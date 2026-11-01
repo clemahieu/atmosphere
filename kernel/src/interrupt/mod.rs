@@ -56,7 +56,7 @@ macro_rules! wrap_interrupt_with_error_code {
         let _: unsafe extern "C" fn(&mut Registers) = $handler;
 
         /// Interrupt trampoline
-        #[naked]
+        #[unsafe(naked)]
         unsafe extern "C" fn trampoline(_: TrampolineMarker) {
             // Figure 6-7. Stack Usage on Transfers to Interrupt and Exception Handling Routines
 
@@ -120,7 +120,7 @@ macro_rules! wrap_interrupt {
         let _: unsafe extern "C" fn(&mut Registers) = $handler;
 
         /// Interrupt trampoline
-        #[naked]
+        #[unsafe(naked)]
         unsafe extern "C" fn trampoline(_: TrampolineMarker) {
             // Figure 6-7. Stack Usage on Transfers to Interrupt and Exception Handling Routines
 

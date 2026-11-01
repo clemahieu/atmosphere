@@ -8,9 +8,7 @@
     alloc_error_handler,
     arbitrary_self_types,
     custom_test_frameworks,
-    naked_functions,
-    pattern,
-    start
+    pattern
 )]
 #![deny(
     asm_sub_register,
@@ -63,9 +61,8 @@ static THREAD_COUNTER: AtomicUsize = AtomicUsize::new(0);
 use verified::array_vec::ArrayVec as vArrayVec;
 
 /// CPU 0 entry point.
-#[start]
 #[no_mangle]
-fn main(boot_info: *const BootInfo) -> isize {
+extern "C" fn main(boot_info: *const BootInfo) -> isize {
     unsafe {
         console::early_init();
         logging::early_init();

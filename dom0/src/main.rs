@@ -1,6 +1,5 @@
 #![no_std]
 #![no_main]
-#![feature(start)]
 
 extern crate alloc;
 // extern crate ixgbe_driver;
@@ -45,7 +44,6 @@ fn test_alloc() {
     log::info!("Allocator works");
 }
 
-#[start]
 #[no_mangle]
 extern "C" fn main(payload_base: *mut u8, payload_size: usize) -> isize {
     asys::logger::init_logging_with_level(log::Level::Info);
