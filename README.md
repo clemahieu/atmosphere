@@ -27,7 +27,7 @@ Run `atmo help` for more information.
 atmo test
 ```
 
-`atmo test` is the gate: a commit is tested when it exits 0. It checks that the workspace builds, that verification reports no more errors than `tools/verify-allowance`, and that dom0 boots under KVM to a clean exit.
+`atmo test` is the gate: a commit is tested when it exits 0. It checks that the workspace builds, that every dependency's license is on `tools/license-allowlist`, that verification reports no more errors than `tools/verify-allowance`, and that dom0 boots under KVM to a clean exit.
 
 ## Run verification
 

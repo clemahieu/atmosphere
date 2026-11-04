@@ -9,7 +9,7 @@ use futures::future::join_all;
 use tokio::fs;
 use tokio::process::Command;
 
-use super::{verify, GlobalOpts, SubCommand};
+use super::{license, verify, GlobalOpts, SubCommand};
 use crate::error::Result;
 use crate::project::{BuildOptions, Project, ProjectHandle};
 
@@ -33,6 +33,7 @@ pub(super) async fn run(global: GlobalOpts) -> Result<()> {
 
     let results = [
         ("build", check_build(&project).await),
+        ("license", license::check(&project)),
         ("verify", check_verify(&project).await),
         ("boot", check_boot(&project, local.boot_timeout).await),
     ];
