@@ -1412,6 +1412,7 @@ impl PageAllocator {
             old(self).free_pages_4k.len() > 0,
             old(self).container_map_4k@.dom().contains(c_ptr),
         ensures
+            crate::pptr::page_is_zero(final(self).page_perms_4k@[ret].value()),
             final(self).wf(),
             // self.free_pages_4k() =~= old(self).free_pages_4k(),
             final(self).free_pages_2m() =~= old(self).free_pages_2m(),
@@ -1459,6 +1460,12 @@ impl PageAllocator {
             self.free_pages_4k.wf_to_no_duplicates();
         }
         let ret = self.free_pages_4k.pop().0;
+        // A new page must not show a process what the page held before.
+        let tracked mut page_perm = self.page_perms_4k.borrow_mut().tracked_remove(ret);
+        crate::pptr::zero_page(ret, Tracked(&mut page_perm));
+        proof {
+            self.page_perms_4k.borrow_mut().tracked_insert(ret, page_perm);
+        }
         assert(page_ptr_valid(ret));
         self.set_state(page_ptr2page_index(ret), PageState::Mapped4k);
         self.set_ref_count(page_ptr2page_index(ret), 1);
@@ -1520,6 +1527,7 @@ impl PageAllocator {
             old(self).free_pages_4k.len() > 0,
             old(self).container_map_4k@.dom().contains(c_ptr),
         ensures
+            crate::pptr::page_is_zero(final(self).page_perms_4k@[ret].value()),
             final(self).wf(),
             // self.free_pages_4k() =~= old(self).free_pages_4k(),
             final(self).free_pages_2m() =~= old(self).free_pages_2m(),
@@ -1571,6 +1579,12 @@ impl PageAllocator {
             self.free_pages_4k.wf_to_no_duplicates();
         }
         let ret = self.free_pages_4k.pop().0;
+        // A new page must not show a process what the page held before.
+        let tracked mut page_perm = self.page_perms_4k.borrow_mut().tracked_remove(ret);
+        crate::pptr::zero_page(ret, Tracked(&mut page_perm));
+        proof {
+            self.page_perms_4k.borrow_mut().tracked_insert(ret, page_perm);
+        }
         assert(page_ptr_valid(ret));
         self.set_state(page_ptr2page_index(ret), PageState::Mapped4k);
         self.set_ref_count(page_ptr2page_index(ret), 1);
