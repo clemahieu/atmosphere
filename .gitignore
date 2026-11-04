@@ -1,10 +1,7 @@
-/.direnv
 /.gdb
 
 target
 build
-result
-result-*
 
 *.mb
 *.mb2
@@ -21,3 +18,4 @@ result-*
 
 build-tool/serial.log
 serial.log
+/tools/verus
