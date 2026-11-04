@@ -3,7 +3,7 @@ verus! {
 
 use core::mem::MaybeUninit;
 use crate::define::*;
-use crate::pptr::PointsTo;
+use crate::pptr::{PPtr, PointsTo};
 use crate::process_manager::thread::*;
 use crate::trap::Registers;
 
@@ -130,8 +130,6 @@ pub fn page_to_thread_with_endpoint(
     }
 }
 
-#[verifier(external_body)]
-// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn thread_set_blocking_endpoint_endpoint_ref_scheduler_ref_state_and_ipc_payload(
     thread_ptr: ThreadPtr,
     thread_perm: &mut Tracked<PointsTo<Thread>>,
@@ -162,16 +160,15 @@ pub fn thread_set_blocking_endpoint_endpoint_ref_scheduler_ref_state_and_ipc_pay
         final(thread_perm)@.value().trap_frame == old(thread_perm)@.value().trap_frame,
         final(thread_perm)@.value().blocking_endpoint_index == blocking_endpoint_index,
 {
-    unsafe {
-        let uptr = thread_ptr as *mut MaybeUninit<Thread>;
-        let ret = (*uptr).assume_init_mut().state = state;
-        let ret = (*uptr).assume_init_mut().scheduler_rev_ptr = scheduler_rev_ptr;
-        let ret = (*uptr).assume_init_mut().blocking_endpoint_ptr = blocking_endpoint_ptr;
-        let ret = (*uptr).assume_init_mut().endpoint_rev_ptr = endpoint_rev_ptr;
-        let ret = (*uptr).assume_init_mut().ipc_payload = ipc_payload;
-        let ret = (*uptr).assume_init_mut().blocking_endpoint_index = blocking_endpoint_index;
-        return ret;
-    }
+    let tracked owned = thread_perm.borrow_mut();
+    let thread = PPtr::<Thread>::from_usize(thread_ptr).borrow_mut(Tracked(owned));
+    thread.state = state;
+    thread.scheduler_rev_ptr = scheduler_rev_ptr;
+    thread.blocking_endpoint_ptr = blocking_endpoint_ptr;
+    thread.endpoint_rev_ptr = endpoint_rev_ptr;
+    thread.ipc_payload = ipc_payload;
+    thread.blocking_endpoint_index = blocking_endpoint_index;
+    thread.running_cpu = None;
 }
 
 #[verifier(external_body)]
