@@ -1,12 +1,10 @@
 #![no_std]
 #![no_main]
-#![feature(start)]
 
 use core::panic::PanicInfo;
 
-#[start]
 #[no_mangle]
-fn main() {
+extern "C" fn main() {
     asys::logger::init_logging_with_level(log::Level::Info);
     log::info!("Hello, world!");
 }
