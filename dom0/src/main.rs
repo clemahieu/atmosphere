@@ -1,6 +1,5 @@
 #![no_std]
 #![no_main]
-#![feature(start)]
 
 extern crate alloc;
 // extern crate ixgbe_driver;
@@ -45,71 +44,19 @@ fn test_alloc() {
     log::info!("Allocator works");
 }
 
-#[start]
 #[no_mangle]
 extern "C" fn main(payload_base: *mut u8, payload_size: usize) -> isize {
     asys::logger::init_logging_with_level(log::Level::Info);
     log::trace!("hello {}", "world");
     log::info!("payload {:?}, size {}", payload_base, payload_size);
 
-    unsafe {
-        asys::sys_print("meow".as_ptr(), 4);
-    }
-    // test_mmap();
-    // test_pingpong();
-    // test_proc_pingpong();
-
-    // unsafe {
-    //     let io_cr3 = asys::sys_rd_io_cr3();
-    //     log::info!("Dom0 IOMMU table @ {:x}", io_cr3);
-    //     let error_code = asys::sys_io_mmap(IOMMU_TEST_ADDR as usize, 0x0000_0000_0000_0002u64 as usize, 1);
-    //     if error_code != 0 {
-    //         log::debug!("sys_io_mmap for IOMMU_TEST_ADDR failed {:?}", error_code);
-    //     }
-    //     log::info!("IOMMU table reslove {:x}",asys::sys_mresolve_io(IOMMU_TEST_ADDR as usize).0 as u64);
-    // }
-    //     log::info!("Dom0 IOMMU table @ {:x}", io_cr3);
-    //     let error_code = asys::sys_mmap(IOMMU_TEST_ADDR as usize, 0x0000_0000_0000_0002u64 as usize, 1);
-    //     if error_code != 0 {
-    //         log::info!("sys_mmap for IOMMU_TEST_ADDR failed {:?}", error_code);
-    //         // return;
-    //     }
-    //     let error_code = asys::sys_io_mmap(IOMMU_TEST_ADDR as usize, 0x0000_0000_0000_0002u64 as usize, 1);
-    //     if error_code != 0 {
-    //         log::info!("sys_io_mmap for IOMMU_TEST_ADDR failed {:?}", error_code);
-    //         // return;
-    //     }
-    //     log::info!("Pagetable reslove {:x}",asys::sys_mresolve(IOMMU_TEST_ADDR as usize).0 as u64);
-    //     log::info!("IOMMU table reslove {:x}",asys::sys_mresolve_io(IOMMU_TEST_ADDR as usize).0 as u64);
-    // }
-    // if !payload_base.is_null() {
-    //     let payload = unsafe {
-    //         slice::from_raw_parts(payload_base, payload_size)
-    //     };
-
-    //     dom1::spawn_dom1(payload);
-    // }
-    // dom1::spawn_dom1();
-
-    // test_proc_pingpong();
-
-    // test_sleep();
-
-    // test_alloc();
-
-    log::info!("Enumerating PCI");
-
-    scan_pci_devs();
-
-    // start_ixgbe_driver_fwd_test();
-
-    // // test_ixgbe_with_ring_buffer_tx();
-
-    // test_ixgbe_driver(); // Commenting out ixgbe driver for now.
-    test_e810_driver();
-    // test_nvme_driver();
-
-    loop {}
+    // The syscall timers, matching VeriFlat's dom0 timers, on CPU 0 with no other runnable thread.
+    syscall_benchmark::time_syscall_returns();
+    syscall_benchmark::time_mmap_only();
+    syscall_benchmark::time_ipc_round_trip();
+    syscall_benchmark::time_new_thread();
+    log::info!("dom0 benchmark done");
+    syscall_benchmark::exit_qemu(0)
 }
 fn thread_1_main() {
     log::info!("hello from thread_1_main");

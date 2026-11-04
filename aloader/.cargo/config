@@ -5,3 +5,8 @@ rustflags = [ "-Z", "emit-stack-sizes" ]
 [unstable]
 build-std = [ "core", "alloc" ]
 unstable-options = true
+json-target-spec = true
+
+# Rust 1.99.1 is a stable compiler: unlock -Z flags, build-std and #![feature].
+[env]
+RUSTC_BOOTSTRAP = "1"

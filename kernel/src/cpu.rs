@@ -108,8 +108,9 @@ pub struct Cpu {
     pub syscall_sp: u64,
 }
 
-/// A stack.
-#[repr(transparent)]
+/// A stack. Its top must be 16-byte aligned: a byte array alone could leave the syscall stack
+/// pointer misaligned.
+#[repr(C, align(16))]
 pub struct Stack<const SZ: usize>([u8; SZ]);
 
 /// An IST stack.

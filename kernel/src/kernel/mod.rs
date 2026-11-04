@@ -12,7 +12,34 @@ use crate::bridge::Bridge;
 use verified::bridge::SwitchDecision;
 use verified::bridge::TrustedBridge;
 use crate::cpu;
-static KERNEL: Mutex<Option<Kernel>> = Mutex::new(None);
+static KERNEL: Mutex<KernelCell> = Mutex::new(KernelCell::new());
+
+/// The kernel state behind `KERNEL`. `Kernel::new` leaves its arrays uninitialized, so in an
+/// `Option<Kernel>` whose niche lies inside one of them, storing `Some(Kernel::new())` need not write
+/// the niche and the option can still read as `None`; an explicit flag keeps the state well defined.
+struct KernelCell {
+    init: bool,
+    kernel: core::mem::MaybeUninit<Kernel>,
+}
+
+impl KernelCell {
+    const fn new() -> Self {
+        Self { init: false, kernel: core::mem::MaybeUninit::uninit() }
+    }
+
+    fn set(&mut self, kernel: Kernel) {
+        self.kernel.write(kernel);
+        self.init = true;
+    }
+
+    fn as_ref(&self) -> Option<&Kernel> {
+        if self.init { Some(unsafe { self.kernel.assume_init_ref() }) } else { None }
+    }
+
+    fn as_mut(&mut self) -> Option<&mut Kernel> {
+        if self.init { Some(unsafe { self.kernel.assume_init_mut() }) } else { None }
+    }
+}
 
 use vstd::prelude::*;
 
@@ -74,7 +101,7 @@ pub fn kernel_new() {
     }
     log::trace!("Kernel objects are within page limit");
     let mut my_int = KERNEL.lock();
-    *my_int = Some(Kernel::new());
+    my_int.set(Kernel::new());
 }
 
 pub fn kernel_init(
@@ -195,8 +222,11 @@ pub extern "C" fn sys_send_empty_try_schedule(endpoint_index:usize, _:usize, _:u
     let sender_cr3: usize = thread_info.3.unwrap();
     let sender_pcid = thread_info.4.unwrap();
     let syscall_ret = kernel.as_mut().unwrap().syscall_send_empty_try_schedule(cpu_id, sender_thread_ptr, endpoint_index, regs);
-    if syscall_ret.pcid.unwrap() != sender_pcid{
-        Bridge::set_cr3((syscall_ret.cr3.unwrap() | syscall_ret.pcid.unwrap() | vdefine::PCID_ENABLE_MASK) as u64);
+    // A send to a thread of the same process, or a failed send, returns no address space to load.
+    if let Some(pcid) = syscall_ret.pcid {
+        if pcid != sender_pcid {
+            Bridge::set_cr3((syscall_ret.cr3.unwrap() | pcid | vdefine::PCID_ENABLE_MASK) as u64);
+        }
     }
 
     Bridge::set_switch_decision(SwitchDecision::SwitchToClean);

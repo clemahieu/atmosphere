@@ -1,7 +1,7 @@
 //! The Atmosphere early loader.
 
-#![cfg_attr(not(test), no_std, no_main, feature(start))]
-#![feature(alloc_error_handler, strict_provenance, abi_x86_interrupt, asm_const)]
+#![cfg_attr(not(test), no_std, no_main)]
+#![feature(alloc_error_handler, abi_x86_interrupt)]
 #![deny(
     asm_sub_register,
     deprecated,
@@ -43,8 +43,8 @@ const KERNEL_RESERVATION: usize = 1024 * 1024 * 1024; // 1 GiB
 const DOM0_RESERVATION: usize = 256 * 1024 * 1024; // 256 MiB
 
 /// Loader entry point.
-#[cfg_attr(not(test), start, no_mangle)]
-fn main(_argc: isize, _argv: *const *const u8) -> ! {
+#[cfg_attr(not(test), no_mangle)]
+extern "C" fn main(_argc: isize, _argv: *const *const u8) -> ! {
     unsafe {
         console::init();
         logging::init();

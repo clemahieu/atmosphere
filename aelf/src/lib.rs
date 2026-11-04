@@ -332,7 +332,8 @@ where
 
                 if file_map_size < total_map_size {
                     let mapping = unsafe {
-                        let addr = zero_end;
+                        // The mapper takes the virtual address; `zero_end` is the loader's view.
+                        let addr = zero_end - load_bias_loader + load_bias;
                         let size = total_map_size - file_map_size;
                         log::trace!(
                             "mmap [{ph}] [{addr:#x?}-0x{mend:x}] (vaddr=0x{vaddr:x}, anon)",
