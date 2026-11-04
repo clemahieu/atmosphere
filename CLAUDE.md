@@ -52,7 +52,7 @@ Beads lives at `~/atmosphere.src/.beads`, shared by every worktree, kept out of 
 
 ## Gate
 
-A commit is tested when `atmo test` exits 0. Until that command exists: the workspace builds; `atmo verify` reports no more errors than the count recorded on the proof-debt epic (read the `verified, errors` line of each crate's output; the command's exit status does not report them); and `atmo run --kvm` boots dom0 to a clean exit (exit status 0, serial log ending in `dom0 benchmark done`).
+A commit is tested when `atmo test` exits 0. Until that command exists: the workspace builds, meaning `cargo build` in `build-tool` exits 0 and `atmo run --kvm` builds the loader, kernel, dom0 and payload; `atmo verify` reports no more errors than the count recorded on the proof-debt epic (read the `verified, errors` line of each crate's output; the command's exit status does not report them); and `atmo run --kvm` boots dom0 to a clean exit (exit status 0, serial log ending in `dom0 benchmark done`).
 
 # Working in the tree
 
