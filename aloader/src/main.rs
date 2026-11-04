@@ -41,7 +41,8 @@ use memory::{
 
 const KERNEL_RESERVATION: usize = 1024 * 1024 * 1024; // 1 GiB
 const DOM0_RESERVATION: usize = 256 * 1024 * 1024; // 256 MiB
-// The kernel reaches 128 MiB during init, as measured by tools/check-boot-stack.py.
+// The kernel reaches 192 MiB during init at opt-level 0 and 128 MiB in release, as measured by
+// tools/check-boot-stack.py.
 // Unmapped below the kernel's stack. The kernel probes large frames, so an overflow cannot jump it.
 const KERNEL_STACK_GUARD_SIZE: u64 = 1024 * 1024; // 1 MiB
 #[cfg(not(feature = "small_kernel_stack"))]
