@@ -52,12 +52,13 @@ Beads lives at `~/atmosphere.src/.beads`, shared by every worktree, kept out of 
 
 ## Gate
 
-A commit is tested when `atmo test` exits 0. Until that command exists: the workspace builds, meaning `cargo build` in `build-tool` exits 0 and `atmo run --kvm` builds the loader, kernel, dom0 and payload; `atmo verify` reports no more errors than the count recorded on the proof-debt epic (read the `verified, errors` line of each crate's output; the command's exit status does not report them); and `atmo run --kvm` boots dom0 to a clean exit (exit status 0, serial log ending in `dom0 benchmark done`).
+A commit is tested when `atmo test` exits 0. It holds when the workspace builds (`cargo build` in `build-tool`, and the loader, kernel, dom0 and payload as `atmo run` builds them); `atmo verify` reports no more errors than `tools/verify-allowance`, which equals the count on the proof-debt epic, and a proof leaf lowers both in the same commit; and `atmo run --kvm` boots dom0 to a clean exit within a timeout (exit status 0, serial log ending in `dom0 benchmark done`).
 
 # Working in the tree
 
 ```
 source tools/env.sh     # Verus, RUSTC_BOOTSTRAP and tools/bin on PATH
+atmo test               # the gate
 atmo run --kvm          # build loader, kernel, dom0 and payload; boot under QEMU with KVM
 atmo verify             # Verus over kernel/verified
 atmo gdb                # attach to a run started with --gdb

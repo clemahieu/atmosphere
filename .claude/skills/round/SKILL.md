@@ -37,7 +37,7 @@ Discard, redefine and split do not commit.
 2. Sources: before reading an external source for the first time, check its license and record the source and the license on the issue with `bd update <id> --append-notes "..."`. Never open a forbidden source (CLAUDE.md, License).
 3. Test first, at the epic's tier: a Verus specification and proof for tier 1; a test that reaches the branch, with fault injection where nothing else reaches it, for tier 2; the best test reasonable for tier 3. Run it and see it fail, make the change, see it pass.
 4. Anything the issue did not name (a dependency, a bug, more complexity, a decision only the human can make) goes through section 5. Do not widen the change.
-5. Gate: `source tools/env.sh`, then `atmo test`; until that command exists, the interim gate in CLAUDE.md. Record the command and its result on the issue.
+5. Gate: `source tools/env.sh`, then `atmo test`. Record the command and its result on the issue.
 6. Commit: one logical change per commit; the message says why; the trailer the harness asks for. If the message needs "and", make two commits, each building on its own.
 7. Land: `git -C ~/atmosphere.src/main merge --ff-only <id>`. If main moved, `git rebase main` in the worktree, run the gate again, merge again. Then `git -C ~/atmosphere.src/main push origin main`, `git -C ~/atmosphere.src/main worktree remove ../<id>`, `git -C ~/atmosphere.src/main branch -d <id>`.
 8. Close: `bd close <id> --reason "<sha>: <evidence>"`. The reason names every commit SHA and the evidence a skeptic will want: verify counts, the serial log line with dom0's exit, where the test output is.
