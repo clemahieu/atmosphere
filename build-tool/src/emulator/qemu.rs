@@ -40,6 +40,23 @@ impl Qemu {
     }
 }
 
+/// The arguments every run shares that depend on the configuration.
+fn common_args(memory_mib: usize, debug_exit_io_base: u16, auto_shutdown: bool) -> Vec<String> {
+    let mut args: Vec<String> = vec![
+        "-smp".into(),
+        "2".into(),
+        "-m".into(),
+        memory_mib.to_string(),
+        "-device".into(),
+        format!("isa-debug-exit,iobase={:#x},iosize=0x04", debug_exit_io_base),
+        "-no-reboot".into(),
+    ];
+    if !auto_shutdown {
+        args.push("-no-shutdown".into());
+    }
+    args
+}
+
 #[async_trait]
 impl Emulator for Qemu {
     /// Start the QEMU process.
@@ -105,17 +122,7 @@ impl Emulator for Qemu {
                 "-chardev",
                 "stdio,id=char0,mux=on,logfile=serial.log,signal=off",
             ])
-            .args(&["-smp", "2"])
-            .args(&["-m", &format!("{}", memory)])
-            .args(&[
-                "-device",
-                &format!(
-                    "isa-debug-exit,iobase={:#x},iosize=0x04",
-                    self.debug_exit_io_base
-                ),
-            ])
-            .arg("-no-reboot")
-            .arg("-no-shutdown")
+            .args(common_args(memory, self.debug_exit_io_base, config.auto_shutdown))
             //.args(&["-d", "int"])
             .args(&["-machine", "q35,kernel_irqchip=split"])
             .args(config.cpu_model.to_qemu()?);
@@ -151,10 +158,6 @@ impl Emulator for Qemu {
 
         if suppress_initial_outputs {
             command.stdout(Stdio::piped());
-        }
-
-        if !config.auto_shutdown {
-            command.arg("-no-shutdown");
         }
 
         if config.freeze_on_startup {
@@ -281,5 +284,28 @@ impl JumboBinary {
 
     fn finalize(self) -> TempPath {
         self.0.into_temp_path()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn no_shutdown_count(auto_shutdown: bool) -> usize {
+        common_args(1024, 0xf4, auto_shutdown)
+            .iter()
+            .filter(|arg| arg.as_str() == "-no-shutdown")
+            .count()
+    }
+
+    /// With -no-shutdown QEMU stays alive after isa-debug-exit, so a run never ends by itself.
+    #[test]
+    fn auto_shutdown_omits_no_shutdown() {
+        assert_eq!(no_shutdown_count(true), 0);
+    }
+
+    #[test]
+    fn no_auto_shutdown_passes_no_shutdown() {
+        assert_eq!(no_shutdown_count(false), 1);
     }
 }
