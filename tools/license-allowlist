@@ -1,0 +1,23 @@
+# The licenses every package in Cargo.lock may use (CLAUDE.md, License), read by atmo license.
+#
+# license <SPDX identifier>                     allowed, in any package's license expression
+# package <name> <source> <SPDX expression>     a package with no license field; the expression
+#                                               is the license verified by reading its LICENSE,
+#                                               and must itself pass
+
+license MIT
+license Apache-2.0
+license BSD-2-Clause
+license BSD-3-Clause
+license ISC
+license 0BSD
+license Zlib
+license BSL-1.0
+license Unlicense
+license Unicode-3.0
+license OLDAP-2.8
+license BSD-2-Clause-Patent
+
+package vstd git+https://github.com/mars-research/verus?branch=mars MIT
+package builtin git+https://github.com/mars-research/verus?branch=mars MIT
+package builtin_macros git+https://github.com/mars-research/verus?branch=mars MIT

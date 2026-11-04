@@ -12,6 +12,7 @@ macro_rules! unwrap_command {
 
 //mod build;
 mod gdb;
+mod license;
 mod run;
 mod test;
 mod verify;
@@ -27,6 +28,7 @@ pub async fn run() -> Result<(), anyhow::Error> {
         SubCommand::Run(_) => run::run(opts).await?,
         //SubCommand::Build(_) => build::run(opts).await?,
         SubCommand::Gdb(_) => gdb::run(opts).await?,
+        SubCommand::License(_) => license::run(opts).await?,
         SubCommand::Test(_) => test::run(opts).await?,
         SubCommand::Verify(_) => verify::run(opts).await?,
         SubCommand::GenCompletions(local) => {
@@ -57,6 +59,7 @@ enum SubCommand {
     Run(run::Opts),
     //Build(build::Opts),
     Gdb(gdb::Opts),
+    License(license::Opts),
     Test(test::Opts),
     Verify(verify::Opts),
 
