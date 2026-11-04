@@ -12,9 +12,12 @@ The rules are in `CLAUDE.md`; this is the procedure. A round moves exactly one i
 ```
 bd ready --exclude-type=epic     # ready leaves, highest priority first
 bd list -s blocked               # questions waiting on the human
+bd list -s in_progress           # a round that did not finish
 ```
 
 `bd ready` without the filter also lists open epics. A round never takes an epic from that list.
+
+Rounds run one at a time, so an issue in progress at orient was left by a round that did not finish, unless a round handed it to a background agent that is still running (the prover, `ListAgents` or the harness shows it): leave that one alone. For each of the others: `bd update <id> --append-notes "Recovered at orient: worktree ~/atmosphere.src/<id> <absent | exists, N commits past main, M files changed>"` (from `git -C ~/atmosphere.src/<id> log --oneline main..HEAD | wc -l` and `git -C ~/atmosphere.src/<id> status --short | wc -l`), then `bd update <id> -s open`. The round that takes it re-reads it and starts from that worktree (section 5). Then pick.
 
 ## 2. Pick
 
