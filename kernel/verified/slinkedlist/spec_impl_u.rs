@@ -17,7 +17,7 @@ pub struct StaticLinkedList<T, const N: usize> {
     pub free_list_head: SLLIndex,
     pub free_list_tail: SLLIndex,
     pub free_list_len: usize,
-    pub size: usize,
+    pub size: Ghost<usize>,
     pub arr_seq: Ghost<Seq<Node<T>>>,
 }
 
@@ -215,7 +215,7 @@ impl<T, const N: usize> StaticLinkedList<T, N> {
 
     pub closed spec fn array_wf(&self) -> bool {
         &&& self.arr_seq@.len() == N
-        &&& self.size == N
+        &&& self.size@ == N
     }
 
     pub closed spec fn spec_seq_wf(&self) -> bool {

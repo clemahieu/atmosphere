@@ -15,7 +15,7 @@ allocator/page_allocator_util_t.rs	set_rev_pointer	unproven	an array element acc
 allocator/page_allocator_util_t.rs	set_state	unproven	an array element access not proven yet
 allocator/page_allocator_util_t.rs	split_2m_pages_to_pages	gap	takes its permission from Tracked::assume_new, which Verus cannot check
 array.rs	get	unproven	an array element access not proven yet
-array.rs	new	gap	builds a value from uninitialised memory
+array.rs	new	gap	builds a value from zeroed memory, which Verus cannot check
 array.rs	set	unproven	an array element access not proven yet
 kernel/create_and_share_pages.rs	insert_page_mapping_t	unproven	a lemma stated without a proof
 kernel/spec.rs	fold_change_ioid_lemma	unproven	a lemma stated without a proof
@@ -42,7 +42,7 @@ memory_manager/mmu_util.rs	pagetable_array_create_pagetable_l4_entry_t	unproven	
 memory_manager/mmu_util.rs	pagetable_array_map_4k_page_t	unproven	an array element access not proven yet
 memory_manager/pci_bitmap.rs	get	unproven	not proven yet
 memory_manager/pci_bitmap.rs	init	unproven	initialisation not proven yet
-memory_manager/pci_bitmap.rs	new	gap	builds a value from uninitialised memory
+memory_manager/pci_bitmap.rs	new	gap	builds a value from zeroed memory, which Verus cannot check
 memory_manager/pci_bitmap.rs	set	unproven	not proven yet
 memory_manager/root_table.rs	get_ioid	glue	accesses the IOMMU root table in its hardware format
 memory_manager/root_table.rs	init	glue	accesses the IOMMU root table in its hardware format
@@ -105,15 +105,15 @@ process_manager/thread_util_t.rs	thread_to_page	gap	takes its permission from Tr
 slinkedlist/impl_t.rs	get_next	unproven	an array element access not proven yet
 slinkedlist/impl_t.rs	get_prev	unproven	an array element access not proven yet
 slinkedlist/impl_t.rs	get_value	unproven	an array element access not proven yet
-slinkedlist/impl_t.rs	new	gap	builds a value from uninitialised memory
+slinkedlist/impl_t.rs	new	gap	builds a value from zeroed memory, which Verus cannot check
 slinkedlist/impl_t.rs	set_next	unproven	an array element access not proven yet
 slinkedlist/impl_t.rs	set_prev	unproven	an array element access not proven yet
 slinkedlist/impl_t.rs	set_value	unproven	an array element access not proven yet
-trap.rs	random	gap	builds a value from uninitialised memory
+trap.rs	random	gap	builds a value from zeroed memory, which Verus cannot check
 trap.rs	set_dst_fast	unproven	field copies of a register frame not proven yet
 trap.rs	set_self_fast	unproven	field copies of a register frame not proven yet
 trap.rs	set_self_fast	unproven	field copies of a register frame not proven yet
-trap.rs	zeroed	gap	builds a value from uninitialised memory
+trap.rs	zeroed	gap	builds a value from zeroed memory, which Verus cannot check
 util/page_ptr_util_u.rs	page_index_lemma	unproven	a lemma stated without a proof
 util/page_ptr_util_u.rs	page_ptr_1g_lemma	unproven	a lemma stated without a proof
 util/page_ptr_util_u.rs	page_ptr_2m_lemma	unproven	a lemma stated without a proof

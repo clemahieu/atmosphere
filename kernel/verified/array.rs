@@ -12,14 +12,14 @@ pub struct Array<A, const N: usize>{
 impl<A, const N: usize> Array<A, N> {
 
     #[verifier(external_body)]
-    // external_body(gap): builds a value from uninitialised memory
+    // external_body(gap): builds a value from zeroed memory, which Verus cannot check
     pub const fn new() -> (ret: Self)
         ensures
             ret.wf(),
     {
         unsafe{
         let ret = Self {
-            ar: MaybeUninit::uninit().assume_init(),
+            ar: MaybeUninit::zeroed().assume_init(),
             seq: Ghost(Seq::empty()),
         };
         ret

@@ -46,12 +46,12 @@ pub struct RootTable {
 impl RootTable {
     #[verifier(external_body)]
     // external_body(glue): accesses the IOMMU root table in its hardware format
-    pub fn new() -> (ret: Self) {
+    pub const fn new() -> (ret: Self) {
         unsafe {
             RootTable {
-                root: MaybeUninit::uninit().assume_init(),
+                root: MaybeUninit::zeroed().assume_init(),
                 seq_ar: Ghost(Seq::empty()),
-                deviecs: MaybeUninit::uninit().assume_init(),
+                deviecs: MaybeUninit::zeroed().assume_init(),
             }
         }
     }

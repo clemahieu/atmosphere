@@ -37,7 +37,7 @@ pub struct PageAllocator {
 impl PageAllocator {
     #[verifier(external_body)]
     // external_body(unproven): initialisation not proven yet
-    pub fn new() -> (ret: Self) {
+    pub const fn new() -> (ret: Self) {
         let ret = Self {
             page_array: Array::<Page, NUM_PAGES>::new(),
             free_pages_4k: StaticLinkedList::<PagePtr, NUM_PAGES>::new(),

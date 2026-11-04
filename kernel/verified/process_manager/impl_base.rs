@@ -26,7 +26,7 @@ use crate::quota::*;
 use crate::process_manager::spec_proof::*;
 //exec
 impl ProcessManager {
-    pub fn new() -> (ret: Self) {
+    pub const fn new() -> (ret: Self) {
         ProcessManager {
             root_container: 0,
             container_perms: Tracked(Map::tracked_empty()),
