@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(~/sel4/sel4.src/**)",
+      "Read(//usr/src/kernels/**)",
+      "Read(//usr/src/debug/**)",
+      "WebFetch(domain:elixir.bootlin.com)",
+      "WebFetch(domain:kernel.org)",
+      "WebFetch(domain:*.kernel.org)",
+      "WebFetch(domain:sourceware.org)",
+      "WebFetch(domain:git.savannah.gnu.org)",
+      "WebFetch(domain:git.qemu.org)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Read|Grep|Glob|Edit|Write|NotebookEdit|WebFetch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/license-guard.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
