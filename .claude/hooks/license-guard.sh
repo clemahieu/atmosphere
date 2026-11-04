@@ -4,10 +4,20 @@
 # in Claude Code and in Grok. The forbidden list lives here and nowhere else.
 set -u
 
+# A name that identifies a forbidden tree wherever a path to it is spelled.
+names=(
+  "sel4.src"  # the seL4 kernel, GPL
+)
+
 roots=(
-  "$HOME/sel4/sel4.src"   # the seL4 kernel, GPL
-  "/usr/src/kernels"      # Linux kernel headers, GPL
-  "/usr/src/debug"        # Fedora debug sources: kernel, binutils, gdb, glibc
+  "/usr/src/kernels"  # Linux kernel headers, GPL
+  "/usr/src/debug"    # Fedora debug sources: kernel, binutils, gdb, glibc
+)
+
+# Directories holding a forbidden tree: a recursive search from one reaches it.
+parents=(
+  "$HOME/sel4"
+  "/usr/src"
 )
 
 repos=(
@@ -31,8 +41,27 @@ strings=$(printf '%s' "$input" | jq -r '(.tool_input // .toolInput // {}) | .. |
 
 while IFS= read -r s; do
   [ -n "$s" ] || continue
+  s=${s//\"/}
+  s=${s//\'/}
   s=${s//"~/"/"$HOME/"}
   s=${s//"\$HOME/"/"$HOME/"}
+  s=${s//"\${HOME}/"/"$HOME/"}
+  s=${s//\/\//\/}
+  while [[ $s =~ ^(.*)/[^/[:space:]]+/\.\./(.*)$ ]]; do
+    s=${BASH_REMATCH[1]}/${BASH_REMATCH[2]}
+  done
+  for r in "${names[@]}"; do
+    case "$s" in *"$r"*)
+      echo "license guard: $r is a forbidden source (CLAUDE.md, License); refer to it by name, not by path" >&2
+      exit 2 ;;
+    esac
+  done
+  for r in "${parents[@]}"; do
+    if [[ $s =~ (^|[[:space:]=:])"$r"/?\*?([[:space:]\;\|\&\)]|$) ]]; then
+      echo "license guard: $r holds a forbidden source (CLAUDE.md, License); name the directory you want inside it" >&2
+      exit 2
+    fi
+  done
   for r in "${roots[@]}"; do
     case "$s" in *"$r"*)
       echo "license guard: $r is a forbidden source (CLAUDE.md, License); refer to it by name, not by path" >&2
