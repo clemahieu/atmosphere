@@ -258,6 +258,10 @@ struct PageBuffer([u64; 512]);
 static mut RESOLVED_PAGE: PageBuffer = PageBuffer([1; 512]);
 static PONGS: AtomicUsize = AtomicUsize::new(0);
 
+/// The code dom0 exits with when every timer finished. The kernel's failure shutdown writes 0 to the
+/// same port, so zero cannot mean success here.
+pub const EXIT_SUCCESS: u32 = 0x10;
+
 /// Ends the QEMU run through the isa-debug-exit device at port 0xf4 (dom0 runs with IOPL 3), which
 /// exits with status `code << 1 | 1`.
 pub fn exit_qemu(code: u32) -> ! {

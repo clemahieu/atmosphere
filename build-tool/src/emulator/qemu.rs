@@ -57,6 +57,25 @@ fn common_args(memory_mib: usize, debug_exit_io_base: u16, auto_shutdown: bool) 
     args
 }
 
+/// QEMU's status when dom0 reports success: isa-debug-exit makes QEMU exit with `code << 1 | 1`,
+/// and dom0 writes 0x10. Every other odd status is a failure.
+const DOM0_SUCCESS_STATUS: i32 = 33;
+
+/// Interprets QEMU's exit status.
+fn exit_from_status(status: Option<i32>) -> EmulatorExit {
+    match status {
+        Some(0) | Some(DOM0_SUCCESS_STATUS) => EmulatorExit::Success,
+        Some(code) => {
+            log::error!("QEMU exited with code {}", code);
+            EmulatorExit::Code(code)
+        }
+        None => {
+            log::error!("QEMU was killed by a signal");
+            EmulatorExit::Killed
+        }
+    }
+}
+
 #[async_trait]
 impl Emulator for Qemu {
     /// Start the QEMU process.
@@ -188,17 +207,7 @@ impl Emulator for Qemu {
         let status = child.wait_with_output().await?.status;
         drop(iso);
 
-        if !status.success() {
-            if let Some(code) = status.code() {
-                log::error!("QEMU exited with code {}", code);
-                Ok(EmulatorExit::Code(code))
-            } else {
-                log::error!("QEMU was killed by a signal");
-                Ok(EmulatorExit::Killed)
-            }
-        } else {
-            Ok(EmulatorExit::Success)
-        }
+        Ok(exit_from_status(status.code()))
     }
 
     /// Returns the GDB connection info for the instance.
@@ -307,5 +316,27 @@ mod tests {
     #[test]
     fn no_auto_shutdown_passes_no_shutdown() {
         assert_eq!(no_shutdown_count(false), 1);
+    }
+
+    #[test]
+    fn dom0_success_status_is_success() {
+        assert!(matches!(exit_from_status(Some(33)), EmulatorExit::Success));
+    }
+
+    /// The kernel's failure shutdown writes 0 to the isa-debug-exit port, which is status 1.
+    #[test]
+    fn kernel_failure_status_is_failure() {
+        assert!(matches!(exit_from_status(Some(1)), EmulatorExit::Code(1)));
+    }
+
+    /// dom0's bench_fail writes 1, which is status 3.
+    #[test]
+    fn dom0_failure_status_is_failure() {
+        assert!(matches!(exit_from_status(Some(3)), EmulatorExit::Code(3)));
+    }
+
+    #[test]
+    fn killed_is_failure() {
+        assert!(matches!(exit_from_status(None), EmulatorExit::Killed));
     }
 }

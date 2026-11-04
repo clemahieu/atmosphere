@@ -38,5 +38,5 @@ taskset -c 0-15 timeout 300 /usr/bin/qemu-system-x86_64 \
 
 grep -a -E 'null syscall:|mmap 4K:|IPC round trip:|new_thread:|dom0 benchmark (done|FAILED)|failed:' "$log" \
     | sed 's/\x1b\[[0-9;]*m//g' || true
-echo "qemu exit status: $status (1 = dom0 finished, 3 = a timer failed, 124 = timeout); log: $log"
-[ "$status" -eq 1 ]
+echo "qemu exit status: $status (33 = dom0 finished, 3 = a timer failed, 1 = the kernel failed, 124 = timeout); log: $log"
+[ "$status" -eq 33 ]
