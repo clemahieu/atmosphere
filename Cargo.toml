@@ -30,11 +30,5 @@ members = [
 
 exclude = ["test-pass", "tools/verus"]
 
-# Unoptimized, the kernel moves its large objects by value through stack frames over a gigabyte
-# deep, far past its boot stack. This level removes the worst of them and keeps the debug assertions
-# and overflow checks.
-[profile.dev]
-opt-level = 1
-
 [profile.release]
 debug = true
