@@ -46,7 +46,7 @@ const DOM0_RESERVATION: usize = 256 * 1024 * 1024; // 256 MiB
 // Unmapped below the kernel's stack. The kernel probes large frames, so an overflow cannot jump it.
 const KERNEL_STACK_GUARD_SIZE: u64 = 1024 * 1024; // 1 MiB
 #[cfg(not(feature = "small_kernel_stack"))]
-const KERNEL_STACK_SIZE: u64 = 384 * 1024 * 1024; // 384 MiB
+const KERNEL_STACK_SIZE: u64 = 256 * 1024 * 1024; // 256 MiB
 // Below the kernel's depth, so check-boot-stack.py can force an overflow.
 #[cfg(feature = "small_kernel_stack")]
 const KERNEL_STACK_SIZE: u64 = 96 * 1024 * 1024; // 96 MiB
