@@ -86,14 +86,6 @@ SECTIONS {
     __data_end = .;
   }
 
-  .bss :
-  {
-    __bss_start = .;
-    *(.bss .bss.*)
-    . = ALIGN(4K);
-    __bss_end = .;
-  }
-
   .tdata :
   {
     __tdata_start = .;
@@ -127,6 +119,14 @@ SECTIONS {
   .gcc_except_table : ALIGN(4K) {
     *(.gcc_except_table)
     . = ALIGN(4K);
+  }
+
+  .bss :
+  {
+    __bss_start = .;
+    *(.bss .bss.*)
+    . = ALIGN(4K);
+    __bss_end = .;
   }
 
   /* `INFO` makes the section not allocatable so it won't be loaded into memory */

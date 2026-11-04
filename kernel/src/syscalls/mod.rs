@@ -108,7 +108,7 @@ global_asm!(
 // r9       | Arg #5         | Arg #6
 //
 // All caller-saved registers are considered clobbered once invoked
-#[naked]
+#[unsafe(naked)]
 unsafe extern "C" fn sys_entry() -> ! {
     naked_asm!(
         // We may not have a valid rsp

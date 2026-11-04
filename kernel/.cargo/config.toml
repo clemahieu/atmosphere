@@ -9,3 +9,8 @@ runner = [ "atmo", "run", "--cargo-runner" ]
 build-std = [ "core" ]
 build-std-features = [ "compiler-builtins-mem" ]
 unstable-options = true
+json-target-spec = true
+
+# Rust 1.99.1 is a stable compiler: unlock -Z flags, build-std and #![feature].
+[env]
+RUSTC_BOOTSTRAP = "1"
