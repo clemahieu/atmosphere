@@ -93,7 +93,6 @@ process_manager/proc_util_t.rs	proc_remove_thread	gap	writes through a raw point
 process_manager/proc_util_t.rs	proc_to_page	gap	takes its permission from Tracked::assume_new, which Verus cannot check
 process_manager/thread_util_t.rs	page_to_thread	gap	writes through a raw pointer and takes its permission from Tracked::assume_new
 process_manager/thread_util_t.rs	page_to_thread_with_endpoint	gap	writes through a raw pointer and takes its permission from Tracked::assume_new
-process_manager/thread_util_t.rs	thread_set_blocking_endpoint_endpoint_ref_scheduler_ref_state_and_ipc_payload	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
 process_manager/thread_util_t.rs	thread_set_current_cpu	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
 process_manager/thread_util_t.rs	thread_set_endpoint_descriptor	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
 process_manager/thread_util_t.rs	thread_set_error_code	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
