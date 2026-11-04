@@ -54,108 +54,108 @@ impl Kernel {
             old(self).get_address_space(proc_ptr).dom().contains(va) == false,
         ensures
             ret.0 <= 3,
-            self.wf(),
-            self.proc_dom() == old(self).proc_dom(),
-            self.thread_dom() == old(self).thread_dom(),
-            self.endpoint_dom() == old(self).endpoint_dom(),
-            self.container_dom() == old(self).container_dom(),
-            self.get_num_of_free_pages() == old(self).get_num_of_free_pages() - ret.0,
+            final(self).wf(),
+            final(self).proc_dom() == old(self).proc_dom(),
+            final(self).thread_dom() == old(self).thread_dom(),
+            final(self).endpoint_dom() == old(self).endpoint_dom(),
+            final(self).container_dom() == old(self).container_dom(),
+            final(self).get_num_of_free_pages() == old(self).get_num_of_free_pages() - ret.0,
             forall|p_ptr: ProcPtr|
                 #![auto]
-                self.proc_dom().contains(p_ptr) ==> self.get_address_space(p_ptr) =~= old(
+                final(self).proc_dom().contains(p_ptr) ==> final(self).get_address_space(p_ptr) =~= old(
                     self,
-                ).get_address_space(p_ptr) && self.get_proc(p_ptr) =~= old(self).get_proc(p_ptr),
+                ).get_address_space(p_ptr) && final(self).get_proc(p_ptr) =~= old(self).get_proc(p_ptr),
             forall|t_ptr: ThreadPtr|
                 #![auto]
-                self.thread_dom().contains(t_ptr) ==> self.get_thread(t_ptr) =~= old(
+                final(self).thread_dom().contains(t_ptr) ==> final(self).get_thread(t_ptr) =~= old(
                     self,
                 ).get_thread(t_ptr),
             forall|c_ptr: ContainerPtr|
                 #![auto]
-                self.container_dom().contains(c_ptr) && c_ptr != self.get_proc(
+                final(self).container_dom().contains(c_ptr) && c_ptr != final(self).get_proc(
                     proc_ptr,
-                ).owning_container ==> self.get_container(c_ptr) =~= old(self).get_container(c_ptr),
+                ).owning_container ==> final(self).get_container(c_ptr) =~= old(self).get_container(c_ptr),
             forall|e_ptr: EndpointPtr|
                 #![auto]
-                self.endpoint_dom().contains(e_ptr) ==> self.get_endpoint(e_ptr) =~= old(
+                final(self).endpoint_dom().contains(e_ptr) ==> final(self).get_endpoint(e_ptr) =~= old(
                     self,
                 ).get_endpoint(e_ptr),
             forall|c_ptr: ContainerPtr|
                 #![auto]
-                self.container_dom().contains(c_ptr) && c_ptr != self.get_proc(
+                final(self).container_dom().contains(c_ptr) && c_ptr != final(self).get_proc(
                     proc_ptr,
-                ).owning_container ==> self.get_container(c_ptr) =~= old(self).get_container(c_ptr),
+                ).owning_container ==> final(self).get_container(c_ptr) =~= old(self).get_container(c_ptr),
             forall|c_ptr: ContainerPtr|
                 #![auto]
-                self.container_dom().contains(c_ptr) ==> self.get_container_owned_pages(c_ptr)
+                final(self).container_dom().contains(c_ptr) ==> final(self).get_container_owned_pages(c_ptr)
                     =~= old(self).get_container_owned_pages(c_ptr),
-            self.get_container(old(self).get_proc(proc_ptr).owning_container).owned_procs =~= old(
+            final(self).get_container(old(self).get_proc(proc_ptr).owning_container).owned_procs =~= old(
                 self,
             ).get_container(old(self).get_proc(proc_ptr).owning_container).owned_procs,
-            self.get_container(old(self).get_proc(proc_ptr).owning_container).parent =~= old(
+            final(self).get_container(old(self).get_proc(proc_ptr).owning_container).parent =~= old(
                 self,
             ).get_container(old(self).get_proc(proc_ptr).owning_container).parent,
-            self.get_container(old(self).get_proc(proc_ptr).owning_container).parent_rev_ptr
+            final(self).get_container(old(self).get_proc(proc_ptr).owning_container).parent_rev_ptr
                 =~= old(self).get_container(
                 old(self).get_proc(proc_ptr).owning_container,
             ).parent_rev_ptr,
-            self.get_container(old(self).get_proc(proc_ptr).owning_container).children =~= old(
+            final(self).get_container(old(self).get_proc(proc_ptr).owning_container).children =~= old(
                 self,
             ).get_container(old(self).get_proc(proc_ptr).owning_container).children,
-            self.get_container(old(self).get_proc(proc_ptr).owning_container).owned_endpoints
+            final(self).get_container(old(self).get_proc(proc_ptr).owning_container).owned_endpoints
                 =~= old(self).get_container(
                 old(self).get_proc(proc_ptr).owning_container,
             ).owned_endpoints,
-            self.get_container(old(self).get_proc(proc_ptr).owning_container).owned_threads =~= old(
+            final(self).get_container(old(self).get_proc(proc_ptr).owning_container).owned_threads =~= old(
                 self,
             ).get_container(old(self).get_proc(proc_ptr).owning_container).owned_threads,
             // self.get_container(old(self).get_proc(proc_ptr).owning_container).mem_quota =~= old(self).get_container(old(self).get_proc(proc_ptr).owning_container).mem_quota,
             // self.get_container(old(self).get_proc(proc_ptr).owning_container).mem_used =~= old(self).get_container(old(self).get_proc(proc_ptr).owning_container).mem_used,
-            self.get_container(old(self).get_proc(proc_ptr).owning_container).owned_cpus =~= old(
+            final(self).get_container(old(self).get_proc(proc_ptr).owning_container).owned_cpus =~= old(
                 self,
             ).get_container(old(self).get_proc(proc_ptr).owning_container).owned_cpus,
-            self.get_container(old(self).get_proc(proc_ptr).owning_container).scheduler =~= old(
+            final(self).get_container(old(self).get_proc(proc_ptr).owning_container).scheduler =~= old(
                 self,
             ).get_container(old(self).get_proc(proc_ptr).owning_container).scheduler,
-            self.get_container(old(self).get_proc(proc_ptr).owning_container).depth =~= old(
+            final(self).get_container(old(self).get_proc(proc_ptr).owning_container).depth =~= old(
                 self,
             ).get_container(old(self).get_proc(proc_ptr).owning_container).depth,
             old(self).get_container(
                 old(self).get_proc(proc_ptr).owning_container,
             ).quota.spec_subtract_mem_4k(
-                self.get_container(old(self).get_proc(proc_ptr).owning_container).quota,
+                final(self).get_container(old(self).get_proc(proc_ptr).owning_container).quota,
                 ret.0,
             ),
-            self.get_container(old(self).get_proc(proc_ptr).owning_container).subtree_set =~= old(
+            final(self).get_container(old(self).get_proc(proc_ptr).owning_container).subtree_set =~= old(
                 self,
             ).get_container(old(self).get_proc(proc_ptr).owning_container).subtree_set,
-            self.mem_man.get_pagetable_by_pcid(
-                self.get_proc(proc_ptr).pcid,
+            final(self).mem_man.get_pagetable_by_pcid(
+                final(self).get_proc(proc_ptr).pcid,
             ).unwrap().spec_resolve_mapping_l2(
                 spec_va2index(va).0,
                 spec_va2index(va).1,
                 spec_va2index(va).2,
             ).is_Some(),
-            self.mem_man.get_pagetable_by_pcid(
-                self.get_proc(proc_ptr).pcid,
+            final(self).mem_man.get_pagetable_by_pcid(
+                final(self).get_proc(proc_ptr).pcid,
             ).unwrap().spec_resolve_mapping_l2(
                 spec_va2index(va).0,
                 spec_va2index(va).1,
                 spec_va2index(va).2,
             ).unwrap().addr == ret.1,
             forall|p: PagePtr|
-                #![trigger self.page_alloc.page_is_mapped(p)]
-                self.page_alloc.page_is_mapped(p) == old(self).page_alloc.page_is_mapped(p),
+                #![trigger final(self).page_alloc.page_is_mapped(p)]
+                final(self).page_alloc.page_is_mapped(p) == old(self).page_alloc.page_is_mapped(p),
             forall|p: PagePtr|
-                #![trigger self.page_alloc.page_is_mapped(p)]
-                self.page_alloc.page_is_mapped(p) ==> self.get_physical_page_reference_counter(p)
+                #![trigger final(self).page_alloc.page_is_mapped(p)]
+                final(self).page_alloc.page_is_mapped(p) ==> final(self).get_physical_page_reference_counter(p)
                     == old(self).get_physical_page_reference_counter(p),
             forall|p: Pcid|
-                #![trigger self.mem_man.pcid_active(p)]
-                #![trigger self.mem_man.pcid_to_proc_ptr(p)]
-                self.mem_man.pcid_active(p) ==> old(self).mem_man.pcid_to_proc_ptr(p)
-                    == self.mem_man.pcid_to_proc_ptr(p),
-            self.page_mapping == old(self).page_mapping,
+                #![trigger final(self).mem_man.pcid_active(p)]
+                #![trigger final(self).mem_man.pcid_to_proc_ptr(p)]
+                final(self).mem_man.pcid_active(p) ==> old(self).mem_man.pcid_to_proc_ptr(p)
+                    == final(self).mem_man.pcid_to_proc_ptr(p),
+            final(self).page_mapping == old(self).page_mapping,
     {
         let mut ret = 0;
         let container_ptr = self.proc_man.get_proc(proc_ptr).owning_container;
@@ -316,117 +316,117 @@ impl Kernel {
             old(self).get_io_space(proc_ptr).dom().contains(va) == false,
         ensures
             ret.0 <= 3,
-            self.wf(),
-            self.proc_dom() == old(self).proc_dom(),
-            self.thread_dom() == old(self).thread_dom(),
-            self.endpoint_dom() == old(self).endpoint_dom(),
-            self.container_dom() == old(self).container_dom(),
-            self.get_num_of_free_pages() == old(self).get_num_of_free_pages() - ret.0,
+            final(self).wf(),
+            final(self).proc_dom() == old(self).proc_dom(),
+            final(self).thread_dom() == old(self).thread_dom(),
+            final(self).endpoint_dom() == old(self).endpoint_dom(),
+            final(self).container_dom() == old(self).container_dom(),
+            final(self).get_num_of_free_pages() == old(self).get_num_of_free_pages() - ret.0,
             forall|p_ptr: ProcPtr|
                 #![auto]
-                self.proc_dom().contains(p_ptr) && self.get_proc_has_iommu_table(p_ptr)
-                    ==> self.get_io_space(p_ptr) =~= old(self).get_io_space(p_ptr),
+                final(self).proc_dom().contains(p_ptr) && final(self).get_proc_has_iommu_table(p_ptr)
+                    ==> final(self).get_io_space(p_ptr) =~= old(self).get_io_space(p_ptr),
             forall|p_ptr: ProcPtr|
                 #![auto]
-                self.proc_dom().contains(p_ptr) ==> self.get_proc(p_ptr) =~= old(self).get_proc(
+                final(self).proc_dom().contains(p_ptr) ==> final(self).get_proc(p_ptr) =~= old(self).get_proc(
                     p_ptr,
-                ) && self.get_address_space(p_ptr) =~= old(self).get_address_space(p_ptr),
+                ) && final(self).get_address_space(p_ptr) =~= old(self).get_address_space(p_ptr),
             forall|t_ptr: ThreadPtr|
                 #![auto]
-                self.thread_dom().contains(t_ptr) ==> self.get_thread(t_ptr) =~= old(
+                final(self).thread_dom().contains(t_ptr) ==> final(self).get_thread(t_ptr) =~= old(
                     self,
                 ).get_thread(t_ptr),
             forall|c_ptr: ContainerPtr|
                 #![auto]
-                self.container_dom().contains(c_ptr) && c_ptr != self.get_proc(
+                final(self).container_dom().contains(c_ptr) && c_ptr != final(self).get_proc(
                     proc_ptr,
-                ).owning_container ==> self.get_container(c_ptr) =~= old(self).get_container(c_ptr),
+                ).owning_container ==> final(self).get_container(c_ptr) =~= old(self).get_container(c_ptr),
             forall|e_ptr: EndpointPtr|
                 #![auto]
-                self.endpoint_dom().contains(e_ptr) ==> self.get_endpoint(e_ptr) =~= old(
+                final(self).endpoint_dom().contains(e_ptr) ==> final(self).get_endpoint(e_ptr) =~= old(
                     self,
                 ).get_endpoint(e_ptr),
             forall|c_ptr: ContainerPtr|
                 #![auto]
-                self.container_dom().contains(c_ptr) && c_ptr != self.get_proc(
+                final(self).container_dom().contains(c_ptr) && c_ptr != final(self).get_proc(
                     proc_ptr,
-                ).owning_container ==> self.get_container(c_ptr) =~= old(self).get_container(c_ptr),
+                ).owning_container ==> final(self).get_container(c_ptr) =~= old(self).get_container(c_ptr),
             forall|c_ptr: ContainerPtr|
                 #![auto]
-                self.container_dom().contains(c_ptr) ==> self.get_container_owned_pages(c_ptr)
+                final(self).container_dom().contains(c_ptr) ==> final(self).get_container_owned_pages(c_ptr)
                     =~= old(self).get_container_owned_pages(c_ptr),
-            self.get_container(old(self).get_proc(proc_ptr).owning_container).owned_procs =~= old(
+            final(self).get_container(old(self).get_proc(proc_ptr).owning_container).owned_procs =~= old(
                 self,
             ).get_container(old(self).get_proc(proc_ptr).owning_container).owned_procs,
-            self.get_container(old(self).get_proc(proc_ptr).owning_container).parent =~= old(
+            final(self).get_container(old(self).get_proc(proc_ptr).owning_container).parent =~= old(
                 self,
             ).get_container(old(self).get_proc(proc_ptr).owning_container).parent,
-            self.get_container(old(self).get_proc(proc_ptr).owning_container).parent_rev_ptr
+            final(self).get_container(old(self).get_proc(proc_ptr).owning_container).parent_rev_ptr
                 =~= old(self).get_container(
                 old(self).get_proc(proc_ptr).owning_container,
             ).parent_rev_ptr,
-            self.get_container(old(self).get_proc(proc_ptr).owning_container).children =~= old(
+            final(self).get_container(old(self).get_proc(proc_ptr).owning_container).children =~= old(
                 self,
             ).get_container(old(self).get_proc(proc_ptr).owning_container).children,
-            self.get_container(old(self).get_proc(proc_ptr).owning_container).owned_endpoints
+            final(self).get_container(old(self).get_proc(proc_ptr).owning_container).owned_endpoints
                 =~= old(self).get_container(
                 old(self).get_proc(proc_ptr).owning_container,
             ).owned_endpoints,
-            self.get_container(old(self).get_proc(proc_ptr).owning_container).owned_threads =~= old(
+            final(self).get_container(old(self).get_proc(proc_ptr).owning_container).owned_threads =~= old(
                 self,
             ).get_container(old(self).get_proc(proc_ptr).owning_container).owned_threads,
             // self.get_container(old(self).get_proc(proc_ptr).owning_container).mem_quota =~= old(self).get_container(old(self).get_proc(proc_ptr).owning_container).mem_quota,
             // self.get_container(old(self).get_proc(proc_ptr).owning_container).mem_used =~= old(self).get_container(old(self).get_proc(proc_ptr).owning_container).mem_used,
-            self.get_container(old(self).get_proc(proc_ptr).owning_container).owned_cpus =~= old(
+            final(self).get_container(old(self).get_proc(proc_ptr).owning_container).owned_cpus =~= old(
                 self,
             ).get_container(old(self).get_proc(proc_ptr).owning_container).owned_cpus,
-            self.get_container(old(self).get_proc(proc_ptr).owning_container).scheduler =~= old(
+            final(self).get_container(old(self).get_proc(proc_ptr).owning_container).scheduler =~= old(
                 self,
             ).get_container(old(self).get_proc(proc_ptr).owning_container).scheduler,
-            self.get_container(old(self).get_proc(proc_ptr).owning_container).depth =~= old(
+            final(self).get_container(old(self).get_proc(proc_ptr).owning_container).depth =~= old(
                 self,
             ).get_container(old(self).get_proc(proc_ptr).owning_container).depth,
             old(self).get_container(
                 old(self).get_proc(proc_ptr).owning_container,
             ).quota.spec_subtract_mem_4k(
-                self.get_container(old(self).get_proc(proc_ptr).owning_container).quota,
+                final(self).get_container(old(self).get_proc(proc_ptr).owning_container).quota,
                 ret.0,
             ),
-            self.get_container(old(self).get_proc(proc_ptr).owning_container).subtree_set =~= old(
+            final(self).get_container(old(self).get_proc(proc_ptr).owning_container).subtree_set =~= old(
                 self,
             ).get_container(old(self).get_proc(proc_ptr).owning_container).subtree_set,
-            self.mem_man.get_iommu_table_by_ioid(
-                self.get_proc(proc_ptr).ioid.unwrap(),
+            final(self).mem_man.get_iommu_table_by_ioid(
+                final(self).get_proc(proc_ptr).ioid.unwrap(),
             ).unwrap().spec_resolve_mapping_l2(
                 spec_va2index(va).0,
                 spec_va2index(va).1,
                 spec_va2index(va).2,
             ).is_Some(),
-            self.mem_man.get_iommu_table_by_ioid(
-                self.get_proc(proc_ptr).ioid.unwrap(),
+            final(self).mem_man.get_iommu_table_by_ioid(
+                final(self).get_proc(proc_ptr).ioid.unwrap(),
             ).unwrap().spec_resolve_mapping_l2(
                 spec_va2index(va).0,
                 spec_va2index(va).1,
                 spec_va2index(va).2,
             ).unwrap().addr == ret.1,
             forall|p: PagePtr|
-                #![trigger self.page_alloc.page_is_mapped(p)]
-                self.page_alloc.page_is_mapped(p) == old(self).page_alloc.page_is_mapped(p),
+                #![trigger final(self).page_alloc.page_is_mapped(p)]
+                final(self).page_alloc.page_is_mapped(p) == old(self).page_alloc.page_is_mapped(p),
             forall|p: PagePtr|
-                #![trigger self.page_alloc.page_is_mapped(p)]
-                self.page_alloc.page_is_mapped(p) ==> self.get_physical_page_reference_counter(p)
+                #![trigger final(self).page_alloc.page_is_mapped(p)]
+                final(self).page_alloc.page_is_mapped(p) ==> final(self).get_physical_page_reference_counter(p)
                     == old(self).get_physical_page_reference_counter(p),
             forall|p: Pcid|
-                #![trigger self.mem_man.pcid_active(p)]
-                #![trigger self.mem_man.pcid_to_proc_ptr(p)]
-                self.mem_man.pcid_active(p) ==> old(self).mem_man.pcid_to_proc_ptr(p)
-                    == self.mem_man.pcid_to_proc_ptr(p),
+                #![trigger final(self).mem_man.pcid_active(p)]
+                #![trigger final(self).mem_man.pcid_to_proc_ptr(p)]
+                final(self).mem_man.pcid_active(p) ==> old(self).mem_man.pcid_to_proc_ptr(p)
+                    == final(self).mem_man.pcid_to_proc_ptr(p),
             forall|i: IOid|
-                #![trigger self.mem_man.ioid_active(i)]
-                #![trigger self.mem_man.ioid_to_proc_ptr(i)]
-                self.mem_man.ioid_active(i) ==> old(self).mem_man.ioid_to_proc_ptr(i)
-                    == self.mem_man.ioid_to_proc_ptr(i),
-            self.page_mapping == old(self).page_mapping,
+                #![trigger final(self).mem_man.ioid_active(i)]
+                #![trigger final(self).mem_man.ioid_to_proc_ptr(i)]
+                final(self).mem_man.ioid_active(i) ==> old(self).mem_man.ioid_to_proc_ptr(i)
+                    == final(self).mem_man.ioid_to_proc_ptr(i),
+            final(self).page_mapping == old(self).page_mapping,
     {
         let mut ret = 0;
         let container_ptr = self.proc_man.get_proc(proc_ptr).owning_container;

@@ -193,8 +193,8 @@ impl PageTable {
                 self.mapping_1g().dom().contains(va) ==> self.mapping_1g()[va].addr != pa
     }
 
-    pub open   spec fn mapped_4k_pages(&self) -> Set<PAddr> {
-        Set::<PAddr>::new(|pa: PAddr| self.is_4k_pa_mapped(pa))
+    pub open   spec fn mapped_4k_pages(&self) -> ISet<PAddr> {
+        ISet::<PAddr>::new(|pa: PAddr| self.is_4k_pa_mapped(pa))
     }
 
     pub open   spec fn is_4k_pa_mapped(&self, pa: PAddr) -> bool {
@@ -203,8 +203,8 @@ impl PageTable {
             self.mapping_4k().dom().contains(va) && self.mapping_4k()[va].addr == pa
     }
 
-    pub open   spec fn mapped_2m_pages(&self) -> Set<PAddr> {
-        Set::<PAddr>::new(|pa: PAddr| self.is_2m_pa_mapped(pa))
+    pub open   spec fn mapped_2m_pages(&self) -> ISet<PAddr> {
+        ISet::<PAddr>::new(|pa: PAddr| self.is_2m_pa_mapped(pa))
     }
 
     pub open   spec fn is_2m_pa_mapped(&self, pa: PAddr) -> bool {
@@ -213,8 +213,8 @@ impl PageTable {
             self.mapping_2m().dom().contains(va) && self.mapping_2m()[va].addr == pa
     }
 
-    pub open   spec fn mapped_1g_pages(&self) -> Set<PAddr> {
-        Set::<PAddr>::new(|pa: PAddr| self.is_1g_pa_mapped(pa))
+    pub open   spec fn mapped_1g_pages(&self) -> ISet<PAddr> {
+        ISet::<PAddr>::new(|pa: PAddr| self.is_1g_pa_mapped(pa))
     }
 
     pub open   spec fn is_1g_pa_mapped(&self, pa: PAddr) -> bool {

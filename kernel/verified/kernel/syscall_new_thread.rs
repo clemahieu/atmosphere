@@ -51,7 +51,7 @@ impl Kernel {
             old(self).wf(),
             old(self).thread_dom().contains(thread_ptr),
         ensures
-            self.wf(),
+            final(self).wf(),
             syscall_new_thread_requirement(*old(self), thread_ptr) == false
                 <==> ret.is_error(),
     // syscall_new_thread_spec(*old(self),*self,cpu_id,pt_regs),

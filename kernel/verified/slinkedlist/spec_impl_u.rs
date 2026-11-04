@@ -262,9 +262,9 @@ impl<T: Copy, const N: usize> StaticLinkedList<T, N> {
             N < SLLIndex::MAX,
             old(self).array_wf(),
         ensures
-            self.wf(),
-            self@ =~= Seq::empty(),
-            self.len() == 0,
+            final(self).wf(),
+            final(self)@ =~= Seq::empty(),
+            final(self).len() == 0,
     {
         self.spec_seq = Ghost(Seq::empty());
 
@@ -345,16 +345,16 @@ impl<T: Copy, const N: usize> StaticLinkedList<T, N> {
             old(self)@.contains(*new_value) == false,
             N > 2,
         ensures
-            self.wf(),
-            self@ == old(self)@.push(*new_value),
-            self.len() == old(self).len() + 1,
+            final(self).wf(),
+            final(self)@ == old(self)@.push(*new_value),
+            final(self).len() == old(self).len() + 1,
             forall|v:T|
                 #![auto]
                 old(self)@.contains(v) ==> 
                     old(self).get_node_ref(v) == 
-                        self.get_node_ref(v),
-            self.get_node_ref(*new_value) == free_node_index,
-            self.unique(),
+                        final(self).get_node_ref(v),
+            final(self).get_node_ref(*new_value) == free_node_index,
+            final(self).unique(),
     {
         proof {
             seq_push_lemma::<SLLIndex>();
@@ -457,16 +457,16 @@ impl<T: Copy, const N: usize> StaticLinkedList<T, N> {
             old(self).unique(),
             N > 2,
         ensures
-            self.wf(),
-            self.len() == old(self).len() - 1,
-            self@ == old(self)@.skip(1),
+            final(self).wf(),
+            final(self).len() == old(self).len() - 1,
+            final(self)@ == old(self)@.skip(1),
             ret.0 == old(self)@[0],
             ret.1 == old(self).get_node_ref(ret.0),
             forall|v:T|
                 #![auto]
-                self@.contains(v) ==> 
+                final(self)@.contains(v) ==> 
                     old(self).get_node_ref(v) == 
-                        self.get_node_ref(v),
+                        final(self).get_node_ref(v),
     {
         proof {
             seq_push_lemma::<SLLIndex>();
@@ -556,16 +556,16 @@ impl<T: Copy, const N: usize> StaticLinkedList<T, N> {
             old(self).get_node_ref(v@) == remove_index,
             old(self).value_list_len == 1,
         ensures
-            self.wf(),
-            self.len() == old(self).len() - 1,
+            final(self).wf(),
+            final(self).len() == old(self).len() - 1,
             ret == v@,
-            self.unique(),
-            self@ =~= old(self)@.remove_value(ret),
+            final(self).unique(),
+            final(self)@ =~= old(self)@.remove_value(ret),
             forall|v:T|
                 #![auto]
-                self@.contains(v) ==> 
+                final(self)@.contains(v) ==> 
                     old(self).get_node_ref(v) == 
-                        self.get_node_ref(v),
+                        final(self).get_node_ref(v),
     {
         proof {
             seq_push_lemma::<SLLIndex>();
@@ -603,16 +603,16 @@ impl<T: Copy, const N: usize> StaticLinkedList<T, N> {
             old(self).value_list_len != 1,
             old(self).free_list_len == 0 && old(self).value_list_head == remove_index,
         ensures
-            self.wf(),
-            self.len() == old(self).len() - 1,
+            final(self).wf(),
+            final(self).len() == old(self).len() - 1,
             ret == v@,
-            self.unique(),
-            self@ =~= old(self)@.remove_value(ret),
+            final(self).unique(),
+            final(self)@ =~= old(self)@.remove_value(ret),
             forall|v:T|
                 #![auto]
-                self@.contains(v) ==> 
+                final(self)@.contains(v) ==> 
                     old(self).get_node_ref(v) == 
-                        self.get_node_ref(v),
+                        final(self).get_node_ref(v),
     {
         proof {
             seq_push_lemma::<SLLIndex>();
@@ -651,16 +651,16 @@ impl<T: Copy, const N: usize> StaticLinkedList<T, N> {
             old(self).value_list_len != 1,
             old(self).free_list_len == 0 && old(self).value_list_tail == remove_index,
         ensures
-            self.wf(),
-            self.len() == old(self).len() - 1,
-            self.unique(),
-            self@ =~= old(self)@.remove_value(ret),
+            final(self).wf(),
+            final(self).len() == old(self).len() - 1,
+            final(self).unique(),
+            final(self)@ =~= old(self)@.remove_value(ret),
             ret == v@,
             forall|v:T|
                 #![auto]
-                self@.contains(v) ==> 
+                final(self)@.contains(v) ==> 
                     old(self).get_node_ref(v) == 
-                        self.get_node_ref(v),
+                        final(self).get_node_ref(v),
     {
         proof {
             seq_push_lemma::<SLLIndex>();
@@ -706,16 +706,16 @@ impl<T: Copy, const N: usize> StaticLinkedList<T, N> {
                 self,
             ).value_list_head != remove_index,
         ensures
-            self.wf(),
-            self.len() == old(self).len() - 1,
+            final(self).wf(),
+            final(self).len() == old(self).len() - 1,
             ret == v@,
             forall|v:T|
                 #![auto]
-                self@.contains(v) ==> 
+                final(self)@.contains(v) ==> 
                     old(self).get_node_ref(v) == 
-                        self.get_node_ref(v),
-            self.unique(),
-            self@ =~= old(self)@.remove_value(ret),
+                        final(self).get_node_ref(v),
+            final(self).unique(),
+            final(self)@ =~= old(self)@.remove_value(ret),
     {
         proof {
             seq_push_lemma::<SLLIndex>();
@@ -781,16 +781,16 @@ impl<T: Copy, const N: usize> StaticLinkedList<T, N> {
                 self,
             ).value_list_len != 1,
         ensures
-            self.wf(),
-            self.len() == old(self).len() - 1,
-            self.unique(),
-            self@ =~= old(self)@.remove_value(ret),
+            final(self).wf(),
+            final(self).len() == old(self).len() - 1,
+            final(self).unique(),
+            final(self)@ =~= old(self)@.remove_value(ret),
             ret == v@,
             forall|v:T|
                 #![auto]
-                self@.contains(v) ==> 
+                final(self)@.contains(v) ==> 
                     old(self).get_node_ref(v) == 
-                        self.get_node_ref(v),
+                        final(self).get_node_ref(v),
     {
         proof {
             seq_push_lemma::<SLLIndex>();
@@ -832,16 +832,16 @@ impl<T: Copy, const N: usize> StaticLinkedList<T, N> {
                 self,
             ).value_list_len != 1,
         ensures
-            self.wf(),
-            self.len() == old(self).len() - 1,
-            self.unique(),
-            self@ =~= old(self)@.remove_value(ret),
+            final(self).wf(),
+            final(self).len() == old(self).len() - 1,
+            final(self).unique(),
+            final(self)@ =~= old(self)@.remove_value(ret),
             ret == v@,
             forall|v:T|
                 #![auto]
-                self@.contains(v) ==> 
+                final(self)@.contains(v) ==> 
                     old(self).get_node_ref(v) == 
-                        self.get_node_ref(v),
+                        final(self).get_node_ref(v),
     {
         proof {
             seq_push_lemma::<SLLIndex>();
@@ -886,16 +886,16 @@ impl<T: Copy, const N: usize> StaticLinkedList<T, N> {
                 self,
             ).value_list_head != remove_index && old(self).value_list_len != 1,
         ensures
-            self.wf(),
-            self.len() == old(self).len() - 1,
-            self.unique(),
-            self@ =~= old(self)@.remove_value(ret),
+            final(self).wf(),
+            final(self).len() == old(self).len() - 1,
+            final(self).unique(),
+            final(self)@ =~= old(self)@.remove_value(ret),
             ret == v@,
             forall|v:T|
                 #![auto]
-                self@.contains(v) ==> 
+                final(self)@.contains(v) ==> 
                     old(self).get_node_ref(v) == 
-                        self.get_node_ref(v),
+                        final(self).get_node_ref(v),
     {
         proof {
             seq_push_lemma::<SLLIndex>();
@@ -945,17 +945,17 @@ impl<T: Copy, const N: usize> StaticLinkedList<T, N> {
             old(self)@.contains(v@),
             old(self).get_node_ref(v@) == remove_index, 
         ensures
-            self.wf(),
-            self.len() == old(self).len() - 1,
-            self@.len() == old(self)@.len() - 1,
-            self.unique(),
-            self@ =~= old(self)@.remove_value(ret),
+            final(self).wf(),
+            final(self).len() == old(self).len() - 1,
+            final(self)@.len() == old(self)@.len() - 1,
+            final(self).unique(),
+            final(self)@ =~= old(self)@.remove_value(ret),
             ret == v@,
             forall|v:T|
                 #![auto]
-                self@.contains(v) ==> 
+                final(self)@.contains(v) ==> 
                     old(self).get_node_ref(v) == 
-                        self.get_node_ref(v),
+                        final(self).get_node_ref(v),
     {
         assert(self.value_list_len != 0);
         if self.value_list_len == 1 {

@@ -6,7 +6,6 @@ use crate::va_range::*;
 use crate::process_manager::spec_util::*;
 use crate::process_manager::spec_proof::*;
 
-use vstd::set::group_set_axioms;
 use vstd::set_lib::*;
 use vstd::seq_lib::*;
 use crate::lemma::lemma_t::*;
@@ -23,36 +22,36 @@ impl Kernel {
             old(self).get_proc(proc_ptr).children@ == Seq::<ProcPtr>::empty(),
             old(self).get_proc(proc_ptr).depth != 0,
         ensures
-            self.wf(),
-            self.thread_dom() == old(self).thread_dom(),
-            threads_unchanged_except(old(self).proc_man, self.proc_man, set![]),
-            self.proc_dom() == old(self).proc_dom().remove(proc_ptr),
-            processes_fields_unchanged(old(self).proc_man, self.proc_man),
-            self.container_dom() == old(self).container_dom(),
-            containers_tree_unchanged(old(self).proc_man, self.proc_man),
-            self.get_proc(old(self).get_proc(proc_ptr).parent.unwrap()).children@ =~= 
+            final(self).wf(),
+            final(self).thread_dom() == old(self).thread_dom(),
+            threads_unchanged_except(old(self).proc_man, final(self).proc_man, set![]),
+            final(self).proc_dom() == old(self).proc_dom().remove(proc_ptr),
+            processes_fields_unchanged(old(self).proc_man, final(self).proc_man),
+            final(self).container_dom() == old(self).container_dom(),
+            containers_tree_unchanged(old(self).proc_man, final(self).proc_man),
+            final(self).get_proc(old(self).get_proc(proc_ptr).parent.unwrap()).children@ =~= 
                 old(self).get_proc(old(self).get_proc(proc_ptr).parent.unwrap()).children@.remove_value(proc_ptr),
-            self.get_proc(old(self).get_proc(proc_ptr).parent.unwrap()).children.len() == 
+            final(self).get_proc(old(self).get_proc(proc_ptr).parent.unwrap()).children.len() == 
                 old(self).get_proc(old(self).get_proc(proc_ptr).parent.unwrap()).children.len() - 1,
             forall|p_ptr:ProcPtr|
-                #![trigger self.get_proc(p_ptr)]
-                self.proc_dom().contains(p_ptr) 
+                #![trigger final(self).get_proc(p_ptr)]
+                final(self).proc_dom().contains(p_ptr) 
                 ==>
                 old(self).mem_man.get_pagetable_by_pcid(old(self).get_proc(p_ptr).pcid)
                     ==
-                self.mem_man.get_pagetable_by_pcid(self.get_proc(p_ptr).pcid),
-            forall|p_ptr:ProcPtr| #![auto]  self.proc_dom().contains(p_ptr) && p_ptr != old(self).get_proc(proc_ptr).parent.unwrap()
+                final(self).mem_man.get_pagetable_by_pcid(final(self).get_proc(p_ptr).pcid),
+            forall|p_ptr:ProcPtr| #![auto]  final(self).proc_dom().contains(p_ptr) && p_ptr != old(self).get_proc(proc_ptr).parent.unwrap()
                 ==>
-                self.get_proc(p_ptr).children == old(self).get_proc(p_ptr).children, 
+                final(self).get_proc(p_ptr).children == old(self).get_proc(p_ptr).children, 
             forall|p_p_ptr:ProcPtr|
-                #![trigger self.get_proc(p_p_ptr)]
+                #![trigger final(self).get_proc(p_p_ptr)]
                 old(self).get_proc(proc_ptr).uppertree_seq@.contains(p_p_ptr) 
                 ==>
-                self.get_proc(p_p_ptr).subtree_set@ =~= 
+                final(self).get_proc(p_p_ptr).subtree_set@ =~= 
                     old(self).get_proc(p_p_ptr).subtree_set@.remove(proc_ptr),     
-            forall|p_ptr:ProcPtr|  #![auto] self.proc_dom().contains(p_ptr)
+            forall|p_ptr:ProcPtr|  #![auto] final(self).proc_dom().contains(p_ptr)
                 ==>
-                self.get_proc(p_ptr).uppertree_seq == old(self).get_proc(p_ptr).uppertree_seq,     
+                final(self).get_proc(p_ptr).uppertree_seq == old(self).get_proc(p_ptr).uppertree_seq,     
     {
         let pcid = self.proc_man.get_proc(proc_ptr).pcid;
         let (page_ptr, page_perm) = self.proc_man.kill_process_none_root(proc_ptr);
@@ -104,32 +103,32 @@ impl Kernel {
             old(self).get_proc(proc_ptr).children@ == Seq::<ProcPtr>::empty(),
             old(self).get_proc(proc_ptr).depth == 0,
         ensures
-            self.wf(),
-            self.thread_dom() == old(self).thread_dom(),
-            threads_unchanged_except(old(self).proc_man, self.proc_man, set![]),
-            self.proc_dom() == old(self).proc_dom().remove(proc_ptr),
-            processes_fields_unchanged(old(self).proc_man, self.proc_man),
-            self.container_dom() == old(self).container_dom(),
-            containers_tree_unchanged(old(self).proc_man, self.proc_man),
+            final(self).wf(),
+            final(self).thread_dom() == old(self).thread_dom(),
+            threads_unchanged_except(old(self).proc_man, final(self).proc_man, set![]),
+            final(self).proc_dom() == old(self).proc_dom().remove(proc_ptr),
+            processes_fields_unchanged(old(self).proc_man, final(self).proc_man),
+            final(self).container_dom() == old(self).container_dom(),
+            containers_tree_unchanged(old(self).proc_man, final(self).proc_man),
             forall|p_ptr:ProcPtr|
-                #![trigger self.get_proc(p_ptr)]
-                self.proc_dom().contains(p_ptr) 
+                #![trigger final(self).get_proc(p_ptr)]
+                final(self).proc_dom().contains(p_ptr) 
                 ==>
                 old(self).mem_man.get_pagetable_by_pcid(old(self).get_proc(p_ptr).pcid)
                     ==
-                self.mem_man.get_pagetable_by_pcid(self.get_proc(p_ptr).pcid),
-            forall|p_ptr:ProcPtr| #![auto]  self.proc_dom().contains(p_ptr)
+                final(self).mem_man.get_pagetable_by_pcid(final(self).get_proc(p_ptr).pcid),
+            forall|p_ptr:ProcPtr| #![auto]  final(self).proc_dom().contains(p_ptr)
                 ==>
-                self.get_proc(p_ptr).children == old(self).get_proc(p_ptr).children, 
+                final(self).get_proc(p_ptr).children == old(self).get_proc(p_ptr).children, 
             forall|p_p_ptr:ProcPtr|
-                #![trigger self.get_proc(p_p_ptr)]
+                #![trigger final(self).get_proc(p_p_ptr)]
                 old(self).get_proc(proc_ptr).uppertree_seq@.contains(p_p_ptr) 
                 ==>
-                self.get_proc(p_p_ptr).subtree_set@ =~= 
+                final(self).get_proc(p_p_ptr).subtree_set@ =~= 
                     old(self).get_proc(p_p_ptr).subtree_set@.remove(proc_ptr),     
-            forall|p_ptr:ProcPtr|  #![auto] self.proc_dom().contains(p_ptr)
+            forall|p_ptr:ProcPtr|  #![auto] final(self).proc_dom().contains(p_ptr)
                 ==>
-                self.get_proc(p_ptr).uppertree_seq == old(self).get_proc(p_ptr).uppertree_seq,  
+                final(self).get_proc(p_ptr).uppertree_seq == old(self).get_proc(p_ptr).uppertree_seq,  
                 
     {
         let pcid = self.proc_man.get_proc(proc_ptr).pcid;
@@ -172,7 +171,7 @@ impl Kernel {
         assert(self.pcid_ioid_wf());
     }
 
-    // #[verifier::exec_allows_no_decreases_clause]
+    #[verifier::rlimit(600)]
     pub fn kernel_kill_proc_recursive_non_root(&mut self, proc_ptr:ProcPtr, current_depth: Ghost<int>) -> (ret: Ghost<Set<ProcPtr>>)
         requires
             old(self).wf(),
@@ -191,44 +190,43 @@ impl Kernel {
                 && old(self).get_proc(s_p_ptr).owned_threads@ == Seq::<ThreadPtr>::empty(),
             current_depth@ == usize::MAX - old(self).get_proc(proc_ptr).depth,
         ensures
-            self.wf(),
+            final(self).wf(),
             ret@ == old(self).get_proc(proc_ptr).subtree_set@.insert(proc_ptr),
-            self.proc_dom() =~= old(self).proc_dom().remove(proc_ptr) - old(self).get_proc(proc_ptr).subtree_set@,
-            processes_fields_unchanged(old(self).proc_man, self.proc_man),
+            final(self).proc_dom() =~= old(self).proc_dom().remove(proc_ptr) - old(self).get_proc(proc_ptr).subtree_set@,
+            processes_fields_unchanged(old(self).proc_man, final(self).proc_man),
             old(self).get_proc(proc_ptr).depth != 0 ==> {
-                self.get_proc(old(self).get_proc(proc_ptr).parent.unwrap()).children.len() == 
+                final(self).get_proc(old(self).get_proc(proc_ptr).parent.unwrap()).children.len() == 
                     old(self).get_proc(old(self).get_proc(proc_ptr).parent.unwrap()).children.len() - 1
             },
             old(self).get_proc(proc_ptr).depth != 0 ==> {
-                forall|p_ptr:ProcPtr| #![auto] self.proc_dom().contains(p_ptr) && p_ptr != old(self).get_proc(proc_ptr).parent.unwrap()
+                forall|p_ptr:ProcPtr| #![auto] final(self).proc_dom().contains(p_ptr) && p_ptr != old(self).get_proc(proc_ptr).parent.unwrap()
                     ==>
-                    self.get_proc(p_ptr).children == old(self).get_proc(p_ptr).children
+                    final(self).get_proc(p_ptr).children == old(self).get_proc(p_ptr).children
             },
             forall|p_p_ptr:ProcPtr|
-                #![trigger self.get_proc(p_p_ptr)]
+                #![trigger final(self).get_proc(p_p_ptr)]
                 old(self).get_proc(proc_ptr).uppertree_seq@.contains(p_p_ptr) 
                 ==>
-                self.get_proc(p_p_ptr).subtree_set@ =~= 
+                final(self).get_proc(p_p_ptr).subtree_set@ =~= 
                     old(self).get_proc(p_p_ptr).subtree_set@ - ret@,
             forall|p_ptr:ProcPtr|
-                #![trigger self.get_proc(p_ptr)]
-                self.proc_dom().contains(p_ptr) 
+                #![trigger final(self).get_proc(p_ptr)]
+                final(self).proc_dom().contains(p_ptr) 
                 ==>
                 old(self).mem_man.get_pagetable_by_pcid(old(self).get_proc(p_ptr).pcid)
                     ==
-                self.mem_man.get_pagetable_by_pcid(self.get_proc(p_ptr).pcid),
+                final(self).mem_man.get_pagetable_by_pcid(final(self).get_proc(p_ptr).pcid),
             old(self).get_proc(proc_ptr).depth == 0 ==> 
             {
                 &&&
-                forall|p_ptr:ProcPtr|  #![auto] self.proc_dom().contains(p_ptr)
+                forall|p_ptr:ProcPtr|  #![auto] final(self).proc_dom().contains(p_ptr)
                 ==>
-                self.get_proc(p_ptr).children == old(self).get_proc(p_ptr).children
+                final(self).get_proc(p_ptr).children == old(self).get_proc(p_ptr).children
             },
-            forall|p_ptr:ProcPtr|  #![auto] self.proc_dom().contains(p_ptr)
+            forall|p_ptr:ProcPtr|  #![auto] final(self).proc_dom().contains(p_ptr)
                 ==>
-                self.get_proc(p_ptr).uppertree_seq == old(self).get_proc(p_ptr).uppertree_seq
-        // decreases
-        //     current_depth@,
+                final(self).get_proc(p_ptr).uppertree_seq == old(self).get_proc(p_ptr).uppertree_seq
+        decreases current_depth@,
     {
         assume(old(self).get_proc(proc_ptr).depth != 0 ==> 
                 old(self).get_proc(proc_ptr).parent.is_Some());
@@ -380,7 +378,7 @@ impl Kernel {
             assert(self.get_proc(proc_ptr).children@.len() == 0) by {
                 broadcast use ProcessManager::reveal_process_manager_wf;
             };
-            proof{lemma_seq_properties::<ProcPtr>();}
+            proof{ broadcast use group_seq_properties; }
             assume(self.get_proc(proc_ptr).parent.is_None());
             assert(old(self).get_proc(proc_ptr).depth == 0);
             assert(removed_procs@ =~= old(self).get_proc(proc_ptr).subtree_set@);
@@ -398,7 +396,7 @@ impl Kernel {
             assert(self.get_proc(proc_ptr).children@.len() == 0) by {
                 broadcast use ProcessManager::reveal_process_manager_wf;
             };
-            proof{lemma_seq_properties::<ProcPtr>();}
+            proof{ broadcast use group_seq_properties; }
             assume(self.get_proc(proc_ptr).parent.is_Some());
             assume(self.proc_dom().contains(self.get_proc(proc_ptr).parent.unwrap()));
             assume(self.get_proc(proc_ptr).parent.unwrap() != proc_ptr);

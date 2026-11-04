@@ -56,8 +56,8 @@ impl TrapFrameOption {
     // external_body(unproven): field copies of a register frame not proven yet
     pub fn set_self_fast(&mut self, src: &Registers)
         ensures
-            self.is_Some(),
-            self.get_Some_0() =~= src,
+            final(self).is_Some(),
+            final(self).get_Some_0() =~= src,
     {
         self.exists = true;
         self.reg.rbx = src.rbx;
@@ -73,8 +73,8 @@ impl TrapFrameOption {
 
     pub fn set_self(&mut self, src: &Registers)
         ensures
-            self.is_Some(),
-            self.get_Some_0() =~= src,
+            final(self).is_Some(),
+            final(self).get_Some_0() =~= src,
     {
         self.exists = true;
         self.reg = *src;
@@ -86,7 +86,7 @@ impl TrapFrameOption {
         requires
             self.is_Some(),
         ensures
-            *dst =~= *self.get_Some_0(),
+            *final(dst) =~= *self.get_Some_0(),
     {
         dst.rbx = self.reg.rbx;
         dst.rbp = self.reg.rbp;
@@ -103,14 +103,14 @@ impl TrapFrameOption {
         requires
             self.is_Some(),
         ensures
-            *dst =~= *self.get_Some_0(),
+            *final(dst) =~= *self.get_Some_0(),
     {
         *dst = self.reg;
     }
 
     pub fn set_to_none(&mut self)
         ensures
-            self.is_None(),
+            final(self).is_None(),
     {
         self.exists = false;
     }
@@ -227,7 +227,7 @@ impl Registers {
     // external_body(unproven): field copies of a register frame not proven yet
     pub fn set_self_fast(&mut self, src: &Registers)
         ensures
-            self == src,
+            *final(self) == *src,
     {
         self.rbx = src.rbx;
         self.rbp = src.rbp;

@@ -23,37 +23,37 @@ pub fn scheduler_push_thread(
         old(container_perm)@.value().scheduler.len() < MAX_CONTAINER_SCHEDULER_LEN,
         old(container_perm)@.value().scheduler@.contains(*thread_ptr) == false,
     ensures
-        container_perm@.is_init(),
-        container_perm@.addr() == container_ptr,
-        container_perm@.value().owned_procs =~= old(container_perm)@.value().owned_procs,
-        container_perm@.value().parent =~= old(container_perm)@.value().parent,
-        container_perm@.value().parent_rev_ptr =~= old(container_perm)@.value().parent_rev_ptr,
-        container_perm@.value().children =~= old(container_perm)@.value().children,
-        container_perm@.value().owned_endpoints =~= old(container_perm)@.value().owned_endpoints,
-        container_perm@.value().quota =~= old(container_perm)@.value().quota,
+        final(container_perm)@.is_init(),
+        final(container_perm)@.addr() == container_ptr,
+        final(container_perm)@.value().owned_procs =~= old(container_perm)@.value().owned_procs,
+        final(container_perm)@.value().parent =~= old(container_perm)@.value().parent,
+        final(container_perm)@.value().parent_rev_ptr =~= old(container_perm)@.value().parent_rev_ptr,
+        final(container_perm)@.value().children =~= old(container_perm)@.value().children,
+        final(container_perm)@.value().owned_endpoints =~= old(container_perm)@.value().owned_endpoints,
+        final(container_perm)@.value().quota =~= old(container_perm)@.value().quota,
         // container_perm@.value().mem_used =~= old(container_perm)@.value().mem_used,
-        container_perm@.value().owned_cpus =~= old(container_perm)@.value().owned_cpus,
-        container_perm@.value().owned_threads =~= old(container_perm)@.value().owned_threads,
+        final(container_perm)@.value().owned_cpus =~= old(container_perm)@.value().owned_cpus,
+        final(container_perm)@.value().owned_threads =~= old(container_perm)@.value().owned_threads,
         // container_perm@.value().scheduler =~= old(container_perm)@.value().scheduler,
-        container_perm@.value().depth =~= old(container_perm)@.value().depth,
-        container_perm@.value().uppertree_seq =~= old(container_perm)@.value().uppertree_seq,
-        container_perm@.value().subtree_set =~= old(container_perm)@.value().subtree_set,
-        container_perm@.value().can_have_children =~= old(
+        final(container_perm)@.value().depth =~= old(container_perm)@.value().depth,
+        final(container_perm)@.value().uppertree_seq =~= old(container_perm)@.value().uppertree_seq,
+        final(container_perm)@.value().subtree_set =~= old(container_perm)@.value().subtree_set,
+        final(container_perm)@.value().can_have_children =~= old(
             container_perm,
         )@.value().can_have_children,
-        container_perm@.value().root_process =~= old(container_perm)@.value().root_process,
-        container_perm@.value().scheduler.wf(),
-        container_perm@.value().scheduler@ == old(container_perm)@.value().scheduler@.push(
+        final(container_perm)@.value().root_process =~= old(container_perm)@.value().root_process,
+        final(container_perm)@.value().scheduler.wf(),
+        final(container_perm)@.value().scheduler@ == old(container_perm)@.value().scheduler@.push(
             *thread_ptr,
         ),
-        container_perm@.value().scheduler.len() == old(container_perm)@.value().scheduler.len() + 1,
+        final(container_perm)@.value().scheduler.len() == old(container_perm)@.value().scheduler.len() + 1,
         forall|t_ptr:ThreadPtr|
             #![auto]
             old(container_perm)@.value().scheduler@.contains(t_ptr) ==> 
                 old(container_perm)@.value().scheduler.get_node_ref(t_ptr) == 
-                    container_perm@.value().scheduler.get_node_ref(t_ptr),
-        container_perm@.value().scheduler.get_node_ref(*thread_ptr) == ret,
-        container_perm@.value().scheduler.unique(),
+                    final(container_perm)@.value().scheduler.get_node_ref(t_ptr),
+        final(container_perm)@.value().scheduler.get_node_ref(*thread_ptr) == ret,
+        final(container_perm)@.value().scheduler.unique(),
 {
     unsafe {
         let uptr = container_ptr as *mut MaybeUninit<Container>;
@@ -75,34 +75,34 @@ pub fn scheduler_pop_head(
         old(container_perm)@.value().scheduler.unique(),
         old(container_perm)@.value().scheduler.len() != 0,
     ensures
-        container_perm@.is_init(),
-        container_perm@.addr() == container_ptr,
-        container_perm@.value().owned_procs =~= old(container_perm)@.value().owned_procs,
-        container_perm@.value().parent =~= old(container_perm)@.value().parent,
-        container_perm@.value().parent_rev_ptr =~= old(container_perm)@.value().parent_rev_ptr,
-        container_perm@.value().children =~= old(container_perm)@.value().children,
-        container_perm@.value().owned_endpoints =~= old(container_perm)@.value().owned_endpoints,
-        container_perm@.value().quota =~= old(container_perm)@.value().quota,
+        final(container_perm)@.is_init(),
+        final(container_perm)@.addr() == container_ptr,
+        final(container_perm)@.value().owned_procs =~= old(container_perm)@.value().owned_procs,
+        final(container_perm)@.value().parent =~= old(container_perm)@.value().parent,
+        final(container_perm)@.value().parent_rev_ptr =~= old(container_perm)@.value().parent_rev_ptr,
+        final(container_perm)@.value().children =~= old(container_perm)@.value().children,
+        final(container_perm)@.value().owned_endpoints =~= old(container_perm)@.value().owned_endpoints,
+        final(container_perm)@.value().quota =~= old(container_perm)@.value().quota,
         // container_perm@.value().mem_used =~= old(container_perm)@.value().mem_used,
-        container_perm@.value().owned_cpus =~= old(container_perm)@.value().owned_cpus,
-        container_perm@.value().owned_threads =~= old(container_perm)@.value().owned_threads,
-        container_perm@.value().depth =~= old(container_perm)@.value().depth,
-        container_perm@.value().uppertree_seq =~= old(container_perm)@.value().uppertree_seq,
-        container_perm@.value().subtree_set =~= old(container_perm)@.value().subtree_set,
-        container_perm@.value().can_have_children =~= old(
+        final(container_perm)@.value().owned_cpus =~= old(container_perm)@.value().owned_cpus,
+        final(container_perm)@.value().owned_threads =~= old(container_perm)@.value().owned_threads,
+        final(container_perm)@.value().depth =~= old(container_perm)@.value().depth,
+        final(container_perm)@.value().uppertree_seq =~= old(container_perm)@.value().uppertree_seq,
+        final(container_perm)@.value().subtree_set =~= old(container_perm)@.value().subtree_set,
+        final(container_perm)@.value().can_have_children =~= old(
             container_perm,
         )@.value().can_have_children,
-        container_perm@.value().root_process =~= old(container_perm)@.value().root_process,
-        container_perm@.value().scheduler.wf(),
-        container_perm@.value().scheduler.unique(),
-        container_perm@.value().scheduler.len() == old(container_perm)@.value().scheduler.len() - 1,
-        container_perm@.value().scheduler@ == old(container_perm)@.value().scheduler@.skip(1),
+        final(container_perm)@.value().root_process =~= old(container_perm)@.value().root_process,
+        final(container_perm)@.value().scheduler.wf(),
+        final(container_perm)@.value().scheduler.unique(),
+        final(container_perm)@.value().scheduler.len() == old(container_perm)@.value().scheduler.len() - 1,
+        final(container_perm)@.value().scheduler@ == old(container_perm)@.value().scheduler@.skip(1),
         ret.0 == old(container_perm)@.value().scheduler@[0],
         forall|v:ThreadPtr|
             #![auto]
-            container_perm@.value().scheduler@.contains(v) ==> 
+            final(container_perm)@.value().scheduler@.contains(v) ==> 
                 old(container_perm)@.value().scheduler.get_node_ref(v) == 
-                    container_perm@.value().scheduler.get_node_ref(v),
+                    final(container_perm)@.value().scheduler.get_node_ref(v),
 {
     unsafe {
         let uptr = container_ptr as *mut MaybeUninit<Container>;
@@ -126,34 +126,34 @@ pub fn scheduler_remove_thread(
         old(container_perm)@.value().scheduler.wf(),
         old(container_perm)@.value().scheduler.get_node_ref(thread_ptr_g@) == rev_ptr,
     ensures
-        container_perm@.is_init(),
-        container_perm@.addr() == container_ptr,
-        container_perm@.value().owned_procs =~= old(container_perm)@.value().owned_procs,
-        container_perm@.value().parent =~= old(container_perm)@.value().parent,
-        container_perm@.value().parent_rev_ptr =~= old(container_perm)@.value().parent_rev_ptr,
-        container_perm@.value().children =~= old(container_perm)@.value().children,
-        container_perm@.value().owned_endpoints =~= old(container_perm)@.value().owned_endpoints,
-        container_perm@.value().quota =~= old(container_perm)@.value().quota,
+        final(container_perm)@.is_init(),
+        final(container_perm)@.addr() == container_ptr,
+        final(container_perm)@.value().owned_procs =~= old(container_perm)@.value().owned_procs,
+        final(container_perm)@.value().parent =~= old(container_perm)@.value().parent,
+        final(container_perm)@.value().parent_rev_ptr =~= old(container_perm)@.value().parent_rev_ptr,
+        final(container_perm)@.value().children =~= old(container_perm)@.value().children,
+        final(container_perm)@.value().owned_endpoints =~= old(container_perm)@.value().owned_endpoints,
+        final(container_perm)@.value().quota =~= old(container_perm)@.value().quota,
         // container_perm@.value().mem_used =~= old(container_perm)@.value().mem_used,
-        container_perm@.value().owned_cpus =~= old(container_perm)@.value().owned_cpus,
-        container_perm@.value().owned_threads =~= old(container_perm)@.value().owned_threads,
-        container_perm@.value().depth =~= old(container_perm)@.value().depth,
-        container_perm@.value().uppertree_seq =~= old(container_perm)@.value().uppertree_seq,
-        container_perm@.value().subtree_set =~= old(container_perm)@.value().subtree_set,
-        container_perm@.value().can_have_children =~= old(
+        final(container_perm)@.value().owned_cpus =~= old(container_perm)@.value().owned_cpus,
+        final(container_perm)@.value().owned_threads =~= old(container_perm)@.value().owned_threads,
+        final(container_perm)@.value().depth =~= old(container_perm)@.value().depth,
+        final(container_perm)@.value().uppertree_seq =~= old(container_perm)@.value().uppertree_seq,
+        final(container_perm)@.value().subtree_set =~= old(container_perm)@.value().subtree_set,
+        final(container_perm)@.value().can_have_children =~= old(
             container_perm,
         )@.value().can_have_children,
-        container_perm@.value().root_process =~= old(container_perm)@.value().root_process,
-        container_perm@.value().scheduler.wf(),
-        container_perm@.value().scheduler.len() == old(container_perm)@.value().scheduler.len() - 1,
+        final(container_perm)@.value().root_process =~= old(container_perm)@.value().root_process,
+        final(container_perm)@.value().scheduler.wf(),
+        final(container_perm)@.value().scheduler.len() == old(container_perm)@.value().scheduler.len() - 1,
         ret == thread_ptr_g@,
-        container_perm@.value().scheduler.unique(),
-        container_perm@.value().scheduler@ =~= old(container_perm)@.value().scheduler@.remove_value(ret),
+        final(container_perm)@.value().scheduler.unique(),
+        final(container_perm)@.value().scheduler@ =~= old(container_perm)@.value().scheduler@.remove_value(ret),
         forall|v:ThreadPtr|
             #![auto]
-            container_perm@.value().scheduler@.contains(v) ==> 
+            final(container_perm)@.value().scheduler@.contains(v) ==> 
                 old(container_perm)@.value().scheduler.get_node_ref(v) == 
-                    container_perm@.value().scheduler.get_node_ref(v),
+                    final(container_perm)@.value().scheduler.get_node_ref(v),
 {
     unsafe {
         let uptr = container_ptr as *mut MaybeUninit<Container>;
@@ -177,37 +177,37 @@ pub fn container_push_proc(
         old(container_perm)@.value().owned_procs.len() < CONTAINER_PROC_LIST_LEN,
         old(container_perm)@.value().owned_procs@.contains(p_ptr) == false,
     ensures
-        container_perm@.is_init(),
-        container_perm@.addr() == container_ptr,
+        final(container_perm)@.is_init(),
+        final(container_perm)@.addr() == container_ptr,
         // container_perm@.value().owned_procs =~= old(container_perm)@.value().owned_procs,
-        container_perm@.value().parent =~= old(container_perm)@.value().parent,
-        container_perm@.value().parent_rev_ptr =~= old(container_perm)@.value().parent_rev_ptr,
-        container_perm@.value().children =~= old(container_perm)@.value().children,
-        container_perm@.value().owned_endpoints =~= old(container_perm)@.value().owned_endpoints,
-        container_perm@.value().quota =~= old(container_perm)@.value().quota,
+        final(container_perm)@.value().parent =~= old(container_perm)@.value().parent,
+        final(container_perm)@.value().parent_rev_ptr =~= old(container_perm)@.value().parent_rev_ptr,
+        final(container_perm)@.value().children =~= old(container_perm)@.value().children,
+        final(container_perm)@.value().owned_endpoints =~= old(container_perm)@.value().owned_endpoints,
+        final(container_perm)@.value().quota =~= old(container_perm)@.value().quota,
         // container_perm@.value().mem_used =~= old(container_perm)@.value().mem_used,
-        container_perm@.value().owned_cpus =~= old(container_perm)@.value().owned_cpus,
-        container_perm@.value().owned_threads =~= old(container_perm)@.value().owned_threads,
-        container_perm@.value().scheduler =~= old(container_perm)@.value().scheduler,
-        container_perm@.value().depth =~= old(container_perm)@.value().depth,
-        container_perm@.value().uppertree_seq =~= old(container_perm)@.value().uppertree_seq,
-        container_perm@.value().subtree_set =~= old(container_perm)@.value().subtree_set,
-        container_perm@.value().can_have_children =~= old(
+        final(container_perm)@.value().owned_cpus =~= old(container_perm)@.value().owned_cpus,
+        final(container_perm)@.value().owned_threads =~= old(container_perm)@.value().owned_threads,
+        final(container_perm)@.value().scheduler =~= old(container_perm)@.value().scheduler,
+        final(container_perm)@.value().depth =~= old(container_perm)@.value().depth,
+        final(container_perm)@.value().uppertree_seq =~= old(container_perm)@.value().uppertree_seq,
+        final(container_perm)@.value().subtree_set =~= old(container_perm)@.value().subtree_set,
+        final(container_perm)@.value().can_have_children =~= old(
             container_perm,
         )@.value().can_have_children,
-        container_perm@.value().root_process =~= old(container_perm)@.value().root_process,
-        container_perm@.value().owned_procs.wf(),
-        container_perm@.value().owned_procs@ == old(container_perm)@.value().owned_procs@.push(
+        final(container_perm)@.value().root_process =~= old(container_perm)@.value().root_process,
+        final(container_perm)@.value().owned_procs.wf(),
+        final(container_perm)@.value().owned_procs@ == old(container_perm)@.value().owned_procs@.push(
             p_ptr,
         ),
-        container_perm@.value().owned_procs.len() == old(container_perm)@.value().owned_procs.len() + 1,
-        container_perm@.value().owned_procs.unique(),
+        final(container_perm)@.value().owned_procs.len() == old(container_perm)@.value().owned_procs.len() + 1,
+        final(container_perm)@.value().owned_procs.unique(),
         forall|v:ThreadPtr|
             #![auto]
             old(container_perm)@.value().owned_procs@.contains(v) ==> 
                 old(container_perm)@.value().owned_procs.get_node_ref(v) == 
-                    container_perm@.value().owned_procs.get_node_ref(v),
-        container_perm@.value().owned_procs.get_node_ref(p_ptr) == ret,
+                    final(container_perm)@.value().owned_procs.get_node_ref(v),
+        final(container_perm)@.value().owned_procs.get_node_ref(p_ptr) == ret,
 {
     unsafe {
         let uptr = container_ptr as *mut MaybeUninit<Container>;
@@ -232,36 +232,36 @@ pub fn container_remove_proc(
         old(container_perm)@.value().owned_procs@.contains(p_ptr@),
         old(container_perm)@.value().owned_procs.get_node_ref(p_ptr@) == rev_ptr,
     ensures
-        container_perm@.is_init(),
-        container_perm@.addr() == container_ptr,
+        final(container_perm)@.is_init(),
+        final(container_perm)@.addr() == container_ptr,
         // container_perm@.value().owned_procs =~= old(container_perm)@.value().owned_procs,
-        container_perm@.value().parent =~= old(container_perm)@.value().parent,
-        container_perm@.value().parent_rev_ptr =~= old(container_perm)@.value().parent_rev_ptr,
-        container_perm@.value().children =~= old(container_perm)@.value().children,
-        container_perm@.value().owned_endpoints =~= old(container_perm)@.value().owned_endpoints,
-        container_perm@.value().quota =~= old(container_perm)@.value().quota,
+        final(container_perm)@.value().parent =~= old(container_perm)@.value().parent,
+        final(container_perm)@.value().parent_rev_ptr =~= old(container_perm)@.value().parent_rev_ptr,
+        final(container_perm)@.value().children =~= old(container_perm)@.value().children,
+        final(container_perm)@.value().owned_endpoints =~= old(container_perm)@.value().owned_endpoints,
+        final(container_perm)@.value().quota =~= old(container_perm)@.value().quota,
         // container_perm@.value().mem_used =~= old(container_perm)@.value().mem_used,
-        container_perm@.value().owned_cpus =~= old(container_perm)@.value().owned_cpus,
-        container_perm@.value().owned_threads =~= old(container_perm)@.value().owned_threads,
-        container_perm@.value().scheduler =~= old(container_perm)@.value().scheduler,
-        container_perm@.value().depth =~= old(container_perm)@.value().depth,
-        container_perm@.value().uppertree_seq =~= old(container_perm)@.value().uppertree_seq,
-        container_perm@.value().subtree_set =~= old(container_perm)@.value().subtree_set,
-        container_perm@.value().can_have_children =~= old(
+        final(container_perm)@.value().owned_cpus =~= old(container_perm)@.value().owned_cpus,
+        final(container_perm)@.value().owned_threads =~= old(container_perm)@.value().owned_threads,
+        final(container_perm)@.value().scheduler =~= old(container_perm)@.value().scheduler,
+        final(container_perm)@.value().depth =~= old(container_perm)@.value().depth,
+        final(container_perm)@.value().uppertree_seq =~= old(container_perm)@.value().uppertree_seq,
+        final(container_perm)@.value().subtree_set =~= old(container_perm)@.value().subtree_set,
+        final(container_perm)@.value().can_have_children =~= old(
             container_perm,
         )@.value().can_have_children,
-        container_perm@.value().root_process =~= old(container_perm)@.value().root_process,
-        container_perm@.value().owned_procs.wf(),
-        container_perm@.value().owned_procs@ == old(container_perm)@.value().owned_procs@.remove_value(
+        final(container_perm)@.value().root_process =~= old(container_perm)@.value().root_process,
+        final(container_perm)@.value().owned_procs.wf(),
+        final(container_perm)@.value().owned_procs@ == old(container_perm)@.value().owned_procs@.remove_value(
             p_ptr@,
         ),
-        container_perm@.value().owned_procs@.len() == old(container_perm)@.value().owned_procs@.len() - 1,
-        container_perm@.value().owned_procs.unique(),
+        final(container_perm)@.value().owned_procs@.len() == old(container_perm)@.value().owned_procs@.len() - 1,
+        final(container_perm)@.value().owned_procs.unique(),
         forall|v:ThreadPtr|
             #![auto]
-            container_perm@.value().owned_procs@.contains(v) ==> 
+            final(container_perm)@.value().owned_procs@.contains(v) ==> 
                 old(container_perm)@.value().owned_procs.get_node_ref(v) == 
-                    container_perm@.value().owned_procs.get_node_ref(v),
+                    final(container_perm)@.value().owned_procs.get_node_ref(v),
 {
     unsafe {
         let uptr = container_ptr as *mut MaybeUninit<Container>;
@@ -285,35 +285,35 @@ pub fn container_push_child(
         old(container_perm)@.value().children.len() < CONTAINER_CHILD_LIST_LEN,
         old(container_perm)@.value().children@.contains(c_ptr) == false,
     ensures
-        container_perm@.is_init(),
-        container_perm@.addr() == container_ptr,
-        container_perm@.value().owned_procs =~= old(container_perm)@.value().owned_procs,
-        container_perm@.value().parent =~= old(container_perm)@.value().parent,
-        container_perm@.value().parent_rev_ptr =~= old(container_perm)@.value().parent_rev_ptr,
+        final(container_perm)@.is_init(),
+        final(container_perm)@.addr() == container_ptr,
+        final(container_perm)@.value().owned_procs =~= old(container_perm)@.value().owned_procs,
+        final(container_perm)@.value().parent =~= old(container_perm)@.value().parent,
+        final(container_perm)@.value().parent_rev_ptr =~= old(container_perm)@.value().parent_rev_ptr,
         // container_perm@.value().children =~= old(container_perm)@.value().children,
-        container_perm@.value().owned_endpoints =~= old(container_perm)@.value().owned_endpoints,
-        container_perm@.value().quota =~= old(container_perm)@.value().quota,
+        final(container_perm)@.value().owned_endpoints =~= old(container_perm)@.value().owned_endpoints,
+        final(container_perm)@.value().quota =~= old(container_perm)@.value().quota,
         // container_perm@.value().mem_used =~= old(container_perm)@.value().mem_used,
-        container_perm@.value().owned_cpus =~= old(container_perm)@.value().owned_cpus,
-        container_perm@.value().owned_threads =~= old(container_perm)@.value().owned_threads,
-        container_perm@.value().scheduler =~= old(container_perm)@.value().scheduler,
-        container_perm@.value().depth =~= old(container_perm)@.value().depth,
-        container_perm@.value().uppertree_seq =~= old(container_perm)@.value().uppertree_seq,
-        container_perm@.value().subtree_set =~= old(container_perm)@.value().subtree_set,
-        container_perm@.value().can_have_children =~= old(
+        final(container_perm)@.value().owned_cpus =~= old(container_perm)@.value().owned_cpus,
+        final(container_perm)@.value().owned_threads =~= old(container_perm)@.value().owned_threads,
+        final(container_perm)@.value().scheduler =~= old(container_perm)@.value().scheduler,
+        final(container_perm)@.value().depth =~= old(container_perm)@.value().depth,
+        final(container_perm)@.value().uppertree_seq =~= old(container_perm)@.value().uppertree_seq,
+        final(container_perm)@.value().subtree_set =~= old(container_perm)@.value().subtree_set,
+        final(container_perm)@.value().can_have_children =~= old(
             container_perm,
         )@.value().can_have_children,
-        container_perm@.value().root_process =~= old(container_perm)@.value().root_process,
-        container_perm@.value().children.wf(),
-        container_perm@.value().children@ == old(container_perm)@.value().children@.push(c_ptr),
-        container_perm@.value().children.len() == old(container_perm)@.value().children.len() + 1,
-        container_perm@.value().children.unique(),
+        final(container_perm)@.value().root_process =~= old(container_perm)@.value().root_process,
+        final(container_perm)@.value().children.wf(),
+        final(container_perm)@.value().children@ == old(container_perm)@.value().children@.push(c_ptr),
+        final(container_perm)@.value().children.len() == old(container_perm)@.value().children.len() + 1,
+        final(container_perm)@.value().children.unique(),
         forall|v:ThreadPtr|
             #![auto]
             old(container_perm)@.value().children@.contains(v) ==> 
                 old(container_perm)@.value().children.get_node_ref(v) == 
-                    container_perm@.value().children.get_node_ref(v),
-        container_perm@.value().children.get_node_ref(c_ptr) == ret,
+                    final(container_perm)@.value().children.get_node_ref(v),
+        final(container_perm)@.value().children.get_node_ref(c_ptr) == ret,
 {
     unsafe {
         let uptr = container_ptr as *mut MaybeUninit<Container>;
@@ -338,33 +338,33 @@ pub fn container_remove_child(
         old(container_perm)@.value().children@.contains(c_ptr@),
         old(container_perm)@.value().children.get_node_ref(c_ptr@) == rev_ptr,
     ensures
-        container_perm@.is_init(),
-        container_perm@.addr() == container_ptr,
-        container_perm@.value().owned_procs =~= old(container_perm)@.value().owned_procs,
-        container_perm@.value().parent =~= old(container_perm)@.value().parent,
-        container_perm@.value().parent_rev_ptr =~= old(container_perm)@.value().parent_rev_ptr,
+        final(container_perm)@.is_init(),
+        final(container_perm)@.addr() == container_ptr,
+        final(container_perm)@.value().owned_procs =~= old(container_perm)@.value().owned_procs,
+        final(container_perm)@.value().parent =~= old(container_perm)@.value().parent,
+        final(container_perm)@.value().parent_rev_ptr =~= old(container_perm)@.value().parent_rev_ptr,
         // container_perm@.value().children =~= old(container_perm)@.value().children,
-        container_perm@.value().owned_endpoints =~= old(container_perm)@.value().owned_endpoints,
-        container_perm@.value().quota =~= old(container_perm)@.value().quota,
-        container_perm@.value().owned_cpus =~= old(container_perm)@.value().owned_cpus,
-        container_perm@.value().owned_threads =~= old(container_perm)@.value().owned_threads,
-        container_perm@.value().scheduler =~= old(container_perm)@.value().scheduler,
-        container_perm@.value().depth =~= old(container_perm)@.value().depth,
-        container_perm@.value().uppertree_seq =~= old(container_perm)@.value().uppertree_seq,
-        container_perm@.value().subtree_set =~= old(container_perm)@.value().subtree_set,
-        container_perm@.value().can_have_children =~= old(
+        final(container_perm)@.value().owned_endpoints =~= old(container_perm)@.value().owned_endpoints,
+        final(container_perm)@.value().quota =~= old(container_perm)@.value().quota,
+        final(container_perm)@.value().owned_cpus =~= old(container_perm)@.value().owned_cpus,
+        final(container_perm)@.value().owned_threads =~= old(container_perm)@.value().owned_threads,
+        final(container_perm)@.value().scheduler =~= old(container_perm)@.value().scheduler,
+        final(container_perm)@.value().depth =~= old(container_perm)@.value().depth,
+        final(container_perm)@.value().uppertree_seq =~= old(container_perm)@.value().uppertree_seq,
+        final(container_perm)@.value().subtree_set =~= old(container_perm)@.value().subtree_set,
+        final(container_perm)@.value().can_have_children =~= old(
             container_perm,
         )@.value().can_have_children,
-        container_perm@.value().root_process =~= old(container_perm)@.value().root_process,
-        container_perm@.value().children.wf(),
-        container_perm@.value().children@ == old(container_perm)@.value().children@.remove_value(c_ptr@),
-        container_perm@.value().children.len() == old(container_perm)@.value().children.len() - 1,
-        container_perm@.value().children.unique(),
+        final(container_perm)@.value().root_process =~= old(container_perm)@.value().root_process,
+        final(container_perm)@.value().children.wf(),
+        final(container_perm)@.value().children@ == old(container_perm)@.value().children@.remove_value(c_ptr@),
+        final(container_perm)@.value().children.len() == old(container_perm)@.value().children.len() - 1,
+        final(container_perm)@.value().children.unique(),
         forall|v:ThreadPtr|
             #![auto]
-            container_perm@.value().children@.contains(v) ==> 
+            final(container_perm)@.value().children@.contains(v) ==> 
                 old(container_perm)@.value().children.get_node_ref(v) == 
-                    container_perm@.value().children.get_node_ref(v),
+                    final(container_perm)@.value().children.get_node_ref(v),
 {
     unsafe {
         let uptr = container_ptr as *mut MaybeUninit<Container>;
@@ -385,26 +385,26 @@ pub fn container_push_endpoint(
         old(container_perm)@.addr() == container_ptr,
         old(container_perm)@.value().owned_endpoints@.contains(e_ptr) == false,
     ensures
-        container_perm@.is_init(),
-        container_perm@.addr() == container_ptr,
-        container_perm@.value().owned_procs =~= old(container_perm)@.value().owned_procs,
-        container_perm@.value().parent =~= old(container_perm)@.value().parent,
-        container_perm@.value().parent_rev_ptr =~= old(container_perm)@.value().parent_rev_ptr,
-        container_perm@.value().children =~= old(container_perm)@.value().children,
+        final(container_perm)@.is_init(),
+        final(container_perm)@.addr() == container_ptr,
+        final(container_perm)@.value().owned_procs =~= old(container_perm)@.value().owned_procs,
+        final(container_perm)@.value().parent =~= old(container_perm)@.value().parent,
+        final(container_perm)@.value().parent_rev_ptr =~= old(container_perm)@.value().parent_rev_ptr,
+        final(container_perm)@.value().children =~= old(container_perm)@.value().children,
         // container_perm@.value().owned_endpoints =~= old(container_perm)@.value().owned_endpoints,
-        container_perm@.value().quota =~= old(container_perm)@.value().quota,
+        final(container_perm)@.value().quota =~= old(container_perm)@.value().quota,
         // container_perm@.value().mem_used =~= old(container_perm)@.value().mem_used,
-        container_perm@.value().owned_cpus =~= old(container_perm)@.value().owned_cpus,
-        container_perm@.value().owned_threads =~= old(container_perm)@.value().owned_threads,
-        container_perm@.value().scheduler =~= old(container_perm)@.value().scheduler,
-        container_perm@.value().depth =~= old(container_perm)@.value().depth,
-        container_perm@.value().uppertree_seq =~= old(container_perm)@.value().uppertree_seq,
-        container_perm@.value().subtree_set =~= old(container_perm)@.value().subtree_set,
-        container_perm@.value().can_have_children =~= old(
+        final(container_perm)@.value().owned_cpus =~= old(container_perm)@.value().owned_cpus,
+        final(container_perm)@.value().owned_threads =~= old(container_perm)@.value().owned_threads,
+        final(container_perm)@.value().scheduler =~= old(container_perm)@.value().scheduler,
+        final(container_perm)@.value().depth =~= old(container_perm)@.value().depth,
+        final(container_perm)@.value().uppertree_seq =~= old(container_perm)@.value().uppertree_seq,
+        final(container_perm)@.value().subtree_set =~= old(container_perm)@.value().subtree_set,
+        final(container_perm)@.value().can_have_children =~= old(
             container_perm,
         )@.value().can_have_children,
-        container_perm@.value().root_process =~= old(container_perm)@.value().root_process,
-        container_perm@.value().owned_endpoints@ == old(
+        final(container_perm)@.value().root_process =~= old(container_perm)@.value().root_process,
+        final(container_perm)@.value().owned_endpoints@ == old(
             container_perm,
         )@.value().owned_endpoints@.insert(e_ptr),
 {
@@ -422,26 +422,26 @@ pub fn container_pop_endpoint(
         old(container_perm)@.addr() == container_ptr,
         old(container_perm)@.value().owned_endpoints@.contains(e_ptr),
     ensures
-        container_perm@.is_init(),
-        container_perm@.addr() == container_ptr,
-        container_perm@.value().owned_procs =~= old(container_perm)@.value().owned_procs,
-        container_perm@.value().parent =~= old(container_perm)@.value().parent,
-        container_perm@.value().parent_rev_ptr =~= old(container_perm)@.value().parent_rev_ptr,
-        container_perm@.value().children =~= old(container_perm)@.value().children,
+        final(container_perm)@.is_init(),
+        final(container_perm)@.addr() == container_ptr,
+        final(container_perm)@.value().owned_procs =~= old(container_perm)@.value().owned_procs,
+        final(container_perm)@.value().parent =~= old(container_perm)@.value().parent,
+        final(container_perm)@.value().parent_rev_ptr =~= old(container_perm)@.value().parent_rev_ptr,
+        final(container_perm)@.value().children =~= old(container_perm)@.value().children,
         // container_perm@.value().owned_endpoints =~= old(container_perm)@.value().owned_endpoints,
-        container_perm@.value().quota =~= old(container_perm)@.value().quota,
+        final(container_perm)@.value().quota =~= old(container_perm)@.value().quota,
         // container_perm@.value().mem_used =~= old(container_perm)@.value().mem_used,
-        container_perm@.value().owned_cpus =~= old(container_perm)@.value().owned_cpus,
-        container_perm@.value().owned_threads =~= old(container_perm)@.value().owned_threads,
-        container_perm@.value().scheduler =~= old(container_perm)@.value().scheduler,
-        container_perm@.value().depth =~= old(container_perm)@.value().depth,
-        container_perm@.value().uppertree_seq =~= old(container_perm)@.value().uppertree_seq,
-        container_perm@.value().subtree_set =~= old(container_perm)@.value().subtree_set,
-        container_perm@.value().can_have_children =~= old(
+        final(container_perm)@.value().owned_cpus =~= old(container_perm)@.value().owned_cpus,
+        final(container_perm)@.value().owned_threads =~= old(container_perm)@.value().owned_threads,
+        final(container_perm)@.value().scheduler =~= old(container_perm)@.value().scheduler,
+        final(container_perm)@.value().depth =~= old(container_perm)@.value().depth,
+        final(container_perm)@.value().uppertree_seq =~= old(container_perm)@.value().uppertree_seq,
+        final(container_perm)@.value().subtree_set =~= old(container_perm)@.value().subtree_set,
+        final(container_perm)@.value().can_have_children =~= old(
             container_perm,
         )@.value().can_have_children,
-        container_perm@.value().root_process =~= old(container_perm)@.value().root_process,
-        container_perm@.value().owned_endpoints@ == old(
+        final(container_perm)@.value().root_process =~= old(container_perm)@.value().root_process,
+        final(container_perm)@.value().owned_endpoints@ == old(
             container_perm,
         )@.value().owned_endpoints@.remove(e_ptr),
 {
@@ -458,27 +458,27 @@ pub fn container_set_quota_mem_4k(
         old(container_perm)@.is_init(),
         old(container_perm)@.addr() == container_ptr,
     ensures
-        container_perm@.is_init(),
-        container_perm@.addr() == container_ptr,
-        container_perm@.value().owned_procs =~= old(container_perm)@.value().owned_procs,
-        container_perm@.value().parent =~= old(container_perm)@.value().parent,
-        container_perm@.value().parent_rev_ptr =~= old(container_perm)@.value().parent_rev_ptr,
-        container_perm@.value().children =~= old(container_perm)@.value().children,
-        container_perm@.value().owned_endpoints =~= old(container_perm)@.value().owned_endpoints,
+        final(container_perm)@.is_init(),
+        final(container_perm)@.addr() == container_ptr,
+        final(container_perm)@.value().owned_procs =~= old(container_perm)@.value().owned_procs,
+        final(container_perm)@.value().parent =~= old(container_perm)@.value().parent,
+        final(container_perm)@.value().parent_rev_ptr =~= old(container_perm)@.value().parent_rev_ptr,
+        final(container_perm)@.value().children =~= old(container_perm)@.value().children,
+        final(container_perm)@.value().owned_endpoints =~= old(container_perm)@.value().owned_endpoints,
         // container_perm@.value().quota =~= old(container_perm)@.value().quota,
         // container_perm@.value().mem_used =~= old(container_perm)@.value().mem_used,
-        container_perm@.value().owned_cpus =~= old(container_perm)@.value().owned_cpus,
-        container_perm@.value().scheduler =~= old(container_perm)@.value().scheduler,
-        container_perm@.value().owned_threads =~= old(container_perm)@.value().owned_threads,
-        container_perm@.value().depth =~= old(container_perm)@.value().depth,
-        container_perm@.value().uppertree_seq =~= old(container_perm)@.value().uppertree_seq,
-        container_perm@.value().subtree_set =~= old(container_perm)@.value().subtree_set,
-        container_perm@.value().can_have_children =~= old(
+        final(container_perm)@.value().owned_cpus =~= old(container_perm)@.value().owned_cpus,
+        final(container_perm)@.value().scheduler =~= old(container_perm)@.value().scheduler,
+        final(container_perm)@.value().owned_threads =~= old(container_perm)@.value().owned_threads,
+        final(container_perm)@.value().depth =~= old(container_perm)@.value().depth,
+        final(container_perm)@.value().uppertree_seq =~= old(container_perm)@.value().uppertree_seq,
+        final(container_perm)@.value().subtree_set =~= old(container_perm)@.value().subtree_set,
+        final(container_perm)@.value().can_have_children =~= old(
             container_perm,
         )@.value().can_have_children,
-        container_perm@.value().root_process =~= old(container_perm)@.value().root_process,
-        container_perm@.value().root_process =~= old(container_perm)@.value().root_process,
-        container_perm@.value().quota =~= old(container_perm)@.value().quota.spec_set_mem_4k(value),
+        final(container_perm)@.value().root_process =~= old(container_perm)@.value().root_process,
+        final(container_perm)@.value().root_process =~= old(container_perm)@.value().root_process,
+        final(container_perm)@.value().quota =~= old(container_perm)@.value().quota.spec_set_mem_4k(value),
 {
     unsafe {
         let uptr = container_ptr as *mut MaybeUninit<Container>;
@@ -499,28 +499,28 @@ pub fn container_insert_cpu(
         0 <= cpu_id < NUM_CPUS,
         old(container_perm)@.value().owned_cpus@.contains(cpu_id) == false,
     ensures
-        container_perm@.is_init(),
-        container_perm@.addr() == container_ptr,
-        container_perm@.value().owned_procs =~= old(container_perm)@.value().owned_procs,
-        container_perm@.value().parent =~= old(container_perm)@.value().parent,
-        container_perm@.value().parent_rev_ptr =~= old(container_perm)@.value().parent_rev_ptr,
-        container_perm@.value().children =~= old(container_perm)@.value().children,
-        container_perm@.value().owned_endpoints =~= old(container_perm)@.value().owned_endpoints,
+        final(container_perm)@.is_init(),
+        final(container_perm)@.addr() == container_ptr,
+        final(container_perm)@.value().owned_procs =~= old(container_perm)@.value().owned_procs,
+        final(container_perm)@.value().parent =~= old(container_perm)@.value().parent,
+        final(container_perm)@.value().parent_rev_ptr =~= old(container_perm)@.value().parent_rev_ptr,
+        final(container_perm)@.value().children =~= old(container_perm)@.value().children,
+        final(container_perm)@.value().owned_endpoints =~= old(container_perm)@.value().owned_endpoints,
         // container_perm@.value().quota =~= old(container_perm)@.value().quota,
         // container_perm@.value().mem_used =~= old(container_perm)@.value().mem_used,
         // container_perm@.value().owned_cpus =~= old(container_perm)@.value().owned_cpus,
-        container_perm@.value().scheduler =~= old(container_perm)@.value().scheduler,
-        container_perm@.value().owned_threads =~= old(container_perm)@.value().owned_threads,
-        container_perm@.value().depth =~= old(container_perm)@.value().depth,
-        container_perm@.value().uppertree_seq =~= old(container_perm)@.value().uppertree_seq,
-        container_perm@.value().subtree_set =~= old(container_perm)@.value().subtree_set,
-        container_perm@.value().can_have_children =~= old(
+        final(container_perm)@.value().scheduler =~= old(container_perm)@.value().scheduler,
+        final(container_perm)@.value().owned_threads =~= old(container_perm)@.value().owned_threads,
+        final(container_perm)@.value().depth =~= old(container_perm)@.value().depth,
+        final(container_perm)@.value().uppertree_seq =~= old(container_perm)@.value().uppertree_seq,
+        final(container_perm)@.value().subtree_set =~= old(container_perm)@.value().subtree_set,
+        final(container_perm)@.value().can_have_children =~= old(
             container_perm,
         )@.value().can_have_children,
-        container_perm@.value().root_process =~= old(container_perm)@.value().root_process,
-        container_perm@.value().root_process =~= old(container_perm)@.value().root_process,
-        container_perm@.value().owned_cpus.wf(),
-        container_perm@.value().owned_cpus@ =~= old(container_perm)@.value().owned_cpus@.insert(cpu_id),
+        final(container_perm)@.value().root_process =~= old(container_perm)@.value().root_process,
+        final(container_perm)@.value().root_process =~= old(container_perm)@.value().root_process,
+        final(container_perm)@.value().owned_cpus.wf(),
+        final(container_perm)@.value().owned_cpus@ =~= old(container_perm)@.value().owned_cpus@.insert(cpu_id),
 {
     unsafe {
         let uptr = container_ptr as *mut MaybeUninit<Container>;
@@ -541,28 +541,28 @@ pub fn container_remove_cpu(
         0 <= cpu_id < NUM_CPUS,
         old(container_perm)@.value().owned_cpus@.contains(cpu_id),
     ensures
-        container_perm@.is_init(),
-        container_perm@.addr() == container_ptr,
-        container_perm@.value().owned_procs =~= old(container_perm)@.value().owned_procs,
-        container_perm@.value().parent =~= old(container_perm)@.value().parent,
-        container_perm@.value().parent_rev_ptr =~= old(container_perm)@.value().parent_rev_ptr,
-        container_perm@.value().children =~= old(container_perm)@.value().children,
-        container_perm@.value().owned_endpoints =~= old(container_perm)@.value().owned_endpoints,
+        final(container_perm)@.is_init(),
+        final(container_perm)@.addr() == container_ptr,
+        final(container_perm)@.value().owned_procs =~= old(container_perm)@.value().owned_procs,
+        final(container_perm)@.value().parent =~= old(container_perm)@.value().parent,
+        final(container_perm)@.value().parent_rev_ptr =~= old(container_perm)@.value().parent_rev_ptr,
+        final(container_perm)@.value().children =~= old(container_perm)@.value().children,
+        final(container_perm)@.value().owned_endpoints =~= old(container_perm)@.value().owned_endpoints,
         // container_perm@.value().quota =~= old(container_perm)@.value().quota,
         // container_perm@.value().mem_used =~= old(container_perm)@.value().mem_used,
         // container_perm@.value().owned_cpus =~= old(container_perm)@.value().owned_cpus,
-        container_perm@.value().scheduler =~= old(container_perm)@.value().scheduler,
-        container_perm@.value().owned_threads =~= old(container_perm)@.value().owned_threads,
-        container_perm@.value().depth =~= old(container_perm)@.value().depth,
-        container_perm@.value().uppertree_seq =~= old(container_perm)@.value().uppertree_seq,
-        container_perm@.value().subtree_set =~= old(container_perm)@.value().subtree_set,
-        container_perm@.value().can_have_children =~= old(
+        final(container_perm)@.value().scheduler =~= old(container_perm)@.value().scheduler,
+        final(container_perm)@.value().owned_threads =~= old(container_perm)@.value().owned_threads,
+        final(container_perm)@.value().depth =~= old(container_perm)@.value().depth,
+        final(container_perm)@.value().uppertree_seq =~= old(container_perm)@.value().uppertree_seq,
+        final(container_perm)@.value().subtree_set =~= old(container_perm)@.value().subtree_set,
+        final(container_perm)@.value().can_have_children =~= old(
             container_perm,
         )@.value().can_have_children,
-        container_perm@.value().root_process =~= old(container_perm)@.value().root_process,
-        container_perm@.value().root_process =~= old(container_perm)@.value().root_process,
-        container_perm@.value().owned_cpus.wf(),
-        container_perm@.value().owned_cpus@ =~= old(container_perm)@.value().owned_cpus@.remove(cpu_id),
+        final(container_perm)@.value().root_process =~= old(container_perm)@.value().root_process,
+        final(container_perm)@.value().root_process =~= old(container_perm)@.value().root_process,
+        final(container_perm)@.value().owned_cpus.wf(),
+        final(container_perm)@.value().owned_cpus@ =~= old(container_perm)@.value().owned_cpus@.remove(cpu_id),
 {
     unsafe {
         let uptr = container_ptr as *mut MaybeUninit<Container>;
@@ -581,27 +581,27 @@ pub fn container_set_quota(
         old(container_perm)@.is_init(),
         old(container_perm)@.addr() == container_ptr,
     ensures
-        container_perm@.is_init(),
-        container_perm@.addr() == container_ptr,
-        container_perm@.value().owned_procs =~= old(container_perm)@.value().owned_procs,
-        container_perm@.value().parent =~= old(container_perm)@.value().parent,
-        container_perm@.value().parent_rev_ptr =~= old(container_perm)@.value().parent_rev_ptr,
-        container_perm@.value().children =~= old(container_perm)@.value().children,
-        container_perm@.value().owned_endpoints =~= old(container_perm)@.value().owned_endpoints,
+        final(container_perm)@.is_init(),
+        final(container_perm)@.addr() == container_ptr,
+        final(container_perm)@.value().owned_procs =~= old(container_perm)@.value().owned_procs,
+        final(container_perm)@.value().parent =~= old(container_perm)@.value().parent,
+        final(container_perm)@.value().parent_rev_ptr =~= old(container_perm)@.value().parent_rev_ptr,
+        final(container_perm)@.value().children =~= old(container_perm)@.value().children,
+        final(container_perm)@.value().owned_endpoints =~= old(container_perm)@.value().owned_endpoints,
         // container_perm@.value().quota =~= old(container_perm)@.value().quota,
         // container_perm@.value().mem_used =~= old(container_perm)@.value().mem_used,
-        container_perm@.value().owned_cpus =~= old(container_perm)@.value().owned_cpus,
-        container_perm@.value().scheduler =~= old(container_perm)@.value().scheduler,
-        container_perm@.value().owned_threads =~= old(container_perm)@.value().owned_threads,
-        container_perm@.value().depth =~= old(container_perm)@.value().depth,
-        container_perm@.value().uppertree_seq =~= old(container_perm)@.value().uppertree_seq,
-        container_perm@.value().subtree_set =~= old(container_perm)@.value().subtree_set,
-        container_perm@.value().can_have_children =~= old(
+        final(container_perm)@.value().owned_cpus =~= old(container_perm)@.value().owned_cpus,
+        final(container_perm)@.value().scheduler =~= old(container_perm)@.value().scheduler,
+        final(container_perm)@.value().owned_threads =~= old(container_perm)@.value().owned_threads,
+        final(container_perm)@.value().depth =~= old(container_perm)@.value().depth,
+        final(container_perm)@.value().uppertree_seq =~= old(container_perm)@.value().uppertree_seq,
+        final(container_perm)@.value().subtree_set =~= old(container_perm)@.value().subtree_set,
+        final(container_perm)@.value().can_have_children =~= old(
             container_perm,
         )@.value().can_have_children,
-        container_perm@.value().root_process =~= old(container_perm)@.value().root_process,
-        container_perm@.value().root_process =~= old(container_perm)@.value().root_process,
-        container_perm@.value().quota =~= *new_quota,
+        final(container_perm)@.value().root_process =~= old(container_perm)@.value().root_process,
+        final(container_perm)@.value().root_process =~= old(container_perm)@.value().root_process,
+        final(container_perm)@.value().quota =~= *new_quota,
 {
     unsafe {
         let uptr = container_ptr as *mut MaybeUninit<Container>;
@@ -620,26 +620,26 @@ pub fn container_set_owned_threads(
         old(container_perm)@.is_init(),
         old(container_perm)@.addr() == container_ptr,
     ensures
-        container_perm@.is_init(),
-        container_perm@.addr() == container_ptr,
-        container_perm@.value().owned_procs =~= old(container_perm)@.value().owned_procs,
-        container_perm@.value().parent =~= old(container_perm)@.value().parent,
-        container_perm@.value().parent_rev_ptr =~= old(container_perm)@.value().parent_rev_ptr,
-        container_perm@.value().children =~= old(container_perm)@.value().children,
-        container_perm@.value().owned_endpoints =~= old(container_perm)@.value().owned_endpoints,
-        container_perm@.value().quota =~= old(container_perm)@.value().quota,
+        final(container_perm)@.is_init(),
+        final(container_perm)@.addr() == container_ptr,
+        final(container_perm)@.value().owned_procs =~= old(container_perm)@.value().owned_procs,
+        final(container_perm)@.value().parent =~= old(container_perm)@.value().parent,
+        final(container_perm)@.value().parent_rev_ptr =~= old(container_perm)@.value().parent_rev_ptr,
+        final(container_perm)@.value().children =~= old(container_perm)@.value().children,
+        final(container_perm)@.value().owned_endpoints =~= old(container_perm)@.value().owned_endpoints,
+        final(container_perm)@.value().quota =~= old(container_perm)@.value().quota,
         // container_perm@.value().mem_used =~= old(container_perm)@.value().mem_used,
-        container_perm@.value().owned_cpus =~= old(container_perm)@.value().owned_cpus,
-        container_perm@.value().scheduler =~= old(container_perm)@.value().scheduler,
+        final(container_perm)@.value().owned_cpus =~= old(container_perm)@.value().owned_cpus,
+        final(container_perm)@.value().scheduler =~= old(container_perm)@.value().scheduler,
         // container_perm@.value().owned_threads =~= old(container_perm)@.value().owned_threads,
-        container_perm@.value().depth =~= old(container_perm)@.value().depth,
-        container_perm@.value().uppertree_seq =~= old(container_perm)@.value().uppertree_seq,
-        container_perm@.value().subtree_set =~= old(container_perm)@.value().subtree_set,
-        container_perm@.value().can_have_children =~= old(
+        final(container_perm)@.value().depth =~= old(container_perm)@.value().depth,
+        final(container_perm)@.value().uppertree_seq =~= old(container_perm)@.value().uppertree_seq,
+        final(container_perm)@.value().subtree_set =~= old(container_perm)@.value().subtree_set,
+        final(container_perm)@.value().can_have_children =~= old(
             container_perm,
         )@.value().can_have_children,
-        container_perm@.value().root_process =~= old(container_perm)@.value().root_process,
-        container_perm@.value().owned_threads =~= owned_threads,
+        final(container_perm)@.value().root_process =~= old(container_perm)@.value().root_process,
+        final(container_perm)@.value().owned_threads =~= owned_threads,
 {
 }
 
@@ -654,26 +654,26 @@ pub fn container_set_root_proc(
         old(container_perm)@.is_init(),
         old(container_perm)@.addr() == container_ptr,
     ensures
-        container_perm@.is_init(),
-        container_perm@.addr() == container_ptr,
-        container_perm@.value().owned_procs =~= old(container_perm)@.value().owned_procs,
-        container_perm@.value().parent =~= old(container_perm)@.value().parent,
-        container_perm@.value().parent_rev_ptr =~= old(container_perm)@.value().parent_rev_ptr,
-        container_perm@.value().children =~= old(container_perm)@.value().children,
-        container_perm@.value().owned_endpoints =~= old(container_perm)@.value().owned_endpoints,
-        container_perm@.value().quota =~= old(container_perm)@.value().quota,
+        final(container_perm)@.is_init(),
+        final(container_perm)@.addr() == container_ptr,
+        final(container_perm)@.value().owned_procs =~= old(container_perm)@.value().owned_procs,
+        final(container_perm)@.value().parent =~= old(container_perm)@.value().parent,
+        final(container_perm)@.value().parent_rev_ptr =~= old(container_perm)@.value().parent_rev_ptr,
+        final(container_perm)@.value().children =~= old(container_perm)@.value().children,
+        final(container_perm)@.value().owned_endpoints =~= old(container_perm)@.value().owned_endpoints,
+        final(container_perm)@.value().quota =~= old(container_perm)@.value().quota,
         // container_perm@.value().mem_used =~= old(container_perm)@.value().mem_used,
-        container_perm@.value().owned_cpus =~= old(container_perm)@.value().owned_cpus,
-        container_perm@.value().scheduler =~= old(container_perm)@.value().scheduler,
-        container_perm@.value().owned_threads =~= old(container_perm)@.value().owned_threads,
-        container_perm@.value().depth =~= old(container_perm)@.value().depth,
-        container_perm@.value().uppertree_seq =~= old(container_perm)@.value().uppertree_seq,
-        container_perm@.value().subtree_set =~= old(container_perm)@.value().subtree_set,
-        container_perm@.value().can_have_children =~= old(
+        final(container_perm)@.value().owned_cpus =~= old(container_perm)@.value().owned_cpus,
+        final(container_perm)@.value().scheduler =~= old(container_perm)@.value().scheduler,
+        final(container_perm)@.value().owned_threads =~= old(container_perm)@.value().owned_threads,
+        final(container_perm)@.value().depth =~= old(container_perm)@.value().depth,
+        final(container_perm)@.value().uppertree_seq =~= old(container_perm)@.value().uppertree_seq,
+        final(container_perm)@.value().subtree_set =~= old(container_perm)@.value().subtree_set,
+        final(container_perm)@.value().can_have_children =~= old(
             container_perm,
         )@.value().can_have_children,
         // container_perm@.value().root_process =~= old(container_perm)@.value().root_process,
-        container_perm@.value().root_process =~= root_proc,
+        final(container_perm)@.value().root_process =~= root_proc,
 {
     unsafe {
         let uptr = container_ptr as *mut MaybeUninit<Container>;
@@ -884,57 +884,57 @@ pub fn container_perms_update_subtree_set(
     new_container_ptr: ContainerPtr,
 )
     ensures
-        old(perms)@.dom() =~= perms@.dom(),
+        old(perms)@.dom() =~= final(perms)@.dom(),
         forall|c_ptr: ContainerPtr|
             #![trigger uppertree_seq@.contains(c_ptr)]
-            #![trigger perms@.dom().contains(c_ptr)]
-            #![trigger perms@[c_ptr]]
-            perms@.dom().contains(c_ptr) && uppertree_seq@.contains(c_ptr) == false
-                ==> perms@[c_ptr] =~= old(perms)@[c_ptr],
+            #![trigger final(perms)@.dom().contains(c_ptr)]
+            #![trigger final(perms)@[c_ptr]]
+            final(perms)@.dom().contains(c_ptr) && uppertree_seq@.contains(c_ptr) == false
+                ==> final(perms)@[c_ptr] =~= old(perms)@[c_ptr],
         forall|c_ptr: ContainerPtr|
          // #![trigger perms@[c_ptr].value().owning_container]
 
-            #![trigger perms@.dom().contains(c_ptr)]
-            #![trigger perms@[c_ptr]]
-            perms@.dom().contains(c_ptr) ==> perms@[c_ptr].is_init() =~= old(
+            #![trigger final(perms)@.dom().contains(c_ptr)]
+            #![trigger final(perms)@[c_ptr]]
+            final(perms)@.dom().contains(c_ptr) ==> final(perms)@[c_ptr].is_init() =~= old(
                 perms,
-            )@[c_ptr].is_init() && perms@[c_ptr].addr() =~= old(perms)@[c_ptr].addr()
-                && perms@[c_ptr].value().parent =~= old(perms)@[c_ptr].value().parent
-                && perms@[c_ptr].value().parent_rev_ptr =~= old(
+            )@[c_ptr].is_init() && final(perms)@[c_ptr].addr() =~= old(perms)@[c_ptr].addr()
+                && final(perms)@[c_ptr].value().parent =~= old(perms)@[c_ptr].value().parent
+                && final(perms)@[c_ptr].value().parent_rev_ptr =~= old(
                 perms,
-            )@[c_ptr].value().parent_rev_ptr && perms@[c_ptr].value().children =~= old(
+            )@[c_ptr].value().parent_rev_ptr && final(perms)@[c_ptr].value().children =~= old(
                 perms,
-            )@[c_ptr].value().children && perms@[c_ptr].value().depth =~= old(
+            )@[c_ptr].value().children && final(perms)@[c_ptr].value().depth =~= old(
                 perms,
-            )@[c_ptr].value().depth && perms@[c_ptr].value().uppertree_seq =~= old(
+            )@[c_ptr].value().depth && final(perms)@[c_ptr].value().uppertree_seq =~= old(
                 perms,
             )@[c_ptr].value().uppertree_seq
             // &&
             // perms@[c_ptr].value().subtree_set =~= old(perms)@[c_ptr].value().subtree_set
-             && perms@[c_ptr].value().root_process =~= old(perms)@[c_ptr].value().root_process
-                && perms@[c_ptr].value().owned_procs =~= old(perms)@[c_ptr].value().owned_procs
-                && perms@[c_ptr].value().owned_endpoints =~= old(
+             && final(perms)@[c_ptr].value().root_process =~= old(perms)@[c_ptr].value().root_process
+                && final(perms)@[c_ptr].value().owned_procs =~= old(perms)@[c_ptr].value().owned_procs
+                && final(perms)@[c_ptr].value().owned_endpoints =~= old(
                 perms,
-            )@[c_ptr].value().owned_endpoints && perms@[c_ptr].value().owned_threads =~= old(
+            )@[c_ptr].value().owned_endpoints && final(perms)@[c_ptr].value().owned_threads =~= old(
                 perms,
-            )@[c_ptr].value().owned_threads && perms@[c_ptr].value().quota =~= old(
+            )@[c_ptr].value().owned_threads && final(perms)@[c_ptr].value().quota =~= old(
                 perms,
             )@[c_ptr].value().quota
             // &&
             // perms@[c_ptr].value().mem_used =~= old(perms)@[c_ptr].value().mem_used
-             && perms@[c_ptr].value().owned_cpus =~= old(perms)@[c_ptr].value().owned_cpus
-                && perms@[c_ptr].value().scheduler =~= old(perms)@[c_ptr].value().scheduler
-                && perms@[c_ptr].value().can_have_children =~= old(
+             && final(perms)@[c_ptr].value().owned_cpus =~= old(perms)@[c_ptr].value().owned_cpus
+                && final(perms)@[c_ptr].value().scheduler =~= old(perms)@[c_ptr].value().scheduler
+                && final(perms)@[c_ptr].value().can_have_children =~= old(
                 perms,
             )@[c_ptr].value().can_have_children,
         forall|c_ptr: ProcPtr|
             #![trigger uppertree_seq@.contains(c_ptr)]
-            #![trigger perms@[c_ptr].value().subtree_set]
+            #![trigger final(perms)@[c_ptr].value().subtree_set]
             #![trigger old(perms)@[c_ptr].value().subtree_set]
-            uppertree_seq@.contains(c_ptr) ==> perms@[c_ptr].value().subtree_set@ =~= old(
+            uppertree_seq@.contains(c_ptr) ==> final(perms)@[c_ptr].value().subtree_set@ =~= old(
                 perms,
             )@[c_ptr].value().subtree_set@.insert(new_container_ptr),
-        perms@[new_container_ptr].value().subtree_set =~= old(
+        final(perms)@[new_container_ptr].value().subtree_set =~= old(
             perms,
         )@[new_container_ptr].value().subtree_set,
 {
@@ -948,55 +948,55 @@ pub fn container_perms_subset_remove(
     container_ptr: ContainerPtr,
 )
     ensures
-        old(perms)@.dom() =~= perms@.dom(),
+        old(perms)@.dom() =~= final(perms)@.dom(),
         forall|c_ptr: ContainerPtr|
             #![trigger uppertree_seq@.contains(c_ptr)]
-            #![trigger perms@.dom().contains(c_ptr)]
-            #![trigger perms@[c_ptr]]
-            perms@.dom().contains(c_ptr) && uppertree_seq@.contains(c_ptr) == false
-                ==> perms@[c_ptr] =~= old(perms)@[c_ptr],
+            #![trigger final(perms)@.dom().contains(c_ptr)]
+            #![trigger final(perms)@[c_ptr]]
+            final(perms)@.dom().contains(c_ptr) && uppertree_seq@.contains(c_ptr) == false
+                ==> final(perms)@[c_ptr] =~= old(perms)@[c_ptr],
         forall|c_ptr: ContainerPtr|
-            #![trigger perms@.dom().contains(c_ptr)]
-            #![trigger perms@[c_ptr]]
-            perms@.dom().contains(c_ptr) ==> perms@[c_ptr].is_init() =~= old(
+            #![trigger final(perms)@.dom().contains(c_ptr)]
+            #![trigger final(perms)@[c_ptr]]
+            final(perms)@.dom().contains(c_ptr) ==> final(perms)@[c_ptr].is_init() =~= old(
                 perms,
-            )@[c_ptr].is_init() && perms@[c_ptr].addr() =~= old(perms)@[c_ptr].addr()
-                && perms@[c_ptr].value().parent =~= old(perms)@[c_ptr].value().parent
-                && perms@[c_ptr].value().parent_rev_ptr =~= old(
+            )@[c_ptr].is_init() && final(perms)@[c_ptr].addr() =~= old(perms)@[c_ptr].addr()
+                && final(perms)@[c_ptr].value().parent =~= old(perms)@[c_ptr].value().parent
+                && final(perms)@[c_ptr].value().parent_rev_ptr =~= old(
                 perms,
-            )@[c_ptr].value().parent_rev_ptr && perms@[c_ptr].value().children =~= old(
+            )@[c_ptr].value().parent_rev_ptr && final(perms)@[c_ptr].value().children =~= old(
                 perms,
-            )@[c_ptr].value().children && perms@[c_ptr].value().depth =~= old(
+            )@[c_ptr].value().children && final(perms)@[c_ptr].value().depth =~= old(
                 perms,
-            )@[c_ptr].value().depth && perms@[c_ptr].value().uppertree_seq =~= old(
+            )@[c_ptr].value().depth && final(perms)@[c_ptr].value().uppertree_seq =~= old(
                 perms,
             )@[c_ptr].value().uppertree_seq
             &&
-            (uppertree_seq@.contains(c_ptr) == false ==> perms@[c_ptr].value().subtree_set =~= old(perms)@[c_ptr].value().subtree_set)
-             && perms@[c_ptr].value().root_process =~= old(perms)@[c_ptr].value().root_process
-                && perms@[c_ptr].value().owned_procs =~= old(perms)@[c_ptr].value().owned_procs
-                && perms@[c_ptr].value().owned_endpoints =~= old(
+            (uppertree_seq@.contains(c_ptr) == false ==> final(perms)@[c_ptr].value().subtree_set =~= old(perms)@[c_ptr].value().subtree_set)
+             && final(perms)@[c_ptr].value().root_process =~= old(perms)@[c_ptr].value().root_process
+                && final(perms)@[c_ptr].value().owned_procs =~= old(perms)@[c_ptr].value().owned_procs
+                && final(perms)@[c_ptr].value().owned_endpoints =~= old(
                 perms,
-            )@[c_ptr].value().owned_endpoints && perms@[c_ptr].value().owned_threads =~= old(
+            )@[c_ptr].value().owned_endpoints && final(perms)@[c_ptr].value().owned_threads =~= old(
                 perms,
-            )@[c_ptr].value().owned_threads && perms@[c_ptr].value().quota =~= old(
+            )@[c_ptr].value().owned_threads && final(perms)@[c_ptr].value().quota =~= old(
                 perms,
             )@[c_ptr].value().quota
             // &&
             // perms@[c_ptr].value().mem_used =~= old(perms)@[c_ptr].value().mem_used
-             && perms@[c_ptr].value().owned_cpus =~= old(perms)@[c_ptr].value().owned_cpus
-                && perms@[c_ptr].value().scheduler =~= old(perms)@[c_ptr].value().scheduler
-                && perms@[c_ptr].value().can_have_children =~= old(
+             && final(perms)@[c_ptr].value().owned_cpus =~= old(perms)@[c_ptr].value().owned_cpus
+                && final(perms)@[c_ptr].value().scheduler =~= old(perms)@[c_ptr].value().scheduler
+                && final(perms)@[c_ptr].value().can_have_children =~= old(
                 perms,
             )@[c_ptr].value().can_have_children,
         forall|c_ptr: ProcPtr|
             #![trigger uppertree_seq@.contains(c_ptr)]
-            #![trigger perms@[c_ptr].value().subtree_set]
+            #![trigger final(perms)@[c_ptr].value().subtree_set]
             #![trigger old(perms)@[c_ptr].value().subtree_set]
-            uppertree_seq@.contains(c_ptr) ==> perms@[c_ptr].value().subtree_set@ =~= old(
+            uppertree_seq@.contains(c_ptr) ==> final(perms)@[c_ptr].value().subtree_set@ =~= old(
                 perms,
             )@[c_ptr].value().subtree_set@.remove(container_ptr),
-        perms@[container_ptr].value() =~= old(
+        final(perms)@[container_ptr].value() =~= old(
             perms,
         )@[container_ptr].value(),
 {

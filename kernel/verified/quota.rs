@@ -24,7 +24,7 @@ verus! {
         }
         pub fn set_mem_4k(&mut self, v:usize) 
             ensures
-                old(self).spec_set_mem_4k(v) == self,
+                old(self).spec_set_mem_4k(v) == *final(self),
         {
             self.mem_4k = v;
         }
@@ -46,7 +46,7 @@ verus! {
             requires
                 old(self).mem_4k >= v,
             ensures
-                old(self).spec_subtract_mem_4k(*self, v),
+                old(self).spec_subtract_mem_4k(*final(self), v),
         {
             self.mem_4k = self.mem_4k - v;
         }
@@ -63,7 +63,7 @@ verus! {
         }
         pub fn set_mem_2m(&mut self, v:usize) 
             ensures
-                old(self).spec_set_mem_2m(v) == self,
+                old(self).spec_set_mem_2m(v) == *final(self),
         {
             self.mem_2m = v;
         }
@@ -79,7 +79,7 @@ verus! {
         }
         pub fn set_mem_1g(&mut self, v:usize) 
             ensures
-                old(self).spec_set_mem_1g(v) == self,
+                old(self).spec_set_mem_1g(v) == *final(self),
         {
             self.mem_1g = v;
         }
@@ -95,7 +95,7 @@ verus! {
         }
         pub fn set_pcid(&mut self, v:usize) 
             ensures
-                old(self).spec_set_pcid(v) == self,
+                old(self).spec_set_pcid(v) == *final(self),
         {
             self.pcid = v;
         }
@@ -111,7 +111,7 @@ verus! {
         }
         pub fn set_ioid(&mut self, v:usize) 
             ensures
-                old(self).spec_set_ioid(v) == self,
+                old(self).spec_set_ioid(v) == *final(self),
         {
             self.ioid = v;
         }
@@ -151,7 +151,7 @@ verus! {
                 old(self).pcid >= new.pcid,
                 old(self).ioid >= new.ioid,
             ensures
-                old(self).spec_subtract_new_quota(self, new),
+                old(self).spec_subtract_new_quota(final(self), new),
         {
             self.mem_4k = self.mem_4k - new.mem_4k;
             self.mem_2m = self.mem_2m - new.mem_2m;

@@ -46,7 +46,7 @@ impl Kernel {
             0 <= blocking_endpoint_index < MAX_NUM_ENDPOINT_DESCRIPTORS,
             old(self).get_thread(sender_thread_ptr).state == ThreadState::RUNNING,
         ensures
-            self.wf(),
+            final(self).wf(),
     {
         proof {
             self.proc_man.thread_inv();
@@ -103,7 +103,7 @@ impl Kernel {
             0 <= blocking_endpoint_index < MAX_NUM_ENDPOINT_DESCRIPTORS,
             old(self).get_thread(sender_thread_ptr).state == ThreadState::RUNNING,
         ensures
-            self.wf(),
+            final(self).wf(),
     {
         proof {
             self.proc_man.thread_inv();

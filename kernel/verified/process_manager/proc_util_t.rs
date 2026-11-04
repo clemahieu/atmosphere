@@ -21,32 +21,32 @@ pub fn proc_push_thread(
         old(proc_perm)@.value().owned_threads.len() < MAX_NUM_THREADS_PER_PROC,
         old(proc_perm)@.value().owned_threads@.contains(*thread_ptr) == false,
     ensures
-        proc_perm@.is_init(),
-        proc_perm@.addr() == proc_ptr,
-        proc_perm@.value().owning_container =~= old(proc_perm)@.value().owning_container,
-        proc_perm@.value().rev_ptr =~= old(proc_perm)@.value().rev_ptr,
-        proc_perm@.value().pcid =~= old(proc_perm)@.value().pcid,
-        proc_perm@.value().ioid =~= old(proc_perm)@.value().ioid,
+        final(proc_perm)@.is_init(),
+        final(proc_perm)@.addr() == proc_ptr,
+        final(proc_perm)@.value().owning_container =~= old(proc_perm)@.value().owning_container,
+        final(proc_perm)@.value().rev_ptr =~= old(proc_perm)@.value().rev_ptr,
+        final(proc_perm)@.value().pcid =~= old(proc_perm)@.value().pcid,
+        final(proc_perm)@.value().ioid =~= old(proc_perm)@.value().ioid,
         // proc_perm@.value().owned_threads =~= old(proc_perm)@.value().owned_threads,
-        proc_perm@.value().parent =~= old(proc_perm)@.value().parent,
-        proc_perm@.value().parent_rev_ptr =~= old(proc_perm)@.value().parent_rev_ptr,
-        proc_perm@.value().children =~= old(proc_perm)@.value().children,
-        proc_perm@.value().uppertree_seq =~= old(proc_perm)@.value().uppertree_seq,
-        proc_perm@.value().subtree_set =~= old(proc_perm)@.value().subtree_set,
-        proc_perm@.value().depth =~= old(proc_perm)@.value().depth,
-        proc_perm@.value().dmd_paging_mode =~= old(proc_perm)@.value().dmd_paging_mode,
-        proc_perm@.value().owned_threads.wf(),
-        proc_perm@.value().owned_threads@ =~= old(proc_perm)@.value().owned_threads@.push(
+        final(proc_perm)@.value().parent =~= old(proc_perm)@.value().parent,
+        final(proc_perm)@.value().parent_rev_ptr =~= old(proc_perm)@.value().parent_rev_ptr,
+        final(proc_perm)@.value().children =~= old(proc_perm)@.value().children,
+        final(proc_perm)@.value().uppertree_seq =~= old(proc_perm)@.value().uppertree_seq,
+        final(proc_perm)@.value().subtree_set =~= old(proc_perm)@.value().subtree_set,
+        final(proc_perm)@.value().depth =~= old(proc_perm)@.value().depth,
+        final(proc_perm)@.value().dmd_paging_mode =~= old(proc_perm)@.value().dmd_paging_mode,
+        final(proc_perm)@.value().owned_threads.wf(),
+        final(proc_perm)@.value().owned_threads@ =~= old(proc_perm)@.value().owned_threads@.push(
             *thread_ptr,
         ),
-        proc_perm@.value().owned_threads.len() == old(proc_perm)@.value().owned_threads.len() + 1,
+        final(proc_perm)@.value().owned_threads.len() == old(proc_perm)@.value().owned_threads.len() + 1,
         forall|v:ThreadPtr|
             #![auto]
             old(proc_perm)@.value().owned_threads@.contains(v) ==> 
                 old(proc_perm)@.value().owned_threads.get_node_ref(v) == 
-                    proc_perm@.value().owned_threads.get_node_ref(v),
-        proc_perm@.value().owned_threads.get_node_ref(*thread_ptr) == ret,
-        proc_perm@.value().owned_threads.unique(),
+                    final(proc_perm)@.value().owned_threads.get_node_ref(v),
+        final(proc_perm)@.value().owned_threads.get_node_ref(*thread_ptr) == ret,
+        final(proc_perm)@.value().owned_threads.unique(),
 {
     unsafe {
         let uptr = proc_ptr as *mut MaybeUninit<Process>;
@@ -70,30 +70,30 @@ pub fn proc_remove_thread(
         old(proc_perm)@.value().owned_threads@.contains(thread_ptr@),
         old(proc_perm)@.value().owned_threads.get_node_ref(thread_ptr@) == rev_ptr,
     ensures
-        proc_perm@.is_init(),
-        proc_perm@.addr() == proc_ptr,
-        proc_perm@.value().owning_container =~= old(proc_perm)@.value().owning_container,
-        proc_perm@.value().rev_ptr =~= old(proc_perm)@.value().rev_ptr,
-        proc_perm@.value().pcid =~= old(proc_perm)@.value().pcid,
-        proc_perm@.value().ioid =~= old(proc_perm)@.value().ioid,
+        final(proc_perm)@.is_init(),
+        final(proc_perm)@.addr() == proc_ptr,
+        final(proc_perm)@.value().owning_container =~= old(proc_perm)@.value().owning_container,
+        final(proc_perm)@.value().rev_ptr =~= old(proc_perm)@.value().rev_ptr,
+        final(proc_perm)@.value().pcid =~= old(proc_perm)@.value().pcid,
+        final(proc_perm)@.value().ioid =~= old(proc_perm)@.value().ioid,
         // proc_perm@.value().owned_threads =~= old(proc_perm)@.value().owned_threads,
-        proc_perm@.value().parent =~= old(proc_perm)@.value().parent,
-        proc_perm@.value().parent_rev_ptr =~= old(proc_perm)@.value().parent_rev_ptr,
-        proc_perm@.value().children =~= old(proc_perm)@.value().children,
-        proc_perm@.value().uppertree_seq =~= old(proc_perm)@.value().uppertree_seq,
-        proc_perm@.value().subtree_set =~= old(proc_perm)@.value().subtree_set,
-        proc_perm@.value().depth =~= old(proc_perm)@.value().depth,
-        proc_perm@.value().dmd_paging_mode =~= old(proc_perm)@.value().dmd_paging_mode,
-        proc_perm@.value().owned_threads.wf(),
-        proc_perm@.value().owned_threads.len() == old(proc_perm)@.value().owned_threads.len() - 1,
+        final(proc_perm)@.value().parent =~= old(proc_perm)@.value().parent,
+        final(proc_perm)@.value().parent_rev_ptr =~= old(proc_perm)@.value().parent_rev_ptr,
+        final(proc_perm)@.value().children =~= old(proc_perm)@.value().children,
+        final(proc_perm)@.value().uppertree_seq =~= old(proc_perm)@.value().uppertree_seq,
+        final(proc_perm)@.value().subtree_set =~= old(proc_perm)@.value().subtree_set,
+        final(proc_perm)@.value().depth =~= old(proc_perm)@.value().depth,
+        final(proc_perm)@.value().dmd_paging_mode =~= old(proc_perm)@.value().dmd_paging_mode,
+        final(proc_perm)@.value().owned_threads.wf(),
+        final(proc_perm)@.value().owned_threads.len() == old(proc_perm)@.value().owned_threads.len() - 1,
         ret == thread_ptr@,
         forall|v:ThreadPtr|
             #![auto]
-            proc_perm@.value().owned_threads@.contains(v) ==> 
+            final(proc_perm)@.value().owned_threads@.contains(v) ==> 
                 old(proc_perm)@.value().owned_threads.get_node_ref(v) == 
-                    proc_perm@.value().owned_threads.get_node_ref(v),
-        proc_perm@.value().owned_threads.unique(),
-        proc_perm@.value().owned_threads@ =~= old(proc_perm)@.value().owned_threads@.remove_value(ret),
+                    final(proc_perm)@.value().owned_threads.get_node_ref(v),
+        final(proc_perm)@.value().owned_threads.unique(),
+        final(proc_perm)@.value().owned_threads@ =~= old(proc_perm)@.value().owned_threads@.remove_value(ret),
 {
     unsafe {
         let uptr = proc_ptr as *mut MaybeUninit<Process>;
@@ -117,30 +117,30 @@ pub fn proc_push_child(
         old(proc_perm)@.value().children.len() < MAX_NUM_THREADS_PER_PROC,
         old(proc_perm)@.value().children@.contains(*new_proc_ptr) == false,
     ensures
-        proc_perm@.is_init(),
-        proc_perm@.addr() == proc_ptr,
-        proc_perm@.value().owning_container =~= old(proc_perm)@.value().owning_container,
-        proc_perm@.value().rev_ptr =~= old(proc_perm)@.value().rev_ptr,
-        proc_perm@.value().pcid =~= old(proc_perm)@.value().pcid,
-        proc_perm@.value().ioid =~= old(proc_perm)@.value().ioid,
-        proc_perm@.value().owned_threads =~= old(proc_perm)@.value().owned_threads,
-        proc_perm@.value().parent =~= old(proc_perm)@.value().parent,
-        proc_perm@.value().parent_rev_ptr =~= old(proc_perm)@.value().parent_rev_ptr,
+        final(proc_perm)@.is_init(),
+        final(proc_perm)@.addr() == proc_ptr,
+        final(proc_perm)@.value().owning_container =~= old(proc_perm)@.value().owning_container,
+        final(proc_perm)@.value().rev_ptr =~= old(proc_perm)@.value().rev_ptr,
+        final(proc_perm)@.value().pcid =~= old(proc_perm)@.value().pcid,
+        final(proc_perm)@.value().ioid =~= old(proc_perm)@.value().ioid,
+        final(proc_perm)@.value().owned_threads =~= old(proc_perm)@.value().owned_threads,
+        final(proc_perm)@.value().parent =~= old(proc_perm)@.value().parent,
+        final(proc_perm)@.value().parent_rev_ptr =~= old(proc_perm)@.value().parent_rev_ptr,
         // proc_perm@.value().children =~= old(proc_perm)@.value().children,
-        proc_perm@.value().uppertree_seq =~= old(proc_perm)@.value().uppertree_seq,
-        proc_perm@.value().subtree_set =~= old(proc_perm)@.value().subtree_set,
-        proc_perm@.value().depth =~= old(proc_perm)@.value().depth,
-        proc_perm@.value().dmd_paging_mode =~= old(proc_perm)@.value().dmd_paging_mode,
-        proc_perm@.value().children.wf(),
-        proc_perm@.value().children@ =~= old(proc_perm)@.value().children@.push(*new_proc_ptr),
-        proc_perm@.value().children.len() == old(proc_perm)@.value().children.len() + 1,
+        final(proc_perm)@.value().uppertree_seq =~= old(proc_perm)@.value().uppertree_seq,
+        final(proc_perm)@.value().subtree_set =~= old(proc_perm)@.value().subtree_set,
+        final(proc_perm)@.value().depth =~= old(proc_perm)@.value().depth,
+        final(proc_perm)@.value().dmd_paging_mode =~= old(proc_perm)@.value().dmd_paging_mode,
+        final(proc_perm)@.value().children.wf(),
+        final(proc_perm)@.value().children@ =~= old(proc_perm)@.value().children@.push(*new_proc_ptr),
+        final(proc_perm)@.value().children.len() == old(proc_perm)@.value().children.len() + 1,
          forall|v:ProcPtr|
             #![auto]
             old(proc_perm)@.value().children@.contains(v) ==> 
                 old(proc_perm)@.value().children.get_node_ref(v) == 
-                    proc_perm@.value().children.get_node_ref(v),
-        proc_perm@.value().children.get_node_ref(*new_proc_ptr) == ret,
-        proc_perm@.value().children.unique(),
+                    final(proc_perm)@.value().children.get_node_ref(v),
+        final(proc_perm)@.value().children.get_node_ref(*new_proc_ptr) == ret,
+        final(proc_perm)@.value().children.unique(),
 {
     unsafe {
         let uptr = proc_ptr as *mut MaybeUninit<Process>;
@@ -164,29 +164,29 @@ pub fn proc_remove_child(
         old(proc_perm)@.value().children.unique(),
         old(proc_perm)@.value().children@.contains(child_proc_ptr@),
     ensures
-        proc_perm@.is_init(),
-        proc_perm@.addr() == proc_ptr,
-        proc_perm@.value().owning_container =~= old(proc_perm)@.value().owning_container,
-        proc_perm@.value().rev_ptr =~= old(proc_perm)@.value().rev_ptr,
-        proc_perm@.value().pcid =~= old(proc_perm)@.value().pcid,
-        proc_perm@.value().ioid =~= old(proc_perm)@.value().ioid,
-        proc_perm@.value().owned_threads =~= old(proc_perm)@.value().owned_threads,
-        proc_perm@.value().parent =~= old(proc_perm)@.value().parent,
-        proc_perm@.value().parent_rev_ptr =~= old(proc_perm)@.value().parent_rev_ptr,
+        final(proc_perm)@.is_init(),
+        final(proc_perm)@.addr() == proc_ptr,
+        final(proc_perm)@.value().owning_container =~= old(proc_perm)@.value().owning_container,
+        final(proc_perm)@.value().rev_ptr =~= old(proc_perm)@.value().rev_ptr,
+        final(proc_perm)@.value().pcid =~= old(proc_perm)@.value().pcid,
+        final(proc_perm)@.value().ioid =~= old(proc_perm)@.value().ioid,
+        final(proc_perm)@.value().owned_threads =~= old(proc_perm)@.value().owned_threads,
+        final(proc_perm)@.value().parent =~= old(proc_perm)@.value().parent,
+        final(proc_perm)@.value().parent_rev_ptr =~= old(proc_perm)@.value().parent_rev_ptr,
         // proc_perm@.value().children =~= old(proc_perm)@.value().children,
-        proc_perm@.value().uppertree_seq =~= old(proc_perm)@.value().uppertree_seq,
-        proc_perm@.value().subtree_set =~= old(proc_perm)@.value().subtree_set,
-        proc_perm@.value().depth =~= old(proc_perm)@.value().depth,
-        proc_perm@.value().dmd_paging_mode =~= old(proc_perm)@.value().dmd_paging_mode,
-        proc_perm@.value().children.wf(),
-        proc_perm@.value().children@ =~= old(proc_perm)@.value().children@.remove_value(child_proc_ptr@),
-        proc_perm@.value().children.len() == old(proc_perm)@.value().children.len() - 1,
+        final(proc_perm)@.value().uppertree_seq =~= old(proc_perm)@.value().uppertree_seq,
+        final(proc_perm)@.value().subtree_set =~= old(proc_perm)@.value().subtree_set,
+        final(proc_perm)@.value().depth =~= old(proc_perm)@.value().depth,
+        final(proc_perm)@.value().dmd_paging_mode =~= old(proc_perm)@.value().dmd_paging_mode,
+        final(proc_perm)@.value().children.wf(),
+        final(proc_perm)@.value().children@ =~= old(proc_perm)@.value().children@.remove_value(child_proc_ptr@),
+        final(proc_perm)@.value().children.len() == old(proc_perm)@.value().children.len() - 1,
          forall|v:ProcPtr|
             #![auto]
-            proc_perm@.value().children@.contains(v) ==> 
+            final(proc_perm)@.value().children@.contains(v) ==> 
                 old(proc_perm)@.value().children.get_node_ref(v) == 
-                    proc_perm@.value().children.get_node_ref(v),
-        proc_perm@.value().children.unique(),
+                    final(proc_perm)@.value().children.get_node_ref(v),
+        final(proc_perm)@.value().children.unique(),
 {
     unsafe {
         let uptr = proc_ptr as *mut MaybeUninit<Process>;
@@ -331,49 +331,49 @@ pub fn proc_perms_update_subtree_set(
     new_proc_ptr: ProcPtr,
 )
     ensures
-        old(perms)@.dom() =~= perms@.dom(),
+        old(perms)@.dom() =~= final(perms)@.dom(),
         forall|p_ptr: ProcPtr|
             #![trigger uppertree_seq@.contains(p_ptr)]
-            #![trigger perms@.dom().contains(p_ptr)]
-            #![trigger perms@[p_ptr]]
-            perms@.dom().contains(p_ptr) && uppertree_seq@.contains(p_ptr) == false
-                ==> perms@[p_ptr] =~= old(perms)@[p_ptr],
+            #![trigger final(perms)@.dom().contains(p_ptr)]
+            #![trigger final(perms)@[p_ptr]]
+            final(perms)@.dom().contains(p_ptr) && uppertree_seq@.contains(p_ptr) == false
+                ==> final(perms)@[p_ptr] =~= old(perms)@[p_ptr],
         forall|p_ptr: ProcPtr|
          // #![trigger perms@[p_ptr].value().owning_container]
 
-            #![trigger perms@.dom().contains(p_ptr)]
-            #![trigger perms@[p_ptr]]
-            perms@.dom().contains(p_ptr) ==> perms@[p_ptr].is_init() =~= old(
+            #![trigger final(perms)@.dom().contains(p_ptr)]
+            #![trigger final(perms)@[p_ptr]]
+            final(perms)@.dom().contains(p_ptr) ==> final(perms)@[p_ptr].is_init() =~= old(
                 perms,
-            )@[p_ptr].is_init() && perms@[p_ptr].addr() =~= old(perms)@[p_ptr].addr()
-                && perms@[p_ptr].value().owning_container =~= old(
+            )@[p_ptr].is_init() && final(perms)@[p_ptr].addr() =~= old(perms)@[p_ptr].addr()
+                && final(perms)@[p_ptr].value().owning_container =~= old(
                 perms,
-            )@[p_ptr].value().owning_container && perms@[p_ptr].value().rev_ptr =~= old(
+            )@[p_ptr].value().owning_container && final(perms)@[p_ptr].value().rev_ptr =~= old(
                 perms,
-            )@[p_ptr].value().rev_ptr && perms@[p_ptr].value().pcid =~= old(
+            )@[p_ptr].value().rev_ptr && final(perms)@[p_ptr].value().pcid =~= old(
                 perms,
-            )@[p_ptr].value().pcid && perms@[p_ptr].value().ioid =~= old(perms)@[p_ptr].value().ioid
-                && perms@[p_ptr].value().owned_threads =~= old(perms)@[p_ptr].value().owned_threads
-                && perms@[p_ptr].value().parent =~= old(perms)@[p_ptr].value().parent
-                && perms@[p_ptr].value().parent_rev_ptr =~= old(
+            )@[p_ptr].value().pcid && final(perms)@[p_ptr].value().ioid =~= old(perms)@[p_ptr].value().ioid
+                && final(perms)@[p_ptr].value().owned_threads =~= old(perms)@[p_ptr].value().owned_threads
+                && final(perms)@[p_ptr].value().parent =~= old(perms)@[p_ptr].value().parent
+                && final(perms)@[p_ptr].value().parent_rev_ptr =~= old(
                 perms,
-            )@[p_ptr].value().parent_rev_ptr && perms@[p_ptr].value().children =~= old(
+            )@[p_ptr].value().parent_rev_ptr && final(perms)@[p_ptr].value().children =~= old(
                 perms,
-            )@[p_ptr].value().children && perms@[p_ptr].value().uppertree_seq =~= old(
+            )@[p_ptr].value().children && final(perms)@[p_ptr].value().uppertree_seq =~= old(
                 perms,
-            )@[p_ptr].value().uppertree_seq && perms@[p_ptr].value().depth =~= old(
+            )@[p_ptr].value().uppertree_seq && final(perms)@[p_ptr].value().depth =~= old(
                 perms,
-            )@[p_ptr].value().depth && perms@[p_ptr].value().dmd_paging_mode =~= old(
+            )@[p_ptr].value().depth && final(perms)@[p_ptr].value().dmd_paging_mode =~= old(
                 perms,
             )@[p_ptr].value().dmd_paging_mode,
         forall|p_ptr: ProcPtr|
             #![trigger uppertree_seq@.contains(p_ptr)]
-            #![trigger perms@[p_ptr].value().subtree_set]
+            #![trigger final(perms)@[p_ptr].value().subtree_set]
             #![trigger old(perms)@[p_ptr].value().subtree_set]
-            uppertree_seq@.contains(p_ptr) ==> perms@[p_ptr].value().subtree_set@ =~= old(
+            uppertree_seq@.contains(p_ptr) ==> final(perms)@[p_ptr].value().subtree_set@ =~= old(
                 perms,
             )@[p_ptr].value().subtree_set@.insert(new_proc_ptr),
-        perms@[new_proc_ptr].value().subtree_set =~= old(perms)@[new_proc_ptr].value().subtree_set,
+        final(perms)@[new_proc_ptr].value().subtree_set =~= old(perms)@[new_proc_ptr].value().subtree_set,
 {
 }
 
@@ -385,46 +385,46 @@ pub fn proc_perms_remove_subtree_set(
     proc_ptr: ProcPtr,
 )
     ensures
-        old(perms)@.dom() =~= perms@.dom(),
+        old(perms)@.dom() =~= final(perms)@.dom(),
         forall|p_ptr: ProcPtr|
             #![trigger uppertree_seq@.contains(p_ptr)]
-            #![trigger perms@.dom().contains(p_ptr)]
-            #![trigger perms@[p_ptr]]
-            perms@.dom().contains(p_ptr) && uppertree_seq@.contains(p_ptr) == false
-                ==> perms@[p_ptr] =~= old(perms)@[p_ptr],
+            #![trigger final(perms)@.dom().contains(p_ptr)]
+            #![trigger final(perms)@[p_ptr]]
+            final(perms)@.dom().contains(p_ptr) && uppertree_seq@.contains(p_ptr) == false
+                ==> final(perms)@[p_ptr] =~= old(perms)@[p_ptr],
         forall|p_ptr: ProcPtr|
-            #![trigger perms@.dom().contains(p_ptr)]
-            #![trigger perms@[p_ptr]]
-            perms@.dom().contains(p_ptr) 
-            ==> perms@[p_ptr].is_init() =~= old(
+            #![trigger final(perms)@.dom().contains(p_ptr)]
+            #![trigger final(perms)@[p_ptr]]
+            final(perms)@.dom().contains(p_ptr) 
+            ==> final(perms)@[p_ptr].is_init() =~= old(
                 perms,
-            )@[p_ptr].is_init() && perms@[p_ptr].addr() =~= old(perms)@[p_ptr].addr()
-                && perms@[p_ptr].value().owning_container =~= old(
+            )@[p_ptr].is_init() && final(perms)@[p_ptr].addr() =~= old(perms)@[p_ptr].addr()
+                && final(perms)@[p_ptr].value().owning_container =~= old(
                 perms,
-            )@[p_ptr].value().owning_container && perms@[p_ptr].value().rev_ptr =~= old(
+            )@[p_ptr].value().owning_container && final(perms)@[p_ptr].value().rev_ptr =~= old(
                 perms,
-            )@[p_ptr].value().rev_ptr && perms@[p_ptr].value().pcid =~= old(
+            )@[p_ptr].value().rev_ptr && final(perms)@[p_ptr].value().pcid =~= old(
                 perms,
-            )@[p_ptr].value().pcid && perms@[p_ptr].value().ioid =~= old(perms)@[p_ptr].value().ioid
-                && perms@[p_ptr].value().owned_threads =~= old(perms)@[p_ptr].value().owned_threads
-                && perms@[p_ptr].value().parent =~= old(perms)@[p_ptr].value().parent
-                && perms@[p_ptr].value().parent_rev_ptr =~= old(
+            )@[p_ptr].value().pcid && final(perms)@[p_ptr].value().ioid =~= old(perms)@[p_ptr].value().ioid
+                && final(perms)@[p_ptr].value().owned_threads =~= old(perms)@[p_ptr].value().owned_threads
+                && final(perms)@[p_ptr].value().parent =~= old(perms)@[p_ptr].value().parent
+                && final(perms)@[p_ptr].value().parent_rev_ptr =~= old(
                 perms,
-            )@[p_ptr].value().parent_rev_ptr && perms@[p_ptr].value().children =~= old(
+            )@[p_ptr].value().parent_rev_ptr && final(perms)@[p_ptr].value().children =~= old(
                 perms,
-            )@[p_ptr].value().children && perms@[p_ptr].value().uppertree_seq =~= old(
+            )@[p_ptr].value().children && final(perms)@[p_ptr].value().uppertree_seq =~= old(
                 perms,
-            )@[p_ptr].value().uppertree_seq && perms@[p_ptr].value().depth =~= old(
+            )@[p_ptr].value().uppertree_seq && final(perms)@[p_ptr].value().depth =~= old(
                 perms,
-            )@[p_ptr].value().depth && perms@[p_ptr].value().dmd_paging_mode =~= old(
+            )@[p_ptr].value().depth && final(perms)@[p_ptr].value().dmd_paging_mode =~= old(
                 perms,
             )@[p_ptr].value().dmd_paging_mode,
         forall|p_ptr: ProcPtr|
             #![trigger uppertree_seq@.contains(p_ptr)]
-            #![trigger perms@[p_ptr].value()]
-            #![trigger perms@[p_ptr].value().subtree_set]
+            #![trigger final(perms)@[p_ptr].value()]
+            #![trigger final(perms)@[p_ptr].value().subtree_set]
             #![trigger old(perms)@[p_ptr].value().subtree_set]
-            uppertree_seq@.contains(p_ptr) ==> perms@[p_ptr].value().subtree_set@ =~= 
+            uppertree_seq@.contains(p_ptr) ==> final(perms)@[p_ptr].value().subtree_set@ =~= 
             old(perms)@[p_ptr].value().subtree_set@.remove(proc_ptr),
 {
 }

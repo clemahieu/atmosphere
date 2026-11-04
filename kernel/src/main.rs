@@ -219,6 +219,22 @@ fn print_logo() {
 }
 
 /// The kernel panic handler.
+/// vstd links alloc for simple_pptr, which needs an allocator to exist. The kernel never allocates.
+struct NoAllocator;
+
+unsafe impl core::alloc::GlobalAlloc for NoAllocator {
+    unsafe fn alloc(&self, _layout: core::alloc::Layout) -> *mut u8 {
+        panic!("the kernel does not allocate");
+    }
+
+    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: core::alloc::Layout) {
+        panic!("the kernel does not allocate");
+    }
+}
+
+#[global_allocator]
+static GLOBAL_ALLOCATOR: NoAllocator = NoAllocator;
+
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     log::error!("panic! {:x?}", info);

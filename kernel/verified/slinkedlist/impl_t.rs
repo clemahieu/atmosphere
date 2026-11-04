@@ -39,29 +39,29 @@ impl<T: Copy, const N: usize> StaticLinkedList<T, N> {
         requires
             old(self).array_wf(),
         ensures
-            self.array_wf(),
+            final(self).array_wf(),
             forall|i: int|
              // #![trigger self.arr_seq@[i], old(self).arr_seq@[i]]
 
-                #![trigger self.arr_seq@[i]]
+                #![trigger final(self).arr_seq@[i]]
                 #![trigger old(self).arr_seq@[i]]
-                0 <= i < self.arr_seq@.len() && i != index ==> self.arr_seq@[i] =~= old(
+                0 <= i < final(self).arr_seq@.len() && i != index ==> final(self).arr_seq@[i] =~= old(
                     self,
                 ).arr_seq@[i],
-            self.arr_seq@[index as int].prev == old(self).arr_seq@[index as int].prev,
-            self.arr_seq@[index as int].next == old(self).arr_seq@[index as int].next,
-            self.arr_seq@[index as int].value == v,
-            self.spec_seq@ == old(self).spec_seq@,
-            self.value_list@ == old(self).value_list@,
-            self.free_list@ == old(self).free_list@,
-            self.value_list_head == old(self).value_list_head,
-            self.value_list_tail == old(self).value_list_tail,
-            self.value_list_len == old(self).value_list_len,
-            self.free_list_head == old(self).free_list_head,
-            self.free_list_tail == old(self).free_list_tail,
-            self.free_list_len == old(self).free_list_len,
-            old(self).free_list_wf() ==> self.free_list_wf(),
-            old(self).value_list_wf() ==> self.value_list_wf(),
+            final(self).arr_seq@[index as int].prev == old(self).arr_seq@[index as int].prev,
+            final(self).arr_seq@[index as int].next == old(self).arr_seq@[index as int].next,
+            final(self).arr_seq@[index as int].value == v,
+            final(self).spec_seq@ == old(self).spec_seq@,
+            final(self).value_list@ == old(self).value_list@,
+            final(self).free_list@ == old(self).free_list@,
+            final(self).value_list_head == old(self).value_list_head,
+            final(self).value_list_tail == old(self).value_list_tail,
+            final(self).value_list_len == old(self).value_list_len,
+            final(self).free_list_head == old(self).free_list_head,
+            final(self).free_list_tail == old(self).free_list_tail,
+            final(self).free_list_len == old(self).free_list_len,
+            old(self).free_list_wf() ==> final(self).free_list_wf(),
+            old(self).value_list_wf() ==> final(self).value_list_wf(),
     {
         self.ar[index as usize].value = v;
     }
@@ -72,27 +72,27 @@ impl<T: Copy, const N: usize> StaticLinkedList<T, N> {
         requires
             old(self).array_wf(),
         ensures
-            self.array_wf(),
+            final(self).array_wf(),
             forall|i: int|
              // #![trigger self.arr_seq@[i], old(self).arr_seq@[i]]
 
-                #![trigger self.arr_seq@[i]]
+                #![trigger final(self).arr_seq@[i]]
                 #![trigger old(self).arr_seq@[i]]
-                0 <= i < self.arr_seq@.len() && i != index ==> self.arr_seq@[i] =~= old(
+                0 <= i < final(self).arr_seq@.len() && i != index ==> final(self).arr_seq@[i] =~= old(
                     self,
                 ).arr_seq@[i],
-            self.arr_seq@[index as int].prev == old(self).arr_seq@[index as int].prev,
-            self.arr_seq@[index as int].value == old(self).arr_seq@[index as int].value,
-            self.arr_seq@[index as int].next == v,
-            self.spec_seq@ == old(self).spec_seq@,
-            self.value_list@ == old(self).value_list@,
-            self.free_list@ == old(self).free_list@,
-            self.value_list_head == old(self).value_list_head,
-            self.value_list_tail == old(self).value_list_tail,
-            self.value_list_len == old(self).value_list_len,
-            self.free_list_head == old(self).free_list_head,
-            self.free_list_tail == old(self).free_list_tail,
-            self.free_list_len == old(self).free_list_len,
+            final(self).arr_seq@[index as int].prev == old(self).arr_seq@[index as int].prev,
+            final(self).arr_seq@[index as int].value == old(self).arr_seq@[index as int].value,
+            final(self).arr_seq@[index as int].next == v,
+            final(self).spec_seq@ == old(self).spec_seq@,
+            final(self).value_list@ == old(self).value_list@,
+            final(self).free_list@ == old(self).free_list@,
+            final(self).value_list_head == old(self).value_list_head,
+            final(self).value_list_tail == old(self).value_list_tail,
+            final(self).value_list_len == old(self).value_list_len,
+            final(self).free_list_head == old(self).free_list_head,
+            final(self).free_list_tail == old(self).free_list_tail,
+            final(self).free_list_len == old(self).free_list_len,
     {
         self.ar[index as usize].next = v;
     }
@@ -103,27 +103,27 @@ impl<T: Copy, const N: usize> StaticLinkedList<T, N> {
         requires
             old(self).array_wf(),
         ensures
-            self.array_wf(),
+            final(self).array_wf(),
             forall|i: int|
              // #![trigger self.arr_seq@[i], old(self).arr_seq@[i]]
 
-                #![trigger self.arr_seq@[i]]
+                #![trigger final(self).arr_seq@[i]]
                 #![trigger old(self).arr_seq@[i]]
-                0 <= i < self.arr_seq@.len() && i != index ==> self.arr_seq@[i] =~= old(
+                0 <= i < final(self).arr_seq@.len() && i != index ==> final(self).arr_seq@[i] =~= old(
                     self,
                 ).arr_seq@[i],
-            self.arr_seq@[index as int].next == old(self).arr_seq@[index as int].next,
-            self.arr_seq@[index as int].value == old(self).arr_seq@[index as int].value,
-            self.arr_seq@[index as int].prev == v,
-            self.spec_seq@ == old(self).spec_seq@,
-            self.value_list@ == old(self).value_list@,
-            self.free_list@ == old(self).free_list@,
-            self.value_list_head == old(self).value_list_head,
-            self.value_list_tail == old(self).value_list_tail,
-            self.value_list_len == old(self).value_list_len,
-            self.free_list_head == old(self).free_list_head,
-            self.free_list_tail == old(self).free_list_tail,
-            self.free_list_len == old(self).free_list_len,
+            final(self).arr_seq@[index as int].next == old(self).arr_seq@[index as int].next,
+            final(self).arr_seq@[index as int].value == old(self).arr_seq@[index as int].value,
+            final(self).arr_seq@[index as int].prev == v,
+            final(self).spec_seq@ == old(self).spec_seq@,
+            final(self).value_list@ == old(self).value_list@,
+            final(self).free_list@ == old(self).free_list@,
+            final(self).value_list_head == old(self).value_list_head,
+            final(self).value_list_tail == old(self).value_list_tail,
+            final(self).value_list_len == old(self).value_list_len,
+            final(self).free_list_head == old(self).free_list_head,
+            final(self).free_list_tail == old(self).free_list_tail,
+            final(self).free_list_len == old(self).free_list_len,
     {
         self.ar[index as usize].prev = v;
     }

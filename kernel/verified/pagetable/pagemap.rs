@@ -21,8 +21,8 @@ impl PageMap {
             old(self).ar.wf(),
             old(self).spec_seq@.len() == 512,
         ensures
-            self.wf(),
-            forall|i: int| #![trigger self@[i].is_empty()] 0 <= i < 512 ==> self@[i].is_empty(),
+            final(self).wf(),
+            forall|i: int| #![trigger final(self)@[i].is_empty()] 0 <= i < 512 ==> final(self)@[i].is_empty(),
     {
         for i in 0..512
             invariant
@@ -90,8 +90,8 @@ impl PageMap {
             value.perm.present ==> MEM_valid(value.addr),
             value.perm.present == false ==> value.is_empty(),
         ensures
-            self.wf(),
-            self@ =~= old(self)@.update(index as int, value),
+            final(self).wf(),
+            final(self)@ =~= old(self)@.update(index as int, value),
     {
         if value.perm.present == false {
             self.ar.set(index, 0usize);

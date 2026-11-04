@@ -41,30 +41,30 @@ impl ProcessManager {
             ==>
                 old(self).get_thread(thread_ptr).blocking_endpoint_index.unwrap() != edp_idx,
         ensures
-            self.wf(),
-            ret.is_Some() ==> self.page_closure() =~= old(self).page_closure().remove(ret.unwrap().0),
+            final(self).wf(),
+            ret.is_Some() ==> final(self).page_closure() =~= old(self).page_closure().remove(ret.unwrap().0),
             ret.is_Some() ==> old(self).page_closure().contains(ret.unwrap().0),
             ret.is_Some() ==> ret.unwrap().0 == ret.unwrap().1@.addr(),
             ret.is_Some() ==> ret.unwrap().1@.is_init(),
             ret.is_Some() ==> old(self).container_dom().contains(ret.unwrap().0) == false,
-            ret.is_None() ==> self.page_closure() =~= old(self).page_closure(),
-            ret.is_None() ==> containers_unchanged(*old(self), *self),
+            ret.is_None() ==> final(self).page_closure() =~= old(self).page_closure(),
+            ret.is_None() ==> containers_unchanged(*old(self), *final(self)),
             ret.is_Some() ==> {
                 &&&
-                containers_unchanged_except(*old(self), *self, set![old(self).get_endpoint(old(self).get_thread(thread_ptr).endpoint_descriptors[edp_idx as int].unwrap()).owning_container])
+                containers_unchanged_except(*old(self), *final(self), set![old(self).get_endpoint(old(self).get_thread(thread_ptr).endpoint_descriptors[edp_idx as int].unwrap()).owning_container])
             },
-            containers_tree_unchanged(*old(self), *self),
-            containers_owned_proc_unchanged(*old(self), *self),
-            processes_unchanged(*old(self), *self),
-            self.container_dom() == old(self).container_dom(),
-            self.thread_dom() == old(self).thread_dom(),
-            threads_unchanged_except(*old(self), *self, set![thread_ptr]),
-            self.get_thread(thread_ptr).endpoint_descriptors@ 
+            containers_tree_unchanged(*old(self), *final(self)),
+            containers_owned_proc_unchanged(*old(self), *final(self)),
+            processes_unchanged(*old(self), *final(self)),
+            final(self).container_dom() == old(self).container_dom(),
+            final(self).thread_dom() == old(self).thread_dom(),
+            threads_unchanged_except(*old(self), *final(self), set![thread_ptr]),
+            final(self).get_thread(thread_ptr).endpoint_descriptors@ 
                 =~= old(self).get_thread(thread_ptr).endpoint_descriptors@.update(edp_idx as int, None),
-            self.get_thread(thread_ptr).blocking_endpoint_index
+            final(self).get_thread(thread_ptr).blocking_endpoint_index
                 =~= old(self).get_thread(thread_ptr).blocking_endpoint_index,
-            old(self).get_thread(thread_ptr).state == self.get_thread(thread_ptr).state,
-            old(self).get_thread(thread_ptr).owning_proc == self.get_thread(thread_ptr).owning_proc,
+            old(self).get_thread(thread_ptr).state == final(self).get_thread(thread_ptr).state,
+            old(self).get_thread(thread_ptr).owning_proc == final(self).get_thread(thread_ptr).owning_proc,
     {
         broadcast use ProcessManager::reveal_process_manager_wf;
 

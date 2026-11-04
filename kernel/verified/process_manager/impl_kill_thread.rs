@@ -42,20 +42,20 @@ impl ProcessManager {
                 old(self).get_thread(thread_ptr).endpoint_descriptors@[edp_idx as int].is_None(),
             old(self).get_thread(thread_ptr).state == ThreadState::SCHEDULED,
         ensures
-            self.wf(),
-            self.thread_dom() == old(self).thread_dom().remove(thread_ptr),
-            threads_unchanged_except(*old(self), *self, set![]),
-            self.proc_dom() == old(self).proc_dom(),
-            process_tree_unchanged(*old(self), *self),
-            self.container_dom() == old(self).container_dom(),
-            containers_tree_unchanged(*old(self), *self),
-            self.get_proc(old(self).get_thread(thread_ptr).owning_proc).owned_threads@ == 
+            final(self).wf(),
+            final(self).thread_dom() == old(self).thread_dom().remove(thread_ptr),
+            threads_unchanged_except(*old(self), *final(self), set![]),
+            final(self).proc_dom() == old(self).proc_dom(),
+            process_tree_unchanged(*old(self), *final(self)),
+            final(self).container_dom() == old(self).container_dom(),
+            containers_tree_unchanged(*old(self), *final(self)),
+            final(self).get_proc(old(self).get_thread(thread_ptr).owning_proc).owned_threads@ == 
               old(self).get_proc(old(self).get_thread(thread_ptr).owning_proc).owned_threads@.remove_value(thread_ptr),  
-            self.get_proc(old(self).get_thread(thread_ptr).owning_proc).owned_threads.len() == 
+            final(self).get_proc(old(self).get_thread(thread_ptr).owning_proc).owned_threads.len() == 
               old(self).get_proc(old(self).get_thread(thread_ptr).owning_proc).owned_threads.len() - 1,  
             
-            process_mem_unchanged(*old(self), *self),
-            self.page_closure() =~= old(self).page_closure().remove(ret.0),
+            process_mem_unchanged(*old(self), *final(self)),
+            final(self).page_closure() =~= old(self).page_closure().remove(ret.0),
             old(self).page_closure().contains(ret.0),
             ret.0 == ret.1@.addr(),
             ret.1@.is_init(),
@@ -141,7 +141,32 @@ impl ProcessManager {
         };
         assert(self.pcid_ioid_wf());
         assert(self.threads_cpu_wf());
-        assert(self.threads_container_wf());
+        assert(self.threads_container_wf()) by {
+            assert(self.container_dom() =~= old(self).container_dom());
+            assert(forall|c_ptr: ContainerPtr|
+                #![trigger self.get_container(c_ptr).owned_threads]
+                self.container_dom().contains(c_ptr)
+                ==> self.get_container(c_ptr).owned_threads@.subset_of(self.thread_perms@.dom()));
+            assert(forall|c_ptr: ContainerPtr, t_ptr: ThreadPtr|
+                #![trigger self.get_container(c_ptr).owned_threads, self.get_thread(t_ptr)]
+                self.container_dom().contains(c_ptr) && self.get_container(c_ptr).owned_threads@.contains(t_ptr)
+                ==> self.get_thread(t_ptr).owning_container == c_ptr);
+            assert forall|t_ptr: ThreadPtr|
+                #![trigger self.container_dom().contains(self.thread_perms@[t_ptr].value().owning_container)]
+                self.thread_perms@.dom().contains(t_ptr) implies self.container_dom().contains(
+                    self.thread_perms@[t_ptr].value().owning_container,
+                ) && self.get_container(
+                    self.thread_perms@[t_ptr].value().owning_container,
+                ).owned_threads@.contains(t_ptr) by {
+                assert(t_ptr != thread_ptr);
+                assert(old(self).thread_perms@.dom().contains(t_ptr));
+                assert(self.thread_perms@[t_ptr] == old(self).thread_perms@[t_ptr]);
+                let c = old(self).thread_perms@[t_ptr].value().owning_container;
+                assert(old(self).container_dom().contains(c));
+                assert(old(self).get_container(c).owned_threads@.contains(t_ptr));
+                assert(self.get_container(c).owned_threads@.contains(t_ptr));
+            };
+        };
 
         thread_to_page(thread_ptr, thread_perm)
     }
@@ -160,20 +185,20 @@ impl ProcessManager {
                 old(self).get_thread(thread_ptr).endpoint_descriptors@[edp_idx as int].is_None(),
             old(self).get_thread(thread_ptr).state == ThreadState::RUNNING,
         ensures
-            self.wf(),
-            self.thread_dom() == old(self).thread_dom().remove(thread_ptr),
-            threads_unchanged_except(*old(self), *self, set![]),
-            self.proc_dom() == old(self).proc_dom(),
-            process_tree_unchanged(*old(self), *self),
-            self.container_dom() == old(self).container_dom(),
-            containers_tree_unchanged(*old(self), *self),
-            self.get_proc(old(self).get_thread(thread_ptr).owning_proc).owned_threads@ == 
+            final(self).wf(),
+            final(self).thread_dom() == old(self).thread_dom().remove(thread_ptr),
+            threads_unchanged_except(*old(self), *final(self), set![]),
+            final(self).proc_dom() == old(self).proc_dom(),
+            process_tree_unchanged(*old(self), *final(self)),
+            final(self).container_dom() == old(self).container_dom(),
+            containers_tree_unchanged(*old(self), *final(self)),
+            final(self).get_proc(old(self).get_thread(thread_ptr).owning_proc).owned_threads@ == 
               old(self).get_proc(old(self).get_thread(thread_ptr).owning_proc).owned_threads@.remove_value(thread_ptr),  
-            self.get_proc(old(self).get_thread(thread_ptr).owning_proc).owned_threads.len() == 
+            final(self).get_proc(old(self).get_thread(thread_ptr).owning_proc).owned_threads.len() == 
               old(self).get_proc(old(self).get_thread(thread_ptr).owning_proc).owned_threads.len() - 1,  
 
-            process_mem_unchanged(*old(self), *self),
-            self.page_closure() =~= old(self).page_closure().remove(ret.0),
+            process_mem_unchanged(*old(self), *final(self)),
+            final(self).page_closure() =~= old(self).page_closure().remove(ret.0),
             old(self).page_closure().contains(ret.0),
             ret.0 == ret.1@.addr(),
             ret.1@.is_init(),
@@ -287,22 +312,22 @@ impl ProcessManager {
                 ||
                 old(self).get_thread(thread_ptr).endpoint_descriptors@[edp_idx as int].is_None(),
         ensures
-            self.wf(),
-            self.thread_dom() == old(self).thread_dom().remove(thread_ptr),
-            threads_unchanged_except(*old(self), *self, set![]),
-            self.proc_dom() == old(self).proc_dom(),
-            process_tree_unchanged(*old(self), *self),
-            self.container_dom() == old(self).container_dom(),
-            containers_tree_unchanged(*old(self), *self),
-            self.get_proc(old(self).get_thread(thread_ptr).owning_proc).owned_threads@ == 
+            final(self).wf(),
+            final(self).thread_dom() == old(self).thread_dom().remove(thread_ptr),
+            threads_unchanged_except(*old(self), *final(self), set![]),
+            final(self).proc_dom() == old(self).proc_dom(),
+            process_tree_unchanged(*old(self), *final(self)),
+            final(self).container_dom() == old(self).container_dom(),
+            containers_tree_unchanged(*old(self), *final(self)),
+            final(self).get_proc(old(self).get_thread(thread_ptr).owning_proc).owned_threads@ == 
               old(self).get_proc(old(self).get_thread(thread_ptr).owning_proc).owned_threads@.remove_value(thread_ptr), 
-            self.get_proc(old(self).get_thread(thread_ptr).owning_proc).owned_threads.len() == 
+            final(self).get_proc(old(self).get_thread(thread_ptr).owning_proc).owned_threads.len() == 
               old(self).get_proc(old(self).get_thread(thread_ptr).owning_proc).owned_threads.len() - 1,  
 
                         
-            process_mem_unchanged(*old(self), *self),
+            process_mem_unchanged(*old(self), *final(self)),
             ret.1.is_Some() ==> {
-                &&& self.page_closure() =~= old(self).page_closure().remove(ret.0.0).remove(ret.1.unwrap().0)
+                &&& final(self).page_closure() =~= old(self).page_closure().remove(ret.0.0).remove(ret.1.unwrap().0)
                 &&& old(self).page_closure().contains(ret.0.0)
                 &&& ret.0.0 == ret.0.1@.addr()
                 &&& ret.0.1@.is_init()
@@ -314,7 +339,7 @@ impl ProcessManager {
                 &&& ret.0.0 != ret.1.unwrap().0
             },
             ret.1.is_None() ==> {
-                &&& self.page_closure() =~= old(self).page_closure().remove(ret.0.0)
+                &&& final(self).page_closure() =~= old(self).page_closure().remove(ret.0.0)
                 &&& old(self).page_closure().contains(ret.0.0)
                 &&& ret.0.0 == ret.0.1@.addr()
                 &&& ret.0.1@.is_init()
@@ -419,6 +444,30 @@ impl ProcessManager {
             assert(self.pcid_ioid_wf());
             assert(self.threads_cpu_wf());
             assert(self.threads_container_wf()) by {
+                assert(self.container_dom() =~= old(self).container_dom());
+                assert(forall|c_ptr: ContainerPtr|
+                    #![trigger self.get_container(c_ptr).owned_threads]
+                    self.container_dom().contains(c_ptr)
+                    ==> self.get_container(c_ptr).owned_threads@.subset_of(self.thread_perms@.dom()));
+                assert(forall|c_ptr: ContainerPtr, t_ptr: ThreadPtr|
+                    #![trigger self.get_container(c_ptr).owned_threads, self.get_thread(t_ptr)]
+                    self.container_dom().contains(c_ptr) && self.get_container(c_ptr).owned_threads@.contains(t_ptr)
+                    ==> self.get_thread(t_ptr).owning_container == c_ptr);
+                assert forall|t_ptr: ThreadPtr|
+                    #![trigger self.container_dom().contains(self.thread_perms@[t_ptr].value().owning_container)]
+                    self.thread_perms@.dom().contains(t_ptr) implies self.container_dom().contains(
+                        self.thread_perms@[t_ptr].value().owning_container,
+                    ) && self.get_container(
+                        self.thread_perms@[t_ptr].value().owning_container,
+                    ).owned_threads@.contains(t_ptr) by {
+                    assert(t_ptr != thread_ptr);
+                    assert(old(self).thread_perms@.dom().contains(t_ptr));
+                    assert(self.thread_perms@[t_ptr] == old(self).thread_perms@[t_ptr]);
+                    let c = old(self).thread_perms@[t_ptr].value().owning_container;
+                    assert(old(self).container_dom().contains(c));
+                    assert(old(self).get_container(c).owned_threads@.contains(t_ptr));
+                    assert(self.get_container(c).owned_threads@.contains(t_ptr));
+                };
             };
             return (ret_0, Some(ret));
         }else{
@@ -500,7 +549,32 @@ impl ProcessManager {
             assert(self.schedulers_wf());
             assert(self.pcid_ioid_wf());
             assert(self.threads_cpu_wf());
-            assert(self.threads_container_wf());
+            assert(self.threads_container_wf()) by {
+                assert(self.container_dom() =~= old(self).container_dom());
+                assert(forall|c_ptr: ContainerPtr|
+                    #![trigger self.get_container(c_ptr).owned_threads]
+                    self.container_dom().contains(c_ptr)
+                    ==> self.get_container(c_ptr).owned_threads@.subset_of(self.thread_perms@.dom()));
+                assert(forall|c_ptr: ContainerPtr, t_ptr: ThreadPtr|
+                    #![trigger self.get_container(c_ptr).owned_threads, self.get_thread(t_ptr)]
+                    self.container_dom().contains(c_ptr) && self.get_container(c_ptr).owned_threads@.contains(t_ptr)
+                    ==> self.get_thread(t_ptr).owning_container == c_ptr);
+                assert forall|t_ptr: ThreadPtr|
+                    #![trigger self.container_dom().contains(self.thread_perms@[t_ptr].value().owning_container)]
+                    self.thread_perms@.dom().contains(t_ptr) implies self.container_dom().contains(
+                        self.thread_perms@[t_ptr].value().owning_container,
+                    ) && self.get_container(
+                        self.thread_perms@[t_ptr].value().owning_container,
+                    ).owned_threads@.contains(t_ptr) by {
+                    assert(t_ptr != thread_ptr);
+                    assert(old(self).thread_perms@.dom().contains(t_ptr));
+                    assert(self.thread_perms@[t_ptr] == old(self).thread_perms@[t_ptr]);
+                    let c = old(self).thread_perms@[t_ptr].value().owning_container;
+                    assert(old(self).container_dom().contains(c));
+                    assert(old(self).get_container(c).owned_threads@.contains(t_ptr));
+                    assert(self.get_container(c).owned_threads@.contains(t_ptr));
+                };
+            };
             (ret_0,None)
         }
     }

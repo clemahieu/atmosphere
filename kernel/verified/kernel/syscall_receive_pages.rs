@@ -266,14 +266,14 @@ impl Kernel {
         ensures
             !ret.is_error() ==> syscall_receive_pages_spec_success(
                 *old(self),
-                *self,
+                *final(self),
                 receiver_thread_ptr,
                 endpoint_idx,
                 receiver_va_range,
             ),
             ret.is_error() ==> syscall_receive_pages_spec_fail(
                 *old(self),
-                *self,
+                *final(self),
                 receiver_thread_ptr,
                 endpoint_idx,
                 receiver_va_range,

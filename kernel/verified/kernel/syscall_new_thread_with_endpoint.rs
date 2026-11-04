@@ -144,11 +144,11 @@ impl Kernel {
             old(self).thread_dom().contains(thread_ptr),
             0 <= endpoint_index < MAX_NUM_ENDPOINT_DESCRIPTORS,
         ensures
-            self.wf(),
+            final(self).wf(),
             // syscall_new_thread_with_endpoint_requirement(*old(self), thread_ptr, endpoint_index) == false <==> ret.is_error(),
             syscall_new_thread_with_endpoint_spec(
                 *old(self),
-                *self,
+                *final(self),
                 thread_ptr,
                 endpoint_index,
                 ret,

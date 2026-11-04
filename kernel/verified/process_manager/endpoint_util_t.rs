@@ -21,15 +21,15 @@ pub fn endpoint_add_ref(
         old(endpoint_perm)@.value().get_owning_threads().contains((thread_ptr, endpoint_idx))
             == false,
     ensures
-        endpoint_perm@.is_init(),
-        endpoint_perm@.addr() == endpoint_ptr,
-        endpoint_perm@.value().queue == old(endpoint_perm)@.value().queue,
-        endpoint_perm@.value().queue_state == old(endpoint_perm)@.value().queue_state,
+        final(endpoint_perm)@.is_init(),
+        final(endpoint_perm)@.addr() == endpoint_ptr,
+        final(endpoint_perm)@.value().queue == old(endpoint_perm)@.value().queue,
+        final(endpoint_perm)@.value().queue_state == old(endpoint_perm)@.value().queue_state,
         // endpoint_perm@.value().rf_counter == old(endpoint_perm)@.value().rf_counter,
         // endpoint_perm@.value().owning_threads == old(endpoint_perm)@.value().owning_threads,
-        endpoint_perm@.value().owning_container == old(endpoint_perm)@.value().owning_container,
-        endpoint_perm@.value().rf_counter == old(endpoint_perm)@.value().rf_counter + 1,
-        endpoint_perm@.value().get_owning_threads() == old(
+        final(endpoint_perm)@.value().owning_container == old(endpoint_perm)@.value().owning_container,
+        final(endpoint_perm)@.value().rf_counter == old(endpoint_perm)@.value().rf_counter + 1,
+        final(endpoint_perm)@.value().get_owning_threads() == old(
             endpoint_perm,
         )@.value().get_owning_threads().insert((thread_ptr, endpoint_idx)),
 {
@@ -53,15 +53,15 @@ pub fn endpoint_remove_ref(
         old(endpoint_perm)@.value().rf_counter != 0,
         old(endpoint_perm)@.value().get_owning_threads().contains((thread_ptr, endpoint_idx)),
     ensures
-        endpoint_perm@.is_init(),
-        endpoint_perm@.addr() == endpoint_ptr,
-        endpoint_perm@.value().queue == old(endpoint_perm)@.value().queue,
-        endpoint_perm@.value().queue_state == old(endpoint_perm)@.value().queue_state,
+        final(endpoint_perm)@.is_init(),
+        final(endpoint_perm)@.addr() == endpoint_ptr,
+        final(endpoint_perm)@.value().queue == old(endpoint_perm)@.value().queue,
+        final(endpoint_perm)@.value().queue_state == old(endpoint_perm)@.value().queue_state,
         // endpoint_perm@.value().rf_counter == old(endpoint_perm)@.value().rf_counter,
         // endpoint_perm@.value().owning_threads == old(endpoint_perm)@.value().owning_threads,
-        endpoint_perm@.value().owning_container == old(endpoint_perm)@.value().owning_container,
-        endpoint_perm@.value().rf_counter == old(endpoint_perm)@.value().rf_counter - 1,
-        endpoint_perm@.value().get_owning_threads() == old(
+        final(endpoint_perm)@.value().owning_container == old(endpoint_perm)@.value().owning_container,
+        final(endpoint_perm)@.value().rf_counter == old(endpoint_perm)@.value().rf_counter - 1,
+        final(endpoint_perm)@.value().get_owning_threads() == old(
             endpoint_perm,
         )@.value().get_owning_threads().remove((thread_ptr, endpoint_idx)),
 {
@@ -82,14 +82,14 @@ pub fn endpoint_set_owning_container(
         old(endpoint_perm)@.is_init(),
         old(endpoint_perm)@.addr() == endpoint_ptr,
     ensures
-        endpoint_perm@.is_init(),
-        endpoint_perm@.addr() == endpoint_ptr,
-        endpoint_perm@.value().queue == old(endpoint_perm)@.value().queue,
-        endpoint_perm@.value().queue_state == old(endpoint_perm)@.value().queue_state,
-        endpoint_perm@.value().rf_counter == old(endpoint_perm)@.value().rf_counter,
-        endpoint_perm@.value().owning_threads == old(endpoint_perm)@.value().owning_threads,
-        endpoint_perm@.value().owning_container == owning_container,
-        endpoint_perm@.value().rf_counter == old(endpoint_perm)@.value().rf_counter,
+        final(endpoint_perm)@.is_init(),
+        final(endpoint_perm)@.addr() == endpoint_ptr,
+        final(endpoint_perm)@.value().queue == old(endpoint_perm)@.value().queue,
+        final(endpoint_perm)@.value().queue_state == old(endpoint_perm)@.value().queue_state,
+        final(endpoint_perm)@.value().rf_counter == old(endpoint_perm)@.value().rf_counter,
+        final(endpoint_perm)@.value().owning_threads == old(endpoint_perm)@.value().owning_threads,
+        final(endpoint_perm)@.value().owning_container == owning_container,
+        final(endpoint_perm)@.value().rf_counter == old(endpoint_perm)@.value().rf_counter,
 {
     unsafe {
         let uptr = endpoint_ptr as *mut MaybeUninit<Endpoint>;
@@ -108,25 +108,25 @@ pub fn endpoint_pop_head(
         old(endpoint_perm)@.addr() == endpoint_ptr,
         old(endpoint_perm)@.value().queue.len() > 0,
     ensures
-        endpoint_perm@.is_init(),
-        endpoint_perm@.addr() == endpoint_ptr,
+        final(endpoint_perm)@.is_init(),
+        final(endpoint_perm)@.addr() == endpoint_ptr,
         // endpoint_perm@.value().queue == old(endpoint_perm)@.value().queue,
-        endpoint_perm@.value().queue_state == old(endpoint_perm)@.value().queue_state,
-        endpoint_perm@.value().rf_counter == old(endpoint_perm)@.value().rf_counter,
-        endpoint_perm@.value().owning_threads == old(endpoint_perm)@.value().owning_threads,
-        endpoint_perm@.value().owning_container == old(endpoint_perm)@.value().owning_container,
-        endpoint_perm@.value().rf_counter == old(endpoint_perm)@.value().rf_counter,
-        endpoint_perm@.value().queue.wf(),
-        endpoint_perm@.value().queue.len() == old(endpoint_perm)@.value().queue.len() - 1,
-        endpoint_perm@.value().queue@ == old(endpoint_perm)@.value().queue@.skip(1),
+        final(endpoint_perm)@.value().queue_state == old(endpoint_perm)@.value().queue_state,
+        final(endpoint_perm)@.value().rf_counter == old(endpoint_perm)@.value().rf_counter,
+        final(endpoint_perm)@.value().owning_threads == old(endpoint_perm)@.value().owning_threads,
+        final(endpoint_perm)@.value().owning_container == old(endpoint_perm)@.value().owning_container,
+        final(endpoint_perm)@.value().rf_counter == old(endpoint_perm)@.value().rf_counter,
+        final(endpoint_perm)@.value().queue.wf(),
+        final(endpoint_perm)@.value().queue.len() == old(endpoint_perm)@.value().queue.len() - 1,
+        final(endpoint_perm)@.value().queue@ == old(endpoint_perm)@.value().queue@.skip(1),
         ret.0 == old(endpoint_perm)@.value().queue@[0],
         forall|v:ThreadPtr|
             #![auto]
-            endpoint_perm@.value().queue@.contains(v) ==> 
+            final(endpoint_perm)@.value().queue@.contains(v) ==> 
                 old(endpoint_perm)@.value().queue.get_node_ref(v) == 
-                    endpoint_perm@.value().queue.get_node_ref(v),
-        endpoint_perm@.value().queue.unique(),
-        endpoint_perm@.value().queue@.no_duplicates(),
+                    final(endpoint_perm)@.value().queue.get_node_ref(v),
+        final(endpoint_perm)@.value().queue.unique(),
+        final(endpoint_perm)@.value().queue@.no_duplicates(),
 {
     unsafe {
         let uptr = endpoint_ptr as *mut MaybeUninit<Endpoint>;
@@ -149,26 +149,26 @@ pub fn endpoint_remove_thread(
         old(endpoint_perm)@.value().queue@.contains(thread_ptr@),
         old(endpoint_perm)@.value().queue.get_node_ref(thread_ptr@) == rev_ptr,
     ensures
-        endpoint_perm@.is_init(),
-        endpoint_perm@.addr() == endpoint_ptr,
+        final(endpoint_perm)@.is_init(),
+        final(endpoint_perm)@.addr() == endpoint_ptr,
         // endpoint_perm@.value().queue == old(endpoint_perm)@.value().queue,
-        endpoint_perm@.value().queue_state == old(endpoint_perm)@.value().queue_state,
-        endpoint_perm@.value().rf_counter == old(endpoint_perm)@.value().rf_counter,
-        endpoint_perm@.value().owning_threads == old(endpoint_perm)@.value().owning_threads,
-        endpoint_perm@.value().owning_container == old(endpoint_perm)@.value().owning_container,
-        endpoint_perm@.value().rf_counter == old(endpoint_perm)@.value().rf_counter,
-        endpoint_perm@.value().queue.wf(),
-        endpoint_perm@.value().queue.len() == old(endpoint_perm)@.value().queue.len() - 1,
+        final(endpoint_perm)@.value().queue_state == old(endpoint_perm)@.value().queue_state,
+        final(endpoint_perm)@.value().rf_counter == old(endpoint_perm)@.value().rf_counter,
+        final(endpoint_perm)@.value().owning_threads == old(endpoint_perm)@.value().owning_threads,
+        final(endpoint_perm)@.value().owning_container == old(endpoint_perm)@.value().owning_container,
+        final(endpoint_perm)@.value().rf_counter == old(endpoint_perm)@.value().rf_counter,
+        final(endpoint_perm)@.value().queue.wf(),
+        final(endpoint_perm)@.value().queue.len() == old(endpoint_perm)@.value().queue.len() - 1,
         ret == thread_ptr@,
-        endpoint_perm@.value().queue@ == old(endpoint_perm)@.value().queue@.remove_value(thread_ptr@),
+        final(endpoint_perm)@.value().queue@ == old(endpoint_perm)@.value().queue@.remove_value(thread_ptr@),
         ret == old(endpoint_perm)@.value().queue@[0],
         forall|v:ThreadPtr|
             #![auto]
-            endpoint_perm@.value().queue@.contains(v) ==> 
+            final(endpoint_perm)@.value().queue@.contains(v) ==> 
                 old(endpoint_perm)@.value().queue.get_node_ref(v) == 
-                    endpoint_perm@.value().queue.get_node_ref(v),
-        endpoint_perm@.value().queue.unique(),
-        endpoint_perm@.value().queue@.no_duplicates(),
+                    final(endpoint_perm)@.value().queue.get_node_ref(v),
+        final(endpoint_perm)@.value().queue.unique(),
+        final(endpoint_perm)@.value().queue@.no_duplicates(),
 {
     unsafe {
         let uptr = endpoint_ptr as *mut MaybeUninit<Endpoint>;
@@ -189,24 +189,24 @@ pub fn endpoint_push(
         old(endpoint_perm)@.addr() == endpoint_ptr,
         old(endpoint_perm)@.value().queue.len() < MAX_NUM_THREADS_PER_ENDPOINT,
     ensures
-        endpoint_perm@.is_init(),
-        endpoint_perm@.addr() == endpoint_ptr,
+        final(endpoint_perm)@.is_init(),
+        final(endpoint_perm)@.addr() == endpoint_ptr,
         // endpoint_perm@.value().queue == old(endpoint_perm)@.value().queue,
-        endpoint_perm@.value().queue_state == old(endpoint_perm)@.value().queue_state,
-        endpoint_perm@.value().rf_counter == old(endpoint_perm)@.value().rf_counter,
-        endpoint_perm@.value().owning_threads == old(endpoint_perm)@.value().owning_threads,
-        endpoint_perm@.value().owning_container == old(endpoint_perm)@.value().owning_container,
-        endpoint_perm@.value().rf_counter == old(endpoint_perm)@.value().rf_counter,
-        endpoint_perm@.value().queue.wf(),
-        endpoint_perm@.value().queue@ == old(endpoint_perm)@.value().queue@.push(t_ptr),
-        endpoint_perm@.value().queue.len() == old(endpoint_perm)@.value().queue.len() + 1,
+        final(endpoint_perm)@.value().queue_state == old(endpoint_perm)@.value().queue_state,
+        final(endpoint_perm)@.value().rf_counter == old(endpoint_perm)@.value().rf_counter,
+        final(endpoint_perm)@.value().owning_threads == old(endpoint_perm)@.value().owning_threads,
+        final(endpoint_perm)@.value().owning_container == old(endpoint_perm)@.value().owning_container,
+        final(endpoint_perm)@.value().rf_counter == old(endpoint_perm)@.value().rf_counter,
+        final(endpoint_perm)@.value().queue.wf(),
+        final(endpoint_perm)@.value().queue@ == old(endpoint_perm)@.value().queue@.push(t_ptr),
+        final(endpoint_perm)@.value().queue.len() == old(endpoint_perm)@.value().queue.len() + 1,
         forall|v:ThreadPtr|
             #![auto]
             old(endpoint_perm)@.value().queue@.contains(v) ==> 
                 old(endpoint_perm)@.value().queue.get_node_ref(v) == 
-                    endpoint_perm@.value().queue.get_node_ref(v),
-        endpoint_perm@.value().queue.get_node_ref(t_ptr) == ret,
-        endpoint_perm@.value().queue.unique(),
+                    final(endpoint_perm)@.value().queue.get_node_ref(v),
+        final(endpoint_perm)@.value().queue.get_node_ref(t_ptr) == ret,
+        final(endpoint_perm)@.value().queue.unique(),
 {
     unsafe {
         let uptr = endpoint_ptr as *mut MaybeUninit<Endpoint>;
@@ -228,24 +228,24 @@ pub fn endpoint_push_and_set_state(
         old(endpoint_perm)@.addr() == endpoint_ptr,
         old(endpoint_perm)@.value().queue.len() < MAX_NUM_THREADS_PER_ENDPOINT,
     ensures
-        endpoint_perm@.is_init(),
-        endpoint_perm@.addr() == endpoint_ptr,
+        final(endpoint_perm)@.is_init(),
+        final(endpoint_perm)@.addr() == endpoint_ptr,
         // endpoint_perm@.value().queue == old(endpoint_perm)@.value().queue,
-        endpoint_perm@.value().queue_state == queue_state,
-        endpoint_perm@.value().rf_counter == old(endpoint_perm)@.value().rf_counter,
-        endpoint_perm@.value().owning_threads == old(endpoint_perm)@.value().owning_threads,
-        endpoint_perm@.value().owning_container == old(endpoint_perm)@.value().owning_container,
-        endpoint_perm@.value().rf_counter == old(endpoint_perm)@.value().rf_counter,
-        endpoint_perm@.value().queue.wf(),
-        endpoint_perm@.value().queue@ == old(endpoint_perm)@.value().queue@.push(t_ptr),
-        endpoint_perm@.value().queue.len() == old(endpoint_perm)@.value().queue.len() + 1,
+        final(endpoint_perm)@.value().queue_state == queue_state,
+        final(endpoint_perm)@.value().rf_counter == old(endpoint_perm)@.value().rf_counter,
+        final(endpoint_perm)@.value().owning_threads == old(endpoint_perm)@.value().owning_threads,
+        final(endpoint_perm)@.value().owning_container == old(endpoint_perm)@.value().owning_container,
+        final(endpoint_perm)@.value().rf_counter == old(endpoint_perm)@.value().rf_counter,
+        final(endpoint_perm)@.value().queue.wf(),
+        final(endpoint_perm)@.value().queue@ == old(endpoint_perm)@.value().queue@.push(t_ptr),
+        final(endpoint_perm)@.value().queue.len() == old(endpoint_perm)@.value().queue.len() + 1,
         forall|v:ThreadPtr|
             #![auto]
             old(endpoint_perm)@.value().queue@.contains(v) ==> 
                 old(endpoint_perm)@.value().queue.get_node_ref(v) == 
-                    endpoint_perm@.value().queue.get_node_ref(v),
-        endpoint_perm@.value().queue.get_node_ref(t_ptr) == ret,
-        endpoint_perm@.value().queue.unique(),
+                    final(endpoint_perm)@.value().queue.get_node_ref(v),
+        final(endpoint_perm)@.value().queue.get_node_ref(t_ptr) == ret,
+        final(endpoint_perm)@.value().queue.unique(),
 {
     unsafe {
         let uptr = endpoint_ptr as *mut MaybeUninit<Endpoint>;

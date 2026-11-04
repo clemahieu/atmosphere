@@ -130,7 +130,7 @@ impl ProcessManager {
             old(self).get_container(container_ptr).depth != 0,
             old(self).root_container != container_ptr,
         ensures
-            self.wf(),
+            final(self).wf(),
     {
         broadcast use ProcessManager::reveal_process_manager_wf;
 

@@ -1778,6 +1778,7 @@ pub fn proc_tree_check_is_ancestor(
                 #![auto]
                 0 <= i < proc_perms@[child_ptr].value().depth
                     ==> proc_perms@[child_ptr].value().uppertree_seq@[i] != a_ptr,
+        decreases depth,
     {
         assert(proc_perms@[child_ptr].value().uppertree_seq@.contains(current_parent_ptr));
         assert(proc_perms@.dom().contains(current_parent_ptr));

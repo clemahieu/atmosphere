@@ -28,10 +28,10 @@ impl PCIBitMap {
     // old(self).wf(),
 
         ensures
-            self.wf(),
+            final(self).wf(),
             forall|ioid: IOid, bus: u8, dev: u8, fun: u8|
                 #![auto]
-                0 <= ioid < IOID_MAX && 0 <= bus < 256 && 0 <= dev < 32 && 0 <= fun < 8 ==> self@[(
+                0 <= ioid < IOID_MAX && 0 <= bus < 256 && 0 <= dev < 32 && 0 <= fun < 8 ==> final(self)@[(
                     ioid,
                     bus,
                     dev,
@@ -99,9 +99,9 @@ impl PCIBitMap {
             0 <= ioid < IOID_MAX,
             0 <= bus < 256 && 0 <= dev < 32 && 0 <= fun < 8,
         ensures
-            self.wf(),
-            self.ghost_map@ =~= old(self).ghost_map@.insert((ioid, bus, dev, fun), target),
-            self@ =~= old(self)@.insert((ioid, bus, dev, fun), target),
+            final(self).wf(),
+            final(self).ghost_map@ =~= old(self).ghost_map@.insert((ioid, bus, dev, fun), target),
+            final(self)@ =~= old(self)@.insert((ioid, bus, dev, fun), target),
     {
         let bit_mask = !(0x1u8 << fun);
         let old = self.bit_map[ioid][bus as usize][dev as usize] & bit_mask;

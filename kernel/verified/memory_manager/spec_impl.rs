@@ -311,6 +311,7 @@ impl MemoryManager {
             0 <= pcid < PCID_MAX,
             self.get_free_pcids_as_set().contains(pcid) == false,
     {
+        assert(self.page_tables@[pcid as int].unwrap().wf());
         return self.page_tables.get(pcid).as_ref().unwrap().cr3;
     }
 
@@ -323,6 +324,7 @@ impl MemoryManager {
         ensures
             self.get_iommu_table_by_ioid(ioid).unwrap().cr3 == ret,
     {
+        assert(self.iommu_tables@[ioid as int].unwrap().wf());
         return self.iommu_tables.get(ioid).as_ref().unwrap().cr3;
     }
 
@@ -501,70 +503,70 @@ impl MemoryManager {
                 ).dom().contains(va) ==> old(self).get_pagetable_mapping_by_pcid(pcid)[va].addr
                     != page_map_ptr,
         ensures
-            self.wf(),
-            self.kernel_entries =~= old(self).kernel_entries,
-            self.kernel_entries_ghost =~= old(self).kernel_entries_ghost,
-            self.free_pcids =~= old(self).free_pcids,
+            final(self).wf(),
+            final(self).kernel_entries =~= old(self).kernel_entries,
+            final(self).kernel_entries_ghost =~= old(self).kernel_entries_ghost,
+            final(self).free_pcids =~= old(self).free_pcids,
             // self.page_tables =~= old(self).page_tables,
             // self.page_table_pages =~= old(self).page_table_pages,
-            self.free_ioids =~= old(self).free_ioids,
-            self.iommu_tables =~= old(self).iommu_tables,
-            self.iommu_table_pages =~= old(self).iommu_table_pages,
-            self.root_table =~= old(self).root_table,
-            self.root_table_cache =~= old(self).root_table_cache,
-            self.pci_bitmap =~= old(self).pci_bitmap,
-            self.page_table_pages@.dom() =~= old(self).page_table_pages@.dom().insert(page_map_ptr),
+            final(self).free_ioids =~= old(self).free_ioids,
+            final(self).iommu_tables =~= old(self).iommu_tables,
+            final(self).iommu_table_pages =~= old(self).iommu_table_pages,
+            final(self).root_table =~= old(self).root_table,
+            final(self).root_table_cache =~= old(self).root_table_cache,
+            final(self).pci_bitmap =~= old(self).pci_bitmap,
+            final(self).page_table_pages@.dom() =~= old(self).page_table_pages@.dom().insert(page_map_ptr),
             forall|p: Pcid|
-                #![trigger self.pcid_active(p)]
-                self.pcid_active(p) == old(self).pcid_active(p),
+                #![trigger final(self).pcid_active(p)]
+                final(self).pcid_active(p) == old(self).pcid_active(p),
             forall|p: Pcid|
-                #![trigger self.pcid_active(p)]
-                #![trigger self.get_pagetable_mapping_by_pcid(p)]
-                self.pcid_active(p) ==> old(self).get_pagetable_mapping_by_pcid(p)
-                    == self.get_pagetable_mapping_by_pcid(p),
+                #![trigger final(self).pcid_active(p)]
+                #![trigger final(self).get_pagetable_mapping_by_pcid(p)]
+                final(self).pcid_active(p) ==> old(self).get_pagetable_mapping_by_pcid(p)
+                    == final(self).get_pagetable_mapping_by_pcid(p),
             forall|i: IOid|
-                #![trigger self.ioid_active(i)]
-                #![trigger self.get_iommu_table_mapping_by_ioid(i)]
-                self.ioid_active(i) ==> old(self).get_iommu_table_mapping_by_ioid(i)
-                    == self.get_iommu_table_mapping_by_ioid(i),
+                #![trigger final(self).ioid_active(i)]
+                #![trigger final(self).get_iommu_table_mapping_by_ioid(i)]
+                final(self).ioid_active(i) ==> old(self).get_iommu_table_mapping_by_ioid(i)
+                    == final(self).get_iommu_table_mapping_by_ioid(i),
             forall|p: Pcid|
-                #![trigger self.pcid_active(p)]
-                #![trigger self.pcid_to_proc_ptr(p)]
-                self.pcid_active(p) ==> old(self).pcid_to_proc_ptr(p) == self.pcid_to_proc_ptr(p),
+                #![trigger final(self).pcid_active(p)]
+                #![trigger final(self).pcid_to_proc_ptr(p)]
+                final(self).pcid_active(p) ==> old(self).pcid_to_proc_ptr(p) == final(self).pcid_to_proc_ptr(p),
             forall|i: IOid|
-                #![trigger self.ioid_active(i)]
-                self.ioid_active(i) == old(self).ioid_active(i),
+                #![trigger final(self).ioid_active(i)]
+                final(self).ioid_active(i) == old(self).ioid_active(i),
             forall|i: IOid|
-                #![trigger self.ioid_active(i)]
-                #![trigger self.ioid_to_proc_ptr(i)]
-                self.ioid_active(i) ==> old(self).ioid_to_proc_ptr(i) == self.ioid_to_proc_ptr(i),
-            self.get_pagetable_by_pcid(target_pcid).is_Some(),
-            self.get_pagetable_by_pcid(target_pcid).unwrap().wf(),
-            self.get_pagetable_by_pcid(target_pcid).unwrap().pcid == old(
+                #![trigger final(self).ioid_active(i)]
+                #![trigger final(self).ioid_to_proc_ptr(i)]
+                final(self).ioid_active(i) ==> old(self).ioid_to_proc_ptr(i) == final(self).ioid_to_proc_ptr(i),
+            final(self).get_pagetable_by_pcid(target_pcid).is_Some(),
+            final(self).get_pagetable_by_pcid(target_pcid).unwrap().wf(),
+            final(self).get_pagetable_by_pcid(target_pcid).unwrap().pcid == old(
                 self,
             ).get_pagetable_by_pcid(target_pcid).unwrap().pcid,
-            self.get_pagetable_by_pcid(target_pcid).unwrap().kernel_l4_end == old(
+            final(self).get_pagetable_by_pcid(target_pcid).unwrap().kernel_l4_end == old(
                 self,
             ).get_pagetable_by_pcid(target_pcid).unwrap().kernel_l4_end,
-            self.get_pagetable_by_pcid(target_pcid).unwrap().page_closure() =~= old(
+            final(self).get_pagetable_by_pcid(target_pcid).unwrap().page_closure() =~= old(
                 self,
             ).get_pagetable_by_pcid(target_pcid).unwrap().page_closure().insert(page_map_ptr),
-            self.get_pagetable_by_pcid(target_pcid).unwrap().mapping_4k() =~= old(
+            final(self).get_pagetable_by_pcid(target_pcid).unwrap().mapping_4k() =~= old(
                 self,
             ).get_pagetable_by_pcid(target_pcid).unwrap().mapping_4k(),
-            self.get_pagetable_by_pcid(target_pcid).unwrap().mapping_2m() =~= old(
+            final(self).get_pagetable_by_pcid(target_pcid).unwrap().mapping_2m() =~= old(
                 self,
             ).get_pagetable_by_pcid(target_pcid).unwrap().mapping_2m(),
-            self.get_pagetable_by_pcid(target_pcid).unwrap().mapping_1g() =~= old(
+            final(self).get_pagetable_by_pcid(target_pcid).unwrap().mapping_1g() =~= old(
                 self,
             ).get_pagetable_by_pcid(target_pcid).unwrap().mapping_1g(),
-            self.get_pagetable_by_pcid(target_pcid).unwrap().spec_resolve_mapping_l4(
+            final(self).get_pagetable_by_pcid(target_pcid).unwrap().spec_resolve_mapping_l4(
                 target_l4i,
             ).is_Some(),
-            self.get_pagetable_by_pcid(target_pcid).unwrap().spec_resolve_mapping_l4(
+            final(self).get_pagetable_by_pcid(target_pcid).unwrap().spec_resolve_mapping_l4(
                 target_l4i,
             ).get_Some_0().addr == page_map_ptr,
-            self.get_pagetable_by_pcid(target_pcid).unwrap().kernel_entries =~= old(
+            final(self).get_pagetable_by_pcid(target_pcid).unwrap().kernel_entries =~= old(
                 self,
             ).get_pagetable_by_pcid(target_pcid).unwrap().kernel_entries,
     {
@@ -608,6 +610,17 @@ impl MemoryManager {
         }
         assert(self.wf()) by {
             assert(self.pagetables_wf()) by {
+                assert forall|pcid: Pcid|
+                    #![trigger old(self).page_tables@[pcid as int]]
+                    0 <= pcid < PCID_MAX implies old(self).page_tables@[pcid as int].is_Some() && (
+                    old(self).get_free_pcids_as_set().contains(pcid)
+                        ==> old(self).page_tables@[pcid as int].unwrap().is_empty()) by {
+                    assert(old(self).page_tables@[pcid as int].unwrap().wf());
+                };
+                assert(forall|pcid: Pcid|
+                    #![trigger self.page_tables@[pcid as int]]
+                    0 <= pcid < PCID_MAX && pcid != target_pcid ==> self.page_tables@[pcid as int]
+                        == old(self).page_tables@[pcid as int]);
                 assert(forall|pcid: Pcid|
                     #![trigger self.page_tables@[pcid as int]]
                     #![trigger self.get_free_pcids_as_set().contains(pcid)]
@@ -653,69 +666,69 @@ impl MemoryManager {
                 ).dom().contains(va) ==> old(self).get_iommu_table_mapping_by_ioid(ioid)[va].addr
                     != page_map_ptr,
         ensures
-            self.wf(),
-            self.kernel_entries =~= old(self).kernel_entries,
-            self.kernel_entries_ghost =~= old(self).kernel_entries_ghost,
-            self.free_ioids =~= old(self).free_ioids,
+            final(self).wf(),
+            final(self).kernel_entries =~= old(self).kernel_entries,
+            final(self).kernel_entries_ghost =~= old(self).kernel_entries_ghost,
+            final(self).free_ioids =~= old(self).free_ioids,
             // self.iommu_tables =~= old(self).iommu_tables,
             // self.iommu_table_pages =~= old(self).iommu_table_pages,
-            self.free_ioids =~= old(self).free_ioids,
-            self.page_tables =~= old(self).page_tables,
-            self.page_table_pages =~= old(self).page_table_pages,
-            self.root_table =~= old(self).root_table,
-            self.root_table_cache =~= old(self).root_table_cache,
-            self.pci_bitmap =~= old(self).pci_bitmap,
-            self.iommu_table_pages@.dom() =~= old(self).iommu_table_pages@.dom().insert(page_map_ptr),
+            final(self).free_ioids =~= old(self).free_ioids,
+            final(self).page_tables =~= old(self).page_tables,
+            final(self).page_table_pages =~= old(self).page_table_pages,
+            final(self).root_table =~= old(self).root_table,
+            final(self).root_table_cache =~= old(self).root_table_cache,
+            final(self).pci_bitmap =~= old(self).pci_bitmap,
+            final(self).iommu_table_pages@.dom() =~= old(self).iommu_table_pages@.dom().insert(page_map_ptr),
             forall|p: Pcid|
-                #![trigger self.pcid_active(p)]
-                self.pcid_active(p) == old(self).pcid_active(p),
+                #![trigger final(self).pcid_active(p)]
+                final(self).pcid_active(p) == old(self).pcid_active(p),
             forall|p: Pcid|
-                #![trigger self.pcid_active(p)]
-                #![trigger self.pcid_to_proc_ptr(p)]
-                self.pcid_active(p) ==> old(self).pcid_to_proc_ptr(p) == self.pcid_to_proc_ptr(p),
+                #![trigger final(self).pcid_active(p)]
+                #![trigger final(self).pcid_to_proc_ptr(p)]
+                final(self).pcid_active(p) ==> old(self).pcid_to_proc_ptr(p) == final(self).pcid_to_proc_ptr(p),
             forall|i: IOid|
-                #![trigger self.ioid_active(i)]
-                self.ioid_active(i) == old(self).ioid_active(i),
+                #![trigger final(self).ioid_active(i)]
+                final(self).ioid_active(i) == old(self).ioid_active(i),
             forall|i: IOid|
-                #![trigger self.ioid_active(i)]
-                self.ioid_active(i) ==> old(self).ioid_to_proc_ptr(i) == self.ioid_to_proc_ptr(i),
+                #![trigger final(self).ioid_active(i)]
+                final(self).ioid_active(i) ==> old(self).ioid_to_proc_ptr(i) == final(self).ioid_to_proc_ptr(i),
             forall|i: IOid|
-                #![trigger self.ioid_active(i)]
-                #![trigger self.get_iommu_table_mapping_by_ioid(i)]
-                self.ioid_active(i) ==> old(self).get_iommu_table_mapping_by_ioid(i)
-                    == self.get_iommu_table_mapping_by_ioid(i),
+                #![trigger final(self).ioid_active(i)]
+                #![trigger final(self).get_iommu_table_mapping_by_ioid(i)]
+                final(self).ioid_active(i) ==> old(self).get_iommu_table_mapping_by_ioid(i)
+                    == final(self).get_iommu_table_mapping_by_ioid(i),
             forall|p: Pcid|
-                #![trigger self.pcid_active(p)]
-                #![trigger self.get_pagetable_mapping_by_pcid(p)]
-                self.pcid_active(p) ==> old(self).get_pagetable_mapping_by_pcid(p)
-                    == self.get_pagetable_mapping_by_pcid(p),
-            self.get_iommu_table_by_ioid(target_ioid).is_Some(),
-            self.get_iommu_table_by_ioid(target_ioid).unwrap().wf(),
-            self.get_iommu_table_by_ioid(target_ioid).unwrap().ioid == old(
+                #![trigger final(self).pcid_active(p)]
+                #![trigger final(self).get_pagetable_mapping_by_pcid(p)]
+                final(self).pcid_active(p) ==> old(self).get_pagetable_mapping_by_pcid(p)
+                    == final(self).get_pagetable_mapping_by_pcid(p),
+            final(self).get_iommu_table_by_ioid(target_ioid).is_Some(),
+            final(self).get_iommu_table_by_ioid(target_ioid).unwrap().wf(),
+            final(self).get_iommu_table_by_ioid(target_ioid).unwrap().ioid == old(
                 self,
             ).get_iommu_table_by_ioid(target_ioid).unwrap().ioid,
-            self.get_iommu_table_by_ioid(target_ioid).unwrap().kernel_l4_end == old(
+            final(self).get_iommu_table_by_ioid(target_ioid).unwrap().kernel_l4_end == old(
                 self,
             ).get_iommu_table_by_ioid(target_ioid).unwrap().kernel_l4_end,
-            self.get_iommu_table_by_ioid(target_ioid).unwrap().page_closure() =~= old(
+            final(self).get_iommu_table_by_ioid(target_ioid).unwrap().page_closure() =~= old(
                 self,
             ).get_iommu_table_by_ioid(target_ioid).unwrap().page_closure().insert(page_map_ptr),
-            self.get_iommu_table_by_ioid(target_ioid).unwrap().mapping_4k() =~= old(
+            final(self).get_iommu_table_by_ioid(target_ioid).unwrap().mapping_4k() =~= old(
                 self,
             ).get_iommu_table_by_ioid(target_ioid).unwrap().mapping_4k(),
-            self.get_iommu_table_by_ioid(target_ioid).unwrap().mapping_2m() =~= old(
+            final(self).get_iommu_table_by_ioid(target_ioid).unwrap().mapping_2m() =~= old(
                 self,
             ).get_iommu_table_by_ioid(target_ioid).unwrap().mapping_2m(),
-            self.get_iommu_table_by_ioid(target_ioid).unwrap().mapping_1g() =~= old(
+            final(self).get_iommu_table_by_ioid(target_ioid).unwrap().mapping_1g() =~= old(
                 self,
             ).get_iommu_table_by_ioid(target_ioid).unwrap().mapping_1g(),
-            self.get_iommu_table_by_ioid(target_ioid).unwrap().spec_resolve_mapping_l4(
+            final(self).get_iommu_table_by_ioid(target_ioid).unwrap().spec_resolve_mapping_l4(
                 target_l4i,
             ).is_Some(),
-            self.get_iommu_table_by_ioid(target_ioid).unwrap().spec_resolve_mapping_l4(
+            final(self).get_iommu_table_by_ioid(target_ioid).unwrap().spec_resolve_mapping_l4(
                 target_l4i,
             ).get_Some_0().addr == page_map_ptr,
-            self.get_iommu_table_by_ioid(target_ioid).unwrap().kernel_entries =~= old(
+            final(self).get_iommu_table_by_ioid(target_ioid).unwrap().kernel_entries =~= old(
                 self,
             ).get_iommu_table_by_ioid(target_ioid).unwrap().kernel_entries,
     {
@@ -759,10 +772,21 @@ impl MemoryManager {
         }
         assert(self.wf()) by {
             assert(self.iommutables_wf()) by {
+                assert forall|ioid: IOid|
+                    #![trigger old(self).iommu_tables@[ioid as int]]
+                    0 <= ioid < IOID_MAX implies old(self).iommu_tables@[ioid as int].is_Some() && (
+                    old(self).get_free_ioids_as_set().contains(ioid)
+                        ==> old(self).iommu_tables@[ioid as int].unwrap().is_empty()) by {
+                    assert(old(self).iommu_tables@[ioid as int].unwrap().wf());
+                };
+                assert(forall|ioid: IOid|
+                    #![trigger self.iommu_tables@[ioid as int]]
+                    0 <= ioid < IOID_MAX && ioid != target_ioid ==> self.iommu_tables@[ioid as int]
+                        == old(self).iommu_tables@[ioid as int]);
                 assert(forall|ioid: IOid|
                     #![trigger self.iommu_tables@[ioid as int]]
                     #![trigger self.get_free_ioids_as_set().contains(ioid)]
-                    0 <= ioid < PCID_MAX ==> self.iommu_tables@[ioid as int].is_Some() && (
+                    0 <= ioid < IOID_MAX ==> self.iommu_tables@[ioid as int].is_Some() && (
                     self.get_free_ioids_as_set().contains(ioid)
                         ==> self.iommu_tables@[ioid as int].unwrap().is_empty()));
             };
@@ -884,80 +908,80 @@ impl MemoryManager {
                 ).dom().contains(va) ==> old(self).get_pagetable_mapping_by_pcid(pcid)[va].addr
                     != page_map_ptr,
         ensures
-            self.wf(),
-            self.kernel_entries =~= old(self).kernel_entries,
-            self.kernel_entries_ghost =~= old(self).kernel_entries_ghost,
-            self.free_pcids =~= old(self).free_pcids,
+            final(self).wf(),
+            final(self).kernel_entries =~= old(self).kernel_entries,
+            final(self).kernel_entries_ghost =~= old(self).kernel_entries_ghost,
+            final(self).free_pcids =~= old(self).free_pcids,
             // self.page_tables =~= old(self).page_tables,
             // self.page_table_pages =~= old(self).page_table_pages,
-            self.free_ioids =~= old(self).free_ioids,
-            self.iommu_tables =~= old(self).iommu_tables,
-            self.iommu_table_pages =~= old(self).iommu_table_pages,
-            self.root_table =~= old(self).root_table,
-            self.root_table_cache =~= old(self).root_table_cache,
-            self.pci_bitmap =~= old(self).pci_bitmap,
-            self.page_table_pages@.dom() =~= old(self).page_table_pages@.dom().insert(page_map_ptr),
+            final(self).free_ioids =~= old(self).free_ioids,
+            final(self).iommu_tables =~= old(self).iommu_tables,
+            final(self).iommu_table_pages =~= old(self).iommu_table_pages,
+            final(self).root_table =~= old(self).root_table,
+            final(self).root_table_cache =~= old(self).root_table_cache,
+            final(self).pci_bitmap =~= old(self).pci_bitmap,
+            final(self).page_table_pages@.dom() =~= old(self).page_table_pages@.dom().insert(page_map_ptr),
             forall|p: Pcid|
-                #![trigger self.pcid_active(p)]
-                self.pcid_active(p) == old(self).pcid_active(p),
+                #![trigger final(self).pcid_active(p)]
+                final(self).pcid_active(p) == old(self).pcid_active(p),
             forall|p: Pcid|
-                #![trigger self.pcid_active(p)]
-                #![trigger self.get_pagetable_mapping_by_pcid(p)]
-                self.pcid_active(p) ==> old(self).get_pagetable_mapping_by_pcid(p)
-                    == self.get_pagetable_mapping_by_pcid(p),
+                #![trigger final(self).pcid_active(p)]
+                #![trigger final(self).get_pagetable_mapping_by_pcid(p)]
+                final(self).pcid_active(p) ==> old(self).get_pagetable_mapping_by_pcid(p)
+                    == final(self).get_pagetable_mapping_by_pcid(p),
             forall|i: IOid|
-                #![trigger self.ioid_active(i)]
-                #![trigger self.get_iommu_table_mapping_by_ioid(i)]
-                self.ioid_active(i) ==> old(self).get_iommu_table_mapping_by_ioid(i)
-                    == self.get_iommu_table_mapping_by_ioid(i),
+                #![trigger final(self).ioid_active(i)]
+                #![trigger final(self).get_iommu_table_mapping_by_ioid(i)]
+                final(self).ioid_active(i) ==> old(self).get_iommu_table_mapping_by_ioid(i)
+                    == final(self).get_iommu_table_mapping_by_ioid(i),
             forall|p: Pcid|
-                #![trigger self.pcid_active(p)]
-                #![trigger self.pcid_to_proc_ptr(p)]
-                self.pcid_active(p) ==> old(self).pcid_to_proc_ptr(p) == self.pcid_to_proc_ptr(p),
+                #![trigger final(self).pcid_active(p)]
+                #![trigger final(self).pcid_to_proc_ptr(p)]
+                final(self).pcid_active(p) ==> old(self).pcid_to_proc_ptr(p) == final(self).pcid_to_proc_ptr(p),
             forall|i: IOid|
-                #![trigger self.ioid_active(i)]
-                self.ioid_active(i) == old(self).ioid_active(i),
+                #![trigger final(self).ioid_active(i)]
+                final(self).ioid_active(i) == old(self).ioid_active(i),
             forall|i: IOid|
-                #![trigger self.ioid_active(i)]
-                #![trigger self.ioid_to_proc_ptr(i)]
-                self.ioid_active(i) ==> old(self).ioid_to_proc_ptr(i) == self.ioid_to_proc_ptr(i),
-            self.get_pagetable_by_pcid(target_pcid).is_Some(),
-            self.get_pagetable_by_pcid(target_pcid).unwrap().wf(),
-            self.get_pagetable_by_pcid(target_pcid).unwrap().pcid == old(
+                #![trigger final(self).ioid_active(i)]
+                #![trigger final(self).ioid_to_proc_ptr(i)]
+                final(self).ioid_active(i) ==> old(self).ioid_to_proc_ptr(i) == final(self).ioid_to_proc_ptr(i),
+            final(self).get_pagetable_by_pcid(target_pcid).is_Some(),
+            final(self).get_pagetable_by_pcid(target_pcid).unwrap().wf(),
+            final(self).get_pagetable_by_pcid(target_pcid).unwrap().pcid == old(
                 self,
             ).get_pagetable_by_pcid(target_pcid).unwrap().pcid,
-            self.get_pagetable_by_pcid(target_pcid).unwrap().kernel_l4_end == old(
+            final(self).get_pagetable_by_pcid(target_pcid).unwrap().kernel_l4_end == old(
                 self,
             ).get_pagetable_by_pcid(target_pcid).unwrap().kernel_l4_end,
-            self.get_pagetable_by_pcid(target_pcid).unwrap().page_closure() =~= old(
+            final(self).get_pagetable_by_pcid(target_pcid).unwrap().page_closure() =~= old(
                 self,
             ).get_pagetable_by_pcid(target_pcid).unwrap().page_closure().insert(page_map_ptr),
-            self.get_pagetable_by_pcid(target_pcid).unwrap().mapping_4k() =~= old(
+            final(self).get_pagetable_by_pcid(target_pcid).unwrap().mapping_4k() =~= old(
                 self,
             ).get_pagetable_by_pcid(target_pcid).unwrap().mapping_4k(),
-            self.get_pagetable_by_pcid(target_pcid).unwrap().mapping_2m() =~= old(
+            final(self).get_pagetable_by_pcid(target_pcid).unwrap().mapping_2m() =~= old(
                 self,
             ).get_pagetable_by_pcid(target_pcid).unwrap().mapping_2m(),
-            self.get_pagetable_by_pcid(target_pcid).unwrap().mapping_1g() =~= old(
+            final(self).get_pagetable_by_pcid(target_pcid).unwrap().mapping_1g() =~= old(
                 self,
             ).get_pagetable_by_pcid(target_pcid).unwrap().mapping_1g(),
-            self.get_pagetable_by_pcid(target_pcid).unwrap().spec_resolve_mapping_l4(target_l4i)
+            final(self).get_pagetable_by_pcid(target_pcid).unwrap().spec_resolve_mapping_l4(target_l4i)
                 == old(self).get_pagetable_by_pcid(target_pcid).unwrap().spec_resolve_mapping_l4(
                 target_l4i,
             ),
-            self.get_pagetable_by_pcid(target_pcid).unwrap().spec_resolve_mapping_l3(
+            final(self).get_pagetable_by_pcid(target_pcid).unwrap().spec_resolve_mapping_l3(
                 target_l4i,
                 target_l3i,
             ).is_Some(),
-            self.get_pagetable_by_pcid(target_pcid).unwrap().spec_resolve_mapping_l3(
+            final(self).get_pagetable_by_pcid(target_pcid).unwrap().spec_resolve_mapping_l3(
                 target_l4i,
                 target_l3i,
             ).get_Some_0().addr == page_map_ptr,
-            self.get_pagetable_by_pcid(target_pcid).unwrap().spec_resolve_mapping_1g_l3(
+            final(self).get_pagetable_by_pcid(target_pcid).unwrap().spec_resolve_mapping_1g_l3(
                 target_l4i,
                 target_l3i,
             ).is_None(),
-            self.get_pagetable_by_pcid(target_pcid).unwrap().kernel_entries =~= old(
+            final(self).get_pagetable_by_pcid(target_pcid).unwrap().kernel_entries =~= old(
                 self,
             ).get_pagetable_by_pcid(target_pcid).unwrap().kernel_entries,
     {
@@ -1047,79 +1071,79 @@ impl MemoryManager {
                 ).dom().contains(va) ==> old(self).get_iommu_table_mapping_by_ioid(ioid)[va].addr
                     != page_map_ptr,
         ensures
-            self.wf(),
-            self.kernel_entries =~= old(self).kernel_entries,
-            self.kernel_entries_ghost =~= old(self).kernel_entries_ghost,
-            self.free_ioids =~= old(self).free_ioids,
-            self.page_tables =~= old(self).page_tables,
-            self.page_table_pages =~= old(self).page_table_pages,
-            self.free_ioids =~= old(self).free_ioids,
+            final(self).wf(),
+            final(self).kernel_entries =~= old(self).kernel_entries,
+            final(self).kernel_entries_ghost =~= old(self).kernel_entries_ghost,
+            final(self).free_ioids =~= old(self).free_ioids,
+            final(self).page_tables =~= old(self).page_tables,
+            final(self).page_table_pages =~= old(self).page_table_pages,
+            final(self).free_ioids =~= old(self).free_ioids,
             // self.iommu_tables =~= old(self).iommu_tables,
             // self.iommu_table_pages =~= old(self).iommu_table_pages,
-            self.root_table =~= old(self).root_table,
-            self.root_table_cache =~= old(self).root_table_cache,
-            self.pci_bitmap =~= old(self).pci_bitmap,
-            self.iommu_table_pages@.dom() =~= old(self).iommu_table_pages@.dom().insert(page_map_ptr),
+            final(self).root_table =~= old(self).root_table,
+            final(self).root_table_cache =~= old(self).root_table_cache,
+            final(self).pci_bitmap =~= old(self).pci_bitmap,
+            final(self).iommu_table_pages@.dom() =~= old(self).iommu_table_pages@.dom().insert(page_map_ptr),
             forall|p: Pcid|
-                #![trigger self.pcid_active(p)]
-                self.pcid_active(p) == old(self).pcid_active(p),
+                #![trigger final(self).pcid_active(p)]
+                final(self).pcid_active(p) == old(self).pcid_active(p),
             forall|p: Pcid|
-                #![trigger self.pcid_active(p)]
-                #![trigger self.pcid_to_proc_ptr(p)]
-                self.pcid_active(p) ==> old(self).pcid_to_proc_ptr(p) == self.pcid_to_proc_ptr(p),
+                #![trigger final(self).pcid_active(p)]
+                #![trigger final(self).pcid_to_proc_ptr(p)]
+                final(self).pcid_active(p) ==> old(self).pcid_to_proc_ptr(p) == final(self).pcid_to_proc_ptr(p),
             forall|i: IOid|
-                #![trigger self.ioid_active(i)]
-                self.ioid_active(i) == old(self).ioid_active(i),
+                #![trigger final(self).ioid_active(i)]
+                final(self).ioid_active(i) == old(self).ioid_active(i),
             forall|i: IOid|
-                #![trigger self.ioid_active(i)]
-                self.ioid_active(i) ==> old(self).ioid_to_proc_ptr(i) == self.ioid_to_proc_ptr(i),
+                #![trigger final(self).ioid_active(i)]
+                final(self).ioid_active(i) ==> old(self).ioid_to_proc_ptr(i) == final(self).ioid_to_proc_ptr(i),
             forall|i: IOid|
-                #![trigger self.ioid_active(i)]
-                #![trigger self.get_iommu_table_mapping_by_ioid(i)]
-                self.ioid_active(i) ==> old(self).get_iommu_table_mapping_by_ioid(i)
-                    == self.get_iommu_table_mapping_by_ioid(i),
+                #![trigger final(self).ioid_active(i)]
+                #![trigger final(self).get_iommu_table_mapping_by_ioid(i)]
+                final(self).ioid_active(i) ==> old(self).get_iommu_table_mapping_by_ioid(i)
+                    == final(self).get_iommu_table_mapping_by_ioid(i),
             forall|p: Pcid|
-                #![trigger self.pcid_active(p)]
-                #![trigger self.get_pagetable_mapping_by_pcid(p)]
-                self.pcid_active(p) ==> old(self).get_pagetable_mapping_by_pcid(p)
-                    == self.get_pagetable_mapping_by_pcid(p),
-            self.get_iommu_table_by_ioid(target_ioid).is_Some(),
-            self.get_iommu_table_by_ioid(target_ioid).unwrap().wf(),
-            self.get_iommu_table_by_ioid(target_ioid).unwrap().ioid == old(
+                #![trigger final(self).pcid_active(p)]
+                #![trigger final(self).get_pagetable_mapping_by_pcid(p)]
+                final(self).pcid_active(p) ==> old(self).get_pagetable_mapping_by_pcid(p)
+                    == final(self).get_pagetable_mapping_by_pcid(p),
+            final(self).get_iommu_table_by_ioid(target_ioid).is_Some(),
+            final(self).get_iommu_table_by_ioid(target_ioid).unwrap().wf(),
+            final(self).get_iommu_table_by_ioid(target_ioid).unwrap().ioid == old(
                 self,
             ).get_iommu_table_by_ioid(target_ioid).unwrap().ioid,
-            self.get_iommu_table_by_ioid(target_ioid).unwrap().kernel_l4_end == old(
+            final(self).get_iommu_table_by_ioid(target_ioid).unwrap().kernel_l4_end == old(
                 self,
             ).get_iommu_table_by_ioid(target_ioid).unwrap().kernel_l4_end,
-            self.get_iommu_table_by_ioid(target_ioid).unwrap().page_closure() =~= old(
+            final(self).get_iommu_table_by_ioid(target_ioid).unwrap().page_closure() =~= old(
                 self,
             ).get_iommu_table_by_ioid(target_ioid).unwrap().page_closure().insert(page_map_ptr),
-            self.get_iommu_table_by_ioid(target_ioid).unwrap().mapping_4k() =~= old(
+            final(self).get_iommu_table_by_ioid(target_ioid).unwrap().mapping_4k() =~= old(
                 self,
             ).get_iommu_table_by_ioid(target_ioid).unwrap().mapping_4k(),
-            self.get_iommu_table_by_ioid(target_ioid).unwrap().mapping_2m() =~= old(
+            final(self).get_iommu_table_by_ioid(target_ioid).unwrap().mapping_2m() =~= old(
                 self,
             ).get_iommu_table_by_ioid(target_ioid).unwrap().mapping_2m(),
-            self.get_iommu_table_by_ioid(target_ioid).unwrap().mapping_1g() =~= old(
+            final(self).get_iommu_table_by_ioid(target_ioid).unwrap().mapping_1g() =~= old(
                 self,
             ).get_iommu_table_by_ioid(target_ioid).unwrap().mapping_1g(),
-            self.get_iommu_table_by_ioid(target_ioid).unwrap().spec_resolve_mapping_l4(target_l4i)
+            final(self).get_iommu_table_by_ioid(target_ioid).unwrap().spec_resolve_mapping_l4(target_l4i)
                 == old(self).get_iommu_table_by_ioid(target_ioid).unwrap().spec_resolve_mapping_l4(
                 target_l4i,
             ),
-            self.get_iommu_table_by_ioid(target_ioid).unwrap().spec_resolve_mapping_l3(
+            final(self).get_iommu_table_by_ioid(target_ioid).unwrap().spec_resolve_mapping_l3(
                 target_l4i,
                 target_l3i,
             ).is_Some(),
-            self.get_iommu_table_by_ioid(target_ioid).unwrap().spec_resolve_mapping_l3(
+            final(self).get_iommu_table_by_ioid(target_ioid).unwrap().spec_resolve_mapping_l3(
                 target_l4i,
                 target_l3i,
             ).get_Some_0().addr == page_map_ptr,
-            self.get_iommu_table_by_ioid(target_ioid).unwrap().spec_resolve_mapping_1g_l3(
+            final(self).get_iommu_table_by_ioid(target_ioid).unwrap().spec_resolve_mapping_1g_l3(
                 target_l4i,
                 target_l3i,
             ).is_None(),
-            self.get_iommu_table_by_ioid(target_ioid).unwrap().kernel_entries =~= old(
+            final(self).get_iommu_table_by_ioid(target_ioid).unwrap().kernel_entries =~= old(
                 self,
             ).get_iommu_table_by_ioid(target_ioid).unwrap().kernel_entries,
     {
@@ -1407,93 +1431,93 @@ impl MemoryManager {
                 ).dom().contains(va) ==> old(self).get_pagetable_mapping_by_pcid(pcid)[va].addr
                     != page_map_ptr,
         ensures
-            self.wf(),
-            self.kernel_entries =~= old(self).kernel_entries,
-            self.kernel_entries_ghost =~= old(self).kernel_entries_ghost,
-            self.free_pcids =~= old(self).free_pcids,
+            final(self).wf(),
+            final(self).kernel_entries =~= old(self).kernel_entries,
+            final(self).kernel_entries_ghost =~= old(self).kernel_entries_ghost,
+            final(self).free_pcids =~= old(self).free_pcids,
             // self.page_tables =~= old(self).page_tables,
             // self.page_table_pages =~= old(self).page_table_pages,
-            self.free_ioids =~= old(self).free_ioids,
-            self.iommu_tables =~= old(self).iommu_tables,
-            self.iommu_table_pages =~= old(self).iommu_table_pages,
-            self.root_table =~= old(self).root_table,
-            self.root_table_cache =~= old(self).root_table_cache,
-            self.pci_bitmap =~= old(self).pci_bitmap,
-            self.page_table_pages@.dom() =~= old(self).page_table_pages@.dom().insert(page_map_ptr),
+            final(self).free_ioids =~= old(self).free_ioids,
+            final(self).iommu_tables =~= old(self).iommu_tables,
+            final(self).iommu_table_pages =~= old(self).iommu_table_pages,
+            final(self).root_table =~= old(self).root_table,
+            final(self).root_table_cache =~= old(self).root_table_cache,
+            final(self).pci_bitmap =~= old(self).pci_bitmap,
+            final(self).page_table_pages@.dom() =~= old(self).page_table_pages@.dom().insert(page_map_ptr),
             forall|p: Pcid|
-                #![trigger self.pcid_active(p)]
-                self.pcid_active(p) == old(self).pcid_active(p),
+                #![trigger final(self).pcid_active(p)]
+                final(self).pcid_active(p) == old(self).pcid_active(p),
             forall|p: Pcid|
-                #![trigger self.pcid_active(p)]
-                #![trigger self.get_pagetable_mapping_by_pcid(p)]
-                self.pcid_active(p) ==> old(self).get_pagetable_mapping_by_pcid(p)
-                    == self.get_pagetable_mapping_by_pcid(p),
+                #![trigger final(self).pcid_active(p)]
+                #![trigger final(self).get_pagetable_mapping_by_pcid(p)]
+                final(self).pcid_active(p) ==> old(self).get_pagetable_mapping_by_pcid(p)
+                    == final(self).get_pagetable_mapping_by_pcid(p),
             forall|i: IOid|
-                #![trigger self.ioid_active(i)]
-                #![trigger self.get_iommu_table_mapping_by_ioid(i)]
-                self.ioid_active(i) ==> old(self).get_iommu_table_mapping_by_ioid(i)
-                    == self.get_iommu_table_mapping_by_ioid(i),
+                #![trigger final(self).ioid_active(i)]
+                #![trigger final(self).get_iommu_table_mapping_by_ioid(i)]
+                final(self).ioid_active(i) ==> old(self).get_iommu_table_mapping_by_ioid(i)
+                    == final(self).get_iommu_table_mapping_by_ioid(i),
             forall|p: Pcid|
-                #![trigger self.pcid_active(p)]
-                #![trigger self.pcid_to_proc_ptr(p)]
-                self.pcid_active(p) ==> old(self).pcid_to_proc_ptr(p) == self.pcid_to_proc_ptr(p),
+                #![trigger final(self).pcid_active(p)]
+                #![trigger final(self).pcid_to_proc_ptr(p)]
+                final(self).pcid_active(p) ==> old(self).pcid_to_proc_ptr(p) == final(self).pcid_to_proc_ptr(p),
             forall|i: IOid|
-                #![trigger self.ioid_active(i)]
-                self.ioid_active(i) == old(self).ioid_active(i),
+                #![trigger final(self).ioid_active(i)]
+                final(self).ioid_active(i) == old(self).ioid_active(i),
             forall|i: IOid|
-                #![trigger self.ioid_active(i)]
-                #![trigger self.ioid_to_proc_ptr(i)]
-                self.ioid_active(i) ==> old(self).ioid_to_proc_ptr(i) == self.ioid_to_proc_ptr(i),
-            self.get_pagetable_by_pcid(target_pcid).is_Some(),
-            self.get_pagetable_by_pcid(target_pcid).unwrap().wf(),
-            self.get_pagetable_by_pcid(target_pcid).unwrap().pcid == old(
+                #![trigger final(self).ioid_active(i)]
+                #![trigger final(self).ioid_to_proc_ptr(i)]
+                final(self).ioid_active(i) ==> old(self).ioid_to_proc_ptr(i) == final(self).ioid_to_proc_ptr(i),
+            final(self).get_pagetable_by_pcid(target_pcid).is_Some(),
+            final(self).get_pagetable_by_pcid(target_pcid).unwrap().wf(),
+            final(self).get_pagetable_by_pcid(target_pcid).unwrap().pcid == old(
                 self,
             ).get_pagetable_by_pcid(target_pcid).unwrap().pcid,
-            self.get_pagetable_by_pcid(target_pcid).unwrap().kernel_l4_end == old(
+            final(self).get_pagetable_by_pcid(target_pcid).unwrap().kernel_l4_end == old(
                 self,
             ).get_pagetable_by_pcid(target_pcid).unwrap().kernel_l4_end,
-            self.get_pagetable_by_pcid(target_pcid).unwrap().page_closure() =~= old(
+            final(self).get_pagetable_by_pcid(target_pcid).unwrap().page_closure() =~= old(
                 self,
             ).get_pagetable_by_pcid(target_pcid).unwrap().page_closure().insert(page_map_ptr),
-            self.get_pagetable_by_pcid(target_pcid).unwrap().mapping_4k() =~= old(
+            final(self).get_pagetable_by_pcid(target_pcid).unwrap().mapping_4k() =~= old(
                 self,
             ).get_pagetable_by_pcid(target_pcid).unwrap().mapping_4k(),
-            self.get_pagetable_by_pcid(target_pcid).unwrap().mapping_2m() =~= old(
+            final(self).get_pagetable_by_pcid(target_pcid).unwrap().mapping_2m() =~= old(
                 self,
             ).get_pagetable_by_pcid(target_pcid).unwrap().mapping_2m(),
-            self.get_pagetable_by_pcid(target_pcid).unwrap().mapping_1g() =~= old(
+            final(self).get_pagetable_by_pcid(target_pcid).unwrap().mapping_1g() =~= old(
                 self,
             ).get_pagetable_by_pcid(target_pcid).unwrap().mapping_1g(),
-            self.get_pagetable_by_pcid(target_pcid).unwrap().spec_resolve_mapping_1g_l3(
+            final(self).get_pagetable_by_pcid(target_pcid).unwrap().spec_resolve_mapping_1g_l3(
                 target_l4i,
                 target_l3i,
             ) == old(self).get_pagetable_by_pcid(target_pcid).unwrap().spec_resolve_mapping_1g_l3(
                 target_l4i,
                 target_l3i,
             ),
-            self.get_pagetable_by_pcid(target_pcid).unwrap().spec_resolve_mapping_l3(
+            final(self).get_pagetable_by_pcid(target_pcid).unwrap().spec_resolve_mapping_l3(
                 target_l4i,
                 target_l3i,
             ) == old(self).get_pagetable_by_pcid(target_pcid).unwrap().spec_resolve_mapping_l3(
                 target_l4i,
                 target_l3i,
             ),
-            self.get_pagetable_by_pcid(target_pcid).unwrap().spec_resolve_mapping_l2(
+            final(self).get_pagetable_by_pcid(target_pcid).unwrap().spec_resolve_mapping_l2(
                 target_l4i,
                 target_l3i,
                 target_l2i,
             ).is_Some(),
-            self.get_pagetable_by_pcid(target_pcid).unwrap().spec_resolve_mapping_l2(
+            final(self).get_pagetable_by_pcid(target_pcid).unwrap().spec_resolve_mapping_l2(
                 target_l4i,
                 target_l3i,
                 target_l2i,
             ).get_Some_0().addr == page_map_ptr,
-            self.get_pagetable_by_pcid(target_pcid).unwrap().spec_resolve_mapping_2m_l2(
+            final(self).get_pagetable_by_pcid(target_pcid).unwrap().spec_resolve_mapping_2m_l2(
                 target_l4i,
                 target_l3i,
                 target_l2i,
             ).is_None(),
-            self.get_pagetable_by_pcid(target_pcid).unwrap().kernel_entries =~= old(
+            final(self).get_pagetable_by_pcid(target_pcid).unwrap().kernel_entries =~= old(
                 self,
             ).get_pagetable_by_pcid(target_pcid).unwrap().kernel_entries,
     {
@@ -1592,92 +1616,92 @@ impl MemoryManager {
                 ).dom().contains(va) ==> old(self).get_iommu_table_mapping_by_ioid(ioid)[va].addr
                     != page_map_ptr,
         ensures
-            self.wf(),
-            self.kernel_entries =~= old(self).kernel_entries,
-            self.kernel_entries_ghost =~= old(self).kernel_entries_ghost,
-            self.free_ioids =~= old(self).free_ioids,
-            self.page_tables =~= old(self).page_tables,
-            self.page_table_pages =~= old(self).page_table_pages,
-            self.free_ioids =~= old(self).free_ioids,
+            final(self).wf(),
+            final(self).kernel_entries =~= old(self).kernel_entries,
+            final(self).kernel_entries_ghost =~= old(self).kernel_entries_ghost,
+            final(self).free_ioids =~= old(self).free_ioids,
+            final(self).page_tables =~= old(self).page_tables,
+            final(self).page_table_pages =~= old(self).page_table_pages,
+            final(self).free_ioids =~= old(self).free_ioids,
             // self.iommu_tables =~= old(self).iommu_tables,
             // self.iommu_table_pages =~= old(self).iommu_table_pages,
-            self.root_table =~= old(self).root_table,
-            self.root_table_cache =~= old(self).root_table_cache,
-            self.pci_bitmap =~= old(self).pci_bitmap,
-            self.iommu_table_pages@.dom() =~= old(self).iommu_table_pages@.dom().insert(page_map_ptr),
+            final(self).root_table =~= old(self).root_table,
+            final(self).root_table_cache =~= old(self).root_table_cache,
+            final(self).pci_bitmap =~= old(self).pci_bitmap,
+            final(self).iommu_table_pages@.dom() =~= old(self).iommu_table_pages@.dom().insert(page_map_ptr),
             forall|p: Pcid|
-                #![trigger self.pcid_active(p)]
-                self.pcid_active(p) == old(self).pcid_active(p),
+                #![trigger final(self).pcid_active(p)]
+                final(self).pcid_active(p) == old(self).pcid_active(p),
             forall|p: Pcid|
-                #![trigger self.pcid_active(p)]
-                #![trigger self.pcid_to_proc_ptr(p)]
-                self.pcid_active(p) ==> old(self).pcid_to_proc_ptr(p) == self.pcid_to_proc_ptr(p),
+                #![trigger final(self).pcid_active(p)]
+                #![trigger final(self).pcid_to_proc_ptr(p)]
+                final(self).pcid_active(p) ==> old(self).pcid_to_proc_ptr(p) == final(self).pcid_to_proc_ptr(p),
             forall|i: IOid|
-                #![trigger self.ioid_active(i)]
-                self.ioid_active(i) == old(self).ioid_active(i),
+                #![trigger final(self).ioid_active(i)]
+                final(self).ioid_active(i) == old(self).ioid_active(i),
             forall|i: IOid|
-                #![trigger self.ioid_active(i)]
-                self.ioid_active(i) ==> old(self).ioid_to_proc_ptr(i) == self.ioid_to_proc_ptr(i),
+                #![trigger final(self).ioid_active(i)]
+                final(self).ioid_active(i) ==> old(self).ioid_to_proc_ptr(i) == final(self).ioid_to_proc_ptr(i),
             forall|i: IOid|
-                #![trigger self.ioid_active(i)]
-                #![trigger self.get_iommu_table_mapping_by_ioid(i)]
-                self.ioid_active(i) ==> old(self).get_iommu_table_mapping_by_ioid(i)
-                    == self.get_iommu_table_mapping_by_ioid(i),
+                #![trigger final(self).ioid_active(i)]
+                #![trigger final(self).get_iommu_table_mapping_by_ioid(i)]
+                final(self).ioid_active(i) ==> old(self).get_iommu_table_mapping_by_ioid(i)
+                    == final(self).get_iommu_table_mapping_by_ioid(i),
             forall|p: Pcid|
-                #![trigger self.pcid_active(p)]
-                #![trigger self.get_pagetable_mapping_by_pcid(p)]
-                self.pcid_active(p) ==> old(self).get_pagetable_mapping_by_pcid(p)
-                    == self.get_pagetable_mapping_by_pcid(p),
-            self.get_iommu_table_by_ioid(target_ioid).is_Some(),
-            self.get_iommu_table_by_ioid(target_ioid).unwrap().wf(),
-            self.get_iommu_table_by_ioid(target_ioid).unwrap().ioid == old(
+                #![trigger final(self).pcid_active(p)]
+                #![trigger final(self).get_pagetable_mapping_by_pcid(p)]
+                final(self).pcid_active(p) ==> old(self).get_pagetable_mapping_by_pcid(p)
+                    == final(self).get_pagetable_mapping_by_pcid(p),
+            final(self).get_iommu_table_by_ioid(target_ioid).is_Some(),
+            final(self).get_iommu_table_by_ioid(target_ioid).unwrap().wf(),
+            final(self).get_iommu_table_by_ioid(target_ioid).unwrap().ioid == old(
                 self,
             ).get_iommu_table_by_ioid(target_ioid).unwrap().ioid,
-            self.get_iommu_table_by_ioid(target_ioid).unwrap().kernel_l4_end == old(
+            final(self).get_iommu_table_by_ioid(target_ioid).unwrap().kernel_l4_end == old(
                 self,
             ).get_iommu_table_by_ioid(target_ioid).unwrap().kernel_l4_end,
-            self.get_iommu_table_by_ioid(target_ioid).unwrap().page_closure() =~= old(
+            final(self).get_iommu_table_by_ioid(target_ioid).unwrap().page_closure() =~= old(
                 self,
             ).get_iommu_table_by_ioid(target_ioid).unwrap().page_closure().insert(page_map_ptr),
-            self.get_iommu_table_by_ioid(target_ioid).unwrap().mapping_4k() =~= old(
+            final(self).get_iommu_table_by_ioid(target_ioid).unwrap().mapping_4k() =~= old(
                 self,
             ).get_iommu_table_by_ioid(target_ioid).unwrap().mapping_4k(),
-            self.get_iommu_table_by_ioid(target_ioid).unwrap().mapping_2m() =~= old(
+            final(self).get_iommu_table_by_ioid(target_ioid).unwrap().mapping_2m() =~= old(
                 self,
             ).get_iommu_table_by_ioid(target_ioid).unwrap().mapping_2m(),
-            self.get_iommu_table_by_ioid(target_ioid).unwrap().mapping_1g() =~= old(
+            final(self).get_iommu_table_by_ioid(target_ioid).unwrap().mapping_1g() =~= old(
                 self,
             ).get_iommu_table_by_ioid(target_ioid).unwrap().mapping_1g(),
-            self.get_iommu_table_by_ioid(target_ioid).unwrap().spec_resolve_mapping_1g_l3(
+            final(self).get_iommu_table_by_ioid(target_ioid).unwrap().spec_resolve_mapping_1g_l3(
                 target_l4i,
                 target_l3i,
             ) == old(self).get_iommu_table_by_ioid(target_ioid).unwrap().spec_resolve_mapping_1g_l3(
                 target_l4i,
                 target_l3i,
             ),
-            self.get_iommu_table_by_ioid(target_ioid).unwrap().spec_resolve_mapping_l3(
+            final(self).get_iommu_table_by_ioid(target_ioid).unwrap().spec_resolve_mapping_l3(
                 target_l4i,
                 target_l3i,
             ) == old(self).get_iommu_table_by_ioid(target_ioid).unwrap().spec_resolve_mapping_l3(
                 target_l4i,
                 target_l3i,
             ),
-            self.get_iommu_table_by_ioid(target_ioid).unwrap().spec_resolve_mapping_l2(
+            final(self).get_iommu_table_by_ioid(target_ioid).unwrap().spec_resolve_mapping_l2(
                 target_l4i,
                 target_l3i,
                 target_l2i,
             ).is_Some(),
-            self.get_iommu_table_by_ioid(target_ioid).unwrap().spec_resolve_mapping_l2(
+            final(self).get_iommu_table_by_ioid(target_ioid).unwrap().spec_resolve_mapping_l2(
                 target_l4i,
                 target_l3i,
                 target_l2i,
             ).get_Some_0().addr == page_map_ptr,
-            self.get_iommu_table_by_ioid(target_ioid).unwrap().spec_resolve_mapping_2m_l2(
+            final(self).get_iommu_table_by_ioid(target_ioid).unwrap().spec_resolve_mapping_2m_l2(
                 target_l4i,
                 target_l3i,
                 target_l2i,
             ).is_None(),
-            self.get_iommu_table_by_ioid(target_ioid).unwrap().kernel_entries =~= old(
+            final(self).get_iommu_table_by_ioid(target_ioid).unwrap().kernel_entries =~= old(
                 self,
             ).get_iommu_table_by_ioid(target_ioid).unwrap().kernel_entries,
     {
@@ -1772,77 +1796,77 @@ impl MemoryManager {
             old(self).page_closure().contains(target_entry.addr) == false,
             page_ptr_valid(target_entry.addr),
         ensures
-            self.wf(),
-            self.kernel_entries =~= old(self).kernel_entries,
-            self.kernel_entries_ghost =~= old(self).kernel_entries_ghost,
-            self.free_pcids =~= old(self).free_pcids,
+            final(self).wf(),
+            final(self).kernel_entries =~= old(self).kernel_entries,
+            final(self).kernel_entries_ghost =~= old(self).kernel_entries_ghost,
+            final(self).free_pcids =~= old(self).free_pcids,
             // self.page_tables =~= old(self).page_tables,
-            self.page_table_pages =~= old(self).page_table_pages,
-            self.free_ioids =~= old(self).free_ioids,
-            self.iommu_tables =~= old(self).iommu_tables,
-            self.iommu_table_pages =~= old(self).iommu_table_pages,
-            self.root_table =~= old(self).root_table,
-            self.root_table_cache =~= old(self).root_table_cache,
-            self.pci_bitmap =~= old(self).pci_bitmap,
+            final(self).page_table_pages =~= old(self).page_table_pages,
+            final(self).free_ioids =~= old(self).free_ioids,
+            final(self).iommu_tables =~= old(self).iommu_tables,
+            final(self).iommu_table_pages =~= old(self).iommu_table_pages,
+            final(self).root_table =~= old(self).root_table,
+            final(self).root_table_cache =~= old(self).root_table_cache,
+            final(self).pci_bitmap =~= old(self).pci_bitmap,
             // self.page_table_pages@.dom() =~= old(self).page_table_pages@.dom().insert(page_map_ptr),
             forall|p: Pcid|
-                #![trigger self.pcid_active(p)]
-                self.pcid_active(p) == old(self).pcid_active(p),
+                #![trigger final(self).pcid_active(p)]
+                final(self).pcid_active(p) == old(self).pcid_active(p),
             forall|p: Pcid|
-                #![trigger self.pcid_active(p)]
-                #![trigger self.pcid_to_proc_ptr(p)]
-                self.pcid_active(p) ==> old(self).pcid_to_proc_ptr(p) == self.pcid_to_proc_ptr(p),
+                #![trigger final(self).pcid_active(p)]
+                #![trigger final(self).pcid_to_proc_ptr(p)]
+                final(self).pcid_active(p) ==> old(self).pcid_to_proc_ptr(p) == final(self).pcid_to_proc_ptr(p),
             forall|p: Pcid|
-                #![trigger self.pcid_active(p)]
-                #![trigger self.get_pagetable_mapping_by_pcid(p)]
-                self.pcid_active(p) && p != target_pcid ==> old(self).get_pagetable_mapping_by_pcid(
+                #![trigger final(self).pcid_active(p)]
+                #![trigger final(self).get_pagetable_mapping_by_pcid(p)]
+                final(self).pcid_active(p) && p != target_pcid ==> old(self).get_pagetable_mapping_by_pcid(
                     p,
-                ) == self.get_pagetable_mapping_by_pcid(p),
+                ) == final(self).get_pagetable_mapping_by_pcid(p),
             forall|i: IOid|
-                #![trigger self.ioid_active(i)]
-                self.ioid_active(i) == old(self).ioid_active(i),
+                #![trigger final(self).ioid_active(i)]
+                final(self).ioid_active(i) == old(self).ioid_active(i),
             forall|i: IOid|
-                #![trigger self.ioid_active(i)]
-                #![trigger self.ioid_to_proc_ptr(i)]
-                self.ioid_active(i) ==> old(self).ioid_to_proc_ptr(i) == self.ioid_to_proc_ptr(i),
+                #![trigger final(self).ioid_active(i)]
+                #![trigger final(self).ioid_to_proc_ptr(i)]
+                final(self).ioid_active(i) ==> old(self).ioid_to_proc_ptr(i) == final(self).ioid_to_proc_ptr(i),
             forall|i: IOid|
-                #![trigger self.ioid_active(i)]
-                #![trigger self.get_iommu_table_mapping_by_ioid(i)]
-                self.ioid_active(i) ==> old(self).get_iommu_table_mapping_by_ioid(i)
-                    == self.get_iommu_table_mapping_by_ioid(i),
-            self.get_pagetable_by_pcid(target_pcid).is_Some(),
-            self.get_pagetable_by_pcid(target_pcid).unwrap().wf(),
-            self.get_pagetable_by_pcid(target_pcid).unwrap().pcid == old(
+                #![trigger final(self).ioid_active(i)]
+                #![trigger final(self).get_iommu_table_mapping_by_ioid(i)]
+                final(self).ioid_active(i) ==> old(self).get_iommu_table_mapping_by_ioid(i)
+                    == final(self).get_iommu_table_mapping_by_ioid(i),
+            final(self).get_pagetable_by_pcid(target_pcid).is_Some(),
+            final(self).get_pagetable_by_pcid(target_pcid).unwrap().wf(),
+            final(self).get_pagetable_by_pcid(target_pcid).unwrap().pcid == old(
                 self,
             ).get_pagetable_by_pcid(target_pcid).unwrap().pcid,
-            self.get_pagetable_by_pcid(target_pcid).unwrap().kernel_l4_end == old(
+            final(self).get_pagetable_by_pcid(target_pcid).unwrap().kernel_l4_end == old(
                 self,
             ).get_pagetable_by_pcid(target_pcid).unwrap().kernel_l4_end,
-            self.get_pagetable_by_pcid(target_pcid).unwrap().page_closure() =~= old(
+            final(self).get_pagetable_by_pcid(target_pcid).unwrap().page_closure() =~= old(
                 self,
             ).get_pagetable_by_pcid(target_pcid).unwrap().page_closure(),
-            self.get_pagetable_by_pcid(target_pcid).unwrap().mapping_4k() =~= old(
+            final(self).get_pagetable_by_pcid(target_pcid).unwrap().mapping_4k() =~= old(
                 self,
             ).get_pagetable_by_pcid(target_pcid).unwrap().mapping_4k().insert(
                 spec_index2va((target_l4i, target_l3i, target_l2i, target_l1i)),
                 *target_entry,
             ),
-            self.get_pagetable_by_pcid(target_pcid).unwrap().mapping_2m() =~= old(
+            final(self).get_pagetable_by_pcid(target_pcid).unwrap().mapping_2m() =~= old(
                 self,
             ).get_pagetable_by_pcid(target_pcid).unwrap().mapping_2m(),
-            self.get_pagetable_by_pcid(target_pcid).unwrap().mapping_1g() =~= old(
+            final(self).get_pagetable_by_pcid(target_pcid).unwrap().mapping_1g() =~= old(
                 self,
             ).get_pagetable_by_pcid(target_pcid).unwrap().mapping_1g(),
-            self.get_pagetable_by_pcid(target_pcid).unwrap().kernel_entries =~= old(
+            final(self).get_pagetable_by_pcid(target_pcid).unwrap().kernel_entries =~= old(
                 self,
             ).get_pagetable_by_pcid(target_pcid).unwrap().kernel_entries,
-            self.get_pagetable_mapping_by_pcid(target_pcid) == old(
+            final(self).get_pagetable_mapping_by_pcid(target_pcid) == old(
                 self,
             ).get_pagetable_mapping_by_pcid(target_pcid).insert(
                 spec_index2va((target_l4i, target_l3i, target_l2i, target_l1i)),
                 *target_entry,
             ),
-            self.get_pagetable_mapping_by_pcid(target_pcid).dom() == old(
+            final(self).get_pagetable_mapping_by_pcid(target_pcid).dom() == old(
                 self,
             ).get_pagetable_mapping_by_pcid(target_pcid).dom().insert(
                 spec_index2va((target_l4i, target_l3i, target_l2i, target_l1i)),
@@ -1907,76 +1931,76 @@ impl MemoryManager {
             old(self).page_closure().contains(target_entry.addr) == false,
             page_ptr_valid(target_entry.addr),
         ensures
-            self.wf(),
-            self.kernel_entries =~= old(self).kernel_entries,
-            self.kernel_entries_ghost =~= old(self).kernel_entries_ghost,
-            self.free_pcids =~= old(self).free_pcids,
-            self.page_tables =~= old(self).page_tables,
-            self.page_table_pages =~= old(self).page_table_pages,
-            self.free_ioids =~= old(self).free_ioids,
+            final(self).wf(),
+            final(self).kernel_entries =~= old(self).kernel_entries,
+            final(self).kernel_entries_ghost =~= old(self).kernel_entries_ghost,
+            final(self).free_pcids =~= old(self).free_pcids,
+            final(self).page_tables =~= old(self).page_tables,
+            final(self).page_table_pages =~= old(self).page_table_pages,
+            final(self).free_ioids =~= old(self).free_ioids,
             // self.iommu_tables =~= old(self).iommu_tables,
-            self.iommu_table_pages =~= old(self).iommu_table_pages,
-            self.root_table =~= old(self).root_table,
-            self.root_table_cache =~= old(self).root_table_cache,
-            self.pci_bitmap =~= old(self).pci_bitmap,
+            final(self).iommu_table_pages =~= old(self).iommu_table_pages,
+            final(self).root_table =~= old(self).root_table,
+            final(self).root_table_cache =~= old(self).root_table_cache,
+            final(self).pci_bitmap =~= old(self).pci_bitmap,
             // self.page_table_pages@.dom() =~= old(self).page_table_pages@.dom().insert(page_map_ptr),
             forall|p: Pcid|
-                #![trigger self.pcid_active(p)]
-                self.pcid_active(p) == old(self).pcid_active(p),
+                #![trigger final(self).pcid_active(p)]
+                final(self).pcid_active(p) == old(self).pcid_active(p),
             forall|p: Pcid|
-                #![trigger self.pcid_active(p)]
-                #![trigger self.pcid_to_proc_ptr(p)]
-                self.pcid_active(p) ==> old(self).pcid_to_proc_ptr(p) == self.pcid_to_proc_ptr(p),
+                #![trigger final(self).pcid_active(p)]
+                #![trigger final(self).pcid_to_proc_ptr(p)]
+                final(self).pcid_active(p) ==> old(self).pcid_to_proc_ptr(p) == final(self).pcid_to_proc_ptr(p),
             forall|i: IOid|
-                #![trigger self.ioid_active(i)]
-                self.ioid_active(i) == old(self).ioid_active(i),
+                #![trigger final(self).ioid_active(i)]
+                final(self).ioid_active(i) == old(self).ioid_active(i),
             forall|i: IOid|
-                #![trigger self.ioid_active(i)]
-                self.ioid_active(i) ==> old(self).ioid_to_proc_ptr(i) == self.ioid_to_proc_ptr(i),
+                #![trigger final(self).ioid_active(i)]
+                final(self).ioid_active(i) ==> old(self).ioid_to_proc_ptr(i) == final(self).ioid_to_proc_ptr(i),
             forall|p: IOid|
-                #![trigger self.ioid_active(p)]
-                #![trigger self.get_iommu_table_mapping_by_ioid(p)]
-                self.ioid_active(p) && p != target_ioid ==> old(
+                #![trigger final(self).ioid_active(p)]
+                #![trigger final(self).get_iommu_table_mapping_by_ioid(p)]
+                final(self).ioid_active(p) && p != target_ioid ==> old(
                     self,
-                ).get_iommu_table_mapping_by_ioid(p) == self.get_iommu_table_mapping_by_ioid(p),
+                ).get_iommu_table_mapping_by_ioid(p) == final(self).get_iommu_table_mapping_by_ioid(p),
             forall|p: Pcid|
-                #![trigger self.pcid_active(p)]
-                #![trigger self.get_pagetable_mapping_by_pcid(p)]
-                self.pcid_active(p) ==> old(self).get_pagetable_mapping_by_pcid(p)
-                    == self.get_pagetable_mapping_by_pcid(p),
-            self.get_iommu_table_by_ioid(target_ioid).is_Some(),
-            self.get_iommu_table_by_ioid(target_ioid).unwrap().wf(),
-            self.get_iommu_table_by_ioid(target_ioid).unwrap().ioid == old(
+                #![trigger final(self).pcid_active(p)]
+                #![trigger final(self).get_pagetable_mapping_by_pcid(p)]
+                final(self).pcid_active(p) ==> old(self).get_pagetable_mapping_by_pcid(p)
+                    == final(self).get_pagetable_mapping_by_pcid(p),
+            final(self).get_iommu_table_by_ioid(target_ioid).is_Some(),
+            final(self).get_iommu_table_by_ioid(target_ioid).unwrap().wf(),
+            final(self).get_iommu_table_by_ioid(target_ioid).unwrap().ioid == old(
                 self,
             ).get_iommu_table_by_ioid(target_ioid).unwrap().ioid,
-            self.get_iommu_table_by_ioid(target_ioid).unwrap().kernel_l4_end == old(
+            final(self).get_iommu_table_by_ioid(target_ioid).unwrap().kernel_l4_end == old(
                 self,
             ).get_iommu_table_by_ioid(target_ioid).unwrap().kernel_l4_end,
-            self.get_iommu_table_by_ioid(target_ioid).unwrap().page_closure() =~= old(
+            final(self).get_iommu_table_by_ioid(target_ioid).unwrap().page_closure() =~= old(
                 self,
             ).get_iommu_table_by_ioid(target_ioid).unwrap().page_closure(),
-            self.get_iommu_table_by_ioid(target_ioid).unwrap().mapping_4k() =~= old(
+            final(self).get_iommu_table_by_ioid(target_ioid).unwrap().mapping_4k() =~= old(
                 self,
             ).get_iommu_table_by_ioid(target_ioid).unwrap().mapping_4k().insert(
                 spec_index2va((target_l4i, target_l3i, target_l2i, target_l1i)),
                 *target_entry,
             ),
-            self.get_iommu_table_by_ioid(target_ioid).unwrap().mapping_2m() =~= old(
+            final(self).get_iommu_table_by_ioid(target_ioid).unwrap().mapping_2m() =~= old(
                 self,
             ).get_iommu_table_by_ioid(target_ioid).unwrap().mapping_2m(),
-            self.get_iommu_table_by_ioid(target_ioid).unwrap().mapping_1g() =~= old(
+            final(self).get_iommu_table_by_ioid(target_ioid).unwrap().mapping_1g() =~= old(
                 self,
             ).get_iommu_table_by_ioid(target_ioid).unwrap().mapping_1g(),
-            self.get_iommu_table_by_ioid(target_ioid).unwrap().kernel_entries =~= old(
+            final(self).get_iommu_table_by_ioid(target_ioid).unwrap().kernel_entries =~= old(
                 self,
             ).get_iommu_table_by_ioid(target_ioid).unwrap().kernel_entries,
-            self.get_iommu_table_mapping_by_ioid(target_ioid) == old(
+            final(self).get_iommu_table_mapping_by_ioid(target_ioid) == old(
                 self,
             ).get_iommu_table_mapping_by_ioid(target_ioid).insert(
                 spec_index2va((target_l4i, target_l3i, target_l2i, target_l1i)),
                 *target_entry,
             ),
-            self.get_iommu_table_mapping_by_ioid(target_ioid).dom() == old(
+            final(self).get_iommu_table_mapping_by_ioid(target_ioid).dom() == old(
                 self,
             ).get_iommu_table_mapping_by_ioid(target_ioid).dom().insert(
                 spec_index2va((target_l4i, target_l3i, target_l2i, target_l1i)),
@@ -2195,48 +2219,48 @@ impl MemoryManager {
             old(self).wf(),
             old(self).free_pcids.len() > 0,
         ensures
-            self.wf(),
-            self.kernel_entries =~= old(self).kernel_entries,
-            self.kernel_entries_ghost =~= old(self).kernel_entries_ghost,
+            final(self).wf(),
+            final(self).kernel_entries =~= old(self).kernel_entries,
+            final(self).kernel_entries_ghost =~= old(self).kernel_entries_ghost,
             // self.free_pcids =~= old(self).free_pcids,
-            self.page_tables =~= old(self).page_tables,
-            self.page_table_pages =~= old(self).page_table_pages,
-            self.free_ioids =~= old(self).free_ioids,
-            self.iommu_tables =~= old(self).iommu_tables,
-            self.iommu_table_pages =~= old(self).iommu_table_pages,
-            self.root_table =~= old(self).root_table,
-            self.root_table_cache =~= old(self).root_table_cache,
-            self.pci_bitmap =~= old(self).pci_bitmap,
-            self.page_table_pages@.dom() =~= old(self).page_table_pages@.dom(),
+            final(self).page_tables =~= old(self).page_tables,
+            final(self).page_table_pages =~= old(self).page_table_pages,
+            final(self).free_ioids =~= old(self).free_ioids,
+            final(self).iommu_tables =~= old(self).iommu_tables,
+            final(self).iommu_table_pages =~= old(self).iommu_table_pages,
+            final(self).root_table =~= old(self).root_table,
+            final(self).root_table_cache =~= old(self).root_table_cache,
+            final(self).pci_bitmap =~= old(self).pci_bitmap,
+            final(self).page_table_pages@.dom() =~= old(self).page_table_pages@.dom(),
             forall|p: Pcid|
-                #![trigger self.pcid_active(p)]
-                p != ret ==> self.pcid_active(p) == old(self).pcid_active(p),
+                #![trigger final(self).pcid_active(p)]
+                p != ret ==> final(self).pcid_active(p) == old(self).pcid_active(p),
             forall|i: IOid|
-                #![trigger self.ioid_active(i)]
-                self.ioid_active(i) == old(self).ioid_active(i),
+                #![trigger final(self).ioid_active(i)]
+                final(self).ioid_active(i) == old(self).ioid_active(i),
             forall|p: Pcid|
-                #![trigger self.pcid_active(p)]
-                #![trigger self.get_pagetable_mapping_by_pcid(p)]
-                self.pcid_active(p) && p != ret ==> old(self).get_pagetable_mapping_by_pcid(p)
-                    == self.get_pagetable_mapping_by_pcid(p),
+                #![trigger final(self).pcid_active(p)]
+                #![trigger final(self).get_pagetable_mapping_by_pcid(p)]
+                final(self).pcid_active(p) && p != ret ==> old(self).get_pagetable_mapping_by_pcid(p)
+                    == final(self).get_pagetable_mapping_by_pcid(p),
             forall|i: IOid|
-                #![trigger self.ioid_active(i)]
-                #![trigger self.get_iommu_table_mapping_by_ioid(i)]
-                self.ioid_active(i) ==> old(self).get_iommu_table_mapping_by_ioid(i)
-                    == self.get_iommu_table_mapping_by_ioid(i),
+                #![trigger final(self).ioid_active(i)]
+                #![trigger final(self).get_iommu_table_mapping_by_ioid(i)]
+                final(self).ioid_active(i) ==> old(self).get_iommu_table_mapping_by_ioid(i)
+                    == final(self).get_iommu_table_mapping_by_ioid(i),
             forall|p: Pcid|
-                #![trigger self.pcid_active(p)]
-                #![trigger self.pcid_to_proc_ptr(p)]
-                self.pcid_active(p) && p != ret ==> old(self).pcid_to_proc_ptr(p)
-                    == self.pcid_to_proc_ptr(p),
+                #![trigger final(self).pcid_active(p)]
+                #![trigger final(self).pcid_to_proc_ptr(p)]
+                final(self).pcid_active(p) && p != ret ==> old(self).pcid_to_proc_ptr(p)
+                    == final(self).pcid_to_proc_ptr(p),
             forall|i: IOid|
-                #![trigger self.ioid_active(i)]
-                #![trigger self.ioid_to_proc_ptr(i)]
-                self.ioid_active(i) ==> old(self).ioid_to_proc_ptr(i) == self.ioid_to_proc_ptr(i),
-            self.pcid_to_proc_ptr(ret) == new_proc_ptr,
-            self.pcid_active(ret),
+                #![trigger final(self).ioid_active(i)]
+                #![trigger final(self).ioid_to_proc_ptr(i)]
+                final(self).ioid_active(i) ==> old(self).ioid_to_proc_ptr(i) == final(self).ioid_to_proc_ptr(i),
+            final(self).pcid_to_proc_ptr(ret) == new_proc_ptr,
+            final(self).pcid_active(ret),
             !old(self).pcid_active(ret),
-            self.get_pagetable_mapping_by_pcid(ret).dom() == Set::<PagePtr>::empty(),
+            final(self).get_pagetable_mapping_by_pcid(ret).dom() == Set::<PagePtr>::empty(),
     {
         let new_pcid = *self.free_pcids.pop_unique();
         self.pcid_to_proc_ptr.set(new_pcid, Some(new_proc_ptr));
@@ -2276,45 +2300,45 @@ pub fn free_page_table(&mut self, proc_ptr: ProcPtr, pcid: Pcid)
             0 <= pcid < PCID_MAX,
             old(self).get_pagetable_by_pcid(pcid).unwrap().is_empty(),
         ensures
-            self.wf(),
-            self.kernel_entries =~= old(self).kernel_entries,
-            self.kernel_entries_ghost =~= old(self).kernel_entries_ghost,
+            final(self).wf(),
+            final(self).kernel_entries =~= old(self).kernel_entries,
+            final(self).kernel_entries_ghost =~= old(self).kernel_entries_ghost,
             // self.free_pcids =~= old(self).free_pcids,
-            self.page_tables =~= old(self).page_tables,
-            self.page_table_pages =~= old(self).page_table_pages,
-            self.free_ioids =~= old(self).free_ioids,
-            self.iommu_tables =~= old(self).iommu_tables,
-            self.iommu_table_pages =~= old(self).iommu_table_pages,
-            self.root_table =~= old(self).root_table,
-            self.root_table_cache =~= old(self).root_table_cache,
-            self.pci_bitmap =~= old(self).pci_bitmap,
-            self.page_table_pages@.dom() =~= old(self).page_table_pages@.dom(),
+            final(self).page_tables =~= old(self).page_tables,
+            final(self).page_table_pages =~= old(self).page_table_pages,
+            final(self).free_ioids =~= old(self).free_ioids,
+            final(self).iommu_tables =~= old(self).iommu_tables,
+            final(self).iommu_table_pages =~= old(self).iommu_table_pages,
+            final(self).root_table =~= old(self).root_table,
+            final(self).root_table_cache =~= old(self).root_table_cache,
+            final(self).pci_bitmap =~= old(self).pci_bitmap,
+            final(self).page_table_pages@.dom() =~= old(self).page_table_pages@.dom(),
             forall|p: Pcid|
-                #![trigger self.pcid_active(p)]
-                p != pcid ==> self.pcid_active(p) == old(self).pcid_active(p),
+                #![trigger final(self).pcid_active(p)]
+                p != pcid ==> final(self).pcid_active(p) == old(self).pcid_active(p),
             forall|i: IOid|
-                #![trigger self.ioid_active(i)]
-                self.ioid_active(i) == old(self).ioid_active(i),
+                #![trigger final(self).ioid_active(i)]
+                final(self).ioid_active(i) == old(self).ioid_active(i),
             forall|p: Pcid|
-                #![trigger self.pcid_active(p)]
-                #![trigger self.get_pagetable_mapping_by_pcid(p)]
-                self.pcid_active(p) && p != pcid ==> old(self).get_pagetable_mapping_by_pcid(p)
-                    == self.get_pagetable_mapping_by_pcid(p),
+                #![trigger final(self).pcid_active(p)]
+                #![trigger final(self).get_pagetable_mapping_by_pcid(p)]
+                final(self).pcid_active(p) && p != pcid ==> old(self).get_pagetable_mapping_by_pcid(p)
+                    == final(self).get_pagetable_mapping_by_pcid(p),
             forall|i: IOid|
-                #![trigger self.ioid_active(i)]
-                #![trigger self.get_iommu_table_mapping_by_ioid(i)]
-                self.ioid_active(i) ==> old(self).get_iommu_table_mapping_by_ioid(i)
-                    == self.get_iommu_table_mapping_by_ioid(i),
+                #![trigger final(self).ioid_active(i)]
+                #![trigger final(self).get_iommu_table_mapping_by_ioid(i)]
+                final(self).ioid_active(i) ==> old(self).get_iommu_table_mapping_by_ioid(i)
+                    == final(self).get_iommu_table_mapping_by_ioid(i),
             forall|p: Pcid|
-                #![trigger self.pcid_active(p)]
-                #![trigger self.pcid_to_proc_ptr(p)]
-                self.pcid_active(p) && p != pcid ==> old(self).pcid_to_proc_ptr(p)
-                    == self.pcid_to_proc_ptr(p),
+                #![trigger final(self).pcid_active(p)]
+                #![trigger final(self).pcid_to_proc_ptr(p)]
+                final(self).pcid_active(p) && p != pcid ==> old(self).pcid_to_proc_ptr(p)
+                    == final(self).pcid_to_proc_ptr(p),
             forall|i: IOid|
-                #![trigger self.ioid_active(i)]
-                #![trigger self.ioid_to_proc_ptr(i)]
-                self.ioid_active(i) ==> old(self).ioid_to_proc_ptr(i) == self.ioid_to_proc_ptr(i),
-            self.pcid_active(pcid) == false,
+                #![trigger final(self).ioid_active(i)]
+                #![trigger final(self).ioid_to_proc_ptr(i)]
+                final(self).ioid_active(i) ==> old(self).ioid_to_proc_ptr(i) == final(self).ioid_to_proc_ptr(i),
+            final(self).pcid_active(pcid) == false,
     {
         assume(self.free_pcids.len() < PCID_MAX);
         self.free_pcids.push_unique(pcid);
@@ -2342,48 +2366,48 @@ pub fn free_page_table(&mut self, proc_ptr: ProcPtr, pcid: Pcid)
             old(self).wf(),
             old(self).free_ioids.len() > 0,
         ensures
-            self.wf(),
-            self.kernel_entries =~= old(self).kernel_entries,
-            self.kernel_entries_ghost =~= old(self).kernel_entries_ghost,
-            self.free_pcids =~= old(self).free_pcids,
-            self.page_tables =~= old(self).page_tables,
-            self.page_table_pages =~= old(self).page_table_pages,
+            final(self).wf(),
+            final(self).kernel_entries =~= old(self).kernel_entries,
+            final(self).kernel_entries_ghost =~= old(self).kernel_entries_ghost,
+            final(self).free_pcids =~= old(self).free_pcids,
+            final(self).page_tables =~= old(self).page_tables,
+            final(self).page_table_pages =~= old(self).page_table_pages,
             // self.free_ioids =~= old(self).free_ioids,
-            self.iommu_tables =~= old(self).iommu_tables,
-            self.iommu_table_pages =~= old(self).iommu_table_pages,
-            self.root_table =~= old(self).root_table,
-            self.root_table_cache =~= old(self).root_table_cache,
-            self.pci_bitmap =~= old(self).pci_bitmap,
-            self.page_table_pages@.dom() =~= old(self).page_table_pages@.dom(),
+            final(self).iommu_tables =~= old(self).iommu_tables,
+            final(self).iommu_table_pages =~= old(self).iommu_table_pages,
+            final(self).root_table =~= old(self).root_table,
+            final(self).root_table_cache =~= old(self).root_table_cache,
+            final(self).pci_bitmap =~= old(self).pci_bitmap,
+            final(self).page_table_pages@.dom() =~= old(self).page_table_pages@.dom(),
             forall|p: Pcid|
-                #![trigger self.pcid_active(p)]
-                self.pcid_active(p) == old(self).pcid_active(p),
+                #![trigger final(self).pcid_active(p)]
+                final(self).pcid_active(p) == old(self).pcid_active(p),
             forall|p: IOid|
-                #![trigger self.ioid_active(p)]
-                p != ret ==> self.ioid_active(p) == old(self).ioid_active(p),
+                #![trigger final(self).ioid_active(p)]
+                p != ret ==> final(self).ioid_active(p) == old(self).ioid_active(p),
             forall|p: IOid|
-                #![trigger self.ioid_active(p)]
-                #![trigger self.get_iommu_table_mapping_by_ioid(p)]
-                self.ioid_active(p) && p != ret ==> old(self).get_iommu_table_mapping_by_ioid(p)
-                    == self.get_iommu_table_mapping_by_ioid(p),
+                #![trigger final(self).ioid_active(p)]
+                #![trigger final(self).get_iommu_table_mapping_by_ioid(p)]
+                final(self).ioid_active(p) && p != ret ==> old(self).get_iommu_table_mapping_by_ioid(p)
+                    == final(self).get_iommu_table_mapping_by_ioid(p),
             forall|i: Pcid|
-                #![trigger self.pcid_active(i)]
-                #![trigger self.get_pagetable_mapping_by_pcid(i)]
-                self.pcid_active(i) ==> old(self).get_pagetable_mapping_by_pcid(i)
-                    == self.get_pagetable_mapping_by_pcid(i),
+                #![trigger final(self).pcid_active(i)]
+                #![trigger final(self).get_pagetable_mapping_by_pcid(i)]
+                final(self).pcid_active(i) ==> old(self).get_pagetable_mapping_by_pcid(i)
+                    == final(self).get_pagetable_mapping_by_pcid(i),
             forall|p: Pcid|
-                #![trigger self.pcid_active(p)]
-                #![trigger self.pcid_to_proc_ptr(p)]
-                self.pcid_active(p) ==> old(self).pcid_to_proc_ptr(p) == self.pcid_to_proc_ptr(p),
+                #![trigger final(self).pcid_active(p)]
+                #![trigger final(self).pcid_to_proc_ptr(p)]
+                final(self).pcid_active(p) ==> old(self).pcid_to_proc_ptr(p) == final(self).pcid_to_proc_ptr(p),
             forall|p: IOid|
-                #![trigger self.ioid_active(p)]
-                #![trigger self.ioid_to_proc_ptr(p)]
-                self.ioid_active(p) && p != ret ==> old(self).ioid_to_proc_ptr(p)
-                    == self.ioid_to_proc_ptr(p),
-            self.ioid_to_proc_ptr(ret) == new_proc_ptr,
-            self.ioid_active(ret),
+                #![trigger final(self).ioid_active(p)]
+                #![trigger final(self).ioid_to_proc_ptr(p)]
+                final(self).ioid_active(p) && p != ret ==> old(self).ioid_to_proc_ptr(p)
+                    == final(self).ioid_to_proc_ptr(p),
+            final(self).ioid_to_proc_ptr(ret) == new_proc_ptr,
+            final(self).ioid_active(ret),
             !old(self).ioid_active(ret),
-            self.get_iommu_table_mapping_by_ioid(ret).dom() == Set::<PagePtr>::empty(),
+            final(self).get_iommu_table_mapping_by_ioid(ret).dom() == Set::<PagePtr>::empty(),
     {
         let new_ioid = *self.free_ioids.pop_unique();
         self.ioid_to_proc_ptr.set(new_ioid, Some(new_proc_ptr));
