@@ -28,7 +28,7 @@ The native system follows the capability model without compromise: no ambient au
 - Tier 2: full line and branch coverage, with fault injection where a branch cannot be reached otherwise. Accepted for the filesystem and network stacks until they reach tier 1.
 - Tier 3: best-effort tests, as extensive as reasonable. Everything else.
 
-Every epic states the tier its acceptance criteria require. Tiers rise as tooling and understanding mature; lowering one is a human decision. Unverified code is allowed only as `external_body` leaf glue for hardware and assembly: counted, with a reason per item, and the count does not grow without an issue saying why. Development is test-first: an implement round writes the failing test, then the change.
+Every epic states the tier its acceptance criteria require. Tiers rise as tooling and understanding mature; lowering one is a human decision. Unverified code is allowed only as `external_body` leaf glue for hardware and assembly: counted, with a reason per item, and the count does not grow without an issue saying why. `tools/external-body-list` is that count; items it classes `gap` or `unproven` are debt, not glue. Development is test-first: an implement round writes the failing test, then the change.
 
 ## Portability
 
@@ -52,7 +52,7 @@ Beads lives at `~/atmosphere.src/.beads`, shared by every worktree, kept out of 
 
 ## Gate
 
-A commit is tested when `atmo test` exits 0. It holds when the workspace builds (`cargo build` in `build-tool`, and the loader, kernel, dom0 and payload as `atmo run` builds them); every package in `Cargo.lock` passes the license check against `tools/license-allowlist`; the license guard's tests pass; `atmo verify` reports no more errors than `tools/verify-allowance`, which equals the count on the proof-debt epic, and a proof leaf lowers both in the same commit; `tools/check-boot-stack.py` passes in debug and release, with and without a forced overflow; and `atmo run --kvm` boots dom0 to a clean exit within a timeout (exit status 0, serial log ending in `dom0 benchmark done`).
+A commit is tested when `atmo test` exits 0. It holds when the workspace builds (`cargo build` in `build-tool`, and the loader, kernel, dom0 and payload as `atmo run` builds them); every package in `Cargo.lock` passes the license check against `tools/license-allowlist`; the license guard's tests pass; `atmo verify` reports no more errors than `tools/verify-allowance`, which equals the count on the proof-debt epic, and a proof leaf lowers both in the same commit; every `external_body` in `kernel/verified` has a reason and matches `tools/external-body-list`; `tools/check-boot-stack.py` passes in debug and release, with and without a forced overflow; and `atmo run --kvm` boots dom0 to a clean exit within a timeout (exit status 0, serial log ending in `dom0 benchmark done`).
 
 # Working in the tree
 

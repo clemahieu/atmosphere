@@ -339,6 +339,7 @@ impl Kernel {
 
     // @TODO: prove this
     #[verifier(external_body)]
+    // external_body(unproven): a lemma stated without a proof
     pub proof fn fold_change_mem_4k_lemma(&self, old: Kernel, mod_c_ptr: ContainerPtr)
         requires
             self.container_dom() == old.container_dom(),
@@ -363,6 +364,7 @@ impl Kernel {
 
     // @TODO: prove this
     #[verifier(external_body)]
+    // external_body(unproven): a lemma stated without a proof
     pub proof fn fold_mem_4k_lemma(&self)
         ensures
             forall|c_ptr: ContainerPtr|
@@ -376,6 +378,7 @@ impl Kernel {
 
     // @TODO: prove this
     #[verifier(external_body)]
+    // external_body(unproven): a lemma stated without a proof
     pub proof fn fold_change_pcid_lemma(&self, old: Kernel, mod_c_ptr: ContainerPtr)
         requires
             self.container_dom() == old.container_dom(),
@@ -398,6 +401,7 @@ impl Kernel {
 
     // @TODO: prove this
     #[verifier(external_body)]
+    // external_body(unproven): a lemma stated without a proof
     pub proof fn fold_pcid_lemma(&self)
         ensures
             forall|c_ptr: ContainerPtr|
@@ -411,6 +415,7 @@ impl Kernel {
 
     // @TODO: prove this
     #[verifier(external_body)]
+    // external_body(unproven): a lemma stated without a proof
     pub proof fn fold_change_ioid_lemma(&self, old: Kernel, mod_c_ptr: ContainerPtr)
         requires
             self.container_dom() == old.container_dom(),
@@ -433,6 +438,7 @@ impl Kernel {
 
     // @TODO: prove this
     #[verifier(external_body)]
+    // external_body(unproven): a lemma stated without a proof
     pub proof fn fold_ioid_lemma(&self)
         ensures
             forall|c_ptr: ContainerPtr|
@@ -457,6 +463,7 @@ impl Kernel {
     }
 
     #[verifier(external_body)]
+    // external_body(unproven): initialisation not proven yet
     pub fn kernel_init(
         &mut self,
         dom_0_container_ptr: ContainerPtr,

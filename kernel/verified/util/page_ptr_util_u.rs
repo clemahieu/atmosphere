@@ -294,6 +294,7 @@ pub open spec fn spec_va_add_range(va: usize, i: usize) -> usize {
 }
 
 #[verifier(external_body)]
+// external_body(unproven): not proven yet
 pub fn va_add_range(va: usize, i: usize) -> (ret: usize)
     ensures
         ret == spec_va_add_range(va, i),
@@ -303,6 +304,7 @@ pub fn va_add_range(va: usize, i: usize) -> (ret: usize)
 }
 
 #[verifier(external_body)]
+// external_body(unproven): a lemma stated without a proof
 pub proof fn va_range_lemma()
     ensures
         forall|va: VAddr, len: usize, i: usize, j: usize|
@@ -313,6 +315,7 @@ pub proof fn va_range_lemma()
 }
 
 #[verifier(external_body)]
+// external_body(unproven): a lemma stated without a proof
 pub proof fn page_index_lemma()
     ensures
         forall|i: usize, j: usize|
@@ -327,6 +330,7 @@ pub proof fn page_index_lemma()
 }
 
 #[verifier(external_body)]
+// external_body(unproven): a lemma stated without a proof
 pub proof fn page_ptr_page_index_truncate_lemma()
     ensures
         forall|pi: usize, i: usize|
@@ -357,6 +361,7 @@ pub proof fn page_ptr_page_index_truncate_lemma()
 }
 
 #[verifier(external_body)]
+// external_body(unproven): a lemma stated without a proof
 pub proof fn page_ptr_lemma1()
     ensures
         forall|pa: PagePtr|
@@ -383,6 +388,7 @@ pub proof fn page_ptr_lemma1()
 }
 
 #[verifier(external_body)]
+// external_body(unproven): a lemma stated without a proof
 pub proof fn page_ptr_2m_lemma()
     ensures
         forall|pa: PagePtr|
@@ -401,6 +407,7 @@ pub proof fn page_ptr_2m_lemma()
 }
 
 #[verifier(external_body)]
+// external_body(unproven): a lemma stated without a proof
 pub proof fn page_ptr_1g_lemma()
     ensures
         forall|pa: PagePtr|
@@ -482,6 +489,7 @@ pub proof fn page_ptr_1g_lemma()
 // {
 // }
 #[verifier(external_body)]
+// external_body(unproven): a lemma stated without a proof
 pub proof fn va_lemma()
     ensures
         forall|va: VAddr|

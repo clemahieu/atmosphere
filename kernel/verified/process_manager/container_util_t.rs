@@ -9,6 +9,7 @@ use crate::array_set::ArraySet;
 use crate::quota::Quota;
 
 #[verifier(external_body)]
+// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn scheduler_push_thread(
     container_ptr: ContainerPtr,
     container_perm: &mut Tracked<PointsTo<Container>>,
@@ -62,6 +63,7 @@ pub fn scheduler_push_thread(
 }
 
 #[verifier(external_body)]
+// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn scheduler_pop_head(
     container_ptr: ContainerPtr,
     container_perm: &mut Tracked<PointsTo<Container>>,
@@ -111,6 +113,7 @@ pub fn scheduler_pop_head(
 
 
 #[verifier(external_body)]
+// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn scheduler_remove_thread(
     container_ptr: ContainerPtr,
     container_perm: &mut Tracked<PointsTo<Container>>,
@@ -160,6 +163,7 @@ pub fn scheduler_remove_thread(
 }
 
 #[verifier(external_body)]
+// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn container_push_proc(
     container_ptr: ContainerPtr,
     container_perm: &mut Tracked<PointsTo<Container>>,
@@ -213,6 +217,7 @@ pub fn container_push_proc(
 }
 
 #[verifier(external_body)]
+// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn container_remove_proc(
     container_ptr: ContainerPtr,
     container_perm: &mut Tracked<PointsTo<Container>>,
@@ -266,6 +271,7 @@ pub fn container_remove_proc(
 }
 
 #[verifier(external_body)]
+// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn container_push_child(
     container_ptr: ContainerPtr,
     container_perm: &mut Tracked<PointsTo<Container>>,
@@ -317,6 +323,7 @@ pub fn container_push_child(
 }
 
 #[verifier(external_body)]
+// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn container_remove_child(
     container_ptr: ContainerPtr,
     container_perm: &mut Tracked<PointsTo<Container>>,
@@ -367,6 +374,7 @@ pub fn container_remove_child(
 }
 
 #[verifier(external_body)]
+// external_body(unproven): updates ghost state only, so its body is empty; the update is assumed, not proven
 pub fn container_push_endpoint(
     container_ptr: ContainerPtr,
     container_perm: &mut Tracked<PointsTo<Container>>,
@@ -403,6 +411,7 @@ pub fn container_push_endpoint(
 }
 
 #[verifier(external_body)]
+// external_body(unproven): updates ghost state only, so its body is empty; the update is assumed, not proven
 pub fn container_pop_endpoint(
     container_ptr: ContainerPtr,
     container_perm: &mut Tracked<PointsTo<Container>>,
@@ -439,6 +448,7 @@ pub fn container_pop_endpoint(
 }
 
 #[verifier(external_body)]
+// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn container_set_quota_mem_4k(
     container_ptr: ContainerPtr,
     container_perm: &mut Tracked<PointsTo<Container>>,
@@ -477,6 +487,7 @@ pub fn container_set_quota_mem_4k(
 }
 
 #[verifier(external_body)]
+// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn container_insert_cpu(
     container_ptr: ContainerPtr,
     container_perm: &mut Tracked<PointsTo<Container>>,
@@ -518,6 +529,7 @@ pub fn container_insert_cpu(
 }
 
 #[verifier(external_body)]
+// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn container_remove_cpu(
     container_ptr: ContainerPtr,
     container_perm: &mut Tracked<PointsTo<Container>>,
@@ -559,6 +571,7 @@ pub fn container_remove_cpu(
 }
 
 #[verifier(external_body)]
+// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn container_set_quota(
     container_ptr: ContainerPtr,
     container_perm: &mut Tracked<PointsTo<Container>>,
@@ -597,6 +610,7 @@ pub fn container_set_quota(
 }
 
 #[verifier(external_body)]
+// external_body(unproven): updates ghost state only, so its body is empty; the update is assumed, not proven
 pub fn container_set_owned_threads(
     container_ptr: ContainerPtr,
     container_perm: &mut Tracked<PointsTo<Container>>,
@@ -630,6 +644,7 @@ pub fn container_set_owned_threads(
 }
 
 #[verifier(external_body)]
+// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn container_set_root_proc(
     container_ptr: ContainerPtr,
     container_perm: &mut Tracked<PointsTo<Container>>,
@@ -667,6 +682,7 @@ pub fn container_set_root_proc(
 }
 
 #[verifier(external_body)]
+// external_body(gap): writes through a raw pointer and takes its permission from Tracked::assume_new
 pub fn page_to_container(
     page_ptr: PagePtr,
     page_perm: Tracked<PagePerm4k>,
@@ -724,6 +740,7 @@ pub fn page_to_container(
 }
 
 #[verifier(external_body)]
+// external_body(gap): takes its permission from Tracked::assume_new, which Verus cannot check
 pub fn container_to_page(
     container_ptr: ContainerPtr,
     container_perm: Tracked<PointsTo<Container>>,
@@ -739,6 +756,7 @@ pub fn container_to_page(
 }
 
 #[verifier(external_body)]
+// external_body(gap): writes through a raw pointer and takes its permission from Tracked::assume_new
 pub fn page_to_container_tree_version(
     page_ptr: PagePtr,
     page_perm: Tracked<PagePerm4k>,
@@ -802,6 +820,7 @@ pub fn page_to_container_tree_version(
 }
 
 #[verifier(external_body)]
+// external_body(gap): writes through a raw pointer and takes its permission from Tracked::assume_new
 pub fn page_to_container_tree_version_1(
     page_ptr: PagePtr,
     page_perm: Tracked<PagePerm4k>,
@@ -858,6 +877,7 @@ pub fn page_to_container_tree_version_1(
 }
 
 #[verifier(external_body)]
+// external_body(unproven): updates ghost state only, so its body is empty; the update is assumed, not proven
 pub fn container_perms_update_subtree_set(
     perms: &mut Tracked<Map<ContainerPtr, PointsTo<Container>>>,
     uppertree_seq: Ghost<Seq<ContainerPtr>>,
@@ -921,6 +941,7 @@ pub fn container_perms_update_subtree_set(
 }
 
 #[verifier(external_body)]
+// external_body(unproven): updates ghost state only, so its body is empty; the update is assumed, not proven
 pub fn container_perms_subset_remove(
     perms: &mut Tracked<Map<ContainerPtr, PointsTo<Container>>>,
     uppertree_seq: Ghost<Seq<ContainerPtr>>,

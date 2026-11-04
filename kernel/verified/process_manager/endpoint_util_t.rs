@@ -7,6 +7,7 @@ use vstd::simple_pptr::PointsTo;
 use crate::process_manager::endpoint::*;
 
 #[verifier(external_body)]
+// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn endpoint_add_ref(
     endpoint_ptr: EndpointPtr,
     endpoint_perm: &mut Tracked<PointsTo<Endpoint>>,
@@ -39,6 +40,7 @@ pub fn endpoint_add_ref(
 }
 
 #[verifier(external_body)]
+// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn endpoint_remove_ref(
     endpoint_ptr: EndpointPtr,
     endpoint_perm: &mut Tracked<PointsTo<Endpoint>>,
@@ -70,6 +72,7 @@ pub fn endpoint_remove_ref(
 }
 
 #[verifier(external_body)]
+// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn endpoint_set_owning_container(
     endpoint_ptr: EndpointPtr,
     endpoint_perm: &mut Tracked<PointsTo<Endpoint>>,
@@ -95,6 +98,7 @@ pub fn endpoint_set_owning_container(
 }
 
 #[verifier(external_body)]
+// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn endpoint_pop_head(
     endpoint_ptr: EndpointPtr,
     endpoint_perm: &mut Tracked<PointsTo<Endpoint>>,
@@ -132,6 +136,7 @@ pub fn endpoint_pop_head(
 }
 
 #[verifier(external_body)]
+// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn endpoint_remove_thread(
     endpoint_ptr: EndpointPtr,
     endpoint_perm: &mut Tracked<PointsTo<Endpoint>>,
@@ -173,6 +178,7 @@ pub fn endpoint_remove_thread(
 }
 
 #[verifier(external_body)]
+// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn endpoint_push(
     endpoint_ptr: EndpointPtr,
     endpoint_perm: &mut Tracked<PointsTo<Endpoint>>,
@@ -210,6 +216,7 @@ pub fn endpoint_push(
 }
 
 #[verifier(external_body)]
+// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn endpoint_push_and_set_state(
     endpoint_ptr: EndpointPtr,
     endpoint_perm: &mut Tracked<PointsTo<Endpoint>>,
@@ -249,6 +256,7 @@ pub fn endpoint_push_and_set_state(
 }
 
 #[verifier(external_body)]
+// external_body(gap): writes through a raw pointer and takes its permission from Tracked::assume_new
 pub fn page_to_endpoint(page_ptr: PagePtr, page_perm: Tracked<PagePerm4k>) -> (ret: (
     EndpointPtr,
     Tracked<PointsTo<Endpoint>>,
@@ -279,6 +287,7 @@ pub fn page_to_endpoint(page_ptr: PagePtr, page_perm: Tracked<PagePerm4k>) -> (r
 }
 
 #[verifier(external_body)]
+// external_body(gap): takes its permission from Tracked::assume_new, which Verus cannot check
 pub fn endpoint_to_page(endpoint_ptr: EndpointPtr, endpoint_perm: Tracked<PointsTo<Endpoint>>) -> (ret: (
     PagePtr,
     Tracked<PagePerm4k>,

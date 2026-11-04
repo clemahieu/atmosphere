@@ -12,6 +12,7 @@ use vstd::simple_pptr::*;
 
 impl PageAllocator {
     #[verifier(external_body)]
+    // external_body(unproven): an array element access not proven yet
     pub fn set_state(&mut self, index: usize, state: PageState)
         requires
             old(self).page_array.wf(),
@@ -67,6 +68,7 @@ impl PageAllocator {
     }
 
     #[verifier(external_body)]
+    // external_body(unproven): an array element access not proven yet
     pub fn set_rev_pointer(&mut self, index: usize, rev_pointer: SLLIndex)
         requires
             old(self).page_array.wf(),
@@ -118,6 +120,7 @@ impl PageAllocator {
     }
 
     #[verifier(external_body)]
+    // external_body(unproven): an array element access not proven yet
     pub fn set_ref_count(&mut self, index: usize, ref_count: usize)
         requires
             old(self).page_array.wf(),
@@ -168,6 +171,7 @@ impl PageAllocator {
     }
 
     #[verifier(external_body)]
+    // external_body(unproven): an array element access not proven yet
     pub fn set_mapping(&mut self, index: usize, mapping: Ghost<Set<(Pcid, VAddr)>>)
         requires
             old(self).page_array.wf(),
@@ -218,6 +222,7 @@ impl PageAllocator {
     }
 
     #[verifier(external_body)]
+    // external_body(unproven): an array element access not proven yet
     pub fn set_io_mapping(&mut self, index: usize, io_mapping: Ghost<Set<(IOid, VAddr)>>)
         requires
             old(self).page_array.wf(),
@@ -268,6 +273,7 @@ impl PageAllocator {
     }
 
     #[verifier(external_body)]
+    // external_body(unproven): an array element access not proven yet
     pub fn set_owning_container(&mut self, index: usize, owning_container_op: Option<ContainerPtr>)
         requires
             old(self).page_array.wf(),
@@ -320,6 +326,7 @@ impl PageAllocator {
 }
 
 #[verifier(external_body)]
+// external_body(gap): takes its permission from Tracked::assume_new, which Verus cannot check
 pub fn merge_4k_pages_to_2m_page(target_page_idx:usize, page_perms: Tracked<Map<usize, PagePerm4k>>) -> (ret: Tracked<PagePerm2m>)
     requires
         target_page_idx + 512 <= NUM_PAGES,
@@ -340,6 +347,7 @@ pub fn merge_4k_pages_to_2m_page(target_page_idx:usize, page_perms: Tracked<Map<
     }
 
 #[verifier(external_body)]
+// external_body(gap): takes its permission from Tracked::assume_new, which Verus cannot check
 pub fn split_2m_pages_to_pages(target_page_idx:usize, page_perm: Tracked<PagePerm2m>) -> (ret: Tracked<Map<usize, PagePerm4k>>)
     requires
         page_perm@.is_init(),

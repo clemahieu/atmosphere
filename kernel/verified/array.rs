@@ -12,6 +12,7 @@ pub struct Array<A, const N: usize>{
 impl<A, const N: usize> Array<A, N> {
 
     #[verifier(external_body)]
+    // external_body(gap): builds a value from uninitialised memory
     pub const fn new() -> (ret: Self)
         ensures
             ret.wf(),
@@ -26,6 +27,7 @@ impl<A, const N: usize> Array<A, N> {
     }
 
     #[verifier(external_body)]
+    // external_body(unproven): an array element access not proven yet
     pub fn get(&self, i: usize) -> (out: &A)
         requires
             0 <= i < N,
@@ -57,6 +59,7 @@ impl<A, const N: usize> Array<A, N> {
 
 impl<A, const N: usize> Array<A, N> {
     #[verifier(external_body)]
+    // external_body(unproven): an array element access not proven yet
     pub fn set(&mut self, i: usize, out: A)
         requires
             0 <= i < N,

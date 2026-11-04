@@ -31,6 +31,7 @@ impl Kernel {
     }
 
     #[verifier(external_body)]
+    // external_body(unproven): a lemma stated without a proof
     pub proof fn insert_page_mapping_t(
         map: Map<PagePtr, Set<(ProcPtr, VAddr)>>,
         target_page_ptr: PagePtr,

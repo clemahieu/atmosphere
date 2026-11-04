@@ -7,6 +7,7 @@ use vstd::simple_pptr::PointsTo;
 use crate::process_manager::process::*;
 
 #[verifier(external_body)]
+// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn proc_push_thread(
     proc_ptr: ProcPtr,
     proc_perm: &mut Tracked<PointsTo<Process>>,
@@ -55,6 +56,7 @@ pub fn proc_push_thread(
 }
 
 #[verifier(external_body)]
+// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn proc_remove_thread(
     proc_ptr: ProcPtr,
     proc_perm: &mut Tracked<PointsTo<Process>>,
@@ -101,6 +103,7 @@ pub fn proc_remove_thread(
 }
 
 #[verifier(external_body)]
+// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn proc_push_child(
     proc_ptr: ProcPtr,
     proc_perm: &mut Tracked<PointsTo<Process>>,
@@ -147,6 +150,7 @@ pub fn proc_push_child(
 }
 
 #[verifier(external_body)]
+// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn proc_remove_child(
     proc_ptr: ProcPtr,
     proc_perm: &mut Tracked<PointsTo<Process>>,
@@ -193,6 +197,7 @@ pub fn proc_remove_child(
 
 
 #[verifier(external_body)]
+// external_body(gap): writes through a raw pointer and takes its permission from Tracked::assume_new
 pub fn page_to_proc(
     page_ptr: PagePtr,
     page_perm: Tracked<PagePerm4k>,
@@ -246,6 +251,7 @@ pub fn page_to_proc(
 }
 
 #[verifier(external_body)]
+// external_body(gap): takes its permission from Tracked::assume_new, which Verus cannot check
 pub fn proc_to_page(
     proc_ptr: ProcPtr,
     proc_perm: Tracked<PointsTo<Process>>,
@@ -318,6 +324,7 @@ pub fn page_to_proc_with_first_thread(
 }
 
 #[verifier(external_body)]
+// external_body(unproven): updates ghost state only, so its body is empty; the update is assumed, not proven
 pub fn proc_perms_update_subtree_set(
     perms: &mut Tracked<Map<ProcPtr, PointsTo<Process>>>,
     uppertree_seq: Ghost<Seq<ProcPtr>>,
@@ -371,6 +378,7 @@ pub fn proc_perms_update_subtree_set(
 }
 
 #[verifier(external_body)]
+// external_body(unproven): updates ghost state only, so its body is empty; the update is assumed, not proven
 pub fn proc_perms_remove_subtree_set(
     perms: &mut Tracked<Map<ProcPtr, PointsTo<Process>>>,
     uppertree_seq: Ghost<Seq<ProcPtr>>,

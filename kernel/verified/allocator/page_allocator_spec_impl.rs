@@ -36,6 +36,7 @@ pub struct PageAllocator {
 
 impl PageAllocator {
     #[verifier(external_body)]
+    // external_body(unproven): initialisation not proven yet
     pub fn new() -> (ret: Self) {
         let ret = Self {
             page_array: Array::<Page, NUM_PAGES>::new(),
@@ -60,6 +61,7 @@ impl PageAllocator {
     }
 
     #[verifier(external_body)]
+    // external_body(unproven): initialisation not proven yet
     pub fn init(
         &mut self,
         boot_pages: &mut ArrayVec::<(PageState, usize), NUM_PAGES>,

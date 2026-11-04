@@ -11,6 +11,7 @@ use crate::pagetable::entry::*;
 
 impl Array<Option<PageTable>, PCID_MAX> {
     #[verifier(external_body)]
+    // external_body(unproven): an array element access not proven yet
     pub fn pagetable_array_create_pagetable_l4_entry_t(
         &mut self,
         pcid: Pcid,
@@ -71,6 +72,7 @@ impl Array<Option<PageTable>, PCID_MAX> {
     }
 
     #[verifier(external_body)]
+    // external_body(unproven): an array element access not proven yet
     pub fn pagetable_array_create_pagetable_l3_entry_t(
         &mut self,
         pcid: Pcid,
@@ -147,6 +149,7 @@ impl Array<Option<PageTable>, PCID_MAX> {
     }
 
     #[verifier(external_body)]
+    // external_body(unproven): an array element access not proven yet
     pub fn pagetable_array_create_pagetable_l2_entry_t(
         &mut self,
         pcid: Pcid,
@@ -244,6 +247,7 @@ impl Array<Option<PageTable>, PCID_MAX> {
     }
 
     #[verifier(external_body)]
+    // external_body(unproven): an array element access not proven yet
     pub fn pagetable_array_map_4k_page_t(
         &mut self,
         pcid: Pcid,
@@ -323,6 +327,7 @@ impl Array<Option<PageTable>, PCID_MAX> {
     }
 
     #[verifier(external_body)]
+    // external_body(unproven): an array element access not proven yet
     pub fn iommu_table_array_create_iommu_table_l4_entry_t(
         &mut self,
         ioid: IOid,
@@ -383,6 +388,7 @@ impl Array<Option<PageTable>, PCID_MAX> {
     }
 
     #[verifier(external_body)]
+    // external_body(unproven): an array element access not proven yet
     pub fn iommu_table_array_create_iommu_table_l3_entry_t(
         &mut self,
         ioid: IOid,
@@ -459,6 +465,7 @@ impl Array<Option<PageTable>, PCID_MAX> {
     }
 
     #[verifier(external_body)]
+    // external_body(unproven): an array element access not proven yet
     pub fn iommu_table_array_create_iommu_table_l2_entry_t(
         &mut self,
         ioid: IOid,
@@ -556,6 +563,7 @@ impl Array<Option<PageTable>, PCID_MAX> {
     }
 
     #[verifier(external_body)]
+    // external_body(unproven): an array element access not proven yet
     pub fn iommu_table_array_map_4k_page_t(
         &mut self,
         ioid: IOid,

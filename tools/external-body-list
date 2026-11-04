@@ -1,0 +1,128 @@
+# Every live external_body in kernel/verified, checked by atmo test against the reason line beside
+# each attribute. Fields, separated by tabs: path under kernel/verified, item, class, reason.
+#
+# glue      hardware or assembly leaf glue, the only unverified code CLAUDE.md allows
+# gap       uses something this Verus cannot check: a raw pointer, a conjured permission, uninit memory
+# unproven  plain code or a lemma with no proof yet, so proof debt
+allocator/page_allocator_spec_impl.rs	init	unproven	initialisation not proven yet
+allocator/page_allocator_spec_impl.rs	new	unproven	initialisation not proven yet
+allocator/page_allocator_util_t.rs	merge_4k_pages_to_2m_page	gap	takes its permission from Tracked::assume_new, which Verus cannot check
+allocator/page_allocator_util_t.rs	set_io_mapping	unproven	an array element access not proven yet
+allocator/page_allocator_util_t.rs	set_mapping	unproven	an array element access not proven yet
+allocator/page_allocator_util_t.rs	set_owning_container	unproven	an array element access not proven yet
+allocator/page_allocator_util_t.rs	set_ref_count	unproven	an array element access not proven yet
+allocator/page_allocator_util_t.rs	set_rev_pointer	unproven	an array element access not proven yet
+allocator/page_allocator_util_t.rs	set_state	unproven	an array element access not proven yet
+allocator/page_allocator_util_t.rs	split_2m_pages_to_pages	gap	takes its permission from Tracked::assume_new, which Verus cannot check
+array.rs	get	unproven	an array element access not proven yet
+array.rs	new	gap	builds a value from uninitialised memory
+array.rs	set	unproven	an array element access not proven yet
+kernel/create_and_share_pages.rs	insert_page_mapping_t	unproven	a lemma stated without a proof
+kernel/spec.rs	fold_change_ioid_lemma	unproven	a lemma stated without a proof
+kernel/spec.rs	fold_change_mem_4k_lemma	unproven	a lemma stated without a proof
+kernel/spec.rs	fold_change_pcid_lemma	unproven	a lemma stated without a proof
+kernel/spec.rs	fold_ioid_lemma	unproven	a lemma stated without a proof
+kernel/spec.rs	fold_mem_4k_lemma	unproven	a lemma stated without a proof
+kernel/spec.rs	fold_pcid_lemma	unproven	a lemma stated without a proof
+kernel/spec.rs	kernel_init	unproven	initialisation not proven yet
+lemma/lemma_t.rs	lemma_usize_int	unproven	states the target's usize width without a proof
+lemma/lemma_t.rs	lemma_usize_u64	unproven	states the target's usize width without a proof
+lemma/lemma_t.rs	page_ptr_lemma	unproven	a lemma stated without a proof
+lemma/lemma_t.rs	set_add_lemma	unproven	a lemma stated without a proof
+lemma/lemma_t.rs	set_insert_lemma	unproven	a lemma stated without a proof
+lemma/lemma_t.rs	set_lemma	unproven	a lemma stated without a proof
+lemma/lemma_u.rs	map_insert_lemma	unproven	a lemma stated without a proof
+memory_manager/mmu_init.rs	new	unproven	in a file outside the module tree, so not compiled
+memory_manager/mmu_util.rs	iommu_table_array_create_iommu_table_l2_entry_t	unproven	an array element access not proven yet
+memory_manager/mmu_util.rs	iommu_table_array_create_iommu_table_l3_entry_t	unproven	an array element access not proven yet
+memory_manager/mmu_util.rs	iommu_table_array_create_iommu_table_l4_entry_t	unproven	an array element access not proven yet
+memory_manager/mmu_util.rs	iommu_table_array_map_4k_page_t	unproven	an array element access not proven yet
+memory_manager/mmu_util.rs	pagetable_array_create_pagetable_l2_entry_t	unproven	an array element access not proven yet
+memory_manager/mmu_util.rs	pagetable_array_create_pagetable_l3_entry_t	unproven	an array element access not proven yet
+memory_manager/mmu_util.rs	pagetable_array_create_pagetable_l4_entry_t	unproven	an array element access not proven yet
+memory_manager/mmu_util.rs	pagetable_array_map_4k_page_t	unproven	an array element access not proven yet
+memory_manager/pci_bitmap.rs	get	unproven	not proven yet
+memory_manager/pci_bitmap.rs	init	unproven	initialisation not proven yet
+memory_manager/pci_bitmap.rs	new	gap	builds a value from uninitialised memory
+memory_manager/pci_bitmap.rs	set	unproven	not proven yet
+memory_manager/root_table.rs	get_ioid	glue	accesses the IOMMU root table in its hardware format
+memory_manager/root_table.rs	init	glue	accesses the IOMMU root table in its hardware format
+memory_manager/root_table.rs	new	glue	accesses the IOMMU root table in its hardware format
+memory_manager/root_table.rs	set	glue	accesses the IOMMU root table in its hardware format
+memory_manager/spec_impl.rs	init	unproven	initialisation not proven yet
+memory_manager/spec_impl.rs	new	unproven	initialisation not proven yet
+pagetable/pagemap_util_t.rs	page_map_set	glue	writes a hardware page table through a raw pointer
+pagetable/pagemap_util_t.rs	page_map_set_no_requires	glue	writes a hardware page table through a raw pointer
+pagetable/pagemap_util_t.rs	page_perm_to_page_map	glue	writes a hardware page table through a raw pointer
+pcid_alloc.rs	new	unproven	in a file outside the module tree, so not compiled
+process_manager/container_util_t.rs	container_insert_cpu	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
+process_manager/container_util_t.rs	container_perms_subset_remove	unproven	updates ghost state only, so its body is empty; the update is assumed, not proven
+process_manager/container_util_t.rs	container_perms_update_subtree_set	unproven	updates ghost state only, so its body is empty; the update is assumed, not proven
+process_manager/container_util_t.rs	container_pop_endpoint	unproven	updates ghost state only, so its body is empty; the update is assumed, not proven
+process_manager/container_util_t.rs	container_push_child	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
+process_manager/container_util_t.rs	container_push_endpoint	unproven	updates ghost state only, so its body is empty; the update is assumed, not proven
+process_manager/container_util_t.rs	container_push_proc	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
+process_manager/container_util_t.rs	container_remove_child	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
+process_manager/container_util_t.rs	container_remove_cpu	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
+process_manager/container_util_t.rs	container_remove_proc	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
+process_manager/container_util_t.rs	container_set_owned_threads	unproven	updates ghost state only, so its body is empty; the update is assumed, not proven
+process_manager/container_util_t.rs	container_set_quota	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
+process_manager/container_util_t.rs	container_set_quota_mem_4k	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
+process_manager/container_util_t.rs	container_set_root_proc	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
+process_manager/container_util_t.rs	container_to_page	gap	takes its permission from Tracked::assume_new, which Verus cannot check
+process_manager/container_util_t.rs	page_to_container	gap	writes through a raw pointer and takes its permission from Tracked::assume_new
+process_manager/container_util_t.rs	page_to_container_tree_version	gap	writes through a raw pointer and takes its permission from Tracked::assume_new
+process_manager/container_util_t.rs	page_to_container_tree_version_1	gap	writes through a raw pointer and takes its permission from Tracked::assume_new
+process_manager/container_util_t.rs	scheduler_pop_head	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
+process_manager/container_util_t.rs	scheduler_push_thread	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
+process_manager/container_util_t.rs	scheduler_remove_thread	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
+process_manager/endpoint_util_t.rs	endpoint_add_ref	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
+process_manager/endpoint_util_t.rs	endpoint_pop_head	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
+process_manager/endpoint_util_t.rs	endpoint_push	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
+process_manager/endpoint_util_t.rs	endpoint_push_and_set_state	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
+process_manager/endpoint_util_t.rs	endpoint_remove_ref	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
+process_manager/endpoint_util_t.rs	endpoint_remove_thread	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
+process_manager/endpoint_util_t.rs	endpoint_set_owning_container	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
+process_manager/endpoint_util_t.rs	endpoint_to_page	gap	takes its permission from Tracked::assume_new, which Verus cannot check
+process_manager/endpoint_util_t.rs	page_to_endpoint	gap	writes through a raw pointer and takes its permission from Tracked::assume_new
+process_manager/impl_base.rs	init	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
+process_manager/proc_util_t.rs	page_to_proc	gap	writes through a raw pointer and takes its permission from Tracked::assume_new
+process_manager/proc_util_t.rs	proc_perms_remove_subtree_set	unproven	updates ghost state only, so its body is empty; the update is assumed, not proven
+process_manager/proc_util_t.rs	proc_perms_update_subtree_set	unproven	updates ghost state only, so its body is empty; the update is assumed, not proven
+process_manager/proc_util_t.rs	proc_push_child	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
+process_manager/proc_util_t.rs	proc_push_thread	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
+process_manager/proc_util_t.rs	proc_remove_child	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
+process_manager/proc_util_t.rs	proc_remove_thread	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
+process_manager/proc_util_t.rs	proc_to_page	gap	takes its permission from Tracked::assume_new, which Verus cannot check
+process_manager/thread_util_t.rs	page_to_thread	gap	writes through a raw pointer and takes its permission from Tracked::assume_new
+process_manager/thread_util_t.rs	page_to_thread_with_endpoint	gap	writes through a raw pointer and takes its permission from Tracked::assume_new
+process_manager/thread_util_t.rs	thread_set_blocking_endpoint_endpoint_ref_scheduler_ref_state_and_ipc_payload	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
+process_manager/thread_util_t.rs	thread_set_current_cpu	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
+process_manager/thread_util_t.rs	thread_set_endpoint_descriptor	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
+process_manager/thread_util_t.rs	thread_set_error_code	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
+process_manager/thread_util_t.rs	thread_set_state	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
+process_manager/thread_util_t.rs	thread_set_trap_frame_fast	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
+process_manager/thread_util_t.rs	thread_set_trap_frame_full	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
+process_manager/thread_util_t.rs	thread_to_page	gap	takes its permission from Tracked::assume_new, which Verus cannot check
+slinkedlist/impl_t.rs	get_next	unproven	an array element access not proven yet
+slinkedlist/impl_t.rs	get_prev	unproven	an array element access not proven yet
+slinkedlist/impl_t.rs	get_value	unproven	an array element access not proven yet
+slinkedlist/impl_t.rs	new	gap	builds a value from uninitialised memory
+slinkedlist/impl_t.rs	set_next	unproven	an array element access not proven yet
+slinkedlist/impl_t.rs	set_prev	unproven	an array element access not proven yet
+slinkedlist/impl_t.rs	set_value	unproven	an array element access not proven yet
+trap.rs	random	gap	builds a value from uninitialised memory
+trap.rs	set_dst_fast	unproven	field copies of a register frame not proven yet
+trap.rs	set_self_fast	unproven	field copies of a register frame not proven yet
+trap.rs	set_self_fast	unproven	field copies of a register frame not proven yet
+trap.rs	zeroed	gap	builds a value from uninitialised memory
+util/page_ptr_util_u.rs	page_index_lemma	unproven	a lemma stated without a proof
+util/page_ptr_util_u.rs	page_ptr_1g_lemma	unproven	a lemma stated without a proof
+util/page_ptr_util_u.rs	page_ptr_2m_lemma	unproven	a lemma stated without a proof
+util/page_ptr_util_u.rs	page_ptr_lemma1	unproven	a lemma stated without a proof
+util/page_ptr_util_u.rs	page_ptr_page_index_truncate_lemma	unproven	a lemma stated without a proof
+util/page_ptr_util_u.rs	va_add_range	unproven	not proven yet
+util/page_ptr_util_u.rs	va_lemma	unproven	a lemma stated without a proof
+util/page_ptr_util_u.rs	va_range_lemma	unproven	a lemma stated without a proof
+va_range.rs	va_range_disjoint	unproven	not proven yet
+va_range.rs	va_range_lemma	unproven	a lemma stated without a proof

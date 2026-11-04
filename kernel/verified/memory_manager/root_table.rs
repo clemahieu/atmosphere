@@ -45,6 +45,7 @@ pub struct RootTable {
 
 impl RootTable {
     #[verifier(external_body)]
+    // external_body(glue): accesses the IOMMU root table in its hardware format
     pub fn new() -> (ret: Self) {
         unsafe {
             RootTable {
@@ -56,6 +57,7 @@ impl RootTable {
     }
 
     #[verifier(external_body)]
+    // external_body(glue): accesses the IOMMU root table in its hardware format
     pub fn init(&mut self)
         ensures
             self.wf(),
@@ -102,6 +104,7 @@ impl RootTable {
     }
 
     #[verifier(external_body)]
+    // external_body(glue): accesses the IOMMU root table in its hardware format
     pub fn get_ioid(&self, bus: u8, dev: u8, fun: u8) -> (ret: Option<(IOid, usize)>)
         requires
             self.wf(),
@@ -120,6 +123,7 @@ impl RootTable {
     }
 
     #[verifier(external_body)]
+    // external_body(glue): accesses the IOMMU root table in its hardware format
     pub fn set(&mut self, bus: u8, dev: u8, fun: u8, target: Option<(IOid, usize)>)
         requires
             old(self).wf(),

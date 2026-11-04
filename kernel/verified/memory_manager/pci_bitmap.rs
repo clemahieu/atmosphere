@@ -11,6 +11,7 @@ pub struct PCIBitMap {
 
 impl PCIBitMap {
     #[verifier(external_body)]
+    // external_body(gap): builds a value from uninitialised memory
     pub fn new() -> (ret: Self)
         ensures
             ret.wf(),
@@ -21,6 +22,7 @@ impl PCIBitMap {
     }
 
     #[verifier(external_body)]
+    // external_body(unproven): initialisation not proven yet
     pub fn init(&mut self)
         requires
     // old(self).wf(),
@@ -77,6 +79,7 @@ impl PCIBitMap {
     }
 
     #[verifier(external_body)]
+    // external_body(unproven): not proven yet
     pub fn get(&self, ioid: IOid, bus: u8, dev: u8, fun: u8) -> (ret: bool)
         requires
             self.wf(),
@@ -89,6 +92,7 @@ impl PCIBitMap {
     }
 
     #[verifier(external_body)]
+    // external_body(unproven): not proven yet
     pub fn set(&mut self, ioid: IOid, bus: u8, dev: u8, fun: u8, target: bool)
         requires
             old(self).wf(),

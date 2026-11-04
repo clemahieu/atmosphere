@@ -8,6 +8,7 @@ use core::mem::MaybeUninit;
 
 impl<T: Copy, const N: usize> StaticLinkedList<T, N> {
     #[verifier(external_body)]
+    // external_body(gap): builds a value from uninitialised memory
     pub fn new() -> (ret: Self)
         ensures
             ret.array_wf(),
@@ -33,6 +34,7 @@ impl<T: Copy, const N: usize> StaticLinkedList<T, N> {
     }
 
     #[verifier(external_body)]
+    // external_body(unproven): an array element access not proven yet
     pub fn set_value(&mut self, index: SLLIndex, v: Option<T>)
         requires
             old(self).array_wf(),
@@ -65,6 +67,7 @@ impl<T: Copy, const N: usize> StaticLinkedList<T, N> {
     }
 
     #[verifier(external_body)]
+    // external_body(unproven): an array element access not proven yet
     pub fn set_next(&mut self, index: SLLIndex, v: SLLIndex)
         requires
             old(self).array_wf(),
@@ -95,6 +98,7 @@ impl<T: Copy, const N: usize> StaticLinkedList<T, N> {
     }
 
     #[verifier(external_body)]
+    // external_body(unproven): an array element access not proven yet
     pub fn set_prev(&mut self, index: SLLIndex, v: SLLIndex)
         requires
             old(self).array_wf(),
@@ -148,6 +152,7 @@ impl<T: Copy, const N: usize> StaticLinkedList<T, N> {
     //     //self.spec_seq@ = self.spec_seq@.push(new_ptr);
     // }
     #[verifier(external_body)]
+    // external_body(unproven): an array element access not proven yet
     pub fn get_value(&self, index: SLLIndex) -> (ret: Option<T>)
         requires
             0 <= index < N,
@@ -159,6 +164,7 @@ impl<T: Copy, const N: usize> StaticLinkedList<T, N> {
     }
 
     #[verifier(external_body)]
+    // external_body(unproven): an array element access not proven yet
     pub fn get_next(&self, index: SLLIndex) -> (next: SLLIndex)
         requires
             0 <= index < N,
@@ -170,6 +176,7 @@ impl<T: Copy, const N: usize> StaticLinkedList<T, N> {
     }
 
     #[verifier(external_body)]
+    // external_body(unproven): an array element access not proven yet
     pub fn get_prev(&self, index: SLLIndex) -> (prev: SLLIndex)
         requires
             0 <= index < N,
