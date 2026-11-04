@@ -188,6 +188,8 @@ pub struct PPtr<V>(pub usize, pub PhantomData<V>);
 pub tracked struct PointsTo<V> {
     points_to: raw_ptr::PointsTo<V>,
     exposed: raw_ptr::IsExposed,
+    /// The raw bytes after the value, up to the end of its 4K page, when it fits one.
+    rest: PointsToRaw,
 }
 
 #[verusfmt::skip]
@@ -256,6 +258,11 @@ impl<V> PointsTo<V> {
     closed spec fn wf(self) -> bool {
         &&& self.points_to.ptr()@.provenance == self.exposed.provenance()
         &&& self.points_to.ptr().addr() != 0
+        &&& size_of::<V>() <= 4096 ==> self.rest.is_range(
+            self.points_to.ptr().addr() + size_of::<V>(),
+            4096 - size_of::<V>(),
+        )
+        &&& self.rest.provenance() == self.exposed.provenance()
     }
 
     pub closed spec fn mem_contents(&self) -> MemContents<V> {
@@ -502,54 +509,59 @@ impl<V> PPtr<V> {
 
 pub use raw_ptr::MemContents;
 
-impl<V> PointsTo<V> {
-    /// Gives up an uninitialised permission for the raw bytes it covers.
-    pub proof fn into_raw(tracked self) -> (tracked ret: (PointsToRaw, IsExposed))
-        requires
-            self.is_uninit(),
-        ensures
-            ret.0.is_range(self.addr() as int, size_of::<V>() as int),
-            ret.0.provenance() == ret.1.provenance(),
-    {
-        use_type_invariant(&self);
-        let tracked PointsTo { points_to, exposed } = self;
-        (points_to.into_raw(), exposed)
-    }
-
-    /// Turns the raw bytes at an aligned, non-null address into an uninitialised typed permission.
-    pub proof fn from_raw(tracked raw: PointsToRaw, tracked exposed: IsExposed, addr: usize) -> (tracked ret: Self)
-        requires
-            addr != 0,
-            addr as int % align_of::<V>() as int == 0,
-            raw.is_range(addr as int, size_of::<V>() as int),
-            raw.provenance() == exposed.provenance(),
-        ensures
-            ret.addr() == addr,
-            ret.is_uninit(),
-    {
-        let tracked points_to = raw.into_typed::<V>(addr);
-        PointsTo { points_to, exposed }
-    }
-}
-
 /// Turns the permission for an uninitialised 4K page into a typed permission for the object at its
-/// start, and the raw permission for the rest of the page.
-pub proof fn page_into_typed<W>(tracked page: PointsTo<[u8; 4096]>) -> (tracked ret: (PointsTo<W>, PointsToRaw))
+/// start. The rest of the page travels inside the permission.
+pub proof fn page_into_typed<W>(tracked page: PointsTo<[u8; 4096]>) -> (tracked ret: PointsTo<W>)
     requires
         page.is_uninit(),
         size_of::<[u8; 4096]>() == 4096,
         size_of::<W>() <= 4096,
         page.addr() as int % align_of::<W>() as int == 0,
     ensures
-        ret.0.addr() == page.addr(),
-        ret.0.is_uninit(),
-        ret.1.is_range(page.addr() + size_of::<W>(), 4096 - size_of::<W>()),
+        ret.addr() == page.addr(),
+        ret.is_uninit(),
 {
-    page.is_nonnull();
+    use_type_invariant(&page);
     let addr = page.addr();
-    let tracked (raw, exposed) = page.into_raw();
+    let tracked PointsTo { points_to, exposed, rest: _ } = page;
+    let tracked raw = points_to.into_raw();
     let tracked (first, rest) = raw.split(set_int_range(addr as int, addr + size_of::<W>()));
-    (PointsTo::<W>::from_raw(first, exposed, addr), rest)
+    PointsTo { points_to: first.into_typed::<W>(addr), exposed, rest }
+}
+
+/// Gives an uninitialised typed permission back as the permission for its whole 4K page.
+pub proof fn typed_into_page<W>(tracked typed: PointsTo<W>) -> (tracked ret: PointsTo<[u8; 4096]>)
+    requires
+        typed.is_uninit(),
+        size_of::<[u8; 4096]>() == 4096,
+        align_of::<[u8; 4096]>() == 1,
+        size_of::<W>() <= 4096,
+    ensures
+        ret.addr() == typed.addr(),
+        ret.is_uninit(),
+{
+    use_type_invariant(&typed);
+    let addr = typed.addr();
+    let tracked PointsTo { points_to, exposed, rest } = typed;
+    let tracked raw = points_to.into_raw().join(rest);
+    let tracked points_to = raw.into_typed::<[u8; 4096]>(addr);
+    let tracked empty = PointsToRaw::empty(exposed.provenance());
+    PointsTo { points_to, exposed, rest: empty }
+}
+
+/// A page survives the round trip through a typed permission at the same address.
+proof fn page_round_trip<W>(tracked page: PointsTo<[u8; 4096]>) -> (tracked ret: PointsTo<[u8; 4096]>)
+    requires
+        page.is_uninit(),
+        size_of::<[u8; 4096]>() == 4096,
+        align_of::<[u8; 4096]>() == 1,
+        size_of::<W>() <= 4096,
+        page.addr() as int % align_of::<W>() as int == 0,
+    ensures
+        ret.addr() == page.addr(),
+        ret.is_uninit(),
+{
+    typed_into_page(page_into_typed::<W>(page))
 }
 
 pub open spec fn page_is_zero(page: [u8; 4096]) -> bool {

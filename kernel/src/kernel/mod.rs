@@ -6,7 +6,6 @@ use astd::sync::Mutex;
 use verified::define::NUM_CPUS;
 use core::arch::asm;
 use core::arch::x86_64::_rdtsc;
-use core::mem::size_of;
 use verified::kernel::Kernel;
 use verified::define as vdefine;
 use verified::trap::Registers as vRegisters;
@@ -52,29 +51,7 @@ pub fn kernel_test() {
 }
 
 pub fn kernel_new() {
-    // log::info!("kernel size={:?}", size_of::<Kernel>());
-    // log::info!("proc_man size={:?}", size_of::<ProcessManager>());
-    // log::info!("mmu_man size={:?}", size_of::<MemoryManager>());
-    // log::info!("page_alloc size={:?}", size_of::<PageAllocator>());
-
-    log::trace!("testing kernel obj size");
-    log::info!("container size={:?}", size_of::<Container>());
-    if size_of::<Container>() > 4096 {
-        panic!("Container size is over the page limit!")
-    }
-    log::info!("process size={:?}", size_of::<Process>());
-    if size_of::<Process>() > 4096 {
-        panic!("Process size is over the page limit!")
-    }
-    log::info!("thread size={:?}", size_of::<Thread>());
-    if size_of::<Thread>() > 4096 {
-        panic!("Thread size is over the page limit!")
-    }
-    log::info!("endpoint size={:?}", size_of::<Endpoint>());
-    if size_of::<Endpoint>() > 4096 {
-        panic!("Thread size is over the page limit!")
-    }
-    log::trace!("Kernel objects are within page limit");
+    log::trace!("the kernel objects' layouts are checked at compile time, in verified::layouts");
 }
 
 pub fn kernel_init(
