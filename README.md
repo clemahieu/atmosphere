@@ -21,6 +21,14 @@ You can now build and run Atmosphere with `cd kernel && cargo run`.
 Atmosphere builds with `atmo`, a build system that extends Cargo.
 Run `atmo help` for more information.
 
+## Test
+
+```bash
+atmo test
+```
+
+`atmo test` is the gate: a commit is tested when it exits 0. It checks that the workspace builds, that verification reports no more errors than `tools/verify-allowance`, and that dom0 boots under KVM to a clean exit.
+
 ## Run verification
 
 ```bash

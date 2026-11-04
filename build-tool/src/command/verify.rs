@@ -1,5 +1,6 @@
 //! Verify the OS.
 
+use std::path::{Path, PathBuf};
 use std::result::Result as StdResult;
 
 use anyhow::anyhow;
@@ -10,7 +11,7 @@ use tokio::process::Command;
 
 use super::{GlobalOpts, SubCommand};
 use crate::error::Result;
-use crate::project::Project;
+use crate::project::{Project, ProjectHandle};
 
 #[derive(Deserialize)]
 struct PackageMetadata {
@@ -36,7 +37,25 @@ pub(super) async fn run(global: GlobalOpts) -> Result<()> {
     let local = unwrap_command!(global, SubCommand::Verify);
 
     let project = Project::discover()?;
+    let source_paths = verified_crates(&project)?;
 
+    log::debug!("{:?}", source_paths);
+    log::info!("Verifying {} crates...", source_paths.len());
+
+    let futures = source_paths
+        .iter()
+        .map(|root| rust_verify(root, &local.extra_args).status());
+
+    join_all(futures)
+        .await
+        .into_iter()
+        .collect::<StdResult<Vec<_>, _>>()?;
+
+    Ok(())
+}
+
+/// Returns the library roots of the crates marked for verification.
+pub(super) fn verified_crates(project: &ProjectHandle) -> Result<Vec<PathBuf>> {
     let metadata = cargo_metadata::MetadataCommand::new()
         .current_dir(&project.root())
         .no_deps()
@@ -63,24 +82,18 @@ pub(super) async fn run(global: GlobalOpts) -> Result<()> {
         }
     }
 
-    log::debug!("{:?}", source_paths);
-    log::info!("Verifying {} crates...", source_paths.len());
+    Ok(source_paths)
+}
 
-    let futures = source_paths.iter().map(|root| {
-        Command::new("rust_verify")
-            .arg("--crate-type")
-            .arg("lib")
-            .arg(root)
-            // slinkedlist::remove_helper7 needs more than the default solver budget.
-            .args(&["--rlimit", "100"])
-            .args(&local.extra_args)
-            .status()
-    });
-
-    join_all(futures)
-        .await
-        .into_iter()
-        .collect::<StdResult<Vec<_>, _>>()?;
-
-    Ok(())
+/// Returns the command that verifies one crate.
+pub(super) fn rust_verify(root: &Path, extra_args: &[String]) -> Command {
+    let mut command = Command::new("rust_verify");
+    command
+        .arg("--crate-type")
+        .arg("lib")
+        .arg(root)
+        // slinkedlist::remove_helper7 needs more than the default solver budget.
+        .args(&["--rlimit", "100"])
+        .args(extra_args);
+    command
 }
