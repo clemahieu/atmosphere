@@ -320,6 +320,15 @@ impl PageAllocator {
         }
     }
 
+    /// Every 4K page mapped in `old` is still mapped here, under the same permission.
+    pub open spec fn mapped_pages_4k_kept(&self, old: Self) -> bool {
+        forall|p: PagePtr|
+            #![trigger old.mapped_pages_4k().contains(p)]
+            #![trigger self.page_perms_4k@[p]]
+            old.mapped_pages_4k().contains(p) ==> self.mapped_pages_4k().contains(p)
+                && self.page_perms_4k@[p] == old.page_perms_4k@[p]
+    }
+
     pub open spec fn page_is_mapped(&self, p: PagePtr) -> bool {
         ||| self.mapped_pages_4k().contains(p)
         ||| self.mapped_pages_2m().contains(p)
@@ -1162,6 +1171,7 @@ impl PageAllocator {
             old(self).wf(),
             old(self).free_pages_4k.len() > 0,
         ensures
+            final(self).mapped_pages_4k_kept(*old(self)),
             final(self).wf(),
             // self.free_pages_4k() =~= old(self).free_pages_4k(),
             final(self).free_pages_2m() =~= old(self).free_pages_2m(),
@@ -1530,6 +1540,7 @@ impl PageAllocator {
             old(self).free_pages_4k.len() > 0,
             old(self).container_map_4k@.dom().contains(c_ptr),
         ensures
+            final(self).mapped_pages_4k_kept(*old(self)),
             crate::pptr::page_is_zero(final(self).page_perms_4k@[ret].value()),
             final(self).wf(),
             // self.free_pages_4k() =~= old(self).free_pages_4k(),

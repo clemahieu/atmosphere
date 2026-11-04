@@ -24,6 +24,18 @@ impl Kernel {
             old(self).thread_dom().contains(thread_ptr),
             va_range.wf(),
             va_range.len * 4 < usize::MAX,
+        ensures
+            ret.get_return_vaule_seq_usize() is Some ==> {
+                let proc_ptr = old(self).get_thread(thread_ptr).owning_proc;
+                let pages = ret.get_return_vaule_seq_usize().unwrap();
+                &&& pages.len() == va_range.len
+                &&& forall|j: int|
+                    #![trigger pages[j]]
+                    0 <= j < va_range.len ==> final(self).get_io_space(proc_ptr)[va_range@[j]].addr
+                        == pages[j] && crate::pptr::page_is_zero(
+                        final(self).page_alloc.page_perms_4k@[pages[j]].value(),
+                    )
+            },
     {
         let proc_ptr = self.proc_man.get_thread(thread_ptr).owning_proc;
         let ioid_op = self.proc_man.get_proc(proc_ptr).ioid;
