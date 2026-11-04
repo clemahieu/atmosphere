@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
-"""Report line and branch coverage of the kernel from a boot under KVM.
+"""Report line and branch coverage per crate from a boot under KVM.
 
-The kernel has no profiler runtime, so it cannot write a profile itself. An instrumented build keeps
-its counters in the __llvm_prf_cnts section. After dom0 finishes, this reads them from guest memory
-through the QEMU monitor and assembles the raw profile the runtime would have written: the header
-below, then __llvm_prf_data and __llvm_prf_names from the ELF, with the counters from the guest in
-between. The layout is the one LLVM 23 (Rust 1.99.1) writes, raw version 11.
+The kernel and dom0 have no profiler runtime, so they cannot write a profile themselves. An
+instrumented build keeps its counters in the __llvm_prf_cnts section. After dom0 finishes, this reads
+them from guest memory through the QEMU monitor and assembles the raw profile the runtime would have
+written: the header below, then __llvm_prf_data and __llvm_prf_names from the ELF, with the counters
+from the guest in between. The layout is the one LLVM 23 (Rust 1.99.1) writes, raw version 11.
+
+The kernel's counters are read by physical address. dom0's are read by virtual address, which works
+because dom0 is the last thing running when its exit stops the guest. A crate no image runs is listed
+as not run. dom0 does not start its payload, so that includes the user crates for now.
 
 usage: tools/coverage.py   (from the workspace root)
 """
@@ -25,6 +29,9 @@ spec.loader.exec_module(check_boot_stack)
 
 OUT = "target/coverage"
 KERNEL = f"{OUT}/x86_64-unknown-aloader/debug/kernel"
+DOM0 = f"{OUT}/x86_64-unknown-aloader/debug/dom0"
+# Built by atmo run or part of the workspace, with no image here that runs them.
+NOT_RUN = ("hello", "maglev", "kv", "libdma", "libtime")
 RAW_MAGIC = 0xff6c70726f667281
 RAW_VERSION = 11
 VALUE_KIND_LAST = 2
@@ -44,10 +51,10 @@ def tool(name):
 
 def build():
     env = {**os.environ, "RUSTC_BOOTSTRAP": "1"}
-    subprocess.run(["cargo", "build", "-q", "--target-dir", f"../{OUT}"], cwd="kernel", check=True,
-                   env={**env, "RUSTFLAGS": FLAGS})
-    for crate in ("aloader", "dom0"):
-        subprocess.run(["cargo", "build", "-q"], cwd=crate, check=True, env=env)
+    for crate in ("kernel", "dom0"):
+        subprocess.run(["cargo", "build", "-q", "--target-dir", f"../{OUT}"], cwd=crate, check=True,
+                       env={**env, "RUSTFLAGS": FLAGS})
+    subprocess.run(["cargo", "build", "-q"], cwd="aloader", check=True, env=env)
 
 
 def sections(path):
@@ -64,11 +71,12 @@ def entry_point(path):
     return int(re.search(r"Entry point address:\s+(0x[0-9a-f]+)", run("readelf", "-hW", path)).group(1), 16)
 
 
-def read_guest(sock, base, size):
+def read_guest(sock, command, base, size):
+    """Saves guest memory with the monitor's pmemsave (physical) or memsave (virtual) command."""
     path = f"{OUT}/counters.bin"
     if os.path.exists(path):
         os.unlink(path)
-    sock.sendall(f"pmemsave {base:#x} {size:#x} {path}\n".encode())
+    sock.sendall(f"{command} {base:#x} {size:#x} {path}\n".encode())
     for _ in range(120):
         if os.path.exists(path) and os.path.getsize(path) == size:
             break
@@ -110,12 +118,31 @@ def raw_profile(elf, found, counters):
     return header + elf[data_offset : data_offset + data_size] + counters + names + padding
 
 
-def summarize(export):
-    """Sums llvm-cov's per-file summaries by crate."""
+def crate_of(path):
+    """Names the crate a source path belongs to, or None for a path outside the tree's crates."""
+    if "/kernel/verified/" in path:
+        return "verified"
+    match = re.search(r"/(?:user/)?([\w-]+)/src/", path)
+    return match.group(1) if match else None
+
+
+def report(image, sock, command, bias):
+    """Returns each crate's llvm-cov summary from one image's counters."""
+    found = sections(image)
+    counters_addr, _, counters_size = found["__llvm_prf_cnts"]
+    counters = read_guest(sock, command, bias + counters_addr, counters_size)
+    with open(image, "rb") as f:
+        elf = f.read()
+    name = os.path.basename(image)
+    raw, merged = f"{OUT}/{name}.profraw", f"{OUT}/{name}.profdata"
+    with open(raw, "wb") as f:
+        f.write(raw_profile(elf, found, counters))
+    run(tool("llvm-profdata"), "merge", "-sparse", raw, "-o", merged)
+    export = json.loads(run(tool("llvm-cov"), "export", image, f"-instr-profile={merged}", "-summary-only",
+                            f"-ignore-filename-regex={FOREIGN}"))
     crates = {}
     for entry in export["data"][0]["files"]:
-        name = entry["filename"]
-        crate = "verified" if "/kernel/verified/" in name else "kernel" if "/kernel/src/" in name else None
+        crate = crate_of(entry["filename"])
         if crate is None:
             continue
         totals = crates.setdefault(crate, {"lines": [0, 0], "branches": [0, 0]})
@@ -128,27 +155,24 @@ def summarize(export):
 def main():
     os.makedirs(OUT, exist_ok=True)
     build()
-    log, qemu, sock = check_boot_stack.boot("debug", OUT, kernel=KERNEL)
+    log, qemu, sock = check_boot_stack.boot("debug", OUT, kernel=KERNEL, dom0=DOM0)
     entry = int(re.search(r"Calling into kernel @ (?:0x)?([0-9a-f]+)", log).group(1), 16)
-    bias = entry - entry_point(KERNEL)
-    found = sections(KERNEL)
-    counters_addr, _, counters_size = found["__llvm_prf_cnts"]
-    counters = read_guest(sock, bias + counters_addr, counters_size)
+    kernel_bias = entry - entry_point(KERNEL)
+    dom0_log = log[log.index("Loading dom0"):]
+    dom0_bias = int(re.search(r"Load Bias: 0x([0-9a-f]+)", dom0_log).group(1), 16)
+    images = {
+        "kernel": report(KERNEL, sock, "pmemsave", kernel_bias),
+        "dom0": report(DOM0, sock, "memsave", dom0_bias),
+    }
     sock.sendall(b"quit\n")
     qemu.wait(timeout=30)
-
-    with open(KERNEL, "rb") as f:
-        elf = f.read()
-    raw, merged = f"{OUT}/kernel.profraw", f"{OUT}/kernel.profdata"
-    with open(raw, "wb") as f:
-        f.write(raw_profile(elf, found, counters))
-    run(tool("llvm-profdata"), "merge", "-sparse", raw, "-o", merged)
-    export = json.loads(run(tool("llvm-cov"), "export", KERNEL, f"-instr-profile={merged}", "-summary-only",
-                            f"-ignore-filename-regex={FOREIGN}"))
-    for crate, totals in sorted(summarize(export).items()):
-        print(f"{crate}: " + ", ".join(
-            f"{kind} {covered}/{count} ({100 * covered / max(count, 1):.1f}%)"
-            for kind, (covered, count) in totals.items()))
+    for image, crates in images.items():
+        for crate, totals in sorted(crates.items()):
+            print(f"{image}/{crate}: " + ", ".join(
+                f"{kind} {covered}/{count} ({100 * covered / max(count, 1):.1f}%)"
+                for kind, (covered, count) in totals.items()))
+    for crate in NOT_RUN:
+        print(f"{crate}: not run")
     return 0
 
 
