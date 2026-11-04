@@ -4,6 +4,7 @@
 use vstd::prelude::*;
 
 use crate::define::PagePerm4k;
+use crate::pptr::PointsTo;
 use crate::process_manager::container::Container;
 use crate::process_manager::endpoint::Endpoint;
 use crate::process_manager::process::Process;
@@ -30,6 +31,29 @@ proof fn thread_page_round_trip(tracked page: PagePerm4k) -> (tracked ret: PageP
         ret.is_uninit(),
 {
     crate::pptr::typed_into_page(crate::pptr::page_into_typed::<Thread>(page))
+}
+
+/// A free page becomes an uninitialised endpoint.
+pub proof fn page_into_endpoint(tracked page: PagePerm4k) -> (tracked ret: PointsTo<Endpoint>)
+    requires
+        page.is_uninit(),
+        crate::util::page_ptr_util_u::page_ptr_valid(page.addr()),
+    ensures
+        ret.addr() == page.addr(),
+        ret.is_uninit(),
+{
+    crate::pptr::page_into_typed::<Endpoint>(page)
+}
+
+/// A dead endpoint becomes a free page.
+pub proof fn endpoint_into_page(tracked endpoint: PointsTo<Endpoint>) -> (tracked ret: PagePerm4k)
+    requires
+        endpoint.is_uninit(),
+    ensures
+        ret.addr() == endpoint.addr(),
+        ret.is_uninit(),
+{
+    crate::pptr::typed_into_page(endpoint)
 }
 
 } // verus!

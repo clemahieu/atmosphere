@@ -80,8 +80,6 @@ process_manager/endpoint_util_t.rs	endpoint_push_and_set_state	gap	writes throug
 process_manager/endpoint_util_t.rs	endpoint_remove_ref	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
 process_manager/endpoint_util_t.rs	endpoint_remove_thread	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
 process_manager/endpoint_util_t.rs	endpoint_set_owning_container	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
-process_manager/endpoint_util_t.rs	endpoint_to_page	gap	takes its permission from Tracked::assume_new, which Verus cannot check
-process_manager/endpoint_util_t.rs	page_to_endpoint	gap	writes through a raw pointer and takes its permission from Tracked::assume_new
 process_manager/impl_base.rs	init	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
 process_manager/proc_util_t.rs	page_to_proc	gap	writes through a raw pointer and takes its permission from Tracked::assume_new
 process_manager/proc_util_t.rs	proc_perms_remove_subtree_set	unproven	updates ghost state only, so its body is empty; the update is assumed, not proven

@@ -1809,6 +1809,7 @@ impl ProcessManager {
             old(self).page_closure().contains(page_ptr_1) == false,
             page_perm_1@.is_uninit(),
             page_perm_1@.addr() == page_ptr_1,
+            crate::util::page_ptr_util_u::page_ptr_valid(page_ptr_1),
             old(self).get_container(old(self).get_thread(thread_ptr).owning_container).quota.mem_4k
                 > 0,
         ensures

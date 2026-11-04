@@ -3,8 +3,9 @@ verus! {
 
 use core::mem::MaybeUninit;
 use crate::define::*;
-use crate::pptr::PointsTo;
+use crate::pptr::{PPtr, PointsTo};
 use crate::process_manager::endpoint::*;
+use crate::slinkedlist::spec_impl_u::StaticLinkedList;
 
 #[verifier(external_body)]
 // external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
@@ -255,8 +256,6 @@ pub fn endpoint_push_and_set_state(
     }
 }
 
-#[verifier(external_body)]
-// external_body(gap): writes through a raw pointer and takes its permission from Tracked::assume_new
 pub fn page_to_endpoint(page_ptr: PagePtr, page_perm: Tracked<PagePerm4k>) -> (ret: (
     EndpointPtr,
     Tracked<PointsTo<Endpoint>>,
@@ -264,6 +263,7 @@ pub fn page_to_endpoint(page_ptr: PagePtr, page_perm: Tracked<PagePerm4k>) -> (r
     requires
         page_perm@.is_uninit(),
         page_perm@.addr() == page_ptr,
+        crate::util::page_ptr_util_u::page_ptr_valid(page_ptr),
     ensures
         ret.0 == page_ptr,
         ret.1@.is_init(),
@@ -276,18 +276,20 @@ pub fn page_to_endpoint(page_ptr: PagePtr, page_perm: Tracked<PagePerm4k>) -> (r
         ret.1@.value().owning_threads@ =~= Set::<(ThreadPtr, EndpointIdx)>::empty(),
         ret.1@.value().owning_container == 0,
 {
-    unsafe {
-        let uptr = page_ptr as *mut MaybeUninit<Endpoint>;
-        (*uptr).assume_init_mut().queue.init();
-        (*uptr).assume_init_mut().queue_state = EndpointState::SEND;
-        (*uptr).assume_init_mut().rf_counter = 0;
-        (*uptr).assume_init_mut().owning_container = 0;
-        (page_ptr, Tracked::assume_new())
-    }
+    let tracked mut perm = crate::layouts::page_into_endpoint(page_perm.get());
+    let mut queue = StaticLinkedList::new();
+    queue.init();
+    let endpoint = Endpoint {
+        queue,
+        queue_state: EndpointState::SEND,
+        rf_counter: 0,
+        owning_threads: Ghost(Set::empty()),
+        owning_container: 0,
+    };
+    PPtr::<Endpoint>::from_usize(page_ptr).put(Tracked(&mut perm), endpoint);
+    (page_ptr, Tracked(perm))
 }
 
-#[verifier(external_body)]
-// external_body(gap): takes its permission from Tracked::assume_new, which Verus cannot check
 pub fn endpoint_to_page(endpoint_ptr: EndpointPtr, endpoint_perm: Tracked<PointsTo<Endpoint>>) -> (ret: (
     PagePtr,
     Tracked<PagePerm4k>,
@@ -300,7 +302,11 @@ pub fn endpoint_to_page(endpoint_ptr: EndpointPtr, endpoint_perm: Tracked<Points
         ret.1@.is_uninit(),
         ret.1@.addr() == endpoint_ptr,
 {
-    (endpoint_ptr, Tracked::assume_new())
+    let tracked mut perm = endpoint_perm.get();
+    proof {
+        perm.leak_contents();
+    }
+    (endpoint_ptr, Tracked(crate::layouts::endpoint_into_page(perm)))
 }
 
 pub fn page_to_endpoint_with_thread_and_container(
@@ -313,6 +319,7 @@ pub fn page_to_endpoint_with_thread_and_container(
     requires
         page_perm@.is_uninit(),
         page_perm@.addr() == page_ptr,
+        crate::util::page_ptr_util_u::page_ptr_valid(page_ptr),
     ensures
         ret.0 == page_ptr,
         ret.1@.is_init(),
