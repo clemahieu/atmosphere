@@ -33,7 +33,7 @@ Discard, redefine and split do not commit.
 
 ## 4. Implement
 
-1. Worktree: `git -C ~/atmosphere.src/main worktree add ../<id> -b <id> main`; work in `~/atmosphere.src/<id>`, where `<id>` is the issue id.
+1. Worktree: `git -C ~/atmosphere.src/main worktree add ../<id> -b <id> main`; work in `~/atmosphere.src/<id>`, where `<id>` is the issue id. Verus is built once, under main; link it so the gate runs here: `ln -s ../../main/tools/verus ~/atmosphere.src/<id>/tools/verus`.
 2. Sources: before reading an external source for the first time, check its license and record the source and the license on the issue with `bd update <id> --append-notes "..."`. Never open a forbidden source (CLAUDE.md, License).
 3. Test first, at the epic's tier: a Verus specification and proof for tier 1; a test that reaches the branch, with fault injection where nothing else reaches it, for tier 2; the best test reasonable for tier 3. Run it and see it fail, make the change, see it pass.
 4. Anything the issue did not name (a dependency, a bug, more complexity, a decision only the human can make) goes through section 5. Do not widen the change.
