@@ -5,6 +5,7 @@ use vstd::prelude::verus;
 
 pub mod bridge;
 pub mod define;
+pub mod pptr;
 pub mod trap;
 pub mod array;
 pub mod array_set;

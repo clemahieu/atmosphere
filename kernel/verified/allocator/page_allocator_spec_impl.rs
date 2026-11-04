@@ -7,7 +7,7 @@ use crate::array::*;
 use crate::slinkedlist::spec_impl_u::*;
 use crate::util::page_ptr_util_u::*;
 
-// use vstd::simple_pptr::*;
+// use crate::pptr::*;
 use crate::lemma::lemma_u::*;
 use crate::lemma::lemma_t::*;
 use vstd::set_lib::*;

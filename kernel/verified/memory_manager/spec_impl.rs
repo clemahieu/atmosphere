@@ -9,7 +9,7 @@ use crate::memory_manager::*;
 use crate::pagetable::pagetable_spec::PageTable;
 use crate::pagetable::entry::*;
 use crate::util::page_ptr_util_u::*;
-use vstd::simple_pptr::PointsTo;
+use crate::pptr::PointsTo;
 use crate::pagetable::pagemap::PageMap;
 use crate::pagetable::pagemap_util_t::*;
 use crate::lemma::lemma_u::*;

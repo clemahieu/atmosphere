@@ -5,7 +5,7 @@ use crate::define::*;
 use crate::slinkedlist::spec_impl_u::*;
 use crate::array_set::*;
 use crate::process_manager::process::Process;
-use vstd::simple_pptr::*;
+use crate::pptr::*;
 use crate::lemma::lemma_u::*;
 use crate::lemma::lemma_t::*;
 use crate::process_manager::proc_util_t::*;

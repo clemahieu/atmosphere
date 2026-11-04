@@ -5,7 +5,7 @@ verus! {
 use crate::define::*;
 
 // use crate::array::*;
-use vstd::simple_pptr::*;
+use crate::pptr::*;
 
 // use crate::util::page_ptr_util_u::*;
 use crate::pagetable::entry::*;

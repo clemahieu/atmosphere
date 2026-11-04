@@ -6,7 +6,7 @@ rustflags = [ "-Z", "emit-stack-sizes" ]
 runner = [ "atmo", "run", "--cargo-runner" ]
 
 [unstable]
-build-std = [ "core", "alloc" ]
+build-std = [ "core" ]
 build-std-features = [ "compiler-builtins-mem" ]
 unstable-options = true
 json-target-spec = true
