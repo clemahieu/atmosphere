@@ -1,7 +1,7 @@
 use vstd::prelude::*;
 verus! {
 
-use vstd::simple_pptr::*;
+use crate::pptr::*;
 use crate::pagetable::pagetable_spec::*;
 use crate::array::Array;
 use crate::define::*;

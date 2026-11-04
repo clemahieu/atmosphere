@@ -30,7 +30,7 @@ use verified::pagetable::pagemap::PageMap;
 use verified::define::PagePerm4k;
 use verified::va_range::VaRange4K as vVaRange4K;
 
-use vstd::simple_pptr::PointsTo;
+use verified::pptr::PointsTo;
 
 trait PhysicalMemoryTypeExt {
     fn to_verified_page_state(&self) -> vdefine::PageState;

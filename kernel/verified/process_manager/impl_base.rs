@@ -2,7 +2,7 @@ use vstd::prelude::*;
 verus! {
 
 use crate::define::*;
-use vstd::simple_pptr::PointsTo;
+use crate::pptr::PointsTo;
 use crate::trap::*;
 use crate::array::Array;
 use crate::process_manager::endpoint::*;
@@ -10,7 +10,7 @@ use crate::process_manager::process::*;
 use crate::process_manager::container::*;
 use crate::process_manager::thread::*;
 use crate::process_manager::cpu::*;
-use vstd::simple_pptr::PPtr;
+use crate::pptr::PPtr;
 use crate::process_manager::thread_util_t::*;
 use crate::process_manager::proc_util_t::*;
 use crate::process_manager::container_util_t::*;

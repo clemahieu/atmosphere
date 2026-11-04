@@ -3,7 +3,7 @@ verus! {
 
 use core::mem::MaybeUninit;
 use crate::define::*;
-use vstd::simple_pptr::PointsTo;
+use crate::pptr::PointsTo;
 use crate::process_manager::container::*;
 use crate::array_set::ArraySet;
 use crate::quota::Quota;

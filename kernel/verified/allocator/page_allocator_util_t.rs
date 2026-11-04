@@ -8,7 +8,7 @@ use crate::define::*;
 // use crate::slinkedlist::spec_impl_u::*;
 use crate::util::page_ptr_util_u::*;
 use crate::allocator::page_allocator_spec_impl::*;
-use vstd::simple_pptr::*;
+use crate::pptr::*;
 
 impl PageAllocator {
     #[verifier(external_body)]

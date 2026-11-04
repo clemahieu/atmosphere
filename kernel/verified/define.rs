@@ -2,7 +2,7 @@ use vstd::prelude::*;
 
 verus! {
 
-use vstd::simple_pptr::*;
+use crate::pptr::*;
 
 // use crate::trap::Registers;
 // -------------------- Begin of Types --------------------

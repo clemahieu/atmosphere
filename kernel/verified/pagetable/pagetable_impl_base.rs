@@ -7,7 +7,7 @@ use crate::pagetable::pagetable_spec::*;
 use crate::pagetable::pagemap::*;
 use crate::pagetable::entry::*;
 use crate::define::*;
-use vstd::simple_pptr::*;
+use crate::pptr::*;
 use crate::lemma::lemma_u::*;
 
 // exec
