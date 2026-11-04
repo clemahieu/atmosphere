@@ -46,14 +46,14 @@ Discard, redefine and split do not commit.
 
 - A discovered issue: `bd create "<title>" -t task --parent <epic of the current issue> -d "Discovered from <current>: ..." --acceptance "..."` (type `bug` for a bug), then `bd dep add <current> <new>`: the current issue depends on the new one. Set the current issue back with `bd update <current> -s open`; it leaves `bd ready` because it is blocked. Keep its worktree if the change so far is still wanted. End the round with the report. The next round takes the new issue; when that closes, the current issue is ready again, and the round that takes it re-reads it before resuming, rebasing its worktree on main or removing it.
 - A bug's commit includes the test that exercises the bug.
-- A decision only the human can make: `bd update <id> --append-notes "Question for the human: <the question, the options, what each implies>"`, then `bd update <id> -s blocked`. Its dependents stay blocked through it. Nothing else changes; end the round with the report.
+- A decision only the human can make: `bd update <id> --append-notes "Question for the human: <the question, the options, what each implies>"`, then `bd update <id> -s blocked`. Its dependents stay blocked through it. Where the harness has a PushNotification tool, send one line, `<id> needs a decision: <the question's first clause>`; where it has none, skip this. Nothing else changes; end the round with the report.
 
 ## 6. Epic rounds (no ready leaf)
 
 Consider the open epics other than the star, shallowest first. Depth is the number of dots in the id: `atmo-1ab` is the star, `atmo-1ab.5` depth 1, `atmo-1ab.5.3` depth 2. `bd list -t epic`, then `bd show <id>`.
 
 - Skeptic pass: an epic with at least one child and no open child. Spawn a reviewer with no prior context (a fresh subagent given only the epic's acceptance criteria, its tier, and where the evidence is: `bd show` of each closed child, the commit SHAs, `atmo test` and `atmo verify` output, serial logs). It tries to refute each criterion from that evidence. If every criterion survives, `bd close <epic> --reason "skeptic pass: <summary>"`. A refuted criterion keeps the epic open and becomes a leaf under it, the refutation as its description.
-- Split round: the shallowest open epic with no ready children that is not blocked on the human. Write its leaves, each with a description, acceptance criteria a skeptic can check from evidence, and the tier; `bd dep add` only where one blocks another. If a leaf cannot be written without a decision only the human can make, record the question on the epic and mark it blocked.
+- Split round: the shallowest open epic with no ready children that is not blocked on the human. Write its leaves, each with a description, acceptance criteria a skeptic can check from evidence, and the tier; `bd dep add` only where one blocks another. If a leaf cannot be written without a decision only the human can make, record the question on the epic and mark it blocked, with the notification of section 5.
 - The star never closes and never gets a split round. Its children are the human's decision.
 
 ## 7. Report
@@ -62,5 +62,5 @@ End every round with: the issue (id and title), the action taken, the commit SHA
 
 ## 8. Under /loop
 
-- Stop condition: no leaf is ready, no epic qualifies for a skeptic pass or a split round, and every open issue other than the star is blocked on the human (status blocked, with a recorded question) or blocked only by such issues. Then print every question in full (`bd show` each blocked issue) and end the loop (ScheduleWakeup with stop). There is no other stop; the human monitors budget.
+- Stop condition: no leaf is ready, no epic qualifies for a skeptic pass or a split round, and every open issue other than the star is blocked on the human (status blocked, with a recorded question) or blocked only by such issues. Then print every question in full (`bd show` each blocked issue), send one PushNotification, `round loop stopped: <n> questions in bd list -s blocked`, and end the loop (ScheduleWakeup with stop). There is no other stop; the human monitors budget.
 - Otherwise schedule the next round at the shortest delay the runtime allows, with the same `/round` prompt.
