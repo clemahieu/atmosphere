@@ -28,7 +28,7 @@ members = [
   #"verified",
 ]
 
-exclude = ["test-pass"]
+exclude = ["test-pass", "tools/verus"]
 
 [profile.release]
 debug = true
