@@ -29,3 +29,7 @@ features = ["elf64"]
 
 [build-dependencies]
 nasm-rs = "0.2.5"
+
+[features]
+# A kernel stack below the measured depth, so tools/check-boot-stack.py can force an overflow.
+small_kernel_stack = []

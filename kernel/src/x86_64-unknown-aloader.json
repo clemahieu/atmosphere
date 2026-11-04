@@ -10,6 +10,9 @@
   "linker": "rust-lld",
   "panic-strategy": "abort",
   "disable-redzone": true,
+  "stack-probes": {
+    "kind": "inline"
+  },
   "features": "-mmx,-sse,+soft-float,+crt-static",
   "relocation-model": "pie",
   "pre-link-args": {

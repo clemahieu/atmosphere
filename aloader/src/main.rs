@@ -43,7 +43,13 @@ const KERNEL_RESERVATION: usize = 1024 * 1024 * 1024; // 1 GiB
 const DOM0_RESERVATION: usize = 256 * 1024 * 1024; // 256 MiB
 // The kernel moves large objects by value during init, reaching 258 MiB at opt-level 1 as measured by
 // tools/check-boot-stack.py.
+// Unmapped below the kernel's stack. The kernel probes large frames, so an overflow cannot jump it.
+const KERNEL_STACK_GUARD_SIZE: u64 = 1024 * 1024; // 1 MiB
+#[cfg(not(feature = "small_kernel_stack"))]
 const KERNEL_STACK_SIZE: u64 = 384 * 1024 * 1024; // 384 MiB
+// Holds the release build's 128 MiB main, so the overflow comes after the kernel's IDT is up and is logged.
+#[cfg(feature = "small_kernel_stack")]
+const KERNEL_STACK_SIZE: u64 = 144 * 1024 * 1024; // 144 MiB
 
 /// Loader entry point.
 #[cfg_attr(not(test), no_mangle)]
@@ -128,7 +134,20 @@ extern "C" fn main(_argc: isize, _argv: *const *const u8) -> ! {
     let (kernel_map, mut jumbo_file) = kernel_elf.load(&mut kernel_allocator).unwrap();
 
     // Allocate kernel stack
-    let stack_base = unsafe { kernel_allocator.allocate_physical(KERNEL_STACK_SIZE as usize).0 };
+    let guard_base = unsafe {
+        kernel_allocator
+            .allocate_physical((KERNEL_STACK_GUARD_SIZE + KERNEL_STACK_SIZE) as usize)
+            .0
+    };
+    let stack_base = guard_base + KERNEL_STACK_GUARD_SIZE;
+    let mut cur = guard_base;
+    while cur < stack_base {
+        unsafe {
+            address_space.unmap(cur);
+        }
+        cur += PAGE_SIZE as u64;
+    }
+    log::info!("Kernel stack guard: {:x}-{:x}", guard_base, stack_base);
 
     debugger::add_binary("kernel", kernel_map.load_bias);
 

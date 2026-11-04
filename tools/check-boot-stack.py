@@ -3,7 +3,9 @@
 
 Memory the guest never wrote is zero, so non-zero pages show the stack's reach as a lower bound.
 
-usage: tools/check-boot-stack.py debug|release   (from the workspace root)
+usage: tools/check-boot-stack.py debug|release [overflow]   (from the workspace root)
+
+With overflow, the loader gets a stack below the kernel's depth and the kernel must fault at the guard.
 """
 import os
 import re
@@ -18,14 +20,15 @@ MARGIN = 16 * MIB  # the least room the stack must have left
 LOADER_SHARE = 16 * MIB  # how far below boot_info the loader's own calls may write
 
 
-def build(profile):
+def build(profile, overflow=False):
     args = ["cargo", "build", "-q"] + (["--release"] if profile == "release" else [])
     for crate in ("aloader", "kernel", "dom0"):
-        subprocess.run(args, cwd=crate, check=True, env={**os.environ, "RUSTC_BOOTSTRAP": "1"})
+        extra = ["--features", "small_kernel_stack"] if overflow and crate == "aloader" else []
+        subprocess.run(args + extra, cwd=crate, check=True, env={**os.environ, "RUSTC_BOOTSTRAP": "1"})
 
 
-def boot(profile, out):
-    """Boots to the end of dom0's run and returns (serial log, qemu, monitor socket)."""
+def boot(profile, out, marker=b"dom0 benchmark done"):
+    """Boots until the marker appears in the serial log and returns (serial log, qemu, monitor socket)."""
     kernel = f"target/x86_64-unknown-aloader/{profile}/kernel"
     dom0 = f"target/x86_64-unknown-aloader/{profile}/dom0"
     initrd = f"{out}/initrd"
@@ -45,14 +48,14 @@ def boot(profile, out):
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     deadline = time.time() + 120
     while time.time() < deadline:
-        if os.path.exists(log) and b"dom0 benchmark done" in open(log, "rb").read():
+        if os.path.exists(log) and marker in open(log, "rb").read():
             time.sleep(1)
             sock = socket.socket(socket.AF_UNIX)
             sock.connect(mon)
             return open(log, "rb").read().decode(errors="replace"), qemu, sock
         time.sleep(1)
     qemu.kill()
-    sys.exit("FAIL: dom0 did not finish")
+    sys.exit(f"FAIL: {marker.decode()} did not appear; see {log}")
 
 
 def written(sock, out, base, size):
@@ -76,10 +79,31 @@ def written(sock, out, base, size):
     return pages
 
 
+def check_overflow(profile, out):
+    build(profile, overflow=True)
+    log, qemu, sock = boot(profile, out, marker=b"Page Fault")
+    sock.sendall(b"quit\n")
+    qemu.wait(timeout=30)
+    guard = re.search(r"Kernel stack guard: ([0-9a-f]+)-([0-9a-f]+)", log)
+    fault = re.search(r"Page Fault \(address 0x([0-9a-f]+)", log)
+    if not guard:
+        print("FAIL: the loader did not log the stack guard")
+        return 1
+    low, high, address = int(guard.group(1), 16), int(guard.group(2), 16), int(fault.group(1), 16)
+    print(f"guard {low:#x}-{high:#x}, fault at {address:#x}")
+    if not low <= address < high:
+        print(f"{profile} overflow: FAIL, the fault is outside the guard")
+        return 1
+    print(f"{profile} overflow: ok")
+    return 0
+
+
 def main():
     profile = sys.argv[1]
     out = f"target/boot-stack-check-{profile}"
     os.makedirs(out, exist_ok=True)
+    if sys.argv[2:] == ["overflow"]:
+        return check_overflow(profile, out)
     build(profile)
     log, qemu, sock = boot(profile, out)
     failures = []
