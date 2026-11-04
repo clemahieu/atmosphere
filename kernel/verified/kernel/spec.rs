@@ -452,7 +452,7 @@ impl Kernel {
 }
 
 impl Kernel {
-    pub fn new() -> (ret: Self) {
+    pub const fn new() -> (ret: Self) {
         Kernel {
             page_alloc: PageAllocator::new(),
             mem_man: MemoryManager::new(),

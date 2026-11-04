@@ -11,13 +11,13 @@ pub struct PCIBitMap {
 
 impl PCIBitMap {
     #[verifier(external_body)]
-    // external_body(gap): builds a value from uninitialised memory
-    pub fn new() -> (ret: Self)
+    // external_body(gap): builds a value from zeroed memory, which Verus cannot check
+    pub const fn new() -> (ret: Self)
         ensures
             ret.wf(),
     {
         unsafe {
-            Self { bit_map: MaybeUninit::uninit().assume_init(), ghost_map: Ghost(Map::empty()) }
+            Self { bit_map: MaybeUninit::zeroed().assume_init(), ghost_map: Ghost(Map::empty()) }
         }
     }
 

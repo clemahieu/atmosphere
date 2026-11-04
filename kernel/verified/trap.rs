@@ -153,16 +153,16 @@ pub struct Registers {
 
 impl Registers {
     #[verifier(external_body)]
-    // external_body(gap): builds a value from uninitialised memory
+    // external_body(gap): builds a value from zeroed memory, which Verus cannot check
     pub const fn zeroed() -> Self {
         unsafe { MaybeUninit::zeroed().assume_init() }
     }
 
     #[verifier(external_body)]
-    // external_body(gap): builds a value from uninitialised memory
-    pub fn random() -> (ret: Self) {
+    // external_body(gap): builds a value from zeroed memory, which Verus cannot check
+    pub const fn random() -> (ret: Self) {
         unsafe {
-            return MaybeUninit::uninit().assume_init();
+            return MaybeUninit::zeroed().assume_init();
         }
     }
 

@@ -1,3 +1,5 @@
+mod zero_valid;
+
 use astd::boot::PhysicalMemoryType;
 use astd::heapless::Vec as ArrayVec;
 use astd::sync::Mutex;
@@ -12,34 +14,7 @@ use crate::bridge::Bridge;
 use verified::bridge::SwitchDecision;
 use verified::bridge::TrustedBridge;
 use crate::cpu;
-static KERNEL: Mutex<KernelCell> = Mutex::new(KernelCell::new());
-
-/// The kernel state behind `KERNEL`. `Kernel::new` leaves its arrays uninitialized, so in an
-/// `Option<Kernel>` whose niche lies inside one of them, storing `Some(Kernel::new())` need not write
-/// the niche and the option can still read as `None`; an explicit flag keeps the state well defined.
-struct KernelCell {
-    init: bool,
-    kernel: core::mem::MaybeUninit<Kernel>,
-}
-
-impl KernelCell {
-    const fn new() -> Self {
-        Self { init: false, kernel: core::mem::MaybeUninit::uninit() }
-    }
-
-    fn set(&mut self, kernel: Kernel) {
-        self.kernel.write(kernel);
-        self.init = true;
-    }
-
-    fn as_ref(&self) -> Option<&Kernel> {
-        if self.init { Some(unsafe { self.kernel.assume_init_ref() }) } else { None }
-    }
-
-    fn as_mut(&mut self) -> Option<&mut Kernel> {
-        if self.init { Some(unsafe { self.kernel.assume_init_mut() }) } else { None }
-    }
-}
+static KERNEL: Mutex<Kernel> = Mutex::new(Kernel::new());
 
 use vstd::prelude::*;
 
@@ -100,8 +75,6 @@ pub fn kernel_new() {
         panic!("Thread size is over the page limit!")
     }
     log::trace!("Kernel objects are within page limit");
-    let mut my_int = KERNEL.lock();
-    my_int.set(Kernel::new());
 }
 
 pub fn kernel_init(
@@ -165,7 +138,7 @@ pub fn kernel_init(
     let page_perm_2: Tracked<PagePerm4k> = Tracked::assume_new();
     let dom0_page_map_perm: Tracked<PointsTo<PageMap>> = Tracked::assume_new();
 
-    KERNEL.lock().as_mut().unwrap().kernel_init(
+    KERNEL.lock().kernel_init(
         dom_0_container_ptr,
         dom_0_proc_ptr,
         dom_0_thread_ptr,
@@ -180,8 +153,6 @@ pub fn kernel_init(
 
     let dom0_retstruc = KERNEL
     .lock()
-    .as_mut()
-    .unwrap()
     .schedule_idle_cpu(0, &mut dom0_pt_regs);
 
     log::info!("dom0 is running on CPU 0");
@@ -195,9 +166,9 @@ pub fn kernel_init(
 pub extern "C" fn sys_mmap(va:usize, perm_bits:usize, range:usize, regs: &mut vRegisters) {
     let cpu_id = cpu::get_cpu_id();
     let mut kernel = KERNEL.lock();
-    let thread_info = kernel.as_mut().unwrap().get_current_cpu_info(cpu_id);
+    let thread_info = kernel.get_current_cpu_info(cpu_id);
 
-    let ret_struc =  kernel.as_mut().unwrap().syscall_mmap(
+    let ret_struc =  kernel.syscall_mmap(
         thread_info.0.unwrap(),
         vVaRange4K::new(va, range)
     );
@@ -216,12 +187,12 @@ pub extern "C" fn sys_send_empty_try_schedule(endpoint_index:usize, _:usize, _:u
     // log::info!("sys_send_empty_try_schedule regs at entrace: {:x?}", regs);
     let cpu_id = cpu::get_cpu_id();
     let mut kernel = KERNEL.lock();
-    let thread_info = kernel.as_mut().unwrap().get_current_cpu_info(cpu_id);
+    let thread_info = kernel.get_current_cpu_info(cpu_id);
     let sender_thread_ptr = thread_info.0.unwrap();
     let sender_proc_ptr = thread_info.0.unwrap();
     let sender_cr3: usize = thread_info.3.unwrap();
     let sender_pcid = thread_info.4.unwrap();
-    let syscall_ret = kernel.as_mut().unwrap().syscall_send_empty_try_schedule(cpu_id, sender_thread_ptr, endpoint_index, regs);
+    let syscall_ret = kernel.syscall_send_empty_try_schedule(cpu_id, sender_thread_ptr, endpoint_index, regs);
     // A send to a thread of the same process, or a failed send, returns no address space to load.
     if let Some(pcid) = syscall_ret.pcid {
         if pcid != sender_pcid {
@@ -236,9 +207,9 @@ pub extern "C" fn sys_send_empty_try_schedule(endpoint_index:usize, _:usize, _:u
 pub extern "C" fn sys_resolve(va:usize,_:usize, _:usize, regs: &mut vRegisters){
     let cpu_id = cpu::get_cpu_id();    
     let mut kernel = KERNEL.lock();
-    let thread_info = kernel.as_ref().unwrap().get_current_cpu_info(cpu_id);
+    let thread_info = kernel.get_current_cpu_info(cpu_id);
     let thread_ptr = thread_info.0.unwrap();
-    let ret_struc = kernel.as_ref().unwrap().syscall_resolve_va(
+    let ret_struc = kernel.syscall_resolve_va(
         thread_ptr,
         vVaRange4K::new(va, 1),
     );
@@ -256,9 +227,9 @@ pub extern "C" fn sys_resolve(va:usize,_:usize, _:usize, regs: &mut vRegisters){
 pub extern "C" fn sys_resolve_io(va:usize,_:usize, _:usize, regs: &mut vRegisters){
     let cpu_id = cpu::get_cpu_id();    
     let mut kernel = KERNEL.lock();
-    let thread_info = kernel.as_ref().unwrap().get_current_cpu_info(cpu_id);
+    let thread_info = kernel.get_current_cpu_info(cpu_id);
     let thread_ptr = thread_info.0.unwrap();
-    let ret_struc = kernel.as_ref().unwrap().syscall_io_resolve_va(
+    let ret_struc = kernel.syscall_io_resolve_va(
         thread_ptr,
         vVaRange4K::new(va, 1),
     );
@@ -277,8 +248,8 @@ pub extern "C" fn sys_resolve_io(va:usize,_:usize, _:usize, regs: &mut vRegister
 pub extern "C" fn sys_new_endpoint(endpoint_index:usize, _:usize, _:usize, regs: &mut vRegisters) {
     let cpu_id = cpu::get_cpu_id();
     let mut kernel = KERNEL.lock();
-    let thread_info = kernel.as_mut().unwrap().get_current_cpu_info(cpu_id);
-    let ret_struc =  kernel.as_mut().unwrap().syscall_new_endpoint(
+    let thread_info = kernel.get_current_cpu_info(cpu_id);
+    let ret_struc =  kernel.syscall_new_endpoint(
         thread_info.0.unwrap(),
         endpoint_index,
     );
@@ -296,12 +267,12 @@ pub extern "C" fn sys_new_endpoint(endpoint_index:usize, _:usize, _:usize, regs:
 pub fn sys_new_proc(endpoint_index:usize, ip:usize, sp:usize, regs: &mut vRegisters, va:usize, range:usize) {
     let cpu_id = cpu::get_cpu_id();
     let mut kernel = KERNEL.lock();
-    let thread_info = kernel.as_mut().unwrap().get_current_cpu_info(cpu_id);
+    let thread_info = kernel.get_current_cpu_info(cpu_id);
     let mut new_proc_pt_regs = *regs;
     new_proc_pt_regs.rip = ip as u64;
     new_proc_pt_regs.rsp = sp as u64;
     log::info!{"range {:#?}", range};
-    let ret_struc = kernel.as_mut().unwrap().syscall_new_proc_with_endpoint(
+    let ret_struc = kernel.syscall_new_proc_with_endpoint(
         thread_info.0.unwrap(),
         endpoint_index,
         &new_proc_pt_regs,
@@ -320,7 +291,7 @@ pub fn sys_new_proc(endpoint_index:usize, ip:usize, sp:usize, regs: &mut vRegist
 // pub fn sys_new_proc_with_iommu(endpoint_index:usize, ip:usize, sp:usize,regs: &mut vRegisters) -> usize{
 //     let cpu_id = cpu::get_cpu_id();
 //     let new_proc_pt_regs = vRegisters::new_empty();
-//     let ret_struc =  KERNEL.lock().as_mut().unwrap().syscall_new_proc_with_iommu(
+//     let ret_struc =  KERNEL.lock().syscall_new_proc_with_iommu(
 //         cpu_id,
 //         endpoint_index,
 //         new_proc_pt_regs,
@@ -336,8 +307,8 @@ pub extern "C" fn sys_new_thread(endpoint_index:usize, ip:usize, sp:usize, regs:
     new_thread_pt_regs.rip = ip as u64;
     new_thread_pt_regs.rsp = sp as u64;
     let mut kernel = KERNEL.lock();
-    let thread_info = kernel.as_ref().unwrap().get_current_cpu_info(cpu_id);
-    let ret_struc =  kernel.as_mut().unwrap().syscall_new_thread_with_endpoint(
+    let thread_info = kernel.get_current_cpu_info(cpu_id);
+    let ret_struc =  kernel.syscall_new_thread_with_endpoint(
         thread_info.0.unwrap(),
         endpoint_index,
         &new_thread_pt_regs,
@@ -355,7 +326,7 @@ pub extern "C" fn sys_new_thread(endpoint_index:usize, ip:usize, sp:usize, regs:
 // pub fn sys_send_empty_no_wait(endpoint_index:usize,_:usize, _:usize, regs: &mut vRegisters){
 //     let cpu_id = cpu::get_cpu_id();
 //     let mut kernel = KERNEL.lock();
-//     let ret_struc =  kernel.as_mut().unwrap().syscall_send_empty_no_wait(
+//     let ret_struc =  kernel.syscall_send_empty_no_wait(
 //         cpu_id,
 //         endpoint_index,
 //     );
@@ -368,7 +339,7 @@ pub extern "C" fn sys_new_thread(endpoint_index:usize, ip:usize, sp:usize, regs:
 //     // log::info!("regs {:x?}", regs);
 //     let cpu_id = cpu::get_cpu_id();
 //     let mut kernel = KERNEL.lock();
-//     let ret_struc =  kernel.as_mut().unwrap().syscall_send_empty_wait(
+//     let ret_struc =  kernel.syscall_send_empty_wait(
 //         cpu_id,
 //         regs,
 //         endpoint_index,
@@ -413,14 +384,14 @@ pub extern "C" fn sys_receive_empty(endpoint_index:usize, _:usize, _:usize, regs
     // log::info!("sys_receive_empty regs at entrance: \n{:x?}", regs);
     let cpu_id = cpu::get_cpu_id();
     let mut kernel = KERNEL.lock();
-    let thread_info_op = kernel.as_mut().unwrap().get_current_cpu_info(cpu_id);
+    let thread_info_op = kernel.get_current_cpu_info(cpu_id);
     let pcid = thread_info_op.4.unwrap();
     //     log::info!{
     //     "thread_info_op {:#?}",
     //     thread_info_op
     // };
     let thread_ptr = thread_info_op.0.unwrap();
-    let ret_struc =  kernel.as_mut().unwrap().syscall_receive_empty_block(
+    let ret_struc =  kernel.syscall_receive_empty_block(
         thread_ptr,
         endpoint_index,
         &regs,
@@ -431,7 +402,7 @@ pub extern "C" fn sys_receive_empty(endpoint_index:usize, _:usize, _:usize, regs
     // cr3: {:#?}
     // switchdecision: {:#?}", ret_struc.is_error(), ret_struc.pcid, ret_struc.cr3, ret_struc.switch_decision};
     if matches!(ret_struc.switch_decision, verified::define::SwitchDecision::NoThread){
-        let sche_ret = kernel.as_mut().unwrap().schedule_idle_cpu(cpu_id, regs);
+        let sche_ret = kernel.schedule_idle_cpu(cpu_id, regs);
     //     log::info!{"sche_ret:
     // is_error: {:#?},
     // pcid: {:#?}
@@ -452,7 +423,7 @@ pub extern "C" fn sys_receive_empty(endpoint_index:usize, _:usize, _:usize, regs
 //     let mut new_proc_pt_regs = *regs;
 //     new_proc_pt_regs.rip = ip as u64;
 //     new_proc_pt_regs.rsp = sp as u64;
-//     let ret_struc =  KERNEL.lock().as_mut().unwrap().syscall_new_proc_with_iommu_pass_mem(
+//     let ret_struc =  KERNEL.lock().syscall_new_proc_with_iommu_pass_mem(
 //         cpu_id,
 //         endpoint_index,
 //         new_proc_pt_regs,
@@ -465,8 +436,8 @@ pub extern "C" fn sys_receive_empty(endpoint_index:usize, _:usize, _:usize, regs
 // pub extern "C" fn sched_get_next_thread(regs: &mut vRegisters) -> bool{
 //     let cpu_id = cpu::get_cpu_id();
 //     let mut kernel = KERNEL.lock();
-//     let thread_info_op = kernel.as_mut().unwrap().until_get_current_thread_info(cpu_id);
-//     let ret_struc =  kernel.as_mut().unwrap().kernel_idle_pop_sched(
+//     let thread_info_op = kernel.until_get_current_thread_info(cpu_id);
+//     let ret_struc =  kernel.kernel_idle_pop_sched(
 //         cpu_id,
 //         regs,
 
@@ -525,10 +496,10 @@ pub extern "C" fn sys_receive_empty(endpoint_index:usize, _:usize, _:usize, regs
 // pub extern "C" fn sys_receive_pages(endpoint_index:usize, va:usize, range:usize, regs: &mut vRegisters){
 //     let cpu_id = cpu::get_cpu_id();
 //     let mut kernel = KERNEL.lock();
-//     let thread_info_op = kernel.as_mut().unwrap().until_get_current_thread_info(cpu_id);
-//     // log::info!("cpu_list addr {:p}",&(kernel.as_ref().unwrap().cpu_list.ar));
-//     // log::info!("sys_receive_pagestrap frame {:x?} thead_info {:x?} thread{:x?}",regs,thread_info_op,kernel.as_mut().unwrap().cpu_list.ar[cpu_id].current_t, );
-//     let ret_struc =  kernel.as_mut().unwrap().syscall_receive_pages_wait(
+//     let thread_info_op = kernel.until_get_current_thread_info(cpu_id);
+//     // log::info!("cpu_list addr {:p}",&(kernel.cpu_list.ar));
+//     // log::info!("sys_receive_pagestrap frame {:x?} thead_info {:x?} thread{:x?}",regs,thread_info_op,kernel.cpu_list.ar[cpu_id].current_t, );
+//     let ret_struc =  kernel.syscall_receive_pages_wait(
 //         cpu_id,
 //         regs,
 //         endpoint_index,
@@ -578,10 +549,10 @@ pub extern "C" fn sys_receive_empty(endpoint_index:usize, _:usize, _:usize, regs
 //     // log::info!("regs {:x?}", regs);
 //     let cpu_id = cpu::get_cpu_id();
 //     let mut kernel = KERNEL.lock();
-//     // log::info!("sys_send_pages_no_wait frame {:x?} thead_info {:x?}",regs,kernel.as_mut().unwrap().cpu_list.ar[0].current_t, );
-//     let thread_info_op = kernel.as_mut().unwrap().until_get_current_thread_info(0);
-//     // log::info!("sys_send_pages_no_wait frame {:x?} thead_info {:x?} thread{:x?}",regs,thread_info_op,kernel.as_mut().unwrap().cpu_list.ar[0].current_t, );
-//     let ret_struc =  kernel.as_mut().unwrap().syscall_send_pages_no_wait(
+//     // log::info!("sys_send_pages_no_wait frame {:x?} thead_info {:x?}",regs,kernel.cpu_list.ar[0].current_t, );
+//     let thread_info_op = kernel.until_get_current_thread_info(0);
+//     // log::info!("sys_send_pages_no_wait frame {:x?} thead_info {:x?} thread{:x?}",regs,thread_info_op,kernel.cpu_list.ar[0].current_t, );
+//     let ret_struc =  kernel.syscall_send_pages_no_wait(
 //         cpu_id,
 //         endpoint_index,
 //         va,
@@ -595,8 +566,8 @@ pub extern "C" fn sys_receive_empty(endpoint_index:usize, _:usize, _:usize, regs
 // pub extern "C" fn sys_send_pages(endpoint_index:usize, va:usize, range:usize, regs: &mut vRegisters){
 //     let cpu_id = cpu::get_cpu_id();
 //     let mut kernel = KERNEL.lock();
-//     let thread_info_op = kernel.as_mut().unwrap().until_get_current_thread_info(cpu_id);
-//     let ret_struc =  kernel.as_mut().unwrap().syscall_send_pages_wait(
+//     let thread_info_op = kernel.until_get_current_thread_info(cpu_id);
+//     let ret_struc =  kernel.syscall_send_pages_wait(
 //         cpu_id,
 //         regs,
 //         endpoint_index,
@@ -647,11 +618,11 @@ pub extern "C" fn sys_get_iommu_cr3(endpoint_index:usize, _:usize, _:usize, regs
     Bridge::set_switch_decision(SwitchDecision::NoSwitching);
     let cpu_id = cpu::get_cpu_id();
     let mut kernel = KERNEL.lock();
-    let thread_info = kernel.as_mut().unwrap().get_current_cpu_info(cpu_id);
+    let thread_info = kernel.get_current_cpu_info(cpu_id);
     let proc_ptr = thread_info.1.unwrap();
-    let ioid_op = kernel.as_ref().unwrap().proc_man.get_proc(proc_ptr).ioid;
+    let ioid_op = kernel.proc_man.get_proc(proc_ptr).ioid;
     if let Some(ioid) = ioid_op{
-        let io_cr3 =  kernel.as_ref().unwrap().mem_man.get_cr3_by_ioid(ioid);
+        let io_cr3 =  kernel.mem_man.get_cr3_by_ioid(ioid);
         regs.rax = io_cr3 as u64;
     }else{
         log::debug!("sys_get_iommu_cr3 has no IOMMU");
@@ -662,18 +633,18 @@ pub extern "C" fn sys_get_iommu_cr3(endpoint_index:usize, _:usize, _:usize, regs
 pub extern "C" fn sys_iommu_mmap(va:usize, perm_bits:usize, range:usize, regs: &mut vRegisters) {
     let cpu_id = cpu::get_cpu_id();
     let mut kernel = KERNEL.lock();
-    let thread_info = kernel.as_mut().unwrap().get_current_cpu_info(cpu_id);
+    let thread_info = kernel.get_current_cpu_info(cpu_id);
 
     log::trace!{"iommaping from {:x?} with {:#?} pages", va, range};
 
-    let address_shareable = kernel.as_ref().unwrap().check_address_space_va_range_shareable(        thread_info.1.unwrap(),
+    let address_shareable = kernel.check_address_space_va_range_shareable(        thread_info.1.unwrap(),
         &vVaRange4K::new(va, range));
      log::trace!{"address_shareable {:#?}", address_shareable};
-    let io_address_shareable = kernel.as_ref().unwrap().check_io_space_va_range_free(
+    let io_address_shareable = kernel.check_io_space_va_range_free(
     thread_info.1.unwrap(),
         &vVaRange4K::new(va, range));
      log::trace!{"io_address_shareable {:#?}", io_address_shareable};
-    let ret_struc =  kernel.as_mut().unwrap().syscall_mmap_to_iommu_table(
+    let ret_struc =  kernel.syscall_mmap_to_iommu_table(
         thread_info.0.unwrap(),
         vVaRange4K::new(va, range)
     );

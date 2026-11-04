@@ -11,7 +11,7 @@ pub struct ArrayVec<T, const N: usize> {
 }
 
 impl<T: Copy, const N: usize> ArrayVec<T, N> {
-    pub fn new() -> (ret: Self)
+    pub const fn new() -> (ret: Self)
         requires
             0 <= N <= usize::MAX, // Verus doesn't know
         ensures

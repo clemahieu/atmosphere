@@ -369,7 +369,7 @@ impl MemoryManager {
 
     #[verifier(external_body)]
     // external_body(unproven): initialisation not proven yet
-    pub fn new() -> (ret: Self) {
+    pub const fn new() -> (ret: Self) {
         Self {
             kernel_entries: Array::<usize, KERNEL_MEM_END_L4INDEX>::new(),
             kernel_entries_ghost: Ghost(Seq::<PageEntry>::empty()),
