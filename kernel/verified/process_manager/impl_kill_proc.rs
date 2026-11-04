@@ -37,34 +37,34 @@ impl ProcessManager {
             old(self).get_proc(proc_ptr).children@ == Seq::<ProcPtr>::empty(),
             old(self).get_proc(proc_ptr).depth != 0,
         ensures
-            self.wf(),
-            self.container_dom() == old(self).container_dom(),
-            containers_tree_unchanged(*old(self), *self),
-            self.proc_dom() == old(self).proc_dom().remove(proc_ptr),
-            processes_fields_unchanged(*old(self), *self),
-            self.thread_dom() == old(self).thread_dom(),
-            threads_unchanged(*old(self), *self),
-            self.page_closure() =~= old(self).page_closure().remove(ret.0),
+            final(self).wf(),
+            final(self).container_dom() == old(self).container_dom(),
+            containers_tree_unchanged(*old(self), *final(self)),
+            final(self).proc_dom() == old(self).proc_dom().remove(proc_ptr),
+            processes_fields_unchanged(*old(self), *final(self)),
+            final(self).thread_dom() == old(self).thread_dom(),
+            threads_unchanged(*old(self), *final(self)),
+            final(self).page_closure() =~= old(self).page_closure().remove(ret.0),
             old(self).page_closure().contains(ret.0),
             ret.0 == ret.1@.addr(),
             ret.1@.is_init(),
             old(self).container_dom().contains(ret.0) == false,
-            self.get_proc(old(self).get_proc(proc_ptr).parent.unwrap()).children@ =~= 
+            final(self).get_proc(old(self).get_proc(proc_ptr).parent.unwrap()).children@ =~= 
                 old(self).get_proc(old(self).get_proc(proc_ptr).parent.unwrap()).children@.remove_value(proc_ptr),
-            self.get_proc(old(self).get_proc(proc_ptr).parent.unwrap()).children.len() == 
+            final(self).get_proc(old(self).get_proc(proc_ptr).parent.unwrap()).children.len() == 
                 old(self).get_proc(old(self).get_proc(proc_ptr).parent.unwrap()).children.len() - 1,
-            forall|p_ptr:ProcPtr| #![auto] self.proc_dom().contains(p_ptr) && p_ptr != old(self).get_proc(proc_ptr).parent.unwrap()
+            forall|p_ptr:ProcPtr| #![auto] final(self).proc_dom().contains(p_ptr) && p_ptr != old(self).get_proc(proc_ptr).parent.unwrap()
                 ==>
-                self.get_proc(p_ptr).children == old(self).get_proc(p_ptr).children,
+                final(self).get_proc(p_ptr).children == old(self).get_proc(p_ptr).children,
             forall|p_p_ptr:ProcPtr|
-                #![trigger self.get_proc(p_p_ptr)]
+                #![trigger final(self).get_proc(p_p_ptr)]
                 old(self).get_proc(proc_ptr).uppertree_seq@.contains(p_p_ptr) 
                 ==>
-                self.get_proc(p_p_ptr).subtree_set@ =~= 
+                final(self).get_proc(p_p_ptr).subtree_set@ =~= 
                     old(self).get_proc(p_p_ptr).subtree_set@.remove(proc_ptr),     
-            forall|p_ptr:ProcPtr|  #![auto] self.proc_dom().contains(p_ptr)
+            forall|p_ptr:ProcPtr|  #![auto] final(self).proc_dom().contains(p_ptr)
                 ==>
-                self.get_proc(p_ptr).uppertree_seq == old(self).get_proc(p_ptr).uppertree_seq,   
+                final(self).get_proc(p_ptr).uppertree_seq == old(self).get_proc(p_ptr).uppertree_seq,   
     {
         broadcast use ProcessManager::reveal_process_manager_wf;
 
@@ -241,30 +241,30 @@ impl ProcessManager {
             old(self).get_proc(proc_ptr).children@ == Seq::<ProcPtr>::empty(),
             old(self).get_proc(proc_ptr).depth == 0,
         ensures
-            self.wf(),
-            self.container_dom() == old(self).container_dom(),
-            containers_tree_unchanged(*old(self), *self),
-            self.proc_dom() == old(self).proc_dom().remove(proc_ptr),
-            processes_fields_unchanged(*old(self), *self),
-            self.thread_dom() == old(self).thread_dom(),
-            threads_unchanged(*old(self), *self),
-            self.page_closure() =~= old(self).page_closure().remove(ret.0),
+            final(self).wf(),
+            final(self).container_dom() == old(self).container_dom(),
+            containers_tree_unchanged(*old(self), *final(self)),
+            final(self).proc_dom() == old(self).proc_dom().remove(proc_ptr),
+            processes_fields_unchanged(*old(self), *final(self)),
+            final(self).thread_dom() == old(self).thread_dom(),
+            threads_unchanged(*old(self), *final(self)),
+            final(self).page_closure() =~= old(self).page_closure().remove(ret.0),
             old(self).page_closure().contains(ret.0),
             ret.0 == ret.1@.addr(),
             ret.1@.is_init(),
             old(self).container_dom().contains(ret.0) == false,
-            forall|p_ptr:ProcPtr| #![auto] self.proc_dom().contains(p_ptr)
+            forall|p_ptr:ProcPtr| #![auto] final(self).proc_dom().contains(p_ptr)
                 ==>
-                self.get_proc(p_ptr).children == old(self).get_proc(p_ptr).children,
+                final(self).get_proc(p_ptr).children == old(self).get_proc(p_ptr).children,
             forall|p_p_ptr:ProcPtr|
-                #![trigger self.get_proc(p_p_ptr)]
+                #![trigger final(self).get_proc(p_p_ptr)]
                 old(self).get_proc(proc_ptr).uppertree_seq@.contains(p_p_ptr) 
                 ==>
-                self.get_proc(p_p_ptr).subtree_set@ =~= 
+                final(self).get_proc(p_p_ptr).subtree_set@ =~= 
                     old(self).get_proc(p_p_ptr).subtree_set@.remove(proc_ptr),     
-            forall|p_ptr:ProcPtr|  #![auto] self.proc_dom().contains(p_ptr)
+            forall|p_ptr:ProcPtr|  #![auto] final(self).proc_dom().contains(p_ptr)
                 ==>
-                self.get_proc(p_ptr).uppertree_seq == old(self).get_proc(p_ptr).uppertree_seq,   
+                final(self).get_proc(p_ptr).uppertree_seq == old(self).get_proc(p_ptr).uppertree_seq,   
     {
         broadcast use ProcessManager::reveal_process_manager_wf;
 

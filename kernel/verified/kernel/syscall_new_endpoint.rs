@@ -115,7 +115,7 @@ impl Kernel {
             old(self).thread_dom().contains(thread_ptr),
             0 <= endpoint_index < MAX_NUM_ENDPOINT_DESCRIPTORS,
         ensures
-            syscall_new_endpoint_success_post(*old(self), *self, thread_ptr, endpoint_index, ret),
+            syscall_new_endpoint_success_post(*old(self), *final(self), thread_ptr, endpoint_index, ret),
     {
         proof {
             self.proc_man.thread_inv();

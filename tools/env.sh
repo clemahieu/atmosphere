@@ -9,8 +9,8 @@
 ATMO_TOOLS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VERUS_SRC="$ATMO_TOOLS/verus/source"
 
-# Verus is built against Rust 1.76.0 and its binaries link to that sysroot.
-VERUS_RUST_LIB="$(rustup run 1.76.0 rustc --print sysroot)/lib"
+# Verus is built against the Rust that rust-toolchain.toml pins, and its binaries link to that sysroot.
+VERUS_RUST_LIB="$(cd "$ATMO_TOOLS" && rustc --print sysroot)/lib"
 
 export VERUS_ROOT="$VERUS_SRC/target-verus/release"
 export VERUS_Z3_PATH="$VERUS_SRC/z3"

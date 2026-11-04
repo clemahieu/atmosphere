@@ -245,19 +245,19 @@ impl Kernel {
 
             !ret.is_error() ==> syscall_receive_endpoint_success(
                 *old(self),
-                *self,
+                *final(self),
                 receiver_thread_ptr,
                 blocking_endpoint_index,
                 receiver_endpoint_payload,
             ),
             ret.is_error() ==> syscall_receive_endpoint_fail(
                 *old(self),
-                *self,
+                *final(self),
                 receiver_thread_ptr,
                 blocking_endpoint_index,
                 receiver_endpoint_payload,
             ),
-            self.wf(),
+            final(self).wf(),
     {
         proof {
             self.proc_man.thread_inv();

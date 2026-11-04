@@ -267,7 +267,7 @@ impl Kernel {
         ensures
             syscall_send_pages_spec(
                 *old(self),
-                *self,
+                *final(self),
                 sender_thread_ptr,
                 sender_endpoint_payload,
                 sender_va_range,

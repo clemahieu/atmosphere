@@ -1616,6 +1616,7 @@ pub fn container_tree_check_is_ancestor(
                 #![auto]
                 0 <= i < container_perms@[child_ptr].value().depth
                     ==> container_perms@[child_ptr].value().uppertree_seq@[i] != a_ptr,
+        decreases depth,
     {
         assert(container_perms@[child_ptr].value().uppertree_seq@.contains(current_parent_ptr));
         assert(container_perms@.dom().contains(current_parent_ptr));

@@ -143,7 +143,7 @@ impl Kernel {
         ensures  // syscall_mmap_return_value(*old(self), thread_ptr, va_range).is_error() ==> ret.is_error(),
     // TODO: @Xiangdong fix
 
-            syscall_mmap_spec(*old(self), *self, thread_ptr, va_range, ret),
+            syscall_mmap_spec(*old(self), *final(self), thread_ptr, va_range, ret),
     {
         let proc_ptr = self.proc_man.get_thread(thread_ptr).owning_proc;
         let pcid = self.proc_man.get_proc(proc_ptr).pcid;

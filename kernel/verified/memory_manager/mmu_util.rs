@@ -34,33 +34,33 @@ impl Array<Option<PageTable>, PCID_MAX> {
                 #![trigger page_map_perm.value()[i].is_empty()]
                 0 <= i < 512 ==> page_map_perm.value()[i].is_empty(),
         ensures
-            self.wf(),
+            final(self).wf(),
             forall|p: Pcid|
-                #![trigger self@[p as int]]
+                #![trigger final(self)@[p as int]]
                 #![trigger old(self)@[p as int]]
-                0 <= p < PCID_MAX && p != pcid ==> self@[p as int] =~= old(self)@[p as int],
-            self@[pcid as int].is_Some(),
-            self@[pcid as int].unwrap().wf(),
-            self@[pcid as int].unwrap().pcid == old(self)@[pcid as int].unwrap().pcid,
-            self@[pcid as int].unwrap().kernel_l4_end == old(
+                0 <= p < PCID_MAX && p != pcid ==> final(self)@[p as int] =~= old(self)@[p as int],
+            final(self)@[pcid as int].is_Some(),
+            final(self)@[pcid as int].unwrap().wf(),
+            final(self)@[pcid as int].unwrap().pcid == old(self)@[pcid as int].unwrap().pcid,
+            final(self)@[pcid as int].unwrap().kernel_l4_end == old(
                 self,
             )@[pcid as int].unwrap().kernel_l4_end,
-            self@[pcid as int].unwrap().page_closure() =~= old(
+            final(self)@[pcid as int].unwrap().page_closure() =~= old(
                 self,
             )@[pcid as int].unwrap().page_closure().insert(page_map_ptr),
-            self@[pcid as int].unwrap().mapping_4k() =~= old(
+            final(self)@[pcid as int].unwrap().mapping_4k() =~= old(
                 self,
             )@[pcid as int].unwrap().mapping_4k(),
-            self@[pcid as int].unwrap().mapping_2m() =~= old(
+            final(self)@[pcid as int].unwrap().mapping_2m() =~= old(
                 self,
             )@[pcid as int].unwrap().mapping_2m(),
-            self@[pcid as int].unwrap().mapping_1g() =~= old(
+            final(self)@[pcid as int].unwrap().mapping_1g() =~= old(
                 self,
             )@[pcid as int].unwrap().mapping_1g(),
-            self@[pcid as int].unwrap().spec_resolve_mapping_l4(target_l4i).is_Some(),
-            self@[pcid as int].unwrap().spec_resolve_mapping_l4(target_l4i).get_Some_0().addr
+            final(self)@[pcid as int].unwrap().spec_resolve_mapping_l4(target_l4i).is_Some(),
+            final(self)@[pcid as int].unwrap().spec_resolve_mapping_l4(target_l4i).get_Some_0().addr
                 == page_map_ptr,
-            self@[pcid as int].unwrap().kernel_entries =~= old(
+            final(self)@[pcid as int].unwrap().kernel_entries =~= old(
                 self,
             )@[pcid as int].unwrap().kernel_entries,
     {
@@ -100,42 +100,42 @@ impl Array<Option<PageTable>, PCID_MAX> {
                 #![trigger page_map_perm.value()[i].is_empty()]
                 0 <= i < 512 ==> page_map_perm.value()[i].is_empty(),
         ensures
-            self.wf(),
+            final(self).wf(),
             forall|p: Pcid|
-                #![trigger self@[p as int]]
+                #![trigger final(self)@[p as int]]
                 #![trigger old(self)@[p as int]]
-                0 <= p < PCID_MAX && p != pcid ==> self@[p as int] =~= old(self)@[p as int],
-            self@[pcid as int].is_Some(),
-            self@[pcid as int].unwrap().wf(),
-            self@[pcid as int].unwrap().pcid == old(self)@[pcid as int].unwrap().pcid,
-            self@[pcid as int].unwrap().kernel_l4_end == old(
+                0 <= p < PCID_MAX && p != pcid ==> final(self)@[p as int] =~= old(self)@[p as int],
+            final(self)@[pcid as int].is_Some(),
+            final(self)@[pcid as int].unwrap().wf(),
+            final(self)@[pcid as int].unwrap().pcid == old(self)@[pcid as int].unwrap().pcid,
+            final(self)@[pcid as int].unwrap().kernel_l4_end == old(
                 self,
             )@[pcid as int].unwrap().kernel_l4_end,
-            self@[pcid as int].unwrap().page_closure() =~= old(
+            final(self)@[pcid as int].unwrap().page_closure() =~= old(
                 self,
             )@[pcid as int].unwrap().page_closure().insert(page_map_ptr),
-            self@[pcid as int].unwrap().mapping_4k() =~= old(
+            final(self)@[pcid as int].unwrap().mapping_4k() =~= old(
                 self,
             )@[pcid as int].unwrap().mapping_4k(),
-            self@[pcid as int].unwrap().mapping_2m() =~= old(
+            final(self)@[pcid as int].unwrap().mapping_2m() =~= old(
                 self,
             )@[pcid as int].unwrap().mapping_2m(),
-            self@[pcid as int].unwrap().mapping_1g() =~= old(
+            final(self)@[pcid as int].unwrap().mapping_1g() =~= old(
                 self,
             )@[pcid as int].unwrap().mapping_1g(),
-            self@[pcid as int].unwrap().spec_resolve_mapping_l4(target_l4i) == old(
+            final(self)@[pcid as int].unwrap().spec_resolve_mapping_l4(target_l4i) == old(
                 self,
             )@[pcid as int].unwrap().spec_resolve_mapping_l4(target_l4i),
-            self@[pcid as int].unwrap().spec_resolve_mapping_l3(target_l4i, target_l3i).is_Some(),
-            self@[pcid as int].unwrap().spec_resolve_mapping_l3(
+            final(self)@[pcid as int].unwrap().spec_resolve_mapping_l3(target_l4i, target_l3i).is_Some(),
+            final(self)@[pcid as int].unwrap().spec_resolve_mapping_l3(
                 target_l4i,
                 target_l3i,
             ).get_Some_0().addr == page_map_ptr,
-            self@[pcid as int].unwrap().spec_resolve_mapping_1g_l3(
+            final(self)@[pcid as int].unwrap().spec_resolve_mapping_1g_l3(
                 target_l4i,
                 target_l3i,
             ).is_None(),
-            self@[pcid as int].unwrap().kernel_entries =~= old(
+            final(self)@[pcid as int].unwrap().kernel_entries =~= old(
                 self,
             )@[pcid as int].unwrap().kernel_entries,
     {
@@ -188,51 +188,51 @@ impl Array<Option<PageTable>, PCID_MAX> {
                 #![trigger page_map_perm.value()[i].is_empty()]
                 0 <= i < 512 ==> page_map_perm.value()[i].is_empty(),
         ensures
-            self.wf(),
+            final(self).wf(),
             forall|p: Pcid|
-                #![trigger self@[p as int]]
+                #![trigger final(self)@[p as int]]
                 #![trigger old(self)@[p as int]]
-                0 <= p < PCID_MAX && p != pcid ==> self@[p as int] =~= old(self)@[p as int],
-            self@[pcid as int].is_Some(),
-            self@[pcid as int].unwrap().wf(),
-            self@[pcid as int].unwrap().pcid == old(self)@[pcid as int].unwrap().pcid,
-            self@[pcid as int].unwrap().kernel_l4_end == old(
+                0 <= p < PCID_MAX && p != pcid ==> final(self)@[p as int] =~= old(self)@[p as int],
+            final(self)@[pcid as int].is_Some(),
+            final(self)@[pcid as int].unwrap().wf(),
+            final(self)@[pcid as int].unwrap().pcid == old(self)@[pcid as int].unwrap().pcid,
+            final(self)@[pcid as int].unwrap().kernel_l4_end == old(
                 self,
             )@[pcid as int].unwrap().kernel_l4_end,
-            self@[pcid as int].unwrap().page_closure() =~= old(
+            final(self)@[pcid as int].unwrap().page_closure() =~= old(
                 self,
             )@[pcid as int].unwrap().page_closure().insert(page_map_ptr),
-            self@[pcid as int].unwrap().mapping_4k() =~= old(
+            final(self)@[pcid as int].unwrap().mapping_4k() =~= old(
                 self,
             )@[pcid as int].unwrap().mapping_4k(),
-            self@[pcid as int].unwrap().mapping_2m() =~= old(
+            final(self)@[pcid as int].unwrap().mapping_2m() =~= old(
                 self,
             )@[pcid as int].unwrap().mapping_2m(),
-            self@[pcid as int].unwrap().mapping_1g() =~= old(
+            final(self)@[pcid as int].unwrap().mapping_1g() =~= old(
                 self,
             )@[pcid as int].unwrap().mapping_1g(),
-            self@[pcid as int].unwrap().spec_resolve_mapping_1g_l3(target_l4i, target_l3i) == old(
+            final(self)@[pcid as int].unwrap().spec_resolve_mapping_1g_l3(target_l4i, target_l3i) == old(
                 self,
             )@[pcid as int].unwrap().spec_resolve_mapping_1g_l3(target_l4i, target_l3i),
-            self@[pcid as int].unwrap().spec_resolve_mapping_l3(target_l4i, target_l3i) == old(
+            final(self)@[pcid as int].unwrap().spec_resolve_mapping_l3(target_l4i, target_l3i) == old(
                 self,
             )@[pcid as int].unwrap().spec_resolve_mapping_l3(target_l4i, target_l3i),
-            self@[pcid as int].unwrap().spec_resolve_mapping_l2(
+            final(self)@[pcid as int].unwrap().spec_resolve_mapping_l2(
                 target_l4i,
                 target_l3i,
                 target_l2i,
             ).is_Some(),
-            self@[pcid as int].unwrap().spec_resolve_mapping_l2(
+            final(self)@[pcid as int].unwrap().spec_resolve_mapping_l2(
                 target_l4i,
                 target_l3i,
                 target_l2i,
             ).get_Some_0().addr == page_map_ptr,
-            self@[pcid as int].unwrap().spec_resolve_mapping_2m_l2(
+            final(self)@[pcid as int].unwrap().spec_resolve_mapping_2m_l2(
                 target_l4i,
                 target_l3i,
                 target_l2i,
             ).is_None(),
-            self@[pcid as int].unwrap().kernel_entries =~= old(
+            final(self)@[pcid as int].unwrap().kernel_entries =~= old(
                 self,
             )@[pcid as int].unwrap().kernel_entries,
     {
@@ -286,33 +286,33 @@ impl Array<Option<PageTable>, PCID_MAX> {
             old(self)@[pcid as int].unwrap().page_closure().contains(target_entry.addr) == false,
             page_ptr_valid(target_entry.addr),
         ensures
-            self.wf(),
+            final(self).wf(),
             forall|p: Pcid|
-                #![trigger self@[p as int]]
+                #![trigger final(self)@[p as int]]
                 #![trigger old(self)@[p as int]]
-                0 <= p < PCID_MAX && p != pcid ==> self@[p as int] =~= old(self)@[p as int],
-            self@[pcid as int].is_Some(),
-            self@[pcid as int].unwrap().wf(),
-            self@[pcid as int].unwrap().pcid == old(self)@[pcid as int].unwrap().pcid,
-            self@[pcid as int].unwrap().kernel_l4_end == old(
+                0 <= p < PCID_MAX && p != pcid ==> final(self)@[p as int] =~= old(self)@[p as int],
+            final(self)@[pcid as int].is_Some(),
+            final(self)@[pcid as int].unwrap().wf(),
+            final(self)@[pcid as int].unwrap().pcid == old(self)@[pcid as int].unwrap().pcid,
+            final(self)@[pcid as int].unwrap().kernel_l4_end == old(
                 self,
             )@[pcid as int].unwrap().kernel_l4_end,
-            self@[pcid as int].unwrap().page_closure() =~= old(
+            final(self)@[pcid as int].unwrap().page_closure() =~= old(
                 self,
             )@[pcid as int].unwrap().page_closure(),
-            self@[pcid as int].unwrap().mapping_4k() =~= old(
+            final(self)@[pcid as int].unwrap().mapping_4k() =~= old(
                 self,
             )@[pcid as int].unwrap().mapping_4k().insert(
                 spec_index2va((target_l4i, target_l3i, target_l2i, target_l1i)),
                 *target_entry,
             ),
-            self@[pcid as int].unwrap().mapping_2m() =~= old(
+            final(self)@[pcid as int].unwrap().mapping_2m() =~= old(
                 self,
             )@[pcid as int].unwrap().mapping_2m(),
-            self@[pcid as int].unwrap().mapping_1g() =~= old(
+            final(self)@[pcid as int].unwrap().mapping_1g() =~= old(
                 self,
             )@[pcid as int].unwrap().mapping_1g(),
-            self@[pcid as int].unwrap().kernel_entries =~= old(
+            final(self)@[pcid as int].unwrap().kernel_entries =~= old(
                 self,
             )@[pcid as int].unwrap().kernel_entries,
     {
@@ -350,33 +350,33 @@ impl Array<Option<PageTable>, PCID_MAX> {
                 #![trigger page_map_perm.value()[i].is_empty()]
                 0 <= i < 512 ==> page_map_perm.value()[i].is_empty(),
         ensures
-            self.wf(),
+            final(self).wf(),
             forall|p: IOid|
-                #![trigger self@[p as int]]
+                #![trigger final(self)@[p as int]]
                 #![trigger old(self)@[p as int]]
-                0 <= p < IOID_MAX && p != ioid ==> self@[p as int] =~= old(self)@[p as int],
-            self@[ioid as int].is_Some(),
-            self@[ioid as int].unwrap().wf(),
-            self@[ioid as int].unwrap().ioid == old(self)@[ioid as int].unwrap().ioid,
-            self@[ioid as int].unwrap().kernel_l4_end == old(
+                0 <= p < IOID_MAX && p != ioid ==> final(self)@[p as int] =~= old(self)@[p as int],
+            final(self)@[ioid as int].is_Some(),
+            final(self)@[ioid as int].unwrap().wf(),
+            final(self)@[ioid as int].unwrap().ioid == old(self)@[ioid as int].unwrap().ioid,
+            final(self)@[ioid as int].unwrap().kernel_l4_end == old(
                 self,
             )@[ioid as int].unwrap().kernel_l4_end,
-            self@[ioid as int].unwrap().page_closure() =~= old(
+            final(self)@[ioid as int].unwrap().page_closure() =~= old(
                 self,
             )@[ioid as int].unwrap().page_closure().insert(page_map_ptr),
-            self@[ioid as int].unwrap().mapping_4k() =~= old(
+            final(self)@[ioid as int].unwrap().mapping_4k() =~= old(
                 self,
             )@[ioid as int].unwrap().mapping_4k(),
-            self@[ioid as int].unwrap().mapping_2m() =~= old(
+            final(self)@[ioid as int].unwrap().mapping_2m() =~= old(
                 self,
             )@[ioid as int].unwrap().mapping_2m(),
-            self@[ioid as int].unwrap().mapping_1g() =~= old(
+            final(self)@[ioid as int].unwrap().mapping_1g() =~= old(
                 self,
             )@[ioid as int].unwrap().mapping_1g(),
-            self@[ioid as int].unwrap().spec_resolve_mapping_l4(target_l4i).is_Some(),
-            self@[ioid as int].unwrap().spec_resolve_mapping_l4(target_l4i).get_Some_0().addr
+            final(self)@[ioid as int].unwrap().spec_resolve_mapping_l4(target_l4i).is_Some(),
+            final(self)@[ioid as int].unwrap().spec_resolve_mapping_l4(target_l4i).get_Some_0().addr
                 == page_map_ptr,
-            self@[ioid as int].unwrap().kernel_entries =~= old(
+            final(self)@[ioid as int].unwrap().kernel_entries =~= old(
                 self,
             )@[ioid as int].unwrap().kernel_entries,
     {
@@ -416,42 +416,42 @@ impl Array<Option<PageTable>, PCID_MAX> {
                 #![trigger page_map_perm.value()[i].is_empty()]
                 0 <= i < 512 ==> page_map_perm.value()[i].is_empty(),
         ensures
-            self.wf(),
+            final(self).wf(),
             forall|p: IOid|
-                #![trigger self@[p as int]]
+                #![trigger final(self)@[p as int]]
                 #![trigger old(self)@[p as int]]
-                0 <= p < IOID_MAX && p != ioid ==> self@[p as int] =~= old(self)@[p as int],
-            self@[ioid as int].is_Some(),
-            self@[ioid as int].unwrap().wf(),
-            self@[ioid as int].unwrap().ioid == old(self)@[ioid as int].unwrap().ioid,
-            self@[ioid as int].unwrap().kernel_l4_end == old(
+                0 <= p < IOID_MAX && p != ioid ==> final(self)@[p as int] =~= old(self)@[p as int],
+            final(self)@[ioid as int].is_Some(),
+            final(self)@[ioid as int].unwrap().wf(),
+            final(self)@[ioid as int].unwrap().ioid == old(self)@[ioid as int].unwrap().ioid,
+            final(self)@[ioid as int].unwrap().kernel_l4_end == old(
                 self,
             )@[ioid as int].unwrap().kernel_l4_end,
-            self@[ioid as int].unwrap().page_closure() =~= old(
+            final(self)@[ioid as int].unwrap().page_closure() =~= old(
                 self,
             )@[ioid as int].unwrap().page_closure().insert(page_map_ptr),
-            self@[ioid as int].unwrap().mapping_4k() =~= old(
+            final(self)@[ioid as int].unwrap().mapping_4k() =~= old(
                 self,
             )@[ioid as int].unwrap().mapping_4k(),
-            self@[ioid as int].unwrap().mapping_2m() =~= old(
+            final(self)@[ioid as int].unwrap().mapping_2m() =~= old(
                 self,
             )@[ioid as int].unwrap().mapping_2m(),
-            self@[ioid as int].unwrap().mapping_1g() =~= old(
+            final(self)@[ioid as int].unwrap().mapping_1g() =~= old(
                 self,
             )@[ioid as int].unwrap().mapping_1g(),
-            self@[ioid as int].unwrap().spec_resolve_mapping_l4(target_l4i) == old(
+            final(self)@[ioid as int].unwrap().spec_resolve_mapping_l4(target_l4i) == old(
                 self,
             )@[ioid as int].unwrap().spec_resolve_mapping_l4(target_l4i),
-            self@[ioid as int].unwrap().spec_resolve_mapping_l3(target_l4i, target_l3i).is_Some(),
-            self@[ioid as int].unwrap().spec_resolve_mapping_l3(
+            final(self)@[ioid as int].unwrap().spec_resolve_mapping_l3(target_l4i, target_l3i).is_Some(),
+            final(self)@[ioid as int].unwrap().spec_resolve_mapping_l3(
                 target_l4i,
                 target_l3i,
             ).get_Some_0().addr == page_map_ptr,
-            self@[ioid as int].unwrap().spec_resolve_mapping_1g_l3(
+            final(self)@[ioid as int].unwrap().spec_resolve_mapping_1g_l3(
                 target_l4i,
                 target_l3i,
             ).is_None(),
-            self@[ioid as int].unwrap().kernel_entries =~= old(
+            final(self)@[ioid as int].unwrap().kernel_entries =~= old(
                 self,
             )@[ioid as int].unwrap().kernel_entries,
     {
@@ -504,51 +504,51 @@ impl Array<Option<PageTable>, PCID_MAX> {
                 #![trigger page_map_perm.value()[i].is_empty()]
                 0 <= i < 512 ==> page_map_perm.value()[i].is_empty(),
         ensures
-            self.wf(),
+            final(self).wf(),
             forall|p: IOid|
-                #![trigger self@[p as int]]
+                #![trigger final(self)@[p as int]]
                 #![trigger old(self)@[p as int]]
-                0 <= p < IOID_MAX && p != ioid ==> self@[p as int] =~= old(self)@[p as int],
-            self@[ioid as int].is_Some(),
-            self@[ioid as int].unwrap().wf(),
-            self@[ioid as int].unwrap().ioid == old(self)@[ioid as int].unwrap().ioid,
-            self@[ioid as int].unwrap().kernel_l4_end == old(
+                0 <= p < IOID_MAX && p != ioid ==> final(self)@[p as int] =~= old(self)@[p as int],
+            final(self)@[ioid as int].is_Some(),
+            final(self)@[ioid as int].unwrap().wf(),
+            final(self)@[ioid as int].unwrap().ioid == old(self)@[ioid as int].unwrap().ioid,
+            final(self)@[ioid as int].unwrap().kernel_l4_end == old(
                 self,
             )@[ioid as int].unwrap().kernel_l4_end,
-            self@[ioid as int].unwrap().page_closure() =~= old(
+            final(self)@[ioid as int].unwrap().page_closure() =~= old(
                 self,
             )@[ioid as int].unwrap().page_closure().insert(page_map_ptr),
-            self@[ioid as int].unwrap().mapping_4k() =~= old(
+            final(self)@[ioid as int].unwrap().mapping_4k() =~= old(
                 self,
             )@[ioid as int].unwrap().mapping_4k(),
-            self@[ioid as int].unwrap().mapping_2m() =~= old(
+            final(self)@[ioid as int].unwrap().mapping_2m() =~= old(
                 self,
             )@[ioid as int].unwrap().mapping_2m(),
-            self@[ioid as int].unwrap().mapping_1g() =~= old(
+            final(self)@[ioid as int].unwrap().mapping_1g() =~= old(
                 self,
             )@[ioid as int].unwrap().mapping_1g(),
-            self@[ioid as int].unwrap().spec_resolve_mapping_1g_l3(target_l4i, target_l3i) == old(
+            final(self)@[ioid as int].unwrap().spec_resolve_mapping_1g_l3(target_l4i, target_l3i) == old(
                 self,
             )@[ioid as int].unwrap().spec_resolve_mapping_1g_l3(target_l4i, target_l3i),
-            self@[ioid as int].unwrap().spec_resolve_mapping_l3(target_l4i, target_l3i) == old(
+            final(self)@[ioid as int].unwrap().spec_resolve_mapping_l3(target_l4i, target_l3i) == old(
                 self,
             )@[ioid as int].unwrap().spec_resolve_mapping_l3(target_l4i, target_l3i),
-            self@[ioid as int].unwrap().spec_resolve_mapping_l2(
+            final(self)@[ioid as int].unwrap().spec_resolve_mapping_l2(
                 target_l4i,
                 target_l3i,
                 target_l2i,
             ).is_Some(),
-            self@[ioid as int].unwrap().spec_resolve_mapping_l2(
+            final(self)@[ioid as int].unwrap().spec_resolve_mapping_l2(
                 target_l4i,
                 target_l3i,
                 target_l2i,
             ).get_Some_0().addr == page_map_ptr,
-            self@[ioid as int].unwrap().spec_resolve_mapping_2m_l2(
+            final(self)@[ioid as int].unwrap().spec_resolve_mapping_2m_l2(
                 target_l4i,
                 target_l3i,
                 target_l2i,
             ).is_None(),
-            self@[ioid as int].unwrap().kernel_entries =~= old(
+            final(self)@[ioid as int].unwrap().kernel_entries =~= old(
                 self,
             )@[ioid as int].unwrap().kernel_entries,
     {
@@ -602,33 +602,33 @@ impl Array<Option<PageTable>, PCID_MAX> {
             old(self)@[ioid as int].unwrap().page_closure().contains(target_entry.addr) == false,
             page_ptr_valid(target_entry.addr),
         ensures
-            self.wf(),
+            final(self).wf(),
             forall|p: IOid|
-                #![trigger self@[p as int]]
+                #![trigger final(self)@[p as int]]
                 #![trigger old(self)@[p as int]]
-                0 <= p < IOID_MAX && p != ioid ==> self@[p as int] =~= old(self)@[p as int],
-            self@[ioid as int].is_Some(),
-            self@[ioid as int].unwrap().wf(),
-            self@[ioid as int].unwrap().ioid == old(self)@[ioid as int].unwrap().ioid,
-            self@[ioid as int].unwrap().kernel_l4_end == old(
+                0 <= p < IOID_MAX && p != ioid ==> final(self)@[p as int] =~= old(self)@[p as int],
+            final(self)@[ioid as int].is_Some(),
+            final(self)@[ioid as int].unwrap().wf(),
+            final(self)@[ioid as int].unwrap().ioid == old(self)@[ioid as int].unwrap().ioid,
+            final(self)@[ioid as int].unwrap().kernel_l4_end == old(
                 self,
             )@[ioid as int].unwrap().kernel_l4_end,
-            self@[ioid as int].unwrap().page_closure() =~= old(
+            final(self)@[ioid as int].unwrap().page_closure() =~= old(
                 self,
             )@[ioid as int].unwrap().page_closure(),
-            self@[ioid as int].unwrap().mapping_4k() =~= old(
+            final(self)@[ioid as int].unwrap().mapping_4k() =~= old(
                 self,
             )@[ioid as int].unwrap().mapping_4k().insert(
                 spec_index2va((target_l4i, target_l3i, target_l2i, target_l1i)),
                 *target_entry,
             ),
-            self@[ioid as int].unwrap().mapping_2m() =~= old(
+            final(self)@[ioid as int].unwrap().mapping_2m() =~= old(
                 self,
             )@[ioid as int].unwrap().mapping_2m(),
-            self@[ioid as int].unwrap().mapping_1g() =~= old(
+            final(self)@[ioid as int].unwrap().mapping_1g() =~= old(
                 self,
             )@[ioid as int].unwrap().mapping_1g(),
-            self@[ioid as int].unwrap().kernel_entries =~= old(
+            final(self)@[ioid as int].unwrap().kernel_entries =~= old(
                 self,
             )@[ioid as int].unwrap().kernel_entries,
     {

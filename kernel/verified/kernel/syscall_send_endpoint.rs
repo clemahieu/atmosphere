@@ -250,13 +250,13 @@ impl Kernel {
         ensures
             syscall_send_endpoint_spec(
                 *old(self),
-                *self,
+                *final(self),
                 sender_thread_ptr,
                 blocking_endpoint_index,
                 sender_endpoint_payload,
                 ret,
             ),
-            self.wf(),
+            final(self).wf(),
     {
         proof {
             self.proc_man.thread_inv();

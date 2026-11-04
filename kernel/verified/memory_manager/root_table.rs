@@ -60,10 +60,10 @@ impl RootTable {
     // external_body(glue): accesses the IOMMU root table in its hardware format
     pub fn init(&mut self)
         ensures
-            self.wf(),
+            final(self).wf(),
             forall|bus: u8, dev: u8, fun: u8|
                 #![auto]
-                0 <= bus < 256 && 0 <= dev < 32 && 0 <= fun < 8 ==> self.resolve(
+                0 <= bus < 256 && 0 <= dev < 32 && 0 <= fun < 8 ==> final(self).resolve(
                     bus,
                     dev,
                     fun,
@@ -129,12 +129,12 @@ impl RootTable {
             old(self).wf(),
             0 <= bus < 256 && 0 <= dev < 32 && 0 <= fun < 8,
         ensures
-            self.wf(),
-            self.resolve(bus, dev, fun) == target,
+            final(self).wf(),
+            final(self).resolve(bus, dev, fun) == target,
             forall|_bus: u8, _dev: u8, _fun: u8|
                 #![auto]
                 0 <= _bus < 256 && 0 <= _dev < 32 && 0 <= _fun < 8 && (_bus != bus || _dev != dev
-                    || _fun != fun) ==> self.resolve(_bus, _dev, _fun) =~= old(self).resolve(
+                    || _fun != fun) ==> final(self).resolve(_bus, _dev, _fun) =~= old(self).resolve(
                     _bus,
                     _dev,
                     _fun,

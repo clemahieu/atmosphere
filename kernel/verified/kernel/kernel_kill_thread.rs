@@ -11,16 +11,16 @@ impl Kernel {
             old(self).wf(),
             old(self).thread_dom().contains(thread_ptr),
         ensures
-            self.wf(),
-            self.thread_dom() == old(self).thread_dom().remove(thread_ptr),
-            threads_unchanged_except(old(self).proc_man, self.proc_man, set![]),
-            self.proc_dom() == old(self).proc_dom(),
-            process_tree_unchanged(old(self).proc_man, self.proc_man),
-            self.container_dom() == old(self).container_dom(),
-            containers_tree_unchanged(old(self).proc_man, self.proc_man),
-            self.get_proc(old(self).get_thread(thread_ptr).owning_proc).owned_threads@ == 
+            final(self).wf(),
+            final(self).thread_dom() == old(self).thread_dom().remove(thread_ptr),
+            threads_unchanged_except(old(self).proc_man, final(self).proc_man, set![]),
+            final(self).proc_dom() == old(self).proc_dom(),
+            process_tree_unchanged(old(self).proc_man, final(self).proc_man),
+            final(self).container_dom() == old(self).container_dom(),
+            containers_tree_unchanged(old(self).proc_man, final(self).proc_man),
+            final(self).get_proc(old(self).get_thread(thread_ptr).owning_proc).owned_threads@ == 
               old(self).get_proc(old(self).get_thread(thread_ptr).owning_proc).owned_threads@.remove_value(thread_ptr), 
-            self.get_proc(old(self).get_thread(thread_ptr).owning_proc).owned_threads.len() == 
+            final(self).get_proc(old(self).get_thread(thread_ptr).owning_proc).owned_threads.len() == 
               old(self).get_proc(old(self).get_thread(thread_ptr).owning_proc).owned_threads.len() - 1,  
     {
 
@@ -134,14 +134,14 @@ impl Kernel {
             old(self).wf(),
             old(self).proc_dom().contains(proc_ptr),
         ensures
-            self.wf(),
-            self.proc_dom().contains(proc_ptr),
-            self.get_proc(proc_ptr).owned_threads.len() == 0,
+            final(self).wf(),
+            final(self).proc_dom().contains(proc_ptr),
+            final(self).get_proc(proc_ptr).owned_threads.len() == 0,
 
-            self.proc_dom() == old(self).proc_dom(),
-            process_tree_unchanged(old(self).proc_man, self.proc_man),
-            self.container_dom() == old(self).container_dom(),
-            containers_tree_unchanged(old(self).proc_man, self.proc_man),
+            final(self).proc_dom() == old(self).proc_dom(),
+            process_tree_unchanged(old(self).proc_man, final(self).proc_man),
+            final(self).container_dom() == old(self).container_dom(),
+            containers_tree_unchanged(old(self).proc_man, final(self).proc_man),
     {
         let num_threads = self.proc_man.get_proc(proc_ptr).owned_threads.len();
         assert(self.get_proc(proc_ptr).owned_threads.len()  == num_threads) by {

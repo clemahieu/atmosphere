@@ -16,7 +16,7 @@ impl Kernel {
             old(self).wf(),
             0 <= cpu_id < NUM_CPUS,
         ensures
-            self.wf(),
+            final(self).wf(),
     {
         proof {
             self.proc_man.thread_inv();

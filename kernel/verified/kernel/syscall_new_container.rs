@@ -226,7 +226,7 @@ impl Kernel {
             ) == false <==> ret.is_error(),
             syscall_new_container_with_endpoint_spec(
                 *old(self),
-                *self,
+                *final(self),
                 thread_ptr,
                 endpoint_index,
                 pt_regs,
