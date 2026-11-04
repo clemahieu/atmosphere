@@ -66,6 +66,7 @@ pub fn page_map_set_kernel_entry_range(
 }
 
 #[verifier(external_body)]
+// external_body(glue): writes a hardware page table through a raw pointer
 pub fn page_map_set_no_requires(
     page_map_ptr: PageMapPtr,
     Tracked(page_map_perm): Tracked<&mut PointsTo<PageMap>>,
@@ -95,6 +96,7 @@ pub fn page_map_set_no_requires(
 }
 
 #[verifier(external_body)]
+// external_body(glue): writes a hardware page table through a raw pointer
 pub fn page_map_set(
     page_map_ptr: PageMapPtr,
     Tracked(page_map_perm): Tracked<&mut PointsTo<PageMap>>,
@@ -126,6 +128,7 @@ pub fn page_map_set(
 }
 
 #[verifier(external_body)]
+// external_body(glue): writes a hardware page table through a raw pointer
 pub fn page_perm_to_page_map(page_ptr: PagePtr, Tracked(page_perm): Tracked<PagePerm4k>) -> (ret: (
     PageMapPtr,
     Tracked<PointsTo<PageMap>>,

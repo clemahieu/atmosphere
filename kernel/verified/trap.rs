@@ -53,6 +53,7 @@ impl TrapFrameOption {
     }
 
     #[verifier(external_body)]
+    // external_body(unproven): field copies of a register frame not proven yet
     pub fn set_self_fast(&mut self, src: &Registers)
         ensures
             self.is_Some(),
@@ -80,6 +81,7 @@ impl TrapFrameOption {
     }
 
     #[verifier(external_body)]
+    // external_body(unproven): field copies of a register frame not proven yet
     pub fn set_dst_fast(&self, dst: &mut Registers)
         requires
             self.is_Some(),
@@ -151,11 +153,13 @@ pub struct Registers {
 
 impl Registers {
     #[verifier(external_body)]
+    // external_body(gap): builds a value from uninitialised memory
     pub const fn zeroed() -> Self {
         unsafe { MaybeUninit::zeroed().assume_init() }
     }
 
     #[verifier(external_body)]
+    // external_body(gap): builds a value from uninitialised memory
     pub fn random() -> (ret: Self) {
         unsafe {
             return MaybeUninit::uninit().assume_init();
@@ -220,6 +224,7 @@ impl Registers {
     }
 
     #[verifier(external_body)]
+    // external_body(unproven): field copies of a register frame not proven yet
     pub fn set_self_fast(&mut self, src: &Registers)
         ensures
             self == src,

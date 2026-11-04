@@ -5,6 +5,7 @@ use crate::define::*;
 use crate::util::page_ptr_util_u::*;
 
 #[verifier(external_body)]
+// external_body(unproven): states the target's usize width without a proof
 pub proof fn lemma_usize_u64(x: u64)
     ensures
         x as usize as u64 == x,
@@ -13,6 +14,7 @@ pub proof fn lemma_usize_u64(x: u64)
 }
 
 #[verifier(external_body)]
+// external_body(unproven): states the target's usize width without a proof
 pub proof fn lemma_usize_int(x: int)
     ensures
         x as usize as int == x,
@@ -21,6 +23,7 @@ pub proof fn lemma_usize_int(x: int)
 }
 
 #[verifier(external_body)]
+// external_body(unproven): a lemma stated without a proof
 pub proof fn set_lemma<A>()
     ensures
         forall|s1: Set<A>, s2: Set<A>, e: A|
@@ -36,6 +39,7 @@ pub proof fn set_lemma<A>()
 }
 
 #[verifier(external_body)]
+// external_body(unproven): a lemma stated without a proof
 pub proof fn set_insert_lemma<A>()
     ensures
         forall|s1: Set<A>, x: A, y: A| x != y ==> (s1.insert(x).contains(y) == s1.contains(y)),
@@ -45,6 +49,7 @@ pub proof fn set_insert_lemma<A>()
 }
 
 #[verifier(external_body)]
+// external_body(unproven): a lemma stated without a proof
 pub proof fn set_add_lemma<A>()
     ensures
         forall|s1: Set<A>|  s1 + Set::<A>::empty() == s1,
@@ -55,6 +60,7 @@ pub proof fn set_add_lemma<A>()
 
 //TODO: @Xiangdong prove this
 #[verifier(external_body)]
+// external_body(unproven): a lemma stated without a proof
 pub proof fn page_ptr_lemma()
     ensures
         forall|ptr: PagePtr|

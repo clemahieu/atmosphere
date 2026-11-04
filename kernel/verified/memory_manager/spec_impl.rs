@@ -368,6 +368,7 @@ impl MemoryManager {
     }
 
     #[verifier(external_body)]
+    // external_body(unproven): initialisation not proven yet
     pub fn new() -> (ret: Self) {
         Self {
             kernel_entries: Array::<usize, KERNEL_MEM_END_L4INDEX>::new(),
@@ -2415,6 +2416,7 @@ pub fn free_page_table(&mut self, proc_ptr: ProcPtr, pcid: Pcid)
     }
 
     #[verifier(external_body)]
+    // external_body(unproven): initialisation not proven yet
     pub fn init(
         &mut self,
         dom0_page_map_ptr: PageMapPtr,

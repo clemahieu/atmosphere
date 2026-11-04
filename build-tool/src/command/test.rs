@@ -9,7 +9,7 @@ use futures::future::join_all;
 use tokio::fs;
 use tokio::process::Command;
 
-use super::{license, verify, GlobalOpts, SubCommand};
+use super::{external_body, license, verify, GlobalOpts, SubCommand};
 use crate::error::Result;
 use crate::project::{BuildOptions, Project, ProjectHandle};
 
@@ -42,6 +42,7 @@ pub(super) async fn run(global: GlobalOpts) -> Result<()> {
         ("license", license::check(&project)),
         ("license guard", check_license_guard(&project).await),
         ("verify", check_verify(&project).await),
+        ("external body", external_body::check(&project)),
         ("boot stack", check_boot_stack(&project).await),
         ("boot", check_boot(&project, local.boot_timeout).await),
     ];

@@ -19,6 +19,7 @@ pub open spec fn spec_va_range_disjoint(va_range_1: &VaRange4K, va_range_2: &VaR
 
 #[verifier(when_used_as_spec(spec_va_range_disjoint))]
 #[verifier(external_body)]
+// external_body(unproven): not proven yet
 pub fn va_range_disjoint(va_range_1: &VaRange4K, va_range_2: &VaRange4K) -> (ret: bool)
     requires
         va_range_1.wf(),
@@ -55,6 +56,7 @@ pub fn va_range_disjoint(va_range_1: &VaRange4K, va_range_2: &VaRange4K) -> (ret
 
 impl VaRange4K {
     #[verifier(external_body)]
+    // external_body(unproven): a lemma stated without a proof
     pub proof fn va_range_lemma(&self)
         requires
             self.wf(),

@@ -23,6 +23,7 @@ pub struct PcidAllocator{
 impl PcidAllocator {
 
     #[verifier(external_body)]
+    // external_body(unproven): in a file outside the module tree, so not compiled
     pub fn new() -> (ret: Self)
         ensures
             ret.free_page_tables.wf(),

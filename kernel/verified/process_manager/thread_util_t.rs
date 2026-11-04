@@ -8,6 +8,7 @@ use crate::process_manager::thread::*;
 use crate::trap::Registers;
 
 #[verifier(external_body)]
+// external_body(gap): writes through a raw pointer and takes its permission from Tracked::assume_new
 pub fn page_to_thread(
     page_ptr: PagePtr,
     page_perm: Tracked<PagePerm4k>,
@@ -59,6 +60,7 @@ pub fn page_to_thread(
 }
 
 #[verifier(external_body)]
+// external_body(gap): takes its permission from Tracked::assume_new, which Verus cannot check
 pub fn thread_to_page(
     thread_ptr: ThreadPtr,
     thread_perm: Tracked<PointsTo<Thread>>,
@@ -75,6 +77,7 @@ pub fn thread_to_page(
 }
 
 #[verifier(external_body)]
+// external_body(gap): writes through a raw pointer and takes its permission from Tracked::assume_new
 pub fn page_to_thread_with_endpoint(
     page_ptr: PagePtr,
     page_perm: Tracked<PagePerm4k>,
@@ -128,6 +131,7 @@ pub fn page_to_thread_with_endpoint(
 }
 
 #[verifier(external_body)]
+// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn thread_set_blocking_endpoint_endpoint_ref_scheduler_ref_state_and_ipc_payload(
     thread_ptr: ThreadPtr,
     thread_perm: &mut Tracked<PointsTo<Thread>>,
@@ -171,6 +175,7 @@ pub fn thread_set_blocking_endpoint_endpoint_ref_scheduler_ref_state_and_ipc_pay
 }
 
 #[verifier(external_body)]
+// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn thread_set_endpoint_descriptor(
     thread_ptr: ThreadPtr,
     thread_perm: &mut Tracked<PointsTo<Thread>>,
@@ -211,6 +216,7 @@ pub fn thread_set_endpoint_descriptor(
 }
 
 #[verifier(external_body)]
+// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn thread_set_state(
     thread_ptr: ThreadPtr,
     thread_perm: &mut Tracked<PointsTo<Thread>>,
@@ -244,6 +250,7 @@ pub fn thread_set_state(
 }
 
 #[verifier(external_body)]
+// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn thread_set_current_cpu(
     thread_ptr: ThreadPtr,
     thread_perm: &mut Tracked<PointsTo<Thread>>,
@@ -277,6 +284,7 @@ pub fn thread_set_current_cpu(
 }
 
 #[verifier(external_body)]
+// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn thread_set_error_code(
     thread_ptr: ThreadPtr,
     thread_perm: &mut Tracked<PointsTo<Thread>>,
@@ -313,6 +321,7 @@ pub fn thread_set_error_code(
 }
 
 #[verifier(external_body)]
+// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn thread_set_trap_frame_fast(
     thread_ptr: ThreadPtr,
     thread_perm: &mut Tracked<PointsTo<Thread>>,
@@ -350,6 +359,7 @@ pub fn thread_set_trap_frame_fast(
 }
 
 #[verifier(external_body)]
+// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn thread_set_trap_frame_full(
     thread_ptr: ThreadPtr,
     thread_perm: &mut Tracked<PointsTo<Thread>>,

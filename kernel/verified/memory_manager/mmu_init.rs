@@ -475,6 +475,7 @@ impl MMUManager {
     }
 
     #[verifier(external_body)]
+    // external_body(unproven): in a file outside the module tree, so not compiled
     pub fn new() -> (ret: MMUManager)
         ensures
             ret.free_pcids.wf(),

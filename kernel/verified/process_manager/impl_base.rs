@@ -38,6 +38,7 @@ impl ProcessManager {
     }
 
     #[verifier(external_body)]
+    // external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
     pub fn init(
         &mut self,
         dom_0_container_ptr: ContainerPtr,
