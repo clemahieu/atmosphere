@@ -1425,6 +1425,7 @@ impl PageAllocator {
             old(self).free_pages_4k.len() > 0,
             old(self).container_map_4k@.dom().contains(c_ptr),
         ensures
+            final(self).mapped_pages_4k_kept(*old(self)),
             crate::pptr::page_is_zero(final(self).page_perms_4k@[ret].value()),
             final(self).wf(),
             // self.free_pages_4k() =~= old(self).free_pages_4k(),

@@ -140,6 +140,9 @@ impl Kernel {
                 spec_va2index(target_va).2,
             ).unwrap().addr == tagret_l1_p,
         ensures
+            final(self).page_alloc.mapped_pages_4k_kept(old(self).page_alloc),
+            final(self).page_alloc.mapped_pages_4k().contains(ret.addr),
+            crate::pptr::page_is_zero(final(self).page_alloc.page_perms_4k@[ret.addr].value()),
             final(self).wf(),
             final(self).proc_dom() == old(self).proc_dom(),
             final(self).thread_dom() == old(self).thread_dom(),
@@ -510,6 +513,9 @@ impl Kernel {
             va_4k_valid(target_va),
             old(self).get_address_space(target_proc_ptr).dom().contains(target_va) == false,
         ensures
+            final(self).page_alloc.mapped_pages_4k_kept(old(self).page_alloc),
+            final(self).page_alloc.mapped_pages_4k().contains(ret.1.addr),
+            crate::pptr::page_is_zero(final(self).page_alloc.page_perms_4k@[ret.1.addr].value()),
             ret.0 <= 4,
             final(self).wf(),
             final(self).proc_dom() == old(self).proc_dom(),
@@ -775,6 +781,11 @@ impl Kernel {
                 ).dom().contains(va_range@[i]) == false,
             va_range.len * 4 < usize::MAX,
         ensures
+            forall|j: int|
+                #![trigger ret.1@[j]]
+                0 <= j < va_range.len ==> crate::pptr::page_is_zero(
+                    final(self).page_alloc.page_perms_4k@[ret.1@[j]].value(),
+                ),
             final(self).wf(),
             final(self).proc_dom() == old(self).proc_dom(),
             final(self).thread_dom() == old(self).thread_dom(),
@@ -971,6 +982,12 @@ impl Kernel {
                         va_range@[j as int],
                     ),
                 page_diff@.len() == i,
+                forall|j: int|
+                    #![trigger page_diff@[j]]
+                    0 <= j < i ==> self.page_alloc.mapped_pages_4k().contains(page_diff@[j])
+                        && crate::pptr::page_is_zero(
+                        self.page_alloc.page_perms_4k@[page_diff@[j]].value(),
+                    ),
                 forall|j: usize|
                     #![auto]
                     0 <= j < i ==> self.get_address_space(target_proc_ptr)[va_range@[j as int]].addr

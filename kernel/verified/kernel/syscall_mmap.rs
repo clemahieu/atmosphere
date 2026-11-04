@@ -126,6 +126,11 @@ pub open spec fn syscall_mmap_spec(
                 p_ptr,
             ).dom().contains(va) ==> new.get_address_space(proc_ptr)[new_va].addr
                 != old.get_address_space(p_ptr)[va].addr
+        &&& forall|i: int|
+            #![trigger mmapped_physcial_pages_seq[i]]
+            0 <= i < va_range.len ==> crate::pptr::page_is_zero(
+                new.page_alloc.page_perms_4k@[mmapped_physcial_pages_seq[i]].value(),
+            )
         &&& forall|new_va: VAddr|
             #![trigger new.get_address_space(proc_ptr).dom().contains(new_va)]
             va_range@.contains(new_va) ==> new.get_address_space(proc_ptr).dom().contains(new_va)
