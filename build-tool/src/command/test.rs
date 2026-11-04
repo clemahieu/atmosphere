@@ -22,6 +22,9 @@ const LICENSE_GUARD_TEST: &str = ".claude/hooks/license-guard-test.sh";
 /// The boot stack's check, relative to the project root.
 const BOOT_STACK_CHECK: &str = "tools/check-boot-stack.py";
 
+/// The coverage report, relative to the project root.
+const COVERAGE: &str = "tools/coverage.py";
+
 /// The payload `atmo run` loads by default.
 const PAYLOAD: &str = "hello";
 
@@ -44,6 +47,7 @@ pub(super) async fn run(global: GlobalOpts) -> Result<()> {
         ("verify", check_verify(&project).await),
         ("external body", external_body::check(&project)),
         ("boot stack", check_boot_stack(&project).await),
+        ("coverage", check_coverage(&project).await),
         ("boot", check_boot(&project, local.boot_timeout).await),
     ];
 
@@ -101,6 +105,23 @@ async fn check_boot_stack(project: &ProjectHandle) -> Result<String> {
         run_check(project, BOOT_STACK_CHECK, args).await?;
     }
     Ok("debug and release, normal and overflow".to_string())
+}
+
+/// Reports coverage per crate. A low number does not fail the gate: only a capture that fails does.
+async fn check_coverage(project: &ProjectHandle) -> Result<String> {
+    let root = project.root();
+    let output = Command::new(root.join(COVERAGE))
+        .current_dir(&root)
+        .stdin(Stdio::null())
+        .stderr(Stdio::inherit())
+        .output()
+        .await
+        .with_context(|| COVERAGE.to_string())?;
+    if !output.status.success() {
+        return Err(anyhow!("{}: {}", COVERAGE, output.status));
+    }
+    let report = String::from_utf8_lossy(&output.stdout);
+    Ok(format!("\n  {}", report.trim_end().replace('\n', "\n  ")))
 }
 
 /// Runs a check from the tree, at the project root; it reports on failure with its exit status.

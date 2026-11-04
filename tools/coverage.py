@@ -160,12 +160,14 @@ def main():
     kernel_bias = entry - entry_point(KERNEL)
     dom0_log = log[log.index("Loading dom0"):]
     dom0_bias = int(re.search(r"Load Bias: 0x([0-9a-f]+)", dom0_log).group(1), 16)
-    images = {
-        "kernel": report(KERNEL, sock, "pmemsave", kernel_bias),
-        "dom0": report(DOM0, sock, "memsave", dom0_bias),
-    }
-    sock.sendall(b"quit\n")
-    qemu.wait(timeout=30)
+    try:
+        images = {
+            "kernel": report(KERNEL, sock, "pmemsave", kernel_bias),
+            "dom0": report(DOM0, sock, "memsave", dom0_bias),
+        }
+    finally:
+        sock.sendall(b"quit\n")
+        qemu.wait(timeout=30)
     for image, crates in images.items():
         for crate, totals in sorted(crates.items()):
             print(f"{image}/{crate}: " + ", ".join(
