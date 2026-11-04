@@ -16,6 +16,12 @@ use crate::project::{BuildOptions, Project, ProjectHandle};
 /// Holds the number of verification errors the gate accepts, relative to the project root.
 const VERIFY_ALLOWANCE_PATH: &str = "tools/verify-allowance";
 
+/// The license guard's tests, relative to the project root.
+const LICENSE_GUARD_TEST: &str = ".claude/hooks/license-guard-test.sh";
+
+/// The boot stack's check, relative to the project root.
+const BOOT_STACK_CHECK: &str = "tools/check-boot-stack.py";
+
 /// The payload `atmo run` loads by default.
 const PAYLOAD: &str = "hello";
 
@@ -34,7 +40,9 @@ pub(super) async fn run(global: GlobalOpts) -> Result<()> {
     let results = [
         ("build", check_build(&project).await),
         ("license", license::check(&project)),
+        ("license guard", check_license_guard(&project).await),
         ("verify", check_verify(&project).await),
+        ("boot stack", check_boot_stack(&project).await),
         ("boot", check_boot(&project, local.boot_timeout).await),
     ];
 
@@ -73,6 +81,41 @@ async fn check_build(project: &ProjectHandle) -> Result<String> {
     project.user(PAYLOAD).build(&options).await.context("payload")?;
 
     Ok("build-tool, loader, kernel, dom0 and payload".to_string())
+}
+
+async fn check_license_guard(project: &ProjectHandle) -> Result<String> {
+    run_check(project, LICENSE_GUARD_TEST, &[]).await?;
+    Ok("the guard refuses what it must".to_string())
+}
+
+async fn check_boot_stack(project: &ProjectHandle) -> Result<String> {
+    // Each profile's overflow build comes first, so the images left behind are the normal ones.
+    let runs: [&[&str]; 4] = [
+        &["debug", "overflow"],
+        &["debug"],
+        &["release", "overflow"],
+        &["release"],
+    ];
+    for args in runs {
+        run_check(project, BOOT_STACK_CHECK, args).await?;
+    }
+    Ok("debug and release, normal and overflow".to_string())
+}
+
+/// Runs a check from the tree, at the project root; it reports on failure with its exit status.
+async fn run_check(project: &ProjectHandle, program: &str, args: &[&str]) -> Result<()> {
+    let root = project.root();
+    let status = Command::new(root.join(program))
+        .args(args)
+        .current_dir(&root)
+        .stdin(Stdio::null())
+        .status()
+        .await
+        .with_context(|| program.to_string())?;
+    if !status.success() {
+        return Err(anyhow!("{} {}: {}", program, args.join(" "), status));
+    }
+    Ok(())
 }
 
 async fn check_verify(project: &ProjectHandle) -> Result<String> {
