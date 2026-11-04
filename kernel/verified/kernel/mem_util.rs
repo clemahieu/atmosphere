@@ -53,6 +53,7 @@ impl Kernel {
             va_4k_valid(va),
             old(self).get_address_space(proc_ptr).dom().contains(va) == false,
         ensures
+            final(self).page_alloc.mapped_pages_4k_kept(old(self).page_alloc),
             ret.0 <= 3,
             final(self).wf(),
             final(self).proc_dom() == old(self).proc_dom(),
