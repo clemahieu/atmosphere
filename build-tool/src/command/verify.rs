@@ -71,6 +71,8 @@ pub(super) async fn run(global: GlobalOpts) -> Result<()> {
             .arg("--crate-type")
             .arg("lib")
             .arg(root)
+            // slinkedlist::remove_helper7 needs more than the default solver budget.
+            .args(&["--rlimit", "100"])
             .args(&local.extra_args)
             .status()
     });

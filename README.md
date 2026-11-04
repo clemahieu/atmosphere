@@ -4,17 +4,14 @@ Atmosphere is a proving ground for novel isolation techniques and formal verific
 
 ## Development Setup
 
-We use [Nix](https://nixos.org) to manage development dependencies.
-Install Nix with the following command:
+Install [rustup](https://rustup.rs) (the pinned nightly comes from
+`rust-toolchain.toml`) and, from the system package manager, `nasm`, `qemu`,
+`gdb`, `jq` and, for bootable ISOs, `grub2` and `xorriso`. Then build the Verus
+fork used for verification and put the toolchain on `PATH`:
 
 ```bash
-# Using https://github.com/DeterminateSystems/nix-installer
-curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install
-```
-First enter nix
-
-```bash
-nix develop
+tools/setup-verus.sh
+source tools/env.sh
 ```
 
 You can now build and run Atmosphere with `cd kernel && cargo run`.
