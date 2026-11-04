@@ -134,7 +134,7 @@ pub fn page_perm_to_page_map(page_ptr: PagePtr, Tracked(page_perm): Tracked<Page
     Tracked<PointsTo<PageMap>>,
 ))
     requires
-        page_perm.is_init(),
+        page_perm.is_uninit(),
         page_perm.addr() == page_ptr,
     ensures
         ret.0 == page_ptr,

@@ -40,7 +40,7 @@ impl ProcessManager {
             old(self).get_container_by_proc_ptr(proc_ptr).quota.mem_4k > 0,
             old(self).get_container_by_proc_ptr(proc_ptr).scheduler.len()
                 < MAX_CONTAINER_SCHEDULER_LEN,
-            page_perm@.is_init(),
+            page_perm@.is_uninit(),
             page_perm@.addr() == page_ptr,
         ensures
             final(self).wf(),
@@ -205,7 +205,7 @@ impl ProcessManager {
             ).get_endpoint_ptr_by_endpoint_idx(thread_ptr, endpoint_index).is_Some(),
             old(self).get_endpoint_by_endpoint_idx(thread_ptr,endpoint_index).unwrap().rf_counter_is_full() == false 
                 || old(self).get_endpoint(old(self).get_endpoint_ptr_by_endpoint_idx(thread_ptr, endpoint_index).unwrap()).rf_counter_is_full() == false,
-            page_perm@.is_init(),
+            page_perm@.is_uninit(),
             page_perm@.addr() == page_ptr,
         ensures
             final(self).wf(),

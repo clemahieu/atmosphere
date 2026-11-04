@@ -58,7 +58,7 @@ impl ProcessManager {
             final(self).page_closure() =~= old(self).page_closure().remove(ret.0),
             old(self).page_closure().contains(ret.0),
             ret.0 == ret.1@.addr(),
-            ret.1@.is_init(),
+            ret.1@.is_uninit(),
             old(self).container_dom().contains(ret.0) == false,
     {
         broadcast use ProcessManager::reveal_process_manager_wf;
@@ -201,7 +201,7 @@ impl ProcessManager {
             final(self).page_closure() =~= old(self).page_closure().remove(ret.0),
             old(self).page_closure().contains(ret.0),
             ret.0 == ret.1@.addr(),
-            ret.1@.is_init(),
+            ret.1@.is_uninit(),
             old(self).container_dom().contains(ret.0) == false,
     {
         broadcast use ProcessManager::reveal_process_manager_wf;
@@ -330,11 +330,11 @@ impl ProcessManager {
                 &&& final(self).page_closure() =~= old(self).page_closure().remove(ret.0.0).remove(ret.1.unwrap().0)
                 &&& old(self).page_closure().contains(ret.0.0)
                 &&& ret.0.0 == ret.0.1@.addr()
-                &&& ret.0.1@.is_init()
+                &&& ret.0.1@.is_uninit()
                 &&& old(self).container_dom().contains(ret.0.0) == false
                 &&& old(self).page_closure().contains(ret.1.unwrap().0)
                 &&& ret.1.unwrap().0 == ret.1.unwrap().1@.addr()
-                &&& ret.1.unwrap().1@.is_init()
+                &&& ret.1.unwrap().1@.is_uninit()
                 &&& old(self).container_dom().contains(ret.1.unwrap().0) == false
                 &&& ret.0.0 != ret.1.unwrap().0
             },
@@ -342,7 +342,7 @@ impl ProcessManager {
                 &&& final(self).page_closure() =~= old(self).page_closure().remove(ret.0.0)
                 &&& old(self).page_closure().contains(ret.0.0)
                 &&& ret.0.0 == ret.0.1@.addr()
-                &&& ret.0.1@.is_init()
+                &&& ret.0.1@.is_uninit()
                 &&& old(self).container_dom().contains(ret.0.0) == false
             },
     {

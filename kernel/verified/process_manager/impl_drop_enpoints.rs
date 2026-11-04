@@ -45,7 +45,7 @@ impl ProcessManager {
             ret.is_Some() ==> final(self).page_closure() =~= old(self).page_closure().remove(ret.unwrap().0),
             ret.is_Some() ==> old(self).page_closure().contains(ret.unwrap().0),
             ret.is_Some() ==> ret.unwrap().0 == ret.unwrap().1@.addr(),
-            ret.is_Some() ==> ret.unwrap().1@.is_init(),
+            ret.is_Some() ==> ret.unwrap().1@.is_uninit(),
             ret.is_Some() ==> old(self).container_dom().contains(ret.unwrap().0) == false,
             ret.is_None() ==> final(self).page_closure() =~= old(self).page_closure(),
             ret.is_None() ==> containers_unchanged(*old(self), *final(self)),

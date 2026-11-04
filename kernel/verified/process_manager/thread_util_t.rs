@@ -19,7 +19,7 @@ pub fn page_to_thread(
     scheduler_rev_ptr: SLLIndex,
 ) -> (ret: (ThreadPtr, Tracked<PointsTo<Thread>>))
     requires
-        page_perm@.is_init(),
+        page_perm@.is_uninit(),
         page_perm@.addr() == page_ptr,
     ensures
         ret.0 == page_ptr,
@@ -70,7 +70,7 @@ pub fn thread_to_page(
         thread_perm@.addr() == thread_ptr,
     ensures
         ret.0 == thread_ptr,
-        ret.1@.is_init(),
+        ret.1@.is_uninit(),
         ret.1@.addr() == ret.0,
 {
     (thread_ptr, Tracked::assume_new())
@@ -89,7 +89,7 @@ pub fn page_to_thread_with_endpoint(
     endpoint_ptr: EndpointPtr,
 ) -> (ret: (ThreadPtr, Tracked<PointsTo<Thread>>))
     requires
-        page_perm@.is_init(),
+        page_perm@.is_uninit(),
         page_perm@.addr() == page_ptr,
     ensures
         ret.0 == page_ptr,

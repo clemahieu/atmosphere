@@ -336,11 +336,11 @@ pub fn merge_4k_pages_to_2m_page(target_page_idx:usize, page_perms: Tracked<Map<
             ==>
             page_perms@.dom().contains(i)
             &&
-            page_perms@[i].is_init()
+            page_perms@[i].is_uninit()
             &&
             page_perms@[i].addr() == page_index2page_ptr((target_page_idx + i) as usize),
     ensures
-        ret@.is_init(),
+        ret@.is_uninit(),
         ret@.addr() == page_index2page_ptr(target_page_idx),
     {
         Tracked::assume_new()
@@ -350,7 +350,7 @@ pub fn merge_4k_pages_to_2m_page(target_page_idx:usize, page_perms: Tracked<Map<
 // external_body(gap): takes its permission from Tracked::assume_new, which Verus cannot check
 pub fn split_2m_pages_to_pages(target_page_idx:usize, page_perm: Tracked<PagePerm2m>) -> (ret: Tracked<Map<usize, PagePerm4k>>)
     requires
-        page_perm@.is_init(),
+        page_perm@.is_uninit(),
         page_perm@.addr() == page_index2page_ptr(target_page_idx),
     ensures
         forall|i:usize|
@@ -360,7 +360,7 @@ pub fn split_2m_pages_to_pages(target_page_idx:usize, page_perm: Tracked<PagePer
             ==>
             ret@.dom().contains(i)
             &&
-            ret@[i].is_init()
+            ret@[i].is_uninit()
             &&
             ret@[i].addr() == page_index2page_ptr(i),
     {
