@@ -32,7 +32,6 @@ lemma/lemma_t.rs	set_add_lemma	unproven	a lemma stated without a proof
 lemma/lemma_t.rs	set_insert_lemma	unproven	a lemma stated without a proof
 lemma/lemma_t.rs	set_lemma	unproven	a lemma stated without a proof
 lemma/lemma_u.rs	map_insert_lemma	unproven	a lemma stated without a proof
-memory_manager/mmu_init.rs	new	unproven	in a file outside the module tree, so not compiled
 memory_manager/mmu_util.rs	iommu_table_array_create_iommu_table_l2_entry_t	unproven	an array element access not proven yet
 memory_manager/mmu_util.rs	iommu_table_array_create_iommu_table_l3_entry_t	unproven	an array element access not proven yet
 memory_manager/mmu_util.rs	iommu_table_array_create_iommu_table_l4_entry_t	unproven	an array element access not proven yet
@@ -54,7 +53,6 @@ memory_manager/spec_impl.rs	new	unproven	initialisation not proven yet
 pagetable/pagemap_util_t.rs	page_map_set	glue	writes a hardware page table through a raw pointer
 pagetable/pagemap_util_t.rs	page_map_set_no_requires	glue	writes a hardware page table through a raw pointer
 pagetable/pagemap_util_t.rs	page_perm_to_page_map	glue	writes a hardware page table through a raw pointer
-pcid_alloc.rs	new	unproven	in a file outside the module tree, so not compiled
 process_manager/container_util_t.rs	container_insert_cpu	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
 process_manager/container_util_t.rs	container_perms_subset_remove	unproven	updates ghost state only, so its body is empty; the update is assumed, not proven
 process_manager/container_util_t.rs	container_perms_update_subtree_set	unproven	updates ghost state only, so its body is empty; the update is assumed, not proven
