@@ -128,6 +128,18 @@ impl AddressSpace {
         table
     }
 
+    /// Removes the mapping of a 4K page, so that any access to it faults.
+    pub unsafe fn unmap(&mut self, vaddr: u64) {
+        let mut cur = self.pml4;
+        for level in 0..3 {
+            let entry = (*cur).read(Self::index(vaddr, level));
+            assert!(entry.present() && !entry.page_size_bit());
+            cur = entry.address() as *mut PageTable;
+        }
+        (*cur).write(Self::index(vaddr, 3), Entry::new());
+        core::arch::asm!("invlpg [{}]", in(reg) vaddr);
+    }
+
     fn index(address: u64, level: usize) -> usize {
         match level {
             0 => ((address >> 39) & LEVEL_MASK) as usize,
