@@ -17,7 +17,8 @@ git -C "$verus" cat-file -e "$commit^{commit}" 2>/dev/null || git -C "$verus" fe
 git -C "$verus" checkout --quiet "$commit"
 
 cd "$verus/source"
-if [ ! -x z3 ]; then
+z3_version="$(sed -n 's/^z3_version="\(.*\)"$/\1/p' tools/get-z3.sh)"
+if [ ! -x z3 ] || ! ./z3 --version | grep -qF "$z3_version"; then
     ./tools/get-z3.sh
 fi
 source ../tools/activate
