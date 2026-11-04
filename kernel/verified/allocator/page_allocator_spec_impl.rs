@@ -615,22 +615,25 @@ impl PageAllocator {
     pub open spec fn perm_wf(&self) -> bool {
         &&& self.page_perms_4k@.dom() =~= self.mapped_pages_4k@ + self.free_pages_4k@.to_set()
         &&& forall|p: PagePtr|
-            #![trigger self.page_perms_4k@[p].is_init()]
             #![trigger self.page_perms_4k@[p].addr()]
-            self.page_perms_4k@.dom().contains(p) ==> self.page_perms_4k@[p].is_init()
-                && self.page_perms_4k@[p].addr() == p
+            self.page_perms_4k@.dom().contains(p) ==> self.page_perms_4k@[p].addr() == p
+        &&& forall|p: PagePtr|
+            #![trigger self.free_pages_4k@.contains(p)]
+            self.free_pages_4k@.contains(p) ==> self.page_perms_4k@[p].is_uninit()
         &&& self.page_perms_2m@.dom() =~= self.mapped_pages_2m@ + self.free_pages_2m@.to_set()
         &&& forall|p: PagePtr|
-            #![trigger self.page_perms_2m@[p].is_init()]
             #![trigger self.page_perms_2m@[p].addr()]
-            self.page_perms_2m@.dom().contains(p) ==> self.page_perms_2m@[p].is_init()
-                && self.page_perms_2m@[p].addr() == p
+            self.page_perms_2m@.dom().contains(p) ==> self.page_perms_2m@[p].addr() == p
+        &&& forall|p: PagePtr|
+            #![trigger self.free_pages_2m@.contains(p)]
+            self.free_pages_2m@.contains(p) ==> self.page_perms_2m@[p].is_uninit()
         &&& self.page_perms_1g@.dom() =~= self.mapped_pages_1g@ + self.free_pages_1g@.to_set()
         &&& forall|p: PagePtr|
-            #![trigger self.page_perms_1g@[p].is_init()]
             #![trigger self.page_perms_1g@[p].addr()]
-            self.page_perms_1g@.dom().contains(p) ==> self.page_perms_1g@[p].is_init()
-                && self.page_perms_1g@[p].addr() == p
+            self.page_perms_1g@.dom().contains(p) ==> self.page_perms_1g@[p].addr() == p
+        &&& forall|p: PagePtr|
+            #![trigger self.free_pages_1g@.contains(p)]
+            self.free_pages_1g@.contains(p) ==> self.page_perms_1g@[p].is_uninit()
     }
 
     pub open spec fn container_wf(&self) -> bool {
@@ -1008,7 +1011,7 @@ impl PageAllocator {
                 final(self).page_is_mapped(p) ==> final(self).page_mappings(p) =~= old(self).page_mappings(p)
                     && final(self).page_io_mappings(p) =~= old(self).page_io_mappings(p),
             ret.0 == ret.1@.addr(),
-            ret.1@.is_init(),
+            ret.1@.is_uninit(),
     {
         proof {
             page_ptr_lemma1();
@@ -1085,7 +1088,7 @@ impl PageAllocator {
             old(self).wf(),
             old(self).allocated_pages_2m().contains(target_ptr),
             target_ptr == target_perm.addr(),
-            target_perm.is_init(),
+            target_perm.is_uninit(),
         ensures
             final(self).wf(),
             final(self).free_pages_4k() =~= old(self).free_pages_4k(),
@@ -1176,7 +1179,7 @@ impl PageAllocator {
             forall|p: PagePtr|
                 final(self).page_is_mapped(p) ==> final(self).page_mappings(p) =~= old(self).page_mappings(p)
                     && final(self).page_io_mappings(p) =~= old(self).page_io_mappings(p),
-            ret.1@.is_init(),
+            ret.1@.is_uninit(),
             ret.1@.addr() == ret.0,
             old(self).allocated_pages_4k().contains(ret.0) == false,
             forall|c: ContainerPtr|
@@ -1259,7 +1262,7 @@ impl PageAllocator {
             forall|p: PagePtr|
                 final(self).page_is_mapped(p) ==> final(self).page_mappings(p) =~= old(self).page_mappings(p)
                     && final(self).page_io_mappings(p) =~= old(self).page_io_mappings(p),
-            ret.1@.is_init(),
+            ret.1@.is_uninit(),
             ret.1@.addr() == ret.0,
             old(self).allocated_pages_4k().contains(ret.0) == false,
             forall|c: ContainerPtr|
@@ -1329,7 +1332,7 @@ impl PageAllocator {
             old(self).wf(),
             old(self).allocated_pages_4k().contains(target_ptr),
             target_ptr == target_perm.addr(),
-            target_perm.is_init(),
+            target_perm.is_uninit(),
             old(self).container_map_4k@.dom().contains(target_ptr) == false,
             old(self).container_map_2m@.dom().contains(target_ptr) == false,
             old(self).container_map_1g@.dom().contains(target_ptr) == false,
@@ -2028,6 +2031,12 @@ impl PageAllocator {
             self.free_pages_4k@.unique_seq_to_set();
             self.len_lemma_mapped_4k(target_ptr);
         }
+        // The page leaves the process: forget its contents so a free page is uninitialised.
+        proof {
+            let tracked mut freed_perm = self.page_perms_4k.borrow_mut().tracked_remove(target_ptr);
+            freed_perm.leak_contents();
+            self.page_perms_4k.borrow_mut().tracked_insert(target_ptr, freed_perm);
+        }
         let rev_index = self.free_pages_4k.push(&target_ptr);
         self.set_rev_pointer(page_ptr2page_index(target_ptr), rev_index);
         self.set_ref_count(page_ptr2page_index(target_ptr), 0);
@@ -2332,6 +2341,12 @@ impl PageAllocator {
         }
 
         let c_ptr = self.page_array.get(page_ptr2page_index(target_ptr)).owning_container.unwrap();
+        // The page leaves the process: forget its contents so a free page is uninitialised.
+        proof {
+            let tracked mut freed_perm = self.page_perms_4k.borrow_mut().tracked_remove(target_ptr);
+            freed_perm.leak_contents();
+            self.page_perms_4k.borrow_mut().tracked_insert(target_ptr, freed_perm);
+        }
         let rev_index = self.free_pages_4k.push(&target_ptr);
         self.set_rev_pointer(page_ptr2page_index(target_ptr), rev_index);
         self.set_ref_count(page_ptr2page_index(target_ptr), 0);
@@ -2556,7 +2571,7 @@ impl PageAllocator {
                     ==>
                     merged_4k_page_perms@.dom().contains(i)
                     &&
-                    merged_4k_page_perms@[i].is_init()
+                    merged_4k_page_perms@[i].is_uninit()
                     &&
                     merged_4k_page_perms@[i].addr() == page_index2page_ptr((target_page_idx + i) as usize),
                 target_page_idx + 512 <= NUM_PAGES,
@@ -2666,7 +2681,7 @@ impl PageAllocator {
                         });
             let tracked page_perm = self.page_perms_4k.borrow_mut().tracked_remove(page_index2page_ptr(page_index));
             proof{
-                assert(page_perm.is_init());
+                assert(page_perm.is_uninit());
                 assert(page_perm.addr() == page_index2page_ptr(page_index));
                 let old = merged_4k_page_perms@;
                 merged_4k_page_perms.borrow_mut().tracked_insert(index, page_perm);
@@ -2822,7 +2837,7 @@ impl PageAllocator {
                 ==>
                 pages_perms@.dom().contains(i)
                 &&
-                pages_perms@[i].is_init()
+                pages_perms@[i].is_uninit()
                 &&
                 pages_perms@[i].addr() == page_index2page_ptr(i)
         );
@@ -2881,7 +2896,7 @@ impl PageAllocator {
                     ==>
                     pages_perms@.dom().contains(i)
                     &&
-                    pages_perms@[i].is_init()
+                    pages_perms@[i].is_uninit()
                     &&
                     pages_perms@[i].addr() == page_index2page_ptr(i)
                     ,

@@ -212,7 +212,7 @@ pub fn page_to_proc(
     depth: usize,
 ) -> (ret: (ProcPtr, Tracked<PointsTo<Process>>))
     requires
-        page_perm@.is_init(),
+        page_perm@.is_uninit(),
         page_perm@.addr() == page_ptr,
     ensures
         ret.0 == page_ptr,
@@ -261,7 +261,7 @@ pub fn proc_to_page(
         proc_perm@.addr() == proc_ptr,
     ensures
         ret.0 == proc_ptr,
-        ret.1@.is_init(),
+        ret.1@.is_uninit(),
         ret.1@.addr() == ret.0,
 {
     (proc_ptr, Tracked::assume_new())
@@ -282,7 +282,7 @@ pub fn page_to_proc_with_first_thread(
     depth: usize,
 ) -> (ret: (ProcPtr, Tracked<PointsTo<Process>>, SLLIndex))
     requires
-        page_perm@.is_init(),
+        page_perm@.is_uninit(),
         page_perm@.addr() == page_ptr,
     ensures
         ret.0 == page_ptr,

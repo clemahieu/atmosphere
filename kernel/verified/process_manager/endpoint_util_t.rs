@@ -262,7 +262,7 @@ pub fn page_to_endpoint(page_ptr: PagePtr, page_perm: Tracked<PagePerm4k>) -> (r
     Tracked<PointsTo<Endpoint>>,
 ))
     requires
-        page_perm@.is_init(),
+        page_perm@.is_uninit(),
         page_perm@.addr() == page_ptr,
     ensures
         ret.0 == page_ptr,
@@ -297,7 +297,7 @@ pub fn endpoint_to_page(endpoint_ptr: EndpointPtr, endpoint_perm: Tracked<Points
         endpoint_perm@.addr() == endpoint_ptr, 
     ensures
         ret.0 == endpoint_ptr,
-        ret.1@.is_init(),
+        ret.1@.is_uninit(),
         ret.1@.addr() == endpoint_ptr,
 {
     (endpoint_ptr, Tracked::assume_new())
@@ -311,7 +311,7 @@ pub fn page_to_endpoint_with_thread_and_container(
     page_perm: Tracked<PagePerm4k>,
 ) -> (ret: (EndpointPtr, Tracked<PointsTo<Endpoint>>))
     requires
-        page_perm@.is_init(),
+        page_perm@.is_uninit(),
         page_perm@.addr() == page_ptr,
     ensures
         ret.0 == page_ptr,

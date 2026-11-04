@@ -47,7 +47,7 @@ impl ProcessManager {
             final(self).page_closure() =~= old(self).page_closure().remove(ret.0),
             old(self).page_closure().contains(ret.0),
             ret.0 == ret.1@.addr(),
-            ret.1@.is_init(),
+            ret.1@.is_uninit(),
             old(self).container_dom().contains(ret.0) == false,
             final(self).get_proc(old(self).get_proc(proc_ptr).parent.unwrap()).children@ =~= 
                 old(self).get_proc(old(self).get_proc(proc_ptr).parent.unwrap()).children@.remove_value(proc_ptr),
@@ -251,7 +251,7 @@ impl ProcessManager {
             final(self).page_closure() =~= old(self).page_closure().remove(ret.0),
             old(self).page_closure().contains(ret.0),
             ret.0 == ret.1@.addr(),
-            ret.1@.is_init(),
+            ret.1@.is_uninit(),
             old(self).container_dom().contains(ret.0) == false,
             forall|p_ptr:ProcPtr| #![auto] final(self).proc_dom().contains(p_ptr)
                 ==>
@@ -344,6 +344,41 @@ impl ProcessManager {
             old(self).container_perms@[container_ptr].value().owned_procs.unique_implys_no_duplicates();
         };
         assert(self.threads_process_wf()) by {
+            assert(self.container_dom() =~= old(self).container_dom());
+            assert(self.proc_dom() =~= old(self).proc_dom().remove(proc_ptr));
+            assert forall|p_ptr: ProcPtr, child_t_ptr: ThreadPtr|
+                #![trigger self.process_perms@.dom().contains(p_ptr), self.thread_perms@[child_t_ptr].value().owning_proc]
+                #![trigger self.process_perms@[p_ptr].value().owned_threads@.contains(child_t_ptr)]
+                self.process_perms@.dom().contains(p_ptr)
+                    && self.process_perms@[p_ptr].value().owned_threads@.contains(child_t_ptr)
+                implies self.thread_perms@.dom().contains(child_t_ptr)
+                    && self.thread_perms@[child_t_ptr].value().owning_proc == p_ptr by {
+                assert(old(self).process_perms@.dom().contains(p_ptr));
+                assert(self.process_perms@[p_ptr] == old(self).process_perms@[p_ptr]);
+                assert(old(self).process_perms@[p_ptr].value().owned_threads@.contains(child_t_ptr));
+            };
+            assert forall|t_ptr: ThreadPtr|
+                #![trigger self.thread_perms@[t_ptr].value().owning_proc]
+                #![trigger self.process_perms@[self.thread_perms@[t_ptr].value().owning_proc].value().owned_threads]
+                self.thread_perms@.dom().contains(t_ptr)
+                implies
+                self.container_dom().contains(self.thread_perms@[t_ptr].value().owning_container)
+                && self.process_perms@.dom().contains(self.thread_perms@[t_ptr].value().owning_proc)
+                && self.process_perms@[self.thread_perms@[t_ptr].value().owning_proc].value().owned_threads@.contains(t_ptr)
+                && self.process_perms@[self.thread_perms@[t_ptr].value().owning_proc].value().owned_threads.get_node_ref(t_ptr)
+                    == self.thread_perms@[t_ptr].value().proc_rev_ptr
+                && self.process_perms@[self.thread_perms@[t_ptr].value().owning_proc].value().owning_container
+                    == self.thread_perms@[t_ptr].value().owning_container by {
+                let p = old(self).thread_perms@[t_ptr].value().owning_proc;
+                assert(old(self).process_perms@.dom().contains(p));
+                assert(old(self).process_perms@[p].value().owned_threads@.contains(t_ptr));
+                if p == proc_ptr {
+                    assert(old(self).get_proc(proc_ptr).owned_threads@ == Seq::<ThreadPtr>::empty());
+                    assert(false);
+                }
+                assert(self.process_perms@.dom().contains(p));
+                assert(self.process_perms@[p] == old(self).process_perms@[p]);
+            };
         };
         assert(self.threads_perms_wf());
         assert(self.endpoint_perms_wf());

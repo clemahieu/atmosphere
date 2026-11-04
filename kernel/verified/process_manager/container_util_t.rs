@@ -694,7 +694,7 @@ pub fn page_to_container(
     first_thread: ThreadPtr,
 ) -> (ret: (SLLIndex, SLLIndex, ContainerPtr, Tracked<PointsTo<Container>>))
     requires
-        page_perm@.is_init(),
+        page_perm@.is_uninit(),
         page_perm@.addr() == page_ptr,
     ensures
         ret.3@.is_init(),
@@ -749,7 +749,7 @@ pub fn container_to_page(
         container_perm@.is_init(),
         container_perm@.addr() == container_ptr,
     ensures
-        ret.1@.is_init(),
+        ret.1@.is_uninit(),
         ret.0 == container_ptr,
 {
     (container_ptr, Tracked::assume_new())
@@ -771,7 +771,7 @@ pub fn page_to_container_tree_version(
     uppertree_seq: Ghost<Seq<ContainerPtr>>,
 ) -> (ret: (SLLIndex, SLLIndex, ContainerPtr, Tracked<PointsTo<Container>>))
     requires
-        page_perm@.is_init(),
+        page_perm@.is_uninit(),
         page_perm@.addr() == page_ptr,
     ensures
         ret.3@.is_init(),
@@ -834,7 +834,7 @@ pub fn page_to_container_tree_version_1(
     root_process: Option<ProcPtr>,
 ) -> (ret: (ContainerPtr, Tracked<PointsTo<Container>>))
     requires
-        page_perm@.is_init(),
+        page_perm@.is_uninit(),
         page_perm@.addr() == page_ptr,
     ensures
         ret.1@.is_init(),
