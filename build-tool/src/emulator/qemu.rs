@@ -51,11 +51,14 @@ impl Emulator for Qemu {
             + &format!(" qemu_debug_exit_io_base={}", self.debug_exit_io_base);
         let suppress_initial_outputs = config.suppress_initial_outputs; // FIXME
 
-        let mut command = Command::new("sudo");
-        command
-            .arg("-E")                         // keep env (incl. PATH)
-            .arg("--preserve-env=PATH")        // explicitly preserve PATH
-            .arg(self.qemu_binary.as_os_str());
+        // VFIO passthrough needs root; everything else (including KVM) does not.
+        let mut command = if config.pci_dev.is_empty() {
+            Command::new(self.qemu_binary.as_os_str())
+        } else {
+            let mut sudo = Command::new("sudo");
+            sudo.arg("-E").arg("--preserve-env=PATH").arg(self.qemu_binary.as_os_str());
+            sudo
+        };
 
         let mut initrd = JumboBinary::new()?;
         initrd.push(&config.kernel)?;
