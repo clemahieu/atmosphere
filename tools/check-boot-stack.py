@@ -27,10 +27,10 @@ def build(profile, overflow=False):
         subprocess.run(args + extra, cwd=crate, check=True, env={**os.environ, "RUSTC_BOOTSTRAP": "1"})
 
 
-def boot(profile, out, marker=b"dom0 benchmark done", kernel=None):
+def boot(profile, out, marker=b"dom0 benchmark done", kernel=None, dom0=None):
     """Boots until the marker appears in the serial log and returns (serial log, qemu, monitor socket)."""
     kernel = kernel or f"target/x86_64-unknown-aloader/{profile}/kernel"
-    dom0 = f"target/x86_64-unknown-aloader/{profile}/dom0"
+    dom0 = dom0 or f"target/x86_64-unknown-aloader/{profile}/dom0"
     initrd = f"{out}/initrd"
     with open(initrd, "wb") as f:
         f.write(open(kernel, "rb").read() + open(dom0, "rb").read())
