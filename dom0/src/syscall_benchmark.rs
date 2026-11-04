@@ -338,6 +338,39 @@ pub fn time_mmap_only() {
     }
 }
 
+/// Maps fresh pages and counts those that do not read as zero: what a new page holds is old data.
+pub fn check_new_pages_are_zero() {
+    const PAGES: usize = 120_000;
+    const VA: usize = 0xd0_0000_0000;
+    let (mut dirty, mut first) = (0usize, None);
+    for call in 0..PAGES / MMAP_PAGES {
+        let base = VA + call * MMAP_PAGES * 4096;
+        let ret = unsafe { asys::sys_mmap(base, 0x2, MMAP_PAGES) };
+        if ret != 0 {
+            bench_fail("mmap (zero check)", ret);
+        }
+        for i in 0..MMAP_PAGES {
+            let page = base + i * 4096;
+            let mut word = 0;
+            while word < 512 {
+                let v = unsafe { ((page + word * 8) as *const u64).read_volatile() };
+                if v != 0 {
+                    dirty += 1;
+                    if first.is_none() {
+                        first = Some((call * MMAP_PAGES + i, word, v));
+                    }
+                    break;
+                }
+                word += 1;
+            }
+        }
+    }
+    log::info!("new pages not zero: {} of {}, first {:x?}", dirty, PAGES, first);
+    if dirty != 0 {
+        bench_fail("a new page holds old data", dirty);
+    }
+}
+
 /// Sends `IPC_ROUNDS` empty messages on its endpoint, each running the receiving main thread, then
 /// parks on that endpoint, which nobody sends on any more.
 extern "C" fn pong_thread() -> ! {

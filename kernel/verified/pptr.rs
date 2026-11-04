@@ -552,4 +552,31 @@ pub proof fn page_into_typed<W>(tracked page: PointsTo<[u8; 4096]>) -> (tracked 
     (PointsTo::<W>::from_raw(first, exposed, addr), rest)
 }
 
+pub open spec fn page_is_zero(page: [u8; 4096]) -> bool {
+    forall|i: int| 0 <= i < 4096 ==> #[trigger] page@[i] == 0
+}
+
+/// Clears a 4K page through its permission.
+pub fn zero_page(addr: usize, Tracked(perm): Tracked<&mut PointsTo<[u8; 4096]>>)
+    requires
+        old(perm).is_init(),
+        old(perm).addr() == addr,
+    ensures
+        final(perm).is_init(),
+        final(perm).addr() == addr,
+        page_is_zero(final(perm).value()),
+{
+    let page = PPtr::<[u8; 4096]>::from_usize(addr).borrow_mut(Tracked(perm));
+    let mut i = 0;
+    while i < 4096
+        invariant
+            0 <= i <= 4096,
+            forall|j: int| 0 <= j < i ==> #[trigger] page@[j] == 0,
+        decreases 4096 - i,
+    {
+        page[i] = 0;
+        i = i + 1;
+    }
+}
+
 } // verus!
