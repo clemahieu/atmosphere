@@ -2,7 +2,6 @@
 //!
 //! We handle interaction with Cargo here.
 
-use std::env;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -11,12 +10,7 @@ use std::sync::Arc;
 use anyhow::anyhow;
 use byte_unit::Byte;
 
-// TODO: Get rid of cargo dep
-use cargo::core::Workspace;
-use cargo::util::config::Config as CargoConfig;
-use cargo::util::important_paths::find_root_manifest_for_wd;
-
-use cargo_metadata::Message as CargoMessage;
+use cargo_metadata::{Message as CargoMessage, MetadataCommand};
 use tokio::fs;
 use tokio::process::Command;
 
@@ -34,33 +28,21 @@ pub struct Project {
 impl Project {
     /// Automatically discover the Atmosphere project root.
     pub fn discover() -> Result<ProjectHandle> {
-        let cwd = env::current_dir()?;
-        let mut cargo_toml = find_root_manifest_for_wd(&cwd)?;
-
-        // Ugly exception for build-tool which lives outside the workspace
-        if "build-tool" == cargo_toml.parent().unwrap().file_name().unwrap() {
-            cargo_toml = cargo_toml
-                .parent()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .join("Cargo.toml");
-        }
-
-        let cargo_config = CargoConfig::default()?;
-
-        let workspace = Workspace::new(&cargo_toml, &cargo_config)?;
-        let root = workspace.root().to_owned();
+        let metadata = MetadataCommand::new().no_deps().exec()?;
 
         // sanity check
-        let kernel_pkg = workspace.members().find(|pkg| pkg.name() == "kernel");
+        let has_kernel = metadata
+            .workspace_packages()
+            .iter()
+            .any(|pkg| pkg.name == "kernel");
 
-        if kernel_pkg.is_none() {
+        if !has_kernel {
             return Err(anyhow!(
                 "Invalid workspace - The kernel crate (\"kernel\") doesn't exist"
             ));
         }
 
+        let root = metadata.workspace_root.into_std_path_buf();
         Ok(Arc::new(Self { root }))
     }
 
