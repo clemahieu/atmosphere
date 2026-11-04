@@ -54,8 +54,9 @@ Atmosphere boots only CPU 0 and has no timer interrupt, so all timers run on one
 
 dom0 ends the run through the isa-debug-exit device, which makes QEMU exit with `code << 1 | 1`:
 
-- `1`: dom0 finished all timers (the script then exits 0).
+- `33`: dom0 finished all timers (the script then exits 0).
 - `3`: a timer failed; the log has a `... failed:` and `dom0 benchmark FAILED` line.
+- `1`: the kernel shut down on a failure.
 - `124`: `timeout` killed QEMU after 300 s.
 - `0` or anything else: QEMU stopped without dom0 finishing (for example a triple fault, which
   `-no-reboot` turns into a clean exit); read the log.
