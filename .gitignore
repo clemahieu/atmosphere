@@ -20,3 +20,4 @@ result-*
 .verus-log
 
 build-tool/serial.log
+serial.log
