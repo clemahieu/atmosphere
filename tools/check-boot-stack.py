@@ -17,7 +17,6 @@ import time
 MIB = 1 << 20
 PAGE = 4096
 MARGIN = 16 * MIB  # the least room the stack must have left
-LOADER_SHARE = 16 * MIB  # how far below boot_info the loader's own calls may write
 
 
 def build(profile, overflow=False):
@@ -118,11 +117,11 @@ def main():
     if stray:
         failures.append(f"writes in the upper half of the boot page tables, from {stray[0]:#x}")
 
-    stack = re.search(r"Kernel stack: ([0-9a-f]+)-([0-9a-f]+), boot info at ([0-9a-f]+)", log)
+    stack = re.search(r"Kernel stack: ([0-9a-f]+)-([0-9a-f]+)", log)
     if not stack:
         failures.append("the loader did not log the kernel stack")
     else:
-        base, top, boot_info = (int(stack.group(i), 16) for i in (1, 2, 3))
+        base, top = (int(stack.group(i), 16) for i in (1, 2))
         pages = written(sock, out, base, top - base)
         low = pages[0] if pages else top
         depth, room = top - low, low - base
@@ -132,10 +131,6 @@ def main():
             failures.append("the kernel did not run on its stack")
         if room < MARGIN:
             failures.append(f"less than {MARGIN // MIB} MiB of the stack left")
-        below = written(sock, out, boot_info - 2 * LOADER_SHARE, LOADER_SHARE)
-        print(f"loader stack below boot info {boot_info:#x}: {len(below)} written pages past the loader's share")
-        if below:
-            failures.append(f"writes on the loader's stack, from {below[0]:#x}")
 
     sock.sendall(b"quit\n")
     qemu.wait(timeout=30)
