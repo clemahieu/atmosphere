@@ -41,6 +41,9 @@ use memory::{
 
 const KERNEL_RESERVATION: usize = 1024 * 1024 * 1024; // 1 GiB
 const DOM0_RESERVATION: usize = 256 * 1024 * 1024; // 256 MiB
+// The kernel moves large objects by value during init, reaching 258 MiB at opt-level 1 as measured by
+// tools/check-boot-stack.py.
+const KERNEL_STACK_SIZE: u64 = 384 * 1024 * 1024; // 384 MiB
 
 /// Loader entry point.
 #[cfg_attr(not(test), no_mangle)]
@@ -125,8 +128,7 @@ extern "C" fn main(_argc: isize, _argv: *const *const u8) -> ! {
     let (kernel_map, mut jumbo_file) = kernel_elf.load(&mut kernel_allocator).unwrap();
 
     // Allocate kernel stack
-    let stack_size = 16 * 1024 * 1024;
-    let stack_base = unsafe { kernel_allocator.allocate_physical(stack_size as usize).0 };
+    let stack_base = unsafe { kernel_allocator.allocate_physical(KERNEL_STACK_SIZE as usize).0 };
 
     debugger::add_binary("kernel", kernel_map.load_bias);
 
@@ -234,6 +236,12 @@ extern "C" fn main(_argc: isize, _argv: *const *const u8) -> ! {
 
     debugger::on_ready();
 
+    log::info!(
+        "Kernel stack: {:x}-{:x}, boot info at {:x}",
+        stack_base,
+        stack_base + KERNEL_STACK_SIZE,
+        &boot_info as *const _ as u64
+    );
     log::info!("Calling into kernel @ {:x?}", kernel_map.entry_point);
     let ret: usize;
     unsafe {
@@ -246,7 +254,6 @@ extern "C" fn main(_argc: isize, _argv: *const *const u8) -> ! {
 
             // clear state
             // rdi = &boot_info
-            "xor rsi, rsi",
             "xor r15, r15",
             "mov ds, r15w",
             "mov fs, r15w",
@@ -254,7 +261,8 @@ extern "C" fn main(_argc: isize, _argv: *const *const u8) -> ! {
             "mov ss, r15w",
 
             "push rsp",
-            "mov rsp, rdi",
+            "mov rsp, rsi",
+            "xor rsi, rsi",
 
             // call entry
             "call rax",
@@ -268,7 +276,7 @@ extern "C" fn main(_argc: isize, _argv: *const *const u8) -> ! {
 
             inout("rax") kernel_map.entry_point => ret,
             inout("rdi") &boot_info as *const _ => _,
-            inout("rsi") stack_base + stack_size => _,
+            inout("rsi") stack_base + KERNEL_STACK_SIZE => _,
             out("r15") _,
         );
     }
