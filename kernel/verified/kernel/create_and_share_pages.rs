@@ -30,17 +30,19 @@ impl Kernel {
         &&& old[target_page_ptr].insert(new_mapping) == new[target_page_ptr]
     }
 
-    #[verifier(external_body)]
-    // external_body(unproven): a lemma stated without a proof
     pub proof fn insert_page_mapping_t(
         map: Map<PagePtr, Set<(ProcPtr, VAddr)>>,
         target_page_ptr: PagePtr,
         new_mapping: (ProcPtr, VAddr),
     ) -> (ret: Map<PagePtr, Set<(ProcPtr, VAddr)>>)
+        requires
+            map.dom().contains(target_page_ptr),
         ensures
             Self::insert_page_mapping(map, ret, target_page_ptr, new_mapping),
     {
-        Map::empty()
+        let ret = map.insert(target_page_ptr, map[target_page_ptr].insert(new_mapping));
+        assert(map.dom() =~= ret.dom());
+        ret
     }
 
     pub open spec fn address_space_range_exists(
