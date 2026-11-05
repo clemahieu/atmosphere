@@ -149,7 +149,7 @@ pub open spec fn spec_va_2m_valid(va: usize) -> bool {
         >= KERNEL_MEM_END_L4INDEX as u64
 }
 
-#[verifier(when_used_as_spec(spec_va_2m_valid))]
+#[verifier(when_used_as_spec(spec_va_1g_valid))]
 pub fn va_1g_valid(va: usize) -> (ret: bool)
     ensures
         ret == spec_va_1g_valid(va),
