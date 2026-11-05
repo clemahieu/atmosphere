@@ -15,7 +15,8 @@ use vstd::prelude::*;
 verus! {
 
 use crate::array::Array;
-use crate::pptr::{PPtr, PointsTo};
+use crate::define::PagePerm4k;
+use crate::pptr::*;
 
 pub const NONE: usize = usize::MAX;
 
@@ -44,6 +45,41 @@ pub struct Node {
 /// A retyped page of nodes. Every object that holds list nodes has at least one.
 pub struct NodePage {
     pub nodes: Array<Node, NODES_PER_PAGE>,
+}
+
+/// Turns a retyped page into a node page with no live node, which is what Tree::add_page takes. The
+/// page's earlier contents do not matter, since every node is written. Built on the stack and copied
+/// into the page, one page's worth, since a permission gives no way to initialise part of a value.
+pub fn init_node_page(addr: usize, Tracked(page): Tracked<PagePerm4k>) -> (ret: Tracked<PointsTo<NodePage>>)
+    requires
+        page.addr() == addr,
+        addr % 4096 == 0,
+    ensures
+        ret@.addr() == addr,
+        ret@.is_init(),
+        ret@.value().nodes.wf(),
+        forall|k: int| 0 <= k < NODES_PER_PAGE ==> !(#[trigger] ret@.value().nodes@[k]).live,
+{
+    let mut nodes = Array::<Node, NODES_PER_PAGE>::new();
+    let mut i = 0;
+    while i != NODES_PER_PAGE
+        invariant
+            0 <= i <= NODES_PER_PAGE,
+            nodes.wf(),
+            forall|k: int| 0 <= k < i ==> !(#[trigger] nodes@[k]).live,
+        decreases NODES_PER_PAGE - i,
+    {
+        nodes.set(i, Node { live: false, kind: NodeKind::Capability, depth: 0, next: NONE, prev: NONE });
+        i = i + 1;
+    }
+    let tracked mut typed;
+    proof {
+        let tracked mut page = page;
+        page.leak_contents();
+        typed = crate::layouts::page_into_node_page(page);
+    }
+    PPtr::<NodePage>::from_usize(addr).put(Tracked(&mut typed), NodePage { nodes });
+    Tracked(typed)
 }
 
 pub struct Tree {
