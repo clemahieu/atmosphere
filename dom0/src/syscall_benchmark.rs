@@ -520,8 +520,14 @@ static mut SECOND_CORE_STACK: [u8; 16384] = [0; 16384];
 static SECOND_CORE_MADE: AtomicUsize = AtomicUsize::new(0);
 static SECOND_CORE_STOP: AtomicUsize = AtomicUsize::new(0);
 static SECOND_CORE_REPORTED: AtomicUsize = AtomicUsize::new(0);
+static SECOND_CORE_WOKEN: AtomicUsize = AtomicUsize::new(0);
+static SECOND_CORE_PLACED: AtomicUsize = AtomicUsize::new(0);
+/// How many times the thread blocks with nothing else runnable: once on each core, since a wake swaps
+/// sender and receiver onto each other's core.
+const SECOND_CORE_BLOCKS: usize = 2;
 
-/// Makes syscalls until told to stop, then holds its core for the rest of the boot.
+/// Makes syscalls until told to stop, blocks with nothing to run on its core, then holds CPU 1 for the
+/// rest of the boot.
 extern "C" fn second_core_thread() -> ! {
     let va = (&raw const RESOLVED_PAGE) as usize & !0xfff;
     while SECOND_CORE_STOP.load(Ordering::SeqCst) == 0 {
@@ -530,6 +536,16 @@ extern "C" fn second_core_thread() -> ! {
     }
     log::info!("thread on CPU 1 made {} syscalls", SECOND_CORE_MADE.load(Ordering::SeqCst));
     SECOND_CORE_REPORTED.store(1, Ordering::SeqCst);
+    for block in 1..=SECOND_CORE_BLOCKS {
+        // Wait until the other thread is running on the other core. If it were still in the scheduler,
+        // blocking here would run it on this core, and this core would not be left with nothing to run.
+        while SECOND_CORE_PLACED.load(Ordering::SeqCst) < block - 1 {
+            core::hint::spin_loop();
+        }
+        // A new thread holds the endpoint it was created with at descriptor 0.
+        unsafe { asys::sys_receive_empty(0) };
+        SECOND_CORE_WOKEN.store(block, Ordering::SeqCst);
+    }
     loop {
         core::hint::spin_loop();
     }
@@ -573,6 +589,19 @@ pub fn check_second_core() {
         core::hint::spin_loop();
     }
     log::info!("thread on CPU 0 made {} syscalls beside it", mine);
+    // The thread blocks on CPU 1 with nothing to run there. A wake puts it on this core and this thread
+    // in the scheduler, which CPU 1 takes from. The second wake swaps them back, so this thread ends on
+    // CPU 0 with the other on CPU 1. A send with no receiver yet does nothing, so each is retried.
+    for block in 1..=SECOND_CORE_BLOCKS {
+        while SECOND_CORE_WOKEN.load(Ordering::SeqCst) < block {
+            unsafe { asys::sys_send_empty_try_schedule(SECOND_CORE_ENDPOINT) };
+            if unsafe { _rdtsc() } > deadline {
+                bench_fail("waking a thread blocked with nothing to run", block);
+            }
+        }
+        SECOND_CORE_PLACED.store(block, Ordering::SeqCst);
+    }
+    log::info!("a thread blocked with nothing else to run on each core, and was woken from the other");
 }
 
 /// Fails the run unless the logging syscalls refuse a buffer the caller does not own, and accept
