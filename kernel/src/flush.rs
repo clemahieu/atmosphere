@@ -48,17 +48,29 @@ pub fn handle_ipi() {
     state.acked[core] = epoch;
 }
 
+/// Rounds of the boot test, so that one slow first round does not stand for the cost.
+const CHECK_ROUNDS: u64 = 1000;
+
 /// Boot test: CPU 0 flushes CPU 1 and waits for it, holding no lock while it waits.
 pub fn check_second_core() {
-    let start_tsc = unsafe { core::arch::x86_64::_rdtsc() };
-    let epoch = start(1);
-    while !acknowledged(1, epoch) {
-        if unsafe { core::arch::x86_64::_rdtsc() } - start_tsc > ACK_CYCLES {
-            log::error!("CPU 1 did not acknowledge a flush IPI");
-            return;
+    let (mut fastest, mut total) = (u64::MAX, 0);
+    let mut epoch = 0;
+    for _ in 0..CHECK_ROUNDS {
+        let start_tsc = unsafe { core::arch::x86_64::_rdtsc() };
+        epoch = start(1);
+        while !acknowledged(1, epoch) {
+            if unsafe { core::arch::x86_64::_rdtsc() } - start_tsc > ACK_CYCLES {
+                log::error!("CPU 1 did not acknowledge a flush IPI");
+                return;
+            }
+            core::hint::spin_loop();
         }
-        core::hint::spin_loop();
+        let cycles = unsafe { core::arch::x86_64::_rdtsc() } - start_tsc;
+        fastest = fastest.min(cycles);
+        total += cycles;
     }
-    let cycles = unsafe { core::arch::x86_64::_rdtsc() } - start_tsc;
-    log::info!("flush IPI acknowledged by CPU 1 at epoch {} in {} TSC cycles", epoch, cycles);
+    log::info!(
+        "flush IPI acknowledged by CPU 1 at epoch {}: fastest {} mean {} TSC cycles over {} rounds",
+        epoch, fastest, total / CHECK_ROUNDS, CHECK_ROUNDS,
+    );
 }
