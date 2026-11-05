@@ -16,6 +16,8 @@ pub struct Thread {
     pub blocking_endpoint_index: Option<EndpointIdx>,
     pub endpoint_rev_ptr: Option<SLLIndex>,
     pub running_cpu: Option<CpuId>,
+    /// Each descriptor names an endpoint in this kernel instance, never one elsewhere, so a
+    /// capability stays meaningful with several instances. Why: atmo-6x9.17.1.
     pub endpoint_descriptors: Array<Option<EndpointPtr>, MAX_NUM_ENDPOINT_DESCRIPTORS>,
     pub ipc_payload: IPCPayLoad,
     pub error_code: Option<RetValueType>,  //this will only be set when it comes out of endpoint and goes to scheduler.

@@ -16,6 +16,8 @@ use verified::trap::Registers;
 const SYSCALL32_ENTRY: u64 = 0; // nein
 const SYSCALL32_ENTRY_EIP: u32 = 0; // nein
 
+// Every name a process passes through these calls resolves within the caller's kernel instance, so
+// the ABI has no machine-wide names. Why, and what to do about a call that needs one: atmo-6x9.17.1.
 static mut SYSCALLS: [u64; MAX_SYSCALLS] = [0; MAX_SYSCALLS];
 
 static mut CPU0_SYSCALL_STACK: [u8; 4 * 1024 * 1024] = [0; 4 * 1024 * 1024];
