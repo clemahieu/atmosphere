@@ -530,10 +530,13 @@ impl ContextTableEntry {
     }
 }
 
+/// The check for a device id from user space, which get_did asserts.
+fn device_in_range(bus: usize, device: usize, function: usize) -> bool {
+    bus < 256 && device < 32 && function < 8
+}
+
 fn get_did(bus: usize, device: usize, function: usize) -> u16 {
-    assert!(bus < 256, "Bus out of range");
-    assert!(device < 32, "Device out of range");
-    assert!(function < 8, "Function out of range");
+    assert!(device_in_range(bus, device, function), "Device id out of range");
 
     ((bus as u16) << 8) | ((device as u16) << 3) | (function as u16)
 }
@@ -570,6 +573,9 @@ pub unsafe fn init_iommu() {
 }
 
 pub unsafe fn map(bus: usize, device: usize, function: usize, pml4: u64) -> Result<(), &'static str> {
+    if !device_in_range(bus, device, function) {
+        return Err("No such device");
+    }
     if IOMMU.lock().is_none() {
         return Err("No IOMMU available");
     }
@@ -584,6 +590,9 @@ pub unsafe fn map(bus: usize, device: usize, function: usize, pml4: u64) -> Resu
 }
 
 pub unsafe fn invalidate_iotlb(bus: usize, device: usize, function: usize, page: u64) -> Result<(), &'static str> {
+    if !device_in_range(bus, device, function) {
+        return Err("No such device");
+    }
     let mut iommu = IOMMU.lock();
     let iommu = iommu.as_mut().ok_or("No IOMMU hardware")?;
 
