@@ -4,6 +4,7 @@
 use vstd::prelude::*;
 
 use crate::capability::list::NodePage;
+use crate::capability::table::{PayloadPage, TableRoot};
 use crate::define::PagePerm4k;
 use crate::pptr::PointsTo;
 use crate::process_manager::container::Container;
@@ -22,6 +23,8 @@ global layout Process is size == 3448, align == 8;
 global layout Thread is size == 2368, align == 8;
 global layout Endpoint is size == 3128, align == 8;
 global layout NodePage is size == 4096, align == 8;
+global layout PayloadPage is size == 4096, align == 8;
+global layout TableRoot is size == 4096, align == 8;
 
 /// A 4K page converts to a thread and back, using these layouts and no other facts.
 proof fn thread_page_round_trip(tracked page: PagePerm4k) -> (tracked ret: PagePerm4k)
@@ -45,6 +48,30 @@ pub proof fn page_into_node_page(tracked page: PagePerm4k) -> (tracked ret: Poin
         ret.is_uninit(),
 {
     crate::pptr::page_into_typed::<NodePage>(page)
+}
+
+/// A page becomes an uninitialised capability table root.
+pub proof fn page_into_table_root(tracked page: PagePerm4k) -> (tracked ret: PointsTo<TableRoot>)
+    requires
+        page.is_uninit(),
+        page.addr() % 4096 == 0,
+    ensures
+        ret.addr() == page.addr(),
+        ret.is_uninit(),
+{
+    crate::pptr::page_into_typed::<TableRoot>(page)
+}
+
+/// A page becomes an uninitialised page of capability payloads.
+pub proof fn page_into_payload_page(tracked page: PagePerm4k) -> (tracked ret: PointsTo<PayloadPage>)
+    requires
+        page.is_uninit(),
+        page.addr() % 4096 == 0,
+    ensures
+        ret.addr() == page.addr(),
+        ret.is_uninit(),
+{
+    crate::pptr::page_into_typed::<PayloadPage>(page)
 }
 
 /// A free page becomes an uninitialised container.
