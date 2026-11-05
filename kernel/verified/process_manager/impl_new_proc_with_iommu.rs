@@ -213,6 +213,7 @@ impl ProcessManager {
             self.process_perms.borrow_mut().tracked_remove(old_proc_ptr),
         );
         let child_list_node_ref = proc_push_child(old_proc_ptr, &mut old_proc_perm, &page_ptr_1);
+        let ghost old_proc_perm_value = old_proc_perm@;
         proof {
             self.process_perms.borrow_mut().tracked_insert(old_proc_ptr, old_proc_perm.get());
         }
@@ -255,6 +256,7 @@ impl ProcessManager {
             Ghost(Set::empty()),
             old_depth + 1,
         );
+        let ghost new_proc_perm_value = proc_perm@;
         proof {
             self.process_perms.borrow_mut().tracked_insert(new_proc_ptr, proc_perm.get());
         }
@@ -280,10 +282,24 @@ impl ProcessManager {
             self.endpoint_perms.borrow_mut().tracked_insert(endpoint_ptr, endpoint_perm.get());
         }
 
+        proof {
+            crate::process_manager::process_tree::proc_ancestors_push_perms(
+                old(self).get_container(container_ptr).root_process.unwrap(),
+                old(self).get_container(container_ptr).owned_procs@.to_set(),
+                old(self).process_perms@,
+                self.process_perms@,
+                old_proc_ptr,
+                old_proc_perm_value,
+                new_proc_ptr,
+                new_proc_perm_value,
+            );
+        }
         proc_perms_update_subtree_set(
             &mut self.process_perms,
             Ghost(old_upper_tree_seq@.push(old_proc_ptr)),
             new_proc_ptr,
+            old_proc_ptr,
+            old_depth + 1,
         );
 
         assert(forall|p_ptr: ProcPtr|

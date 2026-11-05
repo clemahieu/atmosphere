@@ -53,8 +53,6 @@ pagetable/pagemap_util_t.rs	page_map_set	glue	writes a hardware page table throu
 pagetable/pagemap_util_t.rs	page_map_set_no_requires	glue	writes a hardware page table through a raw pointer
 pagetable/pagemap_util_t.rs	page_perm_to_page_map	glue	writes a hardware page table through a raw pointer
 process_manager/impl_base.rs	init	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
-process_manager/proc_util_t.rs	proc_perms_remove_subtree_set	unproven	updates ghost state only, so its body is empty; the update is assumed, not proven
-process_manager/proc_util_t.rs	proc_perms_update_subtree_set	unproven	updates ghost state only, so its body is empty; the update is assumed, not proven
 slinkedlist/impl_t.rs	get_next	unproven	an array element access not proven yet
 slinkedlist/impl_t.rs	get_prev	unproven	an array element access not proven yet
 slinkedlist/impl_t.rs	get_value	unproven	an array element access not proven yet

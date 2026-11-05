@@ -215,6 +215,215 @@ pub open spec fn proc_tree_wf(
     &&& proc_subtree_set_exclusive(root_proc, proc_tree_dom, proc_perms)
 }
 
+/// `upper` lists existing processes from the root down, each the parent of the next.
+pub closed spec fn proc_ancestors_wf(
+    proc_perms: Map<ProcPtr, PointsTo<Process>>,
+    upper: Seq<ProcPtr>,
+) -> bool {
+    &&& upper.no_duplicates()
+    &&& forall|i: int|
+        #![trigger upper[i]]
+        0 <= i < upper.len() ==> proc_perms.dom().contains(upper[i])
+            && proc_perms[upper[i]].is_init() && proc_perms[upper[i]].addr() == upper[i]
+    &&& forall|i: int|
+        #![trigger upper[i]]
+        0 < i < upper.len() ==> proc_perms[upper[i]].value().parent == Some(upper[i - 1])
+}
+
+/// What one step of a parent walk reads of a well-formed ancestor list at position `i`.
+pub proof fn proc_ancestors_wf_at(
+    proc_perms: Map<ProcPtr, PointsTo<Process>>,
+    upper: Seq<ProcPtr>,
+    i: int,
+)
+    requires
+        proc_ancestors_wf(proc_perms, upper),
+        0 <= i < upper.len(),
+    ensures
+        proc_perms.dom().contains(upper[i]),
+        proc_perms[upper[i]].is_init(),
+        proc_perms[upper[i]].addr() == upper[i],
+        i > 0 ==> proc_perms[upper[i]].value().parent == Some(upper[i - 1]),
+        upper.contains(upper[i]),
+        forall|j: int| #![trigger upper[j]] 0 <= j < upper.len() && j != i ==> upper[j] != upper[i],
+{
+}
+
+/// A process's uppertree_seq walks its parent links, ends at its parent, and does not include the process.
+pub proof fn proc_ancestors_inv(
+    root_proc: ProcPtr,
+    proc_tree_dom: Set<ProcPtr>,
+    proc_perms: Map<ProcPtr, PointsTo<Process>>,
+    p_ptr: ProcPtr,
+)
+    requires
+        proc_tree_dom_subset_of_proc_dom(proc_tree_dom, proc_perms),
+        proc_perms_wf(proc_perms),
+        proc_tree_wf(root_proc, proc_tree_dom, proc_perms),
+        proc_tree_dom.contains(p_ptr),
+    ensures
+        proc_ancestors_wf(proc_perms, proc_perms[p_ptr].value().uppertree_seq@),
+        proc_perms[p_ptr].value().uppertree_seq@.contains(p_ptr) == false,
+        proc_perms[p_ptr].value().depth > 0 ==> proc_perms[p_ptr].value().parent
+            == Some(proc_perms[p_ptr].value().uppertree_seq@[proc_perms[p_ptr].value().depth - 1]),
+{
+    assert(proc_tree_dom.contains(p_ptr));
+    let upper = proc_perms[p_ptr].value().uppertree_seq@;
+    assert(upper.no_duplicates());
+    assert forall|i: int|
+        #![trigger upper[i]]
+        0 <= i < upper.len() implies {
+        let u = upper[i];
+        &&& proc_tree_dom.contains(u)
+        &&& proc_perms[u].value().depth == i
+        &&& proc_perms[u].value().uppertree_seq@ =~= upper.subrange(0, i)
+    } by {
+        let u = upper[i];
+        assert(upper.contains(u));
+        assert(proc_tree_dom.contains(u));
+        let k = upper.index_of(u);
+        assert(0 <= k < upper.len() && upper[k] == u);
+        assert(k == i) by {
+            if k != i {
+                assert(upper[k] != upper[i]);
+            }
+        };
+        assert(proc_perms[u].value().depth == k);
+    };
+    assert forall|i: int|
+        #![trigger upper[i]]
+        0 <= i < upper.len() implies proc_perms.dom().contains(upper[i])
+        && proc_perms[upper[i]].is_init() && proc_perms[upper[i]].addr() == upper[i] by {
+        assert(proc_tree_dom.contains(upper[i]));
+    };
+    assert forall|i: int|
+        #![trigger upper[i]]
+        0 < i < upper.len() implies proc_perms[upper[i]].value().parent == Some(upper[i - 1]) by {
+        let u = upper[i];
+        assert(proc_tree_dom.contains(u));
+        assert(proc_perms[u].value().depth == i);
+        assert(u != root_proc);
+        assert(proc_perms[u].value().parent.is_Some());
+        assert(proc_perms[u].value().uppertree_seq@[i - 1] == upper[i - 1]);
+        assert(proc_perms[u].value().uppertree_seq@[i - 1] == proc_perms[u].value().parent.unwrap());
+    };
+    if upper.contains(p_ptr) {
+        assert(upper.index_of(p_ptr) == proc_perms[p_ptr].value().depth);
+        assert(upper.len() == proc_perms[p_ptr].value().depth);
+        assert(false);
+    }
+    if proc_perms[p_ptr].value().depth > 0 {
+        assert(p_ptr != root_proc);
+        assert(proc_perms[p_ptr].value().parent.is_Some());
+        assert(upper[proc_perms[p_ptr].value().depth - 1] == proc_perms[p_ptr].value().parent.unwrap());
+    }
+}
+
+/// The ancestor facts a new child needs, on the permission map as the tracked remove and inserts leave it:
+/// the parent's permission replaced by one with the same parent link, the child's permission added.
+pub proof fn proc_ancestors_push_perms(
+    root_proc: ProcPtr,
+    proc_tree_dom: Set<ProcPtr>,
+    old_perms: Map<ProcPtr, PointsTo<Process>>,
+    new_perms: Map<ProcPtr, PointsTo<Process>>,
+    p_ptr: ProcPtr,
+    p_perm: PointsTo<Process>,
+    new_ptr: ProcPtr,
+    new_perm: PointsTo<Process>,
+)
+    requires
+        proc_tree_dom_subset_of_proc_dom(proc_tree_dom, old_perms),
+        proc_perms_wf(old_perms),
+        proc_tree_wf(root_proc, proc_tree_dom, old_perms),
+        proc_tree_dom.contains(p_ptr),
+        old_perms.dom().contains(new_ptr) == false,
+        new_perms == old_perms.remove(p_ptr).insert(p_ptr, p_perm).insert(new_ptr, new_perm),
+        p_perm.is_init(),
+        p_perm.addr() == p_ptr,
+        p_perm.value().parent == old_perms[p_ptr].value().parent,
+    ensures
+        proc_ancestors_wf(new_perms, old_perms[p_ptr].value().uppertree_seq@.push(p_ptr)),
+        old_perms[p_ptr].value().uppertree_seq@.push(p_ptr).contains(new_ptr) == false,
+        old_perms[p_ptr].value().uppertree_seq@.push(p_ptr).len() == old_perms[p_ptr].value().depth
+            + 1,
+        old_perms[p_ptr].value().uppertree_seq@.push(p_ptr)[old_perms[p_ptr].value().depth as int]
+            == p_ptr,
+        new_perms.dom().contains(new_ptr),
+{
+    assert(old_perms.dom().contains(p_ptr));
+    assert(p_ptr != new_ptr);
+    assert forall|q: ProcPtr|
+        #![trigger new_perms[q]]
+        old_perms.dom().contains(q) && q != p_ptr implies new_perms.dom().contains(q)
+        && new_perms[q] == old_perms[q] by {
+        assert(q != new_ptr);
+    };
+    assert(new_perms.dom().contains(p_ptr));
+    assert(new_perms[p_ptr] == p_perm);
+    proc_ancestors_inv(root_proc, proc_tree_dom, old_perms, p_ptr);
+    let old_upper = old_perms[p_ptr].value().uppertree_seq@;
+    let new_upper = old_upper.push(p_ptr);
+    assert(old_upper.len() == old_perms[p_ptr].value().depth);
+    assert(old_upper.contains(p_ptr) == false);
+    assert(old_upper.contains(new_ptr) == false) by {
+        if old_upper.contains(new_ptr) {
+            assert(old_perms.dom().contains(new_ptr));
+        }
+    };
+    assert(p_ptr != new_ptr);
+    assert(new_upper.no_duplicates()) by {
+        assert forall|i: int, j: int|
+            0 <= i < new_upper.len() && 0 <= j < new_upper.len() && i != j implies new_upper[i]
+            != new_upper[j] by {
+            if i < old_upper.len() && j < old_upper.len() {
+                assert(old_upper[i] != old_upper[j]);
+            } else if i == old_upper.len() {
+                assert(old_upper[j] == new_upper[j]);
+                assert(old_upper.contains(old_upper[j]));
+            } else {
+                assert(old_upper[i] == new_upper[i]);
+                assert(old_upper.contains(old_upper[i]));
+            }
+        };
+    };
+    assert forall|i: int|
+        #![trigger new_upper[i]]
+        0 <= i < new_upper.len() implies new_perms.dom().contains(new_upper[i])
+        && new_perms[new_upper[i]].is_init() && new_perms[new_upper[i]].addr() == new_upper[i] by {
+        if i < old_upper.len() {
+            assert(new_upper[i] == old_upper[i]);
+            assert(old_upper.contains(old_upper[i]));
+            assert(new_perms[old_upper[i]] == old_perms[old_upper[i]]);
+        } else {
+            assert(new_upper[i] == p_ptr);
+        }
+    };
+    assert forall|i: int|
+        #![trigger new_upper[i]]
+        0 < i < new_upper.len() implies new_perms[new_upper[i]].value().parent == Some(
+        new_upper[i - 1],
+    ) by {
+        if i < old_upper.len() {
+            assert(new_upper[i] == old_upper[i]);
+            assert(new_upper[i - 1] == old_upper[i - 1]);
+            assert(old_upper.contains(old_upper[i]));
+            assert(new_perms[old_upper[i]] == old_perms[old_upper[i]]);
+        } else {
+            assert(new_upper[i] == p_ptr);
+            assert(new_upper[i - 1] == old_upper[i - 1]);
+            assert(old_perms[p_ptr].value().depth > 0);
+        }
+    };
+    if new_upper.contains(new_ptr) {
+        let k = choose|k: int| 0 <= k < new_upper.len() && new_upper[k] == new_ptr;
+        if k < old_upper.len() {
+            assert(old_upper[k] == new_ptr);
+            assert(old_upper.contains(new_ptr));
+        }
+        assert(false);
+    }
+}
+
 //proof
 pub proof fn proc_subtree_inv(
     root_proc: ProcPtr,
@@ -1307,6 +1516,91 @@ pub proof fn new_proc_preserve_tree_inv_5(
 {
     seq_push_lemma::<ProcPtr>();
     seq_push_unique_lemma::<ProcPtr>();
+    let new_dom = proc_tree_dom.insert(new_proc_ptr);
+    let old_upper = old_proc_perms[proc_ptr].value().uppertree_seq@;
+    let new_upper = old_upper.push(proc_ptr);
+    let d = old_proc_perms[proc_ptr].value().depth as int;
+    assert(old_upper.len() == d);
+    assert(old_upper.no_duplicates());
+    proc_tree_wf_imply_uppertree_contains_no_self(root_proc, proc_tree_dom, old_proc_perms, proc_ptr);
+    assert(old_upper.contains(proc_ptr) == false);
+    assert(new_upper.no_duplicates());
+    assert(new_upper.index_of(proc_ptr) == d);
+    assert(new_upper[d] == proc_ptr);
+    assert(old_upper =~= new_upper.subrange(0, d));
+    assert(new_proc_perms[new_proc_ptr].value().uppertree_seq@ =~= new_upper);
+    assert(new_proc_perms[new_proc_ptr].value().depth == d + 1);
+    assert(new_proc_perms[proc_ptr].value().uppertree_seq@ =~= old_upper);
+    assert(new_proc_perms[proc_ptr].value().depth == d);
+    assert(proc_tree_dom.contains(new_proc_ptr) == false);
+
+    assert forall|p: ProcPtr, u: ProcPtr|
+        #![trigger new_proc_perms[p].value().uppertree_seq@.contains(u)]
+        new_dom.contains(p) && new_proc_perms[p].value().uppertree_seq@.contains(u)
+        implies new_dom.contains(u)
+        && new_proc_perms[p].value().uppertree_seq@[new_proc_perms[u].value().depth as int] == u
+        && new_proc_perms[u].value().depth == new_proc_perms[p].value().uppertree_seq@.index_of(u)
+        && new_proc_perms[u].value().subtree_set@.contains(p)
+        && new_proc_perms[u].value().uppertree_seq@ =~= new_proc_perms[p].value().uppertree_seq@.subrange(
+            0,
+            new_proc_perms[u].value().depth as int,
+        ) by {
+        if p == new_proc_ptr {
+            assert(new_upper.contains(u));
+            if u == proc_ptr {
+                assert(new_dom.contains(u));
+                assert(new_upper[new_proc_perms[u].value().depth as int] == u);
+                assert(new_proc_perms[u].value().depth == new_upper.index_of(u));
+                assert(new_proc_perms[u].value().subtree_set@ =~= old_proc_perms[u].value().subtree_set@.insert(new_proc_ptr));
+                assert(new_proc_perms[u].value().subtree_set@.contains(p));
+                assert(new_proc_perms[u].value().uppertree_seq@ =~= new_upper.subrange(0, d));
+            } else {
+                assert(old_upper.contains(u)) by {
+                    let k = choose|k: int| 0 <= k < new_upper.len() && new_upper[k] == u;
+                    assert(k < old_upper.len());
+                    assert(old_upper[k] == u);
+                };
+                // the old tree's uppertree fact for (proc_ptr, u)
+                assert(proc_tree_dom.contains(u));
+                let du = old_proc_perms[u].value().depth as int;
+                assert(old_upper[du] == u);
+                assert(du == old_upper.index_of(u));
+                assert(old_proc_perms[u].value().uppertree_seq@ =~= old_upper.subrange(0, du));
+                assert(u != new_proc_ptr);
+                assert(new_proc_perms[u].value().depth == du);
+                assert(new_proc_perms[u].value().uppertree_seq@ =~= old_proc_perms[u].value().uppertree_seq@);
+                assert(new_dom.contains(u));
+                assert(0 <= du < old_upper.len());
+                assert(new_upper[du] == u);
+                assert(new_upper.index_of(u) == old_upper.index_of(u));
+                assert(new_proc_perms[u].value().subtree_set@ =~= old_proc_perms[u].value().subtree_set@.insert(new_proc_ptr));
+                assert(new_proc_perms[u].value().subtree_set@.contains(p));
+                assert(new_upper.subrange(0, du) =~= old_upper.subrange(0, du));
+            }
+        } else {
+            assert(proc_tree_dom.contains(p));
+            assert(new_proc_perms[p].value().uppertree_seq@ =~= old_proc_perms[p].value().uppertree_seq@);
+            let p_upper = old_proc_perms[p].value().uppertree_seq@;
+            assert(p_upper.contains(u));
+            // the old tree's uppertree fact for (p, u)
+            assert(proc_tree_dom.contains(u));
+            let du = old_proc_perms[u].value().depth as int;
+            assert(p_upper[du] == u);
+            assert(du == p_upper.index_of(u));
+            assert(old_proc_perms[u].value().subtree_set@.contains(p));
+            assert(old_proc_perms[u].value().uppertree_seq@ =~= p_upper.subrange(0, du));
+            assert(u != new_proc_ptr);
+            assert(new_proc_perms[u].value().depth == du);
+            assert(new_proc_perms[u].value().uppertree_seq@ =~= old_proc_perms[u].value().uppertree_seq@);
+            assert(new_dom.contains(u));
+            if new_upper.contains(u) {
+                assert(new_proc_perms[u].value().subtree_set@ =~= old_proc_perms[u].value().subtree_set@.insert(new_proc_ptr));
+            } else {
+                assert(new_proc_perms[u].value().subtree_set =~= old_proc_perms[u].value().subtree_set);
+            }
+            assert(new_proc_perms[u].value().subtree_set@.contains(p));
+        }
+    };
 }
 
 pub proof fn new_proc_preserve_tree_inv_6(
