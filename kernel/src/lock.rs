@@ -4,7 +4,8 @@ use core::cell::UnsafeCell;
 use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use verified::queue_lock::QueueLock;
+use verified::queue_lock::{Core, QueueLock};
+use vstd::prelude::Tracked;
 
 use crate::cpu;
 
@@ -20,12 +21,15 @@ pub struct Locked<T> {
 unsafe impl<T: Send> Sync for Locked<T> {}
 
 impl<T> Locked<T> {
-    /// `name` labels this lock's reports in a lock_stats build.
+    /// `name` labels this lock's reports in a lock_stats build. The lock's per-core tokens go nowhere:
+    /// a static cannot hand them out, so each call conjures the core's token, as the kernel conjures
+    /// its boot permissions.
     pub const fn new(name: &'static str, value: T) -> Self {
         #[cfg(not(feature = "lock_stats"))]
         let _ = name;
+        let (lock, _cores) = QueueLock::new();
         Self {
-            lock: QueueLock::new(),
+            lock,
             value: UnsafeCell::new(value),
             #[cfg(feature = "lock_stats")]
             stats: UnsafeCell::new(stats::LockStats::new(name)),
@@ -36,7 +40,8 @@ impl<T> Locked<T> {
         let cpu = cpu::get_cpu_id();
         #[cfg(feature = "lock_stats")]
         let asked = stats::now();
-        self.lock.acquire(cpu);
+        let core: Tracked<&mut Core> = Tracked::assume_new();
+        self.lock.acquire(cpu, core);
         #[cfg(feature = "lock_stats")]
         let held_from = {
             let held_from = stats::now();
@@ -83,7 +88,8 @@ impl<T> Drop for Guard<'_, T> {
             stats.held(stats::now() - self.held_from);
             stats.report_due().then(|| *stats)
         };
-        self.locked.lock.release(self.cpu);
+        let core: Tracked<&mut Core> = Tracked::assume_new();
+        self.locked.lock.release(self.cpu, core);
         // After the release, so that logging is not part of what it measures.
         #[cfg(feature = "lock_stats")]
         if let Some(stats) = report {
