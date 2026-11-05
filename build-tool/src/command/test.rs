@@ -214,6 +214,9 @@ async fn boot(project: &ProjectHandle, timeout: u64, args: &[&str]) -> Result<St
     if !second_core_ran_thread(&serial) {
         return Err(anyhow!("the serial log does not show threads making syscalls on both cores"));
     }
+    if !serial.contains(LOCK_CONTENDED) {
+        return Err(anyhow!("the serial log does not show both cores contending for the kernel's lock"));
+    }
     Ok(serial)
 }
 
@@ -247,6 +250,9 @@ fn second_core_idle(serial: &str) -> bool {
         _ => false,
     }
 }
+
+/// What the kernel logs once both cores have contended for its lock with the protected pair intact.
+const LOCK_CONTENDED: &str = "lock contended by 2 cores: pair intact at 400000";
 
 /// Whether the serial log shows the kernel entering a thread on CPU 1, and dom0's report from each side.
 fn second_core_ran_thread(serial: &str) -> bool {
