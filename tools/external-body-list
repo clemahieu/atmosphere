@@ -17,12 +17,6 @@ allocator/page_allocator_util_t.rs	split_2m_pages_to_pages	gap	takes its permiss
 array.rs	get	unproven	an array element access not proven yet
 array.rs	new	gap	builds a value from zeroed memory, which Verus cannot check
 array.rs	set	unproven	an array element access not proven yet
-kernel/spec.rs	fold_change_ioid_lemma	unproven	a lemma stated without a proof
-kernel/spec.rs	fold_change_mem_4k_lemma	unproven	a lemma stated without a proof
-kernel/spec.rs	fold_change_pcid_lemma	unproven	a lemma stated without a proof
-kernel/spec.rs	fold_ioid_lemma	unproven	a lemma stated without a proof
-kernel/spec.rs	fold_mem_4k_lemma	unproven	a lemma stated without a proof
-kernel/spec.rs	fold_pcid_lemma	unproven	a lemma stated without a proof
 kernel/spec.rs	kernel_init	unproven	initialisation not proven yet
 lemma/lemma_t.rs	lemma_usize_int	unproven	states the target's usize width without a proof
 lemma/lemma_t.rs	lemma_usize_u64	unproven	states the target's usize width without a proof
