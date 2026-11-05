@@ -58,5 +58,4 @@ pub fn schedule(regs: &mut Registers) -> Option<Cycles> {
         //     }
         // }
     }
-    None
 }
