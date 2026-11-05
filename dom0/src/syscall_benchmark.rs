@@ -235,6 +235,12 @@ const MMAP_PAGES: usize = 64;
 const MMAP_ONLY_PAGES: usize = 16384;
 const MMAP_ONLY_VA: [usize; 2] = [0xc0_0000_0000, 0xc0_4000_0000];
 const PAGE_MAGIC: u64 = 0x5afe_9a9e;
+/// Where dom0's image starts, the page only dom0 maps, and the child's stack size.
+const DOM0_IMAGE_VA: usize = 0x80_0000_0000;
+const CHILD_UNSHARED_VA: usize = 0xb0_0000_0000;
+const CHILD_STACK_PAGES: usize = 16;
+const CHILD_ENDPOINT: usize = 3;
+static CHILD_RESOLVED: [AtomicUsize; 2] = [AtomicUsize::new(0), AtomicUsize::new(0)];
 /// Ping-pong round trips to time IPC.
 const IPC_ROUNDS: u64 = 1000;
 /// Threads created to time `new_thread`.
@@ -521,6 +527,60 @@ pub fn check_device_iommu() {
     log::info!("sys_set_device_iommu of dom0's own table: {}", bound);
     let flushed = unsafe { asys::sys_invalidate_iotlb(bus, device, function, 0) };
     log::info!("sys_invalidate_iotlb of that device: {}", flushed);
+}
+
+/// Starts a child process that shares dom0's image and a stack, has it resolve two addresses, and
+/// checks its results. The endpoint carries only the signal; the results come back through a
+/// static in the shared image. The child parks at dom0's next blocking syscall.
+pub fn check_child_process() {
+    let shared = (&raw const RESOLVED_PAGE) as usize;
+    let ret = unsafe { asys::sys_new_endpoint(CHILD_ENDPOINT) };
+    if ret != 0 {
+        bench_fail("new_endpoint (child)", ret);
+    }
+    let ret = unsafe { asys::sys_mmap(CHILD_UNSHARED_VA, 0x2, 1) };
+    if ret != 0 {
+        bench_fail("mmap (unshared with the child)", ret);
+    }
+    let mut image_pages = 0;
+    while unsafe { asys::sys_mresolve(DOM0_IMAGE_VA + image_pages * 4096) }.0 != 1 {
+        image_pages += 1;
+    }
+    let stack = DOM0_IMAGE_VA + image_pages * 4096;
+    let ret = unsafe { asys::sys_mmap(stack, 0x2, CHILD_STACK_PAGES) };
+    if ret != 0 {
+        bench_fail("mmap (child stack)", ret);
+    }
+    let sp = stack + CHILD_STACK_PAGES * 4096 - 8;
+    let ret = unsafe {
+        asys::sys_new_proc(CHILD_ENDPOINT, child_process as *const () as usize, sp, DOM0_IMAGE_VA, image_pages + CHILD_STACK_PAGES)
+    };
+    if ret != 0 {
+        bench_fail("new_proc", ret);
+    }
+    unsafe { asys::sys_receive_empty(CHILD_ENDPOINT) };
+
+    let parent = unsafe { (asys::sys_mresolve(shared).0, asys::sys_mresolve(CHILD_UNSHARED_VA).0) };
+    let child = (CHILD_RESOLVED[0].load(Ordering::SeqCst), CHILD_RESOLVED[1].load(Ordering::SeqCst));
+    log::info!("mresolve of a shared page: dom0 {:#x}, child {:#x}", parent.0, child.0);
+    log::info!("mresolve of a page only dom0 maps: dom0 {:#x}, child {:#x}", parent.1, child.1);
+    if parent.0 == 1 || child.0 != parent.0 {
+        bench_fail("the child's view of a shared page", child.0);
+    }
+    if parent.1 == 1 || child.1 != 1 {
+        bench_fail("the child's view of a page only dom0 maps", child.1);
+    }
+}
+
+extern "C" fn child_process() -> ! {
+    let shared = (&raw const RESOLVED_PAGE) as usize;
+    CHILD_RESOLVED[0].store(unsafe { asys::sys_mresolve(shared) }.0, Ordering::SeqCst);
+    CHILD_RESOLVED[1].store(unsafe { asys::sys_mresolve(CHILD_UNSHARED_VA) }.0, Ordering::SeqCst);
+    // sys_new_proc puts the endpoint in the child's descriptor 0.
+    unsafe { asys::sys_send_empty_try_schedule(0) };
+    loop {
+        unsafe { asys::sys_receive_empty(0) };
+    }
 }
 
 /// sys_log with a level no log::Level can hold, which asys::sys_log cannot express.
