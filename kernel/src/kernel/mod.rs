@@ -303,7 +303,7 @@ pub extern "C" fn sys_new_endpoint(endpoint_index:usize, _:usize, _:usize, regs:
 }
 
 /// create a new process, pass an endpoint, and pass some physical pages
-pub fn sys_new_proc(endpoint_index:usize, ip:usize, sp:usize, regs: &mut vRegisters, va:usize, range:usize) {
+pub extern "C" fn sys_new_proc(endpoint_index:usize, ip:usize, sp:usize, regs: &mut vRegisters, va:usize, range:usize) {
     let cpu_id = cpu::get_cpu_id();
     let mut kernel = KERNEL.lock();
     let thread_info = kernel.get_current_cpu_info(cpu_id);

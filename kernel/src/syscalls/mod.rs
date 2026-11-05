@@ -21,6 +21,9 @@ static mut SYSCALLS: [u64; MAX_SYSCALLS] = [0; MAX_SYSCALLS];
 static mut CPU0_SYSCALL_STACK: [u8; 4 * 1024 * 1024] = [0; 4 * 1024 * 1024];
 static mut CPU0_SYSCALL_SP: u64 = 0;
 
+// sys_entry calls handlers with the C convention, so the six argument entry must declare it.
+const _: extern "C" fn(usize, usize, usize, &mut Registers, usize, usize) = kernel::sys_new_proc;
+
 /// Initializes syscalls.
 ///
 /// This must be called only once for each CPU reset.
