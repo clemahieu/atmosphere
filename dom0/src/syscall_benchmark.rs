@@ -521,6 +521,7 @@ static SECOND_CORE_MADE: AtomicUsize = AtomicUsize::new(0);
 static SECOND_CORE_STOP: AtomicUsize = AtomicUsize::new(0);
 static SECOND_CORE_REPORTED: AtomicUsize = AtomicUsize::new(0);
 static SECOND_CORE_WOKEN: AtomicUsize = AtomicUsize::new(0);
+static SECOND_CORE_CONTEND: AtomicUsize = AtomicUsize::new(0);
 static SECOND_CORE_PLACED: AtomicUsize = AtomicUsize::new(0);
 /// How many times the thread blocks with nothing else runnable: once on each core, since a wake swaps
 /// sender and receiver onto each other's core.
@@ -547,7 +548,12 @@ extern "C" fn second_core_thread() -> ! {
         SECOND_CORE_WOKEN.store(block, Ordering::SeqCst);
     }
     loop {
-        core::hint::spin_loop();
+        if SECOND_CORE_CONTEND.load(Ordering::SeqCst) != 0 {
+            unsafe { asys::sys_mresolve(va) };
+            SECOND_CORE_MADE.fetch_add(1, Ordering::SeqCst);
+        } else {
+            core::hint::spin_loop();
+        }
     }
 }
 
@@ -602,6 +608,40 @@ pub fn check_second_core() {
         SECOND_CORE_PLACED.store(block, Ordering::SeqCst);
     }
     log::info!("a thread blocked with nothing else to run on each core, and was woken from the other");
+}
+
+const CONTENTION_CALLS: u64 = 100_000;
+
+/// How long a syscall takes, in TSC cycles, over CONTENTION_CALLS.
+fn time_mresolve(va: usize) -> u64 {
+    let start = unsafe { _rdtsc() };
+    for _ in 0..CONTENTION_CALLS {
+        unsafe { asys::sys_mresolve(va) };
+    }
+    (unsafe { _rdtsc() } - start) / CONTENTION_CALLS
+}
+
+/// How much the other core slows this one through the kernel's lock: the same syscall with that core
+/// idle in user mode, then with it making the same call in a loop. Its thread is already on CPU 1,
+/// left there by check_second_core.
+pub fn time_contended_syscalls() {
+    let va = (&raw const RESOLVED_PAGE) as usize & !0xfff;
+    let alone = time_mresolve(va);
+    let made = SECOND_CORE_MADE.load(Ordering::SeqCst);
+    SECOND_CORE_CONTEND.store(1, Ordering::SeqCst);
+    while SECOND_CORE_MADE.load(Ordering::SeqCst) == made {
+        core::hint::spin_loop();
+    }
+    let contended = time_mresolve(va);
+    SECOND_CORE_CONTEND.store(0, Ordering::SeqCst);
+    let other = SECOND_CORE_MADE.load(Ordering::SeqCst) - made;
+    log::info!(
+        "sys_mresolve: {} TSC cycles alone, {} with the other core contending ({} calls there), over {} calls",
+        alone, contended, other, CONTENTION_CALLS,
+    );
+    if other < CONTENTION_CALLS as usize / 100 {
+        bench_fail("the other core contending", other);
+    }
 }
 
 /// Fails the run unless the logging syscalls refuse a buffer the caller does not own, and accept
