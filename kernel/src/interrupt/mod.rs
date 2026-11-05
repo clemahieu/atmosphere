@@ -443,7 +443,6 @@ pub unsafe fn init() {
     idt.interrupts[IRQ_TIMER].set_handler_fn(wrap_interrupt!(timer));
 
     idt.interrupts[IRQ_IOMMU_FAULT].set_handler_fn(wrap_interrupt!(iommu_fault));
-    idt.interrupts[IRQ_IOMMU_FAULT].attributes.set_privilege_level(Ring::Ring3);
 
     let ioapic_base = mps::probe_ioapic();
     ioapic::init(ioapic_base);
