@@ -530,9 +530,9 @@ impl ContextTableEntry {
     }
 }
 
-/// The check for a device id from user space, which get_did asserts.
+/// The proven check for a device id from user space, which get_did asserts.
 fn device_in_range(bus: usize, device: usize, function: usize) -> bool {
-    bus < 256 && device < 32 && function < 8
+    verified::device::DeviceId::new(bus, device, function).is_some()
 }
 
 fn get_did(bus: usize, device: usize, function: usize) -> u16 {

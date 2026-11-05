@@ -5,6 +5,7 @@ use vstd::prelude::verus;
 
 pub mod bridge;
 pub mod define;
+pub mod device;
 pub mod pptr;
 pub mod layouts;
 pub mod trap;
