@@ -37,3 +37,7 @@ nasm-rs = "0.2.4"
 git = "https://github.com/verus-lang/verus"
 rev = "3e8600ac3a52238dcf581a91c761e160bb6da743"
 default-features = false
+
+[features]
+# Time every hold of a lock and every wait for one, reported in the serial log.
+lock_stats = []

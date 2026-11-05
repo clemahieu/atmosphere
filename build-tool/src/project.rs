@@ -133,6 +133,10 @@ impl Crate {
             command.arg("--release");
         }
 
+        if !options.features.is_empty() {
+            command.args(&["--features", &options.features.join(",")]);
+        }
+
         let build = command.spawn()?;
         let output = build.wait_with_output().await?;
 
@@ -221,6 +225,8 @@ impl Binary {
 pub struct BuildOptions {
     pub release: bool,
     pub verbose: bool,
+    /// Cargo features of the crate being built.
+    pub features: Vec<String>,
 }
 
 impl Default for BuildOptions {
@@ -228,6 +234,7 @@ impl Default for BuildOptions {
         Self {
             release: false,
             verbose: false,
+            features: Vec::new(),
         }
     }
 }
