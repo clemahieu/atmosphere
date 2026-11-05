@@ -322,13 +322,37 @@ pub fn page_to_proc_with_first_thread(
     (p_ptr, p_perm, sll)
 }
 
-#[verifier(external_body)]
-// external_body(unproven): updates ghost state only, so its body is empty; the update is assumed, not proven
+/// Everything in a process's permission but its subtree_set is the same.
+pub open spec fn proc_same_but_subtree_set(a: PointsTo<Process>, b: PointsTo<Process>) -> bool {
+    &&& a.is_init() == b.is_init()
+    &&& a.addr() == b.addr()
+    &&& a.value().owning_container == b.value().owning_container
+    &&& a.value().rev_ptr == b.value().rev_ptr
+    &&& a.value().pcid == b.value().pcid
+    &&& a.value().ioid == b.value().ioid
+    &&& a.value().owned_threads == b.value().owned_threads
+    &&& a.value().parent == b.value().parent
+    &&& a.value().parent_rev_ptr == b.value().parent_rev_ptr
+    &&& a.value().children == b.value().children
+    &&& a.value().uppertree_seq == b.value().uppertree_seq
+    &&& a.value().depth == b.value().depth
+    &&& a.value().dmd_paging_mode == b.value().dmd_paging_mode
+}
+
 pub fn proc_perms_update_subtree_set(
     perms: &mut Tracked<Map<ProcPtr, PointsTo<Process>>>,
     uppertree_seq: Ghost<Seq<ProcPtr>>,
     new_proc_ptr: ProcPtr,
+    start_ptr: ProcPtr,
+    depth: usize,
 )
+    requires
+        crate::process_manager::process_tree::proc_ancestors_wf(old(perms)@, uppertree_seq@),
+        uppertree_seq@.len() == depth,
+        depth > 0,
+        uppertree_seq@[depth - 1] == start_ptr,
+        old(perms)@.dom().contains(new_proc_ptr),
+        uppertree_seq@.contains(new_proc_ptr) == false,
     ensures
         old(perms)@.dom() =~= final(perms)@.dom(),
         forall|p_ptr: ProcPtr|
@@ -374,15 +398,67 @@ pub fn proc_perms_update_subtree_set(
             )@[p_ptr].value().subtree_set@.insert(new_proc_ptr),
         final(perms)@[new_proc_ptr].value().subtree_set =~= old(perms)@[new_proc_ptr].value().subtree_set,
 {
+    let mut cur = start_ptr;
+    let mut i = depth;
+    let ghost old_perms = perms@;
+    let ghost upper = uppertree_seq@;
+    while i > 0
+        invariant
+            0 <= i <= depth,
+            depth == upper.len(),
+            upper == uppertree_seq@,
+            i > 0 ==> cur == upper[i - 1],
+            old_perms == old(perms)@,
+            crate::process_manager::process_tree::proc_ancestors_wf(old_perms, upper),
+            perms@.dom() == old_perms.dom(),
+            forall|p_ptr: ProcPtr|
+                #![trigger perms@[p_ptr]]
+                old_perms.dom().contains(p_ptr) ==> proc_same_but_subtree_set(perms@[p_ptr], old_perms[p_ptr]),
+            forall|p_ptr: ProcPtr|
+                #![trigger perms@[p_ptr]]
+                old_perms.dom().contains(p_ptr) && !upper.contains(p_ptr) ==> perms@[p_ptr] == old_perms[p_ptr],
+            forall|j: int|
+                #![trigger upper[j]]
+                0 <= j < i ==> perms@[upper[j]] == old_perms[upper[j]],
+            forall|j: int|
+                #![trigger upper[j]]
+                i <= j < upper.len() ==> perms@[upper[j]].value().subtree_set@
+                    =~= old_perms[upper[j]].value().subtree_set@.insert(new_proc_ptr),
+        decreases i,
+    {
+        i = i - 1;
+        proof {
+            crate::process_manager::process_tree::proc_ancestors_wf_at(old_perms, upper, i as int);
+        }
+        let tracked mut perm = perms.borrow_mut().tracked_remove(cur);
+        let process = PPtr::<Process>::from_usize(cur).borrow_mut(Tracked(&mut perm));
+        proof {
+            process.subtree_set = Ghost(process.subtree_set@.insert(new_proc_ptr));
+        }
+        let parent = process.parent;
+        proof {
+            perms.borrow_mut().tracked_insert(cur, perm);
+        }
+        if i > 0 {
+            cur = parent.unwrap();
+        }
+    }
 }
 
-#[verifier(external_body)]
-// external_body(unproven): updates ghost state only, so its body is empty; the update is assumed, not proven
 pub fn proc_perms_remove_subtree_set(
     perms: &mut Tracked<Map<ProcPtr, PointsTo<Process>>>,
     uppertree_seq: Ghost<Seq<ProcPtr>>,
     proc_ptr: ProcPtr,
+    start_ptr: ProcPtr,
+    depth: usize,
 )
+    requires
+        crate::process_manager::process_tree::proc_ancestors_wf(old(perms)@, uppertree_seq@),
+        uppertree_seq@.len() == depth,
+        depth > 0,
+        uppertree_seq@[depth - 1] == start_ptr,
+        old(perms)@.dom().contains(proc_ptr),
+        uppertree_seq@.contains(proc_ptr) == false,
     ensures
         old(perms)@.dom() =~= final(perms)@.dom(),
         forall|p_ptr: ProcPtr|
@@ -426,6 +502,51 @@ pub fn proc_perms_remove_subtree_set(
             uppertree_seq@.contains(p_ptr) ==> final(perms)@[p_ptr].value().subtree_set@ =~= 
             old(perms)@[p_ptr].value().subtree_set@.remove(proc_ptr),
 {
+    let mut cur = start_ptr;
+    let mut i = depth;
+    let ghost old_perms = perms@;
+    let ghost upper = uppertree_seq@;
+    while i > 0
+        invariant
+            0 <= i <= depth,
+            depth == upper.len(),
+            upper == uppertree_seq@,
+            i > 0 ==> cur == upper[i - 1],
+            old_perms == old(perms)@,
+            crate::process_manager::process_tree::proc_ancestors_wf(old_perms, upper),
+            perms@.dom() == old_perms.dom(),
+            forall|p_ptr: ProcPtr|
+                #![trigger perms@[p_ptr]]
+                old_perms.dom().contains(p_ptr) ==> proc_same_but_subtree_set(perms@[p_ptr], old_perms[p_ptr]),
+            forall|p_ptr: ProcPtr|
+                #![trigger perms@[p_ptr]]
+                old_perms.dom().contains(p_ptr) && !upper.contains(p_ptr) ==> perms@[p_ptr] == old_perms[p_ptr],
+            forall|j: int|
+                #![trigger upper[j]]
+                0 <= j < i ==> perms@[upper[j]] == old_perms[upper[j]],
+            forall|j: int|
+                #![trigger upper[j]]
+                i <= j < upper.len() ==> perms@[upper[j]].value().subtree_set@
+                    =~= old_perms[upper[j]].value().subtree_set@.remove(proc_ptr),
+        decreases i,
+    {
+        i = i - 1;
+        proof {
+            crate::process_manager::process_tree::proc_ancestors_wf_at(old_perms, upper, i as int);
+        }
+        let tracked mut perm = perms.borrow_mut().tracked_remove(cur);
+        let process = PPtr::<Process>::from_usize(cur).borrow_mut(Tracked(&mut perm));
+        proof {
+            process.subtree_set = Ghost(process.subtree_set@.remove(proc_ptr));
+        }
+        let parent = process.parent;
+        proof {
+            perms.borrow_mut().tracked_insert(cur, perm);
+        }
+        if i > 0 {
+            cur = parent.unwrap();
+        }
+    }
 }
 
 } // verus!

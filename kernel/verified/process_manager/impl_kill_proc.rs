@@ -89,10 +89,21 @@ impl ProcessManager {
             self.container_perms.borrow_mut().tracked_insert(container_ptr, container_perm.get());
         }
 
+        let depth = self.get_proc(proc_ptr).depth;
+        proof {
+            crate::process_manager::process_tree::proc_ancestors_inv(
+                old(self).get_container(container_ptr).root_process.unwrap(),
+                old(self).get_container(container_ptr).owned_procs@.to_set(),
+                old(self).process_perms@,
+                proc_ptr,
+            );
+        }
         proc_perms_remove_subtree_set(
             &mut self.process_perms,
             upper_tree_seq,
             proc_ptr,
+            parent_proc_ptr,
+            depth,
         );
 
         let proc_perm = Tracked(self.process_perms.borrow_mut().tracked_remove(proc_ptr));
