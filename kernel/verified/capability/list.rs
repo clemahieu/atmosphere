@@ -891,6 +891,49 @@ impl Tree {
         }
     }
 
+    /// Give back a page holding no live node, so its block can free. Everything else in the list
+    /// stays as it was.
+    pub fn remove_page(&mut self, page: usize) -> (ret: Tracked<PointsTo<NodePage>>)
+        requires
+            old(self).wf(),
+            old(self).pages@.dom().contains(page),
+            forall|k: int| 0 <= k < NODES_PER_PAGE ==> !(#[trigger] old(self).nodes@[page + k]).live,
+        ensures
+            final(self).wf(),
+            final(self).seq == old(self).seq,
+            final(self).parent == old(self).parent,
+            final(self).nodes == old(self).nodes,
+            final(self).pages@.dom() == old(self).pages@.dom().remove(page),
+            forall|p: usize| #[trigger] final(self).pages@.dom().contains(p)
+                ==> final(self).pages@[p] == old(self).pages@[p],
+            ret@ == old(self).pages@[page],
+    {
+        let ghost pre = *old(self);
+        let tracked perm;
+        proof {
+            perm = self.pages.borrow_mut().tracked_remove(page);
+            let me = *self;
+            assert(me.pages@ =~= pre.pages@.remove(page));
+            assert(me.store_wf()) by {
+                reveal(Tree::store_wf);
+                assert forall|x: usize| #[trigger] me.valid(x) implies
+                    me.nodes@[x as int] == me.pages@[page_of(x)].value().nodes@[(x % 4096) as int] by {
+                    assert(pre.valid(x));
+                }
+                assert forall|x: int| 0 <= x < NODE_SPACE && #[trigger] me.nodes@[x].live
+                    implies me.valid(x as usize) by {
+                    pre.lemma_live_valid(x as usize);
+                    if page_of(x as usize) == page {
+                        assert(x == page + x % 4096);
+                        assert(!pre.nodes@[page + x % 4096].live);
+                    }
+                }
+            }
+            lemma_wf_same_live(pre, me);
+        }
+        Tracked(perm)
+    }
+
     /// Rename node i to the free slot, in constant time. It keeps its place in the list, its
     /// depth and its kind, so every run is as it was.
     pub fn move_node(&mut self, i: usize, slot: usize)
