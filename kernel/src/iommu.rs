@@ -376,7 +376,7 @@ impl NaiveIommuMap {
             let e = unsafe { self.as_mut().root_table().as_ref().read(i) };
             log::debug!("bus {} = {:?}", i, e);
         }
-        log::debug!("Setting IOPML4 to {:#x?}", pml4);
+        log::info!("IO page table of {:#x}:{:#x}.{:#x}: {:#x}", bus, device, function, pml4);
     }
 
     fn root_table<'a>(self: Pin<&'a mut Self>) -> Pin<&'a mut RootTable> {

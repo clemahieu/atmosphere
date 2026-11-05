@@ -685,6 +685,23 @@ pub extern "C" fn sys_receive_empty(endpoint_index:usize, _:usize, _:usize, regs
 //     }
 // }
 
+/// Binds a device to the caller's own IO page table, the only table a process can name.
+pub extern "C" fn sys_set_device_iommu(bus: usize, device: usize, function: usize, regs: &mut vRegisters) {
+    Bridge::set_switch_decision(SwitchDecision::NoSwitching);
+    let cpu_id = cpu::get_cpu_id();
+    let kernel = KERNEL.lock();
+    let proc_ptr = kernel.get_current_cpu_info(cpu_id).1.unwrap();
+    let Some(ioid) = kernel.proc_man.get_proc(proc_ptr).ioid else {
+        regs.rax = 1;
+        return;
+    };
+    let table = kernel.mem_man.get_cr3_by_ioid(ioid) as u64;
+    regs.rax = match unsafe { crate::iommu::map(bus, device, function, table) } {
+        Ok(()) => 0,
+        Err(_) => 1,
+    };
+}
+
 pub extern "C" fn sys_get_iommu_cr3(_:usize, _:usize, _:usize, regs: &mut vRegisters){
     // log::info!("regs {:x?}", regs);
     

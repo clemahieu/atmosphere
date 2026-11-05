@@ -160,8 +160,8 @@ pub unsafe fn sys_rd_io_cr3() -> usize {
     return syscall!(__NR_RD_IO_CR3,0,0,0) as usize;
 }
 
-pub unsafe fn sys_set_device_iommu(bus: usize, device: usize, function: usize, pml4: u64) -> isize {
-    syscall!(__NR_SET_DEVICE_IOMMU, bus, device, function, pml4)
+pub unsafe fn sys_set_device_iommu(bus: usize, device: usize, function: usize) -> isize {
+    syscall!(__NR_SET_DEVICE_IOMMU, bus, device, function)
 }
 
 pub unsafe fn sys_invalidate_iotlb(bus: usize, device: usize, function: usize, page: u64) -> isize {
