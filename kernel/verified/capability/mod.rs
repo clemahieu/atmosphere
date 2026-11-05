@@ -3,4 +3,5 @@ pub mod kernel;
 pub mod list;
 pub mod reach;
 pub mod table;
+pub mod view;
 pub mod zero;

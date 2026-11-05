@@ -31,10 +31,10 @@ pub enum Right {
 
 pub ghost struct State {
     /// (process, capability): the process holds that capability in a slot.
-    pub held: Set<(ObjectId, NodeId)>,
+    pub held: ISet<(ObjectId, NodeId)>,
     /// The object each live capability names. Only capabilities are here, not other list nodes.
-    pub names: Map<NodeId, ObjectId>,
-    pub rights: Set<(NodeId, Right)>,
+    pub names: IMap<NodeId, ObjectId>,
+    pub rights: ISet<(NodeId, Right)>,
     /// The list's parent map, so every capability is in some lineage.
     pub parent: Map<NodeId, NodeId>,
     /// (process, frame): one of the process's address spaces maps the frame.
@@ -296,9 +296,9 @@ pub proof fn lemma_reach_grows_only_by_grant_or_retype(
 /// A state with one process, 1, holding one capability, node 10, on frame 100, which it maps.
 pub open spec fn example() -> State {
     State {
-        held: set![(1usize, 10usize)],
-        names: map![10usize => 100usize],
-        rights: set![(10usize, Right::Read), (10usize, Right::Write)],
+        held: ISet::new(|h: (ObjectId, NodeId)| h == (1usize, 10usize)),
+        names: IMap::new(|n: NodeId| n == 10, |n: NodeId| 100usize),
+        rights: ISet::new(|h: (NodeId, Right)| h.0 == 10 && (h.1 == Right::Read || h.1 == Right::Write)),
         parent: Map::empty(),
         maps: set![(1usize, 100usize)],
         process_of: Map::empty(),
