@@ -18,6 +18,3 @@ license Unicode-3.0
 license OLDAP-2.8
 license BSD-2-Clause-Patent
 
-package vstd git+https://github.com/mars-research/verus?branch=mars MIT
-package builtin git+https://github.com/mars-research/verus?branch=mars MIT
-package builtin_macros git+https://github.com/mars-research/verus?branch=mars MIT
