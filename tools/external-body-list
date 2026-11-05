@@ -52,12 +52,6 @@ memory_manager/spec_impl.rs	new	unproven	initialisation not proven yet
 pagetable/pagemap_util_t.rs	page_map_set	glue	writes a hardware page table through a raw pointer
 pagetable/pagemap_util_t.rs	page_map_set_no_requires	glue	writes a hardware page table through a raw pointer
 pagetable/pagemap_util_t.rs	page_perm_to_page_map	glue	writes a hardware page table through a raw pointer
-process_manager/endpoint_util_t.rs	endpoint_add_ref	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
-process_manager/endpoint_util_t.rs	endpoint_pop_head	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
-process_manager/endpoint_util_t.rs	endpoint_push	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
-process_manager/endpoint_util_t.rs	endpoint_push_and_set_state	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
-process_manager/endpoint_util_t.rs	endpoint_remove_ref	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
-process_manager/endpoint_util_t.rs	endpoint_set_owning_container	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
 process_manager/impl_base.rs	init	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
 process_manager/proc_util_t.rs	proc_perms_remove_subtree_set	unproven	updates ghost state only, so its body is empty; the update is assumed, not proven
 process_manager/proc_util_t.rs	proc_perms_update_subtree_set	unproven	updates ghost state only, so its body is empty; the update is assumed, not proven

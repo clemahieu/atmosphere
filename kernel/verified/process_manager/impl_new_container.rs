@@ -26,6 +26,7 @@ use crate::process_manager::spec_proof::*;
 use crate::quota::Quota;
 
 impl ProcessManager {
+    #[verifier::rlimit(200)]
     pub fn new_container_with_endpoint(
         &mut self,
         thread_ptr: ThreadPtr,

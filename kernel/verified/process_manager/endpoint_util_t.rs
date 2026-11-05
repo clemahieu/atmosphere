@@ -1,14 +1,11 @@
 use vstd::prelude::*;
 verus! {
 
-use core::mem::MaybeUninit;
 use crate::define::*;
 use crate::pptr::{PPtr, PointsTo};
 use crate::process_manager::endpoint::*;
 use crate::slinkedlist::spec_impl_u::StaticLinkedList;
 
-#[verifier(external_body)]
-// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn endpoint_add_ref(
     endpoint_ptr: EndpointPtr,
     endpoint_perm: &mut Tracked<PointsTo<Endpoint>>,
@@ -34,14 +31,14 @@ pub fn endpoint_add_ref(
             endpoint_perm,
         )@.value().get_owning_threads().insert((thread_ptr, endpoint_idx)),
 {
-    unsafe {
-        let uptr = endpoint_ptr as *mut MaybeUninit<Endpoint>;
-        let ret = (*uptr).assume_init_mut().rf_counter += 1;
+    let tracked owned = endpoint_perm.borrow_mut();
+    let endpoint = PPtr::<Endpoint>::from_usize(endpoint_ptr).borrow_mut(Tracked(owned));
+    endpoint.rf_counter += 1;
+    proof {
+        endpoint.owning_threads = Ghost(endpoint.owning_threads@.insert((thread_ptr, endpoint_idx)));
     }
 }
 
-#[verifier(external_body)]
-// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn endpoint_remove_ref(
     endpoint_ptr: EndpointPtr,
     endpoint_perm: &mut Tracked<PointsTo<Endpoint>>,
@@ -66,14 +63,14 @@ pub fn endpoint_remove_ref(
             endpoint_perm,
         )@.value().get_owning_threads().remove((thread_ptr, endpoint_idx)),
 {
-    unsafe {
-        let uptr = endpoint_ptr as *mut MaybeUninit<Endpoint>;
-        let ret = (*uptr).assume_init_mut().rf_counter -= 1;
+    let tracked owned = endpoint_perm.borrow_mut();
+    let endpoint = PPtr::<Endpoint>::from_usize(endpoint_ptr).borrow_mut(Tracked(owned));
+    endpoint.rf_counter -= 1;
+    proof {
+        endpoint.owning_threads = Ghost(endpoint.owning_threads@.remove((thread_ptr, endpoint_idx)));
     }
 }
 
-#[verifier(external_body)]
-// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn endpoint_set_owning_container(
     endpoint_ptr: EndpointPtr,
     endpoint_perm: &mut Tracked<PointsTo<Endpoint>>,
@@ -92,14 +89,11 @@ pub fn endpoint_set_owning_container(
         final(endpoint_perm)@.value().owning_container == owning_container,
         final(endpoint_perm)@.value().rf_counter == old(endpoint_perm)@.value().rf_counter,
 {
-    unsafe {
-        let uptr = endpoint_ptr as *mut MaybeUninit<Endpoint>;
-        let ret = (*uptr).assume_init_mut().owning_container = owning_container;
-    }
+    let tracked owned = endpoint_perm.borrow_mut();
+    let endpoint = PPtr::<Endpoint>::from_usize(endpoint_ptr).borrow_mut(Tracked(owned));
+    endpoint.owning_container = owning_container;
 }
 
-#[verifier(external_body)]
-// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn endpoint_pop_head(
     endpoint_ptr: EndpointPtr,
     endpoint_perm: &mut Tracked<PointsTo<Endpoint>>,
@@ -107,6 +101,8 @@ pub fn endpoint_pop_head(
     requires
         old(endpoint_perm)@.is_init(),
         old(endpoint_perm)@.addr() == endpoint_ptr,
+        old(endpoint_perm)@.value().queue.wf(),
+        old(endpoint_perm)@.value().queue.unique(),
         old(endpoint_perm)@.value().queue.len() > 0,
     ensures
         final(endpoint_perm)@.is_init(),
@@ -129,11 +125,13 @@ pub fn endpoint_pop_head(
         final(endpoint_perm)@.value().queue.unique(),
         final(endpoint_perm)@.value().queue@.no_duplicates(),
 {
-    unsafe {
-        let uptr = endpoint_ptr as *mut MaybeUninit<Endpoint>;
-        let ret = (*uptr).assume_init_mut().queue.pop();
-        ret
+    let tracked owned = endpoint_perm.borrow_mut();
+    let endpoint = PPtr::<Endpoint>::from_usize(endpoint_ptr).borrow_mut(Tracked(owned));
+    let ret = endpoint.queue.pop();
+    proof {
+        endpoint.queue.unique_implys_no_duplicates();
     }
+    ret
 }
 
 pub fn endpoint_remove_thread(
@@ -179,8 +177,6 @@ pub fn endpoint_remove_thread(
     ret
 }
 
-#[verifier(external_body)]
-// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn endpoint_push(
     endpoint_ptr: EndpointPtr,
     endpoint_perm: &mut Tracked<PointsTo<Endpoint>>,
@@ -189,6 +185,9 @@ pub fn endpoint_push(
     requires
         old(endpoint_perm)@.is_init(),
         old(endpoint_perm)@.addr() == endpoint_ptr,
+        old(endpoint_perm)@.value().queue.wf(),
+        old(endpoint_perm)@.value().queue.unique(),
+        old(endpoint_perm)@.value().queue@.contains(t_ptr) == false,
         old(endpoint_perm)@.value().queue.len() < MAX_NUM_THREADS_PER_ENDPOINT,
     ensures
         final(endpoint_perm)@.is_init(),
@@ -210,15 +209,12 @@ pub fn endpoint_push(
         final(endpoint_perm)@.value().queue.get_node_ref(t_ptr) == ret,
         final(endpoint_perm)@.value().queue.unique(),
 {
-    unsafe {
-        let uptr = endpoint_ptr as *mut MaybeUninit<Endpoint>;
-        let ret = (*uptr).assume_init_mut().queue.push(&t_ptr);
-        ret
-    }
+    let tracked owned = endpoint_perm.borrow_mut();
+    let endpoint = PPtr::<Endpoint>::from_usize(endpoint_ptr).borrow_mut(Tracked(owned));
+    let ret = endpoint.queue.push(&t_ptr);
+    ret
 }
 
-#[verifier(external_body)]
-// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn endpoint_push_and_set_state(
     endpoint_ptr: EndpointPtr,
     endpoint_perm: &mut Tracked<PointsTo<Endpoint>>,
@@ -228,6 +224,9 @@ pub fn endpoint_push_and_set_state(
     requires
         old(endpoint_perm)@.is_init(),
         old(endpoint_perm)@.addr() == endpoint_ptr,
+        old(endpoint_perm)@.value().queue.wf(),
+        old(endpoint_perm)@.value().queue.unique(),
+        old(endpoint_perm)@.value().queue@.contains(t_ptr) == false,
         old(endpoint_perm)@.value().queue.len() < MAX_NUM_THREADS_PER_ENDPOINT,
     ensures
         final(endpoint_perm)@.is_init(),
@@ -249,12 +248,11 @@ pub fn endpoint_push_and_set_state(
         final(endpoint_perm)@.value().queue.get_node_ref(t_ptr) == ret,
         final(endpoint_perm)@.value().queue.unique(),
 {
-    unsafe {
-        let uptr = endpoint_ptr as *mut MaybeUninit<Endpoint>;
-        let ret = (*uptr).assume_init_mut().queue.push(&t_ptr);
-        (*uptr).assume_init_mut().queue_state = queue_state;
-        ret
-    }
+    let tracked owned = endpoint_perm.borrow_mut();
+    let endpoint = PPtr::<Endpoint>::from_usize(endpoint_ptr).borrow_mut(Tracked(owned));
+    let ret = endpoint.queue.push(&t_ptr);
+    endpoint.queue_state = queue_state;
+    ret
 }
 
 pub fn page_to_endpoint(page_ptr: PagePtr, page_perm: Tracked<PagePerm4k>) -> (ret: (
