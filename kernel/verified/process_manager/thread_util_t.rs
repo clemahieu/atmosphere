@@ -319,7 +319,7 @@ pub fn thread_set_error_code(
     thread.error_code = error_code;
 }
 
-pub fn thread_set_trap_frame_fast(
+pub fn thread_set_trap_frame(
     thread_ptr: ThreadPtr,
     thread_perm: &mut Tracked<PointsTo<Thread>>,
     pt_regs: &Registers,
@@ -347,37 +347,6 @@ pub fn thread_set_trap_frame_fast(
             thread_perm,
         )@.value().blocking_endpoint_index,
         final(thread_perm)@.value().trap_frame.is_Some(),
-        final(thread_perm)@.value().trap_frame.unwrap() == *pt_regs,
-{
-    let tracked owned = thread_perm.borrow_mut();
-    let thread = PPtr::<Thread>::from_usize(thread_ptr).borrow_mut(Tracked(owned));
-    thread.trap_frame.set_self_fast(pt_regs);
-}
-
-pub fn thread_set_trap_frame_full(
-    thread_ptr: ThreadPtr,
-    thread_perm: &mut Tracked<PointsTo<Thread>>,
-    pt_regs: &Registers,
-)
-    requires
-        old(thread_perm)@.is_init(),
-        old(thread_perm)@.addr() == thread_ptr,
-    ensures
-        final(thread_perm)@.is_init(),
-        final(thread_perm)@.addr() == thread_ptr,
-        final(thread_perm)@.value().owning_container == old(thread_perm)@.value().owning_container,
-        final(thread_perm)@.value().owning_proc == old(thread_perm)@.value().owning_proc,
-        final(thread_perm)@.value().state == old(thread_perm)@.value().state,
-        final(thread_perm)@.value().proc_rev_ptr == old(thread_perm)@.value().proc_rev_ptr,
-        final(thread_perm)@.value().scheduler_rev_ptr == old(thread_perm)@.value().scheduler_rev_ptr,
-        final(thread_perm)@.value().blocking_endpoint_ptr == old(
-            thread_perm,
-        )@.value().blocking_endpoint_ptr,
-        final(thread_perm)@.value().endpoint_rev_ptr == old(thread_perm)@.value().endpoint_rev_ptr,
-        final(thread_perm)@.value().running_cpu == old(thread_perm)@.value().running_cpu,
-        final(thread_perm)@.value().endpoint_descriptors == old(thread_perm)@.value().endpoint_descriptors,
-        final(thread_perm)@.value().ipc_payload == old(thread_perm)@.value().ipc_payload,
-        final(thread_perm)@.value().error_code == old(thread_perm)@.value().error_code,
         final(thread_perm)@.value().trap_frame.unwrap() == *pt_regs,
 {
     let tracked owned = thread_perm.borrow_mut();
