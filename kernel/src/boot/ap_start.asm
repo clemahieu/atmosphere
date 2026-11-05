@@ -87,10 +87,13 @@ start64:
 	mov fs, ax
 	mov gs, ax
 
-	; Enable PCID
-	mov rax, cr3
-	and rax, 1 << 63
-	jz no_pcid
+	; Enable PCID when the kernel's CR3 value asks for it. The 32-bit load above could not carry
+	; bit 63, so read the slot, not CR3.
+	lea rbx, ap_start16
+	sub rbx, 8
+	mov rax, [rbx]
+	bt rax, 63
+	jnc no_pcid
 
 	mov rax, cr4
 	or rax, 1 << 17
