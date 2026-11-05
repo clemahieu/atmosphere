@@ -45,7 +45,7 @@ mod utils;
 mod ring_buffer;
 
 use core::arch::asm;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::{ffi::c_void, panic::PanicInfo};
 
 use astd::boot::{BootInfo, PhysicalMemoryType};
@@ -53,7 +53,12 @@ use x86::Ring;
 
 static mut SHUTDOWN_ON_PANIC: bool = false;
 
-static mut AP_STACK: [u8; 64 * 1024 * 1024] = [0; 64 * 1024 * 1024];
+/// CPU 1's stack until it has entered ap_main. It stays there, since it runs nothing else yet.
+static mut AP_STACK: cpu::IstStack = cpu::IstStack::new();
+/// CPU 1 sets this when it reaches its idle loop.
+static AP_IDLE: AtomicBool = AtomicBool::new(false);
+/// How long CPU 0 waits for it, in TSC cycles. A core that does not start is reported, not fatal.
+const AP_START_CYCLES: u64 = 20_000_000_000;
 static mut THREAD_STACK: [u8; 64 * 1024 * 1024] = [0; 64 * 1024 * 1024];
 static THREAD_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -140,14 +145,10 @@ fn boot_cpu0(boot_info: *const BootInfo) -> isize {
 
     kernel::kernel_init(&boot_info.pages, pml4 as usize, kernel_pml4 as usize);
 
-    // unsafe {
-    //     let ap_rsp = (&AP_STACK as *const _ as u64 + AP_STACK.len() as u64) & !(4096 - 1);
-    //     interrupt::boot_ap(
-    //         1,
-    //         ap_rsp,
-    //         ap_main as u64,
-    //     );
-    // }
+    log::info!("CPU 0 syscall stack {:#x}", cpu::get_current().syscall_sp);
+    unsafe {
+        start_second_core();
+    }
 
     let initial_sp = unsafe { dom0.virt_start.add(dom0.reserved_size - 0x1000) };
     log::info!("initial_sp: {:?}", initial_sp);
@@ -162,26 +163,36 @@ fn boot_cpu0(boot_info: *const BootInfo) -> isize {
     }
 }
 
-/// AP entry point.
-fn ap_main(cpu_id: u64, rsp: u64) {
+/// Starts CPU 1 and waits for it to reach its idle loop, so that dom0's log and CPU 1's do not
+/// interleave. Nothing runs on it yet.
+unsafe fn start_second_core() {
+    let stack = (&raw const AP_STACK).cast::<u8>().add(core::mem::size_of::<cpu::IstStack>()) as u64;
+    interrupt::boot_ap(1, stack, ap_main as *const () as u64);
+
+    let deadline = core::arch::x86_64::_rdtsc() + AP_START_CYCLES;
+    while !AP_IDLE.load(Ordering::SeqCst) {
+        if core::arch::x86_64::_rdtsc() > deadline {
+            log::error!("CPU 1 did not start");
+            return;
+        }
+        core::hint::spin_loop();
+    }
+}
+
+/// AP entry point, called by the trampoline in boot/ap_start.asm.
+extern "C" fn ap_main(cpu_id: u64) -> ! {
     unsafe {
         cpu::init_cpu(cpu_id as usize);
         gdt::init_cpu();
-        interrupt::init_cpu();
+        interrupt::init_ap();
         syscalls::init_cpu();
     }
 
-    log::info!("Hello from CPU {}", cpu::get_cpu_id());
-
-    unsafe {
-        thread::start_thread(
-            thread_main as u64,
-            (&THREAD_STACK as *const _ as u64 + THREAD_STACK.len() as u64) & !(4096 - 1),
-            Ring::Ring3,
-        );
-    }
+    log::info!("CPU {} idle, syscall stack {:#x}", cpu::get_cpu_id(), cpu::get_current().syscall_sp);
+    AP_IDLE.store(true, Ordering::SeqCst);
 
     loop {
+        unsafe { asm!("hlt") };
     }
 }
 

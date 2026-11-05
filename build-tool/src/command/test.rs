@@ -208,6 +208,9 @@ async fn boot(project: &ProjectHandle, timeout: u64, args: &[&str]) -> Result<St
     if !boot_finished(&serial) {
         return Err(anyhow!("the serial log does not end with dom0's last line"));
     }
+    if !second_core_idle(&serial) {
+        return Err(anyhow!("the serial log does not show CPU 1 idle on a syscall stack of its own"));
+    }
     Ok(serial)
 }
 
@@ -229,6 +232,24 @@ fn boot_finished(serial: &str) -> bool {
         .rev()
         .find(|line| !line.trim().is_empty())
         .map_or(false, |line| line.contains("dom0 benchmark done"))
+}
+
+/// Whether the serial log shows CPU 1 reaching its idle loop, on a different syscall stack from CPU 0.
+fn second_core_idle(serial: &str) -> bool {
+    match (
+        syscall_stack(serial, "CPU 0 syscall stack "),
+        syscall_stack(serial, "CPU 1 idle, syscall stack "),
+    ) {
+        (Some(first), Some(second)) => first != second,
+        _ => false,
+    }
+}
+
+/// The hexadecimal address after `label` in the serial log.
+fn syscall_stack(serial: &str, label: &str) -> Option<u64> {
+    let digits = serial.split(label).nth(1)?.strip_prefix("0x")?;
+    let end = digits.find(|c: char| !c.is_ascii_hexdigit()).unwrap_or(digits.len());
+    u64::from_str_radix(&digits[..end], 16).ok()
 }
 
 fn iommu_boot_ran(serial: &str) -> bool {
@@ -301,6 +322,22 @@ mod tests {
     fn boot_finishes_on_dom0s_last_line() {
         assert!(boot_finished("x\n\u{1b}[34m INFO dom0 benchmark done\u{1b}[0m\n"));
         assert!(boot_finished("x\r\n INFO dom0 benchmark done\r\n\r\n"));
+    }
+
+    #[test]
+    fn second_core_idle_on_its_own_stack() {
+        let serial = "\u{1b}[34m INFO CPU 0 syscall stack 0x1000\u{1b}[0m\n INFO CPU 1 idle, syscall stack 0x2000\n";
+        assert!(second_core_idle(serial));
+    }
+
+    #[test]
+    fn second_core_sharing_a_stack_is_not_idle() {
+        assert!(!second_core_idle("CPU 0 syscall stack 0x1000\nCPU 1 idle, syscall stack 0x1000\n"));
+    }
+
+    #[test]
+    fn no_second_core_is_not_idle() {
+        assert!(!second_core_idle("CPU 0 syscall stack 0x1000\n"));
     }
 
     #[test]

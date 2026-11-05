@@ -481,3 +481,14 @@ pub unsafe fn init_cpu() {
 
     asm!("sti");
 }
+
+/// Initializes an application processor's interrupts. The IOAPIC stays routed to CPU 0.
+///
+/// This should be called only once per CPU.
+pub unsafe fn init_ap() {
+    lapic::init();
+
+    GLOBAL_IDT.load();
+
+    asm!("sti");
+}

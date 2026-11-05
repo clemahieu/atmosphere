@@ -56,6 +56,14 @@ pub fn end_of_interrupt() {
     xapic.eoi();
 }
 
+/// Waits between start-up IPIs. The architecture asks for 10 ms and 200 us. No timer is calibrated this
+/// early, so this is a fixed spin, which only QEMU has exercised.
+fn start_delay() {
+    for _ in 0..100_000 {
+        core::hint::spin_loop();
+    }
+}
+
 /// Boots an application processor.
 pub unsafe fn boot_ap(cpu_id: u32, stack: u64, code: u64) {
     let xapic = unsafe {
@@ -82,5 +90,10 @@ pub unsafe fn boot_ap(cpu_id: u32, stack: u64, code: u64) {
     // FIXME: X2APIC APIC ID
     let apic_id = ApicId::XApic(cpu_id as u8);
     xapic.ipi_init(apic_id);
+    start_delay();
+    // A core takes the first STARTUP it sees and ignores a later one; the second is for the first
+    // being lost, as the universal start-up algorithm allows.
+    xapic.ipi_startup(apic_id, start_page);
+    start_delay();
     xapic.ipi_startup(apic_id, start_page);
 }

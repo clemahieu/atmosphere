@@ -25,9 +25,6 @@ const SYSCALL32_ENTRY_EIP: u32 = 0; // nein
 // the ABI has no machine-wide names. Why, and what to do about a call that needs one: atmo-6x9.17.1.
 static mut SYSCALLS: [u64; MAX_SYSCALLS] = [0; MAX_SYSCALLS];
 
-static mut CPU0_SYSCALL_STACK: [u8; 4 * 1024 * 1024] = [0; 4 * 1024 * 1024];
-static mut CPU0_SYSCALL_SP: u64 = 0;
-
 // sys_entry calls handlers with the C convention, so the six argument entry must declare it.
 const _: extern "C" fn(usize, usize, usize, &mut Registers, usize, usize) = kernel::sys_new_proc;
 
@@ -62,8 +59,6 @@ pub unsafe fn init_cpu() {
     let mut efer = msr::rdmsr(msr::IA32_EFER);
     efer |= 0x1;
     msr::wrmsr(msr::IA32_EFER, efer);
-
-    CPU0_SYSCALL_SP = CPU0_SYSCALL_STACK.as_ptr().add(CPU0_SYSCALL_STACK.len()) as u64;
 
     SYSCALLS[asys::__NR_PRINT] = kernel::sys_print as *const () as u64;
     SYSCALLS[asys::__NR_MMAP] = kernel::sys_mmap as *const () as u64;
