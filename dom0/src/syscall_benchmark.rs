@@ -406,6 +406,40 @@ pub fn time_ipc_round_trip() {
     log::info!("IPC round trip: {} TSC cycles (2 syscalls, 2 thread switches) over {} rounds", cycles, IPC_ROUNDS);
 }
 
+/// Makes one syscall with zeroed arguments but `arg`, and returns the six registers the kernel
+/// must not leave its own values in, as they stand straight after it.
+unsafe fn registers_after_syscall(nr: usize, arg: usize) -> [usize; 6] {
+    let (rdi, rsi, rdx, r8, r9, r10): (usize, usize, usize, usize, usize, usize);
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            inlateout("rax") nr => _,
+            inlateout("rdi") arg => rdi,
+            inlateout("rsi") 0usize => rsi,
+            inlateout("rdx") 0usize => rdx,
+            lateout("rcx") _,
+            inlateout("r8") 0usize => r8,
+            inlateout("r9") 0usize => r9,
+            lateout("r10") r10,
+            lateout("r11") _,
+        );
+    }
+    [rdi, rsi, rdx, r8, r9, r10]
+}
+
+/// Fails the run unless a syscall returns with rdi, rsi, rdx, r8, r9 and r10 zero, both when it
+/// returns to the same thread and when another thread's syscall switches back to this one, which
+/// is `waker_thread`, so this runs after `time_new_thread` has started it.
+pub fn check_syscall_return_registers() {
+    let va = (&raw const RESOLVED_PAGE) as usize;
+    let same_thread = unsafe { registers_after_syscall(asys::__NR_MRESOLVE, va & !0xfff) };
+    let switched = unsafe { registers_after_syscall(asys::__NR_RECEIVE_EMPTY, WAKE_ENDPOINT) };
+    log::info!("registers after syscall: same thread {:x?}, switched {:x?}", same_thread, switched);
+    if same_thread != [0; 6] || switched != [0; 6] {
+        bench_fail("registers left by the kernel", 0);
+    }
+}
+
 /// Entry of every timed thread: parks on its endpoint without touching its stack.
 #[unsafe(naked)]
 extern "C" fn parked_thread() -> ! {
