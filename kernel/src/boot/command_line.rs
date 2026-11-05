@@ -18,9 +18,6 @@ pub struct KernelCommandLine {
     /// Disable colored serial output.
     pub nocolor: bool,
 
-    /// Log to a specified serial port.
-    pub serial: &'static str,
-
     /// QEMU isa-debug-exit I/O port base.
     pub qemu_debug_exit_io_base: Option<u16>,
 
@@ -33,7 +30,6 @@ impl KernelCommandLine {
         Self {
             nologo: false,
             nocolor: false,
-            serial: "com1",
             qemu_debug_exit_io_base: None,
             bochs_apm_io_base: None,
         }
@@ -54,9 +50,6 @@ impl KernelCommandLine {
                     }
                 },
                 Component::KeyValue((key, value)) => match key {
-                    "serial" => {
-                        self.serial = value;
-                    }
                     "qemu_debug_exit_io_base" => {
                         self.qemu_debug_exit_io_base.replace(
                             value

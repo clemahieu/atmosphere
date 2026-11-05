@@ -295,15 +295,6 @@ impl XAPIC {
         }
     }
 
-    /// Detach driver form the xAPIC (disables device).
-    pub fn detach(&mut self) {
-        unsafe {
-            self.base = rdmsr(IA32_APIC_BASE);
-            self.base.set_bit(11, false); // Disable xAPIC
-            wrmsr(IA32_APIC_BASE, self.base);
-        }
-    }
-
     /// Read a register from the MMIO region.
     fn read(&self, offset: ApicRegister) -> u32 {
         assert!(offset as usize % 4 == 0);
