@@ -47,9 +47,7 @@ use e810_driver::device::{E810Device, Error as E810Error, PciBarAddr};
 pub const E810_PCI_DEV: (usize, usize, usize) = (0x17, 0, 0);
 
 unsafe fn attach_e810_iommu() {
-    let io_pml4 = asys::sys_rd_io_cr3() as u64;
-    log::info!("E810 IOMMU root @ {:#x}", io_pml4);
-    asys::sys_set_device_iommu(E810_PCI_DEV.0, E810_PCI_DEV.1, E810_PCI_DEV.2, io_pml4);
+    asys::sys_set_device_iommu(E810_PCI_DEV.0, E810_PCI_DEV.1, E810_PCI_DEV.2);
 }
 
 pub fn test_e810_driver() -> Result<(), E810Error> {

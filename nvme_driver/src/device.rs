@@ -360,8 +360,7 @@ impl NvmeDevice {
         // HACK
         println!("reloading iommu");
         unsafe {
-            let pml4 = asys::sys_rd_io_cr3() as u64;
-            asys::sys_set_device_iommu(NVME_PCI_DEV.0, NVME_PCI_DEV.1, NVME_PCI_DEV.2, pml4);
+            asys::sys_set_device_iommu(NVME_PCI_DEV.0, NVME_PCI_DEV.1, NVME_PCI_DEV.2);
         }
 
         println!(

@@ -241,6 +241,7 @@ const CHILD_UNSHARED_VA: usize = 0xb0_0000_0000;
 const CHILD_STACK_PAGES: usize = 16;
 const CHILD_ENDPOINT: usize = 3;
 static CHILD_RESOLVED: [AtomicUsize; 2] = [AtomicUsize::new(0), AtomicUsize::new(0)];
+static CHILD_BOUND: AtomicUsize = AtomicUsize::new(0);
 /// Ping-pong round trips to time IPC.
 const IPC_ROUNDS: u64 = 1000;
 /// Threads created to time `new_thread`.
@@ -518,12 +519,24 @@ unsafe fn sys_raw(number: usize) -> isize {
     ret
 }
 
-/// Binds a device function no process uses to dom0's own IO table, then flushes it. Both return 1
-/// with no IOMMU; the gate's IOMMU boot looks for these lines with 0.
+/// Binds a device function no process uses, naming an address that is not dom0's IO table in the
+/// register the argument used to arrive in, then flushes it. Both return 1 with no IOMMU; the gate's
+/// IOMMU boot looks for these lines with 0, and for the kernel's log of the table it bound.
 pub fn check_device_iommu() {
     let (bus, device, function) = (0, 0x1f, 7);
-    let table = unsafe { asys::sys_rd_io_cr3() } as u64;
-    let bound = unsafe { asys::sys_set_device_iommu(bus, device, function, table) };
+    log::info!("dom0's IO table: {:#x}", unsafe { asys::sys_rd_io_cr3() });
+    let bound: isize;
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            inlateout("rax") asys::__NR_SET_DEVICE_IOMMU => bound,
+            inlateout("rdi") bus => _,
+            inlateout("rsi") device => _,
+            inlateout("rdx") function => _,
+            inlateout("r8") 0x1000usize => _,
+            lateout("rcx") _, lateout("r9") _, lateout("r10") _, lateout("r11") _,
+        );
+    }
     log::info!("sys_set_device_iommu of dom0's own table: {}", bound);
     let flushed = unsafe { asys::sys_invalidate_iotlb(bus, device, function, 0) };
     log::info!("sys_invalidate_iotlb of that device: {}", flushed);
@@ -570,12 +583,19 @@ pub fn check_child_process() {
     if parent.1 == 1 || child.1 != 1 {
         bench_fail("the child's view of a page only dom0 maps", child.1);
     }
+    // The child has no IO table to bind a device to.
+    let bound = CHILD_BOUND.load(Ordering::SeqCst);
+    log::info!("sys_set_device_iommu from a process with no IO table: {}", bound);
+    if bound != 1 {
+        bench_fail("a device bind with no IO table", bound);
+    }
 }
 
 extern "C" fn child_process() -> ! {
     let shared = (&raw const RESOLVED_PAGE) as usize;
     CHILD_RESOLVED[0].store(unsafe { asys::sys_mresolve(shared) }.0, Ordering::SeqCst);
     CHILD_RESOLVED[1].store(unsafe { asys::sys_mresolve(CHILD_UNSHARED_VA) }.0, Ordering::SeqCst);
+    CHILD_BOUND.store(unsafe { asys::sys_set_device_iommu(0, 0x1f, 7) } as usize, Ordering::SeqCst);
     // sys_new_proc puts the endpoint in the child's descriptor 0.
     unsafe { asys::sys_send_empty_try_schedule(0) };
     loop {
@@ -587,7 +607,7 @@ extern "C" fn child_process() -> ! {
 /// with no IOMMU both syscalls return 1 first.
 pub fn check_device_arguments() {
     let calls: [(&str, unsafe fn(usize, usize, usize) -> isize); 2] = [
-        ("sys_set_device_iommu", |b, d, f| unsafe { asys::sys_set_device_iommu(b, d, f, 0) }),
+        ("sys_set_device_iommu", |b, d, f| unsafe { asys::sys_set_device_iommu(b, d, f) }),
         ("sys_invalidate_iotlb", |b, d, f| unsafe { asys::sys_invalidate_iotlb(b, d, f, 0) }),
     ];
     let ids = [(256, 0, 0), (0, 32, 0), (0, 0, 8), (usize::MAX, 0, 0), (0, usize::MAX, 0), (0, 0, usize::MAX)];
