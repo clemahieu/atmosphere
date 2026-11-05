@@ -561,6 +561,12 @@ pub fn check_device_iommu() {
     log::info!("sys_set_device_iommu of dom0's own table: {}", bound);
     let flushed = unsafe { asys::sys_invalidate_iotlb(bus, device, function, 0) };
     log::info!("sys_invalidate_iotlb of that device: {}", flushed);
+    // Every bus would share one context table, so a bind on another bus must not reach this one.
+    let other_bus = unsafe { asys::sys_set_device_iommu(1, device, function) };
+    log::info!("sys_set_device_iommu on bus 1: {}", other_bus);
+    if other_bus != 1 {
+        bench_fail("sys_set_device_iommu on bus 1", other_bus as usize);
+    }
 }
 
 /// Starts a child process that shares dom0's image and a stack, has it resolve two addresses, and

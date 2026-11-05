@@ -576,6 +576,10 @@ pub unsafe fn map(bus: usize, device: usize, function: usize, pml4: u64) -> Resu
     if !device_in_range(bus, device, function) {
         return Err("No such device");
     }
+    // NaiveIommuMap has one context table, which a second bus would share with bus 0.
+    if bus != 0 {
+        return Err("Only bus 0 has a context table");
+    }
     if IOMMU.lock().is_none() {
         return Err("No IOMMU available");
     }
