@@ -256,6 +256,8 @@ const FAULT_ENDPOINT: usize = 4;
 /// Mapped by no one.
 const UNMAPPED_VA: usize = 0xe0_0000_0000;
 static mut WAKE_ONCE_STACK: [u8; 16384] = [0; 16384];
+static mut RAX_PROBE_STACK: [u8; 16384] = [0; 16384];
+const RAX_PROBE_ENDPOINT: usize = 9;
 static SHARED_PAGES: AtomicUsize = AtomicUsize::new(0);
 static FAULT_KIND: AtomicUsize = AtomicUsize::new(0);
 static FAULT_WITNESS_SP: AtomicUsize = AtomicUsize::new(0);
@@ -435,14 +437,14 @@ pub fn time_ipc_round_trip() {
     log::info!("IPC round trip: {} TSC cycles (2 syscalls, 2 thread switches) over {} rounds", cycles, IPC_ROUNDS);
 }
 
-/// Makes one syscall with zeroed arguments but `arg`, and returns the six registers the kernel
-/// must not leave its own values in, as they stand straight after it.
-unsafe fn registers_after_syscall(nr: usize, arg: usize) -> [usize; 6] {
-    let (rdi, rsi, rdx, r8, r9, r10): (usize, usize, usize, usize, usize, usize);
+/// Makes one syscall with zeroed arguments but `arg`, and returns rax and the six registers the
+/// kernel must not leave its own values in, as they stand straight after it.
+unsafe fn registers_after_syscall(nr: usize, arg: usize) -> (usize, [usize; 6]) {
+    let (rax, rdi, rsi, rdx, r8, r9, r10): (usize, usize, usize, usize, usize, usize, usize);
     unsafe {
         core::arch::asm!(
             "syscall",
-            inlateout("rax") nr => _,
+            inlateout("rax") nr => rax,
             inlateout("rdi") arg => rdi,
             inlateout("rsi") 0usize => rsi,
             inlateout("rdx") 0usize => rdx,
@@ -453,19 +455,59 @@ unsafe fn registers_after_syscall(nr: usize, arg: usize) -> [usize; 6] {
             lateout("r11") _,
         );
     }
-    [rdi, rsi, rdx, r8, r9, r10]
+    (rax, [rdi, rsi, rdx, r8, r9, r10])
 }
 
 /// Fails the run unless a syscall returns with rdi, rsi, rdx, r8, r9 and r10 zero, both when it
-/// returns to the same thread and when another thread's syscall switches back to this one, which
-/// is `waker_thread`, so this runs after `time_new_thread` has started it.
+/// returns to the same thread and when another thread's syscall switches back to this one, and
+/// unless a syscall that blocked and was woken returns 0 in rax, whatever the last syscall on this
+/// core returned. The waker is `waker_thread`, so this runs after `time_new_thread` has started it.
 pub fn check_syscall_return_registers() {
     let va = (&raw const RESOLVED_PAGE) as usize;
-    let same_thread = unsafe { registers_after_syscall(asys::__NR_MRESOLVE, va & !0xfff) };
-    let switched = unsafe { registers_after_syscall(asys::__NR_RECEIVE_EMPTY, WAKE_ENDPOINT) };
+    let (resolved, same_thread) = unsafe { registers_after_syscall(asys::__NR_MRESOLVE, va & !0xfff) };
+    let (woken, switched) = unsafe { registers_after_syscall(asys::__NR_RECEIVE_EMPTY, WAKE_ENDPOINT) };
     log::info!("registers after syscall: same thread {:x?}, switched {:x?}", same_thread, switched);
+    log::info!("rax after mresolve {:#x}, after a woken receive {:#x}", resolved, woken);
     if same_thread != [0; 6] || switched != [0; 6] {
         bench_fail("registers left by the kernel", 0);
+    }
+    if resolved == 0 || resolved == 1 || woken != 0 {
+        bench_fail("rax after a woken receive", woken);
+    }
+}
+
+/// What rax held when `rax_probe` started.
+static NEW_THREAD_RAX: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+#[unsafe(naked)]
+extern "C" fn rax_probe() -> ! {
+    core::arch::naked_asm!(
+        "mov [rip + {rax}], rax",
+        "jmp {next}",
+        rax = sym NEW_THREAD_RAX,
+        next = sym wake_once,
+    )
+}
+
+/// Fails the run unless a new thread starts with rax 0, not whatever its creator's last syscall left.
+pub fn check_new_thread_rax() {
+    let va = (&raw const RESOLVED_PAGE) as usize;
+    let ret = unsafe { asys::sys_new_endpoint(RAX_PROBE_ENDPOINT) };
+    if ret != 0 {
+        bench_fail("new_endpoint (rax)", ret);
+    }
+    let (resolved, _) = unsafe { registers_after_syscall(asys::__NR_MRESOLVE, va & !0xfff) };
+    let ret = unsafe {
+        asys::sys_new_thread(RAX_PROBE_ENDPOINT, rax_probe as *const () as usize, stack_top(&raw const RAX_PROBE_STACK))
+    };
+    if ret != 0 {
+        bench_fail("new_thread (rax)", ret);
+    }
+    unsafe { asys::sys_receive_empty(RAX_PROBE_ENDPOINT) };
+    let rax = NEW_THREAD_RAX.load(Ordering::SeqCst);
+    log::info!("rax after mresolve {:#x}, in a new thread {:#x}", resolved, rax);
+    if rax != 0 {
+        bench_fail("rax in a new thread", rax);
     }
 }
 
