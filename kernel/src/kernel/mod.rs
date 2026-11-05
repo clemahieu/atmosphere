@@ -48,10 +48,6 @@ impl PhysicalMemoryTypeExt for PhysicalMemoryType {
     }
 }
 
-pub fn kernel_test() {
-    log::info!("hello from kernel");
-}
-
 pub fn kernel_new() {
     log::trace!("the kernel objects' layouts are checked at compile time, in verified::layouts");
 }

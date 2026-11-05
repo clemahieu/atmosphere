@@ -5,10 +5,8 @@
 #![no_std]
 #![feature(
     abi_x86_interrupt,
-    alloc_error_handler,
     arbitrary_self_types,
-    custom_test_frameworks,
-    pattern
+    custom_test_frameworks
 )]
 #![deny(
     asm_sub_register,
@@ -42,7 +40,6 @@ mod logging;
 mod syscalls;
 mod thread;
 mod utils;
-mod ring_buffer;
 mod lock;
 mod flush;
 
@@ -93,9 +90,6 @@ fn boot_cpu0(boot_info: *const BootInfo) -> isize {
         boot::init(boot_info);
         iommu::init_iommu();
 
-        // XXX: disable reinitializing console as it hangs on real hw. disabling it on qemu doesn't
-        // cause any harm
-        //console::init();
         logging::init();
     }
 

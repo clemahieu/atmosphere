@@ -279,12 +279,6 @@ impl RemappingHardware {
         }
     }
 
-    pub fn disable_translation(&mut self) {
-        unsafe {
-            self.send_global_command(Self::GCMD_TE, false);
-        }
-    }
-
     pub unsafe fn set_root_table_addr(&mut self, address: u64) {
         self.write_u64(Self::RTADDR_REG, address);
         self.send_global_command(Self::GCMD_SRTP, true);

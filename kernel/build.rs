@@ -18,16 +18,6 @@ fn main() {
     x86_64_asm_bin("boot/ap_start.asm", 0x7000);
 }
 
-fn x86_64_asm(source: &str) {
-    let path = Path::new("src/").join(source);
-    source!("{}", path.to_str().unwrap());
-
-    let objects = build_x86_64_asm(&path);
-    for object in objects {
-        println!("cargo:rustc-link-arg={}", object.to_str().unwrap());
-    }
-}
-
 fn x86_64_asm_bin(source: &str, text_base: u64) {
     let path = Path::new("src/").join(source);
     source!("{}", path.to_str().unwrap());
