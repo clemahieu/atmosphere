@@ -53,11 +53,6 @@ slinkedlist/impl_t.rs	set_prev	unproven	an array element access not proven yet
 slinkedlist/impl_t.rs	set_value	unproven	an array element access not proven yet
 trap.rs	random	gap	builds a value from zeroed memory, which Verus cannot check
 trap.rs	zeroed	gap	builds a value from zeroed memory, which Verus cannot check
-util/page_ptr_util_u.rs	page_index_lemma	unproven	a lemma stated without a proof
-util/page_ptr_util_u.rs	page_ptr_1g_lemma	unproven	a lemma stated without a proof
-util/page_ptr_util_u.rs	page_ptr_2m_lemma	unproven	a lemma stated without a proof
-util/page_ptr_util_u.rs	page_ptr_lemma1	unproven	a lemma stated without a proof
-util/page_ptr_util_u.rs	page_ptr_page_index_truncate_lemma	unproven	a lemma stated without a proof
 util/page_ptr_util_u.rs	va_add_range	unproven	not proven yet
 util/page_ptr_util_u.rs	va_lemma	unproven	a lemma stated without a proof
 util/page_ptr_util_u.rs	va_range_lemma	unproven	a lemma stated without a proof
