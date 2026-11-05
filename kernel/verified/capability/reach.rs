@@ -488,6 +488,113 @@ pub proof fn lemma_removes_cap_discharges(pre: State, post: State, p: ObjectId, 
     }
 }
 
+/// a's authority carries over to b through a renaming f of a's live nodes: whatever a process holds,
+/// each capability's block and rights and each live node's parent are in b under the new names.
+pub open spec fn simulates(a: State, b: State, live: spec_fn(NodeId) -> bool, f: spec_fn(NodeId) -> NodeId) -> bool {
+    &&& forall|h: (ObjectId, NodeId)| #[trigger] a.held.contains(h) ==> live(h.1) && b.held.contains((h.0, f(h.1)))
+    &&& forall|x: NodeId| #[trigger] a.names.contains_key(x) ==> {
+        &&& live(x)
+        &&& b.names.contains_key(f(x))
+        &&& b.names[f(x)] == a.names[x]
+    }
+    &&& forall|x: NodeId| #[trigger] a.pages.contains_key(x) ==> {
+        &&& b.pages.contains_key(f(x))
+        &&& b.pages[f(x)] == a.pages[x]
+    }
+    &&& forall|x: NodeId, r: Right| #[trigger] a.rights.contains((x, r)) ==> b.rights.contains((f(x), r))
+    &&& forall|x: NodeId| live(x) && #[trigger] a.parent.contains_key(x) ==> {
+        &&& live(a.parent[x])
+        &&& b.parent.contains_key(f(x))
+        &&& b.parent[f(x)] == f(a.parent[x])
+    }
+    &&& a.maps == b.maps
+    &&& a.process_of == b.process_of
+}
+
+proof fn lemma_simulates_descends(
+    a: State,
+    b: State,
+    live: spec_fn(NodeId) -> bool,
+    f: spec_fn(NodeId) -> NodeId,
+    top: NodeId,
+    x: NodeId,
+    k: nat,
+)
+    requires
+        simulates(a, b, live, f),
+        a.descends(top, x, k),
+        live(x),
+    ensures
+        b.descends(f(top), f(x), k),
+    decreases k,
+{
+    if k > 0 {
+        assert(a.parent.contains_key(x));
+        lemma_simulates_descends(a, b, live, f, top, a.parent[x], (k - 1) as nat);
+    }
+}
+
+proof fn lemma_simulates_controlled(
+    a: State,
+    b: State,
+    live: spec_fn(NodeId) -> bool,
+    f: spec_fn(NodeId) -> NodeId,
+    r: ObjectId,
+    q: ObjectId,
+    k: nat,
+)
+    requires
+        simulates(a, b, live, f),
+        a.controlled(r, q, k),
+    ensures
+        b.controlled(r, q, k),
+    decreases k,
+{
+    if k > 0 {
+        let m = choose|m: ObjectId| #[trigger] a.controls(m, q) && a.controlled(r, m, (k - 1) as nat);
+        lemma_simulates_controlled(a, b, live, f, r, m, (k - 1) as nat);
+        let t = choose|t: NodeId| #[trigger] a.holds_right(m, t, Right::Control)
+            && a.process_behind(a.names[t]) == q;
+        assert(a.held.contains((m, t)));
+        assert(a.names.contains_key(t));
+        assert(a.rights.contains((t, Right::Control)));
+        assert(b.holds_right(m, f(t), Right::Control));
+        assert(b.process_behind(b.names[f(t)]) == q);
+        assert(b.controls(m, q));
+    }
+}
+
+/// Anything a process reaches in a it reaches in b.
+pub proof fn lemma_simulates_reach(
+    a: State,
+    b: State,
+    live: spec_fn(NodeId) -> bool,
+    f: spec_fn(NodeId) -> NodeId,
+    r: ObjectId,
+    o: ObjectId,
+)
+    requires
+        simulates(a, b, live, f),
+        a.reach(r, o),
+    ensures
+        b.reach(r, o),
+{
+    let (q, k) = choose|q: ObjectId, k: nat| #[trigger] a.controlled(r, q, k) && (o == q || a.direct(q, o));
+    lemma_simulates_controlled(a, b, live, f, r, q, k);
+    if o != q && !a.maps.contains((q, o)) {
+        let (t, x, d) = choose|t: NodeId, x: NodeId, d: nat| #[trigger] a.descends(t, x, d)
+            && a.holds(q, t) && a.covers(x, o);
+        assert(a.names.contains_key(x));
+        assert(a.pages.contains_key(x));
+        assert(a.held.contains((q, t)));
+        lemma_simulates_descends(a, b, live, f, t, x, d);
+        assert(b.holds(q, f(t)));
+        assert(b.covers(f(x), o));
+        assert(b.descends(f(t), f(x), d));
+    }
+    assert(b.controlled(r, q, k));
+}
+
 /// Control is transitive: if s controls m and m controls q, s reaches what q directly reaches, since
 /// s can destroy m, claim its control over q, and repeat.
 pub proof fn lemma_control_transitive(s: State, a: ObjectId, m: ObjectId, q: ObjectId, o: ObjectId)

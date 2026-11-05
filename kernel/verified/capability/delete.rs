@@ -37,7 +37,7 @@ impl CapKernel {
                 &&& ret.unwrap() == old(self).payload_of(n)
                 &&& forall|c: usize| !#[trigger] old(self).list.is_child(n, c)
                 &&& !final(self).is_cap(n)
-                &&& Self::caps_frame(*old(self), *final(self), n)
+                &&& Self::caps_frame(*old(self), *final(self), n, n)
             },
             discharges(old(self).view(), final(self).view(), root, Effect::Local),
     {
@@ -71,7 +71,7 @@ impl CapKernel {
         proof {
             let post = *self;
             pre.tables.lemma_wf_same_pages(&pre.list, &post.list);
-            assert(Self::caps_frame(pre, post, n));
+            assert(Self::caps_frame(pre, post, n, n));
             Self::lemma_delete_caps_wf(pre, post, n);
             Self::lemma_delete_discharges(pre, post, root, n);
             Self::lemma_tlb_same(pre, post);
@@ -82,14 +82,14 @@ impl CapKernel {
     /// Every capability left still names a block.
     proof fn lemma_delete_caps_wf(pre: Self, post: Self, n: usize)
         requires
-            Self::caps_frame(pre, post, n),
+            Self::caps_frame(pre, post, n, n),
             !post.list.nodes@[n as int].live,
         ensures
             post.tables.caps_wf(&post.list),
     {
         assert forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) implies payload_wf(post.tables.payload_of(x)) by {
             assert(x != n);
-            Self::lemma_caps_frame(pre, post, n, x);
+            Self::lemma_caps_frame(pre, post, n, n, x);
             assert(post.is_cap(x));
             assert(pre.tables.is_cap(&pre.list, x));
         }
@@ -98,7 +98,7 @@ impl CapKernel {
     /// The view of the step: one capability the caller held goes, and nothing else.
     proof fn lemma_delete_discharges(pre: Self, post: Self, root: usize, n: usize)
         requires
-            Self::caps_frame(pre, post, n),
+            Self::caps_frame(pre, post, n, n),
             pre.is_cap(n),
             pre.tables.owner@[page_of(n)].0 == root,
             !post.list.nodes@[n as int].live,
@@ -110,28 +110,28 @@ impl CapKernel {
         assert(a.holds(root, n));
         assert forall|h: (ObjectId, NodeId)| #[trigger] b.held.contains(h) implies a.held.contains(h) by {
             assert(h.1 != n);
-            Self::lemma_caps_frame(pre, post, n, h.1);
+            Self::lemma_caps_frame(pre, post, n, n, h.1);
         }
         assert forall|x: NodeId| x != n && #[trigger] a.names.contains_key(x) implies b.names.contains_key(x) by {
-            Self::lemma_caps_frame(pre, post, n, x);
+            Self::lemma_caps_frame(pre, post, n, n, x);
         }
         assert forall|x: NodeId| #[trigger] b.names.contains_key(x) implies {
             &&& a.names.contains_key(x)
             &&& b.names[x] == a.names[x]
         } by {
             assert(x != n);
-            Self::lemma_caps_frame(pre, post, n, x);
+            Self::lemma_caps_frame(pre, post, n, n, x);
         }
         assert forall|x: NodeId| #[trigger] b.pages.contains_key(x) implies {
             &&& a.pages.contains_key(x)
             &&& b.pages[x] == a.pages[x]
         } by {
             assert(x != n);
-            Self::lemma_caps_frame(pre, post, n, x);
+            Self::lemma_caps_frame(pre, post, n, n, x);
         }
         assert forall|h: (NodeId, Right)| #[trigger] b.rights.contains(h) implies a.rights.contains(h) by {
             assert(h.0 != n);
-            Self::lemma_caps_frame(pre, post, n, h.0);
+            Self::lemma_caps_frame(pre, post, n, n, h.0);
         }
         assert forall|o: ObjectId| #[trigger] (b.contents)(o) == (a.contents)(o) by {}
         assert(removes_cap(a, b, root, n));
