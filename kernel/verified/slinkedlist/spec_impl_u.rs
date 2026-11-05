@@ -214,6 +214,7 @@ impl<T, const N: usize> StaticLinkedList<T, N> {
     }
 
     pub closed spec fn array_wf(&self) -> bool {
+        &&& self.arr_seq@ =~= self.ar@
         &&& self.arr_seq@.len() == N
         &&& self.size@ == N
     }
@@ -973,6 +974,139 @@ impl<T: Copy, const N: usize> StaticLinkedList<T, N> {
         } else {
             return self.remove_helper7(remove_index, v);
         }
+    }
+}
+
+impl<T: Copy, const N: usize> StaticLinkedList<T, N> {
+    pub fn set_value(&mut self, index: SLLIndex, v: Option<T>)
+        requires
+            old(self).array_wf(),
+            0 <= index < N,
+        ensures
+            final(self).array_wf(),
+            forall|i: int|
+             // #![trigger self.arr_seq@[i], old(self).arr_seq@[i]]
+
+                #![trigger final(self).arr_seq@[i]]
+                #![trigger old(self).arr_seq@[i]]
+                0 <= i < final(self).arr_seq@.len() && i != index ==> final(self).arr_seq@[i] =~= old(
+                    self,
+                ).arr_seq@[i],
+            final(self).arr_seq@[index as int].prev == old(self).arr_seq@[index as int].prev,
+            final(self).arr_seq@[index as int].next == old(self).arr_seq@[index as int].next,
+            final(self).arr_seq@[index as int].value == v,
+            final(self).spec_seq@ == old(self).spec_seq@,
+            final(self).value_list@ == old(self).value_list@,
+            final(self).free_list@ == old(self).free_list@,
+            final(self).value_list_head == old(self).value_list_head,
+            final(self).value_list_tail == old(self).value_list_tail,
+            final(self).value_list_len == old(self).value_list_len,
+            final(self).free_list_head == old(self).free_list_head,
+            final(self).free_list_tail == old(self).free_list_tail,
+            final(self).free_list_len == old(self).free_list_len,
+            old(self).free_list_wf() ==> final(self).free_list_wf(),
+            old(self).value_list_wf() ==> final(self).value_list_wf(),
+    {
+        self.ar[index as usize].value = v;
+        proof {
+            self.arr_seq = Ghost(self.ar@);
+        }
+    }
+
+    pub fn set_next(&mut self, index: SLLIndex, v: SLLIndex)
+        requires
+            old(self).array_wf(),
+            0 <= index < N,
+        ensures
+            final(self).array_wf(),
+            forall|i: int|
+             // #![trigger self.arr_seq@[i], old(self).arr_seq@[i]]
+
+                #![trigger final(self).arr_seq@[i]]
+                #![trigger old(self).arr_seq@[i]]
+                0 <= i < final(self).arr_seq@.len() && i != index ==> final(self).arr_seq@[i] =~= old(
+                    self,
+                ).arr_seq@[i],
+            final(self).arr_seq@[index as int].prev == old(self).arr_seq@[index as int].prev,
+            final(self).arr_seq@[index as int].value == old(self).arr_seq@[index as int].value,
+            final(self).arr_seq@[index as int].next == v,
+            final(self).spec_seq@ == old(self).spec_seq@,
+            final(self).value_list@ == old(self).value_list@,
+            final(self).free_list@ == old(self).free_list@,
+            final(self).value_list_head == old(self).value_list_head,
+            final(self).value_list_tail == old(self).value_list_tail,
+            final(self).value_list_len == old(self).value_list_len,
+            final(self).free_list_head == old(self).free_list_head,
+            final(self).free_list_tail == old(self).free_list_tail,
+            final(self).free_list_len == old(self).free_list_len,
+    {
+        self.ar[index as usize].next = v;
+        proof {
+            self.arr_seq = Ghost(self.ar@);
+        }
+    }
+
+    pub fn set_prev(&mut self, index: SLLIndex, v: SLLIndex)
+        requires
+            old(self).array_wf(),
+            0 <= index < N,
+        ensures
+            final(self).array_wf(),
+            forall|i: int|
+             // #![trigger self.arr_seq@[i], old(self).arr_seq@[i]]
+
+                #![trigger final(self).arr_seq@[i]]
+                #![trigger old(self).arr_seq@[i]]
+                0 <= i < final(self).arr_seq@.len() && i != index ==> final(self).arr_seq@[i] =~= old(
+                    self,
+                ).arr_seq@[i],
+            final(self).arr_seq@[index as int].next == old(self).arr_seq@[index as int].next,
+            final(self).arr_seq@[index as int].value == old(self).arr_seq@[index as int].value,
+            final(self).arr_seq@[index as int].prev == v,
+            final(self).spec_seq@ == old(self).spec_seq@,
+            final(self).value_list@ == old(self).value_list@,
+            final(self).free_list@ == old(self).free_list@,
+            final(self).value_list_head == old(self).value_list_head,
+            final(self).value_list_tail == old(self).value_list_tail,
+            final(self).value_list_len == old(self).value_list_len,
+            final(self).free_list_head == old(self).free_list_head,
+            final(self).free_list_tail == old(self).free_list_tail,
+            final(self).free_list_len == old(self).free_list_len,
+    {
+        self.ar[index as usize].prev = v;
+        proof {
+            self.arr_seq = Ghost(self.ar@);
+        }
+    }
+
+    pub fn get_value(&self, index: SLLIndex) -> (ret: Option<T>)
+        requires
+            0 <= index < N,
+            self.array_wf(),
+        ensures
+            ret == self.arr_seq@[index as int].value,
+    {
+        self.ar[index as usize].value
+    }
+
+    pub fn get_next(&self, index: SLLIndex) -> (next: SLLIndex)
+        requires
+            0 <= index < N,
+            self.array_wf(),
+        ensures
+            next == self.arr_seq@[index as int].next,
+    {
+        self.ar[index as usize].next
+    }
+
+    pub fn get_prev(&self, index: SLLIndex) -> (prev: SLLIndex)
+        requires
+            0 <= index < N,
+            self.array_wf(),
+        ensures
+            prev == self.arr_seq@[index as int].prev,
+    {
+        self.ar[index as usize].prev
     }
 }
 
