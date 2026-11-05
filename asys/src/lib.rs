@@ -22,7 +22,6 @@ pub const __NR_NEW_PROC_W_IO_MEM: usize = 11;
 pub const __NR_SEND_PAGE_NW: usize = 12;
 pub const __NR_RECEIVE_PAGE: usize = 13;
 pub const __NR_SEND_PAGE: usize = 14;
-pub const __NR_RD_IO_CR3: usize = 15;
 pub const __NR_IO_MMAP: usize = 16;
 pub const __NR_MRESOLVE_IO: usize = 17;
 pub const __NR_SET_DEVICE_IOMMU: usize = 18;
@@ -154,10 +153,6 @@ pub unsafe fn sys_receive_empty(endpoint_index:usize) -> usize{
 
 pub unsafe fn sys_io_mmap(va:usize, perm_bits:usize, range:usize) -> usize {
     return syscall!(__NR_IO_MMAP,va,perm_bits,range) as usize;
-}
-
-pub unsafe fn sys_rd_io_cr3() -> usize {
-    return syscall!(__NR_RD_IO_CR3,0,0,0) as usize;
 }
 
 pub unsafe fn sys_set_device_iommu(bus: usize, device: usize, function: usize) -> isize {

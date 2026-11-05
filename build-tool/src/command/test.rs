@@ -249,7 +249,7 @@ fn iommu_bound_own_table(serial: &str) -> bool {
         let hex: String = rest.chars().skip(2).take_while(char::is_ascii_hexdigit).collect();
         (rest.starts_with("0x") && !hex.is_empty()).then_some(hex)
     };
-    match (value("dom0's IO table: "), value("IO page table of 0x0:0x1f.0x7: ")) {
+    match (value("the caller's IO table: "), value("IO page table of 0x0:0x1f.0x7: ")) {
         (Some(own), Some(bound)) => own == bound,
         _ => false,
     }
@@ -281,7 +281,7 @@ mod tests {
 
     #[test]
     fn iommu_boot_needs_translation_and_both_syscalls() {
-        let tables = "dom0's IO table: 0x2000\nIO page table of 0x0:0x1f.0x7: 0x2000\n";
+        let tables = "the caller's IO table: 0x2000\nIO page table of 0x0:0x1f.0x7: 0x2000\n";
         let ran = format!("Enabling translation\nsys_set_device_iommu of dom0's own table: 0\nsys_invalidate_iotlb of that device: 0\n{}", tables);
         assert!(iommu_boot_ran(&ran));
         assert!(!iommu_boot_ran("Enabling translation\nsys_invalidate_iotlb of that device: 0\n"));
@@ -291,9 +291,9 @@ mod tests {
 
     #[test]
     fn iommu_boot_needs_the_callers_table() {
-        assert!(iommu_bound_own_table("dom0's IO table: 0x2000\nIO page table of 0x0:0x1f.0x7: 0x2000\n"));
-        assert!(!iommu_bound_own_table("dom0's IO table: 0x2000\nIO page table of 0x0:0x1f.0x7: 0x1000\n"));
-        assert!(!iommu_bound_own_table("dom0's IO table: 0x2000\n"));
+        assert!(iommu_bound_own_table("the caller's IO table: 0x2000\nIO page table of 0x0:0x1f.0x7: 0x2000\n"));
+        assert!(!iommu_bound_own_table("the caller's IO table: 0x2000\nIO page table of 0x0:0x1f.0x7: 0x1000\n"));
+        assert!(!iommu_bound_own_table("the caller's IO table: 0x2000\n"));
         assert!(!iommu_bound_own_table("IO page table of 0x0:0x1f.0x7: 0x2000\n"));
     }
 

@@ -743,28 +743,11 @@ pub extern "C" fn sys_set_device_iommu(bus: usize, device: usize, function: usiz
         return;
     };
     let table = kernel.mem_man.get_cr3_by_ioid(ioid) as u64;
+    log::info!("the caller's IO table: {:#x}", table);
     regs.rax = match unsafe { crate::iommu::map(bus, device, function, table) } {
         Ok(()) => 0,
         Err(_) => 1,
     };
-}
-
-pub extern "C" fn sys_get_iommu_cr3(_:usize, _:usize, _:usize, regs: &mut vRegisters){
-    // log::info!("regs {:x?}", regs);
-    
-    Bridge::set_switch_decision(SwitchDecision::NoSwitching);
-    let cpu_id = cpu::get_cpu_id();
-    let mut kernel = KERNEL.lock();
-    let thread_info = kernel.get_current_cpu_info(cpu_id);
-    let proc_ptr = thread_info.1.unwrap();
-    let ioid_op = kernel.proc_man.get_proc(proc_ptr).ioid;
-    if let Some(ioid) = ioid_op{
-        let io_cr3 =  kernel.mem_man.get_cr3_by_ioid(ioid);
-        regs.rax = io_cr3 as u64;
-    }else{
-        log::debug!("sys_get_iommu_cr3 has no IOMMU");
-        regs.rax = 233 as u64;
-    }
 }
 
 pub extern "C" fn sys_iommu_mmap(va:usize, perm_bits:usize, range:usize, regs: &mut vRegisters) {
