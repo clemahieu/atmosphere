@@ -198,11 +198,75 @@ pub open spec fn spec_index2va(i: (L4Index, L3Index, L2Index, L1Index)) -> usize
         i.2 <= 0x1ff,
         i.3 <= 0x1ff,
 {
-    (i.0 as usize) << 39 & (i.1 as usize) << 30 & (i.2 as usize) << 21 & (i.3 as usize) << 12
+    (i.0 as usize) << 39 | (i.1 as usize) << 30 | (i.2 as usize) << 21 | (i.3 as usize) << 12
 }
 
-pub fn index2va(i: (L4Index, L3Index, L2Index, L1Index)) -> usize {
-    (i.0 as usize) << 39 & (i.1 as usize) << 30 & (i.2 as usize) << 21 & (i.3 as usize) << 12
+/// The address of an in-range index tuple whose L4 index is at or past the kernel's is a
+/// valid 4k user address: page aligned, canonical and outside the kernel's L4 entries.
+pub proof fn lemma_index2va_4k_valid(l4i: L4Index, l3i: L3Index, l2i: L2Index, l1i: L1Index)
+    requires
+        KERNEL_MEM_END_L4INDEX <= l4i < 512,
+        0 <= l3i < 512,
+        0 <= l2i < 512,
+        0 <= l1i < 512,
+    ensures
+        spec_va_4k_valid(spec_index2va((l4i, l3i, l2i, l1i))),
+{
+    let va = spec_index2va((l4i, l3i, l2i, l1i));
+    assert(va == l4i << 39 | l3i << 30 | l2i << 21 | l1i << 12);
+    assert(1 <= l4i < 512 && l3i < 512 && l2i < 512 && l1i < 512 ==> ((l4i << 39 | l3i << 30
+        | l2i << 21 | l1i << 12) & (!0x0000_ffff_ffff_f000u64) as usize == 0) && ((l4i << 39 | l3i
+        << 30 | l2i << 21 | l1i << 12) as u64 >> 39u64 & 0x1ffu64) >= 1u64) by (bit_vector);
+    assert((!MEM_4k_MASK) as usize == (!0x0000_ffff_ffff_f000u64) as usize);
+    assert(KERNEL_MEM_END_L4INDEX as u64 == 1u64);
+}
+
+/// The address of an in-range index tuple with L1 index 0 whose L4 index is at or past the
+/// kernel's is a valid 2m user address: 2m aligned, canonical and outside the kernel's L4 entries.
+pub proof fn lemma_index2va_2m_valid(l4i: L4Index, l3i: L3Index, l2i: L2Index)
+    requires
+        KERNEL_MEM_END_L4INDEX <= l4i < 512,
+        0 <= l3i < 512,
+        0 <= l2i < 512,
+    ensures
+        spec_va_2m_valid(spec_index2va((l4i, l3i, l2i, 0))),
+{
+    let va = spec_index2va((l4i, l3i, l2i, 0));
+    assert(va == l4i << 39 | l3i << 30 | l2i << 21 | 0usize << 12);
+    assert(1 <= l4i < 512 && l3i < 512 && l2i < 512 ==> ((l4i << 39 | l3i << 30 | l2i << 21
+        | 0usize << 12) & (!0x0000_ffff_ffe0_0000u64) as usize == 0) && ((l4i << 39 | l3i << 30
+        | l2i << 21 | 0usize << 12) as u64 >> 39u64 & 0x1ffu64) >= 1u64) by (bit_vector);
+    assert((!MEM_2m_MASK) as usize == (!0x0000_ffff_ffe0_0000u64) as usize);
+    assert(KERNEL_MEM_END_L4INDEX as u64 == 1u64);
+}
+
+/// Two in-range index tuples name the same address only when they are equal. One instance of
+/// va_lemma's pairwise clause, so a caller can instantiate it for one pair instead of carrying
+/// the eight-variable quantifier.
+pub proof fn lemma_index2va_injective(
+    l4i: L4Index,
+    l3i: L3Index,
+    l2i: L2Index,
+    l1i: L1Index,
+    l4j: L4Index,
+    l3j: L3Index,
+    l2j: L2Index,
+    l1j: L1Index,
+)
+    requires
+        0 <= l4i < 512,
+        0 <= l3i < 512,
+        0 <= l2i < 512,
+        0 <= l1i < 512,
+        0 <= l4j < 512,
+        0 <= l3j < 512,
+        0 <= l2j < 512,
+        0 <= l1j < 512,
+    ensures
+        ((l4i, l3i, l2i, l1i) =~= (l4j, l3j, l2j, l1j)) <==> spec_index2va((l4i, l3i, l2i, l1i))
+            == spec_index2va((l4j, l3j, l2j, l1j)),
+{
+    va_lemma();
 }
 
 #[verifier(when_used_as_spec(spec_v2l1index))]
@@ -553,11 +617,13 @@ pub proof fn va_lemma()
             l1j: L1Index,
         |
             #![trigger spec_index2va((l4i,l3i,l2i,l1i)), spec_index2va((l4j,l3j,l2j,l1j))]
-            (l4i, l3i, l2i, l1i) =~= (l4j, l3j, l2j, l1j) && 0 <= l4i < 512 && 0 <= l3i < 512 && 0
-                <= l2i < 512 && 0 <= l1i < 512 && 0 <= l4j < 512 && 0 <= l3j < 512 && 0 <= l2j < 512
-                && 0 <= l1j < 512 <==> spec_index2va((l4i, l3i, l2i, l1i)) == spec_index2va(
-                (l4j, l3j, l2j, l1j),
-            ),
+            0 <= l4i < 512 && 0 <= l3i < 512 && 0 <= l2i < 512 && 0 <= l1i < 512 && 0 <= l4j < 512
+                && 0 <= l3j < 512 && 0 <= l2j < 512 && 0 <= l1j < 512 ==> ((l4i, l3i, l2i, l1i) =~= (
+                l4j,
+                l3j,
+                l2j,
+                l1j,
+            ) <==> spec_index2va((l4i, l3i, l2i, l1i)) == spec_index2va((l4j, l3j, l2j, l1j))),
         forall|
             l4i: L4Index,
             l3i: L3Index,
@@ -569,13 +635,18 @@ pub proof fn va_lemma()
             l1j: L1Index,
         |
             #![trigger spec_index2va((l4i,l3i,l2i,l1i)), spec_index2va((l4j,l3j,l2j,l1j))]
-            (l4i, l3i, l2i, l1i) =~= (l4j, l3j, l2j, l1j) == false && 0 <= l4i < 512 && 0 <= l3i
-                < 512 && 0 <= l2i < 512 && 0 <= l1i < 512 && 0 <= l4j < 512 && 0 <= l3j < 512 && 0
-                <= l2j < 512 && 0 <= l1j < 512 <==> spec_index2va((l4i, l3i, l2i, l1i))
-                != spec_index2va((l4j, l3j, l2j, l1j)),
+            0 <= l4i < 512 && 0 <= l3i < 512 && 0 <= l2i < 512 && 0 <= l1i < 512 && 0 <= l4j < 512
+                && 0 <= l3j < 512 && 0 <= l2j < 512 && 0 <= l1j < 512 ==> (((l4i, l3i, l2i, l1i) =~= (
+                l4j,
+                l3j,
+                l2j,
+                l1j,
+            )) == false <==> spec_index2va((l4i, l3i, l2i, l1i)) != spec_index2va(
+                (l4j, l3j, l2j, l1j),
+            )),
         forall|l4i: L4Index, l3i: L3Index, l2i: L2Index, l1i: L1Index|
             #![trigger va_4k_valid(spec_index2va((l4i,l3i,l2i,l1i)))]
-            0 <= l4i < 512 && 0 <= l3i < 512 && 0 <= l2i < 512 && 0 <= l1i < 512 ==> va_4k_valid(
+            KERNEL_MEM_END_L4INDEX <= l4i < 512 && 0 <= l3i < 512 && 0 <= l2i < 512 && 0 <= l1i < 512 ==> va_4k_valid(
                 spec_index2va((l4i, l3i, l2i, l1i)),
             ),
         forall|va: VAddr, l4i: L4Index, l3i: L3Index, l2i: L2Index, l1i: L1Index|
@@ -586,7 +657,7 @@ pub proof fn va_lemma()
             ) == va,
         forall|l4i: L4Index, l3i: L3Index, l2i: L2Index|
             #![trigger va_2m_valid(spec_index2va((l4i,l3i,l2i,0)))]
-            0 <= l4i < 512 && 0 <= l3i < 512 && 0 <= l2i < 512 ==> va_2m_valid(
+            KERNEL_MEM_END_L4INDEX <= l4i < 512 && 0 <= l3i < 512 && 0 <= l2i < 512 ==> va_2m_valid(
                 spec_index2va((l4i, l3i, l2i, 0)),
             ),
 {
