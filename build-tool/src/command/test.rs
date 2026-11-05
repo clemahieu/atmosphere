@@ -48,6 +48,7 @@ pub(super) async fn run(global: GlobalOpts) -> Result<()> {
         ("external body", external_body::check(&project)),
         ("boot stack", check_boot_stack(&project).await),
         ("coverage", check_coverage(&project).await),
+        ("iommu boot", check_iommu_boot(&project, local.boot_timeout).await),
         ("boot", check_boot(&project, local.boot_timeout).await),
     ];
 
@@ -163,6 +164,22 @@ async fn check_verify(project: &ProjectHandle) -> Result<String> {
 }
 
 async fn check_boot(project: &ProjectHandle, timeout: u64) -> Result<String> {
+    boot(project, timeout, &["run", "--kvm"]).await?;
+    Ok("exit status 0, serial log ends with dom0's last line".to_string())
+}
+
+/// Boots with an IOMMU present, the only way the device syscalls run past their first check. The
+/// plain boot comes after it, so the benchmark numbers and serial.log it leaves have no IOMMU.
+async fn check_iommu_boot(project: &ProjectHandle, timeout: u64) -> Result<String> {
+    let serial = boot(project, timeout, &["run", "--kvm", "--iommu"]).await?;
+    if !iommu_boot_ran(&serial) {
+        return Err(anyhow!("the serial log does not show the device syscalls succeeding"));
+    }
+    Ok("translation enabled, device syscalls returned 0, serial log ends with dom0's last line".to_string())
+}
+
+/// Runs atmo with `args` and returns the serial log of a boot that reached dom0's last line.
+async fn boot(project: &ProjectHandle, timeout: u64, args: &[&str]) -> Result<String> {
     let root = project.root();
     let log = root.join("serial.log");
     match fs::remove_file(&log).await {
@@ -174,7 +191,7 @@ async fn check_boot(project: &ProjectHandle, timeout: u64) -> Result<String> {
     let status = Command::new("timeout")
         .arg(timeout.to_string())
         .arg(std::env::current_exe()?)
-        .args(&["run", "--kvm"])
+        .args(args)
         .current_dir(&root)
         .stdin(Stdio::null())
         .status()
@@ -191,7 +208,7 @@ async fn check_boot(project: &ProjectHandle, timeout: u64) -> Result<String> {
     if !boot_finished(&serial) {
         return Err(anyhow!("the serial log does not end with dom0's last line"));
     }
-    Ok("exit status 0, serial log ends with dom0's last line".to_string())
+    Ok(serial)
 }
 
 fn parse_allowance(text: &str) -> Option<u64> {
@@ -212,6 +229,16 @@ fn boot_finished(serial: &str) -> bool {
         .rev()
         .find(|line| !line.trim().is_empty())
         .map_or(false, |line| line.contains("dom0 benchmark done"))
+}
+
+fn iommu_boot_ran(serial: &str) -> bool {
+    [
+        "Enabling translation",
+        "sys_set_device_iommu of dom0's own table: 0",
+        "sys_invalidate_iotlb of that device: 0",
+    ]
+    .iter()
+    .all(|line| serial.contains(line))
 }
 
 #[cfg(test)]
@@ -236,6 +263,15 @@ mod tests {
     #[test]
     fn no_results_line_is_not_zero_errors() {
         assert_eq!(parse_verify_errors("error: cannot find macro\n"), None);
+    }
+
+    #[test]
+    fn iommu_boot_needs_translation_and_both_syscalls() {
+        let ran = "Enabling translation\nsys_set_device_iommu of dom0's own table: 0\nsys_invalidate_iotlb of that device: 0\n";
+        assert!(iommu_boot_ran(ran));
+        assert!(!iommu_boot_ran("Enabling translation\nsys_invalidate_iotlb of that device: 0\n"));
+        assert!(!iommu_boot_ran("sys_set_device_iommu of dom0's own table: 0\nsys_invalidate_iotlb of that device: 0\n"));
+        assert!(!iommu_boot_ran("Enabling translation\nsys_set_device_iommu of dom0's own table: 1\nsys_invalidate_iotlb of that device: 1\n"));
     }
 
     #[test]
