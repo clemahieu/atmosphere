@@ -123,6 +123,9 @@ pub fn va_4k_range_valid(va: usize, len: usize) -> (ret: bool)
                 #![trigger spec_va_add_range(va, i)]
                 0 <= i < idx ==> spec_va_4k_valid(spec_va_add_range(va, i)),
     {
+        proof {
+            lemma_va_4k_range_bound(va, idx);
+        }
         if va_4k_valid(va_add_range(va, idx)) == false {
             return false;
         }
@@ -266,7 +269,86 @@ pub proof fn lemma_index2va_injective(
         ((l4i, l3i, l2i, l1i) =~= (l4j, l3j, l2j, l1j)) <==> spec_index2va((l4i, l3i, l2i, l1i))
             == spec_index2va((l4j, l3j, l2j, l1j)),
 {
-    va_lemma();
+    lemma_index2va_fields(l4i, l3i, l2i, l1i);
+    lemma_index2va_fields(l4j, l3j, l2j, l1j);
+}
+
+/// Each page table index of an address is nine bits.
+pub proof fn lemma_va_index_bounds(va: usize)
+    ensures
+        spec_v2l4index(va) < 512,
+        spec_v2l3index(va) < 512,
+        spec_v2l2index(va) < 512,
+        spec_v2l1index(va) < 512,
+{
+    assert((va >> 39 & 0x1ff) < 512 && (va >> 30 & 0x1ff) < 512 && (va >> 21 & 0x1ff) < 512 && (
+    va >> 12 & 0x1ff) < 512) by (bit_vector);
+}
+
+/// A valid 4k address is outside the kernel's L4 entries.
+pub proof fn lemma_va_4k_valid_l4index(va: usize)
+    requires
+        spec_va_4k_valid(va),
+    ensures
+        KERNEL_MEM_END_L4INDEX <= spec_v2l4index(va),
+{
+    assert((va as u64 >> 39u64 & 0x1ffu64) >= 1u64 ==> (va >> 39 & 0x1ff) >= 1) by (bit_vector);
+    assert(KERNEL_MEM_END_L4INDEX as u64 == 1u64);
+}
+
+/// A valid 2m address has L1 index zero.
+pub proof fn lemma_va_2m_valid_l1index(va: usize)
+    requires
+        spec_va_2m_valid(va),
+    ensures
+        spec_v2l1index(va) == 0,
+{
+    assert((!MEM_2m_MASK) as usize == (!0x0000_ffff_ffe0_0000u64) as usize);
+    assert(va & (!0x0000_ffff_ffe0_0000u64) as usize == 0 ==> (va >> 12 & 0x1ff) == 0)
+        by (bit_vector);
+}
+
+/// A valid 1g address has L2 and L1 index zero.
+pub proof fn lemma_va_1g_valid_indices(va: usize)
+    requires
+        spec_va_1g_valid(va),
+    ensures
+        spec_v2l2index(va) == 0,
+        spec_v2l1index(va) == 0,
+{
+    assert((!MEM_1g_MASK) as usize == (!0x0000_fffc_0000_0000u64) as usize);
+    assert(va & (!0x0000_fffc_0000_0000u64) as usize == 0 ==> (va >> 21 & 0x1ff) == 0 && (va
+        >> 12 & 0x1ff) == 0) by (bit_vector);
+}
+
+/// The address of an in-range index tuple decomposes back into that tuple.
+pub proof fn lemma_index2va_fields(l4i: L4Index, l3i: L3Index, l2i: L2Index, l1i: L1Index)
+    requires
+        0 <= l4i < 512,
+        0 <= l3i < 512,
+        0 <= l2i < 512,
+        0 <= l1i < 512,
+    ensures
+        spec_va2index(spec_index2va((l4i, l3i, l2i, l1i))) == (l4i, l3i, l2i, l1i),
+{
+    assert(l4i < 512 && l3i < 512 && l2i < 512 && l1i < 512 ==> ((l4i << 39 | l3i << 30 | l2i
+        << 21 | l1i << 12) >> 39 & 0x1ff) == l4i && ((l4i << 39 | l3i << 30 | l2i << 21 | l1i
+        << 12) >> 30 & 0x1ff) == l3i && ((l4i << 39 | l3i << 30 | l2i << 21 | l1i << 12) >> 21
+        & 0x1ff) == l2i && ((l4i << 39 | l3i << 30 | l2i << 21 | l1i << 12) >> 12 & 0x1ff)
+        == l1i) by (bit_vector);
+}
+
+/// A valid 4k address is the address of its own index tuple: it has no bits outside them.
+pub proof fn lemma_va2index_index2va(va: usize)
+    requires
+        spec_va_4k_valid(va),
+    ensures
+        spec_index2va(spec_va2index(va)) == va,
+{
+    assert((!MEM_4k_MASK) as usize == (!0x0000_ffff_ffff_f000u64) as usize);
+    assert(va & (!0x0000_ffff_ffff_f000u64) as usize == 0 ==> ((va >> 39 & 0x1ff) << 39 | (va
+        >> 30 & 0x1ff) << 30 | (va >> 21 & 0x1ff) << 21 | (va >> 12 & 0x1ff) << 12) == va)
+        by (bit_vector);
 }
 
 #[verifier(when_used_as_spec(spec_v2l1index))]
@@ -357,9 +439,9 @@ pub open spec fn spec_va_add_range(va: usize, i: usize) -> usize {
     (va + (i * 4096)) as usize
 }
 
-#[verifier(external_body)]
-// external_body(unproven): not proven yet
 pub fn va_add_range(va: usize, i: usize) -> (ret: usize)
+    requires
+        va + i * 4096 <= usize::MAX,
     ensures
         ret == spec_va_add_range(va, i),
         i != 0 ==> ret != va,
@@ -367,8 +449,42 @@ pub fn va_add_range(va: usize, i: usize) -> (ret: usize)
     (va + (i * 4096)) as usize
 }
 
-#[verifier(external_body)]
-// external_body(unproven): a lemma stated without a proof
+/// A valid 4k address is page aligned and below the 48-bit boundary.
+pub proof fn lemma_va_4k_valid_bounds(va: usize)
+    requires
+        spec_va_4k_valid(va),
+    ensures
+        va % 4096 == 0,
+        va < 0x1_0000_0000_0000,
+{
+    assert((!MEM_4k_MASK) as usize == (!0x0000_ffff_ffff_f000u64) as usize);
+    assert(va & (!0x0000_ffff_ffff_f000u64) as usize == 0 ==> va % 4096 == 0 && va
+        < 0x1_0000_0000_0000) by (bit_vector);
+}
+
+/// A valid 4k range of len pages from a valid 4k address ends at or before the 48-bit
+/// boundary: the page at that boundary is not a valid address, so no page of the range is
+/// it or past it, and no page of the range wraps.
+pub proof fn lemma_va_4k_range_bound(va: usize, len: usize)
+    requires
+        spec_va_4k_valid(va),
+        spec_va_4k_range_valid(va, len),
+    ensures
+        va + len * 4096 <= 0x1_0000_0000_0000,
+{
+    lemma_va_4k_valid_bounds(va);
+    if va + len * 4096 > 0x1_0000_0000_0000 {
+        let k = ((0x1_0000_0000_0000 - va) / 4096) as usize;
+        assert(k * 4096 == 0x1_0000_0000_0000 - va);
+        assert(k < len);
+        assert(spec_va_add_range(va, k) == 0x1_0000_0000_0000usize);
+        assert(0x1_0000_0000_0000usize & (!0x0000_ffff_ffff_f000u64) as usize != 0)
+            by (bit_vector);
+        assert((!MEM_4k_MASK) as usize == (!0x0000_ffff_ffff_f000u64) as usize);
+        assert(!spec_va_4k_valid(0x1_0000_0000_0000usize));
+    }
+}
+
 pub proof fn va_range_lemma()
     ensures
         forall|va: VAddr, len: usize, i: usize, j: usize|
@@ -376,6 +492,17 @@ pub proof fn va_range_lemma()
             va_4k_valid(va) && spec_va_4k_range_valid(va, len) && 0 <= i < len && 0 <= j < len ==> (
             (i == j) == (spec_va_add_range(va, i) == spec_va_add_range(va, j))),
 {
+    assert forall|va: VAddr, len: usize, i: usize, j: usize|
+        #![trigger spec_va_4k_range_valid(va,len), spec_va_add_range(va, i), spec_va_add_range(va, j)]
+        va_4k_valid(va) && spec_va_4k_range_valid(va, len) && 0 <= i < len && 0 <= j
+            < len implies ((i == j) == (spec_va_add_range(va, i) == spec_va_add_range(
+        va,
+        j,
+    ))) by {
+        lemma_va_4k_range_bound(va, len);
+        assert(spec_va_add_range(va, i) == va + i * 4096);
+        assert(spec_va_add_range(va, j) == va + j * 4096);
+    }
 }
 
 pub proof fn page_index_lemma()
@@ -581,8 +708,6 @@ pub proof fn page_ptr_1g_lemma()
 //                 page_index2page_ptr(i) != page_index2page_ptr(j),
 // {
 // }
-#[verifier(external_body)]
-// external_body(unproven): a lemma stated without a proof
 pub proof fn va_lemma()
     ensures
         forall|va: VAddr|
@@ -661,33 +786,83 @@ pub proof fn va_lemma()
                 spec_index2va((l4i, l3i, l2i, 0)),
             ),
 {
-    // assert(forall|va:VAddr| #![auto] (va & (!0x0000_fffc_0000_0000u64) as usize == 0) && (va as u64 >> 39u64 & 0x1ffu64) >= 1u64 as u64 ==>
-    //     0 <= ((va >> 39 & 0x1ff) as usize) < 512
-    //     &&
-    //     0 <= ((va >> 30 & 0x1ff) as usize) < 512
-    //     &&
-    //     0 == ((va >> 21 & 0x1ff) as usize)
-    //     &&
-    //     0 == ((va >> 12 & 0x1ff) as usize)
-    // ) by (bit_vector);
-    // assert(forall|va:VAddr| #![auto] ((va & (!0x0000_ffff_ffe0_0000u64) as usize == 0) && (va as u64 >> 39u64 & 0x1ffu64) >= 1u64 as u64) ==>
-    //     0 <= ((va >> 39 & 0x1ff) as usize) < 512
-    //     &&
-    //     0 <= ((va >> 30 & 0x1ff) as usize) < 512
-    //     &&
-    //     0 <= ((va >> 21 & 0x1ff) as usize) < 512
-    //     &&
-    //     0 == ((va >> 12 & 0x1ff) as usize)
-    // ) by (bit_vector);
-    // assert(forall|va:VAddr| #![auto] (va & (!0x0000_ffff_ffff_f000u64) as usize == 0) && (va as u64 >> 39u64 & 0x1ffu64) >= 1u64 as u64 ==>
-    //     0 <= ((va >> 39 & 0x1ff) as usize) < 512
-    //     &&
-    //     0 <= ((va >> 30 & 0x1ff) as usize) < 512
-    //     &&
-    //     0 <= ((va >> 21 & 0x1ff) as usize) < 512
-    //     &&
-    //     0 <= ((va >> 12 & 0x1ff) as usize) < 512
-    // ) by (bit_vector);
+    assert forall|va: VAddr|
+        #![trigger spec_va_4k_valid(va), spec_v2l4index(va)]
+        #![trigger spec_va_4k_valid(va), spec_v2l3index(va)]
+        #![trigger spec_va_4k_valid(va), spec_v2l2index(va)]
+        #![trigger spec_va_4k_valid(va), spec_v2l1index(va)]
+        spec_va_4k_valid(va) implies 0 <= spec_v2l4index(va) < 512 && 0 <= spec_v2l3index(va)
+        < 512 && 0 <= spec_v2l2index(va) < 512 && 0 <= spec_v2l1index(va) < 512 by {
+        lemma_va_index_bounds(va);
+    }
+    assert forall|va: VAddr|
+        #![trigger spec_va_2m_valid(va), spec_v2l4index(va)]
+        #![trigger spec_va_2m_valid(va), spec_v2l3index(va)]
+        #![trigger spec_va_2m_valid(va), spec_v2l2index(va)]
+        #![trigger spec_va_2m_valid(va), spec_v2l1index(va)]
+        spec_va_2m_valid(va) implies 0 <= spec_v2l4index(va) < 512 && 0 <= spec_v2l3index(va)
+        < 512 && 0 <= spec_v2l2index(va) < 512 && 0 == spec_v2l1index(va) by {
+        lemma_va_index_bounds(va);
+        lemma_va_2m_valid_l1index(va);
+    }
+    assert forall|va: VAddr|
+        #![trigger spec_va_1g_valid(va), spec_v2l4index(va)]
+        #![trigger spec_va_1g_valid(va), spec_v2l3index(va)]
+        #![trigger spec_va_1g_valid(va), spec_v2l2index(va)]
+        #![trigger spec_va_1g_valid(va), spec_v2l1index(va)]
+        spec_va_1g_valid(va) implies 0 <= spec_v2l4index(va) < 512 && 0 <= spec_v2l3index(va)
+        < 512 && 0 == spec_v2l2index(va) && 0 == spec_v2l1index(va) by {
+        lemma_va_index_bounds(va);
+        lemma_va_1g_valid_indices(va);
+    }
+    assert forall|
+        l4i: L4Index,
+        l3i: L3Index,
+        l2i: L2Index,
+        l1i: L1Index,
+        l4j: L4Index,
+        l3j: L3Index,
+        l2j: L2Index,
+        l1j: L1Index,
+    |
+        #![trigger spec_index2va((l4i,l3i,l2i,l1i)), spec_index2va((l4j,l3j,l2j,l1j))]
+        0 <= l4i < 512 && 0 <= l3i < 512 && 0 <= l2i < 512 && 0 <= l1i < 512 && 0 <= l4j < 512
+            && 0 <= l3j < 512 && 0 <= l2j < 512 && 0 <= l1j < 512 implies ((l4i, l3i, l2i, l1i)
+            =~= (l4j, l3j, l2j, l1j) <==> spec_index2va((l4i, l3i, l2i, l1i)) == spec_index2va(
+            (l4j, l3j, l2j, l1j),
+        )) && (((l4i, l3i, l2i, l1i) =~= (l4j, l3j, l2j, l1j)) == false <==> spec_index2va(
+            (l4i, l3i, l2i, l1i),
+        ) != spec_index2va((l4j, l3j, l2j, l1j))) by {
+        lemma_index2va_injective(l4i, l3i, l2i, l1i, l4j, l3j, l2j, l1j);
+    }
+    assert forall|l4i: L4Index, l3i: L3Index, l2i: L2Index, l1i: L1Index|
+        #![trigger va_4k_valid(spec_index2va((l4i,l3i,l2i,l1i)))]
+        KERNEL_MEM_END_L4INDEX <= l4i < 512 && 0 <= l3i < 512 && 0 <= l2i < 512 && 0 <= l1i
+            < 512 implies va_4k_valid(spec_index2va((l4i, l3i, l2i, l1i))) by {
+        lemma_index2va_4k_valid(l4i, l3i, l2i, l1i);
+    }
+    assert forall|va: VAddr, l4i: L4Index, l3i: L3Index, l2i: L2Index, l1i: L1Index|
+        #![trigger spec_index2va((l4i,l3i,l2i,l1i)), spec_va2index(va)]
+        (va_4k_valid(va) && spec_va2index(va) == (l4i, l3i, l2i, l1i)) <==> (
+        KERNEL_MEM_END_L4INDEX <= l4i < 512 && 0 <= l3i < 512 && 0 <= l2i < 512 && 0 <= l1i < 512
+            && spec_index2va((l4i, l3i, l2i, l1i)) == va) by {
+        if spec_va_4k_valid(va) {
+            lemma_va_index_bounds(va);
+            lemma_va_4k_valid_l4index(va);
+            lemma_va2index_index2va(va);
+        }
+        if KERNEL_MEM_END_L4INDEX <= l4i < 512 && l3i < 512 && l2i < 512 && l1i < 512 {
+            lemma_index2va_4k_valid(l4i, l3i, l2i, l1i);
+            lemma_index2va_fields(l4i, l3i, l2i, l1i);
+        }
+    }
+    assert forall|l4i: L4Index, l3i: L3Index, l2i: L2Index|
+        #![trigger va_2m_valid(spec_index2va((l4i,l3i,l2i,0)))]
+        KERNEL_MEM_END_L4INDEX <= l4i < 512 && 0 <= l3i < 512 && 0 <= l2i < 512 implies va_2m_valid(
+        spec_index2va((l4i, l3i, l2i, 0)),
+    ) by {
+        lemma_index2va_2m_valid(l4i, l3i, l2i);
+    }
 }
 
 } // verus!

@@ -41,8 +41,3 @@ process_manager/impl_base.rs	init	gap	writes through a raw pointer, which Verus 
 slinkedlist/impl_t.rs	new	gap	builds a value from zeroed memory, which Verus cannot check
 trap.rs	random	gap	builds a value from zeroed memory, which Verus cannot check
 trap.rs	zeroed	gap	builds a value from zeroed memory, which Verus cannot check
-util/page_ptr_util_u.rs	va_add_range	unproven	not proven yet
-util/page_ptr_util_u.rs	va_lemma	unproven	a lemma stated without a proof
-util/page_ptr_util_u.rs	va_range_lemma	unproven	a lemma stated without a proof
-va_range.rs	va_range_disjoint	unproven	not proven yet
-va_range.rs	va_range_lemma	unproven	a lemma stated without a proof
