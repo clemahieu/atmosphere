@@ -21,10 +21,6 @@ pub struct Opts {
     #[clap(long = "cpu")]
     cpu_model: Option<CpuModel>,
 
-    /// A script to run.
-    #[clap(long)]
-    script: Option<String>,
-
     /// Extra command-line arguments.
     #[clap(long = "cmdline")]
     command_line: Option<String>,
@@ -69,9 +65,7 @@ pub struct Opts {
 
     /// Do not automatically shutdown.
     ///
-    /// This will pass `-no-shutdown` to QEMU as well as
-    /// tell Atmosphere not to shutdown after the script
-    /// finishes.
+    /// This will pass `-no-shutdown` to QEMU.
     #[clap(long)]
     no_shutdown: bool,
 
@@ -134,10 +128,6 @@ pub(super) async fn run(global: GlobalOpts) -> Result<()> {
 
     if let Some(cpu_model) = local.cpu_model {
         run_config.cpu_model(cpu_model);
-    }
-
-    if let Some(script) = local.script {
-        run_config.script(script);
     }
 
     if let Some(cmdline) = local.command_line {

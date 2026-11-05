@@ -39,7 +39,6 @@ mod interrupt;
 mod iommu;
 mod kernel;
 mod logging;
-mod scripts;
 mod syscalls;
 mod thread;
 mod utils;
@@ -160,11 +159,6 @@ fn boot_cpu0(boot_info: *const BootInfo) -> isize {
         };
 
         enter_userspace(dom0.entry_point, initial_sp as *mut _, rdi, rsi);
-    }
-
-    unsafe {
-        scripts::run_script_from_command_line();
-        boot::spin_forever();
     }
 }
 

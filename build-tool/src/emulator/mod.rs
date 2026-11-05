@@ -60,15 +60,10 @@ pub struct RunConfiguration {
     /// The emulated CPU model.
     cpu_model: CpuModel,
 
-    /// Atmosphere script to execute.
-    ///
-    /// This will be prepended to the kernel command-line.
-    script: Option<String>,
-
     /// Extra kernel command line flags.
     command_line: String,
 
-    /// Whether to automatically shutdown when a script finishes.
+    /// Whether QEMU exits when the guest shuts down.
     auto_shutdown: bool,
 
     /// GDB server configrations.
@@ -105,7 +100,6 @@ impl RunConfiguration {
             use_grub: false,
             use_iommu: false,
             cpu_model: CpuModel::Haswell,
-            script: None,
             command_line: String::new(),
             auto_shutdown: true,
             gdb_server: None,
@@ -125,12 +119,6 @@ impl RunConfiguration {
     /// Set the payload binary to use.
     pub fn payload(&mut self, payload: Binary) -> &mut Self {
         self.payload = Some(payload);
-        self
-    }
-
-    /// Set the script to run.
-    pub fn script(&mut self, script: String) -> &mut Self {
-        self.script = Some(script);
         self
     }
 
@@ -203,14 +191,6 @@ impl RunConfiguration {
     /// Returns the full kernel command line.
     fn full_command_line(&self) -> String {
         let mut cmdline = self.command_line.clone();
-
-        if let Some(script) = &self.script {
-            cmdline = format!("script={} {}", script, cmdline);
-        }
-
-        if self.auto_shutdown {
-            cmdline += " script_shutdown";
-        }
 
         if self.suppress_initial_outputs {
             cmdline += " nologo";
