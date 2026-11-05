@@ -3,6 +3,7 @@ pub mod delete;
 pub mod derive;
 pub mod kernel;
 pub mod list;
+pub mod moving;
 pub mod reach;
 pub mod table;
 pub mod view;

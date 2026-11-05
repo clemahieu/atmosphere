@@ -193,7 +193,7 @@ impl CapKernel {
 
     /// What a derive does to the fields the view reads.
     pub open spec fn derive_step(pre: Self, post: Self, child: usize) -> bool {
-        &&& Self::caps_frame(pre, post, child)
+        &&& Self::caps_frame(pre, post, child, child)
         &&& !pre.list.nodes@[child as int].live
         &&& post.list.nodes@[child as int].live
         &&& post.list.nodes@[child as int].kind is Capability
@@ -209,7 +209,7 @@ impl CapKernel {
     {
         assert forall|n: usize| #[trigger] post.tables.is_cap(&post.list, n) implies payload_wf(post.tables.payload_of(n)) by {
             if n != child {
-                Self::lemma_caps_frame(pre, post, child, n);
+                Self::lemma_caps_frame(pre, post, child, child, n);
                 assert(post.is_cap(n));
                 assert(pre.tables.is_cap(&pre.list, n));
             }
@@ -248,7 +248,7 @@ impl CapKernel {
         }
         assert forall|h: (ObjectId, NodeId)| #[trigger] b.held.contains(h) == (a.held.contains(h) || h == (root, child)) by {
             if h.1 != child {
-                Self::lemma_caps_frame(pre, post, child, h.1);
+                Self::lemma_caps_frame(pre, post, child, child, h.1);
             }
         }
         assert forall|x: NodeId| x != child implies {
@@ -257,10 +257,10 @@ impl CapKernel {
             &&& a.names.contains_key(x) ==> b.names[x] == a.names[x]
             &&& a.pages.contains_key(x) ==> b.pages[x] == a.pages[x]
         } by {
-            Self::lemma_caps_frame(pre, post, child, x);
+            Self::lemma_caps_frame(pre, post, child, child, x);
         }
         assert forall|x: NodeId, r: Right| x != child implies #[trigger] b.rights.contains((x, r)) == a.rights.contains((x, r)) by {
-            Self::lemma_caps_frame(pre, post, child, x);
+            Self::lemma_caps_frame(pre, post, child, child, x);
         }
         let (cp, pp) = (post.payload_of(child), pre.payload_of(parent));
         let (child_rights, parent_rights) = (cp.rights, pp.rights);

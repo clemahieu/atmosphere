@@ -101,25 +101,26 @@ impl CapKernel {
         self.lemma_slot(root, i);
     }
 
-    /// Between pre and post, no node but n changed its liveness or kind, and no capability but n what
-    /// it says.
-    pub open spec fn caps_frame(pre: Self, post: Self, n: usize) -> bool {
+    /// Between pre and post, no node but n and m changed its liveness or kind, and no capability but
+    /// those what it says.
+    pub open spec fn caps_frame(pre: Self, post: Self, n: usize, m: usize) -> bool {
         &&& pre.wf()
         &&& post.tables.owner == pre.tables.owner
-        &&& forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < NODE_SPACE && i != n ==> {
+        &&& forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < NODE_SPACE && i != n && i != m ==> {
             &&& post.list.nodes@[i].live == pre.list.nodes@[i].live
             &&& post.list.nodes@[i].kind == pre.list.nodes@[i].kind
         }
         &&& forall|x: usize| #![trigger post.tables.payload_of(x)]
-            x != n && x % 4096 < NODES_PER_PAGE && pre.tables.owner@.contains_key(page_of(x))
+            x != n && x != m && x % 4096 < NODES_PER_PAGE && pre.tables.owner@.contains_key(page_of(x))
             ==> post.tables.payload_of(x) == pre.tables.payload_of(x)
     }
 
     /// So any other node is a capability after exactly when it was before, saying the same.
-    pub proof fn lemma_caps_frame(pre: Self, post: Self, n: usize, x: usize)
+    pub proof fn lemma_caps_frame(pre: Self, post: Self, n: usize, m: usize, x: usize)
         requires
-            Self::caps_frame(pre, post, n),
+            Self::caps_frame(pre, post, n, m),
             x != n,
+            x != m,
         ensures
             post.is_cap(x) == pre.is_cap(x),
             pre.is_cap(x) ==> post.payload_of(x) == pre.payload_of(x),

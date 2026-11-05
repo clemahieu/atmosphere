@@ -1088,9 +1088,12 @@ impl Tree {
             forall|x: usize| x != i && x != slot && #[trigger] old(self).parent@.contains_key(x) ==>
                 final(self).parent@.contains_key(x)
                 && final(self).parent@[x] == rename(old(self).parent@[x], i, slot),
-            forall|x: int| 0 <= x < NODE_SPACE && x != i && x != slot ==>
-                #[trigger] final(self).nodes@[x].live == old(self).nodes@[x].live
-                && final(self).nodes@[x].depth == old(self).nodes@[x].depth,
+            forall|x: int| #![trigger final(self).nodes@[x]] 0 <= x < NODE_SPACE && x != i && x != slot ==> {
+                &&& final(self).nodes@[x].live == old(self).nodes@[x].live
+                &&& final(self).nodes@[x].depth == old(self).nodes@[x].depth
+                &&& final(self).nodes@[x].kind == old(self).nodes@[x].kind
+            },
+            final(self).pages@.dom() == old(self).pages@.dom(),
     {
         let ghost pre = *old(self);
         let ghost s = pre.seq@;
