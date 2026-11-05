@@ -242,7 +242,11 @@ const CHILD_STACK_PAGES: usize = 16;
 const CHILD_ENDPOINT: usize = 3;
 /// Stack pages for one faulting child and for its witness, and how many children there are.
 const FAULT_STACK_PAGES: usize = 4;
-const FAULT_KINDS: [&str; 2] = ["a load from an unmapped address", "hlt in ring 3"];
+const FAULT_KINDS: [&str; 3] = [
+    "a load from an unmapped address",
+    "hlt in ring 3",
+    "int3, which returns, then a load from an unmapped address",
+];
 const FAULT_ENDPOINT: usize = 4;
 /// Mapped by no one.
 const UNMAPPED_VA: usize = 0xe0_0000_0000;
@@ -252,6 +256,7 @@ static FAULT_KIND: AtomicUsize = AtomicUsize::new(0);
 static FAULT_WITNESS_SP: AtomicUsize = AtomicUsize::new(0);
 static FAULTS_REACHED: AtomicUsize = AtomicUsize::new(0);
 static FAULTS_SURVIVED: AtomicUsize = AtomicUsize::new(0);
+static INT3_RETURNED: AtomicUsize = AtomicUsize::new(0);
 static CHILD_RESOLVED: [AtomicUsize; 2] = [AtomicUsize::new(0), AtomicUsize::new(0)];
 static CHILD_BOUND: AtomicUsize = AtomicUsize::new(0);
 /// Ping-pong round trips to time IPC.
@@ -665,6 +670,10 @@ pub fn check_process_faults() {
             bench_fail(what, survived);
         }
     }
+    log::info!("int3 from a child returned {} time", INT3_RETURNED.load(Ordering::SeqCst));
+    if INT3_RETURNED.load(Ordering::SeqCst) != 1 {
+        bench_fail("int3 from a child", INT3_RETURNED.load(Ordering::SeqCst));
+    }
     // The last witness dies at dom0's next block. Have it die here, not inside a benchmark.
     let ret = unsafe {
         asys::sys_new_thread(FAULT_ENDPOINT, wake_once as *const () as usize, stack_top(&raw const WAKE_ONCE_STACK))
@@ -690,7 +699,12 @@ extern "C" fn faulting_child() -> ! {
         0 => unsafe {
             core::ptr::read_volatile(UNMAPPED_VA as *const u64);
         },
-        _ => unsafe { core::arch::asm!("hlt") },
+        1 => unsafe { core::arch::asm!("hlt") },
+        _ => unsafe {
+            core::arch::asm!("int3");
+            INT3_RETURNED.fetch_add(1, Ordering::SeqCst);
+            core::ptr::read_volatile(UNMAPPED_VA as *const u64);
+        },
     }
     FAULTS_SURVIVED.fetch_add(1, Ordering::SeqCst);
     loop {
