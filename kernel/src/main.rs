@@ -44,6 +44,7 @@ mod thread;
 mod utils;
 mod ring_buffer;
 mod lock;
+mod flush;
 
 use core::arch::asm;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -180,6 +181,7 @@ unsafe fn start_second_core() {
     }
     lock::contend();
     lock::report_contention();
+    flush::check_second_core();
 }
 
 /// AP entry point, called by the trampoline in boot/ap_start.asm.

@@ -214,6 +214,9 @@ async fn boot(project: &ProjectHandle, timeout: u64, args: &[&str]) -> Result<St
     if !second_core_ran_thread(&serial) {
         return Err(anyhow!("the serial log does not show threads making syscalls on both cores"));
     }
+    if !serial.contains(FLUSH_ACKNOWLEDGED) {
+        return Err(anyhow!("the serial log does not show CPU 1 acknowledging a flush IPI"));
+    }
     if !serial.contains(LOCK_CONTENDED) {
         return Err(anyhow!("the serial log does not show both cores contending for the kernel's lock"));
     }
@@ -250,6 +253,9 @@ fn second_core_idle(serial: &str) -> bool {
         _ => false,
     }
 }
+
+/// What the kernel logs once CPU 1 has taken a flush IPI and acknowledged it.
+const FLUSH_ACKNOWLEDGED: &str = "flush IPI acknowledged by CPU 1";
 
 /// What the kernel logs once both cores have contended for its lock with the protected pair intact.
 const LOCK_CONTENDED: &str = "lock contended by 2 cores: pair intact at 400000";
