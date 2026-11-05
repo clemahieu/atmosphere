@@ -638,6 +638,7 @@ pub open spec fn new_container_with_endpoint_rel(
     &&& s1.get_thread(new_thread_ptr).blocking_endpoint_ptr.is_None()
     &&& s1.get_thread(new_thread_ptr).endpoint_rev_ptr.is_None()
     &&& s1.get_thread(new_thread_ptr).running_cpu.is_None()
+    &&& s1.get_thread(new_thread_ptr).endpoint_descriptors.wf()
     &&& s1.get_thread(new_thread_ptr).endpoint_descriptors@ == Seq::new(
         MAX_NUM_ENDPOINT_DESCRIPTORS as nat,
         |i: int| None::<EndpointPtr>,

@@ -26,8 +26,6 @@ impl<A, const N: usize> Array<A, N> {
         }
     }
 
-    #[verifier(external_body)]
-    // external_body(unproven): an array element access not proven yet
     pub fn get(&self, i: usize) -> (out: &A)
         requires
             0 <= i < N,
@@ -52,14 +50,18 @@ impl<A, const N: usize> Array<A, N> {
     }
 
     pub open spec fn wf(&self) -> bool{
-        self.seq@.len() == N
+        &&& self.seq@.len() == N
+        &&& self.seq_matches_array()
+    }
+
+    /// The ghost sequence the proofs read is what the array holds.
+    pub closed spec fn seq_matches_array(&self) -> bool {
+        self.seq@ =~= self.ar@
     }
 
 }
 
 impl<A, const N: usize> Array<A, N> {
-    #[verifier(external_body)]
-    // external_body(unproven): an array element access not proven yet
     pub fn set(&mut self, i: usize, out: A)
         requires
             0 <= i < N,
@@ -68,7 +70,10 @@ impl<A, const N: usize> Array<A, N> {
             final(self).seq@ =~= old(self).seq@.update(i as int, out),
             final(self).wf(),
     {
-        self.ar[i] = out;
+        self.ar.set(i, out);
+        proof {
+            self.seq = Ghost(self.ar@);
+        }
     }
 }
 

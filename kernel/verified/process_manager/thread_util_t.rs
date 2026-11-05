@@ -22,6 +22,7 @@ pub fn page_to_thread(
         page_perm@.addr() == page_ptr,
         crate::util::page_ptr_util_u::page_ptr_valid(page_ptr),
     ensures
+        ret.1@.value().endpoint_descriptors.wf(),
         ret.0 == page_ptr,
         ret.1@.is_init(),
         ret.1@.addr() == ret.0,
@@ -99,6 +100,7 @@ pub fn page_to_thread_with_endpoint(
         page_perm@.addr() == page_ptr,
         crate::util::page_ptr_util_u::page_ptr_valid(page_ptr),
     ensures
+        ret.1@.value().endpoint_descriptors.wf(),
         ret.0 == page_ptr,
         ret.1@.is_init(),
         ret.1@.addr() == ret.0,
@@ -196,6 +198,7 @@ pub fn thread_set_endpoint_descriptor(
         old(thread_perm)@.value().endpoint_descriptors.wf(),
         0 <= endpoint_index < MAX_NUM_ENDPOINT_DESCRIPTORS,
     ensures
+        final(thread_perm)@.value().endpoint_descriptors.wf(),
         final(thread_perm)@.is_init(),
         final(thread_perm)@.addr() == thread_ptr,
         final(thread_perm)@.value().owning_container == old(thread_perm)@.value().owning_container,
