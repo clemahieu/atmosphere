@@ -170,7 +170,8 @@ unsafe extern "C" fn sys_entry() -> ! {
         // For 1, we can directly skip over restoring most registers since
         // we trust the handler to have already restored callee-saved registers
         //
-        // TODO: Clear registers?
+        // Paths 1 and 2 restore only part of the frame, so they clear the
+        // caller-saved registers the handler used: a process must not see them.
 
         "mov r10, gs:{switch_decision_offset}",
         "cmp r10, {decision_no_switching}",
@@ -196,6 +197,13 @@ unsafe extern "C" fn sys_entry() -> ! {
         "mov r11, [rsp + 8*18]", // rflags
         "mov rsp, [rsp + 8*19]", // rsp
 
+        "xor edi, edi",
+        "xor esi, esi",
+        "xor edx, edx",
+        "xor r8d, r8d",
+        "xor r9d, r9d",
+        "xor r10d, r10d",
+
         "sti",
         "sysretq",
 
@@ -209,6 +217,13 @@ unsafe extern "C" fn sys_entry() -> ! {
         // skip cs
         "mov r11, [rsp + 8*18]", // rflags
         "mov rsp, [rsp + 8*19]", // rsp
+
+        "xor edi, edi",
+        "xor esi, esi",
+        "xor edx, edx",
+        "xor r8d, r8d",
+        "xor r9d, r9d",
+        "xor r10d, r10d",
 
         "sti",
         "sysretq",

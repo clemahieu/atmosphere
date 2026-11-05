@@ -246,6 +246,18 @@ unsafe fn enter_userspace(pc: *const c_void, sp: *mut c_void, rdi: u64, rsi: u64
         "mov rsp, {sp}",
         // HACK: Set IOPL to 3 unconditionally for accessing io ports from dom0
         "or r11, (3 << 12)",
+        // dom0 gets its entry arguments in rdi and rsi and no kernel values.
+        "xor eax, eax",
+        "xor edx, edx",
+        "xor ebx, ebx",
+        "xor ebp, ebp",
+        "xor r8d, r8d",
+        "xor r9d, r9d",
+        "xor r10d, r10d",
+        "xor r12d, r12d",
+        "xor r13d, r13d",
+        "xor r14d, r14d",
+        "xor r15d, r15d",
         "sysretq",
 
         in("rcx") pc,
