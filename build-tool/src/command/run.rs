@@ -1,6 +1,7 @@
 //! Run the OS in QEMU.
 
-use std::path::PathBuf;
+use std::fs::OpenOptions;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::Context;
@@ -28,11 +29,11 @@ pub struct Opts {
     #[clap(long = "cmdline")]
     command_line: Option<String>,
 
-    /// Whether to use KVM.
+    /// Use TCG even if /dev/kvm is writable.
     ///
     /// This only has an effect for QEMU.
     #[clap(long)]
-    kvm: bool,
+    no_kvm: bool,
 
     /// Whether to use GRUB.
     #[clap(long)]
@@ -120,7 +121,7 @@ pub(super) async fn run(global: GlobalOpts) -> Result<()> {
         .expect("No binary was reproduced for payload");
 
     let mut run_config = RunConfiguration::new(kernel, loader);
-    run_config.use_virtualization(local.kvm);
+    run_config.use_virtualization(use_kvm(local.no_kvm, Path::new("/dev/kvm")));
     run_config.auto_shutdown(!local.no_shutdown);
     run_config.dom0(dom0);
     run_config.payload(payload);
@@ -204,4 +205,61 @@ pub(super) async fn run(global: GlobalOpts) -> Result<()> {
     drop(run_dir);
 
     Ok(())
+}
+
+/// Whether to pass -enable-kvm: unless told not to, whenever QEMU could open the device.
+fn use_kvm(no_kvm: bool, device: &Path) -> bool {
+    !no_kvm && OpenOptions::new().read(true).write(true).open(device).is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs::{set_permissions, File, Permissions};
+    use std::os::unix::fs::PermissionsExt;
+
+    use tempfile::tempdir;
+
+    use super::*;
+
+    fn device(mode: u32) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("kvm");
+        File::create(&path).unwrap();
+        set_permissions(&path, Permissions::from_mode(mode)).unwrap();
+        (dir, path)
+    }
+
+    #[test]
+    fn writable_device_uses_kvm() {
+        let (_dir, path) = device(0o666);
+        assert!(use_kvm(false, &path));
+    }
+
+    #[test]
+    fn no_kvm_overrides_a_writable_device() {
+        let (_dir, path) = device(0o666);
+        assert!(!use_kvm(true, &path));
+    }
+
+    #[test]
+    fn read_only_device_does_not_use_kvm() {
+        let (_dir, path) = device(0o444);
+        assert!(!use_kvm(false, &path));
+    }
+
+    #[test]
+    fn missing_device_does_not_use_kvm() {
+        let dir = tempdir().unwrap();
+        assert!(!use_kvm(false, &dir.path().join("kvm")));
+    }
+
+    #[test]
+    fn no_kvm_parses() {
+        assert!(Opts::try_parse_from(["run", "--no-kvm"]).unwrap().no_kvm);
+    }
+
+    #[test]
+    fn kvm_flag_is_gone() {
+        assert!(Opts::try_parse_from(["run", "--kvm"]).is_err());
+    }
 }

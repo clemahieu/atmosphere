@@ -63,14 +63,14 @@ Beads lives at `~/atmosphere.src/.beads`, shared by every worktree, kept out of 
 
 ## Gate
 
-A commit is tested when `atmo test` exits 0. It holds when the workspace builds (`cargo build` in `build-tool`, and the loader, kernel, dom0 and payload as `atmo run` builds them); every package in `Cargo.lock` passes the license check against `tools/license-allowlist`; the license guard's tests pass; `atmo verify` reports no more errors than `tools/verify-allowance`, which equals the count on the proof-debt epic, and a proof leaf lowers both in the same commit; every `external_body` in `kernel/verified` has a reason and matches `tools/external-body-list`; `tools/check-boot-stack.py` passes in debug and release, with and without a forced overflow; `tools/coverage.py` captures line and branch coverage per crate, whose numbers are reported and do not fail the gate; `atmo run --kvm --iommu` boots dom0 under QEMU's emulated IOMMU with the device syscalls returning 0; and `atmo run --kvm` boots dom0 to a clean exit within a timeout (exit status 0, serial log ending in `dom0 benchmark done`).
+A commit is tested when `atmo test` exits 0. It holds when the workspace builds (`cargo build` in `build-tool`, and the loader, kernel, dom0 and payload as `atmo run` builds them); every package in `Cargo.lock` passes the license check against `tools/license-allowlist`; the license guard's tests pass; `atmo verify` reports no more errors than `tools/verify-allowance`, which equals the count on the proof-debt epic, and a proof leaf lowers both in the same commit; every `external_body` in `kernel/verified` has a reason and matches `tools/external-body-list`; `tools/check-boot-stack.py` passes in debug and release, with and without a forced overflow; `tools/coverage.py` captures line and branch coverage per crate, whose numbers are reported and do not fail the gate; `atmo run --iommu` boots dom0 under QEMU's emulated IOMMU with the device syscalls returning 0; and `atmo run` boots dom0 to a clean exit within a timeout (exit status 0, serial log ending in `dom0 benchmark done`).
 
 # Working in the tree
 
 ```
 source tools/env.sh     # Verus, RUSTC_BOOTSTRAP and tools/bin on PATH
 atmo test               # the gate
-atmo run --kvm          # build loader, kernel, dom0 and payload; boot under QEMU with KVM
+atmo run                # build loader, kernel, dom0 and payload; boot under QEMU, with KVM when /dev/kvm is writable; --no-kvm forces TCG
 atmo verify             # Verus over kernel/verified
 atmo gdb                # attach to a run started with --gdb
 ```
