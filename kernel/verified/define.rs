@@ -184,6 +184,14 @@ pub enum RetValueType {
 // -------------------- Begin of Const --------------------
 pub const MAX_NUM_ENDPOINT_DESCRIPTORS: usize = 128;
 
+/// The check for an endpoint index from user space: what the verified syscalls require of one.
+pub fn endpoint_index_in_range(endpoint_index: EndpointIdx) -> (ret: bool)
+    ensures
+        ret == (0 <= endpoint_index < MAX_NUM_ENDPOINT_DESCRIPTORS),
+{
+    endpoint_index < MAX_NUM_ENDPOINT_DESCRIPTORS
+}
+
 pub const MAX_NUM_THREADS_PER_PROC: usize = 128;
 
 pub const MAX_NUM_THREADS_PER_ENDPOINT: usize = 128;
