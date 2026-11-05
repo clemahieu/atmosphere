@@ -682,8 +682,6 @@ pub fn container_set_root_proc(
     }
 }
 
-#[verifier(external_body)]
-// external_body(gap): takes its permission from Tracked::assume_new, which Verus cannot check
 pub fn container_to_page(
     container_ptr: ContainerPtr,
     container_perm: Tracked<PointsTo<Container>>,
@@ -695,7 +693,11 @@ pub fn container_to_page(
         ret.1@.is_uninit(),
         ret.0 == container_ptr,
 {
-    (container_ptr, Tracked::assume_new())
+    let tracked mut perm = container_perm.get();
+    proof {
+        perm.leak_contents();
+    }
+    (container_ptr, Tracked(crate::layouts::container_into_page(perm)))
 }
 
 pub fn page_to_container_tree_version_1(

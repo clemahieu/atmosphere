@@ -45,6 +45,17 @@ pub proof fn page_into_container(tracked page: PagePerm4k) -> (tracked ret: Poin
     crate::pptr::page_into_typed::<Container>(page)
 }
 
+/// A dead container becomes a free page.
+pub proof fn container_into_page(tracked container: PointsTo<Container>) -> (tracked ret: PagePerm4k)
+    requires
+        container.is_uninit(),
+    ensures
+        ret.addr() == container.addr(),
+        ret.is_uninit(),
+{
+    crate::pptr::typed_into_page(container)
+}
+
 /// A free page becomes an uninitialised endpoint.
 pub proof fn page_into_endpoint(tracked page: PagePerm4k) -> (tracked ret: PointsTo<Endpoint>)
     requires
