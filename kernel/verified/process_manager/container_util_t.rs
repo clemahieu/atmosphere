@@ -354,8 +354,6 @@ pub fn container_remove_child(
     return ret;
 }
 
-#[verifier(external_body)]
-// external_body(unproven): updates ghost state only, so its body is empty; the update is assumed, not proven
 pub fn container_push_endpoint(
     container_ptr: ContainerPtr,
     container_perm: &mut Tracked<PointsTo<Container>>,
@@ -389,10 +387,13 @@ pub fn container_push_endpoint(
             container_perm,
         )@.value().owned_endpoints@.insert(e_ptr),
 {
+    let tracked owned = container_perm.borrow_mut();
+    let container = PPtr::<Container>::from_usize(container_ptr).borrow_mut(Tracked(owned));
+    proof {
+        container.owned_endpoints = Ghost(container.owned_endpoints@.insert(e_ptr));
+    }
 }
 
-#[verifier(external_body)]
-// external_body(unproven): updates ghost state only, so its body is empty; the update is assumed, not proven
 pub fn container_pop_endpoint(
     container_ptr: ContainerPtr,
     container_perm: &mut Tracked<PointsTo<Container>>,
@@ -426,6 +427,11 @@ pub fn container_pop_endpoint(
             container_perm,
         )@.value().owned_endpoints@.remove(e_ptr),
 {
+    let tracked owned = container_perm.borrow_mut();
+    let container = PPtr::<Container>::from_usize(container_ptr).borrow_mut(Tracked(owned));
+    proof {
+        container.owned_endpoints = Ghost(container.owned_endpoints@.remove(e_ptr));
+    }
 }
 
 pub fn container_set_quota_mem_4k(
@@ -580,8 +586,6 @@ pub fn container_set_quota(
     container.quota = *new_quota;
 }
 
-#[verifier(external_body)]
-// external_body(unproven): updates ghost state only, so its body is empty; the update is assumed, not proven
 pub fn container_set_owned_threads(
     container_ptr: ContainerPtr,
     container_perm: &mut Tracked<PointsTo<Container>>,
@@ -612,6 +616,11 @@ pub fn container_set_owned_threads(
         final(container_perm)@.value().root_process =~= old(container_perm)@.value().root_process,
         final(container_perm)@.value().owned_threads =~= owned_threads,
 {
+    let tracked owned = container_perm.borrow_mut();
+    let container = PPtr::<Container>::from_usize(container_ptr).borrow_mut(Tracked(owned));
+    proof {
+        container.owned_threads = owned_threads;
+    }
 }
 
 pub fn container_set_root_proc(
