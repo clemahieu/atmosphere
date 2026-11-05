@@ -485,6 +485,33 @@ pub proof fn lemma_va_4k_range_bound(va: usize, len: usize)
     }
 }
 
+/// The converse of lemma_va_4k_range_bound: a valid start whose range ends at or before the 48-bit
+/// boundary has every page valid.
+pub proof fn lemma_va_4k_range_fits(va: usize, len: usize)
+    requires
+        spec_va_4k_valid(va),
+        va + len * 4096 <= 0x1_0000_0000_0000,
+    ensures
+        spec_va_4k_range_valid(va, len),
+{
+    lemma_va_4k_valid_bounds(va);
+    assert((!MEM_4k_MASK) as usize == (!0x0000_ffff_ffff_f000u64) as usize);
+    assert(KERNEL_MEM_END_L4INDEX as u64 == 1u64);
+    assert forall|i: usize|
+        #![trigger spec_va_add_range(va, i)]
+        0 <= i < len implies spec_va_4k_valid(spec_va_add_range(va, i)) by {
+        assert(i * 4096 < len * 4096);
+        let page = spec_va_add_range(va, i);
+        assert(page == va + i * 4096);
+        assert(page % 4096 == 0 && va <= page && page < 0x1_0000_0000_0000);
+        assert(va & (!0x0000_ffff_ffff_f000u64) as usize == 0
+            && (va as u64 >> 39u64 & 0x1ffu64) >= 1u64
+            && page % 4096 == 0 && va <= page && page < 0x1_0000_0000_0000usize
+            ==> page & (!0x0000_ffff_ffff_f000u64) as usize == 0
+            && (page as u64 >> 39u64 & 0x1ffu64) >= 1u64) by (bit_vector);
+    }
+}
+
 pub proof fn va_range_lemma()
     ensures
         forall|va: VAddr, len: usize, i: usize, j: usize|

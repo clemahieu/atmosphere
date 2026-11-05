@@ -167,10 +167,7 @@ fn copy_caller_text<'a>(data: usize, len: usize, buffer: &'a mut [u8; LOG_BUFFER
     let thread_ptr = kernel.get_current_cpu_info(cpu_id).0.unwrap();
     let mut page = data & !0xfff;
     while page < end {
-        if !verified::util::page_ptr_util_u::va_4k_valid(page) {
-            return None;
-        }
-        let resolved = kernel.syscall_resolve_va(thread_ptr, vVaRange4K::new(page, 1));
+        let resolved = kernel.syscall_resolve_va(thread_ptr, vVaRange4K::try_new(page, 1)?);
         if !matches!(resolved.error_code, vdefine::RetValueType::SuccessPairUsize { .. }) {
             return None;
         }
@@ -213,14 +210,27 @@ pub extern "C" fn sys_log(data: usize, len: usize, level: usize, regs: &mut vReg
     Bridge::set_switch_decision(SwitchDecision::NoSwitching);
 }
 
+/// The range a process named, or None with the error already returned to it.
+fn checked_va_range(va: usize, len: usize, regs: &mut vRegisters) -> Option<vVaRange4K> {
+    let va_range = vVaRange4K::try_new(va, len);
+    if va_range.is_none() {
+        regs.rax = 1;
+        Bridge::set_switch_decision(SwitchDecision::NoSwitching);
+    }
+    va_range
+}
+
 pub extern "C" fn sys_mmap(va:usize, perm_bits:usize, range:usize, regs: &mut vRegisters) {
+    let Some(va_range) = checked_va_range(va, range, regs) else {
+        return;
+    };
     let cpu_id = cpu::get_cpu_id();
     let mut kernel = KERNEL.lock();
     let thread_info = kernel.get_current_cpu_info(cpu_id);
 
     let ret_struc =  kernel.syscall_mmap(
         thread_info.0.unwrap(),
-        vVaRange4K::new(va, range)
+        va_range
     );
     regs.rax = 
         if ret_struc.is_error(){
@@ -268,13 +278,16 @@ pub extern "C" fn sys_send_empty_try_schedule(endpoint_index:usize, _:usize, _:u
 
 /// Resolve VA to PA.
 pub extern "C" fn sys_resolve(va:usize,_:usize, _:usize, regs: &mut vRegisters){
+    let Some(va_range) = checked_va_range(va, 1, regs) else {
+        return;
+    };
     let cpu_id = cpu::get_cpu_id();    
     let mut kernel = KERNEL.lock();
     let thread_info = kernel.get_current_cpu_info(cpu_id);
     let thread_ptr = thread_info.0.unwrap();
     let ret_struc = kernel.syscall_resolve_va(
         thread_ptr,
-        vVaRange4K::new(va, 1),
+        va_range,
     );
     match ret_struc.error_code{
         vdefine::RetValueType::SuccessPairUsize { value1, value2 } => {
@@ -288,13 +301,16 @@ pub extern "C" fn sys_resolve(va:usize,_:usize, _:usize, regs: &mut vRegisters){
 }
 
 pub extern "C" fn sys_resolve_io(va:usize,_:usize, _:usize, regs: &mut vRegisters){
+    let Some(va_range) = checked_va_range(va, 1, regs) else {
+        return;
+    };
     let cpu_id = cpu::get_cpu_id();    
     let mut kernel = KERNEL.lock();
     let thread_info = kernel.get_current_cpu_info(cpu_id);
     let thread_ptr = thread_info.0.unwrap();
     let ret_struc = kernel.syscall_io_resolve_va(
         thread_ptr,
-        vVaRange4K::new(va, 1),
+        va_range,
     );
     match ret_struc.error_code{
         vdefine::RetValueType::SuccessPairUsize { value1, value2 } => {
@@ -334,6 +350,9 @@ pub extern "C" fn sys_new_proc(endpoint_index:usize, ip:usize, sp:usize, regs: &
     if reject_endpoint_index(endpoint_index, regs) {
         return;
     }
+    let Some(va_range) = checked_va_range(va, range, regs) else {
+        return;
+    };
     let cpu_id = cpu::get_cpu_id();
     let mut kernel = KERNEL.lock();
     let thread_info = kernel.get_current_cpu_info(cpu_id);
@@ -345,7 +364,7 @@ pub extern "C" fn sys_new_proc(endpoint_index:usize, ip:usize, sp:usize, regs: &
         thread_info.0.unwrap(),
         endpoint_index,
         &new_proc_pt_regs,
-        vVaRange4K::new(va, range)
+        va_range
     );
     regs.rax = 
         if ret_struc.is_error(){
@@ -749,6 +768,9 @@ pub extern "C" fn sys_get_iommu_cr3(_:usize, _:usize, _:usize, regs: &mut vRegis
 }
 
 pub extern "C" fn sys_iommu_mmap(va:usize, perm_bits:usize, range:usize, regs: &mut vRegisters) {
+    let Some(va_range) = checked_va_range(va, range, regs) else {
+        return;
+    };
     let cpu_id = cpu::get_cpu_id();
     let mut kernel = KERNEL.lock();
     let thread_info = kernel.get_current_cpu_info(cpu_id);
@@ -756,15 +778,15 @@ pub extern "C" fn sys_iommu_mmap(va:usize, perm_bits:usize, range:usize, regs: &
     log::trace!{"iommaping from {:x?} with {:#?} pages", va, range};
 
     let address_shareable = kernel.check_address_space_va_range_shareable(        thread_info.1.unwrap(),
-        &vVaRange4K::new(va, range));
+        &va_range);
      log::trace!{"address_shareable {:#?}", address_shareable};
     let io_address_shareable = kernel.check_io_space_va_range_free(
     thread_info.1.unwrap(),
-        &vVaRange4K::new(va, range));
+        &va_range);
      log::trace!{"io_address_shareable {:#?}", io_address_shareable};
     let ret_struc =  kernel.syscall_mmap_to_iommu_table(
         thread_info.0.unwrap(),
-        vVaRange4K::new(va, range)
+        va_range
     );
     regs.rax = 
         if ret_struc.is_error(){

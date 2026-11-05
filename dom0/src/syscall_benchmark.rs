@@ -751,6 +751,52 @@ extern "C" fn fault_witness() -> ! {
     }
 }
 
+/// Every syscall that takes an address range, with ranges no process may name. The first two are
+/// in the kernel's own L4 slot.
+pub fn check_address_ranges() {
+    let calls: [(&str, unsafe fn(usize, usize) -> usize); 5] = [
+        ("sys_mmap", |va, len| unsafe { asys::sys_mmap(va, 0x2, len) }),
+        ("sys_mresolve", |va, _| unsafe { sys_raw_arg(asys::__NR_MRESOLVE, va) }),
+        ("sys_mresolve_io", |va, _| unsafe { sys_raw_arg(asys::__NR_MRESOLVE_IO, va) }),
+        ("sys_io_mmap", |va, len| unsafe { asys::sys_io_mmap(va, 0x2, len) }),
+        ("sys_new_proc", |va, len| unsafe { asys::sys_new_proc(CHILD_ENDPOINT, 0, 0, va, len) }),
+    ];
+    let free = 0xd0_0000_0000usize;
+    let ranges = [
+        ("L4 index 0", 0x1000, 1),
+        ("the kernel's image", 0x1_0000_0000, 1),
+        ("an unaligned address", free + 1, 1),
+        ("a non-canonical address", 1 << 48, 1),
+        ("a range past the user half", (1 << 48) - 4096, 2),
+        ("a range that wraps", free, 1 << 52),
+        ("the longest length", free, usize::MAX),
+    ];
+    for (what, call) in calls {
+        for (range, va, len) in ranges {
+            let ret = unsafe { call(va, len) };
+            log::info!("{} of {} ({:#x}, {:#x}): {}", what, range, va, len, ret);
+            if ret != 1 {
+                bench_fail(what, ret);
+            }
+        }
+    }
+}
+
+/// A syscall with one argument, unmasked, which the asys resolve wrappers do not send.
+unsafe fn sys_raw_arg(number: usize, arg: usize) -> usize {
+    let ret: usize;
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            inlateout("rax") number => ret,
+            inlateout("rdi") arg => _,
+            lateout("rsi") _, lateout("rdx") _, lateout("rcx") _,
+            lateout("r8") _, lateout("r9") _, lateout("r10") _, lateout("r11") _,
+        );
+    }
+    ret
+}
+
 /// sys_log with a level no log::Level can hold, which asys::sys_log cannot express.
 unsafe fn syscall_log_raw(data: *const u8, len: usize, level: usize) -> isize {
     let ret: isize;
