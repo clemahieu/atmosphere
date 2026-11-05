@@ -4,13 +4,10 @@ verus! {
 use crate::define::*;
 use crate::util::page_ptr_util_u::*;
 
-#[verifier(external_body)]
-// external_body(unproven): states the target's usize width without a proof
 pub proof fn lemma_usize_u64(x: u64)
     ensures
         x as usize as u64 == x,
 {
-    unimplemented!();
 }
 
 pub proof fn set_lemma<A>()
