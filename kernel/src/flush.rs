@@ -18,7 +18,7 @@ struct FlushState {
     acked: [usize; NUM_CPUS],
 }
 
-static FLUSH: Locked<FlushState> = Locked::new(FlushState { epoch: 0, acked: [0; NUM_CPUS] });
+static FLUSH: Locked<FlushState> = Locked::new("flush", FlushState { epoch: 0, acked: [0; NUM_CPUS] });
 
 /// How long the boot test waits, in TSC cycles.
 const ACK_CYCLES: u64 = 20_000_000_000;

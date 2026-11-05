@@ -59,6 +59,12 @@ pub struct Opts {
     #[clap(long)]
     pci_dev: Vec<String>,
 
+    /// Report how long the kernel's lock is held and waited for, in the serial log.
+    ///
+    /// A build option, since the timing is a real share of a syscall.
+    #[clap(long)]
+    lock_stats: bool,
+
     /// Whether to emit full output from the emulator.
     #[clap(long)]
     full_output: bool,
@@ -90,8 +96,16 @@ pub(super) async fn run(global: GlobalOpts) -> Result<()> {
         Binary::new(prebuilt)
     } else {
         let kernel_crate = project.kernel();
+        let mut kernel_opts = BuildOptions {
+            release: opts.release,
+            verbose: opts.verbose,
+            features: Vec::new(),
+        };
+        if local.lock_stats {
+            kernel_opts.features.push("lock_stats".to_string());
+        }
         kernel_crate
-            .build(&opts)
+            .build(&kernel_opts)
             .await?
             .expect("No binary was produced")
     };

@@ -82,6 +82,9 @@ async fn check_build(project: &ProjectHandle) -> Result<String> {
 
     let options = BuildOptions::default();
     project.loader().build(&options).await.context("loader")?;
+    // The measuring build, which no boot here runs, so that it cannot rot unseen.
+    let lock_stats = BuildOptions { features: vec!["lock_stats".to_string()], ..BuildOptions::default() };
+    project.kernel().build(&lock_stats).await.context("kernel with lock_stats")?;
     project.kernel().build(&options).await.context("kernel")?;
     project.dom0().build(&options).await.context("dom0")?;
     project.user(PAYLOAD).build(&options).await.context("payload")?;
