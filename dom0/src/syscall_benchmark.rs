@@ -242,10 +242,14 @@ const CHILD_STACK_PAGES: usize = 16;
 const CHILD_ENDPOINT: usize = 3;
 /// Stack pages for one faulting child and for its witness, and how many children there are.
 const FAULT_STACK_PAGES: usize = 4;
-const FAULT_KINDS: [&str; 4] = [
+const FAULT_KINDS: [&str; 8] = [
     "a load from an unmapped address",
     "hlt in ring 3",
     "int 33, the IOMMU fault vector",
+    "ud2",
+    "a division by zero",
+    "single-stepping with the trap flag",
+    "an unmasked SIMD division by zero",
     "int3, which returns, then a load from an unmapped address",
 ];
 const FAULT_ENDPOINT: usize = 4;
@@ -702,6 +706,28 @@ extern "C" fn faulting_child() -> ! {
         },
         1 => unsafe { core::arch::asm!("hlt") },
         2 => unsafe { core::arch::asm!("int 33") },
+        3 => unsafe { core::arch::asm!("ud2") },
+        4 => unsafe {
+            core::arch::asm!(
+                "xor edx, edx",
+                "xor ecx, ecx",
+                "mov eax, 1",
+                "div ecx",
+                out("eax") _, out("ecx") _, out("edx") _,
+            )
+        },
+        5 => unsafe { core::arch::asm!("pushfq", "or qword ptr [rsp], 0x100", "popfq", "nop") },
+        6 => unsafe {
+            // Clear every mask bit, then divide with both registers holding zero.
+            let mxcsr = 0u32;
+            core::arch::asm!(
+                "ldmxcsr [{mxcsr}]",
+                "xorps xmm0, xmm0",
+                "xorps xmm1, xmm1",
+                "divss xmm0, xmm1",
+                mxcsr = in(reg) &mxcsr,
+            )
+        },
         _ => unsafe {
             core::arch::asm!("int3");
             INT3_RETURNED.fetch_add(1, Ordering::SeqCst);

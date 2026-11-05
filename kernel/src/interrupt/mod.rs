@@ -206,12 +206,38 @@ fn from_process(regs: &Registers) -> bool {
     regs.cs & 3 == 3
 }
 
-/// Invalid Opcode handler.
-unsafe extern "C" fn invalid_opcode(regs: &mut PtRegs) {
-    log::error!("CPU {}, Invalid Opcode: {:#x?}", crate::cpu::get_cpu_id(), regs);
+/// Kills the thread when a process raised the exception, and stops the machine when the kernel did.
+unsafe fn fatal_unless_process(what: &str, regs: &mut Registers) {
+    if from_process(regs) {
+        log::info!("{} in a process at {:#x}: killing its thread", what, regs.rip);
+        crate::kernel::kill_current_thread(regs);
+        return;
+    }
+    log::error!("CPU {}: {}: {:#x?}", crate::cpu::get_cpu_id(), what, regs);
     crate::debugger::breakpoint(2);
     spin_forever();
 }
+
+macro_rules! process_exception {
+    ($handler:ident, $what:literal) => {
+        unsafe extern "C" fn $handler(regs: &mut Registers) {
+            fatal_unless_process($what, regs);
+        }
+    };
+}
+
+process_exception!(divide_by_zero, "Divide Error");
+process_exception!(debug, "Debug Exception");
+process_exception!(overflow, "Overflow");
+process_exception!(bound_range_exceeded, "Bound Range Exceeded");
+process_exception!(invalid_opcode, "Invalid Opcode");
+process_exception!(device_not_available, "Device Not Available");
+process_exception!(invalid_tss, "Invalid TSS");
+process_exception!(segment_not_present, "Segment Not Present");
+process_exception!(stack_segment_fault, "Stack Segment Fault");
+process_exception!(x87_floating_point, "x87 Floating Point Exception");
+process_exception!(alignment_check, "Alignment Check");
+process_exception!(simd_floating_point, "SIMD Floating Point Exception");
 
 /// Double Fault handler.
 unsafe extern "C" fn double_fault(regs: &mut PtRegs) {
@@ -224,20 +250,6 @@ unsafe extern "C" fn double_fault(regs: &mut PtRegs) {
 unsafe extern "C" fn breakpoint(regs: &mut Registers) {
     log::warn!("CPU {}: Breakpoint: {:#x?}", crate::cpu::get_cpu_id(), regs);
     crate::debugger::breakpoint(2);
-}
-
-/// Stack Segment Fault handler
-unsafe extern "x86-interrupt" fn stack_segment_fault(
-    frame: &mut InterruptStackFrame,
-    error_code: u64,
-) {
-    log::error!(
-        "Stack Segment Fault (error code {:#b}): {:#x?}",
-        error_code,
-        frame,
-    );
-    crate::debugger::breakpoint(2);
-    spin_forever();
 }
 
 /// General Protection Fault handler.
@@ -431,11 +443,21 @@ pub unsafe fn init() {
     outb(PIC2_DATA, 0xff);
 
     let idt = &mut GLOBAL_IDT;
-    idt.invalid_opcode.set_handler_fn(invalid_opcode);
+    idt.divide_by_zero.set_handler_fn(wrap_interrupt!(divide_by_zero));
+    idt.debug.set_handler_fn(wrap_interrupt!(debug));
+    idt.overflow.set_handler_fn(wrap_interrupt!(overflow));
+    idt.bound_range_exceeded.set_handler_fn(wrap_interrupt!(bound_range_exceeded));
+    idt.invalid_opcode.set_handler_fn(wrap_interrupt!(invalid_opcode));
+    idt.device_not_available.set_handler_fn(wrap_interrupt!(device_not_available));
+    idt.x87_floating_point.set_handler_fn(wrap_interrupt!(x87_floating_point));
+    idt.simd_floating_point.set_handler_fn(wrap_interrupt!(simd_floating_point));
+    idt.invalid_tss.set_handler_fn(wrap_interrupt_with_error_code!(invalid_tss));
+    idt.segment_not_present.set_handler_fn(wrap_interrupt_with_error_code!(segment_not_present));
+    idt.alignment_check.set_handler_fn(wrap_interrupt_with_error_code!(alignment_check));
     idt.breakpoint.set_handler_fn(wrap_interrupt!(breakpoint));
     idt.breakpoint.attributes.set_privilege_level(Ring::Ring3);
     idt.double_fault.set_handler_fn(double_fault);
-    idt.stack_segment_fault.set_handler_fn(stack_segment_fault);
+    idt.stack_segment_fault.set_handler_fn(wrap_interrupt_with_error_code!(stack_segment_fault));
     idt.general_protection_fault
         .set_handler_fn(wrap_interrupt_with_error_code!(general_protection_fault));
     idt.page_fault.set_handler_fn(wrap_interrupt_with_error_code!(page_fault));
