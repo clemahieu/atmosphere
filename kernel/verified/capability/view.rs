@@ -2,6 +2,7 @@
 //! so what a process holds, what each capability names and which rights it carries are read from the
 //! tables here and nowhere else. The fields for mappings, threads and object contents stay empty until
 //! the objects behind them exist. See the design on atmo-6x9.6.7, section 15.
+use vstd::arithmetic::power2::*;
 use vstd::prelude::*;
 
 verus! {
@@ -46,6 +47,7 @@ impl CapKernel {
             held: ISet::new(|h: (ObjectId, NodeId)|
                 self.is_cap(h.1) && self.tables.owner@[page_of(h.1)].0 == h.0),
             names: IMap::new(|n: NodeId| self.is_cap(n), |n: NodeId| self.payload_of(n).base),
+            pages: IMap::new(|n: NodeId| self.is_cap(n), |n: NodeId| pow2(self.payload_of(n).order as nat)),
             rights: ISet::new(|h: (NodeId, Right)|
                 self.is_cap(h.0) && self.payload_of(h.0).rights & right_bit(h.1) != 0),
             parent: self.list.parent@,

@@ -11,11 +11,15 @@ use vstd::prelude::*;
 
 verus! {
 
-/// A block's base address.
+/// A page's address. An object is named by the base of its block.
 pub type ObjectId = usize;
 
 /// A list node's id, as in capability::list.
 pub type NodeId = usize;
+
+/// The 2M block `example`'s capability covers, and the first page past it.
+pub const EXAMPLE_BASE: usize = 0x200000;
+pub const EXAMPLE_PAST: usize = 0x400000;
 
 #[derive(PartialEq, Eq)]
 pub enum Right {
@@ -34,6 +38,8 @@ pub ghost struct State {
     pub held: ISet<(ObjectId, NodeId)>,
     /// The object each live capability names. Only capabilities are here, not other list nodes.
     pub names: IMap<NodeId, ObjectId>,
+    /// How many pages each live capability's block has, from the page it names.
+    pub pages: IMap<NodeId, nat>,
     pub rights: ISet<(NodeId, Right)>,
     /// The list's parent map, so every capability is in some lineage.
     pub parent: Map<NodeId, NodeId>,
@@ -74,12 +80,20 @@ impl State {
         }
     }
 
-    /// p's capabilities name o, or capabilities descended from them do, or p's spaces map it, a
+    /// p's capabilities cover o, or capabilities descended from them do, or p's spaces map it, a
     /// mapping being a hardware copy.
     pub open spec fn direct(self, p: ObjectId, o: ObjectId) -> bool {
         ||| exists|c: NodeId, n: NodeId, k: nat| #[trigger] self.descends(c, n, k) && self.holds(p, c)
-            && self.names.contains_key(n) && self.names[n] == o
+            && self.covers(n, o)
         ||| self.maps.contains((p, o))
+    }
+
+    /// o is a page of the block capability n names.
+    pub open spec fn covers(self, n: NodeId, o: ObjectId) -> bool {
+        &&& self.names.contains_key(n)
+        &&& self.pages.contains_key(n)
+        &&& o % 4096 == 0
+        &&& self.names[n] <= o < self.names[n] + self.pages[n] * 4096
     }
 
     /// The process a control capability over o gives authority over: a thread's process, since
@@ -293,14 +307,16 @@ pub proof fn lemma_reach_grows_only_by_grant_or_retype(
 {
 }
 
-/// A state with one process, 1, holding one capability, node 10, on frame 100, which it maps.
+/// A state with one process, 1, holding one capability, node 10, on the 2M block at EXAMPLE_BASE, the
+/// first page of which it maps.
 pub open spec fn example() -> State {
     State {
         held: ISet::new(|h: (ObjectId, NodeId)| h == (1usize, 10usize)),
-        names: IMap::new(|n: NodeId| n == 10, |n: NodeId| 100usize),
+        names: IMap::new(|n: NodeId| n == 10, |n: NodeId| EXAMPLE_BASE),
+        pages: IMap::new(|n: NodeId| n == 10, |n: NodeId| 512nat),
         rights: ISet::new(|h: (NodeId, Right)| h.0 == 10 && (h.1 == Right::Read || h.1 == Right::Write)),
         parent: Map::empty(),
-        maps: set![(1usize, 100usize)],
+        maps: set![(1usize, EXAMPLE_BASE)],
         process_of: Map::empty(),
         waiting: Set::empty(),
         bound: Map::empty(),
@@ -309,7 +325,7 @@ pub open spec fn example() -> State {
     }
 }
 
-/// `example` with frame 100 written.
+/// `example` with a frame written.
 pub open spec fn written(frame: ObjectId) -> State {
     State {
         contents: |o: ObjectId| if o == frame { seq![1u8] } else { Seq::empty() },
@@ -320,12 +336,12 @@ pub open spec fn written(frame: ObjectId) -> State {
 /// The relation is inhabited: a write to a mapped frame discharges it.
 pub proof fn lemma_mapped_write_discharges()
     ensures
-        discharges(example(), written(100), 1, Effect::Access { frame: 100 }),
+        discharges(example(), written(EXAMPLE_BASE), 1, Effect::Access { frame: EXAMPLE_BASE }),
 {
-    let (pre, post, e) = (example(), written(100), Effect::Access { frame: 100 });
-    assert(pre.maps.contains((1usize, 100usize)));
+    let (pre, post, e) = (example(), written(EXAMPLE_BASE), Effect::Access { frame: EXAMPLE_BASE });
+    assert(pre.maps.contains((1usize, EXAMPLE_BASE)));
     assert forall|o: ObjectId| #[trigger] State::changed(pre, post, o) implies may_change(pre, e, o) by {
-        if o != 100 {
+        if o != EXAMPLE_BASE {
             assert((post.contents)(o) =~= (pre.contents)(o));
         }
     }
@@ -337,9 +353,61 @@ pub proof fn lemma_mapped_write_discharges()
 /// And it excludes something: a write to a frame the process does not map does not discharge it.
 pub proof fn lemma_unmapped_write_does_not_discharge()
     ensures
-        !discharges(example(), written(200), 1, Effect::Access { frame: 200 }),
+        !discharges(example(), written(EXAMPLE_PAST), 1, Effect::Access { frame: EXAMPLE_PAST }),
 {
-    assert(!example().maps.contains((1usize, 200usize)));
+    assert(!example().maps.contains((1usize, EXAMPLE_PAST)));
+}
+
+/// With no control right in `example`, the only process 1 reaches through is itself.
+proof fn lemma_example_controls_nothing(q: ObjectId, k: nat)
+    requires
+        example().controlled(1, q, k),
+    ensures
+        q == 1,
+{
+    if k > 0 {
+        let m = choose|m: ObjectId| #[trigger] example().controls(m, q)
+            && example().controlled(1, m, (k - 1) as nat);
+        let c = choose|c: NodeId| #[trigger] example().holds_right(m, c, Right::Control)
+            && example().process_behind(example().names[c]) == q;
+        assert(!example().rights.contains((c, Right::Control)));
+    }
+}
+
+/// With no parents in `example`, a capability descends only from itself.
+proof fn lemma_example_descends_from_itself(c: NodeId, n: NodeId, k: nat)
+    requires
+        example().descends(c, n, k),
+    ensures
+        c == n,
+{
+}
+
+/// A capability reaches each page of its block and no other: the last page inside, and the pages just
+/// past either end, are all decided by this.
+pub proof fn lemma_example_reaches_its_block(o: ObjectId)
+    requires
+        o % 4096 == 0,
+    ensures
+        example().reach(1, o) == (EXAMPLE_BASE <= o < EXAMPLE_PAST),
+{
+    let s = example();
+    if EXAMPLE_BASE <= o < EXAMPLE_PAST {
+        assert(s.descends(10, 10, 0));
+        assert(s.holds(1, 10));
+        assert(s.direct(1, o));
+        assert(s.controlled(1, 1, 0));
+    }
+    if s.reach(1, o) {
+        let (q, k) = choose|q: ObjectId, k: nat| #[trigger] s.controlled(1, q, k) && (o == q || s.direct(q, o));
+        lemma_example_controls_nothing(q, k);
+        if !s.maps.contains((1usize, o)) && o != 1 {
+            let (c, n, d) = choose|c: NodeId, n: NodeId, d: nat| #[trigger] s.descends(c, n, d)
+                && s.holds(1, c) && s.covers(n, o);
+            lemma_example_descends_from_itself(c, n, d);
+            assert(s.held.contains((1usize, c)));
+        }
+    }
 }
 
 /// Reach reads nothing but the authority fields, so contents do not change it.
@@ -347,6 +415,7 @@ proof fn lemma_same_authority_same_reach(a: State, b: State, r: ObjectId, o: Obj
     requires
         a.held == b.held,
         a.names == b.names,
+        a.pages == b.pages,
         a.rights == b.rights,
         a.parent == b.parent,
         a.maps == b.maps,
@@ -361,7 +430,7 @@ proof fn lemma_same_authority_same_reach(a: State, b: State, r: ObjectId, o: Obj
         if a.maps.contains((q, o)) {
         } else {
             let (c, n, d) = choose|c: NodeId, n: NodeId, d: nat| #[trigger] a.descends(c, n, d)
-                && a.holds(q, c) && a.names.contains_key(n) && a.names[n] == o;
+                && a.holds(q, c) && a.covers(n, o);
             lemma_same_parent_same_descends(a, b, c, n, d);
         }
     }
