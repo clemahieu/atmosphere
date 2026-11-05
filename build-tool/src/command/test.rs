@@ -265,7 +265,13 @@ const LOCK_CONTENDED: &str = "lock contended by 2 cores: pair intact at 400000";
 
 /// Whether the serial log shows the kernel entering a thread on CPU 1, and dom0's report from each side.
 fn second_core_ran_thread(serial: &str) -> bool {
-    ["CPU 1 entering a thread", "thread on CPU 1 made ", "thread on CPU 0 made "]
+    [
+        "CPU 1 entering a thread",
+        "CPU 0 entering a thread",
+        "thread on CPU 1 made ",
+        "thread on CPU 0 made ",
+        "a thread blocked with nothing else to run on each core",
+    ]
         .iter()
         .all(|line| serial.contains(line))
 }
@@ -363,7 +369,7 @@ mod tests {
     #[test]
     fn both_cores_reporting_is_a_thread_on_the_second() {
         assert!(second_core_ran_thread(
-            "CPU 1 entering a thread\nthread on CPU 1 made 1000 syscalls\nthread on CPU 0 made 1000 syscalls beside it\n"
+            "CPU 1 entering a thread\nCPU 0 entering a thread\nthread on CPU 1 made 1000 syscalls\nthread on CPU 0 made 1000 syscalls beside it\na thread blocked with nothing else to run on each core\n"
         ));
     }
 

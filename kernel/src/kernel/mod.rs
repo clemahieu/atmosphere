@@ -497,6 +497,12 @@ pub extern "C" fn sys_receive_empty(endpoint_index:usize, _:usize, _:usize, regs
     // switchdecision: {:#?}", ret_struc.is_error(), ret_struc.pcid, ret_struc.cr3, ret_struc.switch_decision};
     if matches!(ret_struc.switch_decision, verified::define::SwitchDecision::NoThread){
         let sche_ret = kernel.schedule_idle_cpu(cpu_id, regs);
+        if sche_ret.pcid.is_none() {
+            // The caller is blocked and nothing else can run here. That is a process's choice, not
+            // a fault, so the core waits for work rather than taking the kernel down.
+            drop(kernel);
+            idle_loop();
+        }
     //     log::info!{"sche_ret:
     // is_error: {:#?},
     // pcid: {:#?}
@@ -706,9 +712,29 @@ pub extern "C" fn sys_receive_empty(endpoint_index:usize, _:usize, _:usize, regs
 //     }
 // }
 
+/// Waits on this core for a thread to run, and enters it. Interrupts are off while this core could
+/// hold the lock, as on every kernel entry, and open only between tries. The kernel's own tables stay
+/// loaded meanwhile, since the process whose tables were loaded could die and free them.
+pub fn idle_loop() -> ! {
+    let kernel_tables = crate::boot::get_boot_info().pml4 as usize;
+    Bridge::set_cr3((kernel_tables | vdefine::PCID_ENABLE_MASK) as u64);
+    let mut regs = vRegisters::zeroed();
+    loop {
+        unsafe { asm!("cli") };
+        if take_next_thread(&mut regs) {
+            log::info!("CPU {} entering a thread", cpu::get_cpu_id());
+            unsafe { crate::syscalls::enter_thread(&regs) };
+        }
+        unsafe { asm!("sti") };
+        for _ in 0..1000 {
+            core::hint::spin_loop();
+        }
+    }
+}
+
 /// Puts the next runnable thread on this idle CPU, filling `regs` and loading its address space.
 /// Returns whether there was one.
-pub fn take_next_thread(regs: &mut vRegisters) -> bool {
+fn take_next_thread(regs: &mut vRegisters) -> bool {
     let cpu_id = cpu::get_cpu_id();
     let mut kernel = KERNEL.lock();
     let next = kernel.schedule_idle_cpu(cpu_id, regs);
@@ -728,8 +754,8 @@ pub fn kill_current_thread(regs: &mut vRegisters) {
     kernel.kernel_kill_thread(info.0.unwrap());
     let next = kernel.schedule_idle_cpu(cpu_id, regs);
     let Some(next_pcid) = next.pcid else {
-        log::error!("No thread left to run after a fault");
-        unsafe { crate::boot::spin_forever() };
+        drop(kernel);
+        idle_loop();
     };
     if next_pcid != pcid {
         Bridge::set_cr3((next.cr3.unwrap() | next_pcid | vdefine::PCID_ENABLE_MASK) as u64);

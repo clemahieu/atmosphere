@@ -197,20 +197,7 @@ extern "C" fn ap_main(cpu_id: u64) -> ! {
     AP_UP.store(true, Ordering::SeqCst);
     lock::contend();
 
-    // Two cores now enter the kernel under its lock. Interrupts are off while this core could hold
-    // the lock, as on every kernel entry, and open only between tries.
-    let mut regs = verified::trap::Registers::zeroed();
-    loop {
-        unsafe { asm!("cli") };
-        if kernel::take_next_thread(&mut regs) {
-            log::info!("CPU {} entering a thread", cpu::get_cpu_id());
-            unsafe { syscalls::enter_thread(&regs) };
-        }
-        unsafe { asm!("sti") };
-        for _ in 0..1000 {
-            core::hint::spin_loop();
-        }
-    }
+    kernel::idle_loop()
 }
 
 /// Thread entry point.
