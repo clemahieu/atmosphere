@@ -14,9 +14,7 @@ allocator/page_allocator_util_t.rs	set_ref_count	unproven	an array element acces
 allocator/page_allocator_util_t.rs	set_rev_pointer	unproven	an array element access not proven yet
 allocator/page_allocator_util_t.rs	set_state	unproven	an array element access not proven yet
 allocator/page_allocator_util_t.rs	split_2m_pages_to_pages	gap	takes its permission from Tracked::assume_new, which Verus cannot check
-array.rs	get	unproven	an array element access not proven yet
 array.rs	new	gap	builds a value from zeroed memory, which Verus cannot check
-array.rs	set	unproven	an array element access not proven yet
 kernel/spec.rs	kernel_init	unproven	initialisation not proven yet
 lemma/lemma_t.rs	page_ptr_lemma	unproven	a lemma stated without a proof
 memory_manager/mmu_util.rs	iommu_table_array_create_iommu_table_l2_entry_t	unproven	an array element access not proven yet
