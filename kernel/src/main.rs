@@ -53,9 +53,9 @@ use x86::Ring;
 
 static mut SHUTDOWN_ON_PANIC: bool = false;
 
-/// CPU 1's stack until it has entered ap_main. It stays there, since it runs nothing else yet.
+/// CPU 1's stack while it is idle.
 static mut AP_STACK: cpu::IstStack = cpu::IstStack::new();
-/// CPU 1 sets this when it reaches its idle loop.
+/// CPU 1 sets this when it is about to start looking for a thread.
 static AP_IDLE: AtomicBool = AtomicBool::new(false);
 /// How long CPU 0 waits for it, in TSC cycles. A core that does not start is reported, not fatal.
 const AP_START_CYCLES: u64 = 20_000_000_000;
@@ -163,8 +163,8 @@ fn boot_cpu0(boot_info: *const BootInfo) -> isize {
     }
 }
 
-/// Starts CPU 1 and waits for it to reach its idle loop, so that dom0's log and CPU 1's do not
-/// interleave. Nothing runs on it yet.
+/// Starts CPU 1 and waits for it to reach its idle loop, so that dom0's log and CPU 1's start-up
+/// log do not interleave.
 unsafe fn start_second_core() {
     let stack = (&raw const AP_STACK).cast::<u8>().add(core::mem::size_of::<cpu::IstStack>()) as u64;
     interrupt::boot_ap(1, stack, ap_main as *const () as u64);
@@ -191,8 +191,19 @@ extern "C" fn ap_main(cpu_id: u64) -> ! {
     log::info!("CPU {} idle, syscall stack {:#x}", cpu::get_cpu_id(), cpu::get_current().syscall_sp);
     AP_IDLE.store(true, Ordering::SeqCst);
 
+    // Two cores now enter the kernel under its lock. Interrupts are off while this core could hold
+    // the lock, as on every kernel entry, and open only between tries.
+    let mut regs = verified::trap::Registers::zeroed();
     loop {
-        unsafe { asm!("hlt") };
+        unsafe { asm!("cli") };
+        if kernel::take_next_thread(&mut regs) {
+            log::info!("CPU {} entering a thread", cpu::get_cpu_id());
+            unsafe { syscalls::enter_thread(&regs) };
+        }
+        unsafe { asm!("sti") };
+        for _ in 0..1000 {
+            core::hint::spin_loop();
+        }
     }
 }
 

@@ -211,6 +211,9 @@ async fn boot(project: &ProjectHandle, timeout: u64, args: &[&str]) -> Result<St
     if !second_core_idle(&serial) {
         return Err(anyhow!("the serial log does not show CPU 1 idle on a syscall stack of its own"));
     }
+    if !second_core_ran_thread(&serial) {
+        return Err(anyhow!("the serial log does not show threads making syscalls on both cores"));
+    }
     Ok(serial)
 }
 
@@ -243,6 +246,13 @@ fn second_core_idle(serial: &str) -> bool {
         (Some(first), Some(second)) => first != second,
         _ => false,
     }
+}
+
+/// Whether the serial log shows the kernel entering a thread on CPU 1, and dom0's report from each side.
+fn second_core_ran_thread(serial: &str) -> bool {
+    ["CPU 1 entering a thread", "thread on CPU 1 made ", "thread on CPU 0 made "]
+        .iter()
+        .all(|line| serial.contains(line))
 }
 
 /// The hexadecimal address after `label` in the serial log.
@@ -333,6 +343,18 @@ mod tests {
     #[test]
     fn second_core_sharing_a_stack_is_not_idle() {
         assert!(!second_core_idle("CPU 0 syscall stack 0x1000\nCPU 1 idle, syscall stack 0x1000\n"));
+    }
+
+    #[test]
+    fn both_cores_reporting_is_a_thread_on_the_second() {
+        assert!(second_core_ran_thread(
+            "CPU 1 entering a thread\nthread on CPU 1 made 1000 syscalls\nthread on CPU 0 made 1000 syscalls beside it\n"
+        ));
+    }
+
+    #[test]
+    fn dom0_alone_is_not_a_thread_on_the_second() {
+        assert!(!second_core_ran_thread("thread on CPU 0 made 1000 syscalls beside it\n"));
     }
 
     #[test]
