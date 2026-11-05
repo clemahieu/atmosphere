@@ -10,9 +10,6 @@ use crate::boot::command_line::Component as CommandLineComponent;
 #[non_exhaustive]
 #[derive(Clone, Debug, Display)]
 pub enum Error {
-    /// No such script is defined.
-    NoSuchScript,
-
     /// Invalid kernel command-line component: {0:?}
     InvalidCommandLineOption(CommandLineComponent<'static>),
 

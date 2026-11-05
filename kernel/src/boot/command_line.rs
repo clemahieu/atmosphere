@@ -21,12 +21,6 @@ pub struct KernelCommandLine {
     /// Log to a specified serial port.
     pub serial: &'static str,
 
-    /// Run a debug script.
-    pub script: Option<&'static str>,
-
-    /// Shut down after the script finishes.
-    pub script_shutdown: bool,
-
     /// QEMU isa-debug-exit I/O port base.
     pub qemu_debug_exit_io_base: Option<u16>,
 
@@ -40,8 +34,6 @@ impl KernelCommandLine {
             nologo: false,
             nocolor: false,
             serial: "com1",
-            script: None,
-            script_shutdown: false,
             qemu_debug_exit_io_base: None,
             bochs_apm_io_base: None,
         }
@@ -57,9 +49,6 @@ impl KernelCommandLine {
                     "nocolor" => {
                         self.nocolor = true;
                     }
-                    "script_shutdown" => {
-                        self.script_shutdown = true;
-                    }
                     _ => {
                         return Err(Error::InvalidCommandLineOption(component));
                     }
@@ -67,9 +56,6 @@ impl KernelCommandLine {
                 Component::KeyValue((key, value)) => match key {
                     "serial" => {
                         self.serial = value;
-                    }
-                    "script" => {
-                        self.script = Some(value);
                     }
                     "qemu_debug_exit_io_base" => {
                         self.qemu_debug_exit_io_base.replace(
@@ -106,7 +92,7 @@ pub enum Component<'a> {
 
     /// A key-value pair.
     ///
-    /// Example: script=vmx_test
+    /// Example: serial=com1
     KeyValue((&'a str, &'a str)),
 }
 
