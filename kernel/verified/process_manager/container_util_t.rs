@@ -1,7 +1,6 @@
 use vstd::prelude::*;
 verus! {
 
-use core::mem::MaybeUninit;
 use crate::define::*;
 use crate::pptr::{PPtr, PointsTo};
 use crate::process_manager::container::*;
@@ -9,8 +8,6 @@ use crate::slinkedlist::spec_impl_u::StaticLinkedList;
 use crate::array_set::ArraySet;
 use crate::quota::Quota;
 
-#[verifier(external_body)]
-// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn scheduler_push_thread(
     container_ptr: ContainerPtr,
     container_perm: &mut Tracked<PointsTo<Container>>,
@@ -56,15 +53,12 @@ pub fn scheduler_push_thread(
         final(container_perm)@.value().scheduler.get_node_ref(*thread_ptr) == ret,
         final(container_perm)@.value().scheduler.unique(),
 {
-    unsafe {
-        let uptr = container_ptr as *mut MaybeUninit<Container>;
-        let ret = (*uptr).assume_init_mut().scheduler.push(thread_ptr);
-        return ret;
-    }
+    let tracked owned = container_perm.borrow_mut();
+    let container = PPtr::<Container>::from_usize(container_ptr).borrow_mut(Tracked(owned));
+    let ret = container.scheduler.push(thread_ptr);
+    return ret;
 }
 
-#[verifier(external_body)]
-// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn scheduler_pop_head(
     container_ptr: ContainerPtr,
     container_perm: &mut Tracked<PointsTo<Container>>,
@@ -105,16 +99,13 @@ pub fn scheduler_pop_head(
                 old(container_perm)@.value().scheduler.get_node_ref(v) == 
                     final(container_perm)@.value().scheduler.get_node_ref(v),
 {
-    unsafe {
-        let uptr = container_ptr as *mut MaybeUninit<Container>;
-        let ret = (*uptr).assume_init_mut().scheduler.pop();
-        ret
-    }
+    let tracked owned = container_perm.borrow_mut();
+    let container = PPtr::<Container>::from_usize(container_ptr).borrow_mut(Tracked(owned));
+    let ret = container.scheduler.pop();
+    ret
 }
 
 
-#[verifier(external_body)]
-// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn scheduler_remove_thread(
     container_ptr: ContainerPtr,
     container_perm: &mut Tracked<PointsTo<Container>>,
@@ -122,6 +113,8 @@ pub fn scheduler_remove_thread(
     thread_ptr_g: Ghost<ThreadPtr>,
 ) -> (ret: ThreadPtr)
     requires
+        old(container_perm)@.value().scheduler.unique(),
+        old(container_perm)@.value().scheduler@.contains(thread_ptr_g@),
         old(container_perm)@.is_init(),
         old(container_perm)@.addr() == container_ptr,
         old(container_perm)@.value().scheduler.wf(),
@@ -156,15 +149,12 @@ pub fn scheduler_remove_thread(
                 old(container_perm)@.value().scheduler.get_node_ref(v) == 
                     final(container_perm)@.value().scheduler.get_node_ref(v),
 {
-    unsafe {
-        let uptr = container_ptr as *mut MaybeUninit<Container>;
-        let ret = (*uptr).assume_init_mut().scheduler.remove(rev_ptr, Ghost(0));
-        ret
-    }
+    let tracked owned = container_perm.borrow_mut();
+    let container = PPtr::<Container>::from_usize(container_ptr).borrow_mut(Tracked(owned));
+    let ret = container.scheduler.remove(rev_ptr, thread_ptr_g);
+    ret
 }
 
-#[verifier(external_body)]
-// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn container_push_proc(
     container_ptr: ContainerPtr,
     container_perm: &mut Tracked<PointsTo<Container>>,
@@ -210,15 +200,12 @@ pub fn container_push_proc(
                     final(container_perm)@.value().owned_procs.get_node_ref(v),
         final(container_perm)@.value().owned_procs.get_node_ref(p_ptr) == ret,
 {
-    unsafe {
-        let uptr = container_ptr as *mut MaybeUninit<Container>;
-        let ret = (*uptr).assume_init_mut().owned_procs.push(&p_ptr);
-        return ret;
-    }
+    let tracked owned = container_perm.borrow_mut();
+    let container = PPtr::<Container>::from_usize(container_ptr).borrow_mut(Tracked(owned));
+    let ret = container.owned_procs.push(&p_ptr);
+    return ret;
 }
 
-#[verifier(external_body)]
-// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn container_remove_proc(
     container_ptr: ContainerPtr,
     container_perm: &mut Tracked<PointsTo<Container>>,
@@ -264,15 +251,12 @@ pub fn container_remove_proc(
                 old(container_perm)@.value().owned_procs.get_node_ref(v) == 
                     final(container_perm)@.value().owned_procs.get_node_ref(v),
 {
-    unsafe {
-        let uptr = container_ptr as *mut MaybeUninit<Container>;
-        let ret = (*uptr).assume_init_mut().owned_procs.remove(rev_ptr, p_ptr);
-        return ret;
-    }
+    let tracked owned = container_perm.borrow_mut();
+    let container = PPtr::<Container>::from_usize(container_ptr).borrow_mut(Tracked(owned));
+    let ret = container.owned_procs.remove(rev_ptr, p_ptr);
+    return ret;
 }
 
-#[verifier(external_body)]
-// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn container_push_child(
     container_ptr: ContainerPtr,
     container_perm: &mut Tracked<PointsTo<Container>>,
@@ -316,15 +300,12 @@ pub fn container_push_child(
                     final(container_perm)@.value().children.get_node_ref(v),
         final(container_perm)@.value().children.get_node_ref(c_ptr) == ret,
 {
-    unsafe {
-        let uptr = container_ptr as *mut MaybeUninit<Container>;
-        let ret = (*uptr).assume_init_mut().children.push(&c_ptr);
-        return ret;
-    }
+    let tracked owned = container_perm.borrow_mut();
+    let container = PPtr::<Container>::from_usize(container_ptr).borrow_mut(Tracked(owned));
+    let ret = container.children.push(&c_ptr);
+    return ret;
 }
 
-#[verifier(external_body)]
-// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn container_remove_child(
     container_ptr: ContainerPtr,
     container_perm: &mut Tracked<PointsTo<Container>>,
@@ -367,11 +348,10 @@ pub fn container_remove_child(
                 old(container_perm)@.value().children.get_node_ref(v) == 
                     final(container_perm)@.value().children.get_node_ref(v),
 {
-    unsafe {
-        let uptr = container_ptr as *mut MaybeUninit<Container>;
-        let ret = (*uptr).assume_init_mut().children.remove(rev_ptr, c_ptr);
-        return ret;
-    }
+    let tracked owned = container_perm.borrow_mut();
+    let container = PPtr::<Container>::from_usize(container_ptr).borrow_mut(Tracked(owned));
+    let ret = container.children.remove(rev_ptr, c_ptr);
+    return ret;
 }
 
 #[verifier(external_body)]
@@ -448,8 +428,6 @@ pub fn container_pop_endpoint(
 {
 }
 
-#[verifier(external_body)]
-// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn container_set_quota_mem_4k(
     container_ptr: ContainerPtr,
     container_perm: &mut Tracked<PointsTo<Container>>,
@@ -481,14 +459,11 @@ pub fn container_set_quota_mem_4k(
         final(container_perm)@.value().root_process =~= old(container_perm)@.value().root_process,
         final(container_perm)@.value().quota =~= old(container_perm)@.value().quota.spec_set_mem_4k(value),
 {
-    unsafe {
-        let uptr = container_ptr as *mut MaybeUninit<Container>;
-        (*uptr).assume_init_mut().quota.set_mem_4k(value);
-    }
+    let tracked owned = container_perm.borrow_mut();
+    let container = PPtr::<Container>::from_usize(container_ptr).borrow_mut(Tracked(owned));
+    container.quota.set_mem_4k(value);
 }
 
-#[verifier(external_body)]
-// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn container_insert_cpu(
     container_ptr: ContainerPtr,
     container_perm: &mut Tracked<PointsTo<Container>>,
@@ -497,6 +472,7 @@ pub fn container_insert_cpu(
     requires
         old(container_perm)@.is_init(),
         old(container_perm)@.addr() == container_ptr,
+        old(container_perm)@.value().owned_cpus.wf(),
         0 <= cpu_id < NUM_CPUS,
         old(container_perm)@.value().owned_cpus@.contains(cpu_id) == false,
     ensures
@@ -523,14 +499,11 @@ pub fn container_insert_cpu(
         final(container_perm)@.value().owned_cpus.wf(),
         final(container_perm)@.value().owned_cpus@ =~= old(container_perm)@.value().owned_cpus@.insert(cpu_id),
 {
-    unsafe {
-        let uptr = container_ptr as *mut MaybeUninit<Container>;
-        (*uptr).assume_init_mut().owned_cpus.insert(cpu_id);
-    }
+    let tracked owned = container_perm.borrow_mut();
+    let container = PPtr::<Container>::from_usize(container_ptr).borrow_mut(Tracked(owned));
+    container.owned_cpus.insert(cpu_id);
 }
 
-#[verifier(external_body)]
-// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn container_remove_cpu(
     container_ptr: ContainerPtr,
     container_perm: &mut Tracked<PointsTo<Container>>,
@@ -539,6 +512,7 @@ pub fn container_remove_cpu(
     requires
         old(container_perm)@.is_init(),
         old(container_perm)@.addr() == container_ptr,
+        old(container_perm)@.value().owned_cpus.wf(),
         0 <= cpu_id < NUM_CPUS,
         old(container_perm)@.value().owned_cpus@.contains(cpu_id),
     ensures
@@ -565,14 +539,11 @@ pub fn container_remove_cpu(
         final(container_perm)@.value().owned_cpus.wf(),
         final(container_perm)@.value().owned_cpus@ =~= old(container_perm)@.value().owned_cpus@.remove(cpu_id),
 {
-    unsafe {
-        let uptr = container_ptr as *mut MaybeUninit<Container>;
-        (*uptr).assume_init_mut().owned_cpus.remove(cpu_id);
-    }
+    let tracked owned = container_perm.borrow_mut();
+    let container = PPtr::<Container>::from_usize(container_ptr).borrow_mut(Tracked(owned));
+    container.owned_cpus.remove(cpu_id);
 }
 
-#[verifier(external_body)]
-// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn container_set_quota(
     container_ptr: ContainerPtr,
     container_perm: &mut Tracked<PointsTo<Container>>,
@@ -604,10 +575,9 @@ pub fn container_set_quota(
         final(container_perm)@.value().root_process =~= old(container_perm)@.value().root_process,
         final(container_perm)@.value().quota =~= *new_quota,
 {
-    unsafe {
-        let uptr = container_ptr as *mut MaybeUninit<Container>;
-        (*uptr).assume_init_mut().quota = *new_quota;
-    }
+    let tracked owned = container_perm.borrow_mut();
+    let container = PPtr::<Container>::from_usize(container_ptr).borrow_mut(Tracked(owned));
+    container.quota = *new_quota;
 }
 
 #[verifier(external_body)]
@@ -644,8 +614,6 @@ pub fn container_set_owned_threads(
 {
 }
 
-#[verifier(external_body)]
-// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn container_set_root_proc(
     container_ptr: ContainerPtr,
     container_perm: &mut Tracked<PointsTo<Container>>,
@@ -676,10 +644,9 @@ pub fn container_set_root_proc(
         // container_perm@.value().root_process =~= old(container_perm)@.value().root_process,
         final(container_perm)@.value().root_process =~= root_proc,
 {
-    unsafe {
-        let uptr = container_ptr as *mut MaybeUninit<Container>;
-        (*uptr).assume_init_mut().root_process = root_proc;
-    }
+    let tracked owned = container_perm.borrow_mut();
+    let container = PPtr::<Container>::from_usize(container_ptr).borrow_mut(Tracked(owned));
+    container.root_process = root_proc;
 }
 
 pub fn container_to_page(
