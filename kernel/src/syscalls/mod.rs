@@ -51,6 +51,9 @@ pub unsafe fn init_cpu() {
     // Set LSTAR - 32-bit syscall entry
     msr::wrmsr(msr::IA32_CSTAR, SYSCALL32_ENTRY);
 
+    // Mask IF on entry: the kernel is not preemptible, and the return path restores the user's flags.
+    msr::wrmsr(msr::IA32_FMASK, 1 << 9);
+
     // Enable EFER Bit 0 - System Call Extensions
     let mut efer = msr::rdmsr(msr::IA32_EFER);
     efer |= 0x1;
@@ -102,6 +105,33 @@ global_asm!(
     "sub rsp, 9*8",
     ".endm",
 );
+
+// In a debug build, stop if a syscall reaches its handler with interrupts enabled: the handlers take
+// the kernel lock, and a handler that interrupts one holding it would deadlock this core. r10 is free
+// here, since the user's rsp is already saved.
+#[cfg(debug_assertions)]
+global_asm!(
+    ".macro check_interrupts_masked",
+    "pushfq",
+    "pop r10",
+    "test r10d, 0x200",
+    "jz 77f",
+    "call {entered_with_interrupts_enabled}",
+    "77:",
+    ".endm",
+    entered_with_interrupts_enabled = sym entered_with_interrupts_enabled,
+);
+
+#[cfg(not(debug_assertions))]
+global_asm!(
+    ".macro check_interrupts_masked",
+    ".endm",
+);
+
+#[cfg(debug_assertions)]
+extern "C" fn entered_with_interrupts_enabled() -> ! {
+    panic!("a syscall reached its handler with interrupts enabled");
+}
 
 // Syscall ABI
 //
@@ -158,6 +188,7 @@ unsafe extern "C" fn sys_entry() -> ! {
 
         // handler(arg1, arg2, arg3, registers, arg4, arg5)
         // rdi, rsi, rdx, (rcx), r8, r9
+        "check_interrupts_masked",
         "call r11",
 
         "jmp 3f",
