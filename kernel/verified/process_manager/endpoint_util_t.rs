@@ -136,8 +136,6 @@ pub fn endpoint_pop_head(
     }
 }
 
-#[verifier(external_body)]
-// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn endpoint_remove_thread(
     endpoint_ptr: EndpointPtr,
     endpoint_perm: &mut Tracked<PointsTo<Endpoint>>,
@@ -147,6 +145,8 @@ pub fn endpoint_remove_thread(
     requires
         old(endpoint_perm)@.is_init(),
         old(endpoint_perm)@.addr() == endpoint_ptr,
+        old(endpoint_perm)@.value().queue.wf(),
+        old(endpoint_perm)@.value().queue.unique(),
         old(endpoint_perm)@.value().queue@.contains(thread_ptr@),
         old(endpoint_perm)@.value().queue.get_node_ref(thread_ptr@) == rev_ptr,
     ensures
@@ -162,7 +162,6 @@ pub fn endpoint_remove_thread(
         final(endpoint_perm)@.value().queue.len() == old(endpoint_perm)@.value().queue.len() - 1,
         ret == thread_ptr@,
         final(endpoint_perm)@.value().queue@ == old(endpoint_perm)@.value().queue@.remove_value(thread_ptr@),
-        ret == old(endpoint_perm)@.value().queue@[0],
         forall|v:ThreadPtr|
             #![auto]
             final(endpoint_perm)@.value().queue@.contains(v) ==> 
@@ -171,11 +170,13 @@ pub fn endpoint_remove_thread(
         final(endpoint_perm)@.value().queue.unique(),
         final(endpoint_perm)@.value().queue@.no_duplicates(),
 {
-    unsafe {
-        let uptr = endpoint_ptr as *mut MaybeUninit<Endpoint>;
-        let ret = (*uptr).assume_init_mut().queue.remove(rev_ptr, thread_ptr);
-        ret
+    let tracked owned = endpoint_perm.borrow_mut();
+    let endpoint = PPtr::<Endpoint>::from_usize(endpoint_ptr).borrow_mut(Tracked(owned));
+    let ret = endpoint.queue.remove(rev_ptr, thread_ptr);
+    proof {
+        endpoint.queue.unique_implys_no_duplicates();
     }
+    ret
 }
 
 #[verifier(external_body)]
