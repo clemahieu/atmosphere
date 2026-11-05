@@ -13,6 +13,8 @@ use crate::bridge::Bridge;
 use verified::bridge::SwitchDecision;
 use verified::bridge::TrustedBridge;
 use crate::cpu;
+// The one kernel instance, holding every core. Only this file names it, so finding the instance
+// stays one place to change if there are ever several. Why: atmo-6x9.17.1.
 static KERNEL: Mutex<Kernel> = Mutex::new(Kernel::new());
 
 use vstd::prelude::*;
