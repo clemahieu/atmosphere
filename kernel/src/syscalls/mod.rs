@@ -81,7 +81,6 @@ pub unsafe fn init_cpu() {
     // SYSCALLS[asys::__NR_SEND_PAGE_NW] = kernel::sys_send_pages_no_wait as u64;
     // SYSCALLS[asys::__NR_RECEIVE_PAGE] = kernel::sys_receive_pages as u64;
     // SYSCALLS[asys::__NR_SEND_PAGE] = kernel::sys_send_pages as u64;
-    SYSCALLS[asys::__NR_RD_IO_CR3] = kernel::sys_get_iommu_cr3 as u64;
     SYSCALLS[asys::__NR_IO_MMAP] = kernel::sys_iommu_mmap as u64;
     SYSCALLS[asys::__NR_SET_DEVICE_IOMMU] = kernel::sys_set_device_iommu as u64;
     SYSCALLS[asys::__NR_INVALIDATE_IOTLB] = sys_invalidate_iotlb as u64;

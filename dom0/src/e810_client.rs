@@ -5,7 +5,6 @@
 // pub const E810_PCI_DEV: (usize, usize, usize) = (0x17, 0, 0);
 
 // unsafe fn attach_e810_iommu() {
-//     let io_pml4 = asys::sys_rd_io_cr3() as u64;
 //     log::info!("E810 IOMMU root @ {:#x}", io_pml4);
 
 //     // Attach 0000:17:00.0 to this IO page-table

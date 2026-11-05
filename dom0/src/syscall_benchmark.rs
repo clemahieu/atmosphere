@@ -546,7 +546,6 @@ unsafe fn sys_raw(number: usize) -> isize {
 /// IOMMU boot looks for these lines with 0, and for the kernel's log of the table it bound.
 pub fn check_device_iommu() {
     let (bus, device, function) = (0, 0x1f, 7);
-    log::info!("dom0's IO table: {:#x}", unsafe { asys::sys_rd_io_cr3() });
     let bound: isize;
     unsafe {
         core::arch::asm!(
