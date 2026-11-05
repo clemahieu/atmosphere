@@ -683,64 +683,6 @@ pub fn container_set_root_proc(
 }
 
 #[verifier(external_body)]
-// external_body(gap): writes through a raw pointer and takes its permission from Tracked::assume_new
-pub fn page_to_container(
-    page_ptr: PagePtr,
-    page_perm: Tracked<PagePerm4k>,
-    first_proc: ProcPtr,
-    parent_container: ContainerPtr,
-    parent_rev_ptr: SLLIndex,
-    init_quota: Quota,
-    new_cpus: ArraySet<NUM_CPUS>,
-    first_thread: ThreadPtr,
-) -> (ret: (SLLIndex, SLLIndex, ContainerPtr, Tracked<PointsTo<Container>>))
-    requires
-        page_perm@.is_uninit(),
-        page_perm@.addr() == page_ptr,
-    ensures
-        ret.3@.is_init(),
-        ret.2 == page_ptr,
-        ret.3@.addr() == page_ptr,
-        ret.3@.value().owned_procs.wf(),
-        ret.3@.value().owned_procs@ =~= Seq::<ProcPtr>::empty().push(first_proc),
-        ret.3@.value().owned_procs.len() == 1,
-
-        ret.3@.value().owned_procs.get_node_ref(first_proc) == ret.0,
-        ret.3@.value().parent =~= Some(parent_container),
-        ret.3@.value().parent_rev_ptr =~= Some(parent_rev_ptr),
-        ret.3@.value().children.wf(),
-        ret.3@.value().children@ =~= Seq::<ContainerPtr>::empty(),
-        ret.3@.value().children.len() == 0,
-        ret.3@.value().owned_endpoints@ =~= Set::<EndpointPtr>::empty(),
-        ret.3@.value().quota =~= init_quota,
-        // ret.3@.value().mem_used =~= 0,
-        ret.3@.value().owned_cpus =~= new_cpus,
-        ret.3@.value().scheduler.wf(),
-        ret.3@.value().scheduler@ =~= Seq::<ThreadPtr>::empty().push(first_thread),
-        ret.3@.value().scheduler.len() == 1,
-        ret.3@.value().scheduler.get_node_ref(first_thread) == ret.2,
-        ret.3@.value().owned_threads@ =~= Set::<ThreadPtr>::empty().insert(first_thread),
-        ret.3@.value().can_have_children =~= false,
-        ret.3@.value().root_process =~= Some(first_proc),
-{
-    unsafe {
-        let uptr = page_ptr as *mut MaybeUninit<Container>;
-        (*uptr).assume_init_mut().owned_procs.init();
-        let sll1 = (*uptr).assume_init_mut().owned_procs.push(&first_proc);
-        (*uptr).assume_init_mut().parent = Some(parent_container);
-        (*uptr).assume_init_mut().parent_rev_ptr = Some(parent_rev_ptr);
-        (*uptr).assume_init_mut().children.init();
-        (*uptr).assume_init_mut().quota = init_quota;
-        // (*uptr).assume_init_mut().mem_used = 0;
-        (*uptr).assume_init_mut().owned_cpus = new_cpus;
-        (*uptr).assume_init_mut().scheduler.init();
-        let sll2 = (*uptr).assume_init_mut().scheduler.push(&first_thread);
-        (*uptr).assume_init_mut().root_process = Some(first_proc);
-        (sll1, sll2, page_ptr, Tracked::assume_new())
-    }
-}
-
-#[verifier(external_body)]
 // external_body(gap): takes its permission from Tracked::assume_new, which Verus cannot check
 pub fn container_to_page(
     container_ptr: ContainerPtr,
@@ -754,70 +696,6 @@ pub fn container_to_page(
         ret.0 == container_ptr,
 {
     (container_ptr, Tracked::assume_new())
-}
-
-#[verifier(external_body)]
-// external_body(gap): writes through a raw pointer and takes its permission from Tracked::assume_new
-pub fn page_to_container_tree_version(
-    page_ptr: PagePtr,
-    page_perm: Tracked<PagePerm4k>,
-    first_proc: ProcPtr,
-    parent_container: ContainerPtr,
-    parent_rev_ptr: SLLIndex,
-    init_quota: Quota,
-    new_cpus: ArraySet<NUM_CPUS>,
-    first_thread: ThreadPtr,
-    depth: usize,
-    subtree_set: Ghost<Set<ContainerPtr>>,
-    uppertree_seq: Ghost<Seq<ContainerPtr>>,
-) -> (ret: (SLLIndex, SLLIndex, ContainerPtr, Tracked<PointsTo<Container>>))
-    requires
-        page_perm@.is_uninit(),
-        page_perm@.addr() == page_ptr,
-    ensures
-        ret.3@.is_init(),
-        ret.2 == page_ptr,
-        ret.3@.addr() == page_ptr,
-        ret.3@.value().owned_procs.wf(),
-        ret.3@.value().owned_procs@ =~= Seq::<ProcPtr>::empty().push(first_proc),
-        ret.3@.value().owned_procs.len() == 1,
-        ret.3@.value().owned_procs.get_node_ref(first_proc) == ret.0,
-        ret.3@.value().parent =~= Some(parent_container),
-        ret.3@.value().parent_rev_ptr =~= Some(parent_rev_ptr),
-        ret.3@.value().children.wf(),
-        ret.3@.value().children@ =~= Seq::<ContainerPtr>::empty(),
-        ret.3@.value().children.len() == 0,
-        ret.3@.value().owned_endpoints@ =~= Set::<EndpointPtr>::empty(),
-        ret.3@.value().quota =~= init_quota,
-        // ret.3@.value().mem_used =~= 0,
-        ret.3@.value().owned_cpus =~= new_cpus,
-        ret.3@.value().scheduler.wf(),
-        ret.3@.value().scheduler@ =~= Seq::<ThreadPtr>::empty().push(first_thread),
-        ret.3@.value().scheduler.len() == 1,
-        ret.3@.value().scheduler.get_node_ref(first_thread) == ret.1,
-        ret.3@.value().owned_threads@ =~= Set::<ThreadPtr>::empty().insert(first_thread),
-        ret.3@.value().depth =~= depth,
-        ret.3@.value().subtree_set =~= subtree_set,
-        ret.3@.value().uppertree_seq =~= uppertree_seq,
-        ret.3@.value().can_have_children =~= false,
-        ret.3@.value().root_process =~= Some(first_proc),
-{
-    unsafe {
-        let uptr = page_ptr as *mut MaybeUninit<Container>;
-        (*uptr).assume_init_mut().owned_procs.init();
-        let sll1 = (*uptr).assume_init_mut().owned_procs.push(&first_proc);
-        (*uptr).assume_init_mut().parent = Some(parent_container);
-        (*uptr).assume_init_mut().parent_rev_ptr = Some(parent_rev_ptr);
-        (*uptr).assume_init_mut().children.init();
-        (*uptr).assume_init_mut().quota = init_quota;
-        // (*uptr).assume_init_mut().mem_used = 0;
-        (*uptr).assume_init_mut().owned_cpus = new_cpus;
-        (*uptr).assume_init_mut().scheduler.init();
-        (*uptr).assume_init_mut().depth = depth;
-        let sll2 = (*uptr).assume_init_mut().scheduler.push(&first_thread);
-        (*uptr).assume_init_mut().root_process = Some(first_proc);
-        (sll1, sll2, page_ptr, Tracked::assume_new())
-    }
 }
 
 pub fn page_to_container_tree_version_1(

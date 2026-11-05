@@ -67,8 +67,6 @@ process_manager/container_util_t.rs	container_set_quota	gap	writes through a raw
 process_manager/container_util_t.rs	container_set_quota_mem_4k	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
 process_manager/container_util_t.rs	container_set_root_proc	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
 process_manager/container_util_t.rs	container_to_page	gap	takes its permission from Tracked::assume_new, which Verus cannot check
-process_manager/container_util_t.rs	page_to_container	gap	writes through a raw pointer and takes its permission from Tracked::assume_new
-process_manager/container_util_t.rs	page_to_container_tree_version	gap	writes through a raw pointer and takes its permission from Tracked::assume_new
 process_manager/container_util_t.rs	scheduler_pop_head	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
 process_manager/container_util_t.rs	scheduler_push_thread	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
 process_manager/container_util_t.rs	scheduler_remove_thread	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
