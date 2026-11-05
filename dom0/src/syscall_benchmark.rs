@@ -484,6 +484,34 @@ pub fn check_endpoint_indexes() {
     }
 }
 
+/// A number with no handler and a number past the table, each right after a call that returned
+/// something else, so a stale return value cannot pass for the error.
+pub fn check_unassigned_syscalls() {
+    let va = (&raw const RESOLVED_PAGE) as usize;
+    for number in [NR_UNASSIGNED, asys::MAX_SYSCALLS] {
+        let pa = unsafe { asys::sys_mresolve(va) }.0;
+        let ret = unsafe { sys_raw(number) };
+        log::info!("syscall {} after a call returning {:#x}: {}", number, pa, ret);
+        if ret != -1 {
+            bench_fail("a syscall with no handler", ret as usize);
+        }
+    }
+}
+
+/// A syscall by number, which the asys wrappers cannot express for a number with no handler.
+unsafe fn sys_raw(number: usize) -> isize {
+    let ret: isize;
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            inlateout("rax") number => ret,
+            lateout("rdi") _, lateout("rsi") _, lateout("rdx") _, lateout("rcx") _,
+            lateout("r8") _, lateout("r9") _, lateout("r10") _, lateout("r11") _,
+        );
+    }
+    ret
+}
+
 /// sys_log with a level no log::Level can hold, which asys::sys_log cannot express.
 unsafe fn syscall_log_raw(data: *const u8, len: usize, level: usize) -> isize {
     let ret: isize;
