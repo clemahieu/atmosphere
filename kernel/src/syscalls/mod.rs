@@ -159,7 +159,7 @@ unsafe extern "C" fn sys_entry() -> ! {
 
         // Invalid syscall
         "2:",
-        "mov rax, -1",
+        "mov qword ptr [rsp + 8*14], -1", // rax: the return paths reload it from the frame
 
         // Cleanup
         "3:",
