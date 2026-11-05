@@ -393,6 +393,31 @@ proof fn lemma_adds_child_controlled(
     }
 }
 
+/// Adding such a child adds to nobody's reach.
+proof fn lemma_adds_child_reach(
+    pre: State,
+    post: State,
+    p: ObjectId,
+    c: NodeId,
+    n: NodeId,
+    live: spec_fn(NodeId) -> bool,
+    r: ObjectId,
+    o: ObjectId,
+)
+    requires
+        adds_child(pre, post, p, c, n, live),
+        post.reach(r, o),
+    ensures
+        pre.reach(r, o),
+{
+    let (q, k) = choose|q: ObjectId, k: nat| #[trigger] post.controlled(r, q, k) && (o == q || post.direct(q, o));
+    lemma_adds_child_controlled(pre, post, p, c, n, live, r, q, k);
+    if o != q {
+        lemma_adds_child_direct(pre, post, p, c, n, live, q, o);
+    }
+    assert(pre.controlled(r, q, k));
+}
+
 /// Adding a child that covers only what its parent covers is a local step: nothing changes that a
 /// process can see, nothing goes, and nobody's reach grows.
 pub proof fn lemma_adds_child_discharges(
@@ -412,12 +437,35 @@ pub proof fn lemma_adds_child_discharges(
         assert(x != n);
     }
     assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) implies pre.reach(r, o) by {
-        let (q, k) = choose|q: ObjectId, k: nat| #[trigger] post.controlled(r, q, k) && (o == q || post.direct(q, o));
-        lemma_adds_child_controlled(pre, post, p, c, n, live, r, q, k);
-        if o != q {
-            lemma_adds_child_direct(pre, post, p, c, n, live, q, o);
-        }
-        assert(pre.controlled(r, q, k));
+        lemma_adds_child_reach(pre, post, p, c, n, live, r, o);
+    }
+}
+
+/// So it is also a retype, when the parent is an untyped held with the right: a retype's new object
+/// lies in the untyped's block, so it adds nothing to reach either.
+pub proof fn lemma_adds_child_discharges_retype(
+    pre: State,
+    post: State,
+    p: ObjectId,
+    c: NodeId,
+    n: NodeId,
+    live: spec_fn(NodeId) -> bool,
+    object: ObjectId,
+)
+    requires
+        adds_child(pre, post, p, c, n, live),
+        pre.holds_right(p, c, Right::Retype),
+    ensures
+        discharges(pre, post, p, Effect::Retype { untyped: c, object }),
+{
+    assert forall|o: ObjectId| #[trigger] State::changed(pre, post, o) implies may_change(pre, Effect::Retype { untyped: c, object }, o) by {
+        assert((post.contents)(o) == (pre.contents)(o));
+    }
+    assert forall|x: NodeId| #[trigger] State::removed(pre, post, x) implies may_remove(pre, p, Effect::Retype { untyped: c, object }, x) by {
+        assert(x != n);
+    }
+    assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) implies pre.reach(r, o) by {
+        lemma_adds_child_reach(pre, post, p, c, n, live, r, o);
     }
 }
 

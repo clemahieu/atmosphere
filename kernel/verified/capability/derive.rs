@@ -22,15 +22,20 @@ pub open spec fn child_of(parent: Payload, rights: u32, base: usize, order: u8) 
     Payload { kind: parent.kind, order, rights, base, badge: parent.badge, reserved: 0 }
 }
 
+/// A block of this order at this base is a whole block lying within the parent's.
+pub open spec fn block_within(base: usize, order: u8, parent: Payload) -> bool {
+    &&& order <= parent.order
+    &&& parent.base <= base
+    &&& base as int % block_bytes(order) == 0
+    &&& base as int + block_bytes(order) <= parent.base as int + block_bytes(parent.order)
+}
+
 /// The child's rights and block lie within the parent's. Only a block of memory can be narrowed: any
 /// other object is its block's base. And control reads a capability's name alone, so a child that
 /// keeps control keeps the parent's block.
 pub open spec fn narrows(child: Payload, parent: Payload) -> bool {
     &&& child.rights & !parent.rights == 0
-    &&& child.order <= parent.order
-    &&& parent.base <= child.base
-    &&& child.base as int % block_bytes(child.order) == 0
-    &&& child.base as int + block_bytes(child.order) <= parent.base as int + block_bytes(parent.order)
+    &&& block_within(child.base, child.order, parent)
     &&& (child.base != parent.base || child.order != parent.order) ==> {
         &&& parent.kind is Untyped || parent.kind is Frame
         &&& child.rights & right_bit(Right::Control) == 0
@@ -66,6 +71,28 @@ proof fn lemma_pow2_order(order: u8)
     }
 }
 
+/// Decides whether a block lies within a capability's, in constant time. Base and order come from
+/// user space.
+pub fn is_block_within(parent: Payload, base: usize, order: u8) -> (ret: bool)
+    requires
+        payload_wf(parent),
+    ensures
+        ret == block_within(base, order, parent),
+        ret ==> order <= MAX_ORDER,
+        ret ==> base as int % block_bytes(order) == 0,
+        ret ==> base as int + block_bytes(order) <= NODE_SPACE as int,
+{
+    if order > parent.order || base < parent.base || base >= NODE_SPACE {
+        proof {
+            lemma_pow2_pos(order as nat);
+        }
+        return false;
+    }
+    let size = order_bytes(order);
+    let parent_size = order_bytes(parent.order);
+    base + size <= parent.base + parent_size && base % size == 0
+}
+
 /// Decides whether a child with these fields may be derived from `parent`, in constant time. All of
 /// rights, base and order come from user space.
 fn may_derive(parent: Payload, rights: u32, base: usize, order: u8) -> (ret: bool)
@@ -75,15 +102,7 @@ fn may_derive(parent: Payload, rights: u32, base: usize, order: u8) -> (ret: boo
         ret <==> narrows(child_of(parent, rights, base, order), parent),
         ret ==> payload_wf(child_of(parent, rights, base, order)),
 {
-    if order > parent.order || rights & !parent.rights != 0 || base < parent.base || base >= NODE_SPACE {
-        proof {
-            lemma_pow2_pos(order as nat);
-        }
-        return false;
-    }
-    let size = order_bytes(order);
-    let parent_size = order_bytes(parent.order);
-    if base + size > parent.base + parent_size || base % size != 0 {
+    if rights & !parent.rights != 0 || !is_block_within(parent, base, order) {
         return false;
     }
     if base != parent.base || order != parent.order {
@@ -200,7 +219,7 @@ impl CapKernel {
     }
 
     /// Every capability still names a block.
-    proof fn lemma_derive_caps_wf(pre: Self, post: Self, child: usize)
+    pub proof fn lemma_derive_caps_wf(pre: Self, post: Self, child: usize)
         requires
             Self::derive_step(pre, post, child),
             payload_wf(post.payload_of(child)),
@@ -216,18 +235,35 @@ impl CapKernel {
         }
     }
 
-    /// The view of the step: one child under a parent the caller holds, covering only what it covers.
-    proof fn lemma_derive_discharges(pre: Self, post: Self, root: usize, from: usize, to: usize)
+    /// The view of a step that adds one child, in a slot of the caller's table, under a capability the
+    /// caller holds. The child covers only what its parent does, and has control only with its parent's
+    /// name.
+    pub proof fn lemma_adds_child_view(pre: Self, post: Self, root: usize, from: usize, to: usize)
         requires
             Self::derive_step(pre, post, pre.tables.node_of(root, to)),
             pre.tables.has_slot(root, from),
             pre.tables.has_slot(root, to),
             pre.is_cap(pre.tables.node_of(root, from)),
             post.list.parent@ == pre.list.parent@.insert(pre.tables.node_of(root, to), pre.tables.node_of(root, from)),
-            narrows(post.payload_of(pre.tables.node_of(root, to)), pre.payload_of(pre.tables.node_of(root, from))),
+            ({
+                let cp = post.payload_of(pre.tables.node_of(root, to));
+                let pp = pre.payload_of(pre.tables.node_of(root, from));
+                &&& block_within(cp.base, cp.order, pp)
+                &&& cp.rights & right_bit(Right::Control) != 0 ==> {
+                    &&& pp.rights & right_bit(Right::Control) != 0
+                    &&& cp.base == pp.base
+                }
+            }),
         ensures
             post.view().holds(root, pre.tables.node_of(root, to)),
-            discharges(pre.view(), post.view(), root, Effect::Local),
+            adds_child(
+                pre.view(),
+                post.view(),
+                root,
+                pre.tables.node_of(root, from),
+                pre.tables.node_of(root, to),
+                |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live,
+            ),
     {
         let parent = pre.tables.node_of(root, from);
         let child = pre.tables.node_of(root, to);
@@ -263,16 +299,36 @@ impl CapKernel {
             Self::lemma_caps_frame(pre, post, child, child, x);
         }
         let (cp, pp) = (post.payload_of(child), pre.payload_of(parent));
-        let (child_rights, parent_rights) = (cp.rights, pp.rights);
-        assert(child_rights & !parent_rights == 0 && child_rights & 128 != 0 ==> parent_rights & 128 != 0) by (bit_vector);
-        assert(right_bit(Right::Control) == 128);
         assert forall|o: ObjectId| #[trigger] b.covers(child, o) implies a.covers(parent, o) by {
             assert(block_bytes(cp.order) == b.pages[child] * 4096);
             assert(block_bytes(pp.order) == a.pages[parent] * 4096);
         }
         assert forall|o: ObjectId| #[trigger] (b.contents)(o) == (a.contents)(o) by {}
         assert(adds_child(a, b, root, parent, child, live));
-        lemma_adds_child_discharges(a, b, root, parent, child, live);
+    }
+
+    /// What derive's child owes that view: control only with the parent's name, and all its other
+    /// rights the parent's too.
+    proof fn lemma_derive_discharges(pre: Self, post: Self, root: usize, from: usize, to: usize)
+        requires
+            Self::derive_step(pre, post, pre.tables.node_of(root, to)),
+            pre.tables.has_slot(root, from),
+            pre.tables.has_slot(root, to),
+            pre.is_cap(pre.tables.node_of(root, from)),
+            post.list.parent@ == pre.list.parent@.insert(pre.tables.node_of(root, to), pre.tables.node_of(root, from)),
+            narrows(post.payload_of(pre.tables.node_of(root, to)), pre.payload_of(pre.tables.node_of(root, from))),
+        ensures
+            post.view().holds(root, pre.tables.node_of(root, to)),
+            discharges(pre.view(), post.view(), root, Effect::Local),
+    {
+        let parent = pre.tables.node_of(root, from);
+        let child = pre.tables.node_of(root, to);
+        let (cp, pp) = (post.payload_of(child), pre.payload_of(parent));
+        let (child_rights, parent_rights) = (cp.rights, pp.rights);
+        assert(child_rights & !parent_rights == 0 && child_rights & 128 != 0 ==> parent_rights & 128 != 0) by (bit_vector);
+        assert(right_bit(Right::Control) == 128);
+        Self::lemma_adds_child_view(pre, post, root, from, to);
+        lemma_adds_child_discharges(pre.view(), post.view(), root, parent, child, |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live);
     }
 }
 
