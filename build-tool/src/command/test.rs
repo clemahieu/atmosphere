@@ -164,14 +164,14 @@ async fn check_verify(project: &ProjectHandle) -> Result<String> {
 }
 
 async fn check_boot(project: &ProjectHandle, timeout: u64) -> Result<String> {
-    boot(project, timeout, &["run", "--kvm"]).await?;
+    boot(project, timeout, &["run"]).await?;
     Ok("exit status 0, serial log ends with dom0's last line".to_string())
 }
 
 /// Boots with an IOMMU present, the only way the device syscalls run past their first check. The
 /// plain boot comes after it, so the benchmark numbers and serial.log it leaves have no IOMMU.
 async fn check_iommu_boot(project: &ProjectHandle, timeout: u64) -> Result<String> {
-    let serial = boot(project, timeout, &["run", "--kvm", "--iommu"]).await?;
+    let serial = boot(project, timeout, &["run", "--iommu"]).await?;
     if !iommu_boot_ran(&serial) {
         return Err(anyhow!("the serial log does not show the device syscalls succeeding"));
     }
