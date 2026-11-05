@@ -105,7 +105,8 @@ global_asm!(
 #[cfg(not(debug_assertions))]
 global_asm!(
     ".macro push_dummy_caller_saved",
-    "sub rsp, 9*8",
+    "push 0",         // rax: the one slot a return path reads
+    "sub rsp, 8*8",
     ".endm",
 );
 
@@ -149,6 +150,10 @@ extern "C" fn entered_with_flags_set() -> ! {
 // r9       | Arg #5         | Arg #6
 //
 // All caller-saved registers are considered clobbered once invoked
+//
+// rax on return is the syscall's result. A syscall that blocked and was woken returns 0, whichever
+// thread woke it, and a new thread starts with 0. The frame's rax slot starts at 0 on every entry, so
+// a saved frame never carries a value from an earlier syscall on this core's stack.
 #[unsafe(naked)]
 unsafe extern "C" fn sys_entry() -> ! {
     naked_asm!(
