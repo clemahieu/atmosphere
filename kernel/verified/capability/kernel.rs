@@ -9,6 +9,7 @@ verus! {
 use crate::array::Array;
 use crate::capability::block::*;
 use crate::capability::list::*;
+use crate::capability::table::Tables;
 use crate::define::*;
 use crate::pptr::PointsTo;
 
@@ -38,6 +39,7 @@ pub struct CapKernel {
     /// Frames some address space maps.
     pub mapped: Ghost<Set<usize>>,
     pub blocks: BlockTable,
+    pub tables: Tables,
     /// The epoch of the last unmap of the frame whose block is based at this page. Zero if it has
     /// none: unmap bumps the epoch first, so a real one is never zero. A frame is its base page's
     /// number. This outlives the block's typing, so retype cannot lose it.
@@ -86,6 +88,7 @@ impl CapKernel {
         &&& self.list.wf()
         &&& self.cores.wf()
         &&& self.blocks.wf()
+        &&& self.tables.wf(&self.list)
         &&& self.stale_epoch.wf()
         &&& self.tlb_wf()
     }
@@ -156,6 +159,7 @@ impl CapKernel {
             forall|c: int| 0 <= c < NUM_CPUS ==> (#[trigger] final(self).cores@[c]).current_thread.is_None(),
     {
         self.list = Tree::new(root, Tracked(perm));
+        self.tables = Tables::new();
         self.blocks.init();
         let mut i = 0;
         while i != NUM_CPUS
@@ -163,6 +167,7 @@ impl CapKernel {
                 0 <= i <= NUM_CPUS,
                 self.cores.wf(),
                 self.list.wf(),
+                self.tables.wf(&self.list),
                 self.blocks.wf(),
                 self.stale_epoch.wf(),
                 forall|c: int| 0 <= c < i ==> {
@@ -180,6 +185,7 @@ impl CapKernel {
                 0 <= i <= NUM_PAGES,
                 self.cores.wf(),
                 self.list.wf(),
+                self.tables.wf(&self.list),
                 self.blocks.wf(),
                 self.stale_epoch.wf(),
                 forall|c: int| 0 <= c < NUM_CPUS ==> {
@@ -342,6 +348,7 @@ impl CapKernel {
             pre.wf(),
             post.blocks.wf(),
             post.list == pre.list,
+            post.tables == pre.tables,
             post.cores == pre.cores,
             post.flush_epoch == pre.flush_epoch,
             post.tlb == pre.tlb,
