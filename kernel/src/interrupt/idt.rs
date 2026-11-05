@@ -26,10 +26,10 @@ use super::{HandlerFunc, HandlerFuncWithErrCode, PageFaultHandlerFunc, Trampolin
 #[repr(C)]
 pub struct Idt {
     /// Device-By-Zero (`#DE`).
-    pub divide_by_zero: Entry<HandlerFunc>,
+    pub divide_by_zero: Entry<TrampolineHandlerFunc>,
 
     /// Debug (`#DB`)
-    pub debug: Entry<HandlerFunc>,
+    pub debug: Entry<TrampolineHandlerFunc>,
 
     /// Non-Maskable Exception.
     pub non_maskable_interrupt: Entry<HandlerFunc>,
@@ -38,16 +38,16 @@ pub struct Idt {
     pub breakpoint: Entry<TrampolineHandlerFunc>,
 
     /// Overflow (`#OF`)
-    pub overflow: Entry<HandlerFunc>,
+    pub overflow: Entry<TrampolineHandlerFunc>,
 
     /// Bound-Range Exception (`#BR`)
-    pub bound_range_exceeded: Entry<HandlerFunc>,
+    pub bound_range_exceeded: Entry<TrampolineHandlerFunc>,
 
     /// Invalid Opcode (`#UD`)
-    pub invalid_opcode: Entry<HandlerFunc>,
+    pub invalid_opcode: Entry<TrampolineHandlerFunc>,
 
     /// Device Not Available (`#NM`)
-    pub device_not_available: Entry<HandlerFunc>,
+    pub device_not_available: Entry<TrampolineHandlerFunc>,
 
     /// Double Fault (`#DF`)
     pub double_fault: Entry<HandlerFunc>,
@@ -56,13 +56,13 @@ pub struct Idt {
     exception_9: Entry<HandlerFunc>,
 
     /// Invalid TSS (`#TS`)
-    pub invalid_tss: Entry<HandlerFuncWithErrCode>,
+    pub invalid_tss: Entry<TrampolineHandlerFunc>,
 
     /// Segment Not Present (`#NP`)
-    pub segment_not_present: Entry<HandlerFuncWithErrCode>,
+    pub segment_not_present: Entry<TrampolineHandlerFunc>,
 
     /// Stack Segment Fault (`#SS`)
-    pub stack_segment_fault: Entry<HandlerFuncWithErrCode>,
+    pub stack_segment_fault: Entry<TrampolineHandlerFunc>,
 
     /// General Protection Fault (`#GP`)
     pub general_protection_fault: Entry<TrampolineHandlerFunc>,
@@ -74,16 +74,16 @@ pub struct Idt {
     exception_15: Entry<HandlerFunc>,
 
     /// X87 Floating-Point Exception (`#MF`)
-    pub x87_floating_point: Entry<HandlerFunc>,
+    pub x87_floating_point: Entry<TrampolineHandlerFunc>,
 
     /// Alignment Check (`#AC`)
-    pub alignment_check: Entry<HandlerFunc>,
+    pub alignment_check: Entry<TrampolineHandlerFunc>,
 
     /// Machine Check (`#MC`)
     pub machine_check: Entry<HandlerFunc>,
 
     /// SIMD Floating-Point (`#XM`)
-    pub simd_floating_point: Entry<HandlerFunc>,
+    pub simd_floating_point: Entry<TrampolineHandlerFunc>,
 
     /// Virtualization (`#VE`)
     pub virtualization: Entry<HandlerFunc>,
