@@ -5,6 +5,8 @@ Memory the guest never wrote is zero, so non-zero pages show the stack's reach a
 
 usage: tools/check-boot-stack.py debug|release [overflow]   (from the workspace root)
 
+Every build first checks that the kernel's entry point probes no large frame.
+
 With overflow, the loader gets a stack below the kernel's depth and the kernel must fault at the guard.
 """
 import os
@@ -24,6 +26,17 @@ def build(profile, overflow=False):
     for crate in ("aloader", "kernel", "dom0"):
         extra = ["--features", "small_kernel_stack"] if overflow and crate == "aloader" else []
         subprocess.run(args + extra, cwd=crate, check=True, env={**os.environ, "RUSTC_BOOTSTRAP": "1"})
+    check_entry_frame(f"target/x86_64-unknown-aloader/{profile}/kernel")
+
+
+def check_entry_frame(kernel):
+    """main's prologue runs before the IDT exists, so an overflow it probes faults with no report."""
+    text = subprocess.run(["objdump", "-d", "-M", "intel", "--disassemble=main", kernel],
+                          check=True, capture_output=True, text=True).stdout
+    assert "<main>:" in text, f"no main in {kernel}"
+    sizes = [int(size, 16) for size in re.findall(r"sub\s+(?:r11|rsp),0x([0-9a-f]+)", text)]
+    if sizes and max(sizes) >= MIB:
+        sys.exit(f"FAIL: main in {kernel} probes a frame of {max(sizes):#x} bytes before the IDT exists")
 
 
 def boot(profile, out, marker=b"dom0 benchmark done", kernel=None, dom0=None):

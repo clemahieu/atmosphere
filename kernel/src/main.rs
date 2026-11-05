@@ -74,7 +74,16 @@ extern "C" fn main(boot_info: *const BootInfo) -> isize {
         interrupt::init_cpu();
 
         syscalls::init_cpu();
+    }
 
+    boot_cpu0(boot_info)
+}
+
+/// The rest of CPU 0's boot. Never inlined: main's prologue runs before the IDT exists, so a large
+/// frame probed there would overflow without a report.
+#[inline(never)]
+fn boot_cpu0(boot_info: *const BootInfo) -> isize {
+    unsafe {
         boot::init(boot_info);
         iommu::init_iommu();
 
