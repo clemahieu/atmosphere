@@ -94,6 +94,47 @@ pub struct Tables {
     pub owner: Ghost<Map<usize, (usize, int)>>,
 }
 
+/// A leaf's second page is page aligned. On its own, since the modulus is costly among a function's
+/// other facts.
+proof fn lemma_payload_page_aligned(leaf: usize)
+    requires
+        leaf % 8192 == 0,
+    ensures
+        (leaf + 4096) % 4096 == 0,
+{
+}
+
+/// Turns a page into a leaf's payload page with every entry written.
+fn new_payload_page(addr: usize, Tracked(page): Tracked<PagePerm4k>) -> (ret: Tracked<PointsTo<PayloadPage>>)
+    requires
+        page.addr() == addr,
+        addr % 4096 == 0,
+    ensures
+        ret@.addr() == addr,
+        ret@.is_init(),
+        ret@.value().entries.wf(),
+{
+    let mut entries = Array::<Payload, NODES_PER_PAGE>::new();
+    let mut k = 0;
+    while k != NODES_PER_PAGE
+        invariant
+            0 <= k <= NODES_PER_PAGE,
+            entries.wf(),
+        decreases NODES_PER_PAGE - k,
+    {
+        entries.set(k, Payload { kind: CapKind::Untyped, order: 0, rights: 0, base: 0, badge: 0, reserved: 0 });
+        k = k + 1;
+    }
+    let tracked mut typed;
+    proof {
+        let tracked mut page = page;
+        page.leak_contents();
+        typed = crate::layouts::page_into_payload_page(page);
+    }
+    PPtr::<PayloadPage>::from_usize(addr).put(Tracked(&mut typed), PayloadPage { entries });
+    Tracked(typed)
+}
+
 impl Tables {
     /// The leaf in entry r of the table at root.
     pub open spec fn leaf(&self, root: usize, r: int) -> usize {
@@ -355,28 +396,38 @@ impl Tables {
         let ghost pre = *old(self);
         proof {
             pre.lemma_root(root);
+            lemma_payload_page_aligned(leaf);
         }
-        let mut entries = Array::<Payload, NODES_PER_PAGE>::new();
-        let mut k = 0;
-        while k != NODES_PER_PAGE
-            invariant
-                0 <= k <= NODES_PER_PAGE,
-                entries.wf(),
-            decreases NODES_PER_PAGE - k,
-        {
-            entries.set(k, Payload { kind: CapKind::Untyped, order: 0, rights: 0, base: 0, badge: 0, reserved: 0 });
-            k = k + 1;
-        }
-        let tracked mut typed;
-        proof {
-            let tracked mut page = page;
-            page.leak_contents();
-            typed = crate::layouts::page_into_payload_page(page);
-        }
-        PPtr::<PayloadPage>::from_usize(leaf + 4096).put(Tracked(&mut typed), PayloadPage { entries });
+        let Tracked(typed) = new_payload_page(leaf + 4096, Tracked(page));
         proof {
             self.payloads.borrow_mut().tracked_insert(leaf, typed);
         }
+        self.set_leaf(root, r, leaf);
+        self.owner = Ghost(pre.owner@.insert(leaf, (root, r as int)));
+        proof {
+            Self::lemma_leaf_added(pre, *self, list, root, r, leaf);
+        }
+    }
+
+    /// Writes entry r of the root at `root`. The caller keeps the tables' invariant.
+    fn set_leaf(&mut self, root: usize, r: usize, leaf: usize)
+        requires
+            old(self).roots@.contains_key(root),
+            old(self).roots@[root].addr() == root,
+            old(self).roots@[root].is_init(),
+            old(self).roots@[root].value().leaves.wf(),
+            r < ROOT_ENTRIES,
+        ensures
+            final(self).payloads == old(self).payloads,
+            final(self).owner == old(self).owner,
+            final(self).roots@.dom() == old(self).roots@.dom(),
+            forall|t: usize| t != root && #[trigger] old(self).roots@.contains_key(t) ==> final(self).roots@[t] == old(self).roots@[t],
+            final(self).roots@[root].addr() == root,
+            final(self).roots@[root].is_init(),
+            final(self).roots@[root].value().leaves.wf(),
+            final(self).roots@[root].value().leaves@ == old(self).roots@[root].value().leaves@.update(r as int, leaf),
+    {
+        let ghost pre = *old(self);
         let tracked mut root_perm;
         proof {
             root_perm = self.roots.borrow_mut().tracked_remove(root);
@@ -387,10 +438,8 @@ impl Tables {
         root_ptr.put(Tracked(&mut root_perm), root_value);
         proof {
             self.roots.borrow_mut().tracked_insert(root, root_perm);
-        }
-        self.owner = Ghost(pre.owner@.insert(leaf, (root, r as int)));
-        proof {
-            Self::lemma_leaf_added(pre, *self, list, root, r, leaf);
+            assert(self.roots@.dom() =~= pre.roots@.dom());
+            assert(self.roots@[root].value().leaves@ =~= pre.roots@[root].value().leaves@.update(r as int, leaf));
         }
     }
 
