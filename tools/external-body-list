@@ -18,7 +18,6 @@ array.rs	get	unproven	an array element access not proven yet
 array.rs	new	gap	builds a value from zeroed memory, which Verus cannot check
 array.rs	set	unproven	an array element access not proven yet
 kernel/spec.rs	kernel_init	unproven	initialisation not proven yet
-lemma/lemma_t.rs	lemma_usize_int	unproven	states the target's usize width without a proof
 lemma/lemma_t.rs	lemma_usize_u64	unproven	states the target's usize width without a proof
 lemma/lemma_t.rs	page_ptr_lemma	unproven	a lemma stated without a proof
 lemma/lemma_t.rs	set_add_lemma	unproven	a lemma stated without a proof

@@ -14,15 +14,6 @@ pub proof fn lemma_usize_u64(x: u64)
 }
 
 #[verifier(external_body)]
-// external_body(unproven): states the target's usize width without a proof
-pub proof fn lemma_usize_int(x: int)
-    ensures
-        x as usize as int == x,
-{
-    unimplemented!();
-}
-
-#[verifier(external_body)]
 // external_body(unproven): a lemma stated without a proof
 pub proof fn set_lemma<A>()
     ensures
