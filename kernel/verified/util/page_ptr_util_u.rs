@@ -335,8 +335,8 @@ pub proof fn page_ptr_page_index_truncate_lemma()
     ensures
         forall|pi: usize, i: usize|
             #![trigger page_index_1g_valid(pi), spec_page_index_truncate_1g(i)]
-            page_index_1g_valid(pi) ==> (pi <= i < pi + 0x40000) <==> spec_page_index_truncate_1g(i)
-                == spec_page_index_truncate_1g(pi),
+            page_index_1g_valid(pi) ==> ((pi <= i < pi + 0x40000) <==> spec_page_index_truncate_1g(i)
+                == spec_page_index_truncate_1g(pi)),
         forall|pi: usize, i: usize|
             #![trigger page_index_1g_valid(pi), spec_page_index_truncate_1g(i)]
             page_index_1g_valid(pi) && (pi <= i < pi + 0x40000) ==> page_index_1g_valid(
@@ -344,8 +344,8 @@ pub proof fn page_ptr_page_index_truncate_lemma()
             ),
         forall|pi: usize, i: usize|
             #![trigger page_index_2m_valid(pi), spec_page_index_truncate_2m(i)]
-            page_index_2m_valid(pi) ==> (pi <= i < pi + 0x200) <==> spec_page_index_truncate_2m(i)
-                == spec_page_index_truncate_2m(pi),
+            page_index_2m_valid(pi) ==> ((pi <= i < pi + 0x200) <==> spec_page_index_truncate_2m(i)
+                == spec_page_index_truncate_2m(pi)),
         forall|pi: usize, i: usize|
             #![trigger page_index_2m_valid(pi), spec_page_index_truncate_2m(i)]
             page_index_2m_valid(pi) && (pi <= i < pi + 0x200) ==> page_index_2m_valid(
