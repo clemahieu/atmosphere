@@ -437,6 +437,43 @@ impl Tree {
         }
     }
 
+    /// Nothing deeper follows i, so nothing is i's child.
+    pub open spec fn childless(&self, i: usize) -> bool {
+        self.nodes@[i as int].next == NONE || self.d(self.nodes@[i as int].next) <= self.d(i)
+    }
+
+    pub fn is_childless(&self, i: usize) -> (ret: bool)
+        requires
+            self.wf(),
+            i < NODE_SPACE,
+            self.nodes@[i as int].live,
+        ensures
+            ret == self.childless(i),
+            ret ==> forall|c: usize| !#[trigger] self.is_child(i, c),
+    {
+        let ghost s = self.seq@;
+        proof {
+            lemma_has(s, i);
+        }
+        let ghost j = choose|j: int| 0 <= j < s.len() && s[j] == i;
+        proof {
+            self.lemma_link(j);
+            self.lemma_live_valid(i);
+            if j + 1 < s.len() {
+                self.lemma_link(j + 1);
+                self.lemma_live_valid(s[j + 1]);
+            }
+        }
+        let node = self.get(i);
+        let ret = node.next == NONE || self.get(node.next).depth <= node.depth;
+        proof {
+            if ret {
+                self.lemma_no_child(i, j);
+            }
+        }
+        ret
+    }
+
     /// Everything in the run after c descends from c: its ancestor at the depth difference is c.
     /// So revoking the run touches nothing outside c's lineage.
     pub proof fn lemma_run_is_lineage(&self, j: int, k: int)
@@ -631,7 +668,10 @@ impl Tree {
                 #[trigger] final(self).nodes@[x].live == old(self).nodes@[x].live,
             forall|x: int| 0 <= x < old(self).nodes@.len() ==>
                 #[trigger] final(self).nodes@[x].depth == old(self).nodes@[x].depth,
+            forall|x: int| 0 <= x < old(self).nodes@.len() && x != i ==>
+                #[trigger] final(self).nodes@[x].kind == old(self).nodes@[x].kind,
             final(self).parent@ == old(self).parent@,
+            final(self).pages@.dom() == old(self).pages@.dom(),
             exists|p: int| 0 <= p < old(self).seq@.len() && old(self).seq@[p] == i
                 && final(self).seq@ == old(self).seq@.remove(p),
     {

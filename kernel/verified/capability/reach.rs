@@ -421,6 +421,73 @@ pub proof fn lemma_adds_child_discharges(
     }
 }
 
+/// post is pre without capability n, which p held. Nothing else changes, so the parent map still says
+/// what it said.
+pub open spec fn removes_cap(pre: State, post: State, p: ObjectId, n: NodeId) -> bool {
+    &&& pre.holds(p, n)
+    &&& forall|h: (ObjectId, NodeId)| #[trigger] post.held.contains(h) ==> pre.held.contains(h)
+    &&& forall|x: NodeId| x != n && #[trigger] pre.names.contains_key(x) ==> post.names.contains_key(x)
+    &&& forall|x: NodeId| #[trigger] post.names.contains_key(x) ==> {
+        &&& pre.names.contains_key(x)
+        &&& post.names[x] == pre.names[x]
+    }
+    &&& forall|x: NodeId| #[trigger] post.pages.contains_key(x) ==> {
+        &&& pre.pages.contains_key(x)
+        &&& post.pages[x] == pre.pages[x]
+    }
+    &&& forall|h: (NodeId, Right)| #[trigger] post.rights.contains(h) ==> pre.rights.contains(h)
+    &&& post.parent == pre.parent
+    &&& post.maps == pre.maps
+    &&& post.process_of == pre.process_of
+    &&& forall|o: ObjectId| #[trigger] (post.contents)(o) == (pre.contents)(o)
+}
+
+proof fn lemma_removes_cap_controlled(pre: State, post: State, p: ObjectId, n: NodeId, a: ObjectId, b: ObjectId, k: nat)
+    requires
+        removes_cap(pre, post, p, n),
+        post.controlled(a, b, k),
+    ensures
+        pre.controlled(a, b, k),
+    decreases k,
+{
+    if k > 0 {
+        let m = choose|m: ObjectId| #[trigger] post.controls(m, b) && post.controlled(a, m, (k - 1) as nat);
+        lemma_removes_cap_controlled(pre, post, p, n, a, m, (k - 1) as nat);
+        let t = choose|t: NodeId| #[trigger] post.holds_right(m, t, Right::Control)
+            && post.process_behind(post.names[t]) == b;
+        assert(post.held.contains((m, t)));
+        assert(post.rights.contains((t, Right::Control)));
+        assert(pre.holds_right(m, t, Right::Control));
+        assert(pre.controls(m, b));
+    }
+}
+
+/// Removing a capability its holder chose to give up is a local step, and nobody's reach grows.
+pub proof fn lemma_removes_cap_discharges(pre: State, post: State, p: ObjectId, n: NodeId)
+    requires
+        removes_cap(pre, post, p, n),
+    ensures
+        discharges(pre, post, p, Effect::Local),
+{
+    assert forall|x: NodeId| #[trigger] State::removed(pre, post, x) implies may_remove(pre, p, Effect::Local, x) by {
+        assert(x == n);
+    }
+    assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) implies pre.reach(r, o) by {
+        let (q, k) = choose|q: ObjectId, k: nat| #[trigger] post.controlled(r, q, k) && (o == q || post.direct(q, o));
+        lemma_removes_cap_controlled(pre, post, p, n, r, q, k);
+        if o != q && !post.maps.contains((q, o)) {
+            let (t, x, d) = choose|t: NodeId, x: NodeId, d: nat| #[trigger] post.descends(t, x, d)
+                && post.holds(q, t) && post.covers(x, o);
+            lemma_same_parent_same_descends(post, pre, t, x, d);
+            assert(post.held.contains((q, t)));
+            assert(pre.holds(q, t));
+            assert(pre.covers(x, o));
+            assert(pre.descends(t, x, d));
+        }
+        assert(pre.controlled(r, q, k));
+    }
+}
+
 /// Control is transitive: if s controls m and m controls q, s reaches what q directly reaches, since
 /// s can destroy m, claim its control over q, and repeat.
 pub proof fn lemma_control_transitive(s: State, a: ObjectId, m: ObjectId, q: ObjectId, o: ObjectId)

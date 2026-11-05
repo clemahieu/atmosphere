@@ -191,37 +191,12 @@ impl CapKernel {
         true
     }
 
-    /// x is a capability after the step exactly when it was before or is the child, and what any
-    /// other capability says is unchanged.
-    proof fn lemma_derive_cap(pre: Self, post: Self, child: usize, x: usize)
-        requires
-            Self::derive_step(pre, post, child),
-            x != child,
-        ensures
-            post.is_cap(x) == pre.is_cap(x),
-            pre.is_cap(x) ==> post.payload_of(x) == pre.payload_of(x),
-    {
-        if pre.tables.owner@.contains_key(page_of(x)) && x % 4096 < NODES_PER_PAGE {
-            pre.lemma_slot_bound(x);
-            assert(post.list.nodes@[x as int].live == pre.list.nodes@[x as int].live);
-            assert(post.tables.payload_of(x) == pre.tables.payload_of(x));
-        }
-    }
-
     /// What a derive does to the fields the view reads.
     pub open spec fn derive_step(pre: Self, post: Self, child: usize) -> bool {
-        &&& pre.wf()
+        &&& Self::caps_frame(pre, post, child)
         &&& !pre.list.nodes@[child as int].live
-        &&& post.tables.owner == pre.tables.owner
         &&& post.list.nodes@[child as int].live
         &&& post.list.nodes@[child as int].kind is Capability
-        &&& forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < NODE_SPACE && i != child ==> {
-            &&& post.list.nodes@[i].live == pre.list.nodes@[i].live
-            &&& post.list.nodes@[i].kind == pre.list.nodes@[i].kind
-        }
-        &&& forall|n: usize| #![trigger post.tables.payload_of(n)]
-            n != child && n % 4096 < NODES_PER_PAGE && pre.tables.owner@.contains_key(page_of(n))
-            ==> post.tables.payload_of(n) == pre.tables.payload_of(n)
     }
 
     /// Every capability still names a block.
@@ -234,7 +209,7 @@ impl CapKernel {
     {
         assert forall|n: usize| #[trigger] post.tables.is_cap(&post.list, n) implies payload_wf(post.tables.payload_of(n)) by {
             if n != child {
-                Self::lemma_derive_cap(pre, post, child, n);
+                Self::lemma_caps_frame(pre, post, child, n);
                 assert(post.is_cap(n));
                 assert(pre.tables.is_cap(&pre.list, n));
             }
@@ -273,7 +248,7 @@ impl CapKernel {
         }
         assert forall|h: (ObjectId, NodeId)| #[trigger] b.held.contains(h) == (a.held.contains(h) || h == (root, child)) by {
             if h.1 != child {
-                Self::lemma_derive_cap(pre, post, child, h.1);
+                Self::lemma_caps_frame(pre, post, child, h.1);
             }
         }
         assert forall|x: NodeId| x != child implies {
@@ -282,10 +257,10 @@ impl CapKernel {
             &&& a.names.contains_key(x) ==> b.names[x] == a.names[x]
             &&& a.pages.contains_key(x) ==> b.pages[x] == a.pages[x]
         } by {
-            Self::lemma_derive_cap(pre, post, child, x);
+            Self::lemma_caps_frame(pre, post, child, x);
         }
         assert forall|x: NodeId, r: Right| x != child implies #[trigger] b.rights.contains((x, r)) == a.rights.contains((x, r)) by {
-            Self::lemma_derive_cap(pre, post, child, x);
+            Self::lemma_caps_frame(pre, post, child, x);
         }
         let (cp, pp) = (post.payload_of(child), pre.payload_of(parent));
         let (child_rights, parent_rights) = (cp.rights, pp.rights);

@@ -101,6 +101,36 @@ impl CapKernel {
         self.lemma_slot(root, i);
     }
 
+    /// Between pre and post, no node but n changed its liveness or kind, and no capability but n what
+    /// it says.
+    pub open spec fn caps_frame(pre: Self, post: Self, n: usize) -> bool {
+        &&& pre.wf()
+        &&& post.tables.owner == pre.tables.owner
+        &&& forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < NODE_SPACE && i != n ==> {
+            &&& post.list.nodes@[i].live == pre.list.nodes@[i].live
+            &&& post.list.nodes@[i].kind == pre.list.nodes@[i].kind
+        }
+        &&& forall|x: usize| #![trigger post.tables.payload_of(x)]
+            x != n && x % 4096 < NODES_PER_PAGE && pre.tables.owner@.contains_key(page_of(x))
+            ==> post.tables.payload_of(x) == pre.tables.payload_of(x)
+    }
+
+    /// So any other node is a capability after exactly when it was before, saying the same.
+    pub proof fn lemma_caps_frame(pre: Self, post: Self, n: usize, x: usize)
+        requires
+            Self::caps_frame(pre, post, n),
+            x != n,
+        ensures
+            post.is_cap(x) == pre.is_cap(x),
+            pre.is_cap(x) ==> post.payload_of(x) == pre.payload_of(x),
+    {
+        if pre.tables.owner@.contains_key(page_of(x)) && x % 4096 < NODES_PER_PAGE {
+            pre.lemma_slot_bound(x);
+            assert(post.list.nodes@[x as int].live == pre.list.nodes@[x as int].live);
+            assert(post.tables.payload_of(x) == pre.tables.payload_of(x));
+        }
+    }
+
     /// What the view holds, a table has: a slot that is not live is held by nobody.
     pub proof fn lemma_held_is_live(&self, p: ObjectId, n: NodeId)
         requires
