@@ -685,6 +685,32 @@ pub extern "C" fn sys_receive_empty(endpoint_index:usize, _:usize, _:usize, regs
 //     }
 // }
 
+/// Kills the thread running on this CPU after it faulted, and fills `regs` with the next thread.
+pub fn kill_current_thread(regs: &mut vRegisters) {
+    let cpu_id = cpu::get_cpu_id();
+    let mut kernel = KERNEL.lock();
+    let info = kernel.get_current_cpu_info(cpu_id);
+    let pcid = info.4.unwrap();
+    kernel.kernel_kill_thread(info.0.unwrap());
+    let next = kernel.schedule_idle_cpu(cpu_id, regs);
+    let Some(next_pcid) = next.pcid else {
+        log::error!("No thread left to run after a fault");
+        unsafe { crate::boot::spin_forever() };
+    };
+    if next_pcid != pcid {
+        Bridge::set_cr3((next.cr3.unwrap() | next_pcid | vdefine::PCID_ENABLE_MASK) as u64);
+    }
+    // A thread saved at a syscall has stale values in these slots of its frame.
+    regs.rdi = 0;
+    regs.rsi = 0;
+    regs.rdx = 0;
+    regs.rcx = 0;
+    regs.r8 = 0;
+    regs.r9 = 0;
+    regs.r10 = 0;
+    regs.r11 = 0;
+}
+
 /// Binds a device to the caller's own IO page table, the only table a process can name.
 pub extern "C" fn sys_set_device_iommu(bus: usize, device: usize, function: usize, regs: &mut vRegisters) {
     Bridge::set_switch_decision(SwitchDecision::NoSwitching);

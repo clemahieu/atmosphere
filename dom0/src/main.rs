@@ -57,6 +57,7 @@ extern "C" fn main(payload_base: *mut u8, payload_size: usize) -> isize {
     syscall_benchmark::check_log_buffers();
     syscall_benchmark::check_endpoint_indexes();
     syscall_benchmark::check_child_process();
+    syscall_benchmark::check_process_faults();
     syscall_benchmark::time_syscall_returns();
     syscall_benchmark::time_mmap_only();
     syscall_benchmark::time_ipc_round_trip();

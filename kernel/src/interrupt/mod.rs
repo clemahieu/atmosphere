@@ -103,6 +103,8 @@ macro_rules! wrap_interrupt_with_error_code {
                 "pop rdi",
                 "pop rax",
 
+                "add rsp, 8", // error_code
+
                 "sti",
                 "iretq",
 
@@ -199,6 +201,11 @@ pub type TrampolineHandlerFunc = unsafe extern "C" fn(TrampolineMarker);
 pub type PageFaultHandlerFunc =
     unsafe extern "x86-interrupt" fn(&mut InterruptStackFrame, PageFaultErrorCode);
 
+/// Whether the CPU was in ring 3 when the exception that saved these registers happened.
+fn from_process(regs: &Registers) -> bool {
+    regs.cs & 3 == 3
+}
+
 /// Invalid Opcode handler.
 unsafe extern "C" fn invalid_opcode(regs: &mut PtRegs) {
     log::error!("CPU {}, Invalid Opcode: {:#x?}", crate::cpu::get_cpu_id(), regs);
@@ -235,6 +242,11 @@ unsafe extern "x86-interrupt" fn stack_segment_fault(
 
 /// General Protection Fault handler.
 unsafe extern "C" fn general_protection_fault(regs: &mut Registers) {
+    if from_process(regs) {
+        log::info!("General Protection Fault in a process at {:#x}: killing its thread", regs.rip);
+        crate::kernel::kill_current_thread(regs);
+        return;
+    }
     log::error!(
         "CPU {}: General Protection Fault (error code {:#b}): {:#x?}",
         crate::cpu::get_cpu_id(),
@@ -249,6 +261,11 @@ unsafe extern "C" fn general_protection_fault(regs: &mut Registers) {
 unsafe extern "C" fn page_fault(regs: &mut Registers) {
     let address: u64;
     asm!("mov {}, cr2", out(reg) address);
+    if from_process(regs) {
+        log::info!("Page Fault in a process at {:#x}, address {:#x}: killing its thread", regs.rip, address);
+        crate::kernel::kill_current_thread(regs);
+        return;
+    }
     log::info!("CPU {}: Page Fault (address {:#x}, error code {:?}): {:#x?}",
         crate::cpu::get_cpu_id(),
         address,

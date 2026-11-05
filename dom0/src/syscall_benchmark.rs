@@ -240,6 +240,18 @@ const DOM0_IMAGE_VA: usize = 0x80_0000_0000;
 const CHILD_UNSHARED_VA: usize = 0xb0_0000_0000;
 const CHILD_STACK_PAGES: usize = 16;
 const CHILD_ENDPOINT: usize = 3;
+/// Stack pages for one faulting child and for its witness, and how many children there are.
+const FAULT_STACK_PAGES: usize = 4;
+const FAULT_KINDS: [&str; 2] = ["a load from an unmapped address", "hlt in ring 3"];
+const FAULT_ENDPOINT: usize = 4;
+/// Mapped by no one.
+const UNMAPPED_VA: usize = 0xe0_0000_0000;
+static mut WAKE_ONCE_STACK: [u8; 16384] = [0; 16384];
+static SHARED_PAGES: AtomicUsize = AtomicUsize::new(0);
+static FAULT_KIND: AtomicUsize = AtomicUsize::new(0);
+static FAULT_WITNESS_SP: AtomicUsize = AtomicUsize::new(0);
+static FAULTS_REACHED: AtomicUsize = AtomicUsize::new(0);
+static FAULTS_SURVIVED: AtomicUsize = AtomicUsize::new(0);
 static CHILD_RESOLVED: [AtomicUsize; 2] = [AtomicUsize::new(0), AtomicUsize::new(0)];
 static CHILD_BOUND: AtomicUsize = AtomicUsize::new(0);
 /// Ping-pong round trips to time IPC.
@@ -560,13 +572,16 @@ pub fn check_child_process() {
         image_pages += 1;
     }
     let stack = DOM0_IMAGE_VA + image_pages * 4096;
-    let ret = unsafe { asys::sys_mmap(stack, 0x2, CHILD_STACK_PAGES) };
+    let fault_stacks = FAULT_KINDS.len() * 2 * FAULT_STACK_PAGES;
+    let ret = unsafe { asys::sys_mmap(stack, 0x2, CHILD_STACK_PAGES + fault_stacks) };
     if ret != 0 {
         bench_fail("mmap (child stack)", ret);
     }
     let sp = stack + CHILD_STACK_PAGES * 4096 - 8;
+    let shared_pages = image_pages + CHILD_STACK_PAGES + fault_stacks;
+    SHARED_PAGES.store(shared_pages, Ordering::SeqCst);
     let ret = unsafe {
-        asys::sys_new_proc(CHILD_ENDPOINT, child_process as *const () as usize, sp, DOM0_IMAGE_VA, image_pages + CHILD_STACK_PAGES)
+        asys::sys_new_proc(CHILD_ENDPOINT, child_process as *const () as usize, sp, DOM0_IMAGE_VA, shared_pages)
     };
     if ret != 0 {
         bench_fail("new_proc", ret);
@@ -619,6 +634,78 @@ pub fn check_device_arguments() {
                 bench_fail(what, ret as usize);
             }
         }
+    }
+}
+
+/// Has a child process fault in each way the kernel must survive, and checks that only the child
+/// stops. A witness thread in the child wakes dom0, since dom0 is blocked when the child dies.
+pub fn check_process_faults() {
+    let ret = unsafe { asys::sys_new_endpoint(FAULT_ENDPOINT) };
+    if ret != 0 {
+        bench_fail("new_endpoint (faults)", ret);
+    }
+    let shared_pages = SHARED_PAGES.load(Ordering::SeqCst);
+    let first_stack = DOM0_IMAGE_VA + (shared_pages - FAULT_KINDS.len() * 2 * FAULT_STACK_PAGES) * 4096;
+    for (kind, what) in FAULT_KINDS.iter().enumerate() {
+        let child_stack = first_stack + kind * 2 * FAULT_STACK_PAGES * 4096;
+        let sp = child_stack + FAULT_STACK_PAGES * 4096 - 8;
+        FAULT_WITNESS_SP.store(sp + FAULT_STACK_PAGES * 4096, Ordering::SeqCst);
+        FAULT_KIND.store(kind, Ordering::SeqCst);
+        let ret = unsafe {
+            asys::sys_new_proc(FAULT_ENDPOINT, faulting_child as *const () as usize, sp, DOM0_IMAGE_VA, shared_pages)
+        };
+        if ret != 0 {
+            bench_fail("new_proc (fault)", ret);
+        }
+        unsafe { asys::sys_receive_empty(FAULT_ENDPOINT) };
+        let reached = FAULTS_REACHED.load(Ordering::SeqCst);
+        let survived = FAULTS_SURVIVED.load(Ordering::SeqCst);
+        log::info!("a child faulting by {}: {} reached a fault, {} ran past one", what, reached, survived);
+        if reached != kind + 1 || survived != 0 {
+            bench_fail(what, survived);
+        }
+    }
+    // The last witness dies at dom0's next block. Have it die here, not inside a benchmark.
+    let ret = unsafe {
+        asys::sys_new_thread(FAULT_ENDPOINT, wake_once as *const () as usize, stack_top(&raw const WAKE_ONCE_STACK))
+    };
+    if ret != 0 {
+        bench_fail("new_thread (wake once)", ret);
+    }
+    unsafe { asys::sys_receive_empty(FAULT_ENDPOINT) };
+}
+
+extern "C" fn wake_once() -> ! {
+    unsafe { asys::sys_send_empty_try_schedule(0) };
+    loop {
+        unsafe { asys::sys_receive_empty(0) };
+    }
+}
+
+extern "C" fn faulting_child() -> ! {
+    let witness = fault_witness as *const () as usize;
+    unsafe { asys::sys_new_thread(0, witness, FAULT_WITNESS_SP.load(Ordering::SeqCst)) };
+    FAULTS_REACHED.fetch_add(1, Ordering::SeqCst);
+    match FAULT_KIND.load(Ordering::SeqCst) {
+        0 => unsafe {
+            core::ptr::read_volatile(UNMAPPED_VA as *const u64);
+        },
+        _ => unsafe { core::arch::asm!("hlt") },
+    }
+    FAULTS_SURVIVED.fetch_add(1, Ordering::SeqCst);
+    loop {
+        unsafe { asys::sys_receive_empty(0) };
+    }
+}
+
+extern "C" fn fault_witness() -> ! {
+    unsafe {
+        asys::sys_send_empty_try_schedule(0);
+        core::ptr::read_volatile(UNMAPPED_VA as *const u64);
+    }
+    FAULTS_SURVIVED.fetch_add(1, Ordering::SeqCst);
+    loop {
+        unsafe { asys::sys_receive_empty(0) };
     }
 }
 
