@@ -364,10 +364,25 @@ impl ProcessManager {
             );
         }
 
+        assert(container_ancestors_wf(self.container_perms@, new_upper_tree_ghost@)
+            && new_upper_tree_ghost@.contains(new_container_ptr) == false) by {
+            broadcast use ProcessManager::reveal_wf_to_container_tree_wf;
+            assert(old(self).container_tree_wf());
+            assert(old(self).container_perms@.dom().contains(new_container_ptr) == false);
+            container_ancestors_push(
+                old(self).root_container,
+                old(self).container_perms@,
+                self.container_perms@,
+                old_container_ptr,
+                new_container_ptr,
+            );
+        };
         container_perms_update_subtree_set(
             &mut self.container_perms,
             new_upper_tree_ghost,
             new_container_ptr,
+            old_container_ptr,
+            old_depth + 1,
         );
 
         let (new_proc_ptr, mut proc_perm, proc_thread_list_node_ref) =

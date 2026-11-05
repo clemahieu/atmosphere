@@ -734,13 +734,42 @@ pub fn page_to_container_tree_version_1(
     (page_ptr, Tracked(perm))
 }
 
-#[verifier(external_body)]
-// external_body(unproven): updates ghost state only, so its body is empty; the update is assumed, not proven
+/// Everything in a container's permission but its subtree_set is the same.
+pub open spec fn container_same_but_subtree_set(
+    a: PointsTo<Container>,
+    b: PointsTo<Container>,
+) -> bool {
+    &&& a.is_init() == b.is_init()
+    &&& a.addr() == b.addr()
+    &&& a.value().parent == b.value().parent
+    &&& a.value().parent_rev_ptr == b.value().parent_rev_ptr
+    &&& a.value().children == b.value().children
+    &&& a.value().depth == b.value().depth
+    &&& a.value().uppertree_seq == b.value().uppertree_seq
+    &&& a.value().root_process == b.value().root_process
+    &&& a.value().owned_procs == b.value().owned_procs
+    &&& a.value().owned_endpoints == b.value().owned_endpoints
+    &&& a.value().owned_threads == b.value().owned_threads
+    &&& a.value().quota == b.value().quota
+    &&& a.value().owned_cpus == b.value().owned_cpus
+    &&& a.value().scheduler == b.value().scheduler
+    &&& a.value().can_have_children == b.value().can_have_children
+}
+
 pub fn container_perms_update_subtree_set(
     perms: &mut Tracked<Map<ContainerPtr, PointsTo<Container>>>,
     uppertree_seq: Ghost<Seq<ContainerPtr>>,
     new_container_ptr: ContainerPtr,
+    start_ptr: ContainerPtr,
+    depth: usize,
 )
+    requires
+        crate::process_manager::container_tree::container_ancestors_wf(old(perms)@, uppertree_seq@),
+        uppertree_seq@.len() == depth,
+        depth > 0,
+        uppertree_seq@[depth - 1] == start_ptr,
+        old(perms)@.dom().contains(new_container_ptr),
+        uppertree_seq@.contains(new_container_ptr) == false,
     ensures
         old(perms)@.dom() =~= final(perms)@.dom(),
         forall|c_ptr: ContainerPtr|
@@ -796,15 +825,64 @@ pub fn container_perms_update_subtree_set(
             perms,
         )@[new_container_ptr].value().subtree_set,
 {
+    let mut cur = start_ptr;
+    let mut i = depth;
+    let ghost old_perms = perms@;
+    let ghost upper = uppertree_seq@;
+    while i > 0
+        invariant
+            0 <= i <= depth,
+            depth == upper.len(),
+            upper == uppertree_seq@,
+            i > 0 ==> cur == upper[i - 1],
+            old_perms == old(perms)@,
+            crate::process_manager::container_tree::container_ancestors_wf(old_perms, upper),
+            perms@.dom() == old_perms.dom(),
+            forall|c_ptr: ContainerPtr|
+                #![trigger perms@[c_ptr]]
+                old_perms.dom().contains(c_ptr) ==> container_same_but_subtree_set(perms@[c_ptr], old_perms[c_ptr]),
+            forall|c_ptr: ContainerPtr|
+                #![trigger perms@[c_ptr]]
+                old_perms.dom().contains(c_ptr) && !upper.contains(c_ptr) ==> perms@[c_ptr] == old_perms[c_ptr],
+            forall|j: int|
+                #![trigger upper[j]]
+                0 <= j < i ==> perms@[upper[j]] == old_perms[upper[j]],
+            forall|j: int|
+                #![trigger upper[j]]
+                i <= j < upper.len() ==> perms@[upper[j]].value().subtree_set@
+                    =~= old_perms[upper[j]].value().subtree_set@.insert(new_container_ptr),
+        decreases i,
+    {
+        i = i - 1;
+        let tracked mut perm = perms.borrow_mut().tracked_remove(cur);
+        let container = PPtr::<Container>::from_usize(cur).borrow_mut(Tracked(&mut perm));
+        proof {
+            container.subtree_set = Ghost(container.subtree_set@.insert(new_container_ptr));
+        }
+        let parent = container.parent;
+        proof {
+            perms.borrow_mut().tracked_insert(cur, perm);
+        }
+        if i > 0 {
+            cur = parent.unwrap();
+        }
+    }
 }
 
-#[verifier(external_body)]
-// external_body(unproven): updates ghost state only, so its body is empty; the update is assumed, not proven
 pub fn container_perms_subset_remove(
     perms: &mut Tracked<Map<ContainerPtr, PointsTo<Container>>>,
     uppertree_seq: Ghost<Seq<ContainerPtr>>,
     container_ptr: ContainerPtr,
+    start_ptr: ContainerPtr,
+    depth: usize,
 )
+    requires
+        crate::process_manager::container_tree::container_ancestors_wf(old(perms)@, uppertree_seq@),
+        uppertree_seq@.len() == depth,
+        depth > 0,
+        uppertree_seq@[depth - 1] == start_ptr,
+        old(perms)@.dom().contains(container_ptr),
+        uppertree_seq@.contains(container_ptr) == false,
     ensures
         old(perms)@.dom() =~= final(perms)@.dom(),
         forall|c_ptr: ContainerPtr|
@@ -858,6 +936,48 @@ pub fn container_perms_subset_remove(
             perms,
         )@[container_ptr].value(),
 {
+    let mut cur = start_ptr;
+    let mut i = depth;
+    let ghost old_perms = perms@;
+    let ghost upper = uppertree_seq@;
+    while i > 0
+        invariant
+            0 <= i <= depth,
+            depth == upper.len(),
+            upper == uppertree_seq@,
+            i > 0 ==> cur == upper[i - 1],
+            old_perms == old(perms)@,
+            crate::process_manager::container_tree::container_ancestors_wf(old_perms, upper),
+            perms@.dom() == old_perms.dom(),
+            forall|c_ptr: ContainerPtr|
+                #![trigger perms@[c_ptr]]
+                old_perms.dom().contains(c_ptr) ==> container_same_but_subtree_set(perms@[c_ptr], old_perms[c_ptr]),
+            forall|c_ptr: ContainerPtr|
+                #![trigger perms@[c_ptr]]
+                old_perms.dom().contains(c_ptr) && !upper.contains(c_ptr) ==> perms@[c_ptr] == old_perms[c_ptr],
+            forall|j: int|
+                #![trigger upper[j]]
+                0 <= j < i ==> perms@[upper[j]] == old_perms[upper[j]],
+            forall|j: int|
+                #![trigger upper[j]]
+                i <= j < upper.len() ==> perms@[upper[j]].value().subtree_set@
+                    =~= old_perms[upper[j]].value().subtree_set@.remove(container_ptr),
+        decreases i,
+    {
+        i = i - 1;
+        let tracked mut perm = perms.borrow_mut().tracked_remove(cur);
+        let container = PPtr::<Container>::from_usize(cur).borrow_mut(Tracked(&mut perm));
+        proof {
+            container.subtree_set = Ghost(container.subtree_set@.remove(container_ptr));
+        }
+        let parent = container.parent;
+        proof {
+            perms.borrow_mut().tracked_insert(cur, perm);
+        }
+        if i > 0 {
+            cur = parent.unwrap();
+        }
+    }
 }
 
 } // verus!
