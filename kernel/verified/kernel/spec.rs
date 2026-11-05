@@ -337,9 +337,6 @@ impl Kernel {
         self.proc_man.thread_inv();
     }
 
-    // @TODO: prove this
-    #[verifier(external_body)]
-    // external_body(unproven): a lemma stated without a proof
     pub proof fn fold_change_mem_4k_lemma(&self, old: Kernel, mod_c_ptr: ContainerPtr)
         requires
             self.container_dom() == old.container_dom(),
@@ -360,11 +357,20 @@ impl Kernel {
                 mod_c_ptr,
             ).quota.mem_4k,
     {
+        let new_quota = |a: ContainerPtr| self.get_container(a).quota.mem_4k as int;
+        let old_quota = |a: ContainerPtr| old.get_container(a).quota.mem_4k as int;
+        assert(crate::lemma::fold::sum_step(new_quota) =~= |e: int, a: ContainerPtr|
+            e + self.get_container(a).quota.mem_4k);
+        assert(crate::lemma::fold::sum_step(old_quota) =~= |e: int, a: ContainerPtr|
+            e + old.get_container(a).quota.mem_4k);
+        crate::lemma::fold::fold_sum_change(
+            self.container_dom().to_iset(),
+            new_quota,
+            old_quota,
+            mod_c_ptr,
+        );
     }
 
-    // @TODO: prove this
-    #[verifier(external_body)]
-    // external_body(unproven): a lemma stated without a proof
     pub proof fn fold_mem_4k_lemma(&self)
         ensures
             forall|c_ptr: ContainerPtr|
@@ -374,11 +380,19 @@ impl Kernel {
                     |e: int, a: ContainerPtr| e + self.get_container(a).quota.mem_4k,
                 ) >= self.get_container(c_ptr).quota.mem_4k,
     {
+        let quota = |a: ContainerPtr| self.get_container(a).quota.mem_4k as int;
+        assert(crate::lemma::fold::sum_step(quota) =~= |e: int, a: ContainerPtr|
+            e + self.get_container(a).quota.mem_4k);
+        assert forall|c_ptr: ContainerPtr|
+            #![auto]
+            self.container_dom().contains(c_ptr) implies self.container_dom().fold(
+            0,
+            |e: int, a: ContainerPtr| e + self.get_container(a).quota.mem_4k,
+        ) >= self.get_container(c_ptr).quota.mem_4k by {
+            crate::lemma::fold::fold_sum_ge(self.container_dom().to_iset(), quota, c_ptr);
+        };
     }
 
-    // @TODO: prove this
-    #[verifier(external_body)]
-    // external_body(unproven): a lemma stated without a proof
     pub proof fn fold_change_pcid_lemma(&self, old: Kernel, mod_c_ptr: ContainerPtr)
         requires
             self.container_dom() == old.container_dom(),
@@ -397,11 +411,20 @@ impl Kernel {
                 |e: int, a: ContainerPtr| e + old.get_container(a).quota.pcid,
             ) - old.get_container(mod_c_ptr).quota.pcid + self.get_container(mod_c_ptr).quota.pcid,
     {
+        let new_quota = |a: ContainerPtr| self.get_container(a).quota.pcid as int;
+        let old_quota = |a: ContainerPtr| old.get_container(a).quota.pcid as int;
+        assert(crate::lemma::fold::sum_step(new_quota) =~= |e: int, a: ContainerPtr|
+            e + self.get_container(a).quota.pcid);
+        assert(crate::lemma::fold::sum_step(old_quota) =~= |e: int, a: ContainerPtr|
+            e + old.get_container(a).quota.pcid);
+        crate::lemma::fold::fold_sum_change(
+            self.container_dom().to_iset(),
+            new_quota,
+            old_quota,
+            mod_c_ptr,
+        );
     }
 
-    // @TODO: prove this
-    #[verifier(external_body)]
-    // external_body(unproven): a lemma stated without a proof
     pub proof fn fold_pcid_lemma(&self)
         ensures
             forall|c_ptr: ContainerPtr|
@@ -411,11 +434,19 @@ impl Kernel {
                     |e: int, a: ContainerPtr| e + self.get_container(a).quota.pcid,
                 ) >= self.get_container(c_ptr).quota.pcid,
     {
+        let quota = |a: ContainerPtr| self.get_container(a).quota.pcid as int;
+        assert(crate::lemma::fold::sum_step(quota) =~= |e: int, a: ContainerPtr|
+            e + self.get_container(a).quota.pcid);
+        assert forall|c_ptr: ContainerPtr|
+            #![auto]
+            self.container_dom().contains(c_ptr) implies self.container_dom().fold(
+            0,
+            |e: int, a: ContainerPtr| e + self.get_container(a).quota.pcid,
+        ) >= self.get_container(c_ptr).quota.pcid by {
+            crate::lemma::fold::fold_sum_ge(self.container_dom().to_iset(), quota, c_ptr);
+        };
     }
 
-    // @TODO: prove this
-    #[verifier(external_body)]
-    // external_body(unproven): a lemma stated without a proof
     pub proof fn fold_change_ioid_lemma(&self, old: Kernel, mod_c_ptr: ContainerPtr)
         requires
             self.container_dom() == old.container_dom(),
@@ -434,11 +465,20 @@ impl Kernel {
                 |e: int, a: ContainerPtr| e + old.get_container(a).quota.ioid,
             ) - old.get_container(mod_c_ptr).quota.ioid + self.get_container(mod_c_ptr).quota.ioid,
     {
+        let new_quota = |a: ContainerPtr| self.get_container(a).quota.ioid as int;
+        let old_quota = |a: ContainerPtr| old.get_container(a).quota.ioid as int;
+        assert(crate::lemma::fold::sum_step(new_quota) =~= |e: int, a: ContainerPtr|
+            e + self.get_container(a).quota.ioid);
+        assert(crate::lemma::fold::sum_step(old_quota) =~= |e: int, a: ContainerPtr|
+            e + old.get_container(a).quota.ioid);
+        crate::lemma::fold::fold_sum_change(
+            self.container_dom().to_iset(),
+            new_quota,
+            old_quota,
+            mod_c_ptr,
+        );
     }
 
-    // @TODO: prove this
-    #[verifier(external_body)]
-    // external_body(unproven): a lemma stated without a proof
     pub proof fn fold_ioid_lemma(&self)
         ensures
             forall|c_ptr: ContainerPtr|
@@ -448,6 +488,17 @@ impl Kernel {
                     |e: int, a: ContainerPtr| e + self.get_container(a).quota.ioid,
                 ) >= self.get_container(c_ptr).quota.ioid,
     {
+        let quota = |a: ContainerPtr| self.get_container(a).quota.ioid as int;
+        assert(crate::lemma::fold::sum_step(quota) =~= |e: int, a: ContainerPtr|
+            e + self.get_container(a).quota.ioid);
+        assert forall|c_ptr: ContainerPtr|
+            #![auto]
+            self.container_dom().contains(c_ptr) implies self.container_dom().fold(
+            0,
+            |e: int, a: ContainerPtr| e + self.get_container(a).quota.ioid,
+        ) >= self.get_container(c_ptr).quota.ioid by {
+            crate::lemma::fold::fold_sum_ge(self.container_dom().to_iset(), quota, c_ptr);
+        };
     }
 }
 
