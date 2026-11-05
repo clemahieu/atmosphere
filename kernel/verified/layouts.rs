@@ -35,6 +35,18 @@ proof fn thread_page_round_trip(tracked page: PagePerm4k) -> (tracked ret: PageP
     crate::pptr::typed_into_page(crate::pptr::page_into_typed::<Thread>(page))
 }
 
+/// A page becomes an uninitialised node page.
+pub proof fn page_into_node_page(tracked page: PagePerm4k) -> (tracked ret: PointsTo<NodePage>)
+    requires
+        page.is_uninit(),
+        page.addr() % 4096 == 0,
+    ensures
+        ret.addr() == page.addr(),
+        ret.is_uninit(),
+{
+    crate::pptr::page_into_typed::<NodePage>(page)
+}
+
 /// A free page becomes an uninitialised container.
 pub proof fn page_into_container(tracked page: PagePerm4k) -> (tracked ret: PointsTo<Container>)
     requires
