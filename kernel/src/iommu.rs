@@ -68,7 +68,7 @@ struct ContextTableEntry {
 }
 
 #[bitfield(u128)]
-struct FaultRecording {
+pub(crate) struct FaultRecording {
     #[bits(12, default = 0)]
     _reserved: u16,
 

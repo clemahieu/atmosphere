@@ -49,7 +49,7 @@ const PIC2_DATA: u16 = 0xa1;
 pub struct Cycles(pub usize);
 
 #[repr(C)]
-struct TrampolineMarker(());
+pub(crate) struct TrampolineMarker(());
 
 macro_rules! wrap_interrupt_with_error_code {
     ($handler:path) => {{
