@@ -440,6 +440,50 @@ pub fn check_syscall_return_registers() {
     }
 }
 
+/// Fails the run unless the logging syscalls refuse a buffer the caller does not own, and accept
+/// one it does.
+pub fn check_log_buffers() {
+    let mine = b"a buffer dom0 owns";
+    let cases: [(&str, *const u8, usize, isize); 4] = [
+        ("a kernel address", 0x1_0000_0000 as *const u8, 64, 1),
+        ("an unmapped address", 0xa0_0000_0000u64 as *const u8, 64, 1),
+        ("a range that overflows", usize::MAX as *const u8, 64, 1),
+        ("dom0's own buffer", mine.as_ptr(), mine.len(), 0),
+    ];
+    for (what, data, len, expected) in cases {
+        let ret = unsafe { asys::sys_print(data, len) };
+        log::info!("sys_print of {}: {}", what, ret);
+        if ret != expected {
+            bench_fail(what, ret as usize);
+        }
+    }
+    let level = unsafe { syscall_log_raw(mine.as_ptr(), mine.len(), 99) };
+    log::info!("sys_log with level 99: {}", level);
+    if level != 1 {
+        bench_fail("a log level past the end", level as usize);
+    }
+}
+
+/// sys_log with a level no log::Level can hold, which asys::sys_log cannot express.
+unsafe fn syscall_log_raw(data: *const u8, len: usize, level: usize) -> isize {
+    let ret: isize;
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            inlateout("rax") asys::__NR_LOG => ret,
+            inlateout("rdi") data => _,
+            inlateout("rsi") len => _,
+            inlateout("rdx") level => _,
+            lateout("rcx") _,
+            lateout("r8") _,
+            lateout("r9") _,
+            lateout("r10") _,
+            lateout("r11") _,
+        );
+    }
+    ret
+}
+
 /// Entry of every timed thread: parks on its endpoint without touching its stack.
 #[unsafe(naked)]
 extern "C" fn parked_thread() -> ! {
