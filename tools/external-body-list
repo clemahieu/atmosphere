@@ -85,15 +85,12 @@ process_manager/proc_util_t.rs	proc_push_thread	gap	writes through a raw pointer
 process_manager/proc_util_t.rs	proc_remove_child	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
 process_manager/proc_util_t.rs	proc_remove_thread	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
 process_manager/proc_util_t.rs	proc_to_page	gap	takes its permission from Tracked::assume_new, which Verus cannot check
-process_manager/thread_util_t.rs	page_to_thread	gap	writes through a raw pointer and takes its permission from Tracked::assume_new
-process_manager/thread_util_t.rs	page_to_thread_with_endpoint	gap	writes through a raw pointer and takes its permission from Tracked::assume_new
 process_manager/thread_util_t.rs	thread_set_current_cpu	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
 process_manager/thread_util_t.rs	thread_set_endpoint_descriptor	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
 process_manager/thread_util_t.rs	thread_set_error_code	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
 process_manager/thread_util_t.rs	thread_set_state	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
 process_manager/thread_util_t.rs	thread_set_trap_frame_fast	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
 process_manager/thread_util_t.rs	thread_set_trap_frame_full	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
-process_manager/thread_util_t.rs	thread_to_page	gap	takes its permission from Tracked::assume_new, which Verus cannot check
 slinkedlist/impl_t.rs	get_next	unproven	an array element access not proven yet
 slinkedlist/impl_t.rs	get_prev	unproven	an array element access not proven yet
 slinkedlist/impl_t.rs	get_value	unproven	an array element access not proven yet

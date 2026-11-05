@@ -3,12 +3,12 @@ verus! {
 
 use core::mem::MaybeUninit;
 use crate::define::*;
+use crate::array::Array;
 use crate::pptr::{PPtr, PointsTo};
+use crate::trap::TrapFrameOption;
 use crate::process_manager::thread::*;
 use crate::trap::Registers;
 
-#[verifier(external_body)]
-// external_body(gap): writes through a raw pointer and takes its permission from Tracked::assume_new
 pub fn page_to_thread(
     page_ptr: PagePtr,
     page_perm: Tracked<PagePerm4k>,
@@ -21,6 +21,7 @@ pub fn page_to_thread(
     requires
         page_perm@.is_uninit(),
         page_perm@.addr() == page_ptr,
+        crate::util::page_ptr_util_u::page_ptr_valid(page_ptr),
     ensures
         ret.0 == page_ptr,
         ret.1@.is_init(),
@@ -41,26 +42,30 @@ pub fn page_to_thread(
         ret.1@.value().error_code.is_None(),
         ret.1@.value().trap_frame.unwrap() =~= pt_regs,
 {
-    unsafe {
-        let uptr = page_ptr as *mut MaybeUninit<Thread>;
-        (*uptr).assume_init_mut().owning_container = owning_container;
-        (*uptr).assume_init_mut().owning_proc = owning_proc;
-        (*uptr).assume_init_mut().state = ThreadState::SCHEDULED;
-        (*uptr).assume_init_mut().proc_rev_ptr = proc_rev_ptr;
-        (*uptr).assume_init_mut().scheduler_rev_ptr = Some(scheduler_rev_ptr);
-        (*uptr).assume_init_mut().blocking_endpoint_ptr = None;
-        (*uptr).assume_init_mut().endpoint_rev_ptr = None;
-        (*uptr).assume_init_mut().running_cpu = None;
-        (*uptr).assume_init_mut().endpoint_descriptors.init2none();
-        (*uptr).assume_init_mut().ipc_payload = IPCPayLoad::Empty;
-        (*uptr).assume_init_mut().error_code = None;
-        (*uptr).assume_init_mut().trap_frame.set_self(pt_regs);
-        (page_ptr, Tracked::assume_new())
-    }
+    let tracked mut perm = crate::layouts::page_into_thread(page_perm.get());
+    let mut endpoint_descriptors = Array::new();
+    endpoint_descriptors.init2none();
+    let mut trap_frame = TrapFrameOption::zeroed_none();
+    trap_frame.set_self(pt_regs);
+    let thread = Thread {
+        owning_container,
+        owning_proc,
+        state: ThreadState::SCHEDULED,
+        proc_rev_ptr,
+        scheduler_rev_ptr: Some(scheduler_rev_ptr),
+        blocking_endpoint_ptr: None,
+        blocking_endpoint_index: None,
+        endpoint_rev_ptr: None,
+        running_cpu: None,
+        endpoint_descriptors,
+        ipc_payload: IPCPayLoad::Empty,
+        error_code: None,
+        trap_frame,
+    };
+    PPtr::<Thread>::from_usize(page_ptr).put(Tracked(&mut perm), thread);
+    (page_ptr, Tracked(perm))
 }
 
-#[verifier(external_body)]
-// external_body(gap): takes its permission from Tracked::assume_new, which Verus cannot check
 pub fn thread_to_page(
     thread_ptr: ThreadPtr,
     thread_perm: Tracked<PointsTo<Thread>>,
@@ -73,11 +78,13 @@ pub fn thread_to_page(
         ret.1@.is_uninit(),
         ret.1@.addr() == ret.0,
 {
-    (thread_ptr, Tracked::assume_new())
+    let tracked mut perm = thread_perm.get();
+    proof {
+        perm.leak_contents();
+    }
+    (thread_ptr, Tracked(crate::layouts::thread_into_page(perm)))
 }
 
-#[verifier(external_body)]
-// external_body(gap): writes through a raw pointer and takes its permission from Tracked::assume_new
 pub fn page_to_thread_with_endpoint(
     page_ptr: PagePtr,
     page_perm: Tracked<PagePerm4k>,
@@ -91,6 +98,7 @@ pub fn page_to_thread_with_endpoint(
     requires
         page_perm@.is_uninit(),
         page_perm@.addr() == page_ptr,
+        crate::util::page_ptr_util_u::page_ptr_valid(page_ptr),
     ensures
         ret.0 == page_ptr,
         ret.1@.is_init(),
@@ -111,23 +119,29 @@ pub fn page_to_thread_with_endpoint(
         ret.1@.value().error_code.is_None(),
         ret.1@.value().trap_frame.unwrap() =~= pt_regs,
 {
-    unsafe {
-        let uptr = page_ptr as *mut MaybeUninit<Thread>;
-        (*uptr).assume_init_mut().owning_container = owning_container;
-        (*uptr).assume_init_mut().owning_proc = owning_proc;
-        (*uptr).assume_init_mut().state = ThreadState::SCHEDULED;
-        (*uptr).assume_init_mut().proc_rev_ptr = proc_rev_ptr;
-        (*uptr).assume_init_mut().scheduler_rev_ptr = Some(scheduler_rev_ptr);
-        (*uptr).assume_init_mut().blocking_endpoint_ptr = None;
-        (*uptr).assume_init_mut().endpoint_rev_ptr = None;
-        (*uptr).assume_init_mut().running_cpu = None;
-        (*uptr).assume_init_mut().endpoint_descriptors.init2none();
-        (*uptr).assume_init_mut().endpoint_descriptors.set(0, Some(endpoint_ptr));
-        (*uptr).assume_init_mut().ipc_payload = IPCPayLoad::Empty;
-        (*uptr).assume_init_mut().error_code = None;
-        (*uptr).assume_init_mut().trap_frame.set_self(pt_regs);
-        (page_ptr, Tracked::assume_new())
-    }
+    let tracked mut perm = crate::layouts::page_into_thread(page_perm.get());
+    let mut endpoint_descriptors = Array::new();
+    endpoint_descriptors.init2none();
+    endpoint_descriptors.set(0, Some(endpoint_ptr));
+    let mut trap_frame = TrapFrameOption::zeroed_none();
+    trap_frame.set_self(pt_regs);
+    let thread = Thread {
+        owning_container,
+        owning_proc,
+        state: ThreadState::SCHEDULED,
+        proc_rev_ptr,
+        scheduler_rev_ptr: Some(scheduler_rev_ptr),
+        blocking_endpoint_ptr: None,
+        blocking_endpoint_index: None,
+        endpoint_rev_ptr: None,
+        running_cpu: None,
+        endpoint_descriptors,
+        ipc_payload: IPCPayLoad::Empty,
+        error_code: None,
+        trap_frame,
+    };
+    PPtr::<Thread>::from_usize(page_ptr).put(Tracked(&mut perm), thread);
+    (page_ptr, Tracked(perm))
 }
 
 pub fn thread_set_blocking_endpoint_endpoint_ref_scheduler_ref_state_and_ipc_payload(
