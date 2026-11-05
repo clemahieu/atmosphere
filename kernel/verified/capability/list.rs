@@ -11,6 +11,7 @@
 //! neighbours, which name theirs; and distinctness and the parent-child order pair every position
 //! with every other. Together those make the prover walk the list and square its length.
 use vstd::prelude::*;
+use vstd::set_lib::*;
 
 verus! {
 
@@ -347,6 +348,7 @@ impl Tree {
     pub open spec fn order(&self) -> bool {
         let s = self.seq@;
         &&& self.nodes@[s[0] as int].depth == 0
+        &&& !self.parent@.contains_key(s[0])
         &&& forall|k: int| 0 < k < s.len() ==> {
             &&& self.parent@.contains_key(#[trigger] s[k])
             &&& has(s, self.parent@[s[k]])
@@ -367,6 +369,46 @@ impl Tree {
 
     pub open spec fn is_child(&self, c: usize, i: usize) -> bool {
         self.seq@.contains(i) && i != self.seq@[0] && self.parent@[i] == c
+    }
+
+    /// The list cannot be longer than the ids it has to draw on.
+    pub proof fn lemma_seq_fits(&self)
+        requires
+            self.links(),
+        ensures
+            self.seq@.len() <= NODE_SPACE,
+    {
+        let s = self.seq@;
+        let ids = Set::<usize>::range(0, NODE_SPACE);
+        reveal(nodup);
+        s.unique_seq_to_set();
+        range_set_properties::<usize>(0, NODE_SPACE);
+        assert forall|x: usize| #[trigger] s.to_set().contains(x) implies ids.contains(x) by {
+            let k = choose|k: int| 0 <= k < s.len() && s[k] == x;
+            self.lemma_link(k);
+        }
+        lemma_len_subset(s.to_set(), ids);
+    }
+
+    /// A live node's parent is live, so walking up from a live node stays among live nodes.
+    pub proof fn lemma_parent_live(&self, x: usize)
+        requires
+            self.wf(),
+            x < NODE_SPACE,
+            self.nodes@[x as int].live,
+            self.parent@.contains_key(x),
+        ensures
+            self.parent@[x] < NODE_SPACE,
+            self.nodes@[self.parent@[x] as int].live,
+    {
+        let s = self.seq@;
+        lemma_has(s, x);
+        let k = choose|k: int| 0 <= k < s.len() && s[k] == x;
+        assert(k != 0);
+        assert(has(s, self.parent@[s[k]]));
+        lemma_has(s, self.parent@[x]);
+        let a = choose|a: int| 0 <= a < s.len() && s[a] == self.parent@[x];
+        self.lemma_link(a);
     }
 
     /// If the node after c is not deeper, c has no child, whichever list position the child has.
@@ -493,9 +535,17 @@ impl Tree {
             final(self).wf(),
             final(self).is_child(c, slot),
             final(self).parent@ == old(self).parent@.insert(slot, c),
-            // Only the new node and its neighbours' links change, and no one else's depth.
-            forall|i: int| 0 <= i < old(self).nodes@.len() && i != slot ==>
-                #[trigger] final(self).nodes@[i].depth == old(self).nodes@[i].depth,
+            final(self).pages@.dom() == old(self).pages@.dom(),
+            final(self).nodes@[slot as int].live,
+            final(self).nodes@[slot as int].kind == kind,
+            final(self).nodes@[slot as int].depth == old(self).nodes@[c as int].depth + 1,
+            // Only the new node and its neighbours' links change, so no one else's liveness, kind or
+            // depth does.
+            forall|i: int| #![trigger final(self).nodes@[i]] 0 <= i < old(self).nodes@.len() && i != slot ==> {
+                &&& final(self).nodes@[i].live == old(self).nodes@[i].live
+                &&& final(self).nodes@[i].kind == old(self).nodes@[i].kind
+                &&& final(self).nodes@[i].depth == old(self).nodes@[i].depth
+            },
     {
         let ghost pre = *old(self);
         let ghost s = pre.seq@;
@@ -539,7 +589,8 @@ impl Tree {
                 && (m > j + 1 ==> t[m] == s[m - 1]) by {}
             assert forall|i: int| 0 <= i < pre.nodes@.len() && i != slot implies
                 #[trigger] me.nodes@[i].depth == pre.nodes@[i].depth
-                && me.nodes@[i].live == pre.nodes@[i].live by {}
+                && me.nodes@[i].live == pre.nodes@[i].live
+                && me.nodes@[i].kind == pre.nodes@[i].kind by {}
             lemma_insert_no_dup(s, j + 1, slot);
             lemma_linked_insert(pre, me, c, slot, j);
             assert(t[j + 1] == slot);

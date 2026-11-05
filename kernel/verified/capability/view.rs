@@ -27,19 +27,12 @@ pub open spec fn right_bit(right: Right) -> u32 {
 }
 
 impl CapKernel {
-    /// Node n is a live capability in a slot of some table. Node 0 of a leaf is its hidden node, and
-    /// nodes in other pages are mappings and bindings, so neither counts.
     pub open spec fn is_cap(&self, n: usize) -> bool {
-        &&& self.list.nodes@[n as int].live
-        &&& self.list.nodes@[n as int].kind is Capability
-        &&& self.tables.owner@.contains_key(page_of(n))
-        &&& n % 4096 != 0
-        &&& n % 4096 < NODES_PER_PAGE
+        self.tables.is_cap(&self.list, n)
     }
 
-    /// What capability n says.
     pub open spec fn payload_of(&self, n: usize) -> Payload {
-        self.tables.payloads@[page_of(n)].value().entries@[(n % 4096) as int]
+        self.tables.payload_of(n)
     }
 
     pub open spec fn view(&self) -> State {
@@ -60,6 +53,41 @@ impl CapKernel {
         }
     }
 
+    /// Where a node in a leaf's page lies.
+    pub proof fn lemma_slot_bound(&self, n: usize)
+        requires
+            self.wf(),
+            self.tables.owner@.contains_key(page_of(n)),
+            n % 4096 < NODES_PER_PAGE,
+        ensures
+            n < NODE_SPACE,
+            self.list.valid(n),
+    {
+        self.tables.lemma_leaf(&self.list, page_of(n));
+        self.list.lemma_valid_bound(n);
+    }
+
+    /// Where the node of a slot lies, and whose it is.
+    pub proof fn lemma_slot(&self, root: usize, i: usize)
+        requires
+            self.wf(),
+            self.tables.has_slot(root, i),
+        ensures
+            self.tables.owner@.contains_key(page_of(self.tables.node_of(root, i))),
+            self.tables.owner@[page_of(self.tables.node_of(root, i))].0 == root,
+            self.tables.node_of(root, i) % 4096 == index_slot(i),
+            0 < index_slot(i) < NODES_PER_PAGE,
+            page_of(self.tables.node_of(root, i)) == self.tables.leaf(root, index_entry(i)),
+    {
+        let leaf = self.tables.leaf(root, index_entry(i));
+        self.tables.lemma_entry(root, index_entry(i));
+        self.tables.lemma_leaf(&self.list, leaf);
+        let n = self.tables.node_of(root, i);
+        assert(leaf % 4096 == 0);
+        assert(n % 4096 == index_slot(i));
+        assert(page_of(n) == leaf);
+    }
+
     /// A live capability in a slot is held by that table's process.
     pub proof fn lemma_slot_is_held(&self, root: usize, i: usize)
         requires
@@ -70,14 +98,7 @@ impl CapKernel {
         ensures
             self.view().holds(root, self.tables.node_of(root, i)),
     {
-        let leaf = self.tables.leaf(root, index_entry(i));
-        self.tables.lemma_entry(root, index_entry(i));
-        self.tables.lemma_leaf(&self.list, leaf);
-        let n = self.tables.node_of(root, i);
-        assert(leaf % 4096 == 0);
-        assert(0 < index_slot(i) < NODES_PER_PAGE);
-        assert(n % 4096 == index_slot(i));
-        assert(page_of(n) == leaf);
+        self.lemma_slot(root, i);
     }
 
     /// What the view holds, a table has: a slot that is not live is held by nobody.
