@@ -1,6 +1,6 @@
 //! Syscalls.
 
-use core::arch::{naked_asm, global_asm};
+use core::arch::{asm, global_asm, naked_asm};
 
 use asys::MAX_SYSCALLS;
 use memoffset::offset_of;
@@ -80,6 +80,33 @@ pub unsafe fn init_cpu() {
     SYSCALLS[asys::__NR_SET_DEVICE_IOMMU] = kernel::sys_set_device_iommu as *const () as u64;
     SYSCALLS[asys::__NR_INVALIDATE_IOTLB] = sys_invalidate_iotlb as *const () as u64;
     SYSCALLS[asys::__NR_SEND_EMPTY_TRY_SCH] = kernel::sys_send_empty_try_schedule as *const () as u64;
+}
+
+/// Enters the thread whose frame is `regs` from an idle core, as a syscall return to it would. It
+/// clears the caller-saved registers for the same reason: a process must not see them.
+pub unsafe fn enter_thread(regs: &Registers) -> ! {
+    asm!(
+        "mov rsp, {regs}",
+        "mov r15, [rsp + 8*0]",
+        "mov r14, [rsp + 8*1]",
+        "mov r13, [rsp + 8*2]",
+        "mov r12, [rsp + 8*3]",
+        "mov rbp, [rsp + 8*4]",
+        "mov rbx, [rsp + 8*5]",
+        "mov rax, [rsp + 8*14]",
+        "mov rcx, [rsp + 8*16]", // rip
+        "mov r11, [rsp + 8*18]", // rflags
+        "mov rsp, [rsp + 8*19]", // rsp
+        "xor edi, edi",
+        "xor esi, esi",
+        "xor edx, edx",
+        "xor r8d, r8d",
+        "xor r9d, r9d",
+        "xor r10d, r10d",
+        "sysretq",
+        regs = in(reg) regs as *const Registers,
+        options(noreturn),
+    )
 }
 
 #[cfg(debug_assertions)]

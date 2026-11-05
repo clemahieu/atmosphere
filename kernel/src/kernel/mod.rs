@@ -706,6 +706,19 @@ pub extern "C" fn sys_receive_empty(endpoint_index:usize, _:usize, _:usize, regs
 //     }
 // }
 
+/// Puts the next runnable thread on this idle CPU, filling `regs` and loading its address space.
+/// Returns whether there was one.
+pub fn take_next_thread(regs: &mut vRegisters) -> bool {
+    let cpu_id = cpu::get_cpu_id();
+    let mut kernel = KERNEL.lock();
+    let next = kernel.schedule_idle_cpu(cpu_id, regs);
+    let Some(pcid) = next.pcid else {
+        return false;
+    };
+    Bridge::set_cr3((next.cr3.unwrap() | pcid | vdefine::PCID_ENABLE_MASK) as u64);
+    true
+}
+
 /// Kills the thread running on this CPU after it faulted, and fills `regs` with the next thread.
 pub fn kill_current_thread(regs: &mut vRegisters) {
     let cpu_id = cpu::get_cpu_id();

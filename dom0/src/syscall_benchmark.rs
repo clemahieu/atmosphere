@@ -511,6 +511,70 @@ pub fn check_new_thread_rax() {
     }
 }
 
+const SECOND_CORE_ENDPOINT: usize = 10;
+const SECOND_CORE_SYSCALLS: usize = 1000;
+/// How long to wait for the other core, in TSC cycles. With no timer, a thread only runs on another
+/// core, so one that never starts means CPU 1 is not scheduling.
+const SECOND_CORE_CYCLES: u64 = 60_000_000_000;
+static mut SECOND_CORE_STACK: [u8; 16384] = [0; 16384];
+static SECOND_CORE_MADE: AtomicUsize = AtomicUsize::new(0);
+static SECOND_CORE_STOP: AtomicUsize = AtomicUsize::new(0);
+static SECOND_CORE_REPORTED: AtomicUsize = AtomicUsize::new(0);
+
+/// Makes syscalls until told to stop, then holds its core for the rest of the boot.
+extern "C" fn second_core_thread() -> ! {
+    let va = (&raw const RESOLVED_PAGE) as usize & !0xfff;
+    while SECOND_CORE_STOP.load(Ordering::SeqCst) == 0 {
+        unsafe { asys::sys_mresolve(va) };
+        SECOND_CORE_MADE.fetch_add(1, Ordering::SeqCst);
+    }
+    log::info!("thread on CPU 1 made {} syscalls", SECOND_CORE_MADE.load(Ordering::SeqCst));
+    SECOND_CORE_REPORTED.store(1, Ordering::SeqCst);
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+/// Fails the run unless a thread on CPU 1 and this one on CPU 0 both make syscalls at the same time.
+/// Nothing preempts this thread, so the other can only run on the other core.
+pub fn check_second_core() {
+    let va = (&raw const RESOLVED_PAGE) as usize & !0xfff;
+    let ret = unsafe { asys::sys_new_endpoint(SECOND_CORE_ENDPOINT) };
+    if ret != 0 {
+        bench_fail("new_endpoint (second core)", ret);
+    }
+    let ret = unsafe {
+        asys::sys_new_thread(
+            SECOND_CORE_ENDPOINT,
+            second_core_thread as *const () as usize,
+            stack_top(&raw const SECOND_CORE_STACK),
+        )
+    };
+    if ret != 0 {
+        bench_fail("new_thread (second core)", ret);
+    }
+    let deadline = unsafe { _rdtsc() } + SECOND_CORE_CYCLES;
+    let mut mine = 0;
+    while mine < SECOND_CORE_SYSCALLS || SECOND_CORE_MADE.load(Ordering::SeqCst) < SECOND_CORE_SYSCALLS {
+        unsafe { asys::sys_mresolve(va) };
+        // Count only while the other thread is also running.
+        if SECOND_CORE_MADE.load(Ordering::SeqCst) > 0 {
+            mine += 1;
+        }
+        if unsafe { _rdtsc() } > deadline {
+            bench_fail("a thread on the second core", SECOND_CORE_MADE.load(Ordering::SeqCst));
+        }
+    }
+    SECOND_CORE_STOP.store(1, Ordering::SeqCst);
+    while SECOND_CORE_REPORTED.load(Ordering::SeqCst) == 0 {
+        if unsafe { _rdtsc() } > deadline {
+            bench_fail("the second core's report", 0);
+        }
+        core::hint::spin_loop();
+    }
+    log::info!("thread on CPU 0 made {} syscalls beside it", mine);
+}
+
 /// Fails the run unless the logging syscalls refuse a buffer the caller does not own, and accept
 /// one it does.
 pub fn check_log_buffers() {

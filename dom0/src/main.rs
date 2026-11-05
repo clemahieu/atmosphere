@@ -54,6 +54,8 @@ extern "C" fn main(payload_base: *mut u8, payload_size: usize) -> isize {
     log::trace!("hello {}", "world");
     log::info!("payload {:?}, size {}", payload_base, payload_size);
 
+    // First, so its thread holds CPU 1 for the rest of the boot and everything below stays on CPU 0.
+    syscall_benchmark::check_second_core();
     // The syscall timers, matching VeriFlat's dom0 timers, on CPU 0 with no other runnable thread.
     syscall_benchmark::check_unassigned_syscalls();
     syscall_benchmark::check_device_iommu();
