@@ -3,7 +3,8 @@ verus! {
 
 use core::mem::MaybeUninit;
 use crate::define::*;
-use crate::pptr::PointsTo;
+use crate::pptr::{PPtr, PointsTo};
+use crate::slinkedlist::spec_impl_u::StaticLinkedList;
 use crate::process_manager::process::*;
 
 #[verifier(external_body)]
@@ -196,8 +197,6 @@ pub fn proc_remove_child(
 }
 
 
-#[verifier(external_body)]
-// external_body(gap): writes through a raw pointer and takes its permission from Tracked::assume_new
 pub fn page_to_proc(
     page_ptr: PagePtr,
     page_perm: Tracked<PagePerm4k>,
@@ -214,6 +213,7 @@ pub fn page_to_proc(
     requires
         page_perm@.is_uninit(),
         page_perm@.addr() == page_ptr,
+        crate::util::page_ptr_util_u::page_ptr_valid(page_ptr),
     ensures
         ret.0 == page_ptr,
         ret.1@.is_init(),
@@ -234,24 +234,29 @@ pub fn page_to_proc(
         ret.1@.value().depth == depth,
         ret.1@.value().dmd_paging_mode == DemandPagingMode::NoDMDPG,
 {
-    unsafe {
-        let uptr = page_ptr as *mut MaybeUninit<Process>;
-        (*uptr).assume_init_mut().owning_container = owning_container;
-        (*uptr).assume_init_mut().rev_ptr = rev_ptr;
-        (*uptr).assume_init_mut().pcid = pcid;
-        (*uptr).assume_init_mut().ioid = ioid;
-        (*uptr).assume_init_mut().owned_threads.init();
-        (*uptr).assume_init_mut().children.init();
-        (*uptr).assume_init_mut().parent = parent;
-        (*uptr).assume_init_mut().parent_rev_ptr = parent_rev_ptr;
-        (*uptr).assume_init_mut().depth = depth;
-        (*uptr).assume_init_mut().dmd_paging_mode = DemandPagingMode::NoDMDPG;
-        (page_ptr, Tracked::assume_new())
-    }
+    let tracked mut perm = crate::layouts::page_into_process(page_perm.get());
+    let mut owned_threads = StaticLinkedList::new();
+    owned_threads.init();
+    let mut children = StaticLinkedList::new();
+    children.init();
+    let process = Process {
+        owning_container,
+        rev_ptr,
+        pcid,
+        ioid,
+        owned_threads,
+        parent,
+        parent_rev_ptr,
+        children,
+        uppertree_seq,
+        subtree_set,
+        depth,
+        dmd_paging_mode: DemandPagingMode::NoDMDPG,
+    };
+    PPtr::<Process>::from_usize(page_ptr).put(Tracked(&mut perm), process);
+    (page_ptr, Tracked(perm))
 }
 
-#[verifier(external_body)]
-// external_body(gap): takes its permission from Tracked::assume_new, which Verus cannot check
 pub fn proc_to_page(
     proc_ptr: ProcPtr,
     proc_perm: Tracked<PointsTo<Process>>,
@@ -264,7 +269,11 @@ pub fn proc_to_page(
         ret.1@.is_uninit(),
         ret.1@.addr() == ret.0,
 {
-    (proc_ptr, Tracked::assume_new())
+    let tracked mut perm = proc_perm.get();
+    proof {
+        perm.leak_contents();
+    }
+    (proc_ptr, Tracked(crate::layouts::process_into_page(perm)))
 }
 
 pub fn page_to_proc_with_first_thread(
@@ -284,6 +293,7 @@ pub fn page_to_proc_with_first_thread(
     requires
         page_perm@.is_uninit(),
         page_perm@.addr() == page_ptr,
+        crate::util::page_ptr_util_u::page_ptr_valid(page_ptr),
     ensures
         ret.0 == page_ptr,
         ret.1@.is_init(),

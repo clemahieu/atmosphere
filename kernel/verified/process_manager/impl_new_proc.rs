@@ -69,6 +69,7 @@ impl ProcessManager {
                     != new_pcid,
             page_perm_1@.is_uninit(),
             page_perm_1@.addr() == page_ptr_1,
+            crate::util::page_ptr_util_u::page_ptr_valid(page_ptr_1),
             page_perm_2@.is_uninit(),
             page_perm_2@.addr() == page_ptr_2,
             crate::util::page_ptr_util_u::page_ptr_valid(page_ptr_2),
