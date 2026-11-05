@@ -56,6 +56,19 @@ fn check_manifest(project: &ProjectHandle, manifest: &Path) -> Result<String> {
         }
     }
 
+    // Another manifest's graph is smaller than the workspace's, so only the workspace can show an
+    // entry is stale.
+    if manifest == project.root().join("Cargo.toml") {
+        let graph: Vec<(String, Option<String>)> = metadata
+            .packages
+            .iter()
+            .map(|package| (package.name.to_string(), package.source.as_ref().map(|source| source.to_string())))
+            .collect();
+        for entry in allowlist.unmatched_entries(&graph) {
+            failures.push(format!("{}: the entry for {} matches no package in the graph", ALLOWLIST_PATH, entry));
+        }
+    }
+
     if failures.is_empty() {
         return Ok(format!("{} packages within the allowlist", metadata.packages.len()));
     }
@@ -97,6 +110,21 @@ impl Allowlist {
             }
         }
         Ok(allowlist)
+    }
+
+    /// The package entries naming nothing in the graph: an entry that matches nothing could look
+    /// like a verified license for a package that is not there.
+    fn unmatched_entries(&self, graph: &[(String, Option<String>)]) -> Vec<String> {
+        self.packages
+            .iter()
+            .filter(|entry| {
+                !graph.iter().any(|(name, source)| {
+                    let source = source.as_deref().unwrap_or("a path").split('#').next().unwrap();
+                    *name == entry.0 && source == entry.1
+                })
+            })
+            .map(|entry| format!("{} {}", entry.0, entry.1))
+            .collect()
     }
 
     /// Checks one package. Workspace members with no field are covered by the tree's LICENSE.
@@ -222,6 +250,16 @@ mod tests {
 
     fn allows(expression: &str) -> std::result::Result<bool, String> {
         allowlist().allows(expression)
+    }
+
+    #[test]
+    fn an_entry_must_match_a_package() {
+        let source = "git+https://example.org/verus?branch=mars";
+        let listed = vec![("vstd".to_string(), Some(format!("{}#abc", source)))];
+        assert!(allowlist().unmatched_entries(&listed).is_empty());
+        let other_source = vec![("vstd".to_string(), Some("git+https://example.org/other#abc".to_string()))];
+        assert_eq!(allowlist().unmatched_entries(&other_source), vec![format!("vstd {}", source)]);
+        assert_eq!(allowlist().unmatched_entries(&[]), vec![format!("vstd {}", source)]);
     }
 
     #[test]
