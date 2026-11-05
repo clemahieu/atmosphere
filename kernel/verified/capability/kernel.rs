@@ -40,6 +40,29 @@ pub struct CapKernel {
     pub stale_epoch: Ghost<Map<usize, int>>,
 }
 
+/// Flushes every context on this core, all PCIDs and paging-structure caches: changing CR4.PGE does
+/// that where a flush of the current PCID would leave entries under the others.
+#[verifier(external_body)]
+// external_body(glue): only the hardware can attest a flush, so only this makes the token
+pub fn flush_every_context(core: usize, epoch: usize) -> (ret: Tracked<Flushed>)
+    ensures
+        ret@.core == core as int,
+        ret@.epoch == epoch as int,
+{
+    unsafe {
+        core::arch::asm!(
+            "mov {cr4}, cr4",
+            "xor {cr4}, {pge}",
+            "mov cr4, {cr4}",
+            "xor {cr4}, {pge}",
+            "mov cr4, {cr4}",
+            cr4 = out(reg) _,
+            pge = const 1 << 7,
+        );
+    }
+    Tracked::assume_new()
+}
+
 impl CapKernel {
     pub open spec fn acked(&self, c: int) -> int {
         self.cores@[c].acked_epoch as int

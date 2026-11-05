@@ -8,7 +8,10 @@ use core::slice;
 
 use super::x86_xapic::XAPIC;
 use verified::define::PCID_ENABLE_MASK;
-use x86::apic::{ApicControl, ApicId};
+use x86::apic::{
+    ApicControl, ApicId, DeliveryMode, DeliveryStatus, DestinationMode, DestinationShorthand, Icr, Level,
+    TriggerMode,
+};
 use x86::msr;
 
 use super::Cycles;
@@ -54,6 +57,25 @@ pub fn end_of_interrupt() {
     };
 
     xapic.eoi();
+}
+
+/// Sends an interrupt to a CPU, returning once the local APIC has taken it.
+pub fn send_ipi(cpu_id: usize, vector: u8) {
+    let xapic = unsafe {
+        (&mut *crate::cpu::get_current_cpu_field_ptr!(xapic, MaybeUninit<XAPIC>)).assume_init_mut()
+    };
+    // FIXME: X2APIC APIC ID
+    let icr = Icr::for_xapic(
+        vector,
+        ApicId::XApic(cpu_id as u8),
+        DestinationShorthand::NoShorthand,
+        DeliveryMode::Fixed,
+        DestinationMode::Physical,
+        DeliveryStatus::Idle,
+        Level::Assert,
+        TriggerMode::Edge,
+    );
+    unsafe { xapic.send_ipi(icr) };
 }
 
 /// Waits between start-up IPIs. The architecture asks for 10 ms and 200 us. No timer is calibrated this

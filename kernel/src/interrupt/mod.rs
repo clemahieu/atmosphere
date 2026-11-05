@@ -25,7 +25,7 @@ use crate::boot::spin_forever;
 pub use exception::Exception;
 use exception::EXCEPTION_MAX;
 use idt::Idt;
-pub use lapic::{boot_ap, end_of_interrupt, set_timer};
+pub use lapic::{boot_ap, end_of_interrupt, send_ipi, set_timer};
 use verified::trap::Registers;
 
 /// The IRQ offset.
@@ -33,6 +33,7 @@ pub const IRQ_OFFSET: usize = 32;
 
 pub const IRQ_TIMER: usize = 0;
 pub const IRQ_IOMMU_FAULT: usize = 1;
+pub const IRQ_FLUSH: usize = 2;
 
 pub const IST_EXCEPTION: usize = 1;
 pub const IST_IRQ: usize = 2;
@@ -297,6 +298,12 @@ unsafe extern "C" fn timer(regs: &mut Registers) {
     end_of_interrupt();
 }
 
+/// Flush request from another CPU.
+unsafe extern "C" fn flush_ipi(_regs: &mut Registers) {
+    crate::flush::handle_ipi();
+    end_of_interrupt();
+}
+
 /// IOMMU fault handler.
 unsafe extern "C" fn iommu_fault(regs: &mut Registers) {
     log::error!("CPU {}: IOMMU fault: {:#x?}",
@@ -465,6 +472,8 @@ pub unsafe fn init() {
     idt.interrupts[IRQ_TIMER].set_handler_fn(wrap_interrupt!(timer));
 
     idt.interrupts[IRQ_IOMMU_FAULT].set_handler_fn(wrap_interrupt!(iommu_fault));
+
+    idt.interrupts[IRQ_FLUSH].set_handler_fn(wrap_interrupt!(flush_ipi));
 
     let ioapic_base = mps::probe_ioapic();
     ioapic::init(ioapic_base);
