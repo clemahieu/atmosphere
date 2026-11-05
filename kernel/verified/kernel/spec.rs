@@ -1,6 +1,7 @@
 use vstd::prelude::*;
 verus! {
 
+use crate::device::{DeviceId, DeviceTable};
 use crate::allocator::page_allocator_spec_impl::*;
 use crate::memory_manager::spec_impl::*;
 use crate::process_manager::spec_proof::*;
@@ -18,6 +19,7 @@ pub struct Kernel {
     pub page_mapping: Ghost<Map<PagePtr, Set<(ProcPtr, VAddr)>>>,
     /// @Xiangdong fix
     pub page_io_mapping: Ghost<Map<PagePtr, Set<(ProcPtr, VAddr)>>>,
+    pub device_table: DeviceTable,
 }
 
 //spec
@@ -129,6 +131,16 @@ impl Kernel {
                 && self.proc_man.get_proc(self.mem_man.ioid_to_proc_ptr(ioid)).ioid.unwrap() == ioid
     }
 
+    /// A device's owner is a live process, so no later process can inherit it through a reused
+    /// page.
+    pub open spec fn device_table_wf(&self) -> bool {
+        &&& self.device_table.wf()
+        &&& forall|id: DeviceId|
+            #![trigger self.device_table.spec_owner(id)]
+            id.wf() && self.device_table.spec_owner(id).is_some()
+                ==> self.proc_man.proc_dom().contains(self.device_table.spec_owner(id).unwrap())
+    }
+
     pub open spec fn wf(&self) -> bool {
         &&& self.mem_man.wf()
         &&& self.page_alloc.wf()
@@ -137,6 +149,7 @@ impl Kernel {
         &&& self.mapping_wf()
         &&& self.pcid_ioid_wf()
         &&& self.page_mapping_wf()
+        &&& self.device_table_wf()
     }
 
     pub open spec fn total_mem_4k_quota_wf(&self) -> bool {
@@ -510,6 +523,7 @@ impl Kernel {
             proc_man: ProcessManager::new(),
             page_mapping: Ghost(Map::<PagePtr, Set<(ProcPtr, VAddr)>>::empty()),
             page_io_mapping: Ghost(Map::<PagePtr, Set<(ProcPtr, VAddr)>>::empty()),
+            device_table: DeviceTable::new(),
         }
     }
 
@@ -551,6 +565,7 @@ impl Kernel {
             page_perm_1,
             page_perm_2,
         );
+        self.device_table.init(dom_0_proc_ptr);
     }
 }
 

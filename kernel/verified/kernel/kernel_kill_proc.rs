@@ -1,5 +1,6 @@
 use vstd::prelude::*;
 verus! {
+use crate::device::DeviceId;
 use crate::define::*;
 use crate::kernel::Kernel;
 use crate::va_range::*;
@@ -23,6 +24,8 @@ impl Kernel {
             old(self).get_proc(proc_ptr).depth != 0,
         ensures
             final(self).wf(),
+            forall|id: DeviceId|
+                id.wf() ==> #[trigger] final(self).device_table.spec_owner(id) != Some(proc_ptr),
             final(self).thread_dom() == old(self).thread_dom(),
             threads_unchanged_except(old(self).proc_man, final(self).proc_man, set![]),
             final(self).proc_dom() == old(self).proc_dom().remove(proc_ptr),
@@ -53,6 +56,7 @@ impl Kernel {
                 ==>
                 final(self).get_proc(p_ptr).uppertree_seq == old(self).get_proc(p_ptr).uppertree_seq,     
     {
+        self.device_table.release(proc_ptr);
         let pcid = self.proc_man.get_proc(proc_ptr).pcid;
         let (page_ptr, page_perm) = self.proc_man.kill_process_none_root(proc_ptr);
         self.page_alloc.free_page_4k(page_ptr, page_perm);
@@ -104,6 +108,8 @@ impl Kernel {
             old(self).get_proc(proc_ptr).depth == 0,
         ensures
             final(self).wf(),
+            forall|id: DeviceId|
+                id.wf() ==> #[trigger] final(self).device_table.spec_owner(id) != Some(proc_ptr),
             final(self).thread_dom() == old(self).thread_dom(),
             threads_unchanged_except(old(self).proc_man, final(self).proc_man, set![]),
             final(self).proc_dom() == old(self).proc_dom().remove(proc_ptr),
@@ -131,6 +137,7 @@ impl Kernel {
                 final(self).get_proc(p_ptr).uppertree_seq == old(self).get_proc(p_ptr).uppertree_seq,  
                 
     {
+        self.device_table.release(proc_ptr);
         let pcid = self.proc_man.get_proc(proc_ptr).pcid;
         let (page_ptr, page_perm) = self.proc_man.kill_process_root(proc_ptr);
         self.page_alloc.free_page_4k(page_ptr, page_perm);

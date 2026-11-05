@@ -128,6 +128,15 @@ pub fn kernel_init(
         dom0_page_map_perm
     );
 
+    // kernel_init is not proven yet, so check the ends of the table DeviceTable::init proves it fills.
+    {
+        let kernel = KERNEL.lock();
+        for (bus, device, function) in [(0, 0, 0), (255, 31, 7)] {
+            let id = verified::device::DeviceId::new(bus, device, function).unwrap();
+            assert_eq!(kernel.device_table.owner(id), Some(dom_0_proc_ptr), "dom0 owns every device");
+        }
+    }
+
     let dom0_retstruc = KERNEL
     .lock()
     .schedule_idle_cpu(0, &mut dom0_pt_regs);

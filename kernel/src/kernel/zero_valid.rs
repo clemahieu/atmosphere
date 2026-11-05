@@ -5,6 +5,7 @@
 use verified::allocator::page::Page;
 use verified::array::Array;
 use verified::define::{EndpointPtr, PagePtr, ProcPtr};
+use verified::device::DeviceTable;
 use verified::process_manager::cpu::Cpu;
 use verified::memory_manager::pci_bitmap::PCIBitMap;
 use verified::memory_manager::root_table::RootTable;
@@ -20,5 +21,6 @@ const _: Array<Option<ProcPtr>, 1> = Array::new();
 const _: Array<Option<EndpointPtr>, 1> = Array::new();
 const _: StaticLinkedList<PagePtr, 1> = StaticLinkedList::new();
 const _: PCIBitMap = PCIBitMap::new();
+const _: DeviceTable = DeviceTable::new();
 const _: RootTable = RootTable::new();
 const _: Registers = Registers::random();
