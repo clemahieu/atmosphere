@@ -100,6 +100,13 @@ pub struct DeviceTable {
 }
 
 impl DeviceTable {
+    pub const fn new() -> (ret: Self)
+        ensures
+            ret.wf(),
+    {
+        Self { owners: Array::new() }
+    }
+
     pub closed spec fn wf(&self) -> bool {
         self.owners.wf()
     }
@@ -130,6 +137,63 @@ impl DeviceTable {
                     == old(self).spec_owner(other),
     {
         self.owners.set(id.index(), owner);
+    }
+
+    /// Gives every device to one owner: where all authority over devices starts.
+    pub fn init(&mut self, owner: ProcPtr)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+            forall|id: DeviceId| id.wf() ==> #[trigger] final(self).spec_owner(id) == Some(owner),
+    {
+        let mut i = 0;
+        while i < NUM_DEVICE_IDS
+            invariant
+                0 <= i <= NUM_DEVICE_IDS,
+                self.wf(),
+                forall|j: int| 0 <= j < i ==> self.owners@[j] == Some(owner),
+            decreases NUM_DEVICE_IDS - i,
+        {
+            self.owners.set(i, Some(owner));
+            i = i + 1;
+        }
+    }
+
+    /// Takes every device away from a process that is going away.
+    pub fn release(&mut self, proc_ptr: ProcPtr)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+            forall|id: DeviceId|
+                id.wf() ==> #[trigger] final(self).spec_owner(id) == if old(self).spec_owner(id)
+                    == Some(proc_ptr) {
+                    None
+                } else {
+                    old(self).spec_owner(id)
+                },
+    {
+        let mut i = 0;
+        while i < NUM_DEVICE_IDS
+            invariant
+                0 <= i <= NUM_DEVICE_IDS,
+                self.wf(),
+                old(self).wf(),
+                forall|j: int|
+                    0 <= j < i ==> self.owners@[j] == if old(self).owners@[j] == Some(proc_ptr) {
+                        None
+                    } else {
+                        old(self).owners@[j]
+                    },
+                forall|j: int| i <= j < NUM_DEVICE_IDS ==> self.owners@[j] == old(self).owners@[j],
+            decreases NUM_DEVICE_IDS - i,
+        {
+            if *self.owners.get(i) == Some(proc_ptr) {
+                self.owners.set(i, None);
+            }
+            i = i + 1;
+        }
     }
 }
 
