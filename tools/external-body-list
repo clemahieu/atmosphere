@@ -33,10 +33,7 @@ memory_manager/mmu_util.rs	pagetable_array_create_pagetable_l2_entry_t	unproven	
 memory_manager/mmu_util.rs	pagetable_array_create_pagetable_l3_entry_t	unproven	an array element access not proven yet
 memory_manager/mmu_util.rs	pagetable_array_create_pagetable_l4_entry_t	unproven	an array element access not proven yet
 memory_manager/mmu_util.rs	pagetable_array_map_4k_page_t	unproven	an array element access not proven yet
-memory_manager/pci_bitmap.rs	get	unproven	not proven yet
-memory_manager/pci_bitmap.rs	init	unproven	initialisation not proven yet
 memory_manager/pci_bitmap.rs	new	gap	builds a value from zeroed memory, which Verus cannot check
-memory_manager/pci_bitmap.rs	set	unproven	not proven yet
 memory_manager/root_table.rs	get_ioid	glue	accesses the IOMMU root table in its hardware format
 memory_manager/root_table.rs	init	glue	accesses the IOMMU root table in its hardware format
 memory_manager/root_table.rs	new	glue	accesses the IOMMU root table in its hardware format
