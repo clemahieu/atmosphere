@@ -68,11 +68,11 @@ pub proof fn page_ptr_lemma()
             page_index_valid(index) ==> page_ptr2page_index(page_index2page_ptr(index)) == index,
         forall|ptr1: PagePtr, ptr2: PagePtr|
             #![auto]
-            page_index_valid(ptr1) && page_index_valid(ptr2) && ptr1 == ptr2
+            page_ptr_valid(ptr1) && page_ptr_valid(ptr2) && ptr1 == ptr2
                 ==> page_ptr2page_index(ptr1) == page_ptr2page_index(ptr2),
         forall|ptr1: PagePtr, ptr2: PagePtr|
             #![auto]
-            page_index_valid(ptr1) && page_index_valid(ptr2) && ptr1 != ptr2
+            page_ptr_valid(ptr1) && page_ptr_valid(ptr2) && ptr1 != ptr2
                 ==> page_ptr2page_index(ptr1) != page_ptr2page_index(ptr2),
         forall|index1: usize, index2: usize|
             #![auto]
