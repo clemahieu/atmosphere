@@ -31,7 +31,6 @@ pub struct MemoryManager {
     pub root_table_cache: Ghost<Seq<Seq<Seq<Option<(IOid, usize)>>>>>,
     // pub device_table:MarsArray<MarsArray<Option<(u8,u8,u8)>,256>,IOID_MAX>,
     // pub ioid_device_table: Ghost<Seq<Set<(u8,u8,u8)>>>,
-    pub pci_bitmap: PCIBitMap,
 }
 
 impl MemoryManager {
@@ -159,37 +158,6 @@ impl MemoryManager {
     /// @Xiangdong TODO fix
     pub open spec fn root_table_wf(&self) -> bool {
         &&& self.root_table.wf()
-        &&& self.pci_bitmap.wf()
-        // &&& forall|bus: u8, dev: u8, fun: u8|
-        //     #![auto]
-        //     0 <= bus < 256 && 0 <= dev < 32 && 0 <= fun < 8 && self.root_table.resolve(
-        //         bus,
-        //         dev,
-        //         fun,
-        //     ).is_Some() ==> 0 <= self.root_table.resolve(bus, dev, fun).get_Some_0().0 < IOID_MAX
-        //         && self.get_free_ioids_as_set().contains(
-        //         self.root_table.resolve(bus, dev, fun).get_Some_0().0,
-        //     ) == false && self.root_table.resolve(bus, dev, fun).get_Some_0().1
-        //         == self.get_iommu_table_by_ioid(
-        //         self.root_table.resolve(bus, dev, fun).get_Some_0().0,
-        //     ).unwrap().cr3
-        // &&& forall|bus: u8, dev: u8, fun: u8|
-        //     #![auto]
-        //     0 <= bus < 256 && 0 <= dev < 32 && 0 <= fun < 8 && self.root_table.resolve(
-        //         bus,
-        //         dev,
-        //         fun,
-        //     ).is_Some() ==> self.pci_bitmap@[(
-        //         self.root_table.resolve(bus, dev, fun).get_Some_0().0,
-        //         bus,
-        //         dev,
-        //         fun,
-        //     )] == true
-        // &&& forall|ioid: IOid, bus: u8, dev: u8, fun: u8|
-        //     #![auto]
-        //     0 <= ioid < IOID_MAX && self.get_free_ioids_as_set().contains(ioid) && 0 <= bus < 256
-        //         && 0 <= dev < 32 && 0 <= fun < 8 ==> self.pci_bitmap@[(ioid, bus, dev, fun)]
-        //         == false
         // &&
         // self.ioid_device_table@.len() == IOID_MAX
         // &&
@@ -387,7 +355,6 @@ impl MemoryManager {
             root_table_cache: Ghost(Seq::<Seq<Seq<Option<(IOid, usize)>>>>::empty()),
             // pub device_table:MarsArray<MarsArray<Option<(u8,u8,u8)>,256>,IOID_MAX>,
             // pub ioid_device_table: Ghost<Seq<Set<(u8,u8,u8)>>>,
-            pci_bitmap: PCIBitMap::new(),
         }
     }
 
@@ -514,7 +481,6 @@ impl MemoryManager {
             final(self).iommu_table_pages =~= old(self).iommu_table_pages,
             final(self).root_table =~= old(self).root_table,
             final(self).root_table_cache =~= old(self).root_table_cache,
-            final(self).pci_bitmap =~= old(self).pci_bitmap,
             final(self).page_table_pages@.dom() =~= old(self).page_table_pages@.dom().insert(page_map_ptr),
             forall|p: Pcid|
                 #![trigger final(self).pcid_active(p)]
@@ -677,7 +643,6 @@ impl MemoryManager {
             final(self).page_table_pages =~= old(self).page_table_pages,
             final(self).root_table =~= old(self).root_table,
             final(self).root_table_cache =~= old(self).root_table_cache,
-            final(self).pci_bitmap =~= old(self).pci_bitmap,
             final(self).iommu_table_pages@.dom() =~= old(self).iommu_table_pages@.dom().insert(page_map_ptr),
             forall|p: Pcid|
                 #![trigger final(self).pcid_active(p)]
@@ -919,7 +884,6 @@ impl MemoryManager {
             final(self).iommu_table_pages =~= old(self).iommu_table_pages,
             final(self).root_table =~= old(self).root_table,
             final(self).root_table_cache =~= old(self).root_table_cache,
-            final(self).pci_bitmap =~= old(self).pci_bitmap,
             final(self).page_table_pages@.dom() =~= old(self).page_table_pages@.dom().insert(page_map_ptr),
             forall|p: Pcid|
                 #![trigger final(self).pcid_active(p)]
@@ -1082,7 +1046,6 @@ impl MemoryManager {
             // self.iommu_table_pages =~= old(self).iommu_table_pages,
             final(self).root_table =~= old(self).root_table,
             final(self).root_table_cache =~= old(self).root_table_cache,
-            final(self).pci_bitmap =~= old(self).pci_bitmap,
             final(self).iommu_table_pages@.dom() =~= old(self).iommu_table_pages@.dom().insert(page_map_ptr),
             forall|p: Pcid|
                 #![trigger final(self).pcid_active(p)]
@@ -1442,7 +1405,6 @@ impl MemoryManager {
             final(self).iommu_table_pages =~= old(self).iommu_table_pages,
             final(self).root_table =~= old(self).root_table,
             final(self).root_table_cache =~= old(self).root_table_cache,
-            final(self).pci_bitmap =~= old(self).pci_bitmap,
             final(self).page_table_pages@.dom() =~= old(self).page_table_pages@.dom().insert(page_map_ptr),
             forall|p: Pcid|
                 #![trigger final(self).pcid_active(p)]
@@ -1627,7 +1589,6 @@ impl MemoryManager {
             // self.iommu_table_pages =~= old(self).iommu_table_pages,
             final(self).root_table =~= old(self).root_table,
             final(self).root_table_cache =~= old(self).root_table_cache,
-            final(self).pci_bitmap =~= old(self).pci_bitmap,
             final(self).iommu_table_pages@.dom() =~= old(self).iommu_table_pages@.dom().insert(page_map_ptr),
             forall|p: Pcid|
                 #![trigger final(self).pcid_active(p)]
@@ -1807,7 +1768,6 @@ impl MemoryManager {
             final(self).iommu_table_pages =~= old(self).iommu_table_pages,
             final(self).root_table =~= old(self).root_table,
             final(self).root_table_cache =~= old(self).root_table_cache,
-            final(self).pci_bitmap =~= old(self).pci_bitmap,
             // self.page_table_pages@.dom() =~= old(self).page_table_pages@.dom().insert(page_map_ptr),
             forall|p: Pcid|
                 #![trigger final(self).pcid_active(p)]
@@ -1942,7 +1902,6 @@ impl MemoryManager {
             final(self).iommu_table_pages =~= old(self).iommu_table_pages,
             final(self).root_table =~= old(self).root_table,
             final(self).root_table_cache =~= old(self).root_table_cache,
-            final(self).pci_bitmap =~= old(self).pci_bitmap,
             // self.page_table_pages@.dom() =~= old(self).page_table_pages@.dom().insert(page_map_ptr),
             forall|p: Pcid|
                 #![trigger final(self).pcid_active(p)]
@@ -2161,7 +2120,6 @@ impl MemoryManager {
     //         self.iommu_table_pages =~= old(self).iommu_table_pages,
     //         self.root_table =~= old(self).root_table,
     //         self.root_table_cache =~= old(self).root_table_cache,
-    //         self.pci_bitmap =~= old(self).pci_bitmap,
     //         self.page_table_pages@.dom() =~= old(self).page_table_pages@.dom().insert(page_map_ptr),
     //         forall|p:Pcid|
     //             #![trigger self.pcid_active(p)]
@@ -2230,7 +2188,6 @@ impl MemoryManager {
             final(self).iommu_table_pages =~= old(self).iommu_table_pages,
             final(self).root_table =~= old(self).root_table,
             final(self).root_table_cache =~= old(self).root_table_cache,
-            final(self).pci_bitmap =~= old(self).pci_bitmap,
             final(self).page_table_pages@.dom() =~= old(self).page_table_pages@.dom(),
             forall|p: Pcid|
                 #![trigger final(self).pcid_active(p)]
@@ -2311,7 +2268,6 @@ pub fn free_page_table(&mut self, proc_ptr: ProcPtr, pcid: Pcid)
             final(self).iommu_table_pages =~= old(self).iommu_table_pages,
             final(self).root_table =~= old(self).root_table,
             final(self).root_table_cache =~= old(self).root_table_cache,
-            final(self).pci_bitmap =~= old(self).pci_bitmap,
             final(self).page_table_pages@.dom() =~= old(self).page_table_pages@.dom(),
             forall|p: Pcid|
                 #![trigger final(self).pcid_active(p)]
@@ -2377,7 +2333,6 @@ pub fn free_page_table(&mut self, proc_ptr: ProcPtr, pcid: Pcid)
             final(self).iommu_table_pages =~= old(self).iommu_table_pages,
             final(self).root_table =~= old(self).root_table,
             final(self).root_table_cache =~= old(self).root_table_cache,
-            final(self).pci_bitmap =~= old(self).pci_bitmap,
             final(self).page_table_pages@.dom() =~= old(self).page_table_pages@.dom(),
             forall|p: Pcid|
                 #![trigger final(self).pcid_active(p)]
