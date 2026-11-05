@@ -1,7 +1,6 @@
 use vstd::prelude::*;
 verus! {
 
-use core::mem::MaybeUninit;
 use crate::define::*;
 use crate::array::Array;
 use crate::pptr::{PPtr, PointsTo};
@@ -185,8 +184,6 @@ pub fn thread_set_blocking_endpoint_endpoint_ref_scheduler_ref_state_and_ipc_pay
     thread.running_cpu = None;
 }
 
-#[verifier(external_body)]
-// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn thread_set_endpoint_descriptor(
     thread_ptr: ThreadPtr,
     thread_perm: &mut Tracked<PointsTo<Thread>>,
@@ -196,6 +193,7 @@ pub fn thread_set_endpoint_descriptor(
     requires
         old(thread_perm)@.is_init(),
         old(thread_perm)@.addr() == thread_ptr,
+        old(thread_perm)@.value().endpoint_descriptors.wf(),
         0 <= endpoint_index < MAX_NUM_ENDPOINT_DESCRIPTORS,
     ensures
         final(thread_perm)@.is_init(),
@@ -220,14 +218,11 @@ pub fn thread_set_endpoint_descriptor(
             thread_perm,
         )@.value().blocking_endpoint_index,
 {
-    unsafe {
-        let uptr = thread_ptr as *mut MaybeUninit<Thread>;
-        (*uptr).assume_init_mut().endpoint_descriptors.set(endpoint_index, endpoint_op);
-    }
+    let tracked owned = thread_perm.borrow_mut();
+    let thread = PPtr::<Thread>::from_usize(thread_ptr).borrow_mut(Tracked(owned));
+    thread.endpoint_descriptors.set(endpoint_index, endpoint_op);
 }
 
-#[verifier(external_body)]
-// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn thread_set_state(
     thread_ptr: ThreadPtr,
     thread_perm: &mut Tracked<PointsTo<Thread>>,
@@ -254,14 +249,11 @@ pub fn thread_set_state(
         final(thread_perm)@.value().error_code == old(thread_perm)@.value().error_code,
         final(thread_perm)@.value().trap_frame == old(thread_perm)@.value().trap_frame,
 {
-    unsafe {
-        let uptr = thread_ptr as *mut MaybeUninit<Thread>;
-        (*uptr).assume_init_mut().state = state;
-    }
+    let tracked owned = thread_perm.borrow_mut();
+    let thread = PPtr::<Thread>::from_usize(thread_ptr).borrow_mut(Tracked(owned));
+    thread.state = state;
 }
 
-#[verifier(external_body)]
-// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn thread_set_current_cpu(
     thread_ptr: ThreadPtr,
     thread_perm: &mut Tracked<PointsTo<Thread>>,
@@ -288,14 +280,11 @@ pub fn thread_set_current_cpu(
         final(thread_perm)@.value().error_code == old(thread_perm)@.value().error_code,
         final(thread_perm)@.value().trap_frame == old(thread_perm)@.value().trap_frame,
 {
-    unsafe {
-        let uptr = thread_ptr as *mut MaybeUninit<Thread>;
-        (*uptr).assume_init_mut().running_cpu = cpu_id;
-    }
+    let tracked owned = thread_perm.borrow_mut();
+    let thread = PPtr::<Thread>::from_usize(thread_ptr).borrow_mut(Tracked(owned));
+    thread.running_cpu = cpu_id;
 }
 
-#[verifier(external_body)]
-// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn thread_set_error_code(
     thread_ptr: ThreadPtr,
     thread_perm: &mut Tracked<PointsTo<Thread>>,
@@ -325,14 +314,11 @@ pub fn thread_set_error_code(
         final(thread_perm)@.value().error_code == error_code,
         final(thread_perm)@.value().trap_frame == old(thread_perm)@.value().trap_frame,
 {
-    unsafe {
-        let uptr = thread_ptr as *mut MaybeUninit<Thread>;
-        (*uptr).assume_init_mut().error_code = error_code;
-    }
+    let tracked owned = thread_perm.borrow_mut();
+    let thread = PPtr::<Thread>::from_usize(thread_ptr).borrow_mut(Tracked(owned));
+    thread.error_code = error_code;
 }
 
-#[verifier(external_body)]
-// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn thread_set_trap_frame_fast(
     thread_ptr: ThreadPtr,
     thread_perm: &mut Tracked<PointsTo<Thread>>,
@@ -363,14 +349,11 @@ pub fn thread_set_trap_frame_fast(
         final(thread_perm)@.value().trap_frame.is_Some(),
         final(thread_perm)@.value().trap_frame.unwrap() == *pt_regs,
 {
-    unsafe {
-        let uptr = thread_ptr as *mut MaybeUninit<Thread>;
-        (*uptr).assume_init_mut().trap_frame.set_self_fast(pt_regs);
-    }
+    let tracked owned = thread_perm.borrow_mut();
+    let thread = PPtr::<Thread>::from_usize(thread_ptr).borrow_mut(Tracked(owned));
+    thread.trap_frame.set_self_fast(pt_regs);
 }
 
-#[verifier(external_body)]
-// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn thread_set_trap_frame_full(
     thread_ptr: ThreadPtr,
     thread_perm: &mut Tracked<PointsTo<Thread>>,
@@ -397,10 +380,9 @@ pub fn thread_set_trap_frame_full(
         final(thread_perm)@.value().error_code == old(thread_perm)@.value().error_code,
         final(thread_perm)@.value().trap_frame.unwrap() == *pt_regs,
 {
-    unsafe {
-        let uptr = thread_ptr as *mut MaybeUninit<Thread>;
-        (*uptr).assume_init_mut().trap_frame.set_self(pt_regs);
-    }
+    let tracked owned = thread_perm.borrow_mut();
+    let thread = PPtr::<Thread>::from_usize(thread_ptr).borrow_mut(Tracked(owned));
+    thread.trap_frame.set_self(pt_regs);
 }
 
 } // verus!
