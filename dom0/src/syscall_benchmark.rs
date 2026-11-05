@@ -583,6 +583,25 @@ extern "C" fn child_process() -> ! {
     }
 }
 
+/// Device ids no PCI function can have. The gate's IOMMU boot is what makes this reach the checks:
+/// with no IOMMU both syscalls return 1 first.
+pub fn check_device_arguments() {
+    let calls: [(&str, unsafe fn(usize, usize, usize) -> isize); 2] = [
+        ("sys_set_device_iommu", |b, d, f| unsafe { asys::sys_set_device_iommu(b, d, f, 0) }),
+        ("sys_invalidate_iotlb", |b, d, f| unsafe { asys::sys_invalidate_iotlb(b, d, f, 0) }),
+    ];
+    let ids = [(256, 0, 0), (0, 32, 0), (0, 0, 8), (usize::MAX, 0, 0), (0, usize::MAX, 0), (0, 0, usize::MAX)];
+    for (what, call) in calls {
+        for (bus, device, function) in ids {
+            let ret = unsafe { call(bus, device, function) };
+            log::info!("{} of {:#x}:{:#x}.{:#x}: {}", what, bus, device, function, ret);
+            if ret != 1 {
+                bench_fail(what, ret as usize);
+            }
+        }
+    }
+}
+
 /// sys_log with a level no log::Level can hold, which asys::sys_log cannot express.
 unsafe fn syscall_log_raw(data: *const u8, len: usize, level: usize) -> isize {
     let ret: isize;

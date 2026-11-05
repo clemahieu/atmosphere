@@ -53,6 +53,7 @@ extern "C" fn main(payload_base: *mut u8, payload_size: usize) -> isize {
     // The syscall timers, matching VeriFlat's dom0 timers, on CPU 0 with no other runnable thread.
     syscall_benchmark::check_unassigned_syscalls();
     syscall_benchmark::check_device_iommu();
+    syscall_benchmark::check_device_arguments();
     syscall_benchmark::check_log_buffers();
     syscall_benchmark::check_endpoint_indexes();
     syscall_benchmark::check_child_process();
