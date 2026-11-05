@@ -222,7 +222,20 @@ pub extern "C" fn sys_mmap(va:usize, perm_bits:usize, range:usize, regs: &mut vR
 }
 
 /// This syscall does a send and runs the blocked thread if it belongs to the same container. 
+/// Fails the syscall when a process names an endpoint index past the descriptor array.
+fn reject_endpoint_index(endpoint_index: usize, regs: &mut vRegisters) -> bool {
+    if vdefine::endpoint_index_in_range(endpoint_index) {
+        return false;
+    }
+    regs.rax = 1;
+    Bridge::set_switch_decision(SwitchDecision::NoSwitching);
+    true
+}
+
 pub extern "C" fn sys_send_empty_try_schedule(endpoint_index:usize, _:usize, _:usize, regs: &mut vRegisters) {
+    if reject_endpoint_index(endpoint_index, regs) {
+        return;
+    }
     // log::info!("sys_send_empty_try_schedule regs at entrace: {:x?}", regs);
     let cpu_id = cpu::get_cpu_id();
     let mut kernel = KERNEL.lock();
@@ -285,6 +298,9 @@ pub extern "C" fn sys_resolve_io(va:usize,_:usize, _:usize, regs: &mut vRegister
 
 
 pub extern "C" fn sys_new_endpoint(endpoint_index:usize, _:usize, _:usize, regs: &mut vRegisters) {
+    if reject_endpoint_index(endpoint_index, regs) {
+        return;
+    }
     let cpu_id = cpu::get_cpu_id();
     let mut kernel = KERNEL.lock();
     let thread_info = kernel.get_current_cpu_info(cpu_id);
@@ -304,6 +320,9 @@ pub extern "C" fn sys_new_endpoint(endpoint_index:usize, _:usize, _:usize, regs:
 
 /// create a new process, pass an endpoint, and pass some physical pages
 pub extern "C" fn sys_new_proc(endpoint_index:usize, ip:usize, sp:usize, regs: &mut vRegisters, va:usize, range:usize) {
+    if reject_endpoint_index(endpoint_index, regs) {
+        return;
+    }
     let cpu_id = cpu::get_cpu_id();
     let mut kernel = KERNEL.lock();
     let thread_info = kernel.get_current_cpu_info(cpu_id);
@@ -341,6 +360,9 @@ pub extern "C" fn sys_new_proc(endpoint_index:usize, ip:usize, sp:usize, regs: &
 
 /// create a new thread and pass an endpoint
 pub extern "C" fn sys_new_thread(endpoint_index:usize, ip:usize, sp:usize, regs: &mut vRegisters){
+    if reject_endpoint_index(endpoint_index, regs) {
+        return;
+    }
     let cpu_id = cpu::get_cpu_id();
     let mut new_thread_pt_regs = regs.clone();
     new_thread_pt_regs.rip = ip as u64;
@@ -417,6 +439,9 @@ pub extern "C" fn sys_new_thread(endpoint_index:usize, ip:usize, sp:usize, regs:
 /// This syscall currently assumes there's always threads to run. 
 /// @Xiangdong fix this ^
 pub extern "C" fn sys_receive_empty(endpoint_index:usize, _:usize, _:usize, regs: &mut vRegisters){
+    if reject_endpoint_index(endpoint_index, regs) {
+        return;
+    }
     // log::info!{
     //     "hello from sys_receive_empty"
     // };
@@ -651,7 +676,7 @@ pub extern "C" fn sys_receive_empty(endpoint_index:usize, _:usize, _:usize, regs
 //     }
 // }
 
-pub extern "C" fn sys_get_iommu_cr3(endpoint_index:usize, _:usize, _:usize, regs: &mut vRegisters){
+pub extern "C" fn sys_get_iommu_cr3(_:usize, _:usize, _:usize, regs: &mut vRegisters){
     // log::info!("regs {:x?}", regs);
     
     Bridge::set_switch_decision(SwitchDecision::NoSwitching);

@@ -464,6 +464,26 @@ pub fn check_log_buffers() {
     }
 }
 
+/// Every syscall that takes an endpoint index, with an index past the descriptor array.
+pub fn check_endpoint_indexes() {
+    let calls: [(&str, unsafe fn(usize) -> usize); 5] = [
+        ("sys_new_endpoint", |i| unsafe { asys::sys_new_endpoint(i) }),
+        ("sys_new_thread", |i| unsafe { asys::sys_new_thread(i, 0, 0) }),
+        ("sys_new_proc", |i| unsafe { asys::sys_new_proc(i, 0, 0, 0xa0_0000_0000, 1) }),
+        ("sys_send_empty_try_schedule", |i| unsafe { asys::sys_send_empty_try_schedule(i) }),
+        ("sys_receive_empty", |i| unsafe { asys::sys_receive_empty(i) }),
+    ];
+    for (what, call) in calls {
+        for index in [128, usize::MAX] {
+            let ret = unsafe { call(index) };
+            log::info!("{} with endpoint index {:#x}: {}", what, index, ret);
+            if ret != 1 {
+                bench_fail(what, ret);
+            }
+        }
+    }
+}
+
 /// sys_log with a level no log::Level can hold, which asys::sys_log cannot express.
 unsafe fn syscall_log_raw(data: *const u8, len: usize, level: usize) -> isize {
     let ret: isize;
