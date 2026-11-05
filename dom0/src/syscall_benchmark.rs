@@ -521,7 +521,12 @@ static SECOND_CORE_MADE: AtomicUsize = AtomicUsize::new(0);
 static SECOND_CORE_STOP: AtomicUsize = AtomicUsize::new(0);
 static SECOND_CORE_REPORTED: AtomicUsize = AtomicUsize::new(0);
 static SECOND_CORE_WOKEN: AtomicUsize = AtomicUsize::new(0);
-static SECOND_CORE_CONTEND: AtomicUsize = AtomicUsize::new(0);
+/// The thread on CPU 1 reads this while it waits, on a cache line of its own.
+#[repr(align(64))]
+struct OwnLine(AtomicUsize);
+static SECOND_CORE_CONTEND: OwnLine = OwnLine(AtomicUsize::new(0));
+const CONTEND_NOW: usize = 1;
+const CONTEND_DONE: usize = 2;
 static SECOND_CORE_PLACED: AtomicUsize = AtomicUsize::new(0);
 /// How many times the thread blocks with nothing else runnable: once on each core, since a wake swaps
 /// sender and receiver onto each other's core.
@@ -537,6 +542,14 @@ extern "C" fn second_core_thread() -> ! {
     }
     log::info!("thread on CPU 1 made {} syscalls", SECOND_CORE_MADE.load(Ordering::SeqCst));
     SECOND_CORE_REPORTED.store(1, Ordering::SeqCst);
+    while SECOND_CORE_CONTEND.0.load(Ordering::SeqCst) != CONTEND_DONE {
+        if SECOND_CORE_CONTEND.0.load(Ordering::SeqCst) == CONTEND_NOW {
+            unsafe { asys::sys_mresolve(va) };
+            SECOND_CORE_MADE.fetch_add(1, Ordering::SeqCst);
+        } else {
+            core::hint::spin_loop();
+        }
+    }
     for block in 1..=SECOND_CORE_BLOCKS {
         // Wait until the other thread is running on the other core. If it were still in the scheduler,
         // blocking here would run it on this core, and this core would not be left with nothing to run.
@@ -547,13 +560,10 @@ extern "C" fn second_core_thread() -> ! {
         unsafe { asys::sys_receive_empty(0) };
         SECOND_CORE_WOKEN.store(block, Ordering::SeqCst);
     }
+    // Touching no memory from here on: a loop reading a flag here slowed the benchmarks on CPU 0, by
+    // about 50 TSC cycles an IPC round trip with this core in the same CCD and 370 across CCDs.
     loop {
-        if SECOND_CORE_CONTEND.load(Ordering::SeqCst) != 0 {
-            unsafe { asys::sys_mresolve(va) };
-            SECOND_CORE_MADE.fetch_add(1, Ordering::SeqCst);
-        } else {
-            core::hint::spin_loop();
-        }
+        core::hint::spin_loop();
     }
 }
 
@@ -595,6 +605,7 @@ pub fn check_second_core() {
         core::hint::spin_loop();
     }
     log::info!("thread on CPU 0 made {} syscalls beside it", mine);
+    time_contended_syscalls();
     // The thread blocks on CPU 1 with nothing to run there. A wake puts it on this core and this thread
     // in the scheduler, which CPU 1 takes from. The second wake swaps them back, so this thread ends on
     // CPU 0 with the other on CPU 1. A send with no receiver yet does nothing, so each is retried.
@@ -622,18 +633,17 @@ fn time_mresolve(va: usize) -> u64 {
 }
 
 /// How much the other core slows this one through the kernel's lock: the same syscall with that core
-/// idle in user mode, then with it making the same call in a loop. Its thread is already on CPU 1,
-/// left there by check_second_core.
-pub fn time_contended_syscalls() {
+/// idle in user mode, then with it making the same call in a loop.
+fn time_contended_syscalls() {
     let va = (&raw const RESOLVED_PAGE) as usize & !0xfff;
     let alone = time_mresolve(va);
     let made = SECOND_CORE_MADE.load(Ordering::SeqCst);
-    SECOND_CORE_CONTEND.store(1, Ordering::SeqCst);
+    SECOND_CORE_CONTEND.0.store(CONTEND_NOW, Ordering::SeqCst);
     while SECOND_CORE_MADE.load(Ordering::SeqCst) == made {
         core::hint::spin_loop();
     }
     let contended = time_mresolve(va);
-    SECOND_CORE_CONTEND.store(0, Ordering::SeqCst);
+    SECOND_CORE_CONTEND.0.store(CONTEND_DONE, Ordering::SeqCst);
     let other = SECOND_CORE_MADE.load(Ordering::SeqCst) - made;
     log::info!(
         "sys_mresolve: {} TSC cycles alone, {} with the other core contending ({} calls there), over {} calls",
