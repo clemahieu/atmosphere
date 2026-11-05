@@ -190,10 +190,15 @@ pub proof fn seq_skip_lemma<A>()
 
     // Prove property 1: s.skip(1).contains(v) == s.contains(v) when s[0] != v
     assert forall|s: Seq<A>, v: A| s.len() > 0 && s[0] != v && s.no_duplicates() implies (s.skip(1).contains(v) == s.contains(v)) by {
-        // broadcast use vstd::seq_lib::lemma_seq_skip_contains; 
-        // Newer version Verus will have the above lemma. For now just admit()
-        // TODO
-        assume(false);
+        if s.contains(v) {
+            let k = choose|k: int| 0 <= k < s.len() && s[k] == v;
+            assert(k != 0);
+            assert(s.skip(1)[k - 1] == v);
+        }
+        if s.skip(1).contains(v) {
+            let k = choose|k: int| 0 <= k < s.skip(1).len() && s.skip(1)[k] == v;
+            assert(s[k + 1] == v);
+        }
     }
 
     // Prove property 4: s.skip(1) =~= s.remove_value(v) when s[0] == v and s.no_duplicates()
