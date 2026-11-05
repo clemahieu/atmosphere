@@ -50,7 +50,33 @@ impl VaRange4K {
             0 <= i < self.len ==> spec_va_add_range(self.start, i) == self@[i as int]
     }
 
-    pub fn new(va: VAddr, len: usize) -> (ret: Self)
+    /// The range a process names in its registers, or None if it may not name it. This is the only
+    /// way kernel/src builds a range, and it runs in constant time, since len is the caller's.
+    pub fn try_new(va: VAddr, len: usize) -> (ret: Option<Self>)
+        ensures
+            ret.is_some() == (spec_va_4k_valid(va) && va + len * 4096 <= 0x1_0000_0000_0000),
+            ret.is_some() ==> ret.unwrap().wf(),
+            ret.is_some() ==> ret.unwrap().start == va,
+            ret.is_some() ==> ret.unwrap().len == len,
+            ret.is_some() ==> len * 4 < usize::MAX,
+            ret.is_some() ==> len * 3 + 3 < usize::MAX,
+    {
+        if !va_4k_valid(va) {
+            return None;
+        }
+        proof {
+            lemma_va_4k_valid_bounds(va);
+        }
+        if len > (0x1_0000_0000_0000usize - va) / 4096 {
+            return None;
+        }
+        proof {
+            lemma_va_4k_range_fits(va, len);
+        }
+        Some(Self::new(va, len))
+    }
+
+    fn new(va: VAddr, len: usize) -> (ret: Self)
         requires
             spec_va_4k_valid(va),
             va_4k_range_valid(va, len),
