@@ -51,6 +51,7 @@ extern "C" fn main(payload_base: *mut u8, payload_size: usize) -> isize {
     log::info!("payload {:?}, size {}", payload_base, payload_size);
 
     // The syscall timers, matching VeriFlat's dom0 timers, on CPU 0 with no other runnable thread.
+    syscall_benchmark::check_log_buffers();
     syscall_benchmark::time_syscall_returns();
     syscall_benchmark::time_mmap_only();
     syscall_benchmark::time_ipc_round_trip();

@@ -140,6 +140,68 @@ pub fn kernel_init(
     log::trace!("Kernel init success!! XD");
 }
 
+/// The longest buffer the logging syscalls accept, which is what asys's logger fills.
+const LOG_BUFFER_LEN: usize = 4096;
+
+/// Copies `len` bytes at `data` out of the calling process and returns them as text, or None
+/// unless every page they touch is mapped in that process's address space. The address and
+/// length come from a register, so a mapped user page is the only thing this reads.
+fn copy_caller_text<'a>(data: usize, len: usize, buffer: &'a mut [u8; LOG_BUFFER_LEN]) -> Option<&'a str> {
+    if len > LOG_BUFFER_LEN {
+        return None;
+    }
+    let end = data.checked_add(len)?;
+    let cpu_id = cpu::get_cpu_id();
+    let mut kernel = KERNEL.lock();
+    let thread_ptr = kernel.get_current_cpu_info(cpu_id).0.unwrap();
+    let mut page = data & !0xfff;
+    while page < end {
+        if !verified::util::page_ptr_util_u::va_4k_valid(page) {
+            return None;
+        }
+        let resolved = kernel.syscall_resolve_va(thread_ptr, vVaRange4K::new(page, 1));
+        if !matches!(resolved.error_code, vdefine::RetValueType::SuccessPairUsize { .. }) {
+            return None;
+        }
+        page = page.checked_add(0x1000)?;
+    }
+    // Every page is mapped in the address space this syscall runs in, so the copy cannot fault.
+    unsafe { core::ptr::copy_nonoverlapping(data as *const u8, buffer.as_mut_ptr(), len) };
+    core::str::from_utf8(&buffer[..len]).ok()
+}
+
+pub extern "C" fn sys_print(data: usize, len: usize, _: usize, regs: &mut vRegisters) {
+    let mut buffer = [0u8; LOG_BUFFER_LEN];
+    regs.rax = match copy_caller_text(data, len, &mut buffer) {
+        Some(text) => {
+            log::info!("print: {}", text);
+            0
+        }
+        None => 1,
+    };
+    Bridge::set_switch_decision(SwitchDecision::NoSwitching);
+}
+
+pub extern "C" fn sys_log(data: usize, len: usize, level: usize, regs: &mut vRegisters) {
+    let level = match level {
+        1 => Some(log::Level::Error),
+        2 => Some(log::Level::Warn),
+        3 => Some(log::Level::Info),
+        4 => Some(log::Level::Debug),
+        5 => Some(log::Level::Trace),
+        _ => None,
+    };
+    let mut buffer = [0u8; LOG_BUFFER_LEN];
+    regs.rax = match (level, copy_caller_text(data, len, &mut buffer)) {
+        (Some(level), Some(text)) => {
+            log::log!(level, "{}", text);
+            0
+        }
+        _ => 1,
+    };
+    Bridge::set_switch_decision(SwitchDecision::NoSwitching);
+}
+
 pub extern "C" fn sys_mmap(va:usize, perm_bits:usize, range:usize, regs: &mut vRegisters) {
     let cpu_id = cpu::get_cpu_id();
     let mut kernel = KERNEL.lock();
