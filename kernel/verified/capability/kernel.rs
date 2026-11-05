@@ -44,6 +44,8 @@ pub struct CapKernel {
     /// none: unmap bumps the epoch first, so a real one is never zero. A frame is its base page's
     /// number. This outlives the block's typing, so retype cannot lose it.
     pub stale_epoch: Array<usize, NUM_PAGES>,
+    /// The permission of each page of a frame, by page number.
+    pub frames: Tracked<Map<usize, PagePerm4k>>,
 }
 
 /// Flushes every context on this core, all PCIDs and paging-structure caches: changing CR4.PGE does
@@ -92,6 +94,12 @@ impl CapKernel {
         &&& self.tables.caps_wf(&self.list)
         &&& self.stale_epoch.wf()
         &&& self.tlb_wf()
+        &&& self.frames_wf()
+    }
+
+    /// A frame's permission is for its own page.
+    pub open spec fn frames_wf(&self) -> bool {
+        forall|i: usize| #[trigger] self.frames@.contains_key(i) ==> self.frames@[i].addr() == i * 4096
     }
 
     /// No core can reach f through a stale translation. What retype needs, as a fact it can check:
@@ -161,6 +169,7 @@ impl CapKernel {
     {
         self.list = Tree::new(root, Tracked(perm));
         self.tables = Tables::new();
+        self.frames = Tracked(Map::tracked_empty());
         self.blocks.init();
         let mut i = 0;
         while i != NUM_CPUS
@@ -378,6 +387,7 @@ impl CapKernel {
             post.tlb == pre.tlb,
             post.mapped == pre.mapped,
             post.stale_epoch == pre.stale_epoch,
+            post.frames == pre.frames,
         ensures
             post.wf(),
     {
