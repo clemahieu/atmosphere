@@ -20,10 +20,6 @@ array.rs	set	unproven	an array element access not proven yet
 kernel/spec.rs	kernel_init	unproven	initialisation not proven yet
 lemma/lemma_t.rs	lemma_usize_u64	unproven	states the target's usize width without a proof
 lemma/lemma_t.rs	page_ptr_lemma	unproven	a lemma stated without a proof
-lemma/lemma_t.rs	set_add_lemma	unproven	a lemma stated without a proof
-lemma/lemma_t.rs	set_insert_lemma	unproven	a lemma stated without a proof
-lemma/lemma_t.rs	set_lemma	unproven	a lemma stated without a proof
-lemma/lemma_u.rs	map_insert_lemma	unproven	a lemma stated without a proof
 memory_manager/mmu_util.rs	iommu_table_array_create_iommu_table_l2_entry_t	unproven	an array element access not proven yet
 memory_manager/mmu_util.rs	iommu_table_array_create_iommu_table_l3_entry_t	unproven	an array element access not proven yet
 memory_manager/mmu_util.rs	iommu_table_array_create_iommu_table_l4_entry_t	unproven	an array element access not proven yet
