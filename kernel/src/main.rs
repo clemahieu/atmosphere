@@ -43,6 +43,7 @@ mod syscalls;
 mod thread;
 mod utils;
 mod ring_buffer;
+mod lock;
 
 use core::arch::asm;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -55,8 +56,8 @@ static mut SHUTDOWN_ON_PANIC: bool = false;
 
 /// CPU 1's stack while it is idle.
 static mut AP_STACK: cpu::IstStack = cpu::IstStack::new();
-/// CPU 1 sets this when it is about to start looking for a thread.
-static AP_IDLE: AtomicBool = AtomicBool::new(false);
+/// CPU 1 sets this when it has come up, so CPU 0 can start contending for the lock with it.
+static AP_UP: AtomicBool = AtomicBool::new(false);
 /// How long CPU 0 waits for it, in TSC cycles. A core that does not start is reported, not fatal.
 const AP_START_CYCLES: u64 = 20_000_000_000;
 static mut THREAD_STACK: [u8; 64 * 1024 * 1024] = [0; 64 * 1024 * 1024];
@@ -163,20 +164,22 @@ fn boot_cpu0(boot_info: *const BootInfo) -> isize {
     }
 }
 
-/// Starts CPU 1 and waits for it to reach its idle loop, so that dom0's log and CPU 1's start-up
-/// log do not interleave.
+/// Starts CPU 1, and both contend for the lock until the test is done, so that dom0's log and CPU 1's
+/// start-up log do not interleave.
 unsafe fn start_second_core() {
     let stack = (&raw const AP_STACK).cast::<u8>().add(core::mem::size_of::<cpu::IstStack>()) as u64;
     interrupt::boot_ap(1, stack, ap_main as *const () as u64);
 
     let deadline = core::arch::x86_64::_rdtsc() + AP_START_CYCLES;
-    while !AP_IDLE.load(Ordering::SeqCst) {
+    while !AP_UP.load(Ordering::SeqCst) {
         if core::arch::x86_64::_rdtsc() > deadline {
             log::error!("CPU 1 did not start");
             return;
         }
         core::hint::spin_loop();
     }
+    lock::contend();
+    lock::report_contention();
 }
 
 /// AP entry point, called by the trampoline in boot/ap_start.asm.
@@ -189,7 +192,8 @@ extern "C" fn ap_main(cpu_id: u64) -> ! {
     }
 
     log::info!("CPU {} idle, syscall stack {:#x}", cpu::get_cpu_id(), cpu::get_current().syscall_sp);
-    AP_IDLE.store(true, Ordering::SeqCst);
+    AP_UP.store(true, Ordering::SeqCst);
+    lock::contend();
 
     // Two cores now enter the kernel under its lock. Interrupts are off while this core could hold
     // the lock, as on every kernel entry, and open only between tries.

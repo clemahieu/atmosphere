@@ -35,6 +35,9 @@ pagetable/pagemap_util_t.rs	page_map_set	glue	writes a hardware page table throu
 pagetable/pagemap_util_t.rs	page_map_set_no_requires	glue	writes a hardware page table through a raw pointer
 pagetable/pagemap_util_t.rs	page_perm_to_page_map	glue	writes a hardware page table through a raw pointer
 process_manager/impl_base.rs	init	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
+queue_lock.rs	new	unproven	builds the atomics of a lock whose mutual exclusion is not proven yet
+queue_lock.rs	acquire	unproven	atomics of a lock whose mutual exclusion is not proven yet
+queue_lock.rs	release	unproven	atomics of a lock whose mutual exclusion is not proven yet
 slinkedlist/impl_t.rs	new	gap	builds a value from zeroed memory, which Verus cannot check
 trap.rs	random	gap	builds a value from zeroed memory, which Verus cannot check
 trap.rs	zeroed	gap	builds a value from zeroed memory, which Verus cannot check

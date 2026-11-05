@@ -8,6 +8,7 @@ pub mod capability;
 pub mod define;
 pub mod device;
 pub mod pptr;
+pub mod queue_lock;
 pub mod layouts;
 pub mod trap;
 pub mod array;

@@ -2,7 +2,7 @@ mod zero_valid;
 
 use astd::boot::PhysicalMemoryType;
 use astd::heapless::Vec as ArrayVec;
-use astd::sync::Mutex;
+use crate::lock::Locked;
 use verified::define::NUM_CPUS;
 use core::arch::asm;
 use core::arch::x86_64::_rdtsc;
@@ -15,7 +15,7 @@ use verified::bridge::TrustedBridge;
 use crate::cpu;
 // The one kernel instance, holding every core. Only this file names it, so finding the instance
 // stays one place to change if there are ever several. Why: atmo-6x9.17.1.
-static KERNEL: Mutex<Kernel> = Mutex::new(Kernel::new());
+static KERNEL: Locked<Kernel> = Locked::new(Kernel::new());
 
 use vstd::prelude::*;
 
