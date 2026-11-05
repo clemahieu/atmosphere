@@ -314,8 +314,6 @@ pub proof fn va_range_lemma()
 {
 }
 
-#[verifier(external_body)]
-// external_body(unproven): a lemma stated without a proof
 pub proof fn page_index_lemma()
     ensures
         forall|i: usize, j: usize|
@@ -327,10 +325,17 @@ pub proof fn page_index_lemma()
             #![trigger page_index_2m_valid(i), page_index_valid(j)]
             page_index_1g_valid(i) && spec_page_index_merge_1g_vaild(i, j) ==> page_index_valid(j),
 {
+    assert forall|i: usize, j: usize|
+        #![trigger spec_page_index_merge_1g_vaild(i, j)]
+        #![trigger page_index_2m_valid(i), page_index_valid(j)]
+        page_index_1g_valid(i) && spec_page_index_merge_1g_vaild(i, j) implies page_index_valid(
+        j,
+    ) by {
+        vstd::arithmetic::div_mod::lemma_fundamental_div_mod(i as int, 0x40000);
+        assert(i as int / 0x40000 < 8);
+    }
 }
 
-#[verifier(external_body)]
-// external_body(unproven): a lemma stated without a proof
 pub proof fn page_ptr_page_index_truncate_lemma()
     ensures
         forall|pi: usize, i: usize|
@@ -358,10 +363,27 @@ pub proof fn page_ptr_page_index_truncate_lemma()
             #![trigger spec_page_index_truncate_2m(i), spec_page_index_truncate_2m(j)]
             spec_page_index_truncate_2m(i) != spec_page_index_truncate_2m(j) ==> i != j,
 {
+    assert forall|pi: usize, i: usize|
+        #![trigger page_index_1g_valid(pi), spec_page_index_truncate_1g(i)]
+        page_index_1g_valid(pi) implies ((pi <= i < pi + 0x40000) <==> spec_page_index_truncate_1g(
+        i,
+    ) == spec_page_index_truncate_1g(pi)) by {
+        lemma_page_index_truncate_1g_is_div(i);
+        lemma_page_index_truncate_1g_is_div(pi);
+        vstd::arithmetic::div_mod::lemma_fundamental_div_mod(i as int, 0x40000);
+        vstd::arithmetic::div_mod::lemma_fundamental_div_mod(pi as int, 0x40000);
+    }
 }
 
-#[verifier(external_body)]
-// external_body(unproven): a lemma stated without a proof
+proof fn lemma_page_index_truncate_1g_is_div(i: usize)
+    ensures
+        spec_page_index_truncate_1g(i) == (i as int / 0x40000) * 0x40000,
+        (i as int / 0x40000) * 0x40000 <= i,
+{
+    vstd::arithmetic::div_mod::lemma_div_denominator(i as int, 512, 512);
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(i as int, 0x40000);
+}
+
 pub proof fn page_ptr_lemma1()
     ensures
         forall|pa: PagePtr|
@@ -387,8 +409,6 @@ pub proof fn page_ptr_lemma1()
 {
 }
 
-#[verifier(external_body)]
-// external_body(unproven): a lemma stated without a proof
 pub proof fn page_ptr_2m_lemma()
     ensures
         forall|pa: PagePtr|
@@ -406,8 +426,6 @@ pub proof fn page_ptr_2m_lemma()
 {
 }
 
-#[verifier(external_body)]
-// external_body(unproven): a lemma stated without a proof
 pub proof fn page_ptr_1g_lemma()
     ensures
         forall|pa: PagePtr|
@@ -423,6 +441,17 @@ pub proof fn page_ptr_1g_lemma()
             #![trigger page_ptr2page_index(pa)]
             page_ptr_1g_valid(pa) ==> page_index_1g_valid(page_ptr2page_index(pa)),
 {
+    assert forall|pa: PagePtr|
+        #![trigger page_ptr_1g_valid(pa)]
+        #![trigger page_ptr2page_index(pa)]
+        page_ptr_1g_valid(pa) implies page_index_1g_valid(page_ptr2page_index(pa)) by {
+        vstd::arithmetic::div_mod::lemma_fundamental_div_mod(pa as int, 0x40000000);
+        let q = pa as int / 0x40000000;
+        assert(pa as int == 4096 * (0x40000 * q));
+        vstd::arithmetic::div_mod::lemma_div_multiples_vanish(0x40000 * q, 4096);
+        assert(pa as int / 4096 == 0x40000 * q);
+        vstd::arithmetic::div_mod::lemma_mod_multiples_basic(q, 0x40000);
+    }
 }
 
 // #[verifier(external_body)]
