@@ -30,13 +30,16 @@ const _: extern "C" fn(usize, usize, usize, &mut Registers, usize, usize) = kern
 pub unsafe fn init_cpu() {
     use GlobalDescriptorTable as GDT;
 
-    // index - 1 because syscall and sysret will add 8 (cs) or 16 (ss) to those values
-    let kernel_seg = SegmentSelector::new(GDT::KERNEL_CODE_INDEX - 1, Ring::Ring0);
-    let user_seg = SegmentSelector::new(GDT::USER_CODE_INDEX - 1, Ring::Ring3);
+    // syscall loads CS from this selector and SS from the next entry.
+    let syscall_seg = SegmentSelector::new(GDT::KERNEL_CODE_INDEX, Ring::Ring0);
+    // sysret loads SS from the next entry and CS from the one after, with no look at the GDT, so
+    // these must be the selectors an iretq back to a process finds there.
+    let sysret_seg = SegmentSelector::new(GDT::USER_DATA_INDEX - 1, Ring::Ring3);
+    const _: () = assert!(GDT::USER_DATA_INDEX + 1 == GDT::USER_CODE_INDEX);
 
     // Set STAR
-    let star = ((kernel_seg.bits() as u64) << 48)
-        | ((user_seg.bits() as u64) << 32)
+    let star = ((sysret_seg.bits() as u64) << 48)
+        | ((syscall_seg.bits() as u64) << 32)
         | (SYSCALL32_ENTRY_EIP as u64);
     msr::wrmsr(msr::IA32_STAR, star);
 

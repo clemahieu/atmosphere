@@ -125,13 +125,13 @@ pub struct GlobalDescriptorTable {
     /// Null entry.
     _null: GdtEntry,
 
+    /// Kernel code. syscall loads SS from the entry after this one.
+    pub kernel_code: GdtEntry,
+
     /// Kernel data.
     pub kernel_data: GdtEntry,
 
-    /// Kernel code.
-    pub kernel_code: GdtEntry,
-
-    /// User data.
+    /// User data. sysret loads CS from the entry after this one.
     pub user_data: GdtEntry,
 
     /// User code.
@@ -144,8 +144,8 @@ pub struct GlobalDescriptorTable {
 }
 
 impl GlobalDescriptorTable {
-    pub const KERNEL_DATA_INDEX: u16 = 1;
-    pub const KERNEL_CODE_INDEX: u16 = 2;
+    pub const KERNEL_CODE_INDEX: u16 = 1;
+    pub const KERNEL_DATA_INDEX: u16 = 2;
     pub const USER_DATA_INDEX: u16 = 3;
     pub const USER_CODE_INDEX: u16 = 4;
     pub const TSS_INDEX: u16 = 5;
