@@ -148,10 +148,19 @@ impl ProcessManager {
         let parent_container_ptr = self.get_container(container_ptr).parent.unwrap();
         let parent_rev_ptr = self.get_container(container_ptr).parent_rev_ptr.unwrap();
         let uppertree_seq = self.get_container(container_ptr).uppertree_seq;
+        let depth = self.get_container(container_ptr).depth;
+        proof {
+            container_ancestors_inv(self.root_container, self.container_perms@, container_ptr);
+            assert(depth > 0);
+            assert(uppertree_seq@.len() == depth);
+            assert(uppertree_seq@[depth - 1] == parent_container_ptr);
+        }
         container_perms_subset_remove(
             &mut self.container_perms,
             uppertree_seq,
             container_ptr,
+            parent_container_ptr,
+            depth,
         );
         let mut container_perm = Tracked(self.container_perms.borrow_mut().tracked_remove(container_ptr));
 

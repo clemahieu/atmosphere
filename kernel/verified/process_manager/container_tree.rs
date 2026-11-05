@@ -204,6 +204,179 @@ pub open spec fn container_tree_wf(
     &&& container_subtree_set_exclusive(root_container, container_perms)
 }
 
+/// `upper` lists existing containers from the root down, each the parent of the next.
+pub open spec fn container_ancestors_wf(
+    container_perms: Map<ContainerPtr, PointsTo<Container>>,
+    upper: Seq<ContainerPtr>,
+) -> bool {
+    &&& upper.no_duplicates()
+    &&& forall|i: int|
+        #![trigger upper[i]]
+        0 <= i < upper.len() ==> container_perms.dom().contains(upper[i])
+            && container_perms[upper[i]].is_init() && container_perms[upper[i]].addr() == upper[i]
+    &&& forall|i: int|
+        #![trigger upper[i]]
+        0 < i < upper.len() ==> container_perms[upper[i]].value().parent == Some(upper[i - 1])
+}
+
+/// A container's uppertree_seq walks its parent links, ends at its parent, and does not include the container.
+pub proof fn container_ancestors_inv(
+    root_container: ContainerPtr,
+    container_perms: Map<ContainerPtr, PointsTo<Container>>,
+    c_ptr: ContainerPtr,
+)
+    requires
+        container_perms_wf(container_perms),
+        container_tree_wf(root_container, container_perms),
+        container_perms.dom().contains(c_ptr),
+    ensures
+        container_ancestors_wf(container_perms, container_perms[c_ptr].value().uppertree_seq@),
+        container_perms[c_ptr].value().uppertree_seq@.contains(c_ptr) == false,
+        container_perms[c_ptr].value().depth > 0 ==> container_perms[c_ptr].value().parent
+            == Some(container_perms[c_ptr].value().uppertree_seq@[container_perms[c_ptr].value().depth - 1]),
+{
+    assert(container_perms.dom().contains(c_ptr));
+    let upper = container_perms[c_ptr].value().uppertree_seq@;
+    assert(upper.no_duplicates());
+    assert forall|i: int|
+        #![trigger upper[i]]
+        0 <= i < upper.len() implies {
+        let u = upper[i];
+        &&& container_perms.dom().contains(u)
+        &&& container_perms[u].value().depth == i
+        &&& container_perms[u].value().uppertree_seq@ =~= upper.subrange(0, i)
+    } by {
+        let u = upper[i];
+        assert(upper.contains(u));
+        assert(container_perms.dom().contains(u));
+        let k = upper.index_of(u);
+        assert(0 <= k < upper.len() && upper[k] == u);
+        assert(k == i) by {
+            if k != i {
+                assert(upper[k] != upper[i]);
+            }
+        };
+        assert(container_perms[u].value().depth == k);
+    };
+    assert forall|i: int|
+        #![trigger upper[i]]
+        0 <= i < upper.len() implies container_perms.dom().contains(upper[i])
+        && container_perms[upper[i]].is_init() && container_perms[upper[i]].addr() == upper[i] by {
+        assert(container_perms.dom().contains(upper[i]));
+    };
+    assert forall|i: int|
+        #![trigger upper[i]]
+        0 < i < upper.len() implies container_perms[upper[i]].value().parent == Some(upper[i - 1]) by {
+        let u = upper[i];
+        assert(container_perms.dom().contains(u));
+        assert(container_perms[u].value().depth == i);
+        assert(u != root_container);
+        assert(container_perms[u].value().parent.is_Some());
+        assert(container_perms[u].value().uppertree_seq@[i - 1] == upper[i - 1]);
+        assert(container_perms[u].value().uppertree_seq@[i - 1] == container_perms[u].value().parent.unwrap());
+    };
+    if upper.contains(c_ptr) {
+        assert(upper.index_of(c_ptr) == container_perms[c_ptr].value().depth);
+        assert(upper.len() == container_perms[c_ptr].value().depth);
+        assert(false);
+    }
+    if container_perms[c_ptr].value().depth > 0 {
+        assert(c_ptr != root_container);
+        assert(container_perms[c_ptr].value().parent.is_Some());
+        assert(upper[container_perms[c_ptr].value().depth - 1] == container_perms[c_ptr].value().parent.unwrap());
+    }
+}
+
+/// A container's uppertree_seq pushed with the container lists the ancestors of a new child of it,
+/// in a map that differs from the well-formed one only at the container (its parent kept) and at the child.
+pub proof fn container_ancestors_push(
+    root_container: ContainerPtr,
+    old_perms: Map<ContainerPtr, PointsTo<Container>>,
+    new_perms: Map<ContainerPtr, PointsTo<Container>>,
+    c_ptr: ContainerPtr,
+    new_ptr: ContainerPtr,
+)
+    requires
+        container_perms_wf(old_perms),
+        container_tree_wf(root_container, old_perms),
+        old_perms.dom().contains(c_ptr),
+        old_perms.dom().contains(new_ptr) == false,
+        forall|p: ContainerPtr|
+            #![trigger new_perms[p]]
+            old_perms.dom().contains(p) && p != c_ptr ==> new_perms.dom().contains(p) && new_perms[p]
+                == old_perms[p],
+        new_perms.dom().contains(c_ptr),
+        new_perms[c_ptr].is_init(),
+        new_perms[c_ptr].addr() == c_ptr,
+        new_perms[c_ptr].value().parent == old_perms[c_ptr].value().parent,
+    ensures
+        container_ancestors_wf(new_perms, old_perms[c_ptr].value().uppertree_seq@.push(c_ptr)),
+        old_perms[c_ptr].value().uppertree_seq@.push(c_ptr).contains(new_ptr) == false,
+{
+    container_ancestors_inv(root_container, old_perms, c_ptr);
+    let old_upper = old_perms[c_ptr].value().uppertree_seq@;
+    let new_upper = old_upper.push(c_ptr);
+    assert(old_upper.len() == old_perms[c_ptr].value().depth);
+    assert(old_upper.contains(c_ptr) == false);
+    assert(old_upper.contains(new_ptr) == false) by {
+        if old_upper.contains(new_ptr) {
+            assert(old_perms.dom().contains(new_ptr));
+        }
+    };
+    assert(c_ptr != new_ptr);
+    assert(new_upper.no_duplicates()) by {
+        assert forall|i: int, j: int|
+            0 <= i < new_upper.len() && 0 <= j < new_upper.len() && i != j implies new_upper[i]
+            != new_upper[j] by {
+            if i < old_upper.len() && j < old_upper.len() {
+                assert(old_upper[i] != old_upper[j]);
+            } else if i == old_upper.len() {
+                assert(old_upper[j] == new_upper[j]);
+                assert(old_upper.contains(old_upper[j]));
+            } else {
+                assert(old_upper[i] == new_upper[i]);
+                assert(old_upper.contains(old_upper[i]));
+            }
+        };
+    };
+    assert forall|i: int|
+        #![trigger new_upper[i]]
+        0 <= i < new_upper.len() implies new_perms.dom().contains(new_upper[i])
+        && new_perms[new_upper[i]].is_init() && new_perms[new_upper[i]].addr() == new_upper[i] by {
+        if i < old_upper.len() {
+            assert(new_upper[i] == old_upper[i]);
+            assert(old_upper.contains(old_upper[i]));
+            assert(new_perms[old_upper[i]] == old_perms[old_upper[i]]);
+        } else {
+            assert(new_upper[i] == c_ptr);
+        }
+    };
+    assert forall|i: int|
+        #![trigger new_upper[i]]
+        0 < i < new_upper.len() implies new_perms[new_upper[i]].value().parent == Some(
+        new_upper[i - 1],
+    ) by {
+        if i < old_upper.len() {
+            assert(new_upper[i] == old_upper[i]);
+            assert(new_upper[i - 1] == old_upper[i - 1]);
+            assert(old_upper.contains(old_upper[i]));
+            assert(new_perms[old_upper[i]] == old_perms[old_upper[i]]);
+        } else {
+            assert(new_upper[i] == c_ptr);
+            assert(new_upper[i - 1] == old_upper[i - 1]);
+            assert(old_perms[c_ptr].value().depth > 0);
+        }
+    };
+    if new_upper.contains(new_ptr) {
+        let k = choose|k: int| 0 <= k < new_upper.len() && new_upper[k] == new_ptr;
+        if k < old_upper.len() {
+            assert(old_upper[k] == new_ptr);
+            assert(old_upper.contains(new_ptr));
+        }
+        assert(false);
+    }
+}
+
 //proof
 pub proof fn container_subtree_inv(
     root_container: ContainerPtr,
