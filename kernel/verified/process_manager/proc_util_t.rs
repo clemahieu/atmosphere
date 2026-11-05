@@ -1,14 +1,11 @@
 use vstd::prelude::*;
 verus! {
 
-use core::mem::MaybeUninit;
 use crate::define::*;
 use crate::pptr::{PPtr, PointsTo};
 use crate::slinkedlist::spec_impl_u::StaticLinkedList;
 use crate::process_manager::process::*;
 
-#[verifier(external_body)]
-// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn proc_push_thread(
     proc_ptr: ProcPtr,
     proc_perm: &mut Tracked<PointsTo<Process>>,
@@ -49,15 +46,12 @@ pub fn proc_push_thread(
         final(proc_perm)@.value().owned_threads.get_node_ref(*thread_ptr) == ret,
         final(proc_perm)@.value().owned_threads.unique(),
 {
-    unsafe {
-        let uptr = proc_ptr as *mut MaybeUninit<Process>;
-        let ret = (*uptr).assume_init_mut().owned_threads.push(thread_ptr);
-        return ret;
-    }
+    let tracked owned = proc_perm.borrow_mut();
+    let process = PPtr::<Process>::from_usize(proc_ptr).borrow_mut(Tracked(owned));
+    let ret = process.owned_threads.push(thread_ptr);
+    return ret;
 }
 
-#[verifier(external_body)]
-// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn proc_remove_thread(
     proc_ptr: ProcPtr,
     proc_perm: &mut Tracked<PointsTo<Process>>,
@@ -65,6 +59,7 @@ pub fn proc_remove_thread(
     thread_ptr: Ghost<ThreadPtr>,
 ) -> (ret: ThreadPtr)
     requires
+        old(proc_perm)@.value().owned_threads.unique(),
         old(proc_perm)@.is_init(),
         old(proc_perm)@.addr() == proc_ptr,
         old(proc_perm)@.value().owned_threads.wf(),
@@ -96,26 +91,23 @@ pub fn proc_remove_thread(
         final(proc_perm)@.value().owned_threads.unique(),
         final(proc_perm)@.value().owned_threads@ =~= old(proc_perm)@.value().owned_threads@.remove_value(ret),
 {
-    unsafe {
-        let uptr = proc_ptr as *mut MaybeUninit<Process>;
-        let ret = (*uptr).assume_init_mut().owned_threads.remove(rev_ptr, Ghost(0));
-        return ret;
-    }
+    let tracked owned = proc_perm.borrow_mut();
+    let process = PPtr::<Process>::from_usize(proc_ptr).borrow_mut(Tracked(owned));
+    let ret = process.owned_threads.remove(rev_ptr, thread_ptr);
+    return ret;
 }
 
-#[verifier(external_body)]
-// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn proc_push_child(
     proc_ptr: ProcPtr,
     proc_perm: &mut Tracked<PointsTo<Process>>,
     new_proc_ptr: &ProcPtr,
 ) -> (ret: SLLIndex)
     requires
+        old(proc_perm)@.value().children.len() < PROC_CHILD_LIST_LEN,
         old(proc_perm)@.is_init(),
         old(proc_perm)@.addr() == proc_ptr,
         old(proc_perm)@.value().children.wf(),
         old(proc_perm)@.value().children.unique(),
-        old(proc_perm)@.value().children.len() < MAX_NUM_THREADS_PER_PROC,
         old(proc_perm)@.value().children@.contains(*new_proc_ptr) == false,
     ensures
         final(proc_perm)@.is_init(),
@@ -143,15 +135,12 @@ pub fn proc_push_child(
         final(proc_perm)@.value().children.get_node_ref(*new_proc_ptr) == ret,
         final(proc_perm)@.value().children.unique(),
 {
-    unsafe {
-        let uptr = proc_ptr as *mut MaybeUninit<Process>;
-        let ret = (*uptr).assume_init_mut().children.push(new_proc_ptr);
-        return ret;
-    }
+    let tracked owned = proc_perm.borrow_mut();
+    let process = PPtr::<Process>::from_usize(proc_ptr).borrow_mut(Tracked(owned));
+    let ret = process.children.push(new_proc_ptr);
+    return ret;
 }
 
-#[verifier(external_body)]
-// external_body(gap): writes through a raw pointer, which Verus cannot relate to its PointsTo
 pub fn proc_remove_child(
     proc_ptr: ProcPtr,
     proc_perm: &mut Tracked<PointsTo<Process>>,
@@ -159,6 +148,7 @@ pub fn proc_remove_child(
     child_proc_ptr: Ghost<ProcPtr>,
 ) -> (ret: ProcPtr)
     requires
+        old(proc_perm)@.value().children.get_node_ref(child_proc_ptr@) == rev_ptr,
         old(proc_perm)@.is_init(),
         old(proc_perm)@.addr() == proc_ptr,
         old(proc_perm)@.value().children.wf(),
@@ -189,11 +179,10 @@ pub fn proc_remove_child(
                     final(proc_perm)@.value().children.get_node_ref(v),
         final(proc_perm)@.value().children.unique(),
 {
-    unsafe {
-        let uptr = proc_ptr as *mut MaybeUninit<Process>;
-        let ret = (*uptr).assume_init_mut().children.remove(rev_ptr, child_proc_ptr);
-        return ret;
-    }
+    let tracked owned = proc_perm.borrow_mut();
+    let process = PPtr::<Process>::from_usize(proc_ptr).borrow_mut(Tracked(owned));
+    let ret = process.children.remove(rev_ptr, child_proc_ptr);
+    return ret;
 }
 
 
