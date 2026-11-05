@@ -3,8 +3,9 @@ verus! {
 
 use core::mem::MaybeUninit;
 use crate::define::*;
-use crate::pptr::PointsTo;
+use crate::pptr::{PPtr, PointsTo};
 use crate::process_manager::container::*;
+use crate::slinkedlist::spec_impl_u::StaticLinkedList;
 use crate::array_set::ArraySet;
 use crate::quota::Quota;
 
@@ -819,8 +820,6 @@ pub fn page_to_container_tree_version(
     }
 }
 
-#[verifier(external_body)]
-// external_body(gap): writes through a raw pointer and takes its permission from Tracked::assume_new
 pub fn page_to_container_tree_version_1(
     page_ptr: PagePtr,
     page_perm: Tracked<PagePerm4k>,
@@ -836,6 +835,7 @@ pub fn page_to_container_tree_version_1(
     requires
         page_perm@.is_uninit(),
         page_perm@.addr() == page_ptr,
+        crate::util::page_ptr_util_u::page_ptr_valid(page_ptr),
     ensures
         ret.1@.is_init(),
         ret.0 == page_ptr,
@@ -860,20 +860,31 @@ pub fn page_to_container_tree_version_1(
         ret.1@.value().root_process == root_process,
         ret.1@.value().can_have_children =~= false,
 {
-    unsafe {
-        let uptr = page_ptr as *mut MaybeUninit<Container>;
-        (*uptr).assume_init_mut().owned_procs.init();
-        (*uptr).assume_init_mut().parent = Some(parent_container);
-        (*uptr).assume_init_mut().parent_rev_ptr = Some(parent_rev_ptr);
-        (*uptr).assume_init_mut().children.init();
-        (*uptr).assume_init_mut().quota = init_quota;
-        // (*uptr).assume_init_mut().mem_used = 0;
-        (*uptr).assume_init_mut().owned_cpus = new_cpus;
-        (*uptr).assume_init_mut().scheduler.init();
-        (*uptr).assume_init_mut().depth = depth;
-        (*uptr).assume_init_mut().root_process == root_process;
-        (page_ptr, Tracked::assume_new())
-    }
+    let tracked mut perm = crate::layouts::page_into_container(page_perm.get());
+    let mut owned_procs = StaticLinkedList::new();
+    owned_procs.init();
+    let mut children = StaticLinkedList::new();
+    children.init();
+    let mut scheduler = StaticLinkedList::new();
+    scheduler.init();
+    let container = Container {
+        parent: Some(parent_container),
+        parent_rev_ptr: Some(parent_rev_ptr),
+        children,
+        depth,
+        uppertree_seq,
+        subtree_set,
+        root_process,
+        owned_procs,
+        owned_endpoints: Ghost(Set::empty()),
+        owned_threads: Ghost(Set::empty()),
+        quota: init_quota,
+        owned_cpus: new_cpus,
+        scheduler,
+        can_have_children: false,
+    };
+    PPtr::<Container>::from_usize(page_ptr).put(Tracked(&mut perm), container);
+    (page_ptr, Tracked(perm))
 }
 
 #[verifier(external_body)]

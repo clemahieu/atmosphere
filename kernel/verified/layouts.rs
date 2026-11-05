@@ -33,6 +33,18 @@ proof fn thread_page_round_trip(tracked page: PagePerm4k) -> (tracked ret: PageP
     crate::pptr::typed_into_page(crate::pptr::page_into_typed::<Thread>(page))
 }
 
+/// A free page becomes an uninitialised container.
+pub proof fn page_into_container(tracked page: PagePerm4k) -> (tracked ret: PointsTo<Container>)
+    requires
+        page.is_uninit(),
+        crate::util::page_ptr_util_u::page_ptr_valid(page.addr()),
+    ensures
+        ret.addr() == page.addr(),
+        ret.is_uninit(),
+{
+    crate::pptr::page_into_typed::<Container>(page)
+}
+
 /// A free page becomes an uninitialised endpoint.
 pub proof fn page_into_endpoint(tracked page: PagePerm4k) -> (tracked ret: PointsTo<Endpoint>)
     requires
