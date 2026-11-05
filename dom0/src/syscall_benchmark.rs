@@ -512,6 +512,17 @@ unsafe fn sys_raw(number: usize) -> isize {
     ret
 }
 
+/// Binds a device function no process uses to dom0's own IO table, then flushes it. Both return 1
+/// with no IOMMU; the gate's IOMMU boot looks for these lines with 0.
+pub fn check_device_iommu() {
+    let (bus, device, function) = (0, 0x1f, 7);
+    let table = unsafe { asys::sys_rd_io_cr3() } as u64;
+    let bound = unsafe { asys::sys_set_device_iommu(bus, device, function, table) };
+    log::info!("sys_set_device_iommu of dom0's own table: {}", bound);
+    let flushed = unsafe { asys::sys_invalidate_iotlb(bus, device, function, 0) };
+    log::info!("sys_invalidate_iotlb of that device: {}", flushed);
+}
+
 /// sys_log with a level no log::Level can hold, which asys::sys_log cannot express.
 unsafe fn syscall_log_raw(data: *const u8, len: usize, level: usize) -> isize {
     let ret: isize;
