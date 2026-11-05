@@ -47,9 +47,10 @@ const DOM0_RESERVATION: usize = 256 * 1024 * 1024; // 256 MiB
 const KERNEL_STACK_GUARD_SIZE: u64 = 1024 * 1024; // 1 MiB
 #[cfg(not(feature = "small_kernel_stack"))]
 const KERNEL_STACK_SIZE: u64 = 256 * 1024 * 1024; // 256 MiB
-// Below the kernel's depth, so check-boot-stack.py can force an overflow.
+// So check-boot-stack.py can force an overflow. boot::init's copy of BootInfo alone is 64 MiB however
+// the optimiser arranges the kernel's frames, so this is below the kernel's depth in all of them.
 #[cfg(feature = "small_kernel_stack")]
-const KERNEL_STACK_SIZE: u64 = 96 * 1024 * 1024; // 96 MiB
+const KERNEL_STACK_SIZE: u64 = 16 * 1024 * 1024; // 16 MiB
 
 /// Loader entry point.
 #[cfg_attr(not(test), no_mangle)]

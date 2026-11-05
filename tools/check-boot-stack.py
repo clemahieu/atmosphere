@@ -93,7 +93,8 @@ def written(sock, out, base, size):
 
 def check_overflow(profile, out):
     build(profile, overflow=True)
-    log, qemu, sock = boot(profile, out, marker=b"Page Fault")
+    # The kernel's own report, not a process's: dom0 faults on purpose in a boot that gets that far.
+    log, qemu, sock = boot(profile, out, marker=b"Page Fault (address")
     sock.sendall(b"quit\n")
     qemu.wait(timeout=30)
     guard = re.search(r"Kernel stack guard: ([0-9a-f]+)-([0-9a-f]+)", log)
