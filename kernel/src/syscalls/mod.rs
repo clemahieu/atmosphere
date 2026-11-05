@@ -13,6 +13,11 @@ use crate::kernel;
 use crate::thread::SwitchDecision;
 use verified::trap::Registers;
 
+/// Flags cleared on syscall entry. The kernel is not preemptible, so IF. Compiled code assumes DF is
+/// clear. TF would trap on the first kernel instruction, on the user's stack. AC and NT must not reach
+/// kernel code or an iretq. The return path restores the process's own flags.
+const ENTRY_FLAG_MASK: u32 = (1 << 8) | (1 << 9) | (1 << 10) | (1 << 14) | (1 << 18);
+
 const SYSCALL32_ENTRY: u64 = 0; // nein
 const SYSCALL32_ENTRY_EIP: u32 = 0; // nein
 
@@ -51,8 +56,7 @@ pub unsafe fn init_cpu() {
     // Set LSTAR - 32-bit syscall entry
     msr::wrmsr(msr::IA32_CSTAR, SYSCALL32_ENTRY);
 
-    // Mask IF on entry: the kernel is not preemptible, and the return path restores the user's flags.
-    msr::wrmsr(msr::IA32_FMASK, 1 << 9);
+    msr::wrmsr(msr::IA32_FMASK, ENTRY_FLAG_MASK as u64);
 
     // Enable EFER Bit 0 - System Call Extensions
     let mut efer = msr::rdmsr(msr::IA32_EFER);
@@ -106,31 +110,31 @@ global_asm!(
     ".endm",
 );
 
-// In a debug build, stop if a syscall reaches its handler with interrupts enabled: the handlers take
-// the kernel lock, and a handler that interrupts one holding it would deadlock this core. r10 is free
-// here, since the user's rsp is already saved.
+// In a debug build, stop if a syscall reaches its handler with a flag from ENTRY_FLAG_MASK set. r10 is
+// free here, since the user's rsp is already saved.
 #[cfg(debug_assertions)]
 global_asm!(
-    ".macro check_interrupts_masked",
+    ".macro check_entry_flags",
     "pushfq",
     "pop r10",
-    "test r10d, 0x200",
+    "test r10d, {mask}",
     "jz 77f",
-    "call {entered_with_interrupts_enabled}",
+    "call {entered_with_flags_set}",
     "77:",
     ".endm",
-    entered_with_interrupts_enabled = sym entered_with_interrupts_enabled,
+    mask = const ENTRY_FLAG_MASK,
+    entered_with_flags_set = sym entered_with_flags_set,
 );
 
 #[cfg(not(debug_assertions))]
 global_asm!(
-    ".macro check_interrupts_masked",
+    ".macro check_entry_flags",
     ".endm",
 );
 
 #[cfg(debug_assertions)]
-extern "C" fn entered_with_interrupts_enabled() -> ! {
-    panic!("a syscall reached its handler with interrupts enabled");
+extern "C" fn entered_with_flags_set() -> ! {
+    panic!("a syscall reached its handler with a masked flag set");
 }
 
 // Syscall ABI
@@ -188,7 +192,7 @@ unsafe extern "C" fn sys_entry() -> ! {
 
         // handler(arg1, arg2, arg3, registers, arg4, arg5)
         // rdi, rsi, rdx, (rcx), r8, r9
-        "check_interrupts_masked",
+        "check_entry_flags",
         "call r11",
 
         "jmp 3f",

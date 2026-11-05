@@ -248,7 +248,7 @@ const FAULT_KINDS: [&str; 8] = [
     "int 33, the IOMMU fault vector",
     "ud2",
     "a division by zero",
-    "single-stepping with the trap flag",
+    "single-stepping across a syscall with the trap flag",
     "an unmasked SIMD division by zero",
     "int3, which returns, then a load from an unmapped address",
 ];
@@ -716,7 +716,19 @@ extern "C" fn faulting_child() -> ! {
                 out("eax") _, out("ecx") _, out("edx") _,
             )
         },
-        5 => unsafe { core::arch::asm!("pushfq", "or qword ptr [rsp], 0x100", "popfq", "nop") },
+        5 => unsafe {
+            // TF set across a syscall: the kernel must not take the trap on its first instruction. It
+            // comes back on return, in this child.
+            core::arch::asm!(
+                "pushfq",
+                "or qword ptr [rsp], 0x100",
+                "popfq",
+                "syscall",
+                "nop",
+                inlateout("rax") usize::MAX => _,
+                lateout("rcx") _, lateout("r11") _,
+            )
+        },
         6 => unsafe {
             // Clear every mask bit, then divide with both registers holding zero.
             let mxcsr = 0u32;
@@ -795,6 +807,38 @@ unsafe fn sys_raw_arg(number: usize, arg: usize) -> usize {
         );
     }
     ret
+}
+
+/// Flags a process may set that the kernel must not run with. Each comes back on return.
+pub fn check_entry_flags() {
+    const TEXT: &str = "text copied with the process's flags set";
+    for (what, bits) in [("DF", 0x400usize), ("AC", 0x4_0000), ("NT", 0x4000), ("all", 0x4_4400)] {
+        let ret: isize;
+        let flags: usize;
+        unsafe {
+            core::arch::asm!(
+                "pushfq",
+                "or [rsp], {bits}",
+                "popfq",
+                "syscall",
+                "pushfq",
+                "pop {flags}",
+                "push 0x202",
+                "popfq",
+                bits = in(reg) bits,
+                flags = lateout(reg) flags,
+                inlateout("rax") asys::__NR_LOG => ret,
+                inlateout("rdi") TEXT.as_ptr() => _,
+                inlateout("rsi") TEXT.len() => _,
+                inlateout("rdx") 3usize => _,
+                lateout("rcx") _, lateout("r8") _, lateout("r9") _, lateout("r10") _, lateout("r11") _,
+            );
+        }
+        log::info!("a syscall with {} set returned {}, flags {:#x}", what, ret, flags);
+        if ret != 0 || flags & bits != bits {
+            bench_fail(what, flags);
+        }
+    }
 }
 
 /// sys_log with a level no log::Level can hold, which asys::sys_log cannot express.
