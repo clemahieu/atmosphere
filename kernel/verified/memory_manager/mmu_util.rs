@@ -577,7 +577,7 @@ impl Array<Option<PageTable>, PCID_MAX> {
         requires
             old(self).wf(),
             old(self)@[ioid as int].unwrap().wf(),
-            0 <= target_l4i < 512,
+            KERNEL_MEM_END_L4INDEX <= target_l4i < 512,
             0 <= target_l3i < 512,
             0 <= target_l2i < 512,
             0 <= target_l1i < 512,
