@@ -217,6 +217,9 @@ async fn boot(project: &ProjectHandle, timeout: u64, args: &[&str]) -> Result<St
     if !second_core_ran_thread(&serial) {
         return Err(anyhow!("the serial log does not show threads making syscalls on both cores"));
     }
+    if !serial.contains(SYSCALLS_CONTENDED) {
+        return Err(anyhow!("the serial log does not time a syscall with both cores contending"));
+    }
     if !serial.contains(FLUSH_ACKNOWLEDGED) {
         return Err(anyhow!("the serial log does not show CPU 1 acknowledging a flush IPI"));
     }
@@ -256,6 +259,9 @@ fn second_core_idle(serial: &str) -> bool {
         _ => false,
     }
 }
+
+/// What dom0 logs once it has timed a syscall with the other core making the same call.
+const SYSCALLS_CONTENDED: &str = "with the other core contending";
 
 /// What the kernel logs once CPU 1 has taken a flush IPI and acknowledged it.
 const FLUSH_ACKNOWLEDGED: &str = "flush IPI acknowledged by CPU 1";

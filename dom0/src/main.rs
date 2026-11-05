@@ -68,6 +68,7 @@ extern "C" fn main(payload_base: *mut u8, payload_size: usize) -> isize {
     syscall_benchmark::check_entry_flags();
     syscall_benchmark::check_new_thread_rax();
     syscall_benchmark::time_syscall_returns();
+    syscall_benchmark::time_contended_syscalls();
     syscall_benchmark::time_mmap_only();
     syscall_benchmark::time_ipc_round_trip();
     syscall_benchmark::time_new_thread();
