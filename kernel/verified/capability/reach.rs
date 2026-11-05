@@ -252,6 +252,175 @@ pub open spec fn discharges(pre: State, post: State, p: ObjectId, e: Effect) -> 
         ==> may_grow(pre, p, e, r, o)
 }
 
+/// post is pre with capability n added as a child of c, held by p, covering only what c covers. A
+/// child with the control right names what c names, since control reads the name alone. `live` says
+/// which nodes the list holds, and n is not among them.
+pub open spec fn adds_child(pre: State, post: State, p: ObjectId, c: NodeId, n: NodeId, live: spec_fn(NodeId) -> bool) -> bool {
+    &&& pre.holds(p, c)
+    &&& live(c)
+    &&& !live(n)
+    &&& forall|h: (ObjectId, NodeId)| #[trigger] pre.held.contains(h) ==> live(h.1)
+    &&& forall|x: NodeId| #[trigger] pre.names.contains_key(x) ==> live(x)
+    &&& forall|x: NodeId| live(x) && #[trigger] pre.parent.contains_key(x) ==> live(pre.parent[x])
+    &&& forall|h: (ObjectId, NodeId)| #[trigger] post.held.contains(h) == (pre.held.contains(h) || h == (p, n))
+    &&& post.parent == pre.parent.insert(n, c)
+    &&& forall|x: NodeId| x != n ==> {
+        &&& #[trigger] post.names.contains_key(x) == pre.names.contains_key(x)
+        &&& post.pages.contains_key(x) == pre.pages.contains_key(x)
+        &&& pre.names.contains_key(x) ==> post.names[x] == pre.names[x]
+        &&& pre.pages.contains_key(x) ==> post.pages[x] == pre.pages[x]
+    }
+    &&& forall|x: NodeId, r: Right| x != n ==> #[trigger] post.rights.contains((x, r)) == pre.rights.contains((x, r))
+    &&& post.rights.contains((n, Right::Control)) ==> {
+        &&& pre.rights.contains((c, Right::Control))
+        &&& pre.names.contains_key(c)
+        &&& post.names[n] == pre.names[c]
+    }
+    &&& forall|o: ObjectId| #[trigger] post.covers(n, o) ==> pre.covers(c, o)
+    &&& post.maps == pre.maps
+    &&& post.process_of == pre.process_of
+    &&& forall|o: ObjectId| #[trigger] (post.contents)(o) == (pre.contents)(o)
+}
+
+/// Walking up from a live node in post walks the same nodes in pre.
+proof fn lemma_adds_child_descends(
+    pre: State,
+    post: State,
+    p: ObjectId,
+    c: NodeId,
+    n: NodeId,
+    live: spec_fn(NodeId) -> bool,
+    top: NodeId,
+    x: NodeId,
+    k: nat,
+)
+    requires
+        adds_child(pre, post, p, c, n, live),
+        post.descends(top, x, k),
+        live(x),
+    ensures
+        pre.descends(top, x, k),
+        live(top),
+    decreases k,
+{
+    if k > 0 {
+        assert(x != n);
+        assert(pre.parent.contains_key(x));
+        assert(post.parent[x] == pre.parent[x]);
+        assert(live(pre.parent[x]));
+        lemma_adds_child_descends(pre, post, p, c, n, live, top, pre.parent[x], (k - 1) as nat);
+    }
+}
+
+proof fn lemma_adds_child_direct(
+    pre: State,
+    post: State,
+    p: ObjectId,
+    c: NodeId,
+    n: NodeId,
+    live: spec_fn(NodeId) -> bool,
+    q: ObjectId,
+    o: ObjectId,
+)
+    requires
+        adds_child(pre, post, p, c, n, live),
+        post.direct(q, o),
+    ensures
+        pre.direct(q, o),
+{
+    if !post.maps.contains((q, o)) {
+        let (t, x, k) = choose|t: NodeId, x: NodeId, k: nat| #[trigger] post.descends(t, x, k)
+            && post.holds(q, t) && post.covers(x, o);
+        assert(post.held.contains((q, t)));
+        if x == n {
+            assert(pre.covers(c, o));
+            if k == 0 {
+                assert(!pre.held.contains((q, n)) || live(n));
+                assert(q == p);
+                assert(pre.descends(c, c, 0));
+            } else {
+                assert(post.parent[n] == c);
+                lemma_adds_child_descends(pre, post, p, c, n, live, t, c, (k - 1) as nat);
+                assert(t != n);
+                assert(pre.descends(t, c, (k - 1) as nat));
+                assert(pre.held.contains((q, t)));
+            }
+        } else {
+            assert(pre.names.contains_key(x));
+            lemma_adds_child_descends(pre, post, p, c, n, live, t, x, k);
+            assert(t != n);
+            assert(pre.held.contains((q, t)));
+            assert(pre.covers(x, o));
+            assert(pre.descends(t, x, k));
+        }
+    }
+}
+
+proof fn lemma_adds_child_controlled(
+    pre: State,
+    post: State,
+    p: ObjectId,
+    c: NodeId,
+    n: NodeId,
+    live: spec_fn(NodeId) -> bool,
+    a: ObjectId,
+    b: ObjectId,
+    k: nat,
+)
+    requires
+        adds_child(pre, post, p, c, n, live),
+        post.controlled(a, b, k),
+    ensures
+        pre.controlled(a, b, k),
+    decreases k,
+{
+    if k > 0 {
+        let m = choose|m: ObjectId| #[trigger] post.controls(m, b) && post.controlled(a, m, (k - 1) as nat);
+        lemma_adds_child_controlled(pre, post, p, c, n, live, a, m, (k - 1) as nat);
+        let t = choose|t: NodeId| #[trigger] post.holds_right(m, t, Right::Control)
+            && post.process_behind(post.names[t]) == b;
+        assert(post.held.contains((m, t)));
+        if t == n {
+            assert(!pre.held.contains((m, n)) || live(n));
+            assert(m == p);
+            assert(pre.holds_right(p, c, Right::Control));
+            assert(pre.process_behind(pre.names[c]) == b);
+        } else {
+            assert(pre.holds_right(m, t, Right::Control));
+            assert(pre.process_behind(pre.names[t]) == b);
+        }
+        assert(pre.controls(m, b));
+    }
+}
+
+/// Adding a child that covers only what its parent covers is a local step: nothing changes that a
+/// process can see, nothing goes, and nobody's reach grows.
+pub proof fn lemma_adds_child_discharges(
+    pre: State,
+    post: State,
+    p: ObjectId,
+    c: NodeId,
+    n: NodeId,
+    live: spec_fn(NodeId) -> bool,
+)
+    requires
+        adds_child(pre, post, p, c, n, live),
+    ensures
+        discharges(pre, post, p, Effect::Local),
+{
+    assert forall|x: NodeId| #[trigger] State::removed(pre, post, x) implies may_remove(pre, p, Effect::Local, x) by {
+        assert(x != n);
+    }
+    assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) implies pre.reach(r, o) by {
+        let (q, k) = choose|q: ObjectId, k: nat| #[trigger] post.controlled(r, q, k) && (o == q || post.direct(q, o));
+        lemma_adds_child_controlled(pre, post, p, c, n, live, r, q, k);
+        if o != q {
+            lemma_adds_child_direct(pre, post, p, c, n, live, q, o);
+        }
+        assert(pre.controlled(r, q, k));
+    }
+}
+
 /// Control is transitive: if s controls m and m controls q, s reaches what q directly reaches, since
 /// s can destroy m, claim its control over q, and repeat.
 pub proof fn lemma_control_transitive(s: State, a: ObjectId, m: ObjectId, q: ObjectId, o: ObjectId)

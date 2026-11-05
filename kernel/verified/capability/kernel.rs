@@ -89,6 +89,7 @@ impl CapKernel {
         &&& self.cores.wf()
         &&& self.blocks.wf()
         &&& self.tables.wf(&self.list)
+        &&& self.tables.caps_wf(&self.list)
         &&& self.stale_epoch.wf()
         &&& self.tlb_wf()
     }
@@ -342,6 +343,29 @@ impl CapKernel {
         true
     }
 
+    /// The TLB model reads nothing but the cores, the epoch and the staleness record.
+    pub proof fn lemma_tlb_same(pre: Self, post: Self)
+        requires
+            pre.tlb_wf(),
+            post.cores == pre.cores,
+            post.flush_epoch == pre.flush_epoch,
+            post.tlb == pre.tlb,
+            post.mapped == pre.mapped,
+            post.stale_epoch == pre.stale_epoch,
+        ensures
+            post.tlb_wf(),
+    {
+        assert forall|c: int| 0 <= c < NUM_CPUS implies #[trigger] post.acked(c) <= post.flush_epoch by {
+            assert(pre.acked(c) <= pre.flush_epoch);
+        }
+        assert forall|c: int, f: usize|
+            0 <= c < NUM_CPUS && #[trigger] post.tlb@[c].contains(f) && !post.mapped@.contains(f)
+            implies f < NUM_PAGES && post.acked(c) < post.stale_epoch@[f as int] by {
+            assert(pre.tlb@[c].contains(f));
+            assert(pre.acked(c) == post.acked(c));
+        }
+    }
+
     /// Changing only the block table keeps the invariant.
     proof fn lemma_blocks_changed(pre: Self, post: Self)
         requires
@@ -357,15 +381,7 @@ impl CapKernel {
         ensures
             post.wf(),
     {
-        assert forall|c: int| 0 <= c < NUM_CPUS implies #[trigger] post.acked(c) <= post.flush_epoch by {
-            assert(pre.acked(c) <= pre.flush_epoch);
-        }
-        assert forall|c: int, f: usize|
-            0 <= c < NUM_CPUS && #[trigger] post.tlb@[c].contains(f) && !post.mapped@.contains(f)
-            implies f < NUM_PAGES && post.acked(c) < post.stale_epoch@[f as int] by {
-            assert(pre.tlb@[c].contains(f));
-            assert(pre.acked(c) == post.acked(c));
-        }
+        Self::lemma_tlb_same(pre, post);
     }
 
     /// A dead small block at zero references, whose teardown has finished and which no core can reach
