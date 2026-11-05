@@ -42,6 +42,7 @@ impl ProcessManager {
                 < MAX_CONTAINER_SCHEDULER_LEN,
             page_perm@.is_uninit(),
             page_perm@.addr() == page_ptr,
+            crate::util::page_ptr_util_u::page_ptr_valid(page_ptr),
         ensures
             final(self).wf(),
             final(self).page_closure() =~= old(self).page_closure().insert(page_ptr),
@@ -207,6 +208,7 @@ impl ProcessManager {
                 || old(self).get_endpoint(old(self).get_endpoint_ptr_by_endpoint_idx(thread_ptr, endpoint_index).unwrap()).rf_counter_is_full() == false,
             page_perm@.is_uninit(),
             page_perm@.addr() == page_ptr,
+            crate::util::page_ptr_util_u::page_ptr_valid(page_ptr),
         ensures
             final(self).wf(),
             final(self).page_closure() =~= old(self).page_closure().insert(page_ptr),

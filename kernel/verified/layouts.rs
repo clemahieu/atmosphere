@@ -56,6 +56,29 @@ pub proof fn container_into_page(tracked container: PointsTo<Container>) -> (tra
     crate::pptr::typed_into_page(container)
 }
 
+/// A free page becomes an uninitialised thread.
+pub proof fn page_into_thread(tracked page: PagePerm4k) -> (tracked ret: PointsTo<Thread>)
+    requires
+        page.is_uninit(),
+        crate::util::page_ptr_util_u::page_ptr_valid(page.addr()),
+    ensures
+        ret.addr() == page.addr(),
+        ret.is_uninit(),
+{
+    crate::pptr::page_into_typed::<Thread>(page)
+}
+
+/// A dead thread becomes a free page.
+pub proof fn thread_into_page(tracked thread: PointsTo<Thread>) -> (tracked ret: PagePerm4k)
+    requires
+        thread.is_uninit(),
+    ensures
+        ret.addr() == thread.addr(),
+        ret.is_uninit(),
+{
+    crate::pptr::typed_into_page(thread)
+}
+
 /// A free page becomes an uninitialised endpoint.
 pub proof fn page_into_endpoint(tracked page: PagePerm4k) -> (tracked ret: PointsTo<Endpoint>)
     requires
