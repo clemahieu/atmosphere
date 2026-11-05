@@ -52,25 +52,6 @@ impl TrapFrameOption {
         &self.reg
     }
 
-    #[verifier(external_body)]
-    // external_body(unproven): field copies of a register frame not proven yet
-    pub fn set_self_fast(&mut self, src: &Registers)
-        ensures
-            final(self).is_Some(),
-            final(self).get_Some_0() =~= src,
-    {
-        self.exists = true;
-        self.reg.rbx = src.rbx;
-        self.reg.rbp = src.rbp;
-        self.reg.r12 = src.r12;
-        self.reg.r13 = src.r13;
-        self.reg.r14 = src.r14;
-        self.reg.r15 = src.r15;
-        self.reg.rsp = src.rsp;
-        self.reg.rip = src.rip;
-        self.reg.flags = src.flags;
-    }
-
     pub fn set_self(&mut self, src: &Registers)
         ensures
             final(self).is_Some(),
@@ -78,25 +59,6 @@ impl TrapFrameOption {
     {
         self.exists = true;
         self.reg = *src;
-    }
-
-    #[verifier(external_body)]
-    // external_body(unproven): field copies of a register frame not proven yet
-    pub fn set_dst_fast(&self, dst: &mut Registers)
-        requires
-            self.is_Some(),
-        ensures
-            *final(dst) =~= *self.get_Some_0(),
-    {
-        dst.rbx = self.reg.rbx;
-        dst.rbp = self.reg.rbp;
-        dst.r12 = self.reg.r12;
-        dst.r13 = self.reg.r13;
-        dst.r14 = self.reg.r14;
-        dst.r15 = self.reg.r15;
-        dst.rsp = self.reg.rsp;
-        dst.rip = self.reg.rip;
-        dst.flags = self.reg.flags;
     }
 
     pub fn set_dst(&self, dst: &mut Registers)
@@ -223,21 +185,11 @@ impl Registers {
         ret
     }
 
-    #[verifier(external_body)]
-    // external_body(unproven): field copies of a register frame not proven yet
-    pub fn set_self_fast(&mut self, src: &Registers)
+    pub fn set_self(&mut self, src: &Registers)
         ensures
             *final(self) == *src,
     {
-        self.rbx = src.rbx;
-        self.rbp = src.rbp;
-        self.r12 = src.r12;
-        self.r13 = src.r13;
-        self.r14 = src.r14;
-        self.r15 = src.r15;
-        self.rsp = src.rsp;
-        self.rip = src.rip;
-        self.flags = src.flags;
+        *self = *src;
     }
 }
 

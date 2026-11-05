@@ -415,7 +415,7 @@ impl ProcessManager {
             IPCPayLoad::Empty,
             None,
         );
-        thread_set_trap_frame_fast(t_ptr, &mut t_perm, pt_regs);
+        thread_set_trap_frame(t_ptr, &mut t_perm, pt_regs);
         thread_set_error_code(t_ptr, &mut t_perm, None);
         proof {
             self.thread_perms.borrow_mut().tracked_insert(t_ptr, t_perm.get());
@@ -567,7 +567,7 @@ impl ProcessManager {
         let proc_ref = self.get_proc(thread_ref.owning_proc);
         let new_pcid = proc_ref.pcid;
         let old_cpu = *self.cpu_list.get(cpu_id);
-        pt_regs.set_self_fast(thread_ref.trap_frame.unwrap());
+        pt_regs.set_self(thread_ref.trap_frame.unwrap());
         let ret_value = thread_ref.error_code;
         let mut endpoint_perm = Tracked(
             self.endpoint_perms.borrow_mut().tracked_remove(endpoint_ptr),
@@ -1141,7 +1141,7 @@ impl ProcessManager {
             ipc_payload,
             Some(endpoint_index),
         );
-        thread_set_trap_frame_fast(thread_ptr, &mut thread_perm, pt_regs);
+        thread_set_trap_frame(thread_ptr, &mut thread_perm, pt_regs);
         proof {
             self.thread_perms.borrow_mut().tracked_insert(thread_ptr, thread_perm.get());
         }
@@ -1515,7 +1515,7 @@ impl ProcessManager {
             ipc_payload,
             Some(endpoint_index),
         );
-        thread_set_trap_frame_fast(thread_ptr, &mut thread_perm, pt_regs);
+        thread_set_trap_frame(thread_ptr, &mut thread_perm, pt_regs);
         proof {
             self.thread_perms.borrow_mut().tracked_insert(thread_ptr, thread_perm.get());
         }
@@ -2140,7 +2140,7 @@ impl ProcessManager {
         let thread: &Thread = PPtr::<Thread>::from_usize(ret_thread_ptr).borrow(
             Tracked(thread_perm),
         );
-        pt_regs.set_self_fast(thread.trap_frame.unwrap());
+        pt_regs.set_self(thread.trap_frame.unwrap());
 
         let mut thread_perm = Tracked(
             self.thread_perms.borrow_mut().tracked_remove(ret_thread_ptr),
