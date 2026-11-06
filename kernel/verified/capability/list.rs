@@ -805,27 +805,28 @@ impl Tree {
         }
     }
 
-    /// One step of revoking c: walk down c's run to a node with no children and unlink it. The
-    /// walk is bounded by the run; the list shrinks by one each step, so revocation terminates.
-    /// `done` means c has no children and nothing changed.
-    pub fn revoke_step(&mut self, c: usize) -> (done: bool)
+    /// Finds a node of c's run with no children, in a walk of at most 255 links, or says c's run is empty.
+    /// Only a leaf can be unlinked, so no node loses its place.
+    pub fn leaf_of_run(&self, c: usize) -> (ret: Option<usize>)
         requires
-            old(self).wf(),
-            0 <= c < old(self).nodes@.len(),
-            old(self).nodes@[c as int].live,
+            self.wf(),
+            0 <= c < self.nodes@.len(),
+            self.nodes@[c as int].live,
         ensures
-            final(self).wf(),
-            final(self).nodes@.len() == old(self).nodes@.len(),
-            final(self).parent@ == old(self).parent@,
-            final(self).nodes@[c as int].live,
-            forall|x: int| 0 <= x < old(self).nodes@.len() ==>
-                #[trigger] final(self).nodes@[x].depth == old(self).nodes@[x].depth,
-            done ==> final(self).nodes@ == old(self).nodes@ && final(self).seq@ == old(self).seq@
-                && forall|i: usize| !#[trigger] final(self).is_child(c, i),
-            !done ==> final(self).seq@.len() == old(self).seq@.len() - 1
-                && exists|r: usize| #[trigger] revoked_one(*old(self), *final(self), c, r),
+            ret is None == self.childless(c),
+            ret is None ==> forall|i: usize| !#[trigger] self.is_child(c, i),
+            ret is Some ==> {
+                let r = ret.unwrap();
+                &&& has(self.seq@, r)
+                &&& 0 <= r < self.nodes@.len()
+                &&& self.nodes@[r as int].live
+                &&& r != self.seq@[0]
+                &&& self.d(r) > self.d(c)
+                &&& self.anc(r, (self.d(r) - self.d(c)) as nat) == c
+                &&& self.childless(r)
+            },
     {
-        let ghost pre = *old(self);
+        let ghost pre = *self;
         let ghost s = pre.seq@;
         proof {
             lemma_has(s, c);
@@ -879,24 +880,21 @@ impl Tree {
         }
         proof {
             pre.lemma_no_child(cur, k);
+            pre.lemma_link(k);
         }
         if cur == c {
-            return true;
+            return None;
         }
         proof {
             assert(k != j);
             lemma_nodup(s, k, 0);
+            lemma_nodup(s, k, j);
             pre.lemma_run_is_lineage(j, k);
-            pre.lemma_link(k);
-        }
-        self.remove_leaf(cur);
-        proof {
             lemma_has(s, cur);
-            assert(revoked_one(pre, *self, c, cur));
-            let p = choose|p: int| 0 <= p < s.len() && s[p] == cur && self.seq@ == s.remove(p);
-            assert(self.seq@.len() == s.len() - 1);
+            pre.lemma_link(j + 1);
+            assert(pre.d(s[j + 1]) > pre.d(c));
         }
-        false
+        Some(cur)
     }
 }
 

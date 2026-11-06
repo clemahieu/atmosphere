@@ -260,6 +260,7 @@ impl CapKernel {
             assert(post.payload_of(child) == large_frame_of(base, order));
             assert(payload_wf(post.payload_of(child)));
             Self::lemma_derive_caps_wf(pre, post, child);
+            Self::lemma_hidden_frame(pre, post, child, child);
             Self::lemma_tlb_same(pre, post);
             assert(FRAME_RIGHTS & 128 == 0) by (compute_only);
             assert(right_bit(Right::Control) == 128);
@@ -555,6 +556,29 @@ impl CapKernel {
                     assert(pre.blocks.pages@[page + 0int].kind is Free);
                     assert(pre.blocks.pages@[page + 1int].kind is Free);
                     assert(post.blocks.pages@[(p / 4096) as int] == pre.blocks.pages@[(p / 4096) as int]);
+                }
+            }
+            assert forall|x: usize| x < NODE_SPACE && (#[trigger] post.list.nodes@[x as int]).live
+                && post.list.nodes@[x as int].kind is Hidden implies post.tables.owner@.contains_key(x) by {
+                if x != base {
+                    assert(pre.list.nodes@[x as int].live == mid.nodes@[x as int].live);
+                    assert(mid.nodes@[x as int].live);
+                    pre.list.lemma_live_valid(x);
+                    assert(pre.list.nodes@[x as int].kind is Hidden);
+                }
+            }
+            assert forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) && post.tables.attached(l) implies {
+                &&& l < NODE_SPACE
+                &&& post.list.nodes@[l as int].live
+                &&& post.list.nodes@[l as int].kind is Hidden
+            } by {
+                if l != base {
+                    assert(pre.tables.owner@.contains_key(l));
+                    assert(post.tables.payloads@[l] == pre.tables.payloads@[l]);
+                    assert(pre.tables.attached(l));
+                    pre.tables.lemma_leaf(&pre.list, l);
+                    assert(page_of(l) == l);
+                    assert(pre.list.valid(l));
                 }
             }
             assert(post.wf());

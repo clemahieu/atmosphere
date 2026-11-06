@@ -6,6 +6,7 @@ pub mod list;
 pub mod moving;
 pub mod reach;
 pub mod retype;
+pub mod revoke;
 pub mod table;
 pub mod view;
 pub mod zero;

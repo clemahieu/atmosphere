@@ -74,6 +74,19 @@ pub fn flush_every_context(core: usize, epoch: usize) -> (ret: Tracked<Flushed>)
     Tracked::assume_new()
 }
 
+/// A live hidden node is node 0 of a table leaf, the only block with one so far, so unlinking it can
+/// find what to detach. And a leaf in a root entry has its hidden node, so revoking the untyped it came
+/// from always reaches it.
+pub open spec fn hidden_nodes_are_leaves(list: &Tree, tables: &Tables) -> bool {
+    &&& forall|n: usize| n < NODE_SPACE && (#[trigger] list.nodes@[n as int]).live && list.nodes@[n as int].kind is Hidden
+        ==> tables.owner@.contains_key(n)
+    &&& forall|l: usize| #[trigger] tables.owner@.contains_key(l) && tables.attached(l) ==> {
+        &&& l < NODE_SPACE
+        &&& list.nodes@[l as int].live
+        &&& list.nodes@[l as int].kind is Hidden
+    }
+}
+
 /// A page the list holds nodes in is not free, so a newly typed block's first page is not already one.
 pub open spec fn list_pages_used(list: &Tree, blocks: &BlockTable) -> bool {
     forall|p: usize| #[trigger] list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
@@ -122,6 +135,7 @@ impl CapKernel {
         &&& self.zeroing.wf()
         &&& zeroing_typed(&self.zeroing, &self.blocks)
         &&& list_pages_used(&self.list, &self.blocks)
+        &&& hidden_nodes_are_leaves(&self.list, &self.tables)
     }
 
     /// A frame's permission is for its own page.
@@ -213,6 +227,8 @@ impl CapKernel {
                 self.stale_epoch.wf(),
                 self.zeroing.wf(),
                 self.zeroing.blocks@ == Map::<usize, usize>::empty(),
+                forall|i: int| 0 <= i < NODE_SPACE && i != root ==> !(#[trigger] self.list.nodes@[i]).live,
+                self.list.nodes@[root as int].kind == NodeKind::Capability,
                 forall|c: int| 0 <= c < i ==> {
                     &&& (#[trigger] self.cores@[c]).current_thread.is_None()
                     &&& self.cores@[c].acked_epoch == 0
@@ -233,6 +249,8 @@ impl CapKernel {
                 self.stale_epoch.wf(),
                 self.zeroing.wf(),
                 self.zeroing.blocks@ == Map::<usize, usize>::empty(),
+                forall|i: int| 0 <= i < NODE_SPACE && i != root ==> !(#[trigger] self.list.nodes@[i]).live,
+                self.list.nodes@[root as int].kind == NodeKind::Capability,
                 forall|c: int| 0 <= c < NUM_CPUS ==> {
                     &&& (#[trigger] self.cores@[c]).current_thread.is_None()
                     &&& self.cores@[c].acked_epoch == 0
@@ -241,6 +259,12 @@ impl CapKernel {
         {
             self.stale_epoch.set(i, 0);
             i = i + 1;
+        }
+        proof {
+            assert forall|n: usize| n < NODE_SPACE && (#[trigger] self.list.nodes@[n as int]).live
+                && self.list.nodes@[n as int].kind is Hidden implies self.tables.owner@.contains_key(n) by {
+                assert(n == root);
+            }
         }
         self.flush_epoch = 0;
         self.tlb = Ghost(Seq::new(NUM_CPUS as nat, |c: int| Set::<usize>::empty()));
