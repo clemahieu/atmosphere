@@ -56,12 +56,13 @@ impl TableTree {
         if self.is_page(t) { self.records[t].value() } else { self.space_records[t].value().table }
     }
 
-    /// Entry i of table t can point at a child table: it is above level 1 and no kernel slot.
+    /// Entry i of table t can point at a child table: it is above level 1 and no kernel slot. Only a
+    /// process's root has kernel slots.
     pub open spec fn child_slot(self, t: usize, i: usize) -> bool {
         &&& self.is_table(t)
         &&& i < 512
         &&& self.record(t).level >= 2
-        &&& self.is_root(t) ==> i >= KERNEL_MEM_END_L4INDEX
+        &&& self.is_root(t) ==> !holds_kernel(self.space_records[t].value().kind, i)
     }
 
     /// Entry i of table t names a child table: present in a slot that can hold one, without ps. The ps
@@ -187,7 +188,7 @@ pub proof fn lemma_links_root_added(pre: TableTree, post: TableTree, s: usize)
         post.roots == pre.roots.insert(s, post.roots[s]),
         post.space_records == pre.space_records.insert(s, post.space_records[s]),
         post.record(s).parent is None,
-        forall|i: usize| KERNEL_MEM_END_L4INDEX <= i < 512 ==> #[trigger] post.entry(s, i).is_empty(),
+        forall|i: usize| i < 512 && !holds_kernel(post.space_records[s].value().kind, i) ==> #[trigger] post.entry(s, i).is_empty(),
     ensures
         table_links_wf(post),
 {
@@ -266,6 +267,8 @@ pub open spec fn linked(pre: TableTree, post: TableTree, parent: usize, entry: u
     }
     &&& post.record(child).space == Some(s)
     &&& post.record(child).parent == Some(TableParent { table: parent, entry })
+    &&& forall|t: usize| #![trigger post.space_records[t]]
+        pre.is_root(t) ==> post.space_records[t].value().kind == pre.space_records[t].value().kind
 }
 
 /// A link into an empty entry of a table in space s, of a table page one level below it that had no
@@ -546,7 +549,7 @@ impl CapKernel {
         }
     }
 
-    /// The spaces after a link into a root: its entry outside the kernel slots and its record's written
+    /// The spaces after a link into a root: an entry outside its kernel slots, now naming a table, and its record's written
     /// flag changed, and the root keeps its address, its kind, its record and its kernel slots.
     proof fn lemma_link_spaces(pre: Self, post: Self, parent: usize, entry: usize)
         requires
@@ -558,7 +561,9 @@ impl CapKernel {
             post.spaces.holders == pre.spaces.holders,
             post.spaces.kernel_entries == pre.spaces.kernel_entries,
             pre.spaces.roots@.contains_key(parent),
-            entry >= KERNEL_MEM_END_L4INDEX,
+            !holds_kernel(pre.spaces.records@[parent].value().kind, entry),
+            post.spaces.roots@[parent].value()[entry].perm.present,
+            !post.spaces.roots@[parent].value()[entry].perm.ps,
             post.spaces.roots@ == pre.spaces.roots@.insert(parent, post.spaces.roots@[parent]),
             post.spaces.records@ == pre.spaces.records@.insert(parent, post.spaces.records@[parent]),
             post.spaces.roots@[parent].addr() == pre.spaces.roots@[parent].addr(),
@@ -582,7 +587,7 @@ impl CapKernel {
             assert(sa.roots@.contains_key(s));
             assert(space_wf(&pre.list, sa, &pre.blocks, s));
             if s == parent {
-                assert forall|i: usize| i < KERNEL_MEM_END_L4INDEX implies #[trigger] sb.roots@[s].value()[i] == sa.roots@[s].value()[i] by {}
+                assert forall|i: usize| i < KERNEL_MEM_END_L4INDEX && i != entry implies #[trigger] sb.roots@[s].value()[i] == sa.roots@[s].value()[i] by {}
                 assert(kernel_slots_wf(sb, s));
                 assert(root_record_wf(sb, s));
             } else {
@@ -619,6 +624,39 @@ impl CapKernel {
     }
 
     /// Reads a table's record.
+    /// Whether entry i of the table at t is a kernel slot.
+    pub fn is_kernel_slot(&self, t: usize, is_root: bool, i: usize) -> (ret: bool)
+        requires
+            self.wf(),
+            is_root ==> self.spaces.roots@.contains_key(t),
+            !is_root ==> !self.spaces.roots@.contains_key(t),
+        ensures
+            ret == (is_root && holds_kernel(self.spaces.records@[t].value().kind, i)),
+    {
+        if !is_root || i >= KERNEL_MEM_END_L4INDEX {
+            return false;
+        }
+        match self.space_kind(t) {
+            SpaceKind::Process => true,
+            SpaceKind::Io => false,
+        }
+    }
+
+    /// Reads the kind of the space at s.
+    pub fn space_kind(&self, s: usize) -> (ret: SpaceKind)
+        requires
+            self.wf(),
+            self.spaces.roots@.contains_key(s),
+        ensures
+            ret == self.spaces.records@[s].value().kind,
+    {
+        proof {
+            assert(space_wf(&self.list, &self.spaces, &self.blocks, s));
+        }
+        PPtr::<SpaceRecord>::from_usize(s + SPACE_RECORD_PAGE * 4096).borrow(Tracked(self.spaces.records.borrow().tracked_borrow(s))).kind
+    }
+
+    /// Reads a table's record, which the caller has found to be a root's or a table page's.
     pub fn table_record(&self, t: usize, is_root: bool) -> (ret: TableRecord)
         requires
             self.wf(),
@@ -853,6 +891,7 @@ impl CapKernel {
                 &&& post.spaces == pre.spaces
             },
             !pre.table_pages.maps@.contains_key(parent) ==> {
+                &&& post.spaces.records@[parent].value().kind == pre.spaces.records@[parent].value().kind
                 &&& post.spaces.roots@[parent].value()[entry] == child_entry(child)
                 &&& forall|i: usize| i < 512 && i != entry ==> #[trigger] post.spaces.roots@[parent].value()[i] == pre.spaces.roots@[parent].value()[i]
                 &&& post.spaces.records@[parent].value().table.level == pre.spaces.records@[parent].value().table.level
@@ -1089,7 +1128,7 @@ impl CapKernel {
         if !parent_space_ok || !child_free || parent_record.level < 2 || child_record.level + 1 != parent_record.level {
             return false;
         }
-        if is_root && entry < KERNEL_MEM_END_L4INDEX {
+        if self.is_kernel_slot(parent, is_root, entry) {
             return false;
         }
         proof {

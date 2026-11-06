@@ -1,6 +1,7 @@
 pub mod block;
 pub mod delete;
 pub mod derive;
+pub mod io;
 pub mod kernel;
 pub mod link;
 pub mod list;

@@ -204,6 +204,11 @@ pub open spec fn space_wf(list: &Tree, spaces: &Spaces, blocks: &BlockTable, s: 
     &&& blocks.pages@[(s / 4096) as int].refs == 0 ==> blocks.pages@[(s / 4096) as int].dead
 }
 
+/// Entry i of a root of this kind holds the kernel's. Kernel slots exist only in process spaces.
+pub open spec fn holds_kernel(kind: SpaceKind, i: usize) -> bool {
+    kind is Process && i < KERNEL_MEM_END_L4INDEX
+}
+
 /// A root is level 4, of its own space, with no parent. A root not written has no entry but the kernel
 /// slots.
 pub open spec fn root_record_wf(spaces: &Spaces, s: usize) -> bool {
@@ -212,15 +217,16 @@ pub open spec fn root_record_wf(spaces: &Spaces, s: usize) -> bool {
     &&& record.space == Some(s)
     &&& record.parent is None
     &&& !record.written ==> forall|i: usize| #![trigger spaces.roots@[s].value()[i]]
-        KERNEL_MEM_END_L4INDEX <= i < 512 ==> spaces.roots@[s].value()[i].is_empty()
+        i < 512 && !holds_kernel(spaces.records@[s].value().kind, i) ==> spaces.roots@[s].value()[i].is_empty()
 }
 
 /// A process root holds the kernel's entries in the kernel slots, so the kernel stays mapped on entry
-/// from user mode. An IO root's are empty.
+/// from user mode. The same entries of an IO root are empty or name a child table.
 pub open spec fn kernel_slots_wf(spaces: &Spaces, s: usize) -> bool {
     forall|i: usize| #![trigger spaces.roots@[s].value()[i]] i < KERNEL_MEM_END_L4INDEX ==> match spaces.records@[s].value().kind {
         SpaceKind::Process => spaces.roots@[s].value()[i] == usize2page_entry(spaces.kernel_entries@[i as int]),
-        SpaceKind::Io => spaces.roots@[s].value()[i].is_empty(),
+        SpaceKind::Io => spaces.roots@[s].value()[i].is_empty()
+            || (spaces.roots@[s].value()[i].perm.present && !spaces.roots@[s].value()[i].perm.ps),
     }
 }
 
@@ -1854,7 +1860,7 @@ impl CapKernel {
             post.spaces.roots@ == pre.spaces.roots@.insert(base, post.spaces.roots@[base]),
             post.spaces.records@ == pre.spaces.records@.insert(base, post.spaces.records@[base]),
             post.spaces.records@[base].value().table.parent is None,
-            forall|i: usize| KERNEL_MEM_END_L4INDEX <= i < 512 ==> #[trigger] post.spaces.roots@[base].value()[i].is_empty(),
+            forall|i: usize| i < 512 && !holds_kernel(post.spaces.records@[base].value().kind, i) ==> #[trigger] post.spaces.roots@[base].value()[i].is_empty(),
         ensures
             table_links_wf(tree_of(&post.table_pages, &post.spaces)),
     {
@@ -1863,7 +1869,7 @@ impl CapKernel {
         let b = tree_of(&post.table_pages, &post.spaces);
         assert(!b.is_page(base));
         assert(b.is_root(base));
-        assert forall|i: usize| KERNEL_MEM_END_L4INDEX <= i < 512 implies #[trigger] b.entry(base, i).is_empty() by {
+        assert forall|i: usize| i < 512 && !holds_kernel(post.spaces.records@[base].value().kind, i) implies #[trigger] b.entry(base, i).is_empty() by {
             assert(post.spaces.roots@[base].value()[i].is_empty());
         }
         lemma_links_root_added(a, b, base);
@@ -1919,7 +1925,7 @@ impl CapKernel {
             post.table_pages == pre.table_pages,
             post.spaces.roots@ == pre.spaces.roots@.insert(base, post.spaces.roots@[base]),
             post.spaces.records@ == pre.spaces.records@.insert(base, post.spaces.records@[base]),
-            forall|i: usize| KERNEL_MEM_END_L4INDEX <= i < 512 ==> #[trigger] post.spaces.roots@[base].value()[i].is_empty(),
+            forall|i: usize| i < 512 && !holds_kernel(post.spaces.records@[base].value().kind, i) ==> #[trigger] post.spaces.roots@[base].value()[i].is_empty(),
         ensures
             space_mapping(tree_of(&post.table_pages, &post.spaces), base) == IMap::<SpacePath, crate::pagetable::entry::PageEntry>::empty(),
             forall|r: usize| #[trigger] pre.spaces.roots@.contains_key(r) ==>
@@ -1932,7 +1938,7 @@ impl CapKernel {
         let b = tree_of(&post.table_pages, &post.spaces);
         assert(!b.is_page(base));
         assert(b.is_root(base));
-        assert forall|i: usize| KERNEL_MEM_END_L4INDEX <= i < 512 implies #[trigger] b.entry(base, i).is_empty() by {
+        assert forall|i: usize| i < 512 && !holds_kernel(post.spaces.records@[base].value().kind, i) implies #[trigger] b.entry(base, i).is_empty() by {
             assert(post.spaces.roots@[base].value()[i].is_empty());
         }
         lemma_mapping_fresh(b, base);
@@ -2474,7 +2480,7 @@ impl CapKernel {
                 &&& forall|r: usize| #[trigger] old(self).spaces.roots@.contains_key(r) ==>
                     space_mapping(tree_of(&final(self).table_pages, &final(self).spaces), r)
                         == space_mapping(tree_of(&old(self).table_pages, &old(self).spaces), r)
-                &&& forall|i: usize| KERNEL_MEM_END_L4INDEX <= i < 512 ==> #[trigger] final(self).spaces.roots@[base].value()[i].is_empty()
+                &&& forall|i: usize| i < 512 && !holds_kernel(kind, i) ==> #[trigger] final(self).spaces.roots@[base].value()[i].is_empty()
                 &&& final(self).spaces.kernel_entries == old(self).spaces.kernel_entries
                 &&& forall|s: usize| #[trigger] old(self).spaces.roots@.contains_key(s) ==> final(self).spaces.roots@[s] == old(self).spaces.roots@[s]
                 &&& final(self).blocks.pages@[(base / 4096) as int].refs == 1
