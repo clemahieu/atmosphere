@@ -25,6 +25,10 @@ const BOOT_STACK_CHECK: &str = "tools/check-boot-stack.py";
 /// The coverage report, relative to the project root.
 const COVERAGE: &str = "tools/coverage.py";
 
+/// The largest file the tree may hold. The largest source is a seventh of this, so anything over it is
+/// a build or solver output that .gitignore missed.
+const MAX_FILE_BYTES: u64 = 1024 * 1024;
+
 /// The payload `atmo run` loads by default.
 const PAYLOAD: &str = "hello";
 
@@ -41,6 +45,7 @@ pub(super) async fn run(global: GlobalOpts) -> Result<()> {
     let project = Project::discover()?;
 
     let results = [
+        ("file sizes", check_file_sizes(&project).await),
         ("build", check_build(&project).await),
         ("license", license::check(&project)),
         ("license guard", check_license_guard(&project).await),
@@ -68,6 +73,38 @@ pub(super) async fn run(global: GlobalOpts) -> Result<()> {
         quit::with_code(ExitCode::FAILURE);
     }
     Ok(())
+}
+
+/// Looks at everything `git add -A` would take, tracked or not, since the gate runs before the commit.
+async fn check_file_sizes(project: &ProjectHandle) -> Result<String> {
+    let root = project.root();
+    let output = Command::new("git")
+        .args(["ls-files", "-z", "--cached", "--others", "--exclude-standard"])
+        .current_dir(&root)
+        .output()
+        .await?;
+    if !output.status.success() {
+        return Err(anyhow!("git ls-files: {}", output.status));
+    }
+    let listing = String::from_utf8(output.stdout).context("git ls-files")?;
+    let mut sizes = Vec::new();
+    for path in listing.split('\0').filter(|path| !path.is_empty()) {
+        match fs::symlink_metadata(root.join(path)).await {
+            Ok(metadata) => sizes.push((path, metadata.len())),
+            // Deleted and not yet staged, so the commit will not hold it.
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(error).context(path.to_string()),
+        }
+    }
+    let over = oversized(&sizes);
+    if !over.is_empty() {
+        return Err(anyhow!("over {} bytes: {}", MAX_FILE_BYTES, over.join(", ")));
+    }
+    Ok(format!("{} files, none over {} bytes", sizes.len(), MAX_FILE_BYTES))
+}
+
+fn oversized<'a>(sizes: &[(&'a str, u64)]) -> Vec<&'a str> {
+    sizes.iter().filter(|(_, size)| *size > MAX_FILE_BYTES).map(|(path, _)| *path).collect()
 }
 
 async fn check_build(project: &ProjectHandle) -> Result<String> {
@@ -316,6 +353,13 @@ fn iommu_bound_own_table(serial: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_file_over_the_limit_is_named() {
+        let sizes = [("small.rs", MAX_FILE_BYTES), ("solver.profile", MAX_FILE_BYTES + 1)];
+        assert_eq!(oversized(&sizes), vec!["solver.profile"]);
+        assert!(oversized(&sizes[..1]).is_empty());
+    }
 
     #[test]
     fn allowance_is_one_number() {
