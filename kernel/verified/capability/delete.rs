@@ -144,6 +144,7 @@ impl CapKernel {
                 &&& post.spaces.roots == pre.spaces.roots
                 &&& post.spaces.records == pre.spaces.records
                 &&& post.spaces.spare == pre.spaces.spare
+                &&& post.spaces.kernel_entries == pre.spaces.kernel_entries
                 &&& post.spaces.holders@ == pre.spaces.holders@.insert(s, pre.spaces.holders@[s].remove(n))
             },
             !(pre.is_cap(n) && (pre.payload_of(n).kind is Frame || pre.payload_of(n).kind is Space))

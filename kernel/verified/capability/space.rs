@@ -8,6 +8,7 @@ use vstd::prelude::*;
 
 verus! {
 
+use crate::array::*;
 use crate::capability::block::*;
 use crate::capability::kernel::*;
 use crate::capability::list::*;
@@ -18,6 +19,7 @@ use crate::capability::table::*;
 use crate::capability::view::*;
 use crate::layouts::*;
 use crate::define::*;
+use crate::pagetable::entry::*;
 use crate::pagetable::pagemap::*;
 use crate::pagetable::pagemap_util_t::*;
 use crate::pptr::*;
@@ -64,11 +66,14 @@ pub struct Spaces {
     pub records: Tracked<Map<usize, PointsTo<SpaceRecord>>>,
     pub spare: Tracked<Map<usize, PagePerm4k>>,
     pub holders: Ghost<IMap<usize, Set<usize>>>,
+    /// The kernel's entries, which every process root holds in its kernel slots.
+    pub kernel_entries: Array<usize, KERNEL_MEM_END_L4INDEX>,
 }
 
 impl Spaces {
-    pub fn new() -> (ret: Self)
+    pub fn new(kernel_entries: Array<usize, KERNEL_MEM_END_L4INDEX>) -> (ret: Self)
         ensures
+            ret.kernel_entries == kernel_entries,
             ret.roots@ == Map::<usize, PointsTo<PageMap>>::empty(),
             ret.records@ == Map::<usize, PointsTo<SpaceRecord>>::empty(),
             ret.spare@ == Map::<usize, PagePerm4k>::empty(),
@@ -79,6 +84,7 @@ impl Spaces {
             records: Tracked(Map::tracked_empty()),
             spare: Tracked(Map::tracked_empty()),
             holders: Ghost(IMap::empty()),
+            kernel_entries,
         }
     }
 }
@@ -109,14 +115,25 @@ pub open spec fn space_wf(list: &Tree, spaces: &Spaces, blocks: &BlockTable, s: 
     &&& blocks.pages@[(s / 4096) as int].order == 3
     &&& forall|k: usize| k < TABLE_NODE_PAGES ==> list.pages@.dom().contains(#[trigger] table_node_page(s, k))
     &&& spaces.holders@.contains_key(s)
+    &&& kernel_slots_wf(spaces, s)
     &&& spaces.holders@[s].finite()
     &&& spaces.holders@[s].len() == blocks.pages@[(s / 4096) as int].refs
     &&& blocks.pages@[(s / 4096) as int].refs == 0 ==> blocks.pages@[(s / 4096) as int].dead
 }
 
+/// A process root holds the kernel's entries in the kernel slots, so the kernel stays mapped on entry
+/// from user mode. An IO root's are empty.
+pub open spec fn kernel_slots_wf(spaces: &Spaces, s: usize) -> bool {
+    forall|i: usize| #![trigger spaces.roots@[s].value()[i]] i < KERNEL_MEM_END_L4INDEX ==> match spaces.records@[s].value().kind {
+        SpaceKind::Process => spaces.roots@[s].value()[i] == usize2page_entry(spaces.kernel_entries@[i as int]),
+        SpaceKind::Io => spaces.roots@[s].value()[i].is_empty(),
+    }
+}
+
 /// Each space is well formed, a space's block is one of these, and the capabilities of kind Space are
 /// exactly the holders.
 pub open spec fn spaces_wf(list: &Tree, tables: &Tables, spaces: &Spaces, blocks: &BlockTable) -> bool {
+    &&& spaces.kernel_entries.wf()
     &&& forall|s: usize| #[trigger] spaces.roots@.contains_key(s) ==> space_wf(list, spaces, blocks, s)
     &&& forall|b: usize| b < NUM_PAGES && #[trigger] space_block(blocks, b)
         ==> spaces.roots@.contains_key((b * 4096) as usize)
@@ -1131,6 +1148,7 @@ impl CapKernel {
             post.spaces.roots == pre.spaces.roots,
             post.spaces.records == pre.spaces.records,
             post.spaces.spare == pre.spaces.spare,
+            post.spaces.kernel_entries == pre.spaces.kernel_entries,
             post.spaces.holders@ == pre.spaces.holders@.insert(s, pre.spaces.holders@[s].insert(n)),
             forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) ==> post.list.pages@.dom().contains(p),
         ensures
@@ -1207,6 +1225,7 @@ impl CapKernel {
             post.spaces.roots == pre.spaces.roots,
             post.spaces.records == pre.spaces.records,
             post.spaces.spare == pre.spaces.spare,
+            post.spaces.kernel_entries == pre.spaces.kernel_entries,
             post.spaces.holders@ == pre.spaces.holders@.insert(s, pre.spaces.holders@[s].remove(n)),
             forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) ==> post.list.pages@.dom().contains(p),
         ensures
@@ -1971,6 +1990,8 @@ impl CapKernel {
             post.spaces.spare@ == pre.spaces.spare@.insert(base, post.spaces.spare@[base]),
             post.spaces.spare@[base].addr() == base + 7 * 4096,
             post.spaces.spare@[base].is_uninit(),
+            post.spaces.kernel_entries == pre.spaces.kernel_entries,
+            kernel_slots_wf(&post.spaces, base),
             post.spaces.holders@ == pre.spaces.holders@.insert(base, set![child]),
             !pre.list.nodes@[child as int].live,
             post.is_cap(child),
@@ -2174,7 +2195,9 @@ impl CapKernel {
                 &&& final(self).list.is_child(parent, child)
                 &&& final(self).spaces.roots@.contains_key(base)
                 &&& final(self).spaces.records@[base].value().kind == kind
-                &&& forall|i: usize| i < 512 ==> #[trigger] final(self).spaces.roots@[base].value()[i].is_empty()
+                &&& forall|i: usize| KERNEL_MEM_END_L4INDEX <= i < 512 ==> #[trigger] final(self).spaces.roots@[base].value()[i].is_empty()
+                &&& final(self).spaces.kernel_entries == old(self).spaces.kernel_entries
+                &&& forall|s: usize| #[trigger] old(self).spaces.roots@.contains_key(s) ==> final(self).spaces.roots@[s] == old(self).spaces.roots@[s]
                 &&& final(self).blocks.pages@[(base / 4096) as int].refs == 1
                 &&& discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base })
             },
@@ -2249,6 +2272,13 @@ impl CapKernel {
         }
         let root_table = base + SPACE_ROOT_PAGE * 4096;
         let (_, Tracked(map)) = page_perm_to_page_map(root_table, Tracked(table));
+        let tracked mut map = map;
+        match kind {
+            SpaceKind::Process => {
+                page_map_set_kernel_entry_range(&self.spaces.kernel_entries, root_table, Tracked(&mut map));
+            },
+            SpaceKind::Io => {},
+        }
         let tracked mut typed;
         proof {
             typed = page_into_space_record(record);
