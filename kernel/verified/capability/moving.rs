@@ -85,6 +85,7 @@ impl CapKernel {
             assert(post.payload_of(n) == pre.payload_of(i));
             assert(Self::caps_frame(pre, post, i, n));
             Self::lemma_move_caps_wf(pre, post, i, n);
+            Self::lemma_hidden_frame(pre, post, i, n);
             Self::lemma_move_discharges(pre, post, root, i, n);
             Self::lemma_tlb_same(pre, post);
         }

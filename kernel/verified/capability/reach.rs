@@ -670,6 +670,32 @@ pub proof fn lemma_simulated_discharges_retype(
     }
 }
 
+/// A revoke's step: post's authority is all in pre, and what it removed is below the capability named.
+pub proof fn lemma_simulated_discharges_revoke(
+    pre: State,
+    post: State,
+    p: ObjectId,
+    c: NodeId,
+    live: spec_fn(NodeId) -> bool,
+    f: spec_fn(NodeId) -> NodeId,
+)
+    requires
+        simulates(post, pre, live, f),
+        pre.holds(p, c),
+        pre.names.contains_key(c),
+        forall|x: NodeId| #[trigger] State::removed(pre, post, x) ==> exists|k: nat| k > 0 && #[trigger] pre.descends(c, x, k),
+        forall|o: ObjectId| #[trigger] (post.contents)(o) == (pre.contents)(o),
+    ensures
+        discharges(pre, post, p, Effect::Revoke { cap: c }),
+{
+    assert forall|o: ObjectId| #[trigger] State::changed(pre, post, o) implies may_change(pre, Effect::Revoke { cap: c }, o) by {
+        assert((post.contents)(o) == (pre.contents)(o));
+    }
+    assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) implies pre.reach(r, o) by {
+        lemma_simulates_reach(post, pre, live, f, r, o);
+    }
+}
+
 /// Control is transitive: if s controls m and m controls q, s reaches what q directly reaches, since
 /// s can claim m's control over q, and repeat.
 pub proof fn lemma_control_transitive(s: State, a: ObjectId, m: ObjectId, q: ObjectId, o: ObjectId)

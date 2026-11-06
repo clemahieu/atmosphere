@@ -73,6 +73,7 @@ impl CapKernel {
             pre.tables.lemma_wf_same_pages(&pre.list, &post.list);
             assert(Self::caps_frame(pre, post, n, n));
             Self::lemma_delete_caps_wf(pre, post, n);
+            Self::lemma_hidden_frame(pre, post, n, n);
             Self::lemma_delete_discharges(pre, post, root, n);
             Self::lemma_tlb_same(pre, post);
         }
@@ -80,7 +81,7 @@ impl CapKernel {
     }
 
     /// Every capability left still names a block.
-    proof fn lemma_delete_caps_wf(pre: Self, post: Self, n: usize)
+    pub proof fn lemma_delete_caps_wf(pre: Self, post: Self, n: usize)
         requires
             Self::caps_frame(pre, post, n, n),
             !post.list.nodes@[n as int].live,

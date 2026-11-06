@@ -7,7 +7,7 @@ use vstd::prelude::*;
 
 verus! {
 
-use crate::capability::kernel::CapKernel;
+use crate::capability::kernel::*;
 use crate::capability::list::*;
 use crate::capability::reach::*;
 use crate::capability::table::*;
@@ -134,6 +134,62 @@ impl CapKernel {
             pre.lemma_slot_bound(x);
             assert(post.list.nodes@[x as int].live == pre.list.nodes@[x as int].live);
             assert(post.tables.payload_of(x) == pre.tables.payload_of(x));
+        }
+    }
+
+    /// The step changed no node's kind or liveness but n's and m's. They are slots, so neither is a
+    /// leaf's first node, and neither is now a live hidden node, so the hidden nodes are as they were.
+    pub proof fn lemma_hidden_frame(pre: Self, post: Self, n: usize, m: usize)
+        requires
+            Self::caps_frame(pre, post, n, m),
+            n % 4096 != 0,
+            m % 4096 != 0,
+            !(post.list.nodes@[n as int].live && post.list.nodes@[n as int].kind is Hidden),
+            !(post.list.nodes@[m as int].live && post.list.nodes@[m as int].kind is Hidden),
+        ensures
+            hidden_nodes_are_leaves(&post.list, &post.tables),
+    {
+        assert forall|x: usize| x < NODE_SPACE && (#[trigger] post.list.nodes@[x as int]).live
+            && post.list.nodes@[x as int].kind is Hidden implies post.tables.owner@.contains_key(x) by {
+            assert(x != n && x != m);
+            assert(pre.list.nodes@[x as int].live);
+        }
+        assert forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) && post.tables.attached(l) implies {
+            &&& l < NODE_SPACE
+            &&& post.list.nodes@[l as int].live
+            &&& post.list.nodes@[l as int].kind is Hidden
+        } by {
+            pre.tables.lemma_leaf(&pre.list, l);
+            assert(l % 4096 == 0);
+            assert(page_of(l) == l);
+            assert(l != n && l != m);
+            assert(post.tables.payload_of(l) == pre.tables.payload_of(l));
+            assert(pre.tables.attached(l));
+            assert(pre.tables.owner@.contains_key(l));
+            assert(l < NODE_SPACE);
+            assert(post.list.nodes@[l as int].live == pre.list.nodes@[l as int].live);
+        }
+    }
+
+    /// An ancestor by the list is an ancestor by the view: each link is a parent the map holds.
+    pub proof fn lemma_anc_descends(&self, r: usize, n: nat)
+        requires
+            self.list.wf(),
+            has(self.list.seq@, r),
+            n <= self.list.d(r),
+        ensures
+            self.view().descends(self.list.anc(r, n), r, n),
+        decreases n,
+    {
+        if n > 0 {
+            let s = self.list.seq@;
+            lemma_has(s, r);
+            let k = choose|k: int| 0 <= k < s.len() && s[k] == r;
+            assert(k != 0);
+            assert(self.list.parent@.contains_key(s[k]));
+            assert(has(s, self.list.parent@[s[k]]));
+            assert(self.list.d(r) == self.list.d(self.list.parent@[r]) + 1);
+            self.lemma_anc_descends(self.list.parent@[r], (n - 1) as nat);
         }
     }
 

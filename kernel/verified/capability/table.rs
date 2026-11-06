@@ -431,6 +431,7 @@ impl Tables {
             final(self).leaf(root, r as int) == leaf,
             final(self).roots@.dom() == old(self).roots@.dom(),
             final(self).owner@ == old(self).owner@.insert(leaf, (root, r as int)),
+            final(self).attached(leaf),
             final(self).payloads@ == old(self).payloads@.insert(leaf, final(self).payloads@[leaf]),
             forall|t: usize, i: usize| #[trigger] old(self).has_slot(t, i) ==>
                 final(self).has_slot(t, i) && final(self).node_of(t, i) == old(self).node_of(t, i),
@@ -510,6 +511,7 @@ impl Tables {
             me.payloads@[leaf].value().entries@[0] == parent_record(root, r),
         ensures
             me.wf(list),
+            me.attached(leaf),
             me.leaf(root, r as int) == leaf,
             forall|t: usize, i: usize| #[trigger] pre.has_slot(t, i) ==>
                 me.has_slot(t, i) && me.node_of(t, i) == pre.node_of(t, i),
@@ -729,7 +731,7 @@ impl Tables {
             forall|t: usize, i: usize| #[trigger] old(self).has_slot(t, i)
                 && !(t == old(self).owner@[leaf].0 && index_entry(i) == old(self).owner@[leaf].1) ==>
                 final(self).has_slot(t, i) && final(self).node_of(t, i) == old(self).node_of(t, i),
-            forall|n: usize| n % 4096 != 0 ==> #[trigger] final(self).payload_of(n) == old(self).payload_of(n),
+            forall|n: usize| n != leaf ==> #[trigger] final(self).payload_of(n) == old(self).payload_of(n),
     {
         let ghost pre = *old(self);
         proof {
@@ -794,7 +796,7 @@ impl Tables {
             forall|t: usize, i: usize| #[trigger] pre.has_slot(t, i)
                 && !(t == root && index_entry(i) == r as int) ==>
                 me.has_slot(t, i) && me.node_of(t, i) == pre.node_of(t, i),
-            forall|n: usize| n % 4096 != 0 ==> #[trigger] me.payload_of(n) == pre.payload_of(n),
+            forall|n: usize| n != leaf ==> #[trigger] me.payload_of(n) == pre.payload_of(n),
     {
         assert(me.leaf(root, r as int) == NO_LEAF);
         assert(pre.leaf(root, r as int) == leaf);
@@ -853,9 +855,11 @@ impl Tables {
             assert(0 <= index_entry(i) < ROOT_ENTRIES);
             assert(me.leaf(t, index_entry(i)) == pre.leaf(t, index_entry(i)));
         }
-        assert forall|n: usize| n % 4096 != 0 implies #[trigger] me.payload_of(n) == pre.payload_of(n) by {
+        assert forall|n: usize| n != leaf implies #[trigger] me.payload_of(n) == pre.payload_of(n) by {
             if page_of(n) != leaf {
                 assert(me.payloads@[page_of(n)] == pre.payloads@[page_of(n)]);
+            } else {
+                assert(n % 4096 != 0);
             }
         }
     }
