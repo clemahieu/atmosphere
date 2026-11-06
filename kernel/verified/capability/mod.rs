@@ -2,6 +2,7 @@ pub mod block;
 pub mod delete;
 pub mod derive;
 pub mod kernel;
+pub mod link;
 pub mod list;
 pub mod moving;
 pub mod reach;
