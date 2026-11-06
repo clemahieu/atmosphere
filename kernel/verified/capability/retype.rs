@@ -7,6 +7,7 @@ use vstd::prelude::*;
 
 verus! {
 
+use crate::capability::link::*;
 use crate::capability::mapping::*;
 use crate::capability::block::*;
 use crate::capability::derive::*;
@@ -833,6 +834,7 @@ impl CapKernel {
             Self::lemma_leaf_list_pages(pre, post, base, page);
             Self::lemma_leaf_objects(pre, post, base, page);
             Self::lemma_leaf_holders(pre, post, mid, base, page);
+            Self::lemma_leaf_mappings(pre, post, mid, base, page);
             Self::lemma_leaf_blocks_leaf_added(pre, post, base, page);
             Self::lemma_leaf_table_pages(pre, post, base, page);
             Self::lemma_leaf_nodes(pre, post, mid, parent, base);
@@ -1067,7 +1069,67 @@ impl CapKernel {
             assert(pre.tables.is_cap(&pre.list, x));
         }
         lemma_holders_small_typed(&pre.list, &pre.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, page, 1);
+        assert forall|i: usize| i < NODE_SPACE implies
+            (post.list.nodes@[i as int].live && post.list.nodes@[i as int].kind is Mapping)
+                == (pre.list.nodes@[i as int].live && pre.list.nodes@[i as int].kind is Mapping) by {
+            if i != leaf {
+                if pre.list.nodes@[i as int].live {
+                    pre.list.lemma_live_valid(i);
+                } else {
+                    assert(!mid.nodes@[i as int].live);
+                }
+            }
+        }
+        assert(same_mapping_nodes(&pre.list, &post.list));
         lemma_holders_same_frames(&pre.list, &pre.tables, &post.list, &post.tables, &post.blocks, &pre.zeroing, pre.holders@);
+    }
+
+    /// The mappings after a leaf's retype: no mapping node, parent, capability or holder changed, the
+    /// block typed held no frame, and no table changed.
+    proof fn lemma_leaf_mappings(pre: Self, post: Self, mid: Tree, leaf: usize, page: usize)
+        requires
+            Self::leaf_step(pre, post, leaf),
+            post.list.nodes@[leaf as int].kind is Hidden,
+            forall|i: int| 0 <= i < NODE_SPACE ==> #[trigger] mid.nodes@[i].live == pre.list.nodes@[i].live,
+            forall|i: int| 0 <= i < NODE_SPACE && i != leaf ==> #[trigger] post.list.nodes@[i].live == mid.nodes@[i].live,
+            forall|x: usize| x != leaf && #[trigger] pre.list.parent@.contains_key(x)
+                ==> post.list.parent@.contains_key(x) && post.list.parent@[x] == pre.list.parent@[x],
+            forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) ==> post.list.pages@.dom().contains(p),
+            post.holders == pre.holders,
+            post.mappings == pre.mappings,
+            post.table_pages == pre.table_pages,
+            post.spaces == pre.spaces,
+            page % (order_pages(1) as usize) == 0,
+            page + order_pages(1) <= NUM_PAGES,
+            forall|k: int| 0 <= k < order_pages(1) ==> #[trigger] pre.blocks.pages@[page + k].kind is Free,
+            !pre.blocks.covered(page as int),
+            post.blocks.regions_2m@ == pre.blocks.regions_2m@,
+            post.blocks.regions_1g@ == pre.blocks.regions_1g@,
+            forall|i: int| 0 <= i < NUM_PAGES && !(page <= i < page + order_pages(1))
+                ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
+        ensures
+            mappings_wf(&post.list, &post.tables, tree_of(&post.table_pages, &post.spaces), &post.blocks, post.holders@, post.mappings@),
+    {
+        assert forall|i: usize| i < NODE_SPACE implies
+            (post.list.nodes@[i as int].live && post.list.nodes@[i as int].kind is Mapping)
+                == (pre.list.nodes@[i as int].live && pre.list.nodes@[i as int].kind is Mapping) by {
+            if i != leaf {
+                if pre.list.nodes@[i as int].live {
+                    pre.list.lemma_live_valid(i);
+                } else {
+                    assert(!mid.nodes@[i as int].live);
+                }
+            }
+        }
+        assert(same_mapping_nodes(&pre.list, &post.list));
+        assert forall|x: usize| #[trigger] pre.is_cap(x) implies post.is_cap(x) && post.payload_of(x) == pre.payload_of(x) by {
+            Self::lemma_leaf_cap(pre, post, leaf, x);
+        }
+        assert forall|n: usize| #[trigger] pre.mappings@.contains_key(n)
+            implies post.list.parent@.contains_key(n) && post.list.parent@[n] == pre.list.parent@[n] by {
+            pre.lemma_mapping_node(n);
+        }
+        Self::lemma_mappings_grown(pre, post, page, 1);
     }
 
     /// The leaves' blocks after a leaf's retype: the new leaf's node is live and hidden, and its block

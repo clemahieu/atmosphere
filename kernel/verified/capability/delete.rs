@@ -8,11 +8,13 @@ verus! {
 
 use crate::capability::mapping::*;
 use crate::capability::kernel::*;
+use crate::capability::link::*;
 use crate::capability::list::*;
 use crate::capability::reach::*;
 use crate::capability::refs::*;
 use crate::capability::space::*;
 use crate::capability::table::*;
+use crate::define::*;
 
 impl CapKernel {
     /// The refusals: an index that names no slot, a slot with no capability, the list's first node,
@@ -114,12 +116,17 @@ impl CapKernel {
     pub proof fn lemma_delete_holders(pre: Self, post: Self, n: usize)
         requires
             Self::caps_frame(pre, post, n, n),
+            n < NODE_SPACE,
             pre.list.nodes@[n as int].live,
             !(pre.list.nodes@[n as int].kind is Hidden),
+            !(pre.list.nodes@[n as int].kind is Mapping),
+            pre.list.childless(n),
             !post.list.nodes@[n as int].live,
             post.zeroing == pre.zeroing,
             post.table_pages == pre.table_pages,
             post.list.pages@.dom() == pre.list.pages@.dom(),
+            post.list.parent@ == pre.list.parent@,
+            post.mappings == pre.mappings,
             pre.is_cap(n) && pre.payload_of(n).kind is Frame ==> {
                 let br = block_ref(&pre.blocks, pre.payload_of(n).base / 4096);
                 &&& blocks_refs_changed(
@@ -159,6 +166,7 @@ impl CapKernel {
             leaf_blocks_wf(&post.list, &post.tables, &post.blocks),
             table_pages_wf(&post.list, &post.table_pages, &post.blocks),
             spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
+            mappings_wf(&post.list, &post.tables, tree_of(&post.table_pages, &post.spaces), &post.blocks, post.holders@, post.mappings@),
     {
         assert forall|x: usize| x != n implies {
             &&& #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x)
@@ -166,6 +174,8 @@ impl CapKernel {
         } by {
             Self::lemma_caps_frame(pre, post, n, n, x);
         }
+        assert(same_mapping_nodes(&pre.list, &post.list));
+        Self::lemma_delete_mappings(pre, post, n);
         pre.lemma_unhidden_not_owned(n);
         Self::lemma_same_leaf_nodes(pre, post, n, n);
         assert(leaf_blocks_wf(&pre.list, &post.tables, &pre.blocks));
@@ -261,6 +271,42 @@ impl CapKernel {
             lemma_table_pages_same_nodes(&pre.list, &post.list, &pre.table_pages, &post.blocks);
             lemma_spaces_same_caps(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks);
         }
+    }
+
+    /// The mappings after node n goes, the only node that changed: it was childless, so no mapping's
+    /// parent, and it was no mapping, so no mapping's frame lost its holder.
+    pub proof fn lemma_delete_mappings(pre: Self, post: Self, n: usize)
+        requires
+            Self::caps_frame(pre, post, n, n),
+            n < NODE_SPACE,
+            pre.list.nodes@[n as int].live,
+            !(pre.list.nodes@[n as int].kind is Mapping),
+            pre.list.childless(n),
+            !post.list.nodes@[n as int].live,
+            post.table_pages == pre.table_pages,
+            post.spaces.roots == pre.spaces.roots,
+            post.spaces.records == pre.spaces.records,
+            post.list.pages@.dom() == pre.list.pages@.dom(),
+            post.list.parent@ == pre.list.parent@,
+            post.mappings == pre.mappings,
+            forall|i: usize| i < NUM_PAGES ==> #[trigger] block_ref(&post.blocks, i) == block_ref(&pre.blocks, i),
+            forall|br: BlockRef, x: usize| pre.holders@.contains_key(br) && #[trigger] pre.holders@[br].contains(x) && x != n
+                ==> post.holders@.contains_key(br) && post.holders@[br].contains(x),
+            forall|br: BlockRef, x: usize| post.holders@.contains_key(br) && #[trigger] post.holders@[br].contains(x)
+                ==> pre.holders@.contains_key(br) && pre.holders@[br].contains(x),
+        ensures
+            mappings_wf(&post.list, &post.tables, tree_of(&post.table_pages, &post.spaces), &post.blocks, post.holders@, post.mappings@),
+    {
+        assert(Self::same_tree(pre, post));
+        pre.lemma_childless_no_mapping(n);
+        Self::lemma_mapping_parents_kept(pre, post, n, n);
+        assert forall|m: usize| #[trigger] pre.mappings@.contains_key(m) implies mapping_node_kept(
+            &pre.list, &pre.tables, &pre.blocks, pre.holders@, &post.list, &post.tables, &post.blocks, post.holders@, pre.mappings@[m].frame, m,
+        ) by {
+            pre.lemma_mapping_node(m);
+            assert(m != n);
+        }
+        Self::lemma_mappings_same_tree(pre, post);
     }
 
     /// Every capability left still names a block.

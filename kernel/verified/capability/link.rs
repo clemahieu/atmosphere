@@ -10,6 +10,7 @@ use crate::capability::block::{ObjectType, PageKind};
 use crate::capability::kernel::*;
 use crate::capability::list::*;
 use crate::capability::mapping::*;
+use crate::capability::refs::*;
 use crate::capability::reach::*;
 use crate::capability::retype::*;
 use crate::capability::space::*;
@@ -405,14 +406,19 @@ impl CapKernel {
         &&& linked(tree_of(&pre.table_pages, &pre.spaces), tree, parent, entry, child, s)
     }
 
-    /// The invariant after a link, given what the tables' own invariants say.
-    proof fn lemma_link_wf(pre: Self, post: Self)
+    /// The invariant after a link, given what the tables' own invariants say. The entry written is a
+    /// table's above level 1, so no mapping's entry changed.
+    proof fn lemma_link_wf(pre: Self, post: Self, parent: usize, entry: usize, child: usize, s: usize)
         requires
             pre.wf(),
             post.list == pre.list,
             post.tables == pre.tables,
             post.blocks == pre.blocks,
             post.holders == pre.holders,
+            post.mappings == pre.mappings,
+            linked(tree_of(&pre.table_pages, &pre.spaces), tree_of(&post.table_pages, &post.spaces), parent, entry, child, s),
+            tree_of(&pre.table_pages, &pre.spaces).is_table(parent),
+            tree_of(&pre.table_pages, &pre.spaces).record(parent).level >= 2,
             post.zeroing == pre.zeroing,
             post.frames == pre.frames,
             post.cores == pre.cores,
@@ -433,6 +439,16 @@ impl CapKernel {
             assert(pre.tables.owner@.contains_key(n) || pre.table_pages.maps@.contains_key(n));
             assert(post.table_pages.maps@.contains_key(n) == pre.table_pages.maps@.contains_key(n));
         }
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        lemma_frame_entries_linked(a, b, parent, entry, child, s);
+        assert(same_mapping_nodes(&pre.list, &post.list));
+        assert forall|n: usize| #[trigger] pre.mappings@.contains_key(n) implies mapping_node_kept(
+            &pre.list, &pre.tables, &pre.blocks, pre.holders@, &post.list, &post.tables, &post.blocks, post.holders@, pre.mappings@[n].frame, n,
+        ) by {
+            pre.lemma_mapping_node(n);
+        }
+        lemma_mappings_kept(&pre.list, &pre.tables, a, &pre.blocks, pre.holders@, &post.list, &post.tables, b, &post.blocks, post.holders@, pre.mappings@);
     }
 
     /// The table pages after a link: the child's record changed, a page parent's entry and record changed,
@@ -595,6 +611,7 @@ impl CapKernel {
             final(self).table_pages.maps == old(self).table_pages.maps,
             final(self).table_pages.spare == old(self).table_pages.spare,
             final(self).spaces == old(self).spaces,
+            final(self).mappings == old(self).mappings,
             final(self).list == old(self).list,
             final(self).tables == old(self).tables,
             final(self).blocks == old(self).blocks,
@@ -701,7 +718,7 @@ impl CapKernel {
             Self::lemma_link_pages(pre, post, parent, entry, child);
             Self::lemma_link_tree(pre, post, parent, entry, child, parent);
             lemma_links_linked(a, b, parent, entry, child, parent);
-            Self::lemma_link_wf(pre, post);
+            Self::lemma_link_wf(pre, post, parent, entry, child, parent);
         }
     }
 
@@ -769,7 +786,7 @@ impl CapKernel {
             Self::lemma_link_pages(pre, post, parent, entry, child);
             Self::lemma_link_tree(pre, post, parent, entry, child, s);
             lemma_links_linked(a, b, parent, entry, child, s);
-            Self::lemma_link_wf(pre, post);
+            Self::lemma_link_wf(pre, post, parent, entry, child, s);
         }
     }
 

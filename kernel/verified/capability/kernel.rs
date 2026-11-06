@@ -9,6 +9,7 @@ verus! {
 use crate::array::Array;
 use crate::capability::block::*;
 use crate::capability::link::*;
+use crate::capability::mapping::*;
 use crate::capability::list::*;
 use crate::capability::refs::*;
 use crate::capability::space::*;
@@ -54,6 +55,8 @@ pub struct CapKernel {
     pub table_pages: TablePages,
     /// The spaces, each a root table named by capabilities.
     pub spaces: Spaces,
+    /// What each live mapping node stands for.
+    pub mappings: Ghost<IMap<usize, MappingRecord>>,
     /// The large blocks being zeroed. Each is typed with no capability yet.
     pub zeroing: Zeroing,
     /// The frame capabilities holding each block's references.
@@ -396,6 +399,7 @@ impl CapKernel {
         &&& table_pages_wf(&self.list, &self.table_pages, &self.blocks)
         &&& spaces_wf(&self.list, &self.tables, &self.spaces, &self.blocks)
         &&& table_links_wf(tree_of(&self.table_pages, &self.spaces))
+        &&& mappings_wf(&self.list, &self.tables, tree_of(&self.table_pages, &self.spaces), &self.blocks, self.holders@, self.mappings@)
         &&& capability_nodes_are_slots(&self.list, &self.tables)
         &&& parents_are_capabilities(&self.list)
         &&& first_node_outside_leaves(&self.list, &self.tables)
@@ -485,6 +489,7 @@ impl CapKernel {
         self.tables = Tables::new();
         self.table_pages = TablePages::new();
         self.spaces = Spaces::new(kernel_entries);
+        self.mappings = Ghost(IMap::empty());
         self.frames = Tracked(Map::tracked_empty());
         self.zeroing.init();
         self.holders = Ghost(IMap::empty());
@@ -711,8 +716,36 @@ impl CapKernel {
         }
     }
 
+    /// The mappings after a step that changed only the blocks and the holders, keeping every typed
+    /// block's pages in it and every holder in place, adding none.
+    pub proof fn lemma_mappings_blocks_changed(pre: Self, post: Self)
+        requires
+            pre.wf(),
+            post.list == pre.list,
+            post.tables == pre.tables,
+            post.table_pages == pre.table_pages,
+            post.spaces == pre.spaces,
+            post.mappings == pre.mappings,
+            forall|i: usize| i < NUM_PAGES && block_typed(&pre.blocks, block_ref(&pre.blocks, i))
+                && block_refs(&pre.blocks, block_ref(&pre.blocks, i)) > 0
+                ==> #[trigger] block_ref(&post.blocks, i) == block_ref(&pre.blocks, i),
+            forall|br: BlockRef, n: usize| pre.holders@.contains_key(br) && #[trigger] pre.holders@[br].contains(n)
+                ==> post.holders@.contains_key(br) && post.holders@[br].contains(n),
+            forall|br: BlockRef, n: usize| post.holders@.contains_key(br) && #[trigger] post.holders@[br].contains(n)
+                ==> pre.holders@.contains_key(br) && pre.holders@[br].contains(n),
+        ensures
+            mappings_wf(&post.list, &post.tables, tree_of(&post.table_pages, &post.spaces), &post.blocks, post.holders@, post.mappings@),
+    {
+        assert forall|n: usize| #[trigger] pre.mappings@.contains_key(n) implies mapping_node_kept(
+            &pre.list, &pre.tables, &pre.blocks, pre.holders@, &post.list, &post.tables, &post.blocks, post.holders@, pre.mappings@[n].frame, n,
+        ) by {
+            pre.lemma_mapping_node(n);
+        }
+        Self::lemma_mappings_same_tree(pre, post);
+    }
+
     /// Changing only the block table, the frames and the zeroing table keeps the invariant if each of
-    /// them keeps its own.
+    /// them keeps its own, every typed block keeps its pages and every holder stays in place.
     pub proof fn lemma_zeroing_changed(pre: Self, post: Self)
         requires
             pre.wf(),
@@ -731,15 +764,24 @@ impl CapKernel {
             post.tables == pre.tables,
             post.table_pages == pre.table_pages,
             post.spaces == pre.spaces,
+            post.mappings == pre.mappings,
             post.cores == pre.cores,
             post.flush_epoch == pre.flush_epoch,
             post.tlb == pre.tlb,
             post.mapped == pre.mapped,
             post.stale_epoch == pre.stale_epoch,
+            forall|i: usize| i < NUM_PAGES && block_typed(&pre.blocks, block_ref(&pre.blocks, i))
+                && block_refs(&pre.blocks, block_ref(&pre.blocks, i)) > 0
+                ==> #[trigger] block_ref(&post.blocks, i) == block_ref(&pre.blocks, i),
+            forall|br: BlockRef, n: usize| pre.holders@.contains_key(br) && #[trigger] pre.holders@[br].contains(n)
+                ==> post.holders@.contains_key(br) && post.holders@[br].contains(n),
+            forall|br: BlockRef, n: usize| post.holders@.contains_key(br) && #[trigger] post.holders@[br].contains(n)
+                ==> pre.holders@.contains_key(br) && pre.holders@[br].contains(n),
         ensures
             post.wf(),
     {
         Self::lemma_tlb_same(pre, post);
+        Self::lemma_mappings_blocks_changed(pre, post);
     }
 
     /// Changing only the block table keeps the invariant.
@@ -751,6 +793,7 @@ impl CapKernel {
             post.tables == pre.tables,
             post.table_pages == pre.table_pages,
             post.spaces == pre.spaces,
+            post.mappings == pre.mappings,
             post.cores == pre.cores,
             post.flush_epoch == pre.flush_epoch,
             post.tlb == pre.tlb,
@@ -766,10 +809,18 @@ impl CapKernel {
             leaf_blocks_wf(&post.list, &post.tables, &post.blocks),
             table_pages_wf(&post.list, &post.table_pages, &post.blocks),
             spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
+            forall|i: usize| i < NUM_PAGES && block_typed(&pre.blocks, block_ref(&pre.blocks, i))
+                && block_refs(&pre.blocks, block_ref(&pre.blocks, i)) > 0
+                ==> #[trigger] block_ref(&post.blocks, i) == block_ref(&pre.blocks, i),
+            forall|br: BlockRef, n: usize| pre.holders@.contains_key(br) && #[trigger] pre.holders@[br].contains(n)
+                ==> post.holders@.contains_key(br) && post.holders@[br].contains(n),
+            forall|br: BlockRef, n: usize| post.holders@.contains_key(br) && #[trigger] post.holders@[br].contains(n)
+                ==> pre.holders@.contains_key(br) && pre.holders@[br].contains(n),
         ensures
             post.wf(),
     {
         Self::lemma_tlb_same(pre, post);
+        Self::lemma_mappings_blocks_changed(pre, post);
     }
 
     /// A live node in a slot of an owned leaf is a capability.
@@ -952,6 +1003,7 @@ impl CapKernel {
             post.tables == pre.tables,
             post.table_pages == pre.table_pages,
             post.spaces == pre.spaces,
+            post.mappings == pre.mappings,
             post.cores == pre.cores,
             post.flush_epoch == pre.flush_epoch,
             post.tlb == pre.tlb,
@@ -1007,6 +1059,19 @@ impl CapKernel {
             assert(leaf_block(&pre.blocks, x));
         }
         lemma_leaf_blocks_small_freed(&pre.list, &pre.tables, &pre.blocks, &post.blocks, pre.holders@, base);
+        assert forall|i: usize| i < NUM_PAGES && block_typed(&pre.blocks, block_ref(&pre.blocks, i))
+            && block_refs(&pre.blocks, block_ref(&pre.blocks, i)) > 0
+            implies #[trigger] block_ref(&post.blocks, i) == block_ref(&pre.blocks, i) by {
+            assert(block_ref(&pre.blocks, i) != BlockRef::Small(base));
+            lemma_block_ref_small_freed(&pre.blocks, &post.blocks, base, i);
+        }
+        assert forall|br: BlockRef, n: usize| pre.holders@.contains_key(br) && #[trigger] pre.holders@[br].contains(n)
+            implies post.holders@.contains_key(br) && post.holders@[br].contains(n) by {
+            if br == BlockRef::Small(base) {
+                assert(pre.holders@[br].len() == 0);
+                pre.holders@[br].lemma_len0_is_empty();
+            }
+        }
         Self::lemma_blocks_changed(pre, post);
     }
 
@@ -1091,6 +1156,7 @@ impl CapKernel {
             post.tables == pre.tables,
             post.table_pages == pre.table_pages,
             post.spaces == pre.spaces,
+            post.mappings == pre.mappings,
             post.cores == pre.cores,
             post.flush_epoch == pre.flush_epoch,
             post.tlb == pre.tlb,
@@ -1128,6 +1194,23 @@ impl CapKernel {
         lemma_leaf_blocks_owned_same_types(&pre.tables, &pre.blocks, &post.blocks);
         lemma_table_pages_same_pages(&pre.list, &pre.table_pages, &pre.blocks, &post.blocks);
         lemma_spaces_same_pages(&pre.list, &pre.tables, &pre.spaces, &pre.blocks, &post.blocks);
+        let br = level_ref(level, r);
+        assert forall|i: usize| i < NUM_PAGES && block_typed(&pre.blocks, block_ref(&pre.blocks, i))
+            && block_refs(&pre.blocks, block_ref(&pre.blocks, i)) > 0
+            implies #[trigger] block_ref(&post.blocks, i) == block_ref(&pre.blocks, i) by {
+            assert(block_ref(&pre.blocks, i) != br);
+            match level {
+                Large::Two => lemma_block_ref_2m_freed(&pre.blocks, &post.blocks, r, i),
+                Large::One => lemma_block_ref_1g_freed(&pre.blocks, &post.blocks, r, i),
+            }
+        }
+        assert forall|k: BlockRef, n: usize| pre.holders@.contains_key(k) && #[trigger] pre.holders@[k].contains(n)
+            implies post.holders@.contains_key(k) && post.holders@[k].contains(n) by {
+            if k == br {
+                assert(pre.holders@[k].len() == 0);
+                pre.holders@[k].lemma_len0_is_empty();
+            }
+        }
         Self::lemma_blocks_changed(pre, post);
     }
 
