@@ -270,6 +270,12 @@ impl Zeroing {
             final(self).blocks@ == old(self).blocks@.insert(level_base(level, r), level_pages(level)),
             final(self).cursor@[level_base(level, r) as int] == 0,
             final(self).active(level, r),
+            match level {
+                Large::Two => final(self).active_2m@ == old(self).active_2m@.update(r as int, true)
+                    && final(self).active_1g@ == old(self).active_1g@,
+                Large::One => final(self).active_1g@ == old(self).active_1g@.update(r as int, true)
+                    && final(self).active_2m@ == old(self).active_2m@,
+            },
     {
         let ghost pre = *old(self);
         let pages = pages_of_level(level);
@@ -410,6 +416,12 @@ impl Zeroing {
             final(self).blocks@ == old(self).blocks@.remove(level_base(level, r)),
             final(self).cursor == old(self).cursor,
             !final(self).active(level, r),
+            match level {
+                Large::Two => final(self).active_2m@ == old(self).active_2m@.update(r as int, false)
+                    && final(self).active_1g@ == old(self).active_1g@,
+                Large::One => final(self).active_1g@ == old(self).active_1g@.update(r as int, false)
+                    && final(self).active_2m@ == old(self).active_2m@,
+            },
             ret@.dom() == BlockTable::large_pages(level, r as int),
             forall|k: usize| k < level_pages(level) ==> #[trigger] holds_zero(ret@, (level_base(level, r) + k) as usize),
     {

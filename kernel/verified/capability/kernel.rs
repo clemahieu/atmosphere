@@ -9,6 +9,7 @@ verus! {
 use crate::array::Array;
 use crate::capability::block::*;
 use crate::capability::list::*;
+use crate::capability::refs::*;
 use crate::capability::table::Tables;
 use crate::capability::zero::*;
 use crate::define::*;
@@ -49,6 +50,8 @@ pub struct CapKernel {
     pub frames: Tracked<Map<usize, PagePerm4k>>,
     /// The large blocks being zeroed. Each is typed with no capability yet.
     pub zeroing: Zeroing,
+    /// The frame capabilities holding each block's references.
+    pub holders: Ghost<IMap<BlockRef, Set<usize>>>,
 }
 
 /// Flushes every context on this core, all PCIDs and paging-structure caches: changing CR4.PGE does
@@ -87,10 +90,27 @@ pub open spec fn hidden_nodes_are_leaves(list: &Tree, tables: &Tables) -> bool {
     }
 }
 
+/// Every capability node but the list's first is in a table's slot, so unlinking it can read what it
+/// says.
+pub open spec fn capability_nodes_are_slots(list: &Tree, tables: &Tables) -> bool {
+    forall|n: usize| n < NODE_SPACE && (#[trigger] list.nodes@[n as int]).live && list.nodes@[n as int].kind is Capability
+        && n != list.seq@[0] ==> tables.is_cap(list, n)
+}
+
 /// A page the list holds nodes in is not free, so a newly typed block's first page is not already one.
 pub open spec fn list_pages_used(list: &Tree, blocks: &BlockTable) -> bool {
     forall|p: usize| #[trigger] list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
         ==> !(blocks.pages@[(p / 4096) as int].kind is Free)
+}
+
+/// The list's pages stay used while no page changes kind.
+pub proof fn lemma_list_pages_used_same_kinds(list: &Tree, a: &BlockTable, b: &BlockTable)
+    requires
+        list_pages_used(list, a),
+        forall|i: int| 0 <= i < NUM_PAGES ==> (#[trigger] b.pages@[i]).kind == a.pages@[i].kind,
+    ensures
+        list_pages_used(list, b),
+{
 }
 
 /// Each block being zeroed is a live typed region of the block table. It is what keeps a newly typed
@@ -136,6 +156,8 @@ impl CapKernel {
         &&& zeroing_typed(&self.zeroing, &self.blocks)
         &&& list_pages_used(&self.list, &self.blocks)
         &&& hidden_nodes_are_leaves(&self.list, &self.tables)
+        &&& capability_nodes_are_slots(&self.list, &self.tables)
+        &&& holders_wf(&self.list, &self.tables, &self.blocks, &self.zeroing, self.holders@)
     }
 
     /// A frame's permission is for its own page.
@@ -215,6 +237,7 @@ impl CapKernel {
         self.tables = Tables::new();
         self.frames = Tracked(Map::tracked_empty());
         self.zeroing.init();
+        self.holders = Ghost(IMap::empty());
         self.blocks.init();
         let mut i = 0;
         while i != NUM_CPUS
@@ -444,6 +467,7 @@ impl CapKernel {
             post.zeroing.wf(),
             zeroing_typed(&post.zeroing, &post.blocks),
             list_pages_used(&post.list, &post.blocks),
+            holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
             post.list == pre.list,
             post.tables == pre.tables,
             post.cores == pre.cores,
@@ -473,6 +497,7 @@ impl CapKernel {
             post.zeroing == pre.zeroing,
             zeroing_typed(&pre.zeroing, &post.blocks),
             list_pages_used(&post.list, &post.blocks),
+            holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
         ensures
             post.wf(),
     {
@@ -515,7 +540,9 @@ impl CapKernel {
             }
         }
         self.blocks.free_block(base, Tracked(perms));
+        self.holders = Ghost(pre.holders@.remove(BlockRef::Small(base)));
         proof {
+            lemma_holders_small_freed(&pre.list, &pre.tables, &pre.blocks, &self.blocks, &pre.zeroing, pre.holders@, base);
             assert forall|p: usize| #[trigger] self.list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
                 implies !(self.blocks.pages@[(p / 4096) as int].kind is Free) by {
                 assert(!pre.blocks.in_block(base as int, (p / 4096) as int));
@@ -545,7 +572,9 @@ impl CapKernel {
     {
         let ghost pre = *old(self);
         self.blocks.free_2m(r, Tracked(perms));
+        self.holders = Ghost(pre.holders@.remove(BlockRef::Two(r)));
         proof {
+            lemma_holders_2m_freed(&pre.list, &pre.tables, &pre.blocks, &self.blocks, &pre.zeroing, pre.holders@, r);
             assert forall|b: usize| #[trigger] pre.zeroing.blocks@.contains_key(b) implies {
                 &&& pre.zeroing.blocks@[b] == PAGES_PER_2M ==> {
                     &&& self.blocks.regions_2m@[(b / PAGES_PER_2M) as int].typed
@@ -584,7 +613,9 @@ impl CapKernel {
     {
         let ghost pre = *old(self);
         self.blocks.free_1g(r, Tracked(perms));
+        self.holders = Ghost(pre.holders@.remove(BlockRef::One(r)));
         proof {
+            lemma_holders_1g_freed(&pre.list, &pre.tables, &pre.blocks, &self.blocks, &pre.zeroing, pre.holders@, r);
             assert forall|b: usize| #[trigger] pre.zeroing.blocks@.contains_key(b) implies {
                 &&& pre.zeroing.blocks@[b] == PAGES_PER_2M ==> {
                     &&& self.blocks.regions_2m@[(b / PAGES_PER_2M) as int].typed

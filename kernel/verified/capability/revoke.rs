@@ -8,6 +8,7 @@ verus! {
 use crate::capability::kernel::*;
 use crate::capability::list::*;
 use crate::capability::reach::*;
+use crate::capability::refs::*;
 use crate::capability::table::*;
 use crate::define::*;
 
@@ -43,10 +44,11 @@ impl CapKernel {
             old(self).wf(),
             n < NODE_SPACE,
             old(self).list.nodes@[n as int].live,
+            n != old(self).list.seq@[0],
         ensures
             final(self).tables.wf(&old(self).list),
+            final(self).blocks.wf(),
             final(self).list == old(self).list,
-            final(self).blocks == old(self).blocks,
             final(self).frames == old(self).frames,
             final(self).zeroing == old(self).zeroing,
             final(self).cores == old(self).cores,
@@ -58,7 +60,23 @@ impl CapKernel {
             forall|x: usize| x != n ==> #[trigger] final(self).tables.payload_of(x) == old(self).tables.payload_of(x),
             old(self).list.nodes@[n as int].kind is Hidden ==> !final(self).tables.attached(n),
             !(old(self).list.nodes@[n as int].kind is Hidden) ==> final(self).tables == old(self).tables,
+            old(self).is_cap(n) && old(self).payload_of(n).kind is Frame ==> {
+                let br = block_ref(&old(self).blocks, old(self).payload_of(n).base / 4096);
+                &&& blocks_refs_changed(
+                    &old(self).blocks,
+                    &final(self).blocks,
+                    br,
+                    (block_refs(&old(self).blocks, br) - 1) as usize,
+                    block_dead(&old(self).blocks, br) || block_refs(&old(self).blocks, br) == 1,
+                )
+                &&& final(self).holders@ == old(self).holders@.insert(br, old(self).holders@[br].remove(n))
+            },
+            !(old(self).is_cap(n) && old(self).payload_of(n).kind is Frame) ==> {
+                &&& final(self).blocks == old(self).blocks
+                &&& final(self).holders == old(self).holders
+            },
     {
+        let ghost pre = *old(self);
         proof {
             self.list.lemma_live_valid(n);
         }
@@ -67,7 +85,25 @@ impl CapKernel {
             NodeKind::Hidden => {
                 self.tables.detach_leaf(&self.list, n);
             },
-            NodeKind::Capability | NodeKind::Mapping | NodeKind::Binding => {},
+            NodeKind::Capability => {
+                proof {
+                    assert(pre.is_cap(n));
+                }
+                let payload = self.tables.payload_at(&self.list, n);
+                let frame = match payload.kind {
+                    CapKind::Frame => true,
+                    _ => false,
+                };
+                if frame {
+                    proof {
+                        lemma_holder_refs(&pre.list, &pre.tables, &pre.blocks, &pre.zeroing, pre.holders@, n);
+                    }
+                    let br = locate(&self.blocks, payload.base / 4096);
+                    drop_block_ref(&mut self.blocks, br);
+                    self.holders = Ghost(pre.holders@.insert(br, pre.holders@[br].remove(n)));
+                }
+            },
+            NodeKind::Mapping | NodeKind::Binding => {},
         }
     }
 
@@ -183,11 +219,14 @@ impl CapKernel {
             post.tables.lemma_wf_same_pages(&pre.list, &post.list);
             Self::lemma_revoke_step(pre, post, root, c, r);
             Self::lemma_delete_caps_wf(pre, post, r);
-            Self::lemma_revoke_hidden(pre, post, r);
-            Self::lemma_tlb_same(pre, post);
             assert(revoked_one(pre.list, post.list, c, r));
             let p = choose|p: int| 0 <= p < pre.list.seq@.len() && pre.list.seq@[p] == r
                 && post.list.seq@ == pre.list.seq@.remove(p);
+            assert(p != 0);
+            assert(post.list.seq@[0] == pre.list.seq@[0]);
+            Self::lemma_revoke_hidden(pre, post, r);
+            Self::lemma_delete_holders(pre, post, r);
+            Self::lemma_tlb_same(pre, post);
             assert(post.list.nodes@[c as int].live == pre.list.nodes@[c as int].live);
             Self::lemma_caps_frame(pre, post, r, r, c);
         }
@@ -206,16 +245,27 @@ impl CapKernel {
         assert(self.view().names.contains_key(c));
     }
 
-    /// The hidden nodes after the step: r has gone, and if it was hidden its leaf is detached.
+    /// The hidden nodes after the step: r has gone, and if it was hidden its leaf is detached. And every
+    /// other capability node is still in its slot.
     proof fn lemma_revoke_hidden(pre: Self, post: Self, r: usize)
         requires
             Self::caps_frame(pre, post, r, r),
             !post.list.nodes@[r as int].live,
             pre.list.nodes@[r as int].kind is Hidden ==> !post.tables.attached(r),
             !(pre.list.nodes@[r as int].kind is Hidden) ==> post.tables.record(r) == pre.tables.record(r),
+            post.list.seq@[0] == pre.list.seq@[0],
         ensures
             hidden_nodes_are_leaves(&post.list, &post.tables),
+            capability_nodes_are_slots(&post.list, &post.tables),
     {
+        assert forall|x: usize| x < NODE_SPACE && (#[trigger] post.list.nodes@[x as int]).live
+            && post.list.nodes@[x as int].kind is Capability && x != post.list.seq@[0]
+            implies post.tables.is_cap(&post.list, x) by {
+            assert(x != r);
+            assert(pre.list.nodes@[x as int].live);
+            assert(pre.tables.is_cap(&pre.list, x));
+            Self::lemma_caps_frame(pre, post, r, r, x);
+        }
         assert forall|x: usize| x < NODE_SPACE && (#[trigger] post.list.nodes@[x as int]).live
             && post.list.nodes@[x as int].kind is Hidden implies post.tables.owner@.contains_key(x) by {
             assert(x != r);

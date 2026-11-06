@@ -1,6 +1,7 @@
 //! Retyping free memory under an untyped. Here a 4K frame: the page is zeroed at once, and the frame
 //! capability is a child of the untyped in a slot the caller names, so revoking the untyped reaches it.
 //! See the design on atmo-6x9.6.7, sections 1, 3 and 6.
+use vstd::arithmetic::div_mod::*;
 use vstd::arithmetic::power2::*;
 use vstd::prelude::*;
 
@@ -8,9 +9,10 @@ verus! {
 
 use crate::capability::block::*;
 use crate::capability::derive::*;
-use crate::capability::kernel::CapKernel;
+use crate::capability::kernel::*;
 use crate::capability::list::*;
 use crate::capability::reach::*;
+use crate::capability::refs::*;
 use crate::capability::table::*;
 use crate::capability::view::*;
 use crate::capability::zero::*;
@@ -61,6 +63,20 @@ fn type_region(blocks: &mut BlockTable, level: Large, r: usize) -> (ret: Option<
                 ==> final(blocks).regions_1g@[x].typed && !final(blocks).regions_1g@[x].dead
             &&& level is Two ==> final(blocks).regions_2m@[r as int].typed && !final(blocks).regions_2m@[r as int].dead
             &&& level is One ==> final(blocks).regions_1g@[r as int].typed && !final(blocks).regions_1g@[r as int].dead
+            &&& forall|i: int| level_base(level, r) <= i < level_base(level, r) + level_pages(level)
+                ==> #[trigger] old(blocks).pages@[i].kind is Free
+            &&& match level {
+                Large::Two => {
+                    &&& final(blocks).regions_2m@ == old(blocks).regions_2m@.update(r as int, final(blocks).regions_2m@[r as int])
+                    &&& final(blocks).regions_2m@[r as int].refs == 1
+                    &&& final(blocks).regions_1g@ == old(blocks).regions_1g@
+                },
+                Large::One => {
+                    &&& final(blocks).regions_1g@ == old(blocks).regions_1g@.update(r as int, final(blocks).regions_1g@[r as int])
+                    &&& final(blocks).regions_1g@[r as int].refs == 1
+                    &&& final(blocks).regions_2m@ == old(blocks).regions_2m@
+                },
+            }
         },
 {
     let ghost pre = *old(blocks);
@@ -74,6 +90,8 @@ fn type_region(blocks: &mut BlockTable, level: Large, r: usize) -> (ret: Option<
                         implies !#[trigger] pre.covered(i) by {
                         assert(pre.pages@[i].kind is Free);
                     }
+                    assert forall|i: int| level_base(level, r) <= i < level_base(level, r) + level_pages(level)
+                        implies #[trigger] pre.pages@[i].kind is Free by {}
                 }
             }
             ret
@@ -87,6 +105,8 @@ fn type_region(blocks: &mut BlockTable, level: Large, r: usize) -> (ret: Option<
                         implies !#[trigger] pre.covered(i) by {
                         assert(pre.pages@[i].kind is Free);
                     }
+                    assert forall|i: int| level_base(level, r) <= i < level_base(level, r) + level_pages(level)
+                        implies #[trigger] pre.pages@[i].kind is Free by {}
                 }
             }
             ret
@@ -214,6 +234,51 @@ impl CapKernel {
         Some((parent, child))
     }
 
+    /// The block a frame at base will take: typed, holding the one reference retype took for its
+    /// capability, with no capability yet.
+    pub open spec fn frame_block_ready(&self, base: usize, order: u8) -> bool {
+        let br = block_ref(&self.blocks, base / 4096);
+        &&& base / 4096 < NUM_PAGES
+        &&& !self.holders@.contains_key(br)
+        &&& block_typed(&self.blocks, br)
+        &&& block_refs(&self.blocks, br) == 1
+        &&& !block_dead(&self.blocks, br)
+        &&& !block_active(&self.zeroing, br)
+        &&& frame_in_block(br, large_frame_of(base, order))
+    }
+
+    /// The holders after a retype's capability appears: it takes the one reference its block held.
+    proof fn lemma_retype_holders(pre: Self, post: Self, child: usize, base: usize, order: u8)
+        requires
+            Self::derive_step(pre, post, child),
+            post.is_cap(child),
+            post.payload_of(child) == large_frame_of(base, order),
+            post.blocks == pre.blocks,
+            post.zeroing == pre.zeroing,
+            pre.frame_block_ready(base, order),
+            post.holders@ == pre.holders@.insert(block_ref(&pre.blocks, base / 4096), set![child]),
+        ensures
+            holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
+    {
+        assert forall|x: usize| x != child implies {
+            &&& #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x)
+            &&& pre.tables.is_cap(&pre.list, x) ==> post.tables.payload_of(x) == pre.tables.payload_of(x)
+        } by {
+            Self::lemma_caps_frame(pre, post, child, child, x);
+        }
+        lemma_holders_frame_new(
+            &pre.list,
+            &pre.tables,
+            &post.list,
+            &post.tables,
+            &pre.blocks,
+            &pre.zeroing,
+            pre.holders@,
+            child,
+            block_ref(&pre.blocks, base / 4096),
+        );
+    }
+
     /// Makes the frame capability once its pages are zero: one child, in the slot the caller named.
     fn add_frame_cap(&mut self, root: usize, from: usize, to: usize, parent: usize, child: usize, base: usize, order: u8)
         requires
@@ -224,11 +289,13 @@ impl CapKernel {
             order <= MAX_ORDER,
             base as int % block_bytes(order) == 0,
             base as int + block_bytes(order) <= NODE_SPACE as int,
+            old(self).frame_block_ready(base, order),
         ensures
             final(self).wf(),
             final(self).blocks == old(self).blocks,
             final(self).frames == old(self).frames,
             final(self).zeroing == old(self).zeroing,
+            final(self).holders@ == old(self).holders@.insert(block_ref(&old(self).blocks, base / 4096), set![child]),
             final(self).view().holds(root, child),
             final(self).payload_of(child) == large_frame_of(base, order),
             final(self).list.is_child(parent, child),
@@ -255,12 +322,14 @@ impl CapKernel {
             to,
             Payload { kind: CapKind::Frame, order, rights: FRAME_RIGHTS, base, badge: 0, reserved: 0 },
         );
+        self.holders = Ghost(pre.holders@.insert(block_ref(&pre.blocks, base / 4096), set![child]));
         proof {
             let post = *self;
             assert(post.payload_of(child) == large_frame_of(base, order));
             assert(payload_wf(post.payload_of(child)));
             Self::lemma_derive_caps_wf(pre, post, child);
             Self::lemma_hidden_frame(pre, post, child, child);
+            Self::lemma_retype_holders(pre, post, child, base, order);
             Self::lemma_tlb_same(pre, post);
             assert(FRAME_RIGHTS & 128 == 0) by (compute_only);
             assert(right_bit(Right::Control) == 128);
@@ -333,8 +402,13 @@ impl CapKernel {
                     assert(pre.blocks.pages@[page + 0int].kind is Free);
                 }
             }
+            lemma_holders_small_typed(&pre.list, &pre.tables, &pre.blocks, &self.blocks, &pre.zeroing, pre.holders@, page, 0);
             assert(self.wf());
             assert(self.view() == pre.view());
+            assert(self.frame_block_ready(base, 0)) by {
+                assert(!pre.blocks.covered(page as int));
+                assert(block_ref(&self.blocks, page) == BlockRef::Small(page));
+            }
         }
         self.add_frame_cap(root, from, to, parent, child, base, 0);
         true
@@ -350,9 +424,18 @@ impl CapKernel {
             final(self).wf(),
             final(self).list == old(self).list,
             final(self).tables == old(self).tables,
+            final(self).holders == old(self).holders,
             ret is Refused ==> *final(self) == *old(self),
             ret is Done ==> forall|k: usize| k < level_pages(level)
                 ==> #[trigger] holds_zero(final(self).frames@, (level_base(level, r) + k) as usize),
+            ret is Done ==> {
+                let br = level_ref(level, r);
+                &&& !final(self).holders@.contains_key(br)
+                &&& block_typed(&final(self).blocks, br)
+                &&& block_refs(&final(self).blocks, br) == 1
+                &&& !block_dead(&final(self).blocks, br)
+                &&& !block_active(&final(self).zeroing, br)
+            },
             old(self).zeroing.blocks@.contains_key(level_base(level, r)) ==>
                 final(self).zeroing.cursor@[level_base(level, r) as int]
                     <= old(self).zeroing.cursor@[level_base(level, r) as int] + ZERO_CHUNK_PAGES,
@@ -406,17 +489,30 @@ impl CapKernel {
                         assert(me.zeroing.blocks@[b] == pre.zeroing.blocks@[b]);
                     }
                 }
+                lemma_holders_region_typed(&pre.list, &pre.tables, &pre.blocks, &me.blocks, &pre.zeroing, &me.zeroing, pre.holders@, level, r);
             }
         }
+        let ghost typed = *self;
+        proof {
+            assert(holders_wf(&typed.list, &typed.tables, &typed.blocks, &typed.zeroing, typed.holders@));
+            assert(typed.zeroing.active(level, r));
+        }
         let done = self.zeroing.step(base, pages);
+        proof {
+            lemma_holders_same_active(&typed.list, &typed.tables, &typed.blocks, &typed.zeroing, &self.zeroing, typed.holders@);
+        }
         if !done {
             proof {
                 Self::lemma_zeroing_changed(pre, *self);
             }
             return RetypeStep::Again;
         }
-        let Tracked(zeroed) = self.zeroing.finish(level, r);
         let ghost mid = *self;
+        proof {
+            assert(zeroing_typed(&mid.zeroing, &mid.blocks));
+            mid.lemma_active_block_ready(level, r);
+        }
+        let Tracked(zeroed) = self.zeroing.finish(level, r);
         proof {
             lemma_level_pages(level, r);
             self.frames.borrow_mut().tracked_union_prefer_right(zeroed);
@@ -431,9 +527,81 @@ impl CapKernel {
             assert forall|k: usize| k < pages implies #[trigger] holds_zero(me.frames@, (base + k) as usize) by {
                 assert(holds_zero(zeroed, (base + k) as usize));
             }
+            lemma_holders_region_done(&mid.list, &mid.tables, &mid.blocks, &mid.zeroing, &me.zeroing, mid.holders@, level, r);
             Self::lemma_zeroing_changed(pre, me);
         }
         RetypeStep::Done
+    }
+
+    /// A region being zeroed is typed, live and holds one reference, retype's, and has no key.
+    proof fn lemma_active_block_ready(&self, level: Large, r: usize)
+        requires
+            self.zeroing.wf(),
+            zeroing_typed(&self.zeroing, &self.blocks),
+            holders_wf(&self.list, &self.tables, &self.blocks, &self.zeroing, self.holders@),
+            r < level_regions(level),
+            self.zeroing.active(level, r),
+        ensures
+            !self.holders@.contains_key(level_ref(level, r)),
+            block_typed(&self.blocks, level_ref(level, r)),
+            block_refs(&self.blocks, level_ref(level, r)) == 1,
+            !block_dead(&self.blocks, level_ref(level, r)),
+    {
+        let base = level_base(level, r);
+        let pages = level_pages(level);
+        assert(self.zeroing.blocks@.contains_key(base));
+        assert(self.zeroing.blocks@[base] == pages);
+        match level {
+            Large::Two => {
+                assert(base == r * 512);
+                lemma_fundamental_div_mod_converse(base as int, 512, r as int, 0);
+                assert(base / PAGES_PER_2M == r);
+            },
+            Large::One => {
+                assert(base == r * 262144);
+                lemma_fundamental_div_mod_converse(base as int, 262144, r as int, 0);
+                assert(base / PAGES_PER_1G == r);
+            },
+        }
+    }
+
+    /// The block of a large frame at base is its region, which zeroing left typed with one reference.
+    proof fn lemma_large_block_ready(&self, level: Large, r: usize, base: usize, order: u8)
+        requires
+            self.blocks.wf(),
+            r < level_regions(level),
+            base / 4096 == r * level_pages(level),
+            base == (base / 4096) * 4096,
+            order == (match level { Large::Two => 9u8, Large::One => 18u8 }),
+            !self.holders@.contains_key(level_ref(level, r)),
+            block_typed(&self.blocks, level_ref(level, r)),
+            block_refs(&self.blocks, level_ref(level, r)) == 1,
+            !block_dead(&self.blocks, level_ref(level, r)),
+            !block_active(&self.zeroing, level_ref(level, r)),
+        ensures
+            self.frame_block_ready(base, order),
+    {
+        let page = base / 4096;
+        lemma2_to64();
+        match level {
+            Large::Two => {
+                assert(page == r * 512);
+                lemma_fundamental_div_mod_converse(page as int, 512, r as int, 0);
+                assert(page / PAGES_PER_2M == r);
+                assert(block_ref(&self.blocks, page) == BlockRef::Two(r));
+                assert(block_bytes(9) == 0x200000);
+                assert(base == r * 0x200000);
+            },
+            Large::One => {
+                assert(page == r * 262144);
+                lemma_fundamental_div_mod_converse(page as int, 262144, r as int, 0);
+                assert(page / PAGES_PER_1G == r);
+                lemma_in_1g_block(&self.blocks, page, r);
+                assert(pow2(18) == 0x40000);
+                assert(block_bytes(18) == 0x40000000);
+                assert(base == r * 0x40000000);
+            },
+        }
     }
 
     /// Retypes the two free pages at `base` as a table leaf in entry r of the table at root, under the
@@ -567,6 +735,7 @@ impl CapKernel {
                     assert(pre.list.nodes@[x as int].kind is Hidden);
                 }
             }
+            Self::lemma_leaf_holders(pre, post, mid, base, page);
             assert forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) && post.tables.attached(l) implies {
                 &&& l < NODE_SPACE
                 &&& post.list.nodes@[l as int].live
@@ -596,6 +765,46 @@ impl CapKernel {
             Self::lemma_leaf_discharges(pre, post, root, parent, base);
         }
         true
+    }
+
+    /// The slots and the holders after a leaf's retype: no capability changed, and the two pages typed
+    /// held no frame.
+    proof fn lemma_leaf_holders(pre: Self, post: Self, mid: Tree, leaf: usize, page: usize)
+        requires
+            Self::leaf_step(pre, post, leaf),
+            post.list.seq@[0] == pre.list.seq@[0],
+            post.list.nodes@[leaf as int].kind is Hidden,
+            forall|i: int| 0 <= i < NODE_SPACE ==> #[trigger] mid.nodes@[i].live == pre.list.nodes@[i].live,
+            forall|i: int| 0 <= i < NODE_SPACE && i != leaf ==> #[trigger] post.list.nodes@[i].live == mid.nodes@[i].live,
+            post.zeroing == pre.zeroing,
+            post.holders == pre.holders,
+            page % (order_pages(1) as usize) == 0,
+            page + order_pages(1) <= NUM_PAGES,
+            forall|k: int| 0 <= k < order_pages(1) ==> #[trigger] pre.blocks.pages@[page + k].kind is Free,
+            !pre.blocks.covered(page as int),
+            post.blocks.regions_2m@ == pre.blocks.regions_2m@,
+            post.blocks.regions_1g@ == pre.blocks.regions_1g@,
+            forall|i: int| 0 <= i < NUM_PAGES && !(page <= i < page + order_pages(1))
+                ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
+        ensures
+            capability_nodes_are_slots(&post.list, &post.tables),
+            holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
+    {
+        assert forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x)
+            && (pre.tables.is_cap(&pre.list, x) ==> post.tables.payload_of(x) == pre.tables.payload_of(x)) by {
+            Self::lemma_leaf_cap(pre, post, leaf, x);
+        }
+        assert forall|x: usize| x < NODE_SPACE && (#[trigger] post.list.nodes@[x as int]).live
+            && post.list.nodes@[x as int].kind is Capability && x != post.list.seq@[0]
+            implies post.tables.is_cap(&post.list, x) by {
+            assert(x != leaf);
+            assert(pre.list.nodes@[x as int].live);
+            pre.list.lemma_live_valid(x);
+            assert(pre.list.nodes@[x as int].kind is Capability);
+            assert(pre.tables.is_cap(&pre.list, x));
+        }
+        lemma_holders_small_typed(&pre.list, &pre.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, page, 1);
+        lemma_holders_same_frames(&pre.list, &pre.tables, &post.list, &post.tables, &post.blocks, &pre.zeroing, pre.holders@);
     }
 
     /// What a leaf's retype does to the fields the view reads: nothing changes but the new page, none of
@@ -825,6 +1034,9 @@ impl CapKernel {
         proof {
             assert(self.view() == pre.view());
             assert(self.can_retype(root, from, to, base, order));
+            assert(page == r * level_pages(level));
+            assert(base == page * 4096);
+            self.lemma_large_block_ready(level, r, base, order);
         }
         self.add_frame_cap(root, from, to, parent, child, base, order);
         RetypeStep::Done
