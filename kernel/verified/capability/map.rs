@@ -258,6 +258,7 @@ pub proof fn lemma_table_pages_entry_written(list: &Tree, pa: &TablePages, pb: &
         pb.records@[t].addr() == pa.records@[t].addr(),
         pb.records@[t].is_init(),
         pb.records@[t].value().level == pa.records@[t].value().level,
+        pb.records@[t].value().parent == pa.records@[t].value().parent,
         pb.records@[t].value().written,
     ensures
         table_pages_wf(list, pb, blocks),
@@ -1831,8 +1832,8 @@ impl CapKernel {
         }
         lemma_table_pages_refs_changed(&pre.list, &post.list, &pre.table_pages, &pre.blocks, &post.blocks, br, refs, dead);
         assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, t));
-        lemma_table_pages_entry_written(&post.list, &pre.table_pages, &post.table_pages, &post.blocks, t, e);
         Self::lemma_map_tree(pre, post, t, e, f, frame, large);
+        lemma_table_pages_entry_written(&post.list, &pre.table_pages, &post.table_pages, &post.blocks, t, e);
         lemma_links_entry_written(a, b, t, e);
     }
 

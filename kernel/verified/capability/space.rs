@@ -637,7 +637,7 @@ pub open spec fn table_record_wf(pages: &TablePages, t: usize) -> bool {
 }
 
 /// The table page at t has its table, its record, its spare page and its node pages. Its block holds one
-/// reference, its hidden node's, and is dead at once when that goes.
+/// reference, its hidden node's, and is dead at once when that goes, by when no entry names it.
 pub open spec fn table_page_wf(list: &Tree, pages: &TablePages, blocks: &BlockTable, t: usize) -> bool {
     &&& t % 32768 == 0
     &&& t / 4096 < NUM_PAGES
@@ -663,6 +663,7 @@ pub open spec fn table_page_wf(list: &Tree, pages: &TablePages, blocks: &BlockTa
     &&& !list.nodes@[t as int].live ==> {
         &&& blocks.pages@[(t / 4096) as int].refs == 0
         &&& blocks.pages@[(t / 4096) as int].dead
+        &&& pages.records@[t].value().parent is None
     }
 }
 
@@ -851,6 +852,7 @@ pub proof fn lemma_table_page_dropped(
     requires
         table_pages_wf(list_a, pages, a),
         pages.maps@.contains_key(t),
+        pages.records@[t].value().parent is None,
         blocks_refs_changed(a, b, BlockRef::Small(t / 4096), 0, true),
         !list_b.nodes@[t as int].live,
         forall|u: usize| #[trigger] pages.maps@.contains_key(u) && u != t ==> {

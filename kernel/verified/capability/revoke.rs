@@ -44,7 +44,8 @@ pub enum RevokeStep {
 impl CapKernel {
     /// Undoes what node n holds by its kind, before it is unlinked. Every arm meets this one spec: it
     /// changes no node's liveness and keeps the tables whole, and only what n itself held goes. A
-    /// hidden node detaches its leaf. A capability's reference goes with atmo-6x9.16.22. A mapping node
+    /// hidden node detaches its leaf, and a table page's was cut from its parent by cut_hidden_table or
+    /// detach_stale first. A capability's reference goes with atmo-6x9.16.22. A mapping node
     /// records its unmap, clears its entry and drops its reference. No binding node exists until atmo-6x9.16.9, which
     /// supplies its arm.
     pub fn unlink_arm(&mut self, n: usize)
@@ -133,7 +134,6 @@ impl CapKernel {
                 proof {
                     pre.lemma_hidden_block(n);
                 }
-                // A table page has no parent to detach from until its entries exist.
                 let object = self.blocks.pages.get(n / 4096).object;
                 match object {
                     ObjectType::TableLeaf => self.tables.detach_leaf(&self.list, n),
@@ -281,7 +281,8 @@ impl CapKernel {
                 && (old(self).list.nodes@[r as int].kind is Hidden && old(self).tables.owner@.contains_key(r)
                     ==> !final(self).tables.attached(r))
                 && (old(self).list.nodes@[r as int].kind is Mapping ==> Self::mapping_unlinked(*old(self), *final(self), r))
-                && (old(self).list.nodes@[r as int].kind is Mapping ==> Self::mapping_stale_noted(*old(self), *final(self), r)),
+                && (old(self).list.nodes@[r as int].kind is Mapping ==> Self::mapping_stale_noted(*old(self), *final(self), r))
+                && (old(self).hidden_table(r) ==> Self::table_unlinked(*old(self), *final(self), r)),
             forall|x: int| 0 <= x < NODE_SPACE ==> #[trigger] final(self).list.nodes@[x].depth == old(self).list.nodes@[x].depth,
             forall|x: usize| #[trigger] final(self).is_cap(x) ==> old(self).is_cap(x),
             discharges(old(self).view(), final(self).view(), root, Effect::Revoke { cap: c }),
@@ -294,11 +295,21 @@ impl CapKernel {
             Some(found) => found,
             None => { return true; },
         };
+        self.cut_hidden_table(r);
+        let ghost cut = *self;
         self.unlink_arm(r);
         let ghost mid = *self;
         self.list.remove_leaf(r);
         proof {
-            Self::lemma_revoke_step_wf(pre, mid, *self, root, c, r);
+            Self::lemma_revoke_step_wf(cut, mid, *self, root, c, r);
+            assert(cut.view() == pre.view());
+            if pre.hidden_table(r) {
+                Self::lemma_cut_recorded_same(pre, cut, *self, r);
+                Self::lemma_cut_shrunk(pre, cut, r);
+                Self::lemma_shrunk_compose(pre, cut, *self);
+                assert(Self::table_unlinked(pre, *self, r));
+            }
+            assert(revoked_one(pre.list, self.list, c, r));
         }
         false
     }
@@ -318,6 +329,7 @@ impl CapKernel {
             pre.list.d(r) > pre.list.d(c),
             pre.list.anc(r, (pre.list.d(r) - pre.list.d(c)) as nat) == c,
             pre.list.childless(r),
+            pre.hidden_table(r) ==> pre.table_pages.records@[r].value().parent is None,
             mid.tables.wf(&pre.list),
             mid.blocks.wf(),
             mid.list == pre.list,
@@ -482,6 +494,7 @@ impl CapKernel {
             post.list.pages@.dom() == pre.list.pages@.dom(),
             post.list.parent@ == pre.list.parent@,
             post.mappings == pre.mappings,
+            pre.hidden_table(n) ==> pre.table_pages.records@[n].value().parent is None,
             blocks_refs_changed(&pre.blocks, &post.blocks, BlockRef::Small(n / 4096), 0, true),
             post.holders == pre.holders,
             post.spaces == pre.spaces,
