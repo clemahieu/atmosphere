@@ -38,6 +38,73 @@ pub enum RetypeStep {
     Done,
 }
 
+/// The region a 2M or 1G block at this aligned base is, if the block table has one.
+pub fn large_region(base: usize, order: u8) -> (ret: Option<(Large, usize)>)
+    requires
+        order <= MAX_ORDER,
+        base as int % block_bytes(order) == 0,
+    ensures
+        ret is Some == {
+            ||| order == 9 && base / 4096 / PAGES_PER_2M < NUM_2M
+            ||| order == 18 && base / 4096 / PAGES_PER_1G < NUM_1G
+        },
+        ret is Some ==> {
+            let (level, r) = ret.unwrap();
+            &&& level == (if order == 9 { Large::Two } else { Large::One })
+            &&& r == base / 4096 / level_pages(level)
+            &&& r < level_regions(level)
+            &&& level_base(level, r) == base / 4096
+            &&& r * level_pages(level) == base / 4096
+            &&& base / 4096 < NUM_PAGES
+            &&& base == (base / 4096) * 4096
+        },
+{
+    let page = base / 4096;
+    let level = if order == 9 {
+        Large::Two
+    } else if order == 18 {
+        Large::One
+    } else {
+        return None;
+    };
+    let r = page / pages_of_level(level);
+    let regions = match level {
+        Large::Two => NUM_2M,
+        Large::One => NUM_1G,
+    };
+    if r >= regions {
+        return None;
+    }
+    proof {
+        lemma2_to64();
+        match level {
+            Large::Two => {
+                assert(block_bytes(order) == 2097152);
+                assert(base % 2097152 == 0);
+                assert(page % 512 == 0 && r * 512 == page && page * 4096 == base) by (nonlinear_arith)
+                    requires
+                        base % 2097152 == 0,
+                        page == base / 4096,
+                        r == page / 512,
+                ;
+            },
+            Large::One => {
+                assert(pow2(18) == 0x40000);
+                assert(block_bytes(order) == 0x40000000);
+                assert(base % 0x40000000 == 0);
+                assert(page % 262144 == 0 && r * 262144 == page && page * 4096 == base) by (nonlinear_arith)
+                    requires
+                        base % 0x40000000 == 0,
+                        page == base / 4096,
+                        r == page / 262144,
+                ;
+            },
+        }
+        assert(level_base(level, r) == page);
+    }
+    Some((level, r))
+}
+
 /// A frame capability's payload.
 pub open spec fn large_frame_of(base: usize, order: u8) -> Payload {
     Payload { kind: CapKind::Frame, order, rights: FRAME_RIGHTS, base, badge: 0, reserved: 0 }
@@ -740,21 +807,7 @@ impl CapKernel {
                     assert(base / 4096 == page);
                 }
             }
-            assert(pre.blocks.pages@[page + 0int].kind is Free);
-            post.blocks.lemma_member_of(page as int, page + 1int);
-            assert forall|k: int| 0 < k < 2 implies (#[trigger] post.blocks.pages@[page + k]).kind is Member by {
-                assert(k == 1);
-            }
-            lemma_objects_small_typed(&pre.tables, &pre.blocks, &post.blocks, pre.holders@, page, 2);
-            assert forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) implies {
-                &&& l / 4096 < NUM_PAGES
-                &&& post.blocks.pages@[(l / 4096) as int].kind is Base
-                &&& post.blocks.pages@[(l / 4096) as int].object is TableLeaf
-            } by {
-                if l != base {
-                    assert(pre.tables.owner@.contains_key(l));
-                }
-            }
+            Self::lemma_leaf_objects(pre, post, base, page);
             assert forall|x: usize| x < NODE_SPACE && (#[trigger] post.list.nodes@[x as int]).live
                 && post.list.nodes@[x as int].kind is Hidden implies post.tables.owner@.contains_key(x) by {
                 if x != base {
@@ -834,6 +887,47 @@ impl CapKernel {
         }
         lemma_holders_small_typed(&pre.list, &pre.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, page, 1);
         lemma_holders_same_frames(&pre.list, &pre.tables, &post.list, &post.tables, &post.blocks, &pre.zeroing, pre.holders@);
+    }
+
+    /// The types after a leaf's retype: its block is new, and only its own owner entry is.
+    proof fn lemma_leaf_objects(pre: Self, post: Self, base: usize, page: usize)
+        requires
+            pre.wf(),
+            post.blocks.wf(),
+            page < NUM_PAGES,
+            page + 1 < NUM_PAGES,
+            base / 4096 == page,
+            post.holders == pre.holders,
+            pre.blocks.pages@[page + 0int].kind is Free,
+            pre.blocks.pages@[page + 1int].kind is Free,
+            post.blocks.pages@[page as int].kind is Base,
+            post.blocks.pages@[page as int].order == 1,
+            post.blocks.pages@[page as int].object is TableLeaf,
+            post.blocks.pages@[page as int].refs == 1,
+            post.blocks.regions_2m@ == pre.blocks.regions_2m@,
+            post.blocks.regions_1g@ == pre.blocks.regions_1g@,
+            forall|i: int| 0 <= i < NUM_PAGES && !(page <= i < page + 2) ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
+            forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) ==> l == base || pre.tables.owner@.contains_key(l),
+        ensures
+            objects_wf(&post.tables, &post.blocks, post.holders@),
+    {
+        post.blocks.lemma_member_of(page as int, page + 1int);
+        assert forall|k: int| 0 < k < 2 implies (#[trigger] post.blocks.pages@[page + k]).kind is Member by {
+            assert(k == 1);
+        }
+        assert forall|k: int| 0 <= k < 2 implies #[trigger] pre.blocks.pages@[page + k].kind is Free by {
+            if k == 0 { assert(pre.blocks.pages@[page + 0int].kind is Free); }
+        }
+        lemma_objects_small_typed(&pre.tables, &pre.blocks, &post.blocks, pre.holders@, page, 2);
+        assert forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) implies {
+            &&& l / 4096 < NUM_PAGES
+            &&& post.blocks.pages@[(l / 4096) as int].kind is Base
+            &&& post.blocks.pages@[(l / 4096) as int].object is TableLeaf
+        } by {
+            if l != base {
+                assert(pre.tables.owner@.contains_key(l));
+            }
+        }
     }
 
     /// What a leaf's retype does to the fields the view reads: nothing changes but the new page, none of
@@ -1004,50 +1098,11 @@ impl CapKernel {
             Some(found) => found,
             None => { return RetypeStep::Refused; },
         };
+        let (level, r) = match large_region(base, order) {
+            Some(found) => found,
+            None => { return RetypeStep::Refused; },
+        };
         let page = base / 4096;
-        let level = if order == 9 {
-            Large::Two
-        } else if order == 18 {
-            Large::One
-        } else {
-            return RetypeStep::Refused;
-        };
-        let r = page / pages_of_level(level);
-        let regions = match level {
-            Large::Two => NUM_2M,
-            Large::One => NUM_1G,
-        };
-        if r >= regions {
-            return RetypeStep::Refused;
-        }
-        proof {
-            lemma2_to64();
-            match level {
-                Large::Two => {
-                    assert(block_bytes(order) == 2097152);
-                    assert(base % 2097152 == 0);
-                    assert(page % 512 == 0 && r * 512 == page) by (nonlinear_arith)
-                        requires
-                            base % 2097152 == 0,
-                            page == base / 4096,
-                            r == page / 512,
-                    ;
-                },
-                Large::One => {
-                    lemma2_to64();
-                    assert(pow2(18) == 0x40000);
-                    assert(block_bytes(order) == 0x40000000);
-                    assert(base % 0x40000000 == 0);
-                    assert(page % 262144 == 0 && r * 262144 == page) by (nonlinear_arith)
-                        requires
-                            base % 0x40000000 == 0,
-                            page == base / 4096,
-                            r == page / 262144,
-                    ;
-                },
-            }
-            assert(level_base(level, r) == page);
-        }
         let step = self.zero_large(level, r);
         match step {
             RetypeStep::Refused => { return RetypeStep::Refused; },

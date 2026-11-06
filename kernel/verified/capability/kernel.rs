@@ -263,6 +263,8 @@ impl CapKernel {
                 self.zeroing.blocks@ == Map::<usize, usize>::empty(),
                 forall|i: int| 0 <= i < NODE_SPACE && i != root ==> !(#[trigger] self.list.nodes@[i]).live,
                 self.list.nodes@[root as int].kind == NodeKind::Capability,
+                forall|q: int| 0 <= q < NUM_2M ==> !(#[trigger] self.blocks.regions_2m@[q]).typed,
+                forall|q: int| 0 <= q < NUM_1G ==> !(#[trigger] self.blocks.regions_1g@[q]).typed,
                 forall|c: int| 0 <= c < i ==> {
                     &&& (#[trigger] self.cores@[c]).current_thread.is_None()
                     &&& self.cores@[c].acked_epoch == 0
@@ -285,6 +287,8 @@ impl CapKernel {
                 self.zeroing.blocks@ == Map::<usize, usize>::empty(),
                 forall|i: int| 0 <= i < NODE_SPACE && i != root ==> !(#[trigger] self.list.nodes@[i]).live,
                 self.list.nodes@[root as int].kind == NodeKind::Capability,
+                forall|q: int| 0 <= q < NUM_2M ==> !(#[trigger] self.blocks.regions_2m@[q]).typed,
+                forall|q: int| 0 <= q < NUM_1G ==> !(#[trigger] self.blocks.regions_1g@[q]).typed,
                 forall|c: int| 0 <= c < NUM_CPUS ==> {
                     &&& (#[trigger] self.cores@[c]).current_thread.is_None()
                     &&& self.cores@[c].acked_epoch == 0
@@ -649,23 +653,7 @@ Self::lemma_blocks_changed(pre, post);
         self.blocks.free_2m(r, Tracked(perms));
         self.holders = Ghost(pre.holders@.remove(BlockRef::Two(r)));
         proof {
-            lemma_holders_2m_freed(&pre.list, &pre.tables, &pre.blocks, &self.blocks, &pre.zeroing, pre.holders@, r);
-            assert forall|b: usize| #[trigger] pre.zeroing.blocks@.contains_key(b) implies {
-                &&& pre.zeroing.blocks@[b] == PAGES_PER_2M ==> {
-                    &&& self.blocks.regions_2m@[(b / PAGES_PER_2M) as int].typed
-                    &&& !self.blocks.regions_2m@[(b / PAGES_PER_2M) as int].dead
-                }
-                &&& pre.zeroing.blocks@[b] == PAGES_PER_1G ==> {
-                    &&& self.blocks.regions_1g@[(b / PAGES_PER_1G) as int].typed
-                    &&& !self.blocks.regions_1g@[(b / PAGES_PER_1G) as int].dead
-                }
-            } by {
-                assert(pre.zeroing.block_level(b));
-                if pre.zeroing.blocks@[b] == PAGES_PER_2M {
-                    assert((b / PAGES_PER_2M) as int != r as int);
-                }
-            }
-            Self::lemma_blocks_changed(pre, *self);
+            Self::lemma_large_freed(pre, *self, Large::Two, r);
         }
     }
 
@@ -690,24 +678,73 @@ Self::lemma_blocks_changed(pre, post);
         self.blocks.free_1g(r, Tracked(perms));
         self.holders = Ghost(pre.holders@.remove(BlockRef::One(r)));
         proof {
-            lemma_holders_1g_freed(&pre.list, &pre.tables, &pre.blocks, &self.blocks, &pre.zeroing, pre.holders@, r);
-            assert forall|b: usize| #[trigger] pre.zeroing.blocks@.contains_key(b) implies {
-                &&& pre.zeroing.blocks@[b] == PAGES_PER_2M ==> {
-                    &&& self.blocks.regions_2m@[(b / PAGES_PER_2M) as int].typed
-                    &&& !self.blocks.regions_2m@[(b / PAGES_PER_2M) as int].dead
-                }
-                &&& pre.zeroing.blocks@[b] == PAGES_PER_1G ==> {
-                    &&& self.blocks.regions_1g@[(b / PAGES_PER_1G) as int].typed
-                    &&& !self.blocks.regions_1g@[(b / PAGES_PER_1G) as int].dead
-                }
-            } by {
-                assert(pre.zeroing.block_level(b));
-                if pre.zeroing.blocks@[b] == PAGES_PER_1G {
-                    assert((b / PAGES_PER_1G) as int != r as int);
-                }
-            }
-            Self::lemma_blocks_changed(pre, *self);
+            Self::lemma_large_freed(pre, *self, Large::One, r);
         }
+    }
+
+    /// The kernel after a dead large block frees, its holder entry going with it. A block being zeroed is
+    /// not dead, so it is not this one.
+    pub proof fn lemma_large_freed(pre: Self, post: Self, level: Large, r: usize)
+        requires
+            pre.wf(),
+            r < level_regions(level),
+            post.blocks.wf(),
+            post.blocks.pages@ == pre.blocks.pages@,
+            match level {
+                Large::Two => {
+                    &&& pre.blocks.regions_2m@[r as int].typed
+                    &&& pre.blocks.regions_2m@[r as int].dead
+                    &&& pre.blocks.regions_2m@[r as int].refs == 0
+                    &&& !post.blocks.regions_2m@[r as int].typed
+                    &&& post.blocks.regions_2m@ == pre.blocks.regions_2m@.update(r as int, post.blocks.regions_2m@[r as int])
+                    &&& post.blocks.regions_1g@ == pre.blocks.regions_1g@
+                },
+                Large::One => {
+                    &&& pre.blocks.regions_1g@[r as int].typed
+                    &&& pre.blocks.regions_1g@[r as int].dead
+                    &&& pre.blocks.regions_1g@[r as int].refs == 0
+                    &&& !post.blocks.regions_1g@[r as int].typed
+                    &&& post.blocks.regions_1g@ == pre.blocks.regions_1g@.update(r as int, post.blocks.regions_1g@[r as int])
+                    &&& post.blocks.regions_2m@ == pre.blocks.regions_2m@
+                },
+            },
+            post.holders@ == pre.holders@.remove(level_ref(level, r)),
+            post.list == pre.list,
+            post.tables == pre.tables,
+            post.cores == pre.cores,
+            post.flush_epoch == pre.flush_epoch,
+            post.tlb == pre.tlb,
+            post.mapped == pre.mapped,
+            post.stale_epoch == pre.stale_epoch,
+            post.zeroing == pre.zeroing,
+            post.frames_wf(),
+            frames_held(post.frames@, post.holders@),
+        ensures
+            post.wf(),
+    {
+        match level {
+            Large::Two => lemma_holders_2m_freed(&pre.list, &pre.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, r),
+            Large::One => lemma_holders_1g_freed(&pre.list, &pre.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, r),
+        }
+        assert forall|b: usize| #[trigger] pre.zeroing.blocks@.contains_key(b) implies {
+            &&& pre.zeroing.blocks@[b] == PAGES_PER_2M ==> {
+                &&& post.blocks.regions_2m@[(b / PAGES_PER_2M) as int].typed
+                &&& !post.blocks.regions_2m@[(b / PAGES_PER_2M) as int].dead
+            }
+            &&& pre.zeroing.blocks@[b] == PAGES_PER_1G ==> {
+                &&& post.blocks.regions_1g@[(b / PAGES_PER_1G) as int].typed
+                &&& !post.blocks.regions_1g@[(b / PAGES_PER_1G) as int].dead
+            }
+        } by {
+            assert(pre.zeroing.block_level(b));
+            if pre.zeroing.blocks@[b] == PAGES_PER_2M && level is Two {
+                assert((b / PAGES_PER_2M) as int != r as int);
+            }
+            if pre.zeroing.blocks@[b] == PAGES_PER_1G && level is One {
+                assert((b / PAGES_PER_1G) as int != r as int);
+            }
+        }
+        Self::lemma_blocks_changed(pre, post);
     }
 
     /// Core c acknowledges a flush of every context it did. Between that flush and this call c runs

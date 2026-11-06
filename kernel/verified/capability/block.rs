@@ -446,6 +446,8 @@ impl BlockTable {
             final(self).wf(),
             forall|i: int| 0 <= i < NUM_PAGES ==> #[trigger] final(self).pages@[i].kind is Reserved,
             forall|i: int| 0 <= i < NUM_PAGES ==> #[trigger] final(self).pages@[i].object is None,
+            forall|r: int| 0 <= r < NUM_2M ==> !(#[trigger] final(self).regions_2m@[r]).typed,
+            forall|r: int| 0 <= r < NUM_1G ==> !(#[trigger] final(self).regions_1g@[r]).typed,
     {
         let mut i = 0;
         while i != NUM_PAGES
@@ -758,7 +760,7 @@ impl BlockTable {
     }
 
     /// The state of a large block.
-    fn region(&self, level: Large, r: usize) -> (ret: RegionEntry)
+    pub fn region(&self, level: Large, r: usize) -> (ret: RegionEntry)
         requires
             self.wf(),
             match level {
@@ -822,6 +824,15 @@ impl BlockTable {
             },
         ensures
             final(self).wf(),
+            final(self).pages@ == old(self).pages@,
+            match level {
+                Large::Two => final(self).regions_1g@ == old(self).regions_1g@
+                    && final(self).regions_2m@ == old(self).regions_2m@.update(r as int,
+                        RegionEntry { torn_down: true, ..old(self).regions_2m@[r as int] }),
+                Large::One => final(self).regions_2m@ == old(self).regions_2m@
+                    && final(self).regions_1g@ == old(self).regions_1g@.update(r as int,
+                        RegionEntry { torn_down: true, ..old(self).regions_1g@[r as int] }),
+            },
     {
         let e = self.region(level, r);
         self.set_region(level, r, RegionEntry { torn_down: true, ..e });
