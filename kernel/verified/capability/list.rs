@@ -26,6 +26,9 @@ pub const NODE_SPACE: usize = 0x1_0000_0000_0000;
 
 pub const NODES_PER_PAGE: usize = 128;
 
+/// Depth is a byte, so a node this deep has no children.
+pub const MAX_DEPTH: usize = 255;
+
 #[derive(Clone, Copy)]
 pub enum NodeKind {
     Capability,
@@ -354,6 +357,7 @@ impl Tree {
             &&& has(s, self.parent@[s[k]])
             &&& self.d(s[k]) >= 1
             &&& self.d(s[k]) == self.d(self.parent@[s[k]]) + 1
+            &&& self.d(s[k]) <= MAX_DEPTH
         }
         &&& self.runs()
     }
@@ -409,6 +413,37 @@ impl Tree {
         lemma_has(s, self.parent@[x]);
         let a = choose|a: int| 0 <= a < s.len() && s[a] == self.parent@[x];
         self.lemma_link(a);
+    }
+
+    /// No listed node is deeper than a byte says.
+    pub proof fn lemma_depth_bound(&self, k: int)
+        requires
+            self.wf(),
+            0 <= k < self.seq@.len(),
+        ensures
+            self.d(self.seq@[k]) <= MAX_DEPTH,
+    {
+    }
+
+    /// A next node that is deeper is one deeper: it is a child, since everything between a parent and
+    /// its child is deeper than the parent.
+    pub proof fn lemma_next_deeper(&self, k: int)
+        requires
+            self.wf(),
+            0 <= k,
+            k + 1 < self.seq@.len(),
+            self.d(self.seq@[k + 1]) > self.d(self.seq@[k]),
+        ensures
+            self.d(self.seq@[k + 1]) == self.d(self.seq@[k]) + 1,
+    {
+        let s = self.seq@;
+        assert(has(s, self.parent@[s[k + 1]]));
+        lemma_has(s, self.parent@[s[k + 1]]);
+        let p = choose|p: int| 0 <= p < s.len() && #[trigger] s[p] == self.parent@[s[k + 1]];
+        self.lemma_runs(p, k + 1);
+        if p < k {
+            assert(self.d(s[k]) > self.d(s[p]));
+        }
     }
 
     /// If the node after c is not deeper, c has no child, whichever list position the child has.
@@ -564,7 +599,7 @@ impl Tree {
             old(self).valid(slot),
             0 <= c < old(self).nodes@.len(),
             old(self).nodes@[c as int].live,
-            old(self).nodes@[c as int].depth + 1 < usize::MAX,
+            old(self).nodes@[c as int].depth < MAX_DEPTH,
             0 <= slot < old(self).nodes@.len(),
             !old(self).nodes@[slot as int].live,
             old(self).seq@.len() + 1 < NONE,
@@ -799,6 +834,7 @@ impl Tree {
         proof {
             pre.lemma_link(j);
             pre.lemma_live_valid(c);
+            pre.lemma_depth_bound(j);
             if j + 1 < s.len() {
                 pre.lemma_link(j + 1);
                 pre.lemma_live_valid(s[j + 1]);
@@ -821,11 +857,18 @@ impl Tree {
                 pre.nodes@[cur as int].next == (if k + 1 < s.len() { s[k + 1] } else { NONE }),
                 k + 1 < s.len() ==> 0 <= s[k + 1] < pre.nodes@.len() && pre.valid(s[k + 1]),
                 forall|m: int| j < m <= k ==> pre.d(#[trigger] s[m]) > pre.d(c),
-            decreases s.len() - k,
+                // Each link adds one to the depth, and depth is a byte, so the walk is at most 255 links.
+                k - j == pre.d(cur) - pre.d(c),
+                pre.d(cur) <= MAX_DEPTH,
+            decreases MAX_DEPTH - pre.d(cur),
         {
+            proof {
+                pre.lemma_next_deeper(k);
+            }
             cur = self.get(cur).next;
             proof {
                 k = k + 1;
+                pre.lemma_depth_bound(k);
                 pre.lemma_link(k);
                 pre.lemma_live_valid(cur);
                 if k + 1 < s.len() {
@@ -1317,6 +1360,7 @@ proof fn lemma_derive_order(pre: Tree, me: Tree, c: usize, slot: usize, j: int)
             0 <= #[trigger] pre.seq@[m] < pre.nodes@.len() && pre.seq@[m] != slot,
         me.nodes@.len() == pre.nodes@.len(),
         0 <= slot < pre.nodes@.len(),
+        pre.nodes@[c as int].depth < MAX_DEPTH,
         me.nodes@[slot as int].depth == pre.nodes@[c as int].depth + 1,
         forall|i: int| 0 <= i < pre.nodes@.len() && i != slot ==>
             #[trigger] me.nodes@[i].depth == pre.nodes@[i].depth,
@@ -1342,6 +1386,7 @@ proof fn lemma_derive_order(pre: Tree, me: Tree, c: usize, slot: usize, j: int)
         &&& has(t, me.parent@[t[k]])
         &&& me.d(t[k]) >= 1
         &&& me.d(t[k]) == me.d(me.parent@[t[k]]) + 1
+        &&& me.d(t[k]) <= MAX_DEPTH
     } by {
         if k == j + 1 {
             assert(t[k] == slot);
@@ -1448,6 +1493,7 @@ proof fn lemma_remove_order(pre: Tree, me: Tree, i: usize, k: int)
         &&& has(t, me.parent@[t[m]])
         &&& me.d(t[m]) >= 1
         &&& me.d(t[m]) == me.d(me.parent@[t[m]]) + 1
+        &&& me.d(t[m]) <= MAX_DEPTH
     } by {
         let a = if m < k { m } else { m + 1 };
         assert(t[m] == s[a]);
@@ -1720,6 +1766,7 @@ proof fn lemma_move_order(pre: Tree, me: Tree, i: usize, slot: usize, p: int)
         &&& has(t, me.parent@[t[k]])
         &&& me.d(t[k]) >= 1
         &&& me.d(t[k]) == me.d(me.parent@[t[k]]) + 1
+        &&& me.d(t[k]) <= MAX_DEPTH
     } by {
         lemma_has(s, s[k]);
         let q = pre.parent@[s[k]];
