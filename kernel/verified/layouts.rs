@@ -74,6 +74,17 @@ pub proof fn page_into_payload_page(tracked page: PagePerm4k) -> (tracked ret: P
     crate::pptr::page_into_typed::<PayloadPage>(page)
 }
 
+/// A dead leaf's payload page becomes a free page.
+pub proof fn payload_page_into_page(tracked payloads: PointsTo<PayloadPage>) -> (tracked ret: PagePerm4k)
+    requires
+        payloads.is_uninit(),
+    ensures
+        ret.addr() == payloads.addr(),
+        ret.is_uninit(),
+{
+    crate::pptr::typed_into_page(payloads)
+}
+
 /// A free page becomes an uninitialised container.
 pub proof fn page_into_container(tracked page: PagePerm4k) -> (tracked ret: PointsTo<Container>)
     requires
