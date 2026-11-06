@@ -142,7 +142,7 @@ pub open spec fn leaf_blocks_owned(tables: &Tables, blocks: &BlockTable) -> bool
 /// A block with a holder entry is of type frame, and a leaf's block is of type table leaf and a table
 /// leaf block is a leaf's, so a retype naming a block can dispatch on what it reads there. A frame's
 /// small block is one page, and at zero references it has a holder entry, since only its last holder's
-/// going takes it there.
+/// going takes it there. A leaf's block is two pages, so freeing it knows which permissions to hand back.
 pub open spec fn objects_wf(tables: &Tables, blocks: &BlockTable, holders: IMap<BlockRef, Set<usize>>) -> bool {
     &&& forall|b: usize| #[trigger] holders.contains_key(BlockRef::Small(b))
         ==> blocks.pages@[b as int].object is Frame
@@ -155,6 +155,7 @@ pub open spec fn objects_wf(tables: &Tables, blocks: &BlockTable, holders: IMap<
         &&& l / 4096 < NUM_PAGES
         &&& blocks.pages@[(l / 4096) as int].kind is Base
         &&& blocks.pages@[(l / 4096) as int].object is TableLeaf
+        &&& blocks.pages@[(l / 4096) as int].order == 1
     }
     &&& leaf_blocks_owned(tables, blocks)
     &&& forall|r: usize| r < NUM_2M && (#[trigger] blocks.regions_2m@[r as int]).typed
@@ -458,9 +459,11 @@ pub proof fn lemma_objects_leaf_block_changed(
         &&& m / 4096 < NUM_PAGES
         &&& b.pages@[(m / 4096) as int].kind is Base
         &&& b.pages@[(m / 4096) as int].object is TableLeaf
+        &&& b.pages@[(m / 4096) as int].order == 1
     } by {
         assert(b.pages@[(m / 4096) as int].kind == a.pages@[(m / 4096) as int].kind);
         assert(b.pages@[(m / 4096) as int].object == a.pages@[(m / 4096) as int].object);
+        assert(b.pages@[(m / 4096) as int].order == a.pages@[(m / 4096) as int].order);
     }
     assert forall|r: usize| r < NUM_2M && (#[trigger] b.regions_2m@[r as int]).typed
         && b.regions_2m@[r as int].refs == 0 implies holders.contains_key(BlockRef::Two(r)) by {
@@ -630,9 +633,11 @@ pub proof fn lemma_objects_refs_changed(
         &&& l / 4096 < NUM_PAGES
         &&& b.pages@[(l / 4096) as int].kind is Base
         &&& b.pages@[(l / 4096) as int].object is TableLeaf
+        &&& b.pages@[(l / 4096) as int].order == 1
     } by {
         assert(b.pages@[(l / 4096) as int].kind == a.pages@[(l / 4096) as int].kind);
         assert(b.pages@[(l / 4096) as int].object == a.pages@[(l / 4096) as int].object);
+        assert(b.pages@[(l / 4096) as int].order == a.pages@[(l / 4096) as int].order);
     }
     assert forall|r: usize| r < NUM_2M && (#[trigger] b.regions_2m@[r as int]).typed
         && b.regions_2m@[r as int].refs == 0 implies hb.contains_key(BlockRef::Two(r)) by {
@@ -729,6 +734,7 @@ pub proof fn lemma_objects_small_typed(
         forall|l: usize| #[trigger] tb.owner@.contains_key(l) ==> ta.owner@.contains_key(l)
             || (l == (base * 4096) as usize && leaf_block(b, base)),
         leaf_block(b, base) ==> tb.owner@.contains_key((base * 4096) as usize),
+        leaf_block(b, base) ==> b.pages@[base as int].order == 1,
     ensures
         objects_wf(tb, b, holders),
 {
@@ -754,6 +760,7 @@ pub proof fn lemma_objects_small_typed(
         &&& l / 4096 < NUM_PAGES
         &&& b.pages@[(l / 4096) as int].kind is Base
         &&& b.pages@[(l / 4096) as int].object is TableLeaf
+        &&& b.pages@[(l / 4096) as int].order == 1
     } by {
         if ta.owner@.contains_key(l) {
             let x = (l / 4096) as int;

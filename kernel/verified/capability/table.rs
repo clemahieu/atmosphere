@@ -112,7 +112,7 @@ pub open spec fn parent_record(root: usize, r: usize) -> Payload {
 }
 
 /// Where a slot's node lies in its leaf. On its own, like the next, for the modulus.
-proof fn lemma_slot_in_leaf(leaf: usize, slot: usize)
+pub proof fn lemma_slot_in_leaf(leaf: usize, slot: usize)
     requires
         leaf % 8192 == 0,
         slot < NODES_PER_PAGE,
