@@ -1,5 +1,5 @@
 //! Address spaces as retyped objects. A table page is an order-3 block: 5 node pages, whose node 0 is
-//! the block's hidden node, then the table, then 2 spare pages. So an entry finds its mapping's node
+//! the block's hidden node, then the table, then its record, then a spare page. So an entry finds its mapping's node
 //! in constant time, and whoever maps pays for the table. See the design on atmo-6x9.6.7, sections 1
 //! and 8.
 use vstd::arithmetic::div_mod::*;
@@ -24,12 +24,17 @@ use crate::pagetable::pagemap::*;
 use crate::pagetable::pagemap_util_t::*;
 use crate::pptr::*;
 
+/// The page of a table page's block that holds its record.
+pub const TABLE_RECORD_PAGE: usize = 6;
+
 /// The node pages of a table page's block, first in it, so its hidden node is at its address.
 pub const TABLE_NODE_PAGES: usize = 5;
 
-/// The permissions of each table page's table and spare pages, by the block's address.
+/// The permissions of each table page's table, record and spare page, by the block's address, the spare
+/// page's by its own.
 pub struct TablePages {
     pub maps: Tracked<Map<usize, PointsTo<PageMap>>>,
+    pub records: Tracked<Map<usize, PointsTo<TableRecord>>>,
     pub spare: Tracked<Map<usize, PagePerm4k>>,
 }
 
@@ -40,12 +45,41 @@ pub enum SpaceKind {
     Io,
 }
 
+/// The table and entry that point at a table.
+#[derive(Clone, Copy)]
+pub struct TableParent {
+    pub table: usize,
+    pub entry: usize,
+}
+
+/// What a table keeps about itself. Its level is fixed when it is typed. Its space and parent are absent
+/// until it is linked. Written says whether any entry has ever been written, so that an empty table is
+/// known in constant time.
+#[derive(Clone, Copy)]
+pub struct TableRecord {
+    pub level: usize,
+    pub space: Option<usize>,
+    pub parent: Option<TableParent>,
+    pub written: bool,
+}
+
+/// A table page's record when it is typed.
+pub open spec fn fresh_table(level: usize) -> TableRecord {
+    TableRecord { level, space: None, parent: None, written: false }
+}
+
+/// A space root's record when it is typed. A root is level 4, belongs to its space and has no parent.
+pub open spec fn fresh_root(s: usize) -> TableRecord {
+    TableRecord { level: 4, space: Some(s), parent: None, written: false }
+}
+
 /// What a space's block keeps beside its tables. The root is reached through this pointer, never from
 /// the block's layout.
 #[derive(Clone, Copy)]
 pub struct SpaceRecord {
     pub kind: SpaceKind,
     pub root: usize,
+    pub table: TableRecord,
 }
 
 /// A space's page of a block: its root table, its record and the one page unused.
@@ -104,6 +138,7 @@ pub open spec fn space_wf(list: &Tree, spaces: &Spaces, blocks: &BlockTable, s: 
     &&& spaces.records@[s].addr() == s + SPACE_RECORD_PAGE * 4096
     &&& spaces.records@[s].is_init()
     &&& spaces.records@[s].value().root == s + SPACE_ROOT_PAGE * 4096
+    &&& root_record_wf(spaces, s)
     &&& spaces.roots@[s].addr() == spaces.records@[s].value().root
     &&& spaces.roots@[s].is_init()
     &&& spaces.roots@[s].value().wf()
@@ -119,6 +154,17 @@ pub open spec fn space_wf(list: &Tree, spaces: &Spaces, blocks: &BlockTable, s: 
     &&& spaces.holders@[s].finite()
     &&& spaces.holders@[s].len() == blocks.pages@[(s / 4096) as int].refs
     &&& blocks.pages@[(s / 4096) as int].refs == 0 ==> blocks.pages@[(s / 4096) as int].dead
+}
+
+/// A root is level 4, of its own space, with no parent. A root not written has no entry but the kernel
+/// slots.
+pub open spec fn root_record_wf(spaces: &Spaces, s: usize) -> bool {
+    let record = spaces.records@[s].value().table;
+    &&& record.level == 4
+    &&& record.space == Some(s)
+    &&& record.parent is None
+    &&& !record.written ==> forall|i: usize| #![trigger spaces.roots@[s].value()[i]]
+        KERNEL_MEM_END_L4INDEX <= i < 512 ==> spaces.roots@[s].value()[i].is_empty()
 }
 
 /// A process root holds the kernel's entries in the kernel slots, so the kernel stays mapped on entry
@@ -509,9 +555,10 @@ impl TablePages {
     pub fn new() -> (ret: Self)
         ensures
             ret.maps@ == Map::<usize, PointsTo<PageMap>>::empty(),
+            ret.records@ == Map::<usize, PointsTo<TableRecord>>::empty(),
             ret.spare@ == Map::<usize, PagePerm4k>::empty(),
     {
-        TablePages { maps: Tracked(Map::tracked_empty()), spare: Tracked(Map::tracked_empty()) }
+        TablePages { maps: Tracked(Map::tracked_empty()), records: Tracked(Map::tracked_empty()), spare: Tracked(Map::tracked_empty()) }
     }
 }
 
@@ -526,7 +573,15 @@ pub open spec fn table_block(blocks: &BlockTable, b: usize) -> bool {
     &&& blocks.pages@[b as int].object is TablePage
 }
 
-/// The table page at t has its table, its spare pages and its node pages. Its block holds one
+/// A table page is level 1 to 3. One not written has every entry empty.
+pub open spec fn table_record_wf(pages: &TablePages, t: usize) -> bool {
+    let record = pages.records@[t].value();
+    &&& 1 <= record.level <= 3
+    &&& !record.written ==> forall|i: usize| #![trigger pages.maps@[t].value()[i]]
+        i < 512 ==> pages.maps@[t].value()[i].is_empty()
+}
+
+/// The table page at t has its table, its record, its spare page and its node pages. Its block holds one
 /// reference, its hidden node's, and is dead at once when that goes.
 pub open spec fn table_page_wf(list: &Tree, pages: &TablePages, blocks: &BlockTable, t: usize) -> bool {
     &&& t % 32768 == 0
@@ -534,11 +589,12 @@ pub open spec fn table_page_wf(list: &Tree, pages: &TablePages, blocks: &BlockTa
     &&& pages.maps@[t].addr() == t + TABLE_NODE_PAGES * 4096
     &&& pages.maps@[t].is_init()
     &&& pages.maps@[t].value().wf()
-    &&& pages.spare@.contains_key((t + 6 * 4096) as usize)
+    &&& pages.records@.contains_key(t)
+    &&& pages.records@[t].addr() == t + TABLE_RECORD_PAGE * 4096
+    &&& pages.records@[t].is_init()
+    &&& table_record_wf(pages, t)
     &&& pages.spare@.contains_key((t + 7 * 4096) as usize)
-    &&& pages.spare@[(t + 6 * 4096) as usize].addr() == t + 6 * 4096
     &&& pages.spare@[(t + 7 * 4096) as usize].addr() == t + 7 * 4096
-    &&& pages.spare@[(t + 6 * 4096) as usize].is_uninit()
     &&& pages.spare@[(t + 7 * 4096) as usize].is_uninit()
     &&& blocks.pages@[(t / 4096) as int].kind is Base
     &&& blocks.pages@[(t / 4096) as int].object is TablePage
@@ -600,19 +656,6 @@ pub proof fn lemma_table_pages_distinct(t: usize, u: usize)
 {
     lemma_table_page_aligned(t);
     lemma_table_page_aligned(u);
-}
-
-/// Two distinct table pages are eight pages apart, so their spare pages are distinct.
-pub proof fn lemma_table_pages_apart(t: usize, u: usize)
-    requires
-        t % 32768 == 0,
-        u % 32768 == 0,
-        t != u,
-    ensures
-        t + 6 * 4096 != u + 7 * 4096,
-{
-    lemma_fundamental_div_mod(t as int, 32768);
-    lemma_fundamental_div_mod(u as int, 32768);
 }
 
 /// The kth node page of a table page is the kth page of its block, page aligned.
@@ -1525,12 +1568,13 @@ impl CapKernel {
             post.table_pages.maps@[base].addr() == base + TABLE_NODE_PAGES * 4096,
             post.table_pages.maps@[base].is_init(),
             post.table_pages.maps@[base].value().wf(),
+            post.table_pages.records@ == pre.table_pages.records@.insert(base, post.table_pages.records@[base]),
+            post.table_pages.records@[base].addr() == base + TABLE_RECORD_PAGE * 4096,
+            post.table_pages.records@[base].is_init(),
+            table_record_wf(&post.table_pages, base),
             post.table_pages.spare@ == pre.table_pages.spare@
-                .insert((base + 6 * 4096) as usize, post.table_pages.spare@[(base + 6 * 4096) as usize])
                 .insert((base + 7 * 4096) as usize, post.table_pages.spare@[(base + 7 * 4096) as usize]),
-            post.table_pages.spare@[(base + 6 * 4096) as usize].addr() == base + 6 * 4096,
             post.table_pages.spare@[(base + 7 * 4096) as usize].addr() == base + 7 * 4096,
-            post.table_pages.spare@[(base + 6 * 4096) as usize].is_uninit(),
             post.table_pages.spare@[(base + 7 * 4096) as usize].is_uninit(),
             post.spaces == pre.spaces,
         ensures
@@ -1646,12 +1690,13 @@ impl CapKernel {
             post.table_pages.maps@[base].addr() == base + TABLE_NODE_PAGES * 4096,
             post.table_pages.maps@[base].is_init(),
             post.table_pages.maps@[base].value().wf(),
+            post.table_pages.records@ == pre.table_pages.records@.insert(base, post.table_pages.records@[base]),
+            post.table_pages.records@[base].addr() == base + TABLE_RECORD_PAGE * 4096,
+            post.table_pages.records@[base].is_init(),
+            table_record_wf(&post.table_pages, base),
             post.table_pages.spare@ == pre.table_pages.spare@
-                .insert((base + 6 * 4096) as usize, post.table_pages.spare@[(base + 6 * 4096) as usize])
                 .insert((base + 7 * 4096) as usize, post.table_pages.spare@[(base + 7 * 4096) as usize]),
-            post.table_pages.spare@[(base + 6 * 4096) as usize].addr() == base + 6 * 4096,
             post.table_pages.spare@[(base + 7 * 4096) as usize].addr() == base + 7 * 4096,
-            post.table_pages.spare@[(base + 6 * 4096) as usize].is_uninit(),
             post.table_pages.spare@[(base + 7 * 4096) as usize].is_uninit(),
         ensures
             table_pages_wf(&post.list, &post.table_pages, &post.blocks),
@@ -1669,10 +1714,8 @@ impl CapKernel {
                 assert(table_page_wf(&pre.list, pa, b, t));
                 pre.lemma_table_page_valid(t);
                 assert(t != base);
-                lemma_table_pages_apart(t, base);
-                lemma_table_pages_apart(base, t);
                 assert(pb.maps@[t] == pa.maps@[t]);
-                assert(pb.spare@[(t + 6 * 4096) as usize] == pa.spare@[(t + 6 * 4096) as usize]);
+                assert(pb.records@[t] == pa.records@[t]);
                 assert(pb.spare@[(t + 7 * 4096) as usize] == pa.spare@[(t + 7 * 4096) as usize]);
                 assert forall|k: usize| k < TABLE_NODE_PAGES implies post.list.pages@.dom().contains(#[trigger] table_node_page(t, k)) by {
                     assert(pre.list.pages@.dom().contains(table_node_page(t, k)));
@@ -1709,7 +1752,7 @@ impl CapKernel {
 
     /// Retypes the free order-3 block at `base` as a table page, under the untyped at index `from` of the
     /// table at `root`. All of these come from user space, and a refusal changes nothing.
-    pub fn retype_table_page(&mut self, root: usize, from: usize, base: usize) -> (ret: bool)
+    pub fn retype_table_page(&mut self, root: usize, from: usize, base: usize, level: usize) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
@@ -1721,7 +1764,9 @@ impl CapKernel {
                 let parent = old(self).tables.node_of(root, from);
                 &&& old(self).view().holds_right(root, parent, Right::Retype)
                 &&& old(self).blocks.pages@[(base / 4096) as int].kind is Free
+                &&& 1 <= level <= 3
                 &&& final(self).table_pages.maps@.contains_key(base)
+                &&& final(self).table_pages.records@[base].value() == fresh_table(level)
                 &&& forall|i: usize| i < 512 ==> #[trigger] final(self).table_pages.maps@[base].value()[i].is_empty()
                 &&& final(self).blocks.pages@[(base / 4096) as int].refs == 1
                 &&& forall|k: usize| k < TABLE_NODE_PAGES ==> final(self).list.pages@.dom().contains(#[trigger] table_node_page(base, k))
@@ -1732,6 +1777,9 @@ impl CapKernel {
             },
     {
         let ghost pre = *old(self);
+        if level == 0 || level > 3 {
+            return false;
+        }
         let parent = match self.retype_parent(root, from, base, 3) {
             Some(found) => found,
             None => { return false; },
@@ -1796,9 +1844,17 @@ impl CapKernel {
         }
         self.list.derive(parent, base, NodeKind::Hidden);
         let (_, Tracked(map)) = page_perm_to_page_map(base + TABLE_NODE_PAGES * 4096, Tracked(table));
+        let tracked mut record;
+        proof {
+            record = page_into_table_record(sixth);
+        }
+        PPtr::<TableRecord>::from_usize(base + TABLE_RECORD_PAGE * 4096).put(
+            Tracked(&mut record),
+            TableRecord { level, space: None, parent: None, written: false },
+        );
         proof {
             self.table_pages.maps.borrow_mut().tracked_insert(base, map);
-            self.table_pages.spare.borrow_mut().tracked_insert((base + 6 * 4096) as usize, sixth);
+            self.table_pages.records.borrow_mut().tracked_insert(base, record);
             self.table_pages.spare.borrow_mut().tracked_insert((base + 7 * 4096) as usize, seventh);
         }
         proof {
@@ -1818,6 +1874,7 @@ impl CapKernel {
             Self::lemma_table_page_nodes(pre, post, mid, parent, base);
             assert(post.list.pages@.dom() == mid.pages@.dom());
             assert(post.table_pages.maps@ == pre.table_pages.maps@.insert(base, post.table_pages.maps@[base]));
+            assert(post.table_pages.records@ == pre.table_pages.records@.insert(base, post.table_pages.records@[base]));
             Self::lemma_table_page_blocks(pre, post, base, page);
             assert(post.wf());
             Self::lemma_hidden_added_discharges(pre, post, root, parent, base);
@@ -1992,6 +2049,7 @@ impl CapKernel {
             post.spaces.spare@[base].is_uninit(),
             post.spaces.kernel_entries == pre.spaces.kernel_entries,
             kernel_slots_wf(&post.spaces, base),
+            root_record_wf(&post.spaces, base),
             post.spaces.holders@ == pre.spaces.holders@.insert(base, set![child]),
             !pre.list.nodes@[child as int].live,
             post.is_cap(child),
@@ -2195,6 +2253,7 @@ impl CapKernel {
                 &&& final(self).list.is_child(parent, child)
                 &&& final(self).spaces.roots@.contains_key(base)
                 &&& final(self).spaces.records@[base].value().kind == kind
+                &&& final(self).spaces.records@[base].value().table == fresh_root(base)
                 &&& forall|i: usize| KERNEL_MEM_END_L4INDEX <= i < 512 ==> #[trigger] final(self).spaces.roots@[base].value()[i].is_empty()
                 &&& final(self).spaces.kernel_entries == old(self).spaces.kernel_entries
                 &&& forall|s: usize| #[trigger] old(self).spaces.roots@.contains_key(s) ==> final(self).spaces.roots@[s] == old(self).spaces.roots@[s]
@@ -2284,7 +2343,10 @@ impl CapKernel {
             typed = page_into_space_record(record);
         }
         let pptr = PPtr::<SpaceRecord>::from_usize(base + SPACE_RECORD_PAGE * 4096);
-        pptr.put(Tracked(&mut typed), SpaceRecord { kind, root: root_table });
+        pptr.put(
+            Tracked(&mut typed),
+            SpaceRecord { kind, root: root_table, table: TableRecord { level: 4, space: Some(base), parent: None, written: false } },
+        );
         proof {
             self.spaces.roots.borrow_mut().tracked_insert(base, map);
             self.spaces.records.borrow_mut().tracked_insert(base, typed);

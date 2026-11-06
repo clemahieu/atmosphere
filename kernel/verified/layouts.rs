@@ -4,7 +4,7 @@
 use vstd::prelude::*;
 
 use crate::capability::list::NodePage;
-use crate::capability::space::SpaceRecord;
+use crate::capability::space::{SpaceRecord, TableRecord};
 use crate::capability::table::{PayloadPage, TableRoot};
 use crate::define::PagePerm4k;
 use crate::pptr::PointsTo;
@@ -26,7 +26,8 @@ global layout Endpoint is size == 3128, align == 8;
 global layout NodePage is size == 4096, align == 8;
 global layout PayloadPage is size == 4096, align == 8;
 global layout TableRoot is size == 4096, align == 8;
-global layout SpaceRecord is size == 16, align == 8;
+global layout SpaceRecord is size == 72, align == 8;
+global layout TableRecord is size == 56, align == 8;
 
 /// A 4K page converts to a thread and back, using these layouts and no other facts.
 proof fn thread_page_round_trip(tracked page: PagePerm4k) -> (tracked ret: PagePerm4k)
@@ -74,6 +75,18 @@ pub proof fn page_into_space_record(tracked page: PagePerm4k) -> (tracked ret: P
         ret.is_uninit(),
 {
     crate::pptr::page_into_typed::<SpaceRecord>(page)
+}
+
+/// A page becomes an uninitialised table record.
+pub proof fn page_into_table_record(tracked page: PagePerm4k) -> (tracked ret: PointsTo<TableRecord>)
+    requires
+        page.is_uninit(),
+        page.addr() % 4096 == 0,
+    ensures
+        ret.addr() == page.addr(),
+        ret.is_uninit(),
+{
+    crate::pptr::page_into_typed::<TableRecord>(page)
 }
 
 /// A page becomes an uninitialised page of capability payloads.
