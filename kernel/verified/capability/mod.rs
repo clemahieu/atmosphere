@@ -4,6 +4,7 @@ pub mod derive;
 pub mod kernel;
 pub mod link;
 pub mod list;
+pub mod mapping;
 pub mod moving;
 pub mod reach;
 pub mod reclaim;

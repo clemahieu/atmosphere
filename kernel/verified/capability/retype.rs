@@ -7,6 +7,7 @@ use vstd::prelude::*;
 
 verus! {
 
+use crate::capability::mapping::*;
 use crate::capability::block::*;
 use crate::capability::derive::*;
 use crate::capability::kernel::*;
@@ -376,6 +377,7 @@ impl CapKernel {
             old(self).frame_block_ready(base, order),
         ensures
             final(self).wf(),
+            Self::same_tree(*old(self), *final(self)),
             final(self).blocks == old(self).blocks,
             final(self).frames == old(self).frames,
             final(self).zeroing == old(self).zeroing,
@@ -436,6 +438,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
         ensures
             final(self).wf(),
+            Self::same_tree(*old(self), *final(self)),
             ret ==> old(self).can_retype_frame(root, from, to, base),
             !ret ==> *final(self) == *old(self),
             ret ==> {
@@ -516,6 +519,7 @@ impl CapKernel {
             r < level_regions(level),
         ensures
             final(self).wf(),
+            Self::same_tree(*old(self), *final(self)),
             final(self).list == old(self).list,
             final(self).tables == old(self).tables,
             final(self).holders == old(self).holders,
@@ -724,6 +728,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
         ensures
             final(self).wf(),
+            Self::same_tree(*old(self), *final(self)),
             ret ==> old(self).can_retype_leaf(root, from, r, base),
             !ret ==> *final(self) == *old(self),
             ret ==> {
@@ -1255,6 +1260,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
         ensures
             final(self).wf(),
+            Self::same_tree(*old(self), *final(self)),
             !old(self).can_retype_large(root, from, to, base, order) ==> ret is Refused,
             ret is Refused ==> *final(self) == *old(self),
             old(self).zeroing.blocks@.contains_key(base / 4096) ==>

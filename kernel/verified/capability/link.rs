@@ -9,6 +9,7 @@ verus! {
 use crate::capability::block::{ObjectType, PageKind};
 use crate::capability::kernel::*;
 use crate::capability::list::*;
+use crate::capability::mapping::*;
 use crate::capability::reach::*;
 use crate::capability::retype::*;
 use crate::capability::space::*;
@@ -401,6 +402,7 @@ impl CapKernel {
         &&& tree.record(child).space == Some(s)
         &&& tree.record(child).level == tree_of(&pre.table_pages, &pre.spaces).record(child).level
         &&& tree.record(parent).written
+        &&& linked(tree_of(&pre.table_pages, &pre.spaces), tree, parent, entry, child, s)
     }
 
     /// The invariant after a link, given what the tables' own invariants say.
@@ -860,6 +862,31 @@ impl CapKernel {
         }
     }
 
+    /// A link leaves every space's mapping as it was: a child not written has no entry.
+    proof fn lemma_link_mappings(pre: Self, post: Self, root: usize, slot: usize, parent: usize, entry: usize, from: usize, child: usize, s: usize)
+        requires
+            pre.wf(),
+            pre.can_link(root, slot, parent, entry, from, child),
+            Self::link_done(pre, post, parent, entry, child, s),
+        ensures
+            forall|r: usize| #[trigger] space_mapping(tree_of(&post.table_pages, &post.spaces), r)
+                == space_mapping(tree_of(&pre.table_pages, &pre.spaces), r),
+    {
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        assert(a.is_page(child));
+        assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, child));
+        assert(table_record_wf(&pre.table_pages, child));
+        assert forall|i: usize| i < 512 implies #[trigger] a.entry(child, i).is_empty() by {
+            assert(pre.table_pages.maps@[child].value()[i].is_empty());
+        }
+        assert(child != parent);
+        lemma_table_bound(child);
+        assert forall|r: usize| #[trigger] space_mapping(b, r) == space_mapping(a, r) by {
+            lemma_mapping_linked(a, b, parent, entry, child, s, r);
+        }
+    }
+
     /// Links the unlinked table page `child` into `entry` of the table `parent`, in the space named by
     /// the capability at index `slot` of the table at `root`, on the authority of the untyped at index
     /// `from` over the child's block. All of these come from user space, and a refusal changes nothing.
@@ -884,6 +911,7 @@ impl CapKernel {
                 &&& tree.record(child).space == Some(s)
                 &&& tree.record(child).level == tree_of(&old(self).table_pages, &old(self).spaces).record(child).level
                 &&& tree.record(parent).written
+                &&& forall|r: usize| #[trigger] space_mapping(tree, r) == space_mapping(tree_of(&old(self).table_pages, &old(self).spaces), r)
             },
             discharges(old(self).view(), final(self).view(), root, Effect::Local),
     {
@@ -1018,6 +1046,9 @@ impl CapKernel {
         proof {
             assert(pre.can_link(root, slot, parent, entry, from, child));
         }
+        proof {
+            assert(pre.can_link(root, slot, parent, entry, from, child));
+        }
         if is_root {
             self.link_root(parent, entry, child);
         } else {
@@ -1025,6 +1056,7 @@ impl CapKernel {
         }
         proof {
             assert(self.view() == pre.view());
+            Self::lemma_link_mappings(pre, *self, root, slot, parent, entry, from, child, payload.base);
         }
         true
     }

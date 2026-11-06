@@ -9,6 +9,7 @@ use vstd::prelude::*;
 verus! {
 
 use crate::array::*;
+use crate::capability::mapping::*;
 use crate::capability::block::*;
 use crate::capability::kernel::*;
 use crate::capability::link::*;
@@ -1820,6 +1821,76 @@ impl CapKernel {
         lemma_links_root_added(a, b, base);
     }
 
+    /// A table page's retype leaves every space's mapping as it was: nothing walks to the new table.
+    proof fn lemma_table_page_mappings(pre: Self, post: Self, base: usize, page: usize)
+        requires
+            pre.wf(),
+            base / 4096 == page,
+            pre.blocks.pages@[page as int].kind is Free,
+            post.table_pages.maps@ == pre.table_pages.maps@.insert(base, post.table_pages.maps@[base]),
+            post.table_pages.records@ == pre.table_pages.records@.insert(base, post.table_pages.records@[base]),
+            post.spaces == pre.spaces,
+        ensures
+            forall|r: usize| #[trigger] pre.spaces.roots@.contains_key(r) ==>
+                space_mapping(tree_of(&post.table_pages, &post.spaces), r)
+                    == space_mapping(tree_of(&pre.table_pages, &pre.spaces), r),
+    {
+        pre.lemma_free_not_table(base, page);
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        assert forall|t: usize| #![trigger a.is_table(t)] a.is_table(t) implies {
+            &&& b.is_page(t) == a.is_page(t)
+            &&& b.is_root(t) == a.is_root(t)
+            &&& b.record(t) == a.record(t)
+            &&& forall|i: usize| i < 512 ==> #[trigger] b.entry(t, i) == a.entry(t, i)
+        } by {
+            assert(t != base);
+        }
+        assert forall|r: usize| #[trigger] pre.spaces.roots@.contains_key(r) implies
+            space_mapping(b, r) == space_mapping(a, r) by {
+            lemma_mapping_extended(a, b, r);
+        }
+    }
+
+    /// A space's retype leaves every other's mapping as it was, and the new space maps nothing.
+    proof fn lemma_space_mappings(pre: Self, post: Self, base: usize, page: usize)
+        requires
+            pre.wf(),
+            base / 4096 == page,
+            pre.blocks.pages@[page as int].kind is Free,
+            post.table_pages == pre.table_pages,
+            post.spaces.roots@ == pre.spaces.roots@.insert(base, post.spaces.roots@[base]),
+            post.spaces.records@ == pre.spaces.records@.insert(base, post.spaces.records@[base]),
+            forall|i: usize| KERNEL_MEM_END_L4INDEX <= i < 512 ==> #[trigger] post.spaces.roots@[base].value()[i].is_empty(),
+        ensures
+            space_mapping(tree_of(&post.table_pages, &post.spaces), base) == IMap::<SpacePath, crate::pagetable::entry::PageEntry>::empty(),
+            forall|r: usize| #[trigger] pre.spaces.roots@.contains_key(r) ==>
+                space_mapping(tree_of(&post.table_pages, &post.spaces), r)
+                    == space_mapping(tree_of(&pre.table_pages, &pre.spaces), r),
+    {
+        pre.lemma_free_not_table(base, page);
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        assert(!b.is_page(base));
+        assert(b.is_root(base));
+        assert forall|i: usize| KERNEL_MEM_END_L4INDEX <= i < 512 implies #[trigger] b.entry(base, i).is_empty() by {
+            assert(post.spaces.roots@[base].value()[i].is_empty());
+        }
+        lemma_mapping_fresh(b, base);
+        assert forall|t: usize| #![trigger a.is_table(t)] a.is_table(t) implies {
+            &&& b.is_page(t) == a.is_page(t)
+            &&& b.is_root(t) == a.is_root(t)
+            &&& b.record(t) == a.record(t)
+            &&& forall|i: usize| i < 512 ==> #[trigger] b.entry(t, i) == a.entry(t, i)
+        } by {
+            assert(t != base);
+        }
+        assert forall|r: usize| #[trigger] pre.spaces.roots@.contains_key(r) implies
+            space_mapping(b, r) == space_mapping(a, r) by {
+            lemma_mapping_extended(a, b, r);
+        }
+    }
+
     /// Retypes the free order-3 block at `base` as a table page, under the untyped at index `from` of the
     /// table at `root`. All of these come from user space, and a refusal changes nothing.
     pub fn retype_table_page(&mut self, root: usize, from: usize, base: usize, level: usize) -> (ret: bool)
@@ -1837,6 +1908,9 @@ impl CapKernel {
                 &&& 1 <= level <= 3
                 &&& final(self).table_pages.maps@.contains_key(base)
                 &&& final(self).table_pages.records@[base].value() == fresh_table(level)
+                &&& forall|r: usize| #[trigger] old(self).spaces.roots@.contains_key(r) ==>
+                    space_mapping(tree_of(&final(self).table_pages, &final(self).spaces), r)
+                        == space_mapping(tree_of(&old(self).table_pages, &old(self).spaces), r)
                 &&& forall|i: usize| i < 512 ==> #[trigger] final(self).table_pages.maps@[base].value()[i].is_empty()
                 &&& final(self).blocks.pages@[(base / 4096) as int].refs == 1
                 &&& forall|k: usize| k < TABLE_NODE_PAGES ==> final(self).list.pages@.dom().contains(#[trigger] table_node_page(base, k))
@@ -1947,6 +2021,7 @@ impl CapKernel {
             assert(post.table_pages.records@ == pre.table_pages.records@.insert(base, post.table_pages.records@[base]));
             Self::lemma_table_page_blocks(pre, post, base, page);
             Self::lemma_table_page_links(pre, post, base, page);
+            Self::lemma_table_page_mappings(pre, post, base, page);
             assert(post.wf());
             Self::lemma_hidden_added_discharges(pre, post, root, parent, base);
         }
@@ -2325,6 +2400,10 @@ impl CapKernel {
                 &&& final(self).spaces.roots@.contains_key(base)
                 &&& final(self).spaces.records@[base].value().kind == kind
                 &&& final(self).spaces.records@[base].value().table == fresh_root(base)
+                &&& space_mapping(tree_of(&final(self).table_pages, &final(self).spaces), base) == IMap::<SpacePath, crate::pagetable::entry::PageEntry>::empty()
+                &&& forall|r: usize| #[trigger] old(self).spaces.roots@.contains_key(r) ==>
+                    space_mapping(tree_of(&final(self).table_pages, &final(self).spaces), r)
+                        == space_mapping(tree_of(&old(self).table_pages, &old(self).spaces), r)
                 &&& forall|i: usize| KERNEL_MEM_END_L4INDEX <= i < 512 ==> #[trigger] final(self).spaces.roots@[base].value()[i].is_empty()
                 &&& final(self).spaces.kernel_entries == old(self).spaces.kernel_entries
                 &&& forall|s: usize| #[trigger] old(self).spaces.roots@.contains_key(s) ==> final(self).spaces.roots@[s] == old(self).spaces.roots@[s]
@@ -2460,6 +2539,7 @@ impl CapKernel {
             }
             Self::lemma_spaces_space_added(pre, post, base, page, child);
             Self::lemma_space_links(pre, post, base, page);
+            Self::lemma_space_mappings(pre, post, base, page);
             assert(post.wf());
             assert(SPACE_RIGHTS & 128 == 0) by (compute_only);
             assert(right_bit(Right::Control) == 128);

@@ -8,6 +8,7 @@ use vstd::set_lib::*;
 
 verus! {
 
+use crate::capability::mapping::*;
 use crate::capability::block::*;
 use crate::capability::kernel::*;
 use crate::capability::list::*;
@@ -172,6 +173,7 @@ impl CapKernel {
             !old(self).mapped@.contains(base / 4096),
         ensures
             final(self).wf(),
+            Self::same_tree(*old(self), *final(self)),
             ret is Refused || ret is Again ==> *final(self) == *old(self),
             !((old(self).can_retype_under(root, from, base, 0) && old(self).frame_is_dead(base / 4096))
                 || old(self).can_unlink_leaf(root, from, base)
@@ -236,6 +238,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
         ensures
             final(self).wf(),
+            Self::same_tree(*old(self), *final(self)),
             ret == old(self).can_slice_leaf(root, from, base),
             !ret ==> *final(self) == *old(self),
             ret ==> old(self).leaf_sliced(*final(self), root, from, base),
@@ -273,6 +276,7 @@ impl CapKernel {
         let mut k = 1;
         while steps != LEAF_SLICE_BUDGET && k != NODES_PER_PAGE
             invariant
+                Self::same_tree(*old(self), *self),
                 self.wf(),
                 pre == *old(self),
                 steps <= LEAF_SLICE_BUDGET,
@@ -406,6 +410,7 @@ impl CapKernel {
             old(self).list.childless(n),
         ensures
             final(self).wf(),
+            Self::same_tree(*old(self), *final(self)),
             final(self).tables.owner == old(self).tables.owner,
             final(self).list.parent == old(self).list.parent,
             final(self).list.seq@.len() == old(self).list.seq@.len() - 1,
@@ -454,6 +459,7 @@ impl CapKernel {
             !old(self).mapped@.contains(base / 4096),
         ensures
             final(self).wf(),
+            Self::same_tree(*old(self), *final(self)),
             !(ret is Unlinked),
             !(ret is Slice),
             !(ret is Freed) ==> *final(self) == *old(self),
@@ -540,6 +546,7 @@ impl CapKernel {
             old(self).no_stale_translation(base / 4096),
         ensures
             final(self).wf(),
+            Self::same_tree(*old(self), *final(self)),
             final(self).blocks.pages@[(base / 4096) as int].kind is Free,
             final(self).blocks.pages@[base / 4096 + 1int].kind is Free,
             !final(self).tables.owner@.contains_key(base),
@@ -934,6 +941,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
         ensures
             final(self).wf(),
+            Self::same_tree(*old(self), *final(self)),
             ret == old(self).can_unlink_leaf(root, from, base),
             !ret ==> *final(self) == *old(self),
             ret ==> old(self).leaf_unlinked(*final(self), root, from, base),
@@ -1040,6 +1048,7 @@ impl CapKernel {
             !old(self).mapped@.contains(base / 4096),
         ensures
             final(self).wf(),
+            Self::same_tree(*old(self), *final(self)),
             !(ret is Unlinked),
             !(ret is Slice),
             !(ret is Freed) ==> *final(self) == *old(self),
@@ -1115,6 +1124,7 @@ impl CapKernel {
             !old(self).mapped@.contains(base / 4096),
         ensures
             final(self).wf(),
+            Self::same_tree(*old(self), *final(self)),
             !(ret is Freed) ==> *final(self) == *old(self),
             !old(self).can_retype_under(root, from, base, order) ==> ret is Refused,
             ret is Again ==> !old(self).acknowledged(base / 4096),
@@ -1177,6 +1187,7 @@ impl CapKernel {
             !old(self).mapped@.contains(level_base(level, r)),
             old(self).no_stale_translation(level_base(level, r)),
         ensures
+            Self::same_tree(*old(self), *final(self)),
             Self::step_ok(*old(self), *final(self), c as int),
             final(self).list == old(self).list,
             final(self).tables == old(self).tables,
@@ -1243,6 +1254,7 @@ impl CapKernel {
             !old(self).mapped@.contains(page),
             old(self).no_stale_translation(page),
         ensures
+            Self::same_tree(*old(self), *final(self)),
             Self::step_ok(*old(self), *final(self), c as int),
             final(self).list == old(self).list,
             final(self).tables == old(self).tables,
