@@ -11,6 +11,7 @@ verus! {
 use crate::array::*;
 use crate::capability::block::*;
 use crate::capability::kernel::*;
+use crate::capability::link::*;
 use crate::capability::list::*;
 use crate::capability::reach::*;
 use crate::capability::refs::*;
@@ -1750,6 +1751,75 @@ impl CapKernel {
         lemma_table_node_page(base, k);
     }
 
+    /// A free block holds no table and no space.
+    proof fn lemma_free_not_table(&self, base: usize, page: usize)
+        requires
+            self.wf(),
+            base / 4096 == page,
+            self.blocks.pages@[page as int].kind is Free,
+        ensures
+            !self.table_pages.maps@.contains_key(base),
+            !self.spaces.roots@.contains_key(base),
+    {
+        if self.table_pages.maps@.contains_key(base) {
+            assert(table_page_wf(&self.list, &self.table_pages, &self.blocks, base));
+        }
+        if self.spaces.roots@.contains_key(base) {
+            assert(space_wf(&self.list, &self.spaces, &self.blocks, base));
+        }
+    }
+
+    /// The links after a table page's retype: the new table has no parent, no space and no entry.
+    proof fn lemma_table_page_links(pre: Self, post: Self, base: usize, page: usize)
+        requires
+            pre.wf(),
+            base / 4096 == page,
+            pre.blocks.pages@[page as int].kind is Free,
+            post.table_pages.maps@ == pre.table_pages.maps@.insert(base, post.table_pages.maps@[base]),
+            post.table_pages.records@ == pre.table_pages.records@.insert(base, post.table_pages.records@[base]),
+            post.table_pages.records@[base].value().parent is None,
+            post.table_pages.records@[base].value().space is None,
+            forall|i: usize| i < 512 ==> #[trigger] post.table_pages.maps@[base].value()[i].is_empty(),
+            post.spaces == pre.spaces,
+        ensures
+            table_links_wf(tree_of(&post.table_pages, &post.spaces)),
+    {
+        pre.lemma_free_not_table(base, page);
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        assert(b.is_page(base));
+        assert forall|i: usize| i < 512 implies #[trigger] b.entry(base, i).is_empty() by {
+            assert(post.table_pages.maps@[base].value()[i].is_empty());
+        }
+        lemma_links_table_added(a, b, base);
+    }
+
+    /// The links after a space's retype: the new root has no parent and no entry outside the kernel
+    /// slots.
+    proof fn lemma_space_links(pre: Self, post: Self, base: usize, page: usize)
+        requires
+            pre.wf(),
+            base / 4096 == page,
+            pre.blocks.pages@[page as int].kind is Free,
+            post.table_pages == pre.table_pages,
+            post.spaces.roots@ == pre.spaces.roots@.insert(base, post.spaces.roots@[base]),
+            post.spaces.records@ == pre.spaces.records@.insert(base, post.spaces.records@[base]),
+            post.spaces.records@[base].value().table.parent is None,
+            forall|i: usize| KERNEL_MEM_END_L4INDEX <= i < 512 ==> #[trigger] post.spaces.roots@[base].value()[i].is_empty(),
+        ensures
+            table_links_wf(tree_of(&post.table_pages, &post.spaces)),
+    {
+        pre.lemma_free_not_table(base, page);
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        assert(!b.is_page(base));
+        assert(b.is_root(base));
+        assert forall|i: usize| KERNEL_MEM_END_L4INDEX <= i < 512 implies #[trigger] b.entry(base, i).is_empty() by {
+            assert(post.spaces.roots@[base].value()[i].is_empty());
+        }
+        lemma_links_root_added(a, b, base);
+    }
+
     /// Retypes the free order-3 block at `base` as a table page, under the untyped at index `from` of the
     /// table at `root`. All of these come from user space, and a refusal changes nothing.
     pub fn retype_table_page(&mut self, root: usize, from: usize, base: usize, level: usize) -> (ret: bool)
@@ -1876,6 +1946,7 @@ impl CapKernel {
             assert(post.table_pages.maps@ == pre.table_pages.maps@.insert(base, post.table_pages.maps@[base]));
             assert(post.table_pages.records@ == pre.table_pages.records@.insert(base, post.table_pages.records@[base]));
             Self::lemma_table_page_blocks(pre, post, base, page);
+            Self::lemma_table_page_links(pre, post, base, page);
             assert(post.wf());
             Self::lemma_hidden_added_discharges(pre, post, root, parent, base);
         }
@@ -2388,6 +2459,7 @@ impl CapKernel {
                 post.blocks.lemma_member_of(page as int, page + k);
             }
             Self::lemma_spaces_space_added(pre, post, base, page, child);
+            Self::lemma_space_links(pre, post, base, page);
             assert(post.wf());
             assert(SPACE_RIGHTS & 128 == 0) by (compute_only);
             assert(right_bit(Right::Control) == 128);

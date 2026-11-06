@@ -8,6 +8,7 @@ verus! {
 
 use crate::array::Array;
 use crate::capability::block::*;
+use crate::capability::link::*;
 use crate::capability::list::*;
 use crate::capability::refs::*;
 use crate::capability::space::*;
@@ -394,6 +395,7 @@ impl CapKernel {
         &&& hidden_nodes_are_leaves(&self.list, &self.tables, &self.table_pages)
         &&& table_pages_wf(&self.list, &self.table_pages, &self.blocks)
         &&& spaces_wf(&self.list, &self.tables, &self.spaces, &self.blocks)
+        &&& table_links_wf(tree_of(&self.table_pages, &self.spaces))
         &&& capability_nodes_are_slots(&self.list, &self.tables)
         &&& parents_are_capabilities(&self.list)
         &&& first_node_outside_leaves(&self.list, &self.tables)
@@ -728,6 +730,7 @@ impl CapKernel {
             post.list == pre.list,
             post.tables == pre.tables,
             post.table_pages == pre.table_pages,
+            post.spaces == pre.spaces,
             post.cores == pre.cores,
             post.flush_epoch == pre.flush_epoch,
             post.tlb == pre.tlb,
@@ -747,6 +750,7 @@ impl CapKernel {
             post.list == pre.list,
             post.tables == pre.tables,
             post.table_pages == pre.table_pages,
+            post.spaces == pre.spaces,
             post.cores == pre.cores,
             post.flush_epoch == pre.flush_epoch,
             post.tlb == pre.tlb,
