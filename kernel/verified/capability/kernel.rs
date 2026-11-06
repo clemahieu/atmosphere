@@ -25,6 +25,256 @@ pub struct CoreState {
     pub current_thread: Option<usize>,
     /// The flush epoch this core has acknowledged.
     pub acked_epoch: usize,
+    /// A space's id on this core is valid only at this generation. It is never zero.
+    pub generation: usize,
+    /// The next PCID to hand out at this generation.
+    pub next_pcid: usize,
+    /// The PCIDs this core may hold entries under. Only a flush empties it.
+    pub pcids_used: Ghost<Set<usize>>,
+}
+
+/// The largest generation a space's word can hold above its 12 bits of PCID.
+pub const ID_GENERATION_MAX: usize = 0xF_FFFF_FFFF_FFFF;
+
+pub open spec fn id_generation(word: usize) -> usize {
+    (word / 4096) as usize
+}
+
+pub open spec fn id_pcid(word: usize) -> usize {
+    (word % 4096) as usize
+}
+
+/// Space s holds a valid id on core c.
+pub open spec fn holds_id(cores: Seq<CoreState>, lists: Map<usize, PointsTo<SpaceCores>>, c: int, s: usize) -> bool {
+    &&& lists.contains_key(s)
+    &&& id_generation(lists[s].value().ids@[c]) == cores[c].generation
+}
+
+/// No word is ahead of its core's generation, so a new generation leaves no id valid. A valid id is one
+/// already handed out, and no two spaces hold one. Nothing is under a PCID not yet handed out.
+#[verifier::opaque]
+pub open spec fn ids_wf(cores: Seq<CoreState>, lists: Map<usize, PointsTo<SpaceCores>>) -> bool {
+    &&& forall|c: int| 0 <= c < NUM_CPUS ==> {
+        &&& 1 <= (#[trigger] cores[c]).generation <= ID_GENERATION_MAX
+        &&& 1 <= cores[c].next_pcid <= PCID_MAX
+    }
+    &&& forall|c: int, p: usize| 0 <= c < NUM_CPUS && #[trigger] cores[c].pcids_used@.contains(p) ==> p < cores[c].next_pcid
+    &&& forall|c: int, s: usize| 0 <= c < NUM_CPUS && lists.contains_key(s) ==> #[trigger] id_generation(lists[s].value().ids@[c]) <= cores[c].generation
+    &&& forall|c: int, s: usize| 0 <= c < NUM_CPUS && #[trigger] holds_id(cores, lists, c, s) ==> {
+        &&& 1 <= id_pcid(lists[s].value().ids@[c])
+        &&& id_pcid(lists[s].value().ids@[c]) < cores[c].next_pcid
+    }
+    &&& forall|c: int, s: usize, r: usize| 0 <= c < NUM_CPUS && s != r && #[trigger] holds_id(cores, lists, c, s) && #[trigger] holds_id(cores, lists, c, r)
+        ==> id_pcid(lists[s].value().ids@[c]) != id_pcid(lists[r].value().ids@[c])
+}
+
+/// A word holds its generation and PCID.
+pub proof fn lemma_id_word(g: usize, p: usize)
+    requires
+        g <= ID_GENERATION_MAX,
+        p < 4096,
+    ensures
+        g * 4096 + p <= usize::MAX,
+        id_generation((g * 4096 + p) as usize) == g,
+        id_pcid((g * 4096 + p) as usize) == p,
+{
+    assert(g * 4096 + p <= usize::MAX) by (nonlinear_arith)
+        requires g <= ID_GENERATION_MAX, p < 4096;
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(g * 4096 + p, 4096, g as int, p as int);
+}
+
+/// The ids after space s's word on core c becomes w: its generation current, its PCID handed out and
+/// held by no other space.
+pub proof fn lemma_id_loaded(cores: Seq<CoreState>, pre: Map<usize, PointsTo<SpaceCores>>, post: Map<usize, PointsTo<SpaceCores>>, c: int, s: usize, w: usize)
+    requires
+        ids_wf(cores, pre),
+        0 <= c < NUM_CPUS,
+        pre.contains_key(s),
+        post == pre.insert(s, post[s]),
+        post[s].value().ids@ == pre[s].value().ids@.update(c, w),
+        id_generation(w) == cores[c].generation,
+        1 <= id_pcid(w) < cores[c].next_pcid,
+        forall|r: usize| r != s && #[trigger] holds_id(cores, pre, c, r) ==> id_pcid(pre[r].value().ids@[c]) != id_pcid(w),
+    ensures
+        ids_wf(cores, post),
+{
+    reveal(ids_wf);
+    assert forall|d: int, r: usize| 0 <= d < NUM_CPUS && post.contains_key(r) implies #[trigger] id_generation(post[r].value().ids@[d]) <= cores[d].generation by {
+        assert(pre.contains_key(r));
+        if !(d == c && r == s) {
+            assert(post[r].value().ids@[d] == pre[r].value().ids@[d]);
+        }
+    }
+    assert forall|d: int, r: usize| 0 <= d < NUM_CPUS && #[trigger] holds_id(cores, post, d, r) implies {
+        &&& 1 <= id_pcid(post[r].value().ids@[d])
+        &&& id_pcid(post[r].value().ids@[d]) < cores[d].next_pcid
+    } by {
+        if !(d == c && r == s) {
+            assert(post[r].value().ids@[d] == pre[r].value().ids@[d]);
+            assert(holds_id(cores, pre, d, r));
+        }
+    }
+    assert forall|d: int, r: usize, q: usize| 0 <= d < NUM_CPUS && r != q && #[trigger] holds_id(cores, post, d, r) && #[trigger] holds_id(cores, post, d, q)
+        implies id_pcid(post[r].value().ids@[d]) != id_pcid(post[q].value().ids@[d]) by {
+        if !(d == c && r == s) {
+            assert(post[r].value().ids@[d] == pre[r].value().ids@[d]);
+        }
+        if !(d == c && q == s) {
+            assert(post[q].value().ids@[d] == pre[q].value().ids@[d]);
+        }
+        if d == c && r == s {
+            assert(holds_id(cores, pre, c, q));
+        } else if d == c && q == s {
+            assert(holds_id(cores, pre, c, r));
+        } else {
+            assert(holds_id(cores, pre, d, r));
+            assert(holds_id(cores, pre, d, q));
+        }
+    }
+}
+
+/// The ids after core c's state changes with its generation kept: more PCIDs handed out leaves every id
+/// valid, and any set of PCIDs handed out may be the ones used.
+pub proof fn lemma_ids_core_step(pre: Seq<CoreState>, post: Seq<CoreState>, lists: Map<usize, PointsTo<SpaceCores>>, c: int)
+    requires
+        ids_wf(pre, lists),
+        0 <= c < NUM_CPUS,
+        post.len() == pre.len(),
+        forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] post[d] == pre[d],
+        post[c].generation == pre[c].generation,
+        pre[c].next_pcid <= post[c].next_pcid <= PCID_MAX,
+        forall|p: usize| #[trigger] post[c].pcids_used@.contains(p) ==> p < post[c].next_pcid,
+    ensures
+        ids_wf(post, lists),
+        forall|s: usize| #[trigger] holds_id(post, lists, c, s) == holds_id(pre, lists, c, s),
+{
+    reveal(ids_wf);
+    assert forall|d: int, s: usize| 0 <= d < NUM_CPUS implies #[trigger] holds_id(post, lists, d, s) == holds_id(pre, lists, d, s) by {
+        assert(post[d].generation == pre[d].generation);
+    }
+    assert forall|d: int| 0 <= d < NUM_CPUS implies {
+        &&& 1 <= (#[trigger] post[d]).generation <= ID_GENERATION_MAX
+        &&& 1 <= post[d].next_pcid <= PCID_MAX
+    } by {
+        assert(1 <= pre[d].generation <= ID_GENERATION_MAX);
+        assert(1 <= pre[d].next_pcid <= PCID_MAX);
+    }
+    assert forall|d: int, p: usize| 0 <= d < NUM_CPUS && #[trigger] post[d].pcids_used@.contains(p) implies p < post[d].next_pcid by {
+        if d != c {
+            assert(pre[d].pcids_used@.contains(p));
+        }
+    }
+    assert forall|d: int, s: usize| 0 <= d < NUM_CPUS && lists.contains_key(s) implies #[trigger] id_generation(lists[s].value().ids@[d]) <= post[d].generation by {
+        assert(id_generation(lists[s].value().ids@[d]) <= pre[d].generation);
+    }
+    assert forall|d: int, s: usize| 0 <= d < NUM_CPUS && #[trigger] holds_id(post, lists, d, s) implies {
+        &&& 1 <= id_pcid(lists[s].value().ids@[d])
+        &&& id_pcid(lists[s].value().ids@[d]) < post[d].next_pcid
+    } by {
+        assert(holds_id(pre, lists, d, s));
+    }
+    assert forall|d: int, s: usize, r: usize| 0 <= d < NUM_CPUS && s != r && #[trigger] holds_id(post, lists, d, s) && #[trigger] holds_id(post, lists, d, r)
+        implies id_pcid(lists[s].value().ids@[d]) != id_pcid(lists[r].value().ids@[d]) by {
+        assert(holds_id(pre, lists, d, s));
+        assert(holds_id(pre, lists, d, r));
+    }
+}
+
+/// The ids after core c starts a new generation with nothing used: no space's id is valid there.
+pub proof fn lemma_ids_new_generation(pre: Seq<CoreState>, post: Seq<CoreState>, lists: Map<usize, PointsTo<SpaceCores>>, c: int)
+    requires
+        ids_wf(pre, lists),
+        0 <= c < NUM_CPUS,
+        post.len() == pre.len(),
+        forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] post[d] == pre[d],
+        post[c].generation == pre[c].generation + 1,
+        post[c].generation <= ID_GENERATION_MAX,
+        1 <= post[c].next_pcid <= PCID_MAX,
+        post[c].pcids_used@ == Set::<usize>::empty(),
+    ensures
+        ids_wf(post, lists),
+        forall|s: usize| !#[trigger] holds_id(post, lists, c, s),
+{
+    reveal(ids_wf);
+    assert forall|s: usize| !#[trigger] holds_id(post, lists, c, s) by {
+        if lists.contains_key(s) {
+            assert(id_generation(lists[s].value().ids@[c]) <= pre[c].generation);
+        }
+    }
+    assert forall|d: int| 0 <= d < NUM_CPUS implies {
+        &&& 1 <= (#[trigger] post[d]).generation <= ID_GENERATION_MAX
+        &&& 1 <= post[d].next_pcid <= PCID_MAX
+    } by {
+        assert(1 <= pre[d].generation <= ID_GENERATION_MAX);
+        assert(1 <= pre[d].next_pcid <= PCID_MAX);
+    }
+    assert forall|d: int, p: usize| 0 <= d < NUM_CPUS && #[trigger] post[d].pcids_used@.contains(p) implies p < post[d].next_pcid by {
+        if d != c {
+            assert(pre[d].pcids_used@.contains(p));
+        }
+    }
+    assert forall|d: int, s: usize| 0 <= d < NUM_CPUS && lists.contains_key(s) implies #[trigger] id_generation(lists[s].value().ids@[d]) <= post[d].generation by {
+        assert(id_generation(lists[s].value().ids@[d]) <= pre[d].generation);
+    }
+    assert forall|d: int, s: usize| 0 <= d < NUM_CPUS && #[trigger] holds_id(post, lists, d, s) implies {
+        &&& 1 <= id_pcid(lists[s].value().ids@[d])
+        &&& id_pcid(lists[s].value().ids@[d]) < post[d].next_pcid
+    } by {
+        assert(d != c);
+        assert(holds_id(pre, lists, d, s));
+    }
+    assert forall|d: int, s: usize, r: usize| 0 <= d < NUM_CPUS && s != r && #[trigger] holds_id(post, lists, d, s) && #[trigger] holds_id(post, lists, d, r)
+        implies id_pcid(lists[s].value().ids@[d]) != id_pcid(lists[r].value().ids@[d]) by {
+        assert(d != c);
+        assert(holds_id(pre, lists, d, s));
+        assert(holds_id(pre, lists, d, r));
+    }
+}
+
+/// A new space's zero words hold no id, whatever the others hold.
+pub proof fn lemma_ids_space_added(cores: Seq<CoreState>, pre: Map<usize, PointsTo<SpaceCores>>, post: Map<usize, PointsTo<SpaceCores>>, base: usize)
+    requires
+        ids_wf(cores, pre),
+        !pre.contains_key(base),
+        post == pre.insert(base, post[base]),
+        forall|c: int| 0 <= c < NUM_CPUS ==> #[trigger] post[base].value().ids@[c] == 0usize,
+    ensures
+        ids_wf(cores, post),
+{
+    reveal(ids_wf);
+    assert forall|c: int, s: usize| 0 <= c < NUM_CPUS && #[trigger] holds_id(cores, post, c, s) implies s != base && holds_id(cores, pre, c, s) by {
+        if s == base {
+            assert(post[base].value().ids@[c] == 0usize);
+            assert(cores[c].generation >= 1);
+            assert(id_generation(0usize) == 0);
+        } else {
+            assert(post[s] == pre[s]);
+        }
+    }
+    assert forall|c: int, s: usize| 0 <= c < NUM_CPUS && post.contains_key(s) implies #[trigger] id_generation(post[s].value().ids@[c]) <= cores[c].generation by {
+        if s == base {
+            assert(post[base].value().ids@[c] == 0usize);
+            assert(id_generation(0usize) == 0);
+            assert(cores[c].generation >= 1);
+        } else {
+            assert(pre.contains_key(s));
+            assert(post[s] == pre[s]);
+        }
+    }
+    assert forall|c: int, s: usize| 0 <= c < NUM_CPUS && #[trigger] holds_id(cores, post, c, s) implies {
+        &&& 1 <= id_pcid(post[s].value().ids@[c])
+        &&& id_pcid(post[s].value().ids@[c]) < cores[c].next_pcid
+    } by {
+        assert(holds_id(cores, pre, c, s));
+        assert(post[s] == pre[s]);
+    }
+    assert forall|c: int, s: usize, r: usize| 0 <= c < NUM_CPUS && s != r && #[trigger] holds_id(cores, post, c, s) && #[trigger] holds_id(cores, post, c, r)
+        implies id_pcid(post[s].value().ids@[c]) != id_pcid(post[r].value().ids@[c]) by {
+        assert(holds_id(cores, pre, c, s));
+        assert(holds_id(cores, pre, c, r));
+        assert(post[s] == pre[s]);
+        assert(post[r] == pre[r]);
+    }
 }
 
 /// What a flush of every context on `core`, started when the epoch was `epoch`, proves. Only flush
@@ -398,7 +648,7 @@ impl CapKernel {
     /// Core c has loaded space s.
     pub open spec fn loaded(&self, c: int, s: usize) -> bool {
         &&& self.spaces.loaded@.contains_key(s)
-        &&& core_listed(self.spaces.loaded@[s].value(), c)
+        &&& core_listed(self.spaces.loaded@[s].value().list, c)
     }
 
     /// A core holds an entry of a space only if it loaded the space. A translation to an unmapped page
@@ -422,6 +672,7 @@ impl CapKernel {
         &&& self.tables.caps_wf(&self.list)
         &&& self.stale_epoch.wf()
         &&& self.tlb_wf()
+        &&& ids_wf(self.cores@, self.spaces.loaded@)
         &&& self.frames_wf()
         &&& self.zeroing.wf()
         &&& zeroing_typed(&self.zeroing, &self.blocks)
@@ -470,6 +721,59 @@ impl CapKernel {
     pub open spec fn step_ok(pre: Self, post: Self, c: int) -> bool {
         &&& post.wf()
         &&& Self::writes_only_own_current(pre, post, c)
+    }
+
+    /// No two spaces hold one id at one generation on one core.
+    pub proof fn lemma_ids_unique(&self, c: int, s: usize, r: usize)
+        requires
+            self.wf(),
+            0 <= c < NUM_CPUS,
+            s != r,
+            holds_id(self.cores@, self.spaces.loaded@, c, s),
+            holds_id(self.cores@, self.spaces.loaded@, c, r),
+        ensures
+            id_pcid(self.spaces.loaded@[s].value().ids@[c]) != id_pcid(self.spaces.loaded@[r].value().ids@[c]),
+    {
+        reveal(ids_wf);
+    }
+
+    /// A valid id is one this core has handed out, and nothing is under a PCID it has not.
+    pub proof fn lemma_id_handed_out(&self, c: int, s: usize, p: usize)
+        requires
+            self.wf(),
+            0 <= c < NUM_CPUS,
+        ensures
+            holds_id(self.cores@, self.spaces.loaded@, c, s) ==> {
+                &&& 1 <= id_pcid(self.spaces.loaded@[s].value().ids@[c])
+                &&& id_pcid(self.spaces.loaded@[s].value().ids@[c]) < self.cores@[c].next_pcid
+            },
+            self.cores@[c].next_pcid <= p ==> !self.cores@[c].pcids_used@.contains(p),
+            1 <= self.cores@[c].generation <= ID_GENERATION_MAX,
+            1 <= self.cores@[c].next_pcid <= PCID_MAX,
+    {
+        reveal(ids_wf);
+        assert(1 <= self.cores@[c].generation <= ID_GENERATION_MAX);
+    }
+
+    /// Only core c's state and its model of the TLB changed, and it stays on what it was running.
+    pub open spec fn only_core_changed(pre: Self, post: Self, c: int) -> bool {
+        &&& post.list == pre.list
+        &&& post.tables == pre.tables
+        &&& post.blocks == pre.blocks
+        &&& post.holders == pre.holders
+        &&& post.mappings == pre.mappings
+        &&& post.table_pages == pre.table_pages
+        &&& post.zeroing == pre.zeroing
+        &&& post.frames == pre.frames
+        &&& post.spaces == pre.spaces
+        &&& post.mapped == pre.mapped
+        &&& post.stale_epoch == pre.stale_epoch
+        &&& post.flush_epoch == pre.flush_epoch
+        &&& post.cores@[c].current_thread == pre.cores@[c].current_thread
+        &&& pre.acked(c) <= post.acked(c)
+        &&& forall|e: TlbEntry| #[trigger] post.tlb@[c].contains(e) ==> pre.tlb@[c].contains(e)
+        &&& forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] post.cores@[d] == pre.cores@[d]
+        &&& forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] post.tlb@[d] == pre.tlb@[d]
     }
 
     /// An unmapped page every core has acknowledged is free of stale translations.
@@ -544,10 +848,13 @@ impl CapKernel {
                 forall|c: int| 0 <= c < i ==> {
                     &&& (#[trigger] self.cores@[c]).current_thread.is_None()
                     &&& self.cores@[c].acked_epoch == 0
+                    &&& self.cores@[c].generation == 1
+                    &&& self.cores@[c].next_pcid == 1
+                    &&& self.cores@[c].pcids_used@ == Set::<usize>::empty()
                 },
             decreases NUM_CPUS - i,
         {
-            self.cores.set(i, CoreState { current_thread: None, acked_epoch: 0 });
+            self.cores.set(i, CoreState { current_thread: None, acked_epoch: 0, generation: 1, next_pcid: 1, pcids_used: Ghost(Set::empty()) });
             i = i + 1;
         }
         let mut i = 0;
@@ -568,6 +875,9 @@ impl CapKernel {
                 forall|c: int| 0 <= c < NUM_CPUS ==> {
                     &&& (#[trigger] self.cores@[c]).current_thread.is_None()
                     &&& self.cores@[c].acked_epoch == 0
+                    &&& self.cores@[c].generation == 1
+                    &&& self.cores@[c].next_pcid == 1
+                    &&& self.cores@[c].pcids_used@ == Set::<usize>::empty()
                 },
             decreases NUM_PAGES - i,
         {
@@ -583,6 +893,9 @@ impl CapKernel {
         self.flush_epoch = 0;
         self.tlb = Ghost(Seq::new(NUM_CPUS as nat, |c: int| Set::<TlbEntry>::empty()));
         self.mapped = Ghost(Set::empty());
+        proof {
+            reveal(ids_wf);
+        }
     }
 
     /// A step that does nothing keeps the invariant, the shape every later step is stated in.
@@ -1302,12 +1615,25 @@ impl CapKernel {
             forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] final(self).tlb@[d] == old(self).tlb@[d],
             final(self).mapped == old(self).mapped,
             final(self).stale_epoch@ == old(self).stale_epoch@,
+            Self::only_core_changed(*old(self), *final(self), c as int),
+            final(self).cores@[c as int].generation == old(self).cores@[c as int].generation,
+            final(self).cores@[c as int].next_pcid == old(self).cores@[c as int].next_pcid,
+            final(self).cores@[c as int].pcids_used@ == Set::<usize>::empty(),
     {
         let ghost pre = *old(self);
-        let current_thread = self.cores.get(c).current_thread;
-        self.cores.set(c, CoreState { current_thread, acked_epoch: epoch });
+        let state = *self.cores.get(c);
+        self.cores.set(c, CoreState {
+            current_thread: state.current_thread,
+            acked_epoch: epoch,
+            generation: state.generation,
+            next_pcid: state.next_pcid,
+            pcids_used: Ghost(Set::empty()),
+        });
         self.tlb = Ghost(self.tlb@.update(c as int, Set::empty()));
         proof {
+            reveal(ids_wf);
+            assert forall|d: int| 0 <= d < NUM_CPUS && d != c as int implies #[trigger] self.cores@[d] == pre.cores@[d] by {}
+            lemma_ids_core_step(pre.cores@, self.cores@, self.spaces.loaded@, c as int);
             assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] self.acked(d) <= self.flush_epoch by {
                 if d != c as int {
                     assert(self.cores@[d] == pre.cores@[d]);

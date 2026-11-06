@@ -110,15 +110,46 @@ impl CapKernel {
 
     /// Core c loads process space s: from here on it may hold what the space's tables say, and it is on
     /// the space's list of cores, for an unmap to find. Writing the core's CR3 is the caller's.
-    pub fn load_space(&mut self, c: usize, s: usize)
+    pub fn load_space(&mut self, c: usize, s: usize) -> (pcid: usize)
         requires
             old(self).wf(),
             c < NUM_CPUS,
             old(self).spaces.roots@.contains_key(s),
             old(self).spaces.records@[s].value().kind is Process,
+            old(self).cores@[c as int].generation < ID_GENERATION_MAX,
         ensures
             Self::step_ok(*old(self), *final(self), c as int),
             final(self).loaded(c as int, s),
+            1 <= pcid < PCID_MAX,
+            holds_id(final(self).cores@, final(self).spaces.loaded@, c as int, s),
+            id_pcid(final(self).spaces.loaded@[s].value().ids@[c as int]) == pcid,
+            final(self).cores@[c as int].pcids_used@.contains(pcid),
+            holds_id(old(self).cores@, old(self).spaces.loaded@, c as int, s) ==> {
+                &&& pcid == id_pcid(old(self).spaces.loaded@[s].value().ids@[c as int])
+                &&& final(self).cores@[c as int].generation == old(self).cores@[c as int].generation
+                &&& final(self).tlb == old(self).tlb
+            },
+            !holds_id(old(self).cores@, old(self).spaces.loaded@, c as int, s) ==> ({
+                &&& !old(self).cores@[c as int].pcids_used@.contains(pcid)
+                &&& final(self).cores@[c as int].generation == old(self).cores@[c as int].generation
+                &&& final(self).tlb == old(self).tlb
+            } || {
+                &&& final(self).cores@[c as int].generation == old(self).cores@[c as int].generation + 1
+                &&& final(self).cores@[c as int].pcids_used@ == Set::<usize>::empty().insert(pcid)
+                &&& final(self).tlb@[c as int] == Set::<TlbEntry>::empty()
+                &&& final(self).acked(c as int) == old(self).flush_epoch
+            }),
+            forall|r: usize| r != s && #[trigger] holds_id(final(self).cores@, final(self).spaces.loaded@, c as int, r) ==> {
+                &&& holds_id(old(self).cores@, old(self).spaces.loaded@, c as int, r)
+                &&& final(self).spaces.loaded@[r] == old(self).spaces.loaded@[r]
+            },
+            forall|d: int, r: usize| 0 <= d < NUM_CPUS && d != c ==> #[trigger] holds_id(final(self).cores@, final(self).spaces.loaded@, d, r) == holds_id(old(self).cores@, old(self).spaces.loaded@, d, r),
+            forall|d: int, r: usize| 0 <= d < NUM_CPUS && d != c && final(self).spaces.loaded@.contains_key(r)
+                ==> #[trigger] final(self).spaces.loaded@[r].value().ids@[d] == old(self).spaces.loaded@[r].value().ids@[d],
+            forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] final(self).cores@[d] == old(self).cores@[d],
+            forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] final(self).tlb@[d] == old(self).tlb@[d],
+            forall|e: TlbEntry| #[trigger] final(self).tlb@[c as int].contains(e) ==> old(self).tlb@[c as int].contains(e),
+            final(self).cores@[c as int].current_thread == old(self).cores@[c as int].current_thread,
             forall|d: int, r: usize| 0 <= d < NUM_CPUS && !(d == c as int && r == s)
                 ==> #[trigger] final(self).loaded(d, r) == old(self).loaded(d, r),
             forall|e: TlbEntry| e.space == s && space_says(tree_of(&old(self).table_pages, &old(self).spaces), s, e.page)
@@ -136,8 +167,6 @@ impl CapKernel {
             final(self).table_pages == old(self).table_pages,
             final(self).zeroing == old(self).zeroing,
             final(self).frames == old(self).frames,
-            final(self).cores == old(self).cores,
-            final(self).tlb == old(self).tlb,
             final(self).mapped == old(self).mapped,
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
@@ -145,21 +174,194 @@ impl CapKernel {
         let ghost pre = *old(self);
         proof {
             assert(space_wf(&pre.list, &pre.spaces, &pre.blocks, s));
+            reveal(ids_wf);
         }
+        let ptr = PPtr::<SpaceCores>::from_usize(s + SPACE_CORES_PAGE * 4096);
+        let cores = *ptr.borrow(Tracked(self.spaces.loaded.borrow().tracked_borrow(s)));
+        let word = cores.ids[c];
+        let held = word / 4096 == self.cores.get(c).generation;
+        let pcid = if held {
+            proof {
+                reveal(ids_wf);
+                assert(holds_id(pre.cores@, pre.spaces.loaded@, c as int, s));
+            }
+            word % 4096
+        } else {
+            self.fresh_pcid(c)
+        };
+        let ghost after = *self;
+        self.note_pcid_used(c, pcid);
+        let generation = self.cores.get(c).generation;
+        let ghost mid = *self;
+        proof {
+            reveal(ids_wf);
+            lemma_id_word(generation, pcid);
+            assert forall|r: usize| r != s && #[trigger] holds_id(mid.cores@, mid.spaces.loaded@, c as int, r)
+                implies id_pcid(mid.spaces.loaded@[r].value().ids@[c as int]) != pcid by {
+                assert(holds_id(after.cores@, after.spaces.loaded@, c as int, r));
+                if held {
+                    assert(holds_id(pre.cores@, pre.spaces.loaded@, c as int, r));
+                }
+            }
+        }
+        let mut next = cores;
+        next.list = cores.list | (1u32 << (c as u32));
+        next.ids.set(c, generation * 4096 + pcid);
         let tracked mut perm = self.spaces.loaded.borrow_mut().tracked_remove(s);
-        let ptr = PPtr::<u32>::from_usize(s + SPACE_CORES_PAGE * 4096);
-        let cores = *ptr.borrow(Tracked(&perm));
-        ptr.write(Tracked(&mut perm), cores | (1u32 << (c as u32)));
+        ptr.write(Tracked(&mut perm), next);
         proof {
             self.spaces.loaded.borrow_mut().tracked_insert(s, perm);
             let post = *self;
-            assert(post.spaces.loaded@ =~= pre.spaces.loaded@.insert(s, post.spaces.loaded@[s]));
-            assert(post.spaces.loaded@.dom() =~= pre.spaces.loaded@.dom());
-            Self::lemma_core_loaded(pre, post, c as int, s);
+            assert(post.spaces.loaded@ =~= mid.spaces.loaded@.insert(s, post.spaces.loaded@[s]));
+            assert(post.spaces.loaded@.dom() =~= mid.spaces.loaded@.dom());
+            assert(mid.spaces.loaded@ == pre.spaces.loaded@);
+            lemma_id_loaded(mid.cores@, mid.spaces.loaded@, post.spaces.loaded@, c as int, s, (generation * 4096 + pcid) as usize);
+            Self::lemma_core_loaded(mid, post, c as int, s);
             assert forall|e: TlbEntry| e.space == s && space_says(tree_of(&pre.table_pages, &pre.spaces), s, e.page)
                 implies #[trigger] post.core_may_hold(c as int, e) by {
                 assert(post.loaded(c as int, e.space));
             }
+        }
+        pcid
+    }
+
+    /// Hands out core c's next PCID. Run out, it flushes every context on this core first and starts a
+    /// new generation, which leaves no space's id valid here.
+    fn fresh_pcid(&mut self, c: usize) -> (p: usize)
+        requires
+            old(self).wf(),
+            c < NUM_CPUS,
+            old(self).cores@[c as int].generation < ID_GENERATION_MAX,
+        ensures
+            Self::step_ok(*old(self), *final(self), c as int),
+            Self::only_core_changed(*old(self), *final(self), c as int),
+            1 <= p < PCID_MAX,
+            p < final(self).cores@[c as int].next_pcid,
+            !final(self).cores@[c as int].pcids_used@.contains(p),
+            forall|s: usize| #[trigger] holds_id(final(self).cores@, final(self).spaces.loaded@, c as int, s)
+                ==> id_pcid(final(self).spaces.loaded@[s].value().ids@[c as int]) != p,
+            forall|s: usize| #[trigger] holds_id(final(self).cores@, final(self).spaces.loaded@, c as int, s)
+                ==> holds_id(old(self).cores@, old(self).spaces.loaded@, c as int, s),
+            old(self).cores@[c as int].next_pcid != PCID_MAX ==> {
+                &&& final(self).cores@[c as int].generation == old(self).cores@[c as int].generation
+                &&& final(self).cores@[c as int].pcids_used@ == old(self).cores@[c as int].pcids_used@
+                &&& final(self).tlb == old(self).tlb
+                &&& !old(self).cores@[c as int].pcids_used@.contains(p)
+            },
+            old(self).cores@[c as int].next_pcid == PCID_MAX ==> {
+                &&& final(self).cores@[c as int].generation == old(self).cores@[c as int].generation + 1
+                &&& final(self).cores@[c as int].pcids_used@ == Set::<usize>::empty()
+                &&& final(self).tlb@[c as int] == Set::<TlbEntry>::empty()
+                &&& final(self).acked(c as int) == old(self).flush_epoch
+            },
+    {
+        let ghost pre = *old(self);
+        proof {
+            reveal(ids_wf);
+        }
+        let state = *self.cores.get(c);
+        if state.next_pcid == PCID_MAX {
+            let epoch = self.flush_epoch;
+            let flushed = flush_every_context(c, epoch);
+            self.acknowledge(c, epoch, flushed);
+            let ghost mid = *self;
+            let state = *self.cores.get(c);
+            self.cores.set(c, CoreState {
+                current_thread: state.current_thread,
+                acked_epoch: state.acked_epoch,
+                generation: state.generation + 1,
+                next_pcid: 2,
+                pcids_used: state.pcids_used,
+            });
+            proof {
+                let post = *self;
+                assert forall|d: int| 0 <= d < NUM_CPUS && d != c as int implies #[trigger] post.cores@[d] == mid.cores@[d] by {}
+                lemma_ids_new_generation(mid.cores@, post.cores@, post.spaces.loaded@, c as int);
+                Self::lemma_core_ids(mid, post, c as int);
+            }
+            1
+        } else {
+            self.cores.set(c, CoreState {
+                current_thread: state.current_thread,
+                acked_epoch: state.acked_epoch,
+                generation: state.generation,
+                next_pcid: state.next_pcid + 1,
+                pcids_used: state.pcids_used,
+            });
+            proof {
+                let post = *self;
+                assert forall|d: int| 0 <= d < NUM_CPUS && d != c as int implies #[trigger] post.cores@[d] == pre.cores@[d] by {}
+                assert forall|p: usize| #[trigger] post.cores@[c as int].pcids_used@.contains(p) implies p < post.cores@[c as int].next_pcid by {
+                    assert(pre.cores@[c as int].pcids_used@.contains(p));
+                }
+                lemma_ids_core_step(pre.cores@, post.cores@, post.spaces.loaded@, c as int);
+                Self::lemma_core_ids(pre, post, c as int);
+            }
+            state.next_pcid
+        }
+    }
+
+    /// Core c is about to run under this PCID, so it may hold entries under it.
+    fn note_pcid_used(&mut self, c: usize, p: usize)
+        requires
+            old(self).wf(),
+            c < NUM_CPUS,
+            p < old(self).cores@[c as int].next_pcid,
+        ensures
+            Self::step_ok(*old(self), *final(self), c as int),
+            Self::only_core_changed(*old(self), *final(self), c as int),
+            final(self).tlb == old(self).tlb,
+            final(self).cores@[c as int].generation == old(self).cores@[c as int].generation,
+            final(self).cores@[c as int].next_pcid == old(self).cores@[c as int].next_pcid,
+            final(self).cores@[c as int].pcids_used@ == old(self).cores@[c as int].pcids_used@.insert(p),
+    {
+        let ghost pre = *old(self);
+        let state = *self.cores.get(c);
+        self.cores.set(c, CoreState {
+            current_thread: state.current_thread,
+            acked_epoch: state.acked_epoch,
+            generation: state.generation,
+            next_pcid: state.next_pcid,
+            pcids_used: Ghost(state.pcids_used@.insert(p)),
+        });
+        proof {
+            let post = *self;
+            assert forall|d: int| 0 <= d < NUM_CPUS && d != c as int implies #[trigger] post.cores@[d] == pre.cores@[d] by {}
+            reveal(ids_wf);
+            assert forall|q: usize| #[trigger] post.cores@[c as int].pcids_used@.contains(q) implies q < post.cores@[c as int].next_pcid by {
+                if q != p {
+                    assert(pre.cores@[c as int].pcids_used@.contains(q));
+                }
+            }
+            lemma_ids_core_step(pre.cores@, post.cores@, post.spaces.loaded@, c as int);
+            Self::lemma_core_ids(pre, post, c as int);
+        }
+    }
+
+    /// The invariant after a step that changed only core c's ids, given that they still hold.
+    proof fn lemma_core_ids(pre: Self, post: Self, c: int)
+        requires
+            pre.wf(),
+            0 <= c < NUM_CPUS,
+            post.cores.wf(),
+            ids_wf(post.cores@, post.spaces.loaded@),
+            Self::only_core_changed(pre, post, c),
+            post.tlb == pre.tlb,
+            post.acked(c) == pre.acked(c),
+        ensures
+            post.wf(),
+            Self::step_ok(pre, post, c),
+    {
+        assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] post.acked(d) <= post.flush_epoch by {
+            assert(pre.acked(d) <= pre.flush_epoch);
+        }
+        assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] post.tlb@[d].contains(e) implies post.loaded(d, e.space) by {
+            assert(pre.tlb@[d].contains(e));
+        }
+        assert forall|d: int, e: TlbEntry|
+            0 <= d < NUM_CPUS && #[trigger] post.tlb@[d].contains(e) && !post.mapped@.contains(e.page)
+            implies e.page < NUM_PAGES && post.acked(d) < post.stale_epoch@[e.page as int] by {
+            assert(pre.tlb@[d].contains(e));
         }
     }
 
@@ -177,7 +379,8 @@ impl CapKernel {
             post.spaces.loaded@ == pre.spaces.loaded@.insert(s, post.spaces.loaded@[s]),
             post.spaces.loaded@[s].addr() == pre.spaces.loaded@[s].addr(),
             post.spaces.loaded@[s].is_init(),
-            post.spaces.loaded@[s].value() == pre.spaces.loaded@[s].value() | (1u32 << (c as u32)),
+            post.spaces.loaded@[s].value().list == pre.spaces.loaded@[s].value().list | (1u32 << (c as u32)),
+            ids_wf(post.cores@, post.spaces.loaded@),
             post.list == pre.list,
             post.tables == pre.tables,
             post.blocks == pre.blocks,
@@ -201,12 +404,12 @@ impl CapKernel {
         let sa = &pre.spaces;
         let sb = &post.spaces;
         assert(space_wf(&pre.list, sa, &pre.blocks, s));
-        lemma_core_added(sa.loaded@[s].value(), c as u32, c as u32);
+        lemma_core_added(sa.loaded@[s].value().list, c as u32, c as u32);
         assert(post.loaded(c, s));
         assert forall|d: int, r: usize| 0 <= d < NUM_CPUS && !(d == c && r == s)
             implies #[trigger] post.loaded(d, r) == pre.loaded(d, r) by {
             if r == s {
-                lemma_core_added(sa.loaded@[s].value(), c as u32, d as u32);
+                lemma_core_added(sa.loaded@[s].value().list, c as u32, d as u32);
             } else {
                 assert(sb.loaded@.contains_key(r) == sa.loaded@.contains_key(r));
                 if sa.loaded@.contains_key(r) {
@@ -216,7 +419,7 @@ impl CapKernel {
         }
         assert forall|d: int, r: usize| 0 <= d < NUM_CPUS && #[trigger] pre.loaded(d, r) implies post.loaded(d, r) by {
             if r == s {
-                lemma_core_added(sa.loaded@[s].value(), c as u32, d as u32);
+                lemma_core_added(sa.loaded@[s].value().list, c as u32, d as u32);
             } else {
                 assert(sb.loaded@[r] == sa.loaded@[r]);
             }

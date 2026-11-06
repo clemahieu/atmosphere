@@ -89,6 +89,15 @@ pub const SPACE_ROOT_PAGE: usize = 5;
 pub const SPACE_RECORD_PAGE: usize = 6;
 pub const SPACE_CORES_PAGE: usize = 7;
 
+/// What a space keeps per core: the list of cores that have loaded it, and its id on each.
+#[derive(Clone, Copy)]
+pub struct SpaceCores {
+    pub list: u32,
+    /// The space's word on each core, its PCID's generation in the high bits and the PCID in the low 12.
+    /// A new space's words are zero, and generation zero is never current, so it holds no id.
+    pub ids: [usize; NUM_CPUS],
+}
+
 /// Core c is on this list of cores, one bit per core.
 pub open spec fn core_listed(cores: u32, c: int) -> bool {
     (cores >> (c as u32)) & 1u32 == 1u32
@@ -137,7 +146,7 @@ pub struct Spaces {
     /// The cores that have loaded each space. A bit stays set after a flush, since a flush cannot
     /// visit every space in bounded time, and a core past a flush may hold nothing, which costs at
     /// most a spare IPI.
-    pub loaded: Tracked<Map<usize, PointsTo<u32>>>,
+    pub loaded: Tracked<Map<usize, PointsTo<SpaceCores>>>,
     pub holders: Ghost<IMap<usize, Set<usize>>>,
     /// The kernel's entries, which every process root holds in its kernel slots.
     pub kernel_entries: Array<usize, KERNEL_MEM_END_L4INDEX>,
@@ -149,7 +158,7 @@ impl Spaces {
             ret.kernel_entries == kernel_entries,
             ret.roots@ == Map::<usize, PointsTo<PageMap>>::empty(),
             ret.records@ == Map::<usize, PointsTo<SpaceRecord>>::empty(),
-            ret.loaded@ == Map::<usize, PointsTo<u32>>::empty(),
+            ret.loaded@ == Map::<usize, PointsTo<SpaceCores>>::empty(),
             ret.holders@ == IMap::<usize, Set<usize>>::empty(),
     {
         Spaces {
@@ -2460,6 +2469,7 @@ impl CapKernel {
                 &&& final(self).spaces.records@[base].value().kind == kind
                 &&& final(self).spaces.records@[base].value().table == fresh_root(base)
                 &&& forall|c: int| 0 <= c < NUM_CPUS ==> !#[trigger] final(self).loaded(c, base)
+                &&& forall|c: int| 0 <= c < NUM_CPUS ==> !#[trigger] holds_id(final(self).cores@, final(self).spaces.loaded@, c, base)
                 &&& space_mapping(tree_of(&final(self).table_pages, &final(self).spaces), base) == IMap::<SpacePath, crate::pagetable::entry::PageEntry>::empty()
                 &&& forall|r: usize| #[trigger] old(self).spaces.roots@.contains_key(r) ==>
                     space_mapping(tree_of(&final(self).table_pages, &final(self).spaces), r)
@@ -2554,7 +2564,8 @@ impl CapKernel {
             typed = page_into_space_record(record);
             cores = page_into_core_list(spare);
         }
-        PPtr::<u32>::from_usize(base + SPACE_CORES_PAGE * 4096).put(Tracked(&mut cores), 0u32);
+        let ids = vstd::array::array_fill_for_copy_types::<usize, NUM_CPUS>(0usize);
+        PPtr::<SpaceCores>::from_usize(base + SPACE_CORES_PAGE * 4096).put(Tracked(&mut cores), SpaceCores { list: 0u32, ids });
         let pptr = PPtr::<SpaceRecord>::from_usize(base + SPACE_RECORD_PAGE * 4096);
         pptr.put(
             Tracked(&mut typed),
@@ -2607,8 +2618,18 @@ impl CapKernel {
             assert(post.spaces.roots@ == pre.spaces.roots@.insert(base, post.spaces.roots@[base]));
             assert(post.spaces.records@ == pre.spaces.records@.insert(base, post.spaces.records@[base]));
             assert(post.spaces.loaded@ == pre.spaces.loaded@.insert(base, post.spaces.loaded@[base]));
+            assert forall|c: int| 0 <= c < NUM_CPUS implies #[trigger] post.spaces.loaded@[base].value().ids@[c] == 0usize by {
+                broadcast use vstd::array::axiom_spec_array_fill_for_copy_type;
+                assert(vstd::array::spec_array_fill_for_copy_type::<usize, NUM_CPUS>(0usize).view()[c] == 0usize);
+            }
+            lemma_ids_space_added(pre.cores@, pre.spaces.loaded@, post.spaces.loaded@, base);
+            assert forall|c: int| 0 <= c < NUM_CPUS implies !#[trigger] holds_id(post.cores@, post.spaces.loaded@, c, base) by {
+                pre.lemma_id_handed_out(c, base, 0);
+                assert(post.spaces.loaded@[base].value().ids@[c] == 0usize);
+                assert(id_generation(0usize) == 0);
+            }
             assert forall|c: int| 0 <= c < NUM_CPUS implies !#[trigger] post.loaded(c, base) by {
-                assert(post.spaces.loaded@[base].value() == 0u32);
+                assert(post.spaces.loaded@[base].value().list == 0u32);
                 lemma_no_core_listed(c as u32);
             }
             assert forall|k: int| 0 < k < 8 implies (#[trigger] post.blocks.pages@[page + k]).kind is Member by {
