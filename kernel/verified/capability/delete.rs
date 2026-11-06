@@ -99,6 +99,8 @@ impl CapKernel {
     pub proof fn lemma_delete_holders(pre: Self, post: Self, n: usize)
         requires
             Self::caps_frame(pre, post, n, n),
+            pre.list.nodes@[n as int].live,
+            !(pre.list.nodes@[n as int].kind is Hidden),
             !post.list.nodes@[n as int].live,
             post.zeroing == pre.zeroing,
             post.list.pages@.dom() == pre.list.pages@.dom(),
@@ -119,6 +121,7 @@ impl CapKernel {
             zeroing_typed(&post.zeroing, &post.blocks),
             list_pages_used(&post.list, &post.blocks),
             objects_wf(&post.tables, &post.blocks, post.holders@),
+            leaf_blocks_wf(&post.list, &post.tables, &post.blocks),
     {
         assert forall|x: usize| x != n implies {
             &&& #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x)
@@ -126,6 +129,9 @@ impl CapKernel {
         } by {
             Self::lemma_caps_frame(pre, post, n, n, x);
         }
+        pre.lemma_unhidden_not_owned(n);
+        Self::lemma_same_leaf_nodes(pre, post, n, n);
+        assert(leaf_blocks_wf(&pre.list, &post.tables, &pre.blocks));
         if pre.is_cap(n) && pre.payload_of(n).kind is Frame {
             let br = block_ref(&pre.blocks, pre.payload_of(n).base / 4096);
             lemma_holder_refs(&pre.list, &pre.tables, &pre.blocks, &pre.zeroing, pre.holders@, n);
@@ -154,8 +160,20 @@ impl CapKernel {
                 (block_refs(&pre.blocks, br) - 1) as usize,
                 block_dead(&pre.blocks, br) || block_refs(&pre.blocks, br) == 1,
             );
+            lemma_leaf_blocks_refs_changed(
+                &pre.list,
+                &post.list,
+                &post.tables,
+                &pre.blocks,
+                &post.blocks,
+                pre.holders@,
+                br,
+                (block_refs(&pre.blocks, br) - 1) as usize,
+                block_dead(&pre.blocks, br) || block_refs(&pre.blocks, br) == 1,
+            );
         } else {
             lemma_holders_same_frames(&pre.list, &pre.tables, &post.list, &post.tables, &pre.blocks, &pre.zeroing, pre.holders@);
+            lemma_leaf_blocks_same_nodes(&pre.list, &post.list, &post.tables, &post.blocks);
         }
     }
 

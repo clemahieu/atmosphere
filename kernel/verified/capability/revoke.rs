@@ -71,7 +71,12 @@ impl CapKernel {
                 )
                 &&& final(self).holders@ == old(self).holders@.insert(br, old(self).holders@[br].remove(n))
             },
-            !(old(self).is_cap(n) && old(self).payload_of(n).kind is Frame) ==> {
+            old(self).list.nodes@[n as int].kind is Hidden ==> {
+                &&& blocks_refs_changed(&old(self).blocks, &final(self).blocks, BlockRef::Small(n / 4096), 0, true)
+                &&& final(self).holders == old(self).holders
+            },
+            !(old(self).is_cap(n) && old(self).payload_of(n).kind is Frame)
+                && !(old(self).list.nodes@[n as int].kind is Hidden) ==> {
                 &&& final(self).blocks == old(self).blocks
                 &&& final(self).holders == old(self).holders
             },
@@ -84,6 +89,11 @@ impl CapKernel {
         match node.kind {
             NodeKind::Hidden => {
                 self.tables.detach_leaf(&self.list, n);
+                // The block's one reference was the hidden node's, so it is dead at once.
+                proof {
+                    pre.lemma_hidden_block(n);
+                }
+                drop_block_ref(&mut self.blocks, BlockRef::Small(n / 4096));
             },
             NodeKind::Capability => {
                 proof {
@@ -225,7 +235,11 @@ impl CapKernel {
             assert(p != 0);
             assert(post.list.seq@[0] == pre.list.seq@[0]);
             Self::lemma_revoke_hidden(pre, post, r);
-            Self::lemma_delete_holders(pre, post, r);
+            if pre.list.nodes@[r as int].kind is Hidden {
+                Self::lemma_revoke_hidden_holders(pre, post, r);
+            } else {
+                Self::lemma_delete_holders(pre, post, r);
+            }
             Self::lemma_tlb_same(pre, post);
             assert(post.list.nodes@[c as int].live == pre.list.nodes@[c as int].live);
             Self::lemma_caps_frame(pre, post, r, r, c);
@@ -243,6 +257,54 @@ impl CapKernel {
     {
         assert(self.view().holds(root, c));
         assert(self.view().names.contains_key(c));
+    }
+
+    /// The holders and the blocks after hidden node n goes with its leaf's one reference: no frame
+    /// changed, the leaf's block was no holder's key, and it is dead at zero as its node is dead.
+    proof fn lemma_revoke_hidden_holders(pre: Self, post: Self, n: usize)
+        requires
+            Self::caps_frame(pre, post, n, n),
+            n < NODE_SPACE,
+            pre.list.nodes@[n as int].live,
+            pre.list.nodes@[n as int].kind is Hidden,
+            !post.list.nodes@[n as int].live,
+            post.zeroing == pre.zeroing,
+            post.list.pages@.dom() == pre.list.pages@.dom(),
+            blocks_refs_changed(&pre.blocks, &post.blocks, BlockRef::Small(n / 4096), 0, true),
+            post.holders == pre.holders,
+        ensures
+            holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
+            zeroing_typed(&post.zeroing, &post.blocks),
+            list_pages_used(&post.list, &post.blocks),
+            objects_wf(&post.tables, &post.blocks, post.holders@),
+            leaf_blocks_wf(&post.list, &post.tables, &post.blocks),
+    {
+        let br = BlockRef::Small(n / 4096);
+        assert forall|x: usize| x != n implies {
+            &&& #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x)
+            &&& pre.tables.is_cap(&pre.list, x) ==> post.tables.payload_of(x) == pre.tables.payload_of(x)
+        } by {
+            Self::lemma_caps_frame(pre, post, n, n, x);
+        }
+        pre.lemma_hidden_block(n);
+        assert(!pre.is_cap(n));
+        assert(!post.is_cap(n));
+        lemma_holders_same_frames(&pre.list, &pre.tables, &post.list, &post.tables, &pre.blocks, &pre.zeroing, pre.holders@);
+        lemma_holders_unkeyed_small_changed(&post.list, &post.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, n / 4096, 0, true);
+        lemma_zeroing_typed_small_changed(&pre.zeroing, &pre.blocks, &post.blocks, n / 4096, 0, true);
+        lemma_list_pages_used_same_kinds(&pre.list, &pre.blocks, &post.blocks);
+        assert(objects_wf(&post.tables, &pre.blocks, pre.holders@));
+        lemma_objects_leaf_block_changed(&post.tables, &pre.blocks, &post.blocks, pre.holders@, n, 0, true);
+        assert forall|l: usize| #[trigger] pre.tables.owner@.contains_key(l) && l != n implies {
+            &&& post.list.nodes@[l as int].live == pre.list.nodes@[l as int].live
+            &&& post.list.nodes@[l as int].kind == pre.list.nodes@[l as int].kind
+        } by {
+            pre.tables.lemma_leaf(&pre.list, l);
+            assert(page_of(l) == l);
+            pre.lemma_slot_bound(l);
+        }
+        lemma_leaf_blocks_leaf_dropped(&pre.list, &post.list, &pre.tables, &pre.blocks, &post.blocks, pre.holders@, n);
+        assert(leaf_blocks_wf(&post.list, &post.tables, &post.blocks));
     }
 
     /// The hidden nodes after the step: r has gone, and if it was hidden its leaf is detached. And every
