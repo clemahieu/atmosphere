@@ -611,14 +611,14 @@ impl CapKernel {
         }
     }
 
-    /// A new mapping of f exists.
-    pub fn note_mapped(&mut self, c: usize, f: usize)
+    /// A new mapping of each of these frames exists.
+    pub fn note_mapped(&mut self, c: usize, Ghost(frames): Ghost<Set<usize>>)
         requires
             old(self).wf(),
             c < NUM_CPUS,
         ensures
             Self::step_ok(*old(self), *final(self), c as int),
-            final(self).mapped@ == old(self).mapped@.insert(f),
+            final(self).mapped@ == old(self).mapped@.union(frames),
             final(self).list == old(self).list,
             final(self).tables == old(self).tables,
             final(self).blocks == old(self).blocks,
@@ -633,7 +633,7 @@ impl CapKernel {
             final(self).flush_epoch == old(self).flush_epoch,
     {
         let ghost pre = *old(self);
-        self.mapped = Ghost(self.mapped@.insert(f));
+        self.mapped = Ghost(self.mapped@.union(frames));
         proof {
             assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] self.acked(d) <= self.flush_epoch by {
                 assert(pre.acked(d) <= pre.flush_epoch);
@@ -641,7 +641,6 @@ impl CapKernel {
             assert forall|d: int, g: usize|
                 0 <= d < NUM_CPUS && #[trigger] self.tlb@[d].contains(g) && !self.mapped@.contains(g)
                 implies g < NUM_PAGES && self.acked(d) < self.stale_epoch@[g as int] by {
-                assert(g != f);
                 assert(!pre.mapped@.contains(g));
                 assert(pre.tlb@[d].contains(g));
             }

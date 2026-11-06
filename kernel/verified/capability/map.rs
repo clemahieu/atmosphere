@@ -1,5 +1,5 @@
-//! Mapping one 4K page of a frame capability into a space, through tables already linked. The entry is
-//! written from the capability's rights, and its node is derived as a child of the capability, so
+//! Mapping a 4K or 2M page of a frame capability into a space, through tables already linked. The entry
+//! is written from the capability's rights, and its node is derived as a child of the capability, so
 //! revoking the capability reaches the mapping and delete is refused while it stands. See the design on
 //! atmo-6x9.6.7, sections 1, 6, 7 and 8.
 use vstd::arithmetic::div_mod::*;
@@ -43,14 +43,50 @@ pub open spec fn walk_table(tree: TableTree, s: usize, p: SpacePath) -> Option<u
     }
 }
 
-/// The entry a map writes for a page of a capability with these rights: writable with Write, and not
-/// executable without Execute.
-pub open spec fn frame_map_entry(frame: usize, rights: u32) -> PageEntry {
+/// The level 2 table p reaches from root s, whose entry p.l2 is a large frame's.
+pub open spec fn walk_large_table(tree: TableTree, s: usize, p: SpacePath) -> Option<usize> {
+    if !tree.is_root(s) {
+        None
+    } else {
+        match step(tree, s, p.l4) {
+            None => None,
+            Some(t3) => step(tree, t3, p.l3),
+        }
+    }
+}
+
+/// The level of table a map writes: 2 for a large frame, 1 otherwise.
+pub open spec fn map_level(large: bool) -> usize {
+    if large {
+        2
+    } else {
+        1
+    }
+}
+
+/// The pages a map of this first page maps.
+pub open spec fn map_pages(frame: usize, large: bool) -> Set<usize> {
+    Set::<usize>::range(frame, (frame + entry_pages(map_level(large))) as usize)
+}
+
+/// What map_pages holds, when its range fits.
+pub proof fn lemma_map_pages(frame: usize, large: bool)
+    requires
+        frame + entry_pages(map_level(large)) <= usize::MAX,
+    ensures
+        forall|g: usize| #[trigger] map_pages(frame, large).contains(g) <==> frame <= g < frame + entry_pages(map_level(large)),
+{
+    vstd::set_lib::range_set_properties::<usize>(frame, (frame + entry_pages(map_level(large))) as usize);
+}
+
+/// The entry a map writes for a page of a capability with these rights: writable with Write, not
+/// executable without Execute, and ps for a large frame.
+pub open spec fn frame_map_entry(frame: usize, rights: u32, large: bool) -> PageEntry {
     PageEntry {
         addr: (frame * 4096) as usize,
         perm: PageEntryPerm {
             present: true,
-            ps: false,
+            ps: large,
             write: rights & right_bit(Right::Write) != 0,
             execute_disable: rights & right_bit(Right::Execute) == 0,
             user: true,
@@ -63,8 +99,8 @@ pub open spec fn frame_of(cap: Payload, page: usize) -> usize {
     (cap.base / 4096 + page) as usize
 }
 
-/// What writing entry e of the level 1 table t changes between two trees: that entry, and t's record
-/// apart from its level, space and parent. Every other entry and record is as it was.
+/// What writing frame mapping e of the table t changes between two trees: that entry, empty before, and
+/// t's record apart from its level, space and parent. Every other entry and record is as it was.
 pub open spec fn entry_written(a: TableTree, b: TableTree, t: usize, e: usize) -> bool {
     &&& b.maps.dom() == a.maps.dom()
     &&& b.roots == a.roots
@@ -74,9 +110,11 @@ pub open spec fn entry_written(a: TableTree, b: TableTree, t: usize, e: usize) -
     &&& b.record(t).space == a.record(t).space
     &&& b.record(t).parent == a.record(t).parent
     &&& a.is_page(t)
-    &&& a.record(t).level == 1
+    &&& a.record(t).level == 1 || a.record(t).level == 2
     &&& e < 512
+    &&& a.entry(t, e).is_empty()
     &&& b.entry(t, e).perm.present
+    &&& b.entry(t, e).perm.ps == (a.record(t).level == 2)
     &&& forall|u: usize, i: usize| #![trigger b.entry(u, i)]
         i < 512 && !(u == t && i == e) ==> b.entry(u, i) == a.entry(u, i)
 }
@@ -117,6 +155,69 @@ pub proof fn lemma_page_within(page: usize, size: usize, order: u8)
     lemma_mod_multiples_basic(m, 4096);
     lemma_div_multiples_vanish(m, 4096);
     assert(size as int / 4096 == m);
+}
+
+/// A 2M-aligned offset's 512 pages are within a 2M or 1G block exactly when the offset is below the
+/// block's page count by at least 512.
+pub proof fn lemma_large_page_within(page: usize, size: usize, order: u8)
+    requires
+        order == 9 || order == 18,
+        size as int == block_bytes(order),
+    ensures
+        size % 4096 == 0,
+        (page < size / 4096 && size / 4096 - page >= 512) == ((page as int) * 4096 + 512 * 4096 <= block_bytes(order)),
+{
+    let m = pow2(order as nat) as int;
+    lemma_pow2_pos(order as nat);
+    assert(size as int == m * 4096);
+    lemma_mod_multiples_basic(m, 4096);
+    lemma_div_multiples_vanish(m, 4096);
+    assert(size as int / 4096 == m);
+}
+
+/// A block of order 9 or more has a base whose page is 2M aligned.
+pub proof fn lemma_large_base_aligned(base: usize, order: u8)
+    requires
+        9 <= order <= MAX_ORDER,
+        base as int % block_bytes(order) == 0,
+    ensures
+        base % 4096 == 0,
+        (base / 4096) % 512 == 0,
+{
+    lemma_block_base_aligned(base, order);
+    let m = pow2(order as nat) as int;
+    lemma_pow2_pos(order as nat);
+    lemma_pow2_adds(9, (order - 9) as nat);
+    lemma2_to64();
+    let k = pow2((order - 9) as nat) as int;
+    assert(m == 512 * k);
+    let d = m * 4096;
+    lemma_fundamental_div_mod(base as int, d);
+    let q = base as int / d;
+    assert(base as int == d * q);
+    lemma_mul_is_associative(m, 4096, q);
+    lemma_mul_is_commutative(4096, q);
+    lemma_mul_is_associative(m, q, 4096);
+    assert(base as int == (m * q) * 4096);
+    lemma_div_multiples_vanish(m * q, 4096);
+    assert(base as int / 4096 == m * q);
+    lemma_mul_is_associative(512, k, q);
+    assert(m * q == 512 * (k * q));
+    lemma_mod_multiples_basic(k * q, 512);
+}
+
+/// The sum of two multiples of 512 is one.
+pub proof fn lemma_sum_aligned(x: int, y: int)
+    requires
+        x % 512 == 0,
+        y % 512 == 0,
+    ensures
+        (x + y) % 512 == 0,
+{
+    lemma_fundamental_div_mod(x, 512);
+    lemma_fundamental_div_mod(y, 512);
+    assert(x + y == 512 * (x / 512 + y / 512));
+    lemma_mod_multiples_basic(x / 512 + y / 512, 512);
 }
 
 /// A page below NUM_PAGES has an address with no bit outside MEM_MASK.
@@ -204,9 +305,10 @@ pub proof fn lemma_table_pages_entry_written(list: &Tree, pa: &TablePages, pb: &
     }
 }
 
-/// The links after entry e of level 1 table t is written: no link is at level 1, and t's record keeps
-/// its parent and space.
-pub proof fn lemma_links_level1_written(a: TableTree, b: TableTree, t: usize, e: usize)
+/// The links after frame mapping e of table t is written: the entry names no child in either tree, empty
+/// before and at level 1 or with ps after, so no link reads it, and t's record keeps its parent and
+/// space.
+pub proof fn lemma_links_entry_written(a: TableTree, b: TableTree, t: usize, e: usize)
     requires
         table_links_wf(a),
         entry_written(a, b, t, e),
@@ -222,6 +324,8 @@ pub proof fn lemma_links_level1_written(a: TableTree, b: TableTree, t: usize, e:
         }
     }
     assert forall|u: usize, i: usize| #[trigger] b.child_slot(u, i) == a.child_slot(u, i) by {}
+    assert(!a.names_child(t, e));
+    assert(!b.names_child(t, e));
     assert forall|u: usize, i: usize| #![trigger b.entry(u, i)]
         b.names_child(u, i) implies {
         let c = (b.entry(u, i).addr - TABLE_NODE_PAGES * 4096) as usize;
@@ -229,7 +333,7 @@ pub proof fn lemma_links_level1_written(a: TableTree, b: TableTree, t: usize, e:
         &&& b.record(c).parent == Some(TableParent { table: u, entry: i })
     } by {
         assert(a.child_slot(u, i));
-        assert(u != t);
+        assert(!(u == t && i == e));
         assert(b.entry(u, i) == a.entry(u, i));
         assert(a.names_child(u, i));
         let _ = a.entry(u, i);
@@ -240,9 +344,10 @@ pub proof fn lemma_links_level1_written(a: TableTree, b: TableTree, t: usize, e:
     assert forall|u: usize, i: usize| #![trigger b.entry(u, i)]
         b.child_slot(u, i) && b.entry(u, i).perm.present && b.entry(u, i).perm.ps implies b.record(u).level == 2 by {
         assert(a.child_slot(u, i));
-        assert(u != t);
-        assert(b.entry(u, i) == a.entry(u, i));
-        let _ = a.entry(u, i);
+        if !(u == t && i == e) {
+            assert(b.entry(u, i) == a.entry(u, i));
+            let _ = a.entry(u, i);
+        }
     }
     assert forall|c: usize| #![trigger b.maps.contains_key(c)] b.is_page(c) implies {
         let r = b.record(c);
@@ -265,20 +370,39 @@ pub proof fn lemma_links_level1_written(a: TableTree, b: TableTree, t: usize, e:
         if r.parent is Some {
             let p = r.parent->0;
             assert(a.names_child(p.table, p.entry));
-            assert(p.table != t);
+            assert(!(p.table == t && p.entry == e));
             assert(b.entry(p.table, p.entry) == a.entry(p.table, p.entry));
             assert(b.record(p.table).space == a.record(p.table).space);
         }
     }
 }
 
-/// Writing entry e of level 1 table t changes the walks that end there and no other: a step reads only
-/// entries of tables above level 1, and a frame entry is read only by the walk that ends at it.
+/// Path p of space r reaches frame mapping e of table t, at t's level: entry p.l1 of a level 1 table, or
+/// entry p.l2 of a level 2 table at the path of its first page. Unlike ends_at, it reads no entry of t,
+/// so it holds of the tree before the write.
+pub open spec fn reaches(tree: TableTree, r: usize, p: SpacePath, t: usize, e: usize) -> bool {
+    &&& tree.is_root(r)
+    &&& match step(tree, r, p.l4) {
+        None => false,
+        Some(t3) => match step(tree, t3, p.l3) {
+            None => false,
+            Some(t2) => if tree.record(t).level == 2 {
+                p.l1 == 0 && p.l2 == e && t2 == t
+            } else {
+                p.l1 == e && step(tree, t2, p.l2) == Some(t)
+            },
+        },
+    }
+}
+
+/// Writing frame mapping e of table t changes the walks that reach it and no other: a step reads only
+/// entries that name a child, which the entry does in neither tree, and a frame entry is read only by
+/// the walk that reaches it.
 pub proof fn lemma_walk_entry_written(a: TableTree, b: TableTree, t: usize, e: usize, r: usize, p: SpacePath)
     requires
         entry_written(a, b, t, e),
     ensures
-        walk(b, r, p) == (if ends_at(a, r, p, t, e) { Some(b.entry(t, e)) } else { walk(a, r, p) }),
+        walk(b, r, p) == (if reaches(a, r, p, t, e) { Some(b.entry(t, e)) } else { walk(a, r, p) }),
 {
     assert forall|u: usize| #[trigger] b.is_table(u) == a.is_table(u) && b.is_page(u) == a.is_page(u) && b.is_root(u) == a.is_root(u) by {
         assert(b.maps.contains_key(u) == a.maps.contains_key(u));
@@ -288,38 +412,58 @@ pub proof fn lemma_walk_entry_written(a: TableTree, b: TableTree, t: usize, e: u
             assert(b.record(u) == a.record(u));
         }
     }
+    assert(!a.names_child(t, e));
+    assert(!b.names_child(t, e));
     assert forall|u: usize, i: usize| #[trigger] step(b, u, i) == step(a, u, i) by {
         assert(b.child_slot(u, i) == a.child_slot(u, i));
-        if a.child_slot(u, i) {
-            assert(u != t);
+        if a.child_slot(u, i) && !(u == t && i == e) {
             assert(b.entry(u, i) == a.entry(u, i));
         }
     }
-    assert forall|u: usize, i: usize| !(u == t && i == e) implies #[trigger] frame_entry(b, u, i) == frame_entry(a, u, i) by {
+    assert forall|u: usize, i: usize| !(u == t && i == e) implies #[trigger] frame_entry(b, u, i) == frame_entry(a, u, i)
+        && large_entry(b, u, i) == large_entry(a, u, i) by {
         if a.is_table(u) && i < 512 {
             assert(b.entry(u, i) == a.entry(u, i));
         }
     }
-    assert forall|u: usize, i: usize| #[trigger] large_entry(b, u, i) == large_entry(a, u, i) by {
-        if a.is_table(u) && i < 512 && u != t {
-            assert(b.entry(u, i) == a.entry(u, i));
-        }
-    }
-    assert(frame_entry(b, t, e) == Some(b.entry(t, e)));
+    assert(frame_entry(a, t, e) is None);
     assert(large_entry(a, t, e) is None);
+    if a.record(t).level == 2 {
+        assert(frame_entry(b, t, e) is None);
+        assert(large_entry(b, t, e) == Some(b.entry(t, e)));
+    } else {
+        assert(frame_entry(b, t, e) == Some(b.entry(t, e)));
+        assert(large_entry(b, t, e) is None);
+    }
     if a.is_root(r) {
         if let Some(t3) = step(a, r, p.l4) {
             if let Some(t2) = step(a, t3, p.l3) {
                 if let Some(t1) = step(a, t2, p.l2) {
+                    assert(!(t2 == t && p.l2 == e));
                     if t1 == t && p.l1 == e {
-                        assert(ends_at(a, r, p, t, e));
+                        if a.record(t).level == 2 {
+                            assert(!reaches(a, r, p, t, e));
+                        } else {
+                            assert(reaches(a, r, p, t, e));
+                        }
                     } else {
-                        assert(!ends_at(a, r, p, t, e));
+                        assert(!reaches(a, r, p, t, e));
                         assert(frame_entry(b, t1, p.l1) == frame_entry(a, t1, p.l1));
                     }
                 } else {
-                    assert(!ends_at(a, r, p, t, e));
-                    assert(large_entry(b, t2, p.l2) == large_entry(a, t2, p.l2));
+                    if t2 == t && p.l2 == e && p.l1 == 0 && a.record(t).level == 2 {
+                        assert(reaches(a, r, p, t, e));
+                    } else {
+                        assert(!reaches(a, r, p, t, e));
+                        if t2 == t && p.l2 == e {
+                            if p.l1 == 0 {
+                                assert(a.record(t).level != 2);
+                                assert(large_entry(b, t, e) is None);
+                            }
+                        } else {
+                            assert(large_entry(b, t2, p.l2) == large_entry(a, t2, p.l2));
+                        }
+                    }
                 }
             }
         }
@@ -379,19 +523,98 @@ pub proof fn lemma_mapping_written(a: TableTree, b: TableTree, s: usize, p: Spac
         entry_written(a, b, t, p.l1),
         a.is_root(s),
         walk_table(a, s, p) == Some(t),
-        !a.entry(t, p.l1).perm.present,
+        a.record(t).level == 1,
     ensures
         space_mapping(b, s) == space_mapping(a, s).insert(p, b.entry(t, p.l1)),
         forall|r: usize| r != s ==> #[trigger] space_mapping(b, r) == space_mapping(a, r),
 {
     let e = p.l1;
     let v = b.entry(t, e);
+    assert(large_entry(a, t, e) is None);
     assert forall|r: usize, q: SpacePath| #[trigger] walk(b, r, q) == (if r == s && q == p { Some(v) } else { walk(a, r, q) }) by {
         lemma_walk_entry_written(a, b, t, e, r, q);
         lemma_ends_at_unique(a, s, p, t, r, q);
+        assert(reaches(a, r, q, t, e) == ends_at(a, r, q, t, e));
     }
     assert(frame_entry(a, t, e) is None);
     assert(walk(a, s, p) is None);
+    lemma_space_mapping_written(a, b, s, p, v);
+}
+
+/// One path reaches a level 2 table's large entry: each table has one parent entry, so a walk that
+/// reaches entry p.l2 of the table p reaches from s, at its first page, is p from s.
+pub proof fn lemma_reaches_large_unique(a: TableTree, s: usize, p: SpacePath, t: usize, r: usize, q: SpacePath)
+    requires
+        table_links_wf(a),
+        a.is_root(s),
+        walk_large_table(a, s, p) == Some(t),
+        a.record(t).level == 2,
+        p.l1 == 0,
+    ensures
+        reaches(a, r, q, t, p.l2) == (r == s && q == p),
+{
+    let t3 = step(a, s, p.l4)->0;
+    assert(step(a, s, p.l4) == Some(t3));
+    assert(step(a, t3, p.l3) == Some(t));
+    let _ = a.entry(s, p.l4);
+    let _ = a.entry(t3, p.l3);
+    assert(a.record(t).parent == Some(TableParent { table: t3, entry: p.l3 }));
+    assert(a.record(t3).parent == Some(TableParent { table: s, entry: p.l4 }));
+    if reaches(a, r, q, t, p.l2) {
+        let u3 = step(a, r, q.l4)->0;
+        assert(step(a, r, q.l4) == Some(u3));
+        assert(step(a, u3, q.l3) == Some(t));
+        let _ = a.entry(r, q.l4);
+        let _ = a.entry(u3, q.l3);
+        assert(a.record(t).parent == Some(TableParent { table: u3, entry: q.l3 }));
+        assert(u3 == t3 && q.l3 == p.l3);
+        assert(a.record(t3).parent == Some(TableParent { table: r, entry: q.l4 }));
+        assert(r == s && q.l4 == p.l4);
+        assert(q.l2 == p.l2);
+        assert(q.l1 == p.l1);
+        assert(q == p);
+    }
+    if r == s && q == p {
+        assert(reaches(a, r, q, t, p.l2));
+    }
+}
+
+/// Writing the large entry at path p of space s maps exactly that path, and no other space changes.
+pub proof fn lemma_large_mapping_written(a: TableTree, b: TableTree, s: usize, p: SpacePath, t: usize)
+    requires
+        table_links_wf(a),
+        entry_written(a, b, t, p.l2),
+        a.is_root(s),
+        walk_large_table(a, s, p) == Some(t),
+        a.record(t).level == 2,
+        p.l1 == 0,
+    ensures
+        space_mapping(b, s) == space_mapping(a, s).insert(p, b.entry(t, p.l2)),
+        forall|r: usize| r != s ==> #[trigger] space_mapping(b, r) == space_mapping(a, r),
+{
+    let e = p.l2;
+    let v = b.entry(t, e);
+    assert forall|r: usize, q: SpacePath| #[trigger] walk(b, r, q) == (if r == s && q == p { Some(v) } else { walk(a, r, q) }) by {
+        lemma_walk_entry_written(a, b, t, e, r, q);
+        lemma_reaches_large_unique(a, s, p, t, r, q);
+    }
+    assert(!a.names_child(t, e));
+    assert(step(a, t, e) is None);
+    assert(large_entry(a, t, e) is None);
+    assert(walk(a, s, p) is None);
+    lemma_space_mapping_written(a, b, s, p, v);
+}
+
+/// When every walk is as it was but one, now v and finding nothing before, that space's mapping gains
+/// that path and every other space's is as it was.
+pub proof fn lemma_space_mapping_written(a: TableTree, b: TableTree, s: usize, p: SpacePath, v: PageEntry)
+    requires
+        forall|r: usize, q: SpacePath| #[trigger] walk(b, r, q) == (if r == s && q == p { Some(v) } else { walk(a, r, q) }),
+        walk(a, s, p) is None,
+    ensures
+        space_mapping(b, s) == space_mapping(a, s).insert(p, v),
+        forall|r: usize| r != s ==> #[trigger] space_mapping(b, r) == space_mapping(a, r),
+{
     assert forall|r: usize| r != s implies #[trigger] space_mapping(b, r) == space_mapping(a, r) by {
         assert forall|q: SpacePath| #[trigger] walk(b, r, q) == walk(a, r, q) by {}
         assert(space_mapping(b, r) =~= space_mapping(a, r));
@@ -519,13 +742,41 @@ impl CapKernel {
         &&& block_refs(&self.blocks, block_ref(&self.blocks, frame_of(self.payload_of(f), page))) != usize::MAX
     }
 
-    /// What map_frame starts from: a live level 1 table page with entry e empty, a frame capability
-    /// whose block holds the page, and the entry's node free.
-    pub open spec fn map_from(pre: Self, t: usize, e: usize, f: usize, frame: usize) -> bool {
+    /// The refusals of a large map: as can_map's, for entry p.l2 of the level 2 table the path reaches,
+    /// with a capability of a 2M or 1G frame and a 2M-aligned offset whose 512 pages are in its range.
+    /// The entry must be empty, so a child table refuses it.
+    pub open spec fn can_map_large(&self, root: usize, slot: usize, p: SpacePath, from: usize, page: usize) -> bool {
+        let tree = tree_of(&self.table_pages, &self.spaces);
+        let n = self.tables.node_of(root, slot);
+        let f = self.tables.node_of(root, from);
+        let t = walk_large_table(tree, self.payload_of(n).base, p)->0;
+        &&& self.tables.has_slot(root, slot)
+        &&& self.is_cap(n)
+        &&& self.payload_of(n).kind is Space
+        &&& self.payload_of(n).rights & right_bit(Right::Write) != 0
+        &&& walk_large_table(tree, self.payload_of(n).base, p) is Some
+        &&& !self.blocks.pages@[(t / 4096) as int].dead
+        &&& p.l2 < 512
+        &&& p.l1 == 0
+        &&& tree.entry(t, p.l2).is_empty()
+        &&& self.tables.has_slot(root, from)
+        &&& self.is_cap(f)
+        &&& self.payload_of(f).kind is Frame
+        &&& self.payload_of(f).rights & right_bit(Right::Read) != 0
+        &&& self.payload_of(f).order == 9 || self.payload_of(f).order == 18
+        &&& page % 512 == 0
+        &&& (page as int) * 4096 + 512 * 4096 <= block_bytes(self.payload_of(f).order)
+        &&& self.list.nodes@[f as int].depth < MAX_DEPTH
+        &&& block_refs(&self.blocks, block_ref(&self.blocks, frame_of(self.payload_of(f), page))) != usize::MAX
+    }
+
+    /// What map_frame starts from: a live table page of the map's level with entry e empty, a frame
+    /// capability whose block holds the pages, and the entry's node free.
+    pub open spec fn map_from(pre: Self, t: usize, e: usize, f: usize, frame: usize, large: bool) -> bool {
         let tree = tree_of(&pre.table_pages, &pre.spaces);
         let cap = pre.payload_of(f);
         &&& pre.table_pages.maps@.contains_key(t)
-        &&& tree.record(t).level == 1
+        &&& tree.record(t).level == map_level(large)
         &&& !pre.blocks.pages@[(t / 4096) as int].dead
         &&& e < 512
         &&& tree.entry(t, e).is_empty()
@@ -535,13 +786,14 @@ impl CapKernel {
         &&& pre.list.nodes@[f as int].depth < MAX_DEPTH
         &&& frame < NUM_PAGES
         &&& cap.base <= frame * 4096
-        &&& frame * 4096 + 4096 <= cap.base as int + block_bytes(cap.order)
+        &&& frame * 4096 + entry_pages(map_level(large)) * 4096 <= cap.base as int + block_bytes(cap.order)
+        &&& large ==> frame % 512 == 0
         &&& block_ref(&pre.blocks, frame) == block_ref(&pre.blocks, cap.base / 4096)
     }
 
     /// What the writes of a map leave, before the frame is noted mapped: the node derived under f, the
     /// entry and t's written flag set, the block's count and holders up by the node, and its record.
-    pub open spec fn map_written(pre: Self, post: Self, t: usize, e: usize, f: usize, frame: usize) -> bool {
+    pub open spec fn map_written(pre: Self, post: Self, t: usize, e: usize, f: usize, frame: usize, large: bool) -> bool {
         let node = mapping_node(t, e);
         let br = block_ref(&pre.blocks, frame);
         let rights = pre.payload_of(f).rights;
@@ -560,7 +812,7 @@ impl CapKernel {
         &&& post.blocks.wf()
         &&& block_refs(&pre.blocks, br) != usize::MAX
         &&& blocks_refs_changed(&pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br))
-        &&& Self::entry_set(pre.table_pages, post.table_pages, t, e, frame_map_entry(frame, rights))
+        &&& Self::entry_set(pre.table_pages, post.table_pages, t, e, frame_map_entry(frame, rights, large))
         &&& post.spaces == pre.spaces
         &&& post.holders@ == pre.holders@.insert(br, pre.holders@[br].insert(node))
         &&& post.mappings@ == pre.mappings@.insert(node, MappingRecord { table: t, entry: e, frame })
@@ -712,9 +964,9 @@ impl CapKernel {
         let frame = cap.base / 4096 + page;
         proof {
             assert(frame == frame_of(cap, page));
-            assert(Self::map_from(pre, t, l1, f, frame));
+            assert(Self::map_from(pre, t, l1, f, frame, false));
         }
-        let ret = self.map_frame(c, Ghost(root), t, l1, f, cap.rights, frame);
+        let ret = self.map_frame(c, Ghost(root), t, l1, f, cap.rights, frame, false);
         proof {
             if ret {
                 Self::lemma_map_done(pre, *self, root, slot, p, from, page, t, f, frame);
@@ -723,21 +975,148 @@ impl CapKernel {
         ret
     }
 
+    /// Maps the 2M page at offset `page` of the frame capability at index `from` into entry `l2` of the
+    /// level 2 table the path reaches in the space named at index `slot`. All of the indices and the
+    /// offset come from user space, so any of them can be refused, and a refusal changes nothing. Core
+    /// `c` makes the step.
+    pub fn map_large(&mut self, c: usize, root: usize, slot: usize, l4: usize, l3: usize, l2: usize, from: usize, page: usize) -> (ret: bool)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(root),
+            c < NUM_CPUS,
+        ensures
+            final(self).wf(),
+            ret == old(self).can_map_large(root, slot, SpacePath { l4, l3, l2, l1: 0 }, from, page),
+            !ret ==> *final(self) == *old(self),
+            ret ==> Self::map_large_done(*old(self), *final(self), root, slot, SpacePath { l4, l3, l2, l1: 0 }, from, page),
+            discharges(old(self).view(), final(self).view(), root, Effect::Local),
+    {
+        let ghost pre = *old(self);
+        let ghost tree = tree_of(&pre.table_pages, &pre.spaces);
+        let ghost p = SpacePath { l4, l3, l2, l1: 0 };
+        proof {
+            pre.lemma_no_op_discharges(root);
+        }
+        let (n, space) = match self.tables.lookup(&self.list, root, slot) {
+            Some(found) => found,
+            None => { return false; },
+        };
+        proof {
+            pre.lemma_slot(root, slot);
+            assert(space == pre.payload_of(n));
+            assert(right_bit(Right::Write) == 2);
+            assert(right_bit(Right::Read) == 1);
+            assert(right_bit(Right::Execute) == 4);
+        }
+        let n_node = self.list.get(n);
+        let n_kind = match n_node.kind {
+            NodeKind::Capability => true,
+            _ => false,
+        };
+        let is_space = match space.kind {
+            CapKind::Space => true,
+            _ => false,
+        };
+        if !n_node.live || !n_kind || !is_space || space.rights & 2 == 0 {
+            return false;
+        }
+        proof {
+            assert(pre.is_cap(n));
+            pre.lemma_space_cap(n);
+            pre.lemma_root_table(space.base);
+        }
+        let s = space.base;
+        let t3 = match self.table_step(s, true, l4) {
+            Some(t) => t,
+            None => { return false; },
+        };
+        let t = match self.table_step(t3, false, l3) {
+            Some(t) => t,
+            None => { return false; },
+        };
+        proof {
+            assert(walk_large_table(tree, s, p) == Some(t));
+            assert(tree.record(t).level == 2);
+            pre.lemma_table_page_room(t);
+        }
+        if l2 >= 512 || self.blocks.pages.get(t / 4096).dead {
+            return false;
+        }
+        let current = self.table_entry(t, false, l2);
+        if !entry_is_empty(&current) {
+            return false;
+        }
+        let (f, cap) = match self.tables.lookup(&self.list, root, from) {
+            Some(found) => found,
+            None => { return false; },
+        };
+        proof {
+            pre.lemma_slot(root, from);
+            assert(cap == pre.payload_of(f));
+        }
+        let f_node = self.list.get(f);
+        let f_kind = match f_node.kind {
+            NodeKind::Capability => true,
+            _ => false,
+        };
+        let is_frame = match cap.kind {
+            CapKind::Frame => true,
+            _ => false,
+        };
+        if !f_node.live || !f_kind || !is_frame || cap.rights & 1 == 0 {
+            return false;
+        }
+        if cap.order != 9 && cap.order != 18 {
+            return false;
+        }
+        proof {
+            assert(pre.is_cap(f));
+            assert(pre.tables.is_cap(&pre.list, f));
+            assert(payload_wf(cap));
+        }
+        let size = order_bytes(cap.order);
+        proof {
+            lemma_large_page_within(page, size, cap.order);
+        }
+        if page % 512 != 0 || page >= size / 4096 || size / 4096 - page < 512 {
+            return false;
+        }
+        if f_node.depth >= MAX_DEPTH {
+            return false;
+        }
+        proof {
+            pre.lemma_large_frame_page(f, page);
+            pre.lemma_map_node_free(t, l2);
+        }
+        let frame = cap.base / 4096 + page;
+        proof {
+            assert(frame == frame_of(cap, page));
+            assert(Self::map_from(pre, t, l2, f, frame, true));
+        }
+        let ret = self.map_frame(c, Ghost(root), t, l2, f, cap.rights, frame, true);
+        proof {
+            if ret {
+                Self::lemma_map_large_done(pre, *self, root, slot, p, from, page, t, f, frame);
+            }
+        }
+        ret
+    }
+
     /// Writes the map the caller has checked: one more reference on the frame's block, the node derived
-    /// under f, the entry and t's written flag, and the frame noted mapped. Refused only when the block
+    /// under f, the entry and t's written flag, and the pages noted mapped. Refused only when the block
     /// is at the reference limit.
-    fn map_frame(&mut self, c: usize, Ghost(root): Ghost<usize>, t: usize, e: usize, f: usize, rights: u32, frame: usize) -> (ret: bool)
+    fn map_frame(&mut self, c: usize, Ghost(root): Ghost<usize>, t: usize, e: usize, f: usize, rights: u32, frame: usize, large: bool) -> (ret: bool)
         requires
             old(self).wf(),
             c < NUM_CPUS,
-            Self::map_from(*old(self), t, e, f, frame),
+            Self::map_from(*old(self), t, e, f, frame, large),
             rights == old(self).payload_of(f).rights,
         ensures
             final(self).wf(),
             ret == (block_refs(&old(self).blocks, block_ref(&old(self).blocks, frame)) != usize::MAX),
             !ret ==> *final(self) == *old(self),
-            ret ==> Self::map_written(*old(self), *final(self), t, e, f, frame),
-            ret ==> final(self).mapped@ == old(self).mapped@.insert(frame),
+            ret ==> Self::map_written(*old(self), *final(self), t, e, f, frame, large),
+            ret ==> final(self).mapped@ == old(self).mapped@.union(map_pages(frame, large)),
             discharges(old(self).view(), final(self).view(), root, Effect::Local),
     {
         let ghost pre = *old(self);
@@ -759,14 +1138,14 @@ impl CapKernel {
             assert(Self::table_page_perms(self.table_pages, t));
         }
         self.list.derive(f, node, NodeKind::Mapping);
-        self.write_frame_entry(t, e, frame, rights);
+        self.write_frame_entry(t, e, frame, rights, large);
         self.holders = Ghost(pre.holders@.insert(br, pre.holders@[br].insert(node)));
         self.mappings = Ghost(pre.mappings@.insert(node, MappingRecord { table: t, entry: e, frame }));
         proof {
-            assert(Self::map_written(pre, *self, t, e, f, frame));
-            Self::lemma_map_wf(pre, *self, t, e, f, frame);
+            assert(Self::map_written(pre, *self, t, e, f, frame, large));
+            Self::lemma_map_wf(pre, *self, t, e, f, frame, large);
         }
-        self.note_mapped(c, frame);
+        self.note_mapped(c, Ghost(map_pages(frame, large)));
         proof {
             Self::lemma_map_discharges(pre, *self, root, f, node);
         }
@@ -823,13 +1202,13 @@ impl CapKernel {
     }
 
     /// Writes the frame's entry for these rights into entry e of table page t and marks t written.
-    fn write_frame_entry(&mut self, t: usize, e: usize, frame: usize, rights: u32)
+    fn write_frame_entry(&mut self, t: usize, e: usize, frame: usize, rights: u32, large: bool)
         requires
             Self::table_page_perms(old(self).table_pages, t),
             e < 512,
             frame < NUM_PAGES,
         ensures
-            Self::entry_set(old(self).table_pages, final(self).table_pages, t, e, frame_map_entry(frame, rights)),
+            Self::entry_set(old(self).table_pages, final(self).table_pages, t, e, frame_map_entry(frame, rights, large)),
             final(self).list == old(self).list,
             final(self).cores == old(self).cores,
             final(self).flush_epoch == old(self).flush_epoch,
@@ -855,7 +1234,7 @@ impl CapKernel {
             addr: frame * 4096,
             perm: PageEntryPerm {
                 present: true,
-                ps: false,
+                ps: large,
                 write: rights & 2 != 0,
                 execute_disable: rights & 4 == 0,
                 user: true,
@@ -875,7 +1254,7 @@ impl CapKernel {
             self.table_pages.records.borrow_mut().tracked_insert(t, record);
             assert(self.table_pages.maps@ =~= pre.table_pages.maps@.insert(t, self.table_pages.maps@[t]));
             assert(self.table_pages.records@ =~= pre.table_pages.records@.insert(t, self.table_pages.records@[t]));
-            assert(value == frame_map_entry(frame, rights));
+            assert(value == frame_map_entry(frame, rights, large));
         }
     }
 
@@ -892,7 +1271,7 @@ impl CapKernel {
         let t = walk_table(a, s, p)->0;
         let node = mapping_node(t, p.l1);
         let br = block_ref(&pre.blocks, frame);
-        &&& space_mapping(b, s) == space_mapping(a, s).insert(p, frame_map_entry(frame, cap.rights))
+        &&& space_mapping(b, s) == space_mapping(a, s).insert(p, frame_map_entry(frame, cap.rights, false))
         &&& forall|r: usize| r != s ==> #[trigger] space_mapping(b, r) == space_mapping(a, r)
         &&& post.list.is_child(f, node)
         &&& post.list.nodes@[node as int].kind is Mapping
@@ -900,6 +1279,33 @@ impl CapKernel {
         &&& block_refs(&post.blocks, br) == block_refs(&pre.blocks, br) + 1
         &&& post.holders@[br] == pre.holders@[br].insert(node)
         &&& post.mapped@.contains(frame)
+    }
+
+    /// What a large map leaves: the capability tables as they were; path p of the space still reaches its
+    /// level 2 table and, at its first page, gains the large entry, and nothing else changes in any space;
+    /// the node is the capability's child, names the entry and counts on the block; all 512 pages are
+    /// mapped.
+    pub open spec fn map_large_done(pre: Self, post: Self, root: usize, slot: usize, p: SpacePath, from: usize, page: usize) -> bool {
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        let s = pre.payload_of(pre.tables.node_of(root, slot)).base;
+        let f = pre.tables.node_of(root, from);
+        let cap = pre.payload_of(f);
+        let frame = frame_of(cap, page);
+        let t = walk_large_table(a, s, p)->0;
+        let node = mapping_node(t, p.l2);
+        let br = block_ref(&pre.blocks, frame);
+        &&& post.tables == pre.tables
+        &&& walk_large_table(b, s, p) == Some(t)
+        &&& space_mapping(b, s) == space_mapping(a, s).insert(p, frame_map_entry(frame, cap.rights, true))
+        &&& forall|r: usize| r != s ==> #[trigger] space_mapping(b, r) == space_mapping(a, r)
+        &&& post.list.is_child(f, node)
+        &&& post.list.nodes@[node as int].kind is Mapping
+        &&& post.mappings@.contains_key(node)
+        &&& post.mappings@[node] == (MappingRecord { table: t, entry: p.l2, frame })
+        &&& block_refs(&post.blocks, br) == block_refs(&pre.blocks, br) + 1
+        &&& post.holders@[br] == pre.holders@[br].insert(node)
+        &&& forall|g: usize| frame <= g < frame + 512 ==> #[trigger] post.mapped@.contains(g)
     }
 
     /// The writes of a map, with the frame noted, are what map_done says.
@@ -910,9 +1316,9 @@ impl CapKernel {
             f == pre.tables.node_of(root, from),
             frame == frame_of(pre.payload_of(f), page),
             walk_table(tree_of(&pre.table_pages, &pre.spaces), pre.payload_of(pre.tables.node_of(root, slot)).base, p) == Some(t),
-            Self::map_from(pre, t, p.l1, f, frame),
-            Self::map_written(pre, post, t, p.l1, f, frame),
-            post.mapped@ == pre.mapped@.insert(frame),
+            Self::map_from(pre, t, p.l1, f, frame, false),
+            Self::map_written(pre, post, t, p.l1, f, frame, false),
+            post.mapped@ == pre.mapped@.union(map_pages(frame, false)),
         ensures
             Self::map_done(pre, post, root, slot, p, from, page),
     {
@@ -920,17 +1326,50 @@ impl CapKernel {
         let b = tree_of(&post.table_pages, &post.spaces);
         let s = pre.payload_of(pre.tables.node_of(root, slot)).base;
         let e = p.l1;
-        Self::lemma_map_tree(pre, post, t, e, f, frame);
-        assert(b.entry(t, e) == frame_map_entry(frame, pre.payload_of(f).rights));
+        Self::lemma_map_tree(pre, post, t, e, f, frame, false);
+        assert(b.entry(t, e) == frame_map_entry(frame, pre.payload_of(f).rights, false));
         lemma_mapping_written(a, b, s, p, t);
+        lemma_map_pages(frame, false);
+        assert(map_pages(frame, false).contains(frame));
+    }
+
+    /// The writes of a large map, with its pages noted, are what map_large_done says.
+    proof fn lemma_map_large_done(pre: Self, post: Self, root: usize, slot: usize, p: SpacePath, from: usize, page: usize, t: usize, f: usize, frame: usize)
+        requires
+            pre.wf(),
+            pre.can_map_large(root, slot, p, from, page),
+            f == pre.tables.node_of(root, from),
+            frame == frame_of(pre.payload_of(f), page),
+            walk_large_table(tree_of(&pre.table_pages, &pre.spaces), pre.payload_of(pre.tables.node_of(root, slot)).base, p) == Some(t),
+            Self::map_from(pre, t, p.l2, f, frame, true),
+            Self::map_written(pre, post, t, p.l2, f, frame, true),
+            post.mapped@ == pre.mapped@.union(map_pages(frame, true)),
+        ensures
+            Self::map_large_done(pre, post, root, slot, p, from, page),
+    {
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        let s = pre.payload_of(pre.tables.node_of(root, slot)).base;
+        let e = p.l2;
+        Self::lemma_map_tree(pre, post, t, e, f, frame, true);
+        assert(b.entry(t, e) == frame_map_entry(frame, pre.payload_of(f).rights, true));
+        lemma_large_mapping_written(a, b, s, p, t);
+        let t3 = step(a, s, p.l4)->0;
+        assert(step(b, s, p.l4) == step(a, s, p.l4));
+        assert(a.record(t3).level == 3);
+        assert(step(b, t3, p.l3) == step(a, t3, p.l3));
+        lemma_map_pages(frame, true);
+        assert forall|g: usize| frame <= g < frame + 512 implies #[trigger] post.mapped@.contains(g) by {
+            assert(map_pages(frame, true).contains(g));
+        }
     }
 
     /// The trees before and after the writes of a map are related by entry_written.
-    proof fn lemma_map_tree(pre: Self, post: Self, t: usize, e: usize, f: usize, frame: usize)
+    proof fn lemma_map_tree(pre: Self, post: Self, t: usize, e: usize, f: usize, frame: usize, large: bool)
         requires
             pre.wf(),
-            Self::map_from(pre, t, e, f, frame),
-            Self::map_written(pre, post, t, e, f, frame),
+            Self::map_from(pre, t, e, f, frame, large),
+            Self::map_written(pre, post, t, e, f, frame, large),
         ensures
             entry_written(tree_of(&pre.table_pages, &pre.spaces), tree_of(&post.table_pages, &post.spaces), t, e),
     {
@@ -1110,13 +1549,67 @@ impl CapKernel {
         assert(frame_of(cap, page) == fr);
     }
 
+    /// The 512 pages from 2M-aligned offset `page` of the 2M or 1G frame capability f lie in the
+    /// capability's block, below NUM_PAGES, and start 2M aligned.
+    pub proof fn lemma_large_frame_page(&self, f: usize, page: usize)
+        requires
+            self.wf(),
+            self.is_cap(f),
+            self.payload_of(f).kind is Frame,
+            self.payload_of(f).order == 9 || self.payload_of(f).order == 18,
+            page % 512 == 0,
+            (page as int) * 4096 + 512 * 4096 <= block_bytes(self.payload_of(f).order),
+        ensures
+            ({
+                let cap = self.payload_of(f);
+                let frame = frame_of(cap, page);
+                &&& cap.base % 4096 == 0
+                &&& cap.base / 4096 + page < NUM_PAGES
+                &&& frame == cap.base / 4096 + page
+                &&& frame % 512 == 0
+                &&& cap.base <= frame * 4096
+                &&& frame * 4096 + 512 * 4096 <= cap.base as int + block_bytes(cap.order)
+                &&& block_ref(&self.blocks, frame) == block_ref(&self.blocks, cap.base / 4096)
+                &&& self.holders@.contains_key(block_ref(&self.blocks, frame))
+                &&& block_typed(&self.blocks, block_ref(&self.blocks, frame))
+            }),
+    {
+        let cap = self.payload_of(f);
+        assert(self.tables.is_cap(&self.list, f));
+        assert(payload_wf(cap));
+        let m = pow2(cap.order as nat) as int;
+        lemma_pow2_pos(cap.order as nat);
+        assert(block_bytes(cap.order) == m * 4096);
+        lemma_large_base_aligned(cap.base, cap.order);
+        lemma_fundamental_div_mod(cap.base as int, 4096);
+        assert(cap.base as int == 4096 * (cap.base as int / 4096));
+        let fr = cap.base as int / 4096 + page;
+        lemma_sum_aligned(cap.base as int / 4096, page as int);
+        assert(fr % 512 == 0);
+        assert(fr * 4096 == cap.base + page * 4096);
+        assert(fr * 4096 + 512 * 4096 <= cap.base + m * 4096);
+        lemma_holder_refs(&self.list, &self.tables, &self.blocks, &self.zeroing, self.holders@, f);
+        assert(frame_in_block(block_ref(&self.blocks, cap.base / 4096), cap));
+        lemma2_to64();
+        assert(block_bytes(9) == 512 * 4096);
+        let child = Payload { kind: cap.kind, order: 9, rights: cap.rights, base: (fr * 4096) as usize, badge: cap.badge, reserved: cap.reserved };
+        lemma_fundamental_div_mod(fr, 512);
+        assert(fr * 4096 == (512 * 4096) * (fr / 512));
+        lemma_mod_multiples_basic(fr / 512, 512int * 4096);
+        lemma_child_same_block(&self.blocks, cap, child);
+        lemma_div_multiples_vanish(fr, 4096);
+        assert(child.base as int / 4096 == fr);
+        assert(fr < NUM_PAGES);
+        assert(frame_of(cap, page) == fr);
+    }
+
     /// The nodes and capabilities after a map: no capability changed, so the view's tables and every
     /// clause about node kinds stand.
-    proof fn lemma_map_nodes(pre: Self, post: Self, t: usize, e: usize, f: usize, frame: usize)
+    proof fn lemma_map_nodes(pre: Self, post: Self, t: usize, e: usize, f: usize, frame: usize, large: bool)
         requires
             pre.wf(),
-            Self::map_from(pre, t, e, f, frame),
-            Self::map_written(pre, post, t, e, f, frame),
+            Self::map_from(pre, t, e, f, frame, large),
+            Self::map_written(pre, post, t, e, f, frame, large),
         ensures
             forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x),
             post.tables.wf(&post.list),
@@ -1144,17 +1637,17 @@ impl CapKernel {
         assert forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) implies payload_wf(post.tables.payload_of(x)) by {
             assert(pre.tables.is_cap(&pre.list, x));
         }
-        Self::lemma_map_kinds(pre, post, t, e, f, frame);
-        Self::lemma_map_same_nodes(pre, post, t, e, f, frame);
+        Self::lemma_map_kinds(pre, post, t, e, f, frame, large);
+        Self::lemma_map_same_nodes(pre, post, t, e, f, frame, large);
     }
 
     /// The node kinds after a map: the new node is a mapping, so every clause about hidden, capability
     /// and leaf nodes stands, and no node of a leaf or a table page changed.
-    proof fn lemma_map_kinds(pre: Self, post: Self, t: usize, e: usize, f: usize, frame: usize)
+    proof fn lemma_map_kinds(pre: Self, post: Self, t: usize, e: usize, f: usize, frame: usize, large: bool)
         requires
             pre.wf(),
-            Self::map_from(pre, t, e, f, frame),
-            Self::map_written(pre, post, t, e, f, frame),
+            Self::map_from(pre, t, e, f, frame, large),
+            Self::map_written(pre, post, t, e, f, frame, large),
         ensures
             hidden_nodes_are_leaves(&post.list, &post.tables, &post.table_pages),
             parents_are_capabilities(&post.list),
@@ -1195,11 +1688,11 @@ impl CapKernel {
     }
 
     /// No node of a leaf or of a table page changed in a map: the new node is in neither.
-    proof fn lemma_map_same_nodes(pre: Self, post: Self, t: usize, e: usize, f: usize, frame: usize)
+    proof fn lemma_map_same_nodes(pre: Self, post: Self, t: usize, e: usize, f: usize, frame: usize, large: bool)
         requires
             pre.wf(),
-            Self::map_from(pre, t, e, f, frame),
-            Self::map_written(pre, post, t, e, f, frame),
+            Self::map_from(pre, t, e, f, frame, large),
+            Self::map_written(pre, post, t, e, f, frame, large),
         ensures
             same_leaf_nodes(&pre.list, &post.list, &pre.tables),
             same_table_nodes(&pre.list, &post.list, &pre.table_pages),
@@ -1225,11 +1718,11 @@ impl CapKernel {
 
     /// The blocks, holders and spaces after a map: the frame's block has one more reference, held by the
     /// node, and no other block changed.
-    proof fn lemma_map_blocks(pre: Self, post: Self, t: usize, e: usize, f: usize, frame: usize)
+    proof fn lemma_map_blocks(pre: Self, post: Self, t: usize, e: usize, f: usize, frame: usize, large: bool)
         requires
             pre.wf(),
-            Self::map_from(pre, t, e, f, frame),
-            Self::map_written(pre, post, t, e, f, frame),
+            Self::map_from(pre, t, e, f, frame, large),
+            Self::map_written(pre, post, t, e, f, frame, large),
         ensures
             holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
             zeroing_typed(&post.zeroing, &post.blocks),
@@ -1243,7 +1736,7 @@ impl CapKernel {
         assert(pre.tables.is_cap(&pre.list, f));
         lemma_holder_refs(&pre.list, &pre.tables, &pre.blocks, &pre.zeroing, pre.holders@, f);
         assert(pre.holders@.contains_key(br));
-        Self::lemma_map_nodes(pre, post, t, e, f, frame);
+        Self::lemma_map_nodes(pre, post, t, e, f, frame, large);
         assert forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x) by {
             assert(post.is_cap(x) == pre.is_cap(x));
         }
@@ -1254,11 +1747,11 @@ impl CapKernel {
 
     /// The objects, frames, leaf blocks and spaces after a map: a frame block's count changed, which
     /// none of them reads beyond the holders.
-    proof fn lemma_map_objects(pre: Self, post: Self, t: usize, e: usize, f: usize, frame: usize)
+    proof fn lemma_map_objects(pre: Self, post: Self, t: usize, e: usize, f: usize, frame: usize, large: bool)
         requires
             pre.wf(),
-            Self::map_from(pre, t, e, f, frame),
-            Self::map_written(pre, post, t, e, f, frame),
+            Self::map_from(pre, t, e, f, frame, large),
+            Self::map_written(pre, post, t, e, f, frame, large),
         ensures
             objects_wf(&post.tables, &post.blocks, post.holders@),
             frames_held(post.frames@, post.holders@),
@@ -1273,7 +1766,7 @@ impl CapKernel {
         assert(pre.tables.is_cap(&pre.list, f));
         lemma_holder_refs(&pre.list, &pre.tables, &pre.blocks, &pre.zeroing, pre.holders@, f);
         assert(pre.holders@.contains_key(br));
-        Self::lemma_map_nodes(pre, post, t, e, f, frame);
+        Self::lemma_map_nodes(pre, post, t, e, f, frame, large);
         assert forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x) by {
             assert(post.is_cap(x) == pre.is_cap(x));
         }
@@ -1293,11 +1786,11 @@ impl CapKernel {
 
     /// The table pages and the links after a map: the frame's block is no table page's, and the entry
     /// written is at level 1, below every link.
-    proof fn lemma_map_tables(pre: Self, post: Self, t: usize, e: usize, f: usize, frame: usize)
+    proof fn lemma_map_tables(pre: Self, post: Self, t: usize, e: usize, f: usize, frame: usize, large: bool)
         requires
             pre.wf(),
-            Self::map_from(pre, t, e, f, frame),
-            Self::map_written(pre, post, t, e, f, frame),
+            Self::map_from(pre, t, e, f, frame, large),
+            Self::map_written(pre, post, t, e, f, frame, large),
         ensures
             table_pages_wf(&post.list, &post.table_pages, &post.blocks),
             table_links_wf(tree_of(&post.table_pages, &post.spaces)),
@@ -1309,24 +1802,24 @@ impl CapKernel {
         let dead = block_dead(&pre.blocks, br);
         assert(pre.tables.is_cap(&pre.list, f));
         lemma_holder_refs(&pre.list, &pre.tables, &pre.blocks, &pre.zeroing, pre.holders@, f);
-        Self::lemma_map_nodes(pre, post, t, e, f, frame);
+        Self::lemma_map_nodes(pre, post, t, e, f, frame, large);
         if let BlockRef::Small(x) = br {
             assert(pre.blocks.pages@[x as int].object is Frame);
         }
         lemma_table_pages_refs_changed(&pre.list, &post.list, &pre.table_pages, &pre.blocks, &post.blocks, br, refs, dead);
         assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, t));
         lemma_table_pages_entry_written(&post.list, &pre.table_pages, &post.table_pages, &post.blocks, t, e);
-        Self::lemma_map_tree(pre, post, t, e, f, frame);
-        lemma_links_level1_written(a, b, t, e);
+        Self::lemma_map_tree(pre, post, t, e, f, frame, large);
+        lemma_links_entry_written(a, b, t, e);
     }
 
     /// The mappings after a map: the new node's record says what was written, and every other record's
     /// entry, node, parent and holding are as they were.
-    proof fn lemma_map_mappings(pre: Self, post: Self, t: usize, e: usize, f: usize, frame: usize)
+    proof fn lemma_map_mappings(pre: Self, post: Self, t: usize, e: usize, f: usize, frame: usize, large: bool)
         requires
             pre.wf(),
-            Self::map_from(pre, t, e, f, frame),
-            Self::map_written(pre, post, t, e, f, frame),
+            Self::map_from(pre, t, e, f, frame, large),
+            Self::map_written(pre, post, t, e, f, frame, large),
         ensures
             mappings_wf(&post.list, &post.tables, tree_of(&post.table_pages, &post.spaces), &post.blocks, post.holders@, post.mappings@),
     {
@@ -1336,8 +1829,8 @@ impl CapKernel {
         let br = block_ref(&pre.blocks, frame);
         let cap = pre.payload_of(f);
         pre.lemma_map_node_place(t, e);
-        Self::lemma_map_nodes(pre, post, t, e, f, frame);
-        Self::lemma_map_tree(pre, post, t, e, f, frame);
+        Self::lemma_map_nodes(pre, post, t, e, f, frame, large);
+        Self::lemma_map_tree(pre, post, t, e, f, frame, large);
         assert(pre.tables.is_cap(&pre.list, f));
         lemma_holder_refs(&pre.list, &pre.tables, &pre.blocks, &pre.zeroing, pre.holders@, f);
         assert(block_ref(&post.blocks, frame) == br);
@@ -1398,11 +1891,11 @@ impl CapKernel {
     }
 
     /// The node a map adds is a mapping node, and every other node of a table page is as it was.
-    proof fn lemma_map_table_nodes(pre: Self, post: Self, t: usize, e: usize, f: usize, frame: usize)
+    proof fn lemma_map_table_nodes(pre: Self, post: Self, t: usize, e: usize, f: usize, frame: usize, large: bool)
         requires
             pre.wf(),
-            Self::map_from(pre, t, e, f, frame),
-            Self::map_written(pre, post, t, e, f, frame),
+            Self::map_from(pre, t, e, f, frame, large),
+            Self::map_written(pre, post, t, e, f, frame, large),
         ensures
             table_nodes_are_mappings(&post.list, &post.table_pages),
     {
@@ -1416,11 +1909,11 @@ impl CapKernel {
     }
 
     /// Everything the invariant says after the writes of a map.
-    proof fn lemma_map_wf(pre: Self, post: Self, t: usize, e: usize, f: usize, frame: usize)
+    proof fn lemma_map_wf(pre: Self, post: Self, t: usize, e: usize, f: usize, frame: usize, large: bool)
         requires
             pre.wf(),
-            Self::map_from(pre, t, e, f, frame),
-            Self::map_written(pre, post, t, e, f, frame),
+            Self::map_from(pre, t, e, f, frame, large),
+            Self::map_written(pre, post, t, e, f, frame, large),
             post.cores == pre.cores,
             post.flush_epoch == pre.flush_epoch,
             post.tlb == pre.tlb,
@@ -1429,12 +1922,12 @@ impl CapKernel {
         ensures
             post.wf(),
     {
-        Self::lemma_map_nodes(pre, post, t, e, f, frame);
-        Self::lemma_map_table_nodes(pre, post, t, e, f, frame);
-        Self::lemma_map_blocks(pre, post, t, e, f, frame);
-        Self::lemma_map_objects(pre, post, t, e, f, frame);
-        Self::lemma_map_tables(pre, post, t, e, f, frame);
-        Self::lemma_map_mappings(pre, post, t, e, f, frame);
+        Self::lemma_map_nodes(pre, post, t, e, f, frame, large);
+        Self::lemma_map_table_nodes(pre, post, t, e, f, frame, large);
+        Self::lemma_map_blocks(pre, post, t, e, f, frame, large);
+        Self::lemma_map_objects(pre, post, t, e, f, frame, large);
+        Self::lemma_map_tables(pre, post, t, e, f, frame, large);
+        Self::lemma_map_mappings(pre, post, t, e, f, frame, large);
         Self::lemma_tlb_same(pre, post);
         assert(post.frames_wf());
     }
