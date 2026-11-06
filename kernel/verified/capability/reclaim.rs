@@ -199,7 +199,7 @@ impl CapKernel {
                     self.free_leaf(c, root, from, base)
                 }
             },
-            ObjectType::None | ObjectType::TablePage => ReclaimStep::Refused,
+            ObjectType::None | ObjectType::TablePage | ObjectType::Space => ReclaimStep::Refused,
         }
     }
 
@@ -810,6 +810,7 @@ impl CapKernel {
             forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x),
             forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x) ==> post.tables.payload_of(x) == pre.tables.payload_of(x),
             post.table_pages == pre.table_pages,
+            post.spaces == pre.spaces,
         ensures
             holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
             objects_wf(&post.tables, &post.blocks, post.holders@),
@@ -817,6 +818,7 @@ impl CapKernel {
             list_pages_used(&post.list, &post.blocks),
             zeroing_typed(&post.zeroing, &post.blocks),
             table_pages_wf(&post.list, &post.table_pages, &post.blocks),
+            spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
     {
         let page = base / 4096;
         pre.lemma_empty_leaf(base);
@@ -858,6 +860,8 @@ impl CapKernel {
         lemma_list_pages_used_small_freed(&post.list, &pre.blocks, &post.blocks, page);
         lemma_table_node_pages_kept(&pre.list, &post.list, &pre.table_pages, &pre.blocks, base);
         lemma_table_pages_small_freed(&pre.list, &post.list, &pre.table_pages, &pre.blocks, &post.blocks, page);
+        lemma_space_node_pages_kept(&pre.list, &post.list, &pre.tables, &pre.spaces, &pre.blocks, base);
+        lemma_spaces_small_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks, &post.blocks, page);
     }
 
     /// The kernel after the empty leaf at `base` frees: nothing but its block, its owner entry and its
@@ -890,6 +894,7 @@ impl CapKernel {
             post.zeroing == pre.zeroing,
             post.frames == pre.frames,
             post.table_pages == pre.table_pages,
+            post.spaces == pre.spaces,
         ensures
             post.wf(),
             post.view() == pre.view(),

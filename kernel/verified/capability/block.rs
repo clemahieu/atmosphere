@@ -38,6 +38,7 @@ pub enum ObjectType {
     Frame,
     TableLeaf,
     TablePage,
+    Space,
 }
 
 #[derive(Clone, Copy)]

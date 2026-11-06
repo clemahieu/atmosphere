@@ -128,7 +128,7 @@ impl CapKernel {
         &&& self.list.nodes@[parent as int].depth < MAX_DEPTH
         &&& !self.list.nodes@[child as int].live
         &&& narrows(child_of(self.payload_of(parent), rights, base, order), self.payload_of(parent))
-        &&& self.payload_of(parent).kind is Frame ==>
+        &&& (self.payload_of(parent).kind is Frame || self.payload_of(parent).kind is Space) ==>
             block_refs(&self.blocks, block_ref(&self.blocks, self.payload_of(parent).base / 4096)) != usize::MAX
     }
 
@@ -181,16 +181,19 @@ impl CapKernel {
             pre.lemma_slot(root, from);
             assert(pre.tables.is_cap(&pre.list, parent));
             assert(payload == pre.payload_of(parent));
+            if payload.kind is Space {
+                pre.lemma_space_cap(parent);
+            }
         }
         if !may_derive(payload, rights, base, order) {
             return false;
         }
-        let frame = match payload.kind {
-            CapKind::Frame => true,
+        let counted = match payload.kind {
+            CapKind::Frame | CapKind::Space => true,
             _ => false,
         };
-        // A derived frame holds a reference on the block its parent lies in.
-        let block = if frame {
+        // A derived frame or space holds a reference on the block its parent lies in.
+        let block = if counted {
             let br = locate(&self.blocks, payload.base / 4096);
             if !add_block_ref(&mut self.blocks, br) {
                 return false;
@@ -215,7 +218,14 @@ impl CapKernel {
             Payload { kind: payload.kind, order, rights, base, badge: payload.badge, reserved: 0 },
         );
         match block {
-            Some(br) => { self.holders = Ghost(pre.holders@.insert(br, pre.holders@[br].insert(child))); },
+            Some(br) => {
+                match payload.kind {
+                    CapKind::Space => {
+                        self.spaces.holders = Ghost(pre.spaces.holders@.insert(base, pre.spaces.holders@[base].insert(child)));
+                    },
+                    _ => { self.holders = Ghost(pre.holders@.insert(br, pre.holders@[br].insert(child))); },
+                }
+            },
             None => {},
         }
         proof {
@@ -233,8 +243,9 @@ impl CapKernel {
         true
     }
 
-    /// The holders after a derive: a frame child joins its parent's block, and any other child holds
-    /// nothing. With them, what the blocks owe the rest of the invariant.
+    /// The holders after a derive: a frame child joins its parent's block, a space child joins its
+    /// parent's space, and any other child holds nothing. With them, what the blocks owe the rest of
+    /// the invariant.
     proof fn lemma_derive_holders(pre: Self, post: Self, parent: usize, child: usize, block: Option<BlockRef>)
         requires
             Self::derive_step(pre, post, child),
@@ -244,15 +255,26 @@ impl CapKernel {
             post.payload_of(child).kind == pre.payload_of(parent).kind,
             post.zeroing == pre.zeroing,
             post.list.pages@.dom() == pre.list.pages@.dom(),
-            block is Some == (pre.payload_of(parent).kind is Frame),
+            block is Some == (pre.payload_of(parent).kind is Frame || pre.payload_of(parent).kind is Space),
             block is Some ==> {
                 let br = block->0;
                 &&& br == block_ref(&pre.blocks, pre.payload_of(parent).base / 4096)
                 &&& block_refs(&pre.blocks, br) < usize::MAX
                 &&& blocks_refs_changed(&pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br))
-                &&& post.holders@ == pre.holders@.insert(br, pre.holders@[br].insert(child))
             },
-            block is None ==> post.blocks == pre.blocks && post.holders == pre.holders,
+            block is Some && pre.payload_of(parent).kind is Frame ==> {
+                &&& post.holders@ == pre.holders@.insert(block->0, pre.holders@[block->0].insert(child))
+                &&& post.spaces == pre.spaces
+            },
+            block is Some && pre.payload_of(parent).kind is Space ==> {
+                let s = pre.payload_of(parent).base;
+                &&& post.holders == pre.holders
+                &&& post.spaces.roots == pre.spaces.roots
+                &&& post.spaces.records == pre.spaces.records
+                &&& post.spaces.spare == pre.spaces.spare
+                &&& post.spaces.holders@ == pre.spaces.holders@.insert(s, pre.spaces.holders@[s].insert(child))
+            },
+            block is None ==> post.blocks == pre.blocks && post.holders == pre.holders && post.spaces == pre.spaces,
             post.table_pages == pre.table_pages,
         ensures
             holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
@@ -261,6 +283,7 @@ impl CapKernel {
             objects_wf(&post.tables, &post.blocks, post.holders@),
             leaf_blocks_wf(&post.list, &post.tables, &post.blocks),
             table_pages_wf(&post.list, &post.table_pages, &post.blocks),
+            spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
     {
         assert forall|x: usize| x != child implies {
             &&& #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x)
@@ -272,31 +295,57 @@ impl CapKernel {
         Self::lemma_same_leaf_nodes(pre, post, child, child);
         pre.lemma_slot_not_table_page(child);
         Self::lemma_same_table_nodes(pre, post, child, child);
+        let pp = pre.payload_of(parent);
+        let cp = post.payload_of(child);
         match block {
             Some(br) => {
-                let pp = pre.payload_of(parent);
-                let cp = post.payload_of(child);
-                lemma_holder_refs(&pre.list, &pre.tables, &pre.blocks, &pre.zeroing, pre.holders@, parent);
-                assert(frame_in_block(block_ref(&pre.blocks, pp.base / 4096), pp));
-                lemma_child_same_block(&pre.blocks, pp, cp);
-                lemma_holders_frame_added(&pre.list, &pre.tables, &post.list, &post.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, child, br);
-                lemma_zeroing_typed_refs_changed(&pre.list, &pre.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
-                lemma_list_pages_used_same_kinds(&pre.list, &pre.blocks, &post.blocks);
-                assert forall|x: BlockRef| #[trigger] post.holders@.contains_key(x) == pre.holders@.contains_key(x) by {}
-                assert(objects_wf(&post.tables, &pre.blocks, pre.holders@));
-                lemma_objects_refs_changed(&post.tables, &pre.blocks, &post.blocks, pre.holders@, post.holders@, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
-                assert(leaf_blocks_wf(&pre.list, &post.tables, &pre.blocks));
-                lemma_leaf_blocks_refs_changed(&pre.list, &post.list, &post.tables, &pre.blocks, &post.blocks, pre.holders@, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
-                if let BlockRef::Small(x) = br {
-                    assert(pre.blocks.pages@[x as int].object is Frame);
+                if pp.kind is Frame {
+                    lemma_holder_refs(&pre.list, &pre.tables, &pre.blocks, &pre.zeroing, pre.holders@, parent);
+                    assert(frame_in_block(block_ref(&pre.blocks, pp.base / 4096), pp));
+                    lemma_child_same_block(&pre.blocks, pp, cp);
+                    lemma_holders_frame_added(&pre.list, &pre.tables, &post.list, &post.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, child, br);
+                    lemma_zeroing_typed_refs_changed(&pre.list, &pre.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
+                    lemma_list_pages_used_same_kinds(&pre.list, &pre.blocks, &post.blocks);
+                    assert forall|x: BlockRef| #[trigger] post.holders@.contains_key(x) == pre.holders@.contains_key(x) by {}
+                    assert(objects_wf(&post.tables, &pre.blocks, pre.holders@));
+                    lemma_objects_refs_changed(&post.tables, &pre.blocks, &post.blocks, pre.holders@, post.holders@, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
+                    assert(leaf_blocks_wf(&pre.list, &post.tables, &pre.blocks));
+                    lemma_leaf_blocks_refs_changed(&pre.list, &post.list, &post.tables, &pre.blocks, &post.blocks, pre.holders@, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
+                    if let BlockRef::Small(x) = br {
+                        assert(pre.blocks.pages@[x as int].object is Frame);
+                    }
+                    lemma_table_pages_refs_changed(&pre.list, &post.list, &pre.table_pages, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
+                    lemma_spaces_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
+                } else {
+                    // A space is its block's base, so the child names the parent's space.
+                    pre.lemma_space_cap(parent);
+                    let s = pp.base;
+                    assert(br == BlockRef::Small(s / 4096));
+                    assert(cp.base == s);
+                    assert(cp.order == 3);
+                    lemma_holders_same_frames(&pre.list, &pre.tables, &post.list, &post.tables, &pre.blocks, &pre.zeroing, pre.holders@);
+                    assert(!pre.holders@.contains_key(br)) by {
+                        if pre.holders@.contains_key(br) {
+                            assert(pre.blocks.pages@[(s / 4096) as int].object is Frame);
+                        }
+                    }
+                    lemma_holders_unkeyed_small_changed(&post.list, &post.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, s / 4096, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
+                    lemma_zeroing_typed_small_changed(&pre.zeroing, &pre.blocks, &post.blocks, s / 4096, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
+                    lemma_list_pages_used_same_kinds(&pre.list, &pre.blocks, &post.blocks);
+                    assert(objects_wf(&post.tables, &pre.blocks, pre.holders@));
+                    lemma_objects_unframed_block_changed(&post.tables, &pre.blocks, &post.blocks, pre.holders@, s / 4096, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
+                    assert(leaf_blocks_wf(&pre.list, &post.tables, &pre.blocks));
+                    lemma_leaf_blocks_other_changed(&pre.list, &post.list, &post.tables, &pre.blocks, &post.blocks, pre.holders@, s / 4096, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
+                    lemma_table_pages_refs_changed(&pre.list, &post.list, &pre.table_pages, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
+                    Self::lemma_spaces_holder_added(pre, post, child, s);
                 }
-                lemma_table_pages_refs_changed(&pre.list, &post.list, &pre.table_pages, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
             },
             None => {
                 lemma_holders_same_frames(&pre.list, &pre.tables, &post.list, &post.tables, &pre.blocks, &pre.zeroing, pre.holders@);
                 assert(leaf_blocks_wf(&pre.list, &post.tables, &pre.blocks));
                 lemma_leaf_blocks_same_nodes(&pre.list, &post.list, &post.tables, &post.blocks);
                 lemma_table_pages_same_nodes(&pre.list, &post.list, &pre.table_pages, &post.blocks);
+                lemma_spaces_same_caps(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks);
             },
         }
     }
@@ -326,12 +375,41 @@ impl CapKernel {
         }
     }
 
+    /// What a step that makes one capability, in a slot, does to the others: nothing. A derive is one,
+    /// and so is a retype that adds node pages, which keeps every node the list held but says nothing
+    /// of the kinds in the pages it adds.
+    pub open spec fn adds_cap(pre: Self, post: Self, child: usize) -> bool {
+        &&& pre.wf()
+        &&& post.tables.owner == pre.tables.owner
+        &&& forall|x: usize| #![trigger post.is_cap(x)] #![trigger pre.is_cap(x)]
+            x != child ==> post.is_cap(x) == pre.is_cap(x)
+        &&& forall|x: usize| x != child && #[trigger] pre.is_cap(x) ==> post.payload_of(x) == pre.payload_of(x)
+        &&& !pre.list.nodes@[child as int].live
+        &&& post.list.nodes@[child as int].live
+        &&& post.list.nodes@[child as int].kind is Capability
+    }
+
+    pub proof fn lemma_derive_step_adds_cap(pre: Self, post: Self, child: usize)
+        requires
+            Self::derive_step(pre, post, child),
+        ensures
+            Self::adds_cap(pre, post, child),
+    {
+        assert forall|x: usize| #![trigger post.is_cap(x)] #![trigger pre.is_cap(x)]
+            x != child implies post.is_cap(x) == pre.is_cap(x) by {
+            Self::lemma_caps_frame(pre, post, child, child, x);
+        }
+        assert forall|x: usize| x != child && #[trigger] pre.is_cap(x) implies post.payload_of(x) == pre.payload_of(x) by {
+            Self::lemma_caps_frame(pre, post, child, child, x);
+        }
+    }
+
     /// The view of a step that adds one child, in a slot of the caller's table, under a capability the
     /// caller holds. The child covers only what its parent does, and has control only with its parent's
     /// name.
     pub proof fn lemma_adds_child_view(pre: Self, post: Self, root: usize, from: usize, to: usize)
         requires
-            Self::derive_step(pre, post, pre.tables.node_of(root, to)),
+            Self::adds_cap(pre, post, pre.tables.node_of(root, to)),
             pre.tables.has_slot(root, from),
             pre.tables.has_slot(root, to),
             pre.is_cap(pre.tables.node_of(root, from)),
@@ -375,7 +453,7 @@ impl CapKernel {
         }
         assert forall|h: (ObjectId, NodeId)| #[trigger] b.held.contains(h) == (a.held.contains(h) || h == (root, child)) by {
             if h.1 != child {
-                Self::lemma_caps_frame(pre, post, child, child, h.1);
+                assert(post.is_cap(h.1) == pre.is_cap(h.1));
             }
         }
         assert forall|x: NodeId| x != child implies {
@@ -384,10 +462,10 @@ impl CapKernel {
             &&& a.names.contains_key(x) ==> b.names[x] == a.names[x]
             &&& a.pages.contains_key(x) ==> b.pages[x] == a.pages[x]
         } by {
-            Self::lemma_caps_frame(pre, post, child, child, x);
+            assert(post.is_cap(x) == pre.is_cap(x));
         }
         assert forall|x: NodeId, r: Right| x != child implies #[trigger] b.rights.contains((x, r)) == a.rights.contains((x, r)) by {
-            Self::lemma_caps_frame(pre, post, child, child, x);
+            assert(post.is_cap(x) == pre.is_cap(x));
         }
         let (cp, pp) = (post.payload_of(child), pre.payload_of(parent));
         assert forall|o: ObjectId| #[trigger] b.covers(child, o) implies a.covers(parent, o) by {
@@ -418,6 +496,7 @@ impl CapKernel {
         let (child_rights, parent_rights) = (cp.rights, pp.rights);
         assert(child_rights & !parent_rights == 0 && child_rights & 128 != 0 ==> parent_rights & 128 != 0) by (bit_vector);
         assert(right_bit(Right::Control) == 128);
+        Self::lemma_derive_step_adds_cap(pre, post, child);
         Self::lemma_adds_child_view(pre, post, root, from, to);
         lemma_adds_child_discharges(pre.view(), post.view(), root, parent, child, |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live);
     }

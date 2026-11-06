@@ -273,7 +273,7 @@ impl CapKernel {
     }
 
     /// Checks those refusals and an empty slot for the capability, and finds the two nodes.
-    fn retype_slots(&self, root: usize, from: usize, to: usize, base: usize, order: u8) -> (ret: Option<(usize, usize)>)
+    pub fn retype_slots(&self, root: usize, from: usize, to: usize, base: usize, order: u8) -> (ret: Option<(usize, usize)>)
         requires
             self.wf(),
             self.tables.roots@.contains_key(root),
@@ -328,11 +328,13 @@ impl CapKernel {
             pre.frame_block_ready(base, order),
             post.holders@ == pre.holders@.insert(block_ref(&pre.blocks, base / 4096), set![child]),
             post.table_pages == pre.table_pages,
+            post.spaces == pre.spaces,
             post.list.pages@.dom() == pre.list.pages@.dom(),
         ensures
             holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
             leaf_blocks_wf(&post.list, &post.tables, &post.blocks),
             table_pages_wf(&post.list, &post.table_pages, &post.blocks),
+            spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
     {
         assert forall|x: usize| x != child implies {
             &&& #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x)
@@ -347,6 +349,7 @@ impl CapKernel {
         pre.lemma_slot_not_table_page(child);
         Self::lemma_same_table_nodes(pre, post, child, child);
         lemma_table_pages_same_nodes(&pre.list, &post.list, &pre.table_pages, &post.blocks);
+        lemma_spaces_same_caps(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks);
         lemma_holders_frame_new(
             &pre.list,
             &pre.tables,
@@ -416,6 +419,7 @@ impl CapKernel {
             assert(FRAME_RIGHTS & 128 == 0) by (compute_only);
             assert(right_bit(Right::Control) == 128);
             assert(right_bit(Right::Retype) == 8);
+            Self::lemma_derive_step_adds_cap(pre, post, child);
             Self::lemma_adds_child_view(pre, post, root, from, to);
             let live = |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live;
             assert(pre.view().holds_right(root, parent, Right::Retype));
@@ -489,6 +493,10 @@ impl CapKernel {
                 implies self.table_pages.maps@.contains_key((x * 4096) as usize) by {
                 assert(x != page);
             }
+            assert forall|k: int| 0 <= k < 1 implies !((#[trigger] self.blocks.pages@[page + k]).object is Space) by {
+                assert(self.blocks.pages@[page as int].object is Frame);
+            }
+            lemma_spaces_small_typed(&self.list, &self.tables, &self.list, &self.tables, &self.spaces, &pre.blocks, &self.blocks, page, 1);
             assert(self.wf());
             assert(self.view() == pre.view());
             assert(self.frame_block_ready(base, 0)) by {
@@ -594,6 +602,7 @@ impl CapKernel {
                 lemma_leaf_blocks_same_pages(&pre.list, &pre.tables, &pre.blocks, &self.blocks);
                 lemma_leaf_blocks_owned_same_types(&pre.tables, &pre.blocks, &self.blocks);
                 lemma_table_pages_same_pages(&pre.list, &pre.table_pages, &pre.blocks, &self.blocks);
+                lemma_spaces_same_pages(&pre.list, &pre.tables, &pre.spaces, &pre.blocks, &self.blocks);
                 Self::lemma_zeroing_changed(pre, *self);
             }
             return RetypeStep::Again;
@@ -626,6 +635,7 @@ impl CapKernel {
             lemma_leaf_blocks_same_pages(&pre.list, &pre.tables, &pre.blocks, &me.blocks);
             lemma_leaf_blocks_owned_same_types(&pre.tables, &pre.blocks, &me.blocks);
             lemma_table_pages_same_pages(&pre.list, &pre.table_pages, &pre.blocks, &me.blocks);
+            lemma_spaces_same_pages(&pre.list, &pre.tables, &pre.spaces, &pre.blocks, &me.blocks);
             Self::lemma_zeroing_changed(pre, me);
         }
         RetypeStep::Done
@@ -823,6 +833,18 @@ impl CapKernel {
             Self::lemma_leaf_nodes(pre, post, mid, parent, base);
             Self::lemma_leaf_first(pre, post, base);
             Self::lemma_leaf_slots(pre, post, base);
+            assert forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x) by {
+                Self::lemma_leaf_cap(pre, post, base, x);
+            }
+            assert forall|x: usize| #[trigger] pre.is_cap(x) implies post.payload_of(x) == pre.payload_of(x) by {
+                Self::lemma_leaf_cap(pre, post, base, x);
+            }
+            assert forall|k: int| 0 <= k < 2 implies !((#[trigger] post.blocks.pages@[page + k]).object is Space) by {
+                if k == 0 {
+                    assert(post.blocks.pages@[page as int].object is TableLeaf);
+                }
+            }
+            lemma_spaces_small_typed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks, &post.blocks, page, 2);
             assert(post.wf());
             assert forall|i: usize| index_ok(i) && index_entry(i) == r as int implies {
                 &&& #[trigger] post.tables.has_slot(root, i)

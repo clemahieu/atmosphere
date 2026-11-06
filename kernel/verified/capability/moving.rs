@@ -84,6 +84,7 @@ impl CapKernel {
         self.tables.set_payload(&self.list, root, to, payload);
         // A frame's holder has a new name; the count does not change.
         self.holders = Ghost(Self::moved_holders(pre.holders@, i, n));
+        self.spaces.holders = Ghost(moved_space_holders(pre.spaces.holders@, i, n));
         proof {
             let post = *self;
             assert(post.list.nodes@[n as int].kind == pre.list.nodes@[i as int].kind);

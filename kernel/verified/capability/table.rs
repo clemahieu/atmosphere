@@ -34,6 +34,7 @@ pub enum CapKind {
     Endpoint,
     Reply,
     Notification,
+    Space,
 }
 
 /// What a capability says, beyond its place in the list. 32 bytes.
