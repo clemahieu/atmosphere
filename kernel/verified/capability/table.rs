@@ -104,8 +104,27 @@ proof fn lemma_payload_page_aligned(leaf: usize)
 {
 }
 
-/// Turns a page into a leaf's payload page with every entry written.
-fn new_payload_page(addr: usize, Tracked(page): Tracked<PagePerm4k>) -> (ret: Tracked<PointsTo<PayloadPage>>)
+/// The record of a leaf's parent, held where its hidden node's payload would be, since a hidden node
+/// has no slot. It names the root entry that points at the leaf, and a leaf with no parent has rights
+/// 0. The two-way detach needs it at run time, knowing only the leaf.
+pub open spec fn parent_record(root: usize, r: usize) -> Payload {
+    Payload { kind: CapKind::Untyped, order: 0, rights: 1, base: root, badge: r, reserved: 0 }
+}
+
+/// Where a slot's node lies in its leaf. On its own, like the next, for the modulus.
+proof fn lemma_slot_in_leaf(leaf: usize, slot: usize)
+    requires
+        leaf % 8192 == 0,
+        slot < NODES_PER_PAGE,
+        leaf + slot <= usize::MAX,
+    ensures
+        page_of((leaf + slot) as usize) == leaf,
+        ((leaf + slot) as usize) % 4096 == slot,
+{
+}
+
+/// Turns a page into a leaf's payload page with every entry written, and its parent recorded.
+fn new_payload_page(addr: usize, root: usize, r: usize, Tracked(page): Tracked<PagePerm4k>) -> (ret: Tracked<PointsTo<PayloadPage>>)
     requires
         page.addr() == addr,
         addr % 4096 == 0,
@@ -113,6 +132,7 @@ fn new_payload_page(addr: usize, Tracked(page): Tracked<PagePerm4k>) -> (ret: Tr
         ret@.addr() == addr,
         ret@.is_init(),
         ret@.value().entries.wf(),
+        ret@.value().entries@[0] == parent_record(root, r),
 {
     let mut entries = Array::<Payload, NODES_PER_PAGE>::new();
     let mut k = 0;
@@ -125,6 +145,7 @@ fn new_payload_page(addr: usize, Tracked(page): Tracked<PagePerm4k>) -> (ret: Tr
         entries.set(k, Payload { kind: CapKind::Untyped, order: 0, rights: 0, base: 0, badge: 0, reserved: 0 });
         k = k + 1;
     }
+    entries.set(0, Payload { kind: CapKind::Untyped, order: 0, rights: 1, base: root, badge: r, reserved: 0 });
     let tracked mut typed;
     proof {
         let tracked mut page = page;
@@ -141,7 +162,16 @@ impl Tables {
         self.roots@[root].value().leaves@[r]
     }
 
-    /// The root at `root` is initialised, and every leaf it names is owned by that entry.
+    /// The leaf's parent record, which says it is still in its root entry.
+    pub open spec fn record(&self, leaf: usize) -> Payload {
+        self.payloads@[leaf].value().entries@[0]
+    }
+
+    pub open spec fn attached(&self, leaf: usize) -> bool {
+        self.record(leaf).rights != 0
+    }
+
+    /// The root at `root` is initialised, and every leaf it names is owned by that entry and attached.
     pub open spec fn root_wf(&self, root: usize) -> bool {
         &&& self.roots@[root].addr() == root
         &&& self.roots@[root].is_init()
@@ -149,6 +179,7 @@ impl Tables {
         &&& forall|r: int| 0 <= r < ROOT_ENTRIES && #[trigger] self.leaf(root, r) != NO_LEAF ==> {
             &&& self.owner@.contains_key(self.leaf(root, r))
             &&& self.owner@[self.leaf(root, r)] == (root, r)
+            &&& self.attached(self.leaf(root, r))
         }
     }
 
@@ -157,15 +188,21 @@ impl Tables {
         forall|root: usize| #[trigger] self.roots@.contains_key(root) ==> self.root_wf(root)
     }
 
-    /// The owned leaf at `leaf` is where its owner says, has a payload page, and its two pages are
-    /// aligned and in the list's address space.
+    /// The owned leaf at `leaf` has a payload page, and its two pages are aligned and in the list's
+    /// address space. If attached, it is where its owner says, and its record says the same. A detached
+    /// leaf keeps its owner, so its capabilities stay in the view until its teardown removes them, though
+    /// its root entry no longer finds it.
     pub open spec fn leaf_wf(&self, list: &Tree, leaf: usize) -> bool {
         let (root, r) = self.owner@[leaf];
         &&& leaf != NO_LEAF
         &&& leaf % 8192 == 0
         &&& self.roots@.contains_key(root)
         &&& 0 <= r < ROOT_ENTRIES
-        &&& self.leaf(root, r) == leaf
+        &&& self.attached(leaf) ==> {
+            &&& self.leaf(root, r) == leaf
+            &&& self.record(leaf).base == root
+            &&& self.record(leaf).badge as int == r
+        }
         &&& list.pages@.dom().contains(leaf)
         &&& self.payloads@.contains_key(leaf)
         &&& self.payloads@[leaf].addr() == leaf + 4096
@@ -242,6 +279,7 @@ impl Tables {
         ensures
             self.owner@.contains_key(self.leaf(root, r)),
             self.owner@[self.leaf(root, r)] == (root, r),
+            self.attached(self.leaf(root, r)),
     {
         reveal(Tables::roots_wf);
     }
@@ -337,6 +375,7 @@ impl Tables {
                         assert forall|s: int| 0 <= s < ROOT_ENTRIES && #[trigger] me.leaf(t, s) != NO_LEAF implies {
                             &&& me.owner@.contains_key(me.leaf(t, s))
                             &&& me.owner@[me.leaf(t, s)] == (t, s)
+                            &&& me.attached(me.leaf(t, s))
                         } by {
                             assert(me.leaf(root, s) == NO_LEAF);
                         }
@@ -346,6 +385,7 @@ impl Tables {
                         assert forall|s: int| 0 <= s < ROOT_ENTRIES && #[trigger] me.leaf(t, s) != NO_LEAF implies {
                             &&& me.owner@.contains_key(me.leaf(t, s))
                             &&& me.owner@[me.leaf(t, s)] == (t, s)
+                            &&& me.attached(me.leaf(t, s))
                         } by {
                             assert(pre.leaf(t, s) == me.leaf(t, s));
                             pre.lemma_entry(t, s);
@@ -400,7 +440,7 @@ impl Tables {
             pre.lemma_root(root);
             lemma_payload_page_aligned(leaf);
         }
-        let Tracked(typed) = new_payload_page(leaf + 4096, Tracked(page));
+        let Tracked(typed) = new_payload_page(leaf + 4096, root, r, Tracked(page));
         proof {
             self.payloads.borrow_mut().tracked_insert(leaf, typed);
         }
@@ -467,6 +507,7 @@ impl Tables {
             me.payloads@[leaf].addr() == leaf + 4096,
             me.payloads@[leaf].is_init(),
             me.payloads@[leaf].value().entries.wf(),
+            me.payloads@[leaf].value().entries@[0] == parent_record(root, r),
         ensures
             me.wf(list),
             me.leaf(root, r as int) == leaf,
@@ -485,6 +526,7 @@ impl Tables {
                 assert forall|s: int| 0 <= s < ROOT_ENTRIES && #[trigger] me.leaf(t, s) != NO_LEAF implies {
                     &&& me.owner@.contains_key(me.leaf(t, s))
                     &&& me.owner@[me.leaf(t, s)] == (t, s)
+                    &&& me.attached(me.leaf(t, s))
                 } by {
                     if t == root && s == r as int {
                         assert(me.leaf(t, s) == leaf);
@@ -492,6 +534,7 @@ impl Tables {
                         assert(me.leaf(t, s) == pre.leaf(t, s));
                         pre.lemma_entry(t, s);
                         assert(pre.leaf(t, s) != leaf);
+                        assert(me.payloads@[pre.leaf(t, s)] == pre.payloads@[pre.leaf(t, s)]);
                     }
                 }
             }
@@ -507,12 +550,14 @@ impl Tables {
                     let (t, s) = pre.owner@[l];
                     assert(me.owner@[l] == pre.owner@[l]);
                     assert(me.payloads@[l] == pre.payloads@[l]);
-                    if t == root {
-                        assert(s != r as int);
-                    } else {
-                        assert(me.roots@[t] == pre.roots@[t]);
+                    if pre.attached(l) {
+                        if t == root {
+                            assert(s != r as int);
+                        } else {
+                            assert(me.roots@[t] == pre.roots@[t]);
+                        }
+                        assert(me.leaf(t, s) == pre.leaf(t, s));
                     }
-                    assert(me.leaf(t, s) == pre.leaf(t, s));
                 }
             }
         }
@@ -557,7 +602,7 @@ impl Tables {
         proof {
             self.lemma_entry(root, r as int);
             self.lemma_leaf(list, leaf);
-            assert(page_of((leaf + slot) as usize) == leaf);
+            lemma_slot_in_leaf(leaf, slot);
         }
         let payloads = PPtr::<PayloadPage>::from_usize(leaf + 4096).borrow(Tracked(self.payloads.borrow().tracked_borrow(leaf)));
         Some((leaf + slot, *payloads.entries.get(slot)))
@@ -589,7 +634,7 @@ impl Tables {
         proof {
             pre.lemma_entry(root, r as int);
             pre.lemma_leaf(list, leaf);
-            assert(page_of((leaf + slot) as usize) == leaf);
+            lemma_slot_in_leaf(leaf, slot);
         }
         let tracked mut perm;
         proof {
@@ -598,32 +643,219 @@ impl Tables {
         PPtr::<PayloadPage>::from_usize(leaf + 4096).borrow_mut(Tracked(&mut perm)).entries.set(slot, p);
         proof {
             self.payloads.borrow_mut().tracked_insert(leaf, perm);
-            let me = *self;
-            assert(me.roots_wf()) by {
-                reveal(Tables::roots_wf);
-                assert forall|t: usize| #[trigger] me.roots@.contains_key(t) implies me.root_wf(t) by {
-                    pre.lemma_root(t);
-                    assert forall|s: int| 0 <= s < ROOT_ENTRIES && #[trigger] me.leaf(t, s) != NO_LEAF implies {
-                        &&& me.owner@.contains_key(me.leaf(t, s))
-                        &&& me.owner@[me.leaf(t, s)] == (t, s)
-                    } by {
+            assert(self.payloads@ =~= pre.payloads@.insert(leaf, self.payloads@[leaf]));
+            Self::lemma_payload_written(pre, *self, list, root, i, leaf, slot, p);
+        }
+    }
+
+    /// The tables after index i's payload is written.
+    proof fn lemma_payload_written(pre: Self, me: Self, list: &Tree, root: usize, i: usize, leaf: usize, slot: usize, p: Payload)
+        requires
+            pre.wf(list),
+            pre.has_slot(root, i),
+            leaf == pre.leaf(root, index_entry(i)),
+            leaf == page_of(pre.node_of(root, i)),
+            slot as int == index_slot(i),
+            slot == pre.node_of(root, i) % 4096,
+            me.roots == pre.roots,
+            me.owner == pre.owner,
+            me.payloads@ == pre.payloads@.insert(leaf, me.payloads@[leaf]),
+            me.payloads@[leaf].addr() == pre.payloads@[leaf].addr(),
+            me.payloads@[leaf].is_init(),
+            me.payloads@[leaf].value().entries.wf(),
+            me.payloads@[leaf].value().entries@ == pre.payloads@[leaf].value().entries@.update(slot as int, p),
+        ensures
+            me.wf(list),
+            me.payload_of(pre.node_of(root, i)) == p,
+            forall|n: usize| #![trigger me.payload_of(n)]
+                n != pre.node_of(root, i) && n % 4096 < NODES_PER_PAGE
+                && pre.owner@.contains_key(page_of(n))
+                ==> me.payload_of(n) == pre.payload_of(n),
+    {
+        // Index i is a slot, so it is not position 0, where the record is.
+        assert(slot != 0);
+        assert forall|l: usize| #[trigger] me.record(l) == pre.record(l) by {
+            if l == leaf {
+                assert(me.payloads@[leaf].value().entries@[0] == pre.payloads@[leaf].value().entries@[0]);
+            }
+        }
+        assert(me.roots_wf()) by {
+            reveal(Tables::roots_wf);
+            assert forall|t: usize| #[trigger] me.roots@.contains_key(t) implies me.root_wf(t) by {
+                pre.lemma_root(t);
+                assert forall|s: int| 0 <= s < ROOT_ENTRIES && #[trigger] me.leaf(t, s) != NO_LEAF implies {
+                    &&& me.owner@.contains_key(me.leaf(t, s))
+                    &&& me.owner@[me.leaf(t, s)] == (t, s)
+                    &&& me.attached(me.leaf(t, s))
+                } by {
+                    assert(me.leaf(t, s) == pre.leaf(t, s));
+                    pre.lemma_entry(t, s);
+                    assert(me.record(me.leaf(t, s)) == pre.record(me.leaf(t, s)));
+                }
+            }
+        }
+        assert(me.leaves_wf(list)) by {
+            reveal(Tables::leaves_wf);
+            assert forall|l: usize| #[trigger] me.owner@.contains_key(l) implies me.leaf_wf(list, l) by {
+                assert(pre.leaf_wf(list, l));
+                assert(me.record(l) == pre.record(l));
+            }
+        }
+        assert forall|n: usize| #![trigger me.payload_of(n)]
+            n != pre.node_of(root, i) && n % 4096 < NODES_PER_PAGE && pre.owner@.contains_key(page_of(n))
+            implies me.payload_of(n) == pre.payload_of(n) by {
+            if page_of(n) == leaf {
+                assert(n % 4096 != slot);
+            }
+        }
+    }
+
+    /// The two-way detach of a leaf: its root entry and its parent record are cleared in one step, and a
+    /// leaf with no record has nothing to do. The owner stays, so what the leaf's slots hold stays in
+    /// the view, though no index finds them.
+    pub fn detach_leaf(&mut self, list: &Tree, leaf: usize)
+        requires
+            old(self).wf(list),
+            old(self).owner@.contains_key(leaf),
+        ensures
+            final(self).wf(list),
+            final(self).owner == old(self).owner,
+            final(self).roots@.dom() == old(self).roots@.dom(),
+            !final(self).attached(leaf),
+            !old(self).attached(leaf) ==> *final(self) == *old(self),
+            old(self).attached(leaf) ==> final(self).leaf(old(self).owner@[leaf].0, old(self).owner@[leaf].1) == NO_LEAF,
+            old(self).attached(leaf) ==> forall|i: usize| index_entry(i) == old(self).owner@[leaf].1
+                ==> !#[trigger] final(self).has_slot(old(self).owner@[leaf].0, i),
+            forall|t: usize, i: usize| #[trigger] old(self).has_slot(t, i)
+                && !(t == old(self).owner@[leaf].0 && index_entry(i) == old(self).owner@[leaf].1) ==>
+                final(self).has_slot(t, i) && final(self).node_of(t, i) == old(self).node_of(t, i),
+            forall|n: usize| n % 4096 != 0 ==> #[trigger] final(self).payload_of(n) == old(self).payload_of(n),
+    {
+        let ghost pre = *old(self);
+        proof {
+            pre.lemma_leaf(list, leaf);
+        }
+        let record = *PPtr::<PayloadPage>::from_usize(leaf + 4096)
+            .borrow(Tracked(self.payloads.borrow().tracked_borrow(leaf)))
+            .entries
+            .get(0);
+        if record.rights == 0 {
+            return;
+        }
+        let root = record.base;
+        let r = record.badge;
+        proof {
+            pre.lemma_root(root);
+        }
+        self.set_leaf(root, r, NO_LEAF);
+        let tracked mut perm;
+        proof {
+            perm = self.payloads.borrow_mut().tracked_remove(leaf);
+        }
+        PPtr::<PayloadPage>::from_usize(leaf + 4096).borrow_mut(Tracked(&mut perm)).entries.set(
+            0,
+            Payload { kind: CapKind::Untyped, order: 0, rights: 0, base: 0, badge: 0, reserved: 0 },
+        );
+        proof {
+            self.payloads.borrow_mut().tracked_insert(leaf, perm);
+            assert(self.payloads@ =~= pre.payloads@.insert(leaf, self.payloads@[leaf]));
+            Self::lemma_leaf_detached(pre, *self, list, leaf, root, r);
+        }
+    }
+
+    /// The tables after a leaf's root entry and record are cleared.
+    proof fn lemma_leaf_detached(pre: Self, me: Self, list: &Tree, leaf: usize, root: usize, r: usize)
+        requires
+            pre.wf(list),
+            pre.owner@.contains_key(leaf),
+            pre.attached(leaf),
+            pre.owner@[leaf] == (root, r as int),
+            pre.leaf(root, r as int) == leaf,
+            pre.roots@.contains_key(root),
+            r < ROOT_ENTRIES,
+            me.owner == pre.owner,
+            me.roots@.dom() == pre.roots@.dom(),
+            forall|t: usize| t != root && #[trigger] pre.roots@.contains_key(t) ==> me.roots@[t] == pre.roots@[t],
+            me.roots@[root].addr() == root,
+            me.roots@[root].is_init(),
+            me.roots@[root].value().leaves.wf(),
+            me.roots@[root].value().leaves@ == pre.roots@[root].value().leaves@.update(r as int, NO_LEAF),
+            me.payloads@ == pre.payloads@.insert(leaf, me.payloads@[leaf]),
+            me.payloads@[leaf].addr() == pre.payloads@[leaf].addr(),
+            me.payloads@[leaf].is_init(),
+            me.payloads@[leaf].value().entries.wf(),
+            me.payloads@[leaf].value().entries@[0].rights == 0,
+            forall|k: int| k != 0 ==> #[trigger] me.payloads@[leaf].value().entries@[k] == pre.payloads@[leaf].value().entries@[k],
+        ensures
+            me.wf(list),
+            !me.attached(leaf),
+            me.leaf(root, r as int) == NO_LEAF,
+            forall|i: usize| index_entry(i) == r as int ==> !#[trigger] me.has_slot(root, i),
+            forall|t: usize, i: usize| #[trigger] pre.has_slot(t, i)
+                && !(t == root && index_entry(i) == r as int) ==>
+                me.has_slot(t, i) && me.node_of(t, i) == pre.node_of(t, i),
+            forall|n: usize| n % 4096 != 0 ==> #[trigger] me.payload_of(n) == pre.payload_of(n),
+    {
+        assert(me.leaf(root, r as int) == NO_LEAF);
+        assert(pre.leaf(root, r as int) == leaf);
+        assert forall|l: usize| l != leaf implies #[trigger] me.record(l) == pre.record(l) by {
+            assert(me.payloads@[l] == pre.payloads@[l]);
+        }
+        assert forall|t: usize, s: int| !(t == root && s == r as int) && 0 <= s < ROOT_ENTRIES
+            && pre.roots@.contains_key(t) implies #[trigger] me.leaf(t, s) == pre.leaf(t, s) by {
+            if t != root {
+                assert(me.roots@[t] == pre.roots@[t]);
+            }
+        }
+        assert(me.roots_wf()) by {
+            reveal(Tables::roots_wf);
+            assert forall|t: usize| #[trigger] me.roots@.contains_key(t) implies me.root_wf(t) by {
+                pre.lemma_root(t);
+                if t != root {
+                    assert(me.roots@[t] == pre.roots@[t]);
+                }
+                assert forall|s: int| 0 <= s < ROOT_ENTRIES && #[trigger] me.leaf(t, s) != NO_LEAF implies {
+                    &&& me.owner@.contains_key(me.leaf(t, s))
+                    &&& me.owner@[me.leaf(t, s)] == (t, s)
+                    &&& me.attached(me.leaf(t, s))
+                } by {
+                    assert(!(t == root && s == r as int));
+                    assert(pre.roots@.contains_key(t));
+                    assert(me.leaf(t, s) == pre.leaf(t, s));
+                    pre.lemma_entry(t, s);
+                    assert(pre.leaf(t, s) != leaf);
+                    assert(me.record(pre.leaf(t, s)) == pre.record(pre.leaf(t, s)));
+                }
+            }
+        }
+        assert(me.leaves_wf(list)) by {
+            reveal(Tables::leaves_wf);
+            assert forall|l: usize| #[trigger] me.owner@.contains_key(l) implies me.leaf_wf(list, l) by {
+                pre.lemma_leaf(list, l);
+                if l != leaf {
+                    let (t, s) = pre.owner@[l];
+                    assert(me.record(l) == pre.record(l));
+                    assert(me.payloads@[l] == pre.payloads@[l]);
+                    if pre.attached(l) {
+                        assert(pre.leaf(t, s) == l);
+                        assert(!(t == root && s == r as int));
+                        assert(pre.roots@.contains_key(t));
                         assert(me.leaf(t, s) == pre.leaf(t, s));
-                        pre.lemma_entry(t, s);
                     }
                 }
             }
-            assert(me.leaves_wf(list)) by {
-                reveal(Tables::leaves_wf);
-                assert forall|l: usize| #[trigger] me.owner@.contains_key(l) implies me.leaf_wf(list, l) by {
-                    assert(pre.leaf_wf(list, l));
-                }
-            }
-            assert forall|n: usize| #![trigger me.payload_of(n)]
-                n != pre.node_of(root, i) && n % 4096 < NODES_PER_PAGE && pre.owner@.contains_key(page_of(n))
-                implies me.payload_of(n) == pre.payload_of(n) by {
-                if page_of(n) == leaf {
-                    assert(n % 4096 != slot);
-                }
+        }
+        assert forall|i: usize| index_entry(i) == r as int implies !#[trigger] me.has_slot(root, i) by {
+        }
+        assert forall|t: usize, i: usize| #[trigger] pre.has_slot(t, i)
+            && !(t == root && index_entry(i) == r as int) implies
+            me.has_slot(t, i) && me.node_of(t, i) == pre.node_of(t, i) by {
+            assert(0 <= index_entry(i) < ROOT_ENTRIES);
+            assert(me.leaf(t, index_entry(i)) == pre.leaf(t, index_entry(i)));
+        }
+        assert forall|n: usize| n % 4096 != 0 implies #[trigger] me.payload_of(n) == pre.payload_of(n) by {
+            if page_of(n) != leaf {
+                assert(me.payloads@[page_of(n)] == pre.payloads@[page_of(n)]);
             }
         }
     }
