@@ -165,6 +165,73 @@ impl CapKernel {
         &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base })
     }
 
+    /// A dead 4K frame has no page mapped, since a mapping would hold a reference on its block.
+    proof fn lemma_dead_frame_unmapped(&self, page: usize)
+        requires
+            self.wf(),
+            self.frame_is_dead(page),
+        ensures
+            !self.mapped@.contains(page),
+    {
+        if self.mapped@.contains(page) {
+            let br = self.lemma_mapped_block(page);
+            assert(self.holders@.contains_key(BlockRef::Small(page)));
+            match br {
+                BlockRef::Small(b) => {},
+                BlockRef::Two(r) => { lemma_large_block_alone(&self.blocks, Large::Two, r, BlockRef::Small(page), page); },
+                BlockRef::One(r) => { lemma_large_block_alone(&self.blocks, Large::One, r, BlockRef::Small(page), page); },
+            }
+        }
+    }
+
+    /// No page of a table leaf's block is mapped: the only blocks a mapping names are frames'.
+    proof fn lemma_leaf_unmapped(&self, page: usize, g: usize)
+        requires
+            self.wf(),
+            page < NUM_PAGES,
+            page % 2 == 0,
+            self.blocks.pages@[page as int].kind is Base,
+            self.blocks.pages@[page as int].object is TableLeaf,
+            self.blocks.pages@[page as int].order == 1,
+            g == page || g == page + 1,
+        ensures
+            !self.mapped@.contains(g),
+    {
+        if self.mapped@.contains(g) {
+            let br = self.lemma_mapped_block(g);
+            match br {
+                BlockRef::Small(b) => {
+                    assert(self.holders@.contains_key(BlockRef::Small(g)));
+                    if g != page {
+                        self.blocks.lemma_member_of(page as int, g as int);
+                    }
+                },
+                BlockRef::Two(r) => { lemma_large_block_alone(&self.blocks, Large::Two, r, BlockRef::Small(page), page); },
+                BlockRef::One(r) => { lemma_large_block_alone(&self.blocks, Large::One, r, BlockRef::Small(page), page); },
+            }
+        }
+    }
+
+    /// A dead large block has no page mapped: a mapping of one holds a reference on the block, and no
+    /// other block shares its pages.
+    proof fn lemma_dead_region_unmapped(&self, level: Large, r: usize)
+        requires
+            self.wf(),
+            r < level_regions(level),
+            self.region_is_dead(level, r),
+        ensures
+            self.region_unmapped(level, r),
+    {
+        assert forall|i: usize| #[trigger] block_has_page(level_ref(level, r), i) implies !self.mapped@.contains(i) by {
+            if self.mapped@.contains(i) {
+                let br = self.lemma_mapped_block(i);
+                if br != level_ref(level, r) {
+                    lemma_large_block_alone(&self.blocks, level, r, br, i);
+                }
+            }
+        }
+    }
+
     /// A retype naming the block at `base`, under the untyped at index `from` of the table at `root`:
     /// what it does depends on what the block holds. All of these come from user space.
     pub fn reclaim(&mut self, c: usize, root: usize, from: usize, base: usize) -> (ret: ReclaimStep)
@@ -172,8 +239,6 @@ impl CapKernel {
             old(self).wf(),
             c < NUM_CPUS,
             old(self).tables.roots@.contains_key(root),
-            !old(self).mapped@.contains(base / 4096),
-            old(self).blocks.pages@[(base / 4096) as int].object is TableLeaf ==> !old(self).mapped@.contains((base / 4096 + 1) as usize),
         ensures
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
@@ -460,8 +525,6 @@ impl CapKernel {
             old(self).wf(),
             c < NUM_CPUS,
             old(self).tables.roots@.contains_key(root),
-            !old(self).mapped@.contains(base / 4096),
-            !old(self).mapped@.contains((base / 4096 + 1) as usize),
         ensures
             final(self).wf(),
             Self::same_tree(*old(self), *final(self)),
@@ -507,6 +570,9 @@ impl CapKernel {
             return ReclaimStep::Again;
         }
         proof {
+            assert(pre.tables.owner@.contains_key(base));
+            pre.lemma_leaf_unmapped(page, page);
+            pre.lemma_leaf_unmapped(page, (page + 1) as usize);
             pre.lemma_acknowledged_is_clean(page);
             pre.lemma_acknowledged_is_clean((page + 1) as usize);
         }
@@ -555,8 +621,6 @@ impl CapKernel {
             old(self).wf(),
             old(self).leaf_is_empty(base),
             old(self).blocks.pages@[(base / 4096) as int].refs == 0,
-            !old(self).mapped@.contains(base / 4096),
-            !old(self).mapped@.contains((base / 4096 + 1) as usize),
             old(self).no_stale_translation(base / 4096),
             old(self).no_stale_translation((base / 4096 + 1) as usize),
         ensures
@@ -1070,14 +1134,12 @@ impl CapKernel {
     }
 
     /// Reclaims the 4K block at `base`, under the untyped at index `from` of the table at `root`. All of
-    /// these come from user space, and anything but a free changes nothing. That the frame is unmapped
-    /// is atmo-6x9.16.8's to discharge, from its mapping nodes.
+    /// these come from user space, and anything but a free changes nothing.
     pub fn reclaim_frame(&mut self, c: usize, root: usize, from: usize, base: usize) -> (ret: ReclaimStep)
         requires
             old(self).wf(),
             c < NUM_CPUS,
             old(self).tables.roots@.contains_key(root),
-            !old(self).mapped@.contains(base / 4096),
         ensures
             final(self).wf(),
             Self::same_tree(*old(self), *final(self)),
@@ -1118,6 +1180,7 @@ impl CapKernel {
             return ReclaimStep::Again;
         }
         proof {
+            pre.lemma_dead_frame_unmapped(page);
             pre.lemma_acknowledged_is_clean(page);
         }
         self.free_frame(c, page);
@@ -1153,8 +1216,6 @@ impl CapKernel {
             old(self).wf(),
             c < NUM_CPUS,
             old(self).tables.roots@.contains_key(root),
-            order == 9 ==> old(self).region_unmapped(Large::Two, base / 4096 / PAGES_PER_2M),
-            order == 18 ==> old(self).region_unmapped(Large::One, base / 4096 / PAGES_PER_1G),
         ensures
             final(self).wf(),
             Self::same_tree(*old(self), *final(self)),
@@ -1197,9 +1258,10 @@ impl CapKernel {
             return ReclaimStep::Again;
         }
         proof {
-            pre.lemma_region_acknowledged_is_clean(level, r);
             assert(pre.holders@.contains_key(level_ref(level, r)));
             assert(block_refs(&pre.blocks, level_ref(level, r)) == 0);
+            pre.lemma_dead_region_unmapped(level, r);
+            pre.lemma_region_acknowledged_is_clean(level, r);
         }
         self.free_large(c, level, r);
         proof {
@@ -1220,7 +1282,6 @@ impl CapKernel {
             c < NUM_CPUS,
             r < level_regions(level),
             old(self).region_is_dead(level, r),
-            old(self).region_unmapped(level, r),
             old(self).region_clean(level, r),
         ensures
             Self::same_tree(*old(self), *final(self)),
@@ -1287,7 +1348,6 @@ impl CapKernel {
             old(self).wf(),
             c < NUM_CPUS,
             old(self).frame_is_dead(page),
-            !old(self).mapped@.contains(page),
             old(self).no_stale_translation(page),
         ensures
             Self::same_tree(*old(self), *final(self)),

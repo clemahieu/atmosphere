@@ -472,7 +472,7 @@ impl CapKernel {
     pub open spec fn mapping_stale_noted(pre: Self, post: Self, n: usize) -> bool {
         let tree = tree_of(&pre.table_pages, &pre.spaces);
         let m = pre.mappings@[n];
-        let pages = record_pages(tree, m);
+        let pages = record_pages(m);
         let space = tree.record(m.table).space;
         &&& post.flush_epoch == pre.flush_epoch + 1
         &&& forall|g: usize| #[trigger] pages.contains(g) ==> post.stale_epoch.written(post.flush_epoch, g)
@@ -482,7 +482,7 @@ impl CapKernel {
             ==> post.tlb@[d].contains(TlbEntry { space: space->Some_0, page: g })
         &&& forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] pre.tlb@[d].contains(e) ==> post.tlb@[d].contains(e)
         &&& forall|g: usize| #[trigger] post.mapped@.contains(g)
-            == (pre.mapped@.contains(g) && (!pages.contains(g) || named_elsewhere(tree, pre.mappings@, n, g)))
+            == (pre.mapped@.contains(g) && (!pages.contains(g) || page_named(pre.mappings@.remove(n), g)))
     }
 
     /// Node n's mapping is gone: its entry is empty, its record and its reference with it, every other
@@ -573,19 +573,128 @@ pub open spec fn entry_pages(level: usize) -> int {
     }
 }
 
-/// The pages mapping record m maps, by its table's level.
-pub open spec fn record_pages(tree: TableTree, m: MappingRecord) -> Set<usize> {
-    Set::<usize>::range(m.frame, (m.frame + entry_pages(tree.record(m.table).level)) as usize)
+/// The level of table a map writes: 2 for a large frame, 1 otherwise.
+pub open spec fn map_level(large: bool) -> usize {
+    if large {
+        2
+    } else {
+        1
+    }
 }
 
-/// What record_pages holds, when its range fits.
-pub proof fn lemma_record_pages(tree: TableTree, m: MappingRecord)
+/// The pages a map of this first page maps.
+pub open spec fn map_pages(frame: usize, large: bool) -> Set<usize> {
+    Set::<usize>::range(frame, (frame + entry_pages(map_level(large))) as usize)
+}
+
+/// What map_pages holds, when its range fits.
+pub proof fn lemma_map_pages(frame: usize, large: bool)
     requires
-        m.frame + entry_pages(tree.record(m.table).level) <= usize::MAX,
+        frame + entry_pages(map_level(large)) <= usize::MAX,
     ensures
-        forall|g: usize| #[trigger] record_pages(tree, m).contains(g) <==> m.frame <= g < m.frame + entry_pages(tree.record(m.table).level),
+        forall|g: usize| #[trigger] map_pages(frame, large).contains(g) <==> frame <= g < frame + entry_pages(map_level(large)),
 {
-    vstd::set_lib::range_set_properties::<usize>(m.frame, (m.frame + entry_pages(tree.record(m.table).level)) as usize);
+    vstd::set_lib::range_set_properties::<usize>(frame, (frame + entry_pages(map_level(large))) as usize);
+}
+
+/// The pages mapping record m maps.
+pub open spec fn record_pages(m: MappingRecord) -> Set<usize> {
+    map_pages(m.frame, m.large)
+}
+
+/// Some mapping record maps page g.
+pub open spec fn page_named(mappings: IMap<usize, MappingRecord>, g: usize) -> bool {
+    exists|n: usize| #![trigger mappings[n]] mappings.contains_key(n) && record_pages(mappings[n]).contains(g)
+}
+
+/// A page is mapped exactly while a mapping record names it.
+pub open spec fn mapped_wf(mapped: Set<usize>, mappings: IMap<usize, MappingRecord>) -> bool {
+    forall|g: usize| #[trigger] mapped.contains(g) == page_named(mappings, g)
+}
+
+/// A run of pages inside a frame capability lies in the capability's block, which is also its first
+/// page's block.
+pub proof fn lemma_mapped_page_in_block(blocks: &BlockTable, i: usize, p: Payload, frame: usize, count: int, g: usize)
+    requires
+        blocks.wf(),
+        i == p.base / 4096,
+        i < NUM_PAGES,
+        block_typed(blocks, block_ref(blocks, i)),
+        frame_in_block(block_ref(blocks, i), p),
+        p.base <= frame * 4096,
+        frame * 4096 + count * 4096 <= p.base as int + block_bytes(p.order),
+        frame < NUM_PAGES,
+        count >= 1,
+        frame <= g < frame + count,
+    ensures
+        block_ref(blocks, frame) == block_ref(blocks, i),
+        block_has_page(block_ref(blocks, i), g),
+{
+    match block_ref(blocks, i) {
+        BlockRef::Small(b) => {
+            assert(block_bytes(0) == 4096) by {
+                vstd::arithmetic::power2::lemma2_to64();
+            }
+        },
+        BlockRef::Two(r) => {},
+        BlockRef::One(r) => {
+            if blocks.regions_2m@[(frame / PAGES_PER_2M) as int].typed {
+                lemma_large_block_alone(blocks, Large::Two, frame / PAGES_PER_2M, BlockRef::One(r), frame);
+            }
+        },
+    }
+}
+
+/// A new mapping's pages join mapped.
+pub proof fn lemma_mapped_inserted(mapped: Set<usize>, mappings: IMap<usize, MappingRecord>, n: usize, m: MappingRecord)
+    requires
+        mapped_wf(mapped, mappings),
+        !mappings.contains_key(n),
+    ensures
+        mapped_wf(mapped.union(record_pages(m)), mappings.insert(n, m)),
+{
+    let post = mappings.insert(n, m);
+    assert forall|g: usize| #[trigger] mapped.union(record_pages(m)).contains(g) == page_named(post, g) by {
+        if mapped.contains(g) {
+            let o = choose|o: usize| #![trigger mappings[o]] mappings.contains_key(o) && record_pages(mappings[o]).contains(g);
+            assert(post[o] == mappings[o]);
+        }
+        if record_pages(m).contains(g) {
+            assert(post[n] == m);
+        }
+        if page_named(post, g) {
+            let o = choose|o: usize| #![trigger post[o]] post.contains_key(o) && record_pages(post[o]).contains(g);
+            if o != n {
+                assert(mappings[o] == post[o]);
+                assert(mapped.contains(g));
+            }
+        }
+    }
+}
+
+/// With mapping n gone, a page stays mapped only if another mapping names it.
+pub proof fn lemma_mapped_removed(mapped: Set<usize>, post: Set<usize>, mappings: IMap<usize, MappingRecord>, n: usize)
+    requires
+        mapped_wf(mapped, mappings),
+        mappings.contains_key(n),
+        forall|g: usize| #[trigger] post.contains(g)
+            == (mapped.contains(g) && (!record_pages(mappings[n]).contains(g) || page_named(mappings.remove(n), g))),
+    ensures
+        mapped_wf(post, mappings.remove(n)),
+{
+    let rest = mappings.remove(n);
+    assert forall|g: usize| #[trigger] post.contains(g) == page_named(rest, g) by {
+        if page_named(rest, g) {
+            let o = choose|o: usize| #![trigger rest[o]] rest.contains_key(o) && record_pages(rest[o]).contains(g);
+            assert(mappings[o] == rest[o]);
+            assert(mapped.contains(g));
+        }
+        if mapped.contains(g) && !record_pages(mappings[n]).contains(g) {
+            let o = choose|o: usize| #![trigger mappings[o]] mappings.contains_key(o) && record_pages(mappings[o]).contains(g);
+            assert(o != n);
+            assert(rest[o] == mappings[o]);
+        }
+    }
 }
 
 /// The entries a core that loaded space s may hold for these pages.
@@ -606,16 +715,13 @@ pub proof fn lemma_stale_entries(s: usize, pages: Set<usize>)
     }
 }
 
-/// A mapping other than node n maps page g.
-pub open spec fn named_elsewhere(tree: TableTree, mappings: IMap<usize, MappingRecord>, n: usize, g: usize) -> bool {
-    exists|o: usize| #![trigger mappings[o]] o != n && mappings.contains_key(o) && record_pages(tree, mappings[o]).contains(g)
-}
-
-/// What a mapping node holds, by its node: the table and entry that map a frame, and the frame's page.
+/// What a mapping node holds, by its node: the table and entry that map a frame, the frame's page, and
+/// whether the entry is a large one.
 pub ghost struct MappingRecord {
     pub table: usize,
     pub entry: usize,
     pub frame: usize,
+    pub large: bool,
 }
 
 /// Entry e of the table page at t has its node at node e + 1 of the block's node pages, so an entry finds
@@ -637,6 +743,7 @@ pub open spec fn mapping_wf(list: &Tree, tables: &Tables, tree: TableTree, block
     &&& list.nodes@[n as int].kind is Mapping
     &&& tree.is_page(m.table)
     &&& tree.record(m.table).level == 1 || tree.record(m.table).level == 2
+    &&& m.large == (tree.record(m.table).level == 2)
     &&& m.entry < 512
     &&& tree.entry(m.table, m.entry).perm.present
     &&& tree.entry(m.table, m.entry).perm.ps == (tree.record(m.table).level == 2)
@@ -1205,6 +1312,7 @@ impl CapKernel {
             Self::mapping_stale_noted(*old(self), *final(self), n),
             final(self).stale_epoch.wf(),
             final(self).tlb_wf(),
+            mapped_wf(final(self).mapped@, final(self).mappings@),
             final(self).tables == old(self).tables,
             final(self).blocks.wf(),
             final(self).list == old(self).list,
@@ -1261,6 +1369,7 @@ impl CapKernel {
             }
             Self::lemma_tlb_same(noted, *self);
             Self::lemma_stale_noted_same(pre, noted, *self, n);
+            lemma_mapped_removed(pre.mapped@, self.mapped@, pre.mappings@, n);
             Self::lemma_clear_mapping_post(pre, *self, n);
         }
     }
@@ -1279,11 +1388,42 @@ impl CapKernel {
         ensures
             Self::mapping_stale_noted(pre, post, n),
     {
-        let pages = record_pages(tree_of(&pre.table_pages, &pre.spaces), pre.mappings@[n]);
+        let pages = record_pages(pre.mappings@[n]);
         assert forall|g: usize| #[trigger] pages.contains(g) implies !post.acknowledged(g) by {
             assert(pre.acked(0) <= pre.flush_epoch);
             assert(post.acked(0) == pre.acked(0));
         }
+    }
+
+    /// A mapped page lies in a block a mapping holds a reference on, the block of the frame it maps.
+    pub proof fn lemma_mapped_block(&self, g: usize) -> (br: BlockRef)
+        requires
+            self.wf(),
+            self.mapped@.contains(g),
+        ensures
+            self.holders@.contains_key(br),
+            block_typed(&self.blocks, br),
+            block_has_page(br, g),
+            block_refs(&self.blocks, br) > 0,
+    {
+        let n = choose|n: usize| #![trigger self.mappings@[n]] self.mappings@.contains_key(n) && record_pages(self.mappings@[n]).contains(g);
+        let m = self.mappings@[n];
+        let tree = tree_of(&self.table_pages, &self.spaces);
+        assert(mapping_wf(&self.list, &self.tables, tree, &self.blocks, self.holders@, self.mappings@, n));
+        let c = self.list.parent@[n];
+        let p = self.tables.payload_of(c);
+        lemma_holder_refs(&self.list, &self.tables, &self.blocks, &self.zeroing, self.holders@, c);
+        let i = p.base / 4096;
+        assert(frame_in_block(block_ref(&self.blocks, i), p));
+        lemma_map_pages(m.frame, m.large);
+        assert(m.frame <= g < m.frame + entry_pages(tree.record(m.table).level));
+        lemma_mapped_page_in_block(&self.blocks, i, p, m.frame, entry_pages(tree.record(m.table).level), g);
+        let br = block_ref(&self.blocks, m.frame);
+        assert(self.holders@[br].contains(n));
+        if self.holders@[br].len() == 0 {
+            self.holders@[br].lemma_len0_is_empty();
+        }
+        br
     }
 
     /// Records node n's unmap, while its entry still stands: the epoch is bumped first, so no core has
@@ -1293,10 +1433,11 @@ impl CapKernel {
             old(self).wf(),
             old(self).mappings@.contains_key(n),
             old(self).mappings@[n].frame == frame,
-            large == (tree_of(&old(self).table_pages, &old(self).spaces).record(old(self).mappings@[n].table).level == 2),
+            old(self).mappings@[n].large == large,
             old(self).flush_epoch < usize::MAX,
         ensures
-            final(self).wf(),
+            final(self).stale_epoch.wf(),
+            final(self).tlb_wf(),
             Self::mapping_stale_noted(*old(self), *final(self), n),
             final(self).list == old(self).list,
             final(self).tables == old(self).tables,
@@ -1312,7 +1453,7 @@ impl CapKernel {
         let ghost pre = *old(self);
         let ghost tree = tree_of(&pre.table_pages, &pre.spaces);
         let ghost m = pre.mappings@[n];
-        let ghost pages = record_pages(tree, m);
+        let ghost pages = record_pages(m);
         let ghost space = tree.record(m.table).space;
         proof {
             assert(mapping_wf(&pre.list, &pre.tables, tree, &pre.blocks, pre.holders@, pre.mappings@, n));
@@ -1328,10 +1469,10 @@ impl CapKernel {
             } else {
                 pre.tlb@[d]
             }));
-        self.mapped = Ghost(pre.mapped@.filter(|g: usize| !pages.contains(g) || named_elsewhere(tree, pre.mappings@, n, g)));
+        self.mapped = Ghost(pre.mapped@.filter(|g: usize| !pages.contains(g) || page_named(pre.mappings@.remove(n), g)));
         proof {
             broadcast use vstd::set::lemma_set_filter;
-            lemma_record_pages(tree, m);
+            lemma_map_pages(frame, large);
             if space is Some {
                 lemma_stale_entries(space->Some_0, pages);
             }

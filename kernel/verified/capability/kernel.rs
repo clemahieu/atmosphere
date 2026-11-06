@@ -812,6 +812,7 @@ impl CapKernel {
         &&& table_pages_wf(&self.list, &self.table_pages, &self.blocks)
         &&& spaces_wf(&self.list, &self.tables, &self.spaces, &self.blocks)
         &&& table_links_wf(tree_of(&self.table_pages, &self.spaces))
+        &&& mapped_wf(self.mapped@, self.mappings@)
         &&& mappings_wf(&self.list, &self.tables, tree_of(&self.table_pages, &self.spaces), &self.blocks, self.holders@, self.mappings@)
         &&& capability_nodes_are_slots(&self.list, &self.tables)
         &&& parents_are_capabilities(&self.list)
@@ -1103,85 +1104,6 @@ impl CapKernel {
         }
     }
 
-    /// A new mapping of each of these frames exists.
-    pub fn note_mapped(&mut self, c: usize, Ghost(frames): Ghost<Set<usize>>)
-        requires
-            old(self).wf(),
-            c < NUM_CPUS,
-        ensures
-            Self::step_ok(*old(self), *final(self), c as int),
-            final(self).mapped@ == old(self).mapped@.union(frames),
-            final(self).list == old(self).list,
-            final(self).tables == old(self).tables,
-            final(self).blocks == old(self).blocks,
-            final(self).holders == old(self).holders,
-            final(self).mappings == old(self).mappings,
-            final(self).table_pages == old(self).table_pages,
-            final(self).spaces == old(self).spaces,
-            final(self).zeroing == old(self).zeroing,
-            final(self).frames == old(self).frames,
-            final(self).tlb == old(self).tlb,
-            final(self).stale_epoch == old(self).stale_epoch,
-            final(self).flush_epoch == old(self).flush_epoch,
-    {
-        let ghost pre = *old(self);
-        self.mapped = Ghost(self.mapped@.union(frames));
-        proof {
-            assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] self.acked(d) <= self.flush_epoch by {
-                assert(pre.acked(d) <= pre.flush_epoch);
-            }
-            assert forall|d: int, g: TlbEntry|
-                0 <= d < NUM_CPUS && #[trigger] self.tlb@[d].contains(g) && !self.mapped@.contains(g.page)
-                implies g.page < NUM_PAGES && self.stale_epoch.above(self.acked(d), g.page) by {
-                assert(!pre.mapped@.contains(g.page));
-                assert(pre.tlb@[d].contains(g));
-            }
-        }
-    }
-
-    /// f's last mapping went. The epoch is bumped first, so no core has acknowledged this unmap yet,
-    /// however recently it last flushed.
-    pub fn note_unmapped(&mut self, c: usize, f: usize)
-        requires
-            old(self).wf(),
-            c < NUM_CPUS,
-            f < NUM_PAGES,
-            old(self).flush_epoch < usize::MAX,
-        ensures
-            Self::step_ok(*old(self), *final(self), c as int),
-            final(self).flush_epoch == old(self).flush_epoch + 1,
-            final(self).mapped@ == old(self).mapped@.remove(f),
-            final(self).stale_epoch.pages@[f as int] == final(self).flush_epoch,
-            final(self).stale_epoch.two@[(f / PAGES_PER_2M) as int] == final(self).flush_epoch,
-            final(self).stale_epoch.one@[(f / PAGES_PER_1G) as int] == final(self).flush_epoch,
-            final(self).tlb == old(self).tlb,
-            final(self).cores == old(self).cores,
-            final(self).spaces.loaded == old(self).spaces.loaded,
-    {
-        let ghost pre = *old(self);
-        self.flush_epoch = self.flush_epoch + 1;
-        let e = self.flush_epoch;
-        self.mapped = Ghost(self.mapped@.remove(f));
-        self.stale_epoch.record(f, e);
-        proof {
-            assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] self.acked(d) <= self.flush_epoch by {
-                assert(pre.acked(d) <= pre.flush_epoch);
-            }
-            assert forall|c2: int, g: TlbEntry|
-                0 <= c2 < NUM_CPUS && #[trigger] self.tlb@[c2].contains(g) && !self.mapped@.contains(g.page)
-                implies g.page < NUM_PAGES && self.stale_epoch.above(self.acked(c2), g.page) by {
-                assert(pre.acked(c2) <= pre.flush_epoch);
-                assert(self.acked(c2) == pre.acked(c2));
-                assert(pre.tlb@[c2].contains(g));
-                if g.page != f {
-                    assert(!pre.mapped@.contains(g.page));
-                    assert(pre.tlb@[c2].contains(g) && !pre.mapped@.contains(g.page));
-                    assert(pre.stale_epoch.above(pre.acked(c2), g.page));
-                }
-            }
-        }
-    }
-
     /// Whether every core has acknowledged f's last unmap, which is a bounded number of loads.
     pub fn is_acknowledged(&self, f: usize) -> (ret: bool)
         requires
@@ -1260,6 +1182,34 @@ impl CapKernel {
             0 <= c < NUM_CPUS && #[trigger] post.tlb@[c].contains(e) && !post.mapped@.contains(e.page)
             implies e.page < NUM_PAGES && post.stale_epoch.above(post.acked(c), e.page) by {
             assert(pre.tlb@[c].contains(e));
+            assert(pre.acked(c) == post.acked(c));
+        }
+    }
+
+    /// More pages being mapped keeps the TLB model: it says least about a mapped page.
+    pub proof fn lemma_tlb_more_mapped(pre: Self, post: Self)
+        requires
+            pre.tlb_wf(),
+            post.cores == pre.cores,
+            post.flush_epoch == pre.flush_epoch,
+            post.tlb == pre.tlb,
+            forall|g: usize| #[trigger] pre.mapped@.contains(g) ==> post.mapped@.contains(g),
+            post.stale_epoch == pre.stale_epoch,
+            post.spaces.loaded == pre.spaces.loaded,
+        ensures
+            post.tlb_wf(),
+    {
+        assert forall|c: int| 0 <= c < NUM_CPUS implies #[trigger] post.acked(c) <= post.flush_epoch by {
+            assert(pre.acked(c) <= pre.flush_epoch);
+        }
+        assert forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && #[trigger] post.tlb@[c].contains(e) implies post.loaded(c, e.space) by {
+            assert(pre.tlb@[c].contains(e));
+        }
+        assert forall|c: int, e: TlbEntry|
+            0 <= c < NUM_CPUS && #[trigger] post.tlb@[c].contains(e) && !post.mapped@.contains(e.page)
+            implies e.page < NUM_PAGES && post.stale_epoch.above(post.acked(c), e.page) by {
+            assert(pre.tlb@[c].contains(e));
+            assert(!pre.mapped@.contains(e.page));
             assert(pre.acked(c) == post.acked(c));
         }
     }
@@ -1492,10 +1442,8 @@ impl CapKernel {
             old(self).wf(),
             c < NUM_CPUS,
             base < NUM_PAGES,
-            forall|i: usize| #![trigger old(self).mapped@.contains(i)] base <= i < base + order_pages(old(self).blocks.pages@[base as int].order) ==> {
-                &&& !old(self).mapped@.contains(i)
-                &&& old(self).no_stale_translation(i)
-            },
+            forall|i: usize| base <= i < base + order_pages(old(self).blocks.pages@[base as int].order)
+                ==> #[trigger] old(self).no_stale_translation(i),
             old(self).blocks.pages@[base as int].kind is Base,
             old(self).blocks.pages@[base as int].dead,
             old(self).blocks.pages@[base as int].torn_down,
