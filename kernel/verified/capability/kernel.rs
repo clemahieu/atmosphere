@@ -279,6 +279,13 @@ pub proof fn lemma_parents_moved(pre: Tree, post: Tree, i: usize, slot: usize)
     }
 }
 
+/// A live node in a leaf's slot is a capability, since mappings and bindings live in other pages, so
+/// tearing down a leaf only ever finds capabilities in it.
+pub open spec fn leaf_slots_are_capabilities(list: &Tree, tables: &Tables) -> bool {
+    forall|n: usize| #[trigger] list.nodes@[n as int].live && tables.owner@.contains_key(page_of(n))
+        && n % 4096 != 0 && n % 4096 < NODES_PER_PAGE ==> list.nodes@[n as int].kind is Capability
+}
+
 /// The list's first node lives outside every leaf, so whatever a leaf holds can be unlinked.
 pub open spec fn first_node_outside_leaves(list: &Tree, tables: &Tables) -> bool {
     !tables.owner@.contains_key(page_of(list.seq@[0]))
@@ -367,6 +374,7 @@ impl CapKernel {
         &&& capability_nodes_are_slots(&self.list, &self.tables)
         &&& parents_are_capabilities(&self.list)
         &&& first_node_outside_leaves(&self.list, &self.tables)
+        &&& leaf_slots_are_capabilities(&self.list, &self.tables)
         &&& holders_wf(&self.list, &self.tables, &self.blocks, &self.zeroing, self.holders@)
         &&& objects_wf(&self.tables, &self.blocks, self.holders@)
         &&& frames_held(self.frames@, self.holders@)
@@ -725,6 +733,19 @@ impl CapKernel {
             post.wf(),
     {
         Self::lemma_tlb_same(pre, post);
+    }
+
+    /// A live node in a slot of an owned leaf is a capability.
+    pub proof fn lemma_live_slot_is_cap(&self, n: usize)
+        requires
+            self.wf(),
+            self.list.nodes@[n as int].live,
+            self.tables.owner@.contains_key(page_of(n)),
+            n % 4096 != 0,
+            n % 4096 < NODES_PER_PAGE,
+        ensures
+            self.is_cap(n),
+    {
     }
 
     /// A node in a leaf's page is not the list's first.
