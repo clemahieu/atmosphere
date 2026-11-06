@@ -41,7 +41,6 @@ pub open spec fn view_of(list: &Tree, tables: &Tables) -> State {
         process_of: Map::empty(),
         waiting: Set::empty(),
         bound: Map::empty(),
-        dead: Set::empty(),
         contents: |o: ObjectId| Seq::empty(),
     }
 }
