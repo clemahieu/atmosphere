@@ -5,6 +5,7 @@ use vstd::prelude::*;
 
 verus! {
 
+use crate::capability::link::*;
 use crate::capability::mapping::*;
 use crate::capability::block::*;
 use crate::capability::kernel::*;
@@ -40,8 +41,9 @@ pub enum RevokeStep {
 impl CapKernel {
     /// Undoes what node n holds by its kind, before it is unlinked. Every arm meets this one spec: it
     /// changes no node's liveness and keeps the tables whole, and only what n itself held goes. A
-    /// hidden node detaches its leaf. A capability's reference goes with atmo-6x9.16.22. No mapping
-    /// or binding node exists until atmo-6x9.16.8 and atmo-6x9.16.9, which supply their arms.
+    /// hidden node detaches its leaf. A capability's reference goes with atmo-6x9.16.22. A mapping node
+    /// clears its entry and drops its reference. No binding node exists until atmo-6x9.16.9, which
+    /// supplies its arm.
     pub fn unlink_arm(&mut self, n: usize)
         requires
             old(self).wf(),
@@ -63,7 +65,9 @@ impl CapKernel {
             forall|x: usize| x != n ==> #[trigger] final(self).tables.payload_of(x) == old(self).tables.payload_of(x),
             old(self).list.nodes@[n as int].kind is Hidden && old(self).tables.owner@.contains_key(n) ==> !final(self).tables.attached(n),
             !(old(self).list.nodes@[n as int].kind is Hidden && old(self).tables.owner@.contains_key(n)) ==> final(self).tables == old(self).tables,
-            final(self).table_pages == old(self).table_pages,
+            final(self).table_pages.records == old(self).table_pages.records,
+            final(self).table_pages.spare == old(self).table_pages.spare,
+            !(old(self).list.nodes@[n as int].kind is Mapping) ==> final(self).table_pages == old(self).table_pages,
             old(self).is_cap(n) && old(self).payload_of(n).kind is Frame ==> {
                 let br = block_ref(&old(self).blocks, old(self).payload_of(n).base / 4096);
                 &&& blocks_refs_changed(
@@ -93,13 +97,17 @@ impl CapKernel {
             final(self).spaces.records == old(self).spaces.records,
             final(self).spaces.spare == old(self).spaces.spare,
             final(self).spaces.kernel_entries == old(self).spaces.kernel_entries,
-            Self::same_tree(*old(self), *final(self)),
+            old(self).list.nodes@[n as int].kind is Mapping ==> Self::mapping_unlinked(*old(self), *final(self), n),
+            !(old(self).list.nodes@[n as int].kind is Mapping) ==> {
+                &&& Self::same_tree(*old(self), *final(self))
+                &&& final(self).mappings == old(self).mappings
+            },
             old(self).list.nodes@[n as int].kind is Hidden ==> {
                 &&& blocks_refs_changed(&old(self).blocks, &final(self).blocks, BlockRef::Small(n / 4096), 0, true)
                 &&& final(self).holders == old(self).holders
             },
             !(old(self).is_cap(n) && (old(self).payload_of(n).kind is Frame || old(self).payload_of(n).kind is Space))
-                && !(old(self).list.nodes@[n as int].kind is Hidden) ==> {
+                && !(old(self).list.nodes@[n as int].kind is Hidden) && !(old(self).list.nodes@[n as int].kind is Mapping) ==> {
                 &&& final(self).blocks == old(self).blocks
                 &&& final(self).holders == old(self).holders
             },
@@ -147,7 +155,8 @@ impl CapKernel {
                     _ => {},
                 }
             },
-            NodeKind::Mapping | NodeKind::Binding => {},
+            NodeKind::Mapping => { self.clear_mapping(n); },
+            NodeKind::Binding => {},
         }
     }
 
@@ -160,7 +169,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
         ensures
             final(self).wf(),
-            Self::same_tree(*old(self), *final(self)),
+            Self::mappings_shrunk(*old(self), *final(self)),
             ret is Refused == !(old(self).tables.has_slot(root, i) && old(self).is_cap(old(self).tables.node_of(root, i))),
             ret is Refused ==> *final(self) == *old(self),
             !(ret is Refused) ==> {
@@ -197,7 +206,7 @@ impl CapKernel {
                 steps <= REVOKE_BUDGET,
                 self.wf(),
                 pre == *old(self),
-                Self::same_tree(pre, *self),
+                Self::mappings_shrunk(pre, *self),
                 pre.tables.has_slot(root, i),
                 c == pre.tables.node_of(root, i),
                 c < NODE_SPACE,
@@ -238,7 +247,7 @@ impl CapKernel {
             old(self).tables.owner@[page_of(c)].0 == root,
         ensures
             final(self).wf(),
-            Self::same_tree(*old(self), *final(self)),
+            Self::mappings_shrunk(*old(self), *final(self)),
             final(self).is_cap(c),
             final(self).tables.owner == old(self).tables.owner,
             final(self).list.parent == old(self).list.parent,
@@ -248,7 +257,8 @@ impl CapKernel {
             !done ==> final(self).list.seq@.len() == old(self).list.seq@.len() - 1,
             !done ==> exists|r: usize| #[trigger] revoked_one(old(self).list, final(self).list, c, r)
                 && (old(self).list.nodes@[r as int].kind is Hidden && old(self).tables.owner@.contains_key(r)
-                    ==> !final(self).tables.attached(r)),
+                    ==> !final(self).tables.attached(r))
+                && (old(self).list.nodes@[r as int].kind is Mapping ==> Self::mapping_unlinked(*old(self), *final(self), r)),
             forall|x: int| 0 <= x < NODE_SPACE ==> #[trigger] final(self).list.nodes@[x].depth == old(self).list.nodes@[x].depth,
             forall|x: usize| #[trigger] final(self).is_cap(x) ==> old(self).is_cap(x),
             discharges(old(self).view(), final(self).view(), root, Effect::Revoke { cap: c }),
@@ -262,34 +272,161 @@ impl CapKernel {
             None => { return true; },
         };
         self.unlink_arm(r);
+        let ghost mid = *self;
         self.list.remove_leaf(r);
         proof {
-            let post = *self;
-            post.tables.lemma_wf_same_pages(&pre.list, &post.list);
-            Self::lemma_revoke_step(pre, post, root, c, r);
-            Self::lemma_delete_caps_wf(pre, post, r);
-            assert(revoked_one(pre.list, post.list, c, r));
-            let p = choose|p: int| 0 <= p < pre.list.seq@.len() && pre.list.seq@[p] == r
-                && post.list.seq@ == pre.list.seq@.remove(p);
-            assert(p != 0);
-            assert(post.list.seq@[0] == pre.list.seq@[0]);
-            lemma_parents_removed(pre.list, post.list, r);
-            Self::lemma_revoke_hidden(pre, post, r);
-            if pre.list.nodes@[r as int].kind is Hidden {
-                Self::lemma_revoke_hidden_holders(pre, post, r);
-            } else {
-                Self::lemma_delete_holders(pre, post, r);
-            }
-            Self::lemma_tlb_same(pre, post);
-            assert(post.list.nodes@[c as int].live == pre.list.nodes@[c as int].live);
-            Self::lemma_caps_frame(pre, post, r, r, c);
-            assert forall|x: usize| #[trigger] post.is_cap(x) implies pre.is_cap(x) by {
-                if x != r {
-                    Self::lemma_caps_frame(pre, post, r, r, x);
-                }
-            }
+            Self::lemma_revoke_step_wf(pre, mid, *self, root, c, r);
         }
         false
+    }
+
+    /// The state after the leaf r of c's run has its arm unlinked and its node removed: well formed,
+    /// with r's capability and its mapping gone and every other capability as it was.
+    proof fn lemma_revoke_step_wf(pre: Self, mid: Self, post: Self, root: usize, c: usize, r: usize)
+        requires
+            pre.wf(),
+            c < NODE_SPACE,
+            pre.is_cap(c),
+            pre.tables.owner@[page_of(c)].0 == root,
+            r < NODE_SPACE,
+            has(pre.list.seq@, r),
+            pre.list.nodes@[r as int].live,
+            r != pre.list.seq@[0],
+            pre.list.d(r) > pre.list.d(c),
+            pre.list.anc(r, (pre.list.d(r) - pre.list.d(c)) as nat) == c,
+            pre.list.childless(r),
+            mid.tables.wf(&pre.list),
+            mid.blocks.wf(),
+            mid.list == pre.list,
+            mid.frames == pre.frames,
+            mid.zeroing == pre.zeroing,
+            mid.cores == pre.cores,
+            mid.flush_epoch == pre.flush_epoch,
+            mid.tlb == pre.tlb,
+            mid.mapped == pre.mapped,
+            mid.stale_epoch == pre.stale_epoch,
+            mid.tables.owner == pre.tables.owner,
+            forall|x: usize| x != r ==> #[trigger] mid.tables.payload_of(x) == pre.tables.payload_of(x),
+            pre.list.nodes@[r as int].kind is Hidden && pre.tables.owner@.contains_key(r) ==> !mid.tables.attached(r),
+            !(pre.list.nodes@[r as int].kind is Hidden && pre.tables.owner@.contains_key(r)) ==> mid.tables == pre.tables,
+            mid.table_pages.records == pre.table_pages.records,
+            mid.table_pages.spare == pre.table_pages.spare,
+            !(pre.list.nodes@[r as int].kind is Mapping) ==> mid.table_pages == pre.table_pages,
+            pre.is_cap(r) && pre.payload_of(r).kind is Frame ==> {
+                let br = block_ref(&pre.blocks, pre.payload_of(r).base / 4096);
+                &&& blocks_refs_changed(
+                    &pre.blocks,
+                    &mid.blocks,
+                    br,
+                    (block_refs(&pre.blocks, br) - 1) as usize,
+                    block_dead(&pre.blocks, br) || block_refs(&pre.blocks, br) == 1,
+                )
+                &&& mid.holders@ == pre.holders@.insert(br, pre.holders@[br].remove(r))
+            },
+            pre.is_cap(r) && pre.payload_of(r).kind is Space ==> {
+                let s = pre.payload_of(r).base;
+                let br = BlockRef::Small(s / 4096);
+                &&& blocks_refs_changed(
+                    &pre.blocks,
+                    &mid.blocks,
+                    br,
+                    (block_refs(&pre.blocks, br) - 1) as usize,
+                    block_dead(&pre.blocks, br) || block_refs(&pre.blocks, br) == 1,
+                )
+                &&& mid.holders == pre.holders
+                &&& mid.spaces.holders@ == pre.spaces.holders@.insert(s, pre.spaces.holders@[s].remove(r))
+            },
+            !(pre.is_cap(r) && pre.payload_of(r).kind is Space) ==> mid.spaces == pre.spaces,
+            mid.spaces.roots == pre.spaces.roots,
+            mid.spaces.records == pre.spaces.records,
+            mid.spaces.spare == pre.spaces.spare,
+            mid.spaces.kernel_entries == pre.spaces.kernel_entries,
+            pre.list.nodes@[r as int].kind is Mapping ==> Self::mapping_unlinked(pre, mid, r),
+            !(pre.list.nodes@[r as int].kind is Mapping) ==> {
+                &&& Self::same_tree(pre, mid)
+                &&& mid.mappings == pre.mappings
+            },
+            pre.list.nodes@[r as int].kind is Hidden ==> {
+                &&& blocks_refs_changed(&pre.blocks, &mid.blocks, BlockRef::Small(r / 4096), 0, true)
+                &&& mid.holders == pre.holders
+            },
+            !(pre.is_cap(r) && (pre.payload_of(r).kind is Frame || pre.payload_of(r).kind is Space))
+                && !(pre.list.nodes@[r as int].kind is Hidden) && !(pre.list.nodes@[r as int].kind is Mapping) ==> {
+                &&& mid.blocks == pre.blocks
+                &&& mid.holders == pre.holders
+            },
+            post.cores == mid.cores,
+            post.flush_epoch == mid.flush_epoch,
+            post.tlb == mid.tlb,
+            post.mapped == mid.mapped,
+            post.blocks == mid.blocks,
+            post.tables == mid.tables,
+            post.stale_epoch == mid.stale_epoch,
+            post.frames == mid.frames,
+            post.table_pages == mid.table_pages,
+            post.spaces == mid.spaces,
+            post.mappings == mid.mappings,
+            post.zeroing == mid.zeroing,
+            post.holders == mid.holders,
+            post.list.wf(),
+            post.list.nodes@.len() == pre.list.nodes@.len(),
+            !post.list.nodes@[r as int].live,
+            forall|x: int| 0 <= x < pre.list.nodes@.len() && x != r ==>
+                #[trigger] post.list.nodes@[x].live == pre.list.nodes@[x].live,
+            forall|x: int| 0 <= x < pre.list.nodes@.len() ==>
+                #[trigger] post.list.nodes@[x].depth == pre.list.nodes@[x].depth,
+            forall|x: int| 0 <= x < pre.list.nodes@.len() && x != r ==>
+                #[trigger] post.list.nodes@[x].kind == pre.list.nodes@[x].kind,
+            post.list.parent@ == pre.list.parent@,
+            post.list.pages@.dom() == pre.list.pages@.dom(),
+            exists|p: int| 0 <= p < pre.list.seq@.len() && pre.list.seq@[p] == r
+                && post.list.seq@ == pre.list.seq@.remove(p),
+        ensures
+            post.wf(),
+            Self::mappings_shrunk(pre, post),
+            post.is_cap(c),
+            revoked_one(pre.list, post.list, c, r),
+            pre.list.nodes@[r as int].kind is Hidden && pre.tables.owner@.contains_key(r) ==> !post.tables.attached(r),
+            pre.list.nodes@[r as int].kind is Mapping ==> Self::mapping_unlinked(pre, post, r),
+            forall|x: usize| #[trigger] post.is_cap(x) ==> pre.is_cap(x),
+            discharges(pre.view(), post.view(), root, Effect::Revoke { cap: c }),
+    {
+        post.tables.lemma_wf_same_pages(&pre.list, &post.list);
+        Self::lemma_revoke_step(pre, post, root, c, r);
+        Self::lemma_delete_caps_wf(pre, post, r);
+        assert(revoked_one(pre.list, post.list, c, r));
+        let p = choose|p: int| 0 <= p < pre.list.seq@.len() && pre.list.seq@[p] == r
+            && post.list.seq@ == pre.list.seq@.remove(p);
+        assert(p != 0);
+        assert(post.list.seq@[0] == pre.list.seq@[0]);
+        lemma_parents_removed(pre.list, post.list, r);
+        if pre.list.nodes@[r as int].kind is Mapping {
+            assert(Self::mapping_unlinked(pre, post, r));
+            assert(pre.mappings@.contains_key(r));
+            pre.lemma_mapping_node(r);
+            assert(mapping_wf(&pre.list, &pre.tables, tree_of(&pre.table_pages, &pre.spaces), &pre.blocks, pre.holders@, pre.mappings@, r));
+            assert(pre.table_pages.maps@.contains_key(pre.mappings@[r].table));
+            assert(post.table_pages.maps@.dom() =~= pre.table_pages.maps@.dom());
+        }
+        Self::lemma_revoke_hidden(pre, post, r);
+        if pre.list.nodes@[r as int].kind is Hidden {
+            Self::lemma_revoke_hidden_holders(pre, post, r);
+            Self::lemma_same_tree_shrunk(pre, post);
+        } else if pre.list.nodes@[r as int].kind is Mapping {
+            Self::lemma_revoke_mapping_holders(pre, post, r);
+            Self::lemma_unlinked_shrunk(pre, post, r);
+        } else {
+            Self::lemma_delete_holders(pre, post, r);
+            Self::lemma_same_tree_shrunk(pre, post);
+        }
+        Self::lemma_tlb_same(pre, post);
+        assert(post.list.nodes@[c as int].live == pre.list.nodes@[c as int].live);
+        Self::lemma_caps_frame(pre, post, r, r, c);
+        assert forall|x: usize| #[trigger] post.is_cap(x) implies pre.is_cap(x) by {
+            if x != r {
+                Self::lemma_caps_frame(pre, post, r, r, x);
+            }
+        }
     }
 
     /// A step that changes nothing, with the capability held, discharges a revoke of it.
@@ -317,6 +454,8 @@ impl CapKernel {
             post.zeroing == pre.zeroing,
             post.table_pages == pre.table_pages,
             post.list.pages@.dom() == pre.list.pages@.dom(),
+            post.list.parent@ == pre.list.parent@,
+            post.mappings == pre.mappings,
             blocks_refs_changed(&pre.blocks, &post.blocks, BlockRef::Small(n / 4096), 0, true),
             post.holders == pre.holders,
             post.spaces == pre.spaces,
@@ -328,6 +467,7 @@ impl CapKernel {
             leaf_blocks_wf(&post.list, &post.tables, &post.blocks),
             table_pages_wf(&post.list, &post.table_pages, &post.blocks),
             spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
+            mappings_wf(&post.list, &post.tables, tree_of(&post.table_pages, &post.spaces), &post.blocks, post.holders@, post.mappings@),
     {
         let br = BlockRef::Small(n / 4096);
         assert forall|x: usize| x != n implies {
@@ -336,6 +476,17 @@ impl CapKernel {
         } by {
             Self::lemma_caps_frame(pre, post, n, n, x);
         }
+        assert(same_mapping_nodes(&pre.list, &post.list));
+        assert forall|m: usize| #[trigger] pre.mappings@.contains_key(m) implies pre.list.parent@[m] != n by {
+            pre.lemma_mapping_node(m);
+        }
+        Self::lemma_mapping_parents_kept(pre, post, n, n);
+        assert forall|m: usize| #[trigger] pre.mappings@.contains_key(m) implies mapping_node_kept(
+            &pre.list, &pre.tables, &pre.blocks, pre.holders@, &post.list, &post.tables, &post.blocks, post.holders@, pre.mappings@[m].frame, m,
+        ) by {
+            pre.lemma_mapping_node(m);
+        }
+        Self::lemma_mappings_same_tree(pre, post);
         pre.lemma_hidden_block(n);
         assert(!pre.is_cap(n));
         assert(!post.is_cap(n));
@@ -371,12 +522,223 @@ impl CapKernel {
         }
     }
 
+    /// The invariant's parts after mapping node n goes with its entry and its reference: the entry is
+    /// empty, nothing above level 1 changed, its block's count fell by one, dead at zero, and no other
+    /// node, capability or holder changed.
+    pub proof fn lemma_revoke_mapping_holders(pre: Self, post: Self, n: usize)
+        requires
+            Self::caps_frame(pre, post, n, n),
+            n < NODE_SPACE,
+            pre.list.nodes@[n as int].live,
+            pre.list.nodes@[n as int].kind is Mapping,
+            !post.list.nodes@[n as int].live,
+            post.zeroing == pre.zeroing,
+            post.list.pages@.dom() == pre.list.pages@.dom(),
+            post.list.parent@ == pre.list.parent@,
+            post.tables == pre.tables,
+            post.spaces == pre.spaces,
+            post.table_pages.records == pre.table_pages.records,
+            post.table_pages.spare == pre.table_pages.spare,
+            Self::mapping_unlinked(pre, post, n),
+        ensures
+            holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
+            zeroing_typed(&post.zeroing, &post.blocks),
+            list_pages_used(&post.list, &post.blocks),
+            objects_wf(&post.tables, &post.blocks, post.holders@),
+            leaf_blocks_wf(&post.list, &post.tables, &post.blocks),
+            table_pages_wf(&post.list, &post.table_pages, &post.blocks),
+            spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
+            table_links_wf(tree_of(&post.table_pages, &post.spaces)),
+            mappings_wf(&post.list, &post.tables, tree_of(&post.table_pages, &post.spaces), &post.blocks, post.holders@, post.mappings@),
+    {
+        Self::lemma_revoke_mapping_blocks(pre, post, n);
+        Self::lemma_revoke_mapping_tables(pre, post, n);
+        Self::lemma_revoke_mapping_mappings(pre, post, n);
+    }
+
+    /// The holders and the blocks after mapping node n goes: it held its frame's block alone, and no
+    /// capability changed.
+    proof fn lemma_revoke_mapping_blocks(pre: Self, post: Self, n: usize)
+        requires
+            Self::caps_frame(pre, post, n, n),
+            n < NODE_SPACE,
+            pre.list.nodes@[n as int].live,
+            pre.list.nodes@[n as int].kind is Mapping,
+            !post.list.nodes@[n as int].live,
+            post.zeroing == pre.zeroing,
+            post.list.pages@.dom() == pre.list.pages@.dom(),
+            post.tables == pre.tables,
+            Self::mapping_unlinked(pre, post, n),
+        ensures
+            holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
+            zeroing_typed(&post.zeroing, &post.blocks),
+            list_pages_used(&post.list, &post.blocks),
+            objects_wf(&post.tables, &post.blocks, post.holders@),
+            leaf_blocks_wf(&post.list, &post.tables, &post.blocks),
+    {
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let m = pre.mappings@[n];
+        let br = block_ref(&pre.blocks, m.frame);
+        let refs = (block_refs(&pre.blocks, br) - 1) as usize;
+        let dead = block_dead(&pre.blocks, br) || block_refs(&pre.blocks, br) == 1;
+        assert(pre.mappings@.contains_key(n));
+        pre.lemma_mapping_node(n);
+        assert(mapping_wf(&pre.list, &pre.tables, a, &pre.blocks, pre.holders@, pre.mappings@, n));
+        assert forall|x: usize| x != n implies {
+            &&& #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x)
+            &&& pre.tables.is_cap(&pre.list, x) ==> post.tables.payload_of(x) == pre.tables.payload_of(x)
+        } by {
+            Self::lemma_caps_frame(pre, post, n, n, x);
+        }
+        assert(!pre.is_cap(n));
+        assert(!post.is_cap(n));
+        assert(same_frames(&pre.list, &pre.tables, &post.list, &post.tables));
+        pre.lemma_unhidden_not_owned(n);
+        Self::lemma_same_leaf_nodes(pre, post, n, n);
+        lemma_holders_mapping_dropped(&pre.list, &pre.tables, &post.list, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, n, br);
+        lemma_zeroing_typed_refs_changed(&pre.list, &pre.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, br, refs, dead);
+        lemma_list_pages_used_same_kinds(&pre.list, &pre.blocks, &post.blocks);
+        assert forall|p: usize| #[trigger] post.list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES implies {
+            &&& !(post.blocks.pages@[(p / 4096) as int].kind is Free)
+            &&& post.blocks.pages@[(p / 4096) as int].kind is Member
+                ==> post.blocks.pages@[post.blocks.pages@[(p / 4096) as int].base as int].object is TablePage
+                    || post.blocks.pages@[post.blocks.pages@[(p / 4096) as int].base as int].object is Space
+            &&& !(post.blocks.pages@[(p / 4096) as int].object is Frame)
+        } by {
+            assert(pre.list.pages@.dom().contains(p));
+        }
+        assert forall|x: BlockRef| #[trigger] post.holders@.contains_key(x) == pre.holders@.contains_key(x) by {}
+        lemma_objects_refs_changed(&post.tables, &pre.blocks, &post.blocks, pre.holders@, post.holders@, br, refs, dead);
+        lemma_leaf_blocks_refs_changed(&pre.list, &post.list, &post.tables, &pre.blocks, &post.blocks, pre.holders@, br, refs, dead);
+    }
+
+    /// The table pages, spaces and links after mapping node n goes: its frame's block is no table page's
+    /// nor space's, and the one entry emptied is at level 1, below every link.
+    proof fn lemma_revoke_mapping_tables(pre: Self, post: Self, n: usize)
+        requires
+            Self::caps_frame(pre, post, n, n),
+            n < NODE_SPACE,
+            pre.list.nodes@[n as int].live,
+            pre.list.nodes@[n as int].kind is Mapping,
+            !post.list.nodes@[n as int].live,
+            post.list.pages@.dom() == pre.list.pages@.dom(),
+            post.tables == pre.tables,
+            post.spaces == pre.spaces,
+            post.table_pages.records == pre.table_pages.records,
+            post.table_pages.spare == pre.table_pages.spare,
+            Self::mapping_unlinked(pre, post, n),
+        ensures
+            table_pages_wf(&post.list, &post.table_pages, &post.blocks),
+            spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
+            table_links_wf(tree_of(&post.table_pages, &post.spaces)),
+    {
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        let m = pre.mappings@[n];
+        let br = block_ref(&pre.blocks, m.frame);
+        let refs = (block_refs(&pre.blocks, br) - 1) as usize;
+        let dead = block_dead(&pre.blocks, br) || block_refs(&pre.blocks, br) == 1;
+        assert(pre.mappings@.contains_key(n));
+        pre.lemma_mapping_node(n);
+        assert(mapping_wf(&pre.list, &pre.tables, a, &pre.blocks, pre.holders@, pre.mappings@, n));
+        assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, m.table));
+        reveal(entries_cleared);
+        pre.lemma_unhidden_not_table_page(n);
+        Self::lemma_same_table_nodes(pre, post, n, n);
+        if let BlockRef::Small(x) = br {
+            assert(pre.blocks.pages@[x as int].object is Frame);
+        }
+        lemma_table_pages_refs_changed(&pre.list, &post.list, &pre.table_pages, &pre.blocks, &post.blocks, br, refs, dead);
+        assert forall|i: usize| #![trigger post.table_pages.maps@[m.table].value()[i]] i < 512 && i != m.entry
+            implies post.table_pages.maps@[m.table].value()[i] == pre.table_pages.maps@[m.table].value()[i] by {
+            assert(b.entry(m.table, i) == a.entry(m.table, i));
+        }
+        lemma_table_pages_entry_cleared(&post.list, &pre.table_pages, &post.table_pages, &post.blocks, m.table, m.entry);
+        assert forall|x: usize| x != n implies {
+            &&& #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x)
+            &&& pre.tables.is_cap(&pre.list, x) ==> post.tables.payload_of(x) == pre.tables.payload_of(x)
+        } by {
+            Self::lemma_caps_frame(pre, post, n, n, x);
+        }
+        assert(!pre.is_cap(n));
+        assert(!post.is_cap(n));
+        lemma_spaces_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks, &post.blocks, br, refs, dead);
+        assert(b.maps.dom() =~= a.maps.dom());
+        lemma_links_entry_cleared(a, b, m.table, m.entry);
+    }
+
+    /// The mappings after mapping node n goes: every other mapping's entry, node, parent and holding
+    /// are as they were, and the entry emptied was n's alone.
+    proof fn lemma_revoke_mapping_mappings(pre: Self, post: Self, n: usize)
+        requires
+            Self::caps_frame(pre, post, n, n),
+            n < NODE_SPACE,
+            pre.list.nodes@[n as int].live,
+            pre.list.nodes@[n as int].kind is Mapping,
+            !post.list.nodes@[n as int].live,
+            post.list.pages@.dom() == pre.list.pages@.dom(),
+            post.list.parent@ == pre.list.parent@,
+            post.tables == pre.tables,
+            post.spaces == pre.spaces,
+            post.table_pages.records == pre.table_pages.records,
+            Self::mapping_unlinked(pre, post, n),
+        ensures
+            mappings_wf(&post.list, &post.tables, tree_of(&post.table_pages, &post.spaces), &post.blocks, post.holders@, post.mappings@),
+    {
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        assert(b.maps.dom() =~= a.maps.dom());
+        let m = pre.mappings@[n];
+        let br = block_ref(&pre.blocks, m.frame);
+        assert(pre.mappings@.contains_key(n));
+        pre.lemma_mapping_node(n);
+        assert(mapping_wf(&pre.list, &pre.tables, a, &pre.blocks, pre.holders@, pre.mappings@, n));
+        reveal(entries_cleared);
+        assert forall|x: usize| #[trigger] post.mappings@.contains_key(x)
+            implies mapping_wf(&post.list, &post.tables, b, &post.blocks, post.holders@, post.mappings@, x) by {
+            assert(pre.mappings@.contains_key(x));
+            assert(x != n);
+            pre.lemma_mapping_node(x);
+            assert(mapping_wf(&pre.list, &pre.tables, a, &pre.blocks, pre.holders@, pre.mappings@, x));
+            let mx = pre.mappings@[x];
+            let c = pre.list.parent@[x];
+            assert(c != n);
+            Self::lemma_caps_frame(pre, post, n, n, c);
+            assert(!(mx.table == m.table && mx.entry == m.entry));
+            assert(b.entry(mx.table, mx.entry) == a.entry(mx.table, mx.entry));
+            assert(b.record(mx.table) == a.record(mx.table));
+            assert(post.holders@[block_ref(&pre.blocks, mx.frame)].contains(x));
+            assert forall|k: BlockRef| post.holders@.contains_key(k) && #[trigger] post.holders@[k].contains(x)
+                implies k == block_ref(&post.blocks, mx.frame) by {
+                assert(pre.holders@[k].contains(x));
+            }
+        }
+        assert forall|x: usize| x < NODE_SPACE && (#[trigger] post.list.nodes@[x as int]).live && post.list.nodes@[x as int].kind is Mapping
+            implies post.mappings@.contains_key(x) by {
+            assert(x != n);
+            assert(pre.list.nodes@[x as int].live && pre.list.nodes@[x as int].kind is Mapping);
+        }
+        assert forall|t: usize, e: usize| #[trigger] frame_slot(b, t, e) implies {
+            &&& post.mappings@.contains_key(mapping_node(t, e))
+            &&& post.mappings@[mapping_node(t, e)].table == t
+            &&& post.mappings@[mapping_node(t, e)].entry == e
+        } by {
+            assert(!(t == m.table && e == m.entry));
+            assert(b.entry(t, e) == a.entry(t, e));
+            assert(a.is_page(t));
+            assert(a.record(t) == b.record(t));
+            assert(frame_slot(a, t, e));
+            assert(pre.mappings@.contains_key(mapping_node(t, e)));
+            assert(mapping_node(t, e) != n);
+        }
+    }
+
     /// The hidden nodes after the step: r has gone, and if it was hidden its leaf is detached. And every
     /// other capability node is still in its slot.
     pub proof fn lemma_revoke_hidden(pre: Self, post: Self, r: usize)
         requires
             Self::caps_frame(pre, post, r, r),
-            post.table_pages == pre.table_pages,
+            post.table_pages.maps@.dom() == pre.table_pages.maps@.dom(),
             !post.list.nodes@[r as int].live,
             pre.list.nodes@[r as int].kind is Hidden && pre.tables.owner@.contains_key(r) ==> !post.tables.attached(r),
             !(pre.list.nodes@[r as int].kind is Hidden && pre.tables.owner@.contains_key(r))

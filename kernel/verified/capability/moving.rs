@@ -6,6 +6,7 @@ use vstd::prelude::*;
 
 verus! {
 
+use crate::capability::link::*;
 use crate::capability::mapping::*;
 use crate::capability::kernel::*;
 use crate::capability::list::*;
@@ -95,6 +96,7 @@ impl CapKernel {
             Self::lemma_move_caps_wf(pre, post, i, n);
             Self::lemma_hidden_frame(pre, post, i, n);
             Self::lemma_move_holders(pre, post, i, n);
+            Self::lemma_move_mappings(pre, post, i, n);
             lemma_parents_moved(pre.list, post.list, i, n);
             Self::lemma_move_discharges(pre, post, root, i, n);
             Self::lemma_tlb_same(pre, post);
@@ -110,6 +112,9 @@ impl CapKernel {
             post.zeroing == pre.zeroing,
             post.holders@ == Self::moved_holders(pre.holders@, i, n),
             post.table_pages == pre.table_pages,
+            post.spaces.roots == pre.spaces.roots,
+            post.spaces.records == pre.spaces.records,
+            post.mappings == pre.mappings,
             post.list.pages@.dom() == pre.list.pages@.dom(),
         ensures
             holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
@@ -120,6 +125,7 @@ impl CapKernel {
         let hb = post.holders@;
         let blocks = &pre.blocks;
         assert(pre.tables.is_cap(&pre.list, i));
+        assert(same_mapping_nodes(&pre.list, &post.list));
         pre.lemma_slot_not_owned(i);
         pre.lemma_slot_not_owned(n);
         Self::lemma_same_leaf_nodes(pre, post, i, n);
@@ -174,12 +180,12 @@ impl CapKernel {
                 vstd::set::lemma_set_insert_len(ha[k].remove(i), n);
             }
         }
-        assert forall|k: BlockRef, x: usize| hb.contains_key(k) && #[trigger] hb[k].contains(x) implies {
+        assert forall|k: BlockRef, x: usize| hb.contains_key(k) && #[trigger] hb[k].contains(x) implies ({
             &&& post.tables.is_cap(&post.list, x)
             &&& post.tables.payload_of(x).kind is Frame
             &&& post.tables.payload_of(x).base / 4096 < NUM_PAGES
             &&& block_ref(blocks, post.tables.payload_of(x).base / 4096) == k
-        } by {
+        } || (x < NODE_SPACE && post.list.nodes@[x as int].live && post.list.nodes@[x as int].kind is Mapping)) by {
             assert(ha.contains_key(k));
             if ha[k].contains(i) && x == n {
                 assert(ha[k].contains(i));
@@ -187,8 +193,52 @@ impl CapKernel {
                 assert(ha[k].contains(x));
                 assert(x != i);
                 assert(x != n);
+                if pre.tables.is_cap(&pre.list, x) && pre.tables.payload_of(x).kind is Frame {
+                    assert(post.tables.is_cap(&post.list, x));
+                } else {
+                    assert(x < NODE_SPACE && pre.list.nodes@[x as int].live && pre.list.nodes@[x as int].kind is Mapping);
+                    assert(post.list.nodes@[x as int].live && post.list.nodes@[x as int].kind is Mapping);
+                }
             }
         }
+    }
+
+    /// The mappings after a move: a mapping whose parent was i has n, which says the same, and every
+    /// other mapping's parent is as it was. No mapping node, frame block or holder changed.
+    proof fn lemma_move_mappings(pre: Self, post: Self, i: usize, n: usize)
+        requires
+            Self::move_step(pre, post, i, n),
+            post.blocks == pre.blocks,
+            post.holders@ == Self::moved_holders(pre.holders@, i, n),
+            post.table_pages == pre.table_pages,
+            post.spaces.roots == pre.spaces.roots,
+            post.spaces.records == pre.spaces.records,
+            post.mappings == pre.mappings,
+            post.list.pages@.dom() == pre.list.pages@.dom(),
+        ensures
+            mappings_wf(&post.list, &post.tables, tree_of(&post.table_pages, &post.spaces), &post.blocks, post.holders@, post.mappings@),
+    {
+        assert(Self::same_tree(pre, post));
+        assert(same_mapping_nodes(&pre.list, &post.list));
+        assert forall|m: usize| #[trigger] pre.mappings@.contains_key(m) implies mapping_node_kept(
+            &pre.list, &pre.tables, &pre.blocks, pre.holders@, &post.list, &post.tables, &post.blocks, post.holders@, pre.mappings@[m].frame, m,
+        ) by {
+            pre.lemma_mapping_node(m);
+            let c = pre.list.parent@[m];
+            assert(m != i);
+            assert(m != n);
+            assert(post.list.parent@.contains_key(m));
+            assert(post.list.parent@[m] == rename(c, i, n));
+            if c == i {
+                assert(post.is_cap(n));
+            } else {
+                assert(c != n);
+                Self::lemma_caps_frame(pre, post, i, n, c);
+            }
+            let br = block_ref(&pre.blocks, pre.mappings@[m].frame);
+            assert(post.holders@[br] == (if pre.holders@[br].contains(i) { pre.holders@[br].remove(i).insert(n) } else { pre.holders@[br] }));
+        }
+        Self::lemma_mappings_same_tree(pre, post);
     }
 
     /// Each block's holders after node i is renamed n.

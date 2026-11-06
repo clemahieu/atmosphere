@@ -8,6 +8,7 @@ use vstd::set_lib::*;
 
 verus! {
 
+use crate::capability::link::*;
 use crate::capability::mapping::*;
 use crate::capability::block::*;
 use crate::capability::kernel::*;
@@ -173,7 +174,7 @@ impl CapKernel {
             !old(self).mapped@.contains(base / 4096),
         ensures
             final(self).wf(),
-            Self::same_tree(*old(self), *final(self)),
+            Self::mappings_shrunk(*old(self), *final(self)),
             ret is Refused || ret is Again ==> *final(self) == *old(self),
             !((old(self).can_retype_under(root, from, base, 0) && old(self).frame_is_dead(base / 4096))
                 || old(self).can_unlink_leaf(root, from, base)
@@ -238,7 +239,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
         ensures
             final(self).wf(),
-            Self::same_tree(*old(self), *final(self)),
+            Self::mappings_shrunk(*old(self), *final(self)),
             ret == old(self).can_slice_leaf(root, from, base),
             !ret ==> *final(self) == *old(self),
             ret ==> old(self).leaf_sliced(*final(self), root, from, base),
@@ -276,7 +277,7 @@ impl CapKernel {
         let mut k = 1;
         while steps != LEAF_SLICE_BUDGET && k != NODES_PER_PAGE
             invariant
-                Self::same_tree(*old(self), *self),
+                Self::mappings_shrunk(*old(self), *self),
                 self.wf(),
                 pre == *old(self),
                 steps <= LEAF_SLICE_BUDGET,
@@ -813,11 +814,13 @@ impl CapKernel {
             post.zeroing == pre.zeroing,
             post.tables.owner@ == pre.tables.owner@.remove(base),
             post.list.nodes == pre.list.nodes,
+            post.list.parent == pre.list.parent,
             post.list.pages@.dom() == pre.list.pages@.dom().remove(base),
             forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x),
             forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x) ==> post.tables.payload_of(x) == pre.tables.payload_of(x),
             post.table_pages == pre.table_pages,
             post.spaces == pre.spaces,
+            post.mappings == pre.mappings,
         ensures
             holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
             objects_wf(&post.tables, &post.blocks, post.holders@),
@@ -826,11 +829,25 @@ impl CapKernel {
             zeroing_typed(&post.zeroing, &post.blocks),
             table_pages_wf(&post.list, &post.table_pages, &post.blocks),
             spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
+            mappings_wf(&post.list, &post.tables, tree_of(&post.table_pages, &post.spaces), &post.blocks, post.holders@, post.mappings@),
     {
         let page = base / 4096;
         pre.lemma_empty_leaf(base);
         pre.lemma_leaf_block_alone(base);
         lemma_leaf_block_unkeyed(&pre.tables, &pre.blocks, pre.holders@, base);
+        assert(same_mapping_nodes(&pre.list, &post.list));
+        assert forall|m: usize| #[trigger] pre.mappings@.contains_key(m) implies mapping_node_kept(
+            &pre.list, &pre.tables, &pre.blocks, pre.holders@, &post.list, &post.tables, &post.blocks, post.holders@, pre.mappings@[m].frame, m,
+        ) by {
+            pre.lemma_mapping_node(m);
+            pre.lemma_mapping_node_page(m);
+            assert(leaf_block(&pre.blocks, page));
+            assert(page_of(m) != base);
+            assert(post.list.valid(m));
+            assert(block_ref(&pre.blocks, pre.mappings@[m].frame) != BlockRef::Small(page));
+            lemma_block_ref_small_freed(&pre.blocks, &post.blocks, page, pre.mappings@[m].frame);
+        }
+        Self::lemma_mappings_same_tree(pre, post);
         lemma_holders_small_freed(&pre.list, &pre.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, page);
         assert(pre.holders@.remove(BlockRef::Small(page)) =~= pre.holders@);
         lemma_holders_same_frames(&pre.list, &pre.tables, &post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@);
@@ -902,6 +919,7 @@ impl CapKernel {
             post.frames == pre.frames,
             post.table_pages == pre.table_pages,
             post.spaces == pre.spaces,
+            post.mappings == pre.mappings,
         ensures
             post.wf(),
             post.view() == pre.view(),

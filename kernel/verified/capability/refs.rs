@@ -88,8 +88,9 @@ pub open spec fn block_active(zeroing: &Zeroing, br: BlockRef) -> bool {
     }
 }
 
-/// Every frame capability is a holder of the block it lies in, and each block's holders are exactly its
-/// references, so a block at zero has no frame capability. A block being zeroed has no capability yet:
+/// Every frame capability is a holder of the block it lies in, as a mapping node is of its frame's, and
+/// each block's holders are exactly its references, so a block at zero has no frame capability and no
+/// mapping. A block being zeroed has no capability yet:
 /// it holds the one reference retype will hand to its capability.
 pub open spec fn holders_wf(
     list: &Tree,
@@ -112,12 +113,12 @@ pub open spec fn holders_wf(
         &&& block_refs(blocks, br) == 0 ==> block_dead(blocks, br)
         &&& !block_active(zeroing, br)
     }
-    &&& forall|br: BlockRef, n: usize| holders.contains_key(br) && #[trigger] holders[br].contains(n) ==> {
+    &&& forall|br: BlockRef, n: usize| holders.contains_key(br) && #[trigger] holders[br].contains(n) ==> ({
         &&& tables.is_cap(list, n)
         &&& tables.payload_of(n).kind is Frame
         &&& tables.payload_of(n).base / 4096 < NUM_PAGES
         &&& block_ref(blocks, tables.payload_of(n).base / 4096) == br
-    }
+    } || (n < NODE_SPACE && list.nodes@[n as int].live && list.nodes@[n as int].kind is Mapping))
     &&& forall|r: int| 0 <= r < NUM_2M && #[trigger] zeroing.active_2m@[r] ==> {
         &&& blocks.regions_2m@[r].typed
         &&& blocks.regions_2m@[r].refs == 1
@@ -126,6 +127,13 @@ pub open spec fn holders_wf(
         &&& blocks.regions_1g@[r].typed
         &&& blocks.regions_1g@[r].refs == 1
     }
+}
+
+/// The live mapping nodes of a are those of b.
+pub open spec fn same_mapping_nodes(list_a: &Tree, list_b: &Tree) -> bool {
+    forall|n: usize| #![trigger list_a.nodes@[n as int]] #![trigger list_b.nodes@[n as int]] n < NODE_SPACE ==>
+        (list_b.nodes@[n as int].live && list_b.nodes@[n as int].kind is Mapping)
+            == (list_a.nodes@[n as int].live && list_a.nodes@[n as int].kind is Mapping)
 }
 
 /// The block at page b is typed, at its base, as a table leaf.
@@ -359,7 +367,8 @@ pub proof fn lemma_holders_unkeyed_small_changed(
         assert(block_refs(b, k) == block_refs(a, k));
         assert(block_dead(b, k) == block_dead(a, k));
     }
-    assert forall|k: BlockRef, x: usize| holders.contains_key(k) && #[trigger] holders[k].contains(x) implies
+    assert forall|k: BlockRef, x: usize| holders.contains_key(k) && #[trigger] holders[k].contains(x)
+        && tables.is_cap(list, x) && tables.payload_of(x).kind is Frame implies
         block_ref(b, tables.payload_of(x).base / 4096) == k by {
         assert(tables.payload_of(x).base / 4096 < NUM_PAGES);
         assert(block_ref(b, tables.payload_of(x).base / 4096) == block_ref(a, tables.payload_of(x).base / 4096));
@@ -1094,16 +1103,21 @@ pub proof fn lemma_holders_same_frames(
     requires
         holders_wf(list_a, tables_a, blocks, zeroing, holders),
         same_frames(list_a, tables_a, list_b, tables_b),
+        same_mapping_nodes(list_a, list_b),
     ensures
         holders_wf(list_b, tables_b, blocks, zeroing, holders),
 {
-    assert forall|br: BlockRef, n: usize| holders.contains_key(br) && #[trigger] holders[br].contains(n) implies {
+    assert forall|br: BlockRef, n: usize| holders.contains_key(br) && #[trigger] holders[br].contains(n) implies ({
         &&& tables_b.is_cap(list_b, n)
         &&& tables_b.payload_of(n).kind is Frame
         &&& tables_b.payload_of(n).base / 4096 < NUM_PAGES
         &&& block_ref(blocks, tables_b.payload_of(n).base / 4096) == br
-    } by {
-        assert(tables_a.is_cap(list_a, n));
+    } || (n < NODE_SPACE && list_b.nodes@[n as int].live && list_b.nodes@[n as int].kind is Mapping)) by {
+        if tables_a.is_cap(list_a, n) && tables_a.payload_of(n).kind is Frame {
+            assert(tables_b.is_cap(list_b, n));
+        } else {
+            assert(n < NODE_SPACE && list_a.nodes@[n as int].live && list_a.nodes@[n as int].kind is Mapping);
+        }
     }
 }
 
@@ -1152,10 +1166,12 @@ pub proof fn lemma_holders_frame_added(
         holders.contains_key(br),
         block_refs(blocks_a, br) < usize::MAX,
         blocks_refs_changed(blocks_a, blocks_b, br, (block_refs(blocks_a, br) + 1) as usize, block_dead(blocks_a, br)),
+        same_mapping_nodes(list_a, list_b),
     ensures
         holders_wf(list_b, tables_b, blocks_b, zeroing, holders.insert(br, holders[br].insert(n))),
 {
     let hb = holders.insert(br, holders[br].insert(n));
+    assert(!(list_b.nodes@[n as int].kind is Mapping));
     assert(!holders[br].contains(n));
     vstd::set::lemma_set_insert_len(holders[br], n);
     assert forall|x: usize| #[trigger] tables_b.is_cap(list_b, x) && tables_b.payload_of(x).kind is Frame implies {
@@ -1180,17 +1196,20 @@ pub proof fn lemma_holders_frame_added(
     } by {
         assert(holders.contains_key(k));
     }
-    assert forall|k: BlockRef, x: usize| hb.contains_key(k) && #[trigger] hb[k].contains(x) implies {
+    assert forall|k: BlockRef, x: usize| hb.contains_key(k) && #[trigger] hb[k].contains(x) implies ({
         &&& tables_b.is_cap(list_b, x)
         &&& tables_b.payload_of(x).kind is Frame
         &&& tables_b.payload_of(x).base / 4096 < NUM_PAGES
         &&& block_ref(blocks_b, tables_b.payload_of(x).base / 4096) == k
-    } by {
+    } || (x < NODE_SPACE && list_b.nodes@[x as int].live && list_b.nodes@[x as int].kind is Mapping)) by {
         assert(holders.contains_key(k));
         if k != br || x != n {
             assert(holders[k].contains(x));
-            assert(tables_a.is_cap(list_a, x));
-            assert(x != n);
+            if tables_a.is_cap(list_a, x) && tables_a.payload_of(x).kind is Frame {
+                assert(x != n);
+            } else {
+                assert(x < NODE_SPACE && list_a.nodes@[x as int].live && list_a.nodes@[x as int].kind is Mapping);
+            }
         }
     }
     assert forall|r: int| 0 <= r < NUM_2M && #[trigger] zeroing.active_2m@[r] implies {
@@ -1240,6 +1259,7 @@ pub proof fn lemma_holders_frame_dropped(
             (block_refs(blocks_a, br) - 1) as usize,
             block_dead(blocks_a, br) || block_refs(blocks_a, br) == 1,
         ),
+        same_mapping_nodes(list_a, list_b),
     ensures
         holders_wf(list_b, tables_b, blocks_b, zeroing, holders.insert(br, holders[br].remove(n))),
 {
@@ -1268,16 +1288,119 @@ pub proof fn lemma_holders_frame_dropped(
     } by {
         assert(holders.contains_key(k));
     }
-    assert forall|k: BlockRef, x: usize| hb.contains_key(k) && #[trigger] hb[k].contains(x) implies {
+    assert forall|k: BlockRef, x: usize| hb.contains_key(k) && #[trigger] hb[k].contains(x) implies ({
         &&& tables_b.is_cap(list_b, x)
         &&& tables_b.payload_of(x).kind is Frame
         &&& tables_b.payload_of(x).base / 4096 < NUM_PAGES
         &&& block_ref(blocks_b, tables_b.payload_of(x).base / 4096) == k
-    } by {
+    } || (x < NODE_SPACE && list_b.nodes@[x as int].live && list_b.nodes@[x as int].kind is Mapping)) by {
         assert(holders.contains_key(k));
         assert(holders[k].contains(x));
-        assert(tables_a.is_cap(list_a, x));
+        if tables_a.is_cap(list_a, x) && tables_a.payload_of(x).kind is Frame {
+            assert(x != n);
+        } else {
+            assert(x < NODE_SPACE && list_a.nodes@[x as int].live && list_a.nodes@[x as int].kind is Mapping);
+        }
+    }
+    assert forall|r: int| 0 <= r < NUM_2M && #[trigger] zeroing.active_2m@[r] implies {
+        &&& blocks_b.regions_2m@[r].typed
+        &&& blocks_b.regions_2m@[r].refs == 1
+    } by {
+        assert(block_typed(blocks_a, BlockRef::Two(r as usize)));
+        assert(BlockRef::Two(r as usize) != br);
+        assert(block_refs(blocks_b, BlockRef::Two(r as usize)) == block_refs(blocks_a, BlockRef::Two(r as usize)));
+    }
+    assert forall|r: int| 0 <= r < NUM_1G && #[trigger] zeroing.active_1g@[r] implies {
+        &&& blocks_b.regions_1g@[r].typed
+        &&& blocks_b.regions_1g@[r].refs == 1
+    } by {
+        assert(block_typed(blocks_a, BlockRef::One(r as usize)));
+        assert(BlockRef::One(r as usize) != br);
+        assert(block_refs(blocks_b, BlockRef::One(r as usize)) == block_refs(blocks_a, BlockRef::One(r as usize)));
+    }
+}
+
+/// The holders after mapping node n, the only node that changed, leaves its block br, the only block it
+/// held, with one reference fewer.
+pub proof fn lemma_holders_mapping_dropped(
+    list_a: &Tree,
+    tables: &Tables,
+    list_b: &Tree,
+    blocks_a: &BlockTable,
+    blocks_b: &BlockTable,
+    zeroing: &Zeroing,
+    holders: IMap<BlockRef, Set<usize>>,
+    n: usize,
+    br: BlockRef,
+)
+    requires
+        holders_wf(list_a, tables, blocks_a, zeroing, holders),
+        n < NODE_SPACE,
+        list_a.nodes@[n as int].live,
+        list_a.nodes@[n as int].kind is Mapping,
+        !list_b.nodes@[n as int].live,
+        forall|x: int| #![trigger list_b.nodes@[x]] 0 <= x < NODE_SPACE && x != n ==> {
+            &&& list_b.nodes@[x].live == list_a.nodes@[x].live
+            &&& list_b.nodes@[x].kind == list_a.nodes@[x].kind
+        },
+        same_frames(list_a, tables, list_b, tables),
+        holders.contains_key(br),
+        holders[br].contains(n),
+        forall|k: BlockRef| holders.contains_key(k) && #[trigger] holders[k].contains(n) ==> k == br,
+        blocks_refs_changed(
+            blocks_a,
+            blocks_b,
+            br,
+            (block_refs(blocks_a, br) - 1) as usize,
+            block_dead(blocks_a, br) || block_refs(blocks_a, br) == 1,
+        ),
+    ensures
+        holders_wf(list_b, tables, blocks_b, zeroing, holders.insert(br, holders[br].remove(n))),
+{
+    let hb = holders.insert(br, holders[br].remove(n));
+    if holders[br].len() == 0 {
+        holders[br].lemma_len0_is_empty();
+    }
+    vstd::set::lemma_set_remove_len(holders[br], n);
+    assert forall|x: usize| #[trigger] tables.is_cap(list_b, x) && tables.payload_of(x).kind is Frame implies {
+        let i = tables.payload_of(x).base / 4096;
+        &&& i < NUM_PAGES
+        &&& frame_in_block(block_ref(blocks_b, i), tables.payload_of(x))
+        &&& hb.contains_key(block_ref(blocks_b, i))
+        &&& hb[block_ref(blocks_b, i)].contains(x)
+    } by {
+        let i = tables.payload_of(x).base / 4096;
+        assert(tables.is_cap(list_a, x));
         assert(x != n);
+        assert(holders[block_ref(blocks_a, i)].contains(x));
+        assert(block_ref(blocks_b, i) == block_ref(blocks_a, i));
+    }
+    assert forall|k: BlockRef| #[trigger] hb.contains_key(k) implies {
+        &&& hb[k].finite()
+        &&& hb[k].len() == block_refs(blocks_b, k)
+        &&& block_typed(blocks_b, k)
+        &&& block_refs(blocks_b, k) == 0 ==> block_dead(blocks_b, k)
+        &&& !block_active(zeroing, k)
+    } by {
+        assert(holders.contains_key(k));
+    }
+    assert forall|k: BlockRef, x: usize| hb.contains_key(k) && #[trigger] hb[k].contains(x) implies ({
+        &&& tables.is_cap(list_b, x)
+        &&& tables.payload_of(x).kind is Frame
+        &&& tables.payload_of(x).base / 4096 < NUM_PAGES
+        &&& block_ref(blocks_b, tables.payload_of(x).base / 4096) == k
+    } || (x < NODE_SPACE && list_b.nodes@[x as int].live && list_b.nodes@[x as int].kind is Mapping)) by {
+        assert(holders.contains_key(k));
+        assert(holders[k].contains(x));
+        assert(x != n);
+        if tables.is_cap(list_a, x) && tables.payload_of(x).kind is Frame {
+            assert(tables.is_cap(list_b, x));
+            assert(block_ref(blocks_b, tables.payload_of(x).base / 4096) == k);
+        } else {
+            assert(x < NODE_SPACE);
+            assert(list_a.nodes@[x as int].live && list_a.nodes@[x as int].kind is Mapping);
+            assert(list_b.nodes@[x as int].live && list_b.nodes@[x as int].kind is Mapping);
+        }
     }
     assert forall|r: int| 0 <= r < NUM_2M && #[trigger] zeroing.active_2m@[r] implies {
         &&& blocks_b.regions_2m@[r].typed
@@ -1438,12 +1561,9 @@ pub proof fn lemma_holders_small_freed(
             assert(blocks_b.pages@[b as int] == blocks_a.pages@[b as int]);
         }
     }
-    assert forall|k: BlockRef, x: usize| hb.contains_key(k) && #[trigger] hb[k].contains(x) implies {
-        &&& tables.is_cap(list, x)
-        &&& tables.payload_of(x).kind is Frame
-        &&& tables.payload_of(x).base / 4096 < NUM_PAGES
-        &&& block_ref(blocks_b, tables.payload_of(x).base / 4096) == k
-    } by {
+    assert forall|k: BlockRef, x: usize| hb.contains_key(k) && #[trigger] hb[k].contains(x)
+        && tables.is_cap(list, x) && tables.payload_of(x).kind is Frame implies
+        block_ref(blocks_b, tables.payload_of(x).base / 4096) == k by {
         assert(holders.contains_key(k));
         assert(holders[k].contains(x));
     }
@@ -1492,12 +1612,9 @@ pub proof fn lemma_holders_2m_freed(
     } by {
         assert(holders.contains_key(k));
     }
-    assert forall|k: BlockRef, x: usize| hb.contains_key(k) && #[trigger] hb[k].contains(x) implies {
-        &&& tables.is_cap(list, x)
-        &&& tables.payload_of(x).kind is Frame
-        &&& tables.payload_of(x).base / 4096 < NUM_PAGES
-        &&& block_ref(blocks_b, tables.payload_of(x).base / 4096) == k
-    } by {
+    assert forall|k: BlockRef, x: usize| hb.contains_key(k) && #[trigger] hb[k].contains(x)
+        && tables.is_cap(list, x) && tables.payload_of(x).kind is Frame implies
+        block_ref(blocks_b, tables.payload_of(x).base / 4096) == k by {
         assert(holders.contains_key(k));
         assert(holders[k].contains(x));
     }
@@ -1554,12 +1671,9 @@ pub proof fn lemma_holders_1g_freed(
     } by {
         assert(holders.contains_key(k));
     }
-    assert forall|k: BlockRef, x: usize| hb.contains_key(k) && #[trigger] hb[k].contains(x) implies {
-        &&& tables.is_cap(list, x)
-        &&& tables.payload_of(x).kind is Frame
-        &&& tables.payload_of(x).base / 4096 < NUM_PAGES
-        &&& block_ref(blocks_b, tables.payload_of(x).base / 4096) == k
-    } by {
+    assert forall|k: BlockRef, x: usize| hb.contains_key(k) && #[trigger] hb[k].contains(x)
+        && tables.is_cap(list, x) && tables.payload_of(x).kind is Frame implies
+        block_ref(blocks_b, tables.payload_of(x).base / 4096) == k by {
         assert(holders.contains_key(k));
         assert(holders[k].contains(x));
     }
@@ -1599,10 +1713,12 @@ pub proof fn lemma_holders_frame_new(
         block_refs(blocks, br) == 1,
         !block_dead(blocks, br),
         !block_active(zeroing, br),
+        same_mapping_nodes(list_a, list_b),
     ensures
         holders_wf(list_b, tables_b, blocks, zeroing, holders.insert(br, set![n])),
 {
     let hb = holders.insert(br, set![n]);
+    assert(!(list_b.nodes@[n as int].kind is Mapping));
     assert(set![n].len() == 1) by {
         assert(set![n] =~= Set::<usize>::empty().insert(n));
         vstd::set::lemma_set_insert_len(Set::<usize>::empty(), n);
@@ -1629,17 +1745,20 @@ pub proof fn lemma_holders_frame_new(
             assert(holders.contains_key(k));
         }
     }
-    assert forall|k: BlockRef, x: usize| hb.contains_key(k) && #[trigger] hb[k].contains(x) implies {
+    assert forall|k: BlockRef, x: usize| hb.contains_key(k) && #[trigger] hb[k].contains(x) implies ({
         &&& tables_b.is_cap(list_b, x)
         &&& tables_b.payload_of(x).kind is Frame
         &&& tables_b.payload_of(x).base / 4096 < NUM_PAGES
         &&& block_ref(blocks, tables_b.payload_of(x).base / 4096) == k
-    } by {
+    } || (x < NODE_SPACE && list_b.nodes@[x as int].live && list_b.nodes@[x as int].kind is Mapping)) by {
         if k != br {
             assert(holders.contains_key(k));
             assert(holders[k].contains(x));
-            assert(tables_a.is_cap(list_a, x));
-            assert(x != n);
+            if tables_a.is_cap(list_a, x) && tables_a.payload_of(x).kind is Frame {
+                assert(x != n);
+            } else {
+                assert(x < NODE_SPACE && list_a.nodes@[x as int].live && list_a.nodes@[x as int].kind is Mapping);
+            }
         }
     }
 }
@@ -1738,7 +1857,8 @@ pub proof fn lemma_holders_small_typed(
             assert(blocks_b.pages@[b as int] == blocks_a.pages@[b as int]);
         }
     }
-    assert forall|k: BlockRef, x: usize| holders.contains_key(k) && #[trigger] holders[k].contains(x) implies
+    assert forall|k: BlockRef, x: usize| holders.contains_key(k) && #[trigger] holders[k].contains(x)
+        && tables.is_cap(list, x) && tables.payload_of(x).kind is Frame implies
         block_ref(blocks_b, tables.payload_of(x).base / 4096) == k by {
         assert(tables.is_cap(list, x));
     }
@@ -1843,7 +1963,8 @@ pub proof fn lemma_holders_region_typed(
     } by {
         assert(k != level_ref(level, r));
     }
-    assert forall|k: BlockRef, x: usize| holders.contains_key(k) && #[trigger] holders[k].contains(x) implies
+    assert forall|k: BlockRef, x: usize| holders.contains_key(k) && #[trigger] holders[k].contains(x)
+        && tables.is_cap(list, x) && tables.payload_of(x).kind is Frame implies
         block_ref(blocks_b, tables.payload_of(x).base / 4096) == k by {
         assert(tables.is_cap(list, x));
     }
@@ -1876,6 +1997,135 @@ pub proof fn lemma_holders_region_done(
 {
     assert forall|k: BlockRef| #[trigger] holders.contains_key(k) implies !block_active(zeroing_b, k) by {
         assert(!block_active(zeroing_a, k));
+    }
+}
+
+/// A page outside the small block being freed is read in the same block after.
+pub proof fn lemma_block_ref_small_freed(a: &BlockTable, b: &BlockTable, base: usize, i: usize)
+    requires
+        a.wf(),
+        base < NUM_PAGES,
+        i < NUM_PAGES,
+        a.pages@[base as int].kind is Base,
+        forall|j: int| 0 <= j < NUM_PAGES ==> #[trigger] b.pages@[j] == (
+            if a.in_block(base as int, j) { free_entry() } else { a.pages@[j] }),
+        b.regions_2m@ == a.regions_2m@,
+        b.regions_1g@ == a.regions_1g@,
+        block_ref(a, i) != BlockRef::Small(base),
+    ensures
+        block_ref(b, i) == block_ref(a, i),
+{
+    if a.in_block(base as int, i as int) {
+        lemma_small_block_ref(a, base, i);
+    }
+    assert(b.pages@[i as int] == a.pages@[i as int]);
+}
+
+/// A page of a typed block is read in the same block after a free small block is typed.
+pub proof fn lemma_block_ref_small_typed(a: &BlockTable, b: &BlockTable, base: usize, order: usize, i: usize)
+    requires
+        small_order(order),
+        base % (order_pages(order) as usize) == 0,
+        base + order_pages(order) <= NUM_PAGES,
+        forall|k: int| 0 <= k < order_pages(order) ==> #[trigger] a.pages@[base + k].kind is Free,
+        !a.covered(base as int),
+        b.regions_2m@ == a.regions_2m@,
+        b.regions_1g@ == a.regions_1g@,
+        forall|j: int| 0 <= j < NUM_PAGES && !(base <= j < base + order_pages(order))
+            ==> #[trigger] b.pages@[j] == a.pages@[j],
+        i < NUM_PAGES,
+        block_typed(a, block_ref(a, i)),
+    ensures
+        block_ref(b, i) == block_ref(a, i),
+{
+    if base <= i < base + order_pages(order) {
+        lemma_small_range_uncovered(a, base, order, i);
+        assert(a.pages@[base + (i - base)].kind is Free);
+        assert(block_ref(a, i) == BlockRef::Small(i));
+        assert(!block_typed(a, BlockRef::Small(i)));
+    }
+    assert(b.pages@[i as int] == a.pages@[i as int]);
+}
+
+/// A page of a typed block is read in the same block after a free region is typed.
+pub proof fn lemma_block_ref_region_typed(a: &BlockTable, b: &BlockTable, level: Large, r: usize, i: usize)
+    requires
+        r < level_regions(level),
+        forall|j: int| level_base(level, r) <= j < level_base(level, r) + level_pages(level) ==> {
+            &&& #[trigger] a.pages@[j].kind is Free
+            &&& !a.covered(j)
+        },
+        b.pages@ == a.pages@,
+        match level {
+            Large::Two => {
+                &&& b.regions_2m@ == a.regions_2m@.update(r as int, b.regions_2m@[r as int])
+                &&& b.regions_1g@ == a.regions_1g@
+            },
+            Large::One => {
+                &&& b.regions_1g@ == a.regions_1g@.update(r as int, b.regions_1g@[r as int])
+                &&& b.regions_2m@ == a.regions_2m@
+            },
+        },
+        i < NUM_PAGES,
+        block_typed(a, block_ref(a, i)),
+    ensures
+        block_ref(b, i) == block_ref(a, i),
+{
+    let base = level_base(level, r);
+    let pages = level_pages(level);
+    if base <= i < base + pages {
+        assert(a.pages@[i as int].kind is Free);
+        assert(!a.covered(i as int));
+        assert(block_ref(a, i) == BlockRef::Small(i));
+        assert(!block_typed(a, BlockRef::Small(i)));
+    }
+    assert(!(base <= i < base + pages));
+    match level {
+        Large::Two => {
+            assert(base == r * PAGES_PER_2M);
+            lemma_fundamental_div_mod(i as int, PAGES_PER_2M as int);
+            assert(i / PAGES_PER_2M != r);
+        },
+        Large::One => {
+            assert(base == r * PAGES_PER_1G);
+            lemma_fundamental_div_mod(i as int, PAGES_PER_1G as int);
+            assert(i / PAGES_PER_1G != r);
+        },
+    }
+}
+
+/// A page outside the 2M block being freed is read in the same block after.
+pub proof fn lemma_block_ref_2m_freed(a: &BlockTable, b: &BlockTable, r: usize, i: usize)
+    requires
+        r < NUM_2M,
+        a.regions_2m@[r as int].typed,
+        b.pages@ == a.pages@,
+        b.regions_2m@ == a.regions_2m@.update(r as int, b.regions_2m@[r as int]),
+        b.regions_1g@ == a.regions_1g@,
+        i < NUM_PAGES,
+        block_ref(a, i) != BlockRef::Two(r),
+    ensures
+        block_ref(b, i) == block_ref(a, i),
+{
+    assert(i / PAGES_PER_2M != r);
+}
+
+/// A page outside the 1G block being freed is read in the same block after.
+pub proof fn lemma_block_ref_1g_freed(a: &BlockTable, b: &BlockTable, r: usize, i: usize)
+    requires
+        a.wf(),
+        r < NUM_1G,
+        a.regions_1g@[r as int].typed,
+        b.pages@ == a.pages@,
+        b.regions_1g@ == a.regions_1g@.update(r as int, b.regions_1g@[r as int]),
+        b.regions_2m@ == a.regions_2m@,
+        i < NUM_PAGES,
+        block_ref(a, i) != BlockRef::One(r),
+    ensures
+        block_ref(b, i) == block_ref(a, i),
+{
+    if i / PAGES_PER_1G == r {
+        lemma_in_1g_block(a, i, r);
     }
 }
 

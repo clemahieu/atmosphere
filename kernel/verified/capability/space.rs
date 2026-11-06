@@ -1540,6 +1540,7 @@ impl CapKernel {
     proof fn lemma_table_page_blocks(pre: Self, post: Self, base: usize, page: usize)
         requires
             Self::table_page_step(pre, post),
+            same_mapping_nodes(&pre.list, &post.list),
             post.holders == pre.holders,
             post.zeroing == pre.zeroing,
             post.frames == pre.frames,
@@ -1829,11 +1830,13 @@ impl CapKernel {
             pre.blocks.pages@[page as int].kind is Free,
             post.table_pages.maps@ == pre.table_pages.maps@.insert(base, post.table_pages.maps@[base]),
             post.table_pages.records@ == pre.table_pages.records@.insert(base, post.table_pages.records@[base]),
+            forall|i: usize| i < 512 ==> #[trigger] post.table_pages.maps@[base].value()[i].is_empty(),
             post.spaces == pre.spaces,
         ensures
             forall|r: usize| #[trigger] pre.spaces.roots@.contains_key(r) ==>
                 space_mapping(tree_of(&post.table_pages, &post.spaces), r)
                     == space_mapping(tree_of(&pre.table_pages, &pre.spaces), r),
+            same_frame_entries(tree_of(&pre.table_pages, &pre.spaces), tree_of(&post.table_pages, &post.spaces)),
     {
         pre.lemma_free_not_table(base, page);
         let a = tree_of(&pre.table_pages, &pre.spaces);
@@ -1850,6 +1853,14 @@ impl CapKernel {
             space_mapping(b, r) == space_mapping(a, r) by {
             lemma_mapping_extended(a, b, r);
         }
+        assert forall|u: usize| #[trigger] b.is_page(u) && !a.is_page(u)
+            implies forall|i: usize| i < 512 ==> !(#[trigger] b.entry(u, i)).perm.present by {
+            assert(u == base);
+            assert forall|i: usize| i < 512 implies !(#[trigger] b.entry(u, i)).perm.present by {
+                assert(post.table_pages.maps@[base].value()[i].is_empty());
+            }
+        }
+        lemma_frame_entries_extended(a, b);
     }
 
     /// A space's retype leaves every other's mapping as it was, and the new space maps nothing.
@@ -1867,6 +1878,7 @@ impl CapKernel {
             forall|r: usize| #[trigger] pre.spaces.roots@.contains_key(r) ==>
                 space_mapping(tree_of(&post.table_pages, &post.spaces), r)
                     == space_mapping(tree_of(&pre.table_pages, &pre.spaces), r),
+            same_frame_entries(tree_of(&pre.table_pages, &pre.spaces), tree_of(&post.table_pages, &post.spaces)),
     {
         pre.lemma_free_not_table(base, page);
         let a = tree_of(&pre.table_pages, &pre.spaces);
@@ -1889,6 +1901,7 @@ impl CapKernel {
             space_mapping(b, r) == space_mapping(a, r) by {
             lemma_mapping_extended(a, b, r);
         }
+        lemma_frame_entries_extended(a, b);
     }
 
     /// Retypes the free order-3 block at `base` as a table page, under the untyped at index `from` of the
@@ -2019,9 +2032,15 @@ impl CapKernel {
             assert(post.list.pages@.dom() == mid.pages@.dom());
             assert(post.table_pages.maps@ == pre.table_pages.maps@.insert(base, post.table_pages.maps@[base]));
             assert(post.table_pages.records@ == pre.table_pages.records@.insert(base, post.table_pages.records@[base]));
+            lemma_mapping_nodes_grown(pre.list, mid, post.list, base, base);
             Self::lemma_table_page_blocks(pre, post, base, page);
             Self::lemma_table_page_links(pre, post, base, page);
             Self::lemma_table_page_mappings(pre, post, base, page);
+            assert forall|n: usize| #[trigger] pre.mappings@.contains_key(n)
+                implies post.list.parent@.contains_key(n) && post.list.parent@[n] == pre.list.parent@[n] by {
+                pre.lemma_mapping_node(n);
+            }
+            Self::lemma_mappings_grown(pre, post, page, 3);
             assert(post.wf());
             Self::lemma_hidden_added_discharges(pre, post, root, parent, base);
         }
@@ -2290,6 +2309,7 @@ impl CapKernel {
     proof fn lemma_space_blocks(pre: Self, post: Self, base: usize, page: usize, child: usize)
         requires
             Self::space_step(pre, post, child),
+            same_mapping_nodes(&pre.list, &post.list),
             post.holders == pre.holders,
             post.zeroing == pre.zeroing,
             post.frames == pre.frames,
@@ -2530,6 +2550,7 @@ impl CapKernel {
             Self::lemma_tlb_same(pre, post);
             Self::lemma_space_nodes(pre, post, mid, parent, child);
             assert(post.list.pages@.dom() == mid.pages@.dom());
+            lemma_mapping_nodes_grown(pre.list, mid, post.list, child, child);
             Self::lemma_space_blocks(pre, post, base, page, child);
             assert(post.spaces.roots@ == pre.spaces.roots@.insert(base, post.spaces.roots@[base]));
             assert(post.spaces.records@ == pre.spaces.records@.insert(base, post.spaces.records@[base]));
@@ -2540,6 +2561,14 @@ impl CapKernel {
             Self::lemma_spaces_space_added(pre, post, base, page, child);
             Self::lemma_space_links(pre, post, base, page);
             Self::lemma_space_mappings(pre, post, base, page);
+            assert forall|n: usize| #[trigger] pre.mappings@.contains_key(n)
+                implies post.list.parent@.contains_key(n) && post.list.parent@[n] == pre.list.parent@[n] by {
+                pre.lemma_mapping_node(n);
+            }
+            assert forall|x: usize| #[trigger] pre.is_cap(x) implies post.is_cap(x) && post.payload_of(x) == pre.payload_of(x) by {
+                Self::lemma_space_cap_frame(pre, post, child, x);
+            }
+            Self::lemma_mappings_grown(pre, post, page, 3);
             assert(post.wf());
             assert(SPACE_RIGHTS & 128 == 0) by (compute_only);
             assert(right_bit(Right::Control) == 128);
