@@ -51,7 +51,6 @@ pub ghost struct State {
     pub waiting: Set<(ObjectId, ObjectId)>,
     /// The caller bound to each reply.
     pub bound: Map<ObjectId, ObjectId>,
-    pub dead: Set<ObjectId>,
     /// What a process can see of an object: a frame's bytes, a thread's registers, a notification's
     /// word.
     pub contents: spec_fn(ObjectId) -> Seq<u8>,
@@ -106,8 +105,8 @@ impl State {
         }
     }
 
-    /// a holds a control capability over b. Live or dead does not matter: a controller can destroy
-    /// and then claim, so what b holds counts until its slots are revoked.
+    /// a holds a control capability over b. Live or dead does not matter: a controller can claim, so
+    /// what b holds counts until its slots are revoked.
     pub open spec fn controls(self, a: ObjectId, b: ObjectId) -> bool {
         exists|c: NodeId| #[trigger] self.holds_right(a, c, Right::Control)
             && self.process_behind(self.names[c]) == b
@@ -160,7 +159,8 @@ pub ghost enum Effect {
     Revoke { cap: NodeId },
     /// Mark the target dead through a control capability.
     Destroy { cap: NodeId },
-    /// Move one node from a slot of a dead process the caller controls into the caller's table.
+    /// Move one node from a slot of a process the caller controls, live or dead, into the caller's
+    /// table. It takes control of the process itself, not of one of its threads.
     Claim { cap: NodeId, from: NodeId },
     /// Type a free block under an untyped held.
     Retype { untyped: NodeId, object: ObjectId },
@@ -192,8 +192,8 @@ pub open spec fn authorized(s: State, p: ObjectId, e: Effect) -> bool {
         Effect::Destroy { cap } => s.holds_right(p, cap, Right::Control),
         Effect::Claim { cap, from } => {
             &&& s.holds_right(p, cap, Right::Control)
-            &&& s.dead.contains(s.process_behind(s.names[cap]))
-            &&& s.holds(s.process_behind(s.names[cap]), from)
+            &&& !s.process_of.contains_key(s.names[cap])
+            &&& s.holds(s.names[cap], from)
             &&& s.names.contains_key(from)
         },
         Effect::Retype { untyped, object } | Effect::Teardown { untyped, object } =>
@@ -671,7 +671,7 @@ pub proof fn lemma_simulated_discharges_retype(
 }
 
 /// Control is transitive: if s controls m and m controls q, s reaches what q directly reaches, since
-/// s can destroy m, claim its control over q, and repeat.
+/// s can claim m's control over q, and repeat.
 pub proof fn lemma_control_transitive(s: State, a: ObjectId, m: ObjectId, q: ObjectId, o: ObjectId)
     requires
         s.controls(a, m),
@@ -738,7 +738,6 @@ pub open spec fn example() -> State {
         process_of: Map::empty(),
         waiting: Set::empty(),
         bound: Map::empty(),
-        dead: Set::empty(),
         contents: |o: ObjectId| Seq::empty(),
     }
 }
@@ -826,6 +825,48 @@ pub proof fn lemma_example_reaches_its_block(o: ObjectId)
             assert(s.held.contains((1usize, c)));
         }
     }
+}
+
+/// Process 1 controls process 2 through node 10, and process 2's thread 3 through node 11. Process 2
+/// holds node 20, and nobody has destroyed it.
+pub open spec fn control_example() -> State {
+    State {
+        held: ISet::new(|h: (ObjectId, NodeId)| h == (1usize, 10usize) || h == (1usize, 11usize) || h == (2usize, 20usize)),
+        names: IMap::new(
+            |n: NodeId| n == 10 || n == 11 || n == 20,
+            |n: NodeId| if n == 10 { 2usize } else if n == 11 { 3usize } else { EXAMPLE_BASE },
+        ),
+        pages: IMap::new(|n: NodeId| n == 10 || n == 11 || n == 20, |n: NodeId| 1nat),
+        rights: ISet::new(|h: (NodeId, Right)| (h.0 == 10 || h.0 == 11) && h.1 == Right::Control),
+        parent: Map::empty(),
+        maps: Set::empty(),
+        process_of: map![3usize => 2usize],
+        waiting: Set::empty(),
+        bound: Map::empty(),
+        contents: |o: ObjectId| Seq::empty(),
+    }
+}
+
+/// A claim needs control of the process, and not its death.
+pub proof fn lemma_claim_from_a_live_process()
+    ensures
+        authorized(control_example(), 1, Effect::Claim { cap: 10, from: 20 }),
+{
+    let s = control_example();
+    assert(s.holds_right(1, 10, Right::Control));
+    assert(s.holds(2, 20));
+    assert(s.names[10] == 2);
+    assert(!s.process_of.contains_key(2));
+}
+
+/// Control of a thread does not let its holder claim from the thread's process.
+pub proof fn lemma_no_claim_through_a_thread()
+    ensures
+        !authorized(control_example(), 1, Effect::Claim { cap: 11, from: 20 }),
+{
+    let s = control_example();
+    assert(s.names[11] == 3);
+    assert(s.process_of.contains_key(3));
 }
 
 /// Reach reads nothing but the authority fields, so contents do not change it.
