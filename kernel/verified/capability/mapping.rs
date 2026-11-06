@@ -27,9 +27,9 @@ pub ghost struct SpacePath {
     pub l1: usize,
 }
 
-/// The table entry i of table t leads to, if it can hold a child and is present.
+/// The table entry i of table t leads to, if it names a child.
 pub open spec fn step(tree: TableTree, t: usize, i: usize) -> Option<usize> {
-    if tree.child_slot(t, i) && tree.entry(t, i).perm.present {
+    if tree.names_child(t, i) {
         Some((tree.entry(t, i).addr - TABLE_NODE_PAGES * 4096) as usize)
     } else {
         None
@@ -45,7 +45,17 @@ pub open spec fn frame_entry(tree: TableTree, t: usize, i: usize) -> Option<Page
     }
 }
 
-/// What path p of space s maps.
+/// The large frame entry i of table t maps, if t is at level 2 and the entry is present with ps.
+pub open spec fn large_entry(tree: TableTree, t: usize, i: usize) -> Option<PageEntry> {
+    if tree.is_table(t) && i < 512 && tree.record(t).level == 2 && tree.entry(t, i).perm.present && tree.entry(t, i).perm.ps {
+        Some(tree.entry(t, i))
+    } else {
+        None
+    }
+}
+
+/// What path p of space s maps. A large frame is found at the path of its first page, with ps set in
+/// the entry.
 pub open spec fn walk(tree: TableTree, s: usize, p: SpacePath) -> Option<PageEntry> {
     if !tree.is_root(s) {
         None
@@ -55,7 +65,7 @@ pub open spec fn walk(tree: TableTree, s: usize, p: SpacePath) -> Option<PageEnt
             Some(t3) => match step(tree, t3, p.l3) {
                 None => None,
                 Some(t2) => match step(tree, t2, p.l2) {
-                    None => None,
+                    None => if p.l1 == 0 { large_entry(tree, t2, p.l2) } else { None },
                     Some(t1) => frame_entry(tree, t1, p.l1),
                 },
             },
@@ -144,16 +154,28 @@ pub open spec fn walks_cut(a: TableTree, b: TableTree, t: usize, e: usize) -> bo
         == if ends_at(a, r, p, t, e) { None } else { walk(a, r, p) }
 }
 
-/// Path p of space r reaches entry e of table t at level 1.
+/// Path p of space r reaches entry e of table t: an entry of a level 1 table, or a large frame's entry
+/// of a level 2 table at its first page's path.
 pub open spec fn ends_at(tree: TableTree, r: usize, p: SpacePath, t: usize, e: usize) -> bool {
     &&& tree.is_root(r)
-    &&& p.l1 == e
     &&& match step(tree, r, p.l4) {
         None => false,
         Some(t3) => match step(tree, t3, p.l3) {
             None => false,
-            Some(t2) => step(tree, t2, p.l2) == Some(t),
+            Some(t2) => {
+                ||| p.l1 == e && step(tree, t2, p.l2) == Some(t)
+                ||| p.l1 == 0 && p.l2 == e && t2 == t && large_entry(tree, t, e) is Some
+            },
         },
+    }
+}
+
+/// The pages an entry of a table at this level maps: one at level 1, a large frame's 512 at level 2.
+pub open spec fn entry_pages(level: usize) -> int {
+    if level == 2 {
+        512
+    } else {
+        1
     }
 }
 
@@ -170,8 +192,9 @@ pub open spec fn mapping_node(t: usize, e: usize) -> usize {
     (t + ((e + 1) / NODES_PER_PAGE as int) * 4096 + (e + 1) % NODES_PER_PAGE as int) as usize
 }
 
-/// Mapping node n stands for a present entry of a level 1 table, naming its frame. It is a child of a
-/// frame capability covering the frame, and it holds a reference on the frame's block and on no other.
+/// Mapping node n stands for a present entry of a level 1 table, or a present ps entry of a level 2
+/// table, naming its frame, whose first page it is. It is a child of a frame capability covering the
+/// pages the entry maps, and it holds a reference on the frame's block and on no other.
 pub open spec fn mapping_wf(list: &Tree, tables: &Tables, tree: TableTree, blocks: &BlockTable, holders: IMap<BlockRef, Set<usize>>, mappings: IMap<usize, MappingRecord>, n: usize) -> bool {
     let m = mappings[n];
     let c = list.parent@[n];
@@ -181,11 +204,13 @@ pub open spec fn mapping_wf(list: &Tree, tables: &Tables, tree: TableTree, block
     &&& list.nodes@[n as int].live
     &&& list.nodes@[n as int].kind is Mapping
     &&& tree.is_page(m.table)
-    &&& tree.record(m.table).level == 1
+    &&& tree.record(m.table).level == 1 || tree.record(m.table).level == 2
     &&& m.entry < 512
     &&& tree.entry(m.table, m.entry).perm.present
+    &&& tree.entry(m.table, m.entry).perm.ps == (tree.record(m.table).level == 2)
     &&& tree.entry(m.table, m.entry).addr == m.frame * 4096
     &&& m.frame < NUM_PAGES
+    &&& tree.record(m.table).level == 2 ==> m.frame % 512 == 0
     &&& holders.contains_key(block_ref(blocks, m.frame))
     &&& holders[block_ref(blocks, m.frame)].contains(n)
     &&& forall|br: BlockRef| holders.contains_key(br) && #[trigger] holders[br].contains(n) ==> br == block_ref(blocks, m.frame)
@@ -193,13 +218,14 @@ pub open spec fn mapping_wf(list: &Tree, tables: &Tables, tree: TableTree, block
     &&& tables.is_cap(list, c)
     &&& tables.payload_of(c).kind is Frame
     &&& tables.payload_of(c).base <= m.frame * 4096
-    &&& m.frame * 4096 + 4096 <= tables.payload_of(c).base as int + block_bytes(tables.payload_of(c).order)
+    &&& m.frame * 4096 + entry_pages(tree.record(m.table).level) * 4096 <= tables.payload_of(c).base as int + block_bytes(tables.payload_of(c).order)
 }
 
-/// Entry e of t is a present entry of a level 1 table page: a frame mapping.
+/// Entry e of t is a frame mapping: a present entry of a level 1 table page, or a present ps entry of a
+/// level 2 one.
 pub open spec fn frame_slot(tree: TableTree, t: usize, e: usize) -> bool {
     &&& tree.is_page(t)
-    &&& tree.record(t).level == 1
+    &&& tree.record(t).level == 1 || (tree.record(t).level == 2 && tree.entry(t, e).perm.ps)
     &&& e < 512
     &&& tree.entry(t, e).perm.present
 }
@@ -216,16 +242,14 @@ pub open spec fn mappings_wf(list: &Tree, tables: &Tables, tree: TableTree, bloc
     }
 }
 
-/// Every level 1 table of a is one of b with its entries, and a level 1 table new in b has no present
-/// entry.
+/// The frame mappings of a and of b are one set, each entry as it was.
 pub open spec fn same_frame_entries(a: TableTree, b: TableTree) -> bool {
-    &&& forall|t: usize| #![trigger a.record(t)] a.is_page(t) && a.record(t).level == 1 ==> {
-        &&& b.is_page(t)
-        &&& b.record(t).level == 1
-        &&& forall|i: usize| i < 512 ==> #[trigger] b.entry(t, i) == a.entry(t, i)
+    &&& forall|t: usize, e: usize| #[trigger] frame_slot(a, t, e) ==> {
+        &&& frame_slot(b, t, e)
+        &&& b.record(t).level == a.record(t).level
+        &&& b.entry(t, e) == a.entry(t, e)
     }
-    &&& forall|t: usize| #![trigger b.record(t)] b.is_page(t) && b.record(t).level == 1 && !(a.is_page(t) && a.record(t).level == 1)
-        ==> forall|i: usize| i < 512 ==> !(#[trigger] b.entry(t, i)).perm.present
+    &&& forall|t: usize, e: usize| #[trigger] frame_slot(b, t, e) ==> frame_slot(a, t, e)
 }
 
 /// What mappings_wf reads of mapping node n besides the tree and the records: its node, its parent's
@@ -254,7 +278,7 @@ pub open spec fn mapping_node_kept(
         ==> holders_a.contains_key(br) && holders_a[br].contains(n)
 }
 
-/// The mappings after a step that kept every level 1 entry, every mapping node and what each reads.
+/// The mappings after a step that kept every frame mapping, every mapping node and what each reads.
 pub proof fn lemma_mappings_kept(
     list_a: &Tree,
     tables_a: &Tables,
@@ -282,7 +306,9 @@ pub proof fn lemma_mappings_kept(
         let m = mappings[n];
         assert(mapping_wf(list_a, tables_a, tree_a, blocks_a, holders_a, mappings, n));
         assert(mapping_node_kept(list_a, tables_a, blocks_a, holders_a, list_b, tables_b, blocks_b, holders_b, m.frame, n));
-        assert(tree_a.record(m.table).level == 1);
+        assert(frame_slot(tree_a, m.table, m.entry));
+        assert(frame_slot(tree_b, m.table, m.entry));
+        assert(tree_b.record(m.table).level == tree_a.record(m.table).level);
         assert(tree_b.entry(m.table, m.entry) == tree_a.entry(m.table, m.entry));
         assert(list_a.nodes@[n as int].live && list_a.nodes@[n as int].kind is Mapping);
         assert(list_b.nodes@[n as int].live && list_b.nodes@[n as int].kind is Mapping);
@@ -296,12 +322,7 @@ pub proof fn lemma_mappings_kept(
         &&& mappings[mapping_node(t, e)].table == t
         &&& mappings[mapping_node(t, e)].entry == e
     } by {
-        if tree_a.is_page(t) && tree_a.record(t).level == 1 {
-            assert(tree_b.entry(t, e) == tree_a.entry(t, e));
-            assert(frame_slot(tree_a, t, e));
-        } else {
-            assert(!tree_b.entry(t, e).perm.present);
-        }
+        assert(frame_slot(tree_a, t, e));
     }
 }
 
@@ -499,7 +520,7 @@ pub proof fn lemma_mapping_node_place(t: usize, e: usize)
     lemma_table_node_page(t, k);
 }
 
-/// A table added with no present entry keeps the level 1 entries: every table of a is as it was.
+/// A table added with no present entry keeps the frame mappings: every table of a is as it was.
 pub proof fn lemma_frame_entries_extended(a: TableTree, b: TableTree)
     requires
         tree_extended(a, b),
@@ -508,48 +529,57 @@ pub proof fn lemma_frame_entries_extended(a: TableTree, b: TableTree)
     ensures
         same_frame_entries(a, b),
 {
-    assert forall|t: usize| #![trigger a.record(t)] a.is_page(t) && a.record(t).level == 1 implies {
-        &&& b.is_page(t)
-        &&& b.record(t).level == 1
-        &&& forall|i: usize| i < 512 ==> #[trigger] b.entry(t, i) == a.entry(t, i)
+    assert forall|t: usize, e: usize| #[trigger] frame_slot(a, t, e) implies {
+        &&& frame_slot(b, t, e)
+        &&& b.record(t).level == a.record(t).level
+        &&& b.entry(t, e) == a.entry(t, e)
     } by {
         assert(a.is_table(t));
     }
-    assert forall|t: usize| #![trigger b.record(t)] b.is_page(t) && b.record(t).level == 1 && !(a.is_page(t) && a.record(t).level == 1)
-        implies forall|i: usize| i < 512 ==> !(#[trigger] b.entry(t, i)).perm.present by {
+    assert forall|t: usize, e: usize| #[trigger] frame_slot(b, t, e) implies frame_slot(a, t, e) by {
         if a.is_page(t) {
             assert(a.is_table(t));
-            assert(b.record(t) == a.record(t));
+        } else {
+            assert(!b.entry(t, e).perm.present);
         }
     }
 }
 
-/// A link keeps the level 1 entries: it writes an entry of a table above level 1.
+/// A link keeps the frame mappings: it writes an empty entry, which was no mapping, and what it writes
+/// names a child, so is none.
 pub proof fn lemma_frame_entries_linked(a: TableTree, b: TableTree, parent: usize, entry: usize, child: usize, s: usize)
     requires
         linked(a, b, parent, entry, child, s),
         a.is_table(parent),
         a.record(parent).level >= 2,
+        a.entry(parent, entry).is_empty(),
     ensures
         same_frame_entries(a, b),
 {
-    assert forall|t: usize| #![trigger a.record(t)] a.is_page(t) && a.record(t).level == 1 implies {
-        &&& b.is_page(t)
-        &&& b.record(t).level == 1
-        &&& forall|i: usize| i < 512 ==> #[trigger] b.entry(t, i) == a.entry(t, i)
+    assert forall|t: usize, e: usize| #[trigger] frame_slot(a, t, e) implies {
+        &&& frame_slot(b, t, e)
+        &&& b.record(t).level == a.record(t).level
+        &&& b.entry(t, e) == a.entry(t, e)
     } by {
         assert(b.maps.dom() == a.maps.dom());
         assert(b.is_page(t));
         assert(a.is_table(t));
         assert(b.record(t).level == a.record(t).level);
-        assert(t != parent);
+        assert(!(t == parent && e == entry));
+        assert(b.entry(t, e) == a.entry(t, e));
     }
-    assert forall|t: usize| #![trigger b.record(t)] b.is_page(t) && b.record(t).level == 1 && !(a.is_page(t) && a.record(t).level == 1)
-        implies forall|i: usize| i < 512 ==> !(#[trigger] b.entry(t, i)).perm.present by {
+    assert forall|t: usize, e: usize| #[trigger] frame_slot(b, t, e) implies frame_slot(a, t, e) by {
         assert(b.maps.dom() == a.maps.dom());
         assert(a.is_page(t));
         assert(a.is_table(t));
         assert(b.record(t).level == a.record(t).level);
+        if t == parent && e == entry {
+            assert(b.entry(parent, entry) == child_entry(child));
+            assert(!b.entry(t, e).perm.ps);
+            assert(a.record(parent).level >= 2);
+        } else {
+            assert(b.entry(t, e) == a.entry(t, e));
+        }
     }
 }
 
@@ -628,12 +658,24 @@ pub proof fn lemma_walk_linked(a: TableTree, b: TableTree, parent: usize, entry:
             }
         }
     }
+    assert forall|t: usize, i: usize| true implies #[trigger] large_entry(b, t, i) == large_entry(a, t, i) by {
+        if a.is_table(t) && i < 512 {
+            assert(b.record(t).level == a.record(t).level);
+            if t == parent && i == entry {
+                assert(b.entry(parent, entry) == child_entry(child));
+                assert(!b.entry(parent, entry).perm.ps);
+                assert(!a.entry(parent, entry).perm.present);
+            } else {
+                assert(b.entry(t, i) == a.entry(t, i));
+            }
+        }
+    }
     assert(step(a, parent, entry) is None);
-    assert forall|i: usize| i < 512 implies step(b, child, i) is None && frame_entry(b, child, i) is None by {
+    assert forall|i: usize| i < 512 implies step(b, child, i) is None && frame_entry(b, child, i) is None && large_entry(b, child, i) is None by {
         assert(b.entry(child, i) == a.entry(child, i));
         assert(a.entry(child, i).is_empty());
     }
-    assert forall|i: usize| i >= 512 implies step(b, child, i) is None && frame_entry(b, child, i) is None by {}
+    assert forall|i: usize| i >= 512 implies step(b, child, i) is None && frame_entry(b, child, i) is None && large_entry(b, child, i) is None by {}
     assert(b.entry(parent, entry).addr == table_addr(child));
     assert(step(b, parent, entry) == Some(child));
 }
@@ -893,35 +935,36 @@ impl CapKernel {
     }
 }
 
-/// Clearing entry e of level 1 table t ends the walks that reached it and no other: a step reads only
-/// entries of tables above level 1, and a frame entry is read only by the walk that ends at it.
+/// Clearing frame mapping e of table t ends the walks that reached it and no other: a step reads only
+/// entries that name a child, and a frame entry is read only by the walk that ends at it.
 pub proof fn lemma_walk_entry_cleared(a: TableTree, b: TableTree, t: usize, e: usize, r: usize, p: SpacePath)
     requires
         b.maps.dom() == a.maps.dom(),
         b.roots == a.roots,
         b.records == a.records,
         b.space_records == a.space_records,
-        a.is_page(t),
-        a.record(t).level == 1,
-        e < 512,
+        frame_slot(a, t, e),
         !b.entry(t, e).perm.present,
         forall|u: usize, i: usize| #![trigger b.entry(u, i)] i < 512 && !(u == t && i == e) ==> b.entry(u, i) == a.entry(u, i),
     ensures
         walk(b, r, p) == (if ends_at(a, r, p, t, e) { None } else { walk(a, r, p) }),
 {
+    assert(!a.names_child(t, e));
+    assert(!b.names_child(t, e));
     assert forall|u: usize, i: usize| #[trigger] step(b, u, i) == step(a, u, i) by {
         assert(b.child_slot(u, i) == a.child_slot(u, i));
-        if a.child_slot(u, i) {
-            assert(u != t);
+        if a.child_slot(u, i) && !(u == t && i == e) {
             assert(b.entry(u, i) == a.entry(u, i));
         }
     }
-    assert forall|u: usize, i: usize| !(u == t && i == e) implies #[trigger] frame_entry(b, u, i) == frame_entry(a, u, i) by {
+    assert forall|u: usize, i: usize| !(u == t && i == e) implies #[trigger] frame_entry(b, u, i) == frame_entry(a, u, i)
+        && large_entry(b, u, i) == large_entry(a, u, i) by {
         if a.is_table(u) && i < 512 {
             assert(b.entry(u, i) == a.entry(u, i));
         }
     }
     assert(frame_entry(b, t, e) is None);
+    assert(large_entry(b, t, e) is None);
     if a.is_root(r) {
         if let Some(t3) = step(a, r, p.l4) {
             if let Some(t2) = step(a, t3, p.l3) {
@@ -929,8 +972,22 @@ pub proof fn lemma_walk_entry_cleared(a: TableTree, b: TableTree, t: usize, e: u
                     if t1 == t && p.l1 == e {
                         assert(ends_at(a, r, p, t, e));
                     } else {
+                        if t2 == t && p.l2 == e {
+                            assert(step(a, t, e) is None);
+                        }
                         assert(!ends_at(a, r, p, t, e));
                         assert(frame_entry(b, t1, p.l1) == frame_entry(a, t1, p.l1));
+                    }
+                } else {
+                    if t2 == t && p.l2 == e {
+                        if p.l1 == 0 && large_entry(a, t, e) is Some {
+                            assert(ends_at(a, r, p, t, e));
+                        } else {
+                            assert(!ends_at(a, r, p, t, e));
+                        }
+                    } else {
+                        assert(!ends_at(a, r, p, t, e));
+                        assert(large_entry(b, t2, p.l2) == large_entry(a, t2, p.l2));
                     }
                 }
             }
@@ -976,7 +1033,7 @@ pub proof fn lemma_table_pages_entry_cleared(list: &Tree, pa: &TablePages, pb: &
     }
 }
 
-/// The links after entry e of level 1 table t is emptied: no link is at level 1.
+/// The links after frame mapping e of table t is emptied: no link is through a frame mapping.
 pub proof fn lemma_links_entry_cleared(a: TableTree, b: TableTree, t: usize, e: usize)
     requires
         table_links_wf(a),
@@ -984,21 +1041,29 @@ pub proof fn lemma_links_entry_cleared(a: TableTree, b: TableTree, t: usize, e: 
         b.roots == a.roots,
         b.records == a.records,
         b.space_records == a.space_records,
-        a.is_page(t),
-        a.record(t).level == 1,
+        frame_slot(a, t, e),
+        !b.entry(t, e).perm.present,
         forall|u: usize, i: usize| #![trigger b.entry(u, i)] i < 512 && !(u == t && i == e) ==> b.entry(u, i) == a.entry(u, i),
     ensures
         table_links_wf(b),
 {
+    assert(!a.names_child(t, e));
     assert forall|u: usize, i: usize| #![trigger b.entry(u, i)]
-        b.child_slot(u, i) && b.entry(u, i).perm.present implies {
+        b.names_child(u, i) implies {
         let c = (b.entry(u, i).addr - TABLE_NODE_PAGES * 4096) as usize;
         &&& b.is_page(c)
         &&& b.record(c).parent == Some(TableParent { table: u, entry: i })
     } by {
-        assert(a.child_slot(u, i));
-        assert(u != t);
+        assert(!(u == t && i == e));
         assert(b.entry(u, i) == a.entry(u, i));
+        assert(a.names_child(u, i));
+        let _ = a.entry(u, i);
+    }
+    assert forall|u: usize, i: usize| #![trigger b.entry(u, i)]
+        b.child_slot(u, i) && b.entry(u, i).perm.present && b.entry(u, i).perm.ps implies b.record(u).level == 2 by {
+        assert(!(u == t && i == e));
+        assert(b.entry(u, i) == a.entry(u, i));
+        assert(a.child_slot(u, i));
         let _ = a.entry(u, i);
     }
     assert forall|c: usize| #![trigger b.maps.contains_key(c)] b.is_page(c) implies {
@@ -1006,8 +1071,7 @@ pub proof fn lemma_links_entry_cleared(a: TableTree, b: TableTree, t: usize, e: 
         &&& (r.parent is Some) == (r.space is Some)
         &&& r.parent is Some ==> {
             let p = r.parent->0;
-            &&& b.child_slot(p.table, p.entry)
-            &&& b.entry(p.table, p.entry).perm.present
+            &&& b.names_child(p.table, p.entry)
             &&& b.entry(p.table, p.entry).addr == table_addr(c)
             &&& b.record(p.table).level == r.level + 1
             &&& b.record(p.table).space == r.space
@@ -1019,8 +1083,8 @@ pub proof fn lemma_links_entry_cleared(a: TableTree, b: TableTree, t: usize, e: 
         let r = a.record(c);
         if r.parent is Some {
             let p = r.parent->0;
-            assert(a.child_slot(p.table, p.entry));
-            assert(p.table != t);
+            assert(a.names_child(p.table, p.entry));
+            assert(!(p.table == t && p.entry == e));
             assert(b.entry(p.table, p.entry) == a.entry(p.table, p.entry));
         }
     }
