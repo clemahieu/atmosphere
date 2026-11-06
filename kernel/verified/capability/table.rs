@@ -203,11 +203,11 @@ impl Tables {
         forall|n: usize| #[trigger] self.is_cap(list, n) ==> payload_wf(self.payload_of(n))
     }
 
-    /// The tables read nothing of a list but which pages it holds.
+    /// The tables read nothing of a list but which pages it holds, so more pages keep them whole.
     pub proof fn lemma_wf_same_pages(&self, a: &Tree, b: &Tree)
         requires
             self.wf(a),
-            a.pages@.dom() == b.pages@.dom(),
+            forall|p: usize| #[trigger] a.pages@.dom().contains(p) ==> b.pages@.dom().contains(p),
         ensures
             self.wf(b),
     {
@@ -390,6 +390,8 @@ impl Tables {
             final(self).wf(list),
             final(self).leaf(root, r as int) == leaf,
             final(self).roots@.dom() == old(self).roots@.dom(),
+            final(self).owner@ == old(self).owner@.insert(leaf, (root, r as int)),
+            final(self).payloads@ == old(self).payloads@.insert(leaf, final(self).payloads@[leaf]),
             forall|t: usize, i: usize| #[trigger] old(self).has_slot(t, i) ==>
                 final(self).has_slot(t, i) && final(self).node_of(t, i) == old(self).node_of(t, i),
     {
@@ -624,6 +626,22 @@ impl Tables {
                 }
             }
         }
+    }
+
+    /// Reads entry r of the table at root.
+    pub fn entry(&self, root: usize, r: usize) -> (ret: usize)
+        requires
+            self.roots_wf(),
+            self.roots@.contains_key(root),
+            r < ROOT_ENTRIES,
+        ensures
+            ret == self.leaf(root, r as int),
+    {
+        proof {
+            self.lemma_root(root);
+        }
+        let root_ref = PPtr::<TableRoot>::from_usize(root).borrow(Tracked(self.roots.borrow().tracked_borrow(root)));
+        *root_ref.leaves.get(r)
     }
 
     /// Two indices never name one slot, in one table or across two: a leaf is in one entry of one

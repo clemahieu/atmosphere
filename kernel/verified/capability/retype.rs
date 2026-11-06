@@ -49,6 +49,7 @@ fn type_region(blocks: &mut BlockTable, level: Large, r: usize) -> (ret: Option<
     ensures
         final(blocks).wf(),
         ret is None ==> *final(blocks) == *old(blocks),
+        final(blocks).pages@ == old(blocks).pages@,
         ret is Some ==> {
             &&& forall|i: int| level_base(level, r) <= i < level_base(level, r) + level_pages(level)
                 ==> !#[trigger] old(blocks).covered(i)
@@ -68,6 +69,7 @@ fn type_region(blocks: &mut BlockTable, level: Large, r: usize) -> (ret: Option<
             let ret = blocks.try_type_2m(r);
             proof {
                 if ret is Some {
+                    assert((r + 1) * 512 == r * 512 + 512);
                     assert forall|i: int| level_base(level, r) <= i < level_base(level, r) + level_pages(level)
                         implies !#[trigger] pre.covered(i) by {
                         assert(pre.pages@[i].kind is Free);
@@ -80,6 +82,7 @@ fn type_region(blocks: &mut BlockTable, level: Large, r: usize) -> (ret: Option<
             let ret = blocks.try_type_1g(r);
             proof {
                 if ret is Some {
+                    assert((r + 1) * 262144 == r * 262144 + 262144);
                     assert forall|i: int| level_base(level, r) <= i < level_base(level, r) + level_pages(level)
                         implies !#[trigger] pre.covered(i) by {
                         assert(pre.pages@[i].kind is Free);
@@ -93,19 +96,33 @@ fn type_region(blocks: &mut BlockTable, level: Large, r: usize) -> (ret: Option<
 
 impl CapKernel {
     /// The refusals every retype has: an index that names no slot, a parent that is not a capability
-    /// to an untyped, without the retype right or at the deepest depth, a slot in use, or a block
-    /// outside the untyped's.
-    pub open spec fn can_retype(&self, root: usize, from: usize, to: usize, base: usize, order: u8) -> bool {
+    /// to an untyped, without the retype right or at the deepest depth, or a block outside the
+    /// untyped's.
+    pub open spec fn can_retype_under(&self, root: usize, from: usize, base: usize, order: u8) -> bool {
         let parent = self.tables.node_of(root, from);
-        let child = self.tables.node_of(root, to);
         &&& self.tables.has_slot(root, from)
-        &&& self.tables.has_slot(root, to)
         &&& self.is_cap(parent)
         &&& self.payload_of(parent).kind is Untyped
         &&& self.payload_of(parent).rights & right_bit(Right::Retype) != 0
         &&& self.list.nodes@[parent as int].depth < MAX_DEPTH
-        &&& !self.list.nodes@[child as int].live
         &&& block_within(base, order, self.payload_of(parent))
+    }
+
+    /// And a retype that makes a capability needs an empty slot for it.
+    pub open spec fn can_retype(&self, root: usize, from: usize, to: usize, base: usize, order: u8) -> bool {
+        &&& self.can_retype_under(root, from, base, order)
+        &&& self.tables.has_slot(root, to)
+        &&& !self.list.nodes@[self.tables.node_of(root, to) as int].live
+    }
+
+    /// And a leaf needs an empty root entry and two pages of memory, and is never at address zero,
+    /// which means no leaf.
+    pub open spec fn can_retype_leaf(&self, root: usize, from: usize, r: usize, base: usize) -> bool {
+        &&& self.can_retype_under(root, from, base, 1)
+        &&& r < ROOT_ENTRIES
+        &&& self.tables.leaf(root, r as int) == NO_LEAF
+        &&& base != NO_LEAF
+        &&& base / 4096 + 2 <= NUM_PAGES
     }
 
     pub open spec fn can_retype_frame(&self, root: usize, from: usize, to: usize, base: usize) -> bool {
@@ -121,7 +138,53 @@ impl CapKernel {
         &&& order == 9 || order == 18
     }
 
-    /// Checks those refusals and finds the two nodes.
+    /// Checks the refusals every retype has and finds the parent's node.
+    fn retype_parent(&self, root: usize, from: usize, base: usize, order: u8) -> (ret: Option<usize>)
+        requires
+            self.wf(),
+            self.tables.roots@.contains_key(root),
+        ensures
+            ret is Some == self.can_retype_under(root, from, base, order),
+            ret is Some ==> {
+                &&& ret.unwrap() == self.tables.node_of(root, from)
+                &&& self.view().holds_right(root, ret.unwrap(), Right::Retype)
+                &&& base as int % block_bytes(order) == 0
+                &&& order <= MAX_ORDER
+                &&& base as int + block_bytes(order) <= NODE_SPACE as int
+            },
+    {
+        let (parent, payload) = match self.tables.lookup(&self.list, root, from) {
+            Some(found) => found,
+            None => { return None; },
+        };
+        let node = self.list.get(parent);
+        let node_ok = match node.kind {
+            NodeKind::Capability => node.live,
+            _ => false,
+        };
+        if !node_ok || node.depth >= MAX_DEPTH {
+            return None;
+        }
+        proof {
+            self.lemma_slot(root, from);
+            assert(self.tables.is_cap(&self.list, parent));
+            assert(payload == self.payload_of(parent));
+        }
+        let untyped = match payload.kind {
+            CapKind::Untyped => true,
+            _ => false,
+        };
+        if !untyped || payload.rights & 8 == 0 || !is_block_within(payload, base, order) {
+            return None;
+        }
+        proof {
+            assert(right_bit(Right::Retype) == 8);
+            assert(self.view().holds_right(root, parent, Right::Retype));
+        }
+        Some(parent)
+    }
+
+    /// Checks those refusals and an empty slot for the capability, and finds the two nodes.
     fn retype_slots(&self, root: usize, from: usize, to: usize, base: usize, order: u8) -> (ret: Option<(usize, usize)>)
         requires
             self.wf(),
@@ -137,7 +200,7 @@ impl CapKernel {
                 &&& base as int + block_bytes(order) <= NODE_SPACE as int
             },
     {
-        let (parent, payload) = match self.tables.lookup(&self.list, root, from) {
+        let parent = match self.retype_parent(root, from, base, order) {
             Some(found) => found,
             None => { return None; },
         };
@@ -145,30 +208,8 @@ impl CapKernel {
             Some(found) => found.0,
             None => { return None; },
         };
-        let node = self.list.get(parent);
-        let node_ok = match node.kind {
-            NodeKind::Capability => node.live,
-            _ => false,
-        };
-        if !node_ok || node.depth >= MAX_DEPTH || self.list.get(child).live {
+        if self.list.get(child).live {
             return None;
-        }
-        proof {
-            self.lemma_slot(root, from);
-            self.lemma_slot(root, to);
-            assert(self.tables.is_cap(&self.list, parent));
-            assert(payload == self.payload_of(parent));
-        }
-        let untyped = match payload.kind {
-            CapKind::Untyped => true,
-            _ => false,
-        };
-        if !untyped || payload.rights & 8 == 0 || !is_block_within(payload, base, order) {
-            return None;
-        }
-        proof {
-            assert(right_bit(Right::Retype) == 8);
-            assert(self.view().holds_right(root, parent, Right::Retype));
         }
         Some((parent, child))
     }
@@ -284,6 +325,13 @@ impl CapKernel {
         proof {
             self.frames.borrow_mut().tracked_insert(page, perm);
             Self::lemma_tlb_same(pre, *self);
+            assert forall|p: usize| #[trigger] self.list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
+                implies !(self.blocks.pages@[(p / 4096) as int].kind is Free) by {
+                assert(!(pre.blocks.pages@[(p / 4096) as int].kind is Free));
+                assert((p / 4096) as int != page as int) by {
+                    assert(pre.blocks.pages@[page + 0int].kind is Free);
+                }
+            }
             assert(self.wf());
             assert(self.view() == pre.view());
         }
@@ -367,6 +415,244 @@ impl CapKernel {
             Self::lemma_zeroing_changed(pre, me);
         }
         RetypeStep::Done
+    }
+
+    /// Retypes the two free pages at `base` as a table leaf in entry r of the table at root, under the
+    /// untyped at index `from`. No capability names a leaf: its first page's node 0 is its hidden node, a
+    /// child of the untyped, so revoking the untyped reaches it. Both pages are written whole, once, so
+    /// this takes one kernel entry. All of these come from user space, and a refusal changes nothing.
+    /// The block table refuses pages that are not free.
+    pub fn retype_leaf(&mut self, root: usize, from: usize, r: usize, base: usize) -> (ret: bool)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(root),
+        ensures
+            final(self).wf(),
+            ret ==> old(self).can_retype_leaf(root, from, r, base),
+            !ret ==> *final(self) == *old(self),
+            ret ==> {
+                let parent = old(self).tables.node_of(root, from);
+                &&& old(self).view().holds_right(root, parent, Right::Retype)
+                &&& final(self).tables.leaf(root, r as int) == base
+                &&& final(self).list.is_child(parent, base)
+                &&& final(self).list.nodes@[base as int].kind is Hidden
+                &&& forall|i: usize| index_ok(i) && index_entry(i) == r as int ==> {
+                    &&& #[trigger] final(self).tables.has_slot(root, i)
+                    &&& !final(self).list.nodes@[final(self).tables.node_of(root, i) as int].live
+                }
+                &&& forall|x: usize| #[trigger] final(self).is_cap(x) == old(self).is_cap(x)
+                &&& discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base })
+            },
+    {
+        let ghost pre = *old(self);
+        let parent = match self.retype_parent(root, from, base, 1) {
+            Some(found) => found,
+            None => { return false; },
+        };
+        proof {
+            pre.tables.lemma_root(root);
+        }
+        if r >= ROOT_ENTRIES || self.tables.entry(root, r) != NO_LEAF || base == NO_LEAF
+            || base / 4096 >= NUM_PAGES - 1 {
+            return false;
+        }
+        let page = base / 4096;
+        proof {
+            lemma2_to64();
+            assert(block_bytes(1) == 8192);
+            assert(base % 8192 == 0);
+            assert(page % 2 == 0 && page * 4096 == base) by (nonlinear_arith)
+                requires
+                    base % 8192 == 0,
+                    page == base / 4096,
+            ;
+        }
+        let Tracked(perms) = match self.blocks.try_type(page, 1) {
+            Some(perms) => perms,
+            None => { return false; },
+        };
+        let tracked mut perms = perms;
+        let tracked first;
+        let tracked second;
+        proof {
+            assert(0usize < order_pages(1));
+            assert(1usize < order_pages(1));
+            assert(perms[(page + 0usize) as usize].addr() == (page + 0usize) * 4096);
+            assert(perms[(page + 1usize) as usize].addr() == (page + 1usize) * 4096);
+            assert((page + 0usize) as usize == page);
+            first = perms.tracked_remove(page);
+            second = perms.tracked_remove((page + 1) as usize);
+        }
+        let ghost before_list = self.list;
+        let nodes = init_node_page(base, Tracked(first));
+        proof {
+            assert(!pre.list.pages@.dom().contains(base)) by {
+                assert(base / 4096 == page);
+                assert(pre.blocks.pages@[page + 0int].kind is Free);
+            }
+            pre.lemma_slot_bound(parent);
+        }
+        self.list.add_page(base, nodes);
+        let ghost mid = self.list;
+        proof {
+            assert(mid.valid(base));
+            mid.lemma_seq_fits();
+            mid.lemma_valid_bound(base);
+            pre.list.lemma_valid_bound(parent);
+            assert(mid.nodes@[parent as int] == pre.list.nodes@[parent as int]);
+        }
+        self.list.derive(parent, base, NodeKind::Hidden);
+        proof {
+            pre.tables.lemma_wf_same_pages(&pre.list, &self.list);
+            assert(!pre.tables.owner@.contains_key(base)) by {
+                if pre.tables.owner@.contains_key(base) {
+                    pre.tables.lemma_leaf(&pre.list, base);
+                }
+            }
+        }
+        self.tables.add_leaf(&self.list, root, r, base, Tracked(second));
+        proof {
+            let post = *self;
+            assert forall|x: usize| #[trigger] pre.list.valid(x) && x != base implies {
+                &&& post.list.nodes@[x as int].live == pre.list.nodes@[x as int].live
+                &&& post.list.nodes@[x as int].kind == pre.list.nodes@[x as int].kind
+            } by {
+                pre.list.lemma_valid_bound(x);
+                assert(mid.nodes@[x as int] == pre.list.nodes@[x as int]);
+                assert(post.list.nodes@[x as int] == post.list.nodes@[x as int]);
+            }
+            assert forall|x: usize| base < x < base + NODES_PER_PAGE implies !#[trigger] post.list.nodes@[x as int].live by {
+                assert(mid.valid(x));
+                mid.lemma_valid_bound(x);
+                assert(!mid.nodes@[x as int].live);
+            }
+            assert(Self::leaf_step(pre, post, base));
+            Self::lemma_leaf_caps_wf(pre, post, base);
+            Self::lemma_tlb_same(pre, post);
+            assert forall|p: usize| #[trigger] post.list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
+                implies !(post.blocks.pages@[(p / 4096) as int].kind is Free) by {
+                if p != base {
+                    assert(pre.list.pages@.dom().contains(p));
+                    assert(!(pre.blocks.pages@[(p / 4096) as int].kind is Free));
+                    assert(pre.blocks.pages@[page + 0int].kind is Free);
+                    assert(pre.blocks.pages@[page + 1int].kind is Free);
+                    assert(post.blocks.pages@[(p / 4096) as int] == pre.blocks.pages@[(p / 4096) as int]);
+                }
+            }
+            assert(post.wf());
+            assert forall|i: usize| index_ok(i) && index_entry(i) == r as int implies {
+                &&& #[trigger] post.tables.has_slot(root, i)
+                &&& !post.list.nodes@[post.tables.node_of(root, i) as int].live
+            } by {
+                assert(post.tables.roots@.contains_key(root));
+                assert(post.tables.node_of(root, i) == base + index_slot(i));
+                assert(base < post.tables.node_of(root, i) < base + NODES_PER_PAGE);
+            }
+            assert forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x) by {
+                Self::lemma_leaf_cap(pre, post, base, x);
+            }
+            Self::lemma_leaf_discharges(pre, post, root, parent, base);
+        }
+        true
+    }
+
+    /// What a leaf's retype does to the fields the view reads: nothing changes but the new page, none of
+    /// whose slots is live.
+    pub open spec fn leaf_step(pre: Self, post: Self, leaf: usize) -> bool {
+        &&& pre.wf()
+        &&& leaf % 4096 == 0
+        &&& !pre.tables.owner@.contains_key(leaf)
+        &&& !pre.list.nodes@[leaf as int].live
+        &&& leaf < NODE_SPACE
+        &&& exists|e: (usize, int)| post.tables.owner@ == pre.tables.owner@.insert(leaf, e)
+        &&& post.tables.payloads@ == pre.tables.payloads@.insert(leaf, post.tables.payloads@[leaf])
+        &&& forall|x: usize| #[trigger] pre.list.valid(x) && x != leaf ==> {
+            &&& post.list.nodes@[x as int].live == pre.list.nodes@[x as int].live
+            &&& post.list.nodes@[x as int].kind == pre.list.nodes@[x as int].kind
+        }
+        &&& forall|x: usize| leaf < x < leaf + NODES_PER_PAGE ==> !#[trigger] post.list.nodes@[x as int].live
+    }
+
+    /// So the capabilities, and what they say, are as they were.
+    proof fn lemma_leaf_cap(pre: Self, post: Self, leaf: usize, x: usize)
+        requires
+            Self::leaf_step(pre, post, leaf),
+        ensures
+            post.is_cap(x) == pre.is_cap(x),
+            pre.is_cap(x) ==> post.payload_of(x) == pre.payload_of(x),
+            pre.is_cap(x) ==> post.tables.owner@[page_of(x)] == pre.tables.owner@[page_of(x)],
+    {
+        if page_of(x) == leaf {
+            if x % 4096 != 0 && x % 4096 < NODES_PER_PAGE {
+                assert(leaf < x < leaf + NODES_PER_PAGE);
+            }
+        } else if pre.tables.owner@.contains_key(page_of(x)) && x % 4096 < NODES_PER_PAGE {
+            pre.lemma_slot_bound(x);
+            assert(x != leaf);
+        }
+    }
+
+    proof fn lemma_leaf_caps_wf(pre: Self, post: Self, leaf: usize)
+        requires
+            Self::leaf_step(pre, post, leaf),
+        ensures
+            post.tables.caps_wf(&post.list),
+    {
+        assert forall|n: usize| #[trigger] post.tables.is_cap(&post.list, n) implies payload_wf(post.tables.payload_of(n)) by {
+            Self::lemma_leaf_cap(pre, post, leaf, n);
+            assert(post.is_cap(n));
+            assert(pre.tables.is_cap(&pre.list, n));
+        }
+    }
+
+    /// The view of the step: every capability is as it was, and the only new parent entry is the hidden
+    /// node's, which no capability descends from.
+    proof fn lemma_leaf_discharges(pre: Self, post: Self, root: usize, parent: usize, leaf: usize)
+        requires
+            Self::leaf_step(pre, post, leaf),
+            post.list.parent@ == pre.list.parent@.insert(leaf, parent),
+            pre.view().holds_right(root, parent, Right::Retype),
+        ensures
+            discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: leaf }),
+    {
+        let (a, b) = (post.view(), pre.view());
+        let live = |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live;
+        let f = |x: NodeId| x;
+        assert forall|h: (ObjectId, NodeId)| #[trigger] a.held.contains(h) implies live(h.1) && b.held.contains((h.0, f(h.1))) by {
+            Self::lemma_leaf_cap(pre, post, leaf, h.1);
+            pre.lemma_slot_bound(h.1);
+        }
+        assert forall|x: NodeId| #[trigger] a.names.contains_key(x) implies {
+            &&& live(x)
+            &&& b.names.contains_key(f(x))
+            &&& b.names[f(x)] == a.names[x]
+        } by {
+            Self::lemma_leaf_cap(pre, post, leaf, x);
+            pre.lemma_slot_bound(x);
+        }
+        assert forall|x: NodeId| #[trigger] a.pages.contains_key(x) implies {
+            &&& b.pages.contains_key(f(x))
+            &&& b.pages[f(x)] == a.pages[x]
+        } by {
+            Self::lemma_leaf_cap(pre, post, leaf, x);
+        }
+        assert forall|x: NodeId, r: Right| #[trigger] a.rights.contains((x, r)) implies b.rights.contains((f(x), r)) by {
+            Self::lemma_leaf_cap(pre, post, leaf, x);
+        }
+        assert forall|x: NodeId| live(x) && #[trigger] a.parent.contains_key(x) implies {
+            &&& live(a.parent[x])
+            &&& b.parent.contains_key(f(x))
+            &&& b.parent[f(x)] == f(a.parent[x])
+        } by {
+            assert(x != leaf);
+            pre.list.lemma_parent_live(x);
+        }
+        assert(simulates(a, b, live, f));
+        assert forall|x: NodeId| #[trigger] b.names.contains_key(x) implies a.names.contains_key(x) by {
+            Self::lemma_leaf_cap(pre, post, leaf, x);
+        }
+        assert forall|o: ObjectId| #[trigger] (a.contents)(o) == (b.contents)(o) by {}
+        lemma_simulated_discharges_retype(b, a, root, parent, leaf, live, f);
     }
 
     /// A region just typed shares no page with a block being zeroed: its pages were not covered, and
