@@ -74,6 +74,12 @@ pub fn flush_every_context(core: usize, epoch: usize) -> (ret: Tracked<Flushed>)
     Tracked::assume_new()
 }
 
+/// A page the list holds nodes in is not free, so a newly typed block's first page is not already one.
+pub open spec fn list_pages_used(list: &Tree, blocks: &BlockTable) -> bool {
+    forall|p: usize| #[trigger] list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
+        ==> !(blocks.pages@[(p / 4096) as int].kind is Free)
+}
+
 /// Each block being zeroed is a live typed region of the block table. It is what keeps a newly typed
 /// region, whose pages were not covered, apart from every block being zeroed.
 pub open spec fn zeroing_typed(z: &Zeroing, blocks: &BlockTable) -> bool {
@@ -115,6 +121,7 @@ impl CapKernel {
         &&& self.frames_wf()
         &&& self.zeroing.wf()
         &&& zeroing_typed(&self.zeroing, &self.blocks)
+        &&& list_pages_used(&self.list, &self.blocks)
     }
 
     /// A frame's permission is for its own page.
@@ -412,6 +419,7 @@ impl CapKernel {
             post.frames_wf(),
             post.zeroing.wf(),
             zeroing_typed(&post.zeroing, &post.blocks),
+            list_pages_used(&post.list, &post.blocks),
             post.list == pre.list,
             post.tables == pre.tables,
             post.cores == pre.cores,
@@ -440,6 +448,7 @@ impl CapKernel {
             post.frames == pre.frames,
             post.zeroing == pre.zeroing,
             zeroing_typed(&pre.zeroing, &post.blocks),
+            list_pages_used(&post.list, &post.blocks),
         ensures
             post.wf(),
     {
@@ -459,6 +468,8 @@ impl CapKernel {
             old(self).blocks.pages@[base as int].dead,
             old(self).blocks.pages@[base as int].torn_down,
             old(self).blocks.pages@[base as int].refs == 0,
+            forall|p: usize| #[trigger] old(self).list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
+                ==> !old(self).blocks.in_block(base as int, (p / 4096) as int),
             forall|k: usize| k < order_pages(old(self).blocks.pages@[base as int].order) ==> {
                 &&& perms.contains_key((base + k) as usize)
                 &&& #[trigger] perms[(base + k) as usize].addr() == (base + k) * 4096
@@ -469,14 +480,26 @@ impl CapKernel {
     {
         let ghost pre = *old(self);
         proof {
-            // The callee's clause splits, so its first conjunct needs a trigger of its own.
+            // The callee's clause splits, so its conjuncts need triggers of their own.
             assert forall|k: usize| k < order_pages(pre.blocks.pages@[base as int].order) implies
                 #[trigger] perms.contains_key((base + k) as usize) by {
                 assert(perms[(base + k) as usize].addr() == (base + k) * 4096);
             }
+            assert forall|k: usize| k < order_pages(pre.blocks.pages@[base as int].order) implies
+                #[trigger] perms[(base + k) as usize].is_uninit() by {
+                assert(perms[(base + k) as usize].addr() == (base + k) * 4096);
+            }
         }
         self.blocks.free_block(base, Tracked(perms));
-        proof { Self::lemma_blocks_changed(pre, *self); }
+        proof {
+            assert forall|p: usize| #[trigger] self.list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
+                implies !(self.blocks.pages@[(p / 4096) as int].kind is Free) by {
+                assert(!pre.blocks.in_block(base as int, (p / 4096) as int));
+                assert(!(pre.blocks.pages@[(p / 4096) as int].kind is Free));
+                assert(self.blocks.pages@[(p / 4096) as int] == pre.blocks.pages@[(p / 4096) as int]);
+            }
+            Self::lemma_blocks_changed(pre, *self);
+        }
     }
 
     /// As free_block, for a 2M block.

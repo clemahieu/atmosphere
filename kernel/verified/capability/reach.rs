@@ -643,6 +643,33 @@ pub proof fn lemma_simulates_reach(
     assert(b.controlled(r, q, k));
 }
 
+/// A retype that names no new capability, only a node nobody holds: post's authority is all in pre,
+/// and every capability of pre is still there.
+pub proof fn lemma_simulated_discharges_retype(
+    pre: State,
+    post: State,
+    p: ObjectId,
+    c: NodeId,
+    object: ObjectId,
+    live: spec_fn(NodeId) -> bool,
+    f: spec_fn(NodeId) -> NodeId,
+)
+    requires
+        simulates(post, pre, live, f),
+        pre.holds_right(p, c, Right::Retype),
+        forall|x: NodeId| #[trigger] pre.names.contains_key(x) ==> post.names.contains_key(x),
+        forall|o: ObjectId| #[trigger] (post.contents)(o) == (pre.contents)(o),
+    ensures
+        discharges(pre, post, p, Effect::Retype { untyped: c, object }),
+{
+    assert forall|o: ObjectId| #[trigger] State::changed(pre, post, o) implies may_change(pre, Effect::Retype { untyped: c, object }, o) by {
+        assert((post.contents)(o) == (pre.contents)(o));
+    }
+    assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) implies pre.reach(r, o) by {
+        lemma_simulates_reach(post, pre, live, f, r, o);
+    }
+}
+
 /// Control is transitive: if s controls m and m controls q, s reaches what q directly reaches, since
 /// s can destroy m, claim its control over q, and repeat.
 pub proof fn lemma_control_transitive(s: State, a: ObjectId, m: ObjectId, q: ObjectId, o: ObjectId)
