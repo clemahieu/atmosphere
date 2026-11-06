@@ -140,6 +140,27 @@ impl CapKernel {
         &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base })
     }
 
+    /// A retype may unlink the hidden node of the table page at `base`: an untyped covers its block, the
+    /// node is still live, and the epoch can rise to record the cut.
+    pub open spec fn can_unlink_table(&self, root: usize, from: usize, base: usize) -> bool {
+        &&& self.can_retype_under(root, from, base, 3)
+        &&& self.table_pages.maps@.contains_key(base)
+        &&& self.list.nodes@[base as int].live
+        &&& self.flush_epoch < usize::MAX
+    }
+
+    /// What unlinking the hidden node of the table page at `base` did to self: as table_unlinked says.
+    /// Every capability is as it was, so the view is too.
+    pub open spec fn table_page_unlinked(&self, post: Self, root: usize, from: usize, base: usize) -> bool {
+        let untyped = self.tables.node_of(root, from);
+        &&& self.view().holds_right(root, untyped, Right::Retype)
+        &&& Self::table_unlinked(*self, post, base)
+        &&& Self::caps_frame(*self, post, base, base)
+        &&& forall|x: usize| #[trigger] post.is_cap(x) == self.is_cap(x)
+        &&& post.view() == self.view()
+        &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base })
+    }
+
     /// The leaf at `base` is owned and no node in its page is live, so nothing is left of it but its two
     /// pages.
     pub open spec fn leaf_is_empty(&self, base: usize) -> bool {
@@ -1132,6 +1153,104 @@ impl CapKernel {
         assert(b.pages =~= a.pages);
         assert(b.rights =~= a.rights);
         assert(b == a);
+    }
+
+    /// The block test unlink_table makes reads as the node does: a table page block at one reference is
+    /// a table page's whose hidden node is live, and the other way round.
+    proof fn lemma_live_table_block(&self, base: usize)
+        requires
+            self.wf(),
+            base % 32768 == 0,
+            base / 4096 < NUM_PAGES,
+        ensures
+            (table_block(&self.blocks, base / 4096) && self.blocks.pages@[(base / 4096) as int].refs == 1)
+                == (self.table_pages.maps@.contains_key(base) && self.list.nodes@[base as int].live),
+            self.table_pages.maps@.contains_key(base) && self.list.nodes@[base as int].live
+                ==> self.list.nodes@[base as int].kind is Hidden,
+    {
+        assert(base % 32768 == 0 ==> base % 8192 == 0) by (bit_vector);
+        lemma_leaf_page(base);
+        if table_block(&self.blocks, base / 4096) {
+            assert(self.table_pages.maps@.contains_key(((base / 4096) * 4096) as usize));
+        }
+        if self.table_pages.maps@.contains_key(base) {
+            assert(table_page_wf(&self.list, &self.table_pages, &self.blocks, base));
+        }
+    }
+
+    /// Unlinks the hidden node of the table page at `base`: cuts it from the entry naming it, records what
+    /// that leaves stale, and drops its reference, and nothing more. Refused, with nothing changed, unless
+    /// an untyped held covers the block and the block holds a table page with its hidden node still live,
+    /// and the epoch can still rise. A process's root is a space block, so it is refused.
+    pub fn unlink_table(&mut self, root: usize, from: usize, base: usize) -> (ret: bool)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(root),
+        ensures
+            final(self).wf(),
+            Self::mappings_shrunk(*old(self), *final(self)),
+            ret == old(self).can_unlink_table(root, from, base),
+            !ret ==> *final(self) == *old(self),
+            ret ==> old(self).table_page_unlinked(*final(self), root, from, base),
+    {
+        let ghost pre = *old(self);
+        proof {
+            Self::lemma_same_tree_shrunk(pre, pre);
+            if pre.table_pages.maps@.contains_key(base) {
+                assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, base));
+            }
+        }
+        let untyped = match self.retype_parent(root, from, base, 3) {
+            Some(found) => found,
+            None => { return false; },
+        };
+        let page = base / 4096;
+        if page >= NUM_PAGES || self.flush_epoch == usize::MAX {
+            return false;
+        }
+        let entry = *self.blocks.pages.get(page);
+        let live_table = match (entry.kind, entry.object) {
+            (PageKind::Base, ObjectType::TablePage) => entry.refs == 1,
+            _ => false,
+        };
+        proof {
+            lemma2_to64();
+            pre.lemma_live_table_block(base);
+        }
+        if !live_table {
+            return false;
+        }
+        proof {
+            pre.lemma_hidden_is_leaf(base);
+        }
+        self.detach_stale(base);
+        let ghost cut = *self;
+        proof {
+            let b = tree_of(&cut.table_pages, &cut.spaces);
+            assert(b.is_page(base));
+        }
+        self.unlink_arm(base);
+        self.list.remove_leaf(base);
+        proof {
+            let post = *self;
+            post.tables.lemma_wf_same_pages(&cut.list, &post.list);
+            Self::lemma_delete_caps_wf(cut, post, base);
+            let p = choose|p: int| 0 <= p < cut.list.seq@.len() && cut.list.seq@[p] == base
+                && post.list.seq@ == cut.list.seq@.remove(p);
+            assert(p != 0);
+            assert(post.list.seq@[0] == cut.list.seq@[0]);
+            lemma_parents_removed(cut.list, post.list, base);
+            Self::lemma_revoke_hidden(cut, post, base);
+            Self::lemma_revoke_hidden_holders(cut, post, base);
+            Self::lemma_tlb_same(cut, post);
+            Self::lemma_unlink_discharges(cut, post, root, untyped, base);
+            Self::lemma_cut_recorded_same(pre, cut, post, base);
+            Self::lemma_cut_shrunk(pre, cut, base);
+            Self::lemma_same_tree_shrunk(cut, post);
+            Self::lemma_shrunk_compose(pre, cut, post);
+            assert(cut.view() == pre.view());
+        }
+        true
     }
 
     /// Reclaims the 4K block at `base`, under the untyped at index `from` of the table at `root`. All of

@@ -773,11 +773,13 @@ impl CapKernel {
                 &&& post.table_pages.records@[parent].addr() == pre.table_pages.records@[parent].addr()
                 &&& post.table_pages.records@[parent].is_init()
                 &&& post.table_pages.records@[parent].value().level == pre.table_pages.records@[parent].value().level
+                &&& post.table_pages.records@[parent].value().parent == pre.table_pages.records@[parent].value().parent
                 &&& post.table_pages.records@[parent].value().written
             },
             post.table_pages.records@[child].addr() == pre.table_pages.records@[child].addr(),
             post.table_pages.records@[child].is_init(),
             post.table_pages.records@[child].value().level == pre.table_pages.records@[child].value().level,
+            !pre.blocks.pages@[(child / 4096) as int].dead,
         ensures
             table_pages_wf(&post.list, &post.table_pages, &post.blocks),
     {
@@ -989,6 +991,7 @@ impl CapKernel {
             old(self).spaces.roots@.contains_key(parent),
             !old(self).table_pages.maps@.contains_key(parent),
             old(self).table_pages.maps@.contains_key(child),
+            !old(self).blocks.pages@[(child / 4096) as int].dead,
             tree_of(&old(self).table_pages, &old(self).spaces).child_slot(parent, entry),
             tree_of(&old(self).table_pages, &old(self).spaces).entry(parent, entry).is_empty(),
             tree_of(&old(self).table_pages, &old(self).spaces).record(child).parent is None,
@@ -1068,6 +1071,7 @@ impl CapKernel {
             old(self).table_pages.maps@.contains_key(parent),
             old(self).table_pages.maps@.contains_key(child),
             old(self).spaces.roots@.contains_key(s),
+            !old(self).blocks.pages@[(child / 4096) as int].dead,
             tree_of(&old(self).table_pages, &old(self).spaces).child_slot(parent, entry),
             tree_of(&old(self).table_pages, &old(self).spaces).entry(parent, entry).is_empty(),
             tree_of(&old(self).table_pages, &old(self).spaces).record(parent).space == Some(s),
@@ -1420,12 +1424,21 @@ impl CapKernel {
         true
     }
 
-    /// What detaching table page t leaves of the tables: with no parent, nothing changed; with one, that
-    /// entry empty and t's record with no parent, and the walks through the entry gone.
-    pub open spec fn tables_cut(pre: Self, post: Self, t: usize) -> bool {
+    /// What cutting table page t does to the tables: with no parent, nothing changed; with one, that entry
+    /// empty and t's record with no parent, and the walks through the entry gone, so what is left of the
+    /// abstract mapping is what the subtree below it did not map.
+    pub open spec fn tree_cut(pre: Self, post: Self, t: usize) -> bool {
         let a = tree_of(&pre.table_pages, &pre.spaces);
         let b = tree_of(&post.table_pages, &post.spaces);
         let p = a.record(t).parent;
+        &&& p is None ==> post.table_pages == pre.table_pages && post.spaces == pre.spaces
+        &&& p is Some ==> detached(a, b, p->0.table, p->0.entry, t)
+        &&& p is Some ==> walks_detached(a, b, p->0.table, p->0.entry)
+    }
+
+    /// A cut, and nothing but the tables changed by it.
+    pub open spec fn tables_cut(pre: Self, post: Self, t: usize) -> bool {
+        &&& Self::tree_cut(pre, post, t)
         &&& post.list == pre.list
         &&& post.tables == pre.tables
         &&& post.blocks == pre.blocks
@@ -1438,9 +1451,6 @@ impl CapKernel {
         &&& post.spaces.loaded == pre.spaces.loaded
         &&& post.spaces.holders == pre.spaces.holders
         &&& post.spaces.kernel_entries == pre.spaces.kernel_entries
-        &&& p is None ==> post.table_pages == pre.table_pages && post.spaces == pre.spaces
-        &&& p is Some ==> detached(a, b, p->0.table, p->0.entry, t)
-        &&& p is Some ==> walks_detached(a, b, p->0.table, p->0.entry)
     }
 
     /// A detach alone: only the tables changed.
@@ -1478,10 +1488,16 @@ impl CapKernel {
         &&& post.mapped == pre.mapped
     }
 
-    /// A detach with its record: the tables as tables_cut says and the record as cut_stale_noted says. A
-    /// page the walks lost is mapped still, and what a core could hold before it can hold after.
+    /// A detach with its record, and nothing else changed by it.
     pub open spec fn detach_recorded(pre: Self, post: Self, t: usize) -> bool {
         &&& Self::tables_cut(pre, post, t)
+        &&& Self::cut_recorded(pre, post, t)
+    }
+
+    /// The tables as tree_cut says and the record as cut_stale_noted says. A page the walks lost is mapped
+    /// still, and what a core could hold before it can hold after.
+    pub open spec fn cut_recorded(pre: Self, post: Self, t: usize) -> bool {
+        &&& Self::tree_cut(pre, post, t)
         &&& Self::cut_stale_noted(pre, post, t)
         &&& forall|g: usize| #[trigger] cut_walk_finds(tree_of(&pre.table_pages, &pre.spaces), t, g)
             ==> post.mapped@.contains(g) && g < NUM_PAGES
@@ -1747,6 +1763,122 @@ impl CapKernel {
         }
     }
 
+    /// Node n is a table page's hidden node.
+    pub open spec fn hidden_table(&self, n: usize) -> bool {
+        &&& self.list.nodes@[n as int].kind is Hidden
+        &&& self.table_pages.maps@.contains_key(n)
+    }
+
+    /// Table page t's hidden node went: its cut is recorded, the node is gone and its block is dead at
+    /// zero.
+    pub open spec fn table_unlinked(pre: Self, post: Self, t: usize) -> bool {
+        &&& Self::cut_recorded(pre, post, t)
+        &&& !post.list.nodes@[t as int].live
+        &&& post.blocks.pages@[(t / 4096) as int].refs == 0
+        &&& post.blocks.pages@[(t / 4096) as int].dead
+    }
+
+    /// What a recorded cut says stays true while nothing it names changes.
+    pub proof fn lemma_cut_recorded_same(pre: Self, mid: Self, post: Self, t: usize)
+        requires
+            pre.wf(),
+            pre.table_pages.maps@.contains_key(t),
+            Self::cut_recorded(pre, mid, t),
+            mid.cores == pre.cores,
+            post.table_pages == mid.table_pages,
+            post.spaces == mid.spaces,
+            post.cores == mid.cores,
+            post.flush_epoch == mid.flush_epoch,
+            post.tlb == mid.tlb,
+            post.iommus == mid.iommus,
+            post.mapped == mid.mapped,
+            post.stale_epoch == mid.stale_epoch,
+        ensures
+            Self::cut_recorded(pre, post, t),
+    {
+        assert(pre.acked(0) <= pre.flush_epoch);
+        assert(post.acked(0) == pre.acked(0));
+        assert(!post.acknowledged(t / 4096));
+        assert forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && #[trigger] pre.core_may_hold(c, e) implies post.core_may_hold(c, e) by {
+            assert(mid.core_may_hold(c, e));
+        }
+    }
+
+    /// A cut takes walks away and puts none in.
+    pub proof fn lemma_cut_shrunk(pre: Self, post: Self, t: usize)
+        requires
+            Self::tree_cut(pre, post, t),
+        ensures
+            Self::mappings_shrunk(pre, post),
+    {
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        let q = a.record(t).parent;
+        if q is None {
+            assert(a == b);
+        } else {
+            reveal(walks_detached);
+            assert forall|r: usize, p: SpacePath| #![trigger walk(b, r, p)] walk(b, r, p) is Some implies walk(b, r, p) == walk(a, r, p) by {
+                assert(walk(b, r, p) == (if passes_through(a, r, p, q->0.table, q->0.entry) { None } else { walk(a, r, p) }));
+            }
+        }
+    }
+
+    /// Two steps that each only take walks away take only walks away.
+    pub proof fn lemma_shrunk_compose(a: Self, b: Self, c: Self)
+        requires
+            Self::mappings_shrunk(a, b),
+            Self::mappings_shrunk(b, c),
+        ensures
+            Self::mappings_shrunk(a, c),
+    {
+        let (ta, tb, tc) = (tree_of(&a.table_pages, &a.spaces), tree_of(&b.table_pages, &b.spaces), tree_of(&c.table_pages, &c.spaces));
+        assert forall|r: usize, p: SpacePath| #![trigger walk(tc, r, p)] walk(tc, r, p) is Some implies walk(tc, r, p) == walk(ta, r, p) by {
+            assert(walk(tc, r, p) == walk(tb, r, p));
+            assert(walk(tb, r, p) == walk(ta, r, p));
+        }
+    }
+
+    /// Cuts node n's table page, if n is a table page's hidden node, so that node can go.
+    pub fn cut_hidden_table(&mut self, n: usize)
+        requires
+            old(self).wf(),
+            n < NODE_SPACE,
+            old(self).list.nodes@[n as int].live,
+            old(self).flush_epoch < usize::MAX,
+        ensures
+            final(self).wf(),
+            old(self).hidden_table(n) ==> Self::detach_recorded(*old(self), *final(self), n),
+            old(self).hidden_table(n) ==> final(self).table_pages.records@[n].value().parent is None,
+            !old(self).hidden_table(n) ==> *final(self) == *old(self),
+    {
+        let ghost pre = *old(self);
+        proof {
+            self.list.lemma_live_valid(n);
+        }
+        let node = self.list.get(n);
+        match node.kind {
+            NodeKind::Hidden => {
+                proof {
+                    pre.lemma_hidden_block(n);
+                }
+                let object = self.blocks.pages.get(n / 4096).object;
+                match object {
+                    ObjectType::TablePage => {
+                        self.detach_stale(n);
+                        proof {
+                            let a = tree_of(&pre.table_pages, &pre.spaces);
+                            let b = tree_of(&self.table_pages, &self.spaces);
+                            assert(a.is_page(n) && b.is_page(n));
+                        }
+                    },
+                    _ => {},
+                }
+            },
+            _ => {},
+        }
+    }
+
     /// Cuts table page t from the entry that names it and records what that leaves stale, so the walks
     /// through it end and whatever a core or an IOMMU got from them is one a flush must take out.
     pub fn detach_stale(&mut self, t: usize)
@@ -1901,6 +2033,7 @@ impl CapKernel {
             post.table_pages.records@[child].is_init(),
             post.table_pages.records@[child].value().level == pre.table_pages.records@[child].value().level,
             post.table_pages.records@[child].value().written == pre.table_pages.records@[child].value().written,
+            post.table_pages.records@[child].value().parent is None,
         ensures
             table_pages_wf(&post.list, &post.table_pages, &post.blocks),
     {
