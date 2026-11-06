@@ -327,7 +327,7 @@ pub proof fn lemma_links_entry_written(a: TableTree, b: TableTree, t: usize, e: 
     }
     assert forall|c: usize| #![trigger b.maps.contains_key(c)] b.is_page(c) implies {
         let r = b.record(c);
-        &&& (r.parent is Some) == (r.space is Some)
+        &&& r.parent is Some ==> r.space is Some
         &&& r.parent is Some ==> {
             let p = r.parent->0;
             &&& b.names_child(p.table, p.entry)

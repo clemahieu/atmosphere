@@ -81,7 +81,8 @@ pub open spec fn table_addr(t: usize) -> usize {
 
 /// A present entry above level 1, outside the kernel slots, names a child table whose record names that
 /// entry, and a child's record names a present entry that names it, one level up and in the same space.
-/// A table page has a space exactly when it has a parent, and a space is a space the kernel holds.
+/// A table page with a parent has a space, and a space is a space the kernel holds. A table page with a
+/// space and no parent has been cut off with what is below it, which still names that space.
 pub open spec fn table_links_wf(tree: TableTree) -> bool {
     &&& forall|t: usize, i: usize| #![trigger tree.entry(t, i)]
         tree.names_child(t, i) ==> {
@@ -93,7 +94,7 @@ pub open spec fn table_links_wf(tree: TableTree) -> bool {
         tree.child_slot(t, i) && tree.entry(t, i).perm.present && tree.entry(t, i).perm.ps ==> tree.record(t).level == 2
     &&& forall|c: usize| #![trigger tree.maps.contains_key(c)] tree.is_page(c) ==> {
         let r = tree.record(c);
-        &&& (r.parent is Some) == (r.space is Some)
+        &&& r.parent is Some ==> r.space is Some
         &&& r.parent is Some ==> {
             let p = r.parent->0;
             &&& tree.names_child(p.table, p.entry)
@@ -152,7 +153,7 @@ pub proof fn lemma_links_table_added(pre: TableTree, post: TableTree, t: usize)
     }
     assert forall|c: usize| #![trigger post.maps.contains_key(c)] post.is_page(c) implies {
         let r = post.record(c);
-        &&& (r.parent is Some) == (r.space is Some)
+        &&& r.parent is Some ==> r.space is Some
         &&& r.parent is Some ==> {
             let p = r.parent->0;
             &&& post.names_child(p.table, p.entry)
@@ -221,7 +222,7 @@ pub proof fn lemma_links_root_added(pre: TableTree, post: TableTree, s: usize)
     }
     assert forall|c: usize| #![trigger post.maps.contains_key(c)] post.is_page(c) implies {
         let r = post.record(c);
-        &&& (r.parent is Some) == (r.space is Some)
+        &&& r.parent is Some ==> r.space is Some
         &&& r.parent is Some ==> {
             let p = r.parent->0;
             &&& post.names_child(p.table, p.entry)
@@ -282,6 +283,7 @@ pub proof fn lemma_links_linked(pre: TableTree, post: TableTree, parent: usize, 
         pre.entry(parent, entry).is_empty(),
         pre.is_page(child),
         pre.record(child).parent is None,
+        pre.record(child).space is None,
         pre.record(child).level + 1 == pre.record(parent).level,
         pre.record(parent).space == Some(s),
         pre.is_root(s),
@@ -334,7 +336,7 @@ pub proof fn lemma_links_linked(pre: TableTree, post: TableTree, parent: usize, 
     }
     assert forall|c: usize| #![trigger post.maps.contains_key(c)] post.is_page(c) implies {
         let r = post.record(c);
-        &&& (r.parent is Some) == (r.space is Some)
+        &&& r.parent is Some ==> r.space is Some
         &&& r.parent is Some ==> {
             let p = r.parent->0;
             &&& post.names_child(p.table, p.entry)
@@ -368,6 +370,209 @@ pub proof fn lemma_links_linked(pre: TableTree, post: TableTree, parent: usize, 
             }
         }
     }
+}
+
+/// What a detach changes between two trees of the same tables: the parent's entry goes empty and the
+/// child's record forgets its parent. Every level and space stays, and so does every other entry.
+pub open spec fn detached(pre: TableTree, post: TableTree, parent: usize, entry: usize, child: usize) -> bool {
+    &&& post.maps.dom() == pre.maps.dom()
+    &&& post.roots.dom() == pre.roots.dom()
+    &&& post.entry(parent, entry).is_empty()
+    &&& forall|t: usize, i: usize| #![trigger post.entry(t, i)]
+        pre.is_table(t) && i < 512 && !(t == parent && i == entry) ==> post.entry(t, i) == pre.entry(t, i)
+    &&& forall|t: usize| #![trigger post.record(t)] pre.is_table(t) ==> {
+        &&& post.record(t).level == pre.record(t).level
+        &&& post.record(t).space == pre.record(t).space
+    }
+    &&& forall|t: usize| #![trigger post.record(t)] pre.is_table(t) && t != child ==> post.record(t).parent == pre.record(t).parent
+    &&& post.record(child).parent is None
+    &&& forall|t: usize| #![trigger post.space_records[t]]
+        pre.is_root(t) ==> post.space_records[t].value().kind == pre.space_records[t].value().kind
+}
+
+/// A detach of a table page from the entry that names it keeps the links: the entry and the record that
+/// named each other both go, and no other record named that entry, since an entry has one address.
+pub proof fn lemma_links_detached(pre: TableTree, post: TableTree, parent: usize, entry: usize, child: usize)
+    requires
+        table_links_wf(pre),
+        detached(pre, post, parent, entry, child),
+        pre.is_page(child),
+        pre.record(child).parent == Some(TableParent { table: parent, entry }),
+        forall|c: usize| #[trigger] pre.maps.contains_key(c) ==> c + TABLE_NODE_PAGES * 4096 <= usize::MAX,
+    ensures
+        table_links_wf(post),
+{
+    assert forall|t: usize| #[trigger] post.is_table(t) == pre.is_table(t) by {
+        assert(post.maps.contains_key(t) == pre.maps.contains_key(t));
+        assert(post.roots.contains_key(t) == pre.roots.contains_key(t));
+    }
+    assert forall|t: usize| #[trigger] post.is_page(t) == pre.is_page(t) by {
+        assert(post.maps.contains_key(t) == pre.maps.contains_key(t));
+    }
+    assert forall|t: usize| #[trigger] post.is_root(t) == pre.is_root(t) by {
+        assert(post.roots.contains_key(t) == pre.roots.contains_key(t));
+    }
+    assert forall|t: usize, i: usize| #[trigger] post.child_slot(t, i) == pre.child_slot(t, i) by {
+        if pre.is_table(t) {
+            assert(post.record(t).level == pre.record(t).level);
+        }
+    }
+    assert forall|u: usize, i: usize| #![trigger post.entry(u, i)]
+        post.names_child(u, i) implies {
+        let c = (post.entry(u, i).addr - TABLE_NODE_PAGES * 4096) as usize;
+        &&& post.is_page(c)
+        &&& post.record(c).parent == Some(TableParent { table: u, entry: i })
+    } by {
+        assert(!(u == parent && i == entry));
+        assert(post.entry(u, i) == pre.entry(u, i));
+        assert(pre.names_child(u, i));
+        let c = (pre.entry(u, i).addr - TABLE_NODE_PAGES * 4096) as usize;
+        assert(pre.is_page(c));
+        assert(pre.record(c).parent == Some(TableParent { table: u, entry: i }));
+        assert(c != child);
+        assert(post.record(c).parent == pre.record(c).parent);
+    }
+    assert forall|u: usize, i: usize| #![trigger post.entry(u, i)]
+        post.child_slot(u, i) && post.entry(u, i).perm.present && post.entry(u, i).perm.ps implies post.record(u).level == 2 by {
+        assert(!(u == parent && i == entry));
+        assert(post.entry(u, i) == pre.entry(u, i));
+        assert(pre.child_slot(u, i));
+        assert(pre.record(u).level == 2);
+        assert(post.record(u).level == pre.record(u).level);
+    }
+    assert(pre.maps.contains_key(child));
+    assert(pre.entry(parent, entry).addr == table_addr(child));
+    assert forall|c: usize| #![trigger post.maps.contains_key(c)] post.is_page(c) implies {
+        let r = post.record(c);
+        &&& r.parent is Some ==> r.space is Some
+        &&& r.parent is Some ==> {
+            let p = r.parent->0;
+            &&& post.names_child(p.table, p.entry)
+            &&& post.entry(p.table, p.entry).addr == table_addr(c)
+            &&& post.record(p.table).level == r.level + 1
+            &&& post.record(p.table).space == r.space
+        }
+        &&& r.space is Some ==> post.is_root(r.space->0)
+    } by {
+        assert(pre.is_page(c));
+        assert(pre.maps.contains_key(c));
+        let r = pre.record(c);
+        assert(post.record(c).space == r.space);
+        assert(post.record(c).level == r.level);
+        if c != child {
+            assert(post.record(c).parent == r.parent);
+            if r.parent is Some {
+                let p = r.parent->0;
+                assert(pre.names_child(p.table, p.entry));
+                assert(pre.entry(p.table, p.entry).addr == table_addr(c));
+                assert(!(p.table == parent && p.entry == entry));
+                assert(post.entry(p.table, p.entry) == pre.entry(p.table, p.entry));
+                assert(post.record(p.table).level == pre.record(p.table).level);
+                assert(post.record(p.table).space == pre.record(p.table).space);
+                assert(post.child_slot(p.table, p.entry));
+            }
+        }
+    }
+}
+
+/// A detach keeps the frame mappings: the entry it empties named a child, so was none, and an empty entry
+/// is none.
+pub proof fn lemma_frame_entries_detached(a: TableTree, b: TableTree, parent: usize, entry: usize, child: usize)
+    requires
+        detached(a, b, parent, entry, child),
+        a.names_child(parent, entry),
+    ensures
+        same_frame_entries(a, b),
+{
+    assert forall|t: usize, e: usize| #[trigger] frame_slot(a, t, e) implies {
+        &&& frame_slot(b, t, e)
+        &&& b.record(t).level == a.record(t).level
+        &&& b.entry(t, e) == a.entry(t, e)
+    } by {
+        assert(b.maps.dom() == a.maps.dom());
+        assert(b.is_page(t));
+        assert(a.is_table(t));
+        assert(b.record(t).level == a.record(t).level);
+        assert(!(t == parent && e == entry));
+        assert(b.entry(t, e) == a.entry(t, e));
+    }
+    assert forall|t: usize, e: usize| #[trigger] frame_slot(b, t, e) implies frame_slot(a, t, e) by {
+        assert(b.maps.dom() == a.maps.dom());
+        assert(a.is_page(t));
+        assert(a.is_table(t));
+        assert(b.record(t).level == a.record(t).level);
+        assert(!(t == parent && e == entry));
+        assert(b.entry(t, e) == a.entry(t, e));
+    }
+}
+
+/// Path p of space r passes through entry `entry` of table `parent`: its walk reads that entry to find
+/// the next table.
+pub open spec fn passes_through(tree: TableTree, r: usize, p: SpacePath, parent: usize, entry: usize) -> bool {
+    &&& tree.is_root(r)
+    &&& {
+        ||| r == parent && p.l4 == entry
+        ||| match step(tree, r, p.l4) {
+            None => false,
+            Some(t3) => {
+                ||| t3 == parent && p.l3 == entry
+                ||| match step(tree, t3, p.l3) {
+                    None => false,
+                    Some(t2) => t2 == parent && p.l2 == entry,
+                }
+            },
+        }
+    }
+}
+
+/// The walks through entry `entry` of `parent` find nothing, and every other walk finds what it did. Kept
+/// opaque because it relates every walk of b to a's.
+#[verifier::opaque]
+pub open spec fn walks_detached(a: TableTree, b: TableTree, parent: usize, entry: usize) -> bool {
+    forall|r: usize, p: SpacePath| #[trigger] walk(b, r, p)
+        == if passes_through(a, r, p, parent, entry) { None } else { walk(a, r, p) }
+}
+
+/// A detach ends the walks that read its entry and no other: a step reads only entries that name a child,
+/// and the frame entries a walk ends at are not that entry.
+pub proof fn lemma_walk_detached(a: TableTree, b: TableTree, parent: usize, entry: usize, child: usize, r: usize, p: SpacePath)
+    requires
+        detached(a, b, parent, entry, child),
+        a.names_child(parent, entry),
+    ensures
+        walk(b, r, p) == (if passes_through(a, r, p, parent, entry) { None } else { walk(a, r, p) }),
+{
+    assert forall|t: usize| #[trigger] b.is_table(t) == a.is_table(t) by {
+        assert(b.maps.contains_key(t) == a.maps.contains_key(t));
+        assert(b.roots.contains_key(t) == a.roots.contains_key(t));
+    }
+    assert forall|t: usize| #[trigger] b.is_root(t) == a.is_root(t) by {
+        assert(b.roots.contains_key(t) == a.roots.contains_key(t));
+    }
+    assert forall|t: usize, i: usize| !(t == parent && i == entry) implies #[trigger] step(b, t, i) == step(a, t, i) by {
+        if a.is_table(t) && i < 512 {
+            assert(b.entry(t, i) == a.entry(t, i));
+            assert(b.record(t).level == a.record(t).level);
+        }
+    }
+    assert(step(b, parent, entry) is None);
+    assert forall|t: usize, i: usize| true implies #[trigger] frame_entry(b, t, i) == frame_entry(a, t, i) by {
+        if a.is_table(t) && i < 512 {
+            assert(b.record(t).level == a.record(t).level);
+            if !(t == parent && i == entry) {
+                assert(b.entry(t, i) == a.entry(t, i));
+            }
+        }
+    }
+    assert forall|t: usize, i: usize| true implies #[trigger] large_entry(b, t, i) == large_entry(a, t, i) by {
+        if a.is_table(t) && i < 512 {
+            assert(b.record(t).level == a.record(t).level);
+            if !(t == parent && i == entry) {
+                assert(b.entry(t, i) == a.entry(t, i));
+            }
+        }
+    }
+    assert(large_entry(b, parent, entry) is None);
 }
 
 /// An address whose page is below NUM_PAGES is below 2^33.
@@ -448,16 +653,47 @@ impl CapKernel {
     proof fn lemma_link_wf(pre: Self, post: Self, parent: usize, entry: usize, child: usize, s: usize)
         requires
             pre.wf(),
+            linked(tree_of(&pre.table_pages, &pre.spaces), tree_of(&post.table_pages, &post.spaces), parent, entry, child, s),
+            tree_of(&pre.table_pages, &pre.spaces).is_table(parent),
+            tree_of(&pre.table_pages, &pre.spaces).record(parent).level >= 2,
+            tree_of(&pre.table_pages, &pre.spaces).entry(parent, entry).is_empty(),
             post.list == pre.list,
             post.tables == pre.tables,
             post.blocks == pre.blocks,
             post.holders == pre.holders,
             post.mappings == pre.mappings,
             post.spaces.loaded == pre.spaces.loaded,
-            linked(tree_of(&pre.table_pages, &pre.spaces), tree_of(&post.table_pages, &post.spaces), parent, entry, child, s),
-            tree_of(&pre.table_pages, &pre.spaces).is_table(parent),
-            tree_of(&pre.table_pages, &pre.spaces).record(parent).level >= 2,
-            tree_of(&pre.table_pages, &pre.spaces).entry(parent, entry).is_empty(),
+            post.zeroing == pre.zeroing,
+            post.frames == pre.frames,
+            post.cores == pre.cores,
+            post.flush_epoch == pre.flush_epoch,
+            post.tlb == pre.tlb,
+            post.iommus == pre.iommus,
+            post.mapped == pre.mapped,
+            post.stale_epoch == pre.stale_epoch,
+            post.table_pages.maps@.dom() == pre.table_pages.maps@.dom(),
+            table_pages_wf(&post.list, &post.table_pages, &post.blocks),
+            spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
+            table_links_wf(tree_of(&post.table_pages, &post.spaces)),
+        ensures
+            post.wf(),
+    {
+        lemma_frame_entries_linked(tree_of(&pre.table_pages, &pre.spaces), tree_of(&post.table_pages, &post.spaces), parent, entry, child, s);
+        Self::lemma_tables_changed_wf(pre, post);
+    }
+
+    /// The invariant after a step that changed only the tables, none of their frame mappings, given what
+    /// the tables' own invariants say.
+    proof fn lemma_tables_changed_wf(pre: Self, post: Self)
+        requires
+            pre.wf(),
+            post.list == pre.list,
+            post.tables == pre.tables,
+            post.blocks == pre.blocks,
+            post.holders == pre.holders,
+            post.mappings == pre.mappings,
+            post.spaces.loaded == pre.spaces.loaded,
+            same_frame_entries(tree_of(&pre.table_pages, &pre.spaces), tree_of(&post.table_pages, &post.spaces)),
             post.zeroing == pre.zeroing,
             post.frames == pre.frames,
             post.cores == pre.cores,
@@ -481,7 +717,6 @@ impl CapKernel {
         }
         let a = tree_of(&pre.table_pages, &pre.spaces);
         let b = tree_of(&post.table_pages, &post.spaces);
-        lemma_frame_entries_linked(a, b, parent, entry, child, s);
         assert(same_mapping_nodes(&pre.list, &post.list));
         assert forall|n: usize| #[trigger] pre.mappings@.contains_key(n) implies mapping_node_kept(
             &pre.list, &pre.tables, &pre.blocks, pre.holders@, &post.list, &post.tables, &post.blocks, post.holders@, pre.mappings@[n].frame, n,
@@ -550,8 +785,9 @@ impl CapKernel {
         }
     }
 
-    /// The spaces after a link into a root: an entry outside its kernel slots, now naming a table, and its record's written
-    /// flag changed, and the root keeps its address, its kind, its record and its kernel slots.
+    /// The spaces after a link into a root or a detach from one: an entry outside its kernel slots, now naming a
+    /// table or empty, and its record's written flag changed, and the root keeps its address, its kind, its
+    /// record and its kernel slots.
     proof fn lemma_link_spaces(pre: Self, post: Self, parent: usize, entry: usize)
         requires
             pre.wf(),
@@ -563,8 +799,8 @@ impl CapKernel {
             post.spaces.kernel_entries == pre.spaces.kernel_entries,
             pre.spaces.roots@.contains_key(parent),
             !holds_kernel(pre.spaces.records@[parent].value().kind, entry),
-            post.spaces.roots@[parent].value()[entry].perm.present,
-            !post.spaces.roots@[parent].value()[entry].perm.ps,
+            post.spaces.roots@[parent].value()[entry].is_empty()
+                || (post.spaces.roots@[parent].value()[entry].perm.present && !post.spaces.roots@[parent].value()[entry].perm.ps),
             post.spaces.roots@ == pre.spaces.roots@.insert(parent, post.spaces.roots@[parent]),
             post.spaces.records@ == pre.spaces.records@.insert(parent, post.spaces.records@[parent]),
             post.spaces.roots@[parent].addr() == pre.spaces.roots@[parent].addr(),
@@ -732,6 +968,7 @@ impl CapKernel {
             tree_of(&old(self).table_pages, &old(self).spaces).child_slot(parent, entry),
             tree_of(&old(self).table_pages, &old(self).spaces).entry(parent, entry).is_empty(),
             tree_of(&old(self).table_pages, &old(self).spaces).record(child).parent is None,
+            tree_of(&old(self).table_pages, &old(self).spaces).record(child).space is None,
             !tree_of(&old(self).table_pages, &old(self).spaces).record(child).written,
             tree_of(&old(self).table_pages, &old(self).spaces).record(child).level + 1
                 == tree_of(&old(self).table_pages, &old(self).spaces).record(parent).level,
@@ -811,6 +1048,7 @@ impl CapKernel {
             tree_of(&old(self).table_pages, &old(self).spaces).entry(parent, entry).is_empty(),
             tree_of(&old(self).table_pages, &old(self).spaces).record(parent).space == Some(s),
             tree_of(&old(self).table_pages, &old(self).spaces).record(child).parent is None,
+            tree_of(&old(self).table_pages, &old(self).spaces).record(child).space is None,
             !tree_of(&old(self).table_pages, &old(self).spaces).record(child).written,
             tree_of(&old(self).table_pages, &old(self).spaces).record(child).level + 1
                 == tree_of(&old(self).table_pages, &old(self).spaces).record(parent).level,
@@ -1156,6 +1394,392 @@ impl CapKernel {
             Self::lemma_link_mappings(pre, *self, root, slot, parent, entry, from, child, payload.base);
         }
         true
+    }
+
+    /// What detaching table page t leaves: with no parent, nothing changed; with one, that entry empty and
+    /// t's record with no parent, and the walks through the entry gone. Only the tables changed.
+    pub open spec fn detach_done(pre: Self, post: Self, t: usize) -> bool {
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        let p = a.record(t).parent;
+        &&& post.list == pre.list
+        &&& post.tables == pre.tables
+        &&& post.blocks == pre.blocks
+        &&& post.holders == pre.holders
+        &&& post.mappings == pre.mappings
+        &&& post.zeroing == pre.zeroing
+        &&& post.frames == pre.frames
+        &&& post.cores == pre.cores
+        &&& post.flush_epoch == pre.flush_epoch
+        &&& post.tlb == pre.tlb
+        &&& post.iommus == pre.iommus
+        &&& post.mapped == pre.mapped
+        &&& post.stale_epoch == pre.stale_epoch
+        &&& post.table_pages.spare == pre.table_pages.spare
+        &&& post.spaces.loaded == pre.spaces.loaded
+        &&& post.spaces.holders == pre.spaces.holders
+        &&& post.spaces.kernel_entries == pre.spaces.kernel_entries
+        &&& p is None ==> post == pre
+        &&& p is Some ==> detached(a, b, p->0.table, p->0.entry, t)
+        &&& p is Some ==> walks_detached(a, b, p->0.table, p->0.entry)
+    }
+
+    /// Cuts table page t from the entry that names it, the entry and t's parent in one step, so the walks
+    /// through it end. t keeps its space, as what is below it does, and a table with no parent writes
+    /// nothing. Recording what the cut leaves stale is the caller's.
+    pub fn detach_table(&mut self, t: usize)
+        requires
+            old(self).wf(),
+            old(self).table_pages.maps@.contains_key(t),
+        ensures
+            final(self).wf(),
+            Self::detach_done(*old(self), *final(self), t),
+    {
+        let ghost pre = *old(self);
+        let ghost a = tree_of(&pre.table_pages, &pre.spaces);
+        let record = self.table_record(t, false);
+        let p = match record.parent {
+            None => { return; },
+            Some(p) => p,
+        };
+        proof {
+            assert(a.maps.contains_key(t));
+            assert(a.names_child(p.table, p.entry));
+            assert(a.record(p.table).level == a.record(t).level + 1);
+            if a.is_page(p.table) {
+                assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, p.table));
+            } else {
+                assert(space_wf(&pre.list, &pre.spaces, &pre.blocks, p.table));
+            }
+        }
+        let object = self.blocks.pages.get(p.table / 4096).object;
+        match object {
+            ObjectType::TablePage => {
+                proof {
+                    if !a.is_page(p.table) {
+                        assert(space_wf(&pre.list, &pre.spaces, &pre.blocks, p.table));
+                    }
+                }
+                self.detach_from_page(p.table, p.entry, t);
+            },
+            _ => {
+                proof {
+                    if a.is_page(p.table) {
+                        assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, p.table));
+                    }
+                }
+                self.detach_from_root(p.table, p.entry, t);
+            },
+        }
+    }
+
+    /// Forgets table page child's parent.
+    fn clear_parent(&mut self, child: usize)
+        requires
+            old(self).table_pages.records@.contains_key(child),
+            old(self).table_pages.records@[child].addr() == child + TABLE_RECORD_PAGE * 4096,
+            old(self).table_pages.records@[child].is_init(),
+            child / 4096 < NUM_PAGES,
+        ensures
+            final(self).table_pages.maps == old(self).table_pages.maps,
+            final(self).table_pages.spare == old(self).table_pages.spare,
+            final(self).spaces == old(self).spaces,
+            final(self).mappings == old(self).mappings,
+            final(self).list == old(self).list,
+            final(self).tables == old(self).tables,
+            final(self).blocks == old(self).blocks,
+            final(self).holders == old(self).holders,
+            final(self).zeroing == old(self).zeroing,
+            final(self).frames == old(self).frames,
+            final(self).cores == old(self).cores,
+            final(self).flush_epoch == old(self).flush_epoch,
+            final(self).tlb == old(self).tlb,
+            final(self).iommus == old(self).iommus,
+            final(self).mapped == old(self).mapped,
+            final(self).stale_epoch == old(self).stale_epoch,
+            final(self).table_pages.records@ == old(self).table_pages.records@.insert(child, final(self).table_pages.records@[child]),
+            final(self).table_pages.records@[child].addr() == old(self).table_pages.records@[child].addr(),
+            final(self).table_pages.records@[child].is_init(),
+            final(self).table_pages.records@[child].value() == (TableRecord {
+                level: old(self).table_pages.records@[child].value().level,
+                space: old(self).table_pages.records@[child].value().space,
+                parent: None,
+                written: old(self).table_pages.records@[child].value().written,
+            }),
+    {
+        proof {
+            lemma_table_bound(child);
+        }
+        let ptr = PPtr::<TableRecord>::from_usize(child + TABLE_RECORD_PAGE * 4096);
+        let tracked mut perm = self.table_pages.records.borrow_mut().tracked_remove(child);
+        let record = *ptr.borrow(Tracked(&perm));
+        ptr.write(Tracked(&mut perm), TableRecord { level: record.level, space: record.space, parent: None, written: record.written });
+        proof {
+            self.table_pages.records.borrow_mut().tracked_insert(child, perm);
+            assert(self.table_pages.records@ =~= old(self).table_pages.records@.insert(child, self.table_pages.records@[child]));
+        }
+    }
+
+    /// The table pages after a detach: the child's record lost its parent, a page parent's entry went
+    /// empty, and every page keeps its table's address, its level and, while not written, its empty entries.
+    proof fn lemma_detach_pages(pre: Self, post: Self, parent: usize, entry: usize, child: usize)
+        requires
+            pre.wf(),
+            post.list == pre.list,
+            post.blocks == pre.blocks,
+            post.table_pages.spare == pre.table_pages.spare,
+            pre.table_pages.maps@.contains_key(child),
+            child != parent,
+            post.table_pages.maps@.dom() == pre.table_pages.maps@.dom(),
+            post.table_pages.records@.dom() == pre.table_pages.records@.dom(),
+            forall|t: usize| #[trigger] pre.table_pages.maps@.contains_key(t) && t != parent ==> post.table_pages.maps@[t] == pre.table_pages.maps@[t],
+            forall|t: usize| #[trigger] pre.table_pages.maps@.contains_key(t) && t != child
+                ==> post.table_pages.records@[t] == pre.table_pages.records@[t],
+            pre.table_pages.maps@.contains_key(parent) ==> {
+                &&& post.table_pages.maps@[parent].addr() == pre.table_pages.maps@[parent].addr()
+                &&& post.table_pages.maps@[parent].is_init()
+                &&& post.table_pages.maps@[parent].value().wf()
+                &&& entry < 512
+                &&& post.table_pages.maps@[parent].value()[entry].is_empty()
+                &&& forall|i: usize| i < 512 && i != entry ==> #[trigger] post.table_pages.maps@[parent].value()[i] == pre.table_pages.maps@[parent].value()[i]
+            },
+            post.table_pages.records@[child].addr() == pre.table_pages.records@[child].addr(),
+            post.table_pages.records@[child].is_init(),
+            post.table_pages.records@[child].value().level == pre.table_pages.records@[child].value().level,
+            post.table_pages.records@[child].value().written == pre.table_pages.records@[child].value().written,
+        ensures
+            table_pages_wf(&post.list, &post.table_pages, &post.blocks),
+    {
+        let pa = &pre.table_pages;
+        let pb = &post.table_pages;
+        assert forall|t: usize| #[trigger] pb.maps@.contains_key(t) implies table_page_wf(&post.list, pb, &post.blocks, t) by {
+            assert(pa.maps@.contains_key(t));
+            assert(table_page_wf(&pre.list, pa, &pre.blocks, t));
+            assert(pb.records@.contains_key(t));
+            assert(table_record_wf(pb, t)) by {
+                if !pb.records@[t].value().written {
+                    assert(!pa.records@[t].value().written);
+                    assert forall|i: usize| #![trigger pb.maps@[t].value()[i]] i < 512 implies pb.maps@[t].value()[i].is_empty() by {
+                        if !(t == parent && i == entry) {
+                            assert(pa.maps@[t].value()[i].is_empty());
+                        }
+                    }
+                }
+            }
+        }
+        assert forall|b: usize| b < NUM_PAGES && #[trigger] table_block(&post.blocks, b) implies pb.maps@.contains_key((b * 4096) as usize) by {
+            assert(pa.maps@.contains_key((b * 4096) as usize));
+        }
+    }
+
+    /// What a detach's writes say of the two trees, and the invariant after them, given the tables' own.
+    proof fn lemma_detach_post(pre: Self, post: Self, parent: usize, entry: usize, child: usize)
+        requires
+            pre.wf(),
+            post.list == pre.list,
+            post.tables == pre.tables,
+            post.blocks == pre.blocks,
+            post.holders == pre.holders,
+            post.mappings == pre.mappings,
+            post.zeroing == pre.zeroing,
+            post.frames == pre.frames,
+            post.cores == pre.cores,
+            post.flush_epoch == pre.flush_epoch,
+            post.tlb == pre.tlb,
+            post.iommus == pre.iommus,
+            post.mapped == pre.mapped,
+            post.stale_epoch == pre.stale_epoch,
+            post.spaces.loaded == pre.spaces.loaded,
+            post.table_pages.maps@.dom() == pre.table_pages.maps@.dom(),
+            pre.table_pages.maps@.contains_key(child),
+            tree_of(&pre.table_pages, &pre.spaces).names_child(parent, entry),
+            tree_of(&pre.table_pages, &pre.spaces).record(child).parent == Some(TableParent { table: parent, entry }),
+            detached(tree_of(&pre.table_pages, &pre.spaces), tree_of(&post.table_pages, &post.spaces), parent, entry, child),
+            table_pages_wf(&post.list, &post.table_pages, &post.blocks),
+            spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
+        ensures
+            post.wf(),
+            walks_detached(tree_of(&pre.table_pages, &pre.spaces), tree_of(&post.table_pages, &post.spaces), parent, entry),
+    {
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        assert forall|c: usize| #[trigger] a.maps.contains_key(c) implies c + TABLE_NODE_PAGES * 4096 <= usize::MAX by {
+            assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, c));
+            lemma_table_bound(c);
+        }
+        lemma_links_detached(a, b, parent, entry, child);
+        lemma_frame_entries_detached(a, b, parent, entry, child);
+        Self::lemma_tables_changed_wf(pre, post);
+        assert forall|r: usize, p: SpacePath| #[trigger] walk(b, r, p)
+            == (if passes_through(a, r, p, parent, entry) { None } else { walk(a, r, p) }) by {
+            lemma_walk_detached(a, b, parent, entry, child, r, p);
+        }
+        assert(walks_detached(a, b, parent, entry)) by {
+            reveal(walks_detached);
+        }
+    }
+
+    /// Cuts `child` from `entry` of the table page `parent`, whose entry names it.
+    fn detach_from_page(&mut self, parent: usize, entry: usize, child: usize)
+        requires
+            old(self).wf(),
+            old(self).table_pages.maps@.contains_key(parent),
+            old(self).table_pages.maps@.contains_key(child),
+            tree_of(&old(self).table_pages, &old(self).spaces).names_child(parent, entry),
+            tree_of(&old(self).table_pages, &old(self).spaces).record(child).parent == Some(TableParent { table: parent, entry }),
+            child != parent,
+        ensures
+            final(self).wf(),
+            Self::detach_done(*old(self), *final(self), child),
+    {
+        let ghost pre = *old(self);
+        let ghost a = tree_of(&pre.table_pages, &pre.spaces);
+        proof {
+            assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, parent));
+            assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, child));
+            lemma_table_bound(parent);
+            lemma_table_bound(child);
+        }
+        let tracked mut map = self.table_pages.maps.borrow_mut().tracked_remove(parent);
+        page_map_set(parent + TABLE_NODE_PAGES * 4096, Tracked(&mut map), entry, PageEntry::empty());
+        proof {
+            self.table_pages.maps.borrow_mut().tracked_insert(parent, map);
+            assert(self.table_pages.maps@ =~= pre.table_pages.maps@.insert(parent, self.table_pages.maps@[parent]));
+        }
+        self.clear_parent(child);
+        proof {
+            let post = *self;
+            let b = tree_of(&post.table_pages, &post.spaces);
+            assert(post.table_pages.maps@ == pre.table_pages.maps@.insert(parent, post.table_pages.maps@[parent]));
+            assert(post.table_pages.maps@.dom() == pre.table_pages.maps@.dom());
+            assert(post.table_pages.records@.dom() == pre.table_pages.records@.dom());
+            assert forall|i: usize| i < 512 && i != entry implies #[trigger] post.table_pages.maps@[parent].value()[i] == pre.table_pages.maps@[parent].value()[i] by {}
+            assert forall|t: usize| #[trigger] pre.table_pages.maps@.contains_key(t) && t != parent
+                implies post.table_pages.maps@[t] == pre.table_pages.maps@[t] by {}
+            assert forall|t: usize| #[trigger] pre.table_pages.maps@.contains_key(t) && t != child
+                implies post.table_pages.records@[t] == pre.table_pages.records@[t] by {}
+            Self::lemma_detach_pages(pre, post, parent, entry, child);
+            Self::lemma_detach_tree(pre, post, parent, entry, child);
+            Self::lemma_detach_post(pre, post, parent, entry, child);
+        }
+    }
+
+    /// Cuts `child` from `entry` of the root of space `parent`, whose entry names it.
+    fn detach_from_root(&mut self, parent: usize, entry: usize, child: usize)
+        requires
+            old(self).wf(),
+            old(self).spaces.roots@.contains_key(parent),
+            !old(self).table_pages.maps@.contains_key(parent),
+            old(self).table_pages.maps@.contains_key(child),
+            tree_of(&old(self).table_pages, &old(self).spaces).names_child(parent, entry),
+            tree_of(&old(self).table_pages, &old(self).spaces).record(child).parent == Some(TableParent { table: parent, entry }),
+            child != parent,
+        ensures
+            final(self).wf(),
+            Self::detach_done(*old(self), *final(self), child),
+    {
+        let ghost pre = *old(self);
+        let ghost a = tree_of(&pre.table_pages, &pre.spaces);
+        proof {
+            assert(space_wf(&pre.list, &pre.spaces, &pre.blocks, parent));
+            assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, child));
+            lemma_table_bound(parent);
+            lemma_table_bound(child);
+        }
+        let root = PPtr::<SpaceRecord>::from_usize(parent + SPACE_RECORD_PAGE * 4096)
+            .borrow(Tracked(self.spaces.records.borrow().tracked_borrow(parent)))
+            .root;
+        let tracked mut map = self.spaces.roots.borrow_mut().tracked_remove(parent);
+        page_map_set(root, Tracked(&mut map), entry, PageEntry::empty());
+        proof {
+            self.spaces.roots.borrow_mut().tracked_insert(parent, map);
+            assert(self.spaces.roots@ =~= pre.spaces.roots@.insert(parent, self.spaces.roots@[parent]));
+        }
+        self.clear_parent(child);
+        proof {
+            let post = *self;
+            assert(pre.spaces.roots@[parent].value()[entry].perm.present);
+            assert(pre.spaces.records@[parent].value().table.written) by {
+                assert(root_record_wf(&pre.spaces, parent));
+                assert(!pre.spaces.roots@[parent].value()[entry].is_empty());
+            }
+            assert(post.spaces.roots@ == pre.spaces.roots@.insert(parent, post.spaces.roots@[parent]));
+            assert(post.spaces.records@ =~= pre.spaces.records@.insert(parent, post.spaces.records@[parent]));
+            assert forall|i: usize| i < 512 && i != entry implies #[trigger] post.spaces.roots@[parent].value()[i] == pre.spaces.roots@[parent].value()[i] by {}
+            Self::lemma_link_spaces(pre, post, parent, entry);
+            assert(post.table_pages.maps@ == pre.table_pages.maps@);
+            assert(post.table_pages.records@.dom() == pre.table_pages.records@.dom());
+            assert forall|t: usize| #[trigger] pre.table_pages.maps@.contains_key(t) && t != child
+                implies post.table_pages.records@[t] == pre.table_pages.records@[t] by {}
+            Self::lemma_detach_pages(pre, post, parent, entry, child);
+            Self::lemma_detach_tree(pre, post, parent, entry, child);
+            Self::lemma_detach_post(pre, post, parent, entry, child);
+        }
+    }
+
+    /// A detach's writes as a statement of the two trees: one entry and one parent.
+    proof fn lemma_detach_tree(pre: Self, post: Self, parent: usize, entry: usize, child: usize)
+        requires
+            pre.wf(),
+            pre.table_pages.maps@.contains_key(child),
+            child != parent,
+            tree_of(&pre.table_pages, &pre.spaces).is_table(parent),
+            post.table_pages.maps@.dom() == pre.table_pages.maps@.dom(),
+            post.spaces.roots@.dom() == pre.spaces.roots@.dom(),
+            post.spaces.records == pre.spaces.records,
+            forall|t: usize| #[trigger] pre.table_pages.maps@.contains_key(t) && t != parent ==> post.table_pages.maps@[t] == pre.table_pages.maps@[t],
+            forall|t: usize| #[trigger] pre.table_pages.maps@.contains_key(t) && t != child
+                ==> post.table_pages.records@[t] == pre.table_pages.records@[t],
+            forall|t: usize| #[trigger] pre.spaces.roots@.contains_key(t) && t != parent ==> post.spaces.roots@[t] == pre.spaces.roots@[t],
+            pre.table_pages.maps@.contains_key(parent) ==> {
+                &&& post.table_pages.maps@[parent].value()[entry].is_empty()
+                &&& forall|i: usize| i < 512 && i != entry ==> #[trigger] post.table_pages.maps@[parent].value()[i] == pre.table_pages.maps@[parent].value()[i]
+            },
+            !pre.table_pages.maps@.contains_key(parent) ==> {
+                &&& post.spaces.roots@[parent].value()[entry].is_empty()
+                &&& forall|i: usize| i < 512 && i != entry ==> #[trigger] post.spaces.roots@[parent].value()[i] == pre.spaces.roots@[parent].value()[i]
+            },
+            post.table_pages.records@[child].value().level == pre.table_pages.records@[child].value().level,
+            post.table_pages.records@[child].value().space == pre.table_pages.records@[child].value().space,
+            post.table_pages.records@[child].value().parent is None,
+        ensures
+            detached(tree_of(&pre.table_pages, &pre.spaces), tree_of(&post.table_pages, &post.spaces), parent, entry, child),
+    {
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        assert forall|t: usize| #[trigger] b.is_page(t) == a.is_page(t) by {
+            assert(post.table_pages.maps@.contains_key(t) == pre.table_pages.maps@.contains_key(t));
+        }
+        assert(b.entry(parent, entry).is_empty());
+        assert forall|t: usize, i: usize| #![trigger b.entry(t, i)]
+            a.is_table(t) && i < 512 && !(t == parent && i == entry) implies b.entry(t, i) == a.entry(t, i) by {
+            if a.is_page(t) {
+                if t == parent {
+                    assert(post.table_pages.maps@[parent].value()[i] == pre.table_pages.maps@[parent].value()[i]);
+                } else {
+                    assert(post.table_pages.maps@[t] == pre.table_pages.maps@[t]);
+                }
+            } else {
+                if t == parent {
+                    assert(post.spaces.roots@[parent].value()[i] == pre.spaces.roots@[parent].value()[i]);
+                } else {
+                    assert(post.spaces.roots@[t] == pre.spaces.roots@[t]);
+                }
+            }
+        }
+        assert forall|t: usize| #![trigger b.record(t)] a.is_table(t) implies {
+            &&& b.record(t).level == a.record(t).level
+            &&& b.record(t).space == a.record(t).space
+        } by {
+            if a.is_page(t) && t != child {
+                assert(post.table_pages.records@[t] == pre.table_pages.records@[t]);
+            }
+        }
+        assert forall|t: usize| #![trigger b.record(t)] a.is_table(t) && t != child implies b.record(t).parent == a.record(t).parent by {
+            if a.is_page(t) {
+                assert(post.table_pages.records@[t] == pre.table_pages.records@[t]);
+            }
+        }
     }
 }
 
