@@ -2029,6 +2029,7 @@ impl CapKernel {
             Self::lemma_table_page_caps_wf(pre, post);
             Self::lemma_tlb_same(pre, post);
             Self::lemma_table_page_nodes(pre, post, mid, parent, base);
+            Self::lemma_table_nodes_page_added(pre, post, base);
             assert(post.list.pages@.dom() == mid.pages@.dom());
             assert(post.table_pages.maps@ == pre.table_pages.maps@.insert(base, post.table_pages.maps@[base]));
             assert(post.table_pages.records@ == pre.table_pages.records@.insert(base, post.table_pages.records@[base]));
@@ -2549,6 +2550,7 @@ impl CapKernel {
             Self::lemma_space_caps_wf(pre, post, child);
             Self::lemma_tlb_same(pre, post);
             Self::lemma_space_nodes(pre, post, mid, parent, child);
+            Self::lemma_table_nodes_frame(pre, post, child, child);
             assert(post.list.pages@.dom() == mid.pages@.dom());
             lemma_mapping_nodes_grown(pre.list, mid, post.list, child, child);
             Self::lemma_space_blocks(pre, post, base, page, child);

@@ -1026,4 +1026,245 @@ pub proof fn lemma_links_entry_cleared(a: TableTree, b: TableTree, t: usize, e: 
     }
 }
 
+impl CapKernel {
+    /// A table page's block: eight aligned pages below NUM_PAGES, the first its base, the rest members.
+    pub proof fn lemma_table_page_room(&self, t: usize)
+        requires
+            self.wf(),
+            self.table_pages.maps@.contains_key(t),
+        ensures
+            table_page_wf(&self.list, &self.table_pages, &self.blocks, t),
+            t % 32768 == 0,
+            t % 4096 == 0,
+            t / 4096 + 8 <= NUM_PAGES,
+            t < 0x2_0000_0000,
+            self.blocks.pages@[(t / 4096) as int].kind is Base,
+            self.blocks.pages@[(t / 4096) as int].object is TablePage,
+            forall|k: int| 0 < k < 8 ==> (#[trigger] self.blocks.pages@[t / 4096 + k]).kind is Member
+                && self.blocks.pages@[t / 4096 + k].base == t / 4096,
+    {
+        assert(table_page_wf(&self.list, &self.table_pages, &self.blocks, t));
+        lemma_table_page_aligned(t);
+        let q = (t / 4096) as int;
+        self.blocks.lemma_base(q);
+        assert(order_pages(3) == 8);
+        lemma_table_bound(t);
+        assert forall|k: int| 0 < k < 8 implies (#[trigger] self.blocks.pages@[t / 4096 + k]).kind is Member
+            && self.blocks.pages@[t / 4096 + k].base == t / 4096 by {
+            self.blocks.lemma_member_of(q, q + k);
+        }
+    }
+
+    /// A live node at an entry's place in a table page's block is a mapping node.
+    pub proof fn lemma_table_node_is_mapping(&self, t: usize, e: usize)
+        requires
+            self.wf(),
+            self.table_pages.maps@.contains_key(t),
+            e < 512,
+            self.list.nodes@[mapping_node(t, e) as int].live,
+        ensures
+            self.list.nodes@[mapping_node(t, e) as int].kind is Mapping,
+    {
+        self.lemma_table_page_room(t);
+        lemma_mapping_node_place(t, e);
+        let k = ((e + 1) / (NODES_PER_PAGE as int)) as usize;
+        let i = ((e + 1) % (NODES_PER_PAGE as int)) as usize;
+        assert(table_node(t, k, i) == mapping_node(t, e));
+        assert(k != 0 || i != 0);
+    }
+
+    /// Where node i of node page k of table page t lies: in a page the list holds, in the table page's
+    /// block, so in no leaf's page and, unless it is node 0 of page 0, no table page.
+    pub proof fn lemma_table_node_in_block(&self, t: usize, k: usize, i: usize)
+        requires
+            self.wf(),
+            self.table_pages.maps@.contains_key(t),
+            k < TABLE_NODE_PAGES,
+            i < NODES_PER_PAGE,
+        ensures
+            table_node(t, k, i) < NODE_SPACE,
+            table_node(t, k, i) / 4096 == t / 4096 + k,
+            table_node(t, k, i) % 4096 == i,
+            page_of(table_node(t, k, i)) == table_node_page(t, k),
+            self.list.valid(table_node(t, k, i)),
+            !self.tables.owner@.contains_key(page_of(table_node(t, k, i))),
+            k != 0 || i != 0 ==> table_node(t, k, i) != t,
+            k != 0 || i != 0 ==> !self.table_pages.maps@.contains_key(table_node(t, k, i)),
+    {
+        self.lemma_table_page_room(t);
+        lemma_table_node_place(t, k, i);
+        let q = t / 4096;
+        let n = table_node(t, k, i);
+        assert(self.list.pages@.dom().contains(table_node_page(t, k)));
+        assert(self.list.valid(n));
+        if self.tables.owner@.contains_key(page_of(n)) {
+            let l = page_of(n);
+            assert(self.blocks.pages@[(l / 4096) as int].kind is Base);
+            assert(self.blocks.pages@[(l / 4096) as int].object is TableLeaf);
+            assert(l / 4096 == q + k);
+            if k > 0 {
+                assert(self.blocks.pages@[q + k].kind is Member);
+            }
+            assert(false);
+        }
+        if (k != 0 || i != 0) && self.table_pages.maps@.contains_key(n) {
+            assert(table_page_wf(&self.list, &self.table_pages, &self.blocks, n));
+            lemma_table_page_aligned(n);
+            assert(i == 0);
+            assert(k > 0);
+            assert(self.blocks.pages@[q + k].kind is Member);
+            assert(false);
+        }
+    }
+
+    /// The clause after a step that adds no table page and changes no node the list held but n and m,
+    /// each in a leaf's page or in no page the list held: a table page's nodes are as they were.
+    pub proof fn lemma_table_nodes_frame(pre: Self, post: Self, n: usize, m: usize)
+        requires
+            pre.wf(),
+            forall|t: usize| #[trigger] post.table_pages.maps@.contains_key(t) ==> pre.table_pages.maps@.contains_key(t),
+            forall|x: usize| #[trigger] pre.list.valid(x) && x != n && x != m ==> {
+                &&& post.list.nodes@[x as int].live == pre.list.nodes@[x as int].live
+                &&& post.list.nodes@[x as int].kind == pre.list.nodes@[x as int].kind
+            },
+            !pre.list.valid(n) || pre.tables.owner@.contains_key(page_of(n)),
+            !pre.list.valid(m) || pre.tables.owner@.contains_key(page_of(m)),
+        ensures
+            table_nodes_are_mappings(&post.list, &post.table_pages),
+    {
+        assert forall|t: usize, k: usize, i: usize| #![trigger table_node(t, k, i)]
+            post.table_pages.maps@.contains_key(t) && k < TABLE_NODE_PAGES && i < NODES_PER_PAGE && (k != 0 || i != 0)
+                && post.list.nodes@[table_node(t, k, i) as int].live
+            implies post.list.nodes@[table_node(t, k, i) as int].kind is Mapping by {
+            let x = table_node(t, k, i);
+            pre.lemma_table_node_in_block(t, k, i);
+            assert(x != n);
+            assert(x != m);
+            assert(pre.list.nodes@[x as int].live);
+        }
+    }
+
+    /// The clause after a step that changes no node but the slots n and m and keeps the table pages.
+    pub proof fn lemma_table_nodes_caps_frame(pre: Self, post: Self, n: usize, m: usize)
+        requires
+            Self::caps_frame(pre, post, n, m),
+            post.table_pages == pre.table_pages,
+            pre.tables.owner@.contains_key(page_of(n)),
+            pre.tables.owner@.contains_key(page_of(m)),
+        ensures
+            table_nodes_are_mappings(&post.list, &post.table_pages),
+    {
+        assert forall|x: usize| #[trigger] pre.list.valid(x) && x != n && x != m implies {
+            &&& post.list.nodes@[x as int].live == pre.list.nodes@[x as int].live
+            &&& post.list.nodes@[x as int].kind == pre.list.nodes@[x as int].kind
+        } by {
+            pre.list.lemma_valid_bound(x);
+        }
+        Self::lemma_table_nodes_frame(pre, post, n, m);
+    }
+
+    /// What a table page's retype at base leaves of the list: the new node pages were not the list's, and
+    /// every node the list held but base keeps its liveness and kind.
+    pub open spec fn page_added_step(pre: Self, post: Self, base: usize) -> bool {
+        &&& pre.wf()
+        &&& base % 32768 == 0
+        &&& base / 4096 + 8 <= NUM_PAGES
+        &&& forall|t: usize| #[trigger] post.table_pages.maps@.contains_key(t)
+            ==> t == base || pre.table_pages.maps@.contains_key(t)
+        &&& forall|k: usize| k < TABLE_NODE_PAGES ==> !pre.list.pages@.dom().contains(#[trigger] table_node_page(base, k))
+        &&& forall|x: usize| #[trigger] pre.list.valid(x) ==> {
+            &&& post.list.nodes@[x as int].live == pre.list.nodes@[x as int].live
+            &&& post.list.nodes@[x as int].kind == pre.list.nodes@[x as int].kind
+        }
+        &&& forall|x: int| 0 <= x < NODE_SPACE && x != base ==> #[trigger] post.list.nodes@[x].live == pre.list.nodes@[x].live
+    }
+
+    /// A live node in the new table page's node pages after its retype is the hidden one: the pages held no
+    /// live node before, and only base changed.
+    proof fn lemma_table_node_fresh(pre: Self, post: Self, base: usize, k: usize, i: usize)
+        requires
+            Self::page_added_step(pre, post, base),
+            k < TABLE_NODE_PAGES,
+            i < NODES_PER_PAGE,
+            k != 0 || i != 0,
+        ensures
+            !post.list.nodes@[table_node(base, k, i) as int].live,
+    {
+        let x = table_node(base, k, i);
+        lemma_table_node_place(base, k, i);
+        assert(!pre.list.valid(x));
+        if pre.list.nodes@[x as int].live {
+            pre.list.lemma_live_valid(x);
+        }
+    }
+
+    /// A live node in an older table page's node pages after a table page's retype is as it was: it is not
+    /// base, whose page the list did not hold.
+    proof fn lemma_table_node_kept(pre: Self, post: Self, base: usize, t: usize, k: usize, i: usize)
+        requires
+            Self::page_added_step(pre, post, base),
+            pre.table_pages.maps@.contains_key(t),
+            k < TABLE_NODE_PAGES,
+            i < NODES_PER_PAGE,
+            k != 0 || i != 0,
+            post.list.nodes@[table_node(t, k, i) as int].live,
+        ensures
+            post.list.nodes@[table_node(t, k, i) as int].kind is Mapping,
+    {
+        let x = table_node(t, k, i);
+        pre.lemma_table_node_in_block(t, k, i);
+        lemma_table_page_aligned(base);
+        assert(table_node_page(base, 0) == base);
+        assert(!pre.list.pages@.dom().contains(base));
+        assert(page_of(base) == base);
+        assert(x != base);
+        assert(pre.list.nodes@[x as int].live);
+    }
+
+    /// The clause after a table page's retype at base: its node pages hold no live node but the hidden one,
+    /// and every other table page's nodes are as they were.
+    pub proof fn lemma_table_nodes_page_added(pre: Self, post: Self, base: usize)
+        requires
+            Self::page_added_step(pre, post, base),
+        ensures
+            table_nodes_are_mappings(&post.list, &post.table_pages),
+    {
+        assert forall|t: usize, k: usize, i: usize| #![trigger table_node(t, k, i)]
+            post.table_pages.maps@.contains_key(t) && k < TABLE_NODE_PAGES && i < NODES_PER_PAGE && (k != 0 || i != 0)
+                && post.list.nodes@[table_node(t, k, i) as int].live
+            implies post.list.nodes@[table_node(t, k, i) as int].kind is Mapping by {
+            if t == base {
+                Self::lemma_table_node_fresh(pre, post, base, k, i);
+            } else {
+                Self::lemma_table_node_kept(pre, post, base, t, k, i);
+            }
+        }
+    }
+}
+
+/// Where node i of node page k of the table page at t lies: in that node page, at slot i.
+pub proof fn lemma_table_node_place(t: usize, k: usize, i: usize)
+    requires
+        t % 32768 == 0,
+        t / 4096 + TABLE_NODE_PAGES <= NUM_PAGES,
+        k < TABLE_NODE_PAGES,
+        i < NODES_PER_PAGE,
+    ensures
+        table_node(t, k, i) == t + k * 4096 + i,
+        table_node(t, k, i) < NODE_SPACE,
+        table_node(t, k, i) / 4096 == t / 4096 + k,
+        table_node(t, k, i) % 4096 == i,
+        page_of(table_node(t, k, i)) == table_node_page(t, k),
+        k != 0 || i != 0 ==> table_node(t, k, i) != t,
+{
+    lemma_table_page_aligned(t);
+    lemma_table_node_page(t, k);
+    let q = t / 4096;
+    lemma_table_bound(t);
+    let n = table_node(t, k, i);
+    assert(n == 4096 * (q + k) + i);
+    lemma_fundamental_div_mod_converse(n as int, 4096, q + k, i as int);
+    assert(page_of(n) == n - i);
+}
+
 } // verus!

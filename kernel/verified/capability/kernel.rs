@@ -98,6 +98,20 @@ pub open spec fn hidden_nodes_are_leaves(list: &Tree, tables: &Tables, pages: &T
     }
 }
 
+/// Node i of node page k of table page t.
+pub open spec fn table_node(t: usize, k: usize, i: usize) -> usize {
+    (table_node_page(t, k) + i) as usize
+}
+
+/// A live node in a table page's node pages, other than its hidden node, is a mapping node, so an empty
+/// entry's node is free for a map.
+pub open spec fn table_nodes_are_mappings(list: &Tree, pages: &TablePages) -> bool {
+    forall|t: usize, k: usize, i: usize| #![trigger table_node(t, k, i)]
+        pages.maps@.contains_key(t) && k < TABLE_NODE_PAGES && i < NODES_PER_PAGE && (k != 0 || i != 0)
+            && list.nodes@[table_node(t, k, i) as int].live
+            ==> list.nodes@[table_node(t, k, i) as int].kind is Mapping
+}
+
 /// Only a capability has children, and the list's first node is one, so a hidden node is below
 /// something and has nothing below it, and a retype naming its block can unlink it.
 pub open spec fn parents_are_capabilities(list: &Tree) -> bool {
@@ -396,6 +410,7 @@ impl CapKernel {
         &&& zeroing_typed(&self.zeroing, &self.blocks)
         &&& list_pages_used(&self.list, &self.blocks)
         &&& hidden_nodes_are_leaves(&self.list, &self.tables, &self.table_pages)
+        &&& table_nodes_are_mappings(&self.list, &self.table_pages)
         &&& table_pages_wf(&self.list, &self.table_pages, &self.blocks)
         &&& spaces_wf(&self.list, &self.tables, &self.spaces, &self.blocks)
         &&& table_links_wf(tree_of(&self.table_pages, &self.spaces))
