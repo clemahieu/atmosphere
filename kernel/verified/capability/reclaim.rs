@@ -42,6 +42,9 @@ proof fn leak_all(tracked m: Map<usize, PagePerm4k>) -> (tracked ret: Map<usize,
     rest
 }
 
+/// The most nodes one retype removes from a dead leaf's slots.
+pub const LEAF_SLICE_BUDGET: usize = 64;
+
 /// What a reclaim did.
 pub enum ReclaimStep {
     /// Nothing changed: the caller may not name this block, or a capability still does.
@@ -54,6 +57,8 @@ pub enum ReclaimStep {
     /// The block held a table leaf whose hidden node is now gone, so it is dead, and its dismantling
     /// starts on a later retype.
     Unlinked,
+    /// Some of a dead leaf's capabilities went, and more may remain. Retype again.
+    Slice,
 }
 
 /// A page the list holds is page aligned, in the node space and initialised at its own address.
@@ -169,10 +174,12 @@ impl CapKernel {
             ret is Refused || ret is Again ==> *final(self) == *old(self),
             !((old(self).can_retype_under(root, from, base, 0) && old(self).frame_is_dead(base / 4096))
                 || old(self).can_unlink_leaf(root, from, base)
-                || (old(self).can_retype_under(root, from, base, 1) && old(self).leaf_is_empty(base))) ==> ret is Refused,
+                || (old(self).can_retype_under(root, from, base, 1) && old(self).leaf_is_empty(base))
+                || old(self).can_slice_leaf(root, from, base)) ==> ret is Refused,
             ret is Again ==> !old(self).acknowledged(base / 4096),
             ret is Freed ==> old(self).frame_freed(*final(self), c, root, from, base)
                 || old(self).leaf_freed(*final(self), c, root, from, base),
+            ret is Slice ==> old(self).leaf_sliced(*final(self), root, from, base),
             ret is Unlinked ==> old(self).leaf_unlinked(*final(self), root, from, base),
     {
         let page = base / 4096;
@@ -185,11 +192,252 @@ impl CapKernel {
             ObjectType::TableLeaf => {
                 if self.unlink_leaf(root, from, base) {
                     ReclaimStep::Unlinked
+                } else if self.slice_leaf(root, from, base) {
+                    ReclaimStep::Slice
                 } else {
                     self.free_leaf(c, root, from, base)
                 }
             },
             ObjectType::None => ReclaimStep::Refused,
+        }
+    }
+
+    /// A retype may take a slice of the leaf at `base`: an untyped covers its block, its hidden node has
+    /// gone, and a slot is still live.
+    pub open spec fn can_slice_leaf(&self, root: usize, from: usize, base: usize) -> bool {
+        &&& self.can_retype_under(root, from, base, 1)
+        &&& self.tables.owner@.contains_key(base)
+        &&& !self.list.nodes@[base as int].live
+        &&& !self.leaf_is_empty(base)
+    }
+
+    /// What a slice of the leaf at `base` did to self: the list is shorter by a bounded number of nodes,
+    /// all from what the leaf's process held, and the leaf is still detached with its owner.
+    pub open spec fn leaf_sliced(&self, post: Self, root: usize, from: usize, base: usize) -> bool {
+        let untyped = self.tables.node_of(root, from);
+        let object = self.tables.owner@[base].0;
+        &&& self.view().holds_right(root, untyped, Right::Retype)
+        &&& post.list.seq@.len() < self.list.seq@.len()
+        &&& self.list.seq@.len() - post.list.seq@.len() <= LEAF_SLICE_BUDGET
+        &&& post.tables.owner == self.tables.owner
+        &&& post.list.parent == self.list.parent
+        &&& !post.list.nodes@[base as int].live
+        &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object })
+    }
+
+    /// Takes a slice of the dead leaf at `base`, under the untyped at index `from` of the table at `root`:
+    /// up to a budget of nodes from its slots' runs, each slot going itself once childless. Returns
+    /// whether it ran, and if not nothing changed. Dead slots stay dead while the leaf is detached, so a
+    /// slice can walk them once and the next starts again from the first.
+    pub fn slice_leaf(&mut self, root: usize, from: usize, base: usize) -> (ret: bool)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(root),
+        ensures
+            final(self).wf(),
+            ret == old(self).can_slice_leaf(root, from, base),
+            !ret ==> *final(self) == *old(self),
+            ret ==> old(self).leaf_sliced(*final(self), root, from, base),
+    {
+        let ghost pre = *old(self);
+        let untyped = match self.retype_parent(root, from, base, 1) {
+            Some(found) => found,
+            None => { return false; },
+        };
+        let page = base / 4096;
+        proof {
+            lemma2_to64();
+            pre.lemma_leaf_in_range(base);
+        }
+        if page >= NUM_PAGES {
+            return false;
+        }
+        let entry = *self.blocks.pages.get(page);
+        let dead_leaf = match (entry.kind, entry.object) {
+            (PageKind::Base, ObjectType::TableLeaf) => entry.refs == 0,
+            _ => false,
+        };
+        proof {
+            pre.lemma_dead_leaf_block(base);
+        }
+        if !dead_leaf {
+            return false;
+        }
+        let ghost object = pre.tables.owner@[base].0;
+        proof {
+            lemma_no_change_discharges_teardown(pre.view(), root, untyped, object);
+            assert(!pre.list.nodes@[base + 0int].live);
+        }
+        let mut steps = 0;
+        let mut k = 1;
+        while steps != LEAF_SLICE_BUDGET && k != NODES_PER_PAGE
+            invariant
+                self.wf(),
+                pre == *old(self),
+                steps <= LEAF_SLICE_BUDGET,
+                1 <= k <= NODES_PER_PAGE,
+                base % 8192 == 0,
+                pre.tables.owner@.contains_key(base),
+                object == pre.tables.owner@[base].0,
+                pre.view().holds_right(root, untyped, Right::Retype),
+                self.tables.owner == pre.tables.owner,
+                self.list.parent == pre.list.parent,
+                pre.list.seq@.len() == self.list.seq@.len() + steps,
+                !self.list.nodes@[base as int].live,
+                steps == 0 ==> *self == pre,
+                steps > 0 ==> !pre.leaf_is_empty(base),
+                forall|j: int| 0 <= j < k ==> !(#[trigger] self.list.nodes@[base + j]).live,
+                discharges(pre.view(), self.view(), root, Effect::Teardown { untyped, object }),
+                forall|h: (ObjectId, NodeId)| #[trigger] self.view().held.contains(h) ==> pre.view().held.contains(h),
+            decreases LEAF_SLICE_BUDGET - steps, NODES_PER_PAGE - k,
+        {
+            proof {
+                self.lemma_leaf_slot_valid(base, k);
+                lemma_slot_in_leaf(base, k);
+                self.lemma_slot_bound((base + k) as usize);
+            }
+            let n = base + k;
+            if !self.list.get(n).live {
+                k = k + 1;
+                continue;
+            }
+            proof {
+                self.lemma_live_slot_is_cap(n);
+                if steps == 0 {
+                    assert(pre.list.nodes@[base + k as int].live);
+                }
+            }
+            let ghost mid = *self;
+            if !self.revoke_step(Ghost(object), n) {
+                proof {
+                    let r = choose|r: usize| #[trigger] revoked_one(mid.list, self.list, n, r)
+                        && (mid.list.nodes@[r as int].kind is Hidden ==> !self.tables.attached(r));
+                    lemma_revoke_is_teardown(mid.view(), self.view(), object, n);
+                    Self::lemma_slice_step(pre, mid, *self, root, untyped, object);
+                    Self::lemma_leaf_slots_stay_dead(mid, *self, base, k as int, r);
+                }
+                steps = steps + 1;
+                continue;
+            }
+            self.unlink_childless_slot(Ghost(object), n);
+            proof {
+                lemma_delete_is_teardown(mid.view(), self.view(), object);
+                Self::lemma_slice_step(pre, mid, *self, root, untyped, object);
+                Self::lemma_leaf_slots_stay_dead(mid, *self, base, k as int, n);
+            }
+            steps = steps + 1;
+            k = k + 1;
+        }
+        steps != 0
+    }
+
+    /// An owned leaf's block is in the block table's range.
+    proof fn lemma_leaf_in_range(&self, base: usize)
+        requires
+            self.wf(),
+        ensures
+            self.tables.owner@.contains_key(base) ==> base / 4096 < NUM_PAGES,
+    {
+    }
+
+    /// A step that only removes capabilities, with the owners as they were, leaves every process holding
+    /// a subset of what it held.
+    proof fn lemma_held_shrinks(pre: Self, post: Self)
+        requires
+            post.tables.owner == pre.tables.owner,
+            forall|x: usize| #[trigger] post.is_cap(x) ==> pre.is_cap(x),
+        ensures
+            forall|h: (ObjectId, NodeId)| #[trigger] post.view().held.contains(h) ==> pre.view().held.contains(h),
+    {
+        assert forall|h: (ObjectId, NodeId)| #[trigger] post.view().held.contains(h) implies pre.view().held.contains(h) by {
+            assert(post.is_cap(h.1));
+        }
+    }
+
+    /// One more slice of the object's teardown after a teardown under the untyped: the whole is a
+    /// teardown under the untyped, and what is held still shrinks.
+    proof fn lemma_slice_step(pre: Self, mid: Self, post: Self, root: usize, untyped: usize, object: usize)
+        requires
+            discharges(pre.view(), mid.view(), root, Effect::Teardown { untyped, object }),
+            tears_down(mid.view(), post.view(), object),
+            mid.list.parent == pre.list.parent,
+            post.tables.owner == mid.tables.owner,
+            forall|x: usize| #[trigger] post.is_cap(x) ==> mid.is_cap(x),
+            forall|h: (ObjectId, NodeId)| #[trigger] mid.view().held.contains(h) ==> pre.view().held.contains(h),
+        ensures
+            discharges(pre.view(), post.view(), root, Effect::Teardown { untyped, object }),
+            forall|h: (ObjectId, NodeId)| #[trigger] post.view().held.contains(h) ==> pre.view().held.contains(h),
+    {
+        Self::lemma_held_shrinks(mid, post);
+        lemma_teardown_steps_compose(pre.view(), mid.view(), post.view(), root, untyped, object);
+    }
+
+    /// A step that removes node r alone keeps the leaf's hidden node and its first k slots dead.
+    proof fn lemma_leaf_slots_stay_dead(pre: Self, post: Self, base: usize, k: int, r: usize)
+        requires
+            pre.wf(),
+            pre.tables.owner@.contains_key(base),
+            0 <= k <= NODES_PER_PAGE,
+            !pre.list.nodes@[base as int].live,
+            forall|j: int| 0 <= j < k ==> !(#[trigger] pre.list.nodes@[base + j]).live,
+            !post.list.nodes@[r as int].live,
+            forall|x: int| 0 <= x < NODE_SPACE && x != r ==> #[trigger] post.list.nodes@[x].live == pre.list.nodes@[x].live,
+        ensures
+            !post.list.nodes@[base as int].live,
+            forall|j: int| 0 <= j < k ==> !(#[trigger] post.list.nodes@[base + j]).live,
+    {
+        pre.lemma_leaf_slot_valid(base, 0);
+        pre.list.lemma_valid_bound(base);
+        assert forall|j: int| 0 <= j < k implies !(#[trigger] post.list.nodes@[base + j]).live by {
+            pre.lemma_leaf_slot_valid(base, j as usize);
+            pre.list.lemma_valid_bound((base + j) as usize);
+        }
+    }
+
+    /// Unlinks the childless capability in slot n, which the object held, and nothing more.
+    fn unlink_childless_slot(&mut self, Ghost(object): Ghost<usize>, n: usize)
+        requires
+            old(self).wf(),
+            n < NODE_SPACE,
+            old(self).is_cap(n),
+            old(self).tables.owner@[page_of(n)].0 == object,
+            old(self).list.childless(n),
+        ensures
+            final(self).wf(),
+            final(self).tables.owner == old(self).tables.owner,
+            final(self).list.parent == old(self).list.parent,
+            final(self).list.seq@.len() == old(self).list.seq@.len() - 1,
+            !final(self).list.nodes@[n as int].live,
+            forall|x: int| 0 <= x < NODE_SPACE && x != n ==>
+                #[trigger] final(self).list.nodes@[x].live == old(self).list.nodes@[x].live,
+            forall|x: usize| #[trigger] final(self).is_cap(x) ==> old(self).is_cap(x),
+            discharges(old(self).view(), final(self).view(), object, Effect::Local),
+    {
+        let ghost pre = *old(self);
+        proof {
+            pre.lemma_leaf_node_not_first(n);
+        }
+        self.unlink_arm(n);
+        self.list.remove_leaf(n);
+        proof {
+            let post = *self;
+            post.tables.lemma_wf_same_pages(&pre.list, &post.list);
+            assert(Self::caps_frame(pre, post, n, n));
+            Self::lemma_delete_caps_wf(pre, post, n);
+            let p = choose|p: int| 0 <= p < pre.list.seq@.len() && pre.list.seq@[p] == n
+                && post.list.seq@ == pre.list.seq@.remove(p);
+            assert(p != 0);
+            assert(post.list.seq@[0] == pre.list.seq@[0]);
+            lemma_parents_removed(pre.list, post.list, n);
+            Self::lemma_revoke_hidden(pre, post, n);
+            Self::lemma_delete_holders(pre, post, n);
+            Self::lemma_tlb_same(pre, post);
+            Self::lemma_delete_discharges(pre, post, object, n);
+            assert forall|x: usize| #[trigger] post.is_cap(x) implies pre.is_cap(x) by {
+                if x != n {
+                    Self::lemma_caps_frame(pre, post, n, n, x);
+                }
+            }
         }
     }
 
@@ -205,6 +453,7 @@ impl CapKernel {
         ensures
             final(self).wf(),
             !(ret is Unlinked),
+            !(ret is Slice),
             !(ret is Freed) ==> *final(self) == *old(self),
             !(old(self).can_retype_under(root, from, base, 1) && old(self).leaf_is_empty(base)) ==> ret is Refused,
             ret is Again ==> !old(self).acknowledged(base / 4096),
@@ -776,6 +1025,7 @@ impl CapKernel {
         ensures
             final(self).wf(),
             !(ret is Unlinked),
+            !(ret is Slice),
             !(ret is Freed) ==> *final(self) == *old(self),
             !(old(self).can_retype_under(root, from, base, 0) && old(self).frame_is_dead(base / 4096)) ==> ret is Refused,
             ret is Again ==> !old(self).acknowledged(base / 4096),

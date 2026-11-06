@@ -282,6 +282,101 @@ pub open spec fn adds_child(pre: State, post: State, p: ObjectId, c: NodeId, n: 
     &&& forall|o: ObjectId| #[trigger] (post.contents)(o) == (pre.contents)(o)
 }
 
+/// What a slice of an object's teardown does, apart from who may run it: it changes only what waits on
+/// the object, removes only what descends from a capability the object held, and grows no reach.
+pub open spec fn tears_down(pre: State, post: State, object: ObjectId) -> bool {
+    &&& forall|o: ObjectId| #[trigger] State::changed(pre, post, o) ==> pre.waiting.contains((object, o))
+    &&& forall|n: NodeId| #[trigger] State::removed(pre, post, n)
+        ==> exists|c: NodeId, k: nat| #[trigger] pre.descends(c, n, k) && pre.holds(object, c)
+    &&& forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) ==> pre.reach(r, o)
+}
+
+/// A step that changes nothing, by a holder of an untyped with the retype right, discharges a teardown.
+pub proof fn lemma_no_change_discharges_teardown(s: State, p: ObjectId, untyped: NodeId, object: ObjectId)
+    requires
+        s.holds_right(p, untyped, Right::Retype),
+    ensures
+        discharges(s, s, p, Effect::Teardown { untyped, object }),
+{
+}
+
+/// A revoke of a capability the object held is a slice of its teardown: what it removes descends from
+/// that capability.
+pub proof fn lemma_revoke_is_teardown(pre: State, post: State, object: ObjectId, cap: NodeId)
+    requires
+        discharges(pre, post, object, Effect::Revoke { cap }),
+    ensures
+        tears_down(pre, post, object),
+{
+    assert forall|n: NodeId| #[trigger] State::removed(pre, post, n)
+        implies exists|c: NodeId, k: nat| #[trigger] pre.descends(c, n, k) && pre.holds(object, c) by {
+        assert(may_remove(pre, object, Effect::Revoke { cap }, n));
+        let k = choose|k: nat| k > 0 && #[trigger] pre.descends(cap, n, k);
+        assert(pre.descends(cap, n, k) && pre.holds(object, cap));
+    }
+    assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) implies pre.reach(r, o) by {
+        assert(!may_grow(pre, object, Effect::Revoke { cap }, r, o));
+    }
+}
+
+/// Deleting a capability the object held is a slice of its teardown too: the capability descends from
+/// itself.
+pub proof fn lemma_delete_is_teardown(pre: State, post: State, object: ObjectId)
+    requires
+        discharges(pre, post, object, Effect::Local),
+    ensures
+        tears_down(pre, post, object),
+{
+    assert forall|n: NodeId| #[trigger] State::removed(pre, post, n)
+        implies exists|c: NodeId, k: nat| #[trigger] pre.descends(c, n, k) && pre.holds(object, c) by {
+        assert(may_remove(pre, object, Effect::Local, n));
+        assert(pre.descends(n, n, 0));
+        assert(pre.holds(object, n));
+    }
+    assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) implies pre.reach(r, o) by {
+        assert(!may_grow(pre, object, Effect::Local, r, o));
+    }
+}
+
+/// A teardown followed by a slice of the same object's teardown is one teardown, under the first's
+/// authority, when the list's shape stayed and nothing was added. The second step needs no authority
+/// of its own, since the first may have revoked the untyped itself.
+pub proof fn lemma_teardown_steps_compose(a: State, b: State, c: State, p: ObjectId, untyped: NodeId, object: ObjectId)
+    requires
+        discharges(a, b, p, Effect::Teardown { untyped, object }),
+        tears_down(b, c, object),
+        a.parent == b.parent,
+        a.waiting == b.waiting,
+        forall|h: (ObjectId, NodeId)| #[trigger] b.held.contains(h) ==> a.held.contains(h),
+    ensures
+        discharges(a, c, p, Effect::Teardown { untyped, object }),
+{
+    let e = Effect::Teardown { untyped, object };
+    assert forall|o: ObjectId| #[trigger] State::changed(a, c, o) implies may_change(a, e, o) by {
+        if State::changed(a, b, o) {
+            assert(may_change(a, e, o));
+        } else {
+            assert(State::changed(b, c, o));
+            assert(b.waiting.contains((object, o)));
+        }
+    }
+    assert forall|n: NodeId| #[trigger] State::removed(a, c, n) implies may_remove(a, p, e, n) by {
+        if State::removed(a, b, n) {
+            assert(may_remove(a, p, e, n));
+        } else {
+            assert(State::removed(b, c, n));
+            let (t, k) = choose|t: NodeId, k: nat| #[trigger] b.descends(t, n, k) && b.holds(object, t);
+            lemma_same_parent_same_descends(b, a, t, n, k);
+            assert(b.held.contains((object, t)));
+            assert(a.descends(t, n, k) && a.holds(object, t));
+        }
+    }
+    assert forall|r: ObjectId, o: ObjectId| #[trigger] c.reach(r, o) implies a.reach(r, o) by {
+        assert(b.reach(r, o));
+        assert(!may_grow(a, p, e, r, o));
+    }
+}
+
 /// Walking up from a live node in post walks the same nodes in pre.
 proof fn lemma_adds_child_descends(
     pre: State,
