@@ -169,6 +169,7 @@ impl CapKernel {
         &&& holders_wf(&self.list, &self.tables, &self.blocks, &self.zeroing, self.holders@)
         &&& objects_wf(&self.tables, &self.blocks, self.holders@)
         &&& frames_held(self.frames@, self.holders@)
+        &&& leaf_blocks_wf(&self.list, &self.tables, &self.blocks)
     }
 
     /// A frame's permission is for its own page.
@@ -485,6 +486,7 @@ impl CapKernel {
             holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
             objects_wf(&post.tables, &post.blocks, post.holders@),
             frames_held(post.frames@, post.holders@),
+            leaf_blocks_wf(&post.list, &post.tables, &post.blocks),
             post.list == pre.list,
             post.tables == pre.tables,
             post.cores == pre.cores,
@@ -517,10 +519,78 @@ impl CapKernel {
             holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
             objects_wf(&post.tables, &post.blocks, post.holders@),
             frames_held(post.frames@, post.holders@),
+            leaf_blocks_wf(&post.list, &post.tables, &post.blocks),
         ensures
             post.wf(),
     {
         Self::lemma_tlb_same(pre, post);
+    }
+
+    /// A live hidden node is an owned leaf's, whose block holds its one reference and is no holder's key.
+    pub proof fn lemma_hidden_block(&self, n: usize)
+        requires
+            self.wf(),
+            n < NODE_SPACE,
+            self.list.nodes@[n as int].live,
+            self.list.nodes@[n as int].kind is Hidden,
+        ensures
+            self.tables.owner@.contains_key(n),
+            n / 4096 < NUM_PAGES,
+            block_typed(&self.blocks, BlockRef::Small(n / 4096)),
+            block_refs(&self.blocks, BlockRef::Small(n / 4096)) == 1,
+            !block_dead(&self.blocks, BlockRef::Small(n / 4096)),
+            !self.holders@.contains_key(BlockRef::Small(n / 4096)),
+    {
+        assert(self.tables.owner@.contains_key(n));
+        lemma_leaf_block_unkeyed(&self.tables, &self.blocks, self.holders@, n);
+    }
+
+    /// A slot's node is no leaf, since a leaf is page aligned.
+    pub proof fn lemma_slot_not_owned(&self, n: usize)
+        requires
+            self.wf(),
+            n % 4096 != 0,
+        ensures
+            !self.tables.owner@.contains_key(n),
+    {
+        if self.tables.owner@.contains_key(n) {
+            self.tables.lemma_leaf(&self.list, n);
+        }
+    }
+
+    /// A live node that is not hidden is no leaf, since a leaf's live node is its hidden one.
+    pub proof fn lemma_unhidden_not_owned(&self, n: usize)
+        requires
+            self.wf(),
+            self.list.nodes@[n as int].live,
+            !(self.list.nodes@[n as int].kind is Hidden),
+        ensures
+            !self.tables.owner@.contains_key(n),
+    {
+        if self.tables.owner@.contains_key(n) {
+            assert(self.list.nodes@[n as int].kind is Hidden);
+        }
+    }
+
+    /// A step that changes no node but n and m, neither a leaf, leaves every leaf's node as it was.
+    pub proof fn lemma_same_leaf_nodes(pre: Self, post: Self, n: usize, m: usize)
+        requires
+            Self::caps_frame(pre, post, n, m),
+            !pre.tables.owner@.contains_key(n),
+            !pre.tables.owner@.contains_key(m),
+        ensures
+            same_leaf_nodes(&pre.list, &post.list, &pre.tables),
+            same_leaf_nodes(&pre.list, &post.list, &post.tables),
+    {
+        assert forall|l: usize| #[trigger] pre.tables.owner@.contains_key(l) implies {
+            &&& post.list.nodes@[l as int].live == pre.list.nodes@[l as int].live
+            &&& post.list.nodes@[l as int].kind == pre.list.nodes@[l as int].kind
+        } by {
+            pre.tables.lemma_leaf(&pre.list, l);
+            assert(page_of(l) == l);
+            pre.lemma_slot_bound(l);
+            assert(l != n && l != m);
+        }
     }
 
     /// A dead small block at zero references, whose teardown has finished and which no core can reach
@@ -629,7 +699,8 @@ impl CapKernel {
             assert(!pre.blocks.in_block(base as int, (l / 4096) as int));
             assert(post.blocks.pages@[(l / 4096) as int] == pre.blocks.pages@[(l / 4096) as int]);
         }
-Self::lemma_blocks_changed(pre, post);
+        lemma_leaf_blocks_small_freed(&pre.list, &pre.tables, &pre.blocks, &post.blocks, pre.holders@, base);
+        Self::lemma_blocks_changed(pre, post);
     }
 
     /// As free_block, for a 2M block.
@@ -744,6 +815,7 @@ Self::lemma_blocks_changed(pre, post);
                 assert((b / PAGES_PER_1G) as int != r as int);
             }
         }
+        lemma_leaf_blocks_same_pages(&pre.list, &pre.tables, &pre.blocks, &post.blocks);
         Self::lemma_blocks_changed(pre, post);
     }
 

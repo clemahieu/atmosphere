@@ -256,6 +256,7 @@ impl CapKernel {
             zeroing_typed(&post.zeroing, &post.blocks),
             list_pages_used(&post.list, &post.blocks),
             objects_wf(&post.tables, &post.blocks, post.holders@),
+            leaf_blocks_wf(&post.list, &post.tables, &post.blocks),
     {
         assert forall|x: usize| x != child implies {
             &&& #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x)
@@ -263,6 +264,8 @@ impl CapKernel {
         } by {
             Self::lemma_caps_frame(pre, post, child, child, x);
         }
+        pre.lemma_slot_not_owned(child);
+        Self::lemma_same_leaf_nodes(pre, post, child, child);
         match block {
             Some(br) => {
                 let pp = pre.payload_of(parent);
@@ -276,9 +279,13 @@ impl CapKernel {
                 assert forall|x: BlockRef| #[trigger] post.holders@.contains_key(x) == pre.holders@.contains_key(x) by {}
                 assert(objects_wf(&post.tables, &pre.blocks, pre.holders@));
                 lemma_objects_refs_changed(&post.tables, &pre.blocks, &post.blocks, pre.holders@, post.holders@, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
+                assert(leaf_blocks_wf(&pre.list, &post.tables, &pre.blocks));
+                lemma_leaf_blocks_refs_changed(&pre.list, &post.list, &post.tables, &pre.blocks, &post.blocks, pre.holders@, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
             },
             None => {
                 lemma_holders_same_frames(&pre.list, &pre.tables, &post.list, &post.tables, &pre.blocks, &pre.zeroing, pre.holders@);
+                assert(leaf_blocks_wf(&pre.list, &post.tables, &pre.blocks));
+                lemma_leaf_blocks_same_nodes(&pre.list, &post.list, &post.tables, &post.blocks);
             },
         }
     }

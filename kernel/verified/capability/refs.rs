@@ -150,6 +150,370 @@ pub open spec fn objects_wf(tables: &Tables, blocks: &BlockTable, holders: IMap<
         && blocks.regions_1g@[r as int].refs == 0 ==> holders.contains_key(BlockRef::One(r))
 }
 
+/// An owned leaf's block holds one reference, its hidden node's, and is dead at once when that goes.
+/// Its node 0 is that hidden node while it is live, so no other kind of node can take the block down.
+pub open spec fn leaf_blocks_wf(list: &Tree, tables: &Tables, blocks: &BlockTable) -> bool {
+    forall|l: usize| #[trigger] tables.owner@.contains_key(l) ==> {
+        &&& list.nodes@[l as int].live ==> {
+            &&& list.nodes@[l as int].kind is Hidden
+            &&& blocks.pages@[(l / 4096) as int].refs == 1
+            &&& !blocks.pages@[(l / 4096) as int].dead
+        }
+        &&& !list.nodes@[l as int].live ==> {
+            &&& blocks.pages@[(l / 4096) as int].refs == 0
+            &&& blocks.pages@[(l / 4096) as int].dead
+        }
+    }
+}
+
+/// Every owned leaf's node is as it was.
+pub open spec fn same_leaf_nodes(list_a: &Tree, list_b: &Tree, tables: &Tables) -> bool {
+    forall|l: usize| #[trigger] tables.owner@.contains_key(l) ==> {
+        &&& list_b.nodes@[l as int].live == list_a.nodes@[l as int].live
+        &&& list_b.nodes@[l as int].kind == list_a.nodes@[l as int].kind
+    }
+}
+
+/// Two distinct leaves lie on distinct pages, since each is two pages aligned.
+pub proof fn lemma_leaf_pages_distinct(l: usize, m: usize)
+    requires
+        l % 8192 == 0,
+        m % 8192 == 0,
+        l != m,
+    ensures
+        l / 4096 != m / 4096,
+{
+    lemma_fundamental_div_mod(l as int, 8192);
+    lemma_fundamental_div_mod(m as int, 8192);
+    assert(l as int == 8192 * (l as int / 8192));
+    assert(m as int == 8192 * (m as int / 8192));
+    assert(l / 4096 == 2 * (l as int / 8192)) by {
+        lemma_div_multiples_vanish_fancy(2 * (l as int / 8192), 0, 4096);
+    }
+    assert(m / 4096 == 2 * (m as int / 8192)) by {
+        lemma_div_multiples_vanish_fancy(2 * (m as int / 8192), 0, 4096);
+    }
+}
+
+/// The leaves' blocks read nothing of the list but the leaves' nodes.
+pub proof fn lemma_leaf_blocks_same_nodes(list_a: &Tree, list_b: &Tree, tables: &Tables, blocks: &BlockTable)
+    requires
+        leaf_blocks_wf(list_a, tables, blocks),
+        same_leaf_nodes(list_a, list_b, tables),
+    ensures
+        leaf_blocks_wf(list_b, tables, blocks),
+{
+}
+
+/// And nothing of the block table but its page entries.
+pub proof fn lemma_leaf_blocks_same_pages(list: &Tree, tables: &Tables, a: &BlockTable, b: &BlockTable)
+    requires
+        leaf_blocks_wf(list, tables, a),
+        b.pages@ == a.pages@,
+    ensures
+        leaf_blocks_wf(list, tables, b),
+{
+}
+
+/// A leaf's block is no holder's key: a holder's small block is a frame, and a leaf's is a table leaf.
+pub proof fn lemma_leaf_block_unkeyed(tables: &Tables, blocks: &BlockTable, holders: IMap<BlockRef, Set<usize>>, l: usize)
+    requires
+        objects_wf(tables, blocks, holders),
+        tables.owner@.contains_key(l),
+    ensures
+        l / 4096 < NUM_PAGES,
+        block_typed(blocks, BlockRef::Small(l / 4096)),
+        !holders.contains_key(BlockRef::Small(l / 4096)),
+{
+    if holders.contains_key(BlockRef::Small(l / 4096)) {
+        assert(blocks.pages@[(l / 4096) as int].object is Frame);
+    }
+}
+
+/// A step that changes one holder-keyed block's count leaves every leaf's block as it was.
+pub proof fn lemma_leaf_blocks_refs_changed(
+    list_a: &Tree,
+    list_b: &Tree,
+    tables: &Tables,
+    a: &BlockTable,
+    b: &BlockTable,
+    holders: IMap<BlockRef, Set<usize>>,
+    br: BlockRef,
+    refs: usize,
+    dead: bool,
+)
+    requires
+        leaf_blocks_wf(list_a, tables, a),
+        objects_wf(tables, a, holders),
+        holders.contains_key(br),
+        blocks_refs_changed(a, b, br, refs, dead),
+        same_leaf_nodes(list_a, list_b, tables),
+    ensures
+        leaf_blocks_wf(list_b, tables, b),
+{
+    assert forall|l: usize| #[trigger] tables.owner@.contains_key(l) implies {
+        &&& b.pages@[(l / 4096) as int].refs == a.pages@[(l / 4096) as int].refs
+        &&& b.pages@[(l / 4096) as int].dead == a.pages@[(l / 4096) as int].dead
+    } by {
+        let x = BlockRef::Small(l / 4096);
+        lemma_leaf_block_unkeyed(tables, a, holders, l);
+        assert(x != br);
+        assert(block_refs(b, x) == block_refs(a, x));
+        assert(block_dead(b, x) == block_dead(a, x));
+    }
+}
+
+/// The holders after a block with no key changes its count: no holder's block did.
+pub proof fn lemma_holders_unkeyed_small_changed(
+    list: &Tree,
+    tables: &Tables,
+    a: &BlockTable,
+    b: &BlockTable,
+    zeroing: &Zeroing,
+    holders: IMap<BlockRef, Set<usize>>,
+    base: usize,
+    refs: usize,
+    dead: bool,
+)
+    requires
+        holders_wf(list, tables, a, zeroing, holders),
+        !holders.contains_key(BlockRef::Small(base)),
+        blocks_refs_changed(a, b, BlockRef::Small(base), refs, dead),
+    ensures
+        holders_wf(list, tables, b, zeroing, holders),
+{
+    let br = BlockRef::Small(base);
+    assert forall|x: usize| #[trigger] tables.is_cap(list, x) && tables.payload_of(x).kind is Frame implies {
+        let i = tables.payload_of(x).base / 4096;
+        &&& i < NUM_PAGES
+        &&& frame_in_block(block_ref(b, i), tables.payload_of(x))
+        &&& holders.contains_key(block_ref(b, i))
+        &&& holders[block_ref(b, i)].contains(x)
+    } by {
+        let i = tables.payload_of(x).base / 4096;
+        assert(block_ref(b, i) == block_ref(a, i));
+    }
+    assert forall|k: BlockRef| #[trigger] holders.contains_key(k) implies {
+        &&& holders[k].len() == block_refs(b, k)
+        &&& block_typed(b, k)
+        &&& block_refs(b, k) == 0 ==> block_dead(b, k)
+    } by {
+        assert(k != br);
+        assert(block_typed(a, k));
+        assert(block_refs(b, k) == block_refs(a, k));
+        assert(block_dead(b, k) == block_dead(a, k));
+    }
+    assert forall|k: BlockRef, x: usize| holders.contains_key(k) && #[trigger] holders[k].contains(x) implies
+        block_ref(b, tables.payload_of(x).base / 4096) == k by {
+        assert(tables.payload_of(x).base / 4096 < NUM_PAGES);
+        assert(block_ref(b, tables.payload_of(x).base / 4096) == block_ref(a, tables.payload_of(x).base / 4096));
+    }
+    assert forall|r: int| 0 <= r < NUM_2M && #[trigger] zeroing.active_2m@[r] implies {
+        &&& b.regions_2m@[r].typed
+        &&& b.regions_2m@[r].refs == 1
+    } by {
+        assert(block_typed(a, BlockRef::Two(r as usize)));
+        assert(block_refs(b, BlockRef::Two(r as usize)) == block_refs(a, BlockRef::Two(r as usize)));
+    }
+    assert forall|r: int| 0 <= r < NUM_1G && #[trigger] zeroing.active_1g@[r] implies {
+        &&& b.regions_1g@[r].typed
+        &&& b.regions_1g@[r].refs == 1
+    } by {
+        assert(block_typed(a, BlockRef::One(r as usize)));
+        assert(block_refs(b, BlockRef::One(r as usize)) == block_refs(a, BlockRef::One(r as usize)));
+    }
+}
+
+/// A small block's count changing leaves every block being zeroed, which is large, as it was.
+pub proof fn lemma_zeroing_typed_small_changed(
+    zeroing: &Zeroing,
+    a: &BlockTable,
+    b: &BlockTable,
+    base: usize,
+    refs: usize,
+    dead: bool,
+)
+    requires
+        zeroing.wf(),
+        zeroing_typed(zeroing, a),
+        blocks_refs_changed(a, b, BlockRef::Small(base), refs, dead),
+    ensures
+        zeroing_typed(zeroing, b),
+{
+    let br = BlockRef::Small(base);
+    assert forall|k: usize| #[trigger] zeroing.blocks@.contains_key(k) implies {
+        &&& zeroing.blocks@[k] == PAGES_PER_2M ==> {
+            &&& b.regions_2m@[(k / PAGES_PER_2M) as int].typed
+            &&& !b.regions_2m@[(k / PAGES_PER_2M) as int].dead
+        }
+        &&& zeroing.blocks@[k] == PAGES_PER_1G ==> {
+            &&& b.regions_1g@[(k / PAGES_PER_1G) as int].typed
+            &&& !b.regions_1g@[(k / PAGES_PER_1G) as int].dead
+        }
+    } by {
+        assert(zeroing.block_level(k));
+        if zeroing.blocks@[k] == PAGES_PER_2M {
+            let x = BlockRef::Two(k / PAGES_PER_2M);
+            assert(block_typed(a, x));
+            assert(block_dead(b, x) == block_dead(a, x));
+        } else {
+            let x = BlockRef::One(k / PAGES_PER_1G);
+            assert(block_typed(a, x));
+            assert(block_dead(b, x) == block_dead(a, x));
+        }
+    }
+}
+
+/// The types after a leaf's block changes its count: it is no frame, so no frame's count did.
+pub proof fn lemma_objects_leaf_block_changed(
+    tables: &Tables,
+    a: &BlockTable,
+    b: &BlockTable,
+    holders: IMap<BlockRef, Set<usize>>,
+    l: usize,
+    refs: usize,
+    dead: bool,
+)
+    requires
+        objects_wf(tables, a, holders),
+        tables.owner@.contains_key(l),
+        blocks_refs_changed(a, b, BlockRef::Small(l / 4096), refs, dead),
+        forall|x: BlockRef| #[trigger] holders.contains_key(x) ==> block_typed(a, x),
+    ensures
+        objects_wf(tables, b, holders),
+{
+    let br = BlockRef::Small(l / 4096);
+    assert forall|x: usize| #[trigger] holders.contains_key(BlockRef::Small(x)) implies b.pages@[x as int].object is Frame by {
+        assert(block_typed(a, BlockRef::Small(x)));
+        assert(b.pages@[x as int].object == a.pages@[x as int].object);
+    }
+    assert forall|x: usize| x < NUM_PAGES && (#[trigger] b.pages@[x as int]).kind is Base
+        && b.pages@[x as int].object is Frame implies {
+        &&& b.pages@[x as int].order == 0
+        &&& b.pages@[x as int].refs == 0 ==> holders.contains_key(BlockRef::Small(x))
+    } by {
+        assert(a.pages@[x as int].kind is Base);
+        assert(a.pages@[x as int].object is Frame);
+        assert(block_typed(a, BlockRef::Small(x)));
+        assert(BlockRef::Small(x) != br);
+        assert(block_refs(b, BlockRef::Small(x)) == block_refs(a, BlockRef::Small(x)));
+    }
+    assert forall|m: usize| #[trigger] tables.owner@.contains_key(m) implies {
+        &&& m / 4096 < NUM_PAGES
+        &&& b.pages@[(m / 4096) as int].kind is Base
+        &&& b.pages@[(m / 4096) as int].object is TableLeaf
+    } by {
+        assert(b.pages@[(m / 4096) as int].kind == a.pages@[(m / 4096) as int].kind);
+        assert(b.pages@[(m / 4096) as int].object == a.pages@[(m / 4096) as int].object);
+    }
+    assert forall|r: usize| r < NUM_2M && (#[trigger] b.regions_2m@[r as int]).typed
+        && b.regions_2m@[r as int].refs == 0 implies holders.contains_key(BlockRef::Two(r)) by {
+        assert(block_typed(a, BlockRef::Two(r)));
+        assert(block_refs(b, BlockRef::Two(r)) == block_refs(a, BlockRef::Two(r)));
+    }
+    assert forall|r: usize| r < NUM_1G && (#[trigger] b.regions_1g@[r as int]).typed
+        && b.regions_1g@[r as int].refs == 0 implies holders.contains_key(BlockRef::One(r)) by {
+        assert(block_typed(a, BlockRef::One(r)));
+        assert(block_refs(b, BlockRef::One(r)) == block_refs(a, BlockRef::One(r)));
+    }
+}
+
+/// The leaves' blocks after hidden node n goes and its block's one reference with it: that block is
+/// dead at zero, and every other leaf's block is as it was, since no two leaves share a page.
+pub proof fn lemma_leaf_blocks_leaf_dropped(
+    list_a: &Tree,
+    list_b: &Tree,
+    tables: &Tables,
+    a: &BlockTable,
+    b: &BlockTable,
+    holders: IMap<BlockRef, Set<usize>>,
+    n: usize,
+)
+    requires
+        tables.leaves_wf(list_a),
+        leaf_blocks_wf(list_a, tables, a),
+        objects_wf(tables, a, holders),
+        tables.owner@.contains_key(n),
+        blocks_refs_changed(a, b, BlockRef::Small(n / 4096), 0, true),
+        !list_b.nodes@[n as int].live,
+        forall|l: usize| #[trigger] tables.owner@.contains_key(l) && l != n ==> {
+            &&& list_b.nodes@[l as int].live == list_a.nodes@[l as int].live
+            &&& list_b.nodes@[l as int].kind == list_a.nodes@[l as int].kind
+        },
+    ensures
+        leaf_blocks_wf(list_b, tables, b),
+{
+    let br = BlockRef::Small(n / 4096);
+    tables.lemma_leaf(list_a, n);
+    assert forall|l: usize| #[trigger] tables.owner@.contains_key(l) && l != n implies {
+        &&& b.pages@[(l / 4096) as int].refs == a.pages@[(l / 4096) as int].refs
+        &&& b.pages@[(l / 4096) as int].dead == a.pages@[(l / 4096) as int].dead
+    } by {
+        let x = BlockRef::Small(l / 4096);
+        tables.lemma_leaf(list_a, l);
+        lemma_leaf_pages_distinct(l, n);
+        lemma_leaf_block_unkeyed(tables, a, holders, l);
+        assert(x != br);
+        assert(block_refs(b, x) == block_refs(a, x));
+        assert(block_dead(b, x) == block_dead(a, x));
+    }
+}
+
+/// The leaves' blocks after a free small block is typed: no leaf lay in it.
+pub proof fn lemma_leaf_blocks_small_typed(
+    list: &Tree,
+    tables: &Tables,
+    a: &BlockTable,
+    b: &BlockTable,
+    holders: IMap<BlockRef, Set<usize>>,
+    base: usize,
+    size: int,
+)
+    requires
+        leaf_blocks_wf(list, tables, a),
+        objects_wf(tables, a, holders),
+        forall|k: int| 0 <= k < size ==> #[trigger] a.pages@[base + k].kind is Free,
+        forall|i: int| 0 <= i < NUM_PAGES && !(base <= i < base + size) ==> #[trigger] b.pages@[i] == a.pages@[i],
+    ensures
+        leaf_blocks_wf(list, tables, b),
+{
+    assert forall|l: usize| #[trigger] tables.owner@.contains_key(l) implies
+        b.pages@[(l / 4096) as int] == a.pages@[(l / 4096) as int] by {
+        let x = (l / 4096) as int;
+        if base <= x < base + size {
+            assert(a.pages@[base + (x - base)].kind is Free);
+        }
+    }
+}
+
+/// The leaves' blocks after a small block frees: a leaf's page is the list's, so it was not in it.
+pub proof fn lemma_leaf_blocks_small_freed(
+    list: &Tree,
+    tables: &Tables,
+    a: &BlockTable,
+    b: &BlockTable,
+    holders: IMap<BlockRef, Set<usize>>,
+    base: usize,
+)
+    requires
+        tables.leaves_wf(list),
+        leaf_blocks_wf(list, tables, a),
+        objects_wf(tables, a, holders),
+        forall|p: usize| #[trigger] list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
+            ==> !a.in_block(base as int, (p / 4096) as int),
+        forall|i: int| 0 <= i < NUM_PAGES ==> #[trigger] b.pages@[i] == (
+            if a.in_block(base as int, i) { free_entry() } else { a.pages@[i] }),
+    ensures
+        leaf_blocks_wf(list, tables, b),
+{
+    assert forall|l: usize| #[trigger] tables.owner@.contains_key(l) implies
+        b.pages@[(l / 4096) as int] == a.pages@[(l / 4096) as int] by {
+        tables.lemma_leaf(list, l);
+        assert(list.pages@.dom().contains(l));
+        assert(!a.in_block(base as int, (l / 4096) as int));
+    }
+}
+
 /// Page i is a page of this block. A small block with a holder is a one-page frame.
 pub open spec fn block_has_page(br: BlockRef, i: usize) -> bool {
     match br {

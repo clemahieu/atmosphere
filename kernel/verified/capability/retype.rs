@@ -328,6 +328,7 @@ impl CapKernel {
             post.holders@ == pre.holders@.insert(block_ref(&pre.blocks, base / 4096), set![child]),
         ensures
             holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
+            leaf_blocks_wf(&post.list, &post.tables, &post.blocks),
     {
         assert forall|x: usize| x != child implies {
             &&& #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x)
@@ -335,6 +336,10 @@ impl CapKernel {
         } by {
             Self::lemma_caps_frame(pre, post, child, child, x);
         }
+        pre.lemma_slot_not_owned(child);
+        Self::lemma_same_leaf_nodes(pre, post, child, child);
+        assert(leaf_blocks_wf(&pre.list, &post.tables, &pre.blocks));
+        lemma_leaf_blocks_same_nodes(&pre.list, &post.list, &post.tables, &post.blocks);
         lemma_holders_frame_new(
             &pre.list,
             &pre.tables,
@@ -474,6 +479,7 @@ impl CapKernel {
             }
             lemma_objects_small_typed(&self.tables, &pre.blocks, &self.blocks, pre.holders@, page, 1);
             lemma_holders_small_typed(&pre.list, &pre.tables, &pre.blocks, &self.blocks, &pre.zeroing, pre.holders@, page, 0);
+            lemma_leaf_blocks_small_typed(&self.list, &self.tables, &pre.blocks, &self.blocks, pre.holders@, page, 1);
             assert(self.wf());
             assert(self.view() == pre.view());
             assert(self.frame_block_ready(base, 0)) by {
@@ -576,6 +582,7 @@ impl CapKernel {
         }
         if !done {
             proof {
+                lemma_leaf_blocks_same_pages(&pre.list, &pre.tables, &pre.blocks, &self.blocks);
                 Self::lemma_zeroing_changed(pre, *self);
             }
             return RetypeStep::Again;
@@ -605,6 +612,7 @@ impl CapKernel {
                 assert(holds_zero(me.frames@, (base + (i - base) as usize) as usize));
             }
             lemma_holders_region_done(&mid.list, &mid.tables, &mid.blocks, &mid.zeroing, &me.zeroing, mid.holders@, level, r);
+            lemma_leaf_blocks_same_pages(&pre.list, &pre.tables, &pre.blocks, &me.blocks);
             Self::lemma_zeroing_changed(pre, me);
         }
         RetypeStep::Done
@@ -832,6 +840,7 @@ impl CapKernel {
                     assert(pre.list.valid(l));
                 }
             }
+            Self::lemma_leaf_blocks_leaf_added(pre, post, base, page);
             assert(post.wf());
             assert forall|i: usize| index_ok(i) && index_entry(i) == r as int implies {
                 &&& #[trigger] post.tables.has_slot(root, i)
@@ -887,6 +896,50 @@ impl CapKernel {
         }
         lemma_holders_small_typed(&pre.list, &pre.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, page, 1);
         lemma_holders_same_frames(&pre.list, &pre.tables, &post.list, &post.tables, &post.blocks, &pre.zeroing, pre.holders@);
+    }
+
+    /// The leaves' blocks after a leaf's retype: the new leaf's node is live and hidden, and its block
+    /// holds the one reference its typing took. Every other leaf's block and node are as they were.
+    proof fn lemma_leaf_blocks_leaf_added(pre: Self, post: Self, base: usize, page: usize)
+        requires
+            Self::leaf_step(pre, post, base),
+            post.list.nodes@[base as int].live,
+            post.list.nodes@[base as int].kind is Hidden,
+            base / 4096 == page,
+            page + 1 < NUM_PAGES,
+            pre.blocks.pages@[page + 0int].kind is Free,
+            pre.blocks.pages@[page + 1int].kind is Free,
+            post.blocks.pages@[page as int].refs == 1,
+            !post.blocks.pages@[page as int].dead,
+            forall|i: int| 0 <= i < NUM_PAGES && !(page <= i < page + 2) ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
+        ensures
+            leaf_blocks_wf(&post.list, &post.tables, &post.blocks),
+    {
+        assert forall|k: int| 0 <= k < 2 implies #[trigger] pre.blocks.pages@[page + k].kind is Free by {
+            if k == 0 { assert(pre.blocks.pages@[page + 0int].kind is Free); }
+        }
+        lemma_leaf_blocks_small_typed(&pre.list, &pre.tables, &pre.blocks, &post.blocks, pre.holders@, page, 2);
+        let e = choose|e: (usize, int)| post.tables.owner@ == pre.tables.owner@.insert(base, e);
+        assert forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) implies {
+            &&& post.list.nodes@[l as int].live ==> {
+                &&& post.list.nodes@[l as int].kind is Hidden
+                &&& post.blocks.pages@[(l / 4096) as int].refs == 1
+                &&& !post.blocks.pages@[(l / 4096) as int].dead
+            }
+            &&& !post.list.nodes@[l as int].live ==> {
+                &&& post.blocks.pages@[(l / 4096) as int].refs == 0
+                &&& post.blocks.pages@[(l / 4096) as int].dead
+            }
+        } by {
+            if l != base {
+                assert(pre.tables.owner@.contains_key(l));
+                pre.tables.lemma_leaf(&pre.list, l);
+                assert(page_of(l) == l);
+                assert(pre.list.valid(l));
+                assert(post.list.nodes@[l as int].live == pre.list.nodes@[l as int].live);
+                assert(post.list.nodes@[l as int].kind == pre.list.nodes@[l as int].kind);
+            }
+        }
     }
 
     /// The types after a leaf's retype: its block is new, and only its own owner entry is.

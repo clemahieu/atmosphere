@@ -106,11 +106,17 @@ impl CapKernel {
             post.holders@ == Self::moved_holders(pre.holders@, i, n),
         ensures
             holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
+            leaf_blocks_wf(&post.list, &post.tables, &post.blocks),
     {
         let ha = pre.holders@;
         let hb = post.holders@;
         let blocks = &pre.blocks;
         assert(pre.tables.is_cap(&pre.list, i));
+        pre.lemma_slot_not_owned(i);
+        pre.lemma_slot_not_owned(n);
+        Self::lemma_same_leaf_nodes(pre, post, i, n);
+        assert(leaf_blocks_wf(&pre.list, &post.tables, &pre.blocks));
+        lemma_leaf_blocks_same_nodes(&pre.list, &post.list, &post.tables, &post.blocks);
         assert(!pre.tables.is_cap(&pre.list, n));
         assert(!post.tables.is_cap(&post.list, i));
         assert forall|x: usize| x != i && x != n implies {
