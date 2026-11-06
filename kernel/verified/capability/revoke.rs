@@ -91,6 +91,7 @@ impl CapKernel {
             final(self).spaces.roots == old(self).spaces.roots,
             final(self).spaces.records == old(self).spaces.records,
             final(self).spaces.spare == old(self).spaces.spare,
+            final(self).spaces.kernel_entries == old(self).spaces.kernel_entries,
             old(self).list.nodes@[n as int].kind is Hidden ==> {
                 &&& blocks_refs_changed(&old(self).blocks, &final(self).blocks, BlockRef::Small(n / 4096), 0, true)
                 &&& final(self).holders == old(self).holders

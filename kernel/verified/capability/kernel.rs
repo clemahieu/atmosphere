@@ -453,7 +453,7 @@ impl CapKernel {
 
     /// Makes this a kernel with one root capability, no mappings, no core running anything and every
     /// page Reserved. In place, since the block table is too large to move by value.
-    pub fn init(&mut self, root: usize, Tracked(perm): Tracked<PointsTo<NodePage>>)
+    pub fn init(&mut self, root: usize, Tracked(perm): Tracked<PointsTo<NodePage>>, kernel_entries: Array<usize, KERNEL_MEM_END_L4INDEX>)
         requires
             old(self).cores.wf(),
             old(self).stale_epoch.wf(),
@@ -471,8 +471,10 @@ impl CapKernel {
             perm.is_init(),
             perm.value().nodes.wf(),
             forall|k: int| 0 <= k < NODES_PER_PAGE ==> !(#[trigger] perm.value().nodes@[k]).live,
+            kernel_entries.wf(),
         ensures
             final(self).wf(),
+            final(self).spaces.kernel_entries == kernel_entries,
             final(self).flush_epoch == 0,
             final(self).mapped@ == Set::<usize>::empty(),
             forall|c: int| 0 <= c < NUM_CPUS ==> (#[trigger] final(self).cores@[c]).current_thread.is_None(),
@@ -480,7 +482,7 @@ impl CapKernel {
         self.list = Tree::new(root, Tracked(perm));
         self.tables = Tables::new();
         self.table_pages = TablePages::new();
-        self.spaces = Spaces::new();
+        self.spaces = Spaces::new(kernel_entries);
         self.frames = Tracked(Map::tracked_empty());
         self.zeroing.init();
         self.holders = Ghost(IMap::empty());

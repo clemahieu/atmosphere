@@ -272,6 +272,7 @@ impl CapKernel {
                 &&& post.spaces.roots == pre.spaces.roots
                 &&& post.spaces.records == pre.spaces.records
                 &&& post.spaces.spare == pre.spaces.spare
+                &&& post.spaces.kernel_entries == pre.spaces.kernel_entries
                 &&& post.spaces.holders@ == pre.spaces.holders@.insert(s, pre.spaces.holders@[s].insert(child))
             },
             block is None ==> post.blocks == pre.blocks && post.holders == pre.holders && post.spaces == pre.spaces,
