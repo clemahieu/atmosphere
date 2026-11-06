@@ -1234,6 +1234,7 @@ impl CapKernel {
             final(self).list == old(self).list,
             final(self).cores == old(self).cores,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).iommus == old(self).iommus,
             final(self).tlb == old(self).tlb,
             final(self).mapped == old(self).mapped,
             final(self).blocks == old(self).blocks,
@@ -1939,6 +1940,7 @@ impl CapKernel {
             post.cores == pre.cores,
             post.flush_epoch == pre.flush_epoch,
             post.tlb == pre.tlb,
+            post.iommus == pre.iommus,
             post.mapped@ == pre.mapped@.union(map_pages(frame, large)),
             post.stale_epoch == pre.stale_epoch,
         ensures

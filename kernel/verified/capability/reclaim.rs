@@ -991,6 +991,7 @@ impl CapKernel {
             post.cores == pre.cores,
             post.flush_epoch == pre.flush_epoch,
             post.tlb == pre.tlb,
+            post.iommus == pre.iommus,
             post.mapped == pre.mapped,
             post.stale_epoch == pre.stale_epoch,
             post.zeroing == pre.zeroing,

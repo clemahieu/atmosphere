@@ -67,6 +67,7 @@ impl CapKernel {
             !(old(self).list.nodes@[n as int].kind is Mapping) ==> {
                 &&& final(self).flush_epoch == old(self).flush_epoch
                 &&& final(self).tlb == old(self).tlb
+                &&& final(self).iommus == old(self).iommus
                 &&& final(self).mapped == old(self).mapped
                 &&& final(self).stale_epoch == old(self).stale_epoch
             },
@@ -380,6 +381,7 @@ impl CapKernel {
             post.cores == mid.cores,
             post.flush_epoch == mid.flush_epoch,
             post.tlb == mid.tlb,
+            post.iommus == mid.iommus,
             post.mapped == mid.mapped,
             post.blocks == mid.blocks,
             post.tables == mid.tables,
