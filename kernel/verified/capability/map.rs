@@ -55,30 +55,6 @@ pub open spec fn walk_large_table(tree: TableTree, s: usize, p: SpacePath) -> Op
     }
 }
 
-/// The level of table a map writes: 2 for a large frame, 1 otherwise.
-pub open spec fn map_level(large: bool) -> usize {
-    if large {
-        2
-    } else {
-        1
-    }
-}
-
-/// The pages a map of this first page maps.
-pub open spec fn map_pages(frame: usize, large: bool) -> Set<usize> {
-    Set::<usize>::range(frame, (frame + entry_pages(map_level(large))) as usize)
-}
-
-/// What map_pages holds, when its range fits.
-pub proof fn lemma_map_pages(frame: usize, large: bool)
-    requires
-        frame + entry_pages(map_level(large)) <= usize::MAX,
-    ensures
-        forall|g: usize| #[trigger] map_pages(frame, large).contains(g) <==> frame <= g < frame + entry_pages(map_level(large)),
-{
-    vstd::set_lib::range_set_properties::<usize>(frame, (frame + entry_pages(map_level(large))) as usize);
-}
-
 /// The entry a map writes for a page of a capability with these rights: writable with Write, not
 /// executable without Execute, and ps for a large frame.
 pub open spec fn frame_map_entry(frame: usize, rights: u32, large: bool) -> PageEntry {
@@ -791,7 +767,7 @@ impl CapKernel {
         &&& block_ref(&pre.blocks, frame) == block_ref(&pre.blocks, cap.base / 4096)
     }
 
-    /// What the writes of a map leave, before the frame is noted mapped: the node derived under f, the
+    /// What the writes of a map leave, apart from the mapped set: the node derived under f, the
     /// entry and t's written flag set, the block's count and holders up by the node, and its record.
     pub open spec fn map_written(pre: Self, post: Self, t: usize, e: usize, f: usize, frame: usize, large: bool) -> bool {
         let node = mapping_node(t, e);
@@ -815,7 +791,7 @@ impl CapKernel {
         &&& Self::entry_set(pre.table_pages, post.table_pages, t, e, frame_map_entry(frame, rights, large))
         &&& post.spaces == pre.spaces
         &&& post.holders@ == pre.holders@.insert(br, pre.holders@[br].insert(node))
-        &&& post.mappings@ == pre.mappings@.insert(node, MappingRecord { table: t, entry: e, frame })
+        &&& post.mappings@ == pre.mappings@.insert(node, MappingRecord { table: t, entry: e, frame, large })
         &&& post.zeroing == pre.zeroing
         &&& post.frames == pre.frames
     }
@@ -849,13 +825,11 @@ impl CapKernel {
 
     /// Maps the page at offset `page` of the frame capability at index `from` into entry `l1` of the
     /// level 1 table the path reaches in the space named at index `slot`. All of the indices and the
-    /// offset come from user space, so any of them can be refused, and a refusal changes nothing. Core
-    /// `c` makes the step.
-    pub fn map(&mut self, c: usize, root: usize, slot: usize, l4: usize, l3: usize, l2: usize, l1: usize, from: usize, page: usize) -> (ret: bool)
+    /// offset come from user space, so any of them can be refused, and a refusal changes nothing.
+    pub fn map(&mut self, root: usize, slot: usize, l4: usize, l3: usize, l2: usize, l1: usize, from: usize, page: usize) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
-            c < NUM_CPUS,
         ensures
             final(self).wf(),
             ret == old(self).can_map(root, slot, SpacePath { l4, l3, l2, l1 }, from, page),
@@ -967,7 +941,7 @@ impl CapKernel {
             assert(frame == frame_of(cap, page));
             assert(Self::map_from(pre, t, l1, f, frame, false));
         }
-        let ret = self.map_frame(c, Ghost(root), t, l1, f, cap.rights, frame, false);
+        let ret = self.map_frame(Ghost(root), t, l1, f, cap.rights, frame, false);
         proof {
             if ret {
                 Self::lemma_map_done(pre, *self, root, slot, p, from, page, t, f, frame);
@@ -978,13 +952,11 @@ impl CapKernel {
 
     /// Maps the 2M page at offset `page` of the frame capability at index `from` into entry `l2` of the
     /// level 2 table the path reaches in the space named at index `slot`. All of the indices and the
-    /// offset come from user space, so any of them can be refused, and a refusal changes nothing. Core
-    /// `c` makes the step.
-    pub fn map_large(&mut self, c: usize, root: usize, slot: usize, l4: usize, l3: usize, l2: usize, from: usize, page: usize) -> (ret: bool)
+    /// offset come from user space, so any of them can be refused, and a refusal changes nothing.
+    pub fn map_large(&mut self, root: usize, slot: usize, l4: usize, l3: usize, l2: usize, from: usize, page: usize) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
-            c < NUM_CPUS,
         ensures
             final(self).wf(),
             ret == old(self).can_map_large(root, slot, SpacePath { l4, l3, l2, l1: 0 }, from, page),
@@ -1095,7 +1067,7 @@ impl CapKernel {
             assert(frame == frame_of(cap, page));
             assert(Self::map_from(pre, t, l2, f, frame, true));
         }
-        let ret = self.map_frame(c, Ghost(root), t, l2, f, cap.rights, frame, true);
+        let ret = self.map_frame(Ghost(root), t, l2, f, cap.rights, frame, true);
         proof {
             if ret {
                 Self::lemma_map_large_done(pre, *self, root, slot, p, from, page, t, f, frame);
@@ -1105,12 +1077,11 @@ impl CapKernel {
     }
 
     /// Writes the map the caller has checked: one more reference on the frame's block, the node derived
-    /// under f, the entry and t's written flag, and the pages noted mapped. Refused only when the block
+    /// under f, the entry and t's written flag, and the pages mapped. Refused only when the block
     /// is at the reference limit.
-    fn map_frame(&mut self, c: usize, Ghost(root): Ghost<usize>, t: usize, e: usize, f: usize, rights: u32, frame: usize, large: bool) -> (ret: bool)
+    fn map_frame(&mut self, Ghost(root): Ghost<usize>, t: usize, e: usize, f: usize, rights: u32, frame: usize, large: bool) -> (ret: bool)
         requires
             old(self).wf(),
-            c < NUM_CPUS,
             Self::map_from(*old(self), t, e, f, frame, large),
             rights == old(self).payload_of(f).rights,
         ensures
@@ -1142,13 +1113,11 @@ impl CapKernel {
         self.list.derive(f, node, NodeKind::Mapping);
         self.write_frame_entry(t, e, frame, rights, large);
         self.holders = Ghost(pre.holders@.insert(br, pre.holders@[br].insert(node)));
-        self.mappings = Ghost(pre.mappings@.insert(node, MappingRecord { table: t, entry: e, frame }));
+        self.mappings = Ghost(pre.mappings@.insert(node, MappingRecord { table: t, entry: e, frame, large }));
+        self.mapped = Ghost(pre.mapped@.union(map_pages(frame, large)));
         proof {
             assert(Self::map_written(pre, *self, t, e, f, frame, large));
             Self::lemma_map_wf(pre, *self, t, e, f, frame, large);
-        }
-        self.note_mapped(c, Ghost(map_pages(frame, large)));
-        proof {
             Self::lemma_map_discharges(pre, *self, root, f, node);
         }
         true
@@ -1277,7 +1246,7 @@ impl CapKernel {
         &&& forall|r: usize| r != s ==> #[trigger] space_mapping(b, r) == space_mapping(a, r)
         &&& post.list.is_child(f, node)
         &&& post.list.nodes@[node as int].kind is Mapping
-        &&& post.mappings@[node] == (MappingRecord { table: t, entry: p.l1, frame })
+        &&& post.mappings@[node] == (MappingRecord { table: t, entry: p.l1, frame, large: false })
         &&& block_refs(&post.blocks, br) == block_refs(&pre.blocks, br) + 1
         &&& post.holders@[br] == pre.holders@[br].insert(node)
         &&& post.mapped@.contains(frame)
@@ -1304,13 +1273,13 @@ impl CapKernel {
         &&& post.list.is_child(f, node)
         &&& post.list.nodes@[node as int].kind is Mapping
         &&& post.mappings@.contains_key(node)
-        &&& post.mappings@[node] == (MappingRecord { table: t, entry: p.l2, frame })
+        &&& post.mappings@[node] == (MappingRecord { table: t, entry: p.l2, frame, large: true })
         &&& block_refs(&post.blocks, br) == block_refs(&pre.blocks, br) + 1
         &&& post.holders@[br] == pre.holders@[br].insert(node)
         &&& forall|g: usize| frame <= g < frame + 512 ==> #[trigger] post.mapped@.contains(g)
     }
 
-    /// The writes of a map, with the frame noted, are what map_done says.
+    /// The writes of a map, with the frame mapped, are what map_done says.
     proof fn lemma_map_done(pre: Self, post: Self, root: usize, slot: usize, p: SpacePath, from: usize, page: usize, t: usize, f: usize, frame: usize)
         requires
             pre.wf(),
@@ -1335,7 +1304,7 @@ impl CapKernel {
         assert(map_pages(frame, false).contains(frame));
     }
 
-    /// The writes of a large map, with its pages noted, are what map_large_done says.
+    /// The writes of a large map, with its pages mapped, are what map_large_done says.
     proof fn lemma_map_large_done(pre: Self, post: Self, root: usize, slot: usize, p: SpacePath, from: usize, page: usize, t: usize, f: usize, frame: usize)
         requires
             pre.wf(),
@@ -1919,7 +1888,7 @@ impl CapKernel {
             post.cores == pre.cores,
             post.flush_epoch == pre.flush_epoch,
             post.tlb == pre.tlb,
-            post.mapped == pre.mapped,
+            post.mapped@ == pre.mapped@.union(map_pages(frame, large)),
             post.stale_epoch == pre.stale_epoch,
         ensures
             post.wf(),
@@ -1930,7 +1899,9 @@ impl CapKernel {
         Self::lemma_map_objects(pre, post, t, e, f, frame, large);
         Self::lemma_map_tables(pre, post, t, e, f, frame, large);
         Self::lemma_map_mappings(pre, post, t, e, f, frame, large);
-        Self::lemma_tlb_same(pre, post);
+        Self::lemma_tlb_more_mapped(pre, post);
+        assert(!pre.mappings@.contains_key(mapping_node(t, e)));
+        lemma_mapped_inserted(pre.mapped@, pre.mappings@, mapping_node(t, e), MappingRecord { table: t, entry: e, frame, large });
         assert(post.frames_wf());
     }
 

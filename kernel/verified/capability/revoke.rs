@@ -63,6 +63,7 @@ impl CapKernel {
             final(self).cores == old(self).cores,
             final(self).stale_epoch.wf(),
             final(self).tlb_wf(),
+            mapped_wf(final(self).mapped@, final(self).mappings@),
             !(old(self).list.nodes@[n as int].kind is Mapping) ==> {
                 &&& final(self).flush_epoch == old(self).flush_epoch
                 &&& final(self).tlb == old(self).tlb
@@ -324,6 +325,7 @@ impl CapKernel {
             mid.cores == pre.cores,
             mid.stale_epoch.wf(),
             mid.tlb_wf(),
+            mapped_wf(mid.mapped@, mid.mappings@),
             pre.list.nodes@[r as int].kind is Mapping ==> Self::mapping_stale_noted(pre, mid, r),
             mid.tables.owner == pre.tables.owner,
             forall|x: usize| x != r ==> #[trigger] mid.tables.payload_of(x) == pre.tables.payload_of(x),
