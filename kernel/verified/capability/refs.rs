@@ -128,11 +128,17 @@ pub open spec fn holders_wf(
     }
 }
 
-/// A block a capability's block is a small one of type frame, and a leaf's block is one of type table
-/// leaf, so a retype naming a block can dispatch on what it reads there.
+/// A block with a holder entry is of type frame, and a leaf's block is of type table leaf, so a retype
+/// naming a block can dispatch on what it reads there. A frame's small block is one page, and at zero
+/// references it has a holder entry, since only its last holder's going takes it there.
 pub open spec fn objects_wf(tables: &Tables, blocks: &BlockTable, holders: IMap<BlockRef, Set<usize>>) -> bool {
     &&& forall|b: usize| #[trigger] holders.contains_key(BlockRef::Small(b))
         ==> blocks.pages@[b as int].object is Frame
+    &&& forall|b: usize| b < NUM_PAGES && (#[trigger] blocks.pages@[b as int]).kind is Base
+        && blocks.pages@[b as int].object is Frame ==> {
+        &&& blocks.pages@[b as int].order == 0
+        &&& blocks.pages@[b as int].refs == 0 ==> holders.contains_key(BlockRef::Small(b))
+    }
     &&& forall|l: usize| #[trigger] tables.owner@.contains_key(l) ==> {
         &&& l / 4096 < NUM_PAGES
         &&& blocks.pages@[(l / 4096) as int].kind is Base
@@ -156,16 +162,24 @@ pub open spec fn frames_held(frames: Map<usize, PagePerm4k>, holders: IMap<Block
         ==> frames.contains_key(i)
 }
 
-/// Changing no page's kind or type, and adding no holder entry, keeps that.
-pub proof fn lemma_objects_same(tables: &Tables, a: &BlockTable, b: &BlockTable, ha: IMap<BlockRef, Set<usize>>, hb: IMap<BlockRef, Set<usize>>)
+/// A step that changes one block's count keeps the types: the count's own block keeps its entry, and any
+/// other's count is as it was.
+pub proof fn lemma_objects_refs_changed(
+    tables: &Tables,
+    a: &BlockTable,
+    b: &BlockTable,
+    ha: IMap<BlockRef, Set<usize>>,
+    hb: IMap<BlockRef, Set<usize>>,
+    br: BlockRef,
+    refs: usize,
+    dead: bool,
+)
     requires
         objects_wf(tables, a, ha),
-        forall|i: int| 0 <= i < NUM_PAGES ==> {
-            &&& (#[trigger] b.pages@[i]).kind == a.pages@[i].kind
-            &&& b.pages@[i].object == a.pages@[i].object
-        },
-        forall|br: BlockRef| #[trigger] hb.contains_key(br) ==> ha.contains_key(br),
-        forall|br: BlockRef| #[trigger] ha.contains_key(br) ==> block_typed(a, br),
+        blocks_refs_changed(a, b, br, refs, dead),
+        forall|x: BlockRef| #[trigger] hb.contains_key(x) == ha.contains_key(x),
+        hb.contains_key(br),
+        forall|x: BlockRef| #[trigger] ha.contains_key(x) ==> block_typed(a, x),
     ensures
         objects_wf(tables, b, hb),
 {
@@ -174,13 +188,75 @@ pub proof fn lemma_objects_same(tables: &Tables, a: &BlockTable, b: &BlockTable,
         assert(block_typed(a, BlockRef::Small(x)));
         assert(b.pages@[x as int].object == a.pages@[x as int].object);
     }
+    assert forall|x: usize| x < NUM_PAGES && (#[trigger] b.pages@[x as int]).kind is Base
+        && b.pages@[x as int].object is Frame implies {
+        &&& b.pages@[x as int].order == 0
+        &&& b.pages@[x as int].refs == 0 ==> hb.contains_key(BlockRef::Small(x))
+    } by {
+        assert(a.pages@[x as int].kind is Base);
+        assert(a.pages@[x as int].object is Frame);
+        assert(a.pages@[x as int].order == 0);
+        assert(block_typed(a, BlockRef::Small(x)));
+        if BlockRef::Small(x) != br {
+            assert(block_refs(b, BlockRef::Small(x)) == block_refs(a, BlockRef::Small(x)));
+        }
+    }
     assert forall|l: usize| #[trigger] tables.owner@.contains_key(l) implies {
         &&& l / 4096 < NUM_PAGES
         &&& b.pages@[(l / 4096) as int].kind is Base
         &&& b.pages@[(l / 4096) as int].object is TableLeaf
     } by {
-        assert(a.pages@[(l / 4096) as int].kind is Base);
         assert(b.pages@[(l / 4096) as int].kind == a.pages@[(l / 4096) as int].kind);
+        assert(b.pages@[(l / 4096) as int].object == a.pages@[(l / 4096) as int].object);
+    }
+}
+
+/// Typing a free small block keeps the types: nothing with a holder entry or an owner was free.
+pub proof fn lemma_objects_small_typed(
+    tables: &Tables,
+    a: &BlockTable,
+    b: &BlockTable,
+    holders: IMap<BlockRef, Set<usize>>,
+    base: usize,
+    size: int,
+)
+    requires
+        objects_wf(tables, a, holders),
+        forall|br: BlockRef| #[trigger] holders.contains_key(br) ==> block_typed(a, br),
+        forall|k: int| 0 <= k < size ==> #[trigger] a.pages@[base + k].kind is Free,
+        forall|i: int| 0 <= i < NUM_PAGES && !(base <= i < base + size) ==> #[trigger] b.pages@[i] == a.pages@[i],
+        forall|k: int| 0 < k < size ==> (#[trigger] b.pages@[base + k]).kind is Member,
+        b.pages@[base as int].object is Frame ==> b.pages@[base as int].order == 0,
+        b.pages@[base as int].refs == 1,
+    ensures
+        objects_wf(tables, b, holders),
+{
+    assert forall|x: usize| #[trigger] holders.contains_key(BlockRef::Small(x)) implies b.pages@[x as int].object is Frame by {
+        assert(block_typed(a, BlockRef::Small(x)));
+        if base <= x < base + size {
+            assert(a.pages@[base + (x - base)].kind is Free);
+        }
+    }
+    assert forall|x: usize| x < NUM_PAGES && (#[trigger] b.pages@[x as int]).kind is Base
+        && b.pages@[x as int].object is Frame implies {
+        &&& b.pages@[x as int].order == 0
+        &&& b.pages@[x as int].refs == 0 ==> holders.contains_key(BlockRef::Small(x))
+    } by {
+        if base < x < base + size {
+            assert(b.pages@[base + (x - base)].kind is Member);
+        } else if x != base {
+            assert(a.pages@[x as int] == b.pages@[x as int]);
+        }
+    }
+    assert forall|l: usize| #[trigger] tables.owner@.contains_key(l) implies {
+        &&& l / 4096 < NUM_PAGES
+        &&& b.pages@[(l / 4096) as int].kind is Base
+        &&& b.pages@[(l / 4096) as int].object is TableLeaf
+    } by {
+        let x = (l / 4096) as int;
+        if base <= x < base + size {
+            assert(a.pages@[base + (x - base)].kind is Free);
+        }
     }
 }
 
@@ -283,6 +359,7 @@ pub open spec fn blocks_refs_changed(a: &BlockTable, b: &BlockTable, br: BlockRe
     &&& forall|i: int| 0 <= i < NUM_PAGES ==> {
         &&& (#[trigger] b.pages@[i]).kind == a.pages@[i].kind
         &&& b.pages@[i].object == a.pages@[i].object
+        &&& b.pages@[i].order == a.pages@[i].order
     }
     &&& forall|x: int| 0 <= x < NUM_2M ==> (#[trigger] b.regions_2m@[x]).typed == a.regions_2m@[x].typed
     &&& forall|x: int| 0 <= x < NUM_1G ==> (#[trigger] b.regions_1g@[x]).typed == a.regions_1g@[x].typed

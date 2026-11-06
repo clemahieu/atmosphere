@@ -100,17 +100,26 @@ pub open spec fn capability_nodes_are_slots(list: &Tree, tables: &Tables) -> boo
 /// A page the list holds nodes in is not free, so a newly typed block's first page is not already one.
 pub open spec fn list_pages_used(list: &Tree, blocks: &BlockTable) -> bool {
     forall|p: usize| #[trigger] list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
-        ==> !(blocks.pages@[(p / 4096) as int].kind is Free)
+        ==> !(blocks.pages@[(p / 4096) as int].kind is Free) && !(blocks.pages@[(p / 4096) as int].object is Frame)
 }
 
 /// The list's pages stay used while no page changes kind.
 pub proof fn lemma_list_pages_used_same_kinds(list: &Tree, a: &BlockTable, b: &BlockTable)
     requires
         list_pages_used(list, a),
-        forall|i: int| 0 <= i < NUM_PAGES ==> (#[trigger] b.pages@[i]).kind == a.pages@[i].kind,
+        forall|i: int| 0 <= i < NUM_PAGES ==> {
+            &&& (#[trigger] b.pages@[i]).kind == a.pages@[i].kind
+            &&& b.pages@[i].object == a.pages@[i].object
+        },
     ensures
         list_pages_used(list, b),
 {
+    assert forall|p: usize| #[trigger] list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES implies {
+        &&& !(b.pages@[(p / 4096) as int].kind is Free)
+        &&& !(b.pages@[(p / 4096) as int].object is Frame)
+    } by {
+        assert(b.pages@[(p / 4096) as int].kind == a.pages@[(p / 4096) as int].kind);
+    }
 }
 
 /// Each block being zeroed is a live typed region of the block table. It is what keeps a newly typed
@@ -497,7 +506,7 @@ impl CapKernel {
             post.tlb == pre.tlb,
             post.mapped == pre.mapped,
             post.stale_epoch == pre.stale_epoch,
-            post.frames == pre.frames,
+            post.frames_wf(),
             post.zeroing == pre.zeroing,
             zeroing_typed(&pre.zeroing, &post.blocks),
             list_pages_used(&post.list, &post.blocks),
@@ -548,39 +557,75 @@ impl CapKernel {
         self.blocks.free_block(base, Tracked(perms));
         self.holders = Ghost(pre.holders@.remove(BlockRef::Small(base)));
         proof {
-            lemma_holders_small_freed(&pre.list, &pre.tables, &pre.blocks, &self.blocks, &pre.zeroing, pre.holders@, base);
-            assert forall|p: usize| #[trigger] self.list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
-                implies !(self.blocks.pages@[(p / 4096) as int].kind is Free) by {
-                assert(!pre.blocks.in_block(base as int, (p / 4096) as int));
-                assert(!(pre.blocks.pages@[(p / 4096) as int].kind is Free));
-                assert(self.blocks.pages@[(p / 4096) as int] == pre.blocks.pages@[(p / 4096) as int]);
+            assert forall|br: BlockRef, i: usize| #[trigger] self.holders@.contains_key(br) && #[trigger] block_has_page(br, i)
+                implies self.frames@.contains_key(i) by {
+                assert(pre.holders@.contains_key(br));
             }
-            assert forall|x: usize| #[trigger] self.holders@.contains_key(BlockRef::Small(x))
-                implies self.blocks.pages@[x as int].object is Frame by {
-                assert(x != base);
-                assert(pre.holders@.contains_key(BlockRef::Small(x)));
-                assert(block_typed(&pre.blocks, BlockRef::Small(x)));
-                if pre.blocks.in_block(base as int, x as int) {
-                    pre.blocks.lemma_base(base as int);
-                    pre.blocks.lemma_base(x as int);
-                    if x != base {
-                        pre.blocks.lemma_member_of(base as int, x as int);
-                    }
-                }
-                assert(self.blocks.pages@[x as int] == pre.blocks.pages@[x as int]);
-            }
-            assert forall|l: usize| #[trigger] self.tables.owner@.contains_key(l) implies {
-                &&& l / 4096 < NUM_PAGES
-                &&& self.blocks.pages@[(l / 4096) as int].kind is Base
-                &&& self.blocks.pages@[(l / 4096) as int].object is TableLeaf
-            } by {
-                pre.tables.lemma_leaf(&pre.list, l);
-                assert(pre.list.pages@.dom().contains(l));
-                assert(!pre.blocks.in_block(base as int, (l / 4096) as int));
-                assert(self.blocks.pages@[(l / 4096) as int] == pre.blocks.pages@[(l / 4096) as int]);
-            }
-Self::lemma_blocks_changed(pre, *self);
+            Self::lemma_small_freed(pre, *self, base);
         }
+    }
+
+    /// The kernel after a small block frees, its holder entry going with it. What it still holds of the
+    /// frames is the caller's to say, since a frame hands its pages back from there.
+    pub proof fn lemma_small_freed(pre: Self, post: Self, base: usize)
+        requires
+            pre.wf(),
+            base < NUM_PAGES,
+            pre.blocks.pages@[base as int].kind is Base,
+            pre.blocks.pages@[base as int].refs == 0,
+            post.blocks.wf(),
+            forall|i: int| 0 <= i < NUM_PAGES ==> #[trigger] post.blocks.pages@[i] == (
+                if pre.blocks.in_block(base as int, i) { free_entry() } else { pre.blocks.pages@[i] }),
+            post.blocks.regions_2m@ == pre.blocks.regions_2m@,
+            post.blocks.regions_1g@ == pre.blocks.regions_1g@,
+            forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
+                ==> !pre.blocks.in_block(base as int, (p / 4096) as int),
+            post.holders@ == pre.holders@.remove(BlockRef::Small(base)),
+            post.list == pre.list,
+            post.tables == pre.tables,
+            post.cores == pre.cores,
+            post.flush_epoch == pre.flush_epoch,
+            post.tlb == pre.tlb,
+            post.mapped == pre.mapped,
+            post.stale_epoch == pre.stale_epoch,
+            post.zeroing == pre.zeroing,
+            post.frames_wf(),
+            frames_held(post.frames@, post.holders@),
+        ensures
+            post.wf(),
+    {
+        lemma_holders_small_freed(&pre.list, &pre.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, base);
+        assert forall|p: usize| #[trigger] post.list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
+            implies !(post.blocks.pages@[(p / 4096) as int].kind is Free) by {
+            assert(!pre.blocks.in_block(base as int, (p / 4096) as int));
+            assert(!(pre.blocks.pages@[(p / 4096) as int].kind is Free));
+            assert(post.blocks.pages@[(p / 4096) as int] == pre.blocks.pages@[(p / 4096) as int]);
+        }
+        assert forall|x: usize| #[trigger] post.holders@.contains_key(BlockRef::Small(x))
+            implies post.blocks.pages@[x as int].object is Frame by {
+            assert(x != base);
+            assert(pre.holders@.contains_key(BlockRef::Small(x)));
+            assert(block_typed(&pre.blocks, BlockRef::Small(x)));
+            if pre.blocks.in_block(base as int, x as int) {
+                pre.blocks.lemma_base(base as int);
+                pre.blocks.lemma_base(x as int);
+                if x != base {
+                    pre.blocks.lemma_member_of(base as int, x as int);
+                }
+            }
+            assert(post.blocks.pages@[x as int] == pre.blocks.pages@[x as int]);
+        }
+        assert forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) implies {
+            &&& l / 4096 < NUM_PAGES
+            &&& post.blocks.pages@[(l / 4096) as int].kind is Base
+            &&& post.blocks.pages@[(l / 4096) as int].object is TableLeaf
+        } by {
+            pre.tables.lemma_leaf(&pre.list, l);
+            assert(pre.list.pages@.dom().contains(l));
+            assert(!pre.blocks.in_block(base as int, (l / 4096) as int));
+            assert(post.blocks.pages@[(l / 4096) as int] == pre.blocks.pages@[(l / 4096) as int]);
+        }
+Self::lemma_blocks_changed(pre, post);
     }
 
     /// As free_block, for a 2M block.
