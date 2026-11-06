@@ -823,6 +823,7 @@ impl CapKernel {
             post.spaces.loaded == pre.spaces.loaded,
             post.spaces.holders == pre.spaces.holders,
             post.spaces.kernel_entries == pre.spaces.kernel_entries,
+            post.spaces.bound == pre.spaces.bound,
             pre.spaces.roots@.contains_key(parent),
             !holds_kernel(pre.spaces.records@[parent].value().kind, entry),
             post.spaces.roots@[parent].value()[entry].is_empty()
@@ -1451,6 +1452,7 @@ impl CapKernel {
         &&& post.spaces.loaded == pre.spaces.loaded
         &&& post.spaces.holders == pre.spaces.holders
         &&& post.spaces.kernel_entries == pre.spaces.kernel_entries
+        &&& post.spaces.bound == pre.spaces.bound
     }
 
     /// A detach alone: only the tables changed.

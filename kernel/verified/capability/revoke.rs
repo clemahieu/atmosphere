@@ -109,6 +109,7 @@ impl CapKernel {
             final(self).spaces.records == old(self).spaces.records,
             final(self).spaces.loaded == old(self).spaces.loaded,
             final(self).spaces.kernel_entries == old(self).spaces.kernel_entries,
+            final(self).spaces.bound == old(self).spaces.bound,
             old(self).list.nodes@[n as int].kind is Mapping ==> Self::mapping_unlinked(*old(self), *final(self), n),
             !(old(self).list.nodes@[n as int].kind is Mapping) ==> {
                 &&& Self::same_tree(*old(self), *final(self))
@@ -376,6 +377,7 @@ impl CapKernel {
             mid.spaces.records == pre.spaces.records,
             mid.spaces.loaded == pre.spaces.loaded,
             mid.spaces.kernel_entries == pre.spaces.kernel_entries,
+            mid.spaces.bound == pre.spaces.bound,
             pre.list.nodes@[r as int].kind is Mapping ==> Self::mapping_unlinked(pre, mid, r),
             !(pre.list.nodes@[r as int].kind is Mapping) ==> {
                 &&& Self::same_tree(pre, mid)
