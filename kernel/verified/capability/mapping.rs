@@ -360,7 +360,7 @@ impl CapKernel {
         }
         assert forall|d: int, e: TlbEntry|
             0 <= d < NUM_CPUS && #[trigger] post.tlb@[d].contains(e) && !post.mapped@.contains(e.page)
-            implies e.page < NUM_PAGES && post.acked(d) < post.stale_epoch@[e.page as int] by {
+            implies e.page < NUM_PAGES && post.stale_epoch.above(post.acked(d), e.page) by {
             assert(pre.tlb@[d].contains(e));
         }
     }
@@ -446,7 +446,7 @@ impl CapKernel {
         }
         assert forall|d: int, e: TlbEntry|
             0 <= d < NUM_CPUS && #[trigger] post.tlb@[d].contains(e) && !post.mapped@.contains(e.page)
-            implies e.page < NUM_PAGES && post.acked(d) < post.stale_epoch@[e.page as int] by {
+            implies e.page < NUM_PAGES && post.stale_epoch.above(post.acked(d), e.page) by {
             assert(pre.tlb@[d].contains(e));
             assert(pre.acked(d) == post.acked(d));
         }
