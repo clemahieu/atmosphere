@@ -36,6 +36,9 @@ pub enum RevokeStep {
     Done,
     /// Its budget ran out with some of the run left. Revoke again to go on.
     Again,
+    /// The flush epoch is at its limit with some of the run left, after 2^64 unmaps. A further step could
+    /// not record its staleness, so none was taken.
+    Exhausted,
 }
 
 impl CapKernel {
@@ -50,6 +53,7 @@ impl CapKernel {
             n < NODE_SPACE,
             old(self).list.nodes@[n as int].live,
             n != old(self).list.seq@[0],
+            old(self).list.nodes@[n as int].kind is Mapping ==> old(self).flush_epoch < usize::MAX,
         ensures
             final(self).tables.wf(&old(self).list),
             final(self).blocks.wf(),
@@ -172,6 +176,8 @@ impl CapKernel {
             Self::mappings_shrunk(*old(self), *final(self)),
             ret is Refused == !(old(self).tables.has_slot(root, i) && old(self).is_cap(old(self).tables.node_of(root, i))),
             ret is Refused ==> *final(self) == *old(self),
+            old(self).flush_epoch == usize::MAX ==> *final(self) == *old(self),
+            ret is Exhausted ==> final(self).flush_epoch == usize::MAX,
             !(ret is Refused) ==> {
                 let c = old(self).tables.node_of(root, i);
                 &&& ret is Done == final(self).list.childless(c)
@@ -201,11 +207,12 @@ impl CapKernel {
             pre.lemma_no_change_discharges_revoke(root, c);
         }
         let mut steps = 0;
-        while steps != REVOKE_BUDGET
+        while steps != REVOKE_BUDGET && self.flush_epoch != usize::MAX
             invariant
                 steps <= REVOKE_BUDGET,
                 self.wf(),
                 pre == *old(self),
+                pre.flush_epoch == usize::MAX ==> *self == pre,
                 Self::mappings_shrunk(pre, *self),
                 pre.tables.has_slot(root, i),
                 c == pre.tables.node_of(root, i),
@@ -233,6 +240,8 @@ impl CapKernel {
         }
         if self.list.is_childless(c) {
             RevokeStep::Done
+        } else if self.flush_epoch == usize::MAX {
+            RevokeStep::Exhausted
         } else {
             RevokeStep::Again
         }
@@ -245,6 +254,7 @@ impl CapKernel {
             c < NODE_SPACE,
             old(self).is_cap(c),
             old(self).tables.owner@[page_of(c)].0 == root,
+            old(self).flush_epoch < usize::MAX,
         ensures
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),

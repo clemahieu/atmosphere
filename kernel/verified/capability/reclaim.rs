@@ -207,12 +207,13 @@ impl CapKernel {
     }
 
     /// A retype may take a slice of the leaf at `base`: an untyped covers its block, its hidden node has
-    /// gone, and a slot is still live.
+    /// gone, a slot is still live, and the flush epoch has room to record what the slice unmaps.
     pub open spec fn can_slice_leaf(&self, root: usize, from: usize, base: usize) -> bool {
         &&& self.can_retype_under(root, from, base, 1)
         &&& self.tables.owner@.contains_key(base)
         &&& !self.list.nodes@[base as int].live
         &&& !self.leaf_is_empty(base)
+        &&& self.flush_epoch < usize::MAX
     }
 
     /// What a slice of the leaf at `base` did to self: the list is shorter by a bounded number of nodes,
@@ -275,7 +276,7 @@ impl CapKernel {
         }
         let mut steps = 0;
         let mut k = 1;
-        while steps != LEAF_SLICE_BUDGET && k != NODES_PER_PAGE
+        while steps != LEAF_SLICE_BUDGET && k != NODES_PER_PAGE && self.flush_epoch != usize::MAX
             invariant
                 Self::mappings_shrunk(*old(self), *self),
                 self.wf(),
@@ -291,7 +292,7 @@ impl CapKernel {
                 pre.list.seq@.len() == self.list.seq@.len() + steps,
                 !self.list.nodes@[base as int].live,
                 steps == 0 ==> *self == pre,
-                steps > 0 ==> !pre.leaf_is_empty(base),
+                steps > 0 ==> !pre.leaf_is_empty(base) && pre.flush_epoch < usize::MAX,
                 forall|j: int| 0 <= j < k ==> !(#[trigger] self.list.nodes@[base + j]).live,
                 discharges(pre.view(), self.view(), root, Effect::Teardown { untyped, object }),
                 forall|h: (ObjectId, NodeId)| #[trigger] self.view().held.contains(h) ==> pre.view().held.contains(h),
