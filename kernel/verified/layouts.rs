@@ -74,6 +74,17 @@ pub proof fn page_into_payload_page(tracked page: PagePerm4k) -> (tracked ret: P
     crate::pptr::page_into_typed::<PayloadPage>(page)
 }
 
+/// A node page with no live node becomes a free page.
+pub proof fn node_page_into_page(tracked nodes: PointsTo<NodePage>) -> (tracked ret: PagePerm4k)
+    requires
+        nodes.is_uninit(),
+    ensures
+        ret.addr() == nodes.addr(),
+        ret.is_uninit(),
+{
+    crate::pptr::typed_into_page(nodes)
+}
+
 /// A dead leaf's payload page becomes a free page.
 pub proof fn payload_page_into_page(tracked payloads: PointsTo<PayloadPage>) -> (tracked ret: PagePerm4k)
     requires

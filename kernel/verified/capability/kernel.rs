@@ -291,10 +291,14 @@ pub open spec fn capability_nodes_are_slots(list: &Tree, tables: &Tables) -> boo
         && n != list.seq@[0] ==> tables.is_cap(list, n)
 }
 
-/// A page the list holds nodes in is not free, so a newly typed block's first page is not already one.
+/// A page the list holds nodes in is not free, so a newly typed block's first page is not already one,
+/// and is no block's member, so a leaf's second page is not one and its block can free whole.
 pub open spec fn list_pages_used(list: &Tree, blocks: &BlockTable) -> bool {
-    forall|p: usize| #[trigger] list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
-        ==> !(blocks.pages@[(p / 4096) as int].kind is Free) && !(blocks.pages@[(p / 4096) as int].object is Frame)
+    forall|p: usize| #[trigger] list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES ==> {
+        &&& !(blocks.pages@[(p / 4096) as int].kind is Free)
+        &&& !(blocks.pages@[(p / 4096) as int].kind is Member)
+        &&& !(blocks.pages@[(p / 4096) as int].object is Frame)
+    }
 }
 
 /// The list's pages stay used while no page changes kind.
@@ -310,6 +314,7 @@ pub proof fn lemma_list_pages_used_same_kinds(list: &Tree, a: &BlockTable, b: &B
 {
     assert forall|p: usize| #[trigger] list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES implies {
         &&& !(b.pages@[(p / 4096) as int].kind is Free)
+        &&& !(b.pages@[(p / 4096) as int].kind is Member)
         &&& !(b.pages@[(p / 4096) as int].object is Frame)
     } by {
         assert(b.pages@[(p / 4096) as int].kind == a.pages@[(p / 4096) as int].kind);
@@ -892,7 +897,8 @@ impl CapKernel {
     {
         lemma_holders_small_freed(&pre.list, &pre.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, base);
         assert forall|p: usize| #[trigger] post.list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
-            implies !(post.blocks.pages@[(p / 4096) as int].kind is Free) by {
+            implies !(post.blocks.pages@[(p / 4096) as int].kind is Free)
+                && !(post.blocks.pages@[(p / 4096) as int].kind is Member) by {
             assert(!pre.blocks.in_block(base as int, (p / 4096) as int));
             assert(!(pre.blocks.pages@[(p / 4096) as int].kind is Free));
             assert(post.blocks.pages@[(p / 4096) as int] == pre.blocks.pages@[(p / 4096) as int]);
@@ -915,6 +921,7 @@ impl CapKernel {
             &&& l / 4096 < NUM_PAGES
             &&& post.blocks.pages@[(l / 4096) as int].kind is Base
             &&& post.blocks.pages@[(l / 4096) as int].object is TableLeaf
+            &&& post.blocks.pages@[(l / 4096) as int].order == 1
         } by {
             pre.tables.lemma_leaf(&pre.list, l);
             assert(pre.list.pages@.dom().contains(l));

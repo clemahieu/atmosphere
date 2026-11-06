@@ -472,6 +472,7 @@ impl CapKernel {
             Self::lemma_tlb_same(pre, *self);
             assert forall|p: usize| #[trigger] self.list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
                 implies !(self.blocks.pages@[(p / 4096) as int].kind is Free)
+                    && !(self.blocks.pages@[(p / 4096) as int].kind is Member)
                     && !(self.blocks.pages@[(p / 4096) as int].object is Frame) by {
                 assert(!(pre.blocks.pages@[(p / 4096) as int].kind is Free));
                 assert((p / 4096) as int != page as int) by {
@@ -807,6 +808,7 @@ impl CapKernel {
             Self::lemma_tlb_same(pre, post);
             assert forall|p: usize| #[trigger] post.list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
                 implies !(post.blocks.pages@[(p / 4096) as int].kind is Free)
+                    && !(post.blocks.pages@[(p / 4096) as int].kind is Member)
                     && !(post.blocks.pages@[(p / 4096) as int].object is Frame) by {
                 if p != base {
                     assert(pre.list.pages@.dom().contains(p));
