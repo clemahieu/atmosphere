@@ -404,6 +404,7 @@ impl CapKernel {
             Self::lemma_derive_caps_wf(pre, post, child);
             Self::lemma_hidden_frame(pre, post, child, child);
             Self::lemma_retype_holders(pre, post, child, base, order);
+            lemma_parents_derived(pre.list, post.list, parent, child);
             Self::lemma_tlb_same(pre, post);
             assert(FRAME_RIGHTS & 128 == 0) by (compute_only);
             assert(right_bit(Right::Control) == 128);
@@ -816,31 +817,9 @@ impl CapKernel {
                 }
             }
             Self::lemma_leaf_objects(pre, post, base, page);
-            assert forall|x: usize| x < NODE_SPACE && (#[trigger] post.list.nodes@[x as int]).live
-                && post.list.nodes@[x as int].kind is Hidden implies post.tables.owner@.contains_key(x) by {
-                if x != base {
-                    assert(pre.list.nodes@[x as int].live == mid.nodes@[x as int].live);
-                    assert(mid.nodes@[x as int].live);
-                    pre.list.lemma_live_valid(x);
-                    assert(pre.list.nodes@[x as int].kind is Hidden);
-                }
-            }
             Self::lemma_leaf_holders(pre, post, mid, base, page);
-            assert forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) && post.tables.attached(l) implies {
-                &&& l < NODE_SPACE
-                &&& post.list.nodes@[l as int].live
-                &&& post.list.nodes@[l as int].kind is Hidden
-            } by {
-                if l != base {
-                    assert(pre.tables.owner@.contains_key(l));
-                    assert(post.tables.payloads@[l] == pre.tables.payloads@[l]);
-                    assert(pre.tables.attached(l));
-                    pre.tables.lemma_leaf(&pre.list, l);
-                    assert(page_of(l) == l);
-                    assert(pre.list.valid(l));
-                }
-            }
             Self::lemma_leaf_blocks_leaf_added(pre, post, base, page);
+            Self::lemma_leaf_nodes(pre, post, mid, parent, base);
             assert(post.wf());
             assert forall|i: usize| index_ok(i) && index_entry(i) == r as int implies {
                 &&& #[trigger] post.tables.has_slot(root, i)
@@ -856,6 +835,62 @@ impl CapKernel {
             Self::lemma_leaf_discharges(pre, post, root, parent, base);
         }
         true
+    }
+
+    /// The hidden nodes and the parents after a leaf's retype: the new node is the leaf's, hidden
+    /// under the untyped's capability, and every other node's kind and parent are as they were.
+    proof fn lemma_leaf_nodes(pre: Self, post: Self, mid: Tree, parent: usize, base: usize)
+        requires
+            Self::leaf_step(pre, post, base),
+            mid.wf(),
+            post.list.wf(),
+            mid.seq == pre.list.seq,
+            mid.parent == pre.list.parent,
+            forall|i: usize| #[trigger] pre.list.valid(i) ==> mid.nodes@[i as int] == pre.list.nodes@[i as int],
+            forall|i: int| 0 <= i < NODE_SPACE ==> #[trigger] mid.nodes@[i].live == pre.list.nodes@[i].live,
+            parent < NODE_SPACE,
+            pre.is_cap(parent),
+            post.list.nodes@[base as int].live,
+            post.list.nodes@[base as int].kind is Hidden,
+            post.list.parent@ == mid.parent@.insert(base, parent),
+            post.list.seq@[0] == mid.seq@[0],
+            forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < NODE_SPACE && i != base ==> {
+                &&& post.list.nodes@[i].live == mid.nodes@[i].live
+                &&& post.list.nodes@[i].kind == mid.nodes@[i].kind
+            },
+            post.tables.attached(base),
+        ensures
+            hidden_nodes_are_leaves(&post.list, &post.tables),
+            parents_are_capabilities(&post.list),
+    {
+        assert forall|x: usize| x < NODE_SPACE && (#[trigger] post.list.nodes@[x as int]).live
+            && post.list.nodes@[x as int].kind is Hidden implies post.tables.owner@.contains_key(x) by {
+            if x != base {
+                assert(mid.nodes@[x as int].live);
+                pre.list.lemma_live_valid(x);
+                assert(pre.list.nodes@[x as int].kind is Hidden);
+            }
+        }
+        assert forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) && post.tables.attached(l) implies {
+            &&& l < NODE_SPACE
+            &&& post.list.nodes@[l as int].live
+            &&& post.list.nodes@[l as int].kind is Hidden
+        } by {
+            if l != base {
+                assert(pre.tables.owner@.contains_key(l));
+                assert(post.tables.payloads@[l] == pre.tables.payloads@[l]);
+                assert(pre.tables.attached(l));
+                pre.tables.lemma_leaf(&pre.list, l);
+                assert(page_of(l) == l);
+                assert(pre.list.valid(l));
+            }
+        }
+        assert(mid.nodes@[parent as int] == pre.list.nodes@[parent as int]) by {
+            pre.list.lemma_live_valid(parent);
+        }
+        assert(!mid.nodes@[base as int].live);
+        lemma_parents_same_live(pre.list, mid);
+        lemma_parents_derived(mid, post.list, parent, base);
     }
 
     /// The slots and the holders after a leaf's retype: no capability changed, and the two pages typed

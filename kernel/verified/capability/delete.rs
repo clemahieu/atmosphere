@@ -88,6 +88,11 @@ impl CapKernel {
             Self::lemma_delete_caps_wf(pre, post, n);
             Self::lemma_hidden_frame(pre, post, n, n);
             Self::lemma_delete_holders(pre, post, n);
+            let p = choose|p: int| 0 <= p < pre.list.seq@.len() && pre.list.seq@[p] == n
+                && post.list.seq@ == pre.list.seq@.remove(p);
+            assert(p != 0);
+            assert(post.list.seq@[0] == pre.list.seq@[0]);
+            lemma_parents_removed(pre.list, post.list, n);
             Self::lemma_delete_discharges(pre, post, root, n);
             Self::lemma_tlb_same(pre, post);
         }

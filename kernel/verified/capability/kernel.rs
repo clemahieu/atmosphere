@@ -90,6 +90,195 @@ pub open spec fn hidden_nodes_are_leaves(list: &Tree, tables: &Tables) -> bool {
     }
 }
 
+/// Only a capability has children, and the list's first node is one, so a hidden node is below
+/// something and has nothing below it, and a retype naming its block can unlink it.
+pub open spec fn parents_are_capabilities(list: &Tree) -> bool {
+    &&& list.nodes@[list.seq@[0] as int].kind is Capability
+    &&& forall|x: usize| #[trigger] list.seq@.contains(x) && x != list.seq@[0]
+        ==> list.nodes@[list.parent@[x] as int].kind is Capability
+}
+
+/// The parents stay capabilities while the list, the parent map and every node in a page the list
+/// held are as they were: a live node is in such a page.
+pub proof fn lemma_parents_same_live(pre: Tree, post: Tree)
+    requires
+        pre.wf(),
+        post.wf(),
+        parents_are_capabilities(&pre),
+        post.seq == pre.seq,
+        post.parent == pre.parent,
+        forall|i: usize| #[trigger] pre.valid(i) ==> post.nodes@[i as int] == pre.nodes@[i as int],
+    ensures
+        parents_are_capabilities(&post),
+{
+    let s = pre.seq@;
+    pre.lemma_link(0);
+    pre.lemma_live_valid(s[0]);
+    assert forall|x: usize| #[trigger] post.seq@.contains(x) && x != post.seq@[0]
+        implies post.nodes@[post.parent@[x] as int].kind is Capability by {
+        let k = choose|k: int| 0 <= k < s.len() && s[k] == x;
+        pre.lemma_link(k);
+        pre.lemma_parent_live(x);
+        pre.lemma_live_valid(pre.parent@[x]);
+    }
+}
+
+/// The parents after a child joins under a capability: the child's parent is one, and no other
+/// node's kind or parent changed.
+pub proof fn lemma_parents_derived(pre: Tree, post: Tree, c: usize, slot: usize)
+    requires
+        pre.wf(),
+        post.wf(),
+        parents_are_capabilities(&pre),
+        c < NODE_SPACE,
+        pre.nodes@[c as int].live,
+        pre.nodes@[c as int].kind is Capability,
+        slot < NODE_SPACE,
+        !pre.nodes@[slot as int].live,
+        post.parent@ == pre.parent@.insert(slot, c),
+        post.seq@[0] == pre.seq@[0],
+        forall|i: int| #![trigger post.nodes@[i]] 0 <= i < NODE_SPACE && i != slot ==> {
+            &&& post.nodes@[i].live == pre.nodes@[i].live
+            &&& post.nodes@[i].kind == pre.nodes@[i].kind
+        },
+    ensures
+        parents_are_capabilities(&post),
+{
+    let s = pre.seq@;
+    pre.lemma_link(0);
+    assert(s[0] != slot);
+    assert forall|x: usize| #[trigger] post.seq@.contains(x) && x != post.seq@[0]
+        implies post.nodes@[post.parent@[x] as int].kind is Capability by {
+        let k = choose|k: int| 0 <= k < post.seq@.len() && post.seq@[k] == x;
+        post.lemma_link(k);
+        if x != slot {
+            assert(pre.nodes@[x as int].live);
+            lemma_has(s, x);
+            let j = choose|j: int| 0 <= j < s.len() && s[j] == x;
+            assert(j != 0);
+            assert(pre.parent@.contains_key(s[j]));
+            pre.lemma_parent_live(x);
+            assert(pre.parent@[x] != slot);
+            assert(post.parent@[x] == pre.parent@[x]);
+        }
+    }
+}
+
+/// The parents after a node goes: no parent changed, and a node still listed has a live parent, so
+/// not the one that went.
+pub proof fn lemma_parents_removed(pre: Tree, post: Tree, i: usize)
+    requires
+        pre.wf(),
+        post.wf(),
+        parents_are_capabilities(&pre),
+        i < NODE_SPACE,
+        !post.nodes@[i as int].live,
+        post.parent@ == pre.parent@,
+        post.seq@[0] == pre.seq@[0],
+        forall|x: int| 0 <= x < NODE_SPACE && x != i ==> #[trigger] post.nodes@[x].live == pre.nodes@[x].live,
+        forall|x: int| 0 <= x < NODE_SPACE && x != i ==> #[trigger] post.nodes@[x].kind == pre.nodes@[x].kind,
+    ensures
+        parents_are_capabilities(&post),
+{
+    let s = pre.seq@;
+    pre.lemma_link(0);
+    post.lemma_link(0);
+    assert(post.seq@[0] != i);
+    assert forall|x: usize| #[trigger] post.seq@.contains(x) && x != post.seq@[0]
+        implies post.nodes@[post.parent@[x] as int].kind is Capability by {
+        let k = choose|k: int| 0 <= k < post.seq@.len() && post.seq@[k] == x;
+        post.lemma_link(k);
+        assert(x != i);
+        assert(pre.nodes@[x as int].live);
+        lemma_has(s, x);
+        assert(k != 0);
+        assert(post.parent@.contains_key(post.seq@[k]));
+        post.lemma_parent_live(x);
+        assert(post.parent@[x] != i);
+        assert(pre.nodes@[pre.parent@[x] as int].kind is Capability);
+    }
+}
+
+/// The parents after capability i is renamed slot: slot's parent is i's, a child of i has slot, and
+/// every other parent is as it was.
+pub proof fn lemma_parents_moved(pre: Tree, post: Tree, i: usize, slot: usize)
+    requires
+        pre.wf(),
+        post.wf(),
+        parents_are_capabilities(&pre),
+        i < NODE_SPACE,
+        slot < NODE_SPACE,
+        i != slot,
+        pre.nodes@[i as int].live,
+        pre.nodes@[i as int].kind is Capability,
+        !pre.nodes@[slot as int].live,
+        !post.nodes@[i as int].live,
+        post.nodes@[slot as int].kind is Capability,
+        exists|p: int| 0 <= p < pre.seq@.len() && #[trigger] pre.seq@[p] == i
+            && post.seq@ == pre.seq@.update(p, slot),
+        i != pre.seq@[0] ==> post.parent@[slot] == pre.parent@[i],
+        forall|x: usize| x != i && x != slot && #[trigger] pre.parent@.contains_key(x) ==>
+            post.parent@.contains_key(x) && post.parent@[x] == rename(pre.parent@[x], i, slot),
+        forall|x: int| #![trigger post.nodes@[x]] 0 <= x < NODE_SPACE && x != i && x != slot ==> {
+            &&& post.nodes@[x].live == pre.nodes@[x].live
+            &&& post.nodes@[x].kind == pre.nodes@[x].kind
+        },
+    ensures
+        parents_are_capabilities(&post),
+{
+    let s = pre.seq@;
+    let t = post.seq@;
+    let p = choose|p: int| 0 <= p < s.len() && #[trigger] s[p] == i && t == s.update(p, slot);
+    pre.lemma_link(0);
+    if p == 0 {
+        assert(t[0] == slot);
+    } else {
+        lemma_nodup(s, 0, p);
+        assert(t[0] == s[0]);
+        assert(s[0] != i && s[0] != slot);
+    }
+    assert forall|x: usize| #[trigger] t.contains(x) && x != t[0]
+        implies post.nodes@[post.parent@[x] as int].kind is Capability by {
+        let k = choose|k: int| 0 <= k < t.len() && t[k] == x;
+        post.lemma_link(k);
+        assert(x != i);
+        if x == slot {
+            if k != p {
+                pre.lemma_link(k);
+                assert(t[k] == s[k]);
+                assert(false);
+            }
+            assert(p != 0);
+            lemma_nodup(s, 0, p);
+            assert(i != s[0]);
+            assert(pre.parent@.contains_key(s[p]));
+            assert(s.contains(i));
+            pre.lemma_parent_live(i);
+            assert(pre.d(s[p]) == pre.d(pre.parent@[s[p]]) + 1);
+            assert(pre.parent@[i] != i);
+            assert(pre.parent@[i] != slot);
+            assert(post.parent@[slot] == pre.parent@[i]);
+        } else {
+            assert(pre.nodes@[x as int].live);
+            lemma_has(s, x);
+            let j = choose|j: int| 0 <= j < s.len() && s[j] == x;
+            assert(j != p);
+            assert(t[j] == x);
+            if j == 0 {
+                assert(p != 0);
+                assert(t[0] == x);
+                assert(false);
+            }
+            assert(pre.parent@.contains_key(s[j]));
+            assert(post.parent@[x] == rename(pre.parent@[x], i, slot));
+            if pre.parent@[x] != i {
+                pre.lemma_parent_live(x);
+                assert(pre.parent@[x] != slot);
+            }
+        }
+    }
+}
+
 /// Every capability node but the list's first is in a table's slot, so unlinking it can read what it
 /// says.
 pub open spec fn capability_nodes_are_slots(list: &Tree, tables: &Tables) -> bool {
@@ -166,6 +355,7 @@ impl CapKernel {
         &&& list_pages_used(&self.list, &self.blocks)
         &&& hidden_nodes_are_leaves(&self.list, &self.tables)
         &&& capability_nodes_are_slots(&self.list, &self.tables)
+        &&& parents_are_capabilities(&self.list)
         &&& holders_wf(&self.list, &self.tables, &self.blocks, &self.zeroing, self.holders@)
         &&& objects_wf(&self.tables, &self.blocks, self.holders@)
         &&& frames_held(self.frames@, self.holders@)
@@ -524,6 +714,22 @@ impl CapKernel {
             post.wf(),
     {
         Self::lemma_tlb_same(pre, post);
+    }
+
+    /// A live hidden node has a parent and nothing below it.
+    pub proof fn lemma_hidden_is_leaf(&self, n: usize)
+        requires
+            self.wf(),
+            n < NODE_SPACE,
+            self.list.nodes@[n as int].live,
+            self.list.nodes@[n as int].kind is Hidden,
+        ensures
+            n != self.list.seq@[0],
+            self.list.childless(n),
+    {
+        if !self.list.childless(n) {
+            self.list.lemma_next_is_child(n);
+        }
     }
 
     /// A live hidden node is an owned leaf's, whose block holds its one reference and is no holder's key.

@@ -6,7 +6,7 @@ use vstd::prelude::*;
 
 verus! {
 
-use crate::capability::kernel::CapKernel;
+use crate::capability::kernel::*;
 use crate::capability::list::*;
 use crate::capability::reach::*;
 use crate::capability::refs::*;
@@ -91,6 +91,7 @@ impl CapKernel {
             Self::lemma_move_caps_wf(pre, post, i, n);
             Self::lemma_hidden_frame(pre, post, i, n);
             Self::lemma_move_holders(pre, post, i, n);
+            lemma_parents_moved(pre.list, post.list, i, n);
             Self::lemma_move_discharges(pre, post, root, i, n);
             Self::lemma_tlb_same(pre, post);
         }
