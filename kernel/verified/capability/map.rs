@@ -691,12 +691,23 @@ pub proof fn lemma_holders_mapping_added(
     }
 }
 
+/// Whether two kinds of space are the same kind.
+fn same_kind(a: SpaceKind, b: SpaceKind) -> (ret: bool)
+    ensures
+        ret == (a == b),
+{
+    match (a, b) {
+        (SpaceKind::Process, SpaceKind::Process) | (SpaceKind::Io, SpaceKind::Io) => true,
+        _ => false,
+    }
+}
+
 impl CapKernel {
-    /// The refusals: an index that names no capability to a space, or none that may change it; a path
+    /// The refusals: an index that names no capability to a space of this kind, or none that may change it; a path
     /// that reaches no live table, or an entry of it that is taken; an index that names no frame
     /// capability, or none that may be read; an offset beyond its range; a capability at the deepest
     /// depth, or a block at the reference limit.
-    pub open spec fn can_map(&self, root: usize, slot: usize, p: SpacePath, from: usize, page: usize) -> bool {
+    pub open spec fn can_map(&self, root: usize, slot: usize, kind: SpaceKind, p: SpacePath, from: usize, page: usize) -> bool {
         let tree = tree_of(&self.table_pages, &self.spaces);
         let n = self.tables.node_of(root, slot);
         let f = self.tables.node_of(root, from);
@@ -705,6 +716,7 @@ impl CapKernel {
         &&& self.is_cap(n)
         &&& self.payload_of(n).kind is Space
         &&& self.payload_of(n).rights & right_bit(Right::Write) != 0
+        &&& self.spaces.records@[self.payload_of(n).base].value().kind == kind
         &&& walk_table(tree, self.payload_of(n).base, p) is Some
         &&& !self.blocks.pages@[(t / 4096) as int].dead
         &&& p.l1 < 512
@@ -721,7 +733,7 @@ impl CapKernel {
     /// The refusals of a large map: as can_map's, for entry p.l2 of the level 2 table the path reaches,
     /// with a capability of a 2M or 1G frame and a 2M-aligned offset whose 512 pages are in its range.
     /// The entry must be empty, so a child table refuses it.
-    pub open spec fn can_map_large(&self, root: usize, slot: usize, p: SpacePath, from: usize, page: usize) -> bool {
+    pub open spec fn can_map_large(&self, root: usize, slot: usize, kind: SpaceKind, p: SpacePath, from: usize, page: usize) -> bool {
         let tree = tree_of(&self.table_pages, &self.spaces);
         let n = self.tables.node_of(root, slot);
         let f = self.tables.node_of(root, from);
@@ -730,6 +742,7 @@ impl CapKernel {
         &&& self.is_cap(n)
         &&& self.payload_of(n).kind is Space
         &&& self.payload_of(n).rights & right_bit(Right::Write) != 0
+        &&& self.spaces.records@[self.payload_of(n).base].value().kind == kind
         &&& walk_large_table(tree, self.payload_of(n).base, p) is Some
         &&& !self.blocks.pages@[(t / 4096) as int].dead
         &&& p.l2 < 512
@@ -813,7 +826,7 @@ impl CapKernel {
                 &&& tree.record(ret->0).level + 1 == tree.record(t).level
             },
     {
-        if i >= 512 || (is_root && i < KERNEL_MEM_END_L4INDEX) {
+        if i >= 512 || self.is_kernel_slot(t, is_root, i) {
             return None;
         }
         let e = self.table_entry(t, is_root, i);
@@ -832,7 +845,23 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
         ensures
             final(self).wf(),
-            ret == old(self).can_map(root, slot, SpacePath { l4, l3, l2, l1 }, from, page),
+            ret == old(self).can_map(root, slot, SpaceKind::Process, SpacePath { l4, l3, l2, l1 }, from, page),
+            final(self).spaces.loaded == old(self).spaces.loaded,
+            !ret ==> *final(self) == *old(self),
+            ret ==> Self::map_done(*old(self), *final(self), root, slot, SpacePath { l4, l3, l2, l1 }, from, page),
+            discharges(old(self).view(), final(self).view(), root, Effect::Local),
+    {
+        self.map_kind(root, slot, SpaceKind::Process, l4, l3, l2, l1, from, page)
+    }
+
+    /// map, in a space that must be of this kind.
+    pub fn map_kind(&mut self, root: usize, slot: usize, kind: SpaceKind, l4: usize, l3: usize, l2: usize, l1: usize, from: usize, page: usize) -> (ret: bool)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(root),
+        ensures
+            final(self).wf(),
+            ret == old(self).can_map(root, slot, kind, SpacePath { l4, l3, l2, l1 }, from, page),
             final(self).spaces.loaded == old(self).spaces.loaded,
             !ret ==> *final(self) == *old(self),
             ret ==> Self::map_done(*old(self), *final(self), root, slot, SpacePath { l4, l3, l2, l1 }, from, page),
@@ -873,6 +902,9 @@ impl CapKernel {
             pre.lemma_root_table(space.base);
         }
         let s = space.base;
+        if !same_kind(self.space_kind(s), kind) {
+            return false;
+        }
         let t3 = match self.table_step(s, true, l4) {
             Some(t) => t,
             None => { return false; },
@@ -944,7 +976,7 @@ impl CapKernel {
         let ret = self.map_frame(Ghost(root), t, l1, f, cap.rights, frame, false);
         proof {
             if ret {
-                Self::lemma_map_done(pre, *self, root, slot, p, from, page, t, f, frame);
+                Self::lemma_map_done(pre, *self, root, slot, kind, p, from, page, t, f, frame);
             }
         }
         ret
@@ -959,7 +991,23 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
         ensures
             final(self).wf(),
-            ret == old(self).can_map_large(root, slot, SpacePath { l4, l3, l2, l1: 0 }, from, page),
+            ret == old(self).can_map_large(root, slot, SpaceKind::Process, SpacePath { l4, l3, l2, l1: 0 }, from, page),
+            final(self).spaces.loaded == old(self).spaces.loaded,
+            !ret ==> *final(self) == *old(self),
+            ret ==> Self::map_large_done(*old(self), *final(self), root, slot, SpacePath { l4, l3, l2, l1: 0 }, from, page),
+            discharges(old(self).view(), final(self).view(), root, Effect::Local),
+    {
+        self.map_large_kind(root, slot, SpaceKind::Process, l4, l3, l2, from, page)
+    }
+
+    /// map_large, in a space that must be of this kind.
+    pub fn map_large_kind(&mut self, root: usize, slot: usize, kind: SpaceKind, l4: usize, l3: usize, l2: usize, from: usize, page: usize) -> (ret: bool)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(root),
+        ensures
+            final(self).wf(),
+            ret == old(self).can_map_large(root, slot, kind, SpacePath { l4, l3, l2, l1: 0 }, from, page),
             final(self).spaces.loaded == old(self).spaces.loaded,
             !ret ==> *final(self) == *old(self),
             ret ==> Self::map_large_done(*old(self), *final(self), root, slot, SpacePath { l4, l3, l2, l1: 0 }, from, page),
@@ -1000,6 +1048,9 @@ impl CapKernel {
             pre.lemma_root_table(space.base);
         }
         let s = space.base;
+        if !same_kind(self.space_kind(s), kind) {
+            return false;
+        }
         let t3 = match self.table_step(s, true, l4) {
             Some(t) => t,
             None => { return false; },
@@ -1070,7 +1121,7 @@ impl CapKernel {
         let ret = self.map_frame(Ghost(root), t, l2, f, cap.rights, frame, true);
         proof {
             if ret {
-                Self::lemma_map_large_done(pre, *self, root, slot, p, from, page, t, f, frame);
+                Self::lemma_map_large_done(pre, *self, root, slot, kind, p, from, page, t, f, frame);
             }
         }
         ret
@@ -1280,10 +1331,10 @@ impl CapKernel {
     }
 
     /// The writes of a map, with the frame mapped, are what map_done says.
-    proof fn lemma_map_done(pre: Self, post: Self, root: usize, slot: usize, p: SpacePath, from: usize, page: usize, t: usize, f: usize, frame: usize)
+    proof fn lemma_map_done(pre: Self, post: Self, root: usize, slot: usize, kind: SpaceKind, p: SpacePath, from: usize, page: usize, t: usize, f: usize, frame: usize)
         requires
             pre.wf(),
-            pre.can_map(root, slot, p, from, page),
+            pre.can_map(root, slot, kind, p, from, page),
             f == pre.tables.node_of(root, from),
             frame == frame_of(pre.payload_of(f), page),
             walk_table(tree_of(&pre.table_pages, &pre.spaces), pre.payload_of(pre.tables.node_of(root, slot)).base, p) == Some(t),
@@ -1305,10 +1356,10 @@ impl CapKernel {
     }
 
     /// The writes of a large map, with its pages mapped, are what map_large_done says.
-    proof fn lemma_map_large_done(pre: Self, post: Self, root: usize, slot: usize, p: SpacePath, from: usize, page: usize, t: usize, f: usize, frame: usize)
+    proof fn lemma_map_large_done(pre: Self, post: Self, root: usize, slot: usize, kind: SpaceKind, p: SpacePath, from: usize, page: usize, t: usize, f: usize, frame: usize)
         requires
             pre.wf(),
-            pre.can_map_large(root, slot, p, from, page),
+            pre.can_map_large(root, slot, kind, p, from, page),
             f == pre.tables.node_of(root, from),
             frame == frame_of(pre.payload_of(f), page),
             walk_large_table(tree_of(&pre.table_pages, &pre.spaces), pre.payload_of(pre.tables.node_of(root, slot)).base, p) == Some(t),

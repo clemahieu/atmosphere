@@ -1,5 +1,5 @@
 //! What a space maps, read by walking its tables from the root, as pagetable_spec's walk does. A kernel
-//! slot leads nowhere, since child_slot excludes it. Map, unmap and detach state what they do in these
+//! slot, which only a process's root has, leads nowhere, since child_slot excludes it. Map, unmap and detach state what they do in these
 //! terms. See the design on atmo-6x9.6.7, section 8.
 use vstd::arithmetic::div_mod::*;
 use vstd::prelude::*;
@@ -1153,10 +1153,10 @@ pub proof fn lemma_mapping_nodes_grown(a: Tree, mid: Tree, b: Tree, x: usize, y:
     }
 }
 
-/// A root with no entry past the kernel slots maps nothing.
+/// A root with no entry but the kernel slots maps nothing.
 pub proof fn lemma_mapping_fresh(tree: TableTree, s: usize)
     requires
-        forall|i: usize| KERNEL_MEM_END_L4INDEX <= i < 512 ==> #[trigger] tree.entry(s, i).is_empty(),
+        forall|i: usize| i < 512 && !holds_kernel(tree.space_records[s].value().kind, i) ==> #[trigger] tree.entry(s, i).is_empty(),
         tree.is_root(s),
     ensures
         space_mapping(tree, s) =~= IMap::<SpacePath, PageEntry>::empty(),
@@ -1243,6 +1243,7 @@ pub open spec fn tree_extended(a: TableTree, b: TableTree) -> bool {
         &&& b.is_page(t) == a.is_page(t)
         &&& b.is_root(t) == a.is_root(t)
         &&& b.record(t) == a.record(t)
+        &&& a.is_root(t) ==> b.space_records[t].value().kind == a.space_records[t].value().kind
         &&& forall|i: usize| i < 512 ==> #[trigger] b.entry(t, i) == a.entry(t, i)
     }
 }
