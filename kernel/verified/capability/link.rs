@@ -358,7 +358,7 @@ pub proof fn lemma_table_addr_valid(t: usize)
 }
 
 /// An entry is empty, in constant time.
-fn entry_is_empty(e: &PageEntry) -> (ret: bool)
+pub fn entry_is_empty(e: &PageEntry) -> (ret: bool)
     ensures
         ret == e.is_empty(),
 {
@@ -562,7 +562,7 @@ impl CapKernel {
     }
 
     /// Reads the entry of a table, which the caller has found to be a root or a table page.
-    fn table_entry(&self, t: usize, is_root: bool, i: usize) -> (ret: PageEntry)
+    pub fn table_entry(&self, t: usize, is_root: bool, i: usize) -> (ret: PageEntry)
         requires
             self.wf(),
             i < 512,
@@ -583,7 +583,7 @@ impl CapKernel {
     }
 
     /// Reads a table's record.
-    fn table_record(&self, t: usize, is_root: bool) -> (ret: TableRecord)
+    pub fn table_record(&self, t: usize, is_root: bool) -> (ret: TableRecord)
         requires
             self.wf(),
             is_root ==> self.spaces.roots@.contains_key(t),

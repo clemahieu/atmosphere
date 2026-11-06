@@ -791,6 +791,29 @@ pub proof fn lemma_simulated_discharges_revoke(
     }
 }
 
+/// A local step that names no capability and removes none: post's authority is all in pre.
+pub proof fn lemma_simulated_discharges_local(
+    pre: State,
+    post: State,
+    p: ObjectId,
+    live: spec_fn(NodeId) -> bool,
+    f: spec_fn(NodeId) -> NodeId,
+)
+    requires
+        simulates(post, pre, live, f),
+        forall|x: NodeId| #[trigger] pre.names.contains_key(x) ==> post.names.contains_key(x),
+        forall|o: ObjectId| #[trigger] (post.contents)(o) == (pre.contents)(o),
+    ensures
+        discharges(pre, post, p, Effect::Local),
+{
+    assert forall|o: ObjectId| #[trigger] State::changed(pre, post, o) implies may_change(pre, Effect::Local, o) by {
+        assert((post.contents)(o) == (pre.contents)(o));
+    }
+    assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) implies pre.reach(r, o) by {
+        lemma_simulates_reach(post, pre, live, f, r, o);
+    }
+}
+
 /// Two steps of revoking one capability are one: what they remove descends from it in the first state,
 /// since a revoke changes no parent, and reach only shrinks.
 pub proof fn lemma_revoke_steps_compose(a: State, b: State, c: State, p: ObjectId, cap: NodeId)
