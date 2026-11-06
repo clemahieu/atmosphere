@@ -5,6 +5,7 @@ pub mod kernel;
 pub mod list;
 pub mod moving;
 pub mod reach;
+pub mod refs;
 pub mod retype;
 pub mod revoke;
 pub mod table;

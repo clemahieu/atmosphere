@@ -6,9 +6,10 @@ use vstd::prelude::*;
 
 verus! {
 
-use crate::capability::kernel::CapKernel;
+use crate::capability::kernel::*;
 use crate::capability::list::*;
 use crate::capability::reach::*;
+use crate::capability::refs::*;
 use crate::capability::table::*;
 
 impl CapKernel {
@@ -68,16 +69,81 @@ impl CapKernel {
             assert(n != pre.list.seq@[0]);
         }
         self.list.remove_leaf(n);
+        let frame = match payload.kind {
+            CapKind::Frame => true,
+            _ => false,
+        };
+        if frame {
+            proof {
+                lemma_holder_refs(&pre.list, &pre.tables, &pre.blocks, &pre.zeroing, pre.holders@, n);
+            }
+            let br = locate(&self.blocks, payload.base / 4096);
+            drop_block_ref(&mut self.blocks, br);
+            self.holders = Ghost(pre.holders@.insert(br, pre.holders@[br].remove(n)));
+        }
         proof {
             let post = *self;
             pre.tables.lemma_wf_same_pages(&pre.list, &post.list);
             assert(Self::caps_frame(pre, post, n, n));
             Self::lemma_delete_caps_wf(pre, post, n);
             Self::lemma_hidden_frame(pre, post, n, n);
+            Self::lemma_delete_holders(pre, post, n);
             Self::lemma_delete_discharges(pre, post, root, n);
             Self::lemma_tlb_same(pre, post);
         }
         Some(payload)
+    }
+
+    /// The holders after node n goes, the only node that changed: a frame capability leaves its block,
+    /// and any other node held nothing. With them, what the blocks owe the rest of the invariant.
+    pub proof fn lemma_delete_holders(pre: Self, post: Self, n: usize)
+        requires
+            Self::caps_frame(pre, post, n, n),
+            !post.list.nodes@[n as int].live,
+            post.zeroing == pre.zeroing,
+            post.list.pages@.dom() == pre.list.pages@.dom(),
+            pre.is_cap(n) && pre.payload_of(n).kind is Frame ==> {
+                let br = block_ref(&pre.blocks, pre.payload_of(n).base / 4096);
+                &&& blocks_refs_changed(
+                    &pre.blocks,
+                    &post.blocks,
+                    br,
+                    (block_refs(&pre.blocks, br) - 1) as usize,
+                    block_dead(&pre.blocks, br) || block_refs(&pre.blocks, br) == 1,
+                )
+                &&& post.holders@ == pre.holders@.insert(br, pre.holders@[br].remove(n))
+            },
+            !(pre.is_cap(n) && pre.payload_of(n).kind is Frame) ==> post.blocks == pre.blocks && post.holders == pre.holders,
+        ensures
+            holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
+            zeroing_typed(&post.zeroing, &post.blocks),
+            list_pages_used(&post.list, &post.blocks),
+    {
+        assert forall|x: usize| x != n implies {
+            &&& #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x)
+            &&& pre.tables.is_cap(&pre.list, x) ==> post.tables.payload_of(x) == pre.tables.payload_of(x)
+        } by {
+            Self::lemma_caps_frame(pre, post, n, n, x);
+        }
+        if pre.is_cap(n) && pre.payload_of(n).kind is Frame {
+            let br = block_ref(&pre.blocks, pre.payload_of(n).base / 4096);
+            lemma_holder_refs(&pre.list, &pre.tables, &pre.blocks, &pre.zeroing, pre.holders@, n);
+            lemma_holders_frame_dropped(&pre.list, &pre.tables, &post.list, &post.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, n, br);
+            lemma_zeroing_typed_refs_changed(
+                &pre.list,
+                &pre.tables,
+                &pre.blocks,
+                &post.blocks,
+                &pre.zeroing,
+                pre.holders@,
+                br,
+                (block_refs(&pre.blocks, br) - 1) as usize,
+                block_dead(&pre.blocks, br) || block_refs(&pre.blocks, br) == 1,
+            );
+            lemma_list_pages_used_same_kinds(&pre.list, &pre.blocks, &post.blocks);
+        } else {
+            lemma_holders_same_frames(&pre.list, &pre.tables, &post.list, &post.tables, &pre.blocks, &pre.zeroing, pre.holders@);
+        }
     }
 
     /// Every capability left still names a block.

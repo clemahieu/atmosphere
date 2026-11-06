@@ -9,7 +9,9 @@ verus! {
 use crate::capability::kernel::CapKernel;
 use crate::capability::list::*;
 use crate::capability::reach::*;
+use crate::capability::refs::*;
 use crate::capability::table::*;
+use crate::define::*;
 
 impl CapKernel {
     /// The refusals: an index that names no slot, a source with no capability, or a target in use,
@@ -79,6 +81,8 @@ impl CapKernel {
             pre.tables.lemma_wf_same_pages(&pre.list, &self.list);
         }
         self.tables.set_payload(&self.list, root, to, payload);
+        // A frame's holder has a new name; the count does not change.
+        self.holders = Ghost(Self::moved_holders(pre.holders@, i, n));
         proof {
             let post = *self;
             assert(post.list.nodes@[n as int].kind == pre.list.nodes@[i as int].kind);
@@ -86,10 +90,95 @@ impl CapKernel {
             assert(Self::caps_frame(pre, post, i, n));
             Self::lemma_move_caps_wf(pre, post, i, n);
             Self::lemma_hidden_frame(pre, post, i, n);
+            Self::lemma_move_holders(pre, post, i, n);
             Self::lemma_move_discharges(pre, post, root, i, n);
             Self::lemma_tlb_same(pre, post);
         }
         true
+    }
+
+    /// The holders after a move: the node a frame held its block by has a new name, and no count changed.
+    proof fn lemma_move_holders(pre: Self, post: Self, i: usize, n: usize)
+        requires
+            Self::move_step(pre, post, i, n),
+            post.blocks == pre.blocks,
+            post.zeroing == pre.zeroing,
+            post.holders@ == Self::moved_holders(pre.holders@, i, n),
+        ensures
+            holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
+    {
+        let ha = pre.holders@;
+        let hb = post.holders@;
+        let blocks = &pre.blocks;
+        assert(pre.tables.is_cap(&pre.list, i));
+        assert(!pre.tables.is_cap(&pre.list, n));
+        assert(!post.tables.is_cap(&post.list, i));
+        assert forall|x: usize| x != i && x != n implies {
+            &&& #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x)
+            &&& pre.tables.is_cap(&pre.list, x) ==> post.tables.payload_of(x) == pre.tables.payload_of(x)
+        } by {
+            Self::lemma_caps_frame(pre, post, i, n, x);
+        }
+        assert forall|k: BlockRef| #[trigger] hb.contains_key(k) == ha.contains_key(k) by {}
+        assert forall|k: BlockRef| ha.contains_key(k) implies {
+            &&& #[trigger] hb[k] == (if ha[k].contains(i) { ha[k].remove(i).insert(n) } else { ha[k] })
+            &&& !ha[k].contains(n)
+        } by {
+            if ha[k].contains(n) {
+                assert(pre.tables.is_cap(&pre.list, n));
+            }
+        }
+        assert forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) && post.tables.payload_of(x).kind is Frame implies {
+            let p = post.tables.payload_of(x).base / 4096;
+            &&& p < NUM_PAGES
+            &&& frame_in_block(block_ref(blocks, p), post.tables.payload_of(x))
+            &&& hb.contains_key(block_ref(blocks, p))
+            &&& hb[block_ref(blocks, p)].contains(x)
+        } by {
+            let p = post.tables.payload_of(x).base / 4096;
+            if x == n {
+                assert(ha[block_ref(blocks, p)].contains(i));
+            } else {
+                assert(pre.tables.is_cap(&pre.list, x));
+                assert(ha[block_ref(blocks, p)].contains(x));
+            }
+        }
+        assert forall|k: BlockRef| #[trigger] hb.contains_key(k) implies {
+            &&& hb[k].finite()
+            &&& hb[k].len() == block_refs(blocks, k)
+            &&& block_typed(blocks, k)
+            &&& block_refs(blocks, k) == 0 ==> block_dead(blocks, k)
+            &&& !block_active(&post.zeroing, k)
+        } by {
+            assert(ha.contains_key(k));
+            if ha[k].contains(i) {
+                vstd::set::lemma_set_remove_len(ha[k], i);
+                vstd::set::lemma_set_insert_len(ha[k].remove(i), n);
+            }
+        }
+        assert forall|k: BlockRef, x: usize| hb.contains_key(k) && #[trigger] hb[k].contains(x) implies {
+            &&& post.tables.is_cap(&post.list, x)
+            &&& post.tables.payload_of(x).kind is Frame
+            &&& post.tables.payload_of(x).base / 4096 < NUM_PAGES
+            &&& block_ref(blocks, post.tables.payload_of(x).base / 4096) == k
+        } by {
+            assert(ha.contains_key(k));
+            if ha[k].contains(i) && x == n {
+                assert(ha[k].contains(i));
+            } else {
+                assert(ha[k].contains(x));
+                assert(x != i);
+                assert(x != n);
+            }
+        }
+    }
+
+    /// Each block's holders after node i is renamed n.
+    pub open spec fn moved_holders(holders: IMap<BlockRef, Set<usize>>, i: usize, n: usize) -> IMap<BlockRef, Set<usize>> {
+        IMap::new(
+            |br: BlockRef| holders.contains_key(br),
+            |br: BlockRef| if holders[br].contains(i) { holders[br].remove(i).insert(n) } else { holders[br] },
+        )
     }
 
     /// What a move does to the fields the view reads.

@@ -8,9 +8,10 @@ use vstd::prelude::*;
 
 verus! {
 
-use crate::capability::kernel::CapKernel;
+use crate::capability::kernel::*;
 use crate::capability::list::*;
 use crate::capability::reach::*;
+use crate::capability::refs::*;
 use crate::capability::table::*;
 use crate::capability::view::*;
 
@@ -126,6 +127,8 @@ impl CapKernel {
         &&& self.list.nodes@[parent as int].depth < MAX_DEPTH
         &&& !self.list.nodes@[child as int].live
         &&& narrows(child_of(self.payload_of(parent), rights, base, order), self.payload_of(parent))
+        &&& self.payload_of(parent).kind is Frame ==>
+            block_refs(&self.blocks, block_ref(&self.blocks, self.payload_of(parent).base / 4096)) != usize::MAX
     }
 
     /// Derives the capability at index `from` of the table at `root` into the empty index `to`. All of
@@ -181,6 +184,20 @@ impl CapKernel {
         if !may_derive(payload, rights, base, order) {
             return false;
         }
+        let frame = match payload.kind {
+            CapKind::Frame => true,
+            _ => false,
+        };
+        // A derived frame holds a reference on the block its parent lies in.
+        let block = if frame {
+            let br = locate(&self.blocks, payload.base / 4096);
+            if !add_block_ref(&mut self.blocks, br) {
+                return false;
+            }
+            Some(br)
+        } else {
+            None
+        };
         proof {
             self.list.lemma_seq_fits();
             self.list.lemma_valid_bound(parent);
@@ -196,6 +213,10 @@ impl CapKernel {
             to,
             Payload { kind: payload.kind, order, rights, base, badge: payload.badge, reserved: 0 },
         );
+        match block {
+            Some(br) => { self.holders = Ghost(pre.holders@.insert(br, pre.holders@[br].insert(child))); },
+            None => {},
+        }
         proof {
             let post = *self;
             pre.lemma_slot(root, to);
@@ -203,10 +224,59 @@ impl CapKernel {
             Self::lemma_derive_caps_wf(pre, post, child);
             pre.lemma_slot(root, to);
             Self::lemma_hidden_frame(pre, post, child, child);
+            Self::lemma_derive_holders(pre, post, parent, child, block);
             Self::lemma_derive_discharges(pre, post, root, from, to);
             Self::lemma_tlb_same(pre, post);
         }
         true
+    }
+
+    /// The holders after a derive: a frame child joins its parent's block, and any other child holds
+    /// nothing. With them, what the blocks owe the rest of the invariant.
+    proof fn lemma_derive_holders(pre: Self, post: Self, parent: usize, child: usize, block: Option<BlockRef>)
+        requires
+            Self::derive_step(pre, post, child),
+            pre.is_cap(parent),
+            post.is_cap(child),
+            narrows(post.payload_of(child), pre.payload_of(parent)),
+            post.payload_of(child).kind == pre.payload_of(parent).kind,
+            post.zeroing == pre.zeroing,
+            post.list.pages@.dom() == pre.list.pages@.dom(),
+            block is Some == (pre.payload_of(parent).kind is Frame),
+            block is Some ==> {
+                let br = block->0;
+                &&& br == block_ref(&pre.blocks, pre.payload_of(parent).base / 4096)
+                &&& block_refs(&pre.blocks, br) < usize::MAX
+                &&& blocks_refs_changed(&pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br))
+                &&& post.holders@ == pre.holders@.insert(br, pre.holders@[br].insert(child))
+            },
+            block is None ==> post.blocks == pre.blocks && post.holders == pre.holders,
+        ensures
+            holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
+            zeroing_typed(&post.zeroing, &post.blocks),
+            list_pages_used(&post.list, &post.blocks),
+    {
+        assert forall|x: usize| x != child implies {
+            &&& #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x)
+            &&& pre.tables.is_cap(&pre.list, x) ==> post.tables.payload_of(x) == pre.tables.payload_of(x)
+        } by {
+            Self::lemma_caps_frame(pre, post, child, child, x);
+        }
+        match block {
+            Some(br) => {
+                let pp = pre.payload_of(parent);
+                let cp = post.payload_of(child);
+                lemma_holder_refs(&pre.list, &pre.tables, &pre.blocks, &pre.zeroing, pre.holders@, parent);
+                assert(frame_in_block(block_ref(&pre.blocks, pp.base / 4096), pp));
+                lemma_child_same_block(&pre.blocks, pp, cp);
+                lemma_holders_frame_added(&pre.list, &pre.tables, &post.list, &post.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, child, br);
+                lemma_zeroing_typed_refs_changed(&pre.list, &pre.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
+                lemma_list_pages_used_same_kinds(&pre.list, &pre.blocks, &post.blocks);
+            },
+            None => {
+                lemma_holders_same_frames(&pre.list, &pre.tables, &post.list, &post.tables, &pre.blocks, &pre.zeroing, pre.holders@);
+            },
+        }
     }
 
     /// What a derive does to the fields the view reads.

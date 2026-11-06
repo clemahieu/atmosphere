@@ -146,8 +146,14 @@ impl CapKernel {
             m % 4096 != 0,
             !(post.list.nodes@[n as int].live && post.list.nodes@[n as int].kind is Hidden),
             !(post.list.nodes@[m as int].live && post.list.nodes@[m as int].kind is Hidden),
+            post.list.nodes@[n as int].live && post.list.nodes@[n as int].kind is Capability
+                && n != post.list.seq@[0] ==> post.is_cap(n),
+            post.list.nodes@[m as int].live && post.list.nodes@[m as int].kind is Capability
+                && m != post.list.seq@[0] ==> post.is_cap(m),
+            post.list.seq@[0] == pre.list.seq@[0] || pre.list.seq@[0] == n || pre.list.seq@[0] == m,
         ensures
             hidden_nodes_are_leaves(&post.list, &post.tables),
+            capability_nodes_are_slots(&post.list, &post.tables),
     {
         assert forall|x: usize| x < NODE_SPACE && (#[trigger] post.list.nodes@[x as int]).live
             && post.list.nodes@[x as int].kind is Hidden implies post.tables.owner@.contains_key(x) by {

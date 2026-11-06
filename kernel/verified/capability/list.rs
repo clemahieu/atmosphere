@@ -611,6 +611,7 @@ impl Tree {
             final(self).nodes@[slot as int].live,
             final(self).nodes@[slot as int].kind == kind,
             final(self).nodes@[slot as int].depth == old(self).nodes@[c as int].depth + 1,
+            final(self).seq@[0] == old(self).seq@[0],
             // Only the new node and its neighbours' links change, so no one else's liveness, kind or
             // depth does.
             forall|i: int| #![trigger final(self).nodes@[i]] 0 <= i < old(self).nodes@.len() && i != slot ==> {

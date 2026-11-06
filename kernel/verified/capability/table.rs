@@ -864,6 +864,24 @@ impl Tables {
         }
     }
 
+    /// Reads what the capability in a slot says.
+    pub fn payload_at(&self, list: &Tree, n: usize) -> (ret: Payload)
+        requires
+            self.wf(list),
+            self.is_cap(list, n),
+        ensures
+            ret == self.payload_of(n),
+    {
+        let page = n - n % 4096;
+        proof {
+            self.lemma_leaf(list, page);
+        }
+        *PPtr::<PayloadPage>::from_usize(page + 4096)
+            .borrow(Tracked(self.payloads.borrow().tracked_borrow(page)))
+            .entries
+            .get(n % 4096)
+    }
+
     /// Reads entry r of the table at root.
     pub fn entry(&self, root: usize, r: usize) -> (ret: usize)
         requires

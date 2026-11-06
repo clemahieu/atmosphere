@@ -774,6 +774,15 @@ impl BlockTable {
             },
         ensures
             final(self).wf(),
+            final(self).pages@ == old(self).pages@,
+            match level {
+                Large::Two => final(self).regions_1g@ == old(self).regions_1g@
+                    && final(self).regions_2m@ == old(self).regions_2m@.update(r as int,
+                        RegionEntry { dead: true, ..old(self).regions_2m@[r as int] }),
+                Large::One => final(self).regions_2m@ == old(self).regions_2m@
+                    && final(self).regions_1g@ == old(self).regions_1g@.update(r as int,
+                        RegionEntry { dead: true, ..old(self).regions_1g@[r as int] }),
+            },
     {
         let e = self.region(level, r);
         self.set_region(level, r, RegionEntry { dead: true, ..e });
@@ -804,6 +813,20 @@ impl BlockTable {
             },
         ensures
             final(self).wf(),
+            !added ==> *final(self) == *old(self),
+            final(self).pages@ == old(self).pages@,
+            added == (match level {
+                Large::Two => old(self).regions_2m@[r as int].refs != usize::MAX,
+                Large::One => old(self).regions_1g@[r as int].refs != usize::MAX,
+            }),
+            added ==> match level {
+                Large::Two => final(self).regions_1g@ == old(self).regions_1g@
+                    && final(self).regions_2m@ == old(self).regions_2m@.update(r as int,
+                        RegionEntry { refs: (old(self).regions_2m@[r as int].refs + 1) as usize, ..old(self).regions_2m@[r as int] }),
+                Large::One => final(self).regions_2m@ == old(self).regions_2m@
+                    && final(self).regions_1g@ == old(self).regions_1g@.update(r as int,
+                        RegionEntry { refs: (old(self).regions_1g@[r as int].refs + 1) as usize, ..old(self).regions_1g@[r as int] }),
+            },
     {
         let e = self.region(level, r);
         if e.refs == usize::MAX {
@@ -823,6 +846,15 @@ impl BlockTable {
             },
         ensures
             final(self).wf(),
+            final(self).pages@ == old(self).pages@,
+            match level {
+                Large::Two => final(self).regions_1g@ == old(self).regions_1g@
+                    && final(self).regions_2m@ == old(self).regions_2m@.update(r as int,
+                        RegionEntry { refs: (old(self).regions_2m@[r as int].refs - 1) as usize, ..old(self).regions_2m@[r as int] }),
+                Large::One => final(self).regions_2m@ == old(self).regions_2m@
+                    && final(self).regions_1g@ == old(self).regions_1g@.update(r as int,
+                        RegionEntry { refs: (old(self).regions_1g@[r as int].refs - 1) as usize, ..old(self).regions_1g@[r as int] }),
+            },
     {
         let e = self.region(level, r);
         self.set_region(level, r, RegionEntry { refs: e.refs - 1, ..e });
@@ -1457,6 +1489,8 @@ impl BlockTable {
         ensures
             final(self).wf(),
             final(self).pages@ == old(self).pages@.update(base as int, entry),
+            final(self).regions_2m@ == old(self).regions_2m@,
+            final(self).regions_1g@ == old(self).regions_1g@,
     {
         let ghost pre = *old(self);
         self.pages.set(base, entry);
@@ -1492,6 +1526,8 @@ impl BlockTable {
             final(self).wf(),
             final(self).pages@ == old(self).pages@.update(base as int,
                 PageEntry { dead: true, ..old(self).pages@[base as int] }),
+            final(self).regions_2m@ == old(self).regions_2m@,
+            final(self).regions_1g@ == old(self).regions_1g@,
     {
         let e = *self.pages.get(base);
         self.set_base(base, PageEntry { dead: true, ..e });
@@ -1524,6 +1560,9 @@ impl BlockTable {
             added ==> final(self).pages@ == old(self).pages@.update(base as int,
                 PageEntry { refs: (old(self).pages@[base as int].refs + 1) as usize, ..old(self).pages@[base as int] }),
             !added ==> *final(self) == *old(self),
+            added == (old(self).pages@[base as int].refs != usize::MAX),
+            final(self).regions_2m@ == old(self).regions_2m@,
+            final(self).regions_1g@ == old(self).regions_1g@,
     {
         let e = *self.pages.get(base);
         if e.refs == usize::MAX {
@@ -1544,6 +1583,8 @@ impl BlockTable {
             final(self).wf(),
             final(self).pages@ == old(self).pages@.update(base as int,
                 PageEntry { refs: (old(self).pages@[base as int].refs - 1) as usize, ..old(self).pages@[base as int] }),
+            final(self).regions_2m@ == old(self).regions_2m@,
+            final(self).regions_1g@ == old(self).regions_1g@,
     {
         let e = *self.pages.get(base);
         self.set_base(base, PageEntry { refs: e.refs - 1, ..e });
