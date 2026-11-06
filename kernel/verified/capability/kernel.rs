@@ -35,19 +35,27 @@ pub tracked struct Flushed {
     pub ghost epoch: int,
 }
 
+/// Something a core may hold in its TLB or paging-structure caches: an entry of this space's tables
+/// leading to this page, which is a frame's page or the base page of a table's block.
+pub ghost struct TlbEntry {
+    pub space: usize,
+    pub page: usize,
+}
+
 pub struct CapKernel {
     pub list: Tree,
     pub cores: Array<CoreState, NUM_CPUS>,
     pub flush_epoch: usize,
-    /// For each core, the frames it may still hold a translation to, cached or in use.
-    pub tlb: Ghost<Seq<Set<usize>>>,
+    /// For each core, what it may still hold that its space's tables no longer say. What they do say,
+    /// a core that loaded the space may hold too: see core_may_hold.
+    pub tlb: Ghost<Seq<Set<TlbEntry>>>,
     /// Frames some address space maps.
     pub mapped: Ghost<Set<usize>>,
     pub blocks: BlockTable,
     pub tables: Tables,
-    /// The epoch of the last unmap of the frame whose block is based at this page. Zero if it has
-    /// none: unmap bumps the epoch first, so a real one is never zero. A frame is its base page's
-    /// number. This outlives the block's typing, so retype cannot lose it.
+    /// The epoch of the last unmap of the frame or table page whose block is based at this page.
+    /// Zero if it has none: unmap bumps the epoch first, so a real one is never zero. Either is its
+    /// base page's number. This outlives the block's typing, so retype cannot lose it.
     pub stale_epoch: Array<usize, NUM_PAGES>,
     /// The permission of each page of a frame, by page number.
     pub frames: Tracked<Map<usize, PagePerm4k>>,
@@ -387,14 +395,23 @@ impl CapKernel {
         self.cores@[c].acked_epoch as int
     }
 
-    /// A translation to an unmapped frame can survive on a core only if that core has not yet
-    /// acknowledged the frame's unmap. The strict comparison needs unmap to bump the epoch first.
+    /// Core c has loaded space s.
+    pub open spec fn loaded(&self, c: int, s: usize) -> bool {
+        &&& self.spaces.loaded@.contains_key(s)
+        &&& core_listed(self.spaces.loaded@[s].value(), c)
+    }
+
+    /// A core holds an entry of a space only if it loaded the space. A translation to an unmapped page
+    /// can survive on a core only if that core has not yet acknowledged the page's unmap. The strict
+    /// comparison needs unmap to bump the epoch first.
     pub open spec fn tlb_wf(&self) -> bool {
         &&& self.tlb@.len() == NUM_CPUS
         &&& forall|c: int| 0 <= c < NUM_CPUS ==> #[trigger] self.acked(c) <= self.flush_epoch
-        &&& forall|c: int, f: usize|
-            0 <= c < NUM_CPUS && #[trigger] self.tlb@[c].contains(f) && !self.mapped@.contains(f)
-            ==> f < NUM_PAGES && self.acked(c) < self.stale_epoch@[f as int]
+        &&& forall|c: int, e: TlbEntry|
+            0 <= c < NUM_CPUS && #[trigger] self.tlb@[c].contains(e) ==> self.loaded(c, e.space)
+        &&& forall|c: int, e: TlbEntry|
+            0 <= c < NUM_CPUS && #[trigger] self.tlb@[c].contains(e) && !self.mapped@.contains(e.page)
+            ==> e.page < NUM_PAGES && self.acked(c) < self.stale_epoch@[e.page as int]
     }
 
     pub open spec fn wf(&self) -> bool {
@@ -430,10 +447,10 @@ impl CapKernel {
         forall|i: usize| #[trigger] self.frames@.contains_key(i) ==> self.frames@[i].addr() == i * 4096
     }
 
-    /// No core can reach f through a stale translation. What retype needs, as a fact it can check:
-    /// see lemma_acknowledged_is_clean.
+    /// No core can reach page f, a frame's or a table's, through something stale, under any space. What
+    /// retype needs, as a fact it can check: see lemma_acknowledged_is_clean.
     pub open spec fn no_stale_translation(&self, f: usize) -> bool {
-        forall|c: int| 0 <= c < NUM_CPUS ==> !#[trigger] self.tlb@[c].contains(f)
+        forall|c: int, s: usize| 0 <= c < NUM_CPUS ==> !#[trigger] self.tlb@[c].contains(TlbEntry { space: s, page: f })
     }
 
     /// Every core has acknowledged f's last unmap.
@@ -455,7 +472,7 @@ impl CapKernel {
         &&& Self::writes_only_own_current(pre, post, c)
     }
 
-    /// An unmapped frame every core has acknowledged is free of stale translations.
+    /// An unmapped page every core has acknowledged is free of stale translations.
     pub proof fn lemma_acknowledged_is_clean(&self, f: usize)
         requires
             self.wf(),
@@ -464,8 +481,8 @@ impl CapKernel {
         ensures
             self.no_stale_translation(f),
     {
-        assert forall|c: int| 0 <= c < NUM_CPUS implies !#[trigger] self.tlb@[c].contains(f) by {
-            if self.tlb@[c].contains(f) {
+        assert forall|c: int, s: usize| 0 <= c < NUM_CPUS implies !#[trigger] self.tlb@[c].contains(TlbEntry { space: s, page: f }) by {
+            if self.tlb@[c].contains(TlbEntry { space: s, page: f }) {
                 assert(self.acked(c) < self.stale_epoch@[f as int]);
                 assert(self.stale_epoch@[f as int] <= self.acked(c));
             }
@@ -564,7 +581,7 @@ impl CapKernel {
             }
         }
         self.flush_epoch = 0;
-        self.tlb = Ghost(Seq::new(NUM_CPUS as nat, |c: int| Set::<usize>::empty()));
+        self.tlb = Ghost(Seq::new(NUM_CPUS as nat, |c: int| Set::<TlbEntry>::empty()));
         self.mapped = Ghost(Set::empty());
     }
 
@@ -578,35 +595,56 @@ impl CapKernel {
     {
     }
 
-    /// Core c loaded a space that maps f, so it may now hold a translation to it.
-    pub fn note_loaded(&mut self, c: usize, f: usize)
+    /// An entry of space s leading to this page has left its tables, so every core that loaded s may
+    /// still hold it, and only a flush removes it. The page is mapped still, or its unmap is recorded and
+    /// no core has acknowledged it.
+    pub fn note_stale(&mut self, c: usize, s: usize, Ghost(page): Ghost<usize>)
         requires
             old(self).wf(),
             c < NUM_CPUS,
-            old(self).mapped@.contains(f),
+            old(self).spaces.roots@.contains_key(s),
+            page < NUM_PAGES,
+            old(self).mapped@.contains(page)
+                || forall|d: int| 0 <= d < NUM_CPUS ==> #[trigger] old(self).acked(d) < old(self).stale_epoch@[page as int],
         ensures
             Self::step_ok(*old(self), *final(self), c as int),
-            final(self).tlb@[c as int].contains(f),
+            forall|d: int| 0 <= d < NUM_CPUS ==> #[trigger] final(self).tlb@[d] == (
+                if old(self).loaded(d, s) { old(self).tlb@[d].insert(TlbEntry { space: s, page }) } else { old(self).tlb@[d] }),
             final(self).mapped == old(self).mapped,
             final(self).stale_epoch@ == old(self).stale_epoch@,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).cores == old(self).cores,
+            final(self).spaces.loaded == old(self).spaces.loaded,
     {
         let ghost pre = *old(self);
-        self.tlb = Ghost(self.tlb@.update(c as int, self.tlb@[c as int].insert(f)));
+        let ghost e = TlbEntry { space: s, page };
+        self.tlb = Ghost(Seq::new(NUM_CPUS as nat, |d: int| if pre.loaded(d, s) { pre.tlb@[d].insert(e) } else { pre.tlb@[d] }));
         proof {
+            assert(self.tlb@.len() == NUM_CPUS);
+            assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] self.tlb@[d] == (
+                if pre.loaded(d, s) { pre.tlb@[d].insert(e) } else { pre.tlb@[d] }) by {}
             assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] self.acked(d) <= self.flush_epoch by {
                 assert(pre.acked(d) <= pre.flush_epoch);
             }
-            assert forall|d: int, g: usize|
-                0 <= d < NUM_CPUS && #[trigger] self.tlb@[d].contains(g) && !self.mapped@.contains(g)
-                implies g < NUM_PAGES && self.acked(d) < self.stale_epoch@[g as int] by {
-                if d == c as int {
-                    assert(g != f);
-                    assert(pre.tlb@[d].contains(g));
+            assert forall|d: int, g: TlbEntry|
+                0 <= d < NUM_CPUS && #[trigger] self.tlb@[d].contains(g) implies self.loaded(d, g.space) by {
+                if pre.loaded(d, s) && g == e {
+                    assert(pre.loaded(d, s));
                 } else {
-                    assert(self.tlb@[d] == pre.tlb@[d]);
+                    assert(pre.tlb@[d].contains(g));
+                    assert(pre.loaded(d, g.space));
                 }
+            }
+            assert forall|d: int, g: TlbEntry|
+                0 <= d < NUM_CPUS && #[trigger] self.tlb@[d].contains(g) && !self.mapped@.contains(g.page)
+                implies g.page < NUM_PAGES && self.acked(d) < self.stale_epoch@[g.page as int] by {
                 assert(pre.acked(d) == self.acked(d));
+                if g == e {
+                    assert(!pre.mapped@.contains(page));
+                    assert(pre.acked(d) < pre.stale_epoch@[page as int]);
+                } else {
+                    assert(pre.tlb@[d].contains(g));
+                }
             }
         }
     }
@@ -638,10 +676,10 @@ impl CapKernel {
             assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] self.acked(d) <= self.flush_epoch by {
                 assert(pre.acked(d) <= pre.flush_epoch);
             }
-            assert forall|d: int, g: usize|
-                0 <= d < NUM_CPUS && #[trigger] self.tlb@[d].contains(g) && !self.mapped@.contains(g)
-                implies g < NUM_PAGES && self.acked(d) < self.stale_epoch@[g as int] by {
-                assert(!pre.mapped@.contains(g));
+            assert forall|d: int, g: TlbEntry|
+                0 <= d < NUM_CPUS && #[trigger] self.tlb@[d].contains(g) && !self.mapped@.contains(g.page)
+                implies g.page < NUM_PAGES && self.acked(d) < self.stale_epoch@[g.page as int] by {
+                assert(!pre.mapped@.contains(g.page));
                 assert(pre.tlb@[d].contains(g));
             }
         }
@@ -661,6 +699,8 @@ impl CapKernel {
             final(self).mapped@ == old(self).mapped@.remove(f),
             final(self).stale_epoch@[f as int] == final(self).flush_epoch,
             final(self).tlb == old(self).tlb,
+            final(self).cores == old(self).cores,
+            final(self).spaces.loaded == old(self).spaces.loaded,
     {
         let ghost pre = *old(self);
         self.flush_epoch = self.flush_epoch + 1;
@@ -671,18 +711,18 @@ impl CapKernel {
             assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] self.acked(d) <= self.flush_epoch by {
                 assert(pre.acked(d) <= pre.flush_epoch);
             }
-            assert forall|c2: int, g: usize|
-                0 <= c2 < NUM_CPUS && #[trigger] self.tlb@[c2].contains(g) && !self.mapped@.contains(g)
-                implies g < NUM_PAGES && self.acked(c2) < self.stale_epoch@[g as int] by {
+            assert forall|c2: int, g: TlbEntry|
+                0 <= c2 < NUM_CPUS && #[trigger] self.tlb@[c2].contains(g) && !self.mapped@.contains(g.page)
+                implies g.page < NUM_PAGES && self.acked(c2) < self.stale_epoch@[g.page as int] by {
                 assert(pre.acked(c2) <= pre.flush_epoch);
                 assert(self.acked(c2) == pre.acked(c2));
                 assert(pre.tlb@[c2].contains(g));
-                if g != f {
-                    assert(!pre.mapped@.contains(g));
-                    assert(pre.tlb@[c2].contains(g) && !pre.mapped@.contains(g));
-                    assert(self.stale_epoch@[g as int] == pre.stale_epoch@[g as int]);
+                if g.page != f {
+                    assert(!pre.mapped@.contains(g.page));
+                    assert(pre.tlb@[c2].contains(g) && !pre.mapped@.contains(g.page));
+                    assert(self.stale_epoch@[g.page as int] == pre.stale_epoch@[g.page as int]);
                 } else {
-                    assert(self.stale_epoch@[g as int] == e);
+                    assert(self.stale_epoch@[g.page as int] == e);
                 }
             }
         }
@@ -716,7 +756,8 @@ impl CapKernel {
         true
     }
 
-    /// The TLB model reads nothing but the cores, the epoch and the staleness record.
+    /// The TLB model reads nothing but the cores, the epoch, the staleness record and the core lists it
+    /// has entries for.
     pub proof fn lemma_tlb_same(pre: Self, post: Self)
         requires
             pre.tlb_wf(),
@@ -725,16 +766,24 @@ impl CapKernel {
             post.tlb == pre.tlb,
             post.mapped == pre.mapped,
             post.stale_epoch == pre.stale_epoch,
+            forall|s: usize| #[trigger] pre.spaces.loaded@.contains_key(s) ==> {
+                &&& post.spaces.loaded@.contains_key(s)
+                &&& post.spaces.loaded@[s].value() == pre.spaces.loaded@[s].value()
+            },
         ensures
             post.tlb_wf(),
     {
         assert forall|c: int| 0 <= c < NUM_CPUS implies #[trigger] post.acked(c) <= post.flush_epoch by {
             assert(pre.acked(c) <= pre.flush_epoch);
         }
-        assert forall|c: int, f: usize|
-            0 <= c < NUM_CPUS && #[trigger] post.tlb@[c].contains(f) && !post.mapped@.contains(f)
-            implies f < NUM_PAGES && post.acked(c) < post.stale_epoch@[f as int] by {
-            assert(pre.tlb@[c].contains(f));
+        assert forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && #[trigger] post.tlb@[c].contains(e) implies post.loaded(c, e.space) by {
+            assert(pre.tlb@[c].contains(e));
+            assert(pre.spaces.loaded@.contains_key(e.space));
+        }
+        assert forall|c: int, e: TlbEntry|
+            0 <= c < NUM_CPUS && #[trigger] post.tlb@[c].contains(e) && !post.mapped@.contains(e.page)
+            implies e.page < NUM_PAGES && post.acked(c) < post.stale_epoch@[e.page as int] by {
+            assert(pre.tlb@[c].contains(e));
             assert(pre.acked(c) == post.acked(c));
         }
     }
@@ -1249,7 +1298,8 @@ impl CapKernel {
         ensures
             Self::step_ok(*old(self), *final(self), c as int),
             final(self).acked(c as int) == epoch,
-            final(self).tlb@[c as int] == Set::<usize>::empty(),
+            final(self).tlb@[c as int] == Set::<TlbEntry>::empty(),
+            forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] final(self).tlb@[d] == old(self).tlb@[d],
             final(self).mapped == old(self).mapped,
             final(self).stale_epoch@ == old(self).stale_epoch@,
     {
@@ -1268,11 +1318,11 @@ impl CapKernel {
                 #[trigger] self.cores@[d].current_thread == pre.cores@[d].current_thread by {
                 assert(self.cores@[d] == pre.cores@[d]);
             }
-            assert forall|d: int, f: usize|
-                0 <= d < NUM_CPUS && #[trigger] self.tlb@[d].contains(f) && !self.mapped@.contains(f)
-                implies f < NUM_PAGES && self.acked(d) < self.stale_epoch@[f as int] by {
+            assert forall|d: int, f: TlbEntry|
+                0 <= d < NUM_CPUS && #[trigger] self.tlb@[d].contains(f) && !self.mapped@.contains(f.page)
+                implies f.page < NUM_PAGES && self.acked(d) < self.stale_epoch@[f.page as int] by {
                 if d == c as int {
-                    assert(self.tlb@[d] == Set::<usize>::empty());
+                    assert(self.tlb@[d] == Set::<TlbEntry>::empty());
                     assert(!self.tlb@[d].contains(f));
                 }
                 assert(d != c as int);

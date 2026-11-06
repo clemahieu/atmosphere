@@ -84,9 +84,43 @@ pub struct SpaceRecord {
     pub table: TableRecord,
 }
 
-/// A space's page of a block: its root table, its record and the one page unused.
+/// A space's page of a block: its root table, its record and the list of cores that have loaded it.
 pub const SPACE_ROOT_PAGE: usize = 5;
 pub const SPACE_RECORD_PAGE: usize = 6;
+pub const SPACE_CORES_PAGE: usize = 7;
+
+/// Core c is on this list of cores, one bit per core.
+pub open spec fn core_listed(cores: u32, c: int) -> bool {
+    (cores >> (c as u32)) & 1u32 == 1u32
+}
+
+/// Adding core c to a list puts c on it and leaves the others.
+pub proof fn lemma_core_added(cores: u32, c: u32, d: u32)
+    requires
+        c < 32,
+        d < 32,
+    ensures
+        ((cores | (1u32 << c)) >> d) & 1u32 == 1u32 <==> d == c || (cores >> d) & 1u32 == 1u32,
+{
+    assert(((cores | (1u32 << c)) >> d) & 1u32 == 1u32 <==> d == c || (cores >> d) & 1u32 == 1u32) by (bit_vector)
+        requires
+            c < 32,
+            d < 32,
+    ;
+}
+
+/// The empty list has no core on it.
+pub proof fn lemma_no_core_listed(d: u32)
+    requires
+        d < 32,
+    ensures
+        (0u32 >> d) & 1u32 != 1u32,
+{
+    assert((0u32 >> d) & 1u32 != 1u32) by (bit_vector)
+        requires
+            d < 32,
+    ;
+}
 
 /// A space capability carries write: it may change what the space maps.
 pub const SPACE_RIGHTS: u32 = 2;
@@ -100,7 +134,10 @@ pub open spec fn space_of(base: usize) -> Payload {
 pub struct Spaces {
     pub roots: Tracked<Map<usize, PointsTo<PageMap>>>,
     pub records: Tracked<Map<usize, PointsTo<SpaceRecord>>>,
-    pub spare: Tracked<Map<usize, PagePerm4k>>,
+    /// The cores that have loaded each space. A bit stays set after a flush, since a flush cannot
+    /// visit every space in bounded time, and a core past a flush may hold nothing, which costs at
+    /// most a spare IPI.
+    pub loaded: Tracked<Map<usize, PointsTo<u32>>>,
     pub holders: Ghost<IMap<usize, Set<usize>>>,
     /// The kernel's entries, which every process root holds in its kernel slots.
     pub kernel_entries: Array<usize, KERNEL_MEM_END_L4INDEX>,
@@ -112,13 +149,13 @@ impl Spaces {
             ret.kernel_entries == kernel_entries,
             ret.roots@ == Map::<usize, PointsTo<PageMap>>::empty(),
             ret.records@ == Map::<usize, PointsTo<SpaceRecord>>::empty(),
-            ret.spare@ == Map::<usize, PagePerm4k>::empty(),
+            ret.loaded@ == Map::<usize, PointsTo<u32>>::empty(),
             ret.holders@ == IMap::<usize, Set<usize>>::empty(),
     {
         Spaces {
             roots: Tracked(Map::tracked_empty()),
             records: Tracked(Map::tracked_empty()),
-            spare: Tracked(Map::tracked_empty()),
+            loaded: Tracked(Map::tracked_empty()),
             holders: Ghost(IMap::empty()),
             kernel_entries,
         }
@@ -131,7 +168,7 @@ pub open spec fn space_block(blocks: &BlockTable, b: usize) -> bool {
     &&& blocks.pages@[b as int].object is Space
 }
 
-/// The space at s has its record, the root table its record points at, its spare page and its node
+/// The space at s has its record, the root table its record points at, its list of cores and its node
 /// pages. Its block's references are exactly its holders, and it is dead at once when they go.
 pub open spec fn space_wf(list: &Tree, spaces: &Spaces, blocks: &BlockTable, s: usize) -> bool {
     &&& s % 32768 == 0
@@ -144,9 +181,9 @@ pub open spec fn space_wf(list: &Tree, spaces: &Spaces, blocks: &BlockTable, s: 
     &&& spaces.roots@[s].addr() == spaces.records@[s].value().root
     &&& spaces.roots@[s].is_init()
     &&& spaces.roots@[s].value().wf()
-    &&& spaces.spare@.contains_key(s)
-    &&& spaces.spare@[s].addr() == s + 7 * 4096
-    &&& spaces.spare@[s].is_uninit()
+    &&& spaces.loaded@.contains_key(s)
+    &&& spaces.loaded@[s].addr() == s + SPACE_CORES_PAGE * 4096
+    &&& spaces.loaded@[s].is_init()
     &&& blocks.pages@[(s / 4096) as int].kind is Base
     &&& blocks.pages@[(s / 4096) as int].object is Space
     &&& blocks.pages@[(s / 4096) as int].order == 3
@@ -183,6 +220,7 @@ pub open spec fn kernel_slots_wf(spaces: &Spaces, s: usize) -> bool {
 pub open spec fn spaces_wf(list: &Tree, tables: &Tables, spaces: &Spaces, blocks: &BlockTable) -> bool {
     &&& spaces.kernel_entries.wf()
     &&& forall|s: usize| #[trigger] spaces.roots@.contains_key(s) ==> space_wf(list, spaces, blocks, s)
+    &&& forall|s: usize| #[trigger] spaces.loaded@.contains_key(s) ==> spaces.roots@.contains_key(s)
     &&& forall|b: usize| b < NUM_PAGES && #[trigger] space_block(blocks, b)
         ==> spaces.roots@.contains_key((b * 4096) as usize)
     &&& forall|n: usize| #[trigger] tables.is_cap(list, n) && tables.payload_of(n).kind is Space ==> {
@@ -1192,7 +1230,7 @@ impl CapKernel {
             ),
             post.spaces.roots == pre.spaces.roots,
             post.spaces.records == pre.spaces.records,
-            post.spaces.spare == pre.spaces.spare,
+            post.spaces.loaded == pre.spaces.loaded,
             post.spaces.kernel_entries == pre.spaces.kernel_entries,
             post.spaces.holders@ == pre.spaces.holders@.insert(s, pre.spaces.holders@[s].insert(n)),
             forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) ==> post.list.pages@.dom().contains(p),
@@ -1269,7 +1307,7 @@ impl CapKernel {
             ),
             post.spaces.roots == pre.spaces.roots,
             post.spaces.records == pre.spaces.records,
-            post.spaces.spare == pre.spaces.spare,
+            post.spaces.loaded == pre.spaces.loaded,
             post.spaces.kernel_entries == pre.spaces.kernel_entries,
             post.spaces.holders@ == pre.spaces.holders@.insert(s, pre.spaces.holders@[s].remove(n)),
             forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) ==> post.list.pages@.dom().contains(p),
@@ -2210,9 +2248,9 @@ impl CapKernel {
             post.spaces.records@[base].addr() == base + SPACE_RECORD_PAGE * 4096,
             post.spaces.records@[base].is_init(),
             post.spaces.records@[base].value().root == base + SPACE_ROOT_PAGE * 4096,
-            post.spaces.spare@ == pre.spaces.spare@.insert(base, post.spaces.spare@[base]),
-            post.spaces.spare@[base].addr() == base + 7 * 4096,
-            post.spaces.spare@[base].is_uninit(),
+            post.spaces.loaded@ == pre.spaces.loaded@.insert(base, post.spaces.loaded@[base]),
+            post.spaces.loaded@[base].addr() == base + SPACE_CORES_PAGE * 4096,
+            post.spaces.loaded@[base].is_init(),
             post.spaces.kernel_entries == pre.spaces.kernel_entries,
             kernel_slots_wf(&post.spaces, base),
             root_record_wf(&post.spaces, base),
@@ -2256,7 +2294,7 @@ impl CapKernel {
                 assert(b.pages@[x] == a.pages@[x]);
                 assert(sb.roots@[s] == sa.roots@[s]);
                 assert(sb.records@[s] == sa.records@[s]);
-                assert(sb.spare@[s] == sa.spare@[s]);
+                assert(sb.loaded@[s] == sa.loaded@[s]);
                 assert(sb.holders@[s] == sa.holders@[s]);
                 assert forall|k: usize| k < TABLE_NODE_PAGES implies post.list.pages@.dom().contains(#[trigger] table_node_page(s, k)) by {
                     assert(pre.list.pages@.dom().contains(table_node_page(s, k)));
@@ -2421,6 +2459,7 @@ impl CapKernel {
                 &&& final(self).spaces.roots@.contains_key(base)
                 &&& final(self).spaces.records@[base].value().kind == kind
                 &&& final(self).spaces.records@[base].value().table == fresh_root(base)
+                &&& forall|c: int| 0 <= c < NUM_CPUS ==> !#[trigger] final(self).loaded(c, base)
                 &&& space_mapping(tree_of(&final(self).table_pages, &final(self).spaces), base) == IMap::<SpacePath, crate::pagetable::entry::PageEntry>::empty()
                 &&& forall|r: usize| #[trigger] old(self).spaces.roots@.contains_key(r) ==>
                     space_mapping(tree_of(&final(self).table_pages, &final(self).spaces), r)
@@ -2510,9 +2549,12 @@ impl CapKernel {
             SpaceKind::Io => {},
         }
         let tracked mut typed;
+        let tracked mut cores;
         proof {
             typed = page_into_space_record(record);
+            cores = page_into_core_list(spare);
         }
+        PPtr::<u32>::from_usize(base + SPACE_CORES_PAGE * 4096).put(Tracked(&mut cores), 0u32);
         let pptr = PPtr::<SpaceRecord>::from_usize(base + SPACE_RECORD_PAGE * 4096);
         pptr.put(
             Tracked(&mut typed),
@@ -2521,7 +2563,7 @@ impl CapKernel {
         proof {
             self.spaces.roots.borrow_mut().tracked_insert(base, map);
             self.spaces.records.borrow_mut().tracked_insert(base, typed);
-            self.spaces.spare.borrow_mut().tracked_insert(base, spare);
+            self.spaces.loaded.borrow_mut().tracked_insert(base, cores);
         }
         self.list.derive(parent, child, NodeKind::Capability);
         proof {
@@ -2548,6 +2590,14 @@ impl CapKernel {
             assert(payload_wf(post.payload_of(child)));
             assert(post.is_cap(child));
             Self::lemma_space_caps_wf(pre, post, child);
+            assert forall|s: usize| #[trigger] pre.spaces.loaded@.contains_key(s) implies {
+                &&& post.spaces.loaded@.contains_key(s)
+                &&& post.spaces.loaded@[s].value() == pre.spaces.loaded@[s].value()
+            } by {
+                assert(pre.spaces.roots@.contains_key(s));
+                assert(space_wf(&pre.list, &pre.spaces, &pre.blocks, s));
+                assert(s != base);
+            }
             Self::lemma_tlb_same(pre, post);
             Self::lemma_space_nodes(pre, post, mid, parent, child);
             Self::lemma_table_nodes_frame(pre, post, child, child);
@@ -2556,7 +2606,11 @@ impl CapKernel {
             Self::lemma_space_blocks(pre, post, base, page, child);
             assert(post.spaces.roots@ == pre.spaces.roots@.insert(base, post.spaces.roots@[base]));
             assert(post.spaces.records@ == pre.spaces.records@.insert(base, post.spaces.records@[base]));
-            assert(post.spaces.spare@ == pre.spaces.spare@.insert(base, post.spaces.spare@[base]));
+            assert(post.spaces.loaded@ == pre.spaces.loaded@.insert(base, post.spaces.loaded@[base]));
+            assert forall|c: int| 0 <= c < NUM_CPUS implies !#[trigger] post.loaded(c, base) by {
+                assert(post.spaces.loaded@[base].value() == 0u32);
+                lemma_no_core_listed(c as u32);
+            }
             assert forall|k: int| 0 < k < 8 implies (#[trigger] post.blocks.pages@[page + k]).kind is Member by {
                 post.blocks.lemma_member_of(page as int, page + k);
             }

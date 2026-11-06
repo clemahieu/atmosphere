@@ -78,7 +78,178 @@ pub open spec fn space_mapping(tree: TableTree, s: usize) -> IMap<SpacePath, Pag
     IMap::new(|p: SpacePath| walk(tree, s, p) is Some, |p: SpacePath| walk(tree, s, p)->0)
 }
 
+/// The space's tables say page g: g is the base page of a table of the space, or a page a walk finds.
+pub open spec fn space_says(tree: TableTree, s: usize, g: usize) -> bool {
+    ||| exists|t: usize| #![trigger tree.record(t)] tree.is_table(t) && tree.record(t).space == Some(s) && t / 4096 == g
+    ||| exists|p: SpacePath| #![trigger walk(tree, s, p)] walk(tree, s, p) is Some && {
+        let v = walk(tree, s, p)->0;
+        &&& v.addr / 4096 <= g
+        &&& g < v.addr / 4096 + entry_pages(if v.perm.ps { 2usize } else { 1usize })
+    }
+}
+
 impl CapKernel {
+    /// What core c may hold: anything of a space it loaded that the space's tables say now, since it can
+    /// walk them whenever it likes, and whatever has left them that it has not flushed. A map or a link
+    /// after the load is covered with no write here.
+    pub open spec fn core_may_hold(&self, c: int, e: TlbEntry) -> bool {
+        ||| self.tlb@[c].contains(e)
+        ||| self.loaded(c, e.space) && space_says(tree_of(&self.table_pages, &self.spaces), e.space, e.page)
+    }
+
+    /// Only a core that loaded a space may hold anything of it.
+    pub proof fn lemma_may_hold_loaded(&self, c: int, e: TlbEntry)
+        requires
+            self.wf(),
+            0 <= c < NUM_CPUS,
+            self.core_may_hold(c, e),
+        ensures
+            self.loaded(c, e.space),
+    {
+    }
+
+    /// Core c loads process space s: from here on it may hold what the space's tables say, and it is on
+    /// the space's list of cores, for an unmap to find. Writing the core's CR3 is the caller's.
+    pub fn load_space(&mut self, c: usize, s: usize)
+        requires
+            old(self).wf(),
+            c < NUM_CPUS,
+            old(self).spaces.roots@.contains_key(s),
+            old(self).spaces.records@[s].value().kind is Process,
+        ensures
+            Self::step_ok(*old(self), *final(self), c as int),
+            final(self).loaded(c as int, s),
+            forall|d: int, r: usize| 0 <= d < NUM_CPUS && !(d == c as int && r == s)
+                ==> #[trigger] final(self).loaded(d, r) == old(self).loaded(d, r),
+            forall|e: TlbEntry| e.space == s && space_says(tree_of(&old(self).table_pages, &old(self).spaces), s, e.page)
+                ==> #[trigger] final(self).core_may_hold(c as int, e),
+            final(self).spaces.loaded@.dom() == old(self).spaces.loaded@.dom(),
+            final(self).spaces.roots == old(self).spaces.roots,
+            final(self).spaces.records == old(self).spaces.records,
+            final(self).spaces.holders == old(self).spaces.holders,
+            final(self).spaces.kernel_entries == old(self).spaces.kernel_entries,
+            final(self).list == old(self).list,
+            final(self).tables == old(self).tables,
+            final(self).blocks == old(self).blocks,
+            final(self).holders == old(self).holders,
+            final(self).mappings == old(self).mappings,
+            final(self).table_pages == old(self).table_pages,
+            final(self).zeroing == old(self).zeroing,
+            final(self).frames == old(self).frames,
+            final(self).cores == old(self).cores,
+            final(self).tlb == old(self).tlb,
+            final(self).mapped == old(self).mapped,
+            final(self).stale_epoch == old(self).stale_epoch,
+            final(self).flush_epoch == old(self).flush_epoch,
+    {
+        let ghost pre = *old(self);
+        proof {
+            assert(space_wf(&pre.list, &pre.spaces, &pre.blocks, s));
+        }
+        let tracked mut perm = self.spaces.loaded.borrow_mut().tracked_remove(s);
+        let ptr = PPtr::<u32>::from_usize(s + SPACE_CORES_PAGE * 4096);
+        let cores = *ptr.borrow(Tracked(&perm));
+        ptr.write(Tracked(&mut perm), cores | (1u32 << (c as u32)));
+        proof {
+            self.spaces.loaded.borrow_mut().tracked_insert(s, perm);
+            let post = *self;
+            assert(post.spaces.loaded@ =~= pre.spaces.loaded@.insert(s, post.spaces.loaded@[s]));
+            assert(post.spaces.loaded@.dom() =~= pre.spaces.loaded@.dom());
+            Self::lemma_core_loaded(pre, post, c as int, s);
+            assert forall|e: TlbEntry| e.space == s && space_says(tree_of(&pre.table_pages, &pre.spaces), s, e.page)
+                implies #[trigger] post.core_may_hold(c as int, e) by {
+                assert(post.loaded(c as int, e.space));
+            }
+        }
+    }
+
+    /// The invariant after core c joins space s's list of cores: the spaces keep theirs, since only the
+    /// one list's value changed, and a core on a list stays on it.
+    proof fn lemma_core_loaded(pre: Self, post: Self, c: int, s: usize)
+        requires
+            pre.wf(),
+            0 <= c < NUM_CPUS,
+            pre.spaces.roots@.contains_key(s),
+            post.spaces.roots == pre.spaces.roots,
+            post.spaces.records == pre.spaces.records,
+            post.spaces.holders == pre.spaces.holders,
+            post.spaces.kernel_entries == pre.spaces.kernel_entries,
+            post.spaces.loaded@ == pre.spaces.loaded@.insert(s, post.spaces.loaded@[s]),
+            post.spaces.loaded@[s].addr() == pre.spaces.loaded@[s].addr(),
+            post.spaces.loaded@[s].is_init(),
+            post.spaces.loaded@[s].value() == pre.spaces.loaded@[s].value() | (1u32 << (c as u32)),
+            post.list == pre.list,
+            post.tables == pre.tables,
+            post.blocks == pre.blocks,
+            post.holders == pre.holders,
+            post.mappings == pre.mappings,
+            post.table_pages == pre.table_pages,
+            post.zeroing == pre.zeroing,
+            post.frames == pre.frames,
+            post.cores == pre.cores,
+            post.tlb == pre.tlb,
+            post.mapped == pre.mapped,
+            post.stale_epoch == pre.stale_epoch,
+            post.flush_epoch == pre.flush_epoch,
+        ensures
+            post.wf(),
+            post.loaded(c, s),
+            forall|d: int, r: usize| 0 <= d < NUM_CPUS && !(d == c && r == s)
+                ==> #[trigger] post.loaded(d, r) == pre.loaded(d, r),
+            tree_of(&post.table_pages, &post.spaces) == tree_of(&pre.table_pages, &pre.spaces),
+    {
+        let sa = &pre.spaces;
+        let sb = &post.spaces;
+        assert(space_wf(&pre.list, sa, &pre.blocks, s));
+        lemma_core_added(sa.loaded@[s].value(), c as u32, c as u32);
+        assert(post.loaded(c, s));
+        assert forall|d: int, r: usize| 0 <= d < NUM_CPUS && !(d == c && r == s)
+            implies #[trigger] post.loaded(d, r) == pre.loaded(d, r) by {
+            if r == s {
+                lemma_core_added(sa.loaded@[s].value(), c as u32, d as u32);
+            } else {
+                assert(sb.loaded@.contains_key(r) == sa.loaded@.contains_key(r));
+                if sa.loaded@.contains_key(r) {
+                    assert(sb.loaded@[r] == sa.loaded@[r]);
+                }
+            }
+        }
+        assert forall|d: int, r: usize| 0 <= d < NUM_CPUS && #[trigger] pre.loaded(d, r) implies post.loaded(d, r) by {
+            if r == s {
+                lemma_core_added(sa.loaded@[s].value(), c as u32, d as u32);
+            } else {
+                assert(sb.loaded@[r] == sa.loaded@[r]);
+            }
+        }
+        assert forall|r: usize| #[trigger] sb.roots@.contains_key(r) implies space_wf(&post.list, sb, &post.blocks, r) by {
+            assert(space_wf(&pre.list, sa, &pre.blocks, r));
+            if r != s {
+                assert(sb.loaded@[r] == sa.loaded@[r]);
+            }
+            assert(kernel_slots_wf(sb, r));
+            assert(root_record_wf(sb, r));
+        }
+        assert forall|r: usize| #[trigger] sb.loaded@.contains_key(r) implies sb.roots@.contains_key(r) by {
+            assert(sa.loaded@.contains_key(r));
+        }
+        assert(spaces_wf(&post.list, &post.tables, sb, &post.blocks));
+        assert(tree_of(&post.table_pages, &post.spaces) == tree_of(&pre.table_pages, &pre.spaces));
+        assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] post.acked(d) <= post.flush_epoch by {
+            assert(pre.acked(d) <= pre.flush_epoch);
+        }
+        assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] post.tlb@[d].contains(e) implies post.loaded(d, e.space) by {
+            assert(pre.tlb@[d].contains(e));
+            assert(pre.loaded(d, e.space));
+        }
+        assert forall|d: int, e: TlbEntry|
+            0 <= d < NUM_CPUS && #[trigger] post.tlb@[d].contains(e) && !post.mapped@.contains(e.page)
+            implies e.page < NUM_PAGES && post.acked(d) < post.stale_epoch@[e.page as int] by {
+            assert(pre.tlb@[d].contains(e));
+            assert(pre.acked(d) == post.acked(d));
+        }
+        assert(post.tlb_wf());
+    }
+
     /// The step touched no table, so no space's mapping changed.
     pub open spec fn same_tree(pre: Self, post: Self) -> bool {
         tree_of(&post.table_pages, &post.spaces) == tree_of(&pre.table_pages, &pre.spaces)
