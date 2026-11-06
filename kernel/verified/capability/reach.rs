@@ -696,6 +696,40 @@ pub proof fn lemma_simulated_discharges_revoke(
     }
 }
 
+/// Two steps of revoking one capability are one: what they remove descends from it in the first state,
+/// since a revoke changes no parent, and reach only shrinks.
+pub proof fn lemma_revoke_steps_compose(a: State, b: State, c: State, p: ObjectId, cap: NodeId)
+    requires
+        discharges(a, b, p, Effect::Revoke { cap }),
+        discharges(b, c, p, Effect::Revoke { cap }),
+        a.parent == b.parent,
+    ensures
+        discharges(a, c, p, Effect::Revoke { cap }),
+{
+    assert forall|o: ObjectId| #[trigger] State::changed(a, c, o) implies may_change(a, Effect::Revoke { cap }, o) by {
+        if State::changed(a, b, o) {
+            assert(may_change(a, Effect::Revoke { cap }, o));
+        } else {
+            assert(State::changed(b, c, o));
+            assert(may_change(b, Effect::Revoke { cap }, o));
+        }
+    }
+    assert forall|n: NodeId| #[trigger] State::removed(a, c, n) implies may_remove(a, p, Effect::Revoke { cap }, n) by {
+        if State::removed(a, b, n) {
+            assert(may_remove(a, p, Effect::Revoke { cap }, n));
+        } else {
+            assert(State::removed(b, c, n));
+            let k = choose|k: nat| k > 0 && #[trigger] b.descends(cap, n, k);
+            lemma_same_parent_same_descends(b, a, cap, n, k);
+        }
+    }
+    assert forall|r: ObjectId, o: ObjectId| #[trigger] c.reach(r, o) implies a.reach(r, o) by {
+        assert(!may_grow(b, p, Effect::Revoke { cap }, r, o));
+        assert(b.reach(r, o));
+        assert(!may_grow(a, p, Effect::Revoke { cap }, r, o));
+    }
+}
+
 /// Control is transitive: if s controls m and m controls q, s reaches what q directly reaches, since
 /// s can claim m's control over q, and repeat.
 pub proof fn lemma_control_transitive(s: State, a: ObjectId, m: ObjectId, q: ObjectId, o: ObjectId)

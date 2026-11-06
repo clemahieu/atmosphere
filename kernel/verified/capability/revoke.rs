@@ -1,6 +1,6 @@
-//! One step of revoking a capability: find a node of its run with no children, undo what that node's
-//! kind holds, and unlink it. So revoke removes exactly the capability's lineage, leaf first. See the
-//! design on atmo-6x9.6.7, section 5.
+//! Revoking a capability, a bounded number of steps per kernel entry. A step finds a node of its run with
+//! no children, undoes what that node's kind holds, and unlinks it, so revoke removes exactly the
+//! capability's lineage, leaf first. See the design on atmo-6x9.6.7, section 5.
 use vstd::prelude::*;
 
 verus! {
@@ -9,14 +9,27 @@ use crate::capability::kernel::*;
 use crate::capability::list::*;
 use crate::capability::reach::*;
 use crate::capability::table::*;
+use crate::define::*;
 
-/// What a revoke step did.
+/// How many steps a revoke does per kernel entry. No wait happens under the lock, so a revoke returns
+/// and is called again. It is above the core count so the revoker outruns any number of deriving
+/// threads, each core getting one entry per turn: reasoned in the design, not proven, since this
+/// theorem is about safety.
+pub const REVOKE_BUDGET: usize = 64;
+
+pub proof fn lemma_budget_above_cores()
+    ensures
+        REVOKE_BUDGET > NUM_CPUS,
+{
+}
+
+/// What a revoke did.
 pub enum RevokeStep {
     /// Nothing changed: the index names no capability.
     Refused,
-    /// Nothing changed: the capability's run is empty.
+    /// The capability's run is empty.
     Done,
-    /// One node of the run is gone. Revoke again to go on.
+    /// Its budget ran out with some of the run left. Revoke again to go on.
     Again,
 }
 
@@ -58,9 +71,10 @@ impl CapKernel {
         }
     }
 
-    /// One step of revoking the capability at index i of the table at root. The index comes from user
-    /// space, so it can be refused.
-    pub fn revoke_step(&mut self, root: usize, i: usize) -> (ret: RevokeStep)
+    /// Revokes the capability at index i of the table at root, for at most REVOKE_BUDGET steps. The
+    /// index comes from user space, so it can be refused. Its own slot can leave the table during the
+    /// call, if the leaf holding it is in its run, so the steps name its node instead.
+    pub fn revoke(&mut self, root: usize, i: usize) -> (ret: RevokeStep)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
@@ -70,13 +84,10 @@ impl CapKernel {
             ret is Refused ==> *final(self) == *old(self),
             !(ret is Refused) ==> {
                 let c = old(self).tables.node_of(root, i);
-                &&& ret is Again ==> exists|r: usize| #[trigger] revoked_one(old(self).list, final(self).list, c, r)
-                    && (old(self).list.nodes@[r as int].kind is Hidden ==> !final(self).tables.attached(r))
-                &&& ret is Done == old(self).list.childless(c)
-                &&& ret is Done ==> *final(self) == *old(self)
-                &&& ret is Done ==> forall|x: usize| !#[trigger] old(self).list.is_child(c, x)
+                &&& ret is Done == final(self).list.childless(c)
+                &&& ret is Done ==> forall|x: usize| !#[trigger] final(self).list.is_child(c, x)
+                &&& old(self).list.seq@.len() - final(self).list.seq@.len() <= REVOKE_BUDGET
                 &&& final(self).list.parent == old(self).list.parent
-                &&& forall|x: int| 0 <= x < NODE_SPACE ==> #[trigger] final(self).list.nodes@[x].depth == old(self).list.nodes@[x].depth
                 &&& discharges(old(self).view(), final(self).view(), root, Effect::Revoke { cap: c })
             },
     {
@@ -99,9 +110,71 @@ impl CapKernel {
             pre.lemma_slot_bound(c);
             pre.lemma_no_change_discharges_revoke(root, c);
         }
+        let mut steps = 0;
+        while steps != REVOKE_BUDGET
+            invariant
+                steps <= REVOKE_BUDGET,
+                self.wf(),
+                pre == *old(self),
+                pre.tables.has_slot(root, i),
+                c == pre.tables.node_of(root, i),
+                c < NODE_SPACE,
+                self.is_cap(c),
+                self.tables.owner == pre.tables.owner,
+                self.list.parent == pre.list.parent,
+                pre.list.seq@.len() - self.list.seq@.len() == steps,
+                pre.tables.owner@[page_of(c)].0 == root,
+                pre.is_cap(c),
+                discharges(pre.view(), self.view(), root, Effect::Revoke { cap: c }),
+            decreases REVOKE_BUDGET - steps,
+        {
+            let ghost mid = *self;
+            if self.revoke_step(root, c) {
+                proof {
+                    assert(self.view() == mid.view());
+                }
+                return RevokeStep::Done;
+            }
+            proof {
+                lemma_revoke_steps_compose(pre.view(), mid.view(), self.view(), root, c);
+            }
+            steps = steps + 1;
+        }
+        if self.list.is_childless(c) {
+            RevokeStep::Done
+        } else {
+            RevokeStep::Again
+        }
+    }
+
+    /// One step of revoking capability c, which root's table holds. Returns whether c's run was empty.
+    fn revoke_step(&mut self, root: usize, c: usize) -> (done: bool)
+        requires
+            old(self).wf(),
+            c < NODE_SPACE,
+            old(self).is_cap(c),
+            old(self).tables.owner@[page_of(c)].0 == root,
+        ensures
+            final(self).wf(),
+            final(self).is_cap(c),
+            final(self).tables.owner == old(self).tables.owner,
+            final(self).list.parent == old(self).list.parent,
+            done == old(self).list.childless(c),
+            done ==> *final(self) == *old(self),
+            done ==> forall|x: usize| !#[trigger] old(self).list.is_child(c, x),
+            !done ==> final(self).list.seq@.len() == old(self).list.seq@.len() - 1,
+            !done ==> exists|r: usize| #[trigger] revoked_one(old(self).list, final(self).list, c, r)
+                && (old(self).list.nodes@[r as int].kind is Hidden ==> !final(self).tables.attached(r)),
+            forall|x: int| 0 <= x < NODE_SPACE ==> #[trigger] final(self).list.nodes@[x].depth == old(self).list.nodes@[x].depth,
+            discharges(old(self).view(), final(self).view(), root, Effect::Revoke { cap: c }),
+    {
+        let ghost pre = *old(self);
+        proof {
+            pre.lemma_no_change_discharges_revoke(root, c);
+        }
         let r = match self.list.leaf_of_run(c) {
             Some(found) => found,
-            None => { return RevokeStep::Done; },
+            None => { return true; },
         };
         self.unlink_arm(r);
         self.list.remove_leaf(r);
@@ -113,8 +186,12 @@ impl CapKernel {
             Self::lemma_revoke_hidden(pre, post, r);
             Self::lemma_tlb_same(pre, post);
             assert(revoked_one(pre.list, post.list, c, r));
+            let p = choose|p: int| 0 <= p < pre.list.seq@.len() && pre.list.seq@[p] == r
+                && post.list.seq@ == pre.list.seq@.remove(p);
+            assert(post.list.nodes@[c as int].live == pre.list.nodes@[c as int].live);
+            Self::lemma_caps_frame(pre, post, r, r, c);
         }
-        RevokeStep::Again
+        false
     }
 
     /// A step that changes nothing, with the capability held, discharges a revoke of it.
