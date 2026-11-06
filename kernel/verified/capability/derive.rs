@@ -237,6 +237,7 @@ impl CapKernel {
             Self::lemma_derive_caps_wf(pre, post, child);
             pre.lemma_slot(root, to);
             Self::lemma_hidden_frame(pre, post, child, child);
+            Self::lemma_table_nodes_caps_frame(pre, post, child, child);
             Self::lemma_derive_holders(pre, post, parent, child, block);
             lemma_parents_derived(pre.list, post.list, parent, child);
             Self::lemma_derive_discharges(pre, post, root, from, to);

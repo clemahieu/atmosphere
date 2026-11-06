@@ -416,6 +416,7 @@ impl CapKernel {
             assert(payload_wf(post.payload_of(child)));
             Self::lemma_derive_caps_wf(pre, post, child);
             Self::lemma_hidden_frame(pre, post, child, child);
+            Self::lemma_table_nodes_caps_frame(pre, post, child, child);
             Self::lemma_retype_holders(pre, post, child, base, order);
             lemma_parents_derived(pre.list, post.list, parent, child);
             Self::lemma_tlb_same(pre, post);
@@ -840,6 +841,7 @@ impl CapKernel {
             Self::lemma_leaf_nodes(pre, post, mid, parent, base);
             Self::lemma_leaf_first(pre, post, base);
             Self::lemma_leaf_slots(pre, post, base);
+            Self::lemma_table_nodes_frame(pre, post, base, base);
             assert forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x) by {
                 Self::lemma_leaf_cap(pre, post, base, x);
             }
