@@ -155,6 +155,7 @@ impl CapKernel {
         &&& self.view().holds_right(root, untyped, Right::Retype)
         &&& self.leaf_is_empty(base)
         &&& self.no_stale_translation(page)
+        &&& self.no_stale_translation((page + 1) as usize)
         &&& post.blocks.pages@[page as int].kind is Free
         &&& post.blocks.pages@[page + 1int].kind is Free
         &&& !post.tables.owner@.contains_key(base)
@@ -172,6 +173,7 @@ impl CapKernel {
             c < NUM_CPUS,
             old(self).tables.roots@.contains_key(root),
             !old(self).mapped@.contains(base / 4096),
+            old(self).blocks.pages@[(base / 4096) as int].object is TableLeaf ==> !old(self).mapped@.contains((base / 4096 + 1) as usize),
         ensures
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
@@ -180,7 +182,7 @@ impl CapKernel {
                 || old(self).can_unlink_leaf(root, from, base)
                 || (old(self).can_retype_under(root, from, base, 1) && old(self).leaf_is_empty(base))
                 || old(self).can_slice_leaf(root, from, base)) ==> ret is Refused,
-            ret is Again ==> !old(self).acknowledged(base / 4096),
+            ret is Again ==> !old(self).acknowledged(base / 4096) || !old(self).acknowledged((base / 4096 + 1) as usize),
             ret is Freed ==> old(self).frame_freed(*final(self), c, root, from, base)
                 || old(self).leaf_freed(*final(self), c, root, from, base),
             ret is Slice ==> old(self).leaf_sliced(*final(self), root, from, base),
@@ -459,6 +461,7 @@ impl CapKernel {
             c < NUM_CPUS,
             old(self).tables.roots@.contains_key(root),
             !old(self).mapped@.contains(base / 4096),
+            !old(self).mapped@.contains((base / 4096 + 1) as usize),
         ensures
             final(self).wf(),
             Self::same_tree(*old(self), *final(self)),
@@ -466,7 +469,7 @@ impl CapKernel {
             !(ret is Slice),
             !(ret is Freed) ==> *final(self) == *old(self),
             !(old(self).can_retype_under(root, from, base, 1) && old(self).leaf_is_empty(base)) ==> ret is Refused,
-            ret is Again ==> !old(self).acknowledged(base / 4096),
+            ret is Again ==> !old(self).acknowledged(base / 4096) || !old(self).acknowledged((base / 4096 + 1) as usize),
             ret is Freed ==> old(self).leaf_freed(*final(self), c, root, from, base),
     {
         let ghost pre = *old(self);
@@ -493,11 +496,19 @@ impl CapKernel {
         if !leaf || !self.leaf_nodes_dead(base) {
             return ReclaimStep::Refused;
         }
-        if !self.is_acknowledged(page) {
+        proof {
+            // A leaf's block is 2 pages, aligned to them, so the second lies in the range too.
+            assert(page + 1 < NUM_PAGES) by {
+                assert(base % 8192 == 0);
+                assert(page == base / 4096);
+            }
+        }
+        if !self.is_acknowledged(page) || !self.is_acknowledged(page + 1) {
             return ReclaimStep::Again;
         }
         proof {
             pre.lemma_acknowledged_is_clean(page);
+            pre.lemma_acknowledged_is_clean((page + 1) as usize);
         }
         self.free_empty_leaf(base);
         proof {
@@ -545,7 +556,9 @@ impl CapKernel {
             old(self).leaf_is_empty(base),
             old(self).blocks.pages@[(base / 4096) as int].refs == 0,
             !old(self).mapped@.contains(base / 4096),
+            !old(self).mapped@.contains((base / 4096 + 1) as usize),
             old(self).no_stale_translation(base / 4096),
+            old(self).no_stale_translation((base / 4096 + 1) as usize),
         ensures
             final(self).wf(),
             Self::same_tree(*old(self), *final(self)),
@@ -1140,13 +1153,17 @@ impl CapKernel {
             old(self).wf(),
             c < NUM_CPUS,
             old(self).tables.roots@.contains_key(root),
-            !old(self).mapped@.contains(base / 4096),
+            order == 9 ==> old(self).region_unmapped(Large::Two, base / 4096 / PAGES_PER_2M),
+            order == 18 ==> old(self).region_unmapped(Large::One, base / 4096 / PAGES_PER_1G),
         ensures
             final(self).wf(),
             Self::same_tree(*old(self), *final(self)),
             !(ret is Freed) ==> *final(self) == *old(self),
             !old(self).can_retype_under(root, from, base, order) ==> ret is Refused,
-            ret is Again ==> !old(self).acknowledged(base / 4096),
+            ret is Again ==> {
+                let level = if order == 9 { Large::Two } else { Large::One };
+                !old(self).region_acknowledged(level, base / 4096 / level_pages(level))
+            },
             ret is Freed ==> {
                 let untyped = old(self).tables.node_of(root, from);
                 let level = if order == 9 { Large::Two } else { Large::One };
@@ -1155,7 +1172,7 @@ impl CapKernel {
                 &&& r < level_regions(level)
                 &&& old(self).view().holds_right(root, untyped, Right::Retype)
                 &&& old(self).region_is_dead(level, r)
-                &&& old(self).no_stale_translation(base / 4096)
+                &&& old(self).region_clean(level, r)
                 &&& !block_typed(&final(self).blocks, level_ref(level, r))
                 &&& forall|i: usize| #[trigger] block_has_page(level_ref(level, r), i) ==> !final(self).frames@.contains_key(i)
                 &&& Self::step_ok(*old(self), *final(self), c as int)
@@ -1176,11 +1193,11 @@ impl CapKernel {
             return ReclaimStep::Refused;
         }
         let page = base / 4096;
-        if !self.is_acknowledged(page) {
+        if !self.is_region_acknowledged(level, r) {
             return ReclaimStep::Again;
         }
         proof {
-            pre.lemma_acknowledged_is_clean(page);
+            pre.lemma_region_acknowledged_is_clean(level, r);
             assert(pre.holders@.contains_key(level_ref(level, r)));
             assert(block_refs(&pre.blocks, level_ref(level, r)) == 0);
         }
@@ -1203,8 +1220,8 @@ impl CapKernel {
             c < NUM_CPUS,
             r < level_regions(level),
             old(self).region_is_dead(level, r),
-            !old(self).mapped@.contains(level_base(level, r)),
-            old(self).no_stale_translation(level_base(level, r)),
+            old(self).region_unmapped(level, r),
+            old(self).region_clean(level, r),
         ensures
             Self::same_tree(*old(self), *final(self)),
             Self::step_ok(*old(self), *final(self), c as int),
