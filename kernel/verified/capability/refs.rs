@@ -144,6 +144,10 @@ pub open spec fn objects_wf(tables: &Tables, blocks: &BlockTable, holders: IMap<
         &&& blocks.pages@[(l / 4096) as int].kind is Base
         &&& blocks.pages@[(l / 4096) as int].object is TableLeaf
     }
+    &&& forall|r: usize| r < NUM_2M && (#[trigger] blocks.regions_2m@[r as int]).typed
+        && blocks.regions_2m@[r as int].refs == 0 ==> holders.contains_key(BlockRef::Two(r))
+    &&& forall|r: usize| r < NUM_1G && (#[trigger] blocks.regions_1g@[r as int]).typed
+        && blocks.regions_1g@[r as int].refs == 0 ==> holders.contains_key(BlockRef::One(r))
 }
 
 /// Page i is a page of this block. A small block with a holder is a one-page frame.
@@ -209,6 +213,73 @@ pub proof fn lemma_objects_refs_changed(
         assert(b.pages@[(l / 4096) as int].kind == a.pages@[(l / 4096) as int].kind);
         assert(b.pages@[(l / 4096) as int].object == a.pages@[(l / 4096) as int].object);
     }
+    assert forall|r: usize| r < NUM_2M && (#[trigger] b.regions_2m@[r as int]).typed
+        && b.regions_2m@[r as int].refs == 0 implies hb.contains_key(BlockRef::Two(r)) by {
+        assert(block_typed(a, BlockRef::Two(r)));
+        if BlockRef::Two(r) != br {
+            assert(block_refs(b, BlockRef::Two(r)) == block_refs(a, BlockRef::Two(r)));
+        }
+    }
+    assert forall|r: usize| r < NUM_1G && (#[trigger] b.regions_1g@[r as int]).typed
+        && b.regions_1g@[r as int].refs == 0 implies hb.contains_key(BlockRef::One(r)) by {
+        assert(block_typed(a, BlockRef::One(r)));
+        if BlockRef::One(r) != br {
+            assert(block_refs(b, BlockRef::One(r)) == block_refs(a, BlockRef::One(r)));
+        }
+    }
+}
+
+/// A typed large block shares no page with any other block: nothing else is typed inside it or around
+/// it. So taking its pages' permissions leaves every other block's alone.
+pub proof fn lemma_large_block_alone(blocks: &BlockTable, level: Large, r: usize, x: BlockRef, i: usize)
+    requires
+        blocks.wf(),
+        r < level_regions(level),
+        block_typed(blocks, level_ref(level, r)),
+        block_typed(blocks, x),
+        x != level_ref(level, r),
+        block_has_page(level_ref(level, r), i),
+        block_has_page(x, i),
+    ensures
+        false,
+{
+    assert(i < NUM_PAGES);
+    match level {
+        Large::Two => {
+            assert(region_2m(i as int) == r as int);
+            blocks.lemma_zero_2m_is_free(r as int, i as int);
+            match x {
+                BlockRef::Small(b) => {
+                    assert(blocks.pages@[b as int].kind is Base);
+                },
+                BlockRef::Two(q) => {
+                    assert(q == r);
+                },
+                BlockRef::One(q) => {
+                    lemma_region_of_region(i as int);
+                    assert((r / 512) as int == q as int);
+                    assert(!blocks.regions_1g@[(r as int) / 512].typed);
+                },
+            }
+        },
+        Large::One => {
+            assert(region_1g(i as int) == r as int);
+            blocks.lemma_zero_1g_is_free(r as int, i as int);
+            match x {
+                BlockRef::Small(b) => {
+                    assert(blocks.pages@[b as int].kind is Base);
+                },
+                BlockRef::Two(q) => {
+                    lemma_region_of_region(i as int);
+                    assert((q / 512) as int == r as int);
+                    assert(!blocks.regions_1g@[(q as int) / 512].typed);
+                },
+                BlockRef::One(q) => {
+                    assert(q == r);
+                },
+            }
+        },
+    }
 }
 
 /// Typing a free small block keeps the types: nothing with a holder entry or an owner was free.
@@ -228,6 +299,8 @@ pub proof fn lemma_objects_small_typed(
         forall|k: int| 0 < k < size ==> (#[trigger] b.pages@[base + k]).kind is Member,
         b.pages@[base as int].object is Frame ==> b.pages@[base as int].order == 0,
         b.pages@[base as int].refs == 1,
+        b.regions_2m@ == a.regions_2m@,
+        b.regions_1g@ == a.regions_1g@,
     ensures
         objects_wf(tables, b, holders),
 {
@@ -1103,10 +1176,24 @@ pub proof fn lemma_small_range_uncovered(blocks: &BlockTable, base: usize, order
 {
     if order == 0 {
         assert(i == base);
-    } else if order == 1 {
-        assert(base % 2 == 0 && i < base + 2);
     } else {
-        assert(base % 8 == 0 && i < base + 8);
+        // A block of 2 or 8 pages is aligned to its size, so it does not cross a 2M or 1G boundary.
+        let n: int = if order == 1 { 2 } else { 8 };
+        assert(base as int % n == 0);
+        assert(i as int / 512 == base as int / 512) by (nonlinear_arith)
+            requires
+                n == 2 || n == 8,
+                base as int % n == 0,
+                base as int <= i as int,
+                (i as int) < (base as int + n),
+        ;
+        assert(i as int / 262144 == base as int / 262144) by (nonlinear_arith)
+            requires
+                n == 2 || n == 8,
+                base as int % n == 0,
+                base as int <= i as int,
+                (i as int) < (base as int + n),
+        ;
     }
 }
 
