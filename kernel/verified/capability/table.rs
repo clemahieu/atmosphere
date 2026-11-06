@@ -864,6 +864,81 @@ impl Tables {
         }
     }
 
+    /// Takes a detached leaf with no live node out of the tables, handing back its payload page. It held
+    /// nothing that is still a capability, so nothing else changes.
+    pub fn give_back_leaf(&mut self, list: &Tree, leaf: usize) -> (ret: Tracked<PagePerm4k>)
+        requires
+            old(self).wf(list),
+            old(self).owner@.contains_key(leaf),
+            !old(self).attached(leaf),
+            forall|k: int| 0 <= k < NODES_PER_PAGE ==> !(#[trigger] list.nodes@[leaf + k]).live,
+        ensures
+            final(self).wf(list),
+            final(self).roots == old(self).roots,
+            final(self).owner@ == old(self).owner@.remove(leaf),
+            final(self).payloads@ == old(self).payloads@.remove(leaf),
+            ret@.addr() == leaf + 4096,
+            ret@.is_uninit(),
+            forall|n: usize| #[trigger] final(self).is_cap(list, n) == old(self).is_cap(list, n),
+            forall|n: usize| page_of(n) != leaf ==> #[trigger] final(self).payload_of(n) == old(self).payload_of(n),
+    {
+        let ghost pre = *old(self);
+        let tracked page;
+        proof {
+            pre.lemma_leaf(list, leaf);
+            let tracked mut payloads = self.payloads.borrow_mut().tracked_remove(leaf);
+            payloads.leak_contents();
+            page = crate::layouts::payload_page_into_page(payloads);
+            self.owner = Ghost(pre.owner@.remove(leaf));
+            let me = *self;
+            assert(me.roots_wf()) by {
+                reveal(Tables::roots_wf);
+                assert forall|t: usize| #[trigger] me.roots@.contains_key(t) implies me.root_wf(t) by {
+                    pre.lemma_root(t);
+                    assert forall|s: int| 0 <= s < ROOT_ENTRIES && #[trigger] me.leaf(t, s) != NO_LEAF implies {
+                        &&& me.owner@.contains_key(me.leaf(t, s))
+                        &&& me.owner@[me.leaf(t, s)] == (t, s)
+                        &&& me.attached(me.leaf(t, s))
+                    } by {
+                        pre.lemma_entry(t, s);
+                        assert(pre.leaf(t, s) != leaf);
+                        assert(me.payloads@[pre.leaf(t, s)] == pre.payloads@[pre.leaf(t, s)]);
+                    }
+                }
+            }
+            assert(me.leaves_wf(list)) by {
+                reveal(Tables::leaves_wf);
+                assert forall|l: usize| #[trigger] me.owner@.contains_key(l) implies me.leaf_wf(list, l) by {
+                    pre.lemma_leaf(list, l);
+                    assert(me.payloads@[l] == pre.payloads@[l]);
+                    if pre.attached(l) {
+                        let (t, s) = pre.owner@[l];
+                        assert(me.leaf(t, s) == pre.leaf(t, s));
+                    }
+                }
+            }
+            assert forall|n: usize| #[trigger] me.is_cap(list, n) == pre.is_cap(list, n) by {
+                if pre.is_cap(list, n) && page_of(n) == leaf {
+                    Self::lemma_node_in_leaf(leaf, n);
+                    assert(list.nodes@[leaf + (n % 4096) as int] == list.nodes@[n as int]);
+                }
+            }
+            assert forall|n: usize| page_of(n) != leaf implies #[trigger] me.payload_of(n) == pre.payload_of(n) by {
+                assert(me.payloads@[page_of(n)] == pre.payloads@[page_of(n)]);
+            }
+        }
+        Tracked(page)
+    }
+
+    /// A node on a leaf's page is the leaf's address and its offset. On its own, for the modulus.
+    proof fn lemma_node_in_leaf(leaf: usize, n: usize)
+        requires
+            page_of(n) == leaf,
+        ensures
+            n as int == leaf + (n % 4096) as int,
+    {
+    }
+
     /// Reads what the capability in a slot says.
     pub fn payload_at(&self, list: &Tree, n: usize) -> (ret: Payload)
         requires
