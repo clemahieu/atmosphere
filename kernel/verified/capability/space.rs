@@ -148,6 +148,9 @@ pub struct Spaces {
     /// most a spare IPI.
     pub loaded: Tracked<Map<usize, PointsTo<SpaceCores>>>,
     pub holders: Ghost<IMap<usize, Set<usize>>>,
+    /// The devices bound to each IO space, each holding a reference to its block. atmo-6x9.16.14 binds
+    /// the first.
+    pub bound: Ghost<IMap<usize, Set<usize>>>,
     /// The kernel's entries, which every process root holds in its kernel slots.
     pub kernel_entries: Array<usize, KERNEL_MEM_END_L4INDEX>,
 }
@@ -160,12 +163,14 @@ impl Spaces {
             ret.records@ == Map::<usize, PointsTo<SpaceRecord>>::empty(),
             ret.loaded@ == Map::<usize, PointsTo<SpaceCores>>::empty(),
             ret.holders@ == IMap::<usize, Set<usize>>::empty(),
+            ret.bound@ == IMap::<usize, Set<usize>>::empty(),
     {
         Spaces {
             roots: Tracked(Map::tracked_empty()),
             records: Tracked(Map::tracked_empty()),
             loaded: Tracked(Map::tracked_empty()),
             holders: Ghost(IMap::empty()),
+            bound: Ghost(IMap::empty()),
             kernel_entries,
         }
     }
@@ -178,7 +183,8 @@ pub open spec fn space_block(blocks: &BlockTable, b: usize) -> bool {
 }
 
 /// The space at s has its record, the root table its record points at, its list of cores and its node
-/// pages. Its block's references are exactly its holders, and it is dead at once when they go.
+/// pages. Its block's references are exactly its holders and the devices bound to it, and it is dead at
+/// once when they go. A process space has no device bound.
 pub open spec fn space_wf(list: &Tree, spaces: &Spaces, blocks: &BlockTable, s: usize) -> bool {
     &&& s % 32768 == 0
     &&& s / 4096 < NUM_PAGES
@@ -200,7 +206,10 @@ pub open spec fn space_wf(list: &Tree, spaces: &Spaces, blocks: &BlockTable, s: 
     &&& spaces.holders@.contains_key(s)
     &&& kernel_slots_wf(spaces, s)
     &&& spaces.holders@[s].finite()
-    &&& spaces.holders@[s].len() == blocks.pages@[(s / 4096) as int].refs
+    &&& spaces.bound@.contains_key(s)
+    &&& spaces.bound@[s].finite()
+    &&& spaces.records@[s].value().kind is Process ==> spaces.bound@[s] == Set::<usize>::empty()
+    &&& spaces.holders@[s].len() + spaces.bound@[s].len() == blocks.pages@[(s / 4096) as int].refs
     &&& blocks.pages@[(s / 4096) as int].refs == 0 ==> blocks.pages@[(s / 4096) as int].dead
 }
 
@@ -1224,6 +1233,28 @@ impl CapKernel {
         self.blocks.lemma_not_free_uncovered((s / 4096) as int);
     }
 
+    /// The root of the space at s may go: its block has no reference left, so no capability names it and
+    /// no device is bound to it.
+    pub open spec fn root_may_go(&self, s: usize) -> bool {
+        self.blocks.pages@[(s / 4096) as int].refs == 0
+    }
+
+    /// A device bound to a space holds a reference to its block, so the root may not go.
+    pub proof fn lemma_bound_keeps_root(&self, s: usize, d: usize)
+        requires
+            self.wf(),
+            self.spaces.roots@.contains_key(s),
+            self.spaces.bound@[s].contains(d),
+        ensures
+            self.blocks.pages@[(s / 4096) as int].refs > 0,
+            !self.root_may_go(s),
+    {
+        assert(space_wf(&self.list, &self.spaces, &self.blocks, s));
+        if self.spaces.bound@[s].len() == 0 {
+            self.spaces.bound@[s].lemma_len0_is_empty();
+        }
+    }
+
     /// The spaces after space capability n, the only capability that changed, joins space s with one
     /// more reference on its block.
     pub proof fn lemma_spaces_holder_added(pre: Self, post: Self, n: usize, s: usize)
@@ -1249,6 +1280,7 @@ impl CapKernel {
             post.spaces.records == pre.spaces.records,
             post.spaces.loaded == pre.spaces.loaded,
             post.spaces.kernel_entries == pre.spaces.kernel_entries,
+            post.spaces.bound == pre.spaces.bound,
             post.spaces.holders@ == pre.spaces.holders@.insert(s, pre.spaces.holders@[s].insert(n)),
             forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) ==> post.list.pages@.dom().contains(p),
         ensures
@@ -1326,6 +1358,7 @@ impl CapKernel {
             post.spaces.records == pre.spaces.records,
             post.spaces.loaded == pre.spaces.loaded,
             post.spaces.kernel_entries == pre.spaces.kernel_entries,
+            post.spaces.bound == pre.spaces.bound,
             post.spaces.holders@ == pre.spaces.holders@.insert(s, pre.spaces.holders@[s].remove(n)),
             forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) ==> post.list.pages@.dom().contains(p),
         ensures
@@ -2272,6 +2305,7 @@ impl CapKernel {
             kernel_slots_wf(&post.spaces, base),
             root_record_wf(&post.spaces, base),
             post.spaces.holders@ == pre.spaces.holders@.insert(base, set![child]),
+            post.spaces.bound@ == pre.spaces.bound@.insert(base, Set::<usize>::empty()),
             !pre.list.nodes@[child as int].live,
             post.is_cap(child),
             post.payload_of(child) == space_of(base),
@@ -2484,6 +2518,7 @@ impl CapKernel {
                         == space_mapping(tree_of(&old(self).table_pages, &old(self).spaces), r)
                 &&& forall|i: usize| i < 512 && !holds_kernel(kind, i) ==> #[trigger] final(self).spaces.roots@[base].value()[i].is_empty()
                 &&& final(self).spaces.kernel_entries == old(self).spaces.kernel_entries
+                &&& final(self).spaces.bound@ == old(self).spaces.bound@.insert(base, Set::<usize>::empty())
                 &&& forall|s: usize| #[trigger] old(self).spaces.roots@.contains_key(s) ==> final(self).spaces.roots@[s] == old(self).spaces.roots@[s]
                 &&& final(self).blocks.pages@[(base / 4096) as int].refs == 1
                 &&& discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base })
@@ -2595,6 +2630,7 @@ impl CapKernel {
             Payload { kind: CapKind::Space, order: 3, rights: SPACE_RIGHTS, base, badge: 0, reserved: 0 },
         );
         self.spaces.holders = Ghost(pre.spaces.holders@.insert(base, set![child]));
+        self.spaces.bound = Ghost(pre.spaces.bound@.insert(base, Set::<usize>::empty()));
         proof {
             let post = *self;
             assert forall|x: usize| #[trigger] pre.list.valid(x) && x != child implies {
