@@ -70,17 +70,23 @@ impl CapKernel {
             assert(n != pre.list.seq@[0]);
         }
         self.list.remove_leaf(n);
-        let frame = match payload.kind {
-            CapKind::Frame => true,
-            _ => false,
-        };
-        if frame {
-            proof {
-                lemma_holder_refs(&pre.list, &pre.tables, &pre.blocks, &pre.zeroing, pre.holders@, n);
-            }
-            let br = locate(&self.blocks, payload.base / 4096);
-            drop_block_ref(&mut self.blocks, br);
-            self.holders = Ghost(pre.holders@.insert(br, pre.holders@[br].remove(n)));
+        match payload.kind {
+            CapKind::Frame => {
+                proof {
+                    lemma_holder_refs(&pre.list, &pre.tables, &pre.blocks, &pre.zeroing, pre.holders@, n);
+                }
+                let br = locate(&self.blocks, payload.base / 4096);
+                drop_block_ref(&mut self.blocks, br);
+                self.holders = Ghost(pre.holders@.insert(br, pre.holders@[br].remove(n)));
+            },
+            CapKind::Space => {
+                proof {
+                    pre.lemma_space_cap(n);
+                }
+                drop_block_ref(&mut self.blocks, BlockRef::Small(payload.base / 4096));
+                self.spaces.holders = Ghost(pre.spaces.holders@.insert(payload.base, pre.spaces.holders@[payload.base].remove(n)));
+            },
+            _ => {},
         }
         proof {
             let post = *self;
@@ -101,7 +107,8 @@ impl CapKernel {
     }
 
     /// The holders after node n goes, the only node that changed: a frame capability leaves its block,
-    /// and any other node held nothing. With them, what the blocks owe the rest of the invariant.
+    /// a space capability leaves its space, and any other node held nothing. With them, what the
+    /// blocks owe the rest of the invariant.
     pub proof fn lemma_delete_holders(pre: Self, post: Self, n: usize)
         requires
             Self::caps_frame(pre, post, n, n),
@@ -121,8 +128,26 @@ impl CapKernel {
                     block_dead(&pre.blocks, br) || block_refs(&pre.blocks, br) == 1,
                 )
                 &&& post.holders@ == pre.holders@.insert(br, pre.holders@[br].remove(n))
+                &&& post.spaces == pre.spaces
             },
-            !(pre.is_cap(n) && pre.payload_of(n).kind is Frame) ==> post.blocks == pre.blocks && post.holders == pre.holders,
+            pre.is_cap(n) && pre.payload_of(n).kind is Space ==> {
+                let s = pre.payload_of(n).base;
+                let br = BlockRef::Small(s / 4096);
+                &&& blocks_refs_changed(
+                    &pre.blocks,
+                    &post.blocks,
+                    br,
+                    (block_refs(&pre.blocks, br) - 1) as usize,
+                    block_dead(&pre.blocks, br) || block_refs(&pre.blocks, br) == 1,
+                )
+                &&& post.holders == pre.holders
+                &&& post.spaces.roots == pre.spaces.roots
+                &&& post.spaces.records == pre.spaces.records
+                &&& post.spaces.spare == pre.spaces.spare
+                &&& post.spaces.holders@ == pre.spaces.holders@.insert(s, pre.spaces.holders@[s].remove(n))
+            },
+            !(pre.is_cap(n) && (pre.payload_of(n).kind is Frame || pre.payload_of(n).kind is Space))
+                ==> post.blocks == pre.blocks && post.holders == pre.holders && post.spaces == pre.spaces,
         ensures
             holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
             zeroing_typed(&post.zeroing, &post.blocks),
@@ -130,6 +155,7 @@ impl CapKernel {
             objects_wf(&post.tables, &post.blocks, post.holders@),
             leaf_blocks_wf(&post.list, &post.tables, &post.blocks),
             table_pages_wf(&post.list, &post.table_pages, &post.blocks),
+            spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
     {
         assert forall|x: usize| x != n implies {
             &&& #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x)
@@ -194,10 +220,43 @@ impl CapKernel {
                 (block_refs(&pre.blocks, br) - 1) as usize,
                 block_dead(&pre.blocks, br) || block_refs(&pre.blocks, br) == 1,
             );
+            lemma_spaces_refs_changed(
+                &pre.list,
+                &pre.tables,
+                &post.list,
+                &post.tables,
+                &pre.spaces,
+                &pre.blocks,
+                &post.blocks,
+                br,
+                (block_refs(&pre.blocks, br) - 1) as usize,
+                block_dead(&pre.blocks, br) || block_refs(&pre.blocks, br) == 1,
+            );
+        } else if pre.is_cap(n) && pre.payload_of(n).kind is Space {
+            let s = pre.payload_of(n).base;
+            let br = BlockRef::Small(s / 4096);
+            let refs = (block_refs(&pre.blocks, br) - 1) as usize;
+            let dead = block_dead(&pre.blocks, br) || block_refs(&pre.blocks, br) == 1;
+            pre.lemma_space_cap(n);
+            lemma_holders_same_frames(&pre.list, &pre.tables, &post.list, &post.tables, &pre.blocks, &pre.zeroing, pre.holders@);
+            assert(!pre.holders@.contains_key(br)) by {
+                if pre.holders@.contains_key(br) {
+                    assert(pre.blocks.pages@[(s / 4096) as int].object is Frame);
+                }
+            }
+            lemma_holders_unkeyed_small_changed(&post.list, &post.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, s / 4096, refs, dead);
+            lemma_zeroing_typed_small_changed(&pre.zeroing, &pre.blocks, &post.blocks, s / 4096, refs, dead);
+            lemma_list_pages_used_same_kinds(&pre.list, &pre.blocks, &post.blocks);
+            assert(objects_wf(&post.tables, &pre.blocks, pre.holders@));
+            lemma_objects_unframed_block_changed(&post.tables, &pre.blocks, &post.blocks, pre.holders@, s / 4096, refs, dead);
+            lemma_leaf_blocks_other_changed(&pre.list, &post.list, &post.tables, &pre.blocks, &post.blocks, pre.holders@, s / 4096, refs, dead);
+            lemma_table_pages_refs_changed(&pre.list, &post.list, &pre.table_pages, &pre.blocks, &post.blocks, br, refs, dead);
+            Self::lemma_spaces_holder_dropped(pre, post, n, s);
         } else {
             lemma_holders_same_frames(&pre.list, &pre.tables, &post.list, &post.tables, &pre.blocks, &pre.zeroing, pre.holders@);
             lemma_leaf_blocks_same_nodes(&pre.list, &post.list, &post.tables, &post.blocks);
             lemma_table_pages_same_nodes(&pre.list, &post.list, &pre.table_pages, &post.blocks);
+            lemma_spaces_same_caps(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks);
         }
     }
 

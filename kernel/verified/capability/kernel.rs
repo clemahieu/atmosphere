@@ -51,6 +51,8 @@ pub struct CapKernel {
     pub frames: Tracked<Map<usize, PagePerm4k>>,
     /// The table pages' tables and spare pages.
     pub table_pages: TablePages,
+    /// The spaces, each a root table named by capabilities.
+    pub spaces: Spaces,
     /// The large blocks being zeroed. Each is typed with no capability yet.
     pub zeroing: Zeroing,
     /// The frame capabilities holding each block's references.
@@ -307,6 +309,7 @@ pub open spec fn list_pages_used(list: &Tree, blocks: &BlockTable) -> bool {
         &&& !(blocks.pages@[(p / 4096) as int].kind is Free)
         &&& blocks.pages@[(p / 4096) as int].kind is Member
             ==> blocks.pages@[blocks.pages@[(p / 4096) as int].base as int].object is TablePage
+                || blocks.pages@[blocks.pages@[(p / 4096) as int].base as int].object is Space
         &&& !(blocks.pages@[(p / 4096) as int].object is Frame)
     }
 }
@@ -331,6 +334,7 @@ pub proof fn lemma_list_pages_used_same_kinds(list: &Tree, a: &BlockTable, b: &B
         &&& !(b.pages@[(p / 4096) as int].kind is Free)
         &&& b.pages@[(p / 4096) as int].kind is Member
             ==> b.pages@[b.pages@[(p / 4096) as int].base as int].object is TablePage
+                || b.pages@[b.pages@[(p / 4096) as int].base as int].object is Space
         &&& !(b.pages@[(p / 4096) as int].object is Frame)
     } by {
         let x = p / 4096;
@@ -389,6 +393,7 @@ impl CapKernel {
         &&& list_pages_used(&self.list, &self.blocks)
         &&& hidden_nodes_are_leaves(&self.list, &self.tables, &self.table_pages)
         &&& table_pages_wf(&self.list, &self.table_pages, &self.blocks)
+        &&& spaces_wf(&self.list, &self.tables, &self.spaces, &self.blocks)
         &&& capability_nodes_are_slots(&self.list, &self.tables)
         &&& parents_are_capabilities(&self.list)
         &&& first_node_outside_leaves(&self.list, &self.tables)
@@ -475,6 +480,7 @@ impl CapKernel {
         self.list = Tree::new(root, Tracked(perm));
         self.tables = Tables::new();
         self.table_pages = TablePages::new();
+        self.spaces = Spaces::new();
         self.frames = Tracked(Map::tracked_empty());
         self.zeroing.init();
         self.holders = Ghost(IMap::empty());
@@ -716,6 +722,7 @@ impl CapKernel {
             frames_held(post.frames@, post.holders@),
             leaf_blocks_wf(&post.list, &post.tables, &post.blocks),
             table_pages_wf(&post.list, &post.table_pages, &post.blocks),
+            spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
             post.list == pre.list,
             post.tables == pre.tables,
             post.table_pages == pre.table_pages,
@@ -752,6 +759,7 @@ impl CapKernel {
             frames_held(post.frames@, post.holders@),
             leaf_blocks_wf(&post.list, &post.tables, &post.blocks),
             table_pages_wf(&post.list, &post.table_pages, &post.blocks),
+            spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
         ensures
             post.wf(),
     {
@@ -937,6 +945,7 @@ impl CapKernel {
             post.list == pre.list,
             post.tables == pre.tables,
             post.table_pages == pre.table_pages,
+            post.spaces == pre.spaces,
             post.cores == pre.cores,
             post.flush_epoch == pre.flush_epoch,
             post.tlb == pre.tlb,
@@ -955,6 +964,11 @@ impl CapKernel {
             assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, t));
         }
         lemma_table_pages_small_freed(&pre.list, &post.list, &pre.table_pages, &pre.blocks, &post.blocks, base);
+        assert forall|s: usize, k: usize| #[trigger] pre.spaces.roots@.contains_key(s) && k < TABLE_NODE_PAGES
+            implies post.list.pages@.dom().contains(#[trigger] table_node_page(s, k)) by {
+            assert(space_wf(&pre.list, &pre.spaces, &pre.blocks, s));
+        }
+        lemma_spaces_small_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks, &post.blocks, base);
         assert forall|x: usize| #[trigger] post.holders@.contains_key(BlockRef::Small(x))
             implies post.blocks.pages@[x as int].object is Frame by {
             assert(x != base);
@@ -1070,6 +1084,7 @@ impl CapKernel {
             post.list == pre.list,
             post.tables == pre.tables,
             post.table_pages == pre.table_pages,
+            post.spaces == pre.spaces,
             post.cores == pre.cores,
             post.flush_epoch == pre.flush_epoch,
             post.tlb == pre.tlb,
@@ -1106,6 +1121,7 @@ impl CapKernel {
         lemma_leaf_blocks_same_pages(&pre.list, &pre.tables, &pre.blocks, &post.blocks);
         lemma_leaf_blocks_owned_same_types(&pre.tables, &pre.blocks, &post.blocks);
         lemma_table_pages_same_pages(&pre.list, &pre.table_pages, &pre.blocks, &post.blocks);
+        lemma_spaces_same_pages(&pre.list, &pre.tables, &pre.spaces, &pre.blocks, &post.blocks);
         Self::lemma_blocks_changed(pre, post);
     }
 

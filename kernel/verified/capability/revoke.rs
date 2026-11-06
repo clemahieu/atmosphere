@@ -74,11 +74,28 @@ impl CapKernel {
                 )
                 &&& final(self).holders@ == old(self).holders@.insert(br, old(self).holders@[br].remove(n))
             },
+            old(self).is_cap(n) && old(self).payload_of(n).kind is Space ==> {
+                let s = old(self).payload_of(n).base;
+                let br = BlockRef::Small(s / 4096);
+                &&& blocks_refs_changed(
+                    &old(self).blocks,
+                    &final(self).blocks,
+                    br,
+                    (block_refs(&old(self).blocks, br) - 1) as usize,
+                    block_dead(&old(self).blocks, br) || block_refs(&old(self).blocks, br) == 1,
+                )
+                &&& final(self).holders == old(self).holders
+                &&& final(self).spaces.holders@ == old(self).spaces.holders@.insert(s, old(self).spaces.holders@[s].remove(n))
+            },
+            !(old(self).is_cap(n) && old(self).payload_of(n).kind is Space) ==> final(self).spaces == old(self).spaces,
+            final(self).spaces.roots == old(self).spaces.roots,
+            final(self).spaces.records == old(self).spaces.records,
+            final(self).spaces.spare == old(self).spaces.spare,
             old(self).list.nodes@[n as int].kind is Hidden ==> {
                 &&& blocks_refs_changed(&old(self).blocks, &final(self).blocks, BlockRef::Small(n / 4096), 0, true)
                 &&& final(self).holders == old(self).holders
             },
-            !(old(self).is_cap(n) && old(self).payload_of(n).kind is Frame)
+            !(old(self).is_cap(n) && (old(self).payload_of(n).kind is Frame || old(self).payload_of(n).kind is Space))
                 && !(old(self).list.nodes@[n as int].kind is Hidden) ==> {
                 &&& final(self).blocks == old(self).blocks
                 &&& final(self).holders == old(self).holders
@@ -108,17 +125,23 @@ impl CapKernel {
                     assert(pre.is_cap(n));
                 }
                 let payload = self.tables.payload_at(&self.list, n);
-                let frame = match payload.kind {
-                    CapKind::Frame => true,
-                    _ => false,
-                };
-                if frame {
-                    proof {
-                        lemma_holder_refs(&pre.list, &pre.tables, &pre.blocks, &pre.zeroing, pre.holders@, n);
-                    }
-                    let br = locate(&self.blocks, payload.base / 4096);
-                    drop_block_ref(&mut self.blocks, br);
-                    self.holders = Ghost(pre.holders@.insert(br, pre.holders@[br].remove(n)));
+                match payload.kind {
+                    CapKind::Frame => {
+                        proof {
+                            lemma_holder_refs(&pre.list, &pre.tables, &pre.blocks, &pre.zeroing, pre.holders@, n);
+                        }
+                        let br = locate(&self.blocks, payload.base / 4096);
+                        drop_block_ref(&mut self.blocks, br);
+                        self.holders = Ghost(pre.holders@.insert(br, pre.holders@[br].remove(n)));
+                    },
+                    CapKind::Space => {
+                        proof {
+                            pre.lemma_space_cap(n);
+                        }
+                        drop_block_ref(&mut self.blocks, BlockRef::Small(payload.base / 4096));
+                        self.spaces.holders = Ghost(pre.spaces.holders@.insert(payload.base, pre.spaces.holders@[payload.base].remove(n)));
+                    },
+                    _ => {},
                 }
             },
             NodeKind::Mapping | NodeKind::Binding => {},
@@ -290,6 +313,7 @@ impl CapKernel {
             post.list.pages@.dom() == pre.list.pages@.dom(),
             blocks_refs_changed(&pre.blocks, &post.blocks, BlockRef::Small(n / 4096), 0, true),
             post.holders == pre.holders,
+            post.spaces == pre.spaces,
         ensures
             holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
             zeroing_typed(&post.zeroing, &post.blocks),
@@ -297,6 +321,7 @@ impl CapKernel {
             objects_wf(&post.tables, &post.blocks, post.holders@),
             leaf_blocks_wf(&post.list, &post.tables, &post.blocks),
             table_pages_wf(&post.list, &post.table_pages, &post.blocks),
+            spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
     {
         let br = BlockRef::Small(n / 4096);
         assert forall|x: usize| x != n implies {
@@ -308,6 +333,9 @@ impl CapKernel {
         pre.lemma_hidden_block(n);
         assert(!pre.is_cap(n));
         assert(!post.is_cap(n));
+        // The block is a leaf's or a table page's, so no space's.
+        assert(!(pre.blocks.pages@[(n / 4096) as int].object is Space));
+        lemma_spaces_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks, &post.blocks, br, 0, true);
         lemma_holders_same_frames(&pre.list, &pre.tables, &post.list, &post.tables, &pre.blocks, &pre.zeroing, pre.holders@);
         lemma_holders_unkeyed_small_changed(&post.list, &post.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, n / 4096, 0, true);
         lemma_zeroing_typed_small_changed(&pre.zeroing, &pre.blocks, &post.blocks, n / 4096, 0, true);
