@@ -8,6 +8,7 @@ use vstd::prelude::*;
 
 verus! {
 
+use crate::capability::mapping::*;
 use crate::capability::kernel::*;
 use crate::capability::list::*;
 use crate::capability::reach::*;
@@ -141,6 +142,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
         ensures
             final(self).wf(),
+            Self::same_tree(*old(self), *final(self)),
             !ret ==> *final(self) == *old(self),
             ret ==> {
                 let parent = old(self).tables.node_of(root, from);

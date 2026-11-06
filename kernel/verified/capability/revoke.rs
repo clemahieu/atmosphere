@@ -5,6 +5,7 @@ use vstd::prelude::*;
 
 verus! {
 
+use crate::capability::mapping::*;
 use crate::capability::block::*;
 use crate::capability::kernel::*;
 use crate::capability::list::*;
@@ -92,6 +93,7 @@ impl CapKernel {
             final(self).spaces.records == old(self).spaces.records,
             final(self).spaces.spare == old(self).spaces.spare,
             final(self).spaces.kernel_entries == old(self).spaces.kernel_entries,
+            Self::same_tree(*old(self), *final(self)),
             old(self).list.nodes@[n as int].kind is Hidden ==> {
                 &&& blocks_refs_changed(&old(self).blocks, &final(self).blocks, BlockRef::Small(n / 4096), 0, true)
                 &&& final(self).holders == old(self).holders
@@ -158,6 +160,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
         ensures
             final(self).wf(),
+            Self::same_tree(*old(self), *final(self)),
             ret is Refused == !(old(self).tables.has_slot(root, i) && old(self).is_cap(old(self).tables.node_of(root, i))),
             ret is Refused ==> *final(self) == *old(self),
             !(ret is Refused) ==> {
@@ -194,6 +197,7 @@ impl CapKernel {
                 steps <= REVOKE_BUDGET,
                 self.wf(),
                 pre == *old(self),
+                Self::same_tree(pre, *self),
                 pre.tables.has_slot(root, i),
                 c == pre.tables.node_of(root, i),
                 c < NODE_SPACE,
@@ -234,6 +238,7 @@ impl CapKernel {
             old(self).tables.owner@[page_of(c)].0 == root,
         ensures
             final(self).wf(),
+            Self::same_tree(*old(self), *final(self)),
             final(self).is_cap(c),
             final(self).tables.owner == old(self).tables.owner,
             final(self).list.parent == old(self).list.parent,
