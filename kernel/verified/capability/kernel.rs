@@ -10,6 +10,7 @@ use crate::array::Array;
 use crate::capability::block::*;
 use crate::capability::list::*;
 use crate::capability::table::Tables;
+use crate::capability::zero::*;
 use crate::define::*;
 use crate::pptr::PointsTo;
 
@@ -46,6 +47,8 @@ pub struct CapKernel {
     pub stale_epoch: Array<usize, NUM_PAGES>,
     /// The permission of each page of a frame, by page number.
     pub frames: Tracked<Map<usize, PagePerm4k>>,
+    /// The large blocks being zeroed. Each is typed with no capability yet.
+    pub zeroing: Zeroing,
 }
 
 /// Flushes every context on this core, all PCIDs and paging-structure caches: changing CR4.PGE does
@@ -69,6 +72,21 @@ pub fn flush_every_context(core: usize, epoch: usize) -> (ret: Tracked<Flushed>)
         );
     }
     Tracked::assume_new()
+}
+
+/// Each block being zeroed is a live typed region of the block table. It is what keeps a newly typed
+/// region, whose pages were not covered, apart from every block being zeroed.
+pub open spec fn zeroing_typed(z: &Zeroing, blocks: &BlockTable) -> bool {
+    forall|b: usize| #[trigger] z.blocks@.contains_key(b) ==> {
+        &&& z.blocks@[b] == PAGES_PER_2M ==> {
+            &&& blocks.regions_2m@[(b / PAGES_PER_2M) as int].typed
+            &&& !blocks.regions_2m@[(b / PAGES_PER_2M) as int].dead
+        }
+        &&& z.blocks@[b] == PAGES_PER_1G ==> {
+            &&& blocks.regions_1g@[(b / PAGES_PER_1G) as int].typed
+            &&& !blocks.regions_1g@[(b / PAGES_PER_1G) as int].dead
+        }
+    }
 }
 
 impl CapKernel {
@@ -95,6 +113,8 @@ impl CapKernel {
         &&& self.stale_epoch.wf()
         &&& self.tlb_wf()
         &&& self.frames_wf()
+        &&& self.zeroing.wf()
+        &&& zeroing_typed(&self.zeroing, &self.blocks)
     }
 
     /// A frame's permission is for its own page.
@@ -150,6 +170,9 @@ impl CapKernel {
         requires
             old(self).cores.wf(),
             old(self).stale_epoch.wf(),
+            old(self).zeroing.cursor.wf(),
+            old(self).zeroing.active_2m.wf(),
+            old(self).zeroing.active_1g.wf(),
             old(self).blocks.pages.wf(),
             old(self).blocks.regions_2m.wf(),
             old(self).blocks.regions_1g.wf(),
@@ -170,6 +193,7 @@ impl CapKernel {
         self.list = Tree::new(root, Tracked(perm));
         self.tables = Tables::new();
         self.frames = Tracked(Map::tracked_empty());
+        self.zeroing.init();
         self.blocks.init();
         let mut i = 0;
         while i != NUM_CPUS
@@ -180,6 +204,8 @@ impl CapKernel {
                 self.tables.wf(&self.list),
                 self.blocks.wf(),
                 self.stale_epoch.wf(),
+                self.zeroing.wf(),
+                self.zeroing.blocks@ == Map::<usize, usize>::empty(),
                 forall|c: int| 0 <= c < i ==> {
                     &&& (#[trigger] self.cores@[c]).current_thread.is_None()
                     &&& self.cores@[c].acked_epoch == 0
@@ -198,6 +224,8 @@ impl CapKernel {
                 self.tables.wf(&self.list),
                 self.blocks.wf(),
                 self.stale_epoch.wf(),
+                self.zeroing.wf(),
+                self.zeroing.blocks@ == Map::<usize, usize>::empty(),
                 forall|c: int| 0 <= c < NUM_CPUS ==> {
                     &&& (#[trigger] self.cores@[c]).current_thread.is_None()
                     &&& self.cores@[c].acked_epoch == 0
@@ -375,6 +403,28 @@ impl CapKernel {
         }
     }
 
+    /// Changing only the block table, the frames and the zeroing table keeps the invariant if each of
+    /// them keeps its own.
+    pub proof fn lemma_zeroing_changed(pre: Self, post: Self)
+        requires
+            pre.wf(),
+            post.blocks.wf(),
+            post.frames_wf(),
+            post.zeroing.wf(),
+            zeroing_typed(&post.zeroing, &post.blocks),
+            post.list == pre.list,
+            post.tables == pre.tables,
+            post.cores == pre.cores,
+            post.flush_epoch == pre.flush_epoch,
+            post.tlb == pre.tlb,
+            post.mapped == pre.mapped,
+            post.stale_epoch == pre.stale_epoch,
+        ensures
+            post.wf(),
+    {
+        Self::lemma_tlb_same(pre, post);
+    }
+
     /// Changing only the block table keeps the invariant.
     proof fn lemma_blocks_changed(pre: Self, post: Self)
         requires
@@ -388,6 +438,8 @@ impl CapKernel {
             post.mapped == pre.mapped,
             post.stale_epoch == pre.stale_epoch,
             post.frames == pre.frames,
+            post.zeroing == pre.zeroing,
+            zeroing_typed(&pre.zeroing, &post.blocks),
         ensures
             post.wf(),
     {
@@ -446,7 +498,24 @@ impl CapKernel {
     {
         let ghost pre = *old(self);
         self.blocks.free_2m(r, Tracked(perms));
-        proof { Self::lemma_blocks_changed(pre, *self); }
+        proof {
+            assert forall|b: usize| #[trigger] pre.zeroing.blocks@.contains_key(b) implies {
+                &&& pre.zeroing.blocks@[b] == PAGES_PER_2M ==> {
+                    &&& self.blocks.regions_2m@[(b / PAGES_PER_2M) as int].typed
+                    &&& !self.blocks.regions_2m@[(b / PAGES_PER_2M) as int].dead
+                }
+                &&& pre.zeroing.blocks@[b] == PAGES_PER_1G ==> {
+                    &&& self.blocks.regions_1g@[(b / PAGES_PER_1G) as int].typed
+                    &&& !self.blocks.regions_1g@[(b / PAGES_PER_1G) as int].dead
+                }
+            } by {
+                assert(pre.zeroing.block_level(b));
+                if pre.zeroing.blocks@[b] == PAGES_PER_2M {
+                    assert((b / PAGES_PER_2M) as int != r as int);
+                }
+            }
+            Self::lemma_blocks_changed(pre, *self);
+        }
     }
 
     /// As free_block, for a 1G block.
@@ -468,7 +537,24 @@ impl CapKernel {
     {
         let ghost pre = *old(self);
         self.blocks.free_1g(r, Tracked(perms));
-        proof { Self::lemma_blocks_changed(pre, *self); }
+        proof {
+            assert forall|b: usize| #[trigger] pre.zeroing.blocks@.contains_key(b) implies {
+                &&& pre.zeroing.blocks@[b] == PAGES_PER_2M ==> {
+                    &&& self.blocks.regions_2m@[(b / PAGES_PER_2M) as int].typed
+                    &&& !self.blocks.regions_2m@[(b / PAGES_PER_2M) as int].dead
+                }
+                &&& pre.zeroing.blocks@[b] == PAGES_PER_1G ==> {
+                    &&& self.blocks.regions_1g@[(b / PAGES_PER_1G) as int].typed
+                    &&& !self.blocks.regions_1g@[(b / PAGES_PER_1G) as int].dead
+                }
+            } by {
+                assert(pre.zeroing.block_level(b));
+                if pre.zeroing.blocks@[b] == PAGES_PER_1G {
+                    assert((b / PAGES_PER_1G) as int != r as int);
+                }
+            }
+            Self::lemma_blocks_changed(pre, *self);
+        }
     }
 
     /// Core c acknowledges a flush of every context it did. Between that flush and this call c runs

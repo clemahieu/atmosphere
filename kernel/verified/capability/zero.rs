@@ -30,9 +30,115 @@ pub struct Zeroing {
     pub perms: Tracked<Map<usize, PagePerm4k>>,
     /// The block being zeroed at each base, in pages.
     pub blocks: Ghost<Map<usize, usize>>,
+    /// Which 2M and 1G regions are being zeroed, for a later retype to read.
+    pub active_2m: Array<bool, NUM_2M>,
+    pub active_1g: Array<bool, NUM_1G>,
+}
+
+/// A block of this level, in pages.
+pub open spec fn level_pages(level: Large) -> usize {
+    match level {
+        Large::Two => PAGES_PER_2M,
+        Large::One => PAGES_PER_1G,
+    }
+}
+
+/// How many regions this level has.
+pub open spec fn level_regions(level: Large) -> usize {
+    match level {
+        Large::Two => NUM_2M,
+        Large::One => NUM_1G,
+    }
+}
+
+/// The first page of region r.
+pub open spec fn level_base(level: Large, r: usize) -> usize {
+    (r * level_pages(level)) as usize
+}
+
+/// A region's pages are the range from its base.
+pub proof fn lemma_level_pages(level: Large, r: usize)
+    requires
+        r < level_regions(level),
+    ensures
+        BlockTable::large_pages(level, r as int).finite(),
+        forall|i: usize| #[trigger] BlockTable::large_pages(level, r as int).contains(i)
+            == (level_base(level, r) <= i < level_base(level, r) + level_pages(level)),
+{
+    match level {
+        Large::Two => {
+            range_set_properties::<usize>((r * 512) as usize, ((r + 1) * 512) as usize);
+        },
+        Large::One => {
+            range_set_properties::<usize>((r * 262144) as usize, ((r + 1) * 262144) as usize);
+        },
+    }
+}
+
+pub fn pages_of_level(level: Large) -> (ret: usize)
+    ensures
+        ret == level_pages(level),
+{
+    match level {
+        Large::Two => PAGES_PER_2M,
+        Large::One => PAGES_PER_1G,
+    }
 }
 
 impl Zeroing {
+    pub open spec fn active(&self, level: Large, r: usize) -> bool {
+        match level {
+            Large::Two => self.active_2m@[r as int],
+            Large::One => self.active_1g@[r as int],
+        }
+    }
+
+    /// The block at b is a whole region, marked active.
+    pub open spec fn block_level(&self, b: usize) -> bool {
+        ||| {
+            &&& self.blocks@[b] == PAGES_PER_2M
+            &&& b % PAGES_PER_2M == 0
+            &&& b / PAGES_PER_2M < NUM_2M
+            &&& self.active_2m@[(b / PAGES_PER_2M) as int]
+        }
+        ||| {
+            &&& self.blocks@[b] == PAGES_PER_1G
+            &&& b % PAGES_PER_1G == 0
+            &&& b / PAGES_PER_1G < NUM_1G
+            &&& self.active_1g@[(b / PAGES_PER_1G) as int]
+        }
+    }
+
+    /// An active region's block is being zeroed.
+    pub open spec fn active_wf(&self) -> bool {
+        &&& self.active_2m.wf()
+        &&& self.active_1g.wf()
+        &&& forall|r: usize| r < NUM_2M && #[trigger] self.active_2m@[r as int] ==> {
+            &&& self.blocks@.contains_key((r * PAGES_PER_2M) as usize)
+            &&& self.blocks@[(r * PAGES_PER_2M) as usize] == PAGES_PER_2M
+        }
+        &&& forall|r: usize| r < NUM_1G && #[trigger] self.active_1g@[r as int] ==> {
+            &&& self.blocks@.contains_key((r * PAGES_PER_1G) as usize)
+            &&& self.blocks@[(r * PAGES_PER_1G) as usize] == PAGES_PER_1G
+        }
+    }
+
+    /// Reads whether region r is being zeroed.
+    pub fn is_active(&self, level: Large, r: usize) -> (ret: bool)
+        requires
+            self.wf(),
+            r < level_regions(level),
+        ensures
+            ret == self.active(level, r),
+            ret ==> self.blocks@.contains_key(level_base(level, r)),
+            ret ==> self.blocks@[level_base(level, r)] == level_pages(level),
+    {
+        match level {
+            Large::Two => *self.active_2m.get(r),
+            Large::One => *self.active_1g.get(r),
+        }
+    }
+
     /// Page k of the block at b is zero if it is below the cursor, and otherwise uninitialised.
     pub open spec fn page_wf(&self, b: usize, k: usize) -> bool {
         let i = (b + k) as usize;
@@ -64,7 +170,9 @@ impl Zeroing {
             &&& 0 < self.blocks@[b]
             &&& b + self.blocks@[b] <= NUM_PAGES
             &&& self.cursor@[b as int] <= self.blocks@[b]
+            &&& self.block_level(b)
         }
+        &&& self.active_wf()
         &&& self.disjoint_wf()
         &&& self.pages_wf()
     }
@@ -99,67 +207,129 @@ impl Zeroing {
     pub fn init(&mut self)
         requires
             old(self).cursor.wf(),
+            old(self).active_2m.wf(),
+            old(self).active_1g.wf(),
         ensures
             final(self).wf(),
             final(self).blocks@ == Map::<usize, usize>::empty(),
     {
         self.perms = Tracked(Map::tracked_empty());
         self.blocks = Ghost(Map::empty());
+        let mut r = 0;
+        while r != NUM_2M
+            invariant
+                r <= NUM_2M,
+                self.cursor.wf(),
+                self.active_2m.wf(),
+                self.active_1g.wf(),
+                self.blocks@ == Map::<usize, usize>::empty(),
+                forall|x: int| 0 <= x < r ==> !#[trigger] self.active_2m@[x],
+            decreases NUM_2M - r,
+        {
+            self.active_2m.set(r, false);
+            r = r + 1;
+        }
+        let mut r = 0;
+        while r != NUM_1G
+            invariant
+                r <= NUM_1G,
+                self.cursor.wf(),
+                self.active_2m.wf(),
+                self.active_1g.wf(),
+                self.blocks@ == Map::<usize, usize>::empty(),
+                forall|x: int| 0 <= x < NUM_2M ==> !#[trigger] self.active_2m@[x],
+                forall|x: int| 0 <= x < r ==> !#[trigger] self.active_1g@[x],
+            decreases NUM_1G - r,
+        {
+            self.active_1g.set(r, false);
+            r = r + 1;
+        }
         proof {
             reveal(Zeroing::pages_wf);
+            assert forall|x: usize| x < NUM_2M && #[trigger] self.active_2m@[x as int] implies false by {
+                assert(!self.active_2m@[x as int]);
+            }
+            assert forall|x: usize| x < NUM_1G && #[trigger] self.active_1g@[x as int] implies false by {
+                assert(!self.active_1g@[x as int]);
+            }
         }
     }
 
-    /// Start zeroing a block its caller has just typed, taking its permissions. The dom clause says no
-    /// page of it is already here, which is what keeps blocks being zeroed apart.
-    pub fn begin(&mut self, base: usize, pages: usize, Tracked(perms): Tracked<Map<usize, PagePerm4k>>)
+    /// Start zeroing a region its caller has just typed, taking its permissions. The caller says the
+    /// region shares no page with any block already here.
+    pub fn begin(&mut self, level: Large, r: usize, Tracked(perms): Tracked<Map<usize, PagePerm4k>>)
         requires
             old(self).wf(),
-            !old(self).blocks@.contains_key(base),
-            pages > 0,
-            base + pages <= NUM_PAGES,
-            forall|k: usize| k < pages ==> #[trigger] holds(perms, (base + k) as usize),
-            forall|k: usize| k < pages ==> !#[trigger] old(self).perms@.contains_key((base + k) as usize),
-            perms.dom().disjoint(old(self).perms@.dom()),
+            r < level_regions(level),
+            perms.dom() == BlockTable::large_pages(level, r as int),
+            forall|i: usize| BlockTable::large_pages(level, r as int).contains(i) ==> #[trigger] holds(perms, i),
+            forall|b: usize| #[trigger] old(self).blocks@.contains_key(b) ==>
+                level_base(level, r) + level_pages(level) <= b || b + old(self).blocks@[b] <= level_base(level, r),
         ensures
             final(self).wf(),
-            final(self).blocks@ == old(self).blocks@.insert(base, pages),
-            final(self).cursor@[base as int] == 0,
+            final(self).blocks@ == old(self).blocks@.insert(level_base(level, r), level_pages(level)),
+            final(self).cursor@[level_base(level, r) as int] == 0,
+            final(self).active(level, r),
     {
         let ghost pre = *old(self);
+        let pages = pages_of_level(level);
+        let base = r * pages;
         self.cursor.set(base, 0);
+        match level {
+            Large::Two => { self.active_2m.set(r, true); },
+            Large::One => { self.active_1g.set(r, true); },
+        }
         proof {
+            lemma_level_pages(level, r);
             self.perms.borrow_mut().tracked_union_prefer_right(perms);
         }
         self.blocks = Ghost(pre.blocks@.insert(base, pages));
         proof {
             let me = *self;
-            // The new block is apart from every other: its pages are not in the old map, and
-            // theirs are.
-            assert forall|b2: usize| #[trigger] pre.blocks@.contains_key(b2) && b2 != base
-                implies base + pages <= b2 || b2 + pre.blocks@[b2] <= base by {
-                if !(base + pages <= b2 || b2 + pre.blocks@[b2] <= base) {
-                    let m = if base < b2 { b2 } else { base };
-                    let k = (m - base) as usize;
-                    let k2 = (m - b2) as usize;
-                    assert(k < pages);
-                    assert(k2 < pre.blocks@[b2]);
-                    pre.lemma_page(b2, k2);
-                    assert(pre.perms@.contains_key((b2 + k2) as usize));
-                    assert(!pre.perms@.contains_key((base + k) as usize));
-                    assert(false);
+            assert forall|k: usize| k < pages implies #[trigger] holds(me.perms@, (base + k) as usize) by {
+                assert(BlockTable::large_pages(level, r as int).contains((base + k) as usize));
+                assert(holds(perms, (base + k) as usize));
+            }
+            assert forall|b: usize| #[trigger] me.blocks@.contains_key(b) implies {
+                &&& 0 < me.blocks@[b]
+                &&& b + me.blocks@[b] <= NUM_PAGES
+                &&& me.cursor@[b as int] <= me.blocks@[b]
+                &&& me.block_level(b)
+            } by {
+                if b != base {
+                    assert(pre.block_level(b));
+                    assert(me.cursor@[b as int] == pre.cursor@[b as int]);
+                }
+            }
+            assert(me.active_wf()) by {
+                assert forall|x: usize| x < NUM_2M && #[trigger] me.active_2m@[x as int] implies {
+                    &&& me.blocks@.contains_key((x * PAGES_PER_2M) as usize)
+                    &&& me.blocks@[(x * PAGES_PER_2M) as usize] == PAGES_PER_2M
+                } by {
+                    if !(level is Two && x == r) {
+                        assert(pre.active_2m@[x as int]);
+                        assert(pre.blocks@.contains_key((x * PAGES_PER_2M) as usize));
+                    }
+                }
+                assert forall|x: usize| x < NUM_1G && #[trigger] me.active_1g@[x as int] implies {
+                    &&& me.blocks@.contains_key((x * PAGES_PER_1G) as usize)
+                    &&& me.blocks@[(x * PAGES_PER_1G) as usize] == PAGES_PER_1G
+                } by {
+                    if !(level is One && x == r) {
+                        assert(pre.active_1g@[x as int]);
+                        assert(pre.blocks@.contains_key((x * PAGES_PER_1G) as usize));
+                    }
                 }
             }
             assert(me.disjoint_wf());
             assert forall|b: usize, k: usize| me.blocks@.contains_key(b) && k < me.blocks@[b]
                 implies #[trigger] me.page_wf(b, k) by {
-                if b == base {
-                    assert(holds(perms, (base + k) as usize));
-                } else {
+                if b != base {
                     pre.lemma_page(b, k);
                     let i = (b + k) as usize;
                     assert(!perms.dom().contains(i));
                     assert(me.perms@[i] == pre.perms@[i]);
+                    assert(me.cursor@[b as int] == pre.cursor@[b as int]);
                 }
             }
             reveal(Zeroing::pages_wf);
@@ -175,6 +345,8 @@ impl Zeroing {
         ensures
             final(self).wf(),
             final(self).blocks == old(self).blocks,
+            final(self).active_2m == old(self).active_2m,
+            final(self).active_1g == old(self).active_1g,
             done == (final(self).cursor@[base as int] == pages),
             old(self).cursor@[base as int] < pages ==> old(self).cursor@[base as int] < final(self).cursor@[base as int],
             final(self).cursor@[base as int] <= old(self).cursor@[base as int] + ZERO_CHUNK_PAGES,
@@ -189,6 +361,9 @@ impl Zeroing {
                 self.blocks@[base] == pages,
                 self.cursor@[base as int] == k,
                 start <= k <= end <= pages,
+                self.active_2m == old(self).active_2m,
+                self.active_1g == old(self).active_1g,
+                self.blocks == old(self).blocks,
             decreases end - k,
         {
             let ghost pre = *self;
@@ -223,23 +398,32 @@ impl Zeroing {
         end == pages
     }
 
-    /// A block that is all zero leaves here, with its permissions.
-    pub fn finish(&mut self, base: usize, pages: usize) -> (ret: Tracked<Map<usize, PagePerm4k>>)
+    /// A region that is all zero leaves here, with its permissions.
+    pub fn finish(&mut self, level: Large, r: usize) -> (ret: Tracked<Map<usize, PagePerm4k>>)
         requires
             old(self).wf(),
-            old(self).blocks@.contains_key(base),
-            old(self).blocks@[base] == pages,
-            old(self).cursor@[base as int] == pages,
+            r < level_regions(level),
+            old(self).active(level, r),
+            old(self).cursor@[level_base(level, r) as int] == level_pages(level),
         ensures
             final(self).wf(),
-            final(self).blocks@ == old(self).blocks@.remove(base),
-            forall|k: usize| k < pages ==> #[trigger] holds_zero(ret@, (base + k) as usize),
+            final(self).blocks@ == old(self).blocks@.remove(level_base(level, r)),
+            final(self).cursor == old(self).cursor,
+            !final(self).active(level, r),
+            ret@.dom() == BlockTable::large_pages(level, r as int),
+            forall|k: usize| k < level_pages(level) ==> #[trigger] holds_zero(ret@, (level_base(level, r) + k) as usize),
     {
         let ghost pre = *old(self);
-        let ghost keys = Set::<usize>::range(base, (base + pages) as usize);
+        let pages = pages_of_level(level);
+        let base = r * pages;
+        let ghost keys = BlockTable::large_pages(level, r as int);
         let tracked taken;
+        match level {
+            Large::Two => { self.active_2m.set(r, false); },
+            Large::One => { self.active_1g.set(r, false); },
+        }
         proof {
-            range_set_properties::<usize>(base, (base + pages) as usize);
+            lemma_level_pages(level, r);
             assert forall|i: usize| #[trigger] keys.contains(i) implies pre.perms@.dom().contains(i) by {
                 pre.lemma_page(base, (i - base) as usize);
             }
@@ -251,6 +435,33 @@ impl Zeroing {
             assert forall|k: usize| k < pages implies #[trigger] holds_zero(taken, (base + k) as usize) by {
                 pre.lemma_page(base, k);
                 assert(keys.contains((base + k) as usize));
+            }
+            assert forall|b: usize| #[trigger] me.blocks@.contains_key(b) implies {
+                &&& 0 < me.blocks@[b]
+                &&& b + me.blocks@[b] <= NUM_PAGES
+                &&& me.cursor@[b as int] <= me.blocks@[b]
+                &&& me.block_level(b)
+            } by {
+                assert(pre.block_level(b));
+                assert(b != base);
+            }
+            assert(me.active_wf()) by {
+                assert forall|x: usize| x < NUM_2M && #[trigger] me.active_2m@[x as int] implies {
+                    &&& me.blocks@.contains_key((x * PAGES_PER_2M) as usize)
+                    &&& me.blocks@[(x * PAGES_PER_2M) as usize] == PAGES_PER_2M
+                } by {
+                    assert(pre.active_2m@[x as int]);
+                    assert(pre.blocks@.contains_key((x * PAGES_PER_2M) as usize));
+                    assert(pre.blocks@[base] == pages);
+                }
+                assert forall|x: usize| x < NUM_1G && #[trigger] me.active_1g@[x as int] implies {
+                    &&& me.blocks@.contains_key((x * PAGES_PER_1G) as usize)
+                    &&& me.blocks@[(x * PAGES_PER_1G) as usize] == PAGES_PER_1G
+                } by {
+                    assert(pre.active_1g@[x as int]);
+                    assert(pre.blocks@.contains_key((x * PAGES_PER_1G) as usize));
+                    assert(pre.blocks@[base] == pages);
+                }
             }
             assert forall|b: usize, k: usize| me.blocks@.contains_key(b) && k < me.blocks@[b]
                 implies #[trigger] me.page_wf(b, k) by {

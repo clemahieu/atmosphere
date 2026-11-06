@@ -847,6 +847,9 @@ impl BlockTable {
                 &&& final(self).regions_2m@[r as int] == (RegionEntry {
                     typed: true, dead: false, torn_down: false, refs: 1,
                 })
+                &&& final(self).regions_2m@ == old(self).regions_2m@.update(r as int, final(self).regions_2m@[r as int])
+                &&& final(self).regions_1g@ == old(self).regions_1g@
+                &&& ret->0@.dom() == Self::large_pages(Large::Two, r as int)
                 &&& forall|i: usize| Self::large_pages(Large::Two, r as int).contains(i) ==>
                     #[trigger] holds(ret->0@, i)
             },
@@ -955,6 +958,9 @@ impl BlockTable {
                 &&& final(self).regions_1g@[r as int] == (RegionEntry {
                     typed: true, dead: false, torn_down: false, refs: 1,
                 })
+                &&& final(self).regions_1g@ == old(self).regions_1g@.update(r as int, final(self).regions_1g@[r as int])
+                &&& final(self).regions_2m@ == old(self).regions_2m@
+                &&& ret->0@.dom() == Self::large_pages(Large::One, r as int)
                 &&& forall|i: usize| Self::large_pages(Large::One, r as int).contains(i) ==>
                     #[trigger] holds(ret->0@, i)
             },
@@ -1047,6 +1053,8 @@ impl BlockTable {
             final(self).wf(),
             final(self).pages@ == old(self).pages@,
             !final(self).regions_2m@[r as int].typed,
+            final(self).regions_2m@ == old(self).regions_2m@.update(r as int, final(self).regions_2m@[r as int]),
+            final(self).regions_1g@ == old(self).regions_1g@,
     {
         let ghost pre = *old(self);
         let r1 = r / 512;
@@ -1142,6 +1150,8 @@ impl BlockTable {
             final(self).wf(),
             final(self).pages@ == old(self).pages@,
             !final(self).regions_1g@[r as int].typed,
+            final(self).regions_1g@ == old(self).regions_1g@.update(r as int, final(self).regions_1g@[r as int]),
+            final(self).regions_2m@ == old(self).regions_2m@,
     {
         let ghost pre = *old(self);
         let ghost keys = Self::large_pages(Large::One, r as int);
@@ -1233,6 +1243,8 @@ impl BlockTable {
                 &&& forall|k: int| 0 <= k < order_pages(order)
                     ==> #[trigger] old(self).pages@[base + k].kind is Free
                 &&& !old(self).covered(base as int)
+                &&& final(self).regions_2m@ == old(self).regions_2m@
+                &&& final(self).regions_1g@ == old(self).regions_1g@
                 &&& final(self).pages@[base as int].kind is Base
                 &&& final(self).pages@[base as int].order == order
                 &&& final(self).pages@[base as int].refs == 1
@@ -1554,6 +1566,8 @@ impl BlockTable {
             },
         ensures
             final(self).wf(),
+            final(self).regions_2m@ == old(self).regions_2m@,
+            final(self).regions_1g@ == old(self).regions_1g@,
             forall|i: int| 0 <= i < NUM_PAGES ==> #[trigger] final(self).pages@[i] == (
                 if old(self).in_block(base as int, i) { free_entry() } else { old(self).pages@[i] }),
     {
@@ -1585,6 +1599,8 @@ impl BlockTable {
                 forall|i: int| 0 <= i < NUM_PAGES && !(base <= i < base + size)
                     ==> #[trigger] self.pages@[i] == pre.pages@[i],
                 forall|j: usize| k <= j < size ==> #[trigger] holds(perms, (base + j) as usize),
+                self.regions_2m@ == pre.regions_2m@,
+                self.regions_1g@ == pre.regions_1g@,
             decreases size - k,
         {
             let tracked perm;
