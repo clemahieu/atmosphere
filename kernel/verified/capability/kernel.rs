@@ -905,6 +905,12 @@ impl CapKernel {
             assert(!pre.blocks.in_block(base as int, (l / 4096) as int));
             assert(post.blocks.pages@[(l / 4096) as int] == pre.blocks.pages@[(l / 4096) as int]);
         }
+        assert forall|x: usize| x < NUM_PAGES && #[trigger] leaf_block(&post.blocks, x)
+            implies post.tables.owner@.contains_key((x * 4096) as usize) by {
+            assert(!pre.blocks.in_block(base as int, x as int));
+            assert(post.blocks.pages@[x as int] == pre.blocks.pages@[x as int]);
+            assert(leaf_block(&pre.blocks, x));
+        }
         lemma_leaf_blocks_small_freed(&pre.list, &pre.tables, &pre.blocks, &post.blocks, pre.holders@, base);
         Self::lemma_blocks_changed(pre, post);
     }
@@ -1022,6 +1028,7 @@ impl CapKernel {
             }
         }
         lemma_leaf_blocks_same_pages(&pre.list, &pre.tables, &pre.blocks, &post.blocks);
+        lemma_leaf_blocks_owned_same_types(&pre.tables, &pre.blocks, &post.blocks);
         Self::lemma_blocks_changed(pre, post);
     }
 
