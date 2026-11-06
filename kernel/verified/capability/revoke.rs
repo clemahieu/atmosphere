@@ -39,7 +39,7 @@ impl CapKernel {
     /// changes no node's liveness and keeps the tables whole, and only what n itself held goes. A
     /// hidden node detaches its leaf. A capability's reference goes with atmo-6x9.16.22. No mapping
     /// or binding node exists until atmo-6x9.16.8 and atmo-6x9.16.9, which supply their arms.
-    fn unlink_arm(&mut self, n: usize)
+    pub fn unlink_arm(&mut self, n: usize)
         requires
             old(self).wf(),
             n < NODE_SPACE,
@@ -262,7 +262,7 @@ impl CapKernel {
 
     /// The holders and the blocks after hidden node n goes with its leaf's one reference: no frame
     /// changed, the leaf's block was no holder's key, and it is dead at zero as its node is dead.
-    proof fn lemma_revoke_hidden_holders(pre: Self, post: Self, n: usize)
+    pub proof fn lemma_revoke_hidden_holders(pre: Self, post: Self, n: usize)
         requires
             Self::caps_frame(pre, post, n, n),
             n < NODE_SPACE,
@@ -310,7 +310,7 @@ impl CapKernel {
 
     /// The hidden nodes after the step: r has gone, and if it was hidden its leaf is detached. And every
     /// other capability node is still in its slot.
-    proof fn lemma_revoke_hidden(pre: Self, post: Self, r: usize)
+    pub proof fn lemma_revoke_hidden(pre: Self, post: Self, r: usize)
         requires
             Self::caps_frame(pre, post, r, r),
             !post.list.nodes@[r as int].live,

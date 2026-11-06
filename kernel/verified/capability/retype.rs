@@ -478,7 +478,7 @@ impl CapKernel {
                     assert(pre.blocks.pages@[page + 0int].kind is Free);
                 }
             }
-            lemma_objects_small_typed(&self.tables, &pre.blocks, &self.blocks, pre.holders@, page, 1);
+            lemma_objects_small_typed(&self.tables, &self.tables, &pre.blocks, &self.blocks, pre.holders@, page, 1);
             lemma_holders_small_typed(&pre.list, &pre.tables, &pre.blocks, &self.blocks, &pre.zeroing, pre.holders@, page, 0);
             lemma_leaf_blocks_small_typed(&self.list, &self.tables, &pre.blocks, &self.blocks, pre.holders@, page, 1);
             assert(self.wf());
@@ -584,6 +584,7 @@ impl CapKernel {
         if !done {
             proof {
                 lemma_leaf_blocks_same_pages(&pre.list, &pre.tables, &pre.blocks, &self.blocks);
+                lemma_leaf_blocks_owned_same_types(&pre.tables, &pre.blocks, &self.blocks);
                 Self::lemma_zeroing_changed(pre, *self);
             }
             return RetypeStep::Again;
@@ -614,6 +615,7 @@ impl CapKernel {
             }
             lemma_holders_region_done(&mid.list, &mid.tables, &mid.blocks, &mid.zeroing, &me.zeroing, mid.holders@, level, r);
             lemma_leaf_blocks_same_pages(&pre.list, &pre.tables, &pre.blocks, &me.blocks);
+            lemma_leaf_blocks_owned_same_types(&pre.tables, &pre.blocks, &me.blocks);
             Self::lemma_zeroing_changed(pre, me);
         }
         RetypeStep::Done
@@ -984,6 +986,7 @@ impl CapKernel {
             post.blocks.wf(),
             page < NUM_PAGES,
             page + 1 < NUM_PAGES,
+            base % 8192 == 0,
             base / 4096 == page,
             post.holders == pre.holders,
             pre.blocks.pages@[page + 0int].kind is Free,
@@ -995,7 +998,7 @@ impl CapKernel {
             post.blocks.regions_2m@ == pre.blocks.regions_2m@,
             post.blocks.regions_1g@ == pre.blocks.regions_1g@,
             forall|i: int| 0 <= i < NUM_PAGES && !(page <= i < page + 2) ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
-            forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) ==> l == base || pre.tables.owner@.contains_key(l),
+            exists|e: (usize, int)| post.tables.owner@ == pre.tables.owner@.insert(base, e),
         ensures
             objects_wf(&post.tables, &post.blocks, post.holders@),
     {
@@ -1006,16 +1009,11 @@ impl CapKernel {
         assert forall|k: int| 0 <= k < 2 implies #[trigger] pre.blocks.pages@[page + k].kind is Free by {
             if k == 0 { assert(pre.blocks.pages@[page + 0int].kind is Free); }
         }
-        lemma_objects_small_typed(&pre.tables, &pre.blocks, &post.blocks, pre.holders@, page, 2);
-        assert forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) implies {
-            &&& l / 4096 < NUM_PAGES
-            &&& post.blocks.pages@[(l / 4096) as int].kind is Base
-            &&& post.blocks.pages@[(l / 4096) as int].object is TableLeaf
-        } by {
-            if l != base {
-                assert(pre.tables.owner@.contains_key(l));
-            }
-        }
+        lemma_leaf_page(base);
+        let e = choose|e: (usize, int)| post.tables.owner@ == pre.tables.owner@.insert(base, e);
+        assert(post.tables.owner@.contains_key(base));
+        assert forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) implies l == base || pre.tables.owner@.contains_key(l) by {}
+        lemma_objects_small_typed(&pre.tables, &post.tables, &pre.blocks, &post.blocks, pre.holders@, page, 2);
     }
 
     /// What a leaf's retype does to the fields the view reads: nothing changes but the new page, none of

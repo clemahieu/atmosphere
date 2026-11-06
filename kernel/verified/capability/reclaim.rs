@@ -1,6 +1,7 @@
 //! Retype reclaiming memory. There is no kernel list of dead objects, and no revoke or delete drains
 //! another's teardown: a retype naming a block, by a holder of an untyped covering it, does the work.
 //! See the design on atmo-6x9.6.7, section 6.
+use vstd::arithmetic::power2::*;
 use vstd::prelude::*;
 use vstd::set_lib::*;
 
@@ -8,10 +9,12 @@ verus! {
 
 use crate::capability::block::*;
 use crate::capability::kernel::*;
+use crate::capability::list::*;
 use crate::capability::reach::*;
 use crate::capability::refs::*;
 use crate::capability::retype::*;
 use crate::capability::table::*;
+use crate::capability::view::*;
 use crate::capability::zero::*;
 use crate::define::*;
 
@@ -47,6 +50,9 @@ pub enum ReclaimStep {
     Again,
     /// The block is free.
     Freed,
+    /// The block held a table leaf whose hidden node is now gone, so it is dead, and its dismantling
+    /// starts on a later retype.
+    Unlinked,
 }
 
 impl CapKernel {
@@ -57,6 +63,184 @@ impl CapKernel {
         &&& self.blocks.pages@[page as int].object is Frame
         &&& self.blocks.pages@[page as int].dead
         &&& self.blocks.pages@[page as int].refs == 0
+    }
+
+    /// What freeing the 4K frame at `base` did to self, under the untyped at index `from` of the table
+    /// at `root`.
+    pub open spec fn frame_freed(&self, post: Self, c: usize, root: usize, from: usize, base: usize) -> bool {
+        let untyped = self.tables.node_of(root, from);
+        let page = base / 4096;
+        &&& self.view().holds_right(root, untyped, Right::Retype)
+        &&& self.frame_is_dead(page)
+        &&& self.no_stale_translation(page)
+        &&& post.blocks.pages@[page as int].kind is Free
+        &&& !post.frames@.contains_key(page)
+        &&& Self::step_ok(*self, post, c as int)
+        &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base })
+    }
+
+    /// A retype may unlink the hidden node of the leaf at `base`: an untyped covers its block, and the
+    /// node is still live.
+    pub open spec fn can_unlink_leaf(&self, root: usize, from: usize, base: usize) -> bool {
+        &&& self.can_retype_under(root, from, base, 1)
+        &&& self.tables.owner@.contains_key(base)
+        &&& self.list.nodes@[base as int].live
+    }
+
+    /// What unlinking the hidden node of the leaf at `base` did to self: that node went, the leaf came
+    /// out of its table, and its block is dead at zero. Every capability, the leaf's slots among them,
+    /// is as it was, so the view is too.
+    pub open spec fn leaf_unlinked(&self, post: Self, root: usize, from: usize, base: usize) -> bool {
+        let untyped = self.tables.node_of(root, from);
+        let page = base / 4096;
+        &&& self.view().holds_right(root, untyped, Right::Retype)
+        &&& !post.list.nodes@[base as int].live
+        &&& !post.tables.attached(base)
+        &&& post.blocks.pages@[page as int].refs == 0
+        &&& post.blocks.pages@[page as int].dead
+        &&& Self::caps_frame(*self, post, base, base)
+        &&& forall|x: usize| #[trigger] post.is_cap(x) == self.is_cap(x)
+        &&& post.view() == self.view()
+        &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base })
+    }
+
+    /// A retype naming the block at `base`, under the untyped at index `from` of the table at `root`:
+    /// what it does depends on what the block holds. All of these come from user space.
+    pub fn reclaim(&mut self, c: usize, root: usize, from: usize, base: usize) -> (ret: ReclaimStep)
+        requires
+            old(self).wf(),
+            c < NUM_CPUS,
+            old(self).tables.roots@.contains_key(root),
+            !old(self).mapped@.contains(base / 4096),
+        ensures
+            final(self).wf(),
+            ret is Refused || ret is Again ==> *final(self) == *old(self),
+            !((old(self).can_retype_under(root, from, base, 0) && old(self).frame_is_dead(base / 4096))
+                || old(self).can_unlink_leaf(root, from, base)) ==> ret is Refused,
+            ret is Again ==> !old(self).acknowledged(base / 4096),
+            ret is Freed ==> old(self).frame_freed(*final(self), c, root, from, base),
+            ret is Unlinked ==> old(self).leaf_unlinked(*final(self), root, from, base),
+    {
+        let page = base / 4096;
+        if page >= NUM_PAGES {
+            return ReclaimStep::Refused;
+        }
+        let object = self.blocks.pages.get(page).object;
+        match object {
+            ObjectType::Frame => self.reclaim_frame(c, root, from, base),
+            ObjectType::TableLeaf => {
+                if self.unlink_leaf(root, from, base) {
+                    ReclaimStep::Unlinked
+                } else {
+                    ReclaimStep::Refused
+                }
+            },
+            ObjectType::None => ReclaimStep::Refused,
+        }
+    }
+
+    /// Unlinks the hidden node of the leaf at `base`, by the same undo as revoke's hidden arm, and
+    /// nothing more. Refused, with nothing changed, unless an untyped held covers the block and the
+    /// block holds a leaf with its hidden node still live.
+    pub fn unlink_leaf(&mut self, root: usize, from: usize, base: usize) -> (ret: bool)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(root),
+        ensures
+            final(self).wf(),
+            ret == old(self).can_unlink_leaf(root, from, base),
+            !ret ==> *final(self) == *old(self),
+            ret ==> old(self).leaf_unlinked(*final(self), root, from, base),
+    {
+        let ghost pre = *old(self);
+        let untyped = match self.retype_parent(root, from, base, 1) {
+            Some(found) => found,
+            None => { return false; },
+        };
+        let page = base / 4096;
+        if page >= NUM_PAGES {
+            return false;
+        }
+        let entry = *self.blocks.pages.get(page);
+        let live_leaf = match (entry.kind, entry.object) {
+            (PageKind::Base, ObjectType::TableLeaf) => entry.refs == 1,
+            _ => false,
+        };
+        proof {
+            lemma2_to64();
+            pre.lemma_live_leaf_block(base);
+        }
+        if !live_leaf {
+            return false;
+        }
+        proof {
+            pre.lemma_hidden_is_leaf(base);
+        }
+        self.unlink_arm(base);
+        self.list.remove_leaf(base);
+        proof {
+            let post = *self;
+            post.tables.lemma_wf_same_pages(&pre.list, &post.list);
+            Self::lemma_delete_caps_wf(pre, post, base);
+            let p = choose|p: int| 0 <= p < pre.list.seq@.len() && pre.list.seq@[p] == base
+                && post.list.seq@ == pre.list.seq@.remove(p);
+            assert(p != 0);
+            assert(post.list.seq@[0] == pre.list.seq@[0]);
+            lemma_parents_removed(pre.list, post.list, base);
+            Self::lemma_revoke_hidden(pre, post, base);
+            Self::lemma_revoke_hidden_holders(pre, post, base);
+            Self::lemma_tlb_same(pre, post);
+            Self::lemma_unlink_discharges(pre, post, root, untyped, base);
+        }
+        true
+    }
+
+    /// The block test unlink_leaf makes reads as the node does: a table leaf block at one reference
+    /// is an owned leaf's whose hidden node is live, and such a leaf's block is a table leaf at one
+    /// reference.
+    proof fn lemma_live_leaf_block(&self, base: usize)
+        requires
+            self.wf(),
+            base % 8192 == 0,
+            base / 4096 < NUM_PAGES,
+        ensures
+            (leaf_block(&self.blocks, base / 4096) && self.blocks.pages@[(base / 4096) as int].refs == 1)
+                == (self.tables.owner@.contains_key(base) && self.list.nodes@[base as int].live),
+            self.tables.owner@.contains_key(base) && self.list.nodes@[base as int].live
+                ==> self.list.nodes@[base as int].kind is Hidden,
+    {
+        lemma_leaf_page(base);
+        if leaf_block(&self.blocks, base / 4096) {
+            assert(self.tables.owner@.contains_key(((base / 4096) * 4096) as usize));
+        }
+    }
+
+    /// What unlinking a hidden node does to the view: nothing. The node was no capability, and every
+    /// capability says what it did under the parent it had, so the step discharges as a teardown from
+    /// the retype right alone.
+    proof fn lemma_unlink_discharges(pre: Self, post: Self, root: usize, untyped: usize, base: usize)
+        requires
+            Self::caps_frame(pre, post, base, base),
+            base % 4096 == 0,
+            post.list.parent == pre.list.parent,
+            pre.view().holds_right(root, untyped, Right::Retype),
+        ensures
+            forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x),
+            post.view() == pre.view(),
+            discharges(pre.view(), post.view(), root, Effect::Teardown { untyped, object: base }),
+    {
+        let (a, b) = (pre.view(), post.view());
+        assert forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x)
+            && (pre.is_cap(x) ==> post.payload_of(x) == pre.payload_of(x)) by {
+            if x != base {
+                Self::lemma_caps_frame(pre, post, base, base, x);
+            }
+        }
+        assert(b.held =~= a.held);
+        assert(b.names =~= a.names);
+        assert(b.pages =~= a.pages);
+        assert(b.rights =~= a.rights);
+        assert(b == a);
     }
 
     /// Reclaims the 4K block at `base`, under the untyped at index `from` of the table at `root`. All of
@@ -70,20 +254,11 @@ impl CapKernel {
             !old(self).mapped@.contains(base / 4096),
         ensures
             final(self).wf(),
+            !(ret is Unlinked),
             !(ret is Freed) ==> *final(self) == *old(self),
             !(old(self).can_retype_under(root, from, base, 0) && old(self).frame_is_dead(base / 4096)) ==> ret is Refused,
             ret is Again ==> !old(self).acknowledged(base / 4096),
-            ret is Freed ==> {
-                let untyped = old(self).tables.node_of(root, from);
-                let page = base / 4096;
-                &&& old(self).view().holds_right(root, untyped, Right::Retype)
-                &&& old(self).frame_is_dead(page)
-                &&& old(self).no_stale_translation(page)
-                &&& final(self).blocks.pages@[page as int].kind is Free
-                &&& !final(self).frames@.contains_key(page)
-                &&& Self::step_ok(*old(self), *final(self), c as int)
-                &&& discharges(old(self).view(), final(self).view(), root, Effect::Teardown { untyped, object: base })
-            },
+            ret is Freed ==> old(self).frame_freed(*final(self), c, root, from, base),
     {
         let ghost pre = *old(self);
         let untyped = match self.retype_parent(root, from, base, 0) {
