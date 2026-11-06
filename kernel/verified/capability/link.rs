@@ -575,6 +575,30 @@ pub proof fn lemma_walk_detached(a: TableTree, b: TableTree, parent: usize, entr
     assert(large_entry(b, parent, entry) is None);
 }
 
+/// A walk through the entry naming table page t finds page g.
+pub open spec fn cut_walk_finds(tree: TableTree, t: usize, g: usize) -> bool {
+    let s = tree.record(t).space->0;
+    let q = tree.record(t).parent->0;
+    &&& tree.record(t).parent is Some
+    &&& exists|p: SpacePath| #![trigger walk_finds(tree, s, p, g)]
+        passes_through(tree, s, p, q.table, q.entry) && walk_finds(tree, s, p, g)
+}
+
+/// What t's cut leaves a core or an IOMMU holding that nothing will read again: t's own page, from a
+/// paging-structure cache, and the pages the walks through the entry naming it find, from a TLB. The tables
+/// below t keep their space, so their pages stay said until they are cut in turn.
+pub open spec fn cut_pages(tree: TableTree, t: usize) -> Set<usize> {
+    Set::<usize>::range(0, NUM_PAGES).filter(|g: usize| g == t / 4096 || cut_walk_finds(tree, t, g))
+}
+
+pub proof fn lemma_cut_pages(tree: TableTree, t: usize, g: usize)
+    ensures
+        cut_pages(tree, t).contains(g) <==> g < NUM_PAGES && (g == t / 4096 || cut_walk_finds(tree, t, g)),
+{
+    broadcast use vstd::set::lemma_set_filter;
+    vstd::set_lib::range_set_properties::<usize>(0, NUM_PAGES);
+}
+
 /// An address whose page is below NUM_PAGES is below 2^33.
 pub proof fn lemma_table_bound(t: usize)
     requires
@@ -1396,9 +1420,9 @@ impl CapKernel {
         true
     }
 
-    /// What detaching table page t leaves: with no parent, nothing changed; with one, that entry empty and
-    /// t's record with no parent, and the walks through the entry gone. Only the tables changed.
-    pub open spec fn detach_done(pre: Self, post: Self, t: usize) -> bool {
+    /// What detaching table page t leaves of the tables: with no parent, nothing changed; with one, that
+    /// entry empty and t's record with no parent, and the walks through the entry gone.
+    pub open spec fn tables_cut(pre: Self, post: Self, t: usize) -> bool {
         let a = tree_of(&pre.table_pages, &pre.spaces);
         let b = tree_of(&post.table_pages, &post.spaces);
         let p = a.record(t).parent;
@@ -1410,23 +1434,353 @@ impl CapKernel {
         &&& post.zeroing == pre.zeroing
         &&& post.frames == pre.frames
         &&& post.cores == pre.cores
+        &&& post.table_pages.spare == pre.table_pages.spare
+        &&& post.spaces.loaded == pre.spaces.loaded
+        &&& post.spaces.holders == pre.spaces.holders
+        &&& post.spaces.kernel_entries == pre.spaces.kernel_entries
+        &&& p is None ==> post.table_pages == pre.table_pages && post.spaces == pre.spaces
+        &&& p is Some ==> detached(a, b, p->0.table, p->0.entry, t)
+        &&& p is Some ==> walks_detached(a, b, p->0.table, p->0.entry)
+    }
+
+    /// A detach alone: only the tables changed.
+    pub open spec fn detach_done(pre: Self, post: Self, t: usize) -> bool {
+        &&& Self::tables_cut(pre, post, t)
         &&& post.flush_epoch == pre.flush_epoch
         &&& post.tlb == pre.tlb
         &&& post.iommus == pre.iommus
         &&& post.mapped == pre.mapped
         &&& post.stale_epoch == pre.stale_epoch
-        &&& post.table_pages.spare == pre.table_pages.spare
-        &&& post.spaces.loaded == pre.spaces.loaded
-        &&& post.spaces.holders == pre.spaces.holders
-        &&& post.spaces.kernel_entries == pre.spaces.kernel_entries
-        &&& p is None ==> post == pre
-        &&& p is Some ==> detached(a, b, p->0.table, p->0.entry, t)
-        &&& p is Some ==> walks_detached(a, b, p->0.table, p->0.entry)
+        &&& tree_of(&pre.table_pages, &pre.spaces).record(t).parent is None ==> post == pre
+    }
+
+    /// Table page t's cut is recorded: the epoch rose past every acknowledgement and is written for t's
+    /// page, so that page does not count as acknowledged, and what the cut leaves is in the TLB of every
+    /// core that loaded the space and, for an IO space, of every IOMMU, where only a flush takes it out.
+    /// What the walks lost keeps its mapping nodes, so it stays mapped, and its words are written when
+    /// those unlink.
+    pub open spec fn cut_stale_noted(pre: Self, post: Self, t: usize) -> bool {
+        let tree = tree_of(&pre.table_pages, &pre.spaces);
+        let pages = cut_pages(tree, t);
+        let space = tree.record(t).space;
+        &&& post.flush_epoch == pre.flush_epoch + 1
+        &&& post.stale_epoch.written(post.flush_epoch, t / 4096)
+        &&& !post.acknowledged(t / 4096)
+        &&& forall|d: int, g: usize| #![trigger post.tlb@[d].contains(TlbEntry { space: space->Some_0, page: g })]
+            0 <= d < NUM_CPUS && space is Some && pre.loaded(d, space->Some_0) && pages.contains(g)
+            ==> post.tlb@[d].contains(TlbEntry { space: space->Some_0, page: g })
+        &&& forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] pre.tlb@[d].contains(e) ==> post.tlb@[d].contains(e)
+        &&& forall|i: int, g: usize| #![trigger post.iommus.tlb@[i].contains(TlbEntry { space: space->Some_0, page: g })]
+            0 <= i < NUM_IOMMUS && space is Some && pre.spaces.records@[space->Some_0].value().kind is Io && pages.contains(g)
+            ==> post.iommus.tlb@[i].contains(TlbEntry { space: space->Some_0, page: g })
+        &&& forall|i: int, e: TlbEntry| 0 <= i < NUM_IOMMUS && #[trigger] pre.iommus.tlb@[i].contains(e) ==> post.iommus.tlb@[i].contains(e)
+        &&& post.iommus.acked == pre.iommus.acked
+        &&& post.mapped == pre.mapped
+    }
+
+    /// A detach with its record: the tables as tables_cut says and the record as cut_stale_noted says. A
+    /// page the walks lost is mapped still, and what a core could hold before it can hold after.
+    pub open spec fn detach_recorded(pre: Self, post: Self, t: usize) -> bool {
+        &&& Self::tables_cut(pre, post, t)
+        &&& Self::cut_stale_noted(pre, post, t)
+        &&& forall|g: usize| #[trigger] cut_walk_finds(tree_of(&pre.table_pages, &pre.spaces), t, g)
+            ==> post.mapped@.contains(g) && g < NUM_PAGES
+        &&& forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && #[trigger] pre.core_may_hold(c, e) ==> post.core_may_hold(c, e)
+    }
+
+    /// A page a frame mapping maps is mapped.
+    proof fn lemma_slot_mapped(&self, t: usize, e: usize, g: usize)
+        requires
+            self.wf(),
+            frame_slot(tree_of(&self.table_pages, &self.spaces), t, e),
+            tree_of(&self.table_pages, &self.spaces).entry(t, e).addr / 4096 <= g,
+            g < tree_of(&self.table_pages, &self.spaces).entry(t, e).addr / 4096
+                + entry_pages(if tree_of(&self.table_pages, &self.spaces).entry(t, e).perm.ps { 2usize } else { 1usize }),
+        ensures
+            self.mapped@.contains(g),
+            g < NUM_PAGES,
+    {
+        let tree = tree_of(&self.table_pages, &self.spaces);
+        let n = mapping_node(t, e);
+        assert(frame_slot(tree, t, e));
+        assert(self.mappings@.contains_key(n));
+        let m = self.mappings@[n];
+        assert(mapping_wf(&self.list, &self.tables, tree, &self.blocks, self.holders@, self.mappings@, n));
+        assert(m.frame + entry_pages(tree.record(t).level) <= NUM_PAGES);
+        lemma_div_by_multiple(m.frame as int, 4096);
+        lemma_map_pages(m.frame, m.large);
+        assert(record_pages(m).contains(g));
+        assert(page_named(self.mappings@, g));
+    }
+
+    /// A page a walk finds is mapped: the walk ended at a frame mapping of a table page.
+    pub proof fn lemma_walk_mapped(&self, r: usize, p: SpacePath, g: usize)
+        requires
+            self.wf(),
+            walk_finds(tree_of(&self.table_pages, &self.spaces), r, p, g),
+        ensures
+            self.mapped@.contains(g),
+            g < NUM_PAGES,
+    {
+        let tree = tree_of(&self.table_pages, &self.spaces);
+        let t3 = step(tree, r, p.l4)->0;
+        let t2 = step(tree, t3, p.l3)->0;
+        assert(tree.names_child(t3, p.l3));
+        assert(tree.is_page(t2));
+        if step(tree, t2, p.l2) is None {
+            assert(frame_slot(tree, t2, p.l2));
+            self.lemma_slot_mapped(t2, p.l2, g);
+        } else {
+            let t1 = step(tree, t2, p.l2)->0;
+            assert(tree.names_child(t2, p.l2));
+            assert(tree.is_page(t1));
+            assert(frame_slot(tree, t1, p.l1));
+            self.lemma_slot_mapped(t1, p.l1, g);
+        }
+    }
+
+    /// A walk reads only tables of its own space, so a table entry it passes through is one of r's.
+    proof fn lemma_passes_in_space(&self, r: usize, p: SpacePath, parent: usize, entry: usize)
+        requires
+            self.wf(),
+            passes_through(tree_of(&self.table_pages, &self.spaces), r, p, parent, entry),
+        ensures
+            tree_of(&self.table_pages, &self.spaces).record(parent).space == Some(r),
+    {
+        let tree = tree_of(&self.table_pages, &self.spaces);
+        assert(self.spaces.roots@.contains_key(r));
+        assert(space_wf(&self.list, &self.spaces, &self.blocks, r));
+        if self.table_pages.maps@.contains_key(r) {
+            assert(table_page_wf(&self.list, &self.table_pages, &self.blocks, r));
+        }
+        assert(tree.record(r).space == Some(r));
+        if !(r == parent && p.l4 == entry) {
+            let t3 = step(tree, r, p.l4)->0;
+            assert(tree.names_child(r, p.l4));
+            assert(tree.maps.contains_key(t3));
+            assert(tree.record(t3).space == Some(r));
+            if !(t3 == parent && p.l3 == entry) {
+                let t2 = step(tree, t3, p.l3)->0;
+                assert(tree.names_child(t3, p.l3));
+                assert(tree.maps.contains_key(t2));
+            }
+        }
+    }
+
+    /// What a cut's walks lost is mapped still.
+    proof fn lemma_cut_walks_mapped(&self, t: usize, g: usize)
+        requires
+            self.wf(),
+            cut_walk_finds(tree_of(&self.table_pages, &self.spaces), t, g),
+        ensures
+            self.mapped@.contains(g),
+            g < NUM_PAGES,
+    {
+        let tree = tree_of(&self.table_pages, &self.spaces);
+        let s = tree.record(t).space->0;
+        let q = tree.record(t).parent->0;
+        let p = choose|p: SpacePath| #![trigger walk_finds(tree, s, p, g)]
+            passes_through(tree, s, p, q.table, q.entry) && walk_finds(tree, s, p, g);
+        self.lemma_walk_mapped(s, p, g);
+    }
+
+    /// Records table page t's cut, while its entry still stands: the epoch is bumped first, so no core or
+    /// IOMMU has acknowledged it however recently it flushed.
+    fn note_cut_stale(&mut self, t: usize)
+        requires
+            old(self).wf(),
+            old(self).table_pages.maps@.contains_key(t),
+            old(self).flush_epoch < usize::MAX,
+        ensures
+            final(self).wf(),
+            Self::cut_stale_noted(*old(self), *final(self), t),
+            final(self).list == old(self).list,
+            final(self).tables == old(self).tables,
+            final(self).blocks == old(self).blocks,
+            final(self).holders == old(self).holders,
+            final(self).mappings == old(self).mappings,
+            final(self).table_pages == old(self).table_pages,
+            final(self).spaces == old(self).spaces,
+            final(self).zeroing == old(self).zeroing,
+            final(self).frames == old(self).frames,
+            final(self).cores == old(self).cores,
+    {
+        let ghost pre = *old(self);
+        let ghost tree = tree_of(&pre.table_pages, &pre.spaces);
+        let ghost pages = cut_pages(tree, t);
+        let ghost space = tree.record(t).space;
+        proof {
+            assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, t));
+        }
+        self.flush_epoch = self.flush_epoch + 1;
+        let epoch = self.flush_epoch;
+        self.stale_epoch.record_run(t / 4096, 1, epoch);
+        self.tlb = Ghost(Seq::new(NUM_CPUS as nat, |d: int|
+            if space is Some && pre.loaded(d, space->Some_0) {
+                pre.tlb@[d].union(stale_entries(space->Some_0, pages))
+            } else {
+                pre.tlb@[d]
+            }));
+        self.iommus.tlb = Ghost(Seq::new(NUM_IOMMUS as nat, |i: int|
+            if space is Some && pre.spaces.records@[space->Some_0].value().kind is Io {
+                pre.iommus.tlb@[i].union(stale_entries(space->Some_0, pages))
+            } else {
+                pre.iommus.tlb@[i]
+            }));
+        proof {
+            if space is Some {
+                lemma_stale_entries(space->Some_0, pages);
+            }
+            assert(self.stale_epoch.written(epoch, t / 4096));
+            assert(self.tlb@.len() == NUM_CPUS);
+            assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] self.acked(d) <= self.flush_epoch by {
+                assert(pre.acked(d) <= pre.flush_epoch);
+            }
+            assert(pre.acked(0) <= pre.flush_epoch);
+            assert(self.acked(0) == pre.acked(0));
+            assert(!self.acknowledged(t / 4096));
+            assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] self.tlb@[d].contains(e) implies self.loaded(d, e.space) by {
+                assert(pre.loaded(d, e.space));
+            }
+            assert forall|d: int, e: TlbEntry|
+                0 <= d < NUM_CPUS && #[trigger] self.tlb@[d].contains(e) && !self.mapped@.contains(e.page)
+                implies e.page < NUM_PAGES && self.stale_epoch.above(self.acked(d), e.page) by {
+                assert(pre.acked(d) <= pre.flush_epoch);
+                assert(self.acked(d) == pre.acked(d));
+                if pre.tlb@[d].contains(e) {
+                    assert(!pre.mapped@.contains(e.page));
+                    assert(pre.stale_epoch.above(pre.acked(d), e.page));
+                    assert(pre.acked(d) < epoch);
+                } else {
+                    lemma_cut_pages(tree, t, e.page);
+                    if e.page != t / 4096 {
+                        pre.lemma_cut_walks_mapped(t, e.page);
+                    }
+                }
+            }
+            assert(self.iommus.tlb@.len() == NUM_IOMMUS);
+            assert forall|i: int| 0 <= i < NUM_IOMMUS implies #[trigger] self.iommu_acked(i) <= self.flush_epoch by {
+                assert(pre.iommu_acked(i) <= pre.flush_epoch);
+            }
+            assert forall|i: int, e: TlbEntry|
+                0 <= i < NUM_IOMMUS && #[trigger] self.iommus.tlb@[i].contains(e) && !self.mapped@.contains(e.page)
+                implies e.page < NUM_PAGES && self.stale_epoch.above(self.iommu_acked(i), e.page) by {
+                assert(pre.iommu_acked(i) <= pre.flush_epoch);
+                assert(self.iommu_acked(i) == pre.iommu_acked(i));
+                if pre.iommus.tlb@[i].contains(e) {
+                    assert(!pre.mapped@.contains(e.page));
+                    assert(pre.stale_epoch.above(pre.iommu_acked(i), e.page));
+                    assert(pre.iommu_acked(i) < epoch);
+                } else {
+                    lemma_cut_pages(tree, t, e.page);
+                    if e.page != t / 4096 {
+                        pre.lemma_cut_walks_mapped(t, e.page);
+                    }
+                }
+            }
+            assert(self.tlb_wf());
+            assert forall|d: int, g: usize| #![trigger self.tlb@[d].contains(TlbEntry { space: space->Some_0, page: g })]
+                0 <= d < NUM_CPUS && space is Some && pre.loaded(d, space->Some_0) && pages.contains(g)
+                implies self.tlb@[d].contains(TlbEntry { space: space->Some_0, page: g }) by {
+            }
+            assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] pre.tlb@[d].contains(e) implies self.tlb@[d].contains(e) by {
+            }
+            assert forall|i: int, g: usize| #![trigger self.iommus.tlb@[i].contains(TlbEntry { space: space->Some_0, page: g })]
+                0 <= i < NUM_IOMMUS && space is Some && pre.spaces.records@[space->Some_0].value().kind is Io && pages.contains(g)
+                implies self.iommus.tlb@[i].contains(TlbEntry { space: space->Some_0, page: g }) by {
+            }
+            assert forall|i: int, e: TlbEntry| 0 <= i < NUM_IOMMUS && #[trigger] pre.iommus.tlb@[i].contains(e) implies self.iommus.tlb@[i].contains(e) by {
+            }
+        }
+    }
+
+    /// What a core could hold before a recorded cut it can hold after: the tables still say it, or the
+    /// walk that found it passed through the cut entry, in t's space, and the record put it in the TLB.
+    proof fn lemma_cut_keeps_hold(pre: Self, post: Self, t: usize, c: int, e: TlbEntry)
+        requires
+            pre.wf(),
+            pre.table_pages.maps@.contains_key(t),
+            0 <= c < NUM_CPUS,
+            Self::tables_cut(pre, post, t),
+            Self::cut_stale_noted(pre, post, t),
+            pre.core_may_hold(c, e),
+        ensures
+            post.core_may_hold(c, e),
+    {
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        if pre.tlb@[c].contains(e) {
+            return;
+        }
+        assert(post.loaded(c, e.space));
+        let q = a.record(t).parent;
+        if q is None {
+            assert(a == b);
+            return;
+        }
+        let parent = q->0.table;
+        let entry = q->0.entry;
+        assert(detached(a, b, parent, entry, t));
+        if exists|u: usize| #![trigger a.record(u)] a.is_table(u) && a.record(u).space == Some(e.space) && u / 4096 == e.page {
+            let u = choose|u: usize| #![trigger a.record(u)] a.is_table(u) && a.record(u).space == Some(e.space) && u / 4096 == e.page;
+            assert(b.maps.contains_key(u) == a.maps.contains_key(u));
+            assert(b.roots.contains_key(u) == a.roots.contains_key(u));
+            assert(b.record(u).space == a.record(u).space);
+            assert(b.is_table(u) && b.record(u).space == Some(e.space) && u / 4096 == e.page);
+            return;
+        }
+        let p = choose|p: SpacePath| #[trigger] walk_finds(a, e.space, p, e.page);
+        reveal(walks_detached);
+        assert(walk(b, e.space, p) == (if passes_through(a, e.space, p, parent, entry) { None } else { walk(a, e.space, p) }));
+        if passes_through(a, e.space, p, parent, entry) {
+            pre.lemma_passes_in_space(e.space, p, parent, entry);
+            assert(a.maps.contains_key(t));
+            assert(a.record(t).space == Some(e.space));
+            assert(cut_walk_finds(a, t, e.page));
+            pre.lemma_walk_mapped(e.space, p, e.page);
+            lemma_cut_pages(a, t, e.page);
+            assert(pre.loaded(c, e.space));
+            assert(post.tlb@[c].contains(TlbEntry { space: e.space, page: e.page }));
+            assert(TlbEntry { space: e.space, page: e.page } == e);
+        } else {
+            assert(walk_finds(b, e.space, p, e.page));
+        }
+    }
+
+    /// Cuts table page t from the entry that names it and records what that leaves stale, so the walks
+    /// through it end and whatever a core or an IOMMU got from them is one a flush must take out.
+    pub fn detach_stale(&mut self, t: usize)
+        requires
+            old(self).wf(),
+            old(self).table_pages.maps@.contains_key(t),
+            old(self).flush_epoch < usize::MAX,
+        ensures
+            final(self).wf(),
+            Self::detach_recorded(*old(self), *final(self), t),
+    {
+        let ghost pre = *old(self);
+        self.note_cut_stale(t);
+        self.detach_table(t);
+        proof {
+            let a = tree_of(&pre.table_pages, &pre.spaces);
+            assert(Self::tables_cut(pre, *self, t));
+            assert(self.cores == pre.cores);
+            assert(self.acked(0) == pre.acked(0));
+            assert(pre.acked(0) <= pre.flush_epoch);
+            assert(!self.acknowledged(t / 4096));
+            assert(Self::cut_stale_noted(pre, *self, t));
+            assert forall|g: usize| #[trigger] cut_walk_finds(a, t, g) implies self.mapped@.contains(g) && g < NUM_PAGES by {
+                pre.lemma_cut_walks_mapped(t, g);
+            }
+            assert forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && #[trigger] pre.core_may_hold(c, e) implies self.core_may_hold(c, e) by {
+                Self::lemma_cut_keeps_hold(pre, *self, t, c, e);
+            }
+        }
     }
 
     /// Cuts table page t from the entry that names it, the entry and t's parent in one step, so the walks
     /// through it end. t keeps its space, as what is below it does, and a table with no parent writes
-    /// nothing. Recording what the cut leaves stale is the caller's.
+    /// nothing. detach_stale records what the cut leaves stale.
     pub fn detach_table(&mut self, t: usize)
         requires
             old(self).wf(),
