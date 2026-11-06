@@ -316,6 +316,13 @@ impl StaleEpochs {
         &&& acked < self.one@[(page / PAGES_PER_1G) as int]
     }
 
+    /// This page's unmap happened at this epoch, read at any level.
+    pub open spec fn written(&self, epoch: usize, page: usize) -> bool {
+        &&& self.pages@[page as int] == epoch
+        &&& self.two@[(page / PAGES_PER_2M) as int] == epoch
+        &&& self.one@[(page / PAGES_PER_1G) as int] == epoch
+    }
+
     /// The stale word of region r.
     pub open spec fn region(&self, level: Large, r: usize) -> usize {
         match level {
@@ -360,6 +367,44 @@ impl StaleEpochs {
         {
             self.one.set(i, 0);
             i = i + 1;
+        }
+    }
+
+    /// This run of pages was unmapped at this epoch. A page above an acknowledgement older than the epoch
+    /// stays above it.
+    pub fn record_run(&mut self, first: usize, count: usize, epoch: usize)
+        requires
+            old(self).wf(),
+            first + count <= NUM_PAGES,
+        ensures
+            final(self).wf(),
+            forall|g: usize| first <= g < first + count ==> #[trigger] final(self).written(epoch, g),
+            forall|a: int, g: usize| a < epoch && g < NUM_PAGES && old(self).above(a, g) ==> #[trigger] final(self).above(a, g),
+    {
+        let mut k = 0;
+        while k != count
+            invariant
+                self.wf(),
+                0 <= k <= count,
+                first + count <= NUM_PAGES,
+                forall|g: usize| first <= g < first + k ==> #[trigger] self.written(epoch, g),
+                forall|a: int, g: usize| a < epoch && g < NUM_PAGES && old(self).above(a, g) ==> #[trigger] self.above(a, g),
+            decreases count - k,
+        {
+            let ghost mid = *self;
+            self.record(first + k, epoch);
+            proof {
+                let page = (first + k) as usize;
+                assert forall|g: usize| first <= g < first + k + 1 implies #[trigger] self.written(epoch, g) by {
+                    if g != page {
+                        assert(mid.written(epoch, g));
+                    }
+                }
+                assert forall|a: int, g: usize| a < epoch && g < NUM_PAGES && old(self).above(a, g) implies #[trigger] self.above(a, g) by {
+                    assert(mid.above(a, g));
+                }
+            }
+            k = k + 1;
         }
     }
 
