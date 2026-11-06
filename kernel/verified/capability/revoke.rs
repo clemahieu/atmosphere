@@ -234,6 +234,7 @@ impl CapKernel {
                 && post.list.seq@ == pre.list.seq@.remove(p);
             assert(p != 0);
             assert(post.list.seq@[0] == pre.list.seq@[0]);
+            lemma_parents_removed(pre.list, post.list, r);
             Self::lemma_revoke_hidden(pre, post, r);
             if pre.list.nodes@[r as int].kind is Hidden {
                 Self::lemma_revoke_hidden_holders(pre, post, r);

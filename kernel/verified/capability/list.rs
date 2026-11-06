@@ -472,6 +472,36 @@ impl Tree {
         }
     }
 
+    /// A deeper node after i is i's child.
+    pub proof fn lemma_next_is_child(&self, i: usize)
+        requires
+            self.wf(),
+            i < NODE_SPACE,
+            self.nodes@[i as int].live,
+            !self.childless(i),
+        ensures
+            self.is_child(i, self.nodes@[i as int].next),
+    {
+        let s = self.seq@;
+        lemma_has(s, i);
+        let j = choose|j: int| 0 <= j < s.len() && s[j] == i;
+        self.lemma_link(j);
+        assert(j + 1 < s.len());
+        self.lemma_link(j + 1);
+        let c = s[j + 1];
+        assert(self.nodes@[i as int].next == c);
+        self.lemma_next_deeper(j);
+        assert(has(s, self.parent@[c]));
+        lemma_has(s, self.parent@[c]);
+        let p = choose|p: int| 0 <= p < s.len() && #[trigger] s[p] == self.parent@[c];
+        self.lemma_runs(p, j + 1);
+        if p < j {
+            assert(self.d(s[j]) > self.d(s[p]));
+            assert(false);
+        }
+        assert(p == j);
+    }
+
     /// Nothing deeper follows i, so nothing is i's child.
     pub open spec fn childless(&self, i: usize) -> bool {
         self.nodes@[i as int].next == NONE || self.d(self.nodes@[i as int].next) <= self.d(i)
