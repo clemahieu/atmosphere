@@ -128,6 +128,46 @@ pub open spec fn holders_wf(
     }
 }
 
+/// A block a capability's block is a small one of type frame, and a leaf's block is one of type table
+/// leaf, so a retype naming a block can dispatch on what it reads there.
+pub open spec fn objects_wf(tables: &Tables, blocks: &BlockTable, holders: IMap<BlockRef, Set<usize>>) -> bool {
+    &&& forall|b: usize| #[trigger] holders.contains_key(BlockRef::Small(b))
+        ==> blocks.pages@[b as int].object is Frame
+    &&& forall|l: usize| #[trigger] tables.owner@.contains_key(l) ==> {
+        &&& l / 4096 < NUM_PAGES
+        &&& blocks.pages@[(l / 4096) as int].kind is Base
+        &&& blocks.pages@[(l / 4096) as int].object is TableLeaf
+    }
+}
+
+/// Changing no page's kind or type, and adding no holder entry, keeps that.
+pub proof fn lemma_objects_same(tables: &Tables, a: &BlockTable, b: &BlockTable, ha: IMap<BlockRef, Set<usize>>, hb: IMap<BlockRef, Set<usize>>)
+    requires
+        objects_wf(tables, a, ha),
+        forall|i: int| 0 <= i < NUM_PAGES ==> {
+            &&& (#[trigger] b.pages@[i]).kind == a.pages@[i].kind
+            &&& b.pages@[i].object == a.pages@[i].object
+        },
+        forall|br: BlockRef| #[trigger] hb.contains_key(br) ==> ha.contains_key(br),
+        forall|br: BlockRef| #[trigger] ha.contains_key(br) ==> block_typed(a, br),
+    ensures
+        objects_wf(tables, b, hb),
+{
+    assert forall|x: usize| #[trigger] hb.contains_key(BlockRef::Small(x)) implies b.pages@[x as int].object is Frame by {
+        assert(ha.contains_key(BlockRef::Small(x)));
+        assert(block_typed(a, BlockRef::Small(x)));
+        assert(b.pages@[x as int].object == a.pages@[x as int].object);
+    }
+    assert forall|l: usize| #[trigger] tables.owner@.contains_key(l) implies {
+        &&& l / 4096 < NUM_PAGES
+        &&& b.pages@[(l / 4096) as int].kind is Base
+        &&& b.pages@[(l / 4096) as int].object is TableLeaf
+    } by {
+        assert(a.pages@[(l / 4096) as int].kind is Base);
+        assert(b.pages@[(l / 4096) as int].kind == a.pages@[(l / 4096) as int].kind);
+    }
+}
+
 /// Finds the block page i lies in, in constant time.
 pub fn locate(blocks: &BlockTable, i: usize) -> (ret: BlockRef)
     requires
@@ -224,7 +264,10 @@ pub open spec fn blocks_refs_changed(a: &BlockTable, b: &BlockTable, br: BlockRe
     &&& forall|x: BlockRef| #[trigger] block_typed(b, x) == block_typed(a, x)
     &&& forall|x: BlockRef| block_typed(a, x) && x != br ==> #[trigger] block_refs(b, x) == block_refs(a, x)
     &&& forall|x: BlockRef| block_typed(a, x) && x != br ==> #[trigger] block_dead(b, x) == block_dead(a, x)
-    &&& forall|i: int| 0 <= i < NUM_PAGES ==> (#[trigger] b.pages@[i]).kind == a.pages@[i].kind
+    &&& forall|i: int| 0 <= i < NUM_PAGES ==> {
+        &&& (#[trigger] b.pages@[i]).kind == a.pages@[i].kind
+        &&& b.pages@[i].object == a.pages@[i].object
+    }
     &&& forall|x: int| 0 <= x < NUM_2M ==> (#[trigger] b.regions_2m@[x]).typed == a.regions_2m@[x].typed
     &&& forall|x: int| 0 <= x < NUM_1G ==> (#[trigger] b.regions_1g@[x]).typed == a.regions_1g@[x].typed
 }

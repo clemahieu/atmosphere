@@ -245,6 +245,7 @@ impl CapKernel {
         &&& !block_dead(&self.blocks, br)
         &&& !block_active(&self.zeroing, br)
         &&& frame_in_block(br, large_frame_of(base, order))
+        &&& br is Small ==> self.blocks.pages@[br->Small_0 as int].object is Frame
     }
 
     /// The holders after a retype's capability appears: it takes the one reference its block held.
@@ -378,7 +379,7 @@ impl CapKernel {
             assert(base % 4096 == 0);
             assert(page * 4096 == base);
         }
-        let taken = self.blocks.try_type(page, 0);
+        let taken = self.blocks.try_type(page, 0, ObjectType::Frame);
         let Tracked(perms) = match taken {
             Some(perms) => perms,
             None => { return false; },
@@ -654,7 +655,7 @@ impl CapKernel {
                     page == base / 4096,
             ;
         }
-        let Tracked(perms) = match self.blocks.try_type(page, 1) {
+        let Tracked(perms) = match self.blocks.try_type(page, 1, ObjectType::TableLeaf) {
             Some(perms) => perms,
             None => { return false; },
         };

@@ -158,6 +158,7 @@ impl CapKernel {
         &&& hidden_nodes_are_leaves(&self.list, &self.tables)
         &&& capability_nodes_are_slots(&self.list, &self.tables)
         &&& holders_wf(&self.list, &self.tables, &self.blocks, &self.zeroing, self.holders@)
+        &&& objects_wf(&self.tables, &self.blocks, self.holders@)
     }
 
     /// A frame's permission is for its own page.
@@ -468,6 +469,7 @@ impl CapKernel {
             zeroing_typed(&post.zeroing, &post.blocks),
             list_pages_used(&post.list, &post.blocks),
             holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
+            objects_wf(&post.tables, &post.blocks, post.holders@),
             post.list == pre.list,
             post.tables == pre.tables,
             post.cores == pre.cores,
@@ -498,6 +500,7 @@ impl CapKernel {
             zeroing_typed(&pre.zeroing, &post.blocks),
             list_pages_used(&post.list, &post.blocks),
             holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
+            objects_wf(&post.tables, &post.blocks, post.holders@),
         ensures
             post.wf(),
     {
@@ -549,7 +552,31 @@ impl CapKernel {
                 assert(!(pre.blocks.pages@[(p / 4096) as int].kind is Free));
                 assert(self.blocks.pages@[(p / 4096) as int] == pre.blocks.pages@[(p / 4096) as int]);
             }
-            Self::lemma_blocks_changed(pre, *self);
+            assert forall|x: usize| #[trigger] self.holders@.contains_key(BlockRef::Small(x))
+                implies self.blocks.pages@[x as int].object is Frame by {
+                assert(x != base);
+                assert(pre.holders@.contains_key(BlockRef::Small(x)));
+                assert(block_typed(&pre.blocks, BlockRef::Small(x)));
+                if pre.blocks.in_block(base as int, x as int) {
+                    pre.blocks.lemma_base(base as int);
+                    pre.blocks.lemma_base(x as int);
+                    if x != base {
+                        pre.blocks.lemma_member_of(base as int, x as int);
+                    }
+                }
+                assert(self.blocks.pages@[x as int] == pre.blocks.pages@[x as int]);
+            }
+            assert forall|l: usize| #[trigger] self.tables.owner@.contains_key(l) implies {
+                &&& l / 4096 < NUM_PAGES
+                &&& self.blocks.pages@[(l / 4096) as int].kind is Base
+                &&& self.blocks.pages@[(l / 4096) as int].object is TableLeaf
+            } by {
+                pre.tables.lemma_leaf(&pre.list, l);
+                assert(pre.list.pages@.dom().contains(l));
+                assert(!pre.blocks.in_block(base as int, (l / 4096) as int));
+                assert(self.blocks.pages@[(l / 4096) as int] == pre.blocks.pages@[(l / 4096) as int]);
+            }
+Self::lemma_blocks_changed(pre, *self);
         }
     }
 

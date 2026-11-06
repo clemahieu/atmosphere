@@ -31,9 +31,18 @@ pub enum PageKind {
     Member,
 }
 
+/// What a small block was typed as, so a retype naming it knows what it is. Only a base has one.
+#[derive(Clone, Copy)]
+pub enum ObjectType {
+    None,
+    Frame,
+    TableLeaf,
+}
+
 #[derive(Clone, Copy)]
 pub struct PageEntry {
     pub kind: PageKind,
+    pub object: ObjectType,
     /// A member's block.
     pub base: usize,
     /// These four mean something only at a base.
@@ -57,7 +66,7 @@ pub open spec fn region_2m(i: int) -> int { i / PAGES_PER_2M as int }
 pub open spec fn region_1g(i: int) -> int { i / PAGES_PER_1G as int }
 
 pub open spec fn free_entry() -> PageEntry {
-    PageEntry { kind: PageKind::Free, base: 0, order: 0, dead: false, torn_down: false, refs: 0 }
+    PageEntry { kind: PageKind::Free, object: ObjectType::None, base: 0, order: 0, dead: false, torn_down: false, refs: 0 }
 }
 
 /// m holds page i's permission, uninitialised. Named so that a proof can ask for one page's
@@ -447,6 +456,7 @@ impl BlockTable {
         {
             self.pages.set(i, PageEntry {
                 kind: PageKind::Reserved,
+                object: ObjectType::None,
                 base: 0,
                 order: 0,
                 dead: false,
@@ -542,6 +552,7 @@ impl BlockTable {
         self.count_1g.set(r1, c1 - 1);
         self.pages.set(i, PageEntry {
             kind: PageKind::Free,
+            object: ObjectType::None,
             base: 0,
             order: 0,
             dead: false,
@@ -762,6 +773,17 @@ impl BlockTable {
             Large::Two => *self.regions_2m.get(r),
             Large::One => *self.regions_1g.get(r),
         }
+    }
+
+    /// Reads what a small block was typed as.
+    pub fn object_of(&self, base: usize) -> (ret: ObjectType)
+        requires
+            self.wf(),
+            base < NUM_PAGES,
+        ensures
+            ret == self.pages@[base as int].object,
+    {
+        self.pages.get(base).object
     }
 
     /// Mark a large block dead.
@@ -1262,7 +1284,7 @@ impl BlockTable {
 
     /// Type a free block. Checks every page, at most 8, and on success holds one reference for the
     /// caller and hands back the permission of each page.
-    pub fn try_type(&mut self, base: usize, order: usize) -> (ret: Option<Tracked<Map<usize, PagePerm4k>>>)
+    pub fn try_type(&mut self, base: usize, order: usize, object: ObjectType) -> (ret: Option<Tracked<Map<usize, PagePerm4k>>>)
         requires
             old(self).wf(),
             small_order(order),
@@ -1278,6 +1300,7 @@ impl BlockTable {
                 &&& final(self).regions_2m@ == old(self).regions_2m@
                 &&& final(self).regions_1g@ == old(self).regions_1g@
                 &&& final(self).pages@[base as int].kind is Base
+                &&& final(self).pages@[base as int].object == object
                 &&& final(self).pages@[base as int].order == order
                 &&& final(self).pages@[base as int].refs == 1
                 &&& !final(self).pages@[base as int].dead
@@ -1333,7 +1356,7 @@ impl BlockTable {
                 forall|i: int| 0 <= i < NUM_PAGES && !(base <= i < base + size)
                     ==> #[trigger] self.pages@[i] == pre.pages@[i],
                 k > 0 ==> self.pages@[base as int] == (PageEntry {
-                    kind: PageKind::Base, base, order, dead: false, torn_down: false, refs: 1,
+                    kind: PageKind::Base, object, base, order, dead: false, torn_down: false, refs: 1,
                 }),
                 forall|j: int| 0 < j < k ==> {
                     &&& (#[trigger] self.pages@[base + j]).kind is Member
@@ -1343,9 +1366,9 @@ impl BlockTable {
             decreases size - k,
         {
             let entry = if k == 0 {
-                PageEntry { kind: PageKind::Base, base, order, dead: false, torn_down: false, refs: 1 }
+                PageEntry { kind: PageKind::Base, object, base, order, dead: false, torn_down: false, refs: 1 }
             } else {
-                PageEntry { kind: PageKind::Member, base, order: 0, dead: false, torn_down: false, refs: 0 }
+                PageEntry { kind: PageKind::Member, object: ObjectType::None, base, order: 0, dead: false, torn_down: false, refs: 0 }
             };
             proof {
                 if order == 0 {
