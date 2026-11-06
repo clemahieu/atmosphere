@@ -9,6 +9,7 @@ pub mod reclaim;
 pub mod refs;
 pub mod retype;
 pub mod revoke;
+pub mod space;
 pub mod table;
 pub mod view;
 pub mod zero;

@@ -12,6 +12,7 @@ use crate::capability::derive::*;
 use crate::capability::kernel::*;
 use crate::capability::list::*;
 use crate::capability::reach::*;
+use crate::capability::space::*;
 use crate::capability::refs::*;
 use crate::capability::table::*;
 use crate::capability::view::*;
@@ -326,9 +327,12 @@ impl CapKernel {
             post.zeroing == pre.zeroing,
             pre.frame_block_ready(base, order),
             post.holders@ == pre.holders@.insert(block_ref(&pre.blocks, base / 4096), set![child]),
+            post.table_pages == pre.table_pages,
+            post.list.pages@.dom() == pre.list.pages@.dom(),
         ensures
             holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
             leaf_blocks_wf(&post.list, &post.tables, &post.blocks),
+            table_pages_wf(&post.list, &post.table_pages, &post.blocks),
     {
         assert forall|x: usize| x != child implies {
             &&& #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x)
@@ -340,6 +344,9 @@ impl CapKernel {
         Self::lemma_same_leaf_nodes(pre, post, child, child);
         assert(leaf_blocks_wf(&pre.list, &post.tables, &pre.blocks));
         lemma_leaf_blocks_same_nodes(&pre.list, &post.list, &post.tables, &post.blocks);
+        pre.lemma_slot_not_table_page(child);
+        Self::lemma_same_table_nodes(pre, post, child, child);
+        lemma_table_pages_same_nodes(&pre.list, &post.list, &pre.table_pages, &post.blocks);
         lemma_holders_frame_new(
             &pre.list,
             &pre.tables,
@@ -470,18 +477,18 @@ impl CapKernel {
         proof {
             self.frames.borrow_mut().tracked_insert(page, perm);
             Self::lemma_tlb_same(pre, *self);
-            assert forall|p: usize| #[trigger] self.list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
-                implies !(self.blocks.pages@[(p / 4096) as int].kind is Free)
-                    && !(self.blocks.pages@[(p / 4096) as int].kind is Member)
-                    && !(self.blocks.pages@[(p / 4096) as int].object is Frame) by {
-                assert(!(pre.blocks.pages@[(p / 4096) as int].kind is Free));
-                assert((p / 4096) as int != page as int) by {
-                    assert(pre.blocks.pages@[page + 0int].kind is Free);
-                }
+            assert forall|k: int| 0 <= k < 1 implies #[trigger] pre.blocks.pages@[page + k].kind is Free by {
+                assert(pre.blocks.pages@[page + 0int].kind is Free);
             }
+            lemma_list_pages_used_small_typed(&self.list, &pre.blocks, &self.blocks, page, 1);
             lemma_objects_small_typed(&self.tables, &self.tables, &pre.blocks, &self.blocks, pre.holders@, page, 1);
             lemma_holders_small_typed(&pre.list, &pre.tables, &pre.blocks, &self.blocks, &pre.zeroing, pre.holders@, page, 0);
             lemma_leaf_blocks_small_typed(&self.list, &self.tables, &pre.blocks, &self.blocks, pre.holders@, page, 1);
+            lemma_table_pages_small_typed(&self.list, &self.table_pages, &pre.blocks, &self.blocks, page, 1);
+            assert forall|x: usize| x < NUM_PAGES && #[trigger] table_block(&self.blocks, x)
+                implies self.table_pages.maps@.contains_key((x * 4096) as usize) by {
+                assert(x != page);
+            }
             assert(self.wf());
             assert(self.view() == pre.view());
             assert(self.frame_block_ready(base, 0)) by {
@@ -586,6 +593,7 @@ impl CapKernel {
             proof {
                 lemma_leaf_blocks_same_pages(&pre.list, &pre.tables, &pre.blocks, &self.blocks);
                 lemma_leaf_blocks_owned_same_types(&pre.tables, &pre.blocks, &self.blocks);
+                lemma_table_pages_same_pages(&pre.list, &pre.table_pages, &pre.blocks, &self.blocks);
                 Self::lemma_zeroing_changed(pre, *self);
             }
             return RetypeStep::Again;
@@ -617,6 +625,7 @@ impl CapKernel {
             lemma_holders_region_done(&mid.list, &mid.tables, &mid.blocks, &mid.zeroing, &me.zeroing, mid.holders@, level, r);
             lemma_leaf_blocks_same_pages(&pre.list, &pre.tables, &pre.blocks, &me.blocks);
             lemma_leaf_blocks_owned_same_types(&pre.tables, &pre.blocks, &me.blocks);
+            lemma_table_pages_same_pages(&pre.list, &pre.table_pages, &pre.blocks, &me.blocks);
             Self::lemma_zeroing_changed(pre, me);
         }
         RetypeStep::Done
@@ -806,23 +815,11 @@ impl CapKernel {
             assert(Self::leaf_step(pre, post, base));
             Self::lemma_leaf_caps_wf(pre, post, base);
             Self::lemma_tlb_same(pre, post);
-            assert forall|p: usize| #[trigger] post.list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
-                implies !(post.blocks.pages@[(p / 4096) as int].kind is Free)
-                    && !(post.blocks.pages@[(p / 4096) as int].kind is Member)
-                    && !(post.blocks.pages@[(p / 4096) as int].object is Frame) by {
-                if p != base {
-                    assert(pre.list.pages@.dom().contains(p));
-                    assert(!(pre.blocks.pages@[(p / 4096) as int].kind is Free));
-                    assert(pre.blocks.pages@[page + 0int].kind is Free);
-                    assert(pre.blocks.pages@[page + 1int].kind is Free);
-                    assert(post.blocks.pages@[(p / 4096) as int] == pre.blocks.pages@[(p / 4096) as int]);
-                } else {
-                    assert(base / 4096 == page);
-                }
-            }
+            Self::lemma_leaf_list_pages(pre, post, base, page);
             Self::lemma_leaf_objects(pre, post, base, page);
             Self::lemma_leaf_holders(pre, post, mid, base, page);
             Self::lemma_leaf_blocks_leaf_added(pre, post, base, page);
+            Self::lemma_leaf_table_pages(pre, post, base, page);
             Self::lemma_leaf_nodes(pre, post, mid, parent, base);
             Self::lemma_leaf_first(pre, post, base);
             Self::lemma_leaf_slots(pre, post, base);
@@ -841,6 +838,68 @@ impl CapKernel {
             Self::lemma_leaf_discharges(pre, post, root, parent, base);
         }
         true
+    }
+
+    /// The list's pages after a leaf's retype: those it held lie outside the new block, and the new page
+    /// is the block's base.
+    proof fn lemma_leaf_list_pages(pre: Self, post: Self, base: usize, page: usize)
+        requires
+            pre.wf(),
+            base / 4096 == page,
+            page + 1 < NUM_PAGES,
+            pre.blocks.pages@[page + 0int].kind is Free,
+            pre.blocks.pages@[page + 1int].kind is Free,
+            post.blocks.pages@[page as int].kind is Base,
+            post.blocks.pages@[page as int].object is TableLeaf,
+            forall|i: int| 0 <= i < NUM_PAGES && !(page <= i < page + 2) ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
+            post.list.pages@.dom() == pre.list.pages@.dom().insert(base),
+        ensures
+            list_pages_used(&post.list, &post.blocks),
+    {
+        assert forall|k: int| 0 <= k < 2 implies #[trigger] pre.blocks.pages@[page + k].kind is Free by {
+            if k == 0 { assert(pre.blocks.pages@[page + 0int].kind is Free); }
+        }
+        lemma_list_pages_used_small_typed(&pre.list, &pre.blocks, &post.blocks, page, 2);
+        lemma_list_pages_used_page_added(&pre.list, &post.list, &post.blocks, base);
+    }
+
+    /// The table pages after a leaf's retype: none lay in the block, the new page is no table block, and
+    /// every table page's node is as it was.
+    proof fn lemma_leaf_table_pages(pre: Self, post: Self, base: usize, page: usize)
+        requires
+            Self::leaf_step(pre, post, base),
+            post.blocks.wf(),
+            post.table_pages == pre.table_pages,
+            base / 4096 == page,
+            page + 1 < NUM_PAGES,
+            !pre.list.pages@.dom().contains(base),
+            pre.blocks.pages@[page + 0int].kind is Free,
+            pre.blocks.pages@[page + 1int].kind is Free,
+            post.blocks.pages@[page as int].kind is Base,
+            post.blocks.pages@[page as int].object is TableLeaf,
+            post.blocks.pages@[page as int].order == 1,
+            forall|i: int| 0 <= i < NUM_PAGES && !(page <= i < page + 2) ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
+            forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) ==> post.list.pages@.dom().contains(p),
+        ensures
+            table_pages_wf(&post.list, &post.table_pages, &post.blocks),
+    {
+        assert forall|k: int| 0 <= k < 2 implies #[trigger] pre.blocks.pages@[page + k].kind is Free by {
+            if k == 0 { assert(pre.blocks.pages@[page + 0int].kind is Free); }
+        }
+        lemma_table_pages_small_typed(&pre.list, &pre.table_pages, &pre.blocks, &post.blocks, page, 2);
+        post.blocks.lemma_member_of(page as int, page + 1int);
+        assert forall|x: usize| x < NUM_PAGES && #[trigger] table_block(&post.blocks, x)
+            implies pre.table_pages.maps@.contains_key((x * 4096) as usize) by {
+            assert(!(page <= x < page + 2));
+        }
+        assert forall|t: usize| #[trigger] pre.table_pages.maps@.contains_key(t) implies {
+            &&& post.list.nodes@[t as int].live == pre.list.nodes@[t as int].live
+            &&& post.list.nodes@[t as int].kind == pre.list.nodes@[t as int].kind
+        } by {
+            pre.lemma_table_page_valid(t);
+            assert(t != base);
+        }
+        lemma_table_pages_same_nodes(&pre.list, &post.list, &pre.table_pages, &post.blocks);
     }
 
     /// The list's first node stays outside every leaf after a leaf's retype: it is live, so its page
@@ -908,12 +967,14 @@ impl CapKernel {
                 &&& post.list.nodes@[i].kind == mid.nodes@[i].kind
             },
             post.tables.attached(base),
+            post.table_pages == pre.table_pages,
         ensures
-            hidden_nodes_are_leaves(&post.list, &post.tables),
+            hidden_nodes_are_leaves(&post.list, &post.tables, &post.table_pages),
             parents_are_capabilities(&post.list),
     {
         assert forall|x: usize| x < NODE_SPACE && (#[trigger] post.list.nodes@[x as int]).live
-            && post.list.nodes@[x as int].kind is Hidden implies post.tables.owner@.contains_key(x) by {
+            && post.list.nodes@[x as int].kind is Hidden
+            implies post.tables.owner@.contains_key(x) || post.table_pages.maps@.contains_key(x) by {
             if x != base {
                 assert(mid.nodes@[x as int].live);
                 pre.list.lemma_live_valid(x);
@@ -1122,44 +1183,16 @@ impl CapKernel {
         ensures
             discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: leaf }),
     {
-        let (a, b) = (post.view(), pre.view());
-        let live = |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live;
-        let f = |x: NodeId| x;
-        assert forall|h: (ObjectId, NodeId)| #[trigger] a.held.contains(h) implies live(h.1) && b.held.contains((h.0, f(h.1))) by {
-            Self::lemma_leaf_cap(pre, post, leaf, h.1);
-            pre.lemma_slot_bound(h.1);
-        }
-        assert forall|x: NodeId| #[trigger] a.names.contains_key(x) implies {
-            &&& live(x)
-            &&& b.names.contains_key(f(x))
-            &&& b.names[f(x)] == a.names[x]
-        } by {
+        assert forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x) by {
             Self::lemma_leaf_cap(pre, post, leaf, x);
-            pre.lemma_slot_bound(x);
         }
-        assert forall|x: NodeId| #[trigger] a.pages.contains_key(x) implies {
-            &&& b.pages.contains_key(f(x))
-            &&& b.pages[f(x)] == a.pages[x]
+        assert forall|x: usize| #[trigger] pre.is_cap(x) implies {
+            &&& post.payload_of(x) == pre.payload_of(x)
+            &&& post.tables.owner@[page_of(x)] == pre.tables.owner@[page_of(x)]
         } by {
             Self::lemma_leaf_cap(pre, post, leaf, x);
         }
-        assert forall|x: NodeId, r: Right| #[trigger] a.rights.contains((x, r)) implies b.rights.contains((f(x), r)) by {
-            Self::lemma_leaf_cap(pre, post, leaf, x);
-        }
-        assert forall|x: NodeId| live(x) && #[trigger] a.parent.contains_key(x) implies {
-            &&& live(a.parent[x])
-            &&& b.parent.contains_key(f(x))
-            &&& b.parent[f(x)] == f(a.parent[x])
-        } by {
-            assert(x != leaf);
-            pre.list.lemma_parent_live(x);
-        }
-        assert(simulates(a, b, live, f));
-        assert forall|x: NodeId| #[trigger] b.names.contains_key(x) implies a.names.contains_key(x) by {
-            Self::lemma_leaf_cap(pre, post, leaf, x);
-        }
-        assert forall|o: ObjectId| #[trigger] (a.contents)(o) == (b.contents)(o) by {}
-        lemma_simulated_discharges_retype(b, a, root, parent, leaf, live, f);
+        Self::lemma_hidden_added_discharges(pre, post, root, parent, leaf);
     }
 
     /// A region just typed shares no page with a block being zeroed: its pages were not covered, and

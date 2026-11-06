@@ -10,6 +10,7 @@ use crate::array::Array;
 use crate::capability::block::*;
 use crate::capability::list::*;
 use crate::capability::refs::*;
+use crate::capability::space::*;
 use crate::capability::table::Tables;
 use crate::capability::zero::*;
 use crate::define::*;
@@ -48,6 +49,8 @@ pub struct CapKernel {
     pub stale_epoch: Array<usize, NUM_PAGES>,
     /// The permission of each page of a frame, by page number.
     pub frames: Tracked<Map<usize, PagePerm4k>>,
+    /// The table pages' tables and spare pages.
+    pub table_pages: TablePages,
     /// The large blocks being zeroed. Each is typed with no capability yet.
     pub zeroing: Zeroing,
     /// The frame capabilities holding each block's references.
@@ -77,12 +80,11 @@ pub fn flush_every_context(core: usize, epoch: usize) -> (ret: Tracked<Flushed>)
     Tracked::assume_new()
 }
 
-/// A live hidden node is node 0 of a table leaf, the only block with one so far, so unlinking it can
-/// find what to detach. And a leaf in a root entry has its hidden node, so revoking the untyped it came
-/// from always reaches it.
-pub open spec fn hidden_nodes_are_leaves(list: &Tree, tables: &Tables) -> bool {
+/// A live hidden node is node 0 of a table leaf or a table page, so unlinking it can find what to detach.
+/// And a leaf in a root entry has its hidden node, so revoking the untyped it came from always reaches it.
+pub open spec fn hidden_nodes_are_leaves(list: &Tree, tables: &Tables, pages: &TablePages) -> bool {
     &&& forall|n: usize| n < NODE_SPACE && (#[trigger] list.nodes@[n as int]).live && list.nodes@[n as int].kind is Hidden
-        ==> tables.owner@.contains_key(n)
+        ==> tables.owner@.contains_key(n) || pages.maps@.contains_key(n)
     &&& forall|l: usize| #[trigger] tables.owner@.contains_key(l) && tables.attached(l) ==> {
         &&& l < NODE_SPACE
         &&& list.nodes@[l as int].live
@@ -303,28 +305,43 @@ pub open spec fn capability_nodes_are_slots(list: &Tree, tables: &Tables) -> boo
 pub open spec fn list_pages_used(list: &Tree, blocks: &BlockTable) -> bool {
     forall|p: usize| #[trigger] list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES ==> {
         &&& !(blocks.pages@[(p / 4096) as int].kind is Free)
-        &&& !(blocks.pages@[(p / 4096) as int].kind is Member)
+        &&& blocks.pages@[(p / 4096) as int].kind is Member
+            ==> blocks.pages@[blocks.pages@[(p / 4096) as int].base as int].object is TablePage
         &&& !(blocks.pages@[(p / 4096) as int].object is Frame)
     }
 }
 
-/// The list's pages stay used while no page changes kind.
+/// The list's pages stay used while no page changes kind or object and every page keeps its block: a
+/// member page is in no typed region, so its block names its base.
 pub proof fn lemma_list_pages_used_same_kinds(list: &Tree, a: &BlockTable, b: &BlockTable)
     requires
         list_pages_used(list, a),
+        a.wf(),
         forall|i: int| 0 <= i < NUM_PAGES ==> {
             &&& (#[trigger] b.pages@[i]).kind == a.pages@[i].kind
             &&& b.pages@[i].object == a.pages@[i].object
         },
+        forall|i: usize| i < NUM_PAGES ==> #[trigger] block_ref(b, i) == block_ref(a, i),
+        forall|x: int| 0 <= x < NUM_2M ==> (#[trigger] b.regions_2m@[x]).typed == a.regions_2m@[x].typed,
+        forall|x: int| 0 <= x < NUM_1G ==> (#[trigger] b.regions_1g@[x]).typed == a.regions_1g@[x].typed,
     ensures
         list_pages_used(list, b),
 {
     assert forall|p: usize| #[trigger] list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES implies {
         &&& !(b.pages@[(p / 4096) as int].kind is Free)
-        &&& !(b.pages@[(p / 4096) as int].kind is Member)
+        &&& b.pages@[(p / 4096) as int].kind is Member
+            ==> b.pages@[b.pages@[(p / 4096) as int].base as int].object is TablePage
         &&& !(b.pages@[(p / 4096) as int].object is Frame)
     } by {
-        assert(b.pages@[(p / 4096) as int].kind == a.pages@[(p / 4096) as int].kind);
+        let x = p / 4096;
+        assert(b.pages@[x as int].kind == a.pages@[x as int].kind);
+        if a.pages@[x as int].kind is Member {
+            a.lemma_not_free_uncovered(x as int);
+            a.lemma_member(x as int);
+            assert(block_ref(a, x) == BlockRef::Small(a.pages@[x as int].base));
+            assert(block_ref(b, x) == BlockRef::Small(b.pages@[x as int].base));
+            assert(b.pages@[x as int].base == a.pages@[x as int].base);
+        }
     }
 }
 
@@ -370,7 +387,8 @@ impl CapKernel {
         &&& self.zeroing.wf()
         &&& zeroing_typed(&self.zeroing, &self.blocks)
         &&& list_pages_used(&self.list, &self.blocks)
-        &&& hidden_nodes_are_leaves(&self.list, &self.tables)
+        &&& hidden_nodes_are_leaves(&self.list, &self.tables, &self.table_pages)
+        &&& table_pages_wf(&self.list, &self.table_pages, &self.blocks)
         &&& capability_nodes_are_slots(&self.list, &self.tables)
         &&& parents_are_capabilities(&self.list)
         &&& first_node_outside_leaves(&self.list, &self.tables)
@@ -456,6 +474,7 @@ impl CapKernel {
     {
         self.list = Tree::new(root, Tracked(perm));
         self.tables = Tables::new();
+        self.table_pages = TablePages::new();
         self.frames = Tracked(Map::tracked_empty());
         self.zeroing.init();
         self.holders = Ghost(IMap::empty());
@@ -696,8 +715,10 @@ impl CapKernel {
             objects_wf(&post.tables, &post.blocks, post.holders@),
             frames_held(post.frames@, post.holders@),
             leaf_blocks_wf(&post.list, &post.tables, &post.blocks),
+            table_pages_wf(&post.list, &post.table_pages, &post.blocks),
             post.list == pre.list,
             post.tables == pre.tables,
+            post.table_pages == pre.table_pages,
             post.cores == pre.cores,
             post.flush_epoch == pre.flush_epoch,
             post.tlb == pre.tlb,
@@ -716,6 +737,7 @@ impl CapKernel {
             post.blocks.wf(),
             post.list == pre.list,
             post.tables == pre.tables,
+            post.table_pages == pre.table_pages,
             post.cores == pre.cores,
             post.flush_epoch == pre.flush_epoch,
             post.tlb == pre.tlb,
@@ -729,6 +751,7 @@ impl CapKernel {
             objects_wf(&post.tables, &post.blocks, post.holders@),
             frames_held(post.frames@, post.holders@),
             leaf_blocks_wf(&post.list, &post.tables, &post.blocks),
+            table_pages_wf(&post.list, &post.table_pages, &post.blocks),
         ensures
             post.wf(),
     {
@@ -774,7 +797,8 @@ impl CapKernel {
         }
     }
 
-    /// A live hidden node is an owned leaf's, whose block holds its one reference and is no holder's key.
+    /// A live hidden node is an owned leaf's or a table page's, which its block's object tells apart.
+    /// That block holds its one reference and is no holder's key.
     pub proof fn lemma_hidden_block(&self, n: usize)
         requires
             self.wf(),
@@ -782,15 +806,22 @@ impl CapKernel {
             self.list.nodes@[n as int].live,
             self.list.nodes@[n as int].kind is Hidden,
         ensures
-            self.tables.owner@.contains_key(n),
+            self.tables.owner@.contains_key(n) || self.table_pages.maps@.contains_key(n),
             n / 4096 < NUM_PAGES,
+            self.tables.owner@.contains_key(n) == (self.blocks.pages@[(n / 4096) as int].object is TableLeaf),
+            self.table_pages.maps@.contains_key(n) == (self.blocks.pages@[(n / 4096) as int].object is TablePage),
             block_typed(&self.blocks, BlockRef::Small(n / 4096)),
             block_refs(&self.blocks, BlockRef::Small(n / 4096)) == 1,
             !block_dead(&self.blocks, BlockRef::Small(n / 4096)),
             !self.holders@.contains_key(BlockRef::Small(n / 4096)),
     {
-        assert(self.tables.owner@.contains_key(n));
-        lemma_leaf_block_unkeyed(&self.tables, &self.blocks, self.holders@, n);
+        if self.tables.owner@.contains_key(n) {
+            lemma_leaf_block_unkeyed(&self.tables, &self.blocks, self.holders@, n);
+        } else {
+            assert(self.table_pages.maps@.contains_key(n));
+            assert(table_page_wf(&self.list, &self.table_pages, &self.blocks, n));
+            lemma_table_page_unkeyed(&self.list, &self.table_pages, &self.tables, &self.blocks, self.holders@, n);
+        }
     }
 
     /// A slot's node is no leaf, since a leaf is page aligned.
@@ -905,6 +936,7 @@ impl CapKernel {
             post.holders@ == pre.holders@.remove(BlockRef::Small(base)),
             post.list == pre.list,
             post.tables == pre.tables,
+            post.table_pages == pre.table_pages,
             post.cores == pre.cores,
             post.flush_epoch == pre.flush_epoch,
             post.tlb == pre.tlb,
@@ -917,13 +949,12 @@ impl CapKernel {
             post.wf(),
     {
         lemma_holders_small_freed(&pre.list, &pre.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, base);
-        assert forall|p: usize| #[trigger] post.list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
-            implies !(post.blocks.pages@[(p / 4096) as int].kind is Free)
-                && !(post.blocks.pages@[(p / 4096) as int].kind is Member) by {
-            assert(!pre.blocks.in_block(base as int, (p / 4096) as int));
-            assert(!(pre.blocks.pages@[(p / 4096) as int].kind is Free));
-            assert(post.blocks.pages@[(p / 4096) as int] == pre.blocks.pages@[(p / 4096) as int]);
+        lemma_list_pages_used_small_freed(&pre.list, &pre.blocks, &post.blocks, base);
+        assert forall|t: usize, k: usize| #[trigger] pre.table_pages.maps@.contains_key(t) && k < TABLE_NODE_PAGES
+            implies post.list.pages@.dom().contains(#[trigger] table_node_page(t, k)) by {
+            assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, t));
         }
+        lemma_table_pages_small_freed(&pre.list, &post.list, &pre.table_pages, &pre.blocks, &post.blocks, base);
         assert forall|x: usize| #[trigger] post.holders@.contains_key(BlockRef::Small(x))
             implies post.blocks.pages@[x as int].object is Frame by {
             assert(x != base);
@@ -1038,6 +1069,7 @@ impl CapKernel {
             post.holders@ == pre.holders@.remove(level_ref(level, r)),
             post.list == pre.list,
             post.tables == pre.tables,
+            post.table_pages == pre.table_pages,
             post.cores == pre.cores,
             post.flush_epoch == pre.flush_epoch,
             post.tlb == pre.tlb,
@@ -1073,6 +1105,7 @@ impl CapKernel {
         }
         lemma_leaf_blocks_same_pages(&pre.list, &pre.tables, &pre.blocks, &post.blocks);
         lemma_leaf_blocks_owned_same_types(&pre.tables, &pre.blocks, &post.blocks);
+        lemma_table_pages_same_pages(&pre.list, &pre.table_pages, &pre.blocks, &post.blocks);
         Self::lemma_blocks_changed(pre, post);
     }
 

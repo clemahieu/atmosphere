@@ -10,6 +10,7 @@ use crate::capability::kernel::*;
 use crate::capability::list::*;
 use crate::capability::reach::*;
 use crate::capability::refs::*;
+use crate::capability::space::*;
 use crate::capability::table::*;
 use crate::define::*;
 
@@ -105,9 +106,12 @@ impl CapKernel {
             post.blocks == pre.blocks,
             post.zeroing == pre.zeroing,
             post.holders@ == Self::moved_holders(pre.holders@, i, n),
+            post.table_pages == pre.table_pages,
+            post.list.pages@.dom() == pre.list.pages@.dom(),
         ensures
             holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
             leaf_blocks_wf(&post.list, &post.tables, &post.blocks),
+            table_pages_wf(&post.list, &post.table_pages, &post.blocks),
     {
         let ha = pre.holders@;
         let hb = post.holders@;
@@ -118,6 +122,10 @@ impl CapKernel {
         Self::lemma_same_leaf_nodes(pre, post, i, n);
         assert(leaf_blocks_wf(&pre.list, &post.tables, &pre.blocks));
         lemma_leaf_blocks_same_nodes(&pre.list, &post.list, &post.tables, &post.blocks);
+        pre.lemma_slot_not_table_page(i);
+        pre.lemma_slot_not_table_page(n);
+        Self::lemma_same_table_nodes(pre, post, i, n);
+        lemma_table_pages_same_nodes(&pre.list, &post.list, &pre.table_pages, &post.blocks);
         assert(!pre.tables.is_cap(&pre.list, n));
         assert(!post.tables.is_cap(&post.list, i));
         assert forall|x: usize| x != i && x != n implies {

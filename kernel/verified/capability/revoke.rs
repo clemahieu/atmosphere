@@ -5,9 +5,11 @@ use vstd::prelude::*;
 
 verus! {
 
+use crate::capability::block::*;
 use crate::capability::kernel::*;
 use crate::capability::list::*;
 use crate::capability::reach::*;
+use crate::capability::space::*;
 use crate::capability::refs::*;
 use crate::capability::table::*;
 use crate::define::*;
@@ -58,8 +60,9 @@ impl CapKernel {
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).tables.owner == old(self).tables.owner,
             forall|x: usize| x != n ==> #[trigger] final(self).tables.payload_of(x) == old(self).tables.payload_of(x),
-            old(self).list.nodes@[n as int].kind is Hidden ==> !final(self).tables.attached(n),
-            !(old(self).list.nodes@[n as int].kind is Hidden) ==> final(self).tables == old(self).tables,
+            old(self).list.nodes@[n as int].kind is Hidden && old(self).tables.owner@.contains_key(n) ==> !final(self).tables.attached(n),
+            !(old(self).list.nodes@[n as int].kind is Hidden && old(self).tables.owner@.contains_key(n)) ==> final(self).tables == old(self).tables,
+            final(self).table_pages == old(self).table_pages,
             old(self).is_cap(n) && old(self).payload_of(n).kind is Frame ==> {
                 let br = block_ref(&old(self).blocks, old(self).payload_of(n).base / 4096);
                 &&& blocks_refs_changed(
@@ -88,11 +91,16 @@ impl CapKernel {
         let node = self.list.get(n);
         match node.kind {
             NodeKind::Hidden => {
-                self.tables.detach_leaf(&self.list, n);
-                // The block's one reference was the hidden node's, so it is dead at once.
                 proof {
                     pre.lemma_hidden_block(n);
                 }
+                // A table page has no parent to detach from until its entries exist.
+                let object = self.blocks.pages.get(n / 4096).object;
+                match object {
+                    ObjectType::TableLeaf => self.tables.detach_leaf(&self.list, n),
+                    _ => {},
+                }
+                // The block's one reference was the hidden node's, so it is dead at once.
                 drop_block_ref(&mut self.blocks, BlockRef::Small(n / 4096));
             },
             NodeKind::Capability => {
@@ -210,7 +218,8 @@ impl CapKernel {
             done ==> forall|x: usize| !#[trigger] old(self).list.is_child(c, x),
             !done ==> final(self).list.seq@.len() == old(self).list.seq@.len() - 1,
             !done ==> exists|r: usize| #[trigger] revoked_one(old(self).list, final(self).list, c, r)
-                && (old(self).list.nodes@[r as int].kind is Hidden ==> !final(self).tables.attached(r)),
+                && (old(self).list.nodes@[r as int].kind is Hidden && old(self).tables.owner@.contains_key(r)
+                    ==> !final(self).tables.attached(r)),
             forall|x: int| 0 <= x < NODE_SPACE ==> #[trigger] final(self).list.nodes@[x].depth == old(self).list.nodes@[x].depth,
             forall|x: usize| #[trigger] final(self).is_cap(x) ==> old(self).is_cap(x),
             discharges(old(self).view(), final(self).view(), root, Effect::Revoke { cap: c }),
@@ -266,8 +275,9 @@ impl CapKernel {
         assert(self.view().names.contains_key(c));
     }
 
-    /// The holders and the blocks after hidden node n goes with its leaf's one reference: no frame
-    /// changed, the leaf's block was no holder's key, and it is dead at zero as its node is dead.
+    /// The holders and the blocks after hidden node n goes with its block's one reference: no frame
+    /// changed, the block was no holder's key, and it is dead at zero as its node is dead. It was a
+    /// leaf's or a table page's, and the other kind's blocks are as they were.
     pub proof fn lemma_revoke_hidden_holders(pre: Self, post: Self, n: usize)
         requires
             Self::caps_frame(pre, post, n, n),
@@ -276,6 +286,7 @@ impl CapKernel {
             pre.list.nodes@[n as int].kind is Hidden,
             !post.list.nodes@[n as int].live,
             post.zeroing == pre.zeroing,
+            post.table_pages == pre.table_pages,
             post.list.pages@.dom() == pre.list.pages@.dom(),
             blocks_refs_changed(&pre.blocks, &post.blocks, BlockRef::Small(n / 4096), 0, true),
             post.holders == pre.holders,
@@ -285,6 +296,7 @@ impl CapKernel {
             list_pages_used(&post.list, &post.blocks),
             objects_wf(&post.tables, &post.blocks, post.holders@),
             leaf_blocks_wf(&post.list, &post.tables, &post.blocks),
+            table_pages_wf(&post.list, &post.table_pages, &post.blocks),
     {
         let br = BlockRef::Small(n / 4096);
         assert forall|x: usize| x != n implies {
@@ -301,7 +313,7 @@ impl CapKernel {
         lemma_zeroing_typed_small_changed(&pre.zeroing, &pre.blocks, &post.blocks, n / 4096, 0, true);
         lemma_list_pages_used_same_kinds(&pre.list, &pre.blocks, &post.blocks);
         assert(objects_wf(&post.tables, &pre.blocks, pre.holders@));
-        lemma_objects_leaf_block_changed(&post.tables, &pre.blocks, &post.blocks, pre.holders@, n, 0, true);
+        lemma_objects_unframed_block_changed(&post.tables, &pre.blocks, &post.blocks, pre.holders@, n / 4096, 0, true);
         assert forall|l: usize| #[trigger] pre.tables.owner@.contains_key(l) && l != n implies {
             &&& post.list.nodes@[l as int].live == pre.list.nodes@[l as int].live
             &&& post.list.nodes@[l as int].kind == pre.list.nodes@[l as int].kind
@@ -310,8 +322,19 @@ impl CapKernel {
             assert(page_of(l) == l);
             pre.lemma_slot_bound(l);
         }
-        lemma_leaf_blocks_leaf_dropped(&pre.list, &post.list, &pre.tables, &pre.blocks, &post.blocks, pre.holders@, n);
-        assert(leaf_blocks_wf(&post.list, &post.tables, &post.blocks));
+        assert forall|t: usize| #[trigger] pre.table_pages.maps@.contains_key(t) && t != n implies {
+            &&& post.list.nodes@[t as int].live == pre.list.nodes@[t as int].live
+            &&& post.list.nodes@[t as int].kind == pre.list.nodes@[t as int].kind
+        } by {
+            pre.lemma_table_page_valid(t);
+        }
+        if pre.tables.owner@.contains_key(n) {
+            lemma_leaf_blocks_leaf_dropped(&pre.list, &post.list, &pre.tables, &pre.blocks, &post.blocks, pre.holders@, n);
+            lemma_table_pages_refs_changed(&pre.list, &post.list, &pre.table_pages, &pre.blocks, &post.blocks, br, 0, true);
+        } else {
+            lemma_leaf_blocks_other_changed(&pre.list, &post.list, &pre.tables, &pre.blocks, &post.blocks, pre.holders@, n / 4096, 0, true);
+            lemma_table_page_dropped(&pre.list, &post.list, &pre.table_pages, &pre.blocks, &post.blocks, n);
+        }
     }
 
     /// The hidden nodes after the step: r has gone, and if it was hidden its leaf is detached. And every
@@ -319,12 +342,14 @@ impl CapKernel {
     pub proof fn lemma_revoke_hidden(pre: Self, post: Self, r: usize)
         requires
             Self::caps_frame(pre, post, r, r),
+            post.table_pages == pre.table_pages,
             !post.list.nodes@[r as int].live,
-            pre.list.nodes@[r as int].kind is Hidden ==> !post.tables.attached(r),
-            !(pre.list.nodes@[r as int].kind is Hidden) ==> post.tables.record(r) == pre.tables.record(r),
+            pre.list.nodes@[r as int].kind is Hidden && pre.tables.owner@.contains_key(r) ==> !post.tables.attached(r),
+            !(pre.list.nodes@[r as int].kind is Hidden && pre.tables.owner@.contains_key(r))
+                ==> post.tables.record(r) == pre.tables.record(r),
             post.list.seq@[0] == pre.list.seq@[0],
         ensures
-            hidden_nodes_are_leaves(&post.list, &post.tables),
+            hidden_nodes_are_leaves(&post.list, &post.tables, &post.table_pages),
             capability_nodes_are_slots(&post.list, &post.tables),
     {
         assert forall|x: usize| x < NODE_SPACE && (#[trigger] post.list.nodes@[x as int]).live
@@ -336,7 +361,8 @@ impl CapKernel {
             Self::lemma_caps_frame(pre, post, r, r, x);
         }
         assert forall|x: usize| x < NODE_SPACE && (#[trigger] post.list.nodes@[x as int]).live
-            && post.list.nodes@[x as int].kind is Hidden implies post.tables.owner@.contains_key(x) by {
+            && post.list.nodes@[x as int].kind is Hidden
+            implies post.tables.owner@.contains_key(x) || post.table_pages.maps@.contains_key(x) by {
             assert(x != r);
             assert(pre.list.nodes@[x as int].live);
         }
@@ -348,7 +374,7 @@ impl CapKernel {
             pre.tables.lemma_leaf(&pre.list, l);
             assert(page_of(l) == l);
             if l == r {
-                assert(!(pre.list.nodes@[r as int].kind is Hidden));
+                assert(!(pre.list.nodes@[r as int].kind is Hidden && pre.tables.owner@.contains_key(r)));
                 assert(pre.tables.attached(l));
                 assert(false);
             } else {

@@ -10,6 +10,7 @@ use crate::capability::kernel::*;
 use crate::capability::list::*;
 use crate::capability::reach::*;
 use crate::capability::refs::*;
+use crate::capability::space::*;
 use crate::capability::table::*;
 
 impl CapKernel {
@@ -108,6 +109,7 @@ impl CapKernel {
             !(pre.list.nodes@[n as int].kind is Hidden),
             !post.list.nodes@[n as int].live,
             post.zeroing == pre.zeroing,
+            post.table_pages == pre.table_pages,
             post.list.pages@.dom() == pre.list.pages@.dom(),
             pre.is_cap(n) && pre.payload_of(n).kind is Frame ==> {
                 let br = block_ref(&pre.blocks, pre.payload_of(n).base / 4096);
@@ -127,6 +129,7 @@ impl CapKernel {
             list_pages_used(&post.list, &post.blocks),
             objects_wf(&post.tables, &post.blocks, post.holders@),
             leaf_blocks_wf(&post.list, &post.tables, &post.blocks),
+            table_pages_wf(&post.list, &post.table_pages, &post.blocks),
     {
         assert forall|x: usize| x != n implies {
             &&& #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x)
@@ -137,6 +140,8 @@ impl CapKernel {
         pre.lemma_unhidden_not_owned(n);
         Self::lemma_same_leaf_nodes(pre, post, n, n);
         assert(leaf_blocks_wf(&pre.list, &post.tables, &pre.blocks));
+        pre.lemma_unhidden_not_table_page(n);
+        Self::lemma_same_table_nodes(pre, post, n, n);
         if pre.is_cap(n) && pre.payload_of(n).kind is Frame {
             let br = block_ref(&pre.blocks, pre.payload_of(n).base / 4096);
             lemma_holder_refs(&pre.list, &pre.tables, &pre.blocks, &pre.zeroing, pre.holders@, n);
@@ -176,9 +181,23 @@ impl CapKernel {
                 (block_refs(&pre.blocks, br) - 1) as usize,
                 block_dead(&pre.blocks, br) || block_refs(&pre.blocks, br) == 1,
             );
+            if let BlockRef::Small(x) = br {
+                assert(pre.blocks.pages@[x as int].object is Frame);
+            }
+            lemma_table_pages_refs_changed(
+                &pre.list,
+                &post.list,
+                &pre.table_pages,
+                &pre.blocks,
+                &post.blocks,
+                br,
+                (block_refs(&pre.blocks, br) - 1) as usize,
+                block_dead(&pre.blocks, br) || block_refs(&pre.blocks, br) == 1,
+            );
         } else {
             lemma_holders_same_frames(&pre.list, &pre.tables, &post.list, &post.tables, &pre.blocks, &pre.zeroing, pre.holders@);
             lemma_leaf_blocks_same_nodes(&pre.list, &post.list, &post.tables, &post.blocks);
+            lemma_table_pages_same_nodes(&pre.list, &post.list, &pre.table_pages, &post.blocks);
         }
     }
 

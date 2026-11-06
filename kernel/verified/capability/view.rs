@@ -10,6 +10,7 @@ verus! {
 use crate::capability::kernel::*;
 use crate::capability::list::*;
 use crate::capability::reach::*;
+use crate::capability::space::*;
 use crate::capability::table::*;
 
 /// The bit of a capability's rights word that grants this right.
@@ -142,6 +143,7 @@ impl CapKernel {
     pub proof fn lemma_hidden_frame(pre: Self, post: Self, n: usize, m: usize)
         requires
             Self::caps_frame(pre, post, n, m),
+            post.table_pages == pre.table_pages,
             n % 4096 != 0,
             m % 4096 != 0,
             !(post.list.nodes@[n as int].live && post.list.nodes@[n as int].kind is Hidden),
@@ -152,11 +154,12 @@ impl CapKernel {
                 && m != post.list.seq@[0] ==> post.is_cap(m),
             post.list.seq@[0] == pre.list.seq@[0] || pre.list.seq@[0] == n || pre.list.seq@[0] == m,
         ensures
-            hidden_nodes_are_leaves(&post.list, &post.tables),
+            hidden_nodes_are_leaves(&post.list, &post.tables, &post.table_pages),
             capability_nodes_are_slots(&post.list, &post.tables),
     {
         assert forall|x: usize| x < NODE_SPACE && (#[trigger] post.list.nodes@[x as int]).live
-            && post.list.nodes@[x as int].kind is Hidden implies post.tables.owner@.contains_key(x) by {
+            && post.list.nodes@[x as int].kind is Hidden
+            implies post.tables.owner@.contains_key(x) || post.table_pages.maps@.contains_key(x) by {
             assert(x != n && x != m);
             assert(pre.list.nodes@[x as int].live);
         }

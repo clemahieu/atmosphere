@@ -14,6 +14,7 @@ use crate::capability::list::*;
 use crate::capability::reach::*;
 use crate::capability::refs::*;
 use crate::capability::retype::*;
+use crate::capability::space::*;
 use crate::capability::table::*;
 use crate::capability::view::*;
 use crate::capability::zero::*;
@@ -198,7 +199,7 @@ impl CapKernel {
                     self.free_leaf(c, root, from, base)
                 }
             },
-            ObjectType::None => ReclaimStep::Refused,
+            ObjectType::None | ObjectType::TablePage => ReclaimStep::Refused,
         }
     }
 
@@ -311,7 +312,8 @@ impl CapKernel {
             if !self.revoke_step(Ghost(object), n) {
                 proof {
                     let r = choose|r: usize| #[trigger] revoked_one(mid.list, self.list, n, r)
-                        && (mid.list.nodes@[r as int].kind is Hidden ==> !self.tables.attached(r));
+                        && (mid.list.nodes@[r as int].kind is Hidden && mid.tables.owner@.contains_key(r)
+                            ==> !self.tables.attached(r));
                     lemma_revoke_is_teardown(mid.view(), self.view(), object, n);
                     Self::lemma_slice_step(pre, mid, *self, root, untyped, object);
                     Self::lemma_leaf_slots_stay_dead(mid, *self, base, k as int, r);
@@ -720,6 +722,10 @@ impl CapKernel {
             if p / 4096 == page {
                 lemma_same_page(p, base);
             }
+            if self.blocks.in_block(page as int, (p / 4096) as int) {
+                self.blocks.lemma_member_of(page as int, (p / 4096) as int);
+                assert(self.blocks.pages@[page as int].object is TablePage);
+            }
         }
         assert forall|b: usize| #[trigger] self.holders@.contains_key(BlockRef::Small(b))
             implies !self.blocks.in_block(page as int, b as int) by {
@@ -803,12 +809,14 @@ impl CapKernel {
             post.list.pages@.dom() == pre.list.pages@.dom().remove(base),
             forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x),
             forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x) ==> post.tables.payload_of(x) == pre.tables.payload_of(x),
+            post.table_pages == pre.table_pages,
         ensures
             holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
             objects_wf(&post.tables, &post.blocks, post.holders@),
             leaf_blocks_wf(&post.list, &post.tables, &post.blocks),
             list_pages_used(&post.list, &post.blocks),
             zeroing_typed(&post.zeroing, &post.blocks),
+            table_pages_wf(&post.list, &post.table_pages, &post.blocks),
     {
         let page = base / 4096;
         pre.lemma_empty_leaf(base);
@@ -841,14 +849,15 @@ impl CapKernel {
             assert(leaf_block(&pre.blocks, b));
             lemma_page_base(b);
         }
-        assert forall|p: usize| #[trigger] post.list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES implies {
-            &&& !(post.blocks.pages@[(p / 4096) as int].kind is Free)
-            &&& !(post.blocks.pages@[(p / 4096) as int].kind is Member)
-            &&& !(post.blocks.pages@[(p / 4096) as int].object is Frame)
-        } by {
+        assert forall|p: usize| #[trigger] post.list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
+            implies !pre.blocks.in_block(page as int, (p / 4096) as int) by {
             assert(pre.list.pages@.dom().contains(p));
-            assert(post.blocks.pages@[(p / 4096) as int] == pre.blocks.pages@[(p / 4096) as int]);
+            assert(p != base);
         }
+        lemma_list_pages_used_subset(&pre.list, &post.list, &pre.blocks);
+        lemma_list_pages_used_small_freed(&post.list, &pre.blocks, &post.blocks, page);
+        lemma_table_node_pages_kept(&pre.list, &post.list, &pre.table_pages, &pre.blocks, base);
+        lemma_table_pages_small_freed(&pre.list, &post.list, &pre.table_pages, &pre.blocks, &post.blocks, page);
     }
 
     /// The kernel after the empty leaf at `base` frees: nothing but its block, its owner entry and its
@@ -880,6 +889,7 @@ impl CapKernel {
             post.stale_epoch == pre.stale_epoch,
             post.zeroing == pre.zeroing,
             post.frames == pre.frames,
+            post.table_pages == pre.table_pages,
         ensures
             post.wf(),
             post.view() == pre.view(),
@@ -889,8 +899,9 @@ impl CapKernel {
         Self::lemma_leaf_freed_blocks(pre, post, base);
         Self::lemma_tlb_same(pre, post);
         assert forall|n: usize| n < NODE_SPACE && (#[trigger] post.list.nodes@[n as int]).live
-            && post.list.nodes@[n as int].kind is Hidden implies post.tables.owner@.contains_key(n) by {
-            assert(pre.tables.owner@.contains_key(n));
+            && post.list.nodes@[n as int].kind is Hidden
+            implies post.tables.owner@.contains_key(n) || post.table_pages.maps@.contains_key(n) by {
+            assert(pre.tables.owner@.contains_key(n) || pre.table_pages.maps@.contains_key(n));
             assert(n != base);
         }
         assert forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) && post.tables.attached(l) implies {

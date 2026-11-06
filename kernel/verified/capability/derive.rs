@@ -12,6 +12,7 @@ use crate::capability::kernel::*;
 use crate::capability::list::*;
 use crate::capability::reach::*;
 use crate::capability::refs::*;
+use crate::capability::space::*;
 use crate::capability::table::*;
 use crate::capability::view::*;
 
@@ -252,12 +253,14 @@ impl CapKernel {
                 &&& post.holders@ == pre.holders@.insert(br, pre.holders@[br].insert(child))
             },
             block is None ==> post.blocks == pre.blocks && post.holders == pre.holders,
+            post.table_pages == pre.table_pages,
         ensures
             holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
             zeroing_typed(&post.zeroing, &post.blocks),
             list_pages_used(&post.list, &post.blocks),
             objects_wf(&post.tables, &post.blocks, post.holders@),
             leaf_blocks_wf(&post.list, &post.tables, &post.blocks),
+            table_pages_wf(&post.list, &post.table_pages, &post.blocks),
     {
         assert forall|x: usize| x != child implies {
             &&& #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x)
@@ -267,6 +270,8 @@ impl CapKernel {
         }
         pre.lemma_slot_not_owned(child);
         Self::lemma_same_leaf_nodes(pre, post, child, child);
+        pre.lemma_slot_not_table_page(child);
+        Self::lemma_same_table_nodes(pre, post, child, child);
         match block {
             Some(br) => {
                 let pp = pre.payload_of(parent);
@@ -282,11 +287,16 @@ impl CapKernel {
                 lemma_objects_refs_changed(&post.tables, &pre.blocks, &post.blocks, pre.holders@, post.holders@, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
                 assert(leaf_blocks_wf(&pre.list, &post.tables, &pre.blocks));
                 lemma_leaf_blocks_refs_changed(&pre.list, &post.list, &post.tables, &pre.blocks, &post.blocks, pre.holders@, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
+                if let BlockRef::Small(x) = br {
+                    assert(pre.blocks.pages@[x as int].object is Frame);
+                }
+                lemma_table_pages_refs_changed(&pre.list, &post.list, &pre.table_pages, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
             },
             None => {
                 lemma_holders_same_frames(&pre.list, &pre.tables, &post.list, &post.tables, &pre.blocks, &pre.zeroing, pre.holders@);
                 assert(leaf_blocks_wf(&pre.list, &post.tables, &pre.blocks));
                 lemma_leaf_blocks_same_nodes(&pre.list, &post.list, &post.tables, &post.blocks);
+                lemma_table_pages_same_nodes(&pre.list, &post.list, &pre.table_pages, &post.blocks);
             },
         }
     }
