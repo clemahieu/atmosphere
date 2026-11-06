@@ -246,6 +246,7 @@ impl CapKernel {
         &&& !block_active(&self.zeroing, br)
         &&& frame_in_block(br, large_frame_of(base, order))
         &&& br is Small ==> self.blocks.pages@[br->Small_0 as int].object is Frame
+        &&& forall|i: usize| #[trigger] block_has_page(br, i) ==> self.frames@.contains_key(i)
     }
 
     /// The holders after a retype's capability appears: it takes the one reference its block held.
@@ -429,6 +430,8 @@ impl CapKernel {
             ret is Refused ==> *final(self) == *old(self),
             ret is Done ==> forall|k: usize| k < level_pages(level)
                 ==> #[trigger] holds_zero(final(self).frames@, (level_base(level, r) + k) as usize),
+            ret is Done ==> forall|i: usize| #[trigger] block_has_page(level_ref(level, r), i)
+                ==> final(self).frames@.contains_key(i),
             ret is Done ==> {
                 let br = level_ref(level, r);
                 &&& !final(self).holders@.contains_key(br)
@@ -528,6 +531,10 @@ impl CapKernel {
             assert forall|k: usize| k < pages implies #[trigger] holds_zero(me.frames@, (base + k) as usize) by {
                 assert(holds_zero(zeroed, (base + k) as usize));
             }
+            assert forall|i: usize| #[trigger] block_has_page(level_ref(level, r), i) implies me.frames@.contains_key(i) by {
+                assert(i >= base);
+                assert(holds_zero(me.frames@, (base + (i - base) as usize) as usize));
+            }
             lemma_holders_region_done(&mid.list, &mid.tables, &mid.blocks, &mid.zeroing, &me.zeroing, mid.holders@, level, r);
             Self::lemma_zeroing_changed(pre, me);
         }
@@ -579,6 +586,7 @@ impl CapKernel {
             block_refs(&self.blocks, level_ref(level, r)) == 1,
             !block_dead(&self.blocks, level_ref(level, r)),
             !block_active(&self.zeroing, level_ref(level, r)),
+            forall|i: usize| #[trigger] block_has_page(level_ref(level, r), i) ==> self.frames@.contains_key(i),
         ensures
             self.frame_block_ready(base, order),
     {

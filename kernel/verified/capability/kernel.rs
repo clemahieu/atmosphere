@@ -159,6 +159,7 @@ impl CapKernel {
         &&& capability_nodes_are_slots(&self.list, &self.tables)
         &&& holders_wf(&self.list, &self.tables, &self.blocks, &self.zeroing, self.holders@)
         &&& objects_wf(&self.tables, &self.blocks, self.holders@)
+        &&& frames_held(self.frames@, self.holders@)
     }
 
     /// A frame's permission is for its own page.
@@ -470,6 +471,7 @@ impl CapKernel {
             list_pages_used(&post.list, &post.blocks),
             holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
             objects_wf(&post.tables, &post.blocks, post.holders@),
+            frames_held(post.frames@, post.holders@),
             post.list == pre.list,
             post.tables == pre.tables,
             post.cores == pre.cores,
@@ -501,6 +503,7 @@ impl CapKernel {
             list_pages_used(&post.list, &post.blocks),
             holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
             objects_wf(&post.tables, &post.blocks, post.holders@),
+            frames_held(post.frames@, post.holders@),
         ensures
             post.wf(),
     {

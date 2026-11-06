@@ -140,6 +140,22 @@ pub open spec fn objects_wf(tables: &Tables, blocks: &BlockTable, holders: IMap<
     }
 }
 
+/// Page i is a page of this block. A small block with a holder is a one-page frame.
+pub open spec fn block_has_page(br: BlockRef, i: usize) -> bool {
+    match br {
+        BlockRef::Small(b) => i == b,
+        BlockRef::Two(r) => r * PAGES_PER_2M <= i < (r + 1) * PAGES_PER_2M,
+        BlockRef::One(r) => r * PAGES_PER_1G <= i < (r + 1) * PAGES_PER_1G,
+    }
+}
+
+/// The kernel holds the permission of every page of a block with a holder entry, so freeing it can
+/// hand them back.
+pub open spec fn frames_held(frames: Map<usize, PagePerm4k>, holders: IMap<BlockRef, Set<usize>>) -> bool {
+    forall|br: BlockRef, i: usize| #[trigger] holders.contains_key(br) && #[trigger] block_has_page(br, i)
+        ==> frames.contains_key(i)
+}
+
 /// Changing no page's kind or type, and adding no holder entry, keeps that.
 pub proof fn lemma_objects_same(tables: &Tables, a: &BlockTable, b: &BlockTable, ha: IMap<BlockRef, Set<usize>>, hb: IMap<BlockRef, Set<usize>>)
     requires
