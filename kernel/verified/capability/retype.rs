@@ -382,9 +382,27 @@ impl CapKernel {
                         &&& !me.blocks.regions_1g@[(b / PAGES_PER_1G) as int].dead
                     }
                 } by {
-                    if b != base {
+                    if b == base {
+                        match level {
+                            Large::Two => {
+                                assert(base == r * 512);
+                                assert(base / 512 == r) by (nonlinear_arith)
+                                    requires
+                                        base == r * 512,
+                                ;
+                            },
+                            Large::One => {
+                                assert(base == r * 262144);
+                                assert(base / 262144 == r) by (nonlinear_arith)
+                                    requires
+                                        base == r * 262144,
+                                ;
+                            },
+                        }
+                    } else {
                         assert(pre.zeroing.blocks@.contains_key(b));
                         assert(pre.zeroing.block_level(b));
+                        assert(me.zeroing.blocks@[b] == pre.zeroing.blocks@[b]);
                     }
                 }
             }
