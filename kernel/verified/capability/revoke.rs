@@ -45,7 +45,7 @@ impl CapKernel {
     /// Undoes what node n holds by its kind, before it is unlinked. Every arm meets this one spec: it
     /// changes no node's liveness and keeps the tables whole, and only what n itself held goes. A
     /// hidden node detaches its leaf. A capability's reference goes with atmo-6x9.16.22. A mapping node
-    /// clears its entry and drops its reference. No binding node exists until atmo-6x9.16.9, which
+    /// records its unmap, clears its entry and drops its reference. No binding node exists until atmo-6x9.16.9, which
     /// supplies its arm.
     pub fn unlink_arm(&mut self, n: usize)
         requires
@@ -61,10 +61,15 @@ impl CapKernel {
             final(self).frames == old(self).frames,
             final(self).zeroing == old(self).zeroing,
             final(self).cores == old(self).cores,
-            final(self).flush_epoch == old(self).flush_epoch,
-            final(self).tlb == old(self).tlb,
-            final(self).mapped == old(self).mapped,
-            final(self).stale_epoch == old(self).stale_epoch,
+            final(self).stale_epoch.wf(),
+            final(self).tlb_wf(),
+            !(old(self).list.nodes@[n as int].kind is Mapping) ==> {
+                &&& final(self).flush_epoch == old(self).flush_epoch
+                &&& final(self).tlb == old(self).tlb
+                &&& final(self).mapped == old(self).mapped
+                &&& final(self).stale_epoch == old(self).stale_epoch
+            },
+            old(self).list.nodes@[n as int].kind is Mapping ==> Self::mapping_stale_noted(*old(self), *final(self), n),
             final(self).tables.owner == old(self).tables.owner,
             forall|x: usize| x != n ==> #[trigger] final(self).tables.payload_of(x) == old(self).tables.payload_of(x),
             old(self).list.nodes@[n as int].kind is Hidden && old(self).tables.owner@.contains_key(n) ==> !final(self).tables.attached(n),
@@ -161,6 +166,11 @@ impl CapKernel {
             },
             NodeKind::Mapping => { self.clear_mapping(n); },
             NodeKind::Binding => {},
+        }
+        proof {
+            if !(node.kind is Mapping) {
+                Self::lemma_tlb_same(pre, *self);
+            }
         }
     }
 
@@ -268,7 +278,8 @@ impl CapKernel {
             !done ==> exists|r: usize| #[trigger] revoked_one(old(self).list, final(self).list, c, r)
                 && (old(self).list.nodes@[r as int].kind is Hidden && old(self).tables.owner@.contains_key(r)
                     ==> !final(self).tables.attached(r))
-                && (old(self).list.nodes@[r as int].kind is Mapping ==> Self::mapping_unlinked(*old(self), *final(self), r)),
+                && (old(self).list.nodes@[r as int].kind is Mapping ==> Self::mapping_unlinked(*old(self), *final(self), r))
+                && (old(self).list.nodes@[r as int].kind is Mapping ==> Self::mapping_stale_noted(*old(self), *final(self), r)),
             forall|x: int| 0 <= x < NODE_SPACE ==> #[trigger] final(self).list.nodes@[x].depth == old(self).list.nodes@[x].depth,
             forall|x: usize| #[trigger] final(self).is_cap(x) ==> old(self).is_cap(x),
             discharges(old(self).view(), final(self).view(), root, Effect::Revoke { cap: c }),
@@ -311,10 +322,9 @@ impl CapKernel {
             mid.frames == pre.frames,
             mid.zeroing == pre.zeroing,
             mid.cores == pre.cores,
-            mid.flush_epoch == pre.flush_epoch,
-            mid.tlb == pre.tlb,
-            mid.mapped == pre.mapped,
-            mid.stale_epoch == pre.stale_epoch,
+            mid.stale_epoch.wf(),
+            mid.tlb_wf(),
+            pre.list.nodes@[r as int].kind is Mapping ==> Self::mapping_stale_noted(pre, mid, r),
             mid.tables.owner == pre.tables.owner,
             forall|x: usize| x != r ==> #[trigger] mid.tables.payload_of(x) == pre.tables.payload_of(x),
             pre.list.nodes@[r as int].kind is Hidden && pre.tables.owner@.contains_key(r) ==> !mid.tables.attached(r),
@@ -398,6 +408,7 @@ impl CapKernel {
             revoked_one(pre.list, post.list, c, r),
             pre.list.nodes@[r as int].kind is Hidden && pre.tables.owner@.contains_key(r) ==> !post.tables.attached(r),
             pre.list.nodes@[r as int].kind is Mapping ==> Self::mapping_unlinked(pre, post, r),
+            pre.list.nodes@[r as int].kind is Mapping ==> Self::mapping_stale_noted(pre, post, r),
             forall|x: usize| #[trigger] post.is_cap(x) ==> pre.is_cap(x),
             discharges(pre.view(), post.view(), root, Effect::Revoke { cap: c }),
     {
@@ -425,11 +436,12 @@ impl CapKernel {
         } else if pre.list.nodes@[r as int].kind is Mapping {
             Self::lemma_revoke_mapping_holders(pre, post, r);
             Self::lemma_unlinked_shrunk(pre, post, r);
+            Self::lemma_stale_noted_same(pre, mid, post, r);
         } else {
             Self::lemma_delete_holders(pre, post, r);
             Self::lemma_same_tree_shrunk(pre, post);
         }
-        Self::lemma_tlb_same(pre, post);
+        Self::lemma_tlb_same(mid, post);
         assert(post.list.nodes@[c as int].live == pre.list.nodes@[c as int].live);
         Self::lemma_caps_frame(pre, post, r, r, c);
         assert forall|x: usize| #[trigger] post.is_cap(x) implies pre.is_cap(x) by {

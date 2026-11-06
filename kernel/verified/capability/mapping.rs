@@ -465,6 +465,26 @@ impl CapKernel {
                 ==> walk(tree_of(&post.table_pages, &post.spaces), r, p) == walk(tree_of(&pre.table_pages, &pre.spaces), r, p)
     }
 
+    /// Node n's unmap is recorded: the epoch rose past every acknowledgement and is written for each page
+    /// the node mapped, so no such page counts as acknowledged, each such page is in the TLB of every core
+    /// that loaded the space and only a flush takes it out, and a page leaves mapped when no other mapping
+    /// names it.
+    pub open spec fn mapping_stale_noted(pre: Self, post: Self, n: usize) -> bool {
+        let tree = tree_of(&pre.table_pages, &pre.spaces);
+        let m = pre.mappings@[n];
+        let pages = record_pages(tree, m);
+        let space = tree.record(m.table).space;
+        &&& post.flush_epoch == pre.flush_epoch + 1
+        &&& forall|g: usize| #[trigger] pages.contains(g) ==> post.stale_epoch.written(post.flush_epoch, g)
+        &&& forall|g: usize| #[trigger] pages.contains(g) ==> !post.acknowledged(g)
+        &&& forall|d: int, g: usize| #![trigger post.tlb@[d].contains(TlbEntry { space: space->Some_0, page: g })]
+            0 <= d < NUM_CPUS && space is Some && pre.loaded(d, space->Some_0) && pages.contains(g)
+            ==> post.tlb@[d].contains(TlbEntry { space: space->Some_0, page: g })
+        &&& forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] pre.tlb@[d].contains(e) ==> post.tlb@[d].contains(e)
+        &&& forall|g: usize| #[trigger] post.mapped@.contains(g)
+            == (pre.mapped@.contains(g) && (!pages.contains(g) || named_elsewhere(tree, pre.mappings@, n, g)))
+    }
+
     /// Node n's mapping is gone: its entry is empty, its record and its reference with it, every other
     /// entry is as it was, its table's page is the only one written, and the only walks changed are
     /// those that ended at that entry.
@@ -551,6 +571,44 @@ pub open spec fn entry_pages(level: usize) -> int {
     } else {
         1
     }
+}
+
+/// The pages mapping record m maps, by its table's level.
+pub open spec fn record_pages(tree: TableTree, m: MappingRecord) -> Set<usize> {
+    Set::<usize>::range(m.frame, (m.frame + entry_pages(tree.record(m.table).level)) as usize)
+}
+
+/// What record_pages holds, when its range fits.
+pub proof fn lemma_record_pages(tree: TableTree, m: MappingRecord)
+    requires
+        m.frame + entry_pages(tree.record(m.table).level) <= usize::MAX,
+    ensures
+        forall|g: usize| #[trigger] record_pages(tree, m).contains(g) <==> m.frame <= g < m.frame + entry_pages(tree.record(m.table).level),
+{
+    vstd::set_lib::range_set_properties::<usize>(m.frame, (m.frame + entry_pages(tree.record(m.table).level)) as usize);
+}
+
+/// The entries a core that loaded space s may hold for these pages.
+pub open spec fn stale_entries(s: usize, pages: Set<usize>) -> Set<TlbEntry> {
+    pages.map(|g: usize| TlbEntry { space: s, page: g })
+}
+
+pub proof fn lemma_stale_entries(s: usize, pages: Set<usize>)
+    ensures
+        forall|e: TlbEntry| #[trigger] stale_entries(s, pages).contains(e) <==> e.space == s && pages.contains(e.page),
+{
+    broadcast use Set::lemma_map_contains;
+    let f = |g: usize| TlbEntry { space: s, page: g };
+    assert forall|e: TlbEntry| #[trigger] stale_entries(s, pages).contains(e) <==> e.space == s && pages.contains(e.page) by {
+        if e.space == s && pages.contains(e.page) {
+            assert(f(e.page) == e);
+        }
+    }
+}
+
+/// A mapping other than node n maps page g.
+pub open spec fn named_elsewhere(tree: TableTree, mappings: IMap<usize, MappingRecord>, n: usize, g: usize) -> bool {
+    exists|o: usize| #![trigger mappings[o]] o != n && mappings.contains_key(o) && record_pages(tree, mappings[o]).contains(g)
 }
 
 /// What a mapping node holds, by its node: the table and entry that map a frame, and the frame's page.
@@ -1141,18 +1199,18 @@ impl CapKernel {
             n < NODE_SPACE,
             old(self).list.nodes@[n as int].live,
             old(self).list.nodes@[n as int].kind is Mapping,
+            old(self).flush_epoch < usize::MAX,
         ensures
             Self::mapping_unlinked(*old(self), *final(self), n),
+            Self::mapping_stale_noted(*old(self), *final(self), n),
+            final(self).stale_epoch.wf(),
+            final(self).tlb_wf(),
             final(self).tables == old(self).tables,
             final(self).blocks.wf(),
             final(self).list == old(self).list,
             final(self).frames == old(self).frames,
             final(self).zeroing == old(self).zeroing,
             final(self).cores == old(self).cores,
-            final(self).flush_epoch == old(self).flush_epoch,
-            final(self).tlb == old(self).tlb,
-            final(self).mapped == old(self).mapped,
-            final(self).stale_epoch == old(self).stale_epoch,
             final(self).spaces == old(self).spaces,
             final(self).table_pages.records == old(self).table_pages.records,
             final(self).table_pages.spare == old(self).table_pages.spare,
@@ -1180,8 +1238,13 @@ impl CapKernel {
             .get(e);
         proof {
             assert(entry =~= tree_of(&pre.table_pages, &pre.spaces).entry(m.table, m.entry));
+            assert(mapping_wf(&pre.list, &pre.tables, tree_of(&pre.table_pages, &pre.spaces), &pre.blocks, pre.holders@, pre.mappings@, n));
         }
-        let br = locate(&self.blocks, entry.addr / 4096);
+        let frame = entry.addr / 4096;
+        let large = entry.perm.ps;
+        self.note_mapping_stale(n, frame, large);
+        let ghost noted = *self;
+        let br = locate(&self.blocks, frame);
         let tracked mut map = self.table_pages.maps.borrow_mut().tracked_remove(t);
         page_map_set(t + TABLE_NODE_PAGES * 4096, Tracked(&mut map), e, PageEntry::empty());
         proof {
@@ -1196,7 +1259,118 @@ impl CapKernel {
                 implies self.table_pages.maps@[m.table].value()[i] == pre.table_pages.maps@[m.table].value()[i] by {
                 assert(map.value()[i] =~= pre.table_pages.maps@[m.table].value()[i]);
             }
+            Self::lemma_tlb_same(noted, *self);
+            Self::lemma_stale_noted_same(pre, noted, *self, n);
             Self::lemma_clear_mapping_post(pre, *self, n);
+        }
+    }
+
+    /// What recorded node n's unmap stays true while nothing the record names changes.
+    pub proof fn lemma_stale_noted_same(pre: Self, mid: Self, post: Self, n: usize)
+        requires
+            pre.wf(),
+            Self::mapping_stale_noted(pre, mid, n),
+            post.cores == pre.cores,
+            mid.cores == pre.cores,
+            post.flush_epoch == mid.flush_epoch,
+            post.tlb == mid.tlb,
+            post.mapped == mid.mapped,
+            post.stale_epoch == mid.stale_epoch,
+        ensures
+            Self::mapping_stale_noted(pre, post, n),
+    {
+        let pages = record_pages(tree_of(&pre.table_pages, &pre.spaces), pre.mappings@[n]);
+        assert forall|g: usize| #[trigger] pages.contains(g) implies !post.acknowledged(g) by {
+            assert(pre.acked(0) <= pre.flush_epoch);
+            assert(post.acked(0) == pre.acked(0));
+        }
+    }
+
+    /// Records node n's unmap, while its entry still stands: the epoch is bumped first, so no core has
+    /// acknowledged this one however recently it flushed. A large mapping's 512 pages take one epoch.
+    fn note_mapping_stale(&mut self, n: usize, frame: usize, large: bool)
+        requires
+            old(self).wf(),
+            old(self).mappings@.contains_key(n),
+            old(self).mappings@[n].frame == frame,
+            large == (tree_of(&old(self).table_pages, &old(self).spaces).record(old(self).mappings@[n].table).level == 2),
+            old(self).flush_epoch < usize::MAX,
+        ensures
+            final(self).wf(),
+            Self::mapping_stale_noted(*old(self), *final(self), n),
+            final(self).list == old(self).list,
+            final(self).tables == old(self).tables,
+            final(self).blocks == old(self).blocks,
+            final(self).holders == old(self).holders,
+            final(self).mappings == old(self).mappings,
+            final(self).table_pages == old(self).table_pages,
+            final(self).spaces == old(self).spaces,
+            final(self).zeroing == old(self).zeroing,
+            final(self).frames == old(self).frames,
+            final(self).cores == old(self).cores,
+    {
+        let ghost pre = *old(self);
+        let ghost tree = tree_of(&pre.table_pages, &pre.spaces);
+        let ghost m = pre.mappings@[n];
+        let ghost pages = record_pages(tree, m);
+        let ghost space = tree.record(m.table).space;
+        proof {
+            assert(mapping_wf(&pre.list, &pre.tables, tree, &pre.blocks, pre.holders@, pre.mappings@, n));
+            assert(frame + entry_pages(tree.record(m.table).level) <= NUM_PAGES);
+        }
+        let count: usize = if large { 512 } else { 1 };
+        self.flush_epoch = self.flush_epoch + 1;
+        let epoch = self.flush_epoch;
+        self.stale_epoch.record_run(frame, count, epoch);
+        self.tlb = Ghost(Seq::new(NUM_CPUS as nat, |d: int|
+            if space is Some && pre.loaded(d, space->Some_0) {
+                pre.tlb@[d].union(stale_entries(space->Some_0, pages))
+            } else {
+                pre.tlb@[d]
+            }));
+        self.mapped = Ghost(pre.mapped@.filter(|g: usize| !pages.contains(g) || named_elsewhere(tree, pre.mappings@, n, g)));
+        proof {
+            broadcast use vstd::set::lemma_set_filter;
+            lemma_record_pages(tree, m);
+            if space is Some {
+                lemma_stale_entries(space->Some_0, pages);
+            }
+            assert forall|g: usize| #[trigger] pages.contains(g) implies self.stale_epoch.written(self.flush_epoch, g) by {
+                assert(frame <= g < frame + count);
+            }
+            assert(self.tlb@.len() == NUM_CPUS);
+            assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] self.acked(d) <= self.flush_epoch by {
+                assert(pre.acked(d) <= pre.flush_epoch);
+            }
+            assert forall|g: usize| #[trigger] pages.contains(g) implies !self.acknowledged(g) by {
+                assert(pre.acked(0) <= pre.flush_epoch);
+                assert(self.acked(0) == pre.acked(0));
+            }
+            assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] self.tlb@[d].contains(e) implies self.loaded(d, e.space) by {
+                assert(pre.loaded(d, e.space));
+            }
+            assert forall|d: int, e: TlbEntry|
+                0 <= d < NUM_CPUS && #[trigger] self.tlb@[d].contains(e) && !self.mapped@.contains(e.page)
+                implies e.page < NUM_PAGES && self.stale_epoch.above(self.acked(d), e.page) by {
+                assert(pre.acked(d) <= pre.flush_epoch);
+                assert(self.acked(d) == pre.acked(d));
+                if pages.contains(e.page) {
+                    assert(self.stale_epoch.written(self.flush_epoch, e.page));
+                    assert(frame <= e.page < frame + count);
+                } else {
+                    assert(pre.tlb@[d].contains(e));
+                    assert(!pre.mapped@.contains(e.page));
+                    assert(pre.stale_epoch.above(pre.acked(d), e.page));
+                    assert(pre.acked(d) < epoch);
+                }
+            }
+            assert(self.tlb_wf());
+            assert forall|d: int, g: usize| #![trigger self.tlb@[d].contains(TlbEntry { space: space->Some_0, page: g })]
+                0 <= d < NUM_CPUS && space is Some && pre.loaded(d, space->Some_0) && pages.contains(g)
+                implies self.tlb@[d].contains(TlbEntry { space: space->Some_0, page: g }) by {
+            }
+            assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] pre.tlb@[d].contains(e) implies self.tlb@[d].contains(e) by {
+            }
         }
     }
 
