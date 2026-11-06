@@ -420,25 +420,25 @@ pub proof fn lemma_zeroing_typed_small_changed(
     }
 }
 
-/// The types after a leaf's block changes its count: it is no frame, so no frame's count did.
-pub proof fn lemma_objects_leaf_block_changed(
+/// The types after a block that is no frame changes its count: no frame's count did.
+pub proof fn lemma_objects_unframed_block_changed(
     tables: &Tables,
     a: &BlockTable,
     b: &BlockTable,
     holders: IMap<BlockRef, Set<usize>>,
-    l: usize,
+    p: usize,
     refs: usize,
     dead: bool,
 )
     requires
         objects_wf(tables, a, holders),
-        tables.owner@.contains_key(l),
-        blocks_refs_changed(a, b, BlockRef::Small(l / 4096), refs, dead),
+        !(a.pages@[p as int].object is Frame),
+        blocks_refs_changed(a, b, BlockRef::Small(p), refs, dead),
         forall|x: BlockRef| #[trigger] holders.contains_key(x) ==> block_typed(a, x),
     ensures
         objects_wf(tables, b, holders),
 {
-    let br = BlockRef::Small(l / 4096);
+    let br = BlockRef::Small(p);
     lemma_leaf_blocks_owned_same_types(tables, a, b);
     assert forall|x: usize| #[trigger] holders.contains_key(BlockRef::Small(x)) implies b.pages@[x as int].object is Frame by {
         assert(block_typed(a, BlockRef::Small(x)));
@@ -474,6 +474,40 @@ pub proof fn lemma_objects_leaf_block_changed(
         && b.regions_1g@[r as int].refs == 0 implies holders.contains_key(BlockRef::One(r)) by {
         assert(block_typed(a, BlockRef::One(r)));
         assert(block_refs(b, BlockRef::One(r)) == block_refs(a, BlockRef::One(r)));
+    }
+}
+
+/// The leaves' blocks after a block that is no leaf's changes its count: a leaf's block is a table leaf.
+pub proof fn lemma_leaf_blocks_other_changed(
+    list_a: &Tree,
+    list_b: &Tree,
+    tables: &Tables,
+    a: &BlockTable,
+    b: &BlockTable,
+    holders: IMap<BlockRef, Set<usize>>,
+    p: usize,
+    refs: usize,
+    dead: bool,
+)
+    requires
+        leaf_blocks_wf(list_a, tables, a),
+        objects_wf(tables, a, holders),
+        !(a.pages@[p as int].object is TableLeaf),
+        blocks_refs_changed(a, b, BlockRef::Small(p), refs, dead),
+        same_leaf_nodes(list_a, list_b, tables),
+    ensures
+        leaf_blocks_wf(list_b, tables, b),
+{
+    let br = BlockRef::Small(p);
+    assert forall|l: usize| #[trigger] tables.owner@.contains_key(l) implies {
+        &&& b.pages@[(l / 4096) as int].refs == a.pages@[(l / 4096) as int].refs
+        &&& b.pages@[(l / 4096) as int].dead == a.pages@[(l / 4096) as int].dead
+    } by {
+        let x = BlockRef::Small(l / 4096);
+        assert(block_typed(a, x));
+        assert(x != br);
+        assert(block_refs(b, x) == block_refs(a, x));
+        assert(block_dead(b, x) == block_dead(a, x));
     }
 }
 

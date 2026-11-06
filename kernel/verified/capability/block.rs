@@ -37,6 +37,7 @@ pub enum ObjectType {
     None,
     Frame,
     TableLeaf,
+    TablePage,
 }
 
 #[derive(Clone, Copy)]
@@ -1320,6 +1321,7 @@ impl BlockTable {
                 &&& !final(self).pages@[base as int].torn_down
                 &&& forall|i: int| 0 <= i < NUM_PAGES && !(base <= i < base + order_pages(order))
                     ==> #[trigger] final(self).pages@[i] == old(self).pages@[i]
+                &&& forall|k: int| 0 < k < order_pages(order) ==> (#[trigger] final(self).pages@[base + k]).object is None
                 &&& forall|k: usize| k < order_pages(order) ==> {
                     &&& ret->0@.contains_key((base + k) as usize)
                     &&& #[trigger] ret->0@[(base + k) as usize].addr() == (base + k) * 4096
@@ -1374,6 +1376,7 @@ impl BlockTable {
                 forall|j: int| 0 < j < k ==> {
                     &&& (#[trigger] self.pages@[base + j]).kind is Member
                     &&& self.pages@[base + j].base == base
+                    &&& self.pages@[base + j].object is None
                 },
                 forall|j: usize| j < k ==> #[trigger] holds(taken, (base + j) as usize),
             decreases size - k,
