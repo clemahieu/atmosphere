@@ -7,6 +7,7 @@ use crate::capability::list::NodePage;
 use crate::capability::space::{SpaceCores, SpaceRecord, TableRecord};
 use crate::capability::table::{PayloadPage, TableRoot};
 use crate::define::PagePerm4k;
+use crate::pagetable::pagemap::PageMap;
 use crate::pptr::PointsTo;
 use crate::process_manager::container::Container;
 use crate::process_manager::endpoint::Endpoint;
@@ -27,6 +28,7 @@ global layout NodePage is size == 4096, align == 8;
 global layout PayloadPage is size == 4096, align == 8;
 global layout TableRoot is size == 4096, align == 8;
 global layout SpaceRecord is size == 72, align == 8;
+global layout PageMap is size == 4096, align == 8;
 global layout TableRecord is size == 56, align == 8;
 global layout SpaceCores is size == 264, align == 8;
 
@@ -123,6 +125,39 @@ pub proof fn node_page_into_page(tracked nodes: PointsTo<NodePage>) -> (tracked 
         ret.is_uninit(),
 {
     crate::pptr::typed_into_page(nodes)
+}
+
+/// What a proof elsewhere needs to tell a node page's permission from those of the other pages of a
+/// table page's block.
+pub proof fn lemma_table_block_layouts()
+    ensures
+        vstd::layout::size_of::<NodePage>() == 4096,
+        vstd::layout::size_of::<PageMap>() == 4096,
+        vstd::layout::size_of::<TableRecord>() == 56,
+        vstd::layout::size_of::<PageBytes>() == 4096,
+{
+}
+
+/// An emptied table becomes a free page.
+pub proof fn page_map_into_page(tracked map: PointsTo<PageMap>) -> (tracked ret: PagePerm4k)
+    requires
+        map.is_uninit(),
+    ensures
+        ret.addr() == map.addr(),
+        ret.is_uninit(),
+{
+    crate::pptr::typed_into_page(map)
+}
+
+/// A table page's record becomes a free page.
+pub proof fn table_record_into_page(tracked record: PointsTo<TableRecord>) -> (tracked ret: PagePerm4k)
+    requires
+        record.is_uninit(),
+    ensures
+        ret.addr() == record.addr(),
+        ret.is_uninit(),
+{
+    crate::pptr::typed_into_page(record)
 }
 
 /// A dead leaf's payload page becomes a free page.
