@@ -14,9 +14,6 @@ use crate::capability::reach::*;
 use crate::capability::table::*;
 use crate::capability::view::*;
 
-/// Depth is a byte, so a capability this deep has no children.
-pub const MAX_DEPTH: usize = 255;
-
 /// The child a derive from `parent` makes.
 pub open spec fn child_of(parent: Payload, rights: u32, base: usize, order: u8) -> Payload {
     Payload { kind: parent.kind, order, rights, base, badge: parent.badge, reserved: 0 }
