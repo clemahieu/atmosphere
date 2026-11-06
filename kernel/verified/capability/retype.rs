@@ -159,7 +159,7 @@ impl CapKernel {
     }
 
     /// Checks the refusals every retype has and finds the parent's node.
-    fn retype_parent(&self, root: usize, from: usize, base: usize, order: u8) -> (ret: Option<usize>)
+    pub fn retype_parent(&self, root: usize, from: usize, base: usize, order: u8) -> (ret: Option<usize>)
         requires
             self.wf(),
             self.tables.roots@.contains_key(root),
@@ -398,12 +398,14 @@ impl CapKernel {
             self.frames.borrow_mut().tracked_insert(page, perm);
             Self::lemma_tlb_same(pre, *self);
             assert forall|p: usize| #[trigger] self.list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
-                implies !(self.blocks.pages@[(p / 4096) as int].kind is Free) by {
+                implies !(self.blocks.pages@[(p / 4096) as int].kind is Free)
+                    && !(self.blocks.pages@[(p / 4096) as int].object is Frame) by {
                 assert(!(pre.blocks.pages@[(p / 4096) as int].kind is Free));
                 assert((p / 4096) as int != page as int) by {
                     assert(pre.blocks.pages@[page + 0int].kind is Free);
                 }
             }
+            lemma_objects_small_typed(&self.tables, &pre.blocks, &self.blocks, pre.holders@, page, 1);
             lemma_holders_small_typed(&pre.list, &pre.tables, &pre.blocks, &self.blocks, &pre.zeroing, pre.holders@, page, 0);
             assert(self.wf());
             assert(self.view() == pre.view());
@@ -726,13 +728,31 @@ impl CapKernel {
             Self::lemma_leaf_caps_wf(pre, post, base);
             Self::lemma_tlb_same(pre, post);
             assert forall|p: usize| #[trigger] post.list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
-                implies !(post.blocks.pages@[(p / 4096) as int].kind is Free) by {
+                implies !(post.blocks.pages@[(p / 4096) as int].kind is Free)
+                    && !(post.blocks.pages@[(p / 4096) as int].object is Frame) by {
                 if p != base {
                     assert(pre.list.pages@.dom().contains(p));
                     assert(!(pre.blocks.pages@[(p / 4096) as int].kind is Free));
                     assert(pre.blocks.pages@[page + 0int].kind is Free);
                     assert(pre.blocks.pages@[page + 1int].kind is Free);
                     assert(post.blocks.pages@[(p / 4096) as int] == pre.blocks.pages@[(p / 4096) as int]);
+                } else {
+                    assert(base / 4096 == page);
+                }
+            }
+            assert(pre.blocks.pages@[page + 0int].kind is Free);
+            post.blocks.lemma_member_of(page as int, page + 1int);
+            assert forall|k: int| 0 < k < 2 implies (#[trigger] post.blocks.pages@[page + k]).kind is Member by {
+                assert(k == 1);
+            }
+            lemma_objects_small_typed(&pre.tables, &pre.blocks, &post.blocks, pre.holders@, page, 2);
+            assert forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) implies {
+                &&& l / 4096 < NUM_PAGES
+                &&& post.blocks.pages@[(l / 4096) as int].kind is Base
+                &&& post.blocks.pages@[(l / 4096) as int].object is TableLeaf
+            } by {
+                if l != base {
+                    assert(pre.tables.owner@.contains_key(l));
                 }
             }
             assert forall|x: usize| x < NODE_SPACE && (#[trigger] post.list.nodes@[x as int]).live

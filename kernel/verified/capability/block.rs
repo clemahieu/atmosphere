@@ -445,6 +445,7 @@ impl BlockTable {
         ensures
             final(self).wf(),
             forall|i: int| 0 <= i < NUM_PAGES ==> #[trigger] final(self).pages@[i].kind is Reserved,
+            forall|i: int| 0 <= i < NUM_PAGES ==> #[trigger] final(self).pages@[i].object is None,
     {
         let mut i = 0;
         while i != NUM_PAGES
@@ -452,6 +453,7 @@ impl BlockTable {
                 0 <= i <= NUM_PAGES,
                 self.pages.wf(),
                 forall|j: int| 0 <= j < i ==> #[trigger] self.pages@[j].kind is Reserved,
+                forall|j: int| 0 <= j < i ==> #[trigger] self.pages@[j].object is None,
             decreases NUM_PAGES - i,
         {
             self.pages.set(i, PageEntry {
@@ -1567,6 +1569,8 @@ impl BlockTable {
             final(self).wf(),
             final(self).pages@ == old(self).pages@.update(base as int,
                 PageEntry { torn_down: true, ..old(self).pages@[base as int] }),
+            final(self).regions_2m@ == old(self).regions_2m@,
+            final(self).regions_1g@ == old(self).regions_1g@,
     {
         let e = *self.pages.get(base);
         self.set_base(base, PageEntry { torn_down: true, ..e });

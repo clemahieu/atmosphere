@@ -118,6 +118,7 @@ impl CapKernel {
             holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
             zeroing_typed(&post.zeroing, &post.blocks),
             list_pages_used(&post.list, &post.blocks),
+            objects_wf(&post.tables, &post.blocks, post.holders@),
     {
         assert forall|x: usize| x != n implies {
             &&& #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x)
@@ -141,6 +142,18 @@ impl CapKernel {
                 block_dead(&pre.blocks, br) || block_refs(&pre.blocks, br) == 1,
             );
             lemma_list_pages_used_same_kinds(&pre.list, &pre.blocks, &post.blocks);
+            assert forall|x: BlockRef| #[trigger] post.holders@.contains_key(x) == pre.holders@.contains_key(x) by {}
+            assert(objects_wf(&post.tables, &pre.blocks, pre.holders@));
+            lemma_objects_refs_changed(
+                &post.tables,
+                &pre.blocks,
+                &post.blocks,
+                pre.holders@,
+                post.holders@,
+                br,
+                (block_refs(&pre.blocks, br) - 1) as usize,
+                block_dead(&pre.blocks, br) || block_refs(&pre.blocks, br) == 1,
+            );
         } else {
             lemma_holders_same_frames(&pre.list, &pre.tables, &post.list, &post.tables, &pre.blocks, &pre.zeroing, pre.holders@);
         }
