@@ -26,6 +26,26 @@ pub open spec fn right_bit(right: Right) -> u32 {
     }
 }
 
+/// What the view reads: nothing but the list and the tables, so a step that leaves those alone leaves
+/// the view alone.
+pub open spec fn view_of(list: &Tree, tables: &Tables) -> State {
+    State {
+        held: ISet::new(|h: (ObjectId, NodeId)|
+            tables.is_cap(list, h.1) && tables.owner@[page_of(h.1)].0 == h.0),
+        names: IMap::new(|n: NodeId| tables.is_cap(list, n), |n: NodeId| tables.payload_of(n).base),
+        pages: IMap::new(|n: NodeId| tables.is_cap(list, n), |n: NodeId| pow2(tables.payload_of(n).order as nat)),
+        rights: ISet::new(|h: (NodeId, Right)|
+            tables.is_cap(list, h.0) && tables.payload_of(h.0).rights & right_bit(h.1) != 0),
+        parent: list.parent@,
+        maps: Set::empty(),
+        process_of: Map::empty(),
+        waiting: Set::empty(),
+        bound: Map::empty(),
+        dead: Set::empty(),
+        contents: |o: ObjectId| Seq::empty(),
+    }
+}
+
 impl CapKernel {
     pub open spec fn is_cap(&self, n: usize) -> bool {
         self.tables.is_cap(&self.list, n)
@@ -36,21 +56,7 @@ impl CapKernel {
     }
 
     pub open spec fn view(&self) -> State {
-        State {
-            held: ISet::new(|h: (ObjectId, NodeId)|
-                self.is_cap(h.1) && self.tables.owner@[page_of(h.1)].0 == h.0),
-            names: IMap::new(|n: NodeId| self.is_cap(n), |n: NodeId| self.payload_of(n).base),
-            pages: IMap::new(|n: NodeId| self.is_cap(n), |n: NodeId| pow2(self.payload_of(n).order as nat)),
-            rights: ISet::new(|h: (NodeId, Right)|
-                self.is_cap(h.0) && self.payload_of(h.0).rights & right_bit(h.1) != 0),
-            parent: self.list.parent@,
-            maps: Set::empty(),
-            process_of: Map::empty(),
-            waiting: Set::empty(),
-            bound: Map::empty(),
-            dead: Set::empty(),
-            contents: |o: ObjectId| Seq::empty(),
-        }
+        view_of(&self.list, &self.tables)
     }
 
     /// Where a node in a leaf's page lies.
