@@ -223,7 +223,7 @@ pub proof fn lemma_links_level1_written(a: TableTree, b: TableTree, t: usize, e:
     }
     assert forall|u: usize, i: usize| #[trigger] b.child_slot(u, i) == a.child_slot(u, i) by {}
     assert forall|u: usize, i: usize| #![trigger b.entry(u, i)]
-        b.child_slot(u, i) && b.entry(u, i).perm.present implies {
+        b.names_child(u, i) implies {
         let c = (b.entry(u, i).addr - TABLE_NODE_PAGES * 4096) as usize;
         &&& b.is_page(c)
         &&& b.record(c).parent == Some(TableParent { table: u, entry: i })
@@ -231,18 +231,25 @@ pub proof fn lemma_links_level1_written(a: TableTree, b: TableTree, t: usize, e:
         assert(a.child_slot(u, i));
         assert(u != t);
         assert(b.entry(u, i) == a.entry(u, i));
+        assert(a.names_child(u, i));
         let _ = a.entry(u, i);
         let c = (a.entry(u, i).addr - TABLE_NODE_PAGES * 4096) as usize;
         assert(a.is_page(c));
         assert(b.record(c).parent == a.record(c).parent);
+    }
+    assert forall|u: usize, i: usize| #![trigger b.entry(u, i)]
+        b.child_slot(u, i) && b.entry(u, i).perm.present && b.entry(u, i).perm.ps implies b.record(u).level == 2 by {
+        assert(a.child_slot(u, i));
+        assert(u != t);
+        assert(b.entry(u, i) == a.entry(u, i));
+        let _ = a.entry(u, i);
     }
     assert forall|c: usize| #![trigger b.maps.contains_key(c)] b.is_page(c) implies {
         let r = b.record(c);
         &&& (r.parent is Some) == (r.space is Some)
         &&& r.parent is Some ==> {
             let p = r.parent->0;
-            &&& b.child_slot(p.table, p.entry)
-            &&& b.entry(p.table, p.entry).perm.present
+            &&& b.names_child(p.table, p.entry)
             &&& b.entry(p.table, p.entry).addr == table_addr(c)
             &&& b.record(p.table).level == r.level + 1
             &&& b.record(p.table).space == r.space
@@ -257,7 +264,7 @@ pub proof fn lemma_links_level1_written(a: TableTree, b: TableTree, t: usize, e:
         assert(b.record(c).level == r.level);
         if r.parent is Some {
             let p = r.parent->0;
-            assert(a.child_slot(p.table, p.entry));
+            assert(a.names_child(p.table, p.entry));
             assert(p.table != t);
             assert(b.entry(p.table, p.entry) == a.entry(p.table, p.entry));
             assert(b.record(p.table).space == a.record(p.table).space);
@@ -293,7 +300,13 @@ pub proof fn lemma_walk_entry_written(a: TableTree, b: TableTree, t: usize, e: u
             assert(b.entry(u, i) == a.entry(u, i));
         }
     }
+    assert forall|u: usize, i: usize| #[trigger] large_entry(b, u, i) == large_entry(a, u, i) by {
+        if a.is_table(u) && i < 512 && u != t {
+            assert(b.entry(u, i) == a.entry(u, i));
+        }
+    }
     assert(frame_entry(b, t, e) == Some(b.entry(t, e)));
+    assert(large_entry(a, t, e) is None);
     if a.is_root(r) {
         if let Some(t3) = step(a, r, p.l4) {
             if let Some(t2) = step(a, t3, p.l3) {
@@ -304,6 +317,9 @@ pub proof fn lemma_walk_entry_written(a: TableTree, b: TableTree, t: usize, e: u
                         assert(!ends_at(a, r, p, t, e));
                         assert(frame_entry(b, t1, p.l1) == frame_entry(a, t1, p.l1));
                     }
+                } else {
+                    assert(!ends_at(a, r, p, t, e));
+                    assert(large_entry(b, t2, p.l2) == large_entry(a, t2, p.l2));
                 }
             }
         }
@@ -317,9 +333,11 @@ pub proof fn lemma_ends_at_unique(a: TableTree, s: usize, p: SpacePath, t: usize
         table_links_wf(a),
         a.is_root(s),
         walk_table(a, s, p) == Some(t),
+        a.record(t).level == 1,
     ensures
         ends_at(a, r, q, t, p.l1) == (r == s && q == p),
 {
+    assert(large_entry(a, t, p.l1) is None);
     let t3 = step(a, s, p.l4)->0;
     let t2 = step(a, t3, p.l3)->0;
     assert(step(a, s, p.l4) == Some(t3));
@@ -551,7 +569,7 @@ impl CapKernel {
     }
 
     /// The table entry i of table t leads to, in constant time. Above level 1 an entry either is a
-    /// kernel slot, is not present, or names a table page.
+    /// kernel slot, is not present, maps a large frame, or names a table page.
     fn table_step(&self, t: usize, is_root: bool, i: usize) -> (ret: Option<usize>)
         requires
             self.wf(),
@@ -571,7 +589,7 @@ impl CapKernel {
             return None;
         }
         let e = self.table_entry(t, is_root, i);
-        if !e.perm.present {
+        if !e.perm.present || e.perm.ps {
             return None;
         }
         Some(e.addr - TABLE_NODE_PAGES * 4096)

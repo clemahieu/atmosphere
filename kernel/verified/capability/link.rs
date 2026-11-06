@@ -63,6 +63,14 @@ impl TableTree {
         &&& self.record(t).level >= 2
         &&& self.is_root(t) ==> i >= KERNEL_MEM_END_L4INDEX
     }
+
+    /// Entry i of table t names a child table: present in a slot that can hold one, without ps. The ps
+    /// bit is what tells it from a large frame's entry.
+    pub open spec fn names_child(self, t: usize, i: usize) -> bool {
+        &&& self.child_slot(t, i)
+        &&& self.entry(t, i).perm.present
+        &&& !self.entry(t, i).perm.ps
+    }
 }
 
 /// The address a table page's entry holds for it: its table's.
@@ -75,18 +83,19 @@ pub open spec fn table_addr(t: usize) -> usize {
 /// A table page has a space exactly when it has a parent, and a space is a space the kernel holds.
 pub open spec fn table_links_wf(tree: TableTree) -> bool {
     &&& forall|t: usize, i: usize| #![trigger tree.entry(t, i)]
-        tree.child_slot(t, i) && tree.entry(t, i).perm.present ==> {
+        tree.names_child(t, i) ==> {
         let c = (tree.entry(t, i).addr - TABLE_NODE_PAGES * 4096) as usize;
         &&& tree.is_page(c)
         &&& tree.record(c).parent == Some(TableParent { table: t, entry: i })
     }
+    &&& forall|t: usize, i: usize| #![trigger tree.entry(t, i)]
+        tree.child_slot(t, i) && tree.entry(t, i).perm.present && tree.entry(t, i).perm.ps ==> tree.record(t).level == 2
     &&& forall|c: usize| #![trigger tree.maps.contains_key(c)] tree.is_page(c) ==> {
         let r = tree.record(c);
         &&& (r.parent is Some) == (r.space is Some)
         &&& r.parent is Some ==> {
             let p = r.parent->0;
-            &&& tree.child_slot(p.table, p.entry)
-            &&& tree.entry(p.table, p.entry).perm.present
+            &&& tree.names_child(p.table, p.entry)
             &&& tree.entry(p.table, p.entry).addr == table_addr(c)
             &&& tree.record(p.table).level == r.level + 1
             &&& tree.record(p.table).space == r.space
@@ -113,7 +122,7 @@ pub proof fn lemma_links_table_added(pre: TableTree, post: TableTree, t: usize)
         table_links_wf(post),
 {
     assert forall|u: usize, i: usize| #![trigger post.entry(u, i)]
-        post.child_slot(u, i) && post.entry(u, i).perm.present implies {
+        post.names_child(u, i) implies {
         let c = (post.entry(u, i).addr - TABLE_NODE_PAGES * 4096) as usize;
         &&& post.is_page(c)
         &&& post.record(c).parent == Some(TableParent { table: u, entry: i })
@@ -124,19 +133,28 @@ pub proof fn lemma_links_table_added(pre: TableTree, post: TableTree, t: usize)
         assert(pre.is_table(u));
         assert(post.record(u) == pre.record(u));
         assert(post.entry(u, i) == pre.entry(u, i));
-        assert(pre.child_slot(u, i));
+        assert(pre.names_child(u, i));
         let c = (pre.entry(u, i).addr - TABLE_NODE_PAGES * 4096) as usize;
         assert(pre.is_page(c));
         assert(c != t);
         assert(post.record(c) == pre.record(c));
+    }
+    assert forall|u: usize, i: usize| #![trigger post.entry(u, i)]
+        post.child_slot(u, i) && post.entry(u, i).perm.present && post.entry(u, i).perm.ps implies post.record(u).level == 2 by {
+        if u == t {
+            assert(post.entry(t, i).is_empty());
+        }
+        assert(pre.is_table(u));
+        assert(post.record(u) == pre.record(u));
+        assert(post.entry(u, i) == pre.entry(u, i));
+        assert(pre.child_slot(u, i));
     }
     assert forall|c: usize| #![trigger post.maps.contains_key(c)] post.is_page(c) implies {
         let r = post.record(c);
         &&& (r.parent is Some) == (r.space is Some)
         &&& r.parent is Some ==> {
             let p = r.parent->0;
-            &&& post.child_slot(p.table, p.entry)
-            &&& post.entry(p.table, p.entry).perm.present
+            &&& post.names_child(p.table, p.entry)
             &&& post.entry(p.table, p.entry).addr == table_addr(c)
             &&& post.record(p.table).level == r.level + 1
             &&& post.record(p.table).space == r.space
@@ -149,7 +167,7 @@ pub proof fn lemma_links_table_added(pre: TableTree, post: TableTree, t: usize)
             let r = pre.record(c);
             if r.parent is Some {
                 let p = r.parent->0;
-                assert(pre.child_slot(p.table, p.entry));
+                assert(pre.names_child(p.table, p.entry));
                 assert(p.table != t);
                 assert(post.record(p.table) == pre.record(p.table));
                 assert(post.entry(p.table, p.entry) == pre.entry(p.table, p.entry));
@@ -174,7 +192,7 @@ pub proof fn lemma_links_root_added(pre: TableTree, post: TableTree, s: usize)
         table_links_wf(post),
 {
     assert forall|u: usize, i: usize| #![trigger post.entry(u, i)]
-        post.child_slot(u, i) && post.entry(u, i).perm.present implies {
+        post.names_child(u, i) implies {
         let c = (post.entry(u, i).addr - TABLE_NODE_PAGES * 4096) as usize;
         &&& post.is_page(c)
         &&& post.record(c).parent == Some(TableParent { table: u, entry: i })
@@ -185,18 +203,27 @@ pub proof fn lemma_links_root_added(pre: TableTree, post: TableTree, s: usize)
         assert(pre.is_table(u));
         assert(post.record(u) == pre.record(u));
         assert(post.entry(u, i) == pre.entry(u, i));
-        assert(pre.child_slot(u, i));
+        assert(pre.names_child(u, i));
         let c = (pre.entry(u, i).addr - TABLE_NODE_PAGES * 4096) as usize;
         assert(pre.is_page(c));
         assert(post.record(c) == pre.record(c));
+    }
+    assert forall|u: usize, i: usize| #![trigger post.entry(u, i)]
+        post.child_slot(u, i) && post.entry(u, i).perm.present && post.entry(u, i).perm.ps implies post.record(u).level == 2 by {
+        if u == s {
+            assert(post.entry(s, i).is_empty());
+        }
+        assert(pre.is_table(u));
+        assert(post.record(u) == pre.record(u));
+        assert(post.entry(u, i) == pre.entry(u, i));
+        assert(pre.child_slot(u, i));
     }
     assert forall|c: usize| #![trigger post.maps.contains_key(c)] post.is_page(c) implies {
         let r = post.record(c);
         &&& (r.parent is Some) == (r.space is Some)
         &&& r.parent is Some ==> {
             let p = r.parent->0;
-            &&& post.child_slot(p.table, p.entry)
-            &&& post.entry(p.table, p.entry).perm.present
+            &&& post.names_child(p.table, p.entry)
             &&& post.entry(p.table, p.entry).addr == table_addr(c)
             &&& post.record(p.table).level == r.level + 1
             &&& post.record(p.table).space == r.space
@@ -208,7 +235,7 @@ pub proof fn lemma_links_root_added(pre: TableTree, post: TableTree, s: usize)
         let r = pre.record(c);
         if r.parent is Some {
             let p = r.parent->0;
-            assert(pre.child_slot(p.table, p.entry));
+            assert(pre.names_child(p.table, p.entry));
             assert(p.table != s);
             assert(post.record(p.table) == pre.record(p.table));
             assert(post.entry(p.table, p.entry) == pre.entry(p.table, p.entry));
@@ -275,7 +302,7 @@ pub proof fn lemma_links_linked(pre: TableTree, post: TableTree, parent: usize, 
         }
     }
     assert forall|u: usize, i: usize| #![trigger post.entry(u, i)]
-        post.child_slot(u, i) && post.entry(u, i).perm.present implies {
+        post.names_child(u, i) implies {
         let c = (post.entry(u, i).addr - TABLE_NODE_PAGES * 4096) as usize;
         &&& post.is_page(c)
         &&& post.record(c).parent == Some(TableParent { table: u, entry: i })
@@ -285,7 +312,7 @@ pub proof fn lemma_links_linked(pre: TableTree, post: TableTree, parent: usize, 
             assert((child_entry(child).addr - TABLE_NODE_PAGES * 4096) as usize == child);
         } else {
             assert(post.entry(u, i) == pre.entry(u, i));
-            assert(pre.child_slot(u, i));
+            assert(pre.names_child(u, i));
             let c = (pre.entry(u, i).addr - TABLE_NODE_PAGES * 4096) as usize;
             assert(pre.is_page(c));
             assert(pre.record(c).parent == Some(TableParent { table: u, entry: i }));
@@ -293,13 +320,21 @@ pub proof fn lemma_links_linked(pre: TableTree, post: TableTree, parent: usize, 
             assert(post.record(c).parent == pre.record(c).parent);
         }
     }
+    assert forall|u: usize, i: usize| #![trigger post.entry(u, i)]
+        post.child_slot(u, i) && post.entry(u, i).perm.present && post.entry(u, i).perm.ps implies post.record(u).level == 2 by {
+        if !(u == parent && i == entry) {
+            assert(post.entry(u, i) == pre.entry(u, i));
+            assert(pre.child_slot(u, i));
+            assert(pre.record(u).level == 2);
+            assert(post.record(u).level == pre.record(u).level);
+        }
+    }
     assert forall|c: usize| #![trigger post.maps.contains_key(c)] post.is_page(c) implies {
         let r = post.record(c);
         &&& (r.parent is Some) == (r.space is Some)
         &&& r.parent is Some ==> {
             let p = r.parent->0;
-            &&& post.child_slot(p.table, p.entry)
-            &&& post.entry(p.table, p.entry).perm.present
+            &&& post.names_child(p.table, p.entry)
             &&& post.entry(p.table, p.entry).addr == table_addr(c)
             &&& post.record(p.table).level == r.level + 1
             &&& post.record(p.table).space == r.space
@@ -319,8 +354,7 @@ pub proof fn lemma_links_linked(pre: TableTree, post: TableTree, parent: usize, 
             assert(post.record(c).level == r.level);
             if r.parent is Some {
                 let p = r.parent->0;
-                assert(pre.child_slot(p.table, p.entry));
-                assert(pre.entry(p.table, p.entry).perm.present);
+                assert(pre.names_child(p.table, p.entry));
                 if p.table == parent && p.entry == entry {
                     assert(pre.entry(parent, entry).is_empty());
                 }
@@ -406,8 +440,8 @@ impl CapKernel {
         &&& linked(tree_of(&pre.table_pages, &pre.spaces), tree, parent, entry, child, s)
     }
 
-    /// The invariant after a link, given what the tables' own invariants say. The entry written is a
-    /// table's above level 1, so no mapping's entry changed.
+    /// The invariant after a link, given what the tables' own invariants say. The entry written was
+    /// empty, so no mapping's entry changed.
     proof fn lemma_link_wf(pre: Self, post: Self, parent: usize, entry: usize, child: usize, s: usize)
         requires
             pre.wf(),
@@ -419,6 +453,7 @@ impl CapKernel {
             linked(tree_of(&pre.table_pages, &pre.spaces), tree_of(&post.table_pages, &post.spaces), parent, entry, child, s),
             tree_of(&pre.table_pages, &pre.spaces).is_table(parent),
             tree_of(&pre.table_pages, &pre.spaces).record(parent).level >= 2,
+            tree_of(&pre.table_pages, &pre.spaces).entry(parent, entry).is_empty(),
             post.zeroing == pre.zeroing,
             post.frames == pre.frames,
             post.cores == pre.cores,
