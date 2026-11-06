@@ -78,14 +78,17 @@ pub open spec fn space_mapping(tree: TableTree, s: usize) -> IMap<SpacePath, Pag
     IMap::new(|p: SpacePath| walk(tree, s, p) is Some, |p: SpacePath| walk(tree, s, p)->0)
 }
 
+/// The walk of path p of space s finds page g, in the frame it ends at.
+pub open spec fn walk_finds(tree: TableTree, s: usize, p: SpacePath, g: usize) -> bool {
+    &&& walk(tree, s, p) is Some
+    &&& walk(tree, s, p)->0.addr / 4096 <= g
+    &&& g < walk(tree, s, p)->0.addr / 4096 + entry_pages(if walk(tree, s, p)->0.perm.ps { 2usize } else { 1usize })
+}
+
 /// The space's tables say page g: g is the base page of a table of the space, or a page a walk finds.
 pub open spec fn space_says(tree: TableTree, s: usize, g: usize) -> bool {
     ||| exists|t: usize| #![trigger tree.record(t)] tree.is_table(t) && tree.record(t).space == Some(s) && t / 4096 == g
-    ||| exists|p: SpacePath| #![trigger walk(tree, s, p)] walk(tree, s, p) is Some && {
-        let v = walk(tree, s, p)->0;
-        &&& v.addr / 4096 <= g
-        &&& g < v.addr / 4096 + entry_pages(if v.perm.ps { 2usize } else { 1usize })
-    }
+    ||| exists|p: SpacePath| #[trigger] walk_finds(tree, s, p, g)
 }
 
 impl CapKernel {
