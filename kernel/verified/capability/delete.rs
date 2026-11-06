@@ -199,7 +199,7 @@ impl CapKernel {
     }
 
     /// The view of the step: one capability the caller held goes, and nothing else.
-    proof fn lemma_delete_discharges(pre: Self, post: Self, root: usize, n: usize)
+    pub proof fn lemma_delete_discharges(pre: Self, post: Self, root: usize, n: usize)
         requires
             Self::caps_frame(pre, post, n, n),
             pre.is_cap(n),

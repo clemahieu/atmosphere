@@ -175,7 +175,7 @@ impl CapKernel {
             decreases REVOKE_BUDGET - steps,
         {
             let ghost mid = *self;
-            if self.revoke_step(root, c) {
+            if self.revoke_step(Ghost(root), c) {
                 proof {
                     assert(self.view() == mid.view());
                 }
@@ -194,7 +194,7 @@ impl CapKernel {
     }
 
     /// One step of revoking capability c, which root's table holds. Returns whether c's run was empty.
-    fn revoke_step(&mut self, root: usize, c: usize) -> (done: bool)
+    pub fn revoke_step(&mut self, Ghost(root): Ghost<usize>, c: usize) -> (done: bool)
         requires
             old(self).wf(),
             c < NODE_SPACE,
@@ -212,6 +212,7 @@ impl CapKernel {
             !done ==> exists|r: usize| #[trigger] revoked_one(old(self).list, final(self).list, c, r)
                 && (old(self).list.nodes@[r as int].kind is Hidden ==> !final(self).tables.attached(r)),
             forall|x: int| 0 <= x < NODE_SPACE ==> #[trigger] final(self).list.nodes@[x].depth == old(self).list.nodes@[x].depth,
+            forall|x: usize| #[trigger] final(self).is_cap(x) ==> old(self).is_cap(x),
             discharges(old(self).view(), final(self).view(), root, Effect::Revoke { cap: c }),
     {
         let ghost pre = *old(self);
@@ -244,6 +245,11 @@ impl CapKernel {
             Self::lemma_tlb_same(pre, post);
             assert(post.list.nodes@[c as int].live == pre.list.nodes@[c as int].live);
             Self::lemma_caps_frame(pre, post, r, r, c);
+            assert forall|x: usize| #[trigger] post.is_cap(x) implies pre.is_cap(x) by {
+                if x != r {
+                    Self::lemma_caps_frame(pre, post, r, r, x);
+                }
+            }
         }
         false
     }
