@@ -277,11 +277,17 @@ pub proof fn lemma_ids_space_added(cores: Seq<CoreState>, pre: Map<usize, Points
     }
 }
 
-/// What a flush of every context on `core`, started when the epoch was `epoch`, proves. Only flush
-/// glue can make one, so only it can clear the TLB model. That glue comes with the IPIs,
-/// atmo-6x9.5.13.
+/// What a flush cleared: every context on a core, or all of an IOMMU's IOTLB.
+pub ghost enum FlushTarget {
+    Core(int),
+    Iommu(int),
+}
+
+/// What a flush of `target`, started when the epoch was `epoch`, proves. Only flush glue can make one,
+/// so only it can clear a model of what the target holds. A core's glue came with the IPIs,
+/// atmo-6x9.5.13; an IOMMU's comes with device capabilities, atmo-6x9.16.14.
 pub tracked struct Flushed {
-    pub ghost core: int,
+    pub ghost target: FlushTarget,
     pub ghost epoch: int,
 }
 
@@ -290,6 +296,40 @@ pub tracked struct Flushed {
 pub ghost struct TlbEntry {
     pub space: usize,
     pub page: usize,
+}
+
+/// For each IOMMU, the epoch its last finished invalidate started at, and what it may still hold that
+/// its IO spaces' tables no longer say. A device keeps translating while the kernel runs, so an IOMMU
+/// may refill from an entry between an invalidate and that entry's unmap.
+pub struct IommuState {
+    pub acked: Array<usize, NUM_IOMMUS>,
+    pub tlb: Ghost<Seq<Set<TlbEntry>>>,
+}
+
+impl IommuState {
+    /// No IOMMU has acknowledged anything or holds anything stale.
+    pub fn zero(&mut self)
+        requires
+            old(self).acked.wf(),
+        ensures
+            final(self).acked.wf(),
+            final(self).tlb@.len() == NUM_IOMMUS,
+            forall|i: int| 0 <= i < NUM_IOMMUS ==> #[trigger] final(self).acked@[i] == 0,
+            forall|i: int| 0 <= i < NUM_IOMMUS ==> #[trigger] final(self).tlb@[i] == Set::<TlbEntry>::empty(),
+    {
+        let mut i = 0;
+        while i != NUM_IOMMUS
+            invariant
+                0 <= i <= NUM_IOMMUS,
+                self.acked.wf(),
+                forall|j: int| 0 <= j < i ==> #[trigger] self.acked@[j] == 0,
+            decreases NUM_IOMMUS - i,
+        {
+            self.acked.set(i, 0);
+            i = i + 1;
+        }
+        self.tlb = Ghost(Seq::new(NUM_IOMMUS as nat, |i: int| Set::<TlbEntry>::empty()));
+    }
 }
 
 /// When each page's, 2M region's and 1G region's last unmap was, zero if it has none: unmap bumps the
@@ -432,6 +472,7 @@ pub struct CapKernel {
     /// For each core, what it may still hold that its space's tables no longer say. What they do say,
     /// a core that loaded the space may hold too: see core_may_hold.
     pub tlb: Ghost<Seq<Set<TlbEntry>>>,
+    pub iommus: IommuState,
     /// Frames some address space maps.
     pub mapped: Ghost<Set<usize>>,
     pub blocks: BlockTable,
@@ -457,7 +498,7 @@ pub struct CapKernel {
 // external_body(glue): only the hardware can attest a flush, so only this makes the token
 pub fn flush_every_context(core: usize, epoch: usize) -> (ret: Tracked<Flushed>)
     ensures
-        ret@.core == core as int,
+        ret@.target == FlushTarget::Core(core as int),
         ret@.epoch == epoch as int,
 {
     unsafe {
@@ -775,6 +816,11 @@ impl CapKernel {
         self.cores@[c].acked_epoch as int
     }
 
+    /// The epoch IOMMU i's last finished invalidate started at.
+    pub open spec fn iommu_acked(&self, i: int) -> int {
+        self.iommus.acked@[i] as int
+    }
+
     /// Core c has loaded space s.
     pub open spec fn loaded(&self, c: int, s: usize) -> bool {
         &&& self.spaces.loaded@.contains_key(s)
@@ -783,7 +829,7 @@ impl CapKernel {
 
     /// A core holds an entry of a space only if it loaded the space. A translation to an unmapped page
     /// can survive on a core only if that core has not yet acknowledged the page's unmap. The strict
-    /// comparison needs unmap to bump the epoch first.
+    /// comparison needs unmap to bump the epoch first. The same holds of each IOMMU.
     pub open spec fn tlb_wf(&self) -> bool {
         &&& self.tlb@.len() == NUM_CPUS
         &&& forall|c: int| 0 <= c < NUM_CPUS ==> #[trigger] self.acked(c) <= self.flush_epoch
@@ -792,6 +838,39 @@ impl CapKernel {
         &&& forall|c: int, e: TlbEntry|
             0 <= c < NUM_CPUS && #[trigger] self.tlb@[c].contains(e) && !self.mapped@.contains(e.page)
             ==> e.page < NUM_PAGES && self.stale_epoch.above(self.acked(c), e.page)
+        &&& self.iommus_wf()
+    }
+
+    /// A translation to an unmapped page can survive in an IOMMU only if it has not yet acknowledged the
+    /// page's unmap.
+    pub open spec fn iommus_wf(&self) -> bool {
+        &&& self.iommus.acked.wf()
+        &&& self.iommus.tlb@.len() == NUM_IOMMUS
+        &&& forall|i: int| 0 <= i < NUM_IOMMUS ==> #[trigger] self.iommu_acked(i) <= self.flush_epoch
+        &&& forall|i: int, e: TlbEntry|
+            0 <= i < NUM_IOMMUS && #[trigger] self.iommus.tlb@[i].contains(e) && !self.mapped@.contains(e.page)
+            ==> e.page < NUM_PAGES && self.stale_epoch.above(self.iommu_acked(i), e.page)
+    }
+
+    /// The IOMMU model reads nothing but itself, the epoch and the staleness record.
+    pub proof fn lemma_iommus_same(pre: Self, post: Self)
+        requires
+            pre.iommus_wf(),
+            post.iommus == pre.iommus,
+            post.flush_epoch == pre.flush_epoch,
+            post.mapped == pre.mapped,
+            post.stale_epoch == pre.stale_epoch,
+        ensures
+            post.iommus_wf(),
+    {
+        assert forall|i: int| 0 <= i < NUM_IOMMUS implies #[trigger] post.iommu_acked(i) <= post.flush_epoch by {
+            assert(pre.iommu_acked(i) <= pre.flush_epoch);
+        }
+        assert forall|i: int, e: TlbEntry|
+            0 <= i < NUM_IOMMUS && #[trigger] post.iommus.tlb@[i].contains(e) && !post.mapped@.contains(e.page)
+            implies e.page < NUM_PAGES && post.stale_epoch.above(post.iommu_acked(i), e.page) by {
+            assert(pre.iommus.tlb@[i].contains(e));
+        }
     }
 
     pub open spec fn wf(&self) -> bool {
@@ -829,21 +908,29 @@ impl CapKernel {
         forall|i: usize| #[trigger] self.frames@.contains_key(i) ==> self.frames@[i].addr() == i * 4096
     }
 
-    /// No core can reach page f, a frame's or a table's, through something stale, under any space. What
-    /// retype needs, as a fact it can check: see lemma_acknowledged_is_clean.
+    /// No core or IOMMU can reach page f, a frame's or a table's, through something stale, under any
+    /// space. What retype needs, as a fact it can check: see lemma_acknowledged_is_clean.
     pub open spec fn no_stale_translation(&self, f: usize) -> bool {
-        forall|c: int, s: usize| 0 <= c < NUM_CPUS ==> !#[trigger] self.tlb@[c].contains(TlbEntry { space: s, page: f })
+        &&& forall|c: int, s: usize| 0 <= c < NUM_CPUS ==> !#[trigger] self.tlb@[c].contains(TlbEntry { space: s, page: f })
+        &&& forall|i: int, s: usize| 0 <= i < NUM_IOMMUS ==> !#[trigger] self.iommus.tlb@[i].contains(TlbEntry { space: s, page: f })
     }
 
-    /// Every core has acknowledged f's last unmap.
+    /// Every core and every IOMMU has acknowledged this epoch. Either kind of space may have mapped a
+    /// page, and the word records only when.
+    pub open spec fn all_acknowledged(&self, epoch: int) -> bool {
+        &&& forall|c: int| 0 <= c < NUM_CPUS ==> epoch <= #[trigger] self.acked(c)
+        &&& forall|i: int| 0 <= i < NUM_IOMMUS ==> epoch <= #[trigger] self.iommu_acked(i)
+    }
+
+    /// Every core and IOMMU has acknowledged f's last unmap.
     pub open spec fn acknowledged(&self, f: usize) -> bool {
         &&& f < NUM_PAGES
-        &&& forall|c: int| 0 <= c < NUM_CPUS ==> self.stale_epoch.pages@[f as int] <= #[trigger] self.acked(c)
+        &&& self.all_acknowledged(self.stale_epoch.pages@[f as int] as int)
     }
 
-    /// Every core has acknowledged the last unmap of any page of region r.
+    /// Every core and IOMMU has acknowledged the last unmap of any page of region r.
     pub open spec fn region_acknowledged(&self, level: Large, r: usize) -> bool {
-        forall|c: int| 0 <= c < NUM_CPUS ==> self.stale_epoch.region(level, r) <= #[trigger] self.acked(c)
+        self.all_acknowledged(self.stale_epoch.region(level, r) as int)
     }
 
     /// No page of region r is mapped.
@@ -851,7 +938,7 @@ impl CapKernel {
         forall|i: usize| #[trigger] block_has_page(level_ref(level, r), i) ==> !self.mapped@.contains(i)
     }
 
-    /// No core can reach any page of region r through something stale.
+    /// No core or IOMMU can reach any page of region r through something stale.
     pub open spec fn region_clean(&self, level: Large, r: usize) -> bool {
         forall|i: usize| #[trigger] block_has_page(level_ref(level, r), i) ==> self.no_stale_translation(i)
     }
@@ -915,6 +1002,7 @@ impl CapKernel {
         &&& post.mapped == pre.mapped
         &&& post.stale_epoch == pre.stale_epoch
         &&& post.flush_epoch == pre.flush_epoch
+        &&& post.iommus == pre.iommus
         &&& post.cores@[c].current_thread == pre.cores@[c].current_thread
         &&& pre.acked(c) <= post.acked(c)
         &&& forall|e: TlbEntry| #[trigger] post.tlb@[c].contains(e) ==> pre.tlb@[c].contains(e)
@@ -922,7 +1010,7 @@ impl CapKernel {
         &&& forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] post.tlb@[d] == pre.tlb@[d]
     }
 
-    /// An unmapped page every core has acknowledged is free of stale translations.
+    /// An unmapped page every core and IOMMU has acknowledged is free of stale translations.
     pub proof fn lemma_acknowledged_is_clean(&self, f: usize)
         requires
             self.wf(),
@@ -937,9 +1025,15 @@ impl CapKernel {
                 assert(self.stale_epoch.pages@[f as int] <= self.acked(c));
             }
         }
+        assert forall|i: int, s: usize| 0 <= i < NUM_IOMMUS implies !#[trigger] self.iommus.tlb@[i].contains(TlbEntry { space: s, page: f }) by {
+            if self.iommus.tlb@[i].contains(TlbEntry { space: s, page: f }) {
+                assert(self.stale_epoch.above(self.iommu_acked(i), f));
+                assert(self.stale_epoch.pages@[f as int] <= self.iommu_acked(i));
+            }
+        }
     }
 
-    /// A region with no page mapped, every core having acknowledged its word, is free of stale
+    /// A region with no page mapped, every core and IOMMU having acknowledged its word, is free of stale
     /// translations on every page: each page's unmap wrote that word too.
     pub proof fn lemma_region_acknowledged_is_clean(&self, level: Large, r: usize)
         requires
@@ -958,6 +1052,13 @@ impl CapKernel {
                     assert(self.stale_epoch.region(level, r) <= self.acked(c));
                 }
             }
+            assert forall|j: int, s: usize| 0 <= j < NUM_IOMMUS implies !#[trigger] self.iommus.tlb@[j].contains(TlbEntry { space: s, page: i }) by {
+                if self.iommus.tlb@[j].contains(TlbEntry { space: s, page: i }) {
+                    assert(!self.mapped@.contains(i));
+                    assert(self.stale_epoch.above(self.iommu_acked(j), i));
+                    assert(self.stale_epoch.region(level, r) <= self.iommu_acked(j));
+                }
+            }
         }
     }
 
@@ -966,6 +1067,7 @@ impl CapKernel {
     pub fn init(&mut self, root: usize, Tracked(perm): Tracked<PointsTo<NodePage>>, kernel_entries: Array<usize, KERNEL_MEM_END_L4INDEX>)
         requires
             old(self).cores.wf(),
+            old(self).iommus.acked.wf(),
             old(self).stale_epoch.wf(),
             old(self).zeroing.cursor.wf(),
             old(self).zeroing.active_2m.wf(),
@@ -1026,6 +1128,7 @@ impl CapKernel {
             i = i + 1;
         }
         self.stale_epoch.zero();
+        self.iommus.zero();
         proof {
             assert forall|n: usize| n < NODE_SPACE && (#[trigger] self.list.nodes@[n as int]).live
                 && self.list.nodes@[n as int].kind is Hidden implies self.tables.owner@.contains_key(n) by {
@@ -1069,12 +1172,14 @@ impl CapKernel {
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).cores == old(self).cores,
+            final(self).iommus == old(self).iommus,
             final(self).spaces.loaded == old(self).spaces.loaded,
     {
         let ghost pre = *old(self);
         let ghost e = TlbEntry { space: s, page };
         self.tlb = Ghost(Seq::new(NUM_CPUS as nat, |d: int| if pre.loaded(d, s) { pre.tlb@[d].insert(e) } else { pre.tlb@[d] }));
         proof {
+            Self::lemma_iommus_same(pre, *self);
             assert(self.tlb@.len() == NUM_CPUS);
             assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] self.tlb@[d] == (
                 if pre.loaded(d, s) { pre.tlb@[d].insert(e) } else { pre.tlb@[d] }) by {}
@@ -1104,7 +1209,7 @@ impl CapKernel {
         }
     }
 
-    /// Whether every core has acknowledged f's last unmap, which is a bounded number of loads.
+    /// Whether every core and IOMMU has acknowledged f's last unmap, which is a bounded number of loads.
     pub fn is_acknowledged(&self, f: usize) -> (ret: bool)
         requires
             self.wf(),
@@ -1115,7 +1220,7 @@ impl CapKernel {
         self.has_acknowledged(*self.stale_epoch.pages.get(f))
     }
 
-    /// Whether every core has acknowledged the last unmap of any page of region r.
+    /// Whether every core and IOMMU has acknowledged the last unmap of any page of region r.
     pub fn is_region_acknowledged(&self, level: Large, r: usize) -> (ret: bool)
         requires
             self.wf(),
@@ -1130,12 +1235,12 @@ impl CapKernel {
         self.has_acknowledged(epoch)
     }
 
-    /// Whether every core has reached this epoch, which is a bounded number of loads.
+    /// Whether every core and IOMMU has reached this epoch, which is a bounded number of loads.
     fn has_acknowledged(&self, epoch: usize) -> (ret: bool)
         requires
             self.wf(),
         ensures
-            ret == forall|d: int| 0 <= d < NUM_CPUS ==> epoch <= #[trigger] self.acked(d),
+            ret == self.all_acknowledged(epoch as int),
     {
         let mut c = 0;
         while c != NUM_CPUS
@@ -1151,6 +1256,21 @@ impl CapKernel {
             }
             c = c + 1;
         }
+        let mut i = 0;
+        while i != NUM_IOMMUS
+            invariant
+                self.wf(),
+                0 <= i <= NUM_IOMMUS,
+                forall|d: int| 0 <= d < NUM_CPUS ==> epoch <= #[trigger] self.acked(d),
+                forall|j: int| 0 <= j < i ==> epoch <= #[trigger] self.iommu_acked(j),
+            decreases NUM_IOMMUS - i,
+        {
+            if *self.iommus.acked.get(i) < epoch {
+                assert(self.iommu_acked(i as int) < epoch);
+                return false;
+            }
+            i = i + 1;
+        }
         true
     }
 
@@ -1160,8 +1280,10 @@ impl CapKernel {
         requires
             pre.tlb_wf(),
             post.cores == pre.cores,
+            post.iommus == pre.iommus,
             post.flush_epoch == pre.flush_epoch,
             post.tlb == pre.tlb,
+            post.iommus == pre.iommus,
             post.mapped == pre.mapped,
             post.stale_epoch == pre.stale_epoch,
             forall|s: usize| #[trigger] pre.spaces.loaded@.contains_key(s) ==> {
@@ -1184,6 +1306,7 @@ impl CapKernel {
             assert(pre.tlb@[c].contains(e));
             assert(pre.acked(c) == post.acked(c));
         }
+        Self::lemma_iommus_same(pre, post);
     }
 
     /// More pages being mapped keeps the TLB model: it says least about a mapped page.
@@ -1191,8 +1314,10 @@ impl CapKernel {
         requires
             pre.tlb_wf(),
             post.cores == pre.cores,
+            post.iommus == pre.iommus,
             post.flush_epoch == pre.flush_epoch,
             post.tlb == pre.tlb,
+            post.iommus == pre.iommus,
             forall|g: usize| #[trigger] pre.mapped@.contains(g) ==> post.mapped@.contains(g),
             post.stale_epoch == pre.stale_epoch,
             post.spaces.loaded == pre.spaces.loaded,
@@ -1211,6 +1336,15 @@ impl CapKernel {
             assert(pre.tlb@[c].contains(e));
             assert(!pre.mapped@.contains(e.page));
             assert(pre.acked(c) == post.acked(c));
+        }
+        assert forall|i: int| 0 <= i < NUM_IOMMUS implies #[trigger] post.iommu_acked(i) <= post.flush_epoch by {
+            assert(pre.iommu_acked(i) <= pre.flush_epoch);
+        }
+        assert forall|i: int, e: TlbEntry|
+            0 <= i < NUM_IOMMUS && #[trigger] post.iommus.tlb@[i].contains(e) && !post.mapped@.contains(e.page)
+            implies e.page < NUM_PAGES && post.stale_epoch.above(post.iommu_acked(i), e.page) by {
+            assert(pre.iommus.tlb@[i].contains(e));
+            assert(!pre.mapped@.contains(e.page));
         }
     }
 
@@ -1266,6 +1400,7 @@ impl CapKernel {
             post.cores == pre.cores,
             post.flush_epoch == pre.flush_epoch,
             post.tlb == pre.tlb,
+            post.iommus == pre.iommus,
             post.mapped == pre.mapped,
             post.stale_epoch == pre.stale_epoch,
             forall|i: usize| i < NUM_PAGES && block_typed(&pre.blocks, block_ref(&pre.blocks, i))
@@ -1295,6 +1430,7 @@ impl CapKernel {
             post.cores == pre.cores,
             post.flush_epoch == pre.flush_epoch,
             post.tlb == pre.tlb,
+            post.iommus == pre.iommus,
             post.mapped == pre.mapped,
             post.stale_epoch == pre.stale_epoch,
             post.frames_wf(),
@@ -1505,6 +1641,7 @@ impl CapKernel {
             post.cores == pre.cores,
             post.flush_epoch == pre.flush_epoch,
             post.tlb == pre.tlb,
+            post.iommus == pre.iommus,
             post.mapped == pre.mapped,
             post.stale_epoch == pre.stale_epoch,
             post.zeroing == pre.zeroing,
@@ -1658,6 +1795,7 @@ impl CapKernel {
             post.cores == pre.cores,
             post.flush_epoch == pre.flush_epoch,
             post.tlb == pre.tlb,
+            post.iommus == pre.iommus,
             post.mapped == pre.mapped,
             post.stale_epoch == pre.stale_epoch,
             post.zeroing == pre.zeroing,
@@ -1712,13 +1850,71 @@ impl CapKernel {
         Self::lemma_blocks_changed(pre, post);
     }
 
+    /// IOMMU i acknowledges an invalidate of all it holds, which started at this epoch. A device kept
+    /// translating since, so i may hold what was unmapped after that epoch, and only what was unmapped
+    /// by then leaves its model.
+    pub fn acknowledge_iommu(&mut self, i: usize, epoch: usize, Tracked(flushed): Tracked<Flushed>)
+        requires
+            old(self).wf(),
+            i < NUM_IOMMUS,
+            flushed.target == FlushTarget::Iommu(i as int),
+            flushed.epoch == epoch,
+            old(self).iommu_acked(i as int) <= epoch <= old(self).flush_epoch,
+        ensures
+            final(self).wf(),
+            final(self).iommu_acked(i as int) == epoch,
+            old(self).iommu_acked(i as int) <= final(self).iommu_acked(i as int),
+            forall|j: int| 0 <= j < NUM_IOMMUS && j != i ==> #[trigger] final(self).iommu_acked(j) == old(self).iommu_acked(j),
+            final(self).iommus.tlb@[i as int] == old(self).iommus.tlb@[i as int].filter(|e: TlbEntry| old(self).stale_epoch.above(epoch as int, e.page)),
+            forall|j: int| 0 <= j < NUM_IOMMUS && j != i ==> #[trigger] final(self).iommus.tlb@[j] == old(self).iommus.tlb@[j],
+            final(self).tlb == old(self).tlb,
+            final(self).cores == old(self).cores,
+            final(self).mapped == old(self).mapped,
+            final(self).stale_epoch == old(self).stale_epoch,
+            final(self).flush_epoch == old(self).flush_epoch,
+    {
+        let ghost pre = *old(self);
+        self.iommus.acked.set(i, epoch);
+        self.iommus.tlb = Ghost(pre.iommus.tlb@.update(i as int, pre.iommus.tlb@[i as int].filter(|e: TlbEntry| pre.stale_epoch.above(epoch as int, e.page))));
+        proof {
+            broadcast use vstd::set::lemma_set_filter;
+            assert forall|c: int| 0 <= c < NUM_CPUS implies #[trigger] self.acked(c) <= self.flush_epoch by {
+                assert(pre.acked(c) <= pre.flush_epoch);
+            }
+            assert forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && #[trigger] self.tlb@[c].contains(e) implies self.loaded(c, e.space) by {
+                assert(pre.tlb@[c].contains(e));
+            }
+            assert forall|c: int, e: TlbEntry|
+                0 <= c < NUM_CPUS && #[trigger] self.tlb@[c].contains(e) && !self.mapped@.contains(e.page)
+                implies e.page < NUM_PAGES && self.stale_epoch.above(self.acked(c), e.page) by {
+                assert(pre.tlb@[c].contains(e));
+                assert(pre.acked(c) == self.acked(c));
+            }
+            assert forall|j: int| 0 <= j < NUM_IOMMUS implies #[trigger] self.iommu_acked(j) <= self.flush_epoch by {
+                if j != i as int {
+                    assert(pre.iommu_acked(j) <= pre.flush_epoch);
+                }
+            }
+            assert forall|j: int, e: TlbEntry|
+                0 <= j < NUM_IOMMUS && #[trigger] self.iommus.tlb@[j].contains(e) && !self.mapped@.contains(e.page)
+                implies e.page < NUM_PAGES && self.stale_epoch.above(self.iommu_acked(j), e.page) by {
+                if j != i as int {
+                    assert(pre.iommus.tlb@[j].contains(e));
+                    assert(pre.iommu_acked(j) == self.iommu_acked(j));
+                } else {
+                    assert(pre.iommus.tlb@[j].contains(e));
+                }
+            }
+        }
+    }
+
     /// Core c acknowledges a flush of every context it did. Between that flush and this call c runs
     /// no user code, since IF stays clear in the kernel, so its TLB model is empty.
     pub fn acknowledge(&mut self, c: usize, epoch: usize, Tracked(flushed): Tracked<Flushed>)
         requires
             old(self).wf(),
             c < NUM_CPUS,
-            flushed.core == c,
+            flushed.target == FlushTarget::Core(c as int),
             flushed.epoch == epoch,
             old(self).acked(c as int) <= epoch <= old(self).flush_epoch,
         ensures
@@ -1744,6 +1940,7 @@ impl CapKernel {
         });
         self.tlb = Ghost(self.tlb@.update(c as int, Set::empty()));
         proof {
+            Self::lemma_iommus_same(pre, *self);
             reveal(ids_wf);
             assert forall|d: int| 0 <= d < NUM_CPUS && d != c as int implies #[trigger] self.cores@[d] == pre.cores@[d] by {}
             lemma_ids_core_step(pre.cores@, self.cores@, self.spaces.loaded@, c as int);
