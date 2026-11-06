@@ -822,6 +822,7 @@ impl CapKernel {
             Self::lemma_leaf_holders(pre, post, mid, base, page);
             Self::lemma_leaf_blocks_leaf_added(pre, post, base, page);
             Self::lemma_leaf_nodes(pre, post, mid, parent, base);
+            Self::lemma_leaf_first(pre, post, base);
             assert(post.wf());
             assert forall|i: usize| index_ok(i) && index_entry(i) == r as int implies {
                 &&& #[trigger] post.tables.has_slot(root, i)
@@ -837,6 +838,25 @@ impl CapKernel {
             Self::lemma_leaf_discharges(pre, post, root, parent, base);
         }
         true
+    }
+
+    /// The list's first node stays outside every leaf after a leaf's retype: it is live, so its page
+    /// was one the list held, and the new leaf's page was not.
+    proof fn lemma_leaf_first(pre: Self, post: Self, base: usize)
+        requires
+            pre.wf(),
+            !pre.list.pages@.dom().contains(base),
+            exists|e: (usize, int)| post.tables.owner@ == pre.tables.owner@.insert(base, e),
+            post.list.seq@[0] == pre.list.seq@[0],
+        ensures
+            first_node_outside_leaves(&post.list, &post.tables),
+    {
+        let n = pre.list.seq@[0];
+        pre.list.lemma_link(0);
+        pre.list.lemma_live_valid(n);
+        assert(pre.list.pages@.dom().contains(page_of(n)));
+        assert(page_of(n) != base);
+        assert(!pre.tables.owner@.contains_key(page_of(n)));
     }
 
     /// The hidden nodes and the parents after a leaf's retype: the new node is the leaf's, hidden

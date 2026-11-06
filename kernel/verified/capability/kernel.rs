@@ -279,6 +279,11 @@ pub proof fn lemma_parents_moved(pre: Tree, post: Tree, i: usize, slot: usize)
     }
 }
 
+/// The list's first node lives outside every leaf, so whatever a leaf holds can be unlinked.
+pub open spec fn first_node_outside_leaves(list: &Tree, tables: &Tables) -> bool {
+    !tables.owner@.contains_key(page_of(list.seq@[0]))
+}
+
 /// Every capability node but the list's first is in a table's slot, so unlinking it can read what it
 /// says.
 pub open spec fn capability_nodes_are_slots(list: &Tree, tables: &Tables) -> bool {
@@ -356,6 +361,7 @@ impl CapKernel {
         &&& hidden_nodes_are_leaves(&self.list, &self.tables)
         &&& capability_nodes_are_slots(&self.list, &self.tables)
         &&& parents_are_capabilities(&self.list)
+        &&& first_node_outside_leaves(&self.list, &self.tables)
         &&& holders_wf(&self.list, &self.tables, &self.blocks, &self.zeroing, self.holders@)
         &&& objects_wf(&self.tables, &self.blocks, self.holders@)
         &&& frames_held(self.frames@, self.holders@)
@@ -714,6 +720,16 @@ impl CapKernel {
             post.wf(),
     {
         Self::lemma_tlb_same(pre, post);
+    }
+
+    /// A node in a leaf's page is not the list's first.
+    pub proof fn lemma_leaf_node_not_first(&self, n: usize)
+        requires
+            self.wf(),
+            self.tables.owner@.contains_key(page_of(n)),
+        ensures
+            n != self.list.seq@[0],
+    {
     }
 
     /// A live hidden node has a parent and nothing below it.
