@@ -95,7 +95,7 @@ impl CapKernel {
             !(old(self).is_cap(n) && old(self).payload_of(n).kind is Space) ==> final(self).spaces == old(self).spaces,
             final(self).spaces.roots == old(self).spaces.roots,
             final(self).spaces.records == old(self).spaces.records,
-            final(self).spaces.spare == old(self).spaces.spare,
+            final(self).spaces.loaded == old(self).spaces.loaded,
             final(self).spaces.kernel_entries == old(self).spaces.kernel_entries,
             old(self).list.nodes@[n as int].kind is Mapping ==> Self::mapping_unlinked(*old(self), *final(self), n),
             !(old(self).list.nodes@[n as int].kind is Mapping) ==> {
@@ -339,7 +339,7 @@ impl CapKernel {
             !(pre.is_cap(r) && pre.payload_of(r).kind is Space) ==> mid.spaces == pre.spaces,
             mid.spaces.roots == pre.spaces.roots,
             mid.spaces.records == pre.spaces.records,
-            mid.spaces.spare == pre.spaces.spare,
+            mid.spaces.loaded == pre.spaces.loaded,
             mid.spaces.kernel_entries == pre.spaces.kernel_entries,
             pre.list.nodes@[r as int].kind is Mapping ==> Self::mapping_unlinked(pre, mid, r),
             !(pre.list.nodes@[r as int].kind is Mapping) ==> {

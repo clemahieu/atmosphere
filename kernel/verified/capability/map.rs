@@ -859,6 +859,7 @@ impl CapKernel {
         ensures
             final(self).wf(),
             ret == old(self).can_map(root, slot, SpacePath { l4, l3, l2, l1 }, from, page),
+            final(self).spaces.loaded == old(self).spaces.loaded,
             !ret ==> *final(self) == *old(self),
             ret ==> Self::map_done(*old(self), *final(self), root, slot, SpacePath { l4, l3, l2, l1 }, from, page),
             discharges(old(self).view(), final(self).view(), root, Effect::Local),
@@ -987,6 +988,7 @@ impl CapKernel {
         ensures
             final(self).wf(),
             ret == old(self).can_map_large(root, slot, SpacePath { l4, l3, l2, l1: 0 }, from, page),
+            final(self).spaces.loaded == old(self).spaces.loaded,
             !ret ==> *final(self) == *old(self),
             ret ==> Self::map_large_done(*old(self), *final(self), root, slot, SpacePath { l4, l3, l2, l1: 0 }, from, page),
             discharges(old(self).view(), final(self).view(), root, Effect::Local),

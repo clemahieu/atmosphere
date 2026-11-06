@@ -450,6 +450,7 @@ impl CapKernel {
             post.blocks == pre.blocks,
             post.holders == pre.holders,
             post.mappings == pre.mappings,
+            post.spaces.loaded == pre.spaces.loaded,
             linked(tree_of(&pre.table_pages, &pre.spaces), tree_of(&post.table_pages, &post.spaces), parent, entry, child, s),
             tree_of(&pre.table_pages, &pre.spaces).is_table(parent),
             tree_of(&pre.table_pages, &pre.spaces).record(parent).level >= 2,
@@ -553,7 +554,7 @@ impl CapKernel {
             post.list == pre.list,
             post.tables == pre.tables,
             post.blocks == pre.blocks,
-            post.spaces.spare == pre.spaces.spare,
+            post.spaces.loaded == pre.spaces.loaded,
             post.spaces.holders == pre.spaces.holders,
             post.spaces.kernel_entries == pre.spaces.kernel_entries,
             pre.spaces.roots@.contains_key(parent),
@@ -696,6 +697,7 @@ impl CapKernel {
                 == tree_of(&old(self).table_pages, &old(self).spaces).record(parent).level,
         ensures
             final(self).wf(),
+            final(self).spaces.loaded == old(self).spaces.loaded,
             Self::link_done(*old(self), *final(self), parent, entry, child, parent),
     {
         let ghost pre = *old(self);
@@ -774,6 +776,7 @@ impl CapKernel {
                 == tree_of(&old(self).table_pages, &old(self).spaces).record(parent).level,
         ensures
             final(self).wf(),
+            final(self).spaces.loaded == old(self).spaces.loaded,
             Self::link_done(*old(self), *final(self), parent, entry, child, s),
     {
         let ghost pre = *old(self);
@@ -950,6 +953,7 @@ impl CapKernel {
         ensures
             final(self).wf(),
             ret == old(self).can_link(root, slot, parent, entry, from, child),
+            final(self).spaces.loaded == old(self).spaces.loaded,
             !ret ==> *final(self) == *old(self),
             final(self).list == old(self).list,
             final(self).tables == old(self).tables,
