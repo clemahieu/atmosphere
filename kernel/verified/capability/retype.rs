@@ -825,6 +825,7 @@ impl CapKernel {
             Self::lemma_leaf_blocks_leaf_added(pre, post, base, page);
             Self::lemma_leaf_nodes(pre, post, mid, parent, base);
             Self::lemma_leaf_first(pre, post, base);
+            Self::lemma_leaf_slots(pre, post, base);
             assert(post.wf());
             assert forall|i: usize| index_ok(i) && index_entry(i) == r as int implies {
                 &&& #[trigger] post.tables.has_slot(root, i)
@@ -859,6 +860,30 @@ impl CapKernel {
         assert(pre.list.pages@.dom().contains(page_of(n)));
         assert(page_of(n) != base);
         assert(!pre.tables.owner@.contains_key(page_of(n)));
+    }
+
+    /// A live node in a leaf's slot stays a capability after a leaf's retype: the new leaf's slots
+    /// are not live, and a node in an older leaf keeps its kind.
+    proof fn lemma_leaf_slots(pre: Self, post: Self, base: usize)
+        requires
+            Self::leaf_step(pre, post, base),
+        ensures
+            leaf_slots_are_capabilities(&post.list, &post.tables),
+    {
+        assert forall|n: usize| #[trigger] post.list.nodes@[n as int].live
+            && post.tables.owner@.contains_key(page_of(n)) && n % 4096 != 0 && n % 4096 < NODES_PER_PAGE
+            implies post.list.nodes@[n as int].kind is Capability by {
+            if page_of(n) == base {
+                assert(base < n < base + NODES_PER_PAGE);
+                assert(!post.list.nodes@[n as int].live);
+            } else {
+                assert(pre.tables.owner@.contains_key(page_of(n)));
+                pre.tables.lemma_leaf(&pre.list, page_of(n));
+                assert(pre.list.valid(n));
+                assert(n != base);
+                assert(pre.list.nodes@[n as int].live);
+            }
+        }
     }
 
     /// The hidden nodes and the parents after a leaf's retype: the new node is the leaf's, hidden
