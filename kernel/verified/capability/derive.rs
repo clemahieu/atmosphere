@@ -43,7 +43,7 @@ pub open spec fn narrows(child: Payload, parent: Payload) -> bool {
 }
 
 /// A block of this order, in bytes, in constant time.
-fn order_bytes(order: u8) -> (ret: usize)
+pub fn order_bytes(order: u8) -> (ret: usize)
     requires
         order <= MAX_ORDER,
     ensures
