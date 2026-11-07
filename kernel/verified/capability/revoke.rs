@@ -1,6 +1,6 @@
 //! Revoking a capability, a bounded number of steps per kernel entry. A step finds a node of its run with
 //! no children, undoes what that node's kind holds, and unlinks it, so revoke removes exactly the
-//! capability's lineage, leaf first. See the design on atmo-6x9.6.7, section 5.
+//! capability's lineage, leaf first. See design/revoke-by-depth-first-list/.
 use vstd::prelude::*;
 
 verus! {

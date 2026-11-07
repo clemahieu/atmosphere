@@ -3,7 +3,7 @@
 //! descendants are exactly the run after it with greater depth, and revoke needs no scan, mark or
 //! cursor. Only a node with no children is unlinked, so a child never loses its place. Nodes live in
 //! retyped pages, reached through a page's permission plus an index, and a node id is the page's
-//! address plus that index. See the design on atmo-6x9.6.7.
+//! address plus that index. See design/revoke-by-depth-first-list/.
 //!
 //! Four parts of the invariant are opaque and reached through one-position lemmas: membership,
 //! distinctness, the link structure and the parent-child order. Spelled out, membership is an exists
