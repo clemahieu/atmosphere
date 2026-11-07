@@ -34,6 +34,7 @@ pub enum CapKind {
     Reply,
     Notification,
     Space,
+    Device,
 }
 
 /// What a capability says, beyond its place in the list. 32 bytes.
@@ -63,8 +64,8 @@ pub open spec fn block_bytes(order: u8) -> int {
     pow2(order as nat) as int * 4096
 }
 
-/// What a capability says names a block: base aligned to its size, inside the address space. See
-/// design/capability-names-a-block/.
+/// What a memory capability says names a block: base aligned to its size, inside the address space. A
+/// device's names its device instead, devices_wf. See design/capability-names-a-block/.
 pub open spec fn payload_wf(p: Payload) -> bool {
     &&& p.order <= MAX_ORDER
     &&& p.base as int % block_bytes(p.order) == 0
@@ -237,7 +238,7 @@ impl Tables {
 
     /// Every capability names a block.
     pub open spec fn caps_wf(&self, list: &Tree) -> bool {
-        forall|n: usize| #[trigger] self.is_cap(list, n) ==> payload_wf(self.payload_of(n))
+        forall|n: usize| #[trigger] self.is_cap(list, n) && !(self.payload_of(n).kind is Device) ==> payload_wf(self.payload_of(n))
     }
 
     /// The tables read nothing of a list but which pages it holds, so more pages keep them whole.

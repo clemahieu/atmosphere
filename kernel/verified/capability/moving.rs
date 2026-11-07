@@ -6,6 +6,7 @@ use vstd::prelude::*;
 
 verus! {
 
+use crate::capability::device::*;
 use crate::capability::link::*;
 use crate::capability::mapping::*;
 use crate::capability::kernel::*;
@@ -88,6 +89,10 @@ impl CapKernel {
         // A frame's holder has a new name; the count does not change.
         self.holders = Ghost(Self::moved_holders(pre.holders@, i, n));
         self.spaces.holders = Ghost(moved_space_holders(pre.spaces.holders@, i, n));
+        // A device's one capability has a new name.
+        if let CapKind::Device = payload.kind {
+            self.devices.holder = Ghost(pre.devices.holder@.insert(payload.base, n));
+        }
         proof {
             let post = *self;
             assert(post.list.nodes@[n as int].kind == pre.list.nodes@[i as int].kind);
@@ -99,6 +104,7 @@ impl CapKernel {
             Self::lemma_space_nodes_caps_frame(pre, post, i, n);
             Self::lemma_move_holders(pre, post, i, n);
             Self::lemma_move_mappings(pre, post, i, n);
+            Self::lemma_move_devices(pre, post, i, n);
             lemma_parents_moved(pre.list, post.list, i, n);
             Self::lemma_move_discharges(pre, post, root, i, n);
             Self::lemma_tlb_same(pre, post);
@@ -243,6 +249,43 @@ impl CapKernel {
         Self::lemma_mappings_same_tree(pre, post);
     }
 
+    /// The devices after a move: a device whose capability was i has n, which says the same, and a
+    /// device capability other than i names another device, so its entry is as it was.
+    proof fn lemma_move_devices(pre: Self, post: Self, i: usize, n: usize)
+        requires
+            Self::move_step(pre, post, i, n),
+            post.devices.records == pre.devices.records,
+            post.devices.count == pre.devices.count,
+            post.devices.holder@ == if pre.payload_of(i).kind is Device {
+                pre.devices.holder@.insert(pre.payload_of(i).base, n)
+            } else {
+                pre.devices.holder@
+            },
+        ensures
+            devices_wf(&post.list, &post.tables, &post.devices),
+    {
+        reveal(devices_wf);
+        let (pp, base) = (pre.payload_of(i), pre.payload_of(i).base);
+        assert forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) && post.tables.payload_of(x).kind is Device implies {
+            &&& post.tables.payload_of(x).order == 0
+            &&& post.devices.names(post.tables.payload_of(x).base)
+            &&& post.devices.holder@.contains_key(post.tables.payload_of(x).base)
+            &&& post.devices.holder@[post.tables.payload_of(x).base] == x
+        } by {
+            if x == n {
+                assert(pre.tables.is_cap(&pre.list, i));
+            } else {
+                assert(x != i);
+                Self::lemma_caps_frame(pre, post, i, n, x);
+                assert(pre.tables.is_cap(&pre.list, x));
+                if pp.kind is Device && post.tables.payload_of(x).base == base {
+                    assert(pre.tables.is_cap(&pre.list, i));
+                    lemma_device_cap_unique(&pre.list, &pre.tables, &pre.devices, i, x);
+                }
+            }
+        }
+    }
+
     /// Each block's holders after node i is renamed n.
     pub open spec fn moved_holders(holders: IMap<BlockRef, Set<usize>>, i: usize, n: usize) -> IMap<BlockRef, Set<usize>> {
         IMap::new(
@@ -276,7 +319,8 @@ impl CapKernel {
             post.tables.caps_wf(&post.list),
     {
         assert(pre.tables.is_cap(&pre.list, i));
-        assert forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) implies payload_wf(post.tables.payload_of(x)) by {
+        assert forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) && !(post.tables.payload_of(x).kind is Device)
+            implies payload_wf(post.tables.payload_of(x)) by {
             if x != n {
                 assert(x != i);
                 Self::lemma_caps_frame(pre, post, i, n, x);

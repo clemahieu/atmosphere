@@ -7,6 +7,7 @@ use vstd::prelude::*;
 
 verus! {
 
+use crate::capability::device::*;
 use crate::capability::link::*;
 use crate::capability::mapping::*;
 use crate::capability::block::*;
@@ -415,6 +416,7 @@ impl CapKernel {
             assert(post.payload_of(child) == large_frame_of(base, order));
             assert(payload_wf(post.payload_of(child)));
             Self::lemma_derive_caps_wf(pre, post, child);
+            Self::lemma_devices_caps_frame(pre, post, child, child);
             Self::lemma_hidden_frame(pre, post, child, child);
             Self::lemma_table_nodes_caps_frame(pre, post, child, child);
             Self::lemma_space_nodes_caps_frame(pre, post, child, child);
@@ -856,6 +858,7 @@ impl CapKernel {
                 }
             }
             lemma_spaces_small_typed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks, &post.blocks, page, 2);
+            Self::lemma_devices_same_caps(pre, post);
             assert(post.wf());
             assert forall|i: usize| index_ok(i) && index_entry(i) == r as int implies {
                 &&& #[trigger] post.tables.has_slot(root, i)
@@ -1259,7 +1262,8 @@ impl CapKernel {
         ensures
             post.tables.caps_wf(&post.list),
     {
-        assert forall|n: usize| #[trigger] post.tables.is_cap(&post.list, n) implies payload_wf(post.tables.payload_of(n)) by {
+        assert forall|n: usize| #[trigger] post.tables.is_cap(&post.list, n) && !(post.tables.payload_of(n).kind is Device)
+            implies payload_wf(post.tables.payload_of(n)) by {
             Self::lemma_leaf_cap(pre, post, leaf, n);
             assert(post.is_cap(n));
             assert(pre.tables.is_cap(&pre.list, n));

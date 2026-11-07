@@ -5,6 +5,7 @@ use vstd::prelude::*;
 
 verus! {
 
+use crate::capability::device::*;
 use crate::capability::mapping::*;
 use crate::capability::kernel::*;
 use crate::capability::link::*;
@@ -314,10 +315,14 @@ impl CapKernel {
         requires
             Self::caps_frame(pre, post, n, n),
             !post.list.nodes@[n as int].live,
+            post.devices == pre.devices,
         ensures
             post.tables.caps_wf(&post.list),
+            devices_wf(&post.list, &post.tables, &post.devices),
     {
-        assert forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) implies payload_wf(post.tables.payload_of(x)) by {
+        Self::lemma_devices_caps_frame(pre, post, n, n);
+        assert forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) && !(post.tables.payload_of(x).kind is Device)
+            implies payload_wf(post.tables.payload_of(x)) by {
             assert(x != n);
             Self::lemma_caps_frame(pre, post, n, n, x);
             assert(post.is_cap(x));

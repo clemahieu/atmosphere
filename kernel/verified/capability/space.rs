@@ -8,6 +8,7 @@ use vstd::prelude::*;
 verus! {
 
 use crate::array::*;
+use crate::capability::device::*;
 use crate::capability::mapping::*;
 use crate::capability::block::*;
 use crate::capability::kernel::*;
@@ -1672,7 +1673,8 @@ impl CapKernel {
         } by {
             Self::lemma_table_page_cap(pre, post, x);
         }
-        assert forall|n: usize| #[trigger] post.tables.is_cap(&post.list, n) implies payload_wf(post.tables.payload_of(n)) by {
+        assert forall|n: usize| #[trigger] post.tables.is_cap(&post.list, n) && !(post.tables.payload_of(n).kind is Device)
+            implies payload_wf(post.tables.payload_of(n)) by {
             assert(post.is_cap(n));
             assert(pre.tables.is_cap(&pre.list, n));
         }
@@ -2266,6 +2268,7 @@ impl CapKernel {
             }
             assert(Self::table_page_step(pre, post));
             Self::lemma_table_page_caps_wf(pre, post);
+            Self::lemma_devices_same_caps(pre, post);
             Self::lemma_tlb_same(pre, post);
             Self::lemma_table_page_nodes(pre, post, mid, parent, base);
             Self::lemma_table_nodes_page_added(pre, post, base);
@@ -2340,7 +2343,8 @@ impl CapKernel {
             x != child implies post.is_cap(x) == pre.is_cap(x) by {
             Self::lemma_space_cap_frame(pre, post, child, x);
         }
-        assert forall|n: usize| #[trigger] post.tables.is_cap(&post.list, n) implies payload_wf(post.tables.payload_of(n)) by {
+        assert forall|n: usize| #[trigger] post.tables.is_cap(&post.list, n) && !(post.tables.payload_of(n).kind is Device)
+            implies payload_wf(post.tables.payload_of(n)) by {
             if n != child {
                 assert(pre.tables.is_cap(&pre.list, n));
             }
@@ -2877,6 +2881,11 @@ impl CapKernel {
                 Self::lemma_space_cap_frame(pre, post, child, x);
             }
             Self::lemma_mappings_grown(pre, post, page, 3);
+            assert forall|x: usize| #[trigger] post.is_cap(x) && post.payload_of(x).kind is Device
+                implies pre.is_cap(x) && pre.payload_of(x) == post.payload_of(x) by {
+                assert(x != child);
+            }
+            Self::lemma_devices_same_caps(pre, post);
             assert(post.wf());
             assert(SPACE_RIGHTS & 128 == 0) by (compute_only);
             assert(right_bit(Right::Control) == 128);

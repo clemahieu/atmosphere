@@ -62,6 +62,7 @@ impl CapKernel {
             final(self).frames == old(self).frames,
             final(self).zeroing == old(self).zeroing,
             final(self).cores == old(self).cores,
+            final(self).devices == old(self).devices,
             final(self).stale_epoch.wf(),
             final(self).tlb_wf(),
             mapped_wf(final(self).mapped@, final(self).mappings@),
@@ -378,6 +379,7 @@ impl CapKernel {
             mid.spaces.loaded == pre.spaces.loaded,
             mid.spaces.kernel_entries == pre.spaces.kernel_entries,
             mid.spaces.bound == pre.spaces.bound,
+            mid.devices == pre.devices,
             pre.list.nodes@[r as int].kind is Mapping ==> Self::mapping_unlinked(pre, mid, r),
             !(pre.list.nodes@[r as int].kind is Mapping) ==> {
                 &&& Self::same_tree(pre, mid)
@@ -406,6 +408,7 @@ impl CapKernel {
             post.mappings == mid.mappings,
             post.zeroing == mid.zeroing,
             post.holders == mid.holders,
+            post.devices == mid.devices,
             post.list.wf(),
             post.list.nodes@.len() == pre.list.nodes@.len(),
             !post.list.nodes@[r as int].live,
