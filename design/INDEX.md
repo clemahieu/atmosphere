@@ -2,7 +2,7 @@
 
 # Design decisions
 
-6 records: 6 active, 0 superseded.
+7 records: 7 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -19,6 +19,9 @@ in `revisit if` what would make it worth reopening.
 - **[one-kernel-instance](./one-kernel-instance/DECISION.md)** (2026-11-05): One kernel instance holds every core of the machine and a process lives inside it; the kernel provides no spanning. Four rules keep a later move to several instances cheap, and breaking one is the human's decision.
   - *confidence:* A staging judgement on top of the multicore shape. That one instance pays almost nothing for the node concept is reasoned from the code, not measured: finding the instance is one per-CPU load and no syscall path gains a check.
   - *revisit if:* Lock contention measured on this kernel is one a real workload would hit, a workload needs distrusting programs separated from the shared lock's timing, or a change would break one of the four rules.
+- **[revoke-by-depth-first-list](./revoke-by-depth-first-list/DECISION.md)** (2026-11-06): All capabilities, mappings and bindings derived from the boot root are one doubly linked list in depth-first order, a child straight after its parent; a node's descendants are the run after it with greater depth, and revoke unlinks leaves of that run a bounded number per kernel entry.
+  - *confidence:* Proven in the tree, kernel/verified/capability/list.rs and revoke.rs: derive and unlink in constant time, depth-first order kept, a node is in a run exactly when the run's head is its ancestor, a revoke step removes one such node and nothing outside the run, with a falling measure.
+  - *revisit if:* A node needs more than one parent, or a lineage must be reparented, neither of which the list can express; or the 255-link walk to a leaf is measured as the bound that sets the lock hold time.
 - **[sharing-by-derive](./sharing-by-derive/DECISION.md)** (2026-11-05): The only way to share a capability is derive, a child one depth deeper with rights and range within its parent's; nodes never change ancestor; move and claim relocate a node without changing its place; delete is refused while a node has children, mappings or bindings.
   - *confidence:* The human's choice among three lifetime packages, with a precedent survey of seL4, NOVA, L4Re, Genode, EROS, Zircon and Barrelfish from their documents. The structure it rests on is proven, design/revoke-by-depth-first-list/.
   - *revisit if:* A service must survive the death of the holder that granted to its clients without a longer-lived parent doing the granting, and claim by a supervisor is not enough.
@@ -34,7 +37,7 @@ in `revisit if` what would make it worth reopening.
 A view of the lists above. Nothing is reachable only through a tag.
 
 - `abi`: one-kernel-instance
-- `capability`: sharing-by-derive, theorem-over-reach, untyped-memory
+- `capability`: revoke-by-depth-first-list, sharing-by-derive, theorem-over-reach, untyped-memory
 - `kernel-state`: multicore-kernel-shape, one-kernel-instance
 - `lifetime`: sharing-by-derive
 - `lock`: multicore-kernel-shape
@@ -42,6 +45,6 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `multicore`: multicore-kernel-shape, one-kernel-instance
 - `proof`: isolation-claim, theorem-over-reach
 - `purity`: untyped-memory
-- `revoke`: sharing-by-derive
+- `revoke`: revoke-by-depth-first-list, sharing-by-derive
 - `security`: isolation-claim, theorem-over-reach
-- `verified`: theorem-over-reach
+- `verified`: revoke-by-depth-first-list, theorem-over-reach
