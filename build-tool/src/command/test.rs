@@ -25,6 +25,9 @@ const BOOT_STACK_CHECK: &str = "tools/check-boot-stack.py";
 /// The coverage report, relative to the project root.
 const COVERAGE: &str = "tools/coverage.py";
 
+/// The design index builder, relative to the project root; `--check` says whether the index is current.
+const DESIGN_INDEX: &str = "tools/build-design-index.py";
+
 /// The largest file the tree may hold. The largest source is a seventh of this, so anything over it is
 /// a build or solver output that .gitignore missed.
 const MAX_FILE_BYTES: u64 = 1024 * 1024;
@@ -51,6 +54,7 @@ pub(super) async fn run(global: GlobalOpts) -> Result<()> {
         ("license guard", check_license_guard(&project).await),
         ("verify", check_verify(&project).await),
         ("external body", external_body::check(&project)),
+        ("design index", check_design_index(&project).await),
         ("boot stack", check_boot_stack(&project).await),
         ("coverage", check_coverage(&project).await),
         ("iommu boot", check_iommu_boot(&project, local.boot_timeout).await),
@@ -146,6 +150,13 @@ async fn check_boot_stack(project: &ProjectHandle) -> Result<String> {
         run_check(project, BOOT_STACK_CHECK, args).await?;
     }
     Ok("debug and release, normal and overflow".to_string())
+}
+
+/// `design/INDEX.md` is generated from the records, so a record edited without regenerating it would leave
+/// the index saying something the records do not.
+async fn check_design_index(project: &ProjectHandle) -> Result<String> {
+    run_check(project, DESIGN_INDEX, &["--check"]).await?;
+    Ok("design/INDEX.md is current".to_string())
 }
 
 /// Reports coverage per crate. A low number does not fail the gate: only a capture that fails does.
