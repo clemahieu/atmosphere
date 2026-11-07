@@ -16,6 +16,7 @@ allocator/page_allocator_util_t.rs	set_state	unproven	an array element access no
 allocator/page_allocator_util_t.rs	split_2m_pages_to_pages	gap	takes its permission from Tracked::assume_new, which Verus cannot check
 array.rs	new	gap	builds a value from zeroed memory, which Verus cannot check
 capability/kernel.rs	flush_every_context	glue	only the hardware can attest a flush, so only this makes the token
+capability/kernel.rs	invalidate_iommu_all	glue	only the IOMMU can attest an invalidate, so only this makes its token
 kernel/spec.rs	kernel_init	unproven	initialisation not proven yet
 lemma/lemma_t.rs	page_ptr_lemma	unproven	a lemma stated without a proof
 memory_manager/mmu_util.rs	iommu_table_array_create_iommu_table_l2_entry_t	unproven	an array element access not proven yet

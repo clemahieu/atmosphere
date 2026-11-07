@@ -317,8 +317,8 @@ pub ghost enum FlushTarget {
 }
 
 /// What a flush of `target`, started when the epoch was `epoch`, proves. Only flush glue can make one,
-/// so only it can clear a model of what the target holds. A core's glue came with the IPIs,
-/// atmo-6x9.5.13; an IOMMU's comes with device capabilities, atmo-6x9.16.14.
+/// so only it can clear a model of what the target holds: flush_every_context for a core,
+/// invalidate_iommu_all for an IOMMU.
 pub tracked struct Flushed {
     pub ghost target: FlushTarget,
     pub ghost epoch: int,
@@ -406,6 +406,39 @@ impl CommandBuffers {
     pub open spec fn wf(&self, present: Seq<bool>) -> bool {
         &&& self.buffers.wf()
         &&& forall|i: int| 0 <= i < NUM_IOMMUS && #[trigger] present[i] ==> self.buffer_wf(i)
+    }
+
+    /// Invalidates all of present IOMMU i's caches and waits for it to finish, as invalidate_iommu_all
+    /// does, and moves i's tail past the two commands that wrote.
+    pub fn invalidate(&mut self, Ghost(present): Ghost<Seq<bool>>, i: usize, epoch: usize) -> (ret: Tracked<Flushed>)
+        requires
+            old(self).wf(present),
+            i < NUM_IOMMUS,
+            present[i as int],
+        ensures
+            final(self).wf(present),
+            final(self).pages == old(self).pages,
+            ret@.target == FlushTarget::Iommu(i as int),
+            ret@.epoch == epoch as int,
+    {
+        proof {
+            reveal(CommandBuffers::wf);
+        }
+        let ghost pre = *old(self);
+        let (next, flushed) = invalidate_iommu_all(self, i, epoch);
+        let b = *self.buffers.get(i);
+        self.buffers.set(i, CommandBuffer { mmio: b.mmio, ring: b.ring, len: b.len, tail: next, completion: b.completion });
+        proof {
+            reveal(CommandBuffers::wf);
+            assert forall|j: int| 0 <= j < NUM_IOMMUS && #[trigger] present[j] implies self.buffer_wf(j) by {
+                assert(pre.buffer_wf(j));
+                let b = self.buffers@[j];
+                assert forall|k: int| 0 <= k < b.len * IOMMU_COMMAND_SIZE / 4096 implies #[trigger] self.holds(j, ring_page(b, k)) by {
+                    assert(pre.holds(j, ring_page(pre.buffers@[j], k)));
+                }
+            }
+        }
+        flushed
     }
 }
 
@@ -628,6 +661,60 @@ pub fn flush_every_context(core: usize, epoch: usize) -> (ret: Tracked<Flushed>)
         );
     }
     Tracked::assume_new()
+}
+
+/// Opcode of INVALIDATE_IOMMU_ALL, which empties every cache of the IOMMU. AMD IOMMU specification 48882
+/// §2.4.8; the IOMMU must report IASup, MMIO 0030h, for it to be legal.
+pub const IOMMU_INVALIDATE_ALL: u64 = 0x08;
+
+/// Opcode of COMPLETION_WAIT, which finishes once every older command has, and with its s bit stores its
+/// 64-bit data at its address. 48882 §2.4.1.
+pub const IOMMU_COMPLETION_WAIT: u64 = 0x01;
+
+/// The command buffer tail register's offset in an IOMMU's MMIO registers. 48882 §3.4.15.
+pub const IOMMU_COMMAND_TAIL: usize = 0x2008;
+
+/// Invalidates all of IOMMU i's caches and returns once it has finished, with the tail after the two
+/// commands it wrote. It writes INVALIDATE_IOMMU_ALL then COMPLETION_WAIT at i's tail, clears the
+/// completion word, moves the tail register past both and spins until the IOMMU stores to the word. Only
+/// this writes i's ring, and each call waits for the IOMMU to read all it wrote, so the ring is empty
+/// on entry and two commands fit in it. The kernel maps memory at its physical address, as the entries
+/// it writes assume, so the completion word's address is the one the IOMMU stores to. Waiting here is
+/// not waiting for a core: design/flush-without-waiting/.
+#[verifier(external_body)]
+// external_body(glue): only the IOMMU can attest an invalidate, so only this makes its token
+pub fn invalidate_iommu_all(commands: &CommandBuffers, i: usize, epoch: usize) -> (ret: (usize, Tracked<Flushed>))
+    requires
+        i < NUM_IOMMUS,
+        commands.buffers.wf(),
+        commands.buffer_wf(i as int),
+    ensures
+        ret.0 == (commands.buffers@[i as int].tail + 2) % commands.buffers@[i as int].len as int,
+        ret.1@.target == FlushTarget::Iommu(i as int),
+        ret.1@.epoch == epoch as int,
+{
+    let b = *commands.buffers.get(i);
+    let slot = |k: usize| (b.ring + k * IOMMU_COMMAND_SIZE) as *mut u64;
+    let first = b.tail;
+    let second = (b.tail + 1) % b.len;
+    let next = (b.tail + 2) % b.len;
+    let completion = b.completion as *mut u64;
+    // The opcode is bits 63:60 of a command's first quadword, and COMPLETION_WAIT's store address is
+    // bits 51:3 with s at bit 0. 48882 Figures 43, 44 and 51.
+    let store = (b.completion as u64 & 0x000f_ffff_ffff_fff8) | 1 | (IOMMU_COMPLETION_WAIT << 60);
+    unsafe {
+        core::ptr::write_volatile(completion, 0);
+        core::ptr::write_volatile(slot(first), IOMMU_INVALIDATE_ALL << 60);
+        core::ptr::write_volatile(slot(first).add(1), 0);
+        core::ptr::write_volatile(slot(second), store);
+        core::ptr::write_volatile(slot(second).add(1), 1);
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+        core::ptr::write_volatile((b.mmio + IOMMU_COMMAND_TAIL) as *mut u64, (next * IOMMU_COMMAND_SIZE) as u64);
+        while core::ptr::read_volatile(completion) == 0 {
+            core::hint::spin_loop();
+        }
+    }
+    (next, Tracked::assume_new())
 }
 
 /// A live hidden node is node 0 of a table leaf or a table page, so unlinking it can find what to detach.
@@ -983,11 +1070,15 @@ impl CapKernel {
             ==> e.page < NUM_PAGES && self.stale_epoch.above(self.iommu_acked(i), e.page)
     }
 
-    /// The IOMMU model reads nothing but itself, the epoch and the staleness record.
+    /// The IOMMU model reads nothing but itself, the epoch and the staleness record; of the command
+    /// buffers it reads only that they are well formed.
     pub proof fn lemma_iommus_same(pre: Self, post: Self)
         requires
             pre.iommus_wf(),
-            post.iommus == pre.iommus,
+            post.iommus.present == pre.iommus.present,
+            post.iommus.acked == pre.iommus.acked,
+            post.iommus.tlb == pre.iommus.tlb,
+            post.iommus.commands.wf(post.iommus.present@),
             post.flush_epoch == pre.flush_epoch,
             post.mapped == pre.mapped,
             post.stale_epoch == pre.stale_epoch,
@@ -2123,6 +2214,47 @@ impl CapKernel {
                 }
             }
         }
+    }
+
+    /// Present IOMMU i invalidates all it holds and acknowledges the current epoch.
+    pub fn flush_iommu(&mut self, i: usize)
+        requires
+            old(self).wf(),
+            i < NUM_IOMMUS,
+            old(self).iommu_present(i as int),
+        ensures
+            final(self).wf(),
+            final(self).iommu_acked(i as int) == old(self).flush_epoch,
+            forall|j: int| 0 <= j < NUM_IOMMUS && j != i ==> #[trigger] final(self).iommu_acked(j) == old(self).iommu_acked(j),
+            final(self).iommus.tlb@[i as int] == old(self).iommus.tlb@[i as int].filter(|e: TlbEntry| old(self).stale_epoch.above(old(self).flush_epoch as int, e.page)),
+            forall|j: int| 0 <= j < NUM_IOMMUS && j != i ==> #[trigger] final(self).iommus.tlb@[j] == old(self).iommus.tlb@[j],
+            final(self).iommus.present == old(self).iommus.present,
+            final(self).tlb == old(self).tlb,
+            final(self).cores == old(self).cores,
+            final(self).mapped == old(self).mapped,
+            final(self).stale_epoch == old(self).stale_epoch,
+            final(self).flush_epoch == old(self).flush_epoch,
+    {
+        let ghost pre = *old(self);
+        let epoch = self.flush_epoch;
+        let ghost present = self.iommus.present@;
+        let flushed = self.iommus.commands.invalidate(Ghost(present), i, epoch);
+        proof {
+            assert forall|c: int| 0 <= c < NUM_CPUS implies #[trigger] self.acked(c) <= self.flush_epoch by {
+                assert(pre.acked(c) <= pre.flush_epoch);
+            }
+            assert forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && #[trigger] self.tlb@[c].contains(e) implies self.loaded(c, e.space) by {
+                assert(pre.tlb@[c].contains(e));
+            }
+            assert forall|c: int, e: TlbEntry|
+                0 <= c < NUM_CPUS && #[trigger] self.tlb@[c].contains(e) && !self.mapped@.contains(e.page)
+                implies e.page < NUM_PAGES && self.stale_epoch.above(self.acked(c), e.page) by {
+                assert(pre.tlb@[c].contains(e));
+                assert(pre.acked(c) == self.acked(c));
+            }
+            Self::lemma_iommus_same(pre, *self);
+        }
+        self.acknowledge_iommu(i, epoch, flushed);
     }
 
     /// Core c acknowledges a flush of every context it did. Between that flush and this call c runs
