@@ -40,9 +40,10 @@ check 2 "parent glob"    "$(bash_call "grep -n x ~/sel4/*")"
 check 2 "system parent"  "$(bash_call "cd $sys && grep -r x kernels")"
 
 # Allowed.
-check 0 "reference grep" "$(jq -n --arg p "$HOME/sel4/reference/hammer2" '{tool_name:"Grep",tool_input:{pattern:"x",path:$p}}')"
-check 0 "reference cat"  "$(bash_call "cat ~/sel4/reference/hammer2/README")"
-check 0 "design doc"     "$(read_call "$HOME/sel4/hammer2.src/main/docs/DESIGN")"
+check 0 "reference grep" "$(jq -n --arg p "$HOME/atmosphere.src/reference/hammer2" '{tool_name:"Grep",tool_input:{pattern:"x",path:$p}}')"
+check 0 "reference cat"  "$(bash_call "cat ~/atmosphere.src/reference/hammer2/README")"
+check 0 "design doc"     "$(read_call "$HOME/atmosphere.src/reference/hammer2/sys/vfs/hammer2/DESIGN")"
+check 0 "named sibling"  "$(read_call "$HOME/sel4/hammer2.src/main/docs/DESIGN")"
 check 0 "this tree"      "$(read_call "CLAUDE.md")"
 check 0 "no tool input"  '{"tool_name":"Read"}'
 check 0 "not json"       'not json'
