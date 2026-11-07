@@ -1,10 +1,11 @@
 //! Flushing another core's TLB. The kernel never waits for another core while holding a lock: that
 //! core may be spinning for the lock with interrupts off, and so could not take the IPI. A flush bumps
 //! the epoch, sends the IPI and lets go. The target's handler flushes every context and records its
-//! acknowledgement under the lock. See the design on atmo-6x9.6.7, section 7.
+//! acknowledgement under the lock. See design/flush-without-waiting/.
 //!
 //! CapKernel holds the proven form of this state, and acknowledge takes the token flush_every_context
-//! returns. The kernel it belongs to boots at the cut-over, atmo-6x9.16.15; until then this holds it.
+//! returns. The kernel it belongs to boots at the cut-over, design/cut-over-on-a-branch/; until then this
+//! holds it.
 
 use verified::capability::kernel::flush_every_context;
 use verified::define::NUM_CPUS;
