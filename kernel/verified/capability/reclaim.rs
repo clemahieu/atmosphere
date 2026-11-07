@@ -404,6 +404,26 @@ impl CapKernel {
         }
     }
 
+    /// Node n is the mapping of an entry of a table page, placed in that page's node pages, and the entry
+    /// is a frame slot.
+    proof fn lemma_mapping_in_table(&self, n: usize)
+        requires
+            self.wf(),
+            self.mappings@.contains_key(n),
+        ensures
+            self.table_pages.maps@.contains_key(self.mappings@[n].table),
+            self.mappings@[n].table % 32768 == 0,
+            self.mappings@[n].entry < 512,
+            n == mapping_node(self.mappings@[n].table, self.mappings@[n].entry),
+            frame_slot(tree_of(&self.table_pages, &self.spaces), self.mappings@[n].table, self.mappings@[n].entry),
+    {
+        let tree = tree_of(&self.table_pages, &self.spaces);
+        let m = self.mappings@[n];
+        assert(mapping_wf(&self.list, &self.tables, tree, &self.blocks, self.holders@, self.mappings@, n));
+        self.lemma_table_page_room(m.table);
+        lemma_mapping_node_place(m.table, m.entry);
+    }
+
     /// A live node in a table page's node pages, other than its hidden node, is the mapping of one of the
     /// page's entries, so the page has that frame_slot.
     proof fn lemma_live_table_node_maps(&self, base: usize, k: usize, i: usize)
@@ -417,16 +437,13 @@ impl CapKernel {
         ensures
             exists|e: usize| #[trigger] frame_slot(tree_of(&self.table_pages, &self.spaces), base, e),
     {
-        let tree = tree_of(&self.table_pages, &self.spaces);
         let n = table_node(base, k, i);
+        self.lemma_table_page_room(base);
         lemma_table_node_place(base, k, i);
         assert(self.list.nodes@[n as int].kind is Mapping);
-        let m = self.mappings@[n];
-        assert(mapping_wf(&self.list, &self.tables, tree, &self.blocks, self.holders@, self.mappings@, n));
-        let t = m.table;
-        lemma_mapping_node_place(t, m.entry);
-        assert(t == base);
-        assert(frame_slot(tree, base, m.entry));
+        assert(self.mappings@.contains_key(n));
+        self.lemma_mapping_in_table(n);
+        lemma_node_page_names_block(base, self.mappings@[n].table, n / 4096);
     }
 
     /// A retype's parent carries the right: the capability it names holds Retype.
@@ -976,44 +993,10 @@ impl CapKernel {
         let ghost tree = tree_of(&self.table_pages, &self.spaces);
         proof {
             self.lemma_table_page_room(base);
+            assert(table_page_wf(&self.list, &self.table_pages, &self.blocks, base));
         }
-        let mut k = 0;
-        while k != TABLE_NODE_PAGES
-            invariant
-                0 <= k <= TABLE_NODE_PAGES,
-                self.wf(),
-                self.table_pages.maps@.contains_key(base),
-                base % 32768 == 0,
-                base / 4096 + 8 <= NUM_PAGES,
-                forall|j: usize, i: usize| #![trigger table_node(base, j, i)] j < k && i < NODES_PER_PAGE
-                    ==> !self.list.nodes@[table_node(base, j, i) as int].live,
-            decreases TABLE_NODE_PAGES - k,
-        {
-            let mut i = 0;
-            while i != NODES_PER_PAGE
-                invariant
-                    0 <= k < TABLE_NODE_PAGES,
-                    0 <= i <= NODES_PER_PAGE,
-                    self.wf(),
-                    self.table_pages.maps@.contains_key(base),
-                    base % 32768 == 0,
-                    base / 4096 + 8 <= NUM_PAGES,
-                    forall|j: usize, m: usize| #![trigger table_node(base, j, m)] j < k && m < NODES_PER_PAGE
-                        ==> !self.list.nodes@[table_node(base, j, m) as int].live,
-                    forall|m: usize| #![trigger table_node(base, k, m)] m < i
-                        ==> !self.list.nodes@[table_node(base, k, m) as int].live,
-                decreases NODES_PER_PAGE - i,
-            {
-                proof {
-                    self.lemma_table_node_in_block(base, k, i);
-                    lemma_table_node_place(base, k, i);
-                }
-                if self.list.get(base + k * 4096 + i).live {
-                    return false;
-                }
-                i = i + 1;
-            }
-            k = k + 1;
+        if !self.block_nodes_dead(base) {
+            return false;
         }
         let mut e = 0;
         while e != 512
@@ -1032,6 +1015,106 @@ impl CapKernel {
             proof {
                 assert(tree.is_page(base));
                 assert(tree.entry(base, e) == self.table_pages.maps@[base].value()[e]);
+            }
+            if !entry_is_empty(&entry) {
+                return false;
+            }
+            e = e + 1;
+        }
+        true
+    }
+
+    /// Whether every node in the node pages of the table page or space at `base` is dead. The pages hold a
+    /// constant number.
+    fn block_nodes_dead(&self, base: usize) -> (ret: bool)
+        requires
+            self.wf(),
+            base % 32768 == 0,
+            base / 4096 + 8 <= NUM_PAGES,
+            forall|k: usize| k < TABLE_NODE_PAGES ==> self.list.pages@.dom().contains(#[trigger] table_node_page(base, k)),
+        ensures
+            ret == (forall|k: usize, i: usize| #![trigger table_node(base, k, i)] k < TABLE_NODE_PAGES && i < NODES_PER_PAGE
+                ==> !self.list.nodes@[table_node(base, k, i) as int].live),
+    {
+        let mut k = 0;
+        while k != TABLE_NODE_PAGES
+            invariant
+                0 <= k <= TABLE_NODE_PAGES,
+                self.wf(),
+                base % 32768 == 0,
+                base / 4096 + 8 <= NUM_PAGES,
+                forall|k: usize| k < TABLE_NODE_PAGES ==> self.list.pages@.dom().contains(#[trigger] table_node_page(base, k)),
+                forall|j: usize, i: usize| #![trigger table_node(base, j, i)] j < k && i < NODES_PER_PAGE
+                    ==> !self.list.nodes@[table_node(base, j, i) as int].live,
+            decreases TABLE_NODE_PAGES - k,
+        {
+            let mut i = 0;
+            while i != NODES_PER_PAGE
+                invariant
+                    0 <= k < TABLE_NODE_PAGES,
+                    0 <= i <= NODES_PER_PAGE,
+                    self.wf(),
+                    base % 32768 == 0,
+                    base / 4096 + 8 <= NUM_PAGES,
+                    forall|k: usize| k < TABLE_NODE_PAGES ==> self.list.pages@.dom().contains(#[trigger] table_node_page(base, k)),
+                    forall|j: usize, m: usize| #![trigger table_node(base, j, m)] j < k && m < NODES_PER_PAGE
+                        ==> !self.list.nodes@[table_node(base, j, m) as int].live,
+                    forall|m: usize| #![trigger table_node(base, k, m)] m < i
+                        ==> !self.list.nodes@[table_node(base, k, m) as int].live,
+                decreases NODES_PER_PAGE - i,
+            {
+                proof {
+                    lemma_table_node_place(base, k, i);
+                    assert(self.list.pages@.dom().contains(table_node_page(base, k)));
+                    assert(self.list.valid(table_node(base, k, i)));
+                }
+                if self.list.get(base + k * 4096 + i).live {
+                    return false;
+                }
+                i = i + 1;
+            }
+            k = k + 1;
+        }
+        true
+    }
+
+    /// Whether the IO space at `base` has no live node and its root no entry.
+    fn space_nothing_left(&self, base: usize) -> (ret: bool)
+        requires
+            self.wf(),
+            self.dead_io_space(base),
+            !self.table_pages.maps@.contains_key(base),
+        ensures
+            ret == self.space_is_empty(base),
+    {
+        let ghost tree = tree_of(&self.table_pages, &self.spaces);
+        proof {
+            let page = (base / 4096) as int;
+            assert(space_wf(&self.list, &self.spaces, &self.blocks, base));
+            self.blocks.lemma_base(page);
+            assert(order_pages(3) == 8);
+        }
+        if !self.block_nodes_dead(base) {
+            return false;
+        }
+        let mut e = 0;
+        while e != 512
+            invariant
+                0 <= e <= 512,
+                self.wf(),
+                self.dead_io_space(base),
+                !self.table_pages.maps@.contains_key(base),
+                tree == tree_of(&self.table_pages, &self.spaces),
+                forall|j: usize, i: usize| #![trigger table_node(base, j, i)] j < TABLE_NODE_PAGES && i < NODES_PER_PAGE
+                    ==> !self.list.nodes@[table_node(base, j, i) as int].live,
+                forall|j: usize| #![trigger self.spaces.roots@[base].value()[j]]
+                    j < e ==> self.spaces.roots@[base].value()[j].is_empty(),
+            decreases 512 - e,
+        {
+            let entry = self.table_entry(base, true, e);
+            proof {
+                assert(!tree.is_page(base));
+                assert(tree.entry(base, e) == self.spaces.roots@[base].value()[e]);
             }
             if !entry_is_empty(&entry) {
                 return false;
@@ -1493,6 +1576,20 @@ impl CapKernel {
             i < 512 ==> self.table_pages.maps@[base].value()[i].is_empty()
     }
 
+    /// The block at `base` holds a table page or a space, with no reference and no live node.
+    pub open spec fn empty_node_block(&self, base: usize) -> bool {
+        &&& base % 32768 == 0
+        &&& base / 4096 + 8 <= NUM_PAGES
+        &&& self.blocks.pages@[(base / 4096) as int].kind is Base
+        &&& self.blocks.pages@[(base / 4096) as int].object is TablePage
+            || self.blocks.pages@[(base / 4096) as int].object is Space
+        &&& self.blocks.pages@[(base / 4096) as int].order == 3
+        &&& self.blocks.pages@[(base / 4096) as int].refs == 0
+        &&& forall|k: usize, i: usize| #![trigger table_node(base, k, i)] k < TABLE_NODE_PAGES && i < NODES_PER_PAGE
+            ==> !self.list.nodes@[table_node(base, k, i) as int].live
+        &&& forall|k: usize| k < TABLE_NODE_PAGES ==> self.list.pages@.dom().contains(#[trigger] table_node_page(base, k))
+    }
+
     /// A table page with a frame's entry or a child's entry present is not empty.
     pub proof fn lemma_table_with_entry_not_empty(&self, base: usize, e: usize)
         requires
@@ -1536,6 +1633,7 @@ impl CapKernel {
             self.table_pages.spare@[(base + 7 * 4096) as usize].addr() == base + 7 * 4096,
             self.table_pages.spare@[(base + 7 * 4096) as usize].is_uninit(),
             forall|k: usize| k < TABLE_NODE_PAGES ==> self.list.pages@.dom().contains(#[trigger] table_node_page(base, k)),
+            self.empty_node_block(base),
     {
         let page = base / 4096;
         assert(table_page_wf(&self.list, &self.table_pages, &self.blocks, base));
@@ -1549,17 +1647,17 @@ impl CapKernel {
         }
     }
 
-    /// A live node of the list is in no node page of an empty table page.
-    proof fn lemma_live_node_outside_table(&self, base: usize, n: usize)
+    /// A live node of the list is in no node page of an empty block.
+    proof fn lemma_live_node_outside_block(&self, base: usize, n: usize)
         requires
             self.wf(),
-            self.table_is_empty(base),
+            self.empty_node_block(base),
             self.list.valid(n),
             self.list.nodes@[n as int].live,
         ensures
             !(base <= page_of(n) < base + TABLE_NODE_PAGES * 4096),
     {
-        self.lemma_empty_table(base);
+        lemma_table_page_aligned(base);
         lemma_list_page(&self.list, page_of(n));
         if base <= page_of(n) < base + TABLE_NODE_PAGES * 4096 {
             let k = ((page_of(n) - base) / 4096) as usize;
@@ -1572,12 +1670,11 @@ impl CapKernel {
         }
     }
 
-    /// Nothing the invariant tracks outside the table page at `base` lies in its block: no leaf, no space,
-    /// no other table page and no holder's block.
-    proof fn lemma_table_block_alone(&self, base: usize)
+    /// No leaf and no holder's block lies in the empty block at `base`.
+    proof fn lemma_node_block_alone(&self, base: usize)
         requires
             self.wf(),
-            self.table_is_empty(base),
+            self.empty_node_block(base),
         ensures
             forall|l: usize| #[trigger] self.tables.owner@.contains_key(l)
                 ==> !self.blocks.in_block((base / 4096) as int, (l / 4096) as int) && !(base <= l < base + TABLE_NODE_PAGES * 4096),
@@ -1585,7 +1682,7 @@ impl CapKernel {
                 ==> !self.blocks.in_block((base / 4096) as int, b as int),
     {
         let page = base / 4096;
-        self.lemma_empty_table(base);
+        lemma_table_page_aligned(base);
         assert(order_pages(3) == 8);
         assert forall|l: usize| #[trigger] self.tables.owner@.contains_key(l) implies
             !self.blocks.in_block(page as int, (l / 4096) as int) && !(base <= l < base + TABLE_NODE_PAGES * 4096) by {
@@ -1607,13 +1704,13 @@ impl CapKernel {
         }
     }
 
-    /// One step of an empty table page going: its block is free, its node pages are off the list, its
-    /// table, record and spare page are gone, and nothing else changed. The list held none of the three
-    /// other pages of the block.
-    pub open spec fn table_freed_step(pre: Self, post: Self, base: usize) -> bool {
+    /// What an empty table page's or space's block going does alike: the block is free, its node pages are
+    /// off the list, and nothing else changed but what held its other three pages. The list held none of
+    /// them.
+    pub open spec fn node_block_freed_step(pre: Self, post: Self, base: usize) -> bool {
         let page = base / 4096;
         &&& pre.wf()
-        &&& pre.table_is_empty(base)
+        &&& pre.empty_node_block(base)
         &&& post.blocks.wf()
         &&& forall|i: int| 0 <= i < NUM_PAGES ==> #[trigger] post.blocks.pages@[i] == (
             if pre.blocks.in_block(page as int, i) { free_entry() } else { pre.blocks.pages@[i] })
@@ -1627,9 +1724,6 @@ impl CapKernel {
         &&& forall|p: usize| #[trigger] post.list.pages@.dom().contains(p)
             == (pre.list.pages@.dom().contains(p) && !(base <= p < base + TABLE_NODE_PAGES * 4096))
         &&& forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) ==> !(base + 5 * 4096 <= p < base + 8 * 4096)
-        &&& post.table_pages.maps@ == pre.table_pages.maps@.remove(base)
-        &&& post.table_pages.records@ == pre.table_pages.records@.remove(base)
-        &&& post.table_pages.spare@ == pre.table_pages.spare@.remove((base + 7 * 4096) as usize)
         &&& post.holders == pre.holders
         &&& post.cores == pre.cores
         &&& post.flush_epoch == pre.flush_epoch
@@ -1639,8 +1733,17 @@ impl CapKernel {
         &&& post.stale_epoch == pre.stale_epoch
         &&& post.zeroing == pre.zeroing
         &&& post.frames == pre.frames
-        &&& post.spaces == pre.spaces
         &&& post.mappings == pre.mappings
+    }
+
+    /// One step of an empty table page going: its table, record and spare page go with its block.
+    pub open spec fn table_freed_step(pre: Self, post: Self, base: usize) -> bool {
+        &&& Self::node_block_freed_step(pre, post, base)
+        &&& pre.table_is_empty(base)
+        &&& post.table_pages.maps@ == pre.table_pages.maps@.remove(base)
+        &&& post.table_pages.records@ == pre.table_pages.records@.remove(base)
+        &&& post.table_pages.spare@ == pre.table_pages.spare@.remove((base + 7 * 4096) as usize)
+        &&& post.spaces == pre.spaces
     }
 
     /// The tree after the empty table page at `base` goes.
@@ -1680,15 +1783,15 @@ impl CapKernel {
     }
 
     /// A list page after the step is in no page of the freed block.
-    proof fn lemma_table_freed_list_pages(pre: Self, post: Self, base: usize)
+    proof fn lemma_node_block_list_pages(pre: Self, post: Self, base: usize)
         requires
-            Self::table_freed_step(pre, post, base),
+            Self::node_block_freed_step(pre, post, base),
         ensures
             forall|p: usize| #[trigger] post.list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
                 ==> !pre.blocks.in_block((base / 4096) as int, (p / 4096) as int),
     {
         let page = base / 4096;
-        pre.lemma_empty_table(base);
+        lemma_table_page_aligned(base);
         assert(order_pages(3) == 8);
         assert forall|p: usize| #[trigger] post.list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
             implies !pre.blocks.in_block(page as int, (p / 4096) as int) by {
@@ -1712,7 +1815,7 @@ impl CapKernel {
     {
         let page = base / 4096;
         pre.lemma_empty_table(base);
-        Self::lemma_table_freed_list_pages(pre, post, base);
+        Self::lemma_node_block_list_pages(pre, post, base);
         assert(order_pages(3) == 8);
         assert forall|t: usize| #[trigger] post.table_pages.maps@.contains_key(t)
             implies table_page_wf(&post.list, &post.table_pages, &post.blocks, t) by {
@@ -1759,12 +1862,13 @@ impl CapKernel {
         lemma_list_pages_used_small_freed(&post.list, &pre.blocks, &post.blocks, page);
     }
 
-    /// The holders, the objects and the mappings after the empty table page at `base` goes: no holder is
-    /// on its block, no capability names it, and no mapping is in it.
-    proof fn lemma_table_freed_blocks(pre: Self, post: Self, base: usize)
+    /// The holders, the objects and the mappings after the empty block at `base` goes: no holder is on it,
+    /// no capability names it, and no mapping is in it.
+    proof fn lemma_node_block_objects(pre: Self, post: Self, base: usize)
         requires
-            Self::table_freed_step(pre, post, base),
+            Self::node_block_freed_step(pre, post, base),
             forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x),
+            same_frame_entries(tree_of(&pre.table_pages, &pre.spaces), tree_of(&post.table_pages, &post.spaces)),
         ensures
             holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
             objects_wf(&post.tables, &post.blocks, post.holders@),
@@ -1773,9 +1877,8 @@ impl CapKernel {
             mappings_wf(&post.list, &post.tables, tree_of(&post.table_pages, &post.spaces), &post.blocks, post.holders@, post.mappings@),
     {
         let page = base / 4096;
-        pre.lemma_empty_table(base);
-        pre.lemma_table_block_alone(base);
-        Self::lemma_table_freed_tree(pre, post, base);
+        lemma_table_page_aligned(base);
+        pre.lemma_node_block_alone(base);
         assert(order_pages(3) == 8);
         assert(pre.blocks.in_block(page as int, page as int));
         assert(!pre.holders@.contains_key(BlockRef::Small(page)));
@@ -1784,7 +1887,7 @@ impl CapKernel {
             &pre.list, &pre.tables, &pre.blocks, pre.holders@, &post.list, &post.tables, &post.blocks, post.holders@, pre.mappings@[m].frame, m
         ) by {
             pre.lemma_mapping_node(m);
-            pre.lemma_live_node_outside_table(base, m);
+            pre.lemma_live_node_outside_block(base, m);
             assert(post.list.pages@.dom().contains(page_of(m)));
             assert(post.list.valid(m));
             if let BlockRef::Small(b) = block_ref(&pre.blocks, pre.mappings@[m].frame) {
@@ -1824,18 +1927,18 @@ impl CapKernel {
         }
     }
 
-    /// The capabilities and the view after the empty table page at `base` goes: no capability was in a
-    /// page of its block.
-    proof fn lemma_table_freed_caps(pre: Self, post: Self, base: usize)
+    /// The capabilities and the view after the empty block at `base` goes: no capability was in a page of
+    /// it.
+    proof fn lemma_node_block_caps(pre: Self, post: Self, base: usize)
         requires
-            Self::table_freed_step(pre, post, base),
+            Self::node_block_freed_step(pre, post, base),
         ensures
             post.tables.wf(&post.list),
             post.tables.caps_wf(&post.list),
             forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x),
             post.view() == pre.view(),
     {
-        pre.lemma_table_block_alone(base);
+        pre.lemma_node_block_alone(base);
         assert(post.tables.leaves_wf(&post.list)) by {
             reveal(Tables::leaves_wf);
             assert forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) implies post.tables.leaf_wf(&post.list, l) by {
@@ -1867,10 +1970,10 @@ impl CapKernel {
             post.view() == pre.view(),
     {
         pre.lemma_empty_table(base);
-        Self::lemma_table_freed_caps(pre, post, base);
+        Self::lemma_node_block_caps(pre, post, base);
         Self::lemma_table_freed_tree(pre, post, base);
         Self::lemma_table_freed_pages(pre, post, base);
-        Self::lemma_table_freed_blocks(pre, post, base);
+        Self::lemma_node_block_objects(pre, post, base);
         Self::lemma_tlb_same(pre, post);
         assert forall|n: usize| n < NODE_SPACE && (#[trigger] post.list.nodes@[n as int]).live
             && post.list.nodes@[n as int].kind is Hidden
@@ -1961,6 +2064,342 @@ impl CapKernel {
                 lemma_table_node_page(base, k);
             }
         }
+    }
+
+    /// The dead IO space at `base` has no live node and its root no entry, so its block holds nothing the
+    /// kernel still uses.
+    pub open spec fn space_is_empty(&self, base: usize) -> bool {
+        &&& self.dead_io_space(base)
+        &&& forall|k: usize, i: usize| #![trigger table_node(base, k, i)] k < TABLE_NODE_PAGES && i < NODES_PER_PAGE
+            ==> !self.list.nodes@[table_node(base, k, i) as int].live
+        &&& forall|i: usize| #![trigger self.spaces.roots@[base].value()[i]]
+            i < 512 ==> self.spaces.roots@[base].value()[i].is_empty()
+    }
+
+    /// What the invariant says of an empty space's block and pages, before it frees. Its block has no
+    /// reference, so it has no holder and no device bound, and no core ever loaded it.
+    proof fn lemma_empty_space(&self, base: usize)
+        requires
+            self.wf(),
+            self.space_is_empty(base),
+        ensures
+            self.empty_node_block(base),
+            base % 4096 == 0,
+            base as int == 4096 * (base / 4096) as int,
+            self.blocks.pages@[(base / 4096) as int].dead,
+            !self.table_pages.maps@.contains_key(base),
+            self.spaces.roots@[base].addr() == base + 5 * 4096,
+            self.spaces.records@.contains_key(base),
+            self.spaces.records@[base].addr() == base + 6 * 4096,
+            self.spaces.loaded@.contains_key(base),
+            self.spaces.loaded@[base].addr() == base + 7 * 4096,
+            self.spaces.holders@[base] == Set::<usize>::empty(),
+            self.spaces.bound@[base] == Set::<usize>::empty(),
+            forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && e.space == base ==> !#[trigger] self.tlb@[c].contains(e),
+    {
+        let page = (base / 4096) as int;
+        assert(space_wf(&self.list, &self.spaces, &self.blocks, base));
+        lemma_table_page_aligned(base);
+        self.blocks.lemma_base(page);
+        assert(order_pages(3) == 8);
+        self.lemma_space_block(base);
+        self.spaces.holders@[base].lemma_len0_is_empty();
+        self.spaces.bound@[base].lemma_len0_is_empty();
+        self.lemma_io_space_unloaded(base);
+    }
+
+    /// One step of an empty space going: its root, record and list of cores go with its block, and it
+    /// leaves the maps of its holders and devices, which are empty.
+    pub open spec fn space_freed_step(pre: Self, post: Self, base: usize) -> bool {
+        &&& Self::node_block_freed_step(pre, post, base)
+        &&& pre.space_is_empty(base)
+        &&& post.table_pages == pre.table_pages
+        &&& post.spaces.roots@ == pre.spaces.roots@.remove(base)
+        &&& post.spaces.records@ == pre.spaces.records@.remove(base)
+        &&& post.spaces.loaded@ == pre.spaces.loaded@.remove(base)
+        &&& post.spaces.holders@ == pre.spaces.holders@.remove(base)
+        &&& post.spaces.bound@ == pre.spaces.bound@.remove(base)
+        &&& post.spaces.kernel_entries == pre.spaces.kernel_entries
+    }
+
+    /// The tree after the empty space at `base` goes.
+    proof fn lemma_space_freed_tree(pre: Self, post: Self, base: usize)
+        requires
+            Self::space_freed_step(pre, post, base),
+        ensures
+            space_removed(tree_of(&pre.table_pages, &pre.spaces), tree_of(&post.table_pages, &post.spaces), base),
+            table_links_wf(tree_of(&post.table_pages, &post.spaces)),
+            same_frame_entries(tree_of(&pre.table_pages, &pre.spaces), tree_of(&post.table_pages, &post.spaces)),
+    {
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        pre.lemma_empty_space(base);
+        assert(!a.is_page(base));
+        assert forall|i: usize| i < 512 implies #[trigger] a.entry(base, i).is_empty() by {
+            assert(pre.spaces.roots@[base].value()[i].is_empty());
+        }
+        assert(space_removed(a, b, base));
+        lemma_links_space_removed(a, b, base);
+        assert forall|t: usize, e: usize| #[trigger] frame_slot(a, t, e) implies {
+            &&& frame_slot(b, t, e)
+            &&& b.record(t).level == a.record(t).level
+            &&& b.entry(t, e) == a.entry(t, e)
+        } by {
+            assert(t != base);
+            lemma_space_removed_others(a, b, base, t);
+            assert(b.entry(t, e) == a.entry(t, e));
+        }
+        assert forall|t: usize, e: usize| #[trigger] frame_slot(b, t, e) implies frame_slot(a, t, e) by {
+            assert(t != base);
+            lemma_space_removed_others(a, b, base, t);
+            assert(b.entry(t, e) == a.entry(t, e));
+        }
+    }
+
+    /// Every table page's and every other space's node pages stay the list's when the space at `base`
+    /// goes: each lies in its own block, apart from the freed one.
+    proof fn lemma_space_freed_node_pages(pre: Self, post: Self, base: usize)
+        requires
+            table_pages_wf(&pre.list, &pre.table_pages, &pre.blocks),
+            spaces_wf(&pre.list, &pre.tables, &pre.spaces, &pre.blocks),
+            base % 32768 == 0,
+            !pre.table_pages.maps@.contains_key(base),
+            post.table_pages == pre.table_pages,
+            post.spaces.roots@ == pre.spaces.roots@.remove(base),
+            forall|p: usize| #[trigger] post.list.pages@.dom().contains(p)
+                == (pre.list.pages@.dom().contains(p) && !(base <= p < base + TABLE_NODE_PAGES * 4096)),
+        ensures
+            forall|t: usize, k: usize| #[trigger] post.table_pages.maps@.contains_key(t) && k < TABLE_NODE_PAGES
+                ==> post.list.pages@.dom().contains(#[trigger] table_node_page(t, k)),
+            forall|s: usize, k: usize| #[trigger] post.spaces.roots@.contains_key(s) && k < TABLE_NODE_PAGES
+                ==> post.list.pages@.dom().contains(#[trigger] table_node_page(s, k)),
+    {
+        assert forall|t: usize, k: usize| #[trigger] post.table_pages.maps@.contains_key(t) && k < TABLE_NODE_PAGES
+            implies post.list.pages@.dom().contains(#[trigger] table_node_page(t, k)) by {
+            assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, t));
+            assert(pre.list.pages@.dom().contains(table_node_page(t, k)));
+            lemma_node_pages_disjoint(t, base, k);
+        }
+        assert forall|s: usize, k: usize| #[trigger] post.spaces.roots@.contains_key(s) && k < TABLE_NODE_PAGES
+            implies post.list.pages@.dom().contains(#[trigger] table_node_page(s, k)) by {
+            assert(space_wf(&pre.list, &pre.spaces, &pre.blocks, s));
+            assert(pre.list.pages@.dom().contains(table_node_page(s, k)));
+            lemma_node_pages_disjoint(s, base, k);
+        }
+    }
+
+    /// The table pages and the spaces after the empty space at `base` goes: every other one's node pages
+    /// lie in its own block.
+    proof fn lemma_space_freed_pages(pre: Self, post: Self, base: usize)
+        requires
+            Self::space_freed_step(pre, post, base),
+            forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x),
+        ensures
+            table_pages_wf(&post.list, &post.table_pages, &post.blocks),
+            spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
+            list_pages_used(&post.list, &post.blocks),
+    {
+        let page = base / 4096;
+        pre.lemma_empty_space(base);
+        Self::lemma_node_block_list_pages(pre, post, base);
+        assert(order_pages(3) == 8);
+        assert(pre.blocks.in_block(page as int, page as int));
+        Self::lemma_space_freed_node_pages(pre, post, base);
+        lemma_table_pages_small_freed(&pre.list, &post.list, &post.table_pages, &pre.blocks, &post.blocks, page);
+        assert(same_spaces(&pre.list, &pre.tables, &post.list, &post.tables));
+        lemma_spaces_space_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &post.spaces, &pre.blocks, &post.blocks, base);
+        lemma_list_pages_used_subset(&pre.list, &post.list, &pre.blocks);
+        lemma_list_pages_used_small_freed(&post.list, &pre.blocks, &post.blocks, page);
+    }
+
+    /// The kernel after the empty space at `base` frees.
+    proof fn lemma_space_freed(pre: Self, post: Self, base: usize)
+        requires
+            Self::space_freed_step(pre, post, base),
+        ensures
+            post.wf(),
+            post.view() == pre.view(),
+    {
+        pre.lemma_empty_space(base);
+        Self::lemma_node_block_caps(pre, post, base);
+        Self::lemma_space_freed_tree(pre, post, base);
+        Self::lemma_space_freed_pages(pre, post, base);
+        Self::lemma_node_block_objects(pre, post, base);
+        Self::lemma_tlb_space_removed(pre, post, base);
+        lemma_ids_space_removed(pre.cores@, pre.spaces.loaded@, post.spaces.loaded@, base);
+    }
+
+    /// The block of the empty space at `base` goes back to the block table: its node pages off the list,
+    /// and its root, record and list of cores turned back into page permissions.
+    pub fn free_empty_space(&mut self, base: usize)
+        requires
+            old(self).wf(),
+            old(self).space_is_empty(base),
+            old(self).no_stale_translation(base / 4096),
+        ensures
+            final(self).wf(),
+            final(self).blocks.pages@[(base / 4096) as int].kind is Free,
+            !final(self).spaces.roots@.contains_key(base),
+            forall|k: usize| k < TABLE_NODE_PAGES ==> !final(self).list.pages@.dom().contains(#[trigger] table_node_page(base, k)),
+            forall|r: usize, p: SpacePath| #[trigger] walk(tree_of(&final(self).table_pages, &final(self).spaces), r, p)
+                == walk(tree_of(&old(self).table_pages, &old(self).spaces), r, p),
+            final(self).cores == old(self).cores,
+            final(self).view() == old(self).view(),
+    {
+        let ghost pre = *old(self);
+        let page = base / 4096;
+        proof {
+            pre.lemma_empty_space(base);
+            crate::layouts::lemma_space_block_layouts();
+            assert forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) implies pre.list.pages@[p].addr() == p by {
+                lemma_list_page(&pre.list, p);
+            }
+            lemma_list_page_apart(self.list.pages.borrow_mut(), self.spaces.roots.borrow().tracked_borrow(base));
+            lemma_list_page_apart(self.list.pages.borrow_mut(), self.spaces.records.borrow().tracked_borrow(base));
+            lemma_list_page_apart(self.list.pages.borrow_mut(), self.spaces.loaded.borrow().tracked_borrow(base));
+            assert forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) implies !(base + 5 * 4096 <= p < base + 8 * 4096) by {
+                lemma_list_page(&pre.list, p);
+            }
+        }
+        self.blocks.mark_torn_down(page);
+        let ghost mid = *self;
+        let Tracked(nodes) = take_table_node_pages(&mut self.list, base);
+        let tracked mut perms = nodes;
+        proof {
+            let tracked mut root = self.spaces.roots.borrow_mut().tracked_remove(base);
+            let tracked mut record = self.spaces.records.borrow_mut().tracked_remove(base);
+            let tracked mut cores = self.spaces.loaded.borrow_mut().tracked_remove(base);
+            root.leak_contents();
+            record.leak_contents();
+            cores.leak_contents();
+            perms.tracked_insert((page + 5) as usize, crate::layouts::page_map_into_page(root));
+            perms.tracked_insert((page + 6) as usize, crate::layouts::space_record_into_page(record));
+            perms.tracked_insert((page + 7) as usize, crate::layouts::core_list_into_page(cores));
+            self.spaces.holders = Ghost(pre.spaces.holders@.remove(base));
+            self.spaces.bound = Ghost(pre.spaces.bound@.remove(base));
+            assert(self.blocks.pages@[page as int].order == 3);
+            assert(order_pages(3) == 8);
+            assert forall|k: usize| #![trigger perms.contains_key((page + k) as usize)] #![trigger perms[(page + k) as usize]]
+                k < order_pages(self.blocks.pages@[page as int].order) implies {
+                &&& perms.contains_key((page + k) as usize)
+                &&& perms[(page + k) as usize].addr() == (page + k) * 4096
+                &&& perms[(page + k) as usize].is_uninit()
+            } by {
+                if k < 5 {
+                    assert(holds_free_page(nodes, (page + k) as usize));
+                }
+            }
+        }
+        self.blocks.free_block(page, Tracked(perms));
+        proof {
+            let post = *self;
+            assert forall|i: int| 0 <= i < NUM_PAGES implies #[trigger] post.blocks.pages@[i] == (
+                if pre.blocks.in_block(page as int, i) { free_entry() } else { pre.blocks.pages@[i] }) by {
+                assert(mid.blocks.in_block(page as int, i) == pre.blocks.in_block(page as int, i));
+                if i != page {
+                    assert(mid.blocks.pages@[i] == pre.blocks.pages@[i]);
+                }
+            }
+            assert(Self::space_freed_step(pre, post, base));
+            Self::lemma_space_freed(pre, post, base);
+            Self::lemma_space_freed_tree(pre, post, base);
+            assert forall|r: usize, p: SpacePath| #[trigger] walk(tree_of(&post.table_pages, &post.spaces), r, p)
+                == walk(tree_of(&pre.table_pages, &pre.spaces), r, p) by {
+                lemma_walk_space_removed(tree_of(&pre.table_pages, &pre.spaces), tree_of(&post.table_pages, &post.spaces), base, r, p);
+            }
+            assert(pre.blocks.in_block(page as int, page as int));
+            assert forall|k: usize| k < TABLE_NODE_PAGES implies !post.list.pages@.dom().contains(#[trigger] table_node_page(base, k)) by {
+                lemma_table_node_page(base, k);
+            }
+        }
+    }
+
+    /// What freeing the empty IO space at `base` did to self. Its children and any device went earlier,
+    /// so the view is as it was.
+    pub open spec fn space_freed(&self, post: Self, c: usize, root: usize, from: usize, base: usize) -> bool {
+        let untyped = self.tables.node_of(root, from);
+        let page = base / 4096;
+        &&& self.view().holds_right(root, untyped, Right::Retype)
+        &&& self.space_is_empty(base)
+        &&& self.blocks.pages@[page as int].refs == 0
+        &&& self.spaces.bound@[base] == Set::<usize>::empty()
+        &&& self.no_stale_translation(page)
+        &&& post.blocks.pages@[page as int].kind is Free
+        &&& !post.spaces.roots@.contains_key(base)
+        &&& forall|k: usize| k < TABLE_NODE_PAGES ==> !post.list.pages@.dom().contains(#[trigger] table_node_page(base, k))
+        &&& Self::step_ok(*self, post, c as int)
+        &&& post.view() == self.view()
+        &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base })
+    }
+
+    /// Frees the empty IO space at `base`, once every core and IOMMU has acknowledged the epoch of its
+    /// block's last unmap. It refuses a block that is anything else, a process space included.
+    pub fn free_space(&mut self, c: usize, root: usize, from: usize, base: usize) -> (ret: ReclaimStep)
+        requires
+            old(self).wf(),
+            c < NUM_CPUS,
+            old(self).tables.roots@.contains_key(root),
+        ensures
+            final(self).wf(),
+            Self::mappings_shrunk(*old(self), *final(self)),
+            !(ret is Unlinked),
+            !(ret is Slice),
+            !(ret is Freed) ==> *final(self) == *old(self),
+            !(old(self).can_retype_under(root, from, base, 3) && old(self).space_is_empty(base)) ==> ret is Refused,
+            old(self).can_retype_under(root, from, base, 3) && old(self).space_is_empty(base)
+                ==> if old(self).acknowledged(base / 4096) { ret is Freed } else { ret is Again },
+            ret is Again ==> !old(self).acknowledged(base / 4096),
+            ret is Freed ==> old(self).space_freed(*final(self), c, root, from, base),
+    {
+        let ghost pre = *old(self);
+        proof {
+            Self::lemma_same_tree_shrunk(pre, pre);
+            if pre.space_is_empty(base) {
+                pre.lemma_empty_space(base);
+            }
+        }
+        let untyped = match self.retype_parent(root, from, base, 3) {
+            Some(found) => found,
+            None => { return ReclaimStep::Refused; },
+        };
+        let page = base / 4096;
+        if page >= NUM_PAGES {
+            return ReclaimStep::Refused;
+        }
+        let entry = *self.blocks.pages.get(page);
+        let dead_space = match (entry.kind, entry.object) {
+            (PageKind::Base, ObjectType::Space) => entry.refs == 0,
+            _ => false,
+        };
+        proof {
+            lemma2_to64();
+            pre.lemma_space_block(base);
+        }
+        if !dead_space {
+            return ReclaimStep::Refused;
+        }
+        match self.space_kind(base) {
+            SpaceKind::Process => { return ReclaimStep::Refused; },
+            SpaceKind::Io => {},
+        }
+        if !self.space_nothing_left(base) {
+            return ReclaimStep::Refused;
+        }
+        if !self.is_acknowledged(page) {
+            return ReclaimStep::Again;
+        }
+        proof {
+            pre.lemma_acknowledged_is_clean(page);
+        }
+        self.free_empty_space(base);
+        proof {
+            let post = *self;
+            assert(post.view() == pre.view());
+            let v = pre.view();
+            let e = Effect::Teardown { untyped, object: base };
+            assert(authorized(v, root, e));
+        }
+        ReclaimStep::Freed
     }
 
     /// Unlinks the hidden node of the leaf at `base`, by the same undo as revoke's hidden arm, and

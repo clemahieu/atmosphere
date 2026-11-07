@@ -138,6 +138,39 @@ pub proof fn lemma_table_block_layouts()
 {
 }
 
+/// The sizes a space block's pages need when they turn back into page permissions.
+pub proof fn lemma_space_block_layouts()
+    ensures
+        vstd::layout::size_of::<NodePage>() == 4096,
+        vstd::layout::size_of::<PageMap>() == 4096,
+        vstd::layout::size_of::<SpaceRecord>() == 72,
+        vstd::layout::size_of::<SpaceCores>() == 264,
+        vstd::layout::size_of::<PageBytes>() == 4096,
+{
+}
+
+/// A freed space's record becomes a free page.
+pub proof fn space_record_into_page(tracked record: PointsTo<SpaceRecord>) -> (tracked ret: PagePerm4k)
+    requires
+        record.is_uninit(),
+    ensures
+        ret.addr() == record.addr(),
+        ret.is_uninit(),
+{
+    crate::pptr::typed_into_page(record)
+}
+
+/// A freed space's list of cores becomes a free page.
+pub proof fn core_list_into_page(tracked list: PointsTo<SpaceCores>) -> (tracked ret: PagePerm4k)
+    requires
+        list.is_uninit(),
+    ensures
+        ret.addr() == list.addr(),
+        ret.is_uninit(),
+{
+    crate::pptr::typed_into_page(list)
+}
+
 /// An emptied table becomes a free page.
 pub proof fn page_map_into_page(tracked map: PointsTo<PageMap>) -> (tracked ret: PagePerm4k)
     requires

@@ -105,6 +105,145 @@ pub open spec fn table_links_wf(tree: TableTree) -> bool {
     }
 }
 
+/// b is a without space s, which is no table page and whose root has no entry.
+pub open spec fn space_removed(a: TableTree, b: TableTree, s: usize) -> bool {
+    &&& a.is_root(s)
+    &&& !a.is_page(s)
+    &&& b.maps == a.maps
+    &&& b.records == a.records
+    &&& b.roots == a.roots.remove(s)
+    &&& b.space_records == a.space_records.remove(s)
+    &&& forall|i: usize| i < 512 ==> #[trigger] a.entry(s, i).is_empty()
+}
+
+/// Every table but s reads as it did.
+pub proof fn lemma_space_removed_others(a: TableTree, b: TableTree, s: usize, u: usize)
+    requires
+        space_removed(a, b, s),
+        u != s,
+    ensures
+        b.is_page(u) == a.is_page(u),
+        b.is_root(u) == a.is_root(u),
+        b.is_table(u) == a.is_table(u),
+        b.record(u) == a.record(u),
+        forall|i: usize| #[trigger] b.entry(u, i) == a.entry(u, i),
+        forall|i: usize| #[trigger] b.child_slot(u, i) == a.child_slot(u, i),
+        forall|i: usize| #[trigger] b.names_child(u, i) == a.names_child(u, i),
+{
+    assert forall|i: usize| #[trigger] b.entry(u, i) == a.entry(u, i) by {}
+    assert forall|i: usize| #[trigger] b.child_slot(u, i) == a.child_slot(u, i) by {}
+    assert forall|i: usize| #[trigger] b.names_child(u, i) == a.names_child(u, i) by {
+        assert(b.entry(u, i) == a.entry(u, i));
+        assert(b.child_slot(u, i) == a.child_slot(u, i));
+    }
+}
+
+/// A space with no entry goes and the links stay: it named nothing, nothing names a root, and every other
+/// table is as it was.
+pub proof fn lemma_links_space_removed(a: TableTree, b: TableTree, s: usize)
+    requires
+        table_links_wf(a),
+        space_removed(a, b, s),
+    ensures
+        table_links_wf(b),
+{
+    assert forall|u: usize, i: usize| #![trigger b.entry(u, i)]
+        b.names_child(u, i) implies {
+        let c = (b.entry(u, i).addr - TABLE_NODE_PAGES * 4096) as usize;
+        &&& b.is_page(c)
+        &&& b.record(c).parent == Some(TableParent { table: u, entry: i })
+    } by {
+        assert(u != s);
+        lemma_space_removed_others(a, b, s, u);
+        assert(a.names_child(u, i));
+        assert(a.entry(u, i) == b.entry(u, i));
+        let c = (a.entry(u, i).addr - TABLE_NODE_PAGES * 4096) as usize;
+        assert(a.is_page(c));
+        assert(a.record(c).parent == Some(TableParent { table: u, entry: i }));
+        assert(c != s);
+        lemma_space_removed_others(a, b, s, c);
+    }
+    assert forall|u: usize, i: usize| #![trigger b.entry(u, i)]
+        b.child_slot(u, i) && b.entry(u, i).perm.present && b.entry(u, i).perm.ps implies b.record(u).level == 2 by {
+        assert(u != s);
+        lemma_space_removed_others(a, b, s, u);
+        assert(a.entry(u, i) == b.entry(u, i));
+        assert(a.child_slot(u, i));
+    }
+    assert forall|c: usize| #![trigger b.maps.contains_key(c)] b.is_page(c) implies {
+        let r = b.record(c);
+        &&& r.parent is Some ==> r.space is Some
+        &&& r.parent is Some ==> {
+            let p = r.parent->0;
+            &&& b.names_child(p.table, p.entry)
+            &&& b.entry(p.table, p.entry).addr == table_addr(c)
+            &&& b.record(p.table).level == r.level + 1
+            &&& b.record(p.table).space == r.space
+        }
+    } by {
+        assert(c != s);
+        lemma_space_removed_others(a, b, s, c);
+        assert(a.is_page(c));
+        assert(a.maps.contains_key(c));
+        let r = a.record(c);
+        if r.parent is Some {
+            let p = r.parent->0;
+            assert(a.names_child(p.table, p.entry));
+            if p.table == s {
+                assert(a.entry(s, p.entry).is_empty());
+            }
+            lemma_space_removed_others(a, b, s, p.table);
+            assert(b.entry(p.table, p.entry) == a.entry(p.table, p.entry));
+            assert(b.names_child(p.table, p.entry) == a.names_child(p.table, p.entry));
+        }
+    }
+}
+
+/// Every walk reads as it did: s was on none, since nothing names a root, and it found nothing itself.
+pub proof fn lemma_walk_space_removed(a: TableTree, b: TableTree, s: usize, r: usize, p: SpacePath)
+    requires
+        space_removed(a, b, s),
+    ensures
+        walk(b, r, p) == walk(a, r, p),
+{
+    assert forall|u: usize, i: usize| {
+        &&& #[trigger] step(b, u, i) == step(a, u, i)
+        &&& frame_entry(b, u, i) == frame_entry(a, u, i)
+        &&& large_entry(b, u, i) == large_entry(a, u, i)
+    } by {
+        if u == s {
+            assert(!b.is_table(s));
+            if i < 512 {
+                assert(a.entry(s, i).is_empty());
+            }
+        } else {
+            lemma_space_removed_others(a, b, s, u);
+            assert(b.entry(u, i) == a.entry(u, i));
+            assert(b.names_child(u, i) == a.names_child(u, i));
+        }
+    }
+    if r != s {
+        lemma_space_removed_others(a, b, s, r);
+    }
+    if a.is_root(r) && r != s {
+        assert(step(b, r, p.l4) == step(a, r, p.l4));
+        if let Some(t3) = step(a, r, p.l4) {
+            assert(step(b, t3, p.l3) == step(a, t3, p.l3));
+            if let Some(t2) = step(a, t3, p.l3) {
+                assert(step(b, t2, p.l2) == step(a, t2, p.l2));
+                assert(large_entry(b, t2, p.l2) == large_entry(a, t2, p.l2));
+                if let Some(t1) = step(a, t2, p.l2) {
+                    assert(step(b, t1, p.l1) == step(a, t1, p.l1));
+                    assert(frame_entry(b, t1, p.l1) == frame_entry(a, t1, p.l1));
+                }
+            }
+        }
+    }
+    if r == s {
+        assert(step(a, s, p.l4) is None);
+    }
+}
+
 /// b is a without table page t, which is no space's root, has no parent and has no entry.
 pub open spec fn table_removed(a: TableTree, b: TableTree, t: usize) -> bool {
     &&& a.is_page(t)
