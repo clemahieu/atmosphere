@@ -1,7 +1,7 @@
 //! Moving a capability within its table. The node keeps its place and depth, so every child comes
 //! along. A capability's identity in the view is its node id, which a move renames, so reach is carried
-//! across by that renaming, in both directions. Claim out of another table is atmo-6x9.16.9. See the
-//! design on atmo-6x9.6.7, section 4.
+//! across by that renaming, in both directions. Claim out of another table is atmo-6x9.16.9. See
+//! design/sharing-by-derive/.
 use vstd::prelude::*;
 
 verus! {

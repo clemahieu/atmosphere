@@ -1,7 +1,7 @@
 //! Reach: what a process can get at, and the relation every kernel operation must keep to. The
 //! security theorem is stated over these, so a capability operation's spec is written to `discharges`
-//! rather than retrofitted. See the design on atmo-6x9.6.7, section 15, and the answers on
-//! atmo-6x9.6.10, atmo-6x9.6.11 and atmo-6x9.6.13.
+//! rather than retrofitted. See design/theorem-over-reach/, design/isolation-claim/ and
+//! design/sharing-by-derive/.
 //!
 //! This is a spec with no executable code. Each operation's leaf maps the kernel's state to `State`
 //! and ensures `discharges` of its step. Reach is spatial: run queues and kernel lists are not in
@@ -242,8 +242,8 @@ pub open spec fn may_grow(s: State, p: ObjectId, e: Effect, r: ObjectId, o: Obje
     }
 }
 
-/// What every operation's spec ensures of a step by a thread of p. atmo-6x9.16.16 composes these into
-/// the theorem.
+/// What every operation's spec ensures of a step by a thread of p. The theorem in
+/// design/theorem-over-reach/ composes these.
 pub open spec fn discharges(pre: State, post: State, p: ObjectId, e: Effect) -> bool {
     &&& authorized(pre, p, e)
     &&& forall|o: ObjectId| #[trigger] State::changed(pre, post, o) ==> may_change(pre, e, o)

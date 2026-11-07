@@ -2,7 +2,7 @@
 
 # Design decisions
 
-5 records: 5 active, 0 superseded.
+6 records: 6 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -19,6 +19,9 @@ in `revisit if` what would make it worth reopening.
 - **[one-kernel-instance](./one-kernel-instance/DECISION.md)** (2026-11-05): One kernel instance holds every core of the machine and a process lives inside it; the kernel provides no spanning. Four rules keep a later move to several instances cheap, and breaking one is the human's decision.
   - *confidence:* A staging judgement on top of the multicore shape. That one instance pays almost nothing for the node concept is reasoned from the code, not measured: finding the instance is one per-CPU load and no syscall path gains a check.
   - *revisit if:* Lock contention measured on this kernel is one a real workload would hit, a workload needs distrusting programs separated from the shared lock's timing, or a change would break one of the four rules.
+- **[sharing-by-derive](./sharing-by-derive/DECISION.md)** (2026-11-05): The only way to share a capability is derive, a child one depth deeper with rights and range within its parent's; nodes never change ancestor; move and claim relocate a node without changing its place; delete is refused while a node has children, mappings or bindings.
+  - *confidence:* The human's choice among three lifetime packages, with a precedent survey of seL4, NOVA, L4Re, Genode, EROS, Zircon and Barrelfish from their documents. The structure it rests on is proven, design/revoke-by-depth-first-list/.
+  - *revisit if:* A service must survive the death of the holder that granted to its clients without a longer-lived parent doing the granting, and claim by a supervisor is not enough.
 - **[theorem-over-reach](./theorem-over-reach/DECISION.md)** (2026-11-06): A process can read or write an object only if a capability to it is reachable from its own capabilities; every operation changes objects only by a relation of its kind over that reach; reach grows only by grant or retype. Isolation of disjoint subsystems is a corollary.
   - *confidence:* The statement is the human's choice; the definition and the per-operation shape are in the tree, kernel/verified/capability/reach.rs, and each operation's leaf discharges it as it lands. The composed theorem is not yet proven.
   - *revisit if:* A kernel operation is wanted whose effect cannot be written as a relation over the caller's reach, or a shared object must be reachable without any capability naming it.
@@ -31,12 +34,14 @@ in `revisit if` what would make it worth reopening.
 A view of the lists above. Nothing is reachable only through a tag.
 
 - `abi`: one-kernel-instance
-- `capability`: theorem-over-reach, untyped-memory
+- `capability`: sharing-by-derive, theorem-over-reach, untyped-memory
 - `kernel-state`: multicore-kernel-shape, one-kernel-instance
+- `lifetime`: sharing-by-derive
 - `lock`: multicore-kernel-shape
 - `memory`: untyped-memory
 - `multicore`: multicore-kernel-shape, one-kernel-instance
 - `proof`: isolation-claim, theorem-over-reach
 - `purity`: untyped-memory
+- `revoke`: sharing-by-derive
 - `security`: isolation-claim, theorem-over-reach
 - `verified`: theorem-over-reach

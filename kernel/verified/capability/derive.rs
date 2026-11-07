@@ -1,7 +1,7 @@
 //! Deriving a capability, the only way to share one: the child's rights and range lie within its
 //! parent's and its depth is one greater, so whoever derived it can always revoke it. The child goes
-//! in a free slot of the same table; a grant across tables is atmo-6x9.16.11. See the design on
-//! atmo-6x9.6.7, sections 1 to 4.
+//! in a free slot of the same table; a grant across tables is atmo-6x9.16.11. See
+//! design/sharing-by-derive/.
 use vstd::arithmetic::power2::*;
 use vstd::bits::*;
 use vstd::prelude::*;
