@@ -22,7 +22,7 @@ const SYSCALL32_ENTRY: u64 = 0; // nein
 const SYSCALL32_ENTRY_EIP: u32 = 0; // nein
 
 // Every name a process passes through these calls resolves within the caller's kernel instance, so
-// the ABI has no machine-wide names. Why, and what to do about a call that needs one: atmo-6x9.17.1.
+// the ABI has no machine-wide names. Why, and what to do about a call that needs one: design/one-kernel-instance/.
 static mut SYSCALLS: [u64; MAX_SYSCALLS] = [0; MAX_SYSCALLS];
 
 // sys_entry calls handlers with the C convention, so the six argument entry must declare it.

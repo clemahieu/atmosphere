@@ -36,14 +36,14 @@ x86_64 on AMD is the only tested target. Code that makes another architecture or
 
 ## One kernel instance
 
-One kernel instance holds every core, and a process lives inside it; the kernel does not span instances. Multiple nodes are the deferred epic `atmo-6x9.18`, kept cheap to add by four rules. The reasoning is on `atmo-6x9.17.1`.
+One kernel instance holds every core, and a process lives inside it; the kernel does not span instances. Several instances are deferred work that nothing depends on, kept cheap to add by four rules. The reasoning is `design/one-kernel-instance/`.
 
 - Kernel state stays inside the `Kernel` value, and `kernel/verified` has no statics.
 - A capability, and any name a process passes to the kernel, resolves within the caller's instance. The ABI has no machine-wide names.
 - The root process treats what boot gave it as all there is, and does not assume it owns the machine.
 - The pager library draws from the pool it was given, not from all memory.
 
-A change that breaks a rule or adds kernel spanning is a decision only the human can make: file it as a question, with what it costs `atmo-6x9.18`, the alternative that keeps the rule, and why the change is wanted.
+A change that breaks a rule or adds kernel spanning is a decision only the human can make: file it as a question, with what it costs the multi-instance path, the alternative that keeps the rule, and why the change is wanted.
 
 ## Rounds, commits and the stack
 

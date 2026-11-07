@@ -14,7 +14,7 @@ use crate::quota::Quota;
 
 /// All the state of one kernel instance. Kernel state stays inside this value, and this crate has
 /// no statics, so the proofs are about one instance and a second one remains possible. Why, and
-/// what to do about a change that breaks this: atmo-6x9.17.1.
+/// what to do about a change that breaks this: design/one-kernel-instance/.
 pub struct Kernel {
     pub page_alloc: PageAllocator,
     pub mem_man: MemoryManager,
