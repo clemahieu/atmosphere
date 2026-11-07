@@ -2,7 +2,7 @@
 
 # Design decisions
 
-17 records: 17 active, 0 superseded.
+18 records: 18 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -58,6 +58,9 @@ in `revisit if` what would make it worth reopening.
 - **[theorem-over-reach](./theorem-over-reach/DECISION.md)** (2026-11-06): A process can read or write an object only if a capability to it is reachable from its own capabilities; every operation changes objects only by a relation of its kind over that reach; reach grows only by grant or retype. Isolation of disjoint subsystems is a corollary.
   - *confidence:* The statement is the human's choice; the definition and the per-operation shape are in the tree, kernel/verified/capability/reach.rs, and each operation's leaf discharges it as it lands. The composed theorem is not yet proven.
   - *revisit if:* A kernel operation is wanted whose effect cannot be written as a relation over the caller's reach, or a shared object must be reachable without any capability naming it.
+- **[trust-boundary](./trust-boundary/DECISION.md)** (2026-11-05): The kernel's theorem holds whatever a pager does, so a swapped per-application pager needs no assurance for anyone else's safety. Isolation between two subsystems also depends on the component that divided memory between them, which is tier 3 today, and the security claim states that dependence.
+  - *confidence:* The human's choice of the cheapest option with the gap explicit. The tier can rise later; raising it is new work.
+  - *revisit if:* End-to-end isolation between real subsystems is required as a proven property, which means raising the divider's tier: full coverage, or a small proven divider specified under its own parent's revocation.
 - **[untyped-memory](./untyped-memory/DECISION.md)** (2026-11-05): Physical memory is held as untyped capabilities and retyped into kernel objects and frames from user space; containers and kernel quotas are gone; mapping, paging and allocation policy live in a standard pager and allocator library an application can swap.
   - *confidence:* A purity judgement by the human with its costs priced and accepted: a user-level memory manager to build, and most of the container-based proof to rewrite.
   - *revisit if:* It follows from the purity principle in CLAUDE.md; it is wrong only if an application class cannot be served by any user-space pager, which would be a reason to revisit the principle, not this record alone.
@@ -77,9 +80,10 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `memory`: address-spaces-as-objects, capability-names-a-block, flush-without-waiting, teardown-driven-by-retype, untyped-memory
 - `multicore`: flush-without-waiting, multicore-kernel-shape, one-kernel-instance, one-lock-bounded-steps
 - `process`: process-holds-capabilities
-- `proof`: isolation-claim, theorem-over-reach
+- `proof`: isolation-claim, theorem-over-reach, trust-boundary
 - `purity`: untyped-memory
 - `revoke`: revoke-by-depth-first-list, sharing-by-derive, teardown-driven-by-retype
 - `scheduling`: cpu-time-as-capability
-- `security`: isolation-claim, theorem-over-reach
+- `security`: isolation-claim, theorem-over-reach, trust-boundary
+- `tiers`: trust-boundary
 - `verified`: flush-without-waiting, one-lock-bounded-steps, revoke-by-depth-first-list, theorem-over-reach
