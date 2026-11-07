@@ -219,7 +219,7 @@ pub open spec fn holds_kernel(kind: SpaceKind, i: usize) -> bool {
 }
 
 /// A root is level 4, of its own space, with no parent. A root not written has no entry but the kernel
-/// slots.
+/// slots, and any entry outside them is present or empty.
 pub open spec fn root_record_wf(spaces: &Spaces, s: usize) -> bool {
     let record = spaces.records@[s].value().table;
     &&& record.level == 4
@@ -227,6 +227,9 @@ pub open spec fn root_record_wf(spaces: &Spaces, s: usize) -> bool {
     &&& record.parent is None
     &&& !record.written ==> forall|i: usize| #![trigger spaces.roots@[s].value()[i]]
         i < 512 && !holds_kernel(spaces.records@[s].value().kind, i) ==> spaces.roots@[s].value()[i].is_empty()
+    &&& forall|i: usize| #![trigger spaces.roots@[s].value()[i]]
+        i < 512 && !holds_kernel(spaces.records@[s].value().kind, i)
+            ==> spaces.roots@[s].value()[i].perm.present || spaces.roots@[s].value()[i].is_empty()
 }
 
 /// A process root holds the kernel's entries in the kernel slots, so the kernel stays mapped on entry
@@ -2371,6 +2374,8 @@ impl CapKernel {
             capability_nodes_are_slots(&post.list, &post.tables),
             first_node_outside_leaves(&post.list, &post.tables),
             leaf_slots_are_capabilities(&post.list, &post.tables),
+            forall|x: usize| x < NODE_SPACE && x != child && (#[trigger] post.list.nodes@[x as int]).live
+                ==> pre.list.nodes@[x as int].live && pre.list.valid(x),
     {
         assert forall|x: usize| x < NODE_SPACE && x != child && (#[trigger] post.list.nodes@[x as int]).live implies {
             &&& pre.list.nodes@[x as int].live
@@ -2415,6 +2420,38 @@ impl CapKernel {
             && n % 4096 != 0 && n % 4096 < NODES_PER_PAGE implies post.list.nodes@[n as int].kind is Capability by {
             if n != child {
                 pre.lemma_slot_bound(n);
+            }
+        }
+    }
+
+    /// The space clause after a space's retype at base: the new space's node pages were not the list's,
+    /// and the one node that came alive is the capability in a leaf's slot, outside every space.
+    proof fn lemma_space_nodes_added(pre: Self, post: Self, base: usize, child: usize)
+        requires
+            pre.wf(),
+            base % 32768 == 0,
+            base / 4096 + 8 <= NUM_PAGES,
+            post.spaces.roots@ == pre.spaces.roots@.insert(base, post.spaces.roots@[base]),
+            forall|k: usize| k < 8 ==> !pre.list.pages@.dom().contains(#[trigger] table_node_page(base, k)),
+            pre.list.valid(child),
+            pre.tables.owner@.contains_key(page_of(child)),
+            forall|x: usize| x < NODE_SPACE && x != child && (#[trigger] post.list.nodes@[x as int]).live
+                ==> pre.list.nodes@[x as int].live && pre.list.valid(x),
+        ensures
+            space_nodes_dead(&post.list, &post.spaces),
+    {
+        assert forall|s: usize, k: usize, i: usize| #![trigger table_node(s, k, i)]
+            post.spaces.roots@.contains_key(s) && k < TABLE_NODE_PAGES && i < NODES_PER_PAGE
+            implies !post.list.nodes@[table_node(s, k, i) as int].live by {
+            let x = table_node(s, k, i);
+            if s == base {
+                lemma_table_node_place(base, k, i);
+                assert(!pre.list.pages@.dom().contains(table_node_page(base, k)));
+                assert(!pre.list.valid(x));
+            } else {
+                assert(pre.spaces.roots@.contains_key(s));
+                pre.lemma_space_node_in_block(s, k, i);
+                assert(x != child);
             }
         }
     }
@@ -2805,6 +2842,7 @@ impl CapKernel {
             Self::lemma_tlb_same(pre, post);
             Self::lemma_space_nodes(pre, post, mid, parent, child);
             Self::lemma_table_nodes_frame(pre, post, child, child);
+            Self::lemma_space_nodes_added(pre, post, base, child);
             assert(post.list.pages@.dom() == mid.pages@.dom());
             lemma_mapping_nodes_grown(pre.list, mid, post.list, child, child);
             Self::lemma_space_blocks(pre, post, base, page, child);

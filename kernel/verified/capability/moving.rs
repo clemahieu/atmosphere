@@ -96,6 +96,7 @@ impl CapKernel {
             Self::lemma_move_caps_wf(pre, post, i, n);
             Self::lemma_hidden_frame(pre, post, i, n);
             Self::lemma_table_nodes_caps_frame(pre, post, i, n);
+            Self::lemma_space_nodes_caps_frame(pre, post, i, n);
             Self::lemma_move_holders(pre, post, i, n);
             Self::lemma_move_mappings(pre, post, i, n);
             lemma_parents_moved(pre.list, post.list, i, n);

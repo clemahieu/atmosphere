@@ -574,6 +574,14 @@ pub open spec fn table_nodes_are_mappings(list: &Tree, pages: &TablePages) -> bo
             ==> list.nodes@[table_node(t, k, i) as int].kind is Mapping
 }
 
+/// A space's node pages hold no live node: a mapping's node sits in its own table page's node pages, and
+/// a root maps no frame.
+pub open spec fn space_nodes_dead(list: &Tree, spaces: &Spaces) -> bool {
+    forall|s: usize, k: usize, i: usize| #![trigger table_node(s, k, i)]
+        spaces.roots@.contains_key(s) && k < TABLE_NODE_PAGES && i < NODES_PER_PAGE
+            ==> !list.nodes@[table_node(s, k, i) as int].live
+}
+
 /// Only a capability has children, and the list's first node is one, so a hidden node is below
 /// something and has nothing below it, and a retype naming its block can unlink it.
 pub open spec fn parents_are_capabilities(list: &Tree) -> bool {
@@ -921,6 +929,7 @@ impl CapKernel {
         &&& list_pages_used(&self.list, &self.blocks)
         &&& hidden_nodes_are_leaves(&self.list, &self.tables, &self.table_pages)
         &&& table_nodes_are_mappings(&self.list, &self.table_pages)
+        &&& space_nodes_dead(&self.list, &self.spaces)
         &&& table_pages_wf(&self.list, &self.table_pages, &self.blocks)
         &&& spaces_wf(&self.list, &self.tables, &self.spaces, &self.blocks)
         &&& table_links_wf(tree_of(&self.table_pages, &self.spaces))

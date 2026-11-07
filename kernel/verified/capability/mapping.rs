@@ -1977,6 +1977,89 @@ impl CapKernel {
         Self::lemma_table_nodes_frame(pre, post, n, m);
     }
 
+    /// Where node i of node page k of the space at s lies: in a page the list holds, in the space's block,
+    /// so in no leaf's page.
+    pub proof fn lemma_space_node_in_block(&self, s: usize, k: usize, i: usize)
+        requires
+            self.wf(),
+            self.spaces.roots@.contains_key(s),
+            k < TABLE_NODE_PAGES,
+            i < NODES_PER_PAGE,
+        ensures
+            table_node(s, k, i) < NODE_SPACE,
+            page_of(table_node(s, k, i)) == table_node_page(s, k),
+            self.list.valid(table_node(s, k, i)),
+            !self.tables.owner@.contains_key(page_of(table_node(s, k, i))),
+    {
+        assert(space_wf(&self.list, &self.spaces, &self.blocks, s));
+        let q = (s / 4096) as int;
+        self.blocks.lemma_base(q);
+        assert(order_pages(3) == 8);
+        lemma_table_node_place(s, k, i);
+        let n = table_node(s, k, i);
+        assert(self.list.pages@.dom().contains(table_node_page(s, k)));
+        assert(self.list.valid(n));
+        if self.tables.owner@.contains_key(page_of(n)) {
+            let l = page_of(n);
+            assert(self.blocks.pages@[(l / 4096) as int].kind is Base);
+            assert(self.blocks.pages@[(l / 4096) as int].object is TableLeaf);
+            assert(l / 4096 == q + k);
+            if k > 0 {
+                self.blocks.lemma_member_of(q, q + k);
+                assert(self.blocks.pages@[q + k].kind is Member);
+            }
+            assert(false);
+        }
+    }
+
+    /// The space clause after a step that adds no space and changes no node the list held but n and m,
+    /// each in a leaf's page or in no page the list held: a space's nodes are as they were.
+    pub proof fn lemma_space_nodes_frame(pre: Self, post: Self, n: usize, m: usize)
+        requires
+            pre.wf(),
+            forall|s: usize| #[trigger] post.spaces.roots@.contains_key(s) ==> pre.spaces.roots@.contains_key(s),
+            forall|x: usize| #[trigger] pre.list.valid(x) && x != n && x != m ==> {
+                &&& post.list.nodes@[x as int].live == pre.list.nodes@[x as int].live
+                &&& post.list.nodes@[x as int].kind == pre.list.nodes@[x as int].kind
+            },
+            !pre.list.valid(n) || pre.tables.owner@.contains_key(page_of(n)),
+            !pre.list.valid(m) || pre.tables.owner@.contains_key(page_of(m)),
+        ensures
+            space_nodes_dead(&post.list, &post.spaces),
+    {
+        assert forall|s: usize, k: usize, i: usize| #![trigger table_node(s, k, i)]
+            post.spaces.roots@.contains_key(s) && k < TABLE_NODE_PAGES && i < NODES_PER_PAGE
+            implies !post.list.nodes@[table_node(s, k, i) as int].live by {
+            let x = table_node(s, k, i);
+            pre.lemma_space_node_in_block(s, k, i);
+            assert(x != n);
+            assert(x != m);
+            assert(!pre.list.nodes@[x as int].live);
+        }
+    }
+
+    /// The space clause after a step that changes no node but the slots n and m and keeps the spaces.
+    pub proof fn lemma_space_nodes_caps_frame(pre: Self, post: Self, n: usize, m: usize)
+        requires
+            Self::caps_frame(pre, post, n, m),
+            post.spaces.roots@.dom() == pre.spaces.roots@.dom(),
+            pre.tables.owner@.contains_key(page_of(n)),
+            pre.tables.owner@.contains_key(page_of(m)),
+        ensures
+            space_nodes_dead(&post.list, &post.spaces),
+    {
+        assert forall|x: usize| #[trigger] pre.list.valid(x) && x != n && x != m implies {
+            &&& post.list.nodes@[x as int].live == pre.list.nodes@[x as int].live
+            &&& post.list.nodes@[x as int].kind == pre.list.nodes@[x as int].kind
+        } by {
+            pre.list.lemma_valid_bound(x);
+        }
+        assert forall|s: usize| #[trigger] post.spaces.roots@.contains_key(s) implies pre.spaces.roots@.contains_key(s) by {
+            assert(post.spaces.roots@.dom().contains(s));
+        }
+        Self::lemma_space_nodes_frame(pre, post, n, m);
+    }
+
     /// What a table page's retype at base leaves of the list: the new node pages were not the list's, and
     /// every node the list held but base keeps its liveness and kind.
     pub open spec fn page_added_step(pre: Self, post: Self, base: usize) -> bool {
