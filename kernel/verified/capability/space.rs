@@ -2011,6 +2011,7 @@ impl CapKernel {
         Self::lemma_table_nodes_page_added(pre, post, base);
         lemma_mapping_nodes_grown(pre.list, mid, post.list, base, base);
         Self::lemma_table_page_bindings(pre, post, mid, base);
+        Self::lemma_binding_parents_same_caps(pre, post);
         Self::lemma_table_page_blocks(pre, post, base, page);
         Self::lemma_table_page_links(pre, post, base, page);
         Self::lemma_table_page_mappings(pre, post, base, page);
@@ -2053,6 +2054,7 @@ impl CapKernel {
             post.processes == pre.processes,
         ensures
             bindings_wf(&post.list, &post.threads, &post.processes),
+            same_bindings(&pre.list, &post.list),
     {
         lemma_binding_nodes_grown(pre.list, mid, post.list, base, base);
         lemma_bindings_same(&pre.list, &post.list, &pre.threads, &pre.processes);
@@ -3121,6 +3123,11 @@ impl CapKernel {
             lemma_mapping_nodes_grown(pre.list, mid, post.list, child, child);
             lemma_binding_nodes_grown(pre.list, mid, post.list, child, child);
             lemma_bindings_kept(&pre.list, &post.list, &pre.threads, &post.threads, &pre.processes, &post.processes);
+            assert forall|x: usize| #[trigger] pre.is_cap(x) implies post.is_cap(x) && post.payload_of(x) == pre.payload_of(x) by {
+                Self::lemma_space_cap_frame(pre, post, child, x);
+            }
+            assert(post.list.parent@ == pre.list.parent@.insert(child, parent));
+            Self::lemma_binding_parents_same_caps(pre, post);
             Self::lemma_space_blocks(pre, post, base, page, child);
             assert(post.spaces.roots@ == pre.spaces.roots@.insert(base, post.spaces.roots@[base]));
             assert(post.spaces.records@ == pre.spaces.records@.insert(base, post.spaces.records@[base]));

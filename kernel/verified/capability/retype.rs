@@ -898,6 +898,14 @@ impl CapKernel {
             }
             lemma_processes_small_typed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks, &post.blocks, page, 2);
             Self::lemma_devices_same_caps(pre, post);
+            assert(!pre.list.nodes@[base as int].live) by {
+                if pre.list.nodes@[base as int].live {
+                    pre.list.lemma_live_valid(base);
+                    assert(mid.nodes@[base as int] == pre.list.nodes@[base as int]);
+                }
+            }
+            assert(post.list.parent@ == pre.list.parent@.insert(base, parent));
+            Self::lemma_binding_parents_same_caps(pre, post);
             assert(post.wf());
             assert forall|i: usize| index_ok(i) && index_entry(i) == r as int implies {
                 &&& #[trigger] post.tables.has_slot(root, i)

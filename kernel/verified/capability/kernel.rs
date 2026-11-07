@@ -1131,6 +1131,7 @@ impl CapKernel {
         &&& process_tables_wf(&self.tables, &self.processes)
         &&& current_wf(self.cores@, self.threads.records@)
         &&& bindings_wf(&self.list, &self.threads, &self.processes)
+        &&& binding_parents(&self.list, &self.tables, &self.threads)
         &&& table_links_wf(tree_of(&self.table_pages, &self.spaces))
         &&& mapped_wf(self.mapped@, self.mappings@)
         &&& mappings_wf(&self.list, &self.tables, tree_of(&self.table_pages, &self.spaces), &self.blocks, self.holders@, self.mappings@)
@@ -1443,6 +1444,7 @@ impl CapKernel {
             reveal(ids_wf);
             reveal(devices_wf);
             reveal(current_wf);
+            reveal(binding_parents);
             assert forall|c: int, t: usize| 0 <= c < NUM_CPUS && #[trigger] runs(self.cores@, c, t) implies false by {
                 assert(self.cores@[c].current_thread.is_None());
             }

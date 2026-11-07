@@ -706,10 +706,12 @@ impl CapKernel {
             processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
             mappings_wf(&post.list, &post.tables, tree_of(&post.table_pages, &post.spaces), &post.blocks, post.holders@, post.mappings@),
             bindings_wf(&post.list, &post.threads, &post.processes),
+            binding_parents(&post.list, &post.tables, &post.threads),
             current_wf(post.cores@, post.threads.records@),
     {
         reveal(thread_bound);
         let t = n;
+        Self::lemma_binding_parents_caps_frame(pre, post, n, n);
         pre.lemma_bound_process(t);
         let p = pre.threads.records@[t].value().process->Some_0;
         let br = BlockRef::Small(p / 4096);

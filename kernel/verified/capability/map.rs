@@ -1993,6 +1993,7 @@ impl CapKernel {
         }
         assert(same_bindings(&pre.list, &post.list));
         lemma_bindings_same(&pre.list, &post.list, &pre.threads, &pre.processes);
+        Self::lemma_binding_parents_same_caps(pre, post);
     }
 
     /// The node a map makes lives in its table page's block, so every IO space's node pages stay dead.

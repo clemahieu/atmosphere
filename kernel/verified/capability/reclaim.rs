@@ -1566,6 +1566,13 @@ impl CapKernel {
         pre.lemma_empty_leaf(base);
         Self::lemma_leaf_freed_caps(pre, post, base);
         Self::lemma_devices_same_caps(pre, post);
+        assert forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x) && pre.tables.payload_of(x).kind is Process implies {
+            &&& post.tables.is_cap(&post.list, x)
+            &&& post.tables.payload_of(x) == pre.tables.payload_of(x)
+        } by {
+            assert(post.tables.is_cap(&pre.list, x));
+        }
+        lemma_binding_parents_kept(&pre.list, &pre.tables, &pre.threads, &post.list, &post.tables, &post.threads);
         Self::lemma_leaf_freed_blocks(pre, post, base);
         Self::lemma_tlb_same(pre, post);
         assert forall|n: usize| n < NODE_SPACE && (#[trigger] post.list.nodes@[n as int]).live
@@ -2031,6 +2038,7 @@ impl CapKernel {
     {
         pre.lemma_empty_table(base);
         Self::lemma_node_block_caps(pre, post, base);
+        lemma_binding_parents_kept(&pre.list, &pre.tables, &pre.threads, &post.list, &post.tables, &post.threads);
         Self::lemma_devices_same_caps(pre, post);
         Self::lemma_table_freed_tree(pre, post, base);
         Self::lemma_table_freed_pages(pre, post, base);
@@ -2313,6 +2321,7 @@ impl CapKernel {
     {
         pre.lemma_empty_space(base);
         Self::lemma_node_block_caps(pre, post, base);
+        lemma_binding_parents_kept(&pre.list, &pre.tables, &pre.threads, &post.list, &post.tables, &post.threads);
         Self::lemma_devices_same_caps(pre, post);
         Self::lemma_space_freed_tree(pre, post, base);
         Self::lemma_space_freed_pages(pre, post, base);

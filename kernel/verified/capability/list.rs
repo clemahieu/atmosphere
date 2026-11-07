@@ -539,6 +539,26 @@ impl Tree {
         ret
     }
 
+    /// A childless node is no node's parent.
+    pub proof fn lemma_childless(&self, i: usize, c: usize)
+        requires
+            self.wf(),
+            i < NODE_SPACE,
+            self.nodes@[i as int].live,
+            self.childless(i),
+        ensures
+            !self.is_child(i, c),
+    {
+        let s = self.seq@;
+        lemma_has(s, i);
+        let j = choose|j: int| 0 <= j < s.len() && s[j] == i;
+        self.lemma_link(j);
+        if j + 1 < s.len() {
+            self.lemma_link(j + 1);
+        }
+        self.lemma_no_child(i, j);
+    }
+
     /// Everything in the run after c descends from c: its ancestor at the depth difference is c.
     /// So revoking the run touches nothing outside c's lineage.
     pub proof fn lemma_run_is_lineage(&self, j: int, k: int)

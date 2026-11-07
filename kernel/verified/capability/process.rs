@@ -1310,6 +1310,8 @@ impl CapKernel {
             }
             lemma_binding_nodes_grown(pre.list, mid, post.list, child, child);
             lemma_bindings_kept(&pre.list, &post.list, &pre.threads, &post.threads, &pre.processes, &post.processes);
+            assert(post.list.parent@ == pre.list.parent@.insert(child, parent));
+            Self::lemma_binding_parents_same_caps(pre, post);
             assert(post.wf());
             assert(PROCESS_RIGHTS & 128 != 0) by (compute_only);
             assert(right_bit(Right::Control) == 128);

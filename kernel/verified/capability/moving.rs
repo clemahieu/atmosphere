@@ -235,6 +235,7 @@ impl CapKernel {
             Self::lemma_hidden_frame(pre, post, i, n);
             Self::lemma_table_nodes_caps_frame(pre, post, i, n);
             Self::lemma_space_nodes_caps_frame(pre, post, i, n);
+            assert(post.is_cap(n));
             Self::lemma_bindings_caps_frame(pre, post, i, n);
             Self::lemma_move_holders(pre, post, i, n);
             Self::lemma_move_mappings(pre, post, i, n);

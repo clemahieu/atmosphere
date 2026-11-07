@@ -276,6 +276,57 @@ pub open spec fn bindings_wf(list: &Tree, threads: &Threads, processes: &Process
         ==> threads.records@.contains_key(t) && threads.records@[t].value().process == Some(p)
 }
 
+/// Binding node t's parent is a capability to the process t's record names, so the node alone says
+/// which process its thread is bound to.
+pub open spec fn binding_parent(list: &Tree, tables: &Tables, threads: &Threads, t: usize) -> bool {
+    let n = list.parent@[t];
+    &&& list.parent@.contains_key(t)
+    &&& tables.is_cap(list, n)
+    &&& tables.payload_of(n).kind is Process
+    &&& threads.records@.contains_key(t)
+    &&& threads.records@[t].value().process == Some(tables.payload_of(n).base)
+}
+
+/// Every live binding node's parent is a capability to its thread's process. Opaque, as thread_bound
+/// is, so that its node quantifier does not chain into the tables in every proof that mentions a node.
+/// See design/process-holds-capabilities/.
+#[verifier::opaque]
+pub open spec fn binding_parents(list: &Tree, tables: &Tables, threads: &Threads) -> bool {
+    forall|t: usize| t < NODE_SPACE && (#[trigger] list.nodes@[t as int]).live && list.nodes@[t as int].kind is Binding
+        ==> binding_parent(list, tables, threads, t)
+}
+
+/// The binding parents after a step that made no binding, kept every live node's parent, every process
+/// capability saying the same, and every thread's process.
+pub proof fn lemma_binding_parents_kept(la: &Tree, ta: &Tables, tha: &Threads, lb: &Tree, tb: &Tables, thb: &Threads)
+    requires
+        binding_parents(la, ta, tha),
+        forall|t: usize| t < NODE_SPACE && (#[trigger] lb.nodes@[t as int]).live && lb.nodes@[t as int].kind is Binding
+            ==> la.nodes@[t as int].live && la.nodes@[t as int].kind is Binding,
+        forall|x: usize| x < NODE_SPACE && la.nodes@[x as int].live && #[trigger] la.parent@.contains_key(x)
+            ==> lb.parent@.contains_key(x) && lb.parent@[x] == la.parent@[x],
+        forall|x: usize| #[trigger] ta.is_cap(la, x) && ta.payload_of(x).kind is Process ==> {
+            &&& tb.is_cap(lb, x)
+            &&& tb.payload_of(x) == ta.payload_of(x)
+        },
+        forall|t: usize| #[trigger] tha.records@.contains_key(t) ==> {
+            &&& thb.records@.contains_key(t)
+            &&& thb.records@[t].value().process == tha.records@[t].value().process
+        },
+    ensures
+        binding_parents(lb, tb, thb),
+{
+    reveal(binding_parents);
+    assert forall|t: usize| t < NODE_SPACE && (#[trigger] lb.nodes@[t as int]).live && lb.nodes@[t as int].kind is Binding
+        implies binding_parent(lb, tb, thb, t) by {
+        assert(la.nodes@[t as int].live && la.nodes@[t as int].kind is Binding);
+        assert(binding_parent(la, ta, tha, t));
+        let n = la.parent@[t];
+        assert(ta.is_cap(la, n) && ta.payload_of(n).kind is Process);
+        assert(tha.records@.contains_key(t));
+    }
+}
+
 /// The live binding nodes of a are those of b.
 pub open spec fn same_bindings(list_a: &Tree, list_b: &Tree) -> bool {
     forall|n: usize| #![trigger list_a.nodes@[n as int]] #![trigger list_b.nodes@[n as int]] n < NODE_SPACE ==>
@@ -840,7 +891,7 @@ pub proof fn lemma_threads_outside_block(list: &Tree, tables: &Tables, threads: 
 
 impl CapKernel {
     /// The bindings after a step that changed no node but n and m, neither a binding before or after,
-    /// no thread's record and no process's bindings.
+    /// no thread's record and no process's bindings, and renamed n to m in the parent map at most.
     pub proof fn lemma_bindings_caps_frame(pre: Self, post: Self, n: usize, m: usize)
         requires
             Self::caps_frame(pre, post, n, m),
@@ -851,9 +902,15 @@ impl CapKernel {
             post.threads.records == pre.threads.records,
             post.processes.records == pre.processes.records,
             post.processes.bound == pre.processes.bound,
+            forall|x: usize| x != n && x != m && #[trigger] pre.list.parent@.contains_key(x)
+                ==> post.list.parent@.contains_key(x) && post.list.parent@[x] == rename(pre.list.parent@[x], n, m),
+            pre.is_cap(n) ==> pre.list.childless(n) || (post.is_cap(m) && post.payload_of(m) == pre.payload_of(n)),
+            pre.is_cap(m) && m != n ==> pre.list.childless(m),
         ensures
             bindings_wf(&post.list, &post.threads, &post.processes),
+            binding_parents(&post.list, &post.tables, &post.threads),
     {
+        Self::lemma_binding_parents_caps_frame(pre, post, n, m);
         assert forall|x: usize| x < NODE_SPACE implies
             ((#[trigger] post.list.nodes@[x as int]).live && post.list.nodes@[x as int].kind is Binding)
                 == (pre.list.nodes@[x as int].live && pre.list.nodes@[x as int].kind is Binding) by {
@@ -864,6 +921,96 @@ impl CapKernel {
         }
         assert(same_bindings(&pre.list, &post.list));
         lemma_bindings_kept(&pre.list, &post.list, &pre.threads, &post.threads, &pre.processes, &post.processes);
+    }
+
+    /// The binding parents after a step that changed no node but n and m, neither a binding after it,
+    /// kept every other thread's process, and renamed n to m in the parent map at most. A binding's
+    /// parent is a capability with a child, so it is n or m only when n, renamed m, says the same.
+    pub proof fn lemma_binding_parents_caps_frame(pre: Self, post: Self, n: usize, m: usize)
+        requires
+            Self::caps_frame(pre, post, n, m),
+            !(post.list.nodes@[n as int].live && post.list.nodes@[n as int].kind is Binding),
+            !(post.list.nodes@[m as int].live && post.list.nodes@[m as int].kind is Binding),
+            forall|x: usize| x != n && x != m && #[trigger] pre.list.parent@.contains_key(x)
+                ==> post.list.parent@.contains_key(x) && post.list.parent@[x] == rename(pre.list.parent@[x], n, m),
+            forall|x: usize| x != n && x != m && #[trigger] pre.threads.records@.contains_key(x) ==> {
+                &&& post.threads.records@.contains_key(x)
+                &&& post.threads.records@[x].value().process == pre.threads.records@[x].value().process
+            },
+            pre.is_cap(n) ==> pre.list.childless(n) || (post.is_cap(m) && post.payload_of(m) == pre.payload_of(n)),
+            pre.is_cap(m) && m != n ==> pre.list.childless(m),
+        ensures
+            binding_parents(&post.list, &post.tables, &post.threads),
+    {
+        reveal(binding_parents);
+        assert forall|t: usize| t < NODE_SPACE && (#[trigger] post.list.nodes@[t as int]).live
+            && post.list.nodes@[t as int].kind is Binding
+            implies binding_parent(&post.list, &post.tables, &post.threads, t) by {
+            assert(t != n && t != m);
+            assert(pre.list.nodes@[t as int].live && pre.list.nodes@[t as int].kind is Binding);
+            assert(binding_parent(&pre.list, &pre.tables, &pre.threads, t));
+            let a = pre.list.parent@[t];
+            assert(pre.is_cap(a));
+            let s = pre.list.seq@;
+            assert(has(s, t));
+            lemma_has(s, t);
+            assert(pre.list.nodes@[s[0] as int].kind is Capability);
+            assert(pre.list.is_child(a, t));
+            assert(pre.list.nodes@[a as int].live);
+            if a == n {
+                if pre.list.childless(n) {
+                    pre.list.lemma_childless(n, t);
+                }
+                assert(post.is_cap(m) && post.payload_of(m) == pre.payload_of(n));
+            } else if a == m {
+                pre.list.lemma_childless(m, t);
+            } else {
+                Self::lemma_caps_frame(pre, post, n, m, a);
+            }
+        }
+    }
+
+    /// The binding parents after a step that made no binding, kept every live node's parent, every
+    /// capability saying the same, and every thread's process.
+    pub proof fn lemma_binding_parents_same_caps(pre: Self, post: Self)
+        requires
+            binding_parents(&pre.list, &pre.tables, &pre.threads),
+            same_bindings(&pre.list, &post.list),
+            forall|x: usize| x < NODE_SPACE && pre.list.nodes@[x as int].live && #[trigger] pre.list.parent@.contains_key(x)
+                ==> post.list.parent@.contains_key(x) && post.list.parent@[x] == pre.list.parent@[x],
+            forall|x: usize| #[trigger] pre.is_cap(x) ==> post.is_cap(x) && post.payload_of(x) == pre.payload_of(x),
+            forall|t: usize| #[trigger] pre.threads.records@.contains_key(t) ==> {
+                &&& post.threads.records@.contains_key(t)
+                &&& post.threads.records@[t].value().process == pre.threads.records@[t].value().process
+            },
+        ensures
+            binding_parents(&post.list, &post.tables, &post.threads),
+    {
+        assert forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x) && pre.tables.payload_of(x).kind is Process implies {
+            &&& post.tables.is_cap(&post.list, x)
+            &&& post.tables.payload_of(x) == pre.tables.payload_of(x)
+        } by {
+            assert(pre.is_cap(x));
+        }
+        lemma_binding_parents_kept(&pre.list, &pre.tables, &pre.threads, &post.list, &post.tables, &post.threads);
+    }
+
+    /// A live binding node's parent is a capability to the process its thread's record names.
+    pub proof fn lemma_binding_parent(&self, t: usize)
+        requires
+            self.wf(),
+            t < NODE_SPACE,
+            self.list.nodes@[t as int].live,
+            self.list.nodes@[t as int].kind is Binding,
+        ensures
+            self.list.parent@.contains_key(t),
+            self.is_cap(self.list.parent@[t]),
+            self.payload_of(self.list.parent@[t]).kind is Process,
+            self.threads.records@.contains_key(t),
+            self.threads.records@[t].value().process == Some(self.payload_of(self.list.parent@[t]).base),
+    {
+        reveal(binding_parents);
+        assert(binding_parent(&self.list, &self.tables, &self.threads, t));
     }
 
     /// A bound thread's process is a process whose block counts the binding among its references.
@@ -1616,6 +1763,8 @@ impl CapKernel {
             Self::lemma_devices_same_caps(pre, post);
             lemma_binding_nodes_grown(pre.list, mid, post.list, child, child);
             lemma_bindings_kept(&pre.list, &post.list, &pre.threads, &post.threads, &pre.processes, &post.processes);
+            assert(post.list.parent@ == pre.list.parent@.insert(child, parent));
+            Self::lemma_binding_parents_same_caps(pre, post);
             assert(post.wf());
             assert forall|i: int| base <= i < base + NODES_PER_PAGE implies !#[trigger] post.list.nodes@[i].live by {
                 assert(mid.valid(i as usize));
@@ -1704,6 +1853,7 @@ impl CapKernel {
             &&& post.threads.records@[x].value().process == pre.threads.records@[x].value().process
         } by {}
         lemma_bindings_kept(&pre.list, &post.list, &pre.threads, &post.threads, &pre.processes, &post.processes);
+        Self::lemma_binding_parents_same_caps(pre, post);
         Self::lemma_iommus_same(pre, post);
         assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] post.acked(d) <= post.flush_epoch by {
             assert(pre.acked(d) <= pre.flush_epoch);
@@ -2376,6 +2526,41 @@ impl CapKernel {
         lemma_current_same(pre.cores@, post.cores@, pre.threads.records@, post.threads.records@);
     }
 
+    /// The binding parents after a bind: the new binding's parent is the process capability n, whose
+    /// process its thread's record now names, and no other binding, parent or capability changed.
+    proof fn lemma_bind_parents(pre: Self, post: Self, n: usize, t: usize)
+        requires
+            pre.wf(),
+            pre.is_cap(n),
+            pre.payload_of(n).kind is Process,
+            !pre.list.nodes@[t as int].live,
+            Self::bound_to(pre, post, n, t),
+        ensures
+            binding_parents(&post.list, &post.tables, &post.threads),
+    {
+        reveal(binding_parents);
+        Self::lemma_bind_nodes(pre, post, n, t);
+        assert forall|x: usize| x < NODE_SPACE && (#[trigger] post.list.nodes@[x as int]).live
+            && post.list.nodes@[x as int].kind is Binding
+            implies binding_parent(&post.list, &post.tables, &post.threads, x) by {
+            if x == t {
+                assert(post.is_cap(n));
+                assert(post.list.parent@[t] == n);
+                assert(post.threads.records@.contains_key(t));
+            } else {
+                assert(pre.list.nodes@[x as int].live && pre.list.nodes@[x as int].kind is Binding);
+                assert(binding_parent(&pre.list, &pre.tables, &pre.threads, x));
+                let a = pre.list.parent@[x];
+                assert(pre.is_cap(a));
+                assert(post.is_cap(a));
+                assert(post.list.parent@[x] == a);
+                assert(pre.threads.records@.contains_key(x));
+                assert(post.threads.records@.contains_key(x));
+                assert(post.threads.records@[x] == pre.threads.records@[x]);
+            }
+        }
+    }
+
     /// Everything the invariant says after a bind.
     proof fn lemma_bind_wf(pre: Self, post: Self, n: usize, t: usize)
         requires
@@ -2390,6 +2575,7 @@ impl CapKernel {
     {
         Self::lemma_bind_nodes(pre, post, n, t);
         Self::lemma_bind_objects(pre, post, n, t);
+        Self::lemma_bind_parents(pre, post, n, t);
         Self::lemma_tlb_same(pre, post);
         assert(process_tables_wf(&post.tables, &post.processes));
         assert(post.frames_wf());
