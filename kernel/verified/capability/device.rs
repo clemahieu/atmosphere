@@ -16,6 +16,7 @@ use crate::capability::reach::*;
 use crate::capability::refs::*;
 use crate::capability::space::*;
 use crate::capability::table::*;
+use crate::capability::process::*;
 use crate::capability::thread::*;
 use crate::define::*;
 
@@ -336,6 +337,7 @@ impl CapKernel {
             post.holders == pre.holders,
             post.spaces == pre.spaces,
             post.threads == pre.threads,
+            post.processes == pre.processes,
             post.zeroing == pre.zeroing,
             post.table_pages == pre.table_pages,
             post.list.pages@.dom() == pre.list.pages@.dom(),
@@ -347,6 +349,7 @@ impl CapKernel {
             table_pages_wf(&post.list, &post.table_pages, &post.blocks),
             spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
             threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
+            processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
     {
         assert forall|x: usize| x != child implies {
             &&& #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x)
@@ -364,6 +367,7 @@ impl CapKernel {
         lemma_table_pages_same_nodes(&pre.list, &post.list, &pre.table_pages, &post.blocks);
         lemma_spaces_same_caps(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks);
         lemma_threads_same_caps(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks);
+        lemma_processes_same_caps(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks);
     }
 
     /// The devices after device d's capability is added: it is d's, and every other device capability

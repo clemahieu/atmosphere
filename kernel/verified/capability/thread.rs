@@ -14,6 +14,7 @@ use crate::capability::device::*;
 use crate::capability::kernel::*;
 use crate::capability::list::*;
 use crate::capability::mapping::*;
+use crate::capability::process::*;
 use crate::capability::reach::*;
 use crate::capability::refs::*;
 use crate::capability::space::*;
@@ -1068,6 +1069,24 @@ impl CapKernel {
                 Self::lemma_space_cap_frame(pre, post, child, x);
             }
             lemma_spaces_small_typed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks, &post.blocks, page, 2);
+            assert forall|k: int| 0 <= k < 2 implies !((#[trigger] post.blocks.pages@[page + k]).object is Process) by {
+                if k == 0 {
+                    assert(post.blocks.pages@[page as int].object is Thread);
+                }
+            }
+            assert forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) && post.tables.payload_of(x).kind is Process implies {
+                &&& pre.tables.is_cap(&pre.list, x)
+                &&& pre.tables.payload_of(x) == post.tables.payload_of(x)
+            } by {
+                Self::lemma_space_cap_frame(pre, post, child, x);
+            }
+            assert forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x) && pre.tables.payload_of(x).kind is Process implies {
+                &&& post.tables.is_cap(&post.list, x)
+                &&& post.tables.payload_of(x) == pre.tables.payload_of(x)
+            } by {
+                Self::lemma_space_cap_frame(pre, post, child, x);
+            }
+            lemma_processes_small_typed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks, &post.blocks, page, 2);
             Self::lemma_threads_thread_added(pre, post, base, page, child);
             assert(!pre.threads.records@.contains_key(base)) by {
                 if pre.threads.records@.contains_key(base) {
@@ -1140,6 +1159,7 @@ impl CapKernel {
         &&& post.zeroing == pre.zeroing
         &&& post.frames == pre.frames
         &&& post.spaces == pre.spaces
+        &&& post.processes == pre.processes
         &&& post.mapped == pre.mapped
         &&& post.stale_epoch == pre.stale_epoch
         &&& post.flush_epoch == pre.flush_epoch
@@ -1387,6 +1407,7 @@ impl CapKernel {
         &&& post.zeroing == pre.zeroing
         &&& post.frames == pre.frames
         &&& post.spaces == pre.spaces
+        &&& post.processes == pre.processes
         &&& post.mapped == pre.mapped
         &&& post.stale_epoch == pre.stale_epoch
         &&& post.flush_epoch == pre.flush_epoch

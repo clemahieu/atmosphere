@@ -15,6 +15,7 @@ use crate::capability::reach::*;
 use crate::capability::retype::*;
 use crate::capability::space::*;
 use crate::capability::table::*;
+use crate::capability::process::*;
 use crate::capability::thread::*;
 use crate::capability::view::*;
 use crate::define::*;
@@ -966,6 +967,7 @@ impl CapKernel {
         requires
             post.devices == pre.devices,
             post.threads == pre.threads,
+            post.processes == pre.processes,
             pre.wf(),
             linked(tree_of(&pre.table_pages, &pre.spaces), tree_of(&post.table_pages, &post.spaces), parent, entry, child, s),
             tree_of(&pre.table_pages, &pre.spaces).is_table(parent),
@@ -1018,6 +1020,7 @@ impl CapKernel {
             post.stale_epoch == pre.stale_epoch,
             post.devices == pre.devices,
             post.threads == pre.threads,
+            post.processes == pre.processes,
             post.table_pages.maps@.dom() == pre.table_pages.maps@.dom(),
             table_pages_wf(&post.list, &post.table_pages, &post.blocks),
             spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
@@ -1252,6 +1255,7 @@ impl CapKernel {
             final(self).frames == old(self).frames,
             final(self).devices == old(self).devices,
             final(self).threads == old(self).threads,
+            final(self).processes == old(self).processes,
             final(self).cores == old(self).cores,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).tlb == old(self).tlb,
@@ -2287,6 +2291,7 @@ impl CapKernel {
             final(self).frames == old(self).frames,
             final(self).devices == old(self).devices,
             final(self).threads == old(self).threads,
+            final(self).processes == old(self).processes,
             final(self).cores == old(self).cores,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).tlb == old(self).tlb,
@@ -2374,6 +2379,7 @@ impl CapKernel {
         requires
             post.devices == pre.devices,
             post.threads == pre.threads,
+            post.processes == pre.processes,
             pre.wf(),
             post.list == pre.list,
             post.tables == pre.tables,

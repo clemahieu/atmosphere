@@ -21,6 +21,7 @@ use crate::capability::reach::*;
 use crate::capability::refs::*;
 use crate::capability::space::*;
 use crate::capability::table::*;
+use crate::capability::process::*;
 use crate::capability::thread::*;
 use crate::capability::view::*;
 use crate::define::*;
@@ -818,6 +819,7 @@ impl CapKernel {
         &&& post.frames == pre.frames
         &&& post.devices == pre.devices
         &&& post.threads == pre.threads
+        &&& post.processes == pre.processes
     }
 
     /// The table entry i of table t leads to, in constant time. Above level 1 an entry either is a
@@ -1254,6 +1256,7 @@ impl CapKernel {
             final(self).frames == old(self).frames,
             final(self).devices == old(self).devices,
             final(self).threads == old(self).threads,
+            final(self).processes == old(self).processes,
             final(self).spaces == old(self).spaces,
             final(self).mappings == old(self).mappings,
             final(self).zeroing == old(self).zeroing,
@@ -1797,6 +1800,7 @@ impl CapKernel {
             leaf_blocks_wf(&post.list, &post.tables, &post.blocks),
             spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
             threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
+            processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
     {
         let node = mapping_node(t, e);
         let br = block_ref(&pre.blocks, frame);
@@ -1824,6 +1828,7 @@ impl CapKernel {
         lemma_spaces_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks, &post.blocks, br, refs, dead);
         assert(same_threads(&pre.list, &pre.tables, &post.list, &post.tables));
         lemma_threads_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks, &post.blocks, br, refs, dead);
+        lemma_processes_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks, &post.blocks, br, refs, dead);
     }
 
     /// The table pages and the links after a map: the frame's block is no table page's, and the entry
@@ -1976,6 +1981,40 @@ impl CapKernel {
         lemma_mapped_inserted(pre.mapped@, pre.mappings@, mapping_node(t, e), MappingRecord { table: t, entry: e, frame, large });
         assert(mapped_wf(post.mapped@, post.mappings@));
         assert(post.frames_wf());
+        Self::lemma_map_space_nodes(pre, post, t, e, f, frame, large);
+    }
+
+    /// The node a map makes lives in its table page's block, so every IO space's node pages stay dead.
+    proof fn lemma_map_space_nodes(pre: Self, post: Self, t: usize, e: usize, f: usize, frame: usize, large: bool)
+        requires
+            pre.wf(),
+            Self::map_from(pre, t, e, f, frame, large),
+            Self::map_written(pre, post, t, e, f, frame, large),
+        ensures
+            space_nodes_dead(&post.list, &post.spaces),
+    {
+        let n = mapping_node(t, e);
+        let j = ((e + 1) / (NODES_PER_PAGE as int)) as usize;
+        assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, t));
+        pre.lemma_map_node_place(t, e);
+        pre.lemma_table_page_room(t);
+        lemma_mapping_node_place(t, e);
+        assert forall|s: usize, k: usize, i: usize| #![trigger table_node(s, k, i)]
+            post.spaces.roots@.contains_key(s) && post.spaces.records@[s].value().kind is Io && k < TABLE_NODE_PAGES
+                && i < NODES_PER_PAGE
+            implies !post.list.nodes@[table_node(s, k, i) as int].live by {
+            let x = table_node(s, k, i);
+            assert(space_wf(&pre.list, &pre.spaces, &pre.blocks, s));
+            pre.lemma_space_node_in_block(s, k, i);
+            assert(s != t);
+            if x == n {
+                lemma_node_pages_disjoint(t, s, j);
+                assert(page_of(x) == table_node_page(s, k));
+                assert(page_of(n) == table_node_page(t, j));
+            }
+            assert(x != n);
+            assert(!pre.list.nodes@[x as int].live);
+        }
     }
 
     /// A mapping node is no capability, so what the view reads of capabilities stands, and its parent

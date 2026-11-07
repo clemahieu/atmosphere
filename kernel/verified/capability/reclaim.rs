@@ -19,6 +19,7 @@ use crate::capability::refs::*;
 use crate::capability::retype::*;
 use crate::capability::space::*;
 use crate::capability::table::*;
+use crate::capability::process::*;
 use crate::capability::thread::*;
 use crate::capability::view::*;
 use crate::capability::zero::*;
@@ -619,7 +620,7 @@ impl CapKernel {
                     self.free_space(c, root, from, base)
                 }
             },
-            ObjectType::None | ObjectType::Thread => ReclaimStep::Refused,
+            ObjectType::None | ObjectType::Thread | ObjectType::Process => ReclaimStep::Refused,
         }
     }
 
@@ -1446,6 +1447,7 @@ impl CapKernel {
             post.table_pages == pre.table_pages,
             post.spaces == pre.spaces,
             post.threads == pre.threads,
+            post.processes == pre.processes,
             post.mappings == pre.mappings,
         ensures
             holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
@@ -1456,6 +1458,7 @@ impl CapKernel {
             table_pages_wf(&post.list, &post.table_pages, &post.blocks),
             spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
             threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
+            processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
             mappings_wf(&post.list, &post.tables, tree_of(&post.table_pages, &post.spaces), &post.blocks, post.holders@, post.mappings@),
     {
         let page = base / 4096;
@@ -1515,6 +1518,7 @@ impl CapKernel {
         lemma_spaces_small_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks, &post.blocks, page);
         lemma_thread_node_pages_kept(&pre.list, &post.list, &pre.tables, &pre.threads, &pre.blocks, base);
         lemma_threads_small_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks, &post.blocks, page);
+        lemma_processes_small_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks, &post.blocks, page);
     }
 
     /// The kernel after the empty leaf at `base` frees: nothing but its block, its owner entry and its
@@ -1552,6 +1556,7 @@ impl CapKernel {
             post.mappings == pre.mappings,
             post.devices == pre.devices,
             post.threads == pre.threads,
+            post.processes == pre.processes,
         ensures
             post.wf(),
             post.view() == pre.view(),
@@ -1753,6 +1758,7 @@ impl CapKernel {
         &&& post.mappings == pre.mappings
         &&& post.devices == pre.devices
         &&& post.threads == pre.threads
+        &&& post.processes == pre.processes
     }
 
     /// One step of an empty table page going: its table, record and spare page go with its block.
@@ -1801,19 +1807,21 @@ impl CapKernel {
         }
     }
 
-    /// The threads after a table page's or a space's block frees: every thread lies outside it, so its
-    /// node page stays the list's, and no thread capability changed.
+    /// The threads and the processes after a table page's or a space's block frees: every thread and
+    /// every process lies outside it, and no capability naming one changed.
     proof fn lemma_node_block_threads(pre: Self, post: Self, base: usize)
         requires
             Self::node_block_freed_step(pre, post, base),
             pre.blocks.pages@[(base / 4096) as int].kind is Base,
             !(pre.blocks.pages@[(base / 4096) as int].object is Thread),
+            !(pre.blocks.pages@[(base / 4096) as int].object is Process),
             forall|i: int| 0 <= i < NUM_PAGES ==> #[trigger] post.blocks.pages@[i] == (
                 if pre.blocks.in_block((base / 4096) as int, i) { free_entry() } else { pre.blocks.pages@[i] }),
             forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x),
             forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x) ==> post.tables.payload_of(x) == pre.tables.payload_of(x),
         ensures
             threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
+            processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
     {
         let page = base / 4096;
         Self::lemma_node_block_list_pages(pre, post, base);
@@ -1826,6 +1834,7 @@ impl CapKernel {
             assert(!(base <= t < base + TABLE_NODE_PAGES * 4096));
         }
         lemma_threads_small_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks, &post.blocks, page);
+        lemma_processes_small_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks, &post.blocks, page);
     }
 
     /// A list page after the step is in no page of the freed block.
@@ -1858,6 +1867,7 @@ impl CapKernel {
             table_pages_wf(&post.list, &post.table_pages, &post.blocks),
             spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
             threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
+            processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
             list_pages_used(&post.list, &post.blocks),
     {
         let page = base / 4096;
@@ -1895,8 +1905,8 @@ impl CapKernel {
             assert(x != page);
             assert((x * 4096) as usize != base);
         }
-        assert forall|s: usize, k: usize| #[trigger] pre.spaces.roots@.contains_key(s) && k < TABLE_NODE_PAGES
-            implies post.list.pages@.dom().contains(#[trigger] table_node_page(s, k)) by {
+        assert forall|s: usize, k: usize| #[trigger] pre.spaces.roots@.contains_key(s) && pre.spaces.records@[s].value().kind is Io
+            && k < TABLE_NODE_PAGES implies post.list.pages@.dom().contains(#[trigger] table_node_page(s, k)) by {
             assert(space_wf(&pre.list, &pre.spaces, &pre.blocks, s));
             assert(pre.list.pages@.dom().contains(table_node_page(s, k)));
             assert(s != base);
@@ -2240,13 +2250,14 @@ impl CapKernel {
             !pre.table_pages.maps@.contains_key(base),
             post.table_pages == pre.table_pages,
             post.spaces.roots@ == pre.spaces.roots@.remove(base),
+            post.spaces.records@ == pre.spaces.records@.remove(base),
             forall|p: usize| #[trigger] post.list.pages@.dom().contains(p)
                 == (pre.list.pages@.dom().contains(p) && !(base <= p < base + TABLE_NODE_PAGES * 4096)),
         ensures
             forall|t: usize, k: usize| #[trigger] post.table_pages.maps@.contains_key(t) && k < TABLE_NODE_PAGES
                 ==> post.list.pages@.dom().contains(#[trigger] table_node_page(t, k)),
-            forall|s: usize, k: usize| #[trigger] post.spaces.roots@.contains_key(s) && k < TABLE_NODE_PAGES
-                ==> post.list.pages@.dom().contains(#[trigger] table_node_page(s, k)),
+            forall|s: usize, k: usize| #[trigger] post.spaces.roots@.contains_key(s) && post.spaces.records@[s].value().kind is Io
+                && k < TABLE_NODE_PAGES ==> post.list.pages@.dom().contains(#[trigger] table_node_page(s, k)),
     {
         assert forall|t: usize, k: usize| #[trigger] post.table_pages.maps@.contains_key(t) && k < TABLE_NODE_PAGES
             implies post.list.pages@.dom().contains(#[trigger] table_node_page(t, k)) by {
@@ -2254,8 +2265,9 @@ impl CapKernel {
             assert(pre.list.pages@.dom().contains(table_node_page(t, k)));
             lemma_node_pages_disjoint(t, base, k);
         }
-        assert forall|s: usize, k: usize| #[trigger] post.spaces.roots@.contains_key(s) && k < TABLE_NODE_PAGES
-            implies post.list.pages@.dom().contains(#[trigger] table_node_page(s, k)) by {
+        assert forall|s: usize, k: usize| #[trigger] post.spaces.roots@.contains_key(s) && post.spaces.records@[s].value().kind is Io
+            && k < TABLE_NODE_PAGES implies post.list.pages@.dom().contains(#[trigger] table_node_page(s, k)) by {
+            assert(post.spaces.records@[s] == pre.spaces.records@[s]);
             assert(space_wf(&pre.list, &pre.spaces, &pre.blocks, s));
             assert(pre.list.pages@.dom().contains(table_node_page(s, k)));
             lemma_node_pages_disjoint(s, base, k);
@@ -2272,6 +2284,7 @@ impl CapKernel {
             table_pages_wf(&post.list, &post.table_pages, &post.blocks),
             spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
             threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
+            processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
             list_pages_used(&post.list, &post.blocks),
     {
         let page = base / 4096;
@@ -2456,10 +2469,6 @@ impl CapKernel {
         }
         if !dead_space {
             return ReclaimStep::Refused;
-        }
-        match self.space_kind(base) {
-            SpaceKind::Process => { return ReclaimStep::Refused; },
-            SpaceKind::Io => {},
         }
         if !self.space_nothing_left(base) {
             return ReclaimStep::Refused;
@@ -3244,10 +3253,6 @@ impl CapKernel {
         if !dead_space {
             return false;
         }
-        match self.space_kind(base) {
-            SpaceKind::Process => { return false; },
-            SpaceKind::Io => {},
-        }
         let steps = self.cut_children(base, true);
         proof {
             if steps != 0 {
@@ -3257,15 +3262,16 @@ impl CapKernel {
         steps != 0
     }
 
-    /// A block that holds a space is that space's: a space's block is Base and Space, and its root has no
-    /// parent, is level 4 and is no table page.
+    /// A block that holds a space is that IO space's: an IO space's block is Base and Space, a process
+    /// space's is its process's, and a space's root has no parent, is level 4 and is no table page.
     proof fn lemma_space_block(&self, base: usize)
         requires
             self.wf(),
             base % 32768 == 0,
             base / 4096 < NUM_PAGES,
         ensures
-            space_block(&self.blocks, base / 4096) == self.spaces.roots@.contains_key(base),
+            space_block(&self.blocks, base / 4096)
+                == (self.spaces.roots@.contains_key(base) && self.spaces.records@[base].value().kind is Io),
             self.spaces.roots@.contains_key(base) ==> !self.table_pages.maps@.contains_key(base),
             self.spaces.roots@.contains_key(base) ==> tree_of(&self.table_pages, &self.spaces).record(base).parent is None,
             self.spaces.roots@.contains_key(base) ==> tree_of(&self.table_pages, &self.spaces).record(base).level == 4,

@@ -16,6 +16,7 @@ use crate::capability::reach::*;
 use crate::capability::refs::*;
 use crate::capability::space::*;
 use crate::capability::table::*;
+use crate::capability::process::*;
 use crate::capability::thread::*;
 use crate::capability::view::*;
 
@@ -133,7 +134,7 @@ impl CapKernel {
         &&& !self.list.nodes@[child as int].live
         &&& narrows(child_of(self.payload_of(parent), rights, base, order), self.payload_of(parent))
         &&& (self.payload_of(parent).kind is Frame || self.payload_of(parent).kind is Space
-            || self.payload_of(parent).kind is Thread) ==>
+            || self.payload_of(parent).kind is Thread || self.payload_of(parent).kind is Process) ==>
             block_refs(&self.blocks, block_ref(&self.blocks, self.payload_of(parent).base / 4096)) != usize::MAX
     }
 
@@ -193,6 +194,9 @@ impl CapKernel {
             if payload.kind is Thread {
                 pre.lemma_thread_cap(parent);
             }
+            if payload.kind is Process {
+                pre.lemma_process_cap(parent);
+            }
         }
         // A device has one IO table, so its capability has no children: it moves instead.
         if let CapKind::Device = payload.kind {
@@ -202,10 +206,10 @@ impl CapKernel {
             return false;
         }
         let counted = match payload.kind {
-            CapKind::Frame | CapKind::Space | CapKind::Thread => true,
+            CapKind::Frame | CapKind::Space | CapKind::Thread | CapKind::Process => true,
             _ => false,
         };
-        // A derived frame, space or thread holds a reference on the block its parent lies in.
+        // A derived frame, space, thread or process holds a reference on the block its parent lies in.
         let block = if counted {
             let br = locate(&self.blocks, payload.base / 4096);
             if !add_block_ref(&mut self.blocks, br) {
@@ -238,6 +242,9 @@ impl CapKernel {
                     },
                     CapKind::Thread => {
                         self.threads.holders = Ghost(pre.threads.holders@.insert(base, pre.threads.holders@[base].insert(child)));
+                    },
+                    CapKind::Process => {
+                        self.processes.holders = Ghost(pre.processes.holders@.insert(base, pre.processes.holders@[base].insert(child)));
                     },
                     _ => { self.holders = Ghost(pre.holders@.insert(br, pre.holders@[br].insert(child))); },
                 }
@@ -275,7 +282,7 @@ impl CapKernel {
             post.zeroing == pre.zeroing,
             post.list.pages@.dom() == pre.list.pages@.dom(),
             block is Some == (pre.payload_of(parent).kind is Frame || pre.payload_of(parent).kind is Space
-                || pre.payload_of(parent).kind is Thread),
+                || pre.payload_of(parent).kind is Thread || pre.payload_of(parent).kind is Process),
             block is Some ==> {
                 let br = block->0;
                 &&& br == block_ref(&pre.blocks, pre.payload_of(parent).base / 4096)
@@ -286,6 +293,7 @@ impl CapKernel {
                 &&& post.holders@ == pre.holders@.insert(block->0, pre.holders@[block->0].insert(child))
                 &&& post.spaces == pre.spaces
                 &&& post.threads == pre.threads
+                &&& post.processes == pre.processes
             },
             block is Some && pre.payload_of(parent).kind is Space ==> {
                 let s = pre.payload_of(parent).base;
@@ -297,6 +305,7 @@ impl CapKernel {
                 &&& post.spaces.bound == pre.spaces.bound
                 &&& post.spaces.holders@ == pre.spaces.holders@.insert(s, pre.spaces.holders@[s].insert(child))
                 &&& post.threads == pre.threads
+                &&& post.processes == pre.processes
             },
             block is Some && pre.payload_of(parent).kind is Thread ==> {
                 let t = pre.payload_of(parent).base;
@@ -304,9 +313,19 @@ impl CapKernel {
                 &&& post.spaces == pre.spaces
                 &&& post.threads.records == pre.threads.records
                 &&& post.threads.holders@ == pre.threads.holders@.insert(t, pre.threads.holders@[t].insert(child))
+                &&& post.processes == pre.processes
+            },
+            block is Some && pre.payload_of(parent).kind is Process ==> {
+                let p = pre.payload_of(parent).base;
+                &&& post.holders == pre.holders
+                &&& post.spaces == pre.spaces
+                &&& post.threads == pre.threads
+                &&& post.processes.records == pre.processes.records
+                &&& post.processes.spare == pre.processes.spare
+                &&& post.processes.holders@ == pre.processes.holders@.insert(p, pre.processes.holders@[p].insert(child))
             },
             block is None ==> post.blocks == pre.blocks && post.holders == pre.holders && post.spaces == pre.spaces
-                && post.threads == pre.threads,
+                && post.threads == pre.threads && post.processes == pre.processes,
             post.table_pages == pre.table_pages,
         ensures
             holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
@@ -317,6 +336,7 @@ impl CapKernel {
             table_pages_wf(&post.list, &post.table_pages, &post.blocks),
             spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
             threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
+            processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
     {
         assert forall|x: usize| x != child implies {
             &&& #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x)
@@ -350,6 +370,7 @@ impl CapKernel {
                     lemma_table_pages_refs_changed(&pre.list, &post.list, &pre.table_pages, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
                     lemma_spaces_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
                     lemma_threads_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
+                    lemma_processes_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
                 } else if pp.kind is Space {
                     // A space is its block's base, so the child names the parent's space.
                     pre.lemma_space_cap(parent);
@@ -373,7 +394,8 @@ impl CapKernel {
                     lemma_table_pages_refs_changed(&pre.list, &post.list, &pre.table_pages, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
                     Self::lemma_spaces_holder_added(pre, post, child, s);
                     lemma_threads_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
-                } else {
+                    lemma_processes_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
+                } else if pp.kind is Thread {
                     // A thread is its block's base, so the child names the parent's thread.
                     pre.lemma_thread_cap(parent);
                     let t = pp.base;
@@ -396,6 +418,31 @@ impl CapKernel {
                     lemma_table_pages_refs_changed(&pre.list, &post.list, &pre.table_pages, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
                     lemma_spaces_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
                     Self::lemma_threads_holder_added(pre, post, child, t);
+                    lemma_processes_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
+                } else {
+                    // A process is its block's base, so the child names the parent's process.
+                    pre.lemma_process_cap(parent);
+                    let p = pp.base;
+                    assert(br == BlockRef::Small(p / 4096));
+                    assert(cp.base == p);
+                    assert(cp.order == PROCESS_ORDER);
+                    lemma_holders_same_frames(&pre.list, &pre.tables, &post.list, &post.tables, &pre.blocks, &pre.zeroing, pre.holders@);
+                    assert(!pre.holders@.contains_key(br)) by {
+                        if pre.holders@.contains_key(br) {
+                            assert(pre.blocks.pages@[(p / 4096) as int].object is Frame);
+                        }
+                    }
+                    lemma_holders_unkeyed_small_changed(&post.list, &post.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, p / 4096, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
+                    lemma_zeroing_typed_small_changed(&pre.zeroing, &pre.blocks, &post.blocks, p / 4096, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
+                    lemma_list_pages_used_same_kinds(&pre.list, &pre.blocks, &post.blocks);
+                    assert(objects_wf(&post.tables, &pre.blocks, pre.holders@));
+                    lemma_objects_unframed_block_changed(&post.tables, &pre.blocks, &post.blocks, pre.holders@, p / 4096, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
+                    assert(leaf_blocks_wf(&pre.list, &post.tables, &pre.blocks));
+                    lemma_leaf_blocks_other_changed(&pre.list, &post.list, &post.tables, &pre.blocks, &post.blocks, pre.holders@, p / 4096, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
+                    lemma_table_pages_refs_changed(&pre.list, &post.list, &pre.table_pages, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
+                    lemma_spaces_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
+                    lemma_threads_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
+                    Self::lemma_processes_holder_added(pre, post, child, p);
                 }
             },
             None => {
@@ -405,6 +452,7 @@ impl CapKernel {
                 lemma_table_pages_same_nodes(&pre.list, &post.list, &pre.table_pages, &post.blocks);
                 lemma_spaces_same_caps(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks);
                 lemma_threads_same_caps(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks);
+                lemma_processes_same_caps(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks);
             },
         }
     }

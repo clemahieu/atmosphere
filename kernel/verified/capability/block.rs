@@ -40,6 +40,7 @@ pub enum ObjectType {
     TablePage,
     Space,
     Thread,
+    Process,
 }
 
 #[derive(Clone, Copy)]

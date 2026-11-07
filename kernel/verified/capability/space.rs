@@ -18,6 +18,7 @@ use crate::capability::reach::*;
 use crate::capability::refs::*;
 use crate::capability::retype::*;
 use crate::capability::table::*;
+use crate::capability::process::*;
 use crate::capability::thread::*;
 use crate::capability::view::*;
 use crate::layouts::*;
@@ -183,9 +184,11 @@ pub open spec fn space_block(blocks: &BlockTable, b: usize) -> bool {
     &&& blocks.pages@[b as int].object is Space
 }
 
-/// The space at s has its record, the root table its record points at, its list of cores and its node
-/// pages. Its block's references are exactly its holders and the devices bound to it, and it is dead at
-/// once when they go. A process space has no device bound.
+/// The space at s has its record, the root table its record points at and its list of cores. An IO
+/// space is a block of its own with node pages, whose references are exactly its holders and the
+/// devices bound to it, and it is dead at once when they go. A process space lies in its process's
+/// block, which its process capabilities hold, so no space capability names it and no device is bound
+/// to it.
 pub open spec fn space_wf(list: &Tree, spaces: &Spaces, blocks: &BlockTable, s: usize) -> bool {
     &&& s % 32768 == 0
     &&& s / 4096 < NUM_PAGES
@@ -202,17 +205,22 @@ pub open spec fn space_wf(list: &Tree, spaces: &Spaces, blocks: &BlockTable, s: 
     &&& spaces.loaded@[s].is_init()
     &&& spaces.records@[s].value().kind is Io ==> spaces.loaded@[s].value().list == 0u32
     &&& blocks.pages@[(s / 4096) as int].kind is Base
-    &&& blocks.pages@[(s / 4096) as int].object is Space
+    &&& spaces.records@[s].value().kind is Io ==> blocks.pages@[(s / 4096) as int].object is Space
+    &&& spaces.records@[s].value().kind is Process ==> blocks.pages@[(s / 4096) as int].object is Process
     &&& blocks.pages@[(s / 4096) as int].order == 3
-    &&& forall|k: usize| k < TABLE_NODE_PAGES ==> list.pages@.dom().contains(#[trigger] table_node_page(s, k))
+    &&& spaces.records@[s].value().kind is Io
+        ==> forall|k: usize| k < TABLE_NODE_PAGES ==> list.pages@.dom().contains(#[trigger] table_node_page(s, k))
     &&& spaces.holders@.contains_key(s)
     &&& kernel_slots_wf(spaces, s)
     &&& spaces.holders@[s].finite()
     &&& spaces.bound@.contains_key(s)
     &&& spaces.bound@[s].finite()
     &&& spaces.records@[s].value().kind is Process ==> spaces.bound@[s] == Set::<usize>::empty()
-    &&& spaces.holders@[s].len() + spaces.bound@[s].len() == blocks.pages@[(s / 4096) as int].refs
-    &&& blocks.pages@[(s / 4096) as int].refs == 0 ==> blocks.pages@[(s / 4096) as int].dead
+    &&& spaces.records@[s].value().kind is Process ==> spaces.holders@[s] == Set::<usize>::empty()
+    &&& spaces.records@[s].value().kind is Io
+        ==> spaces.holders@[s].len() + spaces.bound@[s].len() == blocks.pages@[(s / 4096) as int].refs
+    &&& spaces.records@[s].value().kind is Io
+        ==> (blocks.pages@[(s / 4096) as int].refs == 0 ==> blocks.pages@[(s / 4096) as int].dead)
 }
 
 /// Entry i of a root of this kind holds the kernel's. Kernel slots exist only in process spaces.
@@ -302,8 +310,10 @@ pub proof fn lemma_spaces_same_caps(
 {
     assert forall|s: usize| #[trigger] spaces.roots@.contains_key(s) implies space_wf(list_b, spaces, blocks, s) by {
         assert(space_wf(list_a, spaces, blocks, s));
-        assert forall|k: usize| k < TABLE_NODE_PAGES implies list_b.pages@.dom().contains(#[trigger] table_node_page(s, k)) by {
-            assert(list_a.pages@.dom().contains(table_node_page(s, k)));
+        if spaces.records@[s].value().kind is Io {
+            assert forall|k: usize| k < TABLE_NODE_PAGES implies list_b.pages@.dom().contains(#[trigger] table_node_page(s, k)) by {
+                assert(list_a.pages@.dom().contains(table_node_page(s, k)));
+            }
         }
     }
     assert forall|n: usize| #[trigger] tables_b.is_cap(list_b, n) && tables_b.payload_of(n).kind is Space implies {
@@ -366,11 +376,13 @@ pub proof fn lemma_spaces_refs_changed(
     lemma_spaces_same_caps(list_a, tables_a, list_b, tables_b, spaces, a);
     assert forall|s: usize| #[trigger] spaces.roots@.contains_key(s) implies space_wf(list_b, spaces, b, s) by {
         assert(space_wf(list_b, spaces, a, s));
-        let x = BlockRef::Small(s / 4096);
-        assert(block_typed(a, x));
-        assert(x != br);
-        assert(block_refs(b, x) == block_refs(a, x));
-        assert(block_dead(b, x) == block_dead(a, x));
+        if spaces.records@[s].value().kind is Io {
+            let x = BlockRef::Small(s / 4096);
+            assert(block_typed(a, x));
+            assert(x != br);
+            assert(block_refs(b, x) == block_refs(a, x));
+            assert(block_dead(b, x) == block_dead(a, x));
+        }
     }
     assert forall|x: usize| x < NUM_PAGES && #[trigger] space_block(b, x) implies spaces.roots@.contains_key((x * 4096) as usize) by {
         assert(space_block(a, x));
@@ -432,20 +444,27 @@ pub proof fn lemma_spaces_small_freed(
 )
     requires
         spaces_wf(list_a, tables_a, spaces, a),
+        a.wf(),
+        base < NUM_PAGES,
+        a.pages@[base as int].kind is Base,
+        !(a.pages@[base as int].object is Process),
         forall|p: usize| #[trigger] list_b.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
             ==> !a.in_block(base as int, (p / 4096) as int),
         forall|i: int| 0 <= i < NUM_PAGES ==> #[trigger] b.pages@[i] == (
             if a.in_block(base as int, i) { free_entry() } else { a.pages@[i] }),
         same_spaces(list_a, tables_a, list_b, tables_b),
-        forall|s: usize, k: usize| #[trigger] spaces.roots@.contains_key(s) && k < TABLE_NODE_PAGES
-            ==> list_b.pages@.dom().contains(#[trigger] table_node_page(s, k)),
+        forall|s: usize, k: usize| #[trigger] spaces.roots@.contains_key(s) && spaces.records@[s].value().kind is Io
+            && k < TABLE_NODE_PAGES ==> list_b.pages@.dom().contains(#[trigger] table_node_page(s, k)),
     ensures
         spaces_wf(list_b, tables_b, spaces, b),
 {
+    lemma_process_spaces_outside_block(list_a, tables_a, spaces, a, base);
     assert forall|s: usize| #[trigger] spaces.roots@.contains_key(s) implies space_wf(list_b, spaces, b, s) by {
         assert(space_wf(list_a, spaces, a, s));
-        assert(list_b.pages@.dom().contains(table_node_page(s, 0)));
-        assert(table_node_page(s, 0) == s);
+        if spaces.records@[s].value().kind is Io {
+            assert(list_b.pages@.dom().contains(table_node_page(s, 0)));
+            assert(table_node_page(s, 0) == s);
+        }
         assert(!a.in_block(base as int, (s / 4096) as int));
         assert(b.pages@[(s / 4096) as int] == a.pages@[(s / 4096) as int]);
     }
@@ -472,8 +491,31 @@ pub proof fn lemma_spaces_small_freed(
     }
 }
 
-/// A space's node pages stay the list's when a page of another kind of block leaves it: each is its
-/// block's base or member.
+/// No process's space lies in a block that is no process's: a process space's first page is its
+/// process's base.
+pub proof fn lemma_process_spaces_outside_block(list: &Tree, tables: &Tables, spaces: &Spaces, blocks: &BlockTable, page: usize)
+    requires
+        spaces_wf(list, tables, spaces, blocks),
+        blocks.wf(),
+        page < NUM_PAGES,
+        blocks.pages@[page as int].kind is Base,
+        !(blocks.pages@[page as int].object is Process),
+    ensures
+        forall|s: usize| #[trigger] spaces.roots@.contains_key(s) && spaces.records@[s].value().kind is Process
+            ==> !blocks.in_block(page as int, (s / 4096) as int),
+{
+    assert forall|s: usize| #[trigger] spaces.roots@.contains_key(s) && spaces.records@[s].value().kind is Process
+        implies !blocks.in_block(page as int, (s / 4096) as int) by {
+        assert(space_wf(list, spaces, blocks, s));
+        let x = (s / 4096) as int;
+        if blocks.in_block(page as int, x) && x != page {
+            blocks.lemma_member_of(page as int, x);
+        }
+    }
+}
+
+/// An IO space's node pages stay the list's when a page of another kind of block leaves it: each is
+/// its block's base or member.
 pub proof fn lemma_space_node_pages_kept(
     list_a: &Tree,
     list_b: &Tree,
@@ -490,11 +532,11 @@ pub proof fn lemma_space_node_pages_kept(
         !(blocks.pages@[(base / 4096) as int].object is Space),
         list_b.pages@.dom() == list_a.pages@.dom().remove(base),
     ensures
-        forall|s: usize, k: usize| #[trigger] spaces.roots@.contains_key(s) && k < TABLE_NODE_PAGES
-            ==> list_b.pages@.dom().contains(#[trigger] table_node_page(s, k)),
+        forall|s: usize, k: usize| #[trigger] spaces.roots@.contains_key(s) && spaces.records@[s].value().kind is Io
+            && k < TABLE_NODE_PAGES ==> list_b.pages@.dom().contains(#[trigger] table_node_page(s, k)),
 {
-    assert forall|s: usize, k: usize| #[trigger] spaces.roots@.contains_key(s) && k < TABLE_NODE_PAGES
-        implies list_b.pages@.dom().contains(#[trigger] table_node_page(s, k)) by {
+    assert forall|s: usize, k: usize| #[trigger] spaces.roots@.contains_key(s) && spaces.records@[s].value().kind is Io
+        && k < TABLE_NODE_PAGES implies list_b.pages@.dom().contains(#[trigger] table_node_page(s, k)) by {
         assert(space_wf(list_a, spaces, blocks, s));
         let p = table_node_page(s, k);
         assert(list_a.pages@.dom().contains(p));
@@ -1021,17 +1063,25 @@ pub proof fn lemma_spaces_space_freed(
         forall|i: int| 0 <= i < NUM_PAGES ==> #[trigger] b.pages@[i] == (
             if a.in_block((base / 4096) as int, i) { free_entry() } else { a.pages@[i] }),
         same_spaces(list_a, tables_a, list_b, tables_b),
-        forall|s: usize, k: usize| #[trigger] sb.roots@.contains_key(s) && k < TABLE_NODE_PAGES
-            ==> list_b.pages@.dom().contains(#[trigger] table_node_page(s, k)),
+        a.wf(),
+        base / 4096 < NUM_PAGES,
+        a.pages@[(base / 4096) as int].kind is Base,
+        a.pages@[(base / 4096) as int].object is Space,
+        forall|s: usize, k: usize| #[trigger] sb.roots@.contains_key(s) && sb.records@[s].value().kind is Io
+            && k < TABLE_NODE_PAGES ==> list_b.pages@.dom().contains(#[trigger] table_node_page(s, k)),
     ensures
         spaces_wf(list_b, tables_b, sb, b),
 {
     let page = base / 4096;
+    lemma_process_spaces_outside_block(list_a, tables_a, sa, a, page);
     assert forall|s: usize| #[trigger] sb.roots@.contains_key(s) implies space_wf(list_b, sb, b, s) by {
         assert(sa.roots@.contains_key(s));
         assert(space_wf(list_a, sa, a, s));
-        assert(list_b.pages@.dom().contains(table_node_page(s, 0)));
-        assert(table_node_page(s, 0) == s);
+        assert(sb.records@[s] == sa.records@[s]);
+        if sa.records@[s].value().kind is Io {
+            assert(list_b.pages@.dom().contains(table_node_page(s, 0)));
+            assert(table_node_page(s, 0) == s);
+        }
         assert(!a.in_block(page as int, (s / 4096) as int));
         assert(b.pages@[(s / 4096) as int] == a.pages@[(s / 4096) as int]);
         assert(sb.records@[s] == sa.records@[s]);
@@ -1370,6 +1420,7 @@ impl CapKernel {
         ensures
             self.spaces.roots@.contains_key(self.payload_of(n).base),
             self.spaces.holders@[self.payload_of(n).base].contains(n),
+            self.spaces.records@[self.payload_of(n).base].value().kind is Io,
             self.payload_of(n).base % 32768 == 0,
             self.payload_of(n).base / 4096 < NUM_PAGES,
             self.blocks.pages@[(self.payload_of(n).base / 4096) as int].object is Space,
@@ -1380,6 +1431,11 @@ impl CapKernel {
         let s = self.payload_of(n).base;
         assert(self.tables.is_cap(&self.list, n));
         assert(space_wf(&self.list, &self.spaces, &self.blocks, s));
+        assert(self.spaces.records@[s].value().kind is Io) by {
+            if self.spaces.records@[s].value().kind is Process {
+                assert(self.spaces.holders@[s].contains(n));
+            }
+        }
         if self.spaces.holders@[s].len() == 0 {
             self.spaces.holders@[s].lemma_len0_is_empty();
         }
@@ -1421,6 +1477,7 @@ impl CapKernel {
             post.payload_of(n).base == s,
             post.payload_of(n).order == 3,
             pre.spaces.roots@.contains_key(s),
+            pre.spaces.records@[s].value().kind is Io,
             block_refs(&pre.blocks, BlockRef::Small(s / 4096)) < usize::MAX,
             blocks_refs_changed(
                 &pre.blocks,
@@ -1450,17 +1507,21 @@ impl CapKernel {
         assert forall|t: usize| #[trigger] post.spaces.roots@.contains_key(t)
             implies space_wf(&post.list, &post.spaces, b, t) by {
             assert(space_wf(&pre.list, &pre.spaces, a, t));
-            assert forall|k: usize| k < TABLE_NODE_PAGES implies post.list.pages@.dom().contains(#[trigger] table_node_page(t, k)) by {
-                assert(pre.list.pages@.dom().contains(table_node_page(t, k)));
+            if pre.spaces.records@[t].value().kind is Io {
+                assert forall|k: usize| k < TABLE_NODE_PAGES implies post.list.pages@.dom().contains(#[trigger] table_node_page(t, k)) by {
+                    assert(pre.list.pages@.dom().contains(table_node_page(t, k)));
+                }
             }
             if t != s {
-                lemma_table_pages_distinct(t, s);
-                let x = BlockRef::Small(t / 4096);
-                assert(block_typed(a, x));
-                assert(x != br);
-                assert(block_refs(b, x) == block_refs(a, x));
-                assert(block_dead(b, x) == block_dead(a, x));
                 assert(hb[t] == ha[t]);
+                if pre.spaces.records@[t].value().kind is Io {
+                    lemma_table_pages_distinct(t, s);
+                    let x = BlockRef::Small(t / 4096);
+                    assert(block_typed(a, x));
+                    assert(x != br);
+                    assert(block_refs(b, x) == block_refs(a, x));
+                    assert(block_dead(b, x) == block_dead(a, x));
+                }
             }
         }
         assert forall|x: usize| x < NUM_PAGES && #[trigger] space_block(b, x)
@@ -1529,17 +1590,21 @@ impl CapKernel {
         assert forall|t: usize| #[trigger] post.spaces.roots@.contains_key(t)
             implies space_wf(&post.list, &post.spaces, b, t) by {
             assert(space_wf(&pre.list, &pre.spaces, a, t));
-            assert forall|k: usize| k < TABLE_NODE_PAGES implies post.list.pages@.dom().contains(#[trigger] table_node_page(t, k)) by {
-                assert(pre.list.pages@.dom().contains(table_node_page(t, k)));
+            if pre.spaces.records@[t].value().kind is Io {
+                assert forall|k: usize| k < TABLE_NODE_PAGES implies post.list.pages@.dom().contains(#[trigger] table_node_page(t, k)) by {
+                    assert(pre.list.pages@.dom().contains(table_node_page(t, k)));
+                }
             }
             if t != s {
-                lemma_table_pages_distinct(t, s);
-                let x = BlockRef::Small(t / 4096);
-                assert(block_typed(a, x));
-                assert(x != br);
-                assert(block_refs(b, x) == block_refs(a, x));
-                assert(block_dead(b, x) == block_dead(a, x));
                 assert(hb[t] == ha[t]);
+                if pre.spaces.records@[t].value().kind is Io {
+                    lemma_table_pages_distinct(t, s);
+                    let x = BlockRef::Small(t / 4096);
+                    assert(block_typed(a, x));
+                    assert(x != br);
+                    assert(block_refs(b, x) == block_refs(a, x));
+                    assert(block_dead(b, x) == block_dead(a, x));
+                }
             }
         }
         assert forall|x: usize| x < NUM_PAGES && #[trigger] space_block(b, x)
@@ -1654,6 +1719,7 @@ impl CapKernel {
             same_frames(&pre.list, &pre.tables, &post.list, &post.tables),
             same_spaces(&pre.list, &pre.tables, &post.list, &post.tables),
             same_threads(&pre.list, &pre.tables, &post.list, &post.tables),
+            same_processes(&pre.list, &pre.tables, &post.list, &post.tables),
             forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x),
             forall|x: usize| #[trigger] pre.is_cap(x) ==> post.payload_of(x) == pre.payload_of(x),
     {
@@ -1682,6 +1748,18 @@ impl CapKernel {
             Self::lemma_table_page_cap(pre, post, x);
         }
         assert forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x) && pre.tables.payload_of(x).kind is Thread implies {
+            &&& post.tables.is_cap(&post.list, x)
+            &&& post.tables.payload_of(x) == pre.tables.payload_of(x)
+        } by {
+            Self::lemma_table_page_cap(pre, post, x);
+        }
+        assert forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) && post.tables.payload_of(x).kind is Process implies {
+            &&& pre.tables.is_cap(&pre.list, x)
+            &&& pre.tables.payload_of(x) == post.tables.payload_of(x)
+        } by {
+            Self::lemma_table_page_cap(pre, post, x);
+        }
+        assert forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x) && pre.tables.payload_of(x).kind is Process implies {
             &&& post.tables.is_cap(&post.list, x)
             &&& post.tables.payload_of(x) == pre.tables.payload_of(x)
         } by {
@@ -1836,6 +1914,7 @@ impl CapKernel {
             post.table_pages.spare@[(base + 7 * 4096) as usize].is_uninit(),
             post.spaces == pre.spaces,
             post.threads == pre.threads,
+            post.processes == pre.processes,
         ensures
             list_pages_used(&post.list, &post.blocks),
             holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
@@ -1844,6 +1923,7 @@ impl CapKernel {
             table_pages_wf(&post.list, &post.table_pages, &post.blocks),
             spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
             threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
+            processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
             zeroing_typed(&post.zeroing, &post.blocks),
     {
         let a = &pre.blocks;
@@ -1872,6 +1952,12 @@ impl CapKernel {
             }
         }
         lemma_threads_small_typed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, a, b, page, 8);
+        assert forall|k: int| 0 <= k < 8 implies !((#[trigger] b.pages@[page + k]).object is Process) by {
+            if k == 0 {
+                assert(b.pages@[page as int].object is TablePage);
+            }
+        }
+        lemma_processes_small_typed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, a, b, page, 8);
         lemma_holders_small_typed(&pre.list, &pre.tables, a, b, &pre.zeroing, pre.holders@, page, 3);
         lemma_holders_same_frames(&pre.list, &pre.tables, &post.list, &post.tables, b, &pre.zeroing, pre.holders@);
         assert forall|br: BlockRef| #[trigger] pre.holders@.contains_key(br) implies block_typed(a, br) by {}
@@ -2061,7 +2147,7 @@ impl CapKernel {
 
     /// The links after a space's retype: the new root has no parent and no entry outside the kernel
     /// slots.
-    proof fn lemma_space_links(pre: Self, post: Self, base: usize, page: usize)
+    pub proof fn lemma_space_links(pre: Self, post: Self, base: usize, page: usize)
         requires
             pre.wf(),
             base / 4096 == page,
@@ -2127,7 +2213,7 @@ impl CapKernel {
     }
 
     /// A space's retype leaves every other's mapping as it was, and the new space maps nothing.
-    proof fn lemma_space_mappings(pre: Self, post: Self, base: usize, page: usize)
+    pub proof fn lemma_space_mappings(pre: Self, post: Self, base: usize, page: usize)
         requires
             pre.wf(),
             base / 4096 == page,
@@ -2458,6 +2544,7 @@ impl CapKernel {
             base % 32768 == 0,
             base / 4096 + 8 <= NUM_PAGES,
             post.spaces.roots@ == pre.spaces.roots@.insert(base, post.spaces.roots@[base]),
+            post.spaces.records@ == pre.spaces.records@.insert(base, post.spaces.records@[base]),
             forall|k: usize| k < 8 ==> !pre.list.pages@.dom().contains(#[trigger] table_node_page(base, k)),
             pre.list.valid(child),
             pre.tables.owner@.contains_key(page_of(child)),
@@ -2467,7 +2554,8 @@ impl CapKernel {
             space_nodes_dead(&post.list, &post.spaces),
     {
         assert forall|s: usize, k: usize, i: usize| #![trigger table_node(s, k, i)]
-            post.spaces.roots@.contains_key(s) && k < TABLE_NODE_PAGES && i < NODES_PER_PAGE
+            post.spaces.roots@.contains_key(s) && post.spaces.records@[s].value().kind is Io && k < TABLE_NODE_PAGES
+                && i < NODES_PER_PAGE
             implies !post.list.nodes@[table_node(s, k, i) as int].live by {
             let x = table_node(s, k, i);
             if s == base {
@@ -2509,6 +2597,7 @@ impl CapKernel {
             post.spaces.records@[base].addr() == base + SPACE_RECORD_PAGE * 4096,
             post.spaces.records@[base].is_init(),
             post.spaces.records@[base].value().root == base + SPACE_ROOT_PAGE * 4096,
+            post.spaces.records@[base].value().kind is Io,
             post.spaces.loaded@ == pre.spaces.loaded@.insert(base, post.spaces.loaded@[base]),
             post.spaces.loaded@[base].addr() == base + SPACE_CORES_PAGE * 4096,
             post.spaces.loaded@[base].is_init(),
@@ -2559,8 +2648,10 @@ impl CapKernel {
                 assert(sb.records@[s] == sa.records@[s]);
                 assert(sb.loaded@[s] == sa.loaded@[s]);
                 assert(sb.holders@[s] == sa.holders@[s]);
-                assert forall|k: usize| k < TABLE_NODE_PAGES implies post.list.pages@.dom().contains(#[trigger] table_node_page(s, k)) by {
-                    assert(pre.list.pages@.dom().contains(table_node_page(s, k)));
+                if sa.records@[s].value().kind is Io {
+                    assert forall|k: usize| k < TABLE_NODE_PAGES implies post.list.pages@.dom().contains(#[trigger] table_node_page(s, k)) by {
+                        assert(pre.list.pages@.dom().contains(table_node_page(s, k)));
+                    }
                 }
             }
         }
@@ -2700,10 +2791,10 @@ impl CapKernel {
         lemma_table_pages_same_nodes(&pre.list, &post.list, &pre.table_pages, b);
     }
 
-    /// Retypes the free block at `base` as a space of the given kind, under the untyped at index `from`
-    /// of the table at `root`, with its capability at the empty index `to`. All of these come from user
-    /// space, and a refusal changes nothing.
-    pub fn retype_space(&mut self, root: usize, from: usize, to: usize, base: usize, kind: SpaceKind) -> (ret: bool)
+    /// Retypes the free block at `base` as an IO space, under the untyped at index `from` of the table at
+    /// `root`, with its capability at the empty index `to`. All of these come from user space, and a
+    /// refusal changes nothing. A process's space is part of its process: see retype_process.
+    pub fn retype_space(&mut self, root: usize, from: usize, to: usize, base: usize) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
@@ -2720,7 +2811,7 @@ impl CapKernel {
                 &&& final(self).payload_of(child) == space_of(base)
                 &&& final(self).list.is_child(parent, child)
                 &&& final(self).spaces.roots@.contains_key(base)
-                &&& final(self).spaces.records@[base].value().kind == kind
+                &&& final(self).spaces.records@[base].value().kind is Io
                 &&& final(self).spaces.records@[base].value().table == fresh_root(base)
                 &&& forall|c: int| 0 <= c < NUM_CPUS ==> !#[trigger] final(self).loaded(c, base)
                 &&& forall|c: int| 0 <= c < NUM_CPUS ==> !#[trigger] holds_id(final(self).cores@, final(self).spaces.loaded@, c, base)
@@ -2728,7 +2819,7 @@ impl CapKernel {
                 &&& forall|r: usize| #[trigger] old(self).spaces.roots@.contains_key(r) ==>
                     space_mapping(tree_of(&final(self).table_pages, &final(self).spaces), r)
                         == space_mapping(tree_of(&old(self).table_pages, &old(self).spaces), r)
-                &&& forall|i: usize| i < 512 && !holds_kernel(kind, i) ==> #[trigger] final(self).spaces.roots@[base].value()[i].is_empty()
+                &&& forall|i: usize| i < 512 ==> #[trigger] final(self).spaces.roots@[base].value()[i].is_empty()
                 &&& final(self).spaces.kernel_entries == old(self).spaces.kernel_entries
                 &&& final(self).spaces.bound@ == old(self).spaces.bound@.insert(base, Set::<usize>::empty())
                 &&& forall|s: usize| #[trigger] old(self).spaces.roots@.contains_key(s) ==> final(self).spaces.roots@[s] == old(self).spaces.roots@[s]
@@ -2806,13 +2897,7 @@ impl CapKernel {
         }
         let root_table = base + SPACE_ROOT_PAGE * 4096;
         let (_, Tracked(map)) = page_perm_to_page_map(root_table, Tracked(table));
-        let tracked mut map = map;
-        match kind {
-            SpaceKind::Process => {
-                page_map_set_kernel_entry_range(&self.spaces.kernel_entries, root_table, Tracked(&mut map));
-            },
-            SpaceKind::Io => {},
-        }
+        let tracked map = map;
         let tracked mut typed;
         let tracked mut cores;
         proof {
@@ -2824,7 +2909,7 @@ impl CapKernel {
         let pptr = PPtr::<SpaceRecord>::from_usize(base + SPACE_RECORD_PAGE * 4096);
         pptr.put(
             Tracked(&mut typed),
-            SpaceRecord { kind, root: root_table, table: TableRecord { level: 4, space: Some(base), parent: None, written: false } },
+            SpaceRecord { kind: SpaceKind::Io, root: root_table, table: TableRecord { level: 4, space: Some(base), parent: None, written: false } },
         );
         proof {
             self.spaces.roots.borrow_mut().tracked_insert(base, map);
@@ -2868,6 +2953,7 @@ impl CapKernel {
             Self::lemma_tlb_same(pre, post);
             Self::lemma_space_nodes(pre, post, mid, parent, child);
             Self::lemma_table_nodes_frame(pre, post, child, child);
+            assert(post.spaces.records@ == pre.spaces.records@.insert(base, post.spaces.records@[base]));
             Self::lemma_space_nodes_added(pre, post, base, child);
             assert(post.list.pages@.dom() == mid.pages@.dom());
             lemma_mapping_nodes_grown(pre.list, mid, post.list, child, child);
@@ -2899,6 +2985,12 @@ impl CapKernel {
                 }
             }
             lemma_threads_small_typed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks, &post.blocks, page, 8);
+            assert forall|k: int| 0 <= k < 8 implies !((#[trigger] post.blocks.pages@[page + k]).object is Process) by {
+                if k == 0 {
+                    assert(post.blocks.pages@[page as int].object is Space);
+                }
+            }
+            lemma_processes_small_typed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks, &post.blocks, page, 8);
             Self::lemma_space_links(pre, post, base, page);
             Self::lemma_space_mappings(pre, post, base, page);
             assert forall|n: usize| #[trigger] pre.mappings@.contains_key(n)

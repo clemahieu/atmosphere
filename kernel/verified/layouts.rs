@@ -6,6 +6,7 @@ use vstd::prelude::*;
 use crate::capability::list::NodePage;
 use crate::capability::space::{SpaceCores, SpaceRecord, TableRecord};
 use crate::capability::table::{PayloadPage, TableRoot};
+use crate::capability::process::ProcessRecord;
 use crate::capability::thread::ThreadRecord;
 use crate::define::PagePerm4k;
 use crate::pagetable::pagemap::PageMap;
@@ -33,6 +34,7 @@ global layout PageMap is size == 4096, align == 8;
 global layout TableRecord is size == 56, align == 8;
 global layout SpaceCores is size == 264, align == 8;
 global layout ThreadRecord is size == 192, align == 8;
+global layout ProcessRecord is size == 1, align == 1;
 
 /// A 4K page converts to a thread and back, using these layouts and no other facts.
 proof fn thread_page_round_trip(tracked page: PagePerm4k) -> (tracked ret: PagePerm4k)
@@ -93,6 +95,18 @@ pub proof fn page_into_thread_record(tracked page: PagePerm4k) -> (tracked ret: 
         ret.is_uninit(),
 {
     crate::pptr::page_into_typed::<ThreadRecord>(page)
+}
+
+/// A page becomes an uninitialised process record.
+pub proof fn page_into_process_record(tracked page: PagePerm4k) -> (tracked ret: PointsTo<ProcessRecord>)
+    requires
+        page.is_uninit(),
+        page.addr() % 4096 == 0,
+    ensures
+        ret.addr() == page.addr(),
+        ret.is_uninit(),
+{
+    crate::pptr::page_into_typed::<ProcessRecord>(page)
 }
 
 /// A page becomes an uninitialised list of a space's cores.

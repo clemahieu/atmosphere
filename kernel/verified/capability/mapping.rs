@@ -13,6 +13,7 @@ use crate::capability::list::*;
 use crate::capability::refs::*;
 use crate::capability::space::*;
 use crate::capability::table::*;
+use crate::capability::process::*;
 use crate::capability::thread::*;
 use crate::define::*;
 use crate::pagetable::entry::PageEntry;
@@ -425,6 +426,7 @@ impl CapKernel {
             post.stale_epoch == pre.stale_epoch,
             post.devices == pre.devices,
             post.threads == pre.threads,
+            post.processes == pre.processes,
             post.flush_epoch == pre.flush_epoch,
         ensures
             post.wf(),
@@ -1363,6 +1365,7 @@ impl CapKernel {
             final(self).spaces == old(self).spaces,
             final(self).devices == old(self).devices,
             final(self).threads == old(self).threads,
+            final(self).processes == old(self).processes,
             final(self).table_pages.records == old(self).table_pages.records,
             final(self).table_pages.spare == old(self).table_pages.spare,
     {
@@ -1495,6 +1498,7 @@ impl CapKernel {
             final(self).cores == old(self).cores,
             final(self).devices == old(self).devices,
             final(self).threads == old(self).threads,
+            final(self).processes == old(self).processes,
     {
         let ghost pre = *old(self);
         let ghost tree = tree_of(&pre.table_pages, &pre.spaces);
@@ -2004,6 +2008,7 @@ impl CapKernel {
         requires
             self.wf(),
             self.spaces.roots@.contains_key(s),
+            self.spaces.records@[s].value().kind is Io,
             k < TABLE_NODE_PAGES,
             i < NODES_PER_PAGE,
         ensures
@@ -2038,7 +2043,8 @@ impl CapKernel {
     pub proof fn lemma_space_nodes_frame(pre: Self, post: Self, n: usize, m: usize)
         requires
             pre.wf(),
-            forall|s: usize| #[trigger] post.spaces.roots@.contains_key(s) ==> pre.spaces.roots@.contains_key(s),
+            forall|s: usize| #[trigger] post.spaces.roots@.contains_key(s) && post.spaces.records@[s].value().kind is Io
+                ==> pre.spaces.roots@.contains_key(s) && post.spaces.records@[s] == pre.spaces.records@[s],
             forall|x: usize| #[trigger] pre.list.valid(x) && x != n && x != m ==> {
                 &&& post.list.nodes@[x as int].live == pre.list.nodes@[x as int].live
                 &&& post.list.nodes@[x as int].kind == pre.list.nodes@[x as int].kind
@@ -2049,7 +2055,8 @@ impl CapKernel {
             space_nodes_dead(&post.list, &post.spaces),
     {
         assert forall|s: usize, k: usize, i: usize| #![trigger table_node(s, k, i)]
-            post.spaces.roots@.contains_key(s) && k < TABLE_NODE_PAGES && i < NODES_PER_PAGE
+            post.spaces.roots@.contains_key(s) && post.spaces.records@[s].value().kind is Io && k < TABLE_NODE_PAGES
+                && i < NODES_PER_PAGE
             implies !post.list.nodes@[table_node(s, k, i) as int].live by {
             let x = table_node(s, k, i);
             pre.lemma_space_node_in_block(s, k, i);
@@ -2064,6 +2071,7 @@ impl CapKernel {
         requires
             Self::caps_frame(pre, post, n, m),
             post.spaces.roots@.dom() == pre.spaces.roots@.dom(),
+            post.spaces.records == pre.spaces.records,
             pre.tables.owner@.contains_key(page_of(n)),
             pre.tables.owner@.contains_key(page_of(m)),
         ensures
@@ -2075,7 +2083,8 @@ impl CapKernel {
         } by {
             pre.list.lemma_valid_bound(x);
         }
-        assert forall|s: usize| #[trigger] post.spaces.roots@.contains_key(s) implies pre.spaces.roots@.contains_key(s) by {
+        assert forall|s: usize| #[trigger] post.spaces.roots@.contains_key(s) && post.spaces.records@[s].value().kind is Io
+            implies pre.spaces.roots@.contains_key(s) && post.spaces.records@[s] == pre.spaces.records@[s] by {
             assert(post.spaces.roots@.dom().contains(s));
         }
         Self::lemma_space_nodes_frame(pre, post, n, m);

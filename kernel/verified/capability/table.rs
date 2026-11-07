@@ -3,7 +3,8 @@
 //! each capability says at the same index. Node 0 of a leaf is its hidden node, so a leaf has 127 slots.
 //! No capability names a table, so tables cannot form cycles. See design/process-holds-capabilities/.
 //!
-//! A table is named by its root's address until the process object holds it, atmo-6x9.16.9.
+//! A table is named by its root's address, which is its process's base: the root is the first page of
+//! the process object.
 //!
 //! The two parts of the invariant are opaque and reached through one-position lemmas: spelled out,
 //! the root clause names every entry of every root the prover has seen, and the leaf clause chains
@@ -327,8 +328,9 @@ impl Tables {
         ret
     }
 
-    /// Adds an empty table whose root is the page at `root`.
-    pub fn add_table(&mut self, list: &Tree, root: usize, Tracked(page): Tracked<PagePerm4k>)
+    /// Makes the page at `root` an empty table's root. The page is the first of a process object, so
+    /// only the process's retype calls this.
+    pub fn put_root(&mut self, list: &Tree, root: usize, Tracked(page): Tracked<PagePerm4k>)
         requires
             old(self).wf(list),
             !old(self).roots@.contains_key(root),
@@ -339,6 +341,10 @@ impl Tables {
             final(self).roots@.contains_key(root),
             forall|r: int| 0 <= r < ROOT_ENTRIES ==> #[trigger] final(self).leaf(root, r) == NO_LEAF,
             forall|t: usize| old(self).roots@.contains_key(t) ==> #[trigger] final(self).roots@.contains_key(t),
+            forall|t: usize| #[trigger] old(self).roots@.contains_key(t) ==> final(self).roots@[t] == old(self).roots@[t],
+            final(self).roots@.dom() == old(self).roots@.dom().insert(root),
+            final(self).owner == old(self).owner,
+            final(self).payloads == old(self).payloads,
             forall|t: usize, i: usize| #[trigger] old(self).has_slot(t, i) ==>
                 final(self).has_slot(t, i) && final(self).node_of(t, i) == old(self).node_of(t, i),
     {
@@ -365,6 +371,7 @@ impl Tables {
         proof {
             self.roots.borrow_mut().tracked_insert(root, typed);
             let me = *self;
+            assert(me.roots@.dom() =~= pre.roots@.dom().insert(root));
             assert(me.roots@[root].value().leaves@ == leaves@);
             assert forall|r: int| 0 <= r < ROOT_ENTRIES implies #[trigger] me.leaf(root, r) == NO_LEAF by {
                 assert(leaves@[r] == NO_LEAF);

@@ -14,6 +14,7 @@ use crate::capability::reach::*;
 use crate::capability::space::*;
 use crate::capability::refs::*;
 use crate::capability::table::*;
+use crate::capability::process::*;
 use crate::capability::thread::*;
 use crate::define::*;
 
@@ -122,6 +123,22 @@ impl CapKernel {
             },
             !(old(self).is_cap(n) && old(self).payload_of(n).kind is Thread) ==> final(self).threads == old(self).threads,
             final(self).threads.records == old(self).threads.records,
+            old(self).is_cap(n) && old(self).payload_of(n).kind is Process ==> {
+                let p = old(self).payload_of(n).base;
+                let br = BlockRef::Small(p / 4096);
+                &&& blocks_refs_changed(
+                    &old(self).blocks,
+                    &final(self).blocks,
+                    br,
+                    (block_refs(&old(self).blocks, br) - 1) as usize,
+                    block_dead(&old(self).blocks, br) || block_refs(&old(self).blocks, br) == 1,
+                )
+                &&& final(self).holders == old(self).holders
+                &&& final(self).processes.holders@ == old(self).processes.holders@.insert(p, old(self).processes.holders@[p].remove(n))
+            },
+            !(old(self).is_cap(n) && old(self).payload_of(n).kind is Process) ==> final(self).processes == old(self).processes,
+            final(self).processes.records == old(self).processes.records,
+            final(self).processes.spare == old(self).processes.spare,
             final(self).spaces.roots == old(self).spaces.roots,
             final(self).spaces.records == old(self).spaces.records,
             final(self).spaces.loaded == old(self).spaces.loaded,
@@ -137,7 +154,7 @@ impl CapKernel {
                 &&& final(self).holders == old(self).holders
             },
             !(old(self).is_cap(n) && (old(self).payload_of(n).kind is Frame || old(self).payload_of(n).kind is Space
-                || old(self).payload_of(n).kind is Thread))
+                || old(self).payload_of(n).kind is Thread || old(self).payload_of(n).kind is Process))
                 && !(old(self).list.nodes@[n as int].kind is Hidden) && !(old(self).list.nodes@[n as int].kind is Mapping) ==> {
                 &&& final(self).blocks == old(self).blocks
                 &&& final(self).holders == old(self).holders
@@ -188,6 +205,13 @@ impl CapKernel {
                         }
                         drop_block_ref(&mut self.blocks, BlockRef::Small(payload.base / 4096));
                         self.threads.holders = Ghost(pre.threads.holders@.insert(payload.base, pre.threads.holders@[payload.base].remove(n)));
+                    },
+                    CapKind::Process => {
+                        proof {
+                            pre.lemma_process_cap(n);
+                        }
+                        drop_block_ref(&mut self.blocks, BlockRef::Small(payload.base / 4096));
+                        self.processes.holders = Ghost(pre.processes.holders@.insert(payload.base, pre.processes.holders@[payload.base].remove(n)));
                     },
                     _ => {},
                 }
@@ -413,6 +437,22 @@ impl CapKernel {
             },
             !(pre.is_cap(r) && pre.payload_of(r).kind is Thread) ==> mid.threads == pre.threads,
             mid.threads.records == pre.threads.records,
+            pre.is_cap(r) && pre.payload_of(r).kind is Process ==> {
+                let p = pre.payload_of(r).base;
+                let br = BlockRef::Small(p / 4096);
+                &&& blocks_refs_changed(
+                    &pre.blocks,
+                    &mid.blocks,
+                    br,
+                    (block_refs(&pre.blocks, br) - 1) as usize,
+                    block_dead(&pre.blocks, br) || block_refs(&pre.blocks, br) == 1,
+                )
+                &&& mid.holders == pre.holders
+                &&& mid.processes.holders@ == pre.processes.holders@.insert(p, pre.processes.holders@[p].remove(r))
+            },
+            !(pre.is_cap(r) && pre.payload_of(r).kind is Process) ==> mid.processes == pre.processes,
+            mid.processes.records == pre.processes.records,
+            mid.processes.spare == pre.processes.spare,
             mid.spaces.roots == pre.spaces.roots,
             mid.spaces.records == pre.spaces.records,
             mid.spaces.loaded == pre.spaces.loaded,
@@ -429,7 +469,7 @@ impl CapKernel {
                 &&& mid.holders == pre.holders
             },
             !(pre.is_cap(r) && (pre.payload_of(r).kind is Frame || pre.payload_of(r).kind is Space
-                || pre.payload_of(r).kind is Thread))
+                || pre.payload_of(r).kind is Thread || pre.payload_of(r).kind is Process))
                 && !(pre.list.nodes@[r as int].kind is Hidden) && !(pre.list.nodes@[r as int].kind is Mapping) ==> {
                 &&& mid.blocks == pre.blocks
                 &&& mid.holders == pre.holders
@@ -450,6 +490,7 @@ impl CapKernel {
             post.holders == mid.holders,
             post.devices == mid.devices,
             post.threads == mid.threads,
+            post.processes == mid.processes,
             post.list.wf(),
             post.list.nodes@.len() == pre.list.nodes@.len(),
             !post.list.nodes@[r as int].live,
@@ -545,6 +586,7 @@ impl CapKernel {
             post.holders == pre.holders,
             post.spaces == pre.spaces,
             post.threads == pre.threads,
+            post.processes == pre.processes,
         ensures
             holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
             zeroing_typed(&post.zeroing, &post.blocks),
@@ -554,6 +596,7 @@ impl CapKernel {
             table_pages_wf(&post.list, &post.table_pages, &post.blocks),
             spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
             threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
+            processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
             mappings_wf(&post.list, &post.tables, tree_of(&post.table_pages, &post.spaces), &post.blocks, post.holders@, post.mappings@),
     {
         let br = BlockRef::Small(n / 4096);
@@ -577,11 +620,13 @@ impl CapKernel {
         pre.lemma_hidden_block(n);
         assert(!pre.is_cap(n));
         assert(!post.is_cap(n));
-        // The block is a leaf's or a table page's, so no space's or thread's.
+        // The block is a leaf's or a table page's, so no space's, thread's or process's.
         assert(!(pre.blocks.pages@[(n / 4096) as int].object is Space));
         assert(!(pre.blocks.pages@[(n / 4096) as int].object is Thread));
+        assert(!(pre.blocks.pages@[(n / 4096) as int].object is Process));
         lemma_spaces_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks, &post.blocks, br, 0, true);
         lemma_threads_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks, &post.blocks, br, 0, true);
+        lemma_processes_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks, &post.blocks, br, 0, true);
         lemma_holders_same_frames(&pre.list, &pre.tables, &post.list, &post.tables, &pre.blocks, &pre.zeroing, pre.holders@);
         lemma_holders_unkeyed_small_changed(&post.list, &post.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, n / 4096, 0, true);
         lemma_zeroing_typed_small_changed(&pre.zeroing, &pre.blocks, &post.blocks, n / 4096, 0, true);
@@ -627,6 +672,7 @@ impl CapKernel {
             post.tables == pre.tables,
             post.spaces == pre.spaces,
             post.threads == pre.threads,
+            post.processes == pre.processes,
             post.table_pages.records == pre.table_pages.records,
             post.table_pages.spare == pre.table_pages.spare,
             Self::mapping_unlinked(pre, post, n),
@@ -639,6 +685,7 @@ impl CapKernel {
             table_pages_wf(&post.list, &post.table_pages, &post.blocks),
             spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
             threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
+            processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
             table_links_wf(tree_of(&post.table_pages, &post.spaces)),
             mappings_wf(&post.list, &post.tables, tree_of(&post.table_pages, &post.spaces), &post.blocks, post.holders@, post.mappings@),
     {
@@ -716,6 +763,7 @@ impl CapKernel {
             post.tables == pre.tables,
             post.spaces == pre.spaces,
             post.threads == pre.threads,
+            post.processes == pre.processes,
             post.table_pages.records == pre.table_pages.records,
             post.table_pages.spare == pre.table_pages.spare,
             Self::mapping_unlinked(pre, post, n),
@@ -723,6 +771,7 @@ impl CapKernel {
             table_pages_wf(&post.list, &post.table_pages, &post.blocks),
             spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
             threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
+            processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
             table_links_wf(tree_of(&post.table_pages, &post.spaces)),
     {
         let a = tree_of(&pre.table_pages, &pre.spaces);
@@ -757,6 +806,7 @@ impl CapKernel {
         assert(!post.is_cap(n));
         lemma_spaces_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks, &post.blocks, br, refs, dead);
         lemma_threads_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks, &post.blocks, br, refs, dead);
+        lemma_processes_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks, &post.blocks, br, refs, dead);
         assert(b.maps.dom() =~= a.maps.dom());
         lemma_links_entry_cleared(a, b, m.table, m.entry);
     }
