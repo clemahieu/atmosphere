@@ -1,7 +1,6 @@
 //! Deleting a capability: one slot of the caller's table goes, refused while the capability has
 //! children, mappings or bindings, which are all child nodes, so a holder revokes first. What the
-//! capability said is returned, for reference counting to act on. See the design on atmo-6x9.6.7,
-//! sections 1 to 5.
+//! capability said is returned, for reference counting to act on. See design/sharing-by-derive/.
 use vstd::prelude::*;
 
 verus! {
