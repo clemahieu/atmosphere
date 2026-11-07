@@ -74,3 +74,7 @@ Kill container (halfway there..).
 Bring back verification for Kernel init(). 
 
 Adjust triggers in ProcessManager (almost there).
+
+## License
+
+Apache-2.0; see `LICENSE`. Code from [mars-research/atmosphere](https://github.com/mars-research/atmosphere) remains under its MIT license, reproduced in `NOTICE`.

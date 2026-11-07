@@ -10,6 +10,8 @@ The Beads tree at `~/atmosphere.src/.beads` is the plan. Its root epic carries t
 
 ## License
 
+The tree is under Apache-2.0. Code from mars-research Atmosphere stays under its MIT license; `NOTICE` reproduces it and states the boundary.
+
 Every line in the tree and every dependency is under an OSI-listed copy-permissive license: MIT, BSD, Apache-2.0, ISC, 0BSD, Zlib, BSL-1.0, OLDAP-2.8, BSD-2-Clause-Patent and the like. No copyleft, weak copyleft or closed source: GPL, LGPL, AGPL, MPL, CDDL and EPL are out.
 
 The rule covers reading, not only copying. Never open, fetch, grep or summarise such code; it would taint the tree. Before reading any external source for the first time, check its license and record the source and the license on the issue.
