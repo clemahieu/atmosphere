@@ -47,7 +47,7 @@ A change that breaks a rule or adds kernel spanning is a decision only the human
 
 ## Rounds, commits and the stack
 
-Work happens in rounds. `/round` runs one; `/loop /round` runs them until everything open is blocked on the human. The procedure is `.claude/skills/round/SKILL.md`. The rules:
+Work happens in rounds. `/round` runs one; `/loop /round` runs them until everything open is blocked on the human. The procedure is `.claude/agents/round.md`, which `/round` runs in a fresh subagent. The rules:
 
 - A round takes the next ready issue and does exactly one of: discard (close with the reason), redefine (rewrite the outcome and the acceptance criteria), split (one issue per independent change, dependencies only where one blocks another), implement (one discrete change, one tested commit, merge to main, push, remove the worktree, close). Only implement commits.
 - Work is a stack. An issue discovered mid-round is pushed as a new issue that blocks the current one and resolved in isolation with its own tested commit; then pop back and re-read the blocked issue's directive before resuming, because the premise may have changed. A bug's commit includes the test that exercises it.
