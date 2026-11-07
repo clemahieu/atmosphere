@@ -199,6 +199,7 @@ pub open spec fn space_wf(list: &Tree, spaces: &Spaces, blocks: &BlockTable, s: 
     &&& spaces.loaded@.contains_key(s)
     &&& spaces.loaded@[s].addr() == s + SPACE_CORES_PAGE * 4096
     &&& spaces.loaded@[s].is_init()
+    &&& spaces.records@[s].value().kind is Io ==> spaces.loaded@[s].value().list == 0u32
     &&& blocks.pages@[(s / 4096) as int].kind is Base
     &&& blocks.pages@[(s / 4096) as int].object is Space
     &&& blocks.pages@[(s / 4096) as int].order == 3
@@ -2303,6 +2304,7 @@ impl CapKernel {
             post.spaces.loaded@ == pre.spaces.loaded@.insert(base, post.spaces.loaded@[base]),
             post.spaces.loaded@[base].addr() == base + SPACE_CORES_PAGE * 4096,
             post.spaces.loaded@[base].is_init(),
+            post.spaces.loaded@[base].value().list == 0u32,
             post.spaces.kernel_entries == pre.spaces.kernel_entries,
             kernel_slots_wf(&post.spaces, base),
             root_record_wf(&post.spaces, base),
