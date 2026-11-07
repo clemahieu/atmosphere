@@ -278,6 +278,38 @@ pub proof fn lemma_ids_space_added(cores: Seq<CoreState>, pre: Map<usize, Points
     }
 }
 
+pub proof fn lemma_ids_space_removed(cores: Seq<CoreState>, pre: Map<usize, PointsTo<SpaceCores>>, post: Map<usize, PointsTo<SpaceCores>>, base: usize)
+    requires
+        ids_wf(cores, pre),
+        post == pre.remove(base),
+    ensures
+        ids_wf(cores, post),
+{
+    reveal(ids_wf);
+    assert forall|c: int, s: usize| 0 <= c < NUM_CPUS && #[trigger] holds_id(cores, post, c, s) implies s != base && holds_id(cores, pre, c, s) by {
+        assert(post.contains_key(s));
+        assert(post[s] == pre[s]);
+    }
+    assert forall|c: int, s: usize| 0 <= c < NUM_CPUS && post.contains_key(s) implies #[trigger] id_generation(post[s].value().ids@[c]) <= cores[c].generation by {
+        assert(pre.contains_key(s));
+        assert(post[s] == pre[s]);
+    }
+    assert forall|c: int, s: usize| 0 <= c < NUM_CPUS && #[trigger] holds_id(cores, post, c, s) implies {
+        &&& 1 <= id_pcid(post[s].value().ids@[c])
+        &&& id_pcid(post[s].value().ids@[c]) < cores[c].next_pcid
+    } by {
+        assert(holds_id(cores, pre, c, s));
+        assert(post[s] == pre[s]);
+    }
+    assert forall|c: int, s: usize, r: usize| 0 <= c < NUM_CPUS && s != r && #[trigger] holds_id(cores, post, c, s) && #[trigger] holds_id(cores, post, c, r)
+        implies id_pcid(post[s].value().ids@[c]) != id_pcid(post[r].value().ids@[c]) by {
+        assert(holds_id(cores, pre, c, s));
+        assert(holds_id(cores, pre, c, r));
+        assert(post[s] == pre[s]);
+        assert(post[r] == pre[r]);
+    }
+}
+
 /// What a flush cleared: every context on a core, or all of an IOMMU's IOTLB.
 pub ghost enum FlushTarget {
     Core(int),
@@ -1300,6 +1332,39 @@ impl CapKernel {
         assert forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && #[trigger] post.tlb@[c].contains(e) implies post.loaded(c, e.space) by {
             assert(pre.tlb@[c].contains(e));
             assert(pre.spaces.loaded@.contains_key(e.space));
+        }
+        assert forall|c: int, e: TlbEntry|
+            0 <= c < NUM_CPUS && #[trigger] post.tlb@[c].contains(e) && !post.mapped@.contains(e.page)
+            implies e.page < NUM_PAGES && post.stale_epoch.above(post.acked(c), e.page) by {
+            assert(pre.tlb@[c].contains(e));
+            assert(pre.acked(c) == post.acked(c));
+        }
+        Self::lemma_iommus_same(pre, post);
+    }
+
+    /// The TLB model after a space no core loaded goes: no core held an entry of it.
+    pub proof fn lemma_tlb_space_removed(pre: Self, post: Self, base: usize)
+        requires
+            pre.tlb_wf(),
+            post.cores == pre.cores,
+            post.iommus == pre.iommus,
+            post.flush_epoch == pre.flush_epoch,
+            post.tlb == pre.tlb,
+            post.mapped == pre.mapped,
+            post.stale_epoch == pre.stale_epoch,
+            post.spaces.loaded@ == pre.spaces.loaded@.remove(base),
+            forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && e.space == base ==> !#[trigger] pre.tlb@[c].contains(e),
+        ensures
+            post.tlb_wf(),
+    {
+        assert forall|c: int| 0 <= c < NUM_CPUS implies #[trigger] post.acked(c) <= post.flush_epoch by {
+            assert(pre.acked(c) <= pre.flush_epoch);
+        }
+        assert forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && #[trigger] post.tlb@[c].contains(e) implies post.loaded(c, e.space) by {
+            assert(pre.tlb@[c].contains(e));
+            assert(e.space != base);
+            assert(pre.spaces.loaded@.contains_key(e.space));
+            assert(post.spaces.loaded@[e.space] == pre.spaces.loaded@[e.space]);
         }
         assert forall|c: int, e: TlbEntry|
             0 <= c < NUM_CPUS && #[trigger] post.tlb@[c].contains(e) && !post.mapped@.contains(e.page)

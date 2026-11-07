@@ -742,6 +742,66 @@ pub proof fn lemma_table_node_page(t: usize, k: usize)
     lemma_div_multiples_vanish(p + k, 4096);
 }
 
+/// A node page of one table page or space lies outside the node pages of any other: the blocks are
+/// eight pages apart and a block's node pages are its first five.
+pub proof fn lemma_node_pages_disjoint(t: usize, u: usize, k: usize)
+    requires
+        t % 32768 == 0,
+        u % 32768 == 0,
+        t != u,
+        t / 4096 < NUM_PAGES,
+        k < TABLE_NODE_PAGES,
+    ensures
+        !(u <= table_node_page(t, k) < u + TABLE_NODE_PAGES * 4096),
+{
+    lemma_table_bound(t);
+    assert(table_node_page(t, k) == t + k * 4096);
+    lemma_fundamental_div_mod(t as int, 32768);
+    lemma_fundamental_div_mod(u as int, 32768);
+    let qt = t as int / 32768;
+    let qu = u as int / 32768;
+    assert(t as int == 32768 * qt);
+    assert(u as int == 32768 * qu);
+    if qt < qu {
+        assert(32768 * qt + 32768 <= 32768 * qu);
+    } else {
+        assert(32768 * qu + 32768 <= 32768 * qt);
+    }
+}
+
+/// A page that is a node page of both the table page or space at `t` and the one at `u` makes them one:
+/// the blocks are eight pages apart and a block's node pages are its first five.
+pub proof fn lemma_node_page_names_block(t: usize, u: usize, p: usize)
+    requires
+        t % 32768 == 0,
+        u % 32768 == 0,
+        t / 4096 <= p < t / 4096 + TABLE_NODE_PAGES,
+        u / 4096 <= p < u / 4096 + TABLE_NODE_PAGES,
+    ensures
+        t == u,
+{
+    lemma_table_page_aligned(t);
+    lemma_table_page_aligned(u);
+    let a = t as int / 4096;
+    let b = u as int / 4096;
+    lemma_fundamental_div_mod(a, 8);
+    lemma_fundamental_div_mod(b, 8);
+    let qa = a / 8;
+    let qb = b / 8;
+    assert(a == 8 * qa);
+    assert(b == 8 * qb);
+    if qa < qb {
+        assert(8 * qa + 8 <= 8 * qb);
+        assert(false);
+    } else if qb < qa {
+        assert(8 * qb + 8 <= 8 * qa);
+        assert(false);
+    }
+    assert(a == b);
+    assert(t as int == 4096 * a);
+    assert(u as int == 4096 * b);
+}
+
 /// The block at `base`, eight pages aligned, starts at `page`.
 pub proof fn lemma_table_page_base(base: usize, page: usize)
     requires
@@ -925,6 +985,92 @@ pub proof fn lemma_table_pages_small_typed(
         implies pages.maps@.contains_key((x * 4096) as usize) by {
         assert(b.pages@[x as int] == a.pages@[x as int]);
         assert(table_block(a, x));
+    }
+}
+
+/// The spaces after one with no holder frees its block: every other space's first page is the list's, so
+/// it was not in the block, a freed page is no space block, and no capability names the space that went.
+pub proof fn lemma_spaces_space_freed(
+    list_a: &Tree,
+    tables_a: &Tables,
+    list_b: &Tree,
+    tables_b: &Tables,
+    sa: &Spaces,
+    sb: &Spaces,
+    a: &BlockTable,
+    b: &BlockTable,
+    base: usize,
+)
+    requires
+        spaces_wf(list_a, tables_a, sa, a),
+        sa.roots@.contains_key(base),
+        sa.holders@[base] == Set::<usize>::empty(),
+        sb.roots@ == sa.roots@.remove(base),
+        sb.records@ == sa.records@.remove(base),
+        sb.loaded@ == sa.loaded@.remove(base),
+        sb.holders@ == sa.holders@.remove(base),
+        sb.bound@ == sa.bound@.remove(base),
+        sb.kernel_entries == sa.kernel_entries,
+        forall|p: usize| #[trigger] list_b.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
+            ==> !a.in_block((base / 4096) as int, (p / 4096) as int),
+        forall|i: int| 0 <= i < NUM_PAGES ==> #[trigger] b.pages@[i] == (
+            if a.in_block((base / 4096) as int, i) { free_entry() } else { a.pages@[i] }),
+        same_spaces(list_a, tables_a, list_b, tables_b),
+        forall|s: usize, k: usize| #[trigger] sb.roots@.contains_key(s) && k < TABLE_NODE_PAGES
+            ==> list_b.pages@.dom().contains(#[trigger] table_node_page(s, k)),
+    ensures
+        spaces_wf(list_b, tables_b, sb, b),
+{
+    let page = base / 4096;
+    assert forall|s: usize| #[trigger] sb.roots@.contains_key(s) implies space_wf(list_b, sb, b, s) by {
+        assert(sa.roots@.contains_key(s));
+        assert(space_wf(list_a, sa, a, s));
+        assert(list_b.pages@.dom().contains(table_node_page(s, 0)));
+        assert(table_node_page(s, 0) == s);
+        assert(!a.in_block(page as int, (s / 4096) as int));
+        assert(b.pages@[(s / 4096) as int] == a.pages@[(s / 4096) as int]);
+        assert(sb.records@[s] == sa.records@[s]);
+        assert(sb.roots@[s] == sa.roots@[s]);
+        assert(sb.loaded@[s] == sa.loaded@[s]);
+        assert(sb.holders@[s] == sa.holders@[s]);
+        assert(sb.bound@[s] == sa.bound@[s]);
+        assert(root_record_wf(sb, s)) by {
+            assert(root_record_wf(sa, s));
+        }
+        assert(kernel_slots_wf(sb, s)) by {
+            assert(kernel_slots_wf(sa, s));
+        }
+    }
+    assert forall|s: usize| #[trigger] sb.loaded@.contains_key(s) implies sb.roots@.contains_key(s) by {
+        assert(sa.loaded@.contains_key(s));
+    }
+    assert forall|x: usize| x < NUM_PAGES && #[trigger] space_block(b, x) implies sb.roots@.contains_key((x * 4096) as usize) by {
+        if a.in_block(page as int, x as int) {
+            assert(b.pages@[x as int] == free_entry());
+        }
+        assert(b.pages@[x as int] == a.pages@[x as int]);
+        assert(space_block(a, x));
+        assert(x != page);
+        assert(((x * 4096) as usize) / 4096 == x);
+        assert((x * 4096) as usize != base);
+    }
+    assert forall|n: usize| #[trigger] tables_b.is_cap(list_b, n) && tables_b.payload_of(n).kind is Space implies {
+        &&& sb.roots@.contains_key(tables_b.payload_of(n).base)
+        &&& sb.holders@[tables_b.payload_of(n).base].contains(n)
+        &&& tables_b.payload_of(n).order == 3
+    } by {
+        assert(tables_a.is_cap(list_a, n));
+        assert(sa.holders@[tables_a.payload_of(n).base].contains(n));
+        assert(tables_a.payload_of(n).base != base);
+    }
+    assert forall|s: usize, n: usize| sb.roots@.contains_key(s) && #[trigger] sb.holders@[s].contains(n) implies {
+        &&& tables_b.is_cap(list_b, n)
+        &&& tables_b.payload_of(n).kind is Space
+        &&& tables_b.payload_of(n).base == s
+    } by {
+        assert(sb.holders@[s] == sa.holders@[s]);
+        assert(sa.holders@[s].contains(n));
+        assert(tables_a.is_cap(list_a, n));
     }
 }
 
