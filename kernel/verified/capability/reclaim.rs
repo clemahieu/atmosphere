@@ -2168,7 +2168,8 @@ impl CapKernel {
 
     /// Child c of a dead table page or IO space is cut: it has no parent and keeps its space, its page is not
     /// acknowledged, its word is above every acknowledgement that stood when the slices began, and its page
-    /// is in the TLB of every core that loaded the space and, for an IO space, of every IOMMU.
+    /// is in the TLB of every core that loaded the space and, for an IO space the kernel still holds, of
+    /// every IOMMU.
     pub open spec fn child_cut(pre: Self, post: Self, c: usize) -> bool {
         let a = tree_of(&pre.table_pages, &pre.spaces);
         let b = tree_of(&post.table_pages, &post.spaces);
@@ -2182,7 +2183,7 @@ impl CapKernel {
             0 <= d < NUM_CPUS && pre.loaded(d, s->Some_0)
             ==> post.tlb@[d].contains(TlbEntry { space: s->Some_0, page: c / 4096 })
         &&& forall|i: int| #![trigger post.iommus.tlb@[i].contains(TlbEntry { space: s->Some_0, page: c / 4096 })]
-            0 <= i < NUM_IOMMUS && pre.spaces.records@[s->Some_0].value().kind is Io
+            0 <= i < NUM_IOMMUS && a.is_root(s->Some_0) && pre.spaces.records@[s->Some_0].value().kind is Io
             ==> post.iommus.tlb@[i].contains(TlbEntry { space: s->Some_0, page: c / 4096 })
     }
 
@@ -2415,9 +2416,9 @@ impl CapKernel {
             tree_of(&pre.table_pages, &pre.spaces).record(c).space == tree_of(&mid.table_pages, &mid.spaces).record(c).space,
             tree_of(&post.table_pages, &post.spaces).record(c).parent is None,
             tree_of(&post.table_pages, &post.spaces).record(c).space == tree_of(&mid.table_pages, &mid.spaces).record(c).space,
-            tree_of(&pre.table_pages, &pre.spaces).is_root(tree_of(&mid.table_pages, &mid.spaces).record(c).space->Some_0),
-            tree_of(&mid.table_pages, &mid.spaces).space_records[tree_of(&mid.table_pages, &mid.spaces).record(c).space->Some_0].value().kind
-                == tree_of(&pre.table_pages, &pre.spaces).space_records[tree_of(&mid.table_pages, &mid.spaces).record(c).space->Some_0].value().kind,
+            tree_of(&pre.table_pages, &pre.spaces).is_root(tree_of(&mid.table_pages, &mid.spaces).record(c).space->Some_0)
+                ==> tree_of(&mid.table_pages, &mid.spaces).space_records[tree_of(&mid.table_pages, &mid.spaces).record(c).space->Some_0].value().kind
+                    == tree_of(&pre.table_pages, &pre.spaces).space_records[tree_of(&mid.table_pages, &mid.spaces).record(c).space->Some_0].value().kind,
         ensures
             Self::child_cut(pre, post, c),
     {
@@ -2431,7 +2432,8 @@ impl CapKernel {
             assert(mid.loaded(d, s));
         }
         assert forall|i: int| #![trigger post.iommus.tlb@[i].contains(TlbEntry { space: s, page: g })]
-            0 <= i < NUM_IOMMUS && pre.spaces.records@[s].value().kind is Io implies post.iommus.tlb@[i].contains(TlbEntry { space: s, page: g }) by {
+            0 <= i < NUM_IOMMUS && tree_of(&pre.table_pages, &pre.spaces).is_root(s) && pre.spaces.records@[s].value().kind is Io
+            implies post.iommus.tlb@[i].contains(TlbEntry { space: s, page: g }) by {
             assert(mid.spaces.records@[s].value().kind is Io);
         }
         assert(post.stale_epoch.written(post.flush_epoch, g));
@@ -2475,7 +2477,8 @@ impl CapKernel {
             assert(mid.tlb@[d].contains(TlbEntry { space: s, page: g }));
         }
         assert forall|j: int| #![trigger post.iommus.tlb@[j].contains(TlbEntry { space: s, page: g })]
-            0 <= j < NUM_IOMMUS && pre.spaces.records@[s].value().kind is Io implies post.iommus.tlb@[j].contains(TlbEntry { space: s, page: g }) by {
+            0 <= j < NUM_IOMMUS && a.is_root(s) && pre.spaces.records@[s].value().kind is Io
+            implies post.iommus.tlb@[j].contains(TlbEntry { space: s, page: g }) by {
             assert(mid.iommus.tlb@[j].contains(TlbEntry { space: s, page: g }));
         }
     }

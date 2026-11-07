@@ -81,8 +81,8 @@ pub open spec fn table_addr(t: usize) -> usize {
 
 /// A present entry above level 1, outside the kernel slots, names a child table whose record names that
 /// entry, and a child's record names a present entry that names it, one level up and in the same space.
-/// A table page with a parent has a space, and a space is a space the kernel holds. A table page with a
-/// space and no parent has been cut off with what is below it, which still names that space.
+/// A table page with a parent has a space. A table page with a space and no parent has been cut off with
+/// what is below it, which still names that space, and a dead table page can outlast the space it names.
 pub open spec fn table_links_wf(tree: TableTree) -> bool {
     &&& forall|t: usize, i: usize| #![trigger tree.entry(t, i)]
         tree.names_child(t, i) ==> {
@@ -102,7 +102,6 @@ pub open spec fn table_links_wf(tree: TableTree) -> bool {
             &&& tree.record(p.table).level == r.level + 1
             &&& tree.record(p.table).space == r.space
         }
-        &&& r.space is Some ==> tree.is_root(r.space->0)
     }
 }
 
@@ -182,7 +181,6 @@ pub proof fn lemma_links_table_removed(a: TableTree, b: TableTree, t: usize)
             &&& b.record(p.table).level == r.level + 1
             &&& b.record(p.table).space == r.space
         }
-        &&& r.space is Some ==> b.is_root(r.space->0)
     } by {
         assert(c != t);
         lemma_table_removed_others(a, b, t, c);
@@ -297,7 +295,6 @@ pub proof fn lemma_links_table_added(pre: TableTree, post: TableTree, t: usize)
             &&& post.record(p.table).level == r.level + 1
             &&& post.record(p.table).space == r.space
         }
-        &&& r.space is Some ==> post.is_root(r.space->0)
     } by {
         if c != t {
             assert(pre.is_page(c));
@@ -366,7 +363,6 @@ pub proof fn lemma_links_root_added(pre: TableTree, post: TableTree, s: usize)
             &&& post.record(p.table).level == r.level + 1
             &&& post.record(p.table).space == r.space
         }
-        &&& r.space is Some ==> post.is_root(r.space->0)
     } by {
         assert(pre.is_page(c));
         assert(post.record(c) == pre.record(c));
@@ -480,7 +476,6 @@ pub proof fn lemma_links_linked(pre: TableTree, post: TableTree, parent: usize, 
             &&& post.record(p.table).level == r.level + 1
             &&& post.record(p.table).space == r.space
         }
-        &&& r.space is Some ==> post.is_root(r.space->0)
     } by {
         assert(pre.is_page(c));
         if c == child {
@@ -588,7 +583,6 @@ pub proof fn lemma_links_detached(pre: TableTree, post: TableTree, parent: usize
             &&& post.record(p.table).level == r.level + 1
             &&& post.record(p.table).space == r.space
         }
-        &&& r.space is Some ==> post.is_root(r.space->0)
     } by {
         assert(pre.is_page(c));
         assert(pre.maps.contains_key(c));
