@@ -1,7 +1,7 @@
 //! The kernel as reach sees it. Every capability operation's spec states discharges over this view,
 //! so what a process holds, what each capability names and which rights it carries are read from the
 //! tables here and nowhere else. The fields for mappings, threads and object contents stay empty until
-//! the objects behind them exist. See the design on atmo-6x9.6.7, section 15.
+//! the objects behind them exist. See design/theorem-over-reach/.
 use vstd::arithmetic::power2::*;
 use vstd::prelude::*;
 
