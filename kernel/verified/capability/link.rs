@@ -1,6 +1,6 @@
 //! Linking a table page into an entry of a table in a space. A table's entry and its child's record say
-//! the same thing, and a link writes both in one step, so a detach can always clear both. See the design
-//! on atmo-6x9.6.7, sections 6 and 8.
+//! the same thing, and a link writes both in one step, so a detach can always clear both. See
+//! design/address-spaces-as-objects/.
 use vstd::arithmetic::div_mod::*;
 use vstd::prelude::*;
 

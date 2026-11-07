@@ -1,6 +1,6 @@
 //! What a space maps, read by walking its tables from the root, as pagetable_spec's walk does. A kernel
 //! slot, which only a process's root has, leads nowhere, since child_slot excludes it. Map, unmap and detach state what they do in these
-//! terms. See the design on atmo-6x9.6.7, section 8.
+//! terms. See design/address-spaces-as-objects/.
 use vstd::arithmetic::div_mod::*;
 use vstd::prelude::*;
 

@@ -1,7 +1,7 @@
 //! An IO space's map. An IO address reaches the map only as an IoRange, which only IoRange::new makes, so
 //! no other kind of address can map as one. A space's kind decides which map it takes, and an IO space
 //! has no kernel slots, so a device's address may use the low entries a process's root keeps for the
-//! kernel. See the design on atmo-6x9.6.7, sections 1 and 8.
+//! kernel. See design/address-spaces-as-objects/.
 use vstd::prelude::*;
 
 verus! {

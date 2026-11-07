@@ -2,7 +2,7 @@
 
 # Design decisions
 
-11 records: 11 active, 0 superseded.
+12 records: 12 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -10,6 +10,9 @@ in `revisit if` what would make it worth reopening.
 
 ## Active
 
+- **[address-spaces-as-objects](./address-spaces-as-objects/DECISION.md)** (2026-11-06): A space is a retyped object of kind process, IO or nested; its table pages come from an untyped named in the map call; a frame entry's mapping node sits at a fixed index in the table page's block so it is found in constant time; a child table's hidden node is its entry's node; PCIDs and ASIDs recycle per core by generation, an IOid is fixed per device.
+  - *confidence:* Structural; the table-page layout and the entry-record agreement are proven in kernel/verified/capability/space.rs, link.rs and mapping.rs.
+  - *revisit if:* A space kind appears whose entries cannot carry a node at a fixed index, or a device must change IOid while bound.
 - **[capability-names-a-block](./capability-names-a-block/DECISION.md)** (2026-11-06): A memory capability names a block: a base aligned to its size and 2^order pages. Frames retype at 4K or 2M in constant time, a 2M frame derives 4K pieces, and a map names a capability, a page offset and an address, so a pager needs few slots.
   - *confidence:* Arithmetic on the page table's block sizes; the payload well-formedness is proven in kernel/verified/capability/table.rs.
   - *revisit if:* A workload needs frames that are not power-of-two aligned, or the 1G frame that pagetable does not yet map becomes necessary rather than convenient.
@@ -49,11 +52,12 @@ in `revisit if` what would make it worth reopening.
 A view of the lists above. Nothing is reachable only through a tag.
 
 - `abi`: one-kernel-instance
-- `capability`: capability-names-a-block, process-holds-capabilities, revoke-by-depth-first-list, sharing-by-derive, teardown-driven-by-retype, theorem-over-reach, untyped-memory
+- `address-space`: address-spaces-as-objects
+- `capability`: address-spaces-as-objects, capability-names-a-block, process-holds-capabilities, revoke-by-depth-first-list, sharing-by-derive, teardown-driven-by-retype, theorem-over-reach, untyped-memory
 - `kernel-state`: multicore-kernel-shape, one-kernel-instance
 - `lifetime`: sharing-by-derive, teardown-driven-by-retype
 - `lock`: flush-without-waiting, multicore-kernel-shape
-- `memory`: capability-names-a-block, flush-without-waiting, teardown-driven-by-retype, untyped-memory
+- `memory`: address-spaces-as-objects, capability-names-a-block, flush-without-waiting, teardown-driven-by-retype, untyped-memory
 - `multicore`: flush-without-waiting, multicore-kernel-shape, one-kernel-instance
 - `process`: process-holds-capabilities
 - `proof`: isolation-claim, theorem-over-reach
