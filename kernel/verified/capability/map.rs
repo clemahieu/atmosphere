@@ -243,8 +243,8 @@ pub proof fn lemma_mapping_node_injective(t: usize, e: usize, u: usize, d: usize
     lemma_fundamental_div_mod(d + 1, NODES_PER_PAGE as int);
 }
 
-/// The table pages after entry e of table page t is written and t marked written: the page keeps its
-/// address and its other entries, and a written record owes no empty entry.
+/// The table pages after entry e of table page t is written present and t marked written: the page keeps
+/// its address and its other entries, and a written record owes no empty entry.
 pub proof fn lemma_table_pages_entry_written(list: &Tree, pa: &TablePages, pb: &TablePages, blocks: &BlockTable, t: usize, e: usize)
     requires
         table_pages_wf(list, pa, blocks),
@@ -260,6 +260,8 @@ pub proof fn lemma_table_pages_entry_written(list: &Tree, pa: &TablePages, pb: &
         pb.records@[t].value().level == pa.records@[t].value().level,
         pb.records@[t].value().parent == pa.records@[t].value().parent,
         pb.records@[t].value().written,
+        pb.maps@[t].value()[e].perm.present,
+        forall|i: usize| i < 512 && i != e ==> #[trigger] pb.maps@[t].value()[i] == pa.maps@[t].value()[i],
     ensures
         table_pages_wf(list, pb, blocks),
 {
@@ -267,6 +269,11 @@ pub proof fn lemma_table_pages_entry_written(list: &Tree, pa: &TablePages, pb: &
         assert(pa.maps@.contains_key(u));
         assert(table_page_wf(list, pa, blocks, u));
         if u == t {
+            assert forall|i: usize| i < 512 implies #[trigger] pb.maps@[t].value()[i].perm.present || pb.maps@[t].value()[i].is_empty() by {
+                if i != e {
+                    assert(pa.maps@[t].value()[i].perm.present || pa.maps@[t].value()[i].is_empty());
+                }
+            }
             assert(table_record_wf(pb, t));
         } else {
             assert(pb.maps@[u] == pa.maps@[u]);

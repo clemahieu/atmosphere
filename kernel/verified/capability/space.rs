@@ -637,12 +637,14 @@ pub open spec fn table_block(blocks: &BlockTable, b: usize) -> bool {
     &&& blocks.pages@[b as int].object is TablePage
 }
 
-/// A table page is level 1 to 3. One not written has every entry empty.
+/// A table page is level 1 to 3. One not written has every entry empty, and any entry is present or empty.
 pub open spec fn table_record_wf(pages: &TablePages, t: usize) -> bool {
     let record = pages.records@[t].value();
     &&& 1 <= record.level <= 3
     &&& !record.written ==> forall|i: usize| #![trigger pages.maps@[t].value()[i]]
         i < 512 ==> pages.maps@[t].value()[i].is_empty()
+    &&& forall|i: usize| #![trigger pages.maps@[t].value()[i]]
+        i < 512 ==> pages.maps@[t].value()[i].perm.present || pages.maps@[t].value()[i].is_empty()
 }
 
 /// The table page at t has its table, its record, its spare page and its node pages. Its block holds one
