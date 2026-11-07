@@ -720,6 +720,24 @@ pub open spec fn cut_walk_finds(tree: TableTree, t: usize, g: usize) -> bool {
         passes_through(tree, s, p, q.table, q.entry) && walk_finds(tree, s, p, g)
 }
 
+/// The entries of table t that name a child.
+pub open spec fn child_entries(tree: TableTree, t: usize) -> Set<usize> {
+    Set::<usize>::range(0, 512).filter(|e: usize| tree.names_child(t, e))
+}
+
+pub proof fn lemma_child_entries(tree: TableTree, t: usize, e: usize)
+    ensures
+        child_entries(tree, t).contains(e) <==> tree.names_child(t, e),
+{
+    broadcast use vstd::set::lemma_set_filter;
+    vstd::set_lib::range_set_properties::<usize>(0, 512);
+}
+
+/// The child table entry e of table t names.
+pub open spec fn child_at(tree: TableTree, t: usize, e: usize) -> usize {
+    (tree.entry(t, e).addr - TABLE_NODE_PAGES * 4096) as usize
+}
+
 /// What t's cut leaves a core or an IOMMU holding that nothing will read again: t's own page, from a
 /// paging-structure cache, and the pages the walks through the entry naming it find, from a TLB. The tables
 /// below t keep their space, so their pages stay said until they are cut in turn.
@@ -1624,6 +1642,8 @@ impl CapKernel {
         &&& forall|i: int, e: TlbEntry| 0 <= i < NUM_IOMMUS && #[trigger] pre.iommus.tlb@[i].contains(e) ==> post.iommus.tlb@[i].contains(e)
         &&& post.iommus.acked == pre.iommus.acked
         &&& post.mapped == pre.mapped
+        &&& forall|a: int, g: usize| a < post.flush_epoch && g < NUM_PAGES && pre.stale_epoch.above(a, g)
+            ==> #[trigger] post.stale_epoch.above(a, g)
     }
 
     /// A detach with its record, and nothing else changed by it.

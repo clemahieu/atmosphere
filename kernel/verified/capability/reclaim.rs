@@ -49,6 +49,9 @@ proof fn leak_all(tracked m: Map<usize, PagePerm4k>) -> (tracked ret: Map<usize,
 /// The most nodes one retype removes from a dead leaf's slots.
 pub const LEAF_SLICE_BUDGET: usize = 64;
 
+/// The most child tables one retype cuts from a dead table page.
+pub const TABLE_SLICE_BUDGET: usize = 64;
+
 /// What a reclaim did.
 pub enum ReclaimStep {
     /// Nothing changed: the caller may not name this block, or a capability still does.
@@ -1839,6 +1842,462 @@ impl CapKernel {
             assert(cut.view() == pre.view());
         }
         true
+    }
+
+    /// Child c of a dead table page is cut: it has no parent and keeps its space, its page is not
+    /// acknowledged, its word is above every acknowledgement that stood when the slices began, and its page
+    /// is in the TLB of every core that loaded the space and, for an IO space, of every IOMMU.
+    pub open spec fn child_cut(pre: Self, post: Self, c: usize) -> bool {
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        let s = a.record(c).space;
+        &&& b.record(c).parent is None
+        &&& b.record(c).space == s
+        &&& s is Some
+        &&& post.stale_epoch.above(pre.flush_epoch as int, c / 4096)
+        &&& !post.acknowledged(c / 4096)
+        &&& forall|d: int| #![trigger post.tlb@[d].contains(TlbEntry { space: s->Some_0, page: c / 4096 })]
+            0 <= d < NUM_CPUS && pre.loaded(d, s->Some_0)
+            ==> post.tlb@[d].contains(TlbEntry { space: s->Some_0, page: c / 4096 })
+        &&& forall|i: int| #![trigger post.iommus.tlb@[i].contains(TlbEntry { space: s->Some_0, page: c / 4096 })]
+            0 <= i < NUM_IOMMUS && pre.spaces.records@[s->Some_0].value().kind is Io
+            ==> post.iommus.tlb@[i].contains(TlbEntry { space: s->Some_0, page: c / 4096 })
+    }
+
+    /// What cutting children of the dead table page at `base` keeps: only tables, the record of each cut
+    /// and the TLBs changed. Every walk finds what it did, since no walk reaches `base`. Each entry that
+    /// stopped naming a child is empty and its child is cut.
+    pub open spec fn table_cuts_kept(pre: Self, post: Self, base: usize) -> bool {
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        &&& post.list == pre.list
+        &&& post.tables == pre.tables
+        &&& post.blocks == pre.blocks
+        &&& post.holders == pre.holders
+        &&& post.mappings == pre.mappings
+        &&& post.zeroing == pre.zeroing
+        &&& post.frames == pre.frames
+        &&& post.cores == pre.cores
+        &&& post.mapped == pre.mapped
+        &&& post.iommus.acked == pre.iommus.acked
+        &&& post.spaces.loaded == pre.spaces.loaded
+        &&& pre.flush_epoch <= post.flush_epoch
+        &&& b.maps.dom() == a.maps.dom()
+        &&& b.roots.dom() == a.roots.dom()
+        &&& forall|t: usize| #![trigger b.record(t)] a.is_table(t) ==> {
+            &&& b.record(t).level == a.record(t).level
+            &&& b.record(t).space == a.record(t).space
+        }
+        &&& forall|t: usize| #![trigger b.space_records[t]]
+            a.is_root(t) ==> b.space_records[t].value().kind == a.space_records[t].value().kind
+        &&& b.record(base).parent is None
+        &&& forall|e: usize| #[trigger] b.names_child(base, e) ==> a.names_child(base, e) && b.entry(base, e) == a.entry(base, e)
+        &&& forall|e: usize| #[trigger] a.names_child(base, e) && !b.names_child(base, e) ==> {
+            &&& b.entry(base, e).is_empty()
+            &&& Self::child_cut(pre, post, child_at(a, base, e))
+        }
+        &&& forall|r: usize, p: SpacePath| #[trigger] walk(b, r, p) == walk(a, r, p)
+        &&& forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && #[trigger] pre.core_may_hold(c, e) ==> post.core_may_hold(c, e)
+    }
+
+    /// A slice of the table page at `base` can cut something: an untyped covers it, it is dead, an entry
+    /// still names a child and the flush epoch can rise.
+    pub open spec fn can_slice_table(&self, root: usize, from: usize, base: usize) -> bool {
+        &&& self.can_retype_under(root, from, base, 3)
+        &&& self.table_pages.maps@.contains_key(base)
+        &&& !self.list.nodes@[base as int].live
+        &&& exists|e: usize| #[trigger] tree_of(&self.table_pages, &self.spaces).names_child(base, e)
+        &&& self.flush_epoch < usize::MAX
+    }
+
+    /// What a slice of the dead table page at `base` did to self: it cut at least one child and no more
+    /// than the budget, each taking one entry off the count, and every capability is as it was.
+    pub open spec fn table_sliced(&self, post: Self, root: usize, from: usize, base: usize) -> bool {
+        let untyped = self.tables.node_of(root, from);
+        let a = child_entries(tree_of(&self.table_pages, &self.spaces), base);
+        let b = child_entries(tree_of(&post.table_pages, &post.spaces), base);
+        &&& self.view().holds_right(root, untyped, Right::Retype)
+        &&& Self::table_cuts_kept(*self, post, base)
+        &&& b.subset_of(a)
+        &&& b.len() < a.len()
+        &&& a.len() - b.len() <= TABLE_SLICE_BUDGET
+        &&& post.view() == self.view()
+        &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base })
+    }
+
+    /// The block test slice_table makes reads as the table page does.
+    pub proof fn lemma_dead_table_block(&self, base: usize)
+        requires
+            self.wf(),
+            base % 32768 == 0,
+            base / 4096 < NUM_PAGES,
+        ensures
+            (table_block(&self.blocks, base / 4096) && self.blocks.pages@[(base / 4096) as int].refs == 0)
+                == (self.table_pages.maps@.contains_key(base) && !self.list.nodes@[base as int].live),
+            self.table_pages.maps@.contains_key(base) ==> !self.spaces.roots@.contains_key(base),
+            self.table_pages.maps@.contains_key(base) && !self.list.nodes@[base as int].live
+                ==> self.table_pages.records@[base].value().parent is None,
+    {
+        assert(base % 32768 == 0 ==> base % 8192 == 0) by (bit_vector);
+        lemma_leaf_page(base);
+        if table_block(&self.blocks, base / 4096) {
+            assert(self.table_pages.maps@.contains_key(((base / 4096) * 4096) as usize));
+        }
+        if self.table_pages.maps@.contains_key(base) {
+            assert(table_page_wf(&self.list, &self.table_pages, &self.blocks, base));
+            if self.spaces.roots@.contains_key(base) {
+                assert(space_wf(&self.list, &self.spaces, &self.blocks, base));
+            }
+        }
+    }
+
+    /// Entry e of table page t names a child: the child's address is below the entry's, the child is a
+    /// table page whose record names the entry, and it lies in the block table's range.
+    proof fn lemma_child_of_entry(&self, t: usize, e: usize)
+        requires
+            self.wf(),
+            tree_of(&self.table_pages, &self.spaces).names_child(t, e),
+        ensures
+            tree_of(&self.table_pages, &self.spaces).entry(t, e).addr >= TABLE_NODE_PAGES * 4096,
+            self.table_pages.maps@.contains_key(child_at(tree_of(&self.table_pages, &self.spaces), t, e)),
+            tree_of(&self.table_pages, &self.spaces).record(child_at(tree_of(&self.table_pages, &self.spaces), t, e)).parent
+                == Some(TableParent { table: t, entry: e }),
+            tree_of(&self.table_pages, &self.spaces).record(child_at(tree_of(&self.table_pages, &self.spaces), t, e)).space is Some,
+            child_at(tree_of(&self.table_pages, &self.spaces), t, e) / 4096 < NUM_PAGES,
+            child_at(tree_of(&self.table_pages, &self.spaces), t, e) % 32768 == 0,
+    {
+        let tree = tree_of(&self.table_pages, &self.spaces);
+        let c = child_at(tree, t, e);
+        assert(tree.is_page(c));
+        assert(tree.maps.contains_key(c));
+        assert(tree.record(c).parent == Some(TableParent { table: t, entry: e }));
+        assert(table_page_wf(&self.list, &self.table_pages, &self.blocks, c));
+        lemma_table_bound(c);
+        assert(tree.entry(t, e).addr == table_addr(c));
+    }
+
+    /// One more cut after cuts of the same dead table page: what was kept stays kept, its entry comes off
+    /// the count and its child is cut.
+    proof fn lemma_table_cut_step(pre: Self, mid: Self, post: Self, base: usize, e: usize)
+        requires
+            pre.wf(),
+            mid.wf(),
+            Self::table_cuts_kept(pre, mid, base),
+            pre.table_pages.maps@.contains_key(base),
+            !pre.spaces.roots@.contains_key(base),
+            tree_of(&mid.table_pages, &mid.spaces).names_child(base, e),
+            Self::detach_recorded(mid, post, child_at(tree_of(&mid.table_pages, &mid.spaces), base, e)),
+        ensures
+            Self::table_cuts_kept(pre, post, base),
+            child_entries(tree_of(&post.table_pages, &post.spaces), base)
+                == child_entries(tree_of(&mid.table_pages, &mid.spaces), base).remove(e),
+    {
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let m = tree_of(&mid.table_pages, &mid.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        let c = child_at(m, base, e);
+        mid.lemma_child_of_entry(base, e);
+        assert(m.record(c).parent == Some(TableParent { table: base, entry: e }));
+        assert(detached(m, b, base, e, c));
+        assert(c != base);
+        assert(a.is_table(base));
+        reveal(walks_detached);
+        assert forall|r: usize, p: SpacePath| #[trigger] walk(b, r, p) == walk(a, r, p) by {
+            assert(walk(b, r, p) == (if passes_through(m, r, p, base, e) { None } else { walk(m, r, p) }));
+            assert(walk(m, r, p) == walk(a, r, p));
+        }
+        assert forall|t: usize| #![trigger b.record(t)] a.is_table(t) implies {
+            &&& b.record(t).level == a.record(t).level
+            &&& b.record(t).space == a.record(t).space
+        } by {
+            assert(m.record(t).level == a.record(t).level);
+            assert(m.is_table(t));
+            assert(b.record(t).level == m.record(t).level);
+        }
+        assert forall|t: usize| #![trigger b.space_records[t]]
+            a.is_root(t) implies b.space_records[t].value().kind == a.space_records[t].value().kind by {
+            assert(m.space_records[t].value().kind == a.space_records[t].value().kind);
+            assert(m.is_root(t));
+            assert(b.space_records[t].value().kind == m.space_records[t].value().kind);
+        }
+        assert(b.record(base).parent == m.record(base).parent);
+        assert forall|i: usize| #[trigger] b.child_slot(base, i) == m.child_slot(base, i) by {
+            assert(b.record(base).level == m.record(base).level);
+        }
+        assert forall|i: usize| #[trigger] b.names_child(base, i) implies a.names_child(base, i) && b.entry(base, i) == a.entry(base, i) by {
+            assert(b.child_slot(base, i) == m.child_slot(base, i));
+            assert(i != e);
+            assert(b.entry(base, i) == m.entry(base, i));
+            assert(m.names_child(base, i));
+        }
+        let s = m.record(c).space;
+        assert(a.record(c).space == s) by {
+            assert(a.is_page(c));
+        }
+        assert(pre.acked(0) <= pre.flush_epoch);
+        assert(post.acked(0) == pre.acked(0));
+        assert forall|i: usize| #[trigger] a.names_child(base, i) && !b.names_child(base, i) implies {
+            &&& b.entry(base, i).is_empty()
+            &&& Self::child_cut(pre, post, child_at(a, base, i))
+        } by {
+            assert(b.child_slot(base, i) == m.child_slot(base, i));
+            if i == e {
+                assert(m.entry(base, e) == a.entry(base, e));
+                assert(child_at(a, base, e) == c);
+                Self::lemma_child_newly_cut(pre, mid, post, c);
+            } else {
+                if m.names_child(base, i) {
+                    assert(b.entry(base, i) == m.entry(base, i));
+                }
+                assert(!m.names_child(base, i));
+                Self::lemma_child_stays_cut(pre, mid, post, base, e, c, child_at(a, base, i), i);
+            }
+        }
+        assert forall|d: int, h: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] pre.core_may_hold(d, h) implies post.core_may_hold(d, h) by {
+            assert(mid.core_may_hold(d, h));
+        }
+        assert forall|i: usize| #[trigger] child_entries(b, base).contains(i) == child_entries(m, base).remove(e).contains(i) by {
+            lemma_child_entries(b, base, i);
+            lemma_child_entries(m, base, i);
+            assert(b.child_slot(base, i) == m.child_slot(base, i));
+            if i != e {
+                if i < 512 {
+                    assert(b.entry(base, i) == m.entry(base, i));
+                } else {
+                    assert(!b.names_child(base, i) && !m.names_child(base, i));
+                }
+            }
+        }
+        assert(child_entries(b, base) =~= child_entries(m, base).remove(e));
+    }
+
+    /// The child this step cuts satisfies child_cut.
+    proof fn lemma_child_newly_cut(pre: Self, mid: Self, post: Self, c: usize)
+        requires
+            pre.wf(),
+            mid.wf(),
+            pre.flush_epoch <= mid.flush_epoch,
+            post.cores == pre.cores,
+            post.iommus.acked == pre.iommus.acked,
+            post.spaces.loaded == pre.spaces.loaded,
+            mid.spaces.loaded == pre.spaces.loaded,
+            mid.cores == pre.cores,
+            Self::detach_recorded(mid, post, c),
+            mid.table_pages.maps@.contains_key(c),
+            c / 4096 < NUM_PAGES,
+            tree_of(&mid.table_pages, &mid.spaces).record(c).parent is Some,
+            tree_of(&mid.table_pages, &mid.spaces).record(c).space is Some,
+            tree_of(&pre.table_pages, &pre.spaces).record(c).space == tree_of(&mid.table_pages, &mid.spaces).record(c).space,
+            tree_of(&post.table_pages, &post.spaces).record(c).parent is None,
+            tree_of(&post.table_pages, &post.spaces).record(c).space == tree_of(&mid.table_pages, &mid.spaces).record(c).space,
+            tree_of(&pre.table_pages, &pre.spaces).is_root(tree_of(&mid.table_pages, &mid.spaces).record(c).space->Some_0),
+            tree_of(&mid.table_pages, &mid.spaces).space_records[tree_of(&mid.table_pages, &mid.spaces).record(c).space->Some_0].value().kind
+                == tree_of(&pre.table_pages, &pre.spaces).space_records[tree_of(&mid.table_pages, &mid.spaces).record(c).space->Some_0].value().kind,
+        ensures
+            Self::child_cut(pre, post, c),
+    {
+        let m = tree_of(&mid.table_pages, &mid.spaces);
+        let s = m.record(c).space->Some_0;
+        let g = c / 4096;
+        lemma_cut_pages(m, c, g);
+        assert(cut_pages(m, c).contains(g));
+        assert forall|d: int| #![trigger post.tlb@[d].contains(TlbEntry { space: s, page: g })]
+            0 <= d < NUM_CPUS && pre.loaded(d, s) implies post.tlb@[d].contains(TlbEntry { space: s, page: g }) by {
+            assert(mid.loaded(d, s));
+        }
+        assert forall|i: int| #![trigger post.iommus.tlb@[i].contains(TlbEntry { space: s, page: g })]
+            0 <= i < NUM_IOMMUS && pre.spaces.records@[s].value().kind is Io implies post.iommus.tlb@[i].contains(TlbEntry { space: s, page: g }) by {
+            assert(mid.spaces.records@[s].value().kind is Io);
+        }
+        assert(post.stale_epoch.written(post.flush_epoch, g));
+    }
+
+    /// A child an earlier step cut stays cut through this one: its record is not this child's, and the
+    /// epoch only rises.
+    proof fn lemma_child_stays_cut(pre: Self, mid: Self, post: Self, base: usize, e: usize, c: usize, old_child: usize, i: usize)
+        requires
+            pre.wf(),
+            mid.wf(),
+            Self::table_cuts_kept(pre, mid, base),
+            Self::child_cut(pre, mid, old_child),
+            Self::detach_recorded(mid, post, c),
+            tree_of(&pre.table_pages, &pre.spaces).names_child(base, i),
+            old_child == child_at(tree_of(&pre.table_pages, &pre.spaces), base, i),
+            tree_of(&mid.table_pages, &mid.spaces).record(c).parent == Some(TableParent { table: base, entry: e }),
+            mid.table_pages.maps@.contains_key(c),
+            tree_of(&mid.table_pages, &mid.spaces).record(old_child).parent is None,
+        ensures
+            Self::child_cut(pre, post, old_child),
+    {
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let m = tree_of(&mid.table_pages, &mid.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        pre.lemma_child_of_entry(base, i);
+        let s = a.record(old_child).space->Some_0;
+        let g = old_child / 4096;
+        assert(old_child != c);
+        assert(m.is_page(c));
+        assert(detached(m, b, base, e, c));
+        assert(a.is_page(old_child));
+        assert(m.is_page(old_child));
+        assert(b.record(old_child).parent == m.record(old_child).parent);
+        assert(b.record(old_child).space == m.record(old_child).space);
+        assert(post.stale_epoch.above(pre.flush_epoch as int, g));
+        assert(pre.acked(0) <= pre.flush_epoch);
+        assert(post.acked(0) == pre.acked(0));
+        assert forall|d: int| #![trigger post.tlb@[d].contains(TlbEntry { space: s, page: g })]
+            0 <= d < NUM_CPUS && pre.loaded(d, s) implies post.tlb@[d].contains(TlbEntry { space: s, page: g }) by {
+            assert(mid.tlb@[d].contains(TlbEntry { space: s, page: g }));
+        }
+        assert forall|j: int| #![trigger post.iommus.tlb@[j].contains(TlbEntry { space: s, page: g })]
+            0 <= j < NUM_IOMMUS && pre.spaces.records@[s].value().kind is Io implies post.iommus.tlb@[j].contains(TlbEntry { space: s, page: g }) by {
+            assert(mid.iommus.tlb@[j].contains(TlbEntry { space: s, page: g }));
+        }
+    }
+
+    /// Takes a slice of the dead table page at `base`, under the untyped at index `from` of the table at
+    /// `root`: cuts up to a budget of its child tables, each from the entry naming it, with what that
+    /// leaves stale. A cut entry stays empty, since can_link refuses a dead parent and no walk reaches a
+    /// table with no parent, so the next slice can start again from the first entry. Returns whether it
+    /// ran, and if not nothing changed.
+    pub fn slice_table(&mut self, root: usize, from: usize, base: usize) -> (ret: bool)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(root),
+        ensures
+            final(self).wf(),
+            Self::mappings_shrunk(*old(self), *final(self)),
+            ret == old(self).can_slice_table(root, from, base),
+            !ret ==> *final(self) == *old(self),
+            ret ==> old(self).table_sliced(*final(self), root, from, base),
+    {
+        let ghost pre = *old(self);
+        let ghost a = tree_of(&pre.table_pages, &pre.spaces);
+        proof {
+            Self::lemma_same_tree_shrunk(pre, pre);
+        }
+        let untyped = match self.retype_parent(root, from, base, 3) {
+            Some(found) => found,
+            None => { return false; },
+        };
+        let page = base / 4096;
+        if page >= NUM_PAGES || self.flush_epoch == usize::MAX {
+            return false;
+        }
+        let entry = *self.blocks.pages.get(page);
+        let dead_table = match (entry.kind, entry.object) {
+            (PageKind::Base, ObjectType::TablePage) => entry.refs == 0,
+            _ => false,
+        };
+        proof {
+            lemma2_to64();
+            pre.lemma_dead_table_block(base);
+        }
+        if !dead_table {
+            return false;
+        }
+        let level = self.table_record(base, false).level;
+        if level < 2 {
+            proof {
+                assert forall|e: usize| !#[trigger] a.names_child(base, e) by {}
+            }
+            return false;
+        }
+        proof {
+            assert(a.is_page(base));
+        }
+        let mut steps: usize = 0;
+        let mut e: usize = 0;
+        while steps != TABLE_SLICE_BUDGET && e != 512 && self.flush_epoch != usize::MAX
+            invariant
+                self.wf(),
+                pre == *old(self),
+                pre.wf(),
+                a == tree_of(&pre.table_pages, &pre.spaces),
+                a.is_page(base),
+                !a.is_root(base),
+                pre.table_pages.maps@.contains_key(base),
+                !pre.spaces.roots@.contains_key(base),
+                pre.flush_epoch < usize::MAX,
+                !pre.list.nodes@[base as int].live,
+                level == a.record(base).level,
+                level >= 2,
+                steps <= TABLE_SLICE_BUDGET,
+                e <= 512,
+                Self::table_cuts_kept(pre, *self, base),
+                steps == 0 ==> *self == pre,
+                steps > 0 ==> exists|i: usize| #[trigger] a.names_child(base, i),
+                child_entries(tree_of(&self.table_pages, &self.spaces), base).subset_of(child_entries(a, base)),
+                child_entries(a, base).len() == child_entries(tree_of(&self.table_pages, &self.spaces), base).len() + steps,
+                forall|j: usize| j < e ==> !#[trigger] tree_of(&self.table_pages, &self.spaces).names_child(base, j),
+            decreases TABLE_SLICE_BUDGET - steps, 512 - e,
+        {
+            let ghost mid = *self;
+            let ghost m = tree_of(&self.table_pages, &self.spaces);
+            let entry = self.table_entry(base, false, e);
+            let names = entry.perm.present && !entry.perm.ps;
+            proof {
+                assert(m.is_page(base));
+                assert(m.record(base).level == level);
+                assert(!m.is_root(base));
+                assert(names == m.names_child(base, e));
+            }
+            if !names {
+                e = e + 1;
+                continue;
+            }
+            proof {
+                mid.lemma_child_of_entry(base, e);
+            }
+            let child = entry.addr - TABLE_NODE_PAGES * 4096;
+            proof {
+                assert(child == child_at(m, base, e));
+            }
+            self.detach_stale(child);
+            proof {
+                let post = *self;
+                let b = tree_of(&post.table_pages, &post.spaces);
+                Self::lemma_table_cut_step(pre, mid, post, base, e);
+                lemma_child_entries(m, base, e);
+                vstd::set::lemma_set_remove_len(child_entries(m, base), e);
+                assert forall|j: usize| #[trigger] child_entries(b, base).contains(j) implies child_entries(a, base).contains(j) by {
+                    assert(child_entries(m, base).contains(j));
+                }
+                assert forall|j: usize| j < e + 1 implies !#[trigger] b.names_child(base, j) by {
+                    lemma_child_entries(b, base, j);
+                    lemma_child_entries(m, base, j);
+                    if j != e {
+                        assert(!m.names_child(base, j));
+                        assert(!child_entries(m, base).contains(j));
+                        assert(!child_entries(b, base).contains(j));
+                    } else {
+                        assert(!child_entries(b, base).contains(j));
+                    }
+                }
+                if steps == 0 {
+                    assert(mid == pre);
+                    assert(a.names_child(base, e));
+                } else {
+                    assert(exists|i: usize| #[trigger] a.names_child(base, i));
+                }
+            }
+            steps = steps + 1;
+            e = e + 1;
+        }
+        proof {
+            if steps == 0 {
+                assert(*self == pre);
+                assert(e == 512);
+                assert forall|j: usize| !#[trigger] a.names_child(base, j) by {
+                    if j < 512 {
+                        assert(!tree_of(&self.table_pages, &self.spaces).names_child(base, j));
+                    }
+                }
+            } else {
+                lemma_no_change_discharges_teardown(pre.view(), root, untyped, base);
+            }
+        }
+        steps != 0
     }
 
     /// Reclaims the 4K block at `base`, under the untyped at index `from` of the table at `root`. All of
