@@ -1772,10 +1772,11 @@ impl CapKernel {
             ==> post.tlb@[d].contains(TlbEntry { space: space->Some_0, page: g })
         &&& forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] pre.tlb@[d].contains(e) ==> post.tlb@[d].contains(e)
         &&& forall|i: int, g: usize| #![trigger post.iommus.tlb@[i].contains(TlbEntry { space: space->Some_0, page: g })]
-            0 <= i < NUM_IOMMUS && space is Some && pre.spaces.records@[space->Some_0].value().kind is Io && pages.contains(g)
+            0 <= i < NUM_IOMMUS && pre.iommu_present(i) && space is Some && pre.spaces.records@[space->Some_0].value().kind is Io && pages.contains(g)
             ==> post.iommus.tlb@[i].contains(TlbEntry { space: space->Some_0, page: g })
         &&& forall|i: int, e: TlbEntry| 0 <= i < NUM_IOMMUS && #[trigger] pre.iommus.tlb@[i].contains(e) ==> post.iommus.tlb@[i].contains(e)
         &&& post.iommus.acked == pre.iommus.acked
+        &&& post.iommus.present == pre.iommus.present
         &&& post.mapped == pre.mapped
         &&& forall|a: int, g: usize| a < post.flush_epoch && g < NUM_PAGES && pre.stale_epoch.above(a, g)
             ==> #[trigger] post.stale_epoch.above(a, g)
@@ -1931,7 +1932,7 @@ impl CapKernel {
                 pre.tlb@[d]
             }));
         self.iommus.tlb = Ghost(Seq::new(NUM_IOMMUS as nat, |i: int|
-            if space is Some && pre.spaces.records@[space->Some_0].value().kind is Io {
+            if pre.iommu_present(i) && space is Some && pre.spaces.records@[space->Some_0].value().kind is Io {
                 pre.iommus.tlb@[i].union(stale_entries(space->Some_0, pages))
             } else {
                 pre.iommus.tlb@[i]
@@ -1968,6 +1969,12 @@ impl CapKernel {
                 }
             }
             assert(self.iommus.tlb@.len() == NUM_IOMMUS);
+            assert forall|i: int, e: TlbEntry| 0 <= i < NUM_IOMMUS && #[trigger] self.iommus.tlb@[i].contains(e) implies self.iommu_present(i) by {
+                if !pre.iommu_present(i) {
+                    assert(self.iommus.tlb@[i] == pre.iommus.tlb@[i]);
+                    assert(pre.iommus.tlb@[i].contains(e));
+                }
+            }
             assert forall|i: int| 0 <= i < NUM_IOMMUS implies #[trigger] self.iommu_acked(i) <= self.flush_epoch by {
                 assert(pre.iommu_acked(i) <= pre.flush_epoch);
             }
@@ -1995,7 +2002,7 @@ impl CapKernel {
             assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] pre.tlb@[d].contains(e) implies self.tlb@[d].contains(e) by {
             }
             assert forall|i: int, g: usize| #![trigger self.iommus.tlb@[i].contains(TlbEntry { space: space->Some_0, page: g })]
-                0 <= i < NUM_IOMMUS && space is Some && pre.spaces.records@[space->Some_0].value().kind is Io && pages.contains(g)
+                0 <= i < NUM_IOMMUS && pre.iommu_present(i) && space is Some && pre.spaces.records@[space->Some_0].value().kind is Io && pages.contains(g)
                 implies self.iommus.tlb@[i].contains(TlbEntry { space: space->Some_0, page: g }) by {
             }
             assert forall|i: int, e: TlbEntry| 0 <= i < NUM_IOMMUS && #[trigger] pre.iommus.tlb@[i].contains(e) implies self.iommus.tlb@[i].contains(e) by {

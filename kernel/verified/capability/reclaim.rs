@@ -2655,7 +2655,7 @@ impl CapKernel {
             0 <= d < NUM_CPUS && pre.loaded(d, s->Some_0)
             ==> post.tlb@[d].contains(TlbEntry { space: s->Some_0, page: c / 4096 })
         &&& forall|i: int| #![trigger post.iommus.tlb@[i].contains(TlbEntry { space: s->Some_0, page: c / 4096 })]
-            0 <= i < NUM_IOMMUS && a.is_root(s->Some_0) && pre.spaces.records@[s->Some_0].value().kind is Io
+            0 <= i < NUM_IOMMUS && pre.iommu_present(i) && a.is_root(s->Some_0) && pre.spaces.records@[s->Some_0].value().kind is Io
             ==> post.iommus.tlb@[i].contains(TlbEntry { space: s->Some_0, page: c / 4096 })
     }
 
@@ -2676,6 +2676,7 @@ impl CapKernel {
         &&& post.cores == pre.cores
         &&& post.mapped == pre.mapped
         &&& post.iommus.acked == pre.iommus.acked
+        &&& post.iommus.present == pre.iommus.present
         &&& post.spaces.loaded == pre.spaces.loaded
         &&& pre.flush_epoch <= post.flush_epoch
         &&& b.maps.dom() == a.maps.dom()
@@ -2877,6 +2878,7 @@ impl CapKernel {
             pre.flush_epoch <= mid.flush_epoch,
             post.cores == pre.cores,
             post.iommus.acked == pre.iommus.acked,
+            post.iommus.present == pre.iommus.present,
             post.spaces.loaded == pre.spaces.loaded,
             mid.spaces.loaded == pre.spaces.loaded,
             mid.cores == pre.cores,
@@ -2904,7 +2906,7 @@ impl CapKernel {
             assert(mid.loaded(d, s));
         }
         assert forall|i: int| #![trigger post.iommus.tlb@[i].contains(TlbEntry { space: s, page: g })]
-            0 <= i < NUM_IOMMUS && tree_of(&pre.table_pages, &pre.spaces).is_root(s) && pre.spaces.records@[s].value().kind is Io
+            0 <= i < NUM_IOMMUS && pre.iommu_present(i) && tree_of(&pre.table_pages, &pre.spaces).is_root(s) && pre.spaces.records@[s].value().kind is Io
             implies post.iommus.tlb@[i].contains(TlbEntry { space: s, page: g }) by {
             assert(mid.spaces.records@[s].value().kind is Io);
         }
@@ -2949,7 +2951,7 @@ impl CapKernel {
             assert(mid.tlb@[d].contains(TlbEntry { space: s, page: g }));
         }
         assert forall|j: int| #![trigger post.iommus.tlb@[j].contains(TlbEntry { space: s, page: g })]
-            0 <= j < NUM_IOMMUS && a.is_root(s) && pre.spaces.records@[s].value().kind is Io
+            0 <= j < NUM_IOMMUS && pre.iommu_present(j) && a.is_root(s) && pre.spaces.records@[s].value().kind is Io
             implies post.iommus.tlb@[j].contains(TlbEntry { space: s, page: g }) by {
             assert(mid.iommus.tlb@[j].contains(TlbEntry { space: s, page: g }));
         }
@@ -3273,6 +3275,7 @@ impl CapKernel {
         &&& post.zeroing == pre.zeroing
         &&& post.cores == pre.cores
         &&& post.iommus.acked == pre.iommus.acked
+        &&& post.iommus.present == pre.iommus.present
         &&& post.table_pages.records == pre.table_pages.records
         &&& post.table_pages.spare == pre.table_pages.spare
         &&& post.list.parent == pre.list.parent
@@ -3426,6 +3429,7 @@ impl CapKernel {
             post.zeroing == mid.zeroing,
             post.cores == mid.cores,
             post.iommus.acked == mid.iommus.acked,
+            post.iommus.present == mid.iommus.present,
             post.table_pages.records == mid.table_pages.records,
             post.table_pages.spare == mid.table_pages.spare,
         ensures
