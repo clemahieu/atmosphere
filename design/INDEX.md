@@ -2,7 +2,7 @@
 
 # Design decisions
 
-3 records: 3 active, 0 superseded.
+4 records: 4 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -10,6 +10,9 @@ in `revisit if` what would make it worth reopening.
 
 ## Active
 
+- **[isolation-claim](./isolation-claim/DECISION.md)** (2026-11-05): The kernel proves spatial isolation: a process affects only what its capabilities reach and gains authority only by grant or retype. It does not claim noninterference or freedom from timing channels, and the claim says so.
+  - *confidence:* A scoping choice by the human. Noninterference is the claim the Atmosphere paper proved with unwinding conditions, so it is known to be reachable; timing needs hardware modelling the project does not have.
+  - *revisit if:* A workload needs distrusting programs that cannot observe each other through status codes or timing, which is when noninterference or multiple kernel instances become required rather than later.
 - **[multicore-kernel-shape](./multicore-kernel-shape/DECISION.md)** (2026-11-05): A node is a set of cores with one kernel instance and one queue lock; a system may have any number of nodes, laid out at boot; nothing in kernel state is shared between nodes, memory crosses only as a quiescent untyped handoff, and stealing is pager policy.
   - *confidence:* The shape is a judgement against published multicore kernels; the lock numbers below are measured on the host with user-space threads, not this kernel, and its own lock has not been measured.
   - *revisit if:* Lock hold times measured on this kernel make a one-node system's contention a real workload's problem and a smaller node is not the answer, or a workload needs kernel state shared between nodes that a handoff cannot express.
@@ -30,4 +33,6 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `lock`: multicore-kernel-shape
 - `memory`: untyped-memory
 - `multicore`: multicore-kernel-shape, one-kernel-instance
+- `proof`: isolation-claim
 - `purity`: untyped-memory
+- `security`: isolation-claim
