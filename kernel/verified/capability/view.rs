@@ -213,6 +213,19 @@ impl CapKernel {
     {
     }
 
+    /// A capability that is no device's names a block within the address space, so it covers no
+    /// device: a device is reached only through its own capability.
+    pub proof fn lemma_covers_no_device(&self, n: usize, o: ObjectId)
+        requires
+            self.wf(),
+            self.is_cap(n),
+            !(self.payload_of(n).kind is Device),
+            self.view().covers(n, o),
+        ensures
+            o < DEVICE_OBJECTS,
+    {
+    }
+
     /// A step that changes nothing discharges the lemma.
     pub proof fn lemma_no_op_discharges(&self, p: ObjectId)
         ensures

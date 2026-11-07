@@ -14,6 +14,14 @@ verus! {
 /// A page's address. An object is named by the base of its block.
 pub type ObjectId = usize;
 
+/// Devices are objects too, named above the 48-bit address space so that no block of memory covers
+/// one: device d is the page DEVICE_OBJECTS + d * 4096.
+pub const DEVICE_OBJECTS: usize = 0x1_0000_0000_0000;
+
+pub open spec fn device_object(d: int) -> ObjectId {
+    (DEVICE_OBJECTS + d * 4096) as usize
+}
+
 /// A list node's id, as in capability::list.
 pub type NodeId = usize;
 

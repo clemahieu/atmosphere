@@ -8,6 +8,7 @@ use vstd::prelude::*;
 
 verus! {
 
+use crate::capability::device::*;
 use crate::capability::mapping::*;
 use crate::capability::kernel::*;
 use crate::capability::list::*;
@@ -118,14 +119,15 @@ fn may_derive(parent: Payload, rights: u32, base: usize, order: u8) -> (ret: boo
 }
 
 impl CapKernel {
-    /// The refusals: an index that names no slot, a parent that is no capability or is at the deepest
-    /// depth, a child's slot in use, or a child that does not narrow its parent.
+    /// The refusals: an index that names no slot, a parent that is no capability, a device's or at the
+    /// deepest depth, a child's slot in use, or a child that does not narrow its parent.
     pub open spec fn can_derive(&self, root: usize, from: usize, to: usize, rights: u32, base: usize, order: u8) -> bool {
         let parent = self.tables.node_of(root, from);
         let child = self.tables.node_of(root, to);
         &&& self.tables.has_slot(root, from)
         &&& self.tables.has_slot(root, to)
         &&& self.is_cap(parent)
+        &&& !(self.payload_of(parent).kind is Device)
         &&& self.list.nodes@[parent as int].depth < MAX_DEPTH
         &&& !self.list.nodes@[child as int].live
         &&& narrows(child_of(self.payload_of(parent), rights, base, order), self.payload_of(parent))
@@ -187,6 +189,10 @@ impl CapKernel {
                 pre.lemma_space_cap(parent);
             }
         }
+        // A device has one IO table, so its capability has no children: it moves instead.
+        if let CapKind::Device = payload.kind {
+            return false;
+        }
         if !may_derive(payload, rights, base, order) {
             return false;
         }
@@ -240,6 +246,7 @@ impl CapKernel {
             Self::lemma_table_nodes_caps_frame(pre, post, child, child);
             Self::lemma_space_nodes_caps_frame(pre, post, child, child);
             Self::lemma_derive_holders(pre, post, parent, child, block);
+            Self::lemma_devices_caps_frame(pre, post, child, child);
             lemma_parents_derived(pre.list, post.list, parent, child);
             Self::lemma_derive_discharges(pre, post, root, from, to);
             Self::lemma_tlb_same(pre, post);
@@ -368,11 +375,12 @@ impl CapKernel {
     pub proof fn lemma_derive_caps_wf(pre: Self, post: Self, child: usize)
         requires
             Self::derive_step(pre, post, child),
-            payload_wf(post.payload_of(child)),
+            !(post.payload_of(child).kind is Device) ==> payload_wf(post.payload_of(child)),
         ensures
             post.tables.caps_wf(&post.list),
     {
-        assert forall|n: usize| #[trigger] post.tables.is_cap(&post.list, n) implies payload_wf(post.tables.payload_of(n)) by {
+        assert forall|n: usize| #[trigger] post.tables.is_cap(&post.list, n) && !(post.tables.payload_of(n).kind is Device)
+            implies payload_wf(post.tables.payload_of(n)) by {
             if n != child {
                 Self::lemma_caps_frame(pre, post, child, child, n);
                 assert(post.is_cap(n));

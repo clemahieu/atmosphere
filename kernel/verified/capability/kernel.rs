@@ -9,6 +9,7 @@ verus! {
 
 use crate::array::Array;
 use crate::capability::block::*;
+use crate::capability::device::*;
 use crate::capability::link::*;
 use crate::capability::mapping::*;
 use crate::capability::list::*;
@@ -638,6 +639,8 @@ pub struct CapKernel {
     pub zeroing: Zeroing,
     /// The frame capabilities holding each block's references.
     pub holders: Ghost<IMap<BlockRef, Set<usize>>>,
+    /// The devices boot found.
+    pub devices: Devices,
 }
 
 /// Flushes every context on this core, all PCIDs and paging-structure caches: changing CR4.PGE does
@@ -1127,6 +1130,7 @@ impl CapKernel {
         &&& objects_wf(&self.tables, &self.blocks, self.holders@)
         &&& frames_held(self.frames@, self.holders@)
         &&& leaf_blocks_wf(&self.list, &self.tables, &self.blocks)
+        &&& devices_wf(&self.list, &self.tables, &self.devices)
     }
 
     /// A frame's permission is for its own page.
@@ -1229,6 +1233,7 @@ impl CapKernel {
         &&& post.stale_epoch == pre.stale_epoch
         &&& post.flush_epoch == pre.flush_epoch
         &&& post.iommus == pre.iommus
+        &&& post.devices == pre.devices
         &&& post.cores@[c].current_thread == pre.cores@[c].current_thread
         &&& pre.acked(c) <= post.acked(c)
         &&& forall|e: TlbEntry| #[trigger] post.tlb@[c].contains(e) ==> pre.tlb@[c].contains(e)
@@ -1352,6 +1357,7 @@ impl CapKernel {
             final(self).iommus.commands == iommu_commands,
             final(self).flush_epoch == 0,
             final(self).mapped@ == Set::<usize>::empty(),
+            final(self).devices.count == 0,
             forall|c: int| 0 <= c < NUM_CPUS ==> (#[trigger] final(self).cores@[c]).current_thread.is_None(),
     {
         self.list = Tree::new(root, Tracked(perm));
@@ -1362,6 +1368,7 @@ impl CapKernel {
         self.frames = Tracked(Map::tracked_empty());
         self.zeroing.init();
         self.holders = Ghost(IMap::empty());
+        self.devices = Devices::new();
         self.blocks.init();
         let mut i = 0;
         while i != NUM_CPUS
@@ -1405,6 +1412,7 @@ impl CapKernel {
         self.mapped = Ghost(Set::empty());
         proof {
             reveal(ids_wf);
+            reveal(devices_wf);
         }
     }
 
@@ -1705,6 +1713,7 @@ impl CapKernel {
             post.iommus == pre.iommus,
             post.mapped == pre.mapped,
             post.stale_epoch == pre.stale_epoch,
+            post.devices == pre.devices,
             forall|i: usize| i < NUM_PAGES && block_typed(&pre.blocks, block_ref(&pre.blocks, i))
                 && block_refs(&pre.blocks, block_ref(&pre.blocks, i)) > 0
                 ==> #[trigger] block_ref(&post.blocks, i) == block_ref(&pre.blocks, i),
@@ -1735,6 +1744,7 @@ impl CapKernel {
             post.iommus == pre.iommus,
             post.mapped == pre.mapped,
             post.stale_epoch == pre.stale_epoch,
+            post.devices == pre.devices,
             post.frames_wf(),
             post.zeroing == pre.zeroing,
             zeroing_typed(&pre.zeroing, &post.blocks),
@@ -1923,6 +1933,7 @@ impl CapKernel {
     /// frames is the caller's to say, since a frame hands its pages back from there.
     pub proof fn lemma_small_freed(pre: Self, post: Self, base: usize)
         requires
+            post.devices == pre.devices,
             pre.wf(),
             base < NUM_PAGES,
             pre.blocks.pages@[base as int].kind is Base,
@@ -2066,6 +2077,7 @@ impl CapKernel {
     /// not dead, so it is not this one.
     pub proof fn lemma_large_freed(pre: Self, post: Self, level: Large, r: usize)
         requires
+            post.devices == pre.devices,
             pre.wf(),
             r < level_regions(level),
             post.blocks.wf(),

@@ -8,6 +8,7 @@ use vstd::set_lib::*;
 
 verus! {
 
+use crate::capability::device::*;
 use crate::capability::link::*;
 use crate::capability::mapping::*;
 use crate::capability::block::*;
@@ -1544,12 +1545,14 @@ impl CapKernel {
             post.table_pages == pre.table_pages,
             post.spaces == pre.spaces,
             post.mappings == pre.mappings,
+            post.devices == pre.devices,
         ensures
             post.wf(),
             post.view() == pre.view(),
     {
         pre.lemma_empty_leaf(base);
         Self::lemma_leaf_freed_caps(pre, post, base);
+        Self::lemma_devices_same_caps(pre, post);
         Self::lemma_leaf_freed_blocks(pre, post, base);
         Self::lemma_tlb_same(pre, post);
         assert forall|n: usize| n < NODE_SPACE && (#[trigger] post.list.nodes@[n as int]).live
@@ -1742,6 +1745,7 @@ impl CapKernel {
         &&& post.zeroing == pre.zeroing
         &&& post.frames == pre.frames
         &&& post.mappings == pre.mappings
+        &&& post.devices == pre.devices
     }
 
     /// One step of an empty table page going: its table, record and spare page go with its block.
@@ -1979,6 +1983,7 @@ impl CapKernel {
     {
         pre.lemma_empty_table(base);
         Self::lemma_node_block_caps(pre, post, base);
+        Self::lemma_devices_same_caps(pre, post);
         Self::lemma_table_freed_tree(pre, post, base);
         Self::lemma_table_freed_pages(pre, post, base);
         Self::lemma_node_block_objects(pre, post, base);
@@ -2255,6 +2260,7 @@ impl CapKernel {
     {
         pre.lemma_empty_space(base);
         Self::lemma_node_block_caps(pre, post, base);
+        Self::lemma_devices_same_caps(pre, post);
         Self::lemma_space_freed_tree(pre, post, base);
         Self::lemma_space_freed_pages(pre, post, base);
         Self::lemma_node_block_objects(pre, post, base);
@@ -2367,6 +2373,8 @@ impl CapKernel {
 
     /// Frees the empty IO space at `base`, once every core and IOMMU has acknowledged the epoch of its
     /// block's last unmap. It refuses a block that is anything else, a process space included.
+    // In a solver of its own: beside the rest of this module it runs past its budget.
+    #[verifier::spinoff_prover]
     pub fn free_space(&mut self, c: usize, root: usize, from: usize, base: usize) -> (ret: ReclaimStep)
         requires
             old(self).wf(),

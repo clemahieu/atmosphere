@@ -416,6 +416,7 @@ impl CapKernel {
             post.tlb == pre.tlb,
             post.mapped == pre.mapped,
             post.stale_epoch == pre.stale_epoch,
+            post.devices == pre.devices,
             post.flush_epoch == pre.flush_epoch,
         ensures
             post.wf(),
@@ -1352,6 +1353,7 @@ impl CapKernel {
             final(self).zeroing == old(self).zeroing,
             final(self).cores == old(self).cores,
             final(self).spaces == old(self).spaces,
+            final(self).devices == old(self).devices,
             final(self).table_pages.records == old(self).table_pages.records,
             final(self).table_pages.spare == old(self).table_pages.spare,
     {
@@ -1482,6 +1484,7 @@ impl CapKernel {
             final(self).zeroing == old(self).zeroing,
             final(self).frames == old(self).frames,
             final(self).cores == old(self).cores,
+            final(self).devices == old(self).devices,
     {
         let ghost pre = *old(self);
         let ghost tree = tree_of(&pre.table_pages, &pre.spaces);

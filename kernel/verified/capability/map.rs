@@ -9,6 +9,7 @@ use vstd::prelude::*;
 
 verus! {
 
+use crate::capability::device::*;
 use crate::capability::block::{BlockTable, ObjectType, PageKind, NUM_1G, NUM_2M};
 use crate::capability::zero::*;
 use crate::capability::derive::*;
@@ -814,6 +815,7 @@ impl CapKernel {
         &&& post.mappings@ == pre.mappings@.insert(node, MappingRecord { table: t, entry: e, frame, large })
         &&& post.zeroing == pre.zeroing
         &&& post.frames == pre.frames
+        &&& post.devices == pre.devices
     }
 
     /// The table entry i of table t leads to, in constant time. Above level 1 an entry either is a
@@ -1248,6 +1250,7 @@ impl CapKernel {
             final(self).tables == old(self).tables,
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).frames == old(self).frames,
+            final(self).devices == old(self).devices,
             final(self).spaces == old(self).spaces,
             final(self).mappings == old(self).mappings,
             final(self).zeroing == old(self).zeroing,
@@ -1651,6 +1654,7 @@ impl CapKernel {
             leaf_slots_are_capabilities(&post.list, &post.tables),
             same_leaf_nodes(&pre.list, &post.list, &pre.tables),
             same_table_nodes(&pre.list, &post.list, &pre.table_pages),
+            devices_wf(&post.list, &post.tables, &post.devices),
     {
         let node = mapping_node(t, e);
         pre.lemma_map_node_place(t, e);
@@ -1664,11 +1668,13 @@ impl CapKernel {
             }
         }
         pre.tables.lemma_wf_same_pages(&pre.list, &post.list);
-        assert forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) implies payload_wf(post.tables.payload_of(x)) by {
+        assert forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) && !(post.tables.payload_of(x).kind is Device)
+            implies payload_wf(post.tables.payload_of(x)) by {
             assert(pre.tables.is_cap(&pre.list, x));
         }
         Self::lemma_map_kinds(pre, post, t, e, f, frame, large);
         Self::lemma_map_same_nodes(pre, post, t, e, f, frame, large);
+        Self::lemma_devices_same_caps(pre, post);
     }
 
     /// The node kinds after a map: the new node is a mapping, so every clause about hidden, capability
