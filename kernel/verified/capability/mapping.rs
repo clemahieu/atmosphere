@@ -511,6 +511,7 @@ impl CapKernel {
         &&& forall|i: int, e: TlbEntry| 0 <= i < NUM_IOMMUS && #[trigger] pre.iommus.tlb@[i].contains(e) ==> post.iommus.tlb@[i].contains(e)
         &&& post.iommus.acked == pre.iommus.acked
         &&& post.iommus.present == pre.iommus.present
+        &&& post.iommus.commands == pre.iommus.commands
         &&& forall|g: usize| #[trigger] post.mapped@.contains(g)
             == (pre.mapped@.contains(g) && (!pages.contains(g) || page_named(pre.mappings@.remove(n), g)))
     }

@@ -331,14 +331,94 @@ pub ghost struct TlbEntry {
     pub page: usize,
 }
 
+/// Bytes in one IOMMU command: a 4-bit opcode and two operands. AMD IOMMU specification 48882 §2.4.
+pub const IOMMU_COMMAND_SIZE: usize = 16;
+
+/// An IOMMU's MMIO registers start on a 16 KiB boundary at least. AMD IOMMU specification 48882 §3.2,
+/// IOMMU Base Address Low Register.
+pub const IOMMU_MMIO_ALIGN: usize = 16384;
+
+/// A command ring length the base register's ComLen field can say: a power of two from 256 to 32768
+/// entries. AMD IOMMU specification 48882 §3.4.1, Command Buffer Base Address Register.
+pub open spec fn command_ring_len_ok(len: usize) -> bool {
+    len == 256 || len == 512 || len == 1024 || len == 2048 || len == 4096 || len == 8192 || len == 16384 || len == 32768
+}
+
+/// What the kernel needs to send an IOMMU commands, in kernel addresses. Boot fills one for each
+/// present IOMMU and programs the ring's base register.
+#[derive(Clone, Copy)]
+pub struct CommandBuffer {
+    /// The IOMMU's MMIO registers.
+    pub mmio: usize,
+    /// The command ring, `len` commands long, 4 KiB aligned.
+    pub ring: usize,
+    pub len: usize,
+    /// The ring entry the kernel writes next, which the tail register holds as a byte offset.
+    pub tail: usize,
+    /// The 8-byte word a COMPLETION_WAIT stores to, outside the ring.
+    pub completion: usize,
+}
+
+/// The k-th 4 KiB page of b's ring.
+pub open spec fn ring_page(b: CommandBuffer, k: int) -> usize {
+    (b.ring + k * 4096) as usize
+}
+
+/// The 4 KiB page holding b's completion word.
+pub open spec fn completion_page(b: CommandBuffer) -> usize {
+    (b.completion - b.completion % 4096) as usize
+}
+
+/// Each IOMMU's command buffer and the pages its ring and completion word sit in. Holding those pages
+/// keeps them out of every block the capability kernel hands out, and keying them by IOMMU keeps two
+/// IOMMUs from sharing one.
+pub struct CommandBuffers {
+    pub buffers: Array<CommandBuffer, NUM_IOMMUS>,
+    pub pages: Tracked<Map<(int, usize), PagePerm4k>>,
+}
+
+impl CommandBuffers {
+    /// IOMMU i's pages include the one at address a.
+    pub open spec fn holds(&self, i: int, a: usize) -> bool {
+        &&& self.pages@.contains_key((i, a))
+        &&& self.pages@[(i, a)].addr() == a
+    }
+
+    /// IOMMU i's ring has a length the specification allows, its tail is inside it, and its ring and
+    /// completion word are in pages it holds. The completion word is 8-byte aligned, as
+    /// COMPLETION_WAIT's store address is (48882 §2.4.1).
+    pub open spec fn buffer_wf(&self, i: int) -> bool {
+        let b = self.buffers@[i];
+        &&& command_ring_len_ok(b.len)
+        &&& b.tail < b.len
+        &&& b.mmio % IOMMU_MMIO_ALIGN == 0
+        &&& b.ring % 4096 == 0
+        &&& b.ring + b.len * IOMMU_COMMAND_SIZE <= usize::MAX
+        &&& forall|k: int| 0 <= k < b.len * IOMMU_COMMAND_SIZE / 4096 ==> #[trigger] self.holds(i, ring_page(b, k))
+        &&& b.completion % 8 == 0
+        &&& !(b.ring <= b.completion < b.ring + b.len * IOMMU_COMMAND_SIZE)
+        &&& self.holds(i, completion_page(b))
+    }
+
+    /// Every present IOMMU's command buffer is well formed. Opaque, since no step but the command
+    /// glue changes a buffer, and every other step's proof is cheaper without its quantifiers.
+    #[verifier::opaque]
+    pub open spec fn wf(&self, present: Seq<bool>) -> bool {
+        &&& self.buffers.wf()
+        &&& forall|i: int| 0 <= i < NUM_IOMMUS && #[trigger] present[i] ==> self.buffer_wf(i)
+    }
+}
+
 /// For each IOMMU, whether the machine has it, the epoch its last finished invalidate started at, and
 /// what it may still hold that its IO spaces' tables no longer say. A device keeps translating while
 /// the kernel runs, so an IOMMU may refill from an entry between an invalidate and that entry's unmap.
-/// An absent IOMMU holds nothing and is never invalidated, so the stale check skips it.
+/// An absent IOMMU holds nothing and is never invalidated, so the stale check skips it. A present one
+/// takes commands through its command buffer.
 pub struct IommuState {
     pub present: Array<bool, NUM_IOMMUS>,
     pub acked: Array<usize, NUM_IOMMUS>,
     pub tlb: Ghost<Seq<Set<TlbEntry>>>,
+    pub commands: CommandBuffers,
 }
 
 impl IommuState {
@@ -895,6 +975,7 @@ impl CapKernel {
         &&& self.iommus.present.wf()
         &&& self.iommus.acked.wf()
         &&& self.iommus.tlb@.len() == NUM_IOMMUS
+        &&& self.iommus.commands.wf(self.iommus.present@)
         &&& forall|i: int, e: TlbEntry| 0 <= i < NUM_IOMMUS && #[trigger] self.iommus.tlb@[i].contains(e) ==> self.iommu_present(i)
         &&& forall|i: int| 0 <= i < NUM_IOMMUS ==> #[trigger] self.iommu_acked(i) <= self.flush_epoch
         &&& forall|i: int, e: TlbEntry|
@@ -1142,14 +1223,15 @@ impl CapKernel {
     }
 
     /// Makes this a kernel with one root capability, no mappings, no core running anything, every page
-    /// Reserved and the IOMMUs boot found present. In place, since the block table is too large to move
-    /// by value.
+    /// Reserved and the IOMMUs boot found present with their command buffers. In place, since the block
+    /// table is too large to move by value.
     pub fn init(
         &mut self,
         root: usize,
         Tracked(perm): Tracked<PointsTo<NodePage>>,
         kernel_entries: Array<usize, KERNEL_MEM_END_L4INDEX>,
         iommus_present: Array<bool, NUM_IOMMUS>,
+        iommu_commands: CommandBuffers,
     )
         requires
             old(self).cores.wf(),
@@ -1171,10 +1253,12 @@ impl CapKernel {
             forall|k: int| 0 <= k < NODES_PER_PAGE ==> !(#[trigger] perm.value().nodes@[k]).live,
             kernel_entries.wf(),
             iommus_present.wf(),
+            iommu_commands.wf(iommus_present@),
         ensures
             final(self).wf(),
             final(self).spaces.kernel_entries == kernel_entries,
             final(self).iommus.present == iommus_present,
+            final(self).iommus.commands == iommu_commands,
             final(self).flush_epoch == 0,
             final(self).mapped@ == Set::<usize>::empty(),
             forall|c: int| 0 <= c < NUM_CPUS ==> (#[trigger] final(self).cores@[c]).current_thread.is_None(),
@@ -1218,6 +1302,7 @@ impl CapKernel {
         self.stale_epoch.zero();
         self.iommus.zero();
         self.iommus.present = iommus_present;
+        self.iommus.commands = iommu_commands;
         proof {
             assert forall|n: usize| n < NODE_SPACE && (#[trigger] self.list.nodes@[n as int]).live
                 && self.list.nodes@[n as int].kind is Hidden implies self.tables.owner@.contains_key(n) by {
@@ -1995,6 +2080,7 @@ impl CapKernel {
             final(self).iommus.tlb@[i as int] == old(self).iommus.tlb@[i as int].filter(|e: TlbEntry| old(self).stale_epoch.above(epoch as int, e.page)),
             forall|j: int| 0 <= j < NUM_IOMMUS && j != i ==> #[trigger] final(self).iommus.tlb@[j] == old(self).iommus.tlb@[j],
             final(self).iommus.present == old(self).iommus.present,
+            final(self).iommus.commands == old(self).iommus.commands,
             final(self).tlb == old(self).tlb,
             final(self).cores == old(self).cores,
             final(self).mapped == old(self).mapped,

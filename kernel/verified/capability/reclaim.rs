@@ -2677,6 +2677,7 @@ impl CapKernel {
         &&& post.mapped == pre.mapped
         &&& post.iommus.acked == pre.iommus.acked
         &&& post.iommus.present == pre.iommus.present
+        &&& post.iommus.commands == pre.iommus.commands
         &&& post.spaces.loaded == pre.spaces.loaded
         &&& pre.flush_epoch <= post.flush_epoch
         &&& b.maps.dom() == a.maps.dom()
@@ -2879,6 +2880,7 @@ impl CapKernel {
             post.cores == pre.cores,
             post.iommus.acked == pre.iommus.acked,
             post.iommus.present == pre.iommus.present,
+            post.iommus.commands == pre.iommus.commands,
             post.spaces.loaded == pre.spaces.loaded,
             mid.spaces.loaded == pre.spaces.loaded,
             mid.cores == pre.cores,
@@ -3276,6 +3278,7 @@ impl CapKernel {
         &&& post.cores == pre.cores
         &&& post.iommus.acked == pre.iommus.acked
         &&& post.iommus.present == pre.iommus.present
+        &&& post.iommus.commands == pre.iommus.commands
         &&& post.table_pages.records == pre.table_pages.records
         &&& post.table_pages.spare == pre.table_pages.spare
         &&& post.list.parent == pre.list.parent
@@ -3430,6 +3433,7 @@ impl CapKernel {
             post.cores == mid.cores,
             post.iommus.acked == mid.iommus.acked,
             post.iommus.present == mid.iommus.present,
+            post.iommus.commands == mid.iommus.commands,
             post.table_pages.records == mid.table_pages.records,
             post.table_pages.spare == mid.table_pages.spare,
         ensures

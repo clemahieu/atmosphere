@@ -1962,6 +1962,7 @@ impl CapKernel {
         Self::lemma_tlb_more_mapped(pre, post);
         assert(!pre.mappings@.contains_key(mapping_node(t, e)));
         lemma_mapped_inserted(pre.mapped@, pre.mappings@, mapping_node(t, e), MappingRecord { table: t, entry: e, frame, large });
+        assert(mapped_wf(post.mapped@, post.mappings@));
         assert(post.frames_wf());
     }
 
