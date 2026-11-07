@@ -2,7 +2,7 @@
 
 # Design decisions
 
-2 records: 2 active, 0 superseded.
+3 records: 3 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -16,12 +16,18 @@ in `revisit if` what would make it worth reopening.
 - **[one-kernel-instance](./one-kernel-instance/DECISION.md)** (2026-11-05): One kernel instance holds every core of the machine and a process lives inside it; the kernel provides no spanning. Four rules keep a later move to several instances cheap, and breaking one is the human's decision.
   - *confidence:* A staging judgement on top of the multicore shape. That one instance pays almost nothing for the node concept is reasoned from the code, not measured: finding the instance is one per-CPU load and no syscall path gains a check.
   - *revisit if:* Lock contention measured on this kernel is one a real workload would hit, a workload needs distrusting programs separated from the shared lock's timing, or a change would break one of the four rules.
+- **[untyped-memory](./untyped-memory/DECISION.md)** (2026-11-05): Physical memory is held as untyped capabilities and retyped into kernel objects and frames from user space; containers and kernel quotas are gone; mapping, paging and allocation policy live in a standard pager and allocator library an application can swap.
+  - *confidence:* A purity judgement by the human with its costs priced and accepted: a user-level memory manager to build, and most of the container-based proof to rewrite.
+  - *revisit if:* It follows from the purity principle in CLAUDE.md; it is wrong only if an application class cannot be served by any user-space pager, which would be a reason to revisit the principle, not this record alone.
 
 ## By tag
 
 A view of the lists above. Nothing is reachable only through a tag.
 
 - `abi`: one-kernel-instance
+- `capability`: untyped-memory
 - `kernel-state`: multicore-kernel-shape, one-kernel-instance
 - `lock`: multicore-kernel-shape
+- `memory`: untyped-memory
 - `multicore`: multicore-kernel-shape, one-kernel-instance
+- `purity`: untyped-memory
