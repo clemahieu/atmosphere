@@ -2,7 +2,7 @@
 
 # Design decisions
 
-19 records: 19 active, 0 superseded.
+20 records: 20 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -67,15 +67,18 @@ in `revisit if` what would make it worth reopening.
 - **[untyped-memory](./untyped-memory/DECISION.md)** (2026-11-05): Physical memory is held as untyped capabilities and retyped into kernel objects and frames from user space; containers and kernel quotas are gone; mapping, paging and allocation policy live in a standard pager and allocator library an application can swap.
   - *confidence:* A purity judgement by the human with its costs priced and accepted: a user-level memory manager to build, and most of the container-based proof to rewrite.
   - *revisit if:* It follows from the purity principle in CLAUDE.md; it is wrong only if an application class cannot be served by any user-space pager, which would be a reason to revisit the principle, not this record alone.
+- **[vmm-over-svm](./vmm-over-svm/DECISION.md)** (2026-11-05): A guest touches only what its nested table maps and what its intercept maps let through. The VMM is an ordinary process; VMRUN needs CPL 0, so the kernel runs it on the VMM's thread, owns the VMCB, and rewrites every control field from the validated request on each run. A nested table is an address space kind for revocation.
+  - *confidence:* A design note against AMD APM volume 2 chapter 15 and the host's reported SVM features; no code yet. The run path's register facts (what VMRUN does and does not save) are from the manual.
+  - *revisit if:* The VMM must run on a core the kernel cannot kick, a guest needs AVIC or SEV before those kernel-owned structures are designed, or a guest must span kernel instances.
 
 ## By tag
 
 A view of the lists above. Nothing is reachable only through a tag.
 
 - `abi`: one-kernel-instance, syscall-abi-in-registers
-- `address-space`: address-spaces-as-objects
+- `address-space`: address-spaces-as-objects, vmm-over-svm
 - `boot`: root-process-at-boot
-- `capability`: address-spaces-as-objects, capability-names-a-block, cpu-time-as-capability, ipc-with-reply-object, process-holds-capabilities, revoke-by-depth-first-list, root-process-at-boot, sharing-by-derive, teardown-driven-by-retype, theorem-over-reach, untyped-memory
+- `capability`: address-spaces-as-objects, capability-names-a-block, cpu-time-as-capability, ipc-with-reply-object, process-holds-capabilities, revoke-by-depth-first-list, root-process-at-boot, sharing-by-derive, teardown-driven-by-retype, theorem-over-reach, untyped-memory, vmm-over-svm
 - `gate`: cut-over-on-a-branch
 - `ipc`: ipc-with-reply-object, syscall-abi-in-registers
 - `kernel-state`: multicore-kernel-shape, one-kernel-instance, one-lock-bounded-steps
@@ -91,3 +94,4 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `security`: isolation-claim, theorem-over-reach, trust-boundary
 - `tiers`: trust-boundary
 - `verified`: cut-over-on-a-branch, flush-without-waiting, one-lock-bounded-steps, revoke-by-depth-first-list, theorem-over-reach
+- `virtualization`: vmm-over-svm
