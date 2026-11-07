@@ -1900,9 +1900,9 @@ impl CapKernel {
         &&& forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && #[trigger] pre.core_may_hold(c, e) ==> post.core_may_hold(c, e)
     }
 
-    /// A slice of the table page at `base` can cut something: an untyped covers it, it is dead, an entry
-    /// still names a child and the flush epoch can rise.
-    pub open spec fn can_slice_table(&self, root: usize, from: usize, base: usize) -> bool {
+    /// The table page at `base` has a child to cut: an untyped covers it, it is dead, an entry still names
+    /// a child and the flush epoch can rise.
+    pub open spec fn can_cut_table(&self, root: usize, from: usize, base: usize) -> bool {
         &&& self.can_retype_under(root, from, base, 3)
         &&& self.table_pages.maps@.contains_key(base)
         &&& !self.list.nodes@[base as int].live
@@ -1910,9 +1910,9 @@ impl CapKernel {
         &&& self.flush_epoch < usize::MAX
     }
 
-    /// What a slice of the dead table page at `base` did to self: it cut at least one child and no more
+    /// What cutting children of the dead table page at `base` did to self: it cut at least one and no more
     /// than the budget, each taking one entry off the count, and every capability is as it was.
-    pub open spec fn table_sliced(&self, post: Self, root: usize, from: usize, base: usize) -> bool {
+    pub open spec fn table_children_cut(&self, post: Self, root: usize, from: usize, base: usize) -> bool {
         let untyped = self.tables.node_of(root, from);
         let a = child_entries(tree_of(&self.table_pages, &self.spaces), base);
         let b = child_entries(tree_of(&post.table_pages, &post.spaces), base);
@@ -2155,21 +2155,21 @@ impl CapKernel {
         }
     }
 
-    /// Takes a slice of the dead table page at `base`, under the untyped at index `from` of the table at
-    /// `root`: cuts up to a budget of its child tables, each from the entry naming it, with what that
-    /// leaves stale. A cut entry stays empty, since can_link refuses a dead parent and no walk reaches a
-    /// table with no parent, so the next slice can start again from the first entry. Returns whether it
-    /// ran, and if not nothing changed.
-    pub fn slice_table(&mut self, root: usize, from: usize, base: usize) -> (ret: bool)
+    /// Cuts up to a budget of the child tables of the dead table page at `base`, under the untyped at index
+    /// `from` of the table at `root`, each from the entry naming it, with what that leaves stale. A cut
+    /// entry stays empty, since can_link refuses a dead parent and no walk reaches a table with no parent,
+    /// so the next slice can start again from the first entry. Returns whether it ran, and if not nothing
+    /// changed.
+    pub fn cut_table_children(&mut self, root: usize, from: usize, base: usize) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
         ensures
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
-            ret == old(self).can_slice_table(root, from, base),
+            ret == old(self).can_cut_table(root, from, base),
             !ret ==> *final(self) == *old(self),
-            ret ==> old(self).table_sliced(*final(self), root, from, base),
+            ret ==> old(self).table_children_cut(*final(self), root, from, base),
     {
         let ghost pre = *old(self);
         let ghost a = tree_of(&pre.table_pages, &pre.spaces);
@@ -2298,6 +2298,446 @@ impl CapKernel {
             }
         }
         steps != 0
+    }
+
+    /// The table page at `base` has a mapping to unlink: an untyped covers it, it is dead, an entry maps a
+    /// frame and the flush epoch can rise.
+    pub open spec fn can_unmap_table(&self, root: usize, from: usize, base: usize) -> bool {
+        &&& self.can_retype_under(root, from, base, 3)
+        &&& self.table_pages.maps@.contains_key(base)
+        &&& !self.list.nodes@[base as int].live
+        &&& exists|e: usize| #[trigger] frame_slot(tree_of(&self.table_pages, &self.spaces), base, e)
+        &&& self.flush_epoch < usize::MAX
+    }
+
+    /// One step of unlinking the dead table page's mappings: node n is a mapping of the page at `base`, its
+    /// entry and its frame's reference go as mapping_unlinked says, its unmap is recorded as
+    /// mapping_stale_noted says, and the list loses that node alone.
+    pub open spec fn table_mapping_step(pre: Self, post: Self, base: usize, n: usize) -> bool {
+        &&& pre.list.nodes@[n as int].live
+        &&& pre.list.nodes@[n as int].kind is Mapping
+        &&& pre.mappings@.contains_key(n)
+        &&& pre.mappings@[n].table == base
+        &&& Self::mapping_unlinked(pre, post, n)
+        &&& Self::mapping_stale_noted(pre, post, n)
+        &&& !post.list.nodes@[n as int].live
+        &&& post.list.seq@.len() == pre.list.seq@.len() - 1
+        &&& forall|x: int| 0 <= x < NODE_SPACE && x != n ==> #[trigger] post.list.nodes@[x].live == pre.list.nodes@[x].live
+    }
+
+    /// The states from pre to post, each reached from the last by one step that unlinks a mapping of the
+    /// page at `base`.
+    pub open spec fn table_mapping_steps(pre: Self, post: Self, base: usize, nodes: Seq<usize>, states: Seq<Self>) -> bool {
+        &&& states.len() == nodes.len() + 1
+        &&& states[0] == pre
+        &&& states[nodes.len() as int] == post
+        &&& forall|i: int| #![trigger nodes[i]] 0 <= i < nodes.len() ==> Self::table_mapping_step(states[i], states[i + 1], base, nodes[i])
+    }
+
+    /// What unlinking mappings of the dead table page at `base` keeps: the list falls by exactly the count,
+    /// the capabilities and the view are as they were, and every walk finds what it did, since no walk
+    /// reaches `base`.
+    pub open spec fn table_unmaps_kept(pre: Self, post: Self, base: usize, count: int) -> bool {
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        &&& post.tables == pre.tables
+        &&& post.spaces == pre.spaces
+        &&& post.frames == pre.frames
+        &&& post.zeroing == pre.zeroing
+        &&& post.cores == pre.cores
+        &&& post.iommus.acked == pre.iommus.acked
+        &&& post.table_pages.records == pre.table_pages.records
+        &&& post.table_pages.spare == pre.table_pages.spare
+        &&& post.list.parent == pre.list.parent
+        &&& b.maps.dom() == a.maps.dom()
+        &&& post.list.seq@.len() == pre.list.seq@.len() - count
+        &&& !post.list.nodes@[base as int].live
+        &&& forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x)
+        &&& post.view() == pre.view()
+        &&& forall|r: usize, p: SpacePath| #[trigger] walk(b, r, p) == walk(a, r, p)
+    }
+
+    /// What unlinking mappings of the dead table page at `base` did to self: at least one and no more than
+    /// the budget, each step as table_mapping_step says.
+    pub open spec fn table_unmapped(&self, post: Self, root: usize, from: usize, base: usize) -> bool {
+        let untyped = self.tables.node_of(root, from);
+        &&& self.view().holds_right(root, untyped, Right::Retype)
+        &&& exists|nodes: Seq<usize>, states: Seq<Self>| {
+            &&& #[trigger] Self::table_mapping_steps(*self, post, base, nodes, states)
+            &&& 0 < nodes.len() <= TABLE_SLICE_BUDGET
+            &&& Self::table_unmaps_kept(*self, post, base, nodes.len() as int)
+        }
+        &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base })
+    }
+
+    /// A slice of the table page at `base` can do something: cut a child or unlink a mapping.
+    pub open spec fn can_slice_table(&self, root: usize, from: usize, base: usize) -> bool {
+        self.can_cut_table(root, from, base) || self.can_unmap_table(root, from, base)
+    }
+
+    /// What a slice of the dead table page at `base` did to self.
+    pub open spec fn table_sliced(&self, post: Self, root: usize, from: usize, base: usize) -> bool {
+        self.table_children_cut(post, root, from, base) || self.table_unmapped(post, root, from, base)
+    }
+
+    /// A live mapping node has a parent and nothing below it.
+    proof fn lemma_mapping_is_leaf(&self, n: usize)
+        requires
+            self.wf(),
+            n < NODE_SPACE,
+            self.list.nodes@[n as int].live,
+            self.list.nodes@[n as int].kind is Mapping,
+        ensures
+            n != self.list.seq@[0],
+            self.list.childless(n),
+    {
+        if !self.list.childless(n) {
+            self.list.lemma_next_is_child(n);
+        }
+    }
+
+    /// A step that takes a mapping node away leaves the view as it was: the node was no capability, and
+    /// every capability says what it did under the parent it had.
+    proof fn lemma_mapping_view_same(pre: Self, post: Self, n: usize)
+        requires
+            Self::caps_frame(pre, post, n, n),
+            pre.list.nodes@[n as int].kind is Mapping,
+            !post.list.nodes@[n as int].live,
+            post.list.parent == pre.list.parent,
+        ensures
+            forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x),
+            post.view() == pre.view(),
+    {
+        let (a, b) = (pre.view(), post.view());
+        assert forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x)
+            && (pre.is_cap(x) ==> post.payload_of(x) == pre.payload_of(x)) by {
+            if x != n {
+                Self::lemma_caps_frame(pre, post, n, n, x);
+            }
+        }
+        assert(b.held =~= a.held);
+        assert(b.names =~= a.names);
+        assert(b.pages =~= a.pages);
+        assert(b.rights =~= a.rights);
+        assert(b == a);
+    }
+
+    /// Unlinks mapping node n with its entry and its frame's reference, and records the unmap.
+    fn unlink_mapping_node(&mut self, n: usize)
+        requires
+            old(self).wf(),
+            n < NODE_SPACE,
+            old(self).list.nodes@[n as int].live,
+            old(self).list.nodes@[n as int].kind is Mapping,
+            old(self).flush_epoch < usize::MAX,
+        ensures
+            final(self).wf(),
+            Self::mapping_unlinked(*old(self), *final(self), n),
+            Self::mapping_stale_noted(*old(self), *final(self), n),
+            Self::caps_frame(*old(self), *final(self), n, n),
+            !final(self).list.nodes@[n as int].live,
+            final(self).list.seq@.len() == old(self).list.seq@.len() - 1,
+            forall|x: int| 0 <= x < NODE_SPACE && x != n ==> #[trigger] final(self).list.nodes@[x].live == old(self).list.nodes@[x].live,
+            final(self).list.parent == old(self).list.parent,
+            final(self).tables == old(self).tables,
+            final(self).spaces == old(self).spaces,
+            final(self).frames == old(self).frames,
+            final(self).zeroing == old(self).zeroing,
+            final(self).cores == old(self).cores,
+            final(self).table_pages.records == old(self).table_pages.records,
+            final(self).table_pages.spare == old(self).table_pages.spare,
+    {
+        let ghost pre = *old(self);
+        proof {
+            pre.lemma_mapping_is_leaf(n);
+        }
+        self.unlink_arm(n);
+        let ghost mid = *self;
+        self.list.remove_leaf(n);
+        proof {
+            let post = *self;
+            post.tables.lemma_wf_same_pages(&pre.list, &post.list);
+            assert(Self::caps_frame(pre, post, n, n));
+            Self::lemma_delete_caps_wf(pre, post, n);
+            let p = choose|p: int| 0 <= p < pre.list.seq@.len() && pre.list.seq@[p] == n
+                && post.list.seq@ == pre.list.seq@.remove(p);
+            assert(p != 0);
+            assert(post.list.seq@[0] == pre.list.seq@[0]);
+            lemma_parents_removed(pre.list, post.list, n);
+            assert(pre.mappings@.contains_key(n));
+            pre.lemma_mapping_node(n);
+            assert(mapping_wf(&pre.list, &pre.tables, tree_of(&pre.table_pages, &pre.spaces), &pre.blocks, pre.holders@, pre.mappings@, n));
+            assert(pre.table_pages.maps@.contains_key(pre.mappings@[n].table));
+            assert(post.table_pages.maps@.dom() =~= pre.table_pages.maps@.dom());
+            Self::lemma_revoke_hidden(pre, post, n);
+            Self::lemma_revoke_mapping_holders(pre, post, n);
+            Self::lemma_stale_noted_same(pre, mid, post, n);
+            Self::lemma_tlb_same(mid, post);
+        }
+    }
+
+    /// One more unlinked mapping of a dead table page, with no walk reaching it: what was kept stays kept
+    /// and the step joins the rest.
+    proof fn lemma_table_unmap_step(pre: Self, mid: Self, post: Self, base: usize, e: usize, n: usize, count: int)
+        requires
+            pre.wf(),
+            mid.wf(),
+            Self::table_unmaps_kept(pre, mid, base, count),
+            pre.table_pages.maps@.contains_key(base),
+            !pre.spaces.roots@.contains_key(base),
+            frame_slot(tree_of(&mid.table_pages, &mid.spaces), base, e),
+            n == mapping_node(base, e),
+            Self::mapping_unlinked(mid, post, n),
+            Self::caps_frame(mid, post, n, n),
+            !post.list.nodes@[n as int].live,
+            post.list.seq@.len() == mid.list.seq@.len() - 1,
+            forall|x: int| 0 <= x < NODE_SPACE && x != n ==> #[trigger] post.list.nodes@[x].live == mid.list.nodes@[x].live,
+            post.list.parent == mid.list.parent,
+            post.tables == mid.tables,
+            post.spaces == mid.spaces,
+            post.frames == mid.frames,
+            post.zeroing == mid.zeroing,
+            post.cores == mid.cores,
+            post.iommus.acked == mid.iommus.acked,
+            post.table_pages.records == mid.table_pages.records,
+            post.table_pages.spare == mid.table_pages.spare,
+        ensures
+            Self::table_unmaps_kept(pre, post, base, count + 1),
+            mid.mappings@.contains_key(n),
+            mid.mappings@[n].table == base,
+            mid.mappings@[n].entry == e,
+            forall|i: usize| i < 512 && i != e ==> #[trigger] tree_of(&post.table_pages, &post.spaces).entry(base, i) == tree_of(&mid.table_pages, &mid.spaces).entry(base, i),
+            tree_of(&post.table_pages, &post.spaces).entry(base, e).is_empty(),
+    {
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let m = tree_of(&mid.table_pages, &mid.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        assert(mid.mappings@.contains_key(n));
+        assert(mid.mappings@[n].table == base);
+        assert(mid.mappings@[n].entry == e);
+        assert(m.record(base).parent is None);
+        assert(!m.is_root(base));
+        assert(n != base) by {
+            assert(e < 512);
+            assert((e + 1) / 128 > 0 || (e + 1) % 128 > 0);
+        }
+        reveal(walks_cut);
+        assert forall|r: usize, p: SpacePath| #[trigger] walk(b, r, p) == walk(a, r, p) by {
+            assert(walk(b, r, p) == (if ends_at(m, r, p, base, e) { None } else { walk(m, r, p) }));
+            assert(!ends_at(m, r, p, base, e)) by {
+                assert(step(m, r, p.l4) != Some(base));
+                if let Some(t3) = step(m, r, p.l4) {
+                    assert(step(m, t3, p.l3) != Some(base));
+                    if let Some(t2) = step(m, t3, p.l3) {
+                        assert(step(m, t2, p.l2) != Some(base));
+                    }
+                }
+            }
+            assert(walk(m, r, p) == walk(a, r, p));
+        }
+        Self::lemma_table_unmap_entries(mid, post, base, e, n);
+        Self::lemma_mapping_view_same(mid, post, n);
+        assert(b.maps.dom() =~= m.maps.dom());
+        assert(!post.list.nodes@[base as int].live) by {
+            pre.lemma_dead_base_in_nodes(base);
+        }
+    }
+
+    /// Clearing entry e of a table page leaves its other entries as they were and that one empty.
+    proof fn lemma_table_unmap_entries(mid: Self, post: Self, base: usize, e: usize, n: usize)
+        requires
+            mid.mappings@.contains_key(n),
+            mid.mappings@[n].table == base,
+            mid.mappings@[n].entry == e,
+            Self::mapping_unlinked(mid, post, n),
+        ensures
+            forall|i: usize| i < 512 && i != e ==> #[trigger] tree_of(&post.table_pages, &post.spaces).entry(base, i) == tree_of(&mid.table_pages, &mid.spaces).entry(base, i),
+            tree_of(&post.table_pages, &post.spaces).entry(base, e).is_empty(),
+    {
+        reveal(entries_cleared);
+        let (m, b) = (tree_of(&mid.table_pages, &mid.spaces), tree_of(&post.table_pages, &post.spaces));
+        assert forall|i: usize| i < 512 && i != e implies #[trigger] b.entry(base, i) == m.entry(base, i) by {}
+    }
+
+    /// A table page's first node lies in the list's range.
+    proof fn lemma_dead_base_in_nodes(&self, base: usize)
+        requires
+            self.wf(),
+            self.table_pages.maps@.contains_key(base),
+        ensures
+            base < NODE_SPACE,
+    {
+        assert(table_page_wf(&self.list, &self.table_pages, &self.blocks, base));
+        lemma_table_bound(base);
+    }
+
+    /// Unlinks up to a budget of the mappings of the dead table page at `base`, under the untyped at index
+    /// `from` of the table at `root`, each with its entry and its frame's reference, and records each
+    /// unmap. A mapping node is always a leaf of its capability's run, so nothing else need consent. A
+    /// cleared entry stays empty, since nothing maps into a dead table, so the next slice can start again
+    /// from the first entry. Returns whether it ran, and if not nothing changed.
+    pub fn unlink_table_mappings(&mut self, root: usize, from: usize, base: usize) -> (ret: bool)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(root),
+        ensures
+            final(self).wf(),
+            Self::mappings_shrunk(*old(self), *final(self)),
+            ret == old(self).can_unmap_table(root, from, base),
+            !ret ==> *final(self) == *old(self),
+            ret ==> old(self).table_unmapped(*final(self), root, from, base),
+    {
+        let ghost pre = *old(self);
+        let ghost a = tree_of(&pre.table_pages, &pre.spaces);
+        proof {
+            Self::lemma_same_tree_shrunk(pre, pre);
+        }
+        let untyped = match self.retype_parent(root, from, base, 3) {
+            Some(found) => found,
+            None => { return false; },
+        };
+        let page = base / 4096;
+        if page >= NUM_PAGES || self.flush_epoch == usize::MAX {
+            return false;
+        }
+        let entry = *self.blocks.pages.get(page);
+        let dead_table = match (entry.kind, entry.object) {
+            (PageKind::Base, ObjectType::TablePage) => entry.refs == 0,
+            _ => false,
+        };
+        proof {
+            lemma2_to64();
+            pre.lemma_dead_table_block(base);
+        }
+        if !dead_table {
+            return false;
+        }
+        let level = self.table_record(base, false).level;
+        proof {
+            assert(a.is_page(base));
+            pre.lemma_dead_base_in_nodes(base);
+        }
+        let ghost mut nodes: Seq<usize> = Seq::empty();
+        let ghost mut states: Seq<Self> = Seq::empty().push(pre);
+        let mut steps: usize = 0;
+        let mut e: usize = 0;
+        while steps != TABLE_SLICE_BUDGET && e != 512 && self.flush_epoch != usize::MAX
+            invariant
+                self.wf(),
+                pre == *old(self),
+                pre.wf(),
+                a == tree_of(&pre.table_pages, &pre.spaces),
+                a.is_page(base),
+                !a.is_root(base),
+                a.record(base).parent is None,
+                pre.table_pages.maps@.contains_key(base),
+                !pre.spaces.roots@.contains_key(base),
+                pre.flush_epoch < usize::MAX,
+                !pre.list.nodes@[base as int].live,
+                base < NODE_SPACE,
+                base % 32768 == 0,
+                base / 4096 < NUM_PAGES,
+                level == a.record(base).level,
+                steps <= TABLE_SLICE_BUDGET,
+                e <= 512,
+                nodes.len() == steps,
+                Self::table_unmaps_kept(pre, *self, base, steps as int),
+                Self::table_mapping_steps(pre, *self, base, nodes, states),
+                steps == 0 ==> *self == pre,
+                steps > 0 ==> exists|i: usize| #[trigger] frame_slot(a, base, i),
+                forall|j: usize| j < e ==> !#[trigger] frame_slot(tree_of(&self.table_pages, &self.spaces), base, j),
+            decreases TABLE_SLICE_BUDGET - steps, 512 - e,
+        {
+            let ghost mid = *self;
+            let ghost m = tree_of(&self.table_pages, &self.spaces);
+            let entry = self.table_entry(base, false, e);
+            let maps_frame = entry.perm.present && (level == 1 || (level == 2 && entry.perm.ps));
+            proof {
+                assert(m.is_page(base));
+                assert(m.record(base).level == level);
+                assert(!m.is_root(base));
+                assert(maps_frame == frame_slot(m, base, e));
+            }
+            if !maps_frame {
+                e = e + 1;
+                continue;
+            }
+            let n = base + ((e + 1) / NODES_PER_PAGE) * 4096 + (e + 1) % NODES_PER_PAGE;
+            proof {
+                assert(n == mapping_node(base, e));
+                assert(mid.mappings@.contains_key(n));
+                mid.lemma_mapping_node(n);
+            }
+            self.unlink_mapping_node(n);
+            proof {
+                let post = *self;
+                let b = tree_of(&post.table_pages, &post.spaces);
+                Self::lemma_table_unmap_step(pre, mid, post, base, e, n, steps as int);
+                assert(Self::table_mapping_step(mid, post, base, n));
+                let (old_nodes, old_states) = (nodes, states);
+                nodes = old_nodes.push(n);
+                states = old_states.push(post);
+                assert forall|i: int| #![trigger nodes[i]] 0 <= i < nodes.len() implies Self::table_mapping_step(states[i], states[i + 1], base, nodes[i]) by {
+                    if i < old_nodes.len() {
+                        assert(old_nodes[i] == nodes[i]);
+                        assert(old_states[i] == states[i]);
+                        assert(old_states[i + 1] == states[i + 1]);
+                    }
+                }
+                assert forall|j: usize| j < e + 1 implies !#[trigger] frame_slot(b, base, j) by {
+                    assert(b.record(base).level == m.record(base).level);
+                    if j != e {
+                        if j < 512 {
+                            assert(b.entry(base, j) == m.entry(base, j));
+                        }
+                        assert(!frame_slot(m, base, j));
+                    } else {
+                        assert(!b.entry(base, e).perm.present);
+                    }
+                }
+                if steps == 0 {
+                    assert(mid == pre);
+                    assert(frame_slot(a, base, e));
+                }
+            }
+            steps = steps + 1;
+            e = e + 1;
+        }
+        proof {
+            if steps == 0 {
+                assert(*self == pre);
+                assert(e == 512);
+                assert forall|j: usize| !#[trigger] frame_slot(a, base, j) by {
+                    if j < 512 {
+                        assert(!frame_slot(tree_of(&self.table_pages, &self.spaces), base, j));
+                    }
+                }
+            } else {
+                lemma_no_change_discharges_teardown(pre.view(), root, untyped, base);
+                assert(Self::table_mapping_steps(pre, *self, base, nodes, states));
+            }
+        }
+        steps != 0
+    }
+
+    /// Takes a slice of the dead table page at `base`, under the untyped at index `from` of the table at
+    /// `root`: the entries naming child tables go first, then the entries mapping frames. Returns whether
+    /// it ran, and if not nothing changed.
+    pub fn slice_table(&mut self, root: usize, from: usize, base: usize) -> (ret: bool)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(root),
+        ensures
+            final(self).wf(),
+            Self::mappings_shrunk(*old(self), *final(self)),
+            ret == old(self).can_slice_table(root, from, base),
+            !ret ==> *final(self) == *old(self),
+            ret ==> old(self).table_sliced(*final(self), root, from, base),
+    {
+        if self.cut_table_children(root, from, base) {
+            return true;
+        }
+        self.unlink_table_mappings(root, from, base)
     }
 
     /// Reclaims the 4K block at `base`, under the untyped at index `from` of the table at `root`. All of
