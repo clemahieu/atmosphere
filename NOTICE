@@ -1,0 +1,43 @@
+Atmosphere
+Copyright 2026 Colin LeMahieu
+
+This work is licensed under the Apache License, Version 2.0; the text is
+in LICENSE.
+
+It is a fork of the Atmosphere verified kernel by the Mars Research Group
+at the University of Utah (https://github.com/mars-research/atmosphere).
+In this repository, every commit up to and including bd485f2, and the
+upstream commits merged after it (the branch ending at 58a29cf), are that
+work, which its authors released under the MIT License reproduced below.
+Code from it remains throughout the tree, in whole files and in parts of
+files; git blame shows which lines. The MIT License continues to cover
+that code, and this notice is the one it requires.
+
+Two files carry code from other MIT-licensed projects and reproduce their
+notices in place: aelf/src/lib.rs (nix-ld-rs, Copyright (c) 2023 Zhaofeng
+Li and nix-ld-rs contributors) and user/libdma/src/dma.rs (Redox OS,
+Copyright (c) 2017 Redox OS Developers).
+
+-----------------------------------------------------------------------
+
+MIT License
+
+Copyright (c) 2025 Mars Research Group
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
