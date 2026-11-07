@@ -2,7 +2,7 @@
 
 # Design decisions
 
-14 records: 14 active, 0 superseded.
+15 records: 15 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -19,6 +19,9 @@ in `revisit if` what would make it worth reopening.
 - **[flush-without-waiting](./flush-without-waiting/DECISION.md)** (2026-11-06): A ghost per-core TLB model holds possibly stale translations keyed by space and core; unmap bumps a flush epoch, sends IPIs and returns again; each core's handler flushes every context and records its acknowledgement on its own kernel entry; retype requires every core's acknowledgement to have reached the epoch, a token only flush glue can produce.
   - *confidence:* The no-wait rule is forced by the lock, see reasoning; the epoch comparison and model are in kernel/verified/capability/kernel.rs and kernel/src/flush.rs, with the flush itself counted glue.
   - *revisit if:* The hardware gains a broadcast invalidation the kernel can rely on (this host reports no INVLPGB), or a flush that returns again is measured as the cost that dominates unmap.
+- **[ipc-with-reply-object](./ipc-with-reply-object/DECISION.md)** (2026-11-06): Endpoints rendezvous with queues over the intrusive list, so there is no fixed thread bound; a reply is a retyped object named at receive and used once; a blocked receiver's reply and destination slot are stored as indices and resolved through the root pointer at the match; a match skips dead waiters a fixed number per entry.
+  - *confidence:* Rendezvous and the explicit reply follow from the CPU-time decision's constraints; resolving at the match is the answer to a memory-safety finding and is a stated invariant.
+  - *revisit if:* Scheduling contexts are added, which is what the explicit reply object keeps possible; or a workload needs asynchronous messages with payload, which notifications do not carry.
 - **[isolation-claim](./isolation-claim/DECISION.md)** (2026-11-05): The kernel proves spatial isolation: a process affects only what its capabilities reach and gains authority only by grant or retype. It does not claim noninterference or freedom from timing channels, and the claim says so.
   - *confidence:* A scoping choice by the human. Noninterference is the claim the Atmosphere paper proved with unwinding conditions, so it is known to be reachable; timing needs hardware modelling the project does not have.
   - *revisit if:* A workload needs distrusting programs that cannot observe each other through status codes or timing, which is when noninterference or multiple kernel instances become required rather than later.
@@ -59,8 +62,8 @@ A view of the lists above. Nothing is reachable only through a tag.
 
 - `abi`: one-kernel-instance, syscall-abi-in-registers
 - `address-space`: address-spaces-as-objects
-- `capability`: address-spaces-as-objects, capability-names-a-block, process-holds-capabilities, revoke-by-depth-first-list, sharing-by-derive, teardown-driven-by-retype, theorem-over-reach, untyped-memory
-- `ipc`: syscall-abi-in-registers
+- `capability`: address-spaces-as-objects, capability-names-a-block, ipc-with-reply-object, process-holds-capabilities, revoke-by-depth-first-list, sharing-by-derive, teardown-driven-by-retype, theorem-over-reach, untyped-memory
+- `ipc`: ipc-with-reply-object, syscall-abi-in-registers
 - `kernel-state`: multicore-kernel-shape, one-kernel-instance, one-lock-bounded-steps
 - `lifetime`: sharing-by-derive, teardown-driven-by-retype
 - `lock`: flush-without-waiting, multicore-kernel-shape, one-lock-bounded-steps
