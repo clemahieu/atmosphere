@@ -2,7 +2,7 @@
 
 # Design decisions
 
-15 records: 15 active, 0 superseded.
+16 records: 16 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -16,6 +16,9 @@ in `revisit if` what would make it worth reopening.
 - **[capability-names-a-block](./capability-names-a-block/DECISION.md)** (2026-11-06): A memory capability names a block: a base aligned to its size and 2^order pages. Frames retype at 4K or 2M in constant time, a 2M frame derives 4K pieces, and a map names a capability, a page offset and an address, so a pager needs few slots.
   - *confidence:* Arithmetic on the page table's block sizes; the payload well-formedness is proven in kernel/verified/capability/table.rs.
   - *revisit if:* A workload needs frames that are not power-of-two aligned, or the 1G frame that pagetable does not yet map becomes necessary rather than convenient.
+- **[cpu-time-as-capability](./cpu-time-as-capability/DECISION.md)** (2026-11-05): Per-core run queues, fixed priorities, turns at equal priority, one selection function and one scheduling record per thread. A core capability allows placing a thread on that core at or below its maximum priority, a derived copy may lower it, and a placement is a binding so CPU time is revocable. Budgets and periods are deferred, with three constraints kept so they stay addable.
+  - *confidence:* The human's choice to defer scheduling contexts; the estimate that they cost about 600 to 900 lines of code and 2,500 to 4,000 of proof plus a one-time rework of the scheduler and IPC proofs is reasoned from structure, not measured.
+  - *revisit if:* A workload needs a bound on how much time a thread can take, which fixed priorities cannot give, or temporal isolation inside a core is wanted by design/isolation-claim/.
 - **[flush-without-waiting](./flush-without-waiting/DECISION.md)** (2026-11-06): A ghost per-core TLB model holds possibly stale translations keyed by space and core; unmap bumps a flush epoch, sends IPIs and returns again; each core's handler flushes every context and records its acknowledgement on its own kernel entry; retype requires every core's acknowledgement to have reached the epoch, a token only flush glue can produce.
   - *confidence:* The no-wait rule is forced by the lock, see reasoning; the epoch comparison and model are in kernel/verified/capability/kernel.rs and kernel/src/flush.rs, with the flush itself counted glue.
   - *revisit if:* The hardware gains a broadcast invalidation the kernel can rely on (this host reports no INVLPGB), or a flush that returns again is measured as the cost that dominates unmap.
@@ -62,7 +65,7 @@ A view of the lists above. Nothing is reachable only through a tag.
 
 - `abi`: one-kernel-instance, syscall-abi-in-registers
 - `address-space`: address-spaces-as-objects
-- `capability`: address-spaces-as-objects, capability-names-a-block, ipc-with-reply-object, process-holds-capabilities, revoke-by-depth-first-list, sharing-by-derive, teardown-driven-by-retype, theorem-over-reach, untyped-memory
+- `capability`: address-spaces-as-objects, capability-names-a-block, cpu-time-as-capability, ipc-with-reply-object, process-holds-capabilities, revoke-by-depth-first-list, sharing-by-derive, teardown-driven-by-retype, theorem-over-reach, untyped-memory
 - `ipc`: ipc-with-reply-object, syscall-abi-in-registers
 - `kernel-state`: multicore-kernel-shape, one-kernel-instance, one-lock-bounded-steps
 - `lifetime`: sharing-by-derive, teardown-driven-by-retype
@@ -73,5 +76,6 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `proof`: isolation-claim, theorem-over-reach
 - `purity`: untyped-memory
 - `revoke`: revoke-by-depth-first-list, sharing-by-derive, teardown-driven-by-retype
+- `scheduling`: cpu-time-as-capability
 - `security`: isolation-claim, theorem-over-reach
 - `verified`: flush-without-waiting, one-lock-bounded-steps, revoke-by-depth-first-list, theorem-over-reach
