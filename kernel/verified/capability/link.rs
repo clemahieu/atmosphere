@@ -1777,6 +1777,7 @@ impl CapKernel {
         &&& forall|i: int, e: TlbEntry| 0 <= i < NUM_IOMMUS && #[trigger] pre.iommus.tlb@[i].contains(e) ==> post.iommus.tlb@[i].contains(e)
         &&& post.iommus.acked == pre.iommus.acked
         &&& post.iommus.present == pre.iommus.present
+        &&& post.iommus.commands == pre.iommus.commands
         &&& post.mapped == pre.mapped
         &&& forall|a: int, g: usize| a < post.flush_epoch && g < NUM_PAGES && pre.stale_epoch.above(a, g)
             ==> #[trigger] post.stale_epoch.above(a, g)
