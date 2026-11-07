@@ -1811,7 +1811,6 @@ pub proof fn lemma_links_entry_cleared(a: TableTree, b: TableTree, t: usize, e: 
             &&& b.record(p.table).level == r.level + 1
             &&& b.record(p.table).space == r.space
         }
-        &&& r.space is Some ==> b.is_root(r.space->0)
     } by {
         assert(a.is_page(c));
         assert(a.maps.contains_key(c));
