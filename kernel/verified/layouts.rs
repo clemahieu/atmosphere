@@ -6,6 +6,7 @@ use vstd::prelude::*;
 use crate::capability::list::NodePage;
 use crate::capability::space::{SpaceCores, SpaceRecord, TableRecord};
 use crate::capability::table::{PayloadPage, TableRoot};
+use crate::capability::thread::ThreadRecord;
 use crate::define::PagePerm4k;
 use crate::pagetable::pagemap::PageMap;
 use crate::pptr::PointsTo;
@@ -31,6 +32,7 @@ global layout SpaceRecord is size == 72, align == 8;
 global layout PageMap is size == 4096, align == 8;
 global layout TableRecord is size == 56, align == 8;
 global layout SpaceCores is size == 264, align == 8;
+global layout ThreadRecord is size == 176, align == 8;
 
 /// A 4K page converts to a thread and back, using these layouts and no other facts.
 proof fn thread_page_round_trip(tracked page: PagePerm4k) -> (tracked ret: PagePerm4k)
@@ -78,6 +80,19 @@ pub proof fn page_into_space_record(tracked page: PagePerm4k) -> (tracked ret: P
         ret.is_uninit(),
 {
     crate::pptr::page_into_typed::<SpaceRecord>(page)
+}
+
+/// A page becomes an uninitialised thread record, with the thread's XSAVE area after it in the same
+/// page.
+pub proof fn page_into_thread_record(tracked page: PagePerm4k) -> (tracked ret: PointsTo<ThreadRecord>)
+    requires
+        page.is_uninit(),
+        page.addr() % 4096 == 0,
+    ensures
+        ret.addr() == page.addr(),
+        ret.is_uninit(),
+{
+    crate::pptr::page_into_typed::<ThreadRecord>(page)
 }
 
 /// A page becomes an uninitialised list of a space's cores.
@@ -146,6 +161,15 @@ pub proof fn lemma_space_block_layouts()
         vstd::layout::size_of::<SpaceRecord>() == 72,
         vstd::layout::size_of::<SpaceCores>() == 264,
         vstd::layout::size_of::<PageBytes>() == 4096,
+{
+}
+
+/// What a thread's retype needs to tell its node page's permission from a table root's.
+pub proof fn lemma_thread_block_layouts()
+    ensures
+        vstd::layout::size_of::<PageBytes>() == 4096,
+        vstd::layout::size_of::<TableRoot>() == 4096,
+        vstd::layout::size_of::<ThreadRecord>() == 176,
 {
 }
 

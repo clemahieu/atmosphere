@@ -18,6 +18,7 @@ use crate::capability::reach::*;
 use crate::capability::refs::*;
 use crate::capability::retype::*;
 use crate::capability::table::*;
+use crate::capability::thread::*;
 use crate::capability::view::*;
 use crate::layouts::*;
 use crate::define::*;
@@ -1652,6 +1653,7 @@ impl CapKernel {
             post.tables.caps_wf(&post.list),
             same_frames(&pre.list, &pre.tables, &post.list, &post.tables),
             same_spaces(&pre.list, &pre.tables, &post.list, &post.tables),
+            same_threads(&pre.list, &pre.tables, &post.list, &post.tables),
             forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x),
             forall|x: usize| #[trigger] pre.is_cap(x) ==> post.payload_of(x) == pre.payload_of(x),
     {
@@ -1668,6 +1670,18 @@ impl CapKernel {
             Self::lemma_table_page_cap(pre, post, x);
         }
         assert forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x) && pre.tables.payload_of(x).kind is Space implies {
+            &&& post.tables.is_cap(&post.list, x)
+            &&& post.tables.payload_of(x) == pre.tables.payload_of(x)
+        } by {
+            Self::lemma_table_page_cap(pre, post, x);
+        }
+        assert forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) && post.tables.payload_of(x).kind is Thread implies {
+            &&& pre.tables.is_cap(&pre.list, x)
+            &&& pre.tables.payload_of(x) == post.tables.payload_of(x)
+        } by {
+            Self::lemma_table_page_cap(pre, post, x);
+        }
+        assert forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x) && pre.tables.payload_of(x).kind is Thread implies {
             &&& post.tables.is_cap(&post.list, x)
             &&& post.tables.payload_of(x) == pre.tables.payload_of(x)
         } by {
@@ -1821,6 +1835,7 @@ impl CapKernel {
             post.table_pages.spare@[(base + 7 * 4096) as usize].addr() == base + 7 * 4096,
             post.table_pages.spare@[(base + 7 * 4096) as usize].is_uninit(),
             post.spaces == pre.spaces,
+            post.threads == pre.threads,
         ensures
             list_pages_used(&post.list, &post.blocks),
             holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
@@ -1828,6 +1843,7 @@ impl CapKernel {
             leaf_blocks_wf(&post.list, &post.tables, &post.blocks),
             table_pages_wf(&post.list, &post.table_pages, &post.blocks),
             spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
+            threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
             zeroing_typed(&post.zeroing, &post.blocks),
     {
         let a = &pre.blocks;
@@ -1850,6 +1866,12 @@ impl CapKernel {
             }
         }
         lemma_spaces_small_typed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, a, b, page, 8);
+        assert forall|k: int| 0 <= k < 8 implies !((#[trigger] b.pages@[page + k]).object is Thread) by {
+            if k == 0 {
+                assert(b.pages@[page as int].object is TablePage);
+            }
+        }
+        lemma_threads_small_typed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, a, b, page, 8);
         lemma_holders_small_typed(&pre.list, &pre.tables, a, b, &pre.zeroing, pre.holders@, page, 3);
         lemma_holders_same_frames(&pre.list, &pre.tables, &post.list, &post.tables, b, &pre.zeroing, pre.holders@);
         assert forall|br: BlockRef| #[trigger] pre.holders@.contains_key(br) implies block_typed(a, br) by {}
@@ -2305,7 +2327,7 @@ impl CapKernel {
     }
 
     /// So any other node is a capability after exactly when it was before, saying the same.
-    proof fn lemma_space_cap_frame(pre: Self, post: Self, child: usize, x: usize)
+    pub proof fn lemma_space_cap_frame(pre: Self, post: Self, child: usize, x: usize)
         requires
             Self::space_step(pre, post, child),
             x != child,
@@ -2319,7 +2341,7 @@ impl CapKernel {
     }
 
     /// Every capability still names a block, and the step adds the one capability.
-    proof fn lemma_space_caps_wf(pre: Self, post: Self, child: usize)
+    pub proof fn lemma_space_caps_wf(pre: Self, post: Self, child: usize)
         requires
             Self::space_step(pre, post, child),
             !pre.list.nodes@[child as int].live,
@@ -2354,7 +2376,7 @@ impl CapKernel {
     /// The hidden nodes, the parents, the slots and the leaves after a space's retype: the one new
     /// live node is the capability in its slot, and every other node's kind and parent are as they
     /// were.
-    proof fn lemma_space_nodes(pre: Self, post: Self, mid: Tree, parent: usize, child: usize)
+    pub proof fn lemma_space_nodes(pre: Self, post: Self, mid: Tree, parent: usize, child: usize)
         requires
             Self::space_step(pre, post, child),
             list_grown(pre.list, mid),
@@ -2871,6 +2893,12 @@ impl CapKernel {
                 post.blocks.lemma_member_of(page as int, page + k);
             }
             Self::lemma_spaces_space_added(pre, post, base, page, child);
+            assert forall|k: int| 0 <= k < 8 implies !((#[trigger] post.blocks.pages@[page + k]).object is Thread) by {
+                if k == 0 {
+                    assert(post.blocks.pages@[page as int].object is Space);
+                }
+            }
+            lemma_threads_small_typed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks, &post.blocks, page, 8);
             Self::lemma_space_links(pre, post, base, page);
             Self::lemma_space_mappings(pre, post, base, page);
             assert forall|n: usize| #[trigger] pre.mappings@.contains_key(n)

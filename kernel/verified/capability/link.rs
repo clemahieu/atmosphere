@@ -15,6 +15,7 @@ use crate::capability::reach::*;
 use crate::capability::retype::*;
 use crate::capability::space::*;
 use crate::capability::table::*;
+use crate::capability::thread::*;
 use crate::capability::view::*;
 use crate::define::*;
 use crate::pagetable::entry::*;
@@ -964,6 +965,7 @@ impl CapKernel {
     proof fn lemma_link_wf(pre: Self, post: Self, parent: usize, entry: usize, child: usize, s: usize)
         requires
             post.devices == pre.devices,
+            post.threads == pre.threads,
             pre.wf(),
             linked(tree_of(&pre.table_pages, &pre.spaces), tree_of(&post.table_pages, &post.spaces), parent, entry, child, s),
             tree_of(&pre.table_pages, &pre.spaces).is_table(parent),
@@ -1015,6 +1017,7 @@ impl CapKernel {
             post.mapped == pre.mapped,
             post.stale_epoch == pre.stale_epoch,
             post.devices == pre.devices,
+            post.threads == pre.threads,
             post.table_pages.maps@.dom() == pre.table_pages.maps@.dom(),
             table_pages_wf(&post.list, &post.table_pages, &post.blocks),
             spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
@@ -1248,6 +1251,7 @@ impl CapKernel {
             final(self).zeroing == old(self).zeroing,
             final(self).frames == old(self).frames,
             final(self).devices == old(self).devices,
+            final(self).threads == old(self).threads,
             final(self).cores == old(self).cores,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).tlb == old(self).tlb,
@@ -2282,6 +2286,7 @@ impl CapKernel {
             final(self).zeroing == old(self).zeroing,
             final(self).frames == old(self).frames,
             final(self).devices == old(self).devices,
+            final(self).threads == old(self).threads,
             final(self).cores == old(self).cores,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).tlb == old(self).tlb,
@@ -2368,6 +2373,7 @@ impl CapKernel {
     proof fn lemma_detach_post(pre: Self, post: Self, parent: usize, entry: usize, child: usize)
         requires
             post.devices == pre.devices,
+            post.threads == pre.threads,
             pre.wf(),
             post.list == pre.list,
             post.tables == pre.tables,

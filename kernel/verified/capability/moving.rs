@@ -15,6 +15,7 @@ use crate::capability::reach::*;
 use crate::capability::refs::*;
 use crate::capability::space::*;
 use crate::capability::table::*;
+use crate::capability::thread::*;
 use crate::define::*;
 
 impl CapKernel {
@@ -89,6 +90,7 @@ impl CapKernel {
         // A frame's holder has a new name; the count does not change.
         self.holders = Ghost(Self::moved_holders(pre.holders@, i, n));
         self.spaces.holders = Ghost(moved_space_holders(pre.spaces.holders@, i, n));
+        self.threads.holders = Ghost(moved_thread_holders(pre.threads.holders@, i, n));
         // A device's one capability has a new name.
         if let CapKind::Device = payload.kind {
             self.devices.holder = Ghost(pre.devices.holder@.insert(payload.base, n));

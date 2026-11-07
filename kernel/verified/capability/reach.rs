@@ -260,10 +260,9 @@ pub open spec fn discharges(pre: State, post: State, p: ObjectId, e: Effect) -> 
         ==> may_grow(pre, p, e, r, o)
 }
 
-/// post is pre with capability n added as a child of c, held by p, covering only what c covers. A
-/// child with the control right names what c names, since control reads the name alone. `live` says
-/// which nodes the list holds, and n is not among them.
-pub open spec fn adds_child(pre: State, post: State, p: ObjectId, c: NodeId, n: NodeId, live: spec_fn(NodeId) -> bool) -> bool {
+/// post is pre with capability n added as a child of c, held by p, covering only what c covers.
+/// `live` says which nodes the list holds, and n is not among them.
+pub open spec fn adds_node(pre: State, post: State, p: ObjectId, c: NodeId, n: NodeId, live: spec_fn(NodeId) -> bool) -> bool {
     &&& pre.holds(p, c)
     &&& live(c)
     &&& !live(n)
@@ -279,15 +278,41 @@ pub open spec fn adds_child(pre: State, post: State, p: ObjectId, c: NodeId, n: 
         &&& pre.pages.contains_key(x) ==> post.pages[x] == pre.pages[x]
     }
     &&& forall|x: NodeId, r: Right| x != n ==> #[trigger] post.rights.contains((x, r)) == pre.rights.contains((x, r))
+    &&& forall|o: ObjectId| #[trigger] post.covers(n, o) ==> pre.covers(c, o)
+    &&& post.maps == pre.maps
+    &&& post.process_of == pre.process_of
+    &&& forall|o: ObjectId| #[trigger] (post.contents)(o) == (pre.contents)(o)
+}
+
+/// Such a child, which has the control right only with what c names, since control reads the name
+/// alone.
+pub open spec fn adds_child(pre: State, post: State, p: ObjectId, c: NodeId, n: NodeId, live: spec_fn(NodeId) -> bool) -> bool {
+    &&& adds_node(pre, post, p, c, n, live)
     &&& post.rights.contains((n, Right::Control)) ==> {
         &&& pre.rights.contains((c, Right::Control))
         &&& pre.names.contains_key(c)
         &&& post.names[n] == pre.names[c]
     }
-    &&& forall|o: ObjectId| #[trigger] post.covers(n, o) ==> pre.covers(c, o)
-    &&& post.maps == pre.maps
-    &&& post.process_of == pre.process_of
-    &&& forall|o: ObjectId| #[trigger] (post.contents)(o) == (pre.contents)(o)
+}
+
+/// Such a child naming a new object inside c's block, which holds nothing, maps nothing and belongs to
+/// no process, so control over it reaches only it. A retype makes one.
+pub open spec fn adds_object(
+    pre: State,
+    post: State,
+    p: ObjectId,
+    c: NodeId,
+    n: NodeId,
+    live: spec_fn(NodeId) -> bool,
+    object: ObjectId,
+) -> bool {
+    &&& adds_node(pre, post, p, c, n, live)
+    &&& post.names.contains_key(n)
+    &&& post.names[n] == object
+    &&& pre.covers(c, object)
+    &&& forall|x: NodeId| !#[trigger] post.held.contains((object, x))
+    &&& forall|x: ObjectId| !#[trigger] post.maps.contains((object, x))
+    &&& !post.process_of.contains_key(object)
 }
 
 /// What a slice of an object's teardown does, apart from who may run it: it changes only what waits on
@@ -398,7 +423,7 @@ proof fn lemma_adds_child_descends(
     k: nat,
 )
     requires
-        adds_child(pre, post, p, c, n, live),
+        adds_node(pre, post, p, c, n, live),
         post.descends(top, x, k),
         live(x),
     ensures
@@ -415,7 +440,7 @@ proof fn lemma_adds_child_descends(
     }
 }
 
-proof fn lemma_adds_child_direct(
+pub proof fn lemma_adds_child_direct(
     pre: State,
     post: State,
     p: ObjectId,
@@ -426,7 +451,7 @@ proof fn lemma_adds_child_direct(
     o: ObjectId,
 )
     requires
-        adds_child(pre, post, p, c, n, live),
+        adds_node(pre, post, p, c, n, live),
         post.direct(q, o),
     ensures
         pre.direct(q, o),
@@ -569,6 +594,121 @@ pub proof fn lemma_adds_child_discharges_retype(
     }
     assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) implies pre.reach(r, o) by {
         lemma_adds_child_reach(pre, post, p, c, n, live, r, o);
+    }
+}
+
+/// A control chain in post is one in pre, or ends at the new object after one in pre that reaches
+/// p: the object holds nothing, so no chain goes on from it.
+proof fn lemma_adds_object_controlled(
+    pre: State,
+    post: State,
+    p: ObjectId,
+    c: NodeId,
+    n: NodeId,
+    live: spec_fn(NodeId) -> bool,
+    object: ObjectId,
+    a: ObjectId,
+    b: ObjectId,
+    k: nat,
+)
+    requires
+        adds_object(pre, post, p, c, n, live, object),
+        post.controlled(a, b, k),
+    ensures
+        pre.controlled(a, b, k) || (b == object && k > 0 && pre.controlled(a, p, (k - 1) as nat)),
+    decreases k,
+{
+    if k > 0 {
+        let m = choose|m: ObjectId| #[trigger] post.controls(m, b) && post.controlled(a, m, (k - 1) as nat);
+        lemma_adds_object_controlled(pre, post, p, c, n, live, object, a, m, (k - 1) as nat);
+        let t = choose|t: NodeId| #[trigger] post.holds_right(m, t, Right::Control)
+            && post.process_behind(post.names[t]) == b;
+        assert(post.held.contains((m, t)));
+        if m == object {
+            assert(!post.held.contains((object, t)));
+        }
+        assert(pre.controlled(a, m, (k - 1) as nat));
+        if t == n {
+            assert(!pre.held.contains((m, n)) || live(n));
+            assert(m == p);
+            assert(b == object);
+        } else {
+            assert(pre.holds_right(m, t, Right::Control));
+            assert(pre.process_behind(pre.names[t]) == b);
+            assert(pre.controls(m, b));
+        }
+    }
+}
+
+/// So the new object adds to nobody's reach: whoever reaches it now reached it through c before.
+proof fn lemma_adds_object_reach(
+    pre: State,
+    post: State,
+    p: ObjectId,
+    c: NodeId,
+    n: NodeId,
+    live: spec_fn(NodeId) -> bool,
+    object: ObjectId,
+    r: ObjectId,
+    o: ObjectId,
+)
+    requires
+        adds_object(pre, post, p, c, n, live, object),
+        post.reach(r, o),
+    ensures
+        pre.reach(r, o),
+{
+    let (q, k) = choose|q: ObjectId, k: nat| #[trigger] post.controlled(r, q, k) && (o == q || post.direct(q, o));
+    lemma_adds_object_controlled(pre, post, p, c, n, live, object, r, q, k);
+    if pre.controlled(r, q, k) {
+        if o != q {
+            lemma_adds_child_direct(pre, post, p, c, n, live, q, o);
+        }
+        assert(pre.controlled(r, q, k) && (o == q || pre.direct(q, o)));
+    } else {
+        let j = (k - 1) as nat;
+        assert(pre.controlled(r, p, j));
+        if o == q {
+            assert(live(c));
+            assert(pre.descends(c, c, 0));
+            assert(pre.holds(p, c));
+            assert(pre.covers(c, o));
+            assert(pre.direct(p, o));
+        } else {
+            assert(post.direct(object, o));
+            assert(!post.maps.contains((object, o)));
+            let (t, x, i) = choose|t: NodeId, x: NodeId, i: nat| #[trigger] post.descends(t, x, i)
+                && post.holds(object, t) && post.covers(x, o);
+            assert(!post.held.contains((object, t)));
+        }
+        assert(pre.controlled(r, p, j) && (o == p || pre.direct(p, o)));
+    }
+}
+
+/// So a retype that adds such an object, by a holder of the untyped with the right, discharges it.
+pub proof fn lemma_adds_object_discharges_retype(
+    pre: State,
+    post: State,
+    p: ObjectId,
+    c: NodeId,
+    n: NodeId,
+    live: spec_fn(NodeId) -> bool,
+    object: ObjectId,
+)
+    requires
+        adds_object(pre, post, p, c, n, live, object),
+        pre.holds_right(p, c, Right::Retype),
+    ensures
+        discharges(pre, post, p, Effect::Retype { untyped: c, object }),
+{
+    assert forall|o: ObjectId| #[trigger] State::changed(pre, post, o) implies may_change(pre, Effect::Retype { untyped: c, object }, o) by {
+        assert((post.contents)(o) == (pre.contents)(o));
+    }
+    assert forall|x: NodeId| #[trigger] State::removed(pre, post, x) implies may_remove(pre, p, Effect::Retype { untyped: c, object }, x) by {
+        assert(x != n);
+    }
+    assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) implies pre.reach(r, o) by {
+        lemma_adds_object_reach(pre, post, p, c, n, live, object, r, o);
     }
 }
 

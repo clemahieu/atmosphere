@@ -21,6 +21,7 @@ use crate::capability::reach::*;
 use crate::capability::refs::*;
 use crate::capability::space::*;
 use crate::capability::table::*;
+use crate::capability::thread::*;
 use crate::capability::view::*;
 use crate::define::*;
 use crate::pagetable::entry::*;
@@ -816,6 +817,7 @@ impl CapKernel {
         &&& post.zeroing == pre.zeroing
         &&& post.frames == pre.frames
         &&& post.devices == pre.devices
+        &&& post.threads == pre.threads
     }
 
     /// The table entry i of table t leads to, in constant time. Above level 1 an entry either is a
@@ -1251,6 +1253,7 @@ impl CapKernel {
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).frames == old(self).frames,
             final(self).devices == old(self).devices,
+            final(self).threads == old(self).threads,
             final(self).spaces == old(self).spaces,
             final(self).mappings == old(self).mappings,
             final(self).zeroing == old(self).zeroing,
@@ -1793,6 +1796,7 @@ impl CapKernel {
             frames_held(post.frames@, post.holders@),
             leaf_blocks_wf(&post.list, &post.tables, &post.blocks),
             spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
+            threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
     {
         let node = mapping_node(t, e);
         let br = block_ref(&pre.blocks, frame);
@@ -1818,6 +1822,8 @@ impl CapKernel {
         }
         assert(same_spaces(&pre.list, &pre.tables, &post.list, &post.tables));
         lemma_spaces_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks, &post.blocks, br, refs, dead);
+        assert(same_threads(&pre.list, &pre.tables, &post.list, &post.tables));
+        lemma_threads_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks, &post.blocks, br, refs, dead);
     }
 
     /// The table pages and the links after a map: the frame's block is no table page's, and the entry

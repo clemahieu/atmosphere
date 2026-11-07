@@ -16,6 +16,7 @@ use crate::capability::list::*;
 use crate::capability::refs::*;
 use crate::capability::space::*;
 use crate::capability::table::Tables;
+use crate::capability::thread::*;
 use crate::capability::zero::*;
 use crate::define::*;
 use crate::pptr::PointsTo;
@@ -641,6 +642,8 @@ pub struct CapKernel {
     pub holders: Ghost<IMap<BlockRef, Set<usize>>>,
     /// The devices boot found.
     pub devices: Devices,
+    /// The threads, each a record named by capabilities.
+    pub threads: Threads,
 }
 
 /// Flushes every context on this core, all PCIDs and paging-structure caches: changing CR4.PGE does
@@ -1119,6 +1122,7 @@ impl CapKernel {
         &&& space_nodes_dead(&self.list, &self.spaces)
         &&& table_pages_wf(&self.list, &self.table_pages, &self.blocks)
         &&& spaces_wf(&self.list, &self.tables, &self.spaces, &self.blocks)
+        &&& threads_wf(&self.list, &self.tables, &self.threads, &self.blocks)
         &&& table_links_wf(tree_of(&self.table_pages, &self.spaces))
         &&& mapped_wf(self.mapped@, self.mappings@)
         &&& mappings_wf(&self.list, &self.tables, tree_of(&self.table_pages, &self.spaces), &self.blocks, self.holders@, self.mappings@)
@@ -1234,6 +1238,7 @@ impl CapKernel {
         &&& post.flush_epoch == pre.flush_epoch
         &&& post.iommus == pre.iommus
         &&& post.devices == pre.devices
+        &&& post.threads == pre.threads
         &&& post.cores@[c].current_thread == pre.cores@[c].current_thread
         &&& pre.acked(c) <= post.acked(c)
         &&& forall|e: TlbEntry| #[trigger] post.tlb@[c].contains(e) ==> pre.tlb@[c].contains(e)
@@ -1299,7 +1304,20 @@ impl CapKernel {
             self.region_clean(level, r),
     {
         assert forall|i: usize| #[trigger] block_has_page(level_ref(level, r), i) implies self.no_stale_translation(i) by {
-            assert(i / level_pages(level) == r);
+            assert(i / level_pages(level) == r) by {
+                match level {
+                    Large::Two => {
+                        assert(r * PAGES_PER_2M <= i < (r + 1) * PAGES_PER_2M);
+                        vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(
+                            i as int, PAGES_PER_2M as int, r as int, i - r * PAGES_PER_2M);
+                    },
+                    Large::One => {
+                        assert(r * PAGES_PER_1G <= i < (r + 1) * PAGES_PER_1G);
+                        vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(
+                            i as int, PAGES_PER_1G as int, r as int, i - r * PAGES_PER_1G);
+                    },
+                }
+            }
             assert forall|c: int, s: usize| 0 <= c < NUM_CPUS implies !#[trigger] self.tlb@[c].contains(TlbEntry { space: s, page: i }) by {
                 if self.tlb@[c].contains(TlbEntry { space: s, page: i }) {
                     assert(!self.mapped@.contains(i));
@@ -1369,6 +1387,7 @@ impl CapKernel {
         self.zeroing.init();
         self.holders = Ghost(IMap::empty());
         self.devices = Devices::new();
+        self.threads = Threads::new();
         self.blocks.init();
         let mut i = 0;
         while i != NUM_CPUS
@@ -1702,6 +1721,7 @@ impl CapKernel {
             leaf_blocks_wf(&post.list, &post.tables, &post.blocks),
             table_pages_wf(&post.list, &post.table_pages, &post.blocks),
             spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
+            threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
             post.list == pre.list,
             post.tables == pre.tables,
             post.table_pages == pre.table_pages,
@@ -1714,6 +1734,7 @@ impl CapKernel {
             post.mapped == pre.mapped,
             post.stale_epoch == pre.stale_epoch,
             post.devices == pre.devices,
+            post.threads == pre.threads,
             forall|i: usize| i < NUM_PAGES && block_typed(&pre.blocks, block_ref(&pre.blocks, i))
                 && block_refs(&pre.blocks, block_ref(&pre.blocks, i)) > 0
                 ==> #[trigger] block_ref(&post.blocks, i) == block_ref(&pre.blocks, i),
@@ -1745,6 +1766,7 @@ impl CapKernel {
             post.mapped == pre.mapped,
             post.stale_epoch == pre.stale_epoch,
             post.devices == pre.devices,
+            post.threads == pre.threads,
             post.frames_wf(),
             post.zeroing == pre.zeroing,
             zeroing_typed(&pre.zeroing, &post.blocks),
@@ -1755,6 +1777,7 @@ impl CapKernel {
             leaf_blocks_wf(&post.list, &post.tables, &post.blocks),
             table_pages_wf(&post.list, &post.table_pages, &post.blocks),
             spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
+            threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
             forall|i: usize| i < NUM_PAGES && block_typed(&pre.blocks, block_ref(&pre.blocks, i))
                 && block_refs(&pre.blocks, block_ref(&pre.blocks, i)) > 0
                 ==> #[trigger] block_ref(&post.blocks, i) == block_ref(&pre.blocks, i),
@@ -1934,6 +1957,7 @@ impl CapKernel {
     pub proof fn lemma_small_freed(pre: Self, post: Self, base: usize)
         requires
             post.devices == pre.devices,
+            post.threads == pre.threads,
             pre.wf(),
             base < NUM_PAGES,
             pre.blocks.pages@[base as int].kind is Base,
@@ -1975,6 +1999,10 @@ impl CapKernel {
             assert(space_wf(&pre.list, &pre.spaces, &pre.blocks, s));
         }
         lemma_spaces_small_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks, &post.blocks, base);
+        assert forall|t: usize| #[trigger] pre.threads.records@.contains_key(t) implies post.list.pages@.dom().contains(t) by {
+            assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, t));
+        }
+        lemma_threads_small_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks, &post.blocks, base);
         assert forall|x: usize| #[trigger] post.holders@.contains_key(BlockRef::Small(x))
             implies post.blocks.pages@[x as int].object is Frame by {
             assert(x != base);
@@ -2078,6 +2106,7 @@ impl CapKernel {
     pub proof fn lemma_large_freed(pre: Self, post: Self, level: Large, r: usize)
         requires
             post.devices == pre.devices,
+            post.threads == pre.threads,
             pre.wf(),
             r < level_regions(level),
             post.blocks.wf(),
@@ -2144,6 +2173,7 @@ impl CapKernel {
         lemma_leaf_blocks_owned_same_types(&pre.tables, &pre.blocks, &post.blocks);
         lemma_table_pages_same_pages(&pre.list, &pre.table_pages, &pre.blocks, &post.blocks);
         lemma_spaces_same_pages(&pre.list, &pre.tables, &pre.spaces, &pre.blocks, &post.blocks);
+        lemma_threads_same_pages(&pre.list, &pre.tables, &pre.threads, &pre.blocks, &post.blocks);
         let br = level_ref(level, r);
         assert forall|i: usize| i < NUM_PAGES && block_typed(&pre.blocks, block_ref(&pre.blocks, i))
             && block_refs(&pre.blocks, block_ref(&pre.blocks, i)) > 0

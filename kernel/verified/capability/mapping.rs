@@ -13,6 +13,7 @@ use crate::capability::list::*;
 use crate::capability::refs::*;
 use crate::capability::space::*;
 use crate::capability::table::*;
+use crate::capability::thread::*;
 use crate::define::*;
 use crate::pagetable::entry::PageEntry;
 use crate::pagetable::pagemap::*;
@@ -417,6 +418,7 @@ impl CapKernel {
             post.mapped == pre.mapped,
             post.stale_epoch == pre.stale_epoch,
             post.devices == pre.devices,
+            post.threads == pre.threads,
             post.flush_epoch == pre.flush_epoch,
         ensures
             post.wf(),
@@ -1354,6 +1356,7 @@ impl CapKernel {
             final(self).cores == old(self).cores,
             final(self).spaces == old(self).spaces,
             final(self).devices == old(self).devices,
+            final(self).threads == old(self).threads,
             final(self).table_pages.records == old(self).table_pages.records,
             final(self).table_pages.spare == old(self).table_pages.spare,
     {
@@ -1485,6 +1488,7 @@ impl CapKernel {
             final(self).frames == old(self).frames,
             final(self).cores == old(self).cores,
             final(self).devices == old(self).devices,
+            final(self).threads == old(self).threads,
     {
         let ghost pre = *old(self);
         let ghost tree = tree_of(&pre.table_pages, &pre.spaces);

@@ -16,5 +16,6 @@ pub mod retype;
 pub mod revoke;
 pub mod space;
 pub mod table;
+pub mod thread;
 pub mod view;
 pub mod zero;

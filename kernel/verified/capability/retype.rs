@@ -18,6 +18,7 @@ use crate::capability::reach::*;
 use crate::capability::space::*;
 use crate::capability::refs::*;
 use crate::capability::table::*;
+use crate::capability::thread::*;
 use crate::capability::view::*;
 use crate::capability::zero::*;
 use crate::define::*;
@@ -332,12 +333,14 @@ impl CapKernel {
             post.holders@ == pre.holders@.insert(block_ref(&pre.blocks, base / 4096), set![child]),
             post.table_pages == pre.table_pages,
             post.spaces == pre.spaces,
+            post.threads == pre.threads,
             post.list.pages@.dom() == pre.list.pages@.dom(),
         ensures
             holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
             leaf_blocks_wf(&post.list, &post.tables, &post.blocks),
             table_pages_wf(&post.list, &post.table_pages, &post.blocks),
             spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
+            threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
     {
         assert forall|x: usize| x != child implies {
             &&& #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x)
@@ -353,6 +356,7 @@ impl CapKernel {
         Self::lemma_same_table_nodes(pre, post, child, child);
         lemma_table_pages_same_nodes(&pre.list, &post.list, &pre.table_pages, &post.blocks);
         lemma_spaces_same_caps(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks);
+        lemma_threads_same_caps(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks);
         lemma_holders_frame_new(
             &pre.list,
             &pre.tables,
@@ -505,6 +509,10 @@ impl CapKernel {
                 assert(self.blocks.pages@[page as int].object is Frame);
             }
             lemma_spaces_small_typed(&self.list, &self.tables, &self.list, &self.tables, &self.spaces, &pre.blocks, &self.blocks, page, 1);
+            assert forall|k: int| 0 <= k < 1 implies !((#[trigger] self.blocks.pages@[page + k]).object is Thread) by {
+                assert(self.blocks.pages@[page as int].object is Frame);
+            }
+            lemma_threads_small_typed(&self.list, &self.tables, &self.list, &self.tables, &self.threads, &pre.blocks, &self.blocks, page, 1);
             assert(self.wf());
             assert(self.view() == pre.view());
             assert(self.frame_block_ready(base, 0)) by {
@@ -612,6 +620,7 @@ impl CapKernel {
                 lemma_leaf_blocks_owned_same_types(&pre.tables, &pre.blocks, &self.blocks);
                 lemma_table_pages_same_pages(&pre.list, &pre.table_pages, &pre.blocks, &self.blocks);
                 lemma_spaces_same_pages(&pre.list, &pre.tables, &pre.spaces, &pre.blocks, &self.blocks);
+                lemma_threads_same_pages(&pre.list, &pre.tables, &pre.threads, &pre.blocks, &self.blocks);
                 Self::lemma_zeroing_changed(pre, *self);
             }
             return RetypeStep::Again;
@@ -645,6 +654,7 @@ impl CapKernel {
             lemma_leaf_blocks_owned_same_types(&pre.tables, &pre.blocks, &me.blocks);
             lemma_table_pages_same_pages(&pre.list, &pre.table_pages, &pre.blocks, &me.blocks);
             lemma_spaces_same_pages(&pre.list, &pre.tables, &pre.spaces, &pre.blocks, &me.blocks);
+            lemma_threads_same_pages(&pre.list, &pre.tables, &pre.threads, &pre.blocks, &me.blocks);
             Self::lemma_zeroing_changed(pre, me);
         }
         RetypeStep::Done
@@ -858,6 +868,12 @@ impl CapKernel {
                 }
             }
             lemma_spaces_small_typed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks, &post.blocks, page, 2);
+            assert forall|k: int| 0 <= k < 2 implies !((#[trigger] post.blocks.pages@[page + k]).object is Thread) by {
+                if k == 0 {
+                    assert(post.blocks.pages@[page as int].object is TableLeaf);
+                }
+            }
+            lemma_threads_small_typed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks, &post.blocks, page, 2);
             Self::lemma_devices_same_caps(pre, post);
             assert(post.wf());
             assert forall|i: usize| index_ok(i) && index_entry(i) == r as int implies {

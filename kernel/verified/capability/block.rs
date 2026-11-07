@@ -39,6 +39,7 @@ pub enum ObjectType {
     TableLeaf,
     TablePage,
     Space,
+    Thread,
 }
 
 #[derive(Clone, Copy)]

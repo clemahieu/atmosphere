@@ -19,6 +19,7 @@ use crate::capability::refs::*;
 use crate::capability::retype::*;
 use crate::capability::space::*;
 use crate::capability::table::*;
+use crate::capability::thread::*;
 use crate::capability::view::*;
 use crate::capability::zero::*;
 use crate::define::*;
@@ -618,7 +619,7 @@ impl CapKernel {
                     self.free_space(c, root, from, base)
                 }
             },
-            ObjectType::None => ReclaimStep::Refused,
+            ObjectType::None | ObjectType::Thread => ReclaimStep::Refused,
         }
     }
 
@@ -1444,6 +1445,7 @@ impl CapKernel {
             forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x) ==> post.tables.payload_of(x) == pre.tables.payload_of(x),
             post.table_pages == pre.table_pages,
             post.spaces == pre.spaces,
+            post.threads == pre.threads,
             post.mappings == pre.mappings,
         ensures
             holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
@@ -1453,6 +1455,7 @@ impl CapKernel {
             zeroing_typed(&post.zeroing, &post.blocks),
             table_pages_wf(&post.list, &post.table_pages, &post.blocks),
             spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
+            threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
             mappings_wf(&post.list, &post.tables, tree_of(&post.table_pages, &post.spaces), &post.blocks, post.holders@, post.mappings@),
     {
         let page = base / 4096;
@@ -1510,6 +1513,8 @@ impl CapKernel {
         lemma_table_pages_small_freed(&pre.list, &post.list, &pre.table_pages, &pre.blocks, &post.blocks, page);
         lemma_space_node_pages_kept(&pre.list, &post.list, &pre.tables, &pre.spaces, &pre.blocks, base);
         lemma_spaces_small_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks, &post.blocks, page);
+        lemma_thread_node_pages_kept(&pre.list, &post.list, &pre.tables, &pre.threads, &pre.blocks, base);
+        lemma_threads_small_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks, &post.blocks, page);
     }
 
     /// The kernel after the empty leaf at `base` frees: nothing but its block, its owner entry and its
@@ -1546,6 +1551,7 @@ impl CapKernel {
             post.spaces == pre.spaces,
             post.mappings == pre.mappings,
             post.devices == pre.devices,
+            post.threads == pre.threads,
         ensures
             post.wf(),
             post.view() == pre.view(),
@@ -1746,6 +1752,7 @@ impl CapKernel {
         &&& post.frames == pre.frames
         &&& post.mappings == pre.mappings
         &&& post.devices == pre.devices
+        &&& post.threads == pre.threads
     }
 
     /// One step of an empty table page going: its table, record and spare page go with its block.
@@ -1794,6 +1801,33 @@ impl CapKernel {
         }
     }
 
+    /// The threads after a table page's or a space's block frees: every thread lies outside it, so its
+    /// node page stays the list's, and no thread capability changed.
+    proof fn lemma_node_block_threads(pre: Self, post: Self, base: usize)
+        requires
+            Self::node_block_freed_step(pre, post, base),
+            pre.blocks.pages@[(base / 4096) as int].kind is Base,
+            !(pre.blocks.pages@[(base / 4096) as int].object is Thread),
+            forall|i: int| 0 <= i < NUM_PAGES ==> #[trigger] post.blocks.pages@[i] == (
+                if pre.blocks.in_block((base / 4096) as int, i) { free_entry() } else { pre.blocks.pages@[i] }),
+            forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x),
+            forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x) ==> post.tables.payload_of(x) == pre.tables.payload_of(x),
+        ensures
+            threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
+    {
+        let page = base / 4096;
+        Self::lemma_node_block_list_pages(pre, post, base);
+        lemma_table_page_aligned(base);
+        assert(order_pages(3) == 8);
+        lemma_threads_outside_block(&pre.list, &pre.tables, &pre.threads, &pre.blocks, page);
+        assert forall|t: usize| #[trigger] pre.threads.records@.contains_key(t) implies post.list.pages@.dom().contains(t) by {
+            assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, t));
+            assert(!pre.blocks.in_block(page as int, (t / 4096) as int));
+            assert(!(base <= t < base + TABLE_NODE_PAGES * 4096));
+        }
+        lemma_threads_small_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks, &post.blocks, page);
+    }
+
     /// A list page after the step is in no page of the freed block.
     proof fn lemma_node_block_list_pages(pre: Self, post: Self, base: usize)
         requires
@@ -1823,6 +1857,7 @@ impl CapKernel {
         ensures
             table_pages_wf(&post.list, &post.table_pages, &post.blocks),
             spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
+            threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
             list_pages_used(&post.list, &post.blocks),
     {
         let page = base / 4096;
@@ -1870,6 +1905,7 @@ impl CapKernel {
         }
         assert(same_spaces(&pre.list, &pre.tables, &post.list, &post.tables));
         lemma_spaces_small_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks, &post.blocks, page);
+        Self::lemma_node_block_threads(pre, post, base);
         lemma_list_pages_used_subset(&pre.list, &post.list, &pre.blocks);
         lemma_list_pages_used_small_freed(&post.list, &pre.blocks, &post.blocks, page);
     }
@@ -2235,6 +2271,7 @@ impl CapKernel {
         ensures
             table_pages_wf(&post.list, &post.table_pages, &post.blocks),
             spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
+            threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
             list_pages_used(&post.list, &post.blocks),
     {
         let page = base / 4096;
@@ -2246,6 +2283,7 @@ impl CapKernel {
         lemma_table_pages_small_freed(&pre.list, &post.list, &post.table_pages, &pre.blocks, &post.blocks, page);
         assert(same_spaces(&pre.list, &pre.tables, &post.list, &post.tables));
         lemma_spaces_space_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &post.spaces, &pre.blocks, &post.blocks, base);
+        Self::lemma_node_block_threads(pre, post, base);
         lemma_list_pages_used_subset(&pre.list, &post.list, &pre.blocks);
         lemma_list_pages_used_small_freed(&post.list, &pre.blocks, &post.blocks, page);
     }
