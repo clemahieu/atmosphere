@@ -65,6 +65,10 @@ Beads lives at `~/atmosphere.src/.beads`, shared by every worktree, kept out of 
 
 A commit is tested when `atmo test` exits 0. It holds when no file `git add -A` would take is over 1 MiB; the workspace builds (`cargo build` in `build-tool`, and the loader, kernel, dom0 and payload as `atmo run` builds them); every package in `Cargo.lock` passes the license check against `tools/license-allowlist`; the license guard's tests pass; `atmo verify` reports no more errors than `tools/verify-allowance`, which equals the count on the proof-debt epic, and a proof leaf lowers both in the same commit; every `external_body` in `kernel/verified` has a reason and matches `tools/external-body-list`; `tools/check-boot-stack.py` passes in debug and release, with and without a forced overflow; `tools/coverage.py` captures line and branch coverage per crate, whose numbers are reported and do not fail the gate; `atmo run --iommu` boots dom0 under QEMU's emulated IOMMU with the device syscalls returning 0; and `atmo run` boots dom0 to a clean exit within a timeout (exit status 0, serial log ending in `dom0 benchmark done`).
 
+# Design decisions
+
+`design/` holds the decisions made under these principles, one per directory, entered at `design/INDEX.md`; `design/README.md` says how a record is written and revised. A comment that explains a design choice points at `design/<slug>/`, never at a tracker issue, since the tracker is private. Before changing how something is done, read its record; a change that reverses a decision revises its record in the same commit, and a decision someone arriving fresh would re-propose gets a record.
+
 # Working in the tree
 
 ```
