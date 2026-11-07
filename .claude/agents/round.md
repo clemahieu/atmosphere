@@ -1,6 +1,6 @@
 ---
 name: round
-description: One round of the Atmosphere Beads discipline, in a fresh context. Takes the next ready issue and discards, redefines, splits or implements it; with no ready leaf, runs a skeptic pass or a split round on an epic. Spawns the prover and the skeptic itself. Reports the round and whether the loop should continue. Use only from the /round skill.
+description: One round of the Atmosphere Beads discipline, in a fresh context. Takes the next ready issue and discards, redefines, splits or implements it; with no ready leaf, runs a skeptic pass or a split round on an epic. Hands proof searches and skeptic passes to the driver, which runs the prover and the skeptic between rounds. Reports the round and whether the loop should continue. Use only from the /round skill.
 model: opus
 effort: high
 maxTurns: 300
@@ -40,7 +40,7 @@ Discard, redefine and split do not commit.
 
 1. Worktree: `git -C ~/atmosphere.src/main worktree add ../<id> -b <id> main`; work in `~/atmosphere.src/<id>`, where `<id>` is the issue id. Verus is built once, under main; link it so the gate runs here: `ln -s ../../main/tools/verus ~/atmosphere.src/<id>/tools/verus`.
 2. Sources: before reading an external source for the first time, check its license and record the source and the license on the issue with `bd update <id> --append-notes "..."`. Never open a forbidden source (CLAUDE.md, License).
-3. Test first, at the epic's tier: a Verus specification and proof for tier 1; a test that reaches the branch, with fault injection where nothing else reaches it, for tier 2; the best test reasonable for tier 3. Run it and see it fail, make the change, see it pass. For tier 1, when the first verify after the change fails, delegate the proof search to the prover agent (`.claude/agents/prover.md`) with the issue id, the worktree path, the failing `atmo verify` output, the target line and the change so far; it works in that worktree and reports the verify line it reached. Wait for its report. One prover run ends the attempt (the bound below): continue to the gate if the target is reached, otherwise record its report as the attempt.
+3. Test first, at the epic's tier: a Verus specification and proof for tier 1; a test that reaches the branch, with fault injection where nothing else reaches it, for tier 2; the best test reasonable for tier 3. Run it and see it fail, make the change, see it pass. For tier 1, when the first verify after the change fails, the proof search goes to the prover agent (`.claude/agents/prover.md`). A round cannot wait for a background agent, so the driver runs it between rounds: `bd update <id> --append-notes "Prover input: target <the verified, errors line needed>; failing: <each error's file:line and message>; change so far: <what the worktree holds>"`, `bd update <id> -s open`, keep the worktree, and end the round with the report and its `Prover: <id>` line. The driver appends the prover's report to the issue. The round that takes the issue next starts from that worktree and that report. One prover run ends the attempt (the bound below): continue to the gate if the report reached the target, otherwise record the report as the attempt.
 4. Anything the issue did not name (a dependency, a bug, more complexity, a decision only the human can make) goes through section 5. Do not widen the change.
 5. Gate: `source tools/env.sh`, then `atmo test`. Record the command and its result on the issue.
 6. Commit: one logical change per commit; the message says why; the trailer the harness asks for. If the message needs "and", make two commits, each building on its own.
@@ -59,7 +59,7 @@ An attempt is bounded. When ten runs of the tier's check (`atmo verify` for tier
 
 Consider the open epics other than the star, shallowest first. Depth is the number of dots in the id: `atmo-1ab` is the star, `atmo-1ab.5` depth 1, `atmo-1ab.5.3` depth 2. `bd list -t epic`, then `bd show <id>`.
 
-- Skeptic pass: an epic with at least one child, no open child, and no child of status blocked. Spawn the skeptic agent (`.claude/agents/skeptic.md`) with only the epic's acceptance criteria, its tier, and where the evidence is: `bd show` of each closed child, the commit SHAs, `atmo test` and `atmo verify` output, serial logs. It tries to refute each criterion from that evidence. Wait for its report. If every criterion survives, `bd close <epic> --reason "skeptic pass: <summary>"`. A refuted criterion keeps the epic open and becomes a leaf under it, the refutation as its description.
+- Skeptic pass: an epic with at least one child, no open child, and no child of status blocked. The skeptic agent (`.claude/agents/skeptic.md`) runs from the driver, as the prover does. When the epic's notes hold no skeptic report newer than its last closed child: `bd update <epic> --append-notes "Skeptic input: tier <t>; evidence: <the closed children, the commit SHAs their close reasons name, where the atmo test and atmo verify output and the serial logs are>"` and end the round with the report and its `Skeptic: <epic>` line. When they hold one: if every criterion stands, `bd close <epic> --reason "skeptic pass: <summary>"`; each refuted criterion keeps the epic open and becomes a leaf under it, the refutation as its description.
 - Split round: the shallowest open epic with no ready children and no child of status blocked. Write its leaves, each with a description, acceptance criteria a skeptic can check from evidence, and the tier; `bd dep add` only where one blocks another. If a leaf cannot be written without a decision only the human can make, file that decision by section 5 under this epic and end the round. Do not mark the epic blocked.
 - The star never closes and never gets a split round. Its children are the human's decision.
 
@@ -71,6 +71,7 @@ End the round with, in this order and nothing else:
 - The first lines of `bd ready --exclude-type=epic`.
 - The questions in `bd list -s blocked`.
 - `Notify:` one line per notification the driver sends, or `Notify: none`.
+- `Prover: <id>` or `Skeptic: <epic>` when the round handed the driver a proof search (section 4.3) or a skeptic pass (section 6); otherwise nothing.
 - The last line, `Loop: continue` or `Loop: stop`. Stop means no leaf is ready and no epic qualifies for a skeptic pass or a split round: every remaining open issue is an epic, a status-blocked question, or an issue blocked only by such a question. There is no other stop; the human monitors budget.
 
 Ask nothing that is not on the blocked list.

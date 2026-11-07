@@ -5,11 +5,11 @@ description: Run one round of the Atmosphere Beads discipline in a fresh subagen
 
 # The driver
 
-The procedure is `.claude/agents/round.md`. This skill spawns that agent so every round starts with a fresh context, relays its report, and keeps the loop going. It reads no issue and touches no file itself.
+The procedure is `.claude/agents/round.md`. This skill spawns that agent so every round starts with a fresh context, relays its report, and keeps the loop going. It also runs the prover and the skeptic a round hands it, because a round cannot wait for a background agent; recording their reports on the issue is the only issue it writes, and it touches no file.
 
 ## On `/round`, and on each wakeup under `/loop /round`
 
-1. `ListAgents`. If a round agent is still running, spawn nothing: under `/loop`, `ScheduleWakeup` with a long delay (3600 s), `noop: true`, the same `/round` prompt, reason `round agent still running; fallback`. End the turn.
+1. `ListAgents`. If a round, prover or skeptic agent is still running, spawn nothing: under `/loop`, `ScheduleWakeup` with a long delay (3600 s), `noop: true`, the same `/round` prompt, reason `round agent still running; fallback`. End the turn.
 2. Otherwise spawn the agent: `Agent` with `subagent_type: "round"` and the prompt `Run one round.` It runs in the background. Under `/loop`, schedule the same fallback wakeup. End the turn; the hand-back re-invokes this session.
 
 ## On the hand-back
@@ -17,6 +17,7 @@ The procedure is `.claude/agents/round.md`. This skill spawns that agent so ever
 1. Print the agent's report as it came.
 2. For each line under `Notify:`, send it with `PushNotification` where the harness has that tool.
 3. If the report's last line is `Loop: stop`, or if not under `/loop`: `bd show` each issue in `bd list -s blocked` when stopping, send one PushNotification, `round loop stopped: <n> questions in bd list -s blocked`, and under `/loop` end the loop (`ScheduleWakeup` with `stop`).
-4. Otherwise spawn the next round at once, as above, and schedule the fallback wakeup.
+4. If the report has a `Prover: <id>` line, spawn `Agent` with `subagent_type: "prover"` and the prompt `Issue <id>, worktree ~/atmosphere.src/<id>. Your input is the issue's last Prover input note.` If it has a `Skeptic: <epic>` line, spawn `Agent` with `subagent_type: "skeptic"` and the prompt `Epic <epic>. Your input is the epic's last Skeptic input note.` Schedule the fallback wakeup and end the turn. On that agent's hand-back, `bd update <id> --append-notes "Prover report: <the report>"` (or `Skeptic report:` on the epic), then spawn the next round.
+5. Otherwise spawn the next round at once, as above, and schedule the fallback wakeup.
 
 A wakeup that finds no agent running and no hand-back received means the round died; the next round's orient recovers what it left. Ask nothing that is not in `bd list -s blocked`.
