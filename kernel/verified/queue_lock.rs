@@ -1,7 +1,7 @@
 //! The queue lock over the kernel's state. Each waiter spins on its own cache line, so the line holding
 //! the lock's word does not bounce between every waiter on each handover. On this host a lock every
 //! waiter spins on fell well below a queue lock across two CCDs, in the simulation recorded on the
-//! multicore decision, atmo-6x9.6.8. This is an MCS lock with one node per core: a core holds the lock
+//! multicore decision, design/multicore-kernel-shape/. This is an MCS lock with one node per core: a core holds the lock
 //! at most once, since interrupts are off while it does.
 //!
 //! Mutual exclusion is a matter of ghost tokens. One set of tokens is allocated per lock: `Held`, and

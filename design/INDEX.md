@@ -2,7 +2,7 @@
 
 # Design decisions
 
-0 records: 0 active, 0 superseded.
+1 record: 1 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -10,3 +10,14 @@ in `revisit if` what would make it worth reopening.
 
 ## Active
 
+- **[multicore-kernel-shape](./multicore-kernel-shape/DECISION.md)** (2026-11-05): A node is a set of cores with one kernel instance and one queue lock; a system may have any number of nodes, laid out at boot; nothing in kernel state is shared between nodes, memory crosses only as a quiescent untyped handoff, and stealing is pager policy.
+  - *confidence:* The shape is a judgement against published multicore kernels; the lock numbers below are measured on the host with user-space threads, not this kernel, and its own lock has not been measured.
+  - *revisit if:* Lock hold times measured on this kernel make a one-node system's contention a real workload's problem and a smaller node is not the answer, or a workload needs kernel state shared between nodes that a handoff cannot express.
+
+## By tag
+
+A view of the lists above. Nothing is reachable only through a tag.
+
+- `kernel-state`: multicore-kernel-shape
+- `lock`: multicore-kernel-shape
+- `multicore`: multicore-kernel-shape
