@@ -2,7 +2,7 @@
 
 # Design decisions
 
-4 records: 4 active, 0 superseded.
+5 records: 5 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -19,6 +19,9 @@ in `revisit if` what would make it worth reopening.
 - **[one-kernel-instance](./one-kernel-instance/DECISION.md)** (2026-11-05): One kernel instance holds every core of the machine and a process lives inside it; the kernel provides no spanning. Four rules keep a later move to several instances cheap, and breaking one is the human's decision.
   - *confidence:* A staging judgement on top of the multicore shape. That one instance pays almost nothing for the node concept is reasoned from the code, not measured: finding the instance is one per-CPU load and no syscall path gains a check.
   - *revisit if:* Lock contention measured on this kernel is one a real workload would hit, a workload needs distrusting programs separated from the shared lock's timing, or a change would break one of the four rules.
+- **[theorem-over-reach](./theorem-over-reach/DECISION.md)** (2026-11-06): A process can read or write an object only if a capability to it is reachable from its own capabilities; every operation changes objects only by a relation of its kind over that reach; reach grows only by grant or retype. Isolation of disjoint subsystems is a corollary.
+  - *confidence:* The statement is the human's choice; the definition and the per-operation shape are in the tree, kernel/verified/capability/reach.rs, and each operation's leaf discharges it as it lands. The composed theorem is not yet proven.
+  - *revisit if:* A kernel operation is wanted whose effect cannot be written as a relation over the caller's reach, or a shared object must be reachable without any capability naming it.
 - **[untyped-memory](./untyped-memory/DECISION.md)** (2026-11-05): Physical memory is held as untyped capabilities and retyped into kernel objects and frames from user space; containers and kernel quotas are gone; mapping, paging and allocation policy live in a standard pager and allocator library an application can swap.
   - *confidence:* A purity judgement by the human with its costs priced and accepted: a user-level memory manager to build, and most of the container-based proof to rewrite.
   - *revisit if:* It follows from the purity principle in CLAUDE.md; it is wrong only if an application class cannot be served by any user-space pager, which would be a reason to revisit the principle, not this record alone.
@@ -28,11 +31,12 @@ in `revisit if` what would make it worth reopening.
 A view of the lists above. Nothing is reachable only through a tag.
 
 - `abi`: one-kernel-instance
-- `capability`: untyped-memory
+- `capability`: theorem-over-reach, untyped-memory
 - `kernel-state`: multicore-kernel-shape, one-kernel-instance
 - `lock`: multicore-kernel-shape
 - `memory`: untyped-memory
 - `multicore`: multicore-kernel-shape, one-kernel-instance
-- `proof`: isolation-claim
+- `proof`: isolation-claim, theorem-over-reach
 - `purity`: untyped-memory
-- `security`: isolation-claim
+- `security`: isolation-claim, theorem-over-reach
+- `verified`: theorem-over-reach
