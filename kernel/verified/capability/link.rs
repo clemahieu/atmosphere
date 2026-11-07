@@ -929,6 +929,8 @@ impl CapKernel {
                 &&& post.table_pages.records@[parent].value().level == pre.table_pages.records@[parent].value().level
                 &&& post.table_pages.records@[parent].value().parent == pre.table_pages.records@[parent].value().parent
                 &&& post.table_pages.records@[parent].value().written
+                &&& forall|i: usize| #![trigger post.table_pages.maps@[parent].value()[i]] i < 512
+                    ==> post.table_pages.maps@[parent].value()[i].perm.present || post.table_pages.maps@[parent].value()[i].is_empty()
             },
             post.table_pages.records@[child].addr() == pre.table_pages.records@[child].addr(),
             post.table_pages.records@[child].is_init(),

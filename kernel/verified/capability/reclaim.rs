@@ -336,6 +336,99 @@ impl CapKernel {
         }
     }
 
+    /// The dead table page at `base` has nothing left to slice: no entry names a child and none maps a
+    /// frame.
+    pub open spec fn table_is_spent(&self, base: usize) -> bool {
+        let tree = tree_of(&self.table_pages, &self.spaces);
+        &&& self.table_pages.maps@.contains_key(base)
+        &&& !self.list.nodes@[base as int].live
+        &&& !exists|e: usize| #[trigger] tree.names_child(base, e)
+        &&& !exists|e: usize| #[trigger] frame_slot(tree, base, e)
+    }
+
+    /// A spent table page is empty, so slicing it to the end leaves what a free takes. A present entry
+    /// either names a child or maps a frame, any other entry is empty, and a live node in its node pages
+    /// other than its hidden node is the mapping of one of its entries.
+    pub proof fn lemma_spent_table_is_empty(&self, base: usize)
+        requires
+            self.wf(),
+        ensures
+            self.table_is_spent(base) ==> self.table_is_empty(base),
+    {
+        if self.table_is_spent(base) {
+            self.lemma_spent_entries_empty(base);
+            self.lemma_spent_nodes_dead(base);
+        }
+    }
+
+    /// A spent table page's entries are all empty.
+    proof fn lemma_spent_entries_empty(&self, base: usize)
+        requires
+            self.wf(),
+            self.table_is_spent(base),
+        ensures
+            forall|i: usize| #![trigger self.table_pages.maps@[base].value()[i]]
+                i < 512 ==> self.table_pages.maps@[base].value()[i].is_empty(),
+    {
+        let tree = tree_of(&self.table_pages, &self.spaces);
+        assert forall|i: usize| #![trigger self.table_pages.maps@[base].value()[i]]
+            i < 512 implies self.table_pages.maps@[base].value()[i].is_empty() by {
+            if tree.entry(base, i).perm.present {
+                if tree.record(base).level >= 2 {
+                    if tree.entry(base, i).perm.ps {
+                        assert(frame_slot(tree, base, i));
+                    } else {
+                        assert(tree.names_child(base, i));
+                    }
+                } else {
+                    assert(frame_slot(tree, base, i));
+                }
+            }
+        }
+    }
+
+    /// A spent table page's node pages hold no live node.
+    proof fn lemma_spent_nodes_dead(&self, base: usize)
+        requires
+            self.wf(),
+            self.table_is_spent(base),
+        ensures
+            forall|k: usize, i: usize| #![trigger table_node(base, k, i)] k < TABLE_NODE_PAGES && i < NODES_PER_PAGE
+                ==> !self.list.nodes@[table_node(base, k, i) as int].live,
+    {
+        assert forall|k: usize, i: usize| #![trigger table_node(base, k, i)] k < TABLE_NODE_PAGES && i < NODES_PER_PAGE
+            implies !self.list.nodes@[table_node(base, k, i) as int].live by {
+            if self.list.nodes@[table_node(base, k, i) as int].live {
+                self.lemma_live_table_node_maps(base, k, i);
+            }
+        }
+    }
+
+    /// A live node in a table page's node pages, other than its hidden node, is the mapping of one of the
+    /// page's entries, so the page has that frame_slot.
+    proof fn lemma_live_table_node_maps(&self, base: usize, k: usize, i: usize)
+        requires
+            self.wf(),
+            self.table_pages.maps@.contains_key(base),
+            k < TABLE_NODE_PAGES,
+            i < NODES_PER_PAGE,
+            k != 0 || i != 0,
+            self.list.nodes@[table_node(base, k, i) as int].live,
+        ensures
+            exists|e: usize| #[trigger] frame_slot(tree_of(&self.table_pages, &self.spaces), base, e),
+    {
+        let tree = tree_of(&self.table_pages, &self.spaces);
+        let n = table_node(base, k, i);
+        lemma_table_node_place(base, k, i);
+        assert(self.list.nodes@[n as int].kind is Mapping);
+        let m = self.mappings@[n];
+        assert(mapping_wf(&self.list, &self.tables, tree, &self.blocks, self.holders@, self.mappings@, n));
+        let t = m.table;
+        lemma_mapping_node_place(t, m.entry);
+        assert(t == base);
+        assert(frame_slot(tree, base, m.entry));
+    }
+
     /// A retype's parent carries the right: the capability it names holds Retype.
     proof fn lemma_retype_holds_right(&self, root: usize, from: usize, base: usize, order: u8)
         requires
@@ -444,6 +537,7 @@ impl CapKernel {
             old(self).can_slice_table(root, from, base) ==> ret is Slice,
             old(self).can_retype_under(root, from, base, 3) && old(self).table_is_empty(base)
                 ==> if old(self).acknowledged(base / 4096) { ret is Freed } else { ret is Again },
+            old(self).can_retype_under(root, from, base, 3) && old(self).table_is_spent(base) ==> ret is Again || ret is Freed,
             old(self).table_pages.maps@.contains_key(base) && ret is Unlinked ==> old(self).table_page_unlinked(*final(self), root, from, base),
             old(self).table_pages.maps@.contains_key(base) && ret is Slice ==> old(self).table_sliced(*final(self), root, from, base),
             old(self).table_pages.maps@.contains_key(base) && ret is Freed ==> old(self).table_freed(*final(self), c, root, from, base),
@@ -462,6 +556,7 @@ impl CapKernel {
             pre.lemma_retype_holds_right(root, from, base, 1);
             pre.lemma_retype_holds_right(root, from, base, 3);
             pre.lemma_empty_table_no_work(root, from, base);
+            pre.lemma_spent_table_is_empty(base);
         }
         let page = base / 4096;
         if page >= NUM_PAGES {
