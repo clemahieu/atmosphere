@@ -12,6 +12,7 @@ use crate::capability::list::*;
 use crate::capability::reach::*;
 use crate::capability::space::*;
 use crate::capability::table::*;
+use crate::capability::thread::*;
 
 /// The bit of a capability's rights word that grants this right.
 pub open spec fn right_bit(right: Right) -> u32 {
@@ -25,6 +26,38 @@ pub open spec fn right_bit(right: Right) -> u32 {
         Right::Grant => 64,
         Right::Control => 128,
     }
+}
+
+/// Each thread bound to a process, read from its binding node: a live binding node's parent is a
+/// capability to the process the thread is bound to. Read from the list and the tables alone, as
+/// view_of is. See design/process-holds-capabilities/.
+pub open spec fn bound_threads(list: &Tree, tables: &Tables) -> Map<ObjectId, ObjectId> {
+    Map::new(
+        Set::range(0usize, NODE_SPACE).filter(|t: usize| list.nodes@[t as int].live && list.nodes@[t as int].kind is Binding),
+        |t: usize| tables.payload_of(list.parent@[t]).base,
+    )
+}
+
+/// The process thread t's record names, if t has a record and it names one.
+pub open spec fn thread_process(threads: &Threads, t: usize) -> Option<ObjectId> {
+    if threads.records@.contains_key(t) { threads.records@[t].value().process } else { None }
+}
+
+/// The process each thread's record names.
+pub open spec fn record_processes(threads: &Threads) -> Map<ObjectId, ObjectId> {
+    Map::new(
+        threads.records@.dom().filter(|t: usize| thread_process(threads, t) is Some),
+        |t: usize| thread_process(threads, t)->Some_0,
+    )
+}
+
+/// t is in the record-named map exactly when its record names a process, and maps to that process.
+pub proof fn lemma_record_processes(threads: &Threads, t: usize)
+    ensures
+        record_processes(threads).dom().contains(t) == thread_process(threads, t) is Some,
+        thread_process(threads, t) is Some ==> record_processes(threads)[t] == thread_process(threads, t)->Some_0,
+{
+    broadcast use vstd::set::lemma_set_filter;
 }
 
 /// What the view reads: nothing but the list and the tables, so a step that leaves those alone leaves
@@ -224,6 +257,99 @@ impl CapKernel {
         ensures
             o < DEVICE_OBJECTS,
     {
+    }
+
+    /// The binding nodes name what the thread records name: bindings_wf makes a live binding node
+    /// exactly a bound thread, and binding_parents makes its parent a capability to that process.
+    pub proof fn lemma_bound_threads(&self)
+        requires
+            self.wf(),
+        ensures
+            bound_threads(&self.list, &self.tables) == record_processes(&self.threads),
+    {
+        broadcast use vstd::set::lemma_set_filter;
+        let b = bound_threads(&self.list, &self.tables);
+        let r = record_processes(&self.threads);
+        assert forall|t: usize| #[trigger] b.dom().contains(t) == r.dom().contains(t) by {
+            lemma_record_processes(&self.threads, t);
+            if t < NODE_SPACE && self.list.nodes@[t as int].live && self.list.nodes@[t as int].kind is Binding {
+                self.lemma_binding_parent(t);
+            }
+            if self.threads.records@.contains_key(t) && self.threads.records@[t].value().process is Some {
+                assert(t < NODE_SPACE && self.list.nodes@[t as int].live);
+            }
+        }
+        assert forall|t: usize| #[trigger] b.dom().contains(t) implies b[t] == r[t] by {
+            lemma_record_processes(&self.threads, t);
+            self.lemma_binding_parent(t);
+        }
+        assert(b =~= r);
+    }
+
+    /// Two states whose thread records name the same process for every thread have the same bound
+    /// threads.
+    pub proof fn lemma_bound_threads_same(pre: Self, post: Self)
+        requires
+            pre.wf(),
+            post.wf(),
+            forall|t: usize| #[trigger] thread_process(&post.threads, t) == thread_process(&pre.threads, t),
+        ensures
+            bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables),
+    {
+        pre.lemma_bound_threads();
+        post.lemma_bound_threads();
+        assert forall|x: usize|
+            #[trigger] record_processes(&post.threads).dom().contains(x) == record_processes(&pre.threads).dom().contains(x)
+            && (record_processes(&post.threads).dom().contains(x)
+                ==> record_processes(&post.threads)[x] == record_processes(&pre.threads)[x]) by {
+            lemma_record_processes(&pre.threads, x);
+            lemma_record_processes(&post.threads, x);
+        }
+        assert(record_processes(&post.threads) =~= record_processes(&pre.threads));
+    }
+
+    /// A step whose thread records gain exactly t bound to p gains exactly t -> p.
+    pub proof fn lemma_bound_threads_insert(pre: Self, post: Self, t: usize, p: ObjectId)
+        requires
+            pre.wf(),
+            post.wf(),
+            thread_process(&post.threads, t) == Some(p),
+            forall|x: usize| x != t ==> #[trigger] thread_process(&post.threads, x) == thread_process(&pre.threads, x),
+        ensures
+            bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables).insert(t, p),
+    {
+        pre.lemma_bound_threads();
+        post.lemma_bound_threads();
+        let a = record_processes(&pre.threads).insert(t, p);
+        assert forall|x: usize|
+            #[trigger] record_processes(&post.threads).dom().contains(x) == a.dom().contains(x)
+            && (a.dom().contains(x) ==> record_processes(&post.threads)[x] == a[x]) by {
+            lemma_record_processes(&pre.threads, x);
+            lemma_record_processes(&post.threads, x);
+        }
+        assert(record_processes(&post.threads) =~= a);
+    }
+
+    /// A step whose thread records lose exactly t's process loses exactly t.
+    pub proof fn lemma_bound_threads_remove(pre: Self, post: Self, t: usize)
+        requires
+            pre.wf(),
+            post.wf(),
+            thread_process(&post.threads, t) is None,
+            forall|x: usize| x != t ==> #[trigger] thread_process(&post.threads, x) == thread_process(&pre.threads, x),
+        ensures
+            bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables).remove(t),
+    {
+        pre.lemma_bound_threads();
+        post.lemma_bound_threads();
+        let a = record_processes(&pre.threads).remove(t);
+        assert forall|x: usize|
+            #[trigger] record_processes(&post.threads).dom().contains(x) == a.dom().contains(x)
+            && (a.dom().contains(x) ==> record_processes(&post.threads)[x] == a[x]) by {
+            lemma_record_processes(&pre.threads, x);
+            lemma_record_processes(&post.threads, x);
+        }
+        assert(record_processes(&post.threads) =~= a);
     }
 
     /// A step that changes nothing discharges the lemma.
