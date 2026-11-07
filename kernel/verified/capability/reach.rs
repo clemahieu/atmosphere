@@ -886,6 +886,203 @@ pub proof fn lemma_simulates_reach(
     assert(b.controlled(r, q, k));
 }
 
+/// a's authority is in b through a renaming f, as `simulates` says, except that a capability p holds in
+/// a may be one q holds in b. A claim's step, read backward: p took from q.
+pub open spec fn simulates_claim(
+    a: State,
+    b: State,
+    live: spec_fn(NodeId) -> bool,
+    f: spec_fn(NodeId) -> NodeId,
+    p: ObjectId,
+    q: ObjectId,
+) -> bool {
+    &&& forall|h: (ObjectId, NodeId)| #[trigger] a.held.contains(h) ==> live(h.1)
+        && (b.held.contains((h.0, f(h.1))) || (h.0 == p && b.held.contains((q, f(h.1)))))
+    &&& forall|x: NodeId| #[trigger] a.names.contains_key(x) ==> {
+        &&& live(x)
+        &&& b.names.contains_key(f(x))
+        &&& b.names[f(x)] == a.names[x]
+    }
+    &&& forall|x: NodeId| #[trigger] a.pages.contains_key(x) ==> {
+        &&& b.pages.contains_key(f(x))
+        &&& b.pages[f(x)] == a.pages[x]
+    }
+    &&& forall|x: NodeId, r: Right| #[trigger] a.rights.contains((x, r)) ==> b.rights.contains((f(x), r))
+    &&& forall|x: NodeId| live(x) && #[trigger] a.parent.contains_key(x) ==> {
+        &&& live(a.parent[x])
+        &&& b.parent.contains_key(f(x))
+        &&& b.parent[f(x)] == f(a.parent[x])
+    }
+    &&& a.maps == b.maps
+    &&& a.process_of == b.process_of
+}
+
+/// With p and q the same process, that is `simulates`.
+pub proof fn lemma_simulates_claim_self(a: State, b: State, live: spec_fn(NodeId) -> bool, f: spec_fn(NodeId) -> NodeId, p: ObjectId)
+    requires
+        simulates_claim(a, b, live, f, p, p),
+    ensures
+        simulates(a, b, live, f),
+{
+}
+
+proof fn lemma_simulates_claim_descends(
+    a: State,
+    b: State,
+    live: spec_fn(NodeId) -> bool,
+    f: spec_fn(NodeId) -> NodeId,
+    p: ObjectId,
+    q: ObjectId,
+    top: NodeId,
+    x: NodeId,
+    k: nat,
+)
+    requires
+        simulates_claim(a, b, live, f, p, q),
+        a.descends(top, x, k),
+        live(x),
+    ensures
+        b.descends(f(top), f(x), k),
+    decreases k,
+{
+    if k > 0 {
+        assert(a.parent.contains_key(x));
+        lemma_simulates_claim_descends(a, b, live, f, p, q, top, a.parent[x], (k - 1) as nat);
+    }
+}
+
+/// A control chain in a is one in b, perhaps longer: a link through what p took from q goes through q
+/// in b, which p controls.
+proof fn lemma_simulates_claim_controlled(
+    a: State,
+    b: State,
+    live: spec_fn(NodeId) -> bool,
+    f: spec_fn(NodeId) -> NodeId,
+    p: ObjectId,
+    q: ObjectId,
+    r: ObjectId,
+    x: ObjectId,
+    k: nat,
+)
+    requires
+        simulates_claim(a, b, live, f, p, q),
+        b.controls(p, q),
+        a.controlled(r, x, k),
+    ensures
+        exists|j: nat| #[trigger] b.controlled(r, x, j),
+    decreases k,
+{
+    if k == 0 {
+        assert(b.controlled(r, x, 0));
+    } else {
+        let m = choose|m: ObjectId| #[trigger] a.controls(m, x) && a.controlled(r, m, (k - 1) as nat);
+        lemma_simulates_claim_controlled(a, b, live, f, p, q, r, m, (k - 1) as nat);
+        let j = choose|j: nat| #[trigger] b.controlled(r, m, j);
+        let t = choose|t: NodeId| #[trigger] a.holds_right(m, t, Right::Control)
+            && a.process_behind(a.names[t]) == x;
+        assert(a.held.contains((m, t)));
+        assert(a.names.contains_key(t));
+        assert(a.rights.contains((t, Right::Control)));
+        assert(b.rights.contains((f(t), Right::Control)));
+        assert(b.names.contains_key(f(t)));
+        assert(b.process_behind(b.names[f(t)]) == x);
+        let j1 = (j + 1) as nat;
+        if b.held.contains((m, f(t))) {
+            assert(b.holds_right(m, f(t), Right::Control));
+            assert(b.controls(m, x));
+            assert(b.controlled(r, x, j1));
+        } else {
+            assert(m == p);
+            assert(b.held.contains((q, f(t))));
+            assert(b.holds_right(q, f(t), Right::Control));
+            assert(b.controls(q, x));
+            assert(b.controlled(r, q, j1));
+            let j2 = (j1 + 1) as nat;
+            assert(b.controlled(r, x, j2));
+        }
+    }
+}
+
+/// Anything a process reaches in a it reaches in b.
+pub proof fn lemma_simulates_claim_reach(
+    a: State,
+    b: State,
+    live: spec_fn(NodeId) -> bool,
+    f: spec_fn(NodeId) -> NodeId,
+    p: ObjectId,
+    q: ObjectId,
+    r: ObjectId,
+    o: ObjectId,
+)
+    requires
+        simulates_claim(a, b, live, f, p, q),
+        b.controls(p, q),
+        a.reach(r, o),
+    ensures
+        b.reach(r, o),
+{
+    let (x, k) = choose|x: ObjectId, k: nat| #[trigger] a.controlled(r, x, k) && (o == x || a.direct(x, o));
+    lemma_simulates_claim_controlled(a, b, live, f, p, q, r, x, k);
+    let j = choose|j: nat| #[trigger] b.controlled(r, x, j);
+    if o == x || a.maps.contains((x, o)) {
+        assert(b.controlled(r, x, j) && (o == x || b.direct(x, o)));
+    } else {
+        let (t, y, d) = choose|t: NodeId, y: NodeId, d: nat| #[trigger] a.descends(t, y, d)
+            && a.holds(x, t) && a.covers(y, o);
+        assert(a.names.contains_key(y));
+        assert(a.pages.contains_key(y));
+        assert(a.held.contains((x, t)));
+        lemma_simulates_claim_descends(a, b, live, f, p, q, t, y, d);
+        assert(b.covers(f(y), o));
+        if b.held.contains((x, f(t))) {
+            assert(b.holds(x, f(t)));
+            assert(b.direct(x, o));
+            assert(b.controlled(r, x, j) && (o == x || b.direct(x, o)));
+        } else {
+            assert(x == p);
+            assert(b.held.contains((q, f(t))));
+            assert(b.holds(q, f(t)));
+            assert(b.direct(q, o));
+            let j1 = (j + 1) as nat;
+            assert(b.controlled(r, q, j1));
+            assert(b.controlled(r, q, j1) && (o == q || b.direct(q, o)));
+        }
+    }
+}
+
+/// A claim's step: post's authority is all in pre, once what p took is read as q's, and p controls q,
+/// so nobody's reach grows. Only the node claimed goes.
+pub proof fn lemma_simulates_claim_discharges(
+    pre: State,
+    post: State,
+    p: ObjectId,
+    c: NodeId,
+    from: NodeId,
+    live: spec_fn(NodeId) -> bool,
+    f: spec_fn(NodeId) -> NodeId,
+)
+    requires
+        simulates_claim(post, pre, live, f, p, pre.names[c]),
+        pre.holds_right(p, c, Right::Control),
+        !pre.process_of.contains_key(pre.names[c]),
+        pre.holds(pre.names[c], from),
+        pre.names.contains_key(from),
+        forall|x: NodeId| #[trigger] State::removed(pre, post, x) ==> x == from,
+        forall|o: ObjectId| #[trigger] (post.contents)(o) == (pre.contents)(o),
+    ensures
+        discharges(pre, post, p, Effect::Claim { cap: c, from }),
+{
+    let q = pre.names[c];
+    assert(pre.process_behind(q) == q);
+    assert(pre.controls(p, q));
+    assert forall|o: ObjectId| #[trigger] State::changed(pre, post, o) implies may_change(pre, Effect::Claim { cap: c, from }, o) by {
+        assert((post.contents)(o) == (pre.contents)(o));
+    }
+    assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) implies pre.reach(r, o) by {
+        lemma_simulates_claim_reach(post, pre, live, f, p, q, r, o);
+    }
+}
+
 /// A retype that names no new capability, only a node nobody holds: post's authority is all in pre,
 /// and every capability of pre is still there.
 pub proof fn lemma_simulated_discharges_retype(

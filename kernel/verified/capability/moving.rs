@@ -1,7 +1,8 @@
-//! Moving a capability within its table. The node keeps its place and depth, so every child comes
-//! along. A capability's identity in the view is its node id, which a move renames, so reach is carried
-//! across by that renaming, in both directions. Claim out of another table is atmo-6x9.16.9. See
-//! design/sharing-by-derive/.
+//! Moving a capability within its table, and claiming one from the table of a process the caller
+//! controls. The node keeps its place and depth, so every child comes along. A capability's identity in
+//! the view is its node id, which a move renames, so reach is carried across by that renaming: in both
+//! directions within one table, and for a claim back from the caller to the process it took from, which
+//! it controls. See design/sharing-by-derive/.
 use vstd::prelude::*;
 
 verus! {
@@ -17,16 +18,32 @@ use crate::capability::space::*;
 use crate::capability::table::*;
 use crate::capability::process::*;
 use crate::capability::thread::*;
+use crate::capability::view::*;
 use crate::define::*;
 
 impl CapKernel {
     /// The refusals: an index that names no slot, a source with no capability, or a target in use,
     /// which a source is, so a slot cannot move onto itself.
+    pub open spec fn can_move_between(&self, src: usize, from: usize, dst: usize, to: usize) -> bool {
+        &&& self.tables.has_slot(src, from)
+        &&& self.tables.has_slot(dst, to)
+        &&& self.is_cap(self.tables.node_of(src, from))
+        &&& !self.list.nodes@[self.tables.node_of(dst, to) as int].live
+    }
+
     pub open spec fn can_move(&self, root: usize, from: usize, to: usize) -> bool {
-        &&& self.tables.has_slot(root, from)
-        &&& self.tables.has_slot(root, to)
-        &&& self.is_cap(self.tables.node_of(root, from))
-        &&& !self.list.nodes@[self.tables.node_of(root, to) as int].live
+        self.can_move_between(root, from, root, to)
+    }
+
+    /// A claim's refusals, beyond a move's: the index `cap` names no capability, or one that is not a
+    /// process's or lacks control. Whether the process is dead is not read.
+    pub open spec fn can_claim(&self, root: usize, cap: usize, from: usize, to: usize) -> bool {
+        let c = self.tables.node_of(root, cap);
+        &&& self.tables.has_slot(root, cap)
+        &&& self.is_cap(c)
+        &&& self.payload_of(c).kind is Process
+        &&& self.payload_of(c).rights & right_bit(Right::Control) != 0
+        &&& self.can_move_between(self.payload_of(c).base, from, root, to)
     }
 
     /// Moves the capability at index `from` of the table at `root` to the empty index `to`. The indices
@@ -59,11 +76,123 @@ impl CapKernel {
         proof {
             pre.lemma_no_op_discharges(root);
         }
-        let (i, payload) = match self.tables.lookup(&self.list, root, from) {
+        let ret = self.move_between(root, from, root, to);
+        if ret {
+            proof {
+                let i = pre.tables.node_of(root, from);
+                let n = pre.tables.node_of(root, to);
+                Self::lemma_move_discharges(pre, *self, root, i, n);
+            }
+        }
+        ret
+    }
+
+    /// Moves the capability at index `from` of the table of the process that the capability at index
+    /// `cap` of the table at `root` names, to the empty index `to` at `root`. That capability must be a
+    /// process's, not a thread's, and carry control; the process may be live or dead. One bounded step:
+    /// nothing enumerates the process's table. The indices come from user space, so any can be refused,
+    /// and a refusal changes nothing.
+    pub fn claim(&mut self, root: usize, cap: usize, from: usize, to: usize) -> (ret: bool)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(root),
+        ensures
+            final(self).wf(),
+            Self::same_tree(*old(self), *final(self)),
+            ret == old(self).can_claim(root, cap, from, to),
+            !ret ==> *final(self) == *old(self),
+            !(old(self).payload_of(old(self).tables.node_of(root, cap)).kind is Process) ==> !ret,
+            ret ==> {
+                let c = old(self).tables.node_of(root, cap);
+                let i = old(self).tables.node_of(old(self).payload_of(c).base, from);
+                let n = old(self).tables.node_of(root, to);
+                &&& exists|p: int| 0 <= p < old(self).list.seq@.len() && #[trigger] old(self).list.seq@[p] == i
+                    && final(self).list.seq@ == old(self).list.seq@.update(p, n)
+                &&& final(self).list.nodes@[n as int].depth == old(self).list.nodes@[i as int].depth
+                &&& final(self).list.parent@ == moved_parent(old(self).list.parent@, i, n)
+                &&& final(self).payload_of(n) == old(self).payload_of(i)
+                &&& !final(self).is_cap(i)
+                &&& final(self).view().holds(root, n)
+                &&& Self::caps_frame(*old(self), *final(self), i, n)
+                &&& discharges(old(self).view(), final(self).view(), root, Effect::Claim { cap: c, from: i })
+            },
+    {
+        let ghost pre = *old(self);
+        let (c, payload) = match self.tables.lookup(&self.list, root, cap) {
             Some(found) => found,
             None => { return false; },
         };
-        let n = match self.tables.lookup(&self.list, root, to) {
+        let node = self.list.get(c);
+        let kind_ok = match node.kind {
+            NodeKind::Capability => true,
+            _ => false,
+        };
+        if !node.live || !kind_ok {
+            return false;
+        }
+        let process_ok = match payload.kind {
+            CapKind::Process => true,
+            _ => false,
+        };
+        proof {
+            pre.lemma_slot(root, cap);
+            assert(pre.tables.is_cap(&pre.list, c));
+            assert(payload == pre.payload_of(c));
+            assert(right_bit(Right::Control) == 128);
+        }
+        if !process_ok || payload.rights & 128 == 0 {
+            return false;
+        }
+        let q = payload.base;
+        proof {
+            assert(pre.processes.records@.contains_key(q));
+            assert(pre.tables.roots@.contains_key(q));
+        }
+        let ret = self.move_between(q, from, root, to);
+        if ret {
+            proof {
+                let i = pre.tables.node_of(q, from);
+                let n = pre.tables.node_of(root, to);
+                Self::lemma_claim_discharges(pre, *self, root, c, i, n);
+            }
+        }
+        ret
+    }
+
+    /// Moves the capability at index `from` of the table at `src` to the empty index `to` of the table at
+    /// `dst`: a move when they are one table, a claim's step when not. A refusal changes nothing.
+    fn move_between(&mut self, src: usize, from: usize, dst: usize, to: usize) -> (ret: bool)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(src),
+            old(self).tables.roots@.contains_key(dst),
+        ensures
+            final(self).wf(),
+            Self::same_tree(*old(self), *final(self)),
+            ret == old(self).can_move_between(src, from, dst, to),
+            !ret ==> *final(self) == *old(self),
+            ret ==> {
+                let i = old(self).tables.node_of(src, from);
+                let n = old(self).tables.node_of(dst, to);
+                &&& exists|p: int| 0 <= p < old(self).list.seq@.len() && #[trigger] old(self).list.seq@[p] == i
+                    && final(self).list.seq@ == old(self).list.seq@.update(p, n)
+                &&& final(self).list.nodes@[n as int].depth == old(self).list.nodes@[i as int].depth
+                &&& final(self).list.parent@ == moved_parent(old(self).list.parent@, i, n)
+                &&& final(self).payload_of(n) == old(self).payload_of(i)
+                &&& !final(self).is_cap(i)
+                &&& final(self).view().holds(dst, n)
+                &&& Self::caps_frame(*old(self), *final(self), i, n)
+                &&& Self::move_step(*old(self), *final(self), i, n)
+                &&& old(self).tables.owner@[page_of(i)].0 == src
+                &&& old(self).tables.owner@[page_of(n)].0 == dst
+            },
+    {
+        let ghost pre = *old(self);
+        let (i, payload) = match self.tables.lookup(&self.list, src, from) {
+            Some(found) => found,
+            None => { return false; },
+        };
+        let n = match self.tables.lookup(&self.list, dst, to) {
             Some(found) => found.0,
             None => { return false; },
         };
@@ -76,8 +205,8 @@ impl CapKernel {
             return false;
         }
         proof {
-            pre.lemma_slot(root, from);
-            pre.lemma_slot(root, to);
+            pre.lemma_slot(src, from);
+            pre.lemma_slot(dst, to);
             assert(pre.tables.is_cap(&pre.list, i));
             assert(payload == pre.payload_of(i));
             self.list.lemma_valid_bound(i);
@@ -87,7 +216,7 @@ impl CapKernel {
         proof {
             pre.tables.lemma_wf_same_pages(&pre.list, &self.list);
         }
-        self.tables.set_payload(&self.list, root, to, payload);
+        self.tables.set_payload(&self.list, dst, to, payload);
         // A frame's holder has a new name; the count does not change.
         self.holders = Ghost(Self::moved_holders(pre.holders@, i, n));
         self.spaces.holders = Ghost(moved_space_holders(pre.spaces.holders@, i, n));
@@ -110,8 +239,8 @@ impl CapKernel {
             Self::lemma_move_mappings(pre, post, i, n);
             Self::lemma_move_devices(pre, post, i, n);
             lemma_parents_moved(pre.list, post.list, i, n);
-            Self::lemma_move_discharges(pre, post, root, i, n);
             Self::lemma_tlb_same(pre, post);
+            assert(post.view().holds(dst, n));
         }
         true
     }
@@ -309,7 +438,6 @@ impl CapKernel {
         &&& n % 4096 != 0
         &&& n % 4096 < NODES_PER_PAGE
         &&& pre.tables.owner@.contains_key(page_of(n))
-        &&& pre.tables.owner@[page_of(n)].0 == pre.tables.owner@[page_of(i)].0
         &&& post.payload_of(n) == pre.payload_of(i)
         &&& post.list.wf()
         &&& post.list.parent@ == moved_parent(pre.list.parent@, i, n)
@@ -334,10 +462,12 @@ impl CapKernel {
         }
     }
 
-    /// Every capability, parent and holding of pre is in post under its new name.
+    /// Every capability, parent and holding of pre is in post under its new name, when the move stays in
+    /// one table.
     proof fn lemma_move_simulates(pre: Self, post: Self, i: usize, n: usize)
         requires
             Self::move_step(pre, post, i, n),
+            pre.tables.owner@[page_of(n)].0 == pre.tables.owner@[page_of(i)].0,
         ensures
             simulates(
                 pre.view(),
@@ -393,18 +523,22 @@ impl CapKernel {
         assert(simulates(a, b, live, f));
     }
 
-    /// Every capability, parent and holding of post was in pre under its old name.
+    /// Every capability, parent and holding of post was in pre under its old name, the moved one held
+    /// by the table it came from.
     proof fn lemma_move_simulated(pre: Self, post: Self, i: usize, n: usize)
         requires
             Self::move_step(pre, post, i, n),
         ensures
-            simulates(
+            simulates_claim(
                 post.view(),
                 pre.view(),
                 |x: NodeId| x < NODE_SPACE && post.list.nodes@[x as int].live,
                 |x: NodeId| rename(x, n, i),
+                pre.tables.owner@[page_of(n)].0,
+                pre.tables.owner@[page_of(i)].0,
             ),
     {
+        let (dst, src) = (pre.tables.owner@[page_of(n)].0, pre.tables.owner@[page_of(i)].0);
         let (a, b) = (post.view(), pre.view());
         let live = |x: NodeId| x < NODE_SPACE && post.list.nodes@[x as int].live;
         let f = |x: NodeId| rename(x, n, i);
@@ -414,7 +548,6 @@ impl CapKernel {
             &&& live(x)
             &&& pre.is_cap(f(x))
             &&& pre.payload_of(f(x)) == post.payload_of(x)
-            &&& pre.tables.owner@[page_of(f(x))].0 == pre.tables.owner@[page_of(x)].0
         } by {
             pre.lemma_slot_bound(x);
             if x != n {
@@ -422,8 +555,13 @@ impl CapKernel {
                 Self::lemma_caps_frame(pre, post, i, n, x);
             }
         }
-        assert forall|h: (ObjectId, NodeId)| #[trigger] a.held.contains(h) implies live(h.1) && b.held.contains((h.0, f(h.1))) by {
+        assert forall|h: (ObjectId, NodeId)| #[trigger] a.held.contains(h) implies live(h.1)
+            && (b.held.contains((h.0, f(h.1))) || (h.0 == dst && b.held.contains((src, f(h.1))))) by {
             assert(post.is_cap(h.1));
+            if h.1 == n {
+                assert(pre.is_cap(i));
+                assert(b.held.contains((src, i)));
+            }
         }
         assert forall|x: NodeId| #[trigger] a.names.contains_key(x) implies {
             &&& live(x)
@@ -458,7 +596,7 @@ impl CapKernel {
             pre.list.lemma_parent_live(old_x);
             assert(pre.list.parent@[old_x] != n);
         }
-        assert(simulates(a, b, live, f));
+        assert(simulates_claim(a, b, live, f, dst, src));
     }
 
     /// The view of the step: the capability the caller held has a new name, and that name is the only
@@ -467,6 +605,7 @@ impl CapKernel {
         requires
             Self::move_step(pre, post, i, n),
             pre.tables.owner@[page_of(i)].0 == root,
+            pre.tables.owner@[page_of(n)].0 == root,
         ensures
             post.view().holds(root, n),
             forall|r: ObjectId, o: ObjectId| #[trigger] post.view().reach(r, o) == pre.view().reach(r, o),
@@ -475,6 +614,7 @@ impl CapKernel {
         let (a, b) = (pre.view(), post.view());
         Self::lemma_move_simulates(pre, post, i, n);
         Self::lemma_move_simulated(pre, post, i, n);
+        lemma_simulates_claim_self(b, a, |x: NodeId| x < NODE_SPACE && post.list.nodes@[x as int].live, |x: NodeId| rename(x, n, i), root);
         assert(a.holds(root, i));
         assert(post.is_cap(n));
         assert(b.holds(root, n));
@@ -495,6 +635,43 @@ impl CapKernel {
         assert forall|o: ObjectId| #[trigger] State::changed(a, b, o) implies may_change(a, Effect::Local, o) by {
             assert((a.contents)(o) == (b.contents)(o));
         }
+    }
+
+    /// The view of a claim's step: the caller, holding control over the process named by c, took node i
+    /// from that process's table as n in its own. Only i went, and nobody's reach grew, since the caller
+    /// reached what i covers through c already.
+    proof fn lemma_claim_discharges(pre: Self, post: Self, root: usize, c: usize, i: usize, n: usize)
+        requires
+            Self::move_step(pre, post, i, n),
+            pre.is_cap(c),
+            pre.tables.owner@[page_of(c)].0 == root,
+            pre.payload_of(c).rights & right_bit(Right::Control) != 0,
+            pre.tables.owner@[page_of(i)].0 == pre.payload_of(c).base,
+            pre.tables.owner@[page_of(n)].0 == root,
+        ensures
+            discharges(pre.view(), post.view(), root, Effect::Claim { cap: c, from: i }),
+    {
+        let (a, b) = (pre.view(), post.view());
+        Self::lemma_move_simulated(pre, post, i, n);
+        assert(a.holds_right(root, c, Right::Control));
+        assert(a.names[c] == pre.payload_of(c).base);
+        assert(a.holds(a.names[c], i));
+        assert forall|x: NodeId| #[trigger] State::removed(a, b, x) implies x == i by {
+            if x != i {
+                assert(x != n);
+                Self::lemma_caps_frame(pre, post, i, n, x);
+            }
+        }
+        assert forall|o: ObjectId| #[trigger] (b.contents)(o) == (a.contents)(o) by {}
+        lemma_simulates_claim_discharges(
+            a,
+            b,
+            root,
+            c,
+            i,
+            |x: NodeId| x < NODE_SPACE && post.list.nodes@[x as int].live,
+            |x: NodeId| rename(x, n, i),
+        );
     }
 }
 
