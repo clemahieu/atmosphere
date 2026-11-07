@@ -2,7 +2,7 @@
 
 # Design decisions
 
-16 records: 16 active, 0 superseded.
+17 records: 17 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -43,6 +43,9 @@ in `revisit if` what would make it worth reopening.
 - **[revoke-by-depth-first-list](./revoke-by-depth-first-list/DECISION.md)** (2026-11-06): All capabilities, mappings and bindings derived from the boot root are one doubly linked list in depth-first order, a child straight after its parent; a node's descendants are the run after it with greater depth, and revoke unlinks leaves of that run a bounded number per kernel entry.
   - *confidence:* Proven in the tree, kernel/verified/capability/list.rs and revoke.rs: derive and unlink in constant time, depth-first order kept, a node is in a run exactly when the run's head is its ancestor, a revoke step removes one such node and nothing outside the run, with a falling measure.
   - *revisit if:* A node needs more than one parent, or a lineage must be reparented, neither of which the list can express; or the 255-link walk to a leaf is measured as the bound that sets the lock hold time.
+- **[root-process-at-boot](./root-process-at-boot/DECISION.md)** (2026-11-06): Boot writes page metadata and creates the root process, thread and table. The root holds at fixed slots untyped capabilities covering free memory as aligned blocks, its own process and thread, a capability per core at top priority, interrupts, devices, ports, a console, SVM and timers; the list's root is a synthetic node boot sets aside, and the root's boot objects are never retyped.
+  - *confidence:* Follows from the kernel allocating nothing after boot: something must hold everything at the start, and only one thing does.
+  - *revisit if:* Several kernel instances each need a root, in which case what boot hands each root is the open question recorded with that work; or a second boot-created process is wanted.
 - **[sharing-by-derive](./sharing-by-derive/DECISION.md)** (2026-11-05): The only way to share a capability is derive, a child one depth deeper with rights and range within its parent's; nodes never change ancestor; move and claim relocate a node without changing its place; delete is refused while a node has children, mappings or bindings.
   - *confidence:* The human's choice among three lifetime packages, with a precedent survey of seL4, NOVA, L4Re, Genode, EROS, Zircon and Barrelfish from their documents. The structure it rests on is proven, design/revoke-by-depth-first-list/.
   - *revisit if:* A service must survive the death of the holder that granted to its clients without a longer-lived parent doing the granting, and claim by a supervisor is not enough.
@@ -65,7 +68,8 @@ A view of the lists above. Nothing is reachable only through a tag.
 
 - `abi`: one-kernel-instance, syscall-abi-in-registers
 - `address-space`: address-spaces-as-objects
-- `capability`: address-spaces-as-objects, capability-names-a-block, cpu-time-as-capability, ipc-with-reply-object, process-holds-capabilities, revoke-by-depth-first-list, sharing-by-derive, teardown-driven-by-retype, theorem-over-reach, untyped-memory
+- `boot`: root-process-at-boot
+- `capability`: address-spaces-as-objects, capability-names-a-block, cpu-time-as-capability, ipc-with-reply-object, process-holds-capabilities, revoke-by-depth-first-list, root-process-at-boot, sharing-by-derive, teardown-driven-by-retype, theorem-over-reach, untyped-memory
 - `ipc`: ipc-with-reply-object, syscall-abi-in-registers
 - `kernel-state`: multicore-kernel-shape, one-kernel-instance, one-lock-bounded-steps
 - `lifetime`: sharing-by-derive, teardown-driven-by-retype
