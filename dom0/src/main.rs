@@ -1,6 +1,6 @@
 //! The root process of its kernel instance. It treats what boot gave it as all there is and does
 //! not assume it owns the machine, so several instances each with a root stay possible. Why, and
-//! what to do about a change that breaks this: atmo-6x9.17.1.
+//! what to do about a change that breaks this: design/one-kernel-instance/.
 
 #![no_std]
 #![no_main]
