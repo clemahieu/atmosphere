@@ -141,6 +141,12 @@ pub open spec fn processes_wf(list: &Tree, tables: &Tables, processes: &Processe
     }
 }
 
+/// Each process has its capability table, rooted at the process's base: a claim reaches the table
+/// from a capability naming the process.
+pub open spec fn process_tables_wf(tables: &Tables, processes: &Processes) -> bool {
+    forall|p: usize| #[trigger] processes.records@.contains_key(p) ==> tables.roots@.contains_key(p)
+}
+
 /// Each process's holders after node i is renamed n.
 pub open spec fn moved_process_holders(holders: IMap<usize, Set<usize>>, i: usize, n: usize) -> IMap<usize, Set<usize>> {
     IMap::new(
@@ -1155,6 +1161,12 @@ impl CapKernel {
                 Self::lemma_space_cap_frame(pre, post, child, x);
             }
             Self::lemma_devices_same_caps(pre, post);
+            assert(post.tables.roots == rooted.roots);
+            assert forall|p: usize| #[trigger] post.processes.records@.contains_key(p) implies post.tables.roots@.contains_key(p) by {
+                if p != base {
+                    assert(pre.processes.records@.contains_key(p));
+                }
+            }
             assert(post.wf());
             assert(PROCESS_RIGHTS & 128 != 0) by (compute_only);
             assert(right_bit(Right::Control) == 128);

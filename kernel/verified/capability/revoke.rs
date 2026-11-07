@@ -77,6 +77,7 @@ impl CapKernel {
             },
             old(self).list.nodes@[n as int].kind is Mapping ==> Self::mapping_stale_noted(*old(self), *final(self), n),
             final(self).tables.owner == old(self).tables.owner,
+            final(self).tables.roots@.dom() == old(self).tables.roots@.dom(),
             forall|x: usize| x != n ==> #[trigger] final(self).tables.payload_of(x) == old(self).tables.payload_of(x),
             old(self).list.nodes@[n as int].kind is Hidden && old(self).tables.owner@.contains_key(n) ==> !final(self).tables.attached(n),
             !(old(self).list.nodes@[n as int].kind is Hidden && old(self).tables.owner@.contains_key(n)) ==> final(self).tables == old(self).tables,
@@ -369,6 +370,7 @@ impl CapKernel {
     proof fn lemma_revoke_step_wf(pre: Self, mid: Self, post: Self, root: usize, c: usize, r: usize)
         requires
             pre.wf(),
+            mid.tables.roots@.dom() == pre.tables.roots@.dom(),
             c < NODE_SPACE,
             pre.is_cap(c),
             pre.tables.owner@[page_of(c)].0 == root,

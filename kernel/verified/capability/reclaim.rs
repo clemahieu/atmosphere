@@ -1535,6 +1535,7 @@ impl CapKernel {
             post.tables.wf(&pre.list),
             post.tables.owner@ == pre.tables.owner@.remove(base),
             post.tables.payloads@ == pre.tables.payloads@.remove(base),
+            post.tables.roots == pre.tables.roots,
             forall|n: usize| #[trigger] post.tables.is_cap(&pre.list, n) == pre.tables.is_cap(&pre.list, n),
             forall|n: usize| page_of(n) != base ==> #[trigger] post.tables.payload_of(n) == pre.tables.payload_of(n),
             post.list.wf(),

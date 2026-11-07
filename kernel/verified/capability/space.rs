@@ -2255,6 +2255,7 @@ impl CapKernel {
 
     /// Retypes the free order-3 block at `base` as a table page, under the untyped at index `from` of the
     /// table at `root`. All of these come from user space, and a refusal changes nothing.
+    #[verifier::spinoff_prover]
     pub fn retype_table_page(&mut self, root: usize, from: usize, base: usize, level: usize) -> (ret: bool)
         requires
             old(self).wf(),
@@ -2392,6 +2393,7 @@ impl CapKernel {
                 pre.lemma_mapping_node(n);
             }
             Self::lemma_mappings_grown(pre, post, page, 3);
+            assert(post.tables == pre.tables && post.processes == pre.processes);
             assert(post.wf());
             Self::lemma_hidden_added_discharges(pre, post, root, parent, base);
         }
