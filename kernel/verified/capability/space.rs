@@ -1868,6 +1868,196 @@ impl CapKernel {
         }
     }
 
+    /// Every node the list held keeps its liveness and kind when pages are added and then node `base`,
+    /// dead before, is made.
+    proof fn lemma_table_page_kept(pre: Tree, mid: Tree, post: Tree, base: usize)
+        requires
+            pre.wf(),
+            list_grown(pre, mid),
+            !pre.valid(base),
+            forall|i: int| #![trigger post.nodes@[i]] 0 <= i < NODE_SPACE && i != base ==> {
+                &&& post.nodes@[i].live == mid.nodes@[i].live
+                &&& post.nodes@[i].kind == mid.nodes@[i].kind
+            },
+        ensures
+            forall|x: usize| #[trigger] pre.valid(x) ==> {
+                &&& post.nodes@[x as int].live == pre.nodes@[x as int].live
+                &&& post.nodes@[x as int].kind == pre.nodes@[x as int].kind
+            },
+    {
+        assert forall|x: usize| #[trigger] pre.valid(x) implies {
+            &&& post.nodes@[x as int].live == pre.nodes@[x as int].live
+            &&& post.nodes@[x as int].kind == pre.nodes@[x as int].kind
+        } by {
+            assert(mid.nodes@[x as int] == pre.nodes@[x as int]);
+            pre.lemma_valid_bound(x);
+            assert(x != base);
+        }
+    }
+
+    /// The invariant and the retype's effect once the free order-3 block at `page` is typed as the
+    /// table page at `base` under `parent`, from what the body's calls ensure: the block typed, the
+    /// node pages added (mid), the hidden node derived, and the page's map, record and spare page
+    /// inserted. Its own proof fn so that the body's query stays within budget.
+    proof fn lemma_table_page_wf(
+        pre: Self,
+        mid: Tree,
+        post: Self,
+        root: usize,
+        from: usize,
+        parent: usize,
+        base: usize,
+        page: usize,
+        level: usize,
+    )
+        requires
+            pre.wf(),
+            pre.tables.roots@.contains_key(root),
+            1 <= level <= 3,
+            pre.can_retype_under(root, from, base, 3),
+            parent == pre.tables.node_of(root, from),
+            pre.view().holds_right(root, parent, Right::Retype),
+            base % 32768 == 0,
+            base + 32768 <= NODE_SPACE,
+            page == base / 4096,
+            page + 8 <= NUM_PAGES,
+            post.blocks.wf(),
+            forall|k: int| 0 <= k < 8 ==> #[trigger] pre.blocks.pages@[page + k].kind is Free,
+            !pre.blocks.covered(page as int),
+            post.blocks.regions_2m@ == pre.blocks.regions_2m@,
+            post.blocks.regions_1g@ == pre.blocks.regions_1g@,
+            post.blocks.pages@[page as int].kind is Base,
+            post.blocks.pages@[page as int].object is TablePage,
+            post.blocks.pages@[page as int].order == 3,
+            post.blocks.pages@[page as int].refs == 1,
+            !post.blocks.pages@[page as int].dead,
+            !post.blocks.pages@[page as int].torn_down,
+            forall|i: int| 0 <= i < NUM_PAGES && !(page <= i < page + 8) ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
+            forall|k: int| 0 < k < 8 ==> (#[trigger] post.blocks.pages@[page + k]).object is None,
+            forall|k: usize| k < 8 ==> !pre.list.pages@.dom().contains(#[trigger] table_node_page(base, k))
+                && table_node_page(base, k) % 4096 == 0 && table_node_page(base, k) == base + k * 4096,
+            mid.wf(),
+            list_grown(pre.list, mid),
+            mid.valid(base),
+            !mid.nodes@[base as int].live,
+            forall|k: usize| k < TABLE_NODE_PAGES ==> mid.pages@.dom().contains(#[trigger] table_node_page(base, k)),
+            forall|p: usize| #[trigger] mid.pages@.dom().contains(p) ==> pre.list.pages@.dom().contains(p)
+                || exists|k: usize| k < TABLE_NODE_PAGES && p == #[trigger] table_node_page(base, k),
+            post.list.wf(),
+            post.list.is_child(parent, base),
+            post.list.parent@ == mid.parent@.insert(base, parent),
+            post.list.pages@.dom() == mid.pages@.dom(),
+            post.list.nodes@[base as int].live,
+            post.list.nodes@[base as int].kind is Hidden,
+            post.list.seq@[0] == mid.seq@[0],
+            forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < NODE_SPACE && i != base ==> {
+                &&& post.list.nodes@[i].live == mid.nodes@[i].live
+                &&& post.list.nodes@[i].kind == mid.nodes@[i].kind
+                &&& post.list.nodes@[i].depth == mid.nodes@[i].depth
+            },
+            post.table_pages.maps@ == pre.table_pages.maps@.insert(base, post.table_pages.maps@[base]),
+            post.table_pages.maps@[base].addr() == base + TABLE_NODE_PAGES * 4096,
+            post.table_pages.maps@[base].is_init(),
+            post.table_pages.maps@[base].value().wf(),
+            forall|i: usize| i < 512 ==> #[trigger] post.table_pages.maps@[base].value()[i].is_empty(),
+            post.table_pages.records@ == pre.table_pages.records@.insert(base, post.table_pages.records@[base]),
+            post.table_pages.records@[base].addr() == base + TABLE_RECORD_PAGE * 4096,
+            post.table_pages.records@[base].is_init(),
+            post.table_pages.records@[base].value() == fresh_table(level),
+            post.table_pages.spare@ == pre.table_pages.spare@
+                .insert((base + 7 * 4096) as usize, post.table_pages.spare@[(base + 7 * 4096) as usize]),
+            post.table_pages.spare@[(base + 7 * 4096) as usize].addr() == base + 7 * 4096,
+            post.table_pages.spare@[(base + 7 * 4096) as usize].is_uninit(),
+            post.cores == pre.cores,
+            post.flush_epoch == pre.flush_epoch,
+            post.tlb == pre.tlb,
+            post.iommus == pre.iommus,
+            post.mapped == pre.mapped,
+            post.tables == pre.tables,
+            post.stale_epoch == pre.stale_epoch,
+            post.frames == pre.frames,
+            post.spaces == pre.spaces,
+            post.mappings == pre.mappings,
+            post.zeroing == pre.zeroing,
+            post.holders == pre.holders,
+            post.devices == pre.devices,
+            post.threads == pre.threads,
+            post.processes == pre.processes,
+        ensures
+            post.wf(),
+            forall|r: usize| #[trigger] pre.spaces.roots@.contains_key(r) ==>
+                space_mapping(tree_of(&post.table_pages, &post.spaces), r)
+                    == space_mapping(tree_of(&pre.table_pages, &pre.spaces), r),
+            forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x),
+            discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base }),
+    {
+        lemma_table_page_base(base, page);
+        pre.lemma_slot(root, from);
+        pre.lemma_slot_bound(parent);
+        assert(pre.blocks.pages@[page as int].kind is Free) by {
+            assert(pre.blocks.pages@[page + 0].kind is Free);
+        }
+        assert(table_node_page(base, 0) == base);
+        assert(!pre.list.valid(base));
+        assert(!pre.list.nodes@[base as int].live);
+        assert(mid.nodes@[parent as int] == pre.list.nodes@[parent as int]);
+        pre.tables.lemma_wf_same_pages(&pre.list, &post.list);
+        Self::lemma_table_page_kept(pre.list, mid, post.list, base);
+        assert(Self::table_page_step(pre, post));
+        Self::lemma_table_page_caps_wf(pre, post);
+        Self::lemma_devices_same_caps(pre, post);
+        Self::lemma_tlb_same(pre, post);
+        Self::lemma_table_page_nodes(pre, post, mid, parent, base);
+        Self::lemma_table_nodes_page_added(pre, post, base);
+        lemma_mapping_nodes_grown(pre.list, mid, post.list, base, base);
+        Self::lemma_table_page_bindings(pre, post, mid, base);
+        Self::lemma_table_page_blocks(pre, post, base, page);
+        Self::lemma_table_page_links(pre, post, base, page);
+        Self::lemma_table_page_mappings(pre, post, base, page);
+        Self::lemma_table_page_mapping_parents(pre, post, parent, base);
+        Self::lemma_mappings_grown(pre, post, page, 3);
+        assert(post.wf());
+        Self::lemma_hidden_added_discharges(pre, post, root, parent, base);
+    }
+
+    /// A mapping node's parent link is as it was once a node dead before is linked under `parent`.
+    proof fn lemma_table_page_mapping_parents(pre: Self, post: Self, parent: usize, base: usize)
+        requires
+            pre.wf(),
+            !pre.list.nodes@[base as int].live,
+            post.list.parent@ == pre.list.parent@.insert(base, parent),
+        ensures
+            forall|n: usize| #[trigger] pre.mappings@.contains_key(n)
+                ==> post.list.parent@.contains_key(n) && post.list.parent@[n] == pre.list.parent@[n],
+    {
+        assert forall|n: usize| #[trigger] pre.mappings@.contains_key(n)
+            implies post.list.parent@.contains_key(n) && post.list.parent@[n] == pre.list.parent@[n] by {
+            pre.lemma_mapping_node(n);
+        }
+    }
+
+    /// The bindings after a table page's retype: its node is hidden, no other node changed, and no
+    /// thread or process did.
+    proof fn lemma_table_page_bindings(pre: Self, post: Self, mid: Tree, base: usize)
+        requires
+            pre.wf(),
+            list_grown(pre.list, mid),
+            base < NODE_SPACE,
+            !pre.list.nodes@[base as int].live,
+            post.list.nodes@[base as int].kind is Hidden,
+            forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < NODE_SPACE && i != base ==> {
+                &&& post.list.nodes@[i].live == mid.nodes@[i].live
+                &&& post.list.nodes@[i].kind == mid.nodes@[i].kind
+            },
+            post.threads == pre.threads,
+            post.processes == pre.processes,
+        ensures
+            bindings_wf(&post.list, &post.threads, &post.processes),
+    {
+        lemma_binding_nodes_grown(pre.list, mid, post.list, base, base);
+        lemma_bindings_same(&pre.list, &post.list, &pre.threads, &pre.processes);
+    }
+
     /// The block table's invariants after the free order-3 block at `page` is typed as the table page at
     /// `base`: no leaf, frame or list page lay in it, and the list's new pages are its first five.
     proof fn lemma_table_page_blocks(pre: Self, post: Self, base: usize, page: usize)
@@ -2365,37 +2555,7 @@ impl CapKernel {
             self.table_pages.spare.borrow_mut().tracked_insert((base + 7 * 4096) as usize, seventh);
         }
         proof {
-            let post = *self;
-            pre.tables.lemma_wf_same_pages(&pre.list, &post.list);
-            assert forall|x: usize| #[trigger] pre.list.valid(x) implies {
-                &&& post.list.nodes@[x as int].live == pre.list.nodes@[x as int].live
-                &&& post.list.nodes@[x as int].kind == pre.list.nodes@[x as int].kind
-            } by {
-                assert(mid.nodes@[x as int] == pre.list.nodes@[x as int]);
-                pre.list.lemma_valid_bound(x);
-                assert(x != base);
-            }
-            assert(Self::table_page_step(pre, post));
-            Self::lemma_table_page_caps_wf(pre, post);
-            Self::lemma_devices_same_caps(pre, post);
-            Self::lemma_tlb_same(pre, post);
-            Self::lemma_table_page_nodes(pre, post, mid, parent, base);
-            Self::lemma_table_nodes_page_added(pre, post, base);
-            assert(post.list.pages@.dom() == mid.pages@.dom());
-            assert(post.table_pages.maps@ == pre.table_pages.maps@.insert(base, post.table_pages.maps@[base]));
-            assert(post.table_pages.records@ == pre.table_pages.records@.insert(base, post.table_pages.records@[base]));
-            lemma_mapping_nodes_grown(pre.list, mid, post.list, base, base);
-            Self::lemma_table_page_blocks(pre, post, base, page);
-            Self::lemma_table_page_links(pre, post, base, page);
-            Self::lemma_table_page_mappings(pre, post, base, page);
-            assert forall|n: usize| #[trigger] pre.mappings@.contains_key(n)
-                implies post.list.parent@.contains_key(n) && post.list.parent@[n] == pre.list.parent@[n] by {
-                pre.lemma_mapping_node(n);
-            }
-            Self::lemma_mappings_grown(pre, post, page, 3);
-            assert(post.tables == pre.tables && post.processes == pre.processes);
-            assert(post.wf());
-            Self::lemma_hidden_added_discharges(pre, post, root, parent, base);
+            Self::lemma_table_page_wf(pre, mid, *self, root, from, parent, base, page, level);
         }
         true
     }
@@ -2959,6 +3119,8 @@ impl CapKernel {
             Self::lemma_space_nodes_added(pre, post, base, child);
             assert(post.list.pages@.dom() == mid.pages@.dom());
             lemma_mapping_nodes_grown(pre.list, mid, post.list, child, child);
+            lemma_binding_nodes_grown(pre.list, mid, post.list, child, child);
+            lemma_bindings_kept(&pre.list, &post.list, &pre.threads, &post.threads, &pre.processes, &post.processes);
             Self::lemma_space_blocks(pre, post, base, page, child);
             assert(post.spaces.roots@ == pre.spaces.roots@.insert(base, post.spaces.roots@[base]));
             assert(post.spaces.records@ == pre.spaces.records@.insert(base, post.spaces.records@[base]));

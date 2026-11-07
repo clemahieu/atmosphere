@@ -16,6 +16,7 @@ use crate::capability::refs::*;
 use crate::capability::table::*;
 use crate::capability::process::*;
 use crate::capability::thread::*;
+use crate::capability::thread::ThreadState;
 use crate::define::*;
 
 /// How many steps a revoke does per kernel entry. No wait happens under the lock, so a revoke returns
@@ -48,8 +49,8 @@ impl CapKernel {
     /// changes no node's liveness and keeps the tables whole, and only what n itself held goes. A
     /// hidden node detaches its leaf, and a table page's was cut from its parent by cut_hidden_table or
     /// detach_stale first. A capability's reference goes with atmo-6x9.16.22. A mapping node
-    /// records its unmap, clears its entry and drops its reference. No binding node exists until atmo-6x9.16.9, which
-    /// supplies its arm.
+    /// records its unmap, clears its entry and drops its reference. A binding node, a thread's binding to
+    /// its process, leaves the thread with no process and drops its reference on the process's block.
     pub fn unlink_arm(&mut self, n: usize)
         requires
             old(self).wf(),
@@ -122,8 +123,10 @@ impl CapKernel {
                 &&& final(self).holders == old(self).holders
                 &&& final(self).threads.holders@ == old(self).threads.holders@.insert(t, old(self).threads.holders@[t].remove(n))
             },
-            !(old(self).is_cap(n) && old(self).payload_of(n).kind is Thread) ==> final(self).threads == old(self).threads,
-            final(self).threads.records == old(self).threads.records,
+            !(old(self).is_cap(n) && old(self).payload_of(n).kind is Thread) && !(old(self).list.nodes@[n as int].kind is Binding)
+                ==> final(self).threads == old(self).threads,
+            !(old(self).list.nodes@[n as int].kind is Binding) ==> final(self).threads.records == old(self).threads.records,
+            old(self).list.nodes@[n as int].kind is Binding ==> Self::unbound(*old(self), *final(self), n),
             old(self).is_cap(n) && old(self).payload_of(n).kind is Process ==> {
                 let p = old(self).payload_of(n).base;
                 let br = BlockRef::Small(p / 4096);
@@ -135,9 +138,11 @@ impl CapKernel {
                     block_dead(&old(self).blocks, br) || block_refs(&old(self).blocks, br) == 1,
                 )
                 &&& final(self).holders == old(self).holders
+                &&& final(self).processes.bound == old(self).processes.bound
                 &&& final(self).processes.holders@ == old(self).processes.holders@.insert(p, old(self).processes.holders@[p].remove(n))
             },
-            !(old(self).is_cap(n) && old(self).payload_of(n).kind is Process) ==> final(self).processes == old(self).processes,
+            !(old(self).is_cap(n) && old(self).payload_of(n).kind is Process) && !(old(self).list.nodes@[n as int].kind is Binding)
+                ==> final(self).processes == old(self).processes,
             final(self).processes.records == old(self).processes.records,
             final(self).processes.spare == old(self).processes.spare,
             final(self).spaces.roots == old(self).spaces.roots,
@@ -156,7 +161,8 @@ impl CapKernel {
             },
             !(old(self).is_cap(n) && (old(self).payload_of(n).kind is Frame || old(self).payload_of(n).kind is Space
                 || old(self).payload_of(n).kind is Thread || old(self).payload_of(n).kind is Process))
-                && !(old(self).list.nodes@[n as int].kind is Hidden) && !(old(self).list.nodes@[n as int].kind is Mapping) ==> {
+                && !(old(self).list.nodes@[n as int].kind is Hidden) && !(old(self).list.nodes@[n as int].kind is Mapping)
+                && !(old(self).list.nodes@[n as int].kind is Binding) ==> {
                 &&& final(self).blocks == old(self).blocks
                 &&& final(self).holders == old(self).holders
             },
@@ -218,7 +224,7 @@ impl CapKernel {
                 }
             },
             NodeKind::Mapping => { self.clear_mapping(n); },
-            NodeKind::Binding => {},
+            NodeKind::Binding => { self.unbind(n); },
         }
         proof {
             if !(node.kind is Mapping) {
@@ -437,8 +443,10 @@ impl CapKernel {
                 &&& mid.holders == pre.holders
                 &&& mid.threads.holders@ == pre.threads.holders@.insert(t, pre.threads.holders@[t].remove(r))
             },
-            !(pre.is_cap(r) && pre.payload_of(r).kind is Thread) ==> mid.threads == pre.threads,
-            mid.threads.records == pre.threads.records,
+            !(pre.is_cap(r) && pre.payload_of(r).kind is Thread) && !(pre.list.nodes@[r as int].kind is Binding)
+                ==> mid.threads == pre.threads,
+            !(pre.list.nodes@[r as int].kind is Binding) ==> mid.threads.records == pre.threads.records,
+            pre.list.nodes@[r as int].kind is Binding ==> Self::unbound(pre, mid, r),
             pre.is_cap(r) && pre.payload_of(r).kind is Process ==> {
                 let p = pre.payload_of(r).base;
                 let br = BlockRef::Small(p / 4096);
@@ -450,9 +458,11 @@ impl CapKernel {
                     block_dead(&pre.blocks, br) || block_refs(&pre.blocks, br) == 1,
                 )
                 &&& mid.holders == pre.holders
+                &&& mid.processes.bound == pre.processes.bound
                 &&& mid.processes.holders@ == pre.processes.holders@.insert(p, pre.processes.holders@[p].remove(r))
             },
-            !(pre.is_cap(r) && pre.payload_of(r).kind is Process) ==> mid.processes == pre.processes,
+            !(pre.is_cap(r) && pre.payload_of(r).kind is Process) && !(pre.list.nodes@[r as int].kind is Binding)
+                ==> mid.processes == pre.processes,
             mid.processes.records == pre.processes.records,
             mid.processes.spare == pre.processes.spare,
             mid.spaces.roots == pre.spaces.roots,
@@ -472,7 +482,8 @@ impl CapKernel {
             },
             !(pre.is_cap(r) && (pre.payload_of(r).kind is Frame || pre.payload_of(r).kind is Space
                 || pre.payload_of(r).kind is Thread || pre.payload_of(r).kind is Process))
-                && !(pre.list.nodes@[r as int].kind is Hidden) && !(pre.list.nodes@[r as int].kind is Mapping) ==> {
+                && !(pre.list.nodes@[r as int].kind is Hidden) && !(pre.list.nodes@[r as int].kind is Mapping)
+                && !(pre.list.nodes@[r as int].kind is Binding) ==> {
                 &&& mid.blocks == pre.blocks
                 &&& mid.holders == pre.holders
             },
@@ -538,13 +549,19 @@ impl CapKernel {
         if pre.list.nodes@[r as int].kind is Hidden {
             Self::lemma_revoke_hidden_holders(pre, post, r);
             Self::lemma_same_tree_shrunk(pre, post);
+            Self::lemma_bindings_caps_frame(pre, post, r, r);
         } else if pre.list.nodes@[r as int].kind is Mapping {
             Self::lemma_revoke_mapping_holders(pre, post, r);
             Self::lemma_unlinked_shrunk(pre, post, r);
             Self::lemma_stale_noted_same(pre, mid, post, r);
+            Self::lemma_bindings_caps_frame(pre, post, r, r);
+        } else if pre.list.nodes@[r as int].kind is Binding {
+            Self::lemma_revoke_binding_holders(pre, post, r);
+            Self::lemma_same_tree_shrunk(pre, post);
         } else {
             Self::lemma_delete_holders(pre, post, r);
             Self::lemma_same_tree_shrunk(pre, post);
+            Self::lemma_bindings_caps_frame(pre, post, r, r);
         }
         Self::lemma_tlb_same(mid, post);
         assert(post.list.nodes@[c as int].live == pre.list.nodes@[c as int].live);
@@ -655,6 +672,132 @@ impl CapKernel {
         } else {
             lemma_leaf_blocks_other_changed(&pre.list, &post.list, &pre.tables, &pre.blocks, &post.blocks, pre.holders@, n / 4096, 0, true);
             lemma_table_page_dropped(&pre.list, &post.list, &pre.table_pages, &pre.blocks, &post.blocks, n);
+        }
+    }
+
+    /// The invariant's parts after binding node n goes with its thread's process and its reference on the
+    /// process's block: no capability, mapping or frame changed, only that block's count did, and the
+    /// thread keeps its core.
+    pub proof fn lemma_revoke_binding_holders(pre: Self, post: Self, n: usize)
+        requires
+            Self::caps_frame(pre, post, n, n),
+            n < NODE_SPACE,
+            pre.list.nodes@[n as int].live,
+            pre.list.nodes@[n as int].kind is Binding,
+            !post.list.nodes@[n as int].live,
+            post.zeroing == pre.zeroing,
+            post.list.pages@.dom() == pre.list.pages@.dom(),
+            post.list.parent@ == pre.list.parent@,
+            post.tables == pre.tables,
+            post.spaces == pre.spaces,
+            post.table_pages == pre.table_pages,
+            post.mappings == pre.mappings,
+            post.cores == pre.cores,
+            Self::unbound(pre, post, n),
+        ensures
+            holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
+            zeroing_typed(&post.zeroing, &post.blocks),
+            list_pages_used(&post.list, &post.blocks),
+            objects_wf(&post.tables, &post.blocks, post.holders@),
+            leaf_blocks_wf(&post.list, &post.tables, &post.blocks),
+            table_pages_wf(&post.list, &post.table_pages, &post.blocks),
+            spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
+            threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
+            processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
+            mappings_wf(&post.list, &post.tables, tree_of(&post.table_pages, &post.spaces), &post.blocks, post.holders@, post.mappings@),
+            bindings_wf(&post.list, &post.threads, &post.processes),
+            current_wf(post.cores@, post.threads.records@),
+    {
+        reveal(thread_bound);
+        let t = n;
+        pre.lemma_bound_process(t);
+        let p = pre.threads.records@[t].value().process->Some_0;
+        let br = BlockRef::Small(p / 4096);
+        let refs = (block_refs(&pre.blocks, br) - 1) as usize;
+        let dead = block_dead(&pre.blocks, br) || block_refs(&pre.blocks, br) == 1;
+        assert forall|x: usize| x != n implies {
+            &&& #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x)
+            &&& pre.tables.is_cap(&pre.list, x) ==> post.tables.payload_of(x) == pre.tables.payload_of(x)
+        } by {
+            Self::lemma_caps_frame(pre, post, n, n, x);
+        }
+        assert(!pre.is_cap(n));
+        assert(!post.is_cap(n));
+        assert(same_mapping_nodes(&pre.list, &post.list));
+        assert(same_frames(&pre.list, &pre.tables, &post.list, &post.tables));
+        assert(same_spaces(&pre.list, &pre.tables, &post.list, &post.tables));
+        assert(same_threads(&pre.list, &pre.tables, &post.list, &post.tables));
+        assert(same_processes(&pre.list, &pre.tables, &post.list, &post.tables));
+        lemma_holders_same_frames(&pre.list, &pre.tables, &post.list, &post.tables, &pre.blocks, &pre.zeroing, pre.holders@);
+        assert(!pre.holders@.contains_key(br)) by {
+            if pre.holders@.contains_key(br) {
+                assert(pre.blocks.pages@[(p / 4096) as int].object is Frame);
+            }
+        }
+        lemma_holders_unkeyed_small_changed(&post.list, &post.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, p / 4096, refs, dead);
+        lemma_zeroing_typed_small_changed(&pre.zeroing, &pre.blocks, &post.blocks, p / 4096, refs, dead);
+        lemma_list_pages_used_same_kinds(&pre.list, &pre.blocks, &post.blocks);
+        assert(objects_wf(&post.tables, &pre.blocks, pre.holders@));
+        lemma_objects_unframed_block_changed(&post.tables, &pre.blocks, &post.blocks, pre.holders@, p / 4096, refs, dead);
+        // Node n is a thread's base, so no leaf's and no table page's.
+        assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, t));
+        assert(pre.blocks.pages@[(t / 4096) as int].object is Thread);
+        assert forall|l: usize| #[trigger] pre.tables.owner@.contains_key(l) implies {
+            &&& post.list.nodes@[l as int].live == pre.list.nodes@[l as int].live
+            &&& post.list.nodes@[l as int].kind == pre.list.nodes@[l as int].kind
+        } by {
+            pre.tables.lemma_leaf(&pre.list, l);
+            assert(page_of(l) == l);
+            pre.lemma_slot_bound(l);
+            assert(pre.blocks.pages@[(l / 4096) as int].object is TableLeaf);
+            assert(l != n);
+        }
+        assert(leaf_blocks_wf(&pre.list, &post.tables, &pre.blocks));
+        lemma_leaf_blocks_other_changed(&pre.list, &post.list, &post.tables, &pre.blocks, &post.blocks, pre.holders@, p / 4096, refs, dead);
+        assert forall|u: usize| #[trigger] pre.table_pages.maps@.contains_key(u) implies {
+            &&& post.list.nodes@[u as int].live == pre.list.nodes@[u as int].live
+            &&& post.list.nodes@[u as int].kind == pre.list.nodes@[u as int].kind
+        } by {
+            pre.lemma_table_page_valid(u);
+            assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, u));
+            assert(u != n);
+        }
+        lemma_table_pages_refs_changed(&pre.list, &post.list, &pre.table_pages, &pre.blocks, &post.blocks, br, refs, dead);
+        lemma_spaces_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks, &post.blocks, br, refs, dead);
+        lemma_threads_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks, &post.blocks, br, refs, dead);
+        lemma_threads_record_written(&post.list, &post.tables, &pre.threads, &post.threads, &post.blocks, t);
+        lemma_processes_same_caps(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks);
+        lemma_processes_bound_dropped(&post.list, &post.tables, &pre.processes, &post.processes, &pre.blocks, &post.blocks, p, t);
+        assert forall|m: usize| #[trigger] pre.mappings@.contains_key(m) implies mapping_node_kept(
+            &pre.list, &pre.tables, &pre.blocks, pre.holders@, &post.list, &post.tables, &post.blocks, post.holders@, pre.mappings@[m].frame, m,
+        ) by {
+            pre.lemma_mapping_node(m);
+            let c = pre.list.parent@[m];
+            assert(c != n);
+            Self::lemma_caps_frame(pre, post, n, n, c);
+        }
+        Self::lemma_mappings_same_tree(pre, post);
+        assert forall|x: usize| x < NODE_SPACE && x != t implies {
+            &&& (#[trigger] post.list.nodes@[x as int]).live == pre.list.nodes@[x as int].live
+            &&& post.list.nodes@[x as int].kind == pre.list.nodes@[x as int].kind
+        } by {}
+        lemma_bindings_unbound(&pre.list, &post.list, &pre.threads, &post.threads, &pre.processes, &post.processes, t, p);
+        assert(current_wf(post.cores@, post.threads.records@)) by {
+            reveal(current_wf);
+            assert forall|c: int, x: usize| 0 <= c < NUM_CPUS && #[trigger] runs(post.cores@, c, x) implies {
+                &&& post.threads.records@.contains_key(x)
+                &&& post.threads.records@[x].value().state == (ThreadState::Running { core: c as usize })
+            } by {
+                assert(runs(pre.cores@, c, x));
+            }
+            assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) && post.threads.records@[x].value().state is Running implies {
+                let e = post.threads.records@[x].value().state->Running_core;
+                &&& e < NUM_CPUS
+                &&& post.cores@[e as int].current_thread == Some(x)
+            } by {
+                assert(pre.threads.records@.contains_key(x));
+                assert(post.threads.records@[x].value().state == pre.threads.records@[x].value().state);
+            }
         }
     }
 

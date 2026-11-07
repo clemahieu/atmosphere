@@ -260,6 +260,7 @@ impl CapKernel {
             Self::lemma_hidden_frame(pre, post, child, child);
             Self::lemma_table_nodes_caps_frame(pre, post, child, child);
             Self::lemma_space_nodes_caps_frame(pre, post, child, child);
+            Self::lemma_bindings_caps_frame(pre, post, child, child);
             Self::lemma_derive_holders(pre, post, parent, child, block);
             Self::lemma_devices_caps_frame(pre, post, child, child);
             lemma_parents_derived(pre.list, post.list, parent, child);
@@ -322,6 +323,7 @@ impl CapKernel {
                 &&& post.threads == pre.threads
                 &&& post.processes.records == pre.processes.records
                 &&& post.processes.spare == pre.processes.spare
+                &&& post.processes.bound == pre.processes.bound
                 &&& post.processes.holders@ == pre.processes.holders@.insert(p, pre.processes.holders@[p].insert(child))
             },
             block is None ==> post.blocks == pre.blocks && post.holders == pre.holders && post.spaces == pre.spaces

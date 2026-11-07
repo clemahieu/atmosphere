@@ -857,6 +857,7 @@ impl CapKernel {
             assert(post.list.seq@[0] == pre.list.seq@[0]);
             lemma_parents_removed(pre.list, post.list, n);
             Self::lemma_revoke_hidden(pre, post, n);
+            Self::lemma_bindings_caps_frame(pre, post, n, n);
             Self::lemma_delete_holders(pre, post, n);
             Self::lemma_tlb_same(pre, post);
             Self::lemma_delete_discharges(pre, post, object, n);
@@ -2541,6 +2542,7 @@ impl CapKernel {
             assert(post.list.seq@[0] == pre.list.seq@[0]);
             lemma_parents_removed(pre.list, post.list, base);
             Self::lemma_revoke_hidden(pre, post, base);
+            Self::lemma_bindings_caps_frame(pre, post, base, base);
             Self::lemma_revoke_hidden_holders(pre, post, base);
             Self::lemma_tlb_same(pre, post);
             Self::lemma_unlink_discharges(pre, post, root, untyped, base);
@@ -2682,6 +2684,7 @@ impl CapKernel {
             assert(post.list.seq@[0] == cut.list.seq@[0]);
             lemma_parents_removed(cut.list, post.list, base);
             Self::lemma_revoke_hidden(cut, post, base);
+            Self::lemma_bindings_caps_frame(cut, post, base, base);
             Self::lemma_revoke_hidden_holders(cut, post, base);
             Self::lemma_tlb_same(cut, post);
             Self::lemma_unlink_discharges(cut, post, root, untyped, base);
@@ -3456,6 +3459,7 @@ impl CapKernel {
             assert(pre.table_pages.maps@.contains_key(pre.mappings@[n].table));
             assert(post.table_pages.maps@.dom() =~= pre.table_pages.maps@.dom());
             Self::lemma_revoke_hidden(pre, post, n);
+            Self::lemma_bindings_caps_frame(pre, post, n, n);
             Self::lemma_revoke_mapping_holders(pre, post, n);
             Self::lemma_stale_noted_same(pre, mid, post, n);
             Self::lemma_tlb_same(mid, post);

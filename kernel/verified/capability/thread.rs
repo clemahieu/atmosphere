@@ -12,6 +12,7 @@ use crate::capability::block::*;
 use crate::capability::derive::*;
 use crate::capability::device::*;
 use crate::capability::kernel::*;
+use crate::capability::link::*;
 use crate::capability::list::*;
 use crate::capability::mapping::*;
 use crate::capability::process::*;
@@ -67,6 +68,9 @@ pub struct ThreadRecord {
     pub frame: Registers,
     /// Set when it must stop on its core's next kernel entry.
     pub pending_stop: bool,
+    /// The process it is bound to: its node page's first node is then a binding under a capability to
+    /// that process, holding a reference on the process's block.
+    pub process: Option<usize>,
 }
 
 /// Registers that are all zero.
@@ -98,7 +102,7 @@ pub open spec fn zero_registers() -> Registers {
 
 /// A thread's record when it is typed: inactive, with zeroed registers and no stop pending.
 pub open spec fn fresh_thread() -> ThreadRecord {
-    ThreadRecord { state: ThreadState::Inactive, frame: zero_registers(), pending_stop: false }
+    ThreadRecord { state: ThreadState::Inactive, frame: zero_registers(), pending_stop: false, process: None }
 }
 
 fn new_thread_record() -> (ret: ThreadRecord)
@@ -131,6 +135,7 @@ fn new_thread_record() -> (ret: ThreadRecord)
             ss: 0,
         },
         pending_stop: false,
+        process: None,
     }
 }
 
@@ -242,6 +247,341 @@ pub open spec fn threads_wf(list: &Tree, tables: &Tables, threads: &Threads, blo
         &&& tables.is_cap(list, n)
         &&& tables.payload_of(n).kind is Thread
         &&& tables.payload_of(n).base == t
+    }
+}
+
+/// Thread n's record names a process. Opaque so that the node quantifier of bindings_wf, which fires on
+/// every node a proof mentions, does not reach into the thread records and through them the block table.
+#[verifier::opaque]
+pub open spec fn thread_bound(threads: &Threads, n: usize) -> bool {
+    threads.records@.contains_key(n) && threads.records@[n].value().process is Some
+}
+
+/// A live binding node is a thread's binding to its process: node 0 of the thread's node page, live
+/// exactly while the thread's record names a process, and counted by that process among the bindings
+/// holding its block. So unlinking a binding node finds what to undo from the node alone. See
+/// design/process-holds-capabilities/.
+pub open spec fn bindings_wf(list: &Tree, threads: &Threads, processes: &Processes) -> bool {
+    &&& forall|n: usize| n < NODE_SPACE && (#[trigger] list.nodes@[n as int]).live && list.nodes@[n as int].kind is Binding
+        ==> thread_bound(threads, n)
+    &&& forall|t: usize| #[trigger] threads.records@.contains_key(t) && threads.records@[t].value().process is Some ==> {
+        let p = threads.records@[t].value().process->Some_0;
+        &&& t < NODE_SPACE
+        &&& list.nodes@[t as int].live
+        &&& list.nodes@[t as int].kind is Binding
+        &&& processes.records@.contains_key(p)
+        &&& processes.bound@[p].contains(t)
+    }
+    &&& forall|p: usize, t: usize| processes.records@.contains_key(p) && #[trigger] processes.bound@[p].contains(t)
+        ==> threads.records@.contains_key(t) && threads.records@[t].value().process == Some(p)
+}
+
+/// The live binding nodes of a are those of b.
+pub open spec fn same_bindings(list_a: &Tree, list_b: &Tree) -> bool {
+    forall|n: usize| #![trigger list_a.nodes@[n as int]] #![trigger list_b.nodes@[n as int]] n < NODE_SPACE ==>
+        (list_b.nodes@[n as int].live && list_b.nodes@[n as int].kind is Binding)
+            == (list_a.nodes@[n as int].live && list_a.nodes@[n as int].kind is Binding)
+}
+
+/// The bindings after a step that kept every binding node, every thread's process and every process's
+/// bindings, and added only threads bound to nothing and processes with no bindings.
+pub proof fn lemma_bindings_kept(list_a: &Tree, list_b: &Tree, ta: &Threads, tb: &Threads, pa: &Processes, pb: &Processes)
+    requires
+        bindings_wf(list_a, ta, pa),
+        same_bindings(list_a, list_b),
+        forall|t: usize| #[trigger] ta.records@.contains_key(t) ==> {
+            &&& tb.records@.contains_key(t)
+            &&& tb.records@[t].value().process == ta.records@[t].value().process
+        },
+        forall|t: usize| #[trigger] tb.records@.contains_key(t) && tb.records@[t].value().process is Some
+            ==> ta.records@.contains_key(t),
+        forall|p: usize| #[trigger] pa.records@.contains_key(p) ==> pb.records@.contains_key(p) && pb.bound@[p] == pa.bound@[p],
+        forall|p: usize| #[trigger] pb.records@.contains_key(p) && !pa.records@.contains_key(p)
+            ==> pb.bound@[p] == Set::<usize>::empty(),
+    ensures
+        bindings_wf(list_b, tb, pb),
+{
+    assert forall|n: usize| n < NODE_SPACE && (#[trigger] list_b.nodes@[n as int]).live && list_b.nodes@[n as int].kind is Binding
+        implies thread_bound(tb, n) by {
+        reveal(thread_bound);
+        assert(list_a.nodes@[n as int].live && list_a.nodes@[n as int].kind is Binding);
+        assert(ta.records@.contains_key(n));
+    }
+    assert forall|t: usize| #[trigger] tb.records@.contains_key(t) && tb.records@[t].value().process is Some implies {
+        let p = tb.records@[t].value().process->Some_0;
+        &&& t < NODE_SPACE
+        &&& list_b.nodes@[t as int].live
+        &&& list_b.nodes@[t as int].kind is Binding
+        &&& pb.records@.contains_key(p)
+        &&& pb.bound@[p].contains(t)
+    } by {
+        assert(ta.records@.contains_key(t));
+        let p = ta.records@[t].value().process->Some_0;
+        assert(pa.records@.contains_key(p));
+        assert(list_a.nodes@[t as int].live && list_a.nodes@[t as int].kind is Binding);
+    }
+    assert forall|p: usize, t: usize| pb.records@.contains_key(p) && #[trigger] pb.bound@[p].contains(t)
+        implies tb.records@.contains_key(t) && tb.records@[t].value().process == Some(p) by {
+        if pa.records@.contains_key(p) {
+            assert(pa.bound@[p].contains(t));
+            assert(ta.records@.contains_key(t));
+        } else {
+            assert(pb.bound@[p] == Set::<usize>::empty());
+        }
+    }
+}
+
+/// The bindings after a step that changed no thread's process and no process, and kept every binding
+/// node.
+pub proof fn lemma_bindings_same(list_a: &Tree, list_b: &Tree, threads: &Threads, processes: &Processes)
+    requires
+        bindings_wf(list_a, threads, processes),
+        same_bindings(list_a, list_b),
+    ensures
+        bindings_wf(list_b, threads, processes),
+{
+    lemma_bindings_kept(list_a, list_b, threads, threads, processes, processes);
+}
+
+/// The bindings after thread t's binding to p, node t, goes: t names no process and p no longer
+/// counts it.
+pub proof fn lemma_bindings_unbound(
+    list_a: &Tree,
+    list_b: &Tree,
+    ta: &Threads,
+    tb: &Threads,
+    pa: &Processes,
+    pb: &Processes,
+    t: usize,
+    p: usize,
+)
+    requires
+        bindings_wf(list_a, ta, pa),
+        ta.records@.contains_key(t),
+        ta.records@[t].value().process == Some(p),
+        !list_b.nodes@[t as int].live,
+        forall|x: usize| x < NODE_SPACE && x != t ==> {
+            &&& (#[trigger] list_b.nodes@[x as int]).live == list_a.nodes@[x as int].live
+            &&& list_b.nodes@[x as int].kind == list_a.nodes@[x as int].kind
+        },
+        tb.records@.dom() == ta.records@.dom(),
+        forall|x: usize| x != t && #[trigger] tb.records@.contains_key(x) ==> tb.records@[x] == ta.records@[x],
+        tb.records@[t].value().process is None,
+        pb.records == pa.records,
+        pb.bound@ == pa.bound@.insert(p, pa.bound@[p].remove(t)),
+    ensures
+        bindings_wf(list_b, tb, pb),
+{
+    assert forall|n: usize| n < NODE_SPACE && (#[trigger] list_b.nodes@[n as int]).live && list_b.nodes@[n as int].kind is Binding
+        implies thread_bound(tb, n) by {
+        reveal(thread_bound);
+        assert(n != t);
+        assert(list_a.nodes@[n as int].live && list_a.nodes@[n as int].kind is Binding);
+        assert(ta.records@.contains_key(n));
+    }
+    assert forall|x: usize| #[trigger] tb.records@.contains_key(x) && tb.records@[x].value().process is Some implies {
+        let q = tb.records@[x].value().process->Some_0;
+        &&& x < NODE_SPACE
+        &&& list_b.nodes@[x as int].live
+        &&& list_b.nodes@[x as int].kind is Binding
+        &&& pb.records@.contains_key(q)
+        &&& pb.bound@[q].contains(x)
+    } by {
+        assert(x != t);
+        assert(ta.records@.contains_key(x));
+        assert(tb.records@[x] == ta.records@[x]);
+        let q = ta.records@[x].value().process->Some_0;
+        assert(pa.bound@[q].contains(x));
+        assert(list_b.nodes@[x as int].live == list_a.nodes@[x as int].live);
+    }
+    assert forall|q: usize, x: usize| pb.records@.contains_key(q) && #[trigger] pb.bound@[q].contains(x)
+        implies tb.records@.contains_key(x) && tb.records@[x].value().process == Some(q) by {
+        assert(pa.bound@[q].contains(x));
+        assert(ta.records@.contains_key(x));
+        assert(x != t);
+        assert(tb.records@[x] == ta.records@[x]);
+    }
+}
+
+/// The bindings after thread t, bound to nothing, is bound to p by node t.
+pub proof fn lemma_bindings_bound(
+    list_a: &Tree,
+    list_b: &Tree,
+    ta: &Threads,
+    tb: &Threads,
+    pa: &Processes,
+    pb: &Processes,
+    t: usize,
+    p: usize,
+)
+    requires
+        bindings_wf(list_a, ta, pa),
+        ta.records@.contains_key(t),
+        ta.records@[t].value().process is None,
+        t < NODE_SPACE,
+        list_b.nodes@[t as int].live,
+        list_b.nodes@[t as int].kind is Binding,
+        forall|x: usize| x < NODE_SPACE && x != t ==> {
+            &&& (#[trigger] list_b.nodes@[x as int]).live == list_a.nodes@[x as int].live
+            &&& list_b.nodes@[x as int].kind == list_a.nodes@[x as int].kind
+        },
+        tb.records@.dom() == ta.records@.dom(),
+        forall|x: usize| x != t && #[trigger] tb.records@.contains_key(x) ==> tb.records@[x] == ta.records@[x],
+        tb.records@[t].value().process == Some(p),
+        pa.records@.contains_key(p),
+        pb.records == pa.records,
+        pb.bound@ == pa.bound@.insert(p, pa.bound@[p].insert(t)),
+    ensures
+        bindings_wf(list_b, tb, pb),
+{
+    assert forall|n: usize| n < NODE_SPACE && (#[trigger] list_b.nodes@[n as int]).live && list_b.nodes@[n as int].kind is Binding
+        implies thread_bound(tb, n) by {
+        reveal(thread_bound);
+        if n != t {
+            assert(list_a.nodes@[n as int].live && list_a.nodes@[n as int].kind is Binding);
+            assert(ta.records@.contains_key(n));
+        }
+    }
+    assert forall|x: usize| #[trigger] tb.records@.contains_key(x) && tb.records@[x].value().process is Some implies {
+        let q = tb.records@[x].value().process->Some_0;
+        &&& x < NODE_SPACE
+        &&& list_b.nodes@[x as int].live
+        &&& list_b.nodes@[x as int].kind is Binding
+        &&& pb.records@.contains_key(q)
+        &&& pb.bound@[q].contains(x)
+    } by {
+        if x != t {
+            assert(ta.records@.contains_key(x));
+            assert(tb.records@[x] == ta.records@[x]);
+            let q = ta.records@[x].value().process->Some_0;
+            assert(pa.bound@[q].contains(x));
+            assert(list_b.nodes@[x as int].live == list_a.nodes@[x as int].live);
+        }
+    }
+    assert forall|q: usize, x: usize| pb.records@.contains_key(q) && #[trigger] pb.bound@[q].contains(x)
+        implies tb.records@.contains_key(x) && tb.records@[x].value().process == Some(q) by {
+        if !(q == p && x == t) {
+            assert(pa.bound@[q].contains(x));
+            assert(ta.records@.contains_key(x));
+            assert(x != t);
+            assert(tb.records@[x] == ta.records@[x]);
+        }
+    }
+}
+
+/// The threads after a step that rewrote one thread's record in place.
+pub proof fn lemma_threads_record_written(list: &Tree, tables: &Tables, a: &Threads, b: &Threads, blocks: &BlockTable, t: usize)
+    requires
+        threads_wf(list, tables, a, blocks),
+        b.holders == a.holders,
+        b.records@.dom() == a.records@.dom(),
+        forall|x: usize| x != t && #[trigger] b.records@.contains_key(x) ==> b.records@[x] == a.records@[x],
+        a.records@.contains_key(t) ==> b.records@[t].addr() == a.records@[t].addr() && b.records@[t].is_init(),
+    ensures
+        threads_wf(list, tables, b, blocks),
+{
+    assert forall|x: usize| #[trigger] b.records@.contains_key(x) implies thread_wf(list, b, blocks, x) by {
+        assert(a.records@.contains_key(x));
+        assert(thread_wf(list, a, blocks, x));
+    }
+    assert forall|x: usize| x < NUM_PAGES && #[trigger] thread_block(blocks, x) implies b.records@.contains_key((x * 4096) as usize) by {
+        assert(a.records@.contains_key((x * 4096) as usize));
+    }
+    assert forall|n: usize| #[trigger] tables.is_cap(list, n) && tables.payload_of(n).kind is Thread implies {
+        &&& b.records@.contains_key(tables.payload_of(n).base)
+        &&& b.holders@[tables.payload_of(n).base].contains(n)
+        &&& tables.payload_of(n).order == THREAD_ORDER
+    } by {
+        assert(a.records@.contains_key(tables.payload_of(n).base));
+    }
+    assert forall|u: usize, n: usize| b.records@.contains_key(u) && #[trigger] b.holders@[u].contains(n) implies {
+        &&& tables.is_cap(list, n)
+        &&& tables.payload_of(n).kind is Thread
+        &&& tables.payload_of(n).base == u
+    } by {
+        assert(a.records@.contains_key(u));
+    }
+}
+
+/// A record with its process binding undone: no process, and Inactive unless it is Running, which
+/// only its core may change, or Dead.
+pub open spec fn unbound_record(r: ThreadRecord) -> ThreadRecord {
+    ThreadRecord {
+        state: match r.state {
+            ThreadState::Running { .. } => r.state,
+            ThreadState::Dead => r.state,
+            _ => ThreadState::Inactive,
+        },
+        frame: r.frame,
+        pending_stop: r.pending_stop,
+        process: None,
+    }
+}
+
+/// The binding nodes after a step that added pages, whose nodes are dead, then made x and y live as
+/// something other than bindings.
+pub proof fn lemma_binding_nodes_grown(a: Tree, mid: Tree, b: Tree, x: usize, y: usize)
+    requires
+        a.wf(),
+        list_grown(a, mid),
+        forall|i: int| #![trigger b.nodes@[i]] 0 <= i < NODE_SPACE && i != x && i != y ==> {
+            &&& b.nodes@[i].live == mid.nodes@[i].live
+            &&& b.nodes@[i].kind == mid.nodes@[i].kind
+        },
+        x < NODE_SPACE,
+        y < NODE_SPACE,
+        !a.nodes@[x as int].live,
+        !a.nodes@[y as int].live,
+        !(b.nodes@[x as int].kind is Binding),
+        !(b.nodes@[y as int].kind is Binding),
+    ensures
+        same_bindings(&a, &b),
+{
+    assert forall|i: usize| i < NODE_SPACE implies
+        ((#[trigger] b.nodes@[i as int]).live && b.nodes@[i as int].kind is Binding) == (a.nodes@[i as int].live && a.nodes@[i as int].kind is Binding) by {
+        if i != x && i != y {
+            assert(mid.nodes@[i as int].live == a.nodes@[i as int].live);
+            if a.nodes@[i as int].live {
+                a.lemma_live_valid(i);
+                assert(mid.nodes@[i as int] == a.nodes@[i as int]);
+            }
+        }
+    }
+}
+
+/// The binding nodes stay when only nodes n and m change in the pages a held, neither a binding before
+/// or after, and any page b adds holds no binding.
+pub proof fn lemma_same_bindings_frame(a: &Tree, b: &Tree, n: usize, m: usize)
+    requires
+        a.wf(),
+        b.wf(),
+        forall|x: usize| #[trigger] a.valid(x) && x != n && x != m ==> {
+            &&& b.nodes@[x as int].live == a.nodes@[x as int].live
+            &&& b.nodes@[x as int].kind == a.nodes@[x as int].kind
+        },
+        forall|x: usize| x < NODE_SPACE && #[trigger] b.valid(x) && !a.valid(x) && x != n && x != m
+            ==> !(b.nodes@[x as int].live && b.nodes@[x as int].kind is Binding),
+        !(a.nodes@[n as int].live && a.nodes@[n as int].kind is Binding),
+        !(b.nodes@[n as int].live && b.nodes@[n as int].kind is Binding),
+        !(a.nodes@[m as int].live && a.nodes@[m as int].kind is Binding),
+        !(b.nodes@[m as int].live && b.nodes@[m as int].kind is Binding),
+    ensures
+        same_bindings(a, b),
+{
+    assert forall|x: usize| x < NODE_SPACE implies
+        ((#[trigger] b.nodes@[x as int]).live && b.nodes@[x as int].kind is Binding)
+            == (a.nodes@[x as int].live && a.nodes@[x as int].kind is Binding) by {
+        if x != n && x != m {
+            if a.valid(x) {
+            } else {
+                if a.nodes@[x as int].live {
+                    a.lemma_live_valid(x);
+                }
+                if b.nodes@[x as int].live {
+                    b.lemma_live_valid(x);
+                }
+            }
+        }
     }
 }
 
@@ -499,6 +839,153 @@ pub proof fn lemma_threads_outside_block(list: &Tree, tables: &Tables, threads: 
 }
 
 impl CapKernel {
+    /// The bindings after a step that changed no node but n and m, neither a binding before or after,
+    /// no thread's record and no process's bindings.
+    pub proof fn lemma_bindings_caps_frame(pre: Self, post: Self, n: usize, m: usize)
+        requires
+            Self::caps_frame(pre, post, n, m),
+            !(pre.list.nodes@[n as int].live && pre.list.nodes@[n as int].kind is Binding),
+            !(post.list.nodes@[n as int].live && post.list.nodes@[n as int].kind is Binding),
+            !(pre.list.nodes@[m as int].live && pre.list.nodes@[m as int].kind is Binding),
+            !(post.list.nodes@[m as int].live && post.list.nodes@[m as int].kind is Binding),
+            post.threads.records == pre.threads.records,
+            post.processes.records == pre.processes.records,
+            post.processes.bound == pre.processes.bound,
+        ensures
+            bindings_wf(&post.list, &post.threads, &post.processes),
+    {
+        assert forall|x: usize| x < NODE_SPACE implies
+            ((#[trigger] post.list.nodes@[x as int]).live && post.list.nodes@[x as int].kind is Binding)
+                == (pre.list.nodes@[x as int].live && pre.list.nodes@[x as int].kind is Binding) by {
+            if x != n && x != m {
+                assert(post.list.nodes@[x as int].live == pre.list.nodes@[x as int].live);
+                assert(post.list.nodes@[x as int].kind == pre.list.nodes@[x as int].kind);
+            }
+        }
+        assert(same_bindings(&pre.list, &post.list));
+        lemma_bindings_kept(&pre.list, &post.list, &pre.threads, &post.threads, &pre.processes, &post.processes);
+    }
+
+    /// A bound thread's process is a process whose block counts the binding among its references.
+    pub proof fn lemma_bound_process(&self, t: usize)
+        requires
+            self.wf(),
+            self.threads.records@.contains_key(t),
+            self.threads.records@[t].value().process is Some,
+        ensures
+            ({
+                let p = self.threads.records@[t].value().process->Some_0;
+                &&& self.processes.records@.contains_key(p)
+                &&& self.processes.bound@[p].contains(t)
+                &&& p % 32768 == 0
+                &&& p / 4096 < NUM_PAGES
+                &&& self.blocks.pages@[(p / 4096) as int].object is Process
+                &&& block_typed(&self.blocks, BlockRef::Small(p / 4096))
+                &&& block_refs(&self.blocks, BlockRef::Small(p / 4096)) > 0
+            }),
+    {
+        let p = self.threads.records@[t].value().process->Some_0;
+        assert(process_wf(&self.processes, &self.blocks, p));
+        if self.processes.bound@[p].len() == 0 {
+            self.processes.bound@[p].lemma_len0_is_empty();
+        }
+        self.blocks.lemma_not_free_uncovered((p / 4096) as int);
+    }
+
+    /// Thread t's binding to its process, node t, is undone: t names no process and is Inactive unless
+    /// it is Running or Dead, and the process's block has one reference fewer, no longer counting t.
+    pub open spec fn unbound(pre: Self, post: Self, t: usize) -> bool {
+        let r = pre.threads.records@[t].value();
+        let p = r.process->Some_0;
+        let br = BlockRef::Small(p / 4096);
+        &&& pre.threads.records@.contains_key(t)
+        &&& r.process is Some
+        &&& pre.processes.records@.contains_key(p)
+        &&& pre.processes.bound@[p].contains(t)
+        &&& blocks_refs_changed(
+            &pre.blocks,
+            &post.blocks,
+            br,
+            (block_refs(&pre.blocks, br) - 1) as usize,
+            block_dead(&pre.blocks, br) || block_refs(&pre.blocks, br) == 1,
+        )
+        &&& post.holders == pre.holders
+        &&& post.processes.records == pre.processes.records
+        &&& post.processes.spare == pre.processes.spare
+        &&& post.processes.holders == pre.processes.holders
+        &&& post.processes.bound@ == pre.processes.bound@.insert(p, pre.processes.bound@[p].remove(t))
+        &&& post.threads.holders == pre.threads.holders
+        &&& post.threads.records@.dom() == pre.threads.records@.dom()
+        &&& forall|x: usize| x != t && #[trigger] post.threads.records@.contains_key(x)
+            ==> post.threads.records@[x] == pre.threads.records@[x]
+        &&& post.threads.records@[t].addr() == pre.threads.records@[t].addr()
+        &&& post.threads.records@[t].is_init()
+        &&& post.threads.records@[t].value() == unbound_record(r)
+    }
+
+    /// Undoes thread t's binding to its process, node t, before revoke unlinks the node. A thread
+    /// Running on a core is left to that core.
+    pub fn unbind(&mut self, t: usize)
+        requires
+            old(self).wf(),
+            t < NODE_SPACE,
+            old(self).list.nodes@[t as int].live,
+            old(self).list.nodes@[t as int].kind is Binding,
+        ensures
+            Self::unbound(*old(self), *final(self), t),
+            final(self).blocks.wf(),
+            final(self).list == old(self).list,
+            final(self).tables == old(self).tables,
+            final(self).frames == old(self).frames,
+            final(self).zeroing == old(self).zeroing,
+            final(self).cores == old(self).cores,
+            final(self).devices == old(self).devices,
+            final(self).flush_epoch == old(self).flush_epoch,
+            final(self).tlb == old(self).tlb,
+            final(self).iommus == old(self).iommus,
+            final(self).mapped == old(self).mapped,
+            final(self).stale_epoch == old(self).stale_epoch,
+            final(self).table_pages == old(self).table_pages,
+            final(self).spaces == old(self).spaces,
+            final(self).mappings == old(self).mappings,
+    {
+        let ghost pre = *old(self);
+        proof {
+            reveal(thread_bound);
+            assert(pre.threads.records@.contains_key(t));
+            assert(pre.threads.records@[t].value().process is Some);
+            pre.lemma_bound_process(t);
+            assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, t));
+        }
+        let ptr = PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * 4096);
+        let record = *ptr.borrow(Tracked(self.threads.records.borrow().tracked_borrow(t)));
+        let p = match record.process {
+            Some(p) => p,
+            None => {
+                proof {
+                    assert(false);
+                }
+                0
+            },
+        };
+        let state = match record.state {
+            ThreadState::Running { core } => ThreadState::Running { core },
+            ThreadState::Dead => ThreadState::Dead,
+            _ => ThreadState::Inactive,
+        };
+        let tracked mut perm;
+        proof {
+            perm = self.threads.records.borrow_mut().tracked_remove(t);
+        }
+        ptr.write(Tracked(&mut perm), ThreadRecord { state, frame: record.frame, pending_stop: record.pending_stop, process: None });
+        proof {
+            self.threads.records.borrow_mut().tracked_insert(t, perm);
+            assert(self.threads.records@.dom() =~= pre.threads.records@.dom());
+        }
+        drop_block_ref(&mut self.blocks, BlockRef::Small(p / 4096));
+        self.processes.bound = Ghost(pre.processes.bound@.insert(p, pre.processes.bound@[p].remove(t)));
+    }
+
     /// A thread capability names a thread, whose block holds its reference, lies in no typed region
     /// and so is read as the small block at its base.
     pub proof fn lemma_thread_cap(&self, n: usize)
@@ -1127,6 +1614,8 @@ impl CapKernel {
                 Self::lemma_space_cap_frame(pre, post, child, x);
             }
             Self::lemma_devices_same_caps(pre, post);
+            lemma_binding_nodes_grown(pre.list, mid, post.list, child, child);
+            lemma_bindings_kept(&pre.list, &post.list, &pre.threads, &post.threads, &pre.processes, &post.processes);
             assert(post.wf());
             assert forall|i: int| base <= i < base + NODES_PER_PAGE implies !#[trigger] post.list.nodes@[i].live by {
                 assert(mid.valid(i as usize));
@@ -1173,6 +1662,7 @@ impl CapKernel {
         &&& post.threads.records@[t].addr() == pre.threads.records@[t].addr()
         &&& post.threads.records@[t].is_init()
         &&& post.threads.records@[t].value().pending_stop == pre.threads.records@[t].value().pending_stop
+        &&& post.threads.records@[t].value().process == pre.threads.records@[t].value().process
         &&& post.cores@.len() == pre.cores@.len()
         &&& forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] post.cores@[d] == pre.cores@[d]
         &&& post.cores@[c].acked_epoch == pre.cores@[c].acked_epoch
@@ -1209,6 +1699,11 @@ impl CapKernel {
             assert(thread_block(&pre.blocks, b));
         }
         assert(threads_wf(&post.list, &post.tables, &post.threads, &post.blocks));
+        assert forall|x: usize| #[trigger] pre.threads.records@.contains_key(x) implies {
+            &&& post.threads.records@.contains_key(x)
+            &&& post.threads.records@[x].value().process == pre.threads.records@[x].value().process
+        } by {}
+        lemma_bindings_kept(&pre.list, &post.list, &pre.threads, &post.threads, &pre.processes, &post.processes);
         Self::lemma_iommus_same(pre, post);
         assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] post.acked(d) <= post.flush_epoch by {
             assert(pre.acked(d) <= pre.flush_epoch);
@@ -1262,6 +1757,7 @@ impl CapKernel {
             state: ThreadState::Running { core: c },
             frame: record.frame,
             pending_stop: record.pending_stop,
+            process: record.process,
         });
         proof {
             self.threads.records.borrow_mut().tracked_insert(t, perm);
@@ -1346,6 +1842,7 @@ impl CapKernel {
             state: ThreadState::Runnable { core: c },
             frame,
             pending_stop: record.pending_stop,
+            process: record.process,
         });
         proof {
             self.threads.records.borrow_mut().tracked_insert(t, perm);
@@ -1425,6 +1922,7 @@ impl CapKernel {
             state: pre.threads.records@[t].value().state,
             frame,
             pending_stop: pre.threads.records@[t].value().pending_stop,
+            process: pre.threads.records@[t].value().process,
         }
     }
 
@@ -1547,6 +2045,7 @@ impl CapKernel {
             state: record.state,
             frame: user_frame_of(frame),
             pending_stop: record.pending_stop,
+            process: record.process,
         });
         proof {
             self.threads.records.borrow_mut().tracked_insert(t, perm);
@@ -1556,6 +2055,452 @@ impl CapKernel {
             lemma_current_same(pre.cores@, post.cores@, pre.threads.records@, post.threads.records@);
             Self::lemma_switch_wf(pre, post, 0, t);
             assert(post.view() == pre.view());
+        }
+        true
+    }
+}
+
+impl CapKernel {
+    /// A thread's base, its binding to its process, is in a page the list holds and in no leaf, table
+    /// page or IO space, whose blocks are of other objects.
+    pub proof fn lemma_thread_node_apart(&self, t: usize)
+        requires
+            self.wf(),
+            self.threads.records@.contains_key(t),
+        ensures
+            t < NODE_SPACE,
+            t % 4096 == 0,
+            page_of(t) == t,
+            self.list.valid(t),
+            !self.tables.owner@.contains_key(t),
+            !self.table_pages.maps@.contains_key(t),
+            forall|u: usize, k: usize, i: usize| #![trigger table_node(u, k, i)]
+                self.table_pages.maps@.contains_key(u) && k < TABLE_NODE_PAGES && i < NODES_PER_PAGE
+                ==> table_node(u, k, i) != t,
+            forall|s: usize, k: usize, i: usize| #![trigger table_node(s, k, i)]
+                self.spaces.roots@.contains_key(s) && self.spaces.records@[s].value().kind is Io
+                    && k < TABLE_NODE_PAGES && i < NODES_PER_PAGE
+                ==> table_node(s, k, i) != t,
+    {
+        assert(thread_wf(&self.list, &self.threads, &self.blocks, t));
+        let b = (t / 4096) as int;
+        assert(t % 4096 == 0);
+        assert(page_of(t) == t);
+        assert(t < NODE_SPACE);
+        assert(self.blocks.pages@[b].kind is Base);
+        assert(self.blocks.pages@[b].object is Thread);
+        if self.tables.owner@.contains_key(t) {
+            self.tables.lemma_leaf(&self.list, t);
+            assert(self.blocks.pages@[(t / 4096) as int].object is TableLeaf);
+        }
+        if self.table_pages.maps@.contains_key(t) {
+            assert(table_page_wf(&self.list, &self.table_pages, &self.blocks, t));
+        }
+        assert forall|u: usize, k: usize, i: usize| #![trigger table_node(u, k, i)]
+            self.table_pages.maps@.contains_key(u) && k < TABLE_NODE_PAGES && i < NODES_PER_PAGE
+            implies table_node(u, k, i) != t by {
+            if table_node(u, k, i) == t {
+                self.lemma_table_node_in_block(u, k, i);
+                assert(table_page_wf(&self.list, &self.table_pages, &self.blocks, u));
+                let q = (u / 4096) as int;
+                assert(b == q + k);
+                if k > 0 {
+                    self.blocks.lemma_base(q);
+                    assert(order_pages(3) == 8);
+                    self.blocks.lemma_member_of(q, q + k);
+                }
+            }
+        }
+        assert forall|s: usize, k: usize, i: usize| #![trigger table_node(s, k, i)]
+            self.spaces.roots@.contains_key(s) && self.spaces.records@[s].value().kind is Io
+                && k < TABLE_NODE_PAGES && i < NODES_PER_PAGE
+            implies table_node(s, k, i) != t by {
+            if table_node(s, k, i) == t {
+                assert(space_wf(&self.list, &self.spaces, &self.blocks, s));
+                let q = (s / 4096) as int;
+                self.blocks.lemma_base(q);
+                assert(order_pages(3) == 8);
+                lemma_table_node_place(s, k, i);
+                assert(b == q + k);
+                if k > 0 {
+                    self.blocks.lemma_member_of(q, q + k);
+                }
+            }
+        }
+    }
+
+    /// Index i of the table at root holds a thread's control capability, and index j a process's, with
+    /// the control right too, below the depth limit; the thread is bound to no process, and the process's
+    /// block can take one more reference.
+    pub open spec fn can_bind(&self, root: usize, i: usize, j: usize) -> bool {
+        let n = self.tables.node_of(root, j);
+        let t = self.payload_of(self.tables.node_of(root, i)).base;
+        &&& self.can_control(root, i)
+        &&& self.tables.has_slot(root, j)
+        &&& self.is_cap(n)
+        &&& self.payload_of(n).kind is Process
+        &&& self.payload_of(n).rights & right_bit(Right::Control) != 0
+        &&& self.list.nodes@[n as int].depth < MAX_DEPTH
+        &&& !self.list.nodes@[t as int].live
+        &&& block_refs(&self.blocks, BlockRef::Small(self.payload_of(n).base / 4096)) != usize::MAX
+    }
+
+    /// Thread t, bound to nothing, is bound to the process capability n names: node t is a binding,
+    /// a child of n, the process's block has one reference more, counting t, and t's record names the
+    /// process. Nothing else changed.
+    pub open spec fn bound_to(pre: Self, post: Self, n: usize, t: usize) -> bool {
+        let p = pre.payload_of(n).base;
+        let br = BlockRef::Small(p / 4096);
+        let r = pre.threads.records@[t].value();
+        &&& pre.threads.records@.contains_key(t)
+        &&& r.process is None
+        &&& post.list.wf()
+        &&& post.list.is_child(n, t)
+        &&& post.list.parent@ == pre.list.parent@.insert(t, n)
+        &&& post.list.pages@.dom() == pre.list.pages@.dom()
+        &&& post.list.seq@[0] == pre.list.seq@[0]
+        &&& post.list.nodes@[t as int].live
+        &&& post.list.nodes@[t as int].kind is Binding
+        &&& forall|x: int| #![trigger post.list.nodes@[x]] 0 <= x < NODE_SPACE && x != t ==> {
+            &&& post.list.nodes@[x].live == pre.list.nodes@[x].live
+            &&& post.list.nodes@[x].kind == pre.list.nodes@[x].kind
+        }
+        &&& post.blocks.wf()
+        &&& blocks_refs_changed(&pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br))
+        &&& post.processes.records == pre.processes.records
+        &&& post.processes.spare == pre.processes.spare
+        &&& post.processes.holders == pre.processes.holders
+        &&& post.processes.bound@ == pre.processes.bound@.insert(p, pre.processes.bound@[p].insert(t))
+        &&& post.threads.holders == pre.threads.holders
+        &&& post.threads.records@.dom() == pre.threads.records@.dom()
+        &&& forall|x: usize| x != t && #[trigger] post.threads.records@.contains_key(x)
+            ==> post.threads.records@[x] == pre.threads.records@[x]
+        &&& post.threads.records@[t].addr() == pre.threads.records@[t].addr()
+        &&& post.threads.records@[t].is_init()
+        &&& post.threads.records@[t].value() == ThreadRecord {
+            state: r.state,
+            frame: r.frame,
+            pending_stop: r.pending_stop,
+            process: Some(p),
+        }
+        &&& post.holders == pre.holders
+        &&& post.tables == pre.tables
+        &&& post.frames == pre.frames
+        &&& post.zeroing == pre.zeroing
+        &&& post.cores == pre.cores
+        &&& post.devices == pre.devices
+        &&& post.flush_epoch == pre.flush_epoch
+        &&& post.tlb == pre.tlb
+        &&& post.iommus == pre.iommus
+        &&& post.mapped == pre.mapped
+        &&& post.stale_epoch == pre.stale_epoch
+        &&& post.table_pages == pre.table_pages
+        &&& post.spaces == pre.spaces
+        &&& post.mappings == pre.mappings
+    }
+
+    /// The kinds of node after a bind: the new node is a binding, outside every leaf, table page and
+    /// IO space, so no clause about capability, hidden, table or space nodes changes.
+    proof fn lemma_bind_nodes(pre: Self, post: Self, n: usize, t: usize)
+        requires
+            pre.wf(),
+            pre.is_cap(n),
+            !pre.list.nodes@[t as int].live,
+            Self::bound_to(pre, post, n, t),
+        ensures
+            forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x),
+            Self::caps_frame(pre, post, t, t),
+            post.tables.wf(&post.list),
+            post.tables.caps_wf(&post.list),
+            hidden_nodes_are_leaves(&post.list, &post.tables, &post.table_pages),
+            parents_are_capabilities(&post.list),
+            capability_nodes_are_slots(&post.list, &post.tables),
+            first_node_outside_leaves(&post.list, &post.tables),
+            leaf_slots_are_capabilities(&post.list, &post.tables),
+            table_nodes_are_mappings(&post.list, &post.table_pages),
+            space_nodes_dead(&post.list, &post.spaces),
+            devices_wf(&post.list, &post.tables, &post.devices),
+    {
+        pre.lemma_thread_node_apart(t);
+        pre.lemma_slot_bound(n);
+        assert(Self::caps_frame(pre, post, t, t));
+        assert forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x) by {
+            if x == t {
+                assert(!(post.list.nodes@[x as int].kind is Capability));
+            } else {
+                Self::lemma_caps_frame(pre, post, t, t, x);
+            }
+        }
+        pre.tables.lemma_wf_same_pages(&pre.list, &post.list);
+        assert forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) && !(post.tables.payload_of(x).kind is Device)
+            implies payload_wf(post.tables.payload_of(x)) by {
+            assert(pre.tables.is_cap(&pre.list, x));
+        }
+        assert forall|x: usize| x < NODE_SPACE && (#[trigger] post.list.nodes@[x as int]).live && post.list.nodes@[x as int].kind is Hidden
+            implies post.tables.owner@.contains_key(x) || post.table_pages.maps@.contains_key(x) by {
+            assert(x != t);
+            assert(pre.list.nodes@[x as int].live && pre.list.nodes@[x as int].kind is Hidden);
+        }
+        assert forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) && post.tables.attached(l) implies {
+            &&& l < NODE_SPACE
+            &&& post.list.nodes@[l as int].live
+            &&& post.list.nodes@[l as int].kind is Hidden
+        } by {
+            assert(l != t);
+            assert(pre.tables.owner@.contains_key(l) && pre.tables.attached(l));
+        }
+        lemma_parents_derived(pre.list, post.list, n, t);
+        assert forall|x: usize| x < NODE_SPACE && (#[trigger] post.list.nodes@[x as int]).live && post.list.nodes@[x as int].kind is Capability
+            && x != post.list.seq@[0] implies post.tables.is_cap(&post.list, x) by {
+            assert(x != t);
+            assert(pre.list.nodes@[x as int].live && pre.list.nodes@[x as int].kind is Capability);
+            assert(pre.tables.is_cap(&pre.list, x));
+        }
+        assert forall|x: usize| #[trigger] post.list.nodes@[x as int].live && post.tables.owner@.contains_key(page_of(x))
+            && x % 4096 != 0 && x % 4096 < NODES_PER_PAGE implies post.list.nodes@[x as int].kind is Capability by {
+            assert(x != t);
+            pre.lemma_slot_bound(x);
+            assert(pre.list.nodes@[x as int].live);
+        }
+        assert forall|u: usize, k: usize, i: usize| #![trigger table_node(u, k, i)]
+            post.table_pages.maps@.contains_key(u) && k < TABLE_NODE_PAGES && i < NODES_PER_PAGE && (k != 0 || i != 0)
+                && post.list.nodes@[table_node(u, k, i) as int].live
+            implies post.list.nodes@[table_node(u, k, i) as int].kind is Mapping by {
+            pre.lemma_table_node_in_block(u, k, i);
+            assert(table_node(u, k, i) != t);
+        }
+        assert forall|s: usize, k: usize, i: usize| #![trigger table_node(s, k, i)]
+            post.spaces.roots@.contains_key(s) && post.spaces.records@[s].value().kind is Io && k < TABLE_NODE_PAGES
+                && i < NODES_PER_PAGE
+            implies !post.list.nodes@[table_node(s, k, i) as int].live by {
+            pre.lemma_space_node_in_block(s, k, i);
+            assert(table_node(s, k, i) != t);
+        }
+        Self::lemma_devices_same_caps(pre, post);
+    }
+
+    /// The counted parts after a bind: the process's block has one reference more, counted among its
+    /// bindings, and no capability, holder, leaf, table page or mapping changed.
+    proof fn lemma_bind_objects(pre: Self, post: Self, n: usize, t: usize)
+        requires
+            pre.wf(),
+            pre.is_cap(n),
+            pre.payload_of(n).kind is Process,
+            !pre.list.nodes@[t as int].live,
+            block_refs(&pre.blocks, BlockRef::Small(pre.payload_of(n).base / 4096)) != usize::MAX,
+            Self::bound_to(pre, post, n, t),
+        ensures
+            holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
+            zeroing_typed(&post.zeroing, &post.blocks),
+            list_pages_used(&post.list, &post.blocks),
+            objects_wf(&post.tables, &post.blocks, post.holders@),
+            leaf_blocks_wf(&post.list, &post.tables, &post.blocks),
+            table_pages_wf(&post.list, &post.table_pages, &post.blocks),
+            spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
+            threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
+            processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
+            mappings_wf(&post.list, &post.tables, tree_of(&post.table_pages, &post.spaces), &post.blocks, post.holders@, post.mappings@),
+            bindings_wf(&post.list, &post.threads, &post.processes),
+            current_wf(post.cores@, post.threads.records@),
+    {
+        let p = pre.payload_of(n).base;
+        let br = BlockRef::Small(p / 4096);
+        let refs = (block_refs(&pre.blocks, br) + 1) as usize;
+        let dead = block_dead(&pre.blocks, br);
+        Self::lemma_bind_nodes(pre, post, n, t);
+        pre.lemma_thread_node_apart(t);
+        pre.lemma_process_cap(n);
+        assert forall|x: usize| x != t implies {
+            &&& #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x)
+            &&& pre.tables.is_cap(&pre.list, x) ==> post.tables.payload_of(x) == pre.tables.payload_of(x)
+        } by {
+            Self::lemma_caps_frame(pre, post, t, t, x);
+        }
+        assert(!pre.is_cap(t));
+        assert(!post.is_cap(t));
+        assert(same_mapping_nodes(&pre.list, &post.list));
+        assert(same_frames(&pre.list, &pre.tables, &post.list, &post.tables));
+        assert(same_spaces(&pre.list, &pre.tables, &post.list, &post.tables));
+        assert(same_threads(&pre.list, &pre.tables, &post.list, &post.tables));
+        assert(same_processes(&pre.list, &pre.tables, &post.list, &post.tables));
+        lemma_holders_same_frames(&pre.list, &pre.tables, &post.list, &post.tables, &pre.blocks, &pre.zeroing, pre.holders@);
+        assert(!pre.holders@.contains_key(br)) by {
+            if pre.holders@.contains_key(br) {
+                assert(pre.blocks.pages@[(p / 4096) as int].object is Frame);
+            }
+        }
+        lemma_holders_unkeyed_small_changed(&post.list, &post.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, p / 4096, refs, dead);
+        lemma_zeroing_typed_small_changed(&pre.zeroing, &pre.blocks, &post.blocks, p / 4096, refs, dead);
+        lemma_list_pages_used_same_kinds(&pre.list, &pre.blocks, &post.blocks);
+        assert(objects_wf(&post.tables, &pre.blocks, pre.holders@));
+        lemma_objects_unframed_block_changed(&post.tables, &pre.blocks, &post.blocks, pre.holders@, p / 4096, refs, dead);
+        assert forall|l: usize| #[trigger] pre.tables.owner@.contains_key(l) implies {
+            &&& post.list.nodes@[l as int].live == pre.list.nodes@[l as int].live
+            &&& post.list.nodes@[l as int].kind == pre.list.nodes@[l as int].kind
+        } by {
+            pre.tables.lemma_leaf(&pre.list, l);
+            pre.lemma_slot_bound(l);
+            assert(l != t);
+        }
+        assert(leaf_blocks_wf(&pre.list, &post.tables, &pre.blocks));
+        lemma_leaf_blocks_other_changed(&pre.list, &post.list, &post.tables, &pre.blocks, &post.blocks, pre.holders@, p / 4096, refs, dead);
+        assert forall|u: usize| #[trigger] pre.table_pages.maps@.contains_key(u) implies {
+            &&& post.list.nodes@[u as int].live == pre.list.nodes@[u as int].live
+            &&& post.list.nodes@[u as int].kind == pre.list.nodes@[u as int].kind
+        } by {
+            pre.lemma_table_page_valid(u);
+            assert(u != t);
+        }
+        lemma_table_pages_refs_changed(&pre.list, &post.list, &pre.table_pages, &pre.blocks, &post.blocks, br, refs, dead);
+        lemma_spaces_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks, &post.blocks, br, refs, dead);
+        lemma_threads_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks, &post.blocks, br, refs, dead);
+        lemma_threads_record_written(&post.list, &post.tables, &pre.threads, &post.threads, &post.blocks, t);
+        lemma_processes_same_caps(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks);
+        assert(!pre.processes.bound@[p].contains(t)) by {
+            if pre.processes.bound@[p].contains(t) {
+                assert(pre.threads.records@[t].value().process == Some(p));
+            }
+        }
+        lemma_processes_bound_added(&post.list, &post.tables, &pre.processes, &post.processes, &pre.blocks, &post.blocks, p, t);
+        assert forall|m: usize| #[trigger] pre.mappings@.contains_key(m) implies mapping_node_kept(
+            &pre.list, &pre.tables, &pre.blocks, pre.holders@, &post.list, &post.tables, &post.blocks, post.holders@, pre.mappings@[m].frame, m,
+        ) by {
+            pre.lemma_mapping_node(m);
+            let c = pre.list.parent@[m];
+            assert(m != t);
+            assert(c != t);
+            Self::lemma_caps_frame(pre, post, t, t, c);
+        }
+        Self::lemma_mappings_same_tree(pre, post);
+        lemma_bindings_bound(&pre.list, &post.list, &pre.threads, &post.threads, &pre.processes, &post.processes, t, p);
+        lemma_current_same(pre.cores@, post.cores@, pre.threads.records@, post.threads.records@);
+    }
+
+    /// Everything the invariant says after a bind.
+    proof fn lemma_bind_wf(pre: Self, post: Self, n: usize, t: usize)
+        requires
+            pre.wf(),
+            pre.is_cap(n),
+            pre.payload_of(n).kind is Process,
+            !pre.list.nodes@[t as int].live,
+            block_refs(&pre.blocks, BlockRef::Small(pre.payload_of(n).base / 4096)) != usize::MAX,
+            Self::bound_to(pre, post, n, t),
+        ensures
+            post.wf(),
+    {
+        Self::lemma_bind_nodes(pre, post, n, t);
+        Self::lemma_bind_objects(pre, post, n, t);
+        Self::lemma_tlb_same(pre, post);
+        assert(process_tables_wf(&post.tables, &post.processes));
+        assert(post.frames_wf());
+    }
+
+    /// Binds the thread whose control capability is at index i to the process whose capability is at
+    /// index j: node t, the first of the thread's node page, becomes a binding below that capability,
+    /// holding a reference on the process's block. The indices come from user space, so either can be
+    /// refused, as is a thread already bound, and a refusal changes nothing. See
+    /// design/process-holds-capabilities/.
+    pub fn bind_process(&mut self, root: usize, i: usize, j: usize) -> (ret: bool)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(root),
+        ensures
+            final(self).wf(),
+            ret == old(self).can_bind(root, i, j),
+            !ret ==> *final(self) == *old(self),
+            ret ==> Self::bound_to(
+                *old(self),
+                *final(self),
+                old(self).tables.node_of(root, j),
+                old(self).payload_of(old(self).tables.node_of(root, i)).base,
+            ),
+            ret ==> forall|r: usize, x: usize, k: usize| #[trigger] final(self).can_bind(r, x, k)
+                ==> final(self).payload_of(final(self).tables.node_of(r, x)).base
+                    != old(self).payload_of(old(self).tables.node_of(root, i)).base,
+            ret ==> !final(self).can_delete(root, j),
+            discharges(old(self).view(), final(self).view(), root, Effect::Local),
+    {
+        let ghost pre = *old(self);
+        proof {
+            pre.lemma_no_op_discharges(root);
+        }
+        let (c, t) = match self.thread_control(root, i) {
+            Some(found) => found,
+            None => { return false; },
+        };
+        let (n, cap) = match self.tables.lookup(&self.list, root, j) {
+            Some(found) => found,
+            None => { return false; },
+        };
+        let node = self.list.get(n);
+        let live_cap = match node.kind {
+            NodeKind::Capability => node.live,
+            _ => false,
+        };
+        if !live_cap {
+            return false;
+        }
+        proof {
+            self.lemma_slot(root, j);
+            assert(self.tables.is_cap(&self.list, n));
+            assert(cap == self.payload_of(n));
+        }
+        let process = match cap.kind {
+            CapKind::Process => true,
+            _ => false,
+        };
+        if !process || cap.rights & 128 == 0 || node.depth >= MAX_DEPTH {
+            return false;
+        }
+        proof {
+            assert(right_bit(Right::Control) == 128);
+            self.lemma_process_cap(n);
+            self.lemma_thread_node_apart(t);
+        }
+        if self.list.get(t).live {
+            return false;
+        }
+        let p = cap.base;
+        if !add_block_ref(&mut self.blocks, BlockRef::Small(p / 4096)) {
+            return false;
+        }
+        proof {
+            pre.list.lemma_seq_fits();
+            pre.lemma_slot_bound(n);
+        }
+        self.list.derive(n, t, NodeKind::Binding);
+        let ptr = PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * 4096);
+        let record = *ptr.borrow(Tracked(self.threads.records.borrow().tracked_borrow(t)));
+        let tracked mut perm;
+        proof {
+            perm = self.threads.records.borrow_mut().tracked_remove(t);
+        }
+        ptr.write(Tracked(&mut perm), ThreadRecord {
+            state: record.state,
+            frame: record.frame,
+            pending_stop: record.pending_stop,
+            process: Some(p),
+        });
+        proof {
+            self.threads.records.borrow_mut().tracked_insert(t, perm);
+            assert(self.threads.records@.dom() =~= pre.threads.records@.dom());
+        }
+        self.processes.bound = Ghost(pre.processes.bound@.insert(p, pre.processes.bound@[p].insert(t)));
+        proof {
+            let post = *self;
+            assert(pre.threads.records@[t].value().process is None) by {
+                if pre.threads.records@[t].value().process is Some {
+                    assert(pre.list.nodes@[t as int].live);
+                }
+            }
+            assert(Self::bound_to(pre, post, n, t));
+            Self::lemma_bind_wf(pre, post, n, t);
+            Self::lemma_leaf_added_discharges(pre, post, root, n, t);
+            assert forall|r: usize, x: usize, k: usize| #[trigger] post.can_bind(r, x, k)
+                implies post.payload_of(post.tables.node_of(r, x)).base != t by {
+                assert(post.list.nodes@[t as int].live);
+            }
+            post.lemma_parent_undeletable(root, j, t);
         }
         true
     }

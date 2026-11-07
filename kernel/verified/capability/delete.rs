@@ -114,6 +114,7 @@ impl CapKernel {
             assert(Self::caps_frame(pre, post, n, n));
             Self::lemma_delete_caps_wf(pre, post, n);
             Self::lemma_hidden_frame(pre, post, n, n);
+            Self::lemma_bindings_caps_frame(pre, post, n, n);
             Self::lemma_delete_holders(pre, post, n);
             let p = choose|p: int| 0 <= p < pre.list.seq@.len() && pre.list.seq@[p] == n
                 && post.list.seq@ == pre.list.seq@.remove(p);
@@ -208,6 +209,7 @@ impl CapKernel {
                 &&& post.threads == pre.threads
                 &&& post.processes.records == pre.processes.records
                 &&& post.processes.spare == pre.processes.spare
+                &&& post.processes.bound == pre.processes.bound
                 &&& post.processes.holders@ == pre.processes.holders@.insert(p, pre.processes.holders@[p].remove(n))
             },
             !(pre.is_cap(n) && (pre.payload_of(n).kind is Frame || pre.payload_of(n).kind is Space || pre.payload_of(n).kind is Thread
@@ -500,6 +502,33 @@ impl CapKernel {
         assert forall|o: ObjectId| #[trigger] (b.contents)(o) == (a.contents)(o) by {}
         assert(removes_cap(a, b, root, n));
         lemma_removes_cap_discharges(a, b, root, n);
+    }
+
+    /// A capability with a child, such as a process capability with a thread's binding below it, is not
+    /// deleted: delete takes only a childless capability.
+    pub proof fn lemma_parent_undeletable(&self, root: usize, i: usize, c: usize)
+        requires
+            self.wf(),
+            self.list.is_child(self.tables.node_of(root, i), c),
+        ensures
+            !self.can_delete(root, i),
+    {
+        let n = self.tables.node_of(root, i);
+        if self.can_delete(root, i) {
+            self.lemma_slot(root, i);
+            self.lemma_slot_bound(n);
+            let s = self.list.seq@;
+            assert(has(s, n));
+            lemma_has(s, n);
+            let j = choose|j: int| 0 <= j < s.len() && s[j] == n;
+            self.list.lemma_link(j);
+            if j + 1 < s.len() {
+                self.list.lemma_link(j + 1);
+                assert(s[j + 1] != NONE);
+            }
+            self.list.lemma_no_child(n, j);
+            assert(!self.list.is_child(n, c));
+        }
     }
 }
 

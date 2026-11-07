@@ -428,6 +428,7 @@ impl CapKernel {
             Self::lemma_hidden_frame(pre, post, child, child);
             Self::lemma_table_nodes_caps_frame(pre, post, child, child);
             Self::lemma_space_nodes_caps_frame(pre, post, child, child);
+            Self::lemma_bindings_caps_frame(pre, post, child, child);
             Self::lemma_retype_holders(pre, post, child, base, order);
             lemma_parents_derived(pre.list, post.list, parent, child);
             Self::lemma_tlb_same(pre, post);
@@ -866,6 +867,12 @@ impl CapKernel {
             Self::lemma_leaf_slots(pre, post, base);
             Self::lemma_table_nodes_frame(pre, post, base, base);
             Self::lemma_space_nodes_frame(pre, post, base, base);
+            assert forall|x: usize| x < NODE_SPACE && #[trigger] post.list.valid(x) && !pre.list.valid(x) && x != base
+                implies !(post.list.nodes@[x as int].live && post.list.nodes@[x as int].kind is Binding) by {
+                assert(page_of(x) == base);
+            }
+            lemma_same_bindings_frame(&pre.list, &post.list, base, base);
+            lemma_bindings_kept(&pre.list, &post.list, &pre.threads, &post.threads, &pre.processes, &post.processes);
             assert forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x) by {
                 Self::lemma_leaf_cap(pre, post, base, x);
             }

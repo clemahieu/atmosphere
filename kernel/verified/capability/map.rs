@@ -1182,7 +1182,7 @@ impl CapKernel {
         proof {
             assert(Self::map_written(pre, *self, t, e, f, frame, large));
             Self::lemma_map_wf(pre, *self, t, e, f, frame, large);
-            Self::lemma_map_discharges(pre, *self, root, f, node);
+            Self::lemma_leaf_added_discharges(pre, *self, root, f, node);
         }
         true
     }
@@ -1982,6 +1982,17 @@ impl CapKernel {
         assert(mapped_wf(post.mapped@, post.mappings@));
         assert(post.frames_wf());
         Self::lemma_map_space_nodes(pre, post, t, e, f, frame, large);
+        let node = mapping_node(t, e);
+        assert forall|x: usize| x < NODE_SPACE implies
+            ((#[trigger] post.list.nodes@[x as int]).live && post.list.nodes@[x as int].kind is Binding)
+                == (pre.list.nodes@[x as int].live && pre.list.nodes@[x as int].kind is Binding) by {
+            if x != node {
+                assert(post.list.nodes@[x as int].live == pre.list.nodes@[x as int].live);
+                assert(post.list.nodes@[x as int].kind == pre.list.nodes@[x as int].kind);
+            }
+        }
+        assert(same_bindings(&pre.list, &post.list));
+        lemma_bindings_same(&pre.list, &post.list, &pre.threads, &pre.processes);
     }
 
     /// The node a map makes lives in its table page's block, so every IO space's node pages stay dead.
@@ -2017,15 +2028,15 @@ impl CapKernel {
         }
     }
 
-    /// A mapping node is no capability, so what the view reads of capabilities stands, and its parent
-    /// link reaches nothing: a local step.
-    proof fn lemma_map_discharges(pre: Self, post: Self, root: usize, f: usize, node: usize)
+    /// A node added that is no capability, such as a mapping or a binding, leaves what the view reads
+    /// of capabilities, and its parent link reaches nothing: a local step.
+    pub proof fn lemma_leaf_added_discharges(pre: Self, post: Self, root: usize, f: usize, node: usize)
         requires
             pre.wf(),
             post.tables == pre.tables,
             node < NODE_SPACE,
             !pre.list.nodes@[node as int].live,
-            post.list.nodes@[node as int].kind is Mapping,
+            !(post.list.nodes@[node as int].kind is Capability),
             post.list.parent@ == pre.list.parent@.insert(node, f),
             forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < NODE_SPACE && i != node ==> {
                 &&& post.list.nodes@[i].live == pre.list.nodes@[i].live

@@ -57,6 +57,9 @@ pub struct Processes {
     /// Pages 2 to 4 of each process's block, by their own addresses.
     pub spare: Tracked<Map<usize, PagePerm4k>>,
     pub holders: Ghost<IMap<usize, Set<usize>>>,
+    /// The threads bound to each process, each through a binding node holding a reference to its
+    /// block.
+    pub bound: Ghost<IMap<usize, Set<usize>>>,
 }
 
 impl Processes {
@@ -65,8 +68,14 @@ impl Processes {
             ret.records@ == Map::<usize, PointsTo<ProcessRecord>>::empty(),
             ret.spare@ == Map::<usize, PagePerm4k>::empty(),
             ret.holders@ == IMap::<usize, Set<usize>>::empty(),
+            ret.bound@ == IMap::<usize, Set<usize>>::empty(),
     {
-        Processes { records: Tracked(Map::tracked_empty()), spare: Tracked(Map::tracked_empty()), holders: Ghost(IMap::empty()) }
+        Processes {
+            records: Tracked(Map::tracked_empty()),
+            spare: Tracked(Map::tracked_empty()),
+            holders: Ghost(IMap::empty()),
+            bound: Ghost(IMap::empty()),
+        }
     }
 }
 
@@ -105,7 +114,7 @@ pub proof fn lemma_blocks_apart(p: usize, q: usize)
 }
 
 /// The process at p has its record and its spare pages. Its block's references are exactly its
-/// holders, and it is dead at once when they go.
+/// holders and the threads bound to it, and it is dead at once when they go.
 pub open spec fn process_wf(processes: &Processes, blocks: &BlockTable, p: usize) -> bool {
     &&& p % 32768 == 0
     &&& p / 4096 + 8 <= NUM_PAGES
@@ -119,7 +128,9 @@ pub open spec fn process_wf(processes: &Processes, blocks: &BlockTable, p: usize
     &&& blocks.pages@[(p / 4096) as int].order == 3
     &&& processes.holders@.contains_key(p)
     &&& processes.holders@[p].finite()
-    &&& processes.holders@[p].len() == blocks.pages@[(p / 4096) as int].refs
+    &&& processes.bound@.contains_key(p)
+    &&& processes.bound@[p].finite()
+    &&& processes.holders@[p].len() + processes.bound@[p].len() == blocks.pages@[(p / 4096) as int].refs
     &&& blocks.pages@[(p / 4096) as int].refs == 0 ==> blocks.pages@[(p / 4096) as int].dead
 }
 
@@ -352,6 +363,129 @@ pub proof fn lemma_processes_small_freed(
     }
 }
 
+/// The processes after thread t's binding to p comes, with one more reference on p's block.
+pub proof fn lemma_processes_bound_added(
+    list: &Tree,
+    tables: &Tables,
+    a: &Processes,
+    b: &Processes,
+    ba: &BlockTable,
+    bb: &BlockTable,
+    p: usize,
+    t: usize,
+)
+    requires
+        processes_wf(list, tables, a, ba),
+        a.records@.contains_key(p),
+        !a.bound@[p].contains(t),
+        b.records == a.records,
+        b.spare == a.spare,
+        b.holders == a.holders,
+        b.bound@ == a.bound@.insert(p, a.bound@[p].insert(t)),
+        block_refs(ba, BlockRef::Small(p / 4096)) < usize::MAX,
+        blocks_refs_changed(
+            ba,
+            bb,
+            BlockRef::Small(p / 4096),
+            (block_refs(ba, BlockRef::Small(p / 4096)) + 1) as usize,
+            block_dead(ba, BlockRef::Small(p / 4096)),
+        ),
+    ensures
+        processes_wf(list, tables, b, bb),
+{
+    let br = BlockRef::Small(p / 4096);
+    assert(process_wf(a, ba, p));
+    vstd::set::lemma_set_insert_len(a.bound@[p], t);
+    assert forall|u: usize| #[trigger] b.records@.contains_key(u) implies process_wf(b, bb, u) by {
+        assert(process_wf(a, ba, u));
+        if u != p {
+            lemma_table_pages_distinct(u, p);
+            let x = BlockRef::Small(u / 4096);
+            assert(block_typed(ba, x));
+            assert(x != br);
+            assert(block_refs(bb, x) == block_refs(ba, x));
+            assert(block_dead(bb, x) == block_dead(ba, x));
+            assert(b.bound@[u] == a.bound@[u]);
+        }
+    }
+    assert forall|x: usize| x < NUM_PAGES && #[trigger] process_block(bb, x) implies b.records@.contains_key((x * 4096) as usize) by {
+        assert(process_block(ba, x));
+    }
+    assert forall|n: usize| #[trigger] tables.is_cap(list, n) && tables.payload_of(n).kind is Process implies {
+        &&& b.records@.contains_key(tables.payload_of(n).base)
+        &&& b.holders@[tables.payload_of(n).base].contains(n)
+        &&& tables.payload_of(n).order == PROCESS_ORDER
+    } by {}
+    assert forall|u: usize, n: usize| b.records@.contains_key(u) && #[trigger] b.holders@[u].contains(n) implies {
+        &&& tables.is_cap(list, n)
+        &&& tables.payload_of(n).kind is Process
+        &&& tables.payload_of(n).base == u
+    } by {
+        assert(a.holders@[u].contains(n));
+    }
+}
+
+/// The processes after thread t's binding to p goes, taking its reference on p's block with it.
+pub proof fn lemma_processes_bound_dropped(
+    list: &Tree,
+    tables: &Tables,
+    a: &Processes,
+    b: &Processes,
+    ba: &BlockTable,
+    bb: &BlockTable,
+    p: usize,
+    t: usize,
+)
+    requires
+        processes_wf(list, tables, a, ba),
+        a.records@.contains_key(p),
+        a.bound@[p].contains(t),
+        b.records == a.records,
+        b.spare == a.spare,
+        b.holders == a.holders,
+        b.bound@ == a.bound@.insert(p, a.bound@[p].remove(t)),
+        blocks_refs_changed(
+            ba,
+            bb,
+            BlockRef::Small(p / 4096),
+            (block_refs(ba, BlockRef::Small(p / 4096)) - 1) as usize,
+            block_dead(ba, BlockRef::Small(p / 4096)) || block_refs(ba, BlockRef::Small(p / 4096)) == 1,
+        ),
+    ensures
+        processes_wf(list, tables, b, bb),
+{
+    let br = BlockRef::Small(p / 4096);
+    assert(process_wf(a, ba, p));
+    vstd::set::lemma_set_remove_len(a.bound@[p], t);
+    assert forall|u: usize| #[trigger] b.records@.contains_key(u) implies process_wf(b, bb, u) by {
+        assert(process_wf(a, ba, u));
+        if u != p {
+            lemma_table_pages_distinct(u, p);
+            let x = BlockRef::Small(u / 4096);
+            assert(block_typed(ba, x));
+            assert(x != br);
+            assert(block_refs(bb, x) == block_refs(ba, x));
+            assert(block_dead(bb, x) == block_dead(ba, x));
+            assert(b.bound@[u] == a.bound@[u]);
+        }
+    }
+    assert forall|x: usize| x < NUM_PAGES && #[trigger] process_block(bb, x) implies b.records@.contains_key((x * 4096) as usize) by {
+        assert(process_block(ba, x));
+    }
+    assert forall|n: usize| #[trigger] tables.is_cap(list, n) && tables.payload_of(n).kind is Process implies {
+        &&& b.records@.contains_key(tables.payload_of(n).base)
+        &&& b.holders@[tables.payload_of(n).base].contains(n)
+        &&& tables.payload_of(n).order == PROCESS_ORDER
+    } by {}
+    assert forall|u: usize, n: usize| b.records@.contains_key(u) && #[trigger] b.holders@[u].contains(n) implies {
+        &&& tables.is_cap(list, n)
+        &&& tables.payload_of(n).kind is Process
+        &&& tables.payload_of(n).base == u
+    } by {
+        assert(a.holders@[u].contains(n));
+    }
+}
+
 impl CapKernel {
     /// A process capability names a process, whose block holds its reference, lies in no typed region
     /// and so is read as the small block at its base.
@@ -403,6 +537,7 @@ impl CapKernel {
             ),
             post.processes.records == pre.processes.records,
             post.processes.spare == pre.processes.spare,
+            post.processes.bound == pre.processes.bound,
             post.processes.holders@ == pre.processes.holders@.insert(p, pre.processes.holders@[p].insert(n)),
         ensures
             processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
@@ -474,6 +609,7 @@ impl CapKernel {
             ),
             post.processes.records == pre.processes.records,
             post.processes.spare == pre.processes.spare,
+            post.processes.bound == pre.processes.bound,
             post.processes.holders@ == pre.processes.holders@.insert(p, pre.processes.holders@[p].remove(n)),
         ensures
             processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
@@ -774,6 +910,7 @@ impl CapKernel {
             spare_kept(&post.processes, base, 3),
             spare_kept(&post.processes, base, 4),
             post.processes.holders@ == pre.processes.holders@.insert(base, set![child]),
+            post.processes.bound@ == pre.processes.bound@.insert(base, Set::<usize>::empty()),
             !pre.list.nodes@[child as int].live,
             post.is_cap(child),
             post.payload_of(child) == process_of(base),
@@ -803,6 +940,8 @@ impl CapKernel {
             if p == base {
                 assert(pb.holders@[base] == set![child]);
                 assert(pb.holders@[base].finite());
+                assert(pb.bound@[base] == Set::<usize>::empty());
+                assert(pb.bound@[base].len() == 0);
             } else {
                 assert(pa.records@.contains_key(p));
                 assert(process_wf(pa, a, p));
@@ -813,6 +952,7 @@ impl CapKernel {
                 assert(b.pages@[x] == a.pages@[x]);
                 assert(pb.records@[p] == pa.records@[p]);
                 assert(pb.holders@[p] == pa.holders@[p]);
+                assert(pb.bound@[p] == pa.bound@[p]);
                 lemma_blocks_apart(p, base);
                 assert(spare_kept(pa, p, 2));
                 assert(spare_kept(pa, p, 3));
@@ -1070,6 +1210,7 @@ impl CapKernel {
             Payload { kind: CapKind::Process, order: PROCESS_ORDER, rights: PROCESS_RIGHTS, base, badge: 0, reserved: 0 },
         );
         self.processes.holders = Ghost(pre.processes.holders@.insert(base, set![child]));
+        self.processes.bound = Ghost(pre.processes.bound@.insert(base, Set::<usize>::empty()));
         self.spaces.holders = Ghost(pre.spaces.holders@.insert(base, Set::<usize>::empty()));
         self.spaces.bound = Ghost(pre.spaces.bound@.insert(base, Set::<usize>::empty()));
         proof {
@@ -1167,6 +1308,8 @@ impl CapKernel {
                     assert(pre.processes.records@.contains_key(p));
                 }
             }
+            lemma_binding_nodes_grown(pre.list, mid, post.list, child, child);
+            lemma_bindings_kept(&pre.list, &post.list, &pre.threads, &post.threads, &pre.processes, &post.processes);
             assert(post.wf());
             assert(PROCESS_RIGHTS & 128 != 0) by (compute_only);
             assert(right_bit(Right::Control) == 128);

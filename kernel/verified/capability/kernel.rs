@@ -1130,6 +1130,7 @@ impl CapKernel {
         &&& processes_wf(&self.list, &self.tables, &self.processes, &self.blocks)
         &&& process_tables_wf(&self.tables, &self.processes)
         &&& current_wf(self.cores@, self.threads.records@)
+        &&& bindings_wf(&self.list, &self.threads, &self.processes)
         &&& table_links_wf(tree_of(&self.table_pages, &self.spaces))
         &&& mapped_wf(self.mapped@, self.mappings@)
         &&& mappings_wf(&self.list, &self.tables, tree_of(&self.table_pages, &self.spaces), &self.blocks, self.holders@, self.mappings@)
