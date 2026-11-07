@@ -14,7 +14,7 @@ Every line in the tree and every dependency is under an OSI-listed copy-permissi
 
 The rule covers reading, not only copying. Never open, fetch, grep or summarise such code; it would taint the tree. Before reading any external source for the first time, check its license and record the source and the license on the issue.
 
-Known allowed: this tree; crates.io dependencies with a permissive license field; Verus and vstd (MIT); Rust std (MIT or Apache-2.0); DragonFly HAMMER2 (BSD-3; copy at `~/sel4/reference/hammer2`, design document at `~/sel4/hammer2.src/main/docs/DESIGN`, usable for design only); Redox (MIT); edk2 and OVMF (BSD-2-Clause-Patent); published specifications (copies under `~/sel4/reference`, indexed by its `SOURCES.md`).
+Known allowed: this tree; crates.io dependencies with a permissive license field; Verus and vstd (MIT); Rust std (MIT or Apache-2.0); DragonFly HAMMER2 (BSD-3; copy at `~/atmosphere.src/reference/hammer2`, design document at `sys/vfs/hammer2/DESIGN` in it, usable for design only); Redox (MIT); edk2 and OVMF (BSD-2-Clause-Patent); published specifications (copies under `~/atmosphere.src/reference`, beside the worktrees and in no tree, indexed by its `SOURCES.md`).
 
 Known forbidden: Linux; the seL4 kernel at `~/sel4/sel4.src`; GRUB; the QEMU, gdb and binutils sources; ZFS; anything Windows. Running a GPL tool (QEMU, gdb, binutils) is allowed; shipping or reading its code is not.
 
