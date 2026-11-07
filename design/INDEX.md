@@ -2,7 +2,7 @@
 
 # Design decisions
 
-12 records: 12 active, 0 superseded.
+13 records: 13 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -28,6 +28,9 @@ in `revisit if` what would make it worth reopening.
 - **[one-kernel-instance](./one-kernel-instance/DECISION.md)** (2026-11-05): One kernel instance holds every core of the machine and a process lives inside it; the kernel provides no spanning. Four rules keep a later move to several instances cheap, and breaking one is the human's decision.
   - *confidence:* A staging judgement on top of the multicore shape. That one instance pays almost nothing for the node concept is reasoned from the code, not measured: finding the instance is one per-CPU load and no syscall path gains a check.
   - *revisit if:* Lock contention measured on this kernel is one a real workload would hit, a workload needs distrusting programs separated from the shared lock's timing, or a change would break one of the four rules.
+- **[one-lock-bounded-steps](./one-lock-bounded-steps/DECISION.md)** (2026-11-06): All of the Kernel value is under one lock with IF clear from entry to exit; every operation does a bounded amount of work and long work returns again with progress in an object, so the invariant holds at every step boundary and other cores interleave only there; per-CPU state outside the lock is only stacks, GDT, TSS and the switch decision, and only core c writes its own current thread.
+  - *confidence:* The non-preemptible rule is in the tree since the interrupt change that made it true; the per-CPU split is stated in kernel/verified/capability/kernel.rs; the budget's value is unmeasured.
+  - *revisit if:* The bounded-step budget measured on this kernel gives a lock hold time a workload cannot tolerate, which is the case for a smaller node rather than for preemption.
 - **[process-holds-capabilities](./process-holds-capabilities/DECISION.md)** (2026-11-06): Capabilities belong to a process, not a thread; its table is a root of 512 pointers in the process object and leaves of 127 slots retyped on demand; no capability names a table and no table holds a table, so the capability graph has no cycles and lookup is constant time.
   - *confidence:* A structural choice; the no-cycles property it buys is what rules out the delete-cascade problem Nevill's thesis describes, and the table invariant is proven in kernel/verified/capability/table.rs.
   - *revisit if:* Threads in one process need distinct authority, or a process needs more slots than the two levels give, or a table must be passed as a capability.
@@ -54,14 +57,14 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `abi`: one-kernel-instance
 - `address-space`: address-spaces-as-objects
 - `capability`: address-spaces-as-objects, capability-names-a-block, process-holds-capabilities, revoke-by-depth-first-list, sharing-by-derive, teardown-driven-by-retype, theorem-over-reach, untyped-memory
-- `kernel-state`: multicore-kernel-shape, one-kernel-instance
+- `kernel-state`: multicore-kernel-shape, one-kernel-instance, one-lock-bounded-steps
 - `lifetime`: sharing-by-derive, teardown-driven-by-retype
-- `lock`: flush-without-waiting, multicore-kernel-shape
+- `lock`: flush-without-waiting, multicore-kernel-shape, one-lock-bounded-steps
 - `memory`: address-spaces-as-objects, capability-names-a-block, flush-without-waiting, teardown-driven-by-retype, untyped-memory
-- `multicore`: flush-without-waiting, multicore-kernel-shape, one-kernel-instance
+- `multicore`: flush-without-waiting, multicore-kernel-shape, one-kernel-instance, one-lock-bounded-steps
 - `process`: process-holds-capabilities
 - `proof`: isolation-claim, theorem-over-reach
 - `purity`: untyped-memory
 - `revoke`: revoke-by-depth-first-list, sharing-by-derive, teardown-driven-by-retype
 - `security`: isolation-claim, theorem-over-reach
-- `verified`: flush-without-waiting, revoke-by-depth-first-list, theorem-over-reach
+- `verified`: flush-without-waiting, one-lock-bounded-steps, revoke-by-depth-first-list, theorem-over-reach
