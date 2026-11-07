@@ -1359,4 +1359,263 @@ impl CapKernel {
     }
 }
 
+impl CapKernel {
+    /// Index i of the table at root holds a capability with the control right naming a thread.
+    pub open spec fn can_control(&self, root: usize, i: usize) -> bool {
+        let n = self.tables.node_of(root, i);
+        &&& self.tables.has_slot(root, i)
+        &&& self.is_cap(n)
+        &&& self.payload_of(n).kind is Thread
+        &&& self.payload_of(n).rights & right_bit(Right::Control) != 0
+    }
+
+    /// The thread that capability names, which must be Inactive for its registers to be read or
+    /// written: only its core touches a Running thread's frame.
+    pub open spec fn can_set_registers(&self, root: usize, i: usize) -> bool {
+        &&& self.can_control(root, i)
+        &&& self.threads.records@[self.payload_of(self.tables.node_of(root, i)).base].value().state is Inactive
+    }
+
+    /// The step wrote thread t's saved frame and nothing else.
+    pub open spec fn frame_written(pre: Self, post: Self, t: usize, frame: Registers) -> bool {
+        &&& post.list == pre.list
+        &&& post.tables == pre.tables
+        &&& post.blocks == pre.blocks
+        &&& post.holders == pre.holders
+        &&& post.mappings == pre.mappings
+        &&& post.table_pages == pre.table_pages
+        &&& post.zeroing == pre.zeroing
+        &&& post.frames == pre.frames
+        &&& post.spaces == pre.spaces
+        &&& post.mapped == pre.mapped
+        &&& post.stale_epoch == pre.stale_epoch
+        &&& post.flush_epoch == pre.flush_epoch
+        &&& post.iommus == pre.iommus
+        &&& post.devices == pre.devices
+        &&& post.tlb == pre.tlb
+        &&& post.cores == pre.cores
+        &&& post.threads.holders == pre.threads.holders
+        &&& post.threads.records@.dom() == pre.threads.records@.dom()
+        &&& forall|x: usize| x != t && #[trigger] post.threads.records@.contains_key(x)
+            ==> post.threads.records@[x] == pre.threads.records@[x]
+        &&& post.threads.records@[t].addr() == pre.threads.records@[t].addr()
+        &&& post.threads.records@[t].is_init()
+        &&& post.threads.records@[t].value() == ThreadRecord {
+            state: pre.threads.records@[t].value().state,
+            frame,
+            pending_stop: pre.threads.records@[t].value().pending_stop,
+        }
+    }
+
+    /// Finds the thread the control capability at index i names. The index comes from user space.
+    fn thread_control(&self, root: usize, i: usize) -> (ret: Option<(usize, usize)>)
+        requires
+            self.wf(),
+            self.tables.roots@.contains_key(root),
+        ensures
+            ret is Some == self.can_control(root, i),
+            ret is Some ==> {
+                let (n, t) = ret->0;
+                &&& n == self.tables.node_of(root, i)
+                &&& t == self.payload_of(n).base
+                &&& self.threads.records@.contains_key(t)
+                &&& thread_wf(&self.list, &self.threads, &self.blocks, t)
+                &&& self.view().holds_right(root, n, Right::Control)
+                &&& self.view().names[n] == t
+            },
+    {
+        let (n, payload) = match self.tables.lookup(&self.list, root, i) {
+            Some(found) => found,
+            None => { return None; },
+        };
+        let node = self.list.get(n);
+        let live_cap = match node.kind {
+            NodeKind::Capability => node.live,
+            _ => false,
+        };
+        if !live_cap {
+            return None;
+        }
+        proof {
+            self.lemma_slot(root, i);
+            assert(self.tables.is_cap(&self.list, n));
+            assert(payload == self.payload_of(n));
+        }
+        let thread = match payload.kind {
+            CapKind::Thread => true,
+            _ => false,
+        };
+        if !thread || payload.rights & 128 == 0 {
+            return None;
+        }
+        proof {
+            assert(right_bit(Right::Control) == 128);
+            self.lemma_thread_cap(n);
+            assert(thread_wf(&self.list, &self.threads, &self.blocks, payload.base));
+        }
+        Some((n, payload.base))
+    }
+
+    /// Reads the saved frame of the Inactive thread named at index i, through its control capability.
+    /// The index comes from user space, so it can be refused.
+    pub fn read_registers(&self, root: usize, i: usize) -> (ret: Option<Registers>)
+        requires
+            self.wf(),
+            self.tables.roots@.contains_key(root),
+        ensures
+            ret is Some == self.can_set_registers(root, i),
+            ret is Some ==> {
+                let n = self.tables.node_of(root, i);
+                let t = self.payload_of(n).base;
+                &&& self.threads.records@.contains_key(t)
+                &&& ret->0 == self.threads.records@[t].value().frame
+                &&& discharges(self.view(), self.view(), root, Effect::Control { cap: n, thread: t })
+            },
+    {
+        let (n, t) = match self.thread_control(root, i) {
+            Some(found) => found,
+            None => { return None; },
+        };
+        let record = *PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * 4096).borrow(
+            Tracked(self.threads.records.borrow().tracked_borrow(t)),
+        );
+        match record.state {
+            ThreadState::Inactive => Some(record.frame),
+            _ => None,
+        }
+    }
+
+    /// Writes the saved frame of the Inactive thread named at index i, through its control capability,
+    /// as user_frame makes it. The index and the frame come from user space, so either can be refused,
+    /// and a refusal changes nothing.
+    pub fn write_registers(&mut self, root: usize, i: usize, frame: Registers) -> (ret: bool)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(root),
+        ensures
+            final(self).wf(),
+            ret == (old(self).can_set_registers(root, i) && user_rip(frame.rip)),
+            !ret ==> *final(self) == *old(self),
+            ret ==> {
+                let n = old(self).tables.node_of(root, i);
+                let t = old(self).payload_of(n).base;
+                &&& old(self).threads.records@.contains_key(t)
+                &&& Self::frame_written(*old(self), *final(self), t, user_frame(frame))
+                &&& discharges(old(self).view(), final(self).view(), root, Effect::Control { cap: n, thread: t })
+            },
+    {
+        let ghost pre = *self;
+        if frame.rip >= USER_RIP_END {
+            return false;
+        }
+        let (n, t) = match self.thread_control(root, i) {
+            Some(found) => found,
+            None => { return false; },
+        };
+        let ptr = PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * 4096);
+        let record = *ptr.borrow(Tracked(self.threads.records.borrow().tracked_borrow(t)));
+        match record.state {
+            ThreadState::Inactive => {},
+            _ => { return false; },
+        }
+        let tracked mut perm;
+        proof {
+            perm = self.threads.records.borrow_mut().tracked_remove(t);
+        }
+        ptr.write(Tracked(&mut perm), ThreadRecord {
+            state: record.state,
+            frame: user_frame_of(frame),
+            pending_stop: record.pending_stop,
+        });
+        proof {
+            self.threads.records.borrow_mut().tracked_insert(t, perm);
+            let post = *self;
+            assert(post.threads.records@.dom() =~= pre.threads.records@.dom());
+            assert(Self::frame_written(pre, post, t, user_frame(frame)));
+            lemma_current_same(pre.cores@, post.cores@, pre.threads.records@, post.threads.records@);
+            Self::lemma_switch_wf(pre, post, 0, t);
+            assert(post.view() == pre.view());
+        }
+        true
+    }
+}
+
+/// The selectors a thread returns to user mode with: the GDT's user code and data entries, 4 and 3,
+/// at privilege 3. See kernel/src/gdt/.
+pub const USER_CS: u64 = 0x23;
+pub const USER_SS: u64 = 0x1b;
+
+/// The flags a written frame keeps: those user mode can set itself with popf (carry, parity, adjust,
+/// zero, sign, trap, direction, overflow, alignment check, ID), without nested task.
+pub const USER_FLAGS: u64 = 0x24_0fd5;
+
+/// The flags a written frame always has: interrupts enabled and the reserved bit 1.
+pub const FORCED_FLAGS: u64 = 0x202;
+
+/// The first address past user space. A frame returning to a non-canonical rip would fault in the
+/// kernel's iretq, so a write refuses any rip at or past it.
+pub const USER_RIP_END: u64 = 0x8000_0000_0000;
+
+pub open spec fn user_rip(rip: u64) -> bool {
+    rip < USER_RIP_END
+}
+
+fn user_frame_of(f: Registers) -> (ret: Registers)
+    ensures
+        ret == user_frame(f),
+{
+    Registers {
+        r15: f.r15,
+        r14: f.r14,
+        r13: f.r13,
+        r12: f.r12,
+        rbp: f.rbp,
+        rbx: f.rbx,
+        r11: f.r11,
+        r10: f.r10,
+        r9: f.r9,
+        r8: f.r8,
+        rcx: f.rcx,
+        rdx: f.rdx,
+        rsi: f.rsi,
+        rdi: f.rdi,
+        rax: f.rax,
+        error_code: f.error_code,
+        rip: f.rip,
+        cs: USER_CS,
+        flags: (f.flags & USER_FLAGS) | FORCED_FLAGS,
+        rsp: f.rsp,
+        ss: USER_SS,
+    }
+}
+
+/// A frame a controller wrote, as the thread will return to user mode with it: the selectors are
+/// user mode's and the flags only those user mode could set, so the write grants no privilege. See
+/// design/process-holds-capabilities/.
+pub open spec fn user_frame(f: Registers) -> Registers {
+    Registers {
+        r15: f.r15,
+        r14: f.r14,
+        r13: f.r13,
+        r12: f.r12,
+        rbp: f.rbp,
+        rbx: f.rbx,
+        r11: f.r11,
+        r10: f.r10,
+        r9: f.r9,
+        r8: f.r8,
+        rcx: f.rcx,
+        rdx: f.rdx,
+        rsi: f.rsi,
+        rdi: f.rdi,
+        rax: f.rax,
+        error_code: f.error_code,
+        rip: f.rip,
+        cs: USER_CS,
+        flags: (f.flags & USER_FLAGS) | FORCED_FLAGS,
+        rsp: f.rsp,
+        ss: USER_SS,
+    }
+}
+
 } // verus!

@@ -18,6 +18,8 @@ No capability names a table and no table holds a table. A slot is the list node,
 
 A thread holds no slots. It is an order-1 block retyped from an untyped held: page 0 is a node page whose nodes are its bindings, to its process, its fault endpoint and its placement, each a counted node under the capability it binds; page 1 holds the thread's record (state, saved frame, pending stop) at offset 0 and its XSAVE area at offset 1024, 64-byte aligned, with 3072 bytes to the end of the page. A capability names a thread by its block's base, with the control right, and the capabilities naming it hold its block's references.
 
+Through that control right a holder reads and writes an Inactive thread's saved frame whole; a thread in any other state is refused, since only its core writes a Running thread's frame. A written frame is the one the thread returns to user mode with, so the kernel keeps its selectors user mode's and its flags to those user mode can set itself with popf, and refuses a rip past the lower half, which would fault in the kernel's iretq. A write grants nothing the thread could not do to itself.
+
 ## Context
 
 Before this, endpoints sat in per-thread slots and pages and devices in per-process tables, so authority was split between thread and process. The new table had to be found by every syscall in constant time and had to fit the depth-first list, `design/revoke-by-depth-first-list/`.
