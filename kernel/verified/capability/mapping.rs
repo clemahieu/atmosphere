@@ -373,6 +373,12 @@ impl CapKernel {
             Self::step_ok(pre, post, c),
     {
         Self::lemma_iommus_same(pre, post);
+        assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] post.cores@[d].current_thread == pre.cores@[d].current_thread by {
+            if d != c {
+                assert(post.cores@[d] == pre.cores@[d]);
+            }
+        }
+        lemma_current_same(pre.cores@, post.cores@, pre.threads.records@, post.threads.records@);
         assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] post.acked(d) <= post.flush_epoch by {
             assert(pre.acked(d) <= pre.flush_epoch);
         }

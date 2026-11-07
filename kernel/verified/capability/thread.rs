@@ -41,10 +41,20 @@ pub const XSAVE_BYTES: usize = 3072;
 /// A thread capability carries control: it may start, stop and configure the thread.
 pub const THREAD_RIGHTS: u32 = 128;
 
-/// What a thread is doing.
+/// What a thread is doing. Only core c moves a thread into or out of Running on c: see
+/// design/one-lock-bounded-steps/.
 #[derive(Clone, Copy)]
 pub enum ThreadState {
+    /// Not runnable until started.
     Inactive,
+    /// Waiting for core `core` to switch it in.
+    Runnable { core: usize },
+    /// Core `core`'s current thread.
+    Running { core: usize },
+    /// Waiting on the object at `object`.
+    Blocked { object: usize },
+    /// Destroyed; its block waits for its references to go.
+    Dead,
 }
 
 /// What a thread keeps at the start of its record's page. Its XSAVE area lies after it in the same
@@ -141,6 +151,55 @@ impl Threads {
             ret.holders@ == IMap::<usize, Set<usize>>::empty(),
     {
         Threads { records: Tracked(Map::tracked_empty()), holders: Ghost(IMap::empty()) }
+    }
+}
+
+/// Core c's current thread is t.
+pub open spec fn runs(cores: Seq<CoreState>, c: int, t: usize) -> bool {
+    cores[c].current_thread == Some(t)
+}
+
+/// Core c's current thread is t exactly when t is Running on c, so no thread is current on two cores
+/// and no core's current thread is anything but a thread.
+#[verifier::opaque]
+pub open spec fn current_wf(cores: Seq<CoreState>, records: Map<usize, PointsTo<ThreadRecord>>) -> bool {
+    &&& forall|c: int, t: usize| 0 <= c < NUM_CPUS && #[trigger] runs(cores, c, t) ==> {
+        &&& records.contains_key(t)
+        &&& records[t].value().state == (ThreadState::Running { core: c as usize })
+    }
+    &&& forall|t: usize| #[trigger] records.contains_key(t) && records[t].value().state is Running ==> {
+        let c = records[t].value().state->Running_core;
+        &&& c < NUM_CPUS
+        &&& cores[c as int].current_thread == Some(t)
+    }
+}
+
+/// Each core runs what it ran and each thread is in the state it was in.
+pub proof fn lemma_current_same(pre: Seq<CoreState>, post: Seq<CoreState>, a: Map<usize, PointsTo<ThreadRecord>>, b: Map<usize, PointsTo<ThreadRecord>>)
+    requires
+        current_wf(pre, a),
+        forall|c: int| 0 <= c < NUM_CPUS ==> #[trigger] post[c].current_thread == pre[c].current_thread,
+        b.dom() == a.dom(),
+        forall|t: usize| #[trigger] b.contains_key(t) ==> b[t].value().state == a[t].value().state,
+    ensures
+        current_wf(post, b),
+{
+    reveal(current_wf);
+    assert forall|c: int, t: usize| 0 <= c < NUM_CPUS && #[trigger] runs(post, c, t) implies {
+        &&& b.contains_key(t)
+        &&& b[t].value().state == (ThreadState::Running { core: c as usize })
+    } by {
+        assert(runs(pre, c, t));
+    }
+    assert forall|t: usize| #[trigger] b.contains_key(t) && b[t].value().state is Running implies {
+        let c = b[t].value().state->Running_core;
+        &&& c < NUM_CPUS
+        &&& post[c as int].current_thread == Some(t)
+    } by {
+        let c = a[t].value().state->Running_core;
+        assert(a.contains_key(t));
+        assert(c < NUM_CPUS);
+        assert(post[c as int].current_thread == pre[c as int].current_thread);
     }
 }
 
@@ -1010,6 +1069,31 @@ impl CapKernel {
             }
             lemma_spaces_small_typed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks, &post.blocks, page, 2);
             Self::lemma_threads_thread_added(pre, post, base, page, child);
+            assert(!pre.threads.records@.contains_key(base)) by {
+                if pre.threads.records@.contains_key(base) {
+                    assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, base));
+                }
+            }
+            assert(post.threads.records@ == pre.threads.records@.insert(base, post.threads.records@[base]));
+            assert(post.cores == pre.cores);
+            assert(current_wf(post.cores@, post.threads.records@)) by {
+                reveal(current_wf);
+                assert forall|c: int, x: usize| 0 <= c < NUM_CPUS && #[trigger] runs(post.cores@, c, x) implies {
+                    &&& post.threads.records@.contains_key(x)
+                    &&& post.threads.records@[x].value().state == (ThreadState::Running { core: c as usize })
+                } by {
+                    assert(runs(pre.cores@, c, x));
+                    assert(x != base);
+                }
+                assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) && post.threads.records@[x].value().state is Running implies {
+                    let e = post.threads.records@[x].value().state->Running_core;
+                    &&& e < NUM_CPUS
+                    &&& post.cores@[e as int].current_thread == Some(x)
+                } by {
+                    assert(x != base);
+                    assert(pre.threads.records@.contains_key(x));
+                }
+            }
             assert forall|n: usize| #[trigger] pre.mappings@.contains_key(n)
                 implies post.list.parent@.contains_key(n) && post.list.parent@[n] == pre.list.parent@[n] by {
                 pre.lemma_mapping_node(n);
@@ -1042,6 +1126,236 @@ impl CapKernel {
             lemma_adds_object_discharges_retype(pre.view(), post.view(), root, parent, child, live, base);
         }
         true
+    }
+
+    /// A switch on core c touched only c's current thread and thread t's record: t's state and its
+    /// saved frame. See design/one-lock-bounded-steps/.
+    pub open spec fn switch_frame(pre: Self, post: Self, c: int, t: usize) -> bool {
+        &&& post.list == pre.list
+        &&& post.tables == pre.tables
+        &&& post.blocks == pre.blocks
+        &&& post.holders == pre.holders
+        &&& post.mappings == pre.mappings
+        &&& post.table_pages == pre.table_pages
+        &&& post.zeroing == pre.zeroing
+        &&& post.frames == pre.frames
+        &&& post.spaces == pre.spaces
+        &&& post.mapped == pre.mapped
+        &&& post.stale_epoch == pre.stale_epoch
+        &&& post.flush_epoch == pre.flush_epoch
+        &&& post.iommus == pre.iommus
+        &&& post.devices == pre.devices
+        &&& post.tlb == pre.tlb
+        &&& post.threads.holders == pre.threads.holders
+        &&& post.threads.records@.dom() == pre.threads.records@.dom()
+        &&& forall|x: usize| x != t && #[trigger] post.threads.records@.contains_key(x)
+            ==> post.threads.records@[x] == pre.threads.records@[x]
+        &&& post.threads.records@[t].addr() == pre.threads.records@[t].addr()
+        &&& post.threads.records@[t].is_init()
+        &&& post.threads.records@[t].value().pending_stop == pre.threads.records@[t].value().pending_stop
+        &&& post.cores@.len() == pre.cores@.len()
+        &&& forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] post.cores@[d] == pre.cores@[d]
+        &&& post.cores@[c].acked_epoch == pre.cores@[c].acked_epoch
+        &&& post.cores@[c].generation == pre.cores@[c].generation
+        &&& post.cores@[c].next_pcid == pre.cores@[c].next_pcid
+        &&& post.cores@[c].pcids_used == pre.cores@[c].pcids_used
+    }
+
+    /// A switch keeps wf when it leaves the current threads matching the Running states.
+    proof fn lemma_switch_wf(pre: Self, post: Self, c: int, t: usize)
+        requires
+            pre.wf(),
+            0 <= c < NUM_CPUS,
+            pre.threads.records@.contains_key(t),
+            Self::switch_frame(pre, post, c, t),
+            post.cores.wf(),
+            current_wf(post.cores@, post.threads.records@),
+        ensures
+            post.wf(),
+    {
+        reveal(ids_wf);
+        lemma_ids_core_step(pre.cores@, post.cores@, pre.spaces.loaded@, c);
+        assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] post.acked(d) == pre.acked(d) by {
+            if d != c {
+                assert(post.cores@[d] == pre.cores@[d]);
+            }
+        }
+        assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x)
+            implies thread_wf(&post.list, &post.threads, &post.blocks, x) by {
+            assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, x));
+        }
+        assert forall|b: usize| b < NUM_PAGES && #[trigger] thread_block(&post.blocks, b)
+            implies post.threads.records@.contains_key((b * 4096) as usize) by {
+            assert(thread_block(&pre.blocks, b));
+        }
+        assert(threads_wf(&post.list, &post.tables, &post.threads, &post.blocks));
+        Self::lemma_iommus_same(pre, post);
+        assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] post.acked(d) <= post.flush_epoch by {
+            assert(pre.acked(d) <= pre.flush_epoch);
+        }
+        assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] post.tlb@[d].contains(e) implies post.loaded(d, e.space) by {
+            assert(pre.tlb@[d].contains(e));
+        }
+        assert forall|d: int, e: TlbEntry|
+            0 <= d < NUM_CPUS && #[trigger] post.tlb@[d].contains(e) && !post.mapped@.contains(e.page)
+            implies e.page < NUM_PAGES && post.stale_epoch.above(post.acked(d), e.page) by {
+            assert(pre.tlb@[d].contains(e));
+        }
+        assert(post.tlb_wf());
+    }
+
+    /// Core c, running nothing, makes thread t, Runnable on c, its current thread. Which thread is the
+    /// scheduler's choice; loading its frame and its space is the caller's.
+    pub fn switch_in(&mut self, c: usize, t: usize)
+        requires
+            old(self).wf(),
+            c < NUM_CPUS,
+            old(self).cores@[c as int].current_thread is None,
+            old(self).threads.records@.contains_key(t),
+            old(self).threads.records@[t].value().state == (ThreadState::Runnable { core: c }),
+        ensures
+            Self::step_ok(*old(self), *final(self), c as int),
+            Self::switch_frame(*old(self), *final(self), c as int, t),
+            final(self).cores@[c as int].current_thread == Some(t),
+            final(self).threads.records@[t].value().state == (ThreadState::Running { core: c }),
+            final(self).threads.records@[t].value().frame == old(self).threads.records@[t].value().frame,
+    {
+        let ghost pre = *self;
+        proof {
+            assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, t));
+        }
+        let state = *self.cores.get(c);
+        self.cores.set(c, CoreState {
+            current_thread: Some(t),
+            acked_epoch: state.acked_epoch,
+            generation: state.generation,
+            next_pcid: state.next_pcid,
+            pcids_used: state.pcids_used,
+        });
+        let tracked mut perm;
+        proof {
+            perm = self.threads.records.borrow_mut().tracked_remove(t);
+        }
+        let ptr = PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * 4096);
+        let record = ptr.read(Tracked(&perm));
+        ptr.write(Tracked(&mut perm), ThreadRecord {
+            state: ThreadState::Running { core: c },
+            frame: record.frame,
+            pending_stop: record.pending_stop,
+        });
+        proof {
+            self.threads.records.borrow_mut().tracked_insert(t, perm);
+            reveal(current_wf);
+            let post = *self;
+            assert(post.threads.records@.dom() =~= pre.threads.records@.dom());
+            assert forall|d: int, x: usize| 0 <= d < NUM_CPUS && #[trigger] runs(post.cores@, d, x) implies {
+                &&& post.threads.records@.contains_key(x)
+                &&& post.threads.records@[x].value().state == (ThreadState::Running { core: d as usize })
+            } by {
+                if d != c {
+                    assert(post.cores@[d] == pre.cores@[d]);
+                    assert(runs(pre.cores@, d, x));
+                    if x == t {
+                        assert(pre.threads.records@[t].value().state == (ThreadState::Running { core: d as usize }));
+                    }
+                }
+            }
+            assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) && post.threads.records@[x].value().state is Running implies {
+                let e = post.threads.records@[x].value().state->Running_core;
+                &&& e < NUM_CPUS
+                &&& post.cores@[e as int].current_thread == Some(x)
+            } by {
+                if x != t {
+                    let e = pre.threads.records@[x].value().state->Running_core;
+                    assert(pre.threads.records@.contains_key(x));
+                    assert(e != c) by {
+                        assert(pre.cores@[c as int].current_thread is None);
+                    }
+                    assert(post.cores@[e as int] == pre.cores@[e as int]);
+                }
+            }
+            Self::lemma_switch_wf(pre, post, c as int, t);
+        }
+    }
+
+    /// Core c saves its current thread's frame and leaves it Runnable on c, running nothing until it
+    /// switches in again.
+    pub fn switch_out(&mut self, c: usize, frame: Registers)
+        requires
+            old(self).wf(),
+            c < NUM_CPUS,
+            old(self).cores@[c as int].current_thread is Some,
+        ensures
+            ({
+                let t = old(self).cores@[c as int].current_thread->Some_0;
+                &&& Self::step_ok(*old(self), *final(self), c as int)
+                &&& Self::switch_frame(*old(self), *final(self), c as int, t)
+                &&& old(self).threads.records@.contains_key(t)
+                &&& old(self).threads.records@[t].value().state == (ThreadState::Running { core: c })
+                &&& final(self).cores@[c as int].current_thread is None
+                &&& final(self).threads.records@[t].value().state == (ThreadState::Runnable { core: c })
+                &&& final(self).threads.records@[t].value().frame == frame
+            }),
+    {
+        let ghost pre = *self;
+        let state = *self.cores.get(c);
+        let t = match state.current_thread {
+            Some(t) => t,
+            None => { proof { assert(false); } 0 },
+        };
+        proof {
+            reveal(current_wf);
+            assert(runs(pre.cores@, c as int, t));
+            assert(pre.threads.records@.contains_key(t));
+            assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, t));
+        }
+        self.cores.set(c, CoreState {
+            current_thread: None,
+            acked_epoch: state.acked_epoch,
+            generation: state.generation,
+            next_pcid: state.next_pcid,
+            pcids_used: state.pcids_used,
+        });
+        let tracked mut perm;
+        proof {
+            perm = self.threads.records.borrow_mut().tracked_remove(t);
+        }
+        let ptr = PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * 4096);
+        let record = ptr.read(Tracked(&perm));
+        ptr.write(Tracked(&mut perm), ThreadRecord {
+            state: ThreadState::Runnable { core: c },
+            frame,
+            pending_stop: record.pending_stop,
+        });
+        proof {
+            self.threads.records.borrow_mut().tracked_insert(t, perm);
+            reveal(current_wf);
+            let post = *self;
+            assert(post.threads.records@.dom() =~= pre.threads.records@.dom());
+            assert forall|d: int, x: usize| 0 <= d < NUM_CPUS && #[trigger] runs(post.cores@, d, x) implies {
+                &&& post.threads.records@.contains_key(x)
+                &&& post.threads.records@[x].value().state == (ThreadState::Running { core: d as usize })
+            } by {
+                assert(d != c);
+                assert(post.cores@[d] == pre.cores@[d]);
+                assert(runs(pre.cores@, d, x));
+                assert(runs(pre.cores@, c as int, t));
+                assert(x != t);
+            }
+            assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) && post.threads.records@[x].value().state is Running implies {
+                let e = post.threads.records@[x].value().state->Running_core;
+                &&& e < NUM_CPUS
+                &&& post.cores@[e as int].current_thread == Some(x)
+            } by {
+                assert(x != t);
+                let e = pre.threads.records@[x].value().state->Running_core;
+                assert(pre.threads.records@.contains_key(x));
+                assert(pre.cores@[e as int].current_thread == Some(x));
+                assert(e != c);
+                assert(post.cores@[e as int] == pre.cores@[e as int]);
+            }
+            Self::lemma_switch_wf(pre, post, c as int, t);
+        }
     }
 }
 

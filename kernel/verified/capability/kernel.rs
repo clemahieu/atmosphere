@@ -1123,6 +1123,7 @@ impl CapKernel {
         &&& table_pages_wf(&self.list, &self.table_pages, &self.blocks)
         &&& spaces_wf(&self.list, &self.tables, &self.spaces, &self.blocks)
         &&& threads_wf(&self.list, &self.tables, &self.threads, &self.blocks)
+        &&& current_wf(self.cores@, self.threads.records@)
         &&& table_links_wf(tree_of(&self.table_pages, &self.spaces))
         &&& mapped_wf(self.mapped@, self.mappings@)
         &&& mappings_wf(&self.list, &self.tables, tree_of(&self.table_pages, &self.spaces), &self.blocks, self.holders@, self.mappings@)
@@ -1432,6 +1433,10 @@ impl CapKernel {
         proof {
             reveal(ids_wf);
             reveal(devices_wf);
+            reveal(current_wf);
+            assert forall|c: int, t: usize| 0 <= c < NUM_CPUS && #[trigger] runs(self.cores@, c, t) implies false by {
+                assert(self.cores@[c].current_thread.is_None());
+            }
         }
     }
 
@@ -2341,10 +2346,13 @@ impl CapKernel {
                     assert(pre.acked(d) <= pre.flush_epoch);
                 }
             }
-            assert forall|d: int| 0 <= d < NUM_CPUS && d != c as int implies
+            assert forall|d: int| 0 <= d < NUM_CPUS implies
                 #[trigger] self.cores@[d].current_thread == pre.cores@[d].current_thread by {
-                assert(self.cores@[d] == pre.cores@[d]);
+                if d != c as int {
+                    assert(self.cores@[d] == pre.cores@[d]);
+                }
             }
+            lemma_current_same(pre.cores@, self.cores@, pre.threads.records@, self.threads.records@);
             assert forall|d: int, f: TlbEntry|
                 0 <= d < NUM_CPUS && #[trigger] self.tlb@[d].contains(f) && !self.mapped@.contains(f.page)
                 implies f.page < NUM_PAGES && self.stale_epoch.above(self.acked(d), f.page) by {

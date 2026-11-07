@@ -28,7 +28,7 @@ Per-process authority matches the memory model: a thread that can map a frame ca
 
 Because no capability names a table, the capability graph has no cycles and the delete-cascade problem of a table reachable from itself cannot arise. Two fixed levels give constant-time lookup and a bounded cost per entry without a tree walk.
 
-The thread's order comes from its parts. Its record is 176 bytes. Its XSAVE area is what CPUID leaf 0xD, sub-leaf 0, reports in ECX for every state component the core supports: 2440 bytes on the reference host, a Ryzen 9 9950X3D with AVX-512 and PKU, read with `__cpuid_count(0xd, 0, ...)`. Both fit one page with the area at 1024, and the bindings take a node page of their own, so two pages; the block table's small orders are 0, 1 and 3, and order 1 is the smallest that holds them. The node page comes first so that a thread's base is a page the node list holds, as a leaf's and a space's are.
+The thread's order comes from its parts. Its record is 192 bytes. Its XSAVE area is what CPUID leaf 0xD, sub-leaf 0, reports in ECX for every state component the core supports: 2440 bytes on the reference host, a Ryzen 9 9950X3D with AVX-512 and PKU, read with `__cpuid_count(0xd, 0, ...)`. Both fit one page with the area at 1024, and the bindings take a node page of their own, so two pages; the block table's small orders are 0, 1 and 3, and order 1 is the smallest that holds them. The node page comes first so that a thread's base is a page the node list holds, as a leaf's and a space's are.
 
 ## Alternatives rejected
 
