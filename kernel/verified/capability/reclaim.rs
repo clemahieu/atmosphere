@@ -546,10 +546,16 @@ impl CapKernel {
                 || old(self).can_slice_leaf(root, from, base)
                 || old(self).can_unlink_table(root, from, base)
                 || old(self).can_slice_table(root, from, base)
-                || (old(self).can_retype_under(root, from, base, 3) && old(self).table_is_empty(base))) ==> ret is Refused,
+                || (old(self).can_retype_under(root, from, base, 3) && old(self).table_is_empty(base))
+                || old(self).can_cut_space(root, from, base)
+                || (old(self).can_retype_under(root, from, base, 3) && old(self).space_is_empty(base))) ==> ret is Refused,
             !old(self).view().holds_right(root, old(self).tables.node_of(root, from), Right::Retype) ==> ret is Refused,
-            old(self).blocks.pages@[(base / 4096) as int].object is Space ==> ret is Refused,
-            old(self).spaces.roots@.contains_key(base) ==> ret is Refused,
+            old(self).spaces.roots@.contains_key(base) && !old(self).dead_io_space(base) ==> ret is Refused,
+            old(self).can_cut_space(root, from, base) ==> ret is Slice,
+            old(self).can_retype_under(root, from, base, 3) && old(self).space_is_empty(base)
+                ==> if old(self).acknowledged(base / 4096) { ret is Freed } else { ret is Again },
+            old(self).spaces.roots@.contains_key(base) && ret is Slice ==> old(self).space_children_cut(*final(self), root, from, base),
+            old(self).spaces.roots@.contains_key(base) && ret is Freed ==> old(self).space_freed(*final(self), c, root, from, base),
             old(self).can_unlink_table(root, from, base) ==> ret is Unlinked,
             old(self).can_slice_table(root, from, base) ==> ret is Slice,
             old(self).can_retype_under(root, from, base, 3) && old(self).table_is_empty(base)
@@ -561,9 +567,11 @@ impl CapKernel {
             ret is Again ==> !old(self).acknowledged(base / 4096) || !old(self).acknowledged((base / 4096 + 1) as usize),
             ret is Freed ==> old(self).frame_freed(*final(self), c, root, from, base)
                 || old(self).leaf_freed(*final(self), c, root, from, base)
-                || old(self).table_freed(*final(self), c, root, from, base),
+                || old(self).table_freed(*final(self), c, root, from, base)
+                || old(self).space_freed(*final(self), c, root, from, base),
             ret is Slice ==> old(self).leaf_sliced(*final(self), root, from, base)
-                || old(self).table_sliced(*final(self), root, from, base),
+                || old(self).table_sliced(*final(self), root, from, base)
+                || old(self).space_children_cut(*final(self), root, from, base),
             ret is Unlinked ==> old(self).leaf_unlinked(*final(self), root, from, base)
                 || old(self).table_page_unlinked(*final(self), root, from, base),
     {
@@ -600,7 +608,14 @@ impl CapKernel {
                     self.free_table(c, root, from, base)
                 }
             },
-            ObjectType::None | ObjectType::Space => ReclaimStep::Refused,
+            ObjectType::Space => {
+                if self.cut_space_children(root, from, base) {
+                    ReclaimStep::Slice
+                } else {
+                    self.free_space(c, root, from, base)
+                }
+            },
+            ObjectType::None => ReclaimStep::Refused,
         }
     }
 
