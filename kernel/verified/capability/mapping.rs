@@ -111,6 +111,21 @@ impl CapKernel {
     {
     }
 
+    /// No core has loaded an IO space, so no core holds anything of it.
+    pub proof fn lemma_io_space_unloaded(&self, s: usize)
+        requires
+            self.wf(),
+            self.spaces.roots@.contains_key(s),
+            self.spaces.records@[s].value().kind is Io,
+        ensures
+            forall|c: int| 0 <= c < NUM_CPUS ==> !#[trigger] self.loaded(c, s),
+            forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && e.space == s ==> !#[trigger] self.tlb@[c].contains(e),
+    {
+        assert forall|c: int| 0 <= c < NUM_CPUS implies !#[trigger] self.loaded(c, s) by {
+            lemma_no_core_listed(c as u32);
+        }
+    }
+
     /// Core c loads process space s: from here on it may hold what the space's tables say, and it is on
     /// the space's list of cores, for an unmap to find. Writing the core's CR3 is the caller's.
     pub fn load_space(&mut self, c: usize, s: usize) -> (pcid: usize)
@@ -377,6 +392,7 @@ impl CapKernel {
             pre.wf(),
             0 <= c < NUM_CPUS,
             pre.spaces.roots@.contains_key(s),
+            pre.spaces.records@[s].value().kind is Process,
             post.iommus == pre.iommus,
             post.spaces.roots == pre.spaces.roots,
             post.spaces.records == pre.spaces.records,
