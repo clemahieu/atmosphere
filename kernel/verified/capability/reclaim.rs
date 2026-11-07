@@ -2166,7 +2166,7 @@ impl CapKernel {
         true
     }
 
-    /// Child c of a dead table page is cut: it has no parent and keeps its space, its page is not
+    /// Child c of a dead table page or IO space is cut: it has no parent and keeps its space, its page is not
     /// acknowledged, its word is above every acknowledgement that stood when the slices began, and its page
     /// is in the TLB of every core that loaded the space and, for an IO space, of every IOMMU.
     pub open spec fn child_cut(pre: Self, post: Self, c: usize) -> bool {
@@ -2186,9 +2186,10 @@ impl CapKernel {
             ==> post.iommus.tlb@[i].contains(TlbEntry { space: s->Some_0, page: c / 4096 })
     }
 
-    /// What cutting children of the dead table page at `base` keeps: only tables, the record of each cut
-    /// and the TLBs changed. Every walk finds what it did, since no walk reaches `base`. Each entry that
-    /// stopped naming a child is empty and its child is cut.
+    /// What cutting children of the dead table at `base` keeps: only tables, the record of each cut and the
+    /// TLBs changed. A table page's cuts leave every walk finding what it did, since no walk reaches it, and
+    /// a root's end the walks through its entries. Each entry that stopped naming a child is empty and its
+    /// child is cut.
     pub open spec fn table_cuts_kept(pre: Self, post: Self, base: usize) -> bool {
         let a = tree_of(&pre.table_pages, &pre.spaces);
         let b = tree_of(&post.table_pages, &post.spaces);
@@ -2218,7 +2219,8 @@ impl CapKernel {
             &&& b.entry(base, e).is_empty()
             &&& Self::child_cut(pre, post, child_at(a, base, e))
         }
-        &&& forall|r: usize, p: SpacePath| #[trigger] walk(b, r, p) == walk(a, r, p)
+        &&& !a.is_root(base) ==> forall|r: usize, p: SpacePath| #[trigger] walk(b, r, p) == walk(a, r, p)
+        &&& Self::mappings_shrunk(pre, post)
         &&& forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && #[trigger] pre.core_may_hold(c, e) ==> post.core_may_hold(c, e)
     }
 
@@ -2305,8 +2307,8 @@ impl CapKernel {
             pre.wf(),
             mid.wf(),
             Self::table_cuts_kept(pre, mid, base),
-            pre.table_pages.maps@.contains_key(base),
-            !pre.spaces.roots@.contains_key(base),
+            tree_of(&pre.table_pages, &pre.spaces).is_table(base),
+            !(tree_of(&pre.table_pages, &pre.spaces).is_page(base) && tree_of(&pre.table_pages, &pre.spaces).is_root(base)),
             tree_of(&mid.table_pages, &mid.spaces).names_child(base, e),
             Self::detach_recorded(mid, post, child_at(tree_of(&mid.table_pages, &mid.spaces), base, e)),
         ensures
@@ -2322,11 +2324,12 @@ impl CapKernel {
         assert(m.record(c).parent == Some(TableParent { table: base, entry: e }));
         assert(detached(m, b, base, e, c));
         assert(c != base);
-        assert(a.is_table(base));
         reveal(walks_detached);
-        assert forall|r: usize, p: SpacePath| #[trigger] walk(b, r, p) == walk(a, r, p) by {
-            assert(walk(b, r, p) == (if passes_through(m, r, p, base, e) { None } else { walk(m, r, p) }));
-            assert(walk(m, r, p) == walk(a, r, p));
+        if !a.is_root(base) {
+            assert forall|r: usize, p: SpacePath| #[trigger] walk(b, r, p) == walk(a, r, p) by {
+                assert(walk(b, r, p) == (if passes_through(m, r, p, base, e) { None } else { walk(m, r, p) }));
+                assert(walk(m, r, p) == walk(a, r, p));
+            }
         }
         assert forall|t: usize| #![trigger b.record(t)] a.is_table(t) implies {
             &&& b.record(t).level == a.record(t).level
@@ -2528,6 +2531,42 @@ impl CapKernel {
         proof {
             assert(a.is_page(base));
         }
+        let steps = self.cut_children(base, false);
+        proof {
+            if steps != 0 {
+                lemma_no_change_discharges_teardown(pre.view(), root, untyped, base);
+            }
+        }
+        steps != 0
+    }
+
+    /// Cuts up to a budget of the children of the table at `base`, a table page or an IO space's root with
+    /// no parent, each from the entry naming it, with what that leaves stale, and returns how many. A slice
+    /// starts again from the first entry, since a cut entry stays empty.
+    fn cut_children(&mut self, base: usize, is_root: bool) -> (steps: usize)
+        requires
+            old(self).wf(),
+            old(self).flush_epoch < usize::MAX,
+            tree_of(&old(self).table_pages, &old(self).spaces).is_table(base),
+            is_root == tree_of(&old(self).table_pages, &old(self).spaces).is_root(base),
+            is_root != tree_of(&old(self).table_pages, &old(self).spaces).is_page(base),
+            is_root ==> old(self).spaces.records@[base].value().kind is Io,
+            tree_of(&old(self).table_pages, &old(self).spaces).record(base).parent is None,
+            tree_of(&old(self).table_pages, &old(self).spaces).record(base).level >= 2,
+        ensures
+            final(self).wf(),
+            steps <= TABLE_SLICE_BUDGET,
+            Self::table_cuts_kept(*old(self), *final(self), base),
+            child_entries(tree_of(&final(self).table_pages, &final(self).spaces), base)
+                .subset_of(child_entries(tree_of(&old(self).table_pages, &old(self).spaces), base)),
+            child_entries(tree_of(&old(self).table_pages, &old(self).spaces), base).len()
+                == child_entries(tree_of(&final(self).table_pages, &final(self).spaces), base).len() + steps,
+            steps == 0 ==> *final(self) == *old(self),
+            steps == 0 ==> forall|j: usize| !#[trigger] tree_of(&old(self).table_pages, &old(self).spaces).names_child(base, j),
+            steps > 0 ==> exists|i: usize| #[trigger] tree_of(&old(self).table_pages, &old(self).spaces).names_child(base, i),
+    {
+        let ghost pre = *old(self);
+        let ghost a = tree_of(&pre.table_pages, &pre.spaces);
         let mut steps: usize = 0;
         let mut e: usize = 0;
         while steps != TABLE_SLICE_BUDGET && e != 512 && self.flush_epoch != usize::MAX
@@ -2536,14 +2575,12 @@ impl CapKernel {
                 pre == *old(self),
                 pre.wf(),
                 a == tree_of(&pre.table_pages, &pre.spaces),
-                a.is_page(base),
-                !a.is_root(base),
-                pre.table_pages.maps@.contains_key(base),
-                !pre.spaces.roots@.contains_key(base),
+                a.is_table(base),
+                is_root == a.is_root(base),
+                is_root != a.is_page(base),
+                is_root ==> a.space_records[base].value().kind is Io,
                 pre.flush_epoch < usize::MAX,
-                !pre.list.nodes@[base as int].live,
-                level == a.record(base).level,
-                level >= 2,
+                a.record(base).level >= 2,
                 steps <= TABLE_SLICE_BUDGET,
                 e <= 512,
                 Self::table_cuts_kept(pre, *self, base),
@@ -2556,12 +2593,12 @@ impl CapKernel {
         {
             let ghost mid = *self;
             let ghost m = tree_of(&self.table_pages, &self.spaces);
-            let entry = self.table_entry(base, false, e);
+            let entry = self.table_entry(base, is_root, e);
             let names = entry.perm.present && !entry.perm.ps;
             proof {
-                assert(m.is_page(base));
-                assert(m.record(base).level == level);
-                assert(!m.is_root(base));
+                assert(m.is_root(base) == is_root);
+                assert(m.is_page(base) != is_root);
+                assert(m.record(base).level == a.record(base).level);
                 assert(names == m.names_child(base, e));
             }
             if !names {
@@ -2615,11 +2652,104 @@ impl CapKernel {
                         assert(!tree_of(&self.table_pages, &self.spaces).names_child(base, j));
                     }
                 }
-            } else {
+            }
+        }
+        steps
+    }
+
+    /// A dead IO space's block: nothing names the space and no device is bound to it. A process space goes
+    /// with its process.
+    pub open spec fn dead_io_space(&self, base: usize) -> bool {
+        &&& self.spaces.roots@.contains_key(base)
+        &&& self.spaces.records@[base].value().kind is Io
+        &&& self.blocks.pages@[(base / 4096) as int].refs == 0
+    }
+
+    /// The IO space at `base` has a child to cut: an untyped covers it, it is dead, an entry still names a
+    /// child and the flush epoch can rise.
+    pub open spec fn can_cut_space(&self, root: usize, from: usize, base: usize) -> bool {
+        &&& self.can_retype_under(root, from, base, 3)
+        &&& self.dead_io_space(base)
+        &&& exists|e: usize| #[trigger] tree_of(&self.table_pages, &self.spaces).names_child(base, e)
+        &&& self.flush_epoch < usize::MAX
+    }
+
+    /// What cutting children of the dead IO space at `base` did to self: as for a table page, and the space
+    /// is still there and still dead.
+    pub open spec fn space_children_cut(&self, post: Self, root: usize, from: usize, base: usize) -> bool {
+        &&& self.table_children_cut(post, root, from, base)
+        &&& post.dead_io_space(base)
+    }
+
+    /// Cuts up to a budget of the child tables of the dead IO space at `base`, under the untyped at index
+    /// `from` of the table at `root`, each from the entry naming it, with what that leaves stale. Returns
+    /// whether it ran, and if not nothing changed.
+    pub fn cut_space_children(&mut self, root: usize, from: usize, base: usize) -> (ret: bool)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(root),
+        ensures
+            final(self).wf(),
+            Self::mappings_shrunk(*old(self), *final(self)),
+            ret == old(self).can_cut_space(root, from, base),
+            !ret ==> *final(self) == *old(self),
+            ret ==> old(self).space_children_cut(*final(self), root, from, base),
+    {
+        let ghost pre = *old(self);
+        proof {
+            Self::lemma_same_tree_shrunk(pre, pre);
+        }
+        let untyped = match self.retype_parent(root, from, base, 3) {
+            Some(found) => found,
+            None => { return false; },
+        };
+        let page = base / 4096;
+        if page >= NUM_PAGES || self.flush_epoch == usize::MAX {
+            return false;
+        }
+        let entry = *self.blocks.pages.get(page);
+        let dead_space = match (entry.kind, entry.object) {
+            (PageKind::Base, ObjectType::Space) => entry.refs == 0,
+            _ => false,
+        };
+        proof {
+            lemma2_to64();
+            pre.lemma_space_block(base);
+        }
+        if !dead_space {
+            return false;
+        }
+        match self.space_kind(base) {
+            SpaceKind::Process => { return false; },
+            SpaceKind::Io => {},
+        }
+        let steps = self.cut_children(base, true);
+        proof {
+            if steps != 0 {
                 lemma_no_change_discharges_teardown(pre.view(), root, untyped, base);
             }
         }
         steps != 0
+    }
+
+    /// A block that holds a space is that space's: a space's block is Base and Space, and its root has no
+    /// parent, is level 4 and is no table page.
+    proof fn lemma_space_block(&self, base: usize)
+        requires
+            self.wf(),
+            base % 32768 == 0,
+            base / 4096 < NUM_PAGES,
+        ensures
+            space_block(&self.blocks, base / 4096) == self.spaces.roots@.contains_key(base),
+            self.spaces.roots@.contains_key(base) ==> !self.table_pages.maps@.contains_key(base),
+            self.spaces.roots@.contains_key(base) ==> tree_of(&self.table_pages, &self.spaces).record(base).parent is None,
+            self.spaces.roots@.contains_key(base) ==> tree_of(&self.table_pages, &self.spaces).record(base).level == 4,
+    {
+        assert(base % 32768 == 0 ==> base % 8192 == 0) by (bit_vector);
+        lemma_leaf_page(base);
+        if self.spaces.roots@.contains_key(base) {
+            assert(space_wf(&self.list, &self.spaces, &self.blocks, base));
+        }
     }
 
     /// The table page at `base` has a mapping to unlink: an untyped covers it, it is dead, an entry maps a
