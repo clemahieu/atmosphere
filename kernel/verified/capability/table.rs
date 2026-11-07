@@ -1,8 +1,7 @@
 //! A process's capability table: a root of 512 pointers and leaves retyped on demand. A leaf is two
 //! pages, an order-1 block: a node page holding the slots' list nodes, and a payload page holding what
 //! each capability says at the same index. Node 0 of a leaf is its hidden node, so a leaf has 127 slots.
-//! No capability names a table, so tables cannot form cycles. See the design on atmo-6x9.6.7, sections
-//! 1 and 2.
+//! No capability names a table, so tables cannot form cycles. See design/process-holds-capabilities/.
 //!
 //! A table is named by its root's address until the process object holds it, atmo-6x9.16.9.
 //!
@@ -64,8 +63,8 @@ pub open spec fn block_bytes(order: u8) -> int {
     pow2(order as nat) as int * 4096
 }
 
-/// What a capability says names a block: base aligned to its size, inside the address space. See the
-/// design on atmo-6x9.6.7, section 3.
+/// What a capability says names a block: base aligned to its size, inside the address space. See
+/// design/capability-names-a-block/.
 pub open spec fn payload_wf(p: Payload) -> bool {
     &&& p.order <= MAX_ORDER
     &&& p.base as int % block_bytes(p.order) == 0

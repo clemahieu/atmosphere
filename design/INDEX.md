@@ -2,7 +2,7 @@
 
 # Design decisions
 
-9 records: 9 active, 0 superseded.
+10 records: 10 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -31,6 +31,9 @@ in `revisit if` what would make it worth reopening.
 - **[sharing-by-derive](./sharing-by-derive/DECISION.md)** (2026-11-05): The only way to share a capability is derive, a child one depth deeper with rights and range within its parent's; nodes never change ancestor; move and claim relocate a node without changing its place; delete is refused while a node has children, mappings or bindings.
   - *confidence:* The human's choice among three lifetime packages, with a precedent survey of seL4, NOVA, L4Re, Genode, EROS, Zircon and Barrelfish from their documents. The structure it rests on is proven, design/revoke-by-depth-first-list/.
   - *revisit if:* A service must survive the death of the holder that granted to its clients without a longer-lived parent doing the granting, and claim by a supervisor is not enough.
+- **[teardown-driven-by-retype](./teardown-driven-by-retype/DECISION.md)** (2026-11-06): An object is dead when its references reach zero or, for a process or thread, when destroyed through a control capability; every operation then refuses it. There is no kernel list of dead objects: a retype of the block by the holder of its untyped detaches, then dismantles, a bounded slice per entry, until the block is free. The kernel never kills on its own.
+  - *confidence:* The human's choice of who pays, and of the kernel deciding no kill policy, after a precedent survey. The block state machine, references, zeroing, reclaim and two-way detach are in the tree; the dismantle arms land with each object kind.
+  - *revisit if:* Memory held by dead objects nobody retypes becomes a real shortage that pager policy cannot collect, or a workload needs the kernel to kill a whole process on a fault.
 - **[theorem-over-reach](./theorem-over-reach/DECISION.md)** (2026-11-06): A process can read or write an object only if a capability to it is reachable from its own capabilities; every operation changes objects only by a relation of its kind over that reach; reach grows only by grant or retype. Isolation of disjoint subsystems is a corollary.
   - *confidence:* The statement is the human's choice; the definition and the per-operation shape are in the tree, kernel/verified/capability/reach.rs, and each operation's leaf discharges it as it lands. The composed theorem is not yet proven.
   - *revisit if:* A kernel operation is wanted whose effect cannot be written as a relation over the caller's reach, or a shared object must be reachable without any capability naming it.
@@ -43,15 +46,15 @@ in `revisit if` what would make it worth reopening.
 A view of the lists above. Nothing is reachable only through a tag.
 
 - `abi`: one-kernel-instance
-- `capability`: capability-names-a-block, process-holds-capabilities, revoke-by-depth-first-list, sharing-by-derive, theorem-over-reach, untyped-memory
+- `capability`: capability-names-a-block, process-holds-capabilities, revoke-by-depth-first-list, sharing-by-derive, teardown-driven-by-retype, theorem-over-reach, untyped-memory
 - `kernel-state`: multicore-kernel-shape, one-kernel-instance
-- `lifetime`: sharing-by-derive
+- `lifetime`: sharing-by-derive, teardown-driven-by-retype
 - `lock`: multicore-kernel-shape
-- `memory`: capability-names-a-block, untyped-memory
+- `memory`: capability-names-a-block, teardown-driven-by-retype, untyped-memory
 - `multicore`: multicore-kernel-shape, one-kernel-instance
 - `process`: process-holds-capabilities
 - `proof`: isolation-claim, theorem-over-reach
 - `purity`: untyped-memory
-- `revoke`: revoke-by-depth-first-list, sharing-by-derive
+- `revoke`: revoke-by-depth-first-list, sharing-by-derive, teardown-driven-by-retype
 - `security`: isolation-claim, theorem-over-reach
 - `verified`: revoke-by-depth-first-list, theorem-over-reach

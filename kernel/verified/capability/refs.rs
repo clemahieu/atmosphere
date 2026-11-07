@@ -1,6 +1,6 @@
 //! References: each frame capability holds one on the block it lies in, and a block is dead at once when
 //! they reach zero. A ghost set of each block's holding nodes makes the count exact, which is what lets
-//! a free say no capability is left behind. See the design on atmo-6x9.6.7, section 6.
+//! a free say no capability is left behind. See design/teardown-driven-by-retype/.
 use vstd::arithmetic::div_mod::*;
 use vstd::arithmetic::power2::*;
 use vstd::prelude::*;
