@@ -331,10 +331,12 @@ pub ghost struct TlbEntry {
     pub page: usize,
 }
 
-/// For each IOMMU, the epoch its last finished invalidate started at, and what it may still hold that
-/// its IO spaces' tables no longer say. A device keeps translating while the kernel runs, so an IOMMU
-/// may refill from an entry between an invalidate and that entry's unmap.
+/// For each IOMMU, whether the machine has it, the epoch its last finished invalidate started at, and
+/// what it may still hold that its IO spaces' tables no longer say. A device keeps translating while
+/// the kernel runs, so an IOMMU may refill from an entry between an invalidate and that entry's unmap.
+/// An absent IOMMU holds nothing and is never invalidated, so the stale check skips it.
 pub struct IommuState {
+    pub present: Array<bool, NUM_IOMMUS>,
     pub acked: Array<usize, NUM_IOMMUS>,
     pub tlb: Ghost<Seq<Set<TlbEntry>>>,
 }
@@ -862,6 +864,11 @@ impl CapKernel {
         self.iommus.acked@[i] as int
     }
 
+    /// The machine has IOMMU i.
+    pub open spec fn iommu_present(&self, i: int) -> bool {
+        self.iommus.present@[i]
+    }
+
     /// Core c has loaded space s.
     pub open spec fn loaded(&self, c: int, s: usize) -> bool {
         &&& self.spaces.loaded@.contains_key(s)
@@ -883,10 +890,12 @@ impl CapKernel {
     }
 
     /// A translation to an unmapped page can survive in an IOMMU only if it has not yet acknowledged the
-    /// page's unmap.
+    /// page's unmap. An absent IOMMU holds nothing.
     pub open spec fn iommus_wf(&self) -> bool {
+        &&& self.iommus.present.wf()
         &&& self.iommus.acked.wf()
         &&& self.iommus.tlb@.len() == NUM_IOMMUS
+        &&& forall|i: int, e: TlbEntry| 0 <= i < NUM_IOMMUS && #[trigger] self.iommus.tlb@[i].contains(e) ==> self.iommu_present(i)
         &&& forall|i: int| 0 <= i < NUM_IOMMUS ==> #[trigger] self.iommu_acked(i) <= self.flush_epoch
         &&& forall|i: int, e: TlbEntry|
             0 <= i < NUM_IOMMUS && #[trigger] self.iommus.tlb@[i].contains(e) && !self.mapped@.contains(e.page)
@@ -904,6 +913,9 @@ impl CapKernel {
         ensures
             post.iommus_wf(),
     {
+        assert forall|i: int, e: TlbEntry| 0 <= i < NUM_IOMMUS && #[trigger] post.iommus.tlb@[i].contains(e) implies post.iommu_present(i) by {
+            assert(pre.iommus.tlb@[i].contains(e));
+        }
         assert forall|i: int| 0 <= i < NUM_IOMMUS implies #[trigger] post.iommu_acked(i) <= post.flush_epoch by {
             assert(pre.iommu_acked(i) <= pre.flush_epoch);
         }
@@ -957,11 +969,11 @@ impl CapKernel {
         &&& forall|i: int, s: usize| 0 <= i < NUM_IOMMUS ==> !#[trigger] self.iommus.tlb@[i].contains(TlbEntry { space: s, page: f })
     }
 
-    /// Every core and every IOMMU has acknowledged this epoch. Either kind of space may have mapped a
-    /// page, and the word records only when.
+    /// Every core and every present IOMMU has acknowledged this epoch, and an absent one holds nothing
+    /// to acknowledge. Either kind of space may have mapped a page, and the word records only when.
     pub open spec fn all_acknowledged(&self, epoch: int) -> bool {
         &&& forall|c: int| 0 <= c < NUM_CPUS ==> epoch <= #[trigger] self.acked(c)
-        &&& forall|i: int| 0 <= i < NUM_IOMMUS ==> epoch <= #[trigger] self.iommu_acked(i)
+        &&& forall|i: int| 0 <= i < NUM_IOMMUS && #[trigger] self.iommu_present(i) ==> epoch <= self.iommu_acked(i)
     }
 
     /// Every core and IOMMU has acknowledged f's last unmap.
@@ -1069,10 +1081,34 @@ impl CapKernel {
         }
         assert forall|i: int, s: usize| 0 <= i < NUM_IOMMUS implies !#[trigger] self.iommus.tlb@[i].contains(TlbEntry { space: s, page: f }) by {
             if self.iommus.tlb@[i].contains(TlbEntry { space: s, page: f }) {
+                assert(self.iommu_present(i));
                 assert(self.stale_epoch.above(self.iommu_acked(i), f));
                 assert(self.stale_epoch.pages@[f as int] <= self.iommu_acked(i));
             }
         }
+    }
+
+    /// The stale check reads only present IOMMUs: with every core and every present IOMMU past an epoch,
+    /// every core and IOMMU has acknowledged it, whatever an absent IOMMU's word says.
+    pub proof fn lemma_present_acknowledged(&self, epoch: int)
+        requires
+            forall|c: int| 0 <= c < NUM_CPUS ==> epoch <= #[trigger] self.acked(c),
+            forall|i: int| 0 <= i < NUM_IOMMUS && #[trigger] self.iommu_present(i) ==> epoch <= self.iommu_acked(i),
+        ensures
+            self.all_acknowledged(epoch),
+    {
+    }
+
+    /// An IOMMU the machine lacks holds nothing.
+    pub proof fn lemma_absent_iommu_empty(&self, i: int)
+        requires
+            self.wf(),
+            0 <= i < NUM_IOMMUS,
+            !self.iommu_present(i),
+        ensures
+            self.iommus.tlb@[i] == Set::<TlbEntry>::empty(),
+    {
+        assert(self.iommus.tlb@[i] =~= Set::<TlbEntry>::empty());
     }
 
     /// A region with no page mapped, every core and IOMMU having acknowledged its word, is free of stale
@@ -1096,6 +1132,7 @@ impl CapKernel {
             }
             assert forall|j: int, s: usize| 0 <= j < NUM_IOMMUS implies !#[trigger] self.iommus.tlb@[j].contains(TlbEntry { space: s, page: i }) by {
                 if self.iommus.tlb@[j].contains(TlbEntry { space: s, page: i }) {
+                    assert(self.iommu_present(j));
                     assert(!self.mapped@.contains(i));
                     assert(self.stale_epoch.above(self.iommu_acked(j), i));
                     assert(self.stale_epoch.region(level, r) <= self.iommu_acked(j));
@@ -1104,9 +1141,16 @@ impl CapKernel {
         }
     }
 
-    /// Makes this a kernel with one root capability, no mappings, no core running anything and every
-    /// page Reserved. In place, since the block table is too large to move by value.
-    pub fn init(&mut self, root: usize, Tracked(perm): Tracked<PointsTo<NodePage>>, kernel_entries: Array<usize, KERNEL_MEM_END_L4INDEX>)
+    /// Makes this a kernel with one root capability, no mappings, no core running anything, every page
+    /// Reserved and the IOMMUs boot found present. In place, since the block table is too large to move
+    /// by value.
+    pub fn init(
+        &mut self,
+        root: usize,
+        Tracked(perm): Tracked<PointsTo<NodePage>>,
+        kernel_entries: Array<usize, KERNEL_MEM_END_L4INDEX>,
+        iommus_present: Array<bool, NUM_IOMMUS>,
+    )
         requires
             old(self).cores.wf(),
             old(self).iommus.acked.wf(),
@@ -1126,9 +1170,11 @@ impl CapKernel {
             perm.value().nodes.wf(),
             forall|k: int| 0 <= k < NODES_PER_PAGE ==> !(#[trigger] perm.value().nodes@[k]).live,
             kernel_entries.wf(),
+            iommus_present.wf(),
         ensures
             final(self).wf(),
             final(self).spaces.kernel_entries == kernel_entries,
+            final(self).iommus.present == iommus_present,
             final(self).flush_epoch == 0,
             final(self).mapped@ == Set::<usize>::empty(),
             forall|c: int| 0 <= c < NUM_CPUS ==> (#[trigger] final(self).cores@[c]).current_thread.is_None(),
@@ -1171,6 +1217,7 @@ impl CapKernel {
         }
         self.stale_epoch.zero();
         self.iommus.zero();
+        self.iommus.present = iommus_present;
         proof {
             assert forall|n: usize| n < NODE_SPACE && (#[trigger] self.list.nodes@[n as int]).live
                 && self.list.nodes@[n as int].kind is Hidden implies self.tables.owner@.contains_key(n) by {
@@ -1304,10 +1351,11 @@ impl CapKernel {
                 self.wf(),
                 0 <= i <= NUM_IOMMUS,
                 forall|d: int| 0 <= d < NUM_CPUS ==> epoch <= #[trigger] self.acked(d),
-                forall|j: int| 0 <= j < i ==> epoch <= #[trigger] self.iommu_acked(j),
+                forall|j: int| 0 <= j < i && #[trigger] self.iommu_present(j) ==> epoch <= self.iommu_acked(j),
             decreases NUM_IOMMUS - i,
         {
-            if *self.iommus.acked.get(i) < epoch {
+            if *self.iommus.present.get(i) && *self.iommus.acked.get(i) < epoch {
+                assert(self.iommu_present(i as int));
                 assert(self.iommu_acked(i as int) < epoch);
                 return false;
             }
@@ -1411,6 +1459,9 @@ impl CapKernel {
             assert(pre.tlb@[c].contains(e));
             assert(!pre.mapped@.contains(e.page));
             assert(pre.acked(c) == post.acked(c));
+        }
+        assert forall|i: int, e: TlbEntry| 0 <= i < NUM_IOMMUS && #[trigger] post.iommus.tlb@[i].contains(e) implies post.iommu_present(i) by {
+            assert(pre.iommus.tlb@[i].contains(e));
         }
         assert forall|i: int| 0 <= i < NUM_IOMMUS implies #[trigger] post.iommu_acked(i) <= post.flush_epoch by {
             assert(pre.iommu_acked(i) <= pre.flush_epoch);
@@ -1932,6 +1983,7 @@ impl CapKernel {
         requires
             old(self).wf(),
             i < NUM_IOMMUS,
+            old(self).iommu_present(i as int),
             flushed.target == FlushTarget::Iommu(i as int),
             flushed.epoch == epoch,
             old(self).iommu_acked(i as int) <= epoch <= old(self).flush_epoch,
@@ -1942,6 +1994,7 @@ impl CapKernel {
             forall|j: int| 0 <= j < NUM_IOMMUS && j != i ==> #[trigger] final(self).iommu_acked(j) == old(self).iommu_acked(j),
             final(self).iommus.tlb@[i as int] == old(self).iommus.tlb@[i as int].filter(|e: TlbEntry| old(self).stale_epoch.above(epoch as int, e.page)),
             forall|j: int| 0 <= j < NUM_IOMMUS && j != i ==> #[trigger] final(self).iommus.tlb@[j] == old(self).iommus.tlb@[j],
+            final(self).iommus.present == old(self).iommus.present,
             final(self).tlb == old(self).tlb,
             final(self).cores == old(self).cores,
             final(self).mapped == old(self).mapped,
@@ -1964,6 +2017,9 @@ impl CapKernel {
                 implies e.page < NUM_PAGES && self.stale_epoch.above(self.acked(c), e.page) by {
                 assert(pre.tlb@[c].contains(e));
                 assert(pre.acked(c) == self.acked(c));
+            }
+            assert forall|j: int, e: TlbEntry| 0 <= j < NUM_IOMMUS && #[trigger] self.iommus.tlb@[j].contains(e) implies self.iommu_present(j) by {
+                assert(pre.iommus.tlb@[j].contains(e));
             }
             assert forall|j: int| 0 <= j < NUM_IOMMUS implies #[trigger] self.iommu_acked(j) <= self.flush_epoch by {
                 if j != i as int {
