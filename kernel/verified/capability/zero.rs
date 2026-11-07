@@ -1,7 +1,7 @@
 //! Zeroing a typed block before anything can name it, in bounded steps. A large block takes more than
 //! one kernel entry, so its permissions and its cursor stay here between them, and a later call, by
-//! whoever retypes the block next, resumes where the last one stopped. See the design on atmo-6x9.6.7,
-//! section 6.
+//! whoever retypes the block next, resumes where the last one stopped. See
+//! design/teardown-driven-by-retype/.
 use vstd::prelude::*;
 use vstd::set_lib::*;
 

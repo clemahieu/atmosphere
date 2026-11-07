@@ -3,8 +3,8 @@
 //! entry at its base holds its order, its reference count and whether its teardown has finished. Each
 //! 2M and 1G region counts what is not free inside it, so that zero means all of it is free. A large
 //! block cannot write its page entries in a bounded step, so its state is in its region's entry, its
-//! pages' entries stay Free, and a page is free only if neither region above it is typed. See the
-//! design on atmo-6x9.6.7, section 6.
+//! pages' entries stay Free, and a page is free only if neither region above it is typed. See
+//! design/teardown-driven-by-retype/.
 //!
 //! Untyped authorisation is a precondition its caller proves, since capabilities live a level above.
 use vstd::prelude::*;

@@ -1,6 +1,6 @@
 //! Retype reclaiming memory. There is no kernel list of dead objects, and no revoke or delete drains
 //! another's teardown: a retype naming a block, by a holder of an untyped covering it, does the work.
-//! See the design on atmo-6x9.6.7, section 6.
+//! See design/teardown-driven-by-retype/.
 use vstd::arithmetic::div_mod::*;
 use vstd::arithmetic::power2::*;
 use vstd::prelude::*;
