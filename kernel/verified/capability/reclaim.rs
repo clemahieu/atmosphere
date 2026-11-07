@@ -554,6 +554,7 @@ impl CapKernel {
             old(self).can_cut_space(root, from, base) ==> ret is Slice,
             old(self).can_retype_under(root, from, base, 3) && old(self).space_is_empty(base)
                 ==> if old(self).acknowledged(base / 4096) { ret is Freed } else { ret is Again },
+            old(self).can_retype_under(root, from, base, 3) && old(self).space_is_spent(base) ==> ret is Again || ret is Freed,
             old(self).spaces.roots@.contains_key(base) && ret is Slice ==> old(self).space_children_cut(*final(self), root, from, base),
             old(self).spaces.roots@.contains_key(base) && ret is Freed ==> old(self).space_freed(*final(self), c, root, from, base),
             old(self).can_unlink_table(root, from, base) ==> ret is Unlinked,
@@ -582,6 +583,7 @@ impl CapKernel {
             pre.lemma_retype_holds_right(root, from, base, 3);
             pre.lemma_empty_table_no_work(root, from, base);
             pre.lemma_spent_table_is_empty(base);
+            pre.lemma_spent_space_is_empty(base);
         }
         let page = base / 4096;
         if page >= NUM_PAGES {
@@ -1093,7 +1095,7 @@ impl CapKernel {
         true
     }
 
-    /// Whether the IO space at `base` has no live node and its root no entry.
+    /// Whether the root of the IO space at `base` has no entry. A space's node pages hold no live node.
     fn space_nothing_left(&self, base: usize) -> (ret: bool)
         requires
             self.wf(),
@@ -1103,15 +1105,6 @@ impl CapKernel {
             ret == self.space_is_empty(base),
     {
         let ghost tree = tree_of(&self.table_pages, &self.spaces);
-        proof {
-            let page = (base / 4096) as int;
-            assert(space_wf(&self.list, &self.spaces, &self.blocks, base));
-            self.blocks.lemma_base(page);
-            assert(order_pages(3) == 8);
-        }
-        if !self.block_nodes_dead(base) {
-            return false;
-        }
         let mut e = 0;
         while e != 512
             invariant
@@ -2089,6 +2082,31 @@ impl CapKernel {
             ==> !self.list.nodes@[table_node(base, k, i) as int].live
         &&& forall|i: usize| #![trigger self.spaces.roots@[base].value()[i]]
             i < 512 ==> self.spaces.roots@[base].value()[i].is_empty()
+    }
+
+    /// The dead IO space at `base` has nothing left to cut: no entry of its root names a child.
+    pub open spec fn space_is_spent(&self, base: usize) -> bool {
+        &&& self.dead_io_space(base)
+        &&& !exists|e: usize| #[trigger] tree_of(&self.table_pages, &self.spaces).names_child(base, e)
+    }
+
+    /// A spent IO space is empty, so cutting it to the end leaves what a free takes. An IO root has no
+    /// kernel slot, a present entry of it names a child since a root maps no frame, any other entry is
+    /// empty, and a space's node pages hold no live node.
+    pub proof fn lemma_spent_space_is_empty(&self, base: usize)
+        requires
+            self.wf(),
+        ensures
+            self.space_is_spent(base) ==> self.space_is_empty(base),
+    {
+        if self.space_is_spent(base) {
+            let tree = tree_of(&self.table_pages, &self.spaces);
+            assert(space_wf(&self.list, &self.spaces, &self.blocks, base));
+            assert forall|i: usize| #![trigger self.spaces.roots@[base].value()[i]]
+                i < 512 implies self.spaces.roots@[base].value()[i].is_empty() by {
+                assert(tree.entry(base, i) == self.spaces.roots@[base].value()[i]);
+            }
+        }
     }
 
     /// What the invariant says of an empty space's block and pages, before it frees. Its block has no
