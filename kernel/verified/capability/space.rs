@@ -1,7 +1,6 @@
 //! Address spaces as retyped objects. A table page is an order-3 block: 5 node pages, whose node 0 is
 //! the block's hidden node, then the table, then its record, then a spare page. So an entry finds its mapping's node
-//! in constant time, and whoever maps pays for the table. See the design on atmo-6x9.6.7, sections 1
-//! and 8.
+//! in constant time, and whoever maps pays for the table. See design/address-spaces-as-objects/.
 use vstd::arithmetic::div_mod::*;
 use vstd::arithmetic::power2::*;
 use vstd::prelude::*;

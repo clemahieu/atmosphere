@@ -1,7 +1,7 @@
 //! Mapping a 4K or 2M page of a frame capability into a space, through tables already linked. The entry
 //! is written from the capability's rights, and its node is derived as a child of the capability, so
-//! revoking the capability reaches the mapping and delete is refused while it stands. See the design on
-//! atmo-6x9.6.7, sections 1, 6, 7 and 8.
+//! revoking the capability reaches the mapping and delete is refused while it stands. See
+//! design/address-spaces-as-objects/ and design/flush-without-waiting/.
 use vstd::arithmetic::div_mod::*;
 use vstd::arithmetic::mul::*;
 use vstd::arithmetic::power2::*;
