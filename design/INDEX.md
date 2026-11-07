@@ -2,7 +2,7 @@
 
 # Design decisions
 
-18 records: 18 active, 0 superseded.
+19 records: 19 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -19,6 +19,9 @@ in `revisit if` what would make it worth reopening.
 - **[cpu-time-as-capability](./cpu-time-as-capability/DECISION.md)** (2026-11-05): Per-core run queues, fixed priorities, turns at equal priority, one selection function and one scheduling record per thread. A core capability allows placing a thread on that core at or below its maximum priority, a derived copy may lower it, and a placement is a binding so CPU time is revocable. Budgets and periods are deferred, with three constraints kept so they stay addable.
   - *confidence:* The human's choice to defer scheduling contexts; the estimate that they cost about 600 to 900 lines of code and 2,500 to 4,000 of proof plus a one-time rework of the scheduler and IPC proofs is reasoned from structure, not measured.
   - *revisit if:* A workload needs a bound on how much time a thread can take, which fixed priorities cannot give, or temporal isolation inside a core is wanted by design/isolation-claim/.
+- **[cut-over-on-a-branch](./cut-over-on-a-branch/DECISION.md)** (2026-11-05): New proven modules land on main beside the old kernel while boot keeps using the old one. The cut-over is a branch off main: a build feature selects old or new kernel entry and dom0, the branch gate boots both so each syscall is booted in the commit that wires it, the last commits delete the old kernel and the feature, and the branch merges with a merge commit. Main never contains the selection.
+  - *confidence:* A process choice by the human after an independent review judged a single landing too large to finish in one round and its parts unable to pass the gate on their own.
+  - *revisit if:* The cut-over branch has merged, when this record has done its work and the shim rule in CLAUDE.md applies to the whole tree again.
 - **[flush-without-waiting](./flush-without-waiting/DECISION.md)** (2026-11-06): A ghost per-core TLB model holds possibly stale translations keyed by space and core; unmap bumps a flush epoch, sends IPIs and returns again; each core's handler flushes every context and records its acknowledgement on its own kernel entry; retype requires every core's acknowledgement to have reached the epoch, a token only flush glue can produce.
   - *confidence:* The no-wait rule is forced by the lock, see reasoning; the epoch comparison and model are in kernel/verified/capability/kernel.rs and kernel/src/flush.rs, with the flush itself counted glue.
   - *revisit if:* The hardware gains a broadcast invalidation the kernel can rely on (this host reports no INVLPGB), or a flush that returns again is measured as the cost that dominates unmap.
@@ -73,17 +76,18 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `address-space`: address-spaces-as-objects
 - `boot`: root-process-at-boot
 - `capability`: address-spaces-as-objects, capability-names-a-block, cpu-time-as-capability, ipc-with-reply-object, process-holds-capabilities, revoke-by-depth-first-list, root-process-at-boot, sharing-by-derive, teardown-driven-by-retype, theorem-over-reach, untyped-memory
+- `gate`: cut-over-on-a-branch
 - `ipc`: ipc-with-reply-object, syscall-abi-in-registers
 - `kernel-state`: multicore-kernel-shape, one-kernel-instance, one-lock-bounded-steps
 - `lifetime`: sharing-by-derive, teardown-driven-by-retype
 - `lock`: flush-without-waiting, multicore-kernel-shape, one-lock-bounded-steps
 - `memory`: address-spaces-as-objects, capability-names-a-block, flush-without-waiting, teardown-driven-by-retype, untyped-memory
 - `multicore`: flush-without-waiting, multicore-kernel-shape, one-kernel-instance, one-lock-bounded-steps
-- `process`: process-holds-capabilities
+- `process`: cut-over-on-a-branch, process-holds-capabilities
 - `proof`: isolation-claim, theorem-over-reach, trust-boundary
 - `purity`: untyped-memory
 - `revoke`: revoke-by-depth-first-list, sharing-by-derive, teardown-driven-by-retype
 - `scheduling`: cpu-time-as-capability
 - `security`: isolation-claim, theorem-over-reach, trust-boundary
 - `tiers`: trust-boundary
-- `verified`: flush-without-waiting, one-lock-bounded-steps, revoke-by-depth-first-list, theorem-over-reach
+- `verified`: cut-over-on-a-branch, flush-without-waiting, one-lock-bounded-steps, revoke-by-depth-first-list, theorem-over-reach
