@@ -2,7 +2,7 @@
 
 # Design decisions
 
-8 records: 8 active, 0 superseded.
+9 records: 9 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -10,6 +10,9 @@ in `revisit if` what would make it worth reopening.
 
 ## Active
 
+- **[capability-names-a-block](./capability-names-a-block/DECISION.md)** (2026-11-06): A memory capability names a block: a base aligned to its size and 2^order pages. Frames retype at 4K or 2M in constant time, a 2M frame derives 4K pieces, and a map names a capability, a page offset and an address, so a pager needs few slots.
+  - *confidence:* Arithmetic on the page table's block sizes; the payload well-formedness is proven in kernel/verified/capability/table.rs.
+  - *revisit if:* A workload needs frames that are not power-of-two aligned, or the 1G frame that pagetable does not yet map becomes necessary rather than convenient.
 - **[isolation-claim](./isolation-claim/DECISION.md)** (2026-11-05): The kernel proves spatial isolation: a process affects only what its capabilities reach and gains authority only by grant or retype. It does not claim noninterference or freedom from timing channels, and the claim says so.
   - *confidence:* A scoping choice by the human. Noninterference is the claim the Atmosphere paper proved with unwinding conditions, so it is known to be reachable; timing needs hardware modelling the project does not have.
   - *revisit if:* A workload needs distrusting programs that cannot observe each other through status codes or timing, which is when noninterference or multiple kernel instances become required rather than later.
@@ -40,11 +43,11 @@ in `revisit if` what would make it worth reopening.
 A view of the lists above. Nothing is reachable only through a tag.
 
 - `abi`: one-kernel-instance
-- `capability`: process-holds-capabilities, revoke-by-depth-first-list, sharing-by-derive, theorem-over-reach, untyped-memory
+- `capability`: capability-names-a-block, process-holds-capabilities, revoke-by-depth-first-list, sharing-by-derive, theorem-over-reach, untyped-memory
 - `kernel-state`: multicore-kernel-shape, one-kernel-instance
 - `lifetime`: sharing-by-derive
 - `lock`: multicore-kernel-shape
-- `memory`: untyped-memory
+- `memory`: capability-names-a-block, untyped-memory
 - `multicore`: multicore-kernel-shape, one-kernel-instance
 - `process`: process-holds-capabilities
 - `proof`: isolation-claim, theorem-over-reach
