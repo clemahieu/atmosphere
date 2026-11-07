@@ -61,10 +61,11 @@ pub enum ReclaimStep {
     Again,
     /// The block is free.
     Freed,
-    /// The block held a table leaf whose hidden node is now gone, so it is dead, and its dismantling
-    /// starts on a later retype.
+    /// The block held a table leaf or table page whose hidden node is now gone, so it is dead, and its
+    /// dismantling starts on a later retype.
     Unlinked,
-    /// Some of a dead leaf's capabilities went, and more may remain. Retype again.
+    /// Some of a dead leaf's capabilities, or of a dead table page's children or mappings, went, and more
+    /// may remain. Retype again.
     Slice,
 }
 
@@ -272,6 +273,23 @@ impl CapKernel {
         &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base })
     }
 
+    /// What freeing the empty table page at `base` did to self. Its children and mappings went earlier,
+    /// so the view is as it was.
+    pub open spec fn table_freed(&self, post: Self, c: usize, root: usize, from: usize, base: usize) -> bool {
+        let untyped = self.tables.node_of(root, from);
+        let page = base / 4096;
+        &&& self.view().holds_right(root, untyped, Right::Retype)
+        &&& self.table_is_empty(base)
+        &&& self.blocks.pages@[page as int].refs == 0
+        &&& self.no_stale_translation(page)
+        &&& post.blocks.pages@[page as int].kind is Free
+        &&& !post.table_pages.maps@.contains_key(base)
+        &&& forall|k: usize| k < TABLE_NODE_PAGES ==> !post.list.pages@.dom().contains(#[trigger] table_node_page(base, k))
+        &&& Self::step_ok(*self, post, c as int)
+        &&& post.view() == self.view()
+        &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base })
+    }
+
     /// The leaf at `base` is owned and no node in its page is live, so nothing is left of it but its two
     /// pages.
     pub open spec fn leaf_is_empty(&self, base: usize) -> bool {
@@ -295,6 +313,43 @@ impl CapKernel {
         &&& Self::step_ok(*self, post, c as int)
         &&& post.view() == self.view()
         &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base })
+    }
+
+    /// An empty table page has nothing left to unlink or slice.
+    proof fn lemma_empty_table_no_work(&self, root: usize, from: usize, base: usize)
+        requires
+            self.wf(),
+        ensures
+            self.table_is_empty(base) ==> !self.can_unlink_table(root, from, base) && !self.can_slice_table(root, from, base),
+    {
+        if self.table_is_empty(base) {
+            let tree = tree_of(&self.table_pages, &self.spaces);
+            self.lemma_empty_table(base);
+            if exists|e: usize| #[trigger] tree.names_child(base, e) {
+                let e = choose|e: usize| #[trigger] tree.names_child(base, e);
+                self.lemma_table_with_entry_not_empty(base, e);
+            }
+            if exists|e: usize| #[trigger] frame_slot(tree, base, e) {
+                let e = choose|e: usize| #[trigger] frame_slot(tree, base, e);
+                self.lemma_table_with_entry_not_empty(base, e);
+            }
+        }
+    }
+
+    /// A retype's parent carries the right: the capability it names holds Retype.
+    proof fn lemma_retype_holds_right(&self, root: usize, from: usize, base: usize, order: u8)
+        requires
+            self.wf(),
+            self.tables.roots@.contains_key(root),
+        ensures
+            self.can_retype_under(root, from, base, order)
+                ==> self.view().holds_right(root, self.tables.node_of(root, from), Right::Retype),
+    {
+        if self.can_retype_under(root, from, base, order) {
+            self.lemma_slot(root, from);
+            assert(right_bit(Right::Retype) == 8);
+            assert(self.tables.is_cap(&self.list, self.tables.node_of(root, from)));
+        }
     }
 
     /// A dead 4K frame has no page mapped, since a mapping would hold a reference on its block.
@@ -378,13 +433,36 @@ impl CapKernel {
             !((old(self).can_retype_under(root, from, base, 0) && old(self).frame_is_dead(base / 4096))
                 || old(self).can_unlink_leaf(root, from, base)
                 || (old(self).can_retype_under(root, from, base, 1) && old(self).leaf_is_empty(base))
-                || old(self).can_slice_leaf(root, from, base)) ==> ret is Refused,
+                || old(self).can_slice_leaf(root, from, base)
+                || old(self).can_unlink_table(root, from, base)
+                || old(self).can_slice_table(root, from, base)
+                || (old(self).can_retype_under(root, from, base, 3) && old(self).table_is_empty(base))) ==> ret is Refused,
+            !old(self).view().holds_right(root, old(self).tables.node_of(root, from), Right::Retype) ==> ret is Refused,
+            old(self).blocks.pages@[(base / 4096) as int].object is Space ==> ret is Refused,
+            old(self).spaces.roots@.contains_key(base) ==> ret is Refused,
+            old(self).can_unlink_table(root, from, base) ==> ret is Unlinked,
+            old(self).can_slice_table(root, from, base) ==> ret is Slice,
+            old(self).can_retype_under(root, from, base, 3) && old(self).table_is_empty(base)
+                ==> if old(self).acknowledged(base / 4096) { ret is Freed } else { ret is Again },
+            old(self).table_pages.maps@.contains_key(base) && ret is Unlinked ==> old(self).table_page_unlinked(*final(self), root, from, base),
+            old(self).table_pages.maps@.contains_key(base) && ret is Slice ==> old(self).table_sliced(*final(self), root, from, base),
+            old(self).table_pages.maps@.contains_key(base) && ret is Freed ==> old(self).table_freed(*final(self), c, root, from, base),
             ret is Again ==> !old(self).acknowledged(base / 4096) || !old(self).acknowledged((base / 4096 + 1) as usize),
             ret is Freed ==> old(self).frame_freed(*final(self), c, root, from, base)
-                || old(self).leaf_freed(*final(self), c, root, from, base),
-            ret is Slice ==> old(self).leaf_sliced(*final(self), root, from, base),
-            ret is Unlinked ==> old(self).leaf_unlinked(*final(self), root, from, base),
+                || old(self).leaf_freed(*final(self), c, root, from, base)
+                || old(self).table_freed(*final(self), c, root, from, base),
+            ret is Slice ==> old(self).leaf_sliced(*final(self), root, from, base)
+                || old(self).table_sliced(*final(self), root, from, base),
+            ret is Unlinked ==> old(self).leaf_unlinked(*final(self), root, from, base)
+                || old(self).table_page_unlinked(*final(self), root, from, base),
     {
+        let ghost pre = *old(self);
+        proof {
+            pre.lemma_retype_holds_right(root, from, base, 0);
+            pre.lemma_retype_holds_right(root, from, base, 1);
+            pre.lemma_retype_holds_right(root, from, base, 3);
+            pre.lemma_empty_table_no_work(root, from, base);
+        }
         let page = base / 4096;
         if page >= NUM_PAGES {
             return ReclaimStep::Refused;
@@ -401,7 +479,16 @@ impl CapKernel {
                     self.free_leaf(c, root, from, base)
                 }
             },
-            ObjectType::None | ObjectType::TablePage | ObjectType::Space => ReclaimStep::Refused,
+            ObjectType::TablePage => {
+                if self.unlink_table(root, from, base) {
+                    ReclaimStep::Unlinked
+                } else if self.slice_table(root, from, base) {
+                    ReclaimStep::Slice
+                } else {
+                    self.free_table(c, root, from, base)
+                }
+            },
+            ObjectType::None | ObjectType::Space => ReclaimStep::Refused,
         }
     }
 
@@ -717,6 +804,146 @@ impl CapKernel {
             assert(authorized(v, root, e));
         }
         ReclaimStep::Freed
+    }
+
+    /// Frees the empty table page at `base`, once every core and IOMMU has acknowledged the epoch that
+    /// recorded its cut. It refuses a block that is anything else.
+    pub fn free_table(&mut self, c: usize, root: usize, from: usize, base: usize) -> (ret: ReclaimStep)
+        requires
+            old(self).wf(),
+            c < NUM_CPUS,
+            old(self).tables.roots@.contains_key(root),
+        ensures
+            final(self).wf(),
+            Self::mappings_shrunk(*old(self), *final(self)),
+            !(ret is Unlinked),
+            !(ret is Slice),
+            !(ret is Freed) ==> *final(self) == *old(self),
+            !(old(self).can_retype_under(root, from, base, 3) && old(self).table_is_empty(base)) ==> ret is Refused,
+            old(self).can_retype_under(root, from, base, 3) && old(self).table_is_empty(base)
+                ==> if old(self).acknowledged(base / 4096) { ret is Freed } else { ret is Again },
+            ret is Again ==> !old(self).acknowledged(base / 4096),
+            ret is Freed ==> old(self).table_freed(*final(self), c, root, from, base),
+    {
+        let ghost pre = *old(self);
+        proof {
+            Self::lemma_same_tree_shrunk(pre, pre);
+            if pre.table_is_empty(base) {
+                pre.lemma_empty_table(base);
+            }
+        }
+        let untyped = match self.retype_parent(root, from, base, 3) {
+            Some(found) => found,
+            None => { return ReclaimStep::Refused; },
+        };
+        let page = base / 4096;
+        if page >= NUM_PAGES {
+            return ReclaimStep::Refused;
+        }
+        let entry = *self.blocks.pages.get(page);
+        let table = match (entry.kind, entry.object) {
+            (PageKind::Base, ObjectType::TablePage) => entry.refs == 0,
+            _ => false,
+        };
+        proof {
+            lemma2_to64();
+            pre.lemma_dead_table_block(base);
+        }
+        if !table || !self.table_nothing_left(base) {
+            return ReclaimStep::Refused;
+        }
+        if !self.is_acknowledged(page) {
+            return ReclaimStep::Again;
+        }
+        proof {
+            pre.lemma_acknowledged_is_clean(page);
+        }
+        self.free_empty_table(base);
+        proof {
+            let post = *self;
+            assert(post.view() == pre.view());
+            let v = pre.view();
+            let e = Effect::Teardown { untyped, object: base };
+            assert(authorized(v, root, e));
+        }
+        ReclaimStep::Freed
+    }
+
+    /// Whether every node of the table page at `base` is dead and every entry empty. A table page holds a
+    /// constant number of each.
+    fn table_nothing_left(&self, base: usize) -> (ret: bool)
+        requires
+            self.wf(),
+            self.table_pages.maps@.contains_key(base),
+        ensures
+            ret == self.table_is_empty(base),
+    {
+        let ghost tree = tree_of(&self.table_pages, &self.spaces);
+        proof {
+            self.lemma_table_page_room(base);
+        }
+        let mut k = 0;
+        while k != TABLE_NODE_PAGES
+            invariant
+                0 <= k <= TABLE_NODE_PAGES,
+                self.wf(),
+                self.table_pages.maps@.contains_key(base),
+                base % 32768 == 0,
+                base / 4096 + 8 <= NUM_PAGES,
+                forall|j: usize, i: usize| #![trigger table_node(base, j, i)] j < k && i < NODES_PER_PAGE
+                    ==> !self.list.nodes@[table_node(base, j, i) as int].live,
+            decreases TABLE_NODE_PAGES - k,
+        {
+            let mut i = 0;
+            while i != NODES_PER_PAGE
+                invariant
+                    0 <= k < TABLE_NODE_PAGES,
+                    0 <= i <= NODES_PER_PAGE,
+                    self.wf(),
+                    self.table_pages.maps@.contains_key(base),
+                    base % 32768 == 0,
+                    base / 4096 + 8 <= NUM_PAGES,
+                    forall|j: usize, m: usize| #![trigger table_node(base, j, m)] j < k && m < NODES_PER_PAGE
+                        ==> !self.list.nodes@[table_node(base, j, m) as int].live,
+                    forall|m: usize| #![trigger table_node(base, k, m)] m < i
+                        ==> !self.list.nodes@[table_node(base, k, m) as int].live,
+                decreases NODES_PER_PAGE - i,
+            {
+                proof {
+                    self.lemma_table_node_in_block(base, k, i);
+                    lemma_table_node_place(base, k, i);
+                }
+                if self.list.get(base + k * 4096 + i).live {
+                    return false;
+                }
+                i = i + 1;
+            }
+            k = k + 1;
+        }
+        let mut e = 0;
+        while e != 512
+            invariant
+                0 <= e <= 512,
+                self.wf(),
+                self.table_pages.maps@.contains_key(base),
+                tree == tree_of(&self.table_pages, &self.spaces),
+                forall|j: usize, i: usize| #![trigger table_node(base, j, i)] j < TABLE_NODE_PAGES && i < NODES_PER_PAGE
+                    ==> !self.list.nodes@[table_node(base, j, i) as int].live,
+                forall|j: usize| #![trigger self.table_pages.maps@[base].value()[j]]
+                    j < e ==> self.table_pages.maps@[base].value()[j].is_empty(),
+            decreases 512 - e,
+        {
+            let entry = self.table_entry(base, false, e);
+            proof {
+                assert(tree.is_page(base));
+                assert(tree.entry(base, e) == self.table_pages.maps@[base].value()[e]);
+            }
+            if !entry_is_empty(&entry) {
+                return false;
+            }
+            e = e + 1;
+        }
+        true
     }
 
     /// Whether every node of the owned leaf at `base` is dead. A leaf's page holds a constant number.
