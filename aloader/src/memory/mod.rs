@@ -13,6 +13,8 @@ use astd::memory::PageProtection;
 use astd::sync::Mutex;
 use aelf::{VirtualMapper, ContiguousMapping};
 
+#[cfg(target_os = "uefi")]
+pub use allocator::set_bootstrap_region;
 pub use map::MemoryMap;
 pub use paging::{AddressSpace, HUGE_PAGE_SIZE, PAGE_SIZE};
 pub use userspace::UserspaceMapper;

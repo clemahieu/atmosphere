@@ -3,8 +3,8 @@
 #   source tools/env.sh
 #
 # Expects: rustup (rust-toolchain.toml picks the nightly), a Verus build under
-# tools/verus made by tools/setup-verus.sh, and nasm, qemu, gdb, grub and
-# xorriso from the system package manager.
+# tools/verus made by tools/setup-verus.sh, and nasm, qemu, edk2-ovmf and gdb
+# from the system package manager.
 
 ATMO_TOOLS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VERUS_SRC="$ATMO_TOOLS/verus/source"
@@ -18,8 +18,5 @@ export LD_LIBRARY_PATH="$VERUS_RUST_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 # The kernel crates use unstable features on a pinned nightly.
 export RUSTC_BOOTSTRAP=1
-
-# Where grub-mkrescue finds the i386-pc modules for the bootable ISO.
-export GRUB_X86_MODULES=/usr/lib/grub/i386-pc
 
 export PATH="$ATMO_TOOLS/bin:$VERUS_ROOT:$PATH"

@@ -24,19 +24,11 @@ pub struct Opts {
     #[clap(long = "cpu")]
     cpu_model: Option<CpuModel>,
 
-    /// Extra command-line arguments.
-    #[clap(long = "cmdline")]
-    command_line: Option<String>,
-
     /// Use TCG even if /dev/kvm is writable.
     ///
     /// This only has an effect for QEMU.
     #[clap(long)]
     no_kvm: bool,
-
-    /// Whether to use GRUB.
-    #[clap(long)]
-    grub: bool,
 
     /// Whether to enable IOMMU.
     #[clap(long)]
@@ -115,7 +107,7 @@ pub(super) async fn run(global: GlobalOpts) -> Result<()> {
     };
 
     let loader = project
-        .loader()
+        .uefi_loader()
         .build(&opts)
         .await?
         .expect("No binary was reproduced for the early loader");
@@ -141,15 +133,10 @@ pub(super) async fn run(global: GlobalOpts) -> Result<()> {
     run_config.auto_shutdown(!local.no_shutdown);
     run_config.dom0(dom0);
     run_config.payload(payload);
-    run_config.use_grub(local.grub);
     run_config.use_iommu(local.iommu);
 
     if let Some(cpu_model) = local.cpu_model {
         run_config.cpu_model(cpu_model);
-    }
-
-    if let Some(cmdline) = local.command_line {
-        run_config.command_line(cmdline);
     }
 
     if local.full_output {

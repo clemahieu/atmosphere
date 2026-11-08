@@ -36,6 +36,9 @@ use constants::*;
 
 use memory::{AddressSpace, BootMemoryType, PhysicalAllocator, UserspaceMapper, PAGE_SIZE};
 
+/// The end of the physical memory the loader identity maps, for itself and for the kernel.
+pub const IDENTITY_MAP_END: u64 = 0x240000000; // 9 GiB
+
 const KERNEL_RESERVATION: usize = 1024 * 1024 * 1024; // 1 GiB
 const DOM0_RESERVATION: usize = 256 * 1024 * 1024; // 256 MiB
 // The kernel reaches 192 MiB during init at opt-level 0 and 128 MiB in release, as measured by
@@ -49,7 +52,8 @@ const KERNEL_STACK_SIZE: u64 = 256 * 1024 * 1024; // 256 MiB
 #[cfg(feature = "small_kernel_stack")]
 const KERNEL_STACK_SIZE: u64 = 16 * 1024 * 1024; // 16 MiB
 
-/// Loader entry point.
+/// The multiboot2 and PVH entry, called from crt0.asm.
+#[cfg(not(target_os = "uefi"))]
 #[cfg_attr(not(test), no_mangle)]
 extern "C" fn main(_argc: isize, _argv: *const *const u8) -> ! {
     unsafe {
@@ -64,6 +68,12 @@ extern "C" fn main(_argc: isize, _argv: *const *const u8) -> ! {
         memory::init();
     }
 
+    load(None)
+}
+
+/// Loads the kernel, dom0 and the payload from the boot path's memory map and kernel image, and
+/// enters the kernel. `rsdp` is the ACPI RSDP when the boot path found it.
+fn load(rsdp: Option<u64>) -> ! {
     let bootstrap_allocator = memory::bootstrap_allocator();
 
     let mut address_space = AddressSpace::new(bootstrap_allocator);
@@ -81,7 +91,7 @@ extern "C" fn main(_argc: isize, _argv: *const *const u8) -> ! {
 
     log::info!("Mapping all physical memory");
     let mut cur = 0;
-    while cur < 0x240000000 {
+    while cur < IDENTITY_MAP_END {
         // FIXME
         unsafe {
             address_space.map(bootstrap_allocator, cur, cur, false, false, false);
@@ -116,7 +126,7 @@ extern "C" fn main(_argc: isize, _argv: *const *const u8) -> ! {
     }
 
     boot_info.pml4 = address_space.pml4();
-    boot_info.iommu_base = acpi::probe_iommu();
+    boot_info.iommu_base = acpi::probe_iommu(rsdp);
 
     let (jumbo_file, jumbo_size) = {
         let range = boot::get_kernel_image_range().expect("No kernel image was passed");

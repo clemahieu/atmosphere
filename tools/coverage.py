@@ -54,7 +54,7 @@ def build():
     for crate in ("kernel", "dom0"):
         subprocess.run(["cargo", "build", "-q", "--target-dir", f"../{OUT}"], cwd=crate, check=True,
                        env={**env, "RUSTFLAGS": FLAGS})
-    subprocess.run(["cargo", "build", "-q"], cwd="aloader", check=True, env=env)
+    check_boot_stack.build_loader("debug")
 
 
 def sections(path):

@@ -1,4 +1,4 @@
-# The licenses every package in Cargo.lock may use (CLAUDE.md, License), read by atmo license.
+# The licenses every package in Cargo.lock may use (CLAUDE.md, License), read by tools/check-licenses.py.
 #
 # license <SPDX identifier>                     allowed, in any package's license expression
 # package <name> <source> <SPDX expression>     a package with no license field; the expression

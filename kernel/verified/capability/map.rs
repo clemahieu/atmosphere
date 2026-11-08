@@ -707,7 +707,7 @@ fn same_kind(a: SpaceKind, b: SpaceKind) -> (ret: bool)
         ret == (a == b),
 {
     match (a, b) {
-        (SpaceKind::Process, SpaceKind::Process) | (SpaceKind::Io, SpaceKind::Io) => true,
+        (SpaceKind::Process, SpaceKind::Process) | (SpaceKind::Device, SpaceKind::Device) => true,
         _ => false,
     }
 }
@@ -2005,7 +2005,7 @@ impl CapKernel {
         Self::lemma_binding_parents_same_caps(pre, post);
     }
 
-    /// The node a map makes lives in its table page's block, so every IO space's node pages stay dead.
+    /// The node a map makes lives in its table page's block, so every device space's node pages stay dead.
     proof fn lemma_map_space_nodes(pre: Self, post: Self, t: usize, e: usize, f: usize, frame: usize, large: bool)
         requires
             pre.wf(),
@@ -2021,7 +2021,7 @@ impl CapKernel {
         pre.lemma_table_page_room(t);
         lemma_mapping_node_place(t, e);
         assert forall|s: usize, k: usize, i: usize| #![trigger table_node(s, k, i)]
-            post.spaces.roots@.contains_key(s) && post.spaces.records@[s].value().kind is Io && k < TABLE_NODE_PAGES
+            post.spaces.roots@.contains_key(s) && post.spaces.records@[s].value().kind is Device && k < TABLE_NODE_PAGES
                 && i < NODES_PER_PAGE
             implies !post.list.nodes@[table_node(s, k, i) as int].live by {
             let x = table_node(s, k, i);

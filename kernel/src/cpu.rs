@@ -184,3 +184,31 @@ pub unsafe fn init_cpu(cpu_id: usize) {
 
     msr::wrmsr(msr::IA32_GS_BASE, address as u64);
 }
+
+/// CR0.MP, CR0.EM, CR0.NE, CR0.WP, CR0.NW and CR0.CD.
+const CR0_MONITOR_COPROCESSOR: u64 = 1 << 1;
+const CR0_EMULATE_COPROCESSOR: u64 = 1 << 2;
+const CR0_NUMERIC_ERROR: u64 = 1 << 5;
+const CR0_WRITE_PROTECT: u64 = 1 << 16;
+const CR0_NOT_WRITE_THROUGH: u64 = 1 << 29;
+const CR0_CACHE_DISABLE: u64 = 1 << 30;
+/// CR4.OSFXSR and CR4.OSXMMEXCPT.
+const CR4_OSFXSR: u64 = 1 << 9;
+const CR4_OSXMMEXCPT: u64 = 1 << 10;
+
+/// Sets the control bits the kernel relies on. Ring 0 cannot write through a read-only mapping,
+/// caching is on, and threads can use x87 and SSE: no x87 emulation, WAIT checks CR0.TS, x87
+/// errors raise #MF, the SSE instructions and FXSAVE are on, and an unmasked SIMD exception raises
+/// #XM. Every core sets this itself, so none depends on what firmware or the trampoline left.
+pub unsafe fn init_control_registers() {
+    let mut cr0: u64;
+    let mut cr4: u64;
+    asm!("mov {}, cr0", out(reg) cr0);
+    asm!("mov {}, cr4", out(reg) cr4);
+    cr0 &= !(CR0_EMULATE_COPROCESSOR | CR0_NOT_WRITE_THROUGH | CR0_CACHE_DISABLE);
+    cr0 |= CR0_MONITOR_COPROCESSOR | CR0_NUMERIC_ERROR | CR0_WRITE_PROTECT;
+    cr4 |= CR4_OSFXSR | CR4_OSXMMEXCPT;
+    asm!("mov cr0, {}", in(reg) cr0);
+    asm!("mov cr4, {}", in(reg) cr4);
+    log::info!("CPU {}: CR0 {:#x}, CR4 {:#x}", get_cpu_id(), cr0, cr4);
+}

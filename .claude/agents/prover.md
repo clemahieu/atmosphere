@@ -1,6 +1,6 @@
 ---
 name: prover
-description: Verus proof search for one tier-1 change in an existing worktree. Takes an issue id, a worktree path, the failing atmo verify output, the target verify line and the change made so far; edits proof code in that worktree until the verify line reaches the target or its bound, then reports the verify line, the files changed and each attempt. Run by the round driver for a round that handed back a tier-1 leaf with `Prover: <id>`, never for tier 2 or 3 work.
+description: Verus proof search for one tier-1 change in an existing worktree. Takes an issue id, a worktree path, the failing tools/verify.py output, the target verify line and the change made so far; edits proof code in that worktree until the verify line reaches the target or its bound, then reports the verify line, the files changed and each attempt. Run by the round driver for a round that handed back a tier-1 leaf with `Prover: <id>`, never for tier 2 or 3 work.
 model: fable
 effort: xhigh
 maxTurns: 200
@@ -16,6 +16,6 @@ Rules, from CLAUDE.md:
 - Sources: this tree, Verus and vstd (MIT). Nothing else; never open a forbidden source.
 - Change exec code only where the issue names it.
 
-Loop: read the failing item and the specs and lemmas it depends on; state the fact the prover lacks; add the lemma, the assert, the trigger annotation or the loop invariant that supplies it; run `atmo verify` and read each crate's `N verified, M errors` line. Keep what lowers the errors; revert what does not. Stop at the target or after 25 verify runs.
+Loop: read the failing item and the specs and lemmas it depends on; state the fact the prover lacks; add the lemma, the assert, the trigger annotation or the loop invariant that supplies it; run `tools/verify.py` and read each crate's `N verified, M errors` line. Keep what lowers the errors; revert what does not. Stop at the target or after 25 verify runs.
 
 Report, in this order, and nothing else: the final verify line; `git -C <worktree> diff --stat`; one line per attempt (what, result); if the target is not reached, what blocks the proof and the lemma statements a split would need.

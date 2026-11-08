@@ -40,11 +40,15 @@ two L3s, within0 uses CPUs 6 and 7, within1 14 and 15, and across 7 and 15:
 import glob
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
 import time
 
+# OVMF, as build-tool/src/emulator/qemu.rs boots it.
+OVMF_CODE = "/usr/share/edk2/ovmf/OVMF_CODE.fd"
+OVMF_VARS = "/usr/share/edk2/ovmf/OVMF_VARS.fd"
 LINES = re.compile(r"IPC round trip|sys_mresolve (?:alone|contended):|flush IPI|kernel lock:|contention test lock:")
 
 
@@ -194,9 +198,29 @@ def check_noise(pair, force):
 def build(lock_stats):
     subprocess.run(["cargo", "build", "-q", "--release"] + (["--features", "lock_stats"] if lock_stats else []),
                    cwd="kernel", check=True, env={**os.environ, "RUSTC_BOOTSTRAP": "1"})
-    for crate in ("aloader", "dom0"):
-        subprocess.run(["cargo", "build", "-q", "--release"], cwd=crate, check=True,
-                       env={**os.environ, "RUSTC_BOOTSTRAP": "1"})
+    subprocess.run(["cargo", "build", "-q", "--release"], cwd="dom0", check=True,
+                   env={**os.environ, "RUSTC_BOOTSTRAP": "1"})
+    # The loader is the UEFI application OVMF boots.
+    subprocess.run(["cargo", "build", "-q", "--release", "--target", "x86_64-unknown-uefi"], cwd="aloader",
+                   check=True, env={**os.environ, "RUSTC_BOOTSTRAP": "1"})
+
+
+def esp(out):
+    """Lays out the EFI system partition under out as build-tool/src/emulator/qemu.rs does, and returns
+    QEMU's arguments to boot it under OVMF: OVMF boots EFI/BOOT/BOOTX64.EFI, and the loader reads the
+    kernel and dom0 ELF images concatenated in the file initrd beside it. OVMF writes its variable
+    store, so it gets a copy."""
+    root = f"{out}/esp"
+    shutil.rmtree(root, ignore_errors=True)
+    os.makedirs(f"{root}/EFI/BOOT")
+    shutil.copy("target/x86_64-unknown-uefi/release/aloader.efi", f"{root}/EFI/BOOT/BOOTX64.EFI")
+    with open(f"{root}/initrd", "wb") as f:
+        for name in ("kernel", "dom0"):
+            f.write(open(f"target/x86_64-unknown-aloader/release/{name}", "rb").read())
+    shutil.copy(OVMF_VARS, f"{out}/OVMF_VARS.fd")
+    return ["-drive", f"if=pflash,format=raw,unit=0,readonly=on,file={OVMF_CODE}",
+            "-drive", f"if=pflash,format=raw,unit=1,file={out}/OVMF_VARS.fd",
+            "-drive", f"format=raw,file=fat:rw:{root}"]
 
 
 def pin_vcpus(pid, pair):
@@ -266,17 +290,14 @@ def sample_clocks(paths, others, done, samples):
 
 
 def boot(pair, others, out):
-    initrd, log = f"{out}/initrd", f"{out}/serial.log"
-    with open(initrd, "wb") as f:
-        for name in ("kernel", "dom0"):
-            f.write(open(f"target/x86_64-unknown-aloader/release/{name}", "rb").read())
+    log = f"{out}/serial.log"
+    drives = esp(out)
     if os.path.exists(log):
         os.unlink(log)
     qemu = subprocess.Popen(
         ["qemu-system-x86_64", "-enable-kvm", "-cpu", "host", "-machine", "q35,kernel_irqchip=split",
          "-name", "guest=atmo,debug-threads=on", "-smp", "2", "-m", "8192", "-nographic",
-         "-serial", f"file:{log}", "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
-         "-kernel", "target/x86_64-unknown-none/release/aloader", "-initrd", initrd],
+         "-serial", f"file:{log}", "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"] + drives,
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         preexec_fn=lambda: os.sched_setaffinity(0, others))
     pin_vcpus(qemu.pid, pair)

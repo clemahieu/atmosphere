@@ -205,7 +205,7 @@ impl CapKernel {
         if self.is_cap_dead(parent, payload) {
             return false;
         }
-        // A device has one IO table, so its capability has no children: it moves instead.
+        // A device is bound to one space at a time, so its capability has no children: it moves instead.
         if let CapKind::Device = payload.kind {
             return false;
         }

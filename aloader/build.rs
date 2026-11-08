@@ -9,6 +9,11 @@ macro_rules! source {
 fn main() {
     eprintln!("Baking garlic bread...");
     source!("build.rs");
+    // Only the multiboot2 and PVH build has its entry in assembly: the UEFI build's is
+    // src/boot/uefi.rs, and a host test build has its own _start.
+    if std::env::var("CARGO_CFG_TARGET_OS").unwrap() != "none" {
+        return;
+    }
     add_x86_64_asm("multiboot2_header.asm");
     add_x86_64_asm("crt0.asm");
 }

@@ -11,6 +11,7 @@ With overflow, the loader gets a stack below the kernel's depth and the kernel m
 """
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -19,14 +20,37 @@ import time
 MIB = 1 << 20
 PAGE = 4096
 MARGIN = 16 * MIB  # the least room the stack must have left
+# OVMF and the ESP layout the loader expects, as build-tool/src/emulator/qemu.rs boots them.
+OVMF_CODE = "/usr/share/edk2/ovmf/OVMF_CODE.fd"
+OVMF_VARS = "/usr/share/edk2/ovmf/OVMF_VARS.fd"
 
 
 def build(profile, overflow=False):
     args = ["cargo", "build", "-q"] + (["--release"] if profile == "release" else [])
-    for crate in ("aloader", "kernel", "dom0"):
-        extra = ["--features", "small_kernel_stack"] if overflow and crate == "aloader" else []
-        subprocess.run(args + extra, cwd=crate, check=True, env={**os.environ, "RUSTC_BOOTSTRAP": "1"})
+    for crate in ("kernel", "dom0"):
+        subprocess.run(args, cwd=crate, check=True, env={**os.environ, "RUSTC_BOOTSTRAP": "1"})
+    build_loader(profile, ["small_kernel_stack"] if overflow else [])
     check_entry_frame(f"target/x86_64-unknown-aloader/{profile}/kernel")
+
+
+def build_loader(profile, features=()):
+    """Builds aloader as the UEFI application OVMF boots."""
+    args = ["cargo", "build", "-q", "--target", "x86_64-unknown-uefi"]
+    args += (["--release"] if profile == "release" else []) + (["--features", ",".join(features)] if features else [])
+    subprocess.run(args, cwd="aloader", check=True, env={**os.environ, "RUSTC_BOOTSTRAP": "1"})
+
+
+def esp(profile, out, initrd):
+    """Lays out the EFI system partition under out and returns QEMU's arguments to boot it."""
+    root = f"{out}/esp"
+    shutil.rmtree(root, ignore_errors=True)
+    os.makedirs(f"{root}/EFI/BOOT")
+    shutil.copy(f"target/x86_64-unknown-uefi/{profile}/aloader.efi", f"{root}/EFI/BOOT/BOOTX64.EFI")
+    shutil.copy(initrd, f"{root}/initrd")
+    shutil.copy(OVMF_VARS, f"{out}/OVMF_VARS.fd")
+    return ["-drive", f"if=pflash,format=raw,unit=0,readonly=on,file={OVMF_CODE}",
+            "-drive", f"if=pflash,format=raw,unit=1,file={out}/OVMF_VARS.fd",
+            "-drive", f"format=raw,file=fat:rw:{root}"]
 
 
 def check_entry_frame(kernel):
@@ -55,8 +79,7 @@ def boot(profile, out, marker=b"dom0 benchmark done", kernel=None, dom0=None):
         ["qemu-system-x86_64", "-enable-kvm", "-cpu", "host", "-machine", "q35,kernel_irqchip=split",
          "-smp", "2", "-m", "8192", "-nographic", "-serial", f"file:{log}",
          "-monitor", f"unix:{mon},server,nowait", "-no-reboot", "-no-shutdown",
-         "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
-         "-kernel", f"target/x86_64-unknown-none/{profile}/aloader", "-initrd", initrd],
+         "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"] + esp(profile, out, initrd),
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     deadline = time.time() + 120
     while time.time() < deadline:

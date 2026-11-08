@@ -1,7 +1,7 @@
 //! Processes as retyped objects. A process is an order-3 block: page 0 is the root of its capability
 //! table, so the table is named by the process's base; page 1 holds its record; pages 2 to 4 are kept
 //! for later per-process state; pages 5 to 7 are its address space's root, record and list of cores, at
-//! the offsets an IO space has them. A capability names a process by its block's base and carries
+//! the offsets a device space has them. A capability names a process by its block's base and carries
 //! control, and the capabilities naming it hold its block's references. See
 //! design/process-holds-capabilities/.
 use vstd::arithmetic::div_mod::*;
@@ -849,7 +849,7 @@ impl CapKernel {
                 assert(sb.loaded@[s] == sa.loaded@[s]);
                 assert(sb.holders@[s] == sa.holders@[s]);
                 assert(sb.bound@[s] == sa.bound@[s]);
-                if sa.records@[s].value().kind is Io {
+                if sa.records@[s].value().kind is Device {
                     assert forall|k: usize| k < TABLE_NODE_PAGES implies post.list.pages@.dom().contains(#[trigger] table_node_page(s, k)) by {
                         assert(pre.list.pages@.dom().contains(table_node_page(s, k)));
                     }

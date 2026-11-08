@@ -448,7 +448,7 @@ impl CommandBuffers {
 }
 
 /// For each IOMMU, whether the machine has it, the epoch its last finished invalidate started at, and
-/// what it may still hold that its IO spaces' tables no longer say. A device keeps translating while
+/// what it may still hold that its device spaces' tables no longer say. A device keeps translating while
 /// the kernel runs, so an IOMMU may refill from an entry between an invalidate and that entry's unmap.
 /// An absent IOMMU holds nothing and is never invalidated, so the stale check skips it. A present one
 /// takes commands through its command buffer.
@@ -790,11 +790,11 @@ pub open spec fn table_nodes_are_mappings(list: &Tree, pages: &TablePages) -> bo
             ==> list.nodes@[table_node(t, k, i) as int].kind is Mapping
 }
 
-/// An IO space's node pages hold no live node: a mapping's node sits in its own table page's node pages,
+/// A device space's node pages hold no live node: a mapping's node sits in its own table page's node pages,
 /// and a root maps no frame. A process space has no node pages.
 pub open spec fn space_nodes_dead(list: &Tree, spaces: &Spaces) -> bool {
     forall|s: usize, k: usize, i: usize| #![trigger table_node(s, k, i)]
-        spaces.roots@.contains_key(s) && spaces.records@[s].value().kind is Io && k < TABLE_NODE_PAGES
+        spaces.roots@.contains_key(s) && spaces.records@[s].value().kind is Device && k < TABLE_NODE_PAGES
             && i < NODES_PER_PAGE
             ==> !list.nodes@[table_node(s, k, i) as int].live
 }
@@ -2033,7 +2033,7 @@ impl CapKernel {
             assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, t));
         }
         lemma_table_pages_small_freed(&pre.list, &post.list, &pre.table_pages, &pre.blocks, &post.blocks, base);
-        assert forall|s: usize, k: usize| #[trigger] pre.spaces.roots@.contains_key(s) && pre.spaces.records@[s].value().kind is Io
+        assert forall|s: usize, k: usize| #[trigger] pre.spaces.roots@.contains_key(s) && pre.spaces.records@[s].value().kind is Device
             && k < TABLE_NODE_PAGES implies post.list.pages@.dom().contains(#[trigger] table_node_page(s, k)) by {
             assert(space_wf(&pre.list, &pre.spaces, &pre.blocks, s));
         }

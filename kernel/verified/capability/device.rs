@@ -1,7 +1,7 @@
-//! Devices. A device is boot-sized and never retyped, so the table of them is filled once, at boot,
-//! from what the boot glue found, and each device gets one capability under the list's first node. A
-//! device has one IO table, so its capability moves and is never derived: at most one capability names
-//! a device. A device's IOid on its IOMMU is its device number, fixed, so nothing allocates one. See
+//! Devices. A device is boot-sized and never retyped, so the table of them is filled once, at boot, from what
+//! the boot glue found, and each device gets one capability under the list's first node. A device is bound to
+//! one space at a time, so its capability moves and is never derived: at most one capability names a device.
+//! A device's IOid on its IOMMU is its device number, fixed, so nothing allocates one. See
 //! design/sharing-by-derive/, design/capability-names-a-block/ and design/address-spaces-as-objects/.
 use vstd::prelude::*;
 
@@ -41,7 +41,7 @@ pub struct DeviceInfo {
 pub struct DeviceRecord {
     pub iommu: usize,
     pub number: usize,
-    /// The IO space the device is bound to, if any.
+    /// The device space the device is bound to, if any.
     pub space: Option<usize>,
     /// The flush epoch of its last unbind, zero if it has none.
     pub unbound: usize,

@@ -38,6 +38,7 @@ mod thread;
 mod utils;
 mod lock;
 mod flush;
+mod write_protect;
 
 use core::arch::asm;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -62,6 +63,7 @@ extern "C" fn main(boot_info: *const BootInfo) -> isize {
         logging::early_init();
 
         cpu::init_cpu(0); // Now get_current() can be used
+        cpu::init_control_registers();
         gdt::init_cpu();
 
         interrupt::init();
@@ -78,6 +80,7 @@ extern "C" fn main(boot_info: *const BootInfo) -> isize {
 #[inline(never)]
 fn boot_cpu0(boot_info: *const BootInfo) -> isize {
     unsafe {
+        write_protect::check();
         boot::init(boot_info);
         iommu::init_iommu();
 
@@ -152,9 +155,11 @@ unsafe fn start_second_core() {
 extern "C" fn ap_main(cpu_id: u64) -> ! {
     unsafe {
         cpu::init_cpu(cpu_id as usize);
+        cpu::init_control_registers();
         gdt::init_cpu();
         interrupt::init_ap();
         syscalls::init_cpu();
+        write_protect::check();
     }
 
     log::info!("CPU {} idle, syscall stack {:#x}", cpu::get_cpu_id(), cpu::get_current().syscall_sp);

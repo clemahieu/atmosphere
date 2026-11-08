@@ -49,17 +49,11 @@ pub struct RunConfiguration {
     /// support QEMU-KVM.
     use_virtualization: bool,
 
-    /// Use GRUB.
-    use_grub: bool,
-
     /// Whether to enable IOMMU.
     use_iommu: bool,
 
     /// The emulated CPU model.
     cpu_model: CpuModel,
-
-    /// Extra kernel command line flags.
-    command_line: String,
 
     /// Whether QEMU exits when the guest shuts down.
     auto_shutdown: bool,
@@ -72,9 +66,9 @@ pub struct RunConfiguration {
 
     /// Whether to suppress inital outputs from the emulator.
     ///
-    /// By default, we suppress initial outputs from the emulator (BIOS, GRUB,
+    /// By default, we suppress initial outputs from the emulator (the firmware,
     /// etc.) up until the point that our kernel is first launched. This is
-    /// because the BIOS and bootloader emit control sequences that reset the
+    /// because the firmware emits control sequences that reset the
     /// terminal to values that make sense when they are output to a standalone
     /// terminal, but are frustrating when run as a normal CLI program.
     suppress_initial_outputs: bool,
@@ -89,10 +83,8 @@ impl RunConfiguration {
             payload: None,
             memory: Byte::from_unit(32.0f64, ByteUnit::GiB).unwrap(),
             use_virtualization: false,
-            use_grub: false,
             use_iommu: false,
             cpu_model: CpuModel::Haswell,
-            command_line: String::new(),
             auto_shutdown: true,
             gdb_server: None,
             freeze_on_startup: false,
@@ -112,21 +104,9 @@ impl RunConfiguration {
         self
     }
 
-    /// Set the kernel command-line.
-    pub fn command_line(&mut self, cmdline: String) -> &mut Self {
-        self.command_line = cmdline;
-        self
-    }
-
     /// Set whether to use hardware virtualization.
     pub fn use_virtualization(&mut self, use_virtualization: bool) -> &mut Self {
         self.use_virtualization = use_virtualization;
-        self
-    }
-
-    /// Set whether to use GRUB.
-    pub fn use_grub(&mut self, use_grub: bool) -> &mut Self {
-        self.use_grub = use_grub;
         self
     }
 
@@ -164,17 +144,6 @@ impl RunConfiguration {
     pub fn suppress_initial_outputs(&mut self, suppress_initial_outputs: bool) -> &mut Self {
         self.suppress_initial_outputs = suppress_initial_outputs;
         self
-    }
-
-    /// Returns the full kernel command line.
-    fn full_command_line(&self) -> String {
-        let mut cmdline = self.command_line.clone();
-
-        if self.suppress_initial_outputs {
-            cmdline += " nologo";
-        }
-
-        cmdline
     }
 }
 

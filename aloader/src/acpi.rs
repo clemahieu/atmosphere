@@ -128,10 +128,16 @@ impl RemappingHeader {
     }
 }
 
-pub fn probe_iommu() -> Option<u64> {
+/// The IOMMU's register base, from the DMAR table under the RSDP at `rsdp`, or under one found in
+/// the BIOS area when the boot path gave none.
+pub fn probe_iommu(rsdp: Option<u64>) -> Option<u64> {
     let handler = NullAcpiHandler::new();
     let acpi = unsafe {
-        AcpiTables::search_for_rsdp_bios(handler).expect("failed to find RSDP")
+        match rsdp {
+            Some(rsdp) => AcpiTables::from_rsdp(handler, rsdp as usize),
+            None => AcpiTables::search_for_rsdp_bios(handler),
+        }
+        .expect("failed to find RSDP")
     };
 
     log::info!("ACPI: {:?}", acpi);

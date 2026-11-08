@@ -1,8 +1,15 @@
 //! Boot loader integration.
 
+#[cfg(any(target_os = "uefi", test))]
+mod efi_memory;
+#[cfg(not(target_os = "uefi"))]
 mod hvm;
+#[cfg(not(target_os = "uefi"))]
 mod multiboot2;
+#[cfg(target_os = "uefi")]
+mod uefi;
 
+#[cfg(not(target_os = "uefi"))]
 use core::ptr;
 
 use crate::memory::init_physical_memory_map;
@@ -12,8 +19,7 @@ use astd::sync::Mutex;
 /// The kernel image passed by the bootloader.
 static KERNEL_IMAGE: Mutex<Option<MemoryRange>> = Mutex::new(None);
 
-#[cfg(not(test))]
-//#[link(name = "crt0")]
+#[cfg(all(not(test), not(target_os = "uefi")))]
 extern "C" {
     static bootinfo: u64;
     static __loader_start: u8;
@@ -30,6 +36,7 @@ static mut __loader_start: u8 = 0;
 static mut __loader_end: u8 = 0;
 
 /// A type of bootloader.
+#[cfg(not(target_os = "uefi"))]
 #[derive(Debug)]
 enum Bootloader {
     /// Multiboot 2.
@@ -76,6 +83,7 @@ trait StartInfo {
 }
 
 /// Returns the range of the loader itself.
+#[cfg(not(target_os = "uefi"))]
 pub fn get_loader_image_range() -> MemoryRange {
     let start = unsafe { &__loader_start as *const _ as u64 };
     let end_exclusive = unsafe { &__loader_end as *const _ as u64 };
@@ -89,47 +97,45 @@ pub fn get_kernel_image_range() -> Option<MemoryRange> {
     KERNEL_IMAGE.lock().clone()
 }
 
-/// Initializes the boot loader information.
-pub unsafe fn init() {
-    let loader_range = get_loader_image_range();
+/// Records the memory map and the kernel image a boot path found.
+fn consume_start_info<S: StartInfo>(start_info: S, loader_range: MemoryRange) {
     log::info!(
         "[ldr {:#016x}-{:#016x}]",
         loader_range.base(),
         loader_range.end_inclusive()
     );
+    start_info.dump_memmap();
+    start_info.dump_modlist();
 
-    fn consume_start_info<S: StartInfo>(start_info: S) {
-        start_info.dump_memmap();
-        start_info.dump_modlist();
+    let regions = start_info
+        .iter_memory_regions()
+        .map(|(r, t)| (r, t.expect("Unknown memory type")));
+    let image_ranges = start_info.iter_modlist();
 
-        let regions = start_info
-            .iter_memory_regions()
-            .map(|(r, t)| (r, t.expect("Unknown memory type")));
-        let loader_range = get_loader_image_range();
-        let image_ranges = start_info
-            .iter_modlist();
+    init_physical_memory_map(regions, loader_range, image_ranges);
 
-        init_physical_memory_map(regions, loader_range, image_ranges);
+    if let Some(module) = start_info.iter_modlist().next() {
+        let mut kernel_image = KERNEL_IMAGE.lock();
+        *kernel_image = Some(module);
+    };
+}
 
-        if let Some(module) = start_info.iter_modlist().next() {
-            let mut kernel_image = KERNEL_IMAGE.lock();
-            *kernel_image = Some(module);
-        };
-    }
-
+/// Initializes the boot loader information from what the multiboot2 or PVH entry in crt0.asm saved.
+#[cfg(not(target_os = "uefi"))]
+pub unsafe fn init() {
     let start_info_ptr = bootinfo as *const u8;
     match detect_bootloader() {
         Some(Bootloader::Hvm) => {
             log::info!("Booted via Xen x86/HVM");
             let start_info =
                 unsafe { hvm::HvmStartInfo::load(start_info_ptr).expect("Invalid Xen x86/HVM start info") };
-            consume_start_info(start_info);
+            consume_start_info(start_info, get_loader_image_range());
         }
         Some(Bootloader::Multiboot2) => {
             log::info!("Booted via Multiboot2");
             let start_info =
                 unsafe { multiboot2::Multiboot2StartInfo::load(start_info_ptr).expect("Invalid Multiboot2 start info") };
-            consume_start_info(start_info);
+            consume_start_info(start_info, get_loader_image_range());
         }
         _ => {
             panic!("Failed to detect bootloader, cannot continue");
@@ -137,6 +143,7 @@ pub unsafe fn init() {
     }
 }
 
+#[cfg(not(target_os = "uefi"))]
 fn detect_bootloader() -> Option<Bootloader> {
     let bootinfo_addr = unsafe { bootinfo };
 

@@ -3073,7 +3073,7 @@ impl CapKernel {
 
 impl CapKernel {
     /// A thread's base, its binding to its process, is in a page the list holds and in no leaf, table
-    /// page or IO space, whose blocks are of other objects.
+    /// page or device space, whose blocks are of other objects.
     pub proof fn lemma_thread_node_apart(&self, t: usize)
         requires
             self.wf(),
@@ -3089,7 +3089,7 @@ impl CapKernel {
                 self.table_pages.maps@.contains_key(u) && k < TABLE_NODE_PAGES && i < NODES_PER_PAGE
                 ==> table_node(u, k, i) != t,
             forall|s: usize, k: usize, i: usize| #![trigger table_node(s, k, i)]
-                self.spaces.roots@.contains_key(s) && self.spaces.records@[s].value().kind is Io
+                self.spaces.roots@.contains_key(s) && self.spaces.records@[s].value().kind is Device
                     && k < TABLE_NODE_PAGES && i < NODES_PER_PAGE
                 ==> table_node(s, k, i) != t,
     {
@@ -3123,7 +3123,7 @@ impl CapKernel {
             }
         }
         assert forall|s: usize, k: usize, i: usize| #![trigger table_node(s, k, i)]
-            self.spaces.roots@.contains_key(s) && self.spaces.records@[s].value().kind is Io
+            self.spaces.roots@.contains_key(s) && self.spaces.records@[s].value().kind is Device
                 && k < TABLE_NODE_PAGES && i < NODES_PER_PAGE
             implies table_node(s, k, i) != t by {
             if table_node(s, k, i) == t {
@@ -3212,7 +3212,7 @@ impl CapKernel {
     }
 
     /// The kinds of node after a bind: the new node is a binding, outside every leaf, table page and
-    /// IO space, so no clause about capability, hidden, table or space nodes changes.
+    /// device space, so no clause about capability, hidden, table or space nodes changes.
     proof fn lemma_bind_nodes(pre: Self, post: Self, n: usize, t: usize)
         requires
             pre.wf(),
@@ -3282,7 +3282,7 @@ impl CapKernel {
             assert(table_node(u, k, i) != t);
         }
         assert forall|s: usize, k: usize, i: usize| #![trigger table_node(s, k, i)]
-            post.spaces.roots@.contains_key(s) && post.spaces.records@[s].value().kind is Io && k < TABLE_NODE_PAGES
+            post.spaces.roots@.contains_key(s) && post.spaces.records@[s].value().kind is Device && k < TABLE_NODE_PAGES
                 && i < NODES_PER_PAGE
             implies !post.list.nodes@[table_node(s, k, i) as int].live by {
             pre.lemma_space_node_in_block(s, k, i);

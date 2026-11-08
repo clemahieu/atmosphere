@@ -358,6 +358,9 @@ impl ApicControl for XAPIC {
         // > (10b) TSC-Deadline mode using absolute target value in IA32_TSC_DEADLINE MSR
         lvt.set_bits(17..18, 0b00); // One-shot
 
+        // Firmware may leave the timer counting: OVMF does after ExitBootServices. A zero initial
+        // count stops it, so the unmasked timer fires only once set_timer arms it.
+        self.write(ApicRegister::XAPIC_TIMER_INIT_COUNT, 0);
         self.write(ApicRegister::XAPIC_LVT_TIMER, lvt);
     }
 
