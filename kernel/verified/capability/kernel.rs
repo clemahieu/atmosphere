@@ -260,9 +260,11 @@ pub proof fn lemma_ids_space_added(cores: Seq<CoreState>, pre: Map<usize, Points
             assert(post[base].value().ids@[c] == 0usize);
             assert(id_generation(0usize) == 0);
             assert(cores[c].generation >= 1);
+            assert(id_generation(post[s].value().ids@[c]) == 0);
         } else {
             assert(pre.contains_key(s));
             assert(post[s] == pre[s]);
+            assert(id_generation(pre[s].value().ids@[c]) <= cores[c].generation);
         }
     }
     assert forall|c: int, s: usize| 0 <= c < NUM_CPUS && #[trigger] holds_id(cores, post, c, s) implies {
@@ -647,6 +649,9 @@ pub struct CapKernel {
     pub threads: Threads,
     /// The processes, each a record named by capabilities, beside its table's root and its space.
     pub processes: Processes,
+    /// The cores sent an IPI to act on a pending stop, in the order sent. The send is ghost: see
+    /// design/one-lock-bounded-steps/.
+    pub stop_ipis: Ghost<Seq<usize>>,
 }
 
 /// Flushes every context on this core, all PCIDs and paging-structure caches: changing CR4.PGE does

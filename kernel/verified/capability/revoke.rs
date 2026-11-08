@@ -524,6 +524,7 @@ impl CapKernel {
             post.devices == mid.devices,
             post.threads == mid.threads,
             post.processes == mid.processes,
+            post.stop_ipis == mid.stop_ipis,
             post.list.wf(),
             post.list.nodes@.len() == pre.list.nodes@.len(),
             !post.list.nodes@[r as int].live,
@@ -857,6 +858,10 @@ impl CapKernel {
             } by {
                 assert(pre.threads.records@.contains_key(x));
                 assert(post.threads.records@[x].value().state == pre.threads.records@[x].value().state);
+            }
+            assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) && post.threads.records@[x].value().pending_stop
+                implies post.threads.records@[x].value().state is Running by {
+                assert(pre.threads.records@.contains_key(x));
             }
         }
     }
