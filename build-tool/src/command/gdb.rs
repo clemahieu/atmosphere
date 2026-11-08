@@ -30,7 +30,7 @@ pub(super) async fn run(global: GlobalOpts) -> Result<()> {
 
     if !json_path.exists() {
         log::error!("The GDB connection info file doesn't exist");
-        log::error!("Hint: Try `atmo run --gdb` or `cargo run -- --gdb`");
+        log::error!("Hint: Try `tools/run.py --gdb`");
         quit::with_code(ExitCode::FAILURE);
     }
 

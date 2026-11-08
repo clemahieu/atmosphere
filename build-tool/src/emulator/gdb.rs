@@ -1,11 +1,11 @@
 //! GDB integration.
 //!
-//! When launching `atmo run --gdb`, the build tool writes a JSON file
-//! at `.gdb` under the workspace root with information in `GdbConnectionInfo`.
+//! `tools/run.py --gdb` writes a JSON file at `.gdb` under the workspace root with the
+//! information in `GdbConnectionInfo`.
 
 use std::{collections::HashMap, path::PathBuf};
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::error::Result;
 use crate::project::Project;
@@ -14,7 +14,7 @@ const GDB_HELPER_PATH: &str = "build-tool/src/emulator/gdb-helper.py";
 
 /// GDB server connection info.
 #[allow(dead_code)]
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct GdbConnectionInfo {
     /// The main executable file.
     file: PathBuf,
@@ -27,7 +27,7 @@ pub struct GdbConnectionInfo {
 }
 
 /// GDB server configurations.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub enum GdbServer {
     /// Listen on a Unix socket.
     Unix(PathBuf),
@@ -37,18 +37,6 @@ pub enum GdbServer {
 }
 
 impl GdbConnectionInfo {
-    pub fn new(file: PathBuf, server: GdbServer) -> Self {
-        Self {
-            file,
-            server,
-            binaries: HashMap::new(),
-        }
-    }
-
-    pub fn add_binary(&mut self, name: String, path: PathBuf) {
-        self.binaries.insert(name, path);
-    }
-
     pub async fn launch_gdb(&self, pause: bool, extra_args: Vec<String>) -> Result<()> {
         let file_command = format!(
             "file {}",

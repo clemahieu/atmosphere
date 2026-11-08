@@ -1,7 +1,7 @@
 //! The UEFI entry.
 //!
 //! OVMF, or a machine's firmware, starts the loader as an application from the EFI system
-//! partition. The loader reads the initrd (kernel, dom0 and payload, as atmo run concatenates
+//! partition. The loader reads the initrd (kernel, dom0 and payload, as tools/run.py concatenates
 //! them) from the same partition, takes the ACPI RSDP from the configuration tables, leaves boot
 //! services, and runs the load on a stack of its own.
 
@@ -21,7 +21,7 @@ use super::{consume_start_info, StartInfo};
 use crate::memory::{AcpiMemoryType, MemoryRange, BOOTSTRAP_SIZE, PAGE_SIZE};
 
 /// The initrd's path on the partition the loader was started from, as UCS-2 with its terminator;
-/// atmo run puts it there.
+/// tools/run.py puts it there.
 static INITRD_PATH: [u16; 7] = [
     b'i' as u16, b'n' as u16, b'i' as u16, b't' as u16, b'r' as u16, b'd' as u16, 0,
 ];

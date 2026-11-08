@@ -1,7 +1,7 @@
 # dom0 syscall benchmark
 
 `bench/run-bench.sh` builds the release loader, kernel and dom0 and runs dom0's syscall
-timers (`dom0/src/syscall_benchmark.rs`) once under KVM. It needs no sudo, unlike `atmo run`.
+timers (`dom0/src/syscall_benchmark.rs`) once under KVM. It pins the vCPUs and preallocates guest memory, which `tools/run.py` does not.
 
 ## Toolchain
 
@@ -51,7 +51,7 @@ Atmosphere boots only CPU 0 and has no timer interrupt, so all timers run on one
 - `-m 6144`: the loader needs more than 2 GiB of contiguous memory.
 - `-mem-prealloc`: backs guest memory before boot, so host page faults do not pollute the
   fresh-page mmap timing.
-- The ESP, `target/bench/esp`, is the directory QEMU serves as a FAT disk, laid out as `atmo run`
+- The ESP, `target/bench/esp`, is the directory QEMU serves as a FAT disk, laid out as `tools/run.py`
   lays it out: OVMF boots the loader at `EFI/BOOT/BOOTX64.EFI`, and the loader reads `initrd`, the
   kernel and dom0 ELF images concatenated.
 - `OVMF_VARS.fd` is a copy of OVMF's variable store, which OVMF writes.

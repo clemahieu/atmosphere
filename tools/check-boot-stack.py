@@ -20,7 +20,7 @@ import time
 MIB = 1 << 20
 PAGE = 4096
 MARGIN = 16 * MIB  # the least room the stack must have left
-# OVMF and the ESP layout the loader expects, as build-tool/src/emulator/qemu.rs boots them.
+# OVMF and the ESP layout the loader expects, as tools/run.py boots them.
 OVMF_CODE = "/usr/share/edk2/ovmf/OVMF_CODE.fd"
 OVMF_VARS = "/usr/share/edk2/ovmf/OVMF_VARS.fd"
 

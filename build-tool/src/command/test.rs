@@ -42,7 +42,10 @@ const DESIGN_INDEX: &str = "tools/build-design-index.py";
 /// a build or solver output that .gitignore missed.
 const MAX_FILE_BYTES: u64 = 1024 * 1024;
 
-/// The payload `atmo run` loads by default.
+/// The boot, relative to the project root; `--test` runs its own tests.
+const RUN: &str = "tools/run.py";
+
+/// The payload tools/run.py loads.
 const PAYLOAD: &str = "hello";
 
 /// Run the gate.
@@ -133,7 +136,7 @@ async fn check_build(project: &ProjectHandle) -> Result<String> {
     project.dom0().build(&options).await.context("dom0")?;
     project.user(PAYLOAD).build(&options).await.context("payload")?;
 
-    Ok(format!("{} workspace members, then the loader, kernel, dom0 and payload as atmo run builds them", members))
+    Ok(format!("{} workspace members, then the loader, kernel, dom0 and payload from their own directories", members))
 }
 
 /// Builds every workspace member from its own directory, since each no_std crate takes its target from its
@@ -272,21 +275,22 @@ async fn check_verify(project: &ProjectHandle) -> Result<String> {
 }
 
 async fn check_boot(project: &ProjectHandle, timeout: u64) -> Result<String> {
-    boot(project, timeout, &["run"]).await?;
-    Ok("exit status 0, serial log ends with dom0's last line".to_string())
+    run_check(project, RUN, &["--test"]).await?;
+    boot(project, timeout, &[]).await?;
+    Ok("tools/run.py's tests pass; exit status 0, serial log ends with dom0's last line".to_string())
 }
 
 /// Boots with an IOMMU present, the only way the device syscalls run past their first check. The
 /// plain boot comes after it, so the benchmark numbers and serial.log it leaves have no IOMMU.
 async fn check_iommu_boot(project: &ProjectHandle, timeout: u64) -> Result<String> {
-    let serial = boot(project, timeout, &["run", "--iommu"]).await?;
+    let serial = boot(project, timeout, &["--iommu"]).await?;
     if !iommu_boot_ran(&serial) {
         return Err(anyhow!("the serial log does not show the device syscalls succeeding"));
     }
     Ok("translation enabled, device syscalls returned 0, serial log ends with dom0's last line".to_string())
 }
 
-/// Runs atmo with `args` and returns the serial log of a boot that reached dom0's last line.
+/// Runs tools/run.py with `args` and returns the serial log of a boot that reached dom0's last line.
 async fn boot(project: &ProjectHandle, timeout: u64, args: &[&str]) -> Result<String> {
     let root = project.root();
     let log = root.join("serial.log");
@@ -295,10 +299,10 @@ async fn boot(project: &ProjectHandle, timeout: u64, args: &[&str]) -> Result<St
         _ => {}
     }
 
-    // timeout signals its whole process group, which takes QEMU down with atmo.
+    // timeout signals its whole process group, which takes QEMU down with the script.
     let status = Command::new("timeout")
         .arg(timeout.to_string())
-        .arg(std::env::current_exe()?)
+        .arg(root.join(RUN))
         .args(args)
         .current_dir(&root)
         .stdin(Stdio::null())
@@ -309,7 +313,7 @@ async fn boot(project: &ProjectHandle, timeout: u64, args: &[&str]) -> Result<St
         return Err(anyhow!("no exit within {} s", timeout));
     }
     if !status.success() {
-        return Err(anyhow!("atmo run: {}", status));
+        return Err(anyhow!("{}: {}", RUN, status));
     }
 
     let serial = String::from_utf8_lossy(&fs::read(&log).await?).into_owned();

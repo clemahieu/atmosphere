@@ -14,7 +14,7 @@ tools/setup-verus.sh
 source tools/env.sh
 ```
 
-You can now build and run Atmosphere with `cd kernel && cargo run`.
+You can now build and boot Atmosphere under QEMU with `tools/run.py`.
 
 ## Atmo
 

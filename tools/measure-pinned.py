@@ -53,7 +53,7 @@ import threading
 import time
 import unittest
 
-# OVMF, as build-tool/src/emulator/qemu.rs boots it.
+# OVMF, as tools/run.py boots it.
 OVMF_CODE = "/usr/share/edk2/ovmf/OVMF_CODE.fd"
 OVMF_VARS = "/usr/share/edk2/ovmf/OVMF_VARS.fd"
 # What tools/isolate-pinned.sh apply changed, for its undo; its fixed lines name the IRQs it could not move.
@@ -243,7 +243,7 @@ def build(lock_stats):
 
 
 def esp(out):
-    """Lays out the EFI system partition under out as build-tool/src/emulator/qemu.rs does, and returns
+    """Lays out the EFI system partition under out as tools/run.py does, and returns
     QEMU's arguments to boot it under OVMF: OVMF boots EFI/BOOT/BOOTX64.EFI, and the loader reads the
     kernel and dom0 ELF images concatenated in the file initrd beside it. OVMF writes its variable
     store, so it gets a copy."""

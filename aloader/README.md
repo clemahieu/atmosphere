@@ -7,7 +7,7 @@ After control is handed off to the kernel, other domains can subsequently be loa
 
 ## Boot Protocol
 
-The loader boots from UEFI, built for `x86_64-unknown-uefi` (`src/boot/uefi.rs`). `atmo run` boots it under OVMF from a directory served as the EFI system partition, with the loader at `EFI/BOOT/BOOTX64.EFI` and the kernel, dom0 and payload concatenated in `initrd` beside it.
+The loader boots from UEFI, built for `x86_64-unknown-uefi` (`src/boot/uefi.rs`). `tools/run.py` boots it under OVMF from a directory served as the EFI system partition, with the loader at `EFI/BOOT/BOOTX64.EFI` and the kernel, dom0 and payload concatenated in `initrd` beside it.
 
 ## Boot Process
 
