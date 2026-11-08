@@ -21,12 +21,8 @@ mod types;
 use core::cmp::min;
 use core::mem;
 
-use x86::bits64::segmentation::load_cs;
-pub use x86::bits64::task::TaskStateSegment;
-use x86::dtables::{lgdt, DescriptorTablePointer};
-use x86::segmentation::{load_ds, load_es, load_ss, SegmentSelector};
-use x86::task::load_tr;
-use x86::Ring;
+pub use crate::arch::TaskStateSegment;
+use crate::arch::{lgdt, load_cs, load_ds, load_es, load_ss, load_tr, DescriptorTablePointer, Ring, SegmentSelector};
 
 use types::{AccessByte, SystemAccessByte, SystemDescriptorType};
 
@@ -46,7 +42,7 @@ pub unsafe fn init_cpu() {
         }
 
         let rsp0_addr = cpu.ist[0].bottom();
-        cpu.tss.set_rsp(Ring::Ring0, rsp0_addr as u64);
+        cpu.tss.set_rsp0(rsp0_addr as u64);
 
         &cpu.tss as *const TaskStateSegment
     };

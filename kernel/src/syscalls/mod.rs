@@ -4,8 +4,7 @@ use core::arch::{asm, global_asm, naked_asm};
 
 use asys::MAX_SYSCALLS;
 use memoffset::offset_of;
-use x86::segmentation::SegmentSelector;
-use x86::{msr, Ring};
+use crate::arch::{msr, Ring, SegmentSelector};
 
 use crate::cpu::Cpu;
 use crate::gdt::GlobalDescriptorTable;
@@ -45,20 +44,17 @@ pub unsafe fn init_cpu() {
     let star = ((sysret_seg.bits() as u64) << 48)
         | ((syscall_seg.bits() as u64) << 32)
         | (SYSCALL32_ENTRY_EIP as u64);
-    msr::wrmsr(msr::IA32_STAR, star);
+    msr::wrmsr(msr::STAR, star);
 
     // Set LSTAR - 64-bit syscall entry
-    msr::wrmsr(msr::IA32_LSTAR, sys_entry as *const () as u64);
+    msr::wrmsr(msr::LSTAR, sys_entry as *const () as u64);
 
     // Set LSTAR - 32-bit syscall entry
-    msr::wrmsr(msr::IA32_CSTAR, SYSCALL32_ENTRY);
+    msr::wrmsr(msr::CSTAR, SYSCALL32_ENTRY);
 
-    msr::wrmsr(msr::IA32_FMASK, ENTRY_FLAG_MASK as u64);
+    msr::wrmsr(msr::SF_MASK, ENTRY_FLAG_MASK as u64);
 
-    // Enable EFER Bit 0 - System Call Extensions
-    let mut efer = msr::rdmsr(msr::IA32_EFER);
-    efer |= 0x1;
-    msr::wrmsr(msr::IA32_EFER, efer);
+    msr::wrmsr(msr::EFER, msr::rdmsr(msr::EFER) | msr::EFER_SCE);
 
     SYSCALLS[asys::__NR_PRINT] = kernel::sys_print as *const () as u64;
     SYSCALLS[asys::__NR_MMAP] = kernel::sys_mmap as *const () as u64;

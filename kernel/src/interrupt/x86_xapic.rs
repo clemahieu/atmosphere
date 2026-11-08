@@ -11,7 +11,7 @@ use bit_field::BitField;
 use core::fmt;
 
 use x86::apic::*;
-use x86::msr::{rdmsr, wrmsr, IA32_APIC_BASE, IA32_TSC_DEADLINE};
+use crate::arch::msr::{rdmsr, wrmsr, APIC_BASE, TSC_DEADLINE};
 
 /// Local APIC ID register. Read-only. See Section 10.12.5.1 for initial values.
 pub const XAPIC_ID: u32 = 0x020;
@@ -275,7 +275,7 @@ impl XAPIC {
         unsafe {
             XAPIC {
                 mmio_region: apic_region,
-                base: rdmsr(IA32_APIC_BASE),
+                base: rdmsr(APIC_BASE),
             }
         }
     }
@@ -285,9 +285,9 @@ impl XAPIC {
         // Enable
         unsafe {
             // Enable xAPIC globally
-            self.base = rdmsr(IA32_APIC_BASE);
+            self.base = rdmsr(APIC_BASE);
             self.base.set_bit(11, true);
-            wrmsr(IA32_APIC_BASE, self.base);
+            wrmsr(APIC_BASE, self.base);
 
             // Enable this XAPIC (set bit 8, spurious IRQ vector 15)
             let svr: u32 = 1 << 8 | 15;
@@ -355,7 +355,7 @@ impl ApicControl for XAPIC {
         // > Bits 18:17 selects the timer mode (see Section 11.5.4)
         // > (00b) one-shot mode using a count-down value
         // > (01b) periodic mode reloading a count-down value
-        // > (10b) TSC-Deadline mode using absolute target value in IA32_TSC_DEADLINE MSR
+        // > (10b) TSC-Deadline mode using absolute target value in TSC_DEADLINE MSR
         lvt.set_bits(17..18, 0b00); // One-shot
 
         // Firmware may leave the timer counting: OVMF does after ExitBootServices. A zero initial
@@ -367,7 +367,7 @@ impl ApicControl for XAPIC {
     /// Set TSC deadline value.
     fn tsc_set(&self, value: u64) {
         unsafe {
-            wrmsr(IA32_TSC_DEADLINE, value);
+            wrmsr(TSC_DEADLINE, value);
         }
     }
 

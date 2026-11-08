@@ -22,6 +22,7 @@
 #![test_runner(crate::test_runner)]
 #![no_main]
 
+mod arch;
 mod boot;
 mod bridge;
 mod console;

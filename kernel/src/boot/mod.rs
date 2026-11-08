@@ -8,7 +8,7 @@ pub mod command_line;
 use core::arch::asm;
 
 use astd::boot::BootInfo;
-use x86::io::{outb, outw};
+use crate::arch::io::{outb, outw};
 
 pub use command_line::get_command_line;
 

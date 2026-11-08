@@ -11,7 +11,7 @@ use core::arch::asm;
 use core::mem::MaybeUninit;
 use core::ptr;
 
-use x86::msr;
+use crate::arch::msr;
 
 use crate::gdt::{GlobalDescriptorTable, TaskStateSegment};
 use crate::interrupt::x86_xapic::XAPIC;
@@ -177,7 +177,7 @@ pub unsafe fn init_cpu(cpu_id: usize) {
     cpu.id = cpu_id;
     cpu.syscall_sp = cpu.syscall_stack.bottom() as u64;
 
-    msr::wrmsr(msr::IA32_GS_BASE, address as u64);
+    msr::wrmsr(msr::GS_BASE, address as u64);
 }
 
 /// CR0.MP, CR0.EM, CR0.NE, CR0.WP, CR0.NW and CR0.CD.

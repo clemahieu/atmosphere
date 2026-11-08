@@ -12,7 +12,7 @@ use x86::apic::{
     ApicControl, ApicId, DeliveryMode, DeliveryStatus, DestinationMode, DestinationShorthand, Icr, Level,
     TriggerMode,
 };
-use x86::msr;
+use crate::arch::msr;
 
 use super::Cycles;
 use crate::boot::ap_start::StartTrampoline;
