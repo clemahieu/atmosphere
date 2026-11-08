@@ -9,31 +9,11 @@ extern crate alloc;
 extern crate pcid;
 extern crate ring_buffer;
 
-mod pci;
 mod slab_alloc;
 
 use core::panic::PanicInfo;
 mod syscall_benchmark;
-use alloc::vec::Vec;
-use constants::*;
-use libtime::sys_ns_loopsleep;
 pub use log::info as println;
-use pci::scan_pci_devs;
-
-fn test_sleep() {
-    log::trace!("Sleeping for 100 ns");
-    sys_ns_loopsleep(100);
-    log::trace!("Waking up from sleep");
-}
-
-fn test_alloc() {
-    log::info!("testing alloc");
-    let mut v: Vec<u64> = Vec::with_capacity(32);
-    for i in 0..64 {
-        v.push(i);
-    }
-    log::info!("Allocator works");
-}
 
 #[no_mangle]
 extern "C" fn main(payload_base: *mut u8, payload_size: usize) -> isize {
@@ -65,31 +45,6 @@ extern "C" fn main(payload_base: *mut u8, payload_size: usize) -> isize {
     syscall_benchmark::check_heap_not_io_mapped();
     log::info!("dom0 benchmark done");
     syscall_benchmark::exit_qemu(syscall_benchmark::EXIT_SUCCESS)
-}
-fn thread_1_main() {
-    log::info!("hello from thread_1_main");
-    loop {
-        unsafe {
-            let error_code = asys::sys_send_empty_try_schedule(0);
-            if error_code != 0 {
-                log::info!("sys_new_thread failed {:?}", error_code);
-                return;
-            }
-        }
-    }
-}
-
-fn dom_1_main() {
-    log::info!("hello from dom_1_main");
-    loop {
-        unsafe {
-            let error_code = asys::sys_send_empty_try_schedule(0);
-            if error_code != 0 {
-                log::info!("sys_send_empty_try_schedule failed {:?}", error_code);
-                return;
-            }
-        }
-    }
 }
 
 /// The kernel panic handler.
