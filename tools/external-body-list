@@ -1,5 +1,6 @@
-# Every live external_body in kernel/verified, checked by atmo test against the reason line beside
-# each attribute. Fields, separated by tabs: path under kernel/verified, item, class, reason.
+# Every live external_body in kernel/verified, checked by tools/check-external-body.py against the
+# reason line beside each attribute. Fields, separated by tabs: path under kernel/verified, item,
+# class, reason.
 #
 # glue      hardware or assembly leaf glue, the only unverified code CLAUDE.md allows
 # gap       uses something this Verus cannot check: a raw pointer, a conjured permission, uninit memory

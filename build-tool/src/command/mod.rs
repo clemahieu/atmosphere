@@ -10,7 +10,6 @@ macro_rules! unwrap_command {
     };
 }
 
-mod external_body;
 mod gdb;
 mod run;
 mod test;

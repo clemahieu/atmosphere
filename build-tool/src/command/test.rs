@@ -10,7 +10,7 @@ use futures::future::join_all;
 use tokio::fs;
 use tokio::process::Command;
 
-use super::{external_body, verify, GlobalOpts, SubCommand};
+use super::{verify, GlobalOpts, SubCommand};
 use crate::error::Result;
 use crate::project::{BuildOptions, Project, ProjectHandle};
 
@@ -19,6 +19,10 @@ const VERIFY_ALLOWANCE_PATH: &str = "tools/verify-allowance";
 
 /// The license check over every package in Cargo.lock, relative to the project root.
 const LICENSE_CHECK: &str = "tools/check-licenses.py";
+
+/// The check that every external_body in kernel/verified is listed with its reason, relative to the
+/// project root.
+const EXTERNAL_BODY_CHECK: &str = "tools/check-external-body.py";
 
 /// The license guard's tests, relative to the project root.
 const LICENSE_GUARD_TEST: &str = ".claude/hooks/license-guard-test.sh";
@@ -57,7 +61,7 @@ pub(super) async fn run(global: GlobalOpts) -> Result<()> {
         ("license", check_licenses(&project).await),
         ("license guard", check_license_guard(&project).await),
         ("verify", check_verify(&project).await),
-        ("external body", external_body::check(&project)),
+        ("external body", check_external_body(&project).await),
         ("design index", check_design_index(&project).await),
         ("boot stack", check_boot_stack(&project).await),
         ("coverage", check_coverage(&project).await),
@@ -160,6 +164,13 @@ async fn build_members(project: &ProjectHandle) -> Result<usize> {
 async fn check_licenses(project: &ProjectHandle) -> Result<String> {
     run_check(project, LICENSE_CHECK, &["--test"]).await?;
     let output = check_output(project, LICENSE_CHECK).await?;
+    Ok(output.trim_end().to_string())
+}
+
+/// Runs the external_body check's own tests, then the check over kernel/verified.
+async fn check_external_body(project: &ProjectHandle) -> Result<String> {
+    run_check(project, EXTERNAL_BODY_CHECK, &["--test"]).await?;
+    let output = check_output(project, EXTERNAL_BODY_CHECK).await?;
     Ok(output.trim_end().to_string())
 }
 
