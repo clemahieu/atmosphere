@@ -146,13 +146,15 @@ impl CapKernel {
     }
 
     /// Index i of the table at root holds a capability with the control right naming a process or a
-    /// thread.
+    /// thread that is not dead. A destroyed target waits for retype's teardown, so destroying it again
+    /// is refused: see design/teardown-driven-by-retype/.
     pub open spec fn can_destroy(&self, root: usize, i: usize) -> bool {
         let n = self.tables.node_of(root, i);
         &&& self.tables.has_slot(root, i)
         &&& self.is_cap(n)
         &&& (self.payload_of(n).kind is Process || self.payload_of(n).kind is Thread)
         &&& self.payload_of(n).rights & right_bit(Right::Control) != 0
+        &&& !self.cap_dead(n)
     }
 
     /// The control capability at index i of the table at root names core c's current thread, or the
@@ -206,8 +208,8 @@ impl CapKernel {
     /// that core finds its current thread's process dead at its next kernel entry; its threads, table,
     /// space, references and capabilities stay as they were. A thread is destroyed as
     /// thread_destroyed says. Destroying the caller's own thread or its own process leaves the caller's
-    /// thread to be moved off by check_current before it returns to user mode. The index comes from
-    /// user space, so it can be refused, and a refusal changes nothing.
+    /// thread to be moved off by check_current before it returns to user mode. A target already dead is
+    /// refused. The index comes from user space, so it can be refused, and a refusal changes nothing.
     pub fn destroy(&mut self, c: usize, root: usize, i: usize) -> (ret: bool)
         requires
             old(self).wf(),
@@ -256,6 +258,9 @@ impl CapKernel {
             assert(right_bit(Right::Control) == 128);
         }
         if payload.rights & 128 == 0 {
+            return false;
+        }
+        if self.is_cap_dead(n, payload) {
             return false;
         }
         match payload.kind {
