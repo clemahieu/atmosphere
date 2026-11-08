@@ -712,6 +712,34 @@ pub proof fn lemma_adds_object_discharges_retype(
     }
 }
 
+/// A retype followed by a local step that removes no capability is one retype: the local step changes
+/// nothing a process can see and grows no reach, so what the two do is what the retype may. A thread's
+/// retype is one, its binding under the process capability being the local step.
+pub proof fn lemma_retype_then_local(a: State, b: State, c: State, p: ObjectId, untyped: NodeId, object: ObjectId)
+    requires
+        discharges(a, b, p, Effect::Retype { untyped, object }),
+        discharges(b, c, p, Effect::Local),
+        forall|n: NodeId| #[trigger] b.names.contains_key(n) ==> c.names.contains_key(n),
+    ensures
+        discharges(a, c, p, Effect::Retype { untyped, object }),
+{
+    let e = Effect::Retype { untyped, object };
+    assert forall|o: ObjectId| #[trigger] State::changed(a, c, o) implies may_change(a, e, o) by {
+        if !State::changed(a, b, o) {
+            assert(State::changed(b, c, o));
+            assert(may_change(b, Effect::Local, o));
+        }
+    }
+    assert forall|n: NodeId| #[trigger] State::removed(a, c, n) implies may_remove(a, p, e, n) by {
+        assert(State::removed(a, b, n));
+    }
+    assert forall|r: ObjectId, o: ObjectId| #[trigger] c.reach(r, o) && !a.reach(r, o) implies may_grow(a, p, e, r, o) by {
+        if !b.reach(r, o) {
+            assert(may_grow(b, p, Effect::Local, r, o));
+        }
+    }
+}
+
 /// post is pre without capability n, which p held. Nothing else changes, so the parent map still says
 /// what it said.
 pub open spec fn removes_cap(pre: State, post: State, p: ObjectId, n: NodeId) -> bool {

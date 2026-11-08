@@ -1580,10 +1580,10 @@ impl CapKernel {
         assert(b.names[child] == base);
     }
 
-    /// Retypes the free order-1 block at `base` as a thread, under the untyped at index `from` of the
-    /// table at `root`, with its capability at the empty index `to`. All of these come from user space,
-    /// and a refusal changes nothing.
-    pub fn retype_thread(&mut self, root: usize, from: usize, to: usize, base: usize) -> (ret: bool)
+    /// Types the free order-1 block at `base` as a thread bound to no process, under the untyped at
+    /// index `from` of the table at `root`, with its capability at the empty index `to`. A refusal
+    /// changes nothing. Only retype_thread calls it, and binds the thread in the same step.
+    fn type_thread(&mut self, root: usize, from: usize, to: usize, base: usize) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
@@ -1591,6 +1591,16 @@ impl CapKernel {
             final(self).wf(),
             !ret ==> *final(self) == *old(self),
             ret ==> old(self).can_retype(root, from, to, base, THREAD_ORDER),
+            ret ==> base as int + 8192 <= NODE_SPACE as int,
+            ret ==> final(self).processes == old(self).processes,
+            ret ==> final(self).tables.roots == old(self).tables.roots,
+            ret ==> forall|x: usize| #[trigger] old(self).is_cap(x) ==> {
+                &&& final(self).is_cap(x)
+                &&& final(self).payload_of(x) == old(self).payload_of(x)
+                &&& final(self).list.nodes@[x as int].depth == old(self).list.nodes@[x as int].depth
+            },
+            ret ==> forall|q: int| 0 <= q < NUM_PAGES && !(base / 4096 <= q < base / 4096 + 2)
+                ==> #[trigger] final(self).blocks.pages@[q] == old(self).blocks.pages@[q],
             ret ==> {
                 let parent = old(self).tables.node_of(root, from);
                 let child = old(self).tables.node_of(root, to);
@@ -1776,8 +1786,14 @@ impl CapKernel {
                 implies post.list.parent@.contains_key(n) && post.list.parent@[n] == pre.list.parent@[n] by {
                 pre.lemma_mapping_node(n);
             }
-            assert forall|x: usize| #[trigger] pre.is_cap(x) implies post.is_cap(x) && post.payload_of(x) == pre.payload_of(x) by {
+            assert forall|x: usize| #[trigger] pre.is_cap(x) implies {
+                &&& post.is_cap(x)
+                &&& post.payload_of(x) == pre.payload_of(x)
+                &&& post.list.nodes@[x as int].depth == pre.list.nodes@[x as int].depth
+            } by {
                 Self::lemma_space_cap_frame(pre, post, child, x);
+                pre.lemma_slot_bound(x);
+                assert(mid.nodes@[x as int] == pre.list.nodes@[x as int]);
             }
             Self::lemma_mappings_grown(pre, post, page, 1);
             assert forall|x: usize| #[trigger] post.is_cap(x) && post.payload_of(x).kind is Device
@@ -1806,6 +1822,112 @@ impl CapKernel {
             let live = |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live;
             assert(pre.view().holds_right(root, parent, Right::Retype));
             lemma_adds_object_discharges_retype(pre.view(), post.view(), root, parent, child, live, base);
+        }
+        true
+    }
+
+    /// Retypes the free order-1 block at `base` as a thread in the process whose capability is at
+    /// index `j`, under the untyped at index `from` of the table at `root`, with its capability at the
+    /// empty index `to`. In one step the thread is typed, its control capability derived under the
+    /// untyped and its binding, node 0 of its node page, under the process capability. All of these
+    /// come from user space; every refusal is read before the block is typed, and changes nothing.
+    /// Nothing binds a thread after this, so its process is fixed for its life. See
+    /// design/thread-bound-at-retype/.
+    pub fn retype_thread(&mut self, root: usize, from: usize, to: usize, base: usize, j: usize) -> (ret: bool)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(root),
+        ensures
+            final(self).wf(),
+            !ret ==> *final(self) == *old(self),
+            ret ==> old(self).can_retype(root, from, to, base, THREAD_ORDER),
+            ret ==> old(self).can_hold_thread(root, j),
+            ret ==> {
+                let parent = old(self).tables.node_of(root, from);
+                let child = old(self).tables.node_of(root, to);
+                let n = old(self).tables.node_of(root, j);
+                let p = old(self).payload_of(n).base;
+                let page = (base / 4096) as int;
+                &&& old(self).view().holds_right(root, parent, Right::Retype)
+                &&& old(self).blocks.pages@[page].kind is Free
+                &&& old(self).blocks.pages@[page + 1].kind is Free
+                &&& final(self).blocks.pages@[page].kind is Base
+                &&& final(self).blocks.pages@[page].object is Thread
+                &&& final(self).blocks.pages@[page].order == 1
+                &&& final(self).blocks.pages@[page].refs == 1
+                &&& final(self).threads.records@.contains_key(base)
+                &&& final(self).threads.records@[base].value() == ThreadRecord {
+                    state: ThreadState::Inactive,
+                    frame: zero_registers(),
+                    pending_stop: false,
+                    process: Some(p),
+                }
+                &&& final(self).list.is_child(n, base)
+                &&& final(self).list.nodes@[base as int].live
+                &&& final(self).list.nodes@[base as int].kind is Binding
+                &&& forall|i: int| base < i < base + NODES_PER_PAGE ==> !#[trigger] final(self).list.nodes@[i].live
+                &&& block_refs(&final(self).blocks, BlockRef::Small(p / 4096))
+                    == block_refs(&old(self).blocks, BlockRef::Small(p / 4096)) + 1
+                &&& final(self).processes.bound@ == old(self).processes.bound@.insert(p, old(self).processes.bound@[p].insert(base))
+                &&& !final(self).can_delete(root, j)
+                &&& final(self).view().holds(root, child)
+                &&& final(self).payload_of(child) == thread_of(base)
+                &&& final(self).payload_of(child).rights & right_bit(Right::Control) != 0
+                &&& final(self).list.is_child(parent, child)
+                &&& discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base })
+            },
+    {
+        let ghost pre = *old(self);
+        let n = match self.process_slot(root, j) {
+            Some(found) => found,
+            None => { return false; },
+        };
+        if !self.type_thread(root, from, to, base) {
+            return false;
+        }
+        let ghost mid = *self;
+        proof {
+            pre.lemma_process_cap(n);
+            let q = (pre.payload_of(n).base / 4096) as int;
+            assert(pre.blocks.pages@[q].object is Process);
+            assert(!(base / 4096 <= q < base / 4096 + 2)) by {
+                assert(pre.blocks.pages@[(base / 4096) as int].kind is Free);
+                assert(pre.blocks.pages@[(base / 4096) as int + 1].kind is Free);
+            }
+            assert(mid.blocks.pages@[q] == pre.blocks.pages@[q]);
+            assert(mid.is_cap(n));
+        }
+        self.bind_thread(n, base);
+        proof {
+            let post = *self;
+            let parent = pre.tables.node_of(root, from);
+            let child = pre.tables.node_of(root, to);
+            let p = pre.payload_of(n).base;
+            let page = (base / 4096) as int;
+            let q = (p / 4096) as int;
+            mid.lemma_thread_node_apart(base);
+            mid.lemma_process_cap(n);
+            assert(mid.blocks.pages@[page].object is Thread);
+            assert(block_typed(&mid.blocks, BlockRef::Small(page as usize)));
+            assert(BlockRef::Small(page as usize) != BlockRef::Small(p / 4096));
+            assert(block_refs(&post.blocks, BlockRef::Small(page as usize)) == block_refs(&mid.blocks, BlockRef::Small(page as usize)));
+            assert forall|i: int| base < i < base + NODES_PER_PAGE implies !#[trigger] post.list.nodes@[i].live by {
+                assert(!mid.list.nodes@[i].live);
+            }
+            assert(child != base);
+            assert(mid.is_cap(child));
+            assert(post.is_cap(child));
+            assert(post.list.nodes@[child as int].live);
+            lemma_has(post.list.seq@, child);
+            assert(post.list.is_child(parent, child));
+            assert(post.view().holds(root, child));
+            Self::lemma_leaf_added_discharges(mid, post, root, n, base);
+            assert forall|x: NodeId| #[trigger] mid.view().names.contains_key(x) implies post.view().names.contains_key(x) by {
+                assert(post.is_cap(x) == mid.is_cap(x));
+            }
+            lemma_retype_then_local(pre.view(), mid.view(), post.view(), root, parent, base);
+            assert(post.tables.node_of(root, j) == n);
+            post.lemma_parent_undeletable(root, j, base);
         }
         true
     }
@@ -2304,19 +2426,16 @@ impl CapKernel {
         }
     }
 
-    /// Index i of the table at root holds a thread's control capability, and index j a process's, with
-    /// the control right too, below the depth limit; the thread is bound to no process, and the process's
-    /// block can take one more reference.
-    pub open spec fn can_bind(&self, root: usize, i: usize, j: usize) -> bool {
+    /// Index j of the table at root holds a process's capability with the control right, below the
+    /// depth limit, and the process's block can take one more reference: a thread can be retyped into
+    /// that process.
+    pub open spec fn can_hold_thread(&self, root: usize, j: usize) -> bool {
         let n = self.tables.node_of(root, j);
-        let t = self.payload_of(self.tables.node_of(root, i)).base;
-        &&& self.can_control(root, i)
         &&& self.tables.has_slot(root, j)
         &&& self.is_cap(n)
         &&& self.payload_of(n).kind is Process
         &&& self.payload_of(n).rights & right_bit(Right::Control) != 0
         &&& self.list.nodes@[n as int].depth < MAX_DEPTH
-        &&& !self.list.nodes@[t as int].live
         &&& block_refs(&self.blocks, BlockRef::Small(self.payload_of(n).base / 4096)) != usize::MAX
     }
 
@@ -2606,42 +2725,19 @@ impl CapKernel {
         assert(post.frames_wf());
     }
 
-    /// Binds the thread whose control capability is at index i to the process whose capability is at
-    /// index j: node t, the first of the thread's node page, becomes a binding below that capability,
-    /// holding a reference on the process's block. The indices come from user space, so either can be
-    /// refused, as is a thread already bound, and a refusal changes nothing. See
-    /// design/process-holds-capabilities/.
-    pub fn bind_process(&mut self, root: usize, i: usize, j: usize) -> (ret: bool)
+    /// Finds the process capability at index j, which a thread is retyped into. The index comes from
+    /// user space.
+    fn process_slot(&self, root: usize, j: usize) -> (ret: Option<usize>)
         requires
-            old(self).wf(),
-            old(self).tables.roots@.contains_key(root),
+            self.wf(),
+            self.tables.roots@.contains_key(root),
         ensures
-            final(self).wf(),
-            ret == old(self).can_bind(root, i, j),
-            !ret ==> *final(self) == *old(self),
-            ret ==> Self::bound_to(
-                *old(self),
-                *final(self),
-                old(self).tables.node_of(root, j),
-                old(self).payload_of(old(self).tables.node_of(root, i)).base,
-            ),
-            ret ==> forall|r: usize, x: usize, k: usize| #[trigger] final(self).can_bind(r, x, k)
-                ==> final(self).payload_of(final(self).tables.node_of(r, x)).base
-                    != old(self).payload_of(old(self).tables.node_of(root, i)).base,
-            ret ==> !final(self).can_delete(root, j),
-            discharges(old(self).view(), final(self).view(), root, Effect::Local),
+            ret is Some == self.can_hold_thread(root, j),
+            ret is Some ==> ret->0 == self.tables.node_of(root, j),
     {
-        let ghost pre = *old(self);
-        proof {
-            pre.lemma_no_op_discharges(root);
-        }
-        let (c, t) = match self.thread_control(root, i) {
-            Some(found) => found,
-            None => { return false; },
-        };
         let (n, cap) = match self.tables.lookup(&self.list, root, j) {
             Some(found) => found,
-            None => { return false; },
+            None => { return None; },
         };
         let node = self.list.get(n);
         let live_cap = match node.kind {
@@ -2649,7 +2745,7 @@ impl CapKernel {
             _ => false,
         };
         if !live_cap {
-            return false;
+            return None;
         }
         proof {
             self.lemma_slot(root, j);
@@ -2661,24 +2757,46 @@ impl CapKernel {
             _ => false,
         };
         if !process || cap.rights & 128 == 0 || node.depth >= MAX_DEPTH {
-            return false;
+            return None;
         }
         proof {
             assert(right_bit(Right::Control) == 128);
             self.lemma_process_cap(n);
-            self.lemma_thread_node_apart(t);
         }
-        if self.list.get(t).live {
-            return false;
+        if self.blocks.pages.get(cap.base / 4096).refs == usize::MAX {
+            return None;
         }
-        let p = cap.base;
-        if !add_block_ref(&mut self.blocks, BlockRef::Small(p / 4096)) {
-            return false;
-        }
+        Some(n)
+    }
+
+    /// Binds thread t, bound to nothing, to the process capability n names: node t, the first of the
+    /// thread's node page, becomes a binding below n, holding a reference on the process's block. Only
+    /// retype_thread calls it, on the thread it has just typed. See design/thread-bound-at-retype/.
+    fn bind_thread(&mut self, n: usize, t: usize)
+        requires
+            old(self).wf(),
+            old(self).is_cap(n),
+            old(self).payload_of(n).kind is Process,
+            old(self).list.nodes@[n as int].depth < MAX_DEPTH,
+            block_refs(&old(self).blocks, BlockRef::Small(old(self).payload_of(n).base / 4096)) != usize::MAX,
+            old(self).threads.records@.contains_key(t),
+            old(self).threads.records@[t].value().process is None,
+            !old(self).list.nodes@[t as int].live,
+        ensures
+            final(self).wf(),
+            Self::bound_to(*old(self), *final(self), n, t),
+            forall|x: usize| #[trigger] final(self).is_cap(x) == old(self).is_cap(x),
+    {
+        let ghost pre = *old(self);
         proof {
+            pre.lemma_process_cap(n);
+            pre.lemma_thread_node_apart(t);
             pre.list.lemma_seq_fits();
             pre.lemma_slot_bound(n);
         }
+        let p = self.tables.payload_at(&self.list, n).base;
+        let added = add_block_ref(&mut self.blocks, BlockRef::Small(p / 4096));
+        assert(added);
         self.list.derive(n, t, NodeKind::Binding);
         let ptr = PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * 4096);
         let record = *ptr.borrow(Tracked(self.threads.records.borrow().tracked_borrow(t)));
@@ -2699,21 +2817,10 @@ impl CapKernel {
         self.processes.bound = Ghost(pre.processes.bound@.insert(p, pre.processes.bound@[p].insert(t)));
         proof {
             let post = *self;
-            assert(pre.threads.records@[t].value().process is None) by {
-                if pre.threads.records@[t].value().process is Some {
-                    assert(pre.list.nodes@[t as int].live);
-                }
-            }
             assert(Self::bound_to(pre, post, n, t));
             Self::lemma_bind_wf(pre, post, n, t);
-            Self::lemma_leaf_added_discharges(pre, post, root, n, t);
-            assert forall|r: usize, x: usize, k: usize| #[trigger] post.can_bind(r, x, k)
-                implies post.payload_of(post.tables.node_of(r, x)).base != t by {
-                assert(post.list.nodes@[t as int].live);
-            }
-            post.lemma_parent_undeletable(root, j, t);
+            Self::lemma_bind_nodes(pre, post, n, t);
         }
-        true
     }
 }
 

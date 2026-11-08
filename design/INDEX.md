@@ -2,7 +2,7 @@
 
 # Design decisions
 
-20 records: 20 active, 0 superseded.
+21 records: 21 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -40,7 +40,7 @@ in `revisit if` what would make it worth reopening.
 - **[one-lock-bounded-steps](./one-lock-bounded-steps/DECISION.md)** (2026-11-06): All of the Kernel value is under one lock with IF clear from entry to exit; every operation does a bounded amount of work and long work returns again with progress in an object, so the invariant holds at every step boundary and other cores interleave only there; per-CPU state outside the lock is only stacks, GDT, TSS and the switch decision, and only core c writes its own current thread.
   - *confidence:* The non-preemptible rule is in the tree since the interrupt change that made it true; the per-CPU split is stated in kernel/verified/capability/kernel.rs; the budget's value is unmeasured.
   - *revisit if:* The bounded-step budget measured on this kernel gives a lock hold time a workload cannot tolerate, which is the case for a smaller node rather than for preemption.
-- **[process-holds-capabilities](./process-holds-capabilities/DECISION.md)** (2026-11-07): Capabilities belong to a process, not a thread; its table is a root of 512 pointers in the process object and leaves of 127 slots retyped on demand; no capability names a table and no table holds a table, so the capability graph has no cycles and lookup is constant time. A process is an order-3 block of its table's root, its record and its address space; a thread holds no slots: it is an order-1 block of a node page for its bindings and a page for its record and XSAVE area.
+- **[process-holds-capabilities](./process-holds-capabilities/DECISION.md)** (2026-11-08): Capabilities belong to a process, not a thread; its table is a root of 512 pointers in the process object and leaves of 127 slots retyped on demand; no capability names a table and no table holds a table, so the capability graph has no cycles and lookup is constant time. A process is an order-3 block of its table's root, its record and its address space; a thread holds no slots: it is an order-1 block of a node page for its bindings and a page for its record and XSAVE area.
   - *confidence:* A structural choice; the no-cycles property it buys is what rules out the delete-cascade problem Nevill's thesis describes, and the table invariant is proven in kernel/verified/capability/table.rs.
   - *revisit if:* Threads in one process need distinct authority, or a process needs more slots than the two levels give, or a table must be passed as a capability, or a supported core's XSAVE area outgrows the 3072 bytes a thread's record page leaves it.
 - **[revoke-by-depth-first-list](./revoke-by-depth-first-list/DECISION.md)** (2026-11-06): All capabilities, mappings and bindings derived from the boot root are one doubly linked list in depth-first order, a child straight after its parent; a node's descendants are the run after it with greater depth, and revoke unlinks leaves of that run a bounded number per kernel entry.
@@ -55,12 +55,15 @@ in `revisit if` what would make it worth reopening.
 - **[syscall-abi-in-registers](./syscall-abi-in-registers/DECISION.md)** (2026-11-06): One entry: rax the operation, rdi the capability index, rsi, rdx, r8, r9 and r10 the arguments; rax returns status in its low 16 bits and a badge in the upper 48. A send carries five words, four with a grant; the kernel copies nothing from user memory for IPC, and larger data goes through shared frames.
   - *confidence:* A packing judgement; the preserved-register set is the one the existing syscall convention keeps.
   - *revisit if:* A message that does not fit five words is on a hot path and the shared-frame ring is measured as its cost, or a second entry is needed for a different privilege transition.
-- **[teardown-driven-by-retype](./teardown-driven-by-retype/DECISION.md)** (2026-11-06): An object is dead when its references reach zero or, for a process or thread, when destroyed through a control capability; every operation then refuses it. There is no kernel list of dead objects: a retype of the block by the holder of its untyped detaches, then dismantles, a bounded slice per entry, until the block is free. The kernel never kills on its own.
+- **[teardown-driven-by-retype](./teardown-driven-by-retype/DECISION.md)** (2026-11-08): An object is dead when its references reach zero or, for a process or thread, when destroyed through a control capability; every operation then refuses it. There is no kernel list of dead objects: a retype of the block by the holder of its untyped detaches, then dismantles, a bounded slice per entry, until the block is free. The kernel never kills on its own.
   - *confidence:* The human's choice of who pays, and of the kernel deciding no kill policy, after a precedent survey. The block state machine, references, zeroing, reclaim and two-way detach are in the tree; the dismantle arms land with each object kind.
   - *revisit if:* Memory held by dead objects nobody retypes becomes a real shortage that pager policy cannot collect, or a workload needs the kernel to kill a whole process on a fault.
-- **[theorem-over-reach](./theorem-over-reach/DECISION.md)** (2026-11-06): A process can read or write an object only if a capability to it is reachable from its own capabilities; every operation changes objects only by a relation of its kind over that reach; reach grows only by grant or retype. Isolation of disjoint subsystems is a corollary.
+- **[theorem-over-reach](./theorem-over-reach/DECISION.md)** (2026-11-08): A process can read or write an object only if a capability to it is reachable from its own capabilities; every operation changes objects only by a relation of its kind over that reach; reach grows only by grant or retype. Isolation of disjoint subsystems is a corollary.
   - *confidence:* The statement is the human's choice; the definition and the per-operation shape are in the tree, kernel/verified/capability/reach.rs, and each operation's leaf discharges it as it lands. The composed theorem is not yet proven.
   - *revisit if:* A kernel operation is wanted whose effect cannot be written as a relation over the caller's reach, or a shared object must be reachable without any capability naming it.
+- **[thread-bound-at-retype](./thread-bound-at-retype/DECISION.md)** (2026-11-08): Retyping a thread names a process capability too: the thread capability goes under the untyped and the process binding under the process capability in one step, so the only holder of the new control capability already controls the process and no reach grows. There is no bind operation. Revoking the binding leaves an inert thread that cannot be bound again; its registers stay readable, and its untyped's holder retypes its block.
+  - *confidence:* Reasoned over kernel/verified/capability/reach.rs and the landed retype and bind, not yet proven: the widened retype lemma and the fact it needs are named below. That the step grows no reach is arithmetic on the model. Choosing construction over a sole-holder bind, which keeps the same theorem, is judgement.
+  - *revisit if:* A workload needs a thread moved to another process without being recreated, carrying its registers in the kernel rather than through its supervisor reading and writing them; or a binding that reach reads must be set on an object that exists before the authority it binds, as a device does, for which the sole-holder rule below is the shape to use instead.
 - **[trust-boundary](./trust-boundary/DECISION.md)** (2026-11-05): The kernel's theorem holds whatever a pager does, so a swapped per-application pager needs no assurance for anyone else's safety. Isolation between two subsystems also depends on the component that divided memory between them, which is tier 3 today, and the security claim states that dependence.
   - *confidence:* The human's choice of the cheapest option with the gap explicit. The tier can rise later; raising it is new work.
   - *revisit if:* End-to-end isolation between real subsystems is required as a proven property, which means raising the divider's tier: full coverage, or a small proven divider specified under its own parent's revocation.
@@ -78,7 +81,7 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `abi`: one-kernel-instance, syscall-abi-in-registers
 - `address-space`: address-spaces-as-objects, vmm-over-svm
 - `boot`: root-process-at-boot
-- `capability`: address-spaces-as-objects, capability-names-a-block, cpu-time-as-capability, ipc-with-reply-object, process-holds-capabilities, revoke-by-depth-first-list, root-process-at-boot, sharing-by-derive, teardown-driven-by-retype, theorem-over-reach, untyped-memory, vmm-over-svm
+- `capability`: address-spaces-as-objects, capability-names-a-block, cpu-time-as-capability, ipc-with-reply-object, process-holds-capabilities, revoke-by-depth-first-list, root-process-at-boot, sharing-by-derive, teardown-driven-by-retype, theorem-over-reach, thread-bound-at-retype, untyped-memory, vmm-over-svm
 - `gate`: cut-over-on-a-branch
 - `ipc`: ipc-with-reply-object, syscall-abi-in-registers
 - `kernel-state`: multicore-kernel-shape, one-kernel-instance, one-lock-bounded-steps
@@ -86,13 +89,13 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `lock`: flush-without-waiting, multicore-kernel-shape, one-lock-bounded-steps
 - `memory`: address-spaces-as-objects, capability-names-a-block, flush-without-waiting, teardown-driven-by-retype, untyped-memory
 - `multicore`: flush-without-waiting, multicore-kernel-shape, one-kernel-instance, one-lock-bounded-steps
-- `process`: cut-over-on-a-branch, process-holds-capabilities
-- `proof`: isolation-claim, theorem-over-reach, trust-boundary
+- `process`: cut-over-on-a-branch, process-holds-capabilities, thread-bound-at-retype
+- `proof`: isolation-claim, theorem-over-reach, thread-bound-at-retype, trust-boundary
 - `purity`: untyped-memory
 - `revoke`: revoke-by-depth-first-list, sharing-by-derive, teardown-driven-by-retype
 - `scheduling`: cpu-time-as-capability
 - `security`: isolation-claim, theorem-over-reach, trust-boundary
-- `thread`: process-holds-capabilities
+- `thread`: process-holds-capabilities, thread-bound-at-retype
 - `tiers`: trust-boundary
-- `verified`: cut-over-on-a-branch, flush-without-waiting, one-lock-bounded-steps, revoke-by-depth-first-list, theorem-over-reach
+- `verified`: cut-over-on-a-branch, flush-without-waiting, one-lock-bounded-steps, revoke-by-depth-first-list, theorem-over-reach, thread-bound-at-retype
 - `virtualization`: vmm-over-svm
