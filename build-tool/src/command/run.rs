@@ -14,6 +14,9 @@ use crate::emulator::{CpuModel, Emulator, EmulatorExit, GdbServer, Qemu, RunConf
 use crate::error::Result;
 use crate::project::{Binary, BuildOptions, Project};
 
+/// The feature of the kernel and dom0 that selects the capability kernel.
+const CAPABILITY: &str = "capability";
+
 /// Run Atmosphere.
 #[derive(Debug, Parser)]
 pub struct Opts {
@@ -65,6 +68,12 @@ pub struct Opts {
     #[clap(long)]
     lock_stats: bool,
 
+    /// Boot the capability kernel's syscall entry and its dom0 instead of the old ones.
+    ///
+    /// On the cut-over branch only; see design/cut-over-on-a-branch/.
+    #[clap(long)]
+    capability: bool,
+
     /// Whether to emit full output from the emulator.
     #[clap(long)]
     full_output: bool,
@@ -104,6 +113,9 @@ pub(super) async fn run(global: GlobalOpts) -> Result<()> {
         if local.lock_stats {
             kernel_opts.features.push("lock_stats".to_string());
         }
+        if local.capability {
+            kernel_opts.features.push(CAPABILITY.to_string());
+        }
         kernel_crate
             .build(&kernel_opts)
             .await?
@@ -116,9 +128,13 @@ pub(super) async fn run(global: GlobalOpts) -> Result<()> {
         .await?
         .expect("No binary was reproduced for the early loader");
 
+    let mut dom0_opts = opts.clone();
+    if local.capability {
+        dom0_opts.features.push(CAPABILITY.to_string());
+    }
     let dom0 = project
         .dom0()
-        .build(&opts)
+        .build(&dom0_opts)
         .await?
         .expect("No binary was reproduced for Dom0");
 
@@ -260,6 +276,12 @@ mod tests {
     #[test]
     fn no_kvm_parses() {
         assert!(Opts::try_parse_from(["run", "--no-kvm"]).unwrap().no_kvm);
+    }
+
+    #[test]
+    fn capability_parses() {
+        assert!(Opts::try_parse_from(["run", "--capability"]).unwrap().capability);
+        assert!(!Opts::try_parse_from(["run"]).unwrap().capability);
     }
 
     #[test]

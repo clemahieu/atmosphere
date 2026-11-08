@@ -2,6 +2,7 @@
 
 use core::arch::{asm, global_asm, naked_asm};
 
+#[cfg(not(feature = "capability"))]
 use asys::MAX_SYSCALLS;
 use memoffset::offset_of;
 use x86::segmentation::SegmentSelector;
@@ -9,6 +10,7 @@ use x86::{msr, Ring};
 
 use crate::cpu::Cpu;
 use crate::gdt::GlobalDescriptorTable;
+#[cfg(not(feature = "capability"))]
 use crate::kernel;
 use crate::thread::SwitchDecision;
 use verified::capability::operation;
@@ -24,9 +26,11 @@ const SYSCALL32_ENTRY_EIP: u32 = 0; // nein
 
 // Every name a process passes through these calls resolves within the caller's kernel instance, so
 // the ABI has no machine-wide names. Why, and what to do about a call that needs one: design/one-kernel-instance/.
+#[cfg(not(feature = "capability"))]
 static mut SYSCALLS: [u64; MAX_SYSCALLS] = [0; MAX_SYSCALLS];
 
 // sys_entry calls handlers with the C convention, so the six argument entry must declare it.
+#[cfg(not(feature = "capability"))]
 const _: extern "C" fn(usize, usize, usize, &mut Registers, usize, usize) = kernel::sys_new_proc;
 
 // User space invokes operations by asys's numbers and reads asys's statuses; they must be the ones the
@@ -83,6 +87,13 @@ pub unsafe fn init_cpu() {
     efer |= 0x1;
     msr::wrmsr(msr::IA32_EFER, efer);
 
+    #[cfg(not(feature = "capability"))]
+    register_handlers();
+}
+
+/// Fills the old kernel's table of handlers, which its entry indexes by the number in rax.
+#[cfg(not(feature = "capability"))]
+unsafe fn register_handlers() {
     SYSCALLS[asys::__NR_PRINT] = kernel::sys_print as *const () as u64;
     SYSCALLS[asys::__NR_MMAP] = kernel::sys_mmap as *const () as u64;
     SYSCALLS[asys::__NR_MRESOLVE] = kernel::sys_resolve as *const () as u64;
@@ -125,9 +136,9 @@ pub unsafe fn enter_thread(regs: &Registers) -> ! {
     )
 }
 
-#[cfg(debug_assertions)]
+#[cfg(all(not(feature = "capability"), debug_assertions))]
 global_asm!(
-    ".macro push_dummy_caller_saved",
+    ".macro push_caller_saved",
     "push 0",         // rax
     "push 0",         // rdi
     "push 0",         // rsi
@@ -140,12 +151,66 @@ global_asm!(
     ".endm",
 );
 
-#[cfg(not(debug_assertions))]
+#[cfg(all(not(feature = "capability"), not(debug_assertions)))]
 global_asm!(
-    ".macro push_dummy_caller_saved",
+    ".macro push_caller_saved",
     "push 0",         // rax: the one slot a return path reads
     "sub rsp, 8*8",
     ".endm",
+);
+
+// The capability kernel's frame holds the operation and its arguments, which the dispatch reads from it.
+// r10 holds the user's rsp by now, so its slot is not the user's r10.
+#[cfg(feature = "capability")]
+global_asm!(
+    ".macro push_caller_saved",
+    "push rax",       // rax: the operation
+    "push rdi",       // rdi: the capability's slot
+    "push rsi",
+    "push rdx",
+    "push 0",         // rcx (taken by original rip)
+    "push r8",
+    "push r9",
+    "push 0",         // r10 (taken by original rsp)
+    "push 0",         // r11 (taken by original rflags across syscall)
+    ".endm",
+);
+
+// The old kernel's dispatch: the handler the table holds for the number in rax, called with the
+// arguments in place and the frame in rcx, or -1 in the frame's rax when there is none.
+#[cfg(not(feature = "capability"))]
+global_asm!(
+    ".macro dispatch",
+    "cmp rax, {max_syscalls}",
+    "jae 2f",
+    "shl rax, 3",
+    "lea r11, [rip + {syscalls}]",
+    "add r11, rax",
+    "mov r11, [r11]",
+    "cmp r11, 0",
+    "jz 2f",
+    // handler(arg1, arg2, arg3, registers, arg4, arg5)
+    // rdi, rsi, rdx, (rcx), r8, r9
+    "check_entry_flags",
+    "call r11",
+    "jmp 3f",
+    "2:",
+    "mov qword ptr [rsp + 8*14], -1", // rax: the return paths reload it from the frame
+    "3:",
+    ".endm",
+    max_syscalls = const MAX_SYSCALLS,
+    syscalls = sym SYSCALLS,
+);
+
+// The capability kernel's dispatch: one handler, given the frame in rcx.
+#[cfg(feature = "capability")]
+global_asm!(
+    ".macro dispatch",
+    "mov rdi, rcx",
+    "check_entry_flags",
+    "call {capability_entry}",
+    ".endm",
+    capability_entry = sym capability_entry,
 );
 
 // In a debug build, stop if a syscall reaches its handler with a flag from ENTRY_FLAG_MASK set. r10 is
@@ -191,7 +256,9 @@ extern "C" fn entered_with_flags_set() -> ! {
 //
 // rax on return is the syscall's result. A syscall that blocked and was woken returns 0, whichever
 // thread woke it, and a new thread starts with 0. The frame's rax slot starts at 0 on every entry, so
-// a saved frame never carries a value from an earlier syscall on this core's stack.
+// a saved frame never carries a value from an earlier syscall on this core's stack. The capability
+// kernel's entry saves the operation and its arguments there instead, and its handler always writes
+// the status over the operation.
 #[unsafe(naked)]
 unsafe extern "C" fn sys_entry() -> ! {
     naked_asm!(
@@ -210,7 +277,7 @@ unsafe extern "C" fn sys_entry() -> ! {
         "push rcx",       // rip
         "push 0",         // error_code
 
-        "push_dummy_caller_saved",
+        "push_caller_saved",
 
         "push rbx",       // rbx
         "push rbp",       // rbp
@@ -221,30 +288,9 @@ unsafe extern "C" fn sys_entry() -> ! {
 
         "mov rcx, rsp",
 
-        "cmp rax, {max_syscalls}",
-        "jae 2f",
-
-        // In-range syscall
-        "shl rax, 3",
-        "lea r11, [rip + {syscalls}]",
-        "add r11, rax",
-        "mov r11, [r11]",
-        "cmp r11, 0",
-        "jz 2f",
-
-        // handler(arg1, arg2, arg3, registers, arg4, arg5)
-        // rdi, rsi, rdx, (rcx), r8, r9
-        "check_entry_flags",
-        "call r11",
-
-        "jmp 3f",
-
-        // Invalid syscall
-        "2:",
-        "mov qword ptr [rsp + 8*14], -1", // rax: the return paths reload it from the frame
+        "dispatch",
 
         // Cleanup
-        "3:",
 
         // Three cases:
         // 1. Switch to another thread that was suspended due to a syscall
@@ -336,8 +382,6 @@ unsafe extern "C" fn sys_entry() -> ! {
         user_ss = const GlobalDescriptorTable::USER_SS,
         user_cs = const GlobalDescriptorTable::USER_CS,
         syscall_sp_offset = const offset_of!(Cpu, syscall_sp),
-        max_syscalls = const MAX_SYSCALLS,
-        syscalls = sym SYSCALLS,
 
         switch_decision_offset = const offset_of!(Cpu, switch_decision),
         decision_no_switching = const SwitchDecision::NoSwitching as u64,
@@ -345,10 +389,29 @@ unsafe extern "C" fn sys_entry() -> ! {
     );
 }
 
+#[cfg(not(feature = "capability"))]
 extern "C" fn sys_invalidate_iotlb(bus: usize, device: usize, function: usize, regs: &mut Registers, page: u64) {
     if let Ok(()) = unsafe { crate::iommu::invalidate_iotlb(bus, device, function, page) } {
         regs.rax = 0;
     } else {
         regs.rax = 1;
     }
+}
+
+/// The capability kernel's handler. The verified dispatch decides the status rax returns, and the
+/// kernel logs each invocation, since no operation is wired yet to report anything itself.
+#[cfg(feature = "capability")]
+extern "C" fn capability_entry(regs: &mut Registers) {
+    use crate::bridge::Bridge;
+    use verified::bridge::TrustedBridge;
+
+    let number = regs.rax;
+    let status = operation::dispatch(number);
+    let outcome = match status {
+        operation::STATUS_REFUSED => "refused",
+        _ => "unknown",
+    };
+    log::info!("capability entry: operation {} on slot {}: {}", number, regs.rdi, outcome);
+    regs.rax = status;
+    Bridge::set_switch_decision(SwitchDecision::NoSwitching);
 }

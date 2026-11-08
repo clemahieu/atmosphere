@@ -31,3 +31,8 @@ features = ["log", "medium-ethernet", "proto-ipv4", "proto-dns", "socket-tcp", "
 
 [build-dependencies]
 nasm-rs = "0.3.0"
+
+[features]
+# Run the capability kernel's dom0 instead of the old one, on the cut-over branch only; see
+# design/cut-over-on-a-branch/.
+capability = []

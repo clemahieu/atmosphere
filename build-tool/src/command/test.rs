@@ -57,6 +57,7 @@ pub(super) async fn run(global: GlobalOpts) -> Result<()> {
         ("design index", check_design_index(&project).await),
         ("boot stack", check_boot_stack(&project).await),
         ("coverage", check_coverage(&project).await),
+        ("capability boot", check_capability_boot(&project, local.boot_timeout).await),
         ("iommu boot", check_iommu_boot(&project, local.boot_timeout).await),
         ("boot", check_boot(&project, local.boot_timeout).await),
     ];
@@ -229,8 +230,53 @@ async fn check_iommu_boot(project: &ProjectHandle, timeout: u64) -> Result<Strin
     Ok("translation enabled, device syscalls returned 0, serial log ends with dom0's last line".to_string())
 }
 
+/// Boots the capability kernel's entry and dom0, which exits with success only when the kernel gave the
+/// statuses it expected. Before the plain boots, so the serial.log they leave is the old kernel's.
+async fn check_capability_boot(project: &ProjectHandle, timeout: u64) -> Result<String> {
+    let serial = run_boot(project, timeout, &["run", "--capability"]).await?;
+    if !first_operation_refused(&serial) {
+        return Err(anyhow!("the serial log does not show the first operation refused"));
+    }
+    Ok("exit status 0, the first operation refused in the serial log".to_string())
+}
+
+/// What the kernel logs for each invocation of its capability entry.
+const CAPABILITY_ENTRY: &str = "capability entry: operation ";
+
+/// Whether the capability kernel's first logged invocation is a refusal.
+fn first_operation_refused(serial: &str) -> bool {
+    serial
+        .lines()
+        .find(|line| line.contains(CAPABILITY_ENTRY))
+        .map_or(false, |line| line.contains(": refused"))
+}
+
 /// Runs atmo with `args` and returns the serial log of a boot that reached dom0's last line.
 async fn boot(project: &ProjectHandle, timeout: u64, args: &[&str]) -> Result<String> {
+    let serial = run_boot(project, timeout, args).await?;
+    if !boot_finished(&serial) {
+        return Err(anyhow!("the serial log does not end with dom0's last line"));
+    }
+    if !second_core_idle(&serial) {
+        return Err(anyhow!("the serial log does not show CPU 1 idle on a syscall stack of its own"));
+    }
+    if !second_core_ran_thread(&serial) {
+        return Err(anyhow!("the serial log does not show threads making syscalls on both cores"));
+    }
+    if !serial.contains(SYSCALLS_CONTENDED) {
+        return Err(anyhow!("the serial log does not time a syscall with both cores contending"));
+    }
+    if !serial.contains(FLUSH_ACKNOWLEDGED) {
+        return Err(anyhow!("the serial log does not show CPU 1 acknowledging a flush IPI"));
+    }
+    if !serial.contains(LOCK_CONTENDED) {
+        return Err(anyhow!("the serial log does not show both cores contending for the kernel's lock"));
+    }
+    Ok(serial)
+}
+
+/// Runs atmo with `args` and returns the serial log of a run that exited with status 0.
+async fn run_boot(project: &ProjectHandle, timeout: u64, args: &[&str]) -> Result<String> {
     let root = project.root();
     let log = root.join("serial.log");
     match fs::remove_file(&log).await {
@@ -255,26 +301,7 @@ async fn boot(project: &ProjectHandle, timeout: u64, args: &[&str]) -> Result<St
         return Err(anyhow!("atmo run: {}", status));
     }
 
-    let serial = String::from_utf8_lossy(&fs::read(&log).await?).into_owned();
-    if !boot_finished(&serial) {
-        return Err(anyhow!("the serial log does not end with dom0's last line"));
-    }
-    if !second_core_idle(&serial) {
-        return Err(anyhow!("the serial log does not show CPU 1 idle on a syscall stack of its own"));
-    }
-    if !second_core_ran_thread(&serial) {
-        return Err(anyhow!("the serial log does not show threads making syscalls on both cores"));
-    }
-    if !serial.contains(SYSCALLS_CONTENDED) {
-        return Err(anyhow!("the serial log does not time a syscall with both cores contending"));
-    }
-    if !serial.contains(FLUSH_ACKNOWLEDGED) {
-        return Err(anyhow!("the serial log does not show CPU 1 acknowledging a flush IPI"));
-    }
-    if !serial.contains(LOCK_CONTENDED) {
-        return Err(anyhow!("the serial log does not show both cores contending for the kernel's lock"));
-    }
-    Ok(serial)
+    Ok(String::from_utf8_lossy(&fs::read(&log).await?).into_owned())
 }
 
 fn parse_allowance(text: &str) -> Option<u64> {
@@ -408,6 +435,15 @@ mod tests {
         assert!(!iommu_bound_own_table("the caller's IO table: 0x2000\nIO page table of 0x0:0x1f.0x7: 0x1000\n"));
         assert!(!iommu_bound_own_table("the caller's IO table: 0x2000\n"));
         assert!(!iommu_bound_own_table("IO page table of 0x0:0x1f.0x7: 0x2000\n"));
+    }
+
+    #[test]
+    fn first_operation_refused_is_the_first_invocation() {
+        let refused = " INFO capability entry: operation 14 on slot 0: refused\u{1b}[0m\n";
+        let unknown = " INFO capability entry: operation 65535 on slot 0: unknown\n";
+        assert!(first_operation_refused(&format!("boot\n{}{}", refused, unknown)));
+        assert!(!first_operation_refused(&format!("{}{}", unknown, refused)));
+        assert!(!first_operation_refused("dom0 benchmark done\n"));
     }
 
     #[test]

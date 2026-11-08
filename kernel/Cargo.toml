@@ -41,3 +41,6 @@ default-features = false
 [features]
 # Time every hold of a lock and every wait for one, reported in the serial log.
 lock_stats = []
+# Enter the capability kernel's syscall entry instead of the old kernel's, on the cut-over branch only;
+# see design/cut-over-on-a-branch/.
+capability = []

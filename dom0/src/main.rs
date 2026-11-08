@@ -10,6 +10,8 @@ extern crate nvme_driver;
 extern crate pcid;
 extern crate ring_buffer;
 
+#[cfg(feature = "capability")]
+mod capability;
 mod e810_client;
 mod ixgbe_client;
 mod nvme_client;
@@ -42,6 +44,7 @@ fn test_alloc() {
     log::info!("Allocator works");
 }
 
+#[cfg(not(feature = "capability"))]
 #[no_mangle]
 extern "C" fn main(payload_base: *mut u8, payload_size: usize) -> isize {
     asys::logger::init_logging_with_level(log::Level::Info);
