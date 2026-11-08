@@ -257,7 +257,21 @@ async fn check_capability_boot(project: &ProjectHandle, timeout: u64) -> Result<
     if !first_operation_refused(&serial) {
         return Err(anyhow!("the serial log does not show the first operation refused"));
     }
-    Ok("exit status 0, the first operation refused in the serial log".to_string())
+    if !first_arguments_arrived(&serial) {
+        return Err(anyhow!("the serial log does not show the first operation's five arguments in place"));
+    }
+    Ok("exit status 0, the first operation refused with its five arguments in the serial log".to_string())
+}
+
+/// The arguments dom0 passes its first invocation, in rsi, rdx, r8, r9 and r10, as the kernel logs them.
+const FIRST_ARGUMENTS: &str = " with [1, 2, 3, 4, 5]: ";
+
+/// Whether the capability kernel's first logged invocation carries dom0's arguments, r10's last.
+fn first_arguments_arrived(serial: &str) -> bool {
+    serial
+        .lines()
+        .find(|line| line.contains(CAPABILITY_ENTRY))
+        .map_or(false, |line| line.contains(FIRST_ARGUMENTS))
 }
 
 /// What the kernel logs for each invocation of its capability entry.
@@ -459,11 +473,22 @@ mod tests {
 
     #[test]
     fn first_operation_refused_is_the_first_invocation() {
-        let refused = " INFO capability entry: operation 14 on slot 0: refused\u{1b}[0m\n";
-        let unknown = " INFO capability entry: operation 65535 on slot 0: unknown\n";
+        let refused = " INFO capability entry: operation 14 on slot 0 with [1, 2, 3, 4, 5]: refused\u{1b}[0m\n";
+        let unknown = " INFO capability entry: operation 65535 on slot 0 with [0, 0, 0, 0, 0]: unknown\n";
         assert!(first_operation_refused(&format!("boot\n{}{}", refused, unknown)));
         assert!(!first_operation_refused(&format!("{}{}", unknown, refused)));
         assert!(!first_operation_refused("dom0 benchmark done\n"));
+    }
+
+    #[test]
+    fn first_arguments_arrived_reads_the_first_invocation() {
+        let arrived = " INFO capability entry: operation 14 on slot 0 with [1, 2, 3, 4, 5]: refused\n";
+        let dropped = " INFO capability entry: operation 14 on slot 0 with [1, 2, 3, 4, 0]: refused\n";
+        let unknown = " INFO capability entry: operation 65535 on slot 0 with [0, 0, 0, 0, 0]: unknown\n";
+        assert!(first_arguments_arrived(&format!("boot\n{}{}", arrived, unknown)));
+        assert!(!first_arguments_arrived(&format!("{}{}", dropped, unknown)));
+        assert!(!first_arguments_arrived(&format!("{}{}", unknown, arrived)));
+        assert!(!first_arguments_arrived("dom0 benchmark done\n"));
     }
 
     #[test]

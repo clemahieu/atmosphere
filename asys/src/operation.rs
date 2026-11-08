@@ -31,13 +31,13 @@ pub fn status(rax: u64) -> u64 {
     rax & 0xffff
 }
 
-/// Invokes `operation` on the capability at `slot`, with the arguments in rsi, rdx, r8 and r9, and
-/// returns rax.
+/// Invokes `operation` on the capability at `slot`, with the arguments in rsi, rdx, r8, r9 and r10,
+/// and returns rax.
 ///
 /// # Safety
 ///
 /// The operation may change the caller's address space, as a map or unmap does.
-pub unsafe fn invoke(operation: u64, slot: u64, arguments: [u64; 4]) -> u64 {
+pub unsafe fn invoke(operation: u64, slot: u64, arguments: [u64; 5]) -> u64 {
     let rax: u64;
     asm!(
         "syscall",
@@ -48,7 +48,7 @@ pub unsafe fn invoke(operation: u64, slot: u64, arguments: [u64; 4]) -> u64 {
         out("rcx") _,
         inout("r8") arguments[2] => _,
         inout("r9") arguments[3] => _,
-        out("r10") _,
+        inout("r10") arguments[4] => _,
         out("r11") _,
     );
     rax

@@ -146,7 +146,7 @@ global_asm!(
     "push 0",         // rcx (taken by original rip)
     "push 0",         // r8
     "push 0",         // r9
-    "push 0",         // r10 (taken by original rsp)
+    "push 0",         // r10
     "push 0",         // r11 (taken by original rflags across syscall)
     ".endm",
 );
@@ -160,7 +160,6 @@ global_asm!(
 );
 
 // The capability kernel's frame holds the operation and its arguments, which the dispatch reads from it.
-// r10 holds the user's rsp by now, so its slot is not the user's r10.
 #[cfg(feature = "capability")]
 global_asm!(
     ".macro push_caller_saved",
@@ -171,7 +170,7 @@ global_asm!(
     "push 0",         // rcx (taken by original rip)
     "push r8",
     "push r9",
-    "push 0",         // r10 (taken by original rsp)
+    "push r10",
     "push 0",         // r11 (taken by original rflags across syscall)
     ".endm",
 );
@@ -214,7 +213,7 @@ global_asm!(
 );
 
 // In a debug build, stop if a syscall reaches its handler with a flag from ENTRY_FLAG_MASK set. r10 is
-// free here, since the user's rsp is already saved.
+// free here: no handler takes an argument in it, and the capability kernel's frame already holds it.
 #[cfg(debug_assertions)]
 global_asm!(
     ".macro check_entry_flags",
@@ -252,6 +251,10 @@ extern "C" fn entered_with_flags_set() -> ! {
 // r8       | Arg #4         | Arg #5
 // r9       | Arg #5         | Arg #6
 //
+// That table is the old kernel's. The capability kernel's handler takes only the frame, which holds
+// the operation from rax, the capability's slot from rdi and the arguments from rsi, rdx, r8, r9 and
+// r10, design/syscall-abi-in-registers/.
+//
 // All caller-saved registers are considered clobbered once invoked
 //
 // rax on return is the syscall's result. A syscall that blocked and was woken returns 0, whichever
@@ -262,16 +265,16 @@ extern "C" fn entered_with_flags_set() -> ! {
 #[unsafe(naked)]
 unsafe extern "C" fn sys_entry() -> ! {
     naked_asm!(
-        // We may not have a valid rsp
-        // rax, r10, r11
+        // We may not have a valid rsp. Every register but rcx and r11 still holds the user's value,
+        // so the user's rsp waits in the Cpu while the stack switches.
 
-        "mov r10, rsp",
+        "mov gs:{user_rsp_offset}, rsp",
         "mov rsp, gs:{syscall_sp_offset}",
 
         // Here we construct the Registers struct and only save
         // a subset of registers
         "push {user_ss}", // ss
-        "push r10",       // rsp
+        "push qword ptr gs:{user_rsp_offset}", // rsp
         "push r11",       // rflags
         "push {user_cs}", // cs
         "push rcx",       // rip
@@ -382,6 +385,7 @@ unsafe extern "C" fn sys_entry() -> ! {
         user_ss = const GlobalDescriptorTable::USER_SS,
         user_cs = const GlobalDescriptorTable::USER_CS,
         syscall_sp_offset = const offset_of!(Cpu, syscall_sp),
+        user_rsp_offset = const offset_of!(Cpu, user_rsp),
 
         switch_decision_offset = const offset_of!(Cpu, switch_decision),
         decision_no_switching = const SwitchDecision::NoSwitching as u64,
@@ -411,7 +415,8 @@ extern "C" fn capability_entry(regs: &mut Registers) {
         operation::STATUS_REFUSED => "refused",
         _ => "unknown",
     };
-    log::info!("capability entry: operation {} on slot {}: {}", number, regs.rdi, outcome);
+    let arguments = [regs.rsi, regs.rdx, regs.r8, regs.r9, regs.r10];
+    log::info!("capability entry: operation {} on slot {} with {:?}: {}", number, regs.rdi, arguments, outcome);
     regs.rax = status;
     Bridge::set_switch_decision(SwitchDecision::NoSwitching);
 }

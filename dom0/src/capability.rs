@@ -12,10 +12,14 @@ const EXIT_UNEXPECTED_STATUS: u32 = 2;
 /// A number past every operation's.
 const NO_OPERATION: u64 = 0xffff;
 
+/// The arguments of the first invocation, which the kernel logs: each word names its position, so
+/// the log shows every argument register reached the kernel in its place, r10 last.
+const FIRST_ARGUMENTS: [u64; 5] = [1, 2, 3, 4, 5];
+
 #[no_mangle]
 extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
-    let print = operation::status(unsafe { operation::invoke(operation::PRINT, 0, [0; 4]) });
-    let unknown = operation::status(unsafe { operation::invoke(NO_OPERATION, 0, [0; 4]) });
+    let print = operation::status(unsafe { operation::invoke(operation::PRINT, 0, FIRST_ARGUMENTS) });
+    let unknown = operation::status(unsafe { operation::invoke(NO_OPERATION, 0, [0; 5]) });
     if print == operation::STATUS_REFUSED && unknown == operation::STATUS_UNKNOWN {
         exit_qemu(EXIT_SUCCESS)
     }
