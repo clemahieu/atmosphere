@@ -804,7 +804,6 @@ dependencies = [
  "kernel-logger",
  "log",
  "memoffset",
- "nasm-rs",
  "ns16550a",
  "num",
  "num-derive",

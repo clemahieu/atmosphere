@@ -148,7 +148,7 @@ unsafe fn start_second_core() {
     flush::check_second_core();
 }
 
-/// AP entry point, called by the trampoline in boot/ap_start.asm.
+/// AP entry point, called by the trampoline in boot/ap_start.rs.
 extern "C" fn ap_main(cpu_id: u64) -> ! {
     unsafe {
         cpu::init_cpu(cpu_id as usize);
