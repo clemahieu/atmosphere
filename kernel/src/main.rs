@@ -40,7 +40,7 @@ mod lock;
 mod flush;
 
 use core::arch::asm;
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
 use core::{ffi::c_void, panic::PanicInfo};
 
 use astd::boot::BootInfo;
@@ -53,8 +53,6 @@ static mut AP_STACK: cpu::IstStack = cpu::IstStack::new();
 static AP_UP: AtomicBool = AtomicBool::new(false);
 /// How long CPU 0 waits for it, in TSC cycles. A core that does not start is reported, not fatal.
 const AP_START_CYCLES: u64 = 20_000_000_000;
-static mut THREAD_STACK: [u8; 64 * 1024 * 1024] = [0; 64 * 1024 * 1024];
-static THREAD_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 /// CPU 0 entry point.
 #[no_mangle]
@@ -164,13 +162,6 @@ extern "C" fn ap_main(cpu_id: u64) -> ! {
     lock::contend();
 
     kernel::idle_loop()
-}
-
-/// Thread entry point.
-fn thread_main(_cpu_id: u64) {
-    loop {
-        THREAD_COUNTER.fetch_add(1, Ordering::SeqCst);
-    }
 }
 
 /// Runs all tests.

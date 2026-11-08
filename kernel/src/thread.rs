@@ -1,38 +1,9 @@
 //! Threading.
 
-use x86::Ring;
-
-use crate::gdt::GlobalDescriptorTable;
-use crate::interrupt::{self, Cycles};
+use crate::interrupt::Cycles;
 use verified::trap::Registers;
 use crate::cpu;
 pub use verified::bridge::SwitchDecision;
-
-const TIME_SLICE: Cycles = Cycles(1_000_000);
-
-/// Starts a thread.
-pub unsafe fn start_thread(code: u64, stack: u64, ring: Ring) {
-    log::info!("Starting thread code={:#x} stack={:#x}", code, stack);
-
-    let cpu = cpu::get_current();
-    let mut regs = Registers::zeroed();
-
-    let (cs, ss) = match ring {
-        Ring::Ring0 => (GlobalDescriptorTable::KERNEL_CS, GlobalDescriptorTable::KERNEL_SS),
-        Ring::Ring3 => (GlobalDescriptorTable::USER_CS, GlobalDescriptorTable::USER_SS),
-        _ => panic!("Unsupported ring"),
-    };
-
-    regs.rip = code;
-    regs.rsp = stack;
-    regs.cs = cs as u64;
-    regs.ss = ss as u64;
-    regs.flags = 1 << 9; // Interrupt Enable
-
-    cpu.parked = regs;
-
-    interrupt::set_timer(TIME_SLICE);
-}
 
 /// Schedules the next thread, returning its time slice.
 pub fn schedule(_regs: &mut Registers) -> Option<Cycles> {
