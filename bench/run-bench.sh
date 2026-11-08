@@ -11,22 +11,31 @@ mkdir -p "$out"
 # build-std, so cargo must run inside the crate directory, as atmo does. The configs' [env]
 # RUSTC_BOOTSTRAP=1 reaches only rustc; the stable cargo needs it too for their [unstable] table.
 export RUSTC_BOOTSTRAP=1
+# The loader is the UEFI application OVMF boots, so it builds for x86_64-unknown-uefi.
 for crate in aloader kernel dom0; do
-    if ! (cd "$root/$crate" && cargo build --release) >"$out/build-$crate.log" 2>&1; then
+    args=(--release)
+    [ "$crate" = aloader ] && args+=(--target x86_64-unknown-uefi)
+    if ! (cd "$root/$crate" && cargo build "${args[@]}") >"$out/build-$crate.log" 2>&1; then
         tail -n 40 "$out/build-$crate.log"
         echo "build of $crate failed (full log: $out/build-$crate.log)" >&2
         exit 2
     fi
 done
 
-loader="$root/target/x86_64-unknown-none/release/aloader"
+loader="$root/target/x86_64-unknown-uefi/release/aloader.efi"
 kernel="$root/target/x86_64-unknown-aloader/release/kernel"
 dom0="$root/target/x86_64-unknown-aloader/release/dom0"
 
-# The loader takes the kernel and dom0 ELF images concatenated in one multiboot module (atmo's
-# JumboBinary, README's /boot/atmo); dom0 needs no payload.
-initrd="$out/atmo.initrd"
-cat "$kernel" "$dom0" >"$initrd"
+# The EFI system partition as build-tool/src/emulator/qemu.rs lays it out: OVMF boots
+# EFI/BOOT/BOOTX64.EFI from removable media, and the loader reads the kernel and dom0 ELF images
+# concatenated in the file initrd beside it (atmo's JumboBinary); dom0 needs no payload. OVMF
+# writes its variable store, so it gets a copy.
+esp="$out/esp"
+rm -rf "$esp"
+mkdir -p "$esp/EFI/BOOT"
+cp "$loader" "$esp/EFI/BOOT/BOOTX64.EFI"
+cat "$kernel" "$dom0" >"$esp/initrd"
+cp /usr/share/edk2/ovmf/OVMF_VARS.fd "$out/OVMF_VARS.fd"
 
 log="$out/run-$(date +%Y%m%d-%H%M%S).log"
 status=0
@@ -34,7 +43,9 @@ taskset -c 0-15 timeout 300 /usr/bin/qemu-system-x86_64 \
     -enable-kvm -cpu host -machine q35,kernel_irqchip=split -smp 4 -m 6144 -mem-prealloc \
     -nographic -serial mon:stdio -no-reboot \
     -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
-    -kernel "$loader" -initrd "$initrd" </dev/null >"$log" 2>&1 || status=$?
+    -drive if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/edk2/ovmf/OVMF_CODE.fd \
+    -drive if=pflash,format=raw,unit=1,file="$out/OVMF_VARS.fd" \
+    -drive format=raw,file=fat:rw:"$esp" </dev/null >"$log" 2>&1 || status=$?
 
 grep -a -E 'null syscall:|mmap 4K:|IPC round trip:|new_thread:|dom0 benchmark (done|FAILED)|failed:' "$log" \
     | sed 's/\x1b\[[0-9;]*m//g' || true
