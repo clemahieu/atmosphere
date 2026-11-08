@@ -2248,12 +2248,20 @@ impl CapKernel {
 
 impl CapKernel {
     /// Index i of the table at root holds a capability with the control right naming a thread.
-    pub open spec fn can_control(&self, root: usize, i: usize) -> bool {
+    pub open spec fn holds_control(&self, root: usize, i: usize) -> bool {
         let n = self.tables.node_of(root, i);
         &&& self.tables.has_slot(root, i)
         &&& self.is_cap(n)
         &&& self.payload_of(n).kind is Thread
         &&& self.payload_of(n).rights & right_bit(Right::Control) != 0
+    }
+
+    /// Index i of the table at root holds a control capability naming a thread that is not dead: not
+    /// Dead, not dying and not bound to a dead process. Nothing starts, suspends or sets the registers
+    /// of a dead thread: see design/teardown-driven-by-retype/.
+    pub open spec fn can_control(&self, root: usize, i: usize) -> bool {
+        &&& self.holds_control(root, i)
+        &&& !self.cap_dead(self.tables.node_of(root, i))
     }
 
     /// The thread that capability names, which must be Inactive for its registers to be read or
@@ -2298,16 +2306,18 @@ impl CapKernel {
         }
     }
 
-    /// Finds the thread the control capability at index i names. The index comes from user space.
-    fn thread_control(&self, root: usize, i: usize) -> (ret: Option<(usize, usize)>)
+    /// Finds the thread the control capability at index i names, and whether it is dead. The index
+    /// comes from user space.
+    fn thread_control(&self, root: usize, i: usize) -> (ret: Option<(usize, usize, bool)>)
         requires
             self.wf(),
             self.tables.roots@.contains_key(root),
         ensures
-            ret is Some == self.can_control(root, i),
+            ret is Some == self.holds_control(root, i),
             ret is Some ==> {
-                let (n, t) = ret->0;
+                let (n, t, dead) = ret->0;
                 &&& n == self.tables.node_of(root, i)
+                &&& dead == self.cap_dead(n)
                 &&& t == self.payload_of(n).base
                 &&& self.threads.records@.contains_key(t)
                 &&& thread_wf(&self.list, &self.threads, &self.blocks, t)
@@ -2344,7 +2354,8 @@ impl CapKernel {
             self.lemma_thread_cap(n);
             assert(thread_wf(&self.list, &self.threads, &self.blocks, payload.base));
         }
-        Some((n, payload.base))
+        let dead = self.is_cap_dead(n, payload);
+        Some((n, payload.base, dead))
     }
 
     /// Reads the saved frame of the Inactive thread named at index i, through its control capability.
@@ -2364,10 +2375,13 @@ impl CapKernel {
                 &&& discharges(self.view(), self.view(), root, Effect::Control { cap: n, thread: t })
             },
     {
-        let (n, t) = match self.thread_control(root, i) {
+        let (n, t, dead) = match self.thread_control(root, i) {
             Some(found) => found,
             None => { return None; },
         };
+        if dead {
+            return None;
+        }
         let record = *PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * 4096).borrow(
             Tracked(self.threads.records.borrow().tracked_borrow(t)),
         );
@@ -2402,10 +2416,13 @@ impl CapKernel {
         if frame.rip >= USER_RIP_END {
             return false;
         }
-        let (n, t) = match self.thread_control(root, i) {
+        let (n, t, dead) = match self.thread_control(root, i) {
             Some(found) => found,
             None => { return false; },
         };
+        if dead {
+            return false;
+        }
         let ptr = PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * 4096);
         let record = *ptr.borrow(Tracked(self.threads.records.borrow().tracked_borrow(t)));
         match record.state {
@@ -2436,12 +2453,12 @@ impl CapKernel {
         true
     }
 
-    /// The thread the control capability at index i names can be suspended: it is Inactive already,
-    /// Runnable or Running, and not destroyed while Running, which its core's stop makes Dead.
+    /// The thread the control capability at index i names can be suspended: it is not dead, and it is
+    /// Inactive already, Runnable or Running. One destroyed while Running is dying, and its core's
+    /// stop makes it Dead.
     pub open spec fn can_suspend(&self, root: usize, i: usize) -> bool {
         let t = self.payload_of(self.tables.node_of(root, i)).base;
         &&& self.can_control(root, i)
-        &&& !self.threads.records@[t].value().dying
         &&& match self.threads.records@[t].value().state {
             ThreadState::Inactive => true,
             ThreadState::Runnable { .. } => true,
@@ -2495,10 +2512,13 @@ impl CapKernel {
             },
     {
         let ghost pre = *self;
-        let (n, t) = match self.thread_control(root, i) {
+        let (n, t, dead) = match self.thread_control(root, i) {
             Some(found) => found,
             None => { return false; },
         };
+        if dead {
+            return false;
+        }
         let ptr = PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * 4096);
         let record = *ptr.borrow(Tracked(self.threads.records.borrow().tracked_borrow(t)));
         match record.state {
@@ -2637,15 +2657,15 @@ impl CapKernel {
             },
     {
         let ghost pre = *self;
-        let (n, t) = match self.thread_control(root, i) {
+        let (n, t, dead) = match self.thread_control(root, i) {
             Some(found) => found,
             None => { return SuspendStep::Refused; },
         };
-        let ptr = PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * 4096);
-        let record = *ptr.borrow(Tracked(self.threads.records.borrow().tracked_borrow(t)));
-        if record.dying {
+        if dead {
             return SuspendStep::Refused;
         }
+        let ptr = PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * 4096);
+        let record = *ptr.borrow(Tracked(self.threads.records.borrow().tracked_borrow(t)));
         let current = match record.state {
             ThreadState::Inactive => false,
             ThreadState::Runnable { .. } => false,
