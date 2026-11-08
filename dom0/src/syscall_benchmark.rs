@@ -96,10 +96,10 @@ fn bench_fail(what: &str, ret: usize) -> ! {
 
 /// Whether QEMU's TCG emulates this CPU: the hypervisor bit is set and leaf 0x40000000 names TCG.
 fn under_tcg() -> bool {
-    if unsafe { __cpuid(1) }.ecx & (1 << 31) == 0 {
+    if __cpuid(1).ecx & (1 << 31) == 0 {
         return false;
     }
-    let leaf = unsafe { __cpuid(0x4000_0000) };
+    let leaf = __cpuid(0x4000_0000);
     let mut name = [0u8; 12];
     name[0..4].copy_from_slice(&leaf.ebx.to_le_bytes());
     name[4..8].copy_from_slice(&leaf.ecx.to_le_bytes());
