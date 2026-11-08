@@ -38,6 +38,11 @@ pub open spec fn bound_threads(list: &Tree, tables: &Tables) -> Map<ObjectId, Ob
     )
 }
 
+/// The nodes live in list, as bound_threads reads them.
+pub open spec fn live_nodes(list: &Tree) -> Set<usize> {
+    Set::range(0usize, NODE_SPACE).filter(|t: usize| list.nodes@[t as int].live)
+}
+
 /// The process thread t's record names, if t has a record and it names one.
 pub open spec fn thread_process(threads: &Threads, t: usize) -> Option<ObjectId> {
     if threads.records@.contains_key(t) { threads.records@[t].value().process } else { None }
@@ -58,6 +63,15 @@ pub proof fn lemma_record_processes(threads: &Threads, t: usize)
         thread_process(threads, t) is Some ==> record_processes(threads)[t] == thread_process(threads, t)->Some_0,
 {
     broadcast use vstd::set::lemma_set_filter;
+}
+
+/// The bound threads are those whose binding node is live.
+pub proof fn lemma_bound_threads_live(list: &Tree, tables: &Tables)
+    ensures
+        bound_threads(list, tables) == bound_threads(list, tables).restrict(live_nodes(list)),
+{
+    broadcast use vstd::set::lemma_set_filter;
+    assert(bound_threads(list, tables) =~= bound_threads(list, tables).restrict(live_nodes(list)));
 }
 
 /// What the view reads: nothing but the list and the tables, so a step that leaves those alone leaves

@@ -17,6 +17,7 @@ use crate::capability::table::*;
 use crate::capability::process::*;
 use crate::capability::thread::*;
 use crate::capability::thread::ThreadState;
+use crate::capability::view::*;
 use crate::define::*;
 
 /// How many steps a revoke does per kernel entry. No wait happens under the lock, so a revoke returns
@@ -254,6 +255,8 @@ impl CapKernel {
                 &&& old(self).list.seq@.len() - final(self).list.seq@.len() <= REVOKE_BUDGET
                 &&& final(self).list.parent == old(self).list.parent
                 &&& discharges(old(self).view(), final(self).view(), root, Effect::Revoke { cap: c })
+                &&& bound_threads(&final(self).list, &final(self).tables)
+                    == bound_threads(&old(self).list, &old(self).tables).restrict(live_nodes(&final(self).list))
             },
     {
         let ghost pre = *old(self);
@@ -274,6 +277,7 @@ impl CapKernel {
             assert(pre.tables.is_cap(&pre.list, c));
             pre.lemma_slot_bound(c);
             pre.lemma_no_change_discharges_revoke(root, c);
+            lemma_bound_threads_live(&pre.list, &pre.tables);
         }
         let mut steps = 0;
         while steps != REVOKE_BUDGET && self.flush_epoch != usize::MAX
@@ -293,6 +297,7 @@ impl CapKernel {
                 pre.tables.owner@[page_of(c)].0 == root,
                 pre.is_cap(c),
                 discharges(pre.view(), self.view(), root, Effect::Revoke { cap: c }),
+                bound_threads(&self.list, &self.tables) == bound_threads(&pre.list, &pre.tables).restrict(live_nodes(&self.list)),
             decreases REVOKE_BUDGET - steps,
         {
             let ghost mid = *self;
@@ -304,6 +309,17 @@ impl CapKernel {
             }
             proof {
                 lemma_revoke_steps_compose(pre.view(), mid.view(), self.view(), root, c);
+                let r = choose|r: usize| #[trigger] revoked_one(mid.list, self.list, c, r)
+                    && (mid.list.nodes@[r as int].kind is Hidden && mid.tables.owner@.contains_key(r)
+                        ==> !self.tables.attached(r))
+                    && (mid.list.nodes@[r as int].kind is Mapping ==> Self::mapping_unlinked(mid, *self, r))
+                    && (mid.list.nodes@[r as int].kind is Mapping ==> Self::mapping_stale_noted(mid, *self, r))
+                    && (mid.hidden_table(r) ==> Self::table_unlinked(mid, *self, r))
+                    && (mid.list.nodes@[r as int].kind is Binding ==> bound_threads(&self.list, &self.tables)
+                        == bound_threads(&mid.list, &mid.tables).remove(r))
+                    && (!(mid.list.nodes@[r as int].kind is Binding) ==> bound_threads(&self.list, &self.tables)
+                        == bound_threads(&mid.list, &mid.tables));
+                Self::lemma_revoke_bound_threads(bound_threads(&pre.list, &pre.tables), mid, *self, c, r);
             }
             steps = steps + 1;
         }
@@ -339,7 +355,11 @@ impl CapKernel {
                     ==> !final(self).tables.attached(r))
                 && (old(self).list.nodes@[r as int].kind is Mapping ==> Self::mapping_unlinked(*old(self), *final(self), r))
                 && (old(self).list.nodes@[r as int].kind is Mapping ==> Self::mapping_stale_noted(*old(self), *final(self), r))
-                && (old(self).hidden_table(r) ==> Self::table_unlinked(*old(self), *final(self), r)),
+                && (old(self).hidden_table(r) ==> Self::table_unlinked(*old(self), *final(self), r))
+                && (old(self).list.nodes@[r as int].kind is Binding ==> bound_threads(&final(self).list, &final(self).tables)
+                    == bound_threads(&old(self).list, &old(self).tables).remove(r))
+                && (!(old(self).list.nodes@[r as int].kind is Binding) ==> bound_threads(&final(self).list, &final(self).tables)
+                    == bound_threads(&old(self).list, &old(self).tables)),
             forall|x: int| 0 <= x < NODE_SPACE ==> #[trigger] final(self).list.nodes@[x].depth == old(self).list.nodes@[x].depth,
             forall|x: usize| #[trigger] final(self).is_cap(x) ==> old(self).is_cap(x),
             discharges(old(self).view(), final(self).view(), root, Effect::Revoke { cap: c }),
@@ -527,6 +547,10 @@ impl CapKernel {
             pre.list.nodes@[r as int].kind is Mapping ==> Self::mapping_stale_noted(pre, post, r),
             forall|x: usize| #[trigger] post.is_cap(x) ==> pre.is_cap(x),
             discharges(pre.view(), post.view(), root, Effect::Revoke { cap: c }),
+            pre.list.nodes@[r as int].kind is Binding
+                ==> bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables).remove(r),
+            !(pre.list.nodes@[r as int].kind is Binding)
+                ==> bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables),
     {
         post.tables.lemma_wf_same_pages(&pre.list, &post.list);
         Self::lemma_revoke_step(pre, post, root, c, r);
@@ -571,6 +595,39 @@ impl CapKernel {
                 Self::lemma_caps_frame(pre, post, r, r, x);
             }
         }
+        if pre.list.nodes@[r as int].kind is Binding {
+            assert forall|x: usize| x != r implies #[trigger] thread_process(&post.threads, x) == thread_process(&pre.threads, x) by {}
+            Self::lemma_bound_threads_remove(pre, post, r);
+        } else {
+            Self::lemma_bound_threads_same(pre, post);
+        }
+    }
+
+    /// A revoke step unlinks one node r and loses at most r from the bound threads, so they stay those
+    /// of the state the revoke began in whose binding nodes are live.
+    proof fn lemma_revoke_bound_threads(b0: Map<ObjectId, ObjectId>, mid: Self, post: Self, c: usize, r: usize)
+        requires
+            mid.wf(),
+            bound_threads(&mid.list, &mid.tables) == b0.restrict(live_nodes(&mid.list)),
+            revoked_one(mid.list, post.list, c, r),
+            mid.list.nodes@[r as int].kind is Binding
+                ==> bound_threads(&post.list, &post.tables) == bound_threads(&mid.list, &mid.tables).remove(r),
+            !(mid.list.nodes@[r as int].kind is Binding)
+                ==> bound_threads(&post.list, &post.tables) == bound_threads(&mid.list, &mid.tables),
+        ensures
+            bound_threads(&post.list, &post.tables) == b0.restrict(live_nodes(&post.list)),
+    {
+        broadcast use vstd::set::lemma_set_filter;
+        let bm = bound_threads(&mid.list, &mid.tables);
+        let bp = bound_threads(&post.list, &post.tables);
+        let l = b0.restrict(live_nodes(&post.list));
+        assert forall|t: usize| #[trigger] bp.dom().contains(t) == l.dom().contains(t) by {
+            if t < NODE_SPACE && t != r {
+                assert(post.list.nodes@[t as int].live == mid.list.nodes@[t as int].live);
+            }
+            assert(bm.dom().contains(t) == (b0.dom().contains(t) && live_nodes(&mid.list).contains(t)));
+        }
+        assert(bp =~= l);
     }
 
     /// A step that changes nothing, with the capability held, discharges a revoke of it.
