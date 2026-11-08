@@ -6,7 +6,7 @@ Atmosphere is a proving ground for novel isolation techniques and formal verific
 
 Install [rustup](https://rustup.rs) (the pinned nightly comes from
 `rust-toolchain.toml`) and, from the system package manager, `nasm`, `qemu`,
-`gdb`, `jq` and, for bootable ISOs, `grub2` and `xorriso`. Then build the Verus
+`edk2-ovmf` (at `/usr/share/edk2/ovmf`), `gdb`, `jq` and, for bootable ISOs, `grub2` and `xorriso`. Then build the Verus
 version used for verification and put the toolchain on `PATH`:
 
 ```bash

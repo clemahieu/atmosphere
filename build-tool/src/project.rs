@@ -52,17 +52,33 @@ impl Project {
             name: "kernel".to_string(),
             crate_dir: self.root.join("kernel"),
             binary: Some("kernel".to_string()),
+            target: None,
             max_stack_size: Some(Byte::from_bytes(1024 * 1024 * 16)), // 16 MiB
         }
     }
 
-    /// Returns the early loader crate
+    /// Returns the early loader crate, built as the multiboot2 and PVH ELF that GRUB and QEMU's
+    /// -kernel boot.
     pub fn loader(self: &Arc<Self>) -> Crate {
         Crate {
             name: "aloader".to_string(),
             crate_dir: self.root.join("aloader"),
             binary: Some("aloader".to_string()),
+            target: None,
             max_stack_size: Some(Byte::from_bytes(1024 * 1024 * 16)), // 16 MiB
+        }
+    }
+
+    /// Returns the early loader crate, built as the UEFI application that OVMF boots.
+    ///
+    /// The stack size check reads ELF, and this build is PE.
+    pub fn uefi_loader(self: &Arc<Self>) -> Crate {
+        Crate {
+            name: "aloader".to_string(),
+            crate_dir: self.root.join("aloader"),
+            binary: Some("aloader".to_string()),
+            target: Some("x86_64-unknown-uefi"),
+            max_stack_size: None,
         }
     }
 
@@ -72,6 +88,7 @@ impl Project {
             name: "dom0".to_string(),
             crate_dir: self.root.join("dom0"),
             binary: Some("dom0".to_string()),
+            target: None,
             max_stack_size: Some(Byte::from_bytes(1024 * 1024 * 16)), // 16 MiB
         }
     }
@@ -82,6 +99,7 @@ impl Project {
             name: name.to_string(),
             crate_dir: self.root.join("user").join(name),
             binary: Some(name.to_string()),
+            target: None,
             max_stack_size: Some(Byte::from_bytes(1024 * 1024 * 16)), // 16 MiB
         }
     }
@@ -113,6 +131,9 @@ pub struct Crate {
     /// Name of the binary, if this is a binary crate.
     binary: Option<String>,
 
+    /// The target to build for, when not the one the crate's `.cargo/config.toml` names.
+    target: Option<&'static str>,
+
     /// Maximum limit of stack sizes.
     max_stack_size: Option<Byte>,
 }
@@ -130,6 +151,10 @@ impl Crate {
 
         if options.release {
             command.arg("--release");
+        }
+
+        if let Some(target) = self.target {
+            command.args(&["--target", target]);
         }
 
         if !options.features.is_empty() {

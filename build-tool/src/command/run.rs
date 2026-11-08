@@ -31,7 +31,7 @@ pub struct Opts {
     #[clap(long)]
     no_kvm: bool,
 
-    /// Whether to use GRUB.
+    /// Boot the multiboot2 loader from a GRUB ISO instead of the UEFI loader under OVMF.
     #[clap(long)]
     grub: bool,
 
@@ -102,8 +102,12 @@ pub(super) async fn run(global: GlobalOpts) -> Result<()> {
             .expect("No binary was produced")
     };
 
-    let loader = project
-        .loader()
+    let loader_crate = if local.grub {
+        project.loader()
+    } else {
+        project.uefi_loader()
+    };
+    let loader = loader_crate
         .build(&opts)
         .await?
         .expect("No binary was reproduced for the early loader");
