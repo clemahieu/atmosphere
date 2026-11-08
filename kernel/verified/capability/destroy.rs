@@ -1,6 +1,7 @@
 //! Destroy through a control capability: the target is dead in one bounded step while capabilities to
 //! it remain, and its references, capabilities and bindings stay as they were until a retype tears it
-//! down. A process's threads are moved off by their own cores: each core on the process's space's list
+//! down. A thread Running on a core is moved off by that core, which a pending stop tells to make it
+//! Dead. A process's threads are moved off by their own cores: each core on the process's space's list
 //! gets an IPI, and finds its current thread's process dead at its next kernel entry. See
 //! design/one-lock-bounded-steps/ and design/process-holds-capabilities/.
 use vstd::prelude::*;
@@ -13,6 +14,7 @@ use crate::capability::process::*;
 use crate::capability::reach::*;
 use crate::capability::space::*;
 use crate::capability::table::*;
+use crate::capability::thread::*;
 use crate::capability::view::*;
 use crate::define::*;
 use crate::pptr::*;
@@ -69,12 +71,13 @@ pub proof fn lemma_listed_cores(list: u32, n: int, c: usize)
 }
 
 impl CapKernel {
-    /// Index i of the table at root holds a capability with the control right naming a process.
+    /// Index i of the table at root holds a capability with the control right naming a process or a
+    /// thread.
     pub open spec fn can_destroy(&self, root: usize, i: usize) -> bool {
         let n = self.tables.node_of(root, i);
         &&& self.tables.has_slot(root, i)
         &&& self.is_cap(n)
-        &&& self.payload_of(n).kind is Process
+        &&& (self.payload_of(n).kind is Process || self.payload_of(n).kind is Thread)
         &&& self.payload_of(n).rights & right_bit(Right::Control) != 0
     }
 
@@ -110,14 +113,16 @@ impl CapKernel {
         &&& post.stop_ipis@ == pre.stop_ipis@ + listed_cores(pre.spaces.loaded@[p].value().list, NUM_CPUS as int)
     }
 
-    /// Destroys the process the control capability at index i of the table at root names: its record
-    /// is dead, and each core that has its space loaded gets an IPI, so that core finds its current
-    /// thread's process dead at its next kernel entry. Its threads, table, space, references and
-    /// capabilities stay as they were. The index comes from user space, so it can be refused, and a
-    /// refusal changes nothing.
-    pub fn destroy(&mut self, root: usize, i: usize) -> (ret: bool)
+    /// Destroys, from core c, the process or thread the control capability at index i of the table at
+    /// root names. A process's record is dead, and each core that has its space loaded gets an IPI, so
+    /// that core finds its current thread's process dead at its next kernel entry; its threads, table,
+    /// space, references and capabilities stay as they were. A thread is destroyed as
+    /// thread_destroyed says. The index comes from user space, so it can be refused, and a refusal
+    /// changes nothing.
+    pub fn destroy(&mut self, c: usize, root: usize, i: usize) -> (ret: bool)
         requires
             old(self).wf(),
+            c < NUM_CPUS,
             old(self).tables.roots@.contains_key(root),
         ensures
             final(self).wf(),
@@ -126,11 +131,17 @@ impl CapKernel {
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             ret ==> {
                 let n = old(self).tables.node_of(root, i);
-                let p = old(self).payload_of(n).base;
-                &&& old(self).processes.records@.contains_key(p)
-                &&& Self::process_destroyed(*old(self), *final(self), p)
-                &&& forall|c: usize| #[trigger] listed_cores(old(self).spaces.loaded@[p].value().list, NUM_CPUS as int).contains(c)
-                    <==> c < NUM_CPUS && old(self).loaded(c as int, p)
+                let o = old(self).payload_of(n).base;
+                &&& old(self).payload_of(n).kind is Process ==> {
+                    &&& old(self).processes.records@.contains_key(o)
+                    &&& Self::process_destroyed(*old(self), *final(self), o)
+                    &&& forall|d: usize| #[trigger] listed_cores(old(self).spaces.loaded@[o].value().list, NUM_CPUS as int).contains(d)
+                        <==> d < NUM_CPUS && old(self).loaded(d as int, o)
+                }
+                &&& old(self).payload_of(n).kind is Thread ==> {
+                    &&& old(self).threads.records@.contains_key(o)
+                    &&& Self::thread_destroyed(*old(self), *final(self), c, o)
+                }
                 &&& discharges(old(self).view(), final(self).view(), root, Effect::Destroy { cap: n })
             },
     {
@@ -153,27 +164,39 @@ impl CapKernel {
             assert(payload == pre.payload_of(n));
             assert(right_bit(Right::Control) == 128);
         }
-        let process = match payload.kind {
-            CapKind::Process => true,
-            _ => false,
-        };
-        if !process || payload.rights & 128 == 0 {
+        if payload.rights & 128 == 0 {
             return false;
         }
-        proof {
-            pre.lemma_process_cap(n);
+        match payload.kind {
+            CapKind::Process => {
+                proof {
+                    pre.lemma_process_cap(n);
+                }
+                let p = payload.base;
+                self.destroy_process(p);
+                proof {
+                    let post = *self;
+                    assert forall|d: usize| #[trigger] listed_cores(pre.spaces.loaded@[p].value().list, NUM_CPUS as int).contains(d)
+                        <==> d < NUM_CPUS && pre.loaded(d as int, p) by {
+                        lemma_listed_cores(pre.spaces.loaded@[p].value().list, NUM_CPUS as int, d);
+                    }
+                    assert(post.view() == pre.view());
+                }
+                true
+            },
+            CapKind::Thread => {
+                proof {
+                    pre.lemma_thread_cap(n);
+                    assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, payload.base));
+                }
+                self.destroy_thread(c, payload.base);
+                proof {
+                    assert(self.view() == pre.view());
+                }
+                true
+            },
+            _ => false,
         }
-        let p = payload.base;
-        self.destroy_process(p);
-        proof {
-            let post = *self;
-            assert forall|c: usize| #[trigger] listed_cores(pre.spaces.loaded@[p].value().list, NUM_CPUS as int).contains(c)
-                <==> c < NUM_CPUS && pre.loaded(c as int, p) by {
-                lemma_listed_cores(pre.spaces.loaded@[p].value().list, NUM_CPUS as int, c);
-            }
-            assert(post.view() == pre.view());
-        }
-        true
     }
 
     /// Sets process p's record dead and sends an IPI to each core on its space's list of cores, one

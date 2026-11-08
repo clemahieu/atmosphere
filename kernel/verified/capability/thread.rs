@@ -68,6 +68,9 @@ pub struct ThreadRecord {
     pub frame: Registers,
     /// Set when it must stop on its core's next kernel entry.
     pub pending_stop: bool,
+    /// Set with a pending stop when it is destroyed while Running: the stop makes it Dead rather than
+    /// Inactive.
+    pub dying: bool,
     /// The process it is bound to: its node page's first node is then a binding under a capability to
     /// that process, holding a reference on the process's block.
     pub process: Option<usize>,
@@ -116,7 +119,7 @@ pub open spec fn zero_registers() -> Registers {
 
 /// A thread's record when it is typed: inactive, with zeroed registers and no stop pending.
 pub open spec fn fresh_thread() -> ThreadRecord {
-    ThreadRecord { state: ThreadState::Inactive, frame: zero_registers(), pending_stop: false, process: None, placement: None }
+    ThreadRecord { state: ThreadState::Inactive, frame: zero_registers(), pending_stop: false, dying: false, process: None, placement: None }
 }
 
 fn new_thread_record() -> (ret: ThreadRecord)
@@ -149,6 +152,7 @@ fn new_thread_record() -> (ret: ThreadRecord)
             ss: 0,
         },
         pending_stop: false,
+        dying: false,
         process: None,
         placement: None,
     }
@@ -588,6 +592,7 @@ pub open spec fn unbound_record(r: ThreadRecord) -> ThreadRecord {
         },
         frame: r.frame,
         pending_stop: r.state is Running,
+        dying: r.dying,
         process: None,
         placement: r.placement,
     }
@@ -1180,7 +1185,7 @@ impl CapKernel {
         proof {
             perm = self.threads.records.borrow_mut().tracked_remove(t);
         }
-        ptr.write(Tracked(&mut perm), ThreadRecord { state, frame: record.frame, pending_stop: running, process: None, placement: record.placement });
+        ptr.write(Tracked(&mut perm), ThreadRecord { state, frame: record.frame, pending_stop: running, dying: record.dying, process: None, placement: record.placement });
         proof {
             self.threads.records.borrow_mut().tracked_insert(t, perm);
             assert(self.threads.records@.dom() =~= pre.threads.records@.dom());
@@ -1901,6 +1906,7 @@ impl CapKernel {
                     state: ThreadState::Inactive,
                     frame: zero_registers(),
                     pending_stop: false,
+                    dying: false,
                     process: Some(p),
                     placement: None,
                 }
@@ -2105,6 +2111,7 @@ impl CapKernel {
             state: ThreadState::Running { core: c },
             frame: record.frame,
             pending_stop: record.pending_stop,
+            dying: record.dying,
             process: record.process,
             placement: record.placement,
         });
@@ -2198,6 +2205,7 @@ impl CapKernel {
             state: ThreadState::Runnable { core: c },
             frame,
             pending_stop: record.pending_stop,
+            dying: record.dying,
             process: record.process,
             placement: record.placement,
         });
@@ -2283,6 +2291,7 @@ impl CapKernel {
             state: pre.threads.records@[t].value().state,
             frame,
             pending_stop: pre.threads.records@[t].value().pending_stop,
+            dying: pre.threads.records@[t].value().dying,
             process: pre.threads.records@[t].value().process,
             placement: pre.threads.records@[t].value().placement,
         }
@@ -2408,6 +2417,7 @@ impl CapKernel {
             state: record.state,
             frame: user_frame_of(frame),
             pending_stop: record.pending_stop,
+            dying: record.dying,
             process: record.process,
             placement: record.placement,
         });
@@ -2424,10 +2434,11 @@ impl CapKernel {
     }
 
     /// The thread the control capability at index i names can be suspended: it is Inactive already,
-    /// Runnable or Running.
+    /// Runnable or Running, and not destroyed while Running, which its core's stop makes Dead.
     pub open spec fn can_suspend(&self, root: usize, i: usize) -> bool {
         let t = self.payload_of(self.tables.node_of(root, i)).base;
         &&& self.can_control(root, i)
+        &&& !self.threads.records@[t].value().dying
         &&& match self.threads.records@[t].value().state {
             ThreadState::Inactive => true,
             ThreadState::Runnable { .. } => true,
@@ -2506,6 +2517,7 @@ impl CapKernel {
             state: ThreadState::Runnable { core },
             frame: record.frame,
             pending_stop: record.pending_stop,
+            dying: record.dying,
             process: record.process,
             placement: record.placement,
         });
@@ -2626,6 +2638,9 @@ impl CapKernel {
         };
         let ptr = PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * 4096);
         let record = *ptr.borrow(Tracked(self.threads.records.borrow().tracked_borrow(t)));
+        if record.dying {
+            return SuspendStep::Refused;
+        }
         let current = match record.state {
             ThreadState::Inactive => false,
             ThreadState::Runnable { .. } => false,
@@ -2667,6 +2682,7 @@ impl CapKernel {
             state: ThreadState::Inactive,
             frame: record.frame,
             pending_stop: false,
+            dying: record.dying,
             process: record.process,
             placement: record.placement,
         });
@@ -2734,6 +2750,7 @@ impl CapKernel {
             state: record.state,
             frame: record.frame,
             pending_stop: true,
+            dying: record.dying,
             process: record.process,
             placement: record.placement,
         });
@@ -2764,8 +2781,91 @@ impl CapKernel {
         }
     }
 
+    /// The step destroyed thread t from core c and changed no core. A thread Running on a core gets a
+    /// pending stop that makes it Dead, and that core, unless it is c, an IPI; only that core moves it
+    /// out of Running, design/one-lock-bounded-steps/. Any other thread is Dead with no stop pending.
+    pub open spec fn thread_destroyed(pre: Self, post: Self, c: usize, t: usize) -> bool {
+        let r = pre.threads.records@[t].value();
+        &&& post.cores == pre.cores
+        &&& match r.state {
+            ThreadState::Running { core } => {
+                &&& Self::record_written(pre, post, t, ThreadRecord { pending_stop: true, dying: true, ..r })
+                &&& post.stop_ipis@ == if core == c { pre.stop_ipis@ } else { pre.stop_ipis@.push(core) }
+            },
+            _ => {
+                &&& Self::record_written(pre, post, t, ThreadRecord { state: ThreadState::Dead, pending_stop: false, dying: false, ..r })
+                &&& post.stop_ipis == pre.stop_ipis
+            },
+        }
+    }
+
+    /// Destroys thread t from core c, in one bounded step: see thread_destroyed. Its references,
+    /// capabilities, binding nodes and process stay as they were.
+    pub fn destroy_thread(&mut self, c: usize, t: usize)
+        requires
+            old(self).wf(),
+            c < NUM_CPUS,
+            old(self).threads.records@.contains_key(t),
+        ensures
+            final(self).wf(),
+            Self::thread_destroyed(*old(self), *final(self), c, t),
+    {
+        let ghost pre = *self;
+        proof {
+            assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, t));
+        }
+        let ptr = PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * 4096);
+        let record = *ptr.borrow(Tracked(self.threads.records.borrow().tracked_borrow(t)));
+        let (state, stop) = match record.state {
+            ThreadState::Running { core } => {
+                if core != c {
+                    self.stop_ipis = Ghost(pre.stop_ipis@.push(core));
+                }
+                (record.state, true)
+            },
+            _ => (ThreadState::Dead, false),
+        };
+        let tracked mut perm;
+        proof {
+            perm = self.threads.records.borrow_mut().tracked_remove(t);
+        }
+        ptr.write(Tracked(&mut perm), ThreadRecord {
+            state,
+            frame: record.frame,
+            pending_stop: stop,
+            dying: stop,
+            process: record.process,
+            placement: record.placement,
+        });
+        proof {
+            self.threads.records.borrow_mut().tracked_insert(t, perm);
+            reveal(current_wf);
+            let post = *self;
+            assert(post.threads.records@.dom() =~= pre.threads.records@.dom());
+            assert forall|e: int, x: usize| 0 <= e < NUM_CPUS && #[trigger] runs(post.cores@, e, x) implies {
+                &&& post.threads.records@.contains_key(x)
+                &&& post.threads.records@[x].value().state == (ThreadState::Running { core: e as usize })
+            } by {
+                assert(runs(pre.cores@, e, x));
+            }
+            assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) && post.threads.records@[x].value().state is Running implies {
+                let e = post.threads.records@[x].value().state->Running_core;
+                &&& e < NUM_CPUS
+                &&& post.cores@[e as int].current_thread == Some(x)
+            } by {
+                assert(pre.threads.records@.contains_key(x));
+            }
+            assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) && post.threads.records@[x].value().pending_stop
+                implies post.threads.records@[x].value().state is Running by {
+                assert(pre.threads.records@.contains_key(x));
+            }
+            Self::lemma_switch_wf(pre, post, c as int, t);
+        }
+    }
+
     /// Core c, on kernel entry, acts on a pending stop on its current thread: it saves the frame the
-    /// thread entered with, makes it Inactive with no stop pending and runs nothing. Only core c moves
+    /// thread entered with, makes it Inactive, or Dead when it was destroyed while Running, with no stop
+    /// pending, and runs nothing. Only core c moves
     /// its current thread off: see design/one-lock-bounded-steps/.
     pub fn take_stop(&mut self, c: usize, frame: Registers) -> (ret: bool)
         requires
@@ -2786,9 +2886,10 @@ impl CapKernel {
                 &&& old(self).threads.records@.contains_key(t)
                 &&& r.state == (ThreadState::Running { core: c })
                 &&& Self::record_written(*old(self), *final(self), t, ThreadRecord {
-                    state: ThreadState::Inactive,
+                    state: if r.dying { ThreadState::Dead } else { ThreadState::Inactive },
                     frame,
                     pending_stop: false,
+                    dying: false,
                     ..r
                 })
                 &&& final(self).stop_ipis == old(self).stop_ipis
@@ -2826,9 +2927,10 @@ impl CapKernel {
             perm = self.threads.records.borrow_mut().tracked_remove(t);
         }
         ptr.write(Tracked(&mut perm), ThreadRecord {
-            state: ThreadState::Inactive,
+            state: if record.dying { ThreadState::Dead } else { ThreadState::Inactive },
             frame,
             pending_stop: false,
+            dying: false,
             process: record.process,
             placement: record.placement,
         });
@@ -2989,6 +3091,7 @@ impl CapKernel {
             state: r.state,
             frame: r.frame,
             pending_stop: r.pending_stop,
+            dying: r.dying,
             process: Some(p),
             placement: r.placement,
         }
@@ -3323,6 +3426,7 @@ impl CapKernel {
             state: record.state,
             frame: record.frame,
             pending_stop: record.pending_stop,
+            dying: record.dying,
             process: Some(p),
             placement: record.placement,
         });
