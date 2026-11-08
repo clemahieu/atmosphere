@@ -144,6 +144,11 @@ const FAULT_KINDS: [&str; 8] = [
     "int3, which returns, then a load from an unmapped address",
 ];
 const FAULT_ENDPOINT: usize = 4;
+/// The kind the thread on CPU 1 faults by, and the endpoint it is created with.
+const SIMD_FAULT_KIND: usize = 6;
+const SECOND_CORE_FAULT_ENDPOINT: usize = 11;
+static mut SECOND_CORE_FAULT_STACK: [u8; 16384] = [0; 16384];
+static mut SECOND_CORE_WITNESS_STACK: [u8; 16384] = [0; 16384];
 /// Mapped by no one.
 const UNMAPPED_VA: usize = 0xe0_0000_0000;
 static mut WAKE_ONCE_STACK: [u8; 16384] = [0; 16384];
@@ -154,6 +159,7 @@ static FAULT_KIND: AtomicUsize = AtomicUsize::new(0);
 static FAULT_WITNESS_SP: AtomicUsize = AtomicUsize::new(0);
 static FAULTS_REACHED: AtomicUsize = AtomicUsize::new(0);
 static FAULTS_SURVIVED: AtomicUsize = AtomicUsize::new(0);
+static FAULTS_WITNESSED: AtomicUsize = AtomicUsize::new(0);
 static INT3_RETURNED: AtomicUsize = AtomicUsize::new(0);
 static SIMD_UNRAISED: AtomicUsize = AtomicUsize::new(0);
 static CHILD_RESOLVED: [AtomicUsize; 2] = [AtomicUsize::new(0), AtomicUsize::new(0)];
@@ -427,6 +433,51 @@ pub fn check_new_thread_rax() {
     }
 }
 
+/// Has a thread on CPU 1 fault by an unmasked SIMD division, the way a faulting child does, and
+/// checks that only it stops. dom0 spins rather than blocks, and nothing preempts it, so the thread
+/// and its witness can only run on CPU 1. The kernel's line for the fault names the core and the
+/// exception: it is #XM only when that core has CR4.OSXMMEXCPT set, and #UD otherwise. A thread and
+/// not a child, since dom0's container has room for no more processes than check_process_faults
+/// and check_child_process make.
+pub fn check_second_core_simd_fault() {
+    let ret = unsafe { asys::sys_new_endpoint(SECOND_CORE_FAULT_ENDPOINT) };
+    if ret != 0 {
+        bench_fail("new_endpoint (fault on the second core)", ret);
+    }
+    FAULT_WITNESS_SP.store(stack_top(&raw const SECOND_CORE_WITNESS_STACK), Ordering::SeqCst);
+    FAULT_KIND.store(SIMD_FAULT_KIND, Ordering::SeqCst);
+    let ret = unsafe {
+        asys::sys_new_thread(
+            SECOND_CORE_FAULT_ENDPOINT,
+            faulting_child as *const () as usize,
+            stack_top(&raw const SECOND_CORE_FAULT_STACK),
+        )
+    };
+    if ret != 0 {
+        bench_fail("new_thread (fault on the second core)", ret);
+    }
+    let deadline = unsafe { _rdtsc() } + SECOND_CORE_CYCLES;
+    while FAULTS_WITNESSED.load(Ordering::SeqCst) == 0 {
+        if unsafe { _rdtsc() } > deadline {
+            bench_fail("a fault on the second core", FAULTS_REACHED.load(Ordering::SeqCst));
+        }
+        core::hint::spin_loop();
+    }
+    let reached = FAULTS_REACHED.load(Ordering::SeqCst);
+    let survived = FAULTS_SURVIVED.load(Ordering::SeqCst);
+    log::info!(
+        "a thread on CPU 1 faulting by {}: {} reached a fault, {} ran past one",
+        FAULT_KINDS[SIMD_FAULT_KIND],
+        reached,
+        survived
+    );
+    if reached != 1 || survived != 0 {
+        bench_fail("a fault on the second core", survived);
+    }
+    // check_process_faults counts its own.
+    FAULTS_REACHED.store(0, Ordering::SeqCst);
+}
+
 const SECOND_CORE_ENDPOINT: usize = 10;
 const SECOND_CORE_SYSCALLS: usize = 1000;
 /// How long to wait for the other core, in TSC cycles. With no timer, a thread only runs on another
@@ -437,6 +488,13 @@ static SECOND_CORE_MADE: AtomicUsize = AtomicUsize::new(0);
 static SECOND_CORE_STOP: AtomicUsize = AtomicUsize::new(0);
 static SECOND_CORE_REPORTED: AtomicUsize = AtomicUsize::new(0);
 static SECOND_CORE_WOKEN: AtomicUsize = AtomicUsize::new(0);
+/// What the thread on CPU 1 computes with SSE: 1.5 + 2.25 as f32 bits, and MXCSR after it, which is
+/// the value it loaded since the sum is exact.
+const SSE_LHS: u32 = 0x3fc0_0000;
+const SSE_RHS: u32 = 0x4010_0000;
+const SSE_SUM: u32 = 0x4070_0000;
+const SSE_MXCSR: u32 = 0x1f80;
+static SECOND_CORE_SSE: [AtomicUsize; 2] = [AtomicUsize::new(0), AtomicUsize::new(0)];
 /// A value on a cache line of its own.
 #[repr(align(64))]
 struct OwnLine(AtomicUsize);
@@ -455,6 +513,27 @@ const SECOND_CORE_BLOCKS: usize = 2;
 /// rest of the boot.
 extern "C" fn second_core_thread() -> ! {
     let va = (&raw const RESOLVED_PAGE) as usize & !0xfff;
+    // #UD here, before any syscall, when CPU 1 runs with CR4.OSFXSR clear.
+    let mxcsr = SSE_MXCSR;
+    let mut after = 0u32;
+    let sum: u32;
+    unsafe {
+        core::arch::asm!(
+            "ldmxcsr [{mxcsr}]",
+            "movd xmm0, {lhs:e}",
+            "movd xmm1, {rhs:e}",
+            "addss xmm0, xmm1",
+            "movd {sum:e}, xmm0",
+            "stmxcsr [{after}]",
+            mxcsr = in(reg) &mxcsr,
+            after = in(reg) &mut after,
+            lhs = in(reg) SSE_LHS,
+            rhs = in(reg) SSE_RHS,
+            sum = lateout(reg) sum,
+        );
+    }
+    SECOND_CORE_SSE[0].store(sum as usize, Ordering::SeqCst);
+    SECOND_CORE_SSE[1].store(after as usize, Ordering::SeqCst);
     while SECOND_CORE_STOP.load(Ordering::SeqCst) == 0 {
         unsafe { asys::sys_mresolve(va) };
         SECOND_CORE_MADE.fetch_add(1, Ordering::SeqCst);
@@ -525,6 +604,11 @@ pub fn check_second_core() {
         core::hint::spin_loop();
     }
     log::info!("thread on CPU 0 made {} syscalls beside it", mine);
+    let (sum, mxcsr) = (SECOND_CORE_SSE[0].load(Ordering::SeqCst), SECOND_CORE_SSE[1].load(Ordering::SeqCst));
+    log::info!("thread on CPU 1 added {:#x} and {:#x} with SSE: {:#x}, MXCSR {:#x}", SSE_LHS, SSE_RHS, sum, mxcsr);
+    if sum != SSE_SUM as usize || mxcsr != SSE_MXCSR as usize {
+        bench_fail("SSE on the second core", sum);
+    }
     time_contended_syscalls();
     // The thread blocks on CPU 1 with nothing to run there. A wake puts it on this core and this thread
     // in the scheduler, which CPU 1 takes from. The second wake swaps them back, so this thread ends on
@@ -875,7 +959,7 @@ extern "C" fn faulting_child() -> ! {
                 lateout("rcx") _, lateout("r11") _,
             )
         },
-        6 => unsafe {
+        SIMD_FAULT_KIND => unsafe {
             // Clear every mask bit, then divide with both registers holding zero.
             let mxcsr = 0u32;
             core::arch::asm!(
@@ -908,6 +992,7 @@ extern "C" fn faulting_child() -> ! {
 }
 
 extern "C" fn fault_witness() -> ! {
+    FAULTS_WITNESSED.fetch_add(1, Ordering::SeqCst);
     unsafe {
         asys::sys_send_empty_try_schedule(0);
         core::ptr::read_volatile(UNMAPPED_VA as *const u64);

@@ -62,6 +62,7 @@ extern "C" fn main(boot_info: *const BootInfo) -> isize {
         logging::early_init();
 
         cpu::init_cpu(0); // Now get_current() can be used
+        cpu::init_fpu();
         gdt::init_cpu();
 
         interrupt::init();
@@ -152,6 +153,7 @@ unsafe fn start_second_core() {
 extern "C" fn ap_main(cpu_id: u64) -> ! {
     unsafe {
         cpu::init_cpu(cpu_id as usize);
+        cpu::init_fpu();
         gdt::init_cpu();
         interrupt::init_ap();
         syscalls::init_cpu();
