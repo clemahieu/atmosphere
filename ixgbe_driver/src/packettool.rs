@@ -65,17 +65,7 @@ fn fnv_a(data: &[u8], state: &mut u64) {
 }
 
 pub fn get_flowhash(frame: &[u8]) -> Option<usize> {
-    // Ugly but fast (supposedly)
-    // let h1f: BuildHasherDefault<FnvHasher> = Default::default();
-    // let mut h1 = h1f.build_hasher();
     let mut state: u64 = 0xcbf29ce4_8422_2325;
-
-    /*
-    if frame[ETH_HEADER_LEN] >> 4 != 4 {
-        // This shitty implementation can only handle IPv4 :(
-        return None
-    }
-    */
 
     // Length of IPv4 header
     let v4len = (frame[ETH_HEADER_LEN] & 0b1111) as usize * 4;
@@ -86,27 +76,17 @@ pub fn get_flowhash(frame: &[u8]) -> Option<usize> {
             ..(ETH_HEADER_LEN + IPV4_SRCDST_OFFSET + IPV4_SRCDST_LEN)],
         &mut state,
     );
-    // frame[(ETH_HEADER_LEN + IPV4_SRCDST_OFFSET)..(ETH_HEADER_LEN + IPV4_SRCDST_OFFSET + IPV4_SRCDST_LEN)].hash(&mut h1);
 
     // Hash IP protocol number
     let proto = frame[ETH_HEADER_LEN + IPV4_PROTO_OFFSET];
-    /*
-    if proto != 6 && proto != 17 {
-        // This shitty implementation can only handle TCP and UDP
-        return None;
-    }
-    */
     state = state.wrapping_mul(0x100000001b3);
     state ^= u64::from(proto);
-
-    // proto.hash(&mut h1);
 
     // Hash source/destination port
     fnv_a(
         &frame[(ETH_HEADER_LEN + v4len)..(ETH_HEADER_LEN + v4len + 4)],
         &mut state,
     );
-    // frame[(ETH_HEADER_LEN + v4len)..(ETH_HEADER_LEN + v4len + 4)].hash(&mut h1);
 
     // Some(h1.finish() as usize)
     Some(state as usize)
