@@ -18,5 +18,4 @@ constants = { path = "../constants" }
 slabmalloc = "0.11.0"
 spin = "0.9.8"
 log = "0.4.19"
-x86 = "0.52.0"
 lazy_static = { version = "1.4.0", features = ["spin_no_std"] }
