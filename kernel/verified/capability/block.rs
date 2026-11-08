@@ -1288,6 +1288,8 @@ impl BlockTable {
         ensures
             final(self).wf(),
             final(self).pages@ == old(self).pages@.update(i as int, free_entry()),
+            final(self).regions_2m@ == old(self).regions_2m@,
+            final(self).regions_1g@ == old(self).regions_1g@,
     {
         let ghost pre = *old(self);
         self.give_page(i, Tracked(perm));
@@ -1310,6 +1312,9 @@ impl BlockTable {
         ensures
             final(self).wf(),
             ret is None ==> *final(self) == *old(self),
+            !old(self).covered(base as int)
+                && (forall|k: int| 0 <= k < order_pages(order) ==> #[trigger] old(self).pages@[base + k].kind is Free)
+                ==> ret is Some,
             ret is Some ==> {
                 &&& forall|k: int| 0 <= k < order_pages(order)
                     ==> #[trigger] old(self).pages@[base + k].kind is Free

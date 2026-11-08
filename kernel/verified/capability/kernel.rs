@@ -618,6 +618,39 @@ impl StaleEpochs {
     }
 }
 
+/// Every core running nothing, at generation 1 with no PCID handed out.
+fn init_cores(cores: &mut Array<CoreState, NUM_CPUS>)
+    requires
+        old(cores).wf(),
+    ensures
+        final(cores).wf(),
+        forall|c: int| 0 <= c < NUM_CPUS ==> {
+            &&& (#[trigger] final(cores)@[c]).current_thread.is_None()
+            &&& final(cores)@[c].acked_epoch == 0
+            &&& final(cores)@[c].generation == 1
+            &&& final(cores)@[c].next_pcid == 1
+            &&& final(cores)@[c].pcids_used@ == Set::<usize>::empty()
+        },
+{
+    let mut i = 0;
+    while i != NUM_CPUS
+        invariant
+            0 <= i <= NUM_CPUS,
+            cores.wf(),
+            forall|c: int| 0 <= c < i ==> {
+                &&& (#[trigger] cores@[c]).current_thread.is_None()
+                &&& cores@[c].acked_epoch == 0
+                &&& cores@[c].generation == 1
+                &&& cores@[c].next_pcid == 1
+                &&& cores@[c].pcids_used@ == Set::<usize>::empty()
+            },
+        decreases NUM_CPUS - i,
+    {
+        cores.set(i, CoreState { current_thread: None, acked_epoch: 0, generation: 1, next_pcid: 1, pcids_used: Ghost(Set::empty()) });
+        i = i + 1;
+    }
+}
+
 pub struct CapKernel {
     pub list: Tree,
     pub cores: Array<CoreState, NUM_CPUS>,
@@ -1394,6 +1427,8 @@ impl CapKernel {
             final(self).mapped@ == Set::<usize>::empty(),
             final(self).devices.count == 0,
             forall|c: int| 0 <= c < NUM_CPUS ==> (#[trigger] final(self).cores@[c]).current_thread.is_None(),
+            final(self).list.seq@[0] == root,
+            final(self).boot_empty(),
     {
         self.list = Tree::new(root, Tracked(perm));
         self.tables = Tables::new();
@@ -1407,33 +1442,7 @@ impl CapKernel {
         self.threads = Threads::new();
         self.processes = Processes::new();
         self.blocks.init();
-        let mut i = 0;
-        while i != NUM_CPUS
-            invariant
-                0 <= i <= NUM_CPUS,
-                self.cores.wf(),
-                self.list.wf(),
-                self.tables.wf(&self.list),
-                self.blocks.wf(),
-                self.stale_epoch.wf(),
-                self.zeroing.wf(),
-                self.zeroing.blocks@ == Map::<usize, usize>::empty(),
-                forall|i: int| 0 <= i < NODE_SPACE && i != root ==> !(#[trigger] self.list.nodes@[i]).live,
-                self.list.nodes@[root as int].kind == NodeKind::Capability,
-                forall|q: int| 0 <= q < NUM_2M ==> !(#[trigger] self.blocks.regions_2m@[q]).typed,
-                forall|q: int| 0 <= q < NUM_1G ==> !(#[trigger] self.blocks.regions_1g@[q]).typed,
-                forall|c: int| 0 <= c < i ==> {
-                    &&& (#[trigger] self.cores@[c]).current_thread.is_None()
-                    &&& self.cores@[c].acked_epoch == 0
-                    &&& self.cores@[c].generation == 1
-                    &&& self.cores@[c].next_pcid == 1
-                    &&& self.cores@[c].pcids_used@ == Set::<usize>::empty()
-                },
-            decreases NUM_CPUS - i,
-        {
-            self.cores.set(i, CoreState { current_thread: None, acked_epoch: 0, generation: 1, next_pcid: 1, pcids_used: Ghost(Set::empty()) });
-            i = i + 1;
-        }
+        init_cores(&mut self.cores);
         self.stale_epoch.zero();
         self.iommus.zero();
         self.iommus.present = iommus_present;
