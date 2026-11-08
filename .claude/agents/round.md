@@ -14,18 +14,18 @@ You run one round. The rules are in `CLAUDE.md`; this is the procedure. A round 
 ```
 bd ready --exclude-type=epic     # ready leaves, highest priority first
 bd list -s blocked               # questions waiting on the human
-bd list -s in_progress           # a round that did not finish
+bd list -s in_progress           # issues held by a round, with the actor that holds each
 ```
 
 `bd ready` without the filter also lists open epics. A round never takes an epic from that list.
 
-Rounds run one at a time, so an issue in progress at orient was left by a round that did not finish. For each: `bd update <id> --append-notes "Recovered at orient: worktree ~/atmosphere.src/<id> <absent | exists, N commits past main, M files changed>"` (from `git -C ~/atmosphere.src/<id> log --oneline main..HEAD | wc -l` and `git -C ~/atmosphere.src/<id> status --short | wc -l`), then `bd update <id> -s open`. The round that takes it re-reads it and starts from that worktree (section 5). Then pick.
+Several loops may run at once, one per terminal, each under its own actor: `BEADS_ACTOR`, or the git user name when it is unset, which `bd` records as the assignee of what it claims. Within one loop rounds run one at a time, so an issue in progress under your own actor was left by a round of this loop that did not finish; one under another actor belongs to a live round in another loop, and you leave it alone. For each of your own: `bd update <id> --append-notes "Recovered at orient: worktree ~/atmosphere.src/<id> <absent | exists, N commits past main, M files changed>"` (from `git -C ~/atmosphere.src/<id> log --oneline main..HEAD | wc -l` and `git -C ~/atmosphere.src/<id> status --short | wc -l`), then `bd update <id> -s open`. The round that takes it re-reads it and starts from that worktree (section 5). Then pick.
 
 ## 2. Pick
 
-- A ready leaf: take the first line. `bd show <id>` and `bd show <parent>`. Read the description, the acceptance criteria, the design notes and the parent epic's tier: an issue that was blocked and is ready again may have a changed premise. Claim it: `bd update <id> --claim`.
-- No ready leaf: section 6.
-- No epic qualifies there either: the loop stops; report by section 7.
+- `bd ready --claim --exclude-type=epic --json` claims the first ready leaf and prints it, in one step, so no other loop can take the same leaf. Then `bd show <id>` and `bd show <parent>`. Read the description, the acceptance criteria, the design notes and the parent epic's tier: an issue that was blocked and is ready again may have a changed premise.
+- It claims nothing: section 6. Another loop may have taken the last leaf since orient; that is the same as no ready leaf.
+- No epic qualifies there either: the loop waits when any issue is in progress under another actor, since what it lands may make leaves ready, and stops otherwise; report by section 7.
 
 ## 3. Decide one action
 
@@ -40,12 +40,18 @@ Discard, redefine and split do not commit.
 
 1. Worktree: `git -C ~/atmosphere.src/main worktree add ../<id> -b <id> main`; work in `~/atmosphere.src/<id>`, where `<id>` is the issue id. Verus is built once, under main; link it so the gate runs here: `ln -s ../../main/tools/verus ~/atmosphere.src/<id>/tools/verus`.
 2. Sources: before reading an external source for the first time, check its license and record the source and the license on the issue with `bd update <id> --append-notes "..."`. Never open a forbidden source (CLAUDE.md, License).
-3. Test first, at the epic's tier: a Verus specification and proof for tier 1; a test that reaches the branch, with fault injection where nothing else reaches it, for tier 2; the best test reasonable for tier 3. Run it and see it fail, make the change, see it pass. For tier 1, the round fixes what the failing verify names itself, for up to three verify runs after the change; when the third still fails, the proof search goes to the prover agent (`.claude/agents/prover.md`). A round cannot wait for a background agent, so the driver runs it between rounds: `bd update <id> --append-notes "Prover input: target <the verified, errors line needed>; failing: <each error's file:line and message>; change so far: <what the worktree holds>"`, `bd update <id> -s open`, keep the worktree, and end the round with the report and its `Prover: <id>` line. The driver appends the prover's report to the issue. The round that takes the issue next starts from that worktree and that report. One prover run ends the attempt (the bound below): continue to the gate if the report reached the target, otherwise record the report as the attempt.
+3. Test first, at the epic's tier: a Verus specification and proof for tier 1; a test that reaches the branch, with fault injection where nothing else reaches it, for tier 2; the best test reasonable for tier 3. Run it and see it fail, make the change, see it pass. For tier 1, the round fixes what the failing verify names itself, for up to three verify runs after the change; when the third still fails, the proof search goes to the prover agent (`.claude/agents/prover.md`). A round cannot wait for a background agent, so the driver runs it between rounds: `bd update <id> --append-notes "Prover input: target <the verified, errors line needed>; failing: <each error's file:line and message>; change so far: <what the worktree holds>"`, keep the worktree and the issue in progress, so no other loop takes it while the prover works in that worktree, and end the round with the report and its `Prover: <id>` line. The driver appends the prover's report to the issue and sets it open. The round that takes the issue next starts from that worktree and that report. One prover run ends the attempt (the bound below): continue to the gate if the report reached the target, otherwise record the report as the attempt.
 4. Anything the issue did not name (a dependency, a bug, more complexity, a decision only the human can make) goes through section 5. Do not widen the change.
-5. Gate: `source tools/env.sh`, then `atmo test`. Record the command and its result on the issue.
-6. Commit: one logical change per commit; the message says why; the trailer the harness asks for. If the message needs "and", make two commits, each building on its own.
-7. Land: `git -C ~/atmosphere.src/main merge --ff-only <id>`. If main moved, `git rebase main` in the worktree, run the gate again, merge again. Then `git -C ~/atmosphere.src/main push origin main`, `git -C ~/atmosphere.src/main worktree remove ../<id>`, `git -C ~/atmosphere.src/main branch -d <id>`.
-8. Close: `bd close <id> --reason "<sha>: <evidence>"`. The reason names every commit SHA and the evidence a skeptic will want: verify counts, the serial log line with dom0's exit, where the test output is.
+5. Commit: one logical change per commit; the message says why; the trailer the harness asks for. If the message needs "and", make two commits, each building on its own. Stage named paths, and read `git diff --cached --stat` before committing.
+6. Land: rebase, gate, merge and push run as one command under the landing lock, so main cannot move between the gate and the merge and nothing lands untested. Start it in the background from the worktree, then watch the log with `Monitor` until its last line starts with `exit`:
+
+   ```
+   flock ~/atmosphere.src/.land.lock bash -c 'git rebase main && source tools/env.sh && atmo test && git -C ~/atmosphere.src/main merge --ff-only <id> && git -C ~/atmosphere.src/main push origin main' > ~/atmosphere.src/logs/<id>-gate.log 2>&1; echo "exit $?" >> ~/atmosphere.src/logs/<id>-gate.log
+   ```
+
+   The lock is held for one gate at most; another loop's round waits at it instead of gating twice. When the rebase stops on a conflict, the lock is released before the gate: resolve it, `git rebase --continue`, and land again. When the gate fails, fix the change, fold the fix into the commit it corrects, and land again. The log is the evidence and stays beside the worktrees, where a later session and the skeptic find it. Record the command and its exit on the issue.
+7. Clean up: `git -C ~/atmosphere.src/main worktree remove ../<id>`, `git -C ~/atmosphere.src/main branch -d <id>`.
+8. Close: `bd close <id> --reason "<sha>: <evidence>"`. The reason names every commit SHA, the gate log path, and the evidence a skeptic will want: verify counts, the serial log line with dom0's exit.
 
 An attempt is bounded. When ten runs of the tier's check (`atmo verify` for tier 1, the test for tiers 2 and 3) have not reached the gate, stop: `bd update <id> --append-notes "Attempt <n>: <what was tried>; closest result: <the verify line or the test output>; next: <what a further attempt would try, as lemma statements for tier 1>"`, keep the worktree, `bd update <id> -s open`, and end the round with the report. The round that takes it next starts from that worktree (section 5). A leaf whose notes hold two attempts waits on a decision only the human can make. File that decision by section 5 and depend the leaf on it. The question names both attempts and the options: a third attempt (budget), a split into the lemmas the notes name (more rounds, smaller proofs), a deferral (the error stays in the allowance), or a tier change (unverified code; the human's by principle 3).
 
@@ -59,8 +65,8 @@ An attempt is bounded. When ten runs of the tier's check (`atmo verify` for tier
 
 Consider the open epics other than the star, shallowest first. Depth is the number of dots in the id: `atmo-1ab` is the star, `atmo-1ab.5` depth 1, `atmo-1ab.5.3` depth 2. `bd list -t epic`, then `bd show <id>`.
 
-- Skeptic pass: an epic with at least one child, no open child, and no child of status blocked. The skeptic agent (`.claude/agents/skeptic.md`) runs from the driver, as the prover does. When the epic's notes hold no skeptic report newer than its last closed child: `bd update <epic> --append-notes "Skeptic input: tier <t>; evidence: <the closed children, the commit SHAs their close reasons name, where the atmo test and atmo verify output and the serial logs are>"` and end the round with the report and its `Skeptic: <epic>` line. When they hold one: if every criterion stands, `bd close <epic> --reason "skeptic pass: <summary>"`; each refuted criterion keeps the epic open and becomes a leaf under it, the refutation as its description.
-- Split round: the shallowest open epic with no ready children and no child of status blocked. Write its leaves, each with a description, acceptance criteria a skeptic can check from evidence, and the tier; `bd dep add` only where one blocks another. If a leaf cannot be written without a decision only the human can make, file that decision by section 5 under this epic and end the round. Do not mark the epic blocked.
+- Skeptic pass: an epic with at least one child, no open child, no child in progress, and no child of status blocked. The skeptic agent (`.claude/agents/skeptic.md`) runs from the driver, as the prover does. When the epic's notes hold a skeptic input newer than its last closed child and no report after it, a skeptic is running for another loop: skip the epic. When they hold no skeptic report newer than its last closed child: `bd update <epic> --append-notes "Skeptic input: tier <t>; evidence: <the closed children, the commit SHAs their close reasons name, where the atmo test and atmo verify output and the serial logs are>"` and end the round with the report and its `Skeptic: <epic>` line. When they hold one: if every criterion stands, `bd close <epic> --reason "skeptic pass: <summary>"`; each refuted criterion keeps the epic open and becomes a leaf under it, the refutation as its description.
+- Split round: the shallowest open epic with no ready children, no child in progress, and no child of status blocked. Write its leaves, each with a description, acceptance criteria a skeptic can check from evidence, and the tier; `bd dep add` only where one blocks another. If a leaf cannot be written without a decision only the human can make, file that decision by section 5 under this epic and end the round. Do not mark the epic blocked.
 - The star never closes and never gets a split round. Its children are the human's decision.
 
 ## 7. Report
@@ -72,6 +78,6 @@ End the round with, in this order and nothing else:
 - The questions in `bd list -s blocked`.
 - `Notify:` one line per notification the driver sends, or `Notify: none`.
 - `Prover: <id>` or `Skeptic: <epic>` when the round handed the driver a proof search (section 4.3) or a skeptic pass (section 6); otherwise nothing.
-- The last line, `Loop: continue` or `Loop: stop`. Stop means no leaf is ready and no epic qualifies for a skeptic pass or a split round: every remaining open issue is an epic, a status-blocked question, or an issue blocked only by such a question. There is no other stop; the human monitors budget.
+- The last line, `Loop: continue`, `Loop: wait` or `Loop: stop`. Wait means no leaf is ready and no epic qualifies for a skeptic pass or a split round while an issue is in progress under another loop's actor; the driver tries again later. Stop means the same with nothing in progress: every remaining open issue is an epic, a status-blocked question, or an issue blocked only by such a question. There is no other stop; the human monitors budget.
 
 Ask nothing that is not on the blocked list.
