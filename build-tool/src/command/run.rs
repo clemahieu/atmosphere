@@ -51,14 +51,6 @@ pub struct Opts {
     #[clap(long, default_value = "hello")]
     payload: String,
 
-    /// Emulate Nvme with this img file
-    #[clap(long)]
-    nvme_img: Option<String>,
-
-    /// Passthru this host pci device
-    #[clap(long)]
-    pci_dev: Vec<String>,
-
     /// Report how long the kernel's lock is held and waited for, in the serial log.
     ///
     /// A build option, since the timing is a real share of a syscall.
@@ -136,20 +128,12 @@ pub(super) async fn run(global: GlobalOpts) -> Result<()> {
     run_config.use_grub(local.grub);
     run_config.use_iommu(local.iommu);
 
-    if let Some(img_file) = local.nvme_img {
-        run_config.nvme_img(img_file);
-    }
-
     if let Some(cpu_model) = local.cpu_model {
         run_config.cpu_model(cpu_model);
     }
 
     if let Some(cmdline) = local.command_line {
         run_config.command_line(cmdline);
-    }
-
-    if !local.pci_dev.is_empty() {
-        run_config.pci_dev(local.pci_dev);
     }
 
     if local.full_output {
