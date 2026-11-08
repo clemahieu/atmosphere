@@ -17,14 +17,6 @@ members = [
   "user/maglev",
   "user/kv",
   "e810_driver",
-
-  #"test-cargo-driver",
-  #"atcp",
-  #"build-tool",
-  #"kernel",
-  #"libcap",
-  #"portman",
-  #"verified",
 ]
 
 exclude = ["test-pass", "tools/verus"]
