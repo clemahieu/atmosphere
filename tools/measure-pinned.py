@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Boot dom0 under KVM with its two vCPUs pinned, and print the kernel's own timing lines.
 
-usage: tools/measure-pinned.py within|across [boots] [--lock-stats]   (from the workspace root)
+usage: tools/measure-pinned.py within|across [boots] [--lock-stats] [--force]   (from the workspace root)
 
 Numbers from a host with other work on it do not mean much, so this reports the load average. It
 pins vCPU 0 and 1 to separate physical cores, sharing an L3 for within and on different L3s for across,
@@ -10,6 +10,14 @@ A cycle in the timing lines is a TSC tick, not a core cycle, so each boot also p
 measured cores over the boot: from cpuinfo_avg_freq, the kernel's APERF/MPERF average, or from
 scaling_cur_freq where that file is absent, sampled from a thread kept off the measured cores. An idle
 core reports the cpufreq policy's clock, so the minimum takes in the moments a vCPU was halted.
+
+Before the first boot it looks at the measured CPUs and their SMT siblings for half a second and
+prints what it finds there: other tasks seen runnable, from /proc/*/task/*/stat; device IRQs routed
+there, from /proc/irq/*/effective_affinity_list, or taken there, from the counts in /proc/interrupts;
+and the CPU-local interrupts (the local timer, rescheduling, function call and TLB IPIs) taken there.
+A runnable task or a device IRQ makes it refuse to boot; --force boots anyway and prints the finding
+as a warning above the numbers. The CPU-local interrupts are printed and do not refuse: no affinity
+setting moves them, and only nohz_full at host boot would quiet the timer.
 
 What needs root to keep the host off the measured cores is tools/isolate-pinned.sh, which the human
 runs around the measurements: apply stops irqbalance, points the IRQs away from the measured CPUs and
@@ -62,6 +70,100 @@ def choose(mode):
     if mode == "within":
         return groups[0][-2], groups[0][-1]
     return groups[0][-1], groups[1][-1]
+
+
+def siblings(pair):
+    """The measured CPUs and their online SMT siblings."""
+    return sorted({sib for cpu in pair
+                   for sib in expand(read(f"/sys/devices/system/cpu/cpu{cpu}/topology/thread_siblings_list"))})
+
+
+def runnable_tasks(cpus):
+    """(tid, comm, cpu) of each task outside this process that is runnable on one of cpus. The
+    fields after comm's closing parenthesis start at state; processor is field 39 of stat."""
+    found = set()
+    for stat in glob.glob("/proc/[0-9]*/task/[0-9]*/stat"):
+        if stat.startswith(f"/proc/{os.getpid()}/"):
+            continue
+        try:
+            text = read(stat)
+        except OSError:
+            continue
+        comm = text[text.index("(") + 1:text.rindex(")")]
+        fields = text[text.rindex(")") + 2:].split()
+        if fields[0] == "R" and int(fields[36]) in cpus:
+            found.add((int(stat.split("/")[4]), comm, int(fields[36])))
+    return found
+
+
+def interrupts():
+    """Maps each /proc/interrupts row that counts per online CPU to its description and those
+    counts. ERR and MIS carry one machine-wide count and are left out."""
+    with open("/proc/interrupts") as f:
+        columns = [int(name[3:]) for name in f.readline().split()]
+        rows = {}
+        for line in f:
+            name, _, rest = line.partition(":")
+            words = rest.split()
+            if len(words) >= len(columns) and all(word.isdigit() for word in words[:len(columns)]):
+                rows[name.strip()] = (" ".join(words[len(columns):]),
+                                      dict(zip(columns, map(int, words[:len(columns)]))))
+    return rows
+
+
+def routed_irqs(cpus):
+    """Maps each IRQ whose effective affinity takes in one of cpus to those CPUs."""
+    routed = {}
+    for path in glob.glob("/proc/irq/[0-9]*/effective_affinity_list"):
+        text = read(path)
+        hit = set(expand(text)) & set(cpus) if text else set()
+        if hit:
+            routed[path.split("/")[3]] = sorted(hit)
+    return routed
+
+
+def noise(cpus, seconds=0.5):
+    """What lands on cpus over seconds: runnable tasks, device IRQs routed or taken there, and the
+    CPU-local interrupts taken there. Returns the lines that refuse a run and the lines that do not."""
+    before, tasks = interrupts(), set()
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        tasks |= runnable_tasks(cpus)
+        time.sleep(0.02)
+    after = interrupts()
+    routed = routed_irqs(cpus)
+    refusing = [f"task {tid} ({comm}) runnable on CPU {cpu}" for tid, comm, cpu in sorted(tasks)]
+    local = []
+    for name, (what, counts) in after.items():
+        taken = {cpu: counts[cpu] - before.get(name, ("", {}))[1].get(cpu, 0) for cpu in cpus if cpu in counts}
+        taken = {cpu: n for cpu, n in taken.items() if n}
+        if name.isdigit() and (taken or name in routed):
+            on = ", ".join(f"CPU {cpu}" for cpu in routed.get(name, []))
+            fired = ", ".join(f"{n} on CPU {cpu}" for cpu, n in taken.items())
+            refusing.append(f"IRQ {name} ({what})" + (f" routed to {on}" if on else "")
+                            + (f", taken {fired}" if fired else ""))
+        elif not name.isdigit() and taken:
+            local.append(f"{name} ({what}): " + ", ".join(f"{n} on CPU {cpu}" for cpu, n in taken.items()))
+    return refusing, local
+
+
+def check_noise(pair, force):
+    """Prints what noise() finds on the measured CPUs and their siblings, and exits before any boot
+    when something there refuses the run and force is not set."""
+    cpus = siblings(pair)
+    refusing, local = noise(cpus)
+    print(f"noise on CPUs {cpus} (measured and SMT siblings) over 0.5 s:")
+    for line in refusing:
+        print(f"  {'WARNING: ' if force else ''}{line}")
+    for line in local:
+        print(f"  local {line}")
+    if not refusing:
+        print("  no runnable task or device IRQ")
+    elif force:
+        print(f"WARNING: --force: measuring with {len(refusing)} tasks and IRQs on the measured CPUs or siblings")
+    else:
+        sys.exit(f"FAIL: {len(refusing)} tasks and IRQs on the measured CPUs or siblings; "
+                 "see tools/isolate-pinned.sh, or pass --force to measure anyway")
 
 
 def build(lock_stats):
@@ -146,12 +248,14 @@ def main():
     mode = sys.argv[1]
     rest = sys.argv[2:]
     lock_stats = "--lock-stats" in rest
+    force = "--force" in rest
     boots = next((int(a) for a in rest if a.isdigit()), 3)
     pair = choose(mode)
     out = "target/measure-pinned"
     os.makedirs(out, exist_ok=True)
     build(lock_stats)
     print(f"{mode}: vCPUs on host CPUs {pair}, lock_stats {lock_stats}, load {os.getloadavg()[0]:.2f}")
+    check_noise(pair, force)
     for i in range(boots):
         log, samples = boot(pair, out)
         if "dom0 benchmark done" not in log:
