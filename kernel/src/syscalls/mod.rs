@@ -11,6 +11,7 @@ use crate::cpu::Cpu;
 use crate::gdt::GlobalDescriptorTable;
 use crate::kernel;
 use crate::thread::SwitchDecision;
+use verified::capability::operation;
 use verified::trap::Registers;
 
 /// Flags cleared on syscall entry. The kernel is not preemptible, so IF. Compiled code assumes DF is
@@ -27,6 +28,28 @@ static mut SYSCALLS: [u64; MAX_SYSCALLS] = [0; MAX_SYSCALLS];
 
 // sys_entry calls handlers with the C convention, so the six argument entry must declare it.
 const _: extern "C" fn(usize, usize, usize, &mut Registers, usize, usize) = kernel::sys_new_proc;
+
+// User space invokes operations by asys's numbers and reads asys's statuses; they must be the ones the
+// verified dispatch decodes and returns.
+const _: () = {
+    use asys::operation as user;
+    assert!(user::STATUS_REFUSED == operation::STATUS_REFUSED);
+    assert!(user::STATUS_UNKNOWN == operation::STATUS_UNKNOWN);
+    assert!(user::RETYPE == operation::OPERATION_RETYPE);
+    assert!(user::DERIVE == operation::OPERATION_DERIVE);
+    assert!(user::MOVE == operation::OPERATION_MOVE);
+    assert!(user::CLAIM == operation::OPERATION_CLAIM);
+    assert!(user::DELETE == operation::OPERATION_DELETE);
+    assert!(user::REVOKE == operation::OPERATION_REVOKE);
+    assert!(user::MAP == operation::OPERATION_MAP);
+    assert!(user::UNMAP == operation::OPERATION_UNMAP);
+    assert!(user::DESTROY == operation::OPERATION_DESTROY);
+    assert!(user::SEND == operation::OPERATION_SEND);
+    assert!(user::RECEIVE == operation::OPERATION_RECEIVE);
+    assert!(user::CALL == operation::OPERATION_CALL);
+    assert!(user::REPLY_RECV == operation::OPERATION_REPLY_RECV);
+    assert!(user::PRINT == operation::OPERATION_PRINT);
+};
 
 /// Initializes syscalls.
 ///

@@ -10,6 +10,7 @@ pub mod list;
 pub mod map;
 pub mod mapping;
 pub mod moving;
+pub mod operation;
 pub mod process;
 pub mod reach;
 pub mod reclaim;
