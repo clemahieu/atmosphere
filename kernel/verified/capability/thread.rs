@@ -1594,6 +1594,7 @@ impl CapKernel {
             ret ==> base as int + 8192 <= NODE_SPACE as int,
             ret ==> final(self).processes == old(self).processes,
             ret ==> final(self).tables.roots == old(self).tables.roots,
+            ret ==> forall|x: usize| x != base ==> #[trigger] thread_process(&final(self).threads, x) == thread_process(&old(self).threads, x),
             ret ==> forall|x: usize| #[trigger] old(self).is_cap(x) ==> {
                 &&& final(self).is_cap(x)
                 &&& final(self).payload_of(x) == old(self).payload_of(x)
@@ -1840,6 +1841,7 @@ impl CapKernel {
         ensures
             final(self).wf(),
             !ret ==> *final(self) == *old(self),
+            !ret ==> bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             ret ==> old(self).can_retype(root, from, to, base, THREAD_ORDER),
             ret ==> old(self).can_hold_thread(root, j),
             ret ==> {
@@ -1875,6 +1877,7 @@ impl CapKernel {
                 &&& final(self).payload_of(child).rights & right_bit(Right::Control) != 0
                 &&& final(self).list.is_child(parent, child)
                 &&& discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base })
+                &&& bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables).insert(base, p)
             },
     {
         let ghost pre = *old(self);
@@ -1928,6 +1931,12 @@ impl CapKernel {
             lemma_retype_then_local(pre.view(), mid.view(), post.view(), root, parent, base);
             assert(post.tables.node_of(root, j) == n);
             post.lemma_parent_undeletable(root, j, base);
+            assert(mid.payload_of(n) == pre.payload_of(n));
+            assert(thread_process(&post.threads, base) == Some(p));
+            assert forall|x: usize| x != base implies #[trigger] thread_process(&post.threads, x) == thread_process(&pre.threads, x) by {
+                assert(thread_process(&mid.threads, x) == thread_process(&pre.threads, x));
+            }
+            Self::lemma_bound_threads_insert(pre, post, base, p);
         }
         true
     }
