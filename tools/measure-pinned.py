@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Boot dom0 under KVM with its two vCPUs pinned, and print the kernel's own timing lines.
 
-usage: tools/measure-pinned.py within|across [boots] [--lock-stats] [--force]   (from the workspace root)
+usage: tools/measure-pinned.py within0|within1|across [boots] [--lock-stats] [--force]   (from the workspace root)
 
 Numbers from a host with other work on it do not mean much, so this reports the load average. It
-pins vCPU 0 and 1 to separate physical cores, sharing an L3 for within and on different L3s for across,
-and keeps QEMU's other threads off both. KVM inflates IPI cost, so the IPI number is an upper bound.
+pins vCPU 0 and 1 to separate physical cores and keeps QEMU's other threads off both. The placement
+picks the cores: within0 takes two cores sharing the L3 that holds CPU 0 (CCD 0 on a 9950X3D, the one
+with the V-cache), within1 two cores sharing the next L3 (CCD 1), and across one core from each. The
+first line names each measured CPU's L3 by its shared_cpu_list. KVM inflates IPI cost, so the IPI
+number is an upper bound.
 A cycle in the timing lines is a TSC tick, not a core cycle, so each boot also prints the clock of both
 measured cores over the boot: from cpuinfo_avg_freq, the kernel's APERF/MPERF average, or from
 scaling_cur_freq where that file is absent, sampled from a thread kept off the measured cores. An idle
@@ -23,10 +26,10 @@ What needs root to keep the host off the measured cores is tools/isolate-pinned.
 runs around the measurements: apply stops irqbalance, points the IRQs away from the measured CPUs and
 their SMT siblings, takes the siblings offline, turns boost off and pins the measured CPUs' cpufreq
 minimum to their maximum; undo restores each. Give it every CPU the runs use; on a 16-core part with
-two L3s, within uses CPUs 6 and 7 and across 7 and 15:
+two L3s, within0 uses CPUs 6 and 7, within1 14 and 15, and across 7 and 15:
 
-    sudo tools/isolate-pinned.sh apply 6 7 15
-    tools/measure-pinned.py within; tools/measure-pinned.py across
+    sudo tools/isolate-pinned.sh apply 6 7 14 15
+    tools/measure-pinned.py within0; tools/measure-pinned.py within1; tools/measure-pinned.py across
     sudo tools/isolate-pinned.sh undo
 """
 import glob
@@ -66,10 +69,16 @@ def physical_cores_by_l3():
 
 
 def choose(mode):
+    """The two host CPUs the placement mode names, from physical_cores_by_l3() in the order of each
+    L3's first CPU."""
     groups = physical_cores_by_l3()
-    if mode == "within":
-        return groups[0][-2], groups[0][-1]
-    return groups[0][-1], groups[1][-1]
+    within = re.fullmatch(r"within(\d)", mode)
+    if within and int(within.group(1)) < len(groups):
+        return groups[int(within.group(1))][-2], groups[int(within.group(1))][-1]
+    if mode == "across" and len(groups) > 1:
+        return groups[0][-1], groups[1][-1]
+    sys.exit(f"FAIL: no placement {mode} on a host with {len(groups)} L3s; "
+             + __doc__.splitlines()[2])
 
 
 def siblings(pair):
@@ -255,6 +264,8 @@ def main():
     os.makedirs(out, exist_ok=True)
     build(lock_stats)
     print(f"{mode}: vCPUs on host CPUs {pair}, lock_stats {lock_stats}, load {os.getloadavg()[0]:.2f}")
+    for cpu in pair:
+        print(f"  L3 of CPU {cpu}: {read(f'/sys/devices/system/cpu/cpu{cpu}/cache/index3/shared_cpu_list')}")
     check_noise(pair, force)
     for i in range(boots):
         log, samples = boot(pair, out)
