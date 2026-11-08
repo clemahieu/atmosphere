@@ -2,8 +2,6 @@ use vstd::prelude::*;
 verus! {
 use core::mem::MaybeUninit;
 
-
-
 pub struct Array<A, const N: usize>{
     pub seq: Ghost<Seq<A>>,
     pub ar: [A;N]
@@ -158,7 +156,6 @@ impl<T: Copy, const N: usize> Array<Option<T>, N> {
     }
 }
 
-
 fn test<const N: usize>(ar: &mut Array<u64, N>)
     requires
         old(ar).wf(),
@@ -172,7 +169,6 @@ fn test<const N: usize>(ar: &mut Array<u64, N>)
     let v_0 = ar.get(0);
     assert(v_0 == 1);
     let v_1_new = ar.get(1);
-    // assert(v_1_new != 0); // this should fail
     }
 
 }

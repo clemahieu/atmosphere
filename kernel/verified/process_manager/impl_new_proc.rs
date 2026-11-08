@@ -329,7 +329,6 @@ impl ProcessManager {
             seq_push_unique_lemma::<usize>();
         };
         assert(self.process_trees_wf()) by {
-            // seq_to_set_lemma::<ProcPtr>();
             seq_push_lemma::<usize>();
             seq_push_unique_lemma::<usize>();
 

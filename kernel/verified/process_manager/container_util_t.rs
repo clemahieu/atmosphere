@@ -105,7 +105,6 @@ pub fn scheduler_pop_head(
     ret
 }
 
-
 pub fn scheduler_remove_thread(
     container_ptr: ContainerPtr,
     container_perm: &mut Tracked<PointsTo<Container>>,
@@ -450,8 +449,6 @@ pub fn container_set_quota_mem_4k(
         final(container_perm)@.value().parent_rev_ptr =~= old(container_perm)@.value().parent_rev_ptr,
         final(container_perm)@.value().children =~= old(container_perm)@.value().children,
         final(container_perm)@.value().owned_endpoints =~= old(container_perm)@.value().owned_endpoints,
-        // container_perm@.value().quota =~= old(container_perm)@.value().quota,
-        // container_perm@.value().mem_used =~= old(container_perm)@.value().mem_used,
         final(container_perm)@.value().owned_cpus =~= old(container_perm)@.value().owned_cpus,
         final(container_perm)@.value().scheduler =~= old(container_perm)@.value().scheduler,
         final(container_perm)@.value().owned_threads =~= old(container_perm)@.value().owned_threads,
@@ -489,9 +486,6 @@ pub fn container_insert_cpu(
         final(container_perm)@.value().parent_rev_ptr =~= old(container_perm)@.value().parent_rev_ptr,
         final(container_perm)@.value().children =~= old(container_perm)@.value().children,
         final(container_perm)@.value().owned_endpoints =~= old(container_perm)@.value().owned_endpoints,
-        // container_perm@.value().quota =~= old(container_perm)@.value().quota,
-        // container_perm@.value().mem_used =~= old(container_perm)@.value().mem_used,
-        // container_perm@.value().owned_cpus =~= old(container_perm)@.value().owned_cpus,
         final(container_perm)@.value().scheduler =~= old(container_perm)@.value().scheduler,
         final(container_perm)@.value().owned_threads =~= old(container_perm)@.value().owned_threads,
         final(container_perm)@.value().depth =~= old(container_perm)@.value().depth,
@@ -529,9 +523,6 @@ pub fn container_remove_cpu(
         final(container_perm)@.value().parent_rev_ptr =~= old(container_perm)@.value().parent_rev_ptr,
         final(container_perm)@.value().children =~= old(container_perm)@.value().children,
         final(container_perm)@.value().owned_endpoints =~= old(container_perm)@.value().owned_endpoints,
-        // container_perm@.value().quota =~= old(container_perm)@.value().quota,
-        // container_perm@.value().mem_used =~= old(container_perm)@.value().mem_used,
-        // container_perm@.value().owned_cpus =~= old(container_perm)@.value().owned_cpus,
         final(container_perm)@.value().scheduler =~= old(container_perm)@.value().scheduler,
         final(container_perm)@.value().owned_threads =~= old(container_perm)@.value().owned_threads,
         final(container_perm)@.value().depth =~= old(container_perm)@.value().depth,
@@ -566,8 +557,6 @@ pub fn container_set_quota(
         final(container_perm)@.value().parent_rev_ptr =~= old(container_perm)@.value().parent_rev_ptr,
         final(container_perm)@.value().children =~= old(container_perm)@.value().children,
         final(container_perm)@.value().owned_endpoints =~= old(container_perm)@.value().owned_endpoints,
-        // container_perm@.value().quota =~= old(container_perm)@.value().quota,
-        // container_perm@.value().mem_used =~= old(container_perm)@.value().mem_used,
         final(container_perm)@.value().owned_cpus =~= old(container_perm)@.value().owned_cpus,
         final(container_perm)@.value().scheduler =~= old(container_perm)@.value().scheduler,
         final(container_perm)@.value().owned_threads =~= old(container_perm)@.value().owned_threads,
@@ -788,7 +777,6 @@ pub fn container_perms_update_subtree_set(
             final(perms)@.dom().contains(c_ptr) && uppertree_seq@.contains(c_ptr) == false
                 ==> final(perms)@[c_ptr] =~= old(perms)@[c_ptr],
         forall|c_ptr: ContainerPtr|
-         // #![trigger perms@[c_ptr].value().owning_container]
 
             #![trigger final(perms)@.dom().contains(c_ptr)]
             #![trigger final(perms)@[c_ptr]]

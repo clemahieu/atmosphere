@@ -3,9 +3,6 @@ verus! {
 
 use crate::define::*;
 
-// use crate::allocator::page::*;
-// use crate::array::*;
-// use crate::slinkedlist::spec_impl_u::*;
 use crate::util::page_ptr_util_u::*;
 use crate::allocator::page_allocator_spec_impl::*;
 use crate::pptr::*;
@@ -28,7 +25,6 @@ impl PageAllocator {
                     self,
                 ).page_array@[i],
             final(self).page_array@[index as int].addr =~= old(self).page_array@[index as int].addr,
-            // self.page_array@[index as int].state =~= old(self).page_array@[index as int].state,
             final(self).page_array@[index as int].is_io_page =~= old(
                 self,
             ).page_array@[index as int].is_io_page,
@@ -86,7 +82,6 @@ impl PageAllocator {
             final(self).page_array@[index as int].is_io_page =~= old(
                 self,
             ).page_array@[index as int].is_io_page,
-            // self.page_array@[index as int].rev_pointer =~= old(self).page_array@[index as int].rev_pointer,
             final(self).page_array@[index as int].ref_count =~= old(
                 self,
             ).page_array@[index as int].ref_count,
@@ -218,7 +213,6 @@ impl PageAllocator {
             final(self).container_map_2m == old(self).container_map_2m,
             final(self).container_map_1g == old(self).container_map_1g,
     {
-        // self.page_array.ar[index].ref_count = self.page_array.ar[index].ref_count + 1;
     }
 
     #[verifier(external_body)]
@@ -269,7 +263,6 @@ impl PageAllocator {
             final(self).container_map_2m == old(self).container_map_2m,
             final(self).container_map_1g == old(self).container_map_1g,
     {
-        // self.page_array.ar[index].ref_count = self.page_array.ar[index].ref_count + 1;
     }
 
     #[verifier(external_body)]
@@ -297,7 +290,6 @@ impl PageAllocator {
             final(self).page_array@[index as int].ref_count =~= old(
                 self,
             ).page_array@[index as int].ref_count,
-            // self.page_array@[index as int].owning_container =~= old(self).page_array@[index as int].owning_container,
             final(self).page_array@[index as int].owning_container =~= owning_container_op,
             final(self).page_array@[index as int].mappings =~= old(
                 self,

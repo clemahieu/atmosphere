@@ -18,12 +18,6 @@ use crate::lemma::lemma_t::*;
         pub kernel_state: Ghost<Kernel>,
 
         pub containers: ContainerGroup
-        // pub v_private_va: Ghost<Seq<VAddr>>,
-        // pub v_private_pa: Ghost<Seq<VAddr>>,
-        // pub v_a_shared_va: Ghost<Seq<VAddr>>,
-        // pub v_b_shared_va: Ghost<Seq<VAddr>>,
-        // pub v_a_shared_pa: Ghost<Seq<PAddr>>,
-        // pub v_b_shared_pa: Ghost<Seq<PAddr>>,
         
     }
 
@@ -240,7 +234,6 @@ use crate::lemma::lemma_t::*;
         }
     }
 
-
     pub open spec fn non_interference_A(old:IsolationStateMachine, new:IsolationStateMachine) -> bool{
         &&&
         old.containers =~= new.containers 
@@ -295,16 +288,6 @@ use crate::lemma::lemma_t::*;
         pub open spec fn v_step_receive_page(&self, blocking_endpoint_index: EndpointIdx, va_range:VaRange4K) -> bool{
             &&&
             blocking_endpoint_index == 0 || blocking_endpoint_index == 1
-            // &&&
-            // forall|va:VAddr| 
-            //     #![auto] 
-            //     va_range@.contains(va) 
-            //     ==>
-            //     self.v_private_va@.contains(va) == false
-            //     &&
-            //     self.v_a_shared_va@.contains(va) == false
-            //     &&
-            //     self.v_b_shared_va@.contains(va) == false
         }
 
         pub open spec fn v_step_receive_endpoint(&self) -> bool{
@@ -378,13 +361,6 @@ use crate::lemma::lemma_t::*;
                     old.kernel_state@.get_container(a_sub_c_ptr).owned_procs@.contains(target_proc_ptr) == false
             );
             assert(non_interference_A(old,new));
-            // assert(old.kernel_state@.get_container(old.containers.v_c_ptr).owned_procs@.contains(old.containers.v_p_ptr));
-            // assert(old.kernel_state@.get_container(old.containers.v_c_ptr).owned_threads@.contains(old.containers.v_t_ptr));
-            // assert(old.kernel_state@.get_container(old.containers.v_c_ptr).owned_threads@.contains(thread_ptr) == false);
-            // assert(old.kernel_state@.get_proc(old.containers.v_p_ptr).owned_threads@.contains(thread_ptr) == false);
-            // assert(thread_ptr != old.containers.v_t_ptr);
-            // assert(target_proc_ptr != old.containers.v_p_ptr);
-            // assert(target_container_ptr != old.containers.v_c_ptr);
         }
 
         pub proof fn mmap_from_B_preserve_non_interference_A(old: IsolationStateMachine, new: IsolationStateMachine, thread_ptr:ThreadPtr, va_range: VaRange4K, ret: SyscallReturnStruct)
@@ -436,13 +412,6 @@ use crate::lemma::lemma_t::*;
                 old.kernel_state@.get_container(a_sub_c_ptr).owned_procs@.contains(target_proc_ptr) == false
         );
         assert(non_interference_A(old,new));
-        // assert(old.kernel_state@.get_container(old.containers.v_c_ptr).owned_procs@.contains(old.containers.v_p_ptr));
-        // assert(old.kernel_state@.get_container(old.containers.v_c_ptr).owned_threads@.contains(old.containers.v_t_ptr));
-        // assert(old.kernel_state@.get_container(old.containers.v_c_ptr).owned_threads@.contains(thread_ptr) == false);
-        // assert(old.kernel_state@.get_proc(old.containers.v_p_ptr).owned_threads@.contains(thread_ptr) == false);
-        // assert(thread_ptr != old.containers.v_t_ptr);
-        // assert(target_proc_ptr != old.containers.v_p_ptr);
-        // assert(target_container_ptr != old.containers.v_c_ptr);
     }
 
         pub proof fn new_thread_preserve_inv(old: IsolationStateMachine, new: IsolationStateMachine, thread_ptr:ThreadPtr, endpoint_index: EndpointIdx, ret: SyscallReturnStruct)
@@ -484,7 +453,6 @@ use crate::lemma::lemma_t::*;
             assert(thread_ptr != old.containers.v_t_ptr);
             assert(target_proc_ptr != old.containers.v_p_ptr);
             assert(target_container_ptr != old.containers.v_c_ptr);
-
 
             if syscall_new_thread_with_endpoint_requirement(old.kernel_state@, thread_ptr, endpoint_index) == false {
                 assert(new.kernel_state@ =~= old.kernel_state@);

@@ -185,7 +185,6 @@ pub fn proc_remove_child(
     return ret;
 }
 
-
 pub fn page_to_proc(
     page_ptr: PagePtr,
     page_perm: Tracked<PagePerm4k>,
@@ -362,7 +361,6 @@ pub fn proc_perms_update_subtree_set(
             final(perms)@.dom().contains(p_ptr) && uppertree_seq@.contains(p_ptr) == false
                 ==> final(perms)@[p_ptr] =~= old(perms)@[p_ptr],
         forall|p_ptr: ProcPtr|
-         // #![trigger perms@[p_ptr].value().owning_container]
 
             #![trigger final(perms)@.dom().contains(p_ptr)]
             #![trigger final(perms)@[p_ptr]]

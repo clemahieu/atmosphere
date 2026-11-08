@@ -8,34 +8,6 @@ pub struct DeviceTable {
     ar: [usize; 512],
 }
 
-// impl DeviceTable{
-//     pub open spec fn wf(&self) {
-//         self.seq_ar@.len() == 256,
-//     }
-//     #[verifier(inline)]
-//     pub fn get(&self, dev:usize, fun:usize) -> (ret:usize)
-//         requires
-//             self.wf(),
-//             0<=dev<32,
-//             0<=fun<8,
-//         ensures
-//             ret == self.seq_ar@[dev*fun]
-//     {
-//         return self.ar[dev*fun];
-//     }
-//     #[verifier(inline)]
-//     pub fn set(&mut self, dev:usize, fun:usize, cr3:usize) -> (ret:usize)
-//         requires
-//             self.wf(),
-//             0<=dev<32,
-//             0<=fun<8,
-//         ensures
-//             ret == self.seq_ar@.update(dev*fun, cr3);
-//             self.wf(),
-//     {
-//         self.ar[dev*fun] = cr3;
-//     }
-// }
 #[repr(align(4096))]
 pub struct RootTable {
     root: [usize; 512],

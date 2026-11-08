@@ -39,7 +39,6 @@ impl Kernel {
         if self.proc_man.get_endpoint(blocking_endpoint_ptr).queue_state.is_receive()
             && self.proc_man.get_endpoint(blocking_endpoint_ptr).queue.len()
             >= MAX_NUM_THREADS_PER_ENDPOINT {
-            // return error
             return SyscallReturnStruct::NoSwitchNew(RetValueType::Error);
         }
         if self.proc_man.get_endpoint(blocking_endpoint_ptr).queue_state.is_send()
@@ -104,7 +103,6 @@ impl Kernel {
         if self.proc_man.get_endpoint(blocking_endpoint_ptr).queue_state.is_receive()
             && self.proc_man.get_endpoint(blocking_endpoint_ptr).queue.len()
             >= MAX_NUM_THREADS_PER_ENDPOINT {
-            // return error
             return SyscallReturnStruct::NoSwitchNew(RetValueType::Error);
         }
         if self.proc_man.get_endpoint(blocking_endpoint_ptr).queue_state.is_send()

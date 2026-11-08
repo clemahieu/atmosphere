@@ -27,8 +27,6 @@ pub mod kernel;
 pub mod lemma;
 pub mod util;
 
-// pub mod user_level_isolation;
-
 verus! {
 
 global size_of usize == 8;

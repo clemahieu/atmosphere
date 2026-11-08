@@ -209,13 +209,9 @@ pub fn flush_tlb_4kentry(tlbmap_4k: Ghost<Seq<Map<VAddr, MapEntry>>>, va: Ghost<
             ret_map@ = tlbseq;
             assert(!ret_map@[cpu_id as int].contains_key(va@));
 
-            // prove ret_map[i] is subset of tlbmap_4k[i]
-            // assert(ret_map@[cpu_id as int] =~= old_ret_map.remove(va@));
-            //assert(ret_map@[cpu_id as int].submap_of(tlbmap_4k@[cpu_id as int]));
         }
     }
     ret_map
 }
-
 
 } // verus!

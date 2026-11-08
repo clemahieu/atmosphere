@@ -1,12 +1,9 @@
 use vstd::prelude::*;
 verus! {
 
-// use vstd::ptr::PointsTo;
-// use crate::define::*;
 use crate::array::*;
 use crate::util::page_ptr_util_u::*;
 
-// use crate::lemma::lemma_u::*;
 use crate::pagetable::entry::*;
 
 pub struct PageMap {
@@ -58,10 +55,6 @@ impl PageMap {
             #![trigger usize2page_entry(self.ar@[i])]
             0 <= i < 512 ==> (usize2page_entry(self.ar@[i])
                 =~= self.spec_seq@[i])
-            // &&&
-            // forall|i:int|
-            //     #![trigger usize2page_entry(self.ar@[i]).is_empty()]
-            //     0<=i<512 ==> (usize2page_entry(self.ar@[i]).is_empty() <==> self.ar@[i] == 0)
 
     }
 

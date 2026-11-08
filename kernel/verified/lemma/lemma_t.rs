@@ -74,9 +74,6 @@ pub proof fn page_ptr_lemma()
             page_index_valid(index1) && page_index_valid(index2) && index1 != index2
                 ==> page_index2page_ptr(index1) != page_index2page_ptr(index2),
 {
-    // assert(forall|index:usize| #![auto] page_index_valid(index) ==> (index * 4096) % 4096 == 0);
-    // assert(forall|index:usize| #![auto] page_index_valid(index) ==> (index * 4096) == page_index2page_ptr(index));
-    // assert(forall|index:usize| #![auto] page_index_valid(index) ==> page_index2page_ptr(index) % 4096 == 0);
 }
 
 } // verus!

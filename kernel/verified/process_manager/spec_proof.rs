@@ -24,7 +24,6 @@ use crate::process_manager::container_tree::*;
 use crate::process_manager::process_tree::*;
 use crate::quota::*;
 
-// use crate::process_manager::container_tree_spec_impl::*;
 pub struct ProcessManager {
     pub root_container: ContainerPtr,
     pub container_perms: Tracked<Map<ContainerPtr, PointsTo<Container>>>,
@@ -203,23 +202,6 @@ impl ProcessManager {
         self.cpu_list.get(cpu_i).current_thread.is_some()
     }
 
-    // pub open spec fn spec_get_container(&self, container_ptr:ContainerPtr) -> &Container
-    //     recommends
-    //         self.wf(),
-    //         self.container_dom().contains(container_ptr),
-    // {
-    //     self.get_container(container_ptr)
-    // }
-    // #[verifier(when_used_as_spec(spec_get_container))]
-    // pub fn get_container(&self, container_ptr:ContainerPtr) -> (ret:&Container)
-    //     requires
-    //         self.wf(),
-    //         self.container_dom().contains(container_ptr),
-    //     ensures
-    //         self.get_container(container_ptr) == ret,
-    // {
-    //     self.get_container(container_ptr)
-    // }
     pub open spec fn spec_get_container_by_proc_ptr(&self, proc_ptr: ProcPtr) -> &Container
         recommends
             self.wf(),
@@ -432,34 +414,6 @@ impl ProcessManager {
             )
         }
     }
-    // pub open spec fn spec_get_thread_owns_endpoint(&self, thread_ptr:ThreadPtr, endpoint_ptr:EndpointPtr) -> bool{
-    //     exists|i:int|
-    //         #![trigger self.thread_perms@[thread_ptr].value().endpoint_descriptors@[i]]
-    //         0 <= i < MAX_NUM_ENDPOINT_DESCRIPTORS
-    //         &&
-    //         self.thread_perms@[thread_ptr].value().endpoint_descriptors@[i].is_Some() && self.thread_perms@[thread_ptr].value().endpoint_descriptors@[i].unwrap() == endpoint_ptr
-    // }
-    // pub fn get_thread_owns_endpoint(&self, thread_ptr:ThreadPtr, endpoint_ptr:EndpointPtr) -> (ret:bool)
-    //     requires
-    //         self.wf(),
-    //         self.thread_dom().contains(thread_ptr),
-    //     ensures
-    //         ret == self.spec_get_thread_owns_endpoint(thread_ptr, endpoint_ptr),
-    // {
-    //     for index in 0..MAX_NUM_ENDPOINT_DESCRIPTORS
-    //         invariant
-    //             self.wf(),
-    //             self.thread_dom().contains(thread_ptr),
-    //             forall|i:int| #![trigger self.get_thread(thread_ptr).endpoint_descriptors@[i]] 0 <= i < index ==> self.get_thread(thread_ptr).endpoint_descriptors@[i].is_None() || self.get_thread(thread_ptr).endpoint_descriptors@[i].unwrap() != endpoint_ptr
-    //     {
-    //         if self.get_thread(thread_ptr).endpoint_descriptors.get(index).is_some(){
-    //             if self.get_thread(thread_ptr).endpoint_descriptors.get(index).unwrap() == endpoint_ptr{
-    //                 return true
-    //             }
-    //         }
-    //     }
-    //     return false
-    // }
 
 }
 
@@ -510,7 +464,6 @@ impl ProcessManager {
         self.cpu_list.wf()
         &&&
         forall|cpu_i:CpuId|
-            // #![trigger self.cpu_list@[cpu_i as int]]
             #![trigger self.cpu_list@[cpu_i as int].active]
             #![trigger self.cpu_list@[cpu_i as int].current_thread]
             0 <= cpu_i < NUM_CPUS 
@@ -582,20 +535,11 @@ impl ProcessManager {
 
     pub open spec fn container_fields_wf(&self) -> bool {
         &&& forall|c_ptr: ContainerPtr|
-            // #![trigger self.container_dom().contains(c_ptr)]
-        // #![trigger self.container_dom().contains(c_ptr), self.get_container(c_ptr).owned_cpus]
-        // #![trigger self.container_dom().contains(c_ptr), self.get_container(c_ptr).scheduler]
-        // #![trigger self.container_dom().contains(c_ptr), self.get_container(c_ptr).owned_procs]
-        // #![trigger self.container_dom().contains(c_ptr), self.get_container(c_ptr).owned_endpoints]
-        // #![trigger self.get_container(c_ptr)]
-        // #![trigger self.container_dom().contains(c_ptr)]
         #![trigger self.get_container(c_ptr).owned_cpus.wf()]
         #![trigger self.get_container(c_ptr).scheduler.wf()]
         #![trigger self.get_container(c_ptr).owned_procs.wf()]
-        // #![trigger self.get_container(c_ptr).owned_endpoints.wf()]
         #![trigger self.get_container(c_ptr).scheduler.unique()]
         #![trigger self.get_container(c_ptr).owned_procs.unique()]
-        // #![trigger self.get_container(c_ptr).owned_endpoints.unique()]
 
             self.container_dom().contains(c_ptr) 
             ==> 
@@ -622,7 +566,6 @@ impl ProcessManager {
             ==> 
             self.get_container(c_ptr).owned_procs@.to_set().subset_of(self.process_perms@.dom())
         &&& forall|c_ptr: ContainerPtr, child_p_ptr: ProcPtr|
-         // #![trigger self.container_dom().contains(c_ptr), self.process_perms@[child_p_ptr].value().owning_container]
 
             #![trigger self.get_container(c_ptr).owned_procs@.contains(child_p_ptr)]
             self.container_dom().contains(c_ptr) && self.get_container(c_ptr).owned_procs@.contains(child_p_ptr) 
@@ -630,7 +573,6 @@ impl ProcessManager {
             self.process_perms@[child_p_ptr].value().owning_container == c_ptr
         &&& forall|p_ptr: ProcPtr|
             #![trigger self.process_perms@[p_ptr].value().owning_container]
-        // #![trigger self.get_container(self.process_perms@[p_ptr].value().owning_container).owned_procs]
             self.process_perms@.dom().contains(p_ptr) 
             ==> 
             self.container_dom().contains(self.process_perms@[p_ptr].value().owning_container) 
@@ -663,10 +605,6 @@ impl ProcessManager {
 
     pub open spec fn threads_perms_wf(&self) -> bool {
         &&& forall|t_ptr: ThreadPtr|
-         // #![trigger self.thread_perms@[t_ptr].is_init()]
-        // #![trigger self.thread_perms@[t_ptr].addr()]
-        // #![trigger self.thread_perms@[t_ptr].value().endpoint_descriptors.wf()]
-        // #![trigger self.thread_perms@[t_ptr].value().ipc_payload]
 
             #![trigger self.thread_perms@.dom().contains(t_ptr)]
             self.thread_perms@.dom().contains(t_ptr) ==> 
@@ -679,7 +617,6 @@ impl ProcessManager {
 
     pub open spec fn threads_container_wf(&self) -> bool {
         &&& forall|c_ptr: ContainerPtr|
-         // #![trigger self.container_dom().contains(c_ptr)]
 
             #![trigger self.get_container(c_ptr).owned_threads]
             self.container_dom().contains(c_ptr) 
@@ -798,7 +735,6 @@ impl ProcessManager {
 
     pub open spec fn schedulers_wf(&self) -> bool {
         &&& forall|t_ptr: ThreadPtr|
-         // #![trigger self.thread_perms@[t_ptr].value().state]
 
             #![trigger self.thread_perms@[t_ptr].value().scheduler_rev_ptr]
             self.thread_perms@.dom().contains(t_ptr)
@@ -822,14 +758,12 @@ impl ProcessManager {
 
     pub open spec fn pcid_ioid_wf(&self) -> bool {
         &&& forall|p_ptr_i: ProcPtr, p_ptr_j: ProcPtr|
-            // #![trigger self.process_perms@.dom().contains(p_ptr_i), self.process_perms@.dom().contains(p_ptr_j), self.process_perms@[p_ptr_i].value().pcid, self.process_perms@[p_ptr_j].value().pcid]
              #![trigger self.process_perms@[p_ptr_i].value().pcid, self.process_perms@[p_ptr_j].value().pcid]
             self.process_perms@.dom().contains(p_ptr_i) 
             && self.process_perms@.dom().contains(p_ptr_j) 
             && p_ptr_i != p_ptr_j 
             ==> self.process_perms@[p_ptr_i].value().pcid != self.process_perms@[p_ptr_j].value().pcid
         &&& forall|p_ptr_i: ProcPtr, p_ptr_j: ProcPtr|
-            // #![trigger self.process_perms@.dom().contains(p_ptr_i), self.process_perms@.dom().contains(p_ptr_j), self.process_perms@[p_ptr_i].value().ioid, self.process_perms@[p_ptr_j].value().ioid]
             #![trigger self.process_perms@[p_ptr_i].value().ioid, self.process_perms@[p_ptr_j].value().ioid]
             self.process_perms@.dom().contains(p_ptr_i) 
             && self.process_perms@.dom().contains(p_ptr_j) 
@@ -1290,29 +1224,6 @@ impl ProcessManager {
         assume(self.get_container(container_ptr).owned_threads@ == Set::<ThreadPtr>::empty());
     }
 
-    // pub proof fn wf_imply_container_proc_disjoint(&self)
-    //     requires
-    //         self.wf(),
-    //     ensures
-    //         forall|c_ptr_i:ContainerPtr, c_ptr_j: ContainerPtr|
-    //             self.container_dom().contains(c_ptr_i) && self.container_dom().contains(c_ptr_j) && c_ptr_i != c_ptr_j
-    //             ==>
-    //             self.container_perms@[c_ptr_i].value().children@.to_set().disjoint(self.container_perms@[c_ptr_j].value().children@.to_set()),
-    //         forall|c_ptr_i:ContainerPtr, c_ptr_j: ContainerPtr|
-    //             self.container_dom().contains(c_ptr_i) && self.container_dom().contains(c_ptr_j) && c_ptr_i != c_ptr_j
-    //             ==>
-    //             self.container_perms@[c_ptr_i].value().owned_procs@.to_set().disjoint(self.container_perms@[c_ptr_j].value().owned_procs@.to_set()),
-    //         forall|c_ptr_i:ContainerPtr, c_ptr_j: ContainerPtr|
-    //             self.container_dom().contains(c_ptr_i) && self.container_dom().contains(c_ptr_j) && c_ptr_i != c_ptr_j
-    //             ==>
-    //             self.container_perms@[c_ptr_i].value().owned_endpoints@.to_set().disjoint(self.container_perms@[c_ptr_j].value().owned_endpoints@.to_set()),
-    //         forall|p_ptr_i:ProcPtr, p_ptr_j: ProcPtr|
-    //             self.process_perms@.dom().contains(p_ptr_i) && self.process_perms@.dom().contains(p_ptr_j) && p_ptr_i != p_ptr_j
-    //             ==>
-    //             self.process_perms@[p_ptr_i].value().owned_threads@.to_set().disjoint(self.process_perms@[p_ptr_j].value().owned_threads@.to_set()),
-    // {
-    //     // assert(false);
-    // }
     pub proof fn wf_imply_container_owned_proc_disjoint(&self)
         requires
             self.wf(),
@@ -1324,7 +1235,6 @@ impl ProcessManager {
                     p_ptr,
                 ) ==> self.get_container(c_ptr_j).owned_procs@.contains(p_ptr) == false,
     {
-        // assert(false);
     }
 
     pub proof fn proc_tree_root_inv(&self, proc_ptr:ProcPtr)

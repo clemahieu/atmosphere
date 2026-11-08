@@ -672,69 +672,6 @@ pub proof fn page_ptr_1g_lemma()
     }
 }
 
-// #[verifier(external_body)]
-// pub proof fn page_ptr_2m_lemma()
-//     ensures
-//         forall|pa:PagePtr|
-//             #![trigger page_ptr_2m_valid(pa)]
-//             #![trigger page_ptr_valid(pa)]
-//             page_ptr_2m_valid(pa) ==> page_ptr_valid(pa),
-//         forall|i:usize|
-//             #![trigger page_index_2m_valid(i)]
-//             #![trigger page_index_valid(i)]
-//             page_index_2m_valid(i) ==> page_index_valid(i),
-//         forall|pa:PagePtr|
-//             #![trigger page_ptr_2m_valid(pa)]
-//             #![trigger page_ptr2page_index(pa)]
-//             page_ptr_2m_valid(pa) ==> page_index_2m_valid(page_ptr2page_index(pa)),
-// {
-// }
-// #[verifier(external_body)]
-// pub proof fn page_ptr_lemma()
-//     ensures
-//         forall|pa:PagePtr|
-//             #![trigger page_ptr_2m_valid(pa)]
-//             #![trigger page_ptr_1g_valid(pa)]
-//             page_ptr_1g_valid(pa) ==> page_ptr_2m_valid(pa),
-//         forall|pa:PagePtr|
-//             #![trigger page_ptr_2m_valid(pa)]
-//             #![trigger page_ptr_valid(pa)]
-//             page_ptr_2m_valid(pa) ==> page_ptr_valid(pa),
-//         forall|i:usize|
-//             #![trigger page_index_1g_valid(i)]
-//             #![trigger page_index_2m_valid(i)]
-//             page_index_1g_valid(i) ==> page_index_2m_valid(i),
-//         forall|i:usize|
-//             #![trigger page_index_2m_valid(i)]
-//             #![trigger page_index_valid(i)]
-//             page_index_2m_valid(i) ==> page_index_valid(i),
-//         forall|pa:PagePtr|
-//             #![trigger page_ptr_1g_valid(pa)]
-//             #![trigger page_ptr2page_index(pa)]
-//             page_ptr_1g_valid(pa) ==> page_index_1g_valid(page_ptr2page_index(pa)),
-//         forall|pa:PagePtr|
-//             #![trigger page_ptr_2m_valid(pa)]
-//             #![trigger page_ptr2page_index(pa)]
-//             page_ptr_2m_valid(pa) ==> page_index_2m_valid(page_ptr2page_index(pa)),
-//         forall|pa:PagePtr|
-//             #![trigger page_ptr_valid(pa)]
-//             #![trigger page_ptr2page_index(pa)]
-//             page_ptr_valid(pa) ==> page_index_valid(page_ptr2page_index(pa)),
-//         forall|pa:PagePtr|
-//             #![trigger page_ptr_valid(pa)]
-//             #![trigger page_ptr2page_index(pa)]
-//             page_ptr_valid(pa) ==> pa == page_index2page_ptr(page_ptr2page_index(pa)),
-//         forall|i:usize|
-//             #![trigger page_index_valid(i)]
-//             #![trigger page_index2page_ptr(i)]
-//             page_index_valid(i) ==> i == page_ptr2page_index(page_index2page_ptr(i)),
-//         forall|i:usize, j:usize|
-//             #![trigger page_index2page_ptr(i), page_index2page_ptr(j)]
-//             0<i<NUM_PAGES && 0<j<NUM_PAGES && i != j
-//             ==>
-//                 page_index2page_ptr(i) != page_index2page_ptr(j),
-// {
-// }
 pub proof fn va_lemma()
     ensures
         forall|va: VAddr|

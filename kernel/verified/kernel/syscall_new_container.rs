@@ -1,23 +1,12 @@
 use vstd::prelude::*;
 verus! {
 
-// use crate::allocator::page_allocator_spec_impl::*;
-// use crate::memory_manager::spec_impl::*;
-// use crate::process_manager::spec_proof::*;
-// use crate::util::page_ptr_util_u::*;
-// use crate::lemma::lemma_t::set_lemma;
-// use crate::lemma::lemma_u::*;
-// use crate::util::page_ptr_util_u::*;
 use crate::define::*;
 
-// use crate::trap::*;
-// use crate::pagetable::pagemap_util_t::*;
-// use crate::pagetable::entry::*;
 use crate::kernel::Kernel;
 use crate::va_range::VaRange4K;
 use crate::trap::Registers;
 
-// use crate::pagetable::pagemap_util_t::*;
 use crate::lemma::lemma_t::*;
 use crate::quota::Quota;
 
@@ -105,12 +94,6 @@ pub open spec fn syscall_new_container_with_endpoint_spec(
             old.proc_dom().contains(p_ptr) ==> new.get_proc(p_ptr) =~= old.get_proc(
                 p_ptr,
             )
-            // &&
-            // forall|c:ContainerPtr|
-            //     #![trigger new.get_container(c)]
-            //     old.container_dom().contains(c) && c != container_ptr
-            //     ==>
-            //     old.get_container(c) =~= new.get_container(c)
              && forall|e_ptr: EndpointPtr|
                 #![trigger new.get_endpoint(e_ptr)]
                 new.endpoint_dom().contains(e_ptr) && e_ptr != endpoint_ptr ==> old.get_endpoint(
@@ -291,13 +274,11 @@ impl Kernel {
         if init_quota.mem_4k < 3 * va_range.len {
             return SyscallReturnStruct::NoSwitchNew(RetValueType::Error);
         }
-        // let (page_ptr_1,mut page_perm_1) = self.page_alloc.alloc_page_4k();
 
         let (page_ptr_2, page_perm_2) = self.page_alloc.alloc_page_4k_for_new_container();
         let (page_ptr_3, page_perm_3) = self.page_alloc.alloc_page_4k();
         let (page_ptr_4, page_perm_4) = self.page_alloc.alloc_page_4k();
 
-        // let (page_map_ptr, mut page_map_perm) = page_perm_to_page_map(page_ptr_1,page_perm_1);
         let new_pcid = self.mem_man.alloc_page_table(page_ptr_3);
         assert(self.proc_man == old(self).proc_man);
         self.proc_man.new_container_with_endpoint(

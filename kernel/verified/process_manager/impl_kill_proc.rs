@@ -68,7 +68,6 @@ impl ProcessManager {
     {
         broadcast use ProcessManager::reveal_process_manager_wf;
 
-
         let container_ptr = self.get_proc(proc_ptr).owning_container;
         let container_rev_ptr = self.get_proc(proc_ptr).rev_ptr;
         proof {
@@ -129,7 +128,6 @@ impl ProcessManager {
             old(self).process_perms@[parent_proc_ptr].value().children.unique_implys_no_duplicates();
         };
         assert(self.process_trees_wf()) by {
-            // seq_to_set_lemma::<ProcPtr>();
             assert forall|c_ptr: ContainerPtr|
                 #![trigger self.container_dom().contains(c_ptr)]
                 #![trigger self.process_tree_wf(c_ptr)]
@@ -167,7 +165,6 @@ impl ProcessManager {
                         old(self).process_perms@,
                     );
                     
-
                     assert(old(self).get_proc(proc_ptr).uppertree_seq@.contains(proc_ptr) == false) by {
                         proc_tree_wf_imply_uppertree_contains_no_self(
                             old(self).get_container(container_ptr).root_process.unwrap(),
@@ -240,7 +237,6 @@ impl ProcessManager {
         proc_to_page(proc_ptr, proc_perm)
     }
 
-
     pub fn kill_process_root(
         &mut self,
         proc_ptr: ProcPtr,
@@ -295,9 +291,6 @@ impl ProcessManager {
        
         assert(self.get_container(container_ptr).owned_procs@.to_set().len() == 1);
         assume(self.get_container(container_ptr).owned_procs@.len() == 1);
-        // by {
-        //     old(self).container_perms@[container_ptr].value().owned_procs.unique_implys_no_duplicates();
-        // };
 
         let mut container_perm = Tracked(self.container_perms.borrow_mut().tracked_remove(container_ptr));
         container_remove_proc(container_ptr, &mut container_perm, container_rev_ptr, Ghost(proc_ptr));
@@ -307,7 +300,6 @@ impl ProcessManager {
         }
 
         let proc_perm = Tracked(self.process_perms.borrow_mut().tracked_remove(proc_ptr));
-
 
         assert(self.container_perms_wf());
         assert(self.container_tree_wf()) by {
@@ -322,7 +314,6 @@ impl ProcessManager {
         };
         assert(self.get_container(container_ptr).owned_procs@.len() == 0);
         assert(self.process_trees_wf()) by {
-            // seq_to_set_lemma::<ProcPtr>();
             assert forall|c_ptr: ContainerPtr|
                 #![trigger self.container_dom().contains(c_ptr)]
                 #![trigger self.process_tree_wf(c_ptr)]

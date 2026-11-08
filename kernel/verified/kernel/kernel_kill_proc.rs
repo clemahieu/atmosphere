@@ -349,9 +349,6 @@ impl Kernel {
                 assume(self.get_proc(proc_ptr).parent.unwrap() != proc_ptr);
                 assume(self.get_proc(proc_ptr).subtree_set@.contains(self.get_proc(proc_ptr).parent.unwrap()) == false);
 
-                // let snap_shot = Ghost(*self);
-                // let snap_shot_seq = Ghost(self.get_proc(child_head).uppertree_seq@);
-
                 let removed = self.kernel_kill_proc_recursive_non_root(child_head, Ghost(current_depth@ - 1));
                 proof{removed_procs@ = removed_procs@ + removed@;}
                 
@@ -416,7 +413,6 @@ impl Kernel {
             return removed_procs;
         }
 
-        // assume(false);
     }
 }
 

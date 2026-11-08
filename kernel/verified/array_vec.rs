@@ -2,8 +2,6 @@ use vstd::prelude::*;
 verus! {
 use crate::array::Array;
 
-
-
 /// A preallocated vector.
 pub struct ArrayVec<T, const N: usize> {
     pub data: Array<T, N>,
@@ -71,7 +69,6 @@ impl<T: Copy, const N: usize> ArrayVec<T, N> {
         &&& self.len() <= self.capacity()
         &&& self.data.wf()
     }
-
 
     #[verifier(inline)]
     pub open spec fn spec_index(&self, index: int) -> (ret: T) {
@@ -177,46 +174,6 @@ impl<T: Copy, const N: usize> ArrayVec<T, N> {
     {
         self.data.set(index, value);
     }
-
-
-    /*
-    proof fn prove_view_consistency(&self, len: nat)
-        requires
-            self.wf(),
-            len <= self.len(),
-
-            len > 0 ==> (
-                forall |i: nat| 0 <= i < len - 1 ==>
-                    #[trigger] self@[i as int] == #[trigger] self.data.map()[i]
-            ),
-        ensures
-            forall |i: nat| 0 <= i < len ==>
-                #[trigger] self@[i as int] == #[trigger] self.data.map()[i],
-        decreases len
-    {
-        if len > 0 {
-            let prev = len - 1;
-            self.prove_view_consistency(prev as nat);
-        }
-    }
-
-    proof fn prove_view_equivalence(&self, other: &Self, len: nat)
-        requires
-            len <= self.len(),
-            len <= other.len(),
-
-            forall |i: nat| 0 <= i < len ==>
-                self.data.map()[i] == other.data.map()[i],
-        ensures
-            self.view_until(len) =~= other.view_until(len),
-        decreases len
-    {
-        if len > 0 {
-            let prev = len - 1;
-            self.prove_view_equivalence(other, prev as nat);
-        }
-    }
-    */
 
 }
 

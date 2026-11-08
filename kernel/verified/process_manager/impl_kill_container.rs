@@ -115,7 +115,6 @@ impl ProcessManager {
         assert(self.threads_container_wf());
     }
 
-
     pub fn kill_container_none_root(
         &mut self,
         container_ptr: ContainerPtr,
@@ -187,12 +186,6 @@ impl ProcessManager {
                     self.container_dom().contains(c_ptr)
                 );
             assert(old(self).get_container(container_ptr).uppertree_seq@.contains(container_ptr) == false) by {
-                        // proc_tree_wf_imply_uppertree_contains_no_self(
-                        //     old(self).get_container(container_ptr).root_process.unwrap(),
-                        //     old(self).get_container(container_ptr).owned_procs@.to_set(),
-                        //     old(self).process_perms@,
-                        //     proc_ptr,
-                        // );
                     };
             remove_container_preserve_tree_inv(
                 self.root_container,

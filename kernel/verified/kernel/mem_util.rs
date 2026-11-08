@@ -1,48 +1,15 @@
 use vstd::prelude::*;
 verus! {
 
-// use crate::allocator::page_allocator_spec_impl::*;
-// use crate::memory_manager::spec_impl::*;
-// use crate::process_manager::spec_proof::*;
-// use crate::util::page_ptr_util_u::*;
-// use crate::lemma::lemma_t::set_lemma;
-// use crate::lemma::lemma_u::*;
 use crate::util::page_ptr_util_u::*;
 use crate::define::*;
 
-// use crate::trap::*;
 use crate::pagetable::pagemap_util_t::*;
 
-// use crate::pagetable::entry::*;
 use crate::kernel::Kernel;
 use crate::va_range::VaRange4K;
 
 impl Kernel {
-    // pub fn check_address_space_va_range_shareable(&self, target_proc_ptr:ProcPtr, va_range:&VaRange4K) -> (ret:bool)
-    //     requires
-    //         self.wf(),
-    //         self.proc_dom().contains(target_proc_ptr),
-    //         va_range.wf(),
-    //     ensures
-    //         ret == self.address_space_range_free(target_proc_ptr, *va_range),
-    // {
-    //     let target_pcid = self.proc_man.get_proc(target_proc_ptr).pcid;
-    //     for i in 0..va_range.len
-    //         invariant
-    //             self.mem_man.pcid_active(target_pcid),
-    //             target_pcid == self.get_proc(target_proc_ptr).pcid,
-    //             0<=i<=va_range.len,
-    //             self.wf(),
-    //             self.proc_dom().contains(target_proc_ptr),
-    //             va_range.wf(),
-    //             forall|j:int| #![auto] 0<=j<i ==> self.get_address_space(target_proc_ptr).dom().contains(va_range@[j]) == false,
-    //     {
-    //         if self.mem_man.resolve_pagetable_mapping(target_pcid, va_range.index(i)).is_some(){
-    //             return false;
-    //         }
-    //     }
-    //     return true;
-    // }
     pub fn create_entry(&mut self, proc_ptr: ProcPtr, va: VAddr) -> (ret: (usize, PageMapPtr))
         requires
             old(self).wf(),
@@ -110,8 +77,6 @@ impl Kernel {
             final(self).get_container(old(self).get_proc(proc_ptr).owning_container).owned_threads =~= old(
                 self,
             ).get_container(old(self).get_proc(proc_ptr).owning_container).owned_threads,
-            // self.get_container(old(self).get_proc(proc_ptr).owning_container).mem_quota =~= old(self).get_container(old(self).get_proc(proc_ptr).owning_container).mem_quota,
-            // self.get_container(old(self).get_proc(proc_ptr).owning_container).mem_used =~= old(self).get_container(old(self).get_proc(proc_ptr).owning_container).mem_used,
             final(self).get_container(old(self).get_proc(proc_ptr).owning_container).owned_cpus =~= old(
                 self,
             ).get_container(old(self).get_proc(proc_ptr).owning_container).owned_cpus,
@@ -377,8 +342,6 @@ impl Kernel {
             final(self).get_container(old(self).get_proc(proc_ptr).owning_container).owned_threads =~= old(
                 self,
             ).get_container(old(self).get_proc(proc_ptr).owning_container).owned_threads,
-            // self.get_container(old(self).get_proc(proc_ptr).owning_container).mem_quota =~= old(self).get_container(old(self).get_proc(proc_ptr).owning_container).mem_quota,
-            // self.get_container(old(self).get_proc(proc_ptr).owning_container).mem_used =~= old(self).get_container(old(self).get_proc(proc_ptr).owning_container).mem_used,
             final(self).get_container(old(self).get_proc(proc_ptr).owning_container).owned_cpus =~= old(
                 self,
             ).get_container(old(self).get_proc(proc_ptr).owning_container).owned_cpus,

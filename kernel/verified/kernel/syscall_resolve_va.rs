@@ -1,18 +1,8 @@
 use vstd::prelude::*;
 verus! {
 
-// use crate::allocator::page_allocator_spec_impl::*;
-// use crate::memory_manager::spec_impl::*;
-// use crate::process_manager::spec_proof::*;
-// use crate::util::page_ptr_util_u::*;
-// use crate::lemma::lemma_t::set_lemma;
-// use crate::lemma::lemma_u::*;
-// use crate::util::page_ptr_util_u::*;
 use crate::define::*;
 
-// use crate::trap::*;
-// use crate::pagetable::pagemap_util_t::*;
-// use crate::pagetable::entry::*;
 use crate::kernel::Kernel;
 use crate::va_range::VaRange4K;
 

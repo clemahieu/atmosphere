@@ -28,15 +28,3 @@ pub mod kernel_kill_proc;
 
 pub use spec::*;
 pub use spec_util::*;
-// pub use syscall_new_thread::*;
-// pub use syscall_new_thread_with_endpoint::*;
-// pub use syscall_mmap::*;
-// pub use syscall_new_proc::*;
-// pub use syscall_new_container::*;
-// pub use syscall_send_endpoint::*;
-// pub use syscall_receive_endpoint::*;
-// pub use syscall_send_pages::*;
-// pub use mem_util::*;
-// pub use create_and_map_pages::*;
-// pub use create_and_share_pages::*;
-// pub use send_receive_pre_spec::*;

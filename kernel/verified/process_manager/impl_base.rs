@@ -60,7 +60,6 @@ impl ProcessManager {
             (*root_container_ptr).assume_init_mut().parent_rev_ptr = None;
             (*root_container_ptr).assume_init_mut().children.init();
             (*root_container_ptr).assume_init_mut().quota = init_quota;
-            // (*root_container_ptr).assume_init_mut().mem_used = 0;
             (*root_container_ptr).assume_init_mut().owned_cpus.init();
             (*root_container_ptr).assume_init_mut().scheduler.init();
             let sll2 = (*root_container_ptr).assume_init_mut().scheduler.push(&dom_0_thread_ptr);
@@ -165,8 +164,6 @@ impl ProcessManager {
             final(self).get_container(container_ptr).owned_threads =~= old(self).get_container(
                 container_ptr,
             ).owned_threads,
-            // self.get_container(container_ptr).mem_quota =~= old(self).get_container(container_ptr).mem_quota,
-            // self.get_container(container_ptr).mem_used =~= old(self).get_container(container_ptr).mem_used,
             final(self).get_container(container_ptr).owned_cpus =~= old(self).get_container(
                 container_ptr,
             ).owned_cpus,
@@ -210,7 +207,6 @@ impl ProcessManager {
         assert(self.container_fields_wf());
         assert(self.proc_perms_wf());
         assert(self.process_trees_wf()) by {
-            // seq_to_set_lemma::<ProcPtr>();
             assert forall|c_ptr: ContainerPtr|
                 #![trigger self.container_dom().contains(c_ptr)]
                 #![trigger self.process_tree_wf(c_ptr)]
@@ -1777,8 +1773,6 @@ impl ProcessManager {
                     && self.thread_perms@[t_ptr].value().endpoint_descriptors@[e_idx as int].is_Some()
                     && self.thread_perms@[t_ptr].value().endpoint_descriptors@[e_idx as int].unwrap()
                     == e_ptr);
-            // assert(forall|i:int| #![auto] 0 <= i < MAX_NUM_ENDPOINT_DESCRIPTORS && i != dst_endpoint_index ==> self.thread_perms@[dst_thread_ptr].value().endpoint_descriptors@[i] == old(self).thread_perms@[dst_thread_ptr].value().endpoint_descriptors@[i]);
-            // assert(self.thread_perms@[dst_thread_ptr].value().endpoint_descriptors@[dst_endpoint_index as int ] =~= Some(src_endpoint_ptr));
         };
         assert(self.endpoints_queue_wf()) by {
             broadcast use ProcessManager::reveal_wf_to_endpoints_queue_wf;
@@ -1988,10 +1982,6 @@ impl ProcessManager {
                 self.endpoint_perms@.dom().contains(e_ptr)
                 &&
                 self.get_endpoint(e_ptr) == old(self).get_endpoint(e_ptr)
-                    // && self.thread_perms@[t_ptr].value().blocking_endpoint_ptr
-                    // == Some(e_ptr)
-                    // && self.thread_perms@[t_ptr].value().state
-                    // == ThreadState::BLOCKED
                 );
             assert(forall|e_ptr: EndpointPtr, t_ptr: ThreadPtr|
                 #![auto]

@@ -98,7 +98,6 @@ impl ProcessManager {
         assert(self.proc_perms_wf()) by {
         };
         assert(self.process_trees_wf()) by {
-            // seq_to_set_lemma::<ProcPtr>();
             assert forall|c_ptr: ContainerPtr|
                 #![trigger self.container_dom().contains(c_ptr)]
                 #![trigger self.process_tree_wf(c_ptr)]
@@ -251,7 +250,6 @@ impl ProcessManager {
         assert(self.proc_perms_wf()) by {
         };
         assert(self.process_trees_wf()) by {
-            // seq_to_set_lemma::<ProcPtr>();
             assert forall|c_ptr: ContainerPtr|
                 #![trigger self.container_dom().contains(c_ptr)]
                 #![trigger self.process_tree_wf(c_ptr)]
@@ -324,7 +322,6 @@ impl ProcessManager {
             final(self).get_proc(old(self).get_thread(thread_ptr).owning_proc).owned_threads.len() == 
               old(self).get_proc(old(self).get_thread(thread_ptr).owning_proc).owned_threads.len() - 1,  
 
-                        
             process_mem_unchanged(*old(self), *final(self)),
             ret.1.is_Some() ==> {
                 &&& final(self).page_closure() =~= old(self).page_closure().remove(ret.0.0).remove(ret.1.unwrap().0)
@@ -405,7 +402,6 @@ impl ProcessManager {
             assert(self.proc_perms_wf()) by {
             };
             assert(self.process_trees_wf()) by {
-                // seq_to_set_lemma::<ProcPtr>();
                 assert forall|c_ptr: ContainerPtr|
                     #![trigger self.container_dom().contains(c_ptr)]
                     #![trigger self.process_tree_wf(c_ptr)]
@@ -487,7 +483,6 @@ impl ProcessManager {
             assert(self.proc_perms_wf()) by {
             };
             assert(self.process_trees_wf()) by {
-                // seq_to_set_lemma::<ProcPtr>();
                 assert forall|c_ptr: ContainerPtr|
                     #![trigger self.container_dom().contains(c_ptr)]
                     #![trigger self.process_tree_wf(c_ptr)]
@@ -521,11 +516,8 @@ impl ProcessManager {
             assert(self.endpoint_perms_wf());
             assert(self.threads_endpoint_descriptors_wf());
             assert(self.endpoints_queue_wf()) by {
-                // assume(false);
-                // seq_remove_lemma::<ThreadPtr>();
                 seq_remove_lemma_2::<ThreadPtr>();
                 old(self).endpoint_perms@[endpoint_ptr].value().queue.unique_implys_no_duplicates();
-                // self.endpoint_perms@[endpoint_ptr].value().queue.unique_implys_no_duplicates();
                 assert(
                 forall|t_ptr: ThreadPtr|
                 #![trigger self.thread_perms@[t_ptr].value()]

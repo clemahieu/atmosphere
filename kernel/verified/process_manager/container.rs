@@ -22,12 +22,6 @@ pub struct Container {
     /// So when we kill all the threads, all the endpoints are killed too. 
     pub owned_endpoints: Ghost<Set<EndpointPtr>>,
     pub owned_threads: Ghost<Set<ThreadPtr>>,
-    // pub mem_quota: usize,
-    // pub mem_quota_2m: usize,
-    // pub mem_quota_1g: usize,
-    // pub mem_used: usize,
-    // pub mem_used_2m: usize,
-    // pub mem_used_1g: usize,
     pub quota: Quota,
     pub owned_cpus: ArraySet<NUM_CPUS>,
     pub scheduler: StaticLinkedList<ThreadPtr, MAX_CONTAINER_SCHEDULER_LEN>,

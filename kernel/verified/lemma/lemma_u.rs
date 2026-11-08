@@ -2,7 +2,6 @@ use vstd::prelude::*;
 use vstd::seq::*;
 
 verus! {
-
 use crate::util::page_ptr_util_u::*;
 
 pub broadcast proof fn map_equal_implies_submap_each_other<K, V>(a: Map<K, V>, b: Map<K, V>)
@@ -107,8 +106,6 @@ pub proof fn seq_skip_index_of_lemma<A>()
         // Get the index where v appears in s
         let i = s.index_of(v);
         
-        // Now we need to show that s.skip(1).index_of(v) == i - 1
-        // We know s[i] == v and i > 0, so i-1 is a valid index in s.skip(1)
         assert(s.skip(1)[i - 1] == s[i]);
     }
 
@@ -140,9 +137,6 @@ pub proof fn seq_pop_unique_lemma<A>()
     implies
         s.drop_last().to_set().contains(v) == s.to_set().contains(v)
     by {
-        // s.to_set().contains(v) iff there exists i such that s[i] == v
-        // s.drop_last().to_set().contains(v) iff there exists i such that s.drop_last()[i] == v
-        // Since s[s.len() - 1] != v, v appears in s iff v appears in s.drop_last()
         
         if s.to_set().contains(v) {
             let j = choose|j: int| 0 <= j < s.len() && s[j] == v;
@@ -209,7 +203,6 @@ pub proof fn seq_skip_lemma<A>()
     }
 }
 
-
 pub proof fn seq_remove_lemma<A>()
     ensures
         forall|s: Seq<A>, v: A, i: int|
@@ -240,9 +233,6 @@ pub proof fn seq_remove_lemma<A>()
         #![trigger s.subrange(0,i), s.contains(v)]
         0 <= i < s.len() && s.contains(v) && s[i] != v && s.no_duplicates()
     implies s.subrange(0, i).add(s.subrange(i + 1, s.len() as int)).contains(v) by {
-        // Since s.contains(v), there exists some index k where s[k] == v
-        // Since s[i] != v and s.no_duplicates(), we know k != i
-        // So either k < i or k > i
         let removed = s.subrange(0, i).add(s.subrange(i + 1, s.len() as int));
         
         // Get the witness index for v in s
@@ -282,8 +272,6 @@ pub proof fn seq_remove_lemma<A>()
             }
         };
         
-        // Now we know s.remove_value(v) = s.remove(i)
-        // And s.remove(i) = s.subrange(0, i).add(s.subrange(i + 1, s.len() as int))
         assert(s.remove(i) == s.subrange(0, i).add(s.subrange(i + 1, s.len() as int)));
     };
 }

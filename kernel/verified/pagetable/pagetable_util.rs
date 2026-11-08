@@ -4,10 +4,8 @@ verus! {
 
 use crate::define::*;
 
-// use crate::array::*;
 use crate::pptr::*;
 
-// use crate::util::page_ptr_util_u::*;
 use crate::pagetable::entry::*;
 use crate::pagetable::pagemap::*;
 use crate::pagetable::pagetable_spec::*;

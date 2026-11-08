@@ -23,8 +23,6 @@ pub fn endpoint_add_ref(
         final(endpoint_perm)@.addr() == endpoint_ptr,
         final(endpoint_perm)@.value().queue == old(endpoint_perm)@.value().queue,
         final(endpoint_perm)@.value().queue_state == old(endpoint_perm)@.value().queue_state,
-        // endpoint_perm@.value().rf_counter == old(endpoint_perm)@.value().rf_counter,
-        // endpoint_perm@.value().owning_threads == old(endpoint_perm)@.value().owning_threads,
         final(endpoint_perm)@.value().owning_container == old(endpoint_perm)@.value().owning_container,
         final(endpoint_perm)@.value().rf_counter == old(endpoint_perm)@.value().rf_counter + 1,
         final(endpoint_perm)@.value().get_owning_threads() == old(
@@ -55,8 +53,6 @@ pub fn endpoint_remove_ref(
         final(endpoint_perm)@.addr() == endpoint_ptr,
         final(endpoint_perm)@.value().queue == old(endpoint_perm)@.value().queue,
         final(endpoint_perm)@.value().queue_state == old(endpoint_perm)@.value().queue_state,
-        // endpoint_perm@.value().rf_counter == old(endpoint_perm)@.value().rf_counter,
-        // endpoint_perm@.value().owning_threads == old(endpoint_perm)@.value().owning_threads,
         final(endpoint_perm)@.value().owning_container == old(endpoint_perm)@.value().owning_container,
         final(endpoint_perm)@.value().rf_counter == old(endpoint_perm)@.value().rf_counter - 1,
         final(endpoint_perm)@.value().get_owning_threads() == old(

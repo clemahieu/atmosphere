@@ -32,7 +32,6 @@ pub type PAddr = usize;
 
 pub type PageMapPtr = usize;
 
-// pub type PageEntryPerm = usize;
 pub type Pcid = usize;
 
 pub type IOid = usize;
@@ -80,9 +79,6 @@ impl EndpointState {
             _ => false,
         }
     }
-    // pub open spec fn is_receive_spec(&self) -> bool {
-    //     self matches EndpointState { foo } &&  foo == EndpointState::SEND
-    // }
 
 }
 

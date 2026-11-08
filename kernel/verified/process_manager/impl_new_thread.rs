@@ -70,7 +70,6 @@ impl ProcessManager {
                     self,
                 ).get_container(container_ptr).owned_procs,
     {
-        // proof{seq_push_lemma::<ThreadPtr>();}
         broadcast use ProcessManager::reveal_process_manager_wf;
 
         let container_ptr = self.get_proc(proc_ptr).owning_container;
@@ -132,7 +131,6 @@ impl ProcessManager {
                     =~= self.process_perms@[p_ptr].value().subtree_set);
         };
         assert(self.process_trees_wf()) by {
-            // seq_to_set_lemma::<ProcPtr>();
             assert forall|c_ptr: ContainerPtr|
                 #![trigger self.container_dom().contains(c_ptr)]
                 #![trigger self.process_tree_wf(c_ptr)]
@@ -282,9 +280,6 @@ impl ProcessManager {
                 old(self).get_endpoint_ptr_by_endpoint_idx(thread_ptr, endpoint_index).unwrap(),
             ).queue_state,
     {
-        // proof {
-        //     seq_push_lemma::<ThreadPtr>();
-        // }
         broadcast use ProcessManager::reveal_process_manager_wf;
 
         let container_ptr = self.get_proc(proc_ptr).owning_container;
@@ -358,7 +353,6 @@ impl ProcessManager {
                     =~= self.process_perms@[p_ptr].value().subtree_set);
         };
         assert(self.process_trees_wf()) by {
-            // seq_to_set_lemma::<ProcPtr>();
             assert forall|c_ptr: ContainerPtr|
                 #![trigger self.container_dom().contains(c_ptr)]
                 #![trigger self.process_tree_wf(c_ptr)]
@@ -405,7 +399,6 @@ impl ProcessManager {
         assert(self.threads_cpu_wf());
         assert(self.threads_container_wf()) by {
             assert(forall|c_ptr: ContainerPtr|
-             // #![trigger self.container_dom().contains(c_ptr)]
 
                 #![trigger self.get_container(c_ptr).owned_threads]
                 self.container_dom().contains(c_ptr) ==> self.get_container(

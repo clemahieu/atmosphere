@@ -108,7 +108,6 @@ impl ProcessManager {
             assert(self.proc_perms_wf()) by {
             };
             assert(self.process_trees_wf()) by {
-                // seq_to_set_lemma::<ProcPtr>();
                 assert forall|c_ptr: ContainerPtr|
                     #![trigger self.container_dom().contains(c_ptr)]
                     #![trigger self.process_tree_wf(c_ptr)]
@@ -179,7 +178,6 @@ impl ProcessManager {
         assert(self.proc_perms_wf()) by {
         };
         assert(self.process_trees_wf()) by {
-            // seq_to_set_lemma::<ProcPtr>();
             assert forall|c_ptr: ContainerPtr|
                 #![trigger self.container_dom().contains(c_ptr)]
                 #![trigger self.process_tree_wf(c_ptr)]

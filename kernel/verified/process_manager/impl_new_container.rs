@@ -181,7 +181,6 @@ impl ProcessManager {
                 - new_quota.ioid == final(self).get_container(
                 old(self).get_thread(thread_ptr).owning_container,
             ).quota.ioid,
-            // self.get_container(old(self).get_thread(thread_ptr).owning_container).mem_used =~= old(self).get_container(old(self).get_thread(thread_ptr).owning_container).mem_used,
             final(self).get_container(old(self).get_thread(thread_ptr).owning_container).owned_cpus
                 =~= old(self).get_container(
                 old(self).get_thread(thread_ptr).owning_container,
@@ -213,7 +212,6 @@ impl ProcessManager {
             final(self).get_container(page_ptr_1).children@ =~= Seq::<ContainerPtr>::empty(),
             final(self).get_container(page_ptr_1).owned_endpoints@ =~= Set::<EndpointPtr>::empty(),
             final(self).get_container(page_ptr_1).quota =~= *new_quota,
-            // self.get_container(page_ptr_1).mem_used =~= 0,
             final(self).get_container(page_ptr_1).owned_cpus.wf(),
             final(self).get_container(page_ptr_1).owned_cpus@ =~= Set::<CpuId>::empty(),
             final(self).get_container(page_ptr_1).scheduler.wf(),
@@ -437,7 +435,6 @@ impl ProcessManager {
         };
         assert(self.container_tree_wf()) by {
             broadcast use ProcessManager::reveal_wf_to_container_tree_wf;
-            // assert(self.get_container(new_container_ptr).uppertree_seq =~= new_upper_tree_ghost);
             seq_push_lemma::<usize>();
             seq_push_unique_lemma::<usize>();
             container_tree_wf_imply_uppertree_subset_of_tree(
@@ -480,7 +477,6 @@ impl ProcessManager {
                     );
                     assert(self.process_tree_wf(c_ptr));
                 } else {
-                    // assert(self.get_container(new_container_ptr).owned_procs@ == seq![new_proc_ptr]);
                     assume(self.get_container(new_container_ptr).owned_procs@.to_set()
                         == set![new_proc_ptr]);  // TODO @xiangdong
                     new_proc_tree_infer_wf(
