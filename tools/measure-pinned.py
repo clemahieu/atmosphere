@@ -40,7 +40,7 @@ import sys
 import threading
 import time
 
-LINES = re.compile(r"IPC round trip|sys_mresolve:|flush IPI|kernel lock:|contention test lock:")
+LINES = re.compile(r"IPC round trip|sys_mresolve (?:alone|contended):|flush IPI|kernel lock:|contention test lock:")
 
 
 def read(path):
