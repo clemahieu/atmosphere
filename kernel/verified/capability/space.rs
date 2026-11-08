@@ -2006,23 +2006,24 @@ impl CapKernel {
         assert(!pre.list.valid(base));
         assert(!pre.list.nodes@[base as int].live);
         assert(mid.nodes@[parent as int] == pre.list.nodes@[parent as int]);
-        pre.tables.lemma_wf_same_pages(&pre.list, &post.list);
         Self::lemma_table_page_kept(pre.list, mid, post.list, base);
         assert(Self::table_page_step(pre, post));
         Self::lemma_table_page_caps_wf(pre, post);
-        Self::lemma_devices_same_caps(pre, post);
-        Self::lemma_tlb_same(pre, post);
-        Self::lemma_table_page_nodes(pre, post, mid, parent, base);
-        Self::lemma_table_nodes_page_added(pre, post, base);
-        lemma_mapping_nodes_grown(pre.list, mid, post.list, base, base);
-        Self::lemma_table_page_bindings(pre, post, mid, base);
-        Self::lemma_binding_parents_same_caps(pre, post);
-        Self::lemma_table_page_blocks(pre, post, base, page);
-        Self::lemma_table_page_links(pre, post, base, page);
         Self::lemma_table_page_mappings(pre, post, base, page);
-        Self::lemma_table_page_mapping_parents(pre, post, parent, base);
-        Self::lemma_mappings_grown(pre, post, page, 3);
-        assert(post.wf());
+        assert(post.wf()) by {
+            pre.tables.lemma_wf_same_pages(&pre.list, &post.list);
+            Self::lemma_devices_same_caps(pre, post);
+            Self::lemma_tlb_same(pre, post);
+            Self::lemma_table_page_nodes(pre, post, mid, parent, base);
+            Self::lemma_table_nodes_page_added(pre, post, base);
+            lemma_mapping_nodes_grown(pre.list, mid, post.list, base, base);
+            Self::lemma_table_page_bindings(pre, post, mid, base);
+            Self::lemma_binding_parents_same_caps(pre, post);
+            Self::lemma_table_page_blocks(pre, post, base, page);
+            Self::lemma_table_page_links(pre, post, base, page);
+            Self::lemma_table_page_mapping_parents(pre, post, parent, base);
+            Self::lemma_mappings_grown(pre, post, page, 3);
+        }
         Self::lemma_hidden_added_discharges(pre, post, root, parent, base);
     }
 
