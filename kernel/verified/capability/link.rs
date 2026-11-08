@@ -920,7 +920,49 @@ pub fn entry_is_empty(e: &PageEntry) -> (ret: bool)
     e.addr == 0 && !e.perm.present && !e.perm.ps && !e.perm.write && !e.perm.execute_disable && !e.perm.user
 }
 
+/// A capability that may change the space at its base: an IO space's capability with the write right, or
+/// a process's with the control right, since a process's space is part of the process. See
+/// design/process-holds-capabilities/.
+pub open spec fn writes_space(cap: Payload) -> bool {
+    ||| cap.kind is Space && cap.rights & right_bit(Right::Write) != 0
+    ||| cap.kind is Process && cap.rights & right_bit(Right::Control) != 0
+}
+
+/// Whether a capability may change the space at its base.
+pub fn may_write_space(cap: &Payload) -> (ret: bool)
+    ensures
+        ret == writes_space(*cap),
+{
+    proof {
+        assert(right_bit(Right::Write) == 2);
+        assert(right_bit(Right::Control) == 128);
+    }
+    match cap.kind {
+        CapKind::Space => cap.rights & 2 != 0,
+        CapKind::Process => cap.rights & 128 != 0,
+        _ => false,
+    }
+}
+
 impl CapKernel {
+    /// A capability that may change a space names one, keyed at its base, of the kind its own kind says.
+    pub proof fn lemma_written_space(&self, n: usize)
+        requires
+            self.wf(),
+            self.is_cap(n),
+            writes_space(self.payload_of(n)),
+        ensures
+            self.spaces.roots@.contains_key(self.payload_of(n).base),
+            self.payload_of(n).kind is Space ==> self.spaces.records@[self.payload_of(n).base].value().kind is Io,
+            self.payload_of(n).kind is Process ==> self.spaces.records@[self.payload_of(n).base].value().kind is Process,
+    {
+        if self.payload_of(n).kind is Space {
+            self.lemma_space_cap(n);
+        } else {
+            self.lemma_process_space(n);
+        }
+    }
+
     /// The refusals: an index that names no capability to a space, or none that may change it; a parent
     /// that is no live table of that space, or an entry of it that is taken or cannot hold a child; an
     /// untyped that does not cover the child; a child that is no live table page, is not one level below
@@ -930,8 +972,7 @@ impl CapKernel {
         let n = self.tables.node_of(root, slot);
         &&& self.tables.has_slot(root, slot)
         &&& self.is_cap(n)
-        &&& self.payload_of(n).kind is Space
-        &&& self.payload_of(n).rights & right_bit(Right::Write) != 0
+        &&& writes_space(self.payload_of(n))
         &&& tree.is_table(parent)
         &&& tree.record(parent).space == Some(self.payload_of(n).base)
         &&& !self.blocks.pages@[(parent / 4096) as int].dead
@@ -1595,20 +1636,16 @@ impl CapKernel {
             assert(right_bit(Right::Write) == 2);
         }
         let node = self.list.get(n);
-        let is_space = match payload.kind {
-            CapKind::Space => true,
-            _ => false,
-        };
         let kind_ok = match node.kind {
             NodeKind::Capability => true,
             _ => false,
         };
-        if !node.live || !kind_ok || !is_space || payload.rights & 2 == 0 {
+        if !node.live || !kind_ok || !may_write_space(&payload) {
             return false;
         }
         proof {
             assert(pre.is_cap(n));
-            pre.lemma_space_cap(n);
+            pre.lemma_written_space(n);
         }
         if parent % 32768 != 0 || parent / 4096 >= NUM_PAGES || child % 32768 != 0 || child / 4096 >= NUM_PAGES || entry >= 512 {
             proof {

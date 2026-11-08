@@ -724,8 +724,7 @@ impl CapKernel {
         let t = walk_table(tree, self.payload_of(n).base, p)->0;
         &&& self.tables.has_slot(root, slot)
         &&& self.is_cap(n)
-        &&& self.payload_of(n).kind is Space
-        &&& self.payload_of(n).rights & right_bit(Right::Write) != 0
+        &&& writes_space(self.payload_of(n))
         &&& self.spaces.records@[self.payload_of(n).base].value().kind == kind
         &&& walk_table(tree, self.payload_of(n).base, p) is Some
         &&& !self.blocks.pages@[(t / 4096) as int].dead
@@ -750,8 +749,7 @@ impl CapKernel {
         let t = walk_large_table(tree, self.payload_of(n).base, p)->0;
         &&& self.tables.has_slot(root, slot)
         &&& self.is_cap(n)
-        &&& self.payload_of(n).kind is Space
-        &&& self.payload_of(n).rights & right_bit(Right::Write) != 0
+        &&& writes_space(self.payload_of(n))
         &&& self.spaces.records@[self.payload_of(n).base].value().kind == kind
         &&& walk_large_table(tree, self.payload_of(n).base, p) is Some
         &&& !self.blocks.pages@[(t / 4096) as int].dead
@@ -904,16 +902,12 @@ impl CapKernel {
             NodeKind::Capability => true,
             _ => false,
         };
-        let is_space = match space.kind {
-            CapKind::Space => true,
-            _ => false,
-        };
-        if !n_node.live || !n_kind || !is_space || space.rights & 2 == 0 {
+        if !n_node.live || !n_kind || !may_write_space(&space) {
             return false;
         }
         proof {
             assert(pre.is_cap(n));
-            pre.lemma_space_cap(n);
+            pre.lemma_written_space(n);
             pre.lemma_root_table(space.base);
         }
         let s = space.base;
@@ -1052,16 +1046,12 @@ impl CapKernel {
             NodeKind::Capability => true,
             _ => false,
         };
-        let is_space = match space.kind {
-            CapKind::Space => true,
-            _ => false,
-        };
-        if !n_node.live || !n_kind || !is_space || space.rights & 2 == 0 {
+        if !n_node.live || !n_kind || !may_write_space(&space) {
             return false;
         }
         proof {
             assert(pre.is_cap(n));
-            pre.lemma_space_cap(n);
+            pre.lemma_written_space(n);
             pre.lemma_root_table(space.base);
         }
         let s = space.base;

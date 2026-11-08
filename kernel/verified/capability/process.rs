@@ -158,6 +158,15 @@ pub open spec fn process_tables_wf(tables: &Tables, processes: &Processes) -> bo
     forall|p: usize| #[trigger] processes.records@.contains_key(p) ==> tables.roots@.contains_key(p)
 }
 
+/// Each process has its address space, keyed at the process's base: a link or a map reaches the space
+/// from a capability naming the process.
+pub open spec fn process_spaces_wf(spaces: &Spaces, processes: &Processes) -> bool {
+    forall|p: usize| #[trigger] processes.records@.contains_key(p) ==> {
+        &&& spaces.roots@.contains_key(p)
+        &&& spaces.records@[p].value().kind is Process
+    }
+}
+
 /// Each process's holders after node i is renamed n.
 pub open spec fn moved_process_holders(holders: IMap<usize, Set<usize>>, i: usize, n: usize) -> IMap<usize, Set<usize>> {
     IMap::new(
@@ -512,6 +521,19 @@ impl CapKernel {
             self.processes.holders@[p].lemma_len0_is_empty();
         }
         self.blocks.lemma_not_free_uncovered((p / 4096) as int);
+    }
+
+    /// A process capability names the process's space, keyed at its base.
+    pub proof fn lemma_process_space(&self, n: usize)
+        requires
+            self.wf(),
+            self.is_cap(n),
+            self.payload_of(n).kind is Process,
+        ensures
+            self.spaces.roots@.contains_key(self.payload_of(n).base),
+            self.spaces.records@[self.payload_of(n).base].value().kind is Process,
+    {
+        self.lemma_process_cap(n);
     }
 
     /// The processes after process capability n, the only capability that changed, joins process p

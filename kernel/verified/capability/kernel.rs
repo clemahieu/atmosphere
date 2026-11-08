@@ -1135,6 +1135,7 @@ impl CapKernel {
         &&& threads_wf(&self.list, &self.tables, &self.threads, &self.blocks)
         &&& processes_wf(&self.list, &self.tables, &self.processes, &self.blocks)
         &&& process_tables_wf(&self.tables, &self.processes)
+        &&& process_spaces_wf(&self.spaces, &self.processes)
         &&& current_wf(self.cores@, self.threads.records@)
         &&& bindings_wf(&self.list, &self.threads, &self.processes)
         &&& binding_parents(&self.list, &self.tables, &self.threads)
