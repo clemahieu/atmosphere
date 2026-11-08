@@ -85,10 +85,6 @@ where
                         if line.contains("SeaBIOS") {
                             // At BIOS
                             self.write_buffer.extend_from_slice(b"SeaBIOS... ");
-                        } else if line.contains("Booting `") {
-                            // GRUB is booting our kernel
-                            unsuppress = true;
-                            self.write_buffer.extend_from_slice(b"GRUB... ");
                         } else if line.contains("ALOADER") {
                             // Our loader
                             //

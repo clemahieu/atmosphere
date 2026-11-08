@@ -5,7 +5,6 @@ build
 
 *.mb
 *.mb2
-*.iso
 *.mbr
 *.rlib
 

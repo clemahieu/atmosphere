@@ -57,8 +57,8 @@ impl Project {
         }
     }
 
-    /// Returns the early loader crate, built as the multiboot2 and PVH ELF that GRUB and QEMU's
-    /// -kernel boot.
+    /// Returns the early loader crate, built as the multiboot2 and PVH ELF that QEMU's -kernel
+    /// boots.
     pub fn loader(self: &Arc<Self>) -> Crate {
         Crate {
             name: "aloader".to_string(),

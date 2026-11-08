@@ -26,7 +26,6 @@ pub async fn run() -> Result<(), anyhow::Error> {
 
     match &opts.cmd {
         SubCommand::Run(_) => run::run(opts).await?,
-        //SubCommand::Build(_) => build::run(opts).await?,
         SubCommand::Gdb(_) => gdb::run(opts).await?,
         SubCommand::License(_) => license::run(opts).await?,
         SubCommand::Test(_) => test::run(opts).await?,
@@ -57,7 +56,6 @@ struct GlobalOpts {
 #[derive(Debug, Parser)]
 enum SubCommand {
     Run(run::Opts),
-    //Build(build::Opts),
     Gdb(gdb::Opts),
     License(license::Opts),
     Test(test::Opts),

@@ -14,7 +14,6 @@ use tokio::process::Command;
 use super::output_filter::InitialOutputFilter;
 use super::{CpuModel, Emulator, EmulatorExit, GdbConnectionInfo, GdbServer, RunConfiguration};
 use crate::error::Result;
-use crate::grub::BootableImage;
 use crate::project::{Binary, ProjectHandle};
 
 /// A QEMU instance.
@@ -83,8 +82,6 @@ impl Emulator for Qemu {
         let config = &self.config;
         let memory = config.memory.get_adjusted_unit(ByteUnit::MiB).get_value() as usize;
 
-        let command_line = config.full_command_line()
-            + &format!(" qemu_debug_exit_io_base={}", self.debug_exit_io_base);
         let suppress_initial_outputs = config.suppress_initial_outputs; // FIXME
 
         let mut command = Command::new(self.qemu_binary.as_os_str());
@@ -103,16 +100,8 @@ impl Emulator for Qemu {
         let initrd = initrd.finalize();
 
         // Held until QEMU exits.
-        let (iso, esp) = if config.use_grub {
-            let iso = BootableImage::generate(command_line, Some(&config.loader), Some(&initrd)).await?;
-            command.arg("-hda");
-            command.arg(iso.iso_path());
-            (Some(iso), None)
-        } else {
-            let esp = Esp::new(&config.loader, &initrd)?;
-            command.args(esp.args());
-            (None, Some(esp))
-        };
+        let esp = Esp::new(&config.loader, &initrd)?;
+        command.args(esp.args());
 
         command
             .arg("-nographic")
@@ -169,7 +158,7 @@ impl Emulator for Qemu {
         }
 
         let status = child.wait_with_output().await?.status;
-        drop((iso, esp));
+        drop(esp);
 
         Ok(exit_from_status(status.code()))
     }

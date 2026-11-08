@@ -47,8 +47,7 @@ Atmosphere boots only CPU 0 and has no timer interrupt, so all timers run on one
 - `-m 6144`: the loader needs more than 2 GiB of contiguous memory.
 - `-mem-prealloc`: backs guest memory before boot, so host page faults do not pollute the
   fresh-page mmap timing.
-- The initrd is the kernel and dom0 ELF images concatenated, as `atmo run` and the GRUB setup in
-  the top-level README build it.
+- The initrd is the kernel and dom0 ELF images concatenated, as `atmo run` builds it.
 
 ## Exit status
 
