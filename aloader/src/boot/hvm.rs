@@ -119,7 +119,7 @@ impl HvmStartInfo {
     }
 
     /// Creates an iterator through the module list entries.
-    fn iter_raw_modlist(&self) -> ModlistIterator {
+    fn iter_raw_modlist(&self) -> ModlistIterator<'_> {
         ModlistIterator {
             start_info: self,
             index: 0,
@@ -132,7 +132,7 @@ impl HvmStartInfo {
     }
 
     /// Creates an iterator through the physical memory map entries.
-    fn iter_raw_memmap(&self) -> MemmapTableIterator {
+    fn iter_raw_memmap(&self) -> MemmapTableIterator<'_> {
         MemmapTableIterator {
             start_info: self,
             index: 0,
