@@ -7,7 +7,8 @@
 # it, and the default for new ones, at the online CPUs that are neither measured nor a measured
 # CPU's SMT sibling; takes those siblings offline; turns boost off and raises each measured CPU's
 # cpufreq minimum to its maximum. Each change is written to the state file as it is made, and undo
-# reverses them from it. plan prints what apply would change and needs no root.
+# reverses them from it; so is each IRQ the kernel would not move, which tools/measure-pinned.py reads.
+# plan prints what apply would change and needs no root.
 set -euo pipefail
 
 state=/run/atmo-isolate-pinned
@@ -101,7 +102,7 @@ plan() {
 }
 
 apply() {
-    local allowed irq old cpu f left=()
+    local allowed irq old error cpu f left=()
     [ "$EUID" -eq 0 ] || die "apply needs root"
     [ ! -e "$state" ] || die "$state exists, so the isolation is applied; run undo first"
     setup "$@"
@@ -115,13 +116,16 @@ apply() {
     allowed=$(join "${others[@]}")
     echo "default $(cat /proc/irq/default_smp_affinity)" >>"$state"
     mask "${others[@]}" >/proc/irq/default_smp_affinity
+    # The kernel refuses the write for a managed IRQ, such as an NVMe queue's, which the driver holds
+    # to the CPUs that submit its I/O. A fixed line records each refusal for tools/measure-pinned.py.
     for irq in /proc/irq/[0-9]*; do
         old=$(cat "$irq/smp_affinity_list")
         if [ "$old" = "$allowed" ]; then continue; fi
-        if printf '%s\n' "$allowed" 2>/dev/null >"$irq/smp_affinity_list"; then
+        if error=$({ printf '%s\n' "$allowed" >"$irq/smp_affinity_list"; } 2>&1); then
             echo "irq ${irq##*/} $old" >>"$state"
         else
-            left+=("${irq##*/}")
+            echo "fixed ${irq##*/} ${error##*: }" >>"$state"
+            left+=("${irq##*/} ($(cat "/sys/kernel/irq/${irq##*/}/actions" 2>/dev/null || true)) on $(cat "$irq/effective_affinity_list"): ${error##*: }")
         fi
     done
 
@@ -145,7 +149,8 @@ apply() {
     echo "measured CPUs: $(join "${measured[@]}")"
     echo "siblings offline: $(join "${siblings[@]}")"
     echo "IRQs and the default for new ones point at: $allowed"
-    echo "IRQs the kernel refused to move: $(join "${left[@]}")"
+    echo "IRQs the kernel refused to move, managed ones such as NVMe queues; tools/measure-pinned.py refuses only if one fires on a measured CPU:"
+    for irq in "${left[@]}"; do echo "  IRQ $irq"; done
     echo "irqbalance: $(systemctl is-active irqbalance || true)"
     clock
     echo "state in $state; undo with: sudo $0 undo"
@@ -164,6 +169,7 @@ undo() {
             ;;
         offline) echo 1 >"$sys/cpu$a/online" ;;
         irq) echo "$b" >"/proc/irq/$a/smp_affinity_list" ;;
+        fixed) ;;
         default) echo "$a" >/proc/irq/default_smp_affinity ;;
         irqbalance) systemctl start irqbalance ;;
         *) die "unknown line in $state: $kind $a $b $c" ;;
