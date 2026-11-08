@@ -24,6 +24,8 @@ A thread is bound to its process when it is retyped: the retype names, with the 
 
 A process is an order-3 block retyped from an untyped held. Page 0 is its table's root, so a table is named by its process's base. Page 1 holds the process's record, a dead flag. Pages 2 to 4 are kept for later per-process state. Pages 5 to 7 are its address space's root, record and list of cores, at the offsets an IO space has them, so the space's invariants and the TLB model apply to it unchanged. A process's space has no node pages: a level-4 entry maps no frame, so nothing in the space needs a list node. A capability names a process by its block's base, with the control right, and the capabilities naming it hold its block's references. No space capability names a process's space: a holder links tables into it and maps frames into it through a process capability with the control right, which names the space by the same base, whether the process is the holder's own or another's. An IO space is changed through its space capability with the write right. Control already lets a holder claim from the process's table and destroy it, so changing its space grants nothing a separate right would withhold.
 
+Through that control right a holder destroys the process: one bounded step sets its record dead and sends an IPI to each core on its space's list of cores, so each such core, at its next kernel entry, finds its current thread's process dead and moves the thread off; only a thread's own core moves it out of Running, `design/one-lock-bounded-steps/`. Its threads, table, space, references and capabilities stay as they were, so a holder can still claim from the dead process's table, and destroy changes nothing reach reads.
+
 ## Context
 
 Before this, endpoints sat in per-thread slots and pages and devices in per-process tables, so authority was split between thread and process. The new table had to be found by every syscall in constant time and had to fit the depth-first list, `design/revoke-by-depth-first-list/`.
@@ -43,4 +45,4 @@ The thread's order comes from its parts. Its record is 224 bytes. Its XSAVE area
 
 ## What this does not settle
 
-- How a process is destroyed and its block reclaimed.
+- How a dead process's block is torn down and reclaimed.
