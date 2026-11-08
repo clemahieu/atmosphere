@@ -319,7 +319,7 @@ impl CapKernel {
                         == bound_threads(&mid.list, &mid.tables).remove(r))
                     && (!(mid.list.nodes@[r as int].kind is Binding) ==> bound_threads(&self.list, &self.tables)
                         == bound_threads(&mid.list, &mid.tables));
-                Self::lemma_revoke_bound_threads(bound_threads(&pre.list, &pre.tables), mid, *self, c, r);
+                Self::lemma_revoke_bound_threads(bound_threads(&pre.list, &pre.tables), mid, *self, r);
             }
             steps = steps + 1;
         }
@@ -603,13 +603,14 @@ impl CapKernel {
         }
     }
 
-    /// A revoke step unlinks one node r and loses at most r from the bound threads, so they stay those
-    /// of the state the revoke began in whose binding nodes are live.
-    proof fn lemma_revoke_bound_threads(b0: Map<ObjectId, ObjectId>, mid: Self, post: Self, c: usize, r: usize)
+    /// A step that unlinks one node r and loses at most r from the bound threads, as a revoke step does,
+    /// keeps them those of the state the revoke began in whose binding nodes are live.
+    pub proof fn lemma_revoke_bound_threads(b0: Map<ObjectId, ObjectId>, mid: Self, post: Self, r: usize)
         requires
             mid.wf(),
             bound_threads(&mid.list, &mid.tables) == b0.restrict(live_nodes(&mid.list)),
-            revoked_one(mid.list, post.list, c, r),
+            !post.list.nodes@[r as int].live,
+            forall|x: int| 0 <= x < NODE_SPACE && x != r ==> #[trigger] post.list.nodes@[x].live == mid.list.nodes@[x].live,
             mid.list.nodes@[r as int].kind is Binding
                 ==> bound_threads(&post.list, &post.tables) == bound_threads(&mid.list, &mid.tables).remove(r),
             !(mid.list.nodes@[r as int].kind is Binding)

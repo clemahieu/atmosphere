@@ -227,6 +227,7 @@ impl CapKernel {
         &&& post.blocks.pages@[page as int].kind is Free
         &&& !post.frames@.contains_key(page)
         &&& Self::step_ok(*self, post, c as int)
+        &&& bound_threads(&post.list, &post.tables) == bound_threads(&self.list, &self.tables)
         &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base })
     }
 
@@ -252,6 +253,7 @@ impl CapKernel {
         &&& Self::caps_frame(*self, post, base, base)
         &&& forall|x: usize| #[trigger] post.is_cap(x) == self.is_cap(x)
         &&& post.view() == self.view()
+        &&& bound_threads(&post.list, &post.tables) == bound_threads(&self.list, &self.tables)
         &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base })
     }
 
@@ -273,6 +275,7 @@ impl CapKernel {
         &&& Self::caps_frame(*self, post, base, base)
         &&& forall|x: usize| #[trigger] post.is_cap(x) == self.is_cap(x)
         &&& post.view() == self.view()
+        &&& bound_threads(&post.list, &post.tables) == bound_threads(&self.list, &self.tables)
         &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base })
     }
 
@@ -290,6 +293,7 @@ impl CapKernel {
         &&& forall|k: usize| k < TABLE_NODE_PAGES ==> !post.list.pages@.dom().contains(#[trigger] table_node_page(base, k))
         &&& Self::step_ok(*self, post, c as int)
         &&& post.view() == self.view()
+        &&& bound_threads(&post.list, &post.tables) == bound_threads(&self.list, &self.tables)
         &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base })
     }
 
@@ -315,6 +319,7 @@ impl CapKernel {
         &&& !post.list.pages@.dom().contains(base)
         &&& Self::step_ok(*self, post, c as int)
         &&& post.view() == self.view()
+        &&& bound_threads(&post.list, &post.tables) == bound_threads(&self.list, &self.tables)
         &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base })
     }
 
@@ -635,7 +640,8 @@ impl CapKernel {
     }
 
     /// What a slice of the leaf at `base` did to self: the list is shorter by a bounded number of nodes,
-    /// all from what the leaf's process held, and the leaf is still detached with its owner.
+    /// all from what the leaf's process held, and the leaf is still detached with its owner. A slot's run
+    /// can hold binding nodes, so the bound threads are those before whose binding nodes are still live.
     pub open spec fn leaf_sliced(&self, post: Self, root: usize, from: usize, base: usize) -> bool {
         let untyped = self.tables.node_of(root, from);
         let object = self.tables.owner@[base].0;
@@ -645,6 +651,7 @@ impl CapKernel {
         &&& post.tables.owner == self.tables.owner
         &&& post.list.parent == self.list.parent
         &&& !post.list.nodes@[base as int].live
+        &&& bound_threads(&post.list, &post.tables) == bound_threads(&self.list, &self.tables).restrict(live_nodes(&post.list))
         &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object })
     }
 
@@ -691,6 +698,7 @@ impl CapKernel {
         proof {
             lemma_no_change_discharges_teardown(pre.view(), root, untyped, object);
             assert(!pre.list.nodes@[base + 0int].live);
+            lemma_bound_threads_live(&pre.list, &pre.tables);
         }
         let mut steps = 0;
         let mut k = 1;
@@ -714,6 +722,7 @@ impl CapKernel {
                 forall|j: int| 0 <= j < k ==> !(#[trigger] self.list.nodes@[base + j]).live,
                 discharges(pre.view(), self.view(), root, Effect::Teardown { untyped, object }),
                 forall|h: (ObjectId, NodeId)| #[trigger] self.view().held.contains(h) ==> pre.view().held.contains(h),
+                bound_threads(&self.list, &self.tables) == bound_threads(&pre.list, &pre.tables).restrict(live_nodes(&self.list)),
             decreases LEAF_SLICE_BUDGET - steps, NODES_PER_PAGE - k,
         {
             proof {
@@ -737,7 +746,15 @@ impl CapKernel {
                 proof {
                     let r = choose|r: usize| #[trigger] revoked_one(mid.list, self.list, n, r)
                         && (mid.list.nodes@[r as int].kind is Hidden && mid.tables.owner@.contains_key(r)
-                            ==> !self.tables.attached(r));
+                            ==> !self.tables.attached(r))
+                        && (mid.list.nodes@[r as int].kind is Mapping ==> Self::mapping_unlinked(mid, *self, r))
+                        && (mid.list.nodes@[r as int].kind is Mapping ==> Self::mapping_stale_noted(mid, *self, r))
+                        && (mid.hidden_table(r) ==> Self::table_unlinked(mid, *self, r))
+                        && (mid.list.nodes@[r as int].kind is Binding ==> bound_threads(&self.list, &self.tables)
+                            == bound_threads(&mid.list, &mid.tables).remove(r))
+                        && (!(mid.list.nodes@[r as int].kind is Binding) ==> bound_threads(&self.list, &self.tables)
+                            == bound_threads(&mid.list, &mid.tables));
+                    Self::lemma_revoke_bound_threads(bound_threads(&pre.list, &pre.tables), mid, *self, r);
                     lemma_revoke_is_teardown(mid.view(), self.view(), object, n);
                     Self::lemma_slice_step(pre, mid, *self, root, untyped, object);
                     Self::lemma_leaf_slots_stay_dead(mid, *self, base, k as int, r);
@@ -747,6 +764,7 @@ impl CapKernel {
             }
             self.unlink_childless_slot(Ghost(object), n);
             proof {
+                Self::lemma_revoke_bound_threads(bound_threads(&pre.list, &pre.tables), mid, *self, n);
                 lemma_delete_is_teardown(mid.view(), self.view(), object);
                 Self::lemma_slice_step(pre, mid, *self, root, untyped, object);
                 Self::lemma_leaf_slots_stay_dead(mid, *self, base, k as int, n);
@@ -839,6 +857,7 @@ impl CapKernel {
                 #[trigger] final(self).list.nodes@[x].live == old(self).list.nodes@[x].live,
             forall|x: usize| #[trigger] final(self).is_cap(x) ==> old(self).is_cap(x),
             discharges(old(self).view(), final(self).view(), object, Effect::Local),
+            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
         let ghost pre = *old(self);
         proof {
@@ -866,6 +885,7 @@ impl CapKernel {
                     Self::lemma_caps_frame(pre, post, n, n, x);
                 }
             }
+            Self::lemma_bound_threads_same(pre, post);
         }
     }
 
@@ -998,6 +1018,7 @@ impl CapKernel {
             let v = pre.view();
             let e = Effect::Teardown { untyped, object: base };
             assert(authorized(v, root, e));
+            assert(pre.table_freed(post, c, root, from, base));
         }
         ReclaimStep::Freed
     }
@@ -1181,6 +1202,7 @@ impl CapKernel {
             !final(self).list.pages@.dom().contains(base),
             final(self).cores == old(self).cores,
             final(self).view() == old(self).view(),
+            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
         let ghost pre = *old(self);
         let page = base / 4096;
@@ -1211,6 +1233,7 @@ impl CapKernel {
                 }
             }
             Self::lemma_leaf_freed(pre, post, base);
+            Self::lemma_bound_threads_same(pre, post);
             assert(pre.blocks.in_block(page as int, page as int));
             assert(pre.blocks.in_block(page as int, page + 1int));
         }
@@ -2069,6 +2092,7 @@ impl CapKernel {
                 == walk(tree_of(&old(self).table_pages, &old(self).spaces), r, p),
             final(self).cores == old(self).cores,
             final(self).view() == old(self).view(),
+            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
         let ghost pre = *old(self);
         let page = base / 4096;
@@ -2123,6 +2147,7 @@ impl CapKernel {
             }
             assert(Self::table_freed_step(pre, post, base));
             Self::lemma_table_freed(pre, post, base);
+            Self::lemma_bound_threads_same(pre, post);
             Self::lemma_table_freed_tree(pre, post, base);
             assert forall|r: usize, p: SpacePath| #[trigger] walk(tree_of(&post.table_pages, &post.spaces), r, p)
                 == walk(tree_of(&pre.table_pages, &pre.spaces), r, p) by {
@@ -2346,6 +2371,7 @@ impl CapKernel {
                 == walk(tree_of(&old(self).table_pages, &old(self).spaces), r, p),
             final(self).cores == old(self).cores,
             final(self).view() == old(self).view(),
+            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
         let ghost pre = *old(self);
         let page = base / 4096;
@@ -2403,6 +2429,7 @@ impl CapKernel {
             }
             assert(Self::space_freed_step(pre, post, base));
             Self::lemma_space_freed(pre, post, base);
+            Self::lemma_bound_threads_same(pre, post);
             Self::lemma_space_freed_tree(pre, post, base);
             assert forall|r: usize, p: SpacePath| #[trigger] walk(tree_of(&post.table_pages, &post.spaces), r, p)
                 == walk(tree_of(&pre.table_pages, &pre.spaces), r, p) by {
@@ -2430,6 +2457,7 @@ impl CapKernel {
         &&& forall|k: usize| k < TABLE_NODE_PAGES ==> !post.list.pages@.dom().contains(#[trigger] table_node_page(base, k))
         &&& Self::step_ok(*self, post, c as int)
         &&& post.view() == self.view()
+        &&& bound_threads(&post.list, &post.tables) == bound_threads(&self.list, &self.tables)
         &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base })
     }
 
@@ -2555,6 +2583,7 @@ impl CapKernel {
             Self::lemma_revoke_hidden_holders(pre, post, base);
             Self::lemma_tlb_same(pre, post);
             Self::lemma_unlink_discharges(pre, post, root, untyped, base);
+            Self::lemma_bound_threads_same(pre, post);
         }
         true
     }
@@ -2702,6 +2731,7 @@ impl CapKernel {
             Self::lemma_same_tree_shrunk(cut, post);
             Self::lemma_shrunk_compose(pre, cut, post);
             assert(cut.view() == pre.view());
+            Self::lemma_bound_threads_same(cut, post);
         }
         true
     }
@@ -2789,6 +2819,7 @@ impl CapKernel {
         &&& b.len() < a.len()
         &&& a.len() - b.len() <= TABLE_SLICE_BUDGET
         &&& post.view() == self.view()
+        &&& bound_threads(&post.list, &post.tables) == bound_threads(&self.list, &self.tables)
         &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base })
     }
 
@@ -3365,6 +3396,7 @@ impl CapKernel {
             &&& 0 < nodes.len() <= TABLE_SLICE_BUDGET
             &&& Self::table_unmaps_kept(*self, post, base, nodes.len() as int)
         }
+        &&& bound_threads(&post.list, &post.tables) == bound_threads(&self.list, &self.tables)
         &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base })
     }
 
@@ -3444,6 +3476,7 @@ impl CapKernel {
             final(self).cores == old(self).cores,
             final(self).table_pages.records == old(self).table_pages.records,
             final(self).table_pages.spare == old(self).table_pages.spare,
+            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
         let ghost pre = *old(self);
         proof {
@@ -3472,6 +3505,7 @@ impl CapKernel {
             Self::lemma_revoke_mapping_holders(pre, post, n);
             Self::lemma_stale_noted_same(pre, mid, post, n);
             Self::lemma_tlb_same(mid, post);
+            Self::lemma_bound_threads_same(pre, post);
         }
     }
 
@@ -3644,6 +3678,7 @@ impl CapKernel {
                 nodes.len() == steps,
                 Self::table_unmaps_kept(pre, *self, base, steps as int),
                 Self::table_mapping_steps(pre, *self, base, nodes, states),
+                bound_threads(&self.list, &self.tables) == bound_threads(&pre.list, &pre.tables),
                 steps == 0 ==> *self == pre,
                 steps > 0 ==> exists|i: usize| #[trigger] frame_slot(a, base, i),
                 forall|j: usize| j < e ==> !#[trigger] frame_slot(tree_of(&self.table_pages, &self.spaces), base, j),
@@ -3845,6 +3880,7 @@ impl CapKernel {
                 &&& !block_typed(&final(self).blocks, level_ref(level, r))
                 &&& forall|i: usize| #[trigger] block_has_page(level_ref(level, r), i) ==> !final(self).frames@.contains_key(i)
                 &&& Self::step_ok(*old(self), *final(self), c as int)
+                &&& bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables)
                 &&& discharges(old(self).view(), final(self).view(), root, Effect::Teardown { untyped, object: base })
             },
     {
