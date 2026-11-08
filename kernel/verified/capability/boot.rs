@@ -13,6 +13,7 @@ use crate::capability::link::*;
 use crate::capability::list::*;
 use crate::capability::mapping::*;
 use crate::capability::process::*;
+use crate::capability::reach::*;
 use crate::capability::refs::*;
 use crate::capability::space::*;
 use crate::capability::table::*;
@@ -104,6 +105,7 @@ impl CapKernel {
             final(self).list.nodes@[leaf as int].live,
             final(self).list.nodes@[leaf as int].kind is Hidden,
             forall|x: usize| #[trigger] final(self).is_cap(x) ==> x == leaf + 1,
+            !final(self).list.nodes@[leaf + 2].live,
             forall|k: int| 0 <= k < 8 ==> {
                 ||| (#[trigger] final(self).blocks.pages@[base / 4096 + k]).kind is Base
                 ||| final(self).blocks.pages@[base / 4096 + k].kind is Member
@@ -267,6 +269,9 @@ impl CapKernel {
         let ghost l3 = self.list;
         proof {
             leafed.lemma_wf_same_pages(&l2, &l3);
+            assert(l1.valid((leaf + 2) as usize));
+            assert(!l2.nodes@[leaf + 2].live);
+            assert(!l3.nodes@[leaf + 2].live);
             assert(index_entry(ROOT_PROCESS_SLOT) == 0);
             assert(index_slot(ROOT_PROCESS_SLOT) == 1);
             assert(index_ok(ROOT_PROCESS_SLOT));
@@ -343,6 +348,7 @@ impl CapKernel {
             final(self).tables.has_slot(process, ROOT_THREAD_SLOT),
             final(self).tables.node_of(process, ROOT_THREAD_SLOT) == leaf + 2,
             final(self).is_cap((leaf + 2) as usize),
+            forall|x: usize| #[trigger] final(self).is_cap(x) ==> x == leaf + 2 || old(self).is_cap(x),
             final(self).payload_of((leaf + 2) as usize) == thread_of(t),
             final(self).payload_of((leaf + 2) as usize).rights & CONTROL_RIGHT != 0,
             final(self).list.is_child(root, (leaf + 2) as usize),
@@ -531,6 +537,205 @@ impl CapKernel {
                 assert(freed.blocks.pages@[i] == pre.blocks.pages@[i]);
             }
             assert(post.list.pages@.dom() =~= pre.list.pages@.dom().insert(t));
+            assert forall|x: usize| #[trigger] post.is_cap(x) implies x == cap || pre.is_cap(x) by {
+                assert(typed.is_cap(x));
+                assert(freed.is_cap(x) == pre.is_cap(x));
+            }
+        }
+    }
+
+    /// Boot's one entry for the root: the root process from the eight pages at `process` with its
+    /// table's first leaf from the two at `leaf`, then the root thread from the two at `t`, bound to it.
+    /// The root holds its process at ROOT_PROCESS_SLOT and its thread at ROOT_THREAD_SLOT, both with
+    /// control, and nothing else, so what it reaches is exactly the pages of those two blocks. It holds
+    /// no Space capability: it writes its own space through its process capability. See
+    /// design/root-process-at-boot/ and design/process-holds-capabilities/.
+    pub fn boot_root(&mut self, root: usize, process: usize, leaf: usize, t: usize, Tracked(pages): Tracked<Map<usize, PagePerm4k>>)
+        requires
+            old(self).wf(),
+            old(self).boot_empty(),
+            root == old(self).list.seq@[0],
+            process % 32768 == 0,
+            process / 4096 + 8 <= NUM_PAGES,
+            leaf % 8192 == 0,
+            leaf != NO_LEAF,
+            leaf / 4096 + 2 <= NUM_PAGES,
+            t % 8192 == 0,
+            t / 4096 + 2 <= NUM_PAGES,
+            process + 32768 <= leaf || leaf + 8192 <= process,
+            process + 32768 <= t || t + 8192 <= process,
+            leaf + 8192 <= t || t + 8192 <= leaf,
+            !(process <= root < process + 32768),
+            !(leaf <= root < leaf + 8192),
+            !(t <= root < t + 8192),
+            forall|i: usize| process / 4096 <= i < process / 4096 + 8 || leaf / 4096 <= i < leaf / 4096 + 2
+                || t / 4096 <= i < t / 4096 + 2 ==> #[trigger] holds(pages, i),
+        ensures
+            final(self).wf(),
+            final(self).list.seq@[0] == root,
+            final(self).tables.has_slot(process, ROOT_PROCESS_SLOT),
+            final(self).tables.node_of(process, ROOT_PROCESS_SLOT) == leaf + 1,
+            final(self).is_cap((leaf + 1) as usize),
+            final(self).payload_of((leaf + 1) as usize) == process_of(process),
+            final(self).payload_of((leaf + 1) as usize).rights & CONTROL_RIGHT != 0,
+            final(self).list.is_child(root, (leaf + 1) as usize),
+            final(self).list.nodes@[leaf + 1].depth == 1,
+            final(self).tables.has_slot(process, ROOT_THREAD_SLOT),
+            final(self).tables.node_of(process, ROOT_THREAD_SLOT) == leaf + 2,
+            final(self).is_cap((leaf + 2) as usize),
+            final(self).payload_of((leaf + 2) as usize) == thread_of(t),
+            final(self).payload_of((leaf + 2) as usize).rights & CONTROL_RIGHT != 0,
+            final(self).list.is_child(root, (leaf + 2) as usize),
+            final(self).list.nodes@[leaf + 2].depth == 1,
+            final(self).threads.records@.contains_key(t),
+            final(self).threads.records@[t].value() == (ThreadRecord {
+                state: crate::capability::thread::ThreadState::Inactive,
+                frame: zero_registers(),
+                pending_stop: false,
+                dying: false,
+                process: Some(process),
+                placement: None,
+            }),
+            forall|o: usize| #[trigger] final(self).view().reach(process, o)
+                <==> (o % 4096 == 0 && ((process <= o < process + 32768) || (t <= o < t + 8192))),
+    {
+        let ghost pre = *old(self);
+        let ghost pb = process / 4096;
+        let ghost lb = leaf / 4096;
+        let ghost tb = t / 4096;
+        proof {
+            lemma2_to64();
+            assert(pb * 4096 == process && lb * 4096 == leaf && tb * 4096 == t) by (nonlinear_arith)
+                requires
+                    process % 32768 == 0,
+                    leaf % 8192 == 0,
+                    t % 8192 == 0,
+                    pb == process / 4096,
+                    lb == leaf / 4096,
+                    tb == t / 4096,
+            ;
+            assert(tb + 2 <= pb || pb + 8 <= tb);
+            assert(tb + 2 <= lb || lb + 2 <= tb);
+        }
+        let tracked mut pages = pages;
+        let tracked thread_pages;
+        proof {
+            let given = pages;
+            let keys = set![tb, (tb + 1) as usize];
+            assert forall|i: usize| #[trigger] keys.contains(i) implies given.dom().contains(i) by {
+                assert(holds(given, i));
+            }
+            thread_pages = pages.tracked_remove_keys(keys);
+            assert forall|i: usize| pb <= i < pb + 8 || lb <= i < lb + 2 implies #[trigger] holds(pages, i) by {
+                assert(holds(given, i));
+                assert(!keys.contains(i));
+            }
+            assert forall|i: usize| tb <= i < tb + 2 implies #[trigger] holds(thread_pages, i) by {
+                assert(holds(given, i));
+                assert(keys.contains(i));
+            }
+        }
+        self.boot_root_process(root, process, leaf, Tracked(pages));
+        let ghost mid = *self;
+        proof {
+            assert forall|i: int| tb <= i < tb + 2 implies #[trigger] mid.blocks.pages@[i].kind is Reserved by {
+                assert(mid.blocks.pages@[i] == pre.blocks.pages@[i]);
+            }
+            assert(!mid.blocks.covered(tb as int)) by {
+                assert(!pre.blocks.regions_2m@[region_2m(tb as int)].typed);
+                assert(!pre.blocks.regions_1g@[region_1g(tb as int)].typed);
+            }
+            assert(!(tb <= root / 4096 < tb + 2)) by (nonlinear_arith)
+                requires
+                    tb * 4096 == t,
+                    !(t <= root < t + 8192),
+            ;
+            assert forall|p: usize| #[trigger] mid.list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
+                implies !(tb <= p / 4096 < tb + 2) by {
+                assert(mid.list.pages@.dom() == set![root, leaf]);
+                assert(p == root || p == leaf);
+            }
+        }
+        self.boot_root_thread(root, process, leaf, t, Tracked(thread_pages));
+        proof {
+            let post = *self;
+            let a = (leaf + 1) as usize;
+            let b = (leaf + 2) as usize;
+            assert(post.tables.has_slot(process, ROOT_PROCESS_SLOT));
+            assert(post.tables.node_of(process, ROOT_PROCESS_SLOT) == a);
+            assert(post.list.nodes@[a as int].live);
+            assert(has(post.list.seq@, a));
+            lemma_has(post.list.seq@, a);
+            assert(post.list.is_child(root, a));
+            post.lemma_slot(process, ROOT_PROCESS_SLOT);
+            lemma_slot_in_leaf(leaf, 1);
+            lemma_slot_in_leaf(leaf, 2);
+            assert forall|x: usize| #[trigger] post.is_cap(x) implies x == a || x == b by {
+                if x != b {
+                    assert(mid.is_cap(x));
+                }
+            }
+            Self::lemma_root_reach(post, process, leaf, t);
+        }
+    }
+
+    /// The root's reach after boot: it holds exactly its process and thread capabilities, each naming
+    /// its block, and nobody else holds anything, so it reaches exactly the pages of those blocks.
+    proof fn lemma_root_reach(s: Self, process: usize, leaf: usize, t: usize)
+        requires
+            forall|x: usize| #[trigger] s.is_cap(x) ==> x == leaf + 1 || x == leaf + 2,
+            s.is_cap((leaf + 1) as usize),
+            s.is_cap((leaf + 2) as usize),
+            s.payload_of((leaf + 1) as usize) == process_of(process),
+            s.payload_of((leaf + 2) as usize) == thread_of(t),
+            page_of((leaf + 1) as usize) == leaf,
+            page_of((leaf + 2) as usize) == leaf,
+            s.tables.owner@[leaf].0 == process,
+            process % 4096 == 0,
+            t % 4096 == 0,
+        ensures
+            forall|o: usize| #[trigger] s.view().reach(process, o)
+                <==> (o % 4096 == 0 && ((process <= o < process + 32768) || (t <= o < t + 8192))),
+    {
+        let v = s.view();
+        let a = (leaf + 1) as usize;
+        let b = (leaf + 2) as usize;
+        lemma2_to64();
+        assert(v.names[a] == process && v.pages[a] == 8);
+        assert(v.names[b] == t && v.pages[b] == 2);
+        assert(v.holds(process, a));
+        assert(v.holds(process, b));
+        // Only the process and its thread are controlled: every control capability names one of them.
+        assert forall|q: usize, k: nat| #[trigger] v.controlled(process, q, k) implies q == process || q == t by {
+            if k > 0 {
+                let m = choose|m: usize| #[trigger] v.controls(m, q) && v.controlled(process, m, (k - 1) as nat);
+                let c = choose|c: usize| #[trigger] v.holds_right(m, c, Right::Control) && v.process_behind(v.names[c]) == q;
+                assert(s.is_cap(c));
+            }
+        }
+        assert forall|o: usize| #[trigger] v.reach(process, o)
+            <==> (o % 4096 == 0 && ((process <= o < process + 32768) || (t <= o < t + 8192))) by {
+            if v.reach(process, o) {
+                let (q, k) = choose|q: usize, k: nat| #[trigger] v.controlled(process, q, k) && (o == q || v.direct(q, o));
+                assert(q == process || q == t);
+                if o != q {
+                    assert(!v.maps.contains((q, o)));
+                    let (c, n, j) = choose|c: usize, n: usize, j: nat| #[trigger] v.descends(c, n, j) && v.holds(q, c) && v.covers(n, o);
+                    assert(s.is_cap(n));
+                }
+            }
+            if o % 4096 == 0 && process <= o < process + 32768 {
+                assert(v.descends(a, a, 0));
+                assert(v.covers(a, o));
+                assert(v.direct(process, o));
+                assert(v.controlled(process, process, 0));
+            }
+            if o % 4096 == 0 && t <= o < t + 8192 {
+                assert(v.descends(b, b, 0));
+                assert(v.covers(b, o));
+                assert(v.direct(process, o));
+                assert(v.controlled(process, process, 0));
+            }
         }
     }
 
@@ -630,6 +835,7 @@ impl CapKernel {
                 &&& post.list.parent@[x] == pre.list.parent@[x]
             },
             post.is_cap((leaf + 2) as usize),
+            forall|x: usize| #[trigger] post.is_cap(x) ==> x == leaf + 2 || pre.is_cap(x),
             !post.list.nodes@[t as int].live,
     {
         let base = t;
@@ -754,6 +960,11 @@ impl CapKernel {
         lemma_bindings_kept(&pre.list, &post.list, &pre.threads, &post.threads, &pre.processes, &post.processes);
         Self::lemma_binding_parents_same_caps(pre, post);
         assert(post.wf());
+        assert forall|x: usize| #[trigger] post.is_cap(x) implies x == child || pre.is_cap(x) by {
+            if x != child {
+                Self::lemma_space_cap_frame(pre, post, child, x);
+            }
+        }
         assert(post.list.nodes@[t as int].live == mid.nodes@[t as int].live) by {
             assert(t as int != leaf + 2);
         }
