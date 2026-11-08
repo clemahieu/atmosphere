@@ -1,4 +1,4 @@
-use core::arch::x86_64::{_mm_lfence, _rdtsc};
+use core::arch::x86_64::{__cpuid, _mm_lfence, _rdtsc};
 use crate::*;
 
 pub fn test_mmap(){
@@ -155,6 +155,7 @@ static FAULT_WITNESS_SP: AtomicUsize = AtomicUsize::new(0);
 static FAULTS_REACHED: AtomicUsize = AtomicUsize::new(0);
 static FAULTS_SURVIVED: AtomicUsize = AtomicUsize::new(0);
 static INT3_RETURNED: AtomicUsize = AtomicUsize::new(0);
+static SIMD_UNRAISED: AtomicUsize = AtomicUsize::new(0);
 static CHILD_RESOLVED: [AtomicUsize; 2] = [AtomicUsize::new(0), AtomicUsize::new(0)];
 static CHILD_BOUND: AtomicUsize = AtomicUsize::new(0);
 /// Ping-pong round trips to time IPC.
@@ -195,6 +196,19 @@ fn bench_fail(what: &str, ret: usize) -> ! {
     log::error!("{} failed: {}", what, ret);
     log::error!("dom0 benchmark FAILED");
     exit_qemu(1)
+}
+
+/// Whether QEMU's TCG emulates this CPU: the hypervisor bit is set and leaf 0x40000000 names TCG.
+fn under_tcg() -> bool {
+    if unsafe { __cpuid(1) }.ecx & (1 << 31) == 0 {
+        return false;
+    }
+    let leaf = unsafe { __cpuid(0x4000_0000) };
+    let mut name = [0u8; 12];
+    name[0..4].copy_from_slice(&leaf.ebx.to_le_bytes());
+    name[4..8].copy_from_slice(&leaf.ecx.to_le_bytes());
+    name[8..12].copy_from_slice(&leaf.edx.to_le_bytes());
+    &name == b"TCGTCGTCGTCG"
 }
 
 fn stack_top<const N: usize>(stack: *const [u8; N]) -> usize {
@@ -804,6 +818,9 @@ pub fn check_process_faults() {
             bench_fail(what, survived);
         }
     }
+    if SIMD_UNRAISED.load(Ordering::SeqCst) != 0 {
+        log::info!("TCG set MXCSR.IE for the unmasked SIMD division without raising #XM; that child died by a load");
+    }
     log::info!("int3 from a child returned {} time", INT3_RETURNED.load(Ordering::SeqCst));
     if INT3_RETURNED.load(Ordering::SeqCst) != 1 {
         bench_fail("int3 from a child", INT3_RETURNED.load(Ordering::SeqCst));
@@ -867,7 +884,16 @@ extern "C" fn faulting_child() -> ! {
                 "xorps xmm1, xmm1",
                 "divss xmm0, xmm1",
                 mxcsr = in(reg) &mxcsr,
-            )
+            );
+            // TCG records the exception in MXCSR but never raises #XM. Under TCG alone, a child that
+            // ran past with the invalid-operation flag set dies by a load instead; anywhere else it
+            // counts as running past.
+            let mut after = 0u32;
+            core::arch::asm!("stmxcsr [{after}]", after = in(reg) &mut after);
+            if after & 1 != 0 && under_tcg() {
+                SIMD_UNRAISED.store(1, Ordering::SeqCst);
+                core::ptr::read_volatile(UNMAPPED_VA as *const u64);
+            }
         },
         _ => unsafe {
             core::arch::asm!("int3");
