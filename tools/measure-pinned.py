@@ -4,7 +4,9 @@
 usage: tools/measure-pinned.py within0|within1|across [boots] [--lock-stats] [--force]   (from the workspace root)
 
 Numbers from a host with other work on it do not mean much, so this reports the load average. It
-pins vCPU 0 and 1 to separate physical cores and keeps QEMU's other threads off both. The placement
+pins vCPU 0 and 1 to separate physical cores and keeps QEMU's other threads, and its own clock sampler,
+off both and off their SMT siblings, which share a core's execution units, L1 and L2. It prints the
+siblings, from thread_siblings_list, and the CPUs left to those threads. The placement
 picks the cores: within0 takes two cores sharing the L3 that holds CPU 0 (CCD 0 on a 9950X3D, the one
 with the V-cache), within1 two cores sharing the next L3 (CCD 1), and across one core from each. The
 first line names each measured CPU's L3 by its shared_cpu_list. KVM inflates IPI cost, so the IPI
@@ -85,6 +87,17 @@ def siblings(pair):
     """The measured CPUs and their online SMT siblings."""
     return sorted({sib for cpu in pair
                    for sib in expand(read(f"/sys/devices/system/cpu/cpu{cpu}/topology/thread_siblings_list"))})
+
+
+def cpu_list(cpus):
+    """cpus in the kernel's list format, such as 0-5,8-21."""
+    runs = []
+    for cpu in sorted(cpus):
+        if runs and runs[-1][1] == cpu - 1:
+            runs[-1][1] = cpu
+        else:
+            runs.append([cpu, cpu])
+    return ",".join(f"{low}" if low == high else f"{low}-{high}" for low, high in runs)
 
 
 def runnable_tasks(cpus):
@@ -221,14 +234,13 @@ def sample_clocks(paths, others, done, samples):
                 continue
 
 
-def boot(pair, out):
+def boot(pair, others, out):
     initrd, log = f"{out}/initrd", f"{out}/serial.log"
     with open(initrd, "wb") as f:
         for name in ("kernel", "dom0"):
             f.write(open(f"target/x86_64-unknown-aloader/release/{name}", "rb").read())
     if os.path.exists(log):
         os.unlink(log)
-    others = set(os.sched_getaffinity(0)) - set(pair)
     qemu = subprocess.Popen(
         ["qemu-system-x86_64", "-enable-kvm", "-cpu", "host", "-machine", "q35,kernel_irqchip=split",
          "-name", "guest=atmo,debug-threads=on", "-smp", "2", "-m", "8192", "-nographic",
@@ -263,12 +275,14 @@ def main():
     out = "target/measure-pinned"
     os.makedirs(out, exist_ok=True)
     build(lock_stats)
+    others = set(os.sched_getaffinity(0)) - set(siblings(pair))
     print(f"{mode}: vCPUs on host CPUs {pair}, lock_stats {lock_stats}, load {os.getloadavg()[0]:.2f}")
+    print(f"  measured and SMT siblings: {cpu_list(siblings(pair))}; QEMU's other threads on {cpu_list(others)}")
     for cpu in pair:
         print(f"  L3 of CPU {cpu}: {read(f'/sys/devices/system/cpu/cpu{cpu}/cache/index3/shared_cpu_list')}")
     check_noise(pair, force)
     for i in range(boots):
-        log, samples = boot(pair, out)
+        log, samples = boot(pair, others, out)
         if "dom0 benchmark done" not in log:
             sys.exit(f"FAIL: boot {i} did not finish; see {out}/serial.log")
         print(f"boot {i}, load {os.getloadavg()[0]:.2f}")
