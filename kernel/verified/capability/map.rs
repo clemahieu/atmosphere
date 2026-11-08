@@ -1292,9 +1292,9 @@ impl CapKernel {
         }
     }
 
-    /// What a map leaves: path p of the space gains the page's entry and nothing else changes in any
-    /// space; the node is the capability's child, names the entry and counts on the block; the frame is
-    /// mapped.
+    /// What a map leaves: the capability tables as they were; path p of the space still reaches its
+    /// level 1 table and gains the page's entry, and nothing else changes in any space; the node is the
+    /// capability's child, names the entry and counts on the block; the frame is mapped.
     pub open spec fn map_done(pre: Self, post: Self, root: usize, slot: usize, p: SpacePath, from: usize, page: usize) -> bool {
         let a = tree_of(&pre.table_pages, &pre.spaces);
         let b = tree_of(&post.table_pages, &post.spaces);
@@ -1305,10 +1305,13 @@ impl CapKernel {
         let t = walk_table(a, s, p)->0;
         let node = mapping_node(t, p.l1);
         let br = block_ref(&pre.blocks, frame);
+        &&& post.tables == pre.tables
+        &&& walk_table(b, s, p) == Some(t)
         &&& space_mapping(b, s) == space_mapping(a, s).insert(p, frame_map_entry(frame, cap.rights, false))
         &&& forall|r: usize| r != s ==> #[trigger] space_mapping(b, r) == space_mapping(a, r)
         &&& post.list.is_child(f, node)
         &&& post.list.nodes@[node as int].kind is Mapping
+        &&& post.mappings@.contains_key(node)
         &&& post.mappings@[node] == (MappingRecord { table: t, entry: p.l1, frame, large: false })
         &&& block_refs(&post.blocks, br) == block_refs(&pre.blocks, br) + 1
         &&& post.holders@[br] == pre.holders@[br].insert(node)

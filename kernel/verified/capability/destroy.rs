@@ -81,6 +81,20 @@ impl CapKernel {
         &&& self.payload_of(n).rights & right_bit(Right::Control) != 0
     }
 
+    /// The control capability at index i of the table at root names core c's current thread, or the
+    /// process that thread's record names.
+    pub open spec fn destroys_own(&self, c: int, root: usize, i: usize) -> bool {
+        let n = self.tables.node_of(root, i);
+        let o = self.payload_of(n).base;
+        match self.cores@[c].current_thread {
+            Some(t) => {
+                ||| self.payload_of(n).kind is Thread && o == t
+                ||| self.payload_of(n).kind is Process && self.threads.records@[t].value().process == Some(o)
+            },
+            None => false,
+        }
+    }
+
     /// The step set process p's record dead and sent an IPI to each core on p's space's list of cores, in
     /// order, and changed nothing else.
     pub open spec fn process_destroyed(pre: Self, post: Self, p: usize) -> bool {
@@ -117,8 +131,9 @@ impl CapKernel {
     /// root names. A process's record is dead, and each core that has its space loaded gets an IPI, so
     /// that core finds its current thread's process dead at its next kernel entry; its threads, table,
     /// space, references and capabilities stay as they were. A thread is destroyed as
-    /// thread_destroyed says. The index comes from user space, so it can be refused, and a refusal
-    /// changes nothing.
+    /// thread_destroyed says. Destroying the caller's own thread or its own process leaves the caller's
+    /// thread to be moved off by check_current before it returns to user mode. The index comes from
+    /// user space, so it can be refused, and a refusal changes nothing.
     pub fn destroy(&mut self, c: usize, root: usize, i: usize) -> (ret: bool)
         requires
             old(self).wf(),
@@ -129,6 +144,7 @@ impl CapKernel {
             ret == old(self).can_destroy(root, i),
             !ret ==> *final(self) == *old(self),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
+            ret && old(self).destroys_own(c as int, root, i) ==> final(self).must_leave(c as int),
             ret ==> {
                 let n = old(self).tables.node_of(root, i);
                 let o = old(self).payload_of(n).base;
@@ -192,6 +208,10 @@ impl CapKernel {
                 self.destroy_thread(c, payload.base);
                 proof {
                     assert(self.view() == pre.view());
+                    if pre.destroys_own(c as int, root, i) {
+                        reveal(current_wf);
+                        assert(runs(pre.cores@, c as int, payload.base));
+                    }
                 }
                 true
             },

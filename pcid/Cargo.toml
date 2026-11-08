@@ -2,6 +2,7 @@
 name = "pcid"
 version = "0.1.0"
 edition = "2018"
+license.workspace = true
 
 [dependencies]
 bitflags = "1.0"

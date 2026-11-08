@@ -2155,7 +2155,7 @@ impl CapKernel {
     }
 
     /// Core c saves its current thread's frame and leaves it Runnable on c, running nothing until it
-    /// switches in again. A thread with a pending stop is stopped instead, by take_stop.
+    /// switches in again. A thread that must leave is moved off instead, by check_current.
     pub fn switch_out(&mut self, c: usize, frame: Registers)
         requires
             old(self).wf(),
@@ -2863,21 +2863,54 @@ impl CapKernel {
         }
     }
 
-    /// Core c, on kernel entry, acts on a pending stop on its current thread: it saves the frame the
-    /// thread entered with, makes it Inactive, or Dead when it was destroyed while Running, with no stop
-    /// pending, and runs nothing. Only core c moves
-    /// its current thread off: see design/one-lock-bounded-steps/.
-    pub fn take_stop(&mut self, c: usize, frame: Registers) -> (ret: bool)
+    /// Core c's current thread must leave user mode: a stop is pending on it, it is marked to die, its
+    /// record names no process, or its process is dead.
+    pub open spec fn must_leave(&self, c: int) -> bool {
+        match self.cores@[c].current_thread {
+            Some(t) => {
+                let r = self.threads.records@[t].value();
+                ||| r.pending_stop
+                ||| r.dying
+                ||| r.process is None
+                ||| self.processes.records@[r.process->Some_0].value().dead
+            },
+            None => false,
+        }
+    }
+
+    /// Core c's current thread, if any, may return to user mode: it is Running on c with no stop
+    /// pending, not marked to die, and bound to a process that is not dead.
+    pub open spec fn current_live(&self, c: int) -> bool {
+        match self.cores@[c].current_thread {
+            Some(t) => {
+                let r = self.threads.records@[t].value();
+                &&& self.threads.records@.contains_key(t)
+                &&& r.state == (ThreadState::Running { core: c as usize })
+                &&& !r.pending_stop
+                &&& !r.dying
+                &&& r.process is Some
+                &&& self.processes.records@.contains_key(r.process->Some_0)
+                &&& !self.processes.records@[r.process->Some_0].value().dead
+            },
+            None => true,
+        }
+    }
+
+    /// Core c's check of its current thread on kernel entry and before returning to user mode: one load
+    /// of the thread's record and one of its process's. A thread that must leave is moved off: core c
+    /// saves the frame it entered with, makes it Inactive, or Dead when it was destroyed while Running,
+    /// with no stop pending, and runs nothing. So a thread that destroys itself or its own process does
+    /// not return to user mode. Only core c moves its current thread off: see
+    /// design/one-lock-bounded-steps/.
+    pub fn check_current(&mut self, c: usize, frame: Registers) -> (ret: bool)
         requires
             old(self).wf(),
             c < NUM_CPUS,
         ensures
             Self::step_ok(*old(self), *final(self), c as int),
-            ret == match old(self).cores@[c as int].current_thread {
-                Some(t) => old(self).threads.records@[t].value().pending_stop,
-                None => false,
-            },
+            ret == old(self).must_leave(c as int),
             !ret ==> *final(self) == *old(self),
+            final(self).current_live(c as int),
             final(self).view() == old(self).view(),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             ret ==> {
@@ -2912,7 +2945,23 @@ impl CapKernel {
         }
         let ptr = PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * 4096);
         let record = *ptr.borrow(Tracked(self.threads.records.borrow().tracked_borrow(t)));
-        if !record.pending_stop {
+        let leave = if record.pending_stop || record.dying {
+            true
+        } else {
+            match record.process {
+                None => true,
+                Some(p) => {
+                    proof {
+                        assert(pre.processes.records@.contains_key(p));
+                        assert(process_wf(&pre.processes, &pre.blocks, p));
+                    }
+                    PPtr::<ProcessRecord>::from_usize(p + PROCESS_RECORD_PAGE * 4096).borrow(
+                        Tracked(self.processes.records.borrow().tracked_borrow(p)),
+                    ).dead
+                },
+            }
+        };
+        if !leave {
             return false;
         }
         self.cores.set(c, CoreState {
