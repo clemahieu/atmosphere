@@ -127,19 +127,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4c95c10ba0b00a02636238b814946408b1322d5ac4760326e6fb8ec956d85775"
 
 [[package]]
-name = "array-init"
-version = "2.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d62b7694a562cdf5a74227903507c56ab2cc8bdd1f781ed5cb4cf9c9f810bfc"
-
-[[package]]
 name = "astd"
 version = "0.1.0"
 dependencies = [
  "atomic_refcell",
  "displaydoc",
  "embedded-io",
- "heapless 0.7.17",
+ "heapless",
  "spin",
 ]
 
@@ -190,12 +184,6 @@ name = "autocfg"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ace50bade8e6234aa140d9a2f552bbee1db4d353f69b8217bc503490fc1a9f26"
-
-[[package]]
-name = "b2histogram"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2de6f553fcc0ce1d05994ecc6972ceadf807c46cb030527f0b5e576bc4185345"
 
 [[package]]
 name = "backtrace"
@@ -434,28 +422,14 @@ dependencies = [
  "astd",
  "asys",
  "constants",
- "e810_driver",
- "ixgbe_driver",
  "lazy_static",
  "libtime",
  "log",
- "nvme_driver",
  "pcid",
  "ring_buffer",
  "slabmalloc",
- "smoltcp",
  "spin",
  "x86 0.52.0",
-]
-
-[[package]]
-name = "e810_driver"
-version = "0.1.0"
-dependencies = [
- "asys",
- "libdma",
- "log",
- "pcid",
 ]
 
 [[package]]
@@ -540,11 +514,6 @@ name = "fastrand"
 version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "486f806e73c5707928240ddc295403b1b93c96a02038563881c4a2fd84b81ac4"
-
-[[package]]
-name = "fnv"
-version = "1.0.7"
-source = "git+https://github.com/servo/rust-fnv#4e55052a343a4372c191141f29a17ab829cf1dbc"
 
 [[package]]
 name = "futures"
@@ -661,15 +630,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hash32"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47d60b12902ba28e2730cd37e95b8c9223af2808df9e902d4df49588d1470606"
-dependencies = [
- "byteorder",
-]
-
-[[package]]
 name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -682,19 +642,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cdc6457c0eb62c71aac4bc17216026d8410337c4126773b9c5daba343f17964f"
 dependencies = [
  "atomic-polyfill",
- "hash32 0.2.1",
+ "hash32",
  "rustc_version",
  "spin",
- "stable_deref_trait",
-]
-
-[[package]]
-name = "heapless"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0bfb9eb618601c89945a70e254898da93b13be0388091d42117462b265bb3fad"
-dependencies = [
- "hash32 0.3.1",
  "stable_deref_trait",
 ]
 
@@ -768,26 +718,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d75a2a4b1b190afb6f5425f10f6a8f959d2ea0b9c2b1d79553551850539e4674"
 
 [[package]]
-name = "ixgbe_driver"
-version = "0.1.0"
-dependencies = [
- "array-init",
- "asys",
- "b2histogram",
- "byteorder",
- "fnv",
- "heapless 0.7.17",
- "libdma",
- "libtime",
- "log",
- "pcid",
- "ring_buffer",
- "spin",
- "twox-hash",
- "x86 0.52.0",
-]
-
-[[package]]
 name = "kernel"
 version = "0.1.0"
 dependencies = [
@@ -843,13 +773,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09d6582e104315a817dff97f75133544b2e094ee22447d2acf4a74e189ba06fc"
 
 [[package]]
-name = "libdma"
-version = "0.1.0"
-dependencies = [
- "asys",
-]
-
-[[package]]
 name = "libtime"
 version = "0.1.0"
 
@@ -874,12 +797,6 @@ name = "log"
 version = "0.4.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a7a70ba024b9dc04c27ea2f0c0548feb474ec5c54bba33a7f72f873a39d07b24"
-
-[[package]]
-name = "managed"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ca88d725a0a943b096803bd34e73a4437208b6077654cc4ecb2947a5f91618d"
 
 [[package]]
 name = "memchr"
@@ -999,24 +916,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nvme_driver"
-version = "0.1.0"
-dependencies = [
- "array-init",
- "asys",
- "b2histogram",
- "constants",
- "heapless 0.7.17",
- "libdma",
- "libtime",
- "log",
- "pcid",
- "ring_buffer",
- "spin",
- "x86 0.52.0",
-]
-
-[[package]]
 name = "object"
 version = "0.36.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1060,7 +959,7 @@ version = "0.1.0"
 dependencies = [
  "bitflags 1.3.2",
  "byteorder",
- "heapless 0.7.17",
+ "heapless",
  "log",
  "serde_derive",
 ]
@@ -1307,20 +1206,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3c5e1a9a646d36c3599cd173a41282daf47c44583ad367b8e6837255952e5c67"
 
 [[package]]
-name = "smoltcp"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a1a996951e50b5971a2c8c0fa05a381480d70a933064245c4a223ddc87ccc97"
-dependencies = [
- "bitflags 1.3.2",
- "byteorder",
- "cfg-if",
- "heapless 0.8.0",
- "log",
- "managed",
-]
-
-[[package]]
 name = "socket2"
 version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1356,12 +1241,6 @@ dependencies = [
  "leb128",
  "xmas-elf",
 ]
-
-[[package]]
-name = "static_assertions"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "strsim"
@@ -1471,16 +1350,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.90",
-]
-
-[[package]]
-name = "twox-hash"
-version = "1.6.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "97fee6b57c6a41524a810daee9286c02d7752c4253064d0b05472833a438f675"
-dependencies = [
- "cfg-if",
- "static_assertions",
 ]
 
 [[package]]

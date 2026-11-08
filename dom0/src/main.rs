@@ -6,13 +6,9 @@
 #![no_main]
 
 extern crate alloc;
-extern crate nvme_driver;
 extern crate pcid;
 extern crate ring_buffer;
 
-mod e810_client;
-mod ixgbe_client;
-mod nvme_client;
 mod pci;
 mod slab_alloc;
 
@@ -20,11 +16,8 @@ use core::panic::PanicInfo;
 mod syscall_benchmark;
 use alloc::vec::Vec;
 use constants::*;
-use e810_client::test_e810_driver;
-use ixgbe_client::*;
 use libtime::sys_ns_loopsleep;
 pub use log::info as println;
-use nvme_client::test_nvme_driver;
 use pci::scan_pci_devs;
 
 fn test_sleep() {
