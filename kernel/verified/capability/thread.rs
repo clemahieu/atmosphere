@@ -2365,6 +2365,153 @@ impl CapKernel {
         }
         true
     }
+
+    /// The thread the control capability at index i names can be suspended from core c: it is
+    /// Runnable, or it is c's current thread. One Running on another core is stopped there, by a
+    /// pending stop its core acts on: see design/one-lock-bounded-steps/.
+    pub open spec fn can_suspend(&self, c: usize, root: usize, i: usize) -> bool {
+        let t = self.payload_of(self.tables.node_of(root, i)).base;
+        &&& self.can_control(root, i)
+        &&& match self.threads.records@[t].value().state {
+            ThreadState::Runnable { .. } => true,
+            ThreadState::Running { core } => core == c,
+            _ => false,
+        }
+    }
+
+    /// The step set thread t's state and nothing else of its record or of any other record, and left
+    /// every object but the cores as it was.
+    pub open spec fn state_written(pre: Self, post: Self, t: usize, state: ThreadState) -> bool {
+        &&& post.list == pre.list
+        &&& post.tables == pre.tables
+        &&& post.blocks == pre.blocks
+        &&& post.holders == pre.holders
+        &&& post.mappings == pre.mappings
+        &&& post.table_pages == pre.table_pages
+        &&& post.zeroing == pre.zeroing
+        &&& post.frames == pre.frames
+        &&& post.spaces == pre.spaces
+        &&& post.processes == pre.processes
+        &&& post.mapped == pre.mapped
+        &&& post.stale_epoch == pre.stale_epoch
+        &&& post.flush_epoch == pre.flush_epoch
+        &&& post.iommus == pre.iommus
+        &&& post.devices == pre.devices
+        &&& post.tlb == pre.tlb
+        &&& post.threads.holders == pre.threads.holders
+        &&& post.threads.records@.dom() == pre.threads.records@.dom()
+        &&& forall|x: usize| x != t && #[trigger] post.threads.records@.contains_key(x)
+            ==> post.threads.records@[x] == pre.threads.records@[x]
+        &&& post.threads.records@[t].addr() == pre.threads.records@[t].addr()
+        &&& post.threads.records@[t].is_init()
+        &&& post.threads.records@[t].value() == ThreadRecord { state, ..pre.threads.records@[t].value() }
+    }
+
+    /// Suspends, from core c, the thread the control capability at index i names: a Runnable thread,
+    /// or c's current thread, which leaves c running nothing, becomes Inactive. Its saved frame is the
+    /// one it left user mode with. The index comes from user space, so it can be refused, and a refusal
+    /// changes nothing.
+    pub fn suspend(&mut self, c: usize, root: usize, i: usize) -> (ret: bool)
+        requires
+            old(self).wf(),
+            c < NUM_CPUS,
+            old(self).tables.roots@.contains_key(root),
+        ensures
+            final(self).wf(),
+            ret == old(self).can_suspend(c, root, i),
+            !ret ==> *final(self) == *old(self),
+            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
+            ret ==> {
+                let n = old(self).tables.node_of(root, i);
+                let t = old(self).payload_of(n).base;
+                &&& old(self).threads.records@.contains_key(t)
+                &&& Self::state_written(*old(self), *final(self), t, ThreadState::Inactive)
+                &&& final(self).cores@.len() == old(self).cores@.len()
+                &&& forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] final(self).cores@[d] == old(self).cores@[d]
+                &&& final(self).cores@[c as int] == if old(self).cores@[c as int].current_thread == Some(t) {
+                    CoreState { current_thread: None, ..old(self).cores@[c as int] }
+                } else {
+                    old(self).cores@[c as int]
+                }
+                &&& discharges(old(self).view(), final(self).view(), root, Effect::Control { cap: n, thread: t })
+            },
+    {
+        let ghost pre = *self;
+        let (n, t) = match self.thread_control(root, i) {
+            Some(found) => found,
+            None => { return false; },
+        };
+        let ptr = PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * 4096);
+        let record = *ptr.borrow(Tracked(self.threads.records.borrow().tracked_borrow(t)));
+        let current = match record.state {
+            ThreadState::Runnable { .. } => false,
+            ThreadState::Running { core } => {
+                if core != c {
+                    return false;
+                }
+                true
+            },
+            _ => { return false; },
+        };
+        proof {
+            reveal(current_wf);
+            assert(current == (pre.cores@[c as int].current_thread == Some(t))) by {
+                if pre.cores@[c as int].current_thread == Some(t) {
+                    assert(runs(pre.cores@, c as int, t));
+                }
+            }
+        }
+        if current {
+            let state = *self.cores.get(c);
+            self.cores.set(c, CoreState {
+                current_thread: None,
+                acked_epoch: state.acked_epoch,
+                generation: state.generation,
+                next_pcid: state.next_pcid,
+                pcids_used: state.pcids_used,
+            });
+        }
+        let tracked mut perm;
+        proof {
+            perm = self.threads.records.borrow_mut().tracked_remove(t);
+        }
+        ptr.write(Tracked(&mut perm), ThreadRecord {
+            state: ThreadState::Inactive,
+            frame: record.frame,
+            pending_stop: record.pending_stop,
+            process: record.process,
+        });
+        proof {
+            self.threads.records.borrow_mut().tracked_insert(t, perm);
+            reveal(current_wf);
+            let post = *self;
+            assert(post.threads.records@.dom() =~= pre.threads.records@.dom());
+            assert forall|d: int, x: usize| 0 <= d < NUM_CPUS && #[trigger] runs(post.cores@, d, x) implies {
+                &&& post.threads.records@.contains_key(x)
+                &&& post.threads.records@[x].value().state == (ThreadState::Running { core: d as usize })
+            } by {
+                assert(post.cores@[d] == pre.cores@[d]);
+                assert(runs(pre.cores@, d, x));
+                assert(x != t);
+            }
+            assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) && post.threads.records@[x].value().state is Running implies {
+                let e = post.threads.records@[x].value().state->Running_core;
+                &&& e < NUM_CPUS
+                &&& post.cores@[e as int].current_thread == Some(x)
+            } by {
+                assert(x != t);
+                let e = pre.threads.records@[x].value().state->Running_core;
+                assert(pre.threads.records@.contains_key(x));
+                assert(pre.cores@[e as int].current_thread == Some(x));
+                if current && e == c {
+                    assert(x == t);
+                }
+            }
+            Self::lemma_switch_wf(pre, post, c as int, t);
+            assert(post.view() == pre.view());
+        }
+        true
+    }
 }
 
 impl CapKernel {
