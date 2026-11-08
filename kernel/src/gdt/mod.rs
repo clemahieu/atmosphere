@@ -31,9 +31,6 @@ use x86::Ring;
 use types::{AccessByte, SystemAccessByte, SystemDescriptorType};
 use crate::cpu::IstStack;
 
-// GDT flags
-// const GDT_F_PAGE_SIZE: u8 = 1 << 7;
-// const GDT_F_PROTECTED_MODE: u8 = 1 << 6;
 const GDT_F_LONG_MODE: u8 = 1 << 5;
 
 /// Initializes and loads the GDT.
@@ -46,7 +43,6 @@ pub unsafe fn init_cpu() {
     let tss_addr = {
         for i in 0..min(cpu.ist.len(), 7) {
             let ist_addr = cpu.ist[i].bottom();
-            //log::debug!("IST {}: {:?}", i + 1, ist_addr);
             cpu.tss.set_ist(i, ist_addr as u64);
         }
 

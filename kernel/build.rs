@@ -62,7 +62,6 @@ fn x86_64_asm_bin(source: &str, text_base: u64) {
             panic!("objcopy failed");
         }
 
-        //panic!("SUCCESS: {:?}", binary);
     }
 }
 

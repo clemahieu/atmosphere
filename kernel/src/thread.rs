@@ -40,22 +40,7 @@ pub unsafe fn start_thread(code: u64, stack: u64, ring: Ring) {
 
 /// Schedules the next thread, returning its time slice.
 pub fn schedule(regs: &mut Registers) -> Option<Cycles> {
-    // crate::debugger::breakpoint(1);
-    // let cpu = cpu::get_current();
-    // mem::swap(&mut cpu.parked, regs);
-    // Some(TIME_SLICE)
-
     log::debug!("hello from cpu {:?} scheduler",cpu::get_cpu_id());
     loop{
-        // unsafe{
-        //     let has_next_thread = kernel::sched_get_next_thread(regs);
-        //     if has_next_thread == false{
-        //         for i in 0..1000{
-        //             asm!("nop");
-        //         }
-        //     }else{
-        //         break;
-        //     }
-        // }
     }
 }

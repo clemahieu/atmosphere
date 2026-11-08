@@ -66,16 +66,9 @@ pub unsafe fn init_cpu() {
     SYSCALLS[asys::__NR_MRESOLVE_IO] = kernel::sys_resolve_io as *const () as u64;
     SYSCALLS[asys::__NR_NEW_END] = kernel::sys_new_endpoint as *const () as u64;
     SYSCALLS[asys::__NR_NEW_PROC] = kernel::sys_new_proc as *const () as u64;
-    // SYSCALLS[asys::__NR_NEW_PROC_W_IO] = kernel::sys_new_proc_with_iommu as u64;
     SYSCALLS[asys::__NR_NEW_THREAD] = kernel::sys_new_thread as *const () as u64;
-    // SYSCALLS[asys::__NR_SEND_EMPTY_NW] = kernel::sys_send_empty_no_wait as u64;
     SYSCALLS[asys::__NR_LOG] = kernel::sys_log as *const () as u64;
-    // SYSCALLS[asys::__NR_SEND_EMPTY] = kernel::sys_send_empty as u64;
     SYSCALLS[asys::__NR_RECEIVE_EMPTY] = kernel::sys_receive_empty as *const () as u64;
-    // SYSCALLS[asys::__NR_NEW_PROC_W_IO_MEM] = kernel::sys_new_proc_with_iommu_pass_mem as u64;
-    // SYSCALLS[asys::__NR_SEND_PAGE_NW] = kernel::sys_send_pages_no_wait as u64;
-    // SYSCALLS[asys::__NR_RECEIVE_PAGE] = kernel::sys_receive_pages as u64;
-    // SYSCALLS[asys::__NR_SEND_PAGE] = kernel::sys_send_pages as u64;
     SYSCALLS[asys::__NR_IO_MMAP] = kernel::sys_iommu_mmap as *const () as u64;
     SYSCALLS[asys::__NR_SET_DEVICE_IOMMU] = kernel::sys_set_device_iommu as *const () as u64;
     SYSCALLS[asys::__NR_INVALIDATE_IOTLB] = sys_invalidate_iotlb as *const () as u64;

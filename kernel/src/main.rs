@@ -18,10 +18,6 @@
 )]
 #![deny(clippy::from_over_into, clippy::needless_question_mark)]
 #![deny(rustdoc::bare_urls, rustdoc::broken_intra_doc_links)]
-// #![cfg_attr(
-//     not(debug_assertions),
-//     deny(dead_code, unused_imports, unused_mut, unused_variables,)
-// )]
 #![reexport_test_harness_main = "test_main"]
 #![test_runner(crate::test_runner)]
 #![no_main]
@@ -99,20 +95,6 @@ fn boot_cpu0(boot_info: *const BootInfo) -> isize {
         print_logo();
     }
 
-    // Thread test
-    // unsafe {
-    //     thread::start_thread(
-    //         thread_main as u64,
-    //         &THREAD_STACK as *const _ as u64 + THREAD_STACK.len() as u64,
-    //         Ring::Ring0,
-    //     );
-    // }
-    // loop {
-    //     let counter = THREAD_COUNTER.load(Ordering::SeqCst);
-    //     log::debug!("Counter: {}", counter);
-    // }
-
-
     kernel::kernel_new();
 
     log::info!("Command line: {}", boot::get_raw_command_line());
@@ -134,10 +116,6 @@ fn boot_cpu0(boot_info: *const BootInfo) -> isize {
     unsafe {
         kernel_pml4 = *(pml4 as *const usize);
     }
-    // log::info!("dom0: {:?}", dom0);
-    // log::info!("pml4: {:?}", pml4);
-    // log::info!("kernel_pml4: {:x}", kernel_pml4);
-    // log::info!("page_array_len: {:x}", boot_info.pages.len());
 
     kernel::kernel_init(&boot_info.pages, pml4 as usize, kernel_pml4 as usize);
 
@@ -196,7 +174,6 @@ extern "C" fn ap_main(cpu_id: u64) -> ! {
 
 /// Thread entry point.
 fn thread_main(cpu_id: u64) {
-    //debugger::breakpoint(1);
     loop {
         THREAD_COUNTER.fetch_add(1, Ordering::SeqCst);
     }

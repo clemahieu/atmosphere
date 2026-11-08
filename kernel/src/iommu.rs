@@ -346,7 +346,6 @@ impl NaiveIommuMap {
     }
 
     pub fn root_table_addr(self: Pin<&mut Self>) -> u64 {
-        //log::info!("Context Table: {:?}", &self.context_table as *const ContextTable);
         &self.root_table as *const RootTable as u64
     }
 
@@ -391,7 +390,6 @@ impl RootTable {
         Self {
             entries: [MaybeUninit::new(RootTableEntry::new()); 256],
         }
-        //unsafe { mem::transmute(MaybeUninit::<Self>::zeroed()) }
     }
 
     unsafe fn read(self: Pin<&Self>, index: usize) -> RootTableEntry {
