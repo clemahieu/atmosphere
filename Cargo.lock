@@ -67,7 +67,6 @@ dependencies = [
  "ns16550a",
  "plain",
  "uefi-raw",
- "x86",
 ]
 
 [[package]]

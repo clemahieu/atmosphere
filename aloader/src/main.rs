@@ -26,7 +26,7 @@ use core::slice;
 #[cfg(not(test))]
 use core::panic::PanicInfo;
 
-use x86::cpuid::cpuid;
+use core::arch::x86_64::__cpuid;
 
 use aelf::ElfHandle;
 use astd::boot::{BootInfo, DomainMapping, Payload, PhysicalMemoryType};
@@ -368,7 +368,7 @@ where
 }
 
 fn cpu_has_pcid() -> bool {
-    let cpuid_1 = cpuid!(0x1);
+    let cpuid_1 = __cpuid(0x1);
     (cpuid_1.ecx & (1 << 17)) != 0
 }
 
