@@ -1064,6 +1064,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
         ensures
             final(self).wf(),
+            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             !ret ==> *final(self) == *old(self),
             ret ==> old(self).can_retype(root, from, to, base, PROCESS_ORDER),
             ret ==> {
@@ -1313,6 +1314,7 @@ impl CapKernel {
             assert(post.list.parent@ == pre.list.parent@.insert(child, parent));
             Self::lemma_binding_parents_same_caps(pre, post);
             assert(post.wf());
+            Self::lemma_bound_threads_same(pre, post);
             assert(PROCESS_RIGHTS & 128 != 0) by (compute_only);
             assert(right_bit(Right::Control) == 128);
             assert(right_bit(Right::Retype) == 8);

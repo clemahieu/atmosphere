@@ -2459,6 +2459,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
         ensures
             final(self).wf(),
+            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             !ret ==> *final(self) == *old(self),
             ret ==> old(self).can_retype_under(root, from, base, 3),
             ret ==> {
@@ -2563,6 +2564,7 @@ impl CapKernel {
         }
         proof {
             Self::lemma_table_page_wf(pre, mid, *self, root, from, parent, base, page, level);
+            Self::lemma_bound_threads_same(pre, *self);
         }
         true
     }
@@ -2973,6 +2975,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
         ensures
             final(self).wf(),
+            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             !ret ==> *final(self) == *old(self),
             ret ==> old(self).can_retype(root, from, to, base, 3),
             ret ==> {
@@ -3188,6 +3191,7 @@ impl CapKernel {
             }
             Self::lemma_devices_same_caps(pre, post);
             assert(post.wf());
+            Self::lemma_bound_threads_same(pre, post);
             assert(SPACE_RIGHTS & 128 == 0) by (compute_only);
             assert(right_bit(Right::Control) == 128);
             assert(right_bit(Right::Retype) == 8);

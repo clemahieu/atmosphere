@@ -387,6 +387,7 @@ impl CapKernel {
             old(self).frame_block_ready(base, order),
         ensures
             final(self).wf(),
+            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             Self::same_tree(*old(self), *final(self)),
             final(self).blocks == old(self).blocks,
             final(self).frames == old(self).frames,
@@ -441,6 +442,7 @@ impl CapKernel {
             let live = |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live;
             assert(pre.view().holds_right(root, parent, Right::Retype));
             lemma_adds_child_discharges_retype(pre.view(), post.view(), root, parent, child, live, base);
+            Self::lemma_bound_threads_same(pre, post);
         }
     }
 
@@ -453,6 +455,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
         ensures
             final(self).wf(),
+            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             Self::same_tree(*old(self), *final(self)),
             ret ==> old(self).can_retype_frame(root, from, to, base),
             !ret ==> *final(self) == *old(self),
@@ -755,6 +758,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
         ensures
             final(self).wf(),
+            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             Self::same_tree(*old(self), *final(self)),
             ret ==> old(self).can_retype_leaf(root, from, r, base),
             !ret ==> *final(self) == *old(self),
@@ -908,6 +912,7 @@ impl CapKernel {
             assert(post.list.parent@ == pre.list.parent@.insert(base, parent));
             Self::lemma_binding_parents_same_caps(pre, post);
             assert(post.wf());
+            Self::lemma_bound_threads_same(pre, post);
             assert forall|i: usize| index_ok(i) && index_entry(i) == r as int implies {
                 &&& #[trigger] post.tables.has_slot(root, i)
                 &&& !post.list.nodes@[post.tables.node_of(root, i) as int].live
@@ -1381,6 +1386,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
         ensures
             final(self).wf(),
+            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             Self::same_tree(*old(self), *final(self)),
             !old(self).can_retype_large(root, from, to, base, order) ==> ret is Refused,
             ret is Refused ==> *final(self) == *old(self),
