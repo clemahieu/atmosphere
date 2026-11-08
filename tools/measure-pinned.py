@@ -6,6 +6,10 @@ usage: tools/measure-pinned.py within|across [boots] [--lock-stats]   (from the 
 Numbers from a host with other work on it do not mean much, so this reports the load average. It
 pins vCPU 0 and 1 to separate physical cores, sharing an L3 for within and on different L3s for across,
 and keeps QEMU's other threads off both. KVM inflates IPI cost, so the IPI number is an upper bound.
+A cycle in the timing lines is a TSC tick, not a core cycle, so each boot also prints the clock of both
+measured cores over the boot: from cpuinfo_avg_freq, the kernel's APERF/MPERF average, or from
+scaling_cur_freq where that file is absent, sampled from a thread kept off the measured cores. An idle
+core reports the cpufreq policy's clock, so the minimum takes in the moments a vCPU was halted.
 
 What needs root to keep the host off the measured cores is tools/isolate-pinned.sh, which the human
 runs around the measurements: apply stops irqbalance, points the IRQs away from the measured CPUs and
@@ -22,6 +26,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 
 LINES = re.compile(r"IPC round trip|sys_mresolve:|flush IPI|kernel lock:|contention test lock:")
@@ -86,6 +91,25 @@ def pin_vcpus(pid, pair):
         sys.exit("FAIL: did not find both vCPU threads")
 
 
+def clock_source(cpu):
+    """The cpufreq file, in kHz, that reports the clock of cpu: the APERF/MPERF average where the kernel has it."""
+    for name in ("cpuinfo_avg_freq", "scaling_cur_freq"):
+        if os.path.exists(f"/sys/devices/system/cpu/cpu{cpu}/cpufreq/{name}"):
+            return name
+    sys.exit(f"FAIL: CPU {cpu} has no cpufreq clock to read")
+
+
+def sample_clocks(paths, others, done, samples):
+    """Reads the clock in each of paths every 10 ms until done is set, from a thread kept on others."""
+    os.sched_setaffinity(0, others)
+    while not done.wait(0.01):
+        for cpu, path in paths.items():
+            try:
+                samples[cpu].append(int(read(path)) / 1000)
+            except (OSError, ValueError):
+                continue
+
+
 def boot(pair, out):
     initrd, log = f"{out}/initrd", f"{out}/serial.log"
     with open(initrd, "wb") as f:
@@ -102,12 +126,20 @@ def boot(pair, out):
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         preexec_fn=lambda: os.sched_setaffinity(0, others))
     pin_vcpus(qemu.pid, pair)
+    samples = {cpu: [] for cpu in pair}
+    done = threading.Event()
+    paths = {cpu: f"/sys/devices/system/cpu/cpu{cpu}/cpufreq/{clock_source(cpu)}" for cpu in pair}
+    sampler = threading.Thread(target=sample_clocks, args=(paths, others, done, samples))
+    sampler.start()
     try:
         qemu.wait(timeout=300)
     except subprocess.TimeoutExpired:
         qemu.kill()
         sys.exit(f"FAIL: no exit within 300 s; see {log}")
-    return open(log, "rb").read().decode(errors="replace")
+    finally:
+        done.set()
+        sampler.join()
+    return open(log, "rb").read().decode(errors="replace"), samples
 
 
 def main():
@@ -121,7 +153,7 @@ def main():
     build(lock_stats)
     print(f"{mode}: vCPUs on host CPUs {pair}, lock_stats {lock_stats}, load {os.getloadavg()[0]:.2f}")
     for i in range(boots):
-        log = boot(pair, out)
+        log, samples = boot(pair, out)
         if "dom0 benchmark done" not in log:
             sys.exit(f"FAIL: boot {i} did not finish; see {out}/serial.log")
         print(f"boot {i}, load {os.getloadavg()[0]:.2f}")
@@ -131,6 +163,11 @@ def main():
                 last[LINES.search(line).group(0)] = re.sub(r"\x1b\[[0-9;]*m", "", line).strip()
         for line in last.values():
             print(f"  {line}")
+        for cpu, mhz in samples.items():
+            if not mhz:
+                sys.exit(f"FAIL: no clock sample of CPU {cpu} over boot {i}")
+            print(f"  clock of CPU {cpu}: min {min(mhz):.0f}, mean {sum(mhz) / len(mhz):.0f}, "
+                  f"max {max(mhz):.0f} MHz over {len(mhz)} samples, from {clock_source(cpu)}")
 
 
 if __name__ == "__main__":
