@@ -878,6 +878,12 @@ impl CapKernel {
             return ReclaimStep::Again;
         }
         proof {
+            // On its own, for the modulus: a thread's block is two pages, aligned to them.
+            assert(page % 2 == 0) by (nonlinear_arith)
+                requires
+                    base % 8192 == 0,
+                    page == base / 4096,
+            ;
             pre.lemma_thread_unmapped(page, page);
             pre.lemma_thread_unmapped(page, (page + 1) as usize);
             pre.lemma_acknowledged_is_clean(page);
