@@ -574,7 +574,7 @@ impl CapKernel {
             old(self).can_retype_under(root, from, base, 3) && old(self).space_is_empty(base)
                 ==> if old(self).acknowledged(base / 4096) { ret is Freed } else { ret is Again },
             old(self).can_retype_under(root, from, base, 3) && old(self).space_is_spent(base) ==> ret is Again || ret is Freed,
-            old(self).spaces.roots@.contains_key(base) && old(self).spaces.records@[base].value().kind is Io && ret is Slice
+            old(self).spaces.roots@.contains_key(base) && old(self).spaces.records@[base].value().kind is Device && ret is Slice
                 ==> old(self).space_children_cut(*final(self), root, from, base),
             old(self).processes.records@.contains_key(base)
                 && (old(self).blocks.pages@[(base / 4096) as int].refs != 0
@@ -1167,7 +1167,7 @@ impl CapKernel {
         true
     }
 
-    /// Whether the root of the IO space at `base` has no entry. A space's node pages hold no live node.
+    /// Whether the root of the device space at `base` has no entry. A space's node pages hold no live node.
     fn space_nothing_left(&self, base: usize) -> (ret: bool)
         requires
             self.wf(),
@@ -1984,7 +1984,7 @@ impl CapKernel {
             assert(x != page);
             assert((x * 4096) as usize != base);
         }
-        assert forall|s: usize, k: usize| #[trigger] pre.spaces.roots@.contains_key(s) && pre.spaces.records@[s].value().kind is Io
+        assert forall|s: usize, k: usize| #[trigger] pre.spaces.roots@.contains_key(s) && pre.spaces.records@[s].value().kind is Device
             && k < TABLE_NODE_PAGES implies post.list.pages@.dom().contains(#[trigger] table_node_page(s, k)) by {
             assert(space_wf(&pre.list, &pre.spaces, &pre.blocks, s));
             assert(pre.list.pages@.dom().contains(table_node_page(s, k)));
@@ -2207,7 +2207,7 @@ impl CapKernel {
         }
     }
 
-    /// The dead IO space at `base` has no live node and its root no entry, so its block holds nothing the
+    /// The dead device space at `base` has no live node and its root no entry, so its block holds nothing the
     /// kernel still uses.
     pub open spec fn space_is_empty(&self, base: usize) -> bool {
         &&& self.dead_io_space(base)
@@ -2217,13 +2217,13 @@ impl CapKernel {
             i < 512 ==> self.spaces.roots@[base].value()[i].is_empty()
     }
 
-    /// The dead IO space at `base` has nothing left to cut: no entry of its root names a child.
+    /// The dead device space at `base` has nothing left to cut: no entry of its root names a child.
     pub open spec fn space_is_spent(&self, base: usize) -> bool {
         &&& self.dead_io_space(base)
         &&& !exists|e: usize| #[trigger] tree_of(&self.table_pages, &self.spaces).names_child(base, e)
     }
 
-    /// A spent IO space is empty, so cutting it to the end leaves what a free takes. An IO root has no
+    /// A spent device space is empty, so cutting it to the end leaves what a free takes. A device root has no
     /// kernel slot, a present entry of it names a child since a root maps no frame, any other entry is
     /// empty, and a space's node pages hold no live node.
     pub proof fn lemma_spent_space_is_empty(&self, base: usize)
@@ -2338,7 +2338,7 @@ impl CapKernel {
         ensures
             forall|t: usize, k: usize| #[trigger] post.table_pages.maps@.contains_key(t) && k < TABLE_NODE_PAGES
                 ==> post.list.pages@.dom().contains(#[trigger] table_node_page(t, k)),
-            forall|s: usize, k: usize| #[trigger] post.spaces.roots@.contains_key(s) && post.spaces.records@[s].value().kind is Io
+            forall|s: usize, k: usize| #[trigger] post.spaces.roots@.contains_key(s) && post.spaces.records@[s].value().kind is Device
                 && k < TABLE_NODE_PAGES ==> post.list.pages@.dom().contains(#[trigger] table_node_page(s, k)),
     {
         assert forall|t: usize, k: usize| #[trigger] post.table_pages.maps@.contains_key(t) && k < TABLE_NODE_PAGES
@@ -2347,7 +2347,7 @@ impl CapKernel {
             assert(pre.list.pages@.dom().contains(table_node_page(t, k)));
             lemma_node_pages_disjoint(t, base, k);
         }
-        assert forall|s: usize, k: usize| #[trigger] post.spaces.roots@.contains_key(s) && post.spaces.records@[s].value().kind is Io
+        assert forall|s: usize, k: usize| #[trigger] post.spaces.roots@.contains_key(s) && post.spaces.records@[s].value().kind is Device
             && k < TABLE_NODE_PAGES implies post.list.pages@.dom().contains(#[trigger] table_node_page(s, k)) by {
             assert(post.spaces.records@[s] == pre.spaces.records@[s]);
             assert(space_wf(&pre.list, &pre.spaces, &pre.blocks, s));
@@ -2489,7 +2489,7 @@ impl CapKernel {
         }
     }
 
-    /// What freeing the empty IO space at `base` did to self. Its children and any device went earlier,
+    /// What freeing the empty device space at `base` did to self. Its children and any device went earlier,
     /// so the view is as it was.
     pub open spec fn space_freed(&self, post: Self, c: usize, root: usize, from: usize, base: usize) -> bool {
         let untyped = self.tables.node_of(root, from);
@@ -2508,7 +2508,7 @@ impl CapKernel {
         &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base })
     }
 
-    /// Frees the empty IO space at `base`, once every core and IOMMU has acknowledged the epoch of its
+    /// Frees the empty device space at `base`, once every core and IOMMU has acknowledged the epoch of its
     /// block's last unmap. It refuses a block that is anything else, a process space included.
     // In a solver of its own: beside the rest of this module it runs past its budget.
     #[verifier::spinoff_prover]
@@ -2783,10 +2783,10 @@ impl CapKernel {
         true
     }
 
-    /// Child c of a dead table page or IO space is cut: it has no parent and keeps its space, its page is not
-    /// acknowledged, its word is above every acknowledgement that stood when the slices began, and its page
-    /// is in the TLB of every core that loaded the space and, for an IO space the kernel still holds, of
-    /// every IOMMU.
+    /// Child c of a dead table page or device space is cut: it has no parent and keeps its space, its page is
+    /// not acknowledged, its word is above every acknowledgement that stood when the slices began, and its
+    /// page is in the TLB of every core that loaded the space and, for a device space the kernel still holds,
+    /// of every IOMMU.
     pub open spec fn child_cut(pre: Self, post: Self, c: usize) -> bool {
         let a = tree_of(&pre.table_pages, &pre.spaces);
         let b = tree_of(&post.table_pages, &post.spaces);
@@ -2800,7 +2800,7 @@ impl CapKernel {
             0 <= d < NUM_CPUS && pre.loaded(d, s->Some_0)
             ==> post.tlb@[d].contains(TlbEntry { space: s->Some_0, page: c / 4096 })
         &&& forall|i: int| #![trigger post.iommus.tlb@[i].contains(TlbEntry { space: s->Some_0, page: c / 4096 })]
-            0 <= i < NUM_IOMMUS && pre.iommu_present(i) && a.is_root(s->Some_0) && pre.spaces.records@[s->Some_0].value().kind is Io
+            0 <= i < NUM_IOMMUS && pre.iommu_present(i) && a.is_root(s->Some_0) && pre.spaces.records@[s->Some_0].value().kind is Device
             ==> post.iommus.tlb@[i].contains(TlbEntry { space: s->Some_0, page: c / 4096 })
     }
 
@@ -3054,9 +3054,9 @@ impl CapKernel {
             assert(mid.loaded(d, s));
         }
         assert forall|i: int| #![trigger post.iommus.tlb@[i].contains(TlbEntry { space: s, page: g })]
-            0 <= i < NUM_IOMMUS && pre.iommu_present(i) && tree_of(&pre.table_pages, &pre.spaces).is_root(s) && pre.spaces.records@[s].value().kind is Io
+            0 <= i < NUM_IOMMUS && pre.iommu_present(i) && tree_of(&pre.table_pages, &pre.spaces).is_root(s) && pre.spaces.records@[s].value().kind is Device
             implies post.iommus.tlb@[i].contains(TlbEntry { space: s, page: g }) by {
-            assert(mid.spaces.records@[s].value().kind is Io);
+            assert(mid.spaces.records@[s].value().kind is Device);
         }
         assert(post.stale_epoch.written(post.flush_epoch, g));
     }
@@ -3099,7 +3099,7 @@ impl CapKernel {
             assert(mid.tlb@[d].contains(TlbEntry { space: s, page: g }));
         }
         assert forall|j: int| #![trigger post.iommus.tlb@[j].contains(TlbEntry { space: s, page: g })]
-            0 <= j < NUM_IOMMUS && pre.iommu_present(j) && a.is_root(s) && pre.spaces.records@[s].value().kind is Io
+            0 <= j < NUM_IOMMUS && pre.iommu_present(j) && a.is_root(s) && pre.spaces.records@[s].value().kind is Device
             implies post.iommus.tlb@[j].contains(TlbEntry { space: s, page: g }) by {
             assert(mid.iommus.tlb@[j].contains(TlbEntry { space: s, page: g }));
         }
@@ -3303,16 +3303,16 @@ impl CapKernel {
         steps
     }
 
-    /// A dead IO space's block: nothing names the space and no device is bound to it. A process space goes
-    /// with its process.
+    /// A dead device space's block: nothing names the space and no device is bound to it. A process space
+    /// goes with its process.
     pub open spec fn dead_io_space(&self, base: usize) -> bool {
         &&& self.spaces.roots@.contains_key(base)
-        &&& self.spaces.records@[base].value().kind is Io
+        &&& self.spaces.records@[base].value().kind is Device
         &&& self.blocks.pages@[(base / 4096) as int].refs == 0
     }
 
-    /// The IO space at `base` has a child to cut: an untyped covers it, it is dead, an entry still names a
-    /// child and the flush epoch can rise.
+    /// The device space at `base` has a child to cut: an untyped covers it, it is dead, an entry still names
+    /// a child and the flush epoch can rise.
     pub open spec fn can_cut_space(&self, root: usize, from: usize, base: usize) -> bool {
         &&& self.can_retype_under(root, from, base, 3)
         &&& self.dead_io_space(base)
@@ -3320,14 +3320,14 @@ impl CapKernel {
         &&& self.flush_epoch < usize::MAX
     }
 
-    /// What cutting children of the dead IO space at `base` did to self: as for a table page, and the space
-    /// is still there and still dead.
+    /// What cutting children of the dead device space at `base` did to self: as for a table page, and the
+    /// space is still there and still dead.
     pub open spec fn space_children_cut(&self, post: Self, root: usize, from: usize, base: usize) -> bool {
         &&& self.table_children_cut(post, root, from, base)
         &&& post.dead_io_space(base)
     }
 
-    /// Cuts up to a budget of the child tables of the dead IO space at `base`, under the untyped at index
+    /// Cuts up to a budget of the child tables of the dead device space at `base`, under the untyped at index
     /// `from` of the table at `root`, each from the entry naming it, with what that leaves stale. Returns
     /// whether it ran, and if not nothing changed.
     pub fn cut_space_children(&mut self, root: usize, from: usize, base: usize) -> (ret: bool)
@@ -3374,7 +3374,7 @@ impl CapKernel {
         steps != 0
     }
 
-    /// A block that holds a space is that IO space's: an IO space's block is Base and Space, a process
+    /// A block that holds a space is that device space's: a device space's block is Base and Space, a process
     /// space's is its process's, and a space's root has no parent, is level 4 and is no table page.
     pub proof fn lemma_space_block(&self, base: usize)
         requires
@@ -3383,7 +3383,7 @@ impl CapKernel {
             base / 4096 < NUM_PAGES,
         ensures
             space_block(&self.blocks, base / 4096)
-                == (self.spaces.roots@.contains_key(base) && self.spaces.records@[base].value().kind is Io),
+                == (self.spaces.roots@.contains_key(base) && self.spaces.records@[base].value().kind is Device),
             self.spaces.roots@.contains_key(base) ==> !self.table_pages.maps@.contains_key(base),
             self.spaces.roots@.contains_key(base) ==> tree_of(&self.table_pages, &self.spaces).record(base).parent is None,
             self.spaces.roots@.contains_key(base) ==> tree_of(&self.table_pages, &self.spaces).record(base).level == 4,

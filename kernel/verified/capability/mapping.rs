@@ -113,12 +113,12 @@ impl CapKernel {
     {
     }
 
-    /// No core has loaded an IO space, so no core holds anything of it.
+    /// No core has loaded a device space, so no core holds anything of it.
     pub proof fn lemma_io_space_unloaded(&self, s: usize)
         requires
             self.wf(),
             self.spaces.roots@.contains_key(s),
-            self.spaces.records@[s].value().kind is Io,
+            self.spaces.records@[s].value().kind is Device,
         ensures
             forall|c: int| 0 <= c < NUM_CPUS ==> !#[trigger] self.loaded(c, s),
             forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && e.space == s ==> !#[trigger] self.tlb@[c].contains(e),
@@ -517,7 +517,7 @@ impl CapKernel {
             ==> post.tlb@[d].contains(TlbEntry { space: space->Some_0, page: g })
         &&& forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] pre.tlb@[d].contains(e) ==> post.tlb@[d].contains(e)
         &&& forall|i: int, g: usize| #![trigger post.iommus.tlb@[i].contains(TlbEntry { space: space->Some_0, page: g })]
-            0 <= i < NUM_IOMMUS && pre.iommu_present(i) && space is Some && pre.spaces.records@[space->Some_0].value().kind is Io && pages.contains(g)
+            0 <= i < NUM_IOMMUS && pre.iommu_present(i) && space is Some && pre.spaces.records@[space->Some_0].value().kind is Device && pages.contains(g)
             ==> post.iommus.tlb@[i].contains(TlbEntry { space: space->Some_0, page: g })
         &&& forall|i: int, e: TlbEntry| 0 <= i < NUM_IOMMUS && #[trigger] pre.iommus.tlb@[i].contains(e) ==> post.iommus.tlb@[i].contains(e)
         &&& post.iommus.acked == pre.iommus.acked
@@ -1520,7 +1520,7 @@ impl CapKernel {
                 pre.tlb@[d]
             }));
         self.iommus.tlb = Ghost(Seq::new(NUM_IOMMUS as nat, |i: int|
-            if pre.iommu_present(i) && space is Some && pre.spaces.records@[space->Some_0].value().kind is Io {
+            if pre.iommu_present(i) && space is Some && pre.spaces.records@[space->Some_0].value().kind is Device {
                 pre.iommus.tlb@[i].union(stale_entries(space->Some_0, pages))
             } else {
                 pre.iommus.tlb@[i]
@@ -1594,7 +1594,7 @@ impl CapKernel {
             assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] pre.tlb@[d].contains(e) implies self.tlb@[d].contains(e) by {
             }
             assert forall|i: int, g: usize| #![trigger self.iommus.tlb@[i].contains(TlbEntry { space: space->Some_0, page: g })]
-                0 <= i < NUM_IOMMUS && pre.iommu_present(i) && space is Some && pre.spaces.records@[space->Some_0].value().kind is Io && pages.contains(g)
+                0 <= i < NUM_IOMMUS && pre.iommu_present(i) && space is Some && pre.spaces.records@[space->Some_0].value().kind is Device && pages.contains(g)
                 implies self.iommus.tlb@[i].contains(TlbEntry { space: space->Some_0, page: g }) by {
             }
             assert forall|i: int, e: TlbEntry| 0 <= i < NUM_IOMMUS && #[trigger] pre.iommus.tlb@[i].contains(e) implies self.iommus.tlb@[i].contains(e) by {
@@ -2008,7 +2008,7 @@ impl CapKernel {
         requires
             self.wf(),
             self.spaces.roots@.contains_key(s),
-            self.spaces.records@[s].value().kind is Io,
+            self.spaces.records@[s].value().kind is Device,
             k < TABLE_NODE_PAGES,
             i < NODES_PER_PAGE,
         ensures
@@ -2043,7 +2043,7 @@ impl CapKernel {
     pub proof fn lemma_space_nodes_frame(pre: Self, post: Self, n: usize, m: usize)
         requires
             pre.wf(),
-            forall|s: usize| #[trigger] post.spaces.roots@.contains_key(s) && post.spaces.records@[s].value().kind is Io
+            forall|s: usize| #[trigger] post.spaces.roots@.contains_key(s) && post.spaces.records@[s].value().kind is Device
                 ==> pre.spaces.roots@.contains_key(s) && post.spaces.records@[s] == pre.spaces.records@[s],
             forall|x: usize| #[trigger] pre.list.valid(x) && x != n && x != m ==> {
                 &&& post.list.nodes@[x as int].live == pre.list.nodes@[x as int].live
@@ -2055,7 +2055,7 @@ impl CapKernel {
             space_nodes_dead(&post.list, &post.spaces),
     {
         assert forall|s: usize, k: usize, i: usize| #![trigger table_node(s, k, i)]
-            post.spaces.roots@.contains_key(s) && post.spaces.records@[s].value().kind is Io && k < TABLE_NODE_PAGES
+            post.spaces.roots@.contains_key(s) && post.spaces.records@[s].value().kind is Device && k < TABLE_NODE_PAGES
                 && i < NODES_PER_PAGE
             implies !post.list.nodes@[table_node(s, k, i) as int].live by {
             let x = table_node(s, k, i);
@@ -2083,7 +2083,7 @@ impl CapKernel {
         } by {
             pre.list.lemma_valid_bound(x);
         }
-        assert forall|s: usize| #[trigger] post.spaces.roots@.contains_key(s) && post.spaces.records@[s].value().kind is Io
+        assert forall|s: usize| #[trigger] post.spaces.roots@.contains_key(s) && post.spaces.records@[s].value().kind is Device
             implies pre.spaces.roots@.contains_key(s) && post.spaces.records@[s] == pre.spaces.records@[s] by {
             assert(post.spaces.roots@.dom().contains(s));
         }

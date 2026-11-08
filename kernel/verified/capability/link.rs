@@ -920,7 +920,7 @@ pub fn entry_is_empty(e: &PageEntry) -> (ret: bool)
     e.addr == 0 && !e.perm.present && !e.perm.ps && !e.perm.write && !e.perm.execute_disable && !e.perm.user
 }
 
-/// A capability that may change the space at its base: an IO space's capability with the write right, or
+/// A capability that may change the space at its base: a device space's capability with the write right, or
 /// a process's with the control right, since a process's space is part of the process. See
 /// design/process-holds-capabilities/.
 pub open spec fn writes_space(cap: Payload) -> bool {
@@ -953,7 +953,7 @@ impl CapKernel {
             writes_space(self.payload_of(n)),
         ensures
             self.spaces.roots@.contains_key(self.payload_of(n).base),
-            self.payload_of(n).kind is Space ==> self.spaces.records@[self.payload_of(n).base].value().kind is Io,
+            self.payload_of(n).kind is Space ==> self.spaces.records@[self.payload_of(n).base].value().kind is Device,
             self.payload_of(n).kind is Process ==> self.spaces.records@[self.payload_of(n).base].value().kind is Process,
     {
         if self.payload_of(n).kind is Space {
@@ -1242,7 +1242,7 @@ impl CapKernel {
         }
         match self.space_kind(t) {
             SpaceKind::Process => true,
-            SpaceKind::Io => false,
+            SpaceKind::Device => false,
         }
     }
 
@@ -1812,7 +1812,7 @@ impl CapKernel {
 
     /// Table page t's cut is recorded: the epoch rose past every acknowledgement and is written for t's
     /// page, so that page does not count as acknowledged, and what the cut leaves is in the TLB of every
-    /// core that loaded the space and, for an IO space, of every IOMMU, where only a flush takes it out.
+    /// core that loaded the space and, for a device space, of every IOMMU, where only a flush takes it out.
     /// What the walks lost keeps its mapping nodes, so it stays mapped, and its words are written when
     /// those unlink.
     pub open spec fn cut_stale_noted(pre: Self, post: Self, t: usize) -> bool {
@@ -1827,7 +1827,7 @@ impl CapKernel {
             ==> post.tlb@[d].contains(TlbEntry { space: space->Some_0, page: g })
         &&& forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] pre.tlb@[d].contains(e) ==> post.tlb@[d].contains(e)
         &&& forall|i: int, g: usize| #![trigger post.iommus.tlb@[i].contains(TlbEntry { space: space->Some_0, page: g })]
-            0 <= i < NUM_IOMMUS && pre.iommu_present(i) && space is Some && pre.spaces.records@[space->Some_0].value().kind is Io && pages.contains(g)
+            0 <= i < NUM_IOMMUS && pre.iommu_present(i) && space is Some && pre.spaces.records@[space->Some_0].value().kind is Device && pages.contains(g)
             ==> post.iommus.tlb@[i].contains(TlbEntry { space: space->Some_0, page: g })
         &&& forall|i: int, e: TlbEntry| 0 <= i < NUM_IOMMUS && #[trigger] pre.iommus.tlb@[i].contains(e) ==> post.iommus.tlb@[i].contains(e)
         &&& post.iommus.acked == pre.iommus.acked
@@ -1988,7 +1988,7 @@ impl CapKernel {
                 pre.tlb@[d]
             }));
         self.iommus.tlb = Ghost(Seq::new(NUM_IOMMUS as nat, |i: int|
-            if pre.iommu_present(i) && space is Some && pre.spaces.records@[space->Some_0].value().kind is Io {
+            if pre.iommu_present(i) && space is Some && pre.spaces.records@[space->Some_0].value().kind is Device {
                 pre.iommus.tlb@[i].union(stale_entries(space->Some_0, pages))
             } else {
                 pre.iommus.tlb@[i]
@@ -2058,7 +2058,7 @@ impl CapKernel {
             assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] pre.tlb@[d].contains(e) implies self.tlb@[d].contains(e) by {
             }
             assert forall|i: int, g: usize| #![trigger self.iommus.tlb@[i].contains(TlbEntry { space: space->Some_0, page: g })]
-                0 <= i < NUM_IOMMUS && pre.iommu_present(i) && space is Some && pre.spaces.records@[space->Some_0].value().kind is Io && pages.contains(g)
+                0 <= i < NUM_IOMMUS && pre.iommu_present(i) && space is Some && pre.spaces.records@[space->Some_0].value().kind is Device && pages.contains(g)
                 implies self.iommus.tlb@[i].contains(TlbEntry { space: space->Some_0, page: g }) by {
             }
             assert forall|i: int, e: TlbEntry| 0 <= i < NUM_IOMMUS && #[trigger] pre.iommus.tlb@[i].contains(e) implies self.iommus.tlb@[i].contains(e) by {

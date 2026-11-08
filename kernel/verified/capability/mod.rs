@@ -3,7 +3,7 @@ pub mod delete;
 pub mod derive;
 pub mod destroy;
 pub mod device;
-pub mod io;
+pub mod device_space;
 pub mod kernel;
 pub mod link;
 pub mod list;
