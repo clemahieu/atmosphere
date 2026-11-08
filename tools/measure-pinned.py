@@ -6,6 +6,16 @@ usage: tools/measure-pinned.py within|across [boots] [--lock-stats]   (from the 
 Numbers from a host with other work on it do not mean much, so this reports the load average. It
 pins vCPU 0 and 1 to separate physical cores, sharing an L3 for within and on different L3s for across,
 and keeps QEMU's other threads off both. KVM inflates IPI cost, so the IPI number is an upper bound.
+
+What needs root to keep the host off the measured cores is tools/isolate-pinned.sh, which the human
+runs around the measurements: apply stops irqbalance, points the IRQs away from the measured CPUs and
+their SMT siblings, takes the siblings offline, turns boost off and pins the measured CPUs' cpufreq
+minimum to their maximum; undo restores each. Give it every CPU the runs use; on a 16-core part with
+two L3s, within uses CPUs 6 and 7 and across 7 and 15:
+
+    sudo tools/isolate-pinned.sh apply 6 7 15
+    tools/measure-pinned.py within; tools/measure-pinned.py across
+    sudo tools/isolate-pinned.sh undo
 """
 import glob
 import os
