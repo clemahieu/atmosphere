@@ -352,6 +352,20 @@ pub open spec fn adds_bound_object(
         ==> pre.names[x] != object
 }
 
+/// post is pre with thread t's binding undone: the process map loses t, and the binding node b, which
+/// is no capability, leaves the parent map. Revoke's binding arm takes such a step.
+pub open spec fn unbinds(pre: State, post: State, t: ObjectId, b: NodeId) -> bool {
+    &&& !pre.names.contains_key(b)
+    &&& post.parent == pre.parent.remove(b)
+    &&& post.process_of == pre.process_of.remove(t)
+    &&& post.held == pre.held
+    &&& post.names == pre.names
+    &&& post.pages == pre.pages
+    &&& post.rights == pre.rights
+    &&& post.maps == pre.maps
+    &&& forall|o: ObjectId| #[trigger] (post.contents)(o) == (pre.contents)(o)
+}
+
 /// What a slice of an object's teardown does, apart from who may run it: it changes only what waits on
 /// the object, removes only what descends from a capability the object held, and grows no reach.
 pub open spec fn tears_down(pre: State, post: State, object: ObjectId) -> bool {
@@ -912,6 +926,103 @@ pub proof fn lemma_adds_bound_object_discharges_retype(
             assert(mid.maps.contains((q, o)));
         }
         assert(pre.controlled(r, q, k) && (o == q || pre.direct(q, o)));
+    }
+}
+
+/// Walking up in post walks the same nodes in pre, since post's parent map is pre's less one entry.
+proof fn lemma_unbinds_descends(pre: State, post: State, t: ObjectId, b: NodeId, top: NodeId, x: NodeId, k: nat)
+    requires
+        unbinds(pre, post, t, b),
+        post.descends(top, x, k),
+    ensures
+        pre.descends(top, x, k),
+    decreases k,
+{
+    if k > 0 {
+        lemma_unbinds_descends(pre, post, t, b, top, post.parent[x], (k - 1) as nat);
+    }
+}
+
+/// A control chain in post is one in pre, or ends at t after one in pre whose last process directly
+/// reaches t: control over t, which reached its process in pre, now reaches t alone, and t holds
+/// nothing, so no chain goes on from it.
+proof fn lemma_unbinds_controlled(pre: State, post: State, t: ObjectId, b: NodeId, a: ObjectId, q: ObjectId, k: nat)
+    requires
+        unbinds(pre, post, t, b),
+        forall|x: NodeId| !#[trigger] pre.held.contains((t, x)),
+        forall|x: NodeId| #[trigger] pre.names.contains_key(x) && pre.names[x] == t ==> pre.covers(x, t),
+        post.controlled(a, q, k),
+    ensures
+        pre.controlled(a, q, k) || (q == t && exists|m: ObjectId, j: nat| #[trigger] pre.controlled(a, m, j) && pre.direct(m, t)),
+    decreases k,
+{
+    if k > 0 {
+        let m = choose|m: ObjectId| #[trigger] post.controls(m, q) && post.controlled(a, m, (k - 1) as nat);
+        lemma_unbinds_controlled(pre, post, t, b, a, m, (k - 1) as nat);
+        let x = choose|x: NodeId| #[trigger] post.holds_right(m, x, Right::Control)
+            && post.process_behind(post.names[x]) == q;
+        assert(pre.held.contains((m, x)));
+        assert(m != t);
+        assert(pre.controlled(a, m, (k - 1) as nat));
+        assert(pre.holds_right(m, x, Right::Control));
+        if pre.names[x] == t {
+            assert(!post.process_of.contains_key(t));
+            assert(q == t);
+            assert(pre.covers(x, t));
+            assert(pre.descends(x, x, 0));
+            assert(pre.direct(m, t));
+            assert(pre.controlled(a, m, (k - 1) as nat) && pre.direct(m, t));
+        } else {
+            assert(post.process_of.contains_key(pre.names[x]) == pre.process_of.contains_key(pre.names[x]));
+            assert(pre.process_behind(pre.names[x]) == q);
+            assert(pre.controls(m, q));
+        }
+    }
+}
+
+/// Undoing a thread's binding is a step of revoking a capability its caller holds, when the thread
+/// holds nothing, maps nothing, and every capability naming it covers it: control over the thread
+/// stops reaching its process and reaches the thread alone, which the capability's holder reached
+/// already.
+pub proof fn lemma_unbinds_discharges_revoke(pre: State, post: State, p: ObjectId, cap: NodeId, t: ObjectId, b: NodeId)
+    requires
+        unbinds(pre, post, t, b),
+        pre.holds(p, cap),
+        pre.names.contains_key(cap),
+        forall|x: NodeId| !#[trigger] pre.held.contains((t, x)),
+        forall|o: ObjectId| !#[trigger] pre.maps.contains((t, o)),
+        forall|x: NodeId| #[trigger] pre.names.contains_key(x) && pre.names[x] == t ==> pre.covers(x, t),
+    ensures
+        discharges(pre, post, p, Effect::Revoke { cap }),
+{
+    let e = Effect::Revoke { cap };
+    assert forall|o: ObjectId| #[trigger] State::changed(pre, post, o) implies may_change(pre, e, o) by {
+        assert((post.contents)(o) == (pre.contents)(o));
+    }
+    assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) implies pre.reach(r, o) by {
+        let (q, k) = choose|q: ObjectId, k: nat| #[trigger] post.controlled(r, q, k) && (o == q || post.direct(q, o));
+        lemma_unbinds_controlled(pre, post, t, b, r, q, k);
+        if o != q && !post.maps.contains((q, o)) {
+            let (x, y, d) = choose|x: NodeId, y: NodeId, d: nat| #[trigger] post.descends(x, y, d)
+                && post.holds(q, x) && post.covers(y, o);
+            lemma_unbinds_descends(pre, post, t, b, x, y, d);
+            assert(pre.descends(x, y, d) && pre.holds(q, x) && pre.covers(y, o));
+            assert(pre.direct(q, o));
+        }
+        if !pre.controlled(r, q, k) {
+            assert(q == t);
+            let (m, j) = choose|m: ObjectId, j: nat| #[trigger] pre.controlled(r, m, j) && pre.direct(m, t);
+            if o != t {
+                assert(!pre.maps.contains((t, o)));
+                assert(post.direct(t, o));
+                let (x, y, d) = choose|x: NodeId, y: NodeId, d: nat| #[trigger] post.descends(x, y, d)
+                    && post.holds(t, x) && post.covers(y, o);
+                assert(pre.held.contains((t, x)));
+            }
+            assert(pre.controlled(r, m, j) && (o == m || pre.direct(m, o)));
+        } else {
+            assert(pre.controlled(r, q, k) && (o == q || pre.direct(q, o)));
+        }
     }
 }
 
