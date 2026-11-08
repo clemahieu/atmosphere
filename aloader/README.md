@@ -9,6 +9,7 @@ After control is handed off to the kernel, other domains can subsequently be loa
 
 The loader supports booting from the following protocols:
 
+- UEFI, built for `x86_64-unknown-uefi` (`src/boot/uefi.rs`). `atmo run` boots it under OVMF from a directory served as the EFI system partition, with the loader at `EFI/BOOT/BOOTX64.EFI` and the kernel, dom0 and payload concatenated in `initrd` beside it.
 - Multiboot 2
 - [Xen x86/HVM Direct Boot ABI](https://xenbits.xen.org/docs/unstable/misc/pvh.html)
     - This is for booting from QEMU using the Direct Linux Boot functionality. Atmosphere cannot be used as a Xen guest yet.

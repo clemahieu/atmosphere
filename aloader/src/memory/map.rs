@@ -4,10 +4,14 @@ use astd::heapless::Vec as ArrayVec;
 
 use super::MemoryRange;
 
+/// The most regions a map holds. A UEFI memory map lists each firmware allocation, more than a
+/// hundred under OVMF, before the loader merges neighbours of one type.
+const MAX_REGIONS: usize = 512;
+
 /// A map of memory regions.
 #[derive(Debug, Clone)]
 pub struct MemoryMap<T: Clone + Debug + PartialEq> {
-    pub regions: ArrayVec<(MemoryRange, T), 100>,
+    pub regions: ArrayVec<(MemoryRange, T), MAX_REGIONS>,
 }
 
 impl<T: Clone + Debug + PartialEq> MemoryMap<T> {
@@ -30,7 +34,7 @@ impl<T: Clone + Debug + PartialEq> MemoryMap<T> {
     }
 
     pub fn relabel(&mut self, range: MemoryRange, label: T) {
-        let mut new_regions: ArrayVec<(MemoryRange, T), 100> = ArrayVec::new();
+        let mut new_regions: ArrayVec<(MemoryRange, T), MAX_REGIONS> = ArrayVec::new();
 
         for (region, cur_label) in self.regions.iter_mut() {
             if region == &range {

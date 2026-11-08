@@ -21,6 +21,9 @@ x86 = "0.52.0"
 plain = "0.2.3"
 acpi = { version = "5.0.0", default-features = false }
 
+[target.'cfg(target_os = "uefi")'.dependencies]
+uefi-raw = "0.17.0"
+
 [dependencies.goblin]
 version = "0.7.1"
 default-features = false
