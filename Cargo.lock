@@ -822,21 +822,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kv"
-version = "0.1.0"
-dependencies = [
- "astd",
- "asys",
- "lazy_static",
- "libtime",
- "log",
- "ring_buffer",
- "slabmalloc",
- "spin",
- "x86 0.52.0",
-]
-
-[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -889,21 +874,6 @@ name = "log"
 version = "0.4.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a7a70ba024b9dc04c27ea2f0c0548feb474ec5c54bba33a7f72f873a39d07b24"
-
-[[package]]
-name = "maglev"
-version = "0.1.0"
-dependencies = [
- "astd",
- "asys",
- "lazy_static",
- "libtime",
- "log",
- "ring_buffer",
- "slabmalloc",
- "spin",
- "x86 0.52.0",
-]
 
 [[package]]
 name = "managed"
