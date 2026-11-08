@@ -731,16 +731,12 @@ pub fn invalidate_iommu_all(commands: &CommandBuffers, i: usize, epoch: usize) -
     (next, Tracked::assume_new())
 }
 
-/// A live hidden node is node 0 of a table leaf or a table page, so unlinking it can find what to detach.
-/// And a leaf in a root entry has its hidden node, so revoking the untyped it came from always reaches it.
+/// A live hidden node is node 0 of a table leaf or a table page, so unlinking it can find what it
+/// stands for. A leaf whose hidden node has gone stays in its root entry, refused by lookup, until its
+/// own retype frees it. See design/teardown-driven-by-retype/.
 pub open spec fn hidden_nodes_are_leaves(list: &Tree, tables: &Tables, pages: &TablePages) -> bool {
-    &&& forall|n: usize| n < NODE_SPACE && (#[trigger] list.nodes@[n as int]).live && list.nodes@[n as int].kind is Hidden
+    forall|n: usize| n < NODE_SPACE && (#[trigger] list.nodes@[n as int]).live && list.nodes@[n as int].kind is Hidden
         ==> tables.owner@.contains_key(n) || pages.maps@.contains_key(n)
-    &&& forall|l: usize| #[trigger] tables.owner@.contains_key(l) && tables.attached(l) ==> {
-        &&& l < NODE_SPACE
-        &&& list.nodes@[l as int].live
-        &&& list.nodes@[l as int].kind is Hidden
-    }
 }
 
 /// Node i of node page k of table page t.

@@ -1057,7 +1057,6 @@ impl CapKernel {
                 &&& post.list.nodes@[i].live == mid.nodes@[i].live
                 &&& post.list.nodes@[i].kind == mid.nodes@[i].kind
             },
-            post.tables.attached(base),
             post.table_pages == pre.table_pages,
         ensures
             hidden_nodes_are_leaves(&post.list, &post.tables, &post.table_pages),
@@ -1070,20 +1069,6 @@ impl CapKernel {
                 assert(mid.nodes@[x as int].live);
                 pre.list.lemma_live_valid(x);
                 assert(pre.list.nodes@[x as int].kind is Hidden);
-            }
-        }
-        assert forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) && post.tables.attached(l) implies {
-            &&& l < NODE_SPACE
-            &&& post.list.nodes@[l as int].live
-            &&& post.list.nodes@[l as int].kind is Hidden
-        } by {
-            if l != base {
-                assert(pre.tables.owner@.contains_key(l));
-                assert(post.tables.payloads@[l] == pre.tables.payloads@[l]);
-                assert(pre.tables.attached(l));
-                pre.tables.lemma_leaf(&pre.list, l);
-                assert(page_of(l) == l);
-                assert(pre.list.valid(l));
             }
         }
         assert(mid.nodes@[parent as int] == pre.list.nodes@[parent as int]) by {

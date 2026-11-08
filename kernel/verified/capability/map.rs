@@ -1715,14 +1715,6 @@ impl CapKernel {
             assert(pre.list.nodes@[x as int].live && pre.list.nodes@[x as int].kind is Hidden);
             assert(post.table_pages.maps@.contains_key(x) == pre.table_pages.maps@.contains_key(x));
         }
-        assert forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) && post.tables.attached(l) implies {
-            &&& l < NODE_SPACE
-            &&& post.list.nodes@[l as int].live
-            &&& post.list.nodes@[l as int].kind is Hidden
-        } by {
-            assert(l != node);
-            assert(pre.tables.owner@.contains_key(l) && pre.tables.attached(l));
-        }
         lemma_parents_derived(pre.list, post.list, f, node);
         assert forall|x: usize| x < NODE_SPACE && (#[trigger] post.list.nodes@[x as int]).live && post.list.nodes@[x as int].kind is Capability
             && x != post.list.seq@[0] implies post.tables.is_cap(&post.list, x) by {

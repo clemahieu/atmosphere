@@ -48,7 +48,8 @@ pub enum RevokeStep {
 impl CapKernel {
     /// Undoes what node n holds by its kind, before it is unlinked. Every arm meets this one spec: it
     /// changes no node's liveness and keeps the tables whole, and only what n itself held goes. A
-    /// hidden node detaches its leaf, and a table page's was cut from its parent by cut_hidden_table or
+    /// hidden node drops its block's reference and nothing more: a leaf stays in its root entry, inert,
+    /// until its own retype frees it, and a table page's was cut from its parent by cut_hidden_table or
     /// detach_stale first. A capability's reference goes with atmo-6x9.16.22. A mapping node
     /// records its unmap, clears its entry and drops its reference. A binding node, a thread's binding to
     /// its process, leaves the thread with no process and drops its reference on the process's block.
@@ -81,8 +82,7 @@ impl CapKernel {
             final(self).tables.owner == old(self).tables.owner,
             final(self).tables.roots@.dom() == old(self).tables.roots@.dom(),
             forall|x: usize| x != n ==> #[trigger] final(self).tables.payload_of(x) == old(self).tables.payload_of(x),
-            old(self).list.nodes@[n as int].kind is Hidden && old(self).tables.owner@.contains_key(n) ==> !final(self).tables.attached(n),
-            !(old(self).list.nodes@[n as int].kind is Hidden && old(self).tables.owner@.contains_key(n)) ==> final(self).tables == old(self).tables,
+            final(self).tables == old(self).tables,
             final(self).table_pages.records == old(self).table_pages.records,
             final(self).table_pages.spare == old(self).table_pages.spare,
             !(old(self).list.nodes@[n as int].kind is Mapping) ==> final(self).table_pages == old(self).table_pages,
@@ -177,11 +177,6 @@ impl CapKernel {
             NodeKind::Hidden => {
                 proof {
                     pre.lemma_hidden_block(n);
-                }
-                let object = self.blocks.pages.get(n / 4096).object;
-                match object {
-                    ObjectType::TableLeaf => self.tables.detach_leaf(&self.list, n),
-                    _ => {},
                 }
                 // The block's one reference was the hidden node's, so it is dead at once.
                 drop_block_ref(&mut self.blocks, BlockRef::Small(n / 4096));
@@ -311,8 +306,6 @@ impl CapKernel {
             proof {
                 lemma_revoke_steps_compose(pre.view(), mid.view(), self.view(), root, c);
                 let r = choose|r: usize| #[trigger] revoked_one(mid.list, self.list, c, r)
-                    && (mid.list.nodes@[r as int].kind is Hidden && mid.tables.owner@.contains_key(r)
-                        ==> !self.tables.attached(r))
                     && (mid.list.nodes@[r as int].kind is Mapping ==> Self::mapping_unlinked(mid, *self, r))
                     && (mid.list.nodes@[r as int].kind is Mapping ==> Self::mapping_stale_noted(mid, *self, r))
                     && (mid.hidden_table(r) ==> Self::table_unlinked(mid, *self, r))
@@ -352,8 +345,6 @@ impl CapKernel {
             done ==> forall|x: usize| !#[trigger] old(self).list.is_child(c, x),
             !done ==> final(self).list.seq@.len() == old(self).list.seq@.len() - 1,
             !done ==> exists|r: usize| #[trigger] revoked_one(old(self).list, final(self).list, c, r)
-                && (old(self).list.nodes@[r as int].kind is Hidden && old(self).tables.owner@.contains_key(r)
-                    ==> !final(self).tables.attached(r))
                 && (old(self).list.nodes@[r as int].kind is Mapping ==> Self::mapping_unlinked(*old(self), *final(self), r))
                 && (old(self).list.nodes@[r as int].kind is Mapping ==> Self::mapping_stale_noted(*old(self), *final(self), r))
                 && (old(self).hidden_table(r) ==> Self::table_unlinked(*old(self), *final(self), r))
@@ -421,8 +412,7 @@ impl CapKernel {
             pre.list.nodes@[r as int].kind is Mapping ==> Self::mapping_stale_noted(pre, mid, r),
             mid.tables.owner == pre.tables.owner,
             forall|x: usize| x != r ==> #[trigger] mid.tables.payload_of(x) == pre.tables.payload_of(x),
-            pre.list.nodes@[r as int].kind is Hidden && pre.tables.owner@.contains_key(r) ==> !mid.tables.attached(r),
-            !(pre.list.nodes@[r as int].kind is Hidden && pre.tables.owner@.contains_key(r)) ==> mid.tables == pre.tables,
+            mid.tables == pre.tables,
             mid.table_pages.records == pre.table_pages.records,
             mid.table_pages.spare == pre.table_pages.spare,
             !(pre.list.nodes@[r as int].kind is Mapping) ==> mid.table_pages == pre.table_pages,
@@ -544,7 +534,6 @@ impl CapKernel {
             Self::mappings_shrunk(pre, post),
             post.is_cap(c),
             revoked_one(pre.list, post.list, c, r),
-            pre.list.nodes@[r as int].kind is Hidden && pre.tables.owner@.contains_key(r) ==> !post.tables.attached(r),
             pre.list.nodes@[r as int].kind is Mapping ==> Self::mapping_unlinked(pre, post, r),
             pre.list.nodes@[r as int].kind is Mapping ==> Self::mapping_stale_noted(pre, post, r),
             forall|x: usize| #[trigger] post.is_cap(x) ==> pre.is_cap(x),
@@ -1088,16 +1077,12 @@ impl CapKernel {
         }
     }
 
-    /// The hidden nodes after the step: r has gone, and if it was hidden its leaf is detached. And every
-    /// other capability node is still in its slot.
+    /// The hidden nodes after the step: r has gone. And every other capability node is still in its slot.
     pub proof fn lemma_revoke_hidden(pre: Self, post: Self, r: usize)
         requires
             Self::caps_frame(pre, post, r, r),
             post.table_pages.maps@.dom() == pre.table_pages.maps@.dom(),
             !post.list.nodes@[r as int].live,
-            pre.list.nodes@[r as int].kind is Hidden && pre.tables.owner@.contains_key(r) ==> !post.tables.attached(r),
-            !(pre.list.nodes@[r as int].kind is Hidden && pre.tables.owner@.contains_key(r))
-                ==> post.tables.record(r) == pre.tables.record(r),
             post.list.seq@[0] == pre.list.seq@[0],
         ensures
             hidden_nodes_are_leaves(&post.list, &post.tables, &post.table_pages),
@@ -1116,23 +1101,6 @@ impl CapKernel {
             implies post.tables.owner@.contains_key(x) || post.table_pages.maps@.contains_key(x) by {
             assert(x != r);
             assert(pre.list.nodes@[x as int].live);
-        }
-        assert forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) && post.tables.attached(l) implies {
-            &&& l < NODE_SPACE
-            &&& post.list.nodes@[l as int].live
-            &&& post.list.nodes@[l as int].kind is Hidden
-        } by {
-            pre.tables.lemma_leaf(&pre.list, l);
-            assert(page_of(l) == l);
-            if l == r {
-                assert(!(pre.list.nodes@[r as int].kind is Hidden && pre.tables.owner@.contains_key(r)));
-                assert(pre.tables.attached(l));
-                assert(false);
-            } else {
-                assert(post.tables.payload_of(l) == pre.tables.payload_of(l));
-                assert(pre.tables.attached(l));
-                assert(post.list.nodes@[l as int].live == pre.list.nodes@[l as int].live);
-            }
         }
     }
 

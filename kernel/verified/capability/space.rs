@@ -1846,18 +1846,6 @@ impl CapKernel {
             implies post.tables.owner@.contains_key(x) || post.table_pages.maps@.contains_key(x) by {
             Self::lemma_table_page_old_node(pre, post, mid, base, x);
         }
-        assert forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) && post.tables.attached(l) implies {
-            &&& l < NODE_SPACE
-            &&& post.list.nodes@[l as int].live
-            &&& post.list.nodes@[l as int].kind is Hidden
-        } by {
-            pre.tables.lemma_leaf(&pre.list, l);
-            lemma_leaf_page(l);
-            assert(page_of(l) == l);
-            assert(pre.list.valid(l));
-            pre.list.lemma_valid_bound(l);
-            assert(l != base);
-        }
         pre.lemma_slot_bound(parent);
         lemma_parents_same_live(pre.list, mid);
         lemma_parents_derived(mid, post.list, parent, base);
@@ -2679,20 +2667,6 @@ impl CapKernel {
             && post.list.nodes@[x as int].kind is Hidden
             implies post.tables.owner@.contains_key(x) || post.table_pages.maps@.contains_key(x) by {
             assert(x != child);
-        }
-        assert forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) && post.tables.attached(l) implies {
-            &&& l < NODE_SPACE
-            &&& post.list.nodes@[l as int].live
-            &&& post.list.nodes@[l as int].kind is Hidden
-        } by {
-            pre.tables.lemma_leaf(&pre.list, l);
-            lemma_leaf_page(l);
-            assert(page_of(l) == l);
-            assert(pre.list.valid(l));
-            pre.list.lemma_valid_bound(l);
-            assert(l != child);
-            assert(post.tables.payload_of(l) == pre.tables.payload_of(l));
-            assert(pre.tables.attached(l));
         }
         pre.lemma_slot_bound(parent);
         lemma_parents_same_live(pre.list, mid);

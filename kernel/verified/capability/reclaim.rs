@@ -54,8 +54,7 @@ proof fn leak_all(tracked m: Map<usize, PagePerm4k>) -> (tracked ret: Map<usize,
 /// The most nodes one retype removes from a dead leaf's slots.
 pub const LEAF_SLICE_BUDGET: usize = 64;
 
-/// The most child tables one retype cuts from a dead table page or space root, or leaves it detaches from
-/// a dead process's table root.
+/// The most child tables one retype cuts from a dead table page or space root.
 pub const TABLE_SLICE_BUDGET: usize = 64;
 
 /// What a reclaim did.
@@ -243,15 +242,15 @@ impl CapKernel {
         &&& self.list.nodes@[base as int].live
     }
 
-    /// What unlinking the hidden node of the leaf at `base` did to self: that node went, the leaf came
-    /// out of its table, and its block is dead at zero. Every capability, the leaf's slots among them,
-    /// is as it was, so the view is too.
+    /// What unlinking the hidden node of the leaf at `base` did to self: that node went and its block is
+    /// dead at zero. The tables are as they were, so the leaf stays in its root entry, where lookup now
+    /// refuses it, and every capability, the leaf's slots among them, is as it was, so the view is too.
     pub open spec fn leaf_unlinked(&self, post: Self, root: usize, from: usize, base: usize) -> bool {
         let untyped = self.tables.node_of(root, from);
         let page = base / 4096;
         &&& self.view().holds_right(root, untyped, Right::Retype)
         &&& !post.list.nodes@[base as int].live
-        &&& !post.tables.attached(base)
+        &&& post.tables == self.tables
         &&& post.blocks.pages@[page as int].refs == 0
         &&& post.blocks.pages@[page as int].dead
         &&& Self::caps_frame(*self, post, base, base)
@@ -308,18 +307,24 @@ impl CapKernel {
         &&& forall|k: int| 0 <= k < NODES_PER_PAGE ==> !(#[trigger] self.list.nodes@[base + k]).live
     }
 
-    /// What freeing the empty leaf at `base` did to self. Its capabilities went earlier, so the view is
-    /// as it was.
+    /// What freeing the empty leaf at `base` did to self: its block is free, and the root entry its
+    /// owner names is cleared with it, every other entry as it was. Its capabilities went earlier, so the
+    /// view is as it was.
     pub open spec fn leaf_freed(&self, post: Self, c: usize, root: usize, from: usize, base: usize) -> bool {
         let untyped = self.tables.node_of(root, from);
         let page = base / 4096;
+        let (owner, r) = self.tables.owner@[base];
         &&& self.view().holds_right(root, untyped, Right::Retype)
         &&& self.leaf_is_empty(base)
         &&& self.no_stale_translation(page)
         &&& self.no_stale_translation((page + 1) as usize)
         &&& post.blocks.pages@[page as int].kind is Free
         &&& post.blocks.pages@[page + 1int].kind is Free
-        &&& !post.tables.owner@.contains_key(base)
+        &&& post.tables.owner@ == self.tables.owner@.remove(base)
+        &&& post.tables.roots@.dom() == self.tables.roots@.dom()
+        &&& post.tables.leaf(owner, r) == NO_LEAF
+        &&& forall|t: usize, s: int| #![trigger post.tables.leaf(t, s)] self.tables.roots@.contains_key(t) && 0 <= s < ROOT_ENTRIES
+            && !(t == owner && s == r) ==> post.tables.leaf(t, s) == self.tables.leaf(t, s)
         &&& !post.list.pages@.dom().contains(base)
         &&& Self::step_ok(*self, post, c as int)
         &&& post.view() == self.view()
@@ -563,13 +568,11 @@ impl CapKernel {
                 || old(self).can_cut_space(root, from, base)
                 || (old(self).can_retype_under(root, from, base, 3) && old(self).space_is_empty(base))
                 || old(self).can_cut_process_space(root, from, base)
-                || old(self).can_detach_process_leaves(root, from, base)
                 || old(self).can_unbind_thread(root, from, base)
                 || (old(self).can_retype_under(root, from, base, 1) && old(self).thread_is_spent(base))) ==> ret is Refused,
             !old(self).view().holds_right(root, old(self).tables.node_of(root, from), Right::Retype) ==> ret is Refused,
             old(self).spaces.roots@.contains_key(base) && !old(self).dead_io_space(base)
-                && !old(self).can_cut_process_space(root, from, base)
-                && !old(self).can_detach_process_leaves(root, from, base) ==> ret is Refused,
+                && !old(self).can_cut_process_space(root, from, base) ==> ret is Refused,
             old(self).can_cut_space(root, from, base) ==> ret is Slice,
             old(self).can_retype_under(root, from, base, 3) && old(self).space_is_empty(base)
                 ==> if old(self).acknowledged(base / 4096) { ret is Freed } else { ret is Again },
@@ -582,10 +585,8 @@ impl CapKernel {
                     || exists|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && e.space == base && #[trigger] old(self).tlb@[d].contains(e))
                 ==> ret is Refused,
             old(self).can_cut_process_space(root, from, base) ==> ret is Slice,
-            old(self).can_detach_process_leaves(root, from, base) ==> ret is Slice,
             old(self).processes.records@.contains_key(base) && ret is Slice
-                ==> old(self).process_space_cut(*final(self), root, from, base)
-                    || old(self).process_leaves_detached(*final(self), root, from, base),
+                ==> old(self).process_space_cut(*final(self), root, from, base),
             old(self).spaces.roots@.contains_key(base) && ret is Freed ==> old(self).space_freed(*final(self), c, root, from, base),
             old(self).can_unlink_table(root, from, base) ==> ret is Unlinked,
             old(self).can_slice_table(root, from, base) ==> ret is Slice,
@@ -608,8 +609,7 @@ impl CapKernel {
                 || old(self).table_sliced(*final(self), root, from, base)
                 || old(self).space_children_cut(*final(self), root, from, base)
                 || old(self).thread_unbound(*final(self), root, from, base)
-                || old(self).process_space_cut(*final(self), root, from, base)
-                || old(self).process_leaves_detached(*final(self), root, from, base),
+                || old(self).process_space_cut(*final(self), root, from, base),
             ret is Unlinked ==> old(self).leaf_unlinked(*final(self), root, from, base)
                 || old(self).table_page_unlinked(*final(self), root, from, base),
     {
@@ -666,8 +666,6 @@ impl CapKernel {
             ObjectType::Process => {
                 if self.cut_process_space(root, from, base) {
                     ReclaimStep::Slice
-                } else if self.detach_process_leaves(root, from, base) {
-                    ReclaimStep::Slice
                 } else {
                     ReclaimStep::Refused
                 }
@@ -687,7 +685,7 @@ impl CapKernel {
     }
 
     /// What a slice of the leaf at `base` did to self: the list is shorter by a bounded number of nodes,
-    /// all from what the leaf's process held, and the leaf is still detached with its owner. A slot's run
+    /// all from what the leaf's process held, and the leaf's hidden node is still dead, its owner kept. A slot's run
     /// can hold binding nodes, so the bound threads are those before whose binding nodes are still live.
     pub open spec fn leaf_sliced(&self, post: Self, root: usize, from: usize, base: usize) -> bool {
         let untyped = self.tables.node_of(root, from);
@@ -704,7 +702,8 @@ impl CapKernel {
 
     /// Takes a slice of the dead leaf at `base`, under the untyped at index `from` of the table at `root`:
     /// up to a budget of nodes from its slots' runs, each slot going itself once childless. Returns
-    /// whether it ran, and if not nothing changed. Dead slots stay dead while the leaf is detached, so a
+    /// whether it ran, and if not nothing changed. Dead slots stay dead while the leaf's hidden node is,
+    /// since lookup refuses such a leaf, so a
     /// slice can walk them once and the next starts again from the first.
     pub fn slice_leaf(&mut self, root: usize, from: usize, base: usize) -> (ret: bool)
         requires
@@ -792,8 +791,6 @@ impl CapKernel {
             if !self.revoke_step(Ghost(object), n) {
                 proof {
                     let r = choose|r: usize| #[trigger] revoked_one(mid.list, self.list, n, r)
-                        && (mid.list.nodes@[r as int].kind is Hidden && mid.tables.owner@.contains_key(r)
-                            ==> !self.tables.attached(r))
                         && (mid.list.nodes@[r as int].kind is Mapping ==> Self::mapping_unlinked(mid, *self, r))
                         && (mid.list.nodes@[r as int].kind is Mapping ==> Self::mapping_stale_noted(mid, *self, r))
                         && (mid.hidden_table(r) ==> Self::table_unlinked(mid, *self, r))
@@ -1232,7 +1229,8 @@ impl CapKernel {
         true
     }
 
-    /// Both pages of an empty leaf go back to the block table, its block's teardown being finished.
+    /// Both pages of an empty leaf go back to the block table, its block's teardown being finished, and
+    /// the root entry its parent record names is cleared in the same step.
     fn free_empty_leaf(&mut self, base: usize)
         requires
             old(self).wf(),
@@ -1245,7 +1243,12 @@ impl CapKernel {
             Self::same_tree(*old(self), *final(self)),
             final(self).blocks.pages@[(base / 4096) as int].kind is Free,
             final(self).blocks.pages@[base / 4096 + 1int].kind is Free,
-            !final(self).tables.owner@.contains_key(base),
+            final(self).tables.owner@ == old(self).tables.owner@.remove(base),
+            final(self).tables.roots@.dom() == old(self).tables.roots@.dom(),
+            final(self).tables.leaf(old(self).tables.owner@[base].0, old(self).tables.owner@[base].1) == NO_LEAF,
+            forall|t: usize, s: int| #![trigger final(self).tables.leaf(t, s)] old(self).tables.roots@.contains_key(t)
+                && 0 <= s < ROOT_ENTRIES && !(t == old(self).tables.owner@[base].0 && s == old(self).tables.owner@[base].1)
+                ==> final(self).tables.leaf(t, s) == old(self).tables.leaf(t, s),
             !final(self).list.pages@.dom().contains(base),
             final(self).cores == old(self).cores,
             final(self).view() == old(self).view(),
@@ -1351,7 +1354,6 @@ impl CapKernel {
             self.blocks.pages@[(base / 4096) as int].dead,
             self.blocks.pages@[base / 4096 + 1int].kind is Member,
             !self.list.nodes@[base as int].live,
-            !self.tables.attached(base),
             self.list.pages@.dom().contains(base),
             self.list.pages@[base].addr() == base,
             self.list.pages@[base].is_init(),
@@ -1606,7 +1608,7 @@ impl CapKernel {
             post.tables.wf(&pre.list),
             post.tables.owner@ == pre.tables.owner@.remove(base),
             post.tables.payloads@ == pre.tables.payloads@.remove(base),
-            post.tables.roots == pre.tables.roots,
+            post.tables.roots@.dom() == pre.tables.roots@.dom(),
             forall|n: usize| #[trigger] post.tables.is_cap(&pre.list, n) == pre.tables.is_cap(&pre.list, n),
             forall|n: usize| page_of(n) != base ==> #[trigger] post.tables.payload_of(n) == pre.tables.payload_of(n),
             post.list.wf(),
@@ -1650,15 +1652,6 @@ impl CapKernel {
             implies post.tables.owner@.contains_key(n) || post.table_pages.maps@.contains_key(n) by {
             assert(pre.tables.owner@.contains_key(n) || pre.table_pages.maps@.contains_key(n));
             assert(n != base);
-        }
-        assert forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) && post.tables.attached(l) implies {
-            &&& l < NODE_SPACE
-            &&& post.list.nodes@[l as int].live
-            &&& post.list.nodes@[l as int].kind is Hidden
-        } by {
-            pre.tables.lemma_leaf(&pre.list, l);
-            assert(post.tables.payloads@[l] == pre.tables.payloads@[l]);
-            assert(pre.tables.attached(l));
         }
         assert forall|n: usize| n < NODE_SPACE && (#[trigger] post.list.nodes@[n as int]).live
             && post.list.nodes@[n as int].kind is Capability && n != post.list.seq@[0]
