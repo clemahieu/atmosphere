@@ -6,7 +6,7 @@ mod userspace;
 use core::num::NonZeroU64;
 use core::{fmt, ops::DerefMut};
 
-use x86::current::paging::PAddr;
+use aelf::PAddr;
 
 use astd::boot::PhysicalMemoryType;
 use astd::memory::PageProtection;

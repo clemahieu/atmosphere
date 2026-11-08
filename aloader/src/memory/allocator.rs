@@ -7,7 +7,7 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::ptr;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use x86::current::paging::{PAddr, VAddr};
+use aelf::{PAddr, VAddr};
 
 use super::{ContiguousMapping, MemoryRange, VirtualMapper, BOOTSTRAP_SIZE};
 use crate::memory::PhysicalAllocator;

@@ -18,10 +18,23 @@ use astd::io::{Error as IoError, Read, ReadExactError, Seek, SeekFrom};
 use cfg_match::cfg_match;
 use displaydoc::Display;
 use plain::Plain;
-use x86::current::paging::{VAddr, PAddr};
 
 use astd::memory::PageProtection;
 use dynamic::Dynamic;
+
+/// A physical address.
+#[derive(Clone, Copy)]
+pub struct PAddr(pub u64);
+
+/// A virtual address.
+#[derive(Clone, Copy)]
+pub struct VAddr(pub u64);
+
+impl VAddr {
+    pub const fn from_usize(addr: usize) -> Self {
+        VAddr(addr as u64)
+    }
+}
 
 cfg_match! {
     target_arch = "x86_64" => {

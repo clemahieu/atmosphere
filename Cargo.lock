@@ -38,7 +38,6 @@ dependencies = [
  "goblin",
  "log",
  "plain",
- "x86",
 ]
 
 [[package]]

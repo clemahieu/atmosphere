@@ -1,4 +1,4 @@
-use x86::current::paging::{PAddr, VAddr};
+use aelf::{PAddr, VAddr};
 
 use crate::memory::{
     AddressSpace, ContiguousMapping, PageProtection, PhysicalAllocator, VirtualMapper, PAGE_SIZE,
