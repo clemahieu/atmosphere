@@ -749,6 +749,9 @@ impl Tables {
             !final(self).attached(leaf),
             !old(self).attached(leaf) ==> *final(self) == *old(self),
             old(self).attached(leaf) ==> final(self).leaf(old(self).owner@[leaf].0, old(self).owner@[leaf].1) == NO_LEAF,
+            forall|t: usize, s: int| #![trigger final(self).leaf(t, s)] old(self).roots@.contains_key(t) && 0 <= s < ROOT_ENTRIES
+                && !(old(self).attached(leaf) && t == old(self).owner@[leaf].0 && s == old(self).owner@[leaf].1)
+                ==> final(self).leaf(t, s) == old(self).leaf(t, s),
             old(self).attached(leaf) ==> forall|i: usize| index_entry(i) == old(self).owner@[leaf].1
                 ==> !#[trigger] final(self).has_slot(old(self).owner@[leaf].0, i),
             forall|t: usize, i: usize| #[trigger] old(self).has_slot(t, i)
@@ -815,6 +818,8 @@ impl Tables {
             me.wf(list),
             !me.attached(leaf),
             me.leaf(root, r as int) == NO_LEAF,
+            forall|t: usize, s: int| #![trigger me.leaf(t, s)] !(t == root && s == r as int) && 0 <= s < ROOT_ENTRIES
+                && pre.roots@.contains_key(t) ==> me.leaf(t, s) == pre.leaf(t, s),
             forall|i: usize| index_entry(i) == r as int ==> !#[trigger] me.has_slot(root, i),
             forall|t: usize, i: usize| #[trigger] pre.has_slot(t, i)
                 && !(t == root && index_entry(i) == r as int) ==>

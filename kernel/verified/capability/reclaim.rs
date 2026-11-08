@@ -54,7 +54,8 @@ proof fn leak_all(tracked m: Map<usize, PagePerm4k>) -> (tracked ret: Map<usize,
 /// The most nodes one retype removes from a dead leaf's slots.
 pub const LEAF_SLICE_BUDGET: usize = 64;
 
-/// The most child tables one retype cuts from a dead table page.
+/// The most child tables one retype cuts from a dead table page or space root, or leaves it detaches from
+/// a dead process's table root.
 pub const TABLE_SLICE_BUDGET: usize = 64;
 
 /// What a reclaim did.
@@ -561,11 +562,13 @@ impl CapKernel {
                 || old(self).can_cut_space(root, from, base)
                 || (old(self).can_retype_under(root, from, base, 3) && old(self).space_is_empty(base))
                 || old(self).can_cut_process_space(root, from, base)
+                || old(self).can_detach_process_leaves(root, from, base)
                 || old(self).can_unbind_thread(root, from, base)
                 || (old(self).can_retype_under(root, from, base, 1) && old(self).thread_is_spent(base))) ==> ret is Refused,
             !old(self).view().holds_right(root, old(self).tables.node_of(root, from), Right::Retype) ==> ret is Refused,
             old(self).spaces.roots@.contains_key(base) && !old(self).dead_io_space(base)
-                && !old(self).can_cut_process_space(root, from, base) ==> ret is Refused,
+                && !old(self).can_cut_process_space(root, from, base)
+                && !old(self).can_detach_process_leaves(root, from, base) ==> ret is Refused,
             old(self).can_cut_space(root, from, base) ==> ret is Slice,
             old(self).can_retype_under(root, from, base, 3) && old(self).space_is_empty(base)
                 ==> if old(self).acknowledged(base / 4096) { ret is Freed } else { ret is Again },
@@ -578,7 +581,10 @@ impl CapKernel {
                     || exists|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && e.space == base && #[trigger] old(self).tlb@[d].contains(e))
                 ==> ret is Refused,
             old(self).can_cut_process_space(root, from, base) ==> ret is Slice,
-            old(self).processes.records@.contains_key(base) && ret is Slice ==> old(self).process_space_cut(*final(self), root, from, base),
+            old(self).can_detach_process_leaves(root, from, base) ==> ret is Slice,
+            old(self).processes.records@.contains_key(base) && ret is Slice
+                ==> old(self).process_space_cut(*final(self), root, from, base)
+                    || old(self).process_leaves_detached(*final(self), root, from, base),
             old(self).spaces.roots@.contains_key(base) && ret is Freed ==> old(self).space_freed(*final(self), c, root, from, base),
             old(self).can_unlink_table(root, from, base) ==> ret is Unlinked,
             old(self).can_slice_table(root, from, base) ==> ret is Slice,
@@ -601,7 +607,8 @@ impl CapKernel {
                 || old(self).table_sliced(*final(self), root, from, base)
                 || old(self).space_children_cut(*final(self), root, from, base)
                 || old(self).thread_unbound(*final(self), root, from, base)
-                || old(self).process_space_cut(*final(self), root, from, base),
+                || old(self).process_space_cut(*final(self), root, from, base)
+                || old(self).process_leaves_detached(*final(self), root, from, base),
             ret is Unlinked ==> old(self).leaf_unlinked(*final(self), root, from, base)
                 || old(self).table_page_unlinked(*final(self), root, from, base),
     {
@@ -657,6 +664,8 @@ impl CapKernel {
             ObjectType::Thread => self.reclaim_thread(c, root, from, base),
             ObjectType::Process => {
                 if self.cut_process_space(root, from, base) {
+                    ReclaimStep::Slice
+                } else if self.detach_process_leaves(root, from, base) {
                     ReclaimStep::Slice
                 } else {
                     ReclaimStep::Refused
