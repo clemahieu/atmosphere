@@ -1567,8 +1567,8 @@ impl CapKernel {
     proof fn lemma_thread_view(pre: Self, post: Self, root: usize, from: usize, to: usize, base: usize)
         requires
             Self::adds_cap(pre, post, pre.tables.node_of(root, to)),
-            pre.tables.has_slot(root, from),
-            pre.tables.has_slot(root, to),
+            pre.tables.has_slot(&pre.list, root, from),
+            pre.tables.has_slot(&pre.list, root, to),
             pre.is_cap(pre.tables.node_of(root, from)),
             post.list.parent@ == pre.list.parent@.insert(pre.tables.node_of(root, to), pre.tables.node_of(root, from)),
             post.payload_of(pre.tables.node_of(root, to)) == thread_of(base),
@@ -2250,7 +2250,7 @@ impl CapKernel {
     /// Index i of the table at root holds a capability with the control right naming a thread.
     pub open spec fn holds_control(&self, root: usize, i: usize) -> bool {
         let n = self.tables.node_of(root, i);
-        &&& self.tables.has_slot(root, i)
+        &&& self.tables.has_slot(&self.list, root, i)
         &&& self.is_cap(n)
         &&& self.payload_of(n).kind is Thread
         &&& self.payload_of(n).rights & right_bit(Right::Control) != 0
@@ -3146,7 +3146,7 @@ impl CapKernel {
     /// go: see design/teardown-driven-by-retype/.
     pub open spec fn can_hold_thread(&self, root: usize, j: usize) -> bool {
         let n = self.tables.node_of(root, j);
-        &&& self.tables.has_slot(root, j)
+        &&& self.tables.has_slot(&self.list, root, j)
         &&& self.is_cap(n)
         &&& self.payload_of(n).kind is Process
         &&& !self.cap_dead(n)

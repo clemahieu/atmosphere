@@ -1027,8 +1027,8 @@ impl CapKernel {
     proof fn lemma_process_view(pre: Self, post: Self, root: usize, from: usize, to: usize, base: usize)
         requires
             Self::adds_cap(pre, post, pre.tables.node_of(root, to)),
-            pre.tables.has_slot(root, from),
-            pre.tables.has_slot(root, to),
+            pre.tables.has_slot(&pre.list, root, from),
+            pre.tables.has_slot(&pre.list, root, to),
             pre.is_cap(pre.tables.node_of(root, from)),
             post.list.parent@ == pre.list.parent@.insert(pre.tables.node_of(root, to), pre.tables.node_of(root, from)),
             post.payload_of(pre.tables.node_of(root, to)) == process_of(base),

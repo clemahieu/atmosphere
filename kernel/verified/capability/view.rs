@@ -124,7 +124,7 @@ impl CapKernel {
     pub proof fn lemma_slot(&self, root: usize, i: usize)
         requires
             self.wf(),
-            self.tables.has_slot(root, i),
+            self.tables.has_slot(&self.list, root, i),
         ensures
             self.tables.owner@.contains_key(page_of(self.tables.node_of(root, i))),
             self.tables.owner@[page_of(self.tables.node_of(root, i))].0 == root,
@@ -145,7 +145,7 @@ impl CapKernel {
     pub proof fn lemma_slot_is_held(&self, root: usize, i: usize)
         requires
             self.wf(),
-            self.tables.has_slot(root, i),
+            self.tables.has_slot(&self.list, root, i),
             self.list.nodes@[self.tables.node_of(root, i) as int].live,
             self.list.nodes@[self.tables.node_of(root, i) as int].kind is Capability,
         ensures

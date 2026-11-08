@@ -25,8 +25,8 @@ impl CapKernel {
     /// The refusals: an index that names no slot, a source with no capability, or a target in use,
     /// which a source is, so a slot cannot move onto itself.
     pub open spec fn can_move_between(&self, src: usize, from: usize, dst: usize, to: usize) -> bool {
-        &&& self.tables.has_slot(src, from)
-        &&& self.tables.has_slot(dst, to)
+        &&& self.tables.has_slot(&self.list, src, from)
+        &&& self.tables.has_slot(&self.list, dst, to)
         &&& self.is_cap(self.tables.node_of(src, from))
         &&& !self.list.nodes@[self.tables.node_of(dst, to) as int].live
     }
@@ -41,7 +41,7 @@ impl CapKernel {
     /// process's or lacks control. Whether the process is dead is not read.
     pub open spec fn can_claim(&self, root: usize, cap: usize, from: usize, to: usize) -> bool {
         let c = self.tables.node_of(root, cap);
-        &&& self.tables.has_slot(root, cap)
+        &&& self.tables.has_slot(&self.list, root, cap)
         &&& self.is_cap(c)
         &&& self.payload_of(c).kind is Process
         &&& self.payload_of(c).rights & right_bit(Right::Control) != 0

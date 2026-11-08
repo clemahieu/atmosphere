@@ -312,10 +312,14 @@ impl Tables {
         reveal(Tables::leaves_wf);
     }
 
-    pub open spec fn has_slot(&self, root: usize, i: usize) -> bool {
+    /// Index i names a slot of the table at root: its leaf is in its root entry and the leaf's hidden
+    /// node is live. A leaf whose hidden node is dead has no slots, so nothing is added to it while it
+    /// is torn down. See design/teardown-driven-by-retype/.
+    pub open spec fn has_slot(&self, list: &Tree, root: usize, i: usize) -> bool {
         &&& index_ok(i)
         &&& self.roots@.contains_key(root)
         &&& self.leaf(root, index_entry(i)) != NO_LEAF
+        &&& list.nodes@[self.leaf(root, index_entry(i)) as int].live
     }
 
     /// The node index i names in the table at root.
@@ -360,8 +364,8 @@ impl Tables {
             final(self).roots@.dom() == old(self).roots@.dom().insert(root),
             final(self).owner == old(self).owner,
             final(self).payloads == old(self).payloads,
-            forall|t: usize, i: usize| #[trigger] old(self).has_slot(t, i) ==>
-                final(self).has_slot(t, i) && final(self).node_of(t, i) == old(self).node_of(t, i),
+            forall|t: usize, i: usize| #[trigger] old(self).has_slot(list, t, i) ==>
+                final(self).has_slot(list, t, i) && final(self).node_of(t, i) == old(self).node_of(t, i),
     {
         let ghost pre = *old(self);
         let mut leaves = Array::<usize, ROOT_ENTRIES>::new();
@@ -456,8 +460,8 @@ impl Tables {
             final(self).owner@ == old(self).owner@.insert(leaf, (root, r as int)),
             final(self).attached(leaf),
             final(self).payloads@ == old(self).payloads@.insert(leaf, final(self).payloads@[leaf]),
-            forall|t: usize, i: usize| #[trigger] old(self).has_slot(t, i) ==>
-                final(self).has_slot(t, i) && final(self).node_of(t, i) == old(self).node_of(t, i),
+            forall|t: usize, i: usize| #[trigger] old(self).has_slot(list, t, i) ==>
+                final(self).has_slot(list, t, i) && final(self).node_of(t, i) == old(self).node_of(t, i),
     {
         let ghost pre = *old(self);
         proof {
@@ -536,8 +540,8 @@ impl Tables {
             me.wf(list),
             me.attached(leaf),
             me.leaf(root, r as int) == leaf,
-            forall|t: usize, i: usize| #[trigger] pre.has_slot(t, i) ==>
-                me.has_slot(t, i) && me.node_of(t, i) == pre.node_of(t, i),
+            forall|t: usize, i: usize| #[trigger] pre.has_slot(list, t, i) ==>
+                me.has_slot(list, t, i) && me.node_of(t, i) == pre.node_of(t, i),
     {
         assert(me.roots@[root].value().leaves@ =~= pre.roots@[root].value().leaves@.update(r as int, leaf));
         assert(pre.roots@.dom() =~= me.roots@.dom());
@@ -586,8 +590,8 @@ impl Tables {
                 }
             }
         }
-        assert forall|t: usize, i: usize| #[trigger] pre.has_slot(t, i) implies
-            me.has_slot(t, i) && me.node_of(t, i) == pre.node_of(t, i) by {
+        assert forall|t: usize, i: usize| #[trigger] pre.has_slot(list, t, i) implies
+            me.has_slot(list, t, i) && me.node_of(t, i) == pre.node_of(t, i) by {
             assert(!(t == root && index_entry(i) == r as int));
             if t != root {
                 assert(me.roots@[t] == pre.roots@[t]);
@@ -596,14 +600,16 @@ impl Tables {
     }
 
     /// Finds index i in the table at root, in a fixed number of loads. An index from user space is
-    /// checked here: it may be out of range, in a missing leaf, or position 0 of a leaf, which is no
-    /// slot. Whether the slot is occupied is for the caller to read from the list.
+    /// checked here: it may be out of range, in a missing leaf, in a leaf whose hidden node is dead, or
+    /// position 0 of a leaf, which is no slot. Whether the slot is occupied is for the caller to read
+    /// from the list.
     pub fn lookup(&self, list: &Tree, root: usize, i: usize) -> (ret: Option<(usize, Payload)>)
         requires
             self.wf(list),
+            list.store_wf(),
             self.roots@.contains_key(root),
         ensures
-            ret is Some <==> self.has_slot(root, i),
+            ret is Some <==> self.has_slot(list, root, i),
             ret is Some ==> {
                 &&& ret.unwrap().0 == self.node_of(root, i)
                 &&& list.valid(ret.unwrap().0)
@@ -628,6 +634,10 @@ impl Tables {
             self.lemma_entry(root, r as int);
             self.lemma_leaf(list, leaf);
             lemma_slot_in_leaf(leaf, slot);
+            lemma_slot_in_leaf(leaf, 0);
+        }
+        if !list.get(leaf).live {
+            return None;
         }
         let payloads = PPtr::<PayloadPage>::from_usize(leaf + 4096).borrow(Tracked(self.payloads.borrow().tracked_borrow(leaf)));
         Some((leaf + slot, *payloads.entries.get(slot)))
@@ -637,7 +647,7 @@ impl Tables {
     pub fn set_payload(&mut self, list: &Tree, root: usize, i: usize, p: Payload)
         requires
             old(self).wf(list),
-            old(self).has_slot(root, i),
+            old(self).has_slot(list, root, i),
         ensures
             final(self).wf(list),
             final(self).roots == old(self).roots,
@@ -677,7 +687,7 @@ impl Tables {
     proof fn lemma_payload_written(pre: Self, me: Self, list: &Tree, root: usize, i: usize, leaf: usize, slot: usize, p: Payload)
         requires
             pre.wf(list),
-            pre.has_slot(root, i),
+            pre.has_slot(list, root, i),
             leaf == pre.leaf(root, index_entry(i)),
             leaf == page_of(pre.node_of(root, i)),
             slot as int == index_slot(i),
@@ -753,10 +763,10 @@ impl Tables {
                 && !(old(self).attached(leaf) && t == old(self).owner@[leaf].0 && s == old(self).owner@[leaf].1)
                 ==> final(self).leaf(t, s) == old(self).leaf(t, s),
             old(self).attached(leaf) ==> forall|i: usize| index_entry(i) == old(self).owner@[leaf].1
-                ==> !#[trigger] final(self).has_slot(old(self).owner@[leaf].0, i),
-            forall|t: usize, i: usize| #[trigger] old(self).has_slot(t, i)
+                ==> !#[trigger] final(self).has_slot(list, old(self).owner@[leaf].0, i),
+            forall|t: usize, i: usize| #[trigger] old(self).has_slot(list, t, i)
                 && !(t == old(self).owner@[leaf].0 && index_entry(i) == old(self).owner@[leaf].1) ==>
-                final(self).has_slot(t, i) && final(self).node_of(t, i) == old(self).node_of(t, i),
+                final(self).has_slot(list, t, i) && final(self).node_of(t, i) == old(self).node_of(t, i),
             forall|n: usize| n != leaf ==> #[trigger] final(self).payload_of(n) == old(self).payload_of(n),
     {
         let ghost pre = *old(self);
@@ -820,10 +830,10 @@ impl Tables {
             me.leaf(root, r as int) == NO_LEAF,
             forall|t: usize, s: int| #![trigger me.leaf(t, s)] !(t == root && s == r as int) && 0 <= s < ROOT_ENTRIES
                 && pre.roots@.contains_key(t) ==> me.leaf(t, s) == pre.leaf(t, s),
-            forall|i: usize| index_entry(i) == r as int ==> !#[trigger] me.has_slot(root, i),
-            forall|t: usize, i: usize| #[trigger] pre.has_slot(t, i)
+            forall|i: usize| index_entry(i) == r as int ==> !#[trigger] me.has_slot(list, root, i),
+            forall|t: usize, i: usize| #[trigger] pre.has_slot(list, t, i)
                 && !(t == root && index_entry(i) == r as int) ==>
-                me.has_slot(t, i) && me.node_of(t, i) == pre.node_of(t, i),
+                me.has_slot(list, t, i) && me.node_of(t, i) == pre.node_of(t, i),
             forall|n: usize| n != leaf ==> #[trigger] me.payload_of(n) == pre.payload_of(n),
     {
         assert(me.leaf(root, r as int) == NO_LEAF);
@@ -875,11 +885,11 @@ impl Tables {
                 }
             }
         }
-        assert forall|i: usize| index_entry(i) == r as int implies !#[trigger] me.has_slot(root, i) by {
+        assert forall|i: usize| index_entry(i) == r as int implies !#[trigger] me.has_slot(list, root, i) by {
         }
-        assert forall|t: usize, i: usize| #[trigger] pre.has_slot(t, i)
+        assert forall|t: usize, i: usize| #[trigger] pre.has_slot(list, t, i)
             && !(t == root && index_entry(i) == r as int) implies
-            me.has_slot(t, i) && me.node_of(t, i) == pre.node_of(t, i) by {
+            me.has_slot(list, t, i) && me.node_of(t, i) == pre.node_of(t, i) by {
             assert(0 <= index_entry(i) < ROOT_ENTRIES);
             assert(me.leaf(t, index_entry(i)) == pre.leaf(t, index_entry(i)));
         }
@@ -1006,8 +1016,8 @@ impl Tables {
     pub proof fn lemma_slots_distinct(&self, list: &Tree, a: usize, i: usize, b: usize, j: usize)
         requires
             self.wf(list),
-            self.has_slot(a, i),
-            self.has_slot(b, j),
+            self.has_slot(list, a, i),
+            self.has_slot(list, b, j),
             a != b || i != j,
         ensures
             self.node_of(a, i) != self.node_of(b, j),

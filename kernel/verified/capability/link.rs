@@ -971,7 +971,7 @@ impl CapKernel {
     pub open spec fn can_link(&self, root: usize, slot: usize, parent: usize, entry: usize, from: usize, child: usize) -> bool {
         let tree = tree_of(&self.table_pages, &self.spaces);
         let n = self.tables.node_of(root, slot);
-        &&& self.tables.has_slot(root, slot)
+        &&& self.tables.has_slot(&self.list, root, slot)
         &&& self.is_cap(n)
         &&& writes_space(self.payload_of(n))
         &&& !self.cap_dead(n)

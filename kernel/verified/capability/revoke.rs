@@ -245,7 +245,7 @@ impl CapKernel {
         ensures
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
-            ret is Refused == !(old(self).tables.has_slot(root, i) && old(self).is_cap(old(self).tables.node_of(root, i))),
+            ret is Refused == !(old(self).tables.has_slot(&old(self).list, root, i) && old(self).is_cap(old(self).tables.node_of(root, i))),
             ret is Refused ==> *final(self) == *old(self),
             old(self).flush_epoch == usize::MAX ==> *final(self) == *old(self),
             ret is Exhausted ==> final(self).flush_epoch == usize::MAX,
@@ -288,7 +288,7 @@ impl CapKernel {
                 pre == *old(self),
                 pre.flush_epoch == usize::MAX ==> *self == pre,
                 Self::mappings_shrunk(pre, *self),
-                pre.tables.has_slot(root, i),
+                pre.tables.has_slot(&pre.list, root, i),
                 c == pre.tables.node_of(root, i),
                 c < NODE_SPACE,
                 self.is_cap(c),

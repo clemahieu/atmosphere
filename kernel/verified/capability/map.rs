@@ -723,7 +723,7 @@ impl CapKernel {
         let n = self.tables.node_of(root, slot);
         let f = self.tables.node_of(root, from);
         let t = walk_table(tree, self.payload_of(n).base, p)->0;
-        &&& self.tables.has_slot(root, slot)
+        &&& self.tables.has_slot(&self.list, root, slot)
         &&& self.is_cap(n)
         &&& writes_space(self.payload_of(n))
         &&& !self.cap_dead(n)
@@ -732,7 +732,7 @@ impl CapKernel {
         &&& !self.blocks.pages@[(t / 4096) as int].dead
         &&& p.l1 < 512
         &&& tree.entry(t, p.l1).is_empty()
-        &&& self.tables.has_slot(root, from)
+        &&& self.tables.has_slot(&self.list, root, from)
         &&& self.is_cap(f)
         &&& self.payload_of(f).kind is Frame
         &&& self.payload_of(f).rights & right_bit(Right::Read) != 0
@@ -749,7 +749,7 @@ impl CapKernel {
         let n = self.tables.node_of(root, slot);
         let f = self.tables.node_of(root, from);
         let t = walk_large_table(tree, self.payload_of(n).base, p)->0;
-        &&& self.tables.has_slot(root, slot)
+        &&& self.tables.has_slot(&self.list, root, slot)
         &&& self.is_cap(n)
         &&& writes_space(self.payload_of(n))
         &&& !self.cap_dead(n)
@@ -759,7 +759,7 @@ impl CapKernel {
         &&& p.l2 < 512
         &&& p.l1 == 0
         &&& tree.entry(t, p.l2).is_empty()
-        &&& self.tables.has_slot(root, from)
+        &&& self.tables.has_slot(&self.list, root, from)
         &&& self.is_cap(f)
         &&& self.payload_of(f).kind is Frame
         &&& self.payload_of(f).rights & right_bit(Right::Read) != 0

@@ -127,8 +127,8 @@ impl CapKernel {
     pub open spec fn can_derive(&self, root: usize, from: usize, to: usize, rights: u32, base: usize, order: u8) -> bool {
         let parent = self.tables.node_of(root, from);
         let child = self.tables.node_of(root, to);
-        &&& self.tables.has_slot(root, from)
-        &&& self.tables.has_slot(root, to)
+        &&& self.tables.has_slot(&self.list, root, from)
+        &&& self.tables.has_slot(&self.list, root, to)
         &&& self.is_cap(parent)
         &&& !(self.payload_of(parent).kind is Device)
         &&& !self.cap_dead(parent)
@@ -234,6 +234,13 @@ impl CapKernel {
         self.list.derive(parent, child, NodeKind::Capability);
         proof {
             pre.tables.lemma_wf_same_pages(&pre.list, &self.list);
+            // The new node is a slot, never the leaf's hidden node, so the slot is still found.
+            pre.lemma_slot(root, to);
+            let leaf = pre.tables.leaf(root, index_entry(to));
+            pre.tables.lemma_leaf(&pre.list, leaf);
+            lemma_slot_in_leaf(leaf, 0);
+            pre.list.lemma_valid_bound(leaf);
+            assert(self.list.nodes@[leaf as int].live == pre.list.nodes@[leaf as int].live);
         }
         self.tables.set_payload(
             &self.list,
@@ -534,8 +541,8 @@ impl CapKernel {
     pub proof fn lemma_adds_node_view(pre: Self, post: Self, root: usize, from: usize, to: usize)
         requires
             Self::adds_cap(pre, post, pre.tables.node_of(root, to)),
-            pre.tables.has_slot(root, from),
-            pre.tables.has_slot(root, to),
+            pre.tables.has_slot(&pre.list, root, from),
+            pre.tables.has_slot(&pre.list, root, to),
             pre.is_cap(pre.tables.node_of(root, from)),
             post.list.parent@ == pre.list.parent@.insert(pre.tables.node_of(root, to), pre.tables.node_of(root, from)),
             ({
@@ -606,8 +613,8 @@ impl CapKernel {
     pub proof fn lemma_adds_child_view(pre: Self, post: Self, root: usize, from: usize, to: usize)
         requires
             Self::adds_cap(pre, post, pre.tables.node_of(root, to)),
-            pre.tables.has_slot(root, from),
-            pre.tables.has_slot(root, to),
+            pre.tables.has_slot(&pre.list, root, from),
+            pre.tables.has_slot(&pre.list, root, to),
             pre.is_cap(pre.tables.node_of(root, from)),
             post.list.parent@ == pre.list.parent@.insert(pre.tables.node_of(root, to), pre.tables.node_of(root, from)),
             ({
@@ -642,8 +649,8 @@ impl CapKernel {
     proof fn lemma_derive_discharges(pre: Self, post: Self, root: usize, from: usize, to: usize)
         requires
             Self::derive_step(pre, post, pre.tables.node_of(root, to)),
-            pre.tables.has_slot(root, from),
-            pre.tables.has_slot(root, to),
+            pre.tables.has_slot(&pre.list, root, from),
+            pre.tables.has_slot(&pre.list, root, to),
             pre.is_cap(pre.tables.node_of(root, from)),
             post.list.parent@ == pre.list.parent@.insert(pre.tables.node_of(root, to), pre.tables.node_of(root, from)),
             narrows(post.payload_of(pre.tables.node_of(root, to)), pre.payload_of(pre.tables.node_of(root, from))),
