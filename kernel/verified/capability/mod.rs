@@ -13,6 +13,7 @@ pub mod moving;
 pub mod process;
 pub mod reach;
 pub mod reclaim;
+pub mod reclaim_process;
 pub mod reclaim_thread;
 pub mod refs;
 pub mod retype;
