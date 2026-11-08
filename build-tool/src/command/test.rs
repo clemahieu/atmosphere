@@ -10,12 +10,15 @@ use futures::future::join_all;
 use tokio::fs;
 use tokio::process::Command;
 
-use super::{external_body, license, verify, GlobalOpts, SubCommand};
+use super::{external_body, verify, GlobalOpts, SubCommand};
 use crate::error::Result;
 use crate::project::{BuildOptions, Project, ProjectHandle};
 
 /// Holds the number of verification errors the gate accepts, relative to the project root.
 const VERIFY_ALLOWANCE_PATH: &str = "tools/verify-allowance";
+
+/// The license check over every package in Cargo.lock, relative to the project root.
+const LICENSE_CHECK: &str = "tools/check-licenses.py";
 
 /// The license guard's tests, relative to the project root.
 const LICENSE_GUARD_TEST: &str = ".claude/hooks/license-guard-test.sh";
@@ -51,7 +54,7 @@ pub(super) async fn run(global: GlobalOpts) -> Result<()> {
     let results = [
         ("file sizes", check_file_sizes(&project).await),
         ("build", check_build(&project).await),
-        ("license", license::check(&project)),
+        ("license", check_licenses(&project).await),
         ("license guard", check_license_guard(&project).await),
         ("verify", check_verify(&project).await),
         ("external body", external_body::check(&project)),
@@ -153,6 +156,13 @@ async fn build_members(project: &ProjectHandle) -> Result<usize> {
     Ok(packages.len())
 }
 
+/// Runs the license check's own tests, then the check over the workspace's graph.
+async fn check_licenses(project: &ProjectHandle) -> Result<String> {
+    run_check(project, LICENSE_CHECK, &["--test"]).await?;
+    let output = check_output(project, LICENSE_CHECK).await?;
+    Ok(output.trim_end().to_string())
+}
+
 async fn check_license_guard(project: &ProjectHandle) -> Result<String> {
     run_check(project, LICENSE_GUARD_TEST, &[]).await?;
     Ok("the guard refuses what it must".to_string())
@@ -181,19 +191,25 @@ async fn check_design_index(project: &ProjectHandle) -> Result<String> {
 
 /// Reports coverage per crate. A low number does not fail the gate: only a capture that fails does.
 async fn check_coverage(project: &ProjectHandle) -> Result<String> {
+    let report = check_output(project, COVERAGE).await?;
+    Ok(format!("\n  {}", report.trim_end().replace('\n', "\n  ")))
+}
+
+/// Runs a check from the tree, at the project root, and returns what it printed to stdout; its stderr
+/// goes to the gate's own.
+async fn check_output(project: &ProjectHandle, program: &str) -> Result<String> {
     let root = project.root();
-    let output = Command::new(root.join(COVERAGE))
+    let output = Command::new(root.join(program))
         .current_dir(&root)
         .stdin(Stdio::null())
         .stderr(Stdio::inherit())
         .output()
         .await
-        .with_context(|| COVERAGE.to_string())?;
+        .with_context(|| program.to_string())?;
     if !output.status.success() {
-        return Err(anyhow!("{}: {}", COVERAGE, output.status));
+        return Err(anyhow!("{}: {}", program, output.status));
     }
-    let report = String::from_utf8_lossy(&output.stdout);
-    Ok(format!("\n  {}", report.trim_end().replace('\n', "\n  ")))
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// Runs a check from the tree, at the project root; it reports on failure with its exit status.
