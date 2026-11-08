@@ -3140,14 +3140,16 @@ impl CapKernel {
         }
     }
 
-    /// Index j of the table at root holds a process's capability with the control right, below the
-    /// depth limit, and the process's block can take one more reference: a thread can be retyped into
-    /// that process.
+    /// Index j of the table at root holds a capability to a live process with the control right, below
+    /// the depth limit, and the process's block can take one more reference: a thread can be retyped
+    /// into that process. A dead process gains no thread, since its block waits for its references to
+    /// go: see design/teardown-driven-by-retype/.
     pub open spec fn can_hold_thread(&self, root: usize, j: usize) -> bool {
         let n = self.tables.node_of(root, j);
         &&& self.tables.has_slot(root, j)
         &&& self.is_cap(n)
         &&& self.payload_of(n).kind is Process
+        &&& !self.cap_dead(n)
         &&& self.payload_of(n).rights & right_bit(Right::Control) != 0
         &&& self.list.nodes@[n as int].depth < MAX_DEPTH
         &&& block_refs(&self.blocks, BlockRef::Small(self.payload_of(n).base / 4096)) != usize::MAX
@@ -3478,6 +3480,9 @@ impl CapKernel {
         proof {
             assert(right_bit(Right::Control) == 128);
             self.lemma_process_cap(n);
+        }
+        if self.is_cap_dead(n, cap) {
+            return None;
         }
         if self.blocks.pages.get(cap.base / 4096).refs == usize::MAX {
             return None;
