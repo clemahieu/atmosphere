@@ -1882,6 +1882,7 @@ impl CapKernel {
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
         ensures
             final(self).wf(),
             !ret ==> *final(self) == *old(self),
@@ -2352,6 +2353,7 @@ impl CapKernel {
         requires
             self.wf(),
             self.tables.roots@.contains_key(root),
+            self.root_live(root),
         ensures
             ret is Some == self.can_set_registers(root, i),
             ret is Some ==> {
@@ -2382,6 +2384,7 @@ impl CapKernel {
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
         ensures
             final(self).wf(),
             ret == (old(self).can_set_registers(root, i) && user_rip(frame.rip)),
@@ -2475,6 +2478,7 @@ impl CapKernel {
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
         ensures
             final(self).wf(),
             ret == old(self).can_start(root, i),
@@ -2597,6 +2601,7 @@ impl CapKernel {
             old(self).wf(),
             c < NUM_CPUS,
             old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
         ensures
             final(self).wf(),
             Self::writes_only_own_current(*old(self), *final(self), c as int),
@@ -2894,6 +2899,30 @@ impl CapKernel {
             },
             None => true,
         }
+    }
+
+    /// The table at root is not a dead process's. A process's table is rooted at its base, so an
+    /// operation on root's table acts within that process. The root comes from the current thread's
+    /// process, not from user space, and check_current runs first in the same locked step, so no
+    /// operation is reached for a dead process's table: see design/one-lock-bounded-steps/.
+    pub open spec fn root_live(&self, root: usize) -> bool {
+        self.processes.records@.contains_key(root) ==> !self.processes.records@[root].value().dead
+    }
+
+    /// The table of core c's current thread's process is a table, and live, once check_current has
+    /// run: the root the dispatch passes to an operation.
+    pub proof fn lemma_current_root_live(&self, c: int)
+        requires
+            self.wf(),
+            self.current_live(c),
+            self.cores@[c].current_thread is Some,
+        ensures
+            ({
+                let p = self.threads.records@[self.cores@[c].current_thread->Some_0].value().process->Some_0;
+                &&& self.tables.roots@.contains_key(p)
+                &&& self.root_live(p)
+            }),
+    {
     }
 
     /// Core c's check of its current thread on kernel entry and before returning to user mode: one load

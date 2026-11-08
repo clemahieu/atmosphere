@@ -139,6 +139,7 @@ impl CapKernel {
             old(self).wf(),
             c < NUM_CPUS,
             old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
         ensures
             final(self).wf(),
             ret == old(self).can_destroy(root, i),

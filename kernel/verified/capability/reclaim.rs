@@ -548,6 +548,7 @@ impl CapKernel {
             old(self).wf(),
             c < NUM_CPUS,
             old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
         ensures
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
@@ -3926,6 +3927,7 @@ impl CapKernel {
             old(self).wf(),
             c < NUM_CPUS,
             old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
         ensures
             final(self).wf(),
             Self::same_tree(*old(self), *final(self)),

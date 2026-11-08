@@ -854,6 +854,7 @@ impl CapKernel {
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
         ensures
             final(self).wf(),
             ret == old(self).can_map(root, slot, SpaceKind::Process, SpacePath { l4, l3, l2, l1 }, from, page),
@@ -998,6 +999,7 @@ impl CapKernel {
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
         ensures
             final(self).wf(),
             ret == old(self).can_map_large(root, slot, SpaceKind::Process, SpacePath { l4, l3, l2, l1: 0 }, from, page),

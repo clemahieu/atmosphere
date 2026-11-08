@@ -52,6 +52,7 @@ impl CapKernel {
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
         ensures
             final(self).wf(),
             Self::same_tree(*old(self), *final(self)),
@@ -97,6 +98,7 @@ impl CapKernel {
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
         ensures
             final(self).wf(),
             Self::same_tree(*old(self), *final(self)),
