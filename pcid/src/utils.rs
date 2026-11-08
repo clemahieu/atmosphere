@@ -1,6 +1,5 @@
 use crate::class::PciClass;
 use crate::header::{read_config_space, PciDeviceHeader};
-use crate::println;
 use crate::PciHeaderType;
 use alloc::vec::Vec;
 use byteorder::{ByteOrder, LittleEndian};

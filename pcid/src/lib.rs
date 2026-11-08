@@ -1,5 +1,4 @@
 #![no_std]
-#![feature(asm_const)]
 #![crate_name = "pcid"]
 #![crate_type = "lib"]
 

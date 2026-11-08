@@ -150,15 +150,6 @@ pub fn read_config_space(pci_addr: &PciAddress) -> Result<PciDeviceHeader, PciHe
             PciHeaderType::GENERAL => {
                 let bars = pci_read_bars(pci_addr, PciHeaderType::GENERAL);
 
-                #[cfg(feature = "c220g2_ixgbe")]
-                {
-                    // Cloudlab has dual port ixgbe devices and the we need to attach our driver
-                    // to the second device.
-                    if bars[0] == unsafe { Some(PciBarAddr::new(0xc7900000, 0)) } {
-                        return Err(Error::new(ENODEV));
-                    }
-                }
-
                 let bytes = pci_read_range(&pci_addr, 30, 24);
                 let cardbus_cis_ptr = LittleEndian::read_u32(&bytes[0..4]);
                 let subsystem_vendor_id = LittleEndian::read_u16(&bytes[4..6]);
