@@ -27,19 +27,16 @@ pub fn test_null_driver_ap()-> ! {
                 buff_ref.free_stack[buff_ref.len] = i;
                 buff_ref.len = buff_ref.len + 1;
             }
-            // log::info!("free_stack init done");
             let start = _rdtsc();
             while counter <= target{
                 //push free stack into request queue
                 // log::info!("counter: {:?}",counter);
                 while buff_ref.len != 0 {
                     let result = buff_ref.request_queue.try_push(buff_ref.free_stack[buff_ref.len-1]);
-                    // log::info!("result: {:?} i: {:?}",result,free_stack[len-1]);
                     if result{
                         buff_ref.len = buff_ref.len -1;
                     }
                     
-
                 }
                 //pop reply queue to free stack
                 loop{
@@ -71,7 +68,6 @@ pub fn test_null_driver(){
         let mut range = 0;
         loop{
             let (pa,perm) = asys::sys_mresolve(0x8000000000usize + range * 4096);
-            // log::info!("va:{:x?}, pa:{:x?}, perm:{:?}", 0x8000000000usize + range * 4096, pa, perm);
             if perm == 34{
                 break;
             }
@@ -94,7 +90,6 @@ pub fn test_null_driver(){
                 log::info!("sys_new_proc_with_iommu_pass_mem failed {:?}", error_code);
                 return;
             }
-        // log::info!("request_queue address: {:p}", &request_queue);   
 
         let size = core::mem::size_of::<DataBufferAllocWrapper>();
         let error_code = asys::sys_mmap(DATA_BUFFER_ADDR as usize, 0x0000_0000_0000_0002u64 as usize, size / 4096 + 1);
@@ -127,15 +122,11 @@ pub fn test_null_driver(){
                     asm!("nop");
                 }
             }else{
-                // for i in 0..SIZE_OF_BUFFER{
-                //     buff_ref.data_buffer[result.unwrap()][i] += 1;
-                // }
                 buff_ref.reply_queue.try_push(result.unwrap());
             }
         }
     }
 }
-
 
 #[no_mangle]
 pub fn test_null_driver_with_batch_size_ap()-> ! {
@@ -159,7 +150,6 @@ pub fn test_null_driver_with_batch_size_ap()-> ! {
                 buff_ref.free_stack[buff_ref.len] = i;
                 buff_ref.len = buff_ref.len + 1;
             }
-            // log::info!("free_stack init done");
             let start = _rdtsc();
             while counter <= target{
                 //push free stack into request queue
@@ -167,13 +157,11 @@ pub fn test_null_driver_with_batch_size_ap()-> ! {
                 let mut current_batch = BATCH_SIZE;
                 while current_batch != 0 {
                     let result = buff_ref.request_queue.try_push(buff_ref.free_stack[buff_ref.len-1]);
-                    // log::info!("result: {:?} i: {:?}",result,free_stack[len-1]);
                     if result{
                         buff_ref.len = buff_ref.len -1;
                         current_batch -= 1;
                     }
                     
-
                 }
                 //pop reply queue to free stack
                 while current_batch != BATCH_SIZE{
@@ -208,7 +196,6 @@ pub fn test_null_driver_with_batch_size(){
         let mut range = 0;
         loop{
             let (pa,perm) = asys::sys_mresolve(0x8000000000usize + range * 4096);
-            // log::info!("va:{:x?}, pa:{:x?}, perm:{:?}", 0x8000000000usize + range * 4096, pa, perm);
             if perm == 34{
                 break;
             }
@@ -230,7 +217,6 @@ pub fn test_null_driver_with_batch_size(){
                 log::info!("sys_new_proc_with_iommu_pass_mem failed {:?}", error_code);
                 return;
             }
-        // log::info!("request_queue address: {:p}", &request_queue);   
 
         let size = core::mem::size_of::<DataBufferAllocWrapper>();
         let error_code = asys::sys_mmap(DATA_BUFFER_ADDR as usize, 0x0000_0000_0000_0002u64 as usize, size / 4096 + 1);
@@ -263,9 +249,6 @@ pub fn test_null_driver_with_batch_size(){
                     asm!("nop");
                 }
             }else{
-                // for i in 0..SIZE_OF_BUFFER{
-                //     buff_ref.data_buffer[result.unwrap()][i] += 1;
-                // }
                 buff_ref.reply_queue.try_push(result.unwrap());
             }
         }

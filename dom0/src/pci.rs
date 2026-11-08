@@ -69,8 +69,6 @@ fn handle_parsed_header(pci_dev: &PciDevice) {
 }
 
 pub fn scan_pci_devs() {
-    //print!("PCI BS/DV/FN VEND:DEVI CL.SC.IN.RV\n");
-
     let pci = Pci::new();
     let mut pci_devices = PCI_DEVICES.lock();
     for bus in pci.buses() {

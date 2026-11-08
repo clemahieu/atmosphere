@@ -6,7 +6,6 @@
 #![no_main]
 
 extern crate alloc;
-// extern crate ixgbe_driver;
 extern crate nvme_driver;
 extern crate pcid;
 extern crate ring_buffer;
@@ -16,13 +15,8 @@ mod ixgbe_client;
 mod nvme_client;
 mod pci;
 mod slab_alloc;
-// mod elf;
-// mod dom1;
-// mod maglev;
-// mod smoltcp_device;
 
 use core::panic::PanicInfo;
-// mod benchmark_null_driver;
 mod syscall_benchmark;
 use alloc::vec::Vec;
 use constants::*;
@@ -80,7 +74,6 @@ fn thread_1_main() {
     log::info!("hello from thread_1_main");
     loop {
         unsafe {
-            // log::info!("ping");
             let error_code = asys::sys_send_empty_try_schedule(0);
             if error_code != 0 {
                 log::info!("sys_new_thread failed {:?}", error_code);
@@ -90,15 +83,10 @@ fn thread_1_main() {
     }
 }
 
-// fn thread_1_hello_ap() {
-//     log::info!("hello from thread_1_main");
-// }
-
 fn dom_1_main() {
     log::info!("hello from dom_1_main");
     loop {
         unsafe {
-            // log::info!("ping");
             let error_code = asys::sys_send_empty_try_schedule(0);
             if error_code != 0 {
                 log::info!("sys_send_empty_try_schedule failed {:?}", error_code);

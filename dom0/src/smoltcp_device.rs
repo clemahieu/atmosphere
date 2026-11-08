@@ -56,8 +56,6 @@ impl Device for SmolIxgbe {
         let mut ring_buffer = unsafe { &mut *self.ring_buffer };
 
         if let Some(pkt) = ring_buffer.request_completion_queue.try_pop() {
-            //log::debug!("got packet");
-
             let rx_token = IxgbeRxToken {
                 frame: Some(pkt),
                 ring_buffer: self.ring_buffer,
@@ -103,10 +101,8 @@ impl TxToken for IxgbeTxToken {
             let mut ring_buffer = unsafe { &mut *core::hint::black_box(self.ring_buffer) } ;
 
             if let Some(pkt) = ring_buffer.request_queue.try_pop() {
-                //log::debug!("taking tx buffer");
                 pkt
             } else if let Some((addr, paddr)) = ring_buffer.try_pop_allocator() {
-                //panic!("no free buffer");
                 IxgbePayLoad {
                     addr,
                     paddr,
@@ -117,7 +113,6 @@ impl TxToken for IxgbeTxToken {
             }
         };
 
-        //let mut frame = self.frame.take().expect("No frame available");
         frame.len = len;
         let slice = unsafe { slice::from_raw_parts_mut(frame.addr as *mut u8, frame.len) };
 
@@ -133,7 +128,6 @@ impl TxToken for IxgbeTxToken {
 impl Drop for IxgbeTxToken {
     fn drop(&mut self) {
         if let Some(frame) = self.frame.take() {
-            //log::debug!("pushing tx back");
             let mut ring_buffer = unsafe { &mut *self.ring_buffer } ;
             ring_buffer.request_queue.try_push(&frame);
         }
@@ -155,7 +149,6 @@ impl RxToken for IxgbeRxToken {
 
         let result = f(slice);
 
-        //log::debug!("pushing rx back");
         let mut ring_buffer = unsafe { &mut *self.ring_buffer } ;
         ring_buffer.request_queue.try_push(&frame);
 
@@ -166,7 +159,6 @@ impl RxToken for IxgbeRxToken {
 impl Drop for IxgbeRxToken {
     fn drop(&mut self) {
         if let Some(frame) = self.frame.take() {
-            //log::debug!("pushing rx back");
             let mut ring_buffer = unsafe { &mut *self.ring_buffer } ;
             ring_buffer.request_queue.try_push(&frame);
         }

@@ -1,7 +1,6 @@
 use core::arch::x86_64::_rdtsc;
 use crate::*;
 
-
 pub fn test_mmap(){
     let iter = 5000000;
     unsafe {
@@ -110,114 +109,6 @@ pub fn test_proc_pingpong(){
         }
     }
 }
-
-// pub fn try_new_thread_ap(){
-//     log::info!("thread_1_hello_ap at {:p}", thread_1_hello_ap as *const ());
-//     unsafe {
-//         let error_code = asys::sys_new_endpoint(0);
-//             if error_code != 0 {
-//                 log::info!("sys_new_endpoint failed {:?}", error_code);
-//                 return;
-//             }
-//         let new_stack = 0xA000000000;
-//         let size = 16 * 1024 * 1024;
-//         let error_code = asys::sys_mmap(new_stack, 0x0000_0000_0000_0002u64 as usize, size / 4096);
-//         if error_code != 0 {
-//             log::info!("sys_mmap failed {:?}", error_code);
-//             return;
-//         }
-
-//         let rsp: usize = (new_stack + size) & !(4096 - 1);
-
-//         let error_code = asys::sys_new_thread(0,thread_1_hello_ap as *const () as usize, rsp);
-//         if error_code != 0 {
-//             log::info!("sys_new_thread failed {:?}", error_code);
-//             return;
-//         }
-//     }
-// }
-
-// pub fn test_null_syscall(){
-//     unsafe {
-//         let error_code = asys::sys_new_endpoint(0);
-//             if error_code != 0 {
-//                 log::info!("sys_new_endpoint failed {:?}", error_code);
-//                 return;
-//             }
-//         let iter = 50000000;
-//             let start = _rdtsc();
-//             for i in 0..iter{
-//                 let error_code = asys::sys_send_empty_no_wait(0);
-//                 if error_code != 5 {
-//                     log::info!("sys_send_empty_no_wait failed {:?}", error_code);
-//                     return;
-//                 }
-//             }
-//             let end = _rdtsc();
-//             log::info!("send no wait cycle per syscall {:?}",(end-start) as usize /iter);
-//         }
-// }
-
-// pub fn test_new_thread(){
-//     unsafe {
-//     let error_code = asys::sys_new_endpoint(0);
-//         if error_code != 0 {
-//             log::info!("sys_new_endpoint failed {:?}", error_code);
-//             return;
-//         }
-//     let iter = 249;
-//         let start = _rdtsc();
-//         for i in 0..iter{
-//             let error_code = asys::sys_new_thread(0,0,0);
-//             if error_code != 0 {
-//                 log::info!("sys_new_thread failed {:?}", error_code);
-//                 return;
-//             }
-//         }
-//         let end = _rdtsc();
-//         log::info!("new thread cycle per syscall {:?}",(end-start) as usize /iter);
-//     }
-// }
-
-// pub fn test_new_proc(){
-//     unsafe {
-//     let error_code = asys::sys_new_endpoint(0);
-//         if error_code != 0 {
-//             log::info!("sys_new_endpoint failed {:?}", error_code);
-//             return;
-//         }
-//     let iter = 4095;
-//         let start = _rdtsc();
-//         for i in 0..iter{
-//             let error_code = asys::sys_new_proc(0,0);
-//             if error_code != 0 {
-//                 log::info!("sys_new_proc failed {:?}", error_code);
-//                 return;
-//             }
-//         }
-//         let end = _rdtsc();
-//         log::info!("new proc cycle per syscall {:?}",(end-start) as usize /iter);
-//     }
-// }
-
-// pub fn test_new_endpoint(){
-//     let iter = 128;
-//     unsafe {
-//         let start = _rdtsc();
-//         for i in 0..iter{
-//             let error_code = asys::sys_new_endpoint(i);
-//             if error_code != 0 {
-//                 log::info!("sys_new_endpoint failed {:?}", error_code);
-//                 return;
-//             }
-//         }
-//         let end = _rdtsc();
-//         log::info!("new endpoint cycle per syscall {:?}",(end-start) as usize /iter);
-//     }
-// }
-
-
-
 
 // ---- Timers matching VeriFlat's dom0 timers (same rounds, same log lines) ----
 

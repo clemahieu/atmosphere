@@ -46,7 +46,6 @@ fn x86_64_asm_elf(source: &str) {
             panic!("ld failed");
         }
 
-        //panic!("SUCCESS: {:?}", linked);
     }
 }
 
