@@ -16,7 +16,19 @@ use bitfield_struct::bitfield;
 use astd::sync::Mutex;
 
 static IOMMU: Mutex<Option<RemappingHardware>> = Mutex::new(None);
+/// Reached through `naive_map` only.
 static mut NAIVE_MAP: NaiveIommuMap = NaiveIommuMap::new();
+
+/// The IOMMU's tables.
+///
+/// # Safety
+///
+/// The caller is the only one using them until it drops the reference: `init_iommu` on CPU 0
+/// before the second core starts, or `map` under the kernel lock, which its one caller,
+/// sys_set_device_iommu, holds.
+unsafe fn naive_map() -> Pin<&'static mut NaiveIommuMap> {
+    Pin::new(&mut *&raw mut NAIVE_MAP)
+}
 
 const MAXPHYADDR: u64 = 56;
 const PAGE_SZ: u64 = 4096;
@@ -534,7 +546,7 @@ fn get_did(bus: usize, device: usize, function: usize) -> u16 {
 }
 
 unsafe fn reload_root_table() {
-    let rt = Pin::new(&mut NAIVE_MAP);
+    let rt = naive_map();
     let mut iommu = IOMMU.lock();
     let iommu = iommu.as_mut().expect("No IOMMU hardware");
     iommu.set_root_table_addr(rt.root_table_addr());
@@ -552,7 +564,7 @@ pub unsafe fn init_iommu() {
     log::info!("Version: {:#x}", iommu.version());
     log::info!("Global Status: {:#x}", iommu.global_status());
 
-    let rt = Pin::new(&mut NAIVE_MAP);
+    let rt = naive_map();
     iommu.set_root_table_addr(rt.root_table_addr());
     log::info!("Root Table: {:#x}", iommu.root_table_addr());
 
@@ -564,6 +576,11 @@ pub unsafe fn init_iommu() {
     *IOMMU.lock() = Some(iommu);
 }
 
+/// Points a device's context entry at the IO page table `pml4`.
+///
+/// # Safety
+///
+/// The caller holds the kernel lock, so no other core changes the tables meanwhile.
 pub unsafe fn map(bus: usize, device: usize, function: usize, pml4: u64) -> Result<(), &'static str> {
     if !device_in_range(bus, device, function) {
         return Err("No such device");
@@ -576,7 +593,7 @@ pub unsafe fn map(bus: usize, device: usize, function: usize, pml4: u64) -> Resu
         return Err("No IOMMU available");
     }
 
-    let rt = Pin::new(&mut NAIVE_MAP);
+    let rt = naive_map();
     rt.map(bus, device, function, pml4);
 
     // TODO: Reload device-specific context

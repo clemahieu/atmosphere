@@ -38,7 +38,7 @@ pub const IRQ_FLUSH: usize = 2;
 pub const IST_EXCEPTION: usize = 1;
 pub const IST_IRQ: usize = 2;
 
-/// The global IDT.
+/// The global IDT. Written only by `init` on CPU 0, before any core loads it; only read after that.
 static mut GLOBAL_IDT: Idt = Idt::new();
 
 const PIC1_DATA: u16 = 0x21;
@@ -449,7 +449,8 @@ pub unsafe fn init() {
     outb(PIC1_DATA, 0xff);
     outb(PIC2_DATA, 0xff);
 
-    let idt = &mut GLOBAL_IDT;
+    // Exclusive: this is the only writer, and no core has loaded the IDT yet.
+    let idt = &mut *&raw mut GLOBAL_IDT;
     idt.divide_by_zero.set_handler_fn(wrap_interrupt!(divide_by_zero));
     idt.debug.set_handler_fn(wrap_interrupt!(debug));
     idt.overflow.set_handler_fn(wrap_interrupt!(overflow));
@@ -486,7 +487,8 @@ pub unsafe fn init_cpu() {
     lapic::init();
     ioapic::init_cpu();
 
-    GLOBAL_IDT.load();
+    // Shared: init is done, so the IDT is only read from here on.
+    (*&raw const GLOBAL_IDT).load();
 
     asm!("sti");
 }
@@ -497,7 +499,8 @@ pub unsafe fn init_cpu() {
 pub unsafe fn init_ap() {
     lapic::init();
 
-    GLOBAL_IDT.load();
+    // Shared: init is done, so the IDT is only read from here on.
+    (*&raw const GLOBAL_IDT).load();
 
     asm!("sti");
 }
