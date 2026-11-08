@@ -16,6 +16,7 @@ pub enum PciHeaderError {
 
 bitflags! {
     /// Flags found in the status register of a PCI device
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct PciHeaderType: u8 {
         /// A general PCI device (Type 0x01).
         const GENERAL       = 0b00000000;
@@ -362,5 +363,34 @@ impl PciHeader {
             &PciHeader::General { interrupt_line, .. }
             | &PciHeader::PciToPci { interrupt_line, .. } => interrupt_line,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PciHeaderType;
+
+    fn layout(header_type: u8) -> Option<PciHeaderType> {
+        match PciHeaderType::from_bits_truncate(header_type) & PciHeaderType::HEADER_TYPE {
+            PciHeaderType::GENERAL => Some(PciHeaderType::GENERAL),
+            PciHeaderType::PCITOPCI => Some(PciHeaderType::PCITOPCI),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn header_type_byte_decodes_to_its_layout() {
+        assert_eq!(layout(0x00), Some(PciHeaderType::GENERAL));
+        assert_eq!(layout(0x80 | 0x01), Some(PciHeaderType::PCITOPCI));
+        assert_eq!(layout(0x02), None);
+        let multifunction = PciHeaderType::from_bits_truncate(0x41);
+        assert!(multifunction.contains(PciHeaderType::MULTIFUNCTION));
+        assert_eq!((multifunction & PciHeaderType::HEADER_TYPE).bits(), 0x01);
+    }
+
+    #[test]
+    fn header_type_keeps_the_traits_its_users_rely_on() {
+        fn traits<T: Copy + Clone + Eq + Ord + core::hash::Hash + core::fmt::Debug>(_: T) {}
+        traits(PciHeaderType::GENERAL);
     }
 }
