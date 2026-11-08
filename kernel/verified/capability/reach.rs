@@ -280,7 +280,6 @@ pub open spec fn adds_node(pre: State, post: State, p: ObjectId, c: NodeId, n: N
     &&& forall|x: NodeId, r: Right| x != n ==> #[trigger] post.rights.contains((x, r)) == pre.rights.contains((x, r))
     &&& forall|o: ObjectId| #[trigger] post.covers(n, o) ==> pre.covers(c, o)
     &&& post.maps == pre.maps
-    &&& post.process_of == pre.process_of
     &&& forall|o: ObjectId| #[trigger] (post.contents)(o) == (pre.contents)(o)
 }
 
@@ -288,6 +287,7 @@ pub open spec fn adds_node(pre: State, post: State, p: ObjectId, c: NodeId, n: N
 /// alone.
 pub open spec fn adds_child(pre: State, post: State, p: ObjectId, c: NodeId, n: NodeId, live: spec_fn(NodeId) -> bool) -> bool {
     &&& adds_node(pre, post, p, c, n, live)
+    &&& post.process_of == pre.process_of
     &&& post.rights.contains((n, Right::Control)) ==> {
         &&& pre.rights.contains((c, Right::Control))
         &&& pre.names.contains_key(c)
@@ -307,12 +307,49 @@ pub open spec fn adds_object(
     object: ObjectId,
 ) -> bool {
     &&& adds_node(pre, post, p, c, n, live)
+    &&& post.process_of == pre.process_of
     &&& post.names.contains_key(n)
     &&& post.names[n] == object
     &&& pre.covers(c, object)
     &&& forall|x: NodeId| !#[trigger] post.held.contains((object, x))
     &&& forall|x: ObjectId| !#[trigger] post.maps.contains((object, x))
     &&& !post.process_of.contains_key(object)
+}
+
+/// post with the binding node of `adds_bound_object` not yet added: the capability n alone under c.
+pub open spec fn without_binding(pre: State, post: State, c: NodeId, n: NodeId) -> State {
+    State { parent: pre.parent.insert(n, c), ..post }
+}
+
+/// Such a child naming a new object inside c's block and typed into the process that cp names: a
+/// second node b, the binding, which is no capability, goes under cp, a capability p holds with the
+/// control right, and the process map gains the object as that process's. No capability with the
+/// control right names the object before, so the only control over it is the new one, and that
+/// reaches the process, which p controls already. A thread's retype makes one. See
+/// design/thread-bound-at-retype/.
+pub open spec fn adds_bound_object(
+    pre: State,
+    post: State,
+    p: ObjectId,
+    c: NodeId,
+    n: NodeId,
+    cp: NodeId,
+    b: NodeId,
+    live: spec_fn(NodeId) -> bool,
+    object: ObjectId,
+) -> bool {
+    &&& adds_node(pre, without_binding(pre, post, c, n), p, c, n, live)
+    &&& post.parent == pre.parent.insert(n, c).insert(b, cp)
+    &&& b != n
+    &&& !live(b)
+    &&& post.names.contains_key(n)
+    &&& post.names[n] == object
+    &&& pre.covers(c, object)
+    &&& pre.holds_right(p, cp, Right::Control)
+    &&& !pre.process_of.contains_key(pre.names[cp])
+    &&& post.process_of == pre.process_of.insert(object, pre.names[cp])
+    &&& forall|x: NodeId| #[trigger] pre.rights.contains((x, Right::Control)) && pre.names.contains_key(x)
+        ==> pre.names[x] != object
 }
 
 /// What a slice of an object's teardown does, apart from who may run it: it changes only what waits on
@@ -737,6 +774,144 @@ pub proof fn lemma_retype_then_local(a: State, b: State, c: State, p: ObjectId, 
         if !b.reach(r, o) {
             assert(may_grow(b, p, Effect::Local, r, o));
         }
+    }
+}
+
+/// Walking up from a capability in post walks the same nodes without the binding, which nothing
+/// lies under.
+proof fn lemma_adds_bound_object_descends(
+    pre: State,
+    post: State,
+    p: ObjectId,
+    c: NodeId,
+    n: NodeId,
+    cp: NodeId,
+    b: NodeId,
+    live: spec_fn(NodeId) -> bool,
+    object: ObjectId,
+    top: NodeId,
+    x: NodeId,
+    k: nat,
+)
+    requires
+        adds_bound_object(pre, post, p, c, n, cp, b, live, object),
+        post.descends(top, x, k),
+        live(x) || x == n,
+    ensures
+        without_binding(pre, post, c, n).descends(top, x, k),
+    decreases k,
+{
+    if k > 0 {
+        assert(x != b);
+        let y = post.parent[x];
+        if x == n {
+            assert(y == c);
+            assert(live(c));
+        } else {
+            assert(pre.parent.contains_key(x));
+            assert(y == pre.parent[x]);
+            assert(live(y));
+        }
+        lemma_adds_bound_object_descends(pre, post, p, c, n, cp, b, live, object, top, y, (k - 1) as nat);
+    }
+}
+
+/// Every control link in post is one in pre: the new capability's control reaches the process, which
+/// p controlled through cp, and no other capability's control target moves, since none names the
+/// object.
+proof fn lemma_adds_bound_object_controlled(
+    pre: State,
+    post: State,
+    p: ObjectId,
+    c: NodeId,
+    n: NodeId,
+    cp: NodeId,
+    b: NodeId,
+    live: spec_fn(NodeId) -> bool,
+    object: ObjectId,
+    a: ObjectId,
+    q: ObjectId,
+    k: nat,
+)
+    requires
+        adds_bound_object(pre, post, p, c, n, cp, b, live, object),
+        post.controlled(a, q, k),
+    ensures
+        pre.controlled(a, q, k),
+    decreases k,
+{
+    if k > 0 {
+        let mid = without_binding(pre, post, c, n);
+        let m = choose|m: ObjectId| #[trigger] post.controls(m, q) && post.controlled(a, m, (k - 1) as nat);
+        lemma_adds_bound_object_controlled(pre, post, p, c, n, cp, b, live, object, a, m, (k - 1) as nat);
+        let t = choose|t: NodeId| #[trigger] post.holds_right(m, t, Right::Control)
+            && post.process_behind(post.names[t]) == q;
+        assert(mid.held.contains((m, t)));
+        if t == n {
+            assert(!pre.held.contains((m, n)) || live(n));
+            assert(m == p);
+            assert(post.process_of.contains_key(object));
+            assert(q == pre.names[cp]);
+            assert(pre.process_behind(pre.names[cp]) == q);
+            assert(pre.holds_right(p, cp, Right::Control));
+        } else {
+            assert(mid.names.contains_key(t) == pre.names.contains_key(t));
+            assert(mid.rights.contains((t, Right::Control)) == pre.rights.contains((t, Right::Control)));
+            assert(pre.holds_right(m, t, Right::Control));
+            assert(pre.names[t] != object);
+            assert(post.process_of.contains_key(pre.names[t]) == pre.process_of.contains_key(pre.names[t]));
+            assert(pre.process_behind(pre.names[t]) == q);
+        }
+        assert(pre.controls(m, q));
+    }
+}
+
+/// So a retype that adds such a bound object, by a holder of the untyped with the right, discharges
+/// it: nobody's reach grows at all.
+pub proof fn lemma_adds_bound_object_discharges_retype(
+    pre: State,
+    post: State,
+    p: ObjectId,
+    c: NodeId,
+    n: NodeId,
+    cp: NodeId,
+    b: NodeId,
+    live: spec_fn(NodeId) -> bool,
+    object: ObjectId,
+)
+    requires
+        adds_bound_object(pre, post, p, c, n, cp, b, live, object),
+        pre.holds_right(p, c, Right::Retype),
+    ensures
+        discharges(pre, post, p, Effect::Retype { untyped: c, object }),
+{
+    let mid = without_binding(pre, post, c, n);
+    let e = Effect::Retype { untyped: c, object };
+    assert forall|o: ObjectId| #[trigger] State::changed(pre, post, o) implies may_change(pre, e, o) by {
+        assert((mid.contents)(o) == (pre.contents)(o));
+    }
+    assert forall|x: NodeId| #[trigger] State::removed(pre, post, x) implies may_remove(pre, p, e, x) by {
+        assert(x != n);
+        assert(mid.names.contains_key(x) == pre.names.contains_key(x));
+    }
+    assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) implies pre.reach(r, o) by {
+        let (q, k) = choose|q: ObjectId, k: nat| #[trigger] post.controlled(r, q, k) && (o == q || post.direct(q, o));
+        lemma_adds_bound_object_controlled(pre, post, p, c, n, cp, b, live, object, r, q, k);
+        if o != q && !post.maps.contains((q, o)) {
+            let (t, x, d) = choose|t: NodeId, x: NodeId, d: nat| #[trigger] post.descends(t, x, d)
+                && post.holds(q, t) && post.covers(x, o);
+            assert(mid.names.contains_key(x));
+            if x != n {
+                assert(pre.names.contains_key(x));
+            }
+            lemma_adds_bound_object_descends(pre, post, p, c, n, cp, b, live, object, t, x, d);
+            assert(mid.descends(t, x, d) && mid.holds(q, t) && mid.covers(x, o));
+            assert(mid.direct(q, o));
+            lemma_adds_child_direct(pre, mid, p, c, n, live, q, o);
+        } else if o != q {
+            assert(mid.maps.contains((q, o)));
+        }
+        assert(pre.controlled(r, q, k) && (o == q || pre.direct(q, o)));
     }
 }
 
@@ -1418,6 +1593,90 @@ pub proof fn lemma_no_claim_through_a_thread()
     let s = control_example();
     assert(s.names[11] == 3);
     assert(s.process_of.contains_key(3));
+}
+
+/// Process 1 holds node 10, an untyped with the retype right on the 2M block at EXAMPLE_BASE, and
+/// process 2 holds node 20, on the page at EXAMPLE_PAST. Nobody holds the control right.
+pub open spec fn retype_example() -> State {
+    State {
+        held: ISet::new(|h: (ObjectId, NodeId)| h == (1usize, 10usize) || h == (2usize, 20usize)),
+        names: IMap::new(|n: NodeId| n == 10 || n == 20, |n: NodeId| if n == 10 { EXAMPLE_BASE } else { EXAMPLE_PAST }),
+        pages: IMap::new(|n: NodeId| n == 10 || n == 20, |n: NodeId| if n == 10 { 512nat } else { 1nat }),
+        rights: ISet::new(|h: (NodeId, Right)| h == (10usize, Right::Retype)),
+        parent: Map::empty(),
+        maps: Set::empty(),
+        process_of: Map::empty(),
+        waiting: Set::empty(),
+        bound: Map::empty(),
+        contents: |o: ObjectId| Seq::empty(),
+    }
+}
+
+/// `retype_example` after process 1 types a thread at EXAMPLE_BASE into process 2, which it does not
+/// control: node 11, a control capability on the thread, goes under the untyped, and the process map
+/// says the thread is process 2's.
+pub open spec fn bound_elsewhere() -> State {
+    State {
+        held: ISet::new(|h: (ObjectId, NodeId)| h == (1usize, 10usize) || h == (1usize, 11usize) || h == (2usize, 20usize)),
+        names: IMap::new(
+            |n: NodeId| n == 10 || n == 11 || n == 20,
+            |n: NodeId| if n == 20 { EXAMPLE_PAST } else { EXAMPLE_BASE },
+        ),
+        pages: IMap::new(
+            |n: NodeId| n == 10 || n == 11 || n == 20,
+            |n: NodeId| if n == 10 { 512nat } else if n == 11 { 2nat } else { 1nat },
+        ),
+        rights: ISet::new(|h: (NodeId, Right)| h == (10usize, Right::Retype) || h == (11usize, Right::Control)),
+        parent: map![11usize => 10usize],
+        process_of: map![EXAMPLE_BASE => 2usize],
+        ..retype_example()
+    }
+}
+
+/// In `retype_example`, process 1 controls nobody, so it reaches its block alone.
+proof fn lemma_retype_example_controls_nothing(q: ObjectId, k: nat)
+    requires
+        retype_example().controlled(1, q, k),
+    ensures
+        q == 1,
+{
+    if k > 0 {
+        let s = retype_example();
+        let m = choose|m: ObjectId| #[trigger] s.controls(m, q) && s.controlled(1, m, (k - 1) as nat);
+        let c = choose|c: NodeId| #[trigger] s.holds_right(m, c, Right::Control) && s.process_behind(s.names[c]) == q;
+        assert(!s.rights.contains((c, Right::Control)));
+    }
+}
+
+/// Typing a thread into a process the caller does not control does not discharge a retype, though the
+/// caller holds the untyped with the right: through the new capability the caller reaches what the
+/// process holds, which is not the new object.
+pub proof fn lemma_retype_into_uncontrolled_process_does_not_discharge()
+    ensures
+        authorized(retype_example(), 1, Effect::Retype { untyped: 10, object: EXAMPLE_BASE }),
+        !discharges(retype_example(), bound_elsewhere(), 1, Effect::Retype { untyped: 10, object: EXAMPLE_BASE }),
+{
+    let (pre, post) = (retype_example(), bound_elsewhere());
+    assert(pre.holds_right(1, 10, Right::Retype));
+    assert(post.holds_right(1, 11, Right::Control));
+    assert(post.process_behind(post.names[11]) == 2);
+    assert(post.controls(1, 2));
+    assert(post.controlled(1, 1, 0));
+    assert(post.controlled(1, 2, 1));
+    assert(post.descends(20, 20, 0));
+    assert(post.holds(2, 20));
+    assert(post.covers(20, EXAMPLE_PAST));
+    assert(post.direct(2, EXAMPLE_PAST));
+    assert(post.reach(1, EXAMPLE_PAST));
+    if pre.reach(1, EXAMPLE_PAST) {
+        let (q, k) = choose|q: ObjectId, k: nat| #[trigger] pre.controlled(1, q, k) && (EXAMPLE_PAST == q || pre.direct(q, EXAMPLE_PAST));
+        lemma_retype_example_controls_nothing(q, k);
+        let (c, n, d) = choose|c: NodeId, n: NodeId, d: nat| #[trigger] pre.descends(c, n, d)
+            && pre.holds(1, c) && pre.covers(n, EXAMPLE_PAST);
+        assert(c == n);
+        assert(pre.held.contains((1usize, c)));
+    }
+    assert(!may_grow(pre, 1, Effect::Retype { untyped: 10, object: EXAMPLE_BASE }, 1, EXAMPLE_PAST));
 }
 
 /// Reach reads nothing but the authority fields, so contents do not change it.
