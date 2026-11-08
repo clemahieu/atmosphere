@@ -31,10 +31,11 @@ def expand(cpus):
 
 
 def physical_cores_by_l3():
-    """Maps each L3's CPU list to one logical CPU per physical core in it."""
+    """Maps each L3's CPU list to one logical CPU per online physical core in it. An offline CPU
+    has no topology to read."""
     groups = {}
-    for path in sorted(glob.glob("/sys/devices/system/cpu/cpu[0-9]*"), key=lambda p: int(p.split("cpu")[-1])):
-        cpu = int(path.split("cpu")[-1])
+    for cpu in expand(read("/sys/devices/system/cpu/online")):
+        path = f"/sys/devices/system/cpu/cpu{cpu}"
         if expand(read(f"{path}/topology/thread_siblings_list"))[0] != cpu:
             continue
         groups.setdefault(read(f"{path}/cache/index3/shared_cpu_list"), []).append(cpu)
