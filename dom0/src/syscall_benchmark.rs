@@ -423,9 +423,12 @@ static SECOND_CORE_MADE: AtomicUsize = AtomicUsize::new(0);
 static SECOND_CORE_STOP: AtomicUsize = AtomicUsize::new(0);
 static SECOND_CORE_REPORTED: AtomicUsize = AtomicUsize::new(0);
 static SECOND_CORE_WOKEN: AtomicUsize = AtomicUsize::new(0);
-/// The thread on CPU 1 reads this while it waits, on a cache line of its own.
+/// A value on a cache line of its own.
 #[repr(align(64))]
 struct OwnLine(AtomicUsize);
+/// The thread on CPU 1 reads this while it waits. `#[used]` keeps the static whole: without it, LLVM
+/// splits it into its one field and drops the padding, and the statics after it share the line.
+#[used]
 static SECOND_CORE_CONTEND: OwnLine = OwnLine(AtomicUsize::new(0));
 const CONTEND_NOW: usize = 1;
 const CONTEND_DONE: usize = 2;
@@ -462,8 +465,9 @@ extern "C" fn second_core_thread() -> ! {
         unsafe { asys::sys_receive_empty(0) };
         SECOND_CORE_WOKEN.store(block, Ordering::SeqCst);
     }
-    // Touching no memory from here on: a loop reading a flag here slowed the benchmarks on CPU 0, by
-    // about 50 TSC cycles an IPC round trip with this core in the same CCD and 370 across CCDs.
+    // Touching no memory from here on, so no line this core reads moves when CPU 0's benchmarks write
+    // it: a read of a line the IPC benchmark writes costs it a line transfer each round trip, about
+    // 40 TSC cycles with this core in the same CCD and 370 across CCDs.
     loop {
         core::hint::spin_loop();
     }
