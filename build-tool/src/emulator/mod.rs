@@ -1,6 +1,5 @@
 //! Emulators/Virtualizers.
 
-// pub mod bochs;
 pub mod gdb;
 mod output_filter;
 pub mod qemu;
@@ -13,7 +12,6 @@ use byte_unit::{Byte, ByteUnit};
 
 use crate::error::{Error, Result};
 use crate::project::Binary;
-//pub use bochs::Bochs;
 pub use gdb::{GdbConnectionInfo, GdbServer};
 pub use qemu::Qemu;
 

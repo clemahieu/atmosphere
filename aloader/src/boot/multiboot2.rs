@@ -153,7 +153,6 @@ impl<'a> Iterator for TagIter<'a> {
         if self.cur >= self.limit {
             return None;
         }
-        //log::debug!("cur = {:?}, limit = {:?}", self.cur, self.limit);
 
         let tag_header = unsafe {
             &*(self.cur as *const TagHeader)
@@ -161,7 +160,6 @@ impl<'a> Iterator for TagIter<'a> {
 
         let next = (self.cur as usize + tag_header.size as usize + TAG_ALIGNMENT - 1) & !(TAG_ALIGNMENT - 1);
         self.cur = next as *const _;
-        //log::debug!("{:#?}", tag_header);
 
         tag_header.data()
     }
@@ -185,7 +183,6 @@ impl<'a> Iterator for MemoryMapIter<'a> {
         if self.cur >= self.limit {
             return None;
         }
-        //log::debug!("cur = {:?}, limit = {:?}", self.cur, self.limit);
 
         let entry = unsafe {
             &*(self.cur as *const MemoryMapEntry)
@@ -193,7 +190,6 @@ impl<'a> Iterator for MemoryMapIter<'a> {
 
         let next = self.cur as usize + self.entry_size;
         self.cur = next as *const _;
-        //log::debug!("{:#?}", tag_header);
 
         Some(entry)
     }

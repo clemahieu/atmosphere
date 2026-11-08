@@ -97,7 +97,6 @@ impl Dynamic {
 
                 let relocated = self.load_bias.wrapping_add(reloc.r_addend as usize);
                 let ptr = self.load_bias_loader.wrapping_add(reloc.r_offset as usize) as *mut usize;
-                // log::debug!("RELA ptr={:?}, offset=0x{:x}, addend=0x{:x}, actual=0x{:x}", ptr, reloc.r_offset, reloc.r_addend, relocated);
 
                 unsafe {
                     ptr::write_unaligned(ptr, relocated);

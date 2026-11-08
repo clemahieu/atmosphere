@@ -66,8 +66,6 @@ impl AddressSpace {
         huge: bool,
         cache_disable: bool,
     ) {
-        //log::info!("Mapping VA 0x{:x} -> PA 0x{:x}", vaddr, paddr);
-
         let mut cur = self.pml4;
 
         if vaddr as u64 & (1u64 << PAGE_SHIFT - 1) != 0 {
@@ -110,8 +108,6 @@ impl AddressSpace {
             .with_cache_disable(cache_disable)
             .with_user(user);
 
-        //log::info!("Physical Mask: 0b{:b}", PHYSICAL_PAGE_MASK);
-        //log::info!("Entry: 0b{:b}", entry.0);
         (*cur).write(index, entry);
     }
 
@@ -161,7 +157,6 @@ impl PageTable {
     }
 
     unsafe fn write(&self, index: usize, value: Entry) {
-        //log::info!("writing to 0x{:x?}", self.entry(index));
         ptr::write_volatile(self.entry(index), value)
     }
 

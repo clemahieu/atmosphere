@@ -120,7 +120,6 @@ pub struct Crate {
 impl Crate {
     /// Build the crate.
     pub async fn build(&self, options: &BuildOptions) -> Result<Option<Binary>> {
-        //log::info!("Building crate {:?}", self.crate_dir);
         let mut command = Command::new("cargo");
         command
             .args(&["build"])

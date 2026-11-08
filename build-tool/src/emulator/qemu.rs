@@ -164,10 +164,7 @@ impl Emulator for Qemu {
 
         if !config.pci_dev.is_empty() {
             for dev in &config.pci_dev {
-                //command.args(&["-object", "iommufd,id=iommufd0"]);
                 command.args(&["-device", &format!("vfio-pci,host={}", dev)]);
-                //command.args(&["-device", &format!("vfio-pci,host={},iommufd=iommufd0", dev)]);
-                //command.args(&["-device", &format!("vfio-pci,fd=23,iommufd=iommufd0")]);
             }
         }
 

@@ -378,7 +378,6 @@ where
     let mut cur = 0xFE000000;
     let virt_base = USERSPACE_BASE;
     while cur < 0xFE000000 + 0x100000 {
-        // while cur < 0xfebf_0000 + 0x1000 {
         unsafe {
             address_space.map(
                 page_table_allocator,
@@ -396,7 +395,6 @@ where
     let mut cur = 0xFA000000;
     let virt_base = USERSPACE_BASE;
     while cur < 0xFA000000 + 0x2000000 {
-        // while cur < 0xfebf_0000 + 0x1000 {
         unsafe {
             address_space.map(
                 page_table_allocator,
@@ -414,7 +412,6 @@ where
     let mut cur = 0xFD000000;
     let virt_base = USERSPACE_BASE;
     while cur < 0xFD000000 + 0x10000 {
-        // while cur < 0xfebf_0000 + 0x1000 {
         unsafe {
             address_space.map(
                 page_table_allocator,
