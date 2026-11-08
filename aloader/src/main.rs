@@ -1,7 +1,6 @@
 //! The Atmosphere early loader.
 
 #![cfg_attr(not(test), no_std, no_main)]
-#![feature(alloc_error_handler, abi_x86_interrupt)]
 #![deny(
     asm_sub_register,
     deprecated,
@@ -35,9 +34,7 @@ use astd::io::{Cursor, Read, Seek, SeekFrom};
 use astd::memory::{USERSPACE_BASE, USERSPACE_PAYLOAD_BASE};
 use constants::*;
 
-use memory::{
-    AddressSpace, BootMemoryType, PhysicalAllocator, UserspaceMapper, HUGE_PAGE_SIZE, PAGE_SIZE,
-};
+use memory::{AddressSpace, BootMemoryType, PhysicalAllocator, UserspaceMapper, PAGE_SIZE};
 
 const KERNEL_RESERVATION: usize = 1024 * 1024 * 1024; // 1 GiB
 const DOM0_RESERVATION: usize = 256 * 1024 * 1024; // 256 MiB
