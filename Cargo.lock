@@ -635,7 +635,6 @@ dependencies = [
  "bit_field",
  "bitfield",
  "bitfield-struct",
- "bitflags 2.6.0",
  "byteorder",
  "displaydoc",
  "enum-primitive-derive",
