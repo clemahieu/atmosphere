@@ -266,7 +266,6 @@ impl NvmeDevice {
                 self.submission_queue_tail(qid as u16, tail as u16);
             }
 
-            // println!("  - Waiting to create I/O completion queue {}", io_qid);
             {
                 let qid = 0;
                 let queue = &mut self.completion_queues[qid];
@@ -301,7 +300,6 @@ impl NvmeDevice {
                 self.submission_queue_tail(qid as u16, tail as u16);
             }
 
-            // println!("  - Waiting to create I/O submission queue {}", io_qid);
             {
                 let qid = 0;
                 let queue = &mut self.completion_queues[qid];
@@ -468,15 +466,12 @@ impl NvmeDevice {
             self.submission_queue_tail(qid as u16, tail as u16);
         }
 
-        // println!("  - Waiting to identify namespace {}", nsid);
         {
             let qid = 0;
             let queue = &mut self.completion_queues[qid];
             let (head, entry, _) = queue.complete_spin();
             self.completion_queue_head(qid as u16, head as u16);
         }
-
-        // println!("  - Dumping identify namespace");
 
         unsafe {
             let size = *(data.as_ptr().offset(0) as *const u64);
@@ -509,7 +504,6 @@ impl NvmeDevice {
         }
     }
 
-
     pub fn submit_and_poll_breq(
         &mut self,
         submit: &mut VecDeque<BlockReq>,
@@ -527,7 +521,6 @@ impl NvmeDevice {
             let buf_addr = breq.data as usize;
             let (ptr0, ptr1) = unsafe { (sys_mresolve(buf_addr).0 as u64, 0) };
             let queue = &mut self.submission_queues[qid];
-            //println!("breq 0x{:08x} ptr0 0x{:08x}", buf_addr, ptr0);
 
             let num_blocks = breq.num_blocks;
             let mut entry;
@@ -623,7 +616,6 @@ impl NvmeDevice {
                 }
             }
             if reap_count > 0 {
-                //println!("updating cur_head {}", cur_head);
                 self.completion_queue_head(qid as u16, cur_head as u16);
             }
         }
@@ -649,7 +641,6 @@ impl NvmeDevice {
             // FIXME: store both (vaddr, paddr) to avoid calling this everytime
             //let (ptr0, ptr1) = unsafe { (sys_mresolve(breq.as_ptr() as usize).0 as u64, 0) };
             let (ptr0, ptr1) = (breq.as_ptr() as u64, 0);
-            //println!("breq 0x{:08x} ptr0 0x{:08x}", breq.as_ptr() as u64, ptr0);
             let queue = &mut self.submission_queues[qid];
 
             let num_blocks = 8;
@@ -692,26 +683,10 @@ impl NvmeDevice {
                         queue.complete()
                     } {
                         assert_eq!(entry.status >> 1, 0);
-                        /*if entry.status >> 1 > 0 {
-                            log::info!(
-                                "head {} entry {:#?} cq_idx {}  command {:#?}",
-                                head,
-                                entry,
-                                cq_idx,
-                                self.submission_queues[qid].data[cq_idx]
-                            );
-                            sys_ns_loopsleep(100);
-                            self.dump_queues(qid);
-                            assert_eq!(entry.status >> 1, 0);
-                        }*/
 
-                        //println!("Got head {} cq_idx {}", head, cq_idx);
                         let sq = &mut self.submission_queues[qid];
                         if sq.req_slot[cq_idx] == true {
                             if let Some(req) = sq.raw_requests_vec[cq_idx].take() {
-                                //let vec =
-                                //    unsafe { Vec::from_raw_parts(*req as *mut u8, 4096, 4096) };
-
                                 collect.push_front(req);
                             }
                             sq.req_slot[cq_idx] = false;
@@ -740,9 +715,6 @@ impl NvmeDevice {
 
         {
             for i in 0..batch_sz {
-                //if collect.len() == 32 {
-                //  break;
-                // }
                 let queue = &mut self.completion_queues[qid];
                 if let Some((head, entry, cq_idx)) = if reap_all {
                     Some(queue.complete_spin())
@@ -757,31 +729,11 @@ impl NvmeDevice {
                             cq_idx,
                             self.submission_queues[qid].data[cq_idx]
                         );
-                        //sys_ns_loopsleep(100);
                         assert_eq!(entry.status >> 1, 0);
-                    } /*else {
-                          log::info!(
-                              "==> head {} entry {:#?} cq_idx {} vaddr {:>08x} paddr {:>08x} command {:#?}",
-                              head,
-                              entry,
-                              cq_idx,
-                              self.submission_queues[qid].raw_requests[cq_idx].expect("not found"),
-                              unsafe {
-                                  sys_mresolve(
-                                      self.submission_queues[qid].raw_requests[cq_idx]
-                                          .expect("not found") as usize,
-                                  )
-                                  .0
-                              },
-                              self.submission_queues[qid].data[cq_idx]
-                          );
-                      }*/
-                    //println!("Got head {} cq_idx {}", head, cq_idx);
+                    }
                     let sq = &mut self.submission_queues[qid];
                     if sq.req_slot[cq_idx] == true {
                         if let Some(req) = sq.raw_requests_vec[cq_idx].take() {
-                            //let vec = unsafe { Vec::from_raw_parts(*req as *mut u8, 4096, 4096) };
-
                             collect.push_front(req);
                         }
                         sq.req_slot[cq_idx] = false;
@@ -796,7 +748,6 @@ impl NvmeDevice {
                 }
             }
             if reap_count > 0 {
-                //x86::fence::sfence();
                 self.completion_queue_head(qid as u16, cur_head as u16);
                 x86::fence::sfence();
             }
@@ -814,11 +765,6 @@ impl NvmeDevice {
 
         let cq = &mut self.completion_queues[qid];
         let sq = &mut self.submission_queues[qid];
-        /*println!("| idx | sq | ");
-        for i in 0..crate::queue::QUEUE_DEPTH {
-            println!("[{}] sq.slot: {} sq.breq_rrefs {}", i, sq.req_slot[i],
-                     sq.blkreq_rrefs[i].is_some());
-        }*/
 
         loop {
             let cq = &mut self.completion_queues[qid];
@@ -827,17 +773,11 @@ impl NvmeDevice {
             let cid = cq.get_cq_head() % cq.data.len();
 
             if sq.req_slot[cid] {
-                //println!("be-> cid {} rref_valid {} cq[].valid {}", cid, sq.blkreq_rrefs[cid].is_some(),
-                //                                               cq.is_valid().is_some());
                 if let Some((head, entry, cq_idx)) = if reap_all {
                     Some(cq.complete_spin())
                 } else {
                     cq.complete()
                 } {
-                    //println!("af-> Got head {} cid {} cq_idx {} rref_valid {}", head, cid, cq_idx,
-                    //                                sq.blkreq_rrefs[cq_idx].is_some());
-                    //assert_eq!(cid, cq_idx, "cid {} cq_idx {}", cid, cq_idx);
-
                     if let Some(mut req) = sq.breq_requests[cq_idx].take() {
                         collect.push_back(req);
                     }
@@ -887,8 +827,6 @@ impl NvmeDevice {
                     cq.complete()
                 } {
                     if let Some(req) = sq.raw_requests_vec[cq_idx].take() {
-                        //let vec = unsafe { Vec::from_raw_parts(*req as *mut u8, 4096, 4096) };
-
                         collect.push_front(req);
                     }
                     sq.req_slot[cq_idx] = false;
@@ -931,7 +869,6 @@ impl NvmeDevice {
             let buf_addr = breq.data as usize;
             let (ptr0, ptr1) = unsafe { (sys_mresolve(buf_addr).0 as u64, 0) };
             let queue = &mut self.submission_queues[qid];
-            //println!("breq 0x{:08x} ptr0 0x{:08x}", buf_addr, ptr0);
 
             let num_blocks = breq.num_blocks;
             let mut entry;
@@ -961,31 +898,10 @@ impl NvmeDevice {
                     cur_tail = tail;
                     sub_count += 1;
 
-                    // let queue = &mut self.completion_queues[qid];
-                    // if let Some((head, entry, cq_idx)) = if reap_all {
-                    //     Some(queue.complete_spin())
-                    // } else {
-                    //     queue.complete()
-                    // } {
-                    //     log::trace!("1 Got head {} cq_idx {}", head, cq_idx);
-                    //     let sq = &mut self.submission_queues[qid];
-                    //     if sq.req_slot[cq_idx] == true {
-                    //         if let Some(req) = sq.breq_requests[cq_idx].take() {
-                    //             collect.push_front(req);
-                    //         }
-                    //         sq.req_slot[cq_idx] = false;
-                    //         reap_count += 1;
-                    //     }
-                    //     cur_head = head;
-                    //     //TODO: Handle errors
-                    //     self.stats.completed += 1;
-                    // }
-
                     self.stats.submitted += 1;
                     submit.try_free();
                 }
             } else {
-                // submit.push_front(breq);
                 break;
             }
 
@@ -1034,7 +950,6 @@ impl NvmeDevice {
                 }
             }
             if reap_count > 0 {
-                //println!("updating cur_head {}", cur_head);
                 self.completion_queue_head(qid as u16, cur_head as u16);
             }
         }

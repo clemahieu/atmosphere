@@ -42,7 +42,6 @@ pub fn run_blocktest_raw_with_delay(
 
     for _i in 0..batch_sz {
         let req1 = req.clone();
-        //println!("req 0x{:08x}", req1.as_ptr() as u64);
         submit.push_back(req1);
     }
 
@@ -50,8 +49,6 @@ pub fn run_blocktest_raw_with_delay(
         "submit ptr {:08x} collect ptr 0x{:08x}",
         &submit as *mut _ as *mut u64 as u64, &collect as *mut _ as *mut u64 as u64
     );*/
-    //if let Some(device) = dev.as_mut() {
-    //let dev: &mut NvmeDevice = device;
 
     let mut submit_start = 0;
     let mut submit_elapsed = 0;
@@ -77,14 +74,6 @@ pub fn run_blocktest_raw_with_delay(
     loop {
         count += 1;
         submit_start = rdtsc();
-        //println!("submit and poll raw count {}", count);
-        // {
-        //  NVME
-        //  &submit.vecdequeue()
-        //  &collect.vecdequue()
-        //  is_write
-        //  is_random
-        // }
         ret = dev.submit_and_poll_raw(&mut submit, &mut collect, is_write, is_random);
 
         submit_elapsed += rdtsc() - submit_start;
@@ -93,15 +82,12 @@ pub fn run_blocktest_raw_with_delay(
 
         poll_hist.record(collect.len() as u64);
 
-        //println!("Append # {} finished blocks {}", count, collect.len());
         submit.append(&mut collect);
 
         if submit.is_empty() {
             alloc_count += 1;
-            //println!("allocating new batch at count {}", count);
             for _i in 0..batch_sz {
                 let req1 = req.clone();
-                //println!("req 0x{:08x}", req1.as_ptr() as u64);
                 submit.push_back(req1);
             }
         }
@@ -119,7 +105,6 @@ pub fn run_blocktest_raw_with_delay(
     let (sub, comp) = dev.stats.get_stats();
 
     println!("Polling ....");
-
 
     let done = dev.poll_raw(&mut collect);
 
@@ -152,7 +137,6 @@ pub fn run_blocktest_raw_with_delay(
         }
     }
     println!("++++++++++++++++++++++++++++++++++++++++++++++++++++");
-    //}
 }
 
 pub fn run_blocktest_blkreq(dev: &mut NvmeDevice) {
@@ -200,7 +184,6 @@ pub fn run_blocktest_blkreq(dev: &mut NvmeDevice) {
         ret = dev.submit_and_poll_breq(&mut submit, &mut collect);
         submit_elapsed += rdtsc() - submit_start;
 
-        //assert_eq!(ret, collect.len());
         total_requests += ret;
 
         log::trace!("submitted {} reqs, collect {} reqs ", ret, collect.len(),);
@@ -215,8 +198,6 @@ pub fn run_blocktest_blkreq(dev: &mut NvmeDevice) {
         }
 
         if submit.is_empty() {
-            //&& (alloc_count * batch_sz) < 1024 {
-            //println!("Alloc new batch at {}", count);
             alloc_count += 1;
             let alloc_rdstc_start = rdtsc();
             for i in 0..32 {
@@ -235,7 +216,6 @@ pub fn run_blocktest_blkreq(dev: &mut NvmeDevice) {
         if rdtsc() > tsc_end {
             break;
         }
-        //sys_ns_loopsleep(2000);
     }
 
     let elapsed = rdtsc() - tsc_start;
@@ -244,7 +224,6 @@ pub fn run_blocktest_blkreq(dev: &mut NvmeDevice) {
 
     let (sub, comp) = dev.stats.get_stats();
 
-    // println!("Polling .... last_sq {} last_cq {} sq_id {}", last_sq, last_cq, sq_id);
     println!("Polling ....");
 
     let done = dev.poll_breq(&mut collect);

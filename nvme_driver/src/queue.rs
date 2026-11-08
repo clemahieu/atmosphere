@@ -73,15 +73,12 @@ impl NvmeCommandQueue {
             self.data[cur_idx].cdw10 %= num_lbas() as u32;
             let cid = cur_idx as u16;
 
-            //println!("Submitting block[{}] {} at slot {}", cid, breq.block, cur_idx);
-
             self.breq_requests[cur_idx] = Some(breq);
 
             self.req_slot[cur_idx] = true;
             self.i = (cur_idx + 1) % self.data.len();
             Some(self.i)
         } else {
-            //println!("No free slot");
             None
         }
     }
@@ -109,7 +106,6 @@ impl NvmeCommandQueue {
             self.i = (cur_idx + 1) % self.data.len();
             Some(self.i)
         } else {
-            //println!("No free slot");
             None
         }
     }
@@ -137,7 +133,6 @@ impl NvmeCommandQueue {
             self.i = (cur_idx + 1) % self.data.len();
             Some(self.i)
         } else {
-            //println!("No free slot");
             None
         }
     }
@@ -175,7 +170,6 @@ impl NvmeCompletionQueue {
             if self.i == 0 {
                 self.phase = !self.phase;
             }
-            //println!("=> {:?}", entry);
             Some((self.i, entry, cq_entry))
         } else {
             None
@@ -186,10 +180,8 @@ impl NvmeCompletionQueue {
         let entry = unsafe { core::ptr::read_volatile(self.data.as_ptr().add(self.i)) };
 
         if ((entry.status & 1) == 1) == self.phase {
-            //println!("idx {} status {} phase {}", self.i, entry.status, self.phase);
             Some(entry)
         } else {
-            //println!("None: idx {} status {} phase {}", self.i, entry.status, self.phase);
             None
         }
     }
@@ -197,7 +189,6 @@ impl NvmeCompletionQueue {
     pub fn advance(&mut self) {
         self.i = (self.i + 1) % self.queue_len;
         if self.i == 0 {
-            //println!("switching phase from {} to {}", self.phase, !self.phase);
             self.phase = !self.phase;
         }
     }

@@ -135,8 +135,6 @@ pub fn read_config_space(pci_addr: &PciAddress) -> Result<PciDeviceHeader, PciHe
         let command = LittleEndian::read_u16(&bytes[4..6]);
         let status = LittleEndian::read_u16(&bytes[6..8]);
 
-        //println!("command {:x} status {:x}", command, status);
-
         // TODO: Move this into a trait object from where a driver can invoke this
         pci_enable_bus_mastering(pci_addr);
         let revision = bytes[8];

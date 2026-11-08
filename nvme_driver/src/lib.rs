@@ -1,7 +1,5 @@
 #![no_std]
 
-//pub(crate) const NUM_LBAS: u64 = 2197504;
-
 extern crate alloc;
 
 pub mod cmd;

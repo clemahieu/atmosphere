@@ -425,17 +425,6 @@ impl E810Device {
             return Err(Error::Config("failed to mmap admin DMA"));
         }
 
-        // let res = unsafe { asys::sys_io_mmap(base, io_flags, pages) };
-        // if res != 0 {
-        //     log::error!(
-        //         "sys_io_mmap failed for admin DMA (base={:#x}, pages={}): {}",
-        //         base,
-        //         pages,
-        //         res
-        //     );
-        //     return Err(Error::Config("failed to map admin DMA into IOMMU"));
-        // }
-
         for page in 0..pages {
             let addr = base + page * ADMIN_PAGE_SIZE;
             unsafe { asys::sys_invalidate_iotlb(bdf.0, bdf.1, bdf.2, addr as u64) };
@@ -471,7 +460,6 @@ impl E810Device {
         let mut desc = LibieAqDesc::default();
         desc.opcode = ICE_AQC_OPC_MANAGE_MAC_READ.to_le();
         desc.flags = LIBIE_AQ_FLAG_SI.to_le();
-        // desc.flags = 0;
 
         // Two entries is what the driver uses (LAN + WoL).
         let mut buf = [0u8; 2 * mem::size_of::<ManageMacReadResp>()];

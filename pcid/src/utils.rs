@@ -172,14 +172,12 @@ pub fn pci_read_bars(pci: &PciAddress, hdr_type: PciHeaderType) -> AVec<Option<P
                     )))
                     .unwrap();
             }
-            //println!("BarAddr {:x} size {:x}", addr, size);
         } else {
             unsafe {
                 bar_vec
                     .push(Some(PciBarAddr::new(addr as u64 & 0xFFFC, 0usize)))
                     .unwrap();
             }
-            //println!("Bar I/O Addr {:x} size {:x}", addr, size);
         }
     }
     bar_vec
