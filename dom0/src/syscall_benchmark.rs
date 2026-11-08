@@ -260,6 +260,17 @@ pub fn time_mmap_only() {
     }
 }
 
+/// Allocates on dom0's heap and checks that its page is not in dom0's IOMMU space: a heap page
+/// mapped for DMA is a grant to every device bound to dom0's table that nobody asked for.
+pub fn check_heap_not_io_mapped() {
+    let v: alloc::vec::Vec<u64> = alloc::vec![0; 64];
+    let resolved = unsafe { asys::sys_mresolve_io(v.as_ptr() as usize) }.0;
+    log::info!("sys_mresolve_io of a heap page: {:#x}", resolved);
+    if resolved != 1 {
+        bench_fail("a heap page is IO-mapped", resolved);
+    }
+}
+
 /// Maps fresh pages and counts those that do not read as zero: what a new page holds is old data.
 pub fn check_new_pages_are_zero() {
     const PAGES: usize = 120_000;

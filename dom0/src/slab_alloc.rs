@@ -36,25 +36,9 @@ impl Pager {
             // FIXME: 2MiB pages are a bunch of 4KiB virtual pages stacked together
             match asys::sys_mmap(*mmap_base, 0x0000_0000_0000_0002u64 as usize, num_pages) {
                 0 => {
-                    let _mmap_addr = *mmap_base;
+                    let mmap_addr = *mmap_base;
                     *mmap_base += page_size;
-                    let error_code = asys::sys_io_mmap(_mmap_addr, 0x0000_0000_0000_0002u64 as usize, num_pages);
-                    if error_code != 0 {
-                        log::error!("sys_io_mmap failed {:?}", error_code);
-                        0 as *mut u8
-                    } else {
-                        log::info!("Invalidate_iotlb for {:>02x}:{:>02x}.{:01x}", 0x17, 0x00, 0);
-                        if page_size == Self::LARGE_PAGE_SIZE {
-                            let base_addr = _mmap_addr as usize;
-                            let num_4k_pages = Self::LARGE_PAGE_SIZE / Self::BASE_PAGE_SIZE;
-                            for i in 0..num_4k_pages {
-                                asys::sys_invalidate_iotlb(0x17, 0x00, 0, _mmap_addr as u64);
-                            }
-                        } else {
-                            asys::sys_invalidate_iotlb(0x17, 0x00, 0, _mmap_addr as u64);
-                        }
-                        _mmap_addr as *mut u8
-                    }
+                    mmap_addr as *mut u8
                 }
                 _ => {
                     trace!("sys_mmap failure");

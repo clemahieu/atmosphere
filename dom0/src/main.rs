@@ -60,6 +60,7 @@ extern "C" fn main(payload_base: *mut u8, payload_size: usize) -> isize {
     syscall_benchmark::time_new_thread();
     syscall_benchmark::check_syscall_return_registers();
     syscall_benchmark::check_new_pages_are_zero();
+    syscall_benchmark::check_heap_not_io_mapped();
     log::info!("dom0 benchmark done");
     syscall_benchmark::exit_qemu(syscall_benchmark::EXIT_SUCCESS)
 }
