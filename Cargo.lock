@@ -67,8 +67,6 @@ dependencies = [
  "log",
  "nasm-rs 0.2.5",
  "ns16550a",
- "num-derive",
- "num-traits",
  "plain",
  "x86 0.52.0",
 ]

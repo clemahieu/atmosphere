@@ -5,8 +5,6 @@
 use core::iter::Iterator;
 use core::ptr;
 
-use num_traits::FromPrimitive;
-
 use super::StartInfo;
 use crate::memory::{AcpiMemoryType, MemoryRange};
 
@@ -143,7 +141,7 @@ impl HvmStartInfo {
 
 impl MemmapTableEntry {
     pub fn map_type(&self) -> Option<AcpiMemoryType> {
-        FromPrimitive::from_u32(self.map_type)
+        AcpiMemoryType::from_u32(self.map_type)
     }
 }
 
