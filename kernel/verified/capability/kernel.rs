@@ -1114,6 +1114,7 @@ impl CapKernel {
         &&& self.blocks.wf()
         &&& self.tables.wf(&self.list)
         &&& self.tables.caps_wf(&self.list)
+        &&& self.tables.control_wf(&self.list)
         &&& self.stale_epoch.wf()
         &&& self.tlb_wf()
         &&& ids_wf(self.cores@, self.spaces.loaded@)

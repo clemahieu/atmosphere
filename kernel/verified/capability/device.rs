@@ -313,6 +313,7 @@ impl CapKernel {
         proof {
             let post = *self;
             assert(post.payload_of(child) == device_payload(d as int));
+            assert(0u32 & 128u32 == 0) by (bit_vector);
             Self::lemma_derive_caps_wf(pre, post, child);
             Self::lemma_hidden_frame(pre, post, child, child);
             Self::lemma_table_nodes_caps_frame(pre, post, child, child);

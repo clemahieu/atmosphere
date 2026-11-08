@@ -73,6 +73,16 @@ pub open spec fn payload_wf(p: Payload) -> bool {
     &&& p.base as int + block_bytes(p.order) <= NODE_SPACE as int
 }
 
+/// The bit of a capability's rights word that grants control.
+pub const CONTROL_RIGHT: u32 = 128;
+
+/// Control is a right over threads and processes only, design/sharing-by-derive/, and reads the object
+/// a capability names, so no untyped or frame capability carries it to whatever is later typed at its
+/// base.
+pub open spec fn control_named(p: Payload) -> bool {
+    p.rights & CONTROL_RIGHT != 0 ==> p.kind is Thread || p.kind is Process
+}
+
 /// Where index i falls in a table.
 pub open spec fn index_entry(i: usize) -> int { (i / NODES_PER_PAGE as usize) as int }
 
@@ -240,6 +250,11 @@ impl Tables {
     /// Every capability names a block.
     pub open spec fn caps_wf(&self, list: &Tree) -> bool {
         forall|n: usize| #[trigger] self.is_cap(list, n) && !(self.payload_of(n).kind is Device) ==> payload_wf(self.payload_of(n))
+    }
+
+    /// Every capability with the control right names a thread or a process.
+    pub open spec fn control_wf(&self, list: &Tree) -> bool {
+        forall|n: usize| #[trigger] self.is_cap(list, n) ==> control_named(self.payload_of(n))
     }
 
     /// The tables read nothing of a list but which pages it holds, so more pages keep them whole.

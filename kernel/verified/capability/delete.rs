@@ -449,11 +449,14 @@ impl CapKernel {
             post.devices == pre.devices,
         ensures
             post.tables.caps_wf(&post.list),
+            post.tables.control_wf(&post.list),
             devices_wf(&post.list, &post.tables, &post.devices),
     {
         Self::lemma_devices_caps_frame(pre, post, n, n);
-        assert forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) && !(post.tables.payload_of(x).kind is Device)
-            implies payload_wf(post.tables.payload_of(x)) by {
+        assert forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) implies {
+            &&& !(post.tables.payload_of(x).kind is Device) ==> payload_wf(post.tables.payload_of(x))
+            &&& control_named(post.tables.payload_of(x))
+        } by {
             assert(x != n);
             Self::lemma_caps_frame(pre, post, n, n, x);
             assert(post.is_cap(x));

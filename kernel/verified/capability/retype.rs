@@ -423,6 +423,7 @@ impl CapKernel {
             let post = *self;
             assert(post.payload_of(child) == large_frame_of(base, order));
             assert(payload_wf(post.payload_of(child)));
+            assert(7u32 & 128u32 == 0) by (bit_vector);
             Self::lemma_derive_caps_wf(pre, post, child);
             Self::lemma_devices_caps_frame(pre, post, child, child);
             Self::lemma_hidden_frame(pre, post, child, child);
@@ -1308,9 +1309,12 @@ impl CapKernel {
             Self::leaf_step(pre, post, leaf),
         ensures
             post.tables.caps_wf(&post.list),
+            post.tables.control_wf(&post.list),
     {
-        assert forall|n: usize| #[trigger] post.tables.is_cap(&post.list, n) && !(post.tables.payload_of(n).kind is Device)
-            implies payload_wf(post.tables.payload_of(n)) by {
+        assert forall|n: usize| #[trigger] post.tables.is_cap(&post.list, n) implies {
+            &&& !(post.tables.payload_of(n).kind is Device) ==> payload_wf(post.tables.payload_of(n))
+            &&& control_named(post.tables.payload_of(n))
+        } by {
             Self::lemma_leaf_cap(pre, post, leaf, n);
             assert(post.is_cap(n));
             assert(pre.tables.is_cap(&pre.list, n));

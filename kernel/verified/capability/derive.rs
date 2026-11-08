@@ -255,6 +255,9 @@ impl CapKernel {
             let post = *self;
             pre.lemma_slot(root, to);
             assert(post.payload_of(child) == child_of(payload, rights, base, order));
+            let parent_rights = payload.rights;
+            assert(rights & !parent_rights == 0 && rights & 128 != 0 ==> parent_rights & 128 != 0) by (bit_vector);
+            assert(control_named(pre.tables.payload_of(parent)));
             Self::lemma_derive_caps_wf(pre, post, child);
             pre.lemma_slot(root, to);
             Self::lemma_hidden_frame(pre, post, child, child);
@@ -472,11 +475,15 @@ impl CapKernel {
         requires
             Self::derive_step(pre, post, child),
             !(post.payload_of(child).kind is Device) ==> payload_wf(post.payload_of(child)),
+            control_named(post.payload_of(child)),
         ensures
             post.tables.caps_wf(&post.list),
+            post.tables.control_wf(&post.list),
     {
-        assert forall|n: usize| #[trigger] post.tables.is_cap(&post.list, n) && !(post.tables.payload_of(n).kind is Device)
-            implies payload_wf(post.tables.payload_of(n)) by {
+        assert forall|n: usize| #[trigger] post.tables.is_cap(&post.list, n) implies {
+            &&& !(post.tables.payload_of(n).kind is Device) ==> payload_wf(post.tables.payload_of(n))
+            &&& control_named(post.tables.payload_of(n))
+        } by {
             if n != child {
                 Self::lemma_caps_frame(pre, post, child, child, n);
                 assert(post.is_cap(n));
