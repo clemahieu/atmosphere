@@ -288,6 +288,9 @@ unsafe extern "C" fn page_fault(regs: &mut Registers) {
         crate::kernel::kill_current_thread(regs);
         return;
     }
+    if crate::write_protect::fixup(regs) {
+        return;
+    }
     log::info!("CPU {}: Page Fault (address {:#x}, error code {:?}): {:#x?}",
         crate::cpu::get_cpu_id(),
         address,
