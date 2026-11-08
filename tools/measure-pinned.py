@@ -6,7 +6,10 @@ usage: tools/measure-pinned.py within0|within1|across [boots] [--lock-stats] [--
 Numbers from a host with other work on it do not mean much, so this reports the load average. It
 pins vCPU 0 and 1 to separate physical cores and keeps QEMU's other threads, and its own clock sampler,
 off both and off their SMT siblings, which share a core's execution units, L1 and L2. It prints the
-siblings, from thread_siblings_list, and the CPUs left to those threads. The placement
+siblings, from thread_siblings_list, and the CPUs left to those threads. A thread a vCPU starts after
+its pin, such as KVM's kvm-nx-lpage-re worker, inherits that pin, so through each boot the tool moves
+every QEMU thread but the two vCPUs back to those CPUs and prints each one it moved, or each one the
+kernel would not let it move. The placement
 picks the cores: within0 takes two cores sharing the L3 that holds CPU 0 (CCD 0 on a 9950X3D, the one
 with the V-cache), within1 two cores sharing the next L3 (CCD 1), and across one core from each. The
 first line names each measured CPU's L3 by its shared_cpu_list. KVM inflates IPI cost, so the IPI
@@ -215,6 +218,34 @@ def pin_vcpus(pid, pair):
         sys.exit("FAIL: did not find both vCPU threads")
 
 
+def confine(pid, others, done, moved):
+    """Until done is set, moves every thread of pid but the vCPU threads onto others whenever it may run
+    elsewhere, and records (tid, comm, cpus it was allowed outside others, refusal or None) once per
+    thread in moved; a refused thread is not tried again. Runs from a thread kept on others, after
+    pin_vcpus has named and pinned both vCPU threads."""
+    os.sched_setaffinity(0, others)
+    seen, refused = set(), set()
+    while not done.wait(0.001):
+        for task in glob.glob(f"/proc/{pid}/task/*"):
+            tid = int(task.split("/")[-1])
+            try:
+                name = read(f"{task}/comm")
+                allowed = os.sched_getaffinity(tid)
+            except OSError:
+                continue
+            if re.match(r"CPU \d/KVM", name) or allowed <= others or tid in refused:
+                continue
+            try:
+                os.sched_setaffinity(tid, others)
+            except OSError as error:
+                refused.add(tid)
+                moved.append((tid, name, sorted(allowed - others), error.strerror))
+                continue
+            if tid not in seen:
+                seen.add(tid)
+                moved.append((tid, name, sorted(allowed - others), None))
+
+
 def clock_source(cpu):
     """The cpufreq file, in kHz, that reports the clock of cpu: the APERF/MPERF average where the kernel has it."""
     for name in ("cpuinfo_avg_freq", "scaling_cur_freq"):
@@ -250,10 +281,13 @@ def boot(pair, others, out):
         preexec_fn=lambda: os.sched_setaffinity(0, others))
     pin_vcpus(qemu.pid, pair)
     samples = {cpu: [] for cpu in pair}
+    moved = []
     done = threading.Event()
     paths = {cpu: f"/sys/devices/system/cpu/cpu{cpu}/cpufreq/{clock_source(cpu)}" for cpu in pair}
-    sampler = threading.Thread(target=sample_clocks, args=(paths, others, done, samples))
-    sampler.start()
+    workers = [threading.Thread(target=sample_clocks, args=(paths, others, done, samples)),
+               threading.Thread(target=confine, args=(qemu.pid, others, done, moved))]
+    for worker in workers:
+        worker.start()
     try:
         qemu.wait(timeout=300)
     except subprocess.TimeoutExpired:
@@ -261,8 +295,9 @@ def boot(pair, others, out):
         sys.exit(f"FAIL: no exit within 300 s; see {log}")
     finally:
         done.set()
-        sampler.join()
-    return open(log, "rb").read().decode(errors="replace"), samples
+        for worker in workers:
+            worker.join()
+    return open(log, "rb").read().decode(errors="replace"), samples, moved
 
 
 def main():
@@ -282,10 +317,15 @@ def main():
         print(f"  L3 of CPU {cpu}: {read(f'/sys/devices/system/cpu/cpu{cpu}/cache/index3/shared_cpu_list')}")
     check_noise(pair, force)
     for i in range(boots):
-        log, samples = boot(pair, others, out)
+        log, samples, moved = boot(pair, others, out)
         if "dom0 benchmark done" not in log:
             sys.exit(f"FAIL: boot {i} did not finish; see {out}/serial.log")
         print(f"boot {i}, load {os.getloadavg()[0]:.2f}")
+        for tid, name, cpus, refused in moved:
+            if refused:
+                print(f"  WARNING: thread {tid} ({name}) could not be moved off CPUs {cpu_list(cpus)}: {refused}")
+            else:
+                print(f"  moved thread {tid} ({name}) off CPUs {cpu_list(cpus)}")
         last = {}
         for line in log.splitlines():
             if LINES.search(line):
