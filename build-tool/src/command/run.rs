@@ -95,7 +95,7 @@ pub(super) async fn run(global: GlobalOpts) -> Result<()> {
     };
 
     let loader = project
-        .uefi_loader()
+        .loader()
         .build(&opts)
         .await?
         .expect("No binary was reproduced for the early loader");

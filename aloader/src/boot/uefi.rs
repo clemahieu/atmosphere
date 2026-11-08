@@ -3,7 +3,7 @@
 //! OVMF, or a machine's firmware, starts the loader as an application from the EFI system
 //! partition. The loader reads the initrd (kernel, dom0 and payload, as atmo run concatenates
 //! them) from the same partition, takes the ACPI RSDP from the configuration tables, leaves boot
-//! services, and runs the same load as the multiboot entry on a stack of its own.
+//! services, and runs the load on a stack of its own.
 
 use core::arch::asm;
 use core::ffi::c_void;
@@ -29,8 +29,7 @@ static INITRD_PATH: [u16; 7] = [
 /// The configuration table entry of the ACPI 2.0 RSDP (UEFI 2.11, section 4.6.1.1).
 const ACPI_20_TABLE_GUID: Guid = guid!("8868e871-e4f1-11d3-bc22-0080c73c8881");
 
-/// The loader's stack. `main::load` keeps the kernel's BootInfo on it, and that alone is 64 MiB;
-/// this is the size crt0.asm reserves for the multiboot entry.
+/// The loader's stack. `main::load` keeps the kernel's BootInfo on it, and that alone is 64 MiB.
 const STACK_SIZE: usize = 256 * 1024 * 1024;
 
 /// Allocations the loader keeps stay below 4 GiB: inside the identity map the loader builds, and
@@ -94,7 +93,7 @@ extern "efiapi" fn efi_main(image: Handle, system_table: *const SystemTable) -> 
 /// Called on the loader's stack with the RSDP in rdi. The target's C convention is Microsoft's,
 /// which passes it in rcx.
 extern "sysv64" fn load(rsdp: u64) -> ! {
-    crate::load(Some(rsdp))
+    crate::load(rsdp)
 }
 
 /// Panics unless `status` is success.

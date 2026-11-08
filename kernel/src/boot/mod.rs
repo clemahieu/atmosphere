@@ -1,6 +1,6 @@
 //! Bootloader integration.
 //!
-//! We are loaded by the boot manager which implements Xen PVH and Multiboot v2.
+//! The early loader (`aloader`) enters the kernel with a `BootInfo`.
 
 pub mod ap_start;
 pub mod command_line;

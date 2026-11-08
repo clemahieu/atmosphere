@@ -12,20 +12,7 @@ use x86::current::paging::{PAddr, VAddr};
 use super::{ContiguousMapping, MemoryRange, VirtualMapper, BOOTSTRAP_SIZE};
 use crate::memory::PhysicalAllocator;
 
-/// Reserved region to identity map physical pages.
-#[cfg(not(target_os = "uefi"))]
-static mut BOOTSTRAP_REGION: [u8; BOOTSTRAP_SIZE] = [0; BOOTSTRAP_SIZE];
-
-/// The allocator for the loader's page tables.
-#[cfg(not(target_os = "uefi"))]
-pub static mut BOOTSTRAP_ALLOCATOR: BumpAllocator = BumpAllocator {
-    base: (&raw mut BOOTSTRAP_REGION).cast::<u8>(),
-    size: BOOTSTRAP_SIZE,
-    watermark: AtomicUsize::new(0),
-};
-
 /// The allocator for the loader's page tables, over the region `set_bootstrap_region` gives it.
-#[cfg(target_os = "uefi")]
 pub static mut BOOTSTRAP_ALLOCATOR: BumpAllocator = BumpAllocator {
     base: ptr::null_mut(),
     size: 0,
@@ -156,7 +143,6 @@ impl BumpAllocator {
 /// The UEFI entry allocates the region below 4 GiB rather than in the image, which the firmware
 /// may load anywhere: the kernel's AP trampoline loads the root of these page tables into CR3 from
 /// 32-bit code. Called once, before anything allocates from it.
-#[cfg(target_os = "uefi")]
 pub unsafe fn set_bootstrap_region(base: *mut u8) {
     BOOTSTRAP_ALLOCATOR.base = base;
     BOOTSTRAP_ALLOCATOR.size = BOOTSTRAP_SIZE;

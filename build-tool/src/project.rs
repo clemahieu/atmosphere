@@ -57,22 +57,10 @@ impl Project {
         }
     }
 
-    /// Returns the early loader crate, built as the multiboot2 and PVH ELF that QEMU's -kernel
-    /// boots.
-    pub fn loader(self: &Arc<Self>) -> Crate {
-        Crate {
-            name: "aloader".to_string(),
-            crate_dir: self.root.join("aloader"),
-            binary: Some("aloader".to_string()),
-            target: None,
-            max_stack_size: Some(Byte::from_bytes(1024 * 1024 * 16)), // 16 MiB
-        }
-    }
-
     /// Returns the early loader crate, built as the UEFI application that OVMF boots.
     ///
     /// The stack size check reads ELF, and this build is PE.
-    pub fn uefi_loader(self: &Arc<Self>) -> Crate {
+    pub fn loader(self: &Arc<Self>) -> Crate {
         Crate {
             name: "aloader".to_string(),
             crate_dir: self.root.join("aloader"),

@@ -52,28 +52,9 @@ const KERNEL_STACK_SIZE: u64 = 256 * 1024 * 1024; // 256 MiB
 #[cfg(feature = "small_kernel_stack")]
 const KERNEL_STACK_SIZE: u64 = 16 * 1024 * 1024; // 16 MiB
 
-/// The multiboot2 and PVH entry, called from crt0.asm.
-#[cfg(not(target_os = "uefi"))]
-#[cfg_attr(not(test), no_mangle)]
-extern "C" fn main(_argc: isize, _argv: *const *const u8) -> ! {
-    unsafe {
-        console::init();
-        logging::init();
-    }
-
-    log::info!("** Atmosphere Loader **");
-
-    unsafe {
-        boot::init();
-        memory::init();
-    }
-
-    load(None)
-}
-
-/// Loads the kernel, dom0 and the payload from the boot path's memory map and kernel image, and
-/// enters the kernel. `rsdp` is the ACPI RSDP when the boot path found it.
-fn load(rsdp: Option<u64>) -> ! {
+/// Loads the kernel, dom0 and the payload from the memory map and kernel image the UEFI entry
+/// recorded, and enters the kernel. `rsdp` is the ACPI RSDP from the UEFI configuration tables.
+fn load(rsdp: u64) -> ! {
     let bootstrap_allocator = memory::bootstrap_allocator();
 
     let mut address_space = AddressSpace::new(bootstrap_allocator);
