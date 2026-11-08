@@ -29,5 +29,8 @@ members = [
 
 exclude = ["test-pass", "tools/verus"]
 
+[workspace.package]
+license = "MIT"
+
 [profile.release]
 debug = true
