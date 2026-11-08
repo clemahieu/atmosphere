@@ -13,7 +13,7 @@ use crate::gdt::GlobalDescriptorTable;
 #[cfg(not(feature = "capability"))]
 use crate::kernel;
 use crate::thread::SwitchDecision;
-use verified::capability::operation;
+use verified::capability::{boot, operation};
 use verified::trap::Registers;
 
 /// Flags cleared on syscall entry. The kernel is not preemptible, so IF. Compiled code assumes DF is
@@ -33,8 +33,8 @@ static mut SYSCALLS: [u64; MAX_SYSCALLS] = [0; MAX_SYSCALLS];
 #[cfg(not(feature = "capability"))]
 const _: extern "C" fn(usize, usize, usize, &mut Registers, usize, usize) = kernel::sys_new_proc;
 
-// User space invokes operations by asys's numbers and reads asys's statuses; they must be the ones the
-// verified dispatch decodes and returns.
+// User space invokes operations by asys's numbers, reads asys's statuses and finds its first capabilities
+// at asys's slots; they must be the ones the verified dispatch decodes and returns and boot writes.
 const _: () = {
     use asys::operation as user;
     assert!(user::STATUS_REFUSED == operation::STATUS_REFUSED);
@@ -53,6 +53,8 @@ const _: () = {
     assert!(user::CALL == operation::OPERATION_CALL);
     assert!(user::REPLY_RECV == operation::OPERATION_REPLY_RECV);
     assert!(user::PRINT == operation::OPERATION_PRINT);
+    assert!(user::ROOT_PROCESS_SLOT == boot::ROOT_PROCESS_SLOT as u64);
+    assert!(user::ROOT_THREAD_SLOT == boot::ROOT_THREAD_SLOT as u64);
 };
 
 /// Initializes syscalls.
