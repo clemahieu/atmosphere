@@ -11,4 +11,3 @@ asys = { path = "../asys" }
 spin = "0.9.8"
 log = "0.4.19"
 x86 = "0.52.0"
-pcid = { path = "../pcid" }

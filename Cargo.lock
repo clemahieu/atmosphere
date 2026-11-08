@@ -972,7 +972,6 @@ version = "0.1.0"
 dependencies = [
  "asys",
  "log",
- "pcid",
  "spin",
  "x86",
 ]

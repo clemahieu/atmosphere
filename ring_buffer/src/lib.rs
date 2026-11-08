@@ -3,7 +3,6 @@
 use core::option::*;
 use core::option::Option::*;
 use core::mem::MaybeUninit;
-use pcid::utils::PciBarAddr;
 
 pub const SIZE_OF_QUEUE:usize = 4096;
 pub const SIZE_OF_BUFFER:usize = 4096;
