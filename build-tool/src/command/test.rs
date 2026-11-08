@@ -6,16 +6,18 @@ use std::process::{ExitCode, Stdio};
 use anyhow::{anyhow, Context};
 use cargo_metadata::MetadataCommand;
 use clap::Parser;
-use futures::future::join_all;
 use tokio::fs;
 use tokio::process::Command;
 
-use super::{verify, GlobalOpts, SubCommand};
+use super::{GlobalOpts, SubCommand};
 use crate::error::Result;
 use crate::project::{BuildOptions, Project, ProjectHandle};
 
 /// Holds the number of verification errors the gate accepts, relative to the project root.
 const VERIFY_ALLOWANCE_PATH: &str = "tools/verify-allowance";
+
+/// Verus over the crates marked for verification, relative to the project root.
+const VERIFY: &str = "tools/verify.py";
 
 /// The license check over every package in Cargo.lock, relative to the project root.
 const LICENSE_CHECK: &str = "tools/check-licenses.py";
@@ -239,20 +241,28 @@ async fn run_check(project: &ProjectHandle, program: &str, args: &[&str]) -> Res
     Ok(())
 }
 
+/// Runs Verus through the script and compares the errors on its results lines with the allowance. The
+/// script exits non-zero whenever a crate has an error, so its status alone does not decide the check.
 async fn check_verify(project: &ProjectHandle) -> Result<String> {
-    let path = project.root().join(VERIFY_ALLOWANCE_PATH);
+    let root = project.root();
+    let path = root.join(VERIFY_ALLOWANCE_PATH);
     let allowance = parse_allowance(&fs::read_to_string(&path).await?)
         .ok_or_else(|| anyhow!("{} does not hold a number", VERIFY_ALLOWANCE_PATH))?;
 
-    let roots = verify::verified_crates(project)?;
-    let outputs = join_all(roots.iter().map(|root| verify::rust_verify(root, &[]).output())).await;
-
-    let mut errors = 0;
-    for (root, output) in roots.iter().zip(outputs) {
-        let output = output?;
-        let text = String::from_utf8_lossy(&output.stdout) + String::from_utf8_lossy(&output.stderr);
-        errors += parse_verify_errors(&text)
-            .ok_or_else(|| anyhow!("no verification result from {}", root.display()))?;
+    let output = Command::new(root.join(VERIFY))
+        .current_dir(&root)
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .with_context(|| VERIFY.to_string())?;
+    let text = String::from_utf8_lossy(&output.stdout) + String::from_utf8_lossy(&output.stderr);
+    let counts: Vec<u64> = text.lines().filter_map(parse_verify_errors).collect();
+    if counts.is_empty() {
+        return Err(anyhow!("{}: {}, no verification results line", VERIFY, output.status));
+    }
+    let errors: u64 = counts.iter().sum();
+    if errors == 0 && !output.status.success() {
+        return Err(anyhow!("{}: {} with no errors counted", VERIFY, output.status));
     }
 
     if errors > allowance {

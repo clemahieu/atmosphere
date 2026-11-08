@@ -32,5 +32,5 @@ atmo test
 ## Run verification
 
 ```bash
-atmo verify
+tools/verify.py
 ```

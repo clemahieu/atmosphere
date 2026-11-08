@@ -13,7 +13,6 @@ macro_rules! unwrap_command {
 mod gdb;
 mod run;
 mod test;
-mod verify;
 
 use clap::{CommandFactory, Parser};
 use clap_complete::Shell;
@@ -26,7 +25,6 @@ pub async fn run() -> Result<(), anyhow::Error> {
         SubCommand::Run(_) => run::run(opts).await?,
         SubCommand::Gdb(_) => gdb::run(opts).await?,
         SubCommand::Test(_) => test::run(opts).await?,
-        SubCommand::Verify(_) => verify::run(opts).await?,
         SubCommand::GenCompletions(local) => {
             gen_completions(local.shell);
         }
@@ -55,7 +53,6 @@ enum SubCommand {
     Run(run::Opts),
     Gdb(gdb::Opts),
     Test(test::Opts),
-    Verify(verify::Opts),
 
     #[clap(hide = true)]
     GenCompletions(GenCompletions),
