@@ -1,11 +1,9 @@
 use core::alloc::{GlobalAlloc, Layout};
-use core::mem::transmute;
 use core::ptr;
 use core::ptr::NonNull;
 use log::trace;
 use slabmalloc::*;
 use spin::Mutex;
-use constants::*;
 
 /// SLAB_ALLOC is set as the system's default allocator, it's implementation follows below.
 ///
@@ -73,7 +71,7 @@ impl Pager {
     fn allocate_page(&mut self) -> Option<&'static mut ObjectPage<'static>> {
         trace!("allocate_page {}", Pager::BASE_PAGE_SIZE);
         self.alloc_page(Pager::BASE_PAGE_SIZE)
-            .map(|r| unsafe { transmute(r as usize) })
+            .map(|r| unsafe { &mut *(r as *mut ObjectPage<'static>) })
     }
 
     /// Release a ObjectPage back to the System.
@@ -86,7 +84,7 @@ impl Pager {
     fn allocate_large_page(&mut self) -> Option<&'static mut LargeObjectPage<'static>> {
         trace!("allocate_large_page {}", Pager::LARGE_PAGE_SIZE);
         self.alloc_page(Pager::LARGE_PAGE_SIZE)
-            .map(|r| unsafe { transmute(r as usize) })
+            .map(|r| unsafe { &mut *(r as *mut LargeObjectPage<'static>) })
     }
 
     /// Release a LargeObjectPage back to the System.
@@ -98,9 +96,6 @@ impl Pager {
         );
     }
 }
-
-/// A pager for GlobalAlloc.
-static mut PAGER: Pager = Pager;
 
 /// A SafeZoneAllocator that wraps the ZoneAllocator in a Mutex.
 ///
@@ -122,7 +117,7 @@ unsafe impl GlobalAlloc for SafeZoneAllocator {
                     }
                     Err(AllocationError::OutOfMemory) => {
                         if layout.size() <= ZoneAllocator::MAX_BASE_ALLOC_SIZE {
-                            PAGER.allocate_page().map_or(ptr::null_mut(), |page| {
+                            Pager.allocate_page().map_or(ptr::null_mut(), |page| {
                                 zone_allocator
                                     .refill(layout, page)
                                     .expect("Could not refill?");
@@ -133,7 +128,7 @@ unsafe impl GlobalAlloc for SafeZoneAllocator {
                             })
                         } else {
                             // layout.size() <= ZoneAllocator::MAX_ALLOC_SIZE
-                            PAGER
+                            Pager
                                 .allocate_large_page()
                                 .map_or(ptr::null_mut(), |large_page| {
                                     zone_allocator
