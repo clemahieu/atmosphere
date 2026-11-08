@@ -15,6 +15,7 @@ use crate::capability::block::*;
 use crate::capability::kernel::*;
 use crate::capability::list::*;
 use crate::capability::reach::*;
+use crate::capability::reclaim_thread::*;
 use crate::capability::refs::*;
 use crate::capability::retype::*;
 use crate::capability::space::*;
@@ -57,7 +58,8 @@ pub const TABLE_SLICE_BUDGET: usize = 64;
 
 /// What a reclaim did.
 pub enum ReclaimStep {
-    /// Nothing changed: the caller may not name this block, or a capability still does.
+    /// Nothing changed: the caller may not name this block, or a capability or a core still depends on
+    /// it.
     Refused,
     /// Nothing changed: a core may still hold a translation to it. Retype again later, since nothing
     /// waits under the lock.
@@ -67,8 +69,8 @@ pub enum ReclaimStep {
     /// The block held a table leaf or table page whose hidden node is now gone, so it is dead, and its
     /// dismantling starts on a later retype.
     Unlinked,
-    /// Some of a dead leaf's capabilities, or of a dead table page's children or mappings, went, and more
-    /// may remain. Retype again.
+    /// Some of a dead leaf's capabilities, of a dead table page's children or mappings, or a dead
+    /// thread's binding, went, and more may remain. Retype again.
     Slice,
 }
 
@@ -556,7 +558,9 @@ impl CapKernel {
                 || old(self).can_slice_table(root, from, base)
                 || (old(self).can_retype_under(root, from, base, 3) && old(self).table_is_empty(base))
                 || old(self).can_cut_space(root, from, base)
-                || (old(self).can_retype_under(root, from, base, 3) && old(self).space_is_empty(base))) ==> ret is Refused,
+                || (old(self).can_retype_under(root, from, base, 3) && old(self).space_is_empty(base))
+                || old(self).can_unbind_thread(root, from, base)
+                || (old(self).can_retype_under(root, from, base, 1) && old(self).thread_is_spent(base))) ==> ret is Refused,
             !old(self).view().holds_right(root, old(self).tables.node_of(root, from), Right::Retype) ==> ret is Refused,
             old(self).spaces.roots@.contains_key(base) && !old(self).dead_io_space(base) ==> ret is Refused,
             old(self).can_cut_space(root, from, base) ==> ret is Slice,
@@ -573,14 +577,19 @@ impl CapKernel {
             old(self).table_pages.maps@.contains_key(base) && ret is Unlinked ==> old(self).table_page_unlinked(*final(self), root, from, base),
             old(self).table_pages.maps@.contains_key(base) && ret is Slice ==> old(self).table_sliced(*final(self), root, from, base),
             old(self).table_pages.maps@.contains_key(base) && ret is Freed ==> old(self).table_freed(*final(self), c, root, from, base),
+            old(self).can_unbind_thread(root, from, base) ==> ret is Slice,
+            old(self).threads.records@.contains_key(base) && ret is Slice ==> old(self).thread_unbound(*final(self), root, from, base),
+            old(self).threads.records@.contains_key(base) && ret is Freed ==> old(self).thread_freed(*final(self), c, root, from, base),
             ret is Again ==> !old(self).acknowledged(base / 4096) || !old(self).acknowledged((base / 4096 + 1) as usize),
             ret is Freed ==> old(self).frame_freed(*final(self), c, root, from, base)
                 || old(self).leaf_freed(*final(self), c, root, from, base)
                 || old(self).table_freed(*final(self), c, root, from, base)
-                || old(self).space_freed(*final(self), c, root, from, base),
+                || old(self).space_freed(*final(self), c, root, from, base)
+                || old(self).thread_freed(*final(self), c, root, from, base),
             ret is Slice ==> old(self).leaf_sliced(*final(self), root, from, base)
                 || old(self).table_sliced(*final(self), root, from, base)
-                || old(self).space_children_cut(*final(self), root, from, base),
+                || old(self).space_children_cut(*final(self), root, from, base)
+                || old(self).thread_unbound(*final(self), root, from, base),
             ret is Unlinked ==> old(self).leaf_unlinked(*final(self), root, from, base)
                 || old(self).table_page_unlinked(*final(self), root, from, base),
     {
@@ -592,6 +601,7 @@ impl CapKernel {
             pre.lemma_empty_table_no_work(root, from, base);
             pre.lemma_spent_table_is_empty(base);
             pre.lemma_spent_space_is_empty(base);
+            pre.lemma_thread_object(base);
         }
         let page = base / 4096;
         if page >= NUM_PAGES {
@@ -625,7 +635,8 @@ impl CapKernel {
                     self.free_space(c, root, from, base)
                 }
             },
-            ObjectType::None | ObjectType::Thread | ObjectType::Process => ReclaimStep::Refused,
+            ObjectType::Thread => self.reclaim_thread(c, root, from, base),
+            ObjectType::None | ObjectType::Process => ReclaimStep::Refused,
         }
     }
 
