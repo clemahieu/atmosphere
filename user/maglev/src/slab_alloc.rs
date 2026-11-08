@@ -65,7 +65,6 @@ impl Pager {
             _ => unreachable!("invalid page-size supplied"),
         };
 
-        //unsafe { System.dealloc(ptr, layout) };
     }
 
     /// Allocates a new ObjectPage from the System.

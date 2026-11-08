@@ -59,7 +59,6 @@ impl MaglevHashmap{
             pairs:[maglev_kv_pair::new();CAPACITY],
         } 
         
-
     }
 }
 
@@ -75,7 +74,6 @@ pub fn fnv_1_multi(data:*mut u8, len:usize, mut state:usize) -> usize {
 		state *= FNV_PRIME;
         
         unsafe{
-            // log::info!("data @ {:x?} data[{}] {:x}", data, i, *(((data as usize) + i) as *mut u8));
             state ^= *(((data as usize) + i) as *mut u8) as usize;
         }
 	}
@@ -167,7 +165,6 @@ pub fn flowhash(frame:*mut u8, len:usize) -> usize {
         if (*(((f as usize) + ETH_HEADER_LEN) as *mut u8) as usize >> 4 != 4) {
             // This shitty implementation can only handle IPv4 :(
             log::info!("\n");
-            // return 0;
         }
     
         let proto = *(((f as usize) + ETH_HEADER_LEN + IPV4_PROTO_OFFSET) as *mut u8) as usize;
@@ -181,7 +178,6 @@ pub fn flowhash(frame:*mut u8, len:usize) -> usize {
         if (len < (ETH_HEADER_LEN + v4len + 4)) {
             // Not long enough
             log::info!("header len short len {} expected {} \n", len, (ETH_HEADER_LEN + v4len + 4));
-            //hexdump(f, 64);
             return 0;
         }
     
@@ -234,7 +230,6 @@ fn populate_lut(lut: &mut LookUpTable) {
 
     loop {
         for i in 0..3 {
-            // let c = 0;
             let mut c = get_permutation(nodes[i], next[i]);
             while (lut[c] >= 0) {
                 next[i] += 1;
@@ -267,14 +262,12 @@ fn maglev_hashmap_insert(key:usize, value:usize)
             }
         }
     }
-    //uint64_t hash = hash_fn(key);
 }
 
 #[inline(always)]
 fn maglev_hashmap_get(key:usize) -> Option<*mut maglev_kv_pair>
 {
     unsafe{
-    //uint64_t hash = hash_fn(key);
     let hash = fnv_1_usize(key);
     for i in 0..CAPACITY {
         let probe = hash + i;
@@ -296,7 +289,6 @@ pub fn maglev_process_frame(frame: *mut rte_ether_hdr, len: usize) -> usize {
     unsafe{
         let mut backend:usize = 0xFFFFFFFF;
         let hash = flowhash(frame as *mut u8, len);
-        // log::info!("hash: {:x}", hash);
         if (hash != 0) {
             let cached = maglev_hashmap_get(hash);
             if (cached.is_none()) {

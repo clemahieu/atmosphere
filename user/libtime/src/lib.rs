@@ -33,7 +33,6 @@ pub fn sys_ns_sleep(ns: u64) {
             break;
         }
 
-        //sys_yield();
     }
 }
 

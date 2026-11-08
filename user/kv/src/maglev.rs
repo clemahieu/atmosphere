@@ -36,7 +36,6 @@ pub const UDP_CHECKSUM_OFFSET: usize = 6;
 
 pub const TABLE_SIZE: usize = 65537;
 
-
 pub type Node = u32;
 
 pub struct MaglevHashmap{
@@ -48,7 +47,6 @@ impl MaglevHashmap{
             pairs:[maglev_kv_pair::new();CAPACITY],
         } 
         
-
     }
 }
 
@@ -63,7 +61,6 @@ pub fn fnv_1_multi(data:*mut u8, len:usize, mut state:usize) -> usize {
 		state *= FNV_PRIME;
         
         unsafe{
-            // log::info!("data @ {:x?} data[{}] {:x}", data, i, *(((data as usize) + i) as *mut u8));
             state ^= *(((data as usize) + i) as *mut u8) as usize;
         }
 	}
@@ -153,10 +150,6 @@ pub fn maglev_hashmap_insert(key:*mut u8, value:*mut u8)
             let probe = hash + i;
             let mut pair = &mut map.pairs[probe % CAPACITY];
             let k = unsafe { core::slice::from_raw_parts(key, K_SIZE) };
-            // log::info!("key: {:?}",k);
-            // log::info!("value: {:?}",unsafe { core::slice::from_raw_parts(value, V_SIZE) });
-            // log::info!("pair.key: {:?}",pair.key);
-            // log::info!("pair.value: {:?}",pair.value);
             let empty_k = unsafe { core::slice::from_raw_parts(&[0u8;K_SIZE] as *const u8, K_SIZE) };
 
             if (k == pair.key || pair.key == empty_k) {
@@ -174,14 +167,12 @@ pub fn maglev_hashmap_insert(key:*mut u8, value:*mut u8)
             }
         }
     }
-    //uint64_t hash = hash_fn(key);
 }
 
 #[inline(always)]
 pub fn maglev_hashmap_get(key:*mut u8) -> Option<*mut maglev_kv_pair>
 {
     unsafe{
-    //uint64_t hash = hash_fn(key);
     let hash = fnv_1(key, K_SIZE);
     for i in 0..CAPACITY {
         let probe = hash + i;
@@ -202,4 +193,3 @@ pub fn maglev_hashmap_get(key:*mut u8) -> Option<*mut maglev_kv_pair>
     return None;
     }
 }
-

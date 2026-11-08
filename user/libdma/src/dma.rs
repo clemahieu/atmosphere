@@ -73,12 +73,3 @@ impl<T> DerefMut for Dma<T> {
         &mut self.value
     }
 }
-
-/*
-impl<T> Drop for Dma<T> {
-    fn drop(&mut self) {
-        unsafe { drop(ptr::read(self.virt)); }
-        let _ = unsafe { crate::physunmap(self.virt as usize) };
-    }
-}
-*/
