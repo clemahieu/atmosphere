@@ -1578,6 +1578,7 @@ impl CapKernel {
                 &&& forall|r: usize| #[trigger] space_mapping(tree, r) == space_mapping(tree_of(&old(self).table_pages, &old(self).spaces), r)
             },
             discharges(old(self).view(), final(self).view(), root, Effect::Local),
+            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
         let ghost pre = *old(self);
         let ghost tree = tree_of(&pre.table_pages, &pre.spaces);

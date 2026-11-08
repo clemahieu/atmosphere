@@ -2321,6 +2321,7 @@ impl CapKernel {
             final(self).wf(),
             ret == (old(self).can_set_registers(root, i) && user_rip(frame.rip)),
             !ret ==> *final(self) == *old(self),
+            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             ret ==> {
                 let n = old(self).tables.node_of(root, i);
                 let t = old(self).payload_of(n).base;

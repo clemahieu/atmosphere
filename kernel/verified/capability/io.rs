@@ -92,6 +92,7 @@ impl CapKernel {
             ret && r.large() ==> Self::map_large_done(*old(self), *final(self), root, slot, r.path(), from, page),
             ret && !r.large() ==> Self::map_done(*old(self), *final(self), root, slot, r.path(), from, page),
             discharges(old(self).view(), final(self).view(), root, Effect::Local),
+            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
         let l4 = (r.base >> 39) & 511;
         let l3 = (r.base >> 30) & 511;

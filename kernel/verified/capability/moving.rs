@@ -71,6 +71,7 @@ impl CapKernel {
                 &&& forall|r: ObjectId, o: ObjectId| #[trigger] final(self).view().reach(r, o) == old(self).view().reach(r, o)
             },
             discharges(old(self).view(), final(self).view(), root, Effect::Local),
+            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
         let ghost pre = *old(self);
         proof {
@@ -102,6 +103,7 @@ impl CapKernel {
             ret == old(self).can_claim(root, cap, from, to),
             !ret ==> *final(self) == *old(self),
             !(old(self).payload_of(old(self).tables.node_of(root, cap)).kind is Process) ==> !ret,
+            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             ret ==> {
                 let c = old(self).tables.node_of(root, cap);
                 let i = old(self).tables.node_of(old(self).payload_of(c).base, from);
@@ -186,6 +188,7 @@ impl CapKernel {
                 &&& old(self).tables.owner@[page_of(i)].0 == src
                 &&& old(self).tables.owner@[page_of(n)].0 == dst
             },
+            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
         let ghost pre = *old(self);
         let (i, payload) = match self.tables.lookup(&self.list, src, from) {
@@ -243,6 +246,7 @@ impl CapKernel {
             lemma_parents_moved(pre.list, post.list, i, n);
             Self::lemma_tlb_same(pre, post);
             assert(post.view().holds(dst, n));
+            Self::lemma_bound_threads_same(pre, post);
         }
         true
     }

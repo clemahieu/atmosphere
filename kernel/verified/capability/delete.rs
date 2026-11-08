@@ -16,6 +16,7 @@ use crate::capability::space::*;
 use crate::capability::table::*;
 use crate::capability::process::*;
 use crate::capability::thread::*;
+use crate::capability::view::*;
 use crate::define::*;
 
 impl CapKernel {
@@ -48,6 +49,7 @@ impl CapKernel {
                 &&& Self::caps_frame(*old(self), *final(self), n, n)
             },
             discharges(old(self).view(), final(self).view(), root, Effect::Local),
+            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
         let ghost pre = *old(self);
         proof {

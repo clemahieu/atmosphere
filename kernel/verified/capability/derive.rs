@@ -163,6 +163,7 @@ impl CapKernel {
             },
             ret == old(self).can_derive(root, from, to, rights, base, order),
             discharges(old(self).view(), final(self).view(), root, Effect::Local),
+            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
         let ghost pre = *old(self);
         proof {
@@ -269,6 +270,7 @@ impl CapKernel {
             lemma_parents_derived(pre.list, post.list, parent, child);
             Self::lemma_derive_discharges(pre, post, root, from, to);
             Self::lemma_tlb_same(pre, post);
+            Self::lemma_bound_threads_same(pre, post);
         }
         true
     }
