@@ -187,6 +187,17 @@ pub proof fn lemma_thread_block_layouts()
 {
 }
 
+/// A freed thread's record, with the XSAVE area after it, becomes a free page.
+pub proof fn thread_record_into_page(tracked record: PointsTo<ThreadRecord>) -> (tracked ret: PagePerm4k)
+    requires
+        record.is_uninit(),
+    ensures
+        ret.addr() == record.addr(),
+        ret.is_uninit(),
+{
+    crate::pptr::typed_into_page(record)
+}
+
 /// A freed space's record becomes a free page.
 pub proof fn space_record_into_page(tracked record: PointsTo<SpaceRecord>) -> (tracked ret: PagePerm4k)
     requires
