@@ -17,6 +17,7 @@ use crate::capability::refs::*;
 use crate::capability::space::*;
 use crate::capability::table::*;
 use crate::capability::thread::*;
+use crate::capability::view::*;
 use crate::define::*;
 use crate::layouts::*;
 use crate::pagetable::entry::*;
@@ -27,6 +28,9 @@ use crate::pptr::*;
 /// The index of the root's capability to its own process in its table: slot 1 of entry 0, the first
 /// slot of the table's first leaf.
 pub const ROOT_PROCESS_SLOT: usize = 1;
+
+/// The index of the root's capability to its own thread: slot 2 of entry 0.
+pub const ROOT_THREAD_SLOT: usize = 2;
 
 impl CapKernel {
     /// What init leaves: the list's synthetic root alone, no table, object, mapping or frame, every page
@@ -112,6 +116,12 @@ impl CapKernel {
             !final(self).processes.records@[base].value().dead,
             final(self).spaces.roots@.contains_key(base),
             forall|c: int| 0 <= c < NUM_CPUS ==> !#[trigger] final(self).loaded(c, base),
+            final(self).blocks.pages@[(base / 4096) as int].refs == 1,
+            final(self).list.pages@.dom() == set![root, leaf],
+            final(self).blocks.regions_2m@ == old(self).blocks.regions_2m@,
+            final(self).blocks.regions_1g@ == old(self).blocks.regions_1g@,
+            forall|i: int| 0 <= i < NUM_PAGES && !(base / 4096 <= i < base / 4096 + 8) && !(leaf / 4096 <= i < leaf / 4096 + 2)
+                ==> #[trigger] final(self).blocks.pages@[i] == old(self).blocks.pages@[i],
     {
         let ghost pre = *old(self);
         let pb = base / 4096;
@@ -290,7 +300,674 @@ impl CapKernel {
             }
             assert(PROCESS_RIGHTS & CONTROL_RIGHT != 0) by (compute_only);
             Self::lemma_boot_root_process(pre, post, root, base, leaf, l0, l1, l2, l3, freed, leaf_typed);
+            assert(post.list.pages@.dom() =~= set![root, leaf]);
+            assert forall|i: int| 0 <= i < NUM_PAGES && !(pb <= i < pb + 8) && !(lb <= i < lb + 2)
+                implies #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i] by {
+                assert(post.blocks.pages@[i] == leaf_typed.pages@[i]);
+                assert(leaf_typed.pages@[i] == freed.pages@[i]);
+            }
         }
+    }
+
+    /// The second boot step: the root thread from the two pages at `t`, bound to the root process whose
+    /// capability is at ROOT_PROCESS_SLOT, with the root's capability to it, with control, at
+    /// ROOT_THREAD_SLOT below the list's synthetic root. The block is typed as a retype types it, so a
+    /// retype naming it is refused. Boot hands over both pages' permissions.
+    #[verifier::spinoff_prover]
+    pub fn boot_root_thread(&mut self, root: usize, process: usize, leaf: usize, t: usize, Tracked(pages): Tracked<Map<usize, PagePerm4k>>)
+        requires
+            old(self).wf(),
+            root == old(self).list.seq@[0],
+            old(self).tables.roots@.contains_key(process),
+            old(self).tables.leaf(process, 0) == leaf,
+            leaf % 8192 == 0,
+            leaf != NO_LEAF,
+            leaf / 4096 + 2 <= NUM_PAGES,
+            old(self).is_cap((leaf + 1) as usize),
+            old(self).payload_of((leaf + 1) as usize) == process_of(process),
+            old(self).list.nodes@[leaf + 1].depth == 1,
+            !old(self).list.nodes@[leaf + 2].live,
+            old(self).blocks.pages@[(process / 4096) as int].refs == 1,
+            t % 8192 == 0,
+            t / 4096 + 2 <= NUM_PAGES,
+            forall|i: int| t / 4096 <= i < t / 4096 + 2 ==> #[trigger] old(self).blocks.pages@[i].kind is Reserved,
+            !old(self).blocks.covered((t / 4096) as int),
+            forall|p: usize| #[trigger] old(self).list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
+                ==> !(t / 4096 <= p / 4096 < t / 4096 + 2),
+            forall|i: usize| t / 4096 <= i < t / 4096 + 2 ==> #[trigger] holds(pages, i),
+        ensures
+            final(self).wf(),
+            final(self).list.seq@[0] == root,
+            final(self).tables.roots == old(self).tables.roots,
+            final(self).tables.owner == old(self).tables.owner,
+            final(self).tables.has_slot(process, ROOT_THREAD_SLOT),
+            final(self).tables.node_of(process, ROOT_THREAD_SLOT) == leaf + 2,
+            final(self).is_cap((leaf + 2) as usize),
+            final(self).payload_of((leaf + 2) as usize) == thread_of(t),
+            final(self).payload_of((leaf + 2) as usize).rights & CONTROL_RIGHT != 0,
+            final(self).list.is_child(root, (leaf + 2) as usize),
+            final(self).list.nodes@[leaf + 2].depth == 1,
+            final(self).threads.records@.contains_key(t),
+            final(self).threads.records@[t].value() == (ThreadRecord {
+                state: crate::capability::thread::ThreadState::Inactive,
+                frame: zero_registers(),
+                pending_stop: false,
+                dying: false,
+                process: Some(process),
+                placement: None,
+            }),
+            final(self).list.is_child((leaf + 1) as usize, t),
+            final(self).list.nodes@[t as int].kind is Binding,
+            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables).insert(t, process),
+            forall|k: int| 0 <= k < 2 ==> {
+                ||| (#[trigger] final(self).blocks.pages@[t / 4096 + k]).kind is Base
+                ||| final(self).blocks.pages@[t / 4096 + k].kind is Member
+            },
+            final(self).is_cap((leaf + 1) as usize),
+            final(self).payload_of((leaf + 1) as usize) == old(self).payload_of((leaf + 1) as usize),
+            final(self).list.nodes@[leaf + 1].depth == 1,
+            final(self).list.parent@[(leaf + 1) as usize] == old(self).list.parent@[(leaf + 1) as usize],
+            final(self).processes.records == old(self).processes.records,
+            final(self).spaces == old(self).spaces,
+            final(self).list.pages@.dom() == old(self).list.pages@.dom().insert(t),
+            forall|i: int| 0 <= i < NUM_PAGES && !(t / 4096 <= i < t / 4096 + 2) ==> {
+                &&& (#[trigger] final(self).blocks.pages@[i]).kind == old(self).blocks.pages@[i].kind
+                &&& final(self).blocks.pages@[i].object == old(self).blocks.pages@[i].object
+                &&& final(self).blocks.pages@[i].order == old(self).blocks.pages@[i].order
+            },
+    {
+        let ghost pre = *old(self);
+        let tb = t / 4096;
+        let n = leaf + 1;
+        let cap = leaf + 2;
+        proof {
+            lemma2_to64();
+            assert(tb % 2 == 0 && tb * 4096 == t) by (nonlinear_arith)
+                requires
+                    t % 8192 == 0,
+                    tb == t / 4096,
+            ;
+            lemma_slot_in_leaf(leaf, 1);
+            lemma_slot_in_leaf(leaf, 2);
+            lemma_slot_in_leaf(t, 0);
+            assert(index_entry(ROOT_THREAD_SLOT) == 0);
+            assert(index_slot(ROOT_THREAD_SLOT) == 2);
+            assert(index_ok(ROOT_THREAD_SLOT));
+            assert(pre.tables.has_slot(process, ROOT_THREAD_SLOT));
+            assert(pre.tables.node_of(process, ROOT_THREAD_SLOT) == cap);
+            assert(pre.tables.owner@.contains_key(leaf));
+            pre.lemma_slot_bound(n);
+            pre.lemma_slot_bound(cap);
+            pre.list.lemma_link(0);
+            pre.list.lemma_live_valid(root);
+            assert(pre.list.nodes@[root as int].kind is Capability);
+            assert(pre.list.nodes@[root as int].depth == 0);
+            assert(root != cap) by {
+                assert(!pre.tables.owner@.contains_key(page_of(root)));
+            }
+            // The process's block is a base, so outside the thread's reserved pages.
+            assert(process_wf(&pre.processes, &pre.blocks, process)) by {
+                pre.lemma_process_cap(n);
+            }
+            assert(!(tb <= process / 4096 < tb + 2)) by {
+                if tb <= process / 4096 < tb + 2 {
+                    assert(pre.blocks.pages@[(process / 4096) as int].kind is Reserved);
+                }
+            }
+        }
+        let tracked mut pages = pages;
+        add_free_run(&mut self.blocks, tb, 2, Tracked(&mut pages));
+        let ghost freed = *self;
+        proof {
+            Self::lemma_reserved_freed(pre, freed, tb, 2);
+            assert forall|k: int| 0 <= k < 2 implies #[trigger] freed.blocks.pages@[tb + k].kind is Free by {}
+            assert(!freed.blocks.covered(tb as int));
+            assert(!freed.list.pages@.dom().contains(t)) by {
+                if freed.list.pages@.dom().contains(t) {
+                    assert(t / 4096 == tb);
+                }
+            }
+        }
+        let typed = self.blocks.try_type(tb, 1, ObjectType::Thread);
+        let Tracked(perms) = typed.unwrap();
+        let tracked mut perms = perms;
+        let tracked first;
+        let tracked second;
+        proof {
+            assert(0usize < order_pages(1));
+            assert(1usize < order_pages(1));
+            assert(perms[(tb + 0usize) as usize].addr() == (tb + 0usize) * 4096);
+            assert(perms[(tb + 1usize) as usize].addr() == (tb + 1usize) * 4096);
+            assert((tb + 0usize) as usize == tb);
+            first = perms.tracked_remove(tb);
+            second = perms.tracked_remove((tb + 1) as usize);
+        }
+        let nodes = init_node_page(t, Tracked(first));
+        self.list.add_page(t, nodes);
+        let ghost mid = self.list;
+        proof {
+            mid.lemma_seq_fits();
+            assert(mid.nodes@[root as int] == freed.list.nodes@[root as int]);
+            assert(mid.nodes@[cap as int] == freed.list.nodes@[cap as int]);
+            assert(mid.valid(cap));
+            assert(!freed.list.nodes@[t as int].live) by {
+                if freed.list.nodes@[t as int].live {
+                    freed.list.lemma_live_valid(t);
+                }
+            }
+            assert(!mid.nodes@[t as int].live);
+        }
+        let tracked mut record = page_into_thread_record(second);
+        PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * 4096).put(Tracked(&mut record), new_thread_record());
+        proof {
+            self.threads.records.borrow_mut().tracked_insert(t, record);
+        }
+        self.list.derive(root, cap, NodeKind::Capability);
+        proof {
+            freed.tables.lemma_wf_same_pages(&freed.list, &self.list);
+        }
+        self.tables.set_payload(
+            &self.list,
+            process,
+            ROOT_THREAD_SLOT,
+            Payload { kind: CapKind::Thread, order: THREAD_ORDER, rights: THREAD_RIGHTS, base: t, badge: 0, reserved: 0 },
+        );
+        self.threads.holders = Ghost(freed.threads.holders@.insert(t, set![cap]));
+        proof {
+            Self::lemma_boot_thread_typed(freed, *self, mid, root, process, leaf, t);
+        }
+        let ghost typed = *self;
+        proof {
+            assert(typed.is_cap(n));
+            assert(typed.payload_of(n) == process_of(process));
+            assert(typed.blocks.pages@[(process / 4096) as int] == pre.blocks.pages@[(process / 4096) as int]);
+            assert(!typed.list.nodes@[t as int].live);
+        }
+        self.bind_thread(n, t);
+        proof {
+            let post = *self;
+            assert(post.tables == typed.tables);
+            assert(cap != t);
+            assert(n != t);
+            assert(post.list.nodes@[cap as int].live == typed.list.nodes@[cap as int].live);
+            assert(post.list.nodes@[cap as int].depth == typed.list.nodes@[cap as int].depth);
+            assert(post.list.nodes@[n as int].depth == typed.list.nodes@[n as int].depth);
+            assert(post.list.parent@[cap] == root);
+            assert(post.list.seq@[0] == root);
+            lemma_has(post.list.seq@, cap);
+            assert(post.list.is_child(root, cap));
+            assert(THREAD_RIGHTS & CONTROL_RIGHT != 0) by (compute_only);
+            assert(post.threads.records@[t].value() == (ThreadRecord {
+                state: crate::capability::thread::ThreadState::Inactive,
+                frame: zero_registers(),
+                pending_stop: false,
+                dying: false,
+                process: Some(process),
+                placement: None,
+            }));
+            assert(thread_process(&post.threads, t) == Some(process));
+            assert forall|x: usize| x != t implies #[trigger] thread_process(&post.threads, x) == thread_process(&pre.threads, x) by {
+                assert(freed.threads == pre.threads);
+                if post.threads.records@.contains_key(x) {
+                    assert(post.threads.records@[x] == typed.threads.records@[x]);
+                }
+            }
+            Self::lemma_bound_threads_insert(pre, post, t, process);
+            assert forall|k: int| 0 <= k < 2 implies {
+                ||| (#[trigger] post.blocks.pages@[t / 4096 + k]).kind is Base
+                ||| post.blocks.pages@[t / 4096 + k].kind is Member
+            } by {
+                assert(post.blocks.pages@[tb + k].kind == typed.blocks.pages@[tb + k].kind);
+                if k == 1 {
+                    typed.blocks.lemma_member_of(tb as int, tb + 1);
+                }
+            }
+            assert forall|i: int| 0 <= i < NUM_PAGES && !(t / 4096 <= i < t / 4096 + 2) implies {
+                &&& (#[trigger] post.blocks.pages@[i]).kind == pre.blocks.pages@[i].kind
+                &&& post.blocks.pages@[i].object == pre.blocks.pages@[i].object
+                &&& post.blocks.pages@[i].order == pre.blocks.pages@[i].order
+            } by {
+                assert(typed.blocks.pages@[i] == freed.blocks.pages@[i]);
+                assert(freed.blocks.pages@[i] == pre.blocks.pages@[i]);
+            }
+            assert(post.list.pages@.dom() =~= pre.list.pages@.dom().insert(t));
+        }
+    }
+
+    /// The thread's block typed and its capability written below the synthetic root, before the thread
+    /// is bound: the state is well formed, as after type_thread, whose proof this follows with the
+    /// synthetic root in place of an untyped.
+    proof fn lemma_boot_thread_typed(pre: Self, post: Self, mid: Tree, root: usize, process: usize, leaf: usize, t: usize)
+        requires
+            pre.wf(),
+            root == pre.list.seq@[0],
+            root < NODE_SPACE,
+            pre.list.valid(root),
+            pre.list.nodes@[root as int].live,
+            pre.list.nodes@[root as int].kind is Capability,
+            pre.list.nodes@[root as int].depth == 0,
+            leaf % 8192 == 0,
+            pre.tables.has_slot(process, ROOT_THREAD_SLOT),
+            pre.tables.node_of(process, ROOT_THREAD_SLOT) == leaf + 2,
+            page_of((leaf + 2) as usize) == leaf,
+            ((leaf + 2) as usize) % 4096 == 2,
+            pre.tables.owner@.contains_key(leaf),
+            (leaf + 2) < NODE_SPACE,
+            pre.list.valid((leaf + 2) as usize),
+            !pre.list.nodes@[leaf + 2].live,
+            t % 8192 == 0,
+            (t / 4096) * 4096 == t,
+            (t / 4096) % 2 == 0,
+            t / 4096 + 2 <= NUM_PAGES,
+            forall|k: int| 0 <= k < 2 ==> #[trigger] pre.blocks.pages@[t / 4096 + k].kind is Free,
+            !pre.blocks.covered((t / 4096) as int),
+            !pre.list.pages@.dom().contains(t),
+            // The list: t's node page added, then the capability derived below the root.
+            list_grown(pre.list, mid),
+            mid.wf(),
+            mid.pages@.dom() == pre.list.pages@.dom().insert(t),
+            !mid.nodes@[t as int].live,
+            post.list.wf(),
+            post.list.is_child(root, (leaf + 2) as usize),
+            post.list.parent@ == mid.parent@.insert((leaf + 2) as usize, root),
+            post.list.pages@.dom() == mid.pages@.dom(),
+            post.list.nodes@[leaf + 2].live,
+            post.list.nodes@[leaf + 2].kind == NodeKind::Capability,
+            post.list.nodes@[leaf + 2].depth == 1,
+            post.list.seq@[0] == mid.seq@[0],
+            forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < NODE_SPACE && i != leaf + 2 ==> {
+                &&& post.list.nodes@[i].live == mid.nodes@[i].live
+                &&& post.list.nodes@[i].kind == mid.nodes@[i].kind
+                &&& post.list.nodes@[i].depth == mid.nodes@[i].depth
+            },
+            // The blocks: the two free pages typed as a thread.
+            post.blocks.wf(),
+            post.blocks.regions_2m@ == pre.blocks.regions_2m@,
+            post.blocks.regions_1g@ == pre.blocks.regions_1g@,
+            post.blocks.pages@[(t / 4096) as int].kind is Base,
+            post.blocks.pages@[(t / 4096) as int].object is Thread,
+            post.blocks.pages@[(t / 4096) as int].order == 1,
+            post.blocks.pages@[(t / 4096) as int].refs == 1,
+            !post.blocks.pages@[(t / 4096) as int].dead,
+            forall|k: int| 0 < k < 2 ==> (#[trigger] post.blocks.pages@[t / 4096 + k]).object is None,
+            forall|i: int| 0 <= i < NUM_PAGES && !(t / 4096 <= i < t / 4096 + 2) ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
+            // The tables: the capability in slot 2.
+            post.tables.wf(&post.list),
+            post.tables.roots == pre.tables.roots,
+            post.tables.owner == pre.tables.owner,
+            post.tables.payload_of((leaf + 2) as usize) == thread_of(t),
+            forall|x: usize| #![trigger post.tables.payload_of(x)]
+                x != leaf + 2 && x % 4096 < NODES_PER_PAGE && pre.tables.owner@.contains_key(page_of(x))
+                ==> post.tables.payload_of(x) == pre.tables.payload_of(x),
+            // The thread.
+            post.threads.records@ == pre.threads.records@.insert(t, post.threads.records@[t]),
+            post.threads.records@[t].addr() == t + THREAD_RECORD_PAGE * 4096,
+            post.threads.records@[t].is_init(),
+            post.threads.records@[t].value() == fresh_thread(),
+            post.threads.holders@ == pre.threads.holders@.insert(t, set![(leaf + 2) as usize]),
+            // Everything else is as it was.
+            post.cores == pre.cores,
+            post.flush_epoch == pre.flush_epoch,
+            post.tlb == pre.tlb,
+            post.iommus == pre.iommus,
+            post.mapped == pre.mapped,
+            post.stale_epoch == pre.stale_epoch,
+            post.frames == pre.frames,
+            post.table_pages == pre.table_pages,
+            post.spaces == pre.spaces,
+            post.mappings == pre.mappings,
+            post.zeroing == pre.zeroing,
+            post.holders == pre.holders,
+            post.devices == pre.devices,
+            post.processes == pre.processes,
+            post.stop_ipis == pre.stop_ipis,
+        ensures
+            post.wf(),
+            forall|x: usize| #[trigger] pre.is_cap(x) ==> {
+                &&& post.is_cap(x)
+                &&& post.payload_of(x) == pre.payload_of(x)
+                &&& post.list.nodes@[x as int].depth == pre.list.nodes@[x as int].depth
+                &&& post.list.parent@[x] == pre.list.parent@[x]
+            },
+            post.is_cap((leaf + 2) as usize),
+            !post.list.nodes@[t as int].live,
+    {
+        let base = t;
+        let page = t / 4096;
+        let parent = root;
+        let child = (leaf + 2) as usize;
+        assert forall|x: usize| #[trigger] pre.list.valid(x) && x != child implies {
+            &&& post.list.nodes@[x as int].live == pre.list.nodes@[x as int].live
+            &&& post.list.nodes@[x as int].kind == pre.list.nodes@[x as int].kind
+        } by {
+            assert(mid.nodes@[x as int] == pre.list.nodes@[x as int]);
+            pre.list.lemma_valid_bound(x);
+        }
+        assert(Self::space_step(pre, post, child));
+        assert(post.payload_of(child) == thread_of(base));
+        lemma2_to64();
+        assert(block_bytes(THREAD_ORDER) == 8192);
+        assert(payload_wf(post.payload_of(child)));
+        assert(post.is_cap(child));
+        Self::lemma_space_caps_wf(pre, post, child);
+        Self::lemma_tlb_same(pre, post);
+        Self::lemma_space_nodes(pre, post, mid, parent, child);
+        Self::lemma_table_nodes_frame(pre, post, child, child);
+        Self::lemma_space_nodes_frame(pre, post, child, child);
+        lemma_mapping_nodes_grown(pre.list, mid, post.list, child, child);
+        assert(post.list.pages@.dom() == pre.list.pages@.dom().insert(base));
+        assert forall|k: int| 0 < k < 2 implies (#[trigger] post.blocks.pages@[page + k]).kind is Member by {
+            post.blocks.lemma_member_of(page as int, page + k);
+        }
+        Self::lemma_thread_blocks(pre, post, base, page, child);
+        assert forall|k: int| 0 <= k < 2 implies !((#[trigger] post.blocks.pages@[page + k]).object is Space) by {
+            if k == 0 {
+                assert(post.blocks.pages@[page as int].object is Thread);
+            }
+        }
+        assert forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) && post.tables.payload_of(x).kind is Space implies {
+            &&& pre.tables.is_cap(&pre.list, x)
+            &&& pre.tables.payload_of(x) == post.tables.payload_of(x)
+        } by {
+            Self::lemma_space_cap_frame(pre, post, child, x);
+        }
+        assert forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x) && pre.tables.payload_of(x).kind is Space implies {
+            &&& post.tables.is_cap(&post.list, x)
+            &&& post.tables.payload_of(x) == pre.tables.payload_of(x)
+        } by {
+            Self::lemma_space_cap_frame(pre, post, child, x);
+        }
+        lemma_spaces_small_typed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks, &post.blocks, page, 2);
+        assert forall|k: int| 0 <= k < 2 implies !((#[trigger] post.blocks.pages@[page + k]).object is Process) by {
+            if k == 0 {
+                assert(post.blocks.pages@[page as int].object is Thread);
+            }
+        }
+        assert forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) && post.tables.payload_of(x).kind is Process implies {
+            &&& pre.tables.is_cap(&pre.list, x)
+            &&& pre.tables.payload_of(x) == post.tables.payload_of(x)
+        } by {
+            Self::lemma_space_cap_frame(pre, post, child, x);
+        }
+        assert forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x) && pre.tables.payload_of(x).kind is Process implies {
+            &&& post.tables.is_cap(&post.list, x)
+            &&& post.tables.payload_of(x) == pre.tables.payload_of(x)
+        } by {
+            Self::lemma_space_cap_frame(pre, post, child, x);
+        }
+        lemma_processes_small_typed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks, &post.blocks, page, 2);
+        Self::lemma_threads_thread_added(pre, post, base, page, child);
+        assert(!pre.threads.records@.contains_key(base)) by {
+            if pre.threads.records@.contains_key(base) {
+                assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, base));
+                assert(pre.blocks.pages@[page + 0int].kind is Free);
+            }
+        }
+        assert(current_wf(post.cores@, post.threads.records@)) by {
+            reveal(current_wf);
+            assert forall|c: int, x: usize| 0 <= c < NUM_CPUS && #[trigger] runs(post.cores@, c, x) implies {
+                &&& post.threads.records@.contains_key(x)
+                &&& post.threads.records@[x].value().state == (crate::capability::thread::ThreadState::Running { core: c as usize })
+            } by {
+                assert(runs(pre.cores@, c, x));
+                assert(x != base);
+            }
+            assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) && post.threads.records@[x].value().state is Running implies {
+                let e = post.threads.records@[x].value().state->Running_core;
+                &&& e < NUM_CPUS
+                &&& post.cores@[e as int].current_thread == Some(x)
+            } by {
+                assert(x != base);
+                assert(pre.threads.records@.contains_key(x));
+            }
+            assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) && post.threads.records@[x].value().pending_stop
+                implies post.threads.records@[x].value().state is Running by {
+                if x == base {
+                    assert(post.threads.records@[base].value() == fresh_thread());
+                } else {
+                    assert(pre.threads.records@.contains_key(x));
+                }
+            }
+        }
+        assert forall|n: usize| #[trigger] pre.mappings@.contains_key(n)
+            implies post.list.parent@.contains_key(n) && post.list.parent@[n] == pre.list.parent@[n] by {
+            pre.lemma_mapping_node(n);
+        }
+        assert forall|x: usize| #[trigger] pre.is_cap(x) implies {
+            &&& post.is_cap(x)
+            &&& post.payload_of(x) == pre.payload_of(x)
+            &&& post.list.nodes@[x as int].depth == pre.list.nodes@[x as int].depth
+            &&& post.list.parent@[x] == pre.list.parent@[x]
+        } by {
+            Self::lemma_space_cap_frame(pre, post, child, x);
+            pre.lemma_slot_bound(x);
+            assert(mid.nodes@[x as int] == pre.list.nodes@[x as int]);
+        }
+        Self::lemma_mappings_grown(pre, post, page, 1);
+        assert forall|x: usize| #[trigger] post.is_cap(x) && post.payload_of(x).kind is Device
+            implies pre.is_cap(x) && pre.payload_of(x) == post.payload_of(x) by {
+            assert(x != child);
+            Self::lemma_space_cap_frame(pre, post, child, x);
+        }
+        Self::lemma_devices_same_caps(pre, post);
+        lemma_binding_nodes_grown(pre.list, mid, post.list, child, child);
+        lemma_bindings_kept(&pre.list, &post.list, &pre.threads, &post.threads, &pre.processes, &post.processes);
+        Self::lemma_binding_parents_same_caps(pre, post);
+        assert(post.wf());
+        assert(post.list.nodes@[t as int].live == mid.nodes@[t as int].live) by {
+            assert(t as int != leaf + 2);
+        }
+    }
+
+    /// The kernel after boot hands reserved pages start to start + n to the block table. No object,
+    /// frame or list page lies in a reserved page, so every clause reads what it read before.
+    proof fn lemma_reserved_freed(pre: Self, post: Self, start: usize, n: usize)
+        requires
+            pre.wf(),
+            post.blocks.wf(),
+            post.blocks.regions_2m@ == pre.blocks.regions_2m@,
+            post.blocks.regions_1g@ == pre.blocks.regions_1g@,
+            start + n <= NUM_PAGES,
+            forall|i: int| start <= i < start + n ==> #[trigger] pre.blocks.pages@[i].kind is Reserved,
+            forall|i: int| 0 <= i < NUM_PAGES ==> #[trigger] post.blocks.pages@[i]
+                == if start <= i < start + n { free_entry() } else { pre.blocks.pages@[i] },
+            forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
+                ==> !(start <= p / 4096 < start + n),
+            post.list == pre.list,
+            post.tables == pre.tables,
+            post.table_pages == pre.table_pages,
+            post.spaces == pre.spaces,
+            post.mappings == pre.mappings,
+            post.cores == pre.cores,
+            post.flush_epoch == pre.flush_epoch,
+            post.tlb == pre.tlb,
+            post.iommus == pre.iommus,
+            post.mapped == pre.mapped,
+            post.stale_epoch == pre.stale_epoch,
+            post.devices == pre.devices,
+            post.threads == pre.threads,
+            post.processes == pre.processes,
+            post.frames == pre.frames,
+            post.zeroing == pre.zeroing,
+            post.holders == pre.holders,
+            post.stop_ipis == pre.stop_ipis,
+        ensures
+            post.wf(),
+    {
+        let a = pre.blocks;
+        let b = post.blocks;
+        // A base or a member, before or after, is the same entry: the freed pages were neither.
+        assert forall|i: int| 0 <= i < NUM_PAGES && ((#[trigger] b.pages@[i]).kind is Base || b.pages@[i].kind is Member
+            || a.pages@[i].kind is Base || a.pages@[i].kind is Member) implies b.pages@[i] == a.pages@[i] by {
+            if start <= i < start + n {
+                assert(a.pages@[i].kind is Reserved);
+            }
+        }
+        assert forall|i: usize| i < NUM_PAGES implies #[trigger] block_ref(&b, i) == block_ref(&a, i) by {
+            if start <= i < start + n {
+                assert(a.pages@[i as int].kind is Reserved);
+            }
+        }
+        assert forall|br: BlockRef| #[trigger] block_typed(&b, br) == block_typed(&a, br) by {
+            match br {
+                BlockRef::Small(x) => {
+                    if x < NUM_PAGES && start <= x < start + n {
+                        assert(a.pages@[x as int].kind is Reserved);
+                    }
+                },
+                _ => {},
+            }
+        }
+        assert forall|br: BlockRef| #[trigger] block_typed(&a, br) implies {
+            &&& block_refs(&b, br) == block_refs(&a, br)
+            &&& block_dead(&b, br) == block_dead(&a, br)
+        } by {
+            match br {
+                BlockRef::Small(x) => {
+                    assert(b.pages@[x as int] == a.pages@[x as int]);
+                },
+                _ => {},
+            }
+        }
+        assert(list_pages_used(&post.list, &b)) by {
+            assert forall|p: usize| #[trigger] post.list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES implies {
+                &&& !(b.pages@[(p / 4096) as int].kind is Free)
+                &&& b.pages@[(p / 4096) as int].kind is Member
+                    ==> b.pages@[b.pages@[(p / 4096) as int].base as int].object is TablePage
+                        || b.pages@[b.pages@[(p / 4096) as int].base as int].object is Space
+                &&& !(b.pages@[(p / 4096) as int].object is Frame)
+            } by {
+                let x = (p / 4096) as int;
+                assert(b.pages@[x] == a.pages@[x]);
+                if a.pages@[x].kind is Member {
+                    a.lemma_member(x);
+                    let y = a.pages@[x].base as int;
+                    assert(b.pages@[y] == a.pages@[y]);
+                }
+            }
+        }
+        assert(holders_wf(&post.list, &post.tables, &b, &post.zeroing, post.holders@)) by {
+            assert forall|m: usize| #[trigger] post.tables.is_cap(&post.list, m) && post.tables.payload_of(m).kind is Frame implies {
+                let i = post.tables.payload_of(m).base / 4096;
+                &&& i < NUM_PAGES
+                &&& frame_in_block(block_ref(&b, i), post.tables.payload_of(m))
+                &&& post.holders@.contains_key(block_ref(&b, i))
+                &&& post.holders@[block_ref(&b, i)].contains(m)
+            } by {
+                assert(pre.tables.is_cap(&pre.list, m));
+            }
+            assert forall|br: BlockRef| #[trigger] post.holders@.contains_key(br) implies {
+                &&& post.holders@[br].finite()
+                &&& post.holders@[br].len() == block_refs(&b, br)
+                &&& block_typed(&b, br)
+                &&& block_refs(&b, br) == 0 ==> block_dead(&b, br)
+                &&& !block_active(&post.zeroing, br)
+            } by {
+                assert(pre.holders@.contains_key(br));
+                assert(block_typed(&a, br));
+            }
+            assert forall|br: BlockRef, m: usize| post.holders@.contains_key(br) && #[trigger] post.holders@[br].contains(m) implies ({
+                &&& post.tables.is_cap(&post.list, m)
+                &&& post.tables.payload_of(m).kind is Frame
+                &&& post.tables.payload_of(m).base / 4096 < NUM_PAGES
+                &&& block_ref(&b, post.tables.payload_of(m).base / 4096) == br
+            } || (m < NODE_SPACE && post.list.nodes@[m as int].live && post.list.nodes@[m as int].kind is Mapping)) by {
+                assert(pre.holders@[br].contains(m));
+                if pre.tables.is_cap(&pre.list, m) && pre.tables.payload_of(m).kind is Frame && pre.tables.payload_of(m).base / 4096 < NUM_PAGES
+                    && block_ref(&a, pre.tables.payload_of(m).base / 4096) == br {
+                    assert(block_ref(&b, pre.tables.payload_of(m).base / 4096) == br);
+                }
+            }
+        }
+        assert(objects_wf(&post.tables, &b, post.holders@)) by {
+            assert forall|x: usize| #[trigger] post.holders@.contains_key(BlockRef::Small(x)) implies b.pages@[x as int].object is Frame by {
+                assert(block_typed(&a, BlockRef::Small(x)));
+                assert(b.pages@[x as int] == a.pages@[x as int]);
+            }
+            assert forall|x: usize| x < NUM_PAGES && (#[trigger] b.pages@[x as int]).kind is Base
+                && b.pages@[x as int].object is Frame implies {
+                &&& b.pages@[x as int].order == 0
+                &&& b.pages@[x as int].refs == 0 ==> post.holders@.contains_key(BlockRef::Small(x))
+            } by {
+                assert(b.pages@[x as int] == a.pages@[x as int]);
+            }
+            assert forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) implies {
+                &&& l / 4096 < NUM_PAGES
+                &&& b.pages@[(l / 4096) as int].kind is Base
+                &&& b.pages@[(l / 4096) as int].object is TableLeaf
+                &&& b.pages@[(l / 4096) as int].order == 1
+            } by {
+                assert(a.pages@[(l / 4096) as int].kind is Base);
+            }
+            assert forall|x: usize| x < NUM_PAGES && #[trigger] leaf_block(&b, x)
+                implies post.tables.owner@.contains_key((x * 4096) as usize) by {
+                assert(b.pages@[x as int] == a.pages@[x as int]);
+                assert(leaf_block(&a, x));
+            }
+        }
+        assert(leaf_blocks_wf(&post.list, &post.tables, &b)) by {
+            assert forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) implies {
+                &&& post.list.nodes@[l as int].live ==> {
+                    &&& post.list.nodes@[l as int].kind is Hidden
+                    &&& b.pages@[(l / 4096) as int].refs == 1
+                    &&& !b.pages@[(l / 4096) as int].dead
+                }
+                &&& !post.list.nodes@[l as int].live ==> {
+                    &&& b.pages@[(l / 4096) as int].refs == 0
+                    &&& b.pages@[(l / 4096) as int].dead
+                }
+            } by {
+                assert(a.pages@[(l / 4096) as int].kind is Base);
+            }
+        }
+        assert(table_pages_wf(&post.list, &post.table_pages, &b)) by {
+            assert forall|u: usize| #[trigger] post.table_pages.maps@.contains_key(u) implies table_page_wf(&post.list, &post.table_pages, &b, u) by {
+                assert(table_page_wf(&pre.list, &pre.table_pages, &a, u));
+                assert(a.pages@[(u / 4096) as int].kind is Base);
+            }
+            assert forall|x: usize| x < NUM_PAGES && #[trigger] table_block(&b, x)
+                implies post.table_pages.maps@.contains_key((x * 4096) as usize) by {
+                assert(b.pages@[x as int] == a.pages@[x as int]);
+                assert(table_block(&a, x));
+            }
+        }
+        assert(spaces_wf(&post.list, &post.tables, &post.spaces, &b)) by {
+            assert forall|s: usize| #[trigger] post.spaces.roots@.contains_key(s) implies space_wf(&post.list, &post.spaces, &b, s) by {
+                assert(space_wf(&pre.list, &pre.spaces, &a, s));
+                assert(a.pages@[(s / 4096) as int].kind is Base);
+            }
+            assert forall|x: usize| x < NUM_PAGES && #[trigger] space_block(&b, x)
+                implies post.spaces.roots@.contains_key((x * 4096) as usize) by {
+                assert(b.pages@[x as int] == a.pages@[x as int]);
+                assert(space_block(&a, x));
+            }
+        }
+        assert(threads_wf(&post.list, &post.tables, &post.threads, &b)) by {
+            assert forall|u: usize| #[trigger] post.threads.records@.contains_key(u) implies thread_wf(&post.list, &post.threads, &b, u) by {
+                assert(thread_wf(&pre.list, &pre.threads, &a, u));
+                assert(a.pages@[(u / 4096) as int].kind is Base);
+            }
+            assert forall|x: usize| x < NUM_PAGES && #[trigger] thread_block(&b, x)
+                implies post.threads.records@.contains_key((x * 4096) as usize) by {
+                assert(b.pages@[x as int] == a.pages@[x as int]);
+                assert(thread_block(&a, x));
+            }
+        }
+        assert(processes_wf(&post.list, &post.tables, &post.processes, &b)) by {
+            assert forall|p: usize| #[trigger] post.processes.records@.contains_key(p) implies process_wf(&post.processes, &b, p) by {
+                assert(process_wf(&pre.processes, &a, p));
+                assert(a.pages@[(p / 4096) as int].kind is Base);
+            }
+            assert forall|x: usize| x < NUM_PAGES && #[trigger] process_block(&b, x)
+                implies post.processes.records@.contains_key((x * 4096) as usize) by {
+                assert(b.pages@[x as int] == a.pages@[x as int]);
+                assert(process_block(&a, x));
+            }
+        }
+        assert forall|i: usize| i < NUM_PAGES && block_typed(&pre.blocks, block_ref(&pre.blocks, i))
+            && block_refs(&pre.blocks, block_ref(&pre.blocks, i)) > 0
+            implies #[trigger] block_ref(&post.blocks, i) == block_ref(&pre.blocks, i) by {}
+        Self::lemma_blocks_changed(pre, post);
     }
 
     /// The state after the first boot step is well formed. Everything in it is new, so each part of the

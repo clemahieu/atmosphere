@@ -1784,7 +1784,7 @@ impl CapKernel {
     }
 
     /// Changing only the block table keeps the invariant.
-    proof fn lemma_blocks_changed(pre: Self, post: Self)
+    pub proof fn lemma_blocks_changed(pre: Self, post: Self)
         requires
             pre.wf(),
             post.blocks.wf(),

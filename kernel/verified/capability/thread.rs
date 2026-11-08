@@ -122,7 +122,7 @@ pub open spec fn fresh_thread() -> ThreadRecord {
     ThreadRecord { state: ThreadState::Inactive, frame: zero_registers(), pending_stop: false, dying: false, process: None, placement: None }
 }
 
-fn new_thread_record() -> (ret: ThreadRecord)
+pub fn new_thread_record() -> (ret: ThreadRecord)
     ensures
         ret == fresh_thread(),
 {
@@ -1366,7 +1366,7 @@ impl CapKernel {
 
     /// What a thread's retype does to the block table: the free order-1 block at `page` is typed as the
     /// thread at `base`, its first page joins the list, and no holder changed.
-    proof fn lemma_thread_blocks(pre: Self, post: Self, base: usize, page: usize, child: usize)
+    pub proof fn lemma_thread_blocks(pre: Self, post: Self, base: usize, page: usize, child: usize)
         requires
             Self::space_step(pre, post, child),
             same_mapping_nodes(&pre.list, &post.list),
@@ -1459,7 +1459,7 @@ impl CapKernel {
 
     /// The threads after a thread's retype at base: the new one has its record and node page and
     /// holds its one capability, and every other lay outside the block and keeps its holders.
-    proof fn lemma_threads_thread_added(pre: Self, post: Self, base: usize, page: usize, child: usize)
+    pub proof fn lemma_threads_thread_added(pre: Self, post: Self, base: usize, page: usize, child: usize)
         requires
             Self::space_step(pre, post, child),
             base % 8192 == 0,
@@ -3438,8 +3438,9 @@ impl CapKernel {
 
     /// Binds thread t, bound to nothing, to the process capability n names: node t, the first of the
     /// thread's node page, becomes a binding below n, holding a reference on the process's block. Only
-    /// retype_thread calls it, on the thread it has just typed. See design/thread-bound-at-retype/.
-    fn bind_thread(&mut self, n: usize, t: usize)
+    /// retype_thread and the boot step that makes the root thread call it, on the thread just typed.
+    /// See design/thread-bound-at-retype/.
+    pub fn bind_thread(&mut self, n: usize, t: usize)
         requires
             old(self).wf(),
             old(self).is_cap(n),
@@ -3453,6 +3454,8 @@ impl CapKernel {
             final(self).wf(),
             Self::bound_to(*old(self), *final(self), n, t),
             forall|x: usize| #[trigger] final(self).is_cap(x) == old(self).is_cap(x),
+            forall|x: int| #![trigger final(self).list.nodes@[x]] 0 <= x < NODE_SPACE && x != t
+                ==> final(self).list.nodes@[x].depth == old(self).list.nodes@[x].depth,
     {
         let ghost pre = *old(self);
         proof {

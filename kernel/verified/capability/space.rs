@@ -2636,8 +2636,8 @@ impl CapKernel {
     }
 
     /// The hidden nodes, the parents, the slots and the leaves after a space's retype: the one new
-    /// live node is the capability in its slot, and every other node's kind and parent are as they
-    /// were.
+    /// live node is the capability in its slot, below a capability or the list's first node, and
+    /// every other node's kind and parent are as they were.
     pub proof fn lemma_space_nodes(pre: Self, post: Self, mid: Tree, parent: usize, child: usize)
         requires
             Self::space_step(pre, post, child),
@@ -2645,7 +2645,7 @@ impl CapKernel {
             mid.wf(),
             post.list.wf(),
             parent < NODE_SPACE,
-            pre.is_cap(parent),
+            pre.is_cap(parent) || parent == pre.list.seq@[0],
             child < NODE_SPACE,
             !pre.list.nodes@[child as int].live,
             post.is_cap(child),
@@ -2692,7 +2692,12 @@ impl CapKernel {
             assert(post.tables.payload_of(l) == pre.tables.payload_of(l));
             assert(pre.tables.attached(l));
         }
-        pre.lemma_slot_bound(parent);
+        if pre.is_cap(parent) {
+            pre.lemma_slot_bound(parent);
+        } else {
+            pre.list.lemma_link(0);
+            pre.list.lemma_live_valid(parent);
+        }
         lemma_parents_same_live(pre.list, mid);
         lemma_parents_derived(mid, post.list, parent, child);
         assert forall|x: usize| x < NODE_SPACE && (#[trigger] post.list.nodes@[x as int]).live
