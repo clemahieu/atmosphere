@@ -43,8 +43,7 @@ use core::arch::asm;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::{ffi::c_void, panic::PanicInfo};
 
-use astd::boot::{BootInfo, PhysicalMemoryType};
-use x86::Ring;
+use astd::boot::BootInfo;
 
 static mut SHUTDOWN_ON_PANIC: bool = false;
 
@@ -56,8 +55,6 @@ static AP_UP: AtomicBool = AtomicBool::new(false);
 const AP_START_CYCLES: u64 = 20_000_000_000;
 static mut THREAD_STACK: [u8; 64 * 1024 * 1024] = [0; 64 * 1024 * 1024];
 static THREAD_COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-use verified::array_vec::ArrayVec as vArrayVec;
 
 /// CPU 0 entry point.
 #[no_mangle]
@@ -112,10 +109,7 @@ fn boot_cpu0(boot_info: *const BootInfo) -> isize {
     let boot_info = boot::get_boot_info();
     let dom0 = boot_info.dom0.as_ref().unwrap();
     let pml4 = boot_info.pml4;
-    let mut kernel_pml4: usize = 0;
-    unsafe {
-        kernel_pml4 = *(pml4 as *const usize);
-    }
+    let kernel_pml4 = unsafe { *(pml4 as *const usize) };
 
     kernel::kernel_init(&boot_info.pages, pml4 as usize, kernel_pml4 as usize);
 
@@ -173,7 +167,7 @@ extern "C" fn ap_main(cpu_id: u64) -> ! {
 }
 
 /// Thread entry point.
-fn thread_main(cpu_id: u64) {
+fn thread_main(_cpu_id: u64) {
     loop {
         THREAD_COUNTER.fetch_add(1, Ordering::SeqCst);
     }

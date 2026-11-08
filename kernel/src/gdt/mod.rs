@@ -29,7 +29,6 @@ use x86::task::load_tr;
 use x86::Ring;
 
 use types::{AccessByte, SystemAccessByte, SystemDescriptorType};
-use crate::cpu::IstStack;
 
 const GDT_F_LONG_MODE: u8 = 1 << 5;
 

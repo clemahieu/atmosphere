@@ -1,15 +1,11 @@
 //! Threading.
 
-use core::mem;
-
-use x86::{segmentation, Ring};
+use x86::Ring;
 
 use crate::gdt::GlobalDescriptorTable;
 use crate::interrupt::{self, Cycles};
 use verified::trap::Registers;
-use core::arch::asm;
 use crate::cpu;
-use crate::kernel;
 pub use verified::bridge::SwitchDecision;
 
 const TIME_SLICE: Cycles = Cycles(1_000_000);
@@ -39,7 +35,7 @@ pub unsafe fn start_thread(code: u64, stack: u64, ring: Ring) {
 }
 
 /// Schedules the next thread, returning its time slice.
-pub fn schedule(regs: &mut Registers) -> Option<Cycles> {
+pub fn schedule(_regs: &mut Registers) -> Option<Cycles> {
     log::debug!("hello from cpu {:?} scheduler",cpu::get_cpu_id());
     loop{
     }

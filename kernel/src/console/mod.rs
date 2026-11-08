@@ -10,7 +10,6 @@
 //!
 //! `serial=[com1|com2|com3|com4]`
 
-use crate::boot;
 use astd::sync::{Mutex, MutexGuard};
 use ns16550a::PioSerial;
 

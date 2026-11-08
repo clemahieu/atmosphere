@@ -171,7 +171,7 @@ pub fn get_cpu_id() -> usize {
 ///
 /// This should only be called once.
 pub unsafe fn init_cpu(cpu_id: usize) {
-    let mut cpu = &mut CPUS[cpu_id];
+    let cpu = &mut CPUS[cpu_id];
     let address = cpu as *const Cpu;
 
     log::debug!("CPU{} @ {:?}", cpu_id, address);

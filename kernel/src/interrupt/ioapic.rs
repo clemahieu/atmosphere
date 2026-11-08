@@ -10,13 +10,13 @@ static mut IOAPIC: MaybeUninit<IoApic> = MaybeUninit::zeroed();
 
 pub unsafe fn init(ioapic_base: usize) {
     log::debug!("IOAPIC base: {:#x}", ioapic_base);
-    let mut ioapic = IoApic::new(ioapic_base);
+    let ioapic = IoApic::new(ioapic_base);
     // Exclusive: see IOAPIC.
     (*&raw mut IOAPIC).write(ioapic);
 }
 
 pub unsafe fn init_cpu() {
-    let mut cpu = crate::cpu::get_current();
+    let cpu = crate::cpu::get_current();
 
     // Exclusive: see IOAPIC. init wrote it first.
     let ioapic = (*&raw mut IOAPIC).assume_init_mut();

@@ -3,9 +3,7 @@ mod zero_valid;
 use astd::boot::PhysicalMemoryType;
 use astd::heapless::Vec as ArrayVec;
 use crate::lock::Locked;
-use verified::define::NUM_CPUS;
 use core::arch::asm;
-use core::arch::x86_64::_rdtsc;
 use verified::kernel::Kernel;
 use verified::define as vdefine;
 use verified::trap::Registers as vRegisters;
@@ -19,13 +17,6 @@ static KERNEL: Locked<Kernel> = Locked::new("kernel", Kernel::new());
 
 use vstd::prelude::*;
 
-use verified::process_manager::spec_proof::ProcessManager;
-use verified::memory_manager::MemoryManager;
-use verified::allocator::page_allocator_spec_impl::PageAllocator;
-use verified::process_manager::container::Container;
-use verified::process_manager::process::Process;
-use verified::process_manager::thread::Thread;
-use verified::process_manager::endpoint::Endpoint;
 use verified::array_vec::ArrayVec as vArrayVec;
 use verified::pagetable::pagemap::PageMap;
 use verified::define::PagePerm4k;
@@ -131,9 +122,11 @@ pub fn kernel_init(
         }
     }
 
-    let dom0_retstruc = KERNEL
-    .lock()
-    .schedule_idle_cpu(0, &mut dom0_pt_regs);
+    let dom0_ret = KERNEL.lock().schedule_idle_cpu(0, &mut dom0_pt_regs);
+    assert!(
+        matches!(dom0_ret.switch_decision, verified::define::SwitchDecision::Switch),
+        "dom0 is scheduled on CPU 0"
+    );
 
     log::info!("dom0 is running on CPU 0");
     let pcid_dom0 = 0;
@@ -155,7 +148,7 @@ fn copy_caller_text<'a>(data: usize, len: usize, buffer: &'a mut [u8; LOG_BUFFER
     }
     let end = data.checked_add(len)?;
     let cpu_id = cpu::get_cpu_id();
-    let mut kernel = KERNEL.lock();
+    let kernel = KERNEL.lock();
     let thread_ptr = kernel.get_current_cpu_info(cpu_id).0.unwrap();
     let mut page = data & !0xfff;
     while page < end {
@@ -212,7 +205,7 @@ fn checked_va_range(va: usize, len: usize, regs: &mut vRegisters) -> Option<vVaR
     va_range
 }
 
-pub extern "C" fn sys_mmap(va:usize, perm_bits:usize, range:usize, regs: &mut vRegisters) {
+pub extern "C" fn sys_mmap(va:usize, _perm_bits:usize, range:usize, regs: &mut vRegisters) {
     let Some(va_range) = checked_va_range(va, range, regs) else {
         return;
     };
@@ -253,8 +246,6 @@ pub extern "C" fn sys_send_empty_try_schedule(endpoint_index:usize, _:usize, _:u
     let mut kernel = KERNEL.lock();
     let thread_info = kernel.get_current_cpu_info(cpu_id);
     let sender_thread_ptr = thread_info.0.unwrap();
-    let sender_proc_ptr = thread_info.0.unwrap();
-    let sender_cr3: usize = thread_info.3.unwrap();
     let sender_pcid = thread_info.4.unwrap();
     let syscall_ret = kernel.syscall_send_empty_try_schedule(cpu_id, sender_thread_ptr, endpoint_index, regs);
     // A send to a thread of the same process, or a failed send, returns no address space to load.
@@ -273,7 +264,7 @@ pub extern "C" fn sys_resolve(va:usize,_:usize, _:usize, regs: &mut vRegisters){
         return;
     };
     let cpu_id = cpu::get_cpu_id();    
-    let mut kernel = KERNEL.lock();
+    let kernel = KERNEL.lock();
     let thread_info = kernel.get_current_cpu_info(cpu_id);
     let thread_ptr = thread_info.0.unwrap();
     let ret_struc = kernel.syscall_resolve_va(
@@ -281,7 +272,7 @@ pub extern "C" fn sys_resolve(va:usize,_:usize, _:usize, regs: &mut vRegisters){
         va_range,
     );
     match ret_struc.error_code{
-        vdefine::RetValueType::SuccessPairUsize { value1, value2 } => {
+        vdefine::RetValueType::SuccessPairUsize { value1, .. } => {
             regs.rax = value1 as u64;
         },
         _ => {
@@ -296,7 +287,7 @@ pub extern "C" fn sys_resolve_io(va:usize,_:usize, _:usize, regs: &mut vRegister
         return;
     };
     let cpu_id = cpu::get_cpu_id();    
-    let mut kernel = KERNEL.lock();
+    let kernel = KERNEL.lock();
     let thread_info = kernel.get_current_cpu_info(cpu_id);
     let thread_ptr = thread_info.0.unwrap();
     let ret_struc = kernel.syscall_io_resolve_va(
@@ -304,7 +295,7 @@ pub extern "C" fn sys_resolve_io(va:usize,_:usize, _:usize, regs: &mut vRegister
         va_range,
     );
     match ret_struc.error_code{
-        vdefine::RetValueType::SuccessPairUsize { value1, value2 } => {
+        vdefine::RetValueType::SuccessPairUsize { value1, .. } => {
             regs.rax = value1 as u64;
         },
         _ => {
@@ -513,7 +504,7 @@ pub extern "C" fn sys_set_device_iommu(bus: usize, device: usize, function: usiz
     };
 }
 
-pub extern "C" fn sys_iommu_mmap(va:usize, perm_bits:usize, range:usize, regs: &mut vRegisters) {
+pub extern "C" fn sys_iommu_mmap(va:usize, _perm_bits:usize, range:usize, regs: &mut vRegisters) {
     let Some(va_range) = checked_va_range(va, range, regs) else {
         return;
     };
