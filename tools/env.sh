@@ -3,7 +3,7 @@
 #   source tools/env.sh
 #
 # Expects: rustup (rust-toolchain.toml picks the nightly), a Verus build under
-# tools/verus made by tools/setup-verus.sh, and nasm, qemu, edk2-ovmf and gdb
+# tools/verus made by tools/setup-verus.sh, and qemu, edk2-ovmf and gdb
 # from the system package manager.
 
 ATMO_TOOLS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
