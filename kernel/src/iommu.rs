@@ -47,12 +47,14 @@ pub struct NaiveIommuMap {
     context_table: ContextTable,
 }
 
-#[repr(transparent)]
+// The IOMMU takes a table's address in bits 63:12, so a table starts on a page.
+#[repr(C, align(4096))]
 struct RootTable {
     entries: [MaybeUninit<RootTableEntry>; 256],
 }
 
-#[repr(transparent)]
+// The IOMMU takes a table's address in bits 63:12, so a table starts on a page.
+#[repr(C, align(4096))]
 struct ContextTable {
     entries: [MaybeUninit<ContextTableEntry>; 256],
 }
@@ -292,6 +294,8 @@ impl RemappingHardware {
     }
 
     pub unsafe fn set_root_table_addr(&mut self, address: u64) {
+        // RTADDR_REG takes bits 63:12; the low bits are flags, not address.
+        assert_eq!(address & !PAGE_MASK, 0, "Root table address is not 4 KiB aligned");
         self.write_u64(Self::RTADDR_REG, address);
         self.send_global_command(Self::GCMD_SRTP, true);
 
@@ -488,6 +492,8 @@ impl RootTableEntry {
     }
 
     fn with_address(mut self, address: u64) -> Self {
+        // A root entry's context table pointer takes bits 63:12 only.
+        assert_eq!(address & !PAGE_MASK, 0, "Context table address is not 4 KiB aligned");
         let masked = PHYSICAL_PAGE_MASK & address;
         self.lower = self.lower & !(PHYSICAL_PAGE_MASK) | masked;
         self
