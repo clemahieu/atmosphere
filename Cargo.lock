@@ -65,7 +65,7 @@ dependencies = [
  "goblin",
  "kernel-logger",
  "log",
- "nasm-rs 0.2.5",
+ "nasm-rs",
  "ns16550a",
  "plain",
  "x86 0.52.0",
@@ -431,7 +431,6 @@ dependencies = [
 name = "dom0"
 version = "0.1.0"
 dependencies = [
- "aelf",
  "astd",
  "asys",
  "constants",
@@ -440,7 +439,6 @@ dependencies = [
  "lazy_static",
  "libtime",
  "log",
- "nasm-rs 0.3.0",
  "nvme_driver",
  "pcid",
  "ring_buffer",
@@ -806,7 +804,7 @@ dependencies = [
  "kernel-logger",
  "log",
  "memoffset",
- "nasm-rs 0.2.5",
+ "nasm-rs",
  "ns16550a",
  "num",
  "num-derive",
@@ -954,12 +952,6 @@ name = "nasm-rs"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fe4d98d0065f4b1daf164b3eafb11974c94662e5e2396cf03f32d0bb5c17da51"
-
-[[package]]
-name = "nasm-rs"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "12fcfa1bd49e0342ec1d07ed2be83b59963e7acbeb9310e1bb2c07b69dadd959"
 
 [[package]]
 name = "ns16550a"
