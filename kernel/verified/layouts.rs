@@ -33,7 +33,7 @@ global layout SpaceRecord is size == 72, align == 8;
 global layout PageMap is size == 4096, align == 8;
 global layout TableRecord is size == 56, align == 8;
 global layout SpaceCores is size == 264, align == 8;
-global layout ThreadRecord is size == 208, align == 8;
+global layout ThreadRecord is size == 224, align == 8;
 global layout ProcessRecord is size == 1, align == 1;
 
 /// A 4K page converts to a thread and back, using these layouts and no other facts.
@@ -183,7 +183,7 @@ pub proof fn lemma_thread_block_layouts()
     ensures
         vstd::layout::size_of::<PageBytes>() == 4096,
         vstd::layout::size_of::<TableRoot>() == 4096,
-        vstd::layout::size_of::<ThreadRecord>() == 208,
+        vstd::layout::size_of::<ThreadRecord>() == 224,
 {
 }
 

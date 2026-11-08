@@ -71,6 +71,9 @@ pub struct ThreadRecord {
     /// The process it is bound to: its node page's first node is then a binding under a capability to
     /// that process, holding a reference on the process's block.
     pub process: Option<usize>,
+    /// The core it runs on once started. A placement is a binding under a capability to that core,
+    /// design/cpu-time-as-capability/; no operation places a thread yet, so it is None.
+    pub placement: Option<usize>,
 }
 
 /// Registers that are all zero.
@@ -102,7 +105,7 @@ pub open spec fn zero_registers() -> Registers {
 
 /// A thread's record when it is typed: inactive, with zeroed registers and no stop pending.
 pub open spec fn fresh_thread() -> ThreadRecord {
-    ThreadRecord { state: ThreadState::Inactive, frame: zero_registers(), pending_stop: false, process: None }
+    ThreadRecord { state: ThreadState::Inactive, frame: zero_registers(), pending_stop: false, process: None, placement: None }
 }
 
 fn new_thread_record() -> (ret: ThreadRecord)
@@ -136,6 +139,7 @@ fn new_thread_record() -> (ret: ThreadRecord)
         },
         pending_stop: false,
         process: None,
+        placement: None,
     }
 }
 
@@ -566,6 +570,7 @@ pub open spec fn unbound_record(r: ThreadRecord) -> ThreadRecord {
         frame: r.frame,
         pending_stop: r.pending_stop,
         process: None,
+        placement: r.placement,
     }
 }
 
@@ -1149,7 +1154,7 @@ impl CapKernel {
         proof {
             perm = self.threads.records.borrow_mut().tracked_remove(t);
         }
-        ptr.write(Tracked(&mut perm), ThreadRecord { state, frame: record.frame, pending_stop: record.pending_stop, process: None });
+        ptr.write(Tracked(&mut perm), ThreadRecord { state, frame: record.frame, pending_stop: record.pending_stop, process: None, placement: record.placement });
         proof {
             self.threads.records.borrow_mut().tracked_insert(t, perm);
             assert(self.threads.records@.dom() =~= pre.threads.records@.dom());
@@ -1863,6 +1868,7 @@ impl CapKernel {
                     frame: zero_registers(),
                     pending_stop: false,
                     process: Some(p),
+                    placement: None,
                 }
                 &&& final(self).list.is_child(n, base)
                 &&& final(self).list.nodes@[base as int].live
@@ -1968,6 +1974,7 @@ impl CapKernel {
         &&& post.threads.records@[t].is_init()
         &&& post.threads.records@[t].value().pending_stop == pre.threads.records@[t].value().pending_stop
         &&& post.threads.records@[t].value().process == pre.threads.records@[t].value().process
+        &&& post.threads.records@[t].value().placement == pre.threads.records@[t].value().placement
         &&& post.cores@.len() == pre.cores@.len()
         &&& forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] post.cores@[d] == pre.cores@[d]
         &&& post.cores@[c].acked_epoch == pre.cores@[c].acked_epoch
@@ -2064,6 +2071,7 @@ impl CapKernel {
             frame: record.frame,
             pending_stop: record.pending_stop,
             process: record.process,
+            placement: record.placement,
         });
         proof {
             self.threads.records.borrow_mut().tracked_insert(t, perm);
@@ -2149,6 +2157,7 @@ impl CapKernel {
             frame,
             pending_stop: record.pending_stop,
             process: record.process,
+            placement: record.placement,
         });
         proof {
             self.threads.records.borrow_mut().tracked_insert(t, perm);
@@ -2229,6 +2238,7 @@ impl CapKernel {
             frame,
             pending_stop: pre.threads.records@[t].value().pending_stop,
             process: pre.threads.records@[t].value().process,
+            placement: pre.threads.records@[t].value().placement,
         }
     }
 
@@ -2353,6 +2363,7 @@ impl CapKernel {
             frame: user_frame_of(frame),
             pending_stop: record.pending_stop,
             process: record.process,
+            placement: record.placement,
         });
         proof {
             self.threads.records.borrow_mut().tracked_insert(t, perm);
@@ -2377,6 +2388,95 @@ impl CapKernel {
             ThreadState::Running { core } => core == c,
             _ => false,
         }
+    }
+
+    /// The thread the control capability at index i names can be started: it is Inactive, bound to a
+    /// process, and placed on a core. A thread with no placement cannot run: see
+    /// design/cpu-time-as-capability/.
+    pub open spec fn can_start(&self, root: usize, i: usize) -> bool {
+        let r = self.threads.records@[self.payload_of(self.tables.node_of(root, i)).base].value();
+        &&& self.can_control(root, i)
+        &&& r.state is Inactive
+        &&& r.process is Some
+        &&& r.placement is Some
+    }
+
+    /// Starts the thread the control capability at index i names: it becomes Runnable on the core it
+    /// is placed on, which switches it in. The index comes from user space, so it can be refused, and
+    /// a refusal changes nothing.
+    pub fn start(&mut self, root: usize, i: usize) -> (ret: bool)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(root),
+        ensures
+            final(self).wf(),
+            ret == old(self).can_start(root, i),
+            !ret ==> *final(self) == *old(self),
+            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
+            ret ==> {
+                let n = old(self).tables.node_of(root, i);
+                let t = old(self).payload_of(n).base;
+                let core = old(self).threads.records@[t].value().placement->Some_0;
+                &&& old(self).threads.records@.contains_key(t)
+                &&& Self::state_written(*old(self), *final(self), t, ThreadState::Runnable { core })
+                &&& final(self).cores == old(self).cores
+                &&& discharges(old(self).view(), final(self).view(), root, Effect::Control { cap: n, thread: t })
+            },
+    {
+        let ghost pre = *self;
+        let (n, t) = match self.thread_control(root, i) {
+            Some(found) => found,
+            None => { return false; },
+        };
+        let ptr = PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * 4096);
+        let record = *ptr.borrow(Tracked(self.threads.records.borrow().tracked_borrow(t)));
+        match record.state {
+            ThreadState::Inactive => {},
+            _ => { return false; },
+        }
+        match record.process {
+            Some(_) => {},
+            None => { return false; },
+        }
+        let core = match record.placement {
+            Some(core) => core,
+            None => { return false; },
+        };
+        let tracked mut perm;
+        proof {
+            perm = self.threads.records.borrow_mut().tracked_remove(t);
+        }
+        ptr.write(Tracked(&mut perm), ThreadRecord {
+            state: ThreadState::Runnable { core },
+            frame: record.frame,
+            pending_stop: record.pending_stop,
+            process: record.process,
+            placement: record.placement,
+        });
+        proof {
+            self.threads.records.borrow_mut().tracked_insert(t, perm);
+            reveal(current_wf);
+            let post = *self;
+            assert(post.threads.records@.dom() =~= pre.threads.records@.dom());
+            assert forall|d: int, x: usize| 0 <= d < NUM_CPUS && #[trigger] runs(post.cores@, d, x) implies {
+                &&& post.threads.records@.contains_key(x)
+                &&& post.threads.records@[x].value().state == (ThreadState::Running { core: d as usize })
+            } by {
+                assert(runs(pre.cores@, d, x));
+                assert(x != t);
+            }
+            assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) && post.threads.records@[x].value().state is Running implies {
+                let e = post.threads.records@[x].value().state->Running_core;
+                &&& e < NUM_CPUS
+                &&& post.cores@[e as int].current_thread == Some(x)
+            } by {
+                assert(x != t);
+                assert(pre.threads.records@.contains_key(x));
+            }
+            Self::lemma_switch_wf(pre, post, 0, t);
+            assert(post.view() == pre.view());
+        }
+        true
     }
 
     /// The step set thread t's state and nothing else of its record or of any other record, and left
@@ -2480,6 +2580,7 @@ impl CapKernel {
             frame: record.frame,
             pending_stop: record.pending_stop,
             process: record.process,
+            placement: record.placement,
         });
         proof {
             self.threads.records.borrow_mut().tracked_insert(t, perm);
@@ -2633,6 +2734,7 @@ impl CapKernel {
             frame: r.frame,
             pending_stop: r.pending_stop,
             process: Some(p),
+            placement: r.placement,
         }
         &&& post.holders == pre.holders
         &&& post.tables == pre.tables
@@ -2966,6 +3068,7 @@ impl CapKernel {
             frame: record.frame,
             pending_stop: record.pending_stop,
             process: Some(p),
+            placement: record.placement,
         });
         proof {
             self.threads.records.borrow_mut().tracked_insert(t, perm);
