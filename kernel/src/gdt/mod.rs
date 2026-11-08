@@ -29,7 +29,6 @@ use x86::task::load_tr;
 use x86::Ring;
 
 use types::{AccessByte, SystemAccessByte, SystemDescriptorType};
-use crate::cpu::IstStack;
 
 const GDT_F_LONG_MODE: u8 = 1 << 5;
 
@@ -148,8 +147,6 @@ impl GlobalDescriptorTable {
 
     pub const USER_CS: u16 = SegmentSelector::new(Self::USER_CODE_INDEX, Ring::Ring3).bits();
     pub const USER_SS: u16 = SegmentSelector::new(Self::USER_DATA_INDEX, Ring::Ring3).bits();
-    pub const KERNEL_CS: u16 = SegmentSelector::new(Self::KERNEL_CODE_INDEX, Ring::Ring0).bits();
-    pub const KERNEL_SS: u16 = SegmentSelector::new(Self::KERNEL_DATA_INDEX, Ring::Ring0).bits();
 
     /// Zero-initializes the GDT.
     ///

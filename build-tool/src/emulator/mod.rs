@@ -78,12 +78,6 @@ pub struct RunConfiguration {
     /// terminal to values that make sense when they are output to a standalone
     /// terminal, but are frustrating when run as a normal CLI program.
     suppress_initial_outputs: bool,
-
-    /// Image file for emulating nvme device
-    nvme_img: Option<String>,
-
-    /// Host pci address to passthru to the guest kernel
-    pci_dev: Vec<String>,
 }
 
 impl RunConfiguration {
@@ -103,8 +97,6 @@ impl RunConfiguration {
             gdb_server: None,
             freeze_on_startup: false,
             suppress_initial_outputs: true,
-            nvme_img: None,
-            pci_dev: Vec::new(),
         }
     }
 
@@ -141,18 +133,6 @@ impl RunConfiguration {
     /// Set whether to enable IOMMU.
     pub fn use_iommu(&mut self, use_iommu: bool) -> &mut Self {
         self.use_iommu = use_iommu;
-        self
-    }
-
-    /// Set whether to use Qemu's Nvme emulation.
-    pub fn nvme_img(&mut self, nvme_img: String) -> &mut Self {
-        self.nvme_img = Some(nvme_img);
-        self
-    }
-
-    /// Set whether to use Qemu's Nvme emulation.
-    pub fn pci_dev(&mut self, pci_dev: Vec<String>) -> &mut Self {
-        self.pci_dev = pci_dev;
         self
     }
 

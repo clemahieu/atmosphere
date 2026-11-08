@@ -12,25 +12,29 @@ use x86::io::{outb, outw};
 
 pub use command_line::get_command_line;
 
+/// Written once by `init` on CPU 0, before anything reads it and before the second core starts;
+/// only read after that.
 static mut BOOT_INFO: BootInfo = BootInfo::empty();
 
 /// Global Tagged TLB toggle.
 pub static mut PCIDE: u64 = 0;
 
 pub unsafe fn init(boot_info: *const BootInfo) {
-    BOOT_INFO = (&*boot_info).clone();
-    PCIDE = if BOOT_INFO.pcide { 1 } else { 0 };
+    BOOT_INFO = (*boot_info).clone();
+    let boot_info = get_boot_info();
+    PCIDE = if boot_info.pcide { 1 } else { 0 };
 
-    command_line::init(BOOT_INFO.command_line.as_str()).expect("Invalid kernel command-line");
+    command_line::init(boot_info.command_line.as_str()).expect("Invalid kernel command-line");
 }
 
 pub fn get_boot_info() -> &'static BootInfo {
-    unsafe { &BOOT_INFO }
+    // Shared: init's write is the only one, and it is done before any caller.
+    unsafe { &*&raw const BOOT_INFO }
 }
 
 /// Returns the raw kernel command line.
 pub fn get_raw_command_line() -> &'static str {
-    unsafe { BOOT_INFO.command_line.as_str() }
+    get_boot_info().command_line.as_str()
 }
 
 /// Shutdown the system.

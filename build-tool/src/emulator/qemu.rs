@@ -87,14 +87,7 @@ impl Emulator for Qemu {
             + &format!(" qemu_debug_exit_io_base={}", self.debug_exit_io_base);
         let suppress_initial_outputs = config.suppress_initial_outputs; // FIXME
 
-        // VFIO passthrough needs root; everything else (including KVM) does not.
-        let mut command = if config.pci_dev.is_empty() {
-            Command::new(self.qemu_binary.as_os_str())
-        } else {
-            let mut sudo = Command::new("sudo");
-            sudo.arg("-E").arg("--preserve-env=PATH").arg(self.qemu_binary.as_os_str());
-            sudo
-        };
+        let mut command = Command::new(self.qemu_binary.as_os_str());
 
         let mut initrd = JumboBinary::new()?;
         initrd.push(&config.kernel)?;
@@ -146,26 +139,12 @@ impl Emulator for Qemu {
             .args(&["-machine", "q35,kernel_irqchip=split"])
             .args(config.cpu_model.to_qemu()?);
 
-        if let Some(img_path) = &config.nvme_img {
-            command.args(&["-drive", &format!("file={},if=none,id=nvm", img_path)]);
-            command.args(&["-device", "nvme,id=nvm,serial=deadbeef,drive=nvm"]);
-        }
-
         if config.use_iommu {
-            // The intel-iommu device must come before vfio-pci, otherwise
-            // shadow IOMMU tables won't be configured correctly
             command.args(&["-device", "intel-iommu,intremap=on,aw-bits=48,caching-mode=on"]); // FIXME: AMD
 
-            command.args(&["--trace", "vfio_*"]);
             command.args(&["--trace", "vtd_*"]);
             command.args(&["--trace", "iommufd_*"]);
             command.args(&["-D", "/tmp/qemu-log.txt"]);
-        }
-
-        if !config.pci_dev.is_empty() {
-            for dev in &config.pci_dev {
-                command.args(&["-device", &format!("vfio-pci,host={}", dev)]);
-            }
         }
 
         if config.use_virtualization {

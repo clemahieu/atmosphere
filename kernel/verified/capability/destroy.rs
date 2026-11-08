@@ -15,6 +15,7 @@ use crate::capability::reach::*;
 use crate::capability::space::*;
 use crate::capability::table::*;
 use crate::capability::thread::*;
+use crate::capability::thread::ThreadState;
 use crate::capability::view::*;
 use crate::define::*;
 use crate::pptr::*;
@@ -71,14 +72,89 @@ pub proof fn lemma_listed_cores(list: u32, n: int, c: usize)
 }
 
 impl CapKernel {
+    /// Capability n names a dead process or thread: a process whose record is dead, or a thread that is
+    /// Dead, destroyed while Running, or bound to a process whose record is dead. Nothing may start or
+    /// control a thread of a destroyed process, whose core moves it off at its next entry. Every
+    /// operation refuses such a capability except claim, revoke and delete: see
+    /// design/teardown-driven-by-retype/.
+    pub open spec fn cap_dead(&self, n: usize) -> bool {
+        let o = self.payload_of(n);
+        match o.kind {
+            CapKind::Process => self.processes.records@[o.base].value().dead,
+            CapKind::Thread => {
+                let r = self.threads.records@[o.base].value();
+                ||| r.state is Dead
+                ||| r.dying
+                ||| (r.process is Some && self.processes.records@[r.process->Some_0].value().dead)
+            },
+            _ => false,
+        }
+    }
+
+    /// Reads cap_dead of capability n, whose payload is given, in at most two loads: the thread's
+    /// record and its process's, or the process's record.
+    pub fn is_cap_dead(&self, n: usize, payload: Payload) -> (ret: bool)
+        requires
+            self.wf(),
+            self.is_cap(n),
+            payload == self.payload_of(n),
+        ensures
+            ret == self.cap_dead(n),
+    {
+        match payload.kind {
+            CapKind::Process => {
+                let p = payload.base;
+                proof {
+                    self.lemma_process_cap(n);
+                    assert(process_wf(&self.processes, &self.blocks, p));
+                }
+                PPtr::<ProcessRecord>::from_usize(p + PROCESS_RECORD_PAGE * 4096).borrow(
+                    Tracked(self.processes.records.borrow().tracked_borrow(p)),
+                ).dead
+            },
+            CapKind::Thread => {
+                let t = payload.base;
+                proof {
+                    self.lemma_thread_cap(n);
+                    assert(thread_wf(&self.list, &self.threads, &self.blocks, t));
+                }
+                let record = *PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * 4096).borrow(
+                    Tracked(self.threads.records.borrow().tracked_borrow(t)),
+                );
+                let dead = match record.state {
+                    ThreadState::Dead => true,
+                    _ => false,
+                };
+                if dead || record.dying {
+                    return true;
+                }
+                match record.process {
+                    None => false,
+                    Some(p) => {
+                        proof {
+                            assert(self.processes.records@.contains_key(p));
+                            assert(process_wf(&self.processes, &self.blocks, p));
+                        }
+                        PPtr::<ProcessRecord>::from_usize(p + PROCESS_RECORD_PAGE * 4096).borrow(
+                            Tracked(self.processes.records.borrow().tracked_borrow(p)),
+                        ).dead
+                    },
+                }
+            },
+            _ => false,
+        }
+    }
+
     /// Index i of the table at root holds a capability with the control right naming a process or a
-    /// thread.
+    /// thread that is not dead. A destroyed target waits for retype's teardown, so destroying it again
+    /// is refused: see design/teardown-driven-by-retype/.
     pub open spec fn can_destroy(&self, root: usize, i: usize) -> bool {
         let n = self.tables.node_of(root, i);
         &&& self.tables.has_slot(root, i)
         &&& self.is_cap(n)
         &&& (self.payload_of(n).kind is Process || self.payload_of(n).kind is Thread)
         &&& self.payload_of(n).rights & right_bit(Right::Control) != 0
+        &&& !self.cap_dead(n)
     }
 
     /// The control capability at index i of the table at root names core c's current thread, or the
@@ -132,13 +208,14 @@ impl CapKernel {
     /// that core finds its current thread's process dead at its next kernel entry; its threads, table,
     /// space, references and capabilities stay as they were. A thread is destroyed as
     /// thread_destroyed says. Destroying the caller's own thread or its own process leaves the caller's
-    /// thread to be moved off by check_current before it returns to user mode. The index comes from
-    /// user space, so it can be refused, and a refusal changes nothing.
+    /// thread to be moved off by check_current before it returns to user mode. A target already dead is
+    /// refused. The index comes from user space, so it can be refused, and a refusal changes nothing.
     pub fn destroy(&mut self, c: usize, root: usize, i: usize) -> (ret: bool)
         requires
             old(self).wf(),
             c < NUM_CPUS,
             old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
         ensures
             final(self).wf(),
             ret == old(self).can_destroy(root, i),
@@ -181,6 +258,9 @@ impl CapKernel {
             assert(right_bit(Right::Control) == 128);
         }
         if payload.rights & 128 == 0 {
+            return false;
+        }
+        if self.is_cap_dead(n, payload) {
             return false;
         }
         match payload.kind {

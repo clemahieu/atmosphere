@@ -1,7 +1,6 @@
 //! The Atmosphere early loader.
 
 #![cfg_attr(not(test), no_std, no_main)]
-#![feature(alloc_error_handler, abi_x86_interrupt)]
 #![deny(
     asm_sub_register,
     deprecated,
@@ -35,9 +34,7 @@ use astd::io::{Cursor, Read, Seek, SeekFrom};
 use astd::memory::{USERSPACE_BASE, USERSPACE_PAYLOAD_BASE};
 use constants::*;
 
-use memory::{
-    AddressSpace, BootMemoryType, PhysicalAllocator, UserspaceMapper, HUGE_PAGE_SIZE, PAGE_SIZE,
-};
+use memory::{AddressSpace, BootMemoryType, PhysicalAllocator, UserspaceMapper, PAGE_SIZE};
 
 const KERNEL_RESERVATION: usize = 1024 * 1024 * 1024; // 1 GiB
 const DOM0_RESERVATION: usize = 256 * 1024 * 1024; // 256 MiB
@@ -355,74 +352,6 @@ where
             );
         }
         cur = cur + PAGE_SIZE as u64;
-    }
-
-    // Nvme bar region
-    let mut cur = NVME_BAR_BASE;
-    let virt_base = USERSPACE_BASE;
-    while cur < NVME_BAR_BASE + NVME_BAR_SIZE as u64 {
-        unsafe {
-            address_space.map(
-                page_table_allocator,
-                cur + virt_base,
-                cur,
-                true,
-                false,
-                true,
-            );
-            cur = cur + PAGE_SIZE as u64;
-        }
-    }
-
-    // Ixgbe bar region
-    let mut cur = 0xFE000000;
-    let virt_base = USERSPACE_BASE;
-    while cur < 0xFE000000 + 0x100000 {
-        unsafe {
-            address_space.map(
-                page_table_allocator,
-                cur + virt_base,
-                cur,
-                true,
-                false,
-                true,
-            );
-            cur = cur + PAGE_SIZE as u64;
-        }
-    }
-
-    // E810 bar region
-    let mut cur = 0xFA000000;
-    let virt_base = USERSPACE_BASE;
-    while cur < 0xFA000000 + 0x2000000 {
-        unsafe {
-            address_space.map(
-                page_table_allocator,
-                cur + virt_base,
-                cur,
-                true,
-                false,
-                true,
-            );
-            cur = cur + PAGE_SIZE as u64;
-        }
-    }
-
-    // E810 bar region 2
-    let mut cur = 0xFD000000;
-    let virt_base = USERSPACE_BASE;
-    while cur < 0xFD000000 + 0x10000 {
-        unsafe {
-            address_space.map(
-                page_table_allocator,
-                cur + virt_base,
-                cur,
-                true,
-                false,
-                true,
-            );
-            cur = cur + PAGE_SIZE as u64;
-        }
     }
 
     elf.seek(SeekFrom::Start(dom_end as u64))

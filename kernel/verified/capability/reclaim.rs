@@ -15,6 +15,7 @@ use crate::capability::block::*;
 use crate::capability::kernel::*;
 use crate::capability::list::*;
 use crate::capability::reach::*;
+use crate::capability::reclaim_process::*;
 use crate::capability::reclaim_thread::*;
 use crate::capability::refs::*;
 use crate::capability::retype::*;
@@ -53,7 +54,8 @@ proof fn leak_all(tracked m: Map<usize, PagePerm4k>) -> (tracked ret: Map<usize,
 /// The most nodes one retype removes from a dead leaf's slots.
 pub const LEAF_SLICE_BUDGET: usize = 64;
 
-/// The most child tables one retype cuts from a dead table page.
+/// The most child tables one retype cuts from a dead table page or space root, or leaves it detaches from
+/// a dead process's table root.
 pub const TABLE_SLICE_BUDGET: usize = 64;
 
 /// What a reclaim did.
@@ -69,8 +71,8 @@ pub enum ReclaimStep {
     /// The block held a table leaf or table page whose hidden node is now gone, so it is dead, and its
     /// dismantling starts on a later retype.
     Unlinked,
-    /// Some of a dead leaf's capabilities, of a dead table page's children or mappings, or a dead
-    /// thread's binding, went, and more may remain. Retype again.
+    /// Some of a dead leaf's capabilities, of a dead table page's children or mappings, of a dead space
+    /// root's children, or a dead thread's binding, went, and more may remain. Retype again.
     Slice,
 }
 
@@ -546,6 +548,7 @@ impl CapKernel {
             old(self).wf(),
             c < NUM_CPUS,
             old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
         ensures
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
@@ -559,15 +562,30 @@ impl CapKernel {
                 || (old(self).can_retype_under(root, from, base, 3) && old(self).table_is_empty(base))
                 || old(self).can_cut_space(root, from, base)
                 || (old(self).can_retype_under(root, from, base, 3) && old(self).space_is_empty(base))
+                || old(self).can_cut_process_space(root, from, base)
+                || old(self).can_detach_process_leaves(root, from, base)
                 || old(self).can_unbind_thread(root, from, base)
                 || (old(self).can_retype_under(root, from, base, 1) && old(self).thread_is_spent(base))) ==> ret is Refused,
             !old(self).view().holds_right(root, old(self).tables.node_of(root, from), Right::Retype) ==> ret is Refused,
-            old(self).spaces.roots@.contains_key(base) && !old(self).dead_io_space(base) ==> ret is Refused,
+            old(self).spaces.roots@.contains_key(base) && !old(self).dead_io_space(base)
+                && !old(self).can_cut_process_space(root, from, base)
+                && !old(self).can_detach_process_leaves(root, from, base) ==> ret is Refused,
             old(self).can_cut_space(root, from, base) ==> ret is Slice,
             old(self).can_retype_under(root, from, base, 3) && old(self).space_is_empty(base)
                 ==> if old(self).acknowledged(base / 4096) { ret is Freed } else { ret is Again },
             old(self).can_retype_under(root, from, base, 3) && old(self).space_is_spent(base) ==> ret is Again || ret is Freed,
-            old(self).spaces.roots@.contains_key(base) && ret is Slice ==> old(self).space_children_cut(*final(self), root, from, base),
+            old(self).spaces.roots@.contains_key(base) && old(self).spaces.records@[base].value().kind is Io && ret is Slice
+                ==> old(self).space_children_cut(*final(self), root, from, base),
+            old(self).processes.records@.contains_key(base)
+                && (old(self).blocks.pages@[(base / 4096) as int].refs != 0
+                    || exists|d: int| 0 <= d < NUM_CPUS && #[trigger] old(self).loaded(d, base)
+                    || exists|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && e.space == base && #[trigger] old(self).tlb@[d].contains(e))
+                ==> ret is Refused,
+            old(self).can_cut_process_space(root, from, base) ==> ret is Slice,
+            old(self).can_detach_process_leaves(root, from, base) ==> ret is Slice,
+            old(self).processes.records@.contains_key(base) && ret is Slice
+                ==> old(self).process_space_cut(*final(self), root, from, base)
+                    || old(self).process_leaves_detached(*final(self), root, from, base),
             old(self).spaces.roots@.contains_key(base) && ret is Freed ==> old(self).space_freed(*final(self), c, root, from, base),
             old(self).can_unlink_table(root, from, base) ==> ret is Unlinked,
             old(self).can_slice_table(root, from, base) ==> ret is Slice,
@@ -589,7 +607,9 @@ impl CapKernel {
             ret is Slice ==> old(self).leaf_sliced(*final(self), root, from, base)
                 || old(self).table_sliced(*final(self), root, from, base)
                 || old(self).space_children_cut(*final(self), root, from, base)
-                || old(self).thread_unbound(*final(self), root, from, base),
+                || old(self).thread_unbound(*final(self), root, from, base)
+                || old(self).process_space_cut(*final(self), root, from, base)
+                || old(self).process_leaves_detached(*final(self), root, from, base),
             ret is Unlinked ==> old(self).leaf_unlinked(*final(self), root, from, base)
                 || old(self).table_page_unlinked(*final(self), root, from, base),
     {
@@ -602,6 +622,13 @@ impl CapKernel {
             pre.lemma_spent_table_is_empty(base);
             pre.lemma_spent_space_is_empty(base);
             pre.lemma_thread_object(base);
+            pre.lemma_process_object(base);
+            if pre.processes.records@.contains_key(base) {
+                pre.lemma_process_block(base);
+                if pre.process_unloaded(base) {
+                    pre.lemma_process_unloaded(base);
+                }
+            }
         }
         let page = base / 4096;
         if page >= NUM_PAGES {
@@ -636,7 +663,16 @@ impl CapKernel {
                 }
             },
             ObjectType::Thread => self.reclaim_thread(c, root, from, base),
-            ObjectType::None | ObjectType::Process => ReclaimStep::Refused,
+            ObjectType::Process => {
+                if self.cut_process_space(root, from, base) {
+                    ReclaimStep::Slice
+                } else if self.detach_process_leaves(root, from, base) {
+                    ReclaimStep::Slice
+                } else {
+                    ReclaimStep::Refused
+                }
+            },
+            ObjectType::None => ReclaimStep::Refused,
         }
     }
 
@@ -3129,17 +3165,17 @@ impl CapKernel {
         steps != 0
     }
 
-    /// Cuts up to a budget of the children of the table at `base`, a table page or an IO space's root with
-    /// no parent, each from the entry naming it, with what that leaves stale, and returns how many. A slice
-    /// starts again from the first entry, since a cut entry stays empty.
-    fn cut_children(&mut self, base: usize, is_root: bool) -> (steps: usize)
+    /// Cuts up to a budget of the children of the table at `base`, a table page or a space's root with no
+    /// parent, each from the entry naming it, with what that leaves stale, and returns how many. A kernel
+    /// slot names no child, so it stays, as does every entry that named none. A slice starts again from
+    /// the first entry, since a cut entry stays empty.
+    pub fn cut_children(&mut self, base: usize, is_root: bool) -> (steps: usize)
         requires
             old(self).wf(),
             old(self).flush_epoch < usize::MAX,
             tree_of(&old(self).table_pages, &old(self).spaces).is_table(base),
             is_root == tree_of(&old(self).table_pages, &old(self).spaces).is_root(base),
             is_root != tree_of(&old(self).table_pages, &old(self).spaces).is_page(base),
-            is_root ==> old(self).spaces.records@[base].value().kind is Io,
             tree_of(&old(self).table_pages, &old(self).spaces).record(base).parent is None,
             tree_of(&old(self).table_pages, &old(self).spaces).record(base).level >= 2,
         ensures
@@ -3153,6 +3189,10 @@ impl CapKernel {
             steps == 0 ==> *final(self) == *old(self),
             steps == 0 ==> forall|j: usize| !#[trigger] tree_of(&old(self).table_pages, &old(self).spaces).names_child(base, j),
             steps > 0 ==> exists|i: usize| #[trigger] tree_of(&old(self).table_pages, &old(self).spaces).names_child(base, i),
+            forall|i: usize| #![trigger tree_of(&final(self).table_pages, &final(self).spaces).entry(base, i)]
+                i < 512 && !tree_of(&old(self).table_pages, &old(self).spaces).names_child(base, i)
+                ==> tree_of(&final(self).table_pages, &final(self).spaces).entry(base, i)
+                    == tree_of(&old(self).table_pages, &old(self).spaces).entry(base, i),
     {
         let ghost pre = *old(self);
         let ghost a = tree_of(&pre.table_pages, &pre.spaces);
@@ -3167,7 +3207,6 @@ impl CapKernel {
                 a.is_table(base),
                 is_root == a.is_root(base),
                 is_root != a.is_page(base),
-                is_root ==> a.space_records[base].value().kind is Io,
                 pre.flush_epoch < usize::MAX,
                 a.record(base).level >= 2,
                 steps <= TABLE_SLICE_BUDGET,
@@ -3178,15 +3217,23 @@ impl CapKernel {
                 child_entries(tree_of(&self.table_pages, &self.spaces), base).subset_of(child_entries(a, base)),
                 child_entries(a, base).len() == child_entries(tree_of(&self.table_pages, &self.spaces), base).len() + steps,
                 forall|j: usize| j < e ==> !#[trigger] tree_of(&self.table_pages, &self.spaces).names_child(base, j),
+                forall|i: usize| #![trigger tree_of(&self.table_pages, &self.spaces).entry(base, i)]
+                    i < 512 && !a.names_child(base, i) ==> tree_of(&self.table_pages, &self.spaces).entry(base, i) == a.entry(base, i),
             decreases TABLE_SLICE_BUDGET - steps, 512 - e,
         {
             let ghost mid = *self;
             let ghost m = tree_of(&self.table_pages, &self.spaces);
-            let entry = self.table_entry(base, is_root, e);
-            let names = entry.perm.present && !entry.perm.ps;
             proof {
                 assert(m.is_root(base) == is_root);
                 assert(m.is_page(base) != is_root);
+            }
+            let kernel = self.is_kernel_slot(base, is_root, e);
+            let entry = self.table_entry(base, is_root, e);
+            let names = !kernel && entry.perm.present && !entry.perm.ps;
+            proof {
+                if is_root {
+                    assert(m.space_records[base].value().kind == a.space_records[base].value().kind);
+                }
                 assert(m.record(base).level == a.record(base).level);
                 assert(names == m.names_child(base, e));
             }
@@ -3206,6 +3253,16 @@ impl CapKernel {
                 let post = *self;
                 let b = tree_of(&post.table_pages, &post.spaces);
                 Self::lemma_table_cut_step(pre, mid, post, base, e);
+                assert(m.record(child).parent == Some(TableParent { table: base, entry: e }));
+                assert(detached(m, b, base, e, child));
+                assert(a.names_child(base, e)) by {
+                    lemma_child_entries(m, base, e);
+                    lemma_child_entries(a, base, e);
+                }
+                assert forall|i: usize| #![trigger b.entry(base, i)]
+                    i < 512 && !a.names_child(base, i) implies b.entry(base, i) == a.entry(base, i) by {
+                    assert(m.entry(base, i) == a.entry(base, i));
+                }
                 lemma_child_entries(m, base, e);
                 vstd::set::lemma_set_remove_len(child_entries(m, base), e);
                 assert forall|j: usize| #[trigger] child_entries(b, base).contains(j) implies child_entries(a, base).contains(j) by {
@@ -3319,7 +3376,7 @@ impl CapKernel {
 
     /// A block that holds a space is that IO space's: an IO space's block is Base and Space, a process
     /// space's is its process's, and a space's root has no parent, is level 4 and is no table page.
-    proof fn lemma_space_block(&self, base: usize)
+    pub proof fn lemma_space_block(&self, base: usize)
         requires
             self.wf(),
             base % 32768 == 0,
@@ -3870,6 +3927,7 @@ impl CapKernel {
             old(self).wf(),
             c < NUM_CPUS,
             old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
         ensures
             final(self).wf(),
             Self::same_tree(*old(self), *final(self)),

@@ -99,8 +99,7 @@ pub unsafe fn boot_ap(cpu_id: u32, stack: u64, code: u64) {
         cr3 |= PCID_ENABLE_MASK as u64;
     }
 
-    let start_page = StartTrampoline::new(0x7000)
-        .unwrap()
+    let start_page = StartTrampoline::new()
         .with_code(code)
         .with_cr3(cr3)
         .with_stack(stack)

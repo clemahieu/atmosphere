@@ -40,11 +40,10 @@ mod lock;
 mod flush;
 
 use core::arch::asm;
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
 use core::{ffi::c_void, panic::PanicInfo};
 
-use astd::boot::{BootInfo, PhysicalMemoryType};
-use x86::Ring;
+use astd::boot::BootInfo;
 
 static mut SHUTDOWN_ON_PANIC: bool = false;
 
@@ -54,10 +53,6 @@ static mut AP_STACK: cpu::IstStack = cpu::IstStack::new();
 static AP_UP: AtomicBool = AtomicBool::new(false);
 /// How long CPU 0 waits for it, in TSC cycles. A core that does not start is reported, not fatal.
 const AP_START_CYCLES: u64 = 20_000_000_000;
-static mut THREAD_STACK: [u8; 64 * 1024 * 1024] = [0; 64 * 1024 * 1024];
-static THREAD_COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-use verified::array_vec::ArrayVec as vArrayVec;
 
 /// CPU 0 entry point.
 #[no_mangle]
@@ -112,10 +107,7 @@ fn boot_cpu0(boot_info: *const BootInfo) -> isize {
     let boot_info = boot::get_boot_info();
     let dom0 = boot_info.dom0.as_ref().unwrap();
     let pml4 = boot_info.pml4;
-    let mut kernel_pml4: usize = 0;
-    unsafe {
-        kernel_pml4 = *(pml4 as *const usize);
-    }
+    let kernel_pml4 = unsafe { *(pml4 as *const usize) };
 
     kernel::kernel_init(&boot_info.pages, pml4 as usize, kernel_pml4 as usize);
 
@@ -156,7 +148,7 @@ unsafe fn start_second_core() {
     flush::check_second_core();
 }
 
-/// AP entry point, called by the trampoline in boot/ap_start.asm.
+/// AP entry point, called by the trampoline in boot/ap_start.rs.
 extern "C" fn ap_main(cpu_id: u64) -> ! {
     unsafe {
         cpu::init_cpu(cpu_id as usize);
@@ -170,13 +162,6 @@ extern "C" fn ap_main(cpu_id: u64) -> ! {
     lock::contend();
 
     kernel::idle_loop()
-}
-
-/// Thread entry point.
-fn thread_main(cpu_id: u64) {
-    loop {
-        THREAD_COUNTER.fetch_add(1, Ordering::SeqCst);
-    }
 }
 
 /// Runs all tests.

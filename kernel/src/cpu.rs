@@ -23,9 +23,6 @@ const NEW_CPU: Cpu = Cpu::new();
 /// Per-processor data.
 static mut CPUS: [Cpu; 16] = [NEW_CPU; 16];
 
-/// Offset of GS where the CPU ID is located.
-const GS_CPU_ID_OFFSET: usize = 8;
-
 /// Size of an IST stack.
 const IST_STACK_SIZE: usize = 1 * 1024 * 1024; // 1 MiB
 
@@ -171,7 +168,7 @@ pub fn get_cpu_id() -> usize {
 ///
 /// This should only be called once.
 pub unsafe fn init_cpu(cpu_id: usize) {
-    let mut cpu = &mut CPUS[cpu_id];
+    let cpu = &mut CPUS[cpu_id];
     let address = cpu as *const Cpu;
 
     log::debug!("CPU{} @ {:?}", cpu_id, address);

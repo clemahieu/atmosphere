@@ -3,7 +3,6 @@ name = "kernel"
 version = "0.1.0"
 edition = "2021"
 license.workspace = true
-build = "build.rs"
 publish = false
 
 [dependencies]
@@ -30,9 +29,6 @@ memoffset = { version = "0.9.0", features = ["unstable_const", "unstable_offset_
 
 [dependencies.verified]
 path = "verified"
-
-[build-dependencies]
-nasm-rs = "0.2.4"
 
 [dependencies.vstd]
 git = "https://github.com/verus-lang/verus"

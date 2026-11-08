@@ -713,10 +713,11 @@ fn same_kind(a: SpaceKind, b: SpaceKind) -> (ret: bool)
 }
 
 impl CapKernel {
-    /// The refusals: an index that names no capability to a space of this kind, or none that may change it; a path
-    /// that reaches no live table, or an entry of it that is taken; an index that names no frame
-    /// capability, or none that may be read; an offset beyond its range; a capability at the deepest
-    /// depth, or a block at the reference limit.
+    /// The refusals: an index that names no capability to a space of this kind, or none that may change
+    /// it, or a process capability naming a dead process, whose space waits for retype's teardown (see
+    /// design/teardown-driven-by-retype/); a path that reaches no live table, or an entry of it that is
+    /// taken; an index that names no frame capability, or none that may be read; an offset beyond its
+    /// range; a capability at the deepest depth, or a block at the reference limit.
     pub open spec fn can_map(&self, root: usize, slot: usize, kind: SpaceKind, p: SpacePath, from: usize, page: usize) -> bool {
         let tree = tree_of(&self.table_pages, &self.spaces);
         let n = self.tables.node_of(root, slot);
@@ -725,6 +726,7 @@ impl CapKernel {
         &&& self.tables.has_slot(root, slot)
         &&& self.is_cap(n)
         &&& writes_space(self.payload_of(n))
+        &&& !self.cap_dead(n)
         &&& self.spaces.records@[self.payload_of(n).base].value().kind == kind
         &&& walk_table(tree, self.payload_of(n).base, p) is Some
         &&& !self.blocks.pages@[(t / 4096) as int].dead
@@ -750,6 +752,7 @@ impl CapKernel {
         &&& self.tables.has_slot(root, slot)
         &&& self.is_cap(n)
         &&& writes_space(self.payload_of(n))
+        &&& !self.cap_dead(n)
         &&& self.spaces.records@[self.payload_of(n).base].value().kind == kind
         &&& walk_large_table(tree, self.payload_of(n).base, p) is Some
         &&& !self.blocks.pages@[(t / 4096) as int].dead
@@ -854,6 +857,7 @@ impl CapKernel {
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
         ensures
             final(self).wf(),
             ret == old(self).can_map(root, slot, SpaceKind::Process, SpacePath { l4, l3, l2, l1 }, from, page),
@@ -909,6 +913,9 @@ impl CapKernel {
             assert(pre.is_cap(n));
             pre.lemma_written_space(n);
             pre.lemma_root_table(space.base);
+        }
+        if self.is_cap_dead(n, space) {
+            return false;
         }
         let s = space.base;
         if !same_kind(self.space_kind(s), kind) {
@@ -998,6 +1005,7 @@ impl CapKernel {
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
         ensures
             final(self).wf(),
             ret == old(self).can_map_large(root, slot, SpaceKind::Process, SpacePath { l4, l3, l2, l1: 0 }, from, page),
@@ -1053,6 +1061,9 @@ impl CapKernel {
             assert(pre.is_cap(n));
             pre.lemma_written_space(n);
             pre.lemma_root_table(space.base);
+        }
+        if self.is_cap_dead(n, space) {
+            return false;
         }
         let s = space.base;
         if !same_kind(self.space_kind(s), kind) {

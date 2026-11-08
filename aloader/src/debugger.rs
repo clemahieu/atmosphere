@@ -33,7 +33,8 @@ pub fn add_binary(name: &'static str, offset: usize) {
     let binary = LoadedBinary { name, offset };
 
     unsafe {
-        if LOADED_BINARIES_LEN >= LOADED_BINARIES.len() {
+        // Shared: the loader runs on one core, and GDB reads the array only while it is stopped.
+        if LOADED_BINARIES_LEN >= (*&raw const LOADED_BINARIES).len() {
             panic!("Too many binaries");
         }
 

@@ -6,7 +6,6 @@ mod userspace;
 use core::num::NonZeroU64;
 use core::{fmt, ops::DerefMut};
 
-use num_derive::{FromPrimitive, ToPrimitive};
 use x86::current::paging::PAddr;
 
 use astd::boot::PhysicalMemoryType;
@@ -77,7 +76,7 @@ impl From<BootMemoryType> for PhysicalMemoryType {
 /// As defined in ACPI, Table 14-1 Address Range Types:
 /// <https://uefi.org/sites/default/files/resources/ACPI_4_Errata_A.pdf>
 #[repr(u32)]
-#[derive(Debug, PartialEq, Eq, Clone, Copy, FromPrimitive, ToPrimitive)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[non_exhaustive]
 pub enum AcpiMemoryType {
     /// This range is available RAM usable by the operating system.
@@ -101,6 +100,22 @@ pub enum AcpiMemoryType {
 
     /// This range of addresses contains memory that is not enabled. This range must not be used by OSPM.
     Disabled = 6,
+}
+
+impl AcpiMemoryType {
+    /// The type a memory map entry's raw type field names, or `None` for a value the table does
+    /// not define.
+    pub fn from_u32(value: u32) -> Option<Self> {
+        match value {
+            1 => Some(Self::Memory),
+            2 => Some(Self::Reserved),
+            3 => Some(Self::Acpi),
+            4 => Some(Self::Nvs),
+            5 => Some(Self::Unusable),
+            6 => Some(Self::Disabled),
+            _ => None,
+        }
+    }
 }
 
 /// A range of memory, denoted by the base address and size.
@@ -221,19 +236,19 @@ pub unsafe fn init() {
     }
 }
 
+/// The allocator over the bootstrap region. The loader runs on one core and calls this once, from
+/// `main`, so the reference it returns is the only one.
 pub fn bootstrap_allocator() -> &'static mut (impl PhysicalAllocator + VirtualMapper) {
-    unsafe { &mut allocator::BOOTSTRAP_ALLOCATOR }
-}
-
-pub fn allocator() -> &'static mut (impl PhysicalAllocator + VirtualMapper) {
-    unsafe { &mut allocator::ALLOCATOR }
+    // Exclusive: see above.
+    unsafe { &mut *&raw mut allocator::BOOTSTRAP_ALLOCATOR }
 }
 
 pub fn reserve(
     size: usize,
     label: BootMemoryType,
 ) -> (*mut u8, impl PhysicalAllocator + VirtualMapper) {
-    let allocator = unsafe { allocator::ALLOCATOR.reserve(size) };
+    // Exclusive: the loader runs on one core, and the reference lives only for this call.
+    let allocator = unsafe { (*&raw mut allocator::ALLOCATOR).reserve(size) };
 
     let mut map = PHYSICAL_MEMORY_MAP.lock();
     map.relabel(allocator.range(), label);

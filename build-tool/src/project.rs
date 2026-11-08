@@ -101,7 +101,7 @@ impl Project {
 ///
 /// The build will be initiated from the crate's directory. We do
 /// this to make Cargo automatically pull in crate-specific
-/// `.cargo/config` so we don't need to waste time injecting
+/// `.cargo/config.toml` so we don't need to waste time injecting
 /// various configurations ourselves.
 pub struct Crate {
     /// Name of the crate.

@@ -5,8 +5,6 @@
 use core::iter::Iterator;
 use core::ptr;
 
-use num_traits::FromPrimitive;
-
 use super::StartInfo;
 use crate::memory::{AcpiMemoryType, MemoryRange};
 
@@ -119,7 +117,7 @@ impl HvmStartInfo {
     }
 
     /// Creates an iterator through the module list entries.
-    fn iter_raw_modlist(&self) -> ModlistIterator {
+    fn iter_raw_modlist(&self) -> ModlistIterator<'_> {
         ModlistIterator {
             start_info: self,
             index: 0,
@@ -132,7 +130,7 @@ impl HvmStartInfo {
     }
 
     /// Creates an iterator through the physical memory map entries.
-    fn iter_raw_memmap(&self) -> MemmapTableIterator {
+    fn iter_raw_memmap(&self) -> MemmapTableIterator<'_> {
         MemmapTableIterator {
             start_info: self,
             index: 0,
@@ -143,7 +141,7 @@ impl HvmStartInfo {
 
 impl MemmapTableEntry {
     pub fn map_type(&self) -> Option<AcpiMemoryType> {
-        FromPrimitive::from_u32(self.map_type)
+        AcpiMemoryType::from_u32(self.map_type)
     }
 }
 

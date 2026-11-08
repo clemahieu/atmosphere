@@ -31,8 +31,10 @@ impl CapKernel {
         &&& !self.list.nodes@[self.tables.node_of(dst, to) as int].live
     }
 
+    /// A move's refusals, beyond those within a table: a source naming a dead process or thread.
     pub open spec fn can_move(&self, root: usize, from: usize, to: usize) -> bool {
-        self.can_move_between(root, from, root, to)
+        &&& self.can_move_between(root, from, root, to)
+        &&& !self.cap_dead(self.tables.node_of(root, from))
     }
 
     /// A claim's refusals, beyond a move's: the index `cap` names no capability, or one that is not a
@@ -52,6 +54,7 @@ impl CapKernel {
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
         ensures
             final(self).wf(),
             Self::same_tree(*old(self), *final(self)),
@@ -77,6 +80,23 @@ impl CapKernel {
         proof {
             pre.lemma_no_op_discharges(root);
         }
+        if let Some((i, payload)) = self.tables.lookup(&self.list, root, from) {
+            let node = self.list.get(i);
+            let kind_ok = match node.kind {
+                NodeKind::Capability => true,
+                _ => false,
+            };
+            if node.live && kind_ok {
+                proof {
+                    pre.lemma_slot(root, from);
+                    assert(pre.tables.is_cap(&pre.list, i));
+                    assert(payload == pre.payload_of(i));
+                }
+                if self.is_cap_dead(i, payload) {
+                    return false;
+                }
+            }
+        }
         let ret = self.move_between(root, from, root, to);
         if ret {
             proof {
@@ -97,6 +117,7 @@ impl CapKernel {
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
         ensures
             final(self).wf(),
             Self::same_tree(*old(self), *final(self)),

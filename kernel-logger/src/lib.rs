@@ -6,21 +6,23 @@
 #![no_std]
 
 use core::fmt::Write;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use log::{Level, Metadata, Record};
 
 /// The default logger.
 pub struct Logger<WR> {
     /// Function to call to acquire a writer.
-    acquire_writer: Option<fn() -> WR>,
+    acquire_writer: fn() -> WR,
 
     /// The maximum log level to emit.
     log_level: Level,
 
     /// Whether to enable colors or not.
     ///
-    /// This can be disabled via the kernel command-line with `nocolors`.
-    use_colors: bool,
+    /// This can be disabled via the kernel command-line with `nocolors`. Atomic so that the
+    /// logger can be a plain static that `log` holds by shared reference while this changes.
+    use_colors: AtomicBool,
 }
 
 impl<WR, W> Logger<WR>
@@ -28,23 +30,18 @@ where
     WR: core::ops::DerefMut<Target = W>,
     W: Write,
 {
-    /// Creates an uninitialized logger instance.
-    pub const fn uninit() -> Self {
+    /// Creates a logger that writes to what `acquire_writer` returns.
+    pub const fn new(acquire_writer: fn() -> WR, use_colors: bool) -> Self {
         Self {
-            acquire_writer: None,
+            acquire_writer,
             log_level: Level::Trace,
-            use_colors: true,
+            use_colors: AtomicBool::new(use_colors),
         }
     }
 
-    /// Initializes the logger instance.
-    pub fn init(&mut self, acquire_writer: fn() -> WR) {
-        self.acquire_writer = Some(acquire_writer);
-    }
-
     /// Sets whether to use colors.
-    pub fn set_colors(&mut self, use_colors: bool) {
-        self.use_colors = use_colors;
+    pub fn set_colors(&self, use_colors: bool) {
+        self.use_colors.store(use_colors, Ordering::Relaxed);
     }
 
     /// Returns the color prefix for a log level.
@@ -70,12 +67,8 @@ where
 
     fn log(&self, record: &Record) {
         if self.enabled(record.metadata()) {
-            let acquire_writer = self
-                .acquire_writer
-                .as_ref()
-                .expect("Writer acquisition function wasn't set");
-            let mut writer = acquire_writer();
-            if self.use_colors {
+            let mut writer = (self.acquire_writer)();
+            if self.use_colors.load(Ordering::Relaxed) {
                 let color = Self::get_color(record.level());
                 writeln!(
                     writer,

@@ -963,16 +963,18 @@ impl CapKernel {
         }
     }
 
-    /// The refusals: an index that names no capability to a space, or none that may change it; a parent
-    /// that is no live table of that space, or an entry of it that is taken or cannot hold a child; an
-    /// untyped that does not cover the child; a child that is no live table page, is not one level below
-    /// the parent, or has been linked or written.
+    /// The refusals: an index that names no capability to a space, or none that may change it, or a process
+    /// capability naming a dead process, whose space waits for retype's teardown (see
+    /// design/teardown-driven-by-retype/); a parent that is no live table of that space, or an entry of it
+    /// that is taken or cannot hold a child; an untyped that does not cover the child; a child that is no
+    /// live table page, is not one level below the parent, or has been linked or written.
     pub open spec fn can_link(&self, root: usize, slot: usize, parent: usize, entry: usize, from: usize, child: usize) -> bool {
         let tree = tree_of(&self.table_pages, &self.spaces);
         let n = self.tables.node_of(root, slot);
         &&& self.tables.has_slot(root, slot)
         &&& self.is_cap(n)
         &&& writes_space(self.payload_of(n))
+        &&& !self.cap_dead(n)
         &&& tree.is_table(parent)
         &&& tree.record(parent).space == Some(self.payload_of(n).base)
         &&& !self.blocks.pages@[(parent / 4096) as int].dead
@@ -1599,6 +1601,7 @@ impl CapKernel {
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
         ensures
             final(self).wf(),
             ret == old(self).can_link(root, slot, parent, entry, from, child),
@@ -1646,6 +1649,9 @@ impl CapKernel {
         proof {
             assert(pre.is_cap(n));
             pre.lemma_written_space(n);
+        }
+        if self.is_cap_dead(n, payload) {
+            return false;
         }
         if parent % 32768 != 0 || parent / 4096 >= NUM_PAGES || child % 32768 != 0 || child / 4096 >= NUM_PAGES || entry >= 512 {
             proof {

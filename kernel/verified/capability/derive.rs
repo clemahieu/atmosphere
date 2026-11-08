@@ -121,8 +121,9 @@ fn may_derive(parent: Payload, rights: u32, base: usize, order: u8) -> (ret: boo
 }
 
 impl CapKernel {
-    /// The refusals: an index that names no slot, a parent that is no capability, a device's or at the
-    /// deepest depth, a child's slot in use, or a child that does not narrow its parent.
+    /// The refusals: an index that names no slot, a parent that is no capability, a device's, a dead
+    /// process's or thread's, or at the deepest depth, a child's slot in use, or a child that does not
+    /// narrow its parent.
     pub open spec fn can_derive(&self, root: usize, from: usize, to: usize, rights: u32, base: usize, order: u8) -> bool {
         let parent = self.tables.node_of(root, from);
         let child = self.tables.node_of(root, to);
@@ -130,6 +131,7 @@ impl CapKernel {
         &&& self.tables.has_slot(root, to)
         &&& self.is_cap(parent)
         &&& !(self.payload_of(parent).kind is Device)
+        &&& !self.cap_dead(parent)
         &&& self.list.nodes@[parent as int].depth < MAX_DEPTH
         &&& !self.list.nodes@[child as int].live
         &&& narrows(child_of(self.payload_of(parent), rights, base, order), self.payload_of(parent))
@@ -145,6 +147,7 @@ impl CapKernel {
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
         ensures
             final(self).wf(),
             Self::same_tree(*old(self), *final(self)),
@@ -198,6 +201,9 @@ impl CapKernel {
             if payload.kind is Process {
                 pre.lemma_process_cap(parent);
             }
+        }
+        if self.is_cap_dead(parent, payload) {
+            return false;
         }
         // A device has one IO table, so its capability has no children: it moves instead.
         if let CapKind::Device = payload.kind {
@@ -587,6 +593,12 @@ impl CapKernel {
             assert(block_bytes(pp.order) == a.pages[parent] * 4096);
         }
         assert forall|o: ObjectId| #[trigger] (b.contents)(o) == (a.contents)(o) by {}
+        pre.lemma_slot_bound(parent);
+        pre.lemma_slot_bound(child);
+        assert(live(parent));
+        assert(!live(child));
+        assert(b.parent == a.parent.insert(child, parent));
+        assert(b.maps == a.maps);
         assert(adds_node(a, b, root, parent, child, live));
     }
 

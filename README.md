@@ -62,15 +62,3 @@ menuentry "Atmosphere" {
 ```bash
 sudo update-grub && sudo reboot
 ```
-
-## TODO
-
-Wire up IPI for killing threads and TLB flush. 
-
-Wire up hugepages. 
-
-Kill container (halfway there..). 
-
-Bring back verification for Kernel init(). 
-
-Adjust triggers in ProcessManager (almost there).

@@ -31,7 +31,7 @@ OUT = "target/coverage"
 KERNEL = f"{OUT}/x86_64-unknown-aloader/debug/kernel"
 DOM0 = f"{OUT}/x86_64-unknown-aloader/debug/dom0"
 # Built by atmo run or part of the workspace, with no image here that runs them.
-NOT_RUN = ("hello", "maglev", "kv", "libdma", "libtime")
+NOT_RUN = ("hello", "libtime")
 RAW_MAGIC = 0xff6c70726f667281
 RAW_VERSION = 11
 VALUE_KIND_LAST = 2

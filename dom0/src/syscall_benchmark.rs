@@ -1,4 +1,4 @@
-use core::arch::x86_64::_rdtsc;
+use core::arch::x86_64::{_mm_lfence, _rdtsc};
 use crate::*;
 
 pub fn test_mmap(){
@@ -260,6 +260,17 @@ pub fn time_mmap_only() {
     }
 }
 
+/// Allocates on dom0's heap and checks that its page is not in dom0's IOMMU space: a heap page
+/// mapped for DMA is a grant to every device bound to dom0's table that nobody asked for.
+pub fn check_heap_not_io_mapped() {
+    let v: alloc::vec::Vec<u64> = alloc::vec![0; 64];
+    let resolved = unsafe { asys::sys_mresolve_io(v.as_ptr() as usize) }.0;
+    log::info!("sys_mresolve_io of a heap page: {:#x}", resolved);
+    if resolved != 1 {
+        bench_fail("a heap page is IO-mapped", resolved);
+    }
+}
+
 /// Maps fresh pages and counts those that do not read as zero: what a new page holds is old data.
 pub fn check_new_pages_are_zero() {
     const PAGES: usize = 120_000;
@@ -512,15 +523,44 @@ pub fn check_second_core() {
     log::info!("a thread blocked with nothing else to run on each core, and was woken from the other");
 }
 
-const CONTENTION_CALLS: u64 = 100_000;
+/// Calls per timed batch, and batches per measurement. A host interrupt or preemption lands in one
+/// batch, so it moves the mean but not the minimum or the median.
+const BATCH_CALLS: u64 = 1000;
+const BATCHES: usize = 100;
+const CONTENTION_CALLS: u64 = BATCH_CALLS * BATCHES as u64;
 
-/// How long a syscall takes, in TSC cycles, over CONTENTION_CALLS.
-fn time_mresolve(va: usize) -> u64 {
-    let start = unsafe { _rdtsc() };
-    for _ in 0..CONTENTION_CALLS {
-        unsafe { asys::sys_mresolve(va) };
+/// The TSC, read after every earlier instruction has finished and before any later one starts.
+fn fenced_tsc() -> u64 {
+    unsafe {
+        _mm_lfence();
+        let tsc = _rdtsc();
+        _mm_lfence();
+        tsc
     }
-    (unsafe { _rdtsc() } - start) / CONTENTION_CALLS
+}
+
+/// TSC cycles per call: the least and the median over the batches, and the mean over every call.
+struct Batched {
+    min: u64,
+    median: u64,
+    mean: u64,
+}
+
+/// How long a syscall takes, timed in BATCHES batches of BATCH_CALLS calls.
+fn time_mresolve(va: usize) -> Batched {
+    let mut per_call = [0u64; BATCHES];
+    let mut total = 0;
+    for batch in per_call.iter_mut() {
+        let start = fenced_tsc();
+        for _ in 0..BATCH_CALLS {
+            unsafe { asys::sys_mresolve(va) };
+        }
+        let cycles = fenced_tsc() - start;
+        total += cycles;
+        *batch = cycles / BATCH_CALLS;
+    }
+    per_call.sort_unstable();
+    Batched { min: per_call[0], median: per_call[BATCHES / 2], mean: total / CONTENTION_CALLS }
 }
 
 /// How much the other core slows this one through the kernel's lock: the same syscall with that core
@@ -537,8 +577,12 @@ fn time_contended_syscalls() {
     SECOND_CORE_CONTEND.0.store(CONTEND_DONE, Ordering::SeqCst);
     let other = SECOND_CORE_MADE.load(Ordering::SeqCst) - made;
     log::info!(
-        "sys_mresolve: {} TSC cycles alone, {} with the other core contending ({} calls there), over {} calls",
-        alone, contended, other, CONTENTION_CALLS,
+        "sys_mresolve alone: min {}, median {}, mean {} TSC cycles per call over {} batches of {} calls",
+        alone.min, alone.median, alone.mean, BATCHES, BATCH_CALLS,
+    );
+    log::info!(
+        "sys_mresolve contended: min {}, median {}, mean {} TSC cycles per call over {} batches of {} calls, with the other core contending ({} calls there)",
+        contended.min, contended.median, contended.mean, BATCHES, BATCH_CALLS, other,
     );
     if other < CONTENTION_CALLS as usize / 100 {
         bench_fail("the other core contending", other);

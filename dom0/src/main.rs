@@ -6,15 +6,11 @@
 #![no_main]
 
 extern crate alloc;
-extern crate nvme_driver;
 extern crate pcid;
 extern crate ring_buffer;
 
 #[cfg(feature = "capability")]
 mod capability;
-mod e810_client;
-mod ixgbe_client;
-mod nvme_client;
 mod pci;
 mod slab_alloc;
 
@@ -22,11 +18,8 @@ use core::panic::PanicInfo;
 mod syscall_benchmark;
 use alloc::vec::Vec;
 use constants::*;
-use e810_client::test_e810_driver;
-use ixgbe_client::*;
 use libtime::sys_ns_loopsleep;
 pub use log::info as println;
-use nvme_client::test_nvme_driver;
 use pci::scan_pci_devs;
 
 fn test_sleep() {
@@ -70,6 +63,7 @@ extern "C" fn main(payload_base: *mut u8, payload_size: usize) -> isize {
     syscall_benchmark::time_new_thread();
     syscall_benchmark::check_syscall_return_registers();
     syscall_benchmark::check_new_pages_are_zero();
+    syscall_benchmark::check_heap_not_io_mapped();
     log::info!("dom0 benchmark done");
     syscall_benchmark::exit_qemu(syscall_benchmark::EXIT_SUCCESS)
 }
