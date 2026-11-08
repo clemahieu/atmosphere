@@ -134,8 +134,6 @@ pub mod msr {
 
     /// The local APIC's base address and enables. APM 2 §16.3.1, Figure 16-2.
     pub const APIC_BASE: u32 = 0x0000_001B;
-    /// The TSC deadline of the local APIC timer. Intel SDM Volume 4, Table 2-2 (IA32_TSC_DEADLINE).
-    pub const TSC_DEADLINE: u32 = 0x0000_06E0;
     /// APM 2 §3.1.7, Figure 3-9.
     pub const EFER: u32 = 0xC000_0080;
     /// SYSCALL and SYSRET selectors, and the 64-bit, compatibility-mode and flag-mask targets. APM 2

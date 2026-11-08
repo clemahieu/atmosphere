@@ -2,8 +2,6 @@
 
 use core::mem::MaybeUninit;
 
-use x86::apic::ApicControl;
-
 use super::IRQ_OFFSET;
 
 /// An I/O APIC, reached through its register select IOREGSEL at the base and its data window

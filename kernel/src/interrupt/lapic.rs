@@ -1,17 +1,11 @@
-//! LAPIC.
-//!
-//! We just use the xAPIC implementation in the x86 crate.
+//! LAPIC, driven in xAPIC mode by `x86_xapic`.
 
 use core::arch::asm;
 use core::mem::MaybeUninit;
 use core::slice;
 
-use super::x86_xapic::XAPIC;
+use super::x86_xapic::{Icr, XAPIC};
 use verified::define::PCID_ENABLE_MASK;
-use x86::apic::{
-    ApicControl, ApicId, DeliveryMode, DeliveryStatus, DestinationMode, DestinationShorthand, Icr, Level,
-    TriggerMode,
-};
 use crate::arch::msr;
 
 use super::Cycles;
@@ -65,17 +59,7 @@ pub fn send_ipi(cpu_id: usize, vector: u8) {
         (&mut *crate::cpu::get_current_cpu_field_ptr!(xapic, MaybeUninit<XAPIC>)).assume_init_mut()
     };
     // FIXME: X2APIC APIC ID
-    let icr = Icr::for_xapic(
-        vector,
-        ApicId::XApic(cpu_id as u8),
-        DestinationShorthand::NoShorthand,
-        DeliveryMode::Fixed,
-        DestinationMode::Physical,
-        DeliveryStatus::Idle,
-        Level::Assert,
-        TriggerMode::Edge,
-    );
-    unsafe { xapic.send_ipi(icr) };
+    unsafe { xapic.send_ipi(Icr::fixed(cpu_id as u8, vector)) };
 }
 
 /// Waits between start-up IPIs. The architecture asks for 10 ms and 200 us. No timer is calibrated this
@@ -109,7 +93,7 @@ pub unsafe fn boot_ap(cpu_id: u32, stack: u64, code: u64) {
     log::info!("page = {:#x}", start_page);
 
     // FIXME: X2APIC APIC ID
-    let apic_id = ApicId::XApic(cpu_id as u8);
+    let apic_id = cpu_id as u8;
     xapic.ipi_init(apic_id);
     start_delay();
     // A core takes the first STARTUP it sees and ignores a later one; the second is for the first

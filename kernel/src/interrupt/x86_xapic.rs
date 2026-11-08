@@ -1,8 +1,8 @@
-//! Vendored from `XAPIC` in x86.
+//! The local APIC in xAPIC mode.
 //!
-//! Search for `LOCAL MOD` for local modifications.
-//!
-//! Information about the xAPIC for the local APIC.
+//! The register map and the driver are vendored from `XAPIC` in the x86 crate (MIT); search for
+//! `LOCAL MOD` for local modifications. The Interrupt Command Register is written from the AMD64
+//! Architecture Programmer's Manual, Volume 2 (24593), §16.5, Figure 16-18.
 //!
 //! Table 10-1 Local APIC Register Address Map
 //! the MMIO base values are found in this file.
@@ -10,8 +10,7 @@
 use bit_field::BitField;
 use core::fmt;
 
-use x86::apic::*;
-use crate::arch::msr::{rdmsr, wrmsr, APIC_BASE, TSC_DEADLINE};
+use crate::arch::msr::{rdmsr, wrmsr, APIC_BASE};
 
 /// Local APIC ID register. Read-only. See Section 10.12.5.1 for initial values.
 pub const XAPIC_ID: u32 = 0x020;
@@ -317,33 +316,95 @@ impl XAPIC {
     }
 }
 
-impl ApicControl for XAPIC {
-    /// Is this the bootstrap core?
-    fn bsp(&self) -> bool {
-        (self.base & (1 << 8)) > 0
+/// The message type of an interprocessor interrupt, ICR bits 10:8. APM 2 §16.5.
+#[derive(Clone, Copy)]
+#[repr(u64)]
+enum MessageType {
+    Fixed = 0b000,
+    Init = 0b101,
+    Startup = 0b110,
+}
+
+/// The level of an interprocessor interrupt, ICR bit 14. APM 2 §16.5.
+#[derive(Clone, Copy)]
+#[repr(u64)]
+enum Level {
+    Assert = 1,
+}
+
+/// The trigger mode of an interprocessor interrupt, ICR bit 15. APM 2 §16.5.
+#[derive(Clone, Copy)]
+#[repr(u64)]
+enum TriggerMode {
+    Edge = 0,
+    Level = 1,
+}
+
+/// An Interrupt Command Register value that names its destination: the destination APIC ID in
+/// bits 63:56, destination shorthand 00b in bits 19:18, physical destination mode (bit 11 clear),
+/// and the read-only delivery status and remote read status written as 0. APM 2 §16.5, Figure
+/// 16-18; Table 16-4 lists the valid combinations of message type, trigger mode and level.
+#[derive(Clone, Copy)]
+pub struct Icr(u64);
+
+impl Icr {
+    const fn new(
+        destination: u8,
+        message_type: MessageType,
+        level: Level,
+        trigger_mode: TriggerMode,
+        vector: u8,
+    ) -> Icr {
+        Icr((destination as u64) << 56
+            | (trigger_mode as u64) << 15
+            | (level as u64) << 14
+            | (message_type as u64) << 8
+            | vector as u64)
     }
 
+    /// Interrupts the local APIC `destination` at `vector`.
+    pub const fn fixed(destination: u8, vector: u8) -> Icr {
+        Icr::new(destination, MessageType::Fixed, Level::Assert, TriggerMode::Edge, vector)
+    }
+
+    /// Puts the core of the local APIC `destination` in the INIT state, to await a STARTUP.
+    pub const fn init(destination: u8) -> Icr {
+        Icr::new(destination, MessageType::Init, Level::Assert, TriggerMode::Level, 0)
+    }
+
+    /// Starts the core of the local APIC `destination` in real mode at physical page `start_page`.
+    pub const fn startup(destination: u8, start_page: u8) -> Icr {
+        Icr::new(destination, MessageType::Startup, Level::Assert, TriggerMode::Edge, start_page)
+    }
+
+    /// Bits 31:0, the write to which sends the interrupt.
+    const fn lower(self) -> u32 {
+        self.0 as u32
+    }
+
+    /// Bits 63:32.
+    const fn upper(self) -> u32 {
+        (self.0 >> 32) as u32
+    }
+}
+
+impl XAPIC {
     /// Read local APIC ID.
-    fn id(&self) -> u32 {
+    pub fn id(&self) -> u32 {
         self.read(ApicRegister::XAPIC_ID)
     }
 
-    fn logical_id(&self) -> u32 {
+    pub fn logical_id(&self) -> u32 {
         self.read(ApicRegister::XAPIC_LDR)
     }
 
-    /// Read APIC version
-    fn version(&self) -> u32 {
-        self.read(ApicRegister::XAPIC_VERSION)
-    }
-
     /// End Of Interrupt -- Acknowledge interrupt delivery.
-    fn eoi(&mut self) {
+    pub fn eoi(&mut self) {
         self.write(ApicRegister::XAPIC_EOI, 0);
     }
 
     /// Enable TSC timer.
-    fn tsc_enable(&mut self, vector: u8) {
+    pub fn tsc_enable(&mut self, vector: u8) {
         let mut lvt: u32 = self.read(ApicRegister::XAPIC_LVT_TIMER);
         lvt &= !0xff;
         lvt |= vector as u32;
@@ -364,61 +425,18 @@ impl ApicControl for XAPIC {
         self.write(ApicRegister::XAPIC_LVT_TIMER, lvt);
     }
 
-    /// Set TSC deadline value.
-    fn tsc_set(&self, value: u64) {
-        unsafe {
-            wrmsr(TSC_DEADLINE, value);
-        }
-    }
-
     /// Send a INIT IPI to a core.
-    unsafe fn ipi_init(&mut self, core: ApicId) {
-        let icr = Icr::for_xapic(
-            0,
-            core,
-            DestinationShorthand::NoShorthand,
-            DeliveryMode::Init,
-            DestinationMode::Physical,
-            DeliveryStatus::Idle,
-            Level::Assert,
-            TriggerMode::Level,
-        );
-        self.send_ipi(icr);
-    }
-
-    /// Deassert INIT IPI.
-    unsafe fn ipi_init_deassert(&mut self) {
-        let icr = Icr::for_xapic(
-            0,
-            ApicId::XApic(0),
-            // INIT deassert is always sent to everyone, so we are supposed to specify:
-            DestinationShorthand::AllIncludingSelf,
-            DeliveryMode::Init,
-            DestinationMode::Physical,
-            DeliveryStatus::Idle,
-            Level::Deassert,
-            TriggerMode::Level,
-        );
-        self.send_ipi(icr);
+    pub unsafe fn ipi_init(&mut self, core: u8) {
+        self.send_ipi(Icr::init(core));
     }
 
     /// Send a STARTUP IPI to a core.
-    unsafe fn ipi_startup(&mut self, core: ApicId, start_page: u8) {
-        let icr = Icr::for_xapic(
-            start_page,
-            core,
-            DestinationShorthand::NoShorthand,
-            DeliveryMode::StartUp,
-            DestinationMode::Physical,
-            DeliveryStatus::Idle,
-            Level::Assert,
-            TriggerMode::Edge,
-        );
-        self.send_ipi(icr);
+    pub unsafe fn ipi_startup(&mut self, core: u8, start_page: u8) {
+        self.send_ipi(Icr::startup(core, start_page));
     }
 
     /// Send a generic IPI.
-    unsafe fn send_ipi(&mut self, icr: Icr) {
+    pub unsafe fn send_ipi(&mut self, icr: Icr) {
         self.write(ApicRegister::XAPIC_ESR, 0);
         self.write(ApicRegister::XAPIC_ESR, 0);
 
@@ -437,3 +455,8 @@ impl ApicControl for XAPIC {
         }
     }
 }
+
+// The encodings the x86 crate's Icr::for_xapic produced for each IPI the kernel sends.
+const _: () = assert!(Icr::init(3).0 == 0x0300_0000_0000_c500);
+const _: () = assert!(Icr::startup(1, 0x08).0 == 0x0100_0000_0000_4608);
+const _: () = assert!(Icr::fixed(1, 34).0 == 0x0100_0000_0000_4022);
