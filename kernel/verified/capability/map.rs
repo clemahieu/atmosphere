@@ -863,6 +863,7 @@ impl CapKernel {
             !ret ==> *final(self) == *old(self),
             ret ==> Self::map_done(*old(self), *final(self), root, slot, SpacePath { l4, l3, l2, l1 }, from, page),
             discharges(old(self).view(), final(self).view(), root, Effect::Local),
+            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
         self.map_kind(root, slot, SpaceKind::Process, l4, l3, l2, l1, from, page)
     }
@@ -879,6 +880,7 @@ impl CapKernel {
             !ret ==> *final(self) == *old(self),
             ret ==> Self::map_done(*old(self), *final(self), root, slot, SpacePath { l4, l3, l2, l1 }, from, page),
             discharges(old(self).view(), final(self).view(), root, Effect::Local),
+            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
         let ghost pre = *old(self);
         let ghost tree = tree_of(&pre.table_pages, &pre.spaces);
@@ -1009,6 +1011,7 @@ impl CapKernel {
             !ret ==> *final(self) == *old(self),
             ret ==> Self::map_large_done(*old(self), *final(self), root, slot, SpacePath { l4, l3, l2, l1: 0 }, from, page),
             discharges(old(self).view(), final(self).view(), root, Effect::Local),
+            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
         self.map_large_kind(root, slot, SpaceKind::Process, l4, l3, l2, from, page)
     }
@@ -1025,6 +1028,7 @@ impl CapKernel {
             !ret ==> *final(self) == *old(self),
             ret ==> Self::map_large_done(*old(self), *final(self), root, slot, SpacePath { l4, l3, l2, l1: 0 }, from, page),
             discharges(old(self).view(), final(self).view(), root, Effect::Local),
+            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
         let ghost pre = *old(self);
         let ghost tree = tree_of(&pre.table_pages, &pre.spaces);
@@ -1155,6 +1159,7 @@ impl CapKernel {
             ret ==> Self::map_written(*old(self), *final(self), t, e, f, frame, large),
             ret ==> final(self).mapped@ == old(self).mapped@.union(map_pages(frame, large)),
             discharges(old(self).view(), final(self).view(), root, Effect::Local),
+            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
         let ghost pre = *old(self);
         let ghost node = mapping_node(t, e);
