@@ -16,7 +16,7 @@ use crate::memory::PhysicalAllocator;
 pub static mut BOOTSTRAP_REGION: [u8; BOOTSTRAP_SIZE] = [0; BOOTSTRAP_SIZE];
 
 pub static mut BOOTSTRAP_ALLOCATOR: BumpAllocator = BumpAllocator {
-    base: unsafe { BOOTSTRAP_REGION.as_mut_ptr() },
+    base: (&raw mut BOOTSTRAP_REGION).cast::<u8>(),
     size: BOOTSTRAP_SIZE,
     watermark: AtomicUsize::new(0),
 };
@@ -142,8 +142,8 @@ impl BumpAllocator {
 
 /// Returns the range of the bootstrap region.
 pub fn get_bootstrap_range() -> MemoryRange {
-    let start = unsafe { BOOTSTRAP_REGION.as_ptr() as u64 };
-    let size = unsafe { BOOTSTRAP_REGION.len() as u64 };
+    let start = (&raw const BOOTSTRAP_REGION) as u64;
+    let size = BOOTSTRAP_SIZE as u64;
 
     MemoryRange::new(start, size)
 }

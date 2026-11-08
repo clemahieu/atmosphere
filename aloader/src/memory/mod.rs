@@ -236,19 +236,19 @@ pub unsafe fn init() {
     }
 }
 
+/// The allocator over the bootstrap region. The loader runs on one core and calls this once, from
+/// `main`, so the reference it returns is the only one.
 pub fn bootstrap_allocator() -> &'static mut (impl PhysicalAllocator + VirtualMapper) {
-    unsafe { &mut allocator::BOOTSTRAP_ALLOCATOR }
-}
-
-pub fn allocator() -> &'static mut (impl PhysicalAllocator + VirtualMapper) {
-    unsafe { &mut allocator::ALLOCATOR }
+    // Exclusive: see above.
+    unsafe { &mut *&raw mut allocator::BOOTSTRAP_ALLOCATOR }
 }
 
 pub fn reserve(
     size: usize,
     label: BootMemoryType,
 ) -> (*mut u8, impl PhysicalAllocator + VirtualMapper) {
-    let allocator = unsafe { allocator::ALLOCATOR.reserve(size) };
+    // Exclusive: the loader runs on one core, and the reference lives only for this call.
+    let allocator = unsafe { (*&raw mut allocator::ALLOCATOR).reserve(size) };
 
     let mut map = PHYSICAL_MEMORY_MAP.lock();
     map.relabel(allocator.range(), label);
