@@ -652,6 +652,174 @@ pub proof fn lemma_adds_child_discharges_retype(
     }
 }
 
+/// post is pre with capability n added as a child of c, held by p, without the control right. c need
+/// be nobody's: boot puts the root's console below the list's first node, which no table holds.
+/// `live` says which nodes the list holds; c is among them and n is not.
+pub open spec fn adds_held(pre: State, post: State, p: ObjectId, c: NodeId, n: NodeId, live: spec_fn(NodeId) -> bool) -> bool {
+    &&& live(c)
+    &&& !live(n)
+    &&& forall|h: (ObjectId, NodeId)| #[trigger] pre.held.contains(h) ==> live(h.1)
+    &&& forall|x: NodeId| #[trigger] pre.names.contains_key(x) ==> live(x)
+    &&& forall|x: NodeId| live(x) && #[trigger] pre.parent.contains_key(x) ==> live(pre.parent[x])
+    &&& forall|h: (ObjectId, NodeId)| #[trigger] post.held.contains(h) == (pre.held.contains(h) || h == (p, n))
+    &&& post.parent == pre.parent.insert(n, c)
+    &&& forall|x: NodeId| x != n ==> {
+        &&& #[trigger] post.names.contains_key(x) == pre.names.contains_key(x)
+        &&& post.pages.contains_key(x) == pre.pages.contains_key(x)
+        &&& pre.names.contains_key(x) ==> post.names[x] == pre.names[x]
+        &&& pre.pages.contains_key(x) ==> post.pages[x] == pre.pages[x]
+    }
+    &&& forall|x: NodeId, r: Right| x != n ==> #[trigger] post.rights.contains((x, r)) == pre.rights.contains((x, r))
+    &&& post.names.contains_key(n)
+    &&& post.pages.contains_key(n)
+    &&& !post.rights.contains((n, Right::Control))
+    &&& post.maps == pre.maps
+    &&& post.process_of == pre.process_of
+}
+
+/// Walking up from a live node walks the same nodes in pre and post.
+proof fn lemma_adds_held_descends(
+    pre: State,
+    post: State,
+    p: ObjectId,
+    c: NodeId,
+    n: NodeId,
+    live: spec_fn(NodeId) -> bool,
+    top: NodeId,
+    x: NodeId,
+    k: nat,
+)
+    requires
+        adds_held(pre, post, p, c, n, live),
+        live(x),
+    ensures
+        post.descends(top, x, k) == pre.descends(top, x, k),
+        post.descends(top, x, k) ==> live(top),
+    decreases k,
+{
+    if k > 0 {
+        assert(x != n);
+        assert(post.parent.contains_key(x) == pre.parent.contains_key(x));
+        if pre.parent.contains_key(x) {
+            assert(post.parent[x] == pre.parent[x]);
+            lemma_adds_held_descends(pre, post, p, c, n, live, top, pre.parent[x], (k - 1) as nat);
+        }
+    }
+}
+
+/// The control chains are pre's: the new capability carries no control, and every other keeps its
+/// name and rights.
+proof fn lemma_adds_held_controlled(
+    pre: State,
+    post: State,
+    p: ObjectId,
+    c: NodeId,
+    n: NodeId,
+    live: spec_fn(NodeId) -> bool,
+    a: ObjectId,
+    b: ObjectId,
+    k: nat,
+)
+    requires
+        adds_held(pre, post, p, c, n, live),
+    ensures
+        post.controlled(a, b, k) == pre.controlled(a, b, k),
+    decreases k,
+{
+    if k > 0 {
+        if post.controlled(a, b, k) {
+            let m = choose|m: ObjectId| #[trigger] post.controls(m, b) && post.controlled(a, m, (k - 1) as nat);
+            lemma_adds_held_controlled(pre, post, p, c, n, live, a, m, (k - 1) as nat);
+            let t = choose|t: NodeId| #[trigger] post.holds_right(m, t, Right::Control)
+                && post.process_behind(post.names[t]) == b;
+            assert(t != n);
+            assert(pre.holds_right(m, t, Right::Control));
+            assert(pre.controls(m, b));
+        }
+        if pre.controlled(a, b, k) {
+            let m = choose|m: ObjectId| #[trigger] pre.controls(m, b) && pre.controlled(a, m, (k - 1) as nat);
+            lemma_adds_held_controlled(pre, post, p, c, n, live, a, m, (k - 1) as nat);
+            let t = choose|t: NodeId| #[trigger] pre.holds_right(m, t, Right::Control)
+                && pre.process_behind(pre.names[t]) == b;
+            assert(pre.held.contains((m, t)));
+            assert(t != n);
+            assert(post.holds_right(m, t, Right::Control));
+            assert(post.controls(m, b));
+        }
+    }
+}
+
+/// What a process covers directly in post it did in pre, or the new capability covers it.
+proof fn lemma_adds_held_direct(
+    pre: State,
+    post: State,
+    p: ObjectId,
+    c: NodeId,
+    n: NodeId,
+    live: spec_fn(NodeId) -> bool,
+    q: ObjectId,
+    o: ObjectId,
+)
+    requires
+        adds_held(pre, post, p, c, n, live),
+    ensures
+        post.direct(q, o) ==> pre.direct(q, o) || post.covers(n, o),
+        pre.direct(q, o) ==> post.direct(q, o),
+{
+    if post.direct(q, o) && !post.maps.contains((q, o)) && !post.covers(n, o) {
+        let (t, x, k) = choose|t: NodeId, x: NodeId, k: nat| #[trigger] post.descends(t, x, k)
+            && post.holds(q, t) && post.covers(x, o);
+        assert(x != n);
+        assert(pre.names.contains_key(x));
+        lemma_adds_held_descends(pre, post, p, c, n, live, t, x, k);
+        assert(t != n);
+        assert(pre.held.contains((q, t)));
+        assert(pre.covers(x, o));
+        assert(pre.descends(t, x, k));
+    }
+    if pre.direct(q, o) && !pre.maps.contains((q, o)) {
+        let (t, x, k) = choose|t: NodeId, x: NodeId, k: nat| #[trigger] pre.descends(t, x, k)
+            && pre.holds(q, t) && pre.covers(x, o);
+        assert(live(x));
+        assert(x != n);
+        lemma_adds_held_descends(pre, post, p, c, n, live, t, x, k);
+        assert(post.held.contains((q, t)));
+        assert(post.names.contains_key(x));
+        assert(post.covers(x, o));
+        assert(post.descends(t, x, k));
+    }
+}
+
+/// Adding a held capability without control grows reach by what it covers alone: everybody keeps
+/// what they reached, nobody gains anything else, and the holder reaches all it covers.
+pub proof fn lemma_adds_held_reach(pre: State, post: State, p: ObjectId, c: NodeId, n: NodeId, live: spec_fn(NodeId) -> bool)
+    requires
+        adds_held(pre, post, p, c, n, live),
+    ensures
+        forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) ==> pre.reach(r, o) || post.covers(n, o),
+        forall|r: ObjectId, o: ObjectId| #[trigger] pre.reach(r, o) ==> post.reach(r, o),
+        forall|o: ObjectId| #[trigger] post.covers(n, o) ==> post.reach(p, o),
+{
+    assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) implies pre.reach(r, o) || post.covers(n, o) by {
+        let (q, k) = choose|q: ObjectId, k: nat| #[trigger] post.controlled(r, q, k) && (o == q || post.direct(q, o));
+        lemma_adds_held_controlled(pre, post, p, c, n, live, r, q, k);
+        lemma_adds_held_direct(pre, post, p, c, n, live, q, o);
+        assert(pre.controlled(r, q, k));
+    }
+    assert forall|r: ObjectId, o: ObjectId| #[trigger] pre.reach(r, o) implies post.reach(r, o) by {
+        let (q, k) = choose|q: ObjectId, k: nat| #[trigger] pre.controlled(r, q, k) && (o == q || pre.direct(q, o));
+        lemma_adds_held_controlled(pre, post, p, c, n, live, r, q, k);
+        lemma_adds_held_direct(pre, post, p, c, n, live, q, o);
+        assert(post.controlled(r, q, k));
+    }
+    assert forall|o: ObjectId| #[trigger] post.covers(n, o) implies post.reach(p, o) by {
+        assert(post.held.contains((p, n)));
+        assert(post.descends(n, n, 0));
+        assert(post.direct(p, o));
+        assert(post.controlled(p, p, 0));
+    }
+}
+
 /// A control chain in post is one in pre, or ends at the new object after one in pre that reaches
 /// p: the object holds nothing, so no chain goes on from it.
 proof fn lemma_adds_object_controlled(
