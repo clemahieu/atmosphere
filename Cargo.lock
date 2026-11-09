@@ -170,6 +170,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "aring"
+version = "0.1.0"
+dependencies = [
+ "vstd",
+]
+
+[[package]]
 name = "astd"
 version = "0.1.0"
 dependencies = [
