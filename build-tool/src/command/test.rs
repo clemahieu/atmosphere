@@ -67,7 +67,8 @@ pub(super) async fn run(global: GlobalOpts) -> Result<()> {
         ("mapped runs", check_mapped_runs(&project).await),
         ("license", check_licenses(&project).await),
         ("hooks", check_hooks(&project).await),
-        ("verify", check_verify(&project).await),
+        ("verify", check_verify(&project, &[]).await),
+        ("verify aarch64", check_verify(&project, &["--target", "aarch64"]).await),
         ("external body", check_external_body(&project).await),
         ("design index", check_design_index(&project).await),
         ("boot stack", check_boot_stack(&project).await),
@@ -243,15 +244,19 @@ async fn run_check(project: &ProjectHandle, program: &str, args: &[&str]) -> Res
     Ok(())
 }
 
-/// Runs Verus through the script and compares the errors on its results lines with the allowance. The
-/// script exits non-zero whenever a crate has an error, so its status alone does not decide the check.
-async fn check_verify(project: &ProjectHandle) -> Result<String> {
+/// Runs Verus through the script for one target, the host's with no arguments or the one `--target`
+/// names, and compares the errors on its results lines with the allowance, which holds for each target
+/// alone. The script exits non-zero whenever a crate has an error, so its status alone does not decide
+/// the check. The detail carries the results lines, so the gate log shows each crate's counts.
+async fn check_verify(project: &ProjectHandle, args: &[&str]) -> Result<String> {
     let root = project.root();
     let path = root.join(VERIFY_ALLOWANCE_PATH);
     let allowance = parse_allowance(&fs::read_to_string(&path).await?)
         .ok_or_else(|| anyhow!("{} does not hold a number", VERIFY_ALLOWANCE_PATH))?;
 
+    let command = [VERIFY].iter().chain(args).copied().collect::<Vec<_>>().join(" ");
     let output = Command::new(root.join(VERIFY))
+        .args(args)
         .current_dir(&root)
         .stdin(Stdio::null())
         .output()
@@ -260,17 +265,18 @@ async fn check_verify(project: &ProjectHandle) -> Result<String> {
     let text = String::from_utf8_lossy(&output.stdout) + String::from_utf8_lossy(&output.stderr);
     let counts: Vec<u64> = text.lines().filter_map(parse_verify_errors).collect();
     if counts.is_empty() {
-        return Err(anyhow!("{}: {}, no verification results line", VERIFY, output.status));
+        return Err(anyhow!("{}: {}, no verification results line", command, output.status));
     }
     let errors: u64 = counts.iter().sum();
     if errors == 0 && !output.status.success() {
-        return Err(anyhow!("{}: {} with no errors counted", VERIFY, output.status));
+        return Err(anyhow!("{}: {} with no errors counted", command, output.status));
     }
 
+    let results = results_lines(&text);
     if errors > allowance {
-        return Err(anyhow!("{} errors, allowance {}", errors, allowance));
+        return Err(anyhow!("{}: {} errors, allowance {}{}", command, errors, allowance, results));
     }
-    Ok(format!("{} errors, allowance {}", errors, allowance))
+    Ok(format!("{} errors, allowance {}{}", errors, allowance, results))
 }
 
 async fn check_boot(project: &ProjectHandle, timeout: u64) -> Result<String> {
@@ -435,6 +441,15 @@ fn parse_verify_errors(output: &str) -> Option<u64> {
     })
 }
 
+/// The `verification results::` lines of a verify run, one per crate, each on a line of its own.
+fn results_lines(output: &str) -> String {
+    output
+        .lines()
+        .filter(|line| line.contains("verification results:: "))
+        .map(|line| format!("\n  {}", line.trim()))
+        .collect()
+}
+
 /// Whether the serial log shows CPU 1 reaching its idle loop, on a different syscall stack from CPU 0.
 fn second_core_idle(serial: &str) -> bool {
     match (
@@ -485,6 +500,15 @@ mod tests {
     }
 
     /// A crate that does not compile prints no results line, which must not read as zero errors.
+    #[test]
+    fn results_lines_are_each_crates_line() {
+        let output = "warning: x\nverification results:: 1345 verified, 0 errors\nnote: y\nverification results:: 5 verified, 0 errors\n";
+        assert_eq!(
+            results_lines(output),
+            "\n  verification results:: 1345 verified, 0 errors\n  verification results:: 5 verified, 0 errors"
+        );
+    }
+
     #[test]
     fn no_results_line_is_not_zero_errors() {
         assert_eq!(parse_verify_errors("error: cannot find macro\n"), None);
