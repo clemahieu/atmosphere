@@ -57,6 +57,7 @@ const _: () = {
     assert!(user::ROOT_THREAD_SLOT == boot::ROOT_THREAD_SLOT as u64);
     assert!(user::ROOT_CONSOLE_SLOT == boot::ROOT_CONSOLE_SLOT as u64);
     assert!(user::ROOT_UNTYPED_SLOT == boot::ROOT_UNTYPED_SLOT as u64);
+    assert!(user::ROOT_FRAME_SLOT == boot::ROOT_FRAME_SLOT as u64);
 };
 
 /// Initializes syscalls.

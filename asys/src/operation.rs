@@ -45,6 +45,11 @@ pub const ROOT_CONSOLE_SLOT: u64 = 3;
 /// block of free memory, at consecutive slots from here to the end of the table's first leaf.
 pub const ROOT_UNTYPED_SLOT: u64 = 4;
 
+/// The root's first slot holding a frame capability for dom0's image, as boot leaves it: one per
+/// aligned block of at most 512 pages of each run the loader mapped, with the run's rights, at
+/// consecutive slots from here, the first slot of the table's second leaf.
+pub const ROOT_FRAME_SLOT: u64 = 129;
+
 /// The status in the rax an invocation returns.
 pub fn status(rax: u64) -> u64 {
     rax & 0xffff
