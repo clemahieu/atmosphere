@@ -215,12 +215,12 @@ impl CapKernel {
         &&& r < ROOT_ENTRIES
         &&& self.tables.leaf(root, r as int) == NO_LEAF
         &&& base != NO_LEAF
-        &&& base / 4096 + 2 <= NUM_PAGES
+        &&& self.blocks.tracks_addr_run(base, 2)
     }
 
     pub open spec fn can_retype_frame(&self, root: usize, from: usize, to: usize, base: usize) -> bool {
         &&& self.can_retype(root, from, to, base, 0)
-        &&& base / 4096 < NUM_PAGES
+        &&& self.blocks.tracks_addr(base)
     }
 
     /// And a large frame is 2M or 1G, in a region the block table has.
@@ -311,7 +311,7 @@ impl CapKernel {
     /// capability, with no capability yet.
     pub open spec fn frame_block_ready(&self, base: usize, order: u8) -> bool {
         let br = block_ref(&self.blocks, base / 4096);
-        &&& base / 4096 < NUM_PAGES
+        &&& self.blocks.tracks_addr(base)
         &&& !self.holders@.contains_key(br)
         &&& block_typed(&self.blocks, br)
         &&& block_refs(&self.blocks, br) == 1
@@ -513,7 +513,7 @@ impl CapKernel {
             Some(found) => found,
             None => { return false; },
         };
-        if base / 4096 >= NUM_PAGES {
+        if !self.blocks.page_tracked(base / 4096) {
             return false;
         }
         let page = base / 4096;
@@ -547,7 +547,7 @@ impl CapKernel {
             lemma_holders_small_typed(&pre.list, &pre.tables, &pre.blocks, &self.blocks, &pre.zeroing, pre.holders@, page, 0);
             lemma_leaf_blocks_small_typed(&self.list, &self.tables, &pre.blocks, &self.blocks, pre.holders@, page, 1);
             lemma_table_pages_small_typed(&self.list, &self.table_pages, &pre.blocks, &self.blocks, page, 1);
-            assert forall|x: usize| x < NUM_PAGES && #[trigger] table_block(&self.blocks, x)
+            assert forall|x: usize| self.blocks.tracks(x as int) && #[trigger] table_block(&self.blocks, x)
                 implies self.table_pages.maps@.contains_key((x * 4096) as usize) by {
                 assert(x != page);
             }
@@ -824,7 +824,7 @@ impl CapKernel {
             pre.tables.lemma_root(root);
         }
         if r >= ROOT_ENTRIES || self.tables.entry(root, r) != NO_LEAF || base == NO_LEAF
-            || base / 4096 >= NUM_PAGES - 1 {
+            || !self.blocks.run_tracked(base / 4096, 2) {
             return false;
         }
         proof {
@@ -858,7 +858,7 @@ impl CapKernel {
             old(self).tables.leaf(root, r as int) == NO_LEAF,
             base != NO_LEAF,
             base % 8192 == 0,
-            base / 4096 + 2 <= NUM_PAGES,
+            old(self).blocks.tracks_addr_run(base, 2),
             base + 8192 <= NODE_SPACE,
             parent < NODE_SPACE,
             old(self).list.nodes@[parent as int].live,
@@ -907,7 +907,7 @@ impl CapKernel {
                 &&& final(self).blocks.pages@[base / 4096 + 1].kind is Member
                 &&& final(self).blocks.regions_2m@ == old(self).blocks.regions_2m@
                 &&& final(self).blocks.regions_1g@ == old(self).blocks.regions_1g@
-                &&& forall|i: int| 0 <= i < NUM_PAGES && !(base / 4096 <= i < base / 4096 + 2)
+                &&& forall|i: int| old(self).blocks.tracks(i) && !(base / 4096 <= i < base / 4096 + 2)
                     ==> #[trigger] final(self).blocks.pages@[i] == old(self).blocks.pages@[i]
                 &&& final(self).threads == old(self).threads
                 &&& final(self).processes == old(self).processes
@@ -1087,12 +1087,12 @@ impl CapKernel {
         requires
             pre.wf(),
             base / 4096 == page,
-            page + 1 < NUM_PAGES,
+            pre.blocks.tracks_run(page as int, 2),
             pre.blocks.pages@[page + 0int].kind is Free,
             pre.blocks.pages@[page + 1int].kind is Free,
             post.blocks.pages@[page as int].kind is Base,
             post.blocks.pages@[page as int].object is TableLeaf,
-            forall|i: int| 0 <= i < NUM_PAGES && !(page <= i < page + 2) ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
+            forall|i: int| pre.blocks.tracks(i) && !(page <= i < page + 2) ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
             post.list.pages@.dom() == pre.list.pages@.dom().insert(base),
         ensures
             list_pages_used(&post.list, &post.blocks),
@@ -1112,14 +1112,14 @@ impl CapKernel {
             post.blocks.wf(),
             post.table_pages == pre.table_pages,
             base / 4096 == page,
-            page + 1 < NUM_PAGES,
+            pre.blocks.tracks_run(page as int, 2),
             !pre.list.pages@.dom().contains(base),
             pre.blocks.pages@[page + 0int].kind is Free,
             pre.blocks.pages@[page + 1int].kind is Free,
             post.blocks.pages@[page as int].kind is Base,
             post.blocks.pages@[page as int].object is TableLeaf,
             post.blocks.pages@[page as int].order == 1,
-            forall|i: int| 0 <= i < NUM_PAGES && !(page <= i < page + 2) ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
+            forall|i: int| pre.blocks.tracks(i) && !(page <= i < page + 2) ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
             forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) ==> post.list.pages@.dom().contains(p),
         ensures
             table_pages_wf(&post.list, &post.table_pages, &post.blocks),
@@ -1129,7 +1129,7 @@ impl CapKernel {
         }
         lemma_table_pages_small_typed(&pre.list, &pre.table_pages, &pre.blocks, &post.blocks, page, 2);
         post.blocks.lemma_member_of(page as int, page + 1int);
-        assert forall|x: usize| x < NUM_PAGES && #[trigger] table_block(&post.blocks, x)
+        assert forall|x: usize| post.blocks.tracks(x as int) && #[trigger] table_block(&post.blocks, x)
             implies pre.table_pages.maps@.contains_key((x * 4096) as usize) by {
             assert(!(page <= x < page + 2));
         }
@@ -1242,12 +1242,12 @@ impl CapKernel {
             post.zeroing == pre.zeroing,
             post.holders == pre.holders,
             page % (order_pages(1) as usize) == 0,
-            page + order_pages(1) <= NUM_PAGES,
+            pre.blocks.tracks_run(page as int, order_pages(1)),
             forall|k: int| 0 <= k < order_pages(1) ==> #[trigger] pre.blocks.pages@[page + k].kind is Free,
             !pre.blocks.covered(page as int),
             post.blocks.regions_2m@ == pre.blocks.regions_2m@,
             post.blocks.regions_1g@ == pre.blocks.regions_1g@,
-            forall|i: int| 0 <= i < NUM_PAGES && !(page <= i < page + order_pages(1))
+            forall|i: int| pre.blocks.tracks(i) && !(page <= i < page + order_pages(1))
                 ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
         ensures
             capability_nodes_are_slots(&post.list, &post.tables),
@@ -1298,12 +1298,12 @@ impl CapKernel {
             post.table_pages == pre.table_pages,
             post.spaces == pre.spaces,
             page % (order_pages(1) as usize) == 0,
-            page + order_pages(1) <= NUM_PAGES,
+            pre.blocks.tracks_run(page as int, order_pages(1)),
             forall|k: int| 0 <= k < order_pages(1) ==> #[trigger] pre.blocks.pages@[page + k].kind is Free,
             !pre.blocks.covered(page as int),
             post.blocks.regions_2m@ == pre.blocks.regions_2m@,
             post.blocks.regions_1g@ == pre.blocks.regions_1g@,
-            forall|i: int| 0 <= i < NUM_PAGES && !(page <= i < page + order_pages(1))
+            forall|i: int| pre.blocks.tracks(i) && !(page <= i < page + order_pages(1))
                 ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
         ensures
             mappings_wf(&post.list, &post.tables, tree_of(&post.table_pages, &post.spaces), &post.blocks, post.holders@, post.mappings@),
@@ -1338,12 +1338,12 @@ impl CapKernel {
             post.list.nodes@[base as int].live,
             post.list.nodes@[base as int].kind is Hidden,
             base / 4096 == page,
-            page + 1 < NUM_PAGES,
+            pre.blocks.tracks_run(page as int, 2),
             pre.blocks.pages@[page + 0int].kind is Free,
             pre.blocks.pages@[page + 1int].kind is Free,
             post.blocks.pages@[page as int].refs == 1,
             !post.blocks.pages@[page as int].dead,
-            forall|i: int| 0 <= i < NUM_PAGES && !(page <= i < page + 2) ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
+            forall|i: int| pre.blocks.tracks(i) && !(page <= i < page + 2) ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
         ensures
             leaf_blocks_wf(&post.list, &post.tables, &post.blocks),
     {
@@ -1379,8 +1379,8 @@ impl CapKernel {
         requires
             pre.wf(),
             post.blocks.wf(),
-            page < NUM_PAGES,
-            page + 1 < NUM_PAGES,
+            pre.blocks.tracks(page as int),
+            pre.blocks.tracks_run(page as int, 2),
             base % 8192 == 0,
             base / 4096 == page,
             post.holders == pre.holders,
@@ -1392,7 +1392,7 @@ impl CapKernel {
             post.blocks.pages@[page as int].refs == 1,
             post.blocks.regions_2m@ == pre.blocks.regions_2m@,
             post.blocks.regions_1g@ == pre.blocks.regions_1g@,
-            forall|i: int| 0 <= i < NUM_PAGES && !(page <= i < page + 2) ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
+            forall|i: int| pre.blocks.tracks(i) && !(page <= i < page + 2) ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
             exists|e: (usize, int)| post.tables.owner@ == pre.tables.owner@.insert(base, e),
         ensures
             objects_wf(&post.tables, &post.blocks, post.holders@),

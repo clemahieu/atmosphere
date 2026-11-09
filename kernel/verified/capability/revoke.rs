@@ -960,7 +960,7 @@ impl CapKernel {
         lemma_holders_mapping_dropped(&pre.list, &pre.tables, &post.list, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, n, br);
         lemma_zeroing_typed_refs_changed(&pre.list, &pre.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, br, refs, dead);
         lemma_list_pages_used_same_kinds(&pre.list, &pre.blocks, &post.blocks);
-        assert forall|p: usize| #[trigger] post.list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES implies {
+        assert forall|p: usize| #[trigger] post.list.pages@.dom().contains(p) && post.blocks.tracks_addr(p) implies {
             &&& !(post.blocks.pages@[(p / 4096) as int].kind is Free)
             &&& post.blocks.pages@[(p / 4096) as int].kind is Member
                 ==> post.blocks.pages@[post.blocks.pages@[(p / 4096) as int].base as int].object is TablePage

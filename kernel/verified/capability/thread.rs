@@ -197,7 +197,7 @@ pub open spec fn thread_block(blocks: &BlockTable, b: usize) -> bool {
 /// and it is dead at once when they go.
 pub open spec fn thread_wf(list: &Tree, threads: &Threads, blocks: &BlockTable, t: usize) -> bool {
     &&& t % 8192 == 0
-    &&& t / 4096 + 2 <= NUM_PAGES
+    &&& blocks.tracks_addr_run(t, 2)
     &&& threads.records@[t].addr() == t + THREAD_RECORD_PAGE * 4096
     &&& threads.records@[t].is_init()
     &&& blocks.pages@[(t / 4096) as int].kind is Base
@@ -214,7 +214,7 @@ pub open spec fn thread_wf(list: &Tree, threads: &Threads, blocks: &BlockTable, 
 /// are exactly the holders.
 pub open spec fn threads_wf(list: &Tree, tables: &Tables, threads: &Threads, blocks: &BlockTable) -> bool {
     &&& forall|t: usize| #[trigger] threads.records@.contains_key(t) ==> thread_wf(list, threads, blocks, t)
-    &&& forall|b: usize| b < NUM_PAGES && #[trigger] thread_block(blocks, b)
+    &&& forall|b: usize| blocks.tracks(b as int) && #[trigger] thread_block(blocks, b)
         ==> threads.records@.contains_key((b * 4096) as usize)
     &&& forall|n: usize| #[trigger] tables.is_cap(list, n) && tables.payload_of(n).kind is Thread ==> {
         &&& threads.records@.contains_key(tables.payload_of(n).base)
@@ -513,7 +513,7 @@ pub proof fn lemma_threads_record_written(list: &Tree, tables: &Tables, a: &Thre
         assert(a.records@.contains_key(x));
         assert(thread_wf(list, a, blocks, x));
     }
-    assert forall|x: usize| x < NUM_PAGES && #[trigger] thread_block(blocks, x) implies b.records@.contains_key((x * 4096) as usize) by {
+    assert forall|x: usize| blocks.tracks(x as int) && #[trigger] thread_block(blocks, x) implies b.records@.contains_key((x * 4096) as usize) by {
         assert(a.records@.contains_key((x * 4096) as usize));
     }
     assert forall|n: usize| #[trigger] tables.is_cap(list, n) && tables.payload_of(n).kind is Thread implies {
@@ -683,7 +683,7 @@ pub proof fn lemma_threads_same_pages(list: &Tree, tables: &Tables, threads: &Th
     assert forall|t: usize| #[trigger] threads.records@.contains_key(t) implies thread_wf(list, threads, b, t) by {
         assert(thread_wf(list, threads, a, t));
     }
-    assert forall|x: usize| x < NUM_PAGES && #[trigger] thread_block(b, x) implies threads.records@.contains_key((x * 4096) as usize) by {
+    assert forall|x: usize| b.tracks(x as int) && #[trigger] thread_block(b, x) implies threads.records@.contains_key((x * 4096) as usize) by {
         assert(thread_block(a, x));
     }
 }
@@ -722,7 +722,7 @@ pub proof fn lemma_threads_refs_changed(
         assert(block_refs(b, x) == block_refs(a, x));
         assert(block_dead(b, x) == block_dead(a, x));
     }
-    assert forall|x: usize| x < NUM_PAGES && #[trigger] thread_block(b, x) implies threads.records@.contains_key((x * 4096) as usize) by {
+    assert forall|x: usize| b.tracks(x as int) && #[trigger] thread_block(b, x) implies threads.records@.contains_key((x * 4096) as usize) by {
         assert(thread_block(a, x));
     }
 }
@@ -743,7 +743,7 @@ pub proof fn lemma_threads_small_typed(
     requires
         threads_wf(list_a, tables_a, threads, a),
         forall|k: int| 0 <= k < size ==> #[trigger] a.pages@[base + k].kind is Free,
-        forall|i: int| 0 <= i < NUM_PAGES && !(base <= i < base + size) ==> #[trigger] b.pages@[i] == a.pages@[i],
+        forall|i: int| a.tracks(i) && !(base <= i < base + size) ==> #[trigger] b.pages@[i] == a.pages@[i],
         forall|k: int| 0 <= k < size ==> !((#[trigger] b.pages@[base + k]).object is Thread),
         same_threads(list_a, tables_a, list_b, tables_b),
         forall|p: usize| #[trigger] list_a.pages@.dom().contains(p) ==> list_b.pages@.dom().contains(p),
@@ -759,7 +759,7 @@ pub proof fn lemma_threads_small_typed(
         }
         assert(b.pages@[x] == a.pages@[x]);
     }
-    assert forall|x: usize| x < NUM_PAGES && #[trigger] thread_block(b, x) implies threads.records@.contains_key((x * 4096) as usize) by {
+    assert forall|x: usize| b.tracks(x as int) && #[trigger] thread_block(b, x) implies threads.records@.contains_key((x * 4096) as usize) by {
         if base <= x < base + size {
             assert(!(b.pages@[base + (x - base)].object is Thread));
         }
@@ -782,9 +782,9 @@ pub proof fn lemma_threads_small_freed(
 )
     requires
         threads_wf(list_a, tables_a, threads, a),
-        forall|p: usize| #[trigger] list_b.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
+        forall|p: usize| #[trigger] list_b.pages@.dom().contains(p) && a.tracks_addr(p)
             ==> !a.in_block(base as int, (p / 4096) as int),
-        forall|i: int| 0 <= i < NUM_PAGES ==> #[trigger] b.pages@[i] == (
+        forall|i: int| a.tracks(i) ==> #[trigger] b.pages@[i] == (
             if a.in_block(base as int, i) { free_entry() } else { a.pages@[i] }),
         same_threads(list_a, tables_a, list_b, tables_b),
         forall|t: usize| #[trigger] threads.records@.contains_key(t) ==> list_b.pages@.dom().contains(t),
@@ -797,7 +797,7 @@ pub proof fn lemma_threads_small_freed(
         assert(!a.in_block(base as int, (t / 4096) as int));
         assert(b.pages@[(t / 4096) as int] == a.pages@[(t / 4096) as int]);
     }
-    assert forall|x: usize| x < NUM_PAGES && #[trigger] thread_block(b, x) implies threads.records@.contains_key((x * 4096) as usize) by {
+    assert forall|x: usize| b.tracks(x as int) && #[trigger] thread_block(b, x) implies threads.records@.contains_key((x * 4096) as usize) by {
         if a.in_block(base as int, x as int) {
             assert(b.pages@[x as int] == free_entry());
         }
@@ -831,7 +831,7 @@ pub proof fn lemma_thread_node_pages_kept(
 )
     requires
         threads_wf(list_a, tables, threads, blocks),
-        base / 4096 < NUM_PAGES,
+        blocks.tracks_addr(base),
         !(blocks.pages@[(base / 4096) as int].object is Thread),
         list_b.pages@.dom() == list_a.pages@.dom().remove(base),
     ensures
@@ -848,7 +848,7 @@ pub proof fn lemma_threads_outside_block(list: &Tree, tables: &Tables, threads: 
     requires
         threads_wf(list, tables, threads, blocks),
         blocks.wf(),
-        base < NUM_PAGES,
+        blocks.tracks(base as int),
         blocks.pages@[base as int].kind is Base,
         !(blocks.pages@[base as int].object is Thread),
     ensures
@@ -1030,7 +1030,7 @@ impl CapKernel {
                 &&& self.processes.records@.contains_key(p)
                 &&& self.processes.bound@[p].contains(t)
                 &&& p % 32768 == 0
-                &&& p / 4096 < NUM_PAGES
+                &&& self.blocks.tracks_addr(p)
                 &&& self.blocks.pages@[(p / 4096) as int].object is Process
                 &&& block_typed(&self.blocks, BlockRef::Small(p / 4096))
                 &&& block_refs(&self.blocks, BlockRef::Small(p / 4096)) > 0
@@ -1156,7 +1156,7 @@ impl CapKernel {
             self.threads.records@.contains_key(self.payload_of(n).base),
             self.threads.holders@[self.payload_of(n).base].contains(n),
             self.payload_of(n).base % 8192 == 0,
-            self.payload_of(n).base / 4096 < NUM_PAGES,
+            self.blocks.tracks_addr(self.payload_of(n).base),
             self.payload_of(n).order == THREAD_ORDER,
             self.blocks.pages@[(self.payload_of(n).base / 4096) as int].object is Thread,
             block_typed(&self.blocks, BlockRef::Small(self.payload_of(n).base / 4096)),
@@ -1220,7 +1220,7 @@ impl CapKernel {
                 assert(hb[u] == ha[u]);
             }
         }
-        assert forall|x: usize| x < NUM_PAGES && #[trigger] thread_block(b, x)
+        assert forall|x: usize| b.tracks(x as int) && #[trigger] thread_block(b, x)
             implies post.threads.records@.contains_key((x * 4096) as usize) by {
             assert(thread_block(a, x));
         }
@@ -1292,7 +1292,7 @@ impl CapKernel {
                 assert(hb[u] == ha[u]);
             }
         }
-        assert forall|x: usize| x < NUM_PAGES && #[trigger] thread_block(b, x)
+        assert forall|x: usize| b.tracks(x as int) && #[trigger] thread_block(b, x)
             implies post.threads.records@.contains_key((x * 4096) as usize) by {
             assert(thread_block(a, x));
         }
@@ -1330,10 +1330,10 @@ impl CapKernel {
             base / 4096 == page,
             page * 4096 == base,
             page % 2 == 0,
-            page + 2 <= NUM_PAGES,
+            pre.blocks.tracks_run(page as int, 2),
             !pre.blocks.covered(page as int),
             forall|k: int| 0 <= k < 2 ==> #[trigger] pre.blocks.pages@[page + k].kind is Free,
-            forall|i: int| 0 <= i < NUM_PAGES && !(page <= i < page + 2) ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
+            forall|i: int| pre.blocks.tracks(i) && !(page <= i < page + 2) ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
             post.blocks.regions_2m@ == pre.blocks.regions_2m@,
             post.blocks.regions_1g@ == pre.blocks.regions_1g@,
             post.blocks.pages@[page as int].kind is Base,
@@ -1389,7 +1389,7 @@ impl CapKernel {
         assert(leaf_blocks_wf(&pre.list, &post.tables, b));
         lemma_leaf_blocks_same_nodes(&pre.list, &post.list, &post.tables, b);
         lemma_table_pages_small_typed(&pre.list, &pre.table_pages, a, b, page, 2);
-        assert forall|x: usize| x < NUM_PAGES && #[trigger] table_block(b, x)
+        assert forall|x: usize| b.tracks(x as int) && #[trigger] table_block(b, x)
             implies pre.table_pages.maps@.contains_key((x * 4096) as usize) by {
             if x == page {
                 assert(b.pages@[page as int].object is Thread);
@@ -1416,9 +1416,9 @@ impl CapKernel {
             base % 8192 == 0,
             base / 4096 == page,
             page * 4096 == base,
-            page + 2 <= NUM_PAGES,
+            pre.blocks.tracks_run(page as int, 2),
             forall|k: int| 0 <= k < 2 ==> #[trigger] pre.blocks.pages@[page + k].kind is Free,
-            forall|i: int| 0 <= i < NUM_PAGES && !(page <= i < page + 2) ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
+            forall|i: int| pre.blocks.tracks(i) && !(page <= i < page + 2) ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
             post.blocks.pages@[page as int].kind is Base,
             post.blocks.pages@[page as int].object is Thread,
             post.blocks.pages@[page as int].order == 1,
@@ -1472,7 +1472,7 @@ impl CapKernel {
                 assert(tb.holders@[t] == ta.holders@[t]);
             }
         }
-        assert forall|x: usize| x < NUM_PAGES && #[trigger] thread_block(b, x) implies tb.records@.contains_key((x * 4096) as usize) by {
+        assert forall|x: usize| b.tracks(x as int) && #[trigger] thread_block(b, x) implies tb.records@.contains_key((x * 4096) as usize) by {
             if x == page {
                 assert((x * 4096) as usize == base);
             } else if page < x < page + 2 {
@@ -1587,7 +1587,7 @@ impl CapKernel {
                 &&& final(self).payload_of(x) == old(self).payload_of(x)
                 &&& final(self).list.nodes@[x as int].depth == old(self).list.nodes@[x as int].depth
             },
-            ret ==> forall|q: int| 0 <= q < NUM_PAGES && !(base / 4096 <= q < base / 4096 + 2)
+            ret ==> forall|q: int| old(self).blocks.tracks(q) && !(base / 4096 <= q < base / 4096 + 2)
                 ==> #[trigger] final(self).blocks.pages@[q] == old(self).blocks.pages@[q],
             ret ==> {
                 let parent = old(self).tables.node_of(root, from);
@@ -1615,7 +1615,7 @@ impl CapKernel {
             Some(found) => found,
             None => { return false; },
         };
-        if base / 4096 >= NUM_PAGES - 1 {
+        if !self.blocks.run_tracked(base / 4096, 2) {
             return false;
         }
         let page = base / 4096;
@@ -1997,7 +1997,7 @@ impl CapKernel {
             implies thread_wf(&post.list, &post.threads, &post.blocks, x) by {
             assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, x));
         }
-        assert forall|b: usize| b < NUM_PAGES && #[trigger] thread_block(&post.blocks, b)
+        assert forall|b: usize| post.blocks.tracks(b as int) && #[trigger] thread_block(&post.blocks, b)
             implies post.threads.records@.contains_key((b * 4096) as usize) by {
             assert(thread_block(&pre.blocks, b));
         }
@@ -2017,7 +2017,7 @@ impl CapKernel {
         }
         assert forall|d: int, e: TlbEntry|
             0 <= d < NUM_CPUS && #[trigger] post.tlb@[d].contains(e) && !post.mapped@.contains(e.page)
-            implies e.page < NUM_PAGES && post.stale_epoch.above(post.acked(d), e.page) by {
+            implies post.blocks.tracks(e.page as int) && post.stale_epoch.above(post.acked(d), e.page) by {
             assert(pre.tlb@[d].contains(e));
         }
         assert(post.tlb_wf());
@@ -3520,7 +3520,7 @@ impl CapKernel {
                 ==> final(self).list.nodes@[x].depth == old(self).list.nodes@[x].depth,
             final(self).blocks.regions_2m@ == old(self).blocks.regions_2m@,
             final(self).blocks.regions_1g@ == old(self).blocks.regions_1g@,
-            forall|i: int| 0 <= i < NUM_PAGES ==> (#[trigger] final(self).blocks.pages@[i]).dead == old(self).blocks.pages@[i].dead,
+            forall|i: int| old(self).blocks.tracks(i) ==> (#[trigger] final(self).blocks.pages@[i]).dead == old(self).blocks.pages@[i].dead,
     {
         let ghost pre = *old(self);
         proof {

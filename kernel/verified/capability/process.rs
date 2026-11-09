@@ -117,7 +117,7 @@ pub proof fn lemma_blocks_apart(p: usize, q: usize)
 /// holders and the threads bound to it, and it is dead at once when they go.
 pub open spec fn process_wf(processes: &Processes, blocks: &BlockTable, p: usize) -> bool {
     &&& p % 32768 == 0
-    &&& p / 4096 + 8 <= NUM_PAGES
+    &&& blocks.tracks_addr_run(p, 8)
     &&& processes.records@[p].addr() == p + PROCESS_RECORD_PAGE * 4096
     &&& processes.records@[p].is_init()
     &&& spare_kept(processes, p, 2)
@@ -138,7 +138,7 @@ pub open spec fn process_wf(processes: &Processes, blocks: &BlockTable, p: usize
 /// Process are exactly the holders.
 pub open spec fn processes_wf(list: &Tree, tables: &Tables, processes: &Processes, blocks: &BlockTable) -> bool {
     &&& forall|p: usize| #[trigger] processes.records@.contains_key(p) ==> process_wf(processes, blocks, p)
-    &&& forall|b: usize| b < NUM_PAGES && #[trigger] process_block(blocks, b)
+    &&& forall|b: usize| blocks.tracks(b as int) && #[trigger] process_block(blocks, b)
         ==> processes.records@.contains_key((b * 4096) as usize)
     &&& forall|n: usize| #[trigger] tables.is_cap(list, n) && tables.payload_of(n).kind is Process ==> {
         &&& processes.records@.contains_key(tables.payload_of(n).base)
@@ -229,7 +229,7 @@ pub proof fn lemma_processes_same_pages(list: &Tree, tables: &Tables, processes:
     assert forall|p: usize| #[trigger] processes.records@.contains_key(p) implies process_wf(processes, b, p) by {
         assert(process_wf(processes, a, p));
     }
-    assert forall|x: usize| x < NUM_PAGES && #[trigger] process_block(b, x) implies processes.records@.contains_key((x * 4096) as usize) by {
+    assert forall|x: usize| b.tracks(x as int) && #[trigger] process_block(b, x) implies processes.records@.contains_key((x * 4096) as usize) by {
         assert(process_block(a, x));
     }
 }
@@ -268,7 +268,7 @@ pub proof fn lemma_processes_refs_changed(
         assert(block_refs(b, x) == block_refs(a, x));
         assert(block_dead(b, x) == block_dead(a, x));
     }
-    assert forall|x: usize| x < NUM_PAGES && #[trigger] process_block(b, x) implies processes.records@.contains_key((x * 4096) as usize) by {
+    assert forall|x: usize| b.tracks(x as int) && #[trigger] process_block(b, x) implies processes.records@.contains_key((x * 4096) as usize) by {
         assert(process_block(a, x));
     }
 }
@@ -289,7 +289,7 @@ pub proof fn lemma_processes_small_typed(
     requires
         processes_wf(list_a, tables_a, processes, a),
         forall|k: int| 0 <= k < size ==> #[trigger] a.pages@[base + k].kind is Free,
-        forall|i: int| 0 <= i < NUM_PAGES && !(base <= i < base + size) ==> #[trigger] b.pages@[i] == a.pages@[i],
+        forall|i: int| a.tracks(i) && !(base <= i < base + size) ==> #[trigger] b.pages@[i] == a.pages@[i],
         forall|k: int| 0 <= k < size ==> !((#[trigger] b.pages@[base + k]).object is Process),
         same_processes(list_a, tables_a, list_b, tables_b),
     ensures
@@ -304,7 +304,7 @@ pub proof fn lemma_processes_small_typed(
         }
         assert(b.pages@[x] == a.pages@[x]);
     }
-    assert forall|x: usize| x < NUM_PAGES && #[trigger] process_block(b, x) implies processes.records@.contains_key((x * 4096) as usize) by {
+    assert forall|x: usize| b.tracks(x as int) && #[trigger] process_block(b, x) implies processes.records@.contains_key((x * 4096) as usize) by {
         if base <= x < base + size {
             assert(!(b.pages@[base + (x - base)].object is Process));
         }
@@ -318,7 +318,7 @@ pub proof fn lemma_processes_outside_block(list: &Tree, tables: &Tables, process
     requires
         processes_wf(list, tables, processes, blocks),
         blocks.wf(),
-        base < NUM_PAGES,
+        blocks.tracks(base as int),
         blocks.pages@[base as int].kind is Base,
         !(blocks.pages@[base as int].object is Process),
     ensures
@@ -347,10 +347,10 @@ pub proof fn lemma_processes_small_freed(
     requires
         processes_wf(list_a, tables_a, processes, a),
         a.wf(),
-        base < NUM_PAGES,
+        a.tracks(base as int),
         a.pages@[base as int].kind is Base,
         !(a.pages@[base as int].object is Process),
-        forall|i: int| 0 <= i < NUM_PAGES ==> #[trigger] b.pages@[i] == (
+        forall|i: int| a.tracks(i) ==> #[trigger] b.pages@[i] == (
             if a.in_block(base as int, i) { free_entry() } else { a.pages@[i] }),
         same_processes(list_a, tables_a, list_b, tables_b),
     ensures
@@ -363,7 +363,7 @@ pub proof fn lemma_processes_small_freed(
         assert(!a.in_block(base as int, (p / 4096) as int));
         assert(b.pages@[(p / 4096) as int] == a.pages@[(p / 4096) as int]);
     }
-    assert forall|x: usize| x < NUM_PAGES && #[trigger] process_block(b, x) implies processes.records@.contains_key((x * 4096) as usize) by {
+    assert forall|x: usize| b.tracks(x as int) && #[trigger] process_block(b, x) implies processes.records@.contains_key((x * 4096) as usize) by {
         if a.in_block(base as int, x as int) {
             assert(b.pages@[x as int] == free_entry());
         }
@@ -389,7 +389,7 @@ pub proof fn lemma_processes_process_freed(
         a.wf(),
         pa.records@.contains_key(base),
         a.pages@[(base / 4096) as int].refs == 0,
-        forall|i: int| 0 <= i < NUM_PAGES ==> #[trigger] b.pages@[i] == (
+        forall|i: int| a.tracks(i) ==> #[trigger] b.pages@[i] == (
             if a.in_block((base / 4096) as int, i) { free_entry() } else { a.pages@[i] }),
         tables_b.owner == tables_a.owner,
         tables_b.payloads == tables_a.payloads,
@@ -429,7 +429,7 @@ pub proof fn lemma_processes_process_freed(
         assert(pb.holders@[p] == pa.holders@[p]);
         assert(pb.bound@[p] == pa.bound@[p]);
     }
-    assert forall|x: usize| x < NUM_PAGES && #[trigger] process_block(b, x) implies pb.records@.contains_key((x * 4096) as usize) by {
+    assert forall|x: usize| b.tracks(x as int) && #[trigger] process_block(b, x) implies pb.records@.contains_key((x * 4096) as usize) by {
         if a.in_block(page, x as int) {
             assert(b.pages@[x as int] == free_entry());
         }
@@ -506,7 +506,7 @@ pub proof fn lemma_processes_bound_added(
             assert(b.bound@[u] == a.bound@[u]);
         }
     }
-    assert forall|x: usize| x < NUM_PAGES && #[trigger] process_block(bb, x) implies b.records@.contains_key((x * 4096) as usize) by {
+    assert forall|x: usize| bb.tracks(x as int) && #[trigger] process_block(bb, x) implies b.records@.contains_key((x * 4096) as usize) by {
         assert(process_block(ba, x));
     }
     assert forall|n: usize| #[trigger] tables.is_cap(list, n) && tables.payload_of(n).kind is Process implies {
@@ -567,7 +567,7 @@ pub proof fn lemma_processes_bound_dropped(
             assert(b.bound@[u] == a.bound@[u]);
         }
     }
-    assert forall|x: usize| x < NUM_PAGES && #[trigger] process_block(bb, x) implies b.records@.contains_key((x * 4096) as usize) by {
+    assert forall|x: usize| bb.tracks(x as int) && #[trigger] process_block(bb, x) implies b.records@.contains_key((x * 4096) as usize) by {
         assert(process_block(ba, x));
     }
     assert forall|n: usize| #[trigger] tables.is_cap(list, n) && tables.payload_of(n).kind is Process implies {
@@ -596,7 +596,7 @@ impl CapKernel {
             self.processes.records@.contains_key(self.payload_of(n).base),
             self.processes.holders@[self.payload_of(n).base].contains(n),
             self.payload_of(n).base % 32768 == 0,
-            self.payload_of(n).base / 4096 < NUM_PAGES,
+            self.blocks.tracks_addr(self.payload_of(n).base),
             self.payload_of(n).order == PROCESS_ORDER,
             self.blocks.pages@[(self.payload_of(n).base / 4096) as int].object is Process,
             block_typed(&self.blocks, BlockRef::Small(self.payload_of(n).base / 4096)),
@@ -674,7 +674,7 @@ impl CapKernel {
                 assert(hb[u] == ha[u]);
             }
         }
-        assert forall|x: usize| x < NUM_PAGES && #[trigger] process_block(b, x)
+        assert forall|x: usize| b.tracks(x as int) && #[trigger] process_block(b, x)
             implies post.processes.records@.contains_key((x * 4096) as usize) by {
             assert(process_block(a, x));
         }
@@ -747,7 +747,7 @@ impl CapKernel {
                 assert(hb[u] == ha[u]);
             }
         }
-        assert forall|x: usize| x < NUM_PAGES && #[trigger] process_block(b, x)
+        assert forall|x: usize| b.tracks(x as int) && #[trigger] process_block(b, x)
             implies post.processes.records@.contains_key((x * 4096) as usize) by {
             assert(process_block(a, x));
         }
@@ -785,10 +785,10 @@ impl CapKernel {
             base / 4096 == page,
             page * 4096 == base,
             page % 8 == 0,
-            page + 8 <= NUM_PAGES,
+            pre.blocks.tracks_run(page as int, 8),
             !pre.blocks.covered(page as int),
             forall|k: int| 0 <= k < 8 ==> #[trigger] pre.blocks.pages@[page + k].kind is Free,
-            forall|i: int| 0 <= i < NUM_PAGES && !(page <= i < page + 8) ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
+            forall|i: int| pre.blocks.tracks(i) && !(page <= i < page + 8) ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
             post.blocks.regions_2m@ == pre.blocks.regions_2m@,
             post.blocks.regions_1g@ == pre.blocks.regions_1g@,
             post.blocks.pages@[page as int].kind is Base,
@@ -845,7 +845,7 @@ impl CapKernel {
         assert(leaf_blocks_wf(&pre.list, &post.tables, b));
         lemma_leaf_blocks_same_nodes(&pre.list, &post.list, &post.tables, b);
         lemma_table_pages_small_typed(&pre.list, &pre.table_pages, a, b, page, 8);
-        assert forall|x: usize| x < NUM_PAGES && #[trigger] table_block(b, x)
+        assert forall|x: usize| b.tracks(x as int) && #[trigger] table_block(b, x)
             implies pre.table_pages.maps@.contains_key((x * 4096) as usize) by {
             if x == page {
                 assert(b.pages@[page as int].object is Process);
@@ -873,9 +873,9 @@ impl CapKernel {
             base % 32768 == 0,
             base / 4096 == page,
             page * 4096 == base,
-            page + 8 <= NUM_PAGES,
+            pre.blocks.tracks_run(page as int, 8),
             forall|k: int| 0 <= k < 8 ==> #[trigger] pre.blocks.pages@[page + k].kind is Free,
-            forall|i: int| 0 <= i < NUM_PAGES && !(page <= i < page + 8) ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
+            forall|i: int| pre.blocks.tracks(i) && !(page <= i < page + 8) ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
             post.blocks.pages@[page as int].kind is Base,
             post.blocks.pages@[page as int].object is Process,
             post.blocks.pages@[page as int].order == 3,
@@ -956,7 +956,7 @@ impl CapKernel {
                 assert(sa.loaded@.contains_key(s));
             }
         }
-        assert forall|x: usize| x < NUM_PAGES && #[trigger] space_block(b, x) implies sb.roots@.contains_key((x * 4096) as usize) by {
+        assert forall|x: usize| b.tracks(x as int) && #[trigger] space_block(b, x) implies sb.roots@.contains_key((x * 4096) as usize) by {
             if x == page {
                 assert(b.pages@[page as int].object is Process);
             } else if page < x < page + 8 {
@@ -1000,9 +1000,9 @@ impl CapKernel {
             base % 32768 == 0,
             base / 4096 == page,
             page * 4096 == base,
-            page + 8 <= NUM_PAGES,
+            pre.blocks.tracks_run(page as int, 8),
             forall|k: int| 0 <= k < 8 ==> #[trigger] pre.blocks.pages@[page + k].kind is Free,
-            forall|i: int| 0 <= i < NUM_PAGES && !(page <= i < page + 8) ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
+            forall|i: int| pre.blocks.tracks(i) && !(page <= i < page + 8) ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
             post.blocks.pages@[page as int].kind is Base,
             post.blocks.pages@[page as int].object is Process,
             post.blocks.pages@[page as int].order == 3,
@@ -1070,7 +1070,7 @@ impl CapKernel {
                 assert(spare_kept(pa, p, 4));
             }
         }
-        assert forall|x: usize| x < NUM_PAGES && #[trigger] process_block(b, x) implies pb.records@.contains_key((x * 4096) as usize) by {
+        assert forall|x: usize| b.tracks(x as int) && #[trigger] process_block(b, x) implies pb.records@.contains_key((x * 4096) as usize) by {
             if x == page {
                 assert((x * 4096) as usize == base);
             } else if page < x < page + 8 {
@@ -1218,7 +1218,7 @@ impl CapKernel {
             Some(found) => found,
             None => { return false; },
         };
-        if base / 4096 >= NUM_PAGES - 7 {
+        if !self.blocks.run_tracked(base / 4096, 8) {
             return false;
         }
         let page = base / 4096;

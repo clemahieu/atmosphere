@@ -432,7 +432,7 @@ impl CapKernel {
             post.list.pages@.dom() == pre.list.pages@.dom(),
             post.list.parent@ == pre.list.parent@,
             post.mappings == pre.mappings,
-            forall|i: usize| i < NUM_PAGES ==> #[trigger] block_ref(&post.blocks, i) == block_ref(&pre.blocks, i),
+            forall|i: usize| pre.blocks.tracks(i as int) ==> #[trigger] block_ref(&post.blocks, i) == block_ref(&pre.blocks, i),
             forall|br: BlockRef, x: usize| pre.holders@.contains_key(br) && #[trigger] pre.holders@[br].contains(x) && x != n
                 ==> post.holders@.contains_key(br) && post.holders@[br].contains(x),
             forall|br: BlockRef, x: usize| post.holders@.contains_key(br) && #[trigger] post.holders@[br].contains(x)

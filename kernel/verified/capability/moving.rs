@@ -332,7 +332,7 @@ impl CapKernel {
         }
         assert forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) && post.tables.payload_of(x).kind is Frame implies {
             let p = post.tables.payload_of(x).base / 4096;
-            &&& p < NUM_PAGES
+            &&& blocks.tracks(p as int)
             &&& frame_in_block(block_ref(blocks, p), post.tables.payload_of(x))
             &&& hb.contains_key(block_ref(blocks, p))
             &&& hb[block_ref(blocks, p)].contains(x)
@@ -361,7 +361,7 @@ impl CapKernel {
         assert forall|k: BlockRef, x: usize| hb.contains_key(k) && #[trigger] hb[k].contains(x) implies ({
             &&& post.tables.is_cap(&post.list, x)
             &&& post.tables.payload_of(x).kind is Frame
-            &&& post.tables.payload_of(x).base / 4096 < NUM_PAGES
+            &&& blocks.tracks_addr(post.tables.payload_of(x).base)
             &&& block_ref(blocks, post.tables.payload_of(x).base / 4096) == k
         } || (x < NODE_SPACE && post.list.nodes@[x as int].live && post.list.nodes@[x as int].kind is Mapping)) by {
             assert(ha.contains_key(k));

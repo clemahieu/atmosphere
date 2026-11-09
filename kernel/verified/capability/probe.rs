@@ -237,7 +237,7 @@ pub proof fn lemma_table_pages_status_only(list: &Tree, pa: &TablePages, pb: &Ta
             }
         }
     }
-    assert forall|b: usize| b < NUM_PAGES && #[trigger] table_block(blocks, b) implies pb.maps@.contains_key((b * 4096) as usize) by {
+    assert forall|b: usize| blocks.tracks(b as int) && #[trigger] table_block(blocks, b) implies pb.maps@.contains_key((b * 4096) as usize) by {
         assert(pa.maps@.contains_key((b * 4096) as usize));
     }
 }
