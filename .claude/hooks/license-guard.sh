@@ -5,7 +5,7 @@
 # per line in license-guard.local beside this script, or the file named by
 # ATMO_LICENSE_GUARD_LOCAL when set; an empty value means no local list.
 # A line "parent <path>" is a parent; any other line is a root. Lines starting
-# with # are comments. Paths may use ~/, $HOME/ or ${HOME}/.
+# with # are comments. A path may name the home directory with a tilde or the home variable.
 set -u
 
 normalize() {
