@@ -10,6 +10,7 @@ use crate::capability::kernel::*;
 use crate::capability::map::*;
 use crate::capability::reach::*;
 use crate::capability::retype::RetypeStep;
+use crate::capability::revoke::RevokeStep;
 use crate::capability::space::*;
 use crate::capability::thread::*;
 use crate::define::NUM_CPUS;
@@ -299,15 +300,36 @@ impl CapKernel {
         }
     }
 
+    /// A revoke in frame by a thread of the process whose table is at root, from pre to post with out
+    /// returned: refused with nothing changed; refused with the flush epoch at its limit, after the steps
+    /// it took on the run of the capability in rdi; again with a step of that run taken and some of it
+    /// left; or ok with the run empty. See design/revoke-by-depth-first-list/.
+    pub open spec fn spec_revoked(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
+        let i = frame.rdi as usize;
+        ||| out == status_only(STATUS_REFUSED) && post == pre
+        ||| {
+            &&& out == status_only(STATUS_REFUSED)
+            &&& post.flush_epoch == usize::MAX
+            &&& Self::cap_revoking(pre, post, root, i)
+        }
+        ||| {
+            &&& out == status_only(STATUS_AGAIN)
+            &&& !post.list.childless(pre.tables.node_of(root, i))
+            &&& Self::cap_revoking(pre, post, root, i)
+        }
+        ||| out == status_only(STATUS_OK) && Self::cap_revoked(pre, post, root, i)
+    }
+
     /// What the invocation in frame by a thread of the process whose table is at root did, from pre to
     /// post with out returned: a retype's effect for retype, a derive's for derive, a move's for move, a
-    /// link's for link, a map's for map, an unmap's for unmap, and for every other operation the kernel
-    /// unchanged with spec_outcome returned.
+    /// revoke's for revoke, a link's for link, a map's for map, an unmap's for unmap, and for every other
+    /// operation the kernel unchanged with spec_outcome returned.
     pub open spec fn invoked(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         match spec_operation(frame.rax) {
             Some(Operation::Retype) => Self::spec_retyped(pre, post, root, frame, out),
             Some(Operation::Derive) => Self::spec_derived(pre, post, root, frame, out),
             Some(Operation::Move) => Self::spec_moved(pre, post, root, frame, out),
+            Some(Operation::Revoke) => Self::spec_revoked(pre, post, root, frame, out),
             Some(Operation::Link) => Self::spec_linked(pre, post, root, frame, out),
             Some(Operation::Map) => Self::spec_mapped(pre, post, root, frame, out),
             Some(Operation::Unmap) => Self::spec_unmapped(pre, post, root, frame, out),
@@ -390,6 +412,14 @@ impl CapKernel {
             Some(Operation::Move) => {
                 let done = self.move_cap(root, frame.rdi as usize, frame.rsi as usize);
                 Some(status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED }))
+            },
+            Some(Operation::Revoke) => {
+                let status = match self.revoke(root, frame.rdi as usize) {
+                    RevokeStep::Done => STATUS_OK,
+                    RevokeStep::Again => STATUS_AGAIN,
+                    RevokeStep::Refused | RevokeStep::Exhausted => STATUS_REFUSED,
+                };
+                Some(status_only_outcome(status))
             },
             Some(Operation::Link) => {
                 let done = self.link_at(root, frame.rdi as usize, frame.rsi, frame.rdx, frame.r8 as usize, frame.r9 as usize);

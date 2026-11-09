@@ -2,7 +2,7 @@
 //! not assume it owns the machine, so several instances each with a root stay possible. Why, and
 //! what to do about a change that breaks this: design/one-kernel-instance/.
 //!
-//! Print, inspect, retype of a 4K frame, of a 2M frame and of a table page, derive, move, link, map and unmap are the wired
+//! Print, inspect, retype of a 4K frame, of a 2M frame and of a table page, derive, move, revoke, link, map and unmap are the wired
 //! operations, so each fixed slot is checked through them: the console accepts print and the process,
 //! thread, untyped and frame slots refuse it; inspect says the console slot holds a console, and each slot
 //! from the first untyped holds an untyped whose base is aligned to its order, up to the first slot
@@ -26,9 +26,14 @@
 //! prints how many again returns that took, reads the frame back with inspect, and a second retype of
 //! the block is refused. It derives from that 2M frame a read-only child of one page inside it, after a
 //! derive from a slot it does not hold, with rights wider than the frame's, of a page outside the frame
-//! and into an occupied slot is refused, and inspect finds the child. dom0 prints that result through the
-//! console, then an exit marker, and exits with success only when every check held. The kernel logs each
-//! invocation, with what it returned, in the serial log.
+//! and into an occupied slot is refused, and inspect finds the child. It maps that child 64 times, so
+//! the run under the 2M frame holds one node more than revoke's budget, reads the first mapping, and
+//! revokes the 2M frame, repeating while revoke returns again, after a revoke of an empty slot and of a
+//! slot past the table is refused; it prints how many again returns that took, and inspect then refuses
+//! the child's slot, a map through it and an unmap at its first mapping are refused, and inspect still
+//! finds the 2M frame. dom0 prints that result through the console, then an exit marker, and exits with
+//! success only when every check held. The kernel logs each invocation, with what it returned, in the
+//! serial log.
 
 #![no_std]
 #![no_main]
@@ -266,17 +271,22 @@ fn moved_frame_held(frame: u64) -> bool {
 /// The pages of a 2M frame's block, order 9.
 const LARGE_FRAME_PAGES: u64 = 512;
 
-/// The text of the line dom0 prints once its 2M retype is done, around the number of again returns it
+/// The start of the line dom0 prints once its 2M retype is done, before the number of again returns it
 /// took.
 const LARGE_FRAME_HEAD: &[u8] = b"dom0 2M retype done after ";
-const LARGE_FRAME_TAIL: &[u8] = b" again\n";
 
-/// Prints through the console that the 2M retype was done after `again` again returns. The status is
-/// the low half of what the print returns.
-fn print_large_frame_done(again: u64) -> u64 {
+/// The start of the line dom0 prints once its revoke is done, before the number of again returns it took.
+const REVOKE_HEAD: &[u8] = b"dom0 revoke done after ";
+
+/// The end of a line that counts again returns.
+const AGAIN_TAIL: &[u8] = b" again\n";
+
+/// Prints through the console `head`, then `again` and AGAIN_TAIL: that an operation was done after
+/// `again` again returns. The status is the low half of what the print returns.
+fn print_done_after(head: &[u8], again: u64) -> u64 {
     let mut text = [0u8; 39];
     let mut length = 0;
-    for &byte in LARGE_FRAME_HEAD {
+    for &byte in head {
         text[length] = byte;
         length += 1;
     }
@@ -296,7 +306,7 @@ fn print_large_frame_done(again: u64) -> u64 {
         text[length] = digits[count];
         length += 1;
     }
-    for &byte in LARGE_FRAME_TAIL {
+    for &byte in AGAIN_TAIL {
         text[length] = byte;
         length += 1;
     }
@@ -336,7 +346,7 @@ fn retyped_large_frame_held(empty: u64, destination: u64) -> bool {
             Ok(frame) if frame.kind == operation::KIND_FRAME && frame.base == base && frame.order == 9
         )
         && retype(base, destination + 1) == operation::STATUS_REFUSED;
-    held && print_large_frame_done(again) == operation::STATUS_OK
+    held && print_done_after(LARGE_FRAME_HEAD, again) == operation::STATUS_OK
 }
 
 /// The read right, as the kernel numbers rights.
@@ -370,6 +380,54 @@ fn derived_frame_held(large: u64, empty: u64, occupied: u64, child: u64) -> bool
         )
 }
 
+/// How many pages dom0 maps through the frame it derived before it revokes the frame's parent: one less
+/// than the nodes of the run the revoke removes, the child and these mappings, and as many as the
+/// kernel's revoke budget, REVOKE_BUDGET in kernel/verified/capability/revoke.rs, so the revoke returns
+/// again at least once.
+const REVOKED_MAPPINGS: u64 = 64;
+
+/// Whether dom0 revokes the 2M frame at `large` once its child at `child` is mapped REVOKED_MAPPINGS
+/// times, from the entry after PATH_ADDRESS up, repeating while revoke returns again, and prints how many
+/// again returns that took: each map is accepted and the first mapping reads the zero the 2M retype left,
+/// a revoke of the empty slot `empty` and of a slot past the table is refused, the revoke returns again
+/// at least once and then ok, the child's slot is refused by inspect, a map through it and an unmap at
+/// its first mapping are refused, and inspect still finds the 2M frame. Each again removes at least one
+/// node of the run, so a revoke still returning again after REVOKED_MAPPINGS + 1 has stopped going on,
+/// and fails.
+fn revoked_frame_held(large: u64, empty: u64, child: u64) -> bool {
+    let address = |k: u64| PATH_ADDRESS + 4096 * k;
+    let map = |k: u64| operation::map(operation::ROOT_PROCESS_SLOT, address(k), 1, child, 0);
+    if !(1..=REVOKED_MAPPINGS).all(|k| map(k) == operation::STATUS_OK) {
+        return false;
+    }
+    // The map just made the page at address(1) the child's, readable, and the 2M retype zeroed it.
+    if unsafe { (address(1) as *const u64).read_volatile() } != 0 {
+        return false;
+    }
+    // Nothing dom0 uses is mapped through either slot: the first is empty, the second past the table.
+    let revoke = |slot: u64| unsafe { operation::revoke(slot) };
+    if revoke(empty) != operation::STATUS_REFUSED || revoke(operation::TABLE_INDICES) != operation::STATUS_REFUSED {
+        return false;
+    }
+    let mut again = 0;
+    let status = loop {
+        // dom0 reads nothing through the child's mappings after the read above.
+        let status = revoke(large);
+        if status != operation::STATUS_AGAIN || again > REVOKED_MAPPINGS {
+            break status;
+        }
+        again += 1;
+    };
+    // The revoke cleared the entry at address(1), so an unmap there finds none; dom0 uses nothing there.
+    let held = status == operation::STATUS_OK
+        && again > 0
+        && matches!(operation::inspect(child), Err(operation::STATUS_REFUSED))
+        && map(1) == operation::STATUS_REFUSED
+        && unsafe { operation::unmap(operation::ROOT_PROCESS_SLOT, address(1), 1) } == operation::STATUS_REFUSED
+        && matches!(operation::inspect(large), Ok(frame) if frame.kind == operation::KIND_FRAME && frame.order == 9);
+    held && print_done_after(REVOKE_HEAD, again) == operation::STATUS_OK
+}
+
 /// Print through `slot`. The status is the low half of what the invocation returns.
 ///
 /// # Safety
@@ -401,6 +459,7 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
                             && moved_frame_held(empty)
                             && retyped_large_frame_held(empty, empty + 2)
                             && derived_frame_held(empty + 2, empty, empty + 1, empty + 3)
+                            && revoked_frame_held(empty + 2, empty, empty + 3)
                     })
         });
     let console = unsafe {

@@ -229,6 +229,30 @@ impl CapKernel {
         }
     }
 
+    /// What a revoke of the capability at index i of the table at root did when it was not refused: the
+    /// index names a capability, at most REVOKE_BUDGET nodes of its run went, no mapping appeared, no
+    /// node changed its parent, the threads bound are those that were whose bindings are still live,
+    /// and the step discharges the revoke's effect.
+    pub open spec fn cap_revoking(pre: Self, post: Self, root: usize, i: usize) -> bool {
+        let c = pre.tables.node_of(root, i);
+        &&& pre.tables.has_slot(&pre.list, root, i)
+        &&& pre.is_cap(c)
+        &&& Self::mappings_shrunk(pre, post)
+        &&& pre.list.seq@.len() - post.list.seq@.len() <= REVOKE_BUDGET
+        &&& post.list.parent == pre.list.parent
+        &&& discharges(pre.view(), post.view(), root, Effect::Revoke { cap: c })
+        &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables).restrict(live_nodes(&post.list))
+    }
+
+    /// What a revoke of the capability at index i of the table at root did when it finished: as
+    /// cap_revoking says, and the capability has no child left.
+    pub open spec fn cap_revoked(pre: Self, post: Self, root: usize, i: usize) -> bool {
+        let c = pre.tables.node_of(root, i);
+        &&& Self::cap_revoking(pre, post, root, i)
+        &&& post.list.childless(c)
+        &&& forall|x: usize| !#[trigger] post.list.is_child(c, x)
+    }
+
     /// Revokes the capability at index i of the table at root, for at most REVOKE_BUDGET steps. The
     /// index comes from user space, so it can be refused. Its own slot can leave the table during the
     /// call, if the leaf holding it is in its run, so the steps name its node instead.
@@ -239,21 +263,15 @@ impl CapKernel {
             old(self).root_live(root),
         ensures
             final(self).wf(),
+            final(self).cores == old(self).cores,
             Self::mappings_shrunk(*old(self), *final(self)),
             ret is Refused == !(old(self).tables.has_slot(&old(self).list, root, i) && old(self).is_cap(old(self).tables.node_of(root, i))),
             ret is Refused ==> *final(self) == *old(self),
             old(self).flush_epoch == usize::MAX ==> *final(self) == *old(self),
             ret is Exhausted ==> final(self).flush_epoch == usize::MAX,
-            !(ret is Refused) ==> {
-                let c = old(self).tables.node_of(root, i);
-                &&& ret is Done == final(self).list.childless(c)
-                &&& ret is Done ==> forall|x: usize| !#[trigger] final(self).list.is_child(c, x)
-                &&& old(self).list.seq@.len() - final(self).list.seq@.len() <= REVOKE_BUDGET
-                &&& final(self).list.parent == old(self).list.parent
-                &&& discharges(old(self).view(), final(self).view(), root, Effect::Revoke { cap: c })
-                &&& bound_threads(&final(self).list, &final(self).tables)
-                    == bound_threads(&old(self).list, &old(self).tables).restrict(live_nodes(&final(self).list))
-            },
+            !(ret is Refused) ==> Self::cap_revoking(*old(self), *final(self), root, i),
+            !(ret is Refused) ==> (ret is Done == final(self).list.childless(old(self).tables.node_of(root, i))),
+            ret is Done ==> Self::cap_revoked(*old(self), *final(self), root, i),
     {
         let ghost pre = *old(self);
         let c = match self.tables.lookup(&self.list, root, i) {
@@ -280,6 +298,7 @@ impl CapKernel {
             invariant
                 steps <= REVOKE_BUDGET,
                 self.wf(),
+                self.cores == pre.cores,
                 pre == *old(self),
                 pre.flush_epoch == usize::MAX ==> *self == pre,
                 Self::mappings_shrunk(pre, *self),
@@ -336,6 +355,7 @@ impl CapKernel {
             old(self).flush_epoch < usize::MAX,
         ensures
             final(self).wf(),
+            final(self).cores == old(self).cores,
             Self::mappings_shrunk(*old(self), *final(self)),
             final(self).is_cap(c),
             final(self).tables.owner == old(self).tables.owner,

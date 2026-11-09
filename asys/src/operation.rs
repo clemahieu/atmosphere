@@ -27,6 +27,9 @@ pub const DERIVE: u64 = 2;
 pub const MOVE: u64 = 3;
 pub const CLAIM: u64 = 4;
 pub const DELETE: u64 = 5;
+/// Removes everything below the capability in rdi, the capabilities derived from it and the mappings
+/// made through it or them, a bounded number of steps at a time: again while some is left, ok once none
+/// is. The capability itself stays.
 pub const REVOKE: u64 = 6;
 /// Maps into the entry of the space in rdi that the virtual address in rsi and the level in rdx name the
 /// page at the page offset in r9 of the frame in r8: a 4K page at level 1, a 2M page at level 2, whose
@@ -238,4 +241,16 @@ pub fn move_capability(from: u64, to: u64) -> u64 {
 pub fn derive(from: u64, to: u64, rights: u64, base: u64, order: u64) -> u64 {
     // A derive changes slots, not the caller's address space.
     status(unsafe { invoke(DERIVE, from, [to, rights, base, order, 0]) })
+}
+
+/// Takes a bounded number of steps of removing everything below the capability at `slot`, the
+/// capabilities derived from it and the mappings made through it or them: again while some is left, ok
+/// once none is. The status is the low half of what returns.
+///
+/// # Safety
+///
+/// Nothing the caller still uses may be mapped through the capability at `slot` or one derived from it:
+/// once its mapping is gone, an access there faults.
+pub unsafe fn revoke(slot: u64) -> u64 {
+    status(unsafe { invoke(REVOKE, slot, [0; 5]) })
 }
