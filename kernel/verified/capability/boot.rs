@@ -38,6 +38,21 @@ pub const ROOT_THREAD_SLOT: usize = 2;
 /// The index of the root's console capability: slot 3 of entry 0.
 pub const ROOT_CONSOLE_SLOT: usize = 3;
 
+/// The rights of an untyped capability boot hands the root: retype alone. Control is no right over
+/// memory, design/sharing-by-derive/.
+pub const UNTYPED_RIGHTS: u32 = 8;
+
+/// The untyped capability boot hands the root for the block of order pages at base.
+pub open spec fn untyped_payload(base: usize, order: u8) -> Payload {
+    Payload { kind: CapKind::Untyped, order, rights: UNTYPED_RIGHTS, base, badge: 0, reserved: 0 }
+}
+
+/// o is one of the pages of the block of order pages at base, as reach names pages.
+pub open spec fn in_block(base: usize, order: u8, o: usize) -> bool {
+    &&& o % 4096 == 0
+    &&& base <= o < base + block_bytes(order)
+}
+
 impl CapKernel {
     /// What init leaves: the list's synthetic root alone, no table, object, mapping or frame, every page
     /// reserved and no large block typed.
@@ -915,6 +930,122 @@ impl CapKernel {
                 ;
             }
         }
+    }
+
+    /// The step after boot_root_console, once per block of free memory: an untyped capability to the
+    /// block at base, of order pages, in slot i of the root's first leaf, below the list's synthetic
+    /// root as the root's other capabilities are. It carries the retype right and no control, so the
+    /// root's reach grows by the block's pages and nobody else's by anything outside them. See
+    /// design/root-process-at-boot/ and design/untyped-memory/.
+    pub fn boot_root_untyped(&mut self, root: usize, process: usize, leaf: usize, i: usize, base: usize, order: u8)
+        requires
+            old(self).wf(),
+            root == old(self).list.seq@[0],
+            old(self).tables.has_slot(&old(self).list, process, ROOT_PROCESS_SLOT),
+            old(self).tables.node_of(process, ROOT_PROCESS_SLOT) == leaf + 1,
+            ROOT_CONSOLE_SLOT < i < NODES_PER_PAGE,
+            !old(self).list.nodes@[leaf + i].live,
+            payload_wf(untyped_payload(base, order)),
+        ensures
+            final(self).wf(),
+            final(self).list.seq@[0] == root,
+            final(self).tables.roots == old(self).tables.roots,
+            final(self).tables.owner == old(self).tables.owner,
+            final(self).tables.has_slot(&final(self).list, process, ROOT_PROCESS_SLOT),
+            final(self).tables.node_of(process, ROOT_PROCESS_SLOT) == leaf + 1,
+            final(self).tables.has_slot(&final(self).list, process, i),
+            final(self).tables.node_of(process, i) == leaf + i,
+            final(self).is_cap((leaf + i) as usize),
+            final(self).payload_of((leaf + i) as usize) == untyped_payload(base, order),
+            final(self).list.is_child(root, (leaf + i) as usize),
+            final(self).list.nodes@[leaf + i].depth == 1,
+            Self::adds_cap(*old(self), *final(self), (leaf + i) as usize),
+            forall|j: int| #![trigger final(self).list.nodes@[j]] 0 <= j < NODE_SPACE && j != leaf + i
+                ==> final(self).list.nodes@[j].live == old(self).list.nodes@[j].live,
+            final(self).blocks == old(self).blocks,
+            final(self).threads == old(self).threads,
+            final(self).processes == old(self).processes,
+            final(self).spaces == old(self).spaces,
+            final(self).list.pages@.dom() == old(self).list.pages@.dom(),
+            forall|o: usize| #[trigger] final(self).view().reach(process, o)
+                <==> (old(self).view().reach(process, o) || in_block(base, order, o)),
+            forall|r: usize, o: usize| #[trigger] final(self).view().reach(r, o) && !old(self).view().reach(r, o)
+                ==> in_block(base, order, o),
+    {
+        let ghost pre = *old(self);
+        proof {
+            pre.lemma_slot(process, ROOT_PROCESS_SLOT);
+            assert(index_entry(ROOT_PROCESS_SLOT) == 0) by (compute_only);
+            assert(index_slot(ROOT_PROCESS_SLOT) == 1) by (compute_only);
+            assert(index_entry(i) == 0);
+            assert(index_slot(i) == i);
+            assert(index_ok(i));
+            assert(pre.tables.leaf(process, 0) == leaf);
+            assert(pre.tables.has_slot(&pre.list, process, i));
+            pre.lemma_slot(process, i);
+            assert(pre.tables.node_of(process, i) == leaf + i);
+            pre.lemma_slot_bound((leaf + i) as usize);
+            pre.list.lemma_link(0);
+            pre.list.lemma_live_valid(root);
+            pre.list.lemma_valid_bound(root);
+            pre.list.lemma_seq_fits();
+            assert(pre.list.nodes@[root as int].depth == 0);
+        }
+        let child = leaf + i;
+        self.list.derive(root, child, NodeKind::Capability);
+        proof {
+            pre.tables.lemma_wf_same_pages(&pre.list, &self.list);
+        }
+        self.tables.set_payload(
+            &self.list,
+            process,
+            i,
+            Payload { kind: CapKind::Untyped, order, rights: UNTYPED_RIGHTS, base, badge: 0, reserved: 0 },
+        );
+        proof {
+            let post = *self;
+            assert(post.payload_of(child) == untyped_payload(base, order));
+            assert(UNTYPED_RIGHTS & CONTROL_RIGHT == 0) by (compute_only);
+            Self::lemma_derive_caps_wf(pre, post, child);
+            Self::lemma_hidden_frame(pre, post, child, child);
+            Self::lemma_table_nodes_caps_frame(pre, post, child, child);
+            Self::lemma_space_nodes_caps_frame(pre, post, child, child);
+            Self::lemma_bindings_caps_frame(pre, post, child, child);
+            Self::lemma_add_untracked_holders(pre, post, child);
+            Self::lemma_devices_caps_frame(pre, post, child, child);
+            lemma_parents_derived(pre.list, post.list, root, child);
+            Self::lemma_tlb_same(pre, post);
+            assert(post.wf());
+            Self::lemma_derive_step_adds_cap(pre, post, child);
+            lemma_has(post.list.seq@, child);
+            assert(post.list.is_child(root, child));
+            assert(post.tables.has_slot(&post.list, process, ROOT_PROCESS_SLOT));
+            assert(post.tables.has_slot(&post.list, process, i));
+            Self::lemma_boot_held_view(pre, post, root, process, i, child);
+            Self::lemma_untyped_covers(post, child, base, order);
+            let live = |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live;
+            lemma_adds_held_reach(pre.view(), post.view(), process, root, child, live);
+            assert forall|o: usize| #[trigger] post.view().reach(process, o)
+                <==> (pre.view().reach(process, o) || in_block(base, order, o)) by {
+                assert(post.view().covers(child, o) == in_block(base, order, o));
+            }
+            assert forall|r: usize, o: usize| #[trigger] post.view().reach(r, o) && !pre.view().reach(r, o)
+                implies in_block(base, order, o) by {
+                assert(post.view().covers(child, o) == in_block(base, order, o));
+            }
+        }
+    }
+
+    /// An untyped capability covers exactly its block's pages.
+    proof fn lemma_untyped_covers(s: Self, child: usize, base: usize, order: u8)
+        requires
+            s.is_cap(child),
+            s.payload_of(child) == untyped_payload(base, order),
+        ensures
+            forall|o: ObjectId| #[trigger] s.view().covers(child, o) <==> in_block(base, order, o),
+    {
+        let b = s.view();
+        assert(b.names[child] == base && b.pages[child] == pow2(order as nat));
     }
 
     /// The root's reach after boot: it holds exactly its process and thread capabilities, each naming
