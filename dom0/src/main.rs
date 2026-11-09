@@ -2,12 +2,15 @@
 //! not assume it owns the machine, so several instances each with a root stay possible. Why, and
 //! what to do about a change that breaks this: design/one-kernel-instance/.
 //!
-//! Print and inspect are the wired operations, so each fixed slot is checked through them: the console
-//! accepts print and the process, thread, untyped and frame slots refuse it; inspect says the console
-//! slot holds a console, and each slot from the first untyped holds an untyped whose base is aligned to
-//! its order, up to the first slot that holds nothing, which inspect refuses. dom0 prints that result
-//! through the console, then an exit marker, and exits with success only when every check held. The
-//! kernel logs each invocation, with what it returned, in the serial log.
+//! Print, inspect and the retype of a 4K frame are the wired operations, so each fixed slot is checked
+//! through them: the console accepts print and the process, thread, untyped and frame slots refuse it;
+//! inspect says the console slot holds a console, and each slot from the first untyped holds an untyped
+//! whose base is aligned to its order, up to the first slot that holds nothing, which inspect refuses.
+//! Retype under an empty slot, a slot past the table and the console is refused, and retype of the last
+//! untyped's last page into that empty slot is accepted, after which inspect says the slot holds a 4K
+//! frame at that page. dom0 prints that result through the console, then an exit marker, and exits
+//! with success only when every check held. The kernel logs each invocation, with what it returned, in
+//! the serial log.
 
 #![no_std]
 #![no_main]
@@ -48,14 +51,15 @@ const MAX_ORDER: u64 = 36;
 /// The last slot of the table's first leaf, where boot's untyped end.
 const FIRST_LEAF_END: u64 = operation::ROOT_FRAME_SLOT - 2;
 
-/// Whether inspect says the console slot holds a console, and every slot from the first untyped holds
-/// an untyped whose base is aligned to its order, at least one, up to a slot inspect refuses because it
-/// holds nothing. Boot fills the untyped slots from the first and leaves the rest of the leaf empty,
-/// design/root-process-at-boot/; a leaf full of untyped leaves no empty slot in it to read, and fails.
-fn inspected_slots_held() -> bool {
+/// The first slot after the untyped, once inspect says the console slot holds a console, and every slot
+/// from the first untyped holds an untyped whose base is aligned to its order, at least one, up to that
+/// slot, which inspect refuses because it holds nothing. Boot fills the untyped slots from the first and
+/// leaves the rest of the leaf empty, design/root-process-at-boot/; a leaf full of untyped leaves no
+/// empty slot in it to read, and fails.
+fn first_empty_slot() -> Option<u64> {
     let console = operation::inspect(operation::ROOT_CONSOLE_SLOT);
     if !matches!(console, Ok(capability) if capability.kind == operation::KIND_CONSOLE) {
-        return false;
+        return None;
     }
     let mut slot = operation::ROOT_UNTYPED_SLOT;
     while slot <= FIRST_LEAF_END {
@@ -63,14 +67,41 @@ fn inspected_slots_held() -> bool {
             Ok(capability) => {
                 let aligned = capability.order <= MAX_ORDER && capability.base % (4096 << capability.order) == 0;
                 if capability.kind != operation::KIND_UNTYPED || !aligned {
-                    return false;
+                    return None;
                 }
             }
-            Err(status) => return status == operation::STATUS_REFUSED && slot > operation::ROOT_UNTYPED_SLOT,
+            Err(status) if status == operation::STATUS_REFUSED && slot > operation::ROOT_UNTYPED_SLOT => {
+                return Some(slot);
+            }
+            Err(_) => return None,
         }
         slot += 1;
     }
-    false
+    None
+}
+
+/// Whether retype of a 4K frame is refused under the empty slot `empty`, under a slot past the table and
+/// under the console, which is no untyped, and then accepted for the last page of the last untyped, the
+/// one before `empty`, into `empty`, which inspect then says holds a frame of order 0 at that page. Boot
+/// pays for dom0's tables from the start of the first untyped and leaves the rest free, so that page is
+/// free.
+fn retyped_frame_held(empty: u64) -> bool {
+    let untyped = empty - 1;
+    let base = match operation::inspect(untyped) {
+        Ok(block) => block.base + (4096 << block.order) - 4096,
+        Err(_) => return false,
+    };
+    let refused = |slot| operation::retype_frame(slot, base, empty) == operation::STATUS_REFUSED;
+    if !refused(empty) || !refused(operation::TABLE_INDICES) || !refused(operation::ROOT_CONSOLE_SLOT) {
+        return false;
+    }
+    if operation::retype_frame(untyped, base, empty) != operation::STATUS_OK {
+        return false;
+    }
+    matches!(
+        operation::inspect(empty),
+        Ok(frame) if frame.kind == operation::KIND_FRAME && frame.base == base && frame.order == 0
+    )
 }
 
 /// Print through `slot`. The status is the low half of what the invocation returns.
@@ -94,7 +125,7 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
         && untyped == operation::STATUS_REFUSED
         && frame == operation::STATUS_REFUSED
         && unknown == operation::STATUS_UNKNOWN
-        && inspected_slots_held();
+        && first_empty_slot().is_some_and(retyped_frame_held);
     let console = unsafe {
         print_slot(
             operation::ROOT_CONSOLE_SLOT,

@@ -389,6 +389,7 @@ impl CapKernel {
             final(self).wf(),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             Self::same_tree(*old(self), *final(self)),
+            final(self).cores == old(self).cores,
             final(self).blocks == old(self).blocks,
             final(self).frames == old(self).frames,
             final(self).zeroing == old(self).zeroing,
@@ -446,6 +447,22 @@ impl CapKernel {
         }
     }
 
+    /// What a retype of the page at base as a 4K frame did, under the untyped at index from of the table
+    /// at root, with the capability at index to: the retype was allowed, the frame capability is the
+    /// untyped's child in that slot, the page is zero, and the step discharges the retype's effect.
+    pub open spec fn frame_retyped(pre: Self, post: Self, root: usize, from: usize, to: usize, base: usize) -> bool {
+        let parent = pre.tables.node_of(root, from);
+        let child = pre.tables.node_of(root, to);
+        &&& pre.can_retype_frame(root, from, to, base)
+        &&& pre.view().holds_right(root, parent, Right::Retype)
+        &&& post.view().holds(root, child)
+        &&& post.payload_of(child) == frame_of(base)
+        &&& post.list.is_child(parent, child)
+        &&& post.list.nodes@[child as int].depth == pre.list.nodes@[parent as int].depth + 1
+        &&& holds_zero(post.frames@, base / 4096)
+        &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base })
+    }
+
     /// Retypes the free page at `base` as a frame, under the untyped at index `from` of the table at
     /// `root`, with the capability at the empty index `to`. All of these come from user space, and a
     /// refusal changes nothing. The block table refuses a page that is not free.
@@ -458,19 +475,9 @@ impl CapKernel {
             final(self).wf(),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             Self::same_tree(*old(self), *final(self)),
-            ret ==> old(self).can_retype_frame(root, from, to, base),
+            final(self).cores == old(self).cores,
             !ret ==> *final(self) == *old(self),
-            ret ==> {
-                let parent = old(self).tables.node_of(root, from);
-                let child = old(self).tables.node_of(root, to);
-                &&& old(self).view().holds_right(root, parent, Right::Retype)
-                &&& final(self).view().holds(root, child)
-                &&& final(self).payload_of(child) == frame_of(base)
-                &&& final(self).list.is_child(parent, child)
-                &&& final(self).list.nodes@[child as int].depth == old(self).list.nodes@[parent as int].depth + 1
-                &&& holds_zero(final(self).frames@, base / 4096)
-                &&& discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base })
-            },
+            ret ==> Self::frame_retyped(*old(self), *final(self), root, from, to, base),
     {
         let ghost pre = *old(self);
         let (parent, child) = match self.retype_slots(root, from, to, base, 0) {

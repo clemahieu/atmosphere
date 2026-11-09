@@ -37,6 +37,9 @@ pub const OPERATION_REPLY_RECV: u64 = 13;
 pub const OPERATION_PRINT: u64 = 14;
 pub const OPERATION_INSPECT: u64 = 15;
 
+/// Retype's kind in rsi for a 4K frame. Every other kind is refused until it is wired.
+pub const RETYPE_FRAME: u64 = 0;
+
 /// What an invocation returns to its thread: the status for rax and the result words for rdi, rsi, rdx
 /// and r8.
 #[derive(Clone, Copy)]
@@ -151,10 +154,11 @@ pub fn operation(number: u64) -> (ret: Option<Operation>)
 }
 
 impl CapKernel {
-    /// What the invocation in frame returns to a thread of the process whose table is at root: print's
-    /// status for print, inspect's outcome for inspect, refused for every other operation, none of which
-    /// is wired yet, and unknown for a number no operation has. The slot is rdi and print's words are
-    /// rsi, rdx, r8, r9 and r10, as design/syscall-abi-in-registers/ places them.
+    /// What the invocation in frame returns to a thread of the process whose table is at root, for an
+    /// operation that leaves the kernel unchanged: print's status for print, inspect's outcome for
+    /// inspect, refused for every operation not wired yet, and unknown for a number no operation has.
+    /// The slot is rdi and print's words are rsi, rdx, r8, r9 and r10, as
+    /// design/syscall-abi-in-registers/ places them.
     pub open spec fn spec_outcome(&self, root: usize, frame: Registers) -> Outcome {
         match spec_operation(frame.rax) {
             Some(Operation::Print) => status_only(
@@ -166,11 +170,34 @@ impl CapKernel {
         }
     }
 
+    /// A retype in frame by a thread of the process whose table is at root, from pre to post with out
+    /// returned: refused with nothing changed, or, for the 4K frame kind in rsi, ok with the frame at the
+    /// base in rdx retyped under the untyped in rdi into the slot in r8. A retype the arguments allow can
+    /// still be refused, when the block table finds the page is not free.
+    pub open spec fn spec_retyped(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
+        ||| out == status_only(STATUS_REFUSED) && post == pre
+        ||| {
+            &&& frame.rsi == RETYPE_FRAME
+            &&& out == status_only(STATUS_OK)
+            &&& Self::frame_retyped(pre, post, root, frame.rdi as usize, frame.r8 as usize, frame.rdx as usize)
+        }
+    }
+
+    /// What the invocation in frame by a thread of the process whose table is at root did, from pre to
+    /// post with out returned: a retype's effect for retype, and for every other operation the kernel
+    /// unchanged with spec_outcome returned.
+    pub open spec fn invoked(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
+        match spec_operation(frame.rax) {
+            Some(Operation::Retype) => Self::spec_retyped(pre, post, root, frame, out),
+            _ => post == pre && out == pre.spec_outcome(root, frame),
+        }
+    }
+
     /// Core c's step for the invocation its current thread entered the kernel with, in frame. The
     /// caller is core c's current thread and the table is its process's, never a name from user
     /// space, and check_current runs first: design/one-lock-bounded-steps/. Returns None when core c
     /// runs no thread after the check, so nothing returns to user mode; otherwise what returns to the
-    /// thread, with the kernel unchanged.
+    /// thread, with the operation's effect on the kernel.
     pub fn dispatch(&mut self, c: usize, frame: Registers) -> (ret: Option<Outcome>)
         requires
             old(self).wf(),
@@ -181,8 +208,7 @@ impl CapKernel {
             ret is Some ==> {
                 let t = old(self).cores@[c as int].current_thread->Some_0;
                 let root = old(self).threads.records@[t].value().process->Some_0;
-                &&& *final(self) == *old(self)
-                &&& ret->0 == old(self).spec_outcome(root, frame)
+                Self::invoked(*old(self), *final(self), root, frame, ret->0)
             },
     {
         if self.check_current(c, frame) {
@@ -204,6 +230,11 @@ impl CapKernel {
             None => { proof { assert(false); } return None; },
         };
         match operation(frame.rax) {
+            Some(Operation::Retype) => {
+                let done = frame.rsi == RETYPE_FRAME
+                    && self.retype_frame(root, frame.rdi as usize, frame.r8 as usize, frame.rdx as usize);
+                Some(status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED }))
+            },
             Some(Operation::Print) => Some(
                 status_only_outcome(
                     self.print(root, frame.rdi as usize, frame.rsi, frame.rdx, frame.r8, frame.r9, frame.r10),

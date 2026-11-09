@@ -35,6 +35,10 @@ pub const PRINT: u64 = 14;
 /// refused for a slot that holds none. It asks for no right.
 pub const INSPECT: u64 = 15;
 
+/// Retype's kind in rsi for a 4K frame: a frame capability of order 0 for the page at the base in rdx,
+/// in the empty slot in r8.
+pub const RETYPE_FRAME: u64 = 0;
+
 /// The kind numbers inspect returns in rdi.
 pub const KIND_UNTYPED: u64 = 0;
 pub const KIND_FRAME: u64 = 1;
@@ -46,6 +50,9 @@ pub const KIND_NOTIFICATION: u64 = 6;
 pub const KIND_SPACE: u64 = 7;
 pub const KIND_DEVICE: u64 = 8;
 pub const KIND_CONSOLE: u64 = 9;
+
+/// The indices a capability table has: 512 root entries of 128 positions. Every slot is below this.
+pub const TABLE_INDICES: u64 = 65536;
 
 /// The root's slot holding its own process, with control, as boot leaves it. See
 /// design/root-process-at-boot/.
@@ -143,4 +150,11 @@ pub fn inspect(slot: u64) -> Result<Capability, u64> {
         STATUS_OK => Ok(Capability { kind, base, order, rights }),
         refused => Err(refused),
     }
+}
+
+/// Retypes the free 4K page at `base`, inside the block of the untyped at `untyped`, as a frame whose
+/// capability goes in the empty slot `destination`. The status is the low half of what returns.
+pub fn retype_frame(untyped: u64, base: u64, destination: u64) -> u64 {
+    // A retype changes the caller's table and the page's memory, never its address space.
+    status(unsafe { invoke(RETYPE, untyped, [RETYPE_FRAME, base, destination, 0, 0]) })
 }
