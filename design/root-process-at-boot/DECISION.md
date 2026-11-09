@@ -16,6 +16,8 @@ Boot writes page metadata and creates the root process, thread and table. The ro
 
 The list's root is a synthetic node at depth 0 in a page boot sets aside, and the root's capabilities are its children at depth 1. The root's process, thread and table come from boot, not from an untyped: boot types their blocks from pages it sets aside, and no untyped covers those pages, so a retype never names them. A table leaf boot makes keeps its hidden node, at node 0 of its first page as every live leaf's is, also a child of the synthetic root; with no untyped above it, no revoke reaches it.
 
+The frames dom0's image and stack are loaded in are frame capabilities at the slots of the root's second boot leaf, from `ROOT_FRAME_SLOT`, each without control. dom0's pages are reserved, so no untyped covers them either: boot types each 2M region holding them as a large frame, its pages free under the region as every large block's are, and each capability names an aligned block of at most 512 pages inside its region, a narrowed piece of the region as a derived frame is, `design/capability-names-a-block/`. A small frame is one page, so frames of 4K alone would take one slot per page, more than a leaf holds.
+
 ## Reasoning
 
 Under `design/untyped-memory/` the kernel has no authority of its own to hand out later, so everything must be in some process's hands from the first instruction of user mode, and in one lineage so that revocation reaches it, `design/revoke-by-depth-first-list/`. Fixed slots are what the root's own code and its tests can rely on without an enumerate operation the ABI does not have.

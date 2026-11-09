@@ -1121,7 +1121,7 @@ impl CapKernel {
 
     /// The view of a boot step that puts a capability in slot i of the root's table, without control,
     /// below the list's first node, which no table holds.
-    proof fn lemma_boot_held_view(pre: Self, post: Self, root: usize, process: usize, i: usize, child: usize)
+    pub proof fn lemma_boot_held_view(pre: Self, post: Self, root: usize, process: usize, i: usize, child: usize)
         requires
             Self::adds_cap(pre, post, child),
             root == pre.list.seq@[0],

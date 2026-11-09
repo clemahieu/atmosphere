@@ -712,6 +712,7 @@ impl BlockTable {
         ensures
             final(self).wf(),
             final(self).pages@ == old(self).pages@,
+            final(self).free_perms == old(self).free_perms,
             match level {
                 Large::Two => {
                     &&& final(self).regions_2m@ == old(self).regions_2m@.update(r as int, entry)
@@ -854,6 +855,7 @@ impl BlockTable {
             final(self).wf(),
             !added ==> *final(self) == *old(self),
             final(self).pages@ == old(self).pages@,
+            final(self).free_perms == old(self).free_perms,
             added == (match level {
                 Large::Two => old(self).regions_2m@[r as int].refs != usize::MAX,
                 Large::One => old(self).regions_1g@[r as int].refs != usize::MAX,
