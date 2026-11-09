@@ -12,5 +12,6 @@ array.rs	new	gap	builds a value from zeroed memory, which Verus cannot check
 capability/kernel.rs	invalidate_iommu_all	glue	only the IOMMU can attest an invalidate, so only this makes its token
 pagetable/pagemap_util_t.rs	page_map_set	glue	writes a hardware page table through a raw pointer
 pagetable/pagemap_util_t.rs	page_map_set_no_requires	glue	writes a hardware page table through a raw pointer
+pagetable/pagemap_util_t.rs	page_map_take_status	glue	clears the processor's accessed and dirty bits in a hardware page table word atomically, since another core's walk may set one between a read and a write
 pagetable/pagemap_util_t.rs	page_perm_to_page_map	glue	writes a hardware page table through a raw pointer
 queue_lock.rs	spin_hint	glue	the pause instruction, which has no state a proof could see

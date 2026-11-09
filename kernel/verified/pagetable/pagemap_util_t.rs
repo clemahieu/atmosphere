@@ -2,12 +2,14 @@ use vstd::prelude::*;
 
 verus! {
 
+use crate::arch::{PAGE_ENTRY_ACCESSED_MASK, PAGE_ENTRY_DIRTY_MASK};
 use crate::define::*;
 use crate::pptr::*;
 use crate::util::page_ptr_util_u::*;
 use crate::pagetable::entry::*;
 use crate::pagetable::pagemap::*;
 use core::mem::MaybeUninit;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::array::Array;
 use crate::lemma::lemma_u::*;
 
@@ -126,6 +128,88 @@ pub fn page_map_set(
         let uptr = page_map_ptr as *mut MaybeUninit<PageMap>;
         (*uptr).assume_init_mut().set(index, value);
     }
+}
+
+/// The bits of an entry's word that are not the processor's accessed and dirty bits.
+pub open spec fn status_kept_mask() -> usize {
+    (!(PAGE_ENTRY_ACCESSED_MASK | PAGE_ENTRY_DIRTY_MASK)) as usize
+}
+
+#[verifier(external_body)]
+// external_body(glue): clears the processor's accessed and dirty bits in a hardware page table word atomically, since another core's walk may set one between a read and a write
+pub fn page_map_take_status(
+    page_map_ptr: PageMapPtr,
+    Tracked(page_map_perm): Tracked<&mut PointsTo<PageMap>>,
+    index: usize,
+) -> (ret: usize)
+    requires
+        old(page_map_perm).addr() == page_map_ptr,
+        old(page_map_perm).is_init(),
+        old(page_map_perm).value().wf(),
+        index < 512,
+    ensures
+        final(page_map_perm).addr() == page_map_ptr,
+        final(page_map_perm).is_init(),
+        final(page_map_perm).value().ar.wf(),
+        final(page_map_perm).value().spec_seq == old(page_map_perm).value().spec_seq,
+        ret & status_kept_mask() == old(page_map_perm).value().ar@[index as int] & status_kept_mask(),
+        final(page_map_perm).value().ar@ == old(page_map_perm).value().ar@.update(index as int, ret & status_kept_mask()),
+{
+    unsafe {
+        let word = core::ptr::addr_of_mut!((*(page_map_ptr as *mut PageMap)).ar.ar[index]);
+        (*(word as *const AtomicUsize)).fetch_and(
+            !((PAGE_ENTRY_ACCESSED_MASK | PAGE_ENTRY_DIRTY_MASK) as usize),
+            Ordering::Relaxed,
+        )
+    }
+}
+
+/// Reads and clears the accessed and dirty bits of entry `index`, returning its word as read. The table
+/// keeps its view, and the word read is the entry's: only those bits can differ from what the table
+/// held, since only the processor sets them.
+pub fn page_map_clear_status(
+    page_map_ptr: PageMapPtr,
+    Tracked(page_map_perm): Tracked<&mut PointsTo<PageMap>>,
+    index: usize,
+) -> (ret: usize)
+    requires
+        old(page_map_perm).addr() == page_map_ptr,
+        old(page_map_perm).is_init(),
+        old(page_map_perm).value().wf(),
+        index < 512,
+    ensures
+        final(page_map_perm).addr() == page_map_ptr,
+        final(page_map_perm).is_init(),
+        final(page_map_perm).value().wf(),
+        final(page_map_perm).value()@ == old(page_map_perm).value()@,
+        final(page_map_perm).value().status(index as int).is_clear(),
+        forall|j: int|
+            #![trigger final(page_map_perm).value().ar@[j]]
+            0 <= j < 512 && j != index ==> final(page_map_perm).value().ar@[j] == old(page_map_perm).value().ar@[j],
+        spec_usize2page_entry(ret) == old(page_map_perm).value()@[index as int],
+{
+    let ghost before = page_map_perm.value();
+    let ret = page_map_take_status(page_map_ptr, Tracked(page_map_perm), index);
+    proof {
+        let after = page_map_perm.value();
+        let w = before.ar@[index as int];
+        assert((ret & (!((0x1u64 << 5u64) | (0x1u64 << 6u64))) as usize) & (!((0x1u64 << 5u64) | (0x1u64
+            << 6u64))) as usize == w & (!((0x1u64 << 5u64) | (0x1u64 << 6u64))) as usize) by (bit_vector)
+            requires
+                ret & (!((0x1u64 << 5u64) | (0x1u64 << 6u64))) as usize == w & (!((0x1u64 << 5u64) | (
+                0x1u64 << 6u64))) as usize,
+        ;
+        assert((ret & (!((0x1u64 << 5u64) | (0x1u64 << 6u64))) as usize) & (0x1u64 << 5u64) as usize == 0
+            && (ret & (!((0x1u64 << 5u64) | (0x1u64 << 6u64))) as usize) & (0x1u64 << 6u64) as usize == 0)
+            by (bit_vector);
+        assert forall|i: int|
+            #![trigger after.ar@[i]]
+            0 <= i < 512 implies after.ar@[i] & status_kept_mask() == before.ar@[i] & status_kept_mask() by {}
+        before.lemma_status_outside_view(&after);
+        lemma_status_outside_entry(ret, w);
+        assert(usize2page_entry(before.ar@[index as int]) =~= before.spec_seq@[index as int]);
+    }
+    ret
 }
 
 #[verifier(external_body)]
