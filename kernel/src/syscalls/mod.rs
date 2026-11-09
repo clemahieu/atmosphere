@@ -136,23 +136,12 @@ global_asm!(
     ".endm",
 );
 
-// The dispatch: one handler, given the frame in rcx.
-global_asm!(
-    ".macro dispatch",
-    "mov rdi, rcx",
-    "check_entry_flags",
-    "call {capability_entry}",
-    ".endm",
-    capability_entry = sym capability_entry,
-);
-
-// In a debug build, stop if a syscall reaches its handler with a flag from ENTRY_FLAG_MASK set. r10 is
-// free here: the frame already holds it.
+// In a debug build, stop if a syscall reaches its handler with a flag from ENTRY_FLAG_MASK set.
 #[cfg(debug_assertions)]
 global_asm!(
     ".macro check_entry_flags",
     "pushfq",
-    "pop r10",
+    "pop r10",        // free here: the frame already holds it
     "test r10d, {mask}",
     "jz 77f",
     "call {entered_with_flags_set}",
@@ -211,9 +200,10 @@ unsafe extern "C" fn sys_entry() -> ! {
         "push r14",       // r14
         "push r15",       // r15
 
-        "mov rcx, rsp",
-
-        "dispatch",
+        // The dispatch: one handler, given the frame as its argument.
+        "mov rdi, rsp",
+        "check_entry_flags",
+        "call {capability_entry}",
 
         // Cleanup
 
@@ -315,6 +305,7 @@ unsafe extern "C" fn sys_entry() -> ! {
         switch_decision_offset = const offset_of!(Cpu, switch_decision),
         decision_no_switching = const SwitchDecision::NoSwitching as u64,
         decision_switch_to_preempted = const SwitchDecision::SwitchToPreempted as u64,
+        capability_entry = sym capability_entry,
     );
 }
 
