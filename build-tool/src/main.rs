@@ -12,7 +12,6 @@
 )]
 
 mod command;
-mod emulator;
 mod error;
 mod project;
 

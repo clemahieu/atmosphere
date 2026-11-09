@@ -4,7 +4,7 @@
 //! relocates it; so a debugger finds nothing of the loader's by symbol. It learns where the kernel
 //! and dom0 were loaded from the serial log instead: the loader logs each binary's load bias, and,
 //! when asked to, waits before it enters the kernel until the debugger clears rax. tools/run.py --gdb
-//! reads these lines, and build-tool/src/emulator/gdb-helper.py lets the loader go.
+//! reads these lines, and tools/gdb-helper.py, which tools/gdb.py sources, lets the loader go.
 
 use core::arch::asm;
 

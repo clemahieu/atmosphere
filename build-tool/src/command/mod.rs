@@ -10,7 +10,6 @@ macro_rules! unwrap_command {
     };
 }
 
-mod gdb;
 mod test;
 
 use clap::{CommandFactory, Parser};
@@ -21,7 +20,6 @@ pub async fn run() -> Result<(), anyhow::Error> {
     let opts = GlobalOpts::parse();
 
     match &opts.cmd {
-        SubCommand::Gdb(_) => gdb::run(opts).await?,
         SubCommand::Test(_) => test::run(opts).await?,
         SubCommand::GenCompletions(local) => {
             gen_completions(local.shell);
@@ -40,7 +38,6 @@ struct GlobalOpts {
 
 #[derive(Debug, Parser)]
 enum SubCommand {
-    Gdb(gdb::Opts),
     Test(test::Opts),
 
     #[clap(hide = true)]

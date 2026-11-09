@@ -92,11 +92,6 @@ impl Project {
     pub fn root(&self) -> PathBuf {
         self.root.clone()
     }
-
-    /// Returns the path to the GDB connection info.
-    pub fn gdb_info_path(&self) -> PathBuf {
-        self.root.join(".gdb").to_owned()
-    }
 }
 
 /// A crate.

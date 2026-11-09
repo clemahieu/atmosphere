@@ -45,6 +45,10 @@ const MAX_FILE_BYTES: u64 = 1024 * 1024;
 /// The boot, relative to the project root; `--test` runs its own tests.
 const RUN: &str = "tools/run.py";
 
+/// The gdb attach to a `tools/run.py --gdb` run, relative to the project root; `--test` runs its own
+/// tests.
+const GDB: &str = "tools/gdb.py";
+
 /// The payload tools/run.py loads.
 const PAYLOAD: &str = "hello";
 
@@ -276,8 +280,9 @@ async fn check_verify(project: &ProjectHandle) -> Result<String> {
 
 async fn check_boot(project: &ProjectHandle, timeout: u64) -> Result<String> {
     run_check(project, RUN, &["--test"]).await?;
+    run_check(project, GDB, &["--test"]).await?;
     boot(project, timeout, &[]).await?;
-    Ok("tools/run.py's tests pass; exit status 0, serial log ends with dom0's last line".to_string())
+    Ok("tools/run.py's and tools/gdb.py's tests pass; exit status 0, serial log ends with dom0's last line".to_string())
 }
 
 /// Boots with an IOMMU present, the only way the device syscalls run past their first check. The

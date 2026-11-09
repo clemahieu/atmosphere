@@ -76,7 +76,7 @@ source tools/env.sh     # Verus, RUSTC_BOOTSTRAP and tools/bin on PATH
 atmo test               # the gate
 tools/run.py            # build loader, kernel, dom0 and payload; boot under QEMU, with KVM when /dev/kvm is writable; --no-kvm forces TCG
 tools/verify.py         # Verus over kernel/verified; extra arguments go to rust_verify
-atmo gdb                # attach to a tools/run.py --gdb run
+tools/gdb.py            # attach gdb to a tools/run.py --gdb run, with the kernel's symbols
 ```
 
 `tools/setup-verus.sh` builds Verus under `tools/verus`, which git ignores. The host is an AMD Ryzen 9 9950X3D; `/dev/kvm` is world-writable; edk2-ovmf is at `/usr/share/edk2/ovmf`.

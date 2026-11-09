@@ -14,7 +14,9 @@ tools/setup-verus.sh
 source tools/env.sh
 ```
 
-You can now build and boot Atmosphere under QEMU with `tools/run.py`.
+You can now build and boot Atmosphere under QEMU with `tools/run.py`. A run
+started with `tools/run.py --gdb` waits in the loader until `tools/gdb.py`,
+in another terminal, attaches gdb with the kernel's and dom0's symbols.
 
 ## Atmo
 

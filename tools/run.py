@@ -7,7 +7,7 @@ beside it (aloader/src/boot/uefi.rs). The serial log is serial.log at the worksp
 whenever /dev/kvm is writable; --no-kvm forces TCG. --iommu adds QEMU's emulated IOMMU. --gdb puts
 a gdb server on the guest and the file gdb on the ESP, which makes the loader wait before it enters
 the kernel (aloader/src/debugger.rs); once the loader has logged where it loaded each binary and that
-it waits, .gdb at the workspace root holds what atmo gdb attaches with.
+it waits, .gdb at the workspace root holds what tools/gdb.py attaches with.
 
 The firmware's output on the terminal ends with control sequences that reset it, so everything
 before the loader's banner is dropped there; serial.log keeps it.
@@ -137,11 +137,11 @@ def qemu_args(run_dir, serial_log, kvm, iommu, gdb_socket):
 
 
 def gdb_info(loader, binaries, biases, socket):
-    """The connection info atmo gdb reads from .gdb (build-tool/src/emulator/gdb.rs): each of
+    """The connection info tools/gdb.py reads from .gdb: the loader, the gdb socket, and each of
     `binaries`, a path by name, with the bias the loader logged for it."""
     return {
         "file": str(loader),
-        "server": {"Unix": str(socket)},
+        "socket": str(socket),
         "binaries": {name: {"path": str(path), "bias": biases[name]} for name, path in binaries.items()},
     }
 
@@ -200,7 +200,7 @@ def main(argv):
     parser = argparse.ArgumentParser(prog="tools/run.py", description=__doc__.split("\n")[0])
     parser.add_argument("--no-kvm", action="store_true", help="use TCG even if /dev/kvm is writable")
     parser.add_argument("--iommu", action="store_true", help="add QEMU's emulated IOMMU")
-    parser.add_argument("--gdb", action="store_true", help="wait for atmo gdb before entering the kernel")
+    parser.add_argument("--gdb", action="store_true", help="wait for tools/gdb.py before entering the kernel")
     options = parser.parse_args(argv)
 
     kernel = build("kernel", "kernel")
@@ -225,7 +225,7 @@ def main(argv):
                 if biases is not None:
                     info = gdb_info(loader, {"kernel": kernel, "dom0": dom0}, biases, socket)
                     gdb_path.write_text(json.dumps(info))
-                    print("Run `atmo gdb` in another terminal. The loader waits for it before entering the kernel.",
+                    print("Run tools/gdb.py in another terminal. The loader waits for it before entering the kernel.",
                           file=sys.stderr)
             copy_output(qemu.stdout, sys.stdout.buffer)
             returncode = qemu.wait()
@@ -308,12 +308,12 @@ class Tests(unittest.TestCase):
         args = qemu_args(Path("/run/x"), Path("/w/serial.log"), False, False, Path("/run/x/gdb.sock"))
         self.assertNotIn("-S", args)
 
-    def test_gdb_info_is_what_atmo_gdb_reads(self):
+    def test_gdb_info_holds_the_socket_and_each_binary_s_bias(self):
         info = gdb_info(Path("/t/aloader.efi"), {"kernel": Path("/t/kernel"), "dom0": Path("/t/dom0")},
                         {"kernel": 0x14005f000, "dom0": 0x8000000000}, Path("/r/gdb.sock"))
         self.assertEqual(json.loads(json.dumps(info)), {
             "file": "/t/aloader.efi",
-            "server": {"Unix": "/r/gdb.sock"},
+            "socket": "/r/gdb.sock",
             "binaries": {"kernel": {"path": "/t/kernel", "bias": 0x14005f000},
                          "dom0": {"path": "/t/dom0", "bias": 0x8000000000}},
         })
