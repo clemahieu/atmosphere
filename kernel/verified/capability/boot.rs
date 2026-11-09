@@ -1055,6 +1055,10 @@ impl CapKernel {
             final(self).list.is_child(root, (leaf + 3) as usize),
             final(self).list.nodes@[leaf + 3].depth == 1,
             Self::adds_cap(*old(self), *final(self), (leaf + 3) as usize),
+            forall|j: int| #![trigger final(self).list.nodes@[j]] 0 <= j < NODE_SPACE && j != leaf + 3
+                ==> final(self).list.nodes@[j].live == old(self).list.nodes@[j].live
+                && final(self).list.nodes@[j].depth == old(self).list.nodes@[j].depth,
+            final(self).table_pages == old(self).table_pages,
             final(self).blocks == old(self).blocks,
             final(self).threads == old(self).threads,
             final(self).processes == old(self).processes,
@@ -1237,6 +1241,7 @@ impl CapKernel {
                 ==> final(self).list.nodes@[j].live == old(self).list.nodes@[j].live
                 && final(self).list.nodes@[j].depth == old(self).list.nodes@[j].depth,
             final(self).list.parent@ == old(self).list.parent@.insert((leaf + i) as usize, root),
+            final(self).table_pages == old(self).table_pages,
             final(self).blocks == old(self).blocks,
             final(self).threads == old(self).threads,
             final(self).processes == old(self).processes,

@@ -196,6 +196,9 @@ impl CapKernel {
                     &&& final(self).payload_of(n) == boot_frame_payload((fb.0 * 4096) as usize, fb.1 as u8, image_rights(runs@[a]))
                     &&& final(self).list.is_child(n, page_node(b0, s, block_virt(runs@[a], u, j)))
                 }
+                &&& forall|x: usize| #![trigger old(self).is_cap(x)]
+                    !(leaf2 + 1 <= x < leaf2 + 1 + count) && old(self).is_cap(x)
+                    ==> final(self).is_cap(x) && final(self).payload_of(x) == old(self).payload_of(x)
                 &&& forall|o: usize| #[trigger] final(self).view().reach(process, o)
                     <==> (old(self).view().reach(process, o) || (o % 4096 == 0
                         && in_runs(phys, runs@.len() as int, (o / 4096) as int)))
@@ -309,6 +312,14 @@ impl CapKernel {
                 assert(post.payload_of(nf) == tab.payload_of(nf));
                 assert(post.payload_of(nf) == boot_frame_payload((fb.0 * 4096) as usize, fb.1 as u8, image_rights(runs@[a])));
                 assert(post.list.is_child(tab.tables.node_of(process, crate::capability::boot_map::frame_slot(runs@, a, u)), page_node(t0, s, x)));
+            }
+            assert forall|x: usize| #![trigger pre.is_cap(x)]
+                !(leaf2 + 1 <= x < leaf2 + 1 + count) && pre.is_cap(x)
+                implies post.is_cap(x) && post.payload_of(x) == pre.payload_of(x) by {
+                assert(mid.is_cap(x) && mid.payload_of(x) == pre.payload_of(x));
+                assert(tab.is_cap(x) && tab.payload_of(x) == mid.payload_of(x));
+                tab.lemma_slot_bound(x);
+                assert(post.list.nodes@[x as int].live && post.list.nodes@[x as int].kind == tab.list.nodes@[x as int].kind);
             }
             assert(post.wf());
             assert(count == image_blocks(runs@).len());

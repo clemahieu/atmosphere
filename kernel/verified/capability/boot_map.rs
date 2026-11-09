@@ -240,6 +240,7 @@ impl CapKernel {
         &&& post.threads == pre.threads
         &&& post.spaces == pre.spaces
         &&& post.list.seq@[0] == pre.list.seq@[0]
+        &&& nodes_kept(pre.list, post.list)
         &&& forall|a: int, x: int| 0 <= a < runs.len() && #[trigger] in_virt_at(runs, a, x) ==> {
             &&& space_mapping(b0, s).contains_key(page_path(x))
             &&& space_mapping(b0, s)[page_path(x)] == image_entry(runs[a], x)
