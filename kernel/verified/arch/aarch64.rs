@@ -160,15 +160,22 @@ pub fn page_entry2usize(page_entry: &PageEntry, level: usize) -> (ret: usize)
     unimplemented!()
 }
 
-/// Flushes every context on this core.
+/// Flushes every context on this core: TLBI VMALLE1 drops the stage-1 entries of the EL1&0 regime
+/// with any ASID, global ones too, from every level of the walk, and only on this core, which is the
+/// per-core flush of design/flush-without-waiting/ (Arm ARM C5.5.77). The DSB before it orders this
+/// core's table writes ahead of it, and the DSB and ISB after it complete it for this core's own
+/// translations (D8.17.8).
 #[verifier(external_body)]
-// external_body(unproven): the aarch64 placeholder for flush_every_context
+// external_body(glue): only the hardware can attest a flush, so only this makes the token
 pub fn flush_every_context(core: usize, epoch: usize) -> (ret: Tracked<Flushed>)
     ensures
         ret@.target == FlushTarget::Core(core as int),
         ret@.epoch == epoch as int,
 {
-    unimplemented!()
+    unsafe {
+        core::arch::asm!("dsb ishst", "tlbi vmalle1", "dsb ish", "isb", options(nostack, preserves_flags));
+    }
+    Tracked::assume_new()
 }
 
 // The trap frame and the user-return checks: what a thread record holds, what a return to user mode

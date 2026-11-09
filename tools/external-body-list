@@ -15,7 +15,7 @@ arch/aarch64.rs	usize2page_entry_perm	unproven	the aarch64 placeholder for usize
 arch/aarch64.rs	usize2page_entry	unproven	the aarch64 placeholder for usize2page_entry
 arch/aarch64.rs	usize2pa	unproven	the aarch64 placeholder for usize2pa
 arch/aarch64.rs	page_entry2usize	unproven	the aarch64 placeholder for page_entry2usize
-arch/aarch64.rs	flush_every_context	unproven	the aarch64 placeholder for flush_every_context
+arch/aarch64.rs	flush_every_context	glue	only the hardware can attest a flush, so only this makes the token
 arch/aarch64.rs	operation_number	unproven	the aarch64 placeholder for operation_number
 arch/aarch64.rs	slot	unproven	the aarch64 placeholder for slot
 arch/aarch64.rs	argument	unproven	the aarch64 placeholder for argument
