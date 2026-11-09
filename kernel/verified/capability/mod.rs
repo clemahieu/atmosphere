@@ -3,6 +3,7 @@ pub mod boot;
 pub mod boot_frame;
 pub mod boot_image;
 pub mod boot_memory;
+pub mod boot_table;
 pub mod console;
 pub mod decompose;
 pub mod delete;
