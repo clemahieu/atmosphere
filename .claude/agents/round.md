@@ -68,12 +68,12 @@ An attempt is bounded. When ten runs of the tier's check (`tools/verify.py` for 
 
 ## 6. Epic rounds (no ready leaf)
 
-Consider the open epics other than the star, shallowest first. Depth is the number of dots in the id: `atmo-1ab` is the star, `atmo-1ab.5` depth 1, `atmo-1ab.5.3` depth 2. `bd list -t epic`, then `bd show <id>`.
+Consider the open epics other than the star, highest priority first and, among equals, deepest first: a deep epic is closest to finished and its closing releases its parent's leaves, while a shallow epic without children is future work that splitting early only inflates. Depth is the number of dots in the id: `atmo-1ab` is the star, `atmo-1ab.5` depth 1, `atmo-1ab.5.3` depth 2. `bd list -t epic --json` gives the priorities, then `bd show <id>`.
 
 A Grok round never reaches this section: with nothing to claim it reports `Loop: wait`. The skeptic passes and the splits are the Claude loops'.
 
 - Skeptic pass: an epic with at least one child, no open child, no child in progress, and no child of status blocked. The skeptic agent (`.claude/agents/skeptic.md`) runs from the driver, as the prover does. When the epic's notes hold a skeptic input newer than its last closed child and no report after it, a skeptic is running for another loop: skip the epic. When they hold no skeptic report newer than its last closed child: `bd update <epic> --append-notes "Skeptic input: tier <t>; evidence: <the closed children, the commit SHAs their close reasons name, where the atmo test and tools/verify.py output and the serial logs are>"` and end the round with the report and its `Skeptic: <epic>` line. When they hold one: if every criterion stands, `bd close <epic> --reason "skeptic pass: <summary>"`; each refuted criterion keeps the epic open and becomes a leaf under it, the refutation as its description.
-- Split round: the shallowest open epic with no ready children, no child in progress, and no child of status blocked. Write its leaves, each with a description, acceptance criteria a skeptic can check from evidence, and the tier, each labeled by the rule in section 3; `bd dep add` only where one blocks another. If a leaf cannot be written without a decision only the human can make, file that decision by section 5 under this epic and end the round. Do not mark the epic blocked.
+- Split round: the first open epic in that order with no ready children, no child in progress, and no child of status blocked. Write its leaves, each with a description, acceptance criteria a skeptic can check from evidence, and the tier, each labeled by the rule in section 3; `bd dep add` only where one blocks another. If a leaf cannot be written without a decision only the human can make, file that decision by section 5 under this epic and end the round. Do not mark the epic blocked.
 - The star never closes and never gets a split round. Its children are the human's decision.
 
 ## 7. Report
