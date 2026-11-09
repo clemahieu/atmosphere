@@ -21,6 +21,9 @@ pub const MOVE: u64 = 3;
 pub const CLAIM: u64 = 4;
 pub const DELETE: u64 = 5;
 pub const REVOKE: u64 = 6;
+/// Maps into the entry of the space in rdi that the virtual address in rsi and the level in rdx name the
+/// page at the page offset in r9 of the frame in r8: a 4K page at level 1, a 2M page at level 2, whose
+/// offset is a multiple of 512. The entry must be empty and the tables above it linked.
 pub const MAP: u64 = 7;
 pub const UNMAP: u64 = 8;
 pub const DESTROY: u64 = 9;
@@ -180,4 +183,12 @@ pub fn retype_table_page(untyped: u64, base: u64, level: u64) -> u64 {
 pub fn link(space: u64, address: u64, level: u64, untyped: u64, table: u64) -> u64 {
     // A link adds an empty table to the space and maps no page, so no address the caller reads changes.
     status(unsafe { invoke(LINK, space, [address, level, untyped, table, 0]) })
+}
+
+/// Maps the page at offset `page` of the frame capability at `frame` into the entry at `level` that
+/// `address` names in the space of the capability at `space`. The status is the low half of what
+/// returns.
+pub fn map(space: u64, address: u64, level: u64, frame: u64, page: u64) -> u64 {
+    // A map fills only an empty entry, so no address the caller already reads changes.
+    status(unsafe { invoke(MAP, space, [address, level, frame, page, 0]) })
 }

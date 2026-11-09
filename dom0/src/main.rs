@@ -2,19 +2,22 @@
 //! not assume it owns the machine, so several instances each with a root stay possible. Why, and
 //! what to do about a change that breaks this: design/one-kernel-instance/.
 //!
-//! Print, inspect, retype of a 4K frame and of a table page, and link are the wired operations, so each
-//! fixed slot is checked through them: the console accepts print and the process, thread, untyped and
-//! frame slots refuse it; inspect says the console slot holds a console, and each slot from the first
-//! untyped holds an untyped whose base is aligned to its order, up to the first slot that holds
-//! nothing, which inspect refuses. Retype under an empty slot, a slot past the table and the console is
-//! refused, and retype of the last untyped's last page into that empty slot is accepted, after which
-//! inspect says the slot holds a 4K frame at that page. dom0 then retypes four table pages, after a
-//! table page of a level no table has is refused, and a retype of one of them again is refused after;
-//! it links three of them, of levels 3, 2 and 1, under an address its image does not use, through its
-//! own process capability, after a table of the wrong level, an entry whose tables above are not linked
-//! and an unaligned address are refused, and the fourth is refused at the entry the third took. dom0
-//! prints that result through the console, then an exit marker, and exits with success only when every
-//! check held. The kernel logs each invocation, with what it returned, in the serial log.
+//! Print, inspect, retype of a 4K frame and of a table page, link and map are the wired operations,
+//! so each fixed slot is checked through them: the console accepts print and the process, thread,
+//! untyped and frame slots refuse it; inspect says the console slot holds a console, and each slot
+//! from the first untyped holds an untyped whose base is aligned to its order, up to the first slot
+//! that holds nothing, which inspect refuses. Retype under an empty slot, a slot past the table and
+//! the console is refused, and retype of the last untyped's last page into that empty slot is
+//! accepted, after which inspect says the slot holds a 4K frame at that page. dom0 then retypes
+//! four table pages, after a table page of a level no table has is refused, and a retype of one of
+//! them again is refused after; it links three of them, of levels 3, 2 and 1, under an address its
+//! image does not use, through its own process capability, after a table of the wrong level, an
+//! entry whose tables above are not linked and an unaligned address are refused, and the fourth is
+//! refused at the entry the third took. It maps the frame it retyped under that path, after a map
+//! at a kernel-half and at a non-canonical address is refused, writes a word through the mapping
+//! and reads it back, and a second map at that entry is refused. dom0 prints that result through
+//! the console, then an exit marker, and exits with success only when every check held. The kernel
+//! logs each invocation, with what it returned, in the serial log.
 
 #![no_std]
 #![no_main]
@@ -168,6 +171,38 @@ fn linked_path_held(untyped: u64, tables: [u64; 4]) -> bool {
         && link(PATH_ADDRESS, 2, 3) == operation::STATUS_REFUSED
 }
 
+/// An address in the kernel's half, canonical, where no map of dom0's may go.
+const KERNEL_HALF_ADDRESS: u64 = 0xffff_8000_0000_0000;
+
+/// An address past the lower half that is not canonical: the old kernel's range past the user half
+/// started here. A map names one entry, so the old kernel's range that wraps has no map of its own; an
+/// address it could wrap to is past the lower half as this one is.
+const NON_CANONICAL_ADDRESS: u64 = 0x0000_ffff_ffff_f000;
+
+/// What dom0 writes through the page it maps and reads back.
+const MAPPED_WORD: u64 = 0x6174_6d6f_7370_6865;
+
+/// Whether dom0 maps the 4K frame at `frame` into its own space at `PATH_ADDRESS`, under the level 1
+/// table the path holds, and reads back a word written through the mapping: a map at a kernel-half and at
+/// a non-canonical address is refused, the map at `PATH_ADDRESS` is accepted, and a second map at the
+/// entry it took is refused.
+fn mapped_frame_held(frame: u64) -> bool {
+    let map = |address: u64| operation::map(operation::ROOT_PROCESS_SLOT, address, 1, frame, 0);
+    if map(KERNEL_HALF_ADDRESS) != operation::STATUS_REFUSED
+        || map(NON_CANONICAL_ADDRESS) != operation::STATUS_REFUSED
+        || map(PATH_ADDRESS) != operation::STATUS_OK
+    {
+        return false;
+    }
+    let word = PATH_ADDRESS as *mut u64;
+    // The map just made the page at PATH_ADDRESS the frame's, writable, and nothing else names it.
+    let read = unsafe {
+        word.write_volatile(MAPPED_WORD);
+        word.read_volatile()
+    };
+    read == MAPPED_WORD && map(PATH_ADDRESS) == operation::STATUS_REFUSED
+}
+
 /// Print through `slot`. The status is the low half of what the invocation returns.
 ///
 /// # Safety
@@ -191,7 +226,8 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
         && unknown == operation::STATUS_UNKNOWN
         && first_empty_slot().is_some_and(|empty| {
             retyped_frame_held(empty)
-                && retyped_table_pages(empty).is_some_and(|(untyped, tables)| linked_path_held(untyped, tables))
+                && retyped_table_pages(empty)
+                    .is_some_and(|(untyped, tables)| linked_path_held(untyped, tables) && mapped_frame_held(empty))
         });
     let console = unsafe {
         print_slot(

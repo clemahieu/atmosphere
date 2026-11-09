@@ -129,6 +129,21 @@ pub fn address_indices(va: u64) -> (ret: (usize, usize, usize, usize))
     )
 }
 
+/// An address that names a level 2 entry has a zero level 1 index.
+pub proof fn lemma_large_entry_path(va: u64)
+    requires
+        va % 0x20_0000 == 0,
+    ensures
+        address_path(va).l1 == 0,
+{
+    let k = va / 0x20_0000;
+    assert(va == 0x20_0000 * k) by (nonlinear_arith)
+        requires va % 0x20_0000 == 0, k == va / 0x20_0000;
+    assert(va / 0x1000 == 512 * k) by (nonlinear_arith)
+        requires va == 0x20_0000 * k;
+    assert((512 * k) % 512 == 0) by (nonlinear_arith);
+}
+
 /// The entry a map writes for a page of a capability with these rights: writable with Write, not
 /// executable without Execute, and ps for a large frame.
 pub open spec fn frame_map_entry(frame: usize, rights: u32, large: bool) -> PageEntry {
@@ -968,6 +983,7 @@ impl CapKernel {
             old(self).root_live(root),
         ensures
             final(self).wf(),
+            final(self).cores == old(self).cores,
             ret == old(self).can_map(root, slot, SpaceKind::Process, SpacePath { l4, l3, l2, l1 }, from, page),
             final(self).spaces.loaded == old(self).spaces.loaded,
             !ret ==> *final(self) == *old(self),
@@ -1088,6 +1104,58 @@ impl CapKernel {
         self.link(root, slot, parent, entry, from, child)
     }
 
+    /// What a map of the page at offset page of the frame capability at index from, into the entry the
+    /// address va and the level name in the space of the capability at index slot of the table at root,
+    /// did: va names an entry at the level, and at level 1 the map was allowed at the path the address
+    /// names and map_done holds there, at level 2 the same for a large map.
+    pub open spec fn page_mapped(pre: Self, post: Self, root: usize, slot: usize, va: u64, level: u64, from: usize, page: usize) -> bool {
+        let p = address_path(va);
+        &&& names_entry(va, level)
+        &&& {
+            ||| {
+                &&& level == 1
+                &&& pre.can_map(root, slot, SpaceKind::Process, p, from, page)
+                &&& Self::map_done(pre, post, root, slot, p, from, page)
+            }
+            ||| {
+                &&& level == 2
+                &&& pre.can_map_large(root, slot, SpaceKind::Process, p, from, page)
+                &&& Self::map_large_done(pre, post, root, slot, p, from, page)
+            }
+        }
+        &&& discharges(pre.view(), post.view(), root, Effect::Local)
+    }
+
+    /// Maps the page at offset `page` of the frame capability at index `from` into the entry the address
+    /// `va` and the level `level` name in the space of the capability at index `slot` of the table at
+    /// `root`: a 4K page at level 1, a 2M page at level 2. All of these come from user space, and a
+    /// refusal changes nothing. See design/syscall-abi-in-registers/.
+    pub fn map_at(&mut self, root: usize, slot: usize, va: u64, level: u64, from: usize, page: usize) -> (ret: bool)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
+        ensures
+            final(self).wf(),
+            final(self).cores == old(self).cores,
+            !ret ==> *final(self) == *old(self),
+            ret ==> Self::page_mapped(*old(self), *final(self), root, slot, va, level, from, page),
+            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
+    {
+        if (level != 1 && level != 2) || !entry_named(va, level) {
+            return false;
+        }
+        let (l4, l3, l2, l1) = address_indices(va);
+        if level == 1 {
+            self.map(root, slot, l4, l3, l2, l1, from, page)
+        } else {
+            proof {
+                lemma_large_entry_path(va);
+            }
+            self.map_large(root, slot, l4, l3, l2, from, page)
+        }
+    }
+
     /// map, in a space that must be of this kind.
     pub fn map_kind(&mut self, root: usize, slot: usize, kind: SpaceKind, l4: usize, l3: usize, l2: usize, l1: usize, from: usize, page: usize) -> (ret: bool)
         requires
@@ -1095,6 +1163,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
         ensures
             final(self).wf(),
+            final(self).cores == old(self).cores,
             ret == old(self).can_map(root, slot, kind, SpacePath { l4, l3, l2, l1 }, from, page),
             final(self).spaces.loaded == old(self).spaces.loaded,
             !ret ==> *final(self) == *old(self),
@@ -1226,6 +1295,7 @@ impl CapKernel {
             old(self).root_live(root),
         ensures
             final(self).wf(),
+            final(self).cores == old(self).cores,
             ret == old(self).can_map_large(root, slot, SpaceKind::Process, SpacePath { l4, l3, l2, l1: 0 }, from, page),
             final(self).spaces.loaded == old(self).spaces.loaded,
             !ret ==> *final(self) == *old(self),
@@ -1243,6 +1313,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
         ensures
             final(self).wf(),
+            final(self).cores == old(self).cores,
             ret == old(self).can_map_large(root, slot, kind, SpacePath { l4, l3, l2, l1: 0 }, from, page),
             final(self).spaces.loaded == old(self).spaces.loaded,
             !ret ==> *final(self) == *old(self),
@@ -1373,6 +1444,7 @@ impl CapKernel {
             rights == old(self).payload_of(f).rights,
         ensures
             final(self).wf(),
+            final(self).cores == old(self).cores,
             ret == (block_refs(&old(self).blocks, block_ref(&old(self).blocks, frame)) != usize::MAX),
             !ret ==> *final(self) == *old(self),
             ret ==> Self::map_written(*old(self), *final(self), t, e, f, frame, large),
