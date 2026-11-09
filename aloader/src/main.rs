@@ -38,11 +38,15 @@ use astd::io::{Cursor, Read, Seek, SeekFrom};
 use astd::memory::{USERSPACE_BASE, USERSPACE_PAYLOAD_BASE};
 use constants::*;
 
-use memory::{AddressSpace, BootMemoryType, PhysicalAllocator, UserspaceMapper, PAGE_SIZE};
+use memory::{
+    AddressSpace, BootMemoryType, Leaf, PhysicalAllocator, UserspaceMapper, BOOTSTRAP_SIZE,
+    LARGE_PAGE_SIZE, PAGE_SIZE,
+};
 
 /// The end of the physical memory the loader identity maps, for itself and for the kernel.
 /// The test guest's RAM is below 512 MiB. The 32-bit MMIO window sits just below 4 GiB, and the
-/// loader only allocates below 4 GiB. design/test-guest-memory/.
+/// loader only allocates below 4 GiB. The map is 2M leaves, but for the kernel's image and its
+/// stack guard. design/test-guest-memory/.
 pub const IDENTITY_MAP_END: u64 = 0x1_0000_0000; // 4 GiB
 
 const KERNEL_RESERVATION: usize = 64 * 1024 * 1024; // 64 MiB
@@ -71,7 +75,7 @@ fn load(rsdp: u64, wait_for_debugger: bool) -> ! {
     let virt_base = USERSPACE_BASE;
     while cur < 0xFEBD4000 + 0x4000 {
         unsafe {
-            address_space_iommu.map(bootstrap_allocator, cur + virt_base, cur, true, false, true);
+            address_space_iommu.map(bootstrap_allocator, cur + virt_base, cur, true, Leaf::Small, true);
             cur = cur + PAGE_SIZE as u64;
         }
     }
@@ -79,11 +83,10 @@ fn load(rsdp: u64, wait_for_debugger: bool) -> ! {
     log::info!("Mapping all physical memory");
     let mut cur = 0;
     while cur < IDENTITY_MAP_END {
-        // FIXME
         unsafe {
-            address_space.map(bootstrap_allocator, cur, cur, false, false, false);
+            address_space.map(bootstrap_allocator, cur, cur, false, Leaf::Large, false);
         }
-        cur = cur + PAGE_SIZE as u64;
+        cur = cur + LARGE_PAGE_SIZE as u64;
     }
 
     let mut boot_info = BootInfo::empty(); // stays on stack
@@ -125,7 +128,8 @@ fn load(rsdp: u64, wait_for_debugger: bool) -> ! {
     let kernel_elf = ElfHandle::parse(jumbo_file, 4096).unwrap();
     let kernel_end = kernel_elf.elf_len();
 
-    let (_, mut kernel_allocator) = memory::reserve(KERNEL_RESERVATION, BootMemoryType::Kernel);
+    let (kernel_base, mut kernel_allocator) =
+        memory::reserve(KERNEL_RESERVATION, BootMemoryType::Kernel);
     let (kernel_map, mut jumbo_file) = kernel_elf.load(&mut kernel_allocator).unwrap();
 
     // Allocate kernel stack
@@ -135,10 +139,25 @@ fn load(rsdp: u64, wait_for_debugger: bool) -> ! {
             .0
     };
     let stack_base = guard_base + KERNEL_STACK_GUARD_SIZE;
+    // The image is everything the window holds below the guard. The kernel changes the protection
+    // of single pages of its image (kernel/src/arch/x86_64/write_protect.rs), and the 1 MiB guard is
+    // less than a 2M stretch.
+    unsafe {
+        address_space.use_small_pages(bootstrap_allocator, kernel_base as u64, stack_base);
+    }
     let mut cur = guard_base;
     while cur < stack_base {
         unsafe {
             address_space.unmap(cur);
+        }
+        cur += PAGE_SIZE as u64;
+    }
+    // The TLB may hold the 2M leaves those stretches had, and the guard's pages. invlpg drops a
+    // page's entry whatever its size, and a global one the firmware's tables left.
+    let mut cur = kernel_base as u64;
+    while cur < stack_base {
+        unsafe {
+            asm!("invlpg [{}]", in(reg) cur);
         }
         cur += PAGE_SIZE as u64;
     }
@@ -184,7 +203,7 @@ fn load(rsdp: u64, wait_for_debugger: bool) -> ! {
                         let paddr = cur - virt_base + phys_base;
                         let page = slice::from_raw_parts_mut(paddr as *mut u8, PAGE_SIZE);
 
-                        address_space.map(bootstrap_allocator, cur, paddr, true, false, false);
+                        address_space.map(bootstrap_allocator, cur, paddr, true, Leaf::Small, false);
 
                         domain
                             .remaining_file
@@ -213,6 +232,11 @@ fn load(rsdp: u64, wait_for_debugger: bool) -> ! {
         debugger::wait();
     }
 
+    log::info!(
+        "Page-table pool: {} of {} pages hold tables",
+        memory::bootstrap_pages_used(),
+        BOOTSTRAP_SIZE / PAGE_SIZE
+    );
     log::info!(
         "Kernel stack: {:x}-{:x}, boot info at {:x}",
         stack_base,
@@ -317,7 +341,7 @@ where
                 cur,
                 cur - virt_base + phys_base,
                 true,
-                false,
+                Leaf::Small,
                 false,
             );
         }

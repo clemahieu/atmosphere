@@ -156,6 +156,14 @@ pub fn get_bootstrap_range() -> MemoryRange {
     MemoryRange::new(allocator.base as u64, allocator.size as u64)
 }
 
+/// How many pages of the bootstrap region hold page tables.
+pub fn bootstrap_pages_used() -> usize {
+    // The loader runs on one core, and the reference lives only for this call.
+    let allocator = unsafe { &*&raw const BOOTSTRAP_ALLOCATOR };
+
+    allocator.watermark.load(Ordering::SeqCst) / 4096
+}
+
 /// Initializes the allocator.
 ///
 /// This is not thread-safe and should only be called once.

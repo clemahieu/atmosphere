@@ -1,7 +1,8 @@
 use aelf::{PAddr, VAddr};
 
 use crate::memory::{
-    AddressSpace, ContiguousMapping, PageProtection, PhysicalAllocator, VirtualMapper, PAGE_SIZE,
+    AddressSpace, ContiguousMapping, Leaf, PageProtection, PhysicalAllocator, VirtualMapper,
+    PAGE_SIZE,
 };
 
 use astd::memory::USERSPACE_BASE;
@@ -67,7 +68,7 @@ where
                         cur - phys_base + virt_base,
                         cur,
                         true,
-                        false,
+                        Leaf::Small,
                         false,
                     );
 

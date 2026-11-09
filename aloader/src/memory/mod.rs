@@ -14,15 +14,16 @@ use astd::memory::PageProtection;
 use astd::sync::Mutex;
 use aelf::{VirtualMapper, ContiguousMapping};
 
-pub use allocator::set_bootstrap_region;
+pub use allocator::{bootstrap_pages_used, set_bootstrap_region};
 pub use map::MemoryMap;
-pub use paging::{AddressSpace, HUGE_PAGE_SIZE, PAGE_SIZE};
+pub use paging::{AddressSpace, Leaf, LARGE_PAGE_SIZE, PAGE_SIZE};
 pub use userspace::UserspaceMapper;
 
 pub const MAX_PHYSICAL_MEMORY: usize = 16 * 1024 * 1024 * 1024; // 16 GiB
-/// Page tables for the 4 GiB identity map are about 8 MiB. The upper half of this pool must stay
-/// unwritten: tools/check-boot-stack.py. design/test-guest-memory/.
-pub const BOOTSTRAP_SIZE: usize = 32 * 1024 * 1024; // 32 MiB
+/// The loader's page tables are at most 55 pages: 6 for the 4 GiB identity map, 32 if the whole
+/// kernel window had 4K entries, 4 for the IOMMU's space and 13 for dom0's window. The pool is 128
+/// pages, so the upper half stays unwritten: tools/check-boot-stack.py. design/test-guest-memory/.
+pub const BOOTSTRAP_SIZE: usize = 512 * 1024; // 512 KiB
 /// Holds the kernel window and dom0's window. design/test-guest-memory/.
 pub const ALLOCATOR_SIZE: usize = 128 * 1024 * 1024; // 128 MiB
 

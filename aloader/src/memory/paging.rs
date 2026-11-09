@@ -9,7 +9,33 @@ use bit_field::BitField;
 use crate::memory::PhysicalAllocator;
 
 pub const PAGE_SIZE: usize = 4096;
-pub const HUGE_PAGE_SIZE: usize = 1024 * 1024 * 1024;
+pub const LARGE_PAGE_SIZE: usize = 2 * 1024 * 1024;
+
+/// The page a leaf entry maps.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Leaf {
+    /// 4 KiB, by a page table's entry.
+    Small,
+    /// 2 MiB, by a page directory's entry.
+    Large,
+}
+
+impl Leaf {
+    pub const fn size(self) -> u64 {
+        match self {
+            Leaf::Small => PAGE_SIZE as u64,
+            Leaf::Large => LARGE_PAGE_SIZE as u64,
+        }
+    }
+
+    /// The level of the table that holds the leaf, the PML4 being level 0.
+    const fn level(self) -> usize {
+        match self {
+            Leaf::Small => 3,
+            Leaf::Large => 2,
+        }
+    }
+}
 
 const LEVEL_MASK: u64 = 0b1_1111_1111;
 
@@ -63,22 +89,15 @@ impl AddressSpace {
         vaddr: u64,
         paddr: u64,
         user: bool,
-        huge: bool,
+        leaf: Leaf,
         cache_disable: bool,
     ) {
+        assert!(vaddr % leaf.size() == 0, "vaddr is unaligned");
+        assert!(paddr % leaf.size() == 0, "paddr is unaligned");
+
         let mut cur = self.pml4;
 
-        if vaddr as u64 & (1u64 << PAGE_SHIFT - 1) != 0 {
-            panic!("vaddr is unaligned");
-        }
-        if paddr as u64 & (1u64 << PAGE_SHIFT - 1) != 0 {
-            panic!("paddr is unaligned");
-        }
-
-        // FIXME
-        let leaf_level = if huge { 1 } else { 3 };
-
-        for level in 0..leaf_level {
+        for level in 0..leaf.level() {
             let index = Self::index(vaddr, level);
             let mut entry = (*cur).read(index);
 
@@ -92,19 +111,17 @@ impl AddressSpace {
                 (*cur).write(index, entry);
             }
 
-            if !huge && entry.page_size_bit() {
-                todo!("Mixed page sizes");
-            }
+            assert!(!entry.page_size_bit(), "a 2M leaf maps {:#x}", vaddr);
 
             cur = entry.address() as *mut PageTable;
         }
 
-        let index = Self::index(vaddr, leaf_level);
+        let index = Self::index(vaddr, leaf.level());
         let entry = Entry::new()
             .with_present(true)
             .with_read_write(true)
             .with_address(paddr)
-            .with_page_size_bit(huge)
+            .with_page_size_bit(leaf == Leaf::Large)
             .with_cache_disable(cache_disable)
             .with_user(user);
 
@@ -124,7 +141,50 @@ impl AddressSpace {
         table
     }
 
-    /// Removes the mapping of a 4K page, so that any access to it faults.
+    /// Maps `start` up to `end` with 4K entries: each 2M leaf that overlaps the range becomes a
+    /// page table whose entries map the same addresses with the leaf's user and cache-disable bits.
+    /// The TLB keeps the leaves until the caller flushes them.
+    pub unsafe fn use_small_pages(
+        &mut self,
+        allocator: &mut impl PhysicalAllocator,
+        start: u64,
+        end: u64,
+    ) {
+        let mut vaddr = start - start % Leaf::Large.size();
+        while vaddr < end {
+            let mut cur = self.pml4;
+            for level in 0..Leaf::Large.level() {
+                let entry = (*cur).read(Self::index(vaddr, level));
+                assert!(entry.present() && !entry.page_size_bit());
+                cur = entry.address() as *mut PageTable;
+            }
+            let index = Self::index(vaddr, Leaf::Large.level());
+            let leaf = (*cur).read(index);
+            assert!(leaf.present());
+            if leaf.page_size_bit() {
+                let table = Self::allocate_page_table(allocator);
+                for page in 0..512 {
+                    let entry = Entry::new()
+                        .with_present(true)
+                        .with_read_write(true)
+                        .with_address(leaf.address() + page as u64 * PAGE_SZ)
+                        .with_cache_disable(leaf.cache_disable())
+                        .with_user(leaf.user());
+                    (*table).write(page, entry);
+                }
+                let entry = Entry::new()
+                    .with_present(true)
+                    .with_read_write(true)
+                    .with_address(table as u64)
+                    .with_user(leaf.user());
+                (*cur).write(index, entry);
+            }
+            vaddr += Leaf::Large.size();
+        }
+    }
+
+    /// Removes the mapping of a 4K page, so that any access to it faults once the caller has
+    /// flushed its TLB entry.
     pub unsafe fn unmap(&mut self, vaddr: u64) {
         let mut cur = self.pml4;
         for level in 0..3 {
@@ -133,7 +193,6 @@ impl AddressSpace {
             cur = entry.address() as *mut PageTable;
         }
         (*cur).write(Self::index(vaddr, 3), Entry::new());
-        core::arch::asm!("invlpg [{}]", in(reg) vaddr);
     }
 
     fn index(address: u64, level: usize) -> usize {
@@ -193,6 +252,14 @@ impl Entry {
         self
     }
 
+    fn user(&self) -> bool {
+        self.0.get_bit(2)
+    }
+
+    fn cache_disable(&self) -> bool {
+        self.0.get_bit(4)
+    }
+
     fn with_user(mut self, user: bool) -> Self {
         self.0.set_bit(2, user);
         self
@@ -217,7 +284,129 @@ impl Entry {
 
 #[cfg(test)]
 mod tests {
+    use std::alloc::{alloc_zeroed, Layout};
+
+    use aelf::PAddr;
+
     use super::*;
+
+    /// Hands out host pages and counts them. A table's address is then a pointer the walk can
+    /// follow, as under the identity map.
+    struct HostPages {
+        count: usize,
+    }
+
+    impl PhysicalAllocator for HostPages {
+        unsafe fn allocate_physical(&mut self, size: usize) -> PAddr {
+            assert_eq!(size, PAGE_SIZE);
+            self.count += 1;
+            PAddr(alloc_zeroed(Layout::from_size_align(PAGE_SIZE, PAGE_SIZE).unwrap()) as u64)
+        }
+    }
+
+    /// What `vaddr` translates to, with its leaf's size and its user and cache-disable bits.
+    fn translate(space: &AddressSpace, vaddr: u64) -> Option<(u64, Leaf, bool, bool)> {
+        let mut cur = space.pml4;
+        for level in 0..4 {
+            let entry = unsafe { (*cur).read(AddressSpace::index(vaddr, level)) };
+            if !entry.present() {
+                return None;
+            }
+            let leaf = match (level, entry.page_size_bit()) {
+                (2, true) => Leaf::Large,
+                (3, _) => Leaf::Small,
+                (_, false) => {
+                    cur = entry.address() as *mut PageTable;
+                    continue;
+                }
+                (_, true) => panic!("a leaf at level {level}"),
+            };
+            let paddr = entry.address() + vaddr % leaf.size();
+            return Some((paddr, leaf, entry.user(), entry.cache_disable()));
+        }
+        unreachable!()
+    }
+
+    const LARGE: u64 = LARGE_PAGE_SIZE as u64;
+    const SMALL: u64 = PAGE_SIZE as u64;
+
+    /// 4 GiB of 2M leaves, as `load` maps them, and the tables they took.
+    fn identity_map(pages: &mut HostPages) -> AddressSpace {
+        let mut space = AddressSpace::new(pages);
+        let mut cur = 0;
+        while cur < 0x1_0000_0000 {
+            unsafe { space.map(pages, cur, cur, false, Leaf::Large, false) };
+            cur += LARGE;
+        }
+        space
+    }
+
+    #[test]
+    fn large_leaves_map_4_gib_in_six_tables() {
+        let mut pages = HostPages { count: 0 };
+        let space = identity_map(&mut pages);
+        // One PML4, one PDPT and four page directories.
+        assert_eq!(pages.count, 6);
+        for vaddr in [0, 0x1234_5678, 0xfee0_0000, 0xffff_ffff] {
+            assert_eq!(translate(&space, vaddr), Some((vaddr, Leaf::Large, false, false)));
+        }
+        assert_eq!(translate(&space, 0x1_0000_0000), None);
+    }
+
+    #[test]
+    fn small_pages_keep_the_translation_and_unmap_by_the_page() {
+        let mut pages = HostPages { count: 0 };
+        let mut space = identity_map(&mut pages);
+        // A range that ends one page into the next 2M stretch takes both stretches' leaves.
+        let (start, end) = (5 * LARGE - 3 * SMALL, 5 * LARGE + SMALL);
+        unsafe { space.use_small_pages(&mut pages, start, end) };
+        assert_eq!(pages.count, 8);
+        for vaddr in [4 * LARGE, start, 5 * LARGE - 1, 5 * LARGE, 6 * LARGE - 1] {
+            assert_eq!(translate(&space, vaddr), Some((vaddr, Leaf::Small, false, false)));
+        }
+        for vaddr in [4 * LARGE - 1, 6 * LARGE] {
+            assert_eq!(translate(&space, vaddr), Some((vaddr, Leaf::Large, false, false)));
+        }
+
+        // A stretch that already has a page table takes no other.
+        unsafe { space.use_small_pages(&mut pages, start, end) };
+        assert_eq!(pages.count, 8);
+
+        unsafe { space.unmap(start) };
+        assert_eq!(translate(&space, start), None);
+        for vaddr in [start - 1, start + SMALL] {
+            assert_eq!(translate(&space, vaddr), Some((vaddr, Leaf::Small, false, false)));
+        }
+    }
+
+    #[test]
+    fn small_pages_keep_the_leaf_s_user_and_cache_disable_bits() {
+        let mut pages = HostPages { count: 0 };
+        let mut space = AddressSpace::new(&mut pages);
+        let (virt, phys) = (0x80_0000_0000, 7 * LARGE);
+        unsafe {
+            space.map(&mut pages, virt, phys, true, Leaf::Large, true);
+            space.use_small_pages(&mut pages, virt, virt + SMALL);
+        }
+        let last = LARGE - SMALL;
+        assert_eq!(translate(&space, virt + last), Some((phys + last, Leaf::Small, true, true)));
+    }
+
+    #[test]
+    #[should_panic(expected = "paddr is unaligned")]
+    fn a_large_leaf_takes_a_2m_aligned_frame() {
+        let mut pages = HostPages { count: 0 };
+        let mut space = AddressSpace::new(&mut pages);
+        unsafe { space.map(&mut pages, LARGE, LARGE + SMALL, false, Leaf::Large, false) };
+    }
+
+    #[test]
+    #[should_panic(expected = "a 2M leaf maps")]
+    fn a_small_page_does_not_map_under_a_large_leaf() {
+        let mut pages = HostPages { count: 0 };
+        let mut space = identity_map(&mut pages);
+        unsafe { space.map(&mut pages, LARGE, LARGE, false, Leaf::Small, false) };
+    }
 
     #[test]
     fn test_level_index() {
