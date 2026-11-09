@@ -1287,7 +1287,7 @@ impl CapKernel {
             self.processes.spare.borrow_mut().tracked_insert((base + 4 * 4096) as usize, spare4);
         }
         let root_table = base + SPACE_ROOT_PAGE * 4096;
-        let (_, Tracked(map)) = page_perm_to_page_map(root_table, Tracked(space_root));
+        let (_, Tracked(map)) = page_perm_to_page_map(root_table, Ghost(4), Tracked(space_root));
         let tracked mut map = map;
         page_map_set_kernel_entry_range(&self.spaces.kernel_entries, root_table, Tracked(&mut map));
         let tracked mut typed;

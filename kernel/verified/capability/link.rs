@@ -1107,6 +1107,7 @@ impl CapKernel {
                 &&& post.table_pages.maps@[parent].addr() == pre.table_pages.maps@[parent].addr()
                 &&& post.table_pages.maps@[parent].is_init()
                 &&& post.table_pages.maps@[parent].value().wf()
+                &&& post.table_pages.maps@[parent].value().level == pre.table_pages.maps@[parent].value().level
                 &&& post.table_pages.records@[parent].addr() == pre.table_pages.records@[parent].addr()
                 &&& post.table_pages.records@[parent].is_init()
                 &&& post.table_pages.records@[parent].value().level == pre.table_pages.records@[parent].value().level
@@ -1172,6 +1173,7 @@ impl CapKernel {
             post.spaces.roots@[parent].addr() == pre.spaces.roots@[parent].addr(),
             post.spaces.roots@[parent].is_init(),
             post.spaces.roots@[parent].value().wf(),
+            post.spaces.roots@[parent].value().level == pre.spaces.roots@[parent].value().level,
             forall|i: usize| i < 512 && i != entry ==> #[trigger] post.spaces.roots@[parent].value()[i] == pre.spaces.roots@[parent].value()[i],
             post.spaces.records@[parent].addr() == pre.spaces.records@[parent].addr(),
             post.spaces.records@[parent].is_init(),
@@ -2393,6 +2395,7 @@ impl CapKernel {
                 &&& post.table_pages.maps@[parent].addr() == pre.table_pages.maps@[parent].addr()
                 &&& post.table_pages.maps@[parent].is_init()
                 &&& post.table_pages.maps@[parent].value().wf()
+                &&& post.table_pages.maps@[parent].value().level == pre.table_pages.maps@[parent].value().level
                 &&& entry < 512
                 &&& post.table_pages.maps@[parent].value()[entry].is_empty()
                 &&& forall|i: usize| i < 512 && i != entry ==> #[trigger] post.table_pages.maps@[parent].value()[i] == pre.table_pages.maps@[parent].value()[i]

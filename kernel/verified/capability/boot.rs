@@ -254,7 +254,7 @@ impl CapKernel {
             self.processes.spare.borrow_mut().tracked_insert((base + 4 * 4096) as usize, spare4);
         }
         let root_table = base + SPACE_ROOT_PAGE * 4096;
-        let (_, Tracked(map)) = page_perm_to_page_map(root_table, Tracked(space_root));
+        let (_, Tracked(map)) = page_perm_to_page_map(root_table, Ghost(4), Tracked(space_root));
         let ghost map0 = map.value();
         let tracked mut map = map;
         page_map_set_kernel_entry_range(&self.spaces.kernel_entries, root_table, Tracked(&mut map));
@@ -2016,6 +2016,7 @@ impl CapKernel {
             post.spaces.roots@[base].addr() == base + SPACE_ROOT_PAGE * 4096,
             post.spaces.roots@[base].is_init(),
             post.spaces.roots@[base].value().wf(),
+            post.spaces.roots@[base].value().level@ == 4,
             forall|i: usize| #![trigger post.spaces.roots@[base].value()[i]]
                 KERNEL_MEM_END_L4INDEX <= i < 512 ==> post.spaces.roots@[base].value()[i].is_empty(),
             forall|i: usize| #![trigger post.spaces.roots@[base].value()[i]]

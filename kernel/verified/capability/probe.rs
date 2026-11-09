@@ -224,6 +224,7 @@ pub proof fn lemma_table_pages_status_only(list: &Tree, pa: &TablePages, pb: &Ta
         pb.maps@[t].addr() == pa.maps@[t].addr(),
         pb.maps@[t].is_init(),
         pb.maps@[t].value().wf(),
+        pb.maps@[t].value().level == pa.maps@[t].value().level,
         pb.maps@[t].value()@ == pa.maps@[t].value()@,
         pb.records == pa.records,
         pb.spare == pa.spare,
@@ -271,6 +272,7 @@ impl CapKernel {
         &&& post.table_pages.maps@[t].addr() == pre.table_pages.maps@[t].addr()
         &&& post.table_pages.maps@[t].is_init()
         &&& post.table_pages.maps@[t].value().wf()
+        &&& post.table_pages.maps@[t].value().level == pre.table_pages.maps@[t].value().level
         &&& post.table_pages.maps@[t].value()@ == pre.table_pages.maps@[t].value()@
         &&& post.table_pages.records == pre.table_pages.records
         &&& post.table_pages.spare == pre.table_pages.spare
@@ -474,6 +476,7 @@ impl CapKernel {
                 ptr == m0.addr(),
                 map.is_init(),
                 map.value().wf(),
+                map.value().level == m0.value().level,
                 map.value()@ == m0.value()@,
                 probed_prefix(tree, map.value(), t, l1, read, accessed, dirty, i as int),
                 forall|j: int| i <= j < 64 ==> !#[trigger] mask_bit(accessed, j),

@@ -9,8 +9,10 @@ use crate::pagetable::entry::*;
 
 pub struct PageMap {
     pub ar: Array<usize, 512>,
-    pub spec_seq: Ghost<Seq<PageEntry>>,  // pub level: Ghost<usize>,
-    // not used for now.
+    pub spec_seq: Ghost<Seq<PageEntry>>,
+    /// The table's level in the kernel's numbering on every target: 4 for a root, 1 for a table of 4K
+    /// leaves. Ghost, so the struct stays the hardware page.
+    pub level: Ghost<usize>,
 }
 
 impl PageMap {
@@ -20,6 +22,7 @@ impl PageMap {
             old(self).spec_seq@.len() == 512,
         ensures
             final(self).wf(),
+            final(self).level == old(self).level,
             forall|i: int| #![trigger final(self)@[i].is_empty()] 0 <= i < 512 ==> final(self)@[i].is_empty(),
     {
         for i in 0..512
@@ -115,6 +118,7 @@ impl PageMap {
             value.perm.present == false ==> value.is_empty(),
         ensures
             final(self).wf(),
+            final(self).level == old(self).level,
             final(self)@ =~= old(self)@.update(index as int, value),
             final(self).status(index as int).is_clear(),
     {

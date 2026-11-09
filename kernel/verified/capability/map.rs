@@ -343,6 +343,7 @@ pub proof fn lemma_table_pages_entry_written(list: &Tree, pa: &TablePages, pb: &
         pb.maps@[t].addr() == pa.maps@[t].addr(),
         pb.maps@[t].is_init(),
         pb.maps@[t].value().wf(),
+        pb.maps@[t].value().level == pa.maps@[t].value().level,
         pb.records@ == pa.records@.insert(t, pb.records@[t]),
         pb.records@[t].addr() == pa.records@[t].addr(),
         pb.records@[t].is_init(),
@@ -1506,6 +1507,7 @@ impl CapKernel {
         &&& b.maps@[t].addr() == a.maps@[t].addr()
         &&& b.maps@[t].is_init()
         &&& b.maps@[t].value().wf()
+        &&& b.maps@[t].value().level == a.maps@[t].value().level
         &&& forall|i: usize| #![trigger b.maps@[t].value()[i]] i < 512 && i != e ==> b.maps@[t].value()[i] == a.maps@[t].value()[i]
         &&& b.maps@[t].value()[e] == v
         &&& b.maps@[t].value().status(e as int).is_clear()

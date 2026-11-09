@@ -234,6 +234,7 @@ pub open spec fn holds_kernel(kind: SpaceKind, i: usize) -> bool {
 pub open spec fn root_record_wf(spaces: &Spaces, s: usize) -> bool {
     let record = spaces.records@[s].value().table;
     &&& record.level == 4
+    &&& spaces.roots@[s].value().level@ == 4
     &&& record.space == Some(s)
     &&& record.parent is None
     &&& !record.written ==> forall|i: usize| #![trigger spaces.roots@[s].value()[i]]
@@ -689,6 +690,7 @@ pub open spec fn table_block(blocks: &BlockTable, b: usize) -> bool {
 pub open spec fn table_record_wf(pages: &TablePages, t: usize) -> bool {
     let record = pages.records@[t].value();
     &&& 1 <= record.level <= 3
+    &&& pages.maps@[t].value().level@ == record.level
     &&& !record.written ==> forall|i: usize| #![trigger pages.maps@[t].value()[i]]
         i < 512 ==> pages.maps@[t].value()[i].is_empty()
     &&& forall|i: usize| #![trigger pages.maps@[t].value()[i]]
@@ -2044,6 +2046,7 @@ impl CapKernel {
             post.table_pages.maps@[base].addr() == base + TABLE_NODE_PAGES * 4096,
             post.table_pages.maps@[base].is_init(),
             post.table_pages.maps@[base].value().wf(),
+            post.table_pages.maps@[base].value().level@ == level,
             forall|i: usize| i < 512 ==> #[trigger] post.table_pages.maps@[base].value()[i].is_empty(),
             post.table_pages.records@ == pre.table_pages.records@.insert(base, post.table_pages.records@[base]),
             post.table_pages.records@[base].addr() == base + TABLE_RECORD_PAGE * 4096,
@@ -2671,7 +2674,7 @@ impl CapKernel {
             assert(mid.nodes@[parent as int] == pre.list.nodes@[parent as int]);
         }
         self.list.derive(parent, base, NodeKind::Hidden);
-        let (_, Tracked(map)) = page_perm_to_page_map(base + TABLE_NODE_PAGES * 4096, Tracked(table));
+        let (_, Tracked(map)) = page_perm_to_page_map(base + TABLE_NODE_PAGES * 4096, Ghost(level), Tracked(table));
         let tracked mut record;
         proof {
             record = page_into_table_record(sixth);
@@ -3187,7 +3190,7 @@ impl CapKernel {
             assert(mid.nodes@[child as int] == pre.list.nodes@[child as int]);
         }
         let root_table = base + SPACE_ROOT_PAGE * 4096;
-        let (_, Tracked(map)) = page_perm_to_page_map(root_table, Tracked(table));
+        let (_, Tracked(map)) = page_perm_to_page_map(root_table, Ghost(4), Tracked(table));
         let tracked map = map;
         let tracked mut typed;
         let tracked mut cores;

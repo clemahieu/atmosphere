@@ -540,6 +540,7 @@ impl CapKernel {
         &&& post.table_pages.maps@[m.table].addr() == pre.table_pages.maps@[m.table].addr()
         &&& post.table_pages.maps@[m.table].is_init()
         &&& post.table_pages.maps@[m.table].value().wf()
+        &&& post.table_pages.maps@[m.table].value().level == pre.table_pages.maps@[m.table].value().level
         &&& b.entry(m.table, m.entry).is_empty()
         &&& entries_cleared(a, b, m.table, m.entry)
         &&& walks_cut(a, b, m.table, m.entry)
@@ -1683,6 +1684,7 @@ impl CapKernel {
                 &&& post.table_pages.maps@[m.table].addr() == pre.table_pages.maps@[m.table].addr()
                 &&& post.table_pages.maps@[m.table].is_init()
                 &&& post.table_pages.maps@[m.table].value().wf()
+                &&& post.table_pages.maps@[m.table].value().level == pre.table_pages.maps@[m.table].value().level
                 &&& forall|i: usize| #![trigger post.table_pages.maps@[m.table].value()[i]] i < 512 && i != m.entry
                     ==> post.table_pages.maps@[m.table].value()[i] == pre.table_pages.maps@[m.table].value()[i]
                 &&& post.table_pages.maps@[m.table].value()[m.entry].is_empty()
@@ -1795,6 +1797,7 @@ pub proof fn lemma_table_pages_entry_cleared(list: &Tree, pa: &TablePages, pb: &
         pb.maps@[t].addr() == pa.maps@[t].addr(),
         pb.maps@[t].is_init(),
         pb.maps@[t].value().wf(),
+        pb.maps@[t].value().level == pa.maps@[t].value().level,
         forall|i: usize| #![trigger pb.maps@[t].value()[i]] i < 512 && i != e ==> pb.maps@[t].value()[i] == pa.maps@[t].value()[i],
         pb.maps@[t].value()[e].is_empty(),
     ensures

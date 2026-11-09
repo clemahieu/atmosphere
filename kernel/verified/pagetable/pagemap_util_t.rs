@@ -27,6 +27,7 @@ pub fn page_map_set_kernel_entry_range(
     ensures
         final(page_map_perm).addr() == page_map_ptr,
         final(page_map_perm).is_init(),
+        final(page_map_perm).value().level == old(page_map_perm).value().level,
         final(page_map_perm).value().wf(),
         forall|i: usize|
             #![trigger final(page_map_perm).value()[i]]
@@ -47,6 +48,7 @@ pub fn page_map_set_kernel_entry_range(
             page_map_perm.addr() == page_map_ptr,
             page_map_perm.is_init(),
             page_map_perm.value().wf(),
+            page_map_perm.value().level == old(page_map_perm).value().level,
             forall|i: usize|
                 #![trigger page_map_perm.value()[i]]
                 KERNEL_MEM_END_L4INDEX <= i < 512 ==> page_map_perm.value()[i] =~= old(
@@ -83,6 +85,7 @@ pub fn page_map_set_no_requires(
     ensures
         final(page_map_perm).addr() == page_map_ptr,
         final(page_map_perm).is_init(),
+        final(page_map_perm).value().level == old(page_map_perm).value().level,
         final(page_map_perm).value().wf(),
         forall|i: usize|
             #![trigger final(page_map_perm).value()[i]]
@@ -115,6 +118,7 @@ pub fn page_map_set(
     ensures
         final(page_map_perm).addr() == page_map_ptr,
         final(page_map_perm).is_init(),
+        final(page_map_perm).value().level == old(page_map_perm).value().level,
         final(page_map_perm).value().wf(),
         forall|i: usize|
             #![trigger final(page_map_perm).value()[i]]
@@ -150,6 +154,7 @@ pub fn page_map_take_status(
     ensures
         final(page_map_perm).addr() == page_map_ptr,
         final(page_map_perm).is_init(),
+        final(page_map_perm).value().level == old(page_map_perm).value().level,
         final(page_map_perm).value().ar.wf(),
         final(page_map_perm).value().spec_seq == old(page_map_perm).value().spec_seq,
         ret & status_kept_mask() == old(page_map_perm).value().ar@[index as int] & status_kept_mask(),
@@ -180,6 +185,7 @@ pub fn page_map_clear_status(
     ensures
         final(page_map_perm).addr() == page_map_ptr,
         final(page_map_perm).is_init(),
+        final(page_map_perm).value().level == old(page_map_perm).value().level,
         final(page_map_perm).value().wf(),
         final(page_map_perm).value()@ == old(page_map_perm).value()@,
         final(page_map_perm).value().status(index as int).is_clear(),
@@ -227,6 +233,7 @@ pub fn page_map_take(
     ensures
         final(page_map_perm).addr() == page_map_ptr,
         final(page_map_perm).is_init(),
+        final(page_map_perm).value().level == old(page_map_perm).value().level,
         final(page_map_perm).value().ar.wf(),
         final(page_map_perm).value().spec_seq@ == old(page_map_perm).value().spec_seq@.update(index as int, usize2page_entry(0usize)),
         ret & status_kept_mask() == old(page_map_perm).value().ar@[index as int] & status_kept_mask(),
@@ -253,6 +260,7 @@ pub fn page_map_clear_take(
     ensures
         final(page_map_perm).addr() == page_map_ptr,
         final(page_map_perm).is_init(),
+        final(page_map_perm).value().level == old(page_map_perm).value().level,
         final(page_map_perm).value().wf(),
         forall|i: usize|
             #![trigger final(page_map_perm).value()[i]]
@@ -287,7 +295,7 @@ pub fn page_map_clear_take(
 
 #[verifier(external_body)]
 // external_body(glue): writes a hardware page table through a raw pointer
-pub fn page_perm_to_page_map(page_ptr: PagePtr, Tracked(page_perm): Tracked<PagePerm4k>) -> (ret: (
+pub fn page_perm_to_page_map(page_ptr: PagePtr, level: Ghost<usize>, Tracked(page_perm): Tracked<PagePerm4k>) -> (ret: (
     PageMapPtr,
     Tracked<PointsTo<PageMap>>,
 ))
@@ -299,6 +307,7 @@ pub fn page_perm_to_page_map(page_ptr: PagePtr, Tracked(page_perm): Tracked<Page
         ret.1@.addr() == ret.0,
         ret.1@.is_init(),
         ret.1@.value().wf(),
+        ret.1@.value().level == level,
         forall|i: usize|
             #![trigger ret.1@.value()[i].is_empty()]
             0 <= i < 512 ==> ret.1@.value()[i].is_empty(),
