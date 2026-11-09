@@ -30,8 +30,8 @@ pub const MEM_4k_MASK: u64 = 0x0000_ffff_ffff_f000;
 /// A 2M page's address, bits 47:21.
 pub const MEM_2m_MASK: u64 = 0x0000_ffff_ffe0_0000;
 
-/// Bits 47:34.
-pub const MEM_1g_MASK: u64 = 0x0000_fffc_0000_0000;
+/// A 1G page's address, bits 47:30.
+pub const MEM_1g_MASK: u64 = 0x0000_ffff_c000_0000;
 
 /// Flushes every context on this core, all PCIDs and paging-structure caches: changing CR4.PGE does
 /// that where a flush of the current PCID would leave entries under the others.
