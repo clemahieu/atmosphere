@@ -16,7 +16,7 @@ The rule covers reading, not only copying. Never open, fetch, grep or summarise 
 
 Known allowed: this tree; crates.io dependencies with a permissive license field; Verus and vstd (MIT); Rust std (MIT or Apache-2.0); DragonFly HAMMER2 (BSD-3; copy at `~/atmosphere.src/reference/hammer2`, design document at `sys/vfs/hammer2/DESIGN` in it, usable for design only); Redox (MIT); edk2 and OVMF (BSD-2-Clause-Patent); published specifications (copies under `~/atmosphere.src/reference`, beside the worktrees and in no tree, indexed by its `SOURCES.md`).
 
-Known forbidden: Linux; the seL4 kernel at `~/sel4/sel4.src`; GRUB; the QEMU, gdb and binutils sources; ZFS; anything Windows. Running a GPL tool (QEMU, gdb, binutils) is allowed; shipping or reading its code is not.
+Known forbidden: Linux; the seL4 kernel checkout and everything else under `~/sel4.gpl`; GRUB; the QEMU, gdb and binutils sources; ZFS; anything Windows. Running a GPL tool (QEMU, gdb, binutils) is allowed; shipping or reading its code is not.
 
 ## Purity, with virtualization as the escape hatch
 
