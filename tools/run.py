@@ -35,6 +35,7 @@ from pathlib import Path
 sys.dont_write_bytecode = True
 # importlib loading does not put this file's directory on the path.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import elfstrip
 import firmware
 
 REPO = Path(__file__).resolve().parent.parent
@@ -192,12 +193,13 @@ def lay_out_esp(run_dir, loader, images, gdb, ovmf_vars):
     loader_path = run_dir / "esp" / ESP_LOADER
     loader_path.parent.mkdir(parents=True)
     shutil.copy(loader, loader_path)
-    with open(run_dir / "esp" / ESP_INITRD, "wb") as initrd:
-        for image in images:
-            initrd.write(image.read_bytes())
+    # .debug_* stays in target/: gdb and the boot-stack check read those files. The initrd copy
+    # drops it, because the loader maps the payload remainder of this file into dom0.
+    size = elfstrip.write_initrd(run_dir / "esp" / ESP_INITRD, images)
     if gdb:
         (run_dir / "esp" / ESP_GDB).touch()
     shutil.copy(ovmf_vars, run_dir / "OVMF_VARS.fd")
+    return size
 
 
 def main(argv):
@@ -219,7 +221,8 @@ def main(argv):
     gdb_path = REPO / ".gdb"
     with tempfile.TemporaryDirectory(prefix="atmo-run-") as directory:
         run_dir = Path(directory)
-        lay_out_esp(run_dir, loader, [kernel, dom0, payload], options.gdb, ovmf_vars)
+        initrd_size = lay_out_esp(run_dir, loader, [kernel, dom0, payload], options.gdb, ovmf_vars)
+        print(f"initrd: {initrd_size} bytes", file=sys.stderr)
         socket = run_dir / "gdb.sock" if options.gdb else None
         args = qemu_args(run_dir, REPO / "serial.log", use_kvm(options.no_kvm, "/dev/kvm"), options.iommu, socket,
                          ovmf_code)
@@ -404,6 +407,26 @@ class Tests(unittest.TestCase):
                 self.assertEqual((run_dir / "esp" / ESP_INITRD).read_bytes(), b"\x7fELF\x7fELF")
                 self.assertEqual((run_dir / "OVMF_VARS.fd").read_bytes(), b"VARS")
                 self.assertEqual((run_dir / "esp" / ESP_GDB).exists(), gdb)
+
+    def test_the_initrd_drops_debug_sections_and_leaves_the_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = Path(directory)
+            loader = run_dir / "aloader.efi"
+            loader.write_bytes(b"MZ")
+            image = run_dir / "kernel"
+            image.write_bytes(elfstrip.elf_with_debug_section())
+            source = image.read_bytes()
+            vars_fd = run_dir / "vars.fd"
+            vars_fd.write_bytes(b"VARS")
+            lay_out_esp(run_dir, loader, [image], False, vars_fd)
+            initrd = run_dir / "esp" / ESP_INITRD
+            self.assertNotIn(".debug_", self.sections(initrd))
+            self.assertIn(".debug_info", self.sections(image))
+            self.assertEqual(image.read_bytes(), source)
+
+    def sections(self, path):
+        out = subprocess.run(["readelf", "-S", str(path)], check=True, capture_output=True, text=True)
+        return out.stdout
 
     def awaited(self, data):
         out = BytesIO()

@@ -55,6 +55,7 @@ import unittest
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import elfstrip
 import firmware
 import run as guest
 
@@ -253,9 +254,8 @@ def esp(out, ovmf_code, ovmf_vars):
     shutil.rmtree(root, ignore_errors=True)
     os.makedirs(f"{root}/EFI/BOOT")
     shutil.copy("target/x86_64-unknown-uefi/release/aloader.efi", f"{root}/EFI/BOOT/BOOTX64.EFI")
-    with open(f"{root}/initrd", "wb") as f:
-        for name in ("kernel", "dom0"):
-            f.write(open(f"target/x86_64-unknown-aloader/release/{name}", "rb").read())
+    elfstrip.write_initrd(f"{root}/initrd",
+                          [f"target/x86_64-unknown-aloader/release/{name}" for name in ("kernel", "dom0")])
     shutil.copy(ovmf_vars, f"{out}/OVMF_VARS.fd")
     return ["-drive", f"if=pflash,format=raw,unit=0,readonly=on,file={ovmf_code}",
             "-drive", f"if=pflash,format=raw,unit=1,file={out}/OVMF_VARS.fd",

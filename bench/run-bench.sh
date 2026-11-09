@@ -34,7 +34,8 @@ esp="$out/esp"
 rm -rf "$esp"
 mkdir -p "$esp/EFI/BOOT"
 cp "$loader" "$esp/EFI/BOOT/BOOTX64.EFI"
-cat "$kernel" "$dom0" >"$esp/initrd"
+# .debug_* stays in target/. Release files keep it too, so the initrd copy drops it.
+python3 "$root/tools/elfstrip.py" "$kernel" "$dom0" >"$esp/initrd"
 # The same resolver the Python tools import: an override wins, then the known paths.
 if ! firmware=$(python3 "$root/tools/firmware.py"); then
     exit 1

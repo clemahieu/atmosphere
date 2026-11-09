@@ -19,6 +19,7 @@ import time
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import elfstrip
 import firmware
 import run as guest
 
@@ -71,9 +72,7 @@ def boot(profile, out, marker=b"dom0 capability done", kernel=None, dom0=None, p
     images = [image or f"target/x86_64-unknown-aloader/{profile}/{name}"
               for image, name in ((kernel, "kernel"), (dom0, "dom0"), (payload, "hello"))]
     initrd = f"{out}/initrd"
-    with open(initrd, "wb") as f:
-        for image in images:
-            f.write(open(image, "rb").read())
+    elfstrip.write_initrd(initrd, images)
     log = f"{out}/serial.log"
     mon = f"{out}/mon"  # relative: a unix socket path is limited to about 100 bytes
     for path in (log, mon):
