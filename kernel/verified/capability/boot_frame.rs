@@ -584,6 +584,7 @@ impl CapKernel {
             final(self).threads == old(self).threads,
             final(self).processes == old(self).processes,
             final(self).spaces == old(self).spaces,
+            final(self).table_pages == old(self).table_pages,
             final(self).list.pages@.dom() == old(self).list.pages@.dom(),
             forall|o: usize| #[trigger] final(self).view().reach(process, o)
                 <==> (old(self).view().reach(process, o) || in_block(base, order, o)),

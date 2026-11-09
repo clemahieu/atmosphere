@@ -146,6 +146,25 @@ proof fn lemma_image_base(s: usize, o: u8)
     assert((s * 4096) as int == 4096 * (s as int));
 }
 
+/// A page of an aligned block of at most 512 pages lies in the 2M region the block does.
+proof fn lemma_page_block_region(b: (nat, nat), x: nat)
+    requires
+        b.1 <= IMAGE_ORDER,
+        b.0 % pow2(b.1) == 0,
+        b.0 < NUM_PAGES,
+        in_page_block(b, x),
+    ensures
+        region_2m(x as int) == block_region(b),
+{
+    let s = b.0 as usize;
+    let o = b.1 as u8;
+    lemma_image_base(s, o);
+    lemma_block_in_2m((s * 4096) as usize, o);
+    let r = s as int / 512;
+    assert(r * 512 <= s && s + pow2(b.1) <= (r + 1) * 512);
+    lemma_fundamental_div_mod_converse(x as int, 512, r, x - r * 512);
+}
+
 /// Counts the blocks the runs decompose into, or refuses when there are more than the root's second
 /// leaf has slots for.
 fn count_frames(runs: &[ImageRun]) -> (ret: Option<usize>)
@@ -240,6 +259,7 @@ pub open spec fn image_progress(
     &&& cur.threads == pre.threads
     &&& cur.processes == pre.processes
     &&& cur.spaces == pre.spaces
+    &&& cur.table_pages == pre.table_pages
     &&& cur.list.pages@.dom() == pre.list.pages@.dom()
     &&& cur.blocks.free_perms == pre.blocks.free_perms
     &&& cur.blocks.regions_1g@ == pre.blocks.regions_1g@
@@ -333,6 +353,7 @@ impl CapKernel {
                 &&& post.threads == cur.threads
                 &&& post.processes == cur.processes
                 &&& post.spaces == cur.spaces
+                &&& post.table_pages == cur.table_pages
                 &&& post.list.pages@.dom() == cur.list.pages@.dom()
                 &&& forall|x: usize| #[trigger] post.view().reach(process, x)
                     <==> (cur.view().reach(process, x) || in_block((s * 4096) as usize, o, x))
@@ -745,6 +766,20 @@ impl CapKernel {
                         && in_runs(phys, runs@.len() as int, (o / 4096) as int)))
                 &&& forall|q: usize, o: usize| #[trigger] final(self).view().reach(q, o) && !old(self).view().reach(q, o)
                     ==> o % 4096 == 0 && in_runs(phys, runs@.len() as int, (o / 4096) as int)
+                &&& final(self).table_pages == old(self).table_pages
+                &&& forall|q: int| 0 <= q < NUM_2M && !image_region(runs@, q)
+                    ==> #[trigger] final(self).blocks.regions_2m@[q] == old(self).blocks.regions_2m@[q]
+                &&& forall|j: int| 0 <= j < NUM_PAGES && !image_region(runs@, region_2m(j))
+                    ==> #[trigger] final(self).blocks.pages@[j] == old(self).blocks.pages@[j]
+                &&& forall|q: int| #[trigger] image_region(runs@, q) ==> {
+                    &&& 0 <= q < NUM_2M
+                    &&& final(self).blocks.regions_2m@[q].typed
+                    &&& !final(self).blocks.regions_2m@[q].dead
+                    &&& final(self).blocks.regions_2m@[q].refs <= count
+                    &&& final(self).holders@.contains_key(BlockRef::Two(q as usize))
+                }
+                &&& forall|a: int, g: int| 0 <= a < runs@.len() && #[trigger] in_run_at(phys, a, g)
+                    ==> block_ref(&final(self).blocks, g as usize) == BlockRef::Two((g / PAGES_PER_2M as int) as usize)
             },
     {
         let count = match count_frames(runs) {
@@ -967,6 +1002,7 @@ impl CapKernel {
             let len = runs@.len() as int;
             assert(phys.take(len) =~= phys);
             assert(k == bs.len());
+            let len_bs = bs.len() as int;
             assert forall|a: int, u: int| #![trigger run_image_blocks(runs@[a])[u]]
                 0 <= a < runs@.len() && 0 <= u < run_image_blocks(runs@[a]).len()
                 implies bs[image_offset(runs@, a) + u] == run_image_blocks(runs@[a])[u] by {
@@ -1000,6 +1036,39 @@ impl CapKernel {
             assert forall|q: usize, o: usize| #[trigger] post.view().reach(q, o) && !pre.view().reach(q, o)
                 implies o % 4096 == 0 && in_runs(phys, len, (o / 4096) as int) by {
                 assert(in_blocks(bs, bs.len() as int, o));
+            }
+            // The image's regions are exactly those its blocks lie in.
+            assert forall|q: int| #[trigger] in_regions(bs, len_bs, q) implies image_region(runs@, q) by {
+                let t = choose|t: int| 0 <= t < len_bs && #[trigger] block_region(bs[t]) == q;
+                let b = bs[t];
+                lemma_pow2_pos(b.1);
+                assert(in_page_block(b, b.0));
+                assert(in_runs(phys, len, b.0 as int));
+                let a = choose|a: int| 0 <= a < len && #[trigger] in_run_at(phys, a, b.0 as int);
+                lemma_page_block_region(b, b.0);
+            }
+            assert forall|q: int| #[trigger] image_region(runs@, q) implies 0 <= q < NUM_2M && in_regions(bs, len_bs, q) by {
+                let (a, x) = choose|a: int, x: int| 0 <= a < runs@.len() && #[trigger] in_run_at(phys, a, x) && region_2m(x) == q;
+                assert(phys[a].0 + phys[a].1 <= NUM_PAGES);
+                let y = x as nat;
+                assert(in_runs(phys, len, y as int));
+                let t = choose|t: int| 0 <= t < len_bs && #[trigger] in_page_block(bs[t], y);
+                lemma_page_block_region(bs[t], y);
+                assert(block_region(bs[t]) == q);
+            }
+            assert forall|q: int| 0 <= q < NUM_2M && !image_region(runs@, q)
+                implies #[trigger] post.blocks.regions_2m@[q] == pre.blocks.regions_2m@[q] by {
+                assert(!in_regions(bs, len_bs, q));
+            }
+            assert forall|j: int| 0 <= j < NUM_PAGES && !image_region(runs@, region_2m(j))
+                implies #[trigger] post.blocks.pages@[j] == pre.blocks.pages@[j] by {
+                assert(!in_regions(bs, len_bs, region_2m(j)));
+            }
+            assert forall|a: int, g: int| 0 <= a < runs@.len() && #[trigger] in_run_at(phys, a, g)
+                implies block_ref(&post.blocks, g as usize) == BlockRef::Two((g / PAGES_PER_2M as int) as usize) by {
+                assert(phys[a].0 + phys[a].1 <= NUM_PAGES);
+                assert(image_region(runs@, region_2m(g)));
+                assert(post.blocks.regions_2m@[region_2m(g)].typed);
             }
         }
         Some(count)
