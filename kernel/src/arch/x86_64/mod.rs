@@ -5,7 +5,14 @@
 //! Volume 3. The APIC's own registers are in `interrupt/`.
 
 use core::arch::asm;
+use core::ffi::c_void;
 use core::mem::size_of;
+
+mod gs;
+pub mod gdt;
+pub mod interrupt;
+pub mod syscalls;
+pub mod write_protect;
 
 /// A privilege level: a selector's RPL and a descriptor's DPL. APM 2 §4.9.1.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -132,6 +139,79 @@ impl TaskStateSegment {
 /// loaded PCID; with PCIDE clear the bit is reserved. APM 2, the CR3 register in its PCID format.
 pub const CR3_NO_FLUSH: u64 = 1 << 63;
 
+/// Set by boot when the processor's PCID feature is on. `switch_address_space` reads it.
+pub static mut PCIDE: u64 = 0;
+
+/// Enters a busy loop.
+pub unsafe fn spin_forever() -> ! {
+    loop {
+        asm!("hlt");
+    }
+}
+
+/// The cycle counter.
+pub fn rdtsc() -> u64 {
+    unsafe { core::arch::x86_64::_rdtsc() }
+}
+
+/// Waits for the next interrupt.
+pub fn wait() {
+    unsafe { asm!("sti", "hlt") };
+}
+
+pub unsafe fn read_cr0() -> u64 {
+    let cr0: u64;
+    asm!("mov {}, cr0", out(reg) cr0);
+    cr0
+}
+
+pub unsafe fn read_cr4() -> u64 {
+    let cr4: u64;
+    asm!("mov {}, cr4", out(reg) cr4);
+    cr4
+}
+
+pub unsafe fn write_cr0(cr0: u64) {
+    asm!("mov cr0, {}", in(reg) cr0);
+}
+
+pub unsafe fn write_cr4(cr4: u64) {
+    asm!("mov cr4, {}", in(reg) cr4);
+}
+
+/// Enters user code at `pc` with stack `sp`. `rdi` and `rsi` are the entry arguments.
+pub unsafe fn enter_userspace(pc: *const c_void, sp: *mut c_void, rdi: u64, rsi: u64) -> ! {
+    log::info!("Going to sysret into {:x?}", pc);
+    asm!(
+        "pushfq",
+        "pop r11",
+        "mov rsp, {sp}",
+        // HACK: Set IOPL to 3 unconditionally for accessing io ports from dom0
+        "or r11, (3 << 12)",
+        // dom0 gets its entry arguments in rdi and rsi and no kernel values.
+        "xor eax, eax",
+        "xor edx, edx",
+        "xor ebx, ebx",
+        "xor ebp, ebp",
+        "xor r8d, r8d",
+        "xor r9d, r9d",
+        "xor r10d, r10d",
+        "xor r12d, r12d",
+        "xor r13d, r13d",
+        "xor r14d, r14d",
+        "xor r15d, r15d",
+        "sysretq",
+
+        in("rcx") pc,
+        sp = in(reg) sp,
+        in("rdi") rdi,
+        in("rsi") rsi,
+        out("r15") _,
+    );
+
+    loop {}
+}
+
 /// Switches this core to the page table whose top level is at physical address `root`, as address
 /// space `asid`, keeping the entries the TLB holds under `asid`: CR3 takes the root in bits 51:12 and
 /// the PCID in bits 11:0. The kernel tracks when an address space's entries go stale and flushes them
@@ -151,7 +231,7 @@ pub fn switch_address_space(root: usize, asid: usize) {
             "mov cr3, {cr3}",
             tmp = out(reg) _,
             cr3 = inout(reg) cr3 => _,
-            pcide = sym crate::boot::PCIDE,
+            pcide = sym PCIDE,
             options(readonly, nostack),
         );
     }

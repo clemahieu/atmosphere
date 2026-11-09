@@ -107,7 +107,7 @@ mod stats {
     const REPORT_EVERY: u64 = 4096;
 
     pub fn now() -> u64 {
-        unsafe { core::arch::x86_64::_rdtsc() }
+        crate::arch::rdtsc()
     }
 
     #[derive(Clone, Copy)]

@@ -7,12 +7,11 @@
 //! - TSS
 //! - IST stack spaces
 
-use core::arch::asm;
 use core::ptr;
 
 use crate::arch::msr;
 
-use crate::gdt::{GlobalDescriptorTable, TaskStateSegment};
+use crate::arch::gdt::{GlobalDescriptorTable, TaskStateSegment};
 use crate::thread::SwitchDecision;
 use verified::arch::Registers;
 
@@ -23,43 +22,6 @@ static mut CPUS: [Cpu; 16] = [NEW_CPU; 16];
 
 /// Size of an IST stack.
 const IST_STACK_SIZE: usize = 1 * 1024 * 1024; // 1 MiB
-
-macro_rules! read_current_cpu_offset {
-    ($offset:expr) => {{
-        let value: u64;
-        unsafe {
-            asm!(
-                "mov {result}, gs:[{offset}]",
-                offset = const $offset,
-                result = out(reg) value,
-            );
-        }
-        value
-    }}
-}
-
-macro_rules! read_current_cpu_field {
-    ($field:ident) => {
-        read_current_cpu_offset!(memoffset::offset_of!($crate::cpu::Cpu, $field))
-    };
-}
-
-macro_rules! get_current_cpu_field_ptr {
-    ($field:ident, $type:ty) => {{
-        let mut address: u64 = memoffset::offset_of!($crate::cpu::Cpu, $field) as u64;
-        #[allow(unused_unsafe)] // nested unsafe
-        unsafe {
-            asm!(
-                "add {result}, gs:{self_offset}",
-                self_offset = const memoffset::offset_of!($crate::cpu::Cpu, self_ptr),
-                result = inout(reg) address => address,
-                options(pure, readonly),
-            );
-        }
-        address as *mut $type
-    }}
-}
-pub(crate) use get_current_cpu_field_ptr;
 
 /// Per-processor data for a CPU.
 #[repr(C, align(4096))]
@@ -83,7 +45,7 @@ pub struct Cpu {
 
     /// The Global Descriptor Table.
     ///
-    /// See [crate::gdt] for a list of indices and their associated usages.
+    /// See [crate::arch::gdt] for a list of indices and their associated usages.
     pub gdt: GlobalDescriptorTable,
 
     /// The Task State Segment.
@@ -154,13 +116,13 @@ impl Cpu {
 
 /// Returns a handle to the current CPU's data structure.
 pub fn get_current() -> &'static mut Cpu {
-    let address = read_current_cpu_field!(self_ptr) as *mut Cpu;
+    let address = crate::read_current_cpu_field!(self_ptr) as *mut Cpu;
     unsafe { &mut *address }
 }
 
 /// Returns the current CPU ID.
 pub fn get_cpu_id() -> usize {
-    read_current_cpu_field!(id) as usize
+    crate::read_current_cpu_field!(id) as usize
 }
 
 /// Initialize the CPU-local data structure.
@@ -195,15 +157,13 @@ const CR4_OSXMMEXCPT: u64 = 1 << 10;
 /// errors raise #MF, the SSE instructions and FXSAVE are on, and an unmasked SIMD exception raises
 /// #XM. Every core sets this itself, so none depends on what firmware or the trampoline left.
 pub unsafe fn init_control_registers() {
-    let mut cr0: u64;
-    let mut cr4: u64;
-    asm!("mov {}, cr0", out(reg) cr0);
-    asm!("mov {}, cr4", out(reg) cr4);
+    let mut cr0 = crate::arch::read_cr0();
+    let mut cr4 = crate::arch::read_cr4();
     cr0 &= !(CR0_EMULATE_COPROCESSOR | CR0_NOT_WRITE_THROUGH | CR0_CACHE_DISABLE);
     cr0 |= CR0_MONITOR_COPROCESSOR | CR0_NUMERIC_ERROR | CR0_WRITE_PROTECT;
     cr4 |= CR4_OSFXSR | CR4_OSXMMEXCPT;
-    asm!("mov cr0, {}", in(reg) cr0);
-    asm!("mov cr4, {}", in(reg) cr4);
+    crate::arch::write_cr0(cr0);
+    crate::arch::write_cr4(cr4);
     log::info!("CPU {}: CR0 {:#x}, CR4 {:#x}", get_cpu_id(), cr0, cr4);
 }
 

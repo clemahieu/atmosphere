@@ -56,16 +56,16 @@ pub fn check_second_core() {
     let (mut fastest, mut total) = (u64::MAX, 0);
     let mut epoch = 0;
     for _ in 0..CHECK_ROUNDS {
-        let start_tsc = unsafe { core::arch::x86_64::_rdtsc() };
+        let start_tsc = crate::arch::rdtsc();
         epoch = start(1);
         while !acknowledged(1, epoch) {
-            if unsafe { core::arch::x86_64::_rdtsc() } - start_tsc > ACK_CYCLES {
+            if crate::arch::rdtsc() - start_tsc > ACK_CYCLES {
                 log::error!("CPU 1 did not acknowledge a flush IPI");
                 return;
             }
             core::hint::spin_loop();
         }
-        let cycles = unsafe { core::arch::x86_64::_rdtsc() } - start_tsc;
+        let cycles = crate::arch::rdtsc() - start_tsc;
         fastest = fastest.min(cycles);
         total += cycles;
     }

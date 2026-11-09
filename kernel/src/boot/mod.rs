@@ -19,8 +19,6 @@ const _: () = {
     );
 };
 
-use core::arch::asm;
-
 use astd::boot::BootInfo;
 
 pub use command_line::get_command_line;
@@ -29,13 +27,10 @@ pub use command_line::get_command_line;
 /// only read after that.
 static mut BOOT_INFO: BootInfo = BootInfo::empty();
 
-/// Global Tagged TLB toggle.
-pub static mut PCIDE: u64 = 0;
-
 pub unsafe fn init(boot_info: *const BootInfo) {
     BOOT_INFO = (*boot_info).clone();
     let boot_info = get_boot_info();
-    PCIDE = if boot_info.pcide { 1 } else { 0 };
+    crate::arch::PCIDE = if boot_info.pcide { 1 } else { 0 };
 
     command_line::init(boot_info.command_line.as_str()).expect("Invalid kernel command-line");
 }
@@ -50,9 +45,3 @@ pub fn get_raw_command_line() -> &'static str {
     get_boot_info().command_line.as_str()
 }
 
-/// Enters a busy loop.
-pub unsafe fn spin_forever() -> ! {
-    loop {
-        asm!("hlt");
-    }
-}

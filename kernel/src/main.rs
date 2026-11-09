@@ -30,20 +30,15 @@ mod capability;
 mod cpu;
 mod debugger;
 mod error;
-mod gdt;
-mod interrupt;
 mod logging;
 mod machine;
-mod syscalls;
 mod thread;
 mod utils;
 mod lock;
 mod flush;
-mod write_protect;
 
-use core::arch::asm;
 use core::sync::atomic::{AtomicBool, Ordering};
-use core::{ffi::c_void, panic::PanicInfo};
+use core::panic::PanicInfo;
 
 use astd::boot::BootInfo;
 
@@ -65,12 +60,12 @@ extern "C" fn main(boot_info: *const BootInfo) -> isize {
 
         cpu::init_cpu(0); // Now get_current() can be used
         cpu::init_control_registers();
-        gdt::init_cpu();
+        arch::gdt::init_cpu();
 
-        interrupt::init();
-        interrupt::init_cpu();
+        arch::interrupt::init();
+        arch::interrupt::init_cpu();
 
-        syscalls::init_cpu();
+        arch::syscalls::init_cpu();
     }
 
     boot_cpu0(boot_info)
@@ -81,7 +76,7 @@ extern "C" fn main(boot_info: *const BootInfo) -> isize {
 #[inline(never)]
 fn boot_cpu0(boot_info: *const BootInfo) -> isize {
     unsafe {
-        write_protect::check();
+        arch::write_protect::check();
         boot::init(boot_info);
         machine::init(boot::get_boot_info());
         machine::iommu_init();
@@ -124,7 +119,7 @@ fn boot_cpu0(boot_info: *const BootInfo) -> isize {
             (0, 0)
         };
 
-        enter_userspace(entry_point, initial_sp as *mut _, rdi, rsi);
+        arch::enter_userspace(entry_point, initial_sp as *mut _, rdi, rsi);
     }
 }
 
@@ -139,9 +134,9 @@ unsafe fn start_second_core() {
     }
     machine::start_core(1, stack, ap_main, root);
 
-    let deadline = core::arch::x86_64::_rdtsc() + AP_START_CYCLES;
+    let deadline = arch::rdtsc() + AP_START_CYCLES;
     // `|`, not `||`: a branch here would be taken or not by how fast CPU 1 starts.
-    cpu::spin_until(|| AP_UP.load(Ordering::SeqCst) | (core::arch::x86_64::_rdtsc() > deadline));
+    cpu::spin_until(|| AP_UP.load(Ordering::SeqCst) | (arch::rdtsc() > deadline));
     if !AP_UP.load(Ordering::SeqCst) {
         log::error!("CPU 1 did not start");
         return;
@@ -156,10 +151,10 @@ extern "C" fn ap_main(cpu_id: u64) -> ! {
     unsafe {
         cpu::init_cpu(cpu_id as usize);
         cpu::init_control_registers();
-        gdt::init_cpu();
-        interrupt::init_ap();
-        syscalls::init_cpu();
-        write_protect::check();
+        arch::gdt::init_cpu();
+        arch::interrupt::init_ap();
+        arch::syscalls::init_cpu();
+        arch::write_protect::check();
     }
 
     log::info!("CPU {} idle, syscall stack {:#x}", cpu::get_cpu_id(), cpu::get_current().syscall_sp);
@@ -173,7 +168,7 @@ extern "C" fn ap_main(cpu_id: u64) -> ! {
 /// operation that places a thread on a core is wired.
 fn idle() -> ! {
     loop {
-        unsafe { asm!("sti", "hlt") };
+        arch::wait();
     }
 }
 
@@ -221,38 +216,7 @@ fn panic(info: &PanicInfo) -> ! {
     // FIXME: Signal all other CPUs to halt
 
     unsafe {
-        boot::spin_forever();
+        arch::spin_forever();
     }
 }
 
-unsafe fn enter_userspace(pc: *const c_void, sp: *mut c_void, rdi: u64, rsi: u64) -> ! {
-    log::info!("Going to sysret into {:x?}", pc);
-    asm!(
-        "pushfq",
-        "pop r11",
-        "mov rsp, {sp}",
-        // HACK: Set IOPL to 3 unconditionally for accessing io ports from dom0
-        "or r11, (3 << 12)",
-        // dom0 gets its entry arguments in rdi and rsi and no kernel values.
-        "xor eax, eax",
-        "xor edx, edx",
-        "xor ebx, ebx",
-        "xor ebp, ebp",
-        "xor r8d, r8d",
-        "xor r9d, r9d",
-        "xor r10d, r10d",
-        "xor r12d, r12d",
-        "xor r13d, r13d",
-        "xor r14d, r14d",
-        "xor r15d, r15d",
-        "sysretq",
-
-        in("rcx") pc,
-        sp = in(reg) sp,
-        in("rdi") rdi,
-        in("rsi") rsi,
-        out("r15") _,
-    );
-
-    loop {}
-}

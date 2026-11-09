@@ -6,7 +6,7 @@ use memoffset::offset_of;
 use crate::arch::{msr, Ring, SegmentSelector};
 
 use crate::cpu::Cpu;
-use crate::gdt::GlobalDescriptorTable;
+use crate::arch::gdt::GlobalDescriptorTable;
 use crate::thread::SwitchDecision;
 use verified::capability::{boot, inspect, operation, table};
 use verified::arch::Registers;

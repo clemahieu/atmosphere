@@ -15,7 +15,7 @@ use core::convert::{Into, TryFrom};
 use bit_field::BitField;
 use crate::arch::Ring;
 
-use crate::boot::spin_forever;
+use crate::arch::spin_forever;
 pub use exception::Exception;
 use exception::EXCEPTION_MAX;
 use idt::Idt;
@@ -267,7 +267,7 @@ unsafe extern "C" fn page_fault(regs: &mut Registers) {
         log::error!("CPU {}: Page Fault in a process, address {:#x}", crate::cpu::get_cpu_id(), address);
     }
     stop_on_process_fault("Page Fault", regs);
-    if crate::write_protect::fixup(regs) {
+    if crate::arch::write_protect::fixup(regs) {
         return;
     }
     log::info!("CPU {}: Page Fault (address {:#x}, error code {:?}): {:#x?}",
