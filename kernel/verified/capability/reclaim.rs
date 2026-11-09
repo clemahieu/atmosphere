@@ -76,7 +76,7 @@ pub enum ReclaimStep {
 }
 
 /// A page the list holds is page aligned, in the node space and initialised at its own address.
-proof fn lemma_list_page(list: &Tree, p: usize)
+pub proof fn lemma_list_page(list: &Tree, p: usize)
     requires
         list.store_wf(),
         list.pages@.dom().contains(p),
@@ -103,7 +103,7 @@ proof fn lemma_same_page(p: usize, base: usize)
 }
 
 /// A permission something else holds is no page of the list: two permissions never share an address.
-proof fn lemma_list_page_apart<V>(tracked pages: &mut Map<usize, PointsTo<NodePage>>, tracked other: &PointsTo<V>)
+pub proof fn lemma_list_page_apart<V>(tracked pages: &mut Map<usize, PointsTo<NodePage>>, tracked other: &PointsTo<V>)
     requires
         vstd::layout::size_of::<V>() != 0,
         vstd::layout::size_of::<NodePage>() != 0,
@@ -568,11 +568,13 @@ impl CapKernel {
                 || old(self).can_cut_space(root, from, base)
                 || (old(self).can_retype_under(root, from, base, 3) && old(self).space_is_empty(base))
                 || old(self).can_cut_process_space(root, from, base)
+                || (old(self).can_retype_under(root, from, base, PROCESS_ORDER) && old(self).process_is_spent(base))
                 || old(self).can_unbind_thread(root, from, base)
                 || (old(self).can_retype_under(root, from, base, 1) && old(self).thread_is_spent(base))) ==> ret is Refused,
             !old(self).view().holds_right(root, old(self).tables.node_of(root, from), Right::Retype) ==> ret is Refused,
             old(self).spaces.roots@.contains_key(base) && !old(self).dead_io_space(base)
-                && !old(self).can_cut_process_space(root, from, base) ==> ret is Refused,
+                && !old(self).can_cut_process_space(root, from, base)
+                && !(old(self).can_retype_under(root, from, base, PROCESS_ORDER) && old(self).process_is_spent(base)) ==> ret is Refused,
             old(self).can_cut_space(root, from, base) ==> ret is Slice,
             old(self).can_retype_under(root, from, base, 3) && old(self).space_is_empty(base)
                 ==> if old(self).acknowledged(base / 4096) { ret is Freed } else { ret is Again },
@@ -587,7 +589,12 @@ impl CapKernel {
             old(self).can_cut_process_space(root, from, base) ==> ret is Slice,
             old(self).processes.records@.contains_key(base) && ret is Slice
                 ==> old(self).process_space_cut(*final(self), root, from, base),
-            old(self).spaces.roots@.contains_key(base) && ret is Freed ==> old(self).space_freed(*final(self), c, root, from, base),
+            old(self).can_retype_under(root, from, base, PROCESS_ORDER) && old(self).process_is_spent(base)
+                ==> if old(self).acknowledged(base / 4096) { ret is Freed } else { ret is Again },
+            old(self).processes.records@.contains_key(base) && ret is Freed
+                ==> old(self).process_freed(*final(self), c, root, from, base),
+            old(self).spaces.roots@.contains_key(base) && old(self).spaces.records@[base].value().kind is Device && ret is Freed
+                ==> old(self).space_freed(*final(self), c, root, from, base),
             old(self).can_unlink_table(root, from, base) ==> ret is Unlinked,
             old(self).can_slice_table(root, from, base) ==> ret is Slice,
             old(self).can_retype_under(root, from, base, 3) && old(self).table_is_empty(base)
@@ -604,7 +611,8 @@ impl CapKernel {
                 || old(self).leaf_freed(*final(self), c, root, from, base)
                 || old(self).table_freed(*final(self), c, root, from, base)
                 || old(self).space_freed(*final(self), c, root, from, base)
-                || old(self).thread_freed(*final(self), c, root, from, base),
+                || old(self).thread_freed(*final(self), c, root, from, base)
+                || old(self).process_freed(*final(self), c, root, from, base),
             ret is Slice ==> old(self).leaf_sliced(*final(self), root, from, base)
                 || old(self).table_sliced(*final(self), root, from, base)
                 || old(self).space_children_cut(*final(self), root, from, base)
@@ -667,7 +675,7 @@ impl CapKernel {
                 if self.cut_process_space(root, from, base) {
                     ReclaimStep::Slice
                 } else {
-                    ReclaimStep::Refused
+                    self.free_process(c, root, from, base)
                 }
             },
             ObjectType::None => ReclaimStep::Refused,
@@ -2294,9 +2302,12 @@ impl CapKernel {
         let b = tree_of(&post.table_pages, &post.spaces);
         pre.lemma_empty_space(base);
         assert(!a.is_page(base));
-        assert forall|i: usize| i < 512 implies #[trigger] a.entry(base, i).is_empty() by {
-            assert(pre.spaces.roots@[base].value()[i].is_empty());
+        assert forall|i: usize| !#[trigger] a.names_child(base, i) by {
+            if i < 512 {
+                assert(pre.spaces.roots@[base].value()[i].is_empty());
+            }
         }
+        assert(space_wf(&pre.list, &pre.spaces, &pre.blocks, base));
         assert(space_removed(a, b, base));
         lemma_links_space_removed(a, b, base);
         assert forall|t: usize, e: usize| #[trigger] frame_slot(a, t, e) implies {

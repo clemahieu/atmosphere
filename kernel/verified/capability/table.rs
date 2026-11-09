@@ -879,6 +879,65 @@ impl Tables {
     {
     }
 
+    /// Takes the table root at `root` out of the tables, handing back its page. Every entry of it names
+    /// no leaf, so no leaf's owner names it and nothing else changes. Only the free of a dead process's
+    /// block calls this.
+    pub fn take_root(&mut self, list: &Tree, root: usize) -> (ret: Tracked<PagePerm4k>)
+        requires
+            old(self).wf(list),
+            old(self).roots@.contains_key(root),
+            forall|r: int| 0 <= r < ROOT_ENTRIES ==> #[trigger] old(self).leaf(root, r) == NO_LEAF,
+        ensures
+            final(self).wf(list),
+            final(self).roots@ == old(self).roots@.remove(root),
+            final(self).owner == old(self).owner,
+            final(self).payloads == old(self).payloads,
+            forall|l: usize| #[trigger] final(self).owner@.contains_key(l) ==> final(self).owner@[l].0 != root,
+            ret@.addr() == root,
+            ret@.is_uninit(),
+    {
+        let ghost pre = *old(self);
+        let tracked page;
+        proof {
+            pre.lemma_root(root);
+            let tracked mut typed = self.roots.borrow_mut().tracked_remove(root);
+            typed.leak_contents();
+            page = crate::layouts::table_root_into_page(typed);
+            let me = *self;
+            assert forall|l: usize| #[trigger] pre.owner@.contains_key(l) implies pre.owner@[l].0 != root by {
+                pre.lemma_leaf(list, l);
+                let (t, r) = pre.owner@[l];
+                if t == root {
+                    assert(pre.leaf(root, r) == NO_LEAF);
+                }
+            }
+            assert(me.roots_wf()) by {
+                reveal(Tables::roots_wf);
+                assert forall|t: usize| #[trigger] me.roots@.contains_key(t) implies me.root_wf(t) by {
+                    pre.lemma_root(t);
+                    assert(me.roots@[t] == pre.roots@[t]);
+                    assert forall|s: int| 0 <= s < ROOT_ENTRIES && #[trigger] me.leaf(t, s) != NO_LEAF implies {
+                        &&& me.owner@.contains_key(me.leaf(t, s))
+                        &&& me.owner@[me.leaf(t, s)] == (t, s)
+                    } by {
+                        assert(me.leaf(t, s) == pre.leaf(t, s));
+                        pre.lemma_entry(t, s);
+                    }
+                }
+            }
+            assert(me.leaves_wf(list)) by {
+                reveal(Tables::leaves_wf);
+                assert forall|l: usize| #[trigger] me.owner@.contains_key(l) implies me.leaf_wf(list, l) by {
+                    pre.lemma_leaf(list, l);
+                    let (t, s) = pre.owner@[l];
+                    assert(t != root);
+                    assert(me.roots@[t] == pre.roots@[t]);
+                }
+            }
+        }
+        Tracked(page)
+    }
+
     /// Reads what the capability in a slot says.
     pub fn payload_at(&self, list: &Tree, n: usize) -> (ret: Payload)
         requires

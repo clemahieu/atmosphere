@@ -107,7 +107,8 @@ pub open spec fn table_links_wf(tree: TableTree) -> bool {
     }
 }
 
-/// b is a without space s, which is no table page and whose root has no entry.
+/// b is a without space s, which is no table page and whose root, at level 4, names no child. A process
+/// root keeps the kernel's entries to the end, and they are no child's.
 pub open spec fn space_removed(a: TableTree, b: TableTree, s: usize) -> bool {
     &&& a.is_root(s)
     &&& !a.is_page(s)
@@ -115,7 +116,8 @@ pub open spec fn space_removed(a: TableTree, b: TableTree, s: usize) -> bool {
     &&& b.records == a.records
     &&& b.roots == a.roots.remove(s)
     &&& b.space_records == a.space_records.remove(s)
-    &&& forall|i: usize| i < 512 ==> #[trigger] a.entry(s, i).is_empty()
+    &&& a.record(s).level == 4
+    &&& forall|i: usize| !#[trigger] a.names_child(s, i)
 }
 
 /// Every table but s reads as it did.
@@ -140,8 +142,8 @@ pub proof fn lemma_space_removed_others(a: TableTree, b: TableTree, s: usize, u:
     }
 }
 
-/// A space with no entry goes and the links stay: it named nothing, nothing names a root, and every other
-/// table is as it was.
+/// A space naming no child goes and the links stay: nothing names a root, and every other table is as it
+/// was.
 pub proof fn lemma_links_space_removed(a: TableTree, b: TableTree, s: usize)
     requires
         table_links_wf(a),
@@ -191,9 +193,7 @@ pub proof fn lemma_links_space_removed(a: TableTree, b: TableTree, s: usize)
         if r.parent is Some {
             let p = r.parent->0;
             assert(a.names_child(p.table, p.entry));
-            if p.table == s {
-                assert(a.entry(s, p.entry).is_empty());
-            }
+            assert(p.table != s);
             lemma_space_removed_others(a, b, s, p.table);
             assert(b.entry(p.table, p.entry) == a.entry(p.table, p.entry));
             assert(b.names_child(p.table, p.entry) == a.names_child(p.table, p.entry));
@@ -215,9 +215,7 @@ pub proof fn lemma_walk_space_removed(a: TableTree, b: TableTree, s: usize, r: u
     } by {
         if u == s {
             assert(!b.is_table(s));
-            if i < 512 {
-                assert(a.entry(s, i).is_empty());
-            }
+            assert(!a.names_child(s, i));
         } else {
             lemma_space_removed_others(a, b, s, u);
             assert(b.entry(u, i) == a.entry(u, i));
