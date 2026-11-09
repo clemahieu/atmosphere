@@ -1,6 +1,6 @@
 //! The capability kernel: built at boot in memory boot sets aside, with dom0 as the root process.
 //!
-//! The loader's page list and dom0's runs cross the trust boundary here, and are checked by
+//! The loader's memory map and dom0's runs cross the trust boundary here, and are checked by
 //! boot/free_ranges.rs and boot/mapped_runs.rs before the verified boot step runs on them. The
 //! permissions that step takes for the pages are this file's to vouch for: the pages it hands over
 //! are the ones those checks passed, and nothing else in the kernel touches them. Why the boundary
@@ -8,7 +8,7 @@
 
 use core::mem::size_of;
 
-use astd::boot::{BootInfo, PhysicalMemoryType, MAPPED_RUNS, PAGE_BYTES};
+use astd::boot::{BootInfo, MAPPED_RUNS, PAGE_BYTES};
 use verified::array::Array;
 use verified::capability::boot::{
     ROOT_CONSOLE_SLOT, ROOT_FRAME_SLOT, ROOT_PROCESS_SLOT, ROOT_THREAD_SLOT, ROOT_UNTYPED_SLOT,
@@ -89,7 +89,6 @@ pub struct Entry {
 /// core 0 enters it next.
 pub fn boot(boot_info: &BootInfo) -> Entry {
     let dom0 = boot_info.dom0.as_ref().expect("no dom0 to boot");
-    let listed = &boot_info.pages[..boot_info.pages.len().min(PAGE_SLOTS)];
     let reserved = ByteRange { base: dom0.reserved_start as u64, size: dom0.reserved_size as u64 };
     let runs = &dom0.runs[..mapped_runs(&dom0.runs, reserved.base, reserved.size)];
 
@@ -100,20 +99,25 @@ pub fn boot(boot_info: &BootInfo) -> Entry {
         let end = (run.phys + run.pages * PAGE_BYTES).div_ceil(REGION_BYTES) * REGION_BYTES;
         aside[1 + k] = ByteRange { base: first, size: end - first };
     }
-    let regions = &aside[1..1 + runs.len()];
-    let stretch_pages = BOOT_OBJECT_PAGES + size_of::<CapKernel>().div_ceil(PAGE_BYTES as usize) as u64;
-    let stretch = available_stretch(listed, stretch_pages, BOOT_OBJECT_PAGES, regions)
-        .expect("no free stretch for the capability kernel");
-    aside[0] = ByteRange { base: stretch, size: stretch_pages * PAGE_BYTES };
-    let aside = &aside[..1 + runs.len()];
-    log::info!("capability kernel at {:#x}, {} pages with the root's boot objects", stretch, stretch_pages);
-
     let image_start = &raw const __ehdr_start as u64;
     let kernel_image = ByteRange { base: image_start, size: &raw const _end as u64 - image_start };
 
     // Only CPU 0 runs, and it runs this once.
     let scratch = unsafe { &mut *&raw mut SCRATCH };
-    let run_count = free_page_ranges(listed, &mut scratch.seen, aside, kernel_image, Some(reserved), &mut scratch.runs);
+
+    // The map is folded twice: the runs around dom0's regions say where the stretch goes, and the
+    // runs around the stretch as well are what is left to hand out.
+    let memory = &boot_info.memory[..];
+    let regions = &aside[1..1 + runs.len()];
+    let run_count = free_page_ranges(memory, &mut scratch.seen, regions, kernel_image, Some(reserved), &mut scratch.runs);
+    let stretch_pages = BOOT_OBJECT_PAGES + size_of::<CapKernel>().div_ceil(PAGE_BYTES as usize) as u64;
+    let stretch = aligned_stretch(&scratch.runs[..run_count], stretch_pages, BOOT_OBJECT_PAGES)
+        .expect("no free stretch for the capability kernel");
+    aside[0] = ByteRange { base: stretch, size: stretch_pages * PAGE_BYTES };
+    let aside = &aside[..1 + runs.len()];
+    log::info!("capability kernel at {:#x}, {} pages with the root's boot objects", stretch, stretch_pages);
+
+    let run_count = free_page_ranges(memory, &mut scratch.seen, aside, kernel_image, Some(reserved), &mut scratch.runs);
     let free = largest_blocks(&scratch.runs[..run_count], &mut scratch.blocks, &mut scratch.free);
     for (k, run) in runs.iter().enumerate() {
         scratch.image[k] = ImageRun {
@@ -181,31 +185,14 @@ pub fn boot(boot_info: &BootInfo) -> Entry {
     }
 }
 
-/// The address of the first `count` available pages in a row in the loader's list, starting at a
-/// multiple of `align` pages, none of them in `avoid`. The list holds one entry per page in address
-/// order; an entry out of place breaks a stretch.
-fn available_stretch(
-    listed: &[(u64, PhysicalMemoryType)],
-    count: u64,
-    align: u64,
-    avoid: &[ByteRange],
-) -> Option<u64> {
-    let mut run_start = 0;
-    for (index, &(address, kind)) in listed.iter().enumerate() {
-        let index = index as u64;
-        let usable = kind == PhysicalMemoryType::Available
-            && address == index * PAGE_BYTES
-            && !avoid.iter().any(|range| range.overlaps_page(address));
-        if !usable {
-            run_start = index + 1;
-            continue;
-        }
-        let start = run_start.next_multiple_of(align);
-        if index + 1 == start + count {
-            return Some(start * PAGE_BYTES);
-        }
-    }
-    None
+/// The address of the lowest `count` free pages in a row that start at a multiple of `align` pages.
+/// `runs` is the free runs in address order.
+fn aligned_stretch(runs: &[PageRun], count: u64, align: u64) -> Option<u64> {
+    runs.iter().find_map(|run| {
+        let first = run.first / PAGE_BYTES;
+        let start = first.next_multiple_of(align);
+        (start + count <= first + run.count).then_some(start * PAGE_BYTES)
+    })
 }
 
 /// Splits the free runs into maximal aligned blocks, as the verified boot step does, and writes the

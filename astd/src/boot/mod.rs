@@ -28,9 +28,26 @@ pub enum PhysicalMemoryType {
     Reserved,
 }
 
-/// Entries in [`BootInfo::pages`]. One entry per 4 KiB address from zero, so this covers 1 GiB:
-/// the test guest and the gaps below it. design/test-guest-memory/.
-pub const BOOT_PAGE_SLOTS: usize = 256 * 1024;
+/// A stretch of physical memory of one type in the loader's memory map.
+///
+/// The base and the length are multiples of [`PAGE_BYTES`], and no two ranges of a map share a
+/// page. The kernel checks both at the trust boundary. An address in no range is not memory the
+/// kernel may use.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PhysicalRange {
+    /// Physical address of the range's first byte.
+    pub base: u64,
+    /// Length of the range.
+    pub bytes: u64,
+    /// What the memory holds.
+    pub kind: PhysicalMemoryType,
+}
+
+/// How many ranges [`BootInfo::memory`] holds. Firmware lists each of its allocations, more than
+/// a hundred under OVMF; the loader merges neighbours of one type, which leaves the test guest
+/// 21. design/test-guest-memory/.
+pub const MEMORY_RANGES: usize = 256;
 
 /// Boot manager handoff information.
 #[repr(C)]
@@ -48,8 +65,8 @@ pub struct BootInfo {
     /// The payload mapped into dom0.
     pub payload: Option<Payload>,
 
-    /// All available physical pages and their state.
-    pub pages: ArrayVec<(u64, PhysicalMemoryType), BOOT_PAGE_SLOTS>,
+    /// The memory map: every range the loader knows of, with its type, in address order.
+    pub memory: ArrayVec<PhysicalRange, MEMORY_RANGES>,
 
     /// Whether Tagged TLB is enabled.
     pub pcide: bool,
@@ -258,7 +275,7 @@ impl BootInfo {
             dom0: None,
             payload: None,
             pml4: ptr::null(),
-            pages: ArrayVec::new(),
+            memory: ArrayVec::new(),
             pcide: false,
             iommu_base: None,
         }

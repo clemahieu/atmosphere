@@ -23,9 +23,10 @@ import elfstrip
 import firmware
 import run as guest
 
-MIB = 1 << 20
+KIB = 1 << 10
 PAGE = 4096
-MARGIN = 16 * MIB  # the least room the stack must have left
+MARGIN = 512 * KIB  # the least room the stack must have left
+ENTRY_FRAME = PAGE  # main's frame stays under this: the overflow build's stack is two pages
 
 
 def build(profile, overflow=False):
@@ -62,7 +63,7 @@ def check_entry_frame(kernel):
                           check=True, capture_output=True, text=True).stdout
     assert "<main>:" in text, f"no main in {kernel}"
     sizes = [int(size, 16) for size in re.findall(r"sub\s+(?:r11|rsp),0x([0-9a-f]+)", text)]
-    if sizes and max(sizes) >= MIB:
+    if sizes and max(sizes) >= ENTRY_FRAME:
         sys.exit(f"FAIL: main in {kernel} probes a frame of {max(sizes):#x} bytes before the IDT exists")
 
 
@@ -166,12 +167,12 @@ def main():
         pages = written(sock, out, base, top - base)
         low = pages[0] if pages else top
         depth, room = top - low, low - base
-        print(f"kernel stack {base:#x}-{top:#x} ({(top - base) // MIB} MiB): "
-              f"depth at least {depth / MIB:.1f} MiB, {room / MIB:.1f} MiB left")
+        print(f"kernel stack {base:#x}-{top:#x} ({(top - base) // KIB} KiB): "
+              f"depth at least {depth // KIB} KiB, {room // KIB} KiB left")
         if not pages:
             failures.append("the kernel did not run on its stack")
         if room < MARGIN:
-            failures.append(f"less than {MARGIN // MIB} MiB of the stack left")
+            failures.append(f"less than {MARGIN // KIB} KiB of the stack left")
 
     sock.sendall(b"quit\n")
     qemu.wait(timeout=30)

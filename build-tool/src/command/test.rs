@@ -143,7 +143,7 @@ async fn check_free_ranges(project: &ProjectHandle) -> Result<String> {
     if !status.success() {
         return Err(anyhow!("cargo test free_page: {}", status));
     }
-    Ok("unaligned, repeated and out-of-range pages rejected; set-aside pages taken out of the free runs".to_string())
+    Ok("unaligned, empty, overlapping and out-of-range ranges rejected; set-aside and untracked pages left out of the free runs".to_string())
 }
 
 /// The dom0 run check. Its lines start with `mapped runs:` in this step's output.

@@ -8,7 +8,7 @@ use core::{fmt, ops::DerefMut};
 
 use aelf::PAddr;
 
-use astd::boot::PhysicalMemoryType;
+use astd::boot::{page_end, PhysicalMemoryType, PhysicalRange, PAGE_BYTES};
 use astd::heapless::Vec as ArrayVec;
 use astd::memory::PageProtection;
 use astd::sync::Mutex;
@@ -270,63 +270,52 @@ pub fn get_physical_memory_map() -> impl DerefMut<Target = MemoryMap<BootMemoryT
     PHYSICAL_MEMORY_MAP.lock()
 }
 
-/// One page entry per address from 0 up to `cover`. Returns how many of those pages are available.
+/// The map as the ranges the kernel is handed, in address order: each region with its edges moved
+/// to pages, and neighbours of one type merged. Returns how many pages are available.
+///
+/// A page two regions share goes to the lower one, and a page a region shares with a gap below it
+/// goes to no range.
 ///
 /// `relabel` appends the unsplit remainder of a region at the end of the map, out of address order.
-/// The walk only moves forward, so it would record that span as reserved on the way to a later
-/// region and then skip the remainder. Sorting first keeps those pages.
-pub fn record_boot_pages<const N: usize>(
+/// The walk only moves forward, so it would step over that remainder on the way to a later region.
+/// Sorting first keeps those pages.
+pub fn record_boot_ranges<const N: usize>(
     map: &mut MemoryMap<BootMemoryType>,
-    pages: &mut ArrayVec<(u64, PhysicalMemoryType), N>,
-    cover: u64,
-) -> usize {
+    ranges: &mut ArrayVec<PhysicalRange, N>,
+) -> u64 {
     map.sort();
     let mut free_page_count = 0;
     let mut cur = 0u64;
     for (region, label) in map.regions.iter() {
-        if pages.is_full() {
-            break;
-        }
-
-        let page_type: PhysicalMemoryType = (*label).into();
+        let kind: PhysicalMemoryType = (*label).into();
         log::info!(
             "region.base() {:x}, region.end_inclusive() {:x}, page_type {:?}, label {:?}",
             region.base(),
             region.end_inclusive(),
-            page_type,
+            kind,
             *label
         );
-        while cur < region.base() {
-            if pages.is_full() {
-                break;
-            }
-
-            pages
-                .push((cur, PhysicalMemoryType::Reserved))
-                .expect("Too many pages");
-            cur += PAGE_SIZE as u64;
+        let start = page_end(region.base()).max(cur);
+        let end = page_end(region.base() + region.size());
+        if end <= start {
+            continue;
         }
-        while cur < region.end_inclusive() {
-            if pages.is_full() {
-                break;
-            }
-
-            if page_type == PhysicalMemoryType::Available {
-                free_page_count = free_page_count + 1;
-            }
-            pages.push((cur, page_type)).expect("Too many pages");
-            cur += PAGE_SIZE as u64;
+        cur = end;
+        if kind == PhysicalMemoryType::Available {
+            free_page_count += (end - start) / PAGE_BYTES;
         }
-    }
-    while cur < cover {
-        if pages.is_full() {
-            break;
+        match ranges.last_mut() {
+            Some(last) if last.kind == kind && last.base + last.bytes == start => {
+                last.bytes += end - start;
+            }
+            _ => ranges
+                .push(PhysicalRange {
+                    base: start,
+                    bytes: end - start,
+                    kind,
+                })
+                .expect("The memory map has more ranges than the kernel is handed"),
         }
-
-        pages
-            .push((cur, PhysicalMemoryType::Reserved))
-            .expect("Too many pages");
-        cur += PAGE_SIZE as u64;
     }
     free_page_count
 }
@@ -377,19 +366,73 @@ mod tests {
             map.regions
         );
 
-        let mut pages: ArrayVec<(u64, PhysicalMemoryType), 16> = ArrayVec::new();
-        let free = record_boot_pages(&mut map, &mut pages, 10 * page);
-        for offset in [5 * page, 6 * page] {
-            let kind = pages
-                .iter()
-                .find(|(addr, _)| *addr == offset)
-                .map(|(_, kind)| *kind);
-            assert_eq!(
-                kind,
-                Some(PhysicalMemoryType::Available),
-                "page {offset:#x} in {pages:?}"
-            );
-        }
-        assert_eq!(free, 4, "{pages:?}");
+        let mut ranges: ArrayVec<PhysicalRange, 16> = ArrayVec::new();
+        let free = record_boot_ranges(&mut map, &mut ranges);
+        let range = |base, pages, kind| PhysicalRange {
+            base: base * page,
+            bytes: pages * page,
+            kind,
+        };
+        // The tail at pages 5 and 6 and the untouched memory at 7 and 8 are one available range.
+        assert_eq!(
+            ranges.as_slice(),
+            [
+                range(0, 1, PhysicalMemoryType::Reserved),
+                range(1, 3, PhysicalMemoryType::Kernel),
+                range(4, 1, PhysicalMemoryType::Domain),
+                range(5, 4, PhysicalMemoryType::Available),
+                range(9, 1, PhysicalMemoryType::Reserved),
+            ]
+        );
+        assert_eq!(free, 4, "{ranges:?}");
+    }
+
+    /// The initrd's length is whatever the file's is, so its region ends inside a page and the
+    /// rest of its allocation starts there. A region can also start inside a page after a gap.
+    #[test]
+    fn region_edges_inside_a_page_move_to_pages() {
+        let page = PAGE_SIZE as u64;
+        let mut map = MemoryMap::new([
+            (
+                MemoryRange::new(0, page + 0x200),
+                BootMemoryType::DomainImage,
+            ),
+            (
+                MemoryRange::new(page + 0x200, page - 0x200),
+                BootMemoryType::Other(AcpiMemoryType::Reserved),
+            ),
+            (
+                MemoryRange::new(2 * page, page),
+                BootMemoryType::Other(AcpiMemoryType::Reserved),
+            ),
+            (
+                MemoryRange::new(5 * page + 0x800, page + 0x800),
+                BootMemoryType::Other(AcpiMemoryType::Memory),
+            ),
+        ]);
+
+        let mut ranges: ArrayVec<PhysicalRange, 16> = ArrayVec::new();
+        let free = record_boot_ranges(&mut map, &mut ranges);
+        assert_eq!(
+            ranges.as_slice(),
+            [
+                PhysicalRange {
+                    base: 0,
+                    bytes: 2 * page,
+                    kind: PhysicalMemoryType::Available,
+                },
+                PhysicalRange {
+                    base: 2 * page,
+                    bytes: page,
+                    kind: PhysicalMemoryType::Reserved,
+                },
+                PhysicalRange {
+                    base: 6 * page,
+                    bytes: page,
+                    kind: PhysicalMemoryType::Available,
+                },
+            ]
+        );
+        assert_eq!(free, 3, "{ranges:?}");
     }
 }

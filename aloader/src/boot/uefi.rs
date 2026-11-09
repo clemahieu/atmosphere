@@ -34,9 +34,9 @@ static DEBUGGER_PATH: [u16; 4] = [b'g' as u16, b'd' as u16, b'b' as u16, 0];
 /// The configuration table entry of the ACPI 2.0 RSDP (UEFI 2.11, section 4.6.1.1).
 const ACPI_20_TABLE_GUID: Guid = guid!("8868e871-e4f1-11d3-bc22-0080c73c8881");
 
-/// The loader's stack. `load` keeps the kernel's BootInfo on it, about 4 MiB.
-/// design/test-guest-memory/.
-const STACK_SIZE: usize = 16 * 1024 * 1024;
+/// The loader's stack. `load` reaches 108 KiB down it in a debug build and 48 KiB in release, with
+/// the kernel's BootInfo and its own copies of the memory map. design/test-guest-memory/.
+const STACK_SIZE: usize = 1024 * 1024;
 
 /// Allocations the loader keeps stay below 4 GiB: inside the identity map the loader builds, and
 /// for the page tables, where the AP trampoline's 32-bit CR3 load reaches.

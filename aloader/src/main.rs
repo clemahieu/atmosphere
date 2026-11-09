@@ -31,7 +31,7 @@ use core::arch::x86_64::__cpuid;
 use aelf::{ElfHandle, LoadSegment};
 use astd::boot::{
     disjoint_page_runs, page_end, page_start, BootInfo, DomainMapping, MappedRun, Payload,
-    SegmentSpan, BOOT_PAGE_SLOTS, DOM0_RESERVATION, DOM0_STACK, MAPPED_RUNS, PAGE_BYTES,
+    SegmentSpan, DOM0_RESERVATION, DOM0_STACK, MAPPED_RUNS, PAGE_BYTES,
 };
 use astd::heapless::Vec as ArrayVec;
 use astd::io::{Cursor, Read, Seek, SeekFrom};
@@ -50,16 +50,16 @@ use memory::{
 pub const IDENTITY_MAP_END: u64 = 0x1_0000_0000; // 4 GiB
 
 const KERNEL_RESERVATION: usize = 64 * 1024 * 1024; // 64 MiB
-// Holds boot's copy of BootInfo (about 4 MiB) and leaves the 16 MiB margin
-// tools/check-boot-stack.py requires. design/test-guest-memory/.
 // Unmapped below the kernel's stack. The kernel probes large frames, so an overflow cannot jump it.
 const KERNEL_STACK_GUARD_SIZE: u64 = 1024 * 1024; // 1 MiB
+// The kernel's boot reaches 48 KiB down it in a debug build and 16 KiB in release, and
+// tools/check-boot-stack.py requires half of it unused. design/test-guest-memory/.
 #[cfg(not(feature = "small_kernel_stack"))]
-const KERNEL_STACK_SIZE: u64 = 32 * 1024 * 1024; // 32 MiB
-// So check-boot-stack.py can force an overflow. Under one copy of BootInfo, and over the probe
-// main runs before the IDT exists.
+const KERNEL_STACK_SIZE: u64 = 1024 * 1024; // 1 MiB
+// So check-boot-stack.py can force an overflow. Under the depth of the kernel's boot in either
+// profile, and over what main uses before the IDT exists.
 #[cfg(feature = "small_kernel_stack")]
-const KERNEL_STACK_SIZE: u64 = 2 * 1024 * 1024; // 2 MiB
+const KERNEL_STACK_SIZE: u64 = 8 * 1024; // 8 KiB
 
 /// Loads the kernel, dom0 and the payload from the memory map and kernel image the UEFI entry
 /// recorded, and enters the kernel. `rsdp` is the ACPI RSDP from the UEFI configuration tables;
@@ -220,13 +220,16 @@ fn load(rsdp: u64, wait_for_debugger: bool) -> ! {
         }
     }
 
-    log::info!("Populating physical page list");
-    let free_page_count = memory::record_boot_pages(
+    log::info!("Recording the memory map");
+    let free_page_count = memory::record_boot_ranges(
         &mut memory::get_physical_memory_map(),
-        &mut boot_info.pages,
-        BOOT_PAGE_SLOTS as u64 * PAGE_BYTES,
+        &mut boot_info.memory,
     );
-    log::info!("ALoader: Num of free pages --> {:?}", free_page_count);
+    log::info!(
+        "ALoader: {} memory ranges, {} free pages",
+        boot_info.memory.len(),
+        free_page_count
+    );
 
     if wait_for_debugger {
         debugger::wait();
