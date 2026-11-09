@@ -1012,6 +1012,146 @@ impl BlockTable {
         Some(Tracked(taken))
     }
 
+    /// Type the 2M region r, every page of which boot reserved, as a large block holding one reference:
+    /// boot's step for a region dom0's image lies in. Its pages go Reserved to Free under the typed
+    /// region, as every large block's pages are, so none becomes free and free_perms is unchanged. A
+    /// bounded loop of 512 page writes. See design/root-process-at-boot/.
+    pub fn type_reserved_2m(&mut self, r: usize)
+        requires
+            old(self).wf(),
+            r < NUM_2M,
+            forall|i: int| r * 512 <= i < (r + 1) * 512 ==> #[trigger] old(self).pages@[i].kind is Reserved,
+        ensures
+            final(self).wf(),
+            final(self).free_perms == old(self).free_perms,
+            final(self).regions_2m@ == old(self).regions_2m@.update(r as int,
+                RegionEntry { typed: true, dead: false, torn_down: false, refs: 1 }),
+            final(self).regions_1g@ == old(self).regions_1g@,
+            !old(self).regions_2m@[r as int].typed,
+            !old(self).regions_1g@[r as int / 512].typed,
+            forall|i: int| 0 <= i < NUM_PAGES ==> #[trigger] final(self).pages@[i]
+                == if region_2m(i) == r { free_entry() } else { old(self).pages@[i] },
+    {
+        let ghost pre = *old(self);
+        let first = r * PAGES_PER_2M;
+        let r1 = r / 512;
+        proof {
+            assert(region_2m(first as int) == r);
+            assert(region_1g(first as int) == r1);
+            assert(pre.pages@[first as int].kind is Reserved);
+            pre.lemma_not_free_uncovered(first as int);
+        }
+        let mut k: usize = 0;
+        while k < PAGES_PER_2M
+            invariant
+                k <= PAGES_PER_2M,
+                r < NUM_2M,
+                first == r * 512,
+                self.pages.wf(),
+                forall|i: int| 0 <= i < NUM_PAGES ==> #[trigger] self.pages@[i]
+                    == if first <= i < first + k { free_entry() } else { pre.pages@[i] },
+                self.regions_2m == pre.regions_2m,
+                self.regions_1g == pre.regions_1g,
+                self.count_2m == pre.count_2m,
+                self.count_1g == pre.count_1g,
+                self.free_perms == pre.free_perms,
+                self.in_2m == pre.in_2m,
+                self.in_1g == pre.in_1g,
+            decreases PAGES_PER_2M - k,
+        {
+            self.pages.set(first + k, PageEntry {
+                kind: PageKind::Free,
+                object: ObjectType::None,
+                base: 0,
+                order: 0,
+                dead: false,
+                torn_down: false,
+                refs: 0,
+            });
+            k = k + 1;
+        }
+        let ghost gone = set_int_range(first + 1, first + 512);
+        proof {
+            lemma_int_range(first + 1, first + 512);
+            assert(pre.in_1g@[r1 as int].finite());
+            assert forall|j: int| gone.contains(j) implies #[trigger] pre.in_1g@[r1 as int].contains(j) by {
+                assert(region_1g(j) == r1);
+                assert(pre.pages@[j].kind is Reserved);
+            }
+            lemma_len_subset(gone, pre.in_1g@[r1 as int]);
+            let kept = pre.in_1g@[r1 as int].difference(gone);
+            assert(kept + gone =~= pre.in_1g@[r1 as int]);
+            assert(kept.disjoint(gone));
+            vstd::set_lib::lemma_set_disjoint_lens(kept, gone);
+            assert(kept.finite());
+        }
+        let c1 = *self.count_1g.get(r1);
+        self.count_1g.set(r1, c1 - 511);
+        self.count_2m.set(r, 0);
+        self.in_2m = Ghost(pre.in_2m@.update(r as int, Set::empty()));
+        self.in_1g = Ghost(pre.in_1g@.update(r1 as int, pre.in_1g@[r1 as int].difference(gone)));
+        self.regions_2m.set(r, RegionEntry { typed: true, dead: false, torn_down: false, refs: 1 });
+        proof {
+            let me = *self;
+            assert forall|i: int| 0 <= i < NUM_PAGES implies #[trigger] me.pages@[i]
+                == if region_2m(i) == r { free_entry() } else { pre.pages@[i] } by {
+                assert((first <= i < first + 512) == (region_2m(i) == r));
+            }
+            assert forall|j: int| 0 <= j < NUM_2M implies {
+                &&& (#[trigger] me.in_2m@[j]).finite()
+                &&& me.in_2m@[j].len() == me.count_2m@[j]
+                &&& me.in_2m@[j].subset_of(set_int_range(j * 512, (j + 1) * 512))
+            } by {
+                assert(pre.in_2m@[j].finite());
+            }
+            assert forall|j: int| 0 <= j < NUM_1G implies {
+                &&& (#[trigger] me.in_1g@[j]).finite()
+                &&& me.in_1g@[j].len() == me.count_1g@[j]
+                &&& me.in_1g@[j].subset_of(set_int_range(j * 262144, (j + 1) * 262144))
+            } by {
+                assert(pre.in_1g@[j].finite());
+            }
+            assert forall|j: int| 0 <= j < NUM_PAGES implies {
+                &&& me.in_2m@[region_2m(j)].contains(j) == !(#[trigger] me.pages@[j].kind is Free)
+                &&& me.in_1g@[region_1g(j)].contains(j) == (!(me.pages@[j].kind is Free)
+                    || (j % 512 == 0 && me.regions_2m@[j / 512].typed))
+            } by {
+                assert(pre.in_2m@[region_2m(j)].contains(j) == !(pre.pages@[j].kind is Free));
+                assert((first <= j < first + 512) == (region_2m(j) == r));
+                if region_2m(j) == r {
+                    assert(region_1g(j) == r1);
+                    assert(j % 512 == 0 <==> j == first);
+                    assert(j / 512 == r);
+                    assert(pre.pages@[j].kind is Reserved);
+                }
+            }
+            assert forall|j: int| 0 <= j < NUM_2M && (#[trigger] me.regions_2m@[j]).typed implies {
+                &&& me.count_2m@[j] == 0
+                &&& !me.regions_1g@[j / 512].typed
+            } by {
+                if j != r {
+                    assert(pre.regions_2m@[j].typed);
+                }
+            }
+            assert forall|j: int| 0 <= j < NUM_1G && (#[trigger] me.regions_1g@[j]).typed implies
+                me.count_1g@[j] == 0 by {
+                assert(pre.regions_1g@[j].typed);
+            }
+            assert forall|j: usize| j < NUM_PAGES implies
+                (#[trigger] me.free_perms@.contains_key(j)
+                    == (me.pages@[j as int].kind is Free && !me.covered(j as int))) by {
+                assert(pre.free_perms@.contains_key(j)
+                    == (pre.pages@[j as int].kind is Free && !pre.covered(j as int)));
+                assert((first <= j < first + 512) == (region_2m(j as int) == r));
+            }
+            assert forall|j: int| 0 <= j < NUM_PAGES
+                implies Self::same_block(#[trigger] pre.pages@[j], me.pages@[j]) by {
+                assert((first <= j < first + 512) == (region_2m(j) == r));
+            }
+            Self::lemma_blocks_wf_same(pre, me);
+        }
+    }
+
     /// Type a free 1G block, in constant time: its count says nothing inside it is typed.
     pub fn try_type_1g(&mut self, r: usize) -> (ret: Option<Tracked<Map<usize, PagePerm4k>>>)
         requires
