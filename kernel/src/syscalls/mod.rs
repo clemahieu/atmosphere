@@ -319,7 +319,7 @@ unsafe extern "C" fn sys_entry() -> ! {
 }
 
 /// The handler. The verified dispatch runs the invocation for the core's current thread and decides
-/// the status and result words that return, and the kernel logs each invocation.
+/// the status and result words that return.
 extern "C" fn capability_entry(regs: &mut Registers) {
     use crate::bridge::Bridge;
     use crate::capability::CAP_KERNEL;
@@ -331,25 +331,13 @@ extern "C" fn capability_entry(regs: &mut Registers) {
         .expect("a syscall before the capability kernel was built")
         .dispatch(crate::cpu::get_cpu_id(), *regs)
         .expect("no operation is wired that moves the calling thread off its core");
-    let outcome = match returned.status {
-        operation::STATUS_OK => "ok",
-        operation::STATUS_REFUSED => "refused",
-        operation::STATUS_UNKNOWN => "unknown",
-        operation::STATUS_AGAIN => "again",
+    match returned.status {
+        operation::STATUS_OK
+        | operation::STATUS_REFUSED
+        | operation::STATUS_UNKNOWN
+        | operation::STATUS_AGAIN => {}
         status => unreachable!("dispatch returned status {status}, which no operation returns"),
-    };
-    let arguments = [regs.rsi, regs.rdx, regs.r8, regs.r9, regs.r10];
-    log::info!(
-        "capability entry: operation {} on slot {} with {:?}: {} returning [{:#x}, {:#x}, {:#x}, {:#x}]",
-        regs.rax,
-        regs.rdi,
-        arguments,
-        outcome,
-        returned.rdi,
-        returned.rsi,
-        returned.rdx,
-        returned.r8,
-    );
+    }
     regs.rax = returned.status;
     regs.rdi = returned.rdi;
     regs.rsi = returned.rsi;

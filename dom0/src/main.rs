@@ -34,8 +34,7 @@
 //! finds the 2M frame. It derives a child from the 2M frame again; a delete of the frame is then
 //! refused, the child's delete is accepted, and the frame's after it, after which inspect, a second
 //! delete and a delete past the table are refused. dom0 prints that result through the console, then an exit marker, and exits with
-//! success only when every check held. The kernel logs each invocation, with what it returned, in the
-//! serial log.
+//! success only when every check held.
 
 #![no_std]
 #![no_main]
@@ -57,8 +56,7 @@ const EXIT_PANIC: u32 = 3;
 /// A number past every operation's.
 const NO_OPERATION: u64 = 0xffff;
 
-/// The arguments of the first invocation, which the kernel logs: each word names its position, so
-/// the log shows every argument register reached the kernel in its place, r10 last.
+/// The arguments of the first invocation. Each word names its position, r10 last.
 const FIRST_ARGUMENTS: [u64; 5] = [1, 2, 3, 4, 5];
 
 /// What dom0 prints through the console when the fixed-slot checks held, which the gate looks for.
