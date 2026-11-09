@@ -824,6 +824,9 @@ impl CapKernel {
                 ||| final(self).blocks.pages@[t / 4096 + k].kind is Member
             },
     {
+        // The body relates four states; unfolding each one's wf would put every kernel invariant's
+        // quantifiers in one query. The steps' contracts carry wf whole, so it stays folded here.
+        hide(CapKernel::wf);
         let ghost pre = *old(self);
         let ghost pb = process / 4096;
         let ghost lb = leaf / 4096;
@@ -940,6 +943,9 @@ impl CapKernel {
             let post = *self;
             let a = (leaf + 1) as usize;
             let b = (leaf + 2) as usize;
+            assert(post.list.wf()) by {
+                reveal(CapKernel::wf);
+            }
             assert(post.tables.has_slot(&post.list, process, ROOT_PROCESS_SLOT));
             assert(post.tables.node_of(process, ROOT_PROCESS_SLOT) == a);
             assert(post.list.nodes@[a as int].live);
@@ -979,8 +985,10 @@ impl CapKernel {
             lemma_has(post.list.seq@, frames);
             assert(post.list.is_child(root, frames));
             assert(post.tables.leaf(process, 1) == frames);
-            assert forall|i: usize| ROOT_FRAME_SLOT <= i < 2 * NODES_PER_PAGE implies {
-                &&& #[trigger] post.tables.has_slot(&post.list, process, i)
+            assert forall|i: usize| #![trigger post.tables.has_slot(&post.list, process, i)]
+                #![trigger post.tables.node_of(process, i)]
+                ROOT_FRAME_SLOT <= i < 2 * NODES_PER_PAGE implies {
+                &&& post.tables.has_slot(&post.list, process, i)
                 &&& !post.list.nodes@[post.tables.node_of(process, i) as int].live
             } by {
                 assert(index_ok(i) && index_entry(i) == 1);
