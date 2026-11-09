@@ -68,6 +68,7 @@ pub(super) async fn run(global: GlobalOpts) -> Result<()> {
         ("file sizes", check_file_sizes(&project).await),
         ("build", check_build(&project).await),
         ("free ranges", check_free_ranges(&project).await),
+        ("mapped runs", check_mapped_runs(&project).await),
         ("license", check_licenses(&project).await),
         ("hooks", check_hooks(&project).await),
         ("verify", check_verify(&project).await),
@@ -158,6 +159,21 @@ async fn check_free_ranges(project: &ProjectHandle) -> Result<String> {
         return Err(anyhow!("cargo test free_page: {}", status));
     }
     Ok("unaligned, repeated and out-of-range pages rejected; set-aside pages taken out of the free runs".to_string())
+}
+
+/// The dom0 run check. Its lines start with `mapped runs:` in this step's output.
+async fn check_mapped_runs(project: &ProjectHandle) -> Result<String> {
+    let status = Command::new("cargo")
+        .args(["test", "--manifest-path", "build-tool/Cargo.toml", "--", "--nocapture", "mapped_run"])
+        .current_dir(project.root())
+        .stdin(Stdio::null())
+        .status()
+        .await
+        .context("mapped runs")?;
+    if !status.success() {
+        return Err(anyhow!("cargo test mapped_run: {}", status));
+    }
+    Ok("real dom0 load accepted; unaligned, empty, outside, kernel-entry and overlapping runs rejected".to_string())
 }
 
 /// Builds every workspace member from its own directory, since each no_std crate takes its target from its

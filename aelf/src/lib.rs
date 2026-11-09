@@ -123,6 +123,15 @@ pub struct ElfMapping {
     pub max_vaddr: usize,
 }
 
+/// One `PT_LOAD` segment with a non-zero memory size, in file order.
+#[derive(Clone, Copy, Debug)]
+pub struct LoadSegment {
+    pub vaddr: u64,
+    pub memsz: u64,
+    pub writable: bool,
+    pub executable: bool,
+}
+
 struct DisplayPFlags<'ph>(&'ph ProgramHeader);
 
 #[derive(Debug, Clone)]
@@ -363,7 +372,10 @@ where
                     }
 
                     let whole_pages = unsafe {
-                        slice::from_raw_parts_mut(mapping as *mut u8, total_map_size - file_map_size)
+                        slice::from_raw_parts_mut(
+                            mapping as *mut u8,
+                            total_map_size - file_map_size,
+                        )
                     };
                     whole_pages.fill(0);
                 }
@@ -377,10 +389,7 @@ where
             dynamic.fixup();
         }
 
-        log::debug!(
-            "GDB: add-symbol-file /path/to/elf -o 0x{:x}",
-            load_bias
-        );
+        log::debug!("GDB: add-symbol-file /path/to/elf -o 0x{:x}", load_bias);
 
         Ok((
             ElfMapping {
@@ -397,6 +406,29 @@ where
 
     pub fn elf_len(&self) -> usize {
         self.elf_len
+    }
+
+    /// Writes each loadable segment into `out`. Returns how many were written, or `None` when
+    /// `out` cannot hold them.
+    pub fn loadable_segments(&self, out: &mut [LoadSegment]) -> Option<usize> {
+        let mut count = 0;
+        for ph in self.program_headers.iter() {
+            if ph.p_type != PT_LOAD || ph.p_memsz == 0 {
+                continue;
+            }
+            if count >= out.len() {
+                return None;
+            }
+            let prot = ph.prot_flags();
+            out[count] = LoadSegment {
+                vaddr: ph.p_vaddr as u64,
+                memsz: ph.p_memsz as u64,
+                writable: prot.write,
+                executable: prot.execute,
+            };
+            count += 1;
+        }
+        Some(count)
     }
 
     fn summarize_loadable(&self) -> Option<LoadableSummary> {
