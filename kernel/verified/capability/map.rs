@@ -457,6 +457,42 @@ pub proof fn lemma_walk_entry_written(a: TableTree, b: TableTree, t: usize, e: u
     }
 }
 
+/// Writing frame mapping e of table t moves no table walk: a step reads only entries that name a child,
+/// which the entry does in neither tree.
+pub proof fn lemma_walk_table_entry_written(a: TableTree, b: TableTree, t: usize, e: usize)
+    requires
+        entry_written(a, b, t, e),
+    ensures
+        forall|r: usize, q: SpacePath| #[trigger] walk_table(b, r, q) == walk_table(a, r, q),
+{
+    assert forall|u: usize| #[trigger] b.is_table(u) == a.is_table(u) && b.is_page(u) == a.is_page(u) && b.is_root(u) == a.is_root(u) by {
+        assert(b.maps.contains_key(u) == a.maps.contains_key(u));
+    }
+    assert forall|u: usize| #[trigger] b.record(u).level == a.record(u).level by {
+        if u != t {
+            assert(b.record(u) == a.record(u));
+        }
+    }
+    assert(!a.names_child(t, e));
+    assert(!b.names_child(t, e));
+    assert forall|u: usize, i: usize| #[trigger] step(b, u, i) == step(a, u, i) by {
+        assert(b.child_slot(u, i) == a.child_slot(u, i));
+        if a.child_slot(u, i) && !(u == t && i == e) {
+            assert(b.entry(u, i) == a.entry(u, i));
+        }
+    }
+    assert forall|r: usize, q: SpacePath| #[trigger] walk_table(b, r, q) == walk_table(a, r, q) by {
+        assert(b.is_root(r) == a.is_root(r));
+        assert(step(b, r, q.l4) == step(a, r, q.l4));
+        if let Some(t3) = step(a, r, q.l4) {
+            assert(step(b, t3, q.l3) == step(a, t3, q.l3));
+            if let Some(t2) = step(a, t3, q.l3) {
+                assert(step(b, t2, q.l2) == step(a, t2, q.l2));
+            }
+        }
+    }
+}
+
 /// One path reaches a level 1 table's entry: each table has one parent entry, so a walk that ends at
 /// entry p.l1 of the table p reaches from s is p from s.
 pub proof fn lemma_ends_at_unique(a: TableTree, s: usize, p: SpacePath, t: usize, r: usize, q: SpacePath)
@@ -808,6 +844,7 @@ impl CapKernel {
         &&& forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < NODE_SPACE && i != node ==> {
             &&& post.list.nodes@[i].live == pre.list.nodes@[i].live
             &&& post.list.nodes@[i].kind == pre.list.nodes@[i].kind
+            &&& post.list.nodes@[i].depth == pre.list.nodes@[i].depth
         }
         &&& post.tables == pre.tables
         &&& post.blocks.wf()
@@ -1306,7 +1343,9 @@ impl CapKernel {
 
     /// What a map leaves: the capability tables as they were; path p of the space still reaches its
     /// level 1 table and gains the page's entry, and nothing else changes in any space; the node is the
-    /// capability's child, names the entry and counts on the block; the frame is mapped.
+    /// capability's child, names the entry and counts on the block; the frame is mapped. What it keeps,
+    /// so that maps compose: every other node, the list's head, every other block's count, the
+    /// processes, threads and spaces, every table walk, and everyone's reach.
     pub open spec fn map_done(pre: Self, post: Self, root: usize, slot: usize, p: SpacePath, from: usize, page: usize) -> bool {
         let a = tree_of(&pre.table_pages, &pre.spaces);
         let b = tree_of(&post.table_pages, &post.spaces);
@@ -1328,6 +1367,20 @@ impl CapKernel {
         &&& block_refs(&post.blocks, br) == block_refs(&pre.blocks, br) + 1
         &&& post.holders@[br] == pre.holders@[br].insert(node)
         &&& post.mapped@.contains(frame)
+        &&& !pre.list.nodes@[node as int].live
+        &&& post.list.parent@ == pre.list.parent@.insert(node, f)
+        &&& post.list.seq@[0] == pre.list.seq@[0]
+        &&& forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < NODE_SPACE && i != node ==> {
+            &&& post.list.nodes@[i].live == pre.list.nodes@[i].live
+            &&& post.list.nodes@[i].kind == pre.list.nodes@[i].kind
+            &&& post.list.nodes@[i].depth == pre.list.nodes@[i].depth
+        }
+        &&& blocks_refs_changed(&pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br))
+        &&& post.processes == pre.processes
+        &&& post.threads == pre.threads
+        &&& post.spaces == pre.spaces
+        &&& forall|r: usize, q: SpacePath| #[trigger] walk_table(b, r, q) == walk_table(a, r, q)
+        &&& forall|r: ObjectId, o: ObjectId| #[trigger] post.view().reach(r, o) == pre.view().reach(r, o)
     }
 
     /// What a large map leaves: the capability tables as they were; path p of the space still reaches its
@@ -1357,6 +1410,27 @@ impl CapKernel {
         &&& forall|g: usize| frame <= g < frame + 512 ==> #[trigger] post.mapped@.contains(g)
     }
 
+    /// The writes of a map move no one's reach: the node they add is no capability, and every
+    /// capability is as it was.
+    proof fn lemma_map_reach(pre: Self, post: Self, t: usize, e: usize, f: usize, frame: usize, large: bool)
+        requires
+            pre.wf(),
+            Self::map_from(pre, t, e, f, frame, large),
+            Self::map_written(pre, post, t, e, f, frame, large),
+        ensures
+            forall|r: ObjectId, o: ObjectId| #[trigger] post.view().reach(r, o) == pre.view().reach(r, o),
+    {
+        let node = mapping_node(t, e);
+        pre.lemma_map_node_place(t, e);
+        assert(Self::caps_frame(pre, post, node, node));
+        assert forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x) by {
+            if x != node {
+                Self::lemma_caps_frame(pre, post, node, node, x);
+            }
+        }
+        Self::lemma_hidden_added_reach(pre, post, f, node);
+    }
+
     /// The writes of a map, with the frame mapped, are what map_done says.
     proof fn lemma_map_done(pre: Self, post: Self, root: usize, slot: usize, kind: SpaceKind, p: SpacePath, from: usize, page: usize, t: usize, f: usize, frame: usize)
         requires
@@ -1378,6 +1452,8 @@ impl CapKernel {
         Self::lemma_map_tree(pre, post, t, e, f, frame, false);
         assert(b.entry(t, e) == frame_map_entry(frame, pre.payload_of(f).rights, false));
         lemma_mapping_written(a, b, s, p, t);
+        lemma_walk_table_entry_written(a, b, t, e);
+        Self::lemma_map_reach(pre, post, t, e, f, frame, false);
         lemma_map_pages(frame, false);
         assert(map_pages(frame, false).contains(frame));
     }
