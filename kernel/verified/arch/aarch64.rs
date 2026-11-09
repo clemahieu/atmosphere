@@ -296,45 +296,65 @@ impl Registers {
     // invocation, design/syscall-abi-in-registers/ under Registers. The dispatch reads and writes the
     // frame only through these.
 
-    /// The operation number.
-    pub uninterp spec fn spec_operation_number(&self) -> u64;
+    /// The operation number, in x8.
+    pub open spec fn spec_operation_number(&self) -> u64 {
+        self.x8
+    }
 
     #[verifier(when_used_as_spec(spec_operation_number))]
-    #[verifier(external_body)]
-    // external_body(unproven): the aarch64 placeholder for operation_number
     pub fn operation_number(&self) -> (ret: u64)
         ensures
             ret == self.spec_operation_number(),
     {
-        unimplemented!()
+        self.x8
     }
 
-    /// The slot of the invoked capability.
-    pub uninterp spec fn spec_slot(&self) -> u64;
+    /// The slot of the invoked capability, in x0.
+    pub open spec fn spec_slot(&self) -> u64 {
+        self.x0
+    }
 
     #[verifier(when_used_as_spec(spec_slot))]
-    #[verifier(external_body)]
-    // external_body(unproven): the aarch64 placeholder for slot
     pub fn slot(&self) -> (ret: u64)
         ensures
             ret == self.spec_slot(),
     {
-        unimplemented!()
+        self.x0
     }
 
-    /// Argument k of 1 to 5.
-    pub uninterp spec fn spec_argument(&self, k: usize) -> u64;
+    /// Argument k of 1 to 5, in x1 to x5.
+    pub open spec fn spec_argument(&self, k: usize) -> u64 {
+        if k == 1 {
+            self.x1
+        } else if k == 2 {
+            self.x2
+        } else if k == 3 {
+            self.x3
+        } else if k == 4 {
+            self.x4
+        } else {
+            self.x5
+        }
+    }
 
     #[verifier(when_used_as_spec(spec_argument))]
-    #[verifier(external_body)]
-    // external_body(unproven): the aarch64 placeholder for argument
     pub fn argument(&self, k: usize) -> (ret: u64)
         requires
             1 <= k <= 5,
         ensures
             ret == self.spec_argument(k),
     {
-        unimplemented!()
+        if k == 1 {
+            self.x1
+        } else if k == 2 {
+            self.x2
+        } else if k == 3 {
+            self.x3
+        } else if k == 4 {
+            self.x4
+        } else {
+            self.x5
+        }
     }
 
     /// The status word, which returns in the operation number's register.
@@ -355,8 +375,6 @@ impl Registers {
     /// Writes what an invocation returns over the frame it entered with: the status word and results
     /// 1 to 4, each at its position. Argument 5 returns no result, so its register keeps what the
     /// frame held.
-    #[verifier(external_body)]
-    // external_body(unproven): the aarch64 placeholder for write_outcome
     pub fn write_outcome(&mut self, out: Outcome)
         ensures
             final(self).spec_status_word() == out.status,
@@ -366,7 +384,11 @@ impl Registers {
             final(self).spec_result(4) == out.result_4,
             final(self).spec_argument(5) == old(self).spec_argument(5),
     {
-        unimplemented!()
+        self.x8 = out.status;
+        self.x0 = out.result_1;
+        self.x1 = out.result_2;
+        self.x2 = out.result_3;
+        self.x3 = out.result_4;
     }
 }
 
