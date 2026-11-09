@@ -7,6 +7,8 @@ verus! {
 
 use crate::capability::inspect::*;
 use crate::capability::kernel::*;
+use crate::capability::reach::*;
+use crate::capability::space::*;
 use crate::capability::thread::*;
 use crate::define::NUM_CPUS;
 use crate::pptr::*;
@@ -37,8 +39,12 @@ pub const OPERATION_REPLY_RECV: u64 = 13;
 pub const OPERATION_PRINT: u64 = 14;
 pub const OPERATION_INSPECT: u64 = 15;
 
-/// Retype's kind in rsi for a 4K frame. Every other kind is refused until it is wired.
+/// Retype's kind in rsi for a 4K frame.
 pub const RETYPE_FRAME: u64 = 0;
+
+/// Retype's kind in rsi for a table page, of the level in r9. Every other kind is refused until it is
+/// wired.
+pub const RETYPE_TABLE_PAGE: u64 = 2;
 
 /// What an invocation returns to its thread: the status for rax and the result words for rdi, rsi, rdx
 /// and r8.
@@ -171,9 +177,10 @@ impl CapKernel {
     }
 
     /// A retype in frame by a thread of the process whose table is at root, from pre to post with out
-    /// returned: refused with nothing changed, or, for the 4K frame kind in rsi, ok with the frame at the
-    /// base in rdx retyped under the untyped in rdi into the slot in r8. A retype the arguments allow can
-    /// still be refused, when the block table finds the page is not free.
+    /// returned: refused with nothing changed; for the 4K frame kind in rsi, ok with the frame at the
+    /// base in rdx retyped under the untyped in rdi into the slot in r8; or, for the table page kind, ok
+    /// with an unlinked table page of the level in r9 at the base in rdx under the untyped in rdi. A
+    /// retype the arguments allow can still be refused, when the block table finds the memory is not free.
     pub open spec fn spec_retyped(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         ||| out == status_only(STATUS_REFUSED) && post == pre
         ||| {
@@ -181,6 +188,31 @@ impl CapKernel {
             &&& out == status_only(STATUS_OK)
             &&& Self::frame_retyped(pre, post, root, frame.rdi as usize, frame.r8 as usize, frame.rdx as usize)
         }
+        ||| {
+            &&& frame.rsi == RETYPE_TABLE_PAGE
+            &&& out == status_only(STATUS_OK)
+            &&& Self::table_page_retyped(pre, post, root, frame.rdi as usize, frame.rdx as usize, frame.r9 as usize)
+        }
+    }
+
+    /// What a retype of the order-3 block at base as a table page of level did, under the untyped at
+    /// index from of the table at root: the retype was allowed and the block free, the page is an empty
+    /// table of that level that no space links and no capability names, the untyped's child, and the
+    /// step discharges the retype's effect.
+    pub open spec fn table_page_retyped(pre: Self, post: Self, root: usize, from: usize, base: usize, level: usize) -> bool {
+        let parent = pre.tables.node_of(root, from);
+        &&& pre.can_retype_under(root, from, base, 3)
+        &&& pre.view().holds_right(root, parent, Right::Retype)
+        &&& pre.blocks.pages@[(base / 4096) as int].kind is Free
+        &&& 1 <= level <= 3
+        &&& post.table_pages.maps@.contains_key(base)
+        &&& post.table_pages.records@[base].value() == fresh_table(level)
+        &&& forall|i: usize| i < 512 ==> #[trigger] post.table_pages.maps@[base].value()[i].is_empty()
+        &&& post.list.is_child(parent, base)
+        &&& forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x)
+        &&& post.tables == pre.tables
+        &&& post.spaces == pre.spaces
+        &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base })
     }
 
     /// What the invocation in frame by a thread of the process whose table is at root did, from pre to
@@ -231,8 +263,13 @@ impl CapKernel {
         };
         match operation(frame.rax) {
             Some(Operation::Retype) => {
-                let done = frame.rsi == RETYPE_FRAME
-                    && self.retype_frame(root, frame.rdi as usize, frame.r8 as usize, frame.rdx as usize);
+                let done = if frame.rsi == RETYPE_FRAME {
+                    self.retype_frame(root, frame.rdi as usize, frame.r8 as usize, frame.rdx as usize)
+                } else if frame.rsi == RETYPE_TABLE_PAGE {
+                    self.retype_table_page(root, frame.rdi as usize, frame.rdx as usize, frame.r9 as usize)
+                } else {
+                    false
+                };
                 Some(status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED }))
             },
             Some(Operation::Print) => Some(

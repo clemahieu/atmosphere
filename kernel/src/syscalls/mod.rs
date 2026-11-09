@@ -42,6 +42,7 @@ const _: () = {
     assert!(user::PRINT == operation::OPERATION_PRINT);
     assert!(user::INSPECT == operation::OPERATION_INSPECT);
     assert!(user::RETYPE_FRAME == operation::RETYPE_FRAME);
+    assert!(user::RETYPE_TABLE_PAGE == operation::RETYPE_TABLE_PAGE);
     assert!(user::TABLE_INDICES == table::TABLE_INDICES as u64);
     assert!(user::KIND_UNTYPED == inspect::CAP_KIND_UNTYPED);
     assert!(user::KIND_FRAME == inspect::CAP_KIND_FRAME);

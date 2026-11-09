@@ -2559,6 +2559,7 @@ impl CapKernel {
         ensures
             final(self).wf(),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
+            final(self).cores == old(self).cores,
             !ret ==> *final(self) == *old(self),
             ret ==> old(self).can_retype_under(root, from, base, 3),
             ret ==> {

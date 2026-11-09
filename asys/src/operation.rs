@@ -39,6 +39,10 @@ pub const INSPECT: u64 = 15;
 /// in the empty slot in r8.
 pub const RETYPE_FRAME: u64 = 0;
 
+/// Retype's kind in rsi for a table page: an unlinked table page of the level in r9, 1 to 3, at the base
+/// in rdx. No capability names it, so it takes no slot; link names it by its base.
+pub const RETYPE_TABLE_PAGE: u64 = 2;
+
 /// The kind numbers inspect returns in rdi.
 pub const KIND_UNTYPED: u64 = 0;
 pub const KIND_FRAME: u64 = 1;
@@ -158,3 +162,11 @@ pub fn retype_frame(untyped: u64, base: u64, destination: u64) -> u64 {
     // A retype changes the caller's table and the page's memory, never its address space.
     status(unsafe { invoke(RETYPE, untyped, [RETYPE_FRAME, base, destination, 0, 0]) })
 }
+
+/// Retypes the free order-3 block at `base`, inside the block of the untyped at `untyped`, as an
+/// unlinked table page of `level`. The status is the low half of what returns.
+pub fn retype_table_page(untyped: u64, base: u64, level: u64) -> u64 {
+    // A retype changes the caller's table and the block's memory, never its address space.
+    status(unsafe { invoke(RETYPE, untyped, [RETYPE_TABLE_PAGE, base, 0, level, 0]) })
+}
+

@@ -2,15 +2,16 @@
 //! not assume it owns the machine, so several instances each with a root stay possible. Why, and
 //! what to do about a change that breaks this: design/one-kernel-instance/.
 //!
-//! Print, inspect and the retype of a 4K frame are the wired operations, so each fixed slot is checked
-//! through them: the console accepts print and the process, thread, untyped and frame slots refuse it;
-//! inspect says the console slot holds a console, and each slot from the first untyped holds an untyped
-//! whose base is aligned to its order, up to the first slot that holds nothing, which inspect refuses.
-//! Retype under an empty slot, a slot past the table and the console is refused, and retype of the last
-//! untyped's last page into that empty slot is accepted, after which inspect says the slot holds a 4K
-//! frame at that page. dom0 prints that result through the console, then an exit marker, and exits
-//! with success only when every check held. The kernel logs each invocation, with what it returned, in
-//! the serial log.
+//! Print, inspect and retype of a 4K frame and of a table page are the wired operations, so each fixed
+//! slot is checked through them: the console accepts print and the process, thread, untyped and frame
+//! slots refuse it; inspect says the console slot holds a console, and each slot from the first untyped
+//! holds an untyped whose base is aligned to its order, up to the first slot that holds nothing, which
+//! inspect refuses. Retype under an empty slot, a slot past the table and the console is refused, and
+//! retype of the last untyped's last page into that empty slot is accepted, after which inspect says
+//! the slot holds a 4K frame at that page. dom0 then retypes four table pages, after a table page of a
+//! level no table has is refused, and a retype of one of them again is refused after. dom0 prints that
+//! result through the console, then an exit marker, and exits with success only when every check held.
+//! The kernel logs each invocation, with what it returned, in the serial log.
 
 #![no_std]
 #![no_main]
@@ -104,6 +105,44 @@ fn retyped_frame_held(empty: u64) -> bool {
     )
 }
 
+/// The bytes of a table page's block, order 3.
+const TABLE_PAGE_BYTES: u64 = 8 * 4096;
+
+/// The last untyped from `empty` down whose block holds at least `pages` 4K pages, if any.
+fn untyped_of_pages(empty: u64, pages: u64) -> Option<(u64, operation::Capability)> {
+    let mut slot = empty;
+    while slot > operation::ROOT_UNTYPED_SLOT {
+        slot -= 1;
+        match operation::inspect(slot) {
+            Ok(block) if block.kind == operation::KIND_UNTYPED && block.order < MAX_ORDER && 1 << block.order >= pages => {
+                return Some((slot, block));
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The untyped and the bases of four unlinked table pages, of levels 3, 2, 1 and 1, once retype has made
+/// them from the top of an untyped of at least 64 pages, below the order-3 block holding its last page,
+/// which the frame check may have taken; and retype of a table page of level 0 and 4, and of a block
+/// already retyped, is refused. Boot pays for dom0's tables from the start of the first untyped, so that
+/// top is free.
+fn retyped_table_pages(empty: u64) -> Option<(u64, [u64; 4])> {
+    let (untyped, block) = untyped_of_pages(empty, 64)?;
+    let top = block.base + (4096 << block.order);
+    let tables = [1, 2, 3, 4].map(|k| top - TABLE_PAGE_BYTES * (k + 1));
+    let retype = |k: usize, level: u64| operation::retype_table_page(untyped, tables[k], level);
+    let held = retype(0, 0) == operation::STATUS_REFUSED
+        && retype(0, 4) == operation::STATUS_REFUSED
+        && retype(0, 3) == operation::STATUS_OK
+        && retype(1, 2) == operation::STATUS_OK
+        && retype(2, 1) == operation::STATUS_OK
+        && retype(3, 1) == operation::STATUS_OK
+        && retype(0, 3) == operation::STATUS_REFUSED;
+    held.then_some((untyped, tables))
+}
+
 /// Print through `slot`. The status is the low half of what the invocation returns.
 ///
 /// # Safety
@@ -125,7 +164,9 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
         && untyped == operation::STATUS_REFUSED
         && frame == operation::STATUS_REFUSED
         && unknown == operation::STATUS_UNKNOWN
-        && first_empty_slot().is_some_and(retyped_frame_held);
+        && first_empty_slot().is_some_and(|empty| {
+            retyped_frame_held(empty) && retyped_table_pages(empty).is_some()
+        });
     let console = unsafe {
         print_slot(
             operation::ROOT_CONSOLE_SLOT,
