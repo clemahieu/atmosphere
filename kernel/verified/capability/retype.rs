@@ -1304,7 +1304,7 @@ impl CapKernel {
             post.tables.control_wf(&post.list),
     {
         assert forall|n: usize| #[trigger] post.tables.is_cap(&post.list, n) implies {
-            &&& !(post.tables.payload_of(n).kind is Device) ==> payload_wf(post.tables.payload_of(n))
+            &&& cap_wf(post.tables.payload_of(n))
             &&& control_named(post.tables.payload_of(n))
         } by {
             Self::lemma_leaf_cap(pre, post, leaf, n);

@@ -22,6 +22,10 @@ pub open spec fn device_object(d: int) -> ObjectId {
     (DEVICE_OBJECTS + d * 4096) as usize
 }
 
+/// The console is an object too, named past every device object: the 2^36 pages from DEVICE_OBJECTS
+/// are devices' room, and the console is the page after them.
+pub const CONSOLE_OBJECT: usize = 0x2_0000_0000_0000;
+
 /// A list node's id, as in capability::list.
 pub type NodeId = usize;
 

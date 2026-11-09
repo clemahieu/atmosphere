@@ -1773,8 +1773,8 @@ impl CapKernel {
         } by {
             Self::lemma_table_page_cap(pre, post, x);
         }
-        assert forall|n: usize| #[trigger] post.tables.is_cap(&post.list, n) && !(post.tables.payload_of(n).kind is Device)
-            implies payload_wf(post.tables.payload_of(n)) by {
+        assert forall|n: usize| #[trigger] post.tables.is_cap(&post.list, n)
+            implies cap_wf(post.tables.payload_of(n)) by {
             assert(post.is_cap(n));
             assert(pre.tables.is_cap(&pre.list, n));
         }
@@ -2596,7 +2596,7 @@ impl CapKernel {
             Self::space_step(pre, post, child),
             !pre.list.nodes@[child as int].live,
             post.is_cap(child),
-            payload_wf(post.payload_of(child)),
+            cap_wf(post.payload_of(child)),
             control_named(post.payload_of(child)),
         ensures
             post.tables.caps_wf(&post.list),
@@ -2618,7 +2618,7 @@ impl CapKernel {
             Self::lemma_space_cap_frame(pre, post, child, x);
         }
         assert forall|n: usize| #[trigger] post.tables.is_cap(&post.list, n) implies {
-            &&& !(post.tables.payload_of(n).kind is Device) ==> payload_wf(post.tables.payload_of(n))
+            &&& cap_wf(post.tables.payload_of(n))
             &&& control_named(post.tables.payload_of(n))
         } by {
             if n != child {

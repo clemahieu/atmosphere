@@ -1543,8 +1543,8 @@ impl CapKernel {
         }
         // What the capability says.
         assert(post.tables.caps_wf(&list)) by {
-            assert forall|n: usize| #[trigger] post.tables.is_cap(&list, n) && !(post.tables.payload_of(n).kind is Device)
-                implies payload_wf(post.tables.payload_of(n)) by {
+            assert forall|n: usize| #[trigger] post.tables.is_cap(&list, n)
+                implies cap_wf(post.tables.payload_of(n)) by {
                 assert(post.is_cap(n));
                 assert(n == cap);
             }

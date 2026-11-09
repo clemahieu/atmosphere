@@ -16,6 +16,7 @@ verus! {
 
 use crate::array::Array;
 use crate::capability::list::*;
+use crate::capability::reach::*;
 use crate::define::*;
 use crate::pptr::*;
 
@@ -36,6 +37,7 @@ pub enum CapKind {
     Notification,
     Space,
     Device,
+    Console,
 }
 
 /// What a capability says, beyond its place in the list. 32 bytes.
@@ -65,12 +67,35 @@ pub open spec fn block_bytes(order: u8) -> int {
     pow2(order as nat) as int * 4096
 }
 
-/// What a memory capability says names a block: base aligned to its size, inside the address space. A
-/// device's names its device instead, devices_wf. See design/capability-names-a-block/.
+/// What a memory capability says names a block: base aligned to its size, inside the address space.
+/// See design/capability-names-a-block/.
 pub open spec fn payload_wf(p: Payload) -> bool {
     &&& p.order <= MAX_ORDER
     &&& p.base as int % block_bytes(p.order) == 0
     &&& p.base as int + block_bytes(p.order) <= NODE_SPACE as int
+}
+
+/// A capability of this kind names a block of memory. A device's and the console's name objects above
+/// the 48-bit space instead: a device's its device, devices_wf, and the console's CONSOLE_OBJECT.
+pub open spec fn names_block(k: CapKind) -> bool {
+    !(k is Device) && !(k is Console)
+}
+
+pub fn is_block_kind(k: CapKind) -> (ret: bool)
+    ensures
+        ret == names_block(k),
+{
+    match k {
+        CapKind::Device | CapKind::Console => false,
+        _ => true,
+    }
+}
+
+/// What a capability says is well formed: a block for a memory capability, the console's one page for
+/// a console's.
+pub open spec fn cap_wf(p: Payload) -> bool {
+    &&& names_block(p.kind) ==> payload_wf(p)
+    &&& p.kind is Console ==> p.base == CONSOLE_OBJECT && p.order == 0
 }
 
 /// The bit of a capability's rights word that grants control.
@@ -240,9 +265,9 @@ impl Tables {
         self.payloads@[page_of(n)].value().entries@[(n % 4096) as int]
     }
 
-    /// Every capability names a block.
+    /// Every capability says something well formed.
     pub open spec fn caps_wf(&self, list: &Tree) -> bool {
-        forall|n: usize| #[trigger] self.is_cap(list, n) && !(self.payload_of(n).kind is Device) ==> payload_wf(self.payload_of(n))
+        forall|n: usize| #[trigger] self.is_cap(list, n) ==> cap_wf(self.payload_of(n))
     }
 
     /// Every capability with the control right names a thread or a process.

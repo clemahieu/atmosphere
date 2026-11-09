@@ -1684,8 +1684,8 @@ impl CapKernel {
             }
         }
         pre.tables.lemma_wf_same_pages(&pre.list, &post.list);
-        assert forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) && !(post.tables.payload_of(x).kind is Device)
-            implies payload_wf(post.tables.payload_of(x)) by {
+        assert forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x)
+            implies cap_wf(post.tables.payload_of(x)) by {
             assert(pre.tables.is_cap(&pre.list, x));
         }
         Self::lemma_map_kinds(pre, post, t, e, f, frame, large);

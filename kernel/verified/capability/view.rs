@@ -7,6 +7,7 @@ use vstd::prelude::*;
 
 verus! {
 
+use crate::capability::device::*;
 use crate::capability::kernel::*;
 use crate::capability::list::*;
 use crate::capability::reach::*;
@@ -245,17 +246,45 @@ impl CapKernel {
     {
     }
 
-    /// A capability that is no device's names a block within the address space, so it covers no
-    /// device: a device is reached only through its own capability.
+    /// A capability that names a block names one within the address space, so it covers no device and
+    /// not the console: each is reached only through its own capability.
     pub proof fn lemma_covers_no_device(&self, n: usize, o: ObjectId)
         requires
             self.wf(),
             self.is_cap(n),
-            !(self.payload_of(n).kind is Device),
+            names_block(self.payload_of(n).kind),
             self.view().covers(n, o),
         ensures
             o < DEVICE_OBJECTS,
     {
+    }
+
+    /// The console's capability covers the console's page alone, past memory and every device object,
+    /// and no other capability covers that page.
+    pub proof fn lemma_covers_console(&self, n: usize, o: ObjectId)
+        requires
+            self.wf(),
+            self.is_cap(n),
+            self.view().covers(n, o),
+        ensures
+            self.payload_of(n).kind is Console ==> o == CONSOLE_OBJECT,
+            self.payload_of(n).kind is Console ==> DEVICE_OBJECTS <= o,
+            self.payload_of(n).kind is Console ==> forall|d: int| 0 <= d < MAX_DEVICES ==> o != #[trigger] device_object(d),
+            !(self.payload_of(n).kind is Console) ==> o != CONSOLE_OBJECT,
+    {
+        let p = self.payload_of(n);
+        if p.kind is Device {
+            reveal(devices_wf);
+            assert(devices_wf(&self.list, &self.tables, &self.devices));
+            assert(self.devices.count <= MAX_DEVICES);
+            let x = (p.base - DEVICE_OBJECTS) as int;
+            assert(x / 4096 < MAX_DEVICES);
+            assert(x < MAX_DEVICES * 4096) by (nonlinear_arith)
+                requires x / 4096 < MAX_DEVICES, x >= 0;
+            assert(pow2(0) == 1) by { lemma2_to64(); }
+        } else if p.kind is Console {
+            assert(pow2(0) == 1) by { lemma2_to64(); }
+        }
     }
 
     /// The binding nodes name what the thread records name: bindings_wf makes a live binding node
