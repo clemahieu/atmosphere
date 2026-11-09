@@ -1,10 +1,11 @@
 //! The operations a process invokes through the one syscall entry, by the number it puts in rax, and
-//! the status rax returns in its low 16 bits. asys holds the same numbers for user space, and the
+//! what returns: the status in rax's low 16 bits and the result words in rdi, rsi, rdx and r8. asys holds the same numbers for user space, and the
 //! kernel crate checks at compile time that the two agree. See design/syscall-abi-in-registers/.
 use vstd::prelude::*;
 
 verus! {
 
+use crate::capability::inspect::*;
 use crate::capability::kernel::*;
 use crate::capability::thread::*;
 use crate::define::NUM_CPUS;
@@ -34,6 +35,31 @@ pub const OPERATION_RECEIVE: u64 = 11;
 pub const OPERATION_CALL: u64 = 12;
 pub const OPERATION_REPLY_RECV: u64 = 13;
 pub const OPERATION_PRINT: u64 = 14;
+pub const OPERATION_INSPECT: u64 = 15;
+
+/// What an invocation returns to its thread: the status for rax and the result words for rdi, rsi, rdx
+/// and r8.
+#[derive(Clone, Copy)]
+pub struct Outcome {
+    pub status: u64,
+    pub rdi: u64,
+    pub rsi: u64,
+    pub rdx: u64,
+    pub r8: u64,
+}
+
+/// The outcome of an operation that returns a status and no result words.
+pub open spec fn status_only(status: u64) -> Outcome {
+    Outcome { status, rdi: 0, rsi: 0, rdx: 0, r8: 0 }
+}
+
+/// The outcome of an operation that returns a status and no result words.
+pub fn status_only_outcome(status: u64) -> (ret: Outcome)
+    ensures
+        ret == status_only(status),
+{
+    Outcome { status, rdi: 0, rsi: 0, rdx: 0, r8: 0 }
+}
 
 /// What a process asks of the capability named in rdi.
 pub enum Operation {
@@ -51,6 +77,7 @@ pub enum Operation {
     Call,
     ReplyRecv,
     Print,
+    Inspect,
 }
 
 impl Operation {
@@ -71,6 +98,7 @@ impl Operation {
             Operation::Call => OPERATION_CALL,
             Operation::ReplyRecv => OPERATION_REPLY_RECV,
             Operation::Print => OPERATION_PRINT,
+            Operation::Inspect => OPERATION_INSPECT,
         }
     }
 }
@@ -111,6 +139,7 @@ pub fn operation(number: u64) -> (ret: Option<Operation>)
         OPERATION_CALL => Some(Operation::Call),
         OPERATION_REPLY_RECV => Some(Operation::ReplyRecv),
         OPERATION_PRINT => Some(Operation::Print),
+        OPERATION_INSPECT => Some(Operation::Inspect),
         _ => None,
     };
     proof {
@@ -122,24 +151,27 @@ pub fn operation(number: u64) -> (ret: Option<Operation>)
 }
 
 impl CapKernel {
-    /// The status the invocation in frame returns to a thread of the process whose table is at root:
-    /// print's for print, refused for every other operation, none of which is wired yet, and unknown
-    /// for a number no operation has. The slot is rdi and print's words are rsi, rdx, r8, r9 and r10, as
-    /// design/syscall-abi-in-registers/ places them.
-    pub open spec fn spec_status(&self, root: usize, frame: Registers) -> u64 {
+    /// What the invocation in frame returns to a thread of the process whose table is at root: print's
+    /// status for print, inspect's outcome for inspect, refused for every other operation, none of which
+    /// is wired yet, and unknown for a number no operation has. The slot is rdi and print's words are
+    /// rsi, rdx, r8, r9 and r10, as design/syscall-abi-in-registers/ places them.
+    pub open spec fn spec_outcome(&self, root: usize, frame: Registers) -> Outcome {
         match spec_operation(frame.rax) {
-            Some(Operation::Print) => if self.can_print(root, frame.rdi as usize) { STATUS_OK } else { STATUS_REFUSED },
-            Some(_) => STATUS_REFUSED,
-            None => STATUS_UNKNOWN,
+            Some(Operation::Print) => status_only(
+                if self.can_print(root, frame.rdi as usize) { STATUS_OK } else { STATUS_REFUSED },
+            ),
+            Some(Operation::Inspect) => self.spec_inspect(root, frame.rdi as usize),
+            Some(_) => status_only(STATUS_REFUSED),
+            None => status_only(STATUS_UNKNOWN),
         }
     }
 
     /// Core c's step for the invocation its current thread entered the kernel with, in frame. The
     /// caller is core c's current thread and the table is its process's, never a name from user
     /// space, and check_current runs first: design/one-lock-bounded-steps/. Returns None when core c
-    /// runs no thread after the check, so nothing returns to user mode; otherwise the status for rax,
-    /// with the kernel unchanged.
-    pub fn dispatch(&mut self, c: usize, frame: Registers) -> (ret: Option<u64>)
+    /// runs no thread after the check, so nothing returns to user mode; otherwise what returns to the
+    /// thread, with the kernel unchanged.
+    pub fn dispatch(&mut self, c: usize, frame: Registers) -> (ret: Option<Outcome>)
         requires
             old(self).wf(),
             c < NUM_CPUS,
@@ -150,7 +182,7 @@ impl CapKernel {
                 let t = old(self).cores@[c as int].current_thread->Some_0;
                 let root = old(self).threads.records@[t].value().process->Some_0;
                 &&& *final(self) == *old(self)
-                &&& ret->0 == old(self).spec_status(root, frame)
+                &&& ret->0 == old(self).spec_outcome(root, frame)
             },
     {
         if self.check_current(c, frame) {
@@ -173,10 +205,13 @@ impl CapKernel {
         };
         match operation(frame.rax) {
             Some(Operation::Print) => Some(
-                self.print(root, frame.rdi as usize, frame.rsi, frame.rdx, frame.r8, frame.r9, frame.r10),
+                status_only_outcome(
+                    self.print(root, frame.rdi as usize, frame.rsi, frame.rdx, frame.r8, frame.r9, frame.r10),
+                ),
             ),
-            Some(_) => Some(STATUS_REFUSED),
-            None => Some(STATUS_UNKNOWN),
+            Some(Operation::Inspect) => Some(self.inspect(root, frame.rdi as usize)),
+            Some(_) => Some(status_only_outcome(STATUS_REFUSED)),
+            None => Some(status_only_outcome(STATUS_UNKNOWN)),
         }
     }
 }

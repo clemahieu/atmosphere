@@ -2,10 +2,12 @@
 //! not assume it owns the machine, so several instances each with a root stay possible. Why, and
 //! what to do about a change that breaks this: design/one-kernel-instance/.
 //!
-//! Print is the one wired operation, so each fixed slot is checked through it: the console accepts it
-//! and the process, thread, untyped and frame slots refuse it. dom0 prints that result through the
-//! console, then an exit marker, and exits with success only when every check held. The kernel logs
-//! each invocation in the serial log.
+//! Print and inspect are the wired operations, so each fixed slot is checked through them: the console
+//! accepts print and the process, thread, untyped and frame slots refuse it; inspect says the console
+//! slot holds a console, and each slot from the first untyped holds an untyped whose base is aligned to
+//! its order, up to the first slot that holds nothing, which inspect refuses. dom0 prints that result
+//! through the console, then an exit marker, and exits with success only when every check held. The
+//! kernel logs each invocation, with what it returned, in the serial log.
 
 #![no_std]
 #![no_main]
@@ -40,6 +42,37 @@ const CHECKS_FAILED: [u64; 5] = operation::print_words(b"dom0 slot checks failed
 /// The line after the check line. dom0 exits with success only once this print is accepted.
 const EXIT_MARKER: [u64; 5] = operation::print_words(b"dom0 capability done\n");
 
+/// The largest order a capability's block has: 2^36 pages reach the end of the 48-bit space.
+const MAX_ORDER: u64 = 36;
+
+/// The last slot of the table's first leaf, where boot's untyped end.
+const FIRST_LEAF_END: u64 = operation::ROOT_FRAME_SLOT - 2;
+
+/// Whether inspect says the console slot holds a console, and every slot from the first untyped holds
+/// an untyped whose base is aligned to its order, at least one, up to a slot inspect refuses because it
+/// holds nothing. Boot fills the untyped slots from the first and leaves the rest of the leaf empty,
+/// design/root-process-at-boot/; a leaf full of untyped leaves no empty slot in it to read, and fails.
+fn inspected_slots_held() -> bool {
+    let console = operation::inspect(operation::ROOT_CONSOLE_SLOT);
+    if !matches!(console, Ok(capability) if capability.kind == operation::KIND_CONSOLE) {
+        return false;
+    }
+    let mut slot = operation::ROOT_UNTYPED_SLOT;
+    while slot <= FIRST_LEAF_END {
+        match operation::inspect(slot) {
+            Ok(capability) => {
+                let aligned = capability.order <= MAX_ORDER && capability.base % (4096 << capability.order) == 0;
+                if capability.kind != operation::KIND_UNTYPED || !aligned {
+                    return false;
+                }
+            }
+            Err(status) => return status == operation::STATUS_REFUSED && slot > operation::ROOT_UNTYPED_SLOT,
+        }
+        slot += 1;
+    }
+    false
+}
+
 /// Print through `slot`. The status is the low half of what the invocation returns.
 ///
 /// # Safety
@@ -60,7 +93,8 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
         && thread == operation::STATUS_REFUSED
         && untyped == operation::STATUS_REFUSED
         && frame == operation::STATUS_REFUSED
-        && unknown == operation::STATUS_UNKNOWN;
+        && unknown == operation::STATUS_UNKNOWN
+        && inspected_slots_held();
     let console = unsafe {
         print_slot(
             operation::ROOT_CONSOLE_SLOT,

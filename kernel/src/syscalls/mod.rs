@@ -8,7 +8,7 @@ use crate::arch::{msr, Ring, SegmentSelector};
 use crate::cpu::Cpu;
 use crate::gdt::GlobalDescriptorTable;
 use crate::thread::SwitchDecision;
-use verified::capability::{boot, operation};
+use verified::capability::{boot, inspect, operation};
 use verified::trap::Registers;
 
 /// Flags cleared on syscall entry. The kernel is not preemptible, so IF. Compiled code assumes DF is
@@ -19,7 +19,7 @@ const ENTRY_FLAG_MASK: u32 = (1 << 8) | (1 << 9) | (1 << 10) | (1 << 14) | (1 <<
 const SYSCALL32_ENTRY: u64 = 0; // nein
 const SYSCALL32_ENTRY_EIP: u32 = 0; // nein
 
-// User space invokes operations by asys's numbers, reads asys's statuses and finds its first capabilities
+// User space invokes operations by asys's numbers, reads asys's statuses and kind numbers and finds its first capabilities
 // at asys's slots; they must be the ones the verified dispatch decodes and returns and boot writes.
 const _: () = {
     use asys::operation as user;
@@ -40,6 +40,17 @@ const _: () = {
     assert!(user::CALL == operation::OPERATION_CALL);
     assert!(user::REPLY_RECV == operation::OPERATION_REPLY_RECV);
     assert!(user::PRINT == operation::OPERATION_PRINT);
+    assert!(user::INSPECT == operation::OPERATION_INSPECT);
+    assert!(user::KIND_UNTYPED == inspect::CAP_KIND_UNTYPED);
+    assert!(user::KIND_FRAME == inspect::CAP_KIND_FRAME);
+    assert!(user::KIND_PROCESS == inspect::CAP_KIND_PROCESS);
+    assert!(user::KIND_THREAD == inspect::CAP_KIND_THREAD);
+    assert!(user::KIND_ENDPOINT == inspect::CAP_KIND_ENDPOINT);
+    assert!(user::KIND_REPLY == inspect::CAP_KIND_REPLY);
+    assert!(user::KIND_NOTIFICATION == inspect::CAP_KIND_NOTIFICATION);
+    assert!(user::KIND_SPACE == inspect::CAP_KIND_SPACE);
+    assert!(user::KIND_DEVICE == inspect::CAP_KIND_DEVICE);
+    assert!(user::KIND_CONSOLE == inspect::CAP_KIND_CONSOLE);
     assert!(user::ROOT_PROCESS_SLOT == boot::ROOT_PROCESS_SLOT as u64);
     assert!(user::ROOT_THREAD_SLOT == boot::ROOT_THREAD_SLOT as u64);
     assert!(user::ROOT_CONSOLE_SLOT == boot::ROOT_CONSOLE_SLOT as u64);
@@ -165,7 +176,8 @@ extern "C" fn entered_with_flags_set() -> ! {
 //
 // All caller-saved registers are considered clobbered once invoked
 //
-// rax on return is the status, which the handler always writes over the operation in the frame.
+// rax on return is the status, which the handler always writes over the operation in the frame, and
+// rdi, rsi, rdx and r8 the result words, which it writes over the arguments there.
 #[unsafe(naked)]
 unsafe extern "C" fn sys_entry() -> ! {
     naked_asm!(
@@ -210,6 +222,8 @@ unsafe extern "C" fn sys_entry() -> ! {
         //
         // Paths 1 and 2 restore only part of the frame, so they clear the
         // caller-saved registers the handler used: a process must not see them.
+        // Path 2 returns the frame's rdi, rsi, rdx and r8, where the handler
+        // wrote the invocation's result words.
 
         "mov r10, gs:{switch_decision_offset}",
         "cmp r10, {decision_no_switching}",
@@ -248,7 +262,12 @@ unsafe extern "C" fn sys_entry() -> ! {
         // 2. Return to the same thread
         "22:",
 
-        // skip r15~rdi (14 registers)
+        // skip r15~r10 (8 registers)
+        "mov r8, [rsp + 8*9]",   // r8
+        // skip rcx
+        "mov rdx, [rsp + 8*11]", // rdx
+        "mov rsi, [rsp + 8*12]", // rsi
+        "mov rdi, [rsp + 8*13]", // rdi
         "mov rax, [rsp + 8*14]", // rax
         // skip error_code
         "mov rcx, [rsp + 8*16]", // rip
@@ -256,10 +275,6 @@ unsafe extern "C" fn sys_entry() -> ! {
         "mov r11, [rsp + 8*18]", // rflags
         "mov rsp, [rsp + 8*19]", // rsp
 
-        "xor edi, edi",
-        "xor esi, esi",
-        "xor edx, edx",
-        "xor r8d, r8d",
         "xor r9d, r9d",
         "xor r10d, r10d",
 
@@ -297,26 +312,40 @@ unsafe extern "C" fn sys_entry() -> ! {
     );
 }
 
-/// The handler. The verified dispatch runs the invocation for the core's current
-/// thread and decides the status rax returns, and the kernel logs each invocation.
+/// The handler. The verified dispatch runs the invocation for the core's current thread and decides
+/// the status and result words that return, and the kernel logs each invocation.
 extern "C" fn capability_entry(regs: &mut Registers) {
     use crate::bridge::Bridge;
     use crate::capability::CAP_KERNEL;
     use verified::bridge::TrustedBridge;
 
-    let status = CAP_KERNEL
+    let returned = CAP_KERNEL
         .lock()
         .as_deref_mut()
         .expect("a syscall before the capability kernel was built")
         .dispatch(crate::cpu::get_cpu_id(), *regs)
         .expect("no operation is wired that moves the calling thread off its core");
-    let outcome = match status {
+    let outcome = match returned.status {
         operation::STATUS_OK => "ok",
         operation::STATUS_REFUSED => "refused",
         _ => "unknown",
     };
     let arguments = [regs.rsi, regs.rdx, regs.r8, regs.r9, regs.r10];
-    log::info!("capability entry: operation {} on slot {} with {:?}: {}", regs.rax, regs.rdi, arguments, outcome);
-    regs.rax = status;
+    log::info!(
+        "capability entry: operation {} on slot {} with {:?}: {} returning [{:#x}, {:#x}, {:#x}, {:#x}]",
+        regs.rax,
+        regs.rdi,
+        arguments,
+        outcome,
+        returned.rdi,
+        returned.rsi,
+        returned.rdx,
+        returned.r8,
+    );
+    regs.rax = returned.status;
+    regs.rdi = returned.rdi;
+    regs.rsi = returned.rsi;
+    regs.rdx = returned.rdx;
+    regs.r8 = returned.r8;
     Bridge::set_switch_decision(SwitchDecision::NoSwitching);
 }

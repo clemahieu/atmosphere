@@ -3,7 +3,7 @@ title: "One syscall entry, and every operation carries its arguments in register
 date: 2026-11-09
 status: active
 tags: [abi, ipc, memory]
-one_line: "One entry: rax the operation, rdi the capability index, rsi, rdx, r8, r9 and r10 the arguments; rax returns status in its low 16 bits (ok 0, refused 1, unknown 2, again 3) and a badge in the upper 48. A send carries five words, four with a grant; the kernel copies nothing from user memory, and larger data goes through shared frames. A place in a space is a virtual address in rsi and a level in rdx, which the kernel splits into the path."
+one_line: "One entry: rax the operation, rdi the capability index, rsi, rdx, r8, r9 and r10 the arguments; rax returns status in its low 16 bits (ok 0, refused 1, unknown 2, again 3) and a badge in the upper 48. A send carries five words, four with a grant; the kernel copies nothing from user memory, and larger data goes through shared frames. A place in a space is a virtual address in rsi and a level in rdx, which the kernel splits into the path. Inspect, operation 15, returns a held capability's kind, base, order and rights in rdi, rsi, rdx and r8."
 revisit_if: "A message that does not fit five words is on a hot path and the shared-frame ring is measured as its cost, an operation needs more than five argument words, or a second entry is needed for a different privilege transition."
 confidence: "A packing judgement; the preserved-register set is the one the existing syscall convention keeps, and the memory operations' registers are counted against the verified functions' parameters in kernel/verified/capability."
 ---
@@ -68,6 +68,25 @@ An address in the root entries a process space keeps for the kernel is refused b
 - **link** writes the entry at the level with the table page at the base in `r9`, whose level is one below it, so `rdx` is 2, 3 or 4 and the table page's own level is `rdx` minus 1. The untyped in `r8` must cover the table page's block. The tables above the entry must be linked; a space's root is level 4.
 - **unmap** clears the entry at the level, which must map a frame. Level 1 is the only level it accepts.
 
+### Inspect
+
+Inspect is operation 15. It names a capability in `rdi` and asks for no right but holding it. It returns ok with the capability's kind in `rdi`, the physical base of its block in `rsi`, its order in `rdx` and its rights in `r8`, and refused when the slot holds no capability. It changes nothing.
+
+The kinds in `rdi`:
+
+| Kind | Number |
+|---|---|
+| untyped | 0 |
+| frame | 1 |
+| process | 2 |
+| thread | 3 |
+| endpoint | 4 |
+| reply | 5 |
+| notification | 6 |
+| space | 7 |
+| device | 8 |
+| console | 9 |
+
 ## Reasoning
 
 Copying nothing from user memory keeps every operation a bounded step with no page walk on its arguments, `design/one-lock-bounded-steps/`, and keeps the reach theorem's IPC relation to a fixed delivery into the receiver's frame, `design/theorem-over-reach/`. A first packing did not add up for a grant or a receive, which is why the slot and reply positions are fixed here rather than left to a leaf.
@@ -75,6 +94,8 @@ Copying nothing from user memory keeps every operation a bounded step with no pa
 The memory operations fit five words because a place in a space is one address, not four indices. The verified map takes the space, four path indices, the frame and the offset, seven values beyond the table root; with the path packed into the address it is five with the level. The address is also what a process already knows of where a page goes, and refusing every bit the split does not use keeps one address to one entry, so a map at a kernel-half or non-canonical address is refused by the same rule that splits every accepted one.
 
 Link names its parent by the address and the level rather than by the parent table's physical base, so a process never tracks where its tables sit and the kernel never trusts a physical address as a table: it walks from the space's root, as map does. The level is passed rather than taken from the table page's record, so a link whose table page has the wrong level for the entry the address reaches is refused rather than linked somewhere the caller did not mean.
+
+Every retype names a base inside its untyped's block, and the bases and orders of the untyped boot hands the root depend on the machine's memory, `design/root-process-at-boot/`. Inspect is how the root learns them, and how any process reads back what its own retypes, derives and moves left in its slots. Reading one slot is a bounded step that copies nothing, and it stays current after the process changes its table.
 
 Retype is one operation whose kind is an argument, since every kind consumes the same authority, an untyped and a base; separate numbers per kind would spend operation numbers on what is one check. A large frame and a revoke return `again` because both do more work than one bounded step allows.
 
@@ -84,6 +105,8 @@ Retype is one operation whose kind is an argument, since every kind consumes the
 - **Separate reply and receive operations.** Two entries on every server round trip.
 - **The path as four index registers.** With the space, the frame and the offset that is seven, two more than the entry carries.
 - **Accepting the upper canonical half.** A second rule for the sign extension, for space no process needs; the lower half is where the boot check on dom0's runs already keeps every user mapping.
+- **Boot writing a description of every slot into a frame the root maps.** It needs a frame and a format, and it is stale once the root retypes, moves or deletes.
+- **Finding an untyped's base by probing retype.** One refused invocation per aligned candidate base across physical memory, per order.
 - **A separate operation number for the large map.** The level already says which entry is written, and the same register says it for link and unmap.
 
 ## What this does not settle
