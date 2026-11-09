@@ -24,6 +24,7 @@ use crate::capability::table::*;
 use crate::capability::process::*;
 use crate::capability::thread::*;
 use crate::capability::view::*;
+use crate::arch::MEM_MASK;
 use crate::define::*;
 use crate::pagetable::entry::*;
 use crate::pagetable::pagemap::*;

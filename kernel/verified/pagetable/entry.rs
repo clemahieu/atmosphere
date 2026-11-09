@@ -1,6 +1,10 @@
 use vstd::prelude::*;
 verus! {
 
+use crate::arch::{
+    MEM_MASK, PAGE_ENTRY_EXECUTE_MASK, PAGE_ENTRY_PRESENT_MASK, PAGE_ENTRY_PS_MASK, PAGE_ENTRY_USER_MASK,
+    PAGE_ENTRY_WRITE_MASK,
+};
 use crate::define::*;
 
 use crate::util::page_ptr_util_u::*;
