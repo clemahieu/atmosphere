@@ -1,0 +1,9 @@
+[package]
+name = "file-service"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+publish = false
+
+[dependencies]
+redoxfs = { version = "0.9.1", default-features = false, features = ["std"] }

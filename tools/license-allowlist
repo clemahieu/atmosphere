@@ -18,3 +18,6 @@ license Unicode-3.0
 license OLDAP-2.8
 license BSD-2-Clause-Patent
 
+# redoxfs 0.9.1 publishes LICENSE (MIT, Jeremy Soller 2016) and no license field.
+package redoxfs registry+https://github.com/rust-lang/crates.io-index MIT
+
