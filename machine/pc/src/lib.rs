@@ -2,6 +2,7 @@
 
 #![no_std]
 
+mod ap_start;
 mod console;
 mod ioapic;
 mod iommu;
@@ -69,8 +70,18 @@ pub fn send_ipi(cpu: usize, vector: u8) {
     lapic::send_ipi(cpu, vector);
 }
 
-/// INIT, then two STARTUPs at `start_page`, for the kernel's `boot_ap`. `start_core` replaces that.
-pub unsafe fn send_init_sipi(cpu: usize, start_page: u8) {
+/// Starts `cpu` on `stack`, translating through `root`, at `entry` with `cpu` as its argument.
+///
+/// `root` is the value the new core loads as its translation base. On this machine that is CR3,
+/// and bit 63 asks the trampoline to turn PCID on.
+pub unsafe fn start_core(cpu: usize, stack: u64, entry: extern "C" fn(u64) -> !, root: u64) {
+    let start_page = ap_start::StartTrampoline::new()
+        .with_code(entry as usize as u64)
+        .with_cr3(root)
+        .with_stack(stack)
+        .with_arg(cpu as u64)
+        .start_page();
+    log::info!("page = {:#x}", start_page);
     lapic::send_init_sipi(cpu, start_page);
 }
 

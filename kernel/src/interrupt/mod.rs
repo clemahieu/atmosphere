@@ -8,7 +8,6 @@
 
 mod exception;
 mod idt;
-mod lapic;
 
 use core::arch::{asm, naked_asm};
 use core::convert::{Into, TryFrom};
@@ -20,7 +19,6 @@ use crate::boot::spin_forever;
 pub use exception::Exception;
 use exception::EXCEPTION_MAX;
 use idt::Idt;
-pub use lapic::boot_ap;
 use crate::machine;
 use verified::arch::Registers;
 

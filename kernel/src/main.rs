@@ -132,7 +132,12 @@ fn boot_cpu0(boot_info: *const BootInfo) -> isize {
 /// start-up log do not interleave.
 unsafe fn start_second_core() {
     let stack = (&raw const AP_STACK).cast::<u8>().add(core::mem::size_of::<cpu::IstStack>()) as u64;
-    interrupt::boot_ap(1, stack, ap_main as *const () as u64);
+    let boot_info = boot::get_boot_info();
+    let mut root = boot_info.pml4 as u64;
+    if boot_info.pcide {
+        root |= arch::CR3_NO_FLUSH;
+    }
+    machine::start_core(1, stack, ap_main, root);
 
     let deadline = core::arch::x86_64::_rdtsc() + AP_START_CYCLES;
     // `|`, not `||`: a branch here would be taken or not by how fast CPU 1 starts.
@@ -146,7 +151,7 @@ unsafe fn start_second_core() {
     flush::check_second_core();
 }
 
-/// AP entry point, called by the trampoline in boot/ap_start.rs.
+/// AP entry point. The machine trampoline calls this with the cpu index.
 extern "C" fn ap_main(cpu_id: u64) -> ! {
     unsafe {
         cpu::init_cpu(cpu_id as usize);

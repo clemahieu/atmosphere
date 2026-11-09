@@ -2,7 +2,6 @@
 //!
 //! The early loader (`aloader`) enters the kernel with a `BootInfo`.
 
-pub mod ap_start;
 pub mod command_line;
 pub mod free_ranges;
 pub mod mapped_runs;
