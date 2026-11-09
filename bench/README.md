@@ -42,13 +42,13 @@ Atmosphere boots only CPU 0 and has no timer interrupt, so all timers run on one
 ## QEMU line
 
     taskset -c 0-15 timeout 300 qemu-system-x86_64 -enable-kvm -cpu host \
-      -machine q35,kernel_irqchip=split -smp 4 -m 6144 -mem-prealloc \
+      -machine q35,kernel_irqchip=split -smp 4 -m 512 -mem-prealloc \
       -nographic -serial mon:stdio -no-reboot -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
       -drive if=pflash,format=raw,unit=0,readonly=on,file="$ATMO_OVMF_CODE" \
       -drive if=pflash,format=raw,unit=1,file=target/bench/OVMF_VARS.fd \
       -drive format=raw,file=fat:rw:target/bench/esp
 
-- `-m 6144`: the loader needs more than 2 GiB of contiguous memory.
+- `-m 512`: the test guest. design/test-guest-memory/. The loader's allocator is 128 MiB.
 - `-mem-prealloc`: backs guest memory before boot, so host page faults do not pollute the
   fresh-page mmap timing.
 - The ESP, `target/bench/esp`, is the directory QEMU serves as a FAT disk, laid out as `tools/run.py`

@@ -56,6 +56,7 @@ import unittest
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import firmware
+import run as guest
 
 # What tools/isolate-pinned.sh apply changed, for its undo; its fixed lines name the IRQs it could not move.
 ISOLATION_STATE = "/run/atmo-isolate-pinned"
@@ -335,7 +336,7 @@ def boot(pair, others, out):
         os.unlink(log)
     qemu = subprocess.Popen(
         [qemu_bin, "-enable-kvm", "-cpu", "host", "-machine", "q35,kernel_irqchip=split",
-         "-name", "guest=atmo,debug-threads=on", "-smp", "2", "-m", "8192", "-nographic",
+         "-name", "guest=atmo,debug-threads=on", "-smp", "2", "-m", str(guest.MEMORY_MIB), "-nographic",
          "-serial", f"file:{log}", "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"] + drives,
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         preexec_fn=lambda: os.sched_setaffinity(0, others))

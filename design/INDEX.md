@@ -2,7 +2,7 @@
 
 # Design decisions
 
-26 records: 26 active, 0 superseded.
+27 records: 27 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -73,6 +73,9 @@ in `revisit if` what would make it worth reopening.
 - **[teardown-driven-by-retype](./teardown-driven-by-retype/DECISION.md)** (2026-11-08): An object is dead when its references reach zero or, for a process or thread, when destroyed through a control capability; every operation then refuses it. There is no kernel list of dead objects: a retype of the block by the holder of its untyped detaches, then dismantles, a bounded slice per entry, until the block is free. The kernel never kills on its own.
   - *confidence:* The human's choice of who pays, and of the kernel deciding no kill policy, after a precedent survey. The block state machine, references, zeroing, reclaim and two-way detach are in the tree; the dismantle arms land with each object kind.
   - *revisit if:* Memory held by dead objects nobody retypes becomes a real shortage that pager policy cannot collect, or a workload needs the kernel to kill a whole process on a fault.
+- **[test-guest-memory](./test-guest-memory/DECISION.md)** (2026-11-09): The gate, the boot-stack check, the pinned measurement and the syscall benchmark boot a 512 MiB guest. The loader's pools, the boot page list, the kernel and loader stacks, dom0's window and the per-CPU stacks are sized to that guest, not to the kernel's 8 GiB page cap and not to a board.
+  - *confidence:* Judgement from the reservation arithmetic below. The gate boot is what checks that a 512 MiB guest actually reaches dom0.
+  - *revisit if:* A functional or performance test needs more RAM than 512 MiB, or the kernel's tracked pages shrink and the guest can shrink with them.
 - **[theorem-over-reach](./theorem-over-reach/DECISION.md)** (2026-11-08): A process can read or write an object only if a capability to it is reachable from its own capabilities; every operation changes objects only by a relation of its kind over that reach; reach grows only by grant or retype. Isolation of disjoint subsystems is a corollary.
   - *confidence:* The statement is the human's choice; the definition and the per-operation shape are in the tree, kernel/verified/capability/reach.rs, and each operation's leaf discharges it as it lands. The composed theorem is not yet proven.
   - *revisit if:* A kernel operation is wanted whose effect cannot be written as a relation over the caller's reach, or a shared object must be reachable without any capability naming it.
@@ -95,7 +98,7 @@ A view of the lists above. Nothing is reachable only through a tag.
 
 - `abi`: arch-module, one-kernel-instance, syscall-abi-in-registers
 - `address-space`: address-spaces-as-objects, vmm-over-svm
-- `boot`: machine-glue-below-the-kernel, root-process-at-boot
+- `boot`: machine-glue-below-the-kernel, root-process-at-boot, test-guest-memory
 - `capability`: address-spaces-as-objects, capability-names-a-block, cpu-time-as-capability, ipc-with-reply-object, process-holds-capabilities, revoke-by-depth-first-list, root-process-at-boot, schedulers-over-core-partitions, sharing-by-derive, teardown-driven-by-retype, theorem-over-reach, thread-bound-at-retype, untyped-memory, vmm-over-svm
 - `gate`: cut-over-on-a-branch
 - `glue`: machine-glue-below-the-kernel
@@ -105,7 +108,7 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `kernel-state`: multicore-kernel-shape, one-kernel-instance, one-lock-bounded-steps
 - `lifetime`: sharing-by-derive, teardown-driven-by-retype
 - `lock`: flush-without-waiting, multicore-kernel-shape, one-lock-bounded-steps
-- `memory`: address-spaces-as-objects, capability-names-a-block, flush-without-waiting, syscall-abi-in-registers, teardown-driven-by-retype, untyped-memory
+- `memory`: address-spaces-as-objects, capability-names-a-block, flush-without-waiting, syscall-abi-in-registers, teardown-driven-by-retype, test-guest-memory, untyped-memory
 - `multicore`: flush-without-waiting, multicore-kernel-shape, one-kernel-instance, one-lock-bounded-steps
 - `pagetable`: arch-module
 - `portability`: arch-module, machine-glue-below-the-kernel, syscall-abi-in-registers
@@ -117,6 +120,7 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `scheduling`: cpu-time-as-capability, schedulers-over-core-partitions
 - `security`: fan-in-over-private-rings, isolation-claim, theorem-over-reach, trust-boundary
 - `shared-memory`: fan-in-over-private-rings, latest-value-by-three-slot-exchange
+- `test`: test-guest-memory
 - `thread`: process-holds-capabilities, thread-bound-at-retype
 - `tiers`: trust-boundary
 - `verified`: arch-module, cut-over-on-a-branch, fan-in-over-private-rings, flush-without-waiting, latest-value-by-three-slot-exchange, one-lock-bounded-steps, revoke-by-depth-first-list, theorem-over-reach, thread-bound-at-retype

@@ -31,7 +31,8 @@ use core::arch::x86_64::__cpuid;
 use aelf::{ElfHandle, LoadSegment};
 use astd::boot::{
     disjoint_page_runs, page_end, page_start, BootInfo, DomainMapping, MappedRun, Payload,
-    PhysicalMemoryType, SegmentSpan, DOM0_RESERVATION, DOM0_STACK, MAPPED_RUNS, PAGE_BYTES,
+    PhysicalMemoryType, SegmentSpan, BOOT_PAGE_SLOTS, DOM0_RESERVATION, DOM0_STACK, MAPPED_RUNS,
+    PAGE_BYTES,
 };
 use astd::heapless::Vec as ArrayVec;
 use astd::io::{Cursor, Read, Seek, SeekFrom};
@@ -41,19 +42,21 @@ use constants::*;
 use memory::{AddressSpace, BootMemoryType, PhysicalAllocator, UserspaceMapper, PAGE_SIZE};
 
 /// The end of the physical memory the loader identity maps, for itself and for the kernel.
-pub const IDENTITY_MAP_END: u64 = 0x240000000; // 9 GiB
+/// The test guest's RAM is below 512 MiB. The 32-bit MMIO window sits just below 4 GiB, and the
+/// loader only allocates below 4 GiB. design/test-guest-memory/.
+pub const IDENTITY_MAP_END: u64 = 0x1_0000_0000; // 4 GiB
 
-const KERNEL_RESERVATION: usize = 1024 * 1024 * 1024; // 1 GiB
-// The kernel reaches 192 MiB during init at opt-level 0 and 128 MiB in release, as measured by
-// tools/check-boot-stack.py.
+const KERNEL_RESERVATION: usize = 64 * 1024 * 1024; // 64 MiB
+// Holds boot's copy of BootInfo (about 4 MiB) and leaves the 16 MiB margin
+// tools/check-boot-stack.py requires. design/test-guest-memory/.
 // Unmapped below the kernel's stack. The kernel probes large frames, so an overflow cannot jump it.
 const KERNEL_STACK_GUARD_SIZE: u64 = 1024 * 1024; // 1 MiB
 #[cfg(not(feature = "small_kernel_stack"))]
-const KERNEL_STACK_SIZE: u64 = 256 * 1024 * 1024; // 256 MiB
-// So check-boot-stack.py can force an overflow. boot::init's copy of BootInfo alone is 64 MiB however
-// the optimiser arranges the kernel's frames, so this is below the kernel's depth in all of them.
+const KERNEL_STACK_SIZE: u64 = 32 * 1024 * 1024; // 32 MiB
+// So check-boot-stack.py can force an overflow. Under one copy of BootInfo, and over the probe
+// main runs before the IDT exists.
 #[cfg(feature = "small_kernel_stack")]
-const KERNEL_STACK_SIZE: u64 = 16 * 1024 * 1024; // 16 MiB
+const KERNEL_STACK_SIZE: u64 = 2 * 1024 * 1024; // 2 MiB
 
 /// Loads the kernel, dom0 and the payload from the memory map and kernel image the UEFI entry
 /// recorded, and enters the kernel. `rsdp` is the ACPI RSDP from the UEFI configuration tables;
@@ -241,7 +244,7 @@ fn load(rsdp: u64, wait_for_debugger: bool) -> ! {
             cur += PAGE_SIZE as u64;
         }
     }
-    while cur < 4 * 1024 * 1024 * 4096 {
+    while cur < BOOT_PAGE_SLOTS as u64 * PAGE_BYTES {
         if boot_info.pages.is_full() {
             break;
         }

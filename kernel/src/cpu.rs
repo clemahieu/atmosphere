@@ -17,11 +17,16 @@ use verified::arch::Registers;
 
 const NEW_CPU: Cpu = Cpu::new();
 
-/// Per-processor data.
-static mut CPUS: [Cpu; 16] = [NEW_CPU; 16];
+/// Slots for the CPUs the test machine boots. The benchmark starts 4 and the gate starts 2.
+/// design/test-guest-memory/.
+const CPU_SLOTS: usize = 4;
 
-/// Size of an IST stack.
-const IST_STACK_SIZE: usize = 1 * 1024 * 1024; // 1 MiB
+/// Per-processor data.
+static mut CPUS: [Cpu; CPU_SLOTS] = [NEW_CPU; CPU_SLOTS];
+
+/// Interrupt and syscall stacks. Boot's copy of BootInfo is on the boot stack, not on these.
+/// design/test-guest-memory/.
+const IST_STACK_SIZE: usize = 64 * 1024;
 
 /// Per-processor data for a CPU.
 #[repr(C, align(4096))]
@@ -129,6 +134,7 @@ pub fn get_cpu_id() -> usize {
 ///
 /// This should only be called once.
 pub unsafe fn init_cpu(cpu_id: usize) {
+    assert!(cpu_id < CPU_SLOTS);
     let cpu = &mut CPUS[cpu_id];
     let address = cpu as *const Cpu;
 

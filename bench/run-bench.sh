@@ -45,8 +45,9 @@ cp "$ATMO_OVMF_VARS" "$out/OVMF_VARS.fd"
 
 log="$out/run-$(date +%Y%m%d-%H%M%S).log"
 status=0
+# Guest RAM is tools/run.py MEMORY_MIB. design/test-guest-memory/.
 taskset -c 0-15 timeout 300 "$ATMO_QEMU" \
-    -enable-kvm -cpu host -machine q35,kernel_irqchip=split -smp 4 -m 6144 -mem-prealloc \
+    -enable-kvm -cpu host -machine q35,kernel_irqchip=split -smp 4 -m 512 -mem-prealloc \
     -nographic -serial mon:stdio -no-reboot \
     -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
     -drive if=pflash,format=raw,unit=0,readonly=on,file="$ATMO_OVMF_CODE" \

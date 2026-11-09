@@ -20,6 +20,7 @@ import time
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import firmware
+import run as guest
 
 MIB = 1 << 20
 PAGE = 4096
@@ -81,7 +82,7 @@ def boot(profile, out, marker=b"dom0 capability done", kernel=None, dom0=None, p
     ovmf_code, ovmf_vars, qemu_bin = firmware.require("tools/check-boot-stack.py")
     qemu = subprocess.Popen(
         [qemu_bin, "-enable-kvm", "-cpu", "host", "-machine", "q35,kernel_irqchip=split",
-         "-smp", "2", "-m", "8192", "-nographic", "-serial", f"file:{log}",
+         "-smp", "2", "-m", str(guest.MEMORY_MIB), "-nographic", "-serial", f"file:{log}",
          "-monitor", f"unix:{mon},server,nowait", "-no-reboot", "-no-shutdown",
          "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"] + esp(profile, out, initrd, ovmf_code, ovmf_vars),
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

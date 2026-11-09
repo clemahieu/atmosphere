@@ -28,6 +28,10 @@ pub enum PhysicalMemoryType {
     Reserved,
 }
 
+/// Entries in [`BootInfo::pages`]. One entry per 4 KiB address from zero, so this covers 1 GiB:
+/// the test guest and the gaps below it. design/test-guest-memory/.
+pub const BOOT_PAGE_SLOTS: usize = 256 * 1024;
+
 /// Boot manager handoff information.
 #[repr(C)]
 #[derive(Debug, Clone)]
@@ -45,7 +49,7 @@ pub struct BootInfo {
     pub payload: Option<Payload>,
 
     /// All available physical pages and their state.
-    pub pages: ArrayVec<(u64, PhysicalMemoryType), { 4 * 1024 * 1024 }>,
+    pub pages: ArrayVec<(u64, PhysicalMemoryType), BOOT_PAGE_SLOTS>,
 
     /// Whether Tagged TLB is enabled.
     pub pcide: bool,
@@ -94,10 +98,11 @@ pub const PAGE_BYTES: u64 = 4096;
 pub const MAPPED_RUNS: usize = 64;
 
 /// Bytes the loader reserves for dom0. The virtual reservation is this long, above the user base.
-pub const DOM0_RESERVATION: u64 = 256 * 1024 * 1024;
+/// The test guest's dom0 image is under 1 MiB. design/test-guest-memory/.
+pub const DOM0_RESERVATION: u64 = 16 * 1024 * 1024;
 
 /// The stack the loader maps at the top of dom0's reservation.
-pub const DOM0_STACK: u64 = 16 * 1024 * 1024;
+pub const DOM0_STACK: u64 = 1024 * 1024;
 
 /// One contiguous mapping the loader made for dom0.
 #[repr(C)]

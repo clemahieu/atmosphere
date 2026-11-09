@@ -19,8 +19,11 @@ pub use paging::{AddressSpace, HUGE_PAGE_SIZE, PAGE_SIZE};
 pub use userspace::UserspaceMapper;
 
 pub const MAX_PHYSICAL_MEMORY: usize = 16 * 1024 * 1024 * 1024; // 16 GiB
-pub const BOOTSTRAP_SIZE: usize = 512 * 1024 * 1024; // 512 MiB
-pub const ALLOCATOR_SIZE: usize = 2 * 1024 * 1024 * 1024; // 2 GiB
+/// Page tables for the 4 GiB identity map are about 8 MiB. The upper half of this pool must stay
+/// unwritten: tools/check-boot-stack.py. design/test-guest-memory/.
+pub const BOOTSTRAP_SIZE: usize = 32 * 1024 * 1024; // 32 MiB
+/// Holds the kernel window and dom0's window. design/test-guest-memory/.
+pub const ALLOCATOR_SIZE: usize = 128 * 1024 * 1024; // 128 MiB
 
 /// The physical memory map.
 static PHYSICAL_MEMORY_MAP: Mutex<MemoryMap<BootMemoryType>> = Mutex::new(MemoryMap::empty());
