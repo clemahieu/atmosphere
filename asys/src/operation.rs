@@ -26,6 +26,8 @@ pub const DERIVE: u64 = 2;
 /// Moves the capability in rdi to the empty slot in rsi, children and all, leaving rdi empty.
 pub const MOVE: u64 = 3;
 pub const CLAIM: u64 = 4;
+/// Deletes the capability in rdi, which must have nothing below it: no capability derived from it, no
+/// mapping made through it and no binding. A holder revokes first.
 pub const DELETE: u64 = 5;
 /// Removes everything below the capability in rdi, the capabilities derived from it and the mappings
 /// made through it or them, a bounded number of steps at a time: again while some is left, ok once none
@@ -241,6 +243,13 @@ pub fn move_capability(from: u64, to: u64) -> u64 {
 pub fn derive(from: u64, to: u64, rights: u64, base: u64, order: u64) -> u64 {
     // A derive changes slots, not the caller's address space.
     status(unsafe { invoke(DERIVE, from, [to, rights, base, order, 0]) })
+}
+
+/// Deletes the capability at `slot`, which must have nothing below it. The status is the low half of
+/// what returns.
+pub fn delete(slot: u64) -> u64 {
+    // A delete of a capability with no mapping below it changes slots, not the caller's address space.
+    status(unsafe { invoke(DELETE, slot, [0; 5]) })
 }
 
 /// Takes a bounded number of steps of removing everything below the capability at `slot`, the

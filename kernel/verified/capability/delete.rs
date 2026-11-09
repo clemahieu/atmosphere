@@ -30,6 +30,18 @@ impl CapKernel {
         &&& self.list.childless(n)
     }
 
+    /// What a delete of the capability at index i of the table at root did: the delete was allowed, the
+    /// node had no child, it holds no capability now, every other node is as it was, and the step
+    /// discharges a local effect.
+    pub open spec fn cap_deleted(pre: Self, post: Self, root: usize, i: usize) -> bool {
+        let n = pre.tables.node_of(root, i);
+        &&& pre.can_delete(root, i)
+        &&& forall|c: usize| !#[trigger] pre.list.is_child(n, c)
+        &&& !post.is_cap(n)
+        &&& Self::caps_frame(pre, post, n, n)
+        &&& discharges(pre.view(), post.view(), root, Effect::Local)
+    }
+
     /// Deletes the capability at index i of the table at root. The index comes from user space, so it
     /// can be refused, and a refusal changes nothing.
     pub fn delete(&mut self, root: usize, i: usize) -> (ret: Option<Payload>)
@@ -39,16 +51,12 @@ impl CapKernel {
             old(self).root_live(root),
         ensures
             final(self).wf(),
+            final(self).cores == old(self).cores,
             Self::same_tree(*old(self), *final(self)),
             ret is Some == old(self).can_delete(root, i),
             ret is None ==> *final(self) == *old(self),
-            ret is Some ==> {
-                let n = old(self).tables.node_of(root, i);
-                &&& ret.unwrap() == old(self).payload_of(n)
-                &&& forall|c: usize| !#[trigger] old(self).list.is_child(n, c)
-                &&& !final(self).is_cap(n)
-                &&& Self::caps_frame(*old(self), *final(self), n, n)
-            },
+            ret is Some ==> ret.unwrap() == old(self).payload_of(old(self).tables.node_of(root, i)),
+            ret is Some ==> Self::cap_deleted(*old(self), *final(self), root, i),
             discharges(old(self).view(), final(self).view(), root, Effect::Local),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {

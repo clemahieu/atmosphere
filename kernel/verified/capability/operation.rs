@@ -300,6 +300,13 @@ impl CapKernel {
         }
     }
 
+    /// A delete in frame by a thread of the process whose table is at root, from pre to post with out
+    /// returned: refused with nothing changed, or ok with the childless capability in rdi gone.
+    pub open spec fn spec_deleted(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
+        ||| out == status_only(STATUS_REFUSED) && post == pre
+        ||| out == status_only(STATUS_OK) && Self::cap_deleted(pre, post, root, frame.rdi as usize)
+    }
+
     /// A revoke in frame by a thread of the process whose table is at root, from pre to post with out
     /// returned: refused with nothing changed; refused with the flush epoch at its limit, after the steps
     /// it took on the run of the capability in rdi; again with a step of that run taken and some of it
@@ -322,13 +329,14 @@ impl CapKernel {
 
     /// What the invocation in frame by a thread of the process whose table is at root did, from pre to
     /// post with out returned: a retype's effect for retype, a derive's for derive, a move's for move, a
-    /// revoke's for revoke, a link's for link, a map's for map, an unmap's for unmap, and for every other
-    /// operation the kernel unchanged with spec_outcome returned.
+    /// delete's for delete, a revoke's for revoke, a link's for link, a map's for map, an unmap's for
+    /// unmap, and for every other operation the kernel unchanged with spec_outcome returned.
     pub open spec fn invoked(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         match spec_operation(frame.rax) {
             Some(Operation::Retype) => Self::spec_retyped(pre, post, root, frame, out),
             Some(Operation::Derive) => Self::spec_derived(pre, post, root, frame, out),
             Some(Operation::Move) => Self::spec_moved(pre, post, root, frame, out),
+            Some(Operation::Delete) => Self::spec_deleted(pre, post, root, frame, out),
             Some(Operation::Revoke) => Self::spec_revoked(pre, post, root, frame, out),
             Some(Operation::Link) => Self::spec_linked(pre, post, root, frame, out),
             Some(Operation::Map) => Self::spec_mapped(pre, post, root, frame, out),
@@ -411,6 +419,10 @@ impl CapKernel {
             },
             Some(Operation::Move) => {
                 let done = self.move_cap(root, frame.rdi as usize, frame.rsi as usize);
+                Some(status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED }))
+            },
+            Some(Operation::Delete) => {
+                let done = self.delete(root, frame.rdi as usize).is_some();
                 Some(status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED }))
             },
             Some(Operation::Revoke) => {
