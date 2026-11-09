@@ -10,13 +10,13 @@ names=(
 )
 
 roots=(
+  "$HOME/sel4.gpl"      # the seL4 kernel checkout and the seL4-based project that was left
   "/usr/src/kernels"  # Linux kernel headers, GPL
   "/usr/src/debug"    # Fedora debug sources: kernel, binutils, gdb, glibc
 )
 
 # Directories holding a forbidden tree: a recursive search from one reaches it.
 parents=(
-  "$HOME/sel4"
   "/usr/src"
 )
 

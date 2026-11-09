@@ -1,7 +1,7 @@
 {
   "permissions": {
     "deny": [
-      "Read(~/sel4/sel4.src/**)",
+      "Read(~/sel4.gpl/**)",
       "Read(//usr/src/kernels/**)",
       "Read(//usr/src/debug/**)",
       "WebFetch(domain:elixir.bootlin.com)",
