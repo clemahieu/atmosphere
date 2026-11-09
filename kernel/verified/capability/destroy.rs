@@ -71,6 +71,36 @@ pub proof fn lemma_listed_cores(list: u32, n: int, c: usize)
     }
 }
 
+/// sent with an IPI to each core on the list after it, in increasing order: one bounded loop over the
+/// cores. The send is ghost: see design/one-lock-bounded-steps/.
+pub fn send_to_listed(list: u32, Ghost(sent): Ghost<Seq<usize>>) -> (ret: Ghost<Seq<usize>>)
+    ensures
+        ret@ == sent + listed_cores(list, NUM_CPUS as int),
+{
+    let ghost mut out = sent;
+    let mut c: usize = 0;
+    while c != NUM_CPUS
+        invariant
+            0 <= c <= NUM_CPUS,
+            out == sent + listed_cores(list, c as int),
+        decreases NUM_CPUS - c,
+    {
+        if (list >> (c as u32)) & 1u32 == 1u32 {
+            proof {
+                assert(core_listed(list, c as int));
+                assert(out.push(c) =~= sent + listed_cores(list, c as int).push(c));
+                out = out.push(c);
+            }
+        } else {
+            proof {
+                assert(!core_listed(list, c as int));
+            }
+        }
+        c = c + 1;
+    }
+    Ghost(out)
+}
+
 impl CapKernel {
     /// Capability n names a dead process or thread: a process whose record is dead, or a thread that is
     /// Dead, destroyed while Running, or bound to a process whose record is dead. Nothing may start or
@@ -328,28 +358,7 @@ impl CapKernel {
         let list = PPtr::<SpaceCores>::from_usize(p + SPACE_CORES_PAGE * 4096).borrow(
             Tracked(self.spaces.loaded.borrow().tracked_borrow(p)),
         ).list;
-        let ghost mut sent = pre.stop_ipis@;
-        let mut c: usize = 0;
-        while c != NUM_CPUS
-            invariant
-                0 <= c <= NUM_CPUS,
-                sent == pre.stop_ipis@ + listed_cores(list, c as int),
-            decreases NUM_CPUS - c,
-        {
-            if (list >> (c as u32)) & 1u32 == 1u32 {
-                proof {
-                    assert(core_listed(list, c as int));
-                    assert(sent.push(c) =~= pre.stop_ipis@ + listed_cores(list, c as int).push(c));
-                    sent = sent.push(c);
-                }
-            } else {
-                proof {
-                    assert(!core_listed(list, c as int));
-                }
-            }
-            c = c + 1;
-        }
-        self.stop_ipis = Ghost(sent);
+        self.stop_ipis = send_to_listed(list, Ghost(pre.stop_ipis@));
         proof {
             let post = *self;
             assert(post.processes.records@.dom() =~= pre.processes.records@.dom());
