@@ -7,7 +7,7 @@ maxTurns: 300
 disallowedTools: ScheduleWakeup, CronCreate, CronDelete, PushNotification, Workflow
 ---
 
-You run one round. The rules are in `CLAUDE.md`; this is the procedure. A round moves exactly one issue by exactly one action. Beads is `.beads` at the project root; `bd` finds it from any worktree. Your context is fresh: run `bd prime` first.
+You run one round. The rules are in `CLAUDE.md`; this is the procedure. A round takes one issue and lands one implementation at most; a redefine or a split goes on to implement what it just wrote, while the context that understood it is at hand. Beads is `.beads` at the project root; `bd` finds it from any worktree. Your context is fresh: run `bd prime` first.
 
 The project root is the parent of the worktree this shell is in. Set it before any command below, and again in a shell that does not inherit it. `$root` in a command is that directory. The landing command's inner shell sees it because it is exported.
 
@@ -33,14 +33,14 @@ Several loops may run at once, one per terminal, each a Claude Code session driv
 - It claims nothing: section 6. Another loop may have taken the last leaf since orient; that is the same as no ready leaf.
 - No epic qualifies there either: the loop waits when any issue is in progress under another actor, since what it lands may make leaves ready, and stops otherwise; report by section 7.
 
-## 3. Decide one action
+## 3. Decide the action
 
 - Discard. The issue is no longer part of the work: not derivable from the star, superseded, or already true. `bd close <id> --reason "<why>"`.
-- Redefine. The outcome or the acceptance criteria do not decide success. Rewrite them: `bd update <id> --description "..." --acceptance "..." --design "..."`, then `bd update <id> -s open --assignee ""`. The code starts on a later round.
-- Split. The issue is more than one independent change. One child per piece: `bd create "<title>" -t task --parent <id> -d "<what and why>" --acceptance "<what a skeptic checks, and from which evidence>"`, each stating the tier it inherits. `bd dep add <blocked> <blocker>` only where one piece blocks another. Then `bd update <id> -t epic -s open --assignee ""` so the parent leaves the leaf list.
+- Redefine. The outcome or the acceptance criteria do not decide success. Rewrite them: `bd update <id> --description "..." --acceptance "..." --design "..."`, then implement it in this round by section 4 when what you wrote is one discrete change: the issue is still yours. When it is not, split it; when it waits on something, section 5.
+- Split. The issue is more than one independent change. One child per piece: `bd create "<title>" -t task --parent <id> -d "<what and why>" --acceptance "<what a skeptic checks, and from which evidence>"`, each stating the tier it inherits. `bd dep add <blocked> <blocker>` only where one piece blocks another. Then `bd update <id> -t epic -s open --assignee ""` so the parent leaves the leaf list, and `bd update <child> --claim` on the first child that nothing blocks: implement that one in this round by section 4. The other children are for later rounds and other loops. When the claim fails, another loop took the child; end the round.
 - Implement. The issue is one discrete change: section 4.
 
-Discard, redefine and split do not commit.
+Discard, redefine and split do not commit; the implementation that follows a redefine or a split does.
 
 ## 4. Implement
 
@@ -74,14 +74,14 @@ An attempt is bounded. When ten runs of the tier's check (`tools/verify.py` for 
 Consider the open epics other than the star. A skeptic pass comes before any split: an epic whose children are all closed is finished work whose closing releases the leaves that depend on it, however low its priority, while a split adds work. Among the epics eligible for the same kind of round, take the highest priority first and, among equals, the deepest: a deep epic is closest to finished, while a shallow epic without children is future work that splitting early only inflates. Depth is the number of dots in the id: `atmo-1ab` is the star, `atmo-1ab.5` depth 1, `atmo-1ab.5.3` depth 2. `bd list -t epic --json` gives the priorities, then `bd show <id>`.
 
 - Skeptic pass, first: any epic with at least one child, no open child, no child in progress, and no child of status blocked. The skeptic agent (`.claude/agents/skeptic.md`) runs from the driver, as the prover does. When the epic's notes hold a skeptic input newer than its last closed child and no report after it, a skeptic is running for another loop: skip the epic. When they hold no skeptic report newer than its last closed child: `bd update <epic> --append-notes "Skeptic input: tier <t>; evidence: <the closed children, the commit SHAs their close reasons name, where the atmo test and tools/verify.py output and the serial logs are>"` and end the round with the report and its `Skeptic: <epic>` line. When they hold one: if every criterion stands, `bd close <epic> --reason "skeptic pass: <summary>"`; each refuted criterion keeps the epic open and becomes a leaf under it, the refutation as its description.
-- Split round, only when no epic qualifies for a skeptic pass: the first open epic in that order with no ready children, no child in progress, and no child of status blocked. Write its leaves, each with a description, acceptance criteria a skeptic can check from evidence, and the tier; `bd dep add` only where one blocks another. If a leaf cannot be written without a decision only the human can make, file that decision by section 5 under this epic and end the round. Do not mark the epic blocked.
+- Split round, only when no epic qualifies for a skeptic pass: the first open epic in that order with no ready children, no child in progress, and no child of status blocked. Write its leaves, each with a description, acceptance criteria a skeptic can check from evidence, and the tier; `bd dep add` only where one blocks another. Then `bd update <leaf> --claim` on the first leaf that nothing blocks and implement it in this round by section 4; when the claim fails, another loop took it, and the round ends. If a leaf cannot be written without a decision only the human can make, file that decision by section 5 under this epic and end the round. Do not mark the epic blocked.
 - The star never closes and never gets a split round. Its children are the human's decision.
 
 ## 7. Report
 
 End the round with, in this order and nothing else:
 
-- The issue (id and title) and the action taken, with the commit SHAs if any.
+- Each issue the round acted on (id and title) and the action taken, with the commit SHAs if any.
 - The first lines of `bd ready --exclude-type=epic`.
 - The questions in `bd list -s blocked`.
 - `Notify:` one line per notification the driver sends, or `Notify: none`.
