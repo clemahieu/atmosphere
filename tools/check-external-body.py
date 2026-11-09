@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
-"""Check that every external_body in kernel/verified is listed in tools/external-body-list with its reason.
+"""Check the trusted surface of kernel/verified: every external_body is listed in
+tools/external-body-list with its reason, and no assume or admit is left.
 
 Each live '#[verifier(external_body)]' attribute is followed by a line
 '// external_body(<class>): <reason>', where the class is glue, gap or unproven (CLAUDE.md,
 Testability), and then by the function it applies to. The list holds one line per attribute: path
 under kernel/verified, item, class and reason, separated by tabs. The check passes when the source
-and the list hold the same items, counting an item that appears twice in one file twice. The
-retired 'old' trees are not scanned.
+and the list hold the same items, counting an item that appears twice in one file twice. A call
+of assume( or admit( outside a '//' comment fails the check: kernel/verified holds none, and a new
+one would be an axiom the proof rests on. The retired 'old' trees are not scanned.
 
 usage: tools/check-external-body.py           (the tree)
        tools/check-external-body.py --test    (this script's own tests)
 """
 import json
+import re
 import sys
 import unittest
 from collections import Counter, namedtuple
@@ -24,6 +27,7 @@ LIST_PATH = "tools/external-body-list"
 VERIFIED_ROOT = "kernel/verified"
 ATTRIBUTE = "#[verifier(external_body)]"
 CLASSES = ("glue", "gap", "unproven")
+ASSUMPTION = re.compile(r"\b(assume|admit)\s*\(")
 
 # One attribute, as the list and the source both state it.
 Item = namedtuple("Item", "path name kind reason")
@@ -83,6 +87,15 @@ def scan(path, source):
     return items
 
 
+def assumptions(path, source):
+    """Each line of one file that calls assume or admit outside a '//' comment, with where it is."""
+    found = []
+    for index, line in enumerate(source.splitlines()):
+        if ASSUMPTION.search(line.split("//", 1)[0]):
+            found.append(f"{path}:{index + 1}: {line.strip()}")
+    return found
+
+
 def compare(found, listed):
     """Describes every item only one side has, counting an item once per occurrence."""
     def describe(item):
@@ -120,19 +133,23 @@ def main(args):
     try:
         listed = parse_list((REPO / LIST_PATH).read_text(encoding="utf-8"))
         found = []
+        assumed = []
         for file in sources(verified):
-            found.extend(scan(file.relative_to(verified).as_posix(), file.read_text(encoding="utf-8")))
+            path = file.relative_to(verified).as_posix()
+            source = file.read_text(encoding="utf-8")
+            found.extend(scan(path, source))
+            assumed.extend(assumptions(path, source))
     except Unreadable as error:
         print(error, file=sys.stderr)
         return 1
-    differences = compare(found, listed)
+    differences = compare(found, listed) + [f"{line} assumes what the proof should show" for line in assumed]
     for difference in differences:
         print(difference, file=sys.stderr)
     if differences:
         return 1
     kinds = Counter(item.kind for item in found)
     totals = ", ".join(f"{count} {kind}" for kind, count in sorted(kinds.items()))
-    print(f"{len(found)} items listed: {totals}")
+    print(f"{len(found)} items listed: {totals}; no assume or admit")
     return 0
 
 
@@ -184,6 +201,21 @@ class Tests(unittest.TestCase):
         a = Item("trap.rs", "set_self_fast", "unproven", "x")
         self.assertNotEqual(compare([a, a], [a]), [])
         self.assertEqual(compare([a, a], [a, a]), [])
+
+    def test_assumptions_finds_a_live_assume_and_admit(self):
+        source = "proof fn f() {\n    assume(x == 1);\n    admit();\n}\n"
+        self.assertEqual(assumptions("a.rs", source), ["a.rs:2: assume(x == 1);", "a.rs:3: admit();"])
+
+    def test_assumptions_finds_assume_false_and_a_spaced_call(self):
+        self.assertEqual(assumptions("a.rs", "    assume (false);\n"), ["a.rs:1: assume (false);"])
+
+    def test_assumptions_ignores_comments(self):
+        source = "// assume(false);\n/// admit()\nlet y = 1; // assume(y == 1)\n"
+        self.assertEqual(assumptions("a.rs", source), [])
+
+    def test_assumptions_ignores_names_that_only_start_with_assume(self):
+        source = "(page_ptr, Tracked::assume_new())\nMaybeUninit::zeroed().assume_init()\nreadmit(x)\n"
+        self.assertEqual(assumptions("a.rs", source), [])
 
     def test_a_changed_reason_shows_on_both_sides(self):
         self.assertEqual(len(compare([Item("a.rs", "f", "gap", "x")], [Item("a.rs", "f", "gap", "y")])), 2)
