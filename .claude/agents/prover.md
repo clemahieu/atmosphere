@@ -1,6 +1,6 @@
 ---
 name: prover
-description: Verus proof search for one tier-1 change in an existing worktree. Takes an issue id, a worktree path, the failing tools/verify.py output, the target verify line and the change made so far; edits proof code in that worktree until the verify line reaches the target or its bound, then reports the verify line, the files changed and each attempt. Run by the round driver for a round that handed back a tier-1 leaf with `Prover: <id>`, never for tier 2 or 3 work.
+description: "Verus proof search for one tier-1 change in an existing worktree. Takes an issue id, a worktree path, the failing tools/verify.py output, the target verify line and the change made so far; edits proof code in that worktree until the verify line reaches the target or its bound, then reports the verify line, the files changed and each attempt. Run by the round driver for a round that handed back a tier-1 leaf with `Prover: <id>`, never for tier 2 or 3 work."
 model: fable
 effort: xhigh
 maxTurns: 200
