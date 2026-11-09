@@ -539,6 +539,7 @@ impl CapKernel {
 
     /// The view of a step that adds one child, in a slot of the caller's table, under a capability the
     /// caller holds, covering only what its parent does.
+    #[verifier::spinoff_prover]
     pub proof fn lemma_adds_node_view(pre: Self, post: Self, root: usize, from: usize, to: usize)
         requires
             Self::adds_cap(pre, post, pre.tables.node_of(root, to)),
