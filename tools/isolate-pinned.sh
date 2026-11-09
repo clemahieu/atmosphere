@@ -5,8 +5,8 @@
 #
 # apply takes the measured CPUs and, in this order: stops irqbalance; points every IRQ that accepts
 # it, and the default for new ones, at the online CPUs that are neither measured nor a measured
-# CPU's SMT sibling; takes those siblings offline; turns boost off and raises each measured CPU's
-# cpufreq minimum to its maximum. Each change is written to the state file as it is made, and undo
+# CPU's SMT sibling; turns boost off and raises each measured CPU's cpufreq minimum to its maximum;
+# takes those siblings offline. Each change is written to the state file as it is made, and undo
 # reverses them from it; so is each IRQ the kernel would not move, which tools/measure-pinned.py reads.
 # plan prints what apply would change and needs no root.
 set -euo pipefail
@@ -129,11 +129,6 @@ apply() {
         fi
     done
 
-    for cpu in "${siblings[@]}"; do
-        echo "offline $cpu" >>"$state"
-        echo 0 >"$sys/cpu$cpu/online"
-    done
-
     # Saved before boost goes off, so undo turns boost back on before it restores them.
     for cpu in "${measured[@]}"; do
         f=$sys/cpu$cpu/cpufreq
@@ -144,6 +139,14 @@ apply() {
     for cpu in "${measured[@]}"; do
         f=$sys/cpu$cpu/cpufreq
         cat "$f/scaling_max_freq" >"$f/scaling_min_freq"
+    done
+
+    # After the clock is pinned: a core runs at the higher of its two threads' requests, and an
+    # offline sibling keeps the boosted request it held when it went down, since cpufreq leaves an
+    # offline CPU's policy alone. Undo brings the siblings back first, so boost on reaches them too.
+    for cpu in "${siblings[@]}"; do
+        echo "offline $cpu" >>"$state"
+        echo 0 >"$sys/cpu$cpu/online"
     done
 
     echo "measured CPUs: $(join "${measured[@]}")"

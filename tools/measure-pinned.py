@@ -34,8 +34,8 @@ affinity setting moves them, and only nohz_full at host boot would quiet the tim
 
 What needs root to keep the host off the measured cores is tools/isolate-pinned.sh, which the human
 runs around the measurements: apply stops irqbalance, points the IRQs away from the measured CPUs and
-their SMT siblings, takes the siblings offline, turns boost off and pins the measured CPUs' cpufreq
-minimum to their maximum; undo restores each. Give it every CPU the runs use; on a 16-core part with
+their SMT siblings, turns boost off, pins the measured CPUs' cpufreq minimum to their maximum and
+takes the siblings offline; undo restores each. Give it every CPU the runs use; on a 16-core part with
 two L3s, within0 uses CPUs 6 and 7, within1 14 and 15, and across 7 and 15:
 
     sudo tools/isolate-pinned.sh apply 6 7 14 15
