@@ -164,15 +164,16 @@ extern "C" fn entered_with_flags_set() -> ! {
 
 // Syscall ABI
 //
-// The handler takes only the frame, which holds the operation from rax, the capability's slot from
-// rdi and the arguments from rsi, rdx, r8, r9 and r10, design/syscall-abi-in-registers/. Every name a
-// process passes resolves within the caller's kernel instance, so the ABI has no machine-wide names.
-// Why, and what to do about an operation that needs one: design/one-kernel-instance/.
+// The handler takes only the frame, which holds the operation number, the capability's slot and the
+// arguments at the positions the arch module's syscall register table names,
+// design/syscall-abi-in-registers/. Every name a process passes resolves within the caller's kernel
+// instance, so the ABI has no machine-wide names. Why, and what to do about an operation that needs
+// one: design/one-kernel-instance/.
 //
 // All caller-saved registers are considered clobbered once invoked
 //
-// rax on return is the status, which the handler always writes over the operation in the frame, and
-// rdi, rsi, rdx and r8 the result words, which it writes over the arguments there.
+// The handler always writes the status word over the operation number in the frame, and the result
+// words over the slot and the arguments, each at its position.
 #[unsafe(naked)]
 unsafe extern "C" fn sys_entry() -> ! {
     naked_asm!(
@@ -329,10 +330,6 @@ extern "C" fn capability_entry(regs: &mut Registers) {
         | operation::STATUS_AGAIN => {}
         status => unreachable!("dispatch returned status {status}, which no operation returns"),
     }
-    regs.rax = returned.status;
-    regs.rdi = returned.rdi;
-    regs.rsi = returned.rsi;
-    regs.rdx = returned.rdx;
-    regs.r8 = returned.r8;
+    regs.write_outcome(returned);
     Bridge::set_switch_decision(SwitchDecision::NoSwitching);
 }

@@ -11,7 +11,7 @@ use crate::capability::operation::*;
 use crate::capability::reach::*;
 use crate::capability::table::*;
 
-/// The number inspect returns in rdi for each kind of capability.
+/// The number inspect returns in result 1 for each kind of capability.
 pub const CAP_KIND_UNTYPED: u64 = 0;
 pub const CAP_KIND_FRAME: u64 = 1;
 pub const CAP_KIND_PROCESS: u64 = 2;
@@ -23,7 +23,7 @@ pub const CAP_KIND_SPACE: u64 = 7;
 pub const CAP_KIND_DEVICE: u64 = 8;
 pub const CAP_KIND_CONSOLE: u64 = 9;
 
-/// The number a kind has in inspect's rdi.
+/// The number a kind has in inspect's result 1.
 pub open spec fn spec_kind_number(kind: CapKind) -> u64 {
     match kind {
         CapKind::Untyped => CAP_KIND_UNTYPED,
@@ -39,7 +39,7 @@ pub open spec fn spec_kind_number(kind: CapKind) -> u64 {
     }
 }
 
-/// The number a kind has in inspect's rdi.
+/// The number a kind has in inspect's result 1.
 pub fn kind_number(kind: CapKind) -> (ret: u64)
     ensures
         ret == spec_kind_number(kind),
@@ -58,15 +58,15 @@ pub fn kind_number(kind: CapKind) -> (ret: u64)
     }
 }
 
-/// What inspect returns for a capability that says payload: ok, with its kind in rdi, base in rsi,
-/// order in rdx and rights in r8.
+/// What inspect returns for a capability that says payload: ok, with its kind in result 1, base in
+/// result 2, order in result 3 and rights in result 4.
 pub open spec fn inspected(payload: Payload) -> Outcome {
     Outcome {
         status: STATUS_OK,
-        rdi: spec_kind_number(payload.kind),
-        rsi: payload.base as u64,
-        rdx: payload.order as u64,
-        r8: payload.rights as u64,
+        result_1: spec_kind_number(payload.kind),
+        result_2: payload.base as u64,
+        result_3: payload.order as u64,
+        result_4: payload.rights as u64,
     }
 }
 
@@ -120,10 +120,10 @@ impl CapKernel {
         }
         Outcome {
             status: STATUS_OK,
-            rdi: kind_number(payload.kind),
-            rsi: payload.base as u64,
-            rdx: payload.order as u64,
-            r8: payload.rights as u64,
+            result_1: kind_number(payload.kind),
+            result_2: payload.base as u64,
+            result_3: payload.order as u64,
+            result_4: payload.rights as u64,
         }
     }
 }

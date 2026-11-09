@@ -1,6 +1,8 @@
-//! The operations a process invokes through the one syscall entry, by the number it puts in rax, and
-//! what returns: the status in rax's low 16 bits and the result words in rdi, rsi, rdx and r8. asys holds the same numbers for user space, and the
-//! kernel crate checks at compile time that the two agree. See design/syscall-abi-in-registers/.
+//! The operations a process invokes through the one syscall entry, by the number in the operation
+//! position, and what returns: the status in the status word's low 16 bits and the result words. The
+//! frame's positions are the arch module's syscall register table. asys holds the same numbers for user
+//! space, and the kernel crate checks at compile time that the two agree. See
+//! design/syscall-abi-in-registers/.
 use vstd::prelude::*;
 
 verus! {
@@ -23,7 +25,7 @@ pub const STATUS_OK: u64 = 0;
 /// The capability, its rights or the arguments do not allow the operation.
 pub const STATUS_REFUSED: u64 = 1;
 
-/// No operation has the number in rax.
+/// No operation has the number in the operation position.
 pub const STATUS_UNKNOWN: u64 = 2;
 
 /// The operation took a bounded step and is not finished; the same invocation again goes on from where
@@ -47,30 +49,30 @@ pub const OPERATION_PRINT: u64 = 14;
 pub const OPERATION_INSPECT: u64 = 15;
 pub const OPERATION_LINK: u64 = 16;
 
-/// Retype's kind in rsi for a 4K frame.
+/// Retype's kind in argument 1 for a 4K frame.
 pub const RETYPE_FRAME: u64 = 0;
 
-/// Retype's kind in rsi for a 2M frame, a block of order 9.
+/// Retype's kind in argument 1 for a 2M frame, a block of order 9.
 pub const RETYPE_LARGE_FRAME: u64 = 1;
 
-/// Retype's kind in rsi for a table page, of the level in r9. Every other kind is refused until it is
-/// wired.
+/// Retype's kind in argument 1 for a table page, of the level in argument 4. Every other kind is
+/// refused until it is wired.
 pub const RETYPE_TABLE_PAGE: u64 = 2;
 
-/// What an invocation returns to its thread: the status for rax and the result words for rdi, rsi, rdx
-/// and r8.
+/// What an invocation returns to its thread: the status word and results 1 to 4, which
+/// Registers::write_outcome puts at their positions in the frame.
 #[derive(Clone, Copy)]
 pub struct Outcome {
     pub status: u64,
-    pub rdi: u64,
-    pub rsi: u64,
-    pub rdx: u64,
-    pub r8: u64,
+    pub result_1: u64,
+    pub result_2: u64,
+    pub result_3: u64,
+    pub result_4: u64,
 }
 
 /// The outcome of an operation that returns a status and no result words.
 pub open spec fn status_only(status: u64) -> Outcome {
-    Outcome { status, rdi: 0, rsi: 0, rdx: 0, r8: 0 }
+    Outcome { status, result_1: 0, result_2: 0, result_3: 0, result_4: 0 }
 }
 
 /// The outcome of an operation that returns a status and no result words.
@@ -78,10 +80,10 @@ pub fn status_only_outcome(status: u64) -> (ret: Outcome)
     ensures
         ret == status_only(status),
 {
-    Outcome { status, rdi: 0, rsi: 0, rdx: 0, r8: 0 }
+    Outcome { status, result_1: 0, result_2: 0, result_3: 0, result_4: 0 }
 }
 
-/// What a process asks of the capability named in rdi.
+/// What a process asks of the capability named in the slot.
 pub enum Operation {
     Retype,
     Derive,
@@ -102,7 +104,7 @@ pub enum Operation {
 }
 
 impl Operation {
-    /// The number a process puts in rax to invoke the operation.
+    /// The number a process puts in the operation position to invoke the operation.
     pub open spec fn number(self) -> u64 {
         match self {
             Operation::Retype => OPERATION_RETYPE,
@@ -177,47 +179,47 @@ impl CapKernel {
     /// What the invocation in frame returns to a thread of the process whose table is at root, for an
     /// operation that leaves the kernel unchanged: print's status for print, inspect's outcome for
     /// inspect, refused for every operation not wired yet, and unknown for a number no operation has.
-    /// The slot is rdi and print's words are rsi, rdx, r8, r9 and r10, as
-    /// design/syscall-abi-in-registers/ places them.
+    /// Print's words are arguments 1 to 5, as design/syscall-abi-in-registers/ places them.
     pub open spec fn spec_outcome(&self, root: usize, frame: Registers) -> Outcome {
-        match spec_operation(frame.rax) {
+        match spec_operation(frame.operation_number()) {
             Some(Operation::Print) => status_only(
-                if self.can_print(root, frame.rdi as usize) { STATUS_OK } else { STATUS_REFUSED },
+                if self.can_print(root, frame.slot() as usize) { STATUS_OK } else { STATUS_REFUSED },
             ),
-            Some(Operation::Inspect) => self.spec_inspect(root, frame.rdi as usize),
+            Some(Operation::Inspect) => self.spec_inspect(root, frame.slot() as usize),
             Some(_) => status_only(STATUS_REFUSED),
             None => status_only(STATUS_UNKNOWN),
         }
     }
 
     /// A retype in frame by a thread of the process whose table is at root, from pre to post with out
-    /// returned: refused with nothing changed; for the 4K frame kind in rsi, ok with the frame at the
-    /// base in rdx retyped under the untyped in rdi into the slot in r8; for the 2M frame kind, again
-    /// with the block at the base in rdx a step further zeroed and no slot changed, or ok with the 2M
-    /// frame retyped into the slot in r8 once the block is all zero; or, for the table page kind, ok
-    /// with an unlinked table page of the level in r9 at the base in rdx under the untyped in rdi. A
+    /// returned: refused with nothing changed; for the 4K frame kind in argument 1, ok with the frame
+    /// at the base in argument 2 retyped under the untyped in the slot into the slot in argument 3; for
+    /// the 2M frame kind, again with the block at the base in argument 2 a step further zeroed and no
+    /// slot changed, or ok with the 2M frame retyped into the slot in argument 3 once the block is all
+    /// zero; or, for the table page kind, ok with an unlinked table page of the level in argument 4 at
+    /// the base in argument 2 under the untyped in the slot. A
     /// retype the arguments allow can still be refused, when the block table finds the memory is not free.
     pub open spec fn spec_retyped(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         ||| out == status_only(STATUS_REFUSED) && post == pre
         ||| {
-            &&& frame.rsi == RETYPE_FRAME
+            &&& frame.argument(1) == RETYPE_FRAME
             &&& out == status_only(STATUS_OK)
-            &&& Self::frame_retyped(pre, post, root, frame.rdi as usize, frame.r8 as usize, frame.rdx as usize)
+            &&& Self::frame_retyped(pre, post, root, frame.slot() as usize, frame.argument(3) as usize, frame.argument(2) as usize)
         }
         ||| {
-            &&& frame.rsi == RETYPE_LARGE_FRAME
+            &&& frame.argument(1) == RETYPE_LARGE_FRAME
             &&& out == status_only(STATUS_AGAIN)
-            &&& Self::large_frame_zeroing(pre, post, root, frame.rdi as usize, frame.r8 as usize, frame.rdx as usize, 9)
+            &&& Self::large_frame_zeroing(pre, post, root, frame.slot() as usize, frame.argument(3) as usize, frame.argument(2) as usize, 9)
         }
         ||| {
-            &&& frame.rsi == RETYPE_LARGE_FRAME
+            &&& frame.argument(1) == RETYPE_LARGE_FRAME
             &&& out == status_only(STATUS_OK)
-            &&& Self::large_frame_retyped(pre, post, root, frame.rdi as usize, frame.r8 as usize, frame.rdx as usize, 9)
+            &&& Self::large_frame_retyped(pre, post, root, frame.slot() as usize, frame.argument(3) as usize, frame.argument(2) as usize, 9)
         }
         ||| {
-            &&& frame.rsi == RETYPE_TABLE_PAGE
+            &&& frame.argument(1) == RETYPE_TABLE_PAGE
             &&& out == status_only(STATUS_OK)
-            &&& Self::table_page_retyped(pre, post, root, frame.rdi as usize, frame.rdx as usize, frame.r9 as usize)
+            &&& Self::table_page_retyped(pre, post, root, frame.slot() as usize, frame.argument(2) as usize, frame.argument(4) as usize)
         }
     }
 
@@ -242,77 +244,79 @@ impl CapKernel {
     }
 
     /// A link in frame by a thread of the process whose table is at root, from pre to post with out
-    /// returned: refused with nothing changed, or ok with the table page at the base in r9, under the
-    /// untyped in r8, linked into the entry the address in rsi and the level in rdx name in the space of
-    /// the capability in rdi.
+    /// returned: refused with nothing changed, or ok with the table page at the base in argument 4,
+    /// under the untyped in argument 3, linked into the entry the address in argument 1 and the level in
+    /// argument 2 name in the space of the capability in the slot.
     pub open spec fn spec_linked(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         ||| out == status_only(STATUS_REFUSED) && post == pre
         ||| {
             &&& out == status_only(STATUS_OK)
-            &&& Self::table_linked(pre, post, root, frame.rdi as usize, frame.rsi, frame.rdx, frame.r8 as usize, frame.r9 as usize)
+            &&& Self::table_linked(pre, post, root, frame.slot() as usize, frame.argument(1), frame.argument(2), frame.argument(3) as usize, frame.argument(4) as usize)
         }
     }
 
     /// A map in frame by a thread of the process whose table is at root, from pre to post with out
-    /// returned: refused with nothing changed, or ok with the page at the offset in r9 of the frame in r8
-    /// mapped into the entry the address in rsi and the level in rdx name in the space of the capability
-    /// in rdi.
+    /// returned: refused with nothing changed, or ok with the page at the offset in argument 4 of the
+    /// frame in argument 3 mapped into the entry the address in argument 1 and the level in argument 2
+    /// name in the space of the capability in the slot.
     pub open spec fn spec_mapped(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         ||| out == status_only(STATUS_REFUSED) && post == pre
         ||| {
             &&& out == status_only(STATUS_OK)
-            &&& Self::page_mapped(pre, post, root, frame.rdi as usize, frame.rsi, frame.rdx, frame.r8 as usize, frame.r9 as usize)
+            &&& Self::page_mapped(pre, post, root, frame.slot() as usize, frame.argument(1), frame.argument(2), frame.argument(3) as usize, frame.argument(4) as usize)
         }
     }
 
     /// An unmap in frame by a thread of the process whose table is at root, from pre to post with out
-    /// returned: refused with nothing changed, or ok with the entry the address in rsi and the level in
-    /// rdx name in the space of the capability in rdi cleared.
+    /// returned: refused with nothing changed, or ok with the entry the address in argument 1 and the
+    /// level in argument 2 name in the space of the capability in the slot cleared.
     pub open spec fn spec_unmapped(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         ||| out == status_only(STATUS_REFUSED) && post == pre
         ||| {
             &&& out == status_only(STATUS_OK)
-            &&& Self::page_unmapped(pre, post, root, frame.rdi as usize, frame.rsi, frame.rdx)
+            &&& Self::page_unmapped(pre, post, root, frame.slot() as usize, frame.argument(1), frame.argument(2))
         }
     }
 
     /// A derive in frame by a thread of the process whose table is at root, from pre to post with out
-    /// returned: refused with nothing changed, or ok with a child of the capability in rdi in the slot in
-    /// rsi, with the rights in rdx and the block of the order in r9 at the base in r8. Rights wider than
-    /// 32 bits and an order wider than 8 are refused, since no capability holds them.
+    /// returned: refused with nothing changed, or ok with a child of the capability in the slot put in
+    /// the slot in argument 1, with the rights in argument 2 and the block of the order in argument 4 at
+    /// the base in argument 3. Rights wider than 32 bits and an order wider than 8 are refused, since no
+    /// capability holds them.
     pub open spec fn spec_derived(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         ||| out == status_only(STATUS_REFUSED) && post == pre
         ||| {
             &&& out == status_only(STATUS_OK)
-            &&& frame.rdx <= u32::MAX as u64
-            &&& frame.r9 <= u8::MAX as u64
-            &&& Self::cap_derived(pre, post, root, frame.rdi as usize, frame.rsi as usize, frame.rdx as u32, frame.r8 as usize, frame.r9 as u8)
+            &&& frame.argument(2) <= u32::MAX as u64
+            &&& frame.argument(4) <= u8::MAX as u64
+            &&& Self::cap_derived(pre, post, root, frame.slot() as usize, frame.argument(1) as usize, frame.argument(2) as u32, frame.argument(3) as usize, frame.argument(4) as u8)
         }
     }
 
     /// A move in frame by a thread of the process whose table is at root, from pre to post with out
-    /// returned: refused with nothing changed, or ok with the capability in rdi moved to the slot in rsi.
+    /// returned: refused with nothing changed, or ok with the capability in the slot moved to the slot
+    /// in argument 1.
     pub open spec fn spec_moved(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         ||| out == status_only(STATUS_REFUSED) && post == pre
         ||| {
             &&& out == status_only(STATUS_OK)
-            &&& Self::cap_moved(pre, post, root, frame.rdi as usize, frame.rsi as usize)
+            &&& Self::cap_moved(pre, post, root, frame.slot() as usize, frame.argument(1) as usize)
         }
     }
 
     /// A delete in frame by a thread of the process whose table is at root, from pre to post with out
-    /// returned: refused with nothing changed, or ok with the childless capability in rdi gone.
+    /// returned: refused with nothing changed, or ok with the childless capability in the slot gone.
     pub open spec fn spec_deleted(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         ||| out == status_only(STATUS_REFUSED) && post == pre
-        ||| out == status_only(STATUS_OK) && Self::cap_deleted(pre, post, root, frame.rdi as usize)
+        ||| out == status_only(STATUS_OK) && Self::cap_deleted(pre, post, root, frame.slot() as usize)
     }
 
     /// A revoke in frame by a thread of the process whose table is at root, from pre to post with out
     /// returned: refused with nothing changed; refused with the flush epoch at its limit, after the steps
-    /// it took on the run of the capability in rdi; again with a step of that run taken and some of it
-    /// left; or ok with the run empty. See design/revoke-by-depth-first-list/.
+    /// it took on the run of the capability in the slot; again with a step of that run taken and some of
+    /// it left; or ok with the run empty. See design/revoke-by-depth-first-list/.
     pub open spec fn spec_revoked(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
-        let i = frame.rdi as usize;
+        let i = frame.slot() as usize;
         ||| out == status_only(STATUS_REFUSED) && post == pre
         ||| {
             &&& out == status_only(STATUS_REFUSED)
@@ -332,7 +336,7 @@ impl CapKernel {
     /// delete's for delete, a revoke's for revoke, a link's for link, a map's for map, an unmap's for
     /// unmap, and for every other operation the kernel unchanged with spec_outcome returned.
     pub open spec fn invoked(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
-        match spec_operation(frame.rax) {
+        match spec_operation(frame.operation_number()) {
             Some(Operation::Retype) => Self::spec_retyped(pre, post, root, frame, out),
             Some(Operation::Derive) => Self::spec_derived(pre, post, root, frame, out),
             Some(Operation::Move) => Self::spec_moved(pre, post, root, frame, out),
@@ -381,22 +385,22 @@ impl CapKernel {
             Some(root) => root,
             None => { proof { assert(false); } return None; },
         };
-        match operation(frame.rax) {
+        match operation(frame.operation_number()) {
             Some(Operation::Retype) => {
-                let status = if frame.rsi == RETYPE_FRAME {
-                    if self.retype_frame(root, frame.rdi as usize, frame.r8 as usize, frame.rdx as usize) {
+                let status = if frame.argument(1) == RETYPE_FRAME {
+                    if self.retype_frame(root, frame.slot() as usize, frame.argument(3) as usize, frame.argument(2) as usize) {
                         STATUS_OK
                     } else {
                         STATUS_REFUSED
                     }
-                } else if frame.rsi == RETYPE_LARGE_FRAME {
-                    match self.retype_large_frame(root, frame.rdi as usize, frame.r8 as usize, frame.rdx as usize, 9) {
+                } else if frame.argument(1) == RETYPE_LARGE_FRAME {
+                    match self.retype_large_frame(root, frame.slot() as usize, frame.argument(3) as usize, frame.argument(2) as usize, 9) {
                         RetypeStep::Refused => STATUS_REFUSED,
                         RetypeStep::Again => STATUS_AGAIN,
                         RetypeStep::Done => STATUS_OK,
                     }
-                } else if frame.rsi == RETYPE_TABLE_PAGE {
-                    if self.retype_table_page(root, frame.rdi as usize, frame.rdx as usize, frame.r9 as usize) {
+                } else if frame.argument(1) == RETYPE_TABLE_PAGE {
+                    if self.retype_table_page(root, frame.slot() as usize, frame.argument(2) as usize, frame.argument(4) as usize) {
                         STATUS_OK
                     } else {
                         STATUS_REFUSED
@@ -407,26 +411,26 @@ impl CapKernel {
                 Some(status_only_outcome(status))
             },
             Some(Operation::Derive) => {
-                let done = frame.rdx <= u32::MAX as u64 && frame.r9 <= u8::MAX as u64 && self.derive(
+                let done = frame.argument(2) <= u32::MAX as u64 && frame.argument(4) <= u8::MAX as u64 && self.derive(
                     root,
-                    frame.rdi as usize,
-                    frame.rsi as usize,
-                    frame.rdx as u32,
-                    frame.r8 as usize,
-                    frame.r9 as u8,
+                    frame.slot() as usize,
+                    frame.argument(1) as usize,
+                    frame.argument(2) as u32,
+                    frame.argument(3) as usize,
+                    frame.argument(4) as u8,
                 );
                 Some(status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED }))
             },
             Some(Operation::Move) => {
-                let done = self.move_cap(root, frame.rdi as usize, frame.rsi as usize);
+                let done = self.move_cap(root, frame.slot() as usize, frame.argument(1) as usize);
                 Some(status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED }))
             },
             Some(Operation::Delete) => {
-                let done = self.delete(root, frame.rdi as usize).is_some();
+                let done = self.delete(root, frame.slot() as usize).is_some();
                 Some(status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED }))
             },
             Some(Operation::Revoke) => {
-                let status = match self.revoke(root, frame.rdi as usize) {
+                let status = match self.revoke(root, frame.slot() as usize) {
                     RevokeStep::Done => STATUS_OK,
                     RevokeStep::Again => STATUS_AGAIN,
                     RevokeStep::Refused | RevokeStep::Exhausted => STATUS_REFUSED,
@@ -434,23 +438,23 @@ impl CapKernel {
                 Some(status_only_outcome(status))
             },
             Some(Operation::Link) => {
-                let done = self.link_at(root, frame.rdi as usize, frame.rsi, frame.rdx, frame.r8 as usize, frame.r9 as usize);
+                let done = self.link_at(root, frame.slot() as usize, frame.argument(1), frame.argument(2), frame.argument(3) as usize, frame.argument(4) as usize);
                 Some(status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED }))
             },
             Some(Operation::Map) => {
-                let done = self.map_at(root, frame.rdi as usize, frame.rsi, frame.rdx, frame.r8 as usize, frame.r9 as usize);
+                let done = self.map_at(root, frame.slot() as usize, frame.argument(1), frame.argument(2), frame.argument(3) as usize, frame.argument(4) as usize);
                 Some(status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED }))
             },
             Some(Operation::Unmap) => {
-                let done = self.unmap_at(root, frame.rdi as usize, frame.rsi, frame.rdx);
+                let done = self.unmap_at(root, frame.slot() as usize, frame.argument(1), frame.argument(2));
                 Some(status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED }))
             },
             Some(Operation::Print) => Some(
                 status_only_outcome(
-                    self.print(root, frame.rdi as usize, frame.rsi, frame.rdx, frame.r8, frame.r9, frame.r10),
+                    self.print(root, frame.slot() as usize, frame.argument(1), frame.argument(2), frame.argument(3), frame.argument(4), frame.argument(5)),
                 ),
             ),
-            Some(Operation::Inspect) => Some(self.inspect(root, frame.rdi as usize)),
+            Some(Operation::Inspect) => Some(self.inspect(root, frame.slot() as usize)),
             Some(_) => Some(status_only_outcome(STATUS_REFUSED)),
             None => Some(status_only_outcome(STATUS_UNKNOWN)),
         }

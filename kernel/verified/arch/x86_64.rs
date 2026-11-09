@@ -6,6 +6,7 @@ use vstd::prelude::*;
 verus! {
 
 use crate::capability::kernel::{FlushTarget, Flushed};
+use crate::capability::operation::Outcome;
 
 // The page-entry encoding: the long-mode page-translation entry's bits, chapter 5. The decoders and
 // encoders in pagetable/entry.rs, the address checks in util/page_ptr_util_u.rs and the address lemmas
@@ -131,6 +132,105 @@ impl Registers {
             *final(self) == *src,
     {
         *self = *src;
+    }
+
+    // The syscall register table: which register of the frame carries each position of an
+    // invocation, design/syscall-abi-in-registers/ under Registers. The dispatch reads and writes the
+    // frame only through these.
+
+    /// The operation number, in rax.
+    pub open spec fn spec_operation_number(&self) -> u64 {
+        self.rax
+    }
+
+    #[verifier(when_used_as_spec(spec_operation_number))]
+    pub fn operation_number(&self) -> (ret: u64)
+        ensures
+            ret == self.spec_operation_number(),
+    {
+        self.rax
+    }
+
+    /// The slot of the invoked capability, in rdi.
+    pub open spec fn spec_slot(&self) -> u64 {
+        self.rdi
+    }
+
+    #[verifier(when_used_as_spec(spec_slot))]
+    pub fn slot(&self) -> (ret: u64)
+        ensures
+            ret == self.spec_slot(),
+    {
+        self.rdi
+    }
+
+    /// Argument k of 1 to 5, in rsi, rdx, r8, r9 and r10.
+    pub open spec fn spec_argument(&self, k: usize) -> u64 {
+        if k == 1 {
+            self.rsi
+        } else if k == 2 {
+            self.rdx
+        } else if k == 3 {
+            self.r8
+        } else if k == 4 {
+            self.r9
+        } else {
+            self.r10
+        }
+    }
+
+    #[verifier(when_used_as_spec(spec_argument))]
+    pub fn argument(&self, k: usize) -> (ret: u64)
+        requires
+            1 <= k <= 5,
+        ensures
+            ret == self.spec_argument(k),
+    {
+        if k == 1 {
+            self.rsi
+        } else if k == 2 {
+            self.rdx
+        } else if k == 3 {
+            self.r8
+        } else if k == 4 {
+            self.r9
+        } else {
+            self.r10
+        }
+    }
+
+    /// The status word, which returns in the operation number's register.
+    pub open spec fn spec_status_word(&self) -> u64 {
+        self.spec_operation_number()
+    }
+
+    /// Result k of 1 to 5, which returns in the register of the input at its position: result 1 in
+    /// the slot's, result k in argument k - 1's.
+    pub open spec fn spec_result(&self, k: usize) -> u64 {
+        if k == 1 {
+            self.spec_slot()
+        } else {
+            self.spec_argument((k - 1) as usize)
+        }
+    }
+
+    /// Writes what an invocation returns over the frame it entered with: the status word and results
+    /// 1 to 4, each at its position. Argument 5 returns no result, so its register keeps what the
+    /// frame held.
+    pub fn write_outcome(&mut self, out: Outcome)
+        ensures
+            final(self).spec_status_word() == out.status,
+            final(self).spec_result(1) == out.result_1,
+            final(self).spec_result(2) == out.result_2,
+            final(self).spec_result(3) == out.result_3,
+            final(self).spec_result(4) == out.result_4,
+            final(self).spec_argument(5) == old(self).spec_argument(5),
+    {
+        self.rax = out.status;
+        self.rdi = out.result_1;
+        self.rsi = out.result_2;
+        self.rdx = out.result_3;
+        self.r8 = out.result_4;
     }
 }
 
