@@ -104,6 +104,8 @@ impl CapKernel {
             final(self).list.is_child(root, leaf),
             final(self).list.nodes@[leaf as int].live,
             final(self).list.nodes@[leaf as int].kind is Hidden,
+            forall|x: int| 0 <= x < NODE_SPACE && #[trigger] final(self).list.nodes@[x].live
+                && final(self).list.nodes@[x].kind is Hidden ==> x == leaf,
             forall|x: usize| #[trigger] final(self).is_cap(x) ==> x == leaf + 1,
             !final(self).list.nodes@[leaf + 2].live,
             forall|k: int| 0 <= k < 8 ==> {
@@ -373,6 +375,11 @@ impl CapKernel {
             final(self).payload_of((leaf + 1) as usize) == old(self).payload_of((leaf + 1) as usize),
             final(self).list.nodes@[leaf + 1].depth == 1,
             final(self).list.parent@[(leaf + 1) as usize] == old(self).list.parent@[(leaf + 1) as usize],
+            final(self).list.parent@[leaf] == old(self).list.parent@[leaf],
+            forall|x: int| #![trigger final(self).list.nodes@[x]] 0 <= x < NODE_SPACE && x != t && x != leaf + 2 ==> {
+                &&& final(self).list.nodes@[x].live == old(self).list.nodes@[x].live
+                &&& old(self).list.nodes@[x].live ==> final(self).list.nodes@[x].kind == old(self).list.nodes@[x].kind
+            },
             final(self).processes.records == old(self).processes.records,
             final(self).spaces == old(self).spaces,
             final(self).list.pages@.dom() == old(self).list.pages@.dom().insert(t),
@@ -541,6 +548,27 @@ impl CapKernel {
                 assert(typed.is_cap(x));
                 assert(freed.is_cap(x) == pre.is_cap(x));
             }
+            // Only the thread's binding node and its capability come alive; every other node keeps its
+            // liveness, and a node live before keeps its kind, the leaf's hidden node among them.
+            assert(freed.list == pre.list);
+            assert forall|x: int| #![trigger post.list.nodes@[x]] 0 <= x < NODE_SPACE && x != t && x != cap implies {
+                &&& post.list.nodes@[x].live == pre.list.nodes@[x].live
+                &&& pre.list.nodes@[x].live ==> post.list.nodes@[x].kind == pre.list.nodes@[x].kind
+            } by {
+                assert(post.list.nodes@[x].live == typed.list.nodes@[x].live);
+                assert(typed.list.nodes@[x].live == mid.nodes@[x].live);
+                assert(mid.nodes@[x].live == pre.list.nodes@[x].live);
+                if pre.list.nodes@[x].live {
+                    pre.list.lemma_live_valid(x as usize);
+                    assert(mid.nodes@[x] == pre.list.nodes@[x]);
+                }
+            }
+            pre.list.lemma_live_valid(leaf);
+            assert(page_of(leaf) == leaf);
+            assert(leaf != t) by {
+                assert(pre.list.pages@.dom().contains(leaf));
+            }
+            assert(post.list.parent@[leaf] == pre.list.parent@[leaf]);
         }
     }
 
@@ -587,6 +615,11 @@ impl CapKernel {
             final(self).payload_of((leaf + 2) as usize).rights & CONTROL_RIGHT != 0,
             final(self).list.is_child(root, (leaf + 2) as usize),
             final(self).list.nodes@[leaf + 2].depth == 1,
+            final(self).list.nodes@[leaf as int].live,
+            final(self).list.nodes@[leaf as int].kind is Hidden,
+            final(self).list.is_child(root, leaf),
+            forall|x: int| 0 <= x < NODE_SPACE && #[trigger] final(self).list.nodes@[x].live
+                && final(self).list.nodes@[x].kind is Hidden ==> x == leaf,
             final(self).threads.records@.contains_key(t),
             final(self).threads.records@[t].value() == (ThreadRecord {
                 state: crate::capability::thread::ThreadState::Inactive,
@@ -688,6 +721,10 @@ impl CapKernel {
                 }
             }
             Self::lemma_root_reach(post, process, leaf, t);
+            assert(post.list.nodes@[leaf as int].live);
+            assert(has(post.list.seq@, leaf));
+            lemma_has(post.list.seq@, leaf);
+            assert(post.list.is_child(root, leaf));
         }
     }
 
