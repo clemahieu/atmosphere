@@ -417,30 +417,73 @@ pub fn zero_frame() -> (ret: Registers)
     Registers::zeroed()
 }
 
-/// Whether a program counter is a user address.
-pub uninterp spec fn user_rip(rip: u64) -> bool;
+/// What a written frame keeps of SPSR_EL1: the condition flags N, Z, C and V, bits 31 to 28, which
+/// user mode sets itself with MSR NZCV. Arm ARM C5.2.21, the layout for M[4] = 0.
+pub const USER_SPSR_KEPT: u64 = 0xf000_0000;
 
-#[verifier(external_body)]
-// external_body(unproven): the aarch64 placeholder for is_user_rip
+/// The mode a written frame always returns to: M[4] = 0, AArch64 state, and M[3:0] = 0b0000, EL0.
+/// Every other bit is clear: D, A, I and F (bits 9 to 6) leave debug, SError, IRQ and FIQ unmasked,
+/// and with IL and SS (bits 20 and 21) clear the exception return is legal and not single-stepped.
+/// Arm ARM C5.2.21 and D1.4.4.
+pub const USER_SPSR_MODE: u64 = 0b0_0000;
+
+/// The first address past user space: 2^48, the top of TTBR0_EL1's range with T0SZ = 16. A write
+/// refuses any program counter at or past it.
+pub const USER_RIP_END: u64 = 0x1_0000_0000_0000;
+
+/// Whether a program counter is a user address.
+pub open spec fn user_rip(rip: u64) -> bool {
+    rip < USER_RIP_END
+}
+
 pub fn is_user_rip(rip: u64) -> (ret: bool)
     ensures
         ret == user_rip(rip),
 {
-    unimplemented!()
+    rip < USER_RIP_END
 }
 
-#[verifier(external_body)]
-// external_body(unproven): the aarch64 placeholder for user_frame_of
 pub fn user_frame_of(f: Registers) -> (ret: Registers)
     ensures
         ret == user_frame(f),
 {
-    unimplemented!()
+    Registers { spsr_el1: (f.spsr_el1 & USER_SPSR_KEPT) | USER_SPSR_MODE, ..f }
 }
 
-/// A frame a controller wrote, as the thread will return to user mode with it, granting no
-/// privilege. See design/process-holds-capabilities/.
-pub uninterp spec fn user_frame(f: Registers) -> Registers;
+/// A frame a controller wrote, as the thread will return to user mode with it: SPSR_EL1 returns to
+/// EL0 with only the condition flags user mode could set, so the write grants no privilege. See
+/// design/process-holds-capabilities/.
+pub open spec fn user_frame(f: Registers) -> Registers {
+    Registers { spsr_el1: (f.spsr_el1 & USER_SPSR_KEPT) | USER_SPSR_MODE, ..f }
+}
+
+/// A written frame returns to EL0 in AArch64 state with debug, SError, IRQ and FIQ unmasked, and
+/// carries no saved process state but the condition flags; the rest of it is the frame as written.
+pub proof fn lemma_user_frame_at_el0(f: Registers)
+    ensures
+        user_frame(f).spsr_el1 & 0x1f == 0,
+        user_frame(f).spsr_el1 & 0x3c0 == 0,
+        user_frame(f).spsr_el1 & !0xf000_0000u64 == 0,
+        user_frame(f).spsr_el1 & 0xf000_0000u64 == f.spsr_el1 & 0xf000_0000u64,
+        user_frame(f).elr_el1 == f.elr_el1,
+        user_frame(f).sp_el0 == f.sp_el0,
+        user_frame(f).x0 == f.x0,
+        user_frame(f).x30 == f.x30,
+{
+    let s = f.spsr_el1;
+    assert(((s & 0xf000_0000u64) | 0u64) & 0x1f == 0) by (bit_vector);
+    assert(((s & 0xf000_0000u64) | 0u64) & 0x3c0 == 0) by (bit_vector);
+    assert(((s & 0xf000_0000u64) | 0u64) & !0xf000_0000u64 == 0) by (bit_vector);
+    assert(((s & 0xf000_0000u64) | 0u64) & 0xf000_0000u64 == s & 0xf000_0000u64) by (bit_vector);
+}
+
+/// The last byte below 2^48 is a user address and 2^48 is not.
+pub proof fn lemma_user_rip_bound()
+    ensures
+        user_rip(0xffff_ffff_ffff),
+        !user_rip(0x1_0000_0000_0000),
+{
+}
 
 /// Writes the bytes words a to e carry: each word's eight bytes from its lowest, a's first, up to the
 /// first zero byte.

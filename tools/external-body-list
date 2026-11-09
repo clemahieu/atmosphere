@@ -20,8 +20,6 @@ arch/aarch64.rs	operation_number	unproven	the aarch64 placeholder for operation_
 arch/aarch64.rs	slot	unproven	the aarch64 placeholder for slot
 arch/aarch64.rs	argument	unproven	the aarch64 placeholder for argument
 arch/aarch64.rs	write_outcome	unproven	the aarch64 placeholder for write_outcome
-arch/aarch64.rs	is_user_rip	unproven	the aarch64 placeholder for is_user_rip
-arch/aarch64.rs	user_frame_of	unproven	the aarch64 placeholder for user_frame_of
 arch/aarch64.rs	serial_write	unproven	the aarch64 placeholder for serial_write
 arch/x86_64.rs	flush_every_context	glue	only the hardware can attest a flush, so only this makes the token
 arch/x86_64.rs	serial_write	glue	writes the serial port through port I/O, which has no state a proof could see
