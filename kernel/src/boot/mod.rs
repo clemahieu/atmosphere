@@ -4,6 +4,16 @@
 
 pub mod ap_start;
 pub mod command_line;
+pub mod free_ranges;
+
+// The map check uses the same page limit and node space as the verified kernel.
+const _: () = {
+    assert!(
+        free_ranges::MAX_PAGE_ADDRESS
+            == verified::define::NUM_PAGES as u64 * free_ranges::PAGE_BYTES
+    );
+    assert!(free_ranges::NODE_SPACE == verified::capability::list::NODE_SPACE as u64);
+};
 
 use core::arch::asm;
 
