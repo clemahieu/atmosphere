@@ -1,9 +1,10 @@
-//! The x86_64 PC machine: COM1, the xAPIC, the IOAPIC and the 8259s. design/machine-glue-below-the-kernel/.
+//! The x86_64 PC machine: COM1, the xAPIC, the IOAPIC, the 8259s and the IOMMU. design/machine-glue-below-the-kernel/.
 
 #![no_std]
 
 mod console;
 mod ioapic;
+mod iommu;
 mod lapic;
 mod mps;
 mod msr;
@@ -73,6 +74,13 @@ pub unsafe fn send_init_sipi(cpu: usize, start_page: u8) {
     lapic::send_init_sipi(cpu, start_page);
 }
 
+/// Keeps the IOMMU base from `boot`. Once on the boot core, after the kernel copies `BootInfo`.
+pub unsafe fn init(boot: &astd::boot::BootInfo) {
+    iommu::store_base(boot.iommu_base);
+}
+
+pub use iommu::{iommu_fault_dump, iommu_init, iommu_invalidate, iommu_map};
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -80,5 +88,25 @@ mod tests {
         fn assert_writer<T: core::fmt::Write>(_: &mut T) {}
         let mut console = crate::console();
         assert_writer(&mut console);
+    }
+
+    #[test]
+    fn iommu_map_without_hardware_refuses() {
+        let err = unsafe { crate::iommu_map(0, 0, 0, 0) };
+        assert_eq!(err, Err("No IOMMU available"));
+    }
+
+    #[test]
+    fn iommu_invalidate_without_hardware_refuses() {
+        let err = unsafe { crate::iommu_invalidate(0, 0, 0, 0) };
+        assert_eq!(err, Err("No IOMMU hardware"));
+    }
+
+    #[test]
+    #[should_panic(expected = "Device id out of range")]
+    fn iommu_map_rejects_a_bus_past_255() {
+        unsafe {
+            let _ = crate::iommu_map(256, 0, 0, 0);
+        }
     }
 }

@@ -303,7 +303,7 @@ unsafe extern "C" fn iommu_fault(regs: &mut Registers) {
         crate::cpu::get_cpu_id(),
         regs,
     );
-    crate::iommu::dump_iommu_fault().unwrap();
+    crate::machine::iommu_fault_dump().unwrap();
     crate::debugger::breakpoint(2);
     spin_forever();
 }

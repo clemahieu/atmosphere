@@ -778,7 +778,6 @@ dependencies = [
  "atest",
  "bit_field",
  "bitfield",
- "bitfield-struct",
  "byteorder",
  "displaydoc",
  "enum-primitive-derive",
@@ -856,7 +855,9 @@ checksum = "373f5eceeeab7925e0c1098212f2fbc4d416adec9d35051a6ab251e824c1854a"
 name = "machine-pc"
 version = "0.1.0"
 dependencies = [
+ "astd",
  "bit_field",
+ "bitfield-struct",
  "log",
  "ns16550a",
  "spin",

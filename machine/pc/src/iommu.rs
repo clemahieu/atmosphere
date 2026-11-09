@@ -16,16 +16,21 @@ use bitfield_struct::bitfield;
 use astd::sync::Mutex;
 
 static IOMMU: Mutex<Option<RemappingHardware>> = Mutex::new(None);
+/// The base `init` kept from `BootInfo`.
+static BASE: Mutex<Option<u64>> = Mutex::new(None);
 /// Reached through `naive_map` only.
 static mut NAIVE_MAP: NaiveIommuMap = NaiveIommuMap::new();
+
+pub(crate) fn store_base(base: Option<u64>) {
+    *BASE.lock() = base;
+}
 
 /// The IOMMU's tables.
 ///
 /// # Safety
 ///
-/// The caller is the only one using them until it drops the reference: `init_iommu` on CPU 0
-/// before the second core starts, or `map` under the kernel lock, which its one caller,
-/// sys_set_device_iommu, holds.
+/// The caller is the only one using them until it drops the reference: `iommu_init` on CPU 0
+/// before the second core starts, or `iommu_map` under the kernel lock.
 unsafe fn naive_map() -> Pin<&'static mut NaiveIommuMap> {
     Pin::new(&mut *&raw mut NAIVE_MAP)
 }
@@ -228,7 +233,7 @@ impl RemappingHardware {
 
     pub unsafe fn set_fault_interrupt(&mut self, apic_id: u8) {
         let mut fedata = 0;
-        fedata.set_bits(Self::FEDATA_IMD, crate::machine::IOMMU_FAULT_VECTOR as u16);
+        fedata.set_bits(Self::FEDATA_IMD, crate::IOMMU_FAULT_VECTOR as u16);
         self.write_u32(Self::FEDATA_REG, fedata as u32);
 
         let mut feaddr: u32 = 0;
@@ -523,13 +528,14 @@ impl ContextTableEntry {
     }
 }
 
-/// The proven check for a device id from user space, which get_did asserts.
-fn device_in_range(bus: usize, device: usize, function: usize) -> bool {
-    verified::device::DeviceId::new(bus, device, function).is_some()
+/// A caller in the kernel that passes a bad id is a bug. The kernel checks a process's id
+/// against `verified::device::DeviceId` before the call.
+fn assert_device(bus: usize, device: usize, function: usize) {
+    assert!(bus < 256 && device < 32 && function < 8, "Device id out of range");
 }
 
 fn get_did(bus: usize, device: usize, function: usize) -> u16 {
-    assert!(device_in_range(bus, device, function), "Device id out of range");
+    assert_device(bus, device, function);
 
     ((bus as u16) << 8) | ((device as u16) << 3) | (function as u16)
 }
@@ -541,10 +547,10 @@ unsafe fn reload_root_table() {
     iommu.set_root_table_addr(rt.root_table_addr());
 }
 
-pub unsafe fn init_iommu() {
-    let boot_info = crate::boot::get_boot_info();
+pub unsafe fn iommu_init() {
+    let iommu_base = *BASE.lock();
 
-    let mut iommu = if let Some(iommu_base) = boot_info.iommu_base {
+    let mut iommu = if let Some(iommu_base) = iommu_base {
         RemappingHardware::new(iommu_base)
     } else {
         return;
@@ -565,15 +571,13 @@ pub unsafe fn init_iommu() {
     *IOMMU.lock() = Some(iommu);
 }
 
-/// Points a device's context entry at the IO page table `pml4`.
+/// Points a device's context entry at the IO page table `root`.
 ///
 /// # Safety
 ///
 /// The caller holds the kernel lock, so no other core changes the tables meanwhile.
-pub unsafe fn map(bus: usize, device: usize, function: usize, pml4: u64) -> Result<(), &'static str> {
-    if !device_in_range(bus, device, function) {
-        return Err("No such device");
-    }
+pub unsafe fn iommu_map(bus: usize, device: usize, function: usize, root: u64) -> Result<(), &'static str> {
+    assert_device(bus, device, function);
     // NaiveIommuMap has one context table, which a second bus would share with bus 0.
     if bus != 0 {
         return Err("Only bus 0 has a context table");
@@ -583,7 +587,7 @@ pub unsafe fn map(bus: usize, device: usize, function: usize, pml4: u64) -> Resu
     }
 
     let rt = naive_map();
-    rt.map(bus, device, function, pml4);
+    rt.map(bus, device, function, root);
 
     // TODO: Reload device-specific context
     reload_root_table();
@@ -591,10 +595,8 @@ pub unsafe fn map(bus: usize, device: usize, function: usize, pml4: u64) -> Resu
     Ok(())
 }
 
-pub unsafe fn invalidate_iotlb(bus: usize, device: usize, function: usize, page: u64) -> Result<(), &'static str> {
-    if !device_in_range(bus, device, function) {
-        return Err("No such device");
-    }
+pub unsafe fn iommu_invalidate(bus: usize, device: usize, function: usize, page: u64) -> Result<(), &'static str> {
+    assert_device(bus, device, function);
     let mut iommu = IOMMU.lock();
     let iommu = iommu.as_mut().ok_or("No IOMMU hardware")?;
 
@@ -603,7 +605,7 @@ pub unsafe fn invalidate_iotlb(bus: usize, device: usize, function: usize, page:
     Ok(())
 }
 
-pub fn dump_iommu_fault() -> Result<(), &'static str> {
+pub fn iommu_fault_dump() -> Result<(), &'static str> {
     let mut iommu = IOMMU.lock();
     let iommu = iommu.as_mut().ok_or("No IOMMU hardware")?;
 

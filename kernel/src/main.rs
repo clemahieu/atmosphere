@@ -32,7 +32,6 @@ mod debugger;
 mod error;
 mod gdt;
 mod interrupt;
-mod iommu;
 mod logging;
 mod machine;
 mod syscalls;
@@ -84,7 +83,8 @@ fn boot_cpu0(boot_info: *const BootInfo) -> isize {
     unsafe {
         write_protect::check();
         boot::init(boot_info);
-        iommu::init_iommu();
+        machine::init(boot::get_boot_info());
+        machine::iommu_init();
 
         logging::init();
     }
