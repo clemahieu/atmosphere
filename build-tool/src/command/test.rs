@@ -26,8 +26,8 @@ const LICENSE_CHECK: &str = "tools/check-licenses.py";
 /// project root.
 const EXTERNAL_BODY_CHECK: &str = "tools/check-external-body.py";
 
-/// The license guard's tests, relative to the project root.
-const LICENSE_GUARD_TEST: &str = ".claude/hooks/license-guard-test.sh";
+/// The hooks' tests, relative to the project root: the license guard's and the Beads actor's.
+const HOOK_TESTS: [&str; 2] = [".claude/hooks/license-guard-test.sh", ".claude/hooks/beads-actor-test.sh"];
 
 /// The boot stack's check, relative to the project root.
 const BOOT_STACK_CHECK: &str = "tools/check-boot-stack.py";
@@ -68,7 +68,7 @@ pub(super) async fn run(global: GlobalOpts) -> Result<()> {
         ("file sizes", check_file_sizes(&project).await),
         ("build", check_build(&project).await),
         ("license", check_licenses(&project).await),
-        ("license guard", check_license_guard(&project).await),
+        ("hooks", check_hooks(&project).await),
         ("verify", check_verify(&project).await),
         ("external body", check_external_body(&project).await),
         ("design index", check_design_index(&project).await),
@@ -183,9 +183,11 @@ async fn check_external_body(project: &ProjectHandle) -> Result<String> {
     Ok(output.trim_end().to_string())
 }
 
-async fn check_license_guard(project: &ProjectHandle) -> Result<String> {
-    run_check(project, LICENSE_GUARD_TEST, &[]).await?;
-    Ok("the guard refuses what it must".to_string())
+async fn check_hooks(project: &ProjectHandle) -> Result<String> {
+    for test in HOOK_TESTS {
+        run_check(project, test, &[]).await?;
+    }
+    Ok("the license guard refuses what it must; the actor hook names the session".to_string())
 }
 
 async fn check_boot_stack(project: &ProjectHandle) -> Result<String> {
