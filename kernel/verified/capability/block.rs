@@ -112,6 +112,56 @@ pub struct BlockTable {
 }
 
 impl BlockTable {
+    /// How many pages the table tracks. Every bound on a page index or a page's address is stated
+    /// through this and the predicates below, so that where the count comes from is decided here.
+    pub open spec fn spec_page_count(&self) -> usize {
+        NUM_PAGES
+    }
+
+    #[verifier::when_used_as_spec(spec_page_count)]
+    pub fn page_count(&self) -> (n: usize)
+        ensures
+            n == self.page_count(),
+    {
+        NUM_PAGES
+    }
+
+    /// Page i is one the table tracks.
+    pub open spec fn tracks(&self, i: int) -> bool {
+        0 <= i < NUM_PAGES
+    }
+
+    /// The n pages from page s end within the tracked pages.
+    pub open spec fn tracks_run(&self, s: int, n: int) -> bool {
+        s + n <= NUM_PAGES
+    }
+
+    /// Address a is in a page the table tracks.
+    pub open spec fn tracks_addr(&self, a: usize) -> bool {
+        a / PAGE_SZ_4k < NUM_PAGES
+    }
+
+    /// The n pages from the one holding address a end within the tracked pages.
+    pub open spec fn tracks_addr_run(&self, a: usize, n: int) -> bool {
+        a / PAGE_SZ_4k + n <= NUM_PAGES
+    }
+
+    /// Whether page i is one the table tracks.
+    pub fn page_tracked(&self, i: usize) -> (r: bool)
+        ensures
+            r == self.tracks(i as int),
+    {
+        i < NUM_PAGES
+    }
+
+    /// Whether the n pages from page s end within the tracked pages.
+    pub fn run_tracked(&self, s: usize, n: usize) -> (r: bool)
+        ensures
+            r == self.tracks_run(s as int, n as int),
+    {
+        s <= NUM_PAGES && n <= NUM_PAGES - s
+    }
+
     /// Page i is inside a typed large block.
     pub open spec fn covered(&self, i: int) -> bool {
         self.regions_2m@[region_2m(i)].typed || self.regions_1g@[region_1g(i)].typed
@@ -136,7 +186,7 @@ impl BlockTable {
             &&& self.in_1g@[r].len() == self.count_1g@[r]
             &&& self.in_1g@[r].subset_of(set_int_range(r * 262144, (r + 1) * 262144))
         }
-        &&& forall|i: int| 0 <= i < NUM_PAGES ==> {
+        &&& forall|i: int| self.tracks(i) ==> {
             &&& self.in_2m@[region_2m(i)].contains(i) == !(#[trigger] self.pages@[i].kind is Free)
             &&& self.in_1g@[region_1g(i)].contains(i) == (!(self.pages@[i].kind is Free)
                 || (i % 512 == 0 && self.regions_2m@[i / 512].typed))
@@ -156,11 +206,11 @@ impl BlockTable {
     /// The table holds a permission for exactly its free pages outside any typed large block.
     pub open spec fn free_wf(&self) -> bool {
         &&& forall|i: usize| #[trigger] self.free_perms@.contains_key(i) ==> {
-            &&& i < NUM_PAGES
+            &&& self.tracks(i as int)
             &&& self.free_perms@[i].addr() == i * 4096
             &&& self.free_perms@[i].is_uninit()
         }
-        &&& forall|i: usize| i < NUM_PAGES ==>
+        &&& forall|i: usize| self.tracks(i as int) ==>
             (#[trigger] self.free_perms@.contains_key(i)
                 == (self.pages@[i as int].kind is Free && !self.covered(i as int)))
     }
@@ -168,17 +218,17 @@ impl BlockTable {
     /// Every base is a small block, aligned and in range.
     #[verifier::opaque]
     pub open spec fn bases_wf(&self) -> bool {
-        forall|i: int| 0 <= i < NUM_PAGES && (#[trigger] self.pages@[i].kind is Base) ==> {
+        forall|i: int| self.tracks(i) && (#[trigger] self.pages@[i].kind is Base) ==> {
             &&& small_order(self.pages@[i].order)
             &&& i % order_pages(self.pages@[i].order) == 0
-            &&& i + order_pages(self.pages@[i].order) <= NUM_PAGES
+            &&& self.tracks_run(i, order_pages(self.pages@[i].order))
         }
     }
 
     /// Every page of a base's block after the base is its member.
     #[verifier::opaque]
     pub open spec fn members_wf(&self) -> bool {
-        forall|i: int, k: int| 0 <= i < NUM_PAGES && (#[trigger] self.pages@[i].kind is Base)
+        forall|i: int, k: int| self.tracks(i) && (#[trigger] self.pages@[i].kind is Base)
             && 0 < k < order_pages(self.pages@[i].order) ==> {
             &&& (#[trigger] self.pages@[i + k]).kind is Member
             &&& self.pages@[i + k].base == i
@@ -188,9 +238,9 @@ impl BlockTable {
     /// A member's base is a base whose block covers it.
     #[verifier::opaque]
     pub open spec fn member_bases_wf(&self) -> bool {
-        forall|i: int| 0 <= i < NUM_PAGES && (#[trigger] self.pages@[i].kind is Member) ==> {
+        forall|i: int| self.tracks(i) && (#[trigger] self.pages@[i].kind is Member) ==> {
             let b = self.pages@[i].base as int;
-            &&& 0 <= b < NUM_PAGES
+            &&& self.tracks(b)
             &&& self.pages@[b].kind is Base
             &&& b < i < b + order_pages(self.pages@[b].order)
         }
@@ -221,12 +271,12 @@ impl BlockTable {
     pub proof fn lemma_base(&self, i: int)
         requires
             self.bases_wf(),
-            0 <= i < NUM_PAGES,
+            self.tracks(i),
             self.pages@[i].kind is Base,
         ensures
             small_order(self.pages@[i].order),
             i % order_pages(self.pages@[i].order) == 0,
-            i + order_pages(self.pages@[i].order) <= NUM_PAGES,
+            self.tracks_run(i, order_pages(self.pages@[i].order)),
     {
         reveal(BlockTable::bases_wf);
     }
@@ -235,7 +285,7 @@ impl BlockTable {
     pub proof fn lemma_member_of(&self, i: int, j: int)
         requires
             self.members_wf(),
-            0 <= i < NUM_PAGES,
+            self.tracks(i),
             self.pages@[i].kind is Base,
             i < j < i + order_pages(self.pages@[i].order),
         ensures
@@ -251,10 +301,10 @@ impl BlockTable {
     pub proof fn lemma_member(&self, i: int)
         requires
             self.member_bases_wf(),
-            0 <= i < NUM_PAGES,
+            self.tracks(i),
             self.pages@[i].kind is Member,
         ensures
-            0 <= self.pages@[i].base < NUM_PAGES,
+            self.tracks(self.pages@[i].base as int),
             self.pages@[self.pages@[i].base as int].kind is Base,
             self.pages@[i].base < i,
             i < self.pages@[i].base + order_pages(self.pages@[self.pages@[i].base as int].order),
@@ -274,18 +324,18 @@ impl BlockTable {
     pub proof fn lemma_blocks_wf_same(pre: Self, post: Self)
         requires
             pre.blocks_wf(),
-            pre.pages@.len() == NUM_PAGES,
-            post.pages@.len() == NUM_PAGES,
-            forall|i: int| 0 <= i < NUM_PAGES ==> Self::same_block(#[trigger] pre.pages@[i], post.pages@[i]),
+            pre.pages@.len() == pre.page_count(),
+            post.pages@.len() == post.page_count(),
+            forall|i: int| pre.tracks(i) ==> Self::same_block(#[trigger] pre.pages@[i], post.pages@[i]),
         ensures
             post.blocks_wf(),
     {
         assert(post.bases_wf()) by {
             reveal(BlockTable::bases_wf);
-            assert forall|b: int| 0 <= b < NUM_PAGES && (#[trigger] post.pages@[b].kind is Base) implies {
+            assert forall|b: int| post.tracks(b) && (#[trigger] post.pages@[b].kind is Base) implies {
                 &&& small_order(post.pages@[b].order)
                 &&& b % order_pages(post.pages@[b].order) == 0
-                &&& b + order_pages(post.pages@[b].order) <= NUM_PAGES
+                &&& post.tracks_run(b, order_pages(post.pages@[b].order))
             } by {
                 assert(Self::same_block(pre.pages@[b], post.pages@[b]));
                 pre.lemma_base(b);
@@ -293,7 +343,7 @@ impl BlockTable {
         }
         assert(post.members_wf()) by {
             reveal(BlockTable::members_wf);
-            assert forall|b: int, k: int| 0 <= b < NUM_PAGES && (#[trigger] post.pages@[b].kind is Base)
+            assert forall|b: int, k: int| post.tracks(b) && (#[trigger] post.pages@[b].kind is Base)
                 && 0 < k < order_pages(post.pages@[b].order) implies {
                 &&& (#[trigger] post.pages@[b + k]).kind is Member
                 &&& post.pages@[b + k].base == b
@@ -306,9 +356,9 @@ impl BlockTable {
         }
         assert(post.member_bases_wf()) by {
             reveal(BlockTable::member_bases_wf);
-            assert forall|j: int| 0 <= j < NUM_PAGES && (#[trigger] post.pages@[j].kind is Member) implies {
+            assert forall|j: int| post.tracks(j) && (#[trigger] post.pages@[j].kind is Member) implies {
                 let b = post.pages@[j].base as int;
-                &&& 0 <= b < NUM_PAGES
+                &&& post.tracks(b)
                 &&& post.pages@[b].kind is Base
                 &&& b < j < b + order_pages(post.pages@[b].order)
             } by {
@@ -324,8 +374,8 @@ impl BlockTable {
     pub proof fn lemma_blocks_disjoint(&self, a: int, b: int, i: int)
         requires
             self.wf(),
-            0 <= a < NUM_PAGES,
-            0 <= b < NUM_PAGES,
+            self.tracks(a),
+            self.tracks(b),
             a != b,
             self.pages@[a].kind is Base,
             self.pages@[b].kind is Base,
@@ -349,7 +399,7 @@ impl BlockTable {
             self.counts_wf(),
             0 <= r < NUM_2M,
             self.count_2m@[r] == 0,
-            0 <= i < NUM_PAGES,
+            self.tracks(i),
             region_2m(i) == r,
         ensures
             self.pages@[i].kind is Free,
@@ -364,7 +414,7 @@ impl BlockTable {
             self.counts_wf(),
             0 <= r < NUM_1G,
             self.count_1g@[r] == 0,
-            0 <= i < NUM_PAGES,
+            self.tracks(i),
             region_1g(i) == r,
         ensures
             self.pages@[i].kind is Free,
@@ -373,7 +423,7 @@ impl BlockTable {
         self.in_1g@[r].lemma_len0_is_empty();
         assert(!self.in_1g@[region_1g(i)].contains(i));
         let b = region_2m(i) * 512;
-        assert(0 <= b < NUM_PAGES);
+        assert(self.tracks(b));
         assert(region_1g(b) == r);
         assert(b % 512 == 0 && b / 512 == region_2m(i));
         assert(self.in_1g@[region_1g(b)].contains(b) == (!(self.pages@[b].kind is Free)
@@ -386,7 +436,7 @@ impl BlockTable {
         requires
             self.counts_wf(),
             self.large_wf(),
-            0 <= i < NUM_PAGES,
+            self.tracks(i),
             !(self.pages@[i].kind is Free),
         ensures
             !self.covered(i),
@@ -448,19 +498,21 @@ impl BlockTable {
             old(self).regions_1g.wf(),
         ensures
             final(self).wf(),
-            forall|i: int| 0 <= i < NUM_PAGES ==> #[trigger] final(self).pages@[i].kind is Reserved,
-            forall|i: int| 0 <= i < NUM_PAGES ==> #[trigger] final(self).pages@[i].object is None,
+            forall|i: int| final(self).tracks(i) ==> #[trigger] final(self).pages@[i].kind is Reserved,
+            forall|i: int| final(self).tracks(i) ==> #[trigger] final(self).pages@[i].object is None,
             forall|r: int| 0 <= r < NUM_2M ==> !(#[trigger] final(self).regions_2m@[r]).typed,
             forall|r: int| 0 <= r < NUM_1G ==> !(#[trigger] final(self).regions_1g@[r]).typed,
     {
+        let n = self.page_count();
         let mut i = 0;
-        while i != NUM_PAGES
+        while i != n
             invariant
-                0 <= i <= NUM_PAGES,
+                n == self.page_count(),
+                i <= n,
                 self.pages.wf(),
                 forall|j: int| 0 <= j < i ==> #[trigger] self.pages@[j].kind is Reserved,
                 forall|j: int| 0 <= j < i ==> #[trigger] self.pages@[j].object is None,
-            decreases NUM_PAGES - i,
+            decreases n - i,
         {
             self.pages.set(i, PageEntry {
                 kind: PageKind::Reserved,
@@ -531,7 +583,7 @@ impl BlockTable {
             old(self).counts_wf(),
             old(self).large_wf(),
             old(self).free_wf(),
-            i < NUM_PAGES,
+            old(self).tracks(i as int),
             !(old(self).pages@[i as int].kind is Free),
             perm.addr() == i * 4096,
             perm.is_uninit(),
@@ -587,7 +639,7 @@ impl BlockTable {
             } by {
                 assert(pre.in_1g@[r].finite());
             }
-            assert forall|j: int| 0 <= j < NUM_PAGES implies {
+            assert forall|j: int| me.tracks(j) implies {
                 &&& me.in_2m@[region_2m(j)].contains(j) == !(#[trigger] me.pages@[j].kind is Free)
                 &&& me.in_1g@[region_1g(j)].contains(j) == (!(me.pages@[j].kind is Free)
                     || (j % 512 == 0 && me.regions_2m@[j / 512].typed))
@@ -604,7 +656,7 @@ impl BlockTable {
                 me.count_1g@[r] == 0 by {
                 assert(pre.regions_1g@[r].typed);
             }
-            assert forall|j: usize| j < NUM_PAGES implies
+            assert forall|j: usize| me.tracks(j as int) implies
                 (#[trigger] me.free_perms@.contains_key(j)
                     == (me.pages@[j as int].kind is Free && !me.covered(j as int))) by {
                 assert(pre.free_perms@.contains_key(j)
@@ -619,7 +671,7 @@ impl BlockTable {
             old(self).counts_wf(),
             old(self).large_wf(),
             old(self).free_wf(),
-            i < NUM_PAGES,
+            old(self).tracks(i as int),
             old(self).pages@[i as int].kind is Free,
             !old(self).covered(i as int),
             !(entry.kind is Free),
@@ -674,7 +726,7 @@ impl BlockTable {
             } by {
                 assert(pre.in_1g@[r].finite());
             }
-            assert forall|j: int| 0 <= j < NUM_PAGES implies {
+            assert forall|j: int| me.tracks(j) implies {
                 &&& me.in_2m@[region_2m(j)].contains(j) == !(#[trigger] me.pages@[j].kind is Free)
                 &&& me.in_1g@[region_1g(j)].contains(j) == (!(me.pages@[j].kind is Free)
                     || (j % 512 == 0 && me.regions_2m@[j / 512].typed))
@@ -691,7 +743,7 @@ impl BlockTable {
                 me.count_1g@[r] == 0 by {
                 assert(pre.regions_1g@[r].typed);
             }
-            assert forall|j: usize| j < NUM_PAGES implies
+            assert forall|j: usize| me.tracks(j as int) implies
                 (#[trigger] me.free_perms@.contains_key(j)
                     == (me.pages@[j as int].kind is Free && !me.covered(j as int))) by {
                 assert(pre.free_perms@.contains_key(j)
@@ -735,7 +787,7 @@ impl BlockTable {
                 (#[trigger] me.regions_2m@[j]).typed == pre.regions_2m@[j].typed by {}
             assert forall|j: int| 0 <= j < NUM_1G implies
                 (#[trigger] me.regions_1g@[j]).typed == pre.regions_1g@[j].typed by {}
-            assert forall|j: int| 0 <= j < NUM_PAGES implies {
+            assert forall|j: int| me.tracks(j) implies {
                 &&& me.in_2m@[region_2m(j)].contains(j) == !(#[trigger] me.pages@[j].kind is Free)
                 &&& me.in_1g@[region_1g(j)].contains(j) == (!(me.pages@[j].kind is Free)
                     || (j % 512 == 0 && me.regions_2m@[j / 512].typed))
@@ -752,13 +804,13 @@ impl BlockTable {
                 me.count_1g@[j] == 0 by {
                 assert(pre.regions_1g@[j].typed);
             }
-            assert forall|j: usize| j < NUM_PAGES implies
+            assert forall|j: usize| me.tracks(j as int) implies
                 (#[trigger] me.free_perms@.contains_key(j)
                     == (me.pages@[j as int].kind is Free && !me.covered(j as int))) by {
                 assert(pre.free_perms@.contains_key(j)
                     == (pre.pages@[j as int].kind is Free && !pre.covered(j as int)));
             }
-            assert forall|j: int| 0 <= j < NUM_PAGES
+            assert forall|j: int| me.tracks(j)
                 implies Self::same_block(#[trigger] pre.pages@[j], me.pages@[j]) by {}
             Self::lemma_blocks_wf_same(pre, me);
         }
@@ -788,7 +840,7 @@ impl BlockTable {
     pub fn object_of(&self, base: usize) -> (ret: ObjectType)
         requires
             self.wf(),
-            base < NUM_PAGES,
+            self.tracks(base as int),
         ensures
             ret == self.pages@[base as int].object,
     {
@@ -961,7 +1013,7 @@ impl BlockTable {
         proof {
             taken = self.free_perms.borrow_mut().tracked_remove_keys(keys);
             let me = *self;
-            assert forall|j: int| 0 <= j < NUM_PAGES implies {
+            assert forall|j: int| me.tracks(j) implies {
                 &&& me.in_2m@[region_2m(j)].contains(j) == !(#[trigger] me.pages@[j].kind is Free)
                 &&& me.in_1g@[region_1g(j)].contains(j) == (!(me.pages@[j].kind is Free)
                     || (j % 512 == 0 && me.regions_2m@[j / 512].typed))
@@ -991,20 +1043,20 @@ impl BlockTable {
                 assert(pre.regions_1g@[j].typed);
             }
             assert forall|j: usize| #[trigger] me.free_perms@.contains_key(j) implies {
-                &&& j < NUM_PAGES
+                &&& me.tracks(j as int)
                 &&& me.free_perms@[j].addr() == j * 4096
                 &&& me.free_perms@[j].is_uninit()
             } by {
                 assert(pre.free_perms@.contains_key(j));
             }
-            assert forall|j: usize| j < NUM_PAGES implies
+            assert forall|j: usize| me.tracks(j as int) implies
                 (#[trigger] me.free_perms@.contains_key(j)
                     == (me.pages@[j as int].kind is Free && !me.covered(j as int))) by {
                 assert(pre.free_perms@.contains_key(j)
                     == (pre.pages@[j as int].kind is Free && !pre.covered(j as int)));
                 assert(keys.contains(j) == (region_2m(j as int) == r));
             }
-            assert forall|j: int| 0 <= j < NUM_PAGES
+            assert forall|j: int| me.tracks(j)
                 implies Self::same_block(#[trigger] pre.pages@[j], me.pages@[j]) by {}
             Self::lemma_blocks_wf_same(pre, me);
             assert forall|i: usize| keys.contains(i) implies #[trigger] holds(taken, i) by {
@@ -1031,7 +1083,7 @@ impl BlockTable {
             final(self).regions_1g@ == old(self).regions_1g@,
             !old(self).regions_2m@[r as int].typed,
             !old(self).regions_1g@[r as int / 512].typed,
-            forall|i: int| 0 <= i < NUM_PAGES ==> #[trigger] final(self).pages@[i]
+            forall|i: int| final(self).tracks(i) ==> #[trigger] final(self).pages@[i]
                 == if region_2m(i) == r { free_entry() } else { old(self).pages@[i] },
     {
         let ghost pre = *old(self);
@@ -1050,7 +1102,7 @@ impl BlockTable {
                 r < NUM_2M,
                 first == r * 512,
                 self.pages.wf(),
-                forall|i: int| 0 <= i < NUM_PAGES ==> #[trigger] self.pages@[i]
+                forall|i: int| self.tracks(i) ==> #[trigger] self.pages@[i]
                     == if first <= i < first + k { free_entry() } else { pre.pages@[i] },
                 self.regions_2m == pre.regions_2m,
                 self.regions_1g == pre.regions_1g,
@@ -1095,7 +1147,7 @@ impl BlockTable {
         self.regions_2m.set(r, RegionEntry { typed: true, dead: false, torn_down: false, refs: 1 });
         proof {
             let me = *self;
-            assert forall|i: int| 0 <= i < NUM_PAGES implies #[trigger] me.pages@[i]
+            assert forall|i: int| me.tracks(i) implies #[trigger] me.pages@[i]
                 == if region_2m(i) == r { free_entry() } else { pre.pages@[i] } by {
                 assert((first <= i < first + 512) == (region_2m(i) == r));
             }
@@ -1113,7 +1165,7 @@ impl BlockTable {
             } by {
                 assert(pre.in_1g@[j].finite());
             }
-            assert forall|j: int| 0 <= j < NUM_PAGES implies {
+            assert forall|j: int| me.tracks(j) implies {
                 &&& me.in_2m@[region_2m(j)].contains(j) == !(#[trigger] me.pages@[j].kind is Free)
                 &&& me.in_1g@[region_1g(j)].contains(j) == (!(me.pages@[j].kind is Free)
                     || (j % 512 == 0 && me.regions_2m@[j / 512].typed))
@@ -1139,14 +1191,14 @@ impl BlockTable {
                 me.count_1g@[j] == 0 by {
                 assert(pre.regions_1g@[j].typed);
             }
-            assert forall|j: usize| j < NUM_PAGES implies
+            assert forall|j: usize| me.tracks(j as int) implies
                 (#[trigger] me.free_perms@.contains_key(j)
                     == (me.pages@[j as int].kind is Free && !me.covered(j as int))) by {
                 assert(pre.free_perms@.contains_key(j)
                     == (pre.pages@[j as int].kind is Free && !pre.covered(j as int)));
                 assert((first <= j < first + 512) == (region_2m(j as int) == r));
             }
-            assert forall|j: int| 0 <= j < NUM_PAGES
+            assert forall|j: int| me.tracks(j)
                 implies Self::same_block(#[trigger] pre.pages@[j], me.pages@[j]) by {
                 assert((first <= j < first + 512) == (region_2m(j) == r));
             }
@@ -1204,7 +1256,7 @@ impl BlockTable {
         proof {
             taken = self.free_perms.borrow_mut().tracked_remove_keys(keys);
             let me = *self;
-            assert forall|j: int| 0 <= j < NUM_PAGES implies {
+            assert forall|j: int| me.tracks(j) implies {
                 &&& me.in_2m@[region_2m(j)].contains(j) == !(#[trigger] me.pages@[j].kind is Free)
                 &&& me.in_1g@[region_1g(j)].contains(j) == (!(me.pages@[j].kind is Free)
                     || (j % 512 == 0 && me.regions_2m@[j / 512].typed))
@@ -1227,20 +1279,20 @@ impl BlockTable {
                 }
             }
             assert forall|j: usize| #[trigger] me.free_perms@.contains_key(j) implies {
-                &&& j < NUM_PAGES
+                &&& me.tracks(j as int)
                 &&& me.free_perms@[j].addr() == j * 4096
                 &&& me.free_perms@[j].is_uninit()
             } by {
                 assert(pre.free_perms@.contains_key(j));
             }
-            assert forall|j: usize| j < NUM_PAGES implies
+            assert forall|j: usize| me.tracks(j as int) implies
                 (#[trigger] me.free_perms@.contains_key(j)
                     == (me.pages@[j as int].kind is Free && !me.covered(j as int))) by {
                 assert(pre.free_perms@.contains_key(j)
                     == (pre.pages@[j as int].kind is Free && !pre.covered(j as int)));
                 assert(keys.contains(j) == (region_1g(j as int) == r));
             }
-            assert forall|j: int| 0 <= j < NUM_PAGES
+            assert forall|j: int| me.tracks(j)
                 implies Self::same_block(#[trigger] pre.pages@[j], me.pages@[j]) by {}
             Self::lemma_blocks_wf_same(pre, me);
             assert forall|i: usize| keys.contains(i) implies #[trigger] holds(taken, i) by {
@@ -1293,7 +1345,7 @@ impl BlockTable {
         proof {
             self.free_perms.borrow_mut().tracked_union_prefer_right(perms);
             let me = *self;
-            assert forall|j: int| 0 <= j < NUM_PAGES implies {
+            assert forall|j: int| me.tracks(j) implies {
                 &&& me.in_2m@[region_2m(j)].contains(j) == !(#[trigger] me.pages@[j].kind is Free)
                 &&& me.in_1g@[region_1g(j)].contains(j) == (!(me.pages@[j].kind is Free)
                     || (j % 512 == 0 && me.regions_2m@[j / 512].typed))
@@ -1321,7 +1373,7 @@ impl BlockTable {
                 assert(pre.regions_1g@[j].typed);
             }
             assert forall|j: usize| #[trigger] me.free_perms@.contains_key(j) implies {
-                &&& j < NUM_PAGES
+                &&& me.tracks(j as int)
                 &&& me.free_perms@[j].addr() == j * 4096
                 &&& me.free_perms@[j].is_uninit()
             } by {
@@ -1331,7 +1383,7 @@ impl BlockTable {
                     assert(pre.free_perms@.contains_key(j));
                 }
             }
-            assert forall|j: usize| j < NUM_PAGES implies
+            assert forall|j: usize| me.tracks(j as int) implies
                 (#[trigger] me.free_perms@.contains_key(j)
                     == (me.pages@[j as int].kind is Free && !me.covered(j as int))) by {
                 assert(pre.free_perms@.contains_key(j)
@@ -1341,7 +1393,7 @@ impl BlockTable {
                     pre.lemma_zero_2m_is_free(r as int, j as int);
                 }
             }
-            assert forall|j: int| 0 <= j < NUM_PAGES
+            assert forall|j: int| me.tracks(j)
                 implies Self::same_block(#[trigger] pre.pages@[j], me.pages@[j]) by {}
             Self::lemma_blocks_wf_same(pre, me);
         }
@@ -1375,7 +1427,7 @@ impl BlockTable {
         proof {
             self.free_perms.borrow_mut().tracked_union_prefer_right(perms);
             let me = *self;
-            assert forall|j: int| 0 <= j < NUM_PAGES implies {
+            assert forall|j: int| me.tracks(j) implies {
                 &&& me.in_2m@[region_2m(j)].contains(j) == !(#[trigger] me.pages@[j].kind is Free)
                 &&& me.in_1g@[region_1g(j)].contains(j) == (!(me.pages@[j].kind is Free)
                     || (j % 512 == 0 && me.regions_2m@[j / 512].typed))
@@ -1393,7 +1445,7 @@ impl BlockTable {
                 assert(pre.regions_1g@[j].typed);
             }
             assert forall|j: usize| #[trigger] me.free_perms@.contains_key(j) implies {
-                &&& j < NUM_PAGES
+                &&& me.tracks(j as int)
                 &&& me.free_perms@[j].addr() == j * 4096
                 &&& me.free_perms@[j].is_uninit()
             } by {
@@ -1403,7 +1455,7 @@ impl BlockTable {
                     assert(pre.free_perms@.contains_key(j));
                 }
             }
-            assert forall|j: usize| j < NUM_PAGES implies
+            assert forall|j: usize| me.tracks(j as int) implies
                 (#[trigger] me.free_perms@.contains_key(j)
                     == (me.pages@[j as int].kind is Free && !me.covered(j as int))) by {
                 assert(pre.free_perms@.contains_key(j)
@@ -1413,7 +1465,7 @@ impl BlockTable {
                     pre.lemma_zero_1g_is_free(r as int, j as int);
                 }
             }
-            assert forall|j: int| 0 <= j < NUM_PAGES
+            assert forall|j: int| me.tracks(j)
                 implies Self::same_block(#[trigger] pre.pages@[j], me.pages@[j]) by {}
             Self::lemma_blocks_wf_same(pre, me);
         }
@@ -1423,7 +1475,7 @@ impl BlockTable {
     pub fn add_free(&mut self, i: usize, Tracked(perm): Tracked<PagePerm4k>)
         requires
             old(self).wf(),
-            i < NUM_PAGES,
+            old(self).tracks(i as int),
             old(self).pages@[i as int].kind is Reserved,
             perm.addr() == i * 4096,
             perm.is_uninit(),
@@ -1437,7 +1489,7 @@ impl BlockTable {
         self.give_page(i, Tracked(perm));
         proof {
             let me = *self;
-            assert forall|j: int| 0 <= j < NUM_PAGES
+            assert forall|j: int| me.tracks(j)
                 implies Self::same_block(#[trigger] pre.pages@[j], me.pages@[j]) by {}
             Self::lemma_blocks_wf_same(pre, me);
         }
@@ -1450,7 +1502,7 @@ impl BlockTable {
             old(self).wf(),
             small_order(order),
             base % (order_pages(order) as usize) == 0,
-            base + order_pages(order) <= NUM_PAGES,
+            old(self).tracks_run(base as int, order_pages(order)),
         ensures
             final(self).wf(),
             ret is None ==> *final(self) == *old(self),
@@ -1469,7 +1521,7 @@ impl BlockTable {
                 &&& final(self).pages@[base as int].refs == 1
                 &&& !final(self).pages@[base as int].dead
                 &&& !final(self).pages@[base as int].torn_down
-                &&& forall|i: int| 0 <= i < NUM_PAGES && !(base <= i < base + order_pages(order))
+                &&& forall|i: int| final(self).tracks(i) && !(base <= i < base + order_pages(order))
                     ==> #[trigger] final(self).pages@[i] == old(self).pages@[i]
                 &&& forall|k: int| 0 < k < order_pages(order) ==> (#[trigger] final(self).pages@[base + k]).object is None
                 &&& forall|k: usize| k < order_pages(order) ==> {
@@ -1491,7 +1543,7 @@ impl BlockTable {
                 *self == pre,
                 size as int == order_pages(order),
                 0 <= k <= size,
-                base + size <= NUM_PAGES,
+                self.tracks_run(base as int, size as int),
                 forall|j: int| 0 <= j < k ==> #[trigger] pre.pages@[base + j].kind is Free,
             decreases size - k,
         {
@@ -1515,10 +1567,10 @@ impl BlockTable {
                 size as int == order_pages(order),
                 small_order(order),
                 0 <= k <= size,
-                base + size <= NUM_PAGES,
+                self.tracks_run(base as int, size as int),
                 forall|j: int| k <= j < size ==> #[trigger] self.pages@[base + j].kind is Free,
                 forall|j: int| 0 <= j < size ==> #[trigger] pre.pages@[base + j].kind is Free,
-                forall|i: int| 0 <= i < NUM_PAGES && !(base <= i < base + size)
+                forall|i: int| self.tracks(i) && !(base <= i < base + size)
                     ==> #[trigger] self.pages@[i] == pre.pages@[i],
                 k > 0 ==> self.pages@[base as int] == (PageEntry {
                     kind: PageKind::Base, object, base, order, dead: false, torn_down: false, refs: 1,
@@ -1585,16 +1637,16 @@ impl BlockTable {
     proof fn lemma_typed_blocks_wf(&self, pre: Self, base: int, order: usize)
         requires
             pre.blocks_wf(),
-            pre.pages@.len() == NUM_PAGES,
-            self.pages@.len() == NUM_PAGES,
+            pre.pages@.len() == pre.page_count(),
+            self.pages@.len() == self.page_count(),
             small_order(order),
             base % order_pages(order) == 0,
             0 <= base,
-            base + order_pages(order) <= NUM_PAGES,
+            self.tracks_run(base, order_pages(order)),
             self.pages@[base].kind is Base,
             self.pages@[base].order == order,
             forall|j: int| 0 <= j < order_pages(order) ==> #[trigger] pre.pages@[base + j].kind is Free,
-            forall|i: int| 0 <= i < NUM_PAGES && !(base <= i < base + order_pages(order))
+            forall|i: int| self.tracks(i) && !(base <= i < base + order_pages(order))
                 ==> #[trigger] self.pages@[i] == pre.pages@[i],
             forall|j: int| 0 < j < order_pages(order) ==> {
                 &&& (#[trigger] self.pages@[base + j]).kind is Member
@@ -1606,10 +1658,10 @@ impl BlockTable {
         let size = order_pages(order);
         assert(self.bases_wf()) by {
             reveal(BlockTable::bases_wf);
-            assert forall|b: int| 0 <= b < NUM_PAGES && (#[trigger] self.pages@[b].kind is Base) implies {
+            assert forall|b: int| self.tracks(b) && (#[trigger] self.pages@[b].kind is Base) implies {
                 &&& small_order(self.pages@[b].order)
                 &&& b % order_pages(self.pages@[b].order) == 0
-                &&& b + order_pages(self.pages@[b].order) <= NUM_PAGES
+                &&& self.tracks_run(b, order_pages(self.pages@[b].order))
             } by {
                 if b == base {
                 } else if base < b < base + size {
@@ -1622,7 +1674,7 @@ impl BlockTable {
         }
         assert(self.members_wf()) by {
             reveal(BlockTable::members_wf);
-            assert forall|b: int, k: int| 0 <= b < NUM_PAGES && (#[trigger] self.pages@[b].kind is Base)
+            assert forall|b: int, k: int| self.tracks(b) && (#[trigger] self.pages@[b].kind is Base)
                 && 0 < k < order_pages(self.pages@[b].order) implies {
                 &&& (#[trigger] self.pages@[b + k]).kind is Member
                 &&& self.pages@[b + k].base == b
@@ -1643,9 +1695,9 @@ impl BlockTable {
         }
         assert(self.member_bases_wf()) by {
             reveal(BlockTable::member_bases_wf);
-            assert forall|j: int| 0 <= j < NUM_PAGES && (#[trigger] self.pages@[j].kind is Member) implies {
+            assert forall|j: int| self.tracks(j) && (#[trigger] self.pages@[j].kind is Member) implies {
                 let b = self.pages@[j].base as int;
-                &&& 0 <= b < NUM_PAGES
+                &&& self.tracks(b)
                 &&& self.pages@[b].kind is Base
                 &&& b < j < b + order_pages(self.pages@[b].order)
             } by {
@@ -1671,7 +1723,7 @@ impl BlockTable {
     fn set_base(&mut self, base: usize, entry: PageEntry)
         requires
             old(self).wf(),
-            base < NUM_PAGES,
+            old(self).tracks(base as int),
             old(self).pages@[base as int].kind is Base,
             entry.kind is Base,
             entry.order == old(self).pages@[base as int].order,
@@ -1686,20 +1738,20 @@ impl BlockTable {
         proof {
             let me = *self;
             assert(me.pages@ =~= pre.pages@.update(base as int, entry));
-            assert forall|j: int| 0 <= j < NUM_PAGES implies {
+            assert forall|j: int| me.tracks(j) implies {
                 &&& me.in_2m@[region_2m(j)].contains(j) == !(#[trigger] me.pages@[j].kind is Free)
                 &&& me.in_1g@[region_1g(j)].contains(j) == (!(me.pages@[j].kind is Free)
                     || (j % 512 == 0 && me.regions_2m@[j / 512].typed))
             } by {
                 assert(pre.in_2m@[region_2m(j)].contains(j) == !(pre.pages@[j].kind is Free));
             }
-            assert forall|i: usize| i < NUM_PAGES implies
+            assert forall|i: usize| me.tracks(i as int) implies
                 (#[trigger] me.free_perms@.contains_key(i)
                     == (me.pages@[i as int].kind is Free && !me.covered(i as int))) by {
                 assert(pre.free_perms@.contains_key(i)
                     == (pre.pages@[i as int].kind is Free && !pre.covered(i as int)));
             }
-            assert forall|j: int| 0 <= j < NUM_PAGES
+            assert forall|j: int| me.tracks(j)
                 implies Self::same_block(#[trigger] pre.pages@[j], me.pages@[j]) by {}
             Self::lemma_blocks_wf_same(pre, me);
         }
@@ -1709,7 +1761,7 @@ impl BlockTable {
     pub fn mark_dead(&mut self, base: usize)
         requires
             old(self).wf(),
-            base < NUM_PAGES,
+            old(self).tracks(base as int),
             old(self).pages@[base as int].kind is Base,
         ensures
             final(self).wf(),
@@ -1726,7 +1778,7 @@ impl BlockTable {
     pub fn mark_torn_down(&mut self, base: usize)
         requires
             old(self).wf(),
-            base < NUM_PAGES,
+            old(self).tracks(base as int),
             old(self).pages@[base as int].kind is Base,
             old(self).pages@[base as int].dead,
         ensures
@@ -1744,7 +1796,7 @@ impl BlockTable {
     pub fn add_ref(&mut self, base: usize) -> (added: bool)
         requires
             old(self).wf(),
-            base < NUM_PAGES,
+            old(self).tracks(base as int),
             old(self).pages@[base as int].kind is Base,
         ensures
             final(self).wf(),
@@ -1767,7 +1819,7 @@ impl BlockTable {
     pub fn drop_ref(&mut self, base: usize)
         requires
             old(self).wf(),
-            base < NUM_PAGES,
+            old(self).tracks(base as int),
             old(self).pages@[base as int].kind is Base,
             old(self).pages@[base as int].refs > 0,
         ensures
@@ -1786,7 +1838,7 @@ impl BlockTable {
     pub fn free_block(&mut self, base: usize, Tracked(perms): Tracked<Map<usize, PagePerm4k>>)
         requires
             old(self).wf(),
-            base < NUM_PAGES,
+            old(self).tracks(base as int),
             old(self).pages@[base as int].kind is Base,
             old(self).pages@[base as int].dead,
             old(self).pages@[base as int].torn_down,
@@ -1800,7 +1852,7 @@ impl BlockTable {
             final(self).wf(),
             final(self).regions_2m@ == old(self).regions_2m@,
             final(self).regions_1g@ == old(self).regions_1g@,
-            forall|i: int| 0 <= i < NUM_PAGES ==> #[trigger] final(self).pages@[i] == (
+            forall|i: int| final(self).tracks(i) ==> #[trigger] final(self).pages@[i] == (
                 if old(self).in_block(base as int, i) { free_entry() } else { old(self).pages@[i] }),
     {
         let ghost pre = *old(self);
@@ -1824,11 +1876,11 @@ impl BlockTable {
                 order == pre.pages@[base as int].order,
                 pre.pages@[base as int].kind is Base,
                 0 <= k <= size,
-                base < NUM_PAGES,
-                base + size <= NUM_PAGES,
+                self.tracks(base as int),
+                self.tracks_run(base as int, size as int),
                 forall|j: int| 0 <= j < k ==> #[trigger] self.pages@[base + j] == free_entry(),
                 forall|j: int| k <= j < size ==> #[trigger] self.pages@[base + j] == pre.pages@[base + j],
-                forall|i: int| 0 <= i < NUM_PAGES && !(base <= i < base + size)
+                forall|i: int| self.tracks(i) && !(base <= i < base + size)
                     ==> #[trigger] self.pages@[i] == pre.pages@[i],
                 forall|j: usize| k <= j < size ==> #[trigger] holds(perms, (base + j) as usize),
                 self.regions_2m@ == pre.regions_2m@,
@@ -1855,7 +1907,7 @@ impl BlockTable {
         }
         proof {
             let me = *self;
-            assert forall|i: int| 0 <= i < NUM_PAGES implies #[trigger] me.pages@[i] == (
+            assert forall|i: int| me.tracks(i) implies #[trigger] me.pages@[i] == (
                 if pre.in_block(base as int, i) { free_entry() } else { pre.pages@[i] }) by {
                 if pre.in_block(base as int, i) {
                     assert(me.pages@[base + (i - base)] == free_entry());
@@ -1870,28 +1922,28 @@ impl BlockTable {
     proof fn lemma_freed_blocks_wf(&self, pre: Self, base: int)
         requires
             pre.blocks_wf(),
-            pre.pages@.len() == NUM_PAGES,
-            self.pages@.len() == NUM_PAGES,
-            0 <= base < NUM_PAGES,
+            pre.pages@.len() == pre.page_count(),
+            self.pages@.len() == self.page_count(),
+            self.tracks(base),
             pre.pages@[base].kind is Base,
-            forall|i: int| 0 <= i < NUM_PAGES ==> #[trigger] self.pages@[i] == (
+            forall|i: int| self.tracks(i) ==> #[trigger] self.pages@[i] == (
                 if pre.in_block(base, i) { free_entry() } else { pre.pages@[i] }),
         ensures
             self.blocks_wf(),
     {
         assert(self.bases_wf()) by {
             reveal(BlockTable::bases_wf);
-            assert forall|b: int| 0 <= b < NUM_PAGES && (#[trigger] self.pages@[b].kind is Base) implies {
+            assert forall|b: int| self.tracks(b) && (#[trigger] self.pages@[b].kind is Base) implies {
                 &&& small_order(self.pages@[b].order)
                 &&& b % order_pages(self.pages@[b].order) == 0
-                &&& b + order_pages(self.pages@[b].order) <= NUM_PAGES
+                &&& self.tracks_run(b, order_pages(self.pages@[b].order))
             } by {
                 pre.lemma_base(b);
             }
         }
         assert(self.members_wf()) by {
             reveal(BlockTable::members_wf);
-            assert forall|b: int, k: int| 0 <= b < NUM_PAGES && (#[trigger] self.pages@[b].kind is Base)
+            assert forall|b: int, k: int| self.tracks(b) && (#[trigger] self.pages@[b].kind is Base)
                 && 0 < k < order_pages(self.pages@[b].order) implies {
                 &&& (#[trigger] self.pages@[b + k]).kind is Member
                 &&& self.pages@[b + k].base == b
@@ -1905,9 +1957,9 @@ impl BlockTable {
         }
         assert(self.member_bases_wf()) by {
             reveal(BlockTable::member_bases_wf);
-            assert forall|j: int| 0 <= j < NUM_PAGES && (#[trigger] self.pages@[j].kind is Member) implies {
+            assert forall|j: int| self.tracks(j) && (#[trigger] self.pages@[j].kind is Member) implies {
                 let b = self.pages@[j].base as int;
-                &&& 0 <= b < NUM_PAGES
+                &&& self.tracks(b)
                 &&& self.pages@[b].kind is Base
                 &&& b < j < b + order_pages(self.pages@[b].order)
             } by {
