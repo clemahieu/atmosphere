@@ -181,6 +181,19 @@ impl CapKernel {
                 &&& final(self).root_space(process) == s
                 &&& final(self).processes == old(self).processes
                 &&& final(self).threads == old(self).threads
+                &&& final(self).list.seq@[0] == root
+                &&& final(self).tables.roots == old(self).tables.roots
+                &&& forall|j: int| 0 <= j < NODE_SPACE && #[trigger] old(self).list.nodes@[j].live ==> final(self).list.nodes@[j].live
+                &&& forall|a: int, u: int| #![trigger crate::capability::boot_map::frame_slot(runs@, a, u)]
+                    0 <= a < runs@.len() && 0 <= u < run_image_blocks(runs@[a]).len() ==> {
+                    let fb = run_image_blocks(runs@[a])[u];
+                    final(self).slot_holds(
+                        process,
+                        crate::capability::boot_map::frame_slot(runs@, a, u),
+                        (leaf2 + 1 + image_offset(runs@, a) + u) as usize,
+                        boot_frame_payload((fb.0 * 4096) as usize, fb.1 as u8, image_rights(runs@[a])),
+                    )
+                }
                 &&& forall|a: int, x: int| 0 <= a < runs@.len() && #[trigger] in_virt_at(runs@, a, x) ==> {
                     &&& space_mapping(b0, s).contains_key(page_path(x))
                     &&& space_mapping(b0, s)[page_path(x)] == image_entry(runs@[a], x)
@@ -320,6 +333,36 @@ impl CapKernel {
                 assert(tab.is_cap(x) && tab.payload_of(x) == mid.payload_of(x));
                 tab.lemma_slot_bound(x);
                 assert(post.list.nodes@[x as int].live && post.list.nodes@[x as int].kind == tab.list.nodes@[x as int].kind);
+            }
+            // What the composed boot reads of the root's table afterwards: its roots, every live node,
+            // and each frame slot.
+            assert(post.list.seq@[0] == root);
+            assert(post.tables.roots == pre.tables.roots);
+            assert forall|j: int| 0 <= j < NODE_SPACE && #[trigger] pre.list.nodes@[j].live implies post.list.nodes@[j].live by {
+                assert(!(leaf2 + 1 <= j < leaf2 + 1 + count));
+                assert(mid.list.nodes@[j].live);
+                assert(tab.list.nodes@[j].live);
+            }
+            assert forall|a: int, u: int| #![trigger crate::capability::boot_map::frame_slot(runs@, a, u)]
+                0 <= a < runs@.len() && 0 <= u < run_image_blocks(runs@[a]).len() implies {
+                let fb = run_image_blocks(runs@[a])[u];
+                post.slot_holds(
+                    process,
+                    crate::capability::boot_map::frame_slot(runs@, a, u),
+                    (leaf2 + 1 + image_offset(runs@, a) + u) as usize,
+                    boot_frame_payload((fb.0 * 4096) as usize, fb.1 as u8, image_rights(runs@[a])),
+                )
+            } by {
+                let fb = run_image_blocks(runs@[a])[u];
+                let i = crate::capability::boot_map::frame_slot(runs@, a, u);
+                let nf = (leaf2 + 1 + image_offset(runs@, a) + u) as usize;
+                assert(tab.root_frame_at(root, process, leaf2, image_offset(runs@, a) + u, fb, image_rights(runs@[a])));
+                assert(i == (ROOT_FRAME_SLOT + (image_offset(runs@, a) + u)) as usize);
+                Self::lemma_slot_stays(tab, post, process, i);
+                tab.lemma_slot_bound(nf);
+                assert(post.list.nodes@[nf as int].live && post.list.nodes@[nf as int].kind == tab.list.nodes@[nf as int].kind);
+                assert(post.is_cap(nf));
+                assert(post.payload_of(nf) == tab.payload_of(nf));
             }
             assert(post.wf());
             assert(count == image_blocks(runs@).len());

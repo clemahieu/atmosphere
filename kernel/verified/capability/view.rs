@@ -142,6 +142,34 @@ impl CapKernel {
         assert(page_of(n) == leaf);
     }
 
+    /// Index i of the table at root is a slot, of node n, and n is a capability saying p.
+    pub open spec fn slot_holds(&self, root: usize, i: usize, n: usize, p: Payload) -> bool {
+        &&& self.tables.has_slot(&self.list, root, i)
+        &&& self.tables.node_of(root, i) == n
+        &&& self.is_cap(n)
+        &&& self.payload_of(n) == p
+    }
+
+    /// A slot stays a slot of the same node while the tables' roots stay and no live node dies.
+    pub proof fn lemma_slot_stays(pre: Self, post: Self, root: usize, i: usize)
+        requires
+            pre.wf(),
+            pre.tables.has_slot(&pre.list, root, i),
+            post.tables.roots == pre.tables.roots,
+            forall|j: int| 0 <= j < NODE_SPACE && #[trigger] pre.list.nodes@[j].live ==> post.list.nodes@[j].live,
+        ensures
+            post.tables.has_slot(&post.list, root, i),
+            post.tables.node_of(root, i) == pre.tables.node_of(root, i),
+    {
+        pre.lemma_slot(root, i);
+        let n = pre.tables.node_of(root, i);
+        pre.lemma_slot_bound(n);
+        let leaf = pre.tables.leaf(root, index_entry(i));
+        assert(leaf == page_of(n));
+        assert(leaf <= n);
+        assert(pre.list.nodes@[leaf as int].live);
+    }
+
     /// A live capability in a slot is held by that table's process.
     pub proof fn lemma_slot_is_held(&self, root: usize, i: usize)
         requires
