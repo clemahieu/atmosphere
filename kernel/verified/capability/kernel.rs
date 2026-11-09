@@ -986,7 +986,7 @@ pub open spec fn capability_nodes_are_slots(list: &Tree, tables: &Tables) -> boo
 /// A page the list holds nodes in is not free, so a newly typed block's first page is not already one,
 /// and is no block's member, so a leaf's second page is not one and its block can free whole.
 pub open spec fn list_pages_used(list: &Tree, blocks: &BlockTable) -> bool {
-    forall|p: usize| #[trigger] list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES ==> {
+    forall|p: usize| #[trigger] list.pages@.dom().contains(p) && blocks.tracks_addr(p) ==> {
         &&& !(blocks.pages@[(p / 4096) as int].kind is Free)
         &&& blocks.pages@[(p / 4096) as int].kind is Member
             ==> blocks.pages@[blocks.pages@[(p / 4096) as int].base as int].object is TablePage
@@ -1001,17 +1001,17 @@ pub proof fn lemma_list_pages_used_same_kinds(list: &Tree, a: &BlockTable, b: &B
     requires
         list_pages_used(list, a),
         a.wf(),
-        forall|i: int| 0 <= i < NUM_PAGES ==> {
+        forall|i: int| a.tracks(i) ==> {
             &&& (#[trigger] b.pages@[i]).kind == a.pages@[i].kind
             &&& b.pages@[i].object == a.pages@[i].object
         },
-        forall|i: usize| i < NUM_PAGES ==> #[trigger] block_ref(b, i) == block_ref(a, i),
+        forall|i: usize| a.tracks(i as int) ==> #[trigger] block_ref(b, i) == block_ref(a, i),
         forall|x: int| 0 <= x < NUM_2M ==> (#[trigger] b.regions_2m@[x]).typed == a.regions_2m@[x].typed,
         forall|x: int| 0 <= x < NUM_1G ==> (#[trigger] b.regions_1g@[x]).typed == a.regions_1g@[x].typed,
     ensures
         list_pages_used(list, b),
 {
-    assert forall|p: usize| #[trigger] list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES implies {
+    assert forall|p: usize| #[trigger] list.pages@.dom().contains(p) && b.tracks_addr(p) implies {
         &&& !(b.pages@[(p / 4096) as int].kind is Free)
         &&& b.pages@[(p / 4096) as int].kind is Member
             ==> b.pages@[b.pages@[(p / 4096) as int].base as int].object is TablePage
@@ -1076,7 +1076,7 @@ impl CapKernel {
             0 <= c < NUM_CPUS && #[trigger] self.tlb@[c].contains(e) ==> self.loaded(c, e.space)
         &&& forall|c: int, e: TlbEntry|
             0 <= c < NUM_CPUS && #[trigger] self.tlb@[c].contains(e) && !self.mapped@.contains(e.page)
-            ==> e.page < NUM_PAGES && self.stale_epoch.above(self.acked(c), e.page)
+            ==> self.blocks.tracks(e.page as int) && self.stale_epoch.above(self.acked(c), e.page)
         &&& self.iommus_wf()
     }
 
@@ -1091,7 +1091,7 @@ impl CapKernel {
         &&& forall|i: int| 0 <= i < NUM_IOMMUS ==> #[trigger] self.iommu_acked(i) <= self.flush_epoch
         &&& forall|i: int, e: TlbEntry|
             0 <= i < NUM_IOMMUS && #[trigger] self.iommus.tlb@[i].contains(e) && !self.mapped@.contains(e.page)
-            ==> e.page < NUM_PAGES && self.stale_epoch.above(self.iommu_acked(i), e.page)
+            ==> self.blocks.tracks(e.page as int) && self.stale_epoch.above(self.iommu_acked(i), e.page)
     }
 
     /// The IOMMU model reads nothing but itself, the epoch and the staleness record; of the command
@@ -1117,7 +1117,7 @@ impl CapKernel {
         }
         assert forall|i: int, e: TlbEntry|
             0 <= i < NUM_IOMMUS && #[trigger] post.iommus.tlb@[i].contains(e) && !post.mapped@.contains(e.page)
-            implies e.page < NUM_PAGES && post.stale_epoch.above(post.iommu_acked(i), e.page) by {
+            implies post.blocks.tracks(e.page as int) && post.stale_epoch.above(post.iommu_acked(i), e.page) by {
             assert(pre.iommus.tlb@[i].contains(e));
         }
     }
@@ -1183,7 +1183,7 @@ impl CapKernel {
 
     /// Every core and IOMMU has acknowledged f's last unmap.
     pub open spec fn acknowledged(&self, f: usize) -> bool {
-        &&& f < NUM_PAGES
+        &&& self.blocks.tracks(f as int)
         &&& self.all_acknowledged(self.stale_epoch.pages@[f as int] as int)
     }
 
@@ -1461,7 +1461,7 @@ impl CapKernel {
             old(self).wf(),
             c < NUM_CPUS,
             old(self).spaces.roots@.contains_key(s),
-            page < NUM_PAGES,
+            old(self).blocks.tracks(page as int),
             old(self).mapped@.contains(page)
                 || forall|d: int| 0 <= d < NUM_CPUS ==> old(self).stale_epoch.above(#[trigger] old(self).acked(d), page),
         ensures
@@ -1497,7 +1497,7 @@ impl CapKernel {
             }
             assert forall|d: int, g: TlbEntry|
                 0 <= d < NUM_CPUS && #[trigger] self.tlb@[d].contains(g) && !self.mapped@.contains(g.page)
-                implies g.page < NUM_PAGES && self.stale_epoch.above(self.acked(d), g.page) by {
+                implies self.blocks.tracks(g.page as int) && self.stale_epoch.above(self.acked(d), g.page) by {
                 assert(pre.acked(d) == self.acked(d));
                 if g == e {
                     assert(!pre.mapped@.contains(page));
@@ -1513,7 +1513,7 @@ impl CapKernel {
     pub fn is_acknowledged(&self, f: usize) -> (ret: bool)
         requires
             self.wf(),
-            f < NUM_PAGES,
+            self.blocks.tracks(f as int),
         ensures
             ret == self.acknowledged(f),
     {
@@ -1603,7 +1603,7 @@ impl CapKernel {
         }
         assert forall|c: int, e: TlbEntry|
             0 <= c < NUM_CPUS && #[trigger] post.tlb@[c].contains(e) && !post.mapped@.contains(e.page)
-            implies e.page < NUM_PAGES && post.stale_epoch.above(post.acked(c), e.page) by {
+            implies post.blocks.tracks(e.page as int) && post.stale_epoch.above(post.acked(c), e.page) by {
             assert(pre.tlb@[c].contains(e));
             assert(pre.acked(c) == post.acked(c));
         }
@@ -1636,7 +1636,7 @@ impl CapKernel {
         }
         assert forall|c: int, e: TlbEntry|
             0 <= c < NUM_CPUS && #[trigger] post.tlb@[c].contains(e) && !post.mapped@.contains(e.page)
-            implies e.page < NUM_PAGES && post.stale_epoch.above(post.acked(c), e.page) by {
+            implies post.blocks.tracks(e.page as int) && post.stale_epoch.above(post.acked(c), e.page) by {
             assert(pre.tlb@[c].contains(e));
             assert(pre.acked(c) == post.acked(c));
         }
@@ -1666,7 +1666,7 @@ impl CapKernel {
         }
         assert forall|c: int, e: TlbEntry|
             0 <= c < NUM_CPUS && #[trigger] post.tlb@[c].contains(e) && !post.mapped@.contains(e.page)
-            implies e.page < NUM_PAGES && post.stale_epoch.above(post.acked(c), e.page) by {
+            implies post.blocks.tracks(e.page as int) && post.stale_epoch.above(post.acked(c), e.page) by {
             assert(pre.tlb@[c].contains(e));
             assert(!pre.mapped@.contains(e.page));
             assert(pre.acked(c) == post.acked(c));
@@ -1679,7 +1679,7 @@ impl CapKernel {
         }
         assert forall|i: int, e: TlbEntry|
             0 <= i < NUM_IOMMUS && #[trigger] post.iommus.tlb@[i].contains(e) && !post.mapped@.contains(e.page)
-            implies e.page < NUM_PAGES && post.stale_epoch.above(post.iommu_acked(i), e.page) by {
+            implies post.blocks.tracks(e.page as int) && post.stale_epoch.above(post.iommu_acked(i), e.page) by {
             assert(pre.iommus.tlb@[i].contains(e));
             assert(!pre.mapped@.contains(e.page));
         }
@@ -1695,7 +1695,7 @@ impl CapKernel {
             post.table_pages == pre.table_pages,
             post.spaces == pre.spaces,
             post.mappings == pre.mappings,
-            forall|i: usize| i < NUM_PAGES && block_typed(&pre.blocks, block_ref(&pre.blocks, i))
+            forall|i: usize| pre.blocks.tracks(i as int) && block_typed(&pre.blocks, block_ref(&pre.blocks, i))
                 && block_refs(&pre.blocks, block_ref(&pre.blocks, i)) > 0
                 ==> #[trigger] block_ref(&post.blocks, i) == block_ref(&pre.blocks, i),
             forall|br: BlockRef, n: usize| pre.holders@.contains_key(br) && #[trigger] pre.holders@[br].contains(n)
@@ -1745,7 +1745,7 @@ impl CapKernel {
             post.devices == pre.devices,
             post.threads == pre.threads,
             post.processes == pre.processes,
-            forall|i: usize| i < NUM_PAGES && block_typed(&pre.blocks, block_ref(&pre.blocks, i))
+            forall|i: usize| pre.blocks.tracks(i as int) && block_typed(&pre.blocks, block_ref(&pre.blocks, i))
                 && block_refs(&pre.blocks, block_ref(&pre.blocks, i)) > 0
                 ==> #[trigger] block_ref(&post.blocks, i) == block_ref(&pre.blocks, i),
             forall|br: BlockRef, n: usize| pre.holders@.contains_key(br) && #[trigger] pre.holders@[br].contains(n)
@@ -1790,7 +1790,7 @@ impl CapKernel {
             spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
             threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
             processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
-            forall|i: usize| i < NUM_PAGES && block_typed(&pre.blocks, block_ref(&pre.blocks, i))
+            forall|i: usize| pre.blocks.tracks(i as int) && block_typed(&pre.blocks, block_ref(&pre.blocks, i))
                 && block_refs(&pre.blocks, block_ref(&pre.blocks, i)) > 0
                 ==> #[trigger] block_ref(&post.blocks, i) == block_ref(&pre.blocks, i),
             forall|br: BlockRef, n: usize| pre.holders@.contains_key(br) && #[trigger] pre.holders@[br].contains(n)
@@ -1853,7 +1853,7 @@ impl CapKernel {
             self.list.nodes@[n as int].kind is Hidden,
         ensures
             self.tables.owner@.contains_key(n) || self.table_pages.maps@.contains_key(n),
-            n / 4096 < NUM_PAGES,
+            self.blocks.tracks_addr(n),
             self.tables.owner@.contains_key(n) == (self.blocks.pages@[(n / 4096) as int].object is TableLeaf),
             self.table_pages.maps@.contains_key(n) == (self.blocks.pages@[(n / 4096) as int].object is TablePage),
             block_typed(&self.blocks, BlockRef::Small(n / 4096)),
@@ -1924,7 +1924,7 @@ impl CapKernel {
         requires
             old(self).wf(),
             c < NUM_CPUS,
-            base < NUM_PAGES,
+            old(self).blocks.tracks(base as int),
             forall|i: usize| base <= i < base + order_pages(old(self).blocks.pages@[base as int].order)
                 ==> #[trigger] old(self).no_stale_translation(i),
             old(self).blocks.pages@[base as int].kind is Base,
@@ -1932,7 +1932,7 @@ impl CapKernel {
             old(self).blocks.pages@[base as int].dead,
             old(self).blocks.pages@[base as int].torn_down,
             old(self).blocks.pages@[base as int].refs == 0,
-            forall|p: usize| #[trigger] old(self).list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
+            forall|p: usize| #[trigger] old(self).list.pages@.dom().contains(p) && old(self).blocks.tracks_addr(p)
                 ==> !old(self).blocks.in_block(base as int, (p / 4096) as int),
             forall|k: usize| k < order_pages(old(self).blocks.pages@[base as int].order) ==> {
                 &&& perms.contains_key((base + k) as usize)
@@ -1973,16 +1973,16 @@ impl CapKernel {
             post.threads == pre.threads,
             post.processes == pre.processes,
             pre.wf(),
-            base < NUM_PAGES,
+            pre.blocks.tracks(base as int),
             pre.blocks.pages@[base as int].kind is Base,
             !(pre.blocks.pages@[base as int].object is Process),
             pre.blocks.pages@[base as int].refs == 0,
             post.blocks.wf(),
-            forall|i: int| 0 <= i < NUM_PAGES ==> #[trigger] post.blocks.pages@[i] == (
+            forall|i: int| pre.blocks.tracks(i) ==> #[trigger] post.blocks.pages@[i] == (
                 if pre.blocks.in_block(base as int, i) { free_entry() } else { pre.blocks.pages@[i] }),
             post.blocks.regions_2m@ == pre.blocks.regions_2m@,
             post.blocks.regions_1g@ == pre.blocks.regions_1g@,
-            forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
+            forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) && pre.blocks.tracks_addr(p)
                 ==> !pre.blocks.in_block(base as int, (p / 4096) as int),
             post.holders@ == pre.holders@.remove(BlockRef::Small(base)),
             post.list == pre.list,
@@ -2034,7 +2034,7 @@ impl CapKernel {
             assert(post.blocks.pages@[x as int] == pre.blocks.pages@[x as int]);
         }
         assert forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) implies {
-            &&& l / 4096 < NUM_PAGES
+            &&& post.blocks.tracks_addr(l)
             &&& post.blocks.pages@[(l / 4096) as int].kind is Base
             &&& post.blocks.pages@[(l / 4096) as int].object is TableLeaf
             &&& post.blocks.pages@[(l / 4096) as int].order == 1
@@ -2044,14 +2044,14 @@ impl CapKernel {
             assert(!pre.blocks.in_block(base as int, (l / 4096) as int));
             assert(post.blocks.pages@[(l / 4096) as int] == pre.blocks.pages@[(l / 4096) as int]);
         }
-        assert forall|x: usize| x < NUM_PAGES && #[trigger] leaf_block(&post.blocks, x)
+        assert forall|x: usize| post.blocks.tracks(x as int) && #[trigger] leaf_block(&post.blocks, x)
             implies post.tables.owner@.contains_key((x * 4096) as usize) by {
             assert(!pre.blocks.in_block(base as int, x as int));
             assert(post.blocks.pages@[x as int] == pre.blocks.pages@[x as int]);
             assert(leaf_block(&pre.blocks, x));
         }
         lemma_leaf_blocks_small_freed(&pre.list, &pre.tables, &pre.blocks, &post.blocks, pre.holders@, base);
-        assert forall|i: usize| i < NUM_PAGES && block_typed(&pre.blocks, block_ref(&pre.blocks, i))
+        assert forall|i: usize| pre.blocks.tracks(i as int) && block_typed(&pre.blocks, block_ref(&pre.blocks, i))
             && block_refs(&pre.blocks, block_ref(&pre.blocks, i)) > 0
             implies #[trigger] block_ref(&post.blocks, i) == block_ref(&pre.blocks, i) by {
             assert(block_ref(&pre.blocks, i) != BlockRef::Small(base));
@@ -2193,7 +2193,7 @@ impl CapKernel {
         lemma_threads_same_pages(&pre.list, &pre.tables, &pre.threads, &pre.blocks, &post.blocks);
         lemma_processes_same_pages(&pre.list, &pre.tables, &pre.processes, &pre.blocks, &post.blocks);
         let br = level_ref(level, r);
-        assert forall|i: usize| i < NUM_PAGES && block_typed(&pre.blocks, block_ref(&pre.blocks, i))
+        assert forall|i: usize| pre.blocks.tracks(i as int) && block_typed(&pre.blocks, block_ref(&pre.blocks, i))
             && block_refs(&pre.blocks, block_ref(&pre.blocks, i)) > 0
             implies #[trigger] block_ref(&post.blocks, i) == block_ref(&pre.blocks, i) by {
             assert(block_ref(&pre.blocks, i) != br);
@@ -2251,7 +2251,7 @@ impl CapKernel {
             }
             assert forall|c: int, e: TlbEntry|
                 0 <= c < NUM_CPUS && #[trigger] self.tlb@[c].contains(e) && !self.mapped@.contains(e.page)
-                implies e.page < NUM_PAGES && self.stale_epoch.above(self.acked(c), e.page) by {
+                implies self.blocks.tracks(e.page as int) && self.stale_epoch.above(self.acked(c), e.page) by {
                 assert(pre.tlb@[c].contains(e));
                 assert(pre.acked(c) == self.acked(c));
             }
@@ -2265,7 +2265,7 @@ impl CapKernel {
             }
             assert forall|j: int, e: TlbEntry|
                 0 <= j < NUM_IOMMUS && #[trigger] self.iommus.tlb@[j].contains(e) && !self.mapped@.contains(e.page)
-                implies e.page < NUM_PAGES && self.stale_epoch.above(self.iommu_acked(j), e.page) by {
+                implies self.blocks.tracks(e.page as int) && self.stale_epoch.above(self.iommu_acked(j), e.page) by {
                 if j != i as int {
                     assert(pre.iommus.tlb@[j].contains(e));
                     assert(pre.iommu_acked(j) == self.iommu_acked(j));
@@ -2308,7 +2308,7 @@ impl CapKernel {
             }
             assert forall|c: int, e: TlbEntry|
                 0 <= c < NUM_CPUS && #[trigger] self.tlb@[c].contains(e) && !self.mapped@.contains(e.page)
-                implies e.page < NUM_PAGES && self.stale_epoch.above(self.acked(c), e.page) by {
+                implies self.blocks.tracks(e.page as int) && self.stale_epoch.above(self.acked(c), e.page) by {
                 assert(pre.tlb@[c].contains(e));
                 assert(pre.acked(c) == self.acked(c));
             }
@@ -2368,7 +2368,7 @@ impl CapKernel {
             lemma_current_same(pre.cores@, self.cores@, pre.threads.records@, self.threads.records@);
             assert forall|d: int, f: TlbEntry|
                 0 <= d < NUM_CPUS && #[trigger] self.tlb@[d].contains(f) && !self.mapped@.contains(f.page)
-                implies f.page < NUM_PAGES && self.stale_epoch.above(self.acked(d), f.page) by {
+                implies self.blocks.tracks(f.page as int) && self.stale_epoch.above(self.acked(d), f.page) by {
                 if d == c as int {
                     assert(self.tlb@[d] == Set::<TlbEntry>::empty());
                     assert(!self.tlb@[d].contains(f));

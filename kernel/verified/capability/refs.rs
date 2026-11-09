@@ -39,7 +39,7 @@ pub open spec fn block_ref(blocks: &BlockTable, i: usize) -> BlockRef {
 /// br is a block the table has typed.
 pub open spec fn block_typed(blocks: &BlockTable, br: BlockRef) -> bool {
     match br {
-        BlockRef::Small(b) => b < NUM_PAGES && blocks.pages@[b as int].kind is Base,
+        BlockRef::Small(b) => blocks.tracks(b as int) && blocks.pages@[b as int].kind is Base,
         BlockRef::Two(r) => r < NUM_2M && blocks.regions_2m@[r as int].typed,
         BlockRef::One(r) => r < NUM_1G && blocks.regions_1g@[r as int].typed,
     }
@@ -101,7 +101,7 @@ pub open spec fn holders_wf(
 ) -> bool {
     &&& forall|n: usize| #[trigger] tables.is_cap(list, n) && tables.payload_of(n).kind is Frame ==> {
         let i = tables.payload_of(n).base / 4096;
-        &&& i < NUM_PAGES
+        &&& blocks.tracks(i as int)
         &&& frame_in_block(block_ref(blocks, i), tables.payload_of(n))
         &&& holders.contains_key(block_ref(blocks, i))
         &&& holders[block_ref(blocks, i)].contains(n)
@@ -116,7 +116,7 @@ pub open spec fn holders_wf(
     &&& forall|br: BlockRef, n: usize| holders.contains_key(br) && #[trigger] holders[br].contains(n) ==> ({
         &&& tables.is_cap(list, n)
         &&& tables.payload_of(n).kind is Frame
-        &&& tables.payload_of(n).base / 4096 < NUM_PAGES
+        &&& blocks.tracks_addr(tables.payload_of(n).base)
         &&& block_ref(blocks, tables.payload_of(n).base / 4096) == br
     } || (n < NODE_SPACE && list.nodes@[n as int].live && list.nodes@[n as int].kind is Mapping))
     &&& forall|r: int| 0 <= r < NUM_2M && #[trigger] zeroing.active_2m@[r] ==> {
@@ -144,7 +144,7 @@ pub open spec fn leaf_block(blocks: &BlockTable, b: usize) -> bool {
 
 /// Every table leaf block is an owned leaf's, so a retype naming one finds its node.
 pub open spec fn leaf_blocks_owned(tables: &Tables, blocks: &BlockTable) -> bool {
-    forall|b: usize| b < NUM_PAGES && #[trigger] leaf_block(blocks, b) ==> tables.owner@.contains_key((b * 4096) as usize)
+    forall|b: usize| blocks.tracks(b as int) && #[trigger] leaf_block(blocks, b) ==> tables.owner@.contains_key((b * 4096) as usize)
 }
 
 /// A block with a holder entry is of type frame, and a leaf's block is of type table leaf and a table
@@ -154,13 +154,13 @@ pub open spec fn leaf_blocks_owned(tables: &Tables, blocks: &BlockTable) -> bool
 pub open spec fn objects_wf(tables: &Tables, blocks: &BlockTable, holders: IMap<BlockRef, Set<usize>>) -> bool {
     &&& forall|b: usize| #[trigger] holders.contains_key(BlockRef::Small(b))
         ==> blocks.pages@[b as int].object is Frame
-    &&& forall|b: usize| b < NUM_PAGES && (#[trigger] blocks.pages@[b as int]).kind is Base
+    &&& forall|b: usize| blocks.tracks(b as int) && (#[trigger] blocks.pages@[b as int]).kind is Base
         && blocks.pages@[b as int].object is Frame ==> {
         &&& blocks.pages@[b as int].order == 0
         &&& blocks.pages@[b as int].refs == 0 ==> holders.contains_key(BlockRef::Small(b))
     }
     &&& forall|l: usize| #[trigger] tables.owner@.contains_key(l) ==> {
-        &&& l / 4096 < NUM_PAGES
+        &&& blocks.tracks_addr(l)
         &&& blocks.pages@[(l / 4096) as int].kind is Base
         &&& blocks.pages@[(l / 4096) as int].object is TableLeaf
         &&& blocks.pages@[(l / 4096) as int].order == 1
@@ -247,14 +247,14 @@ pub proof fn lemma_page_base(b: usize)
 pub proof fn lemma_leaf_blocks_owned_same_types(tables: &Tables, a: &BlockTable, b: &BlockTable)
     requires
         leaf_blocks_owned(tables, a),
-        forall|i: int| 0 <= i < NUM_PAGES ==> {
+        forall|i: int| a.tracks(i) ==> {
             &&& (#[trigger] b.pages@[i]).kind == a.pages@[i].kind
             &&& b.pages@[i].object == a.pages@[i].object
         },
     ensures
         leaf_blocks_owned(tables, b),
 {
-    assert forall|x: usize| x < NUM_PAGES && #[trigger] leaf_block(b, x) implies tables.owner@.contains_key((x * 4096) as usize) by {
+    assert forall|x: usize| b.tracks(x as int) && #[trigger] leaf_block(b, x) implies tables.owner@.contains_key((x * 4096) as usize) by {
         assert(leaf_block(a, x));
     }
 }
@@ -285,7 +285,7 @@ pub proof fn lemma_leaf_block_unkeyed(tables: &Tables, blocks: &BlockTable, hold
         objects_wf(tables, blocks, holders),
         tables.owner@.contains_key(l),
     ensures
-        l / 4096 < NUM_PAGES,
+        blocks.tracks_addr(l),
         block_typed(blocks, BlockRef::Small(l / 4096)),
         !holders.contains_key(BlockRef::Small(l / 4096)),
 {
@@ -349,7 +349,7 @@ pub proof fn lemma_holders_unkeyed_small_changed(
     let br = BlockRef::Small(base);
     assert forall|x: usize| #[trigger] tables.is_cap(list, x) && tables.payload_of(x).kind is Frame implies {
         let i = tables.payload_of(x).base / 4096;
-        &&& i < NUM_PAGES
+        &&& b.tracks(i as int)
         &&& frame_in_block(block_ref(b, i), tables.payload_of(x))
         &&& holders.contains_key(block_ref(b, i))
         &&& holders[block_ref(b, i)].contains(x)
@@ -370,7 +370,7 @@ pub proof fn lemma_holders_unkeyed_small_changed(
     assert forall|k: BlockRef, x: usize| holders.contains_key(k) && #[trigger] holders[k].contains(x)
         && tables.is_cap(list, x) && tables.payload_of(x).kind is Frame implies
         block_ref(b, tables.payload_of(x).base / 4096) == k by {
-        assert(tables.payload_of(x).base / 4096 < NUM_PAGES);
+        assert(a.tracks_addr(tables.payload_of(x).base));
         assert(block_ref(b, tables.payload_of(x).base / 4096) == block_ref(a, tables.payload_of(x).base / 4096));
     }
     assert forall|r: int| 0 <= r < NUM_2M && #[trigger] zeroing.active_2m@[r] implies {
@@ -453,7 +453,7 @@ pub proof fn lemma_objects_unframed_block_changed(
         assert(block_typed(a, BlockRef::Small(x)));
         assert(b.pages@[x as int].object == a.pages@[x as int].object);
     }
-    assert forall|x: usize| x < NUM_PAGES && (#[trigger] b.pages@[x as int]).kind is Base
+    assert forall|x: usize| b.tracks(x as int) && (#[trigger] b.pages@[x as int]).kind is Base
         && b.pages@[x as int].object is Frame implies {
         &&& b.pages@[x as int].order == 0
         &&& b.pages@[x as int].refs == 0 ==> holders.contains_key(BlockRef::Small(x))
@@ -465,7 +465,7 @@ pub proof fn lemma_objects_unframed_block_changed(
         assert(block_refs(b, BlockRef::Small(x)) == block_refs(a, BlockRef::Small(x)));
     }
     assert forall|m: usize| #[trigger] tables.owner@.contains_key(m) implies {
-        &&& m / 4096 < NUM_PAGES
+        &&& b.tracks_addr(m)
         &&& b.pages@[(m / 4096) as int].kind is Base
         &&& b.pages@[(m / 4096) as int].object is TableLeaf
         &&& b.pages@[(m / 4096) as int].order == 1
@@ -575,7 +575,7 @@ pub proof fn lemma_leaf_blocks_small_typed(
         leaf_blocks_wf(list, tables, a),
         objects_wf(tables, a, holders),
         forall|k: int| 0 <= k < size ==> #[trigger] a.pages@[base + k].kind is Free,
-        forall|i: int| 0 <= i < NUM_PAGES && !(base <= i < base + size) ==> #[trigger] b.pages@[i] == a.pages@[i],
+        forall|i: int| a.tracks(i) && !(base <= i < base + size) ==> #[trigger] b.pages@[i] == a.pages@[i],
     ensures
         leaf_blocks_wf(list, tables, b),
 {
@@ -601,9 +601,9 @@ pub proof fn lemma_leaf_blocks_small_freed(
         tables.leaves_wf(list),
         leaf_blocks_wf(list, tables, a),
         objects_wf(tables, a, holders),
-        forall|p: usize| #[trigger] list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
+        forall|p: usize| #[trigger] list.pages@.dom().contains(p) && a.tracks_addr(p)
             ==> !a.in_block(base as int, (p / 4096) as int),
-        forall|i: int| 0 <= i < NUM_PAGES ==> #[trigger] b.pages@[i] == (
+        forall|i: int| a.tracks(i) ==> #[trigger] b.pages@[i] == (
             if a.in_block(base as int, i) { free_entry() } else { a.pages@[i] }),
     ensures
         leaf_blocks_wf(list, tables, b),
@@ -659,7 +659,7 @@ pub proof fn lemma_objects_refs_changed(
         assert(block_typed(a, BlockRef::Small(x)));
         assert(b.pages@[x as int].object == a.pages@[x as int].object);
     }
-    assert forall|x: usize| x < NUM_PAGES && (#[trigger] b.pages@[x as int]).kind is Base
+    assert forall|x: usize| b.tracks(x as int) && (#[trigger] b.pages@[x as int]).kind is Base
         && b.pages@[x as int].object is Frame implies {
         &&& b.pages@[x as int].order == 0
         &&& b.pages@[x as int].refs == 0 ==> hb.contains_key(BlockRef::Small(x))
@@ -673,7 +673,7 @@ pub proof fn lemma_objects_refs_changed(
         }
     }
     assert forall|l: usize| #[trigger] tables.owner@.contains_key(l) implies {
-        &&& l / 4096 < NUM_PAGES
+        &&& b.tracks_addr(l)
         &&& b.pages@[(l / 4096) as int].kind is Base
         &&& b.pages@[(l / 4096) as int].object is TableLeaf
         &&& b.pages@[(l / 4096) as int].order == 1
@@ -712,7 +712,7 @@ pub proof fn lemma_large_block_alone(blocks: &BlockTable, level: Large, r: usize
     ensures
         false,
 {
-    assert(i < NUM_PAGES);
+    assert(blocks.tracks(i as int));
     match level {
         Large::Two => {
             assert(region_2m(i as int) == r as int);
@@ -765,9 +765,9 @@ pub proof fn lemma_objects_small_typed(
     requires
         objects_wf(ta, a, holders),
         forall|br: BlockRef| #[trigger] holders.contains_key(br) ==> block_typed(a, br),
-        base < NUM_PAGES,
+        a.tracks(base as int),
         forall|k: int| 0 <= k < size ==> #[trigger] a.pages@[base + k].kind is Free,
-        forall|i: int| 0 <= i < NUM_PAGES && !(base <= i < base + size) ==> #[trigger] b.pages@[i] == a.pages@[i],
+        forall|i: int| a.tracks(i) && !(base <= i < base + size) ==> #[trigger] b.pages@[i] == a.pages@[i],
         forall|k: int| 0 < k < size ==> (#[trigger] b.pages@[base + k]).kind is Member,
         b.pages@[base as int].object is Frame ==> b.pages@[base as int].order == 0,
         b.pages@[base as int].refs == 1,
@@ -788,7 +788,7 @@ pub proof fn lemma_objects_small_typed(
             assert(a.pages@[base + (x - base)].kind is Free);
         }
     }
-    assert forall|x: usize| x < NUM_PAGES && (#[trigger] b.pages@[x as int]).kind is Base
+    assert forall|x: usize| b.tracks(x as int) && (#[trigger] b.pages@[x as int]).kind is Base
         && b.pages@[x as int].object is Frame implies {
         &&& b.pages@[x as int].order == 0
         &&& b.pages@[x as int].refs == 0 ==> holders.contains_key(BlockRef::Small(x))
@@ -800,7 +800,7 @@ pub proof fn lemma_objects_small_typed(
         }
     }
     assert forall|l: usize| #[trigger] tb.owner@.contains_key(l) implies {
-        &&& l / 4096 < NUM_PAGES
+        &&& b.tracks_addr(l)
         &&& b.pages@[(l / 4096) as int].kind is Base
         &&& b.pages@[(l / 4096) as int].object is TableLeaf
         &&& b.pages@[(l / 4096) as int].order == 1
@@ -814,7 +814,7 @@ pub proof fn lemma_objects_small_typed(
             assert(l / 4096 == base);
         }
     }
-    assert forall|x: usize| x < NUM_PAGES && #[trigger] leaf_block(b, x) implies tb.owner@.contains_key((x * 4096) as usize) by {
+    assert forall|x: usize| b.tracks(x as int) && #[trigger] leaf_block(b, x) implies tb.owner@.contains_key((x * 4096) as usize) by {
         if base < x < base + size {
             assert(b.pages@[base + (x - base)].kind is Member);
         } else if x != base {
@@ -828,7 +828,7 @@ pub proof fn lemma_objects_small_typed(
 pub fn locate(blocks: &BlockTable, i: usize) -> (ret: BlockRef)
     requires
         blocks.wf(),
-        i < NUM_PAGES,
+        blocks.tracks(i as int),
     ensures
         ret == block_ref(blocks, i),
 {
@@ -922,11 +922,11 @@ pub fn drop_block_ref(blocks: &mut BlockTable, br: BlockRef)
 pub open spec fn blocks_refs_changed(a: &BlockTable, b: &BlockTable, br: BlockRef, refs: usize, dead: bool) -> bool {
     &&& block_refs(b, br) == refs
     &&& block_dead(b, br) == dead
-    &&& forall|i: usize| i < NUM_PAGES ==> #[trigger] block_ref(b, i) == block_ref(a, i)
+    &&& forall|i: usize| a.tracks(i as int) ==> #[trigger] block_ref(b, i) == block_ref(a, i)
     &&& forall|x: BlockRef| #[trigger] block_typed(b, x) == block_typed(a, x)
     &&& forall|x: BlockRef| block_typed(a, x) && x != br ==> #[trigger] block_refs(b, x) == block_refs(a, x)
     &&& forall|x: BlockRef| block_typed(a, x) && x != br ==> #[trigger] block_dead(b, x) == block_dead(a, x)
-    &&& forall|i: int| 0 <= i < NUM_PAGES ==> {
+    &&& forall|i: int| a.tracks(i) ==> {
         &&& (#[trigger] b.pages@[i]).kind == a.pages@[i].kind
         &&& b.pages@[i].object == a.pages@[i].object
         &&& b.pages@[i].order == a.pages@[i].order
@@ -939,17 +939,17 @@ pub open spec fn blocks_refs_changed(a: &BlockTable, b: &BlockTable, br: BlockRe
 /// have typed the same blocks.
 pub proof fn lemma_same_structure(a: &BlockTable, b: &BlockTable)
     requires
-        forall|i: int| 0 <= i < NUM_PAGES ==> {
+        forall|i: int| a.tracks(i) ==> {
             &&& (#[trigger] b.pages@[i]).kind == a.pages@[i].kind
             &&& b.pages@[i].base == a.pages@[i].base
         },
         forall|x: int| 0 <= x < NUM_2M ==> (#[trigger] b.regions_2m@[x]).typed == a.regions_2m@[x].typed,
         forall|x: int| 0 <= x < NUM_1G ==> (#[trigger] b.regions_1g@[x]).typed == a.regions_1g@[x].typed,
     ensures
-        forall|i: usize| i < NUM_PAGES ==> #[trigger] block_ref(b, i) == block_ref(a, i),
+        forall|i: usize| a.tracks(i as int) ==> #[trigger] block_ref(b, i) == block_ref(a, i),
         forall|x: BlockRef| #[trigger] block_typed(b, x) == block_typed(a, x),
 {
-    assert forall|i: usize| i < NUM_PAGES implies #[trigger] block_ref(b, i) == block_ref(a, i) by {
+    assert forall|i: usize| a.tracks(i as int) implies #[trigger] block_ref(b, i) == block_ref(a, i) by {
         assert(i / PAGES_PER_2M < NUM_2M);
         assert(i / PAGES_PER_1G < NUM_1G);
     }
@@ -1004,7 +1004,7 @@ pub proof fn lemma_region_of_region(i: int)
 pub proof fn lemma_in_1g_block(blocks: &BlockTable, i: usize, r: usize)
     requires
         blocks.wf(),
-        i < NUM_PAGES,
+        blocks.tracks(i as int),
         r < NUM_1G,
         i / PAGES_PER_1G == r,
         blocks.regions_1g@[r as int].typed,
@@ -1025,14 +1025,14 @@ pub proof fn lemma_child_same_block(blocks: &BlockTable, parent: Payload, child:
     requires
         blocks.wf(),
         frame_in_block(block_ref(blocks, parent.base / 4096), parent),
-        parent.base / 4096 < NUM_PAGES,
+        blocks.tracks_addr(parent.base),
         block_typed(blocks, block_ref(blocks, parent.base / 4096)),
         child.order <= parent.order,
         parent.base <= child.base,
         child.base as int % block_bytes(child.order) == 0,
         child.base as int + block_bytes(child.order) <= parent.base as int + block_bytes(parent.order),
     ensures
-        child.base / 4096 < NUM_PAGES,
+        blocks.tracks_addr(child.base),
         block_ref(blocks, child.base / 4096) == block_ref(blocks, parent.base / 4096),
         frame_in_block(block_ref(blocks, parent.base / 4096), child),
 {
@@ -1072,7 +1072,7 @@ pub proof fn lemma_holder_refs(
         tables.is_cap(list, n),
         tables.payload_of(n).kind is Frame,
     ensures
-        tables.payload_of(n).base / 4096 < NUM_PAGES,
+        blocks.tracks_addr(tables.payload_of(n).base),
         holders.contains_key(block_ref(blocks, tables.payload_of(n).base / 4096)),
         block_typed(blocks, block_ref(blocks, tables.payload_of(n).base / 4096)),
         block_refs(blocks, block_ref(blocks, tables.payload_of(n).base / 4096)) > 0,
@@ -1116,7 +1116,7 @@ pub proof fn lemma_holders_same_frames(
     assert forall|br: BlockRef, n: usize| holders.contains_key(br) && #[trigger] holders[br].contains(n) implies ({
         &&& tables_b.is_cap(list_b, n)
         &&& tables_b.payload_of(n).kind is Frame
-        &&& tables_b.payload_of(n).base / 4096 < NUM_PAGES
+        &&& blocks.tracks_addr(tables_b.payload_of(n).base)
         &&& block_ref(blocks, tables_b.payload_of(n).base / 4096) == br
     } || (n < NODE_SPACE && list_b.nodes@[n as int].live && list_b.nodes@[n as int].kind is Mapping)) by {
         if tables_a.is_cap(list_a, n) && tables_a.payload_of(n).kind is Frame {
@@ -1166,7 +1166,7 @@ pub proof fn lemma_holders_frame_added(
         !tables_a.is_cap(list_a, n),
         tables_b.is_cap(list_b, n),
         tables_b.payload_of(n).kind is Frame,
-        tables_b.payload_of(n).base / 4096 < NUM_PAGES,
+        blocks_a.tracks_addr(tables_b.payload_of(n).base),
         block_ref(blocks_a, tables_b.payload_of(n).base / 4096) == br,
         frame_in_block(br, tables_b.payload_of(n)),
         holders.contains_key(br),
@@ -1182,7 +1182,7 @@ pub proof fn lemma_holders_frame_added(
     vstd::set::lemma_set_insert_len(holders[br], n);
     assert forall|x: usize| #[trigger] tables_b.is_cap(list_b, x) && tables_b.payload_of(x).kind is Frame implies {
         let i = tables_b.payload_of(x).base / 4096;
-        &&& i < NUM_PAGES
+        &&& blocks_b.tracks(i as int)
         &&& frame_in_block(block_ref(blocks_b, i), tables_b.payload_of(x))
         &&& hb.contains_key(block_ref(blocks_b, i))
         &&& hb[block_ref(blocks_b, i)].contains(x)
@@ -1205,7 +1205,7 @@ pub proof fn lemma_holders_frame_added(
     assert forall|k: BlockRef, x: usize| hb.contains_key(k) && #[trigger] hb[k].contains(x) implies ({
         &&& tables_b.is_cap(list_b, x)
         &&& tables_b.payload_of(x).kind is Frame
-        &&& tables_b.payload_of(x).base / 4096 < NUM_PAGES
+        &&& blocks_b.tracks_addr(tables_b.payload_of(x).base)
         &&& block_ref(blocks_b, tables_b.payload_of(x).base / 4096) == k
     } || (x < NODE_SPACE && list_b.nodes@[x as int].live && list_b.nodes@[x as int].kind is Mapping)) by {
         assert(holders.contains_key(k));
@@ -1275,7 +1275,7 @@ pub proof fn lemma_holders_frame_dropped(
     vstd::set::lemma_set_remove_len(holders[br], n);
     assert forall|x: usize| #[trigger] tables_b.is_cap(list_b, x) && tables_b.payload_of(x).kind is Frame implies {
         let i = tables_b.payload_of(x).base / 4096;
-        &&& i < NUM_PAGES
+        &&& blocks_b.tracks(i as int)
         &&& frame_in_block(block_ref(blocks_b, i), tables_b.payload_of(x))
         &&& hb.contains_key(block_ref(blocks_b, i))
         &&& hb[block_ref(blocks_b, i)].contains(x)
@@ -1297,7 +1297,7 @@ pub proof fn lemma_holders_frame_dropped(
     assert forall|k: BlockRef, x: usize| hb.contains_key(k) && #[trigger] hb[k].contains(x) implies ({
         &&& tables_b.is_cap(list_b, x)
         &&& tables_b.payload_of(x).kind is Frame
-        &&& tables_b.payload_of(x).base / 4096 < NUM_PAGES
+        &&& blocks_b.tracks_addr(tables_b.payload_of(x).base)
         &&& block_ref(blocks_b, tables_b.payload_of(x).base / 4096) == k
     } || (x < NODE_SPACE && list_b.nodes@[x as int].live && list_b.nodes@[x as int].kind is Mapping)) by {
         assert(holders.contains_key(k));
@@ -1370,7 +1370,7 @@ pub proof fn lemma_holders_mapping_dropped(
     vstd::set::lemma_set_remove_len(holders[br], n);
     assert forall|x: usize| #[trigger] tables.is_cap(list_b, x) && tables.payload_of(x).kind is Frame implies {
         let i = tables.payload_of(x).base / 4096;
-        &&& i < NUM_PAGES
+        &&& blocks_b.tracks(i as int)
         &&& frame_in_block(block_ref(blocks_b, i), tables.payload_of(x))
         &&& hb.contains_key(block_ref(blocks_b, i))
         &&& hb[block_ref(blocks_b, i)].contains(x)
@@ -1393,7 +1393,7 @@ pub proof fn lemma_holders_mapping_dropped(
     assert forall|k: BlockRef, x: usize| hb.contains_key(k) && #[trigger] hb[k].contains(x) implies ({
         &&& tables.is_cap(list_b, x)
         &&& tables.payload_of(x).kind is Frame
-        &&& tables.payload_of(x).base / 4096 < NUM_PAGES
+        &&& blocks_b.tracks_addr(tables.payload_of(x).base)
         &&& block_ref(blocks_b, tables.payload_of(x).base / 4096) == k
     } || (x < NODE_SPACE && list_b.nodes@[x as int].live && list_b.nodes@[x as int].kind is Mapping)) by {
         assert(holders.contains_key(k));
@@ -1477,8 +1477,8 @@ pub proof fn lemma_zeroing_typed_refs_changed(
 pub proof fn lemma_small_block_ref(blocks: &BlockTable, base: usize, i: usize)
     requires
         blocks.wf(),
-        base < NUM_PAGES,
-        i < NUM_PAGES,
+        blocks.tracks(base as int),
+        blocks.tracks(i as int),
         blocks.pages@[base as int].kind is Base,
         blocks.in_block(base as int, i as int),
     ensures
@@ -1527,10 +1527,10 @@ pub proof fn lemma_holders_small_freed(
     requires
         blocks_a.wf(),
         holders_wf(list, tables, blocks_a, zeroing, holders),
-        base < NUM_PAGES,
+        blocks_a.tracks(base as int),
         blocks_a.pages@[base as int].kind is Base,
         blocks_a.pages@[base as int].refs == 0,
-        forall|i: int| 0 <= i < NUM_PAGES ==> #[trigger] blocks_b.pages@[i] == (
+        forall|i: int| blocks_a.tracks(i) ==> #[trigger] blocks_b.pages@[i] == (
             if blocks_a.in_block(base as int, i) { free_entry() } else { blocks_a.pages@[i] }),
         blocks_b.regions_2m@ == blocks_a.regions_2m@,
         blocks_b.regions_1g@ == blocks_a.regions_1g@,
@@ -1541,7 +1541,7 @@ pub proof fn lemma_holders_small_freed(
     let hb = holders.remove(br);
     assert forall|x: usize| #[trigger] tables.is_cap(list, x) && tables.payload_of(x).kind is Frame implies {
         let i = tables.payload_of(x).base / 4096;
-        &&& i < NUM_PAGES
+        &&& blocks_a.tracks(i as int)
         &&& block_ref(blocks_b, i) == block_ref(blocks_a, i)
         &&& block_ref(blocks_a, i) != br
     } by {
@@ -1601,7 +1601,7 @@ pub proof fn lemma_holders_2m_freed(
     let hb = holders.remove(br);
     assert forall|x: usize| #[trigger] tables.is_cap(list, x) && tables.payload_of(x).kind is Frame implies {
         let i = tables.payload_of(x).base / 4096;
-        &&& i < NUM_PAGES
+        &&& blocks_a.tracks(i as int)
         &&& block_ref(blocks_b, i) == block_ref(blocks_a, i)
         &&& block_ref(blocks_a, i) != br
     } by {
@@ -1658,7 +1658,7 @@ pub proof fn lemma_holders_1g_freed(
     let hb = holders.remove(br);
     assert forall|x: usize| #[trigger] tables.is_cap(list, x) && tables.payload_of(x).kind is Frame implies {
         let i = tables.payload_of(x).base / 4096;
-        &&& i < NUM_PAGES
+        &&& blocks_a.tracks(i as int)
         &&& block_ref(blocks_b, i) == block_ref(blocks_a, i)
         &&& block_ref(blocks_a, i) != br
     } by {
@@ -1711,7 +1711,7 @@ pub proof fn lemma_holders_frame_new(
         !tables_a.is_cap(list_a, n),
         tables_b.is_cap(list_b, n),
         tables_b.payload_of(n).kind is Frame,
-        tables_b.payload_of(n).base / 4096 < NUM_PAGES,
+        blocks.tracks_addr(tables_b.payload_of(n).base),
         block_ref(blocks, tables_b.payload_of(n).base / 4096) == br,
         frame_in_block(br, tables_b.payload_of(n)),
         !holders.contains_key(br),
@@ -1731,7 +1731,7 @@ pub proof fn lemma_holders_frame_new(
     }
     assert forall|x: usize| #[trigger] tables_b.is_cap(list_b, x) && tables_b.payload_of(x).kind is Frame implies {
         let i = tables_b.payload_of(x).base / 4096;
-        &&& i < NUM_PAGES
+        &&& blocks.tracks(i as int)
         &&& frame_in_block(block_ref(blocks, i), tables_b.payload_of(x))
         &&& hb.contains_key(block_ref(blocks, i))
         &&& hb[block_ref(blocks, i)].contains(x)
@@ -1754,7 +1754,7 @@ pub proof fn lemma_holders_frame_new(
     assert forall|k: BlockRef, x: usize| hb.contains_key(k) && #[trigger] hb[k].contains(x) implies ({
         &&& tables_b.is_cap(list_b, x)
         &&& tables_b.payload_of(x).kind is Frame
-        &&& tables_b.payload_of(x).base / 4096 < NUM_PAGES
+        &&& blocks.tracks_addr(tables_b.payload_of(x).base)
         &&& block_ref(blocks, tables_b.payload_of(x).base / 4096) == k
     } || (x < NODE_SPACE && list_b.nodes@[x as int].live && list_b.nodes@[x as int].kind is Mapping)) by {
         if k != br {
@@ -1821,12 +1821,12 @@ pub proof fn lemma_holders_small_typed(
         holders_wf(list, tables, blocks_a, zeroing, holders),
         small_order(order),
         base % (order_pages(order) as usize) == 0,
-        base + order_pages(order) <= NUM_PAGES,
+        blocks_a.tracks_run(base as int, order_pages(order)),
         forall|k: int| 0 <= k < order_pages(order) ==> #[trigger] blocks_a.pages@[base + k].kind is Free,
         !blocks_a.covered(base as int),
         blocks_b.regions_2m@ == blocks_a.regions_2m@,
         blocks_b.regions_1g@ == blocks_a.regions_1g@,
-        forall|i: int| 0 <= i < NUM_PAGES && !(base <= i < base + order_pages(order))
+        forall|i: int| blocks_a.tracks(i) && !(base <= i < base + order_pages(order))
             ==> #[trigger] blocks_b.pages@[i] == blocks_a.pages@[i],
     ensures
         holders_wf(list, tables, blocks_b, zeroing, holders),
@@ -1841,7 +1841,7 @@ pub proof fn lemma_holders_small_typed(
     }
     assert forall|x: usize| #[trigger] tables.is_cap(list, x) && tables.payload_of(x).kind is Frame implies {
         let i = tables.payload_of(x).base / 4096;
-        &&& i < NUM_PAGES
+        &&& blocks_a.tracks(i as int)
         &&& block_ref(blocks_b, i) == block_ref(blocks_a, i)
     } by {
         let i = tables.payload_of(x).base / 4096;
@@ -1941,7 +1941,7 @@ pub proof fn lemma_holders_region_typed(
         assert(blocks_a.pages@[i as int].kind is Free);
         assert(!blocks_a.covered(i as int));
     }
-    assert forall|i: usize| i < NUM_PAGES && !(base <= i < base + pages) implies
+    assert forall|i: usize| blocks_a.tracks(i as int) && !(base <= i < base + pages) implies
         #[trigger] block_ref(blocks_b, i) == block_ref(blocks_a, i) by {
         match level {
             Large::Two => {
@@ -1954,7 +1954,7 @@ pub proof fn lemma_holders_region_typed(
     }
     assert forall|x: usize| #[trigger] tables.is_cap(list, x) && tables.payload_of(x).kind is Frame implies {
         let i = tables.payload_of(x).base / 4096;
-        &&& i < NUM_PAGES
+        &&& blocks_a.tracks(i as int)
         &&& block_ref(blocks_b, i) == block_ref(blocks_a, i)
     } by {
         let i = tables.payload_of(x).base / 4096;
@@ -2010,10 +2010,10 @@ pub proof fn lemma_holders_region_done(
 pub proof fn lemma_block_ref_small_freed(a: &BlockTable, b: &BlockTable, base: usize, i: usize)
     requires
         a.wf(),
-        base < NUM_PAGES,
-        i < NUM_PAGES,
+        a.tracks(base as int),
+        a.tracks(i as int),
         a.pages@[base as int].kind is Base,
-        forall|j: int| 0 <= j < NUM_PAGES ==> #[trigger] b.pages@[j] == (
+        forall|j: int| a.tracks(j) ==> #[trigger] b.pages@[j] == (
             if a.in_block(base as int, j) { free_entry() } else { a.pages@[j] }),
         b.regions_2m@ == a.regions_2m@,
         b.regions_1g@ == a.regions_1g@,
@@ -2032,14 +2032,14 @@ pub proof fn lemma_block_ref_small_typed(a: &BlockTable, b: &BlockTable, base: u
     requires
         small_order(order),
         base % (order_pages(order) as usize) == 0,
-        base + order_pages(order) <= NUM_PAGES,
+        a.tracks_run(base as int, order_pages(order)),
         forall|k: int| 0 <= k < order_pages(order) ==> #[trigger] a.pages@[base + k].kind is Free,
         !a.covered(base as int),
         b.regions_2m@ == a.regions_2m@,
         b.regions_1g@ == a.regions_1g@,
-        forall|j: int| 0 <= j < NUM_PAGES && !(base <= j < base + order_pages(order))
+        forall|j: int| a.tracks(j) && !(base <= j < base + order_pages(order))
             ==> #[trigger] b.pages@[j] == a.pages@[j],
-        i < NUM_PAGES,
+        a.tracks(i as int),
         block_typed(a, block_ref(a, i)),
     ensures
         block_ref(b, i) == block_ref(a, i),
@@ -2072,7 +2072,7 @@ pub proof fn lemma_block_ref_region_typed(a: &BlockTable, b: &BlockTable, level:
                 &&& b.regions_2m@ == a.regions_2m@
             },
         },
-        i < NUM_PAGES,
+        a.tracks(i as int),
         block_typed(a, block_ref(a, i)),
     ensures
         block_ref(b, i) == block_ref(a, i),
@@ -2108,7 +2108,7 @@ pub proof fn lemma_block_ref_2m_freed(a: &BlockTable, b: &BlockTable, r: usize, 
         b.pages@ == a.pages@,
         b.regions_2m@ == a.regions_2m@.update(r as int, b.regions_2m@[r as int]),
         b.regions_1g@ == a.regions_1g@,
-        i < NUM_PAGES,
+        a.tracks(i as int),
         block_ref(a, i) != BlockRef::Two(r),
     ensures
         block_ref(b, i) == block_ref(a, i),
@@ -2125,7 +2125,7 @@ pub proof fn lemma_block_ref_1g_freed(a: &BlockTable, b: &BlockTable, r: usize, 
         b.pages@ == a.pages@,
         b.regions_1g@ == a.regions_1g@.update(r as int, b.regions_1g@[r as int]),
         b.regions_2m@ == a.regions_2m@,
-        i < NUM_PAGES,
+        a.tracks(i as int),
         block_ref(a, i) != BlockRef::One(r),
     ensures
         block_ref(b, i) == block_ref(a, i),
