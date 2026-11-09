@@ -44,7 +44,7 @@ use memory::{
 };
 
 /// The end of the physical memory the loader identity maps, for itself and for the kernel.
-/// The test guest's RAM is below 512 MiB. The 32-bit MMIO window sits just below 4 GiB, and the
+/// The test guest's RAM ends at 2.5 GiB. The 32-bit MMIO window sits just below 4 GiB, and the
 /// loader only allocates below 4 GiB. The map is 2M leaves, but for the kernel's image and its
 /// stack guard. design/test-guest-memory/.
 pub const IDENTITY_MAP_END: u64 = 0x1_0000_0000; // 4 GiB

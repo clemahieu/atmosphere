@@ -364,10 +364,23 @@ fn fixed_slots_printed(serial: &str) -> Result<(usize, usize)> {
     }
 }
 
+/// What follows the slot number on the kernel's line for the untyped that is all of 1 to 2 GiB, up to
+/// its rights. The kernel tracks 2 GiB and the firmware and the loader keep out of the second:
+/// design/test-guest-memory/.
+const GIGABYTE_UNTYPED: &str = ": untyped base 0x40000000 order 18 ";
+
+/// Whether the serial log shows the root holding 1 to 2 GiB as one untyped, a 1G block.
+fn gigabyte_untyped_printed(serial: &str) -> bool {
+    serial
+        .lines()
+        .filter_map(|line| line.find(ROOT_SLOT).map(|at| &line[at + ROOT_SLOT.len()..]))
+        .any(|slot| slot.trim_start_matches(|c: char| c.is_ascii_digit()).starts_with(GIGABYTE_UNTYPED))
+}
+
 /// Runs tools/run.py with `args` and returns the serial log of a boot in which dom0 exited with
 /// success, which it does only when the kernel gave the statuses it expected, with what the gate saw
-/// of it. The serial log shows the kernel's per-slot lines with their kinds, dom0's check line and
-/// exit marker, and CPU 1 idle beside it.
+/// of it. The serial log shows the kernel's per-slot lines with their kinds, the 1G untyped among
+/// them, dom0's check line and exit marker, and CPU 1 idle beside it.
 async fn boot(project: &ProjectHandle, timeout: u64, args: &[&str]) -> Result<(String, String)> {
     let serial = run_boot(project, timeout, args).await?;
     let held = boot_serial_accepted(&serial)?;
@@ -378,6 +391,9 @@ async fn boot(project: &ProjectHandle, timeout: u64, args: &[&str]) -> Result<(S
 /// line; this does not require one.
 fn boot_serial_accepted(serial: &str) -> Result<String> {
     let (untyped, frames) = fixed_slots_printed(serial)?;
+    if !gigabyte_untyped_printed(serial) {
+        return Err(anyhow!("the serial log does not show the root holding 1 to 2 GiB as one 1G untyped"));
+    }
     if !console_line_printed(serial) {
         return Err(anyhow!("the serial log does not hold dom0's check line"));
     }
@@ -394,8 +410,9 @@ fn boot_serial_accepted(serial: &str) -> Result<String> {
         return Err(anyhow!("the serial log does not show both cores contending for the kernel's lock"));
     }
     Ok(format!(
-        "exit status 0, the kernel's per-slot lines with their kinds ({} untyped, {} frames), dom0's check \
-         line and exit marker, CPU 1 idle on its own stack, a flush IPI acknowledged, the lock contended",
+        "exit status 0, the kernel's per-slot lines with their kinds ({} untyped, {} frames), 1 to 2 GiB as \
+         one 1G untyped, dom0's check line and exit marker, CPU 1 idle on its own stack, a flush IPI \
+         acknowledged, the lock contended",
         untyped, frames
     ))
 }
@@ -543,6 +560,9 @@ mod tests {
         let no_slot = log.replace(" INFO root slot 2: thread\n", "");
         assert!(boot_serial_accepted(&no_slot).is_err());
 
+        let no_gigabyte = log.replace("base 0x40000000 order 18", "base 0x40000000 order 17");
+        assert!(boot_serial_accepted(&no_gigabyte).unwrap_err().to_string().contains("1G untyped"));
+
         let no_idle = log.replace("CPU 1 idle, syscall stack 0x2000\n", "");
         assert!(boot_serial_accepted(&no_idle).unwrap_err().to_string().contains("CPU 1 idle"));
 
@@ -565,10 +585,24 @@ mod tests {
     fn slot_lines(frame_kind: &str) -> String {
         format!(
             " INFO root holds 2 untyped and 1 frames\u{1b}[0m\n INFO root slot 1: process base 0x8000\n INFO root slot 2: thread\n\
-             INFO root slot 3: console\n INFO root slot 4: untyped order 9\n\u{1b}[34m INFO root slot 5: untyped\u{1b}[0m\n\
+             INFO root slot 3: console\n INFO root slot 4: untyped base 0x40000000 order 18 rights 0x8\n\
+             \u{1b}[34m INFO root slot 5: untyped\u{1b}[0m\n\
              INFO root slot 129: {} order 0\n",
             frame_kind
         )
+    }
+
+    #[test]
+    fn the_second_gigabyte_is_one_untyped() {
+        assert!(gigabyte_untyped_printed(&slot_lines("frame")));
+        assert!(gigabyte_untyped_printed(" INFO root slot 9: untyped base 0x40000000 order 18 rights 0x8\u{1b}[0m\r\n"));
+        // Another kind, another base, another order, and a base or an order this one is a prefix of.
+        assert!(!gigabyte_untyped_printed(" INFO root slot 129: frame base 0x40000000 order 18 rights 0x8\n"));
+        assert!(!gigabyte_untyped_printed(" INFO root slot 4: untyped base 0x0 order 18 rights 0x8\n"));
+        assert!(!gigabyte_untyped_printed(" INFO root slot 4: untyped base 0x40000000 order 9 rights 0x8\n"));
+        assert!(!gigabyte_untyped_printed(" INFO root slot 4: untyped base 0x400000000 order 18 rights 0x8\n"));
+        assert!(!gigabyte_untyped_printed(" INFO root slot 4: untyped base 0x40000000 order 180 rights 0x8\n"));
+        assert!(!gigabyte_untyped_printed(" INFO root holds 2 untyped and 1 frames\n"));
     }
 
     #[test]

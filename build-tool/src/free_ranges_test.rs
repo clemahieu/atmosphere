@@ -211,7 +211,7 @@ fn free_page_ranges_stop_at_the_tracked_pages() {
     // crosses the limit gives its tracked pages, and ranges past the limit give none.
     let ranges = [
         memory(MAX_PAGE_ADDRESS - 0x3000, 0x10_0000, Available),
-        memory(MAX_PAGE_ADDRESS + 0x4000_0000, 0x4000_0000, Available),
+        memory(MAX_PAGE_ADDRESS + 0x1000_0000, 0x1000_0000, Available),
         memory(0xe000_0000, 0x1000_0000, Reserved),
     ];
     let aside = [range(MAX_PAGE_ADDRESS - 0x1000, 0x8000)];
