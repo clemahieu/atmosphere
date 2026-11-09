@@ -397,14 +397,8 @@ dependencies = [
 name = "dom0"
 version = "0.1.0"
 dependencies = [
- "astd",
  "asys",
- "constants",
- "lazy_static",
- "libtime",
  "log",
- "pcid",
- "ring_buffer",
  "slabmalloc",
  "spin",
 ]
@@ -621,15 +615,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lazy_static"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
-dependencies = [
- "spin",
-]
-
-[[package]]
 name = "leb128"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -640,10 +625,6 @@ name = "libc"
 version = "0.2.167"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09d6582e104315a817dff97f75133544b2e094ee22447d2acf4a74e189ba06fc"
-
-[[package]]
-name = "libtime"
-version = "0.1.0"
 
 [[package]]
 name = "lock_api"
@@ -805,17 +786,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pcid"
-version = "0.1.0"
-dependencies = [
- "bitflags",
- "byteorder",
- "heapless",
- "log",
- "serde_derive",
-]
-
-[[package]]
 name = "pin-project-lite"
 version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -897,15 +867,6 @@ name = "regex-syntax"
 version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2b15c43186be67a4fd63bee50d0303afffcef381492ebe2c5d87f324e1b8815c"
-
-[[package]]
-name = "ring_buffer"
-version = "0.1.0"
-dependencies = [
- "asys",
- "log",
- "spin",
-]
 
 [[package]]
 name = "rustc-demangle"

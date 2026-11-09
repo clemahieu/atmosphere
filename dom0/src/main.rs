@@ -6,8 +6,6 @@
 #![no_main]
 
 extern crate alloc;
-extern crate pcid;
-extern crate ring_buffer;
 
 mod slab_alloc;
 
