@@ -17,12 +17,6 @@ pub struct KernelCommandLine {
 
     /// Disable colored serial output.
     pub nocolor: bool,
-
-    /// QEMU isa-debug-exit I/O port base.
-    pub qemu_debug_exit_io_base: Option<u16>,
-
-    /// Bochs APM I/O port base.
-    pub bochs_apm_io_base: Option<u16>,
 }
 
 impl KernelCommandLine {
@@ -30,8 +24,6 @@ impl KernelCommandLine {
         Self {
             nologo: false,
             nocolor: false,
-            qemu_debug_exit_io_base: None,
-            bochs_apm_io_base: None,
         }
     }
 
@@ -49,25 +41,11 @@ impl KernelCommandLine {
                         return Err(Error::InvalidCommandLineOption(component));
                     }
                 },
-                Component::KeyValue((key, value)) => match key {
-                    "qemu_debug_exit_io_base" => {
-                        self.qemu_debug_exit_io_base.replace(
-                            value
-                                .parse()
-                                .map_err(|_| Error::InvalidCommandLineOption(component))?,
-                        );
-                    }
-                    "bochs_apm_io_base" => {
-                        self.bochs_apm_io_base.replace(
-                            value
-                                .parse()
-                                .map_err(|_| Error::InvalidCommandLineOption(component))?,
-                        );
-                    }
-                    _ => {
+                Component::KeyValue((key, value)) => {
+                    if !crate::machine::set_option(key, value) {
                         return Err(Error::InvalidCommandLineOption(component));
                     }
-                },
+                }
             }
         }
 

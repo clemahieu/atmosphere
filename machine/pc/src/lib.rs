@@ -10,6 +10,7 @@ mod lapic;
 mod mps;
 mod msr;
 mod port;
+mod shutdown;
 mod x86_xapic;
 
 /// The timer's vector.
@@ -91,9 +92,24 @@ pub unsafe fn init(boot: &astd::boot::BootInfo) {
 }
 
 pub use iommu::{iommu_fault_dump, iommu_init, iommu_invalidate, iommu_map};
+pub use shutdown::{set_option, shutdown};
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_machine_takes_its_shutdown_ports() {
+        assert!(crate::set_option("qemu_debug_exit_io_base", "244"));
+        assert_eq!(crate::shutdown::qemu_debug_exit_port(), Some(244));
+        assert!(crate::set_option("bochs_apm_io_base", "8900"));
+        assert_eq!(crate::shutdown::bochs_apm_port(), Some(8900));
+    }
+
+    #[test]
+    fn a_shutdown_key_the_machine_does_not_own_is_refused() {
+        assert!(!crate::set_option("qemu_debug_exit_io_base", "nope"));
+        assert!(!crate::set_option("nologo", "1"));
+    }
+
     #[test]
     fn the_console_is_a_writer() {
         fn assert_writer<T: core::fmt::Write>(_: &mut T) {}

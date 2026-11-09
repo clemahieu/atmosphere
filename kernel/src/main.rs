@@ -193,7 +193,7 @@ fn test_runner(tests: &[&dyn Fn()]) -> ! {
     log::info!("All good!");
 
     unsafe {
-        boot::shutdown(true);
+        machine::shutdown(true);
     }
 }
 
@@ -214,7 +214,7 @@ fn panic(info: &PanicInfo) -> ! {
 
     unsafe {
         if SHUTDOWN_ON_PANIC {
-            boot::shutdown(false);
+            machine::shutdown(false);
         }
     }
 

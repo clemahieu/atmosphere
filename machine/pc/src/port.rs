@@ -1,4 +1,4 @@
-//! Port I/O for the 8259s. The kernel keeps the ports it writes itself.
+//! Port I/O. The kernel keeps the ports it writes itself.
 
 use core::arch::asm;
 
@@ -10,4 +10,8 @@ pub unsafe fn inb(port: u16) -> u8 {
 
 pub unsafe fn outb(port: u16, value: u8) {
     asm!("out dx, al", in("dx") port, in("al") value, options(nomem, nostack, preserves_flags));
+}
+
+pub unsafe fn outw(port: u16, value: u16) {
+    asm!("out dx, ax", in("dx") port, in("ax") value, options(nomem, nostack, preserves_flags));
 }
