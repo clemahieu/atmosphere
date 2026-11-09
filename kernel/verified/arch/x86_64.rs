@@ -72,7 +72,7 @@ pub const MEM_2m_MASK: u64 = 0x0000_ffff_ffe0_0000;
 pub const MEM_1g_MASK: u64 = 0x0000_ffff_c000_0000;
 
 /// The bits of an entry's word that are not the processor's accessed and dirty bits: a word ANDed with
-/// it has its status clear, which is what a clear of the status bits writes.
+/// it has its status clear.
 pub const STATUS_KEPT_MASK: usize = !((PAGE_ENTRY_ACCESSED_MASK | PAGE_ENTRY_DIRTY_MASK) as usize);
 
 // The decoders and the encoder: a word of a table at a level, in the kernel's numbering (4 for a root,
@@ -127,6 +127,15 @@ pub fn usize2page_entry_status(v: usize, level: usize) -> (ret: PageEntryStatus)
 
 /// The word with its accessed and dirty bits clear.
 pub open spec fn spec_without_status(v: usize) -> usize {
+    v & STATUS_KEPT_MASK
+}
+
+/// What a clear of the status bits writes in place of the word it read.
+#[verifier(when_used_as_spec(spec_without_status))]
+pub fn without_status(v: usize) -> (ret: usize)
+    ensures
+        ret == spec_without_status(v),
+{
     v & STATUS_KEPT_MASK
 }
 

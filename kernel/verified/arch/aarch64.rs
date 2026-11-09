@@ -82,7 +82,7 @@ pub const MEM_2m_MASK: u64 = 0x0000_ffff_ffe0_0000;
 pub const MEM_1g_MASK: u64 = 0x0000_ffff_c000_0000;
 
 /// The bits of an entry's word that are not the walker's access flag: a word ANDed with it has its
-/// status clear, which is what a clear of the status bits writes.
+/// status clear.
 pub const STATUS_KEPT_MASK: usize = 0xffff_ffff_ffff_fbff;
 
 /// Whether this target maintains the accessed bit: always. The walker sets AF where TCR_EL1.HA is set
@@ -102,9 +102,9 @@ pub fn maintains_accessed() -> (ret: bool)
 }
 
 /// Whether this target maintains the dirty bit: never. The hardware's dirty state is DBM with AP[2]
-/// clear, and a clean entry is AP[2] set (D8.5.2.1), so clearing it sets a bit, which the AND of
-/// STATUS_KEPT_MASK cannot. The kernel leaves TCR_EL1.HD clear and writes DBM clear, so AP[2] is the
-/// kernel's own and the status's dirty bit is always clear. See design/arch-module/.
+/// clear, and a clean entry is AP[2] set (D8.5.2.1). The encoder writes DBM clear and the kernel leaves
+/// TCR_EL1.HD clear, so AP[2] is the kernel's own, without_status keeps it and the status's dirty bit
+/// is always clear. See design/arch-module/.
 pub open spec fn spec_maintains_dirty() -> bool {
     false
 }
@@ -183,6 +183,15 @@ pub fn usize2page_entry_status(v: usize, level: usize) -> (ret: PageEntryStatus)
 
 /// The word with its access flag clear.
 pub open spec fn spec_without_status(v: usize) -> usize {
+    v & STATUS_KEPT_MASK
+}
+
+/// What a clear of the status bits writes in place of the word it read.
+#[verifier(when_used_as_spec(spec_without_status))]
+pub fn without_status(v: usize) -> (ret: usize)
+    ensures
+        ret == spec_without_status(v),
+{
     v & STATUS_KEPT_MASK
 }
 

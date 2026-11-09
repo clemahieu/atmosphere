@@ -144,7 +144,7 @@ pub fn page_map_set(
 }
 
 #[verifier(external_body)]
-// external_body(glue): clears the processor's accessed and dirty bits in a hardware page table word atomically, since another core's walk may set one between a read and a write
+// external_body(glue): replaces a hardware page table word with the arch module's without_status of it in a compare-exchange, since another core's walk may set a status bit between a read and a write
 pub fn page_map_take_status(
     page_map_ptr: PageMapPtr,
     Tracked(page_map_perm): Tracked<&mut PointsTo<PageMap>>,
@@ -166,7 +166,7 @@ pub fn page_map_take_status(
 {
     unsafe {
         let word = core::ptr::addr_of_mut!((*(page_map_ptr as *mut PageMap)).ar.ar[index]);
-        (*(word as *const AtomicUsize)).fetch_and(STATUS_KEPT_MASK, Ordering::Relaxed)
+        (*(word as *const AtomicUsize)).update(Ordering::Relaxed, Ordering::Relaxed, without_status)
     }
 }
 
