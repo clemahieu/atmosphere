@@ -478,6 +478,7 @@ impl Tables {
         ensures
             final(self).wf(list),
             final(self).leaf(root, r as int) == leaf,
+            forall|e: int| e != r ==> #[trigger] final(self).leaf(root, e) == old(self).leaf(root, e),
             final(self).roots@.dom() == old(self).roots@.dom(),
             final(self).owner@ == old(self).owner@.insert(leaf, (root, r as int)),
             final(self).payloads@ == old(self).payloads@.insert(leaf, final(self).payloads@[leaf]),

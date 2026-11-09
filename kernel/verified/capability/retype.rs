@@ -790,11 +790,97 @@ impl CapKernel {
             || base / 4096 >= NUM_PAGES - 1 {
             return false;
         }
-        let page = base / 4096;
         proof {
             lemma2_to64();
             assert(block_bytes(1) == 8192);
             assert(base % 8192 == 0);
+            pre.lemma_slot_bound(parent);
+            pre.list.lemma_live_valid(parent);
+        }
+        if !self.place_leaf(parent, root, r, base) {
+            return false;
+        }
+        proof {
+            let post = *self;
+            assert forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x) by {
+                Self::lemma_leaf_cap(pre, post, base, x);
+            }
+            Self::lemma_leaf_discharges(pre, post, root, parent, base);
+        }
+        true
+    }
+
+    /// Types the two pages at `base` as a table leaf in entry r of the table at root, its hidden node a
+    /// child of parent: an untyped's capability when a retype makes it, the list's synthetic root when
+    /// boot does. The block table refuses pages that are not free, and a refusal changes nothing.
+    pub fn place_leaf(&mut self, parent: usize, root: usize, r: usize, base: usize) -> (ret: bool)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(root),
+            r < ROOT_ENTRIES,
+            old(self).tables.leaf(root, r as int) == NO_LEAF,
+            base != NO_LEAF,
+            base % 8192 == 0,
+            base / 4096 + 2 <= NUM_PAGES,
+            base + 8192 <= NODE_SPACE,
+            parent < NODE_SPACE,
+            old(self).list.nodes@[parent as int].live,
+            old(self).list.nodes@[parent as int].kind is Capability,
+            old(self).list.nodes@[parent as int].depth < MAX_DEPTH,
+        ensures
+            final(self).wf(),
+            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
+            Self::same_tree(*old(self), *final(self)),
+            !ret ==> *final(self) == *old(self),
+            !old(self).blocks.covered((base / 4096) as int)
+                && (forall|k: int| 0 <= k < 2 ==> #[trigger] old(self).blocks.pages@[base / 4096 + k].kind is Free)
+                ==> ret,
+            ret ==> {
+                &&& Self::leaf_step(*old(self), *final(self), base)
+                &&& final(self).list.parent@ == old(self).list.parent@.insert(base, parent)
+                &&& final(self).tables.leaf(root, r as int) == base
+                &&& forall|e: int| e != r ==> #[trigger] final(self).tables.leaf(root, e) == old(self).tables.leaf(root, e)
+                &&& final(self).tables.roots@.dom() == old(self).tables.roots@.dom()
+                &&& final(self).tables.owner@ == old(self).tables.owner@.insert(base, (root, r as int))
+                &&& forall|t: usize, i: usize| #[trigger] old(self).tables.has_slot(&old(self).list, t, i)
+                    ==> final(self).tables.has_slot(&final(self).list, t, i)
+                        && final(self).tables.node_of(t, i) == old(self).tables.node_of(t, i)
+                &&& final(self).list.is_child(parent, base)
+                &&& final(self).list.seq@[0] == old(self).list.seq@[0]
+                &&& final(self).list.nodes@[base as int].live
+                &&& final(self).list.nodes@[base as int].kind is Hidden
+                &&& final(self).list.nodes@[base as int].depth == old(self).list.nodes@[parent as int].depth + 1
+                &&& forall|x: int| #![trigger final(self).list.nodes@[x]] 0 <= x < NODE_SPACE && x != base ==> {
+                    &&& final(self).list.nodes@[x].live == old(self).list.nodes@[x].live
+                    &&& old(self).list.nodes@[x].live ==> {
+                        &&& final(self).list.nodes@[x].kind == old(self).list.nodes@[x].kind
+                        &&& final(self).list.nodes@[x].depth == old(self).list.nodes@[x].depth
+                    }
+                }
+                &&& forall|i: usize| index_ok(i) && index_entry(i) == r as int ==> {
+                    &&& #[trigger] final(self).tables.has_slot(&final(self).list, root, i)
+                    &&& !final(self).list.nodes@[final(self).tables.node_of(root, i) as int].live
+                }
+                &&& forall|x: usize| #[trigger] final(self).is_cap(x) == old(self).is_cap(x)
+                &&& forall|x: usize| #[trigger] old(self).is_cap(x) ==> final(self).payload_of(x) == old(self).payload_of(x)
+                &&& final(self).list.pages@.dom() == old(self).list.pages@.dom().insert(base)
+                &&& forall|k: int| 0 <= k < 2 ==> #[trigger] old(self).blocks.pages@[base / 4096 + k].kind is Free
+                &&& final(self).blocks.pages@[(base / 4096) as int].kind is Base
+                &&& final(self).blocks.pages@[(base / 4096) as int].object is TableLeaf
+                &&& final(self).blocks.pages@[base / 4096 + 1].kind is Member
+                &&& final(self).blocks.regions_2m@ == old(self).blocks.regions_2m@
+                &&& final(self).blocks.regions_1g@ == old(self).blocks.regions_1g@
+                &&& forall|i: int| 0 <= i < NUM_PAGES && !(base / 4096 <= i < base / 4096 + 2)
+                    ==> #[trigger] final(self).blocks.pages@[i] == old(self).blocks.pages@[i]
+                &&& final(self).threads == old(self).threads
+                &&& final(self).processes == old(self).processes
+                &&& final(self).spaces == old(self).spaces
+            },
+    {
+        let ghost pre = *old(self);
+        let page = base / 4096;
+        proof {
+            lemma2_to64();
             assert(page % 2 == 0 && page * 4096 == base) by (nonlinear_arith)
                 requires
                     base % 8192 == 0,
@@ -824,7 +910,8 @@ impl CapKernel {
                 assert(base / 4096 == page);
                 assert(pre.blocks.pages@[page + 0int].kind is Free);
             }
-            pre.lemma_slot_bound(parent);
+            pre.list.lemma_live_valid(parent);
+            pre.list.lemma_valid_bound(parent);
         }
         self.list.add_page(base, nodes);
         let ghost mid = self.list;
@@ -832,7 +919,6 @@ impl CapKernel {
             assert(mid.valid(base));
             mid.lemma_seq_fits();
             mid.lemma_valid_bound(base);
-            pre.list.lemma_valid_bound(parent);
             assert(mid.nodes@[parent as int] == pre.list.nodes@[parent as int]);
         }
         self.list.derive(parent, base, NodeKind::Hidden);
@@ -923,10 +1009,36 @@ impl CapKernel {
                 assert(post.tables.node_of(root, i) == base + index_slot(i));
                 assert(base < post.tables.node_of(root, i) < base + NODES_PER_PAGE);
             }
-            assert forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x) by {
-                Self::lemma_leaf_cap(pre, post, base, x);
+            assert forall|x: int| #![trigger post.list.nodes@[x]] 0 <= x < NODE_SPACE && x != base implies {
+                &&& post.list.nodes@[x].live == pre.list.nodes@[x].live
+                &&& pre.list.nodes@[x].live ==> {
+                    &&& post.list.nodes@[x].kind == pre.list.nodes@[x].kind
+                    &&& post.list.nodes@[x].depth == pre.list.nodes@[x].depth
+                }
+            } by {
+                assert(mid.nodes@[x].live == pre.list.nodes@[x].live);
+                if pre.list.nodes@[x].live {
+                    pre.list.lemma_live_valid(x as usize);
+                    assert(mid.nodes@[x] == pre.list.nodes@[x]);
+                }
             }
-            Self::lemma_leaf_discharges(pre, post, root, parent, base);
+            assert(post.blocks.pages@[page + 1int].kind is Member) by {
+                post.blocks.lemma_member_of(page as int, page + 1int);
+            }
+            // A slot pre had is in a leaf live before, so not the new one, and still live.
+            assert forall|t: usize, i: usize| #[trigger] pre.tables.has_slot(&pre.list, t, i)
+                implies pre.tables.has_slot(&post.list, t, i) by {
+                let l = pre.tables.leaf(t, index_entry(i));
+                pre.lemma_slot(t, i);
+                pre.lemma_slot_bound(pre.tables.node_of(t, i));
+                assert(l <= pre.tables.node_of(t, i));
+                assert(l != base);
+                assert(post.list.nodes@[l as int].live);
+            }
+            assert(post.list.is_child(parent, base));
+            assert(post.list.nodes@[base as int].depth == pre.list.nodes@[parent as int].depth + 1);
+            assert(post.list.pages@.dom() == pre.list.pages@.dom().insert(base));
+            assert(post.tables.owner@ == pre.tables.owner@.insert(base, (root, r as int)));
         }
         true
     }
@@ -1037,7 +1149,7 @@ impl CapKernel {
     }
 
     /// The hidden nodes and the parents after a leaf's retype: the new node is the leaf's, hidden
-    /// under the untyped's capability, and every other node's kind and parent are as they were.
+    /// under a capability, and every other node's kind and parent are as they were.
     proof fn lemma_leaf_nodes(pre: Self, post: Self, mid: Tree, parent: usize, base: usize)
         requires
             Self::leaf_step(pre, post, base),
@@ -1048,7 +1160,8 @@ impl CapKernel {
             forall|i: usize| #[trigger] pre.list.valid(i) ==> mid.nodes@[i as int] == pre.list.nodes@[i as int],
             forall|i: int| 0 <= i < NODE_SPACE ==> #[trigger] mid.nodes@[i].live == pre.list.nodes@[i].live,
             parent < NODE_SPACE,
-            pre.is_cap(parent),
+            pre.list.nodes@[parent as int].live,
+            pre.list.nodes@[parent as int].kind is Capability,
             post.list.nodes@[base as int].live,
             post.list.nodes@[base as int].kind is Hidden,
             post.list.parent@ == mid.parent@.insert(base, parent),
