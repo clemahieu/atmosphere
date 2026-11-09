@@ -74,7 +74,7 @@ impl CapKernel {
         requires
             self.wf(),
             base % 32768 == 0,
-            base / 4096 < NUM_PAGES,
+            self.blocks.tracks_addr(base),
         ensures
             process_block(&self.blocks, base / 4096) == self.processes.records@.contains_key(base),
             self.processes.records@.contains_key(base) ==> {
@@ -108,7 +108,7 @@ impl CapKernel {
         ensures
             self.processes.records@.contains_key(base) ==> {
                 &&& base % 32768 == 0
-                &&& base / 4096 < NUM_PAGES
+                &&& self.blocks.tracks_addr(base)
                 &&& self.blocks.pages@[(base / 4096) as int].object is Process
             },
     {
@@ -160,7 +160,7 @@ impl CapKernel {
             None => { return false; },
         };
         let page = base / 4096;
-        if page >= NUM_PAGES || self.flush_epoch == usize::MAX {
+        if !self.blocks.page_tracked(page) || self.flush_epoch == usize::MAX {
             return false;
         }
         let entry = *self.blocks.pages.get(page);
@@ -247,7 +247,7 @@ impl CapKernel {
         &&& pre.wf()
         &&& pre.process_is_spent(base)
         &&& post.blocks.wf()
-        &&& forall|i: int| 0 <= i < NUM_PAGES ==> #[trigger] post.blocks.pages@[i] == (
+        &&& forall|i: int| pre.blocks.tracks(i) ==> #[trigger] post.blocks.pages@[i] == (
             if pre.blocks.in_block(page as int, i) { free_entry() } else { pre.blocks.pages@[i] })
         &&& post.blocks.regions_2m@ == pre.blocks.regions_2m@
         &&& post.blocks.regions_1g@ == pre.blocks.regions_1g@
@@ -292,7 +292,7 @@ impl CapKernel {
             base % 32768 == 0,
             base % 4096 == 0,
             base as int == 4096 * (base / 4096) as int,
-            base / 4096 + 8 <= NUM_PAGES,
+            self.blocks.tracks_addr_run(base, 8),
             process_wf(&self.processes, &self.blocks, base),
             self.blocks.pages@[(base / 4096) as int].dead,
             self.processes.holders@[base] == Set::<usize>::empty(),
@@ -321,7 +321,7 @@ impl CapKernel {
     proof fn lemma_process_page_unmapped(&self, page: usize)
         requires
             self.wf(),
-            page < NUM_PAGES,
+            self.blocks.tracks(page as int),
             self.blocks.pages@[page as int].kind is Base,
             self.blocks.pages@[page as int].object is Process,
         ensures
@@ -346,13 +346,13 @@ impl CapKernel {
             pre.process_is_spent(base),
             forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) ==> !(base <= p < base + 8 * 4096),
         ensures
-            forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
+            forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) && pre.blocks.tracks_addr(p)
                 ==> !pre.blocks.in_block((base / 4096) as int, (p / 4096) as int),
     {
         let page = base / 4096;
         pre.lemma_spent_process(base);
         assert(order_pages(3) == 8);
-        assert forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
+        assert forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) && pre.blocks.tracks_addr(p)
             implies !pre.blocks.in_block(page as int, (p / 4096) as int) by {
             lemma_list_page(&pre.list, p);
             lemma_fundamental_div_mod(p as int, 4096);
@@ -551,7 +551,7 @@ impl CapKernel {
             assert(block_typed(&pre.blocks, BlockRef::Small(b)));
             assert(post.blocks.pages@[b as int] == pre.blocks.pages@[b as int]);
         }
-        assert forall|b: usize| b < NUM_PAGES && (#[trigger] post.blocks.pages@[b as int]).kind is Base
+        assert forall|b: usize| post.blocks.tracks(b as int) && (#[trigger] post.blocks.pages@[b as int]).kind is Base
             && post.blocks.pages@[b as int].object is Frame implies {
             &&& post.blocks.pages@[b as int].order == 0
             &&& post.blocks.pages@[b as int].refs == 0 ==> post.holders@.contains_key(BlockRef::Small(b))
@@ -559,12 +559,12 @@ impl CapKernel {
             assert(post.blocks.pages@[b as int] == pre.blocks.pages@[b as int]);
         }
         assert forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) implies {
-            &&& l / 4096 < NUM_PAGES
+            &&& post.blocks.tracks_addr(l)
             &&& post.blocks.pages@[(l / 4096) as int] == pre.blocks.pages@[(l / 4096) as int]
         } by {
             assert(pre.tables.owner@.contains_key(l));
         }
-        assert forall|b: usize| b < NUM_PAGES && #[trigger] leaf_block(&post.blocks, b)
+        assert forall|b: usize| post.blocks.tracks(b as int) && #[trigger] leaf_block(&post.blocks, b)
             implies post.tables.owner@.contains_key((b * 4096) as usize) by {
             assert(post.blocks.pages@[b as int] == pre.blocks.pages@[b as int]);
             assert(leaf_block(&pre.blocks, b));
@@ -733,7 +733,7 @@ impl CapKernel {
         self.blocks.free_block(page, Tracked(perms));
         proof {
             let post = *self;
-            assert forall|i: int| 0 <= i < NUM_PAGES implies #[trigger] post.blocks.pages@[i] == (
+            assert forall|i: int| pre.blocks.tracks(i) implies #[trigger] post.blocks.pages@[i] == (
                 if pre.blocks.in_block(page as int, i) { free_entry() } else { pre.blocks.pages@[i] }) by {
                 assert(mid.blocks.in_block(page as int, i) == pre.blocks.in_block(page as int, i));
                 if i != page {
@@ -787,7 +787,7 @@ impl CapKernel {
             None => { return ReclaimStep::Refused; },
         };
         let page = base / 4096;
-        if page >= NUM_PAGES {
+        if !self.blocks.page_tracked(page) {
             return ReclaimStep::Refused;
         }
         let entry = *self.blocks.pages.get(page);

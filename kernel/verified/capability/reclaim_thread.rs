@@ -115,11 +115,11 @@ impl CapKernel {
         requires
             self.wf(),
             base % 8192 == 0,
-            base / 4096 < NUM_PAGES,
+            self.blocks.tracks_addr(base),
         ensures
             thread_block(&self.blocks, base / 4096) == self.threads.records@.contains_key(base),
             self.threads.records@.contains_key(base) ==> {
-                &&& base / 4096 + 2 <= NUM_PAGES
+                &&& self.blocks.tracks_addr_run(base, 2)
                 &&& self.blocks.pages@[(base / 4096) as int].order == 1
                 &&& (self.blocks.pages@[(base / 4096) as int].refs == 0 ==> self.blocks.pages@[(base / 4096) as int].dead)
                 &&& self.threads.records@[base].addr() == base + THREAD_RECORD_PAGE * 4096
@@ -146,10 +146,10 @@ impl CapKernel {
             self.wf(),
         ensures
             self.threads.records@.contains_key(base) ==> {
-                &&& base / 4096 < NUM_PAGES
+                &&& self.blocks.tracks_addr(base)
                 &&& self.blocks.pages@[(base / 4096) as int].object is Thread
             },
-            base / 4096 < NUM_PAGES && self.blocks.pages@[(base / 4096) as int].object is Thread ==> {
+            self.blocks.tracks_addr(base) && self.blocks.pages@[(base / 4096) as int].object is Thread ==> {
                 &&& !self.tables.owner@.contains_key(base)
                 &&& !self.table_pages.maps@.contains_key(base)
                 &&& !self.spaces.roots@.contains_key(base)
@@ -158,7 +158,7 @@ impl CapKernel {
         if self.threads.records@.contains_key(base) {
             assert(thread_wf(&self.list, &self.threads, &self.blocks, base));
         }
-        if base / 4096 < NUM_PAGES && self.blocks.pages@[(base / 4096) as int].object is Thread {
+        if self.blocks.tracks_addr(base) && self.blocks.pages@[(base / 4096) as int].object is Thread {
             if self.tables.owner@.contains_key(base) {
                 self.tables.lemma_leaf(&self.list, base);
                 assert(self.blocks.pages@[(base / 4096) as int].object is TableLeaf);
@@ -303,7 +303,7 @@ impl CapKernel {
     proof fn lemma_thread_unmapped(&self, page: usize, g: usize)
         requires
             self.wf(),
-            page < NUM_PAGES,
+            self.blocks.tracks(page as int),
             page % 2 == 0,
             self.blocks.pages@[page as int].kind is Base,
             self.blocks.pages@[page as int].object is Thread,
@@ -336,8 +336,8 @@ impl CapKernel {
             base % 8192 == 0,
             base % 4096 == 0,
             base < NODE_SPACE,
-            base / 4096 < NUM_PAGES,
-            base / 4096 + 1 < NUM_PAGES,
+            self.blocks.tracks_addr(base),
+            self.blocks.tracks_addr_run(base, 2),
             (base / 4096) * 4096 == base,
             self.blocks.pages@[(base / 4096) as int].kind is Base,
             self.blocks.pages@[(base / 4096) as int].object is Thread,
@@ -462,7 +462,7 @@ impl CapKernel {
         requires
             pre.wf(),
             pre.thread_is_spent(base),
-            forall|i: int| 0 <= i < NUM_PAGES ==> #[trigger] post.blocks.pages@[i] == (
+            forall|i: int| pre.blocks.tracks(i) ==> #[trigger] post.blocks.pages@[i] == (
                 if pre.blocks.in_block((base / 4096) as int, i) { free_entry() } else { pre.blocks.pages@[i] }),
             post.list.pages@.dom() == pre.list.pages@.dom().remove(base),
             post.list.nodes == pre.list.nodes,
@@ -481,7 +481,7 @@ impl CapKernel {
             assert(t != base);
             assert(!pre.blocks.in_block(page as int, (t / 4096) as int));
         }
-        assert forall|x: usize| x < NUM_PAGES && #[trigger] thread_block(&post.blocks, x)
+        assert forall|x: usize| post.blocks.tracks(x as int) && #[trigger] thread_block(&post.blocks, x)
             implies post.threads.records@.contains_key((x * 4096) as usize) by {
             if pre.blocks.in_block(page as int, x as int) {
                 assert(post.blocks.pages@[x as int] == free_entry());
@@ -519,7 +519,7 @@ impl CapKernel {
             pre.wf(),
             pre.thread_is_spent(base),
             post.blocks.wf(),
-            forall|i: int| 0 <= i < NUM_PAGES ==> #[trigger] post.blocks.pages@[i] == (
+            forall|i: int| pre.blocks.tracks(i) ==> #[trigger] post.blocks.pages@[i] == (
                 if pre.blocks.in_block((base / 4096) as int, i) { free_entry() } else { pre.blocks.pages@[i] }),
             post.blocks.regions_2m@ == pre.blocks.regions_2m@,
             post.blocks.regions_1g@ == pre.blocks.regions_1g@,
@@ -578,7 +578,7 @@ impl CapKernel {
             assert(block_typed(&pre.blocks, BlockRef::Small(b)));
             assert(post.blocks.pages@[b as int] == pre.blocks.pages@[b as int]);
         }
-        assert forall|b: usize| b < NUM_PAGES && (#[trigger] post.blocks.pages@[b as int]).kind is Base
+        assert forall|b: usize| post.blocks.tracks(b as int) && (#[trigger] post.blocks.pages@[b as int]).kind is Base
             && post.blocks.pages@[b as int].object is Frame implies {
             &&& post.blocks.pages@[b as int].order == 0
             &&& post.blocks.pages@[b as int].refs == 0 ==> post.holders@.contains_key(BlockRef::Small(b))
@@ -586,17 +586,17 @@ impl CapKernel {
             assert(post.blocks.pages@[b as int] == pre.blocks.pages@[b as int]);
         }
         assert forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) implies {
-            &&& l / 4096 < NUM_PAGES
+            &&& post.blocks.tracks_addr(l)
             &&& post.blocks.pages@[(l / 4096) as int] == pre.blocks.pages@[(l / 4096) as int]
         } by {
             pre.tables.lemma_leaf(&pre.list, l);
         }
-        assert forall|b: usize| b < NUM_PAGES && #[trigger] leaf_block(&post.blocks, b)
+        assert forall|b: usize| post.blocks.tracks(b as int) && #[trigger] leaf_block(&post.blocks, b)
             implies post.tables.owner@.contains_key((b * 4096) as usize) by {
             assert(post.blocks.pages@[b as int] == pre.blocks.pages@[b as int]);
             assert(leaf_block(&pre.blocks, b));
         }
-        assert forall|p: usize| #[trigger] post.list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
+        assert forall|p: usize| #[trigger] post.list.pages@.dom().contains(p) && pre.blocks.tracks_addr(p)
             implies !pre.blocks.in_block(page as int, (p / 4096) as int) by {
             assert(pre.list.pages@.dom().contains(p));
             assert(p != base);
@@ -618,7 +618,7 @@ impl CapKernel {
             pre.wf(),
             pre.thread_is_spent(base),
             post.blocks.wf(),
-            forall|i: int| 0 <= i < NUM_PAGES ==> #[trigger] post.blocks.pages@[i] == (
+            forall|i: int| pre.blocks.tracks(i) ==> #[trigger] post.blocks.pages@[i] == (
                 if pre.blocks.in_block((base / 4096) as int, i) { free_entry() } else { pre.blocks.pages@[i] }),
             post.blocks.regions_2m@ == pre.blocks.regions_2m@,
             post.blocks.regions_1g@ == pre.blocks.regions_1g@,
@@ -758,7 +758,7 @@ impl CapKernel {
         self.blocks.free_block(page, Tracked(perms));
         proof {
             let post = *self;
-            assert forall|i: int| 0 <= i < NUM_PAGES implies #[trigger] post.blocks.pages@[i] == (
+            assert forall|i: int| pre.blocks.tracks(i) implies #[trigger] post.blocks.pages@[i] == (
                 if pre.blocks.in_block(page as int, i) { free_entry() } else { pre.blocks.pages@[i] }) by {
                 assert(mid.blocks.in_block(page as int, i) == pre.blocks.in_block(page as int, i));
                 if i != page {
@@ -815,7 +815,7 @@ impl CapKernel {
             lemma2_to64();
             assert(block_bytes(1) == 8192);
         }
-        if page >= NUM_PAGES {
+        if !self.blocks.page_tracked(page) {
             proof {
                 if pre.threads.records@.contains_key(base) {
                     assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, base));
