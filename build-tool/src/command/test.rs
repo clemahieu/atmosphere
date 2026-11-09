@@ -399,48 +399,27 @@ fn fixed_slots_printed(serial: &str) -> Result<(usize, usize)> {
     }
 }
 
-/// The arguments dom0 passes its first invocation, in rsi, rdx, r8, r9 and r10, as the kernel logs them.
-const FIRST_ARGUMENTS: &str = " with [1, 2, 3, 4, 5]: ";
-
-/// Whether the capability kernel's first logged invocation carries dom0's arguments, r10's last.
-fn first_arguments_arrived(serial: &str) -> bool {
-    serial
-        .lines()
-        .find(|line| line.contains(CAPABILITY_ENTRY))
-        .map_or(false, |line| line.contains(FIRST_ARGUMENTS))
-}
-
-/// What the kernel logs for each invocation of its capability entry.
-const CAPABILITY_ENTRY: &str = "capability entry: operation ";
-
-/// Whether the capability kernel's first logged invocation is a refusal.
-fn first_operation_refused(serial: &str) -> bool {
-    serial
-        .lines()
-        .find(|line| line.contains(CAPABILITY_ENTRY))
-        .map_or(false, |line| line.contains(": refused"))
-}
-
 /// Runs tools/run.py with `args` and returns the serial log of a boot in which dom0 exited with
 /// success, which it does only when the kernel gave the statuses it expected, with what the gate saw
 /// of it. The serial log shows the kernel's per-slot lines with their kinds, dom0's check line and
 /// exit marker, and CPU 1 idle beside it.
 async fn boot(project: &ProjectHandle, timeout: u64, args: &[&str]) -> Result<(String, String)> {
     let serial = run_boot(project, timeout, args).await?;
-    if !first_operation_refused(&serial) {
-        return Err(anyhow!("the serial log does not show the first operation refused"));
-    }
-    if !first_arguments_arrived(&serial) {
-        return Err(anyhow!("the serial log does not show the first operation's five arguments in place"));
-    }
-    let (untyped, frames) = fixed_slots_printed(&serial)?;
-    if !console_line_printed(&serial) {
+    let held = boot_serial_accepted(&serial)?;
+    Ok((serial, held))
+}
+
+/// The lines a successful boot's serial log must show. The kernel may still print a capability-entry
+/// line; this does not require one.
+fn boot_serial_accepted(serial: &str) -> Result<String> {
+    let (untyped, frames) = fixed_slots_printed(serial)?;
+    if !console_line_printed(serial) {
         return Err(anyhow!("the serial log does not hold dom0's check line"));
     }
-    if !exit_marker_printed(&serial) {
+    if !exit_marker_printed(serial) {
         return Err(anyhow!("the serial log does not show dom0's exit marker"));
     }
-    if !second_core_idle(&serial) {
+    if !second_core_idle(serial) {
         return Err(anyhow!("the serial log does not show CPU 1 idle on a syscall stack of its own"));
     }
     if !serial.contains(FLUSH_ACKNOWLEDGED) {
@@ -449,12 +428,11 @@ async fn boot(project: &ProjectHandle, timeout: u64, args: &[&str]) -> Result<(S
     if !serial.contains(LOCK_CONTENDED) {
         return Err(anyhow!("the serial log does not show both cores contending for the kernel's lock"));
     }
-    let held = format!(
+    Ok(format!(
         "exit status 0, the kernel's per-slot lines with their kinds ({} untyped, {} frames), dom0's check \
          line and exit marker, CPU 1 idle on its own stack, a flush IPI acknowledged, the lock contended",
         untyped, frames
-    );
-    Ok((serial, held))
+    ))
 }
 
 /// Runs tools/run.py with `args` and returns the serial log of a run that exited with status 0.
@@ -553,29 +531,48 @@ mod tests {
         assert_eq!(parse_verify_errors("error: cannot find macro\n"), None);
     }
 
-    #[test]
-    fn first_operation_refused_is_the_first_invocation() {
-        let refused = " INFO capability entry: operation 14 on slot 0 with [1, 2, 3, 4, 5]: refused\u{1b}[0m\n";
-        let unknown = " INFO capability entry: operation 65535 on slot 0 with [0, 0, 0, 0, 0]: unknown\n";
-        assert!(first_operation_refused(&format!("boot\n{}{}", refused, unknown)));
-        assert!(!first_operation_refused(&format!("{}{}", unknown, refused)));
-        assert!(!first_operation_refused("dom0 capability done\n"));
+    /// A boot log with the lines the gate keeps, and no capability-entry line.
+    fn boot_log() -> String {
+        format!(
+            "{}\
+             dom0 slot checks held\n\
+             dom0 capability done\n\
+             \u{1b}[34m INFO CPU 0 syscall stack 0x1000\u{1b}[0m\n\
+             INFO CPU 1 idle, syscall stack 0x2000\n\
+             flush IPI acknowledged by CPU 1\n\
+             lock contended by 2 cores: pair intact at 400000\n",
+            slot_lines("frame")
+        )
     }
 
     #[test]
-    fn first_arguments_arrived_reads_the_first_invocation() {
-        let arrived = " INFO capability entry: operation 14 on slot 0 with [1, 2, 3, 4, 5]: refused\n";
-        let dropped = " INFO capability entry: operation 14 on slot 0 with [1, 2, 3, 4, 0]: refused\n";
-        let unknown = " INFO capability entry: operation 65535 on slot 0 with [0, 0, 0, 0, 0]: unknown\n";
-        assert!(first_arguments_arrived(&format!("boot\n{}{}", arrived, unknown)));
-        assert!(!first_arguments_arrived(&format!("{}{}", dropped, unknown)));
-        assert!(!first_arguments_arrived(&format!("{}{}", unknown, arrived)));
-        assert!(!first_arguments_arrived("dom0 capability done\n"));
+    fn a_boot_without_a_capability_entry_line_passes() {
+        let log = boot_log();
+        assert!(!log.contains("capability entry"));
+        assert!(boot_serial_accepted(&log).is_ok());
+
+        let no_console = log.replace("dom0 slot checks held\n", "");
+        assert!(boot_serial_accepted(&no_console).unwrap_err().to_string().contains("check line"));
+
+        let no_exit = log.replace("dom0 capability done\n", "");
+        assert!(boot_serial_accepted(&no_exit).unwrap_err().to_string().contains("exit marker"));
+
+        let no_slot = log.replace(" INFO root slot 2: thread\n", "");
+        assert!(boot_serial_accepted(&no_slot).is_err());
+
+        let no_idle = log.replace("CPU 1 idle, syscall stack 0x2000\n", "");
+        assert!(boot_serial_accepted(&no_idle).unwrap_err().to_string().contains("CPU 1 idle"));
+
+        let no_flush = log.replace("flush IPI acknowledged by CPU 1\n", "");
+        assert!(boot_serial_accepted(&no_flush).unwrap_err().to_string().contains("flush IPI"));
+
+        let no_lock = log.replace("lock contended by 2 cores: pair intact at 400000\n", "");
+        assert!(boot_serial_accepted(&no_lock).unwrap_err().to_string().contains("contending"));
     }
 
     #[test]
     fn console_line_is_a_line_of_its_own() {
-        assert!(console_line_printed(" INFO root slot 3: console\ndom0 slot checks held\n INFO capability entry\n"));
+        assert!(console_line_printed(" INFO root slot 3: console\ndom0 slot checks held\n INFO root slot 4: untyped\n"));
         assert!(console_line_printed("x\r\ndom0 slot checks held\r\n"));
         assert!(!console_line_printed(" INFO dom0 slot checks held\n"));
         assert!(!console_line_printed("dom0 slot checks\n"));
