@@ -1,5 +1,6 @@
 //! The layout of every object the kernel keeps in a 4K page. rustc checks each at compile time, and a
-//! proof that converts a page to an object can rely on it.
+//! proof that converts a page to an object can rely on it. The thread record holds the target's trap
+//! frame, arch::Registers, so its size is one per target.
 
 use vstd::prelude::*;
 
@@ -7,7 +8,7 @@ use crate::capability::list::NodePage;
 use crate::capability::space::{SpaceCores, SpaceRecord, TableRecord};
 use crate::capability::table::{PayloadPage, TableRoot};
 use crate::capability::process::ProcessRecord;
-use crate::capability::thread::ThreadRecord;
+use crate::capability::thread::{ThreadRecord, XSAVE_OFFSET};
 use crate::define::PagePerm4k;
 use crate::pagetable::pagemap::PageMap;
 use crate::pptr::PointsTo;
@@ -25,7 +26,10 @@ global layout SpaceRecord is size == 72, align == 8;
 global layout PageMap is size == 4096, align == 8;
 global layout TableRecord is size == 56, align == 8;
 global layout SpaceCores is size == 264, align == 8;
+#[cfg(target_arch = "x86_64")]
 global layout ThreadRecord is size == 224, align == 8;
+#[cfg(target_arch = "aarch64")]
+global layout ThreadRecord is size == 328, align == 8;
 global layout ProcessRecord is size == 1, align == 1;
 
 /// A page becomes an uninitialised node page.
@@ -176,7 +180,7 @@ pub proof fn lemma_thread_block_layouts()
     ensures
         vstd::layout::size_of::<PageBytes>() == 4096,
         vstd::layout::size_of::<TableRoot>() == 4096,
-        vstd::layout::size_of::<ThreadRecord>() == 224,
+        vstd::layout::size_of::<ThreadRecord>() <= XSAVE_OFFSET,
 {
 }
 
