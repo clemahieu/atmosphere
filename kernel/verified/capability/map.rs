@@ -739,7 +739,7 @@ pub proof fn lemma_holders_mapping_added(
 }
 
 /// Whether two kinds of space are the same kind.
-fn same_kind(a: SpaceKind, b: SpaceKind) -> (ret: bool)
+pub fn same_kind(a: SpaceKind, b: SpaceKind) -> (ret: bool)
     ensures
         ret == (a == b),
 {
@@ -863,7 +863,7 @@ impl CapKernel {
 
     /// The table entry i of table t leads to, in constant time. Above level 1 an entry either is a
     /// kernel slot, is not present, maps a large frame, or names a table page.
-    fn table_step(&self, t: usize, is_root: bool, i: usize) -> (ret: Option<usize>)
+    pub fn table_step(&self, t: usize, is_root: bool, i: usize) -> (ret: Option<usize>)
         requires
             self.wf(),
             is_root ==> self.spaces.roots@.contains_key(t),
@@ -1232,7 +1232,7 @@ impl CapKernel {
     }
 
     /// The node of entry e of table page t, in constant time.
-    fn map_node(&self, t: usize, e: usize) -> (ret: usize)
+    pub fn map_node(&self, t: usize, e: usize) -> (ret: usize)
         requires
             self.wf(),
             self.table_pages.maps@.contains_key(t),

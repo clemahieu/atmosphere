@@ -3500,7 +3500,7 @@ impl CapKernel {
 
     /// A step that takes a mapping node away leaves the view as it was: the node was no capability, and
     /// every capability says what it did under the parent it had.
-    proof fn lemma_mapping_view_same(pre: Self, post: Self, n: usize)
+    pub proof fn lemma_mapping_view_same(pre: Self, post: Self, n: usize)
         requires
             Self::caps_frame(pre, post, n, n),
             pre.list.nodes@[n as int].kind is Mapping,
@@ -3525,7 +3525,7 @@ impl CapKernel {
     }
 
     /// Unlinks mapping node n with its entry and its frame's reference, and records the unmap.
-    fn unlink_mapping_node(&mut self, n: usize)
+    pub fn unlink_mapping_node(&mut self, n: usize)
         requires
             old(self).wf(),
             n < NODE_SPACE,
