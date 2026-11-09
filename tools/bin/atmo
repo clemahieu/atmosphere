@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build and run the atmo build tool from the current workspace, as the flake's wrapper did.
+# Build the current workspace's build-tool and exec its atmo with the given arguments.
 set -euo pipefail
 metadata=$(cargo metadata --format-version 1)
 root=$(echo "$metadata" | jq -r '.workspace_root')
