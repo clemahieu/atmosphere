@@ -44,9 +44,6 @@ const LEVEL_MASK: u64 = 0b1_1111_1111;
 /// This is also called M in the Intel manual.
 const MAXPHYADDR: u64 = 56;
 
-/// The number of bits to represent offsets in a 4KiB page.
-const PAGE_SHIFT: u64 = 12;
-
 /// The size of a regular 4KiB page.
 const PAGE_SZ: u64 = 4096;
 
@@ -132,9 +129,7 @@ impl AddressSpace {
         let table =
             { allocator.allocate_physical(mem::size_of::<PageTable>()).0 } as *mut PageTable;
 
-        if table as u64 & (1u64 << PAGE_SHIFT - 1) != 0 {
-            panic!("Got unaligned page");
-        }
+        assert!(table as usize % PAGE_SIZE == 0, "page table at an unaligned address {:p}", table);
 
         ptr::write_volatile(table, PageTable::zeroed());
 
@@ -406,6 +401,30 @@ mod tests {
         let mut pages = HostPages { count: 0 };
         let mut space = identity_map(&mut pages);
         unsafe { space.map(&mut pages, LARGE, LARGE, false, Leaf::Small, false) };
+    }
+
+    /// Hands out an address `offset` bytes past a page boundary, with a page of room after it.
+    struct OffsetPages {
+        offset: usize,
+    }
+
+    impl PhysicalAllocator for OffsetPages {
+        unsafe fn allocate_physical(&mut self, _size: usize) -> PAddr {
+            let base = alloc_zeroed(Layout::from_size_align(2 * PAGE_SIZE, PAGE_SIZE).unwrap());
+            PAddr(base as u64 + self.offset as u64)
+        }
+    }
+
+    #[test]
+    fn a_page_table_takes_a_page_aligned_address() {
+        let table = unsafe { AddressSpace::allocate_page_table(&mut OffsetPages { offset: 0 }) };
+        assert_eq!(table as usize % PAGE_SIZE, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "page table at an unaligned address")]
+    fn a_page_table_does_not_take_an_address_unaligned_in_a_low_bit() {
+        unsafe { AddressSpace::allocate_page_table(&mut OffsetPages { offset: 8 }) };
     }
 
     #[test]
