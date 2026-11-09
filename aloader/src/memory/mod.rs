@@ -8,7 +8,7 @@ use core::{fmt, ops::DerefMut};
 
 use aelf::PAddr;
 
-use astd::boot::{page_end, PhysicalMemoryType, PhysicalRange, PAGE_BYTES};
+use astd::boot::{page_end, PhysicalMemoryType, PhysicalRange, DOM0_RESERVATION, PAGE_BYTES};
 use astd::heapless::Vec as ArrayVec;
 use astd::memory::PageProtection;
 use astd::sync::Mutex;
@@ -20,12 +20,14 @@ pub use paging::{AddressSpace, Leaf, LARGE_PAGE_SIZE};
 pub use userspace::UserspaceMapper;
 
 pub const MAX_PHYSICAL_MEMORY: usize = 16 * 1024 * 1024 * 1024; // 16 GiB
-/// The loader's page tables are at most 55 pages: 6 for the 4 GiB identity map, 32 if the whole
-/// kernel window had 4K entries, 4 for the IOMMU's space and 13 for dom0's window. The pool is 128
-/// pages, so the upper half stays unwritten: tools/check-boot-stack.py. design/test-guest-memory/.
+/// The loader's page tables are at most 28 pages: 6 for the 4 GiB identity map, 5 for the 4K
+/// entries of a kernel image at its bound and the stack's guard, 7 MiB wherever they start, 4 for
+/// the IOMMU's space and 13 for dom0's window. The pool is 128 pages, so the upper half stays
+/// unwritten: tools/check-boot-stack.py. design/test-guest-memory/.
 pub const BOOTSTRAP_SIZE: usize = 512 * 1024; // 512 KiB
-/// Holds the kernel window and dom0's window. design/test-guest-memory/.
-pub const ALLOCATOR_SIZE: usize = 128 * 1024 * 1024; // 128 MiB
+/// The kernel window and dom0's window, which are all the loader reserves from it: 24 MiB.
+/// design/test-guest-memory/.
+pub const ALLOCATOR_SIZE: usize = crate::KERNEL_RESERVATION + DOM0_RESERVATION as usize;
 
 /// The physical memory map.
 static PHYSICAL_MEMORY_MAP: Mutex<MemoryMap<BootMemoryType>> = Mutex::new(MemoryMap::empty());

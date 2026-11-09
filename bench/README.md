@@ -48,7 +48,7 @@ Atmosphere boots only CPU 0 and has no timer interrupt, so all timers run on one
       -drive if=pflash,format=raw,unit=1,file=target/bench/OVMF_VARS.fd \
       -drive format=raw,file=fat:rw:target/bench/esp
 
-- `-m 2560`: the test guest. design/test-guest-memory/. The loader's allocator is 128 MiB.
+- `-m 2560`: the test guest. design/test-guest-memory/. The loader's allocator is 24 MiB.
 - `-mem-prealloc`: backs guest memory before boot, so host page faults do not pollute the
   fresh-page mmap timing.
 - The ESP, `target/bench/esp`, is the directory QEMU serves as a FAT disk, laid out as `tools/run.py`

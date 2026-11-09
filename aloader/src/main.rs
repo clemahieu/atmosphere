@@ -49,7 +49,15 @@ use memory::{
 /// stack guard. design/test-guest-memory/.
 pub const IDENTITY_MAP_END: u64 = 0x1_0000_0000; // 4 GiB
 
-const KERNEL_RESERVATION: usize = 64 * 1024 * 1024; // 64 MiB
+/// The kernel window: the image, then the stack's guard, then the stack. The loader's bump allocator
+/// is sized from it (memory::ALLOCATOR_SIZE).
+pub const KERNEL_RESERVATION: usize =
+    (KERNEL_IMAGE_BOUND + KERNEL_STACK_GUARD_SIZE + KERNEL_STACK_SIZE) as usize;
+// The most the kernel's image may take in memory. A debug image is 3.12 MiB and a release image
+// 2.82 MiB, the end of the last LOAD segment in readelf -lW of
+// target/x86_64-unknown-aloader/{debug,release}/kernel, so 2.88 MiB is room to grow.
+// design/test-guest-memory/.
+const KERNEL_IMAGE_BOUND: u64 = 6 * 1024 * 1024; // 6 MiB
 // Unmapped below the kernel's stack. The kernel probes large frames, so an overflow cannot jump it.
 const KERNEL_STACK_GUARD_SIZE: u64 = 1024 * 1024; // 1 MiB
 // The kernel's boot reaches 48 KiB down it in a debug build and 16 KiB in release, and

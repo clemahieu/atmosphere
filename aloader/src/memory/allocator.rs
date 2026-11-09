@@ -171,3 +171,38 @@ pub unsafe fn init(base: *mut u8, size: usize) {
     ALLOCATOR.base = base;
     ALLOCATOR.size = size;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::ALLOCATOR_SIZE;
+    use crate::{
+        KERNEL_IMAGE_BOUND, KERNEL_RESERVATION, KERNEL_STACK_GUARD_SIZE, KERNEL_STACK_SIZE,
+    };
+    use astd::boot::DOM0_RESERVATION;
+
+    /// What `load` takes, in its order: the kernel window, an image in it, the guard and the stack
+    /// in one piece, then dom0's window. An image at its bound leaves the kernel window nothing
+    /// over, and the two windows leave the allocator nothing over.
+    #[test]
+    fn the_windows_hold_what_load_takes_with_nothing_over() {
+        let mut allocator = BumpAllocator {
+            base: 0x178_0000 as *mut u8,
+            size: ALLOCATOR_SIZE,
+            watermark: AtomicUsize::new(0),
+        };
+
+        let mut kernel = allocator.reserve(KERNEL_RESERVATION);
+        let image = unsafe { kernel.allocate_physical(KERNEL_IMAGE_BOUND as usize) };
+        let guard = unsafe {
+            kernel.allocate_physical((KERNEL_STACK_GUARD_SIZE + KERNEL_STACK_SIZE) as usize)
+        };
+        assert_eq!(image.0, kernel.base() as u64);
+        assert_eq!(guard.0, image.0 + KERNEL_IMAGE_BOUND);
+        assert_eq!(kernel.watermark.load(Ordering::SeqCst), kernel.size);
+
+        let dom0 = allocator.reserve(DOM0_RESERVATION as usize);
+        assert_eq!(dom0.base() as u64, kernel.range().end_inclusive() + 1);
+        assert_eq!(allocator.watermark.load(Ordering::SeqCst), allocator.size);
+    }
+}
