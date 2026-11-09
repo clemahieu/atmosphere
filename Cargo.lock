@@ -989,6 +989,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "pager-policy"
+version = "0.1.0"
+dependencies = [
+ "vstd",
+]
+
+[[package]]
 name = "parking_lot"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
