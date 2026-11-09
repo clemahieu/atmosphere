@@ -1,7 +1,8 @@
-//! A run of pages as the maximal aligned blocks an untyped capability can name: from the run's first
-//! page, the largest order its page is aligned to and the run holds, then the same from the page after
-//! that block. Boot hands the root one untyped per block of free memory. See design/root-process-at-boot/
-//! and design/capability-names-a-block/.
+//! A run of pages as the maximal aligned blocks of at most a given order: from the run's first page,
+//! the largest order up to the cap its page is aligned to and the run holds, then the same from the
+//! page after that block. Boot hands the root one untyped per block of free memory, of any order, and
+//! one frame capability per block of dom0's image, of order at most 9 so that each lies in one 2M
+//! region. See design/root-process-at-boot/ and design/capability-names-a-block/.
 use vstd::arithmetic::div_mod::*;
 use vstd::arithmetic::power2::*;
 use vstd::prelude::*;
@@ -26,30 +27,25 @@ pub open spec fn order_below(start: nat, n: nat, m: nat) -> nat
     }
 }
 
-/// The order of the first block of the run of n pages at page start.
-pub open spec fn run_order(start: nat, n: nat) -> nat {
-    order_below(start, n, MAX_ORDER as nat)
-}
-
-/// The blocks the run of n pages at page start decomposes into, in address order, each as its first
-/// page and its order.
-pub open spec fn run_blocks(start: nat, n: nat) -> Seq<(nat, nat)>
+/// The blocks of order at most cap the run of n pages at page start decomposes into, in address order,
+/// each as its first page and its order.
+pub open spec fn run_blocks(start: nat, n: nat, cap: nat) -> Seq<(nat, nat)>
     decreases n,
     via run_blocks_decreases
 {
     if n == 0 {
         Seq::empty()
     } else {
-        let o = run_order(start, n);
-        seq![(start, o)] + run_blocks(start + pow2(o), (n - pow2(o)) as nat)
+        let o = order_below(start, n, cap);
+        seq![(start, o)] + run_blocks(start + pow2(o), (n - pow2(o)) as nat, cap)
     }
 }
 
 #[via_fn]
-proof fn run_blocks_decreases(start: nat, n: nat) {
+proof fn run_blocks_decreases(start: nat, n: nat, cap: nat) {
     if n != 0 {
-        lemma_order_below(start, n, MAX_ORDER as nat);
-        lemma_pow2_pos(run_order(start, n));
+        lemma_order_below(start, n, cap);
+        lemma_pow2_pos(order_below(start, n, cap));
     }
 }
 
@@ -68,13 +64,15 @@ pub open spec fn page_block_payload(b: (nat, nat)) -> Payload {
     untyped_payload((b.0 * 4096) as usize, b.1 as u8)
 }
 
-/// The first block of the run of n pages at page start: its order and its size in pages.
-pub fn first_block(start: usize, n: usize) -> (ret: (u8, usize))
+/// The first block of order at most cap of the run of n pages at page start: its order and its size in
+/// pages.
+pub fn first_block(start: usize, n: usize, cap: u8) -> (ret: (u8, usize))
     requires
         0 < n,
         start + n <= NUM_PAGES,
+        cap <= MAX_ORDER,
     ensures
-        ret.0 as nat == run_order(start as nat, n as nat),
+        ret.0 as nat == order_below(start as nat, n as nat, cap as nat),
         ret.1 as nat == pow2(ret.0 as nat),
         ret.1 <= n,
 {
@@ -83,12 +81,27 @@ pub fn first_block(start: usize, n: usize) -> (ret: (u8, usize))
     proof {
         lemma2_to64_rest();
     }
+    while o > cap
+        invariant
+            cap <= o <= MAX_ORDER,
+            size as nat == pow2(o as nat),
+        decreases o,
+    {
+        proof {
+            lemma_pow2_unfold(o as nat);
+        }
+        o = o - 1;
+        size = size / 2;
+    }
+    proof {
+        lemma_pow2_pos(o as nat);
+    }
     while o > 0 && !(start % size == 0 && size <= n)
         invariant
             o <= MAX_ORDER,
             size as nat == pow2(o as nat),
             size > 0,
-            order_below(start as nat, n as nat, o as nat) == run_order(start as nat, n as nat),
+            order_below(start as nat, n as nat, o as nat) == order_below(start as nat, n as nat, cap as nat),
         decreases o,
     {
         proof {
@@ -100,7 +113,7 @@ pub fn first_block(start: usize, n: usize) -> (ret: (u8, usize))
     }
     proof {
         lemma2_to64();
-        lemma_order_below(start as nat, n as nat, MAX_ORDER as nat);
+        lemma_order_below(start as nat, n as nat, cap as nat);
     }
     (o, size)
 }
@@ -187,23 +200,24 @@ proof fn lemma_aligned_after(x: nat, o: nat)
 }
 
 /// The step from one block to the rest of the run: the first block is the run's first page at its
-/// order, which the run holds, and the rest starts aligned to that order.
-proof fn lemma_run_step(start: nat, n: nat)
+/// order, at most the cap, which the run holds, and the rest starts aligned to that order.
+proof fn lemma_run_step(start: nat, n: nat, cap: nat)
     requires
         n > 0,
     ensures
-        run_order(start, n) <= MAX_ORDER,
-        start % pow2(run_order(start, n)) == 0,
-        0 < pow2(run_order(start, n)) <= n,
-        (start + pow2(run_order(start, n))) % pow2(run_order(start, n)) == 0,
-        run_blocks(start, n) == seq![(start, run_order(start, n))] + run_blocks(
-            start + pow2(run_order(start, n)),
-            (n - pow2(run_order(start, n))) as nat,
+        order_below(start, n, cap) <= cap,
+        start % pow2(order_below(start, n, cap)) == 0,
+        0 < pow2(order_below(start, n, cap)) <= n,
+        (start + pow2(order_below(start, n, cap))) % pow2(order_below(start, n, cap)) == 0,
+        run_blocks(start, n, cap) == seq![(start, order_below(start, n, cap))] + run_blocks(
+            start + pow2(order_below(start, n, cap)),
+            (n - pow2(order_below(start, n, cap))) as nat,
+            cap,
         ),
 {
-    lemma_order_below(start, n, MAX_ORDER as nat);
-    lemma_pow2_pos(run_order(start, n));
-    lemma_aligned_after(start, run_order(start, n));
+    lemma_order_below(start, n, cap);
+    lemma_pow2_pos(order_below(start, n, cap));
+    lemma_aligned_after(start, order_below(start, n, cap));
 }
 
 /// A run that starts aligned to 2^k and is shorter than 2^k has at most k blocks: each is limited by
@@ -214,12 +228,12 @@ proof fn lemma_run_blocks_below(start: nat, n: nat, k: nat)
         start % pow2(k) == 0,
         n < pow2(k),
     ensures
-        run_blocks(start, n).len() <= k,
+        run_blocks(start, n, MAX_ORDER as nat).len() <= k,
     decreases n,
 {
     if n > 0 {
-        let o = run_order(start, n);
-        lemma_run_step(start, n);
+        let o = order_below(start, n, MAX_ORDER as nat);
+        lemma_run_step(start, n, MAX_ORDER as nat);
         lemma_order_below(start, n, MAX_ORDER as nat);
         if o >= k {
             if o > k {
@@ -243,12 +257,12 @@ proof fn lemma_run_blocks_count(start: nat, n: nat, j: nat)
         start % pow2(j) == 0,
         n < pow2(MAX_ORDER as nat),
     ensures
-        run_blocks(start, n).len() <= 2 * MAX_ORDER + 1 - j,
+        run_blocks(start, n, MAX_ORDER as nat).len() <= 2 * MAX_ORDER + 1 - j,
     decreases n,
 {
     if n > 0 {
-        let o = run_order(start, n);
-        lemma_run_step(start, n);
+        let o = order_below(start, n, MAX_ORDER as nat);
+        lemma_run_step(start, n, MAX_ORDER as nat);
         lemma_order_below(start, n, MAX_ORDER as nat);
         if o == MAX_ORDER {
             assert(false);
@@ -267,40 +281,41 @@ proof fn lemma_run_blocks_count(start: nat, n: nat, j: nat)
     }
 }
 
-/// The blocks of a run lie inside it, in address order, each aligned to its order, and cover it.
-proof fn lemma_run_blocks_place(start: nat, n: nat)
+/// The blocks of a run lie inside it, in address order, each aligned to its order, at most the cap, and
+/// cover it.
+proof fn lemma_run_blocks_place(start: nat, n: nat, cap: nat)
     ensures
         forall|i: int|
-            0 <= i < run_blocks(start, n).len() ==> {
-                let b = #[trigger] run_blocks(start, n)[i];
-                &&& b.1 <= MAX_ORDER
+            0 <= i < run_blocks(start, n, cap).len() ==> {
+                let b = #[trigger] run_blocks(start, n, cap)[i];
+                &&& b.1 <= cap
                 &&& b.0 % pow2(b.1) == 0
                 &&& start <= b.0
                 &&& b.0 + pow2(b.1) <= start + n
             },
         forall|i: int, j: int|
-            0 <= i < j < run_blocks(start, n).len() ==> #[trigger] run_blocks(start, n)[i].0 + pow2(
-                run_blocks(start, n)[i].1,
-            ) <= #[trigger] run_blocks(start, n)[j].0,
+            0 <= i < j < run_blocks(start, n, cap).len() ==> #[trigger] run_blocks(start, n, cap)[i].0 + pow2(
+                run_blocks(start, n, cap)[i].1,
+            ) <= #[trigger] run_blocks(start, n, cap)[j].0,
         forall|x: nat|
             #[trigger] in_run(start, n, x) ==> exists|i: int|
-                0 <= i < run_blocks(start, n).len() && #[trigger] in_page_block(run_blocks(start, n)[i], x),
+                0 <= i < run_blocks(start, n, cap).len() && #[trigger] in_page_block(run_blocks(start, n, cap)[i], x),
     decreases n,
 {
     if n > 0 {
-        let o = run_order(start, n);
+        let o = order_below(start, n, cap);
         let next = start + pow2(o);
         let left = (n - pow2(o)) as nat;
-        lemma_run_step(start, n);
-        lemma_run_blocks_place(next, left);
-        let bs = run_blocks(start, n);
-        let rs = run_blocks(next, left);
+        lemma_run_step(start, n, cap);
+        lemma_run_blocks_place(next, left, cap);
+        let bs = run_blocks(start, n, cap);
+        let rs = run_blocks(next, left, cap);
         assert(bs.len() == rs.len() + 1);
         assert(bs[0] == (start, o));
         assert forall|i: int| 0 < i < bs.len() implies bs[i] == rs[i - 1] by {}
         assert forall|i: int| 0 <= i < bs.len() implies {
             let b = #[trigger] bs[i];
-            &&& b.1 <= MAX_ORDER
+            &&& b.1 <= cap
             &&& b.0 % pow2(b.1) == 0
             &&& start <= b.0
             &&& b.0 + pow2(b.1) <= start + n
@@ -356,39 +371,42 @@ proof fn lemma_page_block_wf(b: (nat, nat))
     assert(block_bytes(b.1 as u8) == p * 4096);
 }
 
-/// The decomposition of a run inside NUM_PAGES: its blocks are each aligned to its size and named by an
-/// untyped capability that is payload_wf, pairwise disjoint, together exactly the run's pages, and at
-/// most 2 * (MAX_ORDER + 1).
-pub proof fn lemma_run_blocks(start: nat, n: nat)
+/// The decomposition of a run inside NUM_PAGES under a cap: its blocks are each of order at most the
+/// cap, aligned to its size and named by an untyped capability that is payload_wf, pairwise disjoint,
+/// and together exactly the run's pages; uncapped, at most 2 * (MAX_ORDER + 1).
+pub proof fn lemma_run_blocks(start: nat, n: nat, cap: nat)
     requires
         start + n <= NUM_PAGES,
+        cap <= MAX_ORDER,
     ensures
-        run_blocks(start, n).len() <= 2 * (MAX_ORDER + 1),
+        cap == MAX_ORDER ==> run_blocks(start, n, cap).len() <= 2 * (MAX_ORDER + 1),
         forall|i: int|
-            0 <= i < run_blocks(start, n).len() ==> {
-                let b = #[trigger] run_blocks(start, n)[i];
-                &&& b.1 <= MAX_ORDER
+            0 <= i < run_blocks(start, n, cap).len() ==> {
+                let b = #[trigger] run_blocks(start, n, cap)[i];
+                &&& b.1 <= cap
                 &&& b.0 % pow2(b.1) == 0
                 &&& payload_wf(page_block_payload(b))
             },
         forall|i: int, j: int, x: nat|
-            0 <= i < run_blocks(start, n).len() && 0 <= j < run_blocks(start, n).len() && i != j
-                ==> !(#[trigger] in_page_block(run_blocks(start, n)[i], x) && #[trigger] in_page_block(
-                run_blocks(start, n)[j],
+            0 <= i < run_blocks(start, n, cap).len() && 0 <= j < run_blocks(start, n, cap).len() && i != j
+                ==> !(#[trigger] in_page_block(run_blocks(start, n, cap)[i], x) && #[trigger] in_page_block(
+                run_blocks(start, n, cap)[j],
                 x,
             )),
         forall|x: nat|
             #[trigger] in_run(start, n, x) <==> exists|i: int|
-                0 <= i < run_blocks(start, n).len() && #[trigger] in_page_block(run_blocks(start, n)[i], x),
+                0 <= i < run_blocks(start, n, cap).len() && #[trigger] in_page_block(run_blocks(start, n, cap)[i], x),
 {
-    let bs = run_blocks(start, n);
-    lemma_run_blocks_place(start, n);
+    let bs = run_blocks(start, n, cap);
+    lemma_run_blocks_place(start, n, cap);
     lemma2_to64();
     lemma2_to64_rest();
-    lemma_run_blocks_count(start, n, 0);
+    if cap == MAX_ORDER {
+        lemma_run_blocks_count(start, n, 0);
+    }
     assert forall|i: int| 0 <= i < bs.len() implies {
         let b = #[trigger] bs[i];
-        &&& b.1 <= MAX_ORDER
+        &&& b.1 <= cap
         &&& b.0 % pow2(b.1) == 0
         &&& payload_wf(page_block_payload(b))
     } by {
