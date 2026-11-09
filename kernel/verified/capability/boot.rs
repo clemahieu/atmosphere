@@ -598,6 +598,18 @@ impl CapKernel {
             }),
             forall|o: usize| #[trigger] final(self).view().reach(process, o)
                 <==> (o % 4096 == 0 && ((process <= o < process + 32768) || (t <= o < t + 8192))),
+            forall|k: int| 0 <= k < 8 ==> {
+                ||| (#[trigger] final(self).blocks.pages@[process / 4096 + k]).kind is Base
+                ||| final(self).blocks.pages@[process / 4096 + k].kind is Member
+            },
+            forall|k: int| 0 <= k < 2 ==> {
+                ||| (#[trigger] final(self).blocks.pages@[leaf / 4096 + k]).kind is Base
+                ||| final(self).blocks.pages@[leaf / 4096 + k].kind is Member
+            },
+            forall|k: int| 0 <= k < 2 ==> {
+                ||| (#[trigger] final(self).blocks.pages@[t / 4096 + k]).kind is Base
+                ||| final(self).blocks.pages@[t / 4096 + k].kind is Member
+            },
     {
         let ghost pre = *old(self);
         let ghost pb = process / 4096;
