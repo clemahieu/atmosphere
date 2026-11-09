@@ -9,6 +9,7 @@ use vstd::prelude::*;
 verus! {
 
 use crate::arch::{maintains_accessed, maintains_dirty, PAGE_ENTRY_ACCESSED_MASK, PAGE_ENTRY_DIRTY_MASK};
+use crate::capability::destroy::*;
 use crate::capability::kernel::*;
 use crate::capability::link::*;
 use crate::capability::list::*;
@@ -20,6 +21,7 @@ use crate::capability::table::*;
 use crate::capability::view::*;
 use crate::define::*;
 use crate::pagetable::entry::*;
+use crate::pptr::*;
 
 /// What an unmap returns: the unmapped entry's accessed and dirty bits in the word read as it was
 /// cleared, and whether this target's walker maintains each bit, without which it says nothing. The word
@@ -54,10 +56,33 @@ impl CapKernel {
         &&& self.flush_epoch < usize::MAX
     }
 
-    /// What an unmap leaves: the entry the path reaches is empty, its mapping node is the only node that
-    /// left the list, its record and its frame's reference went with it, its staleness is recorded, and
-    /// no capability changed.
+    /// The cores an unmap in space s sends a flush IPI to: those on the space's list of cores, in
+    /// increasing order.
+    pub open spec fn flush_targets(&self, s: usize) -> Seq<usize> {
+        listed_cores(self.spaces.loaded@[s].value().list, NUM_CPUS as int)
+    }
+
+    /// An unmap in space s sent a flush IPI to each of its targets, and its targets are exactly the
+    /// cores that loaded s, so every core that may hold an entry of s is among them and a core that
+    /// never loaded s is not. See design/flush-without-waiting/.
+    pub open spec fn flush_sent(pre: Self, post: Self, s: usize) -> bool {
+        &&& post.flush_ipis@ == pre.flush_ipis@ + pre.flush_targets(s)
+        &&& forall|d: usize| #[trigger] pre.flush_targets(s).contains(d) <==> d < NUM_CPUS && pre.loaded(d as int, s)
+        &&& forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && e.space == s && #[trigger] pre.core_may_hold(d, e)
+            ==> pre.flush_targets(s).contains(d as usize)
+    }
+
+    /// What an unmap leaves: the entry is gone as entry_unmapped says, and a flush IPI went to each core
+    /// that loaded the space.
     pub open spec fn unmap_done(pre: Self, post: Self, root: usize, slot: usize, p: SpacePath) -> bool {
+        &&& Self::entry_unmapped(pre, post, root, slot, p)
+        &&& Self::flush_sent(pre, post, pre.payload_of(pre.tables.node_of(root, slot)).base)
+    }
+
+    /// What clearing the entry leaves: the entry the path reaches is empty, its mapping node is the only
+    /// node that left the list, its record and its frame's reference went with it, its staleness is
+    /// recorded, and no capability changed.
+    pub open spec fn entry_unmapped(pre: Self, post: Self, root: usize, slot: usize, p: SpacePath) -> bool {
         let tree = tree_of(&pre.table_pages, &pre.spaces);
         let t = walk_table(tree, pre.payload_of(pre.tables.node_of(root, slot)).base, p)->0;
         let node = mapping_node(t, p.l1);
@@ -144,6 +169,7 @@ impl CapKernel {
     }
 
     /// unmap, in a space that must be of this kind.
+    #[verifier::spinoff_prover]
     pub fn unmap_kind(&mut self, root: usize, slot: usize, kind: SpaceKind, l4: usize, l3: usize, l2: usize, l1: usize) -> (ret: Option<Unmapped>)
         requires
             old(self).wf(),
@@ -156,6 +182,122 @@ impl CapKernel {
             ret is None ==> *final(self) == *old(self),
             ret is Some ==> Self::unmap_done(*old(self), *final(self), root, slot, SpacePath { l4, l3, l2, l1 }),
             ret is Some ==> Self::unmapped_read(*old(self), root, slot, SpacePath { l4, l3, l2, l1 }, ret->0),
+            discharges(old(self).view(), final(self).view(), root, Effect::Local),
+            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
+    {
+        let ghost pre = *old(self);
+        match self.unmap_entry(root, slot, kind, l4, l3, l2, l1) {
+            Some((s, r)) => {
+                let ghost mid = *self;
+                self.send_flush(s, Ghost(pre.flush_ipis@));
+                proof {
+                    pre.lemma_flush_targets(s);
+                    assert(mid.flush_targets(s) == pre.flush_targets(s));
+                    Self::lemma_flush_frame(pre, mid, *self, root, slot, SpacePath { l4, l3, l2, l1 });
+                }
+                Some(r)
+            },
+            None => None,
+        }
+    }
+
+    /// The flush targets of space s are exactly the cores that loaded it, so each core that may hold an
+    /// entry of s is among them.
+    pub proof fn lemma_flush_targets(&self, s: usize)
+        requires
+            self.wf(),
+            self.spaces.roots@.contains_key(s),
+        ensures
+            forall|d: usize| #[trigger] self.flush_targets(s).contains(d) <==> d < NUM_CPUS && self.loaded(d as int, s),
+            forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && e.space == s && #[trigger] self.core_may_hold(d, e)
+                ==> self.flush_targets(s).contains(d as usize),
+    {
+        assert(space_wf(&self.list, &self.spaces, &self.blocks, s));
+        assert forall|d: usize| #[trigger] self.flush_targets(s).contains(d) <==> d < NUM_CPUS && self.loaded(d as int, s) by {
+            lemma_listed_cores(self.spaces.loaded@[s].value().list, NUM_CPUS as int, d);
+        }
+        assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && e.space == s && #[trigger] self.core_may_hold(d, e)
+            implies self.flush_targets(s).contains(d as usize) by {
+            self.lemma_may_hold_loaded(d, e);
+            lemma_listed_cores(self.spaces.loaded@[s].value().list, NUM_CPUS as int, d as usize);
+        }
+    }
+
+    /// A change to the flush record alone keeps what clearing the entry left.
+    pub proof fn lemma_flush_frame(pre: Self, mid: Self, post: Self, root: usize, slot: usize, p: SpacePath)
+        requires
+            Self::entry_unmapped(pre, mid, root, slot, p),
+            post == (CapKernel { flush_ipis: post.flush_ipis, ..mid }),
+        ensures
+            Self::entry_unmapped(pre, post, root, slot, p),
+            post.view() == mid.view(),
+    {
+        let tree = tree_of(&pre.table_pages, &pre.spaces);
+        let t = walk_table(tree, pre.payload_of(pre.tables.node_of(root, slot)).base, p)->0;
+        let node = mapping_node(t, p.l1);
+        let pages = record_pages(pre.mappings@[node]);
+        assert(tree_of(&post.table_pages, &post.spaces) == tree_of(&mid.table_pages, &mid.spaces));
+        assert(Self::mapping_unlinked(pre, post, node));
+        assert forall|g: usize| #[trigger] pages.contains(g) implies !post.acknowledged(g) by {
+            assert(!mid.acknowledged(g));
+            if g < NUM_PAGES {
+                let epoch = mid.stale_epoch.pages@[g as int] as int;
+                assert(!mid.all_acknowledged(epoch));
+                if exists|c: int| 0 <= c < NUM_CPUS && !(epoch <= #[trigger] mid.acked(c)) {
+                    let c = choose|c: int| 0 <= c < NUM_CPUS && !(epoch <= #[trigger] mid.acked(c));
+                    assert(post.acked(c) == mid.acked(c));
+                } else {
+                    let i = choose|i: int| 0 <= i < NUM_IOMMUS && #[trigger] mid.iommu_present(i) && !(epoch <= mid.iommu_acked(i));
+                    assert(post.iommu_present(i) == mid.iommu_present(i));
+                    assert(post.iommu_acked(i) == mid.iommu_acked(i));
+                }
+            }
+        }
+        assert(Self::mapping_stale_noted(pre, post, node));
+        assert(Self::mappings_shrunk(pre, post));
+        assert(post.view() == mid.view());
+    }
+
+    /// Records a flush IPI, after those in sent, to each core on space s's list of cores: one load of the
+    /// list and a bounded loop over the cores. The send is ghost: see design/flush-without-waiting/.
+    fn send_flush(&mut self, s: usize, Ghost(sent): Ghost<Seq<usize>>)
+        requires
+            old(self).wf(),
+            old(self).spaces.roots@.contains_key(s),
+        ensures
+            final(self).wf(),
+            *final(self) == (CapKernel { flush_ipis: Ghost(sent + old(self).flush_targets(s)), ..*old(self) }),
+    {
+        let ghost pre = *self;
+        proof {
+            assert(space_wf(&pre.list, &pre.spaces, &pre.blocks, s));
+        }
+        let list = PPtr::<SpaceCores>::from_usize(s + SPACE_CORES_PAGE * 4096).borrow(
+            Tracked(self.spaces.loaded.borrow().tracked_borrow(s)),
+        ).list;
+        self.flush_ipis = send_to_listed(list, Ghost(sent));
+        proof {
+            Self::lemma_tlb_same(pre, *self);
+        }
+    }
+
+    /// Clears the entry for unmap_kind and returns the space it was in and what the unmap returns.
+    fn unmap_entry(&mut self, root: usize, slot: usize, kind: SpaceKind, l4: usize, l3: usize, l2: usize, l1: usize) -> (ret: Option<(usize, Unmapped)>)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(root),
+        ensures
+            final(self).wf(),
+            final(self).cores == old(self).cores,
+            ret is Some == old(self).can_unmap(root, slot, kind, SpacePath { l4, l3, l2, l1 }),
+            final(self).spaces == old(self).spaces,
+            ret is None ==> *final(self) == *old(self),
+            ret is Some ==> {
+                &&& (ret->0).0 == old(self).payload_of(old(self).tables.node_of(root, slot)).base
+                &&& old(self).spaces.roots@.contains_key((ret->0).0)
+                &&& Self::entry_unmapped(*old(self), *final(self), root, slot, SpacePath { l4, l3, l2, l1 })
+                &&& Self::unmapped_read(*old(self), root, slot, SpacePath { l4, l3, l2, l1 }, (ret->0).1)
+            },
             discharges(old(self).view(), final(self).view(), root, Effect::Local),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
@@ -230,13 +372,13 @@ impl CapKernel {
             Self::lemma_mapping_view_same(pre, *self, node);
             Self::lemma_unlinked_shrunk(pre, *self, node);
         }
-        Some(Unmapped {
+        Some((s, Unmapped {
             accessed: word & PAGE_ENTRY_ACCESSED_MASK as usize != 0,
             dirty: word & PAGE_ENTRY_DIRTY_MASK as usize != 0,
             accessed_maintained: maintains_accessed(),
             dirty_maintained: maintains_dirty(),
             read: Ghost(word),
-        })
+        }))
     }
 }
 

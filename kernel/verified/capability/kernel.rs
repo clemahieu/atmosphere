@@ -685,6 +685,9 @@ pub struct CapKernel {
     /// The cores sent an IPI to act on a pending stop, in the order sent. The send is ghost: see
     /// design/one-lock-bounded-steps/.
     pub stop_ipis: Ghost<Seq<usize>>,
+    /// The cores sent an IPI to flush after an unmap, in the order sent: each core on the unmapped
+    /// space's list of cores. The send is ghost: see design/flush-without-waiting/.
+    pub flush_ipis: Ghost<Seq<usize>>,
 }
 
 /// Opcode of INVALIDATE_IOMMU_ALL, which empties every cache of the IOMMU. AMD IOMMU specification 48882
