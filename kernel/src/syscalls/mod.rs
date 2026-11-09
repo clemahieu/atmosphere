@@ -36,6 +36,7 @@ const _: extern "C" fn(usize, usize, usize, &mut Registers, usize, usize) = kern
 // at asys's slots; they must be the ones the verified dispatch decodes and returns and boot writes.
 const _: () = {
     use asys::operation as user;
+    assert!(user::STATUS_OK == operation::STATUS_OK);
     assert!(user::STATUS_REFUSED == operation::STATUS_REFUSED);
     assert!(user::STATUS_UNKNOWN == operation::STATUS_UNKNOWN);
     assert!(user::RETYPE == operation::OPERATION_RETYPE);

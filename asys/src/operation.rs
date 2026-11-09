@@ -5,6 +5,9 @@
 
 use core::arch::asm;
 
+/// The operation was done.
+pub const STATUS_OK: u64 = 0;
+
 /// The capability, its rights or the arguments do not allow the operation.
 pub const STATUS_REFUSED: u64 = 1;
 
@@ -24,6 +27,8 @@ pub const SEND: u64 = 10;
 pub const RECEIVE: u64 = 11;
 pub const CALL: u64 = 12;
 pub const REPLY_RECV: u64 = 13;
+/// Writes to the serial port the bytes rsi, rdx, r8, r9 and r10 carry, through a console capability:
+/// each word's eight bytes from its lowest, rsi's first, up to the first zero byte, so 40 bytes at most.
 pub const PRINT: u64 = 14;
 
 /// The root's slot holding its own process, with control, as boot leaves it. See

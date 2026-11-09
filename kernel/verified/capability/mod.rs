@@ -1,5 +1,6 @@
 pub mod block;
 pub mod boot;
+pub mod console;
 pub mod delete;
 pub mod derive;
 pub mod destroy;

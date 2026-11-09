@@ -5,6 +5,9 @@ use vstd::prelude::*;
 
 verus! {
 
+/// The operation was done.
+pub const STATUS_OK: u64 = 0;
+
 /// The capability, its rights or the arguments do not allow the operation.
 pub const STATUS_REFUSED: u64 = 1;
 

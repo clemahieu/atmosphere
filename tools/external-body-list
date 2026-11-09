@@ -16,6 +16,7 @@ allocator/page_allocator_util_t.rs	set_rev_pointer	unproven	an array element acc
 allocator/page_allocator_util_t.rs	set_state	unproven	an array element access not proven yet
 allocator/page_allocator_util_t.rs	split_2m_pages_to_pages	gap	takes its permission from Tracked::assume_new, which Verus cannot check
 arch/x86_64.rs	flush_every_context	glue	only the hardware can attest a flush, so only this makes the token
+arch/x86_64.rs	serial_write	glue	writes the serial port through port I/O, which has no state a proof could see
 array.rs	new	gap	builds a value from zeroed memory, which Verus cannot check
 capability/kernel.rs	invalidate_iommu_all	glue	only the IOMMU can attest an invalidate, so only this makes its token
 kernel/spec.rs	kernel_init	unproven	initialisation not proven yet
