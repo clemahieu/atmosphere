@@ -25,6 +25,34 @@ use crate::capability::table::*;
 use crate::capability::view::*;
 use crate::define::*;
 
+/// What a table step keeps of the capability list: its root, and every node live before, live with its
+/// parent and depth. A frame capability the frame step made is such a node, so it stays the root's child.
+pub open spec fn nodes_kept(a: Tree, b: Tree) -> bool {
+    &&& b.seq@[0] == a.seq@[0]
+    &&& forall|j: int| #![trigger b.nodes@[j]] 0 <= j < NODE_SPACE && a.nodes@[j].live ==> {
+        &&& b.nodes@[j].live
+        &&& b.nodes@[j].depth == a.nodes@[j].depth
+        &&& b.parent@[j as usize] == a.parent@[j as usize]
+    }
+}
+
+/// Two steps that each keep the list's nodes keep them together.
+pub proof fn lemma_nodes_kept_trans(a: Tree, b: Tree, c: Tree)
+    requires
+        nodes_kept(a, b),
+        nodes_kept(b, c),
+    ensures
+        nodes_kept(a, c),
+{
+    assert forall|j: int| #![trigger c.nodes@[j]] 0 <= j < NODE_SPACE && a.nodes@[j].live implies {
+        &&& c.nodes@[j].live
+        &&& c.nodes@[j].depth == a.nodes@[j].depth
+        &&& c.parent@[j as usize] == a.parent@[j as usize]
+    } by {
+        assert(b.nodes@[j].live);
+    }
+}
+
 /// The k-th order-3 block from the cursor.
 pub open spec fn cursor_block(cursor: usize, k: int) -> usize {
     (cursor + k * 32768) as usize
@@ -551,6 +579,72 @@ impl CapKernel {
         }
     }
 
+    /// A retype keeps the list's nodes: the node it adds was not live, so the root is still first, as
+    /// the only node without a parent, and no live node's parent or depth changed.
+    pub proof fn lemma_retype_nodes_kept(pre: Self, post: Self, base: usize, parent: usize)
+        requires
+            pre.wf(),
+            post.wf(),
+            !pre.list.nodes@[base as int].live,
+            post.list.parent@ == pre.list.parent@.insert(base, parent),
+            forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < NODE_SPACE && i != base
+                ==> post.list.nodes@[i].live == pre.list.nodes@[i].live,
+            forall|x: usize| #![trigger post.list.nodes@[x as int]] pre.list.valid(x) && x != base
+                ==> post.list.nodes@[x as int].depth == pre.list.nodes@[x as int].depth,
+        ensures
+            nodes_kept(pre.list, post.list),
+    {
+        let r = pre.list.seq@[0];
+        pre.list.lemma_link(0);
+        assert(r != base);
+        assert(post.list.nodes@[r as int].live);
+        assert(has(post.list.seq@, r));
+        lemma_has(post.list.seq@, r);
+        let k = choose|k: int| 0 <= k < post.list.seq@.len() && post.list.seq@[k] == r;
+        if k > 0 {
+            assert(post.list.parent@.contains_key(post.list.seq@[k]));
+            assert(pre.list.parent@.contains_key(r));
+        }
+        assert forall|j: int| #![trigger post.list.nodes@[j]] 0 <= j < NODE_SPACE && pre.list.nodes@[j].live implies {
+            &&& post.list.nodes@[j].live
+            &&& post.list.nodes@[j].depth == pre.list.nodes@[j].depth
+            &&& post.list.parent@[j as usize] == pre.list.parent@[j as usize]
+        } by {
+            assert(j != base);
+            pre.list.lemma_live_valid(j as usize);
+            assert(post.list.nodes@[(j as usize) as int].depth == pre.list.nodes@[(j as usize) as int].depth);
+        }
+    }
+
+    /// A frame capability the frame step made stays where it was across a step that kept the
+    /// capability tables, the capabilities, their payloads and the list's nodes.
+    pub proof fn lemma_frame_through_tables(pre: Self, post: Self, root: usize, process: usize, leaf2: usize, t: int, fb: (nat, nat), rights: u32)
+        requires
+            pre.wf(),
+            post.wf(),
+            pre.root_frame_at(root, process, leaf2, t, fb, rights),
+            post.tables == pre.tables,
+            forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x),
+            forall|x: usize| #[trigger] post.payload_of(x) == pre.payload_of(x),
+            nodes_kept(pre.list, post.list),
+        ensures
+            post.root_frame_at(root, process, leaf2, t, fb, rights),
+    {
+        let n = (leaf2 + 1 + t) as usize;
+        let i = (ROOT_FRAME_SLOT + t) as usize;
+        pre.lemma_slot(process, i);
+        pre.lemma_slot_bound(n);
+        let l = pre.tables.leaf(process, index_entry(i));
+        assert(post.list.nodes@[l as int].live);
+        assert(post.is_cap(n));
+        let k = choose|k: int| 0 <= k < pre.list.seq@.len() && pre.list.seq@[k] == n;
+        pre.list.lemma_link(k);
+        assert(post.list.nodes@[n as int].live);
+        assert(has(post.list.seq@, n));
+        lemma_has(post.list.seq@, n);
+        assert(post.list.is_child(root, n));
+    }
+
     /// Gives entry i of the root's table t a child table at the given level: the one it names, changing
     /// nothing, or the block at the cursor, retyped as a table page under the root's untyped at
     /// ROOT_UNTYPED_SLOT and linked through the root's capability at ROOT_PROCESS_SLOT. Returns the child
@@ -586,6 +680,7 @@ impl CapKernel {
             forall|j: int| #![trigger final(self).list.nodes@[j]] 0 <= j < NODE_SPACE && old(self).list.nodes@[j].live
                 ==> final(self).list.nodes@[j].live,
             forall|x: usize| #[trigger] final(self).is_cap(x) == old(self).is_cap(x),
+            nodes_kept(old(self).list, final(self).list),
             forall|r: ObjectId, o: ObjectId| #[trigger] final(self).view().reach(r, o) == old(self).view().reach(r, o),
             forall|r: usize| #[trigger] space_mapping(tree_of(&final(self).table_pages, &final(self).spaces), r)
                 == space_mapping(tree_of(&old(self).table_pages, &old(self).spaces), r),
@@ -612,6 +707,7 @@ impl CapKernel {
             pre.lemma_table_base(t);
             pre.lemma_entry_shape(t, i);
             assert(steps_kept(a, a));
+            assert(nodes_kept(pre.list, pre.list));
         }
         let e = self.table_entry(t, is_root, i);
         if e.perm.present {
@@ -645,6 +741,7 @@ impl CapKernel {
         proof {
             assert(retyped);
             Self::lemma_ready_kept(pre, mid, process);
+            Self::lemma_retype_nodes_kept(pre, mid, cursor, u);
             assert(m.is_table(t));
             assert(m.record(t) == a.record(t));
             assert(m.entry(t, i) == a.entry(t, i));
@@ -720,6 +817,7 @@ impl CapKernel {
             final(self).blocks.regions_2m@ == old(self).blocks.regions_2m@,
             final(self).blocks.regions_1g@ == old(self).blocks.regions_1g@,
             ret == cursor || ret == cursor + 32768 || ret == cursor + 65536 || ret == cursor + 98304,
+            nodes_kept(old(self).list, final(self).list),
             forall|t: usize| #[trigger] final(self).table_pages.maps@.contains_key(t)
                 <==> (old(self).table_pages.maps@.contains_key(t) || made_from(cursor, ret, t)),
             forall|j: int| #![trigger final(self).blocks.pages@[j]] 0 <= j < NUM_PAGES && !(cursor / 4096 <= j < ret / 4096)
@@ -812,6 +910,8 @@ impl CapKernel {
         proof {
             let post = *self;
             let b3 = tree_of(&post.table_pages, &post.spaces);
+            lemma_nodes_kept_trans(pre.list, s1.list, s2.list);
+            lemma_nodes_kept_trans(pre.list, s2.list, post.list);
             lemma_steps_kept_trans(a, b1, b2);
             lemma_steps_kept_trans(a, b2, b3);
             lemma_steps_kept(a, b3);
@@ -1055,6 +1155,12 @@ impl CapKernel {
                 &&& forall|x: usize| #[trigger] final(self).payload_of(x) == old(self).payload_of(x)
                 &&& forall|r: ObjectId, o: ObjectId| #[trigger] final(self).view().reach(r, o) == old(self).view().reach(r, o)
                 &&& forall|r: usize| #[trigger] space_mapping(b, r) == space_mapping(tree_of(&old(self).table_pages, &old(self).spaces), r)
+                &&& nodes_kept(old(self).list, final(self).list)
+                &&& forall|root: usize, leaf2: usize, t: int, fb: (nat, nat), rights: u32|
+                    #![trigger old(self).root_frame_at(root, process, leaf2, t, fb, rights)]
+                    #![trigger final(self).root_frame_at(root, process, leaf2, t, fb, rights)]
+                    old(self).root_frame_at(root, process, leaf2, t, fb, rights)
+                    ==> final(self).root_frame_at(root, process, leaf2, t, fb, rights)
                 &&& forall|a: int, x: int| 0 <= a < runs@.len() && #[trigger] in_virt_at(runs@, a, x) ==> {
                     let t1 = walk_table(b, s, page_path(x))->0;
                     &&& walk_table(b, s, page_path(x)) is Some
@@ -1086,6 +1192,9 @@ impl CapKernel {
                 lemma_untyped_block(u, j);
             }
         }
+        proof {
+            assert(nodes_kept(pre.list, self.list));
+        }
         let mut cursor = untyped.base;
         let ghost mut k: int = 0;
         let mut r: usize = 0;
@@ -1116,6 +1225,7 @@ impl CapKernel {
                 forall|j: int| #![trigger self.list.nodes@[j]] 0 <= j < NODE_SPACE && pre.list.nodes@[j].live
                     ==> self.list.nodes@[j].live,
                 forall|x: usize| #[trigger] self.is_cap(x) == pre.is_cap(x),
+                nodes_kept(pre.list, self.list),
                 forall|r: ObjectId, o: ObjectId| #[trigger] self.view().reach(r, o) == pre.view().reach(r, o),
                 forall|p: SpacePath| !#[trigger] space_mapping(a, s).contains_key(p),
                 forall|r: usize| #[trigger] space_mapping(tree_of(&self.table_pages, &self.spaces), r) == space_mapping(a, r),
@@ -1169,6 +1279,7 @@ impl CapKernel {
                     forall|j: int| #![trigger self.list.nodes@[j]] 0 <= j < NODE_SPACE && pre.list.nodes@[j].live
                         ==> self.list.nodes@[j].live,
                     forall|x: usize| #[trigger] self.is_cap(x) == pre.is_cap(x),
+                    nodes_kept(pre.list, self.list),
                     forall|r: ObjectId, o: ObjectId| #[trigger] self.view().reach(r, o) == pre.view().reach(r, o),
                     forall|p: SpacePath| !#[trigger] space_mapping(a, s).contains_key(p),
                     forall|r: usize| #[trigger] space_mapping(tree_of(&self.table_pages, &self.spaces), r) == space_mapping(a, r),
@@ -1195,6 +1306,7 @@ impl CapKernel {
                     let post = *self;
                     let b = tree_of(&post.table_pages, &post.spaces);
                     let k2 = Self::lemma_region_after(pre, cur, post, process, u, cap as int, k, cursor, next);
+                    lemma_nodes_kept_trans(pre.list, cur.list, post.list);
                     assert forall|aa: int, x: int| 0 <= aa < r && #[trigger] in_virt_at(runs@, aa, x)
                         implies walk_table(b, s, page_path(x)) is Some by {
                         assert(walk_table(c, s, page_path(x)) is Some);
@@ -1243,6 +1355,11 @@ impl CapKernel {
                 && !(u.base / 4096 <= j < (u.base + block_bytes(u.order)) / 4096)
                 implies post.blocks.pages@[j] == pre.blocks.pages@[j] by {
                 lemma_div_is_ordered(cursor as int, u.base + block_bytes(u.order), 4096);
+            }
+            assert forall|root: usize, leaf2: usize, t: int, fb: (nat, nat), rights: u32|
+                #[trigger] pre.root_frame_at(root, process, leaf2, t, fb, rights)
+                implies post.root_frame_at(root, process, leaf2, t, fb, rights) by {
+                Self::lemma_frame_through_tables(pre, post, root, process, leaf2, t, fb, rights);
             }
         }
         true
