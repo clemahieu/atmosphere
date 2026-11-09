@@ -1,6 +1,5 @@
 pub trait TrustedBridge {
     fn set_switch_decision(decision: SwitchDecision);
-    fn set_cr3(cr3: u64);
 }
 
 #[derive(Debug)]

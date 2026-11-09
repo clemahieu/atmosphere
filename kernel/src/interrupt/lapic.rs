@@ -5,7 +5,6 @@ use core::mem::MaybeUninit;
 use core::slice;
 
 use super::x86_xapic::{Icr, XAPIC};
-use verified::define::PCID_ENABLE_MASK;
 use crate::arch::msr;
 
 use super::Cycles;
@@ -80,7 +79,7 @@ pub unsafe fn boot_ap(cpu_id: u32, stack: u64, code: u64) {
 
     let mut cr3 = boot_info.pml4 as u64;
     if boot_info.pcide {
-        cr3 |= PCID_ENABLE_MASK as u64;
+        cr3 |= crate::arch::CR3_NO_FLUSH;
     }
 
     let start_page = StartTrampoline::new()

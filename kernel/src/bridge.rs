@@ -11,27 +11,4 @@ impl TrustedBridge for Bridge {
         };
         *switch_decision = decision;
     }
-
-    fn set_cr3(cr3: u64) {
-        unsafe {
-            asm!(
-                "mov {tmp}, [rip + {pcide}]",
-                "test {tmp}, {tmp}",
-                "jnz 2f",
-
-                // Disable PCIDE
-                "mov {tmp}, ~(1 << 63)",
-                "and {cr3}, {tmp}",
-
-                "2:",
-                "mov cr3, {cr3}",
-                tmp = out(reg) _,
-                cr3 = in(reg) cr3,
-                pcide = sym crate::boot::PCIDE,
-
-                options(readonly, nostack),
-            );
-        }
-    }
-
 }

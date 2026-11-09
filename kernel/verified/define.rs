@@ -236,8 +236,6 @@ pub const READ_EXECUTE: usize = 0x0000_0000_0000_0000u64 as usize;
 
 pub const READ_WRITE_EXECUTE: usize = 0x0000_0000_0000_0002u64 as usize;
 
-pub const PCID_ENABLE_MASK: usize = 0x8000_0000_0000_0000u64 as usize;
-
 pub const NUM_CPUS: usize = 32;
 pub const NUM_IOMMUS: usize = 8;
 
