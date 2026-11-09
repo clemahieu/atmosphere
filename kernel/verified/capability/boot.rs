@@ -21,6 +21,7 @@ use crate::capability::space::*;
 use crate::capability::table::*;
 use crate::capability::thread::*;
 use crate::capability::view::*;
+use crate::arch::*;
 use crate::define::*;
 use crate::layouts::*;
 use crate::pagetable::entry::*;

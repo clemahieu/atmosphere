@@ -1,7 +1,7 @@
 //! Threading.
 
 use crate::interrupt::Cycles;
-use verified::trap::Registers;
+use verified::arch::Registers;
 use crate::cpu;
 pub use verified::bridge::SwitchDecision;
 

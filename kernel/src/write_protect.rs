@@ -6,7 +6,7 @@
 
 use core::arch::{asm, global_asm};
 
-use verified::trap::Registers;
+use verified::arch::Registers;
 
 /// The page the check writes to.
 #[repr(C, align(4096))]

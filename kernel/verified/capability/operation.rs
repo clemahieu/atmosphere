@@ -15,7 +15,7 @@ use crate::capability::space::*;
 use crate::capability::thread::*;
 use crate::define::NUM_CPUS;
 use crate::pptr::*;
-use crate::trap::Registers;
+use crate::arch::Registers;
 
 /// The operation was done.
 pub const STATUS_OK: u64 = 0;

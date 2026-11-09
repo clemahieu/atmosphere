@@ -7,10 +7,10 @@
 # unproven  plain code or a lemma with no proof yet, so proof debt
 arch/x86_64.rs	flush_every_context	glue	only the hardware can attest a flush, so only this makes the token
 arch/x86_64.rs	serial_write	glue	writes the serial port through port I/O, which has no state a proof could see
+arch/x86_64.rs	zeroed	gap	builds a value from zeroed memory, which Verus cannot check
 array.rs	new	gap	builds a value from zeroed memory, which Verus cannot check
 capability/kernel.rs	invalidate_iommu_all	glue	only the IOMMU can attest an invalidate, so only this makes its token
 pagetable/pagemap_util_t.rs	page_map_set	glue	writes a hardware page table through a raw pointer
 pagetable/pagemap_util_t.rs	page_map_set_no_requires	glue	writes a hardware page table through a raw pointer
 pagetable/pagemap_util_t.rs	page_perm_to_page_map	glue	writes a hardware page table through a raw pointer
 queue_lock.rs	spin_hint	glue	the pause instruction, which has no state a proof could see
-trap.rs	zeroed	gap	builds a value from zeroed memory, which Verus cannot check

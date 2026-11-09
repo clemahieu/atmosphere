@@ -24,7 +24,7 @@ use crate::capability::view::*;
 use crate::define::*;
 use crate::layouts::*;
 use crate::pptr::*;
-use crate::trap::Registers;
+use crate::arch::*;
 
 /// A thread's block is two pages.
 pub const THREAD_ORDER: u8 = 1;
@@ -90,33 +90,6 @@ pub enum SuspendStep {
     Again,
 }
 
-/// Registers that are all zero.
-pub open spec fn zero_registers() -> Registers {
-    Registers {
-        r15: 0,
-        r14: 0,
-        r13: 0,
-        r12: 0,
-        rbp: 0,
-        rbx: 0,
-        r11: 0,
-        r10: 0,
-        r9: 0,
-        r8: 0,
-        rcx: 0,
-        rdx: 0,
-        rsi: 0,
-        rdi: 0,
-        rax: 0,
-        error_code: 0,
-        rip: 0,
-        cs: 0,
-        flags: 0,
-        rsp: 0,
-        ss: 0,
-    }
-}
-
 /// A thread's record when it is typed: inactive, with zeroed registers and no stop pending.
 pub open spec fn fresh_thread() -> ThreadRecord {
     ThreadRecord { state: ThreadState::Inactive, frame: zero_registers(), pending_stop: false, dying: false, process: None, placement: None }
@@ -128,29 +101,7 @@ pub fn new_thread_record() -> (ret: ThreadRecord)
 {
     ThreadRecord {
         state: ThreadState::Inactive,
-        frame: Registers {
-            r15: 0,
-            r14: 0,
-            r13: 0,
-            r12: 0,
-            rbp: 0,
-            rbx: 0,
-            r11: 0,
-            r10: 0,
-            r9: 0,
-            r8: 0,
-            rcx: 0,
-            rdx: 0,
-            rsi: 0,
-            rdi: 0,
-            rax: 0,
-            error_code: 0,
-            rip: 0,
-            cs: 0,
-            flags: 0,
-            rsp: 0,
-            ss: 0,
-        },
+        frame: zero_frame(),
         pending_stop: false,
         dying: false,
         process: None,
@@ -3607,84 +3558,6 @@ impl CapKernel {
             Self::lemma_bind_wf(pre, post, n, t);
             Self::lemma_bind_nodes(pre, post, n, t);
         }
-    }
-}
-
-/// The selectors a thread returns to user mode with: the GDT's user code and data entries, 4 and 3,
-/// at privilege 3. See kernel/src/gdt/.
-pub const USER_CS: u64 = 0x23;
-pub const USER_SS: u64 = 0x1b;
-
-/// The flags a written frame keeps: those user mode can set itself with popf (carry, parity, adjust,
-/// zero, sign, trap, direction, overflow, alignment check, ID), without nested task.
-pub const USER_FLAGS: u64 = 0x24_0fd5;
-
-/// The flags a written frame always has: interrupts enabled and the reserved bit 1.
-pub const FORCED_FLAGS: u64 = 0x202;
-
-/// The first address past user space. A frame returning to a non-canonical rip would fault in the
-/// kernel's iretq, so a write refuses any rip at or past it.
-pub const USER_RIP_END: u64 = 0x8000_0000_0000;
-
-pub open spec fn user_rip(rip: u64) -> bool {
-    rip < USER_RIP_END
-}
-
-fn user_frame_of(f: Registers) -> (ret: Registers)
-    ensures
-        ret == user_frame(f),
-{
-    Registers {
-        r15: f.r15,
-        r14: f.r14,
-        r13: f.r13,
-        r12: f.r12,
-        rbp: f.rbp,
-        rbx: f.rbx,
-        r11: f.r11,
-        r10: f.r10,
-        r9: f.r9,
-        r8: f.r8,
-        rcx: f.rcx,
-        rdx: f.rdx,
-        rsi: f.rsi,
-        rdi: f.rdi,
-        rax: f.rax,
-        error_code: f.error_code,
-        rip: f.rip,
-        cs: USER_CS,
-        flags: (f.flags & USER_FLAGS) | FORCED_FLAGS,
-        rsp: f.rsp,
-        ss: USER_SS,
-    }
-}
-
-/// A frame a controller wrote, as the thread will return to user mode with it: the selectors are
-/// user mode's and the flags only those user mode could set, so the write grants no privilege. See
-/// design/process-holds-capabilities/.
-pub open spec fn user_frame(f: Registers) -> Registers {
-    Registers {
-        r15: f.r15,
-        r14: f.r14,
-        r13: f.r13,
-        r12: f.r12,
-        rbp: f.rbp,
-        rbx: f.rbx,
-        r11: f.r11,
-        r10: f.r10,
-        r9: f.r9,
-        r8: f.r8,
-        rcx: f.rcx,
-        rdx: f.rdx,
-        rsi: f.rsi,
-        rdi: f.rdi,
-        rax: f.rax,
-        error_code: f.error_code,
-        rip: f.rip,
-        cs: USER_CS,
-        flags: (f.flags & USER_FLAGS) | FORCED_FLAGS,
-        rsp: f.rsp,
-        ss: USER_SS,
     }
 }
 

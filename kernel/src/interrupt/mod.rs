@@ -25,7 +25,7 @@ pub use exception::Exception;
 use exception::EXCEPTION_MAX;
 use idt::Idt;
 pub use lapic::{boot_ap, end_of_interrupt, send_ipi, set_timer};
-use verified::trap::Registers;
+use verified::arch::Registers;
 
 /// The IRQ offset.
 pub const IRQ_OFFSET: usize = 32;

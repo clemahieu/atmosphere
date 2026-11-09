@@ -1,5 +1,6 @@
 //! The x86_64 arch items. Written from the AMD64 Architecture Programmer's Manual, Volume 2: System
 //! Programming (24593).
+use core::mem::MaybeUninit;
 use vstd::prelude::*;
 
 verus! {
@@ -54,6 +55,217 @@ pub fn flush_every_context(core: usize, epoch: usize) -> (ret: Tracked<Flushed>)
         );
     }
     Tracked::assume_new()
+}
+
+// The trap frame and the user-return checks: what a thread record holds, what a return to user mode
+// writes, and which program counters are user addresses. capability/thread.rs reads them.
+
+/// The frame a thread record holds: the general registers the entry stubs in kernel/src/interrupt/
+/// and kernel/src/syscalls/ push, then the interrupt stack frame, chapter 8.
+#[repr(C, align(8))]
+#[derive(Clone, Copy, Debug)]
+pub struct Registers {
+    pub r15: u64,
+    pub r14: u64,
+    pub r13: u64,
+    pub r12: u64,
+    pub rbp: u64,
+    pub rbx: u64,
+    pub r11: u64,
+    pub r10: u64,
+    pub r9: u64,
+    pub r8: u64,
+    pub rcx: u64,
+    pub rdx: u64,
+    pub rsi: u64,
+    pub rdi: u64,
+    pub rax: u64,
+    // Original interrupt stack frame
+    pub error_code: u64,
+    pub rip: u64,
+    pub cs: u64,
+    pub flags: u64,
+    pub rsp: u64,
+    pub ss: u64,
+}
+
+impl Registers {
+    #[verifier(external_body)]
+    // external_body(gap): builds a value from zeroed memory, which Verus cannot check
+    pub const fn zeroed() -> Self {
+        unsafe { MaybeUninit::zeroed().assume_init() }
+    }
+
+    pub fn new(input: &Registers) -> (ret: Self)
+        ensures
+            ret =~= *input,
+    {
+        let ret = Self {
+            r15: input.r15,
+            r14: input.r14,
+            r13: input.r13,
+            r12: input.r12,
+            rbp: input.rbp,
+            rbx: input.rbx,
+            r11: input.r11,
+            r10: input.r10,
+            r9: input.r9,
+            r8: input.r8,
+            rcx: input.rcx,
+            rdx: input.rdx,
+            rsi: input.rsi,
+            rdi: input.rdi,
+            rax: input.rax,
+            error_code: input.error_code,
+            rip: input.rip,
+            cs: input.cs,
+            flags: input.flags,
+            rsp: input.rsp,
+            ss: input.ss,
+        };
+        ret
+    }
+
+    pub fn set_self(&mut self, src: &Registers)
+        ensures
+            *final(self) == *src,
+    {
+        *self = *src;
+    }
+}
+
+/// Registers that are all zero.
+pub open spec fn zero_registers() -> Registers {
+    Registers {
+        r15: 0,
+        r14: 0,
+        r13: 0,
+        r12: 0,
+        rbp: 0,
+        rbx: 0,
+        r11: 0,
+        r10: 0,
+        r9: 0,
+        r8: 0,
+        rcx: 0,
+        rdx: 0,
+        rsi: 0,
+        rdi: 0,
+        rax: 0,
+        error_code: 0,
+        rip: 0,
+        cs: 0,
+        flags: 0,
+        rsp: 0,
+        ss: 0,
+    }
+}
+
+pub fn zero_frame() -> (ret: Registers)
+    ensures
+        ret == zero_registers(),
+{
+    Registers {
+        r15: 0,
+        r14: 0,
+        r13: 0,
+        r12: 0,
+        rbp: 0,
+        rbx: 0,
+        r11: 0,
+        r10: 0,
+        r9: 0,
+        r8: 0,
+        rcx: 0,
+        rdx: 0,
+        rsi: 0,
+        rdi: 0,
+        rax: 0,
+        error_code: 0,
+        rip: 0,
+        cs: 0,
+        flags: 0,
+        rsp: 0,
+        ss: 0,
+    }
+}
+
+/// The selectors a thread returns to user mode with: the GDT's user code and data entries, 4 and 3,
+/// at privilege 3. See kernel/src/gdt/.
+pub const USER_CS: u64 = 0x23;
+pub const USER_SS: u64 = 0x1b;
+
+/// The flags a written frame keeps: those user mode can set itself with popf (carry, parity, adjust,
+/// zero, sign, trap, direction, overflow, alignment check, ID), without nested task.
+pub const USER_FLAGS: u64 = 0x24_0fd5;
+
+/// The flags a written frame always has: interrupts enabled and the reserved bit 1.
+pub const FORCED_FLAGS: u64 = 0x202;
+
+/// The first address past user space. A frame returning to a non-canonical rip would fault in the
+/// kernel's iretq, so a write refuses any rip at or past it.
+pub const USER_RIP_END: u64 = 0x8000_0000_0000;
+
+pub open spec fn user_rip(rip: u64) -> bool {
+    rip < USER_RIP_END
+}
+
+pub fn user_frame_of(f: Registers) -> (ret: Registers)
+    ensures
+        ret == user_frame(f),
+{
+    Registers {
+        r15: f.r15,
+        r14: f.r14,
+        r13: f.r13,
+        r12: f.r12,
+        rbp: f.rbp,
+        rbx: f.rbx,
+        r11: f.r11,
+        r10: f.r10,
+        r9: f.r9,
+        r8: f.r8,
+        rcx: f.rcx,
+        rdx: f.rdx,
+        rsi: f.rsi,
+        rdi: f.rdi,
+        rax: f.rax,
+        error_code: f.error_code,
+        rip: f.rip,
+        cs: USER_CS,
+        flags: (f.flags & USER_FLAGS) | FORCED_FLAGS,
+        rsp: f.rsp,
+        ss: USER_SS,
+    }
+}
+
+/// A frame a controller wrote, as the thread will return to user mode with it: the selectors are
+/// user mode's and the flags only those user mode could set, so the write grants no privilege. See
+/// design/process-holds-capabilities/.
+pub open spec fn user_frame(f: Registers) -> Registers {
+    Registers {
+        r15: f.r15,
+        r14: f.r14,
+        r13: f.r13,
+        r12: f.r12,
+        rbp: f.rbp,
+        rbx: f.rbx,
+        r11: f.r11,
+        r10: f.r10,
+        r9: f.r9,
+        r8: f.r8,
+        rcx: f.rcx,
+        rdx: f.rdx,
+        rsi: f.rsi,
+        rdi: f.rdi,
+        rax: f.rax,
+        error_code: f.error_code,
+        rip: f.rip,
+        cs: USER_CS,
+        flags: (f.flags & USER_FLAGS) | FORCED_FLAGS,
+        rsp: f.rsp,
+        ss: USER_SS,
+    }
 }
 
 /// COM1's base port, the serial port the kernel crate's console writes.

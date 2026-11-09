@@ -9,7 +9,7 @@ use crate::cpu::Cpu;
 use crate::gdt::GlobalDescriptorTable;
 use crate::thread::SwitchDecision;
 use verified::capability::{boot, inspect, operation, table};
-use verified::trap::Registers;
+use verified::arch::Registers;
 
 /// Flags cleared on syscall entry. The kernel is not preemptible, so IF. Compiled code assumes DF is
 /// clear. TF would trap on the first kernel instruction, on the user's stack. AC and NT must not reach

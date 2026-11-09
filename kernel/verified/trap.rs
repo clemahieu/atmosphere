@@ -1,6 +1,7 @@
-use core::mem::MaybeUninit;
 use vstd::prelude::*;
 verus! {
+
+use crate::arch::Registers;
 
 pub struct TrapFrameOption {
     pub reg: Registers,
@@ -61,79 +62,6 @@ impl TrapFrameOption {
         self.reg = *src;
     }
 
-}
-
-/// Registers passed to the ISR.
-#[repr(C, align(8))]
-#[derive(Clone, Copy, Debug)]
-pub struct Registers {
-    pub r15: u64,
-    pub r14: u64,
-    pub r13: u64,
-    pub r12: u64,
-    pub rbp: u64,
-    pub rbx: u64,
-    pub r11: u64,
-    pub r10: u64,
-    pub r9: u64,
-    pub r8: u64,
-    pub rcx: u64,
-    pub rdx: u64,
-    pub rsi: u64,
-    pub rdi: u64,
-    pub rax: u64,
-    // Original interrupt stack frame
-    pub error_code: u64,
-    pub rip: u64,
-    pub cs: u64,
-    pub flags: u64,
-    pub rsp: u64,
-    pub ss: u64,
-}
-
-impl Registers {
-    #[verifier(external_body)]
-    // external_body(gap): builds a value from zeroed memory, which Verus cannot check
-    pub const fn zeroed() -> Self {
-        unsafe { MaybeUninit::zeroed().assume_init() }
-    }
-
-    pub fn new(input: &Registers) -> (ret: Self)
-        ensures
-            ret =~= *input,
-    {
-        let ret = Self {
-            r15: input.r15,
-            r14: input.r14,
-            r13: input.r13,
-            r12: input.r12,
-            rbp: input.rbp,
-            rbx: input.rbx,
-            r11: input.r11,
-            r10: input.r10,
-            r9: input.r9,
-            r8: input.r8,
-            rcx: input.rcx,
-            rdx: input.rdx,
-            rsi: input.rsi,
-            rdi: input.rdi,
-            rax: input.rax,
-            error_code: input.error_code,
-            rip: input.rip,
-            cs: input.cs,
-            flags: input.flags,
-            rsp: input.rsp,
-            ss: input.ss,
-        };
-        ret
-    }
-
-    pub fn set_self(&mut self, src: &Registers)
-        ensures
-            *final(self) == *src,
-    {
-        *self = *src;
-    }
 }
 
 } // verus!
