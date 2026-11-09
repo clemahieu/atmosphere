@@ -6,6 +6,7 @@ use vstd::prelude::*;
 
 verus! {
 
+use crate::arch::flush_every_context;
 use crate::capability::block::*;
 use crate::capability::kernel::*;
 use crate::capability::link::*;

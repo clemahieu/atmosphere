@@ -322,7 +322,7 @@ pub ghost enum FlushTarget {
 }
 
 /// What a flush of `target`, started when the epoch was `epoch`, proves. Only flush glue can make one,
-/// so only it can clear a model of what the target holds: flush_every_context for a core,
+/// so only it can clear a model of what the target holds: arch::flush_every_context for a core,
 /// invalidate_iommu_all for an IOMMU.
 pub tracked struct Flushed {
     pub ghost target: FlushTarget,
@@ -652,29 +652,6 @@ pub struct CapKernel {
     /// The cores sent an IPI to act on a pending stop, in the order sent. The send is ghost: see
     /// design/one-lock-bounded-steps/.
     pub stop_ipis: Ghost<Seq<usize>>,
-}
-
-/// Flushes every context on this core, all PCIDs and paging-structure caches: changing CR4.PGE does
-/// that where a flush of the current PCID would leave entries under the others.
-#[verifier(external_body)]
-// external_body(glue): only the hardware can attest a flush, so only this makes the token
-pub fn flush_every_context(core: usize, epoch: usize) -> (ret: Tracked<Flushed>)
-    ensures
-        ret@.target == FlushTarget::Core(core as int),
-        ret@.epoch == epoch as int,
-{
-    unsafe {
-        core::arch::asm!(
-            "mov {cr4}, cr4",
-            "xor {cr4}, {pge}",
-            "mov cr4, {cr4}",
-            "xor {cr4}, {pge}",
-            "mov cr4, {cr4}",
-            cr4 = out(reg) _,
-            pge = const 1 << 7,
-        );
-    }
-    Tracked::assume_new()
 }
 
 /// Opcode of INVALIDATE_IOMMU_ALL, which empties every cache of the IOMMU. AMD IOMMU specification 48882
