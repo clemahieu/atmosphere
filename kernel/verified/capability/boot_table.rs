@@ -294,6 +294,65 @@ proof fn lemma_untyped_block(p: Payload, j: int)
     lemma_mod_multiples_vanish(j, p.base as int, 32768);
 }
 
+/// Whether the runs' virtual pages all lie past the kernel's level 4 entries and the tables they need fit
+/// in cap order-3 blocks: what boot_root_tables refuses for, checked without touching any state, so a
+/// caller can check it before a step it must not take when the tables would be refused.
+pub fn image_tables_fit(runs: &[ImageRun], cap: usize) -> (ret: bool)
+    requires
+        image_runs_wf(runs@),
+    ensures
+        ret == (image_virt_wf(runs@) && image_tables_bound(runs@) <= cap),
+        ret ==> forall|a: int| #![trigger runs@[a]] 0 <= a < runs@.len() ==> run_virt_wf(runs@[a]),
+{
+    let mut need: usize = 0;
+    let mut r: usize = 0;
+    while r < runs.len()
+        invariant
+            r <= runs@.len(),
+            image_runs_wf(runs@),
+            need as int == image_tables_bound(runs@.take(r as int)),
+            need <= cap,
+            forall|a: int| #![trigger runs@[a]] 0 <= a < r ==> run_virt_wf(runs@[a]),
+        decreases runs@.len() - r,
+    {
+        let v = runs[r].virt;
+        let n = runs[r].pages;
+        proof {
+            assert(runs@[r as int].pages > 0);
+        }
+        if v < KERNEL_MEM_END_L4INDEX * PAGES_PER_L4 || v > 512 * PAGES_PER_L4 || n > 512 * PAGES_PER_L4 - v {
+            proof {
+                lemma_run_virt_out(runs@, r as int);
+            }
+            return false;
+        }
+        let more = 3 * ((v + n - 1) / PAGES_PER_2M - v / PAGES_PER_2M + 1);
+        proof {
+            lemma_bound_step(runs@, r as int);
+            lemma_div_is_ordered(v as int, v + n - 1, PAGES_PER_2M as int);
+        }
+        if more > cap - need {
+            proof {
+                assert(more as int == 3 * run_regions(runs@[r as int]));
+                assert(image_tables_bound(runs@.take(r as int + 1)) > cap);
+                lemma_bound_prefix(runs@, r as int + 1);
+            }
+            return false;
+        }
+        need = need + more;
+        r = r + 1;
+    }
+    proof {
+        assert(runs@.take(runs@.len() as int) =~= runs@);
+        assert forall|a: int, x: int| 0 <= a < runs@.len() && #[trigger] in_virt_at(runs@, a, x)
+            implies KERNEL_MEM_END_L4INDEX <= x / PAGES_PER_L4 as int && (x / PAGES_PER_L4 as int) < 512 by {
+            assert(run_virt_wf(runs@[a]));
+            lemma_run_virt_in(runs@, a, x);
+        }
+    }
+    true
+}
+
 impl CapKernel {
     /// The space the root's process capability at ROOT_PROCESS_SLOT names.
     pub open spec fn root_space(&self, process: usize) -> usize {
@@ -971,8 +1030,8 @@ impl CapKernel {
             forall|p: SpacePath| !#[trigger] space_mapping(tree_of(&old(self).table_pages, &old(self).spaces), old(self).root_space(process)).contains_key(p),
         ensures
             !ret ==> *final(self) == *old(self),
-            !ret ==> !image_virt_wf(runs@)
-                || image_tables_bound(runs@) > untyped_tables(old(self).payload_of(old(self).root_untyped(process))),
+            ret == (image_virt_wf(runs@)
+                && image_tables_bound(runs@) <= untyped_tables(old(self).payload_of(old(self).root_untyped(process)))),
             ret ==> {
                 let s = old(self).root_space(process);
                 let u = old(self).payload_of(old(self).root_untyped(process));
@@ -1018,56 +1077,11 @@ impl CapKernel {
         let (s, untyped) = self.root_space_and_untyped(process);
         let cap = order_bytes(untyped.order) / 32768;
         // The up-front check, before any write.
-        let mut need: usize = 0;
-        let mut r: usize = 0;
-        while r < runs.len()
-            invariant
-                r <= runs@.len(),
-                image_runs_wf(runs@),
-                *self == *old(self),
-                untyped == old(self).payload_of(old(self).root_untyped(process)),
-                cap as int == untyped_tables(untyped),
-                cap <= NODE_SPACE / 32768,
-                need as int == image_tables_bound(runs@.take(r as int)),
-                need <= cap,
-                forall|a: int| #![trigger runs@[a]] 0 <= a < r ==> run_virt_wf(runs@[a]),
-            decreases runs@.len() - r,
-        {
-            let v = runs[r].virt;
-            let n = runs[r].pages;
-            proof {
-                assert(runs@[r as int].pages > 0);
-            }
-            if v < KERNEL_MEM_END_L4INDEX * PAGES_PER_L4 || v > 512 * PAGES_PER_L4 || n > 512 * PAGES_PER_L4 - v {
-                proof {
-                    lemma_run_virt_out(runs@, r as int);
-                }
-                return false;
-            }
-            let more = 3 * ((v + n - 1) / PAGES_PER_2M - v / PAGES_PER_2M + 1);
-            proof {
-                lemma_bound_step(runs@, r as int);
-                lemma_div_is_ordered(v as int, v + n - 1, PAGES_PER_2M as int);
-            }
-            if more > cap - need {
-                proof {
-                    assert(more as int == 3 * run_regions(runs@[r as int]));
-                    assert(image_tables_bound(runs@.take(r as int + 1)) > cap);
-                    lemma_bound_prefix(runs@, r as int + 1);
-                }
-                return false;
-            }
-            need = need + more;
-            r = r + 1;
+        if !image_tables_fit(runs, cap) {
+            return false;
         }
         proof {
-            assert(runs@.take(runs@.len() as int) =~= runs@);
-            assert forall|a: int, x: int| 0 <= a < runs@.len() && #[trigger] in_virt_at(runs@, a, x)
-                implies KERNEL_MEM_END_L4INDEX <= x / PAGES_PER_L4 as int && (x / PAGES_PER_L4 as int) < 512 by {
-                assert(run_virt_wf(runs@[a]));
-                lemma_run_virt_in(runs@, a, x);
-            }
-            assert(image_virt_wf(runs@));
+            assert(cap as int == untyped_tables(u));
             assert forall|j: int| 0 <= j < cap implies #[trigger] pre.root_table_block(process, cursor_block(untyped.base, j)) by {
                 lemma_untyped_block(u, j);
             }
