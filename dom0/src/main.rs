@@ -33,8 +33,10 @@
 //! the child's slot, a map through it and an unmap at its first mapping are refused, and inspect still
 //! finds the 2M frame. It derives a child from the 2M frame again; a delete of the frame is then
 //! refused, the child's delete is accepted, and the frame's after it, after which inspect, a second
-//! delete and a delete past the table are refused. dom0 prints that result through the console, then an exit marker, and exits with
-//! success only when every check held.
+//! delete and a delete past the table are refused. It times one invocation of a number no operation has,
+//! and one 4K map into each of 64 free entries of the level 1 table, and prints each cycle count beside
+//! the before number from logs/cutover-before.log, 102 and 66926. dom0 prints that result through the
+//! console, then an exit marker, and exits with success only when every check held.
 
 #![no_std]
 #![no_main]
@@ -284,6 +286,13 @@ const AGAIN_TAIL: &[u8] = b" again\n";
 /// Prints through the console `head`, then `again` and AGAIN_TAIL: that an operation was done after
 /// `again` again returns. The status is the low half of what the print returns.
 fn print_done_after(head: &[u8], again: u64) -> u64 {
+    print_count(head, again, AGAIN_TAIL)
+}
+
+/// Prints through the console `head`, then `count` in decimal, then `tail`. `head` and `tail` leave
+/// room for twenty digits in the 39 bytes print carries. The status is the low half of what the print
+/// returns.
+fn print_count(head: &[u8], count: u64, tail: &[u8]) -> u64 {
     let mut text = [0u8; 39];
     let mut length = 0;
     for &byte in head {
@@ -291,26 +300,69 @@ fn print_done_after(head: &[u8], again: u64) -> u64 {
         length += 1;
     }
     let mut digits = [0u8; 20];
-    let mut count = 0;
-    let mut rest = again;
+    let mut pending = 0;
+    let mut rest = count;
     loop {
-        digits[count] = b'0' + (rest % 10) as u8;
-        count += 1;
+        digits[pending] = b'0' + (rest % 10) as u8;
+        pending += 1;
         rest /= 10;
         if rest == 0 {
             break;
         }
     }
-    while count > 0 {
-        count -= 1;
-        text[length] = digits[count];
+    while pending > 0 {
+        pending -= 1;
+        text[length] = digits[pending];
         length += 1;
     }
-    for &byte in AGAIN_TAIL {
+    for &byte in tail {
         text[length] = byte;
         length += 1;
     }
     unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, operation::print_words(&text[..length])) }
+}
+
+/// The cycle counter.
+fn rdtsc() -> u64 {
+    let lo: u32;
+    let hi: u32;
+    unsafe {
+        core::arch::asm!("rdtsc", out("eax") lo, out("edx") hi, options(nomem, nostack, preserves_flags));
+    }
+    ((hi as u64) << 32) | lo as u64
+}
+
+/// How many free entries of the level 1 table at PATH_ADDRESS the timed maps fill, one page each.
+/// Entry 0 is the frame's existing mapping. Entries 1..=64 are free: revoke cleared them.
+const TIMED_MAPS: u64 = 64;
+
+/// The before number for an unassigned invocation, logs/cutover-before.log: 102 TSC cycles.
+const NULL_TAIL: &[u8] = b" before 102\n";
+
+/// The before number for a 4K map, one page per call, logs/cutover-before.log: 66926 TSC cycles per page.
+const MAP_TAIL: &[u8] = b"/p before 66926\n";
+
+/// Whether dom0 times one invocation of a number no operation has, which returns unknown, and one 4K
+/// map of `frame` into each of TIMED_MAPS free entries of the level 1 table, and prints each cycle count
+/// beside its before number. The counts are not checked against those numbers. The timed maps start at
+/// the page after PATH_ADDRESS, which already holds `frame`.
+fn timed_beside_before(frame: u64) -> bool {
+    let start = rdtsc();
+    let unknown = operation::status(unsafe { operation::invoke(NO_OPERATION, 0, [0; 5]) });
+    let null_cycles = rdtsc() - start;
+    if unknown != operation::STATUS_UNKNOWN {
+        return false;
+    }
+    let start = rdtsc();
+    for k in 1..=TIMED_MAPS {
+        let address = PATH_ADDRESS + 4096 * k;
+        if operation::map(operation::ROOT_PROCESS_SLOT, address, 1, frame, 0) != operation::STATUS_OK {
+            return false;
+        }
+    }
+    let per_page = (rdtsc() - start) / TIMED_MAPS;
+    print_count(b"null ", null_cycles, NULL_TAIL) == operation::STATUS_OK
+        && print_count(b"4k ", per_page, MAP_TAIL) == operation::STATUS_OK
 }
 
 /// Whether dom0 retypes the 2M block at the bottom of the last untyped of at least 512 pages as a frame
@@ -480,6 +532,7 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
                             && derived_frame_held(empty + 2, empty, empty + 1, empty + 3)
                             && revoked_frame_held(empty + 2, empty, empty + 3)
                             && deleted_frames_held(empty + 2, empty + 3)
+                            && timed_beside_before(empty + 1)
                     })
         });
     let console = unsafe {
