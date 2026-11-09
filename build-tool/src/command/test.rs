@@ -347,16 +347,27 @@ async fn check_capability_boot(project: &ProjectHandle, timeout: u64) -> Result<
         return Err(anyhow!("the serial log shows the old kernel_init"));
     }
     if !console_line_printed(&serial) {
-        return Err(anyhow!("the serial log does not hold the line dom0 prints through its console"));
+        return Err(anyhow!("the serial log does not hold dom0's check line"));
+    }
+    if !exit_marker_printed(&serial) {
+        return Err(anyhow!("the serial log does not show dom0's exit marker"));
     }
     Ok(format!(
-        "exit status 0, the root's fixed slots printed with their kinds ({} untyped, {} frames), the first operation refused with its five arguments, and dom0's line through its console in the serial log",
+        "exit status 0, the kernel's per-slot lines with their kinds ({} untyped, {} frames), and dom0's exit marker",
         untyped, frames
     ))
 }
 
-/// The line dom0 prints through its console capability, written by the kernel's print as dom0 gave it.
-const CONSOLE_LINE: &str = "dom0 prints through its console";
+/// The line dom0 prints through its console when every fixed-slot check held.
+const CONSOLE_LINE: &str = "dom0 slot checks held";
+
+/// The line dom0 prints after that check line, and only then exits with success.
+const EXIT_MARKER: &str = "dom0 capability done";
+
+/// Whether the serial log holds dom0's exit marker as a line of its own.
+fn exit_marker_printed(serial: &str) -> bool {
+    serial.lines().any(|line| line.trim_end_matches('\r') == EXIT_MARKER)
+}
 
 /// Whether the serial log holds dom0's console line as a line of its own.
 fn console_line_printed(serial: &str) -> bool {
@@ -645,10 +656,10 @@ mod tests {
 
     #[test]
     fn console_line_is_a_line_of_its_own() {
-        assert!(console_line_printed(" INFO root slot 3: console\ndom0 prints through its console\n INFO capability entry\n"));
-        assert!(console_line_printed("x\r\ndom0 prints through its console\r\n"));
-        assert!(!console_line_printed(" INFO dom0 prints through its console\n"));
-        assert!(!console_line_printed("dom0 prints through its\n"));
+        assert!(console_line_printed(" INFO root slot 3: console\ndom0 slot checks held\n INFO capability entry\n"));
+        assert!(console_line_printed("x\r\ndom0 slot checks held\r\n"));
+        assert!(!console_line_printed(" INFO dom0 slot checks held\n"));
+        assert!(!console_line_printed("dom0 slot checks\n"));
     }
 
     /// The kernel's slot lines for a root with two untyped and one frame.
@@ -659,6 +670,22 @@ mod tests {
              INFO root slot 129: {} order 0\n",
             frame_kind
         )
+    }
+
+    #[test]
+    fn a_log_missing_the_exit_marker_does_not_pass() {
+        let slots = slot_lines("frame");
+        assert!(fixed_slots_printed(&slots).is_ok());
+        assert!(!exit_marker_printed(&slots));
+        assert!(exit_marker_printed(&format!("{slots}dom0 capability done\n")));
+        assert!(exit_marker_printed("x\r\ndom0 capability done\r\n"));
+        assert!(!exit_marker_printed(" INFO dom0 capability done\n"));
+    }
+
+    #[test]
+    fn a_log_with_a_wrong_slot_kind_does_not_pass() {
+        assert!(fixed_slots_printed(&slot_lines("page")).is_err());
+        assert_eq!(fixed_slots_printed(&slot_lines("frame")).unwrap(), (2, 1));
     }
 
     #[test]
