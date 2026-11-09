@@ -17,7 +17,7 @@ static LOGGER: Logger<WriterType> = Logger::new(get_writer, true);
 /// This should only be called once.
 pub unsafe fn early_init() {
     log::set_logger(&LOGGER)
-        .map(|_| log::set_max_level(log::LevelFilter::Trace))
+        .map(|_| log::set_max_level(log::LevelFilter::Info))
         .unwrap();
 }
 

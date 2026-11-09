@@ -381,10 +381,6 @@ impl NaiveIommuMap {
             self.as_mut().context_table().write(device, function, ce);
         }
 
-        for i in 0..256 {
-            let e = unsafe { self.as_mut().root_table().as_ref().read(i) };
-            log::debug!("bus {} = {:?}", i, e);
-        }
         log::info!("IO page table of {:#x}:{:#x}.{:#x}: {:#x}", bus, device, function, pml4);
     }
 
@@ -408,21 +404,10 @@ impl RootTable {
         }
     }
 
-    unsafe fn read(self: Pin<&Self>, index: usize) -> RootTableEntry {
-        assert!(index < self.entries.len(), "Out of range");
-        ptr::read_volatile(self.entry(index))
-    }
-
     unsafe fn write(self: Pin<&mut Self>, index: usize, value: RootTableEntry) {
         assert!(index < self.entries.len(), "Out of range");
         let e = self.entry_mut(index);
-        log::info!("Index: {:#x}", index);
-        log::info!("Writing to Root Table: {:?} <- {:#x?}", e, value);
         ptr::write_volatile(e, value);
-    }
-
-    fn entry(self: Pin<&Self>, index: usize) -> *const RootTableEntry {
-        self.entries[index].as_ptr()
     }
 
     fn entry_mut(mut self: Pin<&mut Self>, index: usize) -> *mut RootTableEntry {
@@ -446,8 +431,6 @@ impl ContextTable {
     unsafe fn write(self: Pin<&mut Self>, device: usize, function: usize, value: ContextTableEntry) {
         let index = Self::index(device, function);
         let e = self.entry_mut(index);
-        log::info!("Index: {:#x}", index);
-        log::info!("Writing to Context Table: {:?} <- {:#x?}", e, value);
         ptr::write_volatile(e, value);
     }
 
