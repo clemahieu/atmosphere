@@ -17,8 +17,8 @@ use crate::define::*;
 
 pub const PAGES_PER_2M: usize = 512;
 pub const PAGES_PER_1G: usize = 262144;
-pub const NUM_2M: usize = 4096;
-pub const NUM_1G: usize = 8;
+pub const NUM_2M: usize = 512;
+pub const NUM_1G: usize = 1;
 
 #[derive(Clone, Copy)]
 pub enum PageKind {

@@ -352,11 +352,9 @@ class Tests(unittest.TestCase):
 
     def test_guest_ram_is_the_minimum_test_machine(self):
         # design/test-guest-memory/. 512 MiB holds the loader pools. The kernel
-        # tracks 8 GiB of pages, so a larger guest is not what this run needs,
-        # and a 32 GiB guest has pages it cannot track.
+        # tracks 1 GiB of pages, so a larger guest has pages it cannot track.
         self.assertEqual(MEMORY_MIB, 512)
-        self.assertLess(MEMORY_MIB, 8 * 1024)
-        self.assertNotEqual(MEMORY_MIB, 32 * 1024)
+        self.assertLessEqual(MEMORY_MIB, 1024)
         args = qemu_args(Path("/run/x"), Path("/w/serial.log"), False, False, None,
                          "/ovmf/OVMF_CODE.fd")
         self.assertEqual(self.options(args, "-m"), [str(MEMORY_MIB)])

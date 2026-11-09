@@ -13,7 +13,7 @@ use astd::boot::PhysicalMemoryType;
 pub const PAGE_BYTES: u64 = 4096;
 
 /// Pages the kernel tracks. `boot/mod.rs` checks this against `verified::define::NUM_PAGES`.
-pub const PAGE_SLOTS: usize = 2 * 1024 * 1024;
+pub const PAGE_SLOTS: usize = 256 * 1024;
 
 /// First address that is not a tracked page.
 pub const MAX_PAGE_ADDRESS: u64 = (PAGE_SLOTS as u64) * PAGE_BYTES;
