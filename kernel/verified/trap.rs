@@ -61,28 +61,6 @@ impl TrapFrameOption {
         self.reg = *src;
     }
 
-    pub fn set_dst(&self, dst: &mut Registers)
-        requires
-            self.is_Some(),
-        ensures
-            *final(dst) =~= *self.get_Some_0(),
-    {
-        *dst = self.reg;
-    }
-
-    pub fn set_to_none(&mut self)
-        ensures
-            final(self).is_None(),
-    {
-        self.exists = false;
-    }
-
-    pub fn zeroed_none() -> (ret: Self)
-        ensures
-            ret.is_None(),
-    {
-        Self { reg: Registers::zeroed(), exists: false }
-    }
 }
 
 /// Registers passed to the ISR.
@@ -118,41 +96,6 @@ impl Registers {
     // external_body(gap): builds a value from zeroed memory, which Verus cannot check
     pub const fn zeroed() -> Self {
         unsafe { MaybeUninit::zeroed().assume_init() }
-    }
-
-    #[verifier(external_body)]
-    // external_body(gap): builds a value from zeroed memory, which Verus cannot check
-    pub const fn random() -> (ret: Self) {
-        unsafe {
-            return MaybeUninit::zeroed().assume_init();
-        }
-    }
-
-    pub fn new_empty() -> (ret: Self) {
-        let ret = Self {
-            r15: 0,
-            r14: 0,
-            r13: 0,
-            r12: 0,
-            rbp: 0,
-            rbx: 0,
-            r11: 0,
-            r10: 0,
-            r9: 0,
-            r8: 0,
-            rcx: 0,
-            rdx: 0,
-            rsi: 0,
-            rdi: 0,
-            rax: 0,
-            error_code: 0,
-            rip: 0,
-            cs: 0,
-            flags: 0,
-            rsp: 0,
-            ss: 0,
-        };
-        ret
     }
 
     pub fn new(input: &Registers) -> (ret: Self)
