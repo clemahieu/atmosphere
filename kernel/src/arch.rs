@@ -161,8 +161,6 @@ pub fn switch_address_space(root: usize, asid: usize) {
 pub mod msr {
     use core::arch::asm;
 
-    /// The local APIC's base address and enables. APM 2 §16.3.1, Figure 16-2.
-    pub const APIC_BASE: u32 = 0x0000_001B;
     /// APM 2 §3.1.7, Figure 3-9.
     pub const EFER: u32 = 0xC000_0080;
     /// SYSCALL and SYSRET selectors, and the 64-bit, compatibility-mode and flag-mask targets. APM 2

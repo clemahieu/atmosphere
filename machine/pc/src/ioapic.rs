@@ -2,7 +2,7 @@
 
 use core::mem::MaybeUninit;
 
-use super::IRQ_OFFSET;
+use super::TIMER_VECTOR;
 
 /// An I/O APIC, reached through its register select IOREGSEL at the base and its data window
 /// IOWIN at base + 10h. Datasheet Table 1.
@@ -14,11 +14,11 @@ struct IoApic {
 /// (bits 63:32). Datasheet Table 2 and §3.2.4.
 const IOREDTBL: u8 = 0x10;
 
-/// The redirection entry that routes input `irq` to vector IRQ_OFFSET + irq at the local APIC
+/// The redirection entry that routes input `irq` to vector TIMER_VECTOR + irq at the local APIC
 /// `apic_id`: fixed delivery, physical destination mode, active high, edge triggered and unmasked,
 /// which is bits 16:8 clear, and the APIC ID in bits 63:56. Datasheet §3.2.4.
 const fn redirection_entry(irq: u8, apic_id: u8) -> u64 {
-    (apic_id as u64) << 56 | (IRQ_OFFSET as u64 + irq as u64)
+    (apic_id as u64) << 56 | (TIMER_VECTOR as u64 + irq as u64)
 }
 
 impl IoApic {
@@ -35,7 +35,7 @@ impl IoApic {
     }
 }
 
-/// Reached only by `init` and then `init_cpu`, both on CPU 0 during its boot; an application
+/// Reached only by `init` and then `route`, both on CPU 0 during its boot; an application
 /// processor leaves the IOAPIC routed to CPU 0 and never touches it.
 static mut IOAPIC: MaybeUninit<IoApic> = MaybeUninit::zeroed();
 
@@ -45,17 +45,12 @@ pub unsafe fn init(ioapic_base: usize) {
     (*&raw mut IOAPIC).write(IoApic { base: ioapic_base });
 }
 
-pub unsafe fn init_cpu() {
-    let cpu = crate::cpu::get_current();
-
-    // Exclusive: see IOAPIC. init wrote it first.
+/// Routes inputs 0 and 1 to the local APIC `apic_id`.
+pub unsafe fn route(apic_id: u8) {
+    // Exclusive: see IOAPIC. init wrote it first, and only the boot core routes.
     let ioapic = (*&raw mut IOAPIC).assume_init_mut();
-    ioapic.enable(0, crate::cpu::get_cpu_id() as u8);
-    ioapic.enable(1, crate::cpu::get_cpu_id() as u8);
-
-    let xapic = cpu.xapic.assume_init_mut();
-
-    log::debug!("Init CPU {} {} {}", cpu.id, xapic.id(), xapic.logical_id());
+    ioapic.enable(0, apic_id);
+    ioapic.enable(1, apic_id);
 }
 
 // The entries the x86 crate's IoApic::enable wrote.

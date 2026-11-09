@@ -8,13 +8,11 @@
 //! - IST stack spaces
 
 use core::arch::asm;
-use core::mem::MaybeUninit;
 use core::ptr;
 
 use crate::arch::msr;
 
 use crate::gdt::{GlobalDescriptorTable, TaskStateSegment};
-use crate::interrupt::x86_xapic::XAPIC;
 use crate::thread::SwitchDecision;
 use verified::arch::Registers;
 
@@ -80,9 +78,6 @@ pub struct Cpu {
     /// The state of the parked thread.
     pub parked: Registers,
 
-    /// State for the xAPIC driver.
-    pub xapic: MaybeUninit<XAPIC>,
-
     /// The context switch decision upon exiting the kernel.
     pub switch_decision: SwitchDecision,
 
@@ -138,7 +133,6 @@ impl Cpu {
             self_ptr: ptr::null(),
             id: 0,
             parked: Registers::zeroed(),
-            xapic: MaybeUninit::uninit(),
             switch_decision: SwitchDecision::NoSwitching,
             gdt: GlobalDescriptorTable::empty(),
             tss: TaskStateSegment::new(),

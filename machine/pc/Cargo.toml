@@ -1,0 +1,10 @@
+[package]
+name = "machine-pc"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+publish = false
+
+[dependencies]
+bit_field = "0.10.1"
+log = "0.4.14"

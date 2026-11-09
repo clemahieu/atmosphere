@@ -9,6 +9,7 @@ members = [
   "build-tool",
   "dom0",
   "kernel-logger",
+  "machine/pc",
   "ns16550a",
   "kernel",
   "kernel/verified",

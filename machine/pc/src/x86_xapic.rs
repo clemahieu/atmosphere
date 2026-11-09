@@ -10,7 +10,7 @@
 use bit_field::BitField;
 use core::fmt;
 
-use crate::arch::msr::{rdmsr, wrmsr, APIC_BASE};
+use super::msr::{rdmsr, wrmsr, APIC_BASE};
 
 /// Local APIC ID register. Read-only. See Section 10.12.5.1 for initial values.
 pub const XAPIC_ID: u32 = 0x020;
@@ -196,8 +196,8 @@ enum ApicRegister {
 /// State for the XAPIC driver.
 #[allow(clippy::clippy::upper_case_acronyms)]
 pub struct XAPIC {
-    /// Reference to the xAPCI region
-    mmio_region: &'static mut [u32],
+    /// The xAPIC register page. The same physical address on every core; each core's access reaches its own.
+    mmio_region: *mut u32,
     /// Initial APIC Base register value.
     base: u64,
 }
@@ -266,17 +266,9 @@ impl fmt::Debug for XAPIC {
 }
 
 impl XAPIC {
-    /// Create a new xAPIC object for the local CPU.
-    ///
-    /// Pass the xAPCI region which is at XXX unless you have
-    /// relocated the region.
-    pub fn new(apic_region: &'static mut [u32]) -> XAPIC {
-        unsafe {
-            XAPIC {
-                mmio_region: apic_region,
-                base: rdmsr(APIC_BASE),
-            }
-        }
+    /// The local APIC at `mmio`, the register page `IA32_APIC_BASE` names.
+    pub(crate) fn from_mmio(mmio: *mut u32) -> XAPIC {
+        XAPIC { mmio_region: mmio, base: 0 }
     }
 
     /// Attach driver to the xAPIC (enables device).
@@ -298,14 +290,14 @@ impl XAPIC {
     fn read(&self, offset: ApicRegister) -> u32 {
         assert!(offset as usize % 4 == 0);
         let index = offset as usize / 4;
-        unsafe { core::ptr::read_volatile(&self.mmio_region[index]) }
+        unsafe { core::ptr::read_volatile(self.mmio_region.add(index)) }
     }
 
     /// write a register in the MMIO region.
     fn write(&mut self, offset: ApicRegister, val: u32) {
         assert!(offset as usize % 4 == 0);
         let index = offset as usize / 4;
-        unsafe { core::ptr::write_volatile(&mut self.mmio_region[index], val) }
+        unsafe { core::ptr::write_volatile(self.mmio_region.add(index), val) }
     }
 
     /// Set TSC one-shot value.

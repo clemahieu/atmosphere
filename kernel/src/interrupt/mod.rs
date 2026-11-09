@@ -8,40 +8,30 @@
 
 mod exception;
 mod idt;
-mod ioapic;
 mod lapic;
-mod mps;
-pub mod x86_xapic;
 
 use core::arch::{asm, naked_asm};
 use core::convert::{Into, TryFrom};
 
 use bit_field::BitField;
-use crate::arch::io::{inb, outb};
 use crate::arch::Ring;
 
 use crate::boot::spin_forever;
 pub use exception::Exception;
 use exception::EXCEPTION_MAX;
 use idt::Idt;
-pub use lapic::{boot_ap, end_of_interrupt, send_ipi, set_timer};
+pub use lapic::boot_ap;
+use crate::machine;
 use verified::arch::Registers;
 
-/// The IRQ offset.
+/// The first vector after the exceptions. The IDT's interrupt array starts here.
 pub const IRQ_OFFSET: usize = 32;
-
-pub const IRQ_TIMER: usize = 0;
-pub const IRQ_IOMMU_FAULT: usize = 1;
-pub const IRQ_FLUSH: usize = 2;
 
 pub const IST_EXCEPTION: usize = 1;
 pub const IST_IRQ: usize = 2;
 
 /// The global IDT. Written only by `init` on CPU 0, before any core loads it; only read after that.
 static mut GLOBAL_IDT: Idt = Idt::new();
-
-const PIC1_DATA: u16 = 0x21;
-const PIC2_DATA: u16 = 0xa1;
 
 /// An amount of cycles.
 #[derive(Debug)]
@@ -295,16 +285,16 @@ unsafe extern "C" fn page_fault(regs: &mut Registers) {
 /// Timer handler.
 unsafe extern "C" fn timer(regs: &mut Registers) {
     if let Some(slice) = crate::thread::schedule(regs) {
-        set_timer(slice);
+        machine::set_timer(slice.0 as u64);
     }
 
-    end_of_interrupt();
+    machine::end_of_interrupt();
 }
 
 /// Flush request from another CPU.
 unsafe extern "C" fn flush_ipi(_regs: &mut Registers) {
     crate::flush::handle_ipi();
-    end_of_interrupt();
+    machine::end_of_interrupt();
 }
 
 /// IOMMU fault handler.
@@ -443,14 +433,7 @@ impl PageFaultErrorCode {
 ///
 /// This should be called only once.
 pub unsafe fn init() {
-    let pic1 = inb(PIC1_DATA);
-    let pic2 = inb(PIC2_DATA);
-
-    log::debug!("PIC masks: PIC1={:#x?}, PIC2={:#x?}", pic1, pic2);
-
-    // Disable 8259 PIC
-    outb(PIC1_DATA, 0xff);
-    outb(PIC2_DATA, 0xff);
+    machine::interrupt_init();
 
     // Exclusive: this is the only writer, and no core has loaded the IDT yet.
     let idt = &mut *&raw mut GLOBAL_IDT;
@@ -473,22 +456,20 @@ pub unsafe fn init() {
         .set_handler_fn(wrap_interrupt_with_error_code!(general_protection_fault));
     idt.page_fault.set_handler_fn(wrap_interrupt_with_error_code!(page_fault));
 
-    idt.interrupts[IRQ_TIMER].set_handler_fn(wrap_interrupt!(timer));
+    idt.interrupts[machine::TIMER_VECTOR as usize - IRQ_OFFSET].set_handler_fn(wrap_interrupt!(timer));
 
-    idt.interrupts[IRQ_IOMMU_FAULT].set_handler_fn(wrap_interrupt!(iommu_fault));
+    idt.interrupts[machine::IOMMU_FAULT_VECTOR as usize - IRQ_OFFSET].set_handler_fn(wrap_interrupt!(iommu_fault));
 
-    idt.interrupts[IRQ_FLUSH].set_handler_fn(wrap_interrupt!(flush_ipi));
-
-    let ioapic_base = mps::probe_ioapic();
-    ioapic::init(ioapic_base);
+    idt.interrupts[machine::FLUSH_VECTOR as usize - IRQ_OFFSET].set_handler_fn(wrap_interrupt!(flush_ipi));
 }
 
 /// Initializes per-CPU interrupt controllers.
 ///
 /// This should be called only once per CPU.
 pub unsafe fn init_cpu() {
-    lapic::init();
-    ioapic::init_cpu();
+    let cpu = crate::cpu::get_cpu_id();
+    machine::interrupt_init_core(cpu);
+    machine::route_external(cpu);
 
     // Shared: init is done, so the IDT is only read from here on.
     (*&raw const GLOBAL_IDT).load();
@@ -500,7 +481,7 @@ pub unsafe fn init_cpu() {
 ///
 /// This should be called only once per CPU.
 pub unsafe fn init_ap() {
-    lapic::init();
+    machine::interrupt_init_core(crate::cpu::get_cpu_id());
 
     // Shared: init is done, so the IDT is only read from here on.
     (*&raw const GLOBAL_IDT).load();

@@ -10,7 +10,7 @@ use verified::arch::flush_every_context;
 use verified::define::NUM_CPUS;
 
 use crate::cpu;
-use crate::interrupt::{self, IRQ_FLUSH, IRQ_OFFSET};
+use crate::machine::{self, FLUSH_VECTOR};
 use crate::lock::Locked;
 
 struct FlushState {
@@ -30,7 +30,7 @@ pub fn start(target: usize) -> usize {
         state.epoch += 1;
         state.epoch
     };
-    interrupt::send_ipi(target, (IRQ_OFFSET + IRQ_FLUSH) as u8);
+    machine::send_ipi(target, FLUSH_VECTOR);
     epoch
 }
 

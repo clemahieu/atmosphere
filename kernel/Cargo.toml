@@ -5,6 +5,9 @@ edition = "2021"
 license.workspace = true
 publish = false
 
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+machine-pc = { path = "../machine/pc" }
+
 [dependencies]
 astd = { path = "../astd", features = ["kernel"] }
 asys = { path = "../asys" }

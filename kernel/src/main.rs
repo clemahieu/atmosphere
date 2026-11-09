@@ -35,6 +35,7 @@ mod gdt;
 mod interrupt;
 mod iommu;
 mod logging;
+mod machine;
 mod syscalls;
 mod thread;
 mod utils;

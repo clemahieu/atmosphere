@@ -226,9 +226,9 @@ impl RemappingHardware {
         }
     }
 
-    pub unsafe fn set_fault_interrupt(&mut self, apic_id: u8, irq: u8) {
+    pub unsafe fn set_fault_interrupt(&mut self, apic_id: u8) {
         let mut fedata = 0;
-        fedata.set_bits(Self::FEDATA_IMD, crate::interrupt::IRQ_OFFSET as u16 + irq as u16);
+        fedata.set_bits(Self::FEDATA_IMD, crate::machine::IOMMU_FAULT_VECTOR as u16);
         self.write_u32(Self::FEDATA_REG, fedata as u32);
 
         let mut feaddr: u32 = 0;
@@ -557,7 +557,7 @@ pub unsafe fn init_iommu() {
     iommu.set_root_table_addr(rt.root_table_addr());
     log::info!("Root Table: {:#x}", iommu.root_table_addr());
 
-    iommu.set_fault_interrupt(0, 1);
+    iommu.set_fault_interrupt(0);
 
     log::info!("Enabling translation");
     iommu.enable_translation();
