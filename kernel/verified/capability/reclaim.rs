@@ -1013,6 +1013,9 @@ impl CapKernel {
 
     /// Frees the empty table page at `base`, once every core and IOMMU has acknowledged the epoch that
     /// recorded its cut. It refuses a block that is anything else.
+    // In a solver of its own: in the module's shared solver, the queries before it leave too little of
+    // its budget.
+    #[verifier::spinoff_prover]
     pub fn free_table(&mut self, c: usize, root: usize, from: usize, base: usize) -> (ret: ReclaimStep)
         requires
             old(self).wf(),
