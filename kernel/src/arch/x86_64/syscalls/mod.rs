@@ -43,6 +43,8 @@ const _: () = {
     assert!(user::PRINT == operation::OPERATION_PRINT);
     assert!(user::INSPECT == operation::OPERATION_INSPECT);
     assert!(user::LINK == operation::OPERATION_LINK);
+    assert!(user::PROBE == operation::OPERATION_PROBE);
+    assert!(user::PROBE_MAX == verified::capability::probe::PROBE_MAX);
     assert!(user::RETYPE_FRAME == operation::RETYPE_FRAME);
     assert!(user::RETYPE_LARGE_FRAME == operation::RETYPE_LARGE_FRAME);
     assert!(user::RETYPE_TABLE_PAGE == operation::RETYPE_TABLE_PAGE);

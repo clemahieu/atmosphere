@@ -57,6 +57,16 @@ pub const INSPECT: u64 = 15;
 /// slot that the virtual address in argument 1 and the level in argument 2 name, on the authority of the
 /// untyped in argument 3 over the page's block. The level is 2, 3 or 4 and the page's own level one below it.
 pub const LINK: u64 = 16;
+/// Reads and clears the accessed and dirty bits of the count in argument 2, 1 to PROBE_MAX, of level 1
+/// entries from the one the virtual address in argument 1 names in the space of the capability in the
+/// slot, which must allow writing it; the entries lie in one level 1 table. Returns the accessed mask in
+/// result 1 and the dirty mask in result 2, bit i for entry i, a bit set only for a present entry, and in
+/// results 3 and 4 whether the target maintains each bit, 1 when it does. It changes no mapping and does
+/// not flush, so a translation still cached may hide a use until the next walk.
+pub const PROBE: u64 = 17;
+
+/// The most entries one probe reads.
+pub const PROBE_MAX: u64 = 64;
 
 /// Retype's kind in argument 1 for a 4K frame: a frame capability of order 0 for the page at the base in
 /// argument 2, in the empty slot in argument 3.
@@ -212,6 +222,34 @@ pub fn map(space: u64, address: u64, level: u64, frame: u64, page: u64) -> u64 {
 /// there faults.
 pub unsafe fn unmap(space: u64, address: u64, level: u64) -> u64 {
     status(unsafe { invoke(UNMAP, space, [address, level, 0, 0, 0]) })
+}
+
+/// What a probe found: bit i of each mask is entry i's accessed or dirty bit as read, and whether the
+/// target maintains each bit, without which its mask says nothing.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Probed {
+    pub accessed: u64,
+    pub dirty: u64,
+    pub accessed_maintained: bool,
+    pub dirty_maintained: bool,
+}
+
+/// Reads and clears the accessed and dirty bits of `count` level 1 entries from the one `address` names,
+/// in the space of the capability at `space`: what it found, or the status probe returned when it was
+/// refused.
+pub fn probe(space: u64, address: u64, count: u64) -> Result<Probed, u64> {
+    // A probe changes no mapping, so no address the caller reads changes.
+    let (word, [accessed, dirty, accessed_maintained, dirty_maintained]) =
+        unsafe { invoke_returning(PROBE, space, [address, count, 0, 0, 0]) };
+    match status(word) {
+        STATUS_OK => Ok(Probed {
+            accessed,
+            dirty,
+            accessed_maintained: accessed_maintained == 1,
+            dirty_maintained: dirty_maintained == 1,
+        }),
+        refused => Err(refused),
+    }
 }
 
 /// Moves the capability at `from` to the empty slot `to`, children and all, leaving `from` empty. The

@@ -2,7 +2,7 @@
 //! not assume it owns the machine, so several instances each with a root stay possible. Why, and
 //! what to do about a change that breaks this: design/one-kernel-instance/.
 //!
-//! Print, inspect, retype of a 4K frame, of a 2M frame and of a table page, derive, move, delete, revoke, link, map and unmap are the wired
+//! Print, inspect, retype of a 4K frame, of a 2M frame and of a table page, derive, move, delete, revoke, link, map, unmap and probe are the wired
 //! operations, so each fixed slot is checked through them: the console accepts print and the process,
 //! thread, untyped and frame slots refuse it; inspect says the console slot holds a console, and each slot
 //! from the first untyped holds an untyped whose base is aligned to its order, up to the first slot
@@ -35,8 +35,13 @@
 //! refused, the child's delete is accepted, and the frame's after it, after which inspect, a second
 //! delete and a delete past the table are refused. It times one invocation of a number no operation has,
 //! and one 4K map into each of 64 free entries of the level 1 table, and prints each cycle count beside
-//! the before number from logs/cutover-before.log, 102 and 66926. dom0 prints that result through the
-//! console, then an exit marker, and exits with success only when every check held.
+//! the before number from logs/cutover-before.log, 102 and 66926. It maps the frame at the entry after
+//! those, and probes the 64 entries ending there after the map, after reading the page, again, and after
+//! writing it, printing the mapped entry's accessed and dirty bits each time: both clear, then accessed
+//! alone, then both clear, then dirty; the other 63 entries' bits stay clear and both bits are
+//! maintained. A probe of 0 entries, of 65 and of a range leaving its level 1 table is refused. dom0
+//! prints that result through the console, then an exit marker, and exits with success only when every
+//! check held.
 
 #![no_std]
 #![no_main]
@@ -365,6 +370,97 @@ fn timed_beside_before(frame: u64) -> bool {
         && print_count(b"4k ", per_page, MAP_TAIL) == operation::STATUS_OK
 }
 
+/// The entry of the level 1 table at PATH_ADDRESS that the probe check maps, the one after the timed
+/// maps'.
+const PROBED_ENTRY: u64 = TIMED_MAPS + 1;
+
+/// The first of the operation::PROBE_MAX entries the probe check reads, which end at PROBED_ENTRY.
+const PROBE_FIRST: u64 = PROBED_ENTRY + 1 - operation::PROBE_MAX;
+
+/// The bit of each mask that is PROBED_ENTRY's.
+const PROBED_BIT: u64 = 1 << (PROBED_ENTRY - PROBE_FIRST);
+
+/// The address of entry `k` of the level 1 table at PATH_ADDRESS.
+const fn entry_address(k: u64) -> u64 {
+    PATH_ADDRESS + 4096 * k
+}
+
+/// Prints through the console each of `parts` in turn, which together are shorter than the 40 bytes
+/// print carries. The status is the low half of what the print returns.
+fn print_parts(parts: &[&[u8]]) -> u64 {
+    let mut text = [0u8; 39];
+    let mut length = 0;
+    for part in parts {
+        for &byte in *part {
+            text[length] = byte;
+            length += 1;
+        }
+    }
+    unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, operation::print_words(&text[..length])) }
+}
+
+/// The digit for a bit.
+fn bit_digit(bit: bool) -> &'static [u8] {
+    if bit { b"1" } else { b"0" }
+}
+
+/// Whether a probe of the operation::PROBE_MAX entries ending at PROBED_ENTRY is accepted and finds
+/// PROBED_ENTRY's dirty bit `dirty` and, when `accessed` is some, its accessed bit that, and every other
+/// entry's bits clear, with both bits maintained; it prints `step` and PROBED_ENTRY's two bits.
+fn probed_step_held(step: &[u8], accessed: Option<bool>, dirty: bool) -> bool {
+    let probed = match operation::probe(operation::ROOT_PROCESS_SLOT, entry_address(PROBE_FIRST), operation::PROBE_MAX) {
+        Ok(probed) => probed,
+        Err(_) => return false,
+    };
+    let a = probed.accessed & PROBED_BIT != 0;
+    let d = probed.dirty & PROBED_BIT != 0;
+    let printed = print_parts(&[b"dom0 probe ", step, b": a", bit_digit(a), b" d", bit_digit(d), b"\n"]);
+    printed == operation::STATUS_OK
+        && probed.accessed_maintained
+        && probed.dirty_maintained
+        && (probed.accessed | probed.dirty) & !PROBED_BIT == 0
+        && d == dirty
+        && match accessed {
+            Some(expected) => a == expected,
+            None => true,
+        }
+}
+
+/// Whether a probe of `count` entries from entry `first` of the level 1 table at PATH_ADDRESS is refused;
+/// it prints `what` once it is.
+fn probe_refused(first: u64, count: u64, what: &[u8]) -> bool {
+    matches!(
+        operation::probe(operation::ROOT_PROCESS_SLOT, entry_address(first), count),
+        Err(operation::STATUS_REFUSED)
+    ) && print_parts(&[b"dom0 probe ", what, b" refused\n"]) == operation::STATUS_OK
+}
+
+/// Whether the processor's accessed and dirty bits follow dom0's reads and writes through a page it maps
+/// at PROBED_ENTRY from `frame`, as probe reads and clears them: after the map both are clear, after a read
+/// accessed alone is set, after a probe with no access between both are clear, and after a write dirty is
+/// set. A write sets dirty even through a translation still cached with dirty clear, since the processor
+/// walks to set it, so that step does not depend on the TLB; whether it sets accessed again then does, and
+/// is not checked. A probe of 0 entries, of 65 and of a range that leaves the level 1 table is refused.
+fn probed_bits_held(frame: u64) -> bool {
+    let page = entry_address(PROBED_ENTRY) as *mut u64;
+    if operation::map(operation::ROOT_PROCESS_SLOT, page as u64, 1, frame, 0) != operation::STATUS_OK
+        || !probed_step_held(b"mapped", Some(false), false)
+    {
+        return false;
+    }
+    // The map just made the page the frame's, writable; the frame holds MAPPED_WORD, which the write puts
+    // back.
+    let word = unsafe { page.read_volatile() };
+    if !probed_step_held(b"read", Some(true), false) || !probed_step_held(b"again", Some(false), false) {
+        return false;
+    }
+    unsafe { page.write_volatile(word) };
+    probed_step_held(b"written", None, true)
+        && probe_refused(PROBE_FIRST, 0, b"of 0")
+        && probe_refused(PROBE_FIRST, operation::PROBE_MAX + 1, b"of 65")
+        && probe_refused(512 - operation::PROBE_MAX / 2, operation::PROBE_MAX, b"across tables")
+}
+
 /// Whether dom0 retypes the 2M block at the bottom of the last untyped of at least 512 pages as a frame
 /// into the empty slot `destination`, repeating while retype returns again, and prints how many again
 /// returns that took: a retype at a base not aligned to 2M is refused, the retype returns again at least
@@ -533,6 +629,7 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
                             && revoked_frame_held(empty + 2, empty, empty + 3)
                             && deleted_frames_held(empty + 2, empty + 3)
                             && timed_beside_before(empty + 1)
+                            && probed_bits_held(empty + 1)
                     })
         });
     let console = unsafe {
