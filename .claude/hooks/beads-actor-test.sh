@@ -29,8 +29,8 @@ run CLAUDE_ENV_FILE="$dir/other.sh"; rc=$?
 run CLAUDE_PID=4242; rc=$?
 [ "$rc" != 0 ]; check "no env file is an error" $?
 
-# Under Grok, which sets GROK_SESSION_ID on every hook, the session carries its actor in its loop's
-# prompt: the hook accepts the missing harness variables and writes nothing.
+# Under Grok, which sets GROK_SESSION_ID on every hook, the session has no env file: the hook accepts
+# the missing harness variables and writes nothing.
 run GROK_SESSION_ID=abc; check "grok session exits 0" $?
 run GROK_SESSION_ID=abc CLAUDE_PID=4242 CLAUDE_ENV_FILE="$dir/grok.sh"
 [ ! -e "$dir/grok.sh" ]; check "grok session writes nothing" $?

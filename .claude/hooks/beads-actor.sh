@@ -6,8 +6,7 @@
 # missing one is a harness change, not a case to paper over.
 #
 # Grok loads this hook too and sets GROK_SESSION_ID on every hook it runs. A Grok session has no env
-# file: its rounds carry grok-<pid> in the loop's prompt (.claude/skills/round/SKILL.md), so the hook
-# writes nothing there.
+# file and runs no rounds, so the hook writes nothing there.
 set -u
 [ -z "${GROK_SESSION_ID:-}" ] || exit 0
 echo "export BEADS_ACTOR=claude-${CLAUDE_PID:?}" >> "${CLAUDE_ENV_FILE:?}"

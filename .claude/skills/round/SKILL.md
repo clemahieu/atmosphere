@@ -30,11 +30,3 @@ The harness also sends a task-notification when a round ends, after its hand-bac
 ## Several loops
 
 Loops run one per terminal, each a session of its own and so its own Beads actor: `.claude/hooks/beads-actor.sh` names the session's process in `BEADS_ACTOR` at session start, and nothing is set by hand. The actor is how a round tells an issue a finished session abandoned from one that another loop is working on; the landing lock in `round.md` keeps their gates and merges from colliding. This driver sees only its own agents, so it needs to know nothing else about the other loops.
-
-The Grok loop is the other driver: a Grok session in the `main` worktree runs `/loop 60s <prompt>`. Every fire is a fresh background subagent of that session, which cannot see the conversation, so the prompt stands alone and names the actor, `grok-<pid>` with the pid of the session's `grok` process (`echo $PPID` from its shell is not it; Grok reports its own pid). The round procedure is the `main` worktree's copy, under the project root:
-
-```
-/loop 60s Run one round of $(dirname "$(git rev-parse --show-toplevel)")/main/.claude/agents/round.md as the Grok round whose actor is grok-<pid>. Put BEADS_ACTOR=grok-<pid> in front of every bd call. Claim with --label grok. Spawn no subagent. End with the round report.
-```
-
-A fire still running when the next tick comes is skipped, so rounds run one at a time; the schedule expires after seven days and is started again. The loop has no prover and no skeptic, takes only leaves labeled `grok`, and reports wait rather than stop. While the session lives, `/proc/<pid>/comm` is `grok` and the Claude loops leave its leaves alone; when it ends, a Claude round recovers what it held. The rounds this driver spawns pass a leaf to it by label (`round.md`, section 5).
