@@ -206,13 +206,19 @@ fn from_process(regs: &Registers) -> bool {
     regs.cs & 3 == 3
 }
 
-/// Kills the thread when a process raised the exception, and stops the machine when the kernel did.
-unsafe fn fatal_unless_process(what: &str, regs: &mut Registers) {
+/// Stops the machine when a process raised the exception. No operation that delivers a fault to a
+/// process is wired, so its thread can neither be told nor be removed.
+unsafe fn stop_on_process_fault(what: &str, regs: &Registers) {
     if from_process(regs) {
-        log::info!("CPU {}: {} in a process at {:#x}: killing its thread", crate::cpu::get_cpu_id(), what, regs.rip);
-        crate::kernel::kill_current_thread(regs);
-        return;
+        log::error!("CPU {}: {} in a process at {:#x}: stopping", crate::cpu::get_cpu_id(), what, regs.rip);
+        crate::debugger::breakpoint(2);
+        spin_forever();
     }
+}
+
+/// Stops the machine on an exception, which neither a process nor the kernel recovers from.
+unsafe fn fatal(what: &str, regs: &Registers) -> ! {
+    stop_on_process_fault(what, regs);
     log::error!("CPU {}: {}: {:#x?}", crate::cpu::get_cpu_id(), what, regs);
     crate::debugger::breakpoint(2);
     spin_forever();
@@ -221,7 +227,7 @@ unsafe fn fatal_unless_process(what: &str, regs: &mut Registers) {
 macro_rules! process_exception {
     ($handler:ident, $what:literal) => {
         unsafe extern "C" fn $handler(regs: &mut Registers) {
-            fatal_unless_process($what, regs);
+            fatal($what, regs);
         }
     };
 }
@@ -254,15 +260,7 @@ unsafe extern "C" fn breakpoint(regs: &mut Registers) {
 
 /// General Protection Fault handler.
 unsafe extern "C" fn general_protection_fault(regs: &mut Registers) {
-    if from_process(regs) {
-        log::info!(
-            "CPU {}: General Protection Fault in a process at {:#x}: killing its thread",
-            crate::cpu::get_cpu_id(),
-            regs.rip
-        );
-        crate::kernel::kill_current_thread(regs);
-        return;
-    }
+    stop_on_process_fault("General Protection Fault", regs);
     log::error!(
         "CPU {}: General Protection Fault (error code {:#b}): {:#x?}",
         crate::cpu::get_cpu_id(),
@@ -278,15 +276,9 @@ unsafe extern "C" fn page_fault(regs: &mut Registers) {
     let address: u64;
     asm!("mov {}, cr2", out(reg) address);
     if from_process(regs) {
-        log::info!(
-            "CPU {}: Page Fault in a process at {:#x}, address {:#x}: killing its thread",
-            crate::cpu::get_cpu_id(),
-            regs.rip,
-            address
-        );
-        crate::kernel::kill_current_thread(regs);
-        return;
+        log::error!("CPU {}: Page Fault in a process, address {:#x}", crate::cpu::get_cpu_id(), address);
     }
+    stop_on_process_fault("Page Fault", regs);
     if crate::write_protect::fixup(regs) {
         return;
     }

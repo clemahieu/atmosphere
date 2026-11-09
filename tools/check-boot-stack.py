@@ -64,9 +64,9 @@ def check_entry_frame(kernel):
         sys.exit(f"FAIL: main in {kernel} probes a frame of {max(sizes):#x} bytes before the IDT exists")
 
 
-def boot(profile, out, marker=b"dom0 benchmark done", kernel=None, dom0=None, payload=None):
+def boot(profile, out, marker=b"dom0 capability done", kernel=None, dom0=None, payload=None):
     """Boots until the marker appears in the serial log and returns (serial log, qemu, monitor socket).
-    The initrd is the kernel, dom0 and the payload dom0 starts, as tools/run.py lays it out."""
+    The initrd is the kernel, dom0 and the payload, as tools/run.py lays it out."""
     images = [image or f"target/x86_64-unknown-aloader/{profile}/{name}"
               for image, name in ((kernel, "kernel"), (dom0, "dom0"), (payload, "hello"))]
     initrd = f"{out}/initrd"
@@ -120,7 +120,7 @@ def written(sock, out, base, size):
 
 def check_overflow(profile, out):
     build(profile, overflow=True)
-    # The kernel's own report, not a process's: dom0 faults on purpose in a boot that gets that far.
+    # The kernel's own report, which a fault in a process does not print.
     log, qemu, sock = boot(profile, out, marker=b"Page Fault (address")
     sock.sendall(b"quit\n")
     qemu.wait(timeout=30)

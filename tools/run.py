@@ -4,9 +4,7 @@
 OVMF boots the loader, the UEFI application, from a directory QEMU serves as the EFI system
 partition; the loader reads the kernel, dom0 and payload ELF images concatenated in the file initrd
 beside it (aloader/src/boot/uefi.rs). The serial log is serial.log at the workspace root. KVM is used
-whenever /dev/kvm is writable; --no-kvm forces TCG. --iommu adds QEMU's emulated IOMMU. --capability
-builds the kernel and dom0 with their capability feature, which boots the capability kernel's syscall
-entry and its dom0, on the cut-over branch only (design/cut-over-on-a-branch/). --gdb puts
+whenever /dev/kvm is writable; --no-kvm forces TCG. --iommu adds QEMU's emulated IOMMU. --gdb puts
 a gdb server on the guest and the file gdb on the ESP, which makes the loader wait before it enters
 the kernel (aloader/src/debugger.rs); once the loader has logged where it loaded each binary and that
 it waits, .gdb at the workspace root holds what tools/gdb.py attaches with.
@@ -15,10 +13,11 @@ The firmware's output on the terminal ends with control sequences that reset it,
 before the loader's banner is dropped there; serial.log keeps it.
 
 Exit status: 0 when dom0 reports success or the guest shuts down; otherwise QEMU's: 1 when the
-kernel fails, 3 when a dom0 timer fails. 1 when QEMU dies by a signal, and 1 when a build fails.
+kernel fails, 5 when an invocation of dom0's returns a status it did not expect, 7 when dom0
+panics. 1 when QEMU dies by a signal, and 1 when a build fails.
 
-usage: tools/run.py [--no-kvm] [--iommu] [--capability] [--gdb]   (from anywhere)
-       tools/run.py --test                                      (this script's own tests)
+usage: tools/run.py [--no-kvm] [--iommu] [--gdb]   (from anywhere)
+       tools/run.py --test                         (this script's own tests)
 """
 import argparse
 import json
@@ -47,12 +46,12 @@ ESP_GDB = "gdb"
 # What the loader logs of each binary it loads, and before it waits for gdb (aloader/src/debugger.rs).
 DEBUGGER_BIAS = re.compile(rb"debugger: (\w+) at bias (0x[0-9a-f]+)")
 DEBUGGER_WAITING = b"debugger: waiting"
-# dom0 ends the run by writing to this port (dom0/src/syscall_benchmark.rs).
+# dom0 ends the run by writing to this port (dom0/src/main.rs).
 DEBUG_EXIT_PORT = 0xf4
 # isa-debug-exit makes QEMU exit with `code << 1 | 1`, and dom0 writes 0x10 on success.
 DOM0_SUCCESS_STATUS = 33
 MEMORY_MIB = 32 * 1024
-# The only program under user/, which dom0 is given to load.
+# The only program under user/, which the loader hands dom0.
 PAYLOAD = "hello"
 # What the loader prints first: its name, then a clear screen and the cursor home
 # (aloader/src/console/mod.rs).
@@ -60,21 +59,11 @@ LOADER_MARKER = b"ALOADER\x1b[2J\x1b[0;0H"
 # Each crate's .cargo config uses -Z flags and an [unstable] table; the configs' [env] reaches only
 # rustc, so cargo needs it too.
 CARGO_ENV = {**os.environ, "RUSTC_BOOTSTRAP": "1"}
-# The feature of the kernel and dom0 that selects the capability kernel.
-CAPABILITY = "capability"
 
 
-def build_args(features):
-    """The cargo arguments that build a crate with `features`."""
-    args = ["cargo", "build", "--message-format=json-render-diagnostics"]
-    if features:
-        args += ["--features", ",".join(features)]
-    return args
-
-
-def build(crate_dir, name, features=()):
+def build(crate_dir, name):
     """Builds a crate from its own directory, so its .cargo config applies, and returns its executable."""
-    args = build_args(features)
+    args = ["cargo", "build", "--message-format=json-render-diagnostics"]
     result = subprocess.run(args, cwd=REPO / crate_dir, env=CARGO_ENV, stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, text=True)
     if result.returncode != 0:
@@ -213,17 +202,14 @@ def main(argv):
     parser = argparse.ArgumentParser(prog="tools/run.py", description=__doc__.split("\n")[0])
     parser.add_argument("--no-kvm", action="store_true", help="use TCG even if /dev/kvm is writable")
     parser.add_argument("--iommu", action="store_true", help="add QEMU's emulated IOMMU")
-    parser.add_argument("--capability", action="store_true",
-                        help="boot the capability kernel's syscall entry and its dom0 (cut-over branch only)")
     parser.add_argument("--gdb", action="store_true", help="wait for tools/gdb.py before entering the kernel")
     options = parser.parse_args(argv)
     # Fail before the build when the firmware or QEMU is not there.
     ovmf_code, ovmf_vars, qemu_bin = firmware.require("tools/run.py")
 
-    features = [CAPABILITY] if options.capability else []
-    kernel = build("kernel", "kernel", features)
+    kernel = build("kernel", "kernel")
     loader = build("aloader", "aloader")
-    dom0 = build("dom0", "dom0", features)
+    dom0 = build("dom0", "dom0")
     payload = build(f"user/{PAYLOAD}", PAYLOAD)
 
     # A timeout's SIGTERM unwinds through the with below, so the run directory goes too.
@@ -286,9 +272,10 @@ class Tests(unittest.TestCase):
         # The kernel's failure shutdown writes 0 to the isa-debug-exit port.
         self.assertEqual(exit_status(1), 1)
 
-    def test_dom0_failure_is_status_3(self):
-        # dom0's bench_fail writes 1.
-        self.assertEqual(exit_status(3), 3)
+    def test_dom0_failure_is_its_code_shifted(self):
+        # dom0 writes 2 when a status was not the one it expected, and 3 when it panics.
+        self.assertEqual(exit_status(5), 5)
+        self.assertEqual(exit_status(7), 7)
 
     def test_killed_is_failure(self):
         self.assertEqual(exit_status(-15), 1)
@@ -424,10 +411,6 @@ class Tests(unittest.TestCase):
         lines = b" INFO debugger: kernel at bias 0x14005f000\r\n"
         self.assertEqual(self.awaited(lines), (None, lines))
 
-    def test_capability_builds_with_its_feature(self):
-        self.assertNotIn("--features", build_args([]))
-        self.assertEqual(build_args([CAPABILITY])[-2:], ["--features", "capability"])
-
     def test_executable_is_the_named_artifact(self):
         messages = "\n".join(json.dumps(m) for m in [
             {"reason": "compiler-artifact", "target": {"name": "aelf"}, "executable": None},
@@ -447,8 +430,8 @@ class Tests(unittest.TestCase):
     def test_firmware_output_before_the_loader_is_dropped(self):
         firmware = b"\x1b[2J\x1b[01;01HBdsDxe: loading Boot0001\r\n"
         loader = b"\x1b[0m   " + LOADER_MARKER + b"Loading kernel\r\n"
-        self.assertEqual(self.filtered(firmware + loader + b" INFO dom0 benchmark done\r\n"),
-                         b"Loading kernel\r\n INFO dom0 benchmark done\r\n")
+        self.assertEqual(self.filtered(firmware + loader + b"dom0 capability done\r\n"),
+                         b"Loading kernel\r\ndom0 capability done\r\n")
 
     def test_nothing_passes_without_the_loader(self):
         self.assertEqual(self.filtered(b"BdsDxe: failed to load Boot0001\r\n"), b"")

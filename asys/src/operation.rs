@@ -50,6 +50,21 @@ pub const ROOT_UNTYPED_SLOT: u64 = 4;
 /// consecutive slots from here, the first slot of the table's second leaf.
 pub const ROOT_FRAME_SLOT: u64 = 129;
 
+/// The words of print's arguments carrying `text`, as PRINT reads them: eight bytes a word from
+/// its lowest, the rest zero. The text has no zero byte and is shorter than the 40 bytes they hold, so
+/// a zero byte ends it.
+pub const fn print_words(text: &[u8]) -> [u64; 5] {
+    assert!(text.len() < 40, "print carries fewer than 40 bytes");
+    let mut words = [0u64; 5];
+    let mut k = 0;
+    while k < text.len() {
+        assert!(text[k] != 0, "a zero byte ends print's text");
+        words[k / 8] |= (text[k] as u64) << (8 * (k % 8));
+        k += 1;
+    }
+    words
+}
+
 /// The status in the rax an invocation returns.
 pub fn status(rax: u64) -> u64 {
     rax & 0xffff

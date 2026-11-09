@@ -76,7 +76,6 @@ pub(super) async fn run(global: GlobalOpts) -> Result<()> {
         ("design index", check_design_index(&project).await),
         ("boot stack", check_boot_stack(&project).await),
         ("coverage", check_coverage(&project).await),
-        ("capability boot", check_capability_boot(&project, local.boot_timeout).await),
         ("iommu boot", check_iommu_boot(&project, local.boot_timeout).await),
         ("boot", check_boot(&project, local.boot_timeout).await),
     ];
@@ -318,45 +317,22 @@ async fn check_verify(project: &ProjectHandle) -> Result<String> {
 async fn check_boot(project: &ProjectHandle, timeout: u64) -> Result<String> {
     run_check(project, RUN, &["--test"]).await?;
     run_check(project, GDB, &["--test"]).await?;
-    boot(project, timeout, &[]).await?;
-    Ok("tools/run.py's and tools/gdb.py's tests pass; exit status 0, serial log ends with dom0's last line".to_string())
+    let (_, held) = boot(project, timeout, &[]).await?;
+    Ok(format!("tools/run.py's and tools/gdb.py's tests pass; {}", held))
 }
 
-/// Boots with an IOMMU present, the only way the device syscalls run past their first check. The
-/// plain boot comes after it, so the benchmark numbers and serial.log it leaves have no IOMMU.
+/// Boots with an IOMMU present, which the kernel enables translation on. The plain boot comes after
+/// it, so the serial.log it leaves has no IOMMU.
 async fn check_iommu_boot(project: &ProjectHandle, timeout: u64) -> Result<String> {
-    let serial = boot(project, timeout, &["--iommu"]).await?;
-    if !iommu_boot_ran(&serial) {
-        return Err(anyhow!("the serial log does not show the device syscalls succeeding"));
+    let (serial, held) = boot(project, timeout, &["--iommu"]).await?;
+    if !serial.contains(TRANSLATION_ENABLED) {
+        return Err(anyhow!("the serial log does not show the IOMMU's translation enabled"));
     }
-    Ok("translation enabled, device syscalls returned 0, serial log ends with dom0's last line".to_string())
+    Ok(format!("translation enabled; {}", held))
 }
 
-/// Boots the capability kernel's entry and dom0, which exits with success only when the kernel gave the
-/// statuses it expected. Before the plain boots, so the serial.log they leave is the old kernel's.
-async fn check_capability_boot(project: &ProjectHandle, timeout: u64) -> Result<String> {
-    let serial = run_boot(project, timeout, &["--capability"]).await?;
-    if !first_operation_refused(&serial) {
-        return Err(anyhow!("the serial log does not show the first operation refused"));
-    }
-    if !first_arguments_arrived(&serial) {
-        return Err(anyhow!("the serial log does not show the first operation's five arguments in place"));
-    }
-    let (untyped, frames) = fixed_slots_printed(&serial)?;
-    if serial.contains(OLD_KERNEL_INIT) {
-        return Err(anyhow!("the serial log shows the old kernel_init"));
-    }
-    if !console_line_printed(&serial) {
-        return Err(anyhow!("the serial log does not hold dom0's check line"));
-    }
-    if !exit_marker_printed(&serial) {
-        return Err(anyhow!("the serial log does not show dom0's exit marker"));
-    }
-    Ok(format!(
-        "exit status 0, the kernel's per-slot lines with their kinds ({} untyped, {} frames), and dom0's exit marker",
-        untyped, frames
-    ))
-}
+/// What the kernel logs when it turns on the IOMMU's translation.
+const TRANSLATION_ENABLED: &str = "Enabling translation";
 
 /// The line dom0 prints through its console when every fixed-slot check held.
 const CONSOLE_LINE: &str = "dom0 slot checks held";
@@ -373,9 +349,6 @@ fn exit_marker_printed(serial: &str) -> bool {
 fn console_line_printed(serial: &str) -> bool {
     serial.lines().any(|line| line.trim_end_matches('\r') == CONSOLE_LINE)
 }
-
-/// What the old kernel_init logs when it finishes, which the capability boot does not run.
-const OLD_KERNEL_INIT: &str = "Kernel init success";
 
 /// What the kernel logs of the root's untyped and frame capabilities, before it prints each slot.
 const ROOT_HOLDS: &str = "root holds ";
@@ -448,20 +421,27 @@ fn first_operation_refused(serial: &str) -> bool {
         .map_or(false, |line| line.contains(": refused"))
 }
 
-/// Runs tools/run.py with `args` and returns the serial log of a boot that reached dom0's last line.
-async fn boot(project: &ProjectHandle, timeout: u64, args: &[&str]) -> Result<String> {
+/// Runs tools/run.py with `args` and returns the serial log of a boot in which dom0 exited with
+/// success, which it does only when the kernel gave the statuses it expected, with what the gate saw
+/// of it. The serial log shows the kernel's per-slot lines with their kinds, dom0's check line and
+/// exit marker, and CPU 1 idle beside it.
+async fn boot(project: &ProjectHandle, timeout: u64, args: &[&str]) -> Result<(String, String)> {
     let serial = run_boot(project, timeout, args).await?;
-    if !boot_finished(&serial) {
-        return Err(anyhow!("the serial log does not end with dom0's last line"));
+    if !first_operation_refused(&serial) {
+        return Err(anyhow!("the serial log does not show the first operation refused"));
+    }
+    if !first_arguments_arrived(&serial) {
+        return Err(anyhow!("the serial log does not show the first operation's five arguments in place"));
+    }
+    let (untyped, frames) = fixed_slots_printed(&serial)?;
+    if !console_line_printed(&serial) {
+        return Err(anyhow!("the serial log does not hold dom0's check line"));
+    }
+    if !exit_marker_printed(&serial) {
+        return Err(anyhow!("the serial log does not show dom0's exit marker"));
     }
     if !second_core_idle(&serial) {
         return Err(anyhow!("the serial log does not show CPU 1 idle on a syscall stack of its own"));
-    }
-    if !second_core_ran_thread(&serial) {
-        return Err(anyhow!("the serial log does not show threads making syscalls on both cores"));
-    }
-    if !serial.contains(SYSCALLS_CONTENDED) {
-        return Err(anyhow!("the serial log does not time a syscall with both cores contending"));
     }
     if !serial.contains(FLUSH_ACKNOWLEDGED) {
         return Err(anyhow!("the serial log does not show CPU 1 acknowledging a flush IPI"));
@@ -469,7 +449,12 @@ async fn boot(project: &ProjectHandle, timeout: u64, args: &[&str]) -> Result<St
     if !serial.contains(LOCK_CONTENDED) {
         return Err(anyhow!("the serial log does not show both cores contending for the kernel's lock"));
     }
-    Ok(serial)
+    let held = format!(
+        "exit status 0, the kernel's per-slot lines with their kinds ({} untyped, {} frames), dom0's check \
+         line and exit marker, CPU 1 idle on its own stack, a flush IPI acknowledged, the lock contended",
+        untyped, frames
+    );
+    Ok((serial, held))
 }
 
 /// Runs tools/run.py with `args` and returns the serial log of a run that exited with status 0.
@@ -513,14 +498,6 @@ fn parse_verify_errors(output: &str) -> Option<u64> {
     })
 }
 
-fn boot_finished(serial: &str) -> bool {
-    serial
-        .lines()
-        .rev()
-        .find(|line| !line.trim().is_empty())
-        .map_or(false, |line| line.contains("dom0 benchmark done"))
-}
-
 /// Whether the serial log shows CPU 1 reaching its idle loop, on a different syscall stack from CPU 0.
 fn second_core_idle(serial: &str) -> bool {
     match (
@@ -532,57 +509,17 @@ fn second_core_idle(serial: &str) -> bool {
     }
 }
 
-/// What dom0 logs once it has timed a syscall with the other core making the same call.
-const SYSCALLS_CONTENDED: &str = "with the other core contending";
-
 /// What the kernel logs once CPU 1 has taken a flush IPI and acknowledged it.
 const FLUSH_ACKNOWLEDGED: &str = "flush IPI acknowledged by CPU 1";
 
 /// What the kernel logs once both cores have contended for its lock with the protected pair intact.
 const LOCK_CONTENDED: &str = "lock contended by 2 cores: pair intact at 400000";
 
-/// Whether the serial log shows the kernel entering a thread on CPU 1, and dom0's report from each side.
-fn second_core_ran_thread(serial: &str) -> bool {
-    [
-        "CPU 1 entering a thread",
-        "CPU 0 entering a thread",
-        "thread on CPU 1 made ",
-        "thread on CPU 0 made ",
-        "a thread blocked with nothing else to run on each core",
-    ]
-        .iter()
-        .all(|line| serial.contains(line))
-}
-
 /// The hexadecimal address after `label` in the serial log.
 fn syscall_stack(serial: &str, label: &str) -> Option<u64> {
     let digits = serial.split(label).nth(1)?.strip_prefix("0x")?;
     let end = digits.find(|c: char| !c.is_ascii_hexdigit()).unwrap_or(digits.len());
     u64::from_str_radix(&digits[..end], 16).ok()
-}
-
-fn iommu_boot_ran(serial: &str) -> bool {
-    [
-        "Enabling translation",
-        "sys_set_device_iommu of dom0's own table: 0",
-        "sys_invalidate_iotlb of that device: 0",
-    ]
-    .iter()
-    .all(|line| serial.contains(line))
-        && iommu_bound_own_table(serial)
-}
-
-/// Whether the table the kernel bound dom0's device to is the one dom0 was told it has.
-fn iommu_bound_own_table(serial: &str) -> bool {
-    let value = |prefix: &str| -> Option<String> {
-        let rest = serial.split(prefix).nth(1)?;
-        let hex: String = rest.chars().skip(2).take_while(char::is_ascii_hexdigit).collect();
-        (rest.starts_with("0x") && !hex.is_empty()).then_some(hex)
-    };
-    match (value("the caller's IO table: "), value("IO page table of 0x0:0x1f.0x7: ")) {
-        (Some(own), Some(bound)) => own == bound,
-        _ => false,
-    }
 }
 
 #[cfg(test)]
@@ -617,30 +554,12 @@ mod tests {
     }
 
     #[test]
-    fn iommu_boot_needs_translation_and_both_syscalls() {
-        let tables = "the caller's IO table: 0x2000\nIO page table of 0x0:0x1f.0x7: 0x2000\n";
-        let ran = format!("Enabling translation\nsys_set_device_iommu of dom0's own table: 0\nsys_invalidate_iotlb of that device: 0\n{}", tables);
-        assert!(iommu_boot_ran(&ran));
-        assert!(!iommu_boot_ran("Enabling translation\nsys_invalidate_iotlb of that device: 0\n"));
-        assert!(!iommu_boot_ran("sys_set_device_iommu of dom0's own table: 0\nsys_invalidate_iotlb of that device: 0\n"));
-        assert!(!iommu_boot_ran("Enabling translation\nsys_set_device_iommu of dom0's own table: 1\nsys_invalidate_iotlb of that device: 1\n"));
-    }
-
-    #[test]
-    fn iommu_boot_needs_the_callers_table() {
-        assert!(iommu_bound_own_table("the caller's IO table: 0x2000\nIO page table of 0x0:0x1f.0x7: 0x2000\n"));
-        assert!(!iommu_bound_own_table("the caller's IO table: 0x2000\nIO page table of 0x0:0x1f.0x7: 0x1000\n"));
-        assert!(!iommu_bound_own_table("the caller's IO table: 0x2000\n"));
-        assert!(!iommu_bound_own_table("IO page table of 0x0:0x1f.0x7: 0x2000\n"));
-    }
-
-    #[test]
     fn first_operation_refused_is_the_first_invocation() {
         let refused = " INFO capability entry: operation 14 on slot 0 with [1, 2, 3, 4, 5]: refused\u{1b}[0m\n";
         let unknown = " INFO capability entry: operation 65535 on slot 0 with [0, 0, 0, 0, 0]: unknown\n";
         assert!(first_operation_refused(&format!("boot\n{}{}", refused, unknown)));
         assert!(!first_operation_refused(&format!("{}{}", unknown, refused)));
-        assert!(!first_operation_refused("dom0 benchmark done\n"));
+        assert!(!first_operation_refused("dom0 capability done\n"));
     }
 
     #[test]
@@ -651,7 +570,7 @@ mod tests {
         assert!(first_arguments_arrived(&format!("boot\n{}{}", arrived, unknown)));
         assert!(!first_arguments_arrived(&format!("{}{}", dropped, unknown)));
         assert!(!first_arguments_arrived(&format!("{}{}", unknown, arrived)));
-        assert!(!first_arguments_arrived("dom0 benchmark done\n"));
+        assert!(!first_arguments_arrived("dom0 capability done\n"));
     }
 
     #[test]
@@ -702,12 +621,6 @@ mod tests {
     }
 
     #[test]
-    fn boot_finishes_on_dom0s_last_line() {
-        assert!(boot_finished("x\n\u{1b}[34m INFO dom0 benchmark done\u{1b}[0m\n"));
-        assert!(boot_finished("x\r\n INFO dom0 benchmark done\r\n\r\n"));
-    }
-
-    #[test]
     fn second_core_idle_on_its_own_stack() {
         let serial = "\u{1b}[34m INFO CPU 0 syscall stack 0x1000\u{1b}[0m\n INFO CPU 1 idle, syscall stack 0x2000\n";
         assert!(second_core_idle(serial));
@@ -719,26 +632,7 @@ mod tests {
     }
 
     #[test]
-    fn both_cores_reporting_is_a_thread_on_the_second() {
-        assert!(second_core_ran_thread(
-            "CPU 1 entering a thread\nCPU 0 entering a thread\nthread on CPU 1 made 1000 syscalls\nthread on CPU 0 made 1000 syscalls beside it\na thread blocked with nothing else to run on each core\n"
-        ));
-    }
-
-    #[test]
-    fn dom0_alone_is_not_a_thread_on_the_second() {
-        assert!(!second_core_ran_thread("thread on CPU 0 made 1000 syscalls beside it\n"));
-    }
-
-    #[test]
     fn no_second_core_is_not_idle() {
         assert!(!second_core_idle("CPU 0 syscall stack 0x1000\n"));
-    }
-
-    #[test]
-    fn boot_does_not_finish_when_anything_follows() {
-        assert!(!boot_finished(" INFO dom0 benchmark done\n INFO CPU 0: Page Fault\n"));
-        assert!(!boot_finished(" INFO dom0 benchmark FAILED\n"));
-        assert!(!boot_finished(""));
     }
 }

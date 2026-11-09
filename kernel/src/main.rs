@@ -26,7 +26,6 @@
 mod arch;
 mod boot;
 mod bridge;
-#[cfg(feature = "capability")]
 mod capability;
 mod console;
 mod cpu;
@@ -35,7 +34,6 @@ mod error;
 mod gdt;
 mod interrupt;
 mod iommu;
-mod kernel;
 mod logging;
 mod syscalls;
 mod thread;
@@ -97,8 +95,6 @@ fn boot_cpu0(boot_info: *const BootInfo) -> isize {
         print_logo();
     }
 
-    kernel::kernel_new();
-
     log::info!("Command line: {}", boot::get_raw_command_line());
     #[cfg(debug_assertions)]
     {
@@ -113,28 +109,12 @@ fn boot_cpu0(boot_info: *const BootInfo) -> isize {
 
     let boot_info = boot::get_boot_info();
 
-    #[cfg(not(feature = "capability"))]
-    let (entry_point, initial_sp) = {
-        let dom0 = boot_info.dom0.as_ref().unwrap();
-        let pml4 = boot_info.pml4;
-        let kernel_pml4 = unsafe { *(pml4 as *const usize) };
-
-        kernel::kernel_init(&boot_info.pages, pml4 as usize, kernel_pml4 as usize);
-
-        log::info!("CPU 0 syscall stack {:#x}", cpu::get_current().syscall_sp);
-        unsafe {
-            start_second_core();
-        }
-        (dom0.entry_point, unsafe { dom0.virt_start.add(dom0.reserved_size - 0x1000) })
-    };
-
-    // CPU 1 stays down: nothing schedules a thread on it until the root holds a capability for it.
-    #[cfg(feature = "capability")]
-    let (entry_point, initial_sp) = {
-        let entry = capability::boot(boot_info);
-        log::info!("CPU 0 syscall stack {:#x}", cpu::get_current().syscall_sp);
-        (entry.pc, entry.sp.cast::<u8>())
-    };
+    log::info!("CPU 0 syscall stack {:#x}", cpu::get_current().syscall_sp);
+    unsafe {
+        start_second_core();
+    }
+    let entry = capability::boot(boot_info);
+    let (entry_point, initial_sp) = (entry.pc, entry.sp.cast::<u8>());
 
     log::info!("initial_sp: {:?}", initial_sp);
     unsafe {
@@ -181,7 +161,15 @@ extern "C" fn ap_main(cpu_id: u64) -> ! {
     AP_UP.store(true, Ordering::SeqCst);
     lock::contend();
 
-    kernel::idle_loop()
+    idle()
+}
+
+/// Waits with interrupts open, so this core takes flush IPIs. Nothing schedules a thread on it: no
+/// operation that places a thread on a core is wired.
+fn idle() -> ! {
+    loop {
+        unsafe { asm!("sti", "hlt") };
+    }
 }
 
 /// Runs all tests.
