@@ -13,17 +13,27 @@ line per crate. The script exits 0 when every crate verifies, and otherwise with
 crate's status. A dependency that failed verification is not followed by its dependents, and the
 script names both.
 
+With --target aarch64 every crate is checked under target_arch = "aarch64": rust_verify gets
+--target aarch64-unknown-none and takes vstd and verus_builtin from the aarch64 build that
+tools/setup-verus.sh writes beside the host one, and the shared crates' rlibs go under
+target/verus/aarch64-unknown-none/. With no --target the crates are checked for the host, x86_64.
+design/arch-module/ says why one run per target.
+
 Expects tools/env.sh to be sourced, which puts rust_verify on PATH.
 
-usage: tools/verify.py [rust_verify argument...]
+usage: tools/verify.py [--target aarch64] [rust_verify argument...]
 """
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-VERUS_OUT = REPO / "target" / "verus"
+
+# The rustc target each --target names. tools/setup-verus.sh builds vstd and verus_builtin for each
+# under tools/verus/source/target-verus/<triple>.
+TARGETS = {"aarch64": "aarch64-unknown-none"}
 
 
 def cargo_metadata():
@@ -97,11 +107,13 @@ def order_crates(crates):
     return ordered
 
 
-def verify_command(crate, depended_on, extra_args):
+def verify_command(crate, depended_on, triple, verus_out, extra_args):
     command = ["rust_verify", "--crate-type", "lib", crate["src"], "--rlimit", "100"]
+    if triple is not None:
+        command += ["--target", triple]
     for dep in crate["deps"]:
-        rlib = VERUS_OUT / f"lib{dep['crate']}.rlib"
-        vir = VERUS_OUT / f"{dep['crate']}.vir"
+        rlib = verus_out / f"lib{dep['crate']}.rlib"
+        vir = verus_out / f"{dep['crate']}.vir"
         command += ["--extern", f"{dep['extern']}={rlib}", "--import", f"{dep['extern']}={vir}"]
     if crate["package"] in depended_on:
         # lib.rs would otherwise compile as crate `lib`, and the rlib name follows the crate name.
@@ -109,20 +121,45 @@ def verify_command(crate, depended_on, extra_args):
             "--crate-name",
             crate["crate"],
             "--export",
-            str(VERUS_OUT / f"{crate['crate']}.vir"),
+            str(verus_out / f"{crate['crate']}.vir"),
             "--compile",
             "--out-dir",
-            str(VERUS_OUT),
+            str(verus_out),
         ]
     command += extra_args
     return command
 
 
-def main(extra_args):
+def split_target(args):
+    """The --target the script takes for itself, as a rustc triple or None, and the rest of args."""
+    if args[:1] != ["--target"]:
+        return None, args
+    if len(args) < 2 or args[1] not in TARGETS:
+        sys.exit(f"verify: --target takes one of: {', '.join(TARGETS)}")
+    return TARGETS[args[1]], args[2:]
+
+
+def target_env(triple):
+    """rust_verify's environment: VERUS_ROOT names the vstd and verus_builtin built for the triple."""
+    env = dict(os.environ)
+    if triple is not None:
+        root = Path(env["VERUS_ROOT"]).parent / triple
+        if not (root / "vstd.vir").is_file():
+            sys.exit(f"verify: no vstd for {triple} under {root}; run tools/setup-verus.sh")
+        env["VERUS_ROOT"] = str(root)
+    return env
+
+
+def main(args):
+    triple, extra_args = split_target(args)
+    env = target_env(triple)
+    verus_out = REPO / "target" / "verus"
+    if triple is not None:
+        verus_out = verus_out / triple
     crates = marked_crates(cargo_metadata())
     depended_on = {dep["package"] for crate in crates for dep in crate["deps"]}
     if depended_on:
-        VERUS_OUT.mkdir(parents=True, exist_ok=True)
+        verus_out.mkdir(parents=True, exist_ok=True)
     failed = set()
     status = 0
     for crate in crates:
@@ -135,7 +172,8 @@ def main(extra_args):
                 )
             failed.add(crate["package"])
             continue
-        result = subprocess.run(verify_command(crate, depended_on, extra_args), cwd=REPO, stdin=subprocess.DEVNULL)
+        command = verify_command(crate, depended_on, triple, verus_out, extra_args)
+        result = subprocess.run(command, cwd=REPO, env=env, stdin=subprocess.DEVNULL)
         if result.returncode != 0:
             failed.add(crate["package"])
             if status == 0:
