@@ -1,5 +1,6 @@
 pub mod block;
 pub mod boot;
+pub mod boot_memory;
 pub mod console;
 pub mod decompose;
 pub mod delete;

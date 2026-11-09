@@ -38,6 +38,10 @@ pub const ROOT_THREAD_SLOT: usize = 2;
 /// The index of the root's console capability: slot 3 of entry 0.
 pub const ROOT_CONSOLE_SLOT: usize = 3;
 
+/// The index of the root's first untyped capability: slot 4 of entry 0. Boot puts one per block of free
+/// memory at consecutive slots from here to the leaf's last, boot_root_memory.
+pub const ROOT_UNTYPED_SLOT: usize = 4;
+
 /// The rights of an untyped capability boot hands the root: retype alone. Control is no right over
 /// memory, design/sharing-by-derive/.
 pub const UNTYPED_RIGHTS: u32 = 8;
@@ -1343,7 +1347,7 @@ impl CapKernel {
 
     /// The kernel after boot hands reserved pages start to start + n to the block table. No object,
     /// frame or list page lies in a reserved page, so every clause reads what it read before.
-    proof fn lemma_reserved_freed(pre: Self, post: Self, start: usize, n: usize)
+    pub proof fn lemma_reserved_freed(pre: Self, post: Self, start: usize, n: usize)
         requires
             pre.wf(),
             post.blocks.wf(),
@@ -2050,7 +2054,7 @@ impl CapKernel {
 }
 
 /// Hands boot's reserved pages start to start + n to the block table.
-fn add_free_run(blocks: &mut BlockTable, start: usize, n: usize, Tracked(pages): Tracked<&mut Map<usize, PagePerm4k>>)
+pub fn add_free_run(blocks: &mut BlockTable, start: usize, n: usize, Tracked(pages): Tracked<&mut Map<usize, PagePerm4k>>)
     requires
         old(blocks).wf(),
         start + n <= NUM_PAGES,
