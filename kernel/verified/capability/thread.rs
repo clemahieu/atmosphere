@@ -2155,6 +2155,71 @@ impl CapKernel {
         }
     }
 
+    /// Core c, running nothing, makes thread t, Inactive, its current thread: boot's entry into the
+    /// root's thread, which no capability has started. Boot made the thread, so it runs on c without
+    /// a placement, design/root-process-at-boot/. Loading its frame and its space is the caller's.
+    pub fn enter_boot_thread(&mut self, c: usize, t: usize)
+        requires
+            old(self).wf(),
+            c < NUM_CPUS,
+            old(self).cores@[c as int].current_thread is None,
+            old(self).threads.records@.contains_key(t),
+            old(self).threads.records@[t].value().state is Inactive,
+        ensures
+            final(self).wf(),
+            Self::switch_frame(*old(self), *final(self), c as int, t),
+            final(self).cores@[c as int].current_thread == Some(t),
+            final(self).threads.records@[t].value().state == (ThreadState::Running { core: c }),
+            final(self).threads.records@[t].value().pending_stop == old(self).threads.records@[t].value().pending_stop,
+            final(self).stop_ipis == old(self).stop_ipis,
+    {
+        let ghost pre = *self;
+        proof {
+            assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, t));
+        }
+        let ptr = PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * 4096);
+        let tracked mut perm;
+        proof {
+            perm = self.threads.records.borrow_mut().tracked_remove(t);
+        }
+        let record = ptr.read(Tracked(&perm));
+        ptr.write(Tracked(&mut perm), ThreadRecord {
+            state: ThreadState::Runnable { core: c },
+            frame: record.frame,
+            pending_stop: record.pending_stop,
+            dying: record.dying,
+            process: record.process,
+            placement: record.placement,
+        });
+        proof {
+            self.threads.records.borrow_mut().tracked_insert(t, perm);
+            reveal(current_wf);
+            let post = *self;
+            assert(post.threads.records@.dom() =~= pre.threads.records@.dom());
+            assert forall|d: int, x: usize| 0 <= d < NUM_CPUS && #[trigger] runs(post.cores@, d, x) implies {
+                &&& post.threads.records@.contains_key(x)
+                &&& post.threads.records@[x].value().state == (ThreadState::Running { core: d as usize })
+            } by {
+                assert(runs(pre.cores@, d, x));
+                assert(x != t);
+            }
+            assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) && post.threads.records@[x].value().state is Running implies {
+                let e = post.threads.records@[x].value().state->Running_core;
+                &&& e < NUM_CPUS
+                &&& post.cores@[e as int].current_thread == Some(x)
+            } by {
+                assert(x != t);
+                assert(pre.threads.records@.contains_key(x));
+            }
+            assert forall|x: usize| #[trigger] post.threads.records@.contains_key(x) && post.threads.records@[x].value().pending_stop
+                implies post.threads.records@[x].value().state is Running by {
+                assert(pre.threads.records@.contains_key(x));
+            }
+            Self::lemma_switch_wf(pre, post, c as int, t);
+        }
+        self.switch_in(c, t);
+    }
+
     /// Core c saves its current thread's frame and leaves it Runnable on c, running nothing until it
     /// switches in again. A thread that must leave is moved off instead, by check_current.
     pub fn switch_out(&mut self, c: usize, frame: Registers)

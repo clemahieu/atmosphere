@@ -84,8 +84,9 @@ pub struct Entry {
 }
 
 /// Builds the capability kernel and its root process from what the loader handed over, prints each
-/// fixed slot of the root's table with its kind, and loads the root's space on core 0. Returns where
-/// dom0 starts. The root's thread is the only thread; core 0 enters it next.
+/// fixed slot of the root's table with its kind, loads the root's space on core 0 and makes the root's
+/// thread core 0's current thread. Returns where dom0 starts. The root's thread is the only thread;
+/// core 0 enters it next.
 pub fn boot(boot_info: &BootInfo) -> Entry {
     let dom0 = boot_info.dom0.as_ref().expect("no dom0 to boot");
     let listed = &boot_info.pages[..boot_info.pages.len().min(PAGE_SLOTS)];
@@ -171,6 +172,7 @@ pub fn boot(boot_info: &BootInfo) -> Entry {
 
     let pcid = kernel.load_space(0, process);
     crate::arch::switch_address_space(process + SPACE_ROOT_PAGE * PAGE_BYTES as usize, pcid);
+    kernel.enter_boot_thread(0, page(THREAD_PAGE));
     *CAP_KERNEL.lock() = Some(kernel);
 
     Entry {

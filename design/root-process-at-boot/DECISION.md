@@ -22,6 +22,8 @@ The frames dom0's image and stack are loaded in are frame capabilities at consec
 
 The tables dom0's runs need in the root's space come from the root's own untyped at `ROOT_UNTYPED_SLOT`, as every mapper pays for its tables, `design/address-spaces-as-objects/` and `design/untyped-memory/`: boot retypes its order-3 blocks in address order as table pages and links them through the root's process capability, giving each 2M region a run touches its level 3, 2 and 1 tables. Before any write, boot refuses when a run's virtual pages are not all under level 4 entries past the kernel's, or when that untyped holds fewer order-3 blocks than three for each 2M region a run touches, counted run by run.
 
+Boot ends by making the root's thread core 0's current thread, which core 0 then enters in user mode, so the kernel finds the root's first invocation's caller as it finds every caller, through the core's current thread. No capability started it, so it runs without a placement, as the root's boot objects come without an untyped above them: a placement is a binding under a core capability, `design/cpu-time-as-capability/`, and those are what boot hands the root.
+
 ## Reasoning
 
 Under `design/untyped-memory/` the kernel has no authority of its own to hand out later, so everything must be in some process's hands from the first instruction of user mode, and in one lineage so that revocation reaches it, `design/revoke-by-depth-first-list/`. Fixed slots are what the root's own code and its tests can rely on without an enumerate operation the ABI does not have.
