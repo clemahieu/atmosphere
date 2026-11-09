@@ -1,7 +1,8 @@
-//! The x86_64 PC machine: xAPIC, IOAPIC and the 8259s. design/machine-glue-below-the-kernel/.
+//! The x86_64 PC machine: COM1, the xAPIC, the IOAPIC and the 8259s. design/machine-glue-below-the-kernel/.
 
 #![no_std]
 
+mod console;
 mod ioapic;
 mod lapic;
 mod mps;
@@ -20,6 +21,8 @@ pub const FLUSH_VECTOR: u8 = 34;
 
 /// Cores a machine crate can name. The kernel asserts this is at least `verified::define::NUM_CPUS`.
 pub const MAX_CPUS: usize = 32;
+
+pub use console::{console, console_init, Console};
 
 const PIC1_DATA: u16 = 0x21;
 const PIC2_DATA: u16 = 0xa1;
@@ -68,4 +71,14 @@ pub fn send_ipi(cpu: usize, vector: u8) {
 /// INIT, then two STARTUPs at `start_page`, for the kernel's `boot_ap`. `start_core` replaces that.
 pub unsafe fn send_init_sipi(cpu: usize, start_page: u8) {
     lapic::send_init_sipi(cpu, start_page);
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_console_is_a_writer() {
+        fn assert_writer<T: core::fmt::Write>(_: &mut T) {}
+        let mut console = crate::console();
+        assert_writer(&mut console);
+    }
 }

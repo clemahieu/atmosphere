@@ -5,12 +5,36 @@
 //! to configure the logger to log to multiple targets, such as a
 //! file in the Filesystem.
 
-use crate::boot;
-use crate::console::{get_writer, WriterType};
+use core::ops::{Deref, DerefMut};
+
 use kernel_logger::Logger;
 
+use crate::boot;
+use crate::machine::{console, Console};
+
+/// One log line's console. The logger writes through a deref to [`Console`].
+struct Line(Console);
+
+impl Deref for Line {
+    type Target = Console;
+
+    fn deref(&self) -> &Console {
+        &self.0
+    }
+}
+
+impl DerefMut for Line {
+    fn deref_mut(&mut self) -> &mut Console {
+        &mut self.0
+    }
+}
+
+fn line() -> Line {
+    Line(console())
+}
+
 /// The global logger.
-static LOGGER: Logger<WriterType> = Logger::new(get_writer, true);
+static LOGGER: Logger<Line> = Logger::new(line, true);
 
 /// Initializes the early-boot logger, crashing the kernel on failure.
 ///

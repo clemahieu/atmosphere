@@ -12,7 +12,6 @@ machine-pc = { path = "../machine/pc" }
 astd = { path = "../astd", features = ["kernel"] }
 asys = { path = "../asys" }
 atest = { path = "../atest" }
-ns16550a = { path = "../ns16550a" }
 kernel-logger = { path = "../kernel-logger" }
 
 bitfield = "0.13.2"  # Totally non-confusing crate name

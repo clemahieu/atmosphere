@@ -27,7 +27,6 @@ mod arch;
 mod boot;
 mod bridge;
 mod capability;
-mod console;
 mod cpu;
 mod debugger;
 mod error;
@@ -62,7 +61,7 @@ const AP_START_CYCLES: u64 = 20_000_000_000;
 #[no_mangle]
 extern "C" fn main(boot_info: *const BootInfo) -> isize {
     unsafe {
-        console::early_init();
+        machine::console_init();
         logging::early_init();
 
         cpu::init_cpu(0); // Now get_current() can be used
