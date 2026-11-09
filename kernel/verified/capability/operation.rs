@@ -275,6 +275,20 @@ impl CapKernel {
         }
     }
 
+    /// A derive in frame by a thread of the process whose table is at root, from pre to post with out
+    /// returned: refused with nothing changed, or ok with a child of the capability in rdi in the slot in
+    /// rsi, with the rights in rdx and the block of the order in r9 at the base in r8. Rights wider than
+    /// 32 bits and an order wider than 8 are refused, since no capability holds them.
+    pub open spec fn spec_derived(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
+        ||| out == status_only(STATUS_REFUSED) && post == pre
+        ||| {
+            &&& out == status_only(STATUS_OK)
+            &&& frame.rdx <= u32::MAX as u64
+            &&& frame.r9 <= u8::MAX as u64
+            &&& Self::cap_derived(pre, post, root, frame.rdi as usize, frame.rsi as usize, frame.rdx as u32, frame.r8 as usize, frame.r9 as u8)
+        }
+    }
+
     /// A move in frame by a thread of the process whose table is at root, from pre to post with out
     /// returned: refused with nothing changed, or ok with the capability in rdi moved to the slot in rsi.
     pub open spec fn spec_moved(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
@@ -286,12 +300,13 @@ impl CapKernel {
     }
 
     /// What the invocation in frame by a thread of the process whose table is at root did, from pre to
-    /// post with out returned: a retype's effect for retype, a move's for move, a link's for link, a
-    /// map's for map, an unmap's for unmap, and for every other operation the kernel unchanged with
-    /// spec_outcome returned.
+    /// post with out returned: a retype's effect for retype, a derive's for derive, a move's for move, a
+    /// link's for link, a map's for map, an unmap's for unmap, and for every other operation the kernel
+    /// unchanged with spec_outcome returned.
     pub open spec fn invoked(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         match spec_operation(frame.rax) {
             Some(Operation::Retype) => Self::spec_retyped(pre, post, root, frame, out),
+            Some(Operation::Derive) => Self::spec_derived(pre, post, root, frame, out),
             Some(Operation::Move) => Self::spec_moved(pre, post, root, frame, out),
             Some(Operation::Link) => Self::spec_linked(pre, post, root, frame, out),
             Some(Operation::Map) => Self::spec_mapped(pre, post, root, frame, out),
@@ -360,6 +375,17 @@ impl CapKernel {
                     STATUS_REFUSED
                 };
                 Some(status_only_outcome(status))
+            },
+            Some(Operation::Derive) => {
+                let done = frame.rdx <= u32::MAX as u64 && frame.r9 <= u8::MAX as u64 && self.derive(
+                    root,
+                    frame.rdi as usize,
+                    frame.rsi as usize,
+                    frame.rdx as u32,
+                    frame.r8 as usize,
+                    frame.r9 as u8,
+                );
+                Some(status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED }))
             },
             Some(Operation::Move) => {
                 let done = self.move_cap(root, frame.rdi as usize, frame.rsi as usize);

@@ -2,7 +2,7 @@
 //! not assume it owns the machine, so several instances each with a root stay possible. Why, and
 //! what to do about a change that breaks this: design/one-kernel-instance/.
 //!
-//! Print, inspect, retype of a 4K frame, of a 2M frame and of a table page, move, link, map and unmap are the wired
+//! Print, inspect, retype of a 4K frame, of a 2M frame and of a table page, derive, move, link, map and unmap are the wired
 //! operations, so each fixed slot is checked through them: the console accepts print and the process,
 //! thread, untyped and frame slots refuse it; inspect says the console slot holds a console, and each slot
 //! from the first untyped holds an untyped whose base is aligned to its order, up to the first slot
@@ -24,9 +24,11 @@
 //! through the new slot accepted, through which it reads the word back. It retypes a 2M frame from an
 //! untyped, after a retype at a base not aligned to 2M is refused, repeating while retype returns again,
 //! prints how many again returns that took, reads the frame back with inspect, and a second retype of
-//! the block is refused. dom0 prints that result through the console, then an exit marker, and exits with
-//! success only when every check held. The kernel logs each invocation, with what it returned, in
-//! the serial log.
+//! the block is refused. It derives from that 2M frame a read-only child of one page inside it, after a
+//! derive from a slot it does not hold, with rights wider than the frame's, of a page outside the frame
+//! and into an occupied slot is refused, and inspect finds the child. dom0 prints that result through the
+//! console, then an exit marker, and exits with success only when every check held. The kernel logs each
+//! invocation, with what it returned, in the serial log.
 
 #![no_std]
 #![no_main]
@@ -337,6 +339,37 @@ fn retyped_large_frame_held(empty: u64, destination: u64) -> bool {
     held && print_large_frame_done(again) == operation::STATUS_OK
 }
 
+/// The read right, as the kernel numbers rights.
+const RIGHT_READ: u64 = 1;
+
+/// The retype right, which no frame has.
+const RIGHT_RETYPE: u64 = 8;
+
+/// The bytes of a 2M frame's block.
+const LARGE_FRAME_BYTES: u64 = LARGE_FRAME_PAGES * 4096;
+
+/// Whether dom0 derives from the 2M frame at `large` a child with only the read right, for the second
+/// page of its block, into the empty slot `child`: a derive from the empty slot `empty`, with the frame's
+/// rights and the retype right, of the page past the frame's block and into the occupied slot `occupied`
+/// is refused, the derive is accepted, and inspect finds a frame of order 0 at that page, with the read
+/// right alone, in `child`.
+fn derived_frame_held(large: u64, empty: u64, occupied: u64, child: u64) -> bool {
+    let parent = match operation::inspect(large) {
+        Ok(capability) => capability,
+        Err(_) => return false,
+    };
+    let page = parent.base + 4096;
+    operation::derive(empty, child, RIGHT_READ, page, 0) == operation::STATUS_REFUSED
+        && operation::derive(large, child, parent.rights | RIGHT_RETYPE, page, 0) == operation::STATUS_REFUSED
+        && operation::derive(large, child, RIGHT_READ, parent.base + LARGE_FRAME_BYTES, 0) == operation::STATUS_REFUSED
+        && operation::derive(large, occupied, RIGHT_READ, page, 0) == operation::STATUS_REFUSED
+        && operation::derive(large, child, RIGHT_READ, page, 0) == operation::STATUS_OK
+        && matches!(
+            operation::inspect(child),
+            Ok(frame) if frame.kind == operation::KIND_FRAME && frame.base == page && frame.order == 0 && frame.rights == RIGHT_READ
+        )
+}
+
 /// Print through `slot`. The status is the low half of what the invocation returns.
 ///
 /// # Safety
@@ -367,6 +400,7 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
                             && remapped_frame_held(empty)
                             && moved_frame_held(empty)
                             && retyped_large_frame_held(empty, empty + 2)
+                            && derived_frame_held(empty + 2, empty, empty + 1, empty + 3)
                     })
         });
     let console = unsafe {

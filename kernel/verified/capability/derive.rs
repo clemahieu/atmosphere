@@ -140,6 +140,24 @@ impl CapKernel {
             block_refs(&self.blocks, block_ref(&self.blocks, self.payload_of(parent).base / 4096)) != usize::MAX
     }
 
+    /// What a derive from the capability at index from of the table at root into the empty index to did:
+    /// the derive was allowed, the child holds the parent's kind with these rights and this block, which
+    /// narrow the parent's, one depth below it as its child, and the step discharges a local effect.
+    pub open spec fn cap_derived(pre: Self, post: Self, root: usize, from: usize, to: usize, rights: u32, base: usize, order: u8) -> bool {
+        let parent = pre.tables.node_of(root, from);
+        let child = pre.tables.node_of(root, to);
+        &&& pre.can_derive(root, from, to, rights, base, order)
+        &&& pre.view().holds(root, parent)
+        &&& post.view().holds(root, child)
+        &&& !pre.list.nodes@[child as int].live
+        &&& narrows(post.payload_of(child), pre.payload_of(parent))
+        &&& post.payload_of(child) == child_of(pre.payload_of(parent), rights, base, order)
+        &&& post.list.is_child(parent, child)
+        &&& post.list.nodes@[child as int].depth == pre.list.nodes@[parent as int].depth + 1
+        &&& post.list.nodes@[child as int].depth <= MAX_DEPTH
+        &&& discharges(pre.view(), post.view(), root, Effect::Local)
+    }
+
     /// Derives the capability at index `from` of the table at `root` into the empty index `to`. All of
     /// the indices, rights, base and order come from user space, so any of them can be refused, and a
     /// refusal changes nothing.
@@ -150,20 +168,10 @@ impl CapKernel {
             old(self).root_live(root),
         ensures
             final(self).wf(),
+            final(self).cores == old(self).cores,
             Self::same_tree(*old(self), *final(self)),
             !ret ==> *final(self) == *old(self),
-            ret ==> {
-                let parent = old(self).tables.node_of(root, from);
-                let child = old(self).tables.node_of(root, to);
-                &&& old(self).view().holds(root, parent)
-                &&& final(self).view().holds(root, child)
-                &&& !old(self).list.nodes@[child as int].live
-                &&& narrows(final(self).payload_of(child), old(self).payload_of(parent))
-                &&& final(self).payload_of(child) == child_of(old(self).payload_of(parent), rights, base, order)
-                &&& final(self).list.is_child(parent, child)
-                &&& final(self).list.nodes@[child as int].depth == old(self).list.nodes@[parent as int].depth + 1
-                &&& final(self).list.nodes@[child as int].depth <= MAX_DEPTH
-            },
+            ret ==> Self::cap_derived(*old(self), *final(self), root, from, to, rights, base, order),
             ret == old(self).can_derive(root, from, to, rights, base, order),
             discharges(old(self).view(), final(self).view(), root, Effect::Local),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),

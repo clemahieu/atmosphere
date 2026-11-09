@@ -20,6 +20,8 @@ pub const STATUS_UNKNOWN: u64 = 2;
 pub const STATUS_AGAIN: u64 = 3;
 
 pub const RETYPE: u64 = 1;
+/// Derives from the capability in rdi a child into the empty slot in rsi, with the rights in rdx and
+/// the block of order r9 at the base in r8, which must lie within the parent's rights and block.
 pub const DERIVE: u64 = 2;
 /// Moves the capability in rdi to the empty slot in rsi, children and all, leaving rdi empty.
 pub const MOVE: u64 = 3;
@@ -229,4 +231,11 @@ pub unsafe fn unmap(space: u64, address: u64, level: u64) -> u64 {
 pub fn move_capability(from: u64, to: u64) -> u64 {
     // A move changes slots, not the caller's address space.
     status(unsafe { invoke(MOVE, from, [to, 0, 0, 0, 0]) })
+}
+
+/// Derives from the capability at `from` a child into the empty slot `to`, with `rights` and the block of
+/// `order` at `base`, which must lie within the parent's. The status is the low half of what returns.
+pub fn derive(from: u64, to: u64, rights: u64, base: u64, order: u64) -> u64 {
+    // A derive changes slots, not the caller's address space.
+    status(unsafe { invoke(DERIVE, from, [to, rights, base, order, 0]) })
 }
