@@ -823,6 +823,8 @@ impl CapKernel {
             }),
             forall|o: usize| #[trigger] final(self).view().reach(process, o)
                 <==> (o % 4096 == 0 && ((process <= o < process + 32768) || (t <= o < t + 8192))),
+            forall|q: usize, o: usize| #[trigger] final(self).view().reach(q, o)
+                ==> o == q || final(self).view().reach(process, o),
             forall|k: int| 0 <= k < 8 ==> {
                 ||| (#[trigger] final(self).blocks.pages@[process / 4096 + k]).kind is Base
                 ||| final(self).blocks.pages@[process / 4096 + k].kind is Member
@@ -1397,6 +1399,7 @@ impl CapKernel {
         ensures
             forall|o: usize| #[trigger] s.view().reach(process, o)
                 <==> (o % 4096 == 0 && ((process <= o < process + 32768) || (t <= o < t + 8192))),
+            forall|q: usize, o: usize| #[trigger] s.view().reach(q, o) ==> o == q || s.view().reach(process, o),
     {
         let v = s.view();
         let a = (leaf + 1) as usize;
@@ -1407,9 +1410,9 @@ impl CapKernel {
         assert(v.holds(process, a));
         assert(v.holds(process, b));
         // Only the process and its thread are controlled: every control capability names one of them.
-        assert forall|q: usize, k: nat| #[trigger] v.controlled(process, q, k) implies q == process || q == t by {
+        assert forall|p: usize, q: usize, k: nat| #[trigger] v.controlled(p, q, k) && k > 0 implies q == process || q == t by {
             if k > 0 {
-                let m = choose|m: usize| #[trigger] v.controls(m, q) && v.controlled(process, m, (k - 1) as nat);
+                let m = choose|m: usize| #[trigger] v.controls(m, q) && v.controlled(p, m, (k - 1) as nat);
                 let c = choose|c: usize| #[trigger] v.holds_right(m, c, Right::Control) && v.process_behind(v.names[c]) == q;
                 assert(s.is_cap(c));
             }
@@ -1436,6 +1439,22 @@ impl CapKernel {
                 assert(v.covers(b, o));
                 assert(v.direct(process, o));
                 assert(v.controlled(process, process, 0));
+            }
+        }
+        // Anyone else reaches itself, or through a control link the process or its thread, or what a
+        // capability covers: each is a page of the two blocks.
+        assert forall|p: usize, o: usize| #[trigger] v.reach(p, o) implies o == p || v.reach(process, o) by {
+            let (q, k) = choose|q: usize, k: nat| #[trigger] v.controlled(p, q, k) && (o == q || v.direct(q, o));
+            if o == q {
+                if k > 0 {
+                    assert(q == process || q == t);
+                    assert(v.reach(process, o));
+                }
+            } else {
+                assert(!v.maps.contains((q, o)));
+                let (c, n, j) = choose|c: usize, n: usize, j: nat| #[trigger] v.descends(c, n, j) && v.holds(q, c) && v.covers(n, o);
+                assert(s.is_cap(n));
+                assert(v.reach(process, o));
             }
         }
     }

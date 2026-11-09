@@ -43,6 +43,15 @@ pub open spec fn in_root_blocks(process: usize, leaf: usize, frames: usize, t: u
     ||| t / 4096 <= i < t / 4096 + 2
 }
 
+/// Page i is one the root reaches after boot: a page of its process's or its thread's block, of a free
+/// run handed to it as untyped, or of one of dom0's image runs handed to it as frames.
+pub open spec fn root_reach_page(process: usize, t: usize, free: Seq<(usize, usize)>, image: Seq<ImageRun>, i: int) -> bool {
+    ||| process / 4096 <= i < process / 4096 + 8
+    ||| t / 4096 <= i < t / 4096 + 2
+    ||| in_runs(free, free.len() as int, i)
+    ||| in_runs(image_phys(image), image.len() as int, i)
+}
+
 /// The pages of the four blocks boot_root takes that m holds.
 pub open spec fn root_block_pages(m: Map<usize, PagePerm4k>, process: usize, leaf: usize, frames: usize, t: usize) -> Set<usize> {
     m.dom().filter(|i: usize| in_root_blocks(process, leaf, frames, t, i as int))
@@ -132,7 +141,9 @@ impl CapKernel {
     /// returns how many untyped and frame capabilities the root holds, and refuses exactly when the free
     /// runs make no block or more than the first leaf holds, or the image does not fit the second leaf
     /// or the first untyped block's tables. On success each fixed slot of the root's table holds its
-    /// kind and the root's space maps exactly the image. See design/root-process-at-boot/.
+    /// kind, the root's space maps exactly the image, the root reaches exactly the console and the pages
+    /// of its process, its thread, the free runs and the image, and nothing else reaches anything the
+    /// root does not, besides itself. See design/root-process-at-boot/.
     #[verifier::spinoff_prover]
     pub fn kernel_init(
         &mut self,
@@ -248,6 +259,10 @@ impl CapKernel {
                     &&& space_mapping(b, process)[page_path(x)] == image_entry(image@[a], x)
                 }
                 &&& forall|p: SpacePath| #[trigger] space_mapping(b, process).contains_key(p) ==> image_path(image@, p)
+                &&& forall|o: usize| #[trigger] final(self).view().reach(process, o) <==> (o == CONSOLE_OBJECT
+                    || (o % 4096 == 0 && root_reach_page(process, t, free@, image@, (o / 4096) as int)))
+                &&& forall|q: usize, o: usize| #[trigger] final(self).view().reach(q, o)
+                    ==> o == q || final(self).view().reach(process, o)
             },
     {
         hide(CapKernel::wf);
@@ -467,6 +482,52 @@ impl CapKernel {
                 assert(s4.is_cap(x) && s4.payload_of(x) == s3.payload_of(x));
             }
             assert(s4.threads == s1.threads);
+            // The root's reach is the four steps' growths in turn, and anyone else's grew only by
+            // what the root's did.
+            let phys = image_phys(image@);
+            assert forall|o: usize| #[trigger] s4.view().reach(process, o) <==> (o == CONSOLE_OBJECT
+                || (o % 4096 == 0 && root_reach_page(process, t, free@, image@, (o / 4096) as int))) by {
+                assert(s4.view().reach(process, o) <==> (s3.view().reach(process, o)
+                    || (o % 4096 == 0 && in_runs(phys, image@.len() as int, (o / 4096) as int))));
+                assert(s3.view().reach(process, o) <==> (s2.view().reach(process, o)
+                    || (o % 4096 == 0 && in_runs(free@, len, (o / 4096) as int))));
+                assert(s2.view().reach(process, o) <==> (s1.view().reach(process, o) || o == CONSOLE_OBJECT));
+                assert(s1.view().reach(process, o)
+                    <==> (o % 4096 == 0 && ((process <= o < process + 32768) || (t <= o < t + 8192))));
+                if o % 4096 == 0 {
+                    assert((process <= o < process + 32768) <==> (process / 4096 <= o / 4096 < process / 4096 + 8))
+                        by (nonlinear_arith)
+                        requires
+                            process % 32768 == 0,
+                            o % 4096 == 0,
+                    ;
+                    assert((t <= o < t + 8192) <==> (t / 4096 <= o / 4096 < t / 4096 + 2)) by (nonlinear_arith)
+                        requires
+                            t % 8192 == 0,
+                            o % 4096 == 0,
+                    ;
+                }
+            }
+            assert forall|q: usize, o: usize| #[trigger] s4.view().reach(q, o) implies o == q || s4.view().reach(process, o) by {
+                if !s3.view().reach(q, o) {
+                    assert(o % 4096 == 0 && in_runs(phys, image@.len() as int, (o / 4096) as int));
+                    assert(s4.view().reach(process, o));
+                } else if !s2.view().reach(q, o) {
+                    assert(o % 4096 == 0 && in_runs(free@, len, (o / 4096) as int));
+                    assert(s3.view().reach(process, o));
+                    assert(s4.view().reach(process, o));
+                } else if !s1.view().reach(q, o) {
+                    assert(o == CONSOLE_OBJECT);
+                    assert(s2.view().reach(process, o));
+                    assert(s3.view().reach(process, o));
+                    assert(s4.view().reach(process, o));
+                } else if o != q {
+                    assert(s1.view().reach(process, o));
+                    assert(s2.view().reach(process, o));
+                    assert(s3.view().reach(process, o));
+                    assert(s4.view().reach(process, o));
+                }
+            }
         }
         Some((untyped, frame))
     }
