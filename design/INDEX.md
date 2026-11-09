@@ -2,7 +2,7 @@
 
 # Design decisions
 
-25 records: 25 active, 0 superseded.
+26 records: 26 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -25,6 +25,9 @@ in `revisit if` what would make it worth reopening.
 - **[cut-over-on-a-branch](./cut-over-on-a-branch/DECISION.md)** (2026-11-05): New proven modules land on main beside the old kernel while boot keeps using the old one. The cut-over is a branch off main: a build feature selects old or new kernel entry and dom0, the branch gate boots both so each syscall is booted in the commit that wires it, the last commits delete the old kernel and the feature, and the branch merges with a merge commit. Main never contains the selection.
   - *confidence:* A process choice by the human after an independent review judged a single landing too large to finish in one round and its parts unable to pass the gate on their own.
   - *revisit if:* The cut-over branch has merged, when this record has done its work and the shim rule in CLAUDE.md applies to the whole tree again.
+- **[fan-in-over-private-rings](./fan-in-over-private-rings/DECISION.md)** (2026-11-09): Several untrusted producers feeding one consumer get one aring each, and afanin's scan finds the first ring with a slot available from a start the caller rotates. No word is written by two producers, so a wild index is rejected by its own ring alone and a producer that stops stalls only its own ring. A queue with one shared enqueue cursor is for producers inside one trust domain and is not built until a caller needs its total order.
+  - *confidence:* The isolation is proven in afanin/src/lib.rs over aring's proven observe. That the shared cursor cannot reject a peer's store is an argument from the published algorithms' structure, not a proof; the cost comparison is not measured.
+  - *revisit if:* A caller inside one trust domain needs one total order across producers, which the scan does not give; or the number of producers grows until a scan over every ring costs more than the shared cursor's contended line, which a measurement would show.
 - **[flush-without-waiting](./flush-without-waiting/DECISION.md)** (2026-11-07): A ghost per-core TLB model holds possibly stale translations keyed by space and core; unmap bumps a flush epoch, sends IPIs to exactly the cores that loaded the space and returns again; each core's handler flushes every context and records its acknowledgement on its own kernel entry; an IOMMU's invalidate waits for its completion inside the glue, since an IOMMU is not a core; retype requires every core's and present IOMMU's acknowledgement to have reached the epoch, a token only flush glue can produce.
   - *confidence:* The no-wait rule is forced by the lock, see reasoning; the epoch comparison and model are in kernel/verified/capability/kernel.rs and kernel/src/flush.rs, with the flush itself counted glue.
   - *revisit if:* The hardware gains a broadcast invalidation the kernel can rely on (this host reports no INVLPGB), a flush that returns again is measured as the cost that dominates unmap, or an IOMMU's completion wait is measured as the longest step under the lock.
@@ -98,7 +101,7 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `glue`: machine-glue-below-the-kernel
 - `interrupt`: machine-glue-below-the-kernel
 - `iommu`: machine-glue-below-the-kernel
-- `ipc`: ipc-with-reply-object, latest-value-by-three-slot-exchange, syscall-abi-in-registers
+- `ipc`: fan-in-over-private-rings, ipc-with-reply-object, latest-value-by-three-slot-exchange, syscall-abi-in-registers
 - `kernel-state`: multicore-kernel-shape, one-kernel-instance, one-lock-bounded-steps
 - `lifetime`: sharing-by-derive, teardown-driven-by-retype
 - `lock`: flush-without-waiting, multicore-kernel-shape, one-lock-bounded-steps
@@ -112,9 +115,9 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `real-time`: schedulers-over-core-partitions
 - `revoke`: revoke-by-depth-first-list, sharing-by-derive, teardown-driven-by-retype
 - `scheduling`: cpu-time-as-capability, schedulers-over-core-partitions
-- `security`: isolation-claim, theorem-over-reach, trust-boundary
-- `shared-memory`: latest-value-by-three-slot-exchange
+- `security`: fan-in-over-private-rings, isolation-claim, theorem-over-reach, trust-boundary
+- `shared-memory`: fan-in-over-private-rings, latest-value-by-three-slot-exchange
 - `thread`: process-holds-capabilities, thread-bound-at-retype
 - `tiers`: trust-boundary
-- `verified`: arch-module, cut-over-on-a-branch, flush-without-waiting, latest-value-by-three-slot-exchange, one-lock-bounded-steps, revoke-by-depth-first-list, theorem-over-reach, thread-bound-at-retype
+- `verified`: arch-module, cut-over-on-a-branch, fan-in-over-private-rings, flush-without-waiting, latest-value-by-three-slot-exchange, one-lock-bounded-steps, revoke-by-depth-first-list, theorem-over-reach, thread-bound-at-retype
 - `virtualization`: vmm-over-svm

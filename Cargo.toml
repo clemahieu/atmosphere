@@ -17,6 +17,7 @@ members = [
   "file-service",
   "aring",
   "amailbox",
+  "afanin",
   "pager-policy",
 ]
 
