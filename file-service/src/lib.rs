@@ -7,6 +7,11 @@
 //! The lock file is a second shared map. A one-byte record lock belongs to
 //! the client that took it: closing another handle does not release it, and
 //! dropping the client does.
+//!
+//! A data pwrite is visible at once and unstable until `fdatasync`. The meta
+//! suffix goes out through `sync_pwrite`, which does not return until those
+//! bytes are stable together. A crash drops what is still unstable, or lands
+//! a named subset of it first.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -50,6 +55,10 @@ struct Inner {
     lock: File,
     locks: BTreeMap<u64, ByteLock>,
     next_client: u64,
+    /// Data pages whose cache is ahead of the image.
+    data_dirty: BTreeSet<u64>,
+    /// Logical size that a crash keeps.
+    data_stable_size: u64,
 }
 
 /// The file service. Clients taken from it share one cache and one image.
@@ -125,6 +134,8 @@ impl Service {
             },
             locks: BTreeMap::new(),
             next_client: 1,
+            data_dirty: BTreeSet::new(),
+            data_stable_size: 0,
         };
         Ok(Self {
             inner: Arc::new(Mutex::new(inner)),
@@ -164,6 +175,37 @@ impl Client {
             .lock()
             .expect("file service lock")
             .pwrite_file(Which::Data, offset, data)
+    }
+
+    /// Make every dirty data page stable. Does not write the meta page.
+    pub fn fdatasync(&self) -> io::Result<()> {
+        self.inner.lock().expect("file service lock").fdatasync()
+    }
+
+    /// Write `data` and return only once those bytes are stable, as one suffix.
+    pub fn sync_pwrite(&self, offset: u64, data: &[u8]) -> io::Result<()> {
+        self.inner
+            .lock()
+            .expect("file service lock")
+            .sync_pwrite(offset, data)
+    }
+
+    /// Drop unstable data. Pages in `reorder` land first, in that order; the rest go.
+    pub fn crash(&self, reorder: &[u64]) -> io::Result<()> {
+        self.inner.lock().expect("file service lock").crash(reorder)
+    }
+
+    /// A crash during a synchronous pwrite. Only `prefix` bytes become stable.
+    pub fn crash_during_sync_pwrite(
+        &self,
+        offset: u64,
+        data: &[u8],
+        prefix: usize,
+    ) -> io::Result<()> {
+        self.inner
+            .lock()
+            .expect("file service lock")
+            .crash_during_sync_pwrite(offset, data, prefix)
     }
 
     /// The data file's logical size becomes `size`. A grow does not allocate the hole.
@@ -301,7 +343,11 @@ impl Inner {
                 self.load_page(which, page)?
             };
             bytes[page_off..page_off + take].copy_from_slice(&data[done..done + take]);
-            self.write_disk(which, page * PAGE, &bytes)?;
+            if let Which::Data = which {
+                self.data_dirty.insert(page);
+            } else {
+                self.write_disk(which, page * PAGE, &bytes)?;
+            }
             self.slot(which).pages.insert(page, bytes);
             done += take;
         }
@@ -324,7 +370,83 @@ impl Inner {
             .tx(|tx| tx.truncate_node(node, size, sec, nsec))
             .map_err(fs_err)?;
         self.data.size = size;
+        self.data_stable_size = size;
         Ok(())
+    }
+
+    fn fdatasync(&mut self) -> io::Result<()> {
+        let dirty: Vec<u64> = self.data_dirty.iter().copied().collect();
+        for page in dirty {
+            let bytes = self.cached_page(page)?;
+            self.write_disk(Which::Data, page * PAGE, &bytes)?;
+            self.data_dirty.remove(&page);
+        }
+        self.data_stable_size = self.data.size;
+        Ok(())
+    }
+
+    fn sync_pwrite(&mut self, offset: u64, data: &[u8]) -> io::Result<()> {
+        self.pwrite_file(Which::Data, offset, data)?;
+        self.stabilize_range(offset, data.len())
+    }
+
+    fn crash_during_sync_pwrite(
+        &mut self,
+        offset: u64,
+        data: &[u8],
+        prefix: usize,
+    ) -> io::Result<()> {
+        let prefix = prefix.min(data.len());
+        if prefix > 0 {
+            self.sync_pwrite(offset, &data[..prefix])?;
+        }
+        self.crash(&[])
+    }
+
+    fn crash(&mut self, reorder: &[u64]) -> io::Result<()> {
+        for page in reorder {
+            if !self.data_dirty.contains(page) {
+                continue;
+            }
+            let bytes = self.cached_page(*page)?;
+            self.write_disk(Which::Data, page * PAGE, &bytes)?;
+            self.data_dirty.remove(page);
+            let end = page.saturating_add(1).saturating_mul(PAGE);
+            if end > self.data_stable_size && end <= self.data.size {
+                self.data_stable_size = end;
+            }
+        }
+        for page in self.data_dirty.iter().copied().collect::<Vec<_>>() {
+            self.data.pages.remove(&page);
+        }
+        self.data_dirty.clear();
+        self.data.size = self.data_stable_size;
+        Ok(())
+    }
+
+    fn stabilize_range(&mut self, offset: u64, len: usize) -> io::Result<()> {
+        if len == 0 {
+            return Ok(());
+        }
+        let end = offset + len as u64;
+        let mut page = offset / PAGE;
+        let last = (end - 1) / PAGE;
+        while page <= last {
+            let bytes = self.cached_page(page)?;
+            self.write_disk(Which::Data, page * PAGE, &bytes)?;
+            self.data_dirty.remove(&page);
+            page += 1;
+        }
+        self.data_stable_size = self.data.size;
+        Ok(())
+    }
+
+    fn cached_page(&self, page: u64) -> io::Result<Vec<u8>> {
+        self.data
+            .pages
+            .get(&page)
+            .cloned()
+            .ok_or_else(|| io::Error::other(format!("data page {page} is not in the cache")))
     }
 
     fn allocated_bytes(&self) -> io::Result<u64> {
