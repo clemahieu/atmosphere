@@ -1,8 +1,26 @@
 #!/usr/bin/env bash
 # PreToolUse hook: refuse a tool call that would open, fetch or grep a copyleft
 # source (CLAUDE.md, License). Exit 2 with the reason on stderr blocks the call
-# in Claude Code and in Grok. The forbidden list lives here and nowhere else.
+# in Claude Code and in Grok. Machine-specific roots and parents are one path
+# per line in license-guard.local beside this script, or the file named by
+# ATMO_LICENSE_GUARD_LOCAL when set; an empty value means no local list.
+# A line "parent <path>" is a parent; any other line is a root. Lines starting
+# with # are comments. Paths may use ~/, $HOME/ or ${HOME}/.
 set -u
+
+normalize() {
+  local s=$1
+  s=${s//\"/}
+  s=${s//\'/}
+  s=${s//"~/"/"$HOME/"}
+  s=${s//"\$HOME/"/"$HOME/"}
+  s=${s//"\${HOME}/"/"$HOME/"}
+  s=${s//\/\//\/}
+  while [[ $s =~ ^(.*)/[^/[:space:]]+/\.\./(.*)$ ]]; do
+    s=${BASH_REMATCH[1]}/${BASH_REMATCH[2]}
+  done
+  printf '%s' "$s"
+}
 
 # A name that identifies a forbidden tree wherever a path to it is spelled.
 names=(
@@ -10,7 +28,6 @@ names=(
 )
 
 roots=(
-  "$HOME/sel4.gpl"      # the seL4 kernel checkout and the seL4-based project that was left
   "/usr/src/kernels"  # Linux kernel headers, GPL
   "/usr/src/debug"    # Fedora debug sources: kernel, binutils, gdb, glibc
 )
@@ -36,20 +53,38 @@ repos=(
   github.com/openzfs/zfs
 )
 
+if [ "${ATMO_LICENSE_GUARD_LOCAL+set}" = set ]; then
+  local_file="$ATMO_LICENSE_GUARD_LOCAL"
+else
+  local_file="$(dirname "${BASH_SOURCE[0]}")/license-guard.local"
+fi
+if [ -n "$local_file" ] && [ -f "$local_file" ]; then
+  while IFS= read -r line || [ -n "$line" ]; do
+    line=${line%$'\r'}
+    case "$line" in
+      ''|\#*) continue ;;
+    esac
+    case "$line" in
+      parent\ *)
+        path=$(normalize "${line#parent }")
+        [ -n "$path" ] || continue
+        parents+=("$path")
+        ;;
+      *)
+        path=$(normalize "$line")
+        [ -n "$path" ] || continue
+        roots+=("$path")
+        ;;
+    esac
+  done < "$local_file"
+fi
+
 input=$(cat)
 strings=$(printf '%s' "$input" | jq -r '(.tool_input // .toolInput // {}) | .. | strings' 2>/dev/null) || exit 0
 
 while IFS= read -r s; do
   [ -n "$s" ] || continue
-  s=${s//\"/}
-  s=${s//\'/}
-  s=${s//"~/"/"$HOME/"}
-  s=${s//"\$HOME/"/"$HOME/"}
-  s=${s//"\${HOME}/"/"$HOME/"}
-  s=${s//\/\//\/}
-  while [[ $s =~ ^(.*)/[^/[:space:]]+/\.\./(.*)$ ]]; do
-    s=${BASH_REMATCH[1]}/${BASH_REMATCH[2]}
-  done
+  s=$(normalize "$s")
   for r in "${names[@]}"; do
     case "$s" in *"$r"*)
       echo "license guard: $r is a forbidden source (CLAUDE.md, License); refer to it by name, not by path" >&2
