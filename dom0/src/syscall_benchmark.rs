@@ -347,11 +347,9 @@ pub fn check_second_core_simd_fault() {
         bench_fail("new_thread (fault on the second core)", ret);
     }
     let deadline = unsafe { _rdtsc() } + SECOND_CORE_CYCLES;
-    while FAULTS_WITNESSED.load(Ordering::SeqCst) == 0 {
-        if unsafe { _rdtsc() } > deadline {
-            bench_fail("a fault on the second core", FAULTS_REACHED.load(Ordering::SeqCst));
-        }
-        core::hint::spin_loop();
+    spin_until(|| (FAULTS_WITNESSED.load(Ordering::SeqCst) != 0) | (unsafe { _rdtsc() } > deadline));
+    if FAULTS_WITNESSED.load(Ordering::SeqCst) == 0 {
+        bench_fail("a fault on the second core", FAULTS_REACHED.load(Ordering::SeqCst));
     }
     let reached = FAULTS_REACHED.load(Ordering::SeqCst);
     let survived = FAULTS_SURVIVED.load(Ordering::SeqCst);
@@ -441,9 +439,7 @@ extern "C" fn second_core_thread() -> ! {
     for block in 1..=SECOND_CORE_BLOCKS {
         // Wait until the other thread is running on the other core. If it were still in the scheduler,
         // blocking here would run it on this core, and this core would not be left with nothing to run.
-        while SECOND_CORE_PLACED.load(Ordering::SeqCst) < block - 1 {
-            core::hint::spin_loop();
-        }
+        spin_until(|| SECOND_CORE_PLACED.load(Ordering::SeqCst) >= block - 1);
         // A new thread holds the endpoint it was created with at descriptor 0.
         unsafe { asys::sys_receive_empty(0) };
         SECOND_CORE_WOKEN.store(block, Ordering::SeqCst);
@@ -476,7 +472,7 @@ pub fn check_second_core() {
     }
     let deadline = unsafe { _rdtsc() } + SECOND_CORE_CYCLES;
     let mut mine = 0;
-    while mine < SECOND_CORE_SYSCALLS || SECOND_CORE_MADE.load(Ordering::SeqCst) < SECOND_CORE_SYSCALLS {
+    while mine < SECOND_CORE_SYSCALLS {
         unsafe { asys::sys_mresolve(va) };
         // Count only while the other thread is also running.
         if SECOND_CORE_MADE.load(Ordering::SeqCst) > 0 {
@@ -486,12 +482,19 @@ pub fn check_second_core() {
             bench_fail("a thread on the second core", SECOND_CORE_MADE.load(Ordering::SeqCst));
         }
     }
-    SECOND_CORE_STOP.store(1, Ordering::SeqCst);
-    while SECOND_CORE_REPORTED.load(Ordering::SeqCst) == 0 {
+    // Keep making them beside the other thread until it has made as many.
+    spin_until(|| {
+        unsafe { asys::sys_mresolve(va) };
+        mine += 1;
         if unsafe { _rdtsc() } > deadline {
-            bench_fail("the second core's report", 0);
+            bench_fail("a thread on the second core", SECOND_CORE_MADE.load(Ordering::SeqCst));
         }
-        core::hint::spin_loop();
+        SECOND_CORE_MADE.load(Ordering::SeqCst) >= SECOND_CORE_SYSCALLS
+    });
+    SECOND_CORE_STOP.store(1, Ordering::SeqCst);
+    spin_until(|| (SECOND_CORE_REPORTED.load(Ordering::SeqCst) != 0) | (unsafe { _rdtsc() } > deadline));
+    if SECOND_CORE_REPORTED.load(Ordering::SeqCst) == 0 {
+        bench_fail("the second core's report", 0);
     }
     log::info!("thread on CPU 0 made {} syscalls beside it", mine);
     let (sum, mxcsr) = (SECOND_CORE_SSE[0].load(Ordering::SeqCst), SECOND_CORE_SSE[1].load(Ordering::SeqCst));
@@ -513,6 +516,17 @@ pub fn check_second_core() {
         SECOND_CORE_PLACED.store(block, Ordering::SeqCst);
     }
     log::info!("a thread blocked with nothing else to run on each core, and was woken from the other");
+}
+
+/// Calls `done` until it returns true. Whether it is called more than once depends on how far the
+/// other core has got, so the loop is left out of coverage, which would otherwise differ between two
+/// boots of one build. A `done` that also checks a deadline joins the two with `|`, not `||`, since a
+/// branch there would be taken or not by the same timing.
+#[coverage(off)]
+fn spin_until(mut done: impl FnMut() -> bool) {
+    while !done() {
+        core::hint::spin_loop();
+    }
 }
 
 /// Calls per timed batch, and batches per measurement. A host interrupt or preemption lands in one
@@ -562,9 +576,7 @@ fn time_contended_syscalls() {
     let alone = time_mresolve(va);
     let made = SECOND_CORE_MADE.load(Ordering::SeqCst);
     SECOND_CORE_CONTEND.0.store(CONTEND_NOW, Ordering::SeqCst);
-    while SECOND_CORE_MADE.load(Ordering::SeqCst) == made {
-        core::hint::spin_loop();
-    }
+    spin_until(|| SECOND_CORE_MADE.load(Ordering::SeqCst) != made);
     let contended = time_mresolve(va);
     SECOND_CORE_CONTEND.0.store(CONTEND_DONE, Ordering::SeqCst);
     let other = SECOND_CORE_MADE.load(Ordering::SeqCst) - made;

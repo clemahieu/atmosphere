@@ -11,6 +11,10 @@ The kernel's counters are read by physical address. dom0's are read by virtual a
 because dom0 is the last thing running when its exit stops the guest. A workspace member under user/
 that no image runs is listed as not run.
 
+Two boots of one build count the same lines and branches. A wait on the other core that may spin no
+times, depending on which core gets there first, goes through a spin_until marked #[coverage(off)]
+(kernel/src/cpu.rs, dom0/src/syscall_benchmark.rs), so the timing is not counted.
+
 usage: tools/coverage.py          (from the workspace root)
        tools/coverage.py --test   (this script's own tests)
 """

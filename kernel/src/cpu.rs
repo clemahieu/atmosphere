@@ -207,3 +207,12 @@ pub unsafe fn init_control_registers() {
     asm!("mov cr4, {}", in(reg) cr4);
     log::info!("CPU {}: CR0 {:#x}, CR4 {:#x}", get_cpu_id(), cr0, cr4);
 }
+
+/// Spins until `done`. Whether it spins at all depends on how far another core has got, so the loop
+/// is left out of coverage, which would otherwise differ between two boots of one build.
+#[coverage(off)]
+pub fn spin_until(done: impl Fn() -> bool) {
+    while !done() {
+        core::hint::spin_loop();
+    }
+}

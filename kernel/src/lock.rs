@@ -7,7 +7,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use verified::queue_lock::{Core, QueueLock};
 use vstd::prelude::Tracked;
 
-use crate::cpu;
+use crate::cpu::{self, spin_until};
 
 /// A value only the core holding the lock can reach.
 pub struct Locked<T> {
@@ -166,9 +166,7 @@ static FINISHED: AtomicUsize = AtomicUsize::new(0);
 /// Both cores call this. Panics if the lock let them in together.
 pub fn contend() {
     ARRIVED.fetch_add(1, Ordering::SeqCst);
-    while ARRIVED.load(Ordering::SeqCst) < 2 {
-        core::hint::spin_loop();
-    }
+    spin_until(|| ARRIVED.load(Ordering::SeqCst) >= 2);
     for _ in 0..CONTENTION_ROUNDS {
         let mut pair = CONTENDED.lock();
         assert_eq!(pair.0, pair.1, "two cores inside the lock");
@@ -182,9 +180,7 @@ pub fn contend() {
 
 /// CPU 0 calls this after contend, to wait for the other core and report.
 pub fn report_contention() {
-    while FINISHED.load(Ordering::SeqCst) < 2 {
-        core::hint::spin_loop();
-    }
+    spin_until(|| FINISHED.load(Ordering::SeqCst) >= 2);
     let pair = CONTENDED.lock();
     assert_eq!(pair.0, pair.1, "two cores inside the lock");
     assert_eq!(pair.0, 2 * CONTENTION_ROUNDS as u64, "lost an increment");

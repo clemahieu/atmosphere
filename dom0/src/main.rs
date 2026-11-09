@@ -4,6 +4,7 @@
 
 #![no_std]
 #![no_main]
+#![feature(coverage_attribute)]
 
 extern crate alloc;
 
