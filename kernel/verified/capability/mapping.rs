@@ -1342,9 +1342,16 @@ pub proof fn lemma_mapping_extended(a: TableTree, b: TableTree, s: usize)
 }
 
 impl CapKernel {
+    /// The word w, read from mapping node n's entry as it was cleared, decodes to the entry the node's
+    /// mapping held; its accessed and dirty bits are the processor's as they stood then.
+    pub open spec fn mapping_word(pre: Self, n: usize, w: usize) -> bool {
+        let m = pre.mappings@[n];
+        crate::pagetable::entry::spec_usize2page_entry(w) == tree_of(&pre.table_pages, &pre.spaces).entry(m.table, m.entry)
+    }
+
     /// Undoes mapping node n: its entry and its reference go in one step, and nothing else. The node's
-    /// own page says where its entry is.
-    pub fn clear_mapping(&mut self, n: usize)
+    /// own page says where its entry is. Returns the entry's word as read in the step that cleared it.
+    pub fn clear_mapping(&mut self, n: usize) -> (ret: usize)
         requires
             old(self).wf(),
             n < NODE_SPACE,
@@ -1354,6 +1361,7 @@ impl CapKernel {
         ensures
             Self::mapping_unlinked(*old(self), *final(self), n),
             Self::mapping_stale_noted(*old(self), *final(self), n),
+            Self::mapping_word(*old(self), n, ret),
             final(self).stale_epoch.wf(),
             final(self).tlb_wf(),
             mapped_wf(final(self).mapped@, final(self).mappings@),
@@ -1401,7 +1409,7 @@ impl CapKernel {
         let ghost noted = *self;
         let br = locate(&self.blocks, frame);
         let tracked mut map = self.table_pages.maps.borrow_mut().tracked_remove(t);
-        page_map_set(t + TABLE_NODE_PAGES * 4096, Tracked(&mut map), e, PageEntry::empty());
+        let word = page_map_clear_take(t + TABLE_NODE_PAGES * 4096, Tracked(&mut map), e);
         proof {
             self.table_pages.maps.borrow_mut().tracked_insert(t, map);
         }
@@ -1418,7 +1426,9 @@ impl CapKernel {
             Self::lemma_stale_noted_same(pre, noted, *self, n);
             lemma_mapped_removed(pre.mapped@, self.mapped@, pre.mappings@, n);
             Self::lemma_clear_mapping_post(pre, *self, n);
+            assert(pre.table_pages.maps@[t].value()@[e as int] == entry);
         }
+        word
     }
 
     /// What recorded node n's unmap stays true while nothing the record names changes.

@@ -51,9 +51,10 @@ impl CapKernel {
     /// hidden node drops its block's reference and nothing more: a leaf stays in its root entry, inert,
     /// until its own retype frees it, and a table page's was cut from its parent by cut_hidden_table or
     /// detach_stale first. A capability's reference goes with atmo-6x9.16.22. A mapping node
-    /// records its unmap, clears its entry and drops its reference. A binding node, a thread's binding to
-    /// its process, leaves the thread with no process and drops its reference on the process's block.
-    pub fn unlink_arm(&mut self, n: usize)
+    /// records its unmap, clears its entry and drops its reference, and returns the entry's word as read
+    /// in the step that cleared it; every other arm returns 0. A binding node, a thread's binding to its
+    /// process, leaves the thread with no process and drops its reference on the process's block.
+    pub fn unlink_arm(&mut self, n: usize) -> (ret: usize)
         requires
             old(self).wf(),
             n < NODE_SPACE,
@@ -79,6 +80,7 @@ impl CapKernel {
                 &&& final(self).stale_epoch == old(self).stale_epoch
             },
             old(self).list.nodes@[n as int].kind is Mapping ==> Self::mapping_stale_noted(*old(self), *final(self), n),
+            old(self).list.nodes@[n as int].kind is Mapping ==> Self::mapping_word(*old(self), n, ret),
             final(self).tables.owner == old(self).tables.owner,
             final(self).tables.roots@.dom() == old(self).tables.roots@.dom(),
             forall|x: usize| x != n ==> #[trigger] final(self).tables.payload_of(x) == old(self).tables.payload_of(x),
@@ -173,6 +175,7 @@ impl CapKernel {
             self.list.lemma_live_valid(n);
         }
         let node = self.list.get(n);
+        let mut word = 0;
         match node.kind {
             NodeKind::Hidden => {
                 proof {
@@ -219,7 +222,7 @@ impl CapKernel {
                     _ => {},
                 }
             },
-            NodeKind::Mapping => { self.clear_mapping(n); },
+            NodeKind::Mapping => { word = self.clear_mapping(n); },
             NodeKind::Binding => { self.unbind(n); },
         }
         proof {
@@ -227,6 +230,7 @@ impl CapKernel {
                 Self::lemma_tlb_same(pre, *self);
             }
         }
+        word
     }
 
     /// What a revoke of the capability at index i of the table at root did when it was not refused: the

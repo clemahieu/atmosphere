@@ -39,7 +39,9 @@ pub const REVOKE: u64 = 6;
 /// level 1, a 2M page at level 2, whose offset is a multiple of 512. The entry must be empty and the tables above it linked.
 pub const MAP: u64 = 7;
 /// Clears the entry of the space in the slot that the virtual address in argument 1 and the level in
-/// argument 2 name, which must map a page. Level 1 is the only level it accepts.
+/// argument 2 name, which must map a page. Level 1 is the only level it accepts. Returns the entry's
+/// accessed and dirty bits as read when it was cleared in results 1 and 2, and in results 3 and 4 whether
+/// the target maintains each bit, each 1 when it holds.
 pub const UNMAP: u64 = 8;
 pub const DESTROY: u64 = 9;
 pub const SEND: u64 = 10;
@@ -213,15 +215,35 @@ pub fn map(space: u64, address: u64, level: u64, frame: u64, page: u64) -> u64 {
     status(unsafe { invoke(MAP, space, [address, level, frame, page, 0]) })
 }
 
-/// Clears the entry at `level` that `address` names in the space of the capability at `space`. The
-/// status is the low half of what returns.
+/// What an unmap found in the entry it cleared: its accessed and dirty bits as read when it was cleared,
+/// and whether the target maintains each bit, without which it says nothing.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Unmapped {
+    pub accessed: bool,
+    pub dirty: bool,
+    pub accessed_maintained: bool,
+    pub dirty_maintained: bool,
+}
+
+/// Clears the entry at `level` that `address` names in the space of the capability at `space`: what the
+/// entry held, or the status unmap returned when it was refused.
 ///
 /// # Safety
 ///
 /// Nothing the caller still uses may be at `address` in that space: once the entry is clear, an access
 /// there faults.
-pub unsafe fn unmap(space: u64, address: u64, level: u64) -> u64 {
-    status(unsafe { invoke(UNMAP, space, [address, level, 0, 0, 0]) })
+pub unsafe fn unmap(space: u64, address: u64, level: u64) -> Result<Unmapped, u64> {
+    let (word, [accessed, dirty, accessed_maintained, dirty_maintained]) =
+        unsafe { invoke_returning(UNMAP, space, [address, level, 0, 0, 0]) };
+    match status(word) {
+        STATUS_OK => Ok(Unmapped {
+            accessed: accessed == 1,
+            dirty: dirty == 1,
+            accessed_maintained: accessed_maintained == 1,
+            dirty_maintained: dirty_maintained == 1,
+        }),
+        refused => Err(refused),
+    }
 }
 
 /// What a probe found: bit i of each mask is entry i's accessed or dirty bit as read, and whether the

@@ -39,8 +39,9 @@
 //! those, and probes the 64 entries ending there after the map, after reading the page, again, and after
 //! writing it, printing the mapped entry's accessed and dirty bits each time: both clear, then accessed
 //! alone, then both clear, then dirty; the other 63 entries' bits stay clear and both bits are
-//! maintained. A probe of 0 entries, of 65 and of a range leaving its level 1 table is refused. dom0
-//! prints that result through the console, then an exit marker, and exits with success only when every
+//! maintained. A probe of 0 entries, of 65 and of a range leaving its level 1 table is refused. It maps
+//! the frame at the next entry, writes the page and unmaps it, and the unmap returns accessed and dirty
+//! set, both maintained, which it prints. dom0 prints that result through the console, then an exit marker, and exits with success only when every
 //! check held.
 
 #![no_std]
@@ -233,12 +234,17 @@ fn mapped_frame_held(frame: u64) -> bool {
 fn remapped_frame_held(frame: u64) -> bool {
     // Nothing dom0 uses is at these addresses but the word at PATH_ADDRESS, which it reads only after the
     // map that follows the unmap.
-    let unmap = |address: u64, level: u64| unsafe { operation::unmap(operation::ROOT_PROCESS_SLOT, address, level) };
-    if unmap(KERNEL_HALF_ADDRESS, 1) != operation::STATUS_REFUSED
-        || unmap(PATH_ADDRESS + 0x1000, 1) != operation::STATUS_REFUSED
-        || unmap(PATH_ADDRESS, 2) != operation::STATUS_REFUSED
-        || unmap(PATH_ADDRESS, 1) != operation::STATUS_OK
-        || unmap(PATH_ADDRESS, 1) != operation::STATUS_REFUSED
+    let refused = |address: u64, level: u64| {
+        matches!(
+            unsafe { operation::unmap(operation::ROOT_PROCESS_SLOT, address, level) },
+            Err(operation::STATUS_REFUSED)
+        )
+    };
+    if !refused(KERNEL_HALF_ADDRESS, 1)
+        || !refused(PATH_ADDRESS + 0x1000, 1)
+        || !refused(PATH_ADDRESS, 2)
+        || unsafe { operation::unmap(operation::ROOT_PROCESS_SLOT, PATH_ADDRESS, 1) }.is_err()
+        || !refused(PATH_ADDRESS, 1)
         || operation::map(operation::ROOT_PROCESS_SLOT, PATH_ADDRESS, 1, frame, 0) != operation::STATUS_OK
     {
         return false;
@@ -268,7 +274,7 @@ fn moved_frame_held(frame: u64) -> bool {
             Ok(capability) if capability.kind == operation::KIND_FRAME && capability.base == base && capability.order == 0
         )
         // Nothing dom0 uses is at PATH_ADDRESS but the word, which it reads only after the map that follows.
-        && unsafe { operation::unmap(operation::ROOT_PROCESS_SLOT, PATH_ADDRESS, 1) } == operation::STATUS_OK
+        && unsafe { operation::unmap(operation::ROOT_PROCESS_SLOT, PATH_ADDRESS, 1) }.is_ok()
         && map(frame) == operation::STATUS_REFUSED
         && map(moved) == operation::STATUS_OK;
     // The map just made the page at PATH_ADDRESS the moved frame's, which kept the word.
@@ -461,6 +467,40 @@ fn probed_bits_held(frame: u64) -> bool {
         && probe_refused(512 - operation::PROBE_MAX / 2, operation::PROBE_MAX, b"across tables")
 }
 
+/// The entry of the level 1 table at PATH_ADDRESS that the unmap check maps, the one after PROBED_ENTRY.
+const UNMAPPED_ENTRY: u64 = PROBED_ENTRY + 1;
+
+/// Whether an unmap returns the processor's bits from the entry it clears: dom0 maps the page at
+/// UNMAPPED_ENTRY from `frame`, writes it and unmaps it, and the unmap finds accessed and dirty set, with
+/// both maintained; it prints the two bits. The entry was never mapped before, so no translation of it was
+/// cached and the write walks to it and sets both.
+fn unmapped_bits_held(frame: u64) -> bool {
+    let page = entry_address(UNMAPPED_ENTRY) as *mut u64;
+    if operation::map(operation::ROOT_PROCESS_SLOT, page as u64, 1, frame, 0) != operation::STATUS_OK {
+        return false;
+    }
+    // The map just made the page the frame's, writable; the frame holds MAPPED_WORD, which the write puts
+    // back.
+    unsafe { page.write_volatile(MAPPED_WORD) };
+    // dom0 uses nothing at the page after this write.
+    let unmapped = match unsafe { operation::unmap(operation::ROOT_PROCESS_SLOT, page as u64, 1) } {
+        Ok(unmapped) => unmapped,
+        Err(_) => return false,
+    };
+    let printed = print_parts(&[
+        b"dom0 unmap written: a",
+        bit_digit(unmapped.accessed),
+        b" d",
+        bit_digit(unmapped.dirty),
+        b"\n",
+    ]);
+    printed == operation::STATUS_OK
+        && unmapped.accessed
+        && unmapped.dirty
+        && unmapped.accessed_maintained
+        && unmapped.dirty_maintained
+}
+
 /// Whether dom0 retypes the 2M block at the bottom of the last untyped of at least 512 pages as a frame
 /// into the empty slot `destination`, repeating while retype returns again, and prints how many again
 /// returns that took: a retype at a base not aligned to 2M is refused, the retype returns again at least
@@ -571,7 +611,7 @@ fn revoked_frame_held(large: u64, empty: u64, child: u64) -> bool {
         && again > 0
         && matches!(operation::inspect(child), Err(operation::STATUS_REFUSED))
         && map(1) == operation::STATUS_REFUSED
-        && unsafe { operation::unmap(operation::ROOT_PROCESS_SLOT, address(1), 1) } == operation::STATUS_REFUSED
+        && matches!(unsafe { operation::unmap(operation::ROOT_PROCESS_SLOT, address(1), 1) }, Err(operation::STATUS_REFUSED))
         && matches!(operation::inspect(large), Ok(frame) if frame.kind == operation::KIND_FRAME && frame.order == 9);
     held && print_done_after(REVOKE_HEAD, again) == operation::STATUS_OK
 }
@@ -630,6 +670,7 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
                             && deleted_frames_held(empty + 2, empty + 3)
                             && timed_beside_before(empty + 1)
                             && probed_bits_held(empty + 1)
+                            && unmapped_bits_held(empty + 1)
                     })
         });
     let console = unsafe {

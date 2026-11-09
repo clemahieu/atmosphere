@@ -16,6 +16,7 @@ use crate::capability::retype::RetypeStep;
 use crate::capability::revoke::RevokeStep;
 use crate::capability::space::*;
 use crate::capability::thread::*;
+use crate::capability::unmap::Unmapped;
 use crate::define::NUM_CPUS;
 use crate::pptr::*;
 use crate::arch::Registers;
@@ -210,6 +211,38 @@ pub fn probe_outcome(r: Probed) -> (ret: Outcome)
     }
 }
 
+/// What an unmap's outcome says, with the word it read: the accessed and dirty bits in results 1 and 2,
+/// and each bit maintained, when result 3 or 4 is 1.
+pub open spec fn unmapped_of(out: Outcome, read: usize) -> Unmapped {
+    Unmapped {
+        accessed: out.result_1 == 1,
+        dirty: out.result_2 == 1,
+        accessed_maintained: out.result_3 == 1,
+        dirty_maintained: out.result_4 == 1,
+        read: Ghost(read),
+    }
+}
+
+/// The outcome of an unmap that returned r: ok, with each bit in results 1 and 2 and each fact in results
+/// 3 and 4 as 1 or 0.
+pub fn unmap_outcome(r: Unmapped) -> (ret: Outcome)
+    ensures
+        ret.status == STATUS_OK,
+        ret.result_1 <= 1,
+        ret.result_2 <= 1,
+        ret.result_3 <= 1,
+        ret.result_4 <= 1,
+        unmapped_of(ret, r.read@) == r,
+{
+    Outcome {
+        status: STATUS_OK,
+        result_1: if r.accessed { 1 } else { 0 },
+        result_2: if r.dirty { 1 } else { 0 },
+        result_3: if r.accessed_maintained { 1 } else { 0 },
+        result_4: if r.dirty_maintained { 1 } else { 0 },
+    }
+}
+
 impl CapKernel {
     /// What the invocation in frame returns to a thread of the process whose table is at root, for an
     /// operation that leaves the kernel unchanged: print's status for print, inspect's outcome for
@@ -304,12 +337,18 @@ impl CapKernel {
 
     /// An unmap in frame by a thread of the process whose table is at root, from pre to post with out
     /// returned: refused with nothing changed, or ok with the entry the address in argument 1 and the
-    /// level in argument 2 name in the space of the capability in the slot cleared.
+    /// level in argument 2 name in the space of the capability in the slot cleared, its accessed and dirty
+    /// bits as read before it was cleared in results 1 and 2, and whether the target maintains each bit in
+    /// results 3 and 4, each result 1 when it holds and 0 when it does not.
     pub open spec fn spec_unmapped(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         ||| out == status_only(STATUS_REFUSED) && post == pre
         ||| {
-            &&& out == status_only(STATUS_OK)
-            &&& Self::page_unmapped(pre, post, root, frame.slot() as usize, frame.argument(1), frame.argument(2))
+            &&& out.status == STATUS_OK
+            &&& out.result_1 <= 1
+            &&& out.result_2 <= 1
+            &&& out.result_3 <= 1
+            &&& out.result_4 <= 1
+            &&& exists|read: usize| Self::page_unmapped(pre, post, root, frame.slot() as usize, frame.argument(1), frame.argument(2), #[trigger] unmapped_of(out, read))
         }
     }
 
@@ -497,8 +536,17 @@ impl CapKernel {
                 Some(status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED }))
             },
             Some(Operation::Unmap) => {
-                let done = self.unmap_at(root, frame.slot() as usize, frame.argument(1), frame.argument(2));
-                Some(status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED }))
+                let ghost pre = *self;
+                match self.unmap_at(root, frame.slot() as usize, frame.argument(1), frame.argument(2)) {
+                    Some(r) => {
+                        let out = unmap_outcome(r);
+                        proof {
+                            assert(Self::page_unmapped(pre, *self, root, frame.slot() as usize, frame.argument(1), frame.argument(2), unmapped_of(out, r.read@)));
+                        }
+                        Some(out)
+                    },
+                    None => Some(status_only_outcome(STATUS_REFUSED)),
+                }
             },
             Some(Operation::Probe) => {
                 let ghost pre = *self;

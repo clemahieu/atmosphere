@@ -3,7 +3,7 @@ title: "One syscall entry, and every operation carries its arguments in register
 date: 2026-11-09
 status: active
 tags: [abi, ipc, memory, portability]
-one_line: "One entry, by position: the operation number, the capability's slot and five arguments in; a status word (status in its low 16 bits, ok 0, refused 1, unknown 2, again 3, and a badge in the upper 48) and five result words out, each output in the register of the input at its position. A table per target names the registers: syscall on x86_64, svc on aarch64. A send carries five words, four with a grant; the kernel copies nothing from user memory, and larger data goes through shared frames. A place in a space is a virtual address and a level, which the kernel splits into the path. Inspect, operation 15, returns a held capability's kind, base, order and rights in results 1 to 4. Probe, operation 17, reads and clears the accessed and dirty bits of up to 64 level 1 entries and returns them as two masks in results 1 and 2."
+one_line: "One entry, by position: the operation number, the capability's slot and five arguments in; a status word (status in its low 16 bits, ok 0, refused 1, unknown 2, again 3, and a badge in the upper 48) and five result words out, each output in the register of the input at its position. A table per target names the registers: syscall on x86_64, svc on aarch64. A send carries five words, four with a grant; the kernel copies nothing from user memory, and larger data goes through shared frames. A place in a space is a virtual address and a level, which the kernel splits into the path. Inspect, operation 15, returns a held capability's kind, base, order and rights in results 1 to 4. Unmap returns the cleared entry's accessed and dirty bits in results 1 and 2. Probe, operation 17, reads and clears the accessed and dirty bits of up to 64 level 1 entries and returns them as two masks in results 1 and 2."
 revisit_if: "A message that does not fit five words is on a hot path and the shared-frame ring is measured as its cost, an operation needs more than five argument words, a second entry is needed for a different privilege transition, or a target's instruction leaves fewer than seven registers free to carry an invocation."
 confidence: "A packing judgement; each target's preserved set is the one its C convention keeps across a call, the memory operations' positions are counted against the verified functions' parameters in kernel/verified/capability, and the aarch64 table is written from the Arm Architecture Reference Manual before any aarch64 build has run it."
 ---
@@ -110,6 +110,17 @@ An address in the root entries a process space keeps for the kernel is refused b
 - **link**, operation 16, writes the entry at the level with the table page at the base in argument 4, whose level is one below it, so argument 2 is 2, 3 or 4 and the table page's own level is argument 2 minus 1. The untyped in argument 3 must cover the table page's block. The tables above the entry must be linked; a space's root is level 4.
 - **unmap** clears the entry at the level, which must map a frame. Level 1 is the only level it accepts.
 
+Unmap reads the entry's word in the same atomic step that clears it, and returns ok with:
+
+| Result | What |
+|---|---|
+| 1 | 1 when the entry's accessed bit was set as it was cleared, else 0 |
+| 2 | 1 when the entry's dirty bit was set as it was cleared, else 0 |
+| 3 | 1 when the target maintains the accessed bit, else 0 |
+| 4 | 1 when the target maintains the dirty bit, else 0 |
+
+A bit the target does not maintain says nothing, as for probe. A translation another core still caches stays usable until the unmap's flush, `design/flush-without-waiting/`, and a write through it sets no bit the unmap read, so a pager treats the page as possibly written until that flush is done.
+
 ### Probe
 
 Probe is operation 17. It names a place as map does, at level 1 always, so argument 2 carries a count of entries in place of the level: the count entries from the one the address names, 1 to 64, which must lie in that one level 1 table. The address is refused by the rules above for level 1, and the probe is refused for a count of 0 or over 64, for a range that leaves the table, and when the tables above it are not linked. For each present entry it reads and clears the accessed and dirty bits the processor sets, and it returns ok with:
@@ -153,6 +164,8 @@ The memory operations fit five words because a place in a space is one address, 
 Link names its parent by the address and the level rather than by the parent table's physical base, so a process never tracks where its tables sit and the kernel never trusts a physical address as a table: it walks from the space's root, as map does. The level is passed rather than taken from the table page's record, so a link whose table page has the wrong level for the entry the address reaches is refused rather than linked somewhere the caller did not mean.
 
 Every retype names a base inside its untyped's block, and the bases and orders of the untyped boot hands the root depend on the machine's memory, `design/root-process-at-boot/`. Inspect is how the root learns them, and how any process reads back what its own retypes, derives and moves left in its slots. Reading one slot is a bounded step that copies nothing, and it stays current after the process changes its table.
+
+Unmap returns the bits because it reads and clears the entry anyway: a pager evicting a page learns in the same call whether it was used and whether it must be written back, as L4 X.2's unmap delivers the referenced and written status of what it unmaps. The read and the clear are one exchange, so a bit another core's walk sets between them is not lost.
 
 Probe returns its masks in result words because 64 entries' two bits are 128 bits, which two words carry, and reading them into user memory would be the copy this record rules out. It reads at most 64 entries under the lock, a bounded step, `design/one-lock-bounded-steps/`, and stays in one level 1 table so the walk to it is one, as map's is. It does not flush because the bits are a sample a pager reads repeatedly: a flush per probe would cost the IPIs the bits exist to avoid, and a write always reaches the entry, since the processor walks to set dirty through a translation cached with it clear.
 

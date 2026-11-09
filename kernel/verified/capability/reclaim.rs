@@ -3527,8 +3527,9 @@ impl CapKernel {
         assert(b == a);
     }
 
-    /// Unlinks mapping node n with its entry and its frame's reference, and records the unmap.
-    pub fn unlink_mapping_node(&mut self, n: usize)
+    /// Unlinks mapping node n with its entry and its frame's reference, and records the unmap. Returns the
+    /// entry's word as read in the step that cleared it.
+    pub fn unlink_mapping_node(&mut self, n: usize) -> (ret: usize)
         requires
             old(self).wf(),
             n < NODE_SPACE,
@@ -3539,6 +3540,7 @@ impl CapKernel {
             final(self).wf(),
             Self::mapping_unlinked(*old(self), *final(self), n),
             Self::mapping_stale_noted(*old(self), *final(self), n),
+            Self::mapping_word(*old(self), n, ret),
             Self::caps_frame(*old(self), *final(self), n, n),
             !final(self).list.nodes@[n as int].live,
             final(self).list.seq@.len() == old(self).list.seq@.len() - 1,
@@ -3557,7 +3559,7 @@ impl CapKernel {
         proof {
             pre.lemma_mapping_is_leaf(n);
         }
-        self.unlink_arm(n);
+        let word = self.unlink_arm(n);
         let ghost mid = *self;
         self.list.remove_leaf(n);
         proof {
@@ -3582,6 +3584,7 @@ impl CapKernel {
             Self::lemma_tlb_same(mid, post);
             Self::lemma_bound_threads_same(pre, post);
         }
+        word
     }
 
     /// One more unlinked mapping of a dead table page, with no walk reaching it: what was kept stays kept

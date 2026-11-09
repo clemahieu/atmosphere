@@ -213,6 +213,79 @@ pub fn page_map_clear_status(
 }
 
 #[verifier(external_body)]
+// external_body(glue): clears a hardware page table word and returns it in one atomic exchange, since another core's walk may set the accessed or dirty bit between a read and a write
+pub fn page_map_take(
+    page_map_ptr: PageMapPtr,
+    Tracked(page_map_perm): Tracked<&mut PointsTo<PageMap>>,
+    index: usize,
+) -> (ret: usize)
+    requires
+        old(page_map_perm).addr() == page_map_ptr,
+        old(page_map_perm).is_init(),
+        old(page_map_perm).value().wf(),
+        index < 512,
+    ensures
+        final(page_map_perm).addr() == page_map_ptr,
+        final(page_map_perm).is_init(),
+        final(page_map_perm).value().ar.wf(),
+        final(page_map_perm).value().spec_seq@ == old(page_map_perm).value().spec_seq@.update(index as int, usize2page_entry(0usize)),
+        ret & status_kept_mask() == old(page_map_perm).value().ar@[index as int] & status_kept_mask(),
+        final(page_map_perm).value().ar@ == old(page_map_perm).value().ar@.update(index as int, 0usize),
+{
+    unsafe {
+        let word = core::ptr::addr_of_mut!((*(page_map_ptr as *mut PageMap)).ar.ar[index]);
+        (*(word as *const AtomicUsize)).swap(0, Ordering::Relaxed)
+    }
+}
+
+/// Clears entry `index`, returning its word as read in the same step: the word decodes to the entry the
+/// table held, and its accessed and dirty bits are the processor's as they stood when it was cleared.
+pub fn page_map_clear_take(
+    page_map_ptr: PageMapPtr,
+    Tracked(page_map_perm): Tracked<&mut PointsTo<PageMap>>,
+    index: usize,
+) -> (ret: usize)
+    requires
+        old(page_map_perm).addr() == page_map_ptr,
+        old(page_map_perm).is_init(),
+        old(page_map_perm).value().wf(),
+        index < 512,
+    ensures
+        final(page_map_perm).addr() == page_map_ptr,
+        final(page_map_perm).is_init(),
+        final(page_map_perm).value().wf(),
+        forall|i: usize|
+            #![trigger final(page_map_perm).value()[i]]
+            0 <= i < 512 && i != index ==> final(page_map_perm).value()[i] =~= old(
+                page_map_perm,
+            ).value()[i],
+        final(page_map_perm).value()[index].is_empty(),
+        final(page_map_perm).value().status(index as int).is_clear(),
+        spec_usize2page_entry(ret) == old(page_map_perm).value()@[index as int],
+{
+    let ghost before = page_map_perm.value();
+    let ret = page_map_take(page_map_ptr, Tracked(page_map_perm), index);
+    proof {
+        let after = page_map_perm.value();
+        let w = before.ar@[index as int];
+        zero_leads_is_empty_page_entry();
+        assert(0usize & (0x1u64 << 5u64) as usize == 0 && 0usize & (0x1u64 << 6u64) as usize == 0)
+            by (bit_vector);
+        assert forall|i: int|
+            #![trigger usize2page_entry(after.ar@[i])]
+            0 <= i < 512 implies usize2page_entry(after.ar@[i]) =~= after.spec_seq@[i] by {
+            if i != index as int {
+                assert(usize2page_entry(before.ar@[i]) =~= before.spec_seq@[i]);
+            }
+        }
+        assert(after.wf());
+        lemma_status_outside_entry(ret, w);
+        assert(usize2page_entry(w) =~= before.spec_seq@[index as int]);
+    }
+    ret
+}
+
+#[verifier(external_body)]
 // external_body(glue): writes a hardware page table through a raw pointer
 pub fn page_perm_to_page_map(page_ptr: PagePtr, Tracked(page_perm): Tracked<PagePerm4k>) -> (ret: (
     PageMapPtr,
