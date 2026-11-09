@@ -342,7 +342,66 @@ async fn check_capability_boot(project: &ProjectHandle, timeout: u64) -> Result<
     if !first_arguments_arrived(&serial) {
         return Err(anyhow!("the serial log does not show the first operation's five arguments in place"));
     }
-    Ok("exit status 0, the first operation refused with its five arguments in the serial log".to_string())
+    let (untyped, frames) = fixed_slots_printed(&serial)?;
+    if serial.contains(OLD_KERNEL_INIT) {
+        return Err(anyhow!("the serial log shows the old kernel_init"));
+    }
+    Ok(format!(
+        "exit status 0, the root's fixed slots printed with their kinds ({} untyped, {} frames), the first operation refused with its five arguments in the serial log",
+        untyped, frames
+    ))
+}
+
+/// What the old kernel_init logs when it finishes, which the capability boot does not run.
+const OLD_KERNEL_INIT: &str = "Kernel init success";
+
+/// What the kernel logs of the root's untyped and frame capabilities, before it prints each slot.
+const ROOT_HOLDS: &str = "root holds ";
+
+/// What the kernel logs for each fixed slot of the root's table, followed by the slot and its kind.
+const ROOT_SLOT: &str = "root slot ";
+
+/// The first untyped and frame slots of the root's table, design/root-process-at-boot/.
+const ROOT_UNTYPED_SLOT: usize = 4;
+const ROOT_FRAME_SLOT: usize = 129;
+
+/// The root's untyped and frame counts when the serial log prints, in order, one line per fixed slot
+/// with its kind: process at 1, thread at 2, console at 3, the untyped from 4 and the frames from 129,
+/// as many as the kernel says the root holds, at least one of each.
+fn fixed_slots_printed(serial: &str) -> Result<(usize, usize)> {
+    let holds = serial
+        .lines()
+        .find_map(|line| line.find(ROOT_HOLDS).map(|at| &line[at + ROOT_HOLDS.len()..]))
+        .ok_or_else(|| anyhow!("the serial log does not say what the root holds"))?;
+    let words: Vec<&str> = holds.split(|c: char| !c.is_ascii_alphanumeric()).filter(|word| !word.is_empty()).collect();
+    let (untyped, frames) = match words.as_slice() {
+        [untyped, "untyped", "and", frames, "frames", ..] => (untyped.parse::<usize>(), frames.parse::<usize>()),
+        _ => return Err(anyhow!("the root's holdings are not counted: {}", holds)),
+    };
+    let (untyped, frames) = match (untyped, frames) {
+        (Ok(untyped), Ok(frames)) if untyped > 0 && frames > 0 => (untyped, frames),
+        _ => return Err(anyhow!("the root holds no untyped or no frames: {}", holds)),
+    };
+    let mut expected = vec![(1, "process"), (2, "thread"), (3, "console")];
+    expected.extend((0..untyped).map(|k| (ROOT_UNTYPED_SLOT + k, "untyped")));
+    expected.extend((0..frames).map(|k| (ROOT_FRAME_SLOT + k, "frame")));
+    let printed: Vec<(usize, &str)> = serial
+        .lines()
+        .filter_map(|line| line.find(ROOT_SLOT).map(|at| &line[at + ROOT_SLOT.len()..]))
+        .map(|slot| {
+            let (index, rest) = slot.split_once(':').unwrap_or((slot, ""));
+            (index.parse().unwrap_or(0), rest.trim_start().split(|c: char| !c.is_ascii_alphabetic()).next().unwrap_or(""))
+        })
+        .collect();
+    match printed.iter().zip(&expected).position(|(printed, expected)| printed != expected) {
+        Some(at) => Err(anyhow!("root slot {} prints as {:?}, not {}", expected[at].0, printed[at].1, expected[at].1)),
+        None if printed.len() != expected.len() => Err(anyhow!(
+            "the serial log prints {} of the root's slots, not {}",
+            printed.len(),
+            expected.len()
+        )),
+        None => Ok((untyped, frames)),
+    }
 }
 
 /// The arguments dom0 passes its first invocation, in rsi, rdx, r8, r9 and r10, as the kernel logs them.
@@ -571,6 +630,29 @@ mod tests {
         assert!(!first_arguments_arrived(&format!("{}{}", dropped, unknown)));
         assert!(!first_arguments_arrived(&format!("{}{}", unknown, arrived)));
         assert!(!first_arguments_arrived("dom0 benchmark done\n"));
+    }
+
+    /// The kernel's slot lines for a root with two untyped and one frame.
+    fn slot_lines(frame_kind: &str) -> String {
+        format!(
+            " INFO root holds 2 untyped and 1 frames\u{1b}[0m\n INFO root slot 1: process base 0x8000\n INFO root slot 2: thread\n\
+             INFO root slot 3: console\n INFO root slot 4: untyped order 9\n\u{1b}[34m INFO root slot 5: untyped\u{1b}[0m\n\
+             INFO root slot 129: {} order 0\n",
+            frame_kind
+        )
+    }
+
+    #[test]
+    fn fixed_slots_are_each_printed_with_their_kind() {
+        assert_eq!(fixed_slots_printed(&slot_lines("frame")).unwrap(), (2, 1));
+        assert!(fixed_slots_printed(&slot_lines("untyped")).is_err());
+        let missing = slot_lines("frame").replace(" INFO root slot 2: thread\n", "");
+        assert!(fixed_slots_printed(&missing).is_err());
+        let extra = format!("{} INFO root slot 130: frame\n", slot_lines("frame"));
+        assert!(fixed_slots_printed(&extra).is_err());
+        let empty = slot_lines("frame").replace("holds 2 untyped", "holds 0 untyped");
+        assert!(fixed_slots_printed(&empty).is_err());
+        assert!(fixed_slots_printed(" INFO root slot 1: process\n").is_err());
     }
 
     #[test]

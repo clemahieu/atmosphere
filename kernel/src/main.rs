@@ -26,6 +26,8 @@
 mod arch;
 mod boot;
 mod bridge;
+#[cfg(feature = "capability")]
+mod capability;
 mod console;
 mod cpu;
 mod debugger;
@@ -110,18 +112,30 @@ fn boot_cpu0(boot_info: *const BootInfo) -> isize {
     }
 
     let boot_info = boot::get_boot_info();
-    let dom0 = boot_info.dom0.as_ref().unwrap();
-    let pml4 = boot_info.pml4;
-    let kernel_pml4 = unsafe { *(pml4 as *const usize) };
 
-    kernel::kernel_init(&boot_info.pages, pml4 as usize, kernel_pml4 as usize);
+    #[cfg(not(feature = "capability"))]
+    let (entry_point, initial_sp) = {
+        let dom0 = boot_info.dom0.as_ref().unwrap();
+        let pml4 = boot_info.pml4;
+        let kernel_pml4 = unsafe { *(pml4 as *const usize) };
 
-    log::info!("CPU 0 syscall stack {:#x}", cpu::get_current().syscall_sp);
-    unsafe {
-        start_second_core();
-    }
+        kernel::kernel_init(&boot_info.pages, pml4 as usize, kernel_pml4 as usize);
 
-    let initial_sp = unsafe { dom0.virt_start.add(dom0.reserved_size - 0x1000) };
+        log::info!("CPU 0 syscall stack {:#x}", cpu::get_current().syscall_sp);
+        unsafe {
+            start_second_core();
+        }
+        (dom0.entry_point, unsafe { dom0.virt_start.add(dom0.reserved_size - 0x1000) })
+    };
+
+    // CPU 1 stays down: nothing schedules a thread on it until the root holds a capability for it.
+    #[cfg(feature = "capability")]
+    let (entry_point, initial_sp) = {
+        let entry = capability::boot(boot_info);
+        log::info!("CPU 0 syscall stack {:#x}", cpu::get_current().syscall_sp);
+        (entry.pc, entry.sp.cast::<u8>())
+    };
+
     log::info!("initial_sp: {:?}", initial_sp);
     unsafe {
         let (rdi, rsi) = if let Some(payload) = &boot_info.payload {
@@ -130,7 +144,7 @@ fn boot_cpu0(boot_info: *const BootInfo) -> isize {
             (0, 0)
         };
 
-        enter_userspace(dom0.entry_point, initial_sp as *mut _, rdi, rsi);
+        enter_userspace(entry_point, initial_sp as *mut _, rdi, rsi);
     }
 }
 

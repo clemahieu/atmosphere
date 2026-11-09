@@ -3,8 +3,8 @@
 //!
 //! The list crosses the trust boundary, so a page that is not 4 KiB aligned, is listed twice, sits
 //! at or past the page limit or the node space, or is available inside the kernel image or dom0's
-//! reserved range is a boot panic. Pages set aside for the root's own boot objects are taken out of
-//! the runs. Why the boundary is tier 3: design/trust-boundary/. What boot sets aside:
+//! reserved range is a boot panic. Pages set aside for the kernel, the root's own boot objects and
+//! the 2M regions of dom0's image are taken out of the runs. Why the boundary is tier 3: design/trust-boundary/. What boot sets aside:
 //! design/root-process-at-boot/.
 
 use astd::boot::PhysicalMemoryType;
@@ -33,7 +33,7 @@ pub struct ByteRange {
 }
 
 impl ByteRange {
-    fn overlaps_page(self, address: u64) -> bool {
+    pub fn overlaps_page(self, address: u64) -> bool {
         self.size != 0
             && address < self.base.saturating_add(self.size)
             && address.saturating_add(PAGE_BYTES) > self.base
@@ -55,8 +55,8 @@ struct Reject {
 /// Folds `pages` into maximal free runs written at `out`.
 ///
 /// `seen` is one byte per tracked page; it must be `PAGE_SLOTS` long and is cleared here. `aside`
-/// is the pages boot keeps for the root's process, thread, table leaf and the list's synthetic
-/// root. Returns how many runs were written. A page the loader was not allowed to hand over panics
+/// is the pages boot keeps for the kernel, the root's process, thread and table leaves, the list's
+/// synthetic root and the 2M regions of dom0's image. Returns how many runs were written. A page the loader was not allowed to hand over panics
 /// with that page's address and the reason.
 pub fn free_page_ranges(
     pages: &[(u64, PhysicalMemoryType)],
