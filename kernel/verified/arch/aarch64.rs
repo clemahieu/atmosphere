@@ -23,8 +23,9 @@ use crate::util::page_ptr_util_u::*;
 // (D8.3.1.3), so the encoder keeps the abstract entry there in the same bits as a valid word's.
 // Several of the hardware's bits mean what the abstract entry means when clear (bit 1, AP[2],
 // APTable): the decoders read them against bit 0, so a valid word reads them inverted and the zero
-// word is the empty entry. Its output address sits where x86_64's does, so the address masks are
-// the same.
+// word is the empty entry. A writable leaf is marked DBM, and AP[2] in a word so marked is the dirty
+// state, clear once the leaf was written (D8.5.2). Its output address sits where x86_64's does, so
+// the address masks are the same.
 
 /// Valid descriptor, bit 0.
 pub const DESC_VALID: u64 = 0x1;
@@ -38,13 +39,19 @@ pub const DESC_TYPE: u64 = 0x2;
 /// D8.4.1.2.1).
 pub const DESC_AP_EL0: u64 = 0x40;
 
-/// AP[2], bit 7 of a block or page descriptor: read-only at every exception level.
+/// AP[2], bit 7 of a block or page descriptor: read-only at every exception level. In a descriptor
+/// whose DBM is set it is the dirty state instead: set while the leaf is clean (D8.5.2.1).
 pub const DESC_AP_RO: u64 = 0x80;
 
 /// AF, bit 10 of a block or page descriptor: the access flag (D8.5.1). In a table descriptor the bit
 /// is IGNORED unless hardware management of the table descriptor's access flag is enabled, which the
 /// kernel does not enable, so the walker sets it only in a leaf.
 pub const DESC_AF: u64 = 0x400;
+
+/// DBM, bit 51 of a block or page descriptor: the dirty bit modifier (D8.3.1.2). With AP[2] set the
+/// descriptor is writable-clean, and a write through it clears AP[2], which makes it writable-dirty
+/// (D8.5.2.1). In a table descriptor the bit is IGNORED (D8.3.1.1).
+pub const DESC_DBM: u64 = 0x0008_0000_0000_0000;
 
 /// The memory attributes the encoder writes in every valid leaf and the decoders ignore: AttrIndx[2:0]
 /// = 0, bits 4:2, which MAIR_EL1 attribute 0 makes Normal write-back memory (D8.6.1); SH[1:0] = 0b11,
@@ -81,10 +88,6 @@ pub const MEM_2m_MASK: u64 = 0x0000_ffff_ffe0_0000;
 /// A 1G block's address, bits 47:30.
 pub const MEM_1g_MASK: u64 = 0x0000_ffff_c000_0000;
 
-/// The bits of an entry's word that are not the walker's access flag: a word ANDed with it has its
-/// status clear.
-pub const STATUS_KEPT_MASK: usize = 0xffff_ffff_ffff_fbff;
-
 /// Whether this target maintains the accessed bit: always. The walker sets AF where TCR_EL1.HA is set
 /// (D8.5.1.2); a leaf whose AF is clear faults on its first access otherwise (D8.5.1.1), so where
 /// ID_AA64MMFR1_EL1.HAFDBS says the walker cannot, the kernel's access-flag fault sets it. Either way
@@ -101,12 +104,14 @@ pub fn maintains_accessed() -> (ret: bool)
     true
 }
 
-/// Whether this target maintains the dirty bit: never. The hardware's dirty state is DBM with AP[2]
-/// clear, and a clean entry is AP[2] set (D8.5.2.1). The encoder writes DBM clear and the kernel leaves
-/// TCR_EL1.HD clear, so AP[2] is the kernel's own, without_status keeps it and the status's dirty bit
-/// is always clear. See design/arch-module/.
+/// Whether this target maintains the dirty bit: always. The encoder writes a writable leaf as DBM with
+/// AP[2] set, and the walker clears AP[2] on the first write through it where TCR_EL1.HD is set
+/// (D8.5.2.1). Where ID_AA64MMFR1_EL1.HAFDBS says the walker cannot, the dirty state is software's to
+/// keep (D8.5.2): the write takes a permission fault on AP[2] (D8.4.1.2.1) and the kernel's handler
+/// clears AP[2] in a leaf whose DBM is set. Either way DBM with AP[2] clear says the leaf was written
+/// since the kernel wrote it or last cleared its status. See design/arch-module/.
 pub open spec fn spec_maintains_dirty() -> bool {
-    false
+    true
 }
 
 #[verifier(when_used_as_spec(spec_maintains_dirty))]
@@ -114,7 +119,7 @@ pub fn maintains_dirty() -> (ret: bool)
     ensures
         ret == spec_maintains_dirty(),
 {
-    false
+    true
 }
 
 // The decoders and the encoder: a word of a table at a level, in the kernel's numbering (4 for a root,
@@ -137,12 +142,14 @@ pub open spec fn usize2table(v: usize, level: usize) -> bool {
     level != 1 && !usize2ps(v, level)
 }
 
-/// Writable: APTable[1] or AP[2] clear in a valid word, set in an invalid one.
+/// Writable: in a table descriptor, APTable[1] clear in a valid word and set in an invalid one. In a
+/// block or page descriptor, DBM set, whose AP[2] is the dirty state, or else AP[2] clear in a valid
+/// word and set in an invalid one.
 pub open spec fn usize2write(v: usize, level: usize) -> bool {
     if usize2table(v, level) {
         ((v & TABLE_AP_RO as usize) != 0) != usize2present(v, level)
     } else {
-        ((v & DESC_AP_RO as usize) != 0) != usize2present(v, level)
+        (v & DESC_DBM as usize) != 0 || ((v & DESC_AP_RO as usize) != 0) != usize2present(v, level)
     }
 }
 
@@ -168,9 +175,15 @@ pub open spec fn usize2accessed(v: usize, level: usize) -> bool {
     (v & DESC_AF as usize) != 0
 }
 
-/// The walker's accessed and dirty bits of a word, apart from the entry it decodes to.
+/// Dirty: DBM with AP[2] clear, the writable-dirty state. The encoder sets DBM in no table descriptor,
+/// so one is never dirty.
+pub open spec fn usize2dirty(v: usize, level: usize) -> bool {
+    (v & DESC_DBM as usize) != 0 && (v & DESC_AP_RO as usize) == 0
+}
+
+/// The walker's accessed and dirty state of a word, apart from the entry it decodes to.
 pub open spec fn spec_usize2page_entry_status(v: usize, level: usize) -> PageEntryStatus {
-    PageEntryStatus { accessed: usize2accessed(v, level), dirty: false }
+    PageEntryStatus { accessed: usize2accessed(v, level), dirty: usize2dirty(v, level) }
 }
 
 #[verifier(when_used_as_spec(spec_usize2page_entry_status))]
@@ -178,12 +191,19 @@ pub fn usize2page_entry_status(v: usize, level: usize) -> (ret: PageEntryStatus)
     ensures
         ret == spec_usize2page_entry_status(v, level),
 {
-    PageEntryStatus { accessed: (v & DESC_AF as usize) != 0, dirty: false }
+    PageEntryStatus {
+        accessed: (v & DESC_AF as usize) != 0,
+        dirty: (v & DESC_DBM as usize) != 0 && (v & DESC_AP_RO as usize) == 0,
+    }
 }
 
-/// The word with its access flag clear.
+/// The word with its access flag clear and, where DBM is set, AP[2] set: accessed and dirty clear.
 pub open spec fn spec_without_status(v: usize) -> usize {
-    v & STATUS_KEPT_MASK
+    if (v & DESC_DBM as usize) != 0 {
+        (v & !(DESC_AF as usize)) | DESC_AP_RO as usize
+    } else {
+        v & !(DESC_AF as usize)
+    }
 }
 
 /// What a clear of the status bits writes in place of the word it read.
@@ -192,11 +212,17 @@ pub fn without_status(v: usize) -> (ret: usize)
     ensures
         ret == spec_without_status(v),
 {
-    v & STATUS_KEPT_MASK
+    let cleared = v & !(DESC_AF as usize);
+    if (v & DESC_DBM as usize) != 0 {
+        cleared | DESC_AP_RO as usize
+    } else {
+        cleared
+    }
 }
 
-/// Two words that differ only in the access flag decode to the same entry, so whatever the walker
-/// sets there leaves every table's view as it was.
+/// Two words that differ only in the access flag, and in AP[2] where DBM is set, decode to the same
+/// entry, so whatever the walker sets or clears there leaves every table's view as it was: a word
+/// with DBM set is writable whatever its AP[2].
 pub proof fn lemma_status_outside_entry(v: usize, w: usize, level: usize)
     requires
         spec_without_status(v) == spec_without_status(w),
@@ -207,14 +233,23 @@ pub proof fn lemma_status_outside_entry(v: usize, w: usize, level: usize)
         && (v & 0x1usize != 0) == (w & 0x1usize != 0)
         && (v & 0x2usize != 0) == (w & 0x2usize != 0)
         && (v & 0x40usize != 0) == (w & 0x40usize != 0)
-        && (v & 0x80usize != 0) == (w & 0x80usize != 0)
+        && (v & 0x0008_0000_0000_0000usize != 0) == (w & 0x0008_0000_0000_0000usize != 0)
+        && (v & 0x0008_0000_0000_0000usize == 0 ==> (v & 0x80usize != 0) == (w & 0x80usize != 0))
         && (v & 0x0040_0000_0000_0000usize != 0) == (w & 0x0040_0000_0000_0000usize != 0)
         && (v & 0x1000_0000_0000_0000usize != 0) == (w & 0x1000_0000_0000_0000usize != 0)
         && (v & 0x2000_0000_0000_0000usize != 0) == (w & 0x2000_0000_0000_0000usize != 0)
         && (v & 0x4000_0000_0000_0000usize != 0) == (w & 0x4000_0000_0000_0000usize != 0))
         by (bit_vector)
         requires
-            v & 0xffff_ffff_ffff_fbffusize == w & 0xffff_ffff_ffff_fbffusize,
+            (if v & 0x0008_0000_0000_0000usize != 0 {
+                (v & !0x400usize) | 0x80usize
+            } else {
+                v & !0x400usize
+            }) == (if w & 0x0008_0000_0000_0000usize != 0 {
+                (w & !0x400usize) | 0x80usize
+            } else {
+                w & !0x400usize
+            }),
     ;
 }
 
@@ -224,9 +259,28 @@ pub proof fn lemma_without_status(v: usize, level: usize)
         spec_without_status(spec_without_status(v)) == spec_without_status(v),
         spec_usize2page_entry_status(spec_without_status(v), level).is_clear(),
 {
-    assert((v & 0xffff_ffff_ffff_fbffusize) & 0xffff_ffff_ffff_fbffusize == v
-        & 0xffff_ffff_ffff_fbffusize) by (bit_vector);
-    assert((v & 0xffff_ffff_ffff_fbffusize) & 0x400usize == 0) by (bit_vector);
+    let c = spec_without_status(v);
+    assert(c == (if c & 0x0008_0000_0000_0000usize != 0 {
+        (c & !0x400usize) | 0x80usize
+    } else {
+        c & !0x400usize
+    })) by (bit_vector)
+        requires
+            c == (if v & 0x0008_0000_0000_0000usize != 0 {
+                (v & !0x400usize) | 0x80usize
+            } else {
+                v & !0x400usize
+            }),
+    ;
+    assert(c & 0x400usize == 0 && (c & 0x0008_0000_0000_0000usize != 0 ==> c & 0x80usize != 0))
+        by (bit_vector)
+        requires
+            c == (if v & 0x0008_0000_0000_0000usize != 0 {
+                (v & !0x400usize) | 0x80usize
+            } else {
+                v & !0x400usize
+            }),
+    ;
 }
 
 /// The zero word is the empty entry with its status clear, at every level.
@@ -246,7 +300,8 @@ pub proof fn zero_leads_is_empty_page_entry(level: usize)
         && 0usize & 0x1000_0000_0000_0000usize == 0
         && 0usize & 0x2000_0000_0000_0000usize == 0
         && 0usize & 0x4000_0000_0000_0000usize == 0
-        && 0usize & 0xffff_ffff_ffff_fbffusize == 0) by (bit_vector);
+        && 0usize & 0x0008_0000_0000_0000usize == 0
+        && 0usize & !0x400usize == 0) by (bit_vector);
 }
 
 pub open spec fn spec_usize2page_entry_perm(v: usize, level: usize) -> PageEntryPerm {
@@ -278,7 +333,7 @@ pub fn usize2page_entry_perm(v: usize, level: usize) -> (ret: PageEntryPerm)
         PageEntryPerm {
             present,
             ps,
-            write: ((v & DESC_AP_RO as usize) != 0) != present,
+            write: (v & DESC_DBM as usize) != 0 || ((v & DESC_AP_RO as usize) != 0) != present,
             execute_disable: (v & DESC_UXN as usize) != 0,
             user: (v & DESC_AP_EL0 as usize) != 0,
         }
@@ -315,8 +370,10 @@ pub fn usize2pa(v: usize, level: usize) -> (ret: PAddr)
     return ret;
 }
 
-/// The word that holds an entry in a table at `level`, with its status clear. A valid leaf also gets
-/// DESC_LEAF_ATTRS, which the decoders ignore.
+/// The word that holds an entry in a table at `level`, with its status clear. A valid leaf is written
+/// read-only in AP[2], and DBM beside it where the entry is writable: the writable-clean state. An
+/// invalid leaf keeps write in AP[2] alone. A valid leaf also gets DESC_LEAF_ATTRS, which the decoders
+/// ignore.
 pub fn page_entry2usize(page_entry: &PageEntry, level: usize) -> (ret: usize)
     requires
         MEM_valid(page_entry.addr),
@@ -329,21 +386,23 @@ pub fn page_entry2usize(page_entry: &PageEntry, level: usize) -> (ret: usize)
     let present = page_entry.perm.present;
     let ps = page_entry.perm.ps;
     let leaf = level == 1 || ps;
-    let write_bit = page_entry.perm.write != present;
+    let write = page_entry.perm.write;
     let p: usize = if present { DESC_VALID as usize } else { 0 };
     let t: usize = if ps != present { DESC_TYPE as usize } else { 0 };
-    let lw: usize = if leaf && write_bit { DESC_AP_RO as usize } else { 0 };
-    let tw: usize = if !leaf && write_bit { TABLE_AP_RO as usize } else { 0 };
+    let lw: usize = if leaf && (present || write) { DESC_AP_RO as usize } else { 0 };
+    let ld: usize = if leaf && present && write { DESC_DBM as usize } else { 0 };
+    let tw: usize = if !leaf && write != present { TABLE_AP_RO as usize } else { 0 };
     let lu: usize = if leaf && page_entry.perm.user { DESC_AP_EL0 as usize } else { 0 };
     let tu: usize = if !leaf && page_entry.perm.user != present { TABLE_AP_NO_EL0 as usize } else { 0 };
     let lx: usize = if leaf && page_entry.perm.execute_disable { DESC_XN as usize } else { 0 };
     let tx: usize = if !leaf && page_entry.perm.execute_disable { TABLE_XN as usize } else { 0 };
     let la: usize = if leaf && present { DESC_LEAF_ATTRS as usize } else { 0 };
-    let ret = addr | p | t | lw | tw | lu | tu | lx | tx | la;
+    let ret = addr | p | t | lw | ld | tw | lu | tu | lx | tx | la;
     assert(ret & 0x1usize == p
         && ret & 0x2usize == t
         && ret & 0x40usize == lu
         && ret & 0x80usize == lw
+        && ret & 0x0008_0000_0000_0000usize == ld
         && ret & 0x400usize == 0
         && (ret & 0x0040_0000_0000_0000usize != 0) == (lx != 0)
         && (ret & 0x1000_0000_0000_0000usize != 0) == (tx != 0)
@@ -352,11 +411,12 @@ pub fn page_entry2usize(page_entry: &PageEntry, level: usize) -> (ret: usize)
         && ret & 0x0000_ffff_ffff_f000usize == addr
         && (p == 1 ==> ret != 0)) by (bit_vector)
         requires
-            ret == addr | p | t | lw | tw | lu | tu | lx | tx | la,
+            ret == addr | p | t | lw | ld | tw | lu | tu | lx | tx | la,
             addr & (!0x0000_ffff_ffff_f000u64) as usize == 0,
             p == 0 || p == 1,
             t == 0 || t == 2,
             lw == 0 || lw == 0x80,
+            ld == 0 || ld == 0x0008_0000_0000_0000usize,
             tw == 0 || tw == 0x4000_0000_0000_0000usize,
             lu == 0 || lu == 0x40,
             tu == 0 || tu == 0x2000_0000_0000_0000usize,
