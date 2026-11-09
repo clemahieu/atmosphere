@@ -56,7 +56,7 @@ impl CapKernel {
                 !(leaf2 + 1 <= x < leaf2 + 1 + count) && pre.is_cap(x) ==> post.payload_of(x) == pre.payload_of(x),
             forall|q: int| 0 <= q < NUM_2M && !image_region(runs, q)
                 ==> #[trigger] post.blocks.regions_2m@[q] == pre.blocks.regions_2m@[q],
-            forall|j: int| 0 <= j < NUM_PAGES && !image_region(runs, region_2m(j))
+            forall|j: int| pre.blocks.tracks(j) && !image_region(runs, region_2m(j))
                 ==> #[trigger] post.blocks.pages@[j] == pre.blocks.pages@[j],
         ensures
             post.root_tables_ready(process),
@@ -158,7 +158,7 @@ impl CapKernel {
                 &&& forall|j: usize| q * 512 <= j < (q + 1) * 512 ==> #[trigger] perms.contains_key(j)
             },
             forall|j: usize| #[trigger] perms.contains_key(j) ==> perms[j].addr() == j * 4096,
-            forall|p: usize| #[trigger] old(self).list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
+            forall|p: usize| #[trigger] old(self).list.pages@.dom().contains(p) && old(self).blocks.tracks_addr(p)
                 ==> !image_region(runs@, region_2m((p / 4096) as int)),
             old(self).root_tables_ready(process),
             old(self).root_untyped_free(process),

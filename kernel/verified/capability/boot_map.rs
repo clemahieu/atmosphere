@@ -430,7 +430,7 @@ impl CapKernel {
         }
         let phys = image_phys(runs);
         assert(phys[r] == (runs[r].phys, runs[r].pages));
-        assert(runs[r].phys + runs[r].pages <= NUM_PAGES);
+        assert(cur.blocks.tracks_run(runs[r].phys as int, runs[r].pages as int));
         let g = image_frame(runs[r], v);
         assert(g == b.0 + i);
         assert(in_run_at(phys, r, g as int));
@@ -532,10 +532,10 @@ impl CapKernel {
             &&& post.blocks.regions_2m@[g / PAGES_PER_2M as int].refs <= ROOT_FRAME_SLOTS + done + 1
         } by {
             assert(image_phys(runs)[a] == (runs[a].phys, runs[a].pages));
-            assert(runs[a].phys + runs[a].pages <= NUM_PAGES);
+            assert(cur.blocks.tracks_run(runs[a].phys as int, runs[a].pages as int));
             let q = g / PAGES_PER_2M as int;
             lemma_div_pos_is_pos(g, PAGES_PER_2M as int);
-            lemma_div_is_ordered(g, NUM_PAGES as int - 1, PAGES_PER_2M as int);
+            lemma_div_is_ordered(g, cur.blocks.page_count() as int - 1, PAGES_PER_2M as int);
             assert(0 <= q < NUM_2M);
             assert(post.blocks.regions_2m@[q].typed == cur.blocks.regions_2m@[q].typed);
             if q != g0 / PAGES_PER_2M {
@@ -724,7 +724,7 @@ impl CapKernel {
             proof {
                 reveal(CapKernel::maps_ready);
                 assert(image_phys(runs@)[r as int] == (phys, pages));
-                assert(phys + pages <= NUM_PAGES);
+                assert(pre.blocks.tracks_run(phys as int, pages as int));
                 assert(pages > 0);
                 assert(in_virt_at(runs@, r as int, virt + pages - 1));
                 lemma_virt_range(runs@, r as int, virt + pages - 1);
@@ -741,7 +741,7 @@ impl CapKernel {
                     phys == runs@[r as int].phys,
                     virt == runs@[r as int].virt,
                     pages == runs@[r as int].pages,
-                    phys + pages <= NUM_PAGES,
+                    pre.blocks.tracks_run(phys as int, pages as int),
                     virt + pages <= 512 * PAGES_PER_L4,
                     virt <= w,
                     ps == phys + (w - virt),
@@ -785,7 +785,7 @@ impl CapKernel {
                         phys == runs@[r as int].phys,
                         virt == runs@[r as int].virt,
                         pages == runs@[r as int].pages,
-                        phys + pages <= NUM_PAGES,
+                        pre.blocks.tracks_run(phys as int, pages as int),
                         virt + pages <= 512 * PAGES_PER_L4,
                         virt <= w,
                         ps == phys + (w - virt),
