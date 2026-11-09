@@ -346,10 +346,21 @@ async fn check_capability_boot(project: &ProjectHandle, timeout: u64) -> Result<
     if serial.contains(OLD_KERNEL_INIT) {
         return Err(anyhow!("the serial log shows the old kernel_init"));
     }
+    if !console_line_printed(&serial) {
+        return Err(anyhow!("the serial log does not hold the line dom0 prints through its console"));
+    }
     Ok(format!(
-        "exit status 0, the root's fixed slots printed with their kinds ({} untyped, {} frames), the first operation refused with its five arguments in the serial log",
+        "exit status 0, the root's fixed slots printed with their kinds ({} untyped, {} frames), the first operation refused with its five arguments, and dom0's line through its console in the serial log",
         untyped, frames
     ))
+}
+
+/// The line dom0 prints through its console capability, written by the kernel's print as dom0 gave it.
+const CONSOLE_LINE: &str = "dom0 prints through its console";
+
+/// Whether the serial log holds dom0's console line as a line of its own.
+fn console_line_printed(serial: &str) -> bool {
+    serial.lines().any(|line| line.trim_end_matches('\r') == CONSOLE_LINE)
 }
 
 /// What the old kernel_init logs when it finishes, which the capability boot does not run.
@@ -630,6 +641,14 @@ mod tests {
         assert!(!first_arguments_arrived(&format!("{}{}", dropped, unknown)));
         assert!(!first_arguments_arrived(&format!("{}{}", unknown, arrived)));
         assert!(!first_arguments_arrived("dom0 benchmark done\n"));
+    }
+
+    #[test]
+    fn console_line_is_a_line_of_its_own() {
+        assert!(console_line_printed(" INFO root slot 3: console\ndom0 prints through its console\n INFO capability entry\n"));
+        assert!(console_line_printed("x\r\ndom0 prints through its console\r\n"));
+        assert!(!console_line_printed(" INFO dom0 prints through its console\n"));
+        assert!(!console_line_printed("dom0 prints through its\n"));
     }
 
     /// The kernel's slot lines for a root with two untyped and one frame.

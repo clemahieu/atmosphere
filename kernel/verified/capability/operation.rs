@@ -5,6 +5,12 @@ use vstd::prelude::*;
 
 verus! {
 
+use crate::capability::kernel::*;
+use crate::capability::thread::*;
+use crate::define::NUM_CPUS;
+use crate::pptr::*;
+use crate::trap::Registers;
+
 /// The operation was done.
 pub const STATUS_OK: u64 = 0;
 
@@ -115,15 +121,63 @@ pub fn operation(number: u64) -> (ret: Option<Operation>)
     ret
 }
 
-/// The status of an invocation. No operation is wired to the kernel yet, so each one is refused, and a
-/// number no operation has is unknown.
-pub fn dispatch(number: u64) -> (status: u64)
-    ensures
-        status == if spec_operation(number) is Some { STATUS_REFUSED } else { STATUS_UNKNOWN },
-{
-    match operation(number) {
-        Some(_) => STATUS_REFUSED,
-        None => STATUS_UNKNOWN,
+impl CapKernel {
+    /// The status the invocation in frame returns to a thread of the process whose table is at root:
+    /// print's for print, refused for every other operation, none of which is wired yet, and unknown
+    /// for a number no operation has. The slot is rdi and print's words are rsi, rdx, r8, r9 and r10, as
+    /// design/syscall-abi-in-registers/ places them.
+    pub open spec fn spec_status(&self, root: usize, frame: Registers) -> u64 {
+        match spec_operation(frame.rax) {
+            Some(Operation::Print) => if self.can_print(root, frame.rdi as usize) { STATUS_OK } else { STATUS_REFUSED },
+            Some(_) => STATUS_REFUSED,
+            None => STATUS_UNKNOWN,
+        }
+    }
+
+    /// Core c's step for the invocation its current thread entered the kernel with, in frame. The
+    /// caller is core c's current thread and the table is its process's, never a name from user
+    /// space, and check_current runs first: design/one-lock-bounded-steps/. Returns None when core c
+    /// runs no thread after the check, so nothing returns to user mode; otherwise the status for rax,
+    /// with the kernel unchanged.
+    pub fn dispatch(&mut self, c: usize, frame: Registers) -> (ret: Option<u64>)
+        requires
+            old(self).wf(),
+            c < NUM_CPUS,
+        ensures
+            Self::step_ok(*old(self), *final(self), c as int),
+            ret is None <==> old(self).must_leave(c as int) || old(self).cores@[c as int].current_thread is None,
+            ret is Some ==> {
+                let t = old(self).cores@[c as int].current_thread->Some_0;
+                let root = old(self).threads.records@[t].value().process->Some_0;
+                &&& *final(self) == *old(self)
+                &&& ret->0 == old(self).spec_status(root, frame)
+            },
+    {
+        if self.check_current(c, frame) {
+            return None;
+        }
+        let t = match self.cores.get(c).current_thread {
+            Some(t) => t,
+            None => { return None; },
+        };
+        proof {
+            self.lemma_current_root_live(c as int);
+            assert(thread_wf(&self.list, &self.threads, &self.blocks, t));
+        }
+        let record = *PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * 4096).borrow(
+            Tracked(self.threads.records.borrow().tracked_borrow(t)),
+        );
+        let root = match record.process {
+            Some(root) => root,
+            None => { proof { assert(false); } return None; },
+        };
+        match operation(frame.rax) {
+            Some(Operation::Print) => Some(
+                self.print(root, frame.rdi as usize, frame.rsi, frame.rdx, frame.r8, frame.r9, frame.r10),
+            ),
+            Some(_) => Some(STATUS_REFUSED),
+            None => Some(STATUS_UNKNOWN),
+        }
     }
 }
 

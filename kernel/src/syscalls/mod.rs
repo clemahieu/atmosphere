@@ -404,21 +404,27 @@ extern "C" fn sys_invalidate_iotlb(bus: usize, device: usize, function: usize, r
     }
 }
 
-/// The capability kernel's handler. The verified dispatch decides the status rax returns, and the
-/// kernel logs each invocation, since no operation is wired yet to report anything itself.
+/// The capability kernel's handler. The verified dispatch runs the invocation for the core's current
+/// thread and decides the status rax returns, and the kernel logs each invocation.
 #[cfg(feature = "capability")]
 extern "C" fn capability_entry(regs: &mut Registers) {
     use crate::bridge::Bridge;
+    use crate::capability::CAP_KERNEL;
     use verified::bridge::TrustedBridge;
 
-    let number = regs.rax;
-    let status = operation::dispatch(number);
+    let status = CAP_KERNEL
+        .lock()
+        .as_deref_mut()
+        .expect("a syscall before the capability kernel was built")
+        .dispatch(crate::cpu::get_cpu_id(), *regs)
+        .expect("no operation is wired that moves the calling thread off its core");
     let outcome = match status {
+        operation::STATUS_OK => "ok",
         operation::STATUS_REFUSED => "refused",
         _ => "unknown",
     };
     let arguments = [regs.rsi, regs.rdx, regs.r8, regs.r9, regs.r10];
-    log::info!("capability entry: operation {} on slot {} with {:?}: {}", number, regs.rdi, arguments, outcome);
+    log::info!("capability entry: operation {} on slot {} with {:?}: {}", regs.rax, regs.rdi, arguments, outcome);
     regs.rax = status;
     Bridge::set_switch_decision(SwitchDecision::NoSwitching);
 }
