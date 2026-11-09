@@ -20,14 +20,14 @@ import time
 MIB = 1 << 20
 PAGE = 4096
 MARGIN = 16 * MIB  # the least room the stack must have left
-# OVMF and the ESP layout the loader expects, as build-tool/src/emulator/qemu.rs boots them.
+# OVMF and the ESP layout the loader expects, as tools/run.py boots them.
 OVMF_CODE = "/usr/share/edk2/ovmf/OVMF_CODE.fd"
 OVMF_VARS = "/usr/share/edk2/ovmf/OVMF_VARS.fd"
 
 
 def build(profile, overflow=False):
     args = ["cargo", "build", "-q"] + (["--release"] if profile == "release" else [])
-    for crate in ("kernel", "dom0"):
+    for crate in ("kernel", "dom0", "user/hello"):
         subprocess.run(args, cwd=crate, check=True, env={**os.environ, "RUSTC_BOOTSTRAP": "1"})
     build_loader(profile, ["small_kernel_stack"] if overflow else [])
     check_entry_frame(f"target/x86_64-unknown-aloader/{profile}/kernel")
@@ -63,13 +63,15 @@ def check_entry_frame(kernel):
         sys.exit(f"FAIL: main in {kernel} probes a frame of {max(sizes):#x} bytes before the IDT exists")
 
 
-def boot(profile, out, marker=b"dom0 benchmark done", kernel=None, dom0=None):
-    """Boots until the marker appears in the serial log and returns (serial log, qemu, monitor socket)."""
-    kernel = kernel or f"target/x86_64-unknown-aloader/{profile}/kernel"
-    dom0 = dom0 or f"target/x86_64-unknown-aloader/{profile}/dom0"
+def boot(profile, out, marker=b"dom0 benchmark done", kernel=None, dom0=None, payload=None):
+    """Boots until the marker appears in the serial log and returns (serial log, qemu, monitor socket).
+    The initrd is the kernel, dom0 and the payload dom0 starts, as tools/run.py lays it out."""
+    images = [image or f"target/x86_64-unknown-aloader/{profile}/{name}"
+              for image, name in ((kernel, "kernel"), (dom0, "dom0"), (payload, "hello"))]
     initrd = f"{out}/initrd"
     with open(initrd, "wb") as f:
-        f.write(open(kernel, "rb").read() + open(dom0, "rb").read())
+        for image in images:
+            f.write(open(image, "rb").read())
     log = f"{out}/serial.log"
     mon = f"{out}/mon"  # relative: a unix socket path is limited to about 100 bytes
     for path in (log, mon):

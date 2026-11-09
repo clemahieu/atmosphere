@@ -6,14 +6,13 @@ mod userspace;
 use core::num::NonZeroU64;
 use core::{fmt, ops::DerefMut};
 
-use x86::current::paging::PAddr;
+use aelf::PAddr;
 
 use astd::boot::PhysicalMemoryType;
 use astd::memory::PageProtection;
 use astd::sync::Mutex;
 use aelf::{VirtualMapper, ContiguousMapping};
 
-#[cfg(target_os = "uefi")]
 pub use allocator::set_bootstrap_region;
 pub use map::MemoryMap;
 pub use paging::{AddressSpace, HUGE_PAGE_SIZE, PAGE_SIZE};

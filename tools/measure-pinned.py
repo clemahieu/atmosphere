@@ -2,6 +2,7 @@
 """Boot dom0 under KVM with its two vCPUs pinned, and print the kernel's own timing lines.
 
 usage: tools/measure-pinned.py within0|within1|across [boots] [--lock-stats] [--force]   (from the workspace root)
+       tools/measure-pinned.py --test                                                      (this script's own tests)
 
 Numbers from a host with other work on it do not mean much, so this reports the load average. It
 pins vCPU 0 and 1 to separate physical cores and keeps QEMU's other threads, and its own clock sampler,
@@ -23,14 +24,18 @@ Before the first boot it looks at the measured CPUs and their SMT siblings for h
 prints what it finds there: other tasks seen runnable, from /proc/*/task/*/stat; device IRQs routed
 there, from /proc/irq/*/effective_affinity_list, or taken there, from the counts in /proc/interrupts;
 and the CPU-local interrupts (the local timer, rescheduling, function call and TLB IPIs) taken there.
-A runnable task or a device IRQ makes it refuse to boot; --force boots anyway and prints the finding
-as a warning above the numbers. The CPU-local interrupts are printed and do not refuse: no affinity
-setting moves them, and only nohz_full at host boot would quiet the timer.
+A runnable task, a device IRQ taken there, or a device IRQ routed there that the isolation could move
+makes it refuse to boot; --force boots anyway and prints the finding as a warning above the numbers.
+A device IRQ routed there that the kernel would not move, which tools/isolate-pinned.sh apply records
+in its state, is printed as fixed and does not refuse unless it fired: such an IRQ is managed, as an
+NVMe queue's is, held to the CPUs that submit its I/O, and nothing submits I/O from a measured CPU
+while only a vCPU thread runs there. The CPU-local interrupts are printed and do not refuse: no
+affinity setting moves them, and only nohz_full at host boot would quiet the timer.
 
 What needs root to keep the host off the measured cores is tools/isolate-pinned.sh, which the human
 runs around the measurements: apply stops irqbalance, points the IRQs away from the measured CPUs and
-their SMT siblings, takes the siblings offline, turns boost off and pins the measured CPUs' cpufreq
-minimum to their maximum; undo restores each. Give it every CPU the runs use; on a 16-core part with
+their SMT siblings, turns boost off, pins the measured CPUs' cpufreq minimum to their maximum and
+takes the siblings offline; undo restores each. Give it every CPU the runs use; on a 16-core part with
 two L3s, within0 uses CPUs 6 and 7, within1 14 and 15, and across 7 and 15:
 
     sudo tools/isolate-pinned.sh apply 6 7 14 15
@@ -42,13 +47,17 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import sys
 import threading
 import time
+import unittest
 
-# OVMF, as build-tool/src/emulator/qemu.rs boots it.
+# OVMF, as tools/run.py boots it.
 OVMF_CODE = "/usr/share/edk2/ovmf/OVMF_CODE.fd"
 OVMF_VARS = "/usr/share/edk2/ovmf/OVMF_VARS.fd"
+# What tools/isolate-pinned.sh apply changed, for its undo; its fixed lines name the IRQs it could not move.
+ISOLATION_STATE = "/run/atmo-isolate-pinned"
 LINES = re.compile(r"IPC round trip|sys_mresolve (?:alone|contended):|flush IPI|kernel lock:|contention test lock:")
 
 
@@ -151,43 +160,71 @@ def routed_irqs(cpus):
     return routed
 
 
+def fixed_irqs(state=ISOLATION_STATE):
+    """Maps each IRQ the kernel refused to move under tools/isolate-pinned.sh apply to the refusal, from
+    the fixed lines of the state it writes; empty when the isolation is not applied."""
+    try:
+        with open(state) as f:
+            lines = f.read().splitlines()
+    except FileNotFoundError:
+        return {}
+    fixed = {}
+    for line in lines:
+        kind, _, rest = line.partition(" ")
+        if kind == "fixed":
+            irq, _, reason = rest.partition(" ")
+            fixed[irq] = reason
+    return fixed
+
+
+def classify(cpus, before, after, routed, fixed, tasks):
+    """Sorts what landed on cpus into the lines that refuse a run, the lines for IRQs routed there that
+    no affinity write can move and that did not fire, and the CPU-local interrupts taken there. before
+    and after are interrupts() around the sample, routed is routed_irqs(cpus), fixed is fixed_irqs(),
+    and tasks is runnable_tasks(cpus) over the sample. A device IRQ refuses when it fired on cpus, or
+    when it is routed there and the isolation could have moved it."""
+    refusing = [f"task {tid} ({comm}) runnable on CPU {cpu}" for tid, comm, cpu in sorted(tasks)]
+    held, local = [], []
+    for name, (what, counts) in after.items():
+        taken = {cpu: counts[cpu] - before.get(name, ("", {}))[1].get(cpu, 0) for cpu in cpus if cpu in counts}
+        taken = {cpu: n for cpu, n in taken.items() if n}
+        on = ", ".join(f"CPU {cpu}" for cpu in routed.get(name, []))
+        if name.isdigit() and (taken or (name in routed and name not in fixed)):
+            fired = ", ".join(f"{n} on CPU {cpu}" for cpu, n in taken.items())
+            refusing.append(f"IRQ {name} ({what})" + (f" routed to {on}" if on else "")
+                            + (f", taken {fired}" if fired else ""))
+        elif name.isdigit() and name in routed:
+            held.append(f"IRQ {name} ({what}) routed to {on}, which the kernel would not move "
+                        f"({fixed[name]}), did not fire")
+        elif not name.isdigit() and taken:
+            local.append(f"{name} ({what}): " + ", ".join(f"{n} on CPU {cpu}" for cpu, n in taken.items()))
+    return refusing, held, local
+
+
 def noise(cpus, seconds=0.5):
-    """What lands on cpus over seconds: runnable tasks, device IRQs routed or taken there, and the
-    CPU-local interrupts taken there. Returns the lines that refuse a run and the lines that do not."""
+    """classify() over what lands on cpus over seconds."""
     before, tasks = interrupts(), set()
     deadline = time.time() + seconds
     while time.time() < deadline:
         tasks |= runnable_tasks(cpus)
         time.sleep(0.02)
-    after = interrupts()
-    routed = routed_irqs(cpus)
-    refusing = [f"task {tid} ({comm}) runnable on CPU {cpu}" for tid, comm, cpu in sorted(tasks)]
-    local = []
-    for name, (what, counts) in after.items():
-        taken = {cpu: counts[cpu] - before.get(name, ("", {}))[1].get(cpu, 0) for cpu in cpus if cpu in counts}
-        taken = {cpu: n for cpu, n in taken.items() if n}
-        if name.isdigit() and (taken or name in routed):
-            on = ", ".join(f"CPU {cpu}" for cpu in routed.get(name, []))
-            fired = ", ".join(f"{n} on CPU {cpu}" for cpu, n in taken.items())
-            refusing.append(f"IRQ {name} ({what})" + (f" routed to {on}" if on else "")
-                            + (f", taken {fired}" if fired else ""))
-        elif not name.isdigit() and taken:
-            local.append(f"{name} ({what}): " + ", ".join(f"{n} on CPU {cpu}" for cpu, n in taken.items()))
-    return refusing, local
+    return classify(cpus, before, interrupts(), routed_irqs(cpus), fixed_irqs(), tasks)
 
 
 def check_noise(pair, force):
     """Prints what noise() finds on the measured CPUs and their siblings, and exits before any boot
     when something there refuses the run and force is not set."""
     cpus = siblings(pair)
-    refusing, local = noise(cpus)
+    refusing, held, local = noise(cpus)
     print(f"noise on CPUs {cpus} (measured and SMT siblings) over 0.5 s:")
     for line in refusing:
         print(f"  {'WARNING: ' if force else ''}{line}")
+    for line in held:
+        print(f"  fixed {line}")
     for line in local:
         print(f"  local {line}")
     if not refusing:
-        print("  no runnable task or device IRQ")
+        print("  no runnable task, and no device IRQ that fired there or that the isolation could move")
     elif force:
         print(f"WARNING: --force: measuring with {len(refusing)} tasks and IRQs on the measured CPUs or siblings")
     else:
@@ -206,7 +243,7 @@ def build(lock_stats):
 
 
 def esp(out):
-    """Lays out the EFI system partition under out as build-tool/src/emulator/qemu.rs does, and returns
+    """Lays out the EFI system partition under out as tools/run.py does, and returns
     QEMU's arguments to boot it under OVMF: OVMF boots EFI/BOOT/BOOTX64.EFI, and the loader reads the
     kernel and dom0 ELF images concatenated in the file initrd beside it. OVMF writes its variable
     store, so it gets a copy."""
@@ -360,5 +397,68 @@ def main():
                   f"max {max(mhz):.0f} MHz over {len(mhz)} samples, from {clock_source(cpu)}")
 
 
+class Tests(unittest.TestCase):
+    CPUS = [6, 22]
+
+    def counts(self, **rows):
+        """interrupts() as it reads, from name=(description, count on CPU 6)."""
+        return {name: (what, {6: n, 22: 0, 0: 100}) for name, (what, n) in rows.items()}
+
+    def test_a_fixed_irq_routed_there_that_did_not_fire_does_not_refuse(self):
+        before = self.counts(**{"123": ("nvme1q5", 40)})
+        refusing, fixed, local = classify(self.CPUS, before, before, {"123": [6]}, {"123": "Input/output error"}, set())
+        self.assertEqual(refusing, [])
+        self.assertEqual(len(fixed), 1)
+        self.assertIn("IRQ 123 (nvme1q5) routed to CPU 6", fixed[0])
+        self.assertIn("Input/output error", fixed[0])
+
+    def test_a_fixed_irq_that_fired_there_refuses(self):
+        before = self.counts(**{"123": ("nvme1q5", 40)})
+        after = self.counts(**{"123": ("nvme1q5", 42)})
+        refusing, fixed, _ = classify(self.CPUS, before, after, {"123": [6]}, {"123": "Input/output error"}, set())
+        self.assertEqual(refusing, ["IRQ 123 (nvme1q5) routed to CPU 6, taken 2 on CPU 6"])
+        self.assertEqual(fixed, [])
+
+    def test_an_irq_the_isolation_could_move_refuses_when_routed_there(self):
+        before = self.counts(**{"142": ("amdgpu", 7)})
+        refusing, fixed, _ = classify(self.CPUS, before, before, {"142": [6]}, {}, set())
+        self.assertEqual(refusing, ["IRQ 142 (amdgpu) routed to CPU 6"])
+        self.assertEqual(fixed, [])
+
+    def test_an_irq_routed_elsewhere_refuses_when_it_fired_there(self):
+        before = self.counts(**{"142": ("amdgpu", 7)})
+        after = self.counts(**{"142": ("amdgpu", 8)})
+        refusing, _, _ = classify(self.CPUS, before, after, {}, {}, set())
+        self.assertEqual(refusing, ["IRQ 142 (amdgpu), taken 1 on CPU 6"])
+
+    def test_an_irq_routed_elsewhere_that_did_not_fire_there_is_not_reported(self):
+        before = self.counts(**{"142": ("amdgpu", 7)})
+        self.assertEqual(classify(self.CPUS, before, before, {}, {}, set()), ([], [], []))
+
+    def test_cpu_local_interrupts_are_printed_and_do_not_refuse(self):
+        before = self.counts(LOC=("Local timer interrupts", 1000))
+        after = self.counts(LOC=("Local timer interrupts", 1250))
+        refusing, fixed, local = classify(self.CPUS, before, after, {}, {}, set())
+        self.assertEqual((refusing, fixed), ([], []))
+        self.assertEqual(local, ["LOC (Local timer interrupts): 250 on CPU 6"])
+
+    def test_a_runnable_task_refuses(self):
+        refusing, _, _ = classify(self.CPUS, {}, {}, {}, {}, {(4242, "stress", 22)})
+        self.assertEqual(refusing, ["task 4242 (stress) runnable on CPU 22"])
+
+    def test_fixed_irqs_reads_the_isolations_refusals_from_its_state(self):
+        with tempfile.NamedTemporaryFile("w") as state:
+            state.write("irqbalance\ndefault ffffffff\nirq 142 19\nfixed 123 Input/output error\n"
+                        "fixed 141 Input/output error\noffline 22\n")
+            state.flush()
+            self.assertEqual(fixed_irqs(state.name), {"123": "Input/output error", "141": "Input/output error"})
+
+    def test_fixed_irqs_is_empty_without_the_isolation(self):
+        self.assertEqual(fixed_irqs("/nonexistent/atmo-isolate-pinned"), {})
+
+
 if __name__ == "__main__":
-    main()
+    if sys.argv[1:] == ["--test"]:
+        unittest.main(argv=sys.argv[:1])
+    else:
+        main()

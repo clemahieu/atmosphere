@@ -1,114 +1,4 @@
 use core::arch::x86_64::{__cpuid, _mm_lfence, _rdtsc};
-use crate::*;
-
-pub fn test_mmap(){
-    let iter = 5000000;
-    unsafe {
-        let start = _rdtsc();
-        for i in 0..iter{
-            let error_code = asys::sys_mmap(0xA000000000 + 4096 * i, 0x0000_0000_0000_0002u64 as usize, 1);
-            if error_code != 0 {
-                log::info!("sys_mmap failed {:?}", error_code);
-                return;
-            }
-        }
-        let end = _rdtsc();
-        log::info!("mmap cycle per syscall {:?}",(end-start) as usize /iter);
-    }
-}
-
-pub fn test_pingpong(){
-    log::info!("thread_1_main at {:p}", thread_1_main as *const ());
-    unsafe {
-        let error_code = asys::sys_new_endpoint(0);
-        if error_code != 0 {
-                log::info!("sys_new_endpoint failed {:?}", error_code);
-                return;
-            }
-        let error_code = asys::sys_new_endpoint(1);
-        if error_code != 0 {
-                log::info!("sys_new_endpoint failed {:?}", error_code);
-                return;
-            }
-        let new_stack = 0xA000000000;
-        let size = 16 * 1024 * 1024;
-        let error_code = asys::sys_mmap(new_stack, 0x0000_0000_0000_0002u64 as usize, size / 4096);
-        if error_code != 0 {
-            log::info!("sys_mmap failed {:?}", error_code);
-            return;
-        }
-
-        let rsp: usize = (new_stack + size) & !(4096 - 1);
-
-        let error_code = asys::sys_new_thread(0,thread_1_main as *const () as usize, rsp);
-        if error_code != 0 {
-            log::info!("sys_new_thread failed {:?}", error_code);
-            return;
-        }
-        let iter = 1000000;
-        {
-            let start = _rdtsc();
-            for _i in 0..iter{
-                let error_code = asys::sys_receive_empty(0);
-                if error_code != 0 {
-                    log::info!("sys_new_thread failed {:?}", error_code);
-                    return;
-                }
-            }
-            let end: u64 = _rdtsc();
-            log::info!("pingpong between threads using send/receive syscall {:x?}",((end-start) as usize /iter));
-        }
-
-    }
-}
-
-pub fn test_proc_pingpong(){
-    unsafe {
-        let error_code = asys::sys_new_endpoint(0);
-            if error_code != 0 {
-                log::info!("sys_new_endpoint failed {:?}", error_code);
-                return;
-            }
-        let mut range = 0;
-        loop{
-            let (pa,perm) = asys::sys_mresolve(0x8000000000usize + range * 4096);
-            log::info!("va:{:x?}, pa:{:x?}, perm:{:?}", 0x8000000000usize + range * 4096, pa, perm);
-            if perm == 1{
-                break;
-            }
-            range = range + 1;
-        }
-
-        let new_stack = 0x8000000000usize + range * 4096;
-        let size = 16 * 1024 * 1024;
-        let error_code = asys::sys_mmap(new_stack, 0x0000_0000_0000_0002u64 as usize, size / 4096);
-        if error_code != 0 {
-            log::info!("sys_mmap failed {:?}", error_code);
-            return;
-        }
-        let rsp: usize = (new_stack + size) & !(4096 - 1);
-        let error_code = asys::sys_new_proc(0,dom_1_main as *const () as usize, rsp, 0x8000000000usize, range + size / 4096);
-            if error_code != 0 {
-                log::info!("sys_new_proc failed {:?}", error_code);
-                return;
-            }
-
-        log::info!("sys_new_proc success");
-        let iter = 10000000;
-        {
-            let start = _rdtsc();
-            for _i in 0..iter{
-                let error_code = asys::sys_receive_empty(0);
-                if error_code != 0 {
-                    log::info!("sys_receive_empty failed {:?}", error_code);
-                    return;
-                }
-            }
-            let end = _rdtsc();
-            log::info!("pingpong between process using send/receive syscall {:?}",(end-start) as usize /iter);
-        }
-    }
-}
 
 // ---- Timers matching VeriFlat's dom0 timers (same rounds, same log lines) ----
 
@@ -206,10 +96,10 @@ fn bench_fail(what: &str, ret: usize) -> ! {
 
 /// Whether QEMU's TCG emulates this CPU: the hypervisor bit is set and leaf 0x40000000 names TCG.
 fn under_tcg() -> bool {
-    if unsafe { __cpuid(1) }.ecx & (1 << 31) == 0 {
+    if __cpuid(1).ecx & (1 << 31) == 0 {
         return false;
     }
-    let leaf = unsafe { __cpuid(0x4000_0000) };
+    let leaf = __cpuid(0x4000_0000);
     let mut name = [0u8; 12];
     name[0..4].copy_from_slice(&leaf.ebx.to_le_bytes());
     name[4..8].copy_from_slice(&leaf.ecx.to_le_bytes());
@@ -457,11 +347,9 @@ pub fn check_second_core_simd_fault() {
         bench_fail("new_thread (fault on the second core)", ret);
     }
     let deadline = unsafe { _rdtsc() } + SECOND_CORE_CYCLES;
-    while FAULTS_WITNESSED.load(Ordering::SeqCst) == 0 {
-        if unsafe { _rdtsc() } > deadline {
-            bench_fail("a fault on the second core", FAULTS_REACHED.load(Ordering::SeqCst));
-        }
-        core::hint::spin_loop();
+    spin_until(|| (FAULTS_WITNESSED.load(Ordering::SeqCst) != 0) | (unsafe { _rdtsc() } > deadline));
+    if FAULTS_WITNESSED.load(Ordering::SeqCst) == 0 {
+        bench_fail("a fault on the second core", FAULTS_REACHED.load(Ordering::SeqCst));
     }
     let reached = FAULTS_REACHED.load(Ordering::SeqCst);
     let survived = FAULTS_SURVIVED.load(Ordering::SeqCst);
@@ -551,9 +439,7 @@ extern "C" fn second_core_thread() -> ! {
     for block in 1..=SECOND_CORE_BLOCKS {
         // Wait until the other thread is running on the other core. If it were still in the scheduler,
         // blocking here would run it on this core, and this core would not be left with nothing to run.
-        while SECOND_CORE_PLACED.load(Ordering::SeqCst) < block - 1 {
-            core::hint::spin_loop();
-        }
+        spin_until(|| SECOND_CORE_PLACED.load(Ordering::SeqCst) >= block - 1);
         // A new thread holds the endpoint it was created with at descriptor 0.
         unsafe { asys::sys_receive_empty(0) };
         SECOND_CORE_WOKEN.store(block, Ordering::SeqCst);
@@ -586,7 +472,7 @@ pub fn check_second_core() {
     }
     let deadline = unsafe { _rdtsc() } + SECOND_CORE_CYCLES;
     let mut mine = 0;
-    while mine < SECOND_CORE_SYSCALLS || SECOND_CORE_MADE.load(Ordering::SeqCst) < SECOND_CORE_SYSCALLS {
+    while mine < SECOND_CORE_SYSCALLS {
         unsafe { asys::sys_mresolve(va) };
         // Count only while the other thread is also running.
         if SECOND_CORE_MADE.load(Ordering::SeqCst) > 0 {
@@ -596,12 +482,19 @@ pub fn check_second_core() {
             bench_fail("a thread on the second core", SECOND_CORE_MADE.load(Ordering::SeqCst));
         }
     }
-    SECOND_CORE_STOP.store(1, Ordering::SeqCst);
-    while SECOND_CORE_REPORTED.load(Ordering::SeqCst) == 0 {
+    // Keep making them beside the other thread until it has made as many.
+    spin_until(|| {
+        unsafe { asys::sys_mresolve(va) };
+        mine += 1;
         if unsafe { _rdtsc() } > deadline {
-            bench_fail("the second core's report", 0);
+            bench_fail("a thread on the second core", SECOND_CORE_MADE.load(Ordering::SeqCst));
         }
-        core::hint::spin_loop();
+        SECOND_CORE_MADE.load(Ordering::SeqCst) >= SECOND_CORE_SYSCALLS
+    });
+    SECOND_CORE_STOP.store(1, Ordering::SeqCst);
+    spin_until(|| (SECOND_CORE_REPORTED.load(Ordering::SeqCst) != 0) | (unsafe { _rdtsc() } > deadline));
+    if SECOND_CORE_REPORTED.load(Ordering::SeqCst) == 0 {
+        bench_fail("the second core's report", 0);
     }
     log::info!("thread on CPU 0 made {} syscalls beside it", mine);
     let (sum, mxcsr) = (SECOND_CORE_SSE[0].load(Ordering::SeqCst), SECOND_CORE_SSE[1].load(Ordering::SeqCst));
@@ -623,6 +516,17 @@ pub fn check_second_core() {
         SECOND_CORE_PLACED.store(block, Ordering::SeqCst);
     }
     log::info!("a thread blocked with nothing else to run on each core, and was woken from the other");
+}
+
+/// Calls `done` until it returns true. Whether it is called more than once depends on how far the
+/// other core has got, so the loop is left out of coverage, which would otherwise differ between two
+/// boots of one build. A `done` that also checks a deadline joins the two with `|`, not `||`, since a
+/// branch there would be taken or not by the same timing.
+#[coverage(off)]
+fn spin_until(mut done: impl FnMut() -> bool) {
+    while !done() {
+        core::hint::spin_loop();
+    }
 }
 
 /// Calls per timed batch, and batches per measurement. A host interrupt or preemption lands in one
@@ -672,9 +576,7 @@ fn time_contended_syscalls() {
     let alone = time_mresolve(va);
     let made = SECOND_CORE_MADE.load(Ordering::SeqCst);
     SECOND_CORE_CONTEND.0.store(CONTEND_NOW, Ordering::SeqCst);
-    while SECOND_CORE_MADE.load(Ordering::SeqCst) == made {
-        core::hint::spin_loop();
-    }
+    spin_until(|| SECOND_CORE_MADE.load(Ordering::SeqCst) != made);
     let contended = time_mresolve(va);
     SECOND_CORE_CONTEND.0.store(CONTEND_DONE, Ordering::SeqCst);
     let other = SECOND_CORE_MADE.load(Ordering::SeqCst) - made;

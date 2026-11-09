@@ -26,13 +26,13 @@ const LICENSE_CHECK: &str = "tools/check-licenses.py";
 /// project root.
 const EXTERNAL_BODY_CHECK: &str = "tools/check-external-body.py";
 
-/// The license guard's tests, relative to the project root.
-const LICENSE_GUARD_TEST: &str = ".claude/hooks/license-guard-test.sh";
+/// The hooks' tests, relative to the project root: the license guard's and the Beads actor's.
+const HOOK_TESTS: [&str; 2] = [".claude/hooks/license-guard-test.sh", ".claude/hooks/beads-actor-test.sh"];
 
 /// The boot stack's check, relative to the project root.
 const BOOT_STACK_CHECK: &str = "tools/check-boot-stack.py";
 
-/// The coverage report, relative to the project root.
+/// The coverage report, relative to the project root; `--test` runs its own tests.
 const COVERAGE: &str = "tools/coverage.py";
 
 /// The design index builder, relative to the project root; `--check` says whether the index is current.
@@ -42,7 +42,14 @@ const DESIGN_INDEX: &str = "tools/build-design-index.py";
 /// a build or solver output that .gitignore missed.
 const MAX_FILE_BYTES: u64 = 1024 * 1024;
 
-/// The payload `atmo run` loads by default.
+/// The boot, relative to the project root; `--test` runs its own tests.
+const RUN: &str = "tools/run.py";
+
+/// The gdb attach to a `tools/run.py --gdb` run, relative to the project root; `--test` runs its own
+/// tests.
+const GDB: &str = "tools/gdb.py";
+
+/// The payload tools/run.py loads.
 const PAYLOAD: &str = "hello";
 
 /// Run the gate.
@@ -61,7 +68,7 @@ pub(super) async fn run(global: GlobalOpts) -> Result<()> {
         ("file sizes", check_file_sizes(&project).await),
         ("build", check_build(&project).await),
         ("license", check_licenses(&project).await),
-        ("license guard", check_license_guard(&project).await),
+        ("hooks", check_hooks(&project).await),
         ("verify", check_verify(&project).await),
         ("external body", check_external_body(&project).await),
         ("design index", check_design_index(&project).await),
@@ -134,7 +141,7 @@ async fn check_build(project: &ProjectHandle) -> Result<String> {
     project.dom0().build(&options).await.context("dom0")?;
     project.user(PAYLOAD).build(&options).await.context("payload")?;
 
-    Ok(format!("{} workspace members, then the loader, kernel, dom0 and payload as atmo run builds them", members))
+    Ok(format!("{} workspace members, then the loader, kernel, dom0 and payload from their own directories", members))
 }
 
 /// Builds every workspace member from its own directory, since each no_std crate takes its target from its
@@ -177,9 +184,11 @@ async fn check_external_body(project: &ProjectHandle) -> Result<String> {
     Ok(output.trim_end().to_string())
 }
 
-async fn check_license_guard(project: &ProjectHandle) -> Result<String> {
-    run_check(project, LICENSE_GUARD_TEST, &[]).await?;
-    Ok("the guard refuses what it must".to_string())
+async fn check_hooks(project: &ProjectHandle) -> Result<String> {
+    for test in HOOK_TESTS {
+        run_check(project, test, &[]).await?;
+    }
+    Ok("the license guard refuses what it must; the actor hook names the session".to_string())
 }
 
 async fn check_boot_stack(project: &ProjectHandle) -> Result<String> {
@@ -203,8 +212,10 @@ async fn check_design_index(project: &ProjectHandle) -> Result<String> {
     Ok("design/INDEX.md is current".to_string())
 }
 
-/// Reports coverage per crate. A low number does not fail the gate: only a capture that fails does.
+/// Reports coverage per crate after the script's own tests pass. A low number does not fail the gate:
+/// only a capture that fails does.
 async fn check_coverage(project: &ProjectHandle) -> Result<String> {
+    run_check(project, COVERAGE, &["--test"]).await?;
     let report = check_output(project, COVERAGE).await?;
     Ok(format!("\n  {}", report.trim_end().replace('\n', "\n  ")))
 }
@@ -273,14 +284,16 @@ async fn check_verify(project: &ProjectHandle) -> Result<String> {
 }
 
 async fn check_boot(project: &ProjectHandle, timeout: u64) -> Result<String> {
-    boot(project, timeout, &["run"]).await?;
-    Ok("exit status 0, serial log ends with dom0's last line".to_string())
+    run_check(project, RUN, &["--test"]).await?;
+    run_check(project, GDB, &["--test"]).await?;
+    boot(project, timeout, &[]).await?;
+    Ok("tools/run.py's and tools/gdb.py's tests pass; exit status 0, serial log ends with dom0's last line".to_string())
 }
 
 /// Boots with an IOMMU present, the only way the device syscalls run past their first check. The
 /// plain boot comes after it, so the benchmark numbers and serial.log it leaves have no IOMMU.
 async fn check_iommu_boot(project: &ProjectHandle, timeout: u64) -> Result<String> {
-    let serial = boot(project, timeout, &["run", "--iommu"]).await?;
+    let serial = boot(project, timeout, &["--iommu"]).await?;
     if !iommu_boot_ran(&serial) {
         return Err(anyhow!("the serial log does not show the device syscalls succeeding"));
     }
@@ -290,7 +303,7 @@ async fn check_iommu_boot(project: &ProjectHandle, timeout: u64) -> Result<Strin
 /// Boots the capability kernel's entry and dom0, which exits with success only when the kernel gave the
 /// statuses it expected. Before the plain boots, so the serial.log they leave is the old kernel's.
 async fn check_capability_boot(project: &ProjectHandle, timeout: u64) -> Result<String> {
-    let serial = run_boot(project, timeout, &["run", "--capability"]).await?;
+    let serial = run_boot(project, timeout, &["--capability"]).await?;
     if !first_operation_refused(&serial) {
         return Err(anyhow!("the serial log does not show the first operation refused"));
     }
@@ -322,7 +335,7 @@ fn first_operation_refused(serial: &str) -> bool {
         .map_or(false, |line| line.contains(": refused"))
 }
 
-/// Runs atmo with `args` and returns the serial log of a boot that reached dom0's last line.
+/// Runs tools/run.py with `args` and returns the serial log of a boot that reached dom0's last line.
 async fn boot(project: &ProjectHandle, timeout: u64, args: &[&str]) -> Result<String> {
     let serial = run_boot(project, timeout, args).await?;
     if !boot_finished(&serial) {
@@ -346,7 +359,7 @@ async fn boot(project: &ProjectHandle, timeout: u64, args: &[&str]) -> Result<St
     Ok(serial)
 }
 
-/// Runs atmo with `args` and returns the serial log of a run that exited with status 0.
+/// Runs tools/run.py with `args` and returns the serial log of a run that exited with status 0.
 async fn run_boot(project: &ProjectHandle, timeout: u64, args: &[&str]) -> Result<String> {
     let root = project.root();
     let log = root.join("serial.log");
@@ -355,10 +368,10 @@ async fn run_boot(project: &ProjectHandle, timeout: u64, args: &[&str]) -> Resul
         _ => {}
     }
 
-    // timeout signals its whole process group, which takes QEMU down with atmo.
+    // timeout signals its whole process group, which takes QEMU down with the script.
     let status = Command::new("timeout")
         .arg(timeout.to_string())
-        .arg(std::env::current_exe()?)
+        .arg(root.join(RUN))
         .args(args)
         .current_dir(&root)
         .stdin(Stdio::null())
@@ -369,7 +382,7 @@ async fn run_boot(project: &ProjectHandle, timeout: u64, args: &[&str]) -> Resul
         return Err(anyhow!("no exit within {} s", timeout));
     }
     if !status.success() {
-        return Err(anyhow!("atmo run: {}", status));
+        return Err(anyhow!("{}: {}", RUN, status));
     }
 
     Ok(String::from_utf8_lossy(&fs::read(&log).await?).into_owned())

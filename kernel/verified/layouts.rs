@@ -22,8 +22,8 @@ pub type PageBytes = [u8; 4096];
 verus! {
 
 global layout PageBytes is size == 4096, align == 1;
-global layout Container is size == 952, align == 8;
-global layout Process is size == 3448, align == 8;
+global layout Container is size == 1096, align == 8;
+global layout Process is size == 3592, align == 8;
 global layout Thread is size == 2368, align == 8;
 global layout Endpoint is size == 3128, align == 8;
 global layout NodePage is size == 4096, align == 8;
@@ -178,6 +178,19 @@ pub proof fn lemma_space_block_layouts()
 {
 }
 
+/// The sizes a process block's pages need when they turn back into page permissions.
+pub proof fn lemma_process_block_layouts()
+    ensures
+        vstd::layout::size_of::<NodePage>() == 4096,
+        vstd::layout::size_of::<TableRoot>() == 4096,
+        vstd::layout::size_of::<ProcessRecord>() == 1,
+        vstd::layout::size_of::<PageMap>() == 4096,
+        vstd::layout::size_of::<SpaceRecord>() == 72,
+        vstd::layout::size_of::<SpaceCores>() == 264,
+        vstd::layout::size_of::<PageBytes>() == 4096,
+{
+}
+
 /// What a thread's retype needs to tell its node page's permission from a table root's.
 pub proof fn lemma_thread_block_layouts()
     ensures
@@ -189,6 +202,28 @@ pub proof fn lemma_thread_block_layouts()
 
 /// A freed thread's record, with the XSAVE area after it, becomes a free page.
 pub proof fn thread_record_into_page(tracked record: PointsTo<ThreadRecord>) -> (tracked ret: PagePerm4k)
+    requires
+        record.is_uninit(),
+    ensures
+        ret.addr() == record.addr(),
+        ret.is_uninit(),
+{
+    crate::pptr::typed_into_page(record)
+}
+
+/// A freed process's table root becomes a free page.
+pub proof fn table_root_into_page(tracked root: PointsTo<TableRoot>) -> (tracked ret: PagePerm4k)
+    requires
+        root.is_uninit(),
+    ensures
+        ret.addr() == root.addr(),
+        ret.is_uninit(),
+{
+    crate::pptr::typed_into_page(root)
+}
+
+/// A freed process's record becomes a free page.
+pub proof fn process_record_into_page(tracked record: PointsTo<ProcessRecord>) -> (tracked ret: PagePerm4k)
     requires
         record.is_uninit(),
     ensures

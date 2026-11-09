@@ -124,7 +124,7 @@ impl CapKernel {
     pub proof fn lemma_slot(&self, root: usize, i: usize)
         requires
             self.wf(),
-            self.tables.has_slot(root, i),
+            self.tables.has_slot(&self.list, root, i),
         ensures
             self.tables.owner@.contains_key(page_of(self.tables.node_of(root, i))),
             self.tables.owner@[page_of(self.tables.node_of(root, i))].0 == root,
@@ -145,7 +145,7 @@ impl CapKernel {
     pub proof fn lemma_slot_is_held(&self, root: usize, i: usize)
         requires
             self.wf(),
-            self.tables.has_slot(root, i),
+            self.tables.has_slot(&self.list, root, i),
             self.list.nodes@[self.tables.node_of(root, i) as int].live,
             self.list.nodes@[self.tables.node_of(root, i) as int].kind is Capability,
         ensures
@@ -209,21 +209,6 @@ impl CapKernel {
             implies post.tables.owner@.contains_key(x) || post.table_pages.maps@.contains_key(x) by {
             assert(x != n && x != m);
             assert(pre.list.nodes@[x as int].live);
-        }
-        assert forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) && post.tables.attached(l) implies {
-            &&& l < NODE_SPACE
-            &&& post.list.nodes@[l as int].live
-            &&& post.list.nodes@[l as int].kind is Hidden
-        } by {
-            pre.tables.lemma_leaf(&pre.list, l);
-            assert(l % 4096 == 0);
-            assert(page_of(l) == l);
-            assert(l != n && l != m);
-            assert(post.tables.payload_of(l) == pre.tables.payload_of(l));
-            assert(pre.tables.attached(l));
-            assert(pre.tables.owner@.contains_key(l));
-            assert(l < NODE_SPACE);
-            assert(post.list.nodes@[l as int].live == pre.list.nodes@[l as int].live);
         }
     }
 

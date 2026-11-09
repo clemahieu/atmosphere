@@ -5,20 +5,13 @@ This is akin to the [Elfloader](https://docs.sel4.systems/projects/elfloader) in
 
 After control is handed off to the kernel, other domains can subsequently be loaded and launched the initial domain.
 
-## Boot Protocols
+## Boot Protocol
 
-The loader supports booting from the following protocols:
-
-- UEFI, built for `x86_64-unknown-uefi` (`src/boot/uefi.rs`). `atmo run` boots it under OVMF from a directory served as the EFI system partition, with the loader at `EFI/BOOT/BOOTX64.EFI` and the kernel, dom0 and payload concatenated in `initrd` beside it.
-- Multiboot 2
-- [Xen x86/HVM Direct Boot ABI](https://xenbits.xen.org/docs/unstable/misc/pvh.html)
-    - This is for booting from QEMU using the Direct Linux Boot functionality. Atmosphere cannot be used as a Xen guest yet.
-    - QEMU [refuses](https://patchwork.ozlabs.org/project/qemu-devel/patch/20100819112414.GH22245@os.inf.tu-dresden.de) to load 64-bit Multiboot binaries with its `-kernel` flag, and cannot seem to correctly relocate 64-bit ELF.
+The loader boots from UEFI, built for `x86_64-unknown-uefi` (`src/boot/uefi.rs`). `tools/run.py` boots it under OVMF from a directory served as the EFI system partition, with the loader at `EFI/BOOT/BOOTX64.EFI` and the kernel, dom0 and payload concatenated in `initrd` beside it.
 
 ## Boot Process
 
-- The Early Loader is started via one of the supported boot protocols, with the microkernel image as well as the first domain passed in.
-    - The last bootloader is responsible for loading the ELF images of the kernel and the first domain into memory as plain binary, no relocations.
+- The UEFI firmware starts the Early Loader, which reads the ELF images of the microkernel and the first domain from `initrd` into memory as plain binary, no relocations.
 - The Early Loader computes the usable memory regions.
 
 ## Initial Allocator

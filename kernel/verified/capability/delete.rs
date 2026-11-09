@@ -24,7 +24,7 @@ impl CapKernel {
     /// which has depth 0, or a capability with something below it.
     pub open spec fn can_delete(&self, root: usize, i: usize) -> bool {
         let n = self.tables.node_of(root, i);
-        &&& self.tables.has_slot(root, i)
+        &&& self.tables.has_slot(&self.list, root, i)
         &&& self.is_cap(n)
         &&& self.list.nodes@[n as int].depth > 0
         &&& self.list.childless(n)

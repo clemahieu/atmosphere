@@ -52,19 +52,6 @@ impl Project {
             name: "kernel".to_string(),
             crate_dir: self.root.join("kernel"),
             binary: Some("kernel".to_string()),
-            target: None,
-            max_stack_size: Some(Byte::from_bytes(1024 * 1024 * 16)), // 16 MiB
-        }
-    }
-
-    /// Returns the early loader crate, built as the multiboot2 and PVH ELF that QEMU's -kernel
-    /// boots.
-    pub fn loader(self: &Arc<Self>) -> Crate {
-        Crate {
-            name: "aloader".to_string(),
-            crate_dir: self.root.join("aloader"),
-            binary: Some("aloader".to_string()),
-            target: None,
             max_stack_size: Some(Byte::from_bytes(1024 * 1024 * 16)), // 16 MiB
         }
     }
@@ -72,12 +59,11 @@ impl Project {
     /// Returns the early loader crate, built as the UEFI application that OVMF boots.
     ///
     /// The stack size check reads ELF, and this build is PE.
-    pub fn uefi_loader(self: &Arc<Self>) -> Crate {
+    pub fn loader(self: &Arc<Self>) -> Crate {
         Crate {
             name: "aloader".to_string(),
             crate_dir: self.root.join("aloader"),
             binary: Some("aloader".to_string()),
-            target: Some("x86_64-unknown-uefi"),
             max_stack_size: None,
         }
     }
@@ -88,7 +74,6 @@ impl Project {
             name: "dom0".to_string(),
             crate_dir: self.root.join("dom0"),
             binary: Some("dom0".to_string()),
-            target: None,
             max_stack_size: Some(Byte::from_bytes(1024 * 1024 * 16)), // 16 MiB
         }
     }
@@ -99,7 +84,6 @@ impl Project {
             name: name.to_string(),
             crate_dir: self.root.join("user").join(name),
             binary: Some(name.to_string()),
-            target: None,
             max_stack_size: Some(Byte::from_bytes(1024 * 1024 * 16)), // 16 MiB
         }
     }
@@ -107,11 +91,6 @@ impl Project {
     /// Returns the path to the workspace root.
     pub fn root(&self) -> PathBuf {
         self.root.clone()
-    }
-
-    /// Returns the path to the GDB connection info.
-    pub fn gdb_info_path(&self) -> PathBuf {
-        self.root.join(".gdb").to_owned()
     }
 }
 
@@ -131,16 +110,13 @@ pub struct Crate {
     /// Name of the binary, if this is a binary crate.
     binary: Option<String>,
 
-    /// The target to build for, when not the one the crate's `.cargo/config.toml` names.
-    target: Option<&'static str>,
-
     /// Maximum limit of stack sizes.
     max_stack_size: Option<Byte>,
 }
 
 impl Crate {
-    /// Build the crate.
-    pub async fn build(&self, options: &BuildOptions) -> Result<Option<Binary>> {
+    /// Build the crate, and check its executable's stack frames.
+    pub async fn build(&self, options: &BuildOptions) -> Result<()> {
         let mut command = Command::new("cargo");
         command
             .args(&["build"])
@@ -148,14 +124,6 @@ impl Crate {
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .current_dir(&self.crate_dir);
-
-        if options.release {
-            command.arg("--release");
-        }
-
-        if let Some(target) = self.target {
-            command.args(&["--target", target]);
-        }
 
         if !options.features.is_empty() {
             command.args(&["--features", &options.features.join(",")]);
@@ -192,12 +160,8 @@ impl Crate {
                 ))?;
 
             self.check_stack_sizes(&executable).await?;
-
-            let binary = Binary::new(executable);
-            Ok(Some(binary))
-        } else {
-            Ok(None)
         }
+        Ok(())
     }
 
     async fn check_stack_sizes(&self, path: &Path) -> Result<()> {
@@ -231,34 +195,8 @@ impl Crate {
     }
 }
 
-/// A binary in the build output.
-#[derive(Debug, Clone)]
-pub struct Binary(PathBuf);
-
-impl Binary {
-    pub fn new(path: PathBuf) -> Self {
-        Self(path)
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct BuildOptions {
-    pub release: bool,
-    pub verbose: bool,
     /// Cargo features of the crate being built.
     pub features: Vec<String>,
-}
-
-impl Default for BuildOptions {
-    fn default() -> Self {
-        Self {
-            release: false,
-            verbose: false,
-            features: Vec::new(),
-        }
-    }
 }

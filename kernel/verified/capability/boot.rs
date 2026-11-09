@@ -72,7 +72,7 @@ impl CapKernel {
     /// table from the two at `leaf`, with the root's capability to its process, with control, at
     /// ROOT_PROCESS_SLOT. Both blocks are typed as a retype types them, so a retype naming them is
     /// refused, and both hang below the list's synthetic root: the capability, and the leaf's hidden
-    /// node, which every attached leaf has. Boot hands over every page's permission.
+    /// node, which every live leaf has. Boot hands over every page's permission.
     #[verifier::spinoff_prover]
     pub fn boot_root_process(&mut self, root: usize, base: usize, leaf: usize, Tracked(pages): Tracked<Map<usize, PagePerm4k>>)
         requires
@@ -94,7 +94,7 @@ impl CapKernel {
             final(self).list.seq@[0] == root,
             final(self).tables.roots@.contains_key(base),
             final(self).tables.leaf(base, 0) == leaf,
-            final(self).tables.has_slot(base, ROOT_PROCESS_SLOT),
+            final(self).tables.has_slot(&final(self).list, base, ROOT_PROCESS_SLOT),
             final(self).tables.node_of(base, ROOT_PROCESS_SLOT) == leaf + 1,
             final(self).is_cap((leaf + 1) as usize),
             final(self).payload_of((leaf + 1) as usize) == process_of(base),
@@ -276,7 +276,7 @@ impl CapKernel {
             assert(index_slot(ROOT_PROCESS_SLOT) == 1);
             assert(index_ok(ROOT_PROCESS_SLOT));
             assert(leafed.leaf(base, 0) == leaf);
-            assert(leafed.has_slot(base, ROOT_PROCESS_SLOT));
+            assert(leafed.has_slot(&l3, base, ROOT_PROCESS_SLOT));
             assert(leafed.node_of(base, ROOT_PROCESS_SLOT) == cap);
         }
         self.tables.set_payload(
@@ -293,7 +293,6 @@ impl CapKernel {
             let post = *self;
             assert(post.tables.roots@.dom() =~= set![base]);
             assert(post.tables.payload_of(leaf) == leafed.payload_of(leaf));
-            assert(post.tables.attached(leaf));
             assert forall|i: usize| #![trigger post.spaces.roots@[base].value()[i]]
                 KERNEL_MEM_END_L4INDEX <= i < 512 implies post.spaces.roots@[base].value()[i].is_empty() by {
                 assert(post.spaces.roots@[base].value()[i] =~= map0[i]);
@@ -328,6 +327,7 @@ impl CapKernel {
             leaf % 8192 == 0,
             leaf != NO_LEAF,
             leaf / 4096 + 2 <= NUM_PAGES,
+            old(self).list.nodes@[leaf as int].live,
             old(self).is_cap((leaf + 1) as usize),
             old(self).payload_of((leaf + 1) as usize) == process_of(process),
             old(self).list.nodes@[leaf + 1].depth == 1,
@@ -345,7 +345,7 @@ impl CapKernel {
             final(self).list.seq@[0] == root,
             final(self).tables.roots == old(self).tables.roots,
             final(self).tables.owner == old(self).tables.owner,
-            final(self).tables.has_slot(process, ROOT_THREAD_SLOT),
+            final(self).tables.has_slot(&final(self).list, process, ROOT_THREAD_SLOT),
             final(self).tables.node_of(process, ROOT_THREAD_SLOT) == leaf + 2,
             final(self).is_cap((leaf + 2) as usize),
             forall|x: usize| #[trigger] final(self).is_cap(x) ==> x == leaf + 2 || old(self).is_cap(x),
@@ -399,7 +399,7 @@ impl CapKernel {
             assert(index_entry(ROOT_THREAD_SLOT) == 0);
             assert(index_slot(ROOT_THREAD_SLOT) == 2);
             assert(index_ok(ROOT_THREAD_SLOT));
-            assert(pre.tables.has_slot(process, ROOT_THREAD_SLOT));
+            assert(pre.tables.has_slot(&pre.list, process, ROOT_THREAD_SLOT));
             assert(pre.tables.node_of(process, ROOT_THREAD_SLOT) == cap);
             assert(pre.tables.owner@.contains_key(leaf));
             pre.lemma_slot_bound(n);
@@ -573,14 +573,14 @@ impl CapKernel {
         ensures
             final(self).wf(),
             final(self).list.seq@[0] == root,
-            final(self).tables.has_slot(process, ROOT_PROCESS_SLOT),
+            final(self).tables.has_slot(&final(self).list, process, ROOT_PROCESS_SLOT),
             final(self).tables.node_of(process, ROOT_PROCESS_SLOT) == leaf + 1,
             final(self).is_cap((leaf + 1) as usize),
             final(self).payload_of((leaf + 1) as usize) == process_of(process),
             final(self).payload_of((leaf + 1) as usize).rights & CONTROL_RIGHT != 0,
             final(self).list.is_child(root, (leaf + 1) as usize),
             final(self).list.nodes@[leaf + 1].depth == 1,
-            final(self).tables.has_slot(process, ROOT_THREAD_SLOT),
+            final(self).tables.has_slot(&final(self).list, process, ROOT_THREAD_SLOT),
             final(self).tables.node_of(process, ROOT_THREAD_SLOT) == leaf + 2,
             final(self).is_cap((leaf + 2) as usize),
             final(self).payload_of((leaf + 2) as usize) == thread_of(t),
@@ -661,7 +661,7 @@ impl CapKernel {
             let post = *self;
             let a = (leaf + 1) as usize;
             let b = (leaf + 2) as usize;
-            assert(post.tables.has_slot(process, ROOT_PROCESS_SLOT));
+            assert(post.tables.has_slot(&post.list, process, ROOT_PROCESS_SLOT));
             assert(post.tables.node_of(process, ROOT_PROCESS_SLOT) == a);
             assert(post.list.nodes@[a as int].live);
             assert(has(post.list.seq@, a));
@@ -752,7 +752,7 @@ impl CapKernel {
             pre.list.nodes@[root as int].kind is Capability,
             pre.list.nodes@[root as int].depth == 0,
             leaf % 8192 == 0,
-            pre.tables.has_slot(process, ROOT_THREAD_SLOT),
+            pre.tables.has_slot(&pre.list, process, ROOT_THREAD_SLOT),
             pre.tables.node_of(process, ROOT_THREAD_SLOT) == leaf + 2,
             page_of((leaf + 2) as usize) == leaf,
             ((leaf + 2) as usize) % 4096 == 2,
@@ -1279,7 +1279,6 @@ impl CapKernel {
             post.tables.roots@.dom() == set![base],
             post.tables.leaf(base, 0) == leaf,
             post.tables.owner@ == Map::<usize, (usize, int)>::empty().insert(leaf, (base, 0int)),
-            post.tables.attached(leaf),
             post.tables.payload_of((leaf + 1) as usize) == process_of(base),
             // The process and its space.
             post.processes.records@ == pre.processes.records@.insert(base, post.processes.records@[base]),
@@ -1470,13 +1469,6 @@ impl CapKernel {
             assert forall|n: usize| n < NODE_SPACE && (#[trigger] list.nodes@[n as int]).live && list.nodes@[n as int].kind is Hidden
                 implies post.tables.owner@.contains_key(n) || post.table_pages.maps@.contains_key(n) by {
                 assert(n == leaf);
-            }
-            assert forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) && post.tables.attached(l) implies {
-                &&& l < NODE_SPACE
-                &&& list.nodes@[l as int].live
-                &&& list.nodes@[l as int].kind is Hidden
-            } by {
-                assert(l == leaf);
             }
         }
         assert(leaf_slots_are_capabilities(&list, &post.tables)) by {

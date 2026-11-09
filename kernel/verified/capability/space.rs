@@ -1067,21 +1067,23 @@ pub proof fn lemma_spaces_space_freed(
         a.wf(),
         base / 4096 < NUM_PAGES,
         a.pages@[(base / 4096) as int].kind is Base,
-        a.pages@[(base / 4096) as int].object is Space,
+        a.pages@[(base / 4096) as int].object is Space || a.pages@[(base / 4096) as int].object is Process,
         forall|s: usize, k: usize| #[trigger] sb.roots@.contains_key(s) && sb.records@[s].value().kind is Device
             && k < TABLE_NODE_PAGES ==> list_b.pages@.dom().contains(#[trigger] table_node_page(s, k)),
     ensures
         spaces_wf(list_b, tables_b, sb, b),
 {
     let page = base / 4096;
-    lemma_process_spaces_outside_block(list_a, tables_a, sa, a, page);
+    assert(space_wf(list_a, sa, a, base));
+    lemma_table_page_aligned(base);
     assert forall|s: usize| #[trigger] sb.roots@.contains_key(s) implies space_wf(list_b, sb, b, s) by {
         assert(sa.roots@.contains_key(s));
         assert(space_wf(list_a, sa, a, s));
         assert(sb.records@[s] == sa.records@[s]);
-        if sa.records@[s].value().kind is Device {
-            assert(list_b.pages@.dom().contains(table_node_page(s, 0)));
-            assert(table_node_page(s, 0) == s);
+        lemma_table_page_aligned(s);
+        let x = (s / 4096) as int;
+        if a.in_block(page as int, x) && x != page {
+            a.lemma_member_of(page as int, x);
         }
         assert(!a.in_block(page as int, (s / 4096) as int));
         assert(b.pages@[(s / 4096) as int] == a.pages@[(s / 4096) as int]);
@@ -1845,18 +1847,6 @@ impl CapKernel {
             && post.list.nodes@[x as int].kind is Hidden
             implies post.tables.owner@.contains_key(x) || post.table_pages.maps@.contains_key(x) by {
             Self::lemma_table_page_old_node(pre, post, mid, base, x);
-        }
-        assert forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) && post.tables.attached(l) implies {
-            &&& l < NODE_SPACE
-            &&& post.list.nodes@[l as int].live
-            &&& post.list.nodes@[l as int].kind is Hidden
-        } by {
-            pre.tables.lemma_leaf(&pre.list, l);
-            lemma_leaf_page(l);
-            assert(page_of(l) == l);
-            assert(pre.list.valid(l));
-            pre.list.lemma_valid_bound(l);
-            assert(l != base);
         }
         pre.lemma_slot_bound(parent);
         lemma_parents_same_live(pre.list, mid);
@@ -2679,20 +2669,6 @@ impl CapKernel {
             && post.list.nodes@[x as int].kind is Hidden
             implies post.tables.owner@.contains_key(x) || post.table_pages.maps@.contains_key(x) by {
             assert(x != child);
-        }
-        assert forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) && post.tables.attached(l) implies {
-            &&& l < NODE_SPACE
-            &&& post.list.nodes@[l as int].live
-            &&& post.list.nodes@[l as int].kind is Hidden
-        } by {
-            pre.tables.lemma_leaf(&pre.list, l);
-            lemma_leaf_page(l);
-            assert(page_of(l) == l);
-            assert(pre.list.valid(l));
-            pre.list.lemma_valid_bound(l);
-            assert(l != child);
-            assert(post.tables.payload_of(l) == pre.tables.payload_of(l));
-            assert(pre.tables.attached(l));
         }
         if pre.is_cap(parent) {
             pre.lemma_slot_bound(parent);

@@ -7,7 +7,7 @@
 //! returns. The kernel it belongs to boots at the cut-over, design/cut-over-on-a-branch/; until then this
 //! holds it.
 
-use verified::capability::kernel::flush_every_context;
+use verified::arch::flush_every_context;
 use verified::define::NUM_CPUS;
 
 use crate::cpu;

@@ -7,6 +7,7 @@ use core::arch::asm;
 use verified::kernel::Kernel;
 use verified::define as vdefine;
 use verified::trap::Registers as vRegisters;
+use crate::arch;
 use crate::bridge::Bridge;
 use verified::bridge::SwitchDecision;
 use verified::bridge::TrustedBridge;
@@ -130,8 +131,7 @@ pub fn kernel_init(
 
     log::info!("dom0 is running on CPU 0");
     let pcid_dom0 = 0;
-    let cr3 = dom0_pagetable_ptr | vdefine::PCID_ENABLE_MASK | pcid_dom0;
-    Bridge::set_cr3(cr3 as u64);
+    arch::switch_address_space(dom0_pagetable_ptr, pcid_dom0);
 
     log::trace!("Kernel init success!! XD");
 }
@@ -251,7 +251,7 @@ pub extern "C" fn sys_send_empty_try_schedule(endpoint_index:usize, _:usize, _:u
     // A send to a thread of the same process, or a failed send, returns no address space to load.
     if let Some(pcid) = syscall_ret.pcid {
         if pcid != sender_pcid {
-            Bridge::set_cr3((syscall_ret.cr3.unwrap() | pcid | vdefine::PCID_ENABLE_MASK) as u64);
+            arch::switch_address_space(syscall_ret.cr3.unwrap(), pcid);
         }
     }
 
@@ -420,7 +420,7 @@ pub extern "C" fn sys_receive_empty(endpoint_index:usize, _:usize, _:usize, regs
     // cr3: {:#?}
     // switchdecision: {:x?}", sche_ret.is_error(), sche_ret.pcid, sche_ret.cr3, sche_ret.switch_decision};
         if pcid != sche_ret.pcid.unwrap(){
-            Bridge::set_cr3((sche_ret.cr3.unwrap() | sche_ret.pcid.unwrap() | vdefine::PCID_ENABLE_MASK) as u64);
+            arch::switch_address_space(sche_ret.cr3.unwrap(), sche_ret.pcid.unwrap());
         }
     }
     
@@ -432,7 +432,7 @@ pub extern "C" fn sys_receive_empty(endpoint_index:usize, _:usize, _:usize, regs
 /// loaded meanwhile, since the process whose tables were loaded could die and free them.
 pub fn idle_loop() -> ! {
     let kernel_tables = crate::boot::get_boot_info().pml4 as usize;
-    Bridge::set_cr3((kernel_tables | vdefine::PCID_ENABLE_MASK) as u64);
+    arch::switch_address_space(kernel_tables, 0);
     let mut regs = vRegisters::zeroed();
     loop {
         unsafe { asm!("cli") };
@@ -456,7 +456,7 @@ fn take_next_thread(regs: &mut vRegisters) -> bool {
     let Some(pcid) = next.pcid else {
         return false;
     };
-    Bridge::set_cr3((next.cr3.unwrap() | pcid | vdefine::PCID_ENABLE_MASK) as u64);
+    arch::switch_address_space(next.cr3.unwrap(), pcid);
     true
 }
 
@@ -473,7 +473,7 @@ pub fn kill_current_thread(regs: &mut vRegisters) {
         idle_loop();
     };
     if next_pcid != pcid {
-        Bridge::set_cr3((next.cr3.unwrap() | next_pcid | vdefine::PCID_ENABLE_MASK) as u64);
+        arch::switch_address_space(next.cr3.unwrap(), next_pcid);
     }
     // A thread saved at a syscall has stale values in these slots of its frame.
     regs.rdi = 0;

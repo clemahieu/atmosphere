@@ -248,7 +248,7 @@ impl CapKernel {
         &&& info.iommu < NUM_IOMMUS
         &&& info.number < IOMMU_DEVICES
         &&& self.devices.fresh(info)
-        &&& self.tables.has_slot(root, slot)
+        &&& self.tables.has_slot(&self.list, root, slot)
         &&& !self.list.nodes@[self.tables.node_of(root, slot) as int].live
     }
 

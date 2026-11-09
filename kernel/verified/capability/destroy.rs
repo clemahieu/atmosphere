@@ -150,7 +150,7 @@ impl CapKernel {
     /// is refused: see design/teardown-driven-by-retype/.
     pub open spec fn can_destroy(&self, root: usize, i: usize) -> bool {
         let n = self.tables.node_of(root, i);
-        &&& self.tables.has_slot(root, i)
+        &&& self.tables.has_slot(&self.list, root, i)
         &&& self.is_cap(n)
         &&& (self.payload_of(n).kind is Process || self.payload_of(n).kind is Thread)
         &&& self.payload_of(n).rights & right_bit(Right::Control) != 0

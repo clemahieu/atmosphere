@@ -8,7 +8,7 @@ out="$root/target/bench"
 mkdir -p "$out"
 
 # Rust 1.99.1 comes from rust-toolchain.toml; each crate's .cargo config sets its target and
-# build-std, so cargo must run inside the crate directory, as atmo does. The configs' [env]
+# build-std, so cargo must run inside the crate directory, as tools/run.py does. The configs' [env]
 # RUSTC_BOOTSTRAP=1 reaches only rustc; the stable cargo needs it too for their [unstable] table.
 export RUSTC_BOOTSTRAP=1
 # The loader is the UEFI application OVMF boots, so it builds for x86_64-unknown-uefi.
@@ -26,9 +26,9 @@ loader="$root/target/x86_64-unknown-uefi/release/aloader.efi"
 kernel="$root/target/x86_64-unknown-aloader/release/kernel"
 dom0="$root/target/x86_64-unknown-aloader/release/dom0"
 
-# The EFI system partition as build-tool/src/emulator/qemu.rs lays it out: OVMF boots
+# The EFI system partition as tools/run.py lays it out: OVMF boots
 # EFI/BOOT/BOOTX64.EFI from removable media, and the loader reads the kernel and dom0 ELF images
-# concatenated in the file initrd beside it (atmo's JumboBinary); dom0 needs no payload. OVMF
+# concatenated in the file initrd beside it; dom0 needs no payload. OVMF
 # writes its variable store, so it gets a copy.
 esp="$out/esp"
 rm -rf "$esp"

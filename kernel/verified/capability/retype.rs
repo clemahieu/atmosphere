@@ -193,7 +193,7 @@ impl CapKernel {
     /// untyped's.
     pub open spec fn can_retype_under(&self, root: usize, from: usize, base: usize, order: u8) -> bool {
         let parent = self.tables.node_of(root, from);
-        &&& self.tables.has_slot(root, from)
+        &&& self.tables.has_slot(&self.list, root, from)
         &&& self.is_cap(parent)
         &&& self.payload_of(parent).kind is Untyped
         &&& self.payload_of(parent).rights & right_bit(Right::Retype) != 0
@@ -204,7 +204,7 @@ impl CapKernel {
     /// And a retype that makes a capability needs an empty slot for it.
     pub open spec fn can_retype(&self, root: usize, from: usize, to: usize, base: usize, order: u8) -> bool {
         &&& self.can_retype_under(root, from, base, order)
-        &&& self.tables.has_slot(root, to)
+        &&& self.tables.has_slot(&self.list, root, to)
         &&& !self.list.nodes@[self.tables.node_of(root, to) as int].live
     }
 
@@ -771,7 +771,7 @@ impl CapKernel {
                 &&& final(self).list.is_child(parent, base)
                 &&& final(self).list.nodes@[base as int].kind is Hidden
                 &&& forall|i: usize| index_ok(i) && index_entry(i) == r as int ==> {
-                    &&& #[trigger] final(self).tables.has_slot(root, i)
+                    &&& #[trigger] final(self).tables.has_slot(&final(self).list, root, i)
                     &&& !final(self).list.nodes@[final(self).tables.node_of(root, i) as int].live
                 }
                 &&& forall|x: usize| #[trigger] final(self).is_cap(x) == old(self).is_cap(x)
@@ -916,7 +916,7 @@ impl CapKernel {
             assert(post.wf());
             Self::lemma_bound_threads_same(pre, post);
             assert forall|i: usize| index_ok(i) && index_entry(i) == r as int implies {
-                &&& #[trigger] post.tables.has_slot(root, i)
+                &&& #[trigger] post.tables.has_slot(&post.list, root, i)
                 &&& !post.list.nodes@[post.tables.node_of(root, i) as int].live
             } by {
                 assert(post.tables.roots@.contains_key(root));
@@ -1057,7 +1057,6 @@ impl CapKernel {
                 &&& post.list.nodes@[i].live == mid.nodes@[i].live
                 &&& post.list.nodes@[i].kind == mid.nodes@[i].kind
             },
-            post.tables.attached(base),
             post.table_pages == pre.table_pages,
         ensures
             hidden_nodes_are_leaves(&post.list, &post.tables, &post.table_pages),
@@ -1070,20 +1069,6 @@ impl CapKernel {
                 assert(mid.nodes@[x as int].live);
                 pre.list.lemma_live_valid(x);
                 assert(pre.list.nodes@[x as int].kind is Hidden);
-            }
-        }
-        assert forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) && post.tables.attached(l) implies {
-            &&& l < NODE_SPACE
-            &&& post.list.nodes@[l as int].live
-            &&& post.list.nodes@[l as int].kind is Hidden
-        } by {
-            if l != base {
-                assert(pre.tables.owner@.contains_key(l));
-                assert(post.tables.payloads@[l] == pre.tables.payloads@[l]);
-                assert(pre.tables.attached(l));
-                pre.tables.lemma_leaf(&pre.list, l);
-                assert(page_of(l) == l);
-                assert(pre.list.valid(l));
             }
         }
         assert(mid.nodes@[parent as int] == pre.list.nodes@[parent as int]) by {

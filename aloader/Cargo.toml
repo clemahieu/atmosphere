@@ -16,21 +16,15 @@ bit_field = "0.10.2"
 cfg-match = "0.2.1"
 displaydoc = { version = "0.2.4", default-features = false }
 log = "0.4.19"
-x86 = "0.52.0"
 
 plain = "0.2.3"
 acpi = { version = "5.0.0", default-features = false }
-
-[target.'cfg(target_os = "uefi")'.dependencies]
 uefi-raw = "0.17.0"
 
 [dependencies.goblin]
 version = "0.7.1"
 default-features = false
 features = ["elf64"]
-
-[build-dependencies]
-nasm-rs = "0.2.5"
 
 [features]
 # A kernel stack below the measured depth, so tools/check-boot-stack.py can force an overflow.

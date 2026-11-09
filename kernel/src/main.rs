@@ -6,6 +6,7 @@
 #![feature(
     abi_x86_interrupt,
     arbitrary_self_types,
+    coverage_attribute,
     custom_test_frameworks
 )]
 #![deny(
@@ -22,6 +23,7 @@
 #![test_runner(crate::test_runner)]
 #![no_main]
 
+mod arch;
 mod boot;
 mod bridge;
 mod console;
@@ -139,12 +141,11 @@ unsafe fn start_second_core() {
     interrupt::boot_ap(1, stack, ap_main as *const () as u64);
 
     let deadline = core::arch::x86_64::_rdtsc() + AP_START_CYCLES;
-    while !AP_UP.load(Ordering::SeqCst) {
-        if core::arch::x86_64::_rdtsc() > deadline {
-            log::error!("CPU 1 did not start");
-            return;
-        }
-        core::hint::spin_loop();
+    // `|`, not `||`: a branch here would be taken or not by how fast CPU 1 starts.
+    cpu::spin_until(|| AP_UP.load(Ordering::SeqCst) | (core::arch::x86_64::_rdtsc() > deadline));
+    if !AP_UP.load(Ordering::SeqCst) {
+        log::error!("CPU 1 did not start");
+        return;
     }
     lock::contend();
     lock::report_contention();

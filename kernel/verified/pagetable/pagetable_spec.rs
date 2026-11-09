@@ -994,7 +994,35 @@ impl PageTable {
                     && self.l1_tables@[p].value()[i].perm.present
                     ==>self.page_not_mapped(self.l1_tables@[p].value()[i].addr) == false,
     {
-        admit();
+        self.reveal_page_table_wf();
+        self.reveal_page_table_levels_wf();
+        self.reveal_page_table_mappings_wf();
+        self.ps_entries_exist_in_mapped_pages_l3();
+        assert(forall|p: PageMapPtr, i: L2Index|
+                #![trigger self.l2_tables@[p].value()[i].addr]
+                self.l2_tables@.dom().contains(p) && 0 <= i < 512
+                    && self.l2_tables@[p].value()[i].perm.present
+                    && self.l2_tables@[p].value()[i].perm.ps ==>
+                    self.spec_resolve_mapping_2m_l2(self.l2_rev_map@[p].0, self.l2_rev_map@[p].1, i).is_Some()
+                    &&
+                    self.spec_resolve_mapping_2m_l2(self.l2_rev_map@[p].0, self.l2_rev_map@[p].1, i).unwrap().addr == self.l2_tables@[p].value()[i].addr
+                    &&
+                    self.mapping_2m@.dom().contains(spec_index2va((self.l2_rev_map@[p].0, self.l2_rev_map@[p].1, i, 0)))
+                    &&
+                    self.mapping_2m()[spec_index2va((self.l2_rev_map@[p].0, self.l2_rev_map@[p].1, i, 0))].addr == self.l2_tables@[p].value()[i].addr
+        );
+        assert(forall|p: PageMapPtr, i: L1Index|
+                #![trigger self.l1_tables@[p].value()[i].addr]
+                self.l1_tables@.dom().contains(p) && 0 <= i < 512
+                    && self.l1_tables@[p].value()[i].perm.present ==>
+                    self.spec_resolve_mapping_4k_l1(self.l1_rev_map@[p].0, self.l1_rev_map@[p].1, self.l1_rev_map@[p].2, i).is_Some()
+                    &&
+                    self.spec_resolve_mapping_4k_l1(self.l1_rev_map@[p].0, self.l1_rev_map@[p].1, self.l1_rev_map@[p].2, i).unwrap().addr == self.l1_tables@[p].value()[i].addr
+                    &&
+                    self.mapping_4k@.dom().contains(spec_index2va((self.l1_rev_map@[p].0, self.l1_rev_map@[p].1, self.l1_rev_map@[p].2, i)))
+                    &&
+                    self.mapping_4k()[spec_index2va((self.l1_rev_map@[p].0, self.l1_rev_map@[p].1, self.l1_rev_map@[p].2, i))].addr == self.l1_tables@[p].value()[i].addr
+        );
     }
 
         pub proof fn ps_entries_exist_in_mapped_pages_l3(&self)
@@ -1133,19 +1161,6 @@ impl PageTable {
                 ==> self.spec_resolve_mapping_l2(l4i, l3i, l2i).get_Some_0().addr
                 != self.spec_resolve_mapping_l2(l4j, l3j, l2j).get_Some_0().addr);
 
-    }
-    pub proof fn four_level_empty_imply_4k_map_empty(&self)
-        requires
-            self.wf(),
-            forall|l4i: L4Index, l3i: L3Index, l2i: L2Index, l1i: L1Index|
-                #![trigger self.spec_resolve_mapping_4k_l1(l4i,l3i,l2i,l1i)]
-                self.kernel_l4_end <= l4i < 512 && 0 <= l3i < 512 && 0 <= l2i < 512 && 0 <= l1i < 512 ==>
-                    self.spec_resolve_mapping_4k_l1(l4i,l3i,l2i,l1i).is_None(),
-        ensures
-            self.mapping_4k@.dom() == Set::<VAddr>::empty(),
-    {
-        va_lemma();
-        admit();
     }
 }
 

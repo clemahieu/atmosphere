@@ -1,6 +1,6 @@
 //! Bootloader integration.
 //!
-//! We are loaded by the boot manager which implements Xen PVH and Multiboot v2.
+//! The early loader (`aloader`) enters the kernel with a `BootInfo`.
 
 pub mod ap_start;
 pub mod command_line;
@@ -8,7 +8,7 @@ pub mod command_line;
 use core::arch::asm;
 
 use astd::boot::BootInfo;
-use x86::io::{outb, outw};
+use crate::arch::io::{outb, outw};
 
 pub use command_line::get_command_line;
 

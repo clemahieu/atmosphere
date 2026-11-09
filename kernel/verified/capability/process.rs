@@ -372,6 +372,95 @@ pub proof fn lemma_processes_small_freed(
     }
 }
 
+/// The processes after the dead process at `base` goes with its block: no capability names it and no
+/// thread is bound to it, and every other process lies in its own block.
+pub proof fn lemma_processes_process_freed(
+    list: &Tree,
+    tables_a: &Tables,
+    tables_b: &Tables,
+    pa: &Processes,
+    pb: &Processes,
+    a: &BlockTable,
+    b: &BlockTable,
+    base: usize,
+)
+    requires
+        processes_wf(list, tables_a, pa, a),
+        a.wf(),
+        pa.records@.contains_key(base),
+        a.pages@[(base / 4096) as int].refs == 0,
+        forall|i: int| 0 <= i < NUM_PAGES ==> #[trigger] b.pages@[i] == (
+            if a.in_block((base / 4096) as int, i) { free_entry() } else { a.pages@[i] }),
+        tables_b.owner == tables_a.owner,
+        tables_b.payloads == tables_a.payloads,
+        pb.records@ == pa.records@.remove(base),
+        pb.spare@ == pa.spare@.remove((base + 2 * 4096) as usize).remove((base + 3 * 4096) as usize).remove((base + 4 * 4096) as usize),
+        pb.holders@ == pa.holders@.remove(base),
+        pb.bound@ == pa.bound@.remove(base),
+    ensures
+        processes_wf(list, tables_b, pb, b),
+        pa.holders@[base] == Set::<usize>::empty(),
+        pa.bound@[base] == Set::<usize>::empty(),
+        forall|p: usize| #[trigger] pb.records@.contains_key(p) ==> !a.in_block((base / 4096) as int, (p / 4096) as int),
+{
+    let page = (base / 4096) as int;
+    assert(process_wf(pa, a, base));
+    pa.holders@[base].lemma_len0_is_empty();
+    pa.bound@[base].lemma_len0_is_empty();
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(base as int, 32768);
+    assert forall|p: usize| #[trigger] pb.records@.contains_key(p) implies !a.in_block(page, (p / 4096) as int) by {
+        assert(pa.records@.contains_key(p));
+        assert(process_wf(pa, a, p));
+        vstd::arithmetic::div_mod::lemma_fundamental_div_mod(p as int, 32768);
+        let x = (p / 4096) as int;
+        if a.in_block(page, x) && x != page {
+            a.lemma_member_of(page, x);
+        }
+    }
+    assert forall|p: usize| #[trigger] pb.records@.contains_key(p) implies process_wf(pb, b, p) by {
+        assert(pa.records@.contains_key(p));
+        assert(process_wf(pa, a, p));
+        assert(p != base);
+        lemma_blocks_apart(p, base);
+        assert(b.pages@[(p / 4096) as int] == a.pages@[(p / 4096) as int]);
+        assert(pb.spare@[(p + 2 * 4096) as usize] == pa.spare@[(p + 2 * 4096) as usize]);
+        assert(pb.spare@[(p + 3 * 4096) as usize] == pa.spare@[(p + 3 * 4096) as usize]);
+        assert(pb.spare@[(p + 4 * 4096) as usize] == pa.spare@[(p + 4 * 4096) as usize]);
+        assert(pb.holders@[p] == pa.holders@[p]);
+        assert(pb.bound@[p] == pa.bound@[p]);
+    }
+    assert forall|x: usize| x < NUM_PAGES && #[trigger] process_block(b, x) implies pb.records@.contains_key((x * 4096) as usize) by {
+        if a.in_block(page, x as int) {
+            assert(b.pages@[x as int] == free_entry());
+        }
+        assert(b.pages@[x as int] == a.pages@[x as int]);
+        assert(process_block(a, x));
+        assert(pa.records@.contains_key((x * 4096) as usize));
+        assert(a.in_block(page, page));
+        assert(x as int != page);
+        assert((x * 4096) as usize != base);
+    }
+    assert forall|n: usize| #[trigger] tables_b.is_cap(list, n) && tables_b.payload_of(n).kind is Process implies {
+        &&& pb.records@.contains_key(tables_b.payload_of(n).base)
+        &&& pb.holders@[tables_b.payload_of(n).base].contains(n)
+        &&& tables_b.payload_of(n).order == PROCESS_ORDER
+    } by {
+        assert(tables_a.is_cap(list, n));
+        assert(tables_a.payload_of(n) == tables_b.payload_of(n));
+        assert(pa.holders@[tables_a.payload_of(n).base].contains(n));
+        assert(tables_a.payload_of(n).base != base);
+    }
+    assert forall|p: usize, n: usize| pb.records@.contains_key(p) && #[trigger] pb.holders@[p].contains(n) implies {
+        &&& tables_b.is_cap(list, n)
+        &&& tables_b.payload_of(n).kind is Process
+        &&& tables_b.payload_of(n).base == p
+    } by {
+        assert(pa.holders@[p].contains(n));
+        assert(tables_a.is_cap(list, n));
+        assert(tables_a.payload_of(n) == tables_b.payload_of(n));
+    }
+}
+
 /// The processes after thread t's binding to p comes, with one more reference on p's block.
 pub proof fn lemma_processes_bound_added(
     list: &Tree,
@@ -1027,8 +1116,8 @@ impl CapKernel {
     proof fn lemma_process_view(pre: Self, post: Self, root: usize, from: usize, to: usize, base: usize)
         requires
             Self::adds_cap(pre, post, pre.tables.node_of(root, to)),
-            pre.tables.has_slot(root, from),
-            pre.tables.has_slot(root, to),
+            pre.tables.has_slot(&pre.list, root, from),
+            pre.tables.has_slot(&pre.list, root, to),
             pre.is_cap(pre.tables.node_of(root, from)),
             post.list.parent@ == pre.list.parent@.insert(pre.tables.node_of(root, to), pre.tables.node_of(root, from)),
             post.payload_of(pre.tables.node_of(root, to)) == process_of(base),

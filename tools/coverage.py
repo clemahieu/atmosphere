@@ -8,10 +8,17 @@ written: the header below, then __llvm_prf_data and __llvm_prf_names from the EL
 from the guest in between. The layout is the one LLVM 23 (Rust 1.99.1) writes, raw version 11.
 
 The kernel's counters are read by physical address. dom0's are read by virtual address, which works
-because dom0 is the last thing running when its exit stops the guest. A crate no image runs is listed
-as not run. dom0 does not start its payload, so that includes the user crates for now.
+because dom0 is the last thing running when its exit stops the guest. The payload dom0 starts, hello,
+shares its pages with dom0 at the same addresses (dom0/src/payload.rs), so its counters are read by
+virtual address too, at the load bias dom0 logs. A workspace member under user/ that no image runs is
+listed as not run.
 
-usage: tools/coverage.py   (from the workspace root)
+Two boots of one build count the same lines and branches. A wait on the other core that may spin no
+times, depending on which core gets there first, goes through a spin_until marked #[coverage(off)]
+(kernel/src/cpu.rs, dom0/src/syscall_benchmark.rs), so the timing is not counted.
+
+usage: tools/coverage.py          (from the workspace root)
+       tools/coverage.py --test   (this script's own tests)
 """
 import importlib.util
 import json
@@ -20,7 +27,10 @@ import re
 import struct
 import subprocess
 import sys
+import tempfile
 import time
+import tomllib
+import unittest
 
 sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location("check_boot_stack", "tools/check-boot-stack.py")
@@ -30,8 +40,7 @@ spec.loader.exec_module(check_boot_stack)
 OUT = "target/coverage"
 KERNEL = f"{OUT}/x86_64-unknown-aloader/debug/kernel"
 DOM0 = f"{OUT}/x86_64-unknown-aloader/debug/dom0"
-# Built by atmo run or part of the workspace, with no image here that runs them.
-NOT_RUN = ("hello", "libtime")
+HELLO = f"{OUT}/x86_64-unknown-aloader/debug/hello"
 RAW_MAGIC = 0xff6c70726f667281
 RAW_VERSION = 11
 VALUE_KIND_LAST = 2
@@ -51,8 +60,8 @@ def tool(name):
 
 def build():
     env = {**os.environ, "RUSTC_BOOTSTRAP": "1"}
-    for crate in ("kernel", "dom0"):
-        subprocess.run(["cargo", "build", "-q", "--target-dir", f"../{OUT}"], cwd=crate, check=True,
+    for crate in ("kernel", "dom0", "user/hello"):
+        subprocess.run(["cargo", "build", "-q", "--target-dir", f"{os.getcwd()}/{OUT}"], cwd=crate, check=True,
                        env={**env, "RUSTFLAGS": FLAGS})
     check_boot_stack.build_loader("debug")
 
@@ -126,6 +135,14 @@ def crate_of(path):
     return match.group(1) if match else None
 
 
+def not_run(ran, manifest="Cargo.toml"):
+    """Names the user crates among the workspace's members that no image ran."""
+    with open(manifest, "rb") as f:
+        members = tomllib.load(f)["workspace"]["members"]
+    user = (member.removeprefix("user/") for member in members if member.startswith("user/"))
+    return sorted(crate for crate in user if crate not in ran)
+
+
 def report(image, sock, command, bias):
     """Returns each crate's llvm-cov summary from one image's counters."""
     found = sections(image)
@@ -155,15 +172,17 @@ def report(image, sock, command, bias):
 def main():
     os.makedirs(OUT, exist_ok=True)
     build()
-    log, qemu, sock = check_boot_stack.boot("debug", OUT, kernel=KERNEL, dom0=DOM0)
+    log, qemu, sock = check_boot_stack.boot("debug", OUT, kernel=KERNEL, dom0=DOM0, payload=HELLO)
     entry = int(re.search(r"Calling into kernel @ (?:0x)?([0-9a-f]+)", log).group(1), 16)
     kernel_bias = entry - entry_point(KERNEL)
     dom0_log = log[log.index("Loading dom0"):]
     dom0_bias = int(re.search(r"Load Bias: 0x([0-9a-f]+)", dom0_log).group(1), 16)
+    hello_bias = int(re.search(r"payload load bias 0x([0-9a-f]+)", log).group(1), 16)
     try:
         images = {
             "kernel": report(KERNEL, sock, "pmemsave", kernel_bias),
             "dom0": report(DOM0, sock, "memsave", dom0_bias),
+            "hello": report(HELLO, sock, "memsave", hello_bias),
         }
     finally:
         sock.sendall(b"quit\n")
@@ -173,10 +192,38 @@ def main():
             print(f"{image}/{crate}: " + ", ".join(
                 f"{kind} {covered}/{count} ({100 * covered / max(count, 1):.1f}%)"
                 for kind, (covered, count) in totals.items()))
-    for crate in NOT_RUN:
+    for crate in not_run({crate for crates in images.values() for crate in crates}):
         print(f"{crate}: not run")
     return 0
 
 
+class Tests(unittest.TestCase):
+    def manifest(self, members):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = os.path.join(directory.name, "Cargo.toml")
+        with open(path, "w") as f:
+            f.write("[workspace]\nmembers = [" + ", ".join(f'"{m}"' for m in members) + "]\n")
+        return path
+
+    def test_a_user_crate_no_image_ran_is_listed(self):
+        self.assertEqual(not_run({"kernel", "dom0"}, self.manifest(["kernel", "dom0", "user/hello"])), ["hello"])
+
+    def test_a_user_crate_an_image_ran_is_not_listed(self):
+        self.assertEqual(not_run({"dom0", "hello"}, self.manifest(["dom0", "user/hello"])), [])
+
+    def test_a_crate_outside_user_is_not_listed(self):
+        self.assertEqual(not_run(set(), self.manifest(["aelf", "kernel/verified"])), [])
+
+    def test_an_added_user_crate_is_listed_and_a_removed_one_is_not(self):
+        self.assertEqual(not_run(set(), self.manifest(["user/hello", "user/time"])), ["hello", "time"])
+        self.assertEqual(not_run(set(), self.manifest(["user/time"])), ["time"])
+
+    def test_the_workspace_lists_its_user_crates(self):
+        self.assertEqual(not_run(set(), "Cargo.toml"), ["hello"])
+
+
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--test"]:
+        unittest.main(argv=[sys.argv[0]])
     sys.exit(main())

@@ -1,6 +1,7 @@
 use vstd::prelude::*;
 verus! {
 
+use crate::arch::{MEM_1g_MASK, MEM_2m_MASK, MEM_4k_MASK, MEM_MASK};
 use crate::define::*;
 use crate::lemma::lemma_t::*;
 
@@ -316,9 +317,35 @@ pub proof fn lemma_va_1g_valid_indices(va: usize)
         spec_v2l2index(va) == 0,
         spec_v2l1index(va) == 0,
 {
-    assert((!MEM_1g_MASK) as usize == (!0x0000_fffc_0000_0000u64) as usize);
-    assert(va & (!0x0000_fffc_0000_0000u64) as usize == 0 ==> (va >> 21 & 0x1ff) == 0 && (va
+    assert((!MEM_1g_MASK) as usize == (!0x0000_ffff_c000_0000u64) as usize);
+    assert(va & (!0x0000_ffff_c000_0000u64) as usize == 0 ==> (va >> 21 & 0x1ff) == 0 && (va
         >> 12 & 0x1ff) == 0) by (bit_vector);
+}
+
+/// Every 1g-aligned address below 2^48 outside the kernel's L4 entries is a valid 1g address:
+/// the 1g mask keeps exactly the address bits 47:30.
+pub proof fn lemma_va_1g_valid_aligned(va: usize)
+    requires
+        va % 0x4000_0000 == 0,
+        va < 0x1_0000_0000_0000,
+        KERNEL_MEM_END_L4INDEX <= spec_v2l4index(va),
+    ensures
+        spec_va_1g_valid(va),
+{
+    assert((!MEM_1g_MASK) as usize == (!0x0000_ffff_c000_0000u64) as usize);
+    assert(KERNEL_MEM_END_L4INDEX as u64 == 1u64);
+    assert(va % 0x4000_0000 == 0 && va < 0x1_0000_0000_0000 && (va >> 39 & 0x1ff) >= 1 ==> (va
+        & (!0x0000_ffff_c000_0000u64) as usize == 0) && (va as u64 >> 39u64 & 0x1ffu64) >= 1u64)
+        by (bit_vector);
+}
+
+/// 0x80_4000_0000 is a valid 1g address though it is not 16g aligned.
+pub proof fn lemma_va_1g_valid_not_16g_aligned()
+    ensures
+        spec_va_1g_valid(0x80_4000_0000usize),
+{
+    assert(0x80_4000_0000usize >> 39 & 0x1ff == 1) by (bit_vector);
+    lemma_va_1g_valid_aligned(0x80_4000_0000usize);
 }
 
 /// The address of an in-range index tuple decomposes back into that tuple.

@@ -2,7 +2,7 @@
 
 # Design decisions
 
-21 records: 21 active, 0 superseded.
+22 records: 22 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -13,6 +13,9 @@ in `revisit if` what would make it worth reopening.
 - **[address-spaces-as-objects](./address-spaces-as-objects/DECISION.md)** (2026-11-06): A space is a retyped object of kind process, IO or nested; its table pages come from an untyped named in the map call; a frame entry's mapping node sits at a fixed index in the table page's block so it is found in constant time; a child table's hidden node is its entry's node; PCIDs and ASIDs recycle per core by generation, an IOid is fixed per device.
   - *confidence:* Structural; the table-page layout and the entry-record agreement are proven in kernel/verified/capability/space.rs, link.rs and mapping.rs.
   - *revisit if:* A space kind appears whose entries cannot carry a node at a fixed index, or a device must change IOid while bound.
+- **[arch-module](./arch-module/DECISION.md)** (2026-11-09): Page sizes 4K/2M/1G, 512 entries a level and four levels stay fixed constants the proofs use on every target; only an entry's bit layout is per-ISA. A per-ISA arch module, selected by cfg(target_arch) with no traits, supplies five items: page-entry encoding, trap frame and user-return checks, address-space switch and flush token, syscall register table, and exception and interrupt entry glue. Platform glue is a separate per-machine crate.
+  - *confidence:* A judgement made before the second target exists. That the 4K-granule aarch64 table has the x86_64 shape is arithmetic on both architectures' translation formats; that five items cover the ISA is a survey of the tree, and the first aarch64 build is what tests it.
+  - *revisit if:* A target the project must run on offers no 4K granule to the kernel or its IOMMU (bare Apple silicon, whose DART uses 16K pages), a workload needs more than 48 bits of VA (x86 LA57, Arm LPA2), or a second implementation of an item has to coexist on one target, which is when a trait starts to pay.
 - **[capability-names-a-block](./capability-names-a-block/DECISION.md)** (2026-11-06): A memory capability names a block: a base aligned to its size and 2^order pages. Frames retype at 4K or 2M in constant time, a 2M frame derives 4K pieces, and a map names a capability, a page offset and an address, so a pager needs few slots.
   - *confidence:* Arithmetic on the page table's block sizes; the payload well-formedness is proven in kernel/verified/capability/table.rs.
   - *revisit if:* A workload needs frames that are not power-of-two aligned, or the 1G frame that pagetable does not yet map becomes necessary rather than convenient.
@@ -78,7 +81,7 @@ in `revisit if` what would make it worth reopening.
 
 A view of the lists above. Nothing is reachable only through a tag.
 
-- `abi`: one-kernel-instance, syscall-abi-in-registers
+- `abi`: arch-module, one-kernel-instance, syscall-abi-in-registers
 - `address-space`: address-spaces-as-objects, vmm-over-svm
 - `boot`: root-process-at-boot
 - `capability`: address-spaces-as-objects, capability-names-a-block, cpu-time-as-capability, ipc-with-reply-object, process-holds-capabilities, revoke-by-depth-first-list, root-process-at-boot, sharing-by-derive, teardown-driven-by-retype, theorem-over-reach, thread-bound-at-retype, untyped-memory, vmm-over-svm
@@ -89,6 +92,8 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `lock`: flush-without-waiting, multicore-kernel-shape, one-lock-bounded-steps
 - `memory`: address-spaces-as-objects, capability-names-a-block, flush-without-waiting, teardown-driven-by-retype, untyped-memory
 - `multicore`: flush-without-waiting, multicore-kernel-shape, one-kernel-instance, one-lock-bounded-steps
+- `pagetable`: arch-module
+- `portability`: arch-module
 - `process`: cut-over-on-a-branch, process-holds-capabilities, thread-bound-at-retype
 - `proof`: isolation-claim, theorem-over-reach, thread-bound-at-retype, trust-boundary
 - `purity`: untyped-memory
@@ -97,5 +102,5 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `security`: isolation-claim, theorem-over-reach, trust-boundary
 - `thread`: process-holds-capabilities, thread-bound-at-retype
 - `tiers`: trust-boundary
-- `verified`: cut-over-on-a-branch, flush-without-waiting, one-lock-bounded-steps, revoke-by-depth-first-list, theorem-over-reach, thread-bound-at-retype
+- `verified`: arch-module, cut-over-on-a-branch, flush-without-waiting, one-lock-bounded-steps, revoke-by-depth-first-list, theorem-over-reach, thread-bound-at-retype
 - `virtualization`: vmm-over-svm

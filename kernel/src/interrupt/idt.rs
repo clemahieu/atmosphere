@@ -16,7 +16,7 @@ use core::marker::PhantomData;
 use core::mem;
 
 use bit_field::BitField;
-use x86::{segmentation, Ring};
+use crate::arch::{self, Ring};
 
 use super::{HandlerFunc, HandlerFuncWithErrCode, PageFaultHandlerFunc, TrampolineHandlerFunc, IST_EXCEPTION, IST_IRQ};
 
@@ -136,7 +136,7 @@ impl Idt {
     ///
     /// The IDT must live forever.
     pub unsafe fn load(&self) {
-        use x86::dtables::{lidt, DescriptorTablePointer};
+        use crate::arch::{lidt, DescriptorTablePointer};
 
         let ptr = DescriptorTablePointer {
             base: self as *const _,
@@ -218,7 +218,7 @@ impl<F> Entry<F> {
 
         self.attributes.set_present(true);
         self.attributes.set_gate_type(GateType::Int32);
-        self.selector = segmentation::cs().bits();
+        self.selector = arch::cs().bits();
         self
     }
 

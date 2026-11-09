@@ -10,8 +10,6 @@ macro_rules! unwrap_command {
     };
 }
 
-mod gdb;
-mod run;
 mod test;
 
 use clap::{CommandFactory, Parser};
@@ -22,8 +20,6 @@ pub async fn run() -> Result<(), anyhow::Error> {
     let opts = GlobalOpts::parse();
 
     match &opts.cmd {
-        SubCommand::Run(_) => run::run(opts).await?,
-        SubCommand::Gdb(_) => gdb::run(opts).await?,
         SubCommand::Test(_) => test::run(opts).await?,
         SubCommand::GenCompletions(local) => {
             gen_completions(local.shell);
@@ -38,20 +34,10 @@ pub async fn run() -> Result<(), anyhow::Error> {
 struct GlobalOpts {
     #[clap(subcommand)]
     cmd: SubCommand,
-
-    /// Use verbose output.
-    #[clap(short, long, global = true)]
-    verbose: bool,
-
-    /// Build in release mode.
-    #[clap(long, global = true)]
-    release: bool,
 }
 
 #[derive(Debug, Parser)]
 enum SubCommand {
-    Run(run::Opts),
-    Gdb(gdb::Opts),
     Test(test::Opts),
 
     #[clap(hide = true)]

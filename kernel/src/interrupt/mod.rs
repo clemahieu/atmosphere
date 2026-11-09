@@ -17,9 +17,8 @@ use core::arch::{asm, naked_asm};
 use core::convert::{Into, TryFrom};
 
 use bit_field::BitField;
-use x86::Ring;
-use x86::bits64::paging::VAddr;
-use x86::io::{inb, outb};
+use crate::arch::io::{inb, outb};
+use crate::arch::Ring;
 
 use crate::boot::spin_forever;
 pub use exception::Exception;
@@ -388,7 +387,7 @@ pub struct InterruptStackFrame {
     /// following the last executed instruction. However, for some exceptions (e.g., page faults),
     /// this value points to the faulting instruction, so that the instruction is restarted on
     /// return. See the documentation of the `InterruptDescriptorTable` fields for more details.
-    pub instruction_pointer: VAddr,
+    pub instruction_pointer: u64,
 
     /// The code segment selector, padded with zeros.
     pub code_segment: u64,
@@ -397,7 +396,7 @@ pub struct InterruptStackFrame {
     pub cpu_flags: u64,
 
     /// The stack pointer at the time of the interrupt.
-    pub stack_pointer: VAddr,
+    pub stack_pointer: u64,
 
     /// The stack segment descriptor at the time of the interrupt (often zero in 64-bit mode).
     pub stack_segment: u64,
