@@ -1,6 +1,7 @@
 use vstd::prelude::*;
 verus! {
 
+use crate::arch::{PAGE_ENTRY_ACCESSED_MASK, PAGE_ENTRY_DIRTY_MASK};
 use crate::array::*;
 use crate::util::page_ptr_util_u::*;
 
@@ -62,6 +63,36 @@ impl PageMap {
         self.spec_seq@
     }
 
+    /// The accessed and dirty bits of entry i as its word holds them. The processor sets them at any
+    /// time, so the view leaves them out (lemma_status_outside_view) and a value read here holds only
+    /// for the moment of the read.
+    pub open spec fn status(&self, i: int) -> PageEntryStatus {
+        spec_usize2page_entry_status(self.ar@[i])
+    }
+
+    /// A table whose words differ from a well-formed table's only in the accessed and dirty bits is well
+    /// formed with the same view: whatever the processor sets there, every proof over a table's view
+    /// holds.
+    pub proof fn lemma_status_outside_view(&self, other: &PageMap)
+        requires
+            self.wf(),
+            other.ar.wf(),
+            other.spec_seq@ == self.spec_seq@,
+            forall|i: int|
+                #![trigger other.ar@[i]]
+                0 <= i < 512 ==> other.ar@[i] & (!(PAGE_ENTRY_ACCESSED_MASK | PAGE_ENTRY_DIRTY_MASK)) as usize
+                    == self.ar@[i] & (!(PAGE_ENTRY_ACCESSED_MASK | PAGE_ENTRY_DIRTY_MASK)) as usize,
+        ensures
+            other.wf(),
+            other@ == self@,
+    {
+        assert forall|i: int|
+            #![trigger usize2page_entry(other.ar@[i])]
+            0 <= i < 512 implies usize2page_entry(other.ar@[i]) =~= other.spec_seq@[i] by {
+            lemma_status_outside_entry(other.ar@[i], self.ar@[i]);
+        }
+    }
+
     pub open spec fn spec_index(&self, index: usize) -> PageEntry
         recommends
             0 <= index < 512,
@@ -85,10 +116,13 @@ impl PageMap {
         ensures
             final(self).wf(),
             final(self)@ =~= old(self)@.update(index as int, value),
+            final(self).status(index as int).is_clear(),
     {
         if value.perm.present == false {
             self.ar.set(index, 0usize);
             proof {
+                assert(0usize & (0x1u64 << 5u64) as usize == 0 && 0usize & (0x1u64 << 6u64) as usize == 0)
+                    by (bit_vector);
                 zero_leads_is_empty_page_entry();
                 self.spec_seq@ = self.spec_seq@.update(index as int, usize2page_entry(0usize));
             }

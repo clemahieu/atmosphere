@@ -2,8 +2,8 @@ use vstd::prelude::*;
 verus! {
 
 use crate::arch::{
-    MEM_MASK, PAGE_ENTRY_EXECUTE_MASK, PAGE_ENTRY_PRESENT_MASK, PAGE_ENTRY_PS_MASK, PAGE_ENTRY_USER_MASK,
-    PAGE_ENTRY_WRITE_MASK,
+    MEM_MASK, PAGE_ENTRY_ACCESSED_MASK, PAGE_ENTRY_DIRTY_MASK, PAGE_ENTRY_EXECUTE_MASK,
+    PAGE_ENTRY_PRESENT_MASK, PAGE_ENTRY_PS_MASK, PAGE_ENTRY_USER_MASK, PAGE_ENTRY_WRITE_MASK,
 };
 use crate::define::*;
 
@@ -120,6 +120,58 @@ pub open spec fn usize2user(v: usize) -> bool {
     (v & PAGE_ENTRY_USER_MASK as usize) != 0
 }
 
+/// The bits the processor sets in an entry it walks: accessed on any walk through the entry, dirty on
+/// a write through a leaf. The processor sets them on any core at any time, also while this core holds
+/// the kernel, so they are not part of PageEntry, the entry the table view holds and the proofs relate:
+/// two words that differ only in them decode to the same PageEntry (lemma_status_outside_entry). The
+/// encoder writes them clear. See design/arch-module/.
+#[derive(Clone, Copy, Debug)]
+pub struct PageEntryStatus {
+    pub accessed: bool,
+    pub dirty: bool,
+}
+
+impl PageEntryStatus {
+    pub open spec fn is_clear(self) -> bool {
+        &&& !self.accessed
+        &&& !self.dirty
+    }
+}
+
+pub open spec fn usize2accessed(v: usize) -> bool {
+    (v & PAGE_ENTRY_ACCESSED_MASK as usize) != 0
+}
+
+pub open spec fn usize2dirty(v: usize) -> bool {
+    (v & PAGE_ENTRY_DIRTY_MASK as usize) != 0
+}
+
+pub open spec fn spec_usize2page_entry_status(v: usize) -> PageEntryStatus {
+    PageEntryStatus { accessed: usize2accessed(v), dirty: usize2dirty(v) }
+}
+
+/// Two words that differ only in the accessed and dirty bits decode to the same entry, so whatever the
+/// processor sets there leaves every table's view as it was.
+pub proof fn lemma_status_outside_entry(v: usize, w: usize)
+    requires
+        v & (!(PAGE_ENTRY_ACCESSED_MASK | PAGE_ENTRY_DIRTY_MASK)) as usize == w & (!(
+        PAGE_ENTRY_ACCESSED_MASK | PAGE_ENTRY_DIRTY_MASK)) as usize,
+    ensures
+        spec_usize2page_entry(v) == spec_usize2page_entry(w),
+{
+    assert(v & 0x0000_ffff_ffff_f000u64 as usize == w & 0x0000_ffff_ffff_f000u64 as usize
+        && (v & 0x1u64 as usize != 0) == (w & 0x1u64 as usize != 0)
+        && (v & (0x1u64 << 7u64) as usize != 0) == (w & (0x1u64 << 7u64) as usize != 0)
+        && (v & (0x1u64 << 1u64) as usize != 0) == (w & (0x1u64 << 1u64) as usize != 0)
+        && (v & (0x1u64 << 63u64) as usize != 0) == (w & (0x1u64 << 63u64) as usize != 0)
+        && (v & (0x1u64 << 2u64) as usize != 0) == (w & (0x1u64 << 2u64) as usize != 0))
+        by (bit_vector)
+        requires
+            v & (!((0x1u64 << 5u64) | (0x1u64 << 6u64))) as usize == w & (!((0x1u64 << 5u64) | (
+            0x1u64 << 6u64))) as usize,
+    ;
+}
+
 pub proof fn zero_leads_is_empty_page_entry()
     ensures
         spec_usize2page_entry(0).is_empty(),
@@ -206,6 +258,7 @@ pub fn page_entry2usize(page_entry: &PageEntry) -> (ret: usize)
         usize2user(ret) == page_entry.perm.user,
         usize2pa(ret) == page_entry.addr,
         usize2page_entry_perm(ret) =~= page_entry.perm,
+        spec_usize2page_entry_status(ret).is_clear(),
 {
     let mut ret: usize = page_entry.addr;
 
@@ -548,6 +601,14 @@ pub fn page_entry2usize(page_entry: &PageEntry) -> (ret: usize)
     assert(usize2execute_disable(ret) == page_entry.perm.execute_disable);
     assert(usize2user(ret) == page_entry.perm.user);
     assert(usize2pa(ret) == page_entry.addr);
+
+    assert(ret & (0x1u64 << 5u64) as usize == 0 && ret & (0x1u64 << 6u64) as usize == 0)
+        by (bit_vector)
+        requires
+            ret & (!(0x1u64 | 0x1u64 << 0x7u64 | 0x1u64 << 0x1u64 | 0x1u64 << 63u64 | 0x1u64 << 2u64
+                | 0x0000_ffff_ffff_f000u64)) as usize == 0,
+    ;
+    assert(spec_usize2page_entry_status(ret).is_clear());
 
     return ret;
 }

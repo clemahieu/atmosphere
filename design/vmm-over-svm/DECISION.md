@@ -1,6 +1,6 @@
 ---
 title: "A guest is a principal with no capabilities; the VMM is an ordinary process and the kernel owns the VMCB"
-date: 2026-11-05
+date: 2026-11-09
 status: active
 tags: [virtualization, capability, address-space]
 one_line: "A guest touches only what its nested table maps and what its intercept maps let through. The VMM is an ordinary process; VMRUN needs CPL 0, so the kernel runs it on the VMM's thread, owns the VMCB, and rewrites every control field from the validated request on each run. A nested table is an address space kind for revocation."
@@ -16,7 +16,7 @@ A guest is a principal with no capabilities. It can touch only what its nested t
 
 Objects, all retyped from untyped, `design/untyped-memory/`: a vCPU, holding the VMCB, the guest registers VMRUN does not save and the guest's extended register state, runnable on one core at a time; a nested table, a root and table pages retyped like a process table's; intercept maps, a 12 KB I/O map and an 8 KB MSR map written only by the kernel. Retyping into a vCPU requires a capability to SVM itself, handed to the root at boot, so the root decides who gets this hardware surface. A vCPU capability has rights run and kick; a nested table capability has map and unmap; frame capabilities are the ordinary ones, so a frame can sit in a process table, a device space and a nested table at once. Pass-through of an I/O port needs a port capability covering it; an MSR is passed through only from a fixed kernel allowlist.
 
-A nested table is an address space of the same kind as a process table for revocation, `design/address-spaces-as-objects/`. Revoking a frame removes every entry in all three kinds, then flushes per kind: IPI for a process table, IOTLB invalidate for a device space, a kick of every core running that ASID plus flush-by-ASID on its next VMRUN for a nested table, all producing the token retype requires, `design/flush-without-waiting/`. The guest sees a nested page fault, delivered to the VMM, which is how a pager overcommits guest memory. Hardware writes accessed and dirty bits in nested tables, so an entry's spec allows those bits to change.
+A nested table is an address space of the same kind as a process table for revocation, `design/address-spaces-as-objects/`. Revoking a frame removes every entry in all three kinds, then flushes per kind: IPI for a process table, IOTLB invalidate for a device space, a kick of every core running that ASID plus flush-by-ASID on its next VMRUN for a nested table, all producing the token retype requires, `design/flush-without-waiting/`. The guest sees a nested page fault, delivered to the VMM, which is how a pager overcommits guest memory. Hardware writes accessed and dirty bits in nested tables as it does in a process's tables, and the entry spec already allows those bits to change in every table, `design/arch-module/`.
 
 Per core, boot reserves the host save area and a host VMCB with the rest of per-CPU state, never retyped. A VMCB and its maps stay resident because kernel objects are not paged; a pager that wants that memory back revokes and destroys the vCPU. A vCPU or its table follows the same rule as a thread on another core: no retype until the core has been kicked out and has acknowledged.
 

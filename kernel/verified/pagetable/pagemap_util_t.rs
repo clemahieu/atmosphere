@@ -120,6 +120,7 @@ pub fn page_map_set(
                 page_map_perm,
             ).value()[i],
         final(page_map_perm).value()[index] =~= value,
+        final(page_map_perm).value().status(index as int).is_clear(),
 {
     unsafe {
         let uptr = page_map_ptr as *mut MaybeUninit<PageMap>;

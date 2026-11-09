@@ -1508,6 +1508,7 @@ impl CapKernel {
         &&& b.maps@[t].value().wf()
         &&& forall|i: usize| #![trigger b.maps@[t].value()[i]] i < 512 && i != e ==> b.maps@[t].value()[i] == a.maps@[t].value()[i]
         &&& b.maps@[t].value()[e] == v
+        &&& b.maps@[t].value().status(e as int).is_clear()
         &&& b.records@ == a.records@.insert(t, b.records@[t])
         &&& b.records@[t].addr() == a.records@[t].addr()
         &&& b.records@[t].is_init()
@@ -1594,7 +1595,8 @@ impl CapKernel {
     }
 
     /// What a map leaves: the capability tables as they were; path p of the space still reaches its
-    /// level 1 table and gains the page's entry, and nothing else changes in any space; the node is the
+    /// level 1 table and gains the page's entry, written with its accessed and dirty bits clear, and
+    /// nothing else changes in any space; the node is the
     /// capability's child, names the entry and counts on the block; the frame is mapped. What it keeps,
     /// so that maps compose: every other node, the list's head, every other block's count, the
     /// processes, threads and spaces, every table walk, and everyone's reach.
@@ -1611,6 +1613,7 @@ impl CapKernel {
         &&& post.tables == pre.tables
         &&& walk_table(b, s, p) == Some(t)
         &&& space_mapping(b, s) == space_mapping(a, s).insert(p, frame_map_entry(frame, cap.rights, false))
+        &&& post.table_pages.maps@[t].value().status(p.l1 as int).is_clear()
         &&& forall|r: usize| r != s ==> #[trigger] space_mapping(b, r) == space_mapping(a, r)
         &&& post.list.is_child(f, node)
         &&& post.list.nodes@[node as int].kind is Mapping
@@ -1636,7 +1639,8 @@ impl CapKernel {
     }
 
     /// What a large map leaves: the capability tables as they were; path p of the space still reaches its
-    /// level 2 table and, at its first page, gains the large entry, and nothing else changes in any space;
+    /// level 2 table and, at its first page, gains the large entry, written with its accessed and dirty
+    /// bits clear, and nothing else changes in any space;
     /// the node is the capability's child, names the entry and counts on the block; all 512 pages are
     /// mapped.
     pub open spec fn map_large_done(pre: Self, post: Self, root: usize, slot: usize, p: SpacePath, from: usize, page: usize) -> bool {
@@ -1652,6 +1656,7 @@ impl CapKernel {
         &&& post.tables == pre.tables
         &&& walk_large_table(b, s, p) == Some(t)
         &&& space_mapping(b, s) == space_mapping(a, s).insert(p, frame_map_entry(frame, cap.rights, true))
+        &&& post.table_pages.maps@[t].value().status(p.l2 as int).is_clear()
         &&& forall|r: usize| r != s ==> #[trigger] space_mapping(b, r) == space_mapping(a, r)
         &&& post.list.is_child(f, node)
         &&& post.list.nodes@[node as int].kind is Mapping

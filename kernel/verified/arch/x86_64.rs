@@ -10,7 +10,8 @@ use crate::capability::operation::Outcome;
 
 // The page-entry encoding: the long-mode page-translation entry's bits, chapter 5. The decoders and
 // encoders in pagetable/entry.rs, the address checks in util/page_ptr_util_u.rs and the address lemmas
-// in capability/map.rs and capability/link.rs read them.
+// in capability/map.rs and capability/link.rs read them. The accessed and dirty bits are the
+// processor's, set on any core at any time; see design/arch-module/.
 
 pub const PAGE_ENTRY_PRESENT_MASK: u64 = 0x1;
 
@@ -18,8 +19,40 @@ pub const PAGE_ENTRY_WRITE_MASK: u64 = 0x1u64 << 1;
 
 pub const PAGE_ENTRY_USER_MASK: u64 = 0x1u64 << 2;
 
+/// A: the processor sets it in every entry a walk uses, at every level.
+pub const PAGE_ENTRY_ACCESSED_MASK: u64 = 0x1u64 << 5;
+
+/// D: the processor sets it in the leaf entry a write goes through. Above a leaf the bit is ignored.
+pub const PAGE_ENTRY_DIRTY_MASK: u64 = 0x1u64 << 6;
+
 /// PS: a large page at the 2M and 1G levels.
 pub const PAGE_ENTRY_PS_MASK: u64 = 0x1u64 << 7;
+
+/// Whether this target's walker maintains the accessed bit: always on x86_64.
+pub open spec fn spec_maintains_accessed() -> bool {
+    true
+}
+
+#[verifier(when_used_as_spec(spec_maintains_accessed))]
+pub fn maintains_accessed() -> (ret: bool)
+    ensures
+        ret == spec_maintains_accessed(),
+{
+    true
+}
+
+/// Whether this target's walker maintains the dirty bit: always on x86_64.
+pub open spec fn spec_maintains_dirty() -> bool {
+    true
+}
+
+#[verifier(when_used_as_spec(spec_maintains_dirty))]
+pub fn maintains_dirty() -> (ret: bool)
+    ensures
+        ret == spec_maintains_dirty(),
+{
+    true
+}
 
 /// NX: no instruction fetch, under EFER.NXE.
 pub const PAGE_ENTRY_EXECUTE_MASK: u64 = 0x1u64 << 63;
