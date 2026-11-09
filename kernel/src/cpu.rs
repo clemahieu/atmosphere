@@ -103,6 +103,10 @@ pub struct Cpu {
     ///
     /// We do not support nested syscalls.
     pub syscall_sp: u64,
+
+    /// The user's stack pointer, held here by the syscall entry while it switches to the syscall stack,
+    /// so that no argument register has to hold it.
+    pub user_rsp: u64,
 }
 
 /// A stack. Its top must be 16-byte aligned: a byte array alone could leave the syscall stack
@@ -149,6 +153,7 @@ impl Cpu {
             ],
             syscall_stack: IstStack::new(),
             syscall_sp: 0,
+            user_rsp: 0,
         }
     }
 }

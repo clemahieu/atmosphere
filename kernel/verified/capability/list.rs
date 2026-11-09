@@ -963,6 +963,7 @@ impl Tree {
             ret.wf(),
             ret.seq@ == seq![root],
             ret.parent@ == Map::<usize, usize>::empty(),
+            ret.pages@.dom() == set![root],
             ret.nodes@[root as int].live,
             ret.nodes@[root as int].depth == 0,
             ret.nodes@[root as int].kind == NodeKind::Capability,
@@ -988,6 +989,7 @@ impl Tree {
             parent: Ghost(Map::empty()),
         };
         proof {
+            assert(t.pages@.dom() =~= set![root]);
             assert(t.store_wf()) by {
                 reveal(Tree::store_wf);
                 assert forall|i: int| 0 <= i < NODE_SPACE && #[trigger] t.nodes@[i].live

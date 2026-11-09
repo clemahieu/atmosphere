@@ -1690,6 +1690,95 @@ impl CapKernel {
         lemma_simulated_discharges_retype(b, a, root, parent, n, live, f);
     }
 
+    /// Nor does anyone's reach change: every capability is as it was, the hidden node is none, and no
+    /// node the list held has a new parent, so each state simulates the other.
+    pub proof fn lemma_hidden_added_reach(pre: Self, post: Self, parent: usize, n: usize)
+        requires
+            pre.wf(),
+            n < NODE_SPACE,
+            !pre.list.nodes@[n as int].live,
+            forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x),
+            forall|x: usize| #[trigger] pre.is_cap(x) ==> {
+                &&& post.payload_of(x) == pre.payload_of(x)
+                &&& post.tables.owner@[page_of(x)] == pre.tables.owner@[page_of(x)]
+            },
+            post.list.parent@ == pre.list.parent@.insert(n, parent),
+        ensures
+            forall|r: ObjectId, o: ObjectId| #[trigger] post.view().reach(r, o) == pre.view().reach(r, o),
+    {
+        let (a, b) = (post.view(), pre.view());
+        let live = |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live;
+        let f = |x: NodeId| x;
+        assert forall|h: (ObjectId, NodeId)| #[trigger] a.held.contains(h) implies live(h.1) && b.held.contains((h.0, f(h.1))) by {
+            assert(post.is_cap(h.1) == pre.is_cap(h.1));
+            pre.lemma_slot_bound(h.1);
+        }
+        assert forall|h: (ObjectId, NodeId)| #[trigger] b.held.contains(h) implies live(h.1) && a.held.contains((h.0, f(h.1))) by {
+            assert(post.is_cap(h.1) == pre.is_cap(h.1));
+            pre.lemma_slot_bound(h.1);
+        }
+        assert forall|x: NodeId| #[trigger] a.names.contains_key(x) implies {
+            &&& live(x)
+            &&& b.names.contains_key(f(x))
+            &&& b.names[f(x)] == a.names[x]
+        } by {
+            assert(post.is_cap(x) == pre.is_cap(x));
+            pre.lemma_slot_bound(x);
+        }
+        assert forall|x: NodeId| #[trigger] b.names.contains_key(x) implies {
+            &&& live(x)
+            &&& a.names.contains_key(f(x))
+            &&& a.names[f(x)] == b.names[x]
+        } by {
+            assert(post.is_cap(x) == pre.is_cap(x));
+            pre.lemma_slot_bound(x);
+        }
+        assert forall|x: NodeId| #[trigger] a.pages.contains_key(x) implies {
+            &&& b.pages.contains_key(f(x))
+            &&& b.pages[f(x)] == a.pages[x]
+        } by {
+            assert(post.is_cap(x) == pre.is_cap(x));
+        }
+        assert forall|x: NodeId| #[trigger] b.pages.contains_key(x) implies {
+            &&& a.pages.contains_key(f(x))
+            &&& a.pages[f(x)] == b.pages[x]
+        } by {
+            assert(post.is_cap(x) == pre.is_cap(x));
+        }
+        assert forall|x: NodeId, r: Right| #[trigger] a.rights.contains((x, r)) implies b.rights.contains((f(x), r)) by {
+            assert(post.is_cap(x) == pre.is_cap(x));
+        }
+        assert forall|x: NodeId, r: Right| #[trigger] b.rights.contains((x, r)) implies a.rights.contains((f(x), r)) by {
+            assert(post.is_cap(x) == pre.is_cap(x));
+        }
+        assert forall|x: NodeId| live(x) && #[trigger] a.parent.contains_key(x) implies {
+            &&& live(a.parent[x])
+            &&& b.parent.contains_key(f(x))
+            &&& b.parent[f(x)] == f(a.parent[x])
+        } by {
+            assert(x != n);
+            pre.list.lemma_parent_live(x);
+        }
+        assert forall|x: NodeId| live(x) && #[trigger] b.parent.contains_key(x) implies {
+            &&& live(b.parent[x])
+            &&& a.parent.contains_key(f(x))
+            &&& a.parent[f(x)] == f(b.parent[x])
+        } by {
+            assert(x != n);
+            pre.list.lemma_parent_live(x);
+        }
+        assert(simulates(a, b, live, f));
+        assert(simulates(b, a, live, f));
+        assert forall|r: ObjectId, o: ObjectId| #[trigger] a.reach(r, o) == b.reach(r, o) by {
+            if a.reach(r, o) {
+                lemma_simulates_reach(a, b, live, f, r, o);
+            }
+            if b.reach(r, o) {
+                lemma_simulates_reach(b, a, live, f, r, o);
+            }
+        }
+    }
+
     /// What a table page's retype does to the fields the view reads: the tables are as they were, and so
     /// is every node the list held.
     pub open spec fn table_page_step(pre: Self, post: Self) -> bool {
@@ -1773,8 +1862,8 @@ impl CapKernel {
         } by {
             Self::lemma_table_page_cap(pre, post, x);
         }
-        assert forall|n: usize| #[trigger] post.tables.is_cap(&post.list, n) && !(post.tables.payload_of(n).kind is Device)
-            implies payload_wf(post.tables.payload_of(n)) by {
+        assert forall|n: usize| #[trigger] post.tables.is_cap(&post.list, n)
+            implies cap_wf(post.tables.payload_of(n)) by {
             assert(post.is_cap(n));
             assert(pre.tables.is_cap(&pre.list, n));
         }
@@ -1986,6 +2075,15 @@ impl CapKernel {
                     == space_mapping(tree_of(&pre.table_pages, &pre.spaces), r),
             forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x),
             discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base }),
+            !pre.list.nodes@[base as int].live,
+            post.list.parent@ == pre.list.parent@.insert(base, parent),
+            forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < NODE_SPACE && i != base
+                ==> post.list.nodes@[i].live == pre.list.nodes@[i].live,
+            forall|x: usize| #![trigger post.list.nodes@[x as int]] pre.list.valid(x) && x != base ==> {
+                &&& post.list.nodes@[x as int].kind == pre.list.nodes@[x as int].kind
+                &&& post.list.nodes@[x as int].depth == pre.list.nodes@[x as int].depth
+            },
+            forall|r: ObjectId, o: ObjectId| #[trigger] post.view().reach(r, o) == pre.view().reach(r, o),
     {
         lemma_table_page_base(base, page);
         pre.lemma_slot(root, from);
@@ -2016,6 +2114,14 @@ impl CapKernel {
             Self::lemma_mappings_grown(pre, post, page, 3);
         }
         Self::lemma_hidden_added_discharges(pre, post, root, parent, base);
+        Self::lemma_hidden_added_reach(pre, post, parent, base);
+        assert forall|x: usize| #![trigger post.list.nodes@[x as int]] pre.list.valid(x) && x != base implies {
+            &&& post.list.nodes@[x as int].kind == pre.list.nodes@[x as int].kind
+            &&& post.list.nodes@[x as int].depth == pre.list.nodes@[x as int].depth
+        } by {
+            pre.list.lemma_valid_bound(x);
+            assert(mid.nodes@[x as int] == pre.list.nodes@[x as int]);
+        }
     }
 
     /// A mapping node's parent link is as it was once a node dead before is linked under `parent`.
@@ -2292,7 +2398,7 @@ impl CapKernel {
     }
 
     /// A free block holds no table and no space.
-    proof fn lemma_free_not_table(&self, base: usize, page: usize)
+    pub proof fn lemma_free_not_table(&self, base: usize, page: usize)
         requires
             self.wf(),
             base / 4096 == page,
@@ -2472,7 +2578,30 @@ impl CapKernel {
                 &&& final(self).list.nodes@[base as int].kind is Hidden
                 &&& forall|x: usize| #[trigger] final(self).is_cap(x) == old(self).is_cap(x)
                 &&& discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base })
+                &&& forall|r: ObjectId, o: ObjectId| #[trigger] final(self).view().reach(r, o) == old(self).view().reach(r, o)
+                &&& !old(self).list.nodes@[base as int].live
+                &&& final(self).list.parent@ == old(self).list.parent@.insert(base, parent)
+                &&& forall|i: int| #![trigger final(self).list.nodes@[i]] 0 <= i < NODE_SPACE && i != base
+                    ==> final(self).list.nodes@[i].live == old(self).list.nodes@[i].live
+                &&& forall|x: usize| #![trigger final(self).list.nodes@[x as int]] old(self).list.valid(x) && x != base ==> {
+                    &&& final(self).list.nodes@[x as int].kind == old(self).list.nodes@[x as int].kind
+                    &&& final(self).list.nodes@[x as int].depth == old(self).list.nodes@[x as int].depth
+                }
+                &&& final(self).tables == old(self).tables
+                &&& final(self).spaces == old(self).spaces
+                &&& final(self).processes == old(self).processes
+                &&& final(self).threads == old(self).threads
+                &&& final(self).table_pages.maps@ == old(self).table_pages.maps@.insert(base, final(self).table_pages.maps@[base])
+                &&& final(self).table_pages.records@ == old(self).table_pages.records@.insert(base, final(self).table_pages.records@[base])
+                &&& final(self).blocks.regions_2m@ == old(self).blocks.regions_2m@
+                &&& final(self).blocks.regions_1g@ == old(self).blocks.regions_1g@
+                &&& forall|i: int| 0 <= i < NUM_PAGES && !(base / 4096 <= i < base / 4096 + 8)
+                    ==> #[trigger] final(self).blocks.pages@[i] == old(self).blocks.pages@[i]
             },
+            old(self).can_retype_under(root, from, base, 3) && 1 <= level <= 3 && base / 4096 + 8 <= NUM_PAGES
+                && !old(self).blocks.covered((base / 4096) as int)
+                && (forall|k: int| 0 <= k < 8 ==> #[trigger] old(self).blocks.pages@[base / 4096 + k].kind is Free)
+                ==> ret,
     {
         let ghost pre = *old(self);
         if level == 0 || level > 3 {
@@ -2596,7 +2725,7 @@ impl CapKernel {
             Self::space_step(pre, post, child),
             !pre.list.nodes@[child as int].live,
             post.is_cap(child),
-            payload_wf(post.payload_of(child)),
+            cap_wf(post.payload_of(child)),
             control_named(post.payload_of(child)),
         ensures
             post.tables.caps_wf(&post.list),
@@ -2618,7 +2747,7 @@ impl CapKernel {
             Self::lemma_space_cap_frame(pre, post, child, x);
         }
         assert forall|n: usize| #[trigger] post.tables.is_cap(&post.list, n) implies {
-            &&& !(post.tables.payload_of(n).kind is Device) ==> payload_wf(post.tables.payload_of(n))
+            &&& cap_wf(post.tables.payload_of(n))
             &&& control_named(post.tables.payload_of(n))
         } by {
             if n != child {
@@ -2628,8 +2757,8 @@ impl CapKernel {
     }
 
     /// The hidden nodes, the parents, the slots and the leaves after a space's retype: the one new
-    /// live node is the capability in its slot, and every other node's kind and parent are as they
-    /// were.
+    /// live node is the capability in its slot, below a capability or the list's first node, and
+    /// every other node's kind and parent are as they were.
     pub proof fn lemma_space_nodes(pre: Self, post: Self, mid: Tree, parent: usize, child: usize)
         requires
             Self::space_step(pre, post, child),
@@ -2637,7 +2766,7 @@ impl CapKernel {
             mid.wf(),
             post.list.wf(),
             parent < NODE_SPACE,
-            pre.is_cap(parent),
+            pre.is_cap(parent) || parent == pre.list.seq@[0],
             child < NODE_SPACE,
             !pre.list.nodes@[child as int].live,
             post.is_cap(child),
@@ -2670,7 +2799,12 @@ impl CapKernel {
             implies post.tables.owner@.contains_key(x) || post.table_pages.maps@.contains_key(x) by {
             assert(x != child);
         }
-        pre.lemma_slot_bound(parent);
+        if pre.is_cap(parent) {
+            pre.lemma_slot_bound(parent);
+        } else {
+            pre.list.lemma_link(0);
+            pre.list.lemma_live_valid(parent);
+        }
         lemma_parents_same_live(pre.list, mid);
         lemma_parents_derived(mid, post.list, parent, child);
         assert forall|x: usize| x < NODE_SPACE && (#[trigger] post.list.nodes@[x as int]).live

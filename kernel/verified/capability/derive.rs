@@ -121,16 +121,16 @@ fn may_derive(parent: Payload, rights: u32, base: usize, order: u8) -> (ret: boo
 }
 
 impl CapKernel {
-    /// The refusals: an index that names no slot, a parent that is no capability, a device's, a dead
-    /// process's or thread's, or at the deepest depth, a child's slot in use, or a child that does not
-    /// narrow its parent.
+    /// The refusals: an index that names no slot, a parent that is no capability, a device's or the
+    /// console's, a dead process's or thread's, or at the deepest depth, a child's slot in use, or a child
+    /// that does not narrow its parent.
     pub open spec fn can_derive(&self, root: usize, from: usize, to: usize, rights: u32, base: usize, order: u8) -> bool {
         let parent = self.tables.node_of(root, from);
         let child = self.tables.node_of(root, to);
         &&& self.tables.has_slot(&self.list, root, from)
         &&& self.tables.has_slot(&self.list, root, to)
         &&& self.is_cap(parent)
-        &&& !(self.payload_of(parent).kind is Device)
+        &&& names_block(self.payload_of(parent).kind)
         &&& !self.cap_dead(parent)
         &&& self.list.nodes@[parent as int].depth < MAX_DEPTH
         &&& !self.list.nodes@[child as int].live
@@ -206,7 +206,8 @@ impl CapKernel {
             return false;
         }
         // A device is bound to one space at a time, so its capability has no children: it moves instead.
-        if let CapKind::Device = payload.kind {
+        // The console's names no block for a child to narrow.
+        if !is_block_kind(payload.kind) {
             return false;
         }
         if !may_derive(payload, rights, base, order) {
@@ -489,14 +490,14 @@ impl CapKernel {
     pub proof fn lemma_derive_caps_wf(pre: Self, post: Self, child: usize)
         requires
             Self::derive_step(pre, post, child),
-            !(post.payload_of(child).kind is Device) ==> payload_wf(post.payload_of(child)),
+            cap_wf(post.payload_of(child)),
             control_named(post.payload_of(child)),
         ensures
             post.tables.caps_wf(&post.list),
             post.tables.control_wf(&post.list),
     {
         assert forall|n: usize| #[trigger] post.tables.is_cap(&post.list, n) implies {
-            &&& !(post.tables.payload_of(n).kind is Device) ==> payload_wf(post.tables.payload_of(n))
+            &&& cap_wf(post.tables.payload_of(n))
             &&& control_named(post.tables.payload_of(n))
         } by {
             if n != child {
@@ -538,6 +539,7 @@ impl CapKernel {
 
     /// The view of a step that adds one child, in a slot of the caller's table, under a capability the
     /// caller holds, covering only what its parent does.
+    #[verifier::spinoff_prover]
     pub proof fn lemma_adds_node_view(pre: Self, post: Self, root: usize, from: usize, to: usize)
         requires
             Self::adds_cap(pre, post, pre.tables.node_of(root, to)),

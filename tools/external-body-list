@@ -5,40 +5,12 @@
 # glue      hardware or assembly leaf glue, the only unverified code CLAUDE.md allows
 # gap       uses something this Verus cannot check: a raw pointer, a conjured permission, uninit memory
 # unproven  plain code or a lemma with no proof yet, so proof debt
-allocator/page_allocator_spec_impl.rs	init	unproven	initialisation not proven yet
-allocator/page_allocator_spec_impl.rs	new	unproven	initialisation not proven yet
-allocator/page_allocator_util_t.rs	merge_4k_pages_to_2m_page	gap	takes its permission from Tracked::assume_new, which Verus cannot check
-allocator/page_allocator_util_t.rs	set_io_mapping	unproven	an array element access not proven yet
-allocator/page_allocator_util_t.rs	set_mapping	unproven	an array element access not proven yet
-allocator/page_allocator_util_t.rs	set_owning_container	unproven	an array element access not proven yet
-allocator/page_allocator_util_t.rs	set_ref_count	unproven	an array element access not proven yet
-allocator/page_allocator_util_t.rs	set_rev_pointer	unproven	an array element access not proven yet
-allocator/page_allocator_util_t.rs	set_state	unproven	an array element access not proven yet
-allocator/page_allocator_util_t.rs	split_2m_pages_to_pages	gap	takes its permission from Tracked::assume_new, which Verus cannot check
 arch/x86_64.rs	flush_every_context	glue	only the hardware can attest a flush, so only this makes the token
+arch/x86_64.rs	serial_write	glue	writes the serial port through port I/O, which has no state a proof could see
 array.rs	new	gap	builds a value from zeroed memory, which Verus cannot check
 capability/kernel.rs	invalidate_iommu_all	glue	only the IOMMU can attest an invalidate, so only this makes its token
-kernel/spec.rs	kernel_init	unproven	initialisation not proven yet
-lemma/lemma_t.rs	page_ptr_lemma	unproven	a lemma stated without a proof
-memory_manager/mmu_util.rs	iommu_table_array_create_iommu_table_l2_entry_t	unproven	an array element access not proven yet
-memory_manager/mmu_util.rs	iommu_table_array_create_iommu_table_l3_entry_t	unproven	an array element access not proven yet
-memory_manager/mmu_util.rs	iommu_table_array_create_iommu_table_l4_entry_t	unproven	an array element access not proven yet
-memory_manager/mmu_util.rs	iommu_table_array_map_4k_page_t	unproven	an array element access not proven yet
-memory_manager/mmu_util.rs	pagetable_array_create_pagetable_l2_entry_t	unproven	an array element access not proven yet
-memory_manager/mmu_util.rs	pagetable_array_create_pagetable_l3_entry_t	unproven	an array element access not proven yet
-memory_manager/mmu_util.rs	pagetable_array_create_pagetable_l4_entry_t	unproven	an array element access not proven yet
-memory_manager/mmu_util.rs	pagetable_array_map_4k_page_t	unproven	an array element access not proven yet
-memory_manager/root_table.rs	get_ioid	glue	accesses the IOMMU root table in its hardware format
-memory_manager/root_table.rs	init	glue	accesses the IOMMU root table in its hardware format
-memory_manager/root_table.rs	new	glue	accesses the IOMMU root table in its hardware format
-memory_manager/root_table.rs	set	glue	accesses the IOMMU root table in its hardware format
-memory_manager/spec_impl.rs	init	unproven	initialisation not proven yet
-memory_manager/spec_impl.rs	new	unproven	initialisation not proven yet
 pagetable/pagemap_util_t.rs	page_map_set	glue	writes a hardware page table through a raw pointer
 pagetable/pagemap_util_t.rs	page_map_set_no_requires	glue	writes a hardware page table through a raw pointer
 pagetable/pagemap_util_t.rs	page_perm_to_page_map	glue	writes a hardware page table through a raw pointer
-process_manager/impl_base.rs	init	gap	writes through a raw pointer, which Verus cannot relate to its PointsTo
 queue_lock.rs	spin_hint	glue	the pause instruction, which has no state a proof could see
-slinkedlist/impl_t.rs	new	gap	builds a value from zeroed memory, which Verus cannot check
-trap.rs	random	gap	builds a value from zeroed memory, which Verus cannot check
 trap.rs	zeroed	gap	builds a value from zeroed memory, which Verus cannot check

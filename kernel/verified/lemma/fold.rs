@@ -51,19 +51,6 @@ pub proof fn fold_sum_congruence<A>(s: ISet<A>, f: spec_fn(A) -> int, g: spec_fn
     }
 }
 
-/// With no negative terms, the sum is at least any one of them.
-pub proof fn fold_sum_ge<A>(s: ISet<A>, f: spec_fn(A) -> int, c: A)
-    requires
-        s.finite(),
-        s.contains(c),
-        forall|x: A| #[trigger] f(x) >= 0,
-    ensures
-        s.fold(0, sum_step(f)) >= f(c),
-{
-    fold_sum_remove(s, f, c);
-    fold_sum_nonneg(s.remove(c), f);
-}
-
 proof fn fold_sum_nonneg<A>(s: ISet<A>, f: spec_fn(A) -> int)
     requires
         s.finite(),
@@ -80,20 +67,6 @@ proof fn fold_sum_nonneg<A>(s: ISet<A>, f: spec_fn(A) -> int)
         fold_sum_remove(s, f, a);
         fold_sum_nonneg(s.remove(a), f);
     }
-}
-
-/// Changing `f` at one element changes the sum by that difference.
-pub proof fn fold_sum_change<A>(s: ISet<A>, new: spec_fn(A) -> int, old: spec_fn(A) -> int, a: A)
-    requires
-        s.finite(),
-        s.contains(a),
-        forall|x: A| #[trigger] s.contains(x) && x != a ==> new(x) == old(x),
-    ensures
-        s.fold(0, sum_step(new)) == s.fold(0, sum_step(old)) - old(a) + new(a),
-{
-    fold_sum_remove(s, new, a);
-    fold_sum_remove(s, old, a);
-    fold_sum_congruence(s.remove(a), new, old);
 }
 
 } // verus!

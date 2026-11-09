@@ -480,7 +480,7 @@ impl CapKernel {
     {
         assert(pre.tables.is_cap(&pre.list, i));
         assert forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) implies {
-            &&& !(post.tables.payload_of(x).kind is Device) ==> payload_wf(post.tables.payload_of(x))
+            &&& cap_wf(post.tables.payload_of(x))
             &&& control_named(post.tables.payload_of(x))
         } by {
             if x != n {

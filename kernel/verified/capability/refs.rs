@@ -855,6 +855,12 @@ pub fn add_block_ref(blocks: &mut BlockTable, br: BlockRef) -> (added: bool)
         added == (block_refs(old(blocks), br) != usize::MAX),
         !added ==> *final(blocks) == *old(blocks),
         added ==> blocks_refs_changed(old(blocks), final(blocks), br, (block_refs(old(blocks), br) + 1) as usize, block_dead(old(blocks), br)),
+        added && br is Small ==> {
+            let b = br->Small_0 as int;
+            &&& final(blocks).pages@ == old(blocks).pages@.update(b, PageEntry { refs: (old(blocks).pages@[b].refs + 1) as usize, ..old(blocks).pages@[b] })
+            &&& final(blocks).regions_2m@ == old(blocks).regions_2m@
+            &&& final(blocks).regions_1g@ == old(blocks).regions_1g@
+        },
 {
     let ghost pre = *old(blocks);
     let added = match br {

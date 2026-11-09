@@ -319,7 +319,7 @@ impl CapKernel {
             Self::lemma_table_nodes_caps_frame(pre, post, child, child);
             Self::lemma_space_nodes_caps_frame(pre, post, child, child);
             Self::lemma_bindings_caps_frame(pre, post, child, child);
-            Self::lemma_add_device_holders(pre, post, child);
+            Self::lemma_add_untracked_holders(pre, post, child);
             Self::lemma_add_device_devices(pre, post, child, d as int);
             lemma_parents_derived(pre.list, post.list, first, child);
             Self::lemma_tlb_same(pre, post);
@@ -328,13 +328,13 @@ impl CapKernel {
         true
     }
 
-    /// The blocks, frames and spaces after a device's capability is added: it is neither a frame's nor
-    /// a space's, and nothing else changed.
-    proof fn lemma_add_device_holders(pre: Self, post: Self, child: usize)
+    /// The blocks, frames, spaces, threads and processes after a capability no record tracks is added,
+    /// an untyped's, a device's or the console's, and nothing else changed.
+    pub proof fn lemma_add_untracked_holders(pre: Self, post: Self, child: usize)
         requires
             Self::derive_step(pre, post, child),
             child % 4096 != 0,
-            post.payload_of(child).kind is Device,
+            !tracked_kind(post.payload_of(child).kind),
             post.blocks == pre.blocks,
             post.holders == pre.holders,
             post.spaces == pre.spaces,

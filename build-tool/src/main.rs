@@ -15,6 +15,11 @@ mod command;
 mod error;
 mod project;
 
+#[cfg(test)]
+mod free_ranges_test;
+#[cfg(test)]
+mod mapped_runs_test;
+
 #[tokio::main]
 #[quit::main]
 async fn main() -> Result<(), anyhow::Error> {

@@ -2,14 +2,13 @@
 
 use core::arch::{asm, global_asm, naked_asm};
 
-use asys::MAX_SYSCALLS;
 use memoffset::offset_of;
 use crate::arch::{msr, Ring, SegmentSelector};
 
 use crate::cpu::Cpu;
 use crate::gdt::GlobalDescriptorTable;
-use crate::kernel;
 use crate::thread::SwitchDecision;
+use verified::capability::{boot, operation};
 use verified::trap::Registers;
 
 /// Flags cleared on syscall entry. The kernel is not preemptible, so IF. Compiled code assumes DF is
@@ -20,12 +19,33 @@ const ENTRY_FLAG_MASK: u32 = (1 << 8) | (1 << 9) | (1 << 10) | (1 << 14) | (1 <<
 const SYSCALL32_ENTRY: u64 = 0; // nein
 const SYSCALL32_ENTRY_EIP: u32 = 0; // nein
 
-// Every name a process passes through these calls resolves within the caller's kernel instance, so
-// the ABI has no machine-wide names. Why, and what to do about a call that needs one: design/one-kernel-instance/.
-static mut SYSCALLS: [u64; MAX_SYSCALLS] = [0; MAX_SYSCALLS];
-
-// sys_entry calls handlers with the C convention, so the six argument entry must declare it.
-const _: extern "C" fn(usize, usize, usize, &mut Registers, usize, usize) = kernel::sys_new_proc;
+// User space invokes operations by asys's numbers, reads asys's statuses and finds its first capabilities
+// at asys's slots; they must be the ones the verified dispatch decodes and returns and boot writes.
+const _: () = {
+    use asys::operation as user;
+    assert!(user::STATUS_OK == operation::STATUS_OK);
+    assert!(user::STATUS_REFUSED == operation::STATUS_REFUSED);
+    assert!(user::STATUS_UNKNOWN == operation::STATUS_UNKNOWN);
+    assert!(user::RETYPE == operation::OPERATION_RETYPE);
+    assert!(user::DERIVE == operation::OPERATION_DERIVE);
+    assert!(user::MOVE == operation::OPERATION_MOVE);
+    assert!(user::CLAIM == operation::OPERATION_CLAIM);
+    assert!(user::DELETE == operation::OPERATION_DELETE);
+    assert!(user::REVOKE == operation::OPERATION_REVOKE);
+    assert!(user::MAP == operation::OPERATION_MAP);
+    assert!(user::UNMAP == operation::OPERATION_UNMAP);
+    assert!(user::DESTROY == operation::OPERATION_DESTROY);
+    assert!(user::SEND == operation::OPERATION_SEND);
+    assert!(user::RECEIVE == operation::OPERATION_RECEIVE);
+    assert!(user::CALL == operation::OPERATION_CALL);
+    assert!(user::REPLY_RECV == operation::OPERATION_REPLY_RECV);
+    assert!(user::PRINT == operation::OPERATION_PRINT);
+    assert!(user::ROOT_PROCESS_SLOT == boot::ROOT_PROCESS_SLOT as u64);
+    assert!(user::ROOT_THREAD_SLOT == boot::ROOT_THREAD_SLOT as u64);
+    assert!(user::ROOT_CONSOLE_SLOT == boot::ROOT_CONSOLE_SLOT as u64);
+    assert!(user::ROOT_UNTYPED_SLOT == boot::ROOT_UNTYPED_SLOT as u64);
+    assert!(user::ROOT_FRAME_SLOT == boot::ROOT_FRAME_SLOT as u64);
+};
 
 /// Initializes syscalls.
 ///
@@ -55,20 +75,6 @@ pub unsafe fn init_cpu() {
     msr::wrmsr(msr::SF_MASK, ENTRY_FLAG_MASK as u64);
 
     msr::wrmsr(msr::EFER, msr::rdmsr(msr::EFER) | msr::EFER_SCE);
-
-    SYSCALLS[asys::__NR_PRINT] = kernel::sys_print as *const () as u64;
-    SYSCALLS[asys::__NR_MMAP] = kernel::sys_mmap as *const () as u64;
-    SYSCALLS[asys::__NR_MRESOLVE] = kernel::sys_resolve as *const () as u64;
-    SYSCALLS[asys::__NR_MRESOLVE_IO] = kernel::sys_resolve_io as *const () as u64;
-    SYSCALLS[asys::__NR_NEW_END] = kernel::sys_new_endpoint as *const () as u64;
-    SYSCALLS[asys::__NR_NEW_PROC] = kernel::sys_new_proc as *const () as u64;
-    SYSCALLS[asys::__NR_NEW_THREAD] = kernel::sys_new_thread as *const () as u64;
-    SYSCALLS[asys::__NR_LOG] = kernel::sys_log as *const () as u64;
-    SYSCALLS[asys::__NR_RECEIVE_EMPTY] = kernel::sys_receive_empty as *const () as u64;
-    SYSCALLS[asys::__NR_IO_MMAP] = kernel::sys_iommu_mmap as *const () as u64;
-    SYSCALLS[asys::__NR_SET_DEVICE_IOMMU] = kernel::sys_set_device_iommu as *const () as u64;
-    SYSCALLS[asys::__NR_INVALIDATE_IOTLB] = sys_invalidate_iotlb as *const () as u64;
-    SYSCALLS[asys::__NR_SEND_EMPTY_TRY_SCH] = kernel::sys_send_empty_try_schedule as *const () as u64;
 }
 
 /// Enters the thread whose frame is `regs` from an idle core, as a syscall return to it would. It
@@ -98,31 +104,33 @@ pub unsafe fn enter_thread(regs: &Registers) -> ! {
     )
 }
 
-#[cfg(debug_assertions)]
+// The frame holds the operation and its arguments, which the dispatch reads from it.
 global_asm!(
-    ".macro push_dummy_caller_saved",
-    "push 0",         // rax
-    "push 0",         // rdi
-    "push 0",         // rsi
-    "push 0",         // rdx
+    ".macro push_caller_saved",
+    "push rax",       // rax: the operation
+    "push rdi",       // rdi: the capability's slot
+    "push rsi",
+    "push rdx",
     "push 0",         // rcx (taken by original rip)
-    "push 0",         // r8
-    "push 0",         // r9
-    "push 0",         // r10 (taken by original rsp)
+    "push r8",
+    "push r9",
+    "push r10",
     "push 0",         // r11 (taken by original rflags across syscall)
     ".endm",
 );
 
-#[cfg(not(debug_assertions))]
+// The dispatch: one handler, given the frame in rcx.
 global_asm!(
-    ".macro push_dummy_caller_saved",
-    "push 0",         // rax: the one slot a return path reads
-    "sub rsp, 8*8",
+    ".macro dispatch",
+    "mov rdi, rcx",
+    "check_entry_flags",
+    "call {capability_entry}",
     ".endm",
+    capability_entry = sym capability_entry,
 );
 
 // In a debug build, stop if a syscall reaches its handler with a flag from ENTRY_FLAG_MASK set. r10 is
-// free here, since the user's rsp is already saved.
+// free here: the frame already holds it.
 #[cfg(debug_assertions)]
 global_asm!(
     ".macro check_entry_flags",
@@ -150,40 +158,33 @@ extern "C" fn entered_with_flags_set() -> ! {
 
 // Syscall ABI
 //
-// Register | User           | Kernel Handler
-// ------------------------------------------
-// rax      | Syscall Number | Return Value
-// rdi      | Arg #1         | Arg #1
-// rsi      | Arg #2         | Arg #2
-// rdx      | Arg #3         | Arg #3
-// rcx      | N/A            | Registers (Arg #4)
-// r8       | Arg #4         | Arg #5
-// r9       | Arg #5         | Arg #6
+// The handler takes only the frame, which holds the operation from rax, the capability's slot from
+// rdi and the arguments from rsi, rdx, r8, r9 and r10, design/syscall-abi-in-registers/. Every name a
+// process passes resolves within the caller's kernel instance, so the ABI has no machine-wide names.
+// Why, and what to do about an operation that needs one: design/one-kernel-instance/.
 //
 // All caller-saved registers are considered clobbered once invoked
 //
-// rax on return is the syscall's result. A syscall that blocked and was woken returns 0, whichever
-// thread woke it, and a new thread starts with 0. The frame's rax slot starts at 0 on every entry, so
-// a saved frame never carries a value from an earlier syscall on this core's stack.
+// rax on return is the status, which the handler always writes over the operation in the frame.
 #[unsafe(naked)]
 unsafe extern "C" fn sys_entry() -> ! {
     naked_asm!(
-        // We may not have a valid rsp
-        // rax, r10, r11
+        // We may not have a valid rsp. Every register but rcx and r11 still holds the user's value,
+        // so the user's rsp waits in the Cpu while the stack switches.
 
-        "mov r10, rsp",
+        "mov gs:{user_rsp_offset}, rsp",
         "mov rsp, gs:{syscall_sp_offset}",
 
         // Here we construct the Registers struct and only save
         // a subset of registers
         "push {user_ss}", // ss
-        "push r10",       // rsp
+        "push qword ptr gs:{user_rsp_offset}", // rsp
         "push r11",       // rflags
         "push {user_cs}", // cs
         "push rcx",       // rip
         "push 0",         // error_code
 
-        "push_dummy_caller_saved",
+        "push_caller_saved",
 
         "push rbx",       // rbx
         "push rbp",       // rbp
@@ -194,30 +195,9 @@ unsafe extern "C" fn sys_entry() -> ! {
 
         "mov rcx, rsp",
 
-        "cmp rax, {max_syscalls}",
-        "jae 2f",
-
-        // In-range syscall
-        "shl rax, 3",
-        "lea r11, [rip + {syscalls}]",
-        "add r11, rax",
-        "mov r11, [r11]",
-        "cmp r11, 0",
-        "jz 2f",
-
-        // handler(arg1, arg2, arg3, registers, arg4, arg5)
-        // rdi, rsi, rdx, (rcx), r8, r9
-        "check_entry_flags",
-        "call r11",
-
-        "jmp 3f",
-
-        // Invalid syscall
-        "2:",
-        "mov qword ptr [rsp + 8*14], -1", // rax: the return paths reload it from the frame
+        "dispatch",
 
         // Cleanup
-        "3:",
 
         // Three cases:
         // 1. Switch to another thread that was suspended due to a syscall
@@ -309,8 +289,7 @@ unsafe extern "C" fn sys_entry() -> ! {
         user_ss = const GlobalDescriptorTable::USER_SS,
         user_cs = const GlobalDescriptorTable::USER_CS,
         syscall_sp_offset = const offset_of!(Cpu, syscall_sp),
-        max_syscalls = const MAX_SYSCALLS,
-        syscalls = sym SYSCALLS,
+        user_rsp_offset = const offset_of!(Cpu, user_rsp),
 
         switch_decision_offset = const offset_of!(Cpu, switch_decision),
         decision_no_switching = const SwitchDecision::NoSwitching as u64,
@@ -318,10 +297,26 @@ unsafe extern "C" fn sys_entry() -> ! {
     );
 }
 
-extern "C" fn sys_invalidate_iotlb(bus: usize, device: usize, function: usize, regs: &mut Registers, page: u64) {
-    if let Ok(()) = unsafe { crate::iommu::invalidate_iotlb(bus, device, function, page) } {
-        regs.rax = 0;
-    } else {
-        regs.rax = 1;
-    }
+/// The handler. The verified dispatch runs the invocation for the core's current
+/// thread and decides the status rax returns, and the kernel logs each invocation.
+extern "C" fn capability_entry(regs: &mut Registers) {
+    use crate::bridge::Bridge;
+    use crate::capability::CAP_KERNEL;
+    use verified::bridge::TrustedBridge;
+
+    let status = CAP_KERNEL
+        .lock()
+        .as_deref_mut()
+        .expect("a syscall before the capability kernel was built")
+        .dispatch(crate::cpu::get_cpu_id(), *regs)
+        .expect("no operation is wired that moves the calling thread off its core");
+    let outcome = match status {
+        operation::STATUS_OK => "ok",
+        operation::STATUS_REFUSED => "refused",
+        _ => "unknown",
+    };
+    let arguments = [regs.rsi, regs.rdx, regs.r8, regs.r9, regs.r10];
+    log::info!("capability entry: operation {} on slot {} with {:?}: {}", regs.rax, regs.rdi, arguments, outcome);
+    regs.rax = status;
+    Bridge::set_switch_decision(SwitchDecision::NoSwitching);
 }

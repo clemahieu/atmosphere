@@ -8,14 +8,12 @@ written: the header below, then __llvm_prf_data and __llvm_prf_names from the EL
 from the guest in between. The layout is the one LLVM 23 (Rust 1.99.1) writes, raw version 11.
 
 The kernel's counters are read by physical address. dom0's are read by virtual address, which works
-because dom0 is the last thing running when its exit stops the guest. The payload dom0 starts, hello,
-shares its pages with dom0 at the same addresses (dom0/src/payload.rs), so its counters are read by
-virtual address too, at the load bias dom0 logs. A workspace member under user/ that no image runs is
-listed as not run.
+because dom0 is the last thing running when its exit stops the guest. A workspace member under user/
+that no image runs, as the payload the loader hands dom0 is not, is listed as not run.
 
 Two boots of one build count the same lines and branches. A wait on the other core that may spin no
 times, depending on which core gets there first, goes through a spin_until marked #[coverage(off)]
-(kernel/src/cpu.rs, dom0/src/syscall_benchmark.rs), so the timing is not counted.
+(kernel/src/cpu.rs), so the timing is not counted.
 
 usage: tools/coverage.py          (from the workspace root)
        tools/coverage.py --test   (this script's own tests)
@@ -177,12 +175,10 @@ def main():
     kernel_bias = entry - entry_point(KERNEL)
     dom0_log = log[log.index("Loading dom0"):]
     dom0_bias = int(re.search(r"Load Bias: 0x([0-9a-f]+)", dom0_log).group(1), 16)
-    hello_bias = int(re.search(r"payload load bias 0x([0-9a-f]+)", log).group(1), 16)
     try:
         images = {
             "kernel": report(KERNEL, sock, "pmemsave", kernel_bias),
             "dom0": report(DOM0, sock, "memsave", dom0_bias),
-            "hello": report(HELLO, sock, "memsave", hello_bias),
         }
     finally:
         sock.sendall(b"quit\n")

@@ -26,6 +26,7 @@
 mod arch;
 mod boot;
 mod bridge;
+mod capability;
 mod console;
 mod cpu;
 mod debugger;
@@ -33,7 +34,6 @@ mod error;
 mod gdt;
 mod interrupt;
 mod iommu;
-mod kernel;
 mod logging;
 mod syscalls;
 mod thread;
@@ -95,8 +95,6 @@ fn boot_cpu0(boot_info: *const BootInfo) -> isize {
         print_logo();
     }
 
-    kernel::kernel_new();
-
     log::info!("Command line: {}", boot::get_raw_command_line());
     #[cfg(debug_assertions)]
     {
@@ -110,18 +108,14 @@ fn boot_cpu0(boot_info: *const BootInfo) -> isize {
     }
 
     let boot_info = boot::get_boot_info();
-    let dom0 = boot_info.dom0.as_ref().unwrap();
-    let pml4 = boot_info.pml4;
-    let kernel_pml4 = unsafe { *(pml4 as *const usize) };
-
-    kernel::kernel_init(&boot_info.pages, pml4 as usize, kernel_pml4 as usize);
 
     log::info!("CPU 0 syscall stack {:#x}", cpu::get_current().syscall_sp);
     unsafe {
         start_second_core();
     }
+    let entry = capability::boot(boot_info);
+    let (entry_point, initial_sp) = (entry.pc, entry.sp.cast::<u8>());
 
-    let initial_sp = unsafe { dom0.virt_start.add(dom0.reserved_size - 0x1000) };
     log::info!("initial_sp: {:?}", initial_sp);
     unsafe {
         let (rdi, rsi) = if let Some(payload) = &boot_info.payload {
@@ -130,7 +124,7 @@ fn boot_cpu0(boot_info: *const BootInfo) -> isize {
             (0, 0)
         };
 
-        enter_userspace(dom0.entry_point, initial_sp as *mut _, rdi, rsi);
+        enter_userspace(entry_point, initial_sp as *mut _, rdi, rsi);
     }
 }
 
@@ -167,7 +161,15 @@ extern "C" fn ap_main(cpu_id: u64) -> ! {
     AP_UP.store(true, Ordering::SeqCst);
     lock::contend();
 
-    kernel::idle_loop()
+    idle()
+}
+
+/// Waits with interrupts open, so this core takes flush IPIs. Nothing schedules a thread on it: no
+/// operation that places a thread on a core is wired.
+fn idle() -> ! {
+    loop {
+        unsafe { asm!("sti", "hlt") };
+    }
 }
 
 /// Runs all tests.

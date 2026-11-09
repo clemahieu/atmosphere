@@ -13,7 +13,8 @@ The firmware's output on the terminal ends with control sequences that reset it,
 before the loader's banner is dropped there; serial.log keeps it.
 
 Exit status: 0 when dom0 reports success or the guest shuts down; otherwise QEMU's: 1 when the
-kernel fails, 3 when a dom0 timer fails. 1 when QEMU dies by a signal, and 1 when a build fails.
+kernel fails, 5 when an invocation of dom0's returns a status it did not expect, 7 when dom0
+panics. 1 when QEMU dies by a signal, and 1 when a build fails.
 
 usage: tools/run.py [--no-kvm] [--iommu] [--gdb]   (from anywhere)
        tools/run.py --test                         (this script's own tests)
@@ -45,12 +46,12 @@ ESP_GDB = "gdb"
 # What the loader logs of each binary it loads, and before it waits for gdb (aloader/src/debugger.rs).
 DEBUGGER_BIAS = re.compile(rb"debugger: (\w+) at bias (0x[0-9a-f]+)")
 DEBUGGER_WAITING = b"debugger: waiting"
-# dom0 ends the run by writing to this port (dom0/src/syscall_benchmark.rs).
+# dom0 ends the run by writing to this port (dom0/src/main.rs).
 DEBUG_EXIT_PORT = 0xf4
 # isa-debug-exit makes QEMU exit with `code << 1 | 1`, and dom0 writes 0x10 on success.
 DOM0_SUCCESS_STATUS = 33
 MEMORY_MIB = 32 * 1024
-# The only program under user/, which dom0 is given to load.
+# The only program under user/, which the loader hands dom0.
 PAYLOAD = "hello"
 # What the loader prints first: its name, then a clear screen and the cursor home
 # (aloader/src/console/mod.rs).
@@ -271,9 +272,10 @@ class Tests(unittest.TestCase):
         # The kernel's failure shutdown writes 0 to the isa-debug-exit port.
         self.assertEqual(exit_status(1), 1)
 
-    def test_dom0_failure_is_status_3(self):
-        # dom0's bench_fail writes 1.
-        self.assertEqual(exit_status(3), 3)
+    def test_dom0_failure_is_its_code_shifted(self):
+        # dom0 writes 2 when a status was not the one it expected, and 3 when it panics.
+        self.assertEqual(exit_status(5), 5)
+        self.assertEqual(exit_status(7), 7)
 
     def test_killed_is_failure(self):
         self.assertEqual(exit_status(-15), 1)
@@ -428,8 +430,8 @@ class Tests(unittest.TestCase):
     def test_firmware_output_before_the_loader_is_dropped(self):
         firmware = b"\x1b[2J\x1b[01;01HBdsDxe: loading Boot0001\r\n"
         loader = b"\x1b[0m   " + LOADER_MARKER + b"Loading kernel\r\n"
-        self.assertEqual(self.filtered(firmware + loader + b" INFO dom0 benchmark done\r\n"),
-                         b"Loading kernel\r\n INFO dom0 benchmark done\r\n")
+        self.assertEqual(self.filtered(firmware + loader + b"dom0 capability done\r\n"),
+                         b"Loading kernel\r\ndom0 capability done\r\n")
 
     def test_nothing_passes_without_the_loader(self):
         self.assertEqual(self.filtered(b"BdsDxe: failed to load Boot0001\r\n"), b"")

@@ -4,11 +4,26 @@
 
 pub mod ap_start;
 pub mod command_line;
+pub mod free_ranges;
+pub mod mapped_runs;
+
+// The map check uses the same page limit and node space as the verified kernel. The run check
+// keeps user mappings out of the low entries that space keeps for the kernel.
+const _: () = {
+    assert!(
+        free_ranges::MAX_PAGE_ADDRESS
+            == verified::define::NUM_PAGES as u64 * free_ranges::PAGE_BYTES
+    );
+    assert!(free_ranges::NODE_SPACE == verified::capability::list::NODE_SPACE as u64);
+    assert!(
+        astd::memory::USERSPACE_BASE == (verified::define::KERNEL_MEM_END_L4INDEX as u64) << 39
+    );
+};
 
 use core::arch::asm;
 
-use astd::boot::BootInfo;
 use crate::arch::io::{outb, outw};
+use astd::boot::BootInfo;
 
 pub use command_line::get_command_line;
 

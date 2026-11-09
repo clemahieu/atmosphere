@@ -56,4 +56,47 @@ pub fn flush_every_context(core: usize, epoch: usize) -> (ret: Tracked<Flushed>)
     Tracked::assume_new()
 }
 
+/// COM1's base port, the serial port the kernel crate's console writes.
+pub const COM1: u16 = 0x3f8;
+
+/// The line status register, five ports above the base; bit 5 says the transmit register is empty.
+pub const SERIAL_LINE_STATUS: u16 = 5;
+
+pub const SERIAL_TRANSMIT_EMPTY: u8 = 1 << 5;
+
+/// Writes to COM1 the bytes words a to e carry: each word's eight bytes from its lowest, a's first, up
+/// to the first zero byte. Each byte waits for the transmit register to empty.
+#[verifier(external_body)]
+// external_body(glue): writes the serial port through port I/O, which has no state a proof could see
+pub fn serial_write(a: u64, b: u64, c: u64, d: u64, e: u64) {
+    let words = [a, b, c, d, e];
+    let mut w = 0;
+    while w < 5 {
+        let mut k = 0;
+        while k < 8 {
+            let byte = (words[w] >> (8 * k)) as u8;
+            if byte == 0 {
+                return;
+            }
+            unsafe {
+                loop {
+                    let status: u8;
+                    core::arch::asm!(
+                        "in al, dx",
+                        in("dx") COM1 + SERIAL_LINE_STATUS,
+                        out("al") status,
+                        options(nomem, nostack),
+                    );
+                    if status & SERIAL_TRANSMIT_EMPTY != 0 {
+                        break;
+                    }
+                }
+                core::arch::asm!("out dx, al", in("dx") COM1, in("al") byte, options(nomem, nostack));
+            }
+            k += 1;
+        }
+        w += 1;
+    }
+}
+
 } // verus!

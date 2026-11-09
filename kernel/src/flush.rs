@@ -4,8 +4,7 @@
 //! acknowledgement under the lock. See design/flush-without-waiting/.
 //!
 //! CapKernel holds the proven form of this state, and acknowledge takes the token flush_every_context
-//! returns. The kernel it belongs to boots at the cut-over, design/cut-over-on-a-branch/; until then this
-//! holds it.
+//! returns. No operation that unmaps is wired to it, so this holds the state the boot test flushes by.
 
 use verified::arch::flush_every_context;
 use verified::define::NUM_CPUS;

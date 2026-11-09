@@ -59,7 +59,7 @@ import firmware
 
 # What tools/isolate-pinned.sh apply changed, for its undo; its fixed lines name the IRQs it could not move.
 ISOLATION_STATE = "/run/atmo-isolate-pinned"
-LINES = re.compile(r"IPC round trip|sys_mresolve (?:alone|contended):|flush IPI|kernel lock:|contention test lock:")
+LINES = re.compile(r"flush IPI|kernel lock:|contention test lock:")
 
 
 def read(path):
@@ -378,7 +378,7 @@ def main():
     check_noise(pair, force)
     for i in range(boots):
         log, samples, moved = boot(pair, others, out)
-        if "dom0 benchmark done" not in log:
+        if "dom0 capability done" not in log:
             sys.exit(f"FAIL: boot {i} did not finish; see {out}/serial.log")
         print(f"boot {i}, load {os.getloadavg()[0]:.2f}")
         for tid, name, cpus, refused in moved:
