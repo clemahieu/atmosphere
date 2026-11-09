@@ -1,10 +1,9 @@
-//! Invoking a capability through the one syscall entry: the operation's number in rax, the capability's
-//! slot in rdi and arguments after it, with the status in the low 16 bits of the rax that returns and
-//! result words in rdi, rsi, rdx and r8. The
-//! numbers are the kernel's, which checks at compile time that these match. See
-//! design/syscall-abi-in-registers/.
+//! Invoking a capability through the one syscall entry: the operation number, the capability's slot
+//! and arguments 1 to 5 in, the status word out, with the status in its low 16 bits, and result words
+//! after it. The registers that carry each position are the target's, in `arch`. The numbers are the
+//! kernel's, which checks at compile time that these match. See design/syscall-abi-in-registers/.
 
-use core::arch::asm;
+use crate::arch;
 
 /// The operation was done.
 pub const STATUS_OK: u64 = 0;
@@ -20,56 +19,59 @@ pub const STATUS_UNKNOWN: u64 = 2;
 pub const STATUS_AGAIN: u64 = 3;
 
 pub const RETYPE: u64 = 1;
-/// Derives from the capability in rdi a child into the empty slot in rsi, with the rights in rdx and
-/// the block of order r9 at the base in r8, which must lie within the parent's rights and block.
+/// Derives from the capability in the slot a child into the empty slot in argument 1, with the rights in
+/// argument 2 and the block of the order in argument 4 at the base in argument 3, which must lie within
+/// the parent's rights and block.
 pub const DERIVE: u64 = 2;
-/// Moves the capability in rdi to the empty slot in rsi, children and all, leaving rdi empty.
+/// Moves the capability in the slot to the empty slot in argument 1, children and all, leaving the slot
+/// empty.
 pub const MOVE: u64 = 3;
 pub const CLAIM: u64 = 4;
-/// Deletes the capability in rdi, which must have nothing below it: no capability derived from it, no
+/// Deletes the capability in the slot, which must have nothing below it: no capability derived from it, no
 /// mapping made through it and no binding. A holder revokes first.
 pub const DELETE: u64 = 5;
-/// Removes everything below the capability in rdi, the capabilities derived from it and the mappings
+/// Removes everything below the capability in the slot, the capabilities derived from it and the mappings
 /// made through it or them, a bounded number of steps at a time: again while some is left, ok once none
 /// is. The capability itself stays.
 pub const REVOKE: u64 = 6;
-/// Maps into the entry of the space in rdi that the virtual address in rsi and the level in rdx name the
-/// page at the page offset in r9 of the frame in r8: a 4K page at level 1, a 2M page at level 2, whose
-/// offset is a multiple of 512. The entry must be empty and the tables above it linked.
+/// Maps into the entry of the space in the slot that the virtual address in argument 1 and the level in
+/// argument 2 name the page at the page offset in argument 4 of the frame in argument 3: a 4K page at
+/// level 1, a 2M page at level 2, whose offset is a multiple of 512. The entry must be empty and the tables above it linked.
 pub const MAP: u64 = 7;
-/// Clears the entry of the space in rdi that the virtual address in rsi and the level in rdx name, which
-/// must map a page. Level 1 is the only level it accepts.
+/// Clears the entry of the space in the slot that the virtual address in argument 1 and the level in
+/// argument 2 name, which must map a page. Level 1 is the only level it accepts.
 pub const UNMAP: u64 = 8;
 pub const DESTROY: u64 = 9;
 pub const SEND: u64 = 10;
 pub const RECEIVE: u64 = 11;
 pub const CALL: u64 = 12;
 pub const REPLY_RECV: u64 = 13;
-/// Writes to the serial port the bytes rsi, rdx, r8, r9 and r10 carry, through a console capability:
-/// each word's eight bytes from its lowest, rsi's first, up to the first zero byte, so 40 bytes at most.
+/// Writes to the serial port the bytes arguments 1 to 5 carry, through the console capability in the
+/// slot: each word's eight bytes from its lowest, argument 1's first, up to the first zero byte, so 40
+/// bytes at most.
 pub const PRINT: u64 = 14;
-/// Returns the kind, base, order and rights of a capability the caller holds in rdi, rsi, rdx and r8;
-/// refused for a slot that holds none. It asks for no right.
+/// Returns the kind, base, order and rights of the capability the caller holds in the slot in results 1
+/// to 4; refused for a slot that holds none. It asks for no right.
 pub const INSPECT: u64 = 15;
-/// Links the unlinked table page at the physical base in r9 into the entry of the space in rdi that
-/// the virtual address in rsi and the level in rdx name, on the authority of the untyped in r8 over the
-/// page's block. The level is 2, 3 or 4 and the page's own level one below it.
+/// Links the unlinked table page at the physical base in argument 4 into the entry of the space in the
+/// slot that the virtual address in argument 1 and the level in argument 2 name, on the authority of the
+/// untyped in argument 3 over the page's block. The level is 2, 3 or 4 and the page's own level one below it.
 pub const LINK: u64 = 16;
 
-/// Retype's kind in rsi for a 4K frame: a frame capability of order 0 for the page at the base in rdx,
-/// in the empty slot in r8.
+/// Retype's kind in argument 1 for a 4K frame: a frame capability of order 0 for the page at the base in
+/// argument 2, in the empty slot in argument 3.
 pub const RETYPE_FRAME: u64 = 0;
 
-/// Retype's kind in rsi for a 2M frame: a frame capability of order 9 for the 2M-aligned block at the
-/// base in rdx, in the empty slot in r8. Retype returns again while the block is zeroed a slice at a
+/// Retype's kind in argument 1 for a 2M frame: a frame capability of order 9 for the 2M-aligned block at
+/// the base in argument 2, in the empty slot in argument 3. Retype returns again while the block is zeroed a slice at a
 /// time and ok once the capability is in the slot.
 pub const RETYPE_LARGE_FRAME: u64 = 1;
 
-/// Retype's kind in rsi for a table page: an unlinked table page of the level in r9, 1 to 3, at the base
-/// in rdx. No capability names it, so it takes no slot; link names it by its base.
+/// Retype's kind in argument 1 for a table page: an unlinked table page of the level in argument 4, 1 to
+/// 3, at the base in argument 2. No capability names it, so it takes no slot; link names it by its base.
 pub const RETYPE_TABLE_PAGE: u64 = 2;
 
-/// The kind numbers inspect returns in rdi.
+/// The kind numbers inspect returns in result 1.
 pub const KIND_UNTYPED: u64 = 0;
 pub const KIND_FRAME: u64 = 1;
 pub const KIND_PROCESS: u64 = 2;
@@ -118,13 +120,12 @@ pub const fn print_words(text: &[u8]) -> [u64; 5] {
     words
 }
 
-/// The status in the rax an invocation returns.
-pub fn status(rax: u64) -> u64 {
-    rax & 0xffff
+/// The status in the status word an invocation returns.
+pub fn status(word: u64) -> u64 {
+    word & 0xffff
 }
 
-/// Invokes `operation` on the capability at `slot`, with the arguments in rsi, rdx, r8, r9 and r10,
-/// and returns rax.
+/// Invokes `operation` on the capability at `slot` with arguments 1 to 5, and returns the status word.
 ///
 /// # Safety
 ///
@@ -133,32 +134,14 @@ pub unsafe fn invoke(operation: u64, slot: u64, arguments: [u64; 5]) -> u64 {
     unsafe { invoke_returning(operation, slot, arguments) }.0
 }
 
-/// Invokes `operation` on the capability at `slot`, with the arguments in rsi, rdx, r8, r9 and r10,
-/// and returns rax and the result words in rdi, rsi, rdx and r8.
+/// Invokes `operation` on the capability at `slot` with arguments 1 to 5, and returns the status word
+/// and result words 1 to 4.
 ///
 /// # Safety
 ///
 /// The operation may change the caller's address space, as a map or unmap does.
 pub unsafe fn invoke_returning(operation: u64, slot: u64, arguments: [u64; 5]) -> (u64, [u64; 4]) {
-    let rax: u64;
-    let words: [u64; 4];
-    unsafe {
-        let (rdi, rsi, rdx, r8): (u64, u64, u64, u64);
-        asm!(
-            "syscall",
-            inout("rax") operation => rax,
-            inout("rdi") slot => rdi,
-            inout("rsi") arguments[0] => rsi,
-            inout("rdx") arguments[1] => rdx,
-            out("rcx") _,
-            inout("r8") arguments[2] => r8,
-            inout("r9") arguments[3] => _,
-            inout("r10") arguments[4] => _,
-            out("r11") _,
-        );
-        words = [rdi, rsi, rdx, r8];
-    }
-    (rax, words)
+    unsafe { arch::syscall(operation, slot, arguments) }
 }
 
 /// What inspect says of a capability: its kind number, the base of its block, its order and its
@@ -175,8 +158,8 @@ pub struct Capability {
 /// none.
 pub fn inspect(slot: u64) -> Result<Capability, u64> {
     // Inspect changes nothing, the caller's address space included.
-    let (rax, [kind, base, order, rights]) = unsafe { invoke_returning(INSPECT, slot, [0; 5]) };
-    match status(rax) {
+    let (word, [kind, base, order, rights]) = unsafe { invoke_returning(INSPECT, slot, [0; 5]) };
+    match status(word) {
         STATUS_OK => Ok(Capability { kind, base, order, rights }),
         refused => Err(refused),
     }
