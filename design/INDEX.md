@@ -55,9 +55,9 @@ in `revisit if` what would make it worth reopening.
 - **[sharing-by-derive](./sharing-by-derive/DECISION.md)** (2026-11-05): The only way to share a capability is derive, a child one depth deeper with rights and range within its parent's; nodes never change ancestor; move and claim relocate a node without changing its place; delete is refused while a node has children, mappings or bindings.
   - *confidence:* The human's choice among three lifetime packages, with a precedent survey of seL4, NOVA, L4Re, Genode, EROS, Zircon and Barrelfish from their documents. The structure it rests on is proven, design/revoke-by-depth-first-list/.
   - *revisit if:* A service must survive the death of the holder that granted to its clients without a longer-lived parent doing the granting, and claim by a supervisor is not enough.
-- **[syscall-abi-in-registers](./syscall-abi-in-registers/DECISION.md)** (2026-11-06): One entry: rax the operation, rdi the capability index, rsi, rdx, r8, r9 and r10 the arguments; rax returns status in its low 16 bits and a badge in the upper 48. A send carries five words, four with a grant; the kernel copies nothing from user memory for IPC, and larger data goes through shared frames.
-  - *confidence:* A packing judgement; the preserved-register set is the one the existing syscall convention keeps.
-  - *revisit if:* A message that does not fit five words is on a hot path and the shared-frame ring is measured as its cost, or a second entry is needed for a different privilege transition.
+- **[syscall-abi-in-registers](./syscall-abi-in-registers/DECISION.md)** (2026-11-09): One entry: rax the operation, rdi the capability index, rsi, rdx, r8, r9 and r10 the arguments; rax returns status in its low 16 bits (ok 0, refused 1, unknown 2, again 3) and a badge in the upper 48. A send carries five words, four with a grant; the kernel copies nothing from user memory, and larger data goes through shared frames. A place in a space is a virtual address in rsi and a level in rdx, which the kernel splits into the path.
+  - *confidence:* A packing judgement; the preserved-register set is the one the existing syscall convention keeps, and the memory operations' registers are counted against the verified functions' parameters in kernel/verified/capability.
+  - *revisit if:* A message that does not fit five words is on a hot path and the shared-frame ring is measured as its cost, an operation needs more than five argument words, or a second entry is needed for a different privilege transition.
 - **[teardown-driven-by-retype](./teardown-driven-by-retype/DECISION.md)** (2026-11-08): An object is dead when its references reach zero or, for a process or thread, when destroyed through a control capability; every operation then refuses it. There is no kernel list of dead objects: a retype of the block by the holder of its untyped detaches, then dismantles, a bounded slice per entry, until the block is free. The kernel never kills on its own.
   - *confidence:* The human's choice of who pays, and of the kernel deciding no kill policy, after a precedent survey. The block state machine, references, zeroing, reclaim and two-way detach are in the tree; the dismantle arms land with each object kind.
   - *revisit if:* Memory held by dead objects nobody retypes becomes a real shortage that pager policy cannot collect, or a workload needs the kernel to kill a whole process on a fault.
@@ -90,7 +90,7 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `kernel-state`: multicore-kernel-shape, one-kernel-instance, one-lock-bounded-steps
 - `lifetime`: sharing-by-derive, teardown-driven-by-retype
 - `lock`: flush-without-waiting, multicore-kernel-shape, one-lock-bounded-steps
-- `memory`: address-spaces-as-objects, capability-names-a-block, flush-without-waiting, teardown-driven-by-retype, untyped-memory
+- `memory`: address-spaces-as-objects, capability-names-a-block, flush-without-waiting, syscall-abi-in-registers, teardown-driven-by-retype, untyped-memory
 - `multicore`: flush-without-waiting, multicore-kernel-shape, one-kernel-instance, one-lock-bounded-steps
 - `pagetable`: arch-module
 - `portability`: arch-module
