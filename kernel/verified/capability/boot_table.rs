@@ -416,7 +416,7 @@ impl CapKernel {
     /// succeeds.
     pub open spec fn root_table_block(&self, process: usize, b: usize) -> bool {
         &&& block_within(b, 3, self.payload_of(self.root_untyped(process)))
-        &&& b / 4096 + 8 <= NUM_PAGES
+        &&& self.blocks.tracks_addr_run(b, 8)
         &&& !self.blocks.covered((b / 4096) as int)
         &&& forall|k: int| 0 <= k < 8 ==> #[trigger] self.blocks.pages@[b / 4096 + k].kind is Free
     }
@@ -429,7 +429,7 @@ impl CapKernel {
             tree_of(&self.table_pages, &self.spaces).is_table(t),
         ensures
             self.blocks.pages@[(t / 4096) as int].kind is Base,
-            t / 4096 < NUM_PAGES,
+            self.blocks.tracks_addr(t),
             t % 32768 == 0,
             tree_of(&self.table_pages, &self.spaces).is_page(t) ==> !tree_of(&self.table_pages, &self.spaces).is_root(t),
             tree_of(&self.table_pages, &self.spaces).is_root(t) ==> {
@@ -566,7 +566,7 @@ impl CapKernel {
             post.blocks.regions_1g@ == pre.blocks.regions_1g@,
             used % 32768 == 0,
             b != used,
-            forall|j: int| #![trigger post.blocks.pages@[j]] 0 <= j < NUM_PAGES && !(used / 4096 <= j < used / 4096 + 8)
+            forall|j: int| #![trigger post.blocks.pages@[j]] pre.blocks.tracks(j) && !(used / 4096 <= j < used / 4096 + 8)
                 ==> post.blocks.pages@[j] == pre.blocks.pages@[j],
         ensures
             post.root_table_block(process, b),
@@ -675,7 +675,7 @@ impl CapKernel {
             final(self).spaces.roots@.dom() == old(self).spaces.roots@.dom(),
             final(self).blocks.regions_2m@ == old(self).blocks.regions_2m@,
             final(self).blocks.regions_1g@ == old(self).blocks.regions_1g@,
-            forall|j: int| #![trigger final(self).blocks.pages@[j]] 0 <= j < NUM_PAGES && !(ret.1 && cursor / 4096 <= j < cursor / 4096 + 8)
+            forall|j: int| #![trigger final(self).blocks.pages@[j]] old(self).blocks.tracks(j) && !(ret.1 && cursor / 4096 <= j < cursor / 4096 + 8)
                 ==> final(self).blocks.pages@[j] == old(self).blocks.pages@[j],
             forall|j: int| #![trigger final(self).list.nodes@[j]] 0 <= j < NODE_SPACE && old(self).list.nodes@[j].live
                 ==> final(self).list.nodes@[j].live,
@@ -804,7 +804,7 @@ impl CapKernel {
             KERNEL_MEM_END_L4INDEX <= l4 < 512,
             l3 < 512,
             l2 < 512,
-            cursor + 3 * 32768 <= NUM_PAGES * 4096,
+            cursor + 3 * 32768 <= old(self).blocks.page_count() * 4096,
             forall|k: int| 0 <= k < 3 ==> #[trigger] old(self).root_table_block(process, cursor_block(cursor, k)),
             !space_mapping(tree_of(&old(self).table_pages, &old(self).spaces), s).contains_key(SpacePath { l4, l3, l2, l1: 0 }),
         ensures
@@ -820,7 +820,7 @@ impl CapKernel {
             nodes_kept(old(self).list, final(self).list),
             forall|t: usize| #[trigger] final(self).table_pages.maps@.contains_key(t)
                 <==> (old(self).table_pages.maps@.contains_key(t) || made_from(cursor, ret, t)),
-            forall|j: int| #![trigger final(self).blocks.pages@[j]] 0 <= j < NUM_PAGES && !(cursor / 4096 <= j < ret / 4096)
+            forall|j: int| #![trigger final(self).blocks.pages@[j]] old(self).blocks.tracks(j) && !(cursor / 4096 <= j < ret / 4096)
                 ==> final(self).blocks.pages@[j] == old(self).blocks.pages@[j],
             forall|j: int| #![trigger final(self).list.nodes@[j]] 0 <= j < NODE_SPACE && old(self).list.nodes@[j].live
                 ==> final(self).list.nodes@[j].live,
@@ -1018,7 +1018,7 @@ impl CapKernel {
             post.blocks.regions_2m@ == pre.blocks.regions_2m@,
             post.blocks.regions_1g@ == pre.blocks.regions_1g@,
             hi <= b,
-            forall|j: int| #![trigger post.blocks.pages@[j]] 0 <= j < NUM_PAGES && !(lo / 4096 <= j < hi / 4096)
+            forall|j: int| #![trigger post.blocks.pages@[j]] pre.blocks.tracks(j) && !(lo / 4096 <= j < hi / 4096)
                 ==> post.blocks.pages@[j] == pre.blocks.pages@[j],
         ensures
             post.root_table_block(process, b),
@@ -1040,7 +1040,7 @@ impl CapKernel {
             cursor as int == u.base + k * 32768,
             forall|j: int| k <= j < cap ==> #[trigger] self.root_table_block(process, cursor_block(u.base, j)),
         ensures
-            cursor + 3 * 32768 <= NUM_PAGES * 4096,
+            cursor + 3 * 32768 <= self.blocks.page_count() * 4096,
             forall|i: int| 0 <= i < 3 ==> #[trigger] self.root_table_block(process, cursor_block(cursor, i)),
     {
         assert forall|i: int| 0 <= i < 3 implies #[trigger] self.root_table_block(process, cursor_block(cursor, i)) by {
@@ -1070,15 +1070,15 @@ impl CapKernel {
             post.tables == cur.tables,
             post.blocks.regions_2m@ == cur.blocks.regions_2m@,
             post.blocks.regions_1g@ == cur.blocks.regions_1g@,
-            forall|j: int| #![trigger post.blocks.pages@[j]] 0 <= j < NUM_PAGES && !(cursor / 4096 <= j < next / 4096)
+            forall|j: int| #![trigger post.blocks.pages@[j]] cur.blocks.tracks(j) && !(cursor / 4096 <= j < next / 4096)
                 ==> post.blocks.pages@[j] == cur.blocks.pages@[j],
-            forall|j: int| #![trigger cur.blocks.pages@[j]] 0 <= j < NUM_PAGES && !(u.base / 4096 <= j < cursor / 4096)
+            forall|j: int| #![trigger cur.blocks.pages@[j]] pre.blocks.tracks(j) && !(u.base / 4096 <= j < cursor / 4096)
                 ==> cur.blocks.pages@[j] == pre.blocks.pages@[j],
         ensures
             k <= k2 <= k + 3,
             next as int == u.base + k2 * 32768,
             forall|j: int| k2 <= j < cap ==> #[trigger] post.root_table_block(process, cursor_block(u.base, j)),
-            forall|j: int| #![trigger post.blocks.pages@[j]] 0 <= j < NUM_PAGES && !(u.base / 4096 <= j < next / 4096)
+            forall|j: int| #![trigger post.blocks.pages@[j]] pre.blocks.tracks(j) && !(u.base / 4096 <= j < next / 4096)
                 ==> post.blocks.pages@[j] == pre.blocks.pages@[j],
     {
         let k2 = if next == cursor { k } else if next == cursor + 32768 { k + 1 } else if next == cursor + 65536 { k + 2 } else { k + 3 };
@@ -1086,7 +1086,7 @@ impl CapKernel {
             lemma_untyped_block(u, j);
             Self::lemma_block_past(cur, post, process, cursor_block(u.base, j), cursor, next);
         }
-        assert forall|j: int| #![trigger post.blocks.pages@[j]] 0 <= j < NUM_PAGES && !(u.base / 4096 <= j < next / 4096)
+        assert forall|j: int| #![trigger post.blocks.pages@[j]] pre.blocks.tracks(j) && !(u.base / 4096 <= j < next / 4096)
             implies post.blocks.pages@[j] == pre.blocks.pages@[j] by {
             lemma_div_is_ordered(u.base as int, cursor as int, 4096);
             lemma_div_is_ordered(cursor as int, next as int, 4096);
@@ -1146,7 +1146,7 @@ impl CapKernel {
                 &&& final(self).spaces.roots@.dom() == old(self).spaces.roots@.dom()
                 &&& final(self).blocks.regions_2m@ == old(self).blocks.regions_2m@
                 &&& final(self).blocks.regions_1g@ == old(self).blocks.regions_1g@
-                &&& forall|j: int| #![trigger final(self).blocks.pages@[j]] 0 <= j < NUM_PAGES
+                &&& forall|j: int| #![trigger final(self).blocks.pages@[j]] old(self).blocks.tracks(j)
                     && !(u.base / 4096 <= j < (u.base + block_bytes(u.order)) / 4096)
                     ==> final(self).blocks.pages@[j] == old(self).blocks.pages@[j]
                 &&& forall|j: int| #![trigger final(self).list.nodes@[j]] 0 <= j < NODE_SPACE && old(self).list.nodes@[j].live
@@ -1220,7 +1220,7 @@ impl CapKernel {
                 self.spaces.roots@.dom() == pre.spaces.roots@.dom(),
                 self.blocks.regions_2m@ == pre.blocks.regions_2m@,
                 self.blocks.regions_1g@ == pre.blocks.regions_1g@,
-                forall|j: int| #![trigger self.blocks.pages@[j]] 0 <= j < NUM_PAGES && !(u.base / 4096 <= j < cursor / 4096)
+                forall|j: int| #![trigger self.blocks.pages@[j]] pre.blocks.tracks(j) && !(u.base / 4096 <= j < cursor / 4096)
                     ==> self.blocks.pages@[j] == pre.blocks.pages@[j],
                 forall|j: int| #![trigger self.list.nodes@[j]] 0 <= j < NODE_SPACE && pre.list.nodes@[j].live
                     ==> self.list.nodes@[j].live,
@@ -1274,7 +1274,7 @@ impl CapKernel {
                     self.spaces.roots@.dom() == pre.spaces.roots@.dom(),
                     self.blocks.regions_2m@ == pre.blocks.regions_2m@,
                     self.blocks.regions_1g@ == pre.blocks.regions_1g@,
-                    forall|j: int| #![trigger self.blocks.pages@[j]] 0 <= j < NUM_PAGES && !(u.base / 4096 <= j < cursor / 4096)
+                    forall|j: int| #![trigger self.blocks.pages@[j]] pre.blocks.tracks(j) && !(u.base / 4096 <= j < cursor / 4096)
                         ==> self.blocks.pages@[j] == pre.blocks.pages@[j],
                     forall|j: int| #![trigger self.list.nodes@[j]] 0 <= j < NODE_SPACE && pre.list.nodes@[j].live
                         ==> self.list.nodes@[j].live,
@@ -1351,7 +1351,7 @@ impl CapKernel {
                 assert(!space_mapping(b, s).contains_key(page_path(x)));
                 post.lemma_level1_empty(s, page_path(x));
             }
-            assert forall|j: int| #![trigger post.blocks.pages@[j]] 0 <= j < NUM_PAGES
+            assert forall|j: int| #![trigger post.blocks.pages@[j]] pre.blocks.tracks(j)
                 && !(u.base / 4096 <= j < (u.base + block_bytes(u.order)) / 4096)
                 implies post.blocks.pages@[j] == pre.blocks.pages@[j] by {
                 lemma_div_is_ordered(cursor as int, u.base + block_bytes(u.order), 4096);

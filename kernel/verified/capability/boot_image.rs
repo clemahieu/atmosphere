@@ -279,7 +279,7 @@ pub open spec fn image_progress(
     }
     &&& forall|q: int| 0 <= q < NUM_2M && !in_regions(bs, k, q)
         ==> #[trigger] cur.blocks.regions_2m@[q] == pre.blocks.regions_2m@[q]
-    &&& forall|j: int| 0 <= j < NUM_PAGES && !in_regions(bs, k, region_2m(j))
+    &&& forall|j: int| pre.blocks.tracks(j) && !in_regions(bs, k, region_2m(j))
         ==> #[trigger] cur.blocks.pages@[j] == pre.blocks.pages@[j]
     &&& forall|q: int, j: usize| #![trigger image_region(runs, q), perms.contains_key(j)]
         image_region(runs, q) && !in_regions(bs, k, q) && q * 512 <= j < (q + 1) * 512 ==> perms.contains_key(j)
@@ -326,7 +326,7 @@ impl CapKernel {
             bs.len() <= ROOT_FRAME_SLOTS,
             leaf2 + NODES_PER_PAGE <= NODE_SPACE,
             bs[k] == (s as nat, o as nat),
-            s < NUM_PAGES,
+            cur.blocks.tracks(s as int),
             forall|q: int| #[trigger] image_region(runs, q) ==> !pre.blocks.regions_2m@[q].typed,
             image_region(runs, (s / 512) as int),
             left == perms.remove_keys(region_keys(perms, (s / 512) as int)),
@@ -354,7 +354,7 @@ impl CapKernel {
                 &&& post.blocks.regions_2m@ == cur.blocks.regions_2m@.update(r as int, post.blocks.regions_2m@[r as int])
                 &&& post.blocks.regions_1g@ == cur.blocks.regions_1g@
                 &&& post.holders@ == cur.holders@.insert(BlockRef::Two(r), held.insert(child))
-                &&& forall|j: int| 0 <= j < NUM_PAGES && region_2m(j) != r ==> #[trigger] post.blocks.pages@[j] == cur.blocks.pages@[j]
+                &&& forall|j: int| cur.blocks.tracks(j) && region_2m(j) != r ==> #[trigger] post.blocks.pages@[j] == cur.blocks.pages@[j]
                 &&& post.blocks.free_perms == cur.blocks.free_perms
                 &&& post.threads == cur.threads
                 &&& post.processes == cur.processes
@@ -401,7 +401,7 @@ impl CapKernel {
             assert(q != r as int);
             assert(post.blocks.regions_2m@[q] == cur.blocks.regions_2m@[q]);
         }
-        assert forall|j: int| 0 <= j < NUM_PAGES && !in_regions(bs, k + 1, region_2m(j))
+        assert forall|j: int| pre.blocks.tracks(j) && !in_regions(bs, k + 1, region_2m(j))
             implies #[trigger] post.blocks.pages@[j] == pre.blocks.pages@[j] by {
             assert(region_2m(j) != r as int);
         }
@@ -529,7 +529,7 @@ impl CapKernel {
             bs.len() <= ROOT_FRAME_SLOTS,
             leaf2 + NODES_PER_PAGE <= NODE_SPACE,
             bs[k].0 == s as nat,
-            s < NUM_PAGES,
+            cur.blocks.tracks(s as int),
             image_region(runs, (s / 512) as int),
             pre.tables.leaf(process, 1) == leaf2,
             pre.list.nodes@[leaf2 as int].live,
@@ -538,7 +538,7 @@ impl CapKernel {
                 &&& !pre.blocks.regions_2m@[q].typed
                 &&& forall|j: int| q * 512 <= j < (q + 1) * 512 ==> #[trigger] pre.blocks.pages@[j].kind is Reserved
             },
-            forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
+            forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) && pre.blocks.tracks_addr(p)
                 ==> !image_region(runs, region_2m((p / 4096) as int)),
         ensures
             ({
@@ -558,7 +558,7 @@ impl CapKernel {
                 &&& !cur.blocks.regions_2m@[r as int].typed ==> {
                     &&& forall|j: int| r * 512 <= j < (r + 1) * 512 ==> #[trigger] cur.blocks.pages@[j].kind is Reserved
                     &&& forall|j: usize| r * 512 <= j < (r + 1) * 512 ==> #[trigger] perms.contains_key(j)
-                    &&& forall|p: usize| #[trigger] cur.list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
+                    &&& forall|p: usize| #[trigger] cur.list.pages@.dom().contains(p) && cur.blocks.tracks_addr(p)
                         ==> region_2m((p / 4096) as int) != r
                 }
             }),
@@ -586,7 +586,7 @@ impl CapKernel {
         } else {
             assert(cur.blocks.regions_2m@[q].refs <= k);
         }
-        assert forall|p: usize| #[trigger] cur.list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
+        assert forall|p: usize| #[trigger] cur.list.pages@.dom().contains(p) && cur.blocks.tracks_addr(p)
             implies region_2m((p / 4096) as int) != r by {
             assert(pre.list.pages@.dom().contains(p));
         }
@@ -741,7 +741,7 @@ impl CapKernel {
                 &&& forall|j: usize| q * 512 <= j < (q + 1) * 512 ==> #[trigger] perms.contains_key(j)
             },
             forall|j: usize| #[trigger] perms.contains_key(j) ==> perms[j].addr() == j * 4096,
-            forall|p: usize| #[trigger] old(self).list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
+            forall|p: usize| #[trigger] old(self).list.pages@.dom().contains(p) && old(self).blocks.tracks_addr(p)
                 ==> !image_region(runs@, region_2m((p / 4096) as int)),
         ensures
             ret is None ==> image_blocks(runs@).len() > ROOT_FRAME_SLOTS && *final(self) == *old(self),
@@ -794,7 +794,7 @@ impl CapKernel {
                 &&& final(self).table_pages == old(self).table_pages
                 &&& forall|q: int| 0 <= q < NUM_2M && !image_region(runs@, q)
                     ==> #[trigger] final(self).blocks.regions_2m@[q] == old(self).blocks.regions_2m@[q]
-                &&& forall|j: int| 0 <= j < NUM_PAGES && !image_region(runs@, region_2m(j))
+                &&& forall|j: int| old(self).blocks.tracks(j) && !image_region(runs@, region_2m(j))
                     ==> #[trigger] final(self).blocks.pages@[j] == old(self).blocks.pages@[j]
                 &&& forall|q: int| #[trigger] image_region(runs@, q) ==> {
                     &&& 0 <= q < NUM_2M
@@ -852,7 +852,7 @@ impl CapKernel {
                     &&& !pre.blocks.regions_2m@[q].typed
                     &&& forall|j: int| q * 512 <= j < (q + 1) * 512 ==> #[trigger] pre.blocks.pages@[j].kind is Reserved
                 },
-                forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
+                forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) && pre.blocks.tracks_addr(p)
                     ==> !image_region(runs@, region_2m((p / 4096) as int)),
                 k == runs_blocks(phys.take(r as int), IMAGE_ORDER as nat).len(),
                 image_progress(*self, pre, root, process, leaf2, runs@, bs, k as int, perms),
@@ -876,7 +876,7 @@ impl CapKernel {
             let ghost full = run_image_blocks(runs@[r as int]);
             proof {
                 assert(phys[r as int] == (start, n));
-                assert(start + n <= NUM_PAGES);
+                assert(pre.blocks.tracks_run(start as int, n as int));
                 assert(n > 0);
                 assert(rights == image_rights(runs@[r as int]));
                 assert(rights & 128u32 == 0) by (bit_vector)
@@ -911,12 +911,12 @@ impl CapKernel {
                         &&& !pre.blocks.regions_2m@[q].typed
                         &&& forall|j: int| q * 512 <= j < (q + 1) * 512 ==> #[trigger] pre.blocks.pages@[j].kind is Reserved
                     },
-                    forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
+                    forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) && pre.blocks.tracks_addr(p)
                         ==> !image_region(runs@, region_2m((p / 4096) as int)),
                     phys[r as int] == (start, n),
                     start <= s,
                     s + m == start + n,
-                    start + n <= NUM_PAGES,
+                    pre.blocks.tracks_run(start as int, n as int),
                     rights == image_rights(runs@[r as int]),
                     rights & CONTROL_RIGHT == 0,
                     off == image_offset(runs@, r as int),
@@ -1074,7 +1074,7 @@ impl CapKernel {
             }
             assert forall|q: int| #[trigger] image_region(runs@, q) implies 0 <= q < NUM_2M && in_regions(bs, len_bs, q) by {
                 let (a, x) = choose|a: int, x: int| 0 <= a < runs@.len() && #[trigger] in_run_at(phys, a, x) && region_2m(x) == q;
-                assert(phys[a].0 + phys[a].1 <= NUM_PAGES);
+                assert(pre.blocks.tracks_run(phys[a].0 as int, phys[a].1 as int));
                 let y = x as nat;
                 assert(in_runs(phys, len, y as int));
                 let t = choose|t: int| 0 <= t < len_bs && #[trigger] in_page_block(bs[t], y);
@@ -1085,13 +1085,13 @@ impl CapKernel {
                 implies #[trigger] post.blocks.regions_2m@[q] == pre.blocks.regions_2m@[q] by {
                 assert(!in_regions(bs, len_bs, q));
             }
-            assert forall|j: int| 0 <= j < NUM_PAGES && !image_region(runs@, region_2m(j))
+            assert forall|j: int| pre.blocks.tracks(j) && !image_region(runs@, region_2m(j))
                 implies #[trigger] post.blocks.pages@[j] == pre.blocks.pages@[j] by {
                 assert(!in_regions(bs, len_bs, region_2m(j)));
             }
             assert forall|a: int, g: int| 0 <= a < runs@.len() && #[trigger] in_run_at(phys, a, g)
                 implies block_ref(&post.blocks, g as usize) == BlockRef::Two((g / PAGES_PER_2M as int) as usize) by {
-                assert(phys[a].0 + phys[a].1 <= NUM_PAGES);
+                assert(pre.blocks.tracks_run(phys[a].0 as int, phys[a].1 as int));
                 assert(image_region(runs@, region_2m(g)));
                 assert(post.blocks.regions_2m@[region_2m(g)].typed);
             }

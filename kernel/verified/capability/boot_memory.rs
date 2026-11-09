@@ -351,10 +351,10 @@ impl CapKernel {
         requires
             old(self).wf(),
             runs_wf(runs@),
-            forall|i: int| 0 <= i < NUM_PAGES && in_runs(runs@, runs@.len() as int, i)
+            forall|i: int| old(self).blocks.tracks(i) && in_runs(runs@, runs@.len() as int, i)
                 ==> (#[trigger] old(self).blocks.pages@[i]).kind is Reserved,
             forall|i: usize| in_runs(runs@, runs@.len() as int, i as int) ==> #[trigger] holds(pages, i),
-            forall|p: usize| #[trigger] old(self).list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
+            forall|p: usize| #[trigger] old(self).list.pages@.dom().contains(p) && old(self).blocks.tracks_addr(p)
                 ==> !in_runs(runs@, runs@.len() as int, (p / 4096) as int),
         ensures
             final(self).wf(),
@@ -366,7 +366,7 @@ impl CapKernel {
             final(self).table_pages == old(self).table_pages,
             final(self).blocks.regions_2m@ == old(self).blocks.regions_2m@,
             final(self).blocks.regions_1g@ == old(self).blocks.regions_1g@,
-            forall|i: int| 0 <= i < NUM_PAGES ==> #[trigger] final(self).blocks.pages@[i]
+            forall|i: int| old(self).blocks.tracks(i) ==> #[trigger] final(self).blocks.pages@[i]
                 == if in_runs(runs@, runs@.len() as int, i) { free_entry() } else { old(self).blocks.pages@[i] },
     {
         let ghost pre = *old(self);
@@ -403,13 +403,13 @@ impl CapKernel {
                 self.stop_ipis == pre.stop_ipis,
                 self.blocks.regions_2m@ == pre.blocks.regions_2m@,
                 self.blocks.regions_1g@ == pre.blocks.regions_1g@,
-                forall|i: int| 0 <= i < NUM_PAGES ==> #[trigger] self.blocks.pages@[i]
+                forall|i: int| pre.blocks.tracks(i) ==> #[trigger] self.blocks.pages@[i]
                     == if in_runs(runs@, r as int, i) { free_entry() } else { pre.blocks.pages@[i] },
-                forall|i: int| 0 <= i < NUM_PAGES && in_runs(runs@, runs@.len() as int, i)
+                forall|i: int| pre.blocks.tracks(i) && in_runs(runs@, runs@.len() as int, i)
                     ==> (#[trigger] pre.blocks.pages@[i]).kind is Reserved,
                 forall|a: int, i: usize| r <= a < runs@.len() && #[trigger] in_run_at(runs@, a, i as int)
                     ==> #[trigger] holds(pages, i),
-                forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
+                forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) && pre.blocks.tracks_addr(p)
                     ==> !in_runs(runs@, runs@.len() as int, (p / 4096) as int),
             decreases runs@.len() - r,
         {
@@ -418,7 +418,7 @@ impl CapKernel {
             let ghost given = pages;
             proof {
                 assert(runs@[r as int] == (start, n));
-                assert(start + n <= NUM_PAGES);
+                assert(before.blocks.tracks_run(start as int, n as int));
                 assert forall|i: int| start <= i < start + n implies #[trigger] before.blocks.pages@[i].kind is Reserved by {
                     assert(in_run_at(runs@, r as int, i));
                     if in_runs(runs@, r as int, i) {
@@ -435,7 +435,7 @@ impl CapKernel {
             add_free_run(&mut self.blocks, start, n, Tracked(&mut pages));
             proof {
                 let after = *self;
-                assert forall|p: usize| #[trigger] before.list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
+                assert forall|p: usize| #[trigger] before.list.pages@.dom().contains(p) && before.blocks.tracks_addr(p)
                     implies !(start <= p / 4096 < start + n) by {
                     if start <= p / 4096 < start + n {
                         assert(in_run_at(runs@, r as int, (p / 4096) as int));
@@ -448,7 +448,7 @@ impl CapKernel {
                     assert(holds(given, i));
                     assert(!(in_run_at(runs@, a, i as int) && in_run_at(runs@, r as int, i as int)));
                 }
-                assert forall|i: int| 0 <= i < NUM_PAGES implies #[trigger] after.blocks.pages@[i]
+                assert forall|i: int| pre.blocks.tracks(i) implies #[trigger] after.blocks.pages@[i]
                     == if in_runs(runs@, r + 1, i) { free_entry() } else { pre.blocks.pages@[i] } by {
                     if start <= i < start + n {
                         assert(in_run_at(runs@, r as int, i));
@@ -560,7 +560,7 @@ impl CapKernel {
             let (start, n) = runs[r];
             proof {
                 assert(runs@[r as int] == (start, n));
-                assert(start + n <= NUM_PAGES);
+                assert(pre.blocks.tracks_run(start as int, n as int));
                 lemma_runs_blocks_step(runs@, r as int, MAX_ORDER as nat);
                 lemma_runs_blocks_prefix(runs@, r as int + 1, MAX_ORDER as nat);
                 let c = runs_blocks(runs@.take(r as int + 1), MAX_ORDER as nat);
@@ -578,7 +578,7 @@ impl CapKernel {
                     bs == runs_blocks(runs@, MAX_ORDER as nat),
                     bs.len() <= ROOT_UNTYPED_SLOTS,
                     leaf + NODES_PER_PAGE <= NODE_SPACE,
-                    s + m <= NUM_PAGES,
+                    pre.blocks.tracks_run(s as int, m as int),
                     k + run_blocks(s as nat, m as nat, MAX_ORDER as nat).len() == runs_blocks(runs@.take(r as int + 1), MAX_ORDER as nat).len(),
                     runs_blocks(runs@.take(r as int + 1), MAX_ORDER as nat).len() <= bs.len(),
                     forall|u: int| 0 <= u < run_blocks(s as nat, m as nat, MAX_ORDER as nat).len() ==> bs[k + u] == #[trigger] run_blocks(
@@ -793,10 +793,10 @@ impl CapKernel {
             old(self).tables.node_of(process, ROOT_PROCESS_SLOT) == leaf + 1,
             forall|j: int| leaf + ROOT_UNTYPED_SLOT <= j < leaf + NODES_PER_PAGE ==> !#[trigger] old(self).list.nodes@[j].live,
             runs_wf(runs@),
-            forall|i: int| 0 <= i < NUM_PAGES && in_runs(runs@, runs@.len() as int, i)
+            forall|i: int| old(self).blocks.tracks(i) && in_runs(runs@, runs@.len() as int, i)
                 ==> (#[trigger] old(self).blocks.pages@[i]).kind is Reserved,
             forall|i: usize| in_runs(runs@, runs@.len() as int, i as int) ==> #[trigger] holds(pages, i),
-            forall|p: usize| #[trigger] old(self).list.pages@.dom().contains(p) && p / 4096 < NUM_PAGES
+            forall|p: usize| #[trigger] old(self).list.pages@.dom().contains(p) && old(self).blocks.tracks_addr(p)
                 ==> !in_runs(runs@, runs@.len() as int, (p / 4096) as int),
         ensures
             ret is None ==> runs_blocks(runs@, MAX_ORDER as nat).len() > ROOT_UNTYPED_SLOTS && *final(self) == *old(self),
@@ -826,7 +826,7 @@ impl CapKernel {
                     !(leaf + ROOT_UNTYPED_SLOT <= x < leaf + ROOT_UNTYPED_SLOT + count) && old(self).is_cap(x)
                     ==> final(self).is_cap(x) && final(self).payload_of(x) == old(self).payload_of(x)
                 &&& final(self).table_pages == old(self).table_pages
-                &&& forall|i: int| 0 <= i < NUM_PAGES ==> #[trigger] final(self).blocks.pages@[i]
+                &&& forall|i: int| old(self).blocks.tracks(i) ==> #[trigger] final(self).blocks.pages@[i]
                     == if in_runs(runs@, runs@.len() as int, i) { free_entry() } else { old(self).blocks.pages@[i] }
                 &&& final(self).blocks.regions_2m@ == old(self).blocks.regions_2m@
                 &&& final(self).blocks.regions_1g@ == old(self).blocks.regions_1g@
