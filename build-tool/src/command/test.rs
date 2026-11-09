@@ -32,7 +32,7 @@ const LICENSE_GUARD_TEST: &str = ".claude/hooks/license-guard-test.sh";
 /// The boot stack's check, relative to the project root.
 const BOOT_STACK_CHECK: &str = "tools/check-boot-stack.py";
 
-/// The coverage report, relative to the project root.
+/// The coverage report, relative to the project root; `--test` runs its own tests.
 const COVERAGE: &str = "tools/coverage.py";
 
 /// The design index builder, relative to the project root; `--check` says whether the index is current.
@@ -209,8 +209,10 @@ async fn check_design_index(project: &ProjectHandle) -> Result<String> {
     Ok("design/INDEX.md is current".to_string())
 }
 
-/// Reports coverage per crate. A low number does not fail the gate: only a capture that fails does.
+/// Reports coverage per crate after the script's own tests pass. A low number does not fail the gate:
+/// only a capture that fails does.
 async fn check_coverage(project: &ProjectHandle) -> Result<String> {
+    run_check(project, COVERAGE, &["--test"]).await?;
     let report = check_output(project, COVERAGE).await?;
     Ok(format!("\n  {}", report.trim_end().replace('\n', "\n  ")))
 }
