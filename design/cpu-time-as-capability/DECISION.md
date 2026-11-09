@@ -16,7 +16,7 @@ Per-core queues over the intrusive list, fixed priorities, turns at equal priori
 
 Scheduling contexts, a budget and period per thread, are deferred. Three constraints are kept so they stay addable: a reply is an explicit kernel object, `design/ipc-with-reply-object/`; programs create threads and do IPC through the runtime library; a thread's scheduling state stays in one record behind one selection function. The marker telling a preempted thread's full saved frame from a blocked thread's partial copy is a field on the thread set at each save point. Extended register state lives in the thread object. Running a guest adds no third saved-frame kind, `design/vmm-over-svm/`.
 
-Accepted limit: CPU time is only partly governed by capabilities. A high-priority thread can starve lower ones on its core until something stops it, and time spent in a server is charged to the server. Whole-core grants or a trusted top-priority manager contain this as policy.
+Accepted limit: CPU time is only partly governed by capabilities. A high-priority thread can starve lower ones on its core until something stops it, and time spent in a server is charged to the server. User-level schedulers contain this as policy by owning whole cores, so a runaway thread stops only its own partition, `design/schedulers-over-core-partitions/`.
 
 ## Context
 

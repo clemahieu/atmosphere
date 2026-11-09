@@ -2,7 +2,7 @@
 
 # Design decisions
 
-23 records: 23 active, 0 superseded.
+24 records: 24 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -55,6 +55,9 @@ in `revisit if` what would make it worth reopening.
 - **[root-process-at-boot](./root-process-at-boot/DECISION.md)** (2026-11-09): Boot writes page metadata and creates the root process, thread and table. The root holds at fixed slots untyped capabilities covering free memory as aligned blocks, frame capabilities for dom0's image and stack with the rights they were loaded with, its own process and thread, a capability per core at top priority, interrupts, devices, ports, a console, SVM and timers; the list's root is a synthetic node boot sets aside, and the root's boot objects are never retyped.
   - *confidence:* Follows from the kernel allocating nothing after boot: something must hold everything at the start, and only one thing does.
   - *revisit if:* Several kernel instances each need a root, in which case what boot hands each root is the open question recorded with that work; or a second boot-created process is wanted.
+- **[schedulers-over-core-partitions](./schedulers-over-core-partitions/DECISION.md)** (2026-11-09): Schedulers are swappable user programs over whole-core partitions handed out as derived core capabilities. A real-time library is the only placer on the cores it holds and runs a cooperative class above a preemptive one; a general scheduler holds the rest, places every runnable thread it owns and lets the kernel preempt. The kernel's fixed-priority selection is unchanged.
+  - *confidence:* A judgement by the human between three ways of hosting two policies, informed by published partitioned and core-granting systems. Nothing here is measured on this kernel; the latency bound of an isolated core is the lock's, and its step is not yet measured.
+  - *revisit if:* Budgets and periods land, which contain a runaway thread on a shared core; or the kernel gains a block-and-wake event on a placement and per-thread consumed time, which make a scheduler that places one thread per core and owns the quantum (fair share) possible.
 - **[sharing-by-derive](./sharing-by-derive/DECISION.md)** (2026-11-05): The only way to share a capability is derive, a child one depth deeper with rights and range within its parent's; nodes never change ancestor; move and claim relocate a node without changing its place; delete is refused while a node has children, mappings or bindings.
   - *confidence:* The human's choice among three lifetime packages, with a precedent survey of seL4, NOVA, L4Re, Genode, EROS, Zircon and Barrelfish from their documents. The structure it rests on is proven, design/revoke-by-depth-first-list/.
   - *revisit if:* A service must survive the death of the holder that granted to its clients without a longer-lived parent doing the granting, and claim by a supervisor is not enough.
@@ -87,7 +90,7 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `abi`: arch-module, one-kernel-instance, syscall-abi-in-registers
 - `address-space`: address-spaces-as-objects, vmm-over-svm
 - `boot`: machine-glue-below-the-kernel, root-process-at-boot
-- `capability`: address-spaces-as-objects, capability-names-a-block, cpu-time-as-capability, ipc-with-reply-object, process-holds-capabilities, revoke-by-depth-first-list, root-process-at-boot, sharing-by-derive, teardown-driven-by-retype, theorem-over-reach, thread-bound-at-retype, untyped-memory, vmm-over-svm
+- `capability`: address-spaces-as-objects, capability-names-a-block, cpu-time-as-capability, ipc-with-reply-object, process-holds-capabilities, revoke-by-depth-first-list, root-process-at-boot, schedulers-over-core-partitions, sharing-by-derive, teardown-driven-by-retype, theorem-over-reach, thread-bound-at-retype, untyped-memory, vmm-over-svm
 - `gate`: cut-over-on-a-branch
 - `glue`: machine-glue-below-the-kernel
 - `interrupt`: machine-glue-below-the-kernel
@@ -103,8 +106,9 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `process`: cut-over-on-a-branch, process-holds-capabilities, thread-bound-at-retype
 - `proof`: isolation-claim, theorem-over-reach, thread-bound-at-retype, trust-boundary
 - `purity`: untyped-memory
+- `real-time`: schedulers-over-core-partitions
 - `revoke`: revoke-by-depth-first-list, sharing-by-derive, teardown-driven-by-retype
-- `scheduling`: cpu-time-as-capability
+- `scheduling`: cpu-time-as-capability, schedulers-over-core-partitions
 - `security`: isolation-claim, theorem-over-reach, trust-boundary
 - `thread`: process-holds-capabilities, thread-bound-at-retype
 - `tiers`: trust-boundary
