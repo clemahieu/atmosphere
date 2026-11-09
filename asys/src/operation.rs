@@ -15,6 +15,10 @@ pub const STATUS_REFUSED: u64 = 1;
 /// No operation has the number passed.
 pub const STATUS_UNKNOWN: u64 = 2;
 
+/// The operation took a bounded step and is not finished; the same invocation again goes on from where
+/// it stopped.
+pub const STATUS_AGAIN: u64 = 3;
+
 pub const RETYPE: u64 = 1;
 pub const DERIVE: u64 = 2;
 /// Moves the capability in rdi to the empty slot in rsi, children and all, leaving rdi empty.
@@ -48,6 +52,11 @@ pub const LINK: u64 = 16;
 /// Retype's kind in rsi for a 4K frame: a frame capability of order 0 for the page at the base in rdx,
 /// in the empty slot in r8.
 pub const RETYPE_FRAME: u64 = 0;
+
+/// Retype's kind in rsi for a 2M frame: a frame capability of order 9 for the 2M-aligned block at the
+/// base in rdx, in the empty slot in r8. Retype returns again while the block is zeroed a slice at a
+/// time and ok once the capability is in the slot.
+pub const RETYPE_LARGE_FRAME: u64 = 1;
 
 /// Retype's kind in rsi for a table page: an unlinked table page of the level in r9, 1 to 3, at the base
 /// in rdx. No capability names it, so it takes no slot; link names it by its base.
@@ -171,6 +180,14 @@ pub fn inspect(slot: u64) -> Result<Capability, u64> {
 pub fn retype_frame(untyped: u64, base: u64, destination: u64) -> u64 {
     // A retype changes the caller's table and the page's memory, never its address space.
     status(unsafe { invoke(RETYPE, untyped, [RETYPE_FRAME, base, destination, 0, 0]) })
+}
+
+/// Takes one step of retyping the free 2M block at `base`, inside the block of the untyped at
+/// `untyped`, as a frame whose capability goes in the empty slot `destination`: again while the block is
+/// being zeroed, then ok once the capability is there. The status is the low half of what returns.
+pub fn retype_large_frame(untyped: u64, base: u64, destination: u64) -> u64 {
+    // A retype changes the caller's table and the block's memory, never its address space.
+    status(unsafe { invoke(RETYPE, untyped, [RETYPE_LARGE_FRAME, base, destination, 0, 0]) })
 }
 
 /// Retypes the free order-3 block at `base`, inside the block of the untyped at `untyped`, as an

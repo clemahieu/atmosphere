@@ -26,6 +26,7 @@ const _: () = {
     assert!(user::STATUS_OK == operation::STATUS_OK);
     assert!(user::STATUS_REFUSED == operation::STATUS_REFUSED);
     assert!(user::STATUS_UNKNOWN == operation::STATUS_UNKNOWN);
+    assert!(user::STATUS_AGAIN == operation::STATUS_AGAIN);
     assert!(user::RETYPE == operation::OPERATION_RETYPE);
     assert!(user::DERIVE == operation::OPERATION_DERIVE);
     assert!(user::MOVE == operation::OPERATION_MOVE);
@@ -43,6 +44,7 @@ const _: () = {
     assert!(user::INSPECT == operation::OPERATION_INSPECT);
     assert!(user::LINK == operation::OPERATION_LINK);
     assert!(user::RETYPE_FRAME == operation::RETYPE_FRAME);
+    assert!(user::RETYPE_LARGE_FRAME == operation::RETYPE_LARGE_FRAME);
     assert!(user::RETYPE_TABLE_PAGE == operation::RETYPE_TABLE_PAGE);
     assert!(user::TABLE_INDICES == table::TABLE_INDICES as u64);
     assert!(user::KIND_UNTYPED == inspect::CAP_KIND_UNTYPED);
@@ -332,7 +334,9 @@ extern "C" fn capability_entry(regs: &mut Registers) {
     let outcome = match returned.status {
         operation::STATUS_OK => "ok",
         operation::STATUS_REFUSED => "refused",
-        _ => "unknown",
+        operation::STATUS_UNKNOWN => "unknown",
+        operation::STATUS_AGAIN => "again",
+        status => unreachable!("dispatch returned status {status}, which no operation returns"),
     };
     let arguments = [regs.rsi, regs.rdx, regs.r8, regs.r9, regs.r10];
     log::info!(

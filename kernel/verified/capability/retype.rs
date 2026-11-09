@@ -463,6 +463,35 @@ impl CapKernel {
         &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base })
     }
 
+    /// What a step of a large retype that has not found its block all zero yet did, under the untyped at
+    /// index from of the table at root, for the block at base of order into the slot at index to: the
+    /// retype was allowed, no capability was made and no slot changed, and the step discharges the
+    /// retype's effect.
+    pub open spec fn large_frame_zeroing(pre: Self, post: Self, root: usize, from: usize, to: usize, base: usize, order: u8) -> bool {
+        let parent = pre.tables.node_of(root, from);
+        &&& pre.can_retype_large(root, from, to, base, order)
+        &&& pre.view().holds_right(root, parent, Right::Retype)
+        &&& post.list == pre.list
+        &&& post.tables == pre.tables
+        &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base })
+    }
+
+    /// What the step of a large retype that found its block all zero did: the retype was allowed, the
+    /// frame capability of that order is the untyped's child in the slot at index to, every page of the
+    /// block is zero, and the step discharges the retype's effect.
+    pub open spec fn large_frame_retyped(pre: Self, post: Self, root: usize, from: usize, to: usize, base: usize, order: u8) -> bool {
+        let parent = pre.tables.node_of(root, from);
+        let child = pre.tables.node_of(root, to);
+        &&& pre.can_retype_large(root, from, to, base, order)
+        &&& pre.view().holds_right(root, parent, Right::Retype)
+        &&& post.view().holds(root, child)
+        &&& post.payload_of(child) == large_frame_of(base, order)
+        &&& post.list.is_child(parent, child)
+        &&& post.list.nodes@[child as int].depth == pre.list.nodes@[parent as int].depth + 1
+        &&& forall|k: usize| k < pow2(order as nat) ==> #[trigger] holds_zero(post.frames@, (base / 4096 + k) as usize)
+        &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base })
+    }
+
     /// Retypes the free page at `base` as a frame, under the untyped at index `from` of the table at
     /// `root`, with the capability at the empty index `to`. All of these come from user space, and a
     /// refusal changes nothing. The block table refuses a page that is not free.
@@ -557,6 +586,7 @@ impl CapKernel {
             final(self).list == old(self).list,
             final(self).tables == old(self).tables,
             final(self).holders == old(self).holders,
+            final(self).cores == old(self).cores,
             ret is Refused ==> *final(self) == *old(self),
             ret is Done ==> forall|k: usize| k < level_pages(level)
                 ==> #[trigger] holds_zero(final(self).frames@, (level_base(level, r) + k) as usize),
@@ -1497,31 +1527,15 @@ impl CapKernel {
             final(self).wf(),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             Self::same_tree(*old(self), *final(self)),
-            !old(self).can_retype_large(root, from, to, base, order) ==> ret is Refused,
+            final(self).cores == old(self).cores,
             ret is Refused ==> *final(self) == *old(self),
             old(self).zeroing.blocks@.contains_key(base / 4096) ==>
                 final(self).zeroing.cursor@[(base / 4096) as int]
                     <= old(self).zeroing.cursor@[(base / 4096) as int] + ZERO_CHUNK_PAGES,
             !old(self).zeroing.blocks@.contains_key(base / 4096) && !(ret is Refused) ==>
                 final(self).zeroing.cursor@[(base / 4096) as int] <= ZERO_CHUNK_PAGES,
-            ret is Again ==> {
-                &&& final(self).list == old(self).list
-                &&& final(self).tables == old(self).tables
-            },
-            !(ret is Refused) ==> {
-                let parent = old(self).tables.node_of(root, from);
-                discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base })
-            },
-            ret is Done ==> {
-                let parent = old(self).tables.node_of(root, from);
-                let child = old(self).tables.node_of(root, to);
-                &&& final(self).view().holds(root, child)
-                &&& final(self).payload_of(child) == large_frame_of(base, order)
-                &&& final(self).list.is_child(parent, child)
-                &&& final(self).list.nodes@[child as int].depth == old(self).list.nodes@[parent as int].depth + 1
-                &&& forall|k: usize| k < pow2(order as nat)
-                    ==> #[trigger] holds_zero(final(self).frames@, (base / 4096 + k) as usize)
-            },
+            ret is Again ==> Self::large_frame_zeroing(*old(self), *final(self), root, from, to, base, order),
+            ret is Done ==> Self::large_frame_retyped(*old(self), *final(self), root, from, to, base, order),
     {
         let ghost pre = *old(self);
         let (parent, child) = match self.retype_slots(root, from, to, base, order) {

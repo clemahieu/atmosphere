@@ -9,6 +9,7 @@ use crate::capability::inspect::*;
 use crate::capability::kernel::*;
 use crate::capability::map::*;
 use crate::capability::reach::*;
+use crate::capability::retype::RetypeStep;
 use crate::capability::space::*;
 use crate::capability::thread::*;
 use crate::define::NUM_CPUS;
@@ -23,6 +24,10 @@ pub const STATUS_REFUSED: u64 = 1;
 
 /// No operation has the number in rax.
 pub const STATUS_UNKNOWN: u64 = 2;
+
+/// The operation took a bounded step and is not finished; the same invocation again goes on from where
+/// it stopped. See design/one-lock-bounded-steps/.
+pub const STATUS_AGAIN: u64 = 3;
 
 pub const OPERATION_RETYPE: u64 = 1;
 pub const OPERATION_DERIVE: u64 = 2;
@@ -43,6 +48,9 @@ pub const OPERATION_LINK: u64 = 16;
 
 /// Retype's kind in rsi for a 4K frame.
 pub const RETYPE_FRAME: u64 = 0;
+
+/// Retype's kind in rsi for a 2M frame, a block of order 9.
+pub const RETYPE_LARGE_FRAME: u64 = 1;
 
 /// Retype's kind in rsi for a table page, of the level in r9. Every other kind is refused until it is
 /// wired.
@@ -183,7 +191,9 @@ impl CapKernel {
 
     /// A retype in frame by a thread of the process whose table is at root, from pre to post with out
     /// returned: refused with nothing changed; for the 4K frame kind in rsi, ok with the frame at the
-    /// base in rdx retyped under the untyped in rdi into the slot in r8; or, for the table page kind, ok
+    /// base in rdx retyped under the untyped in rdi into the slot in r8; for the 2M frame kind, again
+    /// with the block at the base in rdx a step further zeroed and no slot changed, or ok with the 2M
+    /// frame retyped into the slot in r8 once the block is all zero; or, for the table page kind, ok
     /// with an unlinked table page of the level in r9 at the base in rdx under the untyped in rdi. A
     /// retype the arguments allow can still be refused, when the block table finds the memory is not free.
     pub open spec fn spec_retyped(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
@@ -192,6 +202,16 @@ impl CapKernel {
             &&& frame.rsi == RETYPE_FRAME
             &&& out == status_only(STATUS_OK)
             &&& Self::frame_retyped(pre, post, root, frame.rdi as usize, frame.r8 as usize, frame.rdx as usize)
+        }
+        ||| {
+            &&& frame.rsi == RETYPE_LARGE_FRAME
+            &&& out == status_only(STATUS_AGAIN)
+            &&& Self::large_frame_zeroing(pre, post, root, frame.rdi as usize, frame.r8 as usize, frame.rdx as usize, 9)
+        }
+        ||| {
+            &&& frame.rsi == RETYPE_LARGE_FRAME
+            &&& out == status_only(STATUS_OK)
+            &&& Self::large_frame_retyped(pre, post, root, frame.rdi as usize, frame.r8 as usize, frame.rdx as usize, 9)
         }
         ||| {
             &&& frame.rsi == RETYPE_TABLE_PAGE
@@ -318,14 +338,28 @@ impl CapKernel {
         };
         match operation(frame.rax) {
             Some(Operation::Retype) => {
-                let done = if frame.rsi == RETYPE_FRAME {
-                    self.retype_frame(root, frame.rdi as usize, frame.r8 as usize, frame.rdx as usize)
+                let status = if frame.rsi == RETYPE_FRAME {
+                    if self.retype_frame(root, frame.rdi as usize, frame.r8 as usize, frame.rdx as usize) {
+                        STATUS_OK
+                    } else {
+                        STATUS_REFUSED
+                    }
+                } else if frame.rsi == RETYPE_LARGE_FRAME {
+                    match self.retype_large_frame(root, frame.rdi as usize, frame.r8 as usize, frame.rdx as usize, 9) {
+                        RetypeStep::Refused => STATUS_REFUSED,
+                        RetypeStep::Again => STATUS_AGAIN,
+                        RetypeStep::Done => STATUS_OK,
+                    }
                 } else if frame.rsi == RETYPE_TABLE_PAGE {
-                    self.retype_table_page(root, frame.rdi as usize, frame.rdx as usize, frame.r9 as usize)
+                    if self.retype_table_page(root, frame.rdi as usize, frame.rdx as usize, frame.r9 as usize) {
+                        STATUS_OK
+                    } else {
+                        STATUS_REFUSED
+                    }
                 } else {
-                    false
+                    STATUS_REFUSED
                 };
-                Some(status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED }))
+                Some(status_only_outcome(status))
             },
             Some(Operation::Move) => {
                 let done = self.move_cap(root, frame.rdi as usize, frame.rsi as usize);

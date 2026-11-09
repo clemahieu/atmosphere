@@ -2,7 +2,7 @@
 //! not assume it owns the machine, so several instances each with a root stay possible. Why, and
 //! what to do about a change that breaks this: design/one-kernel-instance/.
 //!
-//! Print, inspect, retype of a 4K frame and of a table page, move, link, map and unmap are the wired
+//! Print, inspect, retype of a 4K frame, of a 2M frame and of a table page, move, link, map and unmap are the wired
 //! operations, so each fixed slot is checked through them: the console accepts print and the process,
 //! thread, untyped and frame slots refuse it; inspect says the console slot holds a console, and each slot
 //! from the first untyped holds an untyped whose base is aligned to its order, up to the first slot
@@ -21,7 +21,10 @@
 //! word back. It moves the frame's capability, still mapped, to the slot after it, after a move from
 //! that empty slot and onto the console's is refused; inspect then refuses the old slot and finds the
 //! frame in the new one, and once the page is unmapped, a map through the old slot is refused and one
-//! through the new slot accepted, through which it reads the word back. dom0 prints that result through the console, then an exit marker, and exits with
+//! through the new slot accepted, through which it reads the word back. It retypes a 2M frame from an
+//! untyped, after a retype at a base not aligned to 2M is refused, repeating while retype returns again,
+//! prints how many again returns that took, reads the frame back with inspect, and a second retype of
+//! the block is refused. dom0 prints that result through the console, then an exit marker, and exits with
 //! success only when every check held. The kernel logs each invocation, with what it returned, in
 //! the serial log.
 
@@ -258,6 +261,82 @@ fn moved_frame_held(frame: u64) -> bool {
     held && unsafe { (PATH_ADDRESS as *const u64).read_volatile() == MAPPED_WORD }
 }
 
+/// The pages of a 2M frame's block, order 9.
+const LARGE_FRAME_PAGES: u64 = 512;
+
+/// The text of the line dom0 prints once its 2M retype is done, around the number of again returns it
+/// took.
+const LARGE_FRAME_HEAD: &[u8] = b"dom0 2M retype done after ";
+const LARGE_FRAME_TAIL: &[u8] = b" again\n";
+
+/// Prints through the console that the 2M retype was done after `again` again returns. The status is
+/// the low half of what the print returns.
+fn print_large_frame_done(again: u64) -> u64 {
+    let mut text = [0u8; 39];
+    let mut length = 0;
+    for &byte in LARGE_FRAME_HEAD {
+        text[length] = byte;
+        length += 1;
+    }
+    let mut digits = [0u8; 20];
+    let mut count = 0;
+    let mut rest = again;
+    loop {
+        digits[count] = b'0' + (rest % 10) as u8;
+        count += 1;
+        rest /= 10;
+        if rest == 0 {
+            break;
+        }
+    }
+    while count > 0 {
+        count -= 1;
+        text[length] = digits[count];
+        length += 1;
+    }
+    for &byte in LARGE_FRAME_TAIL {
+        text[length] = byte;
+        length += 1;
+    }
+    unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, operation::print_words(&text[..length])) }
+}
+
+/// Whether dom0 retypes the 2M block at the bottom of the last untyped of at least 512 pages as a frame
+/// into the empty slot `destination`, repeating while retype returns again, and prints how many again
+/// returns that took: a retype at a base not aligned to 2M is refused, the retype returns again at least
+/// once and then ok, inspect says the slot holds a frame of order 9 at that base, and a second retype of
+/// the block into the empty slot after `destination` is refused. Each again zeroes at least one of the
+/// block's pages, so a retype still returning again after 512 has stopped going on, and fails. Boot pays
+/// for dom0's tables from the start of the first untyped and the other checks take pages from the top of
+/// an untyped, so that bottom is free unless the untyped is the first.
+fn retyped_large_frame_held(empty: u64, destination: u64) -> bool {
+    let (untyped, block) = match untyped_of_pages(empty, LARGE_FRAME_PAGES) {
+        Some(found) => found,
+        None => return false,
+    };
+    let base = block.base;
+    let retype = |base: u64, destination: u64| operation::retype_large_frame(untyped, base, destination);
+    if retype(base + 4096, destination) != operation::STATUS_REFUSED {
+        return false;
+    }
+    let mut again = 0;
+    let status = loop {
+        let status = retype(base, destination);
+        if status != operation::STATUS_AGAIN || again == LARGE_FRAME_PAGES {
+            break status;
+        }
+        again += 1;
+    };
+    let held = status == operation::STATUS_OK
+        && again > 0
+        && matches!(
+            operation::inspect(destination),
+            Ok(frame) if frame.kind == operation::KIND_FRAME && frame.base == base && frame.order == 9
+        )
+        && retype(base, destination + 1) == operation::STATUS_REFUSED;
+    held && print_large_frame_done(again) == operation::STATUS_OK
+}
+
 /// Print through `slot`. The status is the low half of what the invocation returns.
 ///
 /// # Safety
@@ -287,6 +366,7 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
                             && mapped_frame_held(empty)
                             && remapped_frame_held(empty)
                             && moved_frame_held(empty)
+                            && retyped_large_frame_held(empty, empty + 2)
                     })
         });
     let console = unsafe {
