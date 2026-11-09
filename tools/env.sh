@@ -20,3 +20,10 @@ export LD_LIBRARY_PATH="$VERUS_RUST_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export RUSTC_BOOTSTRAP=1
 
 export PATH="$ATMO_TOOLS/bin:$VERUS_ROOT:$PATH"
+
+# OVMF and QEMU. An override already in the environment wins; otherwise the known
+# distribution paths. The Python tools import firmware.py themselves.
+if firmware=$(python3 "$ATMO_TOOLS/firmware.py"); then
+    eval "$firmware"
+fi
+unset firmware

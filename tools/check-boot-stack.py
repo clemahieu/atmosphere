@@ -17,12 +17,13 @@ import subprocess
 import sys
 import time
 
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import firmware
+
 MIB = 1 << 20
 PAGE = 4096
 MARGIN = 16 * MIB  # the least room the stack must have left
-# OVMF and the ESP layout the loader expects, as tools/run.py boots them.
-OVMF_CODE = "/usr/share/edk2/ovmf/OVMF_CODE.fd"
-OVMF_VARS = "/usr/share/edk2/ovmf/OVMF_VARS.fd"
 
 
 def build(profile, overflow=False):
@@ -40,15 +41,15 @@ def build_loader(profile, features=()):
     subprocess.run(args, cwd="aloader", check=True, env={**os.environ, "RUSTC_BOOTSTRAP": "1"})
 
 
-def esp(profile, out, initrd):
+def esp(profile, out, initrd, ovmf_code, ovmf_vars):
     """Lays out the EFI system partition under out and returns QEMU's arguments to boot it."""
     root = f"{out}/esp"
     shutil.rmtree(root, ignore_errors=True)
     os.makedirs(f"{root}/EFI/BOOT")
     shutil.copy(f"target/x86_64-unknown-uefi/{profile}/aloader.efi", f"{root}/EFI/BOOT/BOOTX64.EFI")
     shutil.copy(initrd, f"{root}/initrd")
-    shutil.copy(OVMF_VARS, f"{out}/OVMF_VARS.fd")
-    return ["-drive", f"if=pflash,format=raw,unit=0,readonly=on,file={OVMF_CODE}",
+    shutil.copy(ovmf_vars, f"{out}/OVMF_VARS.fd")
+    return ["-drive", f"if=pflash,format=raw,unit=0,readonly=on,file={ovmf_code}",
             "-drive", f"if=pflash,format=raw,unit=1,file={out}/OVMF_VARS.fd",
             "-drive", f"format=raw,file=fat:rw:{root}"]
 
@@ -77,11 +78,12 @@ def boot(profile, out, marker=b"dom0 benchmark done", kernel=None, dom0=None, pa
     for path in (log, mon):
         if os.path.exists(path):
             os.unlink(path)
+    ovmf_code, ovmf_vars, qemu_bin = firmware.require("tools/check-boot-stack.py")
     qemu = subprocess.Popen(
-        ["qemu-system-x86_64", "-enable-kvm", "-cpu", "host", "-machine", "q35,kernel_irqchip=split",
+        [qemu_bin, "-enable-kvm", "-cpu", "host", "-machine", "q35,kernel_irqchip=split",
          "-smp", "2", "-m", "8192", "-nographic", "-serial", f"file:{log}",
          "-monitor", f"unix:{mon},server,nowait", "-no-reboot", "-no-shutdown",
-         "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"] + esp(profile, out, initrd),
+         "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"] + esp(profile, out, initrd, ovmf_code, ovmf_vars),
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     deadline = time.time() + 120
     while time.time() < deadline:

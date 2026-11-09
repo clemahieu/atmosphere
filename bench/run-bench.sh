@@ -35,15 +35,21 @@ rm -rf "$esp"
 mkdir -p "$esp/EFI/BOOT"
 cp "$loader" "$esp/EFI/BOOT/BOOTX64.EFI"
 cat "$kernel" "$dom0" >"$esp/initrd"
-cp /usr/share/edk2/ovmf/OVMF_VARS.fd "$out/OVMF_VARS.fd"
+# The same resolver the Python tools import: an override wins, then the known paths.
+if ! firmware=$(python3 "$root/tools/firmware.py"); then
+    exit 1
+fi
+eval "$firmware"
+unset firmware
+cp "$ATMO_OVMF_VARS" "$out/OVMF_VARS.fd"
 
 log="$out/run-$(date +%Y%m%d-%H%M%S).log"
 status=0
-taskset -c 0-15 timeout 300 /usr/bin/qemu-system-x86_64 \
+taskset -c 0-15 timeout 300 "$ATMO_QEMU" \
     -enable-kvm -cpu host -machine q35,kernel_irqchip=split -smp 4 -m 6144 -mem-prealloc \
     -nographic -serial mon:stdio -no-reboot \
     -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
-    -drive if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/edk2/ovmf/OVMF_CODE.fd \
+    -drive if=pflash,format=raw,unit=0,readonly=on,file="$ATMO_OVMF_CODE" \
     -drive if=pflash,format=raw,unit=1,file="$out/OVMF_VARS.fd" \
     -drive format=raw,file=fat:rw:"$esp" </dev/null >"$log" 2>&1 || status=$?
 

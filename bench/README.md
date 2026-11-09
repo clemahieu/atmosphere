@@ -9,8 +9,8 @@ timers (`dom0/src/syscall_benchmark.rs`) once under KVM. It pins the vCPUs and p
   `rust-src` for the loader's `x86_64-unknown-uefi` target, so no target needs installing.
 - The crate `.cargo` configs use `-Z` flags, `build-std` and an `[unstable]` table on a stable
   compiler; the script exports `RUSTC_BOOTSTRAP=1` so cargo accepts them as well as rustc.
-- `/usr/bin/qemu-system-x86_64` (8.2.2 was used) and `/dev/kvm` access (`kvm` group).
-- OVMF at `/usr/share/edk2/ovmf` (`OVMF_CODE.fd` and `OVMF_VARS.fd`, from edk2-ovmf).
+- `qemu-system-x86_64` on `PATH` (8.2.2 was used) and `/dev/kvm` access (`kvm` group). Set `ATMO_QEMU` to name a different emulator.
+- OVMF from edk2-ovmf, at the paths Fedora, Debian and Arch install. Set `ATMO_OVMF_CODE` and `ATMO_OVMF_VARS` to the firmware files when they live elsewhere.
 
 ## Running
 
@@ -41,10 +41,10 @@ Atmosphere boots only CPU 0 and has no timer interrupt, so all timers run on one
 
 ## QEMU line
 
-    taskset -c 0-15 timeout 300 /usr/bin/qemu-system-x86_64 -enable-kvm -cpu host \
+    taskset -c 0-15 timeout 300 qemu-system-x86_64 -enable-kvm -cpu host \
       -machine q35,kernel_irqchip=split -smp 4 -m 6144 -mem-prealloc \
       -nographic -serial mon:stdio -no-reboot -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
-      -drive if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/edk2/ovmf/OVMF_CODE.fd \
+      -drive if=pflash,format=raw,unit=0,readonly=on,file="$ATMO_OVMF_CODE" \
       -drive if=pflash,format=raw,unit=1,file=target/bench/OVMF_VARS.fd \
       -drive format=raw,file=fat:rw:target/bench/esp
 
@@ -54,7 +54,7 @@ Atmosphere boots only CPU 0 and has no timer interrupt, so all timers run on one
 - The ESP, `target/bench/esp`, is the directory QEMU serves as a FAT disk, laid out as `tools/run.py`
   lays it out: OVMF boots the loader at `EFI/BOOT/BOOTX64.EFI`, and the loader reads `initrd`, the
   kernel and dom0 ELF images concatenated.
-- `OVMF_VARS.fd` is a copy of OVMF's variable store, which OVMF writes.
+- `OVMF_VARS.fd` is a copy of the resolved variable store (`ATMO_OVMF_VARS`, or the distribution default), which OVMF writes.
 
 ## Exit status
 

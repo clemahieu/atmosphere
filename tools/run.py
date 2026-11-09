@@ -32,11 +32,11 @@ from io import BytesIO
 from pathlib import Path
 
 sys.dont_write_bytecode = True
+# importlib loading does not put this file's directory on the path.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import firmware
 
 REPO = Path(__file__).resolve().parent.parent
-# OVMF's code read-only, and a copy of its variable store, since OVMF writes the store.
-OVMF_CODE = "/usr/share/edk2/ovmf/OVMF_CODE.fd"
-OVMF_VARS = "/usr/share/edk2/ovmf/OVMF_VARS.fd"
 # Where OVMF looks for an application on removable media, and where the loader looks for the initrd.
 ESP_LOADER = "EFI/BOOT/BOOTX64.EFI"
 ESP_INITRD = "initrd"
@@ -103,18 +103,19 @@ def exit_status(returncode):
     return returncode
 
 
-def esp_args(run_dir):
+def esp_args(run_dir, ovmf_code):
     """The QEMU arguments that boot OVMF from the ESP under `run_dir`. The disk is writable because
-    q35's AHCI disk cannot be read-only; nothing in the guest writes to it."""
+    q35's AHCI disk cannot be read-only; nothing in the guest writes to it. `ovmf_code` is the
+    firmware file, read-only; the variable store is the copy under `run_dir`, since OVMF writes it."""
     return [
-        "-drive", f"if=pflash,format=raw,unit=0,readonly=on,file={OVMF_CODE}",
+        "-drive", f"if=pflash,format=raw,unit=0,readonly=on,file={ovmf_code}",
         "-drive", f"if=pflash,format=raw,unit=1,file={run_dir / 'OVMF_VARS.fd'}",
         "-drive", f"format=raw,file=fat:rw:{run_dir / 'esp'}",
     ]
 
 
-def qemu_args(run_dir, serial_log, kvm, iommu, gdb_socket):
-    args = esp_args(run_dir) + [
+def qemu_args(run_dir, serial_log, kvm, iommu, gdb_socket, ovmf_code):
+    args = esp_args(run_dir, ovmf_code) + [
         "-nographic",
         "-serial", "chardev:char0",
         "-mon", "chardev=char0",
@@ -184,7 +185,7 @@ def copy_output(src, dst):
         dst.flush()
 
 
-def lay_out_esp(run_dir, loader, images, gdb):
+def lay_out_esp(run_dir, loader, images, gdb, ovmf_vars):
     loader_path = run_dir / "esp" / ESP_LOADER
     loader_path.parent.mkdir(parents=True)
     shutil.copy(loader, loader_path)
@@ -193,7 +194,7 @@ def lay_out_esp(run_dir, loader, images, gdb):
             initrd.write(image.read_bytes())
     if gdb:
         (run_dir / "esp" / ESP_GDB).touch()
-    shutil.copy(OVMF_VARS, run_dir / "OVMF_VARS.fd")
+    shutil.copy(ovmf_vars, run_dir / "OVMF_VARS.fd")
 
 
 def main(argv):
@@ -202,6 +203,8 @@ def main(argv):
     parser.add_argument("--iommu", action="store_true", help="add QEMU's emulated IOMMU")
     parser.add_argument("--gdb", action="store_true", help="wait for tools/gdb.py before entering the kernel")
     options = parser.parse_args(argv)
+    # Fail before the build when the firmware or QEMU is not there.
+    ovmf_code, ovmf_vars, qemu_bin = firmware.require("tools/run.py")
 
     kernel = build("kernel", "kernel")
     loader = build("aloader", "aloader")
@@ -213,12 +216,13 @@ def main(argv):
     gdb_path = REPO / ".gdb"
     with tempfile.TemporaryDirectory(prefix="atmo-run-") as directory:
         run_dir = Path(directory)
-        lay_out_esp(run_dir, loader, [kernel, dom0, payload], options.gdb)
+        lay_out_esp(run_dir, loader, [kernel, dom0, payload], options.gdb, ovmf_vars)
         socket = run_dir / "gdb.sock" if options.gdb else None
-        args = qemu_args(run_dir, REPO / "serial.log", use_kvm(options.no_kvm, "/dev/kvm"), options.iommu, socket)
-        print("Starting qemu-system-x86_64 " + " ".join(args), file=sys.stderr)
+        args = qemu_args(run_dir, REPO / "serial.log", use_kvm(options.no_kvm, "/dev/kvm"), options.iommu, socket,
+                         ovmf_code)
+        print(f"Starting {qemu_bin} " + " ".join(args), file=sys.stderr)
         try:
-            qemu = subprocess.Popen(["qemu-system-x86_64"] + args, cwd=REPO, stdout=subprocess.PIPE, bufsize=0)
+            qemu = subprocess.Popen([qemu_bin] + args, cwd=REPO, stdout=subprocess.PIPE, bufsize=0)
             drop_firmware_output(qemu.stdout, sys.stdout.buffer)
             if socket is not None:
                 biases = await_debugger(qemu.stdout, sys.stdout.buffer)
@@ -274,9 +278,58 @@ class Tests(unittest.TestCase):
     def test_killed_is_failure(self):
         self.assertEqual(exit_status(-15), 1)
 
+    def present(self, paths):
+        return lambda path: path in paths
+
+    def test_an_override_that_is_present_wins(self):
+        # A default that also exists must not beat the override.
+        paths = {"/scratch/code.fd", "/scratch/vars.fd", *firmware.CANDIDATES[0]}
+        self.assertEqual(firmware.resolve_ovmf(
+            {"ATMO_OVMF_CODE": "/scratch/code.fd", "ATMO_OVMF_VARS": "/scratch/vars.fd"},
+            self.present(paths)), ("/scratch/code.fd", "/scratch/vars.fd"))
+
+    def test_an_override_that_is_absent_names_the_variable(self):
+        with self.assertRaises(firmware.Missing) as raised:
+            firmware.resolve_ovmf(
+                {"ATMO_OVMF_CODE": "/scratch/missing.fd", "ATMO_OVMF_VARS": "/scratch/vars.fd"},
+                self.present({"/scratch/vars.fd"}))
+        self.assertIn("ATMO_OVMF_CODE", str(raised.exception))
+        with self.assertRaises(firmware.Missing) as raised:
+            firmware.resolve_ovmf(
+                {"ATMO_OVMF_CODE": "/scratch/code.fd", "ATMO_OVMF_VARS": "/scratch/missing.fd"},
+                self.present({"/scratch/code.fd"}))
+        self.assertIn("ATMO_OVMF_VARS", str(raised.exception))
+        with self.assertRaises(firmware.Missing) as raised:
+            firmware.resolve_ovmf({"ATMO_OVMF_CODE": "/scratch/code.fd"}, self.present({"/scratch/code.fd"}))
+        self.assertIn("ATMO_OVMF_VARS", str(raised.exception))
+
+    def test_no_override_finds_the_first_existing_default(self):
+        first_code, first_vars = firmware.CANDIDATES[0]
+        later = firmware.CANDIDATES[2]
+        self.assertEqual(firmware.resolve_ovmf({}, self.present({first_code, first_vars})), (first_code, first_vars))
+        # A code file whose variable store is absent is not a hit.
+        self.assertEqual(firmware.resolve_ovmf({}, self.present({first_code, *later})), later)
+
+    def test_nothing_found_names_the_variable(self):
+        with self.assertRaises(firmware.Missing) as raised:
+            firmware.resolve_ovmf({}, lambda path: False)
+        self.assertIn("ATMO_OVMF_CODE", str(raised.exception))
+        self.assertIn("ATMO_OVMF_VARS", str(raised.exception))
+
+    def test_qemu_override_wins_and_an_absent_one_names_the_variable(self):
+        self.assertEqual(firmware.resolve_qemu({"ATMO_QEMU": "/opt/qemu"}, lambda name: name), "/opt/qemu")
+        with self.assertRaises(firmware.Missing) as raised:
+            firmware.resolve_qemu({"ATMO_QEMU": "/opt/missing"}, lambda name: None)
+        self.assertIn("ATMO_QEMU", str(raised.exception))
+        self.assertEqual(firmware.resolve_qemu({}, lambda name: "/usr/bin/" + name),
+                         "/usr/bin/" + firmware.QEMU_NAME)
+        with self.assertRaises(firmware.Missing) as raised:
+            firmware.resolve_qemu({}, lambda name: None)
+        self.assertIn("ATMO_QEMU", str(raised.exception))
+
     def test_esp_args_boot_ovmf_from_the_directory(self):
-        self.assertEqual(esp_args(Path("/run/x")), [
-            "-drive", f"if=pflash,format=raw,unit=0,readonly=on,file={OVMF_CODE}",
+        self.assertEqual(esp_args(Path("/run/x"), "/ovmf/OVMF_CODE.fd"), [
+            "-drive", "if=pflash,format=raw,unit=0,readonly=on,file=/ovmf/OVMF_CODE.fd",
             "-drive", "if=pflash,format=raw,unit=1,file=/run/x/OVMF_VARS.fd",
             "-drive", "format=raw,file=fat:rw:/run/x/esp",
         ])
@@ -285,7 +338,7 @@ class Tests(unittest.TestCase):
         return [args[i + 1] for i, arg in enumerate(args) if arg == option]
 
     def test_qemu_args_shut_down_on_isa_debug_exit(self):
-        args = qemu_args(Path("/run/x"), Path("/w/serial.log"), False, False, None)
+        args = qemu_args(Path("/run/x"), Path("/w/serial.log"), False, False, None, "/ovmf/OVMF_CODE.fd")
         self.assertIn("isa-debug-exit,iobase=0xf4,iosize=0x04", self.options(args, "-device"))
         self.assertIn("-no-reboot", args)
         self.assertNotIn("-no-shutdown", args)
@@ -294,18 +347,19 @@ class Tests(unittest.TestCase):
         self.assertIn("stdio,id=char0,mux=on,logfile=/w/serial.log,signal=off", self.options(args, "-chardev"))
 
     def test_kvm_iommu_and_gdb_each_add_their_arguments(self):
-        plain = qemu_args(Path("/run/x"), Path("/w/serial.log"), False, False, None)
+        plain = qemu_args(Path("/run/x"), Path("/w/serial.log"), False, False, None, "/ovmf/OVMF_CODE.fd")
         for absent in ("-enable-kvm", "-S", "-gdb"):
             self.assertNotIn(absent, plain)
         self.assertFalse(any("iommu" in arg for arg in plain))
-        args = qemu_args(Path("/run/x"), Path("/w/serial.log"), True, True, Path("/run/x/gdb.sock"))
+        args = qemu_args(Path("/run/x"), Path("/w/serial.log"), True, True, Path("/run/x/gdb.sock"), "/ovmf/OVMF_CODE.fd")
         self.assertIn("-enable-kvm", args)
         self.assertIn("intel-iommu,intremap=on,aw-bits=48,caching-mode=on", self.options(args, "-device"))
         self.assertEqual(self.options(args, "-gdb"), ["unix:/run/x/gdb.sock,server,nowait"])
 
     def test_gdb_does_not_freeze_the_guest(self):
         # The loader waits for gdb itself, once it has logged where it loaded each binary.
-        args = qemu_args(Path("/run/x"), Path("/w/serial.log"), False, False, Path("/run/x/gdb.sock"))
+        args = qemu_args(Path("/run/x"), Path("/w/serial.log"), False, False, Path("/run/x/gdb.sock"),
+                         "/ovmf/OVMF_CODE.fd")
         self.assertNotIn("-S", args)
 
     def test_gdb_info_holds_the_socket_and_each_binary_s_bias(self):
@@ -331,8 +385,11 @@ class Tests(unittest.TestCase):
                 loader.write_bytes(b"MZ")
                 image = run_dir / "kernel"
                 image.write_bytes(b"\x7fELF")
-                lay_out_esp(run_dir, loader, [image, image], gdb)
+                vars_fd = run_dir / "vars.fd"
+                vars_fd.write_bytes(b"VARS")
+                lay_out_esp(run_dir, loader, [image, image], gdb, vars_fd)
                 self.assertEqual((run_dir / "esp" / ESP_INITRD).read_bytes(), b"\x7fELF\x7fELF")
+                self.assertEqual((run_dir / "OVMF_VARS.fd").read_bytes(), b"VARS")
                 self.assertEqual((run_dir / "esp" / ESP_GDB).exists(), gdb)
 
     def awaited(self, data):
