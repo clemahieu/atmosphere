@@ -15,7 +15,7 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Bash|Read|Grep|Glob|Edit|Write|NotebookEdit|WebFetch",
+        "matcher": "Bash|Read|Grep|Glob|Edit|Write|NotebookEdit|WebFetch|web_search|web_fetch|open_page|open_page_with_find",
         "hooks": [
           {
             "type": "command",
