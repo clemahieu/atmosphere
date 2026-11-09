@@ -22,8 +22,8 @@ pub type PageBytes = [u8; 4096];
 verus! {
 
 global layout PageBytes is size == 4096, align == 1;
-global layout Container is size == 952, align == 8;
-global layout Process is size == 3448, align == 8;
+global layout Container is size == 1096, align == 8;
+global layout Process is size == 3592, align == 8;
 global layout Thread is size == 2368, align == 8;
 global layout Endpoint is size == 3128, align == 8;
 global layout NodePage is size == 4096, align == 8;
