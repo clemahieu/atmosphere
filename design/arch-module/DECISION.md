@@ -24,7 +24,7 @@ kernel/verified/arch/x86_64.rs     items verified code names, with their specs
 kernel/src/arch/x86_64/            the same target's unverified entry glue and instruction wrappers
 ```
 
-Each implementation defines the same names with the same signatures and the same `ensures`. There is no trait: shared code calls `arch::item`, and a target that lacks an item, or whose item promises less, fails to build or to verify. The specs are written over the abstract structs that already exist (`PageEntry`, `PageEntryPerm`, `Flushed`, the thread record), so the proofs above the arch module do not know which ISA they run on.
+Each implementation defines the same names with the same signatures and the same `ensures`. `kernel/verified/arch/aarch64.rs` declares every item; one not yet written from the Arm manual is an uninterpreted spec function or an `external_body` placeholder counted as unproven in `tools/external-body-list`. There is no trait: shared code calls `arch::item`, and a target that lacks an item, or whose item promises less, fails to build or to verify. The specs are written over the abstract structs that already exist (`PageEntry`, `PageEntryPerm`, `Flushed`, the thread record), so the proofs above the arch module do not know which ISA they run on.
 
 **The item set**, and where each item lives today:
 

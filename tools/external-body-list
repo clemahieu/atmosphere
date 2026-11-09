@@ -5,6 +5,24 @@
 # glue      hardware or assembly leaf glue, the only unverified code CLAUDE.md allows
 # gap       uses something this Verus cannot check: a raw pointer, a conjured permission, uninit memory
 # unproven  plain code or a lemma with no proof yet, so proof debt
+arch/aarch64.rs	maintains_accessed	unproven	the aarch64 placeholder for maintains_accessed
+arch/aarch64.rs	maintains_dirty	unproven	the aarch64 placeholder for maintains_dirty
+arch/aarch64.rs	usize2page_entry_status	unproven	the aarch64 placeholder for usize2page_entry_status
+arch/aarch64.rs	lemma_status_outside_entry	unproven	the aarch64 placeholder for lemma_status_outside_entry
+arch/aarch64.rs	lemma_without_status	unproven	the aarch64 placeholder for lemma_without_status
+arch/aarch64.rs	zero_leads_is_empty_page_entry	unproven	the aarch64 placeholder for zero_leads_is_empty_page_entry
+arch/aarch64.rs	usize2page_entry_perm	unproven	the aarch64 placeholder for usize2page_entry_perm
+arch/aarch64.rs	usize2page_entry	unproven	the aarch64 placeholder for usize2page_entry
+arch/aarch64.rs	usize2pa	unproven	the aarch64 placeholder for usize2pa
+arch/aarch64.rs	page_entry2usize	unproven	the aarch64 placeholder for page_entry2usize
+arch/aarch64.rs	flush_every_context	unproven	the aarch64 placeholder for flush_every_context
+arch/aarch64.rs	operation_number	unproven	the aarch64 placeholder for operation_number
+arch/aarch64.rs	slot	unproven	the aarch64 placeholder for slot
+arch/aarch64.rs	argument	unproven	the aarch64 placeholder for argument
+arch/aarch64.rs	write_outcome	unproven	the aarch64 placeholder for write_outcome
+arch/aarch64.rs	is_user_rip	unproven	the aarch64 placeholder for is_user_rip
+arch/aarch64.rs	user_frame_of	unproven	the aarch64 placeholder for user_frame_of
+arch/aarch64.rs	serial_write	unproven	the aarch64 placeholder for serial_write
 arch/x86_64.rs	flush_every_context	glue	only the hardware can attest a flush, so only this makes the token
 arch/x86_64.rs	serial_write	glue	writes the serial port through port I/O, which has no state a proof could see
 arch/x86_64.rs	zeroed	gap	builds a value from zeroed memory, which Verus cannot check
