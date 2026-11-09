@@ -4,14 +4,13 @@ use std::io::ErrorKind;
 use std::process::{ExitCode, Stdio};
 
 use anyhow::{anyhow, Context};
-use cargo_metadata::MetadataCommand;
 use clap::Parser;
 use tokio::fs;
 use tokio::process::Command;
 
 use super::{GlobalOpts, SubCommand};
 use crate::error::Result;
-use crate::project::{BuildOptions, Project, ProjectHandle};
+use crate::project::{Project, ProjectHandle};
 
 /// Holds the number of verification errors the gate accepts, relative to the project root.
 const VERIFY_ALLOWANCE_PATH: &str = "tools/verify-allowance";
@@ -48,9 +47,6 @@ const RUN: &str = "tools/run.py";
 /// The gdb attach to a `tools/run.py --gdb` run, relative to the project root; `--test` runs its own
 /// tests.
 const GDB: &str = "tools/gdb.py";
-
-/// The payload tools/run.py loads.
-const PAYLOAD: &str = "hello";
 
 /// Run the gate.
 #[derive(Debug, Parser)]
@@ -131,18 +127,7 @@ fn oversized<'a>(sizes: &[(&'a str, u64)]) -> Vec<&'a str> {
 }
 
 async fn check_build(project: &ProjectHandle) -> Result<String> {
-    let members = build_members(project).await?;
-
-    let options = BuildOptions::default();
-    project.loader().build(&options).await.context("loader")?;
-    // The measuring build, which no boot here runs, so that it cannot rot unseen.
-    let lock_stats = BuildOptions { features: vec!["lock_stats".to_string()], ..BuildOptions::default() };
-    project.kernel().build(&lock_stats).await.context("kernel with lock_stats")?;
-    project.kernel().build(&options).await.context("kernel")?;
-    project.dom0().build(&options).await.context("dom0")?;
-    project.user(PAYLOAD).build(&options).await.context("payload")?;
-
-    Ok(format!("{} workspace members, then the loader, kernel, dom0 and payload from their own directories", members))
+    super::build::gate_build(project).await
 }
 
 /// The loader map check. Its lines start with `free page ranges:` in this step's output.
@@ -173,32 +158,6 @@ async fn check_mapped_runs(project: &ProjectHandle) -> Result<String> {
         return Err(anyhow!("cargo test mapped_run: {}", status));
     }
     Ok("real dom0 load accepted; unaligned, empty, outside, kernel-entry and overlapping runs rejected".to_string())
-}
-
-/// Builds every workspace member from its own directory, since each no_std crate takes its target from its
-/// own .cargo config. A member built only as another's dependency, or not at all, could otherwise stop
-/// building unseen.
-async fn build_members(project: &ProjectHandle) -> Result<usize> {
-    let metadata = MetadataCommand::new().current_dir(project.root()).no_deps().exec()?;
-    let packages = metadata.workspace_packages();
-    let mut failed = Vec::new();
-    for package in &packages {
-        let dir = package.manifest_path.parent().expect("a manifest lies in its package's directory");
-        let status = Command::new("cargo")
-            .arg("build")
-            .current_dir(dir)
-            .stdin(Stdio::null())
-            .status()
-            .await
-            .with_context(|| package.name.clone())?;
-        if !status.success() {
-            failed.push(package.name.as_str());
-        }
-    }
-    if !failed.is_empty() {
-        return Err(anyhow!("from its own directory, does not build: {}", failed.join(", ")));
-    }
-    Ok(packages.len())
 }
 
 /// Runs the license check's own tests, then the check over the workspace's graph.

@@ -115,8 +115,8 @@ pub struct Crate {
 }
 
 impl Crate {
-    /// Build the crate, and check its executable's stack frames.
-    pub async fn build(&self, options: &BuildOptions) -> Result<()> {
+    /// Build the crate, check its executable's stack frames, and return that executable's path.
+    pub async fn build(&self, options: &BuildOptions) -> Result<Option<PathBuf>> {
         let mut command = Command::new("cargo");
         command
             .args(&["build"])
@@ -127,6 +127,12 @@ impl Crate {
 
         if !options.features.is_empty() {
             command.args(&["--features", &options.features.join(",")]);
+        }
+        if let Some(target) = &options.target {
+            // The crate config allows a JSON target named there. A path on the command line also
+            // needs the flag, and a stable compiler needs the bootstrap env to accept it.
+            command.env("RUSTC_BOOTSTRAP", "1");
+            command.arg("-Zjson-target-spec").arg("--target").arg(target);
         }
 
         let build = command.spawn()?;
@@ -160,8 +166,9 @@ impl Crate {
                 ))?;
 
             self.check_stack_sizes(&executable).await?;
+            return Ok(Some(executable));
         }
-        Ok(())
+        Ok(None)
     }
 
     async fn check_stack_sizes(&self, path: &Path) -> Result<()> {
@@ -199,4 +206,7 @@ impl Crate {
 pub struct BuildOptions {
     /// Cargo features of the crate being built.
     pub features: Vec<String>,
+
+    /// A JSON target spec. None uses the target in the crate's `.cargo` config.
+    pub target: Option<PathBuf>,
 }

@@ -333,14 +333,34 @@ fn print_count(head: &[u8], count: u64, tail: &[u8]) -> u64 {
     unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, operation::print_words(&text[..length])) }
 }
 
-/// The cycle counter.
+/// The cycle counter: the TSC on x86_64, the virtual counter on aarch64.
 fn rdtsc() -> u64 {
-    let lo: u32;
-    let hi: u32;
-    unsafe {
-        core::arch::asm!("rdtsc", out("eax") lo, out("edx") hi, options(nomem, nostack, preserves_flags));
+    #[cfg(target_arch = "x86_64")]
+    {
+        let lo: u32;
+        let hi: u32;
+        unsafe {
+            core::arch::asm!(
+                "rdtsc",
+                out("eax") lo,
+                out("edx") hi,
+                options(nomem, nostack, preserves_flags)
+            );
+        }
+        ((hi as u64) << 32) | lo as u64
     }
-    ((hi as u64) << 32) | lo as u64
+    #[cfg(target_arch = "aarch64")]
+    {
+        let ticks: u64;
+        unsafe {
+            core::arch::asm!(
+                "mrs {ticks}, cntvct_el0",
+                ticks = out(reg) ticks,
+                options(nomem, nostack, preserves_flags)
+            );
+        }
+        ticks
+    }
 }
 
 /// How many free entries of the level 1 table at PATH_ADDRESS the timed maps fill, one page each.
@@ -692,10 +712,15 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
     exit_qemu(EXIT_UNEXPECTED_STATUS)
 }
 
-/// Ends the QEMU run through the isa-debug-exit device at port 0xf4 (dom0 runs with IOPL 3), which
-/// exits with status `code << 1 | 1`.
+/// Ends the run. On x86_64 a write to the isa-debug-exit port 0xf4 (dom0 runs with IOPL 3) makes
+/// QEMU exit with status `code << 1 | 1`. virt has no such port, so on aarch64 the core waits.
 fn exit_qemu(code: u32) -> ! {
-    unsafe { core::arch::asm!("out dx, eax", in("dx") 0xf4u16, in("eax") code) };
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        core::arch::asm!("out dx, eax", in("dx") 0xf4u16, in("eax") code);
+    }
+    #[cfg(target_arch = "aarch64")]
+    let _ = code;
     loop {}
 }
 

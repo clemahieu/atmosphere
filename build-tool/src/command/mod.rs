@@ -10,6 +10,7 @@ macro_rules! unwrap_command {
     };
 }
 
+mod build;
 mod test;
 
 use clap::{CommandFactory, Parser};
@@ -21,6 +22,7 @@ pub async fn run() -> Result<(), anyhow::Error> {
 
     match &opts.cmd {
         SubCommand::Test(_) => test::run(opts).await?,
+        SubCommand::Build(_) => build::run(opts).await?,
         SubCommand::GenCompletions(local) => {
             gen_completions(local.shell);
         }
@@ -39,6 +41,8 @@ struct GlobalOpts {
 #[derive(Debug, Parser)]
 enum SubCommand {
     Test(test::Opts),
+
+    Build(build::Opts),
 
     #[clap(hide = true)]
     GenCompletions(GenCompletions),
