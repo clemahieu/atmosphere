@@ -23,6 +23,12 @@ use std::time::SystemTime;
 
 use redoxfs::{DiskSparse, FileSystem, Node, TreePtr, BLOCK_SIZE};
 
+mod ffi;
+
+pub use ffi::{
+    shim_create, shim_fdatasync, shim_get, shim_pread, shim_put, shim_pwrite, shim_size,
+};
+
 /// One page. LMDB's meta pages and RedoxFS blocks are this size.
 pub const PAGE: u64 = BLOCK_SIZE;
 
@@ -244,6 +250,19 @@ impl Client {
             .lock()
             .expect("file service lock")
             .lock_shared(self.id, offset)
+    }
+
+    /// True when a different client holds the byte at `offset`.
+    pub fn lock_blocks(&self, offset: u64) -> bool {
+        self.inner
+            .lock()
+            .expect("file service lock")
+            .lock_blocks(self.id, offset)
+    }
+
+    /// Logical size of the data file, including bytes not yet stable.
+    pub fn size(&self) -> u64 {
+        self.inner.lock().expect("file service lock").data.size
     }
 
     pub fn lock_map(&self) -> LockMap {
@@ -511,6 +530,13 @@ impl Inner {
         slot.exclusive = None;
         slot.shared.insert(client);
         Ok(())
+    }
+
+    fn lock_blocks(&self, client: u64, offset: u64) -> bool {
+        let Some(slot) = self.locks.get(&offset) else {
+            return false;
+        };
+        slot.exclusive.is_some_and(|id| id != client) || slot.shared.iter().any(|id| *id != client)
     }
 
     fn release_client(&mut self, client: u64) {
