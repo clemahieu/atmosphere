@@ -2,7 +2,7 @@
 
 # Design decisions
 
-24 records: 24 active, 0 superseded.
+25 records: 25 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -34,6 +34,9 @@ in `revisit if` what would make it worth reopening.
 - **[isolation-claim](./isolation-claim/DECISION.md)** (2026-11-05): The kernel proves spatial isolation: a process affects only what its capabilities reach and gains authority only by grant or retype. It does not claim noninterference or freedom from timing channels, and the claim says so.
   - *confidence:* A scoping choice by the human. Noninterference is the claim the Atmosphere paper proved with unwinding conditions, so it is known to be reachable; timing needs hardware modelling the project does not have.
   - *revisit if:* A workload needs distrusting programs that cannot observe each other through status codes or timing, which is when noninterference or multiple kernel instances become required rather than later.
+- **[latest-value-by-three-slot-exchange](./latest-value-by-three-slot-exchange/DECISION.md)** (2026-11-09): amailbox gives one producer and one consumer the latest value through three slots and one atomic word holding the shared slot's index and a fresh bit: publish is one swap, observe is one load and at most one swap, nobody copies the payload or retries, and intermediate values are dropped. It is for two ends that both follow it; across a distrust boundary the path is aring.
+  - *confidence:* The permutation, the fresh bit's meaning and the atomic counts are proven in amailbox/src/lib.rs. That three slots are cheaper to prove than Simpson's four is a judgement from the size of each protocol, not a measurement.
+  - *revisit if:* Two ends that do not trust each other need the latest value, which a swapped word cannot protect; a caller measures the word sharing a cache line with the slots as its cost; or a target lacks an atomic swap of 32 bits.
 - **[machine-glue-below-the-kernel](./machine-glue-below-the-kernel/DECISION.md)** (2026-11-09): Boot discovery, the console, the interrupt controller and timer, secondary-core start, shutdown and the IOMMU driver live in one crate per machine (machine/pc for the x86_64 PC, machine/virt for aarch64 on QEMU virt), each exporting the same free functions and constants; the kernel depends on the crate its target selects and re-exports it as crate::machine; the crate depends on nothing in kernel/ or kernel/verified, takes cpu indices as arguments, owns the interrupt vectors and its own per-core state, and issues its own MSR and port instructions.
   - *confidence:* A judgement from a survey of kernel/src at 569f164: the item list and signatures follow today's callers. That the same list fits QEMU virt (GICv3, generic timer, PL011, PSCI) is reasoned from those devices' programming models, and the aarch64 crate is what tests it. The Cargo constraint that rules out one renamed dependency per target was checked with cargo.
   - *revisit if:* Two machines must be supported on one architecture (bare Apple silicon beside QEMU virt), when target_arch no longer selects the crate and a cargo feature or a second build target must; or a machine needs a kernel service at interrupt or boot time that cannot be passed as an argument, which would make the dependency two-way.
@@ -95,7 +98,7 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `glue`: machine-glue-below-the-kernel
 - `interrupt`: machine-glue-below-the-kernel
 - `iommu`: machine-glue-below-the-kernel
-- `ipc`: ipc-with-reply-object, syscall-abi-in-registers
+- `ipc`: ipc-with-reply-object, latest-value-by-three-slot-exchange, syscall-abi-in-registers
 - `kernel-state`: multicore-kernel-shape, one-kernel-instance, one-lock-bounded-steps
 - `lifetime`: sharing-by-derive, teardown-driven-by-retype
 - `lock`: flush-without-waiting, multicore-kernel-shape, one-lock-bounded-steps
@@ -110,7 +113,8 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `revoke`: revoke-by-depth-first-list, sharing-by-derive, teardown-driven-by-retype
 - `scheduling`: cpu-time-as-capability, schedulers-over-core-partitions
 - `security`: isolation-claim, theorem-over-reach, trust-boundary
+- `shared-memory`: latest-value-by-three-slot-exchange
 - `thread`: process-holds-capabilities, thread-bound-at-retype
 - `tiers`: trust-boundary
-- `verified`: arch-module, cut-over-on-a-branch, flush-without-waiting, one-lock-bounded-steps, revoke-by-depth-first-list, theorem-over-reach, thread-bound-at-retype
+- `verified`: arch-module, cut-over-on-a-branch, flush-without-waiting, latest-value-by-three-slot-exchange, one-lock-bounded-steps, revoke-by-depth-first-list, theorem-over-reach, thread-bound-at-retype
 - `virtualization`: vmm-over-svm
