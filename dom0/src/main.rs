@@ -2,7 +2,7 @@
 //! not assume it owns the machine, so several instances each with a root stay possible. Why, and
 //! what to do about a change that breaks this: design/one-kernel-instance/.
 //!
-//! Print, inspect, retype of a 4K frame and of a table page, link, map and unmap are the wired
+//! Print, inspect, retype of a 4K frame and of a table page, move, link, map and unmap are the wired
 //! operations, so each fixed slot is checked through them: the console accepts print and the process,
 //! thread, untyped and frame slots refuse it; inspect says the console slot holds a console, and each slot
 //! from the first untyped holds an untyped whose base is aligned to its order, up to the first slot
@@ -18,7 +18,10 @@
 //! and reads it back, and a second map at that entry is refused. It unmaps that page, after an unmap
 //! at a kernel-half address, at the empty entry after it and at level 2 is refused; a second unmap
 //! there is refused, and a map of the same frame there is accepted again, through which it reads the
-//! word back. dom0 prints that result through the console, then an exit marker, and exits with
+//! word back. It moves the frame's capability, still mapped, to the slot after it, after a move from
+//! that empty slot and onto the console's is refused; inspect then refuses the old slot and finds the
+//! frame in the new one, and once the page is unmapped, a map through the old slot is refused and one
+//! through the new slot accepted, through which it reads the word back. dom0 prints that result through the console, then an exit marker, and exits with
 //! success only when every check held. The kernel logs each invocation, with what it returned, in
 //! the serial log.
 
@@ -227,6 +230,34 @@ fn remapped_frame_held(frame: u64) -> bool {
     unsafe { (PATH_ADDRESS as *const u64).read_volatile() == MAPPED_WORD }
 }
 
+/// Whether dom0 moves the 4K frame capability at `frame`, mapped at `PATH_ADDRESS`, to the slot after it,
+/// which boot left empty: a move from that empty slot and a move onto the console's slot are refused, the
+/// move is accepted, inspect refuses the old slot and finds the frame at its base in the new one, and
+/// once the page is unmapped, a map through the old slot is refused and one through the new slot is
+/// accepted and reads back the word written through the first mapping.
+fn moved_frame_held(frame: u64) -> bool {
+    let moved = frame + 1;
+    let base = match operation::inspect(frame) {
+        Ok(capability) => capability.base,
+        Err(_) => return false,
+    };
+    let map = |slot: u64| operation::map(operation::ROOT_PROCESS_SLOT, PATH_ADDRESS, 1, slot, 0);
+    let held = operation::move_capability(moved, moved) == operation::STATUS_REFUSED
+        && operation::move_capability(frame, operation::ROOT_CONSOLE_SLOT) == operation::STATUS_REFUSED
+        && operation::move_capability(frame, moved) == operation::STATUS_OK
+        && matches!(operation::inspect(frame), Err(operation::STATUS_REFUSED))
+        && matches!(
+            operation::inspect(moved),
+            Ok(capability) if capability.kind == operation::KIND_FRAME && capability.base == base && capability.order == 0
+        )
+        // Nothing dom0 uses is at PATH_ADDRESS but the word, which it reads only after the map that follows.
+        && unsafe { operation::unmap(operation::ROOT_PROCESS_SLOT, PATH_ADDRESS, 1) } == operation::STATUS_OK
+        && map(frame) == operation::STATUS_REFUSED
+        && map(moved) == operation::STATUS_OK;
+    // The map just made the page at PATH_ADDRESS the moved frame's, which kept the word.
+    held && unsafe { (PATH_ADDRESS as *const u64).read_volatile() == MAPPED_WORD }
+}
+
 /// Print through `slot`. The status is the low half of what the invocation returns.
 ///
 /// # Safety
@@ -252,7 +283,10 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
             retyped_frame_held(empty)
                 && retyped_table_pages(empty)
                     .is_some_and(|(untyped, tables)| {
-                        linked_path_held(untyped, tables) && mapped_frame_held(empty) && remapped_frame_held(empty)
+                        linked_path_held(untyped, tables)
+                            && mapped_frame_held(empty)
+                            && remapped_frame_held(empty)
+                            && moved_frame_held(empty)
                     })
         });
     let console = unsafe {

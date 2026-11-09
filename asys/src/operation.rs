@@ -17,6 +17,7 @@ pub const STATUS_UNKNOWN: u64 = 2;
 
 pub const RETYPE: u64 = 1;
 pub const DERIVE: u64 = 2;
+/// Moves the capability in rdi to the empty slot in rsi, children and all, leaving rdi empty.
 pub const MOVE: u64 = 3;
 pub const CLAIM: u64 = 4;
 pub const DELETE: u64 = 5;
@@ -204,4 +205,11 @@ pub fn map(space: u64, address: u64, level: u64, frame: u64, page: u64) -> u64 {
 /// there faults.
 pub unsafe fn unmap(space: u64, address: u64, level: u64) -> u64 {
     status(unsafe { invoke(UNMAP, space, [address, level, 0, 0, 0]) })
+}
+
+/// Moves the capability at `from` to the empty slot `to`, children and all, leaving `from` empty. The
+/// status is the low half of what returns.
+pub fn move_capability(from: u64, to: u64) -> u64 {
+    // A move changes slots, not the caller's address space.
+    status(unsafe { invoke(MOVE, from, [to, 0, 0, 0, 0]) })
 }

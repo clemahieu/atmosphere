@@ -48,6 +48,26 @@ impl CapKernel {
         &&& self.can_move_between(self.payload_of(c).base, from, root, to)
     }
 
+    /// What a move of the capability at index from of the table at root to index to did: the move was
+    /// allowed, the node took the empty node's place in the list at the same depth under the same parent
+    /// with the same payload, every child came along, the source holds no capability and the destination
+    /// is held, reach is unchanged, and the step discharges a local effect.
+    pub open spec fn cap_moved(pre: Self, post: Self, root: usize, from: usize, to: usize) -> bool {
+        let i = pre.tables.node_of(root, from);
+        let n = pre.tables.node_of(root, to);
+        &&& pre.can_move(root, from, to)
+        &&& exists|p: int| 0 <= p < pre.list.seq@.len() && #[trigger] pre.list.seq@[p] == i
+            && post.list.seq@ == pre.list.seq@.update(p, n)
+        &&& post.list.nodes@[n as int].depth == pre.list.nodes@[i as int].depth
+        &&& post.list.parent@ == moved_parent(pre.list.parent@, i, n)
+        &&& post.payload_of(n) == pre.payload_of(i)
+        &&& !post.is_cap(i)
+        &&& post.view().holds(root, n)
+        &&& Self::caps_frame(pre, post, i, n)
+        &&& forall|r: ObjectId, o: ObjectId| #[trigger] post.view().reach(r, o) == pre.view().reach(r, o)
+        &&& discharges(pre.view(), post.view(), root, Effect::Local)
+    }
+
     /// Moves the capability at index `from` of the table at `root` to the empty index `to`. The indices
     /// come from user space, so either can be refused, and a refusal changes nothing.
     pub fn move_cap(&mut self, root: usize, from: usize, to: usize) -> (ret: bool)
@@ -57,22 +77,11 @@ impl CapKernel {
             old(self).root_live(root),
         ensures
             final(self).wf(),
+            final(self).cores == old(self).cores,
             Self::same_tree(*old(self), *final(self)),
             ret == old(self).can_move(root, from, to),
             !ret ==> *final(self) == *old(self),
-            ret ==> {
-                let i = old(self).tables.node_of(root, from);
-                let n = old(self).tables.node_of(root, to);
-                &&& exists|p: int| 0 <= p < old(self).list.seq@.len() && #[trigger] old(self).list.seq@[p] == i
-                    && final(self).list.seq@ == old(self).list.seq@.update(p, n)
-                &&& final(self).list.nodes@[n as int].depth == old(self).list.nodes@[i as int].depth
-                &&& final(self).list.parent@ == moved_parent(old(self).list.parent@, i, n)
-                &&& final(self).payload_of(n) == old(self).payload_of(i)
-                &&& !final(self).is_cap(i)
-                &&& final(self).view().holds(root, n)
-                &&& Self::caps_frame(*old(self), *final(self), i, n)
-                &&& forall|r: ObjectId, o: ObjectId| #[trigger] final(self).view().reach(r, o) == old(self).view().reach(r, o)
-            },
+            ret ==> Self::cap_moved(*old(self), *final(self), root, from, to),
             discharges(old(self).view(), final(self).view(), root, Effect::Local),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
@@ -191,6 +200,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(dst),
         ensures
             final(self).wf(),
+            final(self).cores == old(self).cores,
             Self::same_tree(*old(self), *final(self)),
             ret == old(self).can_move_between(src, from, dst, to),
             !ret ==> *final(self) == *old(self),

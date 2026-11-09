@@ -255,12 +255,24 @@ impl CapKernel {
         }
     }
 
+    /// A move in frame by a thread of the process whose table is at root, from pre to post with out
+    /// returned: refused with nothing changed, or ok with the capability in rdi moved to the slot in rsi.
+    pub open spec fn spec_moved(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
+        ||| out == status_only(STATUS_REFUSED) && post == pre
+        ||| {
+            &&& out == status_only(STATUS_OK)
+            &&& Self::cap_moved(pre, post, root, frame.rdi as usize, frame.rsi as usize)
+        }
+    }
+
     /// What the invocation in frame by a thread of the process whose table is at root did, from pre to
-    /// post with out returned: a retype's effect for retype, a link's for link, a map's for map, an
-    /// unmap's for unmap, and for every other operation the kernel unchanged with spec_outcome returned.
+    /// post with out returned: a retype's effect for retype, a move's for move, a link's for link, a
+    /// map's for map, an unmap's for unmap, and for every other operation the kernel unchanged with
+    /// spec_outcome returned.
     pub open spec fn invoked(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         match spec_operation(frame.rax) {
             Some(Operation::Retype) => Self::spec_retyped(pre, post, root, frame, out),
+            Some(Operation::Move) => Self::spec_moved(pre, post, root, frame, out),
             Some(Operation::Link) => Self::spec_linked(pre, post, root, frame, out),
             Some(Operation::Map) => Self::spec_mapped(pre, post, root, frame, out),
             Some(Operation::Unmap) => Self::spec_unmapped(pre, post, root, frame, out),
@@ -313,6 +325,10 @@ impl CapKernel {
                 } else {
                     false
                 };
+                Some(status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED }))
+            },
+            Some(Operation::Move) => {
+                let done = self.move_cap(root, frame.rdi as usize, frame.rsi as usize);
                 Some(status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED }))
             },
             Some(Operation::Link) => {
