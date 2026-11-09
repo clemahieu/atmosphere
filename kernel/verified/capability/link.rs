@@ -1346,6 +1346,8 @@ impl CapKernel {
             final(self).wf(),
             final(self).spaces.loaded == old(self).spaces.loaded,
             Self::link_done(*old(self), *final(self), parent, entry, child, parent),
+            final(self).processes == old(self).processes,
+            final(self).threads == old(self).threads,
     {
         let ghost pre = *old(self);
         let ghost a = tree_of(&pre.table_pages, &pre.spaces);
@@ -1427,6 +1429,8 @@ impl CapKernel {
             final(self).wf(),
             final(self).spaces.loaded == old(self).spaces.loaded,
             Self::link_done(*old(self), *final(self), parent, entry, child, s),
+            final(self).processes == old(self).processes,
+            final(self).threads == old(self).threads,
     {
         let ghost pre = *old(self);
         let ghost a = tree_of(&pre.table_pages, &pre.spaces);
@@ -1619,7 +1623,10 @@ impl CapKernel {
                 &&& tree.record(child).level == tree_of(&old(self).table_pages, &old(self).spaces).record(child).level
                 &&& tree.record(parent).written
                 &&& forall|r: usize| #[trigger] space_mapping(tree, r) == space_mapping(tree_of(&old(self).table_pages, &old(self).spaces), r)
+                &&& Self::link_done(*old(self), *final(self), parent, entry, child, s)
             },
+            final(self).processes == old(self).processes,
+            final(self).threads == old(self).threads,
             discharges(old(self).view(), final(self).view(), root, Effect::Local),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
