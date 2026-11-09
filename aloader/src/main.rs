@@ -31,8 +31,7 @@ use core::arch::x86_64::__cpuid;
 use aelf::{ElfHandle, LoadSegment};
 use astd::boot::{
     disjoint_page_runs, page_end, page_start, BootInfo, DomainMapping, MappedRun, Payload,
-    PhysicalMemoryType, SegmentSpan, BOOT_PAGE_SLOTS, DOM0_RESERVATION, DOM0_STACK, MAPPED_RUNS,
-    PAGE_BYTES,
+    SegmentSpan, BOOT_PAGE_SLOTS, DOM0_RESERVATION, DOM0_STACK, MAPPED_RUNS, PAGE_BYTES,
 };
 use astd::heapless::Vec as ArrayVec;
 use astd::io::{Cursor, Read, Seek, SeekFrom};
@@ -202,60 +201,12 @@ fn load(rsdp: u64, wait_for_debugger: bool) -> ! {
         }
     }
 
-    let mut free_page_count = 0;
-    let mut cur = 0;
     log::info!("Populating physical page list");
-    for (region, label) in memory::get_physical_memory_map().regions.iter() {
-        if boot_info.pages.is_full() {
-            break;
-        }
-
-        let page_type: PhysicalMemoryType = (*label).into();
-        log::info!(
-            "region.base() {:x}, region.end_inclusive() {:x}, page_type {:?}, label {:?}",
-            region.base(),
-            region.end_inclusive(),
-            page_type,
-            *label
-        );
-        while cur < region.base() {
-            if boot_info.pages.is_full() {
-                break;
-            }
-
-            boot_info
-                .pages
-                .push((cur, PhysicalMemoryType::Reserved))
-                .expect("Too many pages");
-            cur += PAGE_SIZE as u64;
-        }
-        while cur < region.end_inclusive() {
-            if boot_info.pages.is_full() {
-                break;
-            }
-
-            if page_type == PhysicalMemoryType::Available {
-                free_page_count = free_page_count + 1;
-            }
-            boot_info
-                .pages
-                .push((cur, page_type))
-                .expect("Too many pages");
-            cur += PAGE_SIZE as u64;
-        }
-    }
-    while cur < BOOT_PAGE_SLOTS as u64 * PAGE_BYTES {
-        if boot_info.pages.is_full() {
-            break;
-        }
-
-        boot_info
-            .pages
-            .push((cur, PhysicalMemoryType::Reserved))
-            .expect("Too many pages");
-        cur += PAGE_SIZE as u64;
-    }
-
+    let free_page_count = memory::record_boot_pages(
+        &mut memory::get_physical_memory_map(),
+        &mut boot_info.pages,
+        BOOT_PAGE_SLOTS as u64 * PAGE_BYTES,
+    );
     log::info!("ALoader: Num of free pages --> {:?}", free_page_count);
 
     if wait_for_debugger {

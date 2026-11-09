@@ -9,6 +9,7 @@ use core::{fmt, ops::DerefMut};
 use aelf::PAddr;
 
 use astd::boot::PhysicalMemoryType;
+use astd::heapless::Vec as ArrayVec;
 use astd::memory::PageProtection;
 use astd::sync::Mutex;
 use aelf::{VirtualMapper, ContiguousMapping};
@@ -266,4 +267,128 @@ pub fn get_allocator_region() -> Option<MemoryRange> {
 
 pub fn get_physical_memory_map() -> impl DerefMut<Target = MemoryMap<BootMemoryType>> {
     PHYSICAL_MEMORY_MAP.lock()
+}
+
+/// One page entry per address from 0 up to `cover`. Returns how many of those pages are available.
+///
+/// `relabel` appends the unsplit remainder of a region at the end of the map, out of address order.
+/// The walk only moves forward, so it would record that span as reserved on the way to a later
+/// region and then skip the remainder. Sorting first keeps those pages.
+pub fn record_boot_pages<const N: usize>(
+    map: &mut MemoryMap<BootMemoryType>,
+    pages: &mut ArrayVec<(u64, PhysicalMemoryType), N>,
+    cover: u64,
+) -> usize {
+    map.sort();
+    let mut free_page_count = 0;
+    let mut cur = 0u64;
+    for (region, label) in map.regions.iter() {
+        if pages.is_full() {
+            break;
+        }
+
+        let page_type: PhysicalMemoryType = (*label).into();
+        log::info!(
+            "region.base() {:x}, region.end_inclusive() {:x}, page_type {:?}, label {:?}",
+            region.base(),
+            region.end_inclusive(),
+            page_type,
+            *label
+        );
+        while cur < region.base() {
+            if pages.is_full() {
+                break;
+            }
+
+            pages
+                .push((cur, PhysicalMemoryType::Reserved))
+                .expect("Too many pages");
+            cur += PAGE_SIZE as u64;
+        }
+        while cur < region.end_inclusive() {
+            if pages.is_full() {
+                break;
+            }
+
+            if page_type == PhysicalMemoryType::Available {
+                free_page_count = free_page_count + 1;
+            }
+            pages.push((cur, page_type)).expect("Too many pages");
+            cur += PAGE_SIZE as u64;
+        }
+    }
+    while cur < cover {
+        if pages.is_full() {
+            break;
+        }
+
+        pages
+            .push((cur, PhysicalMemoryType::Reserved))
+            .expect("Too many pages");
+        cur += PAGE_SIZE as u64;
+    }
+    free_page_count
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `reserve` relabels a span of the loader allocator. `relabel` appends the unsplit tail, so a
+    /// higher region already in the map leaves that tail out of address order.
+    #[test]
+    fn allocator_remainder_out_of_order_is_not_dropped() {
+        let page = PAGE_SIZE as u64;
+        let mut map = MemoryMap::new([
+            (MemoryRange::new(0, page), BootMemoryType::Bios),
+            (
+                MemoryRange::new(page, 8 * page),
+                BootMemoryType::Other(AcpiMemoryType::Memory),
+            ),
+            (
+                MemoryRange::new(9 * page, page),
+                BootMemoryType::Other(AcpiMemoryType::Reserved),
+            ),
+        ]);
+        // The allocator carve, then the kernel window and dom0's window, each a prefix of what remains.
+        map.relabel(
+            MemoryRange::new(page, 6 * page),
+            BootMemoryType::LoaderAllocator,
+        );
+        map.relabel(MemoryRange::new(page, 3 * page), BootMemoryType::Kernel);
+        map.relabel(MemoryRange::new(4 * page, page), BootMemoryType::Domain);
+
+        let (tail, tail_label) = map.regions.last().cloned().expect("map empty");
+        assert_eq!(
+            tail_label,
+            BootMemoryType::LoaderAllocator,
+            "{:?}",
+            map.regions
+        );
+        assert_eq!(tail.base(), 5 * page, "{:?}", map.regions);
+        assert_eq!(tail.size(), 2 * page, "{:?}", map.regions);
+        assert!(
+            map.regions
+                .iter()
+                .any(|(region, _)| region.base() > tail.base()),
+            "remainder at {:#x} should sit behind a higher region: {:?}",
+            tail.base(),
+            map.regions
+        );
+
+        let mut pages: ArrayVec<(u64, PhysicalMemoryType), 16> = ArrayVec::new();
+        let free = record_boot_pages(&mut map, &mut pages, 10 * page);
+        for offset in [5 * page, 6 * page] {
+            let kind = pages
+                .iter()
+                .find(|(addr, _)| *addr == offset)
+                .map(|(_, kind)| *kind);
+            assert_eq!(
+                kind,
+                Some(PhysicalMemoryType::Available),
+                "page {offset:#x} in {pages:?}"
+            );
+        }
+        assert_eq!(free, 4, "{pages:?}");
+    }
 }
