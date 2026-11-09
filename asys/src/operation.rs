@@ -34,6 +34,10 @@ pub const PRINT: u64 = 14;
 /// Returns the kind, base, order and rights of a capability the caller holds in rdi, rsi, rdx and r8;
 /// refused for a slot that holds none. It asks for no right.
 pub const INSPECT: u64 = 15;
+/// Links the unlinked table page at the physical base in r9 into the entry of the space in rdi that
+/// the virtual address in rsi and the level in rdx name, on the authority of the untyped in r8 over the
+/// page's block. The level is 2, 3 or 4 and the page's own level one below it.
+pub const LINK: u64 = 16;
 
 /// Retype's kind in rsi for a 4K frame: a frame capability of order 0 for the page at the base in rdx,
 /// in the empty slot in r8.
@@ -170,3 +174,10 @@ pub fn retype_table_page(untyped: u64, base: u64, level: u64) -> u64 {
     status(unsafe { invoke(RETYPE, untyped, [RETYPE_TABLE_PAGE, base, 0, level, 0]) })
 }
 
+/// Links the unlinked table page at `table`, covered by the untyped at `untyped`, into the entry at
+/// `level` that `address` names in the space of the capability at `space`. The status is the low half of
+/// what returns.
+pub fn link(space: u64, address: u64, level: u64, untyped: u64, table: u64) -> u64 {
+    // A link adds an empty table to the space and maps no page, so no address the caller reads changes.
+    status(unsafe { invoke(LINK, space, [address, level, untyped, table, 0]) })
+}

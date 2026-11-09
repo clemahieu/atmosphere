@@ -65,7 +65,7 @@ Map, link and unmap name a place in a space the same way: the space capability i
 An address in the root entries a process space keeps for the kernel is refused by the operation itself, as every entry the kernel holds is. So each accepted value names exactly one entry, and no two values name the same one.
 
 - **map** writes the entry at the level: at level 1 the 4K page at the page offset of the frame capability in `r8`; at level 2 the 2M page there, whose offset is a multiple of 512. The entry must be empty and the tables above it linked.
-- **link** writes the entry at the level with the table page at the base in `r9`, whose level is one below it, so `rdx` is 2, 3 or 4 and the table page's own level is `rdx` minus 1. The untyped in `r8` must cover the table page's block. The tables above the entry must be linked; a space's root is level 4.
+- **link**, operation 16, writes the entry at the level with the table page at the base in `r9`, whose level is one below it, so `rdx` is 2, 3 or 4 and the table page's own level is `rdx` minus 1. The untyped in `r8` must cover the table page's block. The tables above the entry must be linked; a space's root is level 4.
 - **unmap** clears the entry at the level, which must map a frame. Level 1 is the only level it accepts.
 
 ### Inspect

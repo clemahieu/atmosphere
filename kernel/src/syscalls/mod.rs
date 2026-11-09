@@ -41,6 +41,7 @@ const _: () = {
     assert!(user::REPLY_RECV == operation::OPERATION_REPLY_RECV);
     assert!(user::PRINT == operation::OPERATION_PRINT);
     assert!(user::INSPECT == operation::OPERATION_INSPECT);
+    assert!(user::LINK == operation::OPERATION_LINK);
     assert!(user::RETYPE_FRAME == operation::RETYPE_FRAME);
     assert!(user::RETYPE_TABLE_PAGE == operation::RETYPE_TABLE_PAGE);
     assert!(user::TABLE_INDICES == table::TABLE_INDICES as u64);

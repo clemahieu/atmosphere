@@ -1344,6 +1344,7 @@ impl CapKernel {
                 == tree_of(&old(self).table_pages, &old(self).spaces).record(parent).level,
         ensures
             final(self).wf(),
+            final(self).cores == old(self).cores,
             final(self).spaces.loaded == old(self).spaces.loaded,
             Self::link_done(*old(self), *final(self), parent, entry, child, parent),
             final(self).processes == old(self).processes,
@@ -1427,6 +1428,7 @@ impl CapKernel {
                 == tree_of(&old(self).table_pages, &old(self).spaces).record(parent).level,
         ensures
             final(self).wf(),
+            final(self).cores == old(self).cores,
             final(self).spaces.loaded == old(self).spaces.loaded,
             Self::link_done(*old(self), *final(self), parent, entry, child, s),
             final(self).processes == old(self).processes,
@@ -1609,6 +1611,7 @@ impl CapKernel {
             final(self).wf(),
             ret == old(self).can_link(root, slot, parent, entry, from, child),
             final(self).spaces.loaded == old(self).spaces.loaded,
+            final(self).cores == old(self).cores,
             !ret ==> *final(self) == *old(self),
             final(self).list == old(self).list,
             final(self).tables == old(self).tables,

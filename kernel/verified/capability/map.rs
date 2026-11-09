@@ -59,6 +59,76 @@ pub open spec fn walk_large_table(tree: TableTree, s: usize, p: SpacePath) -> Op
     }
 }
 
+/// The bytes one entry at a level covers: 4K at level 1, 2M at level 2, 1G at level 3 and 512G at
+/// level 4.
+pub open spec fn entry_span(level: u64) -> u64 {
+    if level == 1 {
+        0x1000
+    } else if level == 2 {
+        0x20_0000
+    } else if level == 3 {
+        0x4000_0000
+    } else {
+        0x80_0000_0000
+    }
+}
+
+/// Whether the address va names one entry at the level, 1 to 4: canonical in the lower half, and zero in
+/// the bits below what the entry covers. See design/syscall-abi-in-registers/.
+pub open spec fn names_entry(va: u64, level: u64) -> bool {
+    &&& 1 <= level <= 4
+    &&& va < 0x8000_0000_0000
+    &&& va % entry_span(level) == 0
+}
+
+/// The four 9-bit indices of the path through a space that the address va takes: bits 47 to 39, 38 to
+/// 30, 29 to 21 and 20 to 12.
+pub open spec fn address_path(va: u64) -> SpacePath {
+    SpacePath {
+        l4: ((va / 0x80_0000_0000) % 512) as usize,
+        l3: ((va / 0x4000_0000) % 512) as usize,
+        l2: ((va / 0x20_0000) % 512) as usize,
+        l1: ((va / 0x1000) % 512) as usize,
+    }
+}
+
+/// Whether the address va names one entry at the level.
+pub fn entry_named(va: u64, level: u64) -> (ret: bool)
+    ensures
+        ret == names_entry(va, level),
+{
+    if level == 0 || level > 4 || va >= 0x8000_0000_0000 {
+        return false;
+    }
+    let span: u64 = if level == 1 {
+        0x1000
+    } else if level == 2 {
+        0x20_0000
+    } else if level == 3 {
+        0x4000_0000
+    } else {
+        0x80_0000_0000
+    };
+    va % span == 0
+}
+
+/// The indices of the path the address va takes, from level 4 down.
+pub fn address_indices(va: u64) -> (ret: (usize, usize, usize, usize))
+    ensures
+        ret.0 == address_path(va).l4,
+        ret.1 == address_path(va).l3,
+        ret.2 == address_path(va).l2,
+        ret.3 == address_path(va).l1,
+        ret.0 < 512 && ret.1 < 512 && ret.2 < 512 && ret.3 < 512,
+{
+    (
+        ((va / 0x80_0000_0000) % 512) as usize,
+        ((va / 0x4000_0000) % 512) as usize,
+        ((va / 0x20_0000) % 512) as usize,
+        ((va / 0x1000) % 512) as usize,
+    )
+}
+
 /// The entry a map writes for a page of a capability with these rights: writable with Write, not
 /// executable without Execute, and ps for a large frame.
 pub open spec fn frame_map_entry(frame: usize, rights: u32, large: bool) -> PageEntry {
@@ -906,6 +976,116 @@ impl CapKernel {
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
         self.map_kind(root, slot, SpaceKind::Process, l4, l3, l2, l1, from, page)
+    }
+
+    /// The entry of a table that the address va and the level name in the space whose root is s, and that
+    /// a link writes: refused unless the level is 2, 3 or 4 and va names an entry there, then the root's
+    /// entry at level 4, and below it the entry of the table the walk from the root reaches at the level.
+    /// See design/syscall-abi-in-registers/.
+    pub open spec fn link_parent(&self, s: usize, va: u64, level: u64) -> Option<TableParent> {
+        let tree = tree_of(&self.table_pages, &self.spaces);
+        let p = address_path(va);
+        if level < 2 || !names_entry(va, level) {
+            None
+        } else if level == 4 {
+            Some(TableParent { table: s, entry: p.l4 })
+        } else {
+            match step(tree, s, p.l4) {
+                None => None,
+                Some(t3) => if level == 3 {
+                    Some(TableParent { table: t3, entry: p.l3 })
+                } else {
+                    match step(tree, t3, p.l3) {
+                        None => None,
+                        Some(t2) => Some(TableParent { table: t2, entry: p.l2 }),
+                    }
+                },
+            }
+        }
+    }
+
+    /// What a link of the table page at child, under the untyped at index from, into the entry the
+    /// address va and the level name in the space of the capability at index slot of the table at root
+    /// did: the entry is one the address names, the link was allowed there, and the tables are linked.
+    pub open spec fn table_linked(pre: Self, post: Self, root: usize, slot: usize, va: u64, level: u64, from: usize, child: usize) -> bool {
+        let s = pre.payload_of(pre.tables.node_of(root, slot)).base;
+        match pre.link_parent(s, va, level) {
+            None => false,
+            Some(place) => {
+                &&& pre.can_link(root, slot, place.table, place.entry, from, child)
+                &&& Self::link_done(pre, post, place.table, place.entry, child, s)
+                &&& discharges(pre.view(), post.view(), root, Effect::Local)
+            },
+        }
+    }
+
+    /// Links the unlinked table page at `child` into the entry the address `va` and the level `level`
+    /// name in the space of the capability at index `slot` of the table at `root`, on the authority of the
+    /// untyped at index `from` over the page's block. All of these come from user space, and a refusal
+    /// changes nothing. The walk from the space's root finds the parent table, as map's does, so no
+    /// physical address from user space is taken as a table.
+    pub fn link_at(&mut self, root: usize, slot: usize, va: u64, level: u64, from: usize, child: usize) -> (ret: bool)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
+        ensures
+            final(self).wf(),
+            final(self).cores == old(self).cores,
+            !ret ==> *final(self) == *old(self),
+            ret ==> Self::table_linked(*old(self), *final(self), root, slot, va, level, from, child),
+            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
+    {
+        let ghost pre = *old(self);
+        let ghost tree = tree_of(&pre.table_pages, &pre.spaces);
+        if level < 2 || !entry_named(va, level) {
+            return false;
+        }
+        let (l4, l3, l2, _) = address_indices(va);
+        let (n, space) = match self.tables.lookup(&self.list, root, slot) {
+            Some(found) => found,
+            None => { return false; },
+        };
+        proof {
+            pre.lemma_slot(root, slot);
+            assert(space == pre.payload_of(n));
+            assert(right_bit(Right::Write) == 2);
+        }
+        let node = self.list.get(n);
+        let kind_ok = match node.kind {
+            NodeKind::Capability => true,
+            _ => false,
+        };
+        if !node.live || !kind_ok || !may_write_space(&space) {
+            return false;
+        }
+        proof {
+            assert(pre.is_cap(n));
+            pre.lemma_written_space(n);
+            pre.lemma_root_table(space.base);
+        }
+        let s = space.base;
+        let (parent, entry) = if level == 4 {
+            (s, l4)
+        } else {
+            let t3 = match self.table_step(s, true, l4) {
+                Some(t) => t,
+                None => { return false; },
+            };
+            if level == 3 {
+                (t3, l3)
+            } else {
+                let t2 = match self.table_step(t3, false, l3) {
+                    Some(t) => t,
+                    None => { return false; },
+                };
+                (t2, l2)
+            }
+        };
+        proof {
+            assert(pre.link_parent(s, va, level) == Some(TableParent { table: parent, entry }));
+        }
+        self.link(root, slot, parent, entry, from, child)
     }
 
     /// map, in a space that must be of this kind.

@@ -2,16 +2,19 @@
 //! not assume it owns the machine, so several instances each with a root stay possible. Why, and
 //! what to do about a change that breaks this: design/one-kernel-instance/.
 //!
-//! Print, inspect and retype of a 4K frame and of a table page are the wired operations, so each fixed
-//! slot is checked through them: the console accepts print and the process, thread, untyped and frame
-//! slots refuse it; inspect says the console slot holds a console, and each slot from the first untyped
-//! holds an untyped whose base is aligned to its order, up to the first slot that holds nothing, which
-//! inspect refuses. Retype under an empty slot, a slot past the table and the console is refused, and
-//! retype of the last untyped's last page into that empty slot is accepted, after which inspect says
-//! the slot holds a 4K frame at that page. dom0 then retypes four table pages, after a table page of a
-//! level no table has is refused, and a retype of one of them again is refused after. dom0 prints that
-//! result through the console, then an exit marker, and exits with success only when every check held.
-//! The kernel logs each invocation, with what it returned, in the serial log.
+//! Print, inspect, retype of a 4K frame and of a table page, and link are the wired operations, so each
+//! fixed slot is checked through them: the console accepts print and the process, thread, untyped and
+//! frame slots refuse it; inspect says the console slot holds a console, and each slot from the first
+//! untyped holds an untyped whose base is aligned to its order, up to the first slot that holds
+//! nothing, which inspect refuses. Retype under an empty slot, a slot past the table and the console is
+//! refused, and retype of the last untyped's last page into that empty slot is accepted, after which
+//! inspect says the slot holds a 4K frame at that page. dom0 then retypes four table pages, after a
+//! table page of a level no table has is refused, and a retype of one of them again is refused after;
+//! it links three of them, of levels 3, 2 and 1, under an address its image does not use, through its
+//! own process capability, after a table of the wrong level, an entry whose tables above are not linked
+//! and an unaligned address are refused, and the fourth is refused at the entry the third took. dom0
+//! prints that result through the console, then an exit marker, and exits with success only when every
+//! check held. The kernel logs each invocation, with what it returned, in the serial log.
 
 #![no_std]
 #![no_main]
@@ -105,6 +108,10 @@ fn retyped_frame_held(empty: u64) -> bool {
     )
 }
 
+/// Where dom0 builds a path of tables: the start of root entry 2, past the image's at entry 1
+/// (`USERSPACE_BASE`), so linking there changes nothing dom0 reads.
+const PATH_ADDRESS: u64 = 2 << 39;
+
 /// The bytes of a table page's block, order 3.
 const TABLE_PAGE_BYTES: u64 = 8 * 4096;
 
@@ -143,6 +150,24 @@ fn retyped_table_pages(empty: u64) -> Option<(u64, [u64; 4])> {
     held.then_some((untyped, tables))
 }
 
+/// Whether dom0 builds a path of the level 3, 2 and 1 tables at `tables`, under `untyped`, at
+/// `PATH_ADDRESS` in its own space, through its process capability: link of the level 1 page into the
+/// level 3 entry, of a table into a level 2 entry whose level 2 table is not linked yet, and at an
+/// address not aligned to its level 2 entry is refused; the level 3, 2 and 1 tables link; and the fourth
+/// page, of level 1, is refused at the level 2 entry the level 1 table took.
+fn linked_path_held(untyped: u64, tables: [u64; 4]) -> bool {
+    let link = |address: u64, level: u64, k: usize| {
+        operation::link(operation::ROOT_PROCESS_SLOT, address, level, untyped, tables[k])
+    };
+    link(PATH_ADDRESS, 4, 0) == operation::STATUS_OK
+        && link(PATH_ADDRESS, 3, 2) == operation::STATUS_REFUSED
+        && link(PATH_ADDRESS, 2, 2) == operation::STATUS_REFUSED
+        && link(PATH_ADDRESS, 3, 1) == operation::STATUS_OK
+        && link(PATH_ADDRESS + 4096, 2, 2) == operation::STATUS_REFUSED
+        && link(PATH_ADDRESS, 2, 2) == operation::STATUS_OK
+        && link(PATH_ADDRESS, 2, 3) == operation::STATUS_REFUSED
+}
+
 /// Print through `slot`. The status is the low half of what the invocation returns.
 ///
 /// # Safety
@@ -165,7 +190,8 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
         && frame == operation::STATUS_REFUSED
         && unknown == operation::STATUS_UNKNOWN
         && first_empty_slot().is_some_and(|empty| {
-            retyped_frame_held(empty) && retyped_table_pages(empty).is_some()
+            retyped_frame_held(empty)
+                && retyped_table_pages(empty).is_some_and(|(untyped, tables)| linked_path_held(untyped, tables))
         });
     let console = unsafe {
         print_slot(

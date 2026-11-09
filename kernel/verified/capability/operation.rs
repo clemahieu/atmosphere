@@ -7,6 +7,7 @@ verus! {
 
 use crate::capability::inspect::*;
 use crate::capability::kernel::*;
+use crate::capability::map::*;
 use crate::capability::reach::*;
 use crate::capability::space::*;
 use crate::capability::thread::*;
@@ -38,6 +39,7 @@ pub const OPERATION_CALL: u64 = 12;
 pub const OPERATION_REPLY_RECV: u64 = 13;
 pub const OPERATION_PRINT: u64 = 14;
 pub const OPERATION_INSPECT: u64 = 15;
+pub const OPERATION_LINK: u64 = 16;
 
 /// Retype's kind in rsi for a 4K frame.
 pub const RETYPE_FRAME: u64 = 0;
@@ -87,6 +89,7 @@ pub enum Operation {
     ReplyRecv,
     Print,
     Inspect,
+    Link,
 }
 
 impl Operation {
@@ -108,6 +111,7 @@ impl Operation {
             Operation::ReplyRecv => OPERATION_REPLY_RECV,
             Operation::Print => OPERATION_PRINT,
             Operation::Inspect => OPERATION_INSPECT,
+            Operation::Link => OPERATION_LINK,
         }
     }
 }
@@ -149,6 +153,7 @@ pub fn operation(number: u64) -> (ret: Option<Operation>)
         OPERATION_REPLY_RECV => Some(Operation::ReplyRecv),
         OPERATION_PRINT => Some(Operation::Print),
         OPERATION_INSPECT => Some(Operation::Inspect),
+        OPERATION_LINK => Some(Operation::Link),
         _ => None,
     };
     proof {
@@ -215,12 +220,25 @@ impl CapKernel {
         &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base })
     }
 
+    /// A link in frame by a thread of the process whose table is at root, from pre to post with out
+    /// returned: refused with nothing changed, or ok with the table page at the base in r9, under the
+    /// untyped in r8, linked into the entry the address in rsi and the level in rdx name in the space of
+    /// the capability in rdi.
+    pub open spec fn spec_linked(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
+        ||| out == status_only(STATUS_REFUSED) && post == pre
+        ||| {
+            &&& out == status_only(STATUS_OK)
+            &&& Self::table_linked(pre, post, root, frame.rdi as usize, frame.rsi, frame.rdx, frame.r8 as usize, frame.r9 as usize)
+        }
+    }
+
     /// What the invocation in frame by a thread of the process whose table is at root did, from pre to
-    /// post with out returned: a retype's effect for retype, and for every other operation the kernel
-    /// unchanged with spec_outcome returned.
+    /// post with out returned: a retype's effect for retype, a link's for link, and for every other
+    /// operation the kernel unchanged with spec_outcome returned.
     pub open spec fn invoked(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         match spec_operation(frame.rax) {
             Some(Operation::Retype) => Self::spec_retyped(pre, post, root, frame, out),
+            Some(Operation::Link) => Self::spec_linked(pre, post, root, frame, out),
             _ => post == pre && out == pre.spec_outcome(root, frame),
         }
     }
@@ -270,6 +288,10 @@ impl CapKernel {
                 } else {
                     false
                 };
+                Some(status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED }))
+            },
+            Some(Operation::Link) => {
+                let done = self.link_at(root, frame.rdi as usize, frame.rsi, frame.rdx, frame.r8 as usize, frame.r9 as usize);
                 Some(status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED }))
             },
             Some(Operation::Print) => Some(
