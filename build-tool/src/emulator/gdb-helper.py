@@ -1,73 +1,33 @@
+# Sourced once gdb is attached to a guest whose loader waits for it (aloader/src/debugger.rs) and
+# the kernel's and dom0's symbols are added at their biases: lets the loader go on into the kernel,
+# and stops where the kernel calls kernel::debugger::breakpoint.
+#
 # Reference:
 # - RedLeaf Vermilion
 
 import gdb
 
-LOADED_BINARIES = 'aloader::debugger::LOADED_BINARIES'
-LOADED_BINARIES_LEN = 'aloader::debugger::LOADED_BINARIES_LEN'
-ON_BINARY_ADDED = 'aloader::debugger::on_binary_added'
-ON_READY = 'aloader::debugger::on_ready'
+# What rax holds while the loader waits (aloader/src/debugger.rs).
+LOADER_WAITING = 0x6764627761697421
+# The instructions a stop may land before the wait loop sets rax: the end of the log call before it.
+MAX_STEPS_TO_WAIT = 100000
 
 KERNEL_BREAKPOINT = 'kernel::debugger::breakpoint'
 
-binaries_consumed = 0
+def rax():
+    return int(gdb.parse_and_eval('$rax')) & 0xffffffffffffffff
 
-def get_str(val):
-    data_ptr = val['data_ptr']
-    length = val['length']
-    return data_ptr.string(length=length)
-
-def unwrap_maybe_uninit(val):
-    return val['value']['value']
-
-def add_binary(index):
-    raw_list = gdb.parse_and_eval(LOADED_BINARIES)
-    binary = unwrap_maybe_uninit(raw_list[index])
-
-    name = get_str(binary['name'])
-    offset = int(binary['offset'])
-
-    path_var = gdb.convenience_variable(f'bin_{name}')
-
-    if path_var:
-        path = path_var.string()
-        gdb.execute(f'add-symbol-file {path} -o {offset:#x}', from_tty=False)
-    else:
-        print(f'Loaded {name} at 0x{offset:x}, but no path is known')
-
-def dump_loaded_binaries():
-    raw_list = gdb.parse_and_eval(LOADED_BINARIES)
-    num_binaries = int(gdb.parse_and_eval(LOADED_BINARIES_LEN))
-
-    for i in range(num_binaries):
-        binary = unwrap_maybe_uninit(raw_list[i])
-        name = get_str(binary['name'])
-        offset = int(binary['offset'])
-
-        path_var = gdb.convenience_variable(f'bin_{name}')
-
-        if path_var:
-            path = path_var.string()
-            print(f'{name} @ 0x{offset:x}: {path}')
-        else:
-            print(f'{name} @ 0x{offset:x}: ???')
-
-class OnBinaryAdded(gdb.Breakpoint):
-    def __init__(self):
-        super().__init__(ON_BINARY_ADDED)
-
-    def stop(self):
-        global binaries_consumed
-
-        num_binaries = int(gdb.parse_and_eval(LOADED_BINARIES_LEN))
-        for i in range(binaries_consumed, num_binaries):
-            add_binary(i)
-
-        binaries_consumed = num_binaries
-
-        return False
-
-OnBinaryAdded()
+def release_loader():
+    # The loader runs on the boot processor, the first CPU and so gdb's thread 1.
+    gdb.execute('thread 1', to_string=True)
+    steps = 0
+    while rax() != LOADER_WAITING:
+        if steps == MAX_STEPS_TO_WAIT:
+            raise gdb.GdbError(f'The loader did not reach its wait within {steps} instructions')
+        gdb.execute('stepi', to_string=True)
+        steps += 1
+    gdb.execute('set $rax = 0')
+    print('Released the loader into the kernel')
 
 class KernelBreakpoint(gdb.Breakpoint):
     def __init__(self):
@@ -90,24 +50,18 @@ class KernelBreakpoint(gdb.Breakpoint):
             else:
                 break
 
-        print(f'Found parent frame: {frame.function().name}')
+        # An assembly stub's frame has no function, only a name gdb may not know either.
+        print(f'Found parent frame: {frame.name()}')
 
         def post():
-            frame.select()
-            gdb.execute('frame')
+            # A command queued behind the stop, as under -batch, may have resumed the guest.
+            if gdb.selected_thread().is_stopped():
+                frame.select()
+                gdb.execute('frame')
 
         gdb.post_event(post)
 
         return True
 
-class OnReady(gdb.Breakpoint):
-    def __init__(self):
-        super().__init__(ON_READY, temporary=True)
-
-    def stop(self):
-        def post():
-            KernelBreakpoint()
-        gdb.post_event(post)
-        return True
-
-OnReady()
+release_loader()
+KernelBreakpoint()

@@ -53,8 +53,9 @@ const KERNEL_STACK_SIZE: u64 = 256 * 1024 * 1024; // 256 MiB
 const KERNEL_STACK_SIZE: u64 = 16 * 1024 * 1024; // 16 MiB
 
 /// Loads the kernel, dom0 and the payload from the memory map and kernel image the UEFI entry
-/// recorded, and enters the kernel. `rsdp` is the ACPI RSDP from the UEFI configuration tables.
-fn load(rsdp: u64) -> ! {
+/// recorded, and enters the kernel. `rsdp` is the ACPI RSDP from the UEFI configuration tables;
+/// `wait_for_debugger` holds the kernel's entry until a debugger lets it go (debugger::wait).
+fn load(rsdp: u64, wait_for_debugger: bool) -> ! {
     let bootstrap_allocator = memory::bootstrap_allocator();
 
     let mut address_space = AddressSpace::new(bootstrap_allocator);
@@ -138,7 +139,7 @@ fn load(rsdp: u64) -> ! {
     }
     log::info!("Kernel stack guard: {:x}-{:x}", guard_base, stack_base);
 
-    debugger::add_binary("kernel", kernel_map.load_bias);
+    debugger::loaded("kernel", kernel_map.load_bias);
 
     // Load dom0
     jumbo_file
@@ -242,7 +243,9 @@ fn load(rsdp: u64) -> ! {
 
     log::info!("ALoader: Num of free pages --> {:?}", free_page_count);
 
-    debugger::on_ready();
+    if wait_for_debugger {
+        debugger::wait();
+    }
 
     log::info!(
         "Kernel stack: {:x}-{:x}, boot info at {:x}",
@@ -350,7 +353,7 @@ where
 
     log::debug!("Dom0 end: {}", dom_end);
 
-    debugger::add_binary(name, dom_map.load_bias);
+    debugger::loaded(name, dom_map.load_bias);
 
     let mapping = DomainMapping {
         reserved_start,

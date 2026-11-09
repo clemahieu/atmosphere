@@ -3,7 +3,8 @@
 //! OVMF, or a machine's firmware, starts the loader as an application from the EFI system
 //! partition. The loader reads the initrd (kernel, dom0 and payload, as tools/run.py concatenates
 //! them) from the same partition, takes the ACPI RSDP from the configuration tables, leaves boot
-//! services, and runs the load on a stack of its own.
+//! services, and runs the load on a stack of its own. A file `gdb` on that partition makes the load
+//! wait for a debugger before it enters the kernel (crate::debugger).
 
 use core::arch::asm;
 use core::ffi::c_void;
@@ -25,6 +26,10 @@ use crate::memory::{AcpiMemoryType, MemoryRange, BOOTSTRAP_SIZE, PAGE_SIZE};
 static INITRD_PATH: [u16; 7] = [
     b'i' as u16, b'n' as u16, b'i' as u16, b't' as u16, b'r' as u16, b'd' as u16, 0,
 ];
+
+/// The path, beside the initrd, of the file that makes the loader wait for a debugger; tools/run.py
+/// --gdb puts it there.
+static DEBUGGER_PATH: [u16; 4] = [b'g' as u16, b'd' as u16, b'b' as u16, 0];
 
 /// The configuration table entry of the ACPI 2.0 RSDP (UEFI 2.11, section 4.6.1.1).
 const ACPI_20_TABLE_GUID: Guid = guid!("8868e871-e4f1-11d3-bc22-0080c73c8881");
@@ -56,6 +61,7 @@ extern "efiapi" fn efi_main(image: Handle, system_table: *const SystemTable) -> 
 
     let loader_range = loader_image_range(boot_services, image);
     let initrd = read_initrd(boot_services, image);
+    let wait_for_debugger = file_exists(boot_services, image, &DEBUGGER_PATH);
     let rsdp = find_rsdp(system_table);
     log::info!("ACPI RSDP at {:#x}", rsdp);
     let stack = allocate(boot_services, STACK_SIZE);
@@ -85,15 +91,16 @@ extern "efiapi" fn efi_main(image: Handle, system_table: *const SystemTable) -> 
             stack_top = in(reg) stack as u64 + STACK_SIZE as u64,
             load = sym load,
             in("rdi") rsdp,
+            in("rsi") wait_for_debugger as u64,
             options(noreturn),
         );
     }
 }
 
-/// Called on the loader's stack with the RSDP in rdi. The target's C convention is Microsoft's,
-/// which passes it in rcx.
-extern "sysv64" fn load(rsdp: u64) -> ! {
-    crate::load(rsdp)
+/// Called on the loader's stack with the RSDP in rdi and whether to wait for a debugger in rsi. The
+/// target's C convention is Microsoft's, which passes them in rcx and rdx.
+extern "sysv64" fn load(rsdp: u64, wait_for_debugger: bool) -> ! {
+    crate::load(rsdp, wait_for_debugger)
 }
 
 /// Panics unless `status` is success.
@@ -124,18 +131,40 @@ fn loader_image_range(boot_services: &BootServices, image: Handle) -> MemoryRang
     range
 }
 
-/// Reads the initrd into memory the loader keeps.
-fn read_initrd(boot_services: &BootServices, image: Handle) -> MemoryRange {
+/// The root directory of the partition the loader was started from.
+fn open_volume(boot_services: &BootServices, image: Handle) -> *mut FileProtocolV1 {
     let loaded_image: *mut LoadedImageProtocol =
         protocol(boot_services, image, &LoadedImageProtocol::GUID);
     let device = unsafe { (*loaded_image).device_handle };
     let file_system: *mut SimpleFileSystemProtocol =
         protocol(boot_services, device, &SimpleFileSystemProtocol::GUID);
 
-    unsafe {
-        let mut root: *mut FileProtocolV1 = ptr::null_mut();
-        check(((*file_system).open_volume)(file_system, &mut root), "open_volume");
+    let mut root: *mut FileProtocolV1 = ptr::null_mut();
+    check(unsafe { ((*file_system).open_volume)(file_system, &mut root) }, "open_volume");
+    root
+}
 
+/// Whether the file at `path`, UCS-2 with its terminator, is on the loader's partition.
+fn file_exists(boot_services: &BootServices, image: Handle, path: &[u16]) -> bool {
+    let root = open_volume(boot_services, image);
+    unsafe {
+        let mut file: *mut FileProtocolV1 = ptr::null_mut();
+        let status = ((*root).open)(root, &mut file, path.as_ptr(), FileMode::READ, FileAttribute::empty());
+        let exists = status != Status::NOT_FOUND;
+        if exists {
+            check(status, "open");
+            check(((*file).close)(file), "close");
+        }
+        check(((*root).close)(root), "close volume");
+        exists
+    }
+}
+
+/// Reads the initrd into memory the loader keeps.
+fn read_initrd(boot_services: &BootServices, image: Handle) -> MemoryRange {
+    let root = open_volume(boot_services, image);
+
+    unsafe {
         let mut file: *mut FileProtocolV1 = ptr::null_mut();
         check(
             ((*root).open)(root, &mut file, INITRD_PATH.as_ptr(), FileMode::READ, FileAttribute::empty()),

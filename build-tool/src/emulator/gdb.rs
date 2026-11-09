@@ -1,7 +1,8 @@
 //! GDB integration.
 //!
 //! `tools/run.py --gdb` writes a JSON file at `.gdb` under the workspace root with the
-//! information in `GdbConnectionInfo`.
+//! information in `GdbConnectionInfo`, once the loader has logged each binary's load bias and
+//! waits for the debugger (aloader/src/debugger.rs).
 
 use std::{collections::HashMap, path::PathBuf};
 
@@ -22,8 +23,17 @@ pub struct GdbConnectionInfo {
     /// Method to connect to the GDB server.
     server: GdbServer,
 
-    /// Paths to other binaries.
-    binaries: HashMap<String, PathBuf>,
+    /// The binaries the loader loaded, by name.
+    binaries: HashMap<String, Binary>,
+}
+
+/// An ELF the loader loaded.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Binary {
+    path: PathBuf,
+
+    /// What the loader added to each of its addresses.
+    bias: u64,
 }
 
 /// GDB server configurations.
@@ -54,9 +64,13 @@ impl GdbConnectionInfo {
             .args(&["-ex", &file_command])
             .args(&["-ex", &self.server.to_gdb_target_command()]);
 
-        for (name, path) in &self.binaries {
-            let var_command = format!("set $bin_{} = \"{}\"", name, path.to_str().unwrap());
-            command.args(&["-ex", &var_command]);
+        for binary in self.binaries.values() {
+            let add_command = format!(
+                "add-symbol-file {} -o {:#x}",
+                binary.path.to_str().expect("Binary path contains non-UTF-8"),
+                binary.bias
+            );
+            command.args(&["-ex", &add_command]);
         }
 
         command

@@ -1,46 +1,33 @@
 //! Debugger integration.
+//!
+//! The loader is a PE whose debug information is a PDB, which gdb cannot read, and the firmware
+//! relocates it; so a debugger finds nothing of the loader's by symbol. It learns where the kernel
+//! and dom0 were loaded from the serial log instead: the loader logs each binary's load bias, and,
+//! when asked to, waits before it enters the kernel until the debugger clears rax. tools/run.py --gdb
+//! reads these lines, and build-tool/src/emulator/gdb-helper.py lets the loader go.
 
-use core::hint::black_box;
-use core::mem::MaybeUninit;
+use core::arch::asm;
 
-#[used]
-static mut LOADED_BINARIES: [MaybeUninit<LoadedBinary>; 10] = [UNINIT_BINARY; 10];
+/// What rax holds while the loader waits; gdb-helper.py checks for it before clearing rax.
+const WAITING: u64 = 0x6764_6277_6169_7421;
 
-#[used]
-static mut LOADED_BINARIES_LEN: usize = 0;
-
-const UNINIT_BINARY: MaybeUninit<LoadedBinary> = MaybeUninit::zeroed();
-
-#[inline(never)]
-fn on_binary_added() {
-    black_box(());
+/// Logs where the binary `name` was loaded, as `debugger: <name> at bias <bias>`.
+pub fn loaded(name: &str, bias: usize) {
+    log::info!("debugger: {} at bias {:#x}", name, bias);
 }
 
-#[inline(never)]
-pub fn on_ready() {
-    black_box(());
-}
-
-#[derive(Debug, Clone)]
-#[allow(dead_code)] // Read by GDB
-pub struct LoadedBinary {
-    name: &'static str,
-    offset: usize,
-}
-
-#[inline(never)]
-pub fn add_binary(name: &'static str, offset: usize) {
-    let binary = LoadedBinary { name, offset };
-
+/// Logs `debugger: waiting`, then spins until a debugger sets rax to anything but `WAITING`.
+pub fn wait() {
+    log::info!("debugger: waiting; clear rax to enter the kernel");
     unsafe {
-        // Shared: the loader runs on one core, and GDB reads the array only while it is stopped.
-        if LOADED_BINARIES_LEN >= (*&raw const LOADED_BINARIES).len() {
-            panic!("Too many binaries");
-        }
-
-        LOADED_BINARIES[LOADED_BINARIES_LEN].write(binary);
-        LOADED_BINARIES_LEN += 1;
+        asm!(
+            "2:",
+            "pause",
+            "cmp rax, {waiting}",
+            "je 2b",
+            waiting = in(reg) WAITING,
+            inout("rax") WAITING => _,
+            options(nomem, nostack),
+        );
     }
-
-    on_binary_added();
 }

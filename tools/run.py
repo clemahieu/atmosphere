@@ -4,9 +4,10 @@
 OVMF boots the loader, the UEFI application, from a directory QEMU serves as the EFI system
 partition; the loader reads the kernel, dom0 and payload ELF images concatenated in the file initrd
 beside it (aloader/src/boot/uefi.rs). The serial log is serial.log at the workspace root. KVM is used
-whenever /dev/kvm is writable; --no-kvm forces TCG. --iommu adds QEMU's emulated IOMMU. --gdb
-freezes the guest at its first instruction behind a gdb server, and writes .gdb at the workspace root
-for atmo gdb to attach with.
+whenever /dev/kvm is writable; --no-kvm forces TCG. --iommu adds QEMU's emulated IOMMU. --gdb puts
+a gdb server on the guest and the file gdb on the ESP, which makes the loader wait before it enters
+the kernel (aloader/src/debugger.rs); once the loader has logged where it loaded each binary and that
+it waits, .gdb at the workspace root holds what atmo gdb attaches with.
 
 The firmware's output on the terminal ends with control sequences that reset it, so everything
 before the loader's banner is dropped there; serial.log keeps it.
@@ -20,6 +21,7 @@ usage: tools/run.py [--no-kvm] [--iommu] [--gdb]   (from anywhere)
 import argparse
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -38,6 +40,11 @@ OVMF_VARS = "/usr/share/edk2/ovmf/OVMF_VARS.fd"
 # Where OVMF looks for an application on removable media, and where the loader looks for the initrd.
 ESP_LOADER = "EFI/BOOT/BOOTX64.EFI"
 ESP_INITRD = "initrd"
+# Whose presence on the ESP makes the loader wait for gdb (aloader/src/boot/uefi.rs).
+ESP_GDB = "gdb"
+# What the loader logs of each binary it loads, and before it waits for gdb (aloader/src/debugger.rs).
+DEBUGGER_BIAS = re.compile(rb"debugger: (\w+) at bias (0x[0-9a-f]+)")
+DEBUGGER_WAITING = b"debugger: waiting"
 # dom0 ends the run by writing to this port (dom0/src/syscall_benchmark.rs).
 DEBUG_EXIT_PORT = 0xf4
 # isa-debug-exit makes QEMU exit with `code << 1 | 1`, and dom0 writes 0x10 on success.
@@ -125,21 +132,22 @@ def qemu_args(run_dir, serial_log, kvm, iommu, gdb_socket):
     if kvm:
         args.append("-enable-kvm")
     if gdb_socket is not None:
-        args += ["-S", "-gdb", f"unix:{gdb_socket},server,nowait"]
+        args += ["-gdb", f"unix:{gdb_socket},server,nowait"]
     return args
 
 
-def gdb_info(loader, kernel, dom0, socket):
-    """The connection info atmo gdb reads from .gdb (build-tool/src/emulator/gdb.rs)."""
+def gdb_info(loader, binaries, biases, socket):
+    """The connection info atmo gdb reads from .gdb (build-tool/src/emulator/gdb.rs): each of
+    `binaries`, a path by name, with the bias the loader logged for it."""
     return {
         "file": str(loader),
         "server": {"Unix": str(socket)},
-        "binaries": {"kernel": str(kernel), "dom0": str(dom0)},
+        "binaries": {name: {"path": str(path), "bias": biases[name]} for name, path in binaries.items()},
     }
 
 
-def filter_output(src, dst):
-    """Copies src to dst from just after the loader's banner on, dropping what comes before it."""
+def drop_firmware_output(src, dst):
+    """Reads src up to the loader's banner and copies what follows it on that line to dst."""
     while True:
         line = src.readline()
         if not line:
@@ -147,7 +155,27 @@ def filter_output(src, dst):
         if LOADER_MARKER in line:
             dst.write(line.split(LOADER_MARKER, 1)[1])
             dst.flush()
-            break
+            return
+
+
+def await_debugger(src, dst):
+    """Copies src to dst line by line until the loader logs that it waits for gdb, and returns the
+    load bias it logged for each binary, by name; None when src ends first."""
+    biases = {}
+    while True:
+        line = src.readline()
+        if not line:
+            return None
+        dst.write(line)
+        dst.flush()
+        match = DEBUGGER_BIAS.search(line)
+        if match:
+            biases[match[1].decode()] = int(match[2], 16)
+        elif DEBUGGER_WAITING in line:
+            return biases
+
+
+def copy_output(src, dst):
     while True:
         chunk = src.read(65536)
         if not chunk:
@@ -156,13 +184,15 @@ def filter_output(src, dst):
         dst.flush()
 
 
-def lay_out_esp(run_dir, loader, images):
+def lay_out_esp(run_dir, loader, images, gdb):
     loader_path = run_dir / "esp" / ESP_LOADER
     loader_path.parent.mkdir(parents=True)
     shutil.copy(loader, loader_path)
     with open(run_dir / "esp" / ESP_INITRD, "wb") as initrd:
         for image in images:
             initrd.write(image.read_bytes())
+    if gdb:
+        (run_dir / "esp" / ESP_GDB).touch()
     shutil.copy(OVMF_VARS, run_dir / "OVMF_VARS.fd")
 
 
@@ -170,7 +200,7 @@ def main(argv):
     parser = argparse.ArgumentParser(prog="tools/run.py", description=__doc__.split("\n")[0])
     parser.add_argument("--no-kvm", action="store_true", help="use TCG even if /dev/kvm is writable")
     parser.add_argument("--iommu", action="store_true", help="add QEMU's emulated IOMMU")
-    parser.add_argument("--gdb", action="store_true", help="wait for atmo gdb at the first instruction")
+    parser.add_argument("--gdb", action="store_true", help="wait for atmo gdb before entering the kernel")
     options = parser.parse_args(argv)
 
     kernel = build("kernel", "kernel")
@@ -183,17 +213,21 @@ def main(argv):
     gdb_path = REPO / ".gdb"
     with tempfile.TemporaryDirectory(prefix="atmo-run-") as directory:
         run_dir = Path(directory)
-        lay_out_esp(run_dir, loader, [kernel, dom0, payload])
+        lay_out_esp(run_dir, loader, [kernel, dom0, payload], options.gdb)
         socket = run_dir / "gdb.sock" if options.gdb else None
-        if socket is not None:
-            gdb_path.write_text(json.dumps(gdb_info(loader, kernel, dom0, socket)))
-            print("Run `atmo gdb` in another terminal. The guest is frozen until you continue in the debugger.",
-                  file=sys.stderr)
         args = qemu_args(run_dir, REPO / "serial.log", use_kvm(options.no_kvm, "/dev/kvm"), options.iommu, socket)
         print("Starting qemu-system-x86_64 " + " ".join(args), file=sys.stderr)
         try:
             qemu = subprocess.Popen(["qemu-system-x86_64"] + args, cwd=REPO, stdout=subprocess.PIPE, bufsize=0)
-            filter_output(qemu.stdout, sys.stdout.buffer)
+            drop_firmware_output(qemu.stdout, sys.stdout.buffer)
+            if socket is not None:
+                biases = await_debugger(qemu.stdout, sys.stdout.buffer)
+                if biases is not None:
+                    info = gdb_info(loader, {"kernel": kernel, "dom0": dom0}, biases, socket)
+                    gdb_path.write_text(json.dumps(info))
+                    print("Run `atmo gdb` in another terminal. The loader waits for it before entering the kernel.",
+                          file=sys.stderr)
+            copy_output(qemu.stdout, sys.stdout.buffer)
             returncode = qemu.wait()
         finally:
             if socket is not None:
@@ -267,16 +301,56 @@ class Tests(unittest.TestCase):
         args = qemu_args(Path("/run/x"), Path("/w/serial.log"), True, True, Path("/run/x/gdb.sock"))
         self.assertIn("-enable-kvm", args)
         self.assertIn("intel-iommu,intremap=on,aw-bits=48,caching-mode=on", self.options(args, "-device"))
-        self.assertIn("-S", args)
         self.assertEqual(self.options(args, "-gdb"), ["unix:/run/x/gdb.sock,server,nowait"])
 
+    def test_gdb_does_not_freeze_the_guest(self):
+        # The loader waits for gdb itself, once it has logged where it loaded each binary.
+        args = qemu_args(Path("/run/x"), Path("/w/serial.log"), False, False, Path("/run/x/gdb.sock"))
+        self.assertNotIn("-S", args)
+
     def test_gdb_info_is_what_atmo_gdb_reads(self):
-        info = gdb_info(Path("/t/aloader.efi"), Path("/t/kernel"), Path("/t/dom0"), Path("/r/gdb.sock"))
+        info = gdb_info(Path("/t/aloader.efi"), {"kernel": Path("/t/kernel"), "dom0": Path("/t/dom0")},
+                        {"kernel": 0x14005f000, "dom0": 0x8000000000}, Path("/r/gdb.sock"))
         self.assertEqual(json.loads(json.dumps(info)), {
             "file": "/t/aloader.efi",
             "server": {"Unix": "/r/gdb.sock"},
-            "binaries": {"kernel": "/t/kernel", "dom0": "/t/dom0"},
+            "binaries": {"kernel": {"path": "/t/kernel", "bias": 0x14005f000},
+                         "dom0": {"path": "/t/dom0", "bias": 0x8000000000}},
         })
+
+    def test_gdb_info_needs_every_binary_s_bias(self):
+        with self.assertRaises(KeyError):
+            gdb_info(Path("/t/aloader.efi"), {"kernel": Path("/t/kernel"), "dom0": Path("/t/dom0")},
+                     {"kernel": 0x14005f000}, Path("/r/gdb.sock"))
+
+    def test_the_esp_asks_the_loader_to_wait_only_under_gdb(self):
+        for gdb in (False, True):
+            with tempfile.TemporaryDirectory() as directory:
+                run_dir = Path(directory)
+                loader = run_dir / "aloader.efi"
+                loader.write_bytes(b"MZ")
+                image = run_dir / "kernel"
+                image.write_bytes(b"\x7fELF")
+                lay_out_esp(run_dir, loader, [image, image], gdb)
+                self.assertEqual((run_dir / "esp" / ESP_INITRD).read_bytes(), b"\x7fELF\x7fELF")
+                self.assertEqual((run_dir / "esp" / ESP_GDB).exists(), gdb)
+
+    def awaited(self, data):
+        out = BytesIO()
+        biases = await_debugger(BytesIO(data), out)
+        return biases, out.getvalue()
+
+    def test_the_biases_are_read_from_the_loader_s_lines_up_to_its_wait(self):
+        lines = (b" INFO debugger: kernel at bias 0x14005f000\r\n"
+                 b"DEBUG     Load Bias: 0x8000000000\r\n"
+                 b" INFO debugger: dom0 at bias 0x8000000000\r\n"
+                 b" INFO debugger: waiting\r\n")
+        self.assertEqual(self.awaited(lines + b" INFO Calling into kernel\r\n"),
+                         ({"kernel": 0x14005f000, "dom0": 0x8000000000}, lines))
+
+    def test_no_biases_when_the_output_ends_before_the_wait(self):
+        lines = b" INFO debugger: kernel at bias 0x14005f000\r\n"
+        self.assertEqual(self.awaited(lines), (None, lines))
 
     def test_executable_is_the_named_artifact(self):
         messages = "\n".join(json.dumps(m) for m in [
@@ -289,8 +363,9 @@ class Tests(unittest.TestCase):
         self.assertIsNone(executable(messages, "dom0"))
 
     def filtered(self, data):
-        out = BytesIO()
-        filter_output(BytesIO(data), out)
+        src, out = BytesIO(data), BytesIO()
+        drop_firmware_output(src, out)
+        copy_output(src, out)
         return out.getvalue()
 
     def test_firmware_output_before_the_loader_is_dropped(self):

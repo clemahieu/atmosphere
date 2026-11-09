@@ -14,7 +14,7 @@ use crate::project::Project;
 #[derive(Debug, Parser)]
 #[clap(trailing_var_arg = true)]
 pub struct Opts {
-    /// Pause at the very beginning.
+    /// Stay stopped where gdb attached, in the loader before the kernel, instead of continuing.
     #[clap(long)]
     pause: bool,
 
