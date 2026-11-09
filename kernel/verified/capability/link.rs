@@ -1146,7 +1146,7 @@ impl CapKernel {
                 assert(table_record_wf(pb, t));
             }
         }
-        assert forall|b: usize| b < NUM_PAGES && #[trigger] table_block(&post.blocks, b) implies pb.maps@.contains_key((b * 4096) as usize) by {
+        assert forall|b: usize| post.blocks.tracks(b as int) && #[trigger] table_block(&post.blocks, b) implies pb.maps@.contains_key((b * 4096) as usize) by {
             assert(pa.maps@.contains_key((b * 4096) as usize));
         }
     }
@@ -1202,7 +1202,7 @@ impl CapKernel {
                 assert(root_record_wf(sb, s));
             }
         }
-        assert forall|b: usize| b < NUM_PAGES && #[trigger] space_block(&post.blocks, b) implies sb.roots@.contains_key((b * 4096) as usize) by {
+        assert forall|b: usize| post.blocks.tracks(b as int) && #[trigger] space_block(&post.blocks, b) implies sb.roots@.contains_key((b * 4096) as usize) by {
             assert(sa.roots@.contains_key((b * 4096) as usize));
         }
     }
@@ -1288,7 +1288,7 @@ impl CapKernel {
             old(self).table_pages.records@.contains_key(child),
             old(self).table_pages.records@[child].addr() == child + TABLE_RECORD_PAGE * 4096,
             old(self).table_pages.records@[child].is_init(),
-            child / 4096 < NUM_PAGES,
+            old(self).blocks.tracks_addr(child),
         ensures
             final(self).table_pages.maps == old(self).table_pages.maps,
             final(self).table_pages.spare == old(self).table_pages.spare,
@@ -1667,7 +1667,7 @@ impl CapKernel {
         if self.is_cap_dead(n, payload) {
             return false;
         }
-        if parent % 32768 != 0 || parent / 4096 >= NUM_PAGES || child % 32768 != 0 || child / 4096 >= NUM_PAGES || entry >= 512 {
+        if parent % 32768 != 0 || !self.blocks.page_tracked(parent / 4096) || child % 32768 != 0 || !self.blocks.page_tracked(child / 4096) || entry >= 512 {
             proof {
                 if tree.is_page(parent) {
                     assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, parent));
@@ -1848,7 +1848,7 @@ impl CapKernel {
         &&& post.iommus.present == pre.iommus.present
         &&& post.iommus.commands == pre.iommus.commands
         &&& post.mapped == pre.mapped
-        &&& forall|a: int, g: usize| a < post.flush_epoch && g < NUM_PAGES && pre.stale_epoch.above(a, g)
+        &&& forall|a: int, g: usize| a < post.flush_epoch && pre.blocks.tracks(g as int) && pre.stale_epoch.above(a, g)
             ==> #[trigger] post.stale_epoch.above(a, g)
     }
 
@@ -1864,7 +1864,7 @@ impl CapKernel {
         &&& Self::tree_cut(pre, post, t)
         &&& Self::cut_stale_noted(pre, post, t)
         &&& forall|g: usize| #[trigger] cut_walk_finds(tree_of(&pre.table_pages, &pre.spaces), t, g)
-            ==> post.mapped@.contains(g) && g < NUM_PAGES
+            ==> post.mapped@.contains(g) && post.blocks.tracks(g as int)
         &&& forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && #[trigger] pre.core_may_hold(c, e) ==> post.core_may_hold(c, e)
     }
 
@@ -1878,7 +1878,7 @@ impl CapKernel {
                 + entry_pages(if tree_of(&self.table_pages, &self.spaces).entry(t, e).perm.ps { 2usize } else { 1usize }),
         ensures
             self.mapped@.contains(g),
-            g < NUM_PAGES,
+            self.blocks.tracks(g as int),
     {
         let tree = tree_of(&self.table_pages, &self.spaces);
         let n = mapping_node(t, e);
@@ -1886,7 +1886,7 @@ impl CapKernel {
         assert(self.mappings@.contains_key(n));
         let m = self.mappings@[n];
         assert(mapping_wf(&self.list, &self.tables, tree, &self.blocks, self.holders@, self.mappings@, n));
-        assert(m.frame + entry_pages(tree.record(t).level) <= NUM_PAGES);
+        assert(self.blocks.tracks_run(m.frame as int, entry_pages(tree.record(t).level)));
         lemma_div_by_multiple(m.frame as int, 4096);
         lemma_map_pages(m.frame, m.large);
         assert(record_pages(m).contains(g));
@@ -1900,7 +1900,7 @@ impl CapKernel {
             walk_finds(tree_of(&self.table_pages, &self.spaces), r, p, g),
         ensures
             self.mapped@.contains(g),
-            g < NUM_PAGES,
+            self.blocks.tracks(g as int),
     {
         let tree = tree_of(&self.table_pages, &self.spaces);
         let t3 = step(tree, r, p.l4)->0;
@@ -1954,7 +1954,7 @@ impl CapKernel {
             cut_walk_finds(tree_of(&self.table_pages, &self.spaces), t, g),
         ensures
             self.mapped@.contains(g),
-            g < NUM_PAGES,
+            self.blocks.tracks(g as int),
     {
         let tree = tree_of(&self.table_pages, &self.spaces);
         let s = tree.record(t).space->0;
@@ -2024,7 +2024,7 @@ impl CapKernel {
             }
             assert forall|d: int, e: TlbEntry|
                 0 <= d < NUM_CPUS && #[trigger] self.tlb@[d].contains(e) && !self.mapped@.contains(e.page)
-                implies e.page < NUM_PAGES && self.stale_epoch.above(self.acked(d), e.page) by {
+                implies self.blocks.tracks(e.page as int) && self.stale_epoch.above(self.acked(d), e.page) by {
                 assert(pre.acked(d) <= pre.flush_epoch);
                 assert(self.acked(d) == pre.acked(d));
                 if pre.tlb@[d].contains(e) {
@@ -2050,7 +2050,7 @@ impl CapKernel {
             }
             assert forall|i: int, e: TlbEntry|
                 0 <= i < NUM_IOMMUS && #[trigger] self.iommus.tlb@[i].contains(e) && !self.mapped@.contains(e.page)
-                implies e.page < NUM_PAGES && self.stale_epoch.above(self.iommu_acked(i), e.page) by {
+                implies self.blocks.tracks(e.page as int) && self.stale_epoch.above(self.iommu_acked(i), e.page) by {
                 assert(pre.iommu_acked(i) <= pre.flush_epoch);
                 assert(self.iommu_acked(i) == pre.iommu_acked(i));
                 if pre.iommus.tlb@[i].contains(e) {
@@ -2271,7 +2271,7 @@ impl CapKernel {
             assert(pre.acked(0) <= pre.flush_epoch);
             assert(!self.acknowledged(t / 4096));
             assert(Self::cut_stale_noted(pre, *self, t));
-            assert forall|g: usize| #[trigger] cut_walk_finds(a, t, g) implies self.mapped@.contains(g) && g < NUM_PAGES by {
+            assert forall|g: usize| #[trigger] cut_walk_finds(a, t, g) implies self.mapped@.contains(g) && self.blocks.tracks(g as int) by {
                 pre.lemma_cut_walks_mapped(t, g);
             }
             assert forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && #[trigger] pre.core_may_hold(c, e) implies self.core_may_hold(c, e) by {
@@ -2335,7 +2335,7 @@ impl CapKernel {
             old(self).table_pages.records@.contains_key(child),
             old(self).table_pages.records@[child].addr() == child + TABLE_RECORD_PAGE * 4096,
             old(self).table_pages.records@[child].is_init(),
-            child / 4096 < NUM_PAGES,
+            old(self).blocks.tracks_addr(child),
         ensures
             final(self).table_pages.maps == old(self).table_pages.maps,
             final(self).table_pages.spare == old(self).table_pages.spare,
@@ -2428,7 +2428,7 @@ impl CapKernel {
                 }
             }
         }
-        assert forall|b: usize| b < NUM_PAGES && #[trigger] table_block(&post.blocks, b) implies pb.maps@.contains_key((b * 4096) as usize) by {
+        assert forall|b: usize| post.blocks.tracks(b as int) && #[trigger] table_block(&post.blocks, b) implies pb.maps@.contains_key((b * 4096) as usize) by {
             assert(pa.maps@.contains_key((b * 4096) as usize));
         }
     }

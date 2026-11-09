@@ -389,7 +389,7 @@ impl CapKernel {
         }
         assert forall|d: int, e: TlbEntry|
             0 <= d < NUM_CPUS && #[trigger] post.tlb@[d].contains(e) && !post.mapped@.contains(e.page)
-            implies e.page < NUM_PAGES && post.stale_epoch.above(post.acked(d), e.page) by {
+            implies post.blocks.tracks(e.page as int) && post.stale_epoch.above(post.acked(d), e.page) by {
             assert(pre.tlb@[d].contains(e));
         }
     }
@@ -481,7 +481,7 @@ impl CapKernel {
         }
         assert forall|d: int, e: TlbEntry|
             0 <= d < NUM_CPUS && #[trigger] post.tlb@[d].contains(e) && !post.mapped@.contains(e.page)
-            implies e.page < NUM_PAGES && post.stale_epoch.above(post.acked(d), e.page) by {
+            implies post.blocks.tracks(e.page as int) && post.stale_epoch.above(post.acked(d), e.page) by {
             assert(pre.tlb@[d].contains(e));
             assert(pre.acked(d) == post.acked(d));
         }
@@ -662,12 +662,12 @@ pub proof fn lemma_mapped_page_in_block(blocks: &BlockTable, i: usize, p: Payloa
     requires
         blocks.wf(),
         i == p.base / 4096,
-        i < NUM_PAGES,
+        blocks.tracks(i as int),
         block_typed(blocks, block_ref(blocks, i)),
         frame_in_block(block_ref(blocks, i), p),
         p.base <= frame * 4096,
         frame * 4096 + count * 4096 <= p.base as int + block_bytes(p.order),
-        frame < NUM_PAGES,
+        blocks.tracks(frame as int),
         count >= 1,
         frame <= g < frame + count,
     ensures
@@ -792,7 +792,7 @@ pub open spec fn mapping_wf(list: &Tree, tables: &Tables, tree: TableTree, block
     &&& tree.entry(m.table, m.entry).perm.present
     &&& tree.entry(m.table, m.entry).perm.ps == (tree.record(m.table).level == 2)
     &&& tree.entry(m.table, m.entry).addr == m.frame * 4096
-    &&& m.frame < NUM_PAGES
+    &&& blocks.tracks(m.frame as int)
     &&& tree.record(m.table).level == 2 ==> m.frame % 512 == 0
     &&& holders.contains_key(block_ref(blocks, m.frame))
     &&& holders[block_ref(blocks, m.frame)].contains(n)
@@ -925,7 +925,7 @@ impl CapKernel {
             self.is_cap(self.list.parent@[n]),
             self.payload_of(self.list.parent@[n]).kind is Frame,
             self.list.is_child(self.list.parent@[n], n),
-            self.mappings@[n].frame < NUM_PAGES,
+            self.blocks.tracks(self.mappings@[n].frame as int),
             self.holders@.contains_key(block_ref(&self.blocks, self.mappings@[n].frame)),
             self.holders@[block_ref(&self.blocks, self.mappings@[n].frame)].contains(n),
             block_typed(&self.blocks, block_ref(&self.blocks, self.mappings@[n].frame)),
@@ -1028,12 +1028,12 @@ impl CapKernel {
             forall|x: usize| #[trigger] pre.is_cap(x) ==> post.is_cap(x) && post.payload_of(x) == pre.payload_of(x),
             small_order(order),
             page % (order_pages(order) as usize) == 0,
-            page + order_pages(order) <= NUM_PAGES,
+            pre.blocks.tracks_run(page as int, order_pages(order)),
             forall|k: int| 0 <= k < order_pages(order) ==> #[trigger] pre.blocks.pages@[page + k].kind is Free,
             !pre.blocks.covered(page as int),
             post.blocks.regions_2m@ == pre.blocks.regions_2m@,
             post.blocks.regions_1g@ == pre.blocks.regions_1g@,
-            forall|i: int| 0 <= i < NUM_PAGES && !(page <= i < page + order_pages(order))
+            forall|i: int| pre.blocks.tracks(i) && !(page <= i < page + order_pages(order))
                 ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
         ensures
             mappings_wf(&post.list, &post.tables, tree_of(&post.table_pages, &post.spaces), &post.blocks, post.holders@, post.mappings@),
@@ -1057,7 +1057,7 @@ impl CapKernel {
             self.wf(),
             self.mappings@.contains_key(n),
         ensures
-            page_of(n) / 4096 < NUM_PAGES,
+            self.blocks.tracks_addr(page_of(n)),
             !leaf_block(&self.blocks, page_of(n) / 4096),
     {
         let m = self.mappings@[n];
@@ -1522,7 +1522,7 @@ impl CapKernel {
         let ghost space = tree.record(m.table).space;
         proof {
             assert(mapping_wf(&pre.list, &pre.tables, tree, &pre.blocks, pre.holders@, pre.mappings@, n));
-            assert(frame + entry_pages(tree.record(m.table).level) <= NUM_PAGES);
+            assert(pre.blocks.tracks_run(frame as int, entry_pages(tree.record(m.table).level)));
         }
         let count: usize = if large { 512 } else { 1 };
         self.flush_epoch = self.flush_epoch + 1;
@@ -1563,7 +1563,7 @@ impl CapKernel {
             }
             assert forall|d: int, e: TlbEntry|
                 0 <= d < NUM_CPUS && #[trigger] self.tlb@[d].contains(e) && !self.mapped@.contains(e.page)
-                implies e.page < NUM_PAGES && self.stale_epoch.above(self.acked(d), e.page) by {
+                implies self.blocks.tracks(e.page as int) && self.stale_epoch.above(self.acked(d), e.page) by {
                 assert(pre.acked(d) <= pre.flush_epoch);
                 assert(self.acked(d) == pre.acked(d));
                 if pages.contains(e.page) {
@@ -1588,7 +1588,7 @@ impl CapKernel {
             }
             assert forall|i: int, e: TlbEntry|
                 0 <= i < NUM_IOMMUS && #[trigger] self.iommus.tlb@[i].contains(e) && !self.mapped@.contains(e.page)
-                implies e.page < NUM_PAGES && self.stale_epoch.above(self.iommu_acked(i), e.page) by {
+                implies self.blocks.tracks(e.page as int) && self.stale_epoch.above(self.iommu_acked(i), e.page) by {
                 assert(pre.iommu_acked(i) <= pre.flush_epoch);
                 assert(self.iommu_acked(i) == pre.iommu_acked(i));
                 if pages.contains(e.page) {
@@ -1634,7 +1634,7 @@ impl CapKernel {
                 let k = ((m.entry + 1) / (NODES_PER_PAGE as int)) as usize;
                 let tree = tree_of(&self.table_pages, &self.spaces);
                 &&& n / 4096 == q + k
-                &&& n / 4096 < NUM_PAGES
+                &&& self.blocks.tracks_addr(n)
                 &&& k == 0 ==> self.blocks.pages@[(n / 4096) as int].kind is Base
                 &&& k > 0 ==> self.blocks.pages@[(n / 4096) as int].kind is Member && self.blocks.pages@[(n / 4096) as int].base == q
                 &&& q * 4096 == m.table
@@ -1647,7 +1647,7 @@ impl CapKernel {
                 &&& self.table_pages.maps@[m.table].value().wf()
                 &&& tree.entry(m.table, m.entry).addr == m.frame * 4096
                 &&& tree.entry(m.table, m.entry).addr / 4096 == m.frame
-                &&& m.frame < NUM_PAGES
+                &&& self.blocks.tracks(m.frame as int)
             }),
     {
         let m = self.mappings@[n];
@@ -1883,7 +1883,7 @@ pub proof fn lemma_links_entry_cleared(a: TableTree, b: TableTree, t: usize, e: 
 }
 
 impl CapKernel {
-    /// A table page's block: eight aligned pages below NUM_PAGES, the first its base, the rest members.
+    /// A table page's block: eight aligned tracked pages, the first its base, the rest members.
     pub proof fn lemma_table_page_room(&self, t: usize)
         requires
             self.wf(),
@@ -1892,7 +1892,7 @@ impl CapKernel {
             table_page_wf(&self.list, &self.table_pages, &self.blocks, t),
             t % 32768 == 0,
             t % 4096 == 0,
-            t / 4096 + 8 <= NUM_PAGES,
+            self.blocks.tracks_addr_run(t, 8),
             t < 0x2_0000_0000,
             self.blocks.pages@[(t / 4096) as int].kind is Base,
             self.blocks.pages@[(t / 4096) as int].object is TablePage,
@@ -2112,7 +2112,7 @@ impl CapKernel {
     pub open spec fn page_added_step(pre: Self, post: Self, base: usize) -> bool {
         &&& pre.wf()
         &&& base % 32768 == 0
-        &&& base / 4096 + 8 <= NUM_PAGES
+        &&& pre.blocks.tracks_addr_run(base, 8)
         &&& forall|t: usize| #[trigger] post.table_pages.maps@.contains_key(t)
             ==> t == base || pre.table_pages.maps@.contains_key(t)
         &&& forall|k: usize| k < TABLE_NODE_PAGES ==> !pre.list.pages@.dom().contains(#[trigger] table_node_page(base, k))

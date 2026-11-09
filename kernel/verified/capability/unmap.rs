@@ -240,7 +240,7 @@ impl CapKernel {
         assert(Self::mapping_unlinked(pre, post, node));
         assert forall|g: usize| #[trigger] pages.contains(g) implies !post.acknowledged(g) by {
             assert(!mid.acknowledged(g));
-            if g < NUM_PAGES {
+            if mid.blocks.tracks(g as int) {
                 let epoch = mid.stale_epoch.pages@[g as int] as int;
                 assert(!mid.all_acknowledged(epoch));
                 if exists|c: int| 0 <= c < NUM_CPUS && !(epoch <= #[trigger] mid.acked(c)) {

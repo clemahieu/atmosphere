@@ -374,7 +374,7 @@ pub proof fn lemma_table_pages_entry_written(list: &Tree, pa: &TablePages, pb: &
             assert(table_record_wf(pb, u));
         }
     }
-    assert forall|b: usize| b < NUM_PAGES && #[trigger] table_block(blocks, b) implies pb.maps@.contains_key((b * 4096) as usize) by {
+    assert forall|b: usize| blocks.tracks(b as int) && #[trigger] table_block(blocks, b) implies pb.maps@.contains_key((b * 4096) as usize) by {
         assert(pa.maps@.contains_key((b * 4096) as usize));
     }
 }
@@ -771,7 +771,7 @@ pub proof fn lemma_holders_mapping_added(
     vstd::set::lemma_set_insert_len(holders[br], n);
     assert forall|x: usize| #[trigger] tables.is_cap(list_b, x) && tables.payload_of(x).kind is Frame implies {
         let i = tables.payload_of(x).base / 4096;
-        &&& i < NUM_PAGES
+        &&& blocks_b.tracks(i as int)
         &&& frame_in_block(block_ref(blocks_b, i), tables.payload_of(x))
         &&& hb.contains_key(block_ref(blocks_b, i))
         &&& hb[block_ref(blocks_b, i)].contains(x)
@@ -792,7 +792,7 @@ pub proof fn lemma_holders_mapping_added(
     assert forall|k: BlockRef, x: usize| hb.contains_key(k) && #[trigger] hb[k].contains(x) implies ({
         &&& tables.is_cap(list_b, x)
         &&& tables.payload_of(x).kind is Frame
-        &&& tables.payload_of(x).base / 4096 < NUM_PAGES
+        &&& blocks_b.tracks_addr(tables.payload_of(x).base)
         &&& block_ref(blocks_b, tables.payload_of(x).base / 4096) == k
     } || (x < NODE_SPACE && list_b.nodes@[x as int].live && list_b.nodes@[x as int].kind is Mapping)) by {
         assert(holders.contains_key(k));
@@ -907,7 +907,7 @@ impl CapKernel {
         &&& pre.is_cap(f)
         &&& cap.kind is Frame
         &&& pre.list.nodes@[f as int].depth < MAX_DEPTH
-        &&& frame < NUM_PAGES
+        &&& pre.blocks.tracks(frame as int)
         &&& cap.base <= frame * 4096
         &&& frame * 4096 + entry_pages(map_level(large)) * 4096 <= cap.base as int + block_bytes(cap.order)
         &&& large ==> frame % 512 == 0
@@ -1541,7 +1541,7 @@ impl CapKernel {
         requires
             Self::table_page_perms(old(self).table_pages, t),
             e < 512,
-            frame < NUM_PAGES,
+            old(self).blocks.tracks(frame as int),
         ensures
             Self::entry_set(old(self).table_pages, final(self).table_pages, t, e, frame_map_entry(frame, rights, large)),
             final(self).list == old(self).list,
@@ -1786,7 +1786,7 @@ impl CapKernel {
             !self.table_pages.maps@.contains_key(s),
             tree_of(&self.table_pages, &self.spaces).is_root(s),
             tree_of(&self.table_pages, &self.spaces).record(s).level == 4,
-            s / 4096 < NUM_PAGES,
+            self.blocks.tracks_addr(s),
     {
         assert(space_wf(&self.list, &self.spaces, &self.blocks, s));
         if self.table_pages.maps@.contains_key(s) {
@@ -1885,7 +1885,7 @@ impl CapKernel {
         }
     }
 
-    /// Page `page` of frame capability f lies in the capability's block, below NUM_PAGES.
+    /// Page `page` of frame capability f lies in the capability's block and is a tracked page.
     pub proof fn lemma_frame_page(&self, f: usize, page: usize)
         requires
             self.wf(),
@@ -1897,7 +1897,7 @@ impl CapKernel {
                 let cap = self.payload_of(f);
                 let frame = frame_of(cap, page);
                 &&& cap.base % 4096 == 0
-                &&& cap.base / 4096 + page < NUM_PAGES
+                &&& self.blocks.tracks(cap.base / 4096 + page)
                 &&& frame == cap.base / 4096 + page
                 &&& frame * 4096 == cap.base + page * 4096
                 &&& cap.base <= frame * 4096
@@ -1930,12 +1930,12 @@ impl CapKernel {
         lemma_child_same_block(&self.blocks, cap, child);
         lemma_div_multiples_vanish(fr, 4096);
         assert(child.base as int / 4096 == fr);
-        assert(fr < NUM_PAGES);
+        assert(self.blocks.tracks(fr));
         assert(frame_of(cap, page) == fr);
     }
 
     /// The 512 pages from 2M-aligned offset `page` of the 2M or 1G frame capability f lie in the
-    /// capability's block, below NUM_PAGES, and start 2M aligned.
+    /// capability's block, are tracked pages, and start 2M aligned.
     pub proof fn lemma_large_frame_page(&self, f: usize, page: usize)
         requires
             self.wf(),
@@ -1949,7 +1949,7 @@ impl CapKernel {
                 let cap = self.payload_of(f);
                 let frame = frame_of(cap, page);
                 &&& cap.base % 4096 == 0
-                &&& cap.base / 4096 + page < NUM_PAGES
+                &&& self.blocks.tracks(cap.base / 4096 + page)
                 &&& frame == cap.base / 4096 + page
                 &&& frame % 512 == 0
                 &&& cap.base <= frame * 4096
@@ -1984,7 +1984,7 @@ impl CapKernel {
         lemma_child_same_block(&self.blocks, cap, child);
         lemma_div_multiples_vanish(fr, 4096);
         assert(child.base as int / 4096 == fr);
-        assert(fr < NUM_PAGES);
+        assert(self.blocks.tracks(fr));
         assert(frame_of(cap, page) == fr);
     }
 
