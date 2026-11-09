@@ -55,6 +55,7 @@ const _: () = {
     assert!(user::PRINT == operation::OPERATION_PRINT);
     assert!(user::ROOT_PROCESS_SLOT == boot::ROOT_PROCESS_SLOT as u64);
     assert!(user::ROOT_THREAD_SLOT == boot::ROOT_THREAD_SLOT as u64);
+    assert!(user::ROOT_CONSOLE_SLOT == boot::ROOT_CONSOLE_SLOT as u64);
 };
 
 /// Initializes syscalls.

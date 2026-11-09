@@ -7,6 +7,8 @@ use vstd::prelude::*;
 verus! {
 
 use crate::capability::block::*;
+use crate::capability::console::*;
+use crate::capability::derive::*;
 use crate::capability::device::*;
 use crate::capability::kernel::*;
 use crate::capability::link::*;
@@ -32,6 +34,9 @@ pub const ROOT_PROCESS_SLOT: usize = 1;
 
 /// The index of the root's capability to its own thread: slot 2 of entry 0.
 pub const ROOT_THREAD_SLOT: usize = 2;
+
+/// The index of the root's console capability: slot 3 of entry 0.
+pub const ROOT_CONSOLE_SLOT: usize = 3;
 
 impl CapKernel {
     /// What init leaves: the list's synthetic root alone, no table, object, mapping or frame, every page
@@ -108,6 +113,7 @@ impl CapKernel {
                 && final(self).list.nodes@[x].kind is Hidden ==> x == leaf,
             forall|x: usize| #[trigger] final(self).is_cap(x) ==> x == leaf + 1,
             !final(self).list.nodes@[leaf + 2].live,
+            !final(self).list.nodes@[leaf + 3].live,
             forall|k: int| 0 <= k < 8 ==> {
                 ||| (#[trigger] final(self).blocks.pages@[base / 4096 + k]).kind is Base
                 ||| final(self).blocks.pages@[base / 4096 + k].kind is Member
@@ -274,6 +280,9 @@ impl CapKernel {
             assert(l1.valid((leaf + 2) as usize));
             assert(!l2.nodes@[leaf + 2].live);
             assert(!l3.nodes@[leaf + 2].live);
+            assert(l1.valid((leaf + 3) as usize));
+            assert(!l2.nodes@[leaf + 3].live);
+            assert(!l3.nodes@[leaf + 3].live);
             assert(index_entry(ROOT_PROCESS_SLOT) == 0);
             assert(index_slot(ROOT_PROCESS_SLOT) == 1);
             assert(index_ok(ROOT_PROCESS_SLOT));
@@ -615,6 +624,7 @@ impl CapKernel {
             final(self).payload_of((leaf + 2) as usize).rights & CONTROL_RIGHT != 0,
             final(self).list.is_child(root, (leaf + 2) as usize),
             final(self).list.nodes@[leaf + 2].depth == 1,
+            !final(self).list.nodes@[leaf + 3].live,
             final(self).list.nodes@[leaf as int].live,
             final(self).list.nodes@[leaf as int].kind is Hidden,
             final(self).list.is_child(root, leaf),
@@ -715,6 +725,12 @@ impl CapKernel {
             post.lemma_slot(process, ROOT_PROCESS_SLOT);
             lemma_slot_in_leaf(leaf, 1);
             lemma_slot_in_leaf(leaf, 2);
+            lemma_slot_in_leaf(leaf, 3);
+            mid.lemma_slot_bound((leaf + 3) as usize);
+            assert(!post.list.nodes@[leaf + 3].live) by {
+                assert(leaf + 3 != t);
+                assert(!mid.list.nodes@[leaf + 3].live);
+            }
             assert forall|x: usize| #[trigger] post.is_cap(x) implies x == a || x == b by {
                 if x != b {
                     assert(mid.is_cap(x));
@@ -725,6 +741,169 @@ impl CapKernel {
             assert(has(post.list.seq@, leaf));
             lemma_has(post.list.seq@, leaf);
             assert(post.list.is_child(root, leaf));
+        }
+    }
+
+    /// The step after boot_root: the root's console capability at ROOT_CONSOLE_SLOT, below the list's
+    /// synthetic root as its process and thread capabilities are. The console is no block and carries
+    /// no control, so the root's reach grows by the console's object alone, and nobody else's by
+    /// anything else. See design/root-process-at-boot/.
+    pub fn boot_root_console(&mut self, root: usize, process: usize, leaf: usize)
+        requires
+            old(self).wf(),
+            root == old(self).list.seq@[0],
+            old(self).tables.has_slot(&old(self).list, process, ROOT_PROCESS_SLOT),
+            old(self).tables.node_of(process, ROOT_PROCESS_SLOT) == leaf + 1,
+            !old(self).list.nodes@[leaf + 3].live,
+        ensures
+            final(self).wf(),
+            final(self).list.seq@[0] == root,
+            final(self).tables.roots == old(self).tables.roots,
+            final(self).tables.owner == old(self).tables.owner,
+            final(self).tables.has_slot(&final(self).list, process, ROOT_CONSOLE_SLOT),
+            final(self).tables.node_of(process, ROOT_CONSOLE_SLOT) == leaf + 3,
+            final(self).is_cap((leaf + 3) as usize),
+            final(self).payload_of((leaf + 3) as usize) == console_payload(),
+            final(self).list.is_child(root, (leaf + 3) as usize),
+            final(self).list.nodes@[leaf + 3].depth == 1,
+            Self::adds_cap(*old(self), *final(self), (leaf + 3) as usize),
+            final(self).blocks == old(self).blocks,
+            final(self).threads == old(self).threads,
+            final(self).processes == old(self).processes,
+            final(self).spaces == old(self).spaces,
+            final(self).list.pages@.dom() == old(self).list.pages@.dom(),
+            forall|o: usize| #[trigger] final(self).view().reach(process, o)
+                <==> (old(self).view().reach(process, o) || o == CONSOLE_OBJECT),
+            forall|r: usize, o: usize| #[trigger] final(self).view().reach(r, o) && !old(self).view().reach(r, o)
+                ==> o == CONSOLE_OBJECT,
+    {
+        let ghost pre = *old(self);
+        proof {
+            pre.lemma_slot(process, ROOT_PROCESS_SLOT);
+            assert(index_entry(ROOT_PROCESS_SLOT) == 0) by (compute_only);
+            assert(index_slot(ROOT_PROCESS_SLOT) == 1) by (compute_only);
+            assert(index_entry(ROOT_CONSOLE_SLOT) == 0) by (compute_only);
+            assert(index_slot(ROOT_CONSOLE_SLOT) == 3) by (compute_only);
+            assert(index_ok(ROOT_CONSOLE_SLOT)) by (compute_only);
+            assert(pre.tables.leaf(process, 0) == leaf);
+            assert(pre.tables.has_slot(&pre.list, process, ROOT_CONSOLE_SLOT));
+            pre.lemma_slot(process, ROOT_CONSOLE_SLOT);
+            assert(pre.tables.node_of(process, ROOT_CONSOLE_SLOT) == leaf + 3);
+            pre.lemma_slot_bound((leaf + 3) as usize);
+            pre.list.lemma_link(0);
+            pre.list.lemma_live_valid(root);
+            pre.list.lemma_valid_bound(root);
+            pre.list.lemma_seq_fits();
+            assert(pre.list.nodes@[root as int].depth == 0);
+        }
+        let child = leaf + 3;
+        self.list.derive(root, child, NodeKind::Capability);
+        proof {
+            pre.tables.lemma_wf_same_pages(&pre.list, &self.list);
+        }
+        self.tables.set_payload(
+            &self.list,
+            process,
+            ROOT_CONSOLE_SLOT,
+            Payload { kind: CapKind::Console, order: 0, rights: CONSOLE_RIGHTS, base: CONSOLE_OBJECT, badge: 0, reserved: 0 },
+        );
+        proof {
+            let post = *self;
+            assert(post.payload_of(child) == console_payload());
+            assert(0u32 & 128u32 == 0) by (bit_vector);
+            Self::lemma_derive_caps_wf(pre, post, child);
+            Self::lemma_hidden_frame(pre, post, child, child);
+            Self::lemma_table_nodes_caps_frame(pre, post, child, child);
+            Self::lemma_space_nodes_caps_frame(pre, post, child, child);
+            Self::lemma_bindings_caps_frame(pre, post, child, child);
+            Self::lemma_add_blockless_holders(pre, post, child);
+            Self::lemma_devices_caps_frame(pre, post, child, child);
+            lemma_parents_derived(pre.list, post.list, root, child);
+            Self::lemma_tlb_same(pre, post);
+            assert(post.wf());
+            Self::lemma_derive_step_adds_cap(pre, post, child);
+            lemma_has(post.list.seq@, child);
+            assert(post.list.is_child(root, child));
+            Self::lemma_boot_console_view(pre, post, root, process, child);
+            let live = |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live;
+            lemma_adds_held_reach(pre.view(), post.view(), process, root, child, live);
+            assert forall|o: usize| #[trigger] post.view().reach(process, o)
+                <==> (pre.view().reach(process, o) || o == CONSOLE_OBJECT) by {
+                assert(post.view().covers(child, o) == (o == CONSOLE_OBJECT));
+            }
+            assert forall|r: usize, o: usize| #[trigger] post.view().reach(r, o) && !pre.view().reach(r, o)
+                implies o == CONSOLE_OBJECT by {
+                assert(post.view().covers(child, o) == (o == CONSOLE_OBJECT));
+            }
+        }
+    }
+
+    /// The view of boot_root_console's step: a capability the root holds, without control, below the
+    /// list's first node, covering the console's object alone.
+    proof fn lemma_boot_console_view(pre: Self, post: Self, root: usize, process: usize, child: usize)
+        requires
+            Self::adds_cap(pre, post, child),
+            root == pre.list.seq@[0],
+            pre.tables.has_slot(&pre.list, process, ROOT_CONSOLE_SLOT),
+            pre.tables.node_of(process, ROOT_CONSOLE_SLOT) == child,
+            post.list.parent@ == pre.list.parent@.insert(child, root),
+            post.is_cap(child),
+            post.payload_of(child) == console_payload(),
+        ensures
+            adds_held(pre.view(), post.view(), process, root, child, |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live),
+            forall|o: ObjectId| #[trigger] post.view().covers(child, o) <==> o == CONSOLE_OBJECT,
+    {
+        let (a, b) = (pre.view(), post.view());
+        let live = |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live;
+        pre.lemma_slot(process, ROOT_CONSOLE_SLOT);
+        pre.lemma_slot_bound(child);
+        pre.list.lemma_link(0);
+        pre.list.lemma_live_valid(root);
+        pre.list.lemma_valid_bound(root);
+        assert(live(root));
+        assert(!live(child));
+        assert forall|h: (ObjectId, NodeId)| #[trigger] a.held.contains(h) implies live(h.1) by {
+            pre.lemma_slot_bound(h.1);
+        }
+        assert forall|x: NodeId| #[trigger] a.names.contains_key(x) implies live(x) by {
+            pre.lemma_slot_bound(x);
+        }
+        assert forall|x: NodeId| live(x) && #[trigger] a.parent.contains_key(x) implies live(a.parent[x]) by {
+            pre.list.lemma_parent_live(x);
+        }
+        assert forall|h: (ObjectId, NodeId)| #[trigger] b.held.contains(h) == (a.held.contains(h) || h == (process, child)) by {
+            if h.1 != child {
+                assert(post.is_cap(h.1) == pre.is_cap(h.1));
+            }
+        }
+        assert forall|x: NodeId| x != child implies {
+            &&& #[trigger] b.names.contains_key(x) == a.names.contains_key(x)
+            &&& b.pages.contains_key(x) == a.pages.contains_key(x)
+            &&& a.names.contains_key(x) ==> b.names[x] == a.names[x]
+            &&& a.pages.contains_key(x) ==> b.pages[x] == a.pages[x]
+        } by {
+            assert(post.is_cap(x) == pre.is_cap(x));
+        }
+        assert forall|x: NodeId, r: Right| x != child implies #[trigger] b.rights.contains((x, r)) == a.rights.contains((x, r)) by {
+            assert(post.is_cap(x) == pre.is_cap(x));
+        }
+        assert(CONSOLE_RIGHTS & 128u32 == 0) by (compute_only);
+        assert(!b.rights.contains((child, Right::Control)));
+        assert(b.parent == a.parent.insert(child, root));
+        assert(adds_held(a, b, process, root, child, live));
+        assert(pow2(0) == 1) by { lemma2_to64(); }
+        assert(b.names[child] == CONSOLE_OBJECT && b.pages[child] == 1);
+        assert(CONSOLE_OBJECT % 4096 == 0) by (compute_only);
+        assert forall|o: ObjectId| #[trigger] b.covers(child, o) <==> o == CONSOLE_OBJECT by {
+            if b.covers(child, o) {
+                assert(CONSOLE_OBJECT <= o < CONSOLE_OBJECT + 4096);
+                assert(o == CONSOLE_OBJECT) by (nonlinear_arith)
+                    requires
+                        CONSOLE_OBJECT <= o < CONSOLE_OBJECT + 4096,
+                        o % 4096 == 0,
+                        CONSOLE_OBJECT % 4096 == 0,
+                ;
+            }
         }
     }
 

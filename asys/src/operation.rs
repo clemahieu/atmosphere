@@ -38,6 +38,9 @@ pub const ROOT_PROCESS_SLOT: u64 = 1;
 /// The root's slot holding its own thread, with control, as boot leaves it.
 pub const ROOT_THREAD_SLOT: u64 = 2;
 
+/// The root's slot holding its console capability, which print writes through, as boot leaves it.
+pub const ROOT_CONSOLE_SLOT: u64 = 3;
+
 /// The status in the rax an invocation returns.
 pub fn status(rax: u64) -> u64 {
     rax & 0xffff

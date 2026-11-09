@@ -12,6 +12,14 @@ use crate::capability::operation::*;
 use crate::capability::reach::*;
 use crate::capability::table::*;
 
+/// A console capability's rights: print asks for none but the capability.
+pub const CONSOLE_RIGHTS: u32 = 0;
+
+/// The console capability, naming the console's object.
+pub open spec fn console_payload() -> Payload {
+    Payload { kind: CapKind::Console, order: 0, rights: CONSOLE_RIGHTS, base: CONSOLE_OBJECT, badge: 0, reserved: 0 }
+}
+
 impl CapKernel {
     /// Index i of the table at root holds a console capability.
     pub open spec fn can_print(&self, root: usize, i: usize) -> bool {
