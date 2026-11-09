@@ -2,7 +2,7 @@
 
 # Design decisions
 
-22 records: 22 active, 0 superseded.
+23 records: 23 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -34,6 +34,9 @@ in `revisit if` what would make it worth reopening.
 - **[isolation-claim](./isolation-claim/DECISION.md)** (2026-11-05): The kernel proves spatial isolation: a process affects only what its capabilities reach and gains authority only by grant or retype. It does not claim noninterference or freedom from timing channels, and the claim says so.
   - *confidence:* A scoping choice by the human. Noninterference is the claim the Atmosphere paper proved with unwinding conditions, so it is known to be reachable; timing needs hardware modelling the project does not have.
   - *revisit if:* A workload needs distrusting programs that cannot observe each other through status codes or timing, which is when noninterference or multiple kernel instances become required rather than later.
+- **[machine-glue-below-the-kernel](./machine-glue-below-the-kernel/DECISION.md)** (2026-11-09): Boot discovery, the console, the interrupt controller and timer, secondary-core start, shutdown and the IOMMU driver live in one crate per machine (machine/pc for the x86_64 PC, machine/virt for aarch64 on QEMU virt), each exporting the same free functions and constants; the kernel depends on the crate its target selects and re-exports it as crate::machine; the crate depends on nothing in kernel/ or kernel/verified, takes cpu indices as arguments, owns the interrupt vectors and its own per-core state, and issues its own MSR and port instructions.
+  - *confidence:* A judgement from a survey of kernel/src at 569f164: the item list and signatures follow today's callers. That the same list fits QEMU virt (GICv3, generic timer, PL011, PSCI) is reasoned from those devices' programming models, and the aarch64 crate is what tests it. The Cargo constraint that rules out one renamed dependency per target was checked with cargo.
+  - *revisit if:* Two machines must be supported on one architecture (bare Apple silicon beside QEMU virt), when target_arch no longer selects the crate and a cargo feature or a second build target must; or a machine needs a kernel service at interrupt or boot time that cannot be passed as an argument, which would make the dependency two-way.
 - **[multicore-kernel-shape](./multicore-kernel-shape/DECISION.md)** (2026-11-05): A node is a set of cores with one kernel instance and one queue lock; a system may have any number of nodes, laid out at boot; nothing in kernel state is shared between nodes, memory crosses only as a quiescent untyped handoff, and stealing is pager policy.
   - *confidence:* The shape is a judgement against published multicore kernels; the lock numbers below are measured on the host with user-space threads, not this kernel, and its own lock has not been measured.
   - *revisit if:* Lock hold times measured on this kernel make a one-node system's contention a real workload's problem and a smaller node is not the answer, or a workload needs kernel state shared between nodes that a handoff cannot express.
@@ -83,9 +86,12 @@ A view of the lists above. Nothing is reachable only through a tag.
 
 - `abi`: arch-module, one-kernel-instance, syscall-abi-in-registers
 - `address-space`: address-spaces-as-objects, vmm-over-svm
-- `boot`: root-process-at-boot
+- `boot`: machine-glue-below-the-kernel, root-process-at-boot
 - `capability`: address-spaces-as-objects, capability-names-a-block, cpu-time-as-capability, ipc-with-reply-object, process-holds-capabilities, revoke-by-depth-first-list, root-process-at-boot, sharing-by-derive, teardown-driven-by-retype, theorem-over-reach, thread-bound-at-retype, untyped-memory, vmm-over-svm
 - `gate`: cut-over-on-a-branch
+- `glue`: machine-glue-below-the-kernel
+- `interrupt`: machine-glue-below-the-kernel
+- `iommu`: machine-glue-below-the-kernel
 - `ipc`: ipc-with-reply-object, syscall-abi-in-registers
 - `kernel-state`: multicore-kernel-shape, one-kernel-instance, one-lock-bounded-steps
 - `lifetime`: sharing-by-derive, teardown-driven-by-retype
@@ -93,7 +99,7 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `memory`: address-spaces-as-objects, capability-names-a-block, flush-without-waiting, syscall-abi-in-registers, teardown-driven-by-retype, untyped-memory
 - `multicore`: flush-without-waiting, multicore-kernel-shape, one-kernel-instance, one-lock-bounded-steps
 - `pagetable`: arch-module
-- `portability`: arch-module
+- `portability`: arch-module, machine-glue-below-the-kernel
 - `process`: cut-over-on-a-branch, process-holds-capabilities, thread-bound-at-retype
 - `proof`: isolation-claim, theorem-over-reach, thread-bound-at-retype, trust-boundary
 - `purity`: untyped-memory
