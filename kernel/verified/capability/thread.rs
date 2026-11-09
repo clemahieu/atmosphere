@@ -2417,7 +2417,7 @@ impl CapKernel {
             old(self).root_live(root),
         ensures
             final(self).wf(),
-            ret == (old(self).can_set_registers(root, i) && user_rip(frame.rip)),
+            ret == (old(self).can_set_registers(root, i) && user_rip(frame.pc())),
             !ret ==> *final(self) == *old(self),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             ret ==> {
@@ -2429,7 +2429,7 @@ impl CapKernel {
             },
     {
         let ghost pre = *self;
-        if frame.rip >= USER_RIP_END {
+        if !is_user_rip(frame.pc()) {
             return false;
         }
         let (n, t, dead) = match self.thread_control(root, i) {

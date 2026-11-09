@@ -705,6 +705,19 @@ impl Registers {
         *self = *src;
     }
 
+    /// The program counter the thread returns to, rip.
+    pub open spec fn spec_pc(&self) -> u64 {
+        self.rip
+    }
+
+    #[verifier(when_used_as_spec(spec_pc))]
+    pub fn pc(&self) -> (ret: u64)
+        ensures
+            ret == self.spec_pc(),
+    {
+        self.rip
+    }
+
     // The syscall register table: which register of the frame carries each position of an
     // invocation, design/syscall-abi-in-registers/ under Registers. The dispatch reads and writes the
     // frame only through these.
@@ -878,6 +891,13 @@ pub const FORCED_FLAGS: u64 = 0x202;
 pub const USER_RIP_END: u64 = 0x8000_0000_0000;
 
 pub open spec fn user_rip(rip: u64) -> bool {
+    rip < USER_RIP_END
+}
+
+pub fn is_user_rip(rip: u64) -> (ret: bool)
+    ensures
+        ret == user_rip(rip),
+{
     rip < USER_RIP_END
 }
 
