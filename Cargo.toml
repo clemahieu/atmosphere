@@ -13,6 +13,7 @@ members = [
   "kernel",
   "kernel/verified",
   "user/hello",
+  "file-service",
 ]
 
 exclude = ["test-pass", "tools/verus"]
