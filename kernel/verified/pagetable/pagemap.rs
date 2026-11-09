@@ -1,7 +1,7 @@
 use vstd::prelude::*;
 verus! {
 
-use crate::arch::{PAGE_ENTRY_ACCESSED_MASK, PAGE_ENTRY_DIRTY_MASK};
+use crate::arch::*;
 use crate::array::*;
 use crate::util::page_ptr_util_u::*;
 
@@ -31,23 +31,19 @@ impl PageMap {
                 self.ar.wf(),
                 self.spec_seq@.len() == 512,
                 forall|j: int|
-                    #![trigger usize2page_entry(self.ar@[j])]
-                    0 <= j < i ==> (usize2page_entry(self.ar@[j]) =~= self.spec_seq@[j]),
+                    #![trigger usize2page_entry(self.ar@[j], self.level@)]
+                    0 <= j < i ==> (usize2page_entry(self.ar@[j], self.level@) =~= self.spec_seq@[j]),
                 forall|j: int|
                     #![trigger self.ar@[j]]
-                    0 <= j < i ==> (usize2page_entry(self.ar@[j]).is_empty() <==> self.ar@[j] == 0),
-                forall|j: int|
-                    #![trigger self.ar@[j]]
-                    0 <= j < i ==> usize2page_entry(self.ar@[j]).is_empty(),
+                    0 <= j < i ==> self.ar@[j] == 0,
                 forall|j: int| #![trigger self@[j].is_empty()] 0 <= j < i ==> self@[j].is_empty(),
         {
             let ghost_view = Ghost(self@);
             self.ar.set(i, 0usize);
             assert(self@ == ghost_view);
             proof {
-                zero_leads_is_empty_page_entry();
-                assert(usize2page_entry(0usize).is_empty());
-                self.spec_seq@ = self.spec_seq@.update(i as int, usize2page_entry(0usize));
+                zero_leads_is_empty_page_entry(self.level@);
+                self.spec_seq@ = self.spec_seq@.update(i as int, usize2page_entry(0usize, self.level@));
             }
         }
     }
@@ -56,9 +52,8 @@ impl PageMap {
         &&& self.ar.wf()
         &&& self.spec_seq@.len() == 512
         &&& forall|i: int|
-            #![trigger usize2page_entry(self.ar@[i])]
-            0 <= i < 512 ==> (usize2page_entry(self.ar@[i])
-                =~= self.spec_seq@[i])
+            #![trigger usize2page_entry(self.ar@[i], self.level@)]
+            0 <= i < 512 ==> (usize2page_entry(self.ar@[i], self.level@) =~= self.spec_seq@[i])
 
     }
 
@@ -70,7 +65,7 @@ impl PageMap {
     /// time, so the view leaves them out (lemma_status_outside_view) and a value read here holds only
     /// for the moment of the read.
     pub open spec fn status(&self, i: int) -> PageEntryStatus {
-        spec_usize2page_entry_status(self.ar@[i])
+        spec_usize2page_entry_status(self.ar@[i], self.level@)
     }
 
     /// A table whose words differ from a well-formed table's only in the accessed and dirty bits is well
@@ -81,18 +76,18 @@ impl PageMap {
             self.wf(),
             other.ar.wf(),
             other.spec_seq@ == self.spec_seq@,
+            other.level == self.level,
             forall|i: int|
                 #![trigger other.ar@[i]]
-                0 <= i < 512 ==> other.ar@[i] & (!(PAGE_ENTRY_ACCESSED_MASK | PAGE_ENTRY_DIRTY_MASK)) as usize
-                    == self.ar@[i] & (!(PAGE_ENTRY_ACCESSED_MASK | PAGE_ENTRY_DIRTY_MASK)) as usize,
+                0 <= i < 512 ==> spec_without_status(other.ar@[i]) == spec_without_status(self.ar@[i]),
         ensures
             other.wf(),
             other@ == self@,
     {
         assert forall|i: int|
-            #![trigger usize2page_entry(other.ar@[i])]
-            0 <= i < 512 implies usize2page_entry(other.ar@[i]) =~= other.spec_seq@[i] by {
-            lemma_status_outside_entry(other.ar@[i], self.ar@[i]);
+            #![trigger usize2page_entry(other.ar@[i], other.level@)]
+            0 <= i < 512 implies usize2page_entry(other.ar@[i], other.level@) =~= other.spec_seq@[i] by {
+            lemma_status_outside_entry(other.ar@[i], self.ar@[i], self.level@);
         }
     }
 
@@ -110,9 +105,10 @@ impl PageMap {
         forall|x: u16| #![auto] 0 <= x < 512 ==> self.spec_seq@[x as int].perm.present == false
     }
 
-    pub fn set(&mut self, index: usize, value: PageEntry)
+    pub fn set(&mut self, index: usize, value: PageEntry, level: usize)
         requires
             old(self).wf(),
+            level == old(self).level@,
             0 <= index < 512,
             value.perm.present ==> MEM_valid(value.addr),
             value.perm.present == false ==> value.is_empty(),
@@ -125,22 +121,13 @@ impl PageMap {
         if value.perm.present == false {
             self.ar.set(index, 0usize);
             proof {
-                assert(0usize & (0x1u64 << 5u64) as usize == 0 && 0usize & (0x1u64 << 6u64) as usize == 0)
-                    by (bit_vector);
-                zero_leads_is_empty_page_entry();
-                self.spec_seq@ = self.spec_seq@.update(index as int, usize2page_entry(0usize));
+                zero_leads_is_empty_page_entry(level);
+                self.spec_seq@ = self.spec_seq@.update(index as int, usize2page_entry(0usize, level));
             }
             return ;
         } else {
-            let u = page_entry2usize(&value);
+            let u = page_entry2usize(&value, level);
             self.ar.set(index, u);
-
-            assert(usize2present(u) == value.perm.present);
-            assert(usize2present(u) == true);
-            assert(u != 0) by (bit_vector)
-                requires
-                    (u & 0x1u64 as usize) != 0 == true,
-            ;
 
             proof {
                 self.spec_seq@ = self.spec_seq@.update(index as int, value);
@@ -150,24 +137,15 @@ impl PageMap {
         }
     }
 
-    pub fn index(&self, index: usize) -> (ret: PageEntry)
+    pub fn get(&self, index: usize, level: usize) -> (ret: PageEntry)
         requires
             self.wf(),
             0 <= index < 512,
+            level == self.level@,
         ensures
             ret =~= self[index],
     {
-        return usize2page_entry(*self.ar.get(index));
-    }
-
-    pub fn get(&self, index: usize) -> (ret: PageEntry)
-        requires
-            self.wf(),
-            0 <= index < 512,
-        ensures
-            ret =~= self[index],
-    {
-        return self.index(index);
+        return usize2page_entry(*self.ar.get(index), level);
     }
 }
 

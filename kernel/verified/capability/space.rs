@@ -23,6 +23,7 @@ use crate::capability::thread::*;
 use crate::capability::view::*;
 use crate::layouts::*;
 use crate::define::*;
+use crate::arch::usize2page_entry;
 use crate::pagetable::entry::*;
 use crate::pagetable::pagemap::*;
 use crate::pagetable::pagemap_util_t::*;
@@ -248,7 +249,7 @@ pub open spec fn root_record_wf(spaces: &Spaces, s: usize) -> bool {
 /// from user mode. The same entries of a device root are empty or name a child table.
 pub open spec fn kernel_slots_wf(spaces: &Spaces, s: usize) -> bool {
     forall|i: usize| #![trigger spaces.roots@[s].value()[i]] i < KERNEL_MEM_END_L4INDEX ==> match spaces.records@[s].value().kind {
-        SpaceKind::Process => spaces.roots@[s].value()[i] == usize2page_entry(spaces.kernel_entries@[i as int]),
+        SpaceKind::Process => spaces.roots@[s].value()[i] == usize2page_entry(spaces.kernel_entries@[i as int], 4),
         SpaceKind::Device => spaces.roots@[s].value()[i].is_empty()
             || (spaces.roots@[s].value()[i].perm.present && !spaces.roots@[s].value()[i].perm.ps),
     }

@@ -1347,7 +1347,7 @@ impl CapKernel {
     /// mapping held; its accessed and dirty bits are the processor's as they stood then.
     pub open spec fn mapping_word(pre: Self, n: usize, w: usize) -> bool {
         let m = pre.mappings@[n];
-        crate::pagetable::entry::spec_usize2page_entry(w) == tree_of(&pre.table_pages, &pre.spaces).entry(m.table, m.entry)
+        crate::arch::spec_usize2page_entry(w, pre.table_pages.maps@[m.table].value().level@) == tree_of(&pre.table_pages, &pre.spaces).entry(m.table, m.entry)
     }
 
     /// Undoes mapping node n: its entry and its reference go in one step, and nothing else. The node's
@@ -1397,9 +1397,12 @@ impl CapKernel {
             assert(t == m.table);
             assert(e == m.entry);
         }
+        let level = PPtr::<TableRecord>::from_usize(t + TABLE_RECORD_PAGE * 4096)
+            .borrow(Tracked(self.table_pages.records.borrow().tracked_borrow(t)))
+            .level;
         let entry = PPtr::<PageMap>::from_usize(t + TABLE_NODE_PAGES * 4096)
             .borrow(Tracked(self.table_pages.maps.borrow().tracked_borrow(t)))
-            .get(e);
+            .get(e, level);
         proof {
             assert(entry =~= tree_of(&pre.table_pages, &pre.spaces).entry(m.table, m.entry));
             assert(mapping_wf(&pre.list, &pre.tables, tree_of(&pre.table_pages, &pre.spaces), &pre.blocks, pre.holders@, pre.mappings@, n));

@@ -2020,7 +2020,7 @@ impl CapKernel {
             forall|i: usize| #![trigger post.spaces.roots@[base].value()[i]]
                 KERNEL_MEM_END_L4INDEX <= i < 512 ==> post.spaces.roots@[base].value()[i].is_empty(),
             forall|i: usize| #![trigger post.spaces.roots@[base].value()[i]]
-                i < KERNEL_MEM_END_L4INDEX ==> post.spaces.roots@[base].value()[i] == usize2page_entry(post.spaces.kernel_entries@[i as int]),
+                i < KERNEL_MEM_END_L4INDEX ==> post.spaces.roots@[base].value()[i] == usize2page_entry(post.spaces.kernel_entries@[i as int], 4),
             post.spaces.records@ == pre.spaces.records@.insert(base, post.spaces.records@[base]),
             post.spaces.records@[base].addr() == base + SPACE_RECORD_PAGE * 4096,
             post.spaces.records@[base].is_init(),

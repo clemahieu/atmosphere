@@ -7,10 +7,13 @@ verus! {
 
 use crate::capability::kernel::{FlushTarget, Flushed};
 use crate::capability::operation::Outcome;
+use crate::define::PAddr;
+use crate::pagetable::entry::{PageEntry, PageEntryPerm, PageEntryStatus};
+use crate::util::page_ptr_util_u::*;
 
 // The page-entry encoding: the long-mode page-translation entry's bits, chapter 5. The decoders and
-// encoders in pagetable/entry.rs, the address checks in util/page_ptr_util_u.rs and the address lemmas
-// in capability/map.rs and capability/link.rs read them. The accessed and dirty bits are the
+// the encoder below, the address checks in util/page_ptr_util_u.rs and the address lemmas in
+// capability/map.rs and capability/link.rs read them. The accessed and dirty bits are the
 // processor's, set on any core at any time; see design/arch-module/.
 
 pub const PAGE_ENTRY_PRESENT_MASK: u64 = 0x1;
@@ -67,6 +70,541 @@ pub const MEM_2m_MASK: u64 = 0x0000_ffff_ffe0_0000;
 
 /// A 1G page's address, bits 47:30.
 pub const MEM_1g_MASK: u64 = 0x0000_ffff_c000_0000;
+
+/// The bits of an entry's word that are not the processor's accessed and dirty bits: a word ANDed with
+/// it has its status clear, which is what a clear of the status bits writes.
+pub const STATUS_KEPT_MASK: usize = !((PAGE_ENTRY_ACCESSED_MASK | PAGE_ENTRY_DIRTY_MASK) as usize);
+
+// The decoders and the encoder: a word of a table at a level, in the kernel's numbering (4 for a root,
+// 1 for a table of 4K leaves), against the abstract PageEntry, PageEntryPerm and PageEntryStatus.
+// x86_64 reads every bit the same way at every level, so it ignores the level; PS is defined at levels
+// 2 and 3 only, and the kernel writes it clear elsewhere. Shared code reaches the bits only through
+// these specs and lemmas. See design/arch-module/.
+
+pub open spec fn usize2present(v: usize, level: usize) -> bool {
+    (v & PAGE_ENTRY_PRESENT_MASK as usize) != 0
+}
+
+pub open spec fn usize2ps(v: usize, level: usize) -> bool {
+    (v & PAGE_ENTRY_PS_MASK as usize) != 0
+}
+
+pub open spec fn usize2write(v: usize, level: usize) -> bool {
+    (v & PAGE_ENTRY_WRITE_MASK as usize) != 0
+}
+
+pub open spec fn usize2execute_disable(v: usize, level: usize) -> bool {
+    (v & PAGE_ENTRY_EXECUTE_MASK as usize) != 0
+}
+
+pub open spec fn usize2user(v: usize, level: usize) -> bool {
+    (v & PAGE_ENTRY_USER_MASK as usize) != 0
+}
+
+pub open spec fn usize2accessed(v: usize, level: usize) -> bool {
+    (v & PAGE_ENTRY_ACCESSED_MASK as usize) != 0
+}
+
+pub open spec fn usize2dirty(v: usize, level: usize) -> bool {
+    (v & PAGE_ENTRY_DIRTY_MASK as usize) != 0
+}
+
+/// The processor's accessed and dirty bits of a word, apart from the entry it decodes to.
+pub open spec fn spec_usize2page_entry_status(v: usize, level: usize) -> PageEntryStatus {
+    PageEntryStatus { accessed: usize2accessed(v, level), dirty: usize2dirty(v, level) }
+}
+
+#[verifier(when_used_as_spec(spec_usize2page_entry_status))]
+pub fn usize2page_entry_status(v: usize, level: usize) -> (ret: PageEntryStatus)
+    ensures
+        ret == spec_usize2page_entry_status(v, level),
+{
+    PageEntryStatus {
+        accessed: (v & PAGE_ENTRY_ACCESSED_MASK as usize) != 0,
+        dirty: (v & PAGE_ENTRY_DIRTY_MASK as usize) != 0,
+    }
+}
+
+/// The word with its accessed and dirty bits clear.
+pub open spec fn spec_without_status(v: usize) -> usize {
+    v & STATUS_KEPT_MASK
+}
+
+/// Two words that differ only in the accessed and dirty bits decode to the same entry, so whatever the
+/// processor sets there leaves every table's view as it was.
+pub proof fn lemma_status_outside_entry(v: usize, w: usize, level: usize)
+    requires
+        spec_without_status(v) == spec_without_status(w),
+    ensures
+        spec_usize2page_entry(v, level) == spec_usize2page_entry(w, level),
+{
+    assert(v & 0x0000_ffff_ffff_f000u64 as usize == w & 0x0000_ffff_ffff_f000u64 as usize
+        && (v & 0x1u64 as usize != 0) == (w & 0x1u64 as usize != 0)
+        && (v & (0x1u64 << 7u64) as usize != 0) == (w & (0x1u64 << 7u64) as usize != 0)
+        && (v & (0x1u64 << 1u64) as usize != 0) == (w & (0x1u64 << 1u64) as usize != 0)
+        && (v & (0x1u64 << 63u64) as usize != 0) == (w & (0x1u64 << 63u64) as usize != 0)
+        && (v & (0x1u64 << 2u64) as usize != 0) == (w & (0x1u64 << 2u64) as usize != 0))
+        by (bit_vector)
+        requires
+            v & (!((0x1u64 << 5u64) | (0x1u64 << 6u64))) as usize == w & (!((0x1u64 << 5u64) | (
+            0x1u64 << 6u64))) as usize,
+    ;
+}
+
+/// Clearing the status bits clears them and keeps the rest: clearing again changes nothing.
+pub proof fn lemma_without_status(v: usize, level: usize)
+    ensures
+        spec_without_status(spec_without_status(v)) == spec_without_status(v),
+        spec_usize2page_entry_status(spec_without_status(v), level).is_clear(),
+{
+    assert((v & (!((0x1u64 << 5u64) | (0x1u64 << 6u64))) as usize) & (!((0x1u64 << 5u64) | (0x1u64
+        << 6u64))) as usize == v & (!((0x1u64 << 5u64) | (0x1u64 << 6u64))) as usize) by (bit_vector);
+    assert((v & (!((0x1u64 << 5u64) | (0x1u64 << 6u64))) as usize) & (0x1u64 << 5u64) as usize == 0
+        && (v & (!((0x1u64 << 5u64) | (0x1u64 << 6u64))) as usize) & (0x1u64 << 6u64) as usize == 0)
+        by (bit_vector);
+}
+
+/// The zero word is the empty entry with its status clear, at every level.
+pub proof fn zero_leads_is_empty_page_entry(level: usize)
+    ensures
+        spec_usize2page_entry(0, level).is_empty(),
+        spec_usize2page_entry_status(0, level).is_clear(),
+        spec_without_status(0) == 0,
+{
+    assert(0usize & 0x0000_ffff_ffff_f000u64 as usize == 0) by (bit_vector);
+    assert(0usize & 0x1 as usize != 0 == false) by (bit_vector);
+    assert(0usize & (0x1u64 << 0x7u64) as usize != 0 == false) by (bit_vector);
+    assert(0usize & (0x1u64 << 0x1u64) as usize != 0 == false) by (bit_vector);
+    assert(0usize & (0x1u64 << 63u64) as usize != 0 == false) by (bit_vector);
+    assert(0usize & (0x1u64 << 0x2u64) as usize != 0 == false) by (bit_vector);
+    assert(0usize & (0x1u64 << 5u64) as usize == 0 && 0usize & (0x1u64 << 6u64) as usize == 0)
+        by (bit_vector);
+    assert(0usize & (!((0x1u64 << 5u64) | (0x1u64 << 6u64))) as usize == 0) by (bit_vector);
+}
+
+pub open spec fn spec_usize2page_entry_perm(v: usize, level: usize) -> PageEntryPerm {
+    PageEntryPerm {
+        present: usize2present(v, level),
+        ps: usize2ps(v, level),
+        write: usize2write(v, level),
+        execute_disable: usize2execute_disable(v, level),
+        user: usize2user(v, level),
+    }
+}
+
+#[verifier(when_used_as_spec(spec_usize2page_entry_perm))]
+pub fn usize2page_entry_perm(v: usize, level: usize) -> (ret: PageEntryPerm)
+    ensures
+        ret =~= spec_usize2page_entry_perm(v, level),
+{
+    PageEntryPerm {
+        present: (v & PAGE_ENTRY_PRESENT_MASK as usize) != 0,
+        ps: (v & PAGE_ENTRY_PS_MASK as usize) != 0,
+        write: (v & PAGE_ENTRY_WRITE_MASK as usize) != 0,
+        execute_disable: (v & PAGE_ENTRY_EXECUTE_MASK as usize) != 0,
+        user: (v & PAGE_ENTRY_USER_MASK as usize) != 0,
+    }
+}
+
+/// The entry a word of a table at `level` holds.
+pub open spec fn spec_usize2page_entry(v: usize, level: usize) -> PageEntry {
+    PageEntry { addr: usize2pa(v, level), perm: usize2page_entry_perm(v, level) }
+}
+
+#[verifier(when_used_as_spec(spec_usize2page_entry))]
+pub fn usize2page_entry(v: usize, level: usize) -> (ret: PageEntry)
+    ensures
+        ret =~= spec_usize2page_entry(v, level),
+        MEM_valid(ret.addr),
+{
+    PageEntry { addr: usize2pa(v, level), perm: usize2page_entry_perm(v, level) }
+}
+
+pub open spec fn spec_usize2pa(v: usize, level: usize) -> PAddr {
+    v & MEM_MASK as usize
+}
+
+#[verifier(when_used_as_spec(spec_usize2pa))]
+pub fn usize2pa(v: usize, level: usize) -> (ret: PAddr)
+    ensures
+        ret =~= spec_usize2pa(v, level),
+        MEM_valid(ret),
+{
+    let ret = v & MEM_MASK as usize;
+    assert(v & 0x0000_ffff_ffff_f000u64 as usize & (!0x0000_ffff_ffff_f000u64) as usize == 0)
+        by (bit_vector);
+    return ret;
+}
+
+/// The word that holds an entry in a table at `level`, with its status clear.
+pub fn page_entry2usize(page_entry: &PageEntry, level: usize) -> (ret: usize)
+    requires
+        MEM_valid(page_entry.addr),
+    ensures
+        spec_usize2page_entry(ret, level) == *page_entry,
+        spec_usize2page_entry_status(ret, level).is_clear(),
+        page_entry.perm.present ==> ret != 0,
+{
+    let mut ret: usize = page_entry.addr;
+
+    let mut ghost_addr = Ghost(page_entry.addr);
+    let mut ghost_ret = Ghost(page_entry.addr);
+    let ghost_present = Ghost(page_entry.perm.present);
+    let ghost_ps = Ghost(page_entry.perm.ps);
+    let ghost_write = Ghost(page_entry.perm.write);
+    let ghost_execute_disable = Ghost(page_entry.perm.execute_disable);
+    let ghost_user = Ghost(page_entry.perm.user);
+    assert(ret == ghost_addr@);
+
+    if page_entry.perm.present == true {
+        assert(((ret | 0x1u64 as usize) & 0x1u64 as usize) != 0) by (bit_vector);
+        assert(((ret | 0x1u64 as usize) & 0x0000_ffff_ffff_f000u64 as usize) == ghost_addr@)
+            by (bit_vector)
+            requires
+                ghost_addr@ & (!0x0000_ffff_ffff_f000u64) as usize == 0 && ghost_addr@ == ret,
+        ;
+
+        ret = ret | 0x1u64 as usize;
+
+        assert((ret & 0x1u64 as usize) != 0);
+        assert(usize2present(ret, level) == page_entry.perm.present);
+        assert((ret & 0x0000_ffff_ffff_f000u64 as usize) == page_entry.addr);
+        assert(usize2pa(ret, level) == page_entry.addr);
+
+        assert((ghost_ret@ | 0x1u64 as usize) & (!(0x1u64 | 0x0000_ffff_ffff_f000u64)) as usize
+            == 0) by (bit_vector)
+            requires
+                ghost_ret@ & (!0x0000_ffff_ffff_f000u64) as usize == 0,
+        ;
+        assert(ret & (!(PAGE_ENTRY_PRESENT_MASK | MEM_MASK)) as usize == 0);
+    } else {
+        assert((ret & 0x1u64 as usize) == 0) by (bit_vector)
+            requires
+                ret & (!0x0000_ffff_ffff_f000u64) as usize == 0,
+        ;
+        assert(usize2present(ret, level) == page_entry.perm.present);
+
+        assert((ret & 0x0000_ffff_ffff_f000u64 as usize) == ret) by (bit_vector)
+            requires
+                ret & (!0x0000_ffff_ffff_f000u64) as usize == 0,
+        ;
+        assert(usize2pa(ret, level) == page_entry.addr);
+
+        assert(ghost_addr@ & (!(0x1u64 | 0x0000_ffff_ffff_f000u64)) as usize == 0) by (bit_vector)
+            requires
+                ghost_addr@ & (!0x0000_ffff_ffff_f000u64) as usize == 0,
+        ;
+        assert(ret & (!(PAGE_ENTRY_PRESENT_MASK | MEM_MASK)) as usize == 0);
+    }
+
+    assert(usize2present(ret, level) == page_entry.perm.present);
+    assert(usize2pa(ret, level) == page_entry.addr);
+    assert(ret & (!(PAGE_ENTRY_PRESENT_MASK | MEM_MASK)) as usize == 0);
+
+    ghost_ret = Ghost(ret);
+
+    if page_entry.perm.ps == true {
+        assert(((ret | (0x1u64 << 0x7u64) as usize) & (0x1u64 << 0x7u64) as usize) != 0)
+            by (bit_vector);
+        assert(((ret | (0x1u64 << 0x7u64) as usize) & 0x1 as usize) != 0 == ghost_present@)
+            by (bit_vector)
+            requires
+                ghost_ret@ == ret && (ret & 0x1u64 as usize) != 0 == ghost_present@,
+        ;
+        assert(((ret | (0x1u64 << 0x7u64) as usize) & 0x0000_ffff_ffff_f000u64 as usize)
+            == ghost_addr@) by (bit_vector)
+            requires
+                ghost_ret@ == ret && (ghost_ret@ & 0x0000_ffff_ffff_f000u64 as usize)
+                    == ghost_addr@,
+        ;
+        ret = ret | (0x1u64 << 0x7u64) as usize;
+
+        assert((ret & 0x1 as usize) != 0 == ghost_present@);
+        assert(usize2present(ret, level) == page_entry.perm.present);
+        assert((ret & (0x1u64 << 0x7u64) as usize) != 0);
+        assert(usize2ps(ret, level) == page_entry.perm.ps);
+        assert((ret & 0x0000_ffff_ffff_f000u64 as usize) == ghost_addr@);
+        assert(usize2pa(ret, level) == page_entry.addr);
+
+        assert((ghost_ret@ | (0x1u64 << 0x7u64) as usize) & (!(0x1u64 | 0x1u64 << 0x7u64
+            | 0x0000_ffff_ffff_f000u64)) as usize == 0) by (bit_vector)
+            requires
+                ghost_ret@ & (!(0x1u64 | 0x0000_ffff_ffff_f000u64)) as usize == 0,
+        ;
+        assert(ret & (!(PAGE_ENTRY_PRESENT_MASK | PAGE_ENTRY_PS_MASK | MEM_MASK)) as usize == 0);
+    } else {
+        assert((ret & (0x1u64 << 0x7u64) as usize) == 0) by (bit_vector)
+            requires
+                ret & (!(0x1u64 | 0x0000_ffff_ffff_f000u64)) as usize == 0,
+        ;
+
+        assert(usize2present(ret, level) == page_entry.perm.present);
+        assert(usize2ps(ret, level) == page_entry.perm.ps);
+        assert(usize2pa(ret, level) == page_entry.addr);
+
+        assert(ret & (!(0x1u64 | 0x1u64 << 0x7u64 | 0x0000_ffff_ffff_f000u64)) as usize == 0)
+            by (bit_vector)
+            requires
+                ret & (!(0x1u64 | 0x0000_ffff_ffff_f000u64)) as usize == 0,
+        ;
+        assert(ret & (!(PAGE_ENTRY_PRESENT_MASK | PAGE_ENTRY_PS_MASK | MEM_MASK)) as usize == 0);
+    }
+
+    assert(usize2present(ret, level) == page_entry.perm.present);
+    assert(usize2ps(ret, level) == page_entry.perm.ps);
+    assert(usize2pa(ret, level) == page_entry.addr);
+    assert(ret & (!(PAGE_ENTRY_PRESENT_MASK | PAGE_ENTRY_PS_MASK | MEM_MASK)) as usize == 0);
+
+    ghost_ret = Ghost(ret);
+
+    if page_entry.perm.write == true {
+        assert(((ret | (0x1u64 << 0x1u64) as usize) & (0x1u64 << 0x1u64) as usize) != 0)
+            by (bit_vector);
+        assert(((ret | (0x1u64 << 0x1u64) as usize) & 0x1 as usize) != 0 == ghost_present@)
+            by (bit_vector)
+            requires
+                ghost_ret@ == ret && (ret & 0x1u64 as usize) != 0 == ghost_present@,
+        ;
+        assert(((ret | (0x1u64 << 0x1u64) as usize) & (0x1u64 << 0x7u64) as usize) != 0
+            == ghost_ps@) by (bit_vector)
+            requires
+                ghost_ret@ == ret && (ret & (0x1u64 << 0x7u64) as usize) != 0 == ghost_ps@,
+        ;
+        assert(((ret | (0x1u64 << 0x1u64) as usize) & 0x0000_ffff_ffff_f000u64 as usize)
+            == ghost_addr@) by (bit_vector)
+            requires
+                ghost_ret@ == ret && (ghost_ret@ & 0x0000_ffff_ffff_f000u64 as usize)
+                    == ghost_addr@,
+        ;
+        ret = ret | (0x1u64 << 0x1u64) as usize;
+
+        assert((ret & 0x1 as usize) != 0 == ghost_present@);
+        assert(usize2present(ret, level) == page_entry.perm.present);
+        assert((ret & (0x1u64 << 0x7u64) as usize) != 0 == ghost_ps@);
+        assert(usize2ps(ret, level) == page_entry.perm.ps);
+        assert((ret & (0x1u64 << 0x1u64) as usize) != 0);
+        assert(usize2write(ret, level) == page_entry.perm.write);
+        assert((ret & 0x0000_ffff_ffff_f000u64 as usize) == ghost_addr@);
+        assert(usize2pa(ret, level) == page_entry.addr);
+
+        assert((ghost_ret@ | (0x1u64 << 0x1u64) as usize) & (!(0x1u64 | 0x1u64 << 0x7u64 | 0x1u64
+            << 0x1u64 | 0x0000_ffff_ffff_f000u64)) as usize == 0) by (bit_vector)
+            requires
+                ghost_ret@ & (!(0x1u64 | 0x1u64 << 0x7u64 | 0x0000_ffff_ffff_f000u64)) as usize
+                    == 0,
+        ;
+        assert(ret & (!(PAGE_ENTRY_PRESENT_MASK | PAGE_ENTRY_PS_MASK | PAGE_ENTRY_WRITE_MASK
+            | MEM_MASK)) as usize == 0);
+    } else {
+        assert((ret & (0x1u64 << 0x1u64) as usize) == 0) by (bit_vector)
+            requires
+                ret & (!(0x1u64 | 0x1u64 << 0x7u64 | 0x0000_ffff_ffff_f000u64)) as usize == 0,
+        ;
+
+        assert(usize2present(ret, level) == page_entry.perm.present);
+        assert(usize2ps(ret, level) == page_entry.perm.ps);
+        assert(usize2write(ret, level) == page_entry.perm.write);
+        assert(usize2pa(ret, level) == page_entry.addr);
+
+        assert(ret & (!(0x1u64 | 0x1u64 << 0x7u64 | 0x1u64 << 0x1u64
+            | 0x0000_ffff_ffff_f000u64)) as usize == 0) by (bit_vector)
+            requires
+                ret & (!(0x1u64 | 0x1u64 << 0x7u64 | 0x0000_ffff_ffff_f000u64)) as usize == 0,
+        ;
+        assert(ret & (!(PAGE_ENTRY_PRESENT_MASK | PAGE_ENTRY_PS_MASK | PAGE_ENTRY_WRITE_MASK
+            | MEM_MASK)) as usize == 0);
+    }
+
+    assert(usize2present(ret, level) == page_entry.perm.present);
+    assert(usize2ps(ret, level) == page_entry.perm.ps);
+    assert(usize2write(ret, level) == page_entry.perm.write);
+    assert(usize2pa(ret, level) == page_entry.addr);
+    assert(ret & (!(PAGE_ENTRY_PRESENT_MASK | PAGE_ENTRY_PS_MASK | PAGE_ENTRY_WRITE_MASK
+        | MEM_MASK)) as usize == 0);
+
+    ghost_ret = Ghost(ret);
+
+    if page_entry.perm.execute_disable == true {
+        assert(((ret | (0x1u64 << 63u64) as usize) & (0x1u64 << 63u64) as usize) != 0)
+            by (bit_vector);
+        assert(((ret | (0x1u64 << 63u64) as usize) & 0x1 as usize) != 0 == ghost_present@)
+            by (bit_vector)
+            requires
+                ghost_ret@ == ret && (ret & 0x1u64 as usize) != 0 == ghost_present@,
+        ;
+        assert(((ret | (0x1u64 << 63u64) as usize) & (0x1u64 << 0x7u64) as usize) != 0 == ghost_ps@)
+            by (bit_vector)
+            requires
+                ghost_ret@ == ret && (ret & (0x1u64 << 0x7u64) as usize) != 0 == ghost_ps@,
+        ;
+        assert(((ret | (0x1u64 << 63u64) as usize) & (0x1u64 << 0x1u64) as usize) != 0
+            == ghost_write@) by (bit_vector)
+            requires
+                ghost_ret@ == ret && (ret & (0x1u64 << 0x1u64) as usize) != 0 == ghost_write@,
+        ;
+        assert(((ret | (0x1u64 << 63u64) as usize) & 0x0000_ffff_ffff_f000u64 as usize)
+            == ghost_addr@) by (bit_vector)
+            requires
+                ghost_ret@ == ret && (ghost_ret@ & 0x0000_ffff_ffff_f000u64 as usize)
+                    == ghost_addr@,
+        ;
+        ret = ret | (0x1u64 << 63u64) as usize;
+
+        assert((ret & 0x1 as usize) != 0 == ghost_present@);
+        assert(usize2present(ret, level) == page_entry.perm.present);
+        assert((ret & (0x1u64 << 0x7u64) as usize) != 0 == ghost_ps@);
+        assert(usize2ps(ret, level) == page_entry.perm.ps);
+        assert((ret & (0x1u64 << 0x1u64) as usize) != 0 == ghost_write@);
+        assert(usize2write(ret, level) == page_entry.perm.write);
+        assert((ret & (0x1u64 << 63u64) as usize) != 0);
+        assert(usize2execute_disable(ret, level) == page_entry.perm.execute_disable);
+        assert((ret & 0x0000_ffff_ffff_f000u64 as usize) == ghost_addr@);
+        assert(usize2pa(ret, level) == page_entry.addr);
+
+        assert((ghost_ret@ | (0x1u64 << 63u64) as usize) & (!(0x1u64 | 0x1u64 << 0x7u64 | 0x1u64
+            << 0x1u64 | 0x1u64 << 63u64 | 0x0000_ffff_ffff_f000u64)) as usize == 0) by (bit_vector)
+            requires
+                ghost_ret@ & (!(0x1u64 | 0x1u64 << 0x7u64 | 0x1u64 << 0x1u64
+                    | 0x0000_ffff_ffff_f000u64)) as usize == 0,
+        ;
+        assert(ret & (!(PAGE_ENTRY_PRESENT_MASK | PAGE_ENTRY_PS_MASK | PAGE_ENTRY_WRITE_MASK
+            | PAGE_ENTRY_EXECUTE_MASK | MEM_MASK)) as usize == 0);
+    } else {
+        assert((ret & (0x1u64 << 63u64) as usize) == 0) by (bit_vector)
+            requires
+                ret & (!(0x1u64 | 0x1u64 << 0x7u64 | 0x1u64 << 0x1u64
+                    | 0x0000_ffff_ffff_f000u64)) as usize == 0,
+        ;
+
+        assert(usize2present(ret, level) == page_entry.perm.present);
+        assert(usize2ps(ret, level) == page_entry.perm.ps);
+        assert(usize2write(ret, level) == page_entry.perm.write);
+        assert(usize2execute_disable(ret, level) == page_entry.perm.execute_disable);
+        assert(usize2pa(ret, level) == page_entry.addr);
+
+        assert(ret & (!(0x1u64 | 0x1u64 << 0x7u64 | 0x1u64 << 0x1u64 | 0x1u64 << 63u64
+            | 0x0000_ffff_ffff_f000u64)) as usize == 0) by (bit_vector)
+            requires
+                ret & (!(0x1u64 | 0x1u64 << 0x7u64 | 0x1u64 << 0x1u64
+                    | 0x0000_ffff_ffff_f000u64)) as usize == 0,
+        ;
+        assert(ret & (!(PAGE_ENTRY_PRESENT_MASK | PAGE_ENTRY_PS_MASK | PAGE_ENTRY_WRITE_MASK
+            | PAGE_ENTRY_EXECUTE_MASK | MEM_MASK)) as usize == 0);
+    }
+
+    assert(usize2present(ret, level) == page_entry.perm.present);
+    assert(usize2ps(ret, level) == page_entry.perm.ps);
+    assert(usize2write(ret, level) == page_entry.perm.write);
+    assert(usize2execute_disable(ret, level) == page_entry.perm.execute_disable);
+    assert(usize2pa(ret, level) == page_entry.addr);
+    assert(ret & (!(PAGE_ENTRY_PRESENT_MASK | PAGE_ENTRY_PS_MASK | PAGE_ENTRY_WRITE_MASK
+        | PAGE_ENTRY_EXECUTE_MASK | MEM_MASK)) as usize == 0);
+
+    ghost_ret = Ghost(ret);
+
+    if page_entry.perm.user == true {
+        assert(((ret | (0x1u64 << 2u64) as usize) & (0x1u64 << 2u64) as usize) != 0)
+            by (bit_vector);
+        assert(((ret | (0x1u64 << 2u64) as usize) & 0x1 as usize) != 0 == ghost_present@)
+            by (bit_vector)
+            requires
+                ghost_ret@ == ret && (ret & 0x1u64 as usize) != 0 == ghost_present@,
+        ;
+        assert(((ret | (0x1u64 << 2u64) as usize) & (0x1u64 << 0x7u64) as usize) != 0 == ghost_ps@)
+            by (bit_vector)
+            requires
+                ghost_ret@ == ret && (ret & (0x1u64 << 0x7u64) as usize) != 0 == ghost_ps@,
+        ;
+        assert(((ret | (0x1u64 << 2u64) as usize) & (0x1u64 << 0x1u64) as usize) != 0
+            == ghost_write@) by (bit_vector)
+            requires
+                ghost_ret@ == ret && (ret & (0x1u64 << 0x1u64) as usize) != 0 == ghost_write@,
+        ;
+        assert(((ret | (0x1u64 << 2u64) as usize) & (0x1u64 << 63u64) as usize) != 0
+            == ghost_execute_disable@) by (bit_vector)
+            requires
+                ghost_ret@ == ret && (ret & (0x1u64 << 63u64) as usize) != 0
+                    == ghost_execute_disable@,
+        ;
+        assert(((ret | (0x1u64 << 2u64) as usize) & 0x0000_ffff_ffff_f000u64 as usize)
+            == ghost_addr@) by (bit_vector)
+            requires
+                ghost_ret@ == ret && (ghost_ret@ & 0x0000_ffff_ffff_f000u64 as usize)
+                    == ghost_addr@,
+        ;
+        ret = ret | (0x1u64 << 2u64) as usize;
+
+        assert((ret & 0x1 as usize) != 0 == ghost_present@);
+        assert(usize2present(ret, level) == page_entry.perm.present);
+        assert((ret & (0x1u64 << 0x7u64) as usize) != 0 == ghost_ps@);
+        assert(usize2ps(ret, level) == page_entry.perm.ps);
+        assert((ret & (0x1u64 << 0x1u64) as usize) != 0 == ghost_write@);
+        assert(usize2write(ret, level) == page_entry.perm.write);
+        assert((ret & (0x1u64 << 63u64) as usize) != 0 == ghost_execute_disable@);
+        assert(usize2execute_disable(ret, level) == page_entry.perm.execute_disable);
+        assert((ret & (0x1u64 << 2u64) as usize) != 0);
+        assert(usize2user(ret, level) == page_entry.perm.user);
+        assert((ret & 0x0000_ffff_ffff_f000u64 as usize) == ghost_addr@);
+        assert(usize2pa(ret, level) == page_entry.addr);
+
+        assert((ghost_ret@ | (0x1u64 << 2u64) as usize) & (!(0x1u64 | 0x1u64 << 0x7u64 | 0x1u64
+            << 0x1u64 | 0x1u64 << 63u64 | 0x1u64 << 2u64 | 0x0000_ffff_ffff_f000u64)) as usize == 0)
+            by (bit_vector)
+            requires
+                ghost_ret@ & (!(0x1u64 | 0x1u64 << 0x7u64 | 0x1u64 << 0x1u64 | 0x1u64 << 63u64
+                    | 0x0000_ffff_ffff_f000u64)) as usize == 0,
+        ;
+        assert(ret & (!(PAGE_ENTRY_PRESENT_MASK | PAGE_ENTRY_PS_MASK | PAGE_ENTRY_WRITE_MASK
+            | PAGE_ENTRY_EXECUTE_MASK | PAGE_ENTRY_USER_MASK | MEM_MASK)) as usize == 0);
+    } else {
+        assert((ret & (0x1u64 << 2u64) as usize) == 0) by (bit_vector)
+            requires
+                ret & (!(0x1u64 | 0x1u64 << 0x7u64 | 0x1u64 << 0x1u64 | 0x1u64 << 63u64
+                    | 0x0000_ffff_ffff_f000u64)) as usize == 0,
+        ;
+
+        assert(usize2present(ret, level) == page_entry.perm.present);
+        assert(usize2ps(ret, level) == page_entry.perm.ps);
+        assert(usize2write(ret, level) == page_entry.perm.write);
+        assert(usize2execute_disable(ret, level) == page_entry.perm.execute_disable);
+        assert(usize2user(ret, level) == page_entry.perm.user);
+        assert(usize2pa(ret, level) == page_entry.addr);
+
+        assert(ret & (!(0x1u64 | 0x1u64 << 0x7u64 | 0x1u64 << 0x1u64 | 0x1u64 << 63u64 | 0x1u64
+            << 2u64 | 0x0000_ffff_ffff_f000u64)) as usize == 0) by (bit_vector)
+            requires
+                ret & (!(0x1u64 | 0x1u64 << 0x7u64 | 0x1u64 << 0x1u64 | 0x1u64 << 63u64
+                    | 0x0000_ffff_ffff_f000u64)) as usize == 0,
+        ;
+        assert(ret & (!(PAGE_ENTRY_PRESENT_MASK | PAGE_ENTRY_PS_MASK | PAGE_ENTRY_WRITE_MASK
+            | PAGE_ENTRY_EXECUTE_MASK | PAGE_ENTRY_USER_MASK | MEM_MASK)) as usize == 0);
+    }
+
+    assert(usize2present(ret, level) == page_entry.perm.present);
+    assert(usize2ps(ret, level) == page_entry.perm.ps);
+    assert(usize2write(ret, level) == page_entry.perm.write);
+    assert(usize2execute_disable(ret, level) == page_entry.perm.execute_disable);
+    assert(usize2user(ret, level) == page_entry.perm.user);
+    assert(usize2pa(ret, level) == page_entry.addr);
+
+    assert(ret & (0x1u64 << 5u64) as usize == 0 && ret & (0x1u64 << 6u64) as usize == 0)
+        by (bit_vector)
+        requires
+            ret & (!(0x1u64 | 0x1u64 << 0x7u64 | 0x1u64 << 0x1u64 | 0x1u64 << 63u64 | 0x1u64 << 2u64
+                | 0x0000_ffff_ffff_f000u64)) as usize == 0,
+    ;
+    assert(spec_usize2page_entry_status(ret, level).is_clear());
+    assert(usize2page_entry_perm(ret, level) =~= page_entry.perm);
+    assert(spec_usize2page_entry(ret, level) =~= *page_entry);
+    if page_entry.perm.present {
+        assert(ret != 0) by (bit_vector)
+            requires
+                (ret & 0x1u64 as usize) != 0,
+        ;
+    }
+
+    return ret;
+}
 
 /// Flushes every context on this core, all PCIDs and paging-structure caches: changing CR4.PGE does
 /// that where a flush of the current PCID would leave entries under the others.

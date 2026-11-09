@@ -1533,6 +1533,7 @@ impl CapKernel {
         &&& pages.records@.contains_key(t)
         &&& pages.records@[t].addr() == t + TABLE_RECORD_PAGE * 4096
         &&& pages.records@[t].is_init()
+        &&& pages.maps@[t].value().level@ == pages.records@[t].value().level
     }
 
     /// Writes the frame's entry for these rights into entry e of table page t and marks t written.
@@ -1582,7 +1583,7 @@ impl CapKernel {
         let tracked mut record = self.table_pages.records.borrow_mut().tracked_remove(t);
         let ptr = PPtr::<TableRecord>::from_usize(t + TABLE_RECORD_PAGE * 4096);
         let table_record = *ptr.borrow(Tracked(&record));
-        page_map_set(t + TABLE_NODE_PAGES * 4096, Tracked(&mut map), e, value);
+        page_map_set(t + TABLE_NODE_PAGES * 4096, Tracked(&mut map), e, value, table_record.level);
         ptr.write(
             Tracked(&mut record),
             TableRecord { level: table_record.level, space: table_record.space, parent: table_record.parent, written: true },

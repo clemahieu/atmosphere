@@ -1221,10 +1221,13 @@ impl CapKernel {
         if is_root {
             let tracked map = self.spaces.roots.borrow().tracked_borrow(t);
             let record = PPtr::<SpaceRecord>::from_usize(t + SPACE_RECORD_PAGE * 4096).borrow(Tracked(self.spaces.records.borrow().tracked_borrow(t)));
-            PPtr::<PageMap>::from_usize(record.root).borrow(Tracked(map)).get(i)
+            PPtr::<PageMap>::from_usize(record.root).borrow(Tracked(map)).get(i, 4)
         } else {
             let tracked map = self.table_pages.maps.borrow().tracked_borrow(t);
-            PPtr::<PageMap>::from_usize(t + TABLE_NODE_PAGES * 4096).borrow(Tracked(map)).get(i)
+            let level = PPtr::<TableRecord>::from_usize(t + TABLE_RECORD_PAGE * 4096)
+                .borrow(Tracked(self.table_pages.records.borrow().tracked_borrow(t)))
+                .level;
+            PPtr::<PageMap>::from_usize(t + TABLE_NODE_PAGES * 4096).borrow(Tracked(map)).get(i, level)
         }
     }
 
@@ -1370,7 +1373,7 @@ impl CapKernel {
         let tracked mut record = self.spaces.records.borrow_mut().tracked_remove(parent);
         let ptr = PPtr::<SpaceRecord>::from_usize(parent + SPACE_RECORD_PAGE * 4096);
         let space_record = *ptr.borrow(Tracked(&record));
-        page_map_set(space_record.root, Tracked(&mut map), entry, value);
+        page_map_set(space_record.root, Tracked(&mut map), entry, value, 4);
         ptr.write(
             Tracked(&mut record),
             SpaceRecord {
@@ -1454,7 +1457,7 @@ impl CapKernel {
         let tracked mut record = self.table_pages.records.borrow_mut().tracked_remove(parent);
         let ptr = PPtr::<TableRecord>::from_usize(parent + TABLE_RECORD_PAGE * 4096);
         let parent_record = *ptr.borrow(Tracked(&record));
-        page_map_set(parent + TABLE_NODE_PAGES * 4096, Tracked(&mut map), entry, value);
+        page_map_set(parent + TABLE_NODE_PAGES * 4096, Tracked(&mut map), entry, value, parent_record.level);
         ptr.write(
             Tracked(&mut record),
             TableRecord { level: parent_record.level, space: parent_record.space, parent: parent_record.parent, written: true },
@@ -2501,8 +2504,11 @@ impl CapKernel {
             lemma_table_bound(parent);
             lemma_table_bound(child);
         }
+        let level = PPtr::<TableRecord>::from_usize(parent + TABLE_RECORD_PAGE * 4096)
+            .borrow(Tracked(self.table_pages.records.borrow().tracked_borrow(parent)))
+            .level;
         let tracked mut map = self.table_pages.maps.borrow_mut().tracked_remove(parent);
-        page_map_set(parent + TABLE_NODE_PAGES * 4096, Tracked(&mut map), entry, PageEntry::empty());
+        page_map_set(parent + TABLE_NODE_PAGES * 4096, Tracked(&mut map), entry, PageEntry::empty(), level);
         proof {
             self.table_pages.maps.borrow_mut().tracked_insert(parent, map);
             assert(self.table_pages.maps@ =~= pre.table_pages.maps@.insert(parent, self.table_pages.maps@[parent]));
@@ -2551,7 +2557,7 @@ impl CapKernel {
             .borrow(Tracked(self.spaces.records.borrow().tracked_borrow(parent)))
             .root;
         let tracked mut map = self.spaces.roots.borrow_mut().tracked_remove(parent);
-        page_map_set(root, Tracked(&mut map), entry, PageEntry::empty());
+        page_map_set(root, Tracked(&mut map), entry, PageEntry::empty(), 4);
         proof {
             self.spaces.roots.borrow_mut().tracked_insert(parent, map);
             assert(self.spaces.roots@ =~= pre.spaces.roots@.insert(parent, self.spaces.roots@[parent]));

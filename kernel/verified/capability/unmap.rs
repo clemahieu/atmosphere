@@ -8,7 +8,7 @@ use vstd::prelude::*;
 
 verus! {
 
-use crate::arch::{maintains_accessed, maintains_dirty, PAGE_ENTRY_ACCESSED_MASK, PAGE_ENTRY_DIRTY_MASK};
+use crate::arch::*;
 use crate::capability::destroy::*;
 use crate::capability::kernel::*;
 use crate::capability::link::*;
@@ -105,9 +105,9 @@ impl CapKernel {
     pub open spec fn unmapped_read(pre: Self, root: usize, slot: usize, p: SpacePath, r: Unmapped) -> bool {
         let tree = tree_of(&pre.table_pages, &pre.spaces);
         let t = walk_table(tree, pre.payload_of(pre.tables.node_of(root, slot)).base, p)->0;
-        &&& spec_usize2page_entry(r.read@) == tree.entry(t, p.l1)
-        &&& r.accessed == usize2accessed(r.read@)
-        &&& r.dirty == usize2dirty(r.read@)
+        &&& spec_usize2page_entry(r.read@, tree.record(t).level) == tree.entry(t, p.l1)
+        &&& r.accessed == spec_usize2page_entry_status(r.read@, tree.record(t).level).accessed
+        &&& r.dirty == spec_usize2page_entry_status(r.read@, tree.record(t).level).dirty
         &&& r.accessed_maintained == maintains_accessed()
         &&& r.dirty_maintained == maintains_dirty()
     }
@@ -372,9 +372,10 @@ impl CapKernel {
             Self::lemma_mapping_view_same(pre, *self, node);
             Self::lemma_unlinked_shrunk(pre, *self, node);
         }
+        let status = usize2page_entry_status(word, 1);
         Some((s, Unmapped {
-            accessed: word & PAGE_ENTRY_ACCESSED_MASK as usize != 0,
-            dirty: word & PAGE_ENTRY_DIRTY_MASK as usize != 0,
+            accessed: status.accessed,
+            dirty: status.dirty,
             accessed_maintained: maintains_accessed(),
             dirty_maintained: maintains_dirty(),
             read: Ghost(word),

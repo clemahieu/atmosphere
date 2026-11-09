@@ -8,10 +8,7 @@ use vstd::prelude::*;
 
 verus! {
 
-use crate::arch::{
-    maintains_accessed, maintains_dirty, PAGE_ENTRY_ACCESSED_MASK,
-    PAGE_ENTRY_DIRTY_MASK,
-};
+use crate::arch::*;
 use crate::capability::block::BlockTable;
 use crate::capability::kernel::*;
 use crate::capability::link::*;
@@ -81,9 +78,9 @@ pub proof fn lemma_mask_empty()
 /// accessed and dirty bits, and the entry's bits are clear; when it is not, a and d are false.
 pub open spec fn probed_entry(tree: TableTree, after: PageMap, t: usize, e: usize, word: usize, a: bool, d: bool) -> bool {
     let present = tree.entry(t, e).perm.present;
-    &&& present ==> spec_usize2page_entry(word) == tree.entry(t, e)
-    &&& a == (present && usize2accessed(word))
-    &&& d == (present && usize2dirty(word))
+    &&& present ==> spec_usize2page_entry(word, after.level@) == tree.entry(t, e)
+    &&& a == (present && spec_usize2page_entry_status(word, after.level@).accessed)
+    &&& d == (present && spec_usize2page_entry_status(word, after.level@).dirty)
     &&& present ==> after.status(e as int).is_clear()
 }
 
@@ -451,6 +448,8 @@ impl CapKernel {
             assert(walk_table(tree, s, p) == Some(t));
             assert(tree.is_page(t));
             assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, t));
+            assert(tree.record(t).level == 1);
+            assert(pre.table_pages.maps@[t].value().level@ == 1);
             lemma_table_bound(t);
             assert(pre.can_probe(root, slot, va, count));
         }
@@ -477,6 +476,7 @@ impl CapKernel {
                 map.is_init(),
                 map.value().wf(),
                 map.value().level == m0.value().level,
+                m0.value().level@ == 1,
                 map.value()@ == m0.value()@,
                 probed_prefix(tree, map.value(), t, l1, read, accessed, dirty, i as int),
                 forall|j: int| i <= j < 64 ==> !#[trigger] mask_bit(accessed, j),
@@ -484,7 +484,7 @@ impl CapKernel {
             decreases count - i,
         {
             let e = l1 + i as usize;
-            let entry = PPtr::<PageMap>::from_usize(ptr).borrow(Tracked(&map)).get(e);
+            let entry = PPtr::<PageMap>::from_usize(ptr).borrow(Tracked(&map)).get(e, 1);
             let ghost before = map.value();
             let ghost read0 = read;
             let ghost accessed0 = accessed;
@@ -496,16 +496,17 @@ impl CapKernel {
             assert(tree.entry(t, e) == m0.value()[e]);
             if entry.perm.present {
                 let word = page_map_clear_status(ptr, Tracked(&mut map), e);
-                let a_bit = word & PAGE_ENTRY_ACCESSED_MASK as usize != 0;
-                let d_bit = word & PAGE_ENTRY_DIRTY_MASK as usize != 0;
+                let status = usize2page_entry_status(word, 1);
+                let a_bit = status.accessed;
+                let d_bit = status.dirty;
                 proof {
                     lemma_mask_bit_set(accessed, i);
                     lemma_mask_bit_set(dirty, i);
                     word0 = word;
                     a0 = a_bit;
                     d0 = d_bit;
-                    assert(a_bit == usize2accessed(word));
-                    assert(d_bit == usize2dirty(word));
+                    assert(a_bit == spec_usize2page_entry_status(word, map.value().level@).accessed);
+                    assert(d_bit == spec_usize2page_entry_status(word, map.value().level@).dirty);
                 }
                 if a_bit {
                     accessed = accessed | (1u64 << i);
