@@ -138,6 +138,7 @@ impl CapKernel {
             forall|x: usize| #[trigger] final(self).is_cap(x) ==> x == leaf + 1,
             !final(self).list.nodes@[leaf + 2].live,
             !final(self).list.nodes@[leaf + 3].live,
+            forall|j: int| leaf + ROOT_UNTYPED_SLOT <= j < leaf + NODES_PER_PAGE ==> !#[trigger] final(self).list.nodes@[j].live,
             forall|k: int| 0 <= k < 8 ==> {
                 ||| (#[trigger] final(self).blocks.pages@[base / 4096 + k]).kind is Base
                 ||| final(self).blocks.pages@[base / 4096 + k].kind is Member
@@ -151,6 +152,8 @@ impl CapKernel {
             final(self).spaces.roots@.contains_key(base),
             forall|c: int| 0 <= c < NUM_CPUS ==> !#[trigger] final(self).loaded(c, base),
             final(self).blocks.pages@[(base / 4096) as int].refs == 1,
+            !final(self).blocks.pages@[(base / 4096) as int].dead,
+            final(self).table_pages == old(self).table_pages,
             final(self).list.pages@.dom() == set![root, leaf],
             final(self).blocks.regions_2m@ == old(self).blocks.regions_2m@,
             final(self).blocks.regions_1g@ == old(self).blocks.regions_1g@,
@@ -307,6 +310,10 @@ impl CapKernel {
             assert(l1.valid((leaf + 3) as usize));
             assert(!l2.nodes@[leaf + 3].live);
             assert(!l3.nodes@[leaf + 3].live);
+            assert forall|j: int| leaf + ROOT_UNTYPED_SLOT <= j < leaf + NODES_PER_PAGE implies !#[trigger] l3.nodes@[j].live by {
+                assert(l1.valid(j as usize));
+                assert(!l2.nodes@[j].live);
+            }
             assert(index_entry(ROOT_PROCESS_SLOT) == 0);
             assert(index_slot(ROOT_PROCESS_SLOT) == 1);
             assert(index_ok(ROOT_PROCESS_SLOT));
@@ -425,7 +432,11 @@ impl CapKernel {
                 &&& (#[trigger] final(self).blocks.pages@[i]).kind == old(self).blocks.pages@[i].kind
                 &&& final(self).blocks.pages@[i].object == old(self).blocks.pages@[i].object
                 &&& final(self).blocks.pages@[i].order == old(self).blocks.pages@[i].order
+                &&& final(self).blocks.pages@[i].dead == old(self).blocks.pages@[i].dead
             },
+            final(self).blocks.regions_2m@ == old(self).blocks.regions_2m@,
+            final(self).blocks.regions_1g@ == old(self).blocks.regions_1g@,
+            final(self).table_pages == old(self).table_pages,
     {
         let ghost pre = *old(self);
         let tb = t / 4096;
@@ -577,11 +588,15 @@ impl CapKernel {
                 &&& (#[trigger] post.blocks.pages@[i]).kind == pre.blocks.pages@[i].kind
                 &&& post.blocks.pages@[i].object == pre.blocks.pages@[i].object
                 &&& post.blocks.pages@[i].order == pre.blocks.pages@[i].order
+                &&& post.blocks.pages@[i].dead == pre.blocks.pages@[i].dead
             } by {
                 assert(typed.blocks.pages@[i] == freed.blocks.pages@[i]);
                 assert(freed.blocks.pages@[i] == pre.blocks.pages@[i]);
             }
             assert(post.list.pages@.dom() =~= pre.list.pages@.dom().insert(t));
+            assert(post.blocks.regions_2m@ == freed.blocks.regions_2m@);
+            assert(post.blocks.regions_1g@ == freed.blocks.regions_1g@);
+            assert(post.table_pages == pre.table_pages);
             assert forall|x: usize| #[trigger] post.is_cap(x) implies x == cap || pre.is_cap(x) by {
                 assert(typed.is_cap(x));
                 assert(freed.is_cap(x) == pre.is_cap(x));
@@ -677,6 +692,7 @@ impl CapKernel {
             final(self).threads == old(self).threads,
             final(self).processes == old(self).processes,
             final(self).spaces == old(self).spaces,
+            final(self).table_pages == old(self).table_pages,
     {
         let ghost pre = *old(self);
         let lb = leaf / 4096;
@@ -823,6 +839,21 @@ impl CapKernel {
                 ||| (#[trigger] final(self).blocks.pages@[t / 4096 + k]).kind is Base
                 ||| final(self).blocks.pages@[t / 4096 + k].kind is Member
             },
+            final(self).table_pages == old(self).table_pages,
+            final(self).blocks.regions_2m@ == old(self).blocks.regions_2m@,
+            final(self).blocks.regions_1g@ == old(self).blocks.regions_1g@,
+            forall|i: int| 0 <= i < NUM_PAGES && !(process / 4096 <= i < process / 4096 + 8) && !(leaf / 4096 <= i < leaf / 4096 + 2)
+                && !(frames / 4096 <= i < frames / 4096 + 2) && !(t / 4096 <= i < t / 4096 + 2) ==> {
+                &&& (#[trigger] final(self).blocks.pages@[i]).kind == old(self).blocks.pages@[i].kind
+                &&& final(self).blocks.pages@[i].object == old(self).blocks.pages@[i].object
+                &&& final(self).blocks.pages@[i].dead == old(self).blocks.pages@[i].dead
+            },
+            !final(self).blocks.pages@[(process / 4096) as int].dead,
+            final(self).processes.records@.contains_key(process),
+            !final(self).processes.records@[process].value().dead,
+            final(self).tables.roots@.contains_key(process),
+            final(self).list.pages@.dom() == set![root, leaf, frames, t],
+            forall|j: int| leaf + ROOT_UNTYPED_SLOT <= j < leaf + NODES_PER_PAGE ==> !#[trigger] final(self).list.nodes@[j].live,
     {
         // The body relates four states; unfolding each one's wf would put every kernel invariant's
         // quantifiers in one query. The steps' contracts carry wf whole, so it stays folded here.
@@ -1028,6 +1059,27 @@ impl CapKernel {
             } by {
                 assert(post.blocks.pages@[lb + k].kind == mid.blocks.pages@[lb + k].kind);
                 assert(mid.blocks.pages@[lb + k] == first.blocks.pages@[lb + k]);
+            }
+            // What the later steps need of the state boot_root leaves: no table page, no region typed,
+            // every page outside the four blocks as it was, the process live, and the first leaf's slots
+            // from ROOT_UNTYPED_SLOT on free.
+            assert forall|i: int| 0 <= i < NUM_PAGES && !(pb <= i < pb + 8) && !(lb <= i < lb + 2)
+                && !(fb <= i < fb + 2) && !(tb <= i < tb + 2) implies {
+                &&& (#[trigger] post.blocks.pages@[i]).kind == pre.blocks.pages@[i].kind
+                &&& post.blocks.pages@[i].object == pre.blocks.pages@[i].object
+                &&& post.blocks.pages@[i].dead == pre.blocks.pages@[i].dead
+            } by {
+                assert(mid.blocks.pages@[i] == first.blocks.pages@[i]);
+                assert(first.blocks.pages@[i] == pre.blocks.pages@[i]);
+            }
+            assert(!post.blocks.pages@[pb as int].dead) by {
+                assert(post.blocks.pages@[pb as int].dead == mid.blocks.pages@[pb as int].dead);
+            }
+            assert(post.list.pages@.dom() =~= set![root, leaf, frames, t]);
+            assert forall|j: int| leaf + ROOT_UNTYPED_SLOT <= j < leaf + NODES_PER_PAGE implies !#[trigger] post.list.nodes@[j].live by {
+                assert(j != frames && j != t && j != leaf + 2);
+                assert(!first.list.nodes@[j].live);
+                assert(!mid.list.nodes@[j].live);
             }
         }
     }

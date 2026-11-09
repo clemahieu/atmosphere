@@ -875,6 +875,7 @@ impl CapKernel {
                 &&& final(self).threads == old(self).threads
                 &&& final(self).processes == old(self).processes
                 &&& final(self).spaces == old(self).spaces
+                &&& final(self).table_pages == old(self).table_pages
             },
     {
         let ghost pre = *old(self);

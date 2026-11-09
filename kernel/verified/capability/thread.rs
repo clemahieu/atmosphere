@@ -3502,6 +3502,9 @@ impl CapKernel {
             forall|x: usize| #[trigger] final(self).is_cap(x) == old(self).is_cap(x),
             forall|x: int| #![trigger final(self).list.nodes@[x]] 0 <= x < NODE_SPACE && x != t
                 ==> final(self).list.nodes@[x].depth == old(self).list.nodes@[x].depth,
+            final(self).blocks.regions_2m@ == old(self).blocks.regions_2m@,
+            final(self).blocks.regions_1g@ == old(self).blocks.regions_1g@,
+            forall|i: int| 0 <= i < NUM_PAGES ==> (#[trigger] final(self).blocks.pages@[i]).dead == old(self).blocks.pages@[i].dead,
     {
         let ghost pre = *old(self);
         proof {
