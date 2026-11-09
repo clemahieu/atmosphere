@@ -53,9 +53,10 @@ import threading
 import time
 import unittest
 
-# OVMF, as tools/run.py boots it.
-OVMF_CODE = "/usr/share/edk2/ovmf/OVMF_CODE.fd"
-OVMF_VARS = "/usr/share/edk2/ovmf/OVMF_VARS.fd"
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import firmware
+
 # What tools/isolate-pinned.sh apply changed, for its undo; its fixed lines name the IRQs it could not move.
 ISOLATION_STATE = "/run/atmo-isolate-pinned"
 LINES = re.compile(r"IPC round trip|sys_mresolve (?:alone|contended):|flush IPI|kernel lock:|contention test lock:")
@@ -242,7 +243,7 @@ def build(lock_stats):
                    check=True, env={**os.environ, "RUSTC_BOOTSTRAP": "1"})
 
 
-def esp(out):
+def esp(out, ovmf_code, ovmf_vars):
     """Lays out the EFI system partition under out as tools/run.py does, and returns
     QEMU's arguments to boot it under OVMF: OVMF boots EFI/BOOT/BOOTX64.EFI, and the loader reads the
     kernel and dom0 ELF images concatenated in the file initrd beside it. OVMF writes its variable
@@ -254,8 +255,8 @@ def esp(out):
     with open(f"{root}/initrd", "wb") as f:
         for name in ("kernel", "dom0"):
             f.write(open(f"target/x86_64-unknown-aloader/release/{name}", "rb").read())
-    shutil.copy(OVMF_VARS, f"{out}/OVMF_VARS.fd")
-    return ["-drive", f"if=pflash,format=raw,unit=0,readonly=on,file={OVMF_CODE}",
+    shutil.copy(ovmf_vars, f"{out}/OVMF_VARS.fd")
+    return ["-drive", f"if=pflash,format=raw,unit=0,readonly=on,file={ovmf_code}",
             "-drive", f"if=pflash,format=raw,unit=1,file={out}/OVMF_VARS.fd",
             "-drive", f"format=raw,file=fat:rw:{root}"]
 
@@ -328,11 +329,12 @@ def sample_clocks(paths, others, done, samples):
 
 def boot(pair, others, out):
     log = f"{out}/serial.log"
-    drives = esp(out)
+    ovmf_code, ovmf_vars, qemu_bin = firmware.require("tools/measure-pinned.py")
+    drives = esp(out, ovmf_code, ovmf_vars)
     if os.path.exists(log):
         os.unlink(log)
     qemu = subprocess.Popen(
-        ["qemu-system-x86_64", "-enable-kvm", "-cpu", "host", "-machine", "q35,kernel_irqchip=split",
+        [qemu_bin, "-enable-kvm", "-cpu", "host", "-machine", "q35,kernel_irqchip=split",
          "-name", "guest=atmo,debug-threads=on", "-smp", "2", "-m", "8192", "-nographic",
          "-serial", f"file:{log}", "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"] + drives,
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,

@@ -19,3 +19,6 @@ build
 build-tool/serial.log
 serial.log
 /tools/verus
+
+.claude/settings.local.json
+.claude/hooks/license-guard.local

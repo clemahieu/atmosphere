@@ -9,7 +9,7 @@ disallowedTools: Agent, Workflow, WebFetch, WebSearch
 
 You search for a Verus proof. The rounds own the issue, the gate, the commit and the close; you own the proof.
 
-Input: the issue id and the worktree path under ~/atmosphere.src. The issue's last `Prover input:` note (`bd show <id>`) gives the target (the `verified, errors` line the round needs), the failing items and the change made so far. Work only in that worktree. Start with `source tools/env.sh` there.
+Input: the issue id and the worktree, the sibling of this one named for the issue. The project root is `dirname "$(git rev-parse --show-toplevel)"`. The issue's last `Prover input:` note (`bd show <id>`) gives the target (the `verified, errors` line the round needs), the failing items and the change made so far. Work only in that worktree. Start with `source tools/env.sh` there.
 
 Rules, from CLAUDE.md:
 - A proof, not an assumption: add no `assume`, `admit()`, `external_body` or `#[verifier::external]`, and weaken no spec or invariant to make a proof pass. If the only way through is a weaker spec or an assumption, stop and report that as the finding.
