@@ -1,0 +1,60 @@
+---
+title: "Every target uses a 4K granule, 48-bit VA and four levels; what differs per ISA is a fixed item set in an arch module chosen by target cfg"
+date: 2026-11-09
+status: active
+tags: [portability, pagetable, verified, abi]
+one_line: "Page sizes 4K/2M/1G, 512 entries a level and four levels stay fixed constants the proofs use on every target; only an entry's bit layout is per-ISA. A per-ISA arch module, selected by cfg(target_arch) with no traits, supplies five items: page-entry encoding, trap frame and user-return checks, address-space switch and flush token, syscall register table, and exception and interrupt entry glue. Platform glue is a separate per-machine crate."
+revisit_if: "A target the project must run on offers no 4K granule to the kernel or its IOMMU (bare Apple silicon, whose DART uses 16K pages), a workload needs more than 48 bits of VA (x86 LA57, Arm LPA2), or a second implementation of an item has to coexist on one target, which is when a trait starts to pay."
+confidence: "A judgement made before the second target exists. That the 4K-granule aarch64 table has the x86_64 shape is arithmetic on both architectures' translation formats; that five items cover the ISA is a survey of the tree, and the first aarch64 build is what tests it."
+---
+
+# The arch module, and why the page granule is fixed
+
+## Decision
+
+This is the default the aarch64 port's plan chose. The human may override it, and an override revises this record.
+
+**Granule.** Every target translates with a 4K granule, 48-bit virtual addresses and four levels of 512 entries. `PAGE_SZ_4k`, `PAGE_SZ_2m` and `PAGE_SZ_1g` in `kernel/verified/define.rs`, the 512-entry table page and the four-level walk (`va2index`, `pagetable_map_4k_page`) stay shared constants and shared code, the same on every target. What differs per architecture is the bit layout of an entry: which bits say valid, block or page, writable, user-accessible and not executable, and where the address sits. On x86_64 that is the long-mode PTE; on aarch64 it is the VMSAv8-64 stage-1 descriptor for the 4K granule with `TCR_EL1.T0SZ = 16`. The kernel's share of every table stays the top-level entries below `KERNEL_MEM_END_L4INDEX`, copied into each process table, so on aarch64 the kernel and the process share `TTBR0_EL1` and `TTBR1_EL1` walks are disabled; the spec's split of a table into kernel and user entries does not change.
+
+**Arch module.** Code the ISA fixes lives in an arch module, one implementation per target, chosen by `cfg(target_arch)`:
+
+```
+kernel/verified/arch/mod.rs        #[cfg(target_arch = "x86_64")] mod x86_64; pub use x86_64::*;  (and aarch64)
+kernel/verified/arch/x86_64.rs     items verified code names, with their specs
+kernel/src/arch/x86_64/            the same target's unverified entry glue and instruction wrappers
+```
+
+Each implementation defines the same names with the same signatures and the same `ensures`. There is no trait: shared code calls `arch::item`, and a target that lacks an item, or whose item promises less, fails to build or to verify. The specs are written over the abstract structs that already exist (`PageEntry`, `PageEntryPerm`, `Flushed`, the thread record), so the proofs above the arch module do not know which ISA they run on.
+
+**The item set**, and where each item lives today:
+
+1. *Page-entry encoding and decoders.* Encode an abstract entry at a level into a word and decode a word at a level back. Today: the `PAGE_ENTRY_*` shifts and masks, `MEM_MASK`, `MEM_4k_MASK`, `MEM_2m_MASK`, `MEM_1g_MASK`, `VA_PERM_MASK`, `READ`, `READ_WRITE`, `READ_EXECUTE`, `READ_WRITE_EXECUTE` and `KERNEL_MEM_END_L4INDEX` in `kernel/verified/define.rs`; the `usize2*` decoders and `page_entry2usize` in `kernel/verified/pagetable/entry.rs`; mask readers in `kernel/verified/capability/map.rs`, `capability/link.rs` and `util/page_ptr_util_u.rs`. The decoders take the level, because aarch64's bit 1 means table at levels 0 to 2 and page at level 3, where x86's PS bit means a large page; x86 ignores the argument where PS is undefined.
+2. *Trap frame and user-return checks.* The register frame a thread record holds, the values a return to user writes (code and stack selectors on x86, `SPSR_EL1` for EL0 on aarch64) and the check that a user-supplied program counter is a user address. Today: `Registers` in `kernel/verified/trap.rs`; `USER_CS`, `USER_SS`, `USER_RIP_END` and `user_rip` in `kernel/verified/capability/thread.rs`. The user bound differs: 2^47 on x86 (canonical lower half), 2^48 under `TTBR0_EL1` with `T0SZ = 16`.
+3. *Address-space switch and flush token.* Switch this core to (root table, address-space id), and flush every context on this core, returning the `Flushed` token. Today: `Bridge::set_cr3`, declared in `kernel/verified/bridge.rs` and implemented in `kernel/src/bridge.rs`, with `cr3 | pcid | PCID_ENABLE_MASK` composed at each call in `kernel/src/kernel/mod.rs` and `PCID_ENABLE_MASK` in `define.rs`; `flush_every_context` in `kernel/verified/capability/kernel.rs`, which toggles CR4.PGE. The `Flushed` token, the epoch model and the IPI protocol of `design/flush-without-waiting/` stay shared; the 12-bit PCID and a 16-bit ASID both hold `PCID_MAX`. The flush stays a counted `external_body` glue leaf on each target.
+4. *Syscall register table.* Which register carries the operation, the capability index, each argument and the return, and what the call clobbers. Today: named in `design/syscall-abi-in-registers/`, read by field name in `kernel/src/syscalls/mod.rs`, and issued inline by the `syscall!` macro in `asys/src/lib.rs`. `asys` does not link `kernel/verified`, so it carries its own copy of the table selected by the same cfg; that record is the one source both follow, for each target.
+5. *Exception and interrupt entry glue.* The vector table, the stubs that save the trap frame and enter the kernel, and the instruction wrappers the stubs and the switch use. Today: `kernel/src/interrupt/mod.rs`, `interrupt/idt.rs` and `interrupt/exception.rs`, the syscall entry in `kernel/src/syscalls/mod.rs`, `kernel/src/gdt/` and `kernel/src/arch.rs`. All of it is unverified glue under `kernel/src/arch/<target>/`.
+
+**Machine glue is not the arch module.** What the platform fixes rather than the ISA (boot and discovery, the interrupt controller, the timer, the console, secondary-core start, the IOMMU) goes to a per-machine glue crate: today's `kernel/src/boot/`, `interrupt/lapic.rs`, `ioapic.rs`, `mps.rs`, `x86_xapic.rs` and `kernel/src/iommu.rs` for the AMD PC, and a QEMU virt crate (GICv3, generic timer, PL011, PSCI) for aarch64.
+
+## Reasoning
+
+Parameterizing an entry's bit layout is cheap: the spec reads entries through the abstract `PageEntry`, and only the decoders touch bits, so a second layout is a second set of decoders proven against the same `ensures`. Parameterizing page size or level count is not: the sizes and the four-level walk appear in the page-table invariants, the memory manager's free lists, the block orders of `design/capability-names-a-block/` and the lemmas over them, and every one would become a function of the target.
+
+Nothing chosen needs that. The aarch64 4K granule with 48-bit VA is four levels of 512 eight-byte entries indexed by 9 bits each, blocks at level 1 (1G) and level 2 (2M), pages at level 3 (4K), with the output address in bits 47:12, 47:21 and 47:30: the x86_64 shape, down to the address masks. Level 0 maps no block on either.
+
+Selecting by cfg rather than by trait follows from there being one implementation per target. A trait in Verus carries its specs on the trait and its proofs on each impl, threads a type parameter through every caller, and buys dispatch the kernel never does. A cfg-selected module with the same names gets the same checking from the compiler and the verifier, provided `tools/verify.py` runs once per target.
+
+Sharing `TTBR0_EL1` with the kernel keeps the kernel/user table split the spec already has. Giving the kernel `TTBR1_EL1` would be the native aarch64 layout, but it moves the kernel's entries out of every process table and changes the invariant that a table's low top-level entries are the kernel's.
+
+## Alternatives rejected
+
+- **A 16K or 64K granule on aarch64.** 16K gives 2048 entries a level and 32M blocks; 64K gives 8192 entries, 512M blocks and three levels. Either makes the page sizes and level count per-target through the proofs. QEMU virt and the cores under test offer 4K.
+- **A trait per item, or one `Arch` trait.** Heavier in Verus, as above, for no second implementation on any one target.
+- **A portability layer over the hardware**, such as a generic MMU or interrupt abstraction. The principles forbid one beyond the arch module and the machine glue, and five items do not need it.
+- **The kernel in the upper half through `TTBR1_EL1`.** Native to aarch64, but it changes the page-table spec on one target only.
+
+## What this does not settle
+
+- The IOMMU. The AMD IOMMU's device IDs, command opcodes and root-table format sit in the verified tree beside the kernel model, not in an arch item; SMMUv3 on QEMU virt is a separate model, and DART on bare Apple silicon would reopen the granule.
+- The aarch64 values of each item: the descriptor bits, the EL1 frame, the syscall table, the memory attributes. Each is written from the Arm Architecture Reference Manual by the leaf that adds it.
+- How `tools/verify.py` verifies the aarch64 module from this x86_64 host.
