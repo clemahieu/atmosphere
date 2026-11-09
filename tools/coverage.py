@@ -38,6 +38,7 @@ spec.loader.exec_module(check_boot_stack)
 OUT = "target/coverage"
 KERNEL = f"{OUT}/x86_64-unknown-aloader/debug/kernel"
 DOM0 = f"{OUT}/x86_64-unknown-aloader/debug/dom0"
+HELLO = f"{OUT}/x86_64-unknown-aloader/debug/hello"
 RAW_MAGIC = 0xff6c70726f667281
 RAW_VERSION = 11
 VALUE_KIND_LAST = 2
@@ -57,8 +58,8 @@ def tool(name):
 
 def build():
     env = {**os.environ, "RUSTC_BOOTSTRAP": "1"}
-    for crate in ("kernel", "dom0"):
-        subprocess.run(["cargo", "build", "-q", "--target-dir", f"../{OUT}"], cwd=crate, check=True,
+    for crate in ("kernel", "dom0", "user/hello"):
+        subprocess.run(["cargo", "build", "-q", "--target-dir", f"{os.getcwd()}/{OUT}"], cwd=crate, check=True,
                        env={**env, "RUSTFLAGS": FLAGS})
     check_boot_stack.build_loader("debug")
 
@@ -169,7 +170,7 @@ def report(image, sock, command, bias):
 def main():
     os.makedirs(OUT, exist_ok=True)
     build()
-    log, qemu, sock = check_boot_stack.boot("debug", OUT, kernel=KERNEL, dom0=DOM0)
+    log, qemu, sock = check_boot_stack.boot("debug", OUT, kernel=KERNEL, dom0=DOM0, payload=HELLO)
     entry = int(re.search(r"Calling into kernel @ (?:0x)?([0-9a-f]+)", log).group(1), 16)
     kernel_bias = entry - entry_point(KERNEL)
     dom0_log = log[log.index("Loading dom0"):]
