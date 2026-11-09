@@ -237,7 +237,8 @@ fn count_frames(runs: &[ImageRun]) -> (ret: Option<usize>)
 
 /// What holds once boot_root_image has put the first k blocks of the image: the second leaf's slots
 /// from ROOT_FRAME_SLOT + k are as boot left them, the 2M regions of the first k blocks are typed
-/// with a holder and at most k references and every other region and page is as it was, the
+/// with a holder and at most k references and every other region and page is as it was, every node
+/// outside those slots keeps its liveness and depth and every capability there its payload, the
 /// permissions left are those of the image regions not yet typed, and the root's reach has grown by
 /// exactly the first k blocks.
 #[verifier::opaque]
@@ -264,7 +265,11 @@ pub open spec fn image_progress(
     &&& cur.blocks.free_perms == pre.blocks.free_perms
     &&& cur.blocks.regions_1g@ == pre.blocks.regions_1g@
     &&& forall|j: int| #![trigger cur.list.nodes@[j]] 0 <= j < NODE_SPACE && !(leaf2 + 1 <= j < leaf2 + 1 + k)
-        ==> cur.list.nodes@[j].live == pre.list.nodes@[j].live
+        ==> cur.list.nodes@[j].live == pre.list.nodes@[j].live && cur.list.nodes@[j].depth == pre.list.nodes@[j].depth
+    &&& forall|x: usize| #![trigger cur.is_cap(x)] #![trigger pre.is_cap(x)]
+        !(leaf2 + 1 <= x < leaf2 + 1 + k) ==> cur.is_cap(x) == pre.is_cap(x)
+    &&& forall|x: usize| #![trigger pre.is_cap(x)] #![trigger cur.payload_of(x)]
+        !(leaf2 + 1 <= x < leaf2 + 1 + k) && pre.is_cap(x) ==> cur.payload_of(x) == pre.payload_of(x)
     &&& forall|j: int| leaf2 + 1 + k <= j < leaf2 + NODES_PER_PAGE ==> !#[trigger] cur.list.nodes@[j].live
     &&& forall|q: int| 0 <= q < NUM_2M && #[trigger] in_regions(bs, k, q) ==> {
         &&& cur.blocks.regions_2m@[q].typed
@@ -339,6 +344,7 @@ impl CapKernel {
                 &&& post.list.seq@[0] == root
                 &&& post.tables.roots == cur.tables.roots
                 &&& post.tables.owner == cur.tables.owner
+                &&& Self::adds_cap(cur, post, child)
                 &&& forall|j: int| #![trigger post.list.nodes@[j]] 0 <= j < NODE_SPACE && j != child
                     ==> post.list.nodes@[j].live == cur.list.nodes@[j].live
                     && post.list.nodes@[j].depth == cur.list.nodes@[j].depth
@@ -406,8 +412,21 @@ impl CapKernel {
             assert(!region_keys(perms, r as int).contains(j));
         }
         assert forall|j: int| #![trigger post.list.nodes@[j]] 0 <= j < NODE_SPACE && !(leaf2 + 1 <= j < leaf2 + 1 + (k + 1))
-            implies post.list.nodes@[j].live == pre.list.nodes@[j].live by {
+            implies post.list.nodes@[j].live == pre.list.nodes@[j].live && post.list.nodes@[j].depth == pre.list.nodes@[j].depth by {
             assert(cur.list.nodes@[j].live == pre.list.nodes@[j].live);
+            assert(cur.list.nodes@[j].depth == pre.list.nodes@[j].depth);
+        }
+        assert forall|x: usize| !(leaf2 + 1 <= x < leaf2 + 1 + (k + 1)) implies #[trigger] post.is_cap(x) == pre.is_cap(x) by {
+            assert(x != child);
+            assert(post.is_cap(x) == cur.is_cap(x));
+            assert(cur.is_cap(x) == pre.is_cap(x));
+        }
+        assert forall|x: usize| !(leaf2 + 1 <= x < leaf2 + 1 + (k + 1)) && #[trigger] pre.is_cap(x)
+            implies post.payload_of(x) == pre.payload_of(x) by {
+            assert(x != child);
+            assert(cur.is_cap(x));
+            assert(post.payload_of(x) == cur.payload_of(x));
+            assert(cur.payload_of(x) == pre.payload_of(x));
         }
         assert forall|j: int| leaf2 + 1 + (k + 1) <= j < leaf2 + NODES_PER_PAGE implies !#[trigger] post.list.nodes@[j].live by {
             assert(!cur.list.nodes@[j].live);
@@ -755,6 +774,12 @@ impl CapKernel {
                 &&& forall|j: int| #![trigger final(self).list.nodes@[j]] 0 <= j < NODE_SPACE
                     && !(leaf2 + 1 <= j < leaf2 + 1 + count)
                     ==> final(self).list.nodes@[j].live == old(self).list.nodes@[j].live
+                    && final(self).list.nodes@[j].depth == old(self).list.nodes@[j].depth
+                &&& forall|x: usize| #![trigger final(self).is_cap(x)] #![trigger old(self).is_cap(x)]
+                    !(leaf2 + 1 <= x < leaf2 + 1 + count) ==> final(self).is_cap(x) == old(self).is_cap(x)
+                &&& forall|x: usize| #![trigger old(self).is_cap(x)] #![trigger final(self).payload_of(x)]
+                    !(leaf2 + 1 <= x < leaf2 + 1 + count) && old(self).is_cap(x)
+                    ==> final(self).payload_of(x) == old(self).payload_of(x)
                 &&& final(self).blocks.free_perms == old(self).blocks.free_perms
                 &&& final(self).blocks.regions_1g@ == old(self).blocks.regions_1g@
                 &&& final(self).threads == old(self).threads
