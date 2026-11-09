@@ -1095,7 +1095,7 @@ impl CapKernel {
     }
 
     /// The root's space and what its untyped at ROOT_UNTYPED_SLOT says.
-    fn root_space_and_untyped(&self, process: usize) -> (ret: (usize, Payload))
+    pub fn root_space_and_untyped(&self, process: usize) -> (ret: (usize, Payload))
         requires
             self.wf(),
             self.root_tables_ready(process),
