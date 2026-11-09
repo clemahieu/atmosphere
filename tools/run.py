@@ -50,7 +50,11 @@ DEBUGGER_WAITING = b"debugger: waiting"
 DEBUG_EXIT_PORT = 0xf4
 # isa-debug-exit makes QEMU exit with `code << 1 | 1`, and dom0 writes 0x10 on success.
 DOM0_SUCCESS_STATUS = 33
-MEMORY_MIB = 32 * 1024
+# Guest RAM, in MiB. The loader needs one conventional region larger than its 2 GiB
+# allocator, and the kernel tracks 8 GiB of pages and rejects a free page past that.
+# 6144 is above that floor and under that cap, and on the Orange Pi (7.7 GiB) it
+# leaves the host OS running beside the guest.
+MEMORY_MIB = 6144
 # The only program under user/, which the loader hands dom0.
 PAYLOAD = "hello"
 # What the loader prints first: its name, then a clear screen and the cursor home
@@ -347,6 +351,18 @@ class Tests(unittest.TestCase):
         self.assertEqual(self.options(args, "-smp"), ["2"])
         self.assertEqual(self.options(args, "-cpu"), ["Haswell-IBRS"])
         self.assertIn("stdio,id=char0,mux=on,logfile=/w/serial.log,signal=off", self.options(args, "-chardev"))
+
+    def test_guest_ram_is_above_the_loader_floor_and_fits_the_board(self):
+        # The loader needs one conventional region larger than its 2 GiB allocator.
+        # The kernel tracks 8 GiB of pages. The Orange Pi has 7.7 GiB; a gigabyte
+        # stays for its OS, so a 32 GiB guest cannot be this run.
+        self.assertGreater(MEMORY_MIB, 2 * 1024)
+        self.assertLessEqual(MEMORY_MIB, 8 * 1024)
+        self.assertLessEqual(MEMORY_MIB + 1024, 77 * 1024 // 10)
+        self.assertNotEqual(MEMORY_MIB, 32 * 1024)
+        args = qemu_args(Path("/run/x"), Path("/w/serial.log"), False, False, None,
+                         "/ovmf/OVMF_CODE.fd")
+        self.assertEqual(self.options(args, "-m"), [str(MEMORY_MIB)])
 
     def test_kvm_iommu_and_gdb_each_add_their_arguments(self):
         plain = qemu_args(Path("/run/x"), Path("/w/serial.log"), False, False, None, "/ovmf/OVMF_CODE.fd")
