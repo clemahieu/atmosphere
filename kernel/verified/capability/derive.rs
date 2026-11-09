@@ -571,6 +571,11 @@ impl CapKernel {
                 |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live,
             ),
     {
+        // The proof reads the list's part of wf alone; the rest stays folded, out of the solver's search.
+        hide(CapKernel::wf);
+        assert(pre.list.wf()) by {
+            reveal(CapKernel::wf);
+        }
         let parent = pre.tables.node_of(root, from);
         let child = pre.tables.node_of(root, to);
         let (a, b) = (pre.view(), post.view());
