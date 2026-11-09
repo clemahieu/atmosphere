@@ -81,6 +81,13 @@ pub open spec fn names_block(k: CapKind) -> bool {
     !(k is Device) && !(k is Console)
 }
 
+/// A capability of this kind is a holder some record counts: a frame's in its block's holders, and a
+/// space's, thread's or process's in that object's. Any other kind's capability can come and go
+/// without a record changing.
+pub open spec fn tracked_kind(k: CapKind) -> bool {
+    k is Frame || k is Space || k is Thread || k is Process
+}
+
 pub fn is_block_kind(k: CapKind) -> (ret: bool)
     ensures
         ret == names_block(k),

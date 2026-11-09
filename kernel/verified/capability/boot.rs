@@ -816,7 +816,7 @@ impl CapKernel {
             Self::lemma_table_nodes_caps_frame(pre, post, child, child);
             Self::lemma_space_nodes_caps_frame(pre, post, child, child);
             Self::lemma_bindings_caps_frame(pre, post, child, child);
-            Self::lemma_add_blockless_holders(pre, post, child);
+            Self::lemma_add_untracked_holders(pre, post, child);
             Self::lemma_devices_caps_frame(pre, post, child, child);
             lemma_parents_derived(pre.list, post.list, root, child);
             Self::lemma_tlb_same(pre, post);
@@ -824,7 +824,8 @@ impl CapKernel {
             Self::lemma_derive_step_adds_cap(pre, post, child);
             lemma_has(post.list.seq@, child);
             assert(post.list.is_child(root, child));
-            Self::lemma_boot_console_view(pre, post, root, process, child);
+            Self::lemma_boot_held_view(pre, post, root, process, ROOT_CONSOLE_SLOT, child);
+            Self::lemma_console_covers(post, child);
             let live = |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live;
             lemma_adds_held_reach(pre.view(), post.view(), process, root, child, live);
             assert forall|o: usize| #[trigger] post.view().reach(process, o)
@@ -838,24 +839,23 @@ impl CapKernel {
         }
     }
 
-    /// The view of boot_root_console's step: a capability the root holds, without control, below the
-    /// list's first node, covering the console's object alone.
-    proof fn lemma_boot_console_view(pre: Self, post: Self, root: usize, process: usize, child: usize)
+    /// The view of a boot step that puts a capability in slot i of the root's table, without control,
+    /// below the list's first node, which no table holds.
+    proof fn lemma_boot_held_view(pre: Self, post: Self, root: usize, process: usize, i: usize, child: usize)
         requires
             Self::adds_cap(pre, post, child),
             root == pre.list.seq@[0],
-            pre.tables.has_slot(&pre.list, process, ROOT_CONSOLE_SLOT),
-            pre.tables.node_of(process, ROOT_CONSOLE_SLOT) == child,
+            pre.tables.has_slot(&pre.list, process, i),
+            pre.tables.node_of(process, i) == child,
             post.list.parent@ == pre.list.parent@.insert(child, root),
             post.is_cap(child),
-            post.payload_of(child) == console_payload(),
+            post.payload_of(child).rights & CONTROL_RIGHT == 0,
         ensures
             adds_held(pre.view(), post.view(), process, root, child, |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live),
-            forall|o: ObjectId| #[trigger] post.view().covers(child, o) <==> o == CONSOLE_OBJECT,
     {
         let (a, b) = (pre.view(), post.view());
         let live = |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live;
-        pre.lemma_slot(process, ROOT_CONSOLE_SLOT);
+        pre.lemma_slot(process, i);
         pre.lemma_slot_bound(child);
         pre.list.lemma_link(0);
         pre.list.lemma_live_valid(root);
@@ -887,10 +887,20 @@ impl CapKernel {
         assert forall|x: NodeId, r: Right| x != child implies #[trigger] b.rights.contains((x, r)) == a.rights.contains((x, r)) by {
             assert(post.is_cap(x) == pre.is_cap(x));
         }
-        assert(CONSOLE_RIGHTS & 128u32 == 0) by (compute_only);
         assert(!b.rights.contains((child, Right::Control)));
         assert(b.parent == a.parent.insert(child, root));
         assert(adds_held(a, b, process, root, child, live));
+    }
+
+    /// The console's capability covers the console's object alone.
+    proof fn lemma_console_covers(s: Self, child: usize)
+        requires
+            s.is_cap(child),
+            s.payload_of(child) == console_payload(),
+        ensures
+            forall|o: ObjectId| #[trigger] s.view().covers(child, o) <==> o == CONSOLE_OBJECT,
+    {
+        let b = s.view();
         assert(pow2(0) == 1) by { lemma2_to64(); }
         assert(b.names[child] == CONSOLE_OBJECT && b.pages[child] == 1);
         assert(CONSOLE_OBJECT % 4096 == 0) by (compute_only);
