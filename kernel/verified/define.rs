@@ -32,7 +32,7 @@ pub const KERNEL_MEM_END_L4INDEX: usize = 1;
 /// Pages the kernel tracks: 1 GiB, the loader's page list. design/test-guest-memory/.
 pub const NUM_PAGES: usize = 256 * 1024;
 
-pub const PAGE_SZ_4k: usize = 1usize << 12;
+pub const PAGE_SZ_4k: usize = 4096;
 
 pub const PCID_MAX: usize = 4096;
 
