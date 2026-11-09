@@ -25,6 +25,8 @@ pub const REVOKE: u64 = 6;
 /// page at the page offset in r9 of the frame in r8: a 4K page at level 1, a 2M page at level 2, whose
 /// offset is a multiple of 512. The entry must be empty and the tables above it linked.
 pub const MAP: u64 = 7;
+/// Clears the entry of the space in rdi that the virtual address in rsi and the level in rdx name, which
+/// must map a page. Level 1 is the only level it accepts.
 pub const UNMAP: u64 = 8;
 pub const DESTROY: u64 = 9;
 pub const SEND: u64 = 10;
@@ -191,4 +193,15 @@ pub fn link(space: u64, address: u64, level: u64, untyped: u64, table: u64) -> u
 pub fn map(space: u64, address: u64, level: u64, frame: u64, page: u64) -> u64 {
     // A map fills only an empty entry, so no address the caller already reads changes.
     status(unsafe { invoke(MAP, space, [address, level, frame, page, 0]) })
+}
+
+/// Clears the entry at `level` that `address` names in the space of the capability at `space`. The
+/// status is the low half of what returns.
+///
+/// # Safety
+///
+/// Nothing the caller still uses may be at `address` in that space: once the entry is clear, an access
+/// there faults.
+pub unsafe fn unmap(space: u64, address: u64, level: u64) -> u64 {
+    status(unsafe { invoke(UNMAP, space, [address, level, 0, 0, 0]) })
 }

@@ -2,9 +2,9 @@
 //! not assume it owns the machine, so several instances each with a root stay possible. Why, and
 //! what to do about a change that breaks this: design/one-kernel-instance/.
 //!
-//! Print, inspect, retype of a 4K frame and of a table page, link and map are the wired operations,
-//! so each fixed slot is checked through them: the console accepts print and the process, thread,
-//! untyped and frame slots refuse it; inspect says the console slot holds a console, and each slot
+//! Print, inspect, retype of a 4K frame and of a table page, link, map and unmap are the wired
+//! operations, so each fixed slot is checked through them: the console accepts print and the process,
+//! thread, untyped and frame slots refuse it; inspect says the console slot holds a console, and each slot
 //! from the first untyped holds an untyped whose base is aligned to its order, up to the first slot
 //! that holds nothing, which inspect refuses. Retype under an empty slot, a slot past the table and
 //! the console is refused, and retype of the last untyped's last page into that empty slot is
@@ -15,9 +15,12 @@
 //! entry whose tables above are not linked and an unaligned address are refused, and the fourth is
 //! refused at the entry the third took. It maps the frame it retyped under that path, after a map
 //! at a kernel-half and at a non-canonical address is refused, writes a word through the mapping
-//! and reads it back, and a second map at that entry is refused. dom0 prints that result through
-//! the console, then an exit marker, and exits with success only when every check held. The kernel
-//! logs each invocation, with what it returned, in the serial log.
+//! and reads it back, and a second map at that entry is refused. It unmaps that page, after an unmap
+//! at a kernel-half address, at the empty entry after it and at level 2 is refused; a second unmap
+//! there is refused, and a map of the same frame there is accepted again, through which it reads the
+//! word back. dom0 prints that result through the console, then an exit marker, and exits with
+//! success only when every check held. The kernel logs each invocation, with what it returned, in
+//! the serial log.
 
 #![no_std]
 #![no_main]
@@ -203,6 +206,27 @@ fn mapped_frame_held(frame: u64) -> bool {
     read == MAPPED_WORD && map(PATH_ADDRESS) == operation::STATUS_REFUSED
 }
 
+/// Whether dom0 unmaps the 4K frame at `frame` that it mapped at `PATH_ADDRESS` and maps it there again:
+/// an unmap at a kernel-half address, at the empty entry after `PATH_ADDRESS` and at level 2 is refused,
+/// the unmap at `PATH_ADDRESS` is accepted and a second one refused, and a map of the frame there is
+/// accepted again and reads back the word written through the first mapping.
+fn remapped_frame_held(frame: u64) -> bool {
+    // Nothing dom0 uses is at these addresses but the word at PATH_ADDRESS, which it reads only after the
+    // map that follows the unmap.
+    let unmap = |address: u64, level: u64| unsafe { operation::unmap(operation::ROOT_PROCESS_SLOT, address, level) };
+    if unmap(KERNEL_HALF_ADDRESS, 1) != operation::STATUS_REFUSED
+        || unmap(PATH_ADDRESS + 0x1000, 1) != operation::STATUS_REFUSED
+        || unmap(PATH_ADDRESS, 2) != operation::STATUS_REFUSED
+        || unmap(PATH_ADDRESS, 1) != operation::STATUS_OK
+        || unmap(PATH_ADDRESS, 1) != operation::STATUS_REFUSED
+        || operation::map(operation::ROOT_PROCESS_SLOT, PATH_ADDRESS, 1, frame, 0) != operation::STATUS_OK
+    {
+        return false;
+    }
+    // The map just made the page at PATH_ADDRESS the frame's again, and the frame kept the word.
+    unsafe { (PATH_ADDRESS as *const u64).read_volatile() == MAPPED_WORD }
+}
+
 /// Print through `slot`. The status is the low half of what the invocation returns.
 ///
 /// # Safety
@@ -227,7 +251,9 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
         && first_empty_slot().is_some_and(|empty| {
             retyped_frame_held(empty)
                 && retyped_table_pages(empty)
-                    .is_some_and(|(untyped, tables)| linked_path_held(untyped, tables) && mapped_frame_held(empty))
+                    .is_some_and(|(untyped, tables)| {
+                        linked_path_held(untyped, tables) && mapped_frame_held(empty) && remapped_frame_held(empty)
+                    })
         });
     let console = unsafe {
         print_slot(

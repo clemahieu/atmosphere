@@ -58,6 +58,40 @@ impl CapKernel {
         &&& post.view() == pre.view()
     }
 
+    /// What an unmap of the entry the address va and the level name, in the space of the capability at
+    /// index slot of the table at root, did: va names a level 1 entry, the unmap was allowed at the path
+    /// the address names, and unmap_done holds there.
+    pub open spec fn page_unmapped(pre: Self, post: Self, root: usize, slot: usize, va: u64, level: u64) -> bool {
+        let p = address_path(va);
+        &&& level == 1
+        &&& names_entry(va, level)
+        &&& pre.can_unmap(root, slot, SpaceKind::Process, p)
+        &&& Self::unmap_done(pre, post, root, slot, p)
+        &&& discharges(pre.view(), post.view(), root, Effect::Local)
+    }
+
+    /// Unmaps the entry the address `va` and the level `level` name in the space of the capability at
+    /// index `slot` of the table at `root`. Level 1 is the only level accepted. All of these come from
+    /// user space, and a refusal changes nothing. See design/syscall-abi-in-registers/.
+    pub fn unmap_at(&mut self, root: usize, slot: usize, va: u64, level: u64) -> (ret: bool)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
+        ensures
+            final(self).wf(),
+            final(self).cores == old(self).cores,
+            !ret ==> *final(self) == *old(self),
+            ret ==> Self::page_unmapped(*old(self), *final(self), root, slot, va, level),
+            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
+    {
+        if level != 1 || !entry_named(va, level) {
+            return false;
+        }
+        let (l4, l3, l2, l1) = address_indices(va);
+        self.unmap(root, slot, l4, l3, l2, l1)
+    }
+
     /// Unmaps entry `l1` of the level 1 table the path reaches in the space named at index `slot`. The
     /// index and the path come from user space, so either can be refused, and a refusal changes nothing.
     pub fn unmap(&mut self, root: usize, slot: usize, l4: usize, l3: usize, l2: usize, l1: usize) -> (ret: bool)
@@ -67,6 +101,7 @@ impl CapKernel {
             old(self).root_live(root),
         ensures
             final(self).wf(),
+            final(self).cores == old(self).cores,
             ret == old(self).can_unmap(root, slot, SpaceKind::Process, SpacePath { l4, l3, l2, l1 }),
             final(self).spaces.loaded == old(self).spaces.loaded,
             !ret ==> *final(self) == *old(self),
@@ -84,6 +119,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
         ensures
             final(self).wf(),
+            final(self).cores == old(self).cores,
             ret == old(self).can_unmap(root, slot, kind, SpacePath { l4, l3, l2, l1 }),
             final(self).spaces.loaded == old(self).spaces.loaded,
             !ret ==> *final(self) == *old(self),

@@ -244,14 +244,26 @@ impl CapKernel {
         }
     }
 
+    /// An unmap in frame by a thread of the process whose table is at root, from pre to post with out
+    /// returned: refused with nothing changed, or ok with the entry the address in rsi and the level in
+    /// rdx name in the space of the capability in rdi cleared.
+    pub open spec fn spec_unmapped(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
+        ||| out == status_only(STATUS_REFUSED) && post == pre
+        ||| {
+            &&& out == status_only(STATUS_OK)
+            &&& Self::page_unmapped(pre, post, root, frame.rdi as usize, frame.rsi, frame.rdx)
+        }
+    }
+
     /// What the invocation in frame by a thread of the process whose table is at root did, from pre to
-    /// post with out returned: a retype's effect for retype, a link's for link, a map's for map, and for
-    /// every other operation the kernel unchanged with spec_outcome returned.
+    /// post with out returned: a retype's effect for retype, a link's for link, a map's for map, an
+    /// unmap's for unmap, and for every other operation the kernel unchanged with spec_outcome returned.
     pub open spec fn invoked(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         match spec_operation(frame.rax) {
             Some(Operation::Retype) => Self::spec_retyped(pre, post, root, frame, out),
             Some(Operation::Link) => Self::spec_linked(pre, post, root, frame, out),
             Some(Operation::Map) => Self::spec_mapped(pre, post, root, frame, out),
+            Some(Operation::Unmap) => Self::spec_unmapped(pre, post, root, frame, out),
             _ => post == pre && out == pre.spec_outcome(root, frame),
         }
     }
@@ -309,6 +321,10 @@ impl CapKernel {
             },
             Some(Operation::Map) => {
                 let done = self.map_at(root, frame.rdi as usize, frame.rsi, frame.rdx, frame.r8 as usize, frame.r9 as usize);
+                Some(status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED }))
+            },
+            Some(Operation::Unmap) => {
+                let done = self.unmap_at(root, frame.rdi as usize, frame.rsi, frame.rdx);
                 Some(status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED }))
             },
             Some(Operation::Print) => Some(
