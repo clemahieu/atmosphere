@@ -17,9 +17,11 @@ use uefi_raw::table::boot::{AllocateType, BootServices, MemoryDescriptor, Memory
 use uefi_raw::table::system::SystemTable;
 use uefi_raw::{guid, Guid, Handle, Status};
 
+use astd::boot::PAGE_BYTES;
+
 use super::efi_memory::region_type;
 use super::{consume_start_info, StartInfo};
-use crate::memory::{AcpiMemoryType, MemoryRange, BOOTSTRAP_SIZE, PAGE_SIZE};
+use crate::memory::{AcpiMemoryType, MemoryRange, BOOTSTRAP_SIZE};
 
 /// The initrd's path on the partition the loader was started from, as UCS-2 with its terminator;
 /// tools/run.py puts it there.
@@ -221,7 +223,7 @@ fn allocate(boot_services: &BootServices, size: usize) -> *mut u8 {
         (boot_services.allocate_pages)(
             AllocateType::MAX_ADDRESS,
             MemoryType::LOADER_DATA,
-            size.div_ceil(PAGE_SIZE),
+            size.div_ceil(PAGE_BYTES as usize),
             &mut address,
         )
     };
@@ -309,7 +311,7 @@ impl StartInfo for UefiStartInfo {
             .filter(|entry| entry.page_count != 0)
             .map(|entry| {
                 (
-                    MemoryRange::new(entry.phys_start, entry.page_count * PAGE_SIZE as u64),
+                    MemoryRange::new(entry.phys_start, entry.page_count * PAGE_BYTES),
                     Some(region_type(entry.ty.0)),
                 )
             })

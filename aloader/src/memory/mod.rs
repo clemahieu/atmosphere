@@ -16,7 +16,7 @@ use aelf::{VirtualMapper, ContiguousMapping};
 
 pub use allocator::{bootstrap_pages_used, set_bootstrap_region};
 pub use map::MemoryMap;
-pub use paging::{AddressSpace, Leaf, LARGE_PAGE_SIZE, PAGE_SIZE};
+pub use paging::{AddressSpace, Leaf, LARGE_PAGE_SIZE};
 pub use userspace::UserspaceMapper;
 
 pub const MAX_PHYSICAL_MEMORY: usize = 16 * 1024 * 1024 * 1024; // 16 GiB
@@ -328,7 +328,7 @@ mod tests {
     /// higher region already in the map leaves that tail out of address order.
     #[test]
     fn allocator_remainder_out_of_order_is_not_dropped() {
-        let page = PAGE_SIZE as u64;
+        let page = PAGE_BYTES;
         let mut map = MemoryMap::new([
             (MemoryRange::new(0, page), BootMemoryType::Bios),
             (
@@ -391,7 +391,7 @@ mod tests {
     /// rest of its allocation starts there. A region can also start inside a page after a gap.
     #[test]
     fn region_edges_inside_a_page_move_to_pages() {
-        let page = PAGE_SIZE as u64;
+        let page = PAGE_BYTES;
         let mut map = MemoryMap::new([
             (
                 MemoryRange::new(0, page + 0x200),

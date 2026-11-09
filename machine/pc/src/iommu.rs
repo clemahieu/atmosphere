@@ -36,8 +36,7 @@ unsafe fn naive_map() -> Pin<&'static mut NaiveIommuMap> {
 }
 
 const MAXPHYADDR: u64 = 56;
-const PAGE_SZ: u64 = 4096;
-const PAGE_MASK: u64 = !(PAGE_SZ - 1);
+const PAGE_MASK: u64 = !(astd::boot::PAGE_BYTES - 1);
 const PHYSICAL_MASK: u64 = (1u64 << MAXPHYADDR) - 1u64;
 const PHYSICAL_PAGE_MASK: u64 = PAGE_MASK & PHYSICAL_MASK;
 

@@ -8,10 +8,7 @@
 //! are taken out of the runs. Why the boundary is tier 3: design/trust-boundary/. What boot sets
 //! aside: design/root-process-at-boot/.
 
-use astd::boot::{PhysicalMemoryType, PhysicalRange};
-
-/// Bytes in a page. The map's ranges start and end on pages.
-pub const PAGE_BYTES: u64 = 4096;
+use astd::boot::{PhysicalMemoryType, PhysicalRange, PAGE_BYTES};
 
 /// Pages the kernel tracks. `boot/mod.rs` checks this against `verified::define::NUM_PAGES`.
 pub const PAGE_SLOTS: usize = 256 * 1024;

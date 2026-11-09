@@ -6,13 +6,15 @@ pub mod command_line;
 pub mod free_ranges;
 pub mod mapped_runs;
 
-// The map check uses the same page limit and node space as the verified kernel, and the 2M and 1G
-// regions tile the pages under that limit. The run check keeps user mappings out of the low
-// entries that space keeps for the kernel.
+// The loader, the boot checks and the verified kernel use one page size. The map check uses the
+// same page limit and node space as the verified kernel, and the 2M and 1G regions tile the pages
+// under that limit. The run check keeps user mappings out of the low entries that space keeps for
+// the kernel.
 const _: () = {
+    assert!(astd::boot::PAGE_BYTES == verified::define::PAGE_SZ_4k as u64);
     assert!(
         free_ranges::MAX_PAGE_ADDRESS
-            == verified::define::NUM_PAGES as u64 * free_ranges::PAGE_BYTES
+            == verified::define::NUM_PAGES as u64 * astd::boot::PAGE_BYTES
     );
     {
         use verified::capability::block::{NUM_1G, NUM_2M, PAGES_PER_1G, PAGES_PER_2M};

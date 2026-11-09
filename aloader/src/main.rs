@@ -40,7 +40,7 @@ use constants::*;
 
 use memory::{
     AddressSpace, BootMemoryType, Leaf, PhysicalAllocator, UserspaceMapper, BOOTSTRAP_SIZE,
-    LARGE_PAGE_SIZE, PAGE_SIZE,
+    LARGE_PAGE_SIZE,
 };
 
 /// The end of the physical memory the loader identity maps, for itself and for the kernel.
@@ -76,7 +76,7 @@ fn load(rsdp: u64, wait_for_debugger: bool) -> ! {
     while cur < 0xFEBD4000 + 0x4000 {
         unsafe {
             address_space_iommu.map(bootstrap_allocator, cur + virt_base, cur, true, Leaf::Small, true);
-            cur = cur + PAGE_SIZE as u64;
+            cur = cur + PAGE_BYTES;
         }
     }
 
@@ -150,7 +150,7 @@ fn load(rsdp: u64, wait_for_debugger: bool) -> ! {
         unsafe {
             address_space.unmap(cur);
         }
-        cur += PAGE_SIZE as u64;
+        cur += PAGE_BYTES;
     }
     // The TLB may hold the 2M leaves those stretches had, and the guard's pages. invlpg drops a
     // page's entry whatever its size, and a global one the firmware's tables left.
@@ -159,7 +159,7 @@ fn load(rsdp: u64, wait_for_debugger: bool) -> ! {
         unsafe {
             asm!("invlpg [{}]", in(reg) cur);
         }
-        cur += PAGE_SIZE as u64;
+        cur += PAGE_BYTES;
     }
     log::info!("Kernel stack guard: {:x}-{:x}", guard_base, stack_base);
 
@@ -201,7 +201,7 @@ fn load(rsdp: u64, wait_for_debugger: bool) -> ! {
                 while cur < virt_base + payload_size {
                     unsafe {
                         let paddr = cur - virt_base + phys_base;
-                        let page = slice::from_raw_parts_mut(paddr as *mut u8, PAGE_SIZE);
+                        let page = slice::from_raw_parts_mut(paddr as *mut u8, PAGE_BYTES as usize);
 
                         address_space.map(bootstrap_allocator, cur, paddr, true, Leaf::Small, false);
 
@@ -210,7 +210,7 @@ fn load(rsdp: u64, wait_for_debugger: bool) -> ! {
                             .read(page)
                             .expect("Failed to copy payload page");
                     }
-                    cur = cur + PAGE_SIZE as u64;
+                    cur = cur + PAGE_BYTES;
                 }
             }
             boot_info.dom0 = Some(domain.mapping);
@@ -238,7 +238,7 @@ fn load(rsdp: u64, wait_for_debugger: bool) -> ! {
     log::info!(
         "Page-table pool: {} of {} pages hold tables",
         memory::bootstrap_pages_used(),
-        BOOTSTRAP_SIZE / PAGE_SIZE
+        BOOTSTRAP_SIZE / PAGE_BYTES as usize
     );
     log::info!(
         "Kernel stack: {:x}-{:x}, boot info at {:x}",
@@ -308,7 +308,7 @@ where
     A: PhysicalAllocator,
 {
     let dom_start = elf.stream_position().unwrap() as usize;
-    let parsed = ElfHandle::parse(elf, PAGE_SIZE)?;
+    let parsed = ElfHandle::parse(elf, PAGE_BYTES as usize)?;
     let dom_end = dom_start + parsed.elf_len();
     log::info!("Loading {}...", name);
 
@@ -348,7 +348,7 @@ where
                 false,
             );
         }
-        cur = cur + PAGE_SIZE as u64;
+        cur = cur + PAGE_BYTES;
     }
 
     elf.seek(SeekFrom::Start(dom_end as u64))

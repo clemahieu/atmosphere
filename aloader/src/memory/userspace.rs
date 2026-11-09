@@ -2,9 +2,9 @@ use aelf::{PAddr, VAddr};
 
 use crate::memory::{
     AddressSpace, ContiguousMapping, Leaf, PageProtection, PhysicalAllocator, VirtualMapper,
-    PAGE_SIZE,
 };
 
+use astd::boot::PAGE_BYTES;
 use astd::memory::USERSPACE_BASE;
 
 pub struct UserspaceMapper<'a, 'b, PGA, PA>
@@ -72,7 +72,7 @@ where
                         false,
                     );
 
-                    cur = cur + PAGE_SIZE as u64;
+                    cur = cur + PAGE_BYTES;
                 }
             }
 

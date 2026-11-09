@@ -4,11 +4,11 @@ use core::ffi::c_void;
 use core::mem::{self, MaybeUninit};
 use core::ptr;
 
+use astd::boot::PAGE_BYTES;
 use bit_field::BitField;
 
 use crate::memory::PhysicalAllocator;
 
-pub const PAGE_SIZE: usize = 4096;
 pub const LARGE_PAGE_SIZE: usize = 2 * 1024 * 1024;
 
 /// The page a leaf entry maps.
@@ -23,7 +23,7 @@ pub enum Leaf {
 impl Leaf {
     pub const fn size(self) -> u64 {
         match self {
-            Leaf::Small => PAGE_SIZE as u64,
+            Leaf::Small => PAGE_BYTES,
             Leaf::Large => LARGE_PAGE_SIZE as u64,
         }
     }
@@ -44,11 +44,8 @@ const LEVEL_MASK: u64 = 0b1_1111_1111;
 /// This is also called M in the Intel manual.
 const MAXPHYADDR: u64 = 56;
 
-/// The size of a regular 4KiB page.
-const PAGE_SZ: u64 = 4096;
-
 /// Bitmask to get the page in a linear address.
-const PAGE_MASK: u64 = !(PAGE_SZ - 1);
+const PAGE_MASK: u64 = !(PAGE_BYTES - 1);
 
 /// Bitmask to get the physical address.
 const PHYSICAL_MASK: u64 = (1u64 << MAXPHYADDR) - 1u64;
@@ -129,7 +126,11 @@ impl AddressSpace {
         let table =
             { allocator.allocate_physical(mem::size_of::<PageTable>()).0 } as *mut PageTable;
 
-        assert!(table as usize % PAGE_SIZE == 0, "page table at an unaligned address {:p}", table);
+        assert!(
+            table as u64 % PAGE_BYTES == 0,
+            "page table at an unaligned address {:p}",
+            table
+        );
 
         ptr::write_volatile(table, PageTable::zeroed());
 
@@ -162,7 +163,7 @@ impl AddressSpace {
                     let entry = Entry::new()
                         .with_present(true)
                         .with_read_write(true)
-                        .with_address(leaf.address() + page as u64 * PAGE_SZ)
+                        .with_address(leaf.address() + page as u64 * PAGE_BYTES)
                         .with_cache_disable(leaf.cache_disable())
                         .with_user(leaf.user());
                     (*table).write(page, entry);
@@ -285,6 +286,8 @@ mod tests {
 
     use super::*;
 
+    const PAGE: usize = PAGE_BYTES as usize;
+
     /// Hands out host pages and counts them. A table's address is then a pointer the walk can
     /// follow, as under the identity map.
     struct HostPages {
@@ -293,9 +296,9 @@ mod tests {
 
     impl PhysicalAllocator for HostPages {
         unsafe fn allocate_physical(&mut self, size: usize) -> PAddr {
-            assert_eq!(size, PAGE_SIZE);
+            assert_eq!(size, PAGE);
             self.count += 1;
-            PAddr(alloc_zeroed(Layout::from_size_align(PAGE_SIZE, PAGE_SIZE).unwrap()) as u64)
+            PAddr(alloc_zeroed(Layout::from_size_align(PAGE, PAGE).unwrap()) as u64)
         }
     }
 
@@ -323,7 +326,7 @@ mod tests {
     }
 
     const LARGE: u64 = LARGE_PAGE_SIZE as u64;
-    const SMALL: u64 = PAGE_SIZE as u64;
+    const SMALL: u64 = PAGE_BYTES;
 
     /// 4 GiB of 2M leaves, as `load` maps them, and the tables they took.
     fn identity_map(pages: &mut HostPages) -> AddressSpace {
@@ -410,7 +413,7 @@ mod tests {
 
     impl PhysicalAllocator for OffsetPages {
         unsafe fn allocate_physical(&mut self, _size: usize) -> PAddr {
-            let base = alloc_zeroed(Layout::from_size_align(2 * PAGE_SIZE, PAGE_SIZE).unwrap());
+            let base = alloc_zeroed(Layout::from_size_align(2 * PAGE, PAGE).unwrap());
             PAddr(base as u64 + self.offset as u64)
         }
     }
@@ -418,7 +421,7 @@ mod tests {
     #[test]
     fn a_page_table_takes_a_page_aligned_address() {
         let table = unsafe { AddressSpace::allocate_page_table(&mut OffsetPages { offset: 0 }) };
-        assert_eq!(table as usize % PAGE_SIZE, 0);
+        assert_eq!(table as usize % PAGE, 0);
     }
 
     #[test]
