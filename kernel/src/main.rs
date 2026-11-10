@@ -170,7 +170,8 @@ fn print_logo() {
     }
 }
 
-/// The kernel panic handler.
+/// The kernel panic handler. Logs the panic, then ends the run as a failure, so a run under QEMU
+/// exits with a failure status at the panic rather than at its runner's timeout.
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     log::error!("panic! {:x?}", info);
@@ -180,7 +181,7 @@ fn panic(info: &PanicInfo) -> ! {
     // FIXME: Signal all other CPUs to halt
 
     unsafe {
-        arch::spin_forever();
+        machine::shutdown(false);
     }
 }
 
