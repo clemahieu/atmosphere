@@ -18,4 +18,6 @@ Rules, from CLAUDE.md:
 
 Loop: read the failing item and the specs and lemmas it depends on; state the fact the prover lacks; add the lemma, the assert, the trigger annotation or the loop invariant that supplies it; run `tools/verify.py` and read each crate's `N verified, M errors` line. Keep what lowers the errors; revert what does not. Stop at the target or after 25 verify runs.
 
-Report, in this order, and nothing else: the final verify line; `git -C <worktree> diff --stat`; one line per attempt (what, result); if the target is not reached, what blocks the proof and the lemma statements a split would need.
+Observations: reading the specs and lemmas shows gaps beyond the target. Two kinds count: a specification that cannot tell a working operation from one that refuses (ensures that a component refusing the operation would satisfy, such as nothing showing a second process can be spawned), and scaffolding a nearby proof will need (an ensures that drops a frame, owner or parent fact a caller must rebuild; a lemma that needs a two-node form). Note them; spend no verify run and no edit on them. Style and naming do not count.
+
+Report, in this order, and nothing else: the final verify line; `git -C <worktree> diff --stat`; one line per attempt (what, result); if the target is not reached, what blocks the proof and the lemma statements a split would need; then, when there are any, `Observations:` with at most three, one line each: the item's name and `file:line` (the spec, ensures or lemma), the fact missing, and the behaviour or witness it blocks.
