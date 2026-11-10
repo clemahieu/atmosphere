@@ -83,15 +83,10 @@ dependencies = [
  "acpi",
  "aelf",
  "astd",
- "atest",
  "bit_field",
- "cfg-match",
- "displaydoc",
- "goblin",
  "kernel-logger",
  "log",
  "ns16550a",
- "plain",
  "uefi-raw",
 ]
 

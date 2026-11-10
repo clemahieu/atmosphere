@@ -7,23 +7,13 @@ license.workspace = true
 [dependencies]
 aelf = { path = "../aelf" }
 astd = { path = "../astd", features = ["kernel"] }
-atest = { path = "../atest" }
 ns16550a = { path = "../ns16550a" }
 kernel-logger = { path = "../kernel-logger" }
 
 bit_field = "0.10.2"
-cfg-match = "0.2.1"
-displaydoc = { version = "0.2.4", default-features = false }
 log = "0.4.19"
-
-plain = "0.2.3"
 acpi = { version = "5.0.0", default-features = false }
 uefi-raw = "0.17.0"
-
-[dependencies.goblin]
-version = "0.7.1"
-default-features = false
-features = ["elf64"]
 
 [features]
 # A kernel stack below the measured depth, so tools/check-boot-stack.py can force an overflow.
