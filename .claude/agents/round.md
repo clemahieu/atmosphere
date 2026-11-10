@@ -1,7 +1,7 @@
 ---
 name: round
 description: One round of the Atmosphere Beads discipline, in a fresh context. Takes the next ready issue and discards, redefines, splits or implements it; with no ready leaf, runs a skeptic pass or a split round on an epic. Hands proof searches and skeptic passes to the driver, which runs the prover and the skeptic between rounds. Reports the round and whether the loop should continue. Use only from the /round skill.
-model: fable
+model: opus
 effort: high
 maxTurns: 300
 disallowedTools: ScheduleWakeup, CronCreate, CronDelete, PushNotification, Workflow
