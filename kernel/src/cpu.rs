@@ -11,9 +11,9 @@ use verified::arch::Registers;
 
 const NEW_CPU: Cpu = Cpu::new();
 
-/// Slots for the CPUs the test machine boots. Every boot starts 2.
+/// Slots for the CPUs the kernel runs: CPU 0 and the second core `start_second_core` starts.
 /// design/test-guest-memory/.
-const CPU_SLOTS: usize = 4;
+const CPU_SLOTS: usize = 2;
 
 /// Per-processor data.
 static mut CPUS: [Cpu; CPU_SLOTS] = [NEW_CPU; CPU_SLOTS];
