@@ -725,8 +725,9 @@ pub fn invalidate_iommu_all(commands: &CommandBuffers, i: usize, epoch: usize, T
 // The trap frame and the user-return checks: what a thread record holds, what a return to user mode
 // writes, and which program counters are user addresses. capability/thread.rs reads them.
 
-/// The frame a thread record holds: the general registers the entry stubs in kernel/src/interrupt/
-/// and kernel/src/syscalls/ push, then the interrupt stack frame, chapter 8.
+/// The frame a thread record holds: the general registers the entry stubs in
+/// kernel/src/arch/x86_64/interrupt/ and kernel/src/arch/x86_64/syscalls/ push, then the interrupt
+/// stack frame, chapter 8.
 #[repr(C, align(8))]
 #[derive(Clone, Copy, Debug)]
 pub struct Registers {
@@ -968,7 +969,7 @@ pub fn zero_frame() -> (ret: Registers)
 }
 
 /// The selectors a thread returns to user mode with: the GDT's user code and data entries, 4 and 3,
-/// at privilege 3. See kernel/src/gdt/.
+/// at privilege 3. See kernel/src/arch/x86_64/gdt/.
 pub const USER_CS: u64 = 0x23;
 pub const USER_SS: u64 = 0x1b;
 
