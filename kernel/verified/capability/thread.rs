@@ -1595,6 +1595,7 @@ impl CapKernel {
             ret ==> forall|q: int| old(self).blocks.tracks(q) && !(base / 4096 <= q < base / 4096 + 2)
                 ==> #[trigger] final(self).blocks.pages@[q] == old(self).blocks.pages@[q],
             ret ==> Self::retype_keeps(*old(self), *final(self), old(self).tables.node_of(root, to), (base / 4096) as int, 1, None),
+            ret ==> Self::typed_nodes(old(self).list, final(self).list, old(self).tables.node_of(root, to), base),
             ret ==> {
                 let parent = old(self).tables.node_of(root, from);
                 let child = old(self).tables.node_of(root, to);
@@ -1826,8 +1827,90 @@ impl CapKernel {
             assert(pre.view().holds_right(root, parent, Right::Retype));
             lemma_adds_object_discharges_retype(pre.view(), post.view(), root, parent, child, live, base);
             Self::lemma_type_thread_keeps(pre, post, mid, root, to, page as int);
+            Self::lemma_typed_nodes(pre.list, mid, post.list, child, base);
         }
         true
+    }
+
+    /// What a thread's retype does to the list's nodes between pre and post, making the capability
+    /// child and the node page at base: the first entry is kept, no node but child and base changed its
+    /// liveness, and no node there was before but child its kind or depth. base was no node: its page
+    /// is new, so the kinds of its dead nodes are fresh.
+    pub open spec fn typed_nodes(pre: Tree, post: Tree, child: usize, base: usize) -> bool {
+        &&& !pre.valid(base)
+        &&& post.seq@[0] == pre.seq@[0]
+        &&& forall|i: int| #![trigger post.nodes@[i]] 0 <= i < NODE_SPACE && i != child && i != base
+            ==> post.nodes@[i].live == pre.nodes@[i].live
+        &&& forall|x: usize| #![trigger post.nodes@[x as int]] pre.valid(x) && x != child ==> {
+            &&& post.nodes@[x as int].kind == pre.nodes@[x as int].kind
+            &&& post.nodes@[x as int].depth == pre.nodes@[x as int].depth
+        }
+    }
+
+    /// Typing a thread adds the node page at base, which keeps every node there was, then derives
+    /// child, which keeps every other node: so it keeps the nodes as typed_nodes says.
+    proof fn lemma_typed_nodes(pre: Tree, mid: Tree, post: Tree, child: usize, base: usize)
+        requires
+            pre.wf(),
+            base % 4096 == 0,
+            !pre.pages@.dom().contains(base),
+            mid.seq == pre.seq,
+            forall|i: usize| #[trigger] pre.valid(i) ==> mid.valid(i) && mid.nodes@[i as int] == pre.nodes@[i as int],
+            forall|i: int| 0 <= i < NODE_SPACE ==> #[trigger] mid.nodes@[i].live == pre.nodes@[i].live,
+            mid.nodes@.len() == NODE_SPACE,
+            post.seq@[0] == mid.seq@[0],
+            forall|i: int| #![trigger post.nodes@[i]] 0 <= i < mid.nodes@.len() && i != child ==> {
+                &&& post.nodes@[i].live == mid.nodes@[i].live
+                &&& post.nodes@[i].kind == mid.nodes@[i].kind
+                &&& post.nodes@[i].depth == mid.nodes@[i].depth
+            },
+        ensures
+            Self::typed_nodes(pre, post, child, base),
+    {
+        assert(page_of(base) == base) by {
+            assert(base % 4096 == 0);
+        }
+        assert forall|i: int| #![trigger post.nodes@[i]] 0 <= i < NODE_SPACE && i != child && i != base
+            implies post.nodes@[i].live == pre.nodes@[i].live by {
+            assert(mid.nodes@[i].live == pre.nodes@[i].live);
+        }
+        assert forall|x: usize| #![trigger post.nodes@[x as int]] pre.valid(x) && x != child implies {
+            &&& post.nodes@[x as int].kind == pre.nodes@[x as int].kind
+            &&& post.nodes@[x as int].depth == pre.nodes@[x as int].depth
+        } by {
+            pre.lemma_valid_bound(x);
+            assert(mid.nodes@[x as int] == pre.nodes@[x as int]);
+        }
+    }
+
+    /// The bind that follows makes only base live, a binding, and changes no other node's kind or
+    /// depth, so the retype and the bind together keep the nodes as typed_nodes says.
+    proof fn lemma_bound_nodes(pre: Tree, mid: Tree, post: Tree, child: usize, base: usize)
+        requires
+            pre.wf(),
+            Self::typed_nodes(pre, mid, child, base),
+            post.seq@[0] == mid.seq@[0],
+            forall|x: int| #![trigger post.nodes@[x]] 0 <= x < NODE_SPACE && x != base ==> {
+                &&& post.nodes@[x].live == mid.nodes@[x].live
+                &&& post.nodes@[x].kind == mid.nodes@[x].kind
+            },
+            forall|x: int| #![trigger post.nodes@[x]] 0 <= x < NODE_SPACE && x != base
+                ==> post.nodes@[x].depth == mid.nodes@[x].depth,
+        ensures
+            Self::typed_nodes(pre, post, child, base),
+    {
+        assert forall|i: int| #![trigger post.nodes@[i]] 0 <= i < NODE_SPACE && i != child && i != base
+            implies post.nodes@[i].live == pre.nodes@[i].live by {
+            assert(mid.nodes@[i].live == pre.nodes@[i].live);
+        }
+        assert forall|x: usize| #![trigger post.nodes@[x as int]] pre.valid(x) && x != child implies {
+            &&& post.nodes@[x as int].kind == pre.nodes@[x as int].kind
+            &&& post.nodes@[x as int].depth == pre.nodes@[x as int].depth
+        } by {
+            pre.lemma_valid_bound(x);
+            assert(x != base);
+            assert(mid.nodes@[x as int].kind == pre.nodes@[x as int].kind);
+        }
     }
 
     /// What typing a thread leaves as it was: its new node page and its derive changed the liveness
@@ -1953,6 +2036,7 @@ impl CapKernel {
                 &&& discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base, into: None })
                 &&& bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables).insert(base, p)
                 &&& Self::retype_keeps(*old(self), *final(self), child, page, 1, None)
+                &&& Self::typed_nodes(old(self).list, final(self).list, child, base)
             },
     {
         let ghost pre = *old(self);
@@ -2013,6 +2097,7 @@ impl CapKernel {
             }
             Self::lemma_bound_threads_insert(pre, post, base, p);
             Self::lemma_bind_keeps(pre, mid, post, child, page, n, base);
+            Self::lemma_bound_nodes(pre.list, mid.list, post.list, child, base);
         }
         true
     }

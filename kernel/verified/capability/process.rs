@@ -1287,6 +1287,12 @@ impl CapKernel {
                 &&& final(self).list.is_child(parent, child)
                 &&& final(self).list.parent@ == old(self).list.parent@.insert(child, parent)
                 &&& final(self).list.nodes@[child as int].depth == old(self).list.nodes@[parent as int].depth + 1
+                &&& final(self).list.seq@[0] == old(self).list.seq@[0]
+                &&& forall|i: int| #![trigger final(self).list.nodes@[i]] 0 <= i < NODE_SPACE && i != child ==> {
+                    &&& final(self).list.nodes@[i].live == old(self).list.nodes@[i].live
+                    &&& final(self).list.nodes@[i].kind == old(self).list.nodes@[i].kind
+                    &&& final(self).list.nodes@[i].depth == old(self).list.nodes@[i].depth
+                }
                 &&& Self::retype_keeps(*old(self), *final(self), child, page, 3, None)
                 &&& discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base, into: None })
             },
