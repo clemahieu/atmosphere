@@ -27,6 +27,41 @@ use crate::capability::view::*;
 use crate::define::*;
 use crate::pptr::*;
 
+/// Removing node t from the list at position p, every parent as it was, leaves a node whose only child
+/// was t with none: whatever follows it now is listed, so it was listed before and is not t.
+proof fn lemma_only_child_gone(pre: Tree, post: Tree, t: usize, p: int)
+    requires
+        pre.wf(),
+        post.wf(),
+        0 < p < pre.seq@.len(),
+        pre.seq@[p] == t,
+        post.seq@ == pre.seq@.remove(p),
+        post.parent@ == pre.parent@,
+        !post.nodes@[t as int].live,
+        forall|x: int| 0 <= x < NODE_SPACE && x != t ==> #[trigger] post.nodes@[x].live == pre.nodes@[x].live,
+    ensures
+        forall|x: usize| x < NODE_SPACE && x != t && pre.nodes@[x as int].live
+            && (forall|c: usize| #[trigger] pre.is_child(x, c) ==> c == t)
+            ==> #[trigger] post.childless(x),
+{
+    assert forall|x: usize| x < NODE_SPACE && x != t && pre.nodes@[x as int].live
+        && (forall|c: usize| #[trigger] pre.is_child(x, c) ==> c == t)
+        implies #[trigger] post.childless(x) by {
+        if !post.childless(x) {
+            post.lemma_next_is_child(x);
+            let c = post.nodes@[x as int].next;
+            let k = choose|k: int| 0 <= k < post.seq@.len() && post.seq@[k] == c;
+            post.lemma_link(k);
+            let j = if k < p { k } else { k + 1 };
+            assert(c != t);
+            assert(pre.seq@[j] == c);
+            assert(pre.seq@.contains(c));
+            assert(post.seq@[0] == pre.seq@[0]);
+            assert(pre.is_child(x, c));
+        }
+    }
+}
+
 impl CapKernel {
     /// The thread at `base` is dead at zero references, so no capability names it, and is not Running,
     /// so no core has it as current thread and no stop is pending on it.
@@ -64,8 +99,10 @@ impl CapKernel {
     }
 
     /// What unlinking the binding of the dead thread at `base` did to self: its record names no process,
-    /// the process's block lost the reference, and the list lost the binding node alone. The node was
-    /// no capability, so the view is as it was.
+    /// the process's block lost the reference, and the list lost the binding node alone, so every other
+    /// node keeps its kind and its depth, and a node whose only child was the binding has none. The node
+    /// was no capability and no mapping, so the view is as it was, and so are the spaces, the table
+    /// pages, the stale epochs, the cores and the IOMMUs.
     pub open spec fn thread_unbound(&self, post: Self, root: usize, from: usize, base: usize) -> bool {
         let untyped = self.tables.node_of(root, from);
         &&& self.view().holds_right(root, untyped, Right::Retype)
@@ -74,9 +111,18 @@ impl CapKernel {
         &&& !post.list.nodes@[base as int].live
         &&& post.list.seq@.len() == self.list.seq@.len() - 1
         &&& forall|x: int| 0 <= x < NODE_SPACE && x != base ==> #[trigger] post.list.nodes@[x].live == self.list.nodes@[x].live
+        &&& forall|x: int| 0 <= x < NODE_SPACE && x != base ==> #[trigger] post.list.nodes@[x].kind == self.list.nodes@[x].kind
+        &&& forall|x: int| 0 <= x < NODE_SPACE ==> #[trigger] post.list.nodes@[x].depth == self.list.nodes@[x].depth
+        &&& forall|x: usize| x < NODE_SPACE && x != base && self.list.nodes@[x as int].live
+            && (forall|c: usize| #[trigger] self.list.is_child(x, c) ==> c == base)
+            ==> #[trigger] post.list.childless(x)
         &&& post.list.parent == self.list.parent
         &&& post.tables == self.tables
         &&& post.cores == self.cores
+        &&& post.iommus == self.iommus
+        &&& post.spaces == self.spaces
+        &&& post.table_pages == self.table_pages
+        &&& post.stale_epoch == self.stale_epoch
         &&& post.thread_is_dead(base)
         &&& post.thread_work(base) < self.thread_work(base)
         &&& post.view() == self.view()
@@ -230,9 +276,18 @@ impl CapKernel {
             !final(self).list.nodes@[t as int].live,
             final(self).list.seq@.len() == old(self).list.seq@.len() - 1,
             forall|x: int| 0 <= x < NODE_SPACE && x != t ==> #[trigger] final(self).list.nodes@[x].live == old(self).list.nodes@[x].live,
+            forall|x: int| 0 <= x < NODE_SPACE && x != t ==> #[trigger] final(self).list.nodes@[x].kind == old(self).list.nodes@[x].kind,
+            forall|x: int| 0 <= x < NODE_SPACE ==> #[trigger] final(self).list.nodes@[x].depth == old(self).list.nodes@[x].depth,
+            forall|x: usize| x < NODE_SPACE && x != t && old(self).list.nodes@[x as int].live
+                && (forall|c: usize| #[trigger] old(self).list.is_child(x, c) ==> c == t)
+                ==> #[trigger] final(self).list.childless(x),
             final(self).list.parent == old(self).list.parent,
             final(self).tables == old(self).tables,
             final(self).cores == old(self).cores,
+            final(self).iommus == old(self).iommus,
+            final(self).spaces == old(self).spaces,
+            final(self).table_pages == old(self).table_pages,
+            final(self).stale_epoch == old(self).stale_epoch,
             final(self).view() == old(self).view(),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables).remove(t),
     {
@@ -260,6 +315,8 @@ impl CapKernel {
             assert forall|x: usize| x != t implies #[trigger] thread_process(&post.threads, x) == thread_process(&pre.threads, x) by {}
             Self::lemma_bound_threads_remove(pre, post, t);
             Self::lemma_binding_view_same(pre, post, t);
+            assert(!pre.is_cap(t));
+            lemma_only_child_gone(pre.list, post.list, t, p);
         }
     }
 
