@@ -1724,6 +1724,83 @@ impl CapKernel {
         }
     }
 
+    /// The spaces after device d, bound to nothing, is bound to the device space s, taking a reference
+    /// on its block, and no capability changed.
+    pub proof fn lemma_spaces_bound_added(pre: Self, post: Self, s: usize, d: usize)
+        requires
+            pre.wf(),
+            forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x),
+            forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x) ==> post.tables.payload_of(x) == pre.tables.payload_of(x),
+            pre.spaces.roots@.contains_key(s),
+            pre.spaces.records@[s].value().kind is Device,
+            !pre.spaces.bound@[s].contains(d),
+            blocks_refs_changed(
+                &pre.blocks,
+                &post.blocks,
+                BlockRef::Small(s / PAGE_SZ),
+                (block_refs(&pre.blocks, BlockRef::Small(s / PAGE_SZ)) + 1) as usize,
+                block_dead(&pre.blocks, BlockRef::Small(s / PAGE_SZ)),
+            ),
+            block_refs(&pre.blocks, BlockRef::Small(s / PAGE_SZ)) != usize::MAX,
+            post.spaces.roots == pre.spaces.roots,
+            post.spaces.records == pre.spaces.records,
+            post.spaces.loaded == pre.spaces.loaded,
+            post.spaces.kernel_entries == pre.spaces.kernel_entries,
+            post.spaces.holders == pre.spaces.holders,
+            post.spaces.bound@ == pre.spaces.bound@.insert(s, pre.spaces.bound@[s].insert(d)),
+            forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) ==> post.list.pages@.dom().contains(p),
+        ensures
+            spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
+    {
+        let ba = pre.spaces.bound@;
+        let bb = post.spaces.bound@;
+        let ha = pre.spaces.holders@;
+        let a = &pre.blocks;
+        let b = &post.blocks;
+        let br = BlockRef::Small(s / PAGE_SZ);
+        assert(space_wf(&pre.list, &pre.spaces, a, s));
+        vstd::set::lemma_set_insert_len(ba[s], d);
+        assert(block_typed(a, br));
+        assert forall|t: usize| #[trigger] post.spaces.roots@.contains_key(t)
+            implies space_wf(&post.list, &post.spaces, b, t) by {
+            assert(space_wf(&pre.list, &pre.spaces, a, t));
+            if pre.spaces.records@[t].value().kind is Device {
+                assert forall|k: usize| k < TABLE_NODE_PAGES implies post.list.pages@.dom().contains(#[trigger] table_node_page(t, k)) by {
+                    assert(pre.list.pages@.dom().contains(table_node_page(t, k)));
+                }
+            }
+            if t != s {
+                assert(bb[t] == ba[t]);
+                if pre.spaces.records@[t].value().kind is Device {
+                    lemma_table_pages_distinct(t, s);
+                    let x = BlockRef::Small(t / PAGE_SZ);
+                    assert(block_typed(a, x));
+                    assert(x != br);
+                    assert(block_refs(b, x) == block_refs(a, x));
+                    assert(block_dead(b, x) == block_dead(a, x));
+                }
+            }
+        }
+        assert forall|x: usize| b.tracks(x as int) && #[trigger] space_block(b, x)
+            implies post.spaces.roots@.contains_key((x * PAGE_SZ) as usize) by {
+            assert(space_block(a, x));
+        }
+        assert forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) && post.tables.payload_of(x).kind is Space implies {
+            &&& post.spaces.roots@.contains_key(post.tables.payload_of(x).base)
+            &&& ha[post.tables.payload_of(x).base].contains(x)
+            &&& post.tables.payload_of(x).order == 3
+        } by {
+            assert(pre.tables.is_cap(&pre.list, x));
+        }
+        assert forall|t: usize, x: usize| post.spaces.roots@.contains_key(t) && #[trigger] ha[t].contains(x) implies {
+            &&& post.tables.is_cap(&post.list, x)
+            &&& post.tables.payload_of(x).kind is Space
+            &&& post.tables.payload_of(x).base == t
+        } by {
+            assert(pre.tables.is_cap(&pre.list, x));
+        }
+    }
+
     /// `lemma_hidden_added_discharges` for a hidden node at the block a retype under `from` names,
     /// which the untyped covers. Its own proof fn so that the covers fact stays out of its caller's
     /// query.

@@ -11,7 +11,11 @@ verus! {
 
 use crate::array::Array;
 use crate::capability::kernel::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::link::*;
 use crate::capability::list::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::mapping::*;
 use crate::capability::reach::*;
 use crate::capability::refs::*;
 use crate::capability::steps::Steps;
@@ -70,6 +74,11 @@ pub open spec fn unbound_record(info: DeviceInfo) -> DeviceRecord {
 /// A record after its device's unbind at this epoch.
 pub open spec fn unbound_at(r: DeviceRecord, epoch: usize) -> DeviceRecord {
     DeviceRecord { iommu: r.iommu, number: r.number, space: None, unbound: epoch }
+}
+
+/// A record after its device is bound to the space at s.
+pub open spec fn bound_record(r: DeviceRecord, s: usize) -> DeviceRecord {
+    DeviceRecord { iommu: r.iommu, number: r.number, space: Some(s), unbound: r.unbound }
 }
 
 /// What device d's capability says.
@@ -246,6 +255,30 @@ impl Devices {
             }
         }
     }
+
+    /// Device d is bound to the space at s.
+    pub fn bind(&mut self, d: usize, s: usize)
+        requires
+            old(self).wf(),
+            d < old(self).count,
+        ensures
+            final(self).wf(),
+            final(self).count == old(self).count,
+            final(self).page == old(self).page,
+            final(self).holder == old(self).holder,
+            final(self).records@ == old(self).records@.update(d as int, bound_record(old(self).records@[d as int], s)),
+    {
+        let ghost pre = *old(self);
+        let r = *self.records.get(d);
+        self.records.set(d, DeviceRecord { iommu: r.iommu, number: r.number, space: Some(s), unbound: r.unbound });
+        proof {
+            let me = *self;
+            assert forall|x: int, y: int| #![trigger me.records@[x], me.records@[y]]
+                0 <= x < me.count && 0 <= y < me.count && x != y implies me.distinct(x, y) by {
+                assert(pre.distinct(x, y));
+            }
+        }
+    }
 }
 
 /// Every device capability names one device, a record of the table, and is the one that device was
@@ -352,6 +385,17 @@ pub open spec fn device_bindings_wf(list: &Tree, tables: &Tables, bound: IMap<us
     }
     &&& forall|s: usize, d: usize| bound.contains_key(s) && #[trigger] bound[s].contains(d)
         ==> d < devices.count && devices.records@[d as int].space == Some(s)
+}
+
+/// The binding nodes are nodes of the list's first page, and a bound device sits behind an IOMMU the
+/// machine has, which acknowledged the device's last unbind, so nothing it cached under the device's IOid
+/// from the space it was bound to before survives.
+pub open spec fn devices_placed(list: &Tree, present: Seq<bool>, acked: Seq<usize>, devices: &Devices) -> bool {
+    &&& devices.page == list.seq@[0]
+    &&& forall|d: int| 0 <= d < devices.count && (#[trigger] devices.records@[d]).space is Some ==> {
+        &&& present[devices.records@[d].iommu as int]
+        &&& devices.records@[d].unbound <= acked[devices.records@[d].iommu as int]
+    }
 }
 
 /// The device table after a step that bound and unbound nothing: the same page, each record bound as it
@@ -1031,6 +1075,700 @@ impl CapKernel {
             Self::lemma_caps_frame(pre, post, n, m, x);
         }
         Self::lemma_devices_same_caps(pre, post);
+    }
+
+    /// The list's first page, which holds the device binding nodes, is a page the list holds whose first
+    /// node is the list's first, a live capability. So it is no leaf, and no node page of a table page or
+    /// a device space, whose first node is hidden, a mapping or dead.
+    pub proof fn lemma_first_page_apart(&self)
+        requires
+            self.wf(),
+        ensures
+            self.devices.page == self.list.seq@[0],
+            self.devices.page % PAGE_SZ == 0,
+            self.devices.page + PAGE_SZ <= NODE_SPACE,
+            page_of(self.devices.page) == self.devices.page,
+            self.list.pages@.dom().contains(self.devices.page),
+            self.list.nodes@[self.devices.page as int].live,
+            self.list.nodes@[self.devices.page as int].kind is Capability,
+            !self.tables.owner@.contains_key(self.devices.page),
+            forall|u: usize, k: usize| #![trigger table_node_page(u, k)]
+                self.table_pages.maps@.contains_key(u) && k < TABLE_NODE_PAGES ==> table_node_page(u, k) != self.devices.page,
+            forall|s: usize, k: usize| #![trigger table_node_page(s, k)]
+                self.spaces.roots@.contains_key(s) && self.spaces.records@[s].value().kind is Device && k < TABLE_NODE_PAGES
+                ==> table_node_page(s, k) != self.devices.page,
+    {
+        reveal(devices_wf);
+        let p = self.devices.page;
+        assert(self.devices.wf());
+        self.list.lemma_link(0);
+        self.list.lemma_live_valid(p);
+        assert(page_of(p) == p);
+        assert forall|u: usize, k: usize| #![trigger table_node_page(u, k)]
+            self.table_pages.maps@.contains_key(u) && k < TABLE_NODE_PAGES implies table_node_page(u, k) != p by {
+            if table_node_page(u, k) == p {
+                self.lemma_table_node_in_block(u, k, 0);
+                assert(table_node(u, k, 0) == p);
+                if k == 0 {
+                    assert(u == p);
+                    assert(table_page_wf(&self.list, &self.table_pages, &self.blocks, u));
+                } else {
+                    assert(self.list.nodes@[table_node(u, k, 0) as int].kind is Mapping);
+                }
+            }
+        }
+        assert forall|s: usize, k: usize| #![trigger table_node_page(s, k)]
+            self.spaces.roots@.contains_key(s) && self.spaces.records@[s].value().kind is Device && k < TABLE_NODE_PAGES
+            implies table_node_page(s, k) != p by {
+            if table_node_page(s, k) == p {
+                self.lemma_space_node_in_block(s, k, 0);
+                assert(table_node(s, k, 0) == p);
+                assert(!self.list.nodes@[table_node(s, k, 0) as int].live);
+            }
+        }
+    }
+
+    /// Device d's binding node lies in the list's first page, past its first node, so in no leaf, table
+    /// page, thread, mapping or device space, and it is no capability: live, it is a device binding, and
+    /// it is live only while its device is bound.
+    pub proof fn lemma_binding_node_apart(&self, d: int)
+        requires
+            self.wf(),
+            0 <= d < self.devices.count,
+        ensures
+            binding_node(&self.devices, d) < NODE_SPACE,
+            binding_node(&self.devices, d) % PAGE_SZ == 1 + d,
+            page_of(binding_node(&self.devices, d)) == self.devices.page,
+            binding_device(&self.devices, binding_node(&self.devices, d)) == d,
+            self.list.valid(binding_node(&self.devices, d)),
+            binding_node(&self.devices, d) != self.list.seq@[0],
+            !self.tables.owner@.contains_key(binding_node(&self.devices, d)),
+            !self.tables.owner@.contains_key(page_of(binding_node(&self.devices, d))),
+            !self.table_pages.maps@.contains_key(binding_node(&self.devices, d)),
+            !self.threads.records@.contains_key(binding_node(&self.devices, d)),
+            !self.mappings@.contains_key(binding_node(&self.devices, d)),
+            !self.is_cap(binding_node(&self.devices, d)),
+            self.list.nodes@[binding_node(&self.devices, d) as int].live
+                ==> self.list.nodes@[binding_node(&self.devices, d) as int].kind is DeviceBinding,
+            self.devices.records@[d].space is None ==> !self.list.nodes@[binding_node(&self.devices, d) as int].live,
+            forall|u: usize, k: usize, i: usize| #![trigger table_node(u, k, i)]
+                self.table_pages.maps@.contains_key(u) && k < TABLE_NODE_PAGES && i < NODES_PER_PAGE
+                ==> table_node(u, k, i) != binding_node(&self.devices, d),
+            forall|s: usize, k: usize, i: usize| #![trigger table_node(s, k, i)]
+                self.spaces.roots@.contains_key(s) && self.spaces.records@[s].value().kind is Device
+                    && k < TABLE_NODE_PAGES && i < NODES_PER_PAGE
+                ==> table_node(s, k, i) != binding_node(&self.devices, d),
+    {
+        reveal(devices_wf);
+        self.lemma_first_page_apart();
+        let p = self.devices.page;
+        let x = binding_node(&self.devices, d);
+        assert(self.devices.wf());
+        assert(1 + d < NODES_PER_PAGE);
+        assert(NODES_PER_PAGE < PAGE_SZ);
+        assert(x == p + 1 + d);
+        vstd::arithmetic::div_mod::lemma_add_mod_noop(p as int, 1 + d, PAGE_SZ as int);
+        vstd::arithmetic::div_mod::lemma_small_mod((1 + d) as nat, PAGE_SZ as nat);
+        assert(x % PAGE_SZ == 1 + d);
+        assert(page_of(x) == p);
+        assert(self.list.valid(x));
+        self.lemma_slot_not_owned(x);
+        self.lemma_slot_not_table_page(x);
+        if self.threads.records@.contains_key(x) {
+            self.lemma_thread_node_apart(x);
+        }
+        assert forall|u: usize, k: usize, i: usize| #![trigger table_node(u, k, i)]
+            self.table_pages.maps@.contains_key(u) && k < TABLE_NODE_PAGES && i < NODES_PER_PAGE
+            implies table_node(u, k, i) != x by {
+            self.lemma_table_node_in_block(u, k, i);
+            if table_node(u, k, i) == x {
+                assert(table_node_page(u, k) == p);
+            }
+        }
+        assert forall|s: usize, k: usize, i: usize| #![trigger table_node(s, k, i)]
+            self.spaces.roots@.contains_key(s) && self.spaces.records@[s].value().kind is Device
+                && k < TABLE_NODE_PAGES && i < NODES_PER_PAGE
+            implies table_node(s, k, i) != x by {
+            self.lemma_space_node_in_block(s, k, i);
+            if table_node(s, k, i) == x {
+                assert(table_node_page(s, k) == p);
+            }
+        }
+        if self.mappings@.contains_key(x) {
+            let r = self.mappings@[x];
+            assert(mapping_wf(&self.list, &self.tables, tree_of(&self.table_pages, &self.spaces), &self.blocks, self.holders@, self.mappings@, x));
+            self.lemma_table_page_room(r.table);
+            lemma_mapping_node_place(r.table, r.entry);
+            let k = ((r.entry + 1) / (NODES_PER_PAGE as int)) as usize;
+            let i = ((r.entry + 1) % (NODES_PER_PAGE as int)) as usize;
+            assert(table_node(r.table, k, i) == mapping_node(r.table, r.entry));
+        }
+        if self.list.nodes@[x as int].live {
+            let kind = self.list.nodes@[x as int].kind;
+            if kind is Capability {
+                assert(self.tables.is_cap(&self.list, x));
+            } else if kind is Hidden {
+                assert(self.tables.owner@.contains_key(x) || self.table_pages.maps@.contains_key(x));
+            } else if kind is Mapping {
+                assert(self.mappings@.contains_key(x));
+            } else if kind is Binding {
+                reveal(thread_bound);
+                assert(thread_bound(&self.threads, x));
+            }
+        }
+        if self.devices.records@[d].space is None && self.list.nodes@[x as int].live {
+            reveal(device_bindings_wf);
+            assert(binding_device(&self.devices, x) == d);
+        }
+    }
+
+    /// The refusals of bind: index i of the table at root must hold a device capability and index j a
+    /// device space capability, below the depth limit, whose block can take one more reference; the
+    /// device must be bound to nothing; and its IOMMU must be one the machine has, which acknowledged an
+    /// invalidate started at or past the device's last unbind, so nothing it cached under the device's
+    /// IOid from the space the device was bound to before survives. Both indices come from user space.
+    /// See design/device-binding-under-the-space-capability/.
+    pub open spec fn can_bind_device(&self, root: usize, i: usize, j: usize) -> bool {
+        let n = self.tables.node_of(root, i);
+        let m = self.tables.node_of(root, j);
+        let r = self.devices.records@[device_of(self.payload_of(n).base)];
+        &&& self.tables.has_slot(&self.list, root, i)
+        &&& self.is_cap(n)
+        &&& self.payload_of(n).kind is Device
+        &&& self.tables.has_slot(&self.list, root, j)
+        &&& self.is_cap(m)
+        &&& self.payload_of(m).kind is Space
+        &&& self.list.nodes@[m as int].depth < MAX_DEPTH
+        &&& block_refs(&self.blocks, BlockRef::Small(self.payload_of(m).base / PAGE_SZ)) != usize::MAX
+        &&& r.space is None
+        &&& self.iommu_present(r.iommu as int)
+        &&& r.unbound <= self.iommu_acked(r.iommu as int)
+    }
+
+    /// Device d, bound to nothing, is bound to the device space capability m names: its binding node is
+    /// a child of m, the space's block has one reference more, the space counts d among its bound
+    /// devices, and d's record names the space. Nothing else changed.
+    pub open spec fn device_bound(pre: Self, post: Self, m: usize, d: int) -> bool {
+        let s = pre.payload_of(m).base;
+        let br = BlockRef::Small(s / PAGE_SZ);
+        let x = binding_node(&pre.devices, d);
+        &&& 0 <= d < pre.devices.count
+        &&& pre.devices.records@[d].space is None
+        &&& post.list.wf()
+        &&& post.list.is_child(m, x)
+        &&& post.list.parent@ == pre.list.parent@.insert(x, m)
+        &&& post.list.pages@.dom() == pre.list.pages@.dom()
+        &&& post.list.seq@[0] == pre.list.seq@[0]
+        &&& post.list.nodes@[x as int].live
+        &&& post.list.nodes@[x as int].kind is DeviceBinding
+        &&& forall|y: int| #![trigger post.list.nodes@[y]] 0 <= y < NODE_SPACE && y != x ==> {
+            &&& post.list.nodes@[y].live == pre.list.nodes@[y].live
+            &&& post.list.nodes@[y].kind == pre.list.nodes@[y].kind
+        }
+        &&& post.blocks.wf()
+        &&& blocks_refs_changed(&pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br))
+        &&& post.spaces.roots == pre.spaces.roots
+        &&& post.spaces.records == pre.spaces.records
+        &&& post.spaces.loaded == pre.spaces.loaded
+        &&& post.spaces.kernel_entries == pre.spaces.kernel_entries
+        &&& post.spaces.holders == pre.spaces.holders
+        &&& post.spaces.bound@ == pre.spaces.bound@.insert(s, pre.spaces.bound@[s].insert(d as usize))
+        &&& post.devices.wf()
+        &&& post.devices.count == pre.devices.count
+        &&& post.devices.page == pre.devices.page
+        &&& post.devices.holder == pre.devices.holder
+        &&& post.devices.records@ == pre.devices.records@.update(d, bound_record(pre.devices.records@[d], s))
+        &&& post.holders == pre.holders
+        &&& post.tables == pre.tables
+        &&& post.frames == pre.frames
+        &&& post.zeroing == pre.zeroing
+        &&& post.cores == pre.cores
+        &&& post.threads == pre.threads
+        &&& post.processes == pre.processes
+        &&& post.flush_epoch == pre.flush_epoch
+        &&& post.tlb == pre.tlb
+        &&& post.iommus == pre.iommus
+        &&& post.mapped == pre.mapped
+        &&& post.stale_epoch == pre.stale_epoch
+        &&& post.table_pages == pre.table_pages
+        &&& post.mappings == pre.mappings
+        &&& post.stop_ipis == pre.stop_ipis
+        &&& post.flush_ipis == pre.flush_ipis
+    }
+
+    /// The kinds of node after a bind: the new node is a device binding, outside every leaf, table page
+    /// and device space, so no clause about capability, hidden, table or space nodes changes.
+    proof fn lemma_bind_device_nodes(pre: Self, post: Self, m: usize, d: int)
+        requires
+            pre.wf(),
+            pre.is_cap(m),
+            Self::device_bound(pre, post, m, d),
+        ensures
+            forall|y: usize| #[trigger] post.is_cap(y) == pre.is_cap(y),
+            Self::caps_frame(pre, post, binding_node(&pre.devices, d), binding_node(&pre.devices, d)),
+            post.tables.wf(&post.list),
+            post.tables.caps_wf(&post.list),
+            hidden_nodes_are_leaves(&post.list, &post.tables, &post.table_pages),
+            parents_are_capabilities(&post.list),
+            capability_nodes_are_slots(&post.list, &post.tables),
+            first_node_outside_leaves(&post.list, &post.tables),
+            leaf_slots_are_capabilities(&post.list, &post.tables),
+            table_nodes_are_mappings(&post.list, &post.table_pages),
+            space_nodes_dead(&post.list, &post.spaces),
+            devices_wf(&post.list, &post.tables, &post.devices),
+    {
+        let x = binding_node(&pre.devices, d);
+        pre.lemma_binding_node_apart(d);
+        pre.lemma_slot_bound(m);
+        assert(Self::caps_frame(pre, post, x, x));
+        assert forall|y: usize| #[trigger] post.is_cap(y) == pre.is_cap(y) by {
+            if y == x {
+                assert(!(post.list.nodes@[y as int].kind is Capability));
+            } else {
+                Self::lemma_caps_frame(pre, post, x, x, y);
+            }
+        }
+        pre.tables.lemma_wf_same_pages(&pre.list, &post.list);
+        assert forall|y: usize| #[trigger] post.tables.is_cap(&post.list, y)
+            implies cap_wf(post.tables.payload_of(y)) by {
+            assert(pre.tables.is_cap(&pre.list, y));
+        }
+        assert forall|y: usize| y < NODE_SPACE && (#[trigger] post.list.nodes@[y as int]).live && post.list.nodes@[y as int].kind is Hidden
+            implies post.tables.owner@.contains_key(y) || post.table_pages.maps@.contains_key(y) by {
+            assert(y != x);
+            assert(pre.list.nodes@[y as int].live && pre.list.nodes@[y as int].kind is Hidden);
+        }
+        lemma_parents_derived(pre.list, post.list, m, x);
+        assert forall|y: usize| y < NODE_SPACE && (#[trigger] post.list.nodes@[y as int]).live && post.list.nodes@[y as int].kind is Capability
+            && y != post.list.seq@[0] implies post.tables.is_cap(&post.list, y) by {
+            assert(y != x);
+            assert(pre.list.nodes@[y as int].live && pre.list.nodes@[y as int].kind is Capability);
+            assert(pre.tables.is_cap(&pre.list, y));
+        }
+        assert forall|y: usize| #[trigger] post.list.nodes@[y as int].live && post.tables.owner@.contains_key(page_of(y))
+            && y % PAGE_SZ != 0 && y % PAGE_SZ < NODES_PER_PAGE implies post.list.nodes@[y as int].kind is Capability by {
+            assert(y != x);
+            pre.lemma_slot_bound(y);
+            assert(pre.list.nodes@[y as int].live);
+        }
+        assert forall|u: usize, k: usize, i: usize| #![trigger table_node(u, k, i)]
+            post.table_pages.maps@.contains_key(u) && k < TABLE_NODE_PAGES && i < NODES_PER_PAGE && (k != 0 || i != 0)
+                && post.list.nodes@[table_node(u, k, i) as int].live
+            implies post.list.nodes@[table_node(u, k, i) as int].kind is Mapping by {
+            pre.lemma_table_node_in_block(u, k, i);
+            assert(table_node(u, k, i) != x);
+        }
+        assert forall|s: usize, k: usize, i: usize| #![trigger table_node(s, k, i)]
+            post.spaces.roots@.contains_key(s) && post.spaces.records@[s].value().kind is Device && k < TABLE_NODE_PAGES
+                && i < NODES_PER_PAGE
+            implies !post.list.nodes@[table_node(s, k, i) as int].live by {
+            pre.lemma_space_node_in_block(s, k, i);
+            assert(table_node(s, k, i) != x);
+        }
+        assert forall|y: usize| #[trigger] post.tables.is_cap(&post.list, y) && post.tables.payload_of(y).kind is Device implies {
+            &&& pre.tables.is_cap(&pre.list, y)
+            &&& pre.tables.payload_of(y) == post.tables.payload_of(y)
+        } by {
+            assert(post.is_cap(y));
+        }
+        lemma_devices_kept(&pre.list, &pre.tables, &post.list, &post.tables, &pre.devices);
+        lemma_devices_records(&post.list, &post.tables, &pre.devices, &post.devices);
+    }
+
+    /// The counted parts after a bind: the space's block has one reference more, counted among its bound
+    /// devices, and no capability, holder, leaf, table page, thread, process or mapping changed.
+    proof fn lemma_bind_device_objects(pre: Self, post: Self, m: usize, d: int)
+        requires
+            pre.wf(),
+            pre.is_cap(m),
+            pre.payload_of(m).kind is Space,
+            block_refs(&pre.blocks, BlockRef::Small(pre.payload_of(m).base / PAGE_SZ)) != usize::MAX,
+            Self::device_bound(pre, post, m, d),
+        ensures
+            holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
+            zeroing_typed(&post.zeroing, &post.blocks),
+            list_pages_used(&post.list, &post.blocks),
+            objects_wf(&post.tables, &post.blocks, post.holders@),
+            leaf_blocks_wf(&post.list, &post.tables, &post.blocks),
+            table_pages_wf(&post.list, &post.table_pages, &post.blocks),
+            spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
+            threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
+            processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
+            mappings_wf(&post.list, &post.tables, tree_of(&post.table_pages, &post.spaces), &post.blocks, post.holders@, post.mappings@),
+            bindings_wf(&post.list, &post.threads, &post.processes),
+            current_wf(post.cores@, post.threads.records@),
+    {
+        let s = pre.payload_of(m).base;
+        let br = BlockRef::Small(s / PAGE_SZ);
+        let refs = (block_refs(&pre.blocks, br) + 1) as usize;
+        let dead = block_dead(&pre.blocks, br);
+        let x = binding_node(&pre.devices, d);
+        Self::lemma_bind_device_nodes(pre, post, m, d);
+        pre.lemma_binding_node_apart(d);
+        pre.lemma_space_cap(m);
+        assert forall|y: usize| y != x implies {
+            &&& #[trigger] post.tables.is_cap(&post.list, y) == pre.tables.is_cap(&pre.list, y)
+            &&& pre.tables.is_cap(&pre.list, y) ==> post.tables.payload_of(y) == pre.tables.payload_of(y)
+        } by {
+            Self::lemma_caps_frame(pre, post, x, x, y);
+        }
+        assert(!pre.is_cap(x));
+        assert(!post.is_cap(x));
+        assert forall|y: usize| #[trigger] post.tables.is_cap(&post.list, y) == pre.tables.is_cap(&pre.list, y) by {
+            assert(post.is_cap(y) == pre.is_cap(y));
+        }
+        assert(same_mapping_nodes(&pre.list, &post.list));
+        assert(same_frames(&pre.list, &pre.tables, &post.list, &post.tables));
+        assert(same_spaces(&pre.list, &pre.tables, &post.list, &post.tables));
+        assert(same_threads(&pre.list, &pre.tables, &post.list, &post.tables));
+        assert(same_processes(&pre.list, &pre.tables, &post.list, &post.tables));
+        lemma_holders_same_frames(&pre.list, &pre.tables, &post.list, &post.tables, &pre.blocks, &pre.zeroing, pre.holders@);
+        assert(!pre.holders@.contains_key(br)) by {
+            if pre.holders@.contains_key(br) {
+                assert(pre.blocks.pages@[(s / PAGE_SZ) as int].object is Frame);
+            }
+        }
+        lemma_holders_unkeyed_small_changed(&post.list, &post.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, s / PAGE_SZ, refs, dead);
+        lemma_zeroing_typed_small_changed(&pre.zeroing, &pre.blocks, &post.blocks, s / PAGE_SZ, refs, dead);
+        lemma_list_pages_used_same_kinds(&pre.list, &pre.blocks, &post.blocks);
+        assert(objects_wf(&post.tables, &pre.blocks, pre.holders@));
+        lemma_objects_unframed_block_changed(&post.tables, &pre.blocks, &post.blocks, pre.holders@, s / PAGE_SZ, refs, dead);
+        assert forall|l: usize| #[trigger] pre.tables.owner@.contains_key(l) implies {
+            &&& post.list.nodes@[l as int].live == pre.list.nodes@[l as int].live
+            &&& post.list.nodes@[l as int].kind == pre.list.nodes@[l as int].kind
+        } by {
+            pre.tables.lemma_leaf(&pre.list, l);
+            pre.lemma_slot_bound(l);
+            assert(l != x);
+        }
+        assert(leaf_blocks_wf(&pre.list, &post.tables, &pre.blocks));
+        lemma_leaf_blocks_other_changed(&pre.list, &post.list, &post.tables, &pre.blocks, &post.blocks, pre.holders@, s / PAGE_SZ, refs, dead);
+        assert forall|u: usize| #[trigger] pre.table_pages.maps@.contains_key(u) implies {
+            &&& post.list.nodes@[u as int].live == pre.list.nodes@[u as int].live
+            &&& post.list.nodes@[u as int].kind == pre.list.nodes@[u as int].kind
+        } by {
+            pre.lemma_table_page_valid(u);
+            assert(u != x);
+        }
+        lemma_table_pages_refs_changed(&pre.list, &post.list, &pre.table_pages, &pre.blocks, &post.blocks, br, refs, dead);
+        assert(!pre.spaces.bound@[s].contains(d as usize)) by {
+            reveal(device_bindings_wf);
+            assert(space_wf(&pre.list, &pre.spaces, &pre.blocks, s));
+            if pre.spaces.bound@[s].contains(d as usize) {
+                assert(pre.devices.records@[d].space == Some(s));
+            }
+        }
+        Self::lemma_spaces_bound_added(pre, post, s, d as usize);
+        lemma_threads_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks, &post.blocks, br, refs, dead);
+        lemma_processes_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks, &post.blocks, br, refs, dead);
+        assert forall|n: usize| #[trigger] pre.mappings@.contains_key(n) implies mapping_node_kept(
+            &pre.list, &pre.tables, &pre.blocks, pre.holders@, &post.list, &post.tables, &post.blocks, post.holders@, pre.mappings@[n].frame, n,
+        ) by {
+            pre.lemma_mapping_node(n);
+            let c = pre.list.parent@[n];
+            assert(n != x);
+            assert(c != x);
+            Self::lemma_caps_frame(pre, post, x, x, c);
+        }
+        assert(Self::same_tree(pre, post));
+        Self::lemma_mappings_same_tree(pre, post);
+        assert forall|y: usize| y < NODE_SPACE implies ((#[trigger] post.list.nodes@[y as int]).live && post.list.nodes@[y as int].kind is Binding)
+            == (pre.list.nodes@[y as int].live && pre.list.nodes@[y as int].kind is Binding) by {
+            if y != x {
+                assert(post.list.nodes@[y as int].live == pre.list.nodes@[y as int].live);
+            }
+        }
+        lemma_bindings_same(&pre.list, &post.list, &pre.threads, &pre.processes);
+    }
+
+    /// The device bindings after a bind: the new binding node is device d's, below a capability to the
+    /// space its record now names, which counts d among its bound devices; every other binding, record
+    /// and bound set is as it was.
+    proof fn lemma_bind_device_bindings(pre: Self, post: Self, m: usize, d: int)
+        requires
+            pre.wf(),
+            pre.is_cap(m),
+            pre.payload_of(m).kind is Space,
+            Self::device_bound(pre, post, m, d),
+        ensures
+            device_bindings_wf(&post.list, &post.tables, post.spaces.bound@, &post.devices),
+    {
+        reveal(device_bindings_wf);
+        let x = binding_node(&pre.devices, d);
+        let s = pre.payload_of(m).base;
+        let ba = pre.spaces.bound@;
+        let bb = post.spaces.bound@;
+        Self::lemma_bind_device_nodes(pre, post, m, d);
+        pre.lemma_binding_node_apart(d);
+        pre.lemma_space_cap(m);
+        assert(space_wf(&pre.list, &pre.spaces, &pre.blocks, s));
+        assert(ba.contains_key(s));
+        assert(post.is_cap(m));
+        assert(bb[s] == ba[s].insert(d as usize));
+        assert forall|y: usize| y < NODE_SPACE && (#[trigger] post.list.nodes@[y as int]).live && post.list.nodes@[y as int].kind is DeviceBinding implies {
+            let e = binding_device(&post.devices, y);
+            &&& 0 <= e < post.devices.count
+            &&& post.devices.records@[e].space is Some
+            &&& device_binding_parent(&post.list, &post.tables, y, post.devices.records@[e].space->Some_0)
+        } by {
+            if y == x {
+                assert(binding_device(&post.devices, y) == d);
+                assert(post.devices.records@[d] == bound_record(pre.devices.records@[d], s));
+                assert(post.list.parent@[x] == m);
+            } else {
+                assert(pre.list.nodes@[y as int].live && pre.list.nodes@[y as int].kind is DeviceBinding);
+                let e = binding_device(&pre.devices, y);
+                assert(pre.devices.records@[e].space is Some);
+                assert(e != d);
+                assert(post.devices.records@[e] == pre.devices.records@[e]);
+                let a = pre.list.parent@[y];
+                assert(device_binding_parent(&pre.list, &pre.tables, y, pre.devices.records@[e].space->Some_0));
+                assert(pre.is_cap(a));
+                assert(post.is_cap(a));
+                assert(post.list.parent@[y] == a);
+            }
+        }
+        assert forall|e: int| 0 <= e < post.devices.count && (#[trigger] post.devices.records@[e]).space is Some implies {
+            let y = binding_node(&post.devices, e);
+            let t = post.devices.records@[e].space->Some_0;
+            &&& y < NODE_SPACE
+            &&& post.list.nodes@[y as int].live
+            &&& post.list.nodes@[y as int].kind is DeviceBinding
+            &&& bb.contains_key(t)
+            &&& bb[t].contains(e as usize)
+        } by {
+            if e != d {
+                assert(post.devices.records@[e] == pre.devices.records@[e]);
+                assert(pre.devices.records@[e].space is Some);
+                let y = binding_node(&pre.devices, e);
+                let t = pre.devices.records@[e].space->Some_0;
+                assert(pre.list.nodes@[y as int].live);
+                assert(y != x);
+                assert(ba[t].contains(e as usize));
+                if t == s {
+                    assert(bb[s].contains(e as usize));
+                } else {
+                    assert(bb[t] == ba[t]);
+                }
+            }
+        }
+        assert forall|t: usize, e: usize| bb.contains_key(t) && #[trigger] bb[t].contains(e)
+            implies e < post.devices.count && post.devices.records@[e as int].space == Some(t) by {
+            if t == s {
+                if e as int != d {
+                    assert(ba[s].contains(e));
+                    assert(pre.devices.records@[e as int].space == Some(s));
+                    assert(post.devices.records@[e as int] == pre.devices.records@[e as int]);
+                }
+            } else {
+                assert(bb[t] == ba[t]);
+                assert(ba.contains_key(t) && ba[t].contains(e));
+                assert(pre.devices.records@[e as int].space == Some(t));
+                assert(e as int != d);
+                assert(post.devices.records@[e as int] == pre.devices.records@[e as int]);
+            }
+        }
+    }
+
+    /// Everything the invariant says after a bind. The device's IOMMU is present and acknowledged its
+    /// last unbind, as devices_placed asks of a bound device.
+    proof fn lemma_bind_device_wf(pre: Self, post: Self, m: usize, d: int)
+        requires
+            pre.wf(),
+            pre.is_cap(m),
+            pre.payload_of(m).kind is Space,
+            block_refs(&pre.blocks, BlockRef::Small(pre.payload_of(m).base / PAGE_SZ)) != usize::MAX,
+            pre.iommu_present(pre.devices.records@[d].iommu as int),
+            pre.devices.records@[d].unbound <= pre.iommu_acked(pre.devices.records@[d].iommu as int),
+            Self::device_bound(pre, post, m, d),
+        ensures
+            post.wf(),
+    {
+        let x = binding_node(&pre.devices, d);
+        Self::lemma_bind_device_nodes(pre, post, m, d);
+        Self::lemma_bind_device_objects(pre, post, m, d);
+        Self::lemma_bind_device_bindings(pre, post, m, d);
+        pre.lemma_binding_node_apart(d);
+        assert forall|t: usize| t < NODE_SPACE && (#[trigger] post.list.nodes@[t as int]).live && post.list.nodes@[t as int].kind is Binding
+            implies pre.list.nodes@[t as int].live && pre.list.nodes@[t as int].kind is Binding by {
+            assert(t != x);
+        }
+        assert forall|y: usize| y < NODE_SPACE && pre.list.nodes@[y as int].live && #[trigger] pre.list.parent@.contains_key(y)
+            implies post.list.parent@.contains_key(y) && post.list.parent@[y] == pre.list.parent@[y] by {
+            assert(y != x);
+        }
+        assert forall|y: usize| #[trigger] pre.tables.is_cap(&pre.list, y) && pre.tables.payload_of(y).kind is Process implies {
+            &&& post.tables.is_cap(&post.list, y)
+            &&& post.tables.payload_of(y) == pre.tables.payload_of(y)
+        } by {
+            assert(pre.is_cap(y));
+            assert(post.is_cap(y));
+        }
+        lemma_binding_parents_kept(&pre.list, &pre.tables, &pre.threads, &post.list, &post.tables, &post.threads);
+        assert forall|e: int| 0 <= e < post.devices.count && (#[trigger] post.devices.records@[e]).space is Some implies {
+            &&& post.iommus.present@[post.devices.records@[e].iommu as int]
+            &&& post.devices.records@[e].unbound <= post.iommus.acked@[post.devices.records@[e].iommu as int]
+        } by {
+            if e != d {
+                assert(post.devices.records@[e] == pre.devices.records@[e]);
+            }
+        }
+        assert(tree_of(&post.table_pages, &post.spaces) == tree_of(&pre.table_pages, &pre.spaces));
+        Self::lemma_tlb_same(pre, post);
+        assert(process_tables_wf(&post.tables, &post.processes));
+        assert(process_spaces_wf(&post.spaces, &post.processes));
+        assert(post.frames_wf());
+    }
+
+    /// Binds the device whose capability is at index i of the table at root to the device space whose
+    /// capability is at index j: the device's binding node, in the list's first page, becomes a child of
+    /// the space capability, holding a reference on the space's block, the space counts the device among
+    /// its bound devices, and the device's record names the space. The caller holds the device's only
+    /// capability, so no one else gains a reach. Writing the IOMMU's device table entry is the glue's, on
+    /// success. See design/device-binding-under-the-space-capability/.
+    pub fn bind_device(&mut self, root: usize, i: usize, j: usize) -> (ret: bool)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(root),
+        ensures
+            final(self).wf(),
+            ret == old(self).can_bind_device(root, i, j),
+            !ret ==> *final(self) == *old(self),
+            ret ==> Self::device_bound(
+                *old(self),
+                *final(self),
+                old(self).tables.node_of(root, j),
+                device_of(old(self).payload_of(old(self).tables.node_of(root, i)).base),
+            ),
+            discharges(old(self).view(), final(self).view(), root, Effect::Local),
+    {
+        let ghost pre = *old(self);
+        proof {
+            pre.lemma_no_op_discharges(root);
+        }
+        let (n, device) = match self.tables.lookup(&self.list, root, i) {
+            Some(found) => found,
+            None => { return false; },
+        };
+        let node = self.list.get(n);
+        let live_device = match node.kind {
+            NodeKind::Capability => node.live,
+            _ => false,
+        };
+        if !live_device {
+            return false;
+        }
+        proof {
+            pre.lemma_slot(root, i);
+            assert(pre.tables.is_cap(&pre.list, n));
+            assert(device == pre.payload_of(n));
+        }
+        let is_device = match device.kind {
+            CapKind::Device => true,
+            _ => false,
+        };
+        if !is_device {
+            return false;
+        }
+        let (m, space) = match self.tables.lookup(&self.list, root, j) {
+            Some(found) => found,
+            None => { return false; },
+        };
+        let space_node = self.list.get(m);
+        let live_space = match space_node.kind {
+            NodeKind::Capability => space_node.live,
+            _ => false,
+        };
+        if !live_space {
+            return false;
+        }
+        proof {
+            pre.lemma_slot(root, j);
+            assert(pre.tables.is_cap(&pre.list, m));
+            assert(space == pre.payload_of(m));
+        }
+        let is_space = match space.kind {
+            CapKind::Space => true,
+            _ => false,
+        };
+        if !is_space || space_node.depth >= MAX_DEPTH {
+            return false;
+        }
+        proof {
+            reveal(devices_wf);
+            assert(pre.devices.wf());
+            assert(pre.devices.names(device.base));
+            pre.lemma_space_cap(m);
+        }
+        let s = space.base;
+        if self.blocks.pages.get(s / PAGE_SZ).refs == usize::MAX {
+            return false;
+        }
+        let d = (device.base - DEVICE_OBJECTS) / PAGE_SZ;
+        proof {
+            assert(d as int == device_of(device.base));
+            assert(d < pre.devices.count);
+            assert(pre.devices.records@[d as int].iommu < NUM_IOMMUS);
+        }
+        let record = *self.devices.records.get(d);
+        match record.space {
+            Some(_) => { return false; },
+            None => {},
+        }
+        if !*self.iommus.present.get(record.iommu) || *self.iommus.acked.get(record.iommu) < record.unbound {
+            return false;
+        }
+        proof {
+            pre.lemma_binding_node_apart(d as int);
+            pre.list.lemma_seq_fits();
+            pre.lemma_slot_bound(m);
+        }
+        let added = add_block_ref(&mut self.blocks, BlockRef::Small(s / PAGE_SZ));
+        assert(added);
+        let x = self.devices.page + 1 + d;
+        self.list.derive(m, x, NodeKind::DeviceBinding);
+        self.spaces.bound = Ghost(pre.spaces.bound@.insert(s, pre.spaces.bound@[s].insert(d)));
+        self.devices.bind(d, s);
+        proof {
+            let post = *self;
+            assert(Self::device_bound(pre, post, m, d as int));
+            Self::lemma_bind_device_wf(pre, post, m, d as int);
+            Self::lemma_leaf_added_discharges(pre, post, root, m, x);
+        }
+        true
+    }
+
+    /// A bound device's space is a live device space whose block its binding holds a reference on, so
+    /// no device is bound to a freed table; its IOMMU is one the machine has and acknowledged the
+    /// device's last unbind; and no other device has its IOMMU and IOid.
+    pub proof fn lemma_bound_device(&self, d: int)
+        requires
+            self.wf(),
+            0 <= d < self.devices.count,
+            self.devices.records@[d].space is Some,
+        ensures
+            self.spaces.roots@.contains_key(self.devices.records@[d].space->Some_0),
+            self.spaces.records@[self.devices.records@[d].space->Some_0].value().kind is Device,
+            block_typed(&self.blocks, BlockRef::Small(self.devices.records@[d].space->Some_0 / PAGE_SZ)),
+            block_refs(&self.blocks, BlockRef::Small(self.devices.records@[d].space->Some_0 / PAGE_SZ)) > 0,
+            self.devices.records@[d].iommu < NUM_IOMMUS,
+            self.iommu_present(self.devices.records@[d].iommu as int),
+            self.devices.records@[d].unbound <= self.iommu_acked(self.devices.records@[d].iommu as int),
+            forall|e: int| 0 <= e < self.devices.count && e != d ==> #[trigger] self.devices.distinct(d, e),
+    {
+        reveal(device_bindings_wf);
+        reveal(devices_wf);
+        let x = binding_node(&self.devices, d);
+        let s = self.devices.records@[d].space->Some_0;
+        assert(x < NODE_SPACE);
+        assert(self.list.nodes@[x as int].live && self.list.nodes@[x as int].kind is DeviceBinding);
+        self.lemma_binding_node_apart(d);
+        assert(device_binding_parent(&self.list, &self.tables, x, s));
+        self.lemma_space_cap(self.list.parent@[x]);
+        assert forall|e: int| 0 <= e < self.devices.count && e != d implies #[trigger] self.devices.distinct(d, e) by {
+            assert(self.devices.records@[d] == self.devices.records@[d]);
+            assert(self.devices.records@[e] == self.devices.records@[e]);
+        }
     }
 }
 

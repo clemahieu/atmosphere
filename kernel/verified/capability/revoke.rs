@@ -82,6 +82,8 @@ impl CapKernel {
             final(self).cores == old(self).cores,
             !(old(self).list.nodes@[n as int].kind is DeviceBinding) ==> final(self).devices == old(self).devices,
             final(self).devices.wf(),
+            final(self).iommus.present == old(self).iommus.present,
+            final(self).iommus.acked == old(self).iommus.acked,
             final(self).stale_epoch.wf(),
             final(self).tlb_wf(),
             mapped_wf(final(self).mapped@, final(self).mappings@),
@@ -582,6 +584,8 @@ impl CapKernel {
             !(pre.list.nodes@[r as int].kind is DeviceBinding) ==> mid.spaces.bound == pre.spaces.bound,
             !(pre.list.nodes@[r as int].kind is DeviceBinding) ==> mid.devices == pre.devices,
             mid.devices.wf(),
+            mid.iommus.present == pre.iommus.present,
+            mid.iommus.acked == pre.iommus.acked,
             pre.list.nodes@[r as int].kind is DeviceBinding ==> {
                 &&& Self::device_unbound(pre, mid, r)
                 &&& mid.holders == pre.holders
@@ -681,6 +685,13 @@ impl CapKernel {
         } else if pre.list.nodes@[r as int].kind is DeviceBinding {
             Self::lemma_revoke_device_binding_holders(pre, post, r);
             Self::lemma_same_tree_shrunk(pre, post);
+            // The device unbound is bound to nothing, and every other record is as it was.
+            assert forall|e: int| 0 <= e < post.devices.count && (#[trigger] post.devices.records@[e]).space is Some implies {
+                &&& post.iommus.present@[post.devices.records@[e].iommu as int]
+                &&& post.devices.records@[e].unbound <= post.iommus.acked@[post.devices.records@[e].iommu as int]
+            } by {
+                assert(post.devices.records@[e] == pre.devices.records@[e]);
+            }
         } else {
             Self::lemma_delete_holders(pre, post, r);
             Self::lemma_same_tree_shrunk(pre, post);

@@ -1115,6 +1115,7 @@ impl CapKernel {
         &&& leaf_blocks_wf(&self.list, &self.tables, &self.blocks)
         &&& devices_wf(&self.list, &self.tables, &self.devices)
         &&& device_bindings_wf(&self.list, &self.tables, self.spaces.bound@, &self.devices)
+        &&& devices_placed(&self.list, self.iommus.present@, self.iommus.acked@, &self.devices)
     }
 
     /// A frame's permission is for its own page.
@@ -2167,6 +2168,17 @@ impl CapKernel {
                     assert(pre.iommu_acked(j) == self.iommu_acked(j));
                 } else {
                     assert(pre.iommus.tlb@[j].contains(e));
+                }
+            }
+            // An acknowledgement only rises, so a bound device's IOMMU still acknowledged its last unbind.
+            assert forall|d: int| 0 <= d < self.devices.count && (#[trigger] self.devices.records@[d]).space is Some implies {
+                &&& self.iommus.present@[self.devices.records@[d].iommu as int]
+                &&& self.devices.records@[d].unbound <= self.iommus.acked@[self.devices.records@[d].iommu as int]
+            } by {
+                let j = self.devices.records@[d].iommu as int;
+                assert(pre.devices.records@[d].unbound <= pre.iommus.acked@[j]);
+                if j != i as int {
+                    assert(self.iommus.acked@[j] == pre.iommus.acked@[j]);
                 }
             }
         }
