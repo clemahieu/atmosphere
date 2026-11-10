@@ -72,7 +72,7 @@ pub ghost struct State {
     /// See design/device-binding-under-the-space-capability/.
     pub shares: ISet<(ObjectId, ObjectId)>,
     /// The device space each bound device is bound to, whose mappings its accesses go through.
-    pub binds: Map<ObjectId, ObjectId>,
+    pub binds: IMap<ObjectId, ObjectId>,
     /// What a process can see of an object: a frame's bytes, a thread's registers, a notification's
     /// word.
     pub contents: spec_fn(ObjectId) -> Seq<u8>,
@@ -402,11 +402,16 @@ pub open spec fn adds_no_waiter(pre: State, post: State) -> bool {
     forall|w: (ObjectId, ObjectId)| #[trigger] post.waiting.contains(w) ==> pre.waiting.contains(w)
 }
 
-/// What q sees in a, q or q2 sees in b, when b binds as a does and what q reaches directly in a, q or
-/// q2 reaches directly in b.
+/// Each device a binds, b binds to the same space; b may bind fewer.
+pub open spec fn binds_within(a: State, b: State) -> bool {
+    forall|d: ObjectId| #[trigger] a.binds.contains_key(d) ==> b.binds.contains_key(d) && b.binds[d] == a.binds[d]
+}
+
+/// What q sees in a, q or q2 sees in b, when b binds what a does and what q reaches directly in a, q
+/// or q2 reaches directly in b.
 proof fn lemma_sees_carries(a: State, b: State, q: ObjectId, q2: ObjectId, s: ObjectId)
     requires
-        a.binds == b.binds,
+        binds_within(a, b),
         forall|x: ObjectId| #[trigger] a.direct(q, x) ==> b.direct(q, x) || b.direct(q2, x),
         a.sees(q, s),
     ensures
@@ -423,7 +428,7 @@ proof fn lemma_sees_carries(a: State, b: State, q: ObjectId, q2: ObjectId, s: Ob
 proof fn lemma_shared_carries(a: State, b: State, q: ObjectId, q2: ObjectId, o: ObjectId)
     requires
         a.shares.subset_of(b.shares),
-        a.binds == b.binds,
+        binds_within(a, b),
         forall|x: ObjectId| #[trigger] a.direct(q, x) ==> b.direct(q, x) || b.direct(q2, x),
         a.shared(q, o),
     ensures
@@ -444,7 +449,7 @@ proof fn lemma_shared_carries(a: State, b: State, q: ObjectId, q2: ObjectId, o: 
 proof fn lemma_edge_carries(a: State, b: State, q: ObjectId, q2: ObjectId, o: ObjectId)
     requires
         a.shares.subset_of(b.shares),
-        a.binds == b.binds,
+        binds_within(a, b),
         forall|x: ObjectId| #[trigger] a.direct(q, x) ==> b.direct(q, x) || b.direct(q2, x),
         a.direct(q, o) || a.shared(q, o),
     ensures
@@ -1982,7 +1987,8 @@ pub proof fn lemma_adds_share_discharges(pre: State, post: State, p: ObjectId, s
 }
 
 /// a's authority carries over to b through a renaming f of a's live nodes: whatever a process holds,
-/// each capability's block and rights and each live node's parent are in b under the new names.
+/// each capability's block and rights and each live node's parent are in b under the new names, and
+/// each device a binds b binds alike.
 pub open spec fn simulates(a: State, b: State, live: spec_fn(NodeId) -> bool, f: spec_fn(NodeId) -> NodeId) -> bool {
     &&& forall|h: (ObjectId, NodeId)| #[trigger] a.held.contains(h) ==> live(h.1) && b.held.contains((h.0, f(h.1)))
     &&& forall|x: NodeId| #[trigger] a.names.contains_key(x) ==> {
@@ -2002,9 +2008,58 @@ pub open spec fn simulates(a: State, b: State, live: spec_fn(NodeId) -> bool, f:
     }
     &&& a.maps == b.maps
     &&& a.shares.subset_of(b.shares)
-    &&& a.binds == b.binds
+    &&& binds_within(a, b)
     &&& a.process_of == b.process_of
     &&& adds_no_waiter(b, a)
+}
+
+/// A state with a's authority and other device spaces' pages and bindings simulates b as a does, when
+/// b maps and binds what it has of those.
+pub proof fn lemma_simulates_spaces(a: State, a2: State, b: State, live: spec_fn(NodeId) -> bool, f: spec_fn(NodeId) -> NodeId)
+    requires
+        simulates(a, b, live, f),
+        a2.held == a.held,
+        a2.names == a.names,
+        a2.pages == a.pages,
+        a2.rights == a.rights,
+        a2.parent == a.parent,
+        a2.maps == a.maps,
+        a2.process_of == a.process_of,
+        a2.waiting == a.waiting,
+        a2.shares.subset_of(b.shares),
+        binds_within(a2, b),
+    ensures
+        simulates(a2, b, live, f),
+{
+    assert forall|h: (ObjectId, NodeId)| #[trigger] a2.held.contains(h) implies live(h.1) && b.held.contains((h.0, f(h.1))) by {
+        assert(a.held.contains(h));
+    }
+    assert forall|x: NodeId| #[trigger] a2.names.contains_key(x) implies {
+        &&& live(x)
+        &&& b.names.contains_key(f(x))
+        &&& b.names[f(x)] == a2.names[x]
+    } by {
+        assert(a.names.contains_key(x));
+    }
+    assert forall|x: NodeId| #[trigger] a2.pages.contains_key(x) implies {
+        &&& b.pages.contains_key(f(x))
+        &&& b.pages[f(x)] == a2.pages[x]
+    } by {
+        assert(a.pages.contains_key(x));
+    }
+    assert forall|x: NodeId, r: Right| #[trigger] a2.rights.contains((x, r)) implies b.rights.contains((f(x), r)) by {
+        assert(a.rights.contains((x, r)));
+    }
+    assert forall|x: NodeId| live(x) && #[trigger] a2.parent.contains_key(x) implies {
+        &&& live(a2.parent[x])
+        &&& b.parent.contains_key(f(x))
+        &&& b.parent[f(x)] == f(a2.parent[x])
+    } by {
+        assert(a.parent.contains_key(x));
+    }
+    assert forall|w: (ObjectId, ObjectId)| #[trigger] a2.waiting.contains(w) implies b.waiting.contains(w) by {
+        assert(a.waiting.contains(w));
+    }
 }
 
 proof fn lemma_simulates_descends(
@@ -2653,11 +2708,13 @@ pub proof fn lemma_simulated_discharges_share(
         assert(o != q && !pre.direct(q, o) && !pre.shared(q, o));
         if exists|d: ObjectId| #[trigger] post.binds.contains_key(d) && post.binds[d] == o && post.direct(q, d) {
             let d = choose|d: ObjectId| #[trigger] post.binds.contains_key(d) && post.binds[d] == o && post.direct(q, d);
+            assert(mid.binds.contains_key(d));
             assert(pre.binds.contains_key(d) && pre.binds[d] == o && pre.direct(q, d));
         } else {
             let t = choose|t: ObjectId| #[trigger] post.shares.contains((t, o)) && post.sees(q, t);
             if !post.direct(q, t) {
                 let d = choose|d: ObjectId| #[trigger] post.binds.contains_key(d) && post.binds[d] == t && post.direct(q, d);
+                assert(mid.binds.contains_key(d));
                 assert(pre.binds.contains_key(d) && pre.binds[d] == t && pre.direct(q, d));
             }
             assert(pre.sees(q, t));
@@ -2666,6 +2723,99 @@ pub proof fn lemma_simulated_discharges_share(
             }
             assert(t == sp && pre.reach(p, o));
             assert(pre.controlled(r, q, k) && pre.sees(q, sp));
+        }
+    }
+    assert forall|w: (ObjectId, ObjectId)| #[trigger] post.waiting.contains(w) && !pre.waiting.contains(w)
+        implies may_wait(pre, p, w) by {
+        assert(mid.waiting.contains(w));
+    }
+    assert forall|w: (ObjectId, ObjectId)| #[trigger] post.waiting.contains(w)
+        implies post.process_behind(w.1) == pre.process_behind(w.1) by {
+        assert(mid.waiting.contains(w));
+        assert(mid.process_behind(w.1) == pre.process_behind(w.1));
+    }
+    assert forall|x: NodeId, r: Right| #[trigger] post.rights.contains((x, r)) && post.names.contains_key(x)
+        implies (pre.rights.contains((x, r)) && pre.names.contains_key(x)) || may_hold(pre, post, e, x, r) by {
+        assert(f(x) == x);
+        assert(mid.rights.contains((x, r)));
+        assert(mid.names.contains_key(x));
+    }
+}
+
+/// A local step that binds device d to space s, where whoever reaches d directly sees s already: post's
+/// authority apart from the binding is all in pre, and the binding gives no one a space they did not
+/// see, so reach does not grow.
+pub proof fn lemma_simulated_discharges_bind(
+    pre: State,
+    post: State,
+    p: ObjectId,
+    d: ObjectId,
+    s: ObjectId,
+    live: spec_fn(NodeId) -> bool,
+    f: spec_fn(NodeId) -> NodeId,
+)
+    requires
+        simulates(State { binds: pre.binds, ..post }, pre, live, f),
+        forall|x: NodeId| #[trigger] f(x) == x,
+        forall|x: NodeId| #[trigger] pre.names.contains_key(x) ==> post.names.contains_key(x),
+        forall|o: ObjectId| #[trigger] (post.contents)(o) == (pre.contents)(o),
+        post.binds == pre.binds.insert(d, s),
+        forall|q: ObjectId| #[trigger] pre.direct(q, d) ==> pre.sees(q, s),
+    ensures
+        discharges(pre, post, p, Effect::Local),
+{
+    let e = Effect::Local;
+    let mid = State { binds: pre.binds, ..post };
+    lemma_simulated_discharges_local(pre, mid, p, live, f);
+    assert forall|o: ObjectId| #[trigger] State::changed(pre, post, o) implies may_change(pre, e, o) by {
+        assert((post.contents)(o) == (pre.contents)(o));
+    }
+    assert forall|n: NodeId| #[trigger] State::removed(pre, post, n) implies may_remove(pre, p, e, n) by {
+        assert(post.names.contains_key(n));
+    }
+    assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) implies pre.reach(r, o) by {
+        let (q, k) = choose|q: ObjectId, k: nat| #[trigger] post.controlled(r, q, k)
+            && (o == q || post.direct(q, o) || post.shared(q, o));
+        lemma_same_authority_same_controlled(post, mid, r, q, k);
+        lemma_simulates_controlled(mid, pre, live, f, r, q, k);
+        assert forall|x: ObjectId| #[trigger] post.direct(q, x) implies pre.direct(q, x) by {
+            lemma_same_authority_same_direct(post, mid, q, x);
+            lemma_simulates_direct(mid, pre, live, f, q, x);
+        }
+        assert(pre.controlled(r, q, k));
+        // What q sees in post it sees in pre: a space bound to d it sees already.
+        assert forall|t: ObjectId| #[trigger] post.sees(q, t) implies pre.sees(q, t) by {
+            if !post.direct(q, t) {
+                let b = choose|b: ObjectId| #[trigger] post.binds.contains_key(b) && post.binds[b] == t && post.direct(q, b);
+                assert(pre.direct(q, b));
+                if b != d {
+                    assert(pre.binds.contains_key(b) && pre.binds[b] == t);
+                } else {
+                    assert(t == s && pre.sees(q, s));
+                }
+            }
+        }
+        if o != q && !post.direct(q, o) {
+            if exists|b: ObjectId| #[trigger] post.binds.contains_key(b) && post.binds[b] == o && post.direct(q, b) {
+                let b = choose|b: ObjectId| #[trigger] post.binds.contains_key(b) && post.binds[b] == o && post.direct(q, b);
+                assert(pre.direct(q, b));
+                if b != d {
+                    assert(pre.binds.contains_key(b) && pre.binds[b] == o);
+                    assert(pre.shared(q, o));
+                } else {
+                    assert(o == s && pre.sees(q, s));
+                    if !pre.direct(q, s) {
+                        let c = choose|c: ObjectId| #[trigger] pre.binds.contains_key(c) && pre.binds[c] == s && pre.direct(q, c);
+                        assert(pre.shared(q, o));
+                    }
+                }
+            } else {
+                let t = choose|t: ObjectId| #[trigger] post.shares.contains((t, o)) && post.sees(q, t);
+                assert(mid.shares.contains((t, o)));
+                assert(pre.shares.contains((t, o)));
+                assert(pre.sees(q, t));
+                assert(pre.shared(q, o));
+            }
         }
     }
     assert forall|w: (ObjectId, ObjectId)| #[trigger] post.waiting.contains(w) && !pre.waiting.contains(w)
@@ -2838,7 +2988,7 @@ pub open spec fn example() -> State {
         waiting: Set::empty(),
         bound: Map::empty(),
         shares: ISet::empty(),
-        binds: Map::empty(),
+        binds: IMap::empty(),
         contents: |o: ObjectId| Seq::empty(),
     }
 }
@@ -2947,7 +3097,7 @@ pub open spec fn control_example() -> State {
         waiting: Set::empty(),
         bound: Map::empty(),
         shares: ISet::empty(),
-        binds: Map::empty(),
+        binds: IMap::empty(),
         contents: |o: ObjectId| Seq::empty(),
     }
 }
@@ -3134,7 +3284,7 @@ pub open spec fn retype_example() -> State {
         waiting: Set::empty(),
         bound: Map::empty(),
         shares: ISet::empty(),
-        binds: Map::empty(),
+        binds: IMap::empty(),
         contents: |o: ObjectId| Seq::empty(),
     }
 }
@@ -3324,7 +3474,7 @@ pub open spec fn send_example() -> State {
         waiting: Set::empty(),
         bound: Map::empty(),
         shares: ISet::empty(),
-        binds: Map::empty(),
+        binds: IMap::empty(),
         contents: |o: ObjectId| Seq::empty(),
     }
 }
@@ -3401,7 +3551,7 @@ pub open spec fn share_example() -> State {
         waiting: Set::empty(),
         bound: Map::empty(),
         shares: ISet::empty(),
-        binds: map![DEVICE_OBJECTS => EXAMPLE_BASE],
+        binds: IMap::empty().insert(DEVICE_OBJECTS, EXAMPLE_BASE),
         contents: |o: ObjectId| Seq::empty(),
     }
 }

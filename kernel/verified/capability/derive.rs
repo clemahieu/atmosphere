@@ -322,6 +322,7 @@ impl CapKernel {
             final(self).iommus == old(self).iommus,
             final(self).spaces.loaded == old(self).spaces.loaded,
             final(self).tables.roots == old(self).tables.roots,
+            final(self).devices == old(self).devices,
             ret && !tracked_kind(old(self).payload_of(old(self).tables.node_of(src, from)).kind) ==> {
                 &&& final(self).blocks == old(self).blocks
                 &&& final(self).holders == old(self).holders
@@ -725,6 +726,7 @@ impl CapKernel {
         requires
             Self::adds_cap(pre, post, pre.tables.node_of(dst, to)),
             post.view().shares == pre.view().shares,
+            post.devices == pre.devices,
             pre.tables.has_slot(&pre.list, src, from),
             pre.tables.has_slot(&pre.list, dst, to),
             pre.is_cap(pre.tables.node_of(src, from)),
@@ -804,6 +806,7 @@ impl CapKernel {
         requires
             Self::adds_cap(pre, post, pre.tables.node_of(dst, to)),
             post.view().shares == pre.view().shares,
+            post.devices == pre.devices,
             pre.tables.has_slot(&pre.list, src, from),
             pre.tables.has_slot(&pre.list, dst, to),
             pre.is_cap(pre.tables.node_of(src, from)),
@@ -842,6 +845,7 @@ impl CapKernel {
         requires
             Self::derive_step(pre, post, pre.tables.node_of(root, to)),
             Self::same_tree(pre, post),
+            post.devices == pre.devices,
             pre.tables.has_slot(&pre.list, root, from),
             pre.tables.has_slot(&pre.list, root, to),
             pre.is_cap(pre.tables.node_of(root, from)),
@@ -876,6 +880,7 @@ impl CapKernel {
         requires
             Self::derive_step(pre, post, pre.tables.node_of(d, to)),
             Self::same_tree(pre, post),
+            post.devices == pre.devices,
             pre.tables.has_slot(&pre.list, root, from),
             pre.tables.has_slot(&pre.list, d, to),
             pre.is_cap(pre.tables.node_of(root, from)),

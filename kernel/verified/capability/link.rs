@@ -1649,6 +1649,7 @@ impl CapKernel {
             pre.wf(),
             pre.can_link(root, slot, parent, entry, from, child),
             Self::link_done(pre, post, parent, entry, child, s),
+            post.devices == pre.devices,
         ensures
             forall|r: usize| #[trigger] space_mapping(tree_of(&post.table_pages, &post.spaces), r)
                 == space_mapping(tree_of(&pre.table_pages, &pre.spaces), r),
@@ -1888,6 +1889,7 @@ impl CapKernel {
         &&& post.spaces.holders == pre.spaces.holders
         &&& post.spaces.kernel_entries == pre.spaces.kernel_entries
         &&& post.spaces.bound == pre.spaces.bound
+        &&& post.devices == pre.devices
     }
 
     /// A detach alone: only the tables changed.
@@ -2059,6 +2061,7 @@ impl CapKernel {
             final(self).mappings == old(self).mappings,
             final(self).table_pages == old(self).table_pages,
             final(self).spaces == old(self).spaces,
+            final(self).devices == old(self).devices,
             final(self).zeroing == old(self).zeroing,
             final(self).frames == old(self).frames,
             final(self).cores == old(self).cores,
@@ -2278,6 +2281,7 @@ impl CapKernel {
             Self::tree_cut(pre, post, t),
             post.list == pre.list,
             post.tables == pre.tables,
+            post.devices == pre.devices,
         ensures
             sheds_shares(pre.view(), post.view()),
     {

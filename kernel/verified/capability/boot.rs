@@ -1260,8 +1260,10 @@ impl CapKernel {
     /// below the list's first node, which no table holds.
     pub proof fn lemma_boot_held_view(pre: Self, post: Self, root: usize, process: usize, i: usize, child: usize)
         requires
+            pre.wf(),
             Self::adds_cap(pre, post, child),
             Self::same_tree(pre, post),
+            post.devices == pre.devices,
             no_device_space(&pre.spaces),
             root == pre.list.seq@[0],
             pre.tables.has_slot(&pre.list, process, i),
@@ -1310,6 +1312,8 @@ impl CapKernel {
         assert(b.parent == a.parent.insert(child, root));
         pre.lemma_no_device_no_shares();
         assert(b.shares == a.shares);
+        pre.lemma_no_device_no_binds();
+        assert(b.binds == a.binds);
         assert(adds_held(a, b, process, root, child, live));
     }
 
@@ -1481,6 +1485,7 @@ impl CapKernel {
     /// its block, and nobody else holds anything, so it reaches exactly the pages of those blocks.
     proof fn lemma_root_reach(s: Self, process: usize, leaf: usize, t: usize)
         requires
+            s.wf(),
             forall|x: usize| #[trigger] s.is_cap(x) ==> x == leaf + 1 || x == leaf + 2,
             s.is_cap((leaf + 1) as usize),
             s.is_cap((leaf + 2) as usize),
@@ -1502,6 +1507,7 @@ impl CapKernel {
         let b = (leaf + 2) as usize;
         lemma2_to64();
         s.lemma_no_device_no_shares();
+        s.lemma_no_device_no_binds();
         assert(v.names[a] == process && v.pages[a] == 8);
         assert(v.names[b] == t && v.pages[b] == 2);
         assert(v.holds(process, a));

@@ -842,6 +842,7 @@ impl CapKernel {
             final(self).tables == old(self).tables,
             final(self).holders == old(self).holders,
             final(self).cores == old(self).cores,
+            final(self).devices == old(self).devices,
             ret is Refused == (!old(self).zeroing.active(level, r) && !old(self).blocks.large_free(level, r as int)),
             ret is Refused ==> *final(self) == *old(self),
             ret is Done ==> forall|k: usize| k < level_pages(level)
@@ -1864,6 +1865,7 @@ impl CapKernel {
             Self::leaf_step(pre, post, leaf),
             Self::same_tree(pre, post),
             post.list.parent@ == pre.list.parent@.insert(leaf, parent),
+            post.devices == pre.devices,
             pre.view().holds_right(root, parent, Right::Retype),
             pre.view().covers(parent, leaf),
             into is Some ==> pre.view().holds_right(root, into->0, Right::Control),

@@ -256,6 +256,7 @@ impl CapKernel {
             !post.list.nodes@[n as int].live,
             post.list.parent == pre.list.parent,
             Self::same_tree(pre, post),
+            post.devices == pre.devices,
         ensures
             forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x),
             post.view() == pre.view(),

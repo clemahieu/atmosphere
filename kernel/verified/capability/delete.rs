@@ -532,6 +532,7 @@ impl CapKernel {
             !post.list.nodes@[n as int].live,
             post.list.parent@ == pre.list.parent@,
             Self::same_tree(pre, post),
+            post.devices == pre.devices,
         ensures
             removes_cap(pre.view(), post.view(), n),
     {

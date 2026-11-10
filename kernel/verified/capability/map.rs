@@ -2626,14 +2626,14 @@ impl CapKernel {
                 &&& post.list.nodes@[i].kind == pre.list.nodes@[i].kind
             },
         ensures
-            simulates(State { shares: pre.view().shares, ..post.view() }, pre.view(), m.0, m.1),
+            simulates(State { shares: pre.view().shares, binds: pre.view().binds, ..post.view() }, pre.view(), m.0, m.1),
             forall|x: NodeId| #[trigger] (m.1)(x) == x,
             forall|x: NodeId| #[trigger] post.view().names.contains_key(x) == pre.view().names.contains_key(x),
             forall|x: NodeId, r: Right| #[trigger] post.view().rights.contains((x, r)) && post.view().names.contains_key(x)
                 ==> pre.view().rights.contains((x, r)) && pre.view().names.contains_key(x)
                 && post.view().names[x] == pre.view().names[x],
     {
-        let (a, b) = (State { shares: pre.view().shares, ..post.view() }, pre.view());
+        let (a, b) = (State { shares: pre.view().shares, binds: pre.view().binds, ..post.view() }, pre.view());
         let live = |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live;
         let g = |x: NodeId| x;
         assert(Self::caps_frame(pre, post, node, node));
@@ -2680,7 +2680,7 @@ impl CapKernel {
         (live, g)
     }
 
-    /// So when the device spaces map no more, it is a local step.
+    /// So when the device spaces map and bind no more, it is a local step.
     pub proof fn lemma_leaf_added_discharges(pre: Self, post: Self, root: usize, f: usize, node: usize)
         requires
             pre.wf(),
@@ -2694,6 +2694,7 @@ impl CapKernel {
                 &&& post.list.nodes@[i].kind == pre.list.nodes@[i].kind
             },
             post.view().shares.subset_of(pre.view().shares),
+            binds_within(post.view(), pre.view()),
         ensures
             discharges(pre.view(), post.view(), root, Effect::Local),
             forall|x: NodeId| #[trigger] post.view().names.contains_key(x) == pre.view().names.contains_key(x),
@@ -2703,42 +2704,36 @@ impl CapKernel {
     {
         let (a, b) = (post.view(), pre.view());
         let m = Self::lemma_leaf_added_simulates(pre, post, f, node);
-        let mid = State { shares: b.shares, ..a };
-        assert(simulates(mid, b, m.0, m.1));
-        assert(simulates(a, b, m.0, m.1)) by {
-            assert forall|h: (ObjectId, NodeId)| #[trigger] a.held.contains(h)
-                implies (m.0)(h.1) && b.held.contains((h.0, (m.1)(h.1))) by {
-                assert(mid.held.contains(h));
-            }
-            assert forall|x: NodeId| #[trigger] a.names.contains_key(x) implies {
-                &&& (m.0)(x)
-                &&& b.names.contains_key((m.1)(x))
-                &&& b.names[(m.1)(x)] == a.names[x]
-            } by {
-                assert(mid.names.contains_key(x));
-            }
-            assert forall|x: NodeId| #[trigger] a.pages.contains_key(x) implies {
-                &&& b.pages.contains_key((m.1)(x))
-                &&& b.pages[(m.1)(x)] == a.pages[x]
-            } by {
-                assert(mid.pages.contains_key(x));
-            }
-            assert forall|x: NodeId, r: Right| #[trigger] a.rights.contains((x, r)) implies b.rights.contains(((m.1)(x), r)) by {
-                assert(mid.rights.contains((x, r)));
-            }
-            assert forall|x: NodeId| (m.0)(x) && #[trigger] a.parent.contains_key(x) implies {
-                &&& (m.0)(a.parent[x])
-                &&& b.parent.contains_key((m.1)(x))
-                &&& b.parent[(m.1)(x)] == (m.1)(a.parent[x])
-            } by {
-                assert(mid.parent.contains_key(x));
-            }
-            assert forall|w: (ObjectId, ObjectId)| #[trigger] a.waiting.contains(w) implies b.waiting.contains(w) by {
-                assert(mid.waiting.contains(w));
-            }
-        }
+        lemma_simulates_spaces(State { shares: b.shares, binds: b.binds, ..a }, a, b, m.0, m.1);
         assert forall|o: ObjectId| #[trigger] (a.contents)(o) == (b.contents)(o) by {}
         lemma_simulated_discharges_local(b, a, root, m.0, m.1);
+    }
+
+    /// And when the node added binds device d to space s, which whoever reaches d directly sees
+    /// already.
+    pub proof fn lemma_binding_added_discharges(pre: Self, post: Self, root: usize, f: usize, node: usize, d: ObjectId, s: ObjectId)
+        requires
+            pre.wf(),
+            post.tables == pre.tables,
+            node < NODE_SPACE,
+            !pre.list.nodes@[node as int].live,
+            !(post.list.nodes@[node as int].kind is Capability),
+            post.list.parent@ == pre.list.parent@.insert(node, f),
+            forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < NODE_SPACE && i != node ==> {
+                &&& post.list.nodes@[i].live == pre.list.nodes@[i].live
+                &&& post.list.nodes@[i].kind == pre.list.nodes@[i].kind
+            },
+            post.view().shares.subset_of(pre.view().shares),
+            post.view().binds == pre.view().binds.insert(d, s),
+            forall|q: ObjectId| #[trigger] pre.view().direct(q, d) ==> pre.view().sees(q, s),
+        ensures
+            discharges(pre.view(), post.view(), root, Effect::Local),
+    {
+        let (a, b) = (post.view(), pre.view());
+        let m = Self::lemma_leaf_added_simulates(pre, post, f, node);
+        lemma_simulates_spaces(State { shares: b.shares, binds: b.binds, ..a }, State { binds: b.binds, ..a }, b, m.0, m.1);
+        assert forall|o: ObjectId| #[trigger] (a.contents)(o) == (b.contents)(o) by {}
+        lemma_simulated_discharges_bind(b, a, root, d, s, m.0, m.1);
     }
 
     /// And when what they map beyond what they did is in the space that capability `space` names, which
@@ -2758,11 +2753,13 @@ impl CapKernel {
             authorized(pre.view(), root, Effect::Share { space, from }),
             forall|s: ObjectId, o: ObjectId| #[trigger] post.view().shares.contains((s, o)) && !pre.view().shares.contains((s, o))
                 ==> s == pre.view().names[space] && pre.view().reach(root, o),
+            binds_within(post.view(), pre.view()),
         ensures
             discharges(pre.view(), post.view(), root, Effect::Share { space, from }),
     {
         let (a, b) = (post.view(), pre.view());
         let m = Self::lemma_leaf_added_simulates(pre, post, f, node);
+        lemma_simulates_spaces(State { shares: b.shares, binds: b.binds, ..a }, State { shares: b.shares, ..a }, b, m.0, m.1);
         assert forall|o: ObjectId| #[trigger] (a.contents)(o) == (b.contents)(o) by {}
         lemma_simulated_discharges_share(b, a, root, space, from, m.0, m.1);
     }

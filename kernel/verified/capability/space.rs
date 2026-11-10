@@ -1824,6 +1824,7 @@ impl CapKernel {
             },
             post.list.parent@ == pre.list.parent@.insert(n, parent),
             post.view().shares == pre.view().shares,
+            post.devices == pre.devices,
             pre.view().holds_right(root, parent, Right::Retype),
             pre.can_retype_under(root, from, n, order),
             parent == pre.tables.node_of(root, from),
@@ -1848,6 +1849,7 @@ impl CapKernel {
             },
             post.list.parent@ == pre.list.parent@.insert(n, parent),
             post.view().shares == pre.view().shares,
+            post.devices == pre.devices,
             pre.view().holds_right(root, parent, Right::Retype),
             pre.view().covers(parent, n),
         ensures
@@ -1907,6 +1909,7 @@ impl CapKernel {
             },
             post.list.parent@ == pre.list.parent@.insert(n, parent),
             post.view().shares == pre.view().shares,
+            post.devices == pre.devices,
         ensures
             forall|r: ObjectId, o: ObjectId| #[trigger] post.view().reach(r, o) == pre.view().reach(r, o),
     {

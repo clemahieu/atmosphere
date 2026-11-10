@@ -575,6 +575,8 @@ impl CapKernel {
         &&& post.payload_of(n) == pre.payload_of(i)
         &&& post.list.wf()
         &&& post.list.parent@ == moved_parent(pre.list.parent@, i, n)
+        &&& post.devices.records == pre.devices.records
+        &&& post.devices.count == pre.devices.count
     }
 
     /// Every capability still names a block.
@@ -658,6 +660,7 @@ impl CapKernel {
             assert(a.parent[x] != n);
             lemma_moved_parent(pre.list.parent@, i, n, x);
         }
+        assert(b.binds =~= a.binds);
         assert(simulates(a, b, live, f));
     }
 
@@ -735,6 +738,7 @@ impl CapKernel {
             pre.list.lemma_parent_live(old_x);
             assert(pre.list.parent@[old_x] != n);
         }
+        assert(b.binds =~= a.binds);
         assert(simulates_claim(a, b, live, f, dst, src));
     }
 

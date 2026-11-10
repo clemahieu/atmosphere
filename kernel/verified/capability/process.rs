@@ -1131,6 +1131,7 @@ impl CapKernel {
         requires
             Self::adds_cap(pre, post, pre.tables.node_of(root, to)),
             pre.tables.has_slot(&pre.list, root, from),
+            post.devices == pre.devices,
             pre.tables.has_slot(&pre.list, root, to),
             pre.is_cap(pre.tables.node_of(root, from)),
             post.list.parent@ == pre.list.parent@.insert(pre.tables.node_of(root, to), pre.tables.node_of(root, from)),

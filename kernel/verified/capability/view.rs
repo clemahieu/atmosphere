@@ -1,6 +1,7 @@
 //! The kernel as reach sees it. Every capability operation's spec states discharges over this view,
 //! so what a process holds, what each capability names and which rights it carries are read from the
-//! tables here and nowhere else, beside what each device space maps, read from the walks of its tables.
+//! tables here and nowhere else, beside what each device space maps, read from the walks of its tables,
+//! and which space each device is bound to, read from the device records.
 //! The fields for process mappings, threads and object contents stay empty until the objects behind
 //! them exist. See design/theorem-over-reach/ and design/device-binding-under-the-space-capability/.
 #[cfg(verus_keep_ghost)]
@@ -386,9 +387,18 @@ pub open spec fn no_device_space(spaces: &Spaces) -> bool {
     forall|s: usize| #[trigger] spaces.roots@.contains_key(s) ==> !(spaces.records@[s].value().kind is Device)
 }
 
-/// What the view reads: the list and the tables, and what the device spaces map through the table
-/// tree, so a step that leaves those alone leaves the view alone.
-pub open spec fn view_of(list: &Tree, tables: &Tables, tree: TableTree) -> State {
+/// Each bound device with the device space its record names: the holder of the device sees the space.
+/// See design/device-binding-under-the-space-capability/.
+pub open spec fn binds_of(devices: &Devices) -> IMap<ObjectId, ObjectId> {
+    IMap::new(
+        |o: ObjectId| devices.names(o) && devices.records@[device_of(o)].space is Some,
+        |o: ObjectId| devices.records@[device_of(o)].space->Some_0,
+    )
+}
+
+/// What the view reads: the list and the tables, what the device spaces map through the table tree
+/// and which space each device is bound to, so a step that leaves those alone leaves the view alone.
+pub open spec fn view_of(list: &Tree, tables: &Tables, tree: TableTree, devices: &Devices) -> State {
     State {
         held: ISet::new(|h: (ObjectId, NodeId)|
             tables.is_cap(list, h.1) && tables.owner@[page_of(h.1)].0 == h.0),
@@ -402,7 +412,7 @@ pub open spec fn view_of(list: &Tree, tables: &Tables, tree: TableTree) -> State
         waiting: Set::empty(),
         bound: Map::empty(),
         shares: shares_of(tree),
-        binds: Map::empty(),
+        binds: binds_of(devices),
         contents: |o: ObjectId| Seq::empty(),
     }
 }
@@ -460,7 +470,7 @@ impl CapKernel {
     }
 
     pub open spec fn view(&self) -> State {
-        view_of(&self.list, &self.tables, tree_of(&self.table_pages, &self.spaces))
+        view_of(&self.list, &self.tables, tree_of(&self.table_pages, &self.spaces), &self.devices)
     }
 
     /// Without a device space nothing is shared through one.
@@ -473,6 +483,23 @@ impl CapKernel {
         assert forall|x: (ObjectId, ObjectId)| !#[trigger] self.view().shares.contains(x) by {
             if self.view().shares.contains(x) {
                 assert(self.spaces.roots@.contains_key(x.0));
+            }
+        }
+    }
+
+    /// Nor is any device bound, since a bound device's space is a device space.
+    pub proof fn lemma_no_device_no_binds(&self)
+        requires
+            self.wf(),
+            no_device_space(&self.spaces),
+        ensures
+            forall|o: ObjectId| !#[trigger] self.view().binds.contains_key(o),
+    {
+        assert forall|o: ObjectId| !#[trigger] self.view().binds.contains_key(o) by {
+            if self.view().binds.contains_key(o) {
+                self.lemma_binds(o);
+                self.lemma_bound_device(device_of(o));
+                assert(self.spaces.roots@.contains_key(self.devices.records@[device_of(o)].space->Some_0));
             }
         }
     }
@@ -732,6 +759,36 @@ impl CapKernel {
             assert(c == first);
             assert(first_node_outside_leaves(&self.list, &self.tables));
             assert(!self.is_cap(first));
+        }
+    }
+
+    /// The view's binds are what the binding nodes say: a device is bound exactly when its record names a
+    /// space, and then its binding node is live under a capability to that space. See
+    /// design/device-binding-under-the-space-capability/.
+    pub proof fn lemma_binds(&self, o: ObjectId)
+        requires
+            self.wf(),
+        ensures
+            self.view().binds.contains_key(o) == (self.devices.names(o) && self.devices.records@[device_of(o)].space is Some),
+            self.view().binds.contains_key(o) ==> {
+                let d = device_of(o);
+                let x = binding_node(&self.devices, d);
+                &&& o == device_object(d)
+                &&& 0 <= d < self.devices.count
+                &&& self.view().binds[o] == self.devices.records@[d].space->Some_0
+                &&& x < NODE_SPACE
+                &&& self.list.nodes@[x as int].live
+                &&& self.list.nodes@[x as int].kind is DeviceBinding
+                &&& device_binding_parent(&self.list, &self.tables, x, self.view().binds[o])
+            },
+    {
+        reveal(devices_wf);
+        reveal(device_bindings_wf);
+        if self.view().binds.contains_key(o) {
+            let d = device_of(o);
+            assert((o - DEVICE_OBJECTS) % (PAGE_SZ as int) == 0);
+            assert(o == device_object(d));
+            assert(self.devices.records@[d].space is Some);
         }
     }
 

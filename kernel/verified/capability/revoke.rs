@@ -490,6 +490,8 @@ impl CapKernel {
                 Self::lemma_cut_sheds(pre, cut, r);
                 assert(Self::same_tree(cut, mid));
                 assert(self.view().shares == cut.view().shares);
+                assert(self.devices == pre.devices);
+                assert(self.view().binds == pre.view().binds);
                 Self::lemma_revoke_step(pre, *self, root, c, r);
                 Self::lemma_cut_recorded_same(pre, cut, *self, r);
                 Self::lemma_cut_shrunk(pre, cut, r);
@@ -677,6 +679,18 @@ impl CapKernel {
                 Self::lemma_shrunk_sheds(pre, mid);
             } else {
                 assert(Self::same_tree(pre, mid));
+            }
+        }
+        // Only the device unbound leaves the binds, and every other record is as it was.
+        assert forall|o: ObjectId| #[trigger] post.view().binds.contains_key(o) implies {
+            &&& pre.view().binds.contains_key(o)
+            &&& pre.view().binds[o] == post.view().binds[o]
+        } by {
+            if pre.list.nodes@[r as int].kind is DeviceBinding {
+                let d = binding_device(&pre.devices, r);
+                if device_of(o) != d {
+                    assert(post.devices.records@[device_of(o)] == pre.devices.records@[device_of(o)]);
+                }
             }
         }
         Self::lemma_revoke_step(pre, post, root, c, r);
@@ -1457,6 +1471,7 @@ impl CapKernel {
             post.tables.owner == pre.tables.owner,
             post.list.parent == pre.list.parent,
             post.view().shares.subset_of(pre.view().shares),
+            binds_within(post.view(), pre.view()),
             !post.list.nodes@[r as int].live,
             has(pre.list.seq@, r),
             pre.list.d(r) > pre.list.d(c),

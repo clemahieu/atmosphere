@@ -1862,7 +1862,40 @@ impl CapKernel {
             let post = *self;
             assert(Self::device_bound(pre, post, m, d as int));
             Self::lemma_bind_device_wf(pre, post, m, d as int);
-            Self::lemma_leaf_added_discharges(pre, post, root, m, x);
+            let (pv, sv) = (post.view(), pre.view());
+            let o = device.base;
+            assert((o - DEVICE_OBJECTS) % (PAGE_SZ as int) == 0);
+            assert(o == device_object(d as int));
+            lemma_device_object(d as int);
+            // The binds gain o, bound to s, and nothing else.
+            assert forall|y: ObjectId| #[trigger] pre.devices.names(y) implies y == device_object(device_of(y)) by {
+                assert((y - DEVICE_OBJECTS) % (PAGE_SZ as int) == 0);
+            }
+            assert forall|y: ObjectId| #[trigger] pv.binds.contains_key(y) == sv.binds.insert(o, s).contains_key(y) by {
+                if y != o && pre.devices.names(y) {
+                    assert(device_of(y) != d as int);
+                }
+            }
+            assert forall|y: ObjectId| #[trigger] pv.binds.contains_key(y) implies pv.binds[y] == sv.binds.insert(o, s)[y] by {
+                if y != o {
+                    assert(device_of(y) != d as int);
+                }
+            }
+            assert(pv.binds =~= sv.binds.insert(o, s));
+            // Only root reaches the device directly, and root holds the space capability.
+            assert(pre.devices.holder@[o] == n);
+            assert(sv.holds(root, n));
+            assert(sv.holds(root, m));
+            vstd::arithmetic::power2::lemma_pow2_pos(pre.payload_of(m).order as nat);
+            vstd::arithmetic::div_mod::lemma_mod_mod(s as int, PAGE_SZ as int, 8);
+            assert(sv.covers(m, s));
+            assert(sv.descends(m, m, 0));
+            assert(sv.direct(root, s));
+            assert forall|q: ObjectId| #[trigger] sv.direct(q, o) implies sv.sees(q, s) by {
+                pre.lemma_direct_device_held(q, d as int);
+                assert(q == root);
+            }
+            Self::lemma_binding_added_discharges(pre, post, root, m, x, o, s);
         }
         true
     }

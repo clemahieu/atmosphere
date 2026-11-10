@@ -1972,6 +1972,7 @@ impl CapKernel {
             post.list.parent == pre.list.parent,
             post.list.pages@.dom() == pre.list.pages@.dom().remove(base),
             Self::same_tree(pre, post),
+            post.devices == pre.devices,
         ensures
             post.tables.wf(&post.list),
             post.tables.caps_wf(&post.list),
@@ -3217,6 +3218,7 @@ impl CapKernel {
             post.list.parent == pre.list.parent,
             pre.view().holds_right(root, untyped, Right::Retype),
             Self::same_tree(pre, post),
+            post.devices == pre.devices,
         ensures
             forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x),
             post.view() == pre.view(),
@@ -3377,6 +3379,7 @@ impl CapKernel {
         &&& post.frames == pre.frames
         &&& post.cores == pre.cores
         &&& post.mapped == pre.mapped
+        &&& post.devices == pre.devices
         &&& post.iommus.acked == pre.iommus.acked
         &&& post.iommus.present == pre.iommus.present
         &&& post.iommus.commands == pre.iommus.commands
@@ -4173,6 +4176,7 @@ impl CapKernel {
             post.list.parent == pre.list.parent,
             Self::mapping_unlinked(pre, post, n),
             post.spaces.records == pre.spaces.records,
+            post.devices == pre.devices,
         ensures
             forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x),
             sheds_shares(pre.view(), post.view()),
@@ -4215,6 +4219,7 @@ impl CapKernel {
             final(self).list.parent == old(self).list.parent,
             final(self).tables == old(self).tables,
             final(self).spaces == old(self).spaces,
+            final(self).devices == old(self).devices,
             final(self).frames == old(self).frames,
             final(self).zeroing == old(self).zeroing,
             final(self).cores == old(self).cores,
@@ -4273,6 +4278,7 @@ impl CapKernel {
             post.list.parent == mid.list.parent,
             post.tables == mid.tables,
             post.spaces == mid.spaces,
+            post.devices == mid.devices,
             post.frames == mid.frames,
             post.zeroing == mid.zeroing,
             post.cores == mid.cores,
@@ -4695,6 +4701,7 @@ impl CapKernel {
             Self::step_ok(*old(self), *final(self), c as int),
             final(self).list == old(self).list,
             final(self).tables == old(self).tables,
+            final(self).devices == old(self).devices,
             !block_typed(&final(self).blocks, level_ref(level, r)),
             forall|i: usize| #[trigger] block_has_page(level_ref(level, r), i) ==> !final(self).frames@.contains_key(i),
     {
@@ -4762,6 +4769,7 @@ impl CapKernel {
             Self::step_ok(*old(self), *final(self), c as int),
             final(self).list == old(self).list,
             final(self).tables == old(self).tables,
+            final(self).devices == old(self).devices,
             final(self).blocks.pages@[page as int].kind is Free,
             !final(self).frames@.contains_key(page),
     {
