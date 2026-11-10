@@ -42,7 +42,7 @@ impl KernelCommandLine {
                     }
                 },
                 Component::KeyValue((key, value)) => {
-                    if !crate::machine::set_option(key, value) {
+                    if !crate::arch::set_option(key, value) && !crate::machine::set_option(key, value) {
                         return Err(Error::InvalidCommandLineOption(component));
                     }
                 }

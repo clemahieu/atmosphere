@@ -151,6 +151,13 @@ pub unsafe fn spin_forever() -> ! {
     }
 }
 
+/// Refuses every key: the x86_64 arch module has no command-line option, and the machine's
+/// `set_option` answers for its own.
+pub fn set_option(key: &str, value: &str) -> bool {
+    let _ = (key, value);
+    false
+}
+
 /// The cycle counter: the TSC.
 pub fn cycles() -> u64 {
     unsafe { core::arch::x86_64::_rdtsc() }

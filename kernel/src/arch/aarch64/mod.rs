@@ -7,6 +7,7 @@
 
 use core::arch::asm;
 use core::ffi::c_void;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use astd::boot::BootInfo;
 use verified::arch::{user_frame_of, Registers};
@@ -15,6 +16,7 @@ use verified::define::PCID_MAX;
 use crate::cpu::{Cpu, KernelStack};
 use crate::machine;
 
+mod access_dirty;
 mod exception;
 mod interrupt;
 mod syscall;
@@ -107,17 +109,53 @@ const TCR_AS: u64 = 1 << 36;
 /// An address-space id the kernel hands out fits the 16 bits, and not the 8.
 const _: () = assert!(PCID_MAX > 1 << 8 && PCID_MAX <= 1 << 16);
 
-/// TCR_EL1 as the kernel switches address spaces by it, from the value the core entered with.
-const fn translation_control(entered: u64) -> u64 {
-    entered & !TCR_A1 | TCR_AS
+/// TCR_EL1.HA, bit 39, and HD, bit 40: the walker sets the access flag, and keeps the dirty state.
+/// The loader sets them where ID_AA64MMFR1_EL1.HAFDBS offers them. Arm ARM D24.2.193.
+const TCR_HA_HD: u64 = 0b11 << 39;
+
+/// Whether the walker keeps the access flag and the dirty state where the core offers it. The
+/// command line's `access_dirty=fault` makes it false, and every core then leaves TCR_EL1.HA and HD
+/// clear, so the kernel's faults keep both, as on a core without FEAT_HAFDBS. design/arch-module/
+/// item 5.
+static WALKER_KEEPS_STATUS: AtomicBool = AtomicBool::new(true);
+
+/// TCR_EL1 as the kernel switches address spaces by it, from the value the core entered with, and
+/// with HA and HD cleared unless `walker` says the walker keeps the status.
+const fn translation_control(entered: u64, walker: bool) -> u64 {
+    let control = entered & !TCR_A1 | TCR_AS;
+    if walker {
+        control
+    } else {
+        control & !TCR_HA_HD
+    }
 }
 
-const _: () = assert!(translation_control(0) == 1 << 36);
-const _: () = assert!(translation_control(u64::MAX) == !(1 << 22));
+const _: () = assert!(translation_control(0, true) == 1 << 36);
+const _: () = assert!(translation_control(u64::MAX, true) == !(1 << 22));
+const _: () = assert!(translation_control(u64::MAX, false) == !(1 << 22 | 1 << 39 | 1 << 40));
+const _: () = assert!(translation_control(0x18280903510, true) == 0x19280903510);
+const _: () = assert!(translation_control(0x18280903510, false) == 0x1280903510);
+
+/// Takes the arch module's command-line keys: `access_dirty=fault`, which has the kernel's faults
+/// keep the access flag and the dirty state in place of the walker from here on. The command line is
+/// read on the boot core before any other core starts, so this core's translation control is set
+/// again here and a later core's at its start. False for any other key, as the machine's
+/// `set_option` answers.
+pub fn set_option(key: &str, value: &str) -> bool {
+    if (key, value) != ("access_dirty", "fault") {
+        return false;
+    }
+    WALKER_KEEPS_STATUS.store(false, Ordering::SeqCst);
+    unsafe { init_translation_control() };
+    true
+}
 
 /// Sets the translation control [`switch_address_space`] relies on: a 16-bit address-space id, taken
-/// from TTBR0_EL1. Every core sets this itself, so none depends on what the loader or the start of
-/// a second core left. The id in use is 0 before and after, so no TLB entry changes meaning.
+/// from TTBR0_EL1, and HA and HD as [`WALKER_KEEPS_STATUS`] says. Every core sets this itself, so
+/// none depends on what the loader or the start of a second core left. The id in use is 0 before and
+/// after, so no TLB entry changes meaning. The core's entries are dropped after the write (TLBI
+/// VMALLE1, Arm ARM C5.5.77), so none walked under the earlier HA and HD outlives it; every leaf they
+/// translate is the loader's, with the access flag set and dirty, which faults under neither setting.
 unsafe fn init_translation_control() {
     let features: u64;
     asm!("mrs {features}, ID_AA64MMFR0_EL1", features = out(reg) features, options(nomem, nostack, preserves_flags));
@@ -128,9 +166,17 @@ unsafe fn init_translation_control() {
     );
     let entered: u64;
     asm!("mrs {entered}, TCR_EL1", entered = out(reg) entered, options(nomem, nostack, preserves_flags));
-    let control = translation_control(entered);
+    let control = translation_control(entered, WALKER_KEEPS_STATUS.load(Ordering::SeqCst));
     // A change to a system register binds the instructions after the next ISB. Arm ARM B2.6.1.
-    asm!("msr TCR_EL1, {control}", "isb", control = in(reg) control, options(nomem, nostack, preserves_flags));
+    asm!(
+        "msr TCR_EL1, {control}",
+        "isb",
+        "tlbi vmalle1",
+        "dsb nsh",
+        "isb",
+        control = in(reg) control,
+        options(nostack, preserves_flags)
+    );
     log::info!("CPU {}: TCR_EL1 {:#x}", crate::cpu::get_cpu_id(), control);
 }
 

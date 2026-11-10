@@ -19,7 +19,7 @@ use core::mem::{offset_of, size_of};
 
 use verified::arch::Registers;
 
-use super::{interrupt, spin_forever, syscall, write_protect, CoreState};
+use super::{access_dirty, interrupt, spin_forever, syscall, write_protect, CoreState};
 use crate::cpu::{Cpu, KernelStack};
 
 // The stub stores the frame as pairs at fixed offsets: x0 to x30 in order, then SP_EL0, ELR_EL1 and
@@ -214,8 +214,10 @@ const _: () = assert!(KINDS.len() * SOURCES.len() == 16);
 
 /// Every vector's handler. An IRQ goes to the interrupt it names and resumes; the write-protect
 /// check's fault resumes past its write; an `svc` from EL0 is the thread's invocation, whose
-/// outcome is written over the frame the thread resumes with; anything else, another exception
-/// from EL0 among them, is reported and stops the core. ESR_EL1 is what the latest synchronous
+/// outcome is written over the frame the thread resumes with; an abort from EL0 that the walker
+/// would have spared, where it does not keep the access flag or the dirty state, is served and the
+/// instruction runs again; anything else, another exception from EL0 among them, is reported and
+/// stops the core. ESR_EL1 is what the latest synchronous
 /// exception or SError wrote (Arm ARM D24.2.44), and FAR_EL1 the address of the latest abort or
 /// alignment fault (D24.2.47), so under an FIQ both are older than it.
 ///
@@ -239,6 +241,9 @@ extern "C" fn exception(vector: u64, frame: &mut Registers) {
     if vector == SYNCHRONOUS_FROM_EL0 {
         if let Some(immediate) = syscall::svc_immediate(syndrome) {
             syscall::invoke(frame, immediate);
+            return;
+        }
+        if access_dirty::serve(syndrome, address) {
             return;
         }
     }

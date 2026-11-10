@@ -63,6 +63,7 @@ pub fn invoke(frame: &mut Registers, immediate: u64) {
     }
     // The statement that ran the dispatch released the kernel's lock when it ended.
     if let Some(success) = power_off_accepted(frame, &returned) {
+        super::access_dirty::report();
         unsafe { crate::machine::shutdown(success) }
     }
     frame.write_outcome(returned);
