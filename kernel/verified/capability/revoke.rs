@@ -7,7 +7,6 @@ verus! {
 
 #[cfg(verus_keep_ghost)]
 use crate::capability::device::*;
-#[cfg(verus_keep_ghost)]
 use crate::capability::link::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::mapping::*;
@@ -34,6 +33,10 @@ use crate::define::*;
 /// threads, each core getting one entry per turn: reasoned in the design, not proven, since this
 /// theorem is about safety.
 pub const REVOKE_BUDGET: usize = 64;
+
+/// The units of one revoke step, apart from the step's own: the walk to the run's leaf and the stale
+/// note when the leaf is a table page's hidden node. See design/one-lock-bounded-steps/.
+pub const REVOKE_STEP_STEPS: usize = MAX_DEPTH + CUT_NOTE_STEPS;
 
 pub proof fn lemma_budget_above_cores()
     ensures
@@ -303,7 +306,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
-            final(steps).count <= old(steps).count + REVOKE_BUDGET * (MAX_DEPTH + 1),
+            final(steps).count <= old(steps).count + REVOKE_BUDGET * (REVOKE_STEP_STEPS + 1),
             final(self).wf(),
             final(self).cores == old(self).cores,
             Self::mappings_shrunk(*old(self), *final(self)),
@@ -343,7 +346,7 @@ impl CapKernel {
                 forall|x: int| 0 <= x < NODE_SPACE ==> #[trigger] self.list.nodes@[x].depth == pre.list.nodes@[x].depth,
                 revoked_seq(pre.list, self.list, c, gone),
                 start == old(steps).count,
-                steps.count <= start + taken * (MAX_DEPTH + 1),
+                steps.count <= start + taken * (REVOKE_STEP_STEPS + 1),
                 self.wf(),
                 self.cores == pre.cores,
                 pre == *old(self),
@@ -365,8 +368,8 @@ impl CapKernel {
             let ghost mid = *self;
             proof {
                 steps.step();
-                assert((taken + 1) * (MAX_DEPTH + 1) == taken * (MAX_DEPTH + 1) + MAX_DEPTH + 1) by (nonlinear_arith);
-                assert((taken + 1) * (MAX_DEPTH + 1) <= REVOKE_BUDGET * (MAX_DEPTH + 1)) by (nonlinear_arith)
+                assert((taken + 1) * (REVOKE_STEP_STEPS + 1) == taken * (REVOKE_STEP_STEPS + 1) + REVOKE_STEP_STEPS + 1) by (nonlinear_arith);
+                assert((taken + 1) * (REVOKE_STEP_STEPS + 1) <= REVOKE_BUDGET * (REVOKE_STEP_STEPS + 1)) by (nonlinear_arith)
                     requires
                         taken < REVOKE_BUDGET,
                 ;
@@ -398,7 +401,7 @@ impl CapKernel {
             taken = taken + 1;
         }
         proof {
-            assert(taken * (MAX_DEPTH + 1) <= REVOKE_BUDGET * (MAX_DEPTH + 1)) by (nonlinear_arith)
+            assert(taken * (REVOKE_STEP_STEPS + 1) <= REVOKE_BUDGET * (REVOKE_STEP_STEPS + 1)) by (nonlinear_arith)
                 requires
                     taken <= REVOKE_BUDGET,
             ;
@@ -421,7 +424,7 @@ impl CapKernel {
             old(self).tables.owner@[page_of(c)].0 == root,
             old(self).flush_epoch < usize::MAX,
         ensures
-            final(steps).count <= old(steps).count + MAX_DEPTH,
+            final(steps).count <= old(steps).count + REVOKE_STEP_STEPS,
             final(self).wf(),
             final(self).cores == old(self).cores,
             Self::mappings_shrunk(*old(self), *final(self)),
@@ -452,11 +455,11 @@ impl CapKernel {
         proof {
             pre.lemma_no_change_discharges_revoke(root, c);
         }
-        let r = match self.list.leaf_of_run(c, Tracked(steps)) {
+        let r = match self.list.leaf_of_run(c, Tracked(&mut *steps)) {
             Some(found) => found,
             None => { return true; },
         };
-        self.cut_hidden_table(r);
+        self.cut_hidden_table(r, Tracked(steps));
         let ghost cut = *self;
         self.unlink_arm(r);
         let ghost mid = *self;

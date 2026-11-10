@@ -10,7 +10,6 @@ verus! {
 use crate::capability::block::{ObjectType, PageKind};
 use crate::capability::kernel::*;
 use crate::capability::list::*;
-#[cfg(verus_keep_ghost)]
 use crate::capability::steps::Steps;
 #[cfg(verus_keep_ghost)]
 use crate::capability::mapping::*;
@@ -31,6 +30,10 @@ use crate::pagetable::pagemap_util_t::*;
 use crate::pptr::*;
 #[cfg(verus_keep_ghost)]
 use crate::util::page_ptr_util_u::*;
+
+/// The steps of noting one table page's cut stale: the one page its record_run writes.
+/// See design/one-lock-bounded-steps/.
+pub const CUT_NOTE_STEPS: usize = 1;
 
 /// Every table the kernel holds, whether a table page or a space's root, by its block's address.
 pub ghost struct TableTree {
@@ -1980,12 +1983,13 @@ impl CapKernel {
 
     /// Records table page t's cut, while its entry still stands: the epoch is bumped first, so no core or
     /// IOMMU has acknowledged it however recently it flushed.
-    fn note_cut_stale(&mut self, t: usize)
+    fn note_cut_stale(&mut self, t: usize, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).wf(),
             old(self).table_pages.maps@.contains_key(t),
             old(self).flush_epoch < usize::MAX,
         ensures
+            final(steps).count <= old(steps).count + CUT_NOTE_STEPS,
             final(self).wf(),
             Self::cut_stale_noted(*old(self), *final(self), t),
             final(self).list == old(self).list,
@@ -2008,9 +2012,7 @@ impl CapKernel {
         }
         self.flush_epoch = self.flush_epoch + 1;
         let epoch = self.flush_epoch;
-        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
-        let tracked mut steps = Steps::fresh();
-        self.stale_epoch.record_run(t / PAGE_SZ, 1, epoch, Tracked(&mut steps));
+        self.stale_epoch.record_run(t / PAGE_SZ, 1, epoch, Tracked(steps));
         self.tlb = Ghost(Seq::new(NUM_CPUS as nat, |d: int|
             if space is Some && pre.loaded(d, space->Some_0) {
                 pre.tlb@[d].union(stale_entries(space->Some_0, pages))
@@ -2226,13 +2228,14 @@ impl CapKernel {
     }
 
     /// Cuts node n's table page, if n is a table page's hidden node, so that node can go.
-    pub fn cut_hidden_table(&mut self, n: usize)
+    pub fn cut_hidden_table(&mut self, n: usize, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).wf(),
             n < NODE_SPACE,
             old(self).list.nodes@[n as int].live,
             old(self).flush_epoch < usize::MAX,
         ensures
+            final(steps).count <= old(steps).count + CUT_NOTE_STEPS,
             final(self).wf(),
             old(self).hidden_table(n) ==> Self::detach_recorded(*old(self), *final(self), n),
             old(self).hidden_table(n) ==> final(self).table_pages.records@[n].value().parent is None,
@@ -2251,7 +2254,7 @@ impl CapKernel {
                 let object = self.blocks.pages.get(n / PAGE_SZ).object;
                 match object {
                     ObjectType::TablePage => {
-                        self.detach_stale(n);
+                        self.detach_stale(n, Tracked(steps));
                         proof {
                             let a = tree_of(&pre.table_pages, &pre.spaces);
                             let b = tree_of(&self.table_pages, &self.spaces);
@@ -2267,17 +2270,18 @@ impl CapKernel {
 
     /// Cuts table page t from the entry that names it and records what that leaves stale, so the walks
     /// through it end and whatever a core or an IOMMU got from them is one a flush must take out.
-    pub fn detach_stale(&mut self, t: usize)
+    pub fn detach_stale(&mut self, t: usize, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).wf(),
             old(self).table_pages.maps@.contains_key(t),
             old(self).flush_epoch < usize::MAX,
         ensures
+            final(steps).count <= old(steps).count + CUT_NOTE_STEPS,
             final(self).wf(),
             Self::detach_recorded(*old(self), *final(self), t),
     {
         let ghost pre = *old(self);
-        self.note_cut_stale(t);
+        self.note_cut_stale(t, Tracked(steps));
         self.detach_table(t);
         proof {
             let a = tree_of(&pre.table_pages, &pre.spaces);

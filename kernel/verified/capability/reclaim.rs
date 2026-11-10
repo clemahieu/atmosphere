@@ -17,6 +17,8 @@ use crate::capability::kernel::*;
 use crate::capability::list::*;
 use crate::capability::steps::Steps;
 #[cfg(verus_keep_ghost)]
+use crate::capability::revoke::REVOKE_STEP_STEPS;
+#[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::refs::*;
@@ -88,6 +90,10 @@ pub const LEAF_SLICE_BUDGET: usize = 64;
 
 /// The most child tables one retype cuts from a dead table page or space root.
 pub const TABLE_SLICE_BUDGET: usize = 64;
+
+/// The units of one slice of cuts: a step per entry looked at and a stale note per child cut.
+/// See design/one-lock-bounded-steps/.
+pub const CUT_SLICE_STEPS: usize = ENTRIES + TABLE_SLICE_BUDGET * CUT_NOTE_STEPS;
 
 /// What a reclaim did.
 pub enum ReclaimStep {
@@ -642,7 +648,7 @@ impl CapKernel {
             old(self).root_live(root),
         ensures
             // The leaf's arm, a slice and then a free, is the largest.
-            final(steps).count <= old(steps).count + (NODES_PER_PAGE - 1) + LEAF_SLICE_BUDGET * (MAX_DEPTH + 1)
+            final(steps).count <= old(steps).count + (NODES_PER_PAGE - 1) + LEAF_SLICE_BUDGET * (REVOKE_STEP_STEPS + 1)
                 + (NODES_PER_PAGE + 2 * (NUM_CPUS + NUM_IOMMUS) + SMALL_PAGES_MAX),
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
@@ -760,7 +766,7 @@ impl CapKernel {
                 }
             },
             ObjectType::TablePage => {
-                if self.unlink_table(root, from, base) {
+                if self.unlink_table(root, from, base, Tracked(&mut *steps)) {
                     ReclaimStep::Unlinked
                 } else if self.slice_table(root, from, base, Tracked(&mut *steps)) {
                     ReclaimStep::Slice
@@ -900,7 +906,7 @@ impl CapKernel {
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
         ensures
-            final(steps).count <= old(steps).count + (NODES_PER_PAGE - 1) + LEAF_SLICE_BUDGET * (MAX_DEPTH + 1),
+            final(steps).count <= old(steps).count + (NODES_PER_PAGE - 1) + LEAF_SLICE_BUDGET * (REVOKE_STEP_STEPS + 1),
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
             ret == old(self).can_slice_leaf(root, from, base),
@@ -953,7 +959,7 @@ impl CapKernel {
         while taken != LEAF_SLICE_BUDGET && k != NODES_PER_PAGE && self.flush_epoch != usize::MAX
             invariant
                 start == old(steps).count,
-                steps.count <= start + (k - 1) + taken * (MAX_DEPTH + 1),
+                steps.count <= start + (k - 1) + taken * (REVOKE_STEP_STEPS + 1),
                 Self::mappings_shrunk(*old(self), *self),
                 self.wf(),
                 pre == *old(self),
@@ -1006,10 +1012,10 @@ impl CapKernel {
                 }
             }
             proof {
-                assert(steps.count + MAX_DEPTH <= start + (k - 1) + (taken + 1) * (MAX_DEPTH + 1)) by (nonlinear_arith)
+                assert(steps.count + REVOKE_STEP_STEPS <= start + (k - 1) + (taken + 1) * (REVOKE_STEP_STEPS + 1)) by (nonlinear_arith)
                     requires
-                        steps.count <= start + (k - 1) + taken * (MAX_DEPTH + 1) + 1,
-                        MAX_DEPTH + 1 == 256,
+                        steps.count <= start + (k - 1) + taken * (REVOKE_STEP_STEPS + 1) + 1,
+                        REVOKE_STEP_STEPS + 1 == 257,
                 ;
             }
             let ghost mid = *self;
@@ -3234,11 +3240,12 @@ impl CapKernel {
     /// that leaves stale, and drops its reference, and nothing more. Refused, with nothing changed, unless
     /// an untyped held covers the block and the block holds a table page with its hidden node still live,
     /// and the epoch can still rise. A process's root is a space block, so it is refused.
-    pub fn unlink_table(&mut self, root: usize, from: usize, base: usize) -> (ret: bool)
+    pub fn unlink_table(&mut self, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
         ensures
+            final(steps).count <= old(steps).count + CUT_NOTE_STEPS,
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
             ret == old(self).can_unlink_table(root, from, base),
@@ -3275,7 +3282,7 @@ impl CapKernel {
         proof {
             pre.lemma_hidden_is_leaf(base);
         }
-        self.detach_stale(base);
+        self.detach_stale(base, Tracked(steps));
         let ghost cut = *self;
         proof {
             let b = tree_of(&cut.table_pages, &cut.spaces);
@@ -3639,7 +3646,7 @@ impl CapKernel {
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
         ensures
-            final(steps).count <= old(steps).count + ENTRIES,
+            final(steps).count <= old(steps).count + CUT_SLICE_STEPS,
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
             ret == old(self).can_cut_table(root, from, base),
@@ -3704,7 +3711,7 @@ impl CapKernel {
             tree_of(&old(self).table_pages, &old(self).spaces).record(base).parent is None,
             tree_of(&old(self).table_pages, &old(self).spaces).record(base).level >= 2,
         ensures
-            final(steps).count <= old(steps).count + ENTRIES,
+            final(steps).count <= old(steps).count + CUT_SLICE_STEPS,
             final(self).wf(),
             cut <= TABLE_SLICE_BUDGET,
             Self::table_cuts_kept(*old(self), *final(self), base),
@@ -3728,7 +3735,7 @@ impl CapKernel {
         while cut != TABLE_SLICE_BUDGET && e != ENTRIES && self.flush_epoch != usize::MAX
             invariant
                 start == old(steps).count,
-                steps.count == start + e,
+                steps.count <= start + e + cut * CUT_NOTE_STEPS,
                 self.wf(),
                 pre == *old(self),
                 pre.wf(),
@@ -3780,7 +3787,7 @@ impl CapKernel {
             proof {
                 assert(child == child_at(m, base, e));
             }
-            self.detach_stale(child);
+            self.detach_stale(child, Tracked(&mut *steps));
             proof {
                 let post = *self;
                 let b = tree_of(&post.table_pages, &post.spaces);
@@ -3867,7 +3874,7 @@ impl CapKernel {
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
         ensures
-            final(steps).count <= old(steps).count + ENTRIES,
+            final(steps).count <= old(steps).count + CUT_SLICE_STEPS,
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
             ret == old(self).can_cut_space(root, from, base),
@@ -4375,7 +4382,7 @@ impl CapKernel {
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
         ensures
-            final(steps).count <= old(steps).count + ENTRIES + ENTRIES,
+            final(steps).count <= old(steps).count + CUT_SLICE_STEPS + ENTRIES,
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
             ret == old(self).can_slice_table(root, from, base),

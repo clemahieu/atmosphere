@@ -153,7 +153,7 @@ impl CapKernel {
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
         ensures
-            final(steps).count <= old(steps).count + ENTRIES,
+            final(steps).count <= old(steps).count + CUT_SLICE_STEPS,
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
             ret == old(self).can_cut_process_space(root, from, base),
