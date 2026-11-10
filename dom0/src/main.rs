@@ -50,6 +50,11 @@
 //! a word naming no position and of a block that is not free is refused, and a second leaf into entry 3
 //! through its own process capability, after entry 2 named through it is refused; inspect refuses each
 //! leaf's first slot until a derive of the power capability into it, after which inspect finds it there.
+//! It retypes a third leaf into root entry 4 and derives into its first slot a child untyped of 64 pages
+//! of the gigabyte untyped, from which aeager's eager span source backs page runs of a window in root
+//! entry 3 of its space; aeager's verified exercise reserves a span, backs it a page at a time until the
+//! source refuses, writes a byte through the run and reads it back, releases it, backs a page again and
+//! gives the span back, and dom0 prints how many pages it backed.
 //! dom0 prints that result through the console, then an exit marker,
 //! and ends the run with a power-off through its power capability, reporting success only when every
 //! check held. On aarch64, where the instruction carries an immediate, a print through the console by
@@ -814,6 +819,61 @@ fn retyped_leaves_held(untyped: u64, table: u64) -> bool {
         && leaf_slot_held(second, through(first_slot(second)))
 }
 
+/// The root entry of dom0's table that takes the eager source's frame capabilities, the one after the
+/// leaves the leaf check retypes.
+const EAGER_ENTRY: u64 = FIRST_EMPTY_ENTRY + 2;
+
+/// The order of the block dom0 gives the eager source: as many pages as the source records.
+const EAGER_ORDER: u64 = aeager::MAX_PAGES.trailing_zeros() as u64;
+
+/// How far below the top of the gigabyte untyped the eager source's block starts, clear of the pages the
+/// frame, table page and leaf checks take from that top.
+const EAGER_BELOW_TOP: u64 = 256 * 4096;
+
+/// The address of the eager source's window: the start of root entry 3 of dom0's space, past
+/// PATH_ADDRESS's, which nothing maps.
+const EAGER_WINDOW: u64 = 3 << 39;
+
+/// The start of the line dom0 prints once its eager source is exercised, before how many pages it backed.
+const EAGER_HEAD: &[u8] = b"dom0 eager backed ";
+
+/// Whether dom0 runs aeager's verified exercise over an eager source of its own: from the untyped that is
+/// a gigabyte, a table leaf into root entry EAGER_ENTRY and a child untyped of EAGER_ORDER below
+/// EAGER_BELOW_TOP into its first slot, whose pages the source alone retypes, putting frame capabilities
+/// in the slots after it, and the window at EAGER_WINDOW. The exercise reserves a span, backs it a page at
+/// a time until the source refuses, writes a byte through the run and reads it back, releases the run,
+/// backs a page again and gives the span back; dom0 prints how many pages it backed, and the check holds
+/// when the source refused before the block was full, the byte read back and a page was backed again.
+fn eager_source_held(empty: u64) -> bool {
+    let Some((untyped, block)) = untyped_of_pages(empty, 1 << 18) else {
+        return false;
+    };
+    let top = block.base + (4096 << block.order);
+    let memory = top - EAGER_BELOW_TOP;
+    let source = first_slot(EAGER_ENTRY);
+    if operation::retype_leaf(untyped, memory - LEAF_BYTES, EAGER_ENTRY) != operation::STATUS_OK
+        || operation::derive(untyped, source, block.rights, memory, EAGER_ORDER) != operation::STATUS_OK
+    {
+        return false;
+    }
+    let Some(mut eager) = aeager::Eager::new(
+        operation::ROOT_PROCESS_SLOT,
+        source,
+        memory,
+        aeager::MAX_PAGES,
+        source + 1,
+        EAGER_WINDOW as *mut u8,
+    ) else {
+        return false;
+    };
+    let seen = aeager::exercise(&mut eager);
+    print_count(EAGER_HEAD, seen.backed as u64, b"\n") == operation::STATUS_OK
+        && seen.backed > 0
+        && seen.refused
+        && seen.read
+        && seen.again
+}
+
 /// Print through `slot`. The status is the low half of what the invocation returns.
 ///
 /// # Safety
@@ -903,6 +963,7 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
                             && probed_bits_held(empty + 1)
                             && unmapped_bits_held(empty + 1)
                             && retyped_leaves_held(untyped, tables[3])
+                            && eager_source_held(empty)
                     })
         });
     let console = unsafe {

@@ -262,6 +262,12 @@ mod tests {
     }
 
     #[test]
+    fn a_run_without_the_eager_source_line_fails() {
+        let output = board_output().replace("dom0 eager backed 40\n", "");
+        assert!(board_run_accepted(Some(0), &output, None).unwrap_err().to_string().contains("eager source"));
+    }
+
+    #[test]
     fn a_run_on_the_pc_s_memory_map_fails() {
         let output = board_output().replace("base 0x80000000 order 18", "base 0x40000000 order 18");
         assert!(board_run_accepted(Some(0), &output, None).unwrap_err().to_string().contains("2 to 3 GiB"));

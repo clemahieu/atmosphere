@@ -433,6 +433,12 @@ const CONSOLE_LINE: &str = "dom0 slot checks held";
 /// The line dom0 prints after that check line, and only then exits with success.
 const EXIT_MARKER: &str = "dom0 capability done";
 
+/// The line dom0 prints once its eager span source reserved a span, backed it a page at a time until
+/// the source refused, wrote and read it, released it, backed a page of it again and gave it all back:
+/// the 64 pages dom0 gives the source, less the three table pages of eight pages each the path to the
+/// span takes, are 40 frames.
+const EAGER_LINE: &str = "dom0 eager backed 40";
+
 /// Whether the serial log holds dom0's exit marker as a line of its own.
 fn exit_marker_printed(serial: &str) -> bool {
     serial.lines().any(|line| line.trim_end_matches('\r') == EXIT_MARKER)
@@ -536,6 +542,9 @@ pub(super) fn boot_serial_accepted(serial: &str, arch: Arch) -> Result<String> {
     if !exit_marker_printed(serial) {
         return Err(anyhow!("the serial log does not show dom0's exit marker"));
     }
+    if !serial.lines().any(|line| line.trim_end_matches('\r') == EAGER_LINE) {
+        return Err(anyhow!("the serial log does not show dom0's eager source backing 40 pages: {:?}", EAGER_LINE));
+    }
     if !second_core_idle(serial) {
         return Err(anyhow!("the serial log does not show CPU 1 idle on a syscall stack of its own"));
     }
@@ -547,7 +556,7 @@ pub(super) fn boot_serial_accepted(serial: &str, arch: Arch) -> Result<String> {
     }
     Ok(format!(
         "exit status 0, the kernel's per-slot lines with their kinds ({} untyped, {} frames), {}, dom0's \
-         check line and exit marker, CPU 1 idle on its own stack, a flush IPI acknowledged, the lock \
+         check line, exit marker and eager source line, CPU 1 idle on its own stack, a flush IPI acknowledged, the lock \
          contended",
         untyped, frames, gigabyte
     ))
@@ -725,6 +734,7 @@ pub(super) mod tests {
     pub(in crate::command) fn boot_log() -> String {
         format!(
             "{}\
+             dom0 eager backed 40\n\
              dom0 slot checks held\n\
              dom0 capability done\n\
              \u{1b}[34m INFO CPU 0 syscall stack 0x1000\u{1b}[0m\n\
@@ -743,6 +753,12 @@ pub(super) mod tests {
 
         let no_console = log.replace("dom0 slot checks held\n", "");
         assert!(boot_serial_accepted(&no_console, Arch::X86_64).unwrap_err().to_string().contains("check line"));
+
+        let no_eager = log.replace("dom0 eager backed 40\n", "");
+        assert!(boot_serial_accepted(&no_eager, Arch::X86_64).unwrap_err().to_string().contains("eager source"));
+
+        let fewer_pages = log.replace("dom0 eager backed 40\n", "dom0 eager backed 39\n");
+        assert!(boot_serial_accepted(&fewer_pages, Arch::X86_64).unwrap_err().to_string().contains("eager source"));
 
         let no_exit = log.replace("dom0 capability done\n", "");
         assert!(boot_serial_accepted(&no_exit, Arch::X86_64).unwrap_err().to_string().contains("exit marker"));
