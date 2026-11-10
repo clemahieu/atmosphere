@@ -31,7 +31,7 @@ license = "MIT"
 # The Verus every verified crate builds against, and the commit tools/setup-verus.sh builds.
 [workspace.dependencies.vstd]
 git = "https://github.com/verus-lang/verus"
-rev = "3e8600ac3a52238dcf581a91c761e160bb6da743"
+rev = "09464f0f7f5e545c2f2fe328437ebf8f968e263e"
 default-features = false
 
 [profile.release]
