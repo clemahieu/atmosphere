@@ -78,6 +78,7 @@ atmo test               # the gate
 tools/run.py            # build loader, kernel, dom0 and payload; boot under QEMU, with KVM when /dev/kvm is writable; --no-kvm forces TCG
 tools/verify.py         # Verus over kernel/verified; extra arguments go to rust_verify
 tools/gdb.py            # attach gdb to a tools/run.py --gdb run, with the kernel's symbols
+tools/aarch64-esp.py    # build the aarch64 loader, kernel, dom0 and payload and lay out the ESP that tools/orangepi-kvm.py --esp boots on the board
 ```
 
 `tools/setup-verus.sh` builds Verus under `tools/verus`, which git ignores. The host is an AMD Ryzen 9 9950X3D; `/dev/kvm` is world-writable; edk2-ovmf is at `/usr/share/edk2/ovmf`.
