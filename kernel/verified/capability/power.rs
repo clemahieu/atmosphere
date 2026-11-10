@@ -9,10 +9,15 @@ use crate::capability::kernel::*;
 use crate::capability::operation::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
+use crate::capability::steps::Steps;
 use crate::capability::table::*;
 
 /// A power capability's rights: power-off asks for none but the capability.
 pub const POWER_RIGHTS: u32 = 0;
+
+/// power_off's bound in the step counter: none, since it runs no loop and calls nothing counted. See
+/// design/one-lock-bounded-steps/.
+pub const POWER_OFF_STEPS: usize = 0;
 
 /// The power capability, naming power's object.
 pub open spec fn power_payload() -> Payload {
@@ -32,11 +37,12 @@ impl CapKernel {
     /// comes from user space, so it can name no power capability, and then the power-off is refused. It
     /// reads the kernel and changes nothing: ending the run is the entry's, which calls the machine's
     /// shutdown once this returns ok and the kernel's lock is released.
-    pub fn power_off(&self, root: usize, i: usize) -> (status: u64)
+    pub fn power_off(&self, root: usize, i: usize, Tracked(steps): Tracked<&mut Steps>) -> (status: u64)
         requires
             self.wf(),
             self.tables.roots@.contains_key(root),
         ensures
+            final(steps).count <= old(steps).count + POWER_OFF_STEPS,
             status == if self.holds_power(root, i) { STATUS_OK } else { STATUS_REFUSED },
             discharges(self.view(), self.view(), root, Effect::Local),
     {

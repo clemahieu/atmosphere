@@ -12,6 +12,7 @@ use crate::capability::operation::*;
 use crate::capability::position::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
+use crate::capability::steps::Steps;
 use crate::capability::table::*;
 
 /// The number inspect returns in result 1 for each kind of capability.
@@ -26,6 +27,10 @@ pub const CAP_KIND_SPACE: u64 = 7;
 pub const CAP_KIND_DEVICE: u64 = 8;
 pub const CAP_KIND_CONSOLE: u64 = 9;
 pub const CAP_KIND_POWER: u64 = 10;
+
+/// inspect's bound in the step counter: none, since it runs no loop and calls nothing counted. See
+/// design/one-lock-bounded-steps/.
+pub const INSPECT_STEPS: usize = 0;
 
 /// The number a kind has in inspect's result 1.
 pub open spec fn spec_kind_number(kind: CapKind) -> u64 {
@@ -128,11 +133,12 @@ impl CapKernel {
     /// name no capability, and then inspect is refused. Commanding the capability is the whole
     /// authority, holding it or controlling the process that does: inspect asks for no right of the
     /// capability itself. Either way the kernel is unchanged.
-    pub fn inspect(&self, root: usize, at: Position) -> (ret: Outcome)
+    pub fn inspect(&self, root: usize, at: Position, Tracked(steps): Tracked<&mut Steps>) -> (ret: Outcome)
         requires
             self.wf(),
             self.tables.roots@.contains_key(root),
         ensures
+            final(steps).count <= old(steps).count + INSPECT_STEPS,
             ret == self.spec_inspect_at(root, at),
             self.cap_at(root, at) is Some ==> self.view().commands(root, self.cap_at(root, at)->0),
             discharges(self.view(), self.view(), root, Effect::Local),

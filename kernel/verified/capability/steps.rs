@@ -15,8 +15,8 @@ pub tracked struct Steps {
 }
 
 impl Steps {
-    /// A counter at zero. The paths that hold the kernel's lock and boot each make one; a caller
-    /// whose own work is not counted yet makes one at its call, which counts toward no bound.
+    /// A counter at zero. Each path that holds the kernel's lock makes one per entry, and boot and the
+    /// witnesses, which hold no lock, make their own.
     pub proof fn fresh() -> (tracked ret: Steps)
         ensures
             ret.count == 0,

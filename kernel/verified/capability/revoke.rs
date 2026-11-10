@@ -42,6 +42,10 @@ pub const UNLINK_ARM_STEPS: usize = MAPPING_NOTE_STEPS;
 /// design/one-lock-bounded-steps/.
 pub const REVOKE_STEP_STEPS: usize = MAX_DEPTH + CUT_NOTE_STEPS + UNLINK_ARM_STEPS;
 
+/// revoke's bound in the step counter: REVOKE_BUDGET steps, each a unit of its own and its
+/// REVOKE_STEP_STEPS.
+pub const REVOKE_STEPS: usize = REVOKE_BUDGET * (REVOKE_STEP_STEPS + 1);
+
 pub proof fn lemma_budget_above_cores()
     ensures
         REVOKE_BUDGET > NUM_CPUS,
@@ -313,7 +317,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
-            final(steps).count <= old(steps).count + REVOKE_BUDGET * (REVOKE_STEP_STEPS + 1),
+            final(steps).count <= old(steps).count + REVOKE_STEPS,
             final(self).wf(),
             final(self).cores == old(self).cores,
             Self::mappings_shrunk(*old(self), *final(self)),

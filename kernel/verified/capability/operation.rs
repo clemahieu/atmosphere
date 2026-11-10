@@ -18,7 +18,6 @@ use crate::capability::retype::RetypeStep;
 use crate::capability::revoke::RevokeStep;
 #[cfg(verus_keep_ghost)]
 use crate::capability::space::*;
-#[cfg(verus_keep_ghost)]
 use crate::capability::steps::Steps;
 use crate::capability::thread::*;
 use crate::capability::unmap::Unmapped;
@@ -38,6 +37,38 @@ pub const STATUS_UNKNOWN: u64 = 2;
 /// The operation took a bounded step and is not finished; the same invocation again goes on from where
 /// it stopped. See design/one-lock-bounded-steps/.
 pub const STATUS_AGAIN: u64 = 3;
+
+/// invoke_retype's bound in the step counter: a table page's retype, the largest of the four kinds.
+/// See design/one-lock-bounded-steps/.
+pub const INVOKE_RETYPE_STEPS: usize = crate::capability::space::RETYPE_TABLE_PAGE_STEPS;
+
+/// invoke_derive's bound in the step counter: none, since derive runs no loop and calls nothing
+/// counted.
+pub const INVOKE_DERIVE_STEPS: usize = 0;
+
+/// invoke_move's bound in the step counter: none, since a move runs no loop and calls nothing counted.
+pub const INVOKE_MOVE_STEPS: usize = 0;
+
+/// invoke_delete's bound in the step counter: none, since delete runs no loop and calls nothing
+/// counted.
+pub const INVOKE_DELETE_STEPS: usize = 0;
+
+/// invoke_revoke's bound in the step counter: one revoke's.
+pub const INVOKE_REVOKE_STEPS: usize = crate::capability::revoke::REVOKE_STEPS;
+
+/// invoke_link's bound in the step counter: none, since link_at walks a fixed number of levels and
+/// calls nothing counted.
+pub const INVOKE_LINK_STEPS: usize = 0;
+
+/// invoke_map's bound in the step counter: none, since map_at walks a fixed number of levels and calls
+/// nothing counted.
+pub const INVOKE_MAP_STEPS: usize = 0;
+
+/// invoke_unmap's bound in the step counter: one unmap_at's.
+pub const INVOKE_UNMAP_STEPS: usize = crate::capability::unmap::UNMAP_AT_STEPS;
+
+/// invoke_probe's bound in the step counter: one probe_at's, an entry each.
+pub const INVOKE_PROBE_STEPS: usize = PROBE_MAX as usize;
 
 pub const OPERATION_RETYPE: u64 = 1;
 pub const OPERATION_DERIVE: u64 = 2;
@@ -640,7 +671,9 @@ impl CapKernel {
                 Self::invoked(*old(self), *final(self), root, frame, ret->0)
             },
     {
-        if self.check_current(c, frame) {
+        // The one counter of this entry, on a path that holds the kernel's lock: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        if self.check_current(c, frame, Tracked(&mut steps)) {
             return None;
         }
         let t = match self.cores.get(c).current_thread {
@@ -659,25 +692,21 @@ impl CapKernel {
             None => { proof { assert(false); } return None; },
         };
         match operation(frame.operation_number()) {
-            Some(Operation::Retype) => Some(self.invoke_retype(root, frame)),
-            Some(Operation::Derive) => Some(self.invoke_derive(root, frame)),
-            Some(Operation::Move) => Some(self.invoke_move(root, frame)),
-            Some(Operation::Delete) => Some(self.invoke_delete(root, frame)),
-            Some(Operation::Revoke) => Some(self.invoke_revoke(root, frame)),
-            Some(Operation::Link) => Some(self.invoke_link(root, frame)),
-            Some(Operation::Map) => Some(self.invoke_map(root, frame)),
-            Some(Operation::Unmap) => Some(self.invoke_unmap(root, frame)),
-            Some(Operation::Probe) => Some(self.invoke_probe(root, frame)),
-            Some(Operation::Print) => {
-                // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
-                let tracked mut steps = Steps::fresh();
-                Some(status_only_outcome(
-                    self.print(root, frame.slot() as usize, frame.argument(1), frame.argument(2), frame.argument(3), frame.argument(4), frame.argument(5), Tracked(&mut steps)),
-                ))
-            },
-            Some(Operation::PowerOff) => Some(status_only_outcome(self.power_off(root, frame.slot() as usize))),
+            Some(Operation::Retype) => Some(self.invoke_retype(root, frame, Tracked(&mut steps))),
+            Some(Operation::Derive) => Some(self.invoke_derive(root, frame, Tracked(&mut steps))),
+            Some(Operation::Move) => Some(self.invoke_move(root, frame, Tracked(&mut steps))),
+            Some(Operation::Delete) => Some(self.invoke_delete(root, frame, Tracked(&mut steps))),
+            Some(Operation::Revoke) => Some(self.invoke_revoke(root, frame, Tracked(&mut steps))),
+            Some(Operation::Link) => Some(self.invoke_link(root, frame, Tracked(&mut steps))),
+            Some(Operation::Map) => Some(self.invoke_map(root, frame, Tracked(&mut steps))),
+            Some(Operation::Unmap) => Some(self.invoke_unmap(root, frame, Tracked(&mut steps))),
+            Some(Operation::Probe) => Some(self.invoke_probe(root, frame, Tracked(&mut steps))),
+            Some(Operation::Print) => Some(status_only_outcome(
+                self.print(root, frame.slot() as usize, frame.argument(1), frame.argument(2), frame.argument(3), frame.argument(4), frame.argument(5), Tracked(&mut steps)),
+            )),
+            Some(Operation::PowerOff) => Some(status_only_outcome(self.power_off(root, frame.slot() as usize, Tracked(&mut steps)))),
             Some(Operation::Inspect) => match position(frame.slot()) {
-                Some(at) => Some(self.inspect(root, at)),
+                Some(at) => Some(self.inspect(root, at, Tracked(&mut steps))),
                 None => Some(status_only_outcome(STATUS_REFUSED)),
             },
             Some(_) => Some(status_only_outcome(STATUS_REFUSED)),
@@ -686,32 +715,31 @@ impl CapKernel {
     }
 
     /// The retype in frame, by a thread of the process whose table is at root.
-    fn invoke_retype(&mut self, root: usize, frame: Registers) -> (ret: Outcome)
+    fn invoke_retype(&mut self, root: usize, frame: Registers, Tracked(steps): Tracked<&mut Steps>) -> (ret: Outcome)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(steps).count <= old(steps).count + INVOKE_RETYPE_STEPS,
             final(self).wf(),
             final(self).cores == old(self).cores,
             Self::spec_retyped(*old(self), *final(self), root, frame, ret),
     {
-        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
-        let tracked mut steps = Steps::fresh();
         let status = if frame.argument(1) == RETYPE_FRAME {
-            if self.retype_frame(root, frame.slot() as usize, frame.argument(3) as usize, frame.argument(2) as usize, Tracked(&mut steps)) {
+            if self.retype_frame(root, frame.slot() as usize, frame.argument(3) as usize, frame.argument(2) as usize, Tracked(steps)) {
                 STATUS_OK
             } else {
                 STATUS_REFUSED
             }
         } else if frame.argument(1) == RETYPE_LARGE_FRAME {
-            match self.retype_large_frame(root, frame.slot() as usize, frame.argument(3) as usize, frame.argument(2) as usize, 9, Tracked(&mut steps)) {
+            match self.retype_large_frame(root, frame.slot() as usize, frame.argument(3) as usize, frame.argument(2) as usize, 9, Tracked(steps)) {
                 RetypeStep::Refused => STATUS_REFUSED,
                 RetypeStep::Again => STATUS_AGAIN,
                 RetypeStep::Done => STATUS_OK,
             }
         } else if frame.argument(1) == RETYPE_TABLE_PAGE {
-            if self.retype_table_page(root, frame.slot() as usize, frame.argument(2) as usize, frame.argument(4) as usize, Tracked(&mut steps)) {
+            if self.retype_table_page(root, frame.slot() as usize, frame.argument(2) as usize, frame.argument(4) as usize, Tracked(steps)) {
                 STATUS_OK
             } else {
                 STATUS_REFUSED
@@ -719,7 +747,7 @@ impl CapKernel {
         } else if frame.argument(1) == RETYPE_LEAF {
             match position(frame.argument(3)) {
                 Some(at) => {
-                    if self.retype_leaf(root, frame.slot() as usize, at, frame.argument(2) as usize, Tracked(&mut steps)) {
+                    if self.retype_leaf(root, frame.slot() as usize, at, frame.argument(2) as usize, Tracked(steps)) {
                         STATUS_OK
                     } else {
                         STATUS_REFUSED
@@ -734,12 +762,13 @@ impl CapKernel {
     }
 
     /// The derive in frame, by a thread of the process whose table is at root.
-    fn invoke_derive(&mut self, root: usize, frame: Registers) -> (ret: Outcome)
+    fn invoke_derive(&mut self, root: usize, frame: Registers, Tracked(steps): Tracked<&mut Steps>) -> (ret: Outcome)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(steps).count <= old(steps).count + INVOKE_DERIVE_STEPS,
             final(self).wf(),
             final(self).cores == old(self).cores,
             Self::spec_derived(*old(self), *final(self), root, frame, ret),
@@ -757,12 +786,13 @@ impl CapKernel {
     }
 
     /// The move in frame, by a thread of the process whose table is at root.
-    fn invoke_move(&mut self, root: usize, frame: Registers) -> (ret: Outcome)
+    fn invoke_move(&mut self, root: usize, frame: Registers, Tracked(steps): Tracked<&mut Steps>) -> (ret: Outcome)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(steps).count <= old(steps).count + INVOKE_MOVE_STEPS,
             final(self).wf(),
             final(self).cores == old(self).cores,
             Self::spec_moved(*old(self), *final(self), root, frame, ret),
@@ -775,12 +805,13 @@ impl CapKernel {
     }
 
     /// The delete in frame, by a thread of the process whose table is at root.
-    fn invoke_delete(&mut self, root: usize, frame: Registers) -> (ret: Outcome)
+    fn invoke_delete(&mut self, root: usize, frame: Registers, Tracked(steps): Tracked<&mut Steps>) -> (ret: Outcome)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(steps).count <= old(steps).count + INVOKE_DELETE_STEPS,
             final(self).wf(),
             final(self).cores == old(self).cores,
             Self::spec_deleted(*old(self), *final(self), root, frame, ret),
@@ -793,20 +824,19 @@ impl CapKernel {
     }
 
     /// The revoke in frame, by a thread of the process whose table is at root.
-    fn invoke_revoke(&mut self, root: usize, frame: Registers) -> (ret: Outcome)
+    fn invoke_revoke(&mut self, root: usize, frame: Registers, Tracked(steps): Tracked<&mut Steps>) -> (ret: Outcome)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(steps).count <= old(steps).count + INVOKE_REVOKE_STEPS,
             final(self).wf(),
             final(self).cores == old(self).cores,
             Self::spec_revoked(*old(self), *final(self), root, frame, ret),
     {
-        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
-        let tracked mut steps = Steps::fresh();
         let status = match position(frame.slot()) {
-            Some(at) => match self.revoke(root, at, Tracked(&mut steps)) {
+            Some(at) => match self.revoke(root, at, Tracked(steps)) {
                 RevokeStep::Done => STATUS_OK,
                 RevokeStep::Again => STATUS_AGAIN,
                 RevokeStep::Refused | RevokeStep::Exhausted => STATUS_REFUSED,
@@ -817,12 +847,13 @@ impl CapKernel {
     }
 
     /// The link in frame, by a thread of the process whose table is at root.
-    fn invoke_link(&mut self, root: usize, frame: Registers) -> (ret: Outcome)
+    fn invoke_link(&mut self, root: usize, frame: Registers, Tracked(steps): Tracked<&mut Steps>) -> (ret: Outcome)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(steps).count <= old(steps).count + INVOKE_LINK_STEPS,
             final(self).wf(),
             final(self).cores == old(self).cores,
             Self::spec_linked(*old(self), *final(self), root, frame, ret),
@@ -832,12 +863,13 @@ impl CapKernel {
     }
 
     /// The map in frame, by a thread of the process whose table is at root.
-    fn invoke_map(&mut self, root: usize, frame: Registers) -> (ret: Outcome)
+    fn invoke_map(&mut self, root: usize, frame: Registers, Tracked(steps): Tracked<&mut Steps>) -> (ret: Outcome)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(steps).count <= old(steps).count + INVOKE_MAP_STEPS,
             final(self).wf(),
             final(self).cores == old(self).cores,
             Self::spec_mapped(*old(self), *final(self), root, frame, ret),
@@ -847,20 +879,19 @@ impl CapKernel {
     }
 
     /// The unmap in frame, by a thread of the process whose table is at root.
-    fn invoke_unmap(&mut self, root: usize, frame: Registers) -> (ret: Outcome)
+    fn invoke_unmap(&mut self, root: usize, frame: Registers, Tracked(steps): Tracked<&mut Steps>) -> (ret: Outcome)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(steps).count <= old(steps).count + INVOKE_UNMAP_STEPS,
             final(self).wf(),
             final(self).cores == old(self).cores,
             Self::spec_unmapped(*old(self), *final(self), root, frame, ret),
     {
         let ghost pre = *self;
-        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
-        let tracked mut steps = Steps::fresh();
-        match self.unmap_at(root, frame.slot() as usize, frame.argument(1), frame.argument(2), Tracked(&mut steps)) {
+        match self.unmap_at(root, frame.slot() as usize, frame.argument(1), frame.argument(2), Tracked(steps)) {
             Some(r) => {
                 let out = unmap_outcome(r);
                 proof {
@@ -873,19 +904,18 @@ impl CapKernel {
     }
 
     /// The probe in frame, by a thread of the process whose table is at root.
-    fn invoke_probe(&mut self, root: usize, frame: Registers) -> (ret: Outcome)
+    fn invoke_probe(&mut self, root: usize, frame: Registers, Tracked(steps): Tracked<&mut Steps>) -> (ret: Outcome)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
         ensures
+            final(steps).count <= old(steps).count + INVOKE_PROBE_STEPS,
             final(self).wf(),
             final(self).cores == old(self).cores,
             Self::spec_probed(*old(self), *final(self), root, frame, ret),
     {
         let ghost pre = *self;
-        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
-        let tracked mut steps = Steps::fresh();
-        match self.probe_at(root, frame.slot() as usize, frame.argument(1), frame.argument(2), Tracked(&mut steps)) {
+        match self.probe_at(root, frame.slot() as usize, frame.argument(1), frame.argument(2), Tracked(steps)) {
             Some(r) => {
                 let out = probe_outcome(r);
                 proof {

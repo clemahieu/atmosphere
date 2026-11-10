@@ -49,6 +49,9 @@ pub const TYPE_THREAD_STEPS: usize = 2 * SMALL_PAGES_MAX + NODES_PER_PAGE;
 /// retype_thread's bound in the step counter: one type_thread.
 pub const RETYPE_THREAD_STEPS: usize = TYPE_THREAD_STEPS;
 
+/// check_current's bound in the step counter: none, since it loads two records and runs no loop.
+pub const CHECK_CURRENT_STEPS: usize = 0;
+
 /// The page of a thread's block that holds its record and its XSAVE area. Page 0 is its node page.
 pub const THREAD_RECORD_PAGE: usize = 1;
 
@@ -3248,11 +3251,12 @@ impl CapKernel {
     /// with no stop pending, and runs nothing. So a thread that destroys itself or its own process does
     /// not return to user mode. Only core c moves its current thread off: see
     /// design/one-lock-bounded-steps/.
-    pub fn check_current(&mut self, c: usize, frame: Registers) -> (ret: bool)
+    pub fn check_current(&mut self, c: usize, frame: Registers, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             old(self).wf(),
             c < NUM_CPUS,
         ensures
+            final(steps).count <= old(steps).count + CHECK_CURRENT_STEPS,
             Self::step_ok(*old(self), *final(self), c as int),
             ret == old(self).must_leave(c as int),
             !ret ==> *final(self) == *old(self),

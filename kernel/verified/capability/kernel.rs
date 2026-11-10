@@ -43,6 +43,14 @@ pub struct CoreState {
 /// The largest generation a space's word can hold above its 12 bits of PCID.
 pub const ID_GENERATION_MAX: usize = 0xF_FFFF_FFFF_FFFF;
 
+/// acknowledge's bound in the step counter: none, since it writes one core's state and runs no loop.
+/// See design/one-lock-bounded-steps/.
+pub const ACKNOWLEDGE_STEPS: usize = 0;
+
+/// acknowledge_iommu's bound in the step counter: none, since it writes one IOMMU's epoch and runs no
+/// loop.
+pub const ACKNOWLEDGE_IOMMU_STEPS: usize = 0;
+
 pub open spec fn id_generation(word: usize) -> usize {
     (word / PCID_MAX) as usize
 }
@@ -2112,7 +2120,7 @@ impl CapKernel {
     /// IOMMU i acknowledges an invalidate of all it holds, which started at this epoch. A device kept
     /// translating since, so i may hold what was unmapped after that epoch, and only what was unmapped
     /// by then leaves its model.
-    pub fn acknowledge_iommu(&mut self, i: usize, epoch: usize, Tracked(flushed): Tracked<Flushed>)
+    pub fn acknowledge_iommu(&mut self, i: usize, epoch: usize, Tracked(flushed): Tracked<Flushed>, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).wf(),
             i < NUM_IOMMUS,
@@ -2121,6 +2129,7 @@ impl CapKernel {
             flushed.epoch == epoch,
             old(self).iommu_acked(i as int) <= epoch <= old(self).flush_epoch,
         ensures
+            final(steps).count <= old(steps).count + ACKNOWLEDGE_IOMMU_STEPS,
             final(self).wf(),
             final(self).iommu_acked(i as int) == epoch,
             old(self).iommu_acked(i as int) <= final(self).iommu_acked(i as int),
@@ -2224,12 +2233,12 @@ impl CapKernel {
             }
             Self::lemma_iommus_same(pre, *self);
         }
-        self.acknowledge_iommu(i, epoch, flushed);
+        self.acknowledge_iommu(i, epoch, flushed, Tracked(steps));
     }
 
     /// Core c acknowledges a flush of every context it did. Between that flush and this call c runs
     /// no user code, since IF stays clear in the kernel, so its TLB model is empty.
-    pub fn acknowledge(&mut self, c: usize, epoch: usize, Tracked(flushed): Tracked<Flushed>)
+    pub fn acknowledge(&mut self, c: usize, epoch: usize, Tracked(flushed): Tracked<Flushed>, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).wf(),
             c < NUM_CPUS,
@@ -2237,6 +2246,7 @@ impl CapKernel {
             flushed.epoch == epoch,
             old(self).acked(c as int) <= epoch <= old(self).flush_epoch,
         ensures
+            final(steps).count <= old(steps).count + ACKNOWLEDGE_STEPS,
             Self::step_ok(*old(self), *final(self), c as int),
             final(self).acked(c as int) == epoch,
             final(self).tlb@[c as int] == Set::<TlbEntry>::empty(),

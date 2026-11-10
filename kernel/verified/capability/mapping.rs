@@ -32,6 +32,13 @@ use crate::pptr::*;
 /// PAGES_PER_2M at most. See design/one-lock-bounded-steps/.
 pub const MAPPING_NOTE_STEPS: usize = PAGES_PER_2M;
 
+/// fresh_pcid's bound in the step counter: the acknowledgement of a flush of every context, when the
+/// core's PCIDs run out.
+pub const FRESH_PCID_STEPS: usize = ACKNOWLEDGE_STEPS;
+
+/// load_space's bound in the step counter: one fresh_pcid.
+pub const LOAD_SPACE_STEPS: usize = FRESH_PCID_STEPS;
+
 /// The indices of one page of a space's virtual address, level 4 first.
 pub ghost struct SpacePath {
     pub l4: usize,
@@ -141,7 +148,7 @@ impl CapKernel {
 
     /// Core c loads process space s: from here on it may hold what the space's tables say, and it is on
     /// the space's list of cores, for an unmap to find. Writing the core's CR3 is the caller's.
-    pub fn load_space(&mut self, c: usize, s: usize) -> (pcid: usize)
+    pub fn load_space(&mut self, c: usize, s: usize, Tracked(steps): Tracked<&mut Steps>) -> (pcid: usize)
         requires
             old(self).wf(),
             c < NUM_CPUS,
@@ -149,6 +156,7 @@ impl CapKernel {
             old(self).spaces.records@[s].value().kind is Process,
             old(self).cores@[c as int].generation < ID_GENERATION_MAX,
         ensures
+            final(steps).count <= old(steps).count + LOAD_SPACE_STEPS,
             Self::step_ok(*old(self), *final(self), c as int),
             final(self).loaded(c as int, s),
             1 <= pcid < PCID_MAX,
@@ -219,7 +227,7 @@ impl CapKernel {
             }
             word % PAGE_SZ
         } else {
-            self.fresh_pcid(c)
+            self.fresh_pcid(c, Tracked(steps))
         };
         let ghost after = *self;
         self.note_pcid_used(c, pcid);
@@ -259,12 +267,13 @@ impl CapKernel {
 
     /// Hands out core c's next PCID. Run out, it flushes every context on this core first and starts a
     /// new generation, which leaves no space's id valid here.
-    fn fresh_pcid(&mut self, c: usize) -> (p: usize)
+    fn fresh_pcid(&mut self, c: usize, Tracked(steps): Tracked<&mut Steps>) -> (p: usize)
         requires
             old(self).wf(),
             c < NUM_CPUS,
             old(self).cores@[c as int].generation < ID_GENERATION_MAX,
         ensures
+            final(steps).count <= old(steps).count + FRESH_PCID_STEPS,
             Self::step_ok(*old(self), *final(self), c as int),
             Self::only_core_changed(*old(self), *final(self), c as int),
             1 <= p < PCID_MAX,
@@ -295,7 +304,7 @@ impl CapKernel {
         if state.next_pcid == PCID_MAX {
             let epoch = self.flush_epoch;
             let flushed = flush_every_context(c, epoch);
-            self.acknowledge(c, epoch, flushed);
+            self.acknowledge(c, epoch, flushed, Tracked(steps));
             let ghost mid = *self;
             let state = *self.cores.get(c);
             self.cores.set(c, CoreState {
