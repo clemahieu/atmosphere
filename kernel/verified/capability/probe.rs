@@ -27,6 +27,7 @@ use crate::capability::space::*;
 use crate::capability::table::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::view::*;
+use crate::define::*;
 use crate::pagetable::pagemap::*;
 use crate::pagetable::pagemap_util_t::*;
 use crate::pptr::*;
@@ -236,14 +237,14 @@ pub proof fn lemma_table_pages_status_only(list: &Tree, pa: &TablePages, pb: &Ta
     assert forall|u: usize| #[trigger] pb.maps@.contains_key(u) implies table_page_wf(list, pb, blocks, u) by {
         assert(table_page_wf(list, pa, blocks, u));
         if u == t {
-            assert forall|i: usize| i < 512 implies #[trigger] pb.maps@[u].value()[i] == pa.maps@[u].value()[i] by {
+            assert forall|i: usize| i < ENTRIES implies #[trigger] pb.maps@[u].value()[i] == pa.maps@[u].value()[i] by {
                 assert(pb.maps@[u].value()[i] == pb.maps@[u].value()@[i as int]);
                 assert(pa.maps@[u].value()[i] == pa.maps@[u].value()@[i as int]);
             }
         }
     }
-    assert forall|b: usize| blocks.tracks(b as int) && #[trigger] table_block(blocks, b) implies pb.maps@.contains_key((b * 4096) as usize) by {
-        assert(pa.maps@.contains_key((b * 4096) as usize));
+    assert forall|b: usize| blocks.tracks(b as int) && #[trigger] table_block(blocks, b) implies pb.maps@.contains_key((b * PAGE_SZ) as usize) by {
+        assert(pa.maps@.contains_key((b * PAGE_SZ) as usize));
     }
 }
 
@@ -257,7 +258,7 @@ impl CapKernel {
         let p = address_path(va);
         &&& names_entry(va, 1)
         &&& 1 <= count <= PROBE_MAX
-        &&& p.l1 + count <= 512
+        &&& p.l1 + count <= ENTRIES
         &&& self.tables.has_slot(&self.list, root, slot)
         &&& self.is_cap(n)
         &&& writes_space(self.payload_of(n))
@@ -407,7 +408,7 @@ impl CapKernel {
             return None;
         }
         let (l4, l3, l2, l1) = address_indices(va);
-        if l1 + count as usize > 512 {
+        if l1 + count as usize > ENTRIES {
             return None;
         }
         let (n, space) = match self.tables.lookup(&self.list, root, slot) {
@@ -461,7 +462,7 @@ impl CapKernel {
         }
         let ghost m0 = pre.table_pages.maps@[t];
         let tracked mut map = self.table_pages.maps.borrow_mut().tracked_remove(t);
-        let ptr = t + TABLE_NODE_PAGES * 4096;
+        let ptr = t + TABLE_NODE_PAGES * PAGE_SZ;
         let mut accessed: u64 = 0;
         let mut dirty: u64 = 0;
         let ghost mut read: Seq<usize> = Seq::empty();
@@ -474,7 +475,7 @@ impl CapKernel {
             invariant
                 0 <= i <= count <= PROBE_MAX,
                 steps.count == start + i,
-                l1 + count <= 512,
+                l1 + count <= ENTRIES,
                 l1 == p.l1,
                 m0 == pre.table_pages.maps@[t],
                 tree.is_page(t),

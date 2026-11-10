@@ -25,6 +25,7 @@ use crate::capability::process::*;
 use crate::capability::thread::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::view::*;
+use crate::define::*;
 
 /// The child a derive from `parent` makes.
 pub open spec fn child_of(parent: Payload, rights: u32, base: usize, order: u8) -> Payload {
@@ -62,9 +63,9 @@ pub fn order_bytes(order: u8) -> (ret: usize)
     proof {
         lemma_pow2_pos(order as nat);
         lemma_pow2_order(order);
-        lemma_usize_shl_is_mul(4096, order as usize);
+        lemma_usize_shl_is_mul(PAGE_SZ, order as usize);
     }
-    4096usize << (order as usize)
+    PAGE_SZ << (order as usize)
 }
 
 /// A block of any order fits in the address space.
@@ -72,7 +73,7 @@ proof fn lemma_pow2_order(order: u8)
     requires
         order <= MAX_ORDER,
     ensures
-        pow2(order as nat) * 4096 <= NODE_SPACE,
+        pow2(order as nat) * PAGE_SZ <= NODE_SPACE,
 {
     lemma2_to64_rest();
     if order < MAX_ORDER {
@@ -107,14 +108,14 @@ pub fn is_block_within(parent: Payload, base: usize, order: u8) -> (ret: bool)
 proof fn lemma_object_within(parent: Payload, base: usize, order: u8)
     requires
         parent.order == 0,
-        parent.base % 4096 == 0,
+        parent.base % PAGE_SZ == 0,
     ensures
         block_within(base, order, parent) <==> (order == 0 && base == parent.base),
 {
     assert(pow2(0) == 1) by {
         lemma2_to64();
     }
-    assert(block_bytes(0) == 4096);
+    assert(block_bytes(0) == PAGE_SZ);
 }
 
 /// Decides whether a child with these fields may be derived from `parent`, in constant time. All of
@@ -159,7 +160,7 @@ impl CapKernel {
         &&& narrows(child_of(self.payload_of(parent), rights, base, order), self.payload_of(parent))
         &&& (self.payload_of(parent).kind is Frame || self.payload_of(parent).kind is Space
             || self.payload_of(parent).kind is Thread || self.payload_of(parent).kind is Process) ==>
-            block_refs(&self.blocks, block_ref(&self.blocks, self.payload_of(parent).base / 4096)) != usize::MAX
+            block_refs(&self.blocks, block_ref(&self.blocks, self.payload_of(parent).base / PAGE_SZ)) != usize::MAX
     }
 
     /// The refusals of a derive from index from of the caller's table, at root, into a position: one
@@ -397,7 +398,7 @@ impl CapKernel {
         };
         // A derived frame, space, thread or process holds a reference on the block its parent lies in.
         let block = if counted {
-            let br = locate(&self.blocks, payload.base / 4096);
+            let br = locate(&self.blocks, payload.base / PAGE_SZ);
             if !add_block_ref(&mut self.blocks, br) {
                 return false;
             }
@@ -485,7 +486,7 @@ impl CapKernel {
                 || pre.payload_of(parent).kind is Thread || pre.payload_of(parent).kind is Process),
             block is Some ==> {
                 let br = block->0;
-                &&& br == block_ref(&pre.blocks, pre.payload_of(parent).base / 4096)
+                &&& br == block_ref(&pre.blocks, pre.payload_of(parent).base / PAGE_SZ)
                 &&& block_refs(&pre.blocks, br) < usize::MAX
                 &&& blocks_refs_changed(&pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br))
             },
@@ -555,7 +556,7 @@ impl CapKernel {
             Some(br) => {
                 if pp.kind is Frame {
                     lemma_holder_refs(&pre.list, &pre.tables, &pre.blocks, &pre.zeroing, pre.holders@, parent);
-                    assert(frame_in_block(block_ref(&pre.blocks, pp.base / 4096), pp));
+                    assert(frame_in_block(block_ref(&pre.blocks, pp.base / PAGE_SZ), pp));
                     lemma_child_same_block(&pre.blocks, pp, cp);
                     lemma_holders_frame_added(&pre.list, &pre.tables, &post.list, &post.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, child, br);
                     lemma_zeroing_typed_refs_changed(&pre.list, &pre.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
@@ -576,22 +577,22 @@ impl CapKernel {
                     // A space is its block's base, so the child names the parent's space.
                     pre.lemma_space_cap(parent);
                     let s = pp.base;
-                    assert(br == BlockRef::Small(s / 4096));
+                    assert(br == BlockRef::Small(s / PAGE_SZ));
                     assert(cp.base == s);
                     assert(cp.order == 3);
                     lemma_holders_same_frames(&pre.list, &pre.tables, &post.list, &post.tables, &pre.blocks, &pre.zeroing, pre.holders@);
                     assert(!pre.holders@.contains_key(br)) by {
                         if pre.holders@.contains_key(br) {
-                            assert(pre.blocks.pages@[(s / 4096) as int].object is Frame);
+                            assert(pre.blocks.pages@[(s / PAGE_SZ) as int].object is Frame);
                         }
                     }
-                    lemma_holders_unkeyed_small_changed(&post.list, &post.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, s / 4096, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
-                    lemma_zeroing_typed_small_changed(&pre.zeroing, &pre.blocks, &post.blocks, s / 4096, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
+                    lemma_holders_unkeyed_small_changed(&post.list, &post.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, s / PAGE_SZ, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
+                    lemma_zeroing_typed_small_changed(&pre.zeroing, &pre.blocks, &post.blocks, s / PAGE_SZ, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
                     lemma_list_pages_used_same_kinds(&pre.list, &pre.blocks, &post.blocks);
                     assert(objects_wf(&post.tables, &pre.blocks, pre.holders@));
-                    lemma_objects_unframed_block_changed(&post.tables, &pre.blocks, &post.blocks, pre.holders@, s / 4096, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
+                    lemma_objects_unframed_block_changed(&post.tables, &pre.blocks, &post.blocks, pre.holders@, s / PAGE_SZ, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
                     assert(leaf_blocks_wf(&pre.list, &post.tables, &pre.blocks));
-                    lemma_leaf_blocks_other_changed(&pre.list, &post.list, &post.tables, &pre.blocks, &post.blocks, pre.holders@, s / 4096, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
+                    lemma_leaf_blocks_other_changed(&pre.list, &post.list, &post.tables, &pre.blocks, &post.blocks, pre.holders@, s / PAGE_SZ, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
                     lemma_table_pages_refs_changed(&pre.list, &post.list, &pre.table_pages, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
                     Self::lemma_spaces_holder_added(pre, post, child, s);
                     lemma_threads_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
@@ -600,22 +601,22 @@ impl CapKernel {
                     // A thread is its block's base, so the child names the parent's thread.
                     pre.lemma_thread_cap(parent);
                     let t = pp.base;
-                    assert(br == BlockRef::Small(t / 4096));
+                    assert(br == BlockRef::Small(t / PAGE_SZ));
                     assert(cp.base == t);
                     assert(cp.order == THREAD_ORDER);
                     lemma_holders_same_frames(&pre.list, &pre.tables, &post.list, &post.tables, &pre.blocks, &pre.zeroing, pre.holders@);
                     assert(!pre.holders@.contains_key(br)) by {
                         if pre.holders@.contains_key(br) {
-                            assert(pre.blocks.pages@[(t / 4096) as int].object is Frame);
+                            assert(pre.blocks.pages@[(t / PAGE_SZ) as int].object is Frame);
                         }
                     }
-                    lemma_holders_unkeyed_small_changed(&post.list, &post.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, t / 4096, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
-                    lemma_zeroing_typed_small_changed(&pre.zeroing, &pre.blocks, &post.blocks, t / 4096, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
+                    lemma_holders_unkeyed_small_changed(&post.list, &post.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, t / PAGE_SZ, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
+                    lemma_zeroing_typed_small_changed(&pre.zeroing, &pre.blocks, &post.blocks, t / PAGE_SZ, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
                     lemma_list_pages_used_same_kinds(&pre.list, &pre.blocks, &post.blocks);
                     assert(objects_wf(&post.tables, &pre.blocks, pre.holders@));
-                    lemma_objects_unframed_block_changed(&post.tables, &pre.blocks, &post.blocks, pre.holders@, t / 4096, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
+                    lemma_objects_unframed_block_changed(&post.tables, &pre.blocks, &post.blocks, pre.holders@, t / PAGE_SZ, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
                     assert(leaf_blocks_wf(&pre.list, &post.tables, &pre.blocks));
-                    lemma_leaf_blocks_other_changed(&pre.list, &post.list, &post.tables, &pre.blocks, &post.blocks, pre.holders@, t / 4096, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
+                    lemma_leaf_blocks_other_changed(&pre.list, &post.list, &post.tables, &pre.blocks, &post.blocks, pre.holders@, t / PAGE_SZ, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
                     lemma_table_pages_refs_changed(&pre.list, &post.list, &pre.table_pages, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
                     lemma_spaces_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
                     Self::lemma_threads_holder_added(pre, post, child, t);
@@ -624,22 +625,22 @@ impl CapKernel {
                     // A process is its block's base, so the child names the parent's process.
                     pre.lemma_process_cap(parent);
                     let p = pp.base;
-                    assert(br == BlockRef::Small(p / 4096));
+                    assert(br == BlockRef::Small(p / PAGE_SZ));
                     assert(cp.base == p);
                     assert(cp.order == PROCESS_ORDER);
                     lemma_holders_same_frames(&pre.list, &pre.tables, &post.list, &post.tables, &pre.blocks, &pre.zeroing, pre.holders@);
                     assert(!pre.holders@.contains_key(br)) by {
                         if pre.holders@.contains_key(br) {
-                            assert(pre.blocks.pages@[(p / 4096) as int].object is Frame);
+                            assert(pre.blocks.pages@[(p / PAGE_SZ) as int].object is Frame);
                         }
                     }
-                    lemma_holders_unkeyed_small_changed(&post.list, &post.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, p / 4096, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
-                    lemma_zeroing_typed_small_changed(&pre.zeroing, &pre.blocks, &post.blocks, p / 4096, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
+                    lemma_holders_unkeyed_small_changed(&post.list, &post.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, p / PAGE_SZ, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
+                    lemma_zeroing_typed_small_changed(&pre.zeroing, &pre.blocks, &post.blocks, p / PAGE_SZ, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
                     lemma_list_pages_used_same_kinds(&pre.list, &pre.blocks, &post.blocks);
                     assert(objects_wf(&post.tables, &pre.blocks, pre.holders@));
-                    lemma_objects_unframed_block_changed(&post.tables, &pre.blocks, &post.blocks, pre.holders@, p / 4096, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
+                    lemma_objects_unframed_block_changed(&post.tables, &pre.blocks, &post.blocks, pre.holders@, p / PAGE_SZ, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
                     assert(leaf_blocks_wf(&pre.list, &post.tables, &pre.blocks));
-                    lemma_leaf_blocks_other_changed(&pre.list, &post.list, &post.tables, &pre.blocks, &post.blocks, pre.holders@, p / 4096, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
+                    lemma_leaf_blocks_other_changed(&pre.list, &post.list, &post.tables, &pre.blocks, &post.blocks, pre.holders@, p / PAGE_SZ, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
                     lemma_table_pages_refs_changed(&pre.list, &post.list, &pre.table_pages, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
                     lemma_spaces_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
                     lemma_threads_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br));
@@ -784,8 +785,8 @@ impl CapKernel {
         }
         let (cp, pp) = (post.payload_of(child), pre.payload_of(parent));
         assert forall|o: ObjectId| #[trigger] b.covers(child, o) implies a.covers(parent, o) by {
-            assert(block_bytes(cp.order) == b.pages[child] * 4096);
-            assert(block_bytes(pp.order) == a.pages[parent] * 4096);
+            assert(block_bytes(cp.order) == b.pages[child] * PAGE_SZ);
+            assert(block_bytes(pp.order) == a.pages[parent] * PAGE_SZ);
         }
         assert forall|o: ObjectId| #[trigger] (b.contents)(o) == (a.contents)(o) by {}
         pre.lemma_slot_bound(parent);

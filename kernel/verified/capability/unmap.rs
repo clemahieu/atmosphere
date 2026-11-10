@@ -23,7 +23,6 @@ use crate::capability::reach::*;
 use crate::capability::space::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::view::*;
-#[cfg(verus_keep_ghost)]
 use crate::define::*;
 use crate::pptr::*;
 
@@ -55,7 +54,7 @@ impl CapKernel {
         &&& !self.cap_dead(n)
         &&& self.spaces.records@[self.payload_of(n).base].value().kind == kind
         &&& walk_table(tree, self.payload_of(n).base, p) is Some
-        &&& p.l1 < 512
+        &&& p.l1 < ENTRIES
         &&& tree.entry(t, p.l1).perm.present
         &&& self.flush_epoch < usize::MAX
     }
@@ -286,7 +285,7 @@ impl CapKernel {
         proof {
             assert(space_wf(&pre.list, &pre.spaces, &pre.blocks, s));
         }
-        let list = PPtr::<SpaceCores>::from_usize(s + SPACE_CORES_PAGE * 4096).borrow(
+        let list = PPtr::<SpaceCores>::from_usize(s + SPACE_CORES_PAGE * PAGE_SZ).borrow(
             Tracked(self.spaces.loaded.borrow().tracked_borrow(s)),
         ).list;
         // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
@@ -367,7 +366,7 @@ impl CapKernel {
             assert(walk_table(tree, s, p) == Some(t));
             assert(tree.record(t).level == 1);
         }
-        if l1 >= 512 {
+        if l1 >= ENTRIES {
             return None;
         }
         let current = self.table_entry(t, false, l1);

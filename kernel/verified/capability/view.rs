@@ -19,6 +19,8 @@ use crate::capability::reach::*;
 use crate::capability::table::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::thread::*;
+#[cfg(verus_keep_ghost)]
+use crate::define::*;
 
 /// The bit of a capability's rights word that grants this right.
 pub open spec fn right_bit(right: Right) -> u32 {
@@ -117,7 +119,7 @@ impl CapKernel {
         requires
             self.wf(),
             self.tables.owner@.contains_key(page_of(n)),
-            n % 4096 < NODES_PER_PAGE,
+            n % PAGE_SZ < NODES_PER_PAGE,
         ensures
             n < NODE_SPACE,
             self.list.valid(n),
@@ -134,7 +136,7 @@ impl CapKernel {
         ensures
             self.tables.owner@.contains_key(page_of(self.tables.node_of(root, i))),
             self.tables.owner@[page_of(self.tables.node_of(root, i))].0 == root,
-            self.tables.node_of(root, i) % 4096 == index_slot(i),
+            self.tables.node_of(root, i) % PAGE_SZ == index_slot(i),
             0 < index_slot(i) < NODES_PER_PAGE,
             page_of(self.tables.node_of(root, i)) == self.tables.leaf(root, index_entry(i)),
     {
@@ -142,8 +144,8 @@ impl CapKernel {
         self.tables.lemma_entry(root, index_entry(i));
         self.tables.lemma_leaf(&self.list, leaf);
         let n = self.tables.node_of(root, i);
-        assert(leaf % 4096 == 0);
-        assert(n % 4096 == index_slot(i));
+        assert(leaf % PAGE_SZ == 0);
+        assert(n % PAGE_SZ == index_slot(i));
         assert(page_of(n) == leaf);
     }
 
@@ -198,7 +200,7 @@ impl CapKernel {
             &&& post.list.nodes@[i].kind == pre.list.nodes@[i].kind
         }
         &&& forall|x: usize| #![trigger post.tables.payload_of(x)]
-            x != n && x != m && x % 4096 < NODES_PER_PAGE && pre.tables.owner@.contains_key(page_of(x))
+            x != n && x != m && x % PAGE_SZ < NODES_PER_PAGE && pre.tables.owner@.contains_key(page_of(x))
             ==> post.tables.payload_of(x) == pre.tables.payload_of(x)
     }
 
@@ -212,7 +214,7 @@ impl CapKernel {
             post.is_cap(x) == pre.is_cap(x),
             pre.is_cap(x) ==> post.payload_of(x) == pre.payload_of(x),
     {
-        if pre.tables.owner@.contains_key(page_of(x)) && x % 4096 < NODES_PER_PAGE {
+        if pre.tables.owner@.contains_key(page_of(x)) && x % PAGE_SZ < NODES_PER_PAGE {
             pre.lemma_slot_bound(x);
             assert(post.list.nodes@[x as int].live == pre.list.nodes@[x as int].live);
             assert(post.tables.payload_of(x) == pre.tables.payload_of(x));
@@ -225,8 +227,8 @@ impl CapKernel {
         requires
             Self::caps_frame(pre, post, n, m),
             post.table_pages == pre.table_pages,
-            n % 4096 != 0,
-            m % 4096 != 0,
+            n % PAGE_SZ != 0,
+            m % PAGE_SZ != 0,
             !(post.list.nodes@[n as int].live && post.list.nodes@[n as int].kind is Hidden),
             !(post.list.nodes@[m as int].live && post.list.nodes@[m as int].kind is Hidden),
             post.list.nodes@[n as int].live && post.list.nodes@[n as int].kind is Capability
@@ -314,9 +316,9 @@ impl CapKernel {
             assert(devices_wf(&self.list, &self.tables, &self.devices));
             assert(self.devices.count <= MAX_DEVICES);
             let x = (p.base - DEVICE_OBJECTS) as int;
-            assert(x / 4096 < MAX_DEVICES);
-            assert(x < MAX_DEVICES * 4096) by (nonlinear_arith)
-                requires x / 4096 < MAX_DEVICES, x >= 0;
+            assert(x / (PAGE_SZ as int) < MAX_DEVICES);
+            assert(x < MAX_DEVICES * PAGE_SZ) by (nonlinear_arith)
+                requires x / (PAGE_SZ as int) < MAX_DEVICES, x >= 0;
             assert(pow2(0) == 1) by { lemma2_to64(); }
         } else if p.kind is Console || p.kind is Power {
             assert(pow2(0) == 1) by { lemma2_to64(); }

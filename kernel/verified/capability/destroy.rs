@@ -141,7 +141,7 @@ impl CapKernel {
         proof {
             assert(process_wf(&self.processes, &self.blocks, p));
         }
-        PPtr::<ProcessRecord>::from_usize(p + PROCESS_RECORD_PAGE * 4096).borrow(
+        PPtr::<ProcessRecord>::from_usize(p + PROCESS_RECORD_PAGE * PAGE_SZ).borrow(
             Tracked(self.processes.records.borrow().tracked_borrow(p)),
         ).dead
     }
@@ -170,7 +170,7 @@ impl CapKernel {
                     self.lemma_thread_cap(n);
                     assert(thread_wf(&self.list, &self.threads, &self.blocks, t));
                 }
-                let record = *PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * 4096).borrow(
+                let record = *PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * PAGE_SZ).borrow(
                     Tracked(self.threads.records.borrow().tracked_borrow(t)),
                 );
                 let dead = match record.state {
@@ -367,7 +367,7 @@ impl CapKernel {
             assert(pre.spaces.roots@.contains_key(p));
             assert(space_wf(&pre.list, &pre.spaces, &pre.blocks, p));
         }
-        let ptr = PPtr::<ProcessRecord>::from_usize(p + PROCESS_RECORD_PAGE * 4096);
+        let ptr = PPtr::<ProcessRecord>::from_usize(p + PROCESS_RECORD_PAGE * PAGE_SZ);
         let tracked mut perm;
         proof {
             perm = self.processes.records.borrow_mut().tracked_remove(p);
@@ -376,7 +376,7 @@ impl CapKernel {
         proof {
             self.processes.records.borrow_mut().tracked_insert(p, perm);
         }
-        let list = PPtr::<SpaceCores>::from_usize(p + SPACE_CORES_PAGE * 4096).borrow(
+        let list = PPtr::<SpaceCores>::from_usize(p + SPACE_CORES_PAGE * PAGE_SZ).borrow(
             Tracked(self.spaces.loaded.borrow().tracked_borrow(p)),
         ).list;
         self.stop_ipis = send_to_listed(list, Ghost(pre.stop_ipis@), Tracked(steps));

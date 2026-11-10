@@ -65,7 +65,7 @@ pub open spec fn in_run(start: nat, n: nat, x: nat) -> bool {
 
 /// The untyped capability boot hands the root for block b, given as its first page and its order.
 pub open spec fn page_block_payload(b: (nat, nat)) -> Payload {
-    untyped_payload((b.0 * 4096) as usize, b.1 as u8)
+    untyped_payload((b.0 * PAGE_SZ) as usize, b.1 as u8)
 }
 
 /// The first block of order at most cap of the run of n pages at page start: its order and its size in
@@ -368,17 +368,17 @@ proof fn lemma_page_block_wf(b: (nat, nat))
     lemma_pow2_pos(b.1);
     lemma_fundamental_div_mod(b.0 as int, p);
     let q = b.0 as int / p;
-    assert(b.0 * 4096 == q * (p * 4096)) by (nonlinear_arith)
+    assert(b.0 * PAGE_SZ == q * (p * PAGE_SZ)) by (nonlinear_arith)
         requires
             b.0 == p * q + 0,
     ;
-    lemma_mod_multiples_basic(q, p * 4096);
-    assert(b.0 * 4096 + p * 4096 <= NUM_PAGES * 4096) by (nonlinear_arith)
+    lemma_mod_multiples_basic(q, p * PAGE_SZ as int);
+    assert(b.0 * PAGE_SZ + p * PAGE_SZ <= NUM_PAGES * PAGE_SZ) by (nonlinear_arith)
         requires
             b.0 + p <= NUM_PAGES,
     ;
     assert((b.1 as u8) as nat == b.1);
-    assert(block_bytes(b.1 as u8) == p * 4096);
+    assert(block_bytes(b.1 as u8) == p * PAGE_SZ);
 }
 
 /// The decomposition of a run inside NUM_PAGES under a cap: its blocks are each of order at most the

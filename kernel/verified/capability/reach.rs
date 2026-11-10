@@ -11,15 +11,17 @@ use vstd::prelude::*;
 
 verus! {
 
+use crate::define::*;
+
 /// A page's address. An object is named by the base of its block.
 pub type ObjectId = usize;
 
 /// Devices are objects too, named above the 48-bit address space so that no block of memory covers
-/// one: device d is the page DEVICE_OBJECTS + d * 4096.
+/// one: device d is the page DEVICE_OBJECTS + d * PAGE_SZ.
 pub const DEVICE_OBJECTS: usize = 0x1_0000_0000_0000;
 
 pub open spec fn device_object(d: int) -> ObjectId {
-    (DEVICE_OBJECTS + d * 4096) as usize
+    (DEVICE_OBJECTS + d * PAGE_SZ) as usize
 }
 
 /// The console is an object too, named past every device object: the 2^36 pages from DEVICE_OBJECTS
@@ -33,8 +35,8 @@ pub const POWER_OBJECT: usize = 0x2_0000_0000_1000;
 pub type NodeId = usize;
 
 /// The 2M block `example`'s capability covers, and the first page past it.
-pub const EXAMPLE_BASE: usize = 0x200000;
-pub const EXAMPLE_PAST: usize = 0x400000;
+pub const EXAMPLE_BASE: usize = SIZE_2M;
+pub const EXAMPLE_PAST: usize = EXAMPLE_BASE + SIZE_2M;
 
 #[derive(PartialEq, Eq)]
 pub enum Right {
@@ -106,8 +108,8 @@ impl State {
     pub open spec fn covers(self, n: NodeId, o: ObjectId) -> bool {
         &&& self.names.contains_key(n)
         &&& self.pages.contains_key(n)
-        &&& o % 4096 == 0
-        &&& self.names[n] <= o < self.names[n] + self.pages[n] * 4096
+        &&& o % PAGE_SZ == 0
+        &&& self.names[n] <= o < self.names[n] + self.pages[n] * PAGE_SZ
     }
 
     /// The process a control capability over o gives authority over: a thread's process, since
@@ -2385,7 +2387,7 @@ proof fn lemma_example_descends_from_itself(c: NodeId, n: NodeId, k: nat)
 /// past either end, are all decided by this.
 pub proof fn lemma_example_reaches_its_block(o: ObjectId)
     requires
-        o % 4096 == 0,
+        o % PAGE_SZ == 0,
     ensures
         example().reach(1, o) == (EXAMPLE_BASE <= o < EXAMPLE_PAST),
 {

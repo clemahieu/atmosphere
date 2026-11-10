@@ -63,21 +63,21 @@ pub fn large_region(base: usize, order: u8) -> (ret: Option<(Large, usize)>)
         base as int % block_bytes(order) == 0,
     ensures
         ret is Some == {
-            ||| order == 9 && base / 4096 / PAGES_PER_2M < NUM_2M
-            ||| order == 18 && base / 4096 / PAGES_PER_1G < NUM_1G
+            ||| order == 9 && base / PAGE_SZ / PAGES_PER_2M < NUM_2M
+            ||| order == 18 && base / PAGE_SZ / PAGES_PER_1G < NUM_1G
         },
         ret is Some ==> {
             let (level, r) = ret.unwrap();
             &&& level == (if order == 9 { Large::Two } else { Large::One })
-            &&& r == base / 4096 / level_pages(level)
+            &&& r == base / PAGE_SZ / level_pages(level)
             &&& r < level_regions(level)
-            &&& level_base(level, r) == base / 4096
-            &&& r * level_pages(level) == base / 4096
-            &&& base / 4096 < NUM_PAGES
-            &&& base == (base / 4096) * 4096
+            &&& level_base(level, r) == base / PAGE_SZ
+            &&& r * level_pages(level) == base / PAGE_SZ
+            &&& base / PAGE_SZ < NUM_PAGES
+            &&& base == (base / PAGE_SZ) * PAGE_SZ
         },
 {
-    let page = base / 4096;
+    let page = base / PAGE_SZ;
     let level = if order == 9 {
         Large::Two
     } else if order == 18 {
@@ -97,24 +97,24 @@ pub fn large_region(base: usize, order: u8) -> (ret: Option<(Large, usize)>)
         lemma2_to64();
         match level {
             Large::Two => {
-                assert(block_bytes(order) == 2097152);
-                assert(base % 2097152 == 0);
-                assert(page % 512 == 0 && r * 512 == page && page * 4096 == base) by (nonlinear_arith)
+                assert(block_bytes(order) == SIZE_2M);
+                assert(base % SIZE_2M == 0);
+                assert(page % PAGES_PER_2M == 0 && r * PAGES_PER_2M == page && page * PAGE_SZ == base) by (nonlinear_arith)
                     requires
-                        base % 2097152 == 0,
-                        page == base / 4096,
-                        r == page / 512,
+                        base % SIZE_2M == 0,
+                        page == base / PAGE_SZ,
+                        r == page / PAGES_PER_2M,
                 ;
             },
             Large::One => {
-                assert(pow2(18) == 0x40000);
-                assert(block_bytes(order) == 0x40000000);
-                assert(base % 0x40000000 == 0);
-                assert(page % 262144 == 0 && r * 262144 == page && page * 4096 == base) by (nonlinear_arith)
+                assert(pow2(18) == PAGES_PER_1G);
+                assert(block_bytes(order) == SIZE_1G);
+                assert(base % SIZE_1G == 0);
+                assert(page % PAGES_PER_1G == 0 && r * PAGES_PER_1G == page && page * PAGE_SZ == base) by (nonlinear_arith)
                     requires
-                        base % 0x40000000 == 0,
-                        page == base / 4096,
-                        r == page / 262144,
+                        base % SIZE_1G == 0,
+                        page == base / PAGE_SZ,
+                        r == page / PAGES_PER_1G,
                 ;
             },
         }
@@ -171,7 +171,7 @@ fn type_region(blocks: &mut BlockTable, level: Large, r: usize) -> (ret: Option<
             let ret = blocks.try_type_2m(r);
             proof {
                 if ret is Some {
-                    assert((r + 1) * 512 == r * 512 + 512);
+                    assert((r + 1) * PAGES_PER_2M == r * PAGES_PER_2M + PAGES_PER_2M);
                     assert forall|i: int| level_base(level, r) <= i < level_base(level, r) + level_pages(level)
                         implies !#[trigger] pre.covered(i) by {
                         assert(pre.pages@[i].kind is Free);
@@ -186,7 +186,7 @@ fn type_region(blocks: &mut BlockTable, level: Large, r: usize) -> (ret: Option<
             let ret = blocks.try_type_1g(r);
             proof {
                 if ret is Some {
-                    assert((r + 1) * 262144 == r * 262144 + 262144);
+                    assert((r + 1) * PAGES_PER_1G == r * PAGES_PER_1G + PAGES_PER_1G);
                     assert forall|i: int| level_base(level, r) <= i < level_base(level, r) + level_pages(level)
                         implies !#[trigger] pre.covered(i) by {
                         assert(pre.pages@[i].kind is Free);
@@ -226,11 +226,11 @@ impl CapKernel {
         let size = pow2(order as nat) as int;
         lemma_pow2_pos(order as nat);
         lemma_pow2_pos(p.order as nat);
-        assert(block_bytes(order) == 4096 * size) by (nonlinear_arith)
-            requires block_bytes(order) == size * 4096;
-        lemma_mod_mod(base as int, 4096, size);
-        assert(block_bytes(order) >= 4096) by (nonlinear_arith)
-            requires block_bytes(order) == 4096 * size, size > 0;
+        assert(block_bytes(order) == PAGE_SZ * size) by (nonlinear_arith)
+            requires block_bytes(order) == size * PAGE_SZ;
+        lemma_mod_mod(base as int, PAGE_SZ as int, size);
+        assert(block_bytes(order) >= PAGE_SZ) by (nonlinear_arith)
+            requires block_bytes(order) == PAGE_SZ * size, size > 0;
     }
 
     /// And a retype that makes a capability needs an empty slot for it.
@@ -245,7 +245,7 @@ impl CapKernel {
     pub open spec fn can_retype_block(&self, root: usize, from: usize, to: usize, base: usize, order: u8) -> bool {
         &&& self.can_retype(root, from, to, base, order)
         &&& self.blocks.tracks_addr_run(base, order_pages(order as usize))
-        &&& self.blocks.small_free((base / 4096) as int, order as usize)
+        &&& self.blocks.small_free((base / PAGE_SZ) as int, order as usize)
     }
 
     /// And a leaf needs a table to go in, the caller's own or that of a live process the caller
@@ -259,7 +259,7 @@ impl CapKernel {
         &&& self.tables.leaf(table->0, at.index as int) == NO_LEAF
         &&& base != NO_LEAF
         &&& self.blocks.tracks_addr_run(base, 2)
-        &&& self.blocks.small_free((base / 4096) as int, 1)
+        &&& self.blocks.small_free((base / PAGE_SZ) as int, 1)
     }
 
     /// And a table page has no capability, so needs no slot: a level a table page has, and a free
@@ -268,7 +268,7 @@ impl CapKernel {
         &&& self.can_retype_under(root, from, base, 3)
         &&& 1 <= level <= 3
         &&& self.blocks.tracks_addr_run(base, 8)
-        &&& self.blocks.small_free((base / 4096) as int, 3)
+        &&& self.blocks.small_free((base / PAGE_SZ) as int, 3)
     }
 
     /// A 4K frame is that and no more.
@@ -286,10 +286,10 @@ impl CapKernel {
     /// the one an earlier step of this retype typed and is zeroing.
     pub open spec fn can_retype_large(&self, root: usize, from: usize, to: usize, base: usize, order: u8) -> bool {
         let level = if order == 9 { Large::Two } else { Large::One };
-        let r = base / 4096 / level_pages(level);
+        let r = base / PAGE_SZ / level_pages(level);
         &&& self.can_retype(root, from, to, base, order)
-        &&& order == 9 ==> base / 4096 / PAGES_PER_2M < NUM_2M
-        &&& order == 18 ==> base / 4096 / PAGES_PER_1G < NUM_1G
+        &&& order == 9 ==> base / PAGE_SZ / PAGES_PER_2M < NUM_2M
+        &&& order == 18 ==> base / PAGE_SZ / PAGES_PER_1G < NUM_1G
         &&& order == 9 || order == 18
         &&& self.zeroing.active(level, r) || self.blocks.large_free(level, r as int)
     }
@@ -373,7 +373,7 @@ impl CapKernel {
     /// The block a frame at base will take: typed, holding the one reference retype took for its
     /// capability, with no capability yet.
     pub open spec fn frame_block_ready(&self, base: usize, order: u8) -> bool {
-        let br = block_ref(&self.blocks, base / 4096);
+        let br = block_ref(&self.blocks, base / PAGE_SZ);
         &&& self.blocks.tracks_addr(base)
         &&& !self.holders@.contains_key(br)
         &&& block_typed(&self.blocks, br)
@@ -394,7 +394,7 @@ impl CapKernel {
             post.blocks == pre.blocks,
             post.zeroing == pre.zeroing,
             pre.frame_block_ready(base, order),
-            post.holders@ == pre.holders@.insert(block_ref(&pre.blocks, base / 4096), set![child]),
+            post.holders@ == pre.holders@.insert(block_ref(&pre.blocks, base / PAGE_SZ), set![child]),
             post.table_pages == pre.table_pages,
             post.spaces == pre.spaces,
             post.threads == pre.threads,
@@ -433,7 +433,7 @@ impl CapKernel {
             &pre.zeroing,
             pre.holders@,
             child,
-            block_ref(&pre.blocks, base / 4096),
+            block_ref(&pre.blocks, base / PAGE_SZ),
         );
     }
 
@@ -456,7 +456,7 @@ impl CapKernel {
             final(self).blocks == old(self).blocks,
             final(self).frames == old(self).frames,
             final(self).zeroing == old(self).zeroing,
-            final(self).holders@ == old(self).holders@.insert(block_ref(&old(self).blocks, base / 4096), set![child]),
+            final(self).holders@ == old(self).holders@.insert(block_ref(&old(self).blocks, base / PAGE_SZ), set![child]),
             final(self).view().holds(root, child),
             final(self).payload_of(child) == large_frame_of(base, order),
             final(self).list.is_child(parent, child),
@@ -495,7 +495,7 @@ impl CapKernel {
             to,
             Payload { kind: CapKind::Frame, order, rights: FRAME_RIGHTS, base, badge: 0, reserved: 0 },
         );
-        self.holders = Ghost(pre.holders@.insert(block_ref(&pre.blocks, base / 4096), set![child]));
+        self.holders = Ghost(pre.holders@.insert(block_ref(&pre.blocks, base / PAGE_SZ), set![child]));
         proof {
             let post = *self;
             assert(post.payload_of(child) == large_frame_of(base, order));
@@ -581,7 +581,7 @@ impl CapKernel {
         &&& post.list.nodes@[child as int].depth == pre.list.nodes@[parent as int].depth + 1
         &&& post.tables.roots == pre.tables.roots
         &&& Self::caps_frame(pre, post, child, child)
-        &&& holds_zero(post.frames@, base / 4096)
+        &&& holds_zero(post.frames@, base / PAGE_SZ)
         &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, into: None })
     }
 
@@ -614,7 +614,7 @@ impl CapKernel {
         &&& post.list.nodes@[child as int].depth == pre.list.nodes@[parent as int].depth + 1
         &&& post.tables.roots == pre.tables.roots
         &&& Self::caps_frame(pre, post, child, child)
-        &&& forall|k: usize| k < pow2(order as nat) ==> #[trigger] holds_zero(post.frames@, (base / 4096 + k) as usize)
+        &&& forall|k: usize| k < pow2(order as nat) ==> #[trigger] holds_zero(post.frames@, (base / PAGE_SZ + k) as usize)
         &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, into: None })
     }
 
@@ -634,9 +634,9 @@ impl CapKernel {
             ret == old(self).can_retype_frame(root, from, to, base),
             !ret ==> *final(self) == *old(self),
             ret ==> Self::frame_retyped(*old(self), *final(self), root, from, to, base),
-            ret ==> Self::retype_keeps(*old(self), *final(self), old(self).tables.node_of(root, to), (base / 4096) as int, 0, None),
+            ret ==> Self::retype_keeps(*old(self), *final(self), old(self).tables.node_of(root, to), (base / PAGE_SZ) as int, 0, None),
             ret ==> {
-                let br = block_ref(&final(self).blocks, base / 4096);
+                let br = block_ref(&final(self).blocks, base / PAGE_SZ);
                 &&& block_typed(&final(self).blocks, br)
                 &&& block_refs(&final(self).blocks, br) == 1
                 &&& !block_dead(&final(self).blocks, br)
@@ -647,14 +647,14 @@ impl CapKernel {
             Some(found) => found,
             None => { return false; },
         };
-        if !self.blocks.page_tracked(base / 4096) {
+        if !self.blocks.page_tracked(base / PAGE_SZ) {
             return false;
         }
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         proof {
             lemma2_to64();
-            assert(base % 4096 == 0);
-            assert(page * 4096 == base);
+            assert(base % PAGE_SZ == 0);
+            assert(page * PAGE_SZ == base);
         }
         // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
         let tracked mut steps = Steps::fresh();
@@ -667,7 +667,7 @@ impl CapKernel {
         let tracked mut perm;
         proof {
             assert(0usize < order_pages(0));
-            assert(perms[(page + 0usize) as usize].addr() == (page + 0usize) * 4096);
+            assert(perms[(page + 0usize) as usize].addr() == (page + 0usize) * PAGE_SZ);
             assert((page + 0usize) as usize == page);
             perm = perms.tracked_remove(page);
         }
@@ -684,7 +684,7 @@ impl CapKernel {
             lemma_leaf_blocks_small_typed(&self.list, &self.tables, &pre.blocks, &self.blocks, pre.holders@, page, 1);
             lemma_table_pages_small_typed(&self.list, &self.table_pages, &pre.blocks, &self.blocks, page, 1);
             assert forall|x: usize| self.blocks.tracks(x as int) && #[trigger] table_block(&self.blocks, x)
-                implies self.table_pages.maps@.contains_key((x * 4096) as usize) by {
+                implies self.table_pages.maps@.contains_key((x * PAGE_SZ) as usize) by {
                 assert(x != page);
             }
             assert forall|k: int| 0 <= k < 1 implies !((#[trigger] self.blocks.pages@[page + k]).object is Space) by {
@@ -804,17 +804,17 @@ impl CapKernel {
                     if b == base {
                         match level {
                             Large::Two => {
-                                assert(base == r * 512);
-                                assert(base / 512 == r) by (nonlinear_arith)
+                                assert(base == r * PAGES_PER_2M);
+                                assert(base / PAGES_PER_2M == r) by (nonlinear_arith)
                                     requires
-                                        base == r * 512,
+                                        base == r * PAGES_PER_2M,
                                 ;
                             },
                             Large::One => {
-                                assert(base == r * 262144);
-                                assert(base / 262144 == r) by (nonlinear_arith)
+                                assert(base == r * PAGES_PER_1G);
+                                assert(base / PAGES_PER_1G == r) by (nonlinear_arith)
                                     requires
-                                        base == r * 262144,
+                                        base == r * PAGES_PER_1G,
                                 ;
                             },
                         }
@@ -860,7 +860,7 @@ impl CapKernel {
             lemma_level_pages(level, r);
             self.frames.borrow_mut().tracked_union_prefer_right(zeroed);
             let me = *self;
-            assert forall|i: usize| #[trigger] me.frames@.contains_key(i) implies me.frames@[i].addr() == i * 4096 by {
+            assert forall|i: usize| #[trigger] me.frames@.contains_key(i) implies me.frames@[i].addr() == i * PAGE_SZ by {
                 if zeroed.dom().contains(i) {
                     assert(holds_zero(zeroed, (base + (i - base) as usize) as usize));
                 } else {
@@ -906,13 +906,13 @@ impl CapKernel {
         assert(self.zeroing.blocks@[base] == pages);
         match level {
             Large::Two => {
-                assert(base == r * 512);
-                lemma_fundamental_div_mod_converse(base as int, 512, r as int, 0);
+                assert(base == r * PAGES_PER_2M);
+                lemma_fundamental_div_mod_converse(base as int, PAGES_PER_2M as int, r as int, 0);
                 assert(base / PAGES_PER_2M == r);
             },
             Large::One => {
-                assert(base == r * 262144);
-                lemma_fundamental_div_mod_converse(base as int, 262144, r as int, 0);
+                assert(base == r * PAGES_PER_1G);
+                lemma_fundamental_div_mod_converse(base as int, PAGES_PER_1G as int, r as int, 0);
                 assert(base / PAGES_PER_1G == r);
             },
         }
@@ -923,8 +923,8 @@ impl CapKernel {
         requires
             self.blocks.wf(),
             r < level_regions(level),
-            base / 4096 == r * level_pages(level),
-            base == (base / 4096) * 4096,
+            base / PAGE_SZ == r * level_pages(level),
+            base == (base / PAGE_SZ) * PAGE_SZ,
             order == (match level { Large::Two => 9u8, Large::One => 18u8 }),
             !self.holders@.contains_key(level_ref(level, r)),
             block_typed(&self.blocks, level_ref(level, r)),
@@ -935,25 +935,25 @@ impl CapKernel {
         ensures
             self.frame_block_ready(base, order),
     {
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         lemma2_to64();
         match level {
             Large::Two => {
-                assert(page == r * 512);
-                lemma_fundamental_div_mod_converse(page as int, 512, r as int, 0);
+                assert(page == r * PAGES_PER_2M);
+                lemma_fundamental_div_mod_converse(page as int, PAGES_PER_2M as int, r as int, 0);
                 assert(page / PAGES_PER_2M == r);
                 assert(block_ref(&self.blocks, page) == BlockRef::Two(r));
-                assert(block_bytes(9) == 0x200000);
-                assert(base == r * 0x200000);
+                assert(block_bytes(9) == SIZE_2M);
+                assert(base == r * SIZE_2M);
             },
             Large::One => {
-                assert(page == r * 262144);
-                lemma_fundamental_div_mod_converse(page as int, 262144, r as int, 0);
+                assert(page == r * PAGES_PER_1G);
+                lemma_fundamental_div_mod_converse(page as int, PAGES_PER_1G as int, r as int, 0);
                 assert(page / PAGES_PER_1G == r);
                 lemma_in_1g_block(&self.blocks, page, r);
-                assert(pow2(18) == 0x40000);
-                assert(block_bytes(18) == 0x40000000);
-                assert(base == r * 0x40000000);
+                assert(pow2(18) == PAGES_PER_1G);
+                assert(block_bytes(18) == SIZE_1G);
+                assert(base == r * SIZE_1G);
             },
         }
     }
@@ -991,7 +991,7 @@ impl CapKernel {
         }
         &&& forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x)
         &&& post.processes == pre.processes
-        &&& Self::retype_keeps(pre, post, base, (base / 4096) as int, 1, Some((table, at.index as int)))
+        &&& Self::retype_keeps(pre, post, base, (base / PAGE_SZ) as int, 1, Some((table, at.index as int)))
         &&& discharges(
             pre.view(),
             post.view(),
@@ -1026,7 +1026,7 @@ impl CapKernel {
             !ret ==> *final(self) == *old(self),
             ret ==> Self::leaf_retyped(*old(self), *final(self), root, from, at, base),
             ret ==> final(self).spaces == old(self).spaces,
-            ret ==> forall|i: int| old(self).blocks.tracks(i) && !(base / 4096 <= i < base / 4096 + 2)
+            ret ==> forall|i: int| old(self).blocks.tracks(i) && !(base / PAGE_SZ <= i < base / PAGE_SZ + 2)
                 ==> #[trigger] final(self).blocks.pages@[i] == old(self).blocks.pages@[i],
     {
         let ghost pre = *old(self);
@@ -1043,7 +1043,7 @@ impl CapKernel {
             pre.tables.lemma_root(table);
         }
         if r >= ROOT_ENTRIES || self.tables.entry(table, r) != NO_LEAF || base == NO_LEAF
-            || !self.blocks.run_tracked(base / 4096, 2) {
+            || !self.blocks.run_tracked(base / PAGE_SZ, 2) {
             return false;
         }
         proof {
@@ -1084,7 +1084,7 @@ impl CapKernel {
                 &&& self.tables.leaf(root, r as int) == NO_LEAF
                 &&& base != NO_LEAF
                 &&& self.blocks.tracks_addr_run(base, 2)
-                &&& self.blocks.small_free((base / 4096) as int, 1)
+                &&& self.blocks.small_free((base / PAGE_SZ) as int, 1)
             },
     {
     }
@@ -1115,7 +1115,7 @@ impl CapKernel {
             final(self).cores == old(self).cores,
             Self::same_tree(*old(self), *final(self)),
             !ret ==> *final(self) == *old(self),
-            ret == old(self).blocks.small_free((base / 4096) as int, 1),
+            ret == old(self).blocks.small_free((base / PAGE_SZ) as int, 1),
             ret ==> {
                 &&& Self::leaf_step(*old(self), *final(self), base)
                 &&& final(self).list.parent@ == old(self).list.parent@.insert(base, parent)
@@ -1147,12 +1147,12 @@ impl CapKernel {
                 &&& forall|x: usize| #[trigger] final(self).is_cap(x) == old(self).is_cap(x)
                 &&& forall|x: usize| #[trigger] old(self).is_cap(x) ==> final(self).payload_of(x) == old(self).payload_of(x)
                 &&& final(self).list.pages@.dom() == old(self).list.pages@.dom().insert(base)
-                &&& final(self).blocks.pages@[(base / 4096) as int].kind is Base
-                &&& final(self).blocks.pages@[(base / 4096) as int].object is TableLeaf
-                &&& final(self).blocks.pages@[base / 4096 + 1].kind is Member
+                &&& final(self).blocks.pages@[(base / PAGE_SZ) as int].kind is Base
+                &&& final(self).blocks.pages@[(base / PAGE_SZ) as int].object is TableLeaf
+                &&& final(self).blocks.pages@[base / PAGE_SZ + 1].kind is Member
                 &&& final(self).blocks.regions_2m@ == old(self).blocks.regions_2m@
                 &&& final(self).blocks.regions_1g@ == old(self).blocks.regions_1g@
-                &&& forall|i: int| old(self).blocks.tracks(i) && !(base / 4096 <= i < base / 4096 + 2)
+                &&& forall|i: int| old(self).blocks.tracks(i) && !(base / PAGE_SZ <= i < base / PAGE_SZ + 2)
                     ==> #[trigger] final(self).blocks.pages@[i] == old(self).blocks.pages@[i]
                 &&& final(self).threads == old(self).threads
                 &&& final(self).processes == old(self).processes
@@ -1161,13 +1161,13 @@ impl CapKernel {
             },
     {
         let ghost pre = *old(self);
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         proof {
             lemma2_to64();
-            assert(page % 2 == 0 && page * 4096 == base) by (nonlinear_arith)
+            assert(page % 2 == 0 && page * PAGE_SZ == base) by (nonlinear_arith)
                 requires
                     base % 8192 == 0,
-                    page == base / 4096,
+                    page == base / PAGE_SZ,
             ;
         }
         // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
@@ -1182,8 +1182,8 @@ impl CapKernel {
         proof {
             assert(0usize < order_pages(1));
             assert(1usize < order_pages(1));
-            assert(perms[(page + 0usize) as usize].addr() == (page + 0usize) * 4096);
-            assert(perms[(page + 1usize) as usize].addr() == (page + 1usize) * 4096);
+            assert(perms[(page + 0usize) as usize].addr() == (page + 0usize) * PAGE_SZ);
+            assert(perms[(page + 1usize) as usize].addr() == (page + 1usize) * PAGE_SZ);
             assert((page + 0usize) as usize == page);
             first = perms.tracked_remove(page);
             second = perms.tracked_remove((page + 1) as usize);
@@ -1192,7 +1192,7 @@ impl CapKernel {
         let nodes = init_node_page(base, Tracked(first), Tracked(&mut steps));
         proof {
             assert(!pre.list.pages@.dom().contains(base)) by {
-                assert(base / 4096 == page);
+                assert(base / PAGE_SZ == page);
                 assert(pre.blocks.pages@[page + 0int].kind is Free);
             }
             pre.list.lemma_live_valid(parent);
@@ -1333,7 +1333,7 @@ impl CapKernel {
     proof fn lemma_leaf_list_pages(pre: Self, post: Self, base: usize, page: usize)
         requires
             pre.wf(),
-            base / 4096 == page,
+            base / PAGE_SZ == page,
             pre.blocks.tracks_run(page as int, 2),
             pre.blocks.pages@[page + 0int].kind is Free,
             pre.blocks.pages@[page + 1int].kind is Free,
@@ -1358,7 +1358,7 @@ impl CapKernel {
             Self::leaf_step(pre, post, base),
             post.blocks.wf(),
             post.table_pages == pre.table_pages,
-            base / 4096 == page,
+            base / PAGE_SZ == page,
             pre.blocks.tracks_run(page as int, 2),
             !pre.list.pages@.dom().contains(base),
             pre.blocks.pages@[page + 0int].kind is Free,
@@ -1377,7 +1377,7 @@ impl CapKernel {
         lemma_table_pages_small_typed(&pre.list, &pre.table_pages, &pre.blocks, &post.blocks, page, 2);
         post.blocks.lemma_member_of(page as int, page + 1int);
         assert forall|x: usize| post.blocks.tracks(x as int) && #[trigger] table_block(&post.blocks, x)
-            implies pre.table_pages.maps@.contains_key((x * 4096) as usize) by {
+            implies pre.table_pages.maps@.contains_key((x * PAGE_SZ) as usize) by {
             assert(!(page <= x < page + 2));
         }
         assert forall|t: usize| #[trigger] pre.table_pages.maps@.contains_key(t) implies {
@@ -1418,7 +1418,7 @@ impl CapKernel {
             leaf_slots_are_capabilities(&post.list, &post.tables),
     {
         assert forall|n: usize| #[trigger] post.list.nodes@[n as int].live
-            && post.tables.owner@.contains_key(page_of(n)) && n % 4096 != 0 && n % 4096 < NODES_PER_PAGE
+            && post.tables.owner@.contains_key(page_of(n)) && n % PAGE_SZ != 0 && n % PAGE_SZ < NODES_PER_PAGE
             implies post.list.nodes@[n as int].kind is Capability by {
             if page_of(n) == base {
                 assert(base < n < base + NODES_PER_PAGE);
@@ -1584,7 +1584,7 @@ impl CapKernel {
             Self::leaf_step(pre, post, base),
             post.list.nodes@[base as int].live,
             post.list.nodes@[base as int].kind is Hidden,
-            base / 4096 == page,
+            base / PAGE_SZ == page,
             pre.blocks.tracks_run(page as int, 2),
             pre.blocks.pages@[page + 0int].kind is Free,
             pre.blocks.pages@[page + 1int].kind is Free,
@@ -1602,12 +1602,12 @@ impl CapKernel {
         assert forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) implies {
             &&& post.list.nodes@[l as int].live ==> {
                 &&& post.list.nodes@[l as int].kind is Hidden
-                &&& post.blocks.pages@[(l / 4096) as int].refs == 1
-                &&& !post.blocks.pages@[(l / 4096) as int].dead
+                &&& post.blocks.pages@[(l / PAGE_SZ) as int].refs == 1
+                &&& !post.blocks.pages@[(l / PAGE_SZ) as int].dead
             }
             &&& !post.list.nodes@[l as int].live ==> {
-                &&& post.blocks.pages@[(l / 4096) as int].refs == 0
-                &&& post.blocks.pages@[(l / 4096) as int].dead
+                &&& post.blocks.pages@[(l / PAGE_SZ) as int].refs == 0
+                &&& post.blocks.pages@[(l / PAGE_SZ) as int].dead
             }
         } by {
             if l != base {
@@ -1629,7 +1629,7 @@ impl CapKernel {
             pre.blocks.tracks(page as int),
             pre.blocks.tracks_run(page as int, 2),
             base % 8192 == 0,
-            base / 4096 == page,
+            base / PAGE_SZ == page,
             post.holders == pre.holders,
             pre.blocks.pages@[page + 0int].kind is Free,
             pre.blocks.pages@[page + 1int].kind is Free,
@@ -1662,7 +1662,7 @@ impl CapKernel {
     /// whose slots is live.
     pub open spec fn leaf_step(pre: Self, post: Self, leaf: usize) -> bool {
         &&& pre.wf()
-        &&& leaf % 4096 == 0
+        &&& leaf % PAGE_SZ == 0
         &&& !pre.tables.owner@.contains_key(leaf)
         &&& !pre.list.nodes@[leaf as int].live
         &&& leaf < NODE_SPACE
@@ -1681,7 +1681,7 @@ impl CapKernel {
     proof fn lemma_leaf_keeps(pre: Self, post: Self, table: usize, r: usize, base: usize)
         requires
             pre.wf(),
-            base % 4096 == 0,
+            base % PAGE_SZ == 0,
             forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x),
             forall|x: usize| #[trigger] pre.is_cap(x) ==> post.payload_of(x) == pre.payload_of(x),
             forall|t: usize, i: usize| #[trigger] pre.tables.has_slot(&pre.list, t, i)
@@ -1697,10 +1697,10 @@ impl CapKernel {
             post.processes == pre.processes,
             post.blocks.regions_2m@ == pre.blocks.regions_2m@,
             post.blocks.regions_1g@ == pre.blocks.regions_1g@,
-            forall|i: int| pre.blocks.tracks(i) && !(base / 4096 <= i < base / 4096 + 2)
+            forall|i: int| pre.blocks.tracks(i) && !(base / PAGE_SZ <= i < base / PAGE_SZ + 2)
                 ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
         ensures
-            Self::retype_keeps(pre, post, base, (base / 4096) as int, 1, Some((table, r as int))),
+            Self::retype_keeps(pre, post, base, (base / PAGE_SZ) as int, 1, Some((table, r as int))),
     {
         assert forall|t: usize, i: usize| #[trigger] pre.tables.has_slot(&pre.list, t, i) implies {
             &&& post.tables.has_slot(&post.list, t, i)
@@ -1728,7 +1728,7 @@ impl CapKernel {
                 assert(e != r);
             }
         }
-        assert forall|i: int| pre.blocks.tracks(i) && !((base / 4096) as int <= i < (base / 4096) as int + order_pages(1))
+        assert forall|i: int| pre.blocks.tracks(i) && !((base / PAGE_SZ) as int <= i < (base / PAGE_SZ) as int + order_pages(1))
             implies #[trigger] post.blocks.pages@[i].kind == pre.blocks.pages@[i].kind by {
             assert(post.blocks.pages@[i] == pre.blocks.pages@[i]);
         }
@@ -1744,10 +1744,10 @@ impl CapKernel {
             pre.is_cap(x) ==> post.tables.owner@[page_of(x)] == pre.tables.owner@[page_of(x)],
     {
         if page_of(x) == leaf {
-            if x % 4096 != 0 && x % 4096 < NODES_PER_PAGE {
+            if x % PAGE_SZ != 0 && x % PAGE_SZ < NODES_PER_PAGE {
                 assert(leaf < x < leaf + NODES_PER_PAGE);
             }
-        } else if pre.tables.owner@.contains_key(page_of(x)) && x % 4096 < NODES_PER_PAGE {
+        } else if pre.tables.owner@.contains_key(page_of(x)) && x % PAGE_SZ < NODES_PER_PAGE {
             pre.lemma_slot_bound(x);
             assert(x != leaf);
         }
@@ -1854,11 +1854,11 @@ impl CapKernel {
             final(self).cores == old(self).cores,
             ret is Refused == !old(self).can_retype_large(root, from, to, base, order),
             ret is Refused ==> *final(self) == *old(self),
-            old(self).zeroing.blocks@.contains_key(base / 4096) ==>
-                final(self).zeroing.cursor@[(base / 4096) as int]
-                    <= old(self).zeroing.cursor@[(base / 4096) as int] + ZERO_CHUNK_PAGES,
-            !old(self).zeroing.blocks@.contains_key(base / 4096) && !(ret is Refused) ==>
-                final(self).zeroing.cursor@[(base / 4096) as int] <= ZERO_CHUNK_PAGES,
+            old(self).zeroing.blocks@.contains_key(base / PAGE_SZ) ==>
+                final(self).zeroing.cursor@[(base / PAGE_SZ) as int]
+                    <= old(self).zeroing.cursor@[(base / PAGE_SZ) as int] + ZERO_CHUNK_PAGES,
+            !old(self).zeroing.blocks@.contains_key(base / PAGE_SZ) && !(ret is Refused) ==>
+                final(self).zeroing.cursor@[(base / PAGE_SZ) as int] <= ZERO_CHUNK_PAGES,
             ret is Again ==> Self::large_frame_zeroing(*old(self), *final(self), root, from, to, base, order),
             ret is Done ==> Self::large_frame_retyped(*old(self), *final(self), root, from, to, base, order),
     {
@@ -1871,7 +1871,7 @@ impl CapKernel {
             Some(found) => found,
             None => { return RetypeStep::Refused; },
         };
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         let step = self.zero_large(level, r);
         match step {
             RetypeStep::Refused => { return RetypeStep::Refused; },
@@ -1889,7 +1889,7 @@ impl CapKernel {
             assert(self.view() == pre.view());
             assert(self.can_retype(root, from, to, base, order));
             assert(page == r * level_pages(level));
-            assert(base == page * 4096);
+            assert(base == page * PAGE_SZ);
             self.lemma_large_block_ready(level, r, base, order);
         }
         self.add_frame_cap(root, from, to, parent, child, base, order);

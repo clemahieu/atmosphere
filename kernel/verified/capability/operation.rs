@@ -22,8 +22,7 @@ use crate::capability::space::*;
 use crate::capability::steps::Steps;
 use crate::capability::thread::*;
 use crate::capability::unmap::Unmapped;
-#[cfg(verus_keep_ghost)]
-use crate::define::NUM_CPUS;
+use crate::define::*;
 use crate::pptr::*;
 use crate::arch::Registers;
 
@@ -340,10 +339,10 @@ impl CapKernel {
         let parent = pre.tables.node_of(root, from);
         &&& pre.can_retype_table_page(root, from, base, level)
         &&& pre.view().holds_right(root, parent, Right::Retype)
-        &&& pre.blocks.pages@[(base / 4096) as int].kind is Free
+        &&& pre.blocks.pages@[(base / PAGE_SZ) as int].kind is Free
         &&& post.table_pages.maps@.contains_key(base)
         &&& post.table_pages.records@[base].value() == fresh_table(level)
-        &&& forall|i: usize| i < 512 ==> #[trigger] post.table_pages.maps@[base].value()[i].is_empty()
+        &&& forall|i: usize| i < ENTRIES ==> #[trigger] post.table_pages.maps@[base].value()[i].is_empty()
         &&& post.list.is_child(parent, base)
         &&& !pre.list.nodes@[base as int].live
         &&& post.list.parent@ == pre.list.parent@.insert(base, parent)
@@ -652,7 +651,7 @@ impl CapKernel {
             self.lemma_current_root_live(c as int);
             assert(thread_wf(&self.list, &self.threads, &self.blocks, t));
         }
-        let record = *PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * 4096).borrow(
+        let record = *PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * PAGE_SZ).borrow(
             Tracked(self.threads.records.borrow().tracked_borrow(t)),
         );
         let root = match record.process {

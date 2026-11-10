@@ -31,6 +31,8 @@ use crate::capability::process::*;
 use crate::capability::thread::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::view::*;
+#[cfg(verus_keep_ghost)]
+use crate::define::*;
 
 impl CapKernel {
     /// The refusals: an index that names no slot, a source with no capability, or a target in use,
@@ -393,13 +395,13 @@ impl CapKernel {
             }
         }
         assert forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) && post.tables.payload_of(x).kind is Frame implies {
-            let p = post.tables.payload_of(x).base / 4096;
+            let p = post.tables.payload_of(x).base / PAGE_SZ;
             &&& blocks.tracks(p as int)
             &&& frame_in_block(block_ref(blocks, p), post.tables.payload_of(x))
             &&& hb.contains_key(block_ref(blocks, p))
             &&& hb[block_ref(blocks, p)].contains(x)
         } by {
-            let p = post.tables.payload_of(x).base / 4096;
+            let p = post.tables.payload_of(x).base / PAGE_SZ;
             if x == n {
                 assert(ha[block_ref(blocks, p)].contains(i));
             } else {
@@ -423,7 +425,7 @@ impl CapKernel {
             &&& post.tables.is_cap(&post.list, x)
             &&& post.tables.payload_of(x).kind is Frame
             &&& blocks.tracks_addr(post.tables.payload_of(x).base)
-            &&& block_ref(blocks, post.tables.payload_of(x).base / 4096) == k
+            &&& block_ref(blocks, post.tables.payload_of(x).base / PAGE_SZ) == k
         } || (x < NODE_SPACE && post.list.nodes@[x as int].live && post.list.nodes@[x as int].kind is Mapping)) by {
             assert(ha.contains_key(k));
             if ha[k].contains(i) && x == n {
@@ -533,8 +535,8 @@ impl CapKernel {
         &&& !post.list.nodes@[i as int].live
         &&& post.list.nodes@[n as int].live
         &&& post.list.nodes@[n as int].kind is Capability
-        &&& n % 4096 != 0
-        &&& n % 4096 < NODES_PER_PAGE
+        &&& n % PAGE_SZ != 0
+        &&& n % PAGE_SZ < NODES_PER_PAGE
         &&& pre.tables.owner@.contains_key(page_of(n))
         &&& post.payload_of(n) == pre.payload_of(i)
         &&& post.list.wf()

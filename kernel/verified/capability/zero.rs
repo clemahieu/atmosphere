@@ -20,7 +20,7 @@ pub const ZERO_CHUNK_PAGES: usize = 16;
 /// m holds page i's permission, and the page is zero.
 pub open spec fn holds_zero(m: Map<usize, PagePerm4k>, i: usize) -> bool {
     &&& m.contains_key(i)
-    &&& m[i].addr() == i * 4096
+    &&& m[i].addr() == i * PAGE_SZ
     &&& m[i].is_init()
     &&& page_is_zero(m[i].value())
 }
@@ -68,10 +68,10 @@ pub proof fn lemma_level_pages(level: Large, r: usize)
 {
     match level {
         Large::Two => {
-            range_set_properties::<usize>((r * 512) as usize, ((r + 1) * 512) as usize);
+            range_set_properties::<usize>((r * PAGES_PER_2M) as usize, ((r + 1) * PAGES_PER_2M) as usize);
         },
         Large::One => {
-            range_set_properties::<usize>((r * 262144) as usize, ((r + 1) * 262144) as usize);
+            range_set_properties::<usize>((r * PAGES_PER_1G) as usize, ((r + 1) * PAGES_PER_1G) as usize);
         },
     }
 }
@@ -394,7 +394,7 @@ impl Zeroing {
                 pre.lemma_page(base, k);
                 perm = self.perms.borrow_mut().tracked_remove(i);
             }
-            zero_page(i * 4096, Tracked(&mut perm));
+            zero_page(i * PAGE_SZ, Tracked(&mut perm));
             proof {
                 self.perms.borrow_mut().tracked_insert(i, perm);
             }
@@ -484,7 +484,7 @@ impl Zeroing {
                     match level {
                         Large::Two => {
                             assert(x != r);
-                            assert(x * 512 != r * 512) by (nonlinear_arith)
+                            assert(x * PAGES_PER_2M != r * PAGES_PER_2M) by (nonlinear_arith)
                                 requires x != r;
                         },
                         Large::One => {},

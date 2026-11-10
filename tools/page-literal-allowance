@@ -1,15 +1,3 @@
 # Files under kernel/verified that still write a page size, an entry count or a size derived from them
 # as a literal, one path a line; tools/check-page-literals.py passes a literal here and nowhere else
 # outside the definitions. A file leaves the list when its literals become the names in define.rs.
-capability/block.rs
-capability/decompose.rs
-capability/derive.rs
-capability/destroy.rs
-capability/moving.rs
-capability/operation.rs
-capability/probe.rs
-capability/reach.rs
-capability/retype.rs
-capability/unmap.rs
-capability/view.rs
-capability/zero.rs
