@@ -27,6 +27,10 @@ const LICENSE_CHECK: &str = "tools/check-licenses.py";
 /// with its reason and that no assume or admit is left there, relative to the project root.
 const EXTERNAL_BODY_CHECK: &str = "tools/check-external-body.py";
 
+/// The check that kernel/verified writes no page size, entries a level or size derived from them as a
+/// literal outside the definitions and the files its allowance lists, relative to the project root.
+const PAGE_LITERALS_CHECK: &str = "tools/check-page-literals.py";
+
 /// The hooks' tests, relative to the project root: the license guard's and the Beads actor's.
 const HOOK_TESTS: [&str; 2] = [".claude/hooks/license-guard-test.sh", ".claude/hooks/beads-actor-test.sh"];
 
@@ -74,6 +78,7 @@ enum Step {
     Verify,
     VerifyAarch64,
     ExternalBody,
+    PageLiterals,
     DesignIndex,
     BootStack,
     Coverage,
@@ -83,7 +88,7 @@ enum Step {
 }
 
 impl Step {
-    const ALL: [Step; 14] = [
+    const ALL: [Step; 15] = [
         Step::FileSizes,
         Step::Build,
         Step::BuildToolTests,
@@ -92,6 +97,7 @@ impl Step {
         Step::Verify,
         Step::VerifyAarch64,
         Step::ExternalBody,
+        Step::PageLiterals,
         Step::DesignIndex,
         Step::BootStack,
         Step::Coverage,
@@ -110,6 +116,7 @@ impl Step {
             Step::Verify => "verify",
             Step::VerifyAarch64 => "verify aarch64",
             Step::ExternalBody => "external body",
+            Step::PageLiterals => "page literals",
             Step::DesignIndex => "design index",
             Step::BootStack => "boot stack",
             Step::Coverage => "coverage",
@@ -141,6 +148,7 @@ impl Step {
             }
             Step::VerifyAarch64 => check_verify(project, &["--target", "aarch64"]).await,
             Step::ExternalBody => check_external_body(project).await,
+            Step::PageLiterals => check_page_literals(project).await,
             Step::DesignIndex => check_design_index(project).await,
             Step::BootStack => check_boot_stack(project).await,
             Step::Coverage => check_coverage(project).await,
@@ -267,6 +275,13 @@ async fn check_licenses(project: &ProjectHandle) -> Result<String> {
 async fn check_external_body(project: &ProjectHandle) -> Result<String> {
     run_check(project, EXTERNAL_BODY_CHECK, &["--test"]).await?;
     let output = check_output(project, EXTERNAL_BODY_CHECK).await?;
+    Ok(output.trim_end().to_string())
+}
+
+/// Runs the page literal check's own tests, then the check over kernel/verified.
+async fn check_page_literals(project: &ProjectHandle) -> Result<String> {
+    run_check(project, PAGE_LITERALS_CHECK, &["--test"]).await?;
+    let output = check_output(project, PAGE_LITERALS_CHECK).await?;
     Ok(output.trim_end().to_string())
 }
 
@@ -624,6 +639,7 @@ pub(super) mod tests {
         assert_eq!(steps(Some(Arch::Aarch64)), vec![Step::VerifyAarch64, Step::Aarch64Boot]);
         let x86_64 = steps(Some(Arch::X86_64));
         assert!(x86_64.contains(&Step::Boot) && x86_64.contains(&Step::Verify));
+        assert!(x86_64.contains(&Step::PageLiterals));
         assert!(!x86_64.contains(&Step::VerifyAarch64) && !x86_64.contains(&Step::Aarch64Boot));
         let both = steps(None);
         assert_eq!(both.len(), x86_64.len() + 2);
