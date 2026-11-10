@@ -194,8 +194,36 @@ pub unsafe fn flush_page(vaddr: u64) {
     );
 }
 
-/// The kernel's entry, which is not written for this target: the loader's run ends at the kernel's
-/// image.
-pub unsafe fn enter_kernel(_entry: *const c_void, _boot_info: *const BootInfo, _stack_top: u64) -> usize {
-    panic!("arch::enter_kernel is not written for aarch64");
+/// PSTATE.{D, A, I, F} as DAIF reads them, bits 9:6.
+const INTERRUPTS_MASKED: u64 = 0b1111 << 6;
+
+/// Calls the kernel's entry on the stack that ends at `stack_top`, with the boot information's
+/// address in x0, where the entry's C signature takes it, and returns what the entry returns.
+///
+/// The kernel's stack is SP_EL1, the one an exception taken to EL1 runs on, whichever the firmware
+/// left selected. The kernel finds every interrupt masked, as `disable_interrupts` left them, and
+/// translates through the table `activate` installed.
+pub unsafe fn enter_kernel(entry: *const c_void, boot_info: *const BootInfo, stack_top: u64) -> usize {
+    let masks: u64;
+    asm!("mrs {masks}, DAIF", masks = out(reg) masks, options(nomem, nostack, preserves_flags));
+    assert!(masks == INTERRUPTS_MASKED, "the kernel's entry takes every interrupt masked: DAIF {:#x}", masks);
+
+    let ret: usize;
+    asm!(
+        // The loader's stack and its selection, in registers the entry preserves.
+        "mov x20, sp",
+        "mrs x21, SPSel",
+        "msr SPSel, #1",
+        "mov sp, {stack_top}",
+        "blr {entry}",
+        "msr SPSel, x21",
+        "mov sp, x20",
+        entry = in(reg) entry,
+        stack_top = in(reg) stack_top,
+        inout("x0") boot_info => ret,
+        out("x20") _,
+        out("x21") _,
+        clobber_abi("C"),
+    );
+    ret
 }
