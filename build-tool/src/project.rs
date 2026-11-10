@@ -207,6 +207,7 @@ pub struct BuildOptions {
     /// Cargo features of the crate being built.
     pub features: Vec<String>,
 
-    /// A JSON target spec. None uses the target in the crate's `.cargo` config.
+    /// A JSON target spec, or a triple rustc has built in. None uses the target in the crate's
+    /// `.cargo` config.
     pub target: Option<PathBuf>,
 }

@@ -7,7 +7,7 @@ After control is handed off to the kernel, other domains can subsequently be loa
 
 ## Boot Protocol
 
-The loader boots from UEFI, built for `x86_64-unknown-uefi` (`src/boot/uefi.rs`). `tools/run.py` boots it under OVMF from a directory served as the EFI system partition, with the loader at `EFI/BOOT/BOOTX64.EFI` and the kernel, dom0 and payload concatenated in `initrd` beside it. Built for `aarch64-unknown-uefi` (`cargo build --target aarch64-unknown-uefi`), it is `EFI/BOOT/BOOTAA64.EFI`, which EDK2 on QEMU virt starts; `tools/orangepi-kvm.py --esp` boots such a directory under KVM. What differs between the two is `src/arch/`.
+The loader boots from UEFI, built for `x86_64-unknown-uefi` (`src/boot/uefi.rs`). `tools/run.py` boots it under OVMF from a directory served as the EFI system partition, with the loader at `EFI/BOOT/BOOTX64.EFI` and the kernel, dom0 and payload concatenated in `initrd` beside it. Built for `aarch64-unknown-uefi` (`cargo build --target aarch64-unknown-uefi`, which `atmo build --target aarch64` runs), it is `EFI/BOOT/BOOTAA64.EFI`, which EDK2 on QEMU virt starts; `tools/orangepi-kvm.py --esp` boots such a directory under KVM. What differs between the two is `src/arch/`.
 
 ## Boot Process
 

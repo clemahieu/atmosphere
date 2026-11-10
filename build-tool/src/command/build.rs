@@ -1,4 +1,5 @@
-//! `atmo build`: the workspace build the gate runs, and the same build for aarch64 user code.
+//! `atmo build`: the workspace build the gate runs, and the build of the loader and the user code
+//! for aarch64.
 
 use std::path::Path;
 use std::process::Stdio;
@@ -71,10 +72,16 @@ pub(super) async fn gate_build(project: &ProjectHandle) -> Result<String> {
     ))
 }
 
-/// dom0 and the user program that links asys, as aarch64 ELFs. The kernel is not built: it has no
-/// virt machine.
+/// The loader as an aarch64 EFI application, and dom0 and the user program that links asys as
+/// aarch64 ELFs. The kernel is not built: it has no virt machine.
 async fn aarch64_build(project: &ProjectHandle) -> Result<String> {
     let root = project.root();
+    let loader = project
+        .loader()
+        .build(&BuildOptions { target: Some(LOADER_AARCH64_TARGET.into()), ..BuildOptions::default() })
+        .await
+        .context("loader")?
+        .context("loader produced no executable")?;
     let dom0 = project
         .dom0()
         .build(&spec(&root, "dom0/src/aarch64-unknown-aloader.json"))
@@ -88,7 +95,7 @@ async fn aarch64_build(project: &ProjectHandle) -> Result<String> {
         .context("hello")?
         .context("hello produced no executable")?;
     let mut lines = Vec::new();
-    for path in [dom0, hello] {
+    for (path, image) in [(loader, Image::EfiApplication), (dom0, Image::Elf), (hello, Image::Elf)] {
         let file = Command::new("file")
             .arg(&path)
             .output()
@@ -98,12 +105,42 @@ async fn aarch64_build(project: &ProjectHandle) -> Result<String> {
             return Err(anyhow!("file {}: {}", path.display(), file.status));
         }
         let text = String::from_utf8_lossy(&file.stdout);
-        if !text.contains("ARM aarch64") {
-            return Err(anyhow!("{} is not an aarch64 ELF: {}", path.display(), text.trim()));
+        if !image.describes(&text) {
+            return Err(anyhow!("{} is not an aarch64 {}: {}", path.display(), image.name(), text.trim()));
         }
         lines.push(text.trim().to_string());
     }
     Ok(lines.join("; "))
+}
+
+/// The triple the aarch64 loader is built for, one rustc has built in; aloader's own config names
+/// the x86_64 one.
+const LOADER_AARCH64_TARGET: &str = "aarch64-unknown-uefi";
+
+/// What an image the aarch64 build makes is.
+#[derive(Debug, Clone, Copy)]
+enum Image {
+    /// What the loader loads: the kernel, dom0 and a user program.
+    Elf,
+    /// What the firmware starts: the loader.
+    EfiApplication,
+}
+
+impl Image {
+    fn name(self) -> &'static str {
+        match self {
+            Image::Elf => "ELF",
+            Image::EfiApplication => "EFI application",
+        }
+    }
+
+    /// Whether `file`'s line for an image says it is an aarch64 image of this kind.
+    fn describes(self, description: &str) -> bool {
+        match self {
+            Image::Elf => description.contains("ELF 64-bit") && description.contains("ARM aarch64"),
+            Image::EfiApplication => description.contains("PE32+ executable for EFI (application), ARM64"),
+        }
+    }
 }
 
 fn spec(root: &Path, relative: &str) -> BuildOptions {
@@ -163,6 +200,26 @@ mod tests {
                 assert!(text.contains(needle), "{path} missing {needle}");
             }
         }
+    }
+
+    /// `file`'s line for each image the aarch64 build makes, and for the x86_64 ones beside them.
+    const AARCH64_ELF: &str = "dom0: ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), statically linked, with debug_info, not stripped";
+    const X86_64_ELF: &str = "dom0: ELF 64-bit LSB executable, x86-64, version 1 (SYSV), statically linked, with debug_info, not stripped";
+    const AARCH64_EFI: &str = "aloader.efi: PE32+ executable for EFI (application), ARM64, 4 sections";
+    const X86_64_EFI: &str = "aloader.efi: PE32+ executable for EFI (application), x86-64, 5 sections";
+
+    #[test]
+    fn an_aarch64_image_is_told_from_an_x86_64_one_and_an_elf_from_an_efi_application() {
+        assert!(Image::Elf.describes(AARCH64_ELF));
+        assert!(Image::EfiApplication.describes(AARCH64_EFI));
+        for other in [X86_64_ELF, AARCH64_EFI, X86_64_EFI] {
+            assert!(!Image::Elf.describes(other), "{other}");
+        }
+        for other in [AARCH64_ELF, X86_64_ELF, X86_64_EFI] {
+            assert!(!Image::EfiApplication.describes(other), "{other}");
+        }
+        // An EFI image of another kind is not one the firmware starts as an application.
+        assert!(!Image::EfiApplication.describes("driver.efi: PE32+ executable for EFI (boot service driver), ARM64, 4 sections"));
     }
 
     #[test]
