@@ -375,6 +375,7 @@ pub proof fn lemma_processes_small_freed(
 
 /// The processes after the dead process at `base` goes with its block: no capability names it and no
 /// thread is bound to it, and every other process lies in its own block.
+#[verifier::spinoff_prover]
 pub proof fn lemma_processes_process_freed(
     list: &Tree,
     tables_a: &Tables,
