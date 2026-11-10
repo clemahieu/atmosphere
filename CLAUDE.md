@@ -81,6 +81,7 @@ tools/run.py            # build loader, kernel, dom0 and payload; boot under QEM
 tools/verify.py         # Verus over kernel/verified; extra arguments go to rust_verify
 tools/check-upstream-copies.py --update   # rewrite the recorded delta of a copied upstream file after a deliberate change to it or a Verus pin that moves its upstream
 tools/gdb.py            # attach gdb to a tools/run.py --gdb run, with the kernel's symbols
+tools/land.py           # from a task worktree: rebase onto main, gate, land by fast-forward and push; when the gate fails, say whether the change fails or main does, gating main's commit by itself when no gate has judged its tree (logs/gate-ledger at the project root)
 tools/aarch64-esp.py    # build the aarch64 loader, kernel, dom0 and payload and lay out the ESP that tools/orangepi-kvm.py --esp boots on the board
 atmo board              # build the aarch64 images, boot dom0 on the Orange Pi under KVM until QEMU exits, and hold the exit and the serial log (target/orangepi-serial.log) to the gate's boot checks, as the gate's aarch64 boot does but failing when the board is unreachable; --command-line LINE writes the kernel's command line to the partition; --iommu puts an SMMUv3 on the machine and requires its translation enabled
 tools/orangepi-stack-overflow.py   # boot an aarch64 kernel that overflows its boot stack, or with --stack syscall its syscall stack, on the board and check its one report; not part of the gate
