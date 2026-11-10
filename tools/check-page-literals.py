@@ -11,10 +11,6 @@ definitions are exempt: define.rs and arch/, and the 'global layout' directives 
 which Verus takes only with a literal size. A line that holds such a value for another reason says
 so in a comment '// not a page size: <reason>'.
 
-tools/page-literal-allowance lists the files under kernel/verified not yet converted, one path a
-line, '#' starting a comment line. A literal in a listed file passes; a listed file that holds none
-fails the check, so the list only shrinks.
-
 usage: tools/check-page-literals.py           (the tree)
        tools/check-page-literals.py --test    (this script's own tests)
 """
@@ -26,7 +22,6 @@ from pathlib import Path
 sys.dont_write_bytecode = True
 
 REPO = Path(__file__).resolve().parent.parent
-ALLOWANCE_PATH = "tools/page-literal-allowance"
 VERIFIED_ROOT = "kernel/verified"
 EXEMPT_FILES = ("define.rs",)
 EXEMPT_DIRECTORIES = ("arch",)
@@ -49,10 +44,6 @@ NUMBER = re.compile(
 )
 BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
 STRING = re.compile(r'"(?:\\.|[^"\\])*"')
-
-
-class Unreadable(Exception):
-    """An allowance line that names no file under kernel/verified."""
 
 
 def value(token):
@@ -88,28 +79,13 @@ def exempt(path):
     return path in EXEMPT_FILES or path.split("/", 1)[0] in EXEMPT_DIRECTORIES
 
 
-def parse_allowance(text):
-    """The paths the allowance lists, in order."""
-    paths = []
-    for line in text.splitlines():
-        if not line.strip() or line.startswith("#"):
-            continue
-        if line != line.strip() or not line.endswith(".rs"):
-            raise Unreadable(f"{ALLOWANCE_PATH}: cannot read {line!r}")
-        paths.append(line)
-    return paths
-
-
-def judge(found, allowed):
-    """The failures for the literals found, keyed by path, against the paths the allowance lists."""
-    failures = []
-    for path, lines in sorted(found.items()):
-        if path not in allowed:
-            failures.extend(f"{line}: a page-shaped literal outside the definitions" for line in lines)
-    for path in allowed:
-        if not found.get(path):
-            failures.append(f"{ALLOWANCE_PATH}: {path} holds no page-shaped literal: take it off the list")
-    return failures
+def judge(found):
+    """The failures for the literals found, keyed by path."""
+    return [
+        f"{line}: a page-shaped literal outside the definitions"
+        for _, lines in sorted(found.items())
+        for line in lines
+    ]
 
 
 def sources(directory):
@@ -138,19 +114,12 @@ def main(args):
     if args:
         print(__doc__.split("usage: ")[1], file=sys.stderr)
         return 2
-    try:
-        allowed = parse_allowance((REPO / ALLOWANCE_PATH).read_text(encoding="utf-8"))
-    except Unreadable as error:
-        print(error, file=sys.stderr)
-        return 1
-    found = scan_tree(REPO / VERIFIED_ROOT)
-    failures = judge(found, allowed)
+    failures = judge(scan_tree(REPO / VERIFIED_ROOT))
     for failure in failures:
         print(failure, file=sys.stderr)
     if failures:
         return 1
-    count = sum(len(lines) for lines in found.values())
-    print(f"{count} page-shaped literal lines in the {len(allowed)} files on {ALLOWANCE_PATH}; none elsewhere")
+    print(f"no page-shaped literal in {VERIFIED_ROOT} outside the definitions")
     return 0
 
 
@@ -213,25 +182,15 @@ class Tests(unittest.TestCase):
         self.assertEqual(len(literals("capability/table.rs", source)), 2)
         self.assertEqual(len(literals("layouts.rs", "let x = 4096; // global layout \n")), 1)
 
-    def test_a_literal_in_an_unlisted_file_fails_with_where_it_is(self):
-        found = {"b.rs": ["b.rs:7: x * 4096"]}
-        self.assertEqual(judge(found, []), ["b.rs:7: x * 4096: a page-shaped literal outside the definitions"])
+    def test_each_literal_fails_with_where_it_is(self):
+        found = {"a.rs": ["a.rs:3: x % 512"], "b.rs": ["b.rs:7: x * 4096"]}
+        self.assertEqual(judge(found), [
+            "a.rs:3: x % 512: a page-shaped literal outside the definitions",
+            "b.rs:7: x * 4096: a page-shaped literal outside the definitions",
+        ])
 
-    def test_a_literal_in_a_listed_file_passes(self):
-        self.assertEqual(judge({"b.rs": ["b.rs:7: x * 4096"]}, ["b.rs"]), [])
-
-    def test_a_listed_file_without_a_literal_fails(self):
-        self.assertEqual(
-            judge({}, ["b.rs"]),
-            [f"{ALLOWANCE_PATH}: b.rs holds no page-shaped literal: take it off the list"],
-        )
-
-    def test_the_allowance_is_one_path_a_line(self):
-        self.assertEqual(parse_allowance("# files\n\ncapability/map.rs\nlayouts.rs\n"), ["capability/map.rs", "layouts.rs"])
-        with self.assertRaises(Unreadable):
-            parse_allowance("capability/map.rs extra\n")
-        with self.assertRaises(Unreadable):
-            parse_allowance(" layouts.rs\n")
+    def test_no_literal_passes(self):
+        self.assertEqual(judge({}), [])
 
     def test_the_tree_scan_skips_the_definitions(self):
         import tempfile

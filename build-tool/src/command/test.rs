@@ -28,7 +28,7 @@ const LICENSE_CHECK: &str = "tools/check-licenses.py";
 const EXTERNAL_BODY_CHECK: &str = "tools/check-external-body.py";
 
 /// The check that kernel/verified writes no page size, entries a level or size derived from them as a
-/// literal outside the definitions and the files its allowance lists, relative to the project root.
+/// literal outside the definitions, relative to the project root.
 const PAGE_LITERALS_CHECK: &str = "tools/check-page-literals.py";
 /// The check that each file copied from upstream differs from it only by its record under
 /// tools/upstream-copies, relative to the project root.
