@@ -1,0 +1,298 @@
+--- tools/verus/source/vstd/simple_pptr.rs
++++ kernel/verified/pptr.rs
+@@ -1,7 +1,36 @@
+-use super::layout::*;
+-use super::prelude::*;
+-use super::raw_ptr;
+-use super::raw_ptr::*;
++// Permissioned pointers for the kernel. This is the simple_pptr of the vstd the workspace Cargo.toml
++// pins, without its allocation API, which the kernel does not have, and with conversions between
++// permission types, which simple_pptr's private fields rule out. Its license follows.
++//
++// MIT License
++//
++// Copyright (c) 2021 The Verus Contributors
++//
++// Permission is hereby granted, free of charge, to any person obtaining a copy
++// of this software and associated documentation files (the "Software"), to deal
++// in the Software without restriction, including without limitation the rights
++// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++// copies of the Software, and to permit persons to whom the Software is
++// furnished to do so, subject to the following conditions:
++//
++// The above copyright notice and this permission notice shall be included in all
++// copies or substantial portions of the Software.
++//
++// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
++// SOFTWARE.
++
++#[cfg(verus_keep_ghost)]
++use vstd::layout::*;
++use vstd::prelude::*;
++use vstd::raw_ptr;
++use vstd::raw_ptr::*;
++#[cfg(verus_keep_ghost)]
++use vstd::set_lib::*;
+ use core::marker::PhantomData;
+ 
+ verus! {
+@@ -47,7 +76,6 @@
+ ///     e.g., `&PointsTo<V>`.
+ ///  * You can _write_ to the pointer as long as you have mutable access to the `PointsTo` object,
+ ///     e.g., `&mut PointsTo<V>`
+-///  * You can call `free` to deallocate the memory as long as you have full onwership
+ ///     of the `PointsTo` object (i.e., the ability to move it).
+ ///
+ /// For those familiar with separation logic, the `PointsTo` object plays a role
+@@ -159,17 +187,25 @@
+ /// `View` object, [`PointsToData`].
+ ///
+ /// See the [`PPtr`] documentation for more details.
++// Proofs alone read the fields, and a cargo build erases proofs, so only Verus compiles them; a
++// cargo build keeps the type, which exec signatures name, with a marker for `V`.
+ pub tracked struct PointsTo<V> {
++    #[cfg(verus_keep_ghost)]
+     points_to: raw_ptr::PointsTo<V>,
++    #[cfg(verus_keep_ghost)]
+     exposed: raw_ptr::IsExposed,
+-    dealloc: Option<raw_ptr::Dealloc>,
++    /// The raw bytes after the value, up to the end of its 4K page, when it fits one.
++    #[cfg(verus_keep_ghost)]
++    rest: PointsToRaw,
++    #[cfg(not(verus_keep_ghost))]
++    v: PhantomData<V>,
+ }
+ 
+ #[verusfmt::skip]
+ broadcast use {
+-    super::raw_ptr::group_raw_ptr_axioms,
+-    super::set_lib::group_set_lib_default,
+-    super::set::group_set_lemmas};
++    vstd::raw_ptr::group_raw_ptr_axioms,
++    vstd::set_lib::group_set_lib_default,
++    vstd::set::group_set_lemmas};
+ 
+ impl<V> PPtr<V> {
+     /// Use `addr()` instead
+@@ -230,17 +266,12 @@
+     #[verifier::type_invariant]
+     closed spec fn wf(self) -> bool {
+         &&& self.points_to.ptr()@.provenance == self.exposed.provenance()
+-        &&& match self.dealloc {
+-            Some(dealloc) => {
+-                &&& dealloc.addr() == self.points_to.ptr().addr()
+-                &&& dealloc.size() == size_of::<V>()
+-                &&& dealloc.align() == align_of::<V>()
+-                &&& dealloc.provenance() == self.points_to.ptr()@.provenance
+-                &&& size_of::<V>() > 0
+-            },
+-            None => { size_of::<V>() == 0 },
+-        }
+         &&& self.points_to.ptr().addr() != 0
++        &&& size_of::<V>() <= 4096 ==> self.rest.is_range(
++            self.points_to.ptr().addr() + size_of::<V>(),
++            4096 - size_of::<V>(),
++        )
++        &&& self.rest.provenance() == self.exposed.provenance()
+     }
+ 
+     pub closed spec fn mem_contents(&self) -> MemContents<V> {
+@@ -342,116 +373,6 @@
+ }
+ 
+ impl<V> PPtr<V> {
+-    /// Allocates heap memory for type `V`, leaving it uninitialized.
+-    #[cfg(feature = "std")]
+-    pub fn empty() -> (pt: (PPtr<V>, Tracked<PointsTo<V>>))
+-        ensures
+-            pt.1@.pptr() == pt.0,
+-            pt.1@.is_uninit(),
+-        opens_invariants none
+-    {
+-        layout_for_type_is_valid::<V>();
+-        if core::mem::size_of::<V>() != 0 {
+-            let (p, Tracked(points_to_raw), Tracked(dealloc)) = allocate(
+-                core::mem::size_of::<V>(),
+-                core::mem::align_of::<V>(),
+-            );
+-            let Tracked(exposed) = expose_provenance(p);
+-            let tracked points_to = points_to_raw.into_typed::<V>(p.addr());
+-            proof {
+-                points_to.is_nonnull();
+-            }
+-            let tracked pt = PointsTo { points_to, exposed, dealloc: Some(dealloc) };
+-            let pptr = PPtr(p as usize, PhantomData);
+-
+-            return (pptr, Tracked(pt));
+-        } else {
+-            let p = core::mem::align_of::<V>();
+-            assert(p % p == 0) by (nonlinear_arith)
+-                requires
+-                    p != 0,
+-            ;
+-            let tracked emp = PointsToRaw::empty(Provenance::null());
+-            proof {
+-                assert forall|i: int| #[trigger]
+-                    Set::<int>::range(p as int, p as int).contains(i) == Set::<
+-                        int,
+-                    >::empty().contains(i) by {}
+-                super::set::axiom_set_ext_equal(
+-                    Set::<int>::range(p as int, p as int),
+-                    Set::<int>::empty(),
+-                );
+-                assert(emp.is_range(p as int, 0));
+-            }
+-            let tracked points_to = emp.into_typed(p);
+-            let tracked pt = PointsTo { points_to, exposed: IsExposed::null(), dealloc: None };
+-            let pptr = PPtr(p, PhantomData);
+-
+-            return (pptr, Tracked(pt));
+-        }
+-    }
+-
+-    /// Allocates heap memory for type `V`, leaving it initialized
+-    /// with the given value `v`.
+-    #[cfg(feature = "std")]
+-    pub fn new(v: V) -> (pt: (PPtr<V>, Tracked<PointsTo<V>>))
+-        ensures
+-            pt.1@.pptr() == pt.0,
+-            pt.1@.mem_contents() == MemContents::Init(v),
+-        opens_invariants none
+-    {
+-        let (p, Tracked(mut pt)) = PPtr::<V>::empty();
+-        p.put(Tracked(&mut pt), v);
+-        (p, Tracked(pt))
+-    }
+-
+-    /// Free the memory pointed to be `perm`.
+-    /// Requires the memory to be uninitialized.
+-    ///
+-    /// This consumes `perm`, since it will no longer be safe to access
+-    /// that memory location.
+-    pub fn free(self, Tracked(perm): Tracked<PointsTo<V>>)
+-        requires
+-            perm.pptr() == self,
+-            perm.is_uninit(),
+-        opens_invariants none
+-    {
+-        proof {
+-            use_type_invariant(&perm);
+-        }
+-        if core::mem::size_of::<V>() != 0 {
+-            let ptr: *mut u8 = with_exposed_provenance(self.0, Tracked(perm.exposed));
+-            let tracked PointsTo { points_to, dealloc: dea, exposed } = perm;
+-            let tracked points_to_raw = points_to.into_raw();
+-            deallocate(
+-                ptr,
+-                core::mem::size_of::<V>(),
+-                core::mem::align_of::<V>(),
+-                Tracked(points_to_raw),
+-                Tracked(dea.tracked_unwrap()),
+-            );
+-        }
+-    }
+-
+-    /// Free the memory pointed to be `perm` and return the
+-    /// value that was previously there.
+-    /// Requires the memory to be initialized.
+-    /// This consumes the [`PointsTo`] token, since the user is giving up
+-    /// access to the memory by freeing it.
+-    #[inline(always)]
+-    pub fn into_inner(self, Tracked(perm): Tracked<PointsTo<V>>) -> (v: V)
+-        requires
+-            perm.pptr() == self,
+-            perm.is_init(),
+-        ensures
+-            v == perm.value(),
+-        opens_invariants none
+-    {
+-        let tracked mut perm = perm;
+-        let v = self.take(Tracked(&mut perm));
+-        self.free(Tracked(perm));
+-        v
+-    }
+ 
+     /// Moves `v` into the location pointed to by the pointer `self`.
+     /// Requires the memory to be uninitialized, and leaves it initialized.
+@@ -597,4 +518,76 @@
+ 
+ pub use raw_ptr::MemContents;
+ 
++/// Turns the permission for an uninitialised 4K page into a typed permission for the object at its
++/// start. The rest of the page travels inside the permission.
++pub proof fn page_into_typed<W>(tracked page: PointsTo<[u8; 4096]>) -> (tracked ret: PointsTo<W>)
++    requires
++        page.is_uninit(),
++        size_of::<[u8; 4096]>() == 4096,
++        size_of::<W>() <= 4096,
++        page.addr() as int % align_of::<W>() as int == 0,
++    ensures
++        ret.addr() == page.addr(),
++        ret.is_uninit(),
++{
++    use_type_invariant(&page);
++    let addr = page.addr();
++    let tracked PointsTo { points_to, exposed, rest: _ } = page;
++    let tracked raw = points_to.into_raw();
++    let tracked (first, rest) = raw.split(set_int_range(addr as int, addr + size_of::<W>()));
++    PointsTo { points_to: first.into_typed::<W>(addr), exposed, rest }
++}
++
++/// Gives an uninitialised typed permission back as the permission for its whole 4K page.
++pub proof fn typed_into_page<W>(tracked typed: PointsTo<W>) -> (tracked ret: PointsTo<[u8; 4096]>)
++    requires
++        typed.is_uninit(),
++        size_of::<[u8; 4096]>() == 4096,
++        align_of::<[u8; 4096]>() == 1,
++        size_of::<W>() <= 4096,
++    ensures
++        ret.addr() == typed.addr(),
++        ret.is_uninit(),
++{
++    use_type_invariant(&typed);
++    let addr = typed.addr();
++    let tracked PointsTo { points_to, exposed, rest } = typed;
++    let tracked raw = points_to.into_raw().join(rest);
++    let tracked points_to = raw.into_typed::<[u8; 4096]>(addr);
++    let tracked empty = PointsToRaw::empty(exposed.provenance());
++    PointsTo { points_to, exposed, rest: empty }
++}
++
++/// A page survives the round trip through a typed permission at the same address.
++proof fn page_round_trip<W>(tracked page: PointsTo<[u8; 4096]>) -> (tracked ret: PointsTo<[u8; 4096]>)
++    requires
++        page.is_uninit(),
++        size_of::<[u8; 4096]>() == 4096,
++        align_of::<[u8; 4096]>() == 1,
++        size_of::<W>() <= 4096,
++        page.addr() as int % align_of::<W>() as int == 0,
++    ensures
++        ret.addr() == page.addr(),
++        ret.is_uninit(),
++{
++    typed_into_page(page_into_typed::<W>(page))
++}
++
++pub open spec fn page_is_zero(page: [u8; 4096]) -> bool {
++    forall|i: int| 0 <= i < 4096 ==> #[trigger] page@[i] == 0
++}
++
++/// Clears an uninitialised 4K page through its permission.
++pub fn zero_page(addr: usize, Tracked(perm): Tracked<&mut PointsTo<[u8; 4096]>>)
++    requires
++        old(perm).is_uninit(),
++        old(perm).addr() == addr,
++    ensures
++        final(perm).is_init(),
++        final(perm).addr() == addr,
++        page_is_zero(final(perm).value()),
++{
++    PPtr::<[u8; 4096]>::from_usize(addr).put(Tracked(perm), [0u8; 4096]);
++}
++
+ } // verus!
