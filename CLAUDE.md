@@ -28,6 +28,8 @@ The native system follows the capability model without compromise: no ambient au
 - Tier 2: full line and branch coverage, with fault injection where a branch cannot be reached otherwise. Accepted for the filesystem and network stacks until they reach tier 1.
 - Tier 3: best-effort tests, as extensive as reasonable. Everything else.
 
+A tier-1 proof bounds a component from both sides. From above, the component changes only what its specification allows, as the reach theorem says for the kernel. From below, each operation's specification says exactly when it refuses, and each use the component exists for has a witness: a verified sequence of its operations, built into no image, that reaches the use from any state boot can produce, beside a throwaway variant claiming more that does not verify. A specification that a component refusing everything satisfies says nothing about what it can do. A witness covers the proven model; a boot checks the glue and the hardware against it.
+
 Every epic states the tier its acceptance criteria require. Tiers rise as tooling and understanding mature; lowering one is a human decision. Unverified code is allowed only as `external_body` leaf glue for hardware and assembly: counted, with a reason per item, and the count does not grow without an issue saying why. `tools/external-body-list` is that count; items it classes `gap` or `unproven` are debt, not glue. Development is test-first: an implement round writes the failing test, then the change.
 
 ## Portability
