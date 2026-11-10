@@ -1164,6 +1164,71 @@ impl CapKernel {
         assert(b.names[child] == base);
     }
 
+    /// What a process's retype leaves as it was: its derive changed the liveness of the new capability
+    /// alone and no node's depth, its table root is a new one, and the block table's pages outside
+    /// the new block are as they were.
+    proof fn lemma_process_keeps(pre: Self, post: Self, mid: Tree, root: usize, to: usize, page: int)
+        requires
+            pre.wf(),
+            pre.tables.has_slot(&pre.list, root, to),
+            !pre.list.nodes@[pre.tables.node_of(root, to) as int].live,
+            mid == pre.list,
+            post.list.nodes@.len() == NODE_SPACE,
+            forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < mid.nodes@.len() && i != pre.tables.node_of(root, to) ==> {
+                &&& post.list.nodes@[i].live == mid.nodes@[i].live
+                &&& post.list.nodes@[i].kind == mid.nodes@[i].kind
+                &&& post.list.nodes@[i].depth == mid.nodes@[i].depth
+            },
+            forall|t: usize| #[trigger] pre.tables.roots@.contains_key(t) ==>
+                post.tables.roots@.contains_key(t) && post.tables.roots@[t] == pre.tables.roots@[t],
+            forall|x: usize| #[trigger] pre.is_cap(x) ==> post.is_cap(x) && post.payload_of(x) == pre.payload_of(x),
+            forall|p: usize| #[trigger] pre.processes.records@.contains_key(p) ==> {
+                &&& post.processes.records@.contains_key(p)
+                &&& post.processes.records@[p] == pre.processes.records@[p]
+            },
+            post.blocks.regions_2m@ == pre.blocks.regions_2m@,
+            post.blocks.regions_1g@ == pre.blocks.regions_1g@,
+            forall|i: int| post.blocks.tracks(i) && !(page <= i < page + 8) ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
+        ensures
+            Self::retype_keeps(pre, post, pre.tables.node_of(root, to), page, 3),
+    {
+        let child = pre.tables.node_of(root, to);
+        pre.lemma_slot(root, to);
+        pre.lemma_slot_bound(child);
+        assert forall|r: usize, i: usize| #[trigger] pre.tables.has_slot(&pre.list, r, i) implies {
+            &&& post.tables.has_slot(&post.list, r, i)
+            &&& post.tables.node_of(r, i) == pre.tables.node_of(r, i)
+            &&& pre.tables.node_of(r, i) != child && !pre.list.nodes@[pre.tables.node_of(r, i) as int].live
+                ==> !post.list.nodes@[pre.tables.node_of(r, i) as int].live
+        } by {
+            pre.lemma_slot(r, i);
+            let n = pre.tables.node_of(r, i);
+            pre.lemma_slot_bound(n);
+            let leaf = pre.tables.leaf(r, index_entry(i));
+            assert(leaf == page_of(n));
+            assert(leaf != child);
+            assert(post.tables.leaf(r, index_entry(i)) == leaf);
+            assert(post.list.nodes@[leaf as int].live == mid.nodes@[leaf as int].live);
+        }
+        assert forall|x: usize| #[trigger] pre.is_cap(x) implies {
+            &&& post.is_cap(x)
+            &&& post.payload_of(x) == pre.payload_of(x)
+            &&& post.list.nodes@[x as int].depth == pre.list.nodes@[x as int].depth
+        } by {
+            pre.lemma_slot_bound(x);
+            assert(x != child);
+            assert(post.list.nodes@[x as int].depth == mid.nodes@[x as int].depth);
+        }
+        assert forall|r: usize, e: int| pre.tables.roots@.contains_key(r) && 0 <= e < ROOT_ENTRIES
+            implies #[trigger] post.tables.leaf(r, e) == pre.tables.leaf(r, e) by {
+            assert(post.tables.roots@[r] == pre.tables.roots@[r]);
+        }
+        assert forall|i: int| pre.blocks.tracks(i) && !(page <= i < page + order_pages(3))
+            implies #[trigger] post.blocks.pages@[i].kind == pre.blocks.pages@[i].kind by {
+            assert(post.blocks.pages@[i] == pre.blocks.pages@[i]);
+        }
+    }
+
     /// Retypes the free order-3 block at `base` as a process, under the untyped at index `from` of the
     /// table at `root`, with its capability at the empty index `to`: an empty capability table whose
     /// root is the block's first page, a record that says it is live, and an address space holding the
@@ -1209,6 +1274,8 @@ impl CapKernel {
                 &&& final(self).payload_of(child) == process_of(base)
                 &&& final(self).payload_of(child).rights & right_bit(Right::Control) != 0
                 &&& final(self).list.is_child(parent, child)
+                &&& final(self).list.nodes@[child as int].depth == old(self).list.nodes@[parent as int].depth + 1
+                &&& Self::retype_keeps(*old(self), *final(self), child, page, 3)
                 &&& discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base, into: None })
             },
     {
@@ -1438,9 +1505,11 @@ impl CapKernel {
             assert forall|r: int| 0 <= r < ROOT_ENTRIES implies #[trigger] post.tables.leaf(base, r) == NO_LEAF by {
                 assert(rooted.leaf(base, r) == NO_LEAF);
             }
+            Self::lemma_process_keeps(pre, post, mid, root, to, page as int);
         }
         true
     }
 }
+
 
 } // verus!

@@ -480,6 +480,37 @@ impl CapKernel {
         }
     }
 
+    /// What a retype that makes the capability child, typing the small block of the order at page,
+    /// leaves as it was, so that a later operation's success can be proven from what held before:
+    /// every slot is a slot of the node it was, every capability says what it said at the depth it
+    /// had, every empty slot but the new capability's is empty, every table has the root entries it
+    /// had, every process record has the dead flag it had, and the block table's large regions and
+    /// the kind of every tracked page outside the block are as they were.
+    pub open spec fn retype_keeps(pre: Self, post: Self, child: usize, page: int, order: usize) -> bool {
+        &&& forall|r: usize, i: usize| #[trigger] pre.tables.has_slot(&pre.list, r, i) ==> {
+            &&& post.tables.has_slot(&post.list, r, i)
+            &&& post.tables.node_of(r, i) == pre.tables.node_of(r, i)
+            &&& pre.tables.node_of(r, i) != child && !pre.list.nodes@[pre.tables.node_of(r, i) as int].live
+                ==> !post.list.nodes@[pre.tables.node_of(r, i) as int].live
+        }
+        &&& forall|x: usize| #[trigger] pre.is_cap(x) ==> {
+            &&& post.is_cap(x)
+            &&& post.payload_of(x) == pre.payload_of(x)
+            &&& post.list.nodes@[x as int].depth == pre.list.nodes@[x as int].depth
+        }
+        &&& forall|r: usize| #[trigger] pre.tables.roots@.contains_key(r) ==> post.tables.roots@.contains_key(r)
+        &&& forall|r: usize, e: int| pre.tables.roots@.contains_key(r) && 0 <= e < ROOT_ENTRIES
+            ==> #[trigger] post.tables.leaf(r, e) == pre.tables.leaf(r, e)
+        &&& forall|p: usize| #[trigger] pre.processes.records@.contains_key(p) ==> {
+            &&& post.processes.records@.contains_key(p)
+            &&& post.processes.records@[p].value().dead == pre.processes.records@[p].value().dead
+        }
+        &&& post.blocks.regions_2m@ == pre.blocks.regions_2m@
+        &&& post.blocks.regions_1g@ == pre.blocks.regions_1g@
+        &&& forall|i: int| pre.blocks.tracks(i) && !(page <= i < page + order_pages(order))
+            ==> #[trigger] post.blocks.pages@[i].kind == pre.blocks.pages@[i].kind
+    }
+
     /// What a retype of the page at base as a 4K frame did, under the untyped at index from of the table
     /// at root, with the capability at index to: the retype was allowed, the frame capability is the
     /// untyped's child in that slot, the page is zero, and the step discharges the retype's effect.
