@@ -34,7 +34,10 @@
 //! the child's slot, a map through it and an unmap at its first mapping are refused, and inspect still
 //! finds the 2M frame. It derives a child from the 2M frame again; a delete of the frame is then
 //! refused, the child's delete is accepted, and the frame's after it, after which inspect, a second
-//! delete and a delete past the table are refused. It times one invocation of a number no operation has,
+//! delete and a delete past the table are refused. It derives its power capability into that freed
+//! slot, after a derive naming another page and one with a right power's does not carry are refused;
+//! inspect finds power's capability in both slots, and once the child is deleted a power-off through
+//! its slot is refused. It times one invocation of a number no operation has,
 //! and one 4K map into each of 64 free entries of the level 1 table, and prints each cycle count beside
 //! the before number from logs/cutover-before.log, 102 and 66926. It maps the frame at the entry after
 //! those, and probes the 64 entries ending there after the map, after reading the page, again, and after
@@ -661,6 +664,26 @@ fn deleted_frames_held(large: u64, child: u64) -> bool {
         && operation::delete(NO_POSITION) == operation::STATUS_REFUSED
 }
 
+/// Whether dom0 passes a copy of its power capability on and keeps its own: a derive from the power
+/// slot into the empty slot `child` naming the page after power's, or with a right power's capability
+/// does not carry, is refused; the derive naming power's page is accepted, after which inspect finds
+/// the same power capability in `child` and in the power slot; the child's delete is accepted, and a
+/// power-off through its slot is then refused.
+fn derived_power_held(child: u64) -> bool {
+    let power = match operation::inspect(operation::ROOT_POWER_SLOT) {
+        Ok(capability) => capability,
+        Err(_) => return false,
+    };
+    operation::derive(operation::ROOT_POWER_SLOT, child, power.rights, power.base + 4096, 0) == operation::STATUS_REFUSED
+        && operation::derive(operation::ROOT_POWER_SLOT, child, power.rights | RIGHT_READ, power.base, 0)
+            == operation::STATUS_REFUSED
+        && operation::derive(operation::ROOT_POWER_SLOT, child, power.rights, power.base, 0) == operation::STATUS_OK
+        && operation::inspect(child) == Ok(power)
+        && operation::inspect(operation::ROOT_POWER_SLOT) == Ok(power)
+        && operation::delete(child) == operation::STATUS_OK
+        && operation::power_off(child, false) == operation::STATUS_REFUSED
+}
+
 /// Print through `slot`. The status is the low half of what the invocation returns.
 ///
 /// # Safety
@@ -745,6 +768,7 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
                             && derived_frame_held(empty + 2, empty, empty + 1, empty + 3)
                             && revoked_frame_held(empty + 2, empty, empty + 3)
                             && deleted_frames_held(empty + 2, empty + 3)
+                            && derived_power_held(empty + 2)
                             && timed_beside_before(empty + 1)
                             && probed_bits_held(empty + 1)
                             && unmapped_bits_held(empty + 1)

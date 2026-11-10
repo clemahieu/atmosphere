@@ -97,6 +97,21 @@ pub fn is_block_within(parent: Payload, base: usize, order: u8) -> (ret: bool)
     base + size <= parent.base + parent_size && base % size == 0
 }
 
+/// A block lies within a one-page parent's only as that page: so a child of a console or a power
+/// capability, whose object is a page past memory, names its parent's object.
+proof fn lemma_object_within(parent: Payload, base: usize, order: u8)
+    requires
+        parent.order == 0,
+        parent.base % 4096 == 0,
+    ensures
+        block_within(base, order, parent) <==> (order == 0 && base == parent.base),
+{
+    assert(pow2(0) == 1) by {
+        lemma2_to64();
+    }
+    assert(block_bytes(0) == 4096);
+}
+
 /// Decides whether a child with these fields may be derived from `parent`, in constant time. All of
 /// rights, base and order come from user space.
 fn may_derive(parent: Payload, rights: u32, base: usize, order: u8) -> (ret: bool)
@@ -123,16 +138,16 @@ fn may_derive(parent: Payload, rights: u32, base: usize, order: u8) -> (ret: boo
 
 impl CapKernel {
     /// The refusals of a derive from index from of the table at src into index to of the table at dst:
-    /// an index that names no slot, a parent that is no capability, a device's, the console's or
-    /// power's, a dead process's or thread's, or at the deepest depth, a child's slot in use, or a child
-    /// that does not narrow its parent.
+    /// an index that names no slot, a parent that is no capability, a device's, a dead process's or
+    /// thread's, or at the deepest depth, a child's slot in use, or a child that does not narrow its
+    /// parent. A console's or power's child names its parent's object, with rights no wider.
     pub open spec fn can_derive_between(&self, src: usize, from: usize, dst: usize, to: usize, rights: u32, base: usize, order: u8) -> bool {
         let parent = self.tables.node_of(src, from);
         let child = self.tables.node_of(dst, to);
         &&& self.tables.has_slot(&self.list, src, from)
         &&& self.tables.has_slot(&self.list, dst, to)
         &&& self.is_cap(parent)
-        &&& names_block(self.payload_of(parent).kind)
+        &&& !(self.payload_of(parent).kind is Device)
         &&& !self.cap_dead(parent)
         &&& self.list.nodes@[parent as int].depth < MAX_DEPTH
         &&& !self.list.nodes@[child as int].live
@@ -186,6 +201,37 @@ impl CapKernel {
         &&& pre.can_derive_at(root, from, to, rights, base, order)
         &&& Self::cap_derived_between(pre, post, root, from, pre.table_at(root, to.through)->0, to.index, rights, base, order)
         &&& discharges(pre.view(), post.view(), root, pre.derive_effect(root, from, to))
+    }
+
+    /// A console or power capability derives a child naming its object, with rights no wider, so its
+    /// holder can pass it on and keep its own; a device's derives nothing, since a device is bound to one
+    /// space at a time.
+    pub proof fn lemma_console_power_derive(&self, src: usize, from: usize, dst: usize, to: usize, rights: u32, base: usize, order: u8)
+        requires
+            self.wf(),
+            self.tables.has_slot(&self.list, src, from),
+            self.tables.has_slot(&self.list, dst, to),
+            self.is_cap(self.tables.node_of(src, from)),
+        ensures
+            ({
+                let parent = self.tables.node_of(src, from);
+                let p = self.payload_of(parent);
+                (p.kind is Console || p.kind is Power) ==> (self.can_derive_between(src, from, dst, to, rights, base, order) <==> {
+                    &&& self.list.nodes@[parent as int].depth < MAX_DEPTH
+                    &&& !self.list.nodes@[self.tables.node_of(dst, to) as int].live
+                    &&& rights & !p.rights == 0
+                    &&& base == p.base
+                    &&& order == 0
+                })
+            }),
+            self.payload_of(self.tables.node_of(src, from)).kind is Device
+                ==> !self.can_derive_between(src, from, dst, to, rights, base, order),
+    {
+        let p = self.payload_of(self.tables.node_of(src, from));
+        if p.kind is Console || p.kind is Power {
+            assert(cap_wf(p));
+            lemma_object_within(p, base, order);
+        }
     }
 
     /// Derives the capability at index `from` of the caller's table, at `root`, into the empty position
@@ -325,12 +371,20 @@ impl CapKernel {
             return false;
         }
         // A device is bound to one space at a time, so its capability has no children: it moves instead.
-        // The console's and power's name no block for a child to narrow.
-        if !is_block_kind(payload.kind) {
+        // The console's and power's name a page past memory, so a child names that page as its parent
+        // does.
+        let allowed = match payload.kind {
+            CapKind::Device => false,
+            CapKind::Console | CapKind::Power => rights & !payload.rights == 0 && base == payload.base && order == payload.order,
+            _ => may_derive(payload, rights, base, order),
+        };
+        if !allowed {
             return false;
         }
-        if !may_derive(payload, rights, base, order) {
-            return false;
+        proof {
+            if payload.kind is Console || payload.kind is Power {
+                lemma_object_within(payload, base, order);
+            }
         }
         let counted = match payload.kind {
             CapKind::Frame | CapKind::Space | CapKind::Thread | CapKind::Process => true,

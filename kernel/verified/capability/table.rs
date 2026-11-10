@@ -91,16 +91,6 @@ pub open spec fn tracked_kind(k: CapKind) -> bool {
     k is Frame || k is Space || k is Thread || k is Process
 }
 
-pub fn is_block_kind(k: CapKind) -> (ret: bool)
-    ensures
-        ret == names_block(k),
-{
-    match k {
-        CapKind::Device | CapKind::Console | CapKind::Power => false,
-        _ => true,
-    }
-}
-
 /// What a capability says is well formed: a block for a memory capability, the console's one page for
 /// a console's, and power's one page for a power capability's.
 pub open spec fn cap_wf(p: Payload) -> bool {

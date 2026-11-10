@@ -26,6 +26,8 @@ Consequences accepted with the package: when a holder dies or is revoked, everyt
 
 Rights: read, write and execute for frames; retype for untyped; send, receive and grant for endpoints; control for threads and processes; none for a device, whose capability is the authority; plus a maximum priority on a core capability and a badge on an endpoint.
 
+A console or power capability names one page past memory, `design/capability-names-a-block/`, so there is no range to narrow: its child names the same object with rights no wider, both carrying none today, and goes with its parent on revoke. The root passes the console to whatever should be heard, or the authority to end the run to a supervisor, and keeps its own and the means to take it back. A device's capability is the exception: it is bound to one space at a time, so derive refuses it and it moves.
+
 The service contract this implies for the runtime: cooperative upgrade by move, crash recovery by claim, and the holder of a dead process's untyped not retyping its leaves before the controller has claimed, a convention when both are one party and a contract when they are not.
 
 ## Context
