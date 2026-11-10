@@ -116,7 +116,7 @@ fn load(rsdp: u64, wait_for_debugger: bool) -> ! {
     };
     let stack_base = guard_base + KERNEL_STACK_GUARD_SIZE;
     // The image is everything the window holds below the guard. The kernel changes the protection
-    // of single pages of its image (kernel/src/arch/x86_64/write_protect.rs), and the 1 MiB guard is
+    // of single pages of its image (write_protect.rs in the kernel's arch module), and the 1 MiB guard is
     // less than a 2M stretch.
     unsafe {
         address_space.use_small_pages(bootstrap_allocator, kernel_base as u64, stack_base);

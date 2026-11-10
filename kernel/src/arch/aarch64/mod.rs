@@ -13,6 +13,7 @@ use verified::define::PCID_MAX;
 
 use crate::cpu::Cpu;
 
+mod exception;
 pub mod write_protect;
 
 /// The AArch64 share of a core's [`Cpu`]: nothing, since what the instruction set keeps per core is
@@ -51,18 +52,18 @@ pub fn translation_root(boot: &BootInfo) -> u64 {
     translation_base(boot.pml4 as usize, 0)
 }
 
-/// Brings up the boot core, whose [`Cpu`] is in place: its translation control. It has no exception
-/// vectors to install, so it stops there, naming itself.
+/// Brings up the boot core, whose [`Cpu`] is in place: its translation control and its exception
+/// vectors.
 pub unsafe fn init_boot_core() {
     init_translation_control();
-    unimplemented!("init_boot_core");
+    exception::install();
 }
 
-/// Brings up a core started after the boot core, whose [`Cpu`] is in place, as far as
-/// [`init_boot_core`] brings up the boot core.
+/// Brings up a core started after the boot core, whose [`Cpu`] is in place, as [`init_boot_core`]
+/// brings up the boot core.
 pub unsafe fn init_core() {
     init_translation_control();
-    unimplemented!("init_core");
+    exception::install();
 }
 
 /// ID_AA64MMFR0_EL1.ASIDBits, bits 7:4: 0b0010 where an address-space id has 16 bits and 0b0000
@@ -149,8 +150,8 @@ pub fn wait() {
     unsafe { asm!("msr DAIFClr, #0b0010", "wfi", options(nomem, nostack, preserves_flags)) };
 }
 
-/// Enters user code at `pc` with stack `sp` and two entry arguments. The return to EL0 comes with
-/// the exception vectors that take EL0's calls, so this stops, naming itself.
+/// Enters user code at `pc` with stack `sp` and two entry arguments. Nothing returns to EL0, and
+/// the exception vectors stop on a call from it, so this stops, naming itself.
 pub unsafe fn enter_userspace(pc: *const c_void, sp: *mut c_void, first: u64, second: u64) -> ! {
     let _ = (pc, sp, first, second);
     unimplemented!("enter_userspace");
