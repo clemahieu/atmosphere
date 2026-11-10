@@ -243,8 +243,9 @@ impl CapKernel {
     }
 
     /// What unlinking the hidden node of the leaf at `base` did to self: that node went and its block is
-    /// dead at zero. The tables are as they were, so the leaf stays in its root entry, where lookup now
-    /// refuses it, and every capability, the leaf's slots among them, is as it was, so the view is too.
+    /// dead at zero, every other block as it was. The tables are as they were, so the leaf stays in its
+    /// root entry, where lookup now refuses it, and every capability, the leaf's slots among them, is as
+    /// it was, so the view is too. No record, table page or epoch changed.
     pub open spec fn leaf_unlinked(&self, post: Self, root: usize, from: usize, base: usize) -> bool {
         let untyped = self.tables.node_of(root, from);
         let page = base / 4096;
@@ -253,6 +254,14 @@ impl CapKernel {
         &&& post.tables == self.tables
         &&& post.blocks.pages@[page as int].refs == 0
         &&& post.blocks.pages@[page as int].dead
+        &&& blocks_refs_changed(&self.blocks, &post.blocks, BlockRef::Small(page), 0, true)
+        &&& post.holders == self.holders
+        &&& post.spaces == self.spaces
+        &&& post.threads == self.threads
+        &&& post.processes == self.processes
+        &&& post.table_pages == self.table_pages
+        &&& post.stale_epoch == self.stale_epoch
+        &&& post.flush_epoch == self.flush_epoch
         &&& Self::caps_frame(*self, post, base, base)
         &&& forall|x: usize| #[trigger] post.is_cap(x) == self.is_cap(x)
         &&& post.view() == self.view()
@@ -606,6 +615,14 @@ impl CapKernel {
             old(self).can_unbind_thread(root, from, base) ==> ret is Slice,
             old(self).threads.records@.contains_key(base) && ret is Slice ==> old(self).thread_unbound(*final(self), root, from, base),
             old(self).threads.records@.contains_key(base) && ret is Freed ==> old(self).thread_freed(*final(self), c, root, from, base),
+            old(self).can_unlink_leaf(root, from, base) ==> ret is Unlinked && old(self).leaf_unlinked(*final(self), root, from, base),
+            old(self).can_slice_leaf(root, from, base) ==> ret is Slice && old(self).leaf_sliced(*final(self), root, from, base),
+            old(self).can_retype_under(root, from, base, 1) && old(self).leaf_is_empty(base)
+                ==> if old(self).acknowledged(base / 4096) && old(self).acknowledged((base / 4096 + 1) as usize) {
+                    ret is Freed && old(self).leaf_freed(*final(self), c, root, from, base)
+                } else {
+                    ret is Again
+                },
             ret is Again ==> !old(self).acknowledged(base / 4096) || !old(self).acknowledged((base / 4096 + 1) as usize),
             ret is Freed ==> old(self).frame_freed(*final(self), c, root, from, base)
                 || old(self).leaf_freed(*final(self), c, root, from, base)
@@ -631,6 +648,10 @@ impl CapKernel {
             pre.lemma_spent_space_is_empty(base);
             pre.lemma_thread_object(base);
             pre.lemma_process_object(base);
+            if pre.leaf_is_empty(base) {
+                // An empty leaf's hidden node is dead, so neither its unlink nor its slice runs.
+                assert(!pre.list.nodes@[base + 0int].live);
+            }
             if pre.processes.records@.contains_key(base) {
                 pre.lemma_process_block(base);
                 if pre.process_unloaded(base) {
@@ -957,6 +978,12 @@ impl CapKernel {
             !(ret is Slice),
             !(ret is Freed) ==> *final(self) == *old(self),
             !(old(self).can_retype_under(root, from, base, 1) && old(self).leaf_is_empty(base)) ==> ret is Refused,
+            old(self).can_retype_under(root, from, base, 1) && old(self).leaf_is_empty(base)
+                ==> if old(self).acknowledged(base / 4096) && old(self).acknowledged((base / 4096 + 1) as usize) {
+                    ret is Freed
+                } else {
+                    ret is Again
+                },
             ret is Again ==> !old(self).acknowledged(base / 4096) || !old(self).acknowledged((base / 4096 + 1) as usize),
             ret is Freed ==> old(self).leaf_freed(*final(self), c, root, from, base),
     {
