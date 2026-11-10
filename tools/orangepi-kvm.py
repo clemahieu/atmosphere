@@ -14,8 +14,8 @@ a second guest. The remote side watches this process's stdin and kills QEMU when
 the local side dies. A timeout here does the same.
 
 When ssh cannot reach the host, this prints one skip line naming orangepi5 and
-exits 0. A guest that starts and then fails is a failure. This command is not
-part of atmo test.
+exits 0. A guest that starts and then fails is a failure. atmo test runs it as
+its aarch64 boot, which takes the skip line as a pass.
 
 usage: tools/orangepi-kvm.py [--ssh-host HOST] [--connect-timeout SEC] [--boot-timeout SEC]
                              [--esp DIR] [--memory-mib MIB] [--wait-for LINE | --until-exit]

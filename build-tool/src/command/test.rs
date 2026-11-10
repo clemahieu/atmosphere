@@ -55,28 +55,115 @@ pub struct Opts {
     /// Seconds dom0 has to boot and finish before the run counts as a hang.
     #[clap(long, default_value_t = 120)]
     boot_timeout: u64,
+
+    /// Run one target's steps only: aarch64 is its verify and its boot on the Orange Pi, and x86_64 is
+    /// every other step. Without it the gate runs both.
+    #[clap(long, value_enum)]
+    target: Option<Arch>,
+}
+
+/// A step of the gate, in the order the gate runs them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Step {
+    FileSizes,
+    Build,
+    FreeRanges,
+    MappedRuns,
+    License,
+    Hooks,
+    Verify,
+    VerifyAarch64,
+    ExternalBody,
+    DesignIndex,
+    BootStack,
+    Coverage,
+    IommuBoot,
+    Boot,
+    Aarch64Boot,
+}
+
+impl Step {
+    const ALL: [Step; 15] = [
+        Step::FileSizes,
+        Step::Build,
+        Step::FreeRanges,
+        Step::MappedRuns,
+        Step::License,
+        Step::Hooks,
+        Step::Verify,
+        Step::VerifyAarch64,
+        Step::ExternalBody,
+        Step::DesignIndex,
+        Step::BootStack,
+        Step::Coverage,
+        Step::IommuBoot,
+        Step::Boot,
+        Step::Aarch64Boot,
+    ];
+
+    fn name(self) -> &'static str {
+        match self {
+            Step::FileSizes => "file sizes",
+            Step::Build => "build",
+            Step::FreeRanges => "free ranges",
+            Step::MappedRuns => "mapped runs",
+            Step::License => "license",
+            Step::Hooks => "hooks",
+            Step::Verify => "verify",
+            Step::VerifyAarch64 => "verify aarch64",
+            Step::ExternalBody => "external body",
+            Step::DesignIndex => "design index",
+            Step::BootStack => "boot stack",
+            Step::Coverage => "coverage",
+            Step::IommuBoot => "iommu boot",
+            Step::Boot => "boot",
+            Step::Aarch64Boot => "aarch64 boot",
+        }
+    }
+
+    /// The target the step belongs to. The steps that check the tree as a whole run with x86_64's,
+    /// since the workstation that runs them is the x86_64 host.
+    fn target(self) -> Arch {
+        match self {
+            Step::VerifyAarch64 | Step::Aarch64Boot => Arch::Aarch64,
+            _ => Arch::X86_64,
+        }
+    }
+
+    async fn run(self, project: &ProjectHandle, timeout: u64) -> Result<String> {
+        match self {
+            Step::FileSizes => check_file_sizes(project).await,
+            Step::Build => check_build(project).await,
+            Step::FreeRanges => check_free_ranges(project).await,
+            Step::MappedRuns => check_mapped_runs(project).await,
+            Step::License => check_licenses(project).await,
+            Step::Hooks => check_hooks(project).await,
+            Step::Verify => check_verify(project, &[]).await,
+            Step::VerifyAarch64 => check_verify(project, &["--target", "aarch64"]).await,
+            Step::ExternalBody => check_external_body(project).await,
+            Step::DesignIndex => check_design_index(project).await,
+            Step::BootStack => check_boot_stack(project).await,
+            Step::Coverage => check_coverage(project).await,
+            Step::IommuBoot => check_iommu_boot(project, timeout).await,
+            Step::Boot => check_boot(project, timeout).await,
+            Step::Aarch64Boot => super::board::gate_boot(project, timeout).await,
+        }
+    }
+}
+
+/// The steps the gate runs for `target`, or for both targets.
+fn steps(target: Option<Arch>) -> Vec<Step> {
+    Step::ALL.into_iter().filter(|step| target.is_none_or(|target| step.target() == target)).collect()
 }
 
 pub(super) async fn run(global: GlobalOpts) -> Result<()> {
     let local = unwrap_command!(global, SubCommand::Test);
     let project = Project::discover()?;
 
-    let results = [
-        ("file sizes", check_file_sizes(&project).await),
-        ("build", check_build(&project).await),
-        ("free ranges", check_free_ranges(&project).await),
-        ("mapped runs", check_mapped_runs(&project).await),
-        ("license", check_licenses(&project).await),
-        ("hooks", check_hooks(&project).await),
-        ("verify", check_verify(&project, &[]).await),
-        ("verify aarch64", check_verify(&project, &["--target", "aarch64"]).await),
-        ("external body", check_external_body(&project).await),
-        ("design index", check_design_index(&project).await),
-        ("boot stack", check_boot_stack(&project).await),
-        ("coverage", check_coverage(&project).await),
-        ("iommu boot", check_iommu_boot(&project, local.boot_timeout).await),
-        ("boot", check_boot(&project, local.boot_timeout).await),
-    ];
+    let mut results = Vec::new();
+    for step in steps(local.target) {
+        results.push((step.name(), step.run(&project, local.boot_timeout).await));
+    }
 
     let mut passed = true;
     println!();
@@ -507,6 +594,28 @@ fn syscall_stack(serial: &str, label: &str) -> Option<u64> {
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
+
+    #[test]
+    fn test_runs_both_targets_unless_one_is_named() {
+        let target = |args: &[&str]| match GlobalOpts::try_parse_from(args).unwrap().cmd {
+            SubCommand::Test(local) => local.target,
+            other => panic!("not test: {other:?}"),
+        };
+        assert_eq!(target(&["atmo", "test"]), None);
+        assert_eq!(target(&["atmo", "test", "--target", "aarch64"]), Some(Arch::Aarch64));
+        assert_eq!(target(&["atmo", "test", "--target", "x86_64"]), Some(Arch::X86_64));
+    }
+
+    #[test]
+    fn the_aarch64_target_is_its_verify_and_the_board_boot() {
+        assert_eq!(steps(Some(Arch::Aarch64)), vec![Step::VerifyAarch64, Step::Aarch64Boot]);
+        let x86_64 = steps(Some(Arch::X86_64));
+        assert!(x86_64.contains(&Step::Boot) && x86_64.contains(&Step::Verify));
+        assert!(!x86_64.contains(&Step::VerifyAarch64) && !x86_64.contains(&Step::Aarch64Boot));
+        let both = steps(None);
+        assert_eq!(both.len(), x86_64.len() + 2);
+        assert_eq!(both.last(), Some(&Step::Aarch64Boot));
+    }
 
     #[test]
     fn a_file_over_the_limit_is_named() {

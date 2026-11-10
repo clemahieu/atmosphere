@@ -1,5 +1,6 @@
 //! `atmo board`: dom0 booted on QEMU virt under KVM on the Orange Pi, held to the boot checks the gate
-//! holds the x86_64 boot to. The board is not part of the gate.
+//! holds the x86_64 boot to. The gate's aarch64 boot is the same run, with an unreachable board taken
+//! as a skip rather than a failure.
 
 use std::process::Stdio;
 
@@ -17,8 +18,17 @@ use crate::project::{Project, ProjectHandle};
 /// Builds the aarch64 images and lays out the partition the board boots, relative to the project root.
 const ESP_BUILD: &str = "tools/aarch64-esp.py";
 
-/// Boots a partition on the board, relative to the project root.
+/// Boots a partition on the board, relative to the project root; `--test` runs its own tests.
 const BOARD_RUN: &str = "tools/orangepi-kvm.py";
+
+/// What the runner prints first: the name of the host the guest ran on.
+const HOST: &str = "host: ";
+
+/// What the runner prints when it launches QEMU with KVM as its only accelerator.
+const KVM: &str = "kvm: accel kvm";
+
+/// What the runner prints, as its only line, when ssh cannot reach the board.
+const SKIP: &str = "skip: ";
 
 /// The partition, relative to the project root.
 const ESP: &str = "target/orangepi-esp";
@@ -60,6 +70,44 @@ pub(super) async fn run(global: GlobalOpts) -> Result<()> {
     Ok(())
 }
 
+/// The gate's aarch64 boot: the build's and the runner's own tests, then the run. A board that ssh
+/// cannot reach does not fail the gate; the runner's skip line is printed on a line of its own, which
+/// is what the round procedure looks for in a gate log, and the step reports it.
+pub(super) async fn gate_boot(project: &ProjectHandle, timeout: u64) -> Result<String> {
+    for program in [ESP_BUILD, BOARD_RUN] {
+        let status = Command::new(project.root().join(program))
+            .arg("--test")
+            .current_dir(project.root())
+            .stdin(Stdio::null())
+            .status()
+            .await
+            .with_context(|| program.to_string())?;
+        if !status.success() {
+            return Err(anyhow!("{} --test: {}", program, status));
+        }
+    }
+    let (code, output) = boot(project, timeout, None).await?;
+    let held = gate_run_accepted(code, &output)?;
+    if held.starts_with(SKIP) {
+        println!("{}", output.trim_end());
+    }
+    Ok(format!("{}'s and {}'s tests pass; {}", ESP_BUILD, BOARD_RUN, held))
+}
+
+/// What the gate takes from a board run: the skip line of a board that was not reached, or what
+/// [`board_run_accepted`] holds of one that was.
+fn gate_run_accepted(code: Option<i32>, output: &str) -> Result<String> {
+    match skip_line(output) {
+        Some(skip) if code == Some(0) => Ok(format!("{}: this commit did not boot on aarch64", skip)),
+        _ => board_run_accepted(code, output, None),
+    }
+}
+
+/// The runner's skip line, when it printed one.
+fn skip_line(output: &str) -> Option<&str> {
+    output.lines().find(|line| line.starts_with(SKIP))
+}
+
 /// Builds the partition, boots it on the board until QEMU exits, and returns the runner's exit code
 /// and what it printed, which it also writes to the serial log.
 async fn boot(project: &ProjectHandle, timeout: u64, command_line: Option<&str>) -> Result<(Option<i32>, String)> {
@@ -91,18 +139,26 @@ async fn boot(project: &ProjectHandle, timeout: u64, command_line: Option<&str>)
     Ok((ran.status.code(), String::from_utf8_lossy(&ran.stdout).into_owned()))
 }
 
-/// Whether the board run is a successful boot: the board was reached, QEMU exited by itself with
-/// status 0, which on virt follows only the power-off of a run that succeeded, and the serial log
-/// shows what the gate requires of the x86_64 boot's. Under `command_line` holding [`FAULT_KEPT`] it
+/// Whether the board run is a successful boot: the board was reached, the runner named the host and
+/// launched QEMU under KVM, QEMU exited by itself with status 0, which on virt follows only the
+/// power-off of a run that succeeded, and the serial log shows what the gate requires of the x86_64
+/// boot's. Under `command_line` holding [`FAULT_KEPT`] it
 /// also shows that the kernel served at least one access-flag fault and one dirty-state fault.
 fn board_run_accepted(code: Option<i32>, output: &str, command_line: Option<&str>) -> Result<String> {
-    if let Some(skip) = output.lines().find(|line| line.starts_with("skip: ")) {
+    if let Some(skip) = skip_line(output) {
         return Err(anyhow!("no run: {}", skip));
+    }
+    let host = output
+        .lines()
+        .find_map(|line| line.strip_prefix(HOST))
+        .ok_or_else(|| anyhow!("{} did not name the host it ran on", BOARD_RUN))?;
+    if !output.lines().any(|line| line == KVM) {
+        return Err(anyhow!("{} did not say it launched QEMU under KVM", BOARD_RUN));
     }
     if code != Some(0) {
         return Err(anyhow!("{} exited with {:?}: QEMU did not exit 0 within the timeout", BOARD_RUN, code));
     }
-    let held = boot_serial_accepted(output, Arch::Aarch64)?;
+    let held = format!("on {} under KVM: {}", host, boot_serial_accepted(output, Arch::Aarch64)?);
     if !command_line.is_some_and(|line| line.split(' ').any(|component| component == FAULT_KEPT)) {
         return Ok(held);
     }
@@ -199,6 +255,34 @@ mod tests {
     fn the_line_is_not_asked_of_a_run_without_the_key() {
         assert!(board_run_accepted(Some(0), &board_output(), Some("nologo")).is_ok());
         assert!(board_run_accepted(Some(0), &fault_kept_output(0, 0), None).is_ok());
+    }
+
+    #[test]
+    fn a_run_names_the_host_it_ran_on_and_kvm() {
+        let held = board_run_accepted(Some(0), &board_output(), None).unwrap();
+        assert!(held.starts_with("on orangepi5 under KVM: "), "{}", held);
+    }
+
+    #[test]
+    fn a_run_that_does_not_name_its_host_or_kvm_fails() {
+        let output = board_output().replace("host: orangepi5\n", "");
+        assert!(board_run_accepted(Some(0), &output, None).unwrap_err().to_string().contains("host"));
+        let output = board_output().replace("kvm: accel kvm\n", "");
+        assert!(board_run_accepted(Some(0), &output, None).unwrap_err().to_string().contains("KVM"));
+    }
+
+    #[test]
+    fn the_gate_takes_an_unreachable_board_as_a_skip() {
+        let held = gate_run_accepted(Some(0), "skip: orangepi5 unreachable\n").unwrap();
+        assert!(held.starts_with("skip: orangepi5 unreachable"), "{}", held);
+    }
+
+    #[test]
+    fn the_gate_holds_a_reached_board_to_the_boot_checks() {
+        assert!(gate_run_accepted(Some(0), &board_output()).unwrap().starts_with("on orangepi5 under KVM: "));
+        let output = board_output().replace("dom0 slot checks held\ndom0 capability done\n", "dom0 slot checks failed\n");
+        assert!(gate_run_accepted(Some(1), &output).is_err());
+        assert!(gate_run_accepted(Some(2), "host: orangepi5\nkvm: accel kvm\n").is_err());
     }
 
     #[test]
