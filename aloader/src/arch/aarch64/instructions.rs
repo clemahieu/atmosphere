@@ -5,7 +5,7 @@ use core::ffi::c_void;
 
 use astd::boot::BootInfo;
 
-use super::{flush_argument, system_control, translation_control, MEMORY_ATTRIBUTES};
+use super::{coherence, flush_argument, lines, system_control, translation_control, MEMORY_ATTRIBUTES};
 
 /// Reads the 32-bit register at `address` in one load of a register without writeback, the form
 /// whose stage 2 data abort reports the access in its syndrome (Arm ARM D24.2.45, ISV), which a
@@ -192,6 +192,39 @@ pub unsafe fn flush_page(vaddr: u64) {
         page = in(reg) flush_argument(vaddr),
         options(nostack, preserves_flags),
     );
+}
+
+/// Makes this CPU's instruction fetch see what the loader wrote to `start..end`, addresses mapped in
+/// the live table, before anything there is executed.
+///
+/// A fetch need not see a write made through the data cache until the lines written are cleaned to
+/// where the two caches meet and the instruction cache's copies of them are invalidated, each
+/// complete at a DSB, with an ISB before the first fetch (Arm ARM B2.2.5); CTR_EL0 says which of
+/// the two this core needs. The firmware does it for the image it loads, the loader's own; what the
+/// loader places is the loader's to do. An instruction cache indexed by virtual address drops the
+/// lines of the address it is given, not of every address the frame is mapped at (D7.5.9.13), so
+/// the range is the one the code executes at.
+pub unsafe fn synchronize_instructions(start: u64, end: u64) {
+    let cache_type: u64;
+    asm!("mrs {cache_type}, CTR_EL0", cache_type = out(reg) cache_type, options(nomem, nostack, preserves_flags));
+    let coherence = coherence(cache_type);
+
+    if let Some(line) = coherence.clean {
+        for address in lines(start, end, line) {
+            asm!("dc cvau, {address}", address = in(reg) address, options(nostack, preserves_flags));
+        }
+    }
+    // The writes, and the cleans, are complete.
+    asm!("dsb ish", options(nostack, preserves_flags));
+    if let Some(line) = coherence.invalidate {
+        for address in lines(start, end, line) {
+            asm!("ic ivau, {address}", address = in(reg) address, options(nostack, preserves_flags));
+        }
+        asm!("dsb ish", options(nostack, preserves_flags));
+    }
+    asm!("isb", options(nostack, preserves_flags));
+
+    log::info!("Instruction fetch sees {:x}-{:x}: CTR_EL0 {:#x}, {:?}", start, end, cache_type, coherence);
 }
 
 /// PSTATE.{D, A, I, F} as DAIF reads them, bits 9:6.

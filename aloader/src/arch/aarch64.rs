@@ -178,6 +178,47 @@ pub fn flush_argument(vaddr: u64) -> u64 {
     vaddr >> 12 & ((1 << 44) - 1)
 }
 
+// What the fetch of an instruction sees of a write, Arm ARM DDI 0487 M.d B2.7.4.2, by the cache
+// type register, CTR_EL0 (D24.2.41).
+
+/// CTR_EL0.IminLine, bits 3:0, and DminLine, bits 19:16: log2 of the 4-byte words in the smallest
+/// line of the instruction caches, and of the data caches, that maintenance by address reaches.
+const CTR_LINE: u64 = 0b1111;
+const CTR_DMINLINE_SHIFT: u32 = 16;
+
+/// CTR_EL0.IDC, bit 28: the fetch needs no clean of the data cache to see a write.
+const CTR_IDC: u64 = 1 << 28;
+
+/// CTR_EL0.DIC, bit 29: nor an invalidation of the instruction cache.
+const CTR_DIC: u64 = 1 << 29;
+
+/// What a core asks for before its fetch sees a write: the bytes of the line to clean the data
+/// cache by, and of the line to invalidate the instruction cache by, each absent where the core
+/// needs no such step.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Coherence {
+    pub clean: Option<u64>,
+    pub invalidate: Option<u64>,
+}
+
+/// What the core whose CTR_EL0 is `cache_type` asks for.
+pub fn coherence(cache_type: u64) -> Coherence {
+    let line = |shift: u32| 4 << (cache_type >> shift & CTR_LINE);
+    Coherence {
+        clean: (cache_type & CTR_IDC == 0).then(|| line(CTR_DMINLINE_SHIFT)),
+        invalidate: (cache_type & CTR_DIC == 0).then(|| line(0)),
+    }
+}
+
+/// The address of every `line`-byte cache line that holds a byte of `start..end`, which holds one
+/// at least: an operation by address reaches the naturally aligned line its address is in
+/// (D7.5.9.4).
+pub fn lines(start: u64, end: u64, line: u64) -> impl Iterator<Item = u64> {
+    assert!(line.is_power_of_two(), "a cache line of {} bytes", line);
+    assert!(start < end, "no byte in {:#x}-{:#x}", start, end);
+    (start & !(line - 1)..end).step_by(line as usize)
+}
+
 /// Where QEMU virt's RAM starts: the lowest address in the memory map its firmware reports. What is
 /// below is the machine's devices.
 const RAM_START: u64 = 0x4000_0000;
@@ -534,6 +575,71 @@ mod tests {
         assert_eq!(flush_argument(0x0000_8765_4321_0fff), 0x8_7654_3210);
         assert_eq!(flush_argument(0x0000_8765_4321_1000), 0x8_7654_3211);
         assert_eq!(flush_argument(u64::MAX), (1 << 44) - 1);
+    }
+
+    /// CTR_EL0 with [31] RES1 alone: [19:16] DminLine and [3:0] IminLine 0, one word a line, and
+    /// [28] IDC and [29] DIC clear, a core that asks for the clean and for the invalidation.
+    const CTR: u64 = bit(31);
+
+    #[test]
+    fn the_cache_type_gives_each_line_as_four_bytes_shifted_by_its_field() {
+        assert_eq!(coherence(CTR), Coherence { clean: Some(4), invalidate: Some(4) });
+        // DminLine 4 and IminLine 4: 16 words, 64 bytes, in each.
+        assert_eq!(coherence(CTR | 4 << 16 | 4), Coherence { clean: Some(64), invalidate: Some(64) });
+        // Each field is its own: DminLine 5 beside IminLine 3, and the other way round.
+        assert_eq!(coherence(CTR | 5 << 16 | 3), Coherence { clean: Some(128), invalidate: Some(32) });
+        assert_eq!(coherence(CTR | 3 << 16 | 5), Coherence { clean: Some(32), invalidate: Some(128) });
+        // The largest a field holds: 2^15 words.
+        assert_eq!(coherence(CTR | 0xf << 16 | 0xf), Coherence { clean: Some(1 << 17), invalidate: Some(1 << 17) });
+        // [15:14] L1Ip, [23:20] ERG, [27:24] CWG and [37:32] TminLine beside them change nothing.
+        let others = 0b11 << 14 | 0xf << 20 | 0xf << 24 | 0x3f << 32;
+        assert_eq!(coherence(CTR | others | 4 << 16 | 4), Coherence { clean: Some(64), invalidate: Some(64) });
+    }
+
+    #[test]
+    fn a_core_whose_fetch_reads_through_the_data_cache_is_not_cleaned() {
+        // [28] IDC: no clean to the point of unification; the invalidation stays.
+        assert_eq!(coherence(CTR | bit(28) | 4 << 16 | 4), Coherence { clean: None, invalidate: Some(64) });
+    }
+
+    #[test]
+    fn a_core_whose_fetch_sees_every_write_is_not_invalidated() {
+        // [29] DIC, which a core reports with [28] IDC: neither step.
+        assert_eq!(coherence(CTR | bit(29) | bit(28) | 4 << 16 | 4), Coherence { clean: None, invalidate: None });
+        // Each bit takes its own step away, so DIC without IDC still cleans.
+        assert_eq!(coherence(CTR | bit(29) | 4 << 16 | 4), Coherence { clean: Some(64), invalidate: None });
+    }
+
+    #[test]
+    fn a_range_s_lines_are_every_line_that_holds_one_of_its_bytes() {
+        fn all(start: u64, end: u64, line: u64) -> Vec<u64> {
+            lines(start, end, line).collect()
+        }
+        // A range that starts and ends inside one line is that line.
+        assert_eq!(all(0x1010, 0x1030, 64), [0x1000]);
+        assert_eq!(all(0x103f, 0x1040, 64), [0x1000]);
+        // One that starts inside a line and ends inside a later one takes both and what is between.
+        assert_eq!(all(0x103f, 0x1041, 64), [0x1000, 0x1040]);
+        assert_eq!(all(0x1010, 0x10c1, 64), [0x1000, 0x1040, 0x1080, 0x10c0]);
+        // The end is exclusive: a range that ends where a line starts leaves that line out.
+        assert_eq!(all(0x1000, 0x1080, 64), [0x1000, 0x1040]);
+        assert_eq!(all(0x1000, 0x1081, 64), [0x1000, 0x1040, 0x1080]);
+        // Another line size, and a page of 64-byte lines.
+        assert_eq!(all(0x1004, 0x100c, 4), [0x1004, 0x1008]);
+        assert_eq!(all(0x8000013000, 0x8000014000, 64).len(), 64);
+    }
+
+    #[test]
+    #[should_panic(expected = "no byte in 0x1010-0x1010")]
+    fn a_range_without_a_byte_has_no_lines_to_ask_for() {
+        // Its start rounded down is below its end, which would name a line it has no byte in.
+        let _ = lines(0x1010, 0x1010, 64);
+    }
+
+    #[test]
+    #[should_panic(expected = "a cache line of 48 bytes")]
+    fn a_line_is_a_power_of_two() {
+        let _ = lines(0x1000, 0x2000, 48);
     }
 
     #[test]

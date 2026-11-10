@@ -108,6 +108,10 @@ pub unsafe fn flush_page(vaddr: u64) {
     asm!("invlpg [{}]", in(reg) vaddr);
 }
 
+/// Makes this CPU's instruction fetch see what the loader wrote to `start..end`. Nothing to do: an
+/// x86 processor keeps its instruction cache coherent with its writes by itself.
+pub unsafe fn synchronize_instructions(_start: u64, _end: u64) {}
+
 /// Calls the kernel's `entry` on the stack that ends at `stack_top`, with `boot_info` as its
 /// argument and the data segment registers cleared. Returns what the kernel returns.
 pub unsafe fn enter_kernel(entry: *const c_void, boot_info: *const BootInfo, stack_top: u64) -> usize {

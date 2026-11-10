@@ -137,6 +137,11 @@ fn load(rsdp: u64, wait_for_debugger: bool) -> ! {
         cur += PAGE_BYTES;
     }
     log::info!("Kernel stack guard: {:x}-{:x}", guard_base, stack_base);
+    // The image, relocated, is everything the window holds below the guard, and the kernel runs
+    // from it at these addresses.
+    unsafe {
+        arch::synchronize_instructions(kernel_base as u64, guard_base);
+    }
 
     debugger::loaded("kernel", kernel_map.load_bias);
 
@@ -186,6 +191,13 @@ fn load(rsdp: u64, wait_for_debugger: bool) -> ! {
                             .expect("Failed to copy payload page");
                     }
                     cur = cur + PAGE_BYTES;
+                }
+            }
+            // dom0 runs from the frames of its executable runs at the addresses mapped here. The
+            // payload is data to it.
+            for run in domain.mapping.runs.iter().filter(|run| run.executable) {
+                unsafe {
+                    arch::synchronize_instructions(run.virt, run.virt + run.pages * PAGE_BYTES);
                 }
             }
             boot_info.dom0 = Some(domain.mapping);
