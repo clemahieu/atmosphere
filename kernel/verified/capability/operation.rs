@@ -9,6 +9,7 @@ verus! {
 
 use crate::capability::inspect::*;
 use crate::capability::kernel::*;
+use crate::capability::list::NODE_SPACE;
 use crate::capability::map::*;
 use crate::capability::position::*;
 use crate::capability::probe::*;
@@ -329,8 +330,9 @@ impl CapKernel {
 
     /// What a retype of the order-3 block at base as a table page of level did, under the untyped at
     /// index from of the table at root: the retype was allowed and the block free, the page is an empty
-    /// table of that level that no space links and no capability names, the untyped's child, and the
-    /// step discharges the retype's effect.
+    /// table of that level that no space links and no capability names, the untyped's child, its node
+    /// not live before, the one entry the parent map gains and the only node whose liveness changed,
+    /// and the step discharges the retype's effect.
     pub open spec fn table_page_retyped(pre: Self, post: Self, root: usize, from: usize, base: usize, level: usize) -> bool {
         let parent = pre.tables.node_of(root, from);
         &&& pre.can_retype_table_page(root, from, base, level)
@@ -340,6 +342,10 @@ impl CapKernel {
         &&& post.table_pages.records@[base].value() == fresh_table(level)
         &&& forall|i: usize| i < 512 ==> #[trigger] post.table_pages.maps@[base].value()[i].is_empty()
         &&& post.list.is_child(parent, base)
+        &&& !pre.list.nodes@[base as int].live
+        &&& post.list.parent@ == pre.list.parent@.insert(base, parent)
+        &&& forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < NODE_SPACE && i != base
+            ==> post.list.nodes@[i].live == pre.list.nodes@[i].live
         &&& forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x)
         &&& post.tables == pre.tables
         &&& post.spaces == pre.spaces

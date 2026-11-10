@@ -453,6 +453,8 @@ impl CapKernel {
             final(self).list.nodes@[child as int].depth == old(self).list.nodes@[parent as int].depth + 1,
             discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base, into: None }),
             final(self).tables.roots == old(self).tables.roots,
+            Self::caps_frame(*old(self), *final(self), child, child),
+            final(self).list.parent@ == old(self).list.parent@.insert(child, parent),
             final(self).processes == old(self).processes,
             forall|i: int| #![trigger final(self).list.nodes@[i]] 0 <= i < NODE_SPACE && i != child ==> {
                 &&& final(self).list.nodes@[i].live == old(self).list.nodes@[i].live
@@ -554,7 +556,9 @@ impl CapKernel {
 
     /// What a retype of the page at base as a 4K frame did, under the untyped at index from of the table
     /// at root, with the capability at index to: the retype was allowed, the frame capability is the
-    /// untyped's child in that slot, the page is zero, and the step discharges the retype's effect.
+    /// untyped's child in that slot, the one entry the parent map gains and the only node whose kind,
+    /// liveness or capability changed, no root entry changed, the page is zero, and the step
+    /// discharges the retype's effect.
     pub open spec fn frame_retyped(pre: Self, post: Self, root: usize, from: usize, to: usize, base: usize) -> bool {
         let parent = pre.tables.node_of(root, from);
         let child = pre.tables.node_of(root, to);
@@ -563,7 +567,10 @@ impl CapKernel {
         &&& post.view().holds(root, child)
         &&& post.payload_of(child) == frame_of(base)
         &&& post.list.is_child(parent, child)
+        &&& post.list.parent@ == pre.list.parent@.insert(child, parent)
         &&& post.list.nodes@[child as int].depth == pre.list.nodes@[parent as int].depth + 1
+        &&& post.tables.roots == pre.tables.roots
+        &&& Self::caps_frame(pre, post, child, child)
         &&& holds_zero(post.frames@, base / 4096)
         &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, into: None })
     }
@@ -582,8 +589,9 @@ impl CapKernel {
     }
 
     /// What the step of a large retype that found its block all zero did: the retype was allowed, the
-    /// frame capability of that order is the untyped's child in the slot at index to, every page of the
-    /// block is zero, and the step discharges the retype's effect.
+    /// frame capability of that order is the untyped's child in the slot at index to, the one entry the
+    /// parent map gains and the only node whose kind, liveness or capability changed, no root entry
+    /// changed, every page of the block is zero, and the step discharges the retype's effect.
     pub open spec fn large_frame_retyped(pre: Self, post: Self, root: usize, from: usize, to: usize, base: usize, order: u8) -> bool {
         let parent = pre.tables.node_of(root, from);
         let child = pre.tables.node_of(root, to);
@@ -592,7 +600,10 @@ impl CapKernel {
         &&& post.view().holds(root, child)
         &&& post.payload_of(child) == large_frame_of(base, order)
         &&& post.list.is_child(parent, child)
+        &&& post.list.parent@ == pre.list.parent@.insert(child, parent)
         &&& post.list.nodes@[child as int].depth == pre.list.nodes@[parent as int].depth + 1
+        &&& post.tables.roots == pre.tables.roots
+        &&& Self::caps_frame(pre, post, child, child)
         &&& forall|k: usize| k < pow2(order as nat) ==> #[trigger] holds_zero(post.frames@, (base / 4096 + k) as usize)
         &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, into: None })
     }
@@ -941,9 +952,9 @@ impl CapKernel {
     /// the table at root, into the root entry at names: the retype was allowed, the leaf is in that
     /// entry of the position's table and owned by that entry, its hidden node the untyped's child, the
     /// one entry the parent map gains and the only node whose liveness changed, every other node on its
-    /// page and every slot in it empty, the list's first node and what retype_keeps names as they were
-    /// but that root entry, and the step discharges the retype's effect, into the table named through a
-    /// process capability when the position names one.
+    /// page and every slot in it empty, the tables it had, the list's first node and what retype_keeps
+    /// names as they were but that root entry, and the step discharges the retype's effect, into the
+    /// table named through a process capability when the position names one.
     pub open spec fn leaf_retyped(pre: Self, post: Self, root: usize, from: usize, at: Position, base: usize) -> bool {
         let parent = pre.tables.node_of(root, from);
         let table = pre.destination_at(root, at.through)->0;
@@ -963,6 +974,7 @@ impl CapKernel {
         }
         &&& forall|x: int| base < x < base + NODES_PER_PAGE ==> !#[trigger] post.list.nodes@[x].live
         &&& post.tables.owner@ == pre.tables.owner@.insert(base, (table, at.index as int))
+        &&& post.tables.roots@.dom() == pre.tables.roots@.dom()
         &&& forall|i: usize| index_ok(i) && index_entry(i) == at.index as int ==> {
             &&& #[trigger] post.tables.has_slot(&post.list, table, i)
             &&& !post.list.nodes@[post.tables.node_of(table, i) as int].live
