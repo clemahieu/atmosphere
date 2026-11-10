@@ -6,11 +6,10 @@ use std::process::{ExitCode, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use tokio::fs;
 use tokio::process::Command;
 
-use super::build::Arch;
 use super::{GlobalOpts, SubCommand};
 use crate::error::Result;
 use crate::project::{Project, ProjectHandle};
@@ -40,6 +39,9 @@ const UPSTREAM_COPIES_CHECK: &str = "tools/check-upstream-copies.py";
 /// The check that no function of a built kernel, dom0 or user ELF has a stack frame over 16 MiB, which
 /// the build runs on each, relative to the project root.
 const STACK_SIZES_CHECK: &str = "tools/check-stack-sizes.py";
+/// The build of every workspace member, then the loader, kernel, dom0 and payload, relative to the
+/// project root; `--test` runs its own tests.
+const BUILD: &str = "tools/build.py";
 
 /// The hooks' tests, relative to the project root: the license guard's and the Beads actor's.
 const HOOK_TESTS: [&str; 2] = [".claude/hooks/license-guard-test.sh", ".claude/hooks/beads-actor-test.sh"];
@@ -75,6 +77,24 @@ pub struct Opts {
     /// every other step. Without it the gate runs both.
     #[clap(long, value_enum)]
     target: Option<Arch>,
+}
+
+/// A machine the gate builds for and boots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(super) enum Arch {
+    #[value(name = "x86_64")]
+    X86_64,
+    #[value(name = "aarch64")]
+    Aarch64,
+}
+
+impl std::fmt::Display for Arch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Arch::X86_64 => "x86_64",
+            Arch::Aarch64 => "aarch64",
+        })
+    }
 }
 
 /// A step of the gate, in the order the gate runs them.
@@ -261,11 +281,25 @@ fn oversized<'a>(sizes: &[(&'a str, u64)]) -> Vec<&'a str> {
     sizes.iter().filter(|(_, size)| *size > MAX_FILE_BYTES).map(|(path, _)| *path).collect()
 }
 
-/// The stack frame check's own tests, then the build, which runs that check on each ELF it makes.
+/// The stack frame check's and the build's own tests, then the build, which runs that check on each ELF
+/// it makes. The build's last line says what it built, or what failed.
 async fn check_build(project: &ProjectHandle) -> Result<String> {
     run_check(project, STACK_SIZES_CHECK, &["--test"]).await?;
-    let built = super::build::gate_build(project).await?;
-    Ok(format!("{}; no stack frame over 16 MiB in the kernel, dom0 or payload", built))
+    run_check(project, BUILD, &["--test"]).await?;
+    let root = project.root();
+    let output = Command::new(root.join(BUILD))
+        .current_dir(&root)
+        .stdin(Stdio::null())
+        .stderr(Stdio::inherit())
+        .output()
+        .await
+        .with_context(|| BUILD.to_string())?;
+    let said = String::from_utf8_lossy(&output.stdout);
+    let last = said.lines().last().unwrap_or_default();
+    if !output.status.success() {
+        return Err(anyhow!("{}: {}: {}", BUILD, output.status, last));
+    }
+    Ok(last.to_string())
 }
 
 /// A workspace crate's whole test suite, after the build, since the dom0 run check in

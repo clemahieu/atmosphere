@@ -1,21 +1,13 @@
 //! Project.
-//!
-//! We handle interaction with Cargo here.
 
-use std::io::Cursor;
-use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::anyhow;
 
-use cargo_metadata::{Message as CargoMessage, MetadataCommand};
-use tokio::process::Command;
+use cargo_metadata::MetadataCommand;
 
 use super::error::Result;
-
-/// The check that no function in an ELF has a stack frame over 16 MiB, relative to the project root.
-const STACK_SIZES_CHECK: &str = "tools/check-stack-sizes.py";
 
 /// A handle to a project.
 pub type ProjectHandle = Arc<Project>;
@@ -47,148 +39,8 @@ impl Project {
         Ok(Arc::new(Self { root }))
     }
 
-    /// Returns the kernel crate.
-    pub fn kernel(self: &Arc<Self>) -> Crate {
-        Crate {
-            name: "kernel".to_string(),
-            crate_dir: self.root.join("kernel"),
-            binary: Some("kernel".to_string()),
-            stack_check: Some(self.root.join(STACK_SIZES_CHECK)),
-        }
-    }
-
-    /// Returns the early loader crate, built as the UEFI application that OVMF boots.
-    ///
-    /// The stack frame check reads ELF, and this build is PE.
-    pub fn loader(self: &Arc<Self>) -> Crate {
-        Crate {
-            name: "aloader".to_string(),
-            crate_dir: self.root.join("aloader"),
-            binary: Some("aloader".to_string()),
-            stack_check: None,
-        }
-    }
-
-    /// Returns the init/dom0 crate
-    pub fn dom0(self: &Arc<Self>) -> Crate {
-        Crate {
-            name: "dom0".to_string(),
-            crate_dir: self.root.join("dom0"),
-            binary: Some("dom0".to_string()),
-            stack_check: Some(self.root.join(STACK_SIZES_CHECK)),
-        }
-    }
-
-    /// Returns a user crate
-    pub fn user(self: &Arc<Self>, name: &str) -> Crate {
-        Crate {
-            name: name.to_string(),
-            crate_dir: self.root.join("user").join(name),
-            binary: Some(name.to_string()),
-            stack_check: Some(self.root.join(STACK_SIZES_CHECK)),
-        }
-    }
-
     /// Returns the path to the workspace root.
     pub fn root(&self) -> PathBuf {
         self.root.clone()
     }
-}
-
-/// A crate.
-///
-/// The build will be initiated from the crate's directory. We do
-/// this to make Cargo automatically pull in crate-specific
-/// `.cargo/config.toml` so we don't need to waste time injecting
-/// various configurations ourselves.
-pub struct Crate {
-    /// Name of the crate.
-    name: String,
-
-    /// Directory of the crate.
-    crate_dir: PathBuf,
-
-    /// Name of the binary, if this is a binary crate.
-    binary: Option<String>,
-
-    /// The stack frame check its executable must pass, when it is an ELF built with -Z emit-stack-sizes.
-    stack_check: Option<PathBuf>,
-}
-
-impl Crate {
-    /// Build the crate, check its executable's stack frames, and return that executable's path.
-    pub async fn build(&self, options: &BuildOptions) -> Result<Option<PathBuf>> {
-        let mut command = Command::new("cargo");
-        command
-            .args(&["build"])
-            .args(&["--message-format=json-render-diagnostics"])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .current_dir(&self.crate_dir);
-
-        if !options.features.is_empty() {
-            command.args(&["--features", &options.features.join(",")]);
-        }
-        if let Some(target) = &options.target {
-            // The crate config allows a JSON target named there. A path on the command line also
-            // needs the flag, and a stable compiler needs the bootstrap env to accept it.
-            command.env("RUSTC_BOOTSTRAP", "1");
-            command.arg("-Zjson-target-spec").arg("--target").arg(target);
-        }
-
-        let build = command.spawn()?;
-        let output = build.wait_with_output().await?;
-
-        if !output.status.success() {
-            return Err(anyhow!("Compilation failed with {}", output.status));
-        }
-
-        if let Some(binary) = &self.binary {
-            let reader = Cursor::new(output.stdout.as_slice());
-            let messages = CargoMessage::parse_stream(reader).collect::<Result<Vec<_>, _>>()?;
-
-            let executable = messages
-                .iter()
-                .find_map(|message| {
-                    if let CargoMessage::CompilerArtifact(artifact) = message {
-                        if artifact.target.name != self.name {
-                            return None;
-                        }
-
-                        return artifact.executable.clone();
-                    }
-
-                    None
-                })
-                .map(|utf8| utf8.into_std_path_buf())
-                .ok_or(anyhow!(
-                    "Compilation did not generate binary \"{}\"",
-                    binary
-                ))?;
-
-            self.check_stack_sizes(&executable).await?;
-            return Ok(Some(executable));
-        }
-        Ok(None)
-    }
-
-    async fn check_stack_sizes(&self, path: &Path) -> Result<()> {
-        if let Some(check) = &self.stack_check {
-            let status = Command::new(check).arg(path).stdin(Stdio::null()).status().await?;
-            if !status.success() {
-                return Err(anyhow!("{} {}: {}", check.display(), path.display(), status));
-            }
-        }
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct BuildOptions {
-    /// Cargo features of the crate being built.
-    pub features: Vec<String>,
-
-    /// A JSON target spec, or a triple rustc has built in. None uses the target in the crate's
-    /// `.cargo` config.
-    pub target: Option<PathBuf>,
 }

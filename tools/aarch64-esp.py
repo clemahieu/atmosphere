@@ -7,7 +7,7 @@ loader reads them. With --command-line the directory also gets cmdline, the kern
 which the loader hands the kernel. tools/orangepi-kvm.py --esp takes the directory. A directory
 already there is replaced.
 
-The images are the debug build of `atmo build --target aarch64`. With --loader-feature the loader
+The images are the debug build of `tools/build.py --target aarch64`. With --loader-feature the loader
 is then built again with those features, small_kernel_stack for a kernel stack the boot overflows,
 and with --kernel-feature the kernel, small_syscall_stack for a syscall stack a call overflows.
 
@@ -37,7 +37,7 @@ IMAGES = [f"target/aarch64-unknown-aloader/debug/{name}" for name in ("kernel", 
 
 def build(loader_features, kernel_features=()):
     """Builds the four images, then the loader and the kernel again with the features asked for."""
-    subprocess.run([str(TREE / "tools/bin/atmo"), "build", "--target", "aarch64"], cwd=TREE, check=True)
+    subprocess.run([str(TREE / "tools/build.py"), "--target", "aarch64"], cwd=TREE, check=True)
     if kernel_features:
         subprocess.run(
             ["cargo", "build", "-q", "-Zjson-target-spec", "--target", str(TREE / KERNEL_SPEC),

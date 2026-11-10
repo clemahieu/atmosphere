@@ -11,8 +11,7 @@ use clap::Parser;
 use tokio::fs;
 use tokio::process::Command;
 
-use super::build::Arch;
-use super::test::boot_log_accepted;
+use super::test::{boot_log_accepted, Arch};
 use super::{GlobalOpts, SubCommand};
 use crate::error::Result;
 use crate::project::{Project, ProjectHandle};
