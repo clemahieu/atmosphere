@@ -10,6 +10,9 @@ pub const PAGE_BYTES: usize = 4096;
 /// The pages one block holds: the entries of one table.
 pub const BLOCK_PAGES: usize = 512;
 
+/// The order of a block: BLOCK_PAGES is two to this power.
+pub const BLOCK_ORDER: usize = 9;
+
 /// The size one entry of the level above the leaf maps, which a span is a whole number of.
 pub const BLOCK_BYTES: usize = PAGE_BYTES * BLOCK_PAGES;
 
