@@ -649,6 +649,7 @@ pub proof fn lemma_mapping_written(a: TableTree, b: TableTree, s: usize, p: Spac
         walk_table(a, s, p) == Some(t),
         a.record(t).level == 1,
     ensures
+        walk(a, s, p) is None,
         space_mapping(b, s) == space_mapping(a, s).insert(p, b.entry(t, p.l1)),
         forall|r: usize| r != s ==> #[trigger] space_mapping(b, r) == space_mapping(a, r),
 {
@@ -713,6 +714,7 @@ pub proof fn lemma_large_mapping_written(a: TableTree, b: TableTree, s: usize, p
         a.record(t).level == 2,
         p.l1 == 0,
     ensures
+        walk(a, s, p) is None,
         space_mapping(b, s) == space_mapping(a, s).insert(p, b.entry(t, p.l2)),
         forall|r: usize| r != s ==> #[trigger] space_mapping(b, r) == space_mapping(a, r),
 {
@@ -1685,8 +1687,9 @@ impl CapKernel {
     /// capability's child, names the entry, counts on the block and has the one record added; the frame
     /// is mapped. What it keeps,
     /// so that maps compose: every other node, the list's head, every other block's count, the
-    /// processes, threads and spaces, every table walk, and, in a process's space, everyone's reach: a
-    /// map into a device space is a grant to whoever sees the space.
+    /// processes, threads and spaces, every table walk, and, in a process's space, everyone's reach. A
+    /// map into a device space adds the space with the frame's page to the shares, a grant to whoever
+    /// sees the space.
     pub open spec fn map_done(pre: Self, post: Self, root: usize, slot: usize, p: SpacePath, from: usize, page: usize) -> bool {
         let a = tree_of(&pre.table_pages, &pre.spaces);
         let b = tree_of(&post.table_pages, &post.spaces);
@@ -1725,13 +1728,16 @@ impl CapKernel {
         &&& forall|r: usize, q: SpacePath| #[trigger] walk_table(b, r, q) == walk_table(a, r, q)
         &&& pre.spaces.records@[s].value().kind is Process
             ==> forall|r: ObjectId, o: ObjectId| #[trigger] post.view().reach(r, o) == pre.view().reach(r, o)
+        &&& pre.spaces.records@[s].value().kind is Device
+            ==> post.view().shares == pre.view().shares.union(map_shares(s, frame, false))
     }
 
     /// What a large map leaves: the capability tables as they were; path p of the space still reaches its
     /// level 2 table and, at its first page, gains the large entry, written with its accessed and dirty
     /// bits clear, and nothing else changes in any space;
     /// the node is the capability's child, names the entry and counts on the block; all 512 pages are
-    /// mapped. Every other node keeps its liveness, kind, depth and parent.
+    /// mapped. Every other node keeps its liveness, kind, depth and parent. A large map into a device
+    /// space adds the space with each of the frame's 512 pages to the shares.
     pub open spec fn map_large_done(pre: Self, post: Self, root: usize, slot: usize, p: SpacePath, from: usize, page: usize) -> bool {
         let a = tree_of(&pre.table_pages, &pre.spaces);
         let b = tree_of(&post.table_pages, &post.spaces);
@@ -1760,6 +1766,8 @@ impl CapKernel {
             &&& post.list.nodes@[i].kind == pre.list.nodes@[i].kind
             &&& post.list.nodes@[i].depth == pre.list.nodes@[i].depth
         }
+        &&& pre.spaces.records@[s].value().kind is Device
+            ==> post.view().shares == pre.view().shares.union(map_shares(s, frame, true))
     }
 
     /// The writes of a map that leaves what the device spaces map move no one's reach: the node they add
@@ -1818,6 +1826,7 @@ impl CapKernel {
             Self::lemma_map_reach(pre, post, t, e, f, frame, false);
         } else {
             Self::lemma_map_device_discharges(pre, post, root, slot, from, p, t, e, frame, false);
+            Self::lemma_map_device_shares(pre, post, s, p, t, e, f, frame, false);
         }
         lemma_map_pages(frame, false);
         assert(map_pages(frame, false).contains(frame));
@@ -1855,6 +1864,7 @@ impl CapKernel {
             Self::lemma_map_process_shares(pre, post, s);
         } else {
             Self::lemma_map_device_discharges(pre, post, root, slot, from, p, t, e, frame, true);
+            Self::lemma_map_device_shares(pre, post, s, p, t, e, f, frame, true);
         }
         let t3 = step(a, s, p.l4)->0;
         assert(step(b, s, p.l4) == step(a, s, p.l4));
@@ -1880,6 +1890,35 @@ impl CapKernel {
         let b = tree_of(&post.table_pages, &post.spaces);
         assert forall|r: usize| #![trigger is_device(b, r)] #![trigger is_device(a, r)] is_device(b, r) == is_device(a, r) by {}
         lemma_mapped_same_shares(a, b, s);
+    }
+
+    /// The writes of a map into device space s, at a path it did not map, add to the shares s with each
+    /// page of the frame, and nothing else.
+    proof fn lemma_map_device_shares(pre: Self, post: Self, s: usize, p: SpacePath, t: usize, e: usize, f: usize, frame: usize, large: bool)
+        requires
+            pre.wf(),
+            Self::map_from(pre, t, e, f, frame, large),
+            Self::map_written(pre, post, t, e, f, frame, large),
+            pre.spaces.roots@.contains_key(s),
+            pre.spaces.records@[s].value().kind is Device,
+            ({
+                let a = tree_of(&pre.table_pages, &pre.spaces);
+                let b = tree_of(&post.table_pages, &post.spaces);
+                &&& walk(a, s, p) is None
+                &&& space_mapping(b, s) == space_mapping(a, s).insert(p, frame_map_entry(frame, pre.payload_of(f).rights, large))
+                &&& forall|r: usize| r != s ==> #[trigger] space_mapping(b, r) == space_mapping(a, r)
+            }),
+        ensures
+            post.view().shares == pre.view().shares.union(map_shares(s, frame, large)),
+    {
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        let v = frame_map_entry(frame, pre.payload_of(f).rights, large);
+        assert forall|r: usize| #![trigger is_device(b, r)] #![trigger is_device(a, r)] is_device(b, r) == is_device(a, r) by {}
+        assert(pre.blocks.tracks(frame as int));
+        assert(v.addr == frame * PAGE_SZ);
+        assert(v.addr / PAGE_SZ == frame);
+        lemma_mapped_device_shares(a, b, s, p, v);
     }
 
     /// The writes of a map into a device space are a share by the mapper: what the space maps beyond

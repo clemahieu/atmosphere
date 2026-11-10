@@ -110,6 +110,16 @@ pub open spec fn shares_of(tree: TableTree) -> ISet<(ObjectId, ObjectId)> {
     ISet::new(|x: (ObjectId, ObjectId)| shares_page(tree, x.0, x.1))
 }
 
+/// Space s with each page a map of first page `frame`, large or not, maps: what such a map into device
+/// space s adds to the shares.
+pub open spec fn map_shares(s: ObjectId, frame: usize, large: bool) -> ISet<(ObjectId, ObjectId)> {
+    ISet::new(|x: (ObjectId, ObjectId)| {
+        &&& x.0 == s
+        &&& x.1 % PAGE_SZ == 0
+        &&& frame <= x.1 / PAGE_SZ < frame + entry_pages(map_level(large))
+    })
+}
+
 /// b's device spaces map nothing a's did not: each walk of a device space of b that finds a frame is a
 /// walk of a device space of a that finds the same.
 pub open spec fn shares_kept(a: TableTree, b: TableTree) -> bool {
@@ -280,6 +290,42 @@ pub proof fn lemma_mapped_shares(a: TableTree, b: TableTree, s: usize, p: SpaceP
         assert(shares_page(a, x.0, x.1));
     }
     assert(space_mapping(b, s)[p] == v);
+}
+
+/// A map of entry v at a path p that device space s did not map adds to the shares s with each page v
+/// maps, and nothing else.
+pub proof fn lemma_mapped_device_shares(a: TableTree, b: TableTree, s: usize, p: SpacePath, v: PageEntry)
+    requires
+        forall|r: usize| #![trigger is_device(b, r)] #![trigger is_device(a, r)] is_device(b, r) == is_device(a, r),
+        is_device(a, s),
+        walk(a, s, p) is None,
+        space_mapping(b, s) == space_mapping(a, s).insert(p, v),
+        forall|r: usize| r != s ==> #[trigger] space_mapping(b, r) == space_mapping(a, r),
+    ensures
+        shares_of(b) == shares_of(a).union(map_shares(s, (v.addr / PAGE_SZ) as usize, v.perm.ps)),
+{
+    let added = map_shares(s, (v.addr / PAGE_SZ) as usize, v.perm.ps);
+    assert forall|x: (ObjectId, ObjectId)| #[trigger] shares_of(b).contains(x)
+        implies shares_of(a).union(added).contains(x) by {
+        if !shares_of(a).contains(x) {
+            lemma_mapped_shares(a, b, s, p, v, x);
+        }
+    }
+    assert forall|x: (ObjectId, ObjectId)| #[trigger] shares_of(a).contains(x) implies shares_of(b).contains(x) by {
+        let g = (x.1 / PAGE_SZ) as usize;
+        let q = choose|q: SpacePath| #[trigger] walk_finds(a, x.0, q, g);
+        assert(space_mapping(a, x.0).contains_key(q));
+        assert(space_mapping(b, x.0).contains_key(q));
+        assert(space_mapping(b, x.0)[q] == space_mapping(a, x.0)[q]);
+        assert(walk_finds(b, x.0, q, g));
+    }
+    assert forall|x: (ObjectId, ObjectId)| #[trigger] added.contains(x) implies shares_of(b).contains(x) by {
+        let g = (x.1 / PAGE_SZ) as usize;
+        assert(space_mapping(b, s).contains_key(p));
+        assert(space_mapping(b, s)[p] == v);
+        assert(walk_finds(b, s, p, g));
+    }
+    assert(shares_of(b) =~= shares_of(a).union(added));
 }
 
 /// A map into a space that is no device space shares the same.
