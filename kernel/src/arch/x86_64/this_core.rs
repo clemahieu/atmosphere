@@ -149,6 +149,14 @@ const PERF_CTR0: u32 = 0xC001_0201;
 /// data cache fills from any source, PMCx044 with every defined unit mask bit but 7, extension memory
 /// (p. 18); and those fills that came from another CCX's cache in the same NUMA node, PMCx044 bit 2.
 const PERF_EVENTS: [u64; 4] = [0x43_0076, 0x43_00C0, 0x43_5F44, 0x43_0444];
+/// CPUID Fn8000_0022 EAX bit 0, PerfMonV2: PerfCntrGlobalCtl exists. APM 2 §13.2.2.
+const PERF_MON_V2: u32 = 1 << 0;
+/// PerfCntrGlobalCtl: counter n counts only while its bit n here and its PerfEvtSel's EN are both
+/// set. APM 2 §13.2.1, Figure 13-12, and Appendix A.6. Its documented reset value enables all six,
+/// but firmware or a hypervisor may leave them clear, as KVM's PerfMonV2 guest starts.
+const PERF_CNTR_GLOBAL_CTL: u32 = 0xC000_0301;
+/// The bits of PerfCntrGlobalCtl that enable counters 0 to 3.
+const PERF_GLOBAL_ENABLE: u64 = (1 << PERF_EVENTS.len()) - 1;
 
 /// Counts PERF_EVENTS on counters 0 to 3 from boot on, in the kernel and in every process, and lets
 /// every process read them with RDPMC, where CPUID offers the extended core counters. That is a boot
@@ -163,6 +171,11 @@ unsafe fn init_performance_counters() {
     for (n, &event) in PERF_EVENTS.iter().enumerate() {
         msr::wrmsr(PERF_CTR0 + 2 * n as u32, 0);
         msr::wrmsr(PERF_CTL0 + 2 * n as u32, event);
+    }
+    if core::arch::x86_64::__cpuid(0x8000_0000).eax >= 0x8000_0022
+        && core::arch::x86_64::__cpuid(0x8000_0022).eax & PERF_MON_V2 != 0
+    {
+        msr::wrmsr(PERF_CNTR_GLOBAL_CTL, msr::rdmsr(PERF_CNTR_GLOBAL_CTL) | PERF_GLOBAL_ENABLE);
     }
     super::write_cr4(super::read_cr4() | CR4_PCE);
     log::info!("CPU {}: performance counters 0 to 3 count {:x?}", crate::cpu::get_cpu_id(), PERF_EVENTS);
