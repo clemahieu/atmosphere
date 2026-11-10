@@ -85,6 +85,32 @@ impl CapKernel {
         }
     }
 
+    /// Without table pages, a process's space has no entry outside the kernel slots: a present one
+    /// would name a table page, or be a large frame's, which only a level 2 table holds.
+    proof fn lemma_no_root_entries(&self, s: usize)
+        requires
+            self.wf(),
+            self.table_pages.maps@ == Map::<usize, PointsTo<PageMap>>::empty(),
+            self.spaces.roots@.contains_key(s),
+            self.spaces.records@[s].value().kind == SpaceKind::Process,
+        ensures
+            forall|j: usize| KERNEL_MEM_END_L4INDEX <= j < 512
+                ==> #[trigger] tree_of(&self.table_pages, &self.spaces).entry(s, j).is_empty(),
+    {
+        let tree = tree_of(&self.table_pages, &self.spaces);
+        self.lemma_table_base(s);
+        assert forall|j: usize| KERNEL_MEM_END_L4INDEX <= j < 512 implies #[trigger] tree.entry(s, j).is_empty() by {
+            assert(!holds_kernel(tree.space_records[s].value().kind, j));
+            assert(tree.child_slot(s, j));
+            self.lemma_entry_shape(s, j);
+            if tree.names_child(s, j) {
+                let c = (tree.entry(s, j).addr - TABLE_NODE_PAGES * 4096) as usize;
+                assert(tree.is_page(c));
+                assert(tree.maps.contains_key(c));
+            }
+        }
+    }
+
     /// Every order-3 block of an untyped capability for block b0 is free and outside any typed large
     /// block when every page of b0 is free and no large block is typed.
     proof fn lemma_untyped_block_free(&self, process: usize, b0: (nat, nat))
@@ -138,8 +164,10 @@ impl CapKernel {
     /// The free runs are well formed, so each untyped block lies in the tracked pages. Each fixed slot of the root's table holds its kind, and each untyped is at depth 1, so a
     /// capability retyped under it is below the deepest depth; every page of the untyped blocks is
     /// acknowledged, since boot unmaps nothing, so a free of a block typed there is not refused as
-    /// stale; the root's process is live; no flush has run, so the flush epoch is 0; every root
-    /// entry of its table past the two boot filled is empty; the root's space maps exactly the image; of
+    /// stale; the root's process is live, as is the page of its space; no flush has run, so the flush
+    /// epoch is 0; every root entry of its table past the two boot filled is empty; the root's space
+    /// maps exactly the image, and its level 4 entries outside the kernel slots that no image run
+    /// reaches are empty, so a table built there is the root's own to fill; of
     /// the first untyped's order-3 blocks, every one past those the image's tables can take is free;
     /// the root reaches exactly the console, power and the pages of its process, its thread, the free
     /// runs and the image, and nothing else reaches anything the root does not, besides itself.
@@ -201,7 +229,10 @@ impl CapKernel {
             || (o % 4096 == 0 && root_reach_page(process, t, free, image, (o / 4096) as int)))
         &&& forall|q: usize, o: usize| #[trigger] self.view().reach(q, o)
             ==> o == q || self.view().reach(process, o)
+        &&& forall|l4: usize| KERNEL_MEM_END_L4INDEX <= l4 < 512 && !image_l4(image, l4)
+            ==> #[trigger] b.entry(process, l4).is_empty()
         &&& self.root_live(process)
+        &&& !self.blocks.pages@[(process / 4096) as int].dead
         &&& self.flush_epoch == 0
         &&& forall|r: int| 2 <= r < ROOT_ENTRIES ==> #[trigger] self.tables.leaf(process, r) == NO_LEAF
         &&& forall|j: int| image_tables_bound(image) <= j < untyped_tables(first)
@@ -435,6 +466,8 @@ impl CapKernel {
             // No table page, so the root's space maps nothing.
             assert(s3.table_pages == s0.table_pages);
             s3.lemma_no_table_pages(s3.root_space(process));
+            s3.lemma_written_space(n);
+            s3.lemma_no_root_entries(process);
             // The second leaf's frame slots are slots, and free.
             assert(s3.tables.leaf(process, 1) == frames);
             assert forall|i: usize| ROOT_FRAME_SLOT <= i < 2 * NODES_PER_PAGE implies #[trigger] s3.tables.has_slot(&s3.list, process, i) by {
@@ -565,6 +598,13 @@ impl CapKernel {
             assert(s4.root_live(process)) by {
                 assert(s3.root_live(process));
             }
+            // The root's level 4 entries outside the kernel slots that no image run reaches are as
+            // boot_root_memory left them, empty.
+            assert forall|l4: usize| KERNEL_MEM_END_L4INDEX <= l4 < 512 && !image_l4(image@, l4)
+                implies #[trigger] tree_of(&s4.table_pages, &s4.spaces).entry(process, l4).is_empty() by {
+                assert(tree_of(&s4.table_pages, &s4.spaces).entry(process, l4) == tree_of(&s3.table_pages, &s3.spaces).entry(process, l4));
+            }
+            assert(!s4.blocks.pages@[(process / 4096) as int].dead);
             assert forall|r: int| 2 <= r < ROOT_ENTRIES implies #[trigger] s4.tables.leaf(process, r) == NO_LEAF by {
                 assert(s1.tables.leaf(process, r) == NO_LEAF);
             }

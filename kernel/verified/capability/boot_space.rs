@@ -231,6 +231,8 @@ impl CapKernel {
                 }
                 &&& forall|p: SpacePath| #[trigger] space_mapping(b0, s).contains_key(p) ==> image_path(runs@, p)
                 &&& forall|t: usize| t != s ==> #[trigger] space_mapping(b0, t) == space_mapping(a0, t)
+                &&& forall|j: usize| j < 512 && !image_l4(runs@, j) ==> #[trigger] b0.entry(s, j) == a0.entry(s, j)
+                &&& !final(self).blocks.pages@[(s / 4096) as int].dead
                 &&& forall|a: int, u: int, j: int| #![trigger crate::capability::boot_map::frame_slot(runs@, a, u), block_virt(runs@[a], u, j)]
                     0 <= a < runs@.len() && 0 <= u < run_image_blocks(runs@[a]).len()
                     && 0 <= j < pow2(run_image_blocks(runs@[a])[u].1) ==> {
@@ -407,6 +409,18 @@ impl CapKernel {
                 assert(post.list.nodes@[nf as int].live && post.list.nodes@[nf as int].kind == tab.list.nodes@[nf as int].kind);
                 assert(post.is_cap(nf));
                 assert(post.payload_of(nf) == tab.payload_of(nf));
+            }
+            // The root's level 4 entries that no run reaches: the tables step left them, and the maps
+            // write only level 1 tables.
+            assert(t0.is_root(s));
+            assert(b0.is_root(s));
+            post.lemma_table_base(s);
+            tab.lemma_table_base(s);
+            assert forall|j: usize| j < 512 && !image_l4(runs@, j) implies #[trigger] b0.entry(s, j) == a0.entry(s, j) by {
+                assert(b0.entry(s, j) == t0.entry(s, j));
+            }
+            assert(!post.blocks.pages@[(s / 4096) as int].dead) by {
+                reveal(CapKernel::root_tables_ready);
             }
             assert(post.wf());
             assert(count == image_blocks(runs@).len());

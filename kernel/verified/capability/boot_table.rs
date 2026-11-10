@@ -163,6 +163,11 @@ pub open spec fn page_path(x: int) -> SpacePath {
     }
 }
 
+/// Some virtual page of the runs lies under entry l4 of a level 4 table.
+pub open spec fn image_l4(runs: Seq<ImageRun>, l4: usize) -> bool {
+    exists|a: int, x: int| 0 <= a < runs.len() && #[trigger] in_virt_at(runs, a, x) && page_path(x).l4 == l4
+}
+
 /// Every virtual page of the runs lies under a level 4 entry past the kernel's: its l4 index is at least
 /// KERNEL_MEM_END_L4INDEX and below 512.
 pub open spec fn image_virt_wf(runs: Seq<ImageRun>) -> bool {
@@ -284,6 +289,37 @@ proof fn lemma_region_l4(v: usize, n: usize, q: usize)
     lemma_div_is_ordered(v as int / PAGES_PER_2M as int, q as int, PAGES_PER_1G as int);
     lemma_div_is_ordered(v + n - 1, 512 * PAGES_PER_L4 - 1, PAGES_PER_2M as int);
     lemma_div_is_ordered(q as int, (512 * PAGES_PER_L4 - 1) / PAGES_PER_2M as int, PAGES_PER_1G as int);
+}
+
+/// A 2M region q that run r's virtual pages touch lies under a level 4 entry some page of the runs lies
+/// under: the first page of the run's in that region.
+proof fn lemma_region_image_l4(runs: Seq<ImageRun>, r: int, q: usize)
+    requires
+        0 <= r < runs.len(),
+        runs[r].pages > 0,
+        runs[r].virt as int / PAGES_PER_2M as int <= q <= (runs[r].virt + runs[r].pages - 1) / PAGES_PER_2M as int,
+    ensures
+        image_l4(runs, q / PAGES_PER_1G),
+{
+    let v = runs[r].virt as int;
+    let e = runs[r].virt + runs[r].pages - 1;
+    lemma_fundamental_div_mod(e, 512);
+    lemma_fundamental_div_mod(v, 512);
+    lemma_mod_bound(e, 512);
+    lemma_mod_bound(v, 512);
+    vstd::arithmetic::mul::lemma_mul_inequality(v / 512, q as int, 512);
+    vstd::arithmetic::mul::lemma_mul_inequality(q as int, e / 512, 512);
+    let x = if v <= q * 512 { q * 512 } else { v };
+    assert(x / 512 == q) by {
+        if v <= q * 512 {
+            lemma_fundamental_div_mod_converse(x, 512, q as int, 0);
+        } else {
+            lemma_fundamental_div_mod_converse(v, 512, q as int, v - q * 512);
+        }
+    }
+    assert(in_virt_at(runs, r, x));
+    lemma_page_region(x);
+    assert(page_path(x).l4 == q / PAGES_PER_1G);
 }
 
 /// The j-th order-3 block of a block of memory with at least j + 1 of them lies within it.
@@ -694,6 +730,10 @@ impl CapKernel {
             tree_of(&final(self).table_pages, &final(self).spaces).record(ret.0).level == level,
             tree_of(&final(self).table_pages, &final(self).spaces).record(ret.0).space == Some(s),
             !final(self).blocks.pages@[(ret.0 / 4096) as int].dead,
+            forall|x: usize, j: usize| #![trigger tree_of(&final(self).table_pages, &final(self).spaces).entry(x, j)]
+                tree_of(&old(self).table_pages, &old(self).spaces).is_table(x) && j < 512 && !(x == t && j == i)
+                ==> tree_of(&final(self).table_pages, &final(self).spaces).entry(x, j)
+                    == tree_of(&old(self).table_pages, &old(self).spaces).entry(x, j),
             !ret.1 ==> *final(self) == *old(self),
             ret.1 ==> {
                 &&& ret.0 == cursor
@@ -787,6 +827,12 @@ impl CapKernel {
                 Self::lemma_block_kept(pre, post, process, x, cursor);
             }
             assert(post.table_pages.maps@.dom() =~= pre.table_pages.maps@.dom().insert(cursor));
+            assert forall|x: usize, j: usize| #![trigger b.entry(x, j)] a.is_table(x) && j < 512 && !(x == t && j == i)
+                implies b.entry(x, j) == a.entry(x, j) by {
+                assert(x != cursor);
+                assert(m.is_table(x));
+                assert(m.entry(x, j) == a.entry(x, j));
+            }
         }
         (cursor, true)
     }
@@ -854,6 +900,9 @@ impl CapKernel {
                 final(self).table_pages.maps@.contains_key(t) && !old(self).table_pages.maps@.contains_key(t)
                 && tree_of(&final(self).table_pages, &final(self).spaces).record(t).level == 1
                 ==> forall|j: usize| j < 512 ==> #[trigger] tree_of(&final(self).table_pages, &final(self).spaces).entry(t, j).is_empty(),
+            forall|j: usize| #![trigger tree_of(&final(self).table_pages, &final(self).spaces).entry(s, j)]
+                j < 512 && j != l4 ==> tree_of(&final(self).table_pages, &final(self).spaces).entry(s, j)
+                    == tree_of(&old(self).table_pages, &old(self).spaces).entry(s, j),
     {
         // The body relates four states; their invariants stay folded, and the steps' contracts carry them.
         hide(CapKernel::wf);
@@ -953,6 +1002,16 @@ impl CapKernel {
                 } else {
                     assert(m1 && t == c2);
                 }
+            }
+            // Only the path's own entry of the level 4 table changes: the other two steps write below it.
+            assert(b1.is_root(s));
+            assert(b2.is_root(s));
+            assert(s != t3);
+            assert(s != t2);
+            assert forall|j: usize| #![trigger b3.entry(s, j)] j < 512 && j != l4 implies b3.entry(s, j) == a.entry(s, j) by {
+                assert(b1.entry(s, j) == a.entry(s, j));
+                assert(b2.entry(s, j) == b1.entry(s, j));
+                assert(b3.entry(s, j) == b2.entry(s, j));
             }
         }
         c3
@@ -1179,6 +1238,8 @@ impl CapKernel {
                     &&& !final(self).blocks.pages@[(t1 / 4096) as int].dead
                     &&& b.entry(t1, page_path(x).l1).is_empty()
                 }
+                &&& forall|j: usize| j < 512 && !image_l4(runs@, j)
+                    ==> #[trigger] b.entry(s, j) == tree_of(&old(self).table_pages, &old(self).spaces).entry(s, j)
             },
     {
         // The invariants of the states stay folded, as do the two facts about the root's that every
@@ -1242,6 +1303,8 @@ impl CapKernel {
                 forall|r: usize| #[trigger] space_mapping(tree_of(&self.table_pages, &self.spaces), r) == space_mapping(a, r),
                 forall|a: int, x: int| 0 <= a < r && #[trigger] in_virt_at(runs@, a, x)
                     ==> walk_table(tree_of(&self.table_pages, &self.spaces), s, page_path(x)) is Some,
+                forall|j: usize| j < 512 && !image_l4(runs@, j)
+                    ==> #[trigger] tree_of(&self.table_pages, &self.spaces).entry(s, j) == a.entry(s, j),
             decreases runs@.len() - r,
         {
             let v = runs[r].virt;
@@ -1300,6 +1363,8 @@ impl CapKernel {
                         ==> walk_table(tree_of(&self.table_pages, &self.spaces), s, page_path(x)) is Some,
                     forall|x: int| #[trigger] in_virt_at(runs@, r as int, x) && (x / PAGES_PER_2M as int) < q
                         ==> walk_table(tree_of(&self.table_pages, &self.spaces), s, page_path(x)) is Some,
+                    forall|j: usize| j < 512 && !image_l4(runs@, j)
+                        ==> #[trigger] tree_of(&self.table_pages, &self.spaces).entry(s, j) == a.entry(s, j),
                 decreases last + 1 - q,
             {
                 let l4 = q / PAGES_PER_1G;
@@ -1332,6 +1397,12 @@ impl CapKernel {
                             lemma_page_region(x);
                             assert(page_path(x).l4 == l4 && page_path(x).l3 == l3 && page_path(x).l2 == l2);
                         }
+                    }
+                    // The region's level 4 entry is one the image reaches; every other entry stays.
+                    lemma_region_image_l4(runs@, r as int, q);
+                    assert forall|j: usize| j < 512 && !image_l4(runs@, j) implies #[trigger] b.entry(s, j) == a.entry(s, j) by {
+                        assert(j != l4);
+                        assert(c.entry(s, j) == a.entry(s, j));
                     }
                     k = k2;
                 }

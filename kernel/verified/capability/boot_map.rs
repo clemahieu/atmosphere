@@ -251,6 +251,7 @@ impl CapKernel {
         &&& post.list.seq@[0] == pre.list.seq@[0]
         &&& nodes_kept(pre.list, post.list)
         &&& kinds_kept(&pre.blocks, &post.blocks)
+        &&& post.blocks.pages@[(s / 4096) as int].dead == pre.blocks.pages@[(s / 4096) as int].dead
         &&& forall|a: int, x: int| 0 <= a < runs.len() && #[trigger] in_virt_at(runs, a, x) ==> {
             &&& space_mapping(b0, s).contains_key(page_path(x))
             &&& space_mapping(b0, s)[page_path(x)] == image_entry(runs[a], x)
@@ -297,6 +298,7 @@ impl CapKernel {
         &&& cur.list.seq@[0] == pre.list.seq@[0]
         &&& nodes_kept(pre.list, cur.list)
         &&& kinds_kept(&pre.blocks, &cur.blocks)
+        &&& cur.blocks.pages@[(s / 4096) as int].dead == pre.blocks.pages@[(s / 4096) as int].dead
         &&& forall|t: usize, q: SpacePath| #[trigger] walk_table(b0, t, q) == walk_table(a0, t, q)
         &&& forall|o1: ObjectId, o2: ObjectId| #[trigger] cur.view().reach(o1, o2) == pre.view().reach(o1, o2)
         &&& forall|t: usize| t != s ==> #[trigger] space_mapping(b0, t) == space_mapping(a0, t)
@@ -538,6 +540,11 @@ impl CapKernel {
         let br = block_ref(&cur.blocks, g0);
         assert(in_run_at(image_phys(runs), r, g0 as int));
         assert(br == BlockRef::Two(g0 / PAGES_PER_2M));
+        // The root's space's own page is a small block, so its dead flag is not the region's.
+        assert(c0.is_root(s));
+        cur.lemma_table_base(s);
+        assert(block_typed(&cur.blocks, BlockRef::Small(s / 4096)));
+        assert(block_dead(&post.blocks, BlockRef::Small(s / 4096)) == block_dead(&cur.blocks, BlockRef::Small(s / 4096)));
         assert forall|a: int, g: int| 0 <= a < runs.len() && #[trigger] in_run_at(image_phys(runs), a, g) implies {
             &&& post.blocks.regions_2m@[g / PAGES_PER_2M as int].typed
             &&& post.blocks.regions_2m@[g / PAGES_PER_2M as int].refs <= ROOT_FRAME_SLOTS + done + 1
