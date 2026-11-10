@@ -14,6 +14,7 @@ use crate::capability::mapping::*;
 use crate::capability::list::*;
 use crate::capability::reach::*;
 use crate::capability::refs::*;
+use crate::capability::steps::Steps;
 use crate::capability::space::*;
 use crate::capability::table::*;
 use crate::capability::process::*;
@@ -118,21 +119,28 @@ impl Devices {
     }
 
     /// Whether a record already names this device, in at most MAX_DEVICES loads.
-    pub fn recorded(&self, info: DeviceInfo) -> (ret: bool)
+    pub fn recorded(&self, info: DeviceInfo, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             self.wf(),
         ensures
+            final(steps).count <= old(steps).count + MAX_DEVICES,
             ret == !self.fresh(info),
     {
+        let ghost start = steps.count;
         let mut e = 0;
         while e < self.count
             invariant
                 self.wf(),
                 0 <= e <= self.count,
+                start == old(steps).count,
+                steps.count == start + e,
                 forall|d: int| 0 <= d < e ==>
                     (#[trigger] self.records@[d]).iommu != info.iommu || self.records@[d].number != info.number,
             decreases self.count - e,
         {
+            proof {
+                steps.step();
+            }
             let r = *self.records.get(e);
             if r.iommu == info.iommu && r.number == info.number {
                 return true;
@@ -254,12 +262,13 @@ impl CapKernel {
 
     /// Records a device boot found and puts its capability at index `slot` of the table at root, a
     /// child of the list's first node. A refusal changes nothing.
-    pub fn add_device(&mut self, first: usize, root: usize, slot: usize, info: DeviceInfo) -> (ret: bool)
+    pub fn add_device(&mut self, first: usize, root: usize, slot: usize, info: DeviceInfo, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
             first == old(self).list.seq@[0],
         ensures
+            final(steps).count <= old(steps).count + MAX_DEVICES,
             final(self).wf(),
             ret == old(self).can_add_device(root, slot, info),
             !ret ==> *final(self) == *old(self),
@@ -283,7 +292,7 @@ impl CapKernel {
             reveal(devices_wf);
         }
         if self.devices.count >= MAX_DEVICES || info.iommu >= NUM_IOMMUS || info.number >= IOMMU_DEVICES
-            || self.devices.recorded(info) {
+            || self.devices.recorded(info, Tracked(steps)) {
             return false;
         }
         let child = match self.tables.lookup(&self.list, root, slot) {
@@ -405,7 +414,7 @@ impl CapKernel {
     /// Gives each device boot found a record and a capability under the list's first node, device k
     /// at index slot + k of the table at root. Boot fills the table once, and it stops at the first
     /// device refused, so false means boot fails.
-    pub fn add_devices(&mut self, first: usize, root: usize, slot: usize, devices: &Array<DeviceInfo, MAX_DEVICES>, count: usize) -> (ret: bool)
+    pub fn add_devices(&mut self, first: usize, root: usize, slot: usize, devices: &Array<DeviceInfo, MAX_DEVICES>, count: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
@@ -415,6 +424,7 @@ impl CapKernel {
             count <= MAX_DEVICES,
             slot + count <= usize::MAX,
         ensures
+            final(steps).count <= old(steps).count + MAX_DEVICES * (MAX_DEVICES + 1),
             final(self).wf(),
             ret ==> {
                 &&& final(self).devices.count == count
@@ -428,11 +438,14 @@ impl CapKernel {
             },
     {
         let ghost pre = *old(self);
+        let ghost start = steps.count;
         let mut k = 0;
         while k != count
             invariant
                 self.wf(),
                 0 <= k <= count,
+                start == old(steps).count,
+                steps.count <= start + k * (MAX_DEVICES + 1),
                 count <= MAX_DEVICES,
                 slot + count <= usize::MAX,
                 devices.wf(),
@@ -451,8 +464,17 @@ impl CapKernel {
             decreases count - k,
         {
             let ghost before = *self;
+            proof {
+                steps.step();
+                assert((k + 1) * (MAX_DEVICES + 1) == k * (MAX_DEVICES + 1) + MAX_DEVICES + 1) by (nonlinear_arith);
+                assert((k + 1) * (MAX_DEVICES + 1) <= MAX_DEVICES * (MAX_DEVICES + 1)) by (nonlinear_arith)
+                    requires
+                        k < count,
+                        count <= MAX_DEVICES,
+                ;
+            }
             let info = *devices.get(k);
-            if !self.add_device(first, root, slot + k, info) {
+            if !self.add_device(first, root, slot + k, info, Tracked(steps)) {
                 return false;
             }
             proof {
@@ -492,6 +514,12 @@ impl CapKernel {
                 }
             }
             k = k + 1;
+        }
+        proof {
+            assert(k * (MAX_DEVICES + 1) <= MAX_DEVICES * (MAX_DEVICES + 1)) by (nonlinear_arith)
+                requires
+                    k <= MAX_DEVICES,
+            ;
         }
         true
     }

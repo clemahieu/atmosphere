@@ -265,12 +265,13 @@ impl CapKernel {
     /// during the call, if the leaf holding it is in its run, and so can the capability the position
     /// goes through, so the steps name the capability's node and the authority is the caller's when
     /// the call began.
-    pub fn revoke(&mut self, root: usize, at: Position) -> (ret: RevokeStep)
+    pub fn revoke(&mut self, root: usize, at: Position, Tracked(steps): Tracked<&mut Steps>) -> (ret: RevokeStep)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(steps).count <= old(steps).count + REVOKE_BUDGET * (MAX_DEPTH + 1),
             final(self).wf(),
             final(self).cores == old(self).cores,
             Self::mappings_shrunk(*old(self), *final(self)),
@@ -293,10 +294,13 @@ impl CapKernel {
             assert(discharges(pre.view(), pre.view(), root, Effect::Revoke { cap: c }));
             lemma_bound_threads_live(&pre.list, &pre.tables);
         }
-        let mut steps = 0;
-        while steps != REVOKE_BUDGET && self.flush_epoch != usize::MAX
+        let ghost start = steps.count;
+        let mut taken = 0;
+        while taken != REVOKE_BUDGET && self.flush_epoch != usize::MAX
             invariant
-                steps <= REVOKE_BUDGET,
+                taken <= REVOKE_BUDGET,
+                start == old(steps).count,
+                steps.count <= start + taken * (MAX_DEPTH + 1),
                 self.wf(),
                 self.cores == pre.cores,
                 pre == *old(self),
@@ -307,15 +311,23 @@ impl CapKernel {
                 self.is_cap(c),
                 self.tables.owner == pre.tables.owner,
                 self.list.parent == pre.list.parent,
-                pre.list.seq@.len() - self.list.seq@.len() == steps,
+                pre.list.seq@.len() - self.list.seq@.len() == taken,
                 pre.tables.owner@[page_of(c)].0 == holder,
                 pre.is_cap(c),
                 discharges(pre.view(), self.view(), root, Effect::Revoke { cap: c }),
                 bound_threads(&self.list, &self.tables) == bound_threads(&pre.list, &pre.tables).restrict(live_nodes(&self.list)),
-            decreases REVOKE_BUDGET - steps,
+            decreases REVOKE_BUDGET - taken,
         {
             let ghost mid = *self;
-            if self.revoke_step(Ghost(holder), c) {
+            proof {
+                steps.step();
+                assert((taken + 1) * (MAX_DEPTH + 1) == taken * (MAX_DEPTH + 1) + MAX_DEPTH + 1) by (nonlinear_arith);
+                assert((taken + 1) * (MAX_DEPTH + 1) <= REVOKE_BUDGET * (MAX_DEPTH + 1)) by (nonlinear_arith)
+                    requires
+                        taken < REVOKE_BUDGET,
+                ;
+            }
+            if self.revoke_step(Ghost(holder), c, Tracked(steps)) {
                 proof {
                     assert(self.view() == mid.view());
                 }
@@ -333,7 +345,13 @@ impl CapKernel {
                         == bound_threads(&mid.list, &mid.tables));
                 Self::lemma_revoke_bound_threads(bound_threads(&pre.list, &pre.tables), mid, *self, r);
             }
-            steps = steps + 1;
+            taken = taken + 1;
+        }
+        proof {
+            assert(taken * (MAX_DEPTH + 1) <= REVOKE_BUDGET * (MAX_DEPTH + 1)) by (nonlinear_arith)
+                requires
+                    taken <= REVOKE_BUDGET,
+            ;
         }
         if self.list.is_childless(c) {
             RevokeStep::Done
@@ -345,7 +363,7 @@ impl CapKernel {
     }
 
     /// One step of revoking capability c, which root's table holds. Returns whether c's run was empty.
-    pub fn revoke_step(&mut self, Ghost(root): Ghost<usize>, c: usize) -> (done: bool)
+    pub fn revoke_step(&mut self, Ghost(root): Ghost<usize>, c: usize, Tracked(steps): Tracked<&mut Steps>) -> (done: bool)
         requires
             old(self).wf(),
             c < NODE_SPACE,
@@ -353,6 +371,7 @@ impl CapKernel {
             old(self).tables.owner@[page_of(c)].0 == root,
             old(self).flush_epoch < usize::MAX,
         ensures
+            final(steps).count <= old(steps).count + MAX_DEPTH,
             final(self).wf(),
             final(self).cores == old(self).cores,
             Self::mappings_shrunk(*old(self), *final(self)),
@@ -379,9 +398,7 @@ impl CapKernel {
         proof {
             pre.lemma_no_change_discharges_revoke(root, c);
         }
-        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
-        let tracked mut steps = Steps::fresh();
-        let r = match self.list.leaf_of_run(c, Tracked(&mut steps)) {
+        let r = match self.list.leaf_of_run(c, Tracked(steps)) {
             Some(found) => found,
             None => { return true; },
         };

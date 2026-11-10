@@ -982,7 +982,9 @@ impl CapKernel {
                 }
             }
             let ghost mid = *self;
-            if !self.revoke_step(Ghost(object), n) {
+            // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
+            let tracked mut revoke_steps = Steps::fresh();
+            if !self.revoke_step(Ghost(object), n, Tracked(&mut revoke_steps)) {
                 proof {
                     if kept {
                         // A childless slot's revoke has nothing to do.

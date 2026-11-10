@@ -788,8 +788,10 @@ impl CapKernel {
             final(self).cores == old(self).cores,
             Self::spec_revoked(*old(self), *final(self), root, frame, ret),
     {
+        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
         let status = match position(frame.slot()) {
-            Some(at) => match self.revoke(root, at) {
+            Some(at) => match self.revoke(root, at, Tracked(&mut steps)) {
                 RevokeStep::Done => STATUS_OK,
                 RevokeStep::Again => STATUS_AGAIN,
                 RevokeStep::Refused | RevokeStep::Exhausted => STATUS_REFUSED,

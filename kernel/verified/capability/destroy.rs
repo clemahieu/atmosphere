@@ -257,13 +257,14 @@ impl CapKernel {
     /// thread_destroyed says. Destroying the caller's own thread or its own process leaves the caller's
     /// thread to be moved off by check_current before it returns to user mode. A target already dead is
     /// refused. The index comes from user space, so it can be refused, and a refusal changes nothing.
-    pub fn destroy(&mut self, c: usize, root: usize, i: usize) -> (ret: bool)
+    pub fn destroy(&mut self, c: usize, root: usize, i: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             old(self).wf(),
             c < NUM_CPUS,
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(steps).count <= old(steps).count + NUM_CPUS,
             final(self).wf(),
             ret == old(self).can_destroy(root, i),
             !ret ==> *final(self) == *old(self),
@@ -316,7 +317,7 @@ impl CapKernel {
                     pre.lemma_process_cap(n);
                 }
                 let p = payload.base;
-                self.destroy_process(p);
+                self.destroy_process(p, Tracked(steps));
                 proof {
                     let post = *self;
                     assert forall|d: usize| #[trigger] listed_cores(pre.spaces.loaded@[p].value().list, NUM_CPUS as int).contains(d)
@@ -348,11 +349,12 @@ impl CapKernel {
 
     /// Sets process p's record dead and sends an IPI to each core on its space's list of cores, one
     /// load of the list and a bounded loop over the cores.
-    fn destroy_process(&mut self, p: usize)
+    fn destroy_process(&mut self, p: usize, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).wf(),
             old(self).processes.records@.contains_key(p),
         ensures
+            final(steps).count <= old(steps).count + NUM_CPUS,
             final(self).wf(),
             Self::process_destroyed(*old(self), *final(self), p),
             old(self).spaces.loaded@.contains_key(p),
@@ -375,9 +377,7 @@ impl CapKernel {
         let list = PPtr::<SpaceCores>::from_usize(p + SPACE_CORES_PAGE * 4096).borrow(
             Tracked(self.spaces.loaded.borrow().tracked_borrow(p)),
         ).list;
-        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
-        let tracked mut steps = Steps::fresh();
-        self.stop_ipis = send_to_listed(list, Ghost(pre.stop_ipis@), Tracked(&mut steps));
+        self.stop_ipis = send_to_listed(list, Ghost(pre.stop_ipis@), Tracked(steps));
         proof {
             let post = *self;
             assert(post.processes.records@.dom() =~= pre.processes.records@.dom());
