@@ -1,17 +1,49 @@
-//! The instructions this crate issues itself: the load and the store of a device register, the
-//! hypervisor call and the wait for an interrupt. On another architecture the crate is built for its
-//! tests, where a register is a word of the test's own memory and each store and call is recorded.
+//! The instructions this crate issues itself: the load and the store of a device register, the read
+//! and the write of a system register, the two barriers, the hypervisor call and the wait for an
+//! interrupt. On another architecture the crate is built for its tests, where a device register is a
+//! word of the test's own memory, a system register is a value the test's thread keeps, and each
+//! store, system register access, barrier and call is recorded.
 
 #[cfg(target_arch = "aarch64")]
-pub use aarch64::{hvc, load, store, wait};
+pub use aarch64::{dsb, hvc, isb, load, load_wide, read, store, wait, write};
 #[cfg(test)]
-pub use host::{events, Block, Event};
+pub use host::{events, ignore_writes, set, Block, Event};
 #[cfg(not(target_arch = "aarch64"))]
-pub use host::{hvc, load, store, wait};
+pub use host::{dsb, hvc, isb, load, load_wide, read, store, wait, write};
+
+/// A system register this crate reads or writes, by its name in the Arm ARM (DDI 0487) and, for the
+/// ICC registers, in the GIC architecture specification (IHI 0069).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum System {
+    /// MPIDR_EL1, read-only: this core's affinity. Arm ARM D24.2.137.
+    Mpidr,
+    /// ICC_SRE_EL1: whether the ICC system registers are in use. IHI 0069 12.2.23.
+    IccSre,
+    /// ICC_PMR_EL1: the priority mask. IHI 0069 12.2.19.
+    IccPmr,
+    /// ICC_CTLR_EL1: the CPU interface's control. IHI 0069 12.2.6.
+    IccCtlr,
+    /// ICC_IGRPEN1_EL1: Group 1's enable. IHI 0069 12.2.16.
+    IccIgrpen1,
+    /// ICC_IAR1_EL1, read-only: a read acknowledges the Group 1 interrupt signaled. IHI 0069 12.2.14.
+    IccIar1,
+    /// ICC_EOIR1_EL1, write-only: the end of a Group 1 interrupt. IHI 0069 12.2.10.
+    IccEoir1,
+    /// ICC_SGI1R_EL1, write-only: a write generates a Group 1 SGI. IHI 0069 12.2.22.
+    IccSgi1r,
+    /// CNTPCT_EL0, read-only: the physical count. Arm ARM D24.10.17.
+    Cntpct,
+    /// CNTP_CVAL_EL0: the EL1 physical timer's compare value. Arm ARM D24.10.23.
+    CntpCval,
+    /// CNTP_CTL_EL0: the EL1 physical timer's control. Arm ARM D24.10.22.
+    CntpCtl,
+}
 
 #[cfg(target_arch = "aarch64")]
 mod aarch64 {
     use core::arch::asm;
+
+    use super::System;
 
     /// Loads the 32-bit device register at `register`.
     ///
@@ -47,6 +79,88 @@ mod aarch64 {
         );
     }
 
+    /// Loads the 64-bit device register at `register`, in the form [`load`] names.
+    ///
+    /// # Safety
+    ///
+    /// `register` is a 64-bit device register this core can read.
+    pub unsafe fn load_wide(register: usize) -> u64 {
+        let value: u64;
+        asm!(
+            "ldr {value}, [{register}]",
+            register = in(reg) register,
+            value = out(reg) value,
+            options(nostack, readonly, preserves_flags),
+        );
+        value
+    }
+
+    /// Reads `register`.
+    ///
+    /// # Safety
+    ///
+    /// The caller accepts what the read does: a read of ICC_IAR1_EL1 acknowledges an interrupt.
+    pub unsafe fn read(register: System) -> u64 {
+        let value: u64;
+        macro_rules! mrs {
+            ($name:literal) => {
+                asm!(concat!("mrs {value}, ", $name), value = out(reg) value, options(nomem, nostack, preserves_flags))
+            };
+        }
+        match register {
+            System::Mpidr => mrs!("MPIDR_EL1"),
+            System::IccSre => mrs!("ICC_SRE_EL1"),
+            System::IccPmr => mrs!("ICC_PMR_EL1"),
+            System::IccCtlr => mrs!("ICC_CTLR_EL1"),
+            System::IccIgrpen1 => mrs!("ICC_IGRPEN1_EL1"),
+            System::IccIar1 => mrs!("ICC_IAR1_EL1"),
+            System::Cntpct => mrs!("CNTPCT_EL0"),
+            System::CntpCval => mrs!("CNTP_CVAL_EL0"),
+            System::CntpCtl => mrs!("CNTP_CTL_EL0"),
+            System::IccEoir1 | System::IccSgi1r => panic!("{:?} is write-only", register),
+        }
+        value
+    }
+
+    /// Writes `value` to `register`.
+    ///
+    /// # Safety
+    ///
+    /// The caller accepts what the write does to this core's interrupts and timer.
+    pub unsafe fn write(register: System, value: u64) {
+        macro_rules! msr {
+            ($name:literal) => {
+                asm!(concat!("msr ", $name, ", {value}"), value = in(reg) value, options(nomem, nostack, preserves_flags))
+            };
+        }
+        match register {
+            System::IccSre => msr!("ICC_SRE_EL1"),
+            System::IccPmr => msr!("ICC_PMR_EL1"),
+            System::IccCtlr => msr!("ICC_CTLR_EL1"),
+            System::IccIgrpen1 => msr!("ICC_IGRPEN1_EL1"),
+            System::IccEoir1 => msr!("ICC_EOIR1_EL1"),
+            System::IccSgi1r => msr!("ICC_SGI1R_EL1"),
+            System::CntpCval => msr!("CNTP_CVAL_EL0"),
+            System::CntpCtl => msr!("CNTP_CTL_EL0"),
+            System::Mpidr | System::IccIar1 | System::Cntpct => panic!("{:?} is read-only", register),
+        }
+    }
+
+    /// ISB: the instructions after it see every system register write before it. Arm ARM B2.6.1.
+    pub fn isb() {
+        unsafe {
+            asm!("isb", options(nomem, nostack, preserves_flags));
+        }
+    }
+
+    /// DSB SY: after an ISB, the Redistributor has observed the last write to an ICC register that
+    /// IHI 0069 12.1.6 lists.
+    pub fn dsb() {
+        unsafe {
+            asm!("dsb sy", options(nomem, nostack, preserves_flags));
+        }
+    }
+
     /// Calls the PSCI function `function`, which takes no argument.
     ///
     /// The conduit is `hvc`, as QEMU virt's device tree says (node `psci`, `method = "hvc"`). The
@@ -78,17 +192,46 @@ mod host {
     #[cfg(test)]
     use {core::cell::RefCell, std::boxed::Box, std::vec::Vec};
 
+    use super::System;
+
     /// What a test's thread did to the machine.
     #[cfg(test)]
     #[derive(Debug, PartialEq)]
     pub enum Event {
         Store { register: usize, value: u32 },
+        Read { register: System },
+        Write { register: System, value: u64 },
+        Isb,
+        Dsb,
         Hvc { function: u32 },
     }
+
+    /// The system registers [`System`] names.
+    #[cfg(test)]
+    const SYSTEM_REGISTERS: usize = System::CntpCtl as usize + 1;
 
     #[cfg(test)]
     std::thread_local! {
         static EVENTS: RefCell<Vec<Event>> = const { RefCell::new(Vec::new()) };
+        static SYSTEM: RefCell<[u64; SYSTEM_REGISTERS]> = const { RefCell::new([0; SYSTEM_REGISTERS]) };
+        static IGNORED: RefCell<[bool; SYSTEM_REGISTERS]> = const { RefCell::new([false; SYSTEM_REGISTERS]) };
+    }
+
+    /// Makes `register` keep its value across the writes this thread makes from here on, as a
+    /// register that ignores writes does. The writes are still recorded.
+    #[cfg(test)]
+    pub fn ignore_writes(register: System) {
+        IGNORED.with_borrow_mut(|ignored| ignored[register as usize] = true);
+    }
+
+    /// The bits a [`Block::hold`] keeps, by the word's address.
+    #[cfg(test)]
+    static HELD: std::sync::Mutex<Vec<(usize, u32)>> = std::sync::Mutex::new(Vec::new());
+
+    /// Makes `register` hold `value` on this thread, recording nothing.
+    #[cfg(test)]
+    pub fn set(register: System, value: u64) {
+        SYSTEM.with_borrow_mut(|system| system[register as usize] = value);
     }
 
     /// Takes what this thread did since the last call, in order.
@@ -97,14 +240,20 @@ mod host {
         EVENTS.take()
     }
 
-    /// A page of device registers in the test's memory, all zero.
+    /// Device registers in the test's memory, all zero.
     #[cfg(test)]
-    pub struct Block(Box<[AtomicU32; 1024]>);
+    pub struct Block(Box<[AtomicU32]>);
 
     #[cfg(test)]
     impl Block {
+        /// A page of registers.
         pub fn new() -> Self {
-            Self(Box::new([const { AtomicU32::new(0) }; 1024]))
+            Self::of(0x1000)
+        }
+
+        /// `bytes` of registers.
+        pub fn of(bytes: usize) -> Self {
+            Self((0..bytes / 4).map(|_| AtomicU32::new(0)).collect())
         }
 
         pub fn base(&self) -> usize {
@@ -117,6 +266,17 @@ mod host {
 
         pub fn set(&self, offset: usize, value: u32) {
             self.0[offset / 4].store(value, Ordering::SeqCst);
+        }
+
+        /// Makes the bits of `mask` in the word at `offset` keep their value across every
+        /// [`store`], as read-only bits do, until [`Block::release`].
+        pub fn hold(&self, offset: usize, mask: u32) {
+            HELD.lock().unwrap().push((self.base() + offset, mask));
+        }
+
+        /// Ends every [`Block::hold`] on the word at `offset`.
+        pub fn release(&self, offset: usize) {
+            HELD.lock().unwrap().retain(|(register, _)| *register != self.base() + offset);
         }
     }
 
@@ -136,8 +296,67 @@ mod host {
     /// `register` is a word of a [`Block`].
     pub unsafe fn store(register: usize, value: u32) {
         #[cfg(test)]
-        EVENTS.with_borrow_mut(|events| events.push(Event::Store { register, value }));
+        let value = {
+            EVENTS.with_borrow_mut(|events| events.push(Event::Store { register, value }));
+            let held = HELD.lock().unwrap().iter().filter(|(word, _)| *word == register).fold(0, |all, (_, mask)| all | mask);
+            value & !held | load(register) & held
+        };
         (*(register as *const AtomicU32)).store(value, Ordering::SeqCst);
+    }
+
+    /// Loads the two words at `register`, the lower first.
+    ///
+    /// # Safety
+    ///
+    /// `register` is a pair of words of a [`Block`].
+    pub unsafe fn load_wide(register: usize) -> u64 {
+        u64::from(load(register)) | u64::from(load(register + 4)) << 32
+    }
+
+    /// Reads the value this thread keeps for `register`, and records the read.
+    ///
+    /// # Safety
+    ///
+    /// None is needed here; the signature is the aarch64 one.
+    pub unsafe fn read(register: System) -> u64 {
+        assert!(!matches!(register, System::IccEoir1 | System::IccSgi1r), "{:?} is write-only", register);
+        #[cfg(test)]
+        {
+            EVENTS.with_borrow_mut(|events| events.push(Event::Read { register }));
+            SYSTEM.with_borrow(|system| system[register as usize])
+        }
+        #[cfg(not(test))]
+        0
+    }
+
+    /// Keeps `value` as `register` on this thread, and records the write.
+    ///
+    /// # Safety
+    ///
+    /// None is needed here; the signature is the aarch64 one.
+    pub unsafe fn write(register: System, value: u64) {
+        assert!(!matches!(register, System::Mpidr | System::IccIar1 | System::Cntpct), "{:?} is read-only", register);
+        #[cfg(test)]
+        {
+            EVENTS.with_borrow_mut(|events| events.push(Event::Write { register, value }));
+            if !IGNORED.with_borrow(|ignored| ignored[register as usize]) {
+                set(register, value);
+            }
+        }
+        #[cfg(not(test))]
+        let _ = value;
+    }
+
+    /// Records the barrier.
+    pub fn isb() {
+        #[cfg(test)]
+        EVENTS.with_borrow_mut(|events| events.push(Event::Isb));
+    }
+
+    /// Records the barrier.
+    pub fn dsb() {
+        #[cfg(test)]
+        EVENTS.with_borrow_mut(|events| events.push(Event::Dsb));
     }
 
     /// Records the call. It returns, as no PSCI function that changes the machine's power does.

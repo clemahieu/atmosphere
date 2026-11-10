@@ -1,6 +1,6 @@
-//! QEMU virt on aarch64: the PL011 console and the PSCI power-off, on a machine without an IOMMU. The
-//! items of the interrupt controller, the timer and the start of a second core are declared and panic
-//! with their names. design/machine-glue-below-the-kernel/.
+//! QEMU virt on aarch64: the PL011 console, the GICv3, the generic timer and the PSCI power-off, on a
+//! machine without an IOMMU. The start of a second core is declared and panics with its name.
+//! design/machine-glue-below-the-kernel/.
 
 #![no_std]
 
@@ -9,8 +9,12 @@ extern crate std;
 
 mod console;
 mod instruction;
+mod interrupt;
 mod iommu;
 mod shutdown;
+mod timer;
+
+use interrupt::Gic;
 
 /// The timer's interrupt: the EL1 physical timer's, which QEMU virt's device tree gives as PPI 14 (node
 /// `timer`, its second interrupt), interrupt 30 to the GIC.
@@ -36,39 +40,55 @@ pub unsafe fn init(boot: &astd::boot::BootInfo) {
     assert!(boot.iommu_base.is_none(), "machine-virt drives no IOMMU");
 }
 
-/// Sets up the interrupt controller. Once on the boot core, before any `interrupt_init_core`.
+static GIC: Gic = unsafe { Gic::new(interrupt::DISTRIBUTOR, interrupt::REDISTRIBUTORS) };
+
+/// Sets up the interrupt controller: the GIC's Distributor, with affinity routing and Group 1
+/// forwarded. Once on the boot core, before any `interrupt_init_core`.
 pub unsafe fn interrupt_init() {
-    unimplemented!("interrupt_init");
+    GIC.init();
 }
 
-/// Sets up `cpu`'s share of the interrupt controller and points its one-shot timer at
-/// [`TIMER_VECTOR`], unarmed. Once on each core.
+/// Sets up `cpu`'s share of the interrupt controller, its Redistributor and its CPU interface, with
+/// the flush SGI and the timer's PPI enabled, and leaves its one-shot timer unarmed. Once on each
+/// core, which is `cpu`.
 pub unsafe fn interrupt_init_core(cpu: usize) {
-    let _ = cpu;
-    unimplemented!("interrupt_init_core");
+    GIC.init_core(cpu);
 }
 
-/// Routes the external interrupts to `cpu`.
+/// Routes the external interrupts to `cpu`: none, since this crate enables no SPI.
 pub unsafe fn route_external(cpu: usize) {
-    let _ = cpu;
-    unimplemented!("route_external");
+    assert!(cpu < MAX_CPUS);
 }
 
-/// Arms this core's one-shot timer.
+/// Arms this core's one-shot timer to fire `ticks` of the physical count from now.
 pub fn set_timer(ticks: u64) {
-    let _ = ticks;
-    unimplemented!("set_timer");
+    timer::arm(ticks);
 }
 
-/// Acknowledges an interrupt on this core.
+/// Acknowledges the interrupt this core took and returns its id, one of the vector constants, or
+/// nothing when none was pending. The interrupt's handler ends with [`end_of_interrupt`]. The
+/// timer's shot is spent here: its line is a level, which would raise the interrupt again at the
+/// end of this one.
+pub fn acknowledge_interrupt() -> Option<u32> {
+    acknowledge(&GIC)
+}
+
+fn acknowledge(gic: &Gic) -> Option<u32> {
+    let id = gic.acknowledge()?;
+    if id == u32::from(TIMER_VECTOR) {
+        timer::disarm();
+    }
+    Some(id)
+}
+
+/// Ends the interrupt this core acknowledged last.
 pub fn end_of_interrupt() {
-    unimplemented!("end_of_interrupt");
+    GIC.end();
 }
 
-/// Sends `vector` to `cpu`, returning once this core's interrupt controller has taken it.
+/// Sends `vector`, an SGI, to `cpu`, returning once this core's interrupt controller has taken it.
 pub fn send_ipi(cpu: usize, vector: u8) {
-    let _ = (cpu, vector);
-    unimplemented!("send_ipi");
+    interrupt::send(cpu, vector);
 }
 
 /// Starts `cpu` on `stack`, translating through `root`, at `entry` with `cpu` as its argument.
@@ -81,8 +101,12 @@ pub unsafe fn start_core(cpu: usize, stack: u64, entry: extern "C" fn(u64) -> !,
 mod tests {
     use std::boxed::Box;
     use std::string::String;
+    use std::vec::Vec;
 
     use astd::boot::BootInfo;
+
+    use crate::instruction::{events, set, Block, Event, System};
+    use crate::interrupt::Gic;
 
     #[test]
     fn every_item_of_the_record_is_here_with_its_signature() {
@@ -96,6 +120,7 @@ mod tests {
         let _: unsafe fn(usize) = crate::interrupt_init_core;
         let _: unsafe fn(usize) = crate::route_external;
         let _: fn(u64) = crate::set_timer;
+        let _: fn() -> Option<u32> = crate::acknowledge_interrupt;
         let _: fn() = crate::end_of_interrupt;
         let _: fn(usize, u8) = crate::send_ipi;
         let _: unsafe fn(usize, u64, extern "C" fn(u64) -> !, u64) = crate::start_core;
@@ -124,21 +149,70 @@ mod tests {
 
     #[test]
     fn an_item_that_is_not_written_panics_with_its_name() {
-        let items: [(&str, Box<dyn Fn() + std::panic::UnwindSafe>); 7] = [
-            ("interrupt_init", Box::new(|| unsafe { crate::interrupt_init() })),
-            ("interrupt_init_core", Box::new(|| unsafe { crate::interrupt_init_core(0) })),
-            ("route_external", Box::new(|| unsafe { crate::route_external(0) })),
-            ("set_timer", Box::new(|| crate::set_timer(1))),
-            ("end_of_interrupt", Box::new(crate::end_of_interrupt)),
-            ("send_ipi", Box::new(|| crate::send_ipi(1, crate::FLUSH_VECTOR))),
-            ("start_core", Box::new(|| unsafe { crate::start_core(1, 0, entry, 0) })),
-        ];
+        let items: [(&str, Box<dyn Fn() + std::panic::UnwindSafe>); 1] =
+            [("start_core", Box::new(|| unsafe { crate::start_core(1, 0, entry, 0) }))];
         for (name, item) in items {
             let panic = std::panic::catch_unwind(item).expect_err(name);
             // The message is a literal once the compiler has folded the name into it.
             let message = panic.downcast_ref::<&str>().copied().or(panic.downcast_ref::<String>().map(String::as_str));
             assert_eq!(message, Some(std::format!("not implemented: {}", name).as_str()));
         }
+    }
+
+    #[test]
+    fn the_timer_s_acknowledgement_spends_its_shot_before_the_interrupt_ends() {
+        let block = Block::new();
+        let gic = unsafe { Gic::new(block.base(), block.base()) };
+        set(System::IccIar1, u64::from(crate::TIMER_VECTOR));
+        set(System::CntpCtl, 0b001);
+
+        assert_eq!(crate::acknowledge(&gic), Some(30));
+        gic.end();
+
+        let writes: Vec<Event> = events().into_iter().filter(|event| matches!(event, Event::Write { .. })).collect();
+        assert_eq!(
+            writes,
+            [
+                Event::Write { register: System::CntpCtl, value: 0 },
+                Event::Write { register: System::IccEoir1, value: 30 },
+            ]
+        );
+    }
+
+    #[test]
+    fn another_interrupt_s_acknowledgement_leaves_the_timer_armed() {
+        let block = Block::new();
+        let gic = unsafe { Gic::new(block.base(), block.base()) };
+        set(System::IccIar1, u64::from(crate::FLUSH_VECTOR));
+
+        assert_eq!(crate::acknowledge(&gic), Some(0));
+
+        assert!(events().iter().all(|event| !matches!(event, Event::Write { .. })));
+    }
+
+    #[test]
+    fn a_spurious_acknowledgement_leaves_the_timer_armed() {
+        let block = Block::new();
+        let gic = unsafe { Gic::new(block.base(), block.base()) };
+        set(System::IccIar1, 1023);
+
+        assert_eq!(crate::acknowledge(&gic), None);
+
+        assert_eq!(events(), [Event::Read { register: System::IccIar1 }]);
+    }
+
+    #[test]
+    fn no_external_interrupt_is_routed() {
+        unsafe { crate::route_external(1) };
+        assert_eq!(events(), []);
+    }
+
+    #[test]
+    fn the_timer_s_and_the_flush_s_interrupts_are_private_to_a_core() {
+        // IHI 0069 2.2: INTIDs 0 to 15 are SGIs and 16 to 31 PPIs, the two kinds a Redistributor's
+        // SGI_base configures.
+        assert!((16..32).contains(&crate::TIMER_VECTOR));
+        assert!(crate::FLUSH_VECTOR < 16);
     }
 
     #[test]
