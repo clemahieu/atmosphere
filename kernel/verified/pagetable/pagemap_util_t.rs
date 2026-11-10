@@ -11,7 +11,6 @@ use crate::pagetable::pagemap::*;
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::array::Array;
-use crate::lemma::lemma_u::*;
 
 pub fn page_map_set_kernel_entry_range(
     kernel_entries: &Array<usize, KERNEL_MEM_END_L4INDEX>,
@@ -309,68 +308,6 @@ pub fn page_perm_to_page_map(page_ptr: PagePtr, level: Ghost<usize>, Tracked(pag
         (*uptr).assume_init_mut().init();
     }
     (page_ptr, Tracked::assume_new())
-}
-
-pub fn flush_tlb_4kentry(tlbmap_4k: Ghost<Seq<Map<VAddr, MapEntry>>>, va: Ghost<VAddr>) -> (ret:
-    Ghost<Seq<Map<VAddr, MapEntry>>>)
-    requires
-        NUM_CPUS > 0,
-        tlbmap_4k@.len() == NUM_CPUS,
-    ensures
-        ret@.len() == NUM_CPUS,
-        forall|cpu_id: CpuId|
-            #![auto]
-            0 <= cpu_id < NUM_CPUS ==> !(ret@[cpu_id as int].contains_key(va@)),
-        forall|cpu_id: CpuId|
-            #![auto]
-            0 <= cpu_id < NUM_CPUS ==> ret@[cpu_id as int].submap_of(tlbmap_4k@[cpu_id as int]),
-{
-    let mut cpu_id = 0;
-    let mut ret_map = tlbmap_4k;
-
-    broadcast use map_equal_implies_submap_each_other;
-
-    assert(forall|cpu_id: CpuId|
-        #![auto]
-        0 <= cpu_id < NUM_CPUS ==> ret_map@[cpu_id as int] =~= tlbmap_4k@[cpu_id as int]);
-    assert(forall|cpu_id: CpuId|
-        #![auto]
-        0 <= cpu_id < NUM_CPUS ==> ret_map@[cpu_id as int].submap_of(tlbmap_4k@[cpu_id as int]));
-
-    // #[verifier::loop_isolation(false)]
-    for cpu_id in 0..NUM_CPUS
-        invariant
-            0 <= cpu_id <= NUM_CPUS,
-            tlbmap_4k@.len() == NUM_CPUS,
-            ret_map@.len() == NUM_CPUS,
-            ret_map@[0].submap_of(tlbmap_4k@[0]),
-            forall|cpu_i: CpuId|
-                #![auto]
-                0 <= cpu_i < cpu_id ==> ret_map@[cpu_i as int].contains_key(va@) == false,
-            forall|cpu_i: CpuId|
-                #![auto]
-                0 <= cpu_i < cpu_id ==> ret_map@[cpu_i as int].submap_of(tlbmap_4k@[cpu_i as int]),
-            forall|cpu_i: CpuId|
-                #![auto]
-                cpu_id <= cpu_i < NUM_CPUS ==> ret_map@[cpu_i as int].submap_of(tlbmap_4k@[cpu_i as int]),
-    {
-        proof {
-            //assert(ret_map@[cpu_id as int].submap_of(tlbmap_4k@[cpu_id as int]));
-            // prove ret_map[i] has no key va
-            assert(cpu_id < ret_map@.len());
-            let tlbmap = ret_map@[cpu_id as int].remove(va@);
-            assert(!tlbmap.contains_key(va@));
-            assert(ret_map@[cpu_id as int].submap_of(tlbmap_4k@[cpu_id as int]));
-            assert(tlbmap.submap_of(tlbmap_4k@[cpu_id as int]));
-            let tlbseq = ret_map@.update(cpu_id as int, tlbmap);
-            assert(tlbseq.index(cpu_id as int) =~= tlbmap);
-            assert(tlbseq.contains(tlbmap));
-            ret_map@ = tlbseq;
-            assert(!ret_map@[cpu_id as int].contains_key(va@));
-
-        }
-    }
-    ret_map
 }
 
 } // verus!
