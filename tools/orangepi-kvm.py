@@ -10,8 +10,9 @@ EFI/BOOT/BOOTAA64.EFI; the board's copy is removed with the run. The guest runs
 until the --wait-for line is in the log, the UEFI shell banner by default, or until
 the boot timeout. With --until-exit it runs until QEMU exits by itself, which it does
 when the guest powers off, and this exits with QEMU's status; a guest still on at the
-boot timeout is stopped and the run fails. The board holds an exclusive lock so a second run does not start
-a second guest. The remote side watches this process's stdin and kills QEMU when
+boot timeout is stopped and the run fails. The board holds an exclusive lock, so it runs one guest
+at a time: a second run waits for the lock for up to the boot timeout, then fails without starting
+a guest. The remote side watches this process's stdin and kills QEMU when
 the local side dies. A timeout here does the same.
 
 When ssh cannot reach the host, this prints one skip line naming orangepi5 and
@@ -64,10 +65,16 @@ exit "$status"
 # The board runs this. stdin stays open; EOF means the local side is gone.
 REMOTE = r"""
 set -u
+case ${ATMO_BOOT_TIMEOUT:-20} in
+    ''|*[!0-9]*) boot_timeout=20 ;;
+    *) boot_timeout=$ATMO_BOOT_TIMEOUT ;;
+esac
+# One guest at a time. A run that finds the board taken waits its turn, for as long as one guest
+# may take, so gates that overlap queue here.
 lock=${ATMO_LOCK:-$HOME/.atmo-orangepi-kvm.lock}
 exec 9>"$lock"
-if ! flock -n 9; then
-    echo "atmo-orangepi-kvm: lock held, not starting a second guest" >&2
+if ! flock -w "$boot_timeout" 9; then
+    echo "atmo-orangepi-kvm: lock held for $boot_timeout s, not starting a second guest" >&2
     exit 2
 fi
 log=
@@ -75,10 +82,6 @@ err=
 esp=
 qpid=
 aborted=0
-case ${ATMO_BOOT_TIMEOUT:-20} in
-    ''|*[!0-9]*) boot_timeout=20 ;;
-    *) boot_timeout=$ATMO_BOOT_TIMEOUT ;;
-esac
 until_exit=${ATMO_UNTIL_EXIT:-0}
 
 stop_qemu() {
@@ -284,7 +287,8 @@ def run(ssh_host, connect_timeout, boot_timeout, memory_mib, wait_for, esp_dir, 
         ],
         _payload(boot_timeout, memory_mib, wait_for, esp, until_exit, iommu),
         None,
-        boot_timeout + connect_timeout + 30,
+        # The wait for the board's lock, then the guest's own run.
+        2 * boot_timeout + connect_timeout + 30,
         preexec_fn=_die_with_parent,
     )
     if code == 255 and _unreachable(out + err):
@@ -521,7 +525,8 @@ def self_test():
                 f"code={refused.returncode} err={refused.stderr!r}",
             )
 
-        # A second run while the first holds the lock does not start a guest.
+        # A second run while the first holds the lock waits for it, and starts no guest when the
+        # wait outlasts its boot timeout.
         env2 = dict(env)
         env2["ATMO_FAKE_SERIAL"] = ""
         env2["ATMO_QEMU_PID"] = str(tmp / "qemu2.pid")
@@ -542,15 +547,42 @@ def self_test():
             if not chunk:
                 break
             started += chunk
-        code2, sout, serr = _held(["bash", "-c", BOOTSTRAP], payload, env2, 15)
+        code2, sout, serr = _held(["bash", "-c", BOOTSTRAP], _payload(2, 512, SHELL_MARK, b""), env2, 15)
         check(
-            "second run does not start a guest",
+            "second run whose wait runs out does not start a guest",
             code2 == 2 and b"not starting a second guest" in serr and b"guest: started" not in sout,
             f"code={code2} out={sout!r} err={serr!r}",
         )
+        env3 = dict(env)
+        env3["ATMO_QEMU_PID"] = str(tmp / "qemu3.pid")
+        queued = subprocess.Popen(
+            ["bash", "-c", BOOTSTRAP],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env3,
+        )
+        assert queued.stdin is not None
+        queued.stdin.write(payload)
+        queued.stdin.flush()
+        try:
+            queued.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
+        check("second run waits while the first holds the board", queued.poll() is None, f"code={queued.poll()}")
         first.stdin.close()
         first.wait(timeout=15)
         check("closing stdin stops the guest", gone(tmp / "qemu2.pid"))
+        # Its stdin stays open until it ends: EOF there means the local side is gone.
+        queued.wait(timeout=20)
+        assert queued.stdout is not None and queued.stderr is not None
+        qout, qerr = queued.stdout.read(), queued.stderr.read()
+        queued.stdin.close()
+        check(
+            "second run starts its guest once the first is gone",
+            queued.returncode == 0 and b"guest: started" in qout and SHELL_MARK.encode() in qout,
+            f"code={queued.returncode} out={qout!r} err={qerr!r}",
+        )
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
