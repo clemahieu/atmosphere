@@ -78,64 +78,79 @@ proof fn lemma_tables_bound_nonneg(runs: Seq<ImageRun>)
 /// and at an even k starts an order-1 block; the next order-3 block starts 8 pages on.
 proof fn lemma_block_page(b: usize, k: int)
     requires
-        b % 32768 == 0,
+        b % PROCESS_BYTES == 0,
         0 <= k < 8,
     ensures
         (b + k * PAGE_SZ) / PAGE_SZ as int == b / PAGE_SZ + k,
         (b + k * PAGE_SZ) % PAGE_SZ as int == 0,
-        (b + 32768) / PAGE_SZ as int == b / PAGE_SZ + 8,
+        (b + PROCESS_BYTES) / PAGE_SZ as int == b / PAGE_SZ + 8,
         region_2m(b / PAGE_SZ + k) == region_2m((b / PAGE_SZ) as int),
         region_1g(b / PAGE_SZ + k) == region_1g((b / PAGE_SZ) as int),
-        k % 2 == 0 ==> (b + k * PAGE_SZ) % 8192 == 0,
+        k % 2 == 0 ==> (b + k * PAGE_SZ) % (2 * PAGE_SZ) as int == 0,
 {
-    let q = b as int / 32768;
-    lemma_fundamental_div_mod(b as int, 32768);
-    assert(b == 32768 * q);
+    // The order-3 blocks in a 2M and in a 1G region.
+    let in_2m = PAGES_PER_2M as int / 8;
+    let in_1g = PAGES_PER_1G as int / 8;
+    assert(PAGES_PER_2M as int == 8 * in_2m && PAGES_PER_1G as int == 8 * in_1g);
+    let q = b as int / PROCESS_BYTES as int;
+    lemma_fundamental_div_mod(b as int, PROCESS_BYTES as int);
+    assert(b == PROCESS_BYTES as int * q);
     lemma_fundamental_div_mod_converse(b + k * PAGE_SZ, PAGE_SZ as int, 8 * q + k, 0);
     lemma_fundamental_div_mod_converse(b as int, PAGE_SZ as int, 8 * q, 0);
-    lemma_fundamental_div_mod_converse(b + 32768, PAGE_SZ as int, 8 * q + 8, 0);
-    lemma_fundamental_div_mod(q, 64);
-    lemma_mod_pos_bound(q, 64);
-    lemma_fundamental_div_mod_converse(8 * q + k, PAGES_PER_2M as int, q / 64, 8 * (q % 64) + k);
-    lemma_fundamental_div_mod_converse(8 * q, PAGES_PER_2M as int, q / 64, 8 * (q % 64));
-    lemma_fundamental_div_mod(q, 32768);
-    lemma_mod_pos_bound(q, 32768);
-    lemma_fundamental_div_mod_converse(8 * q + k, PAGES_PER_1G as int, q / 32768, 8 * (q % 32768) + k);
-    lemma_fundamental_div_mod_converse(8 * q, PAGES_PER_1G as int, q / 32768, 8 * (q % 32768));
+    lemma_fundamental_div_mod_converse(b + PROCESS_BYTES, PAGE_SZ as int, 8 * q + 8, 0);
+    lemma_fundamental_div_mod(q, in_2m);
+    lemma_mod_pos_bound(q, in_2m);
+    let d2 = q / in_2m;
+    let r2 = q % in_2m;
+    assert(8 * q == d2 * PAGES_PER_2M as int + 8 * r2) by (nonlinear_arith)
+        requires
+            q == in_2m * d2 + r2,
+            PAGES_PER_2M as int == 8 * in_2m,
+    ;
+    lemma_fundamental_div_mod_converse(8 * q + k, PAGES_PER_2M as int, q / in_2m, 8 * (q % in_2m) + k);
+    lemma_fundamental_div_mod_converse(8 * q, PAGES_PER_2M as int, q / in_2m, 8 * (q % in_2m));
+    lemma_fundamental_div_mod(q, in_1g);
+    lemma_mod_pos_bound(q, in_1g);
+    lemma_fundamental_div_mod_converse(8 * q + k, PAGES_PER_1G as int, q / in_1g, 8 * (q % in_1g) + k);
+    lemma_fundamental_div_mod_converse(8 * q, PAGES_PER_1G as int, q / in_1g, 8 * (q % in_1g));
     if k % 2 == 0 {
         lemma_fundamental_div_mod(k, 2);
-        lemma_fundamental_div_mod_converse(b + k * PAGE_SZ, 8192, 4 * q + k / 2, 0);
+        lemma_fundamental_div_mod_converse(b + k * PAGE_SZ, (2 * PAGE_SZ) as int, 4 * q + k / 2, 0);
     }
 }
 
-/// An order-3 block 32768-aligned from b, and its first page, which an order-1 block starts at.
+/// An order-3 block aligned from b, and its first page, which an order-1 block starts at.
 proof fn lemma_aligned(b: usize)
     requires
-        b % 32768 == 0,
+        b % PROCESS_BYTES == 0,
     ensures
         b % PAGE_SZ == 0,
-        b % 8192 == 0,
+        b % (2 * PAGE_SZ) as usize == 0,
 {
-    lemma_fundamental_div_mod(b as int, 32768);
-    lemma_fundamental_div_mod_converse(b as int, PAGE_SZ as int, 8 * (b as int / 32768), 0);
-    lemma_fundamental_div_mod_converse(b as int, 8192, 4 * (b as int / 32768), 0);
+    lemma_fundamental_div_mod(b as int, PROCESS_BYTES as int);
+    lemma_fundamental_div_mod_converse(b as int, PAGE_SZ as int, 8 * (b as int / PROCESS_BYTES as int), 0);
+    lemma_fundamental_div_mod_converse(b as int, (2 * PAGE_SZ) as int, 4 * (b as int / PROCESS_BYTES as int), 0);
 }
 
 /// The j-th order-3 block from b is j blocks on, aligned, and starts 8j pages on.
 proof fn lemma_cursor_block(b: usize, j: int)
     requires
-        b % 32768 == 0,
+        b % PROCESS_BYTES == 0,
         0 <= j,
-        b + j * 32768 <= NODE_SPACE,
+        b + j * PROCESS_BYTES <= NODE_SPACE,
     ensures
-        cursor_block(b, j) == b + j * 32768,
-        cursor_block(b, j) % 32768 == 0,
+        cursor_block(b, j) == b + j * PROCESS_BYTES,
+        cursor_block(b, j) % PROCESS_BYTES == 0,
         cursor_block(b, j) / PAGE_SZ == b / PAGE_SZ + 8 * j,
 {
-    let q = b as int / 32768;
-    lemma_fundamental_div_mod(b as int, 32768);
-    lemma_fundamental_div_mod_converse(b + j * 32768, 32768, q + j, 0);
-    lemma_fundamental_div_mod_converse(b + j * 32768, PAGE_SZ as int, 8 * q + 8 * j, 0);
+    let q = b as int / PROCESS_BYTES as int;
+    lemma_fundamental_div_mod(b as int, PROCESS_BYTES as int);
+    assert(b + j * PROCESS_BYTES == (q + j) * PROCESS_BYTES) by (nonlinear_arith)
+        requires
+            b == PROCESS_BYTES as int * q,
+    ;
+    lemma_fundamental_div_mod_converse(b + j * PROCESS_BYTES, PROCESS_BYTES as int, q + j, 0);
+    lemma_fundamental_div_mod_converse(b + j * PROCESS_BYTES, PAGE_SZ as int, 8 * q + 8 * j, 0);
     lemma_fundamental_div_mod_converse(b as int, PAGE_SZ as int, 8 * q, 0);
 }
 
@@ -203,9 +218,9 @@ proof fn lemma_witness_block_kept(pre: CapKernel, post: CapKernel, b: usize, fir
 proof fn lemma_run_kept(pre: CapKernel, post: CapKernel, b: usize, jlo: int, jhi: int, first: Payload, lo: int, hi: int)
     requires
         witness_run(pre, b, jlo, jhi, first),
-        b % 32768 == 0,
+        b % PROCESS_BYTES == 0,
         0 <= jlo,
-        b + jhi * 32768 <= NODE_SPACE,
+        b + jhi * PROCESS_BYTES <= NODE_SPACE,
         post.blocks.regions_2m@ == pre.blocks.regions_2m@,
         post.blocks.regions_1g@ == pre.blocks.regions_1g@,
         forall|j: int| #![trigger post.blocks.pages@[j]] pre.blocks.tracks(j) && !(lo <= j < hi)
@@ -215,6 +230,10 @@ proof fn lemma_run_kept(pre: CapKernel, post: CapKernel, b: usize, jlo: int, jhi
         witness_run(post, b, jlo, jhi, first),
 {
     assert forall|j: int| jlo <= j < jhi implies #[trigger] witness_block(post, cursor_block(b, j), first) by {
+        assert(j * PROCESS_BYTES <= jhi * PROCESS_BYTES) by (nonlinear_arith)
+            requires
+                j <= jhi,
+        ;
         lemma_cursor_block(b, j);
         lemma_witness_block_kept(pre, post, cursor_block(b, j), first, lo, hi);
     }
@@ -394,26 +413,26 @@ impl CapKernel {
             ({
                 let first = page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]);
                 let u = (leaf@ + ROOT_UNTYPED_SLOT) as usize;
-                let child = (base + 49153) as usize;
-                let thread = (base + 40960) as usize;
+                let child = (base + 12 * PAGE_SZ + 1) as usize;
+                let thread = (base + 10 * PAGE_SZ) as usize;
                 &&& final(self).wf()
                 &&& base != process
                 &&& final(self).view().holds(base, child)
                 &&& final(self).list.is_child(u, child)
-                &&& final(self).payload_of(child) == child_of(first, UNTYPED_RIGHTS, (base + 57344) as usize, 1)
+                &&& final(self).payload_of(child) == child_of(first, UNTYPED_RIGHTS, (base + 14 * PAGE_SZ) as usize, 1)
                 &&& bound_threads(&final(self).list, &final(self).tables).contains_key(thread)
                 &&& bound_threads(&final(self).list, &final(self).tables)[thread] == base
                 &&& final(self).acknowledged(base / PAGE_SZ)
-                &&& final(self).acknowledged(((base + 49152) / PAGE_SZ as int) as usize)
-                &&& final(self).acknowledged(((base + 49152) / PAGE_SZ as int + 1) as usize)
+                &&& final(self).acknowledged(((base + 12 * PAGE_SZ) / PAGE_SZ as int) as usize)
+                &&& final(self).acknowledged(((base + 12 * PAGE_SZ) / PAGE_SZ as int + 1) as usize)
                 &&& block_refs(&final(self).blocks, BlockRef::Small(thread / PAGE_SZ)) == 1
                 &&& block_refs(&final(self).blocks, BlockRef::Small(base / PAGE_SZ)) == 2
                 &&& final(self).process_unloaded(base)
-                &&& final(self).tables.leaf(base, 0) == (base + 49152) as usize
+                &&& final(self).tables.leaf(base, 0) == (base + 12 * PAGE_SZ) as usize
                 &&& forall|r: int| 1 <= r < ROOT_ENTRIES ==> #[trigger] final(self).tables.leaf(base, r) == NO_LEAF
-                &&& final(self).slot_holds(process, WITNESS_PROCESS_SLOT, (base + 32769) as usize, process_of(base))
-                &&& final(self).slot_holds(process, WITNESS_THREAD_SLOT, (base + 32770) as usize, thread_of(thread))
-                &&& final(self).slot_holds(base, WITNESS_CHILD_SLOT, child, child_of(first, UNTYPED_RIGHTS, (base + 57344) as usize, 1))
+                &&& final(self).slot_holds(process, WITNESS_PROCESS_SLOT, (base + 8 * PAGE_SZ + 1) as usize, process_of(base))
+                &&& final(self).slot_holds(process, WITNESS_THREAD_SLOT, (base + 8 * PAGE_SZ + 2) as usize, thread_of(thread))
+                &&& final(self).slot_holds(base, WITNESS_CHILD_SLOT, child, child_of(first, UNTYPED_RIGHTS, (base + 14 * PAGE_SZ) as usize, 1))
                 &&& final(self).flush_epoch == 0
                 &&& witness_alive(*final(self), base)
                 &&& final(self).threads.records@.contains_key(thread)
@@ -422,13 +441,13 @@ impl CapKernel {
                 &&& final(self).spaces.roots@.contains_key(base)
                 &&& forall|i: usize| i < ENTRIES && !holds_kernel(SpaceKind::Process, i)
                     ==> #[trigger] final(self).spaces.roots@[base].value()[i].is_empty()
-                &&& final(self).list.nodes@[base + 49152].live
-                &&& final(self).list.nodes@[base + 49152].kind is Hidden
-                &&& forall|x: int| base + 49152 + 1 < x < base + 49152 + NODES_PER_PAGE ==> !#[trigger] final(self).list.nodes@[x].live
-                &&& final(self).tables.owner@[(base + 49152) as usize] == (base, 0int)
-                &&& forall|c: usize| !#[trigger] final(self).list.is_child((base + 32770) as usize, c)
-                &&& final(self).list.childless((base + 32770) as usize)
-                &&& forall|c: usize| #[trigger] final(self).list.is_child((base + 32769) as usize, c) ==> c == thread
+                &&& final(self).list.nodes@[base + 12 * PAGE_SZ].live
+                &&& final(self).list.nodes@[base + 12 * PAGE_SZ].kind is Hidden
+                &&& forall|x: int| base + 12 * PAGE_SZ + 1 < x < base + 12 * PAGE_SZ + NODES_PER_PAGE ==> !#[trigger] final(self).list.nodes@[x].live
+                &&& final(self).tables.owner@[(base + 12 * PAGE_SZ) as usize] == (base, 0int)
+                &&& forall|c: usize| !#[trigger] final(self).list.is_child((base + 8 * PAGE_SZ + 2) as usize, c)
+                &&& final(self).list.childless((base + 8 * PAGE_SZ + 2) as usize)
+                &&& forall|c: usize| #[trigger] final(self).list.is_child((base + 8 * PAGE_SZ + 1) as usize, c) ==> c == thread
                 &&& forall|c: usize| !#[trigger] final(self).list.is_child(child, c)
                 &&& final(self).list.childless(child)
             }),
@@ -464,12 +483,12 @@ impl CapKernel {
             assert(s0.root_table_block(process, cursor_block(first.base, itb)));
             assert(s0.root_table_block(process, cursor_block(first.base, itb + 1)));
             lemma_pow2_pos(first.order as nat);
-            lemma_fundamental_div_mod(block_bytes(first.order), 32768);
-            lemma_mod_bound(block_bytes(first.order), 32768);
-            assert((itb + 2) * 32768 <= block_bytes(first.order));
+            lemma_fundamental_div_mod(block_bytes(first.order), PROCESS_BYTES as int);
+            lemma_mod_bound(block_bytes(first.order), PROCESS_BYTES as int);
+            assert((itb + 2) * PROCESS_BYTES <= block_bytes(first.order));
             assert(first.base + block_bytes(first.order) <= NODE_SPACE);
-            assert(base == first.base + itb * 32768);
-            assert(cursor_block(first.base, itb + 1) == base + 32768);
+            assert(base == first.base + itb * PROCESS_BYTES);
+            assert(cursor_block(first.base, itb + 1) == base + PROCESS_BYTES);
             // The first untyped is the first boot block, whose pages boot left acknowledged.
             lemma_runs_blocks(free@, MAX_ORDER as nat);
             let b0 = bs[0];
@@ -485,7 +504,8 @@ impl CapKernel {
             assert(base / PAGE_SZ == b0.0 + 8 * itb);
             assert(8 * itb + 16 <= pow2(b0.1)) by (nonlinear_arith)
                 requires
-                    (itb + 2) * 32768 <= pow2(b0.1) * PAGE_SZ,
+                    PROCESS_BYTES == 8 * PAGE_SZ,
+                    (itb + 2) * PROCESS_BYTES <= pow2(b0.1) * PAGE_SZ,
             ;
             assert(in_page_block(bs[0], (base / PAGE_SZ) as nat));
             assert(in_page_block(bs[0], (base / PAGE_SZ + 12) as nat));
@@ -494,15 +514,15 @@ impl CapKernel {
             assert(s0.acknowledged((base / PAGE_SZ + 12) as usize));
             assert(s0.acknowledged((base / PAGE_SZ + 13) as usize));
         }
-        let b2 = base + 32768;
-        let bt = b2 + 8192;
-        let bl = b2 + 16384;
-        let bd = b2 + 24576;
+        let b2 = base + PROCESS_BYTES;
+        let bt = b2 + 2 * PAGE_SZ;
+        let bl = b2 + 4 * PAGE_SZ;
+        let bd = b2 + 6 * PAGE_SZ;
         proof {
-            assert(block_bytes(3) == 32768);
-            assert(block_bytes(1) == 8192);
-            assert(base % 32768 == 0);
-            assert(b2 % 32768 == 0);
+            assert(block_bytes(3) == PROCESS_BYTES);
+            assert(block_bytes(1) == 2 * PAGE_SZ);
+            assert(base % PROCESS_BYTES == 0);
+            assert(b2 % PROCESS_BYTES == 0);
             lemma_block_page(base, 0);
             lemma_block_page(b2, 0);
             lemma_block_page(b2, 2);
@@ -797,9 +817,9 @@ impl CapKernel {
             assert(s5.list.is_child(u, child));
             assert(s5.payload_of(child) == child_of(first, UNTYPED_RIGHTS, bd, 1));
             assert(bound_threads(&s5.list, &s5.tables) == bound_threads(&s2.list, &s2.tables).insert(bt, base));
-            assert(child == base + 49153);
-            assert(bt == base + 40960);
-            assert(bd == base + 57344);
+            assert(child == base + 12 * PAGE_SZ + 1);
+            assert(bt == base + 10 * PAGE_SZ);
+            assert(bd == base + 14 * PAGE_SZ);
             // An untyped's derive leaves the blocks, and no step changed an acknowledgement.
             assert(s4.payload_of(s4.tables.node_of(process, ROOT_UNTYPED_SLOT)).kind is Untyped);
             assert(s5.blocks == s4.blocks);
@@ -810,7 +830,7 @@ impl CapKernel {
             assert(s5.cores == s0.cores);
             assert(s5.iommus == s0.iommus);
             assert(bl / PAGE_SZ == base / PAGE_SZ + 12);
-            assert((base + 49152) / PAGE_SZ as int == bl / PAGE_SZ);
+            assert((base + 12 * PAGE_SZ) / PAGE_SZ as int == bl / PAGE_SZ);
             // The new table's root entries and the three slots the reclaim starts from.
             assert(s5.tables.roots == s4.tables.roots);
             assert forall|r: int| 1 <= r < ROOT_ENTRIES implies #[trigger] s5.tables.leaf(base, r) == NO_LEAF by {
@@ -948,7 +968,7 @@ impl CapKernel {
         let ghost a = tree_of(&pre.table_pages, &pre.spaces);
         proof {
             lemma2_to64();
-            assert(block_bytes(3) == 32768);
+            assert(block_bytes(3) == PROCESS_BYTES);
             pre.lemma_table_base(t);
             assert(pre.blocks.pages@[cursor / PAGE_SZ + 0].kind is Free);
             pre.lemma_free_not_table(cursor, cursor / PAGE_SZ);
@@ -1054,10 +1074,10 @@ impl CapKernel {
             KERNEL_MEM_END_L4INDEX <= l4 < ENTRIES,
             tree_of(&old(self).table_pages, &old(self).spaces).entry(s, l4).is_empty(),
             !old(self).blocks.pages@[(s / PAGE_SZ) as int].dead,
-            cursor + 98304 <= NODE_SPACE,
+            cursor + 3 * PROCESS_BYTES <= NODE_SPACE,
             witness_block(*old(self), cursor, first@),
-            witness_block(*old(self), (cursor + 32768) as usize, first@),
-            witness_block(*old(self), (cursor + 65536) as usize, first@),
+            witness_block(*old(self), (cursor + PROCESS_BYTES) as usize, first@),
+            witness_block(*old(self), (cursor + 2 * PROCESS_BYTES) as usize, first@),
         ensures
             ret,
             final(self).wf(),
@@ -1084,14 +1104,14 @@ impl CapKernel {
         let ghost pre = *old(self);
         let ghost a = tree_of(&pre.table_pages, &pre.spaces);
         let ghost path = SpacePath { l4: l4, l3: 0, l2: 0, l1: 0 };
-        let c1 = cursor + 32768;
-        let c2 = c1 + 32768;
+        let c1 = cursor + PROCESS_BYTES;
+        let c2 = c1 + PROCESS_BYTES;
         proof {
             lemma2_to64();
-            assert(block_bytes(3) == 32768);
+            assert(block_bytes(3) == PROCESS_BYTES);
             pre.lemma_table_base(s);
-            assert(cursor % 32768 == 0);
-            assert(c1 % 32768 == 0);
+            assert(cursor % PROCESS_BYTES == 0);
+            assert(c1 % PROCESS_BYTES == 0);
             lemma_block_page(cursor, 0);
             lemma_block_page(c1, 0);
             assert(c1 / PAGE_SZ == cursor / PAGE_SZ + 8);
@@ -1185,9 +1205,9 @@ impl CapKernel {
             ret,
             ({
                 let tree = tree_of(&final(self).table_pages, &final(self).spaces);
-                let q = (base + 163840) as usize;
+                let q = (base + 5 * PROCESS_BYTES) as usize;
                 let path = SpacePath { l4: KERNEL_MEM_END_L4INDEX, l3: 0, l2: 0, l1: 0 };
-                let entry = frame_map_entry(((base + 40960) / PAGE_SZ as int) as usize, FRAME_RIGHTS, false);
+                let entry = frame_map_entry(((base + 10 * PAGE_SZ) / PAGE_SZ as int) as usize, FRAME_RIGHTS, false);
                 &&& final(self).wf()
                 &&& base != process
                 &&& q != process
@@ -1229,30 +1249,30 @@ impl CapKernel {
             // The nine free blocks, one after another.
             assert(s0.root_untyped(process) == u);
             lemma_pow2_pos(first.order as nat);
-            lemma_fundamental_div_mod(block_bytes(first.order), 32768);
-            lemma_mod_bound(block_bytes(first.order), 32768);
-            assert((itb + 9) * 32768 <= block_bytes(first.order));
+            lemma_fundamental_div_mod(block_bytes(first.order), PROCESS_BYTES as int);
+            lemma_mod_bound(block_bytes(first.order), PROCESS_BYTES as int);
+            assert((itb + 9) * PROCESS_BYTES <= block_bytes(first.order));
             assert(first.base + block_bytes(first.order) <= NODE_SPACE);
-            assert(base == first.base + itb * 32768);
-            assert(base + 9 * 32768 <= NODE_SPACE);
+            assert(base == first.base + itb * PROCESS_BYTES);
+            assert(base + 9 * PROCESS_BYTES <= NODE_SPACE);
             assert forall|j: int| 0 <= j < 9 implies #[trigger] witness_block(s0, cursor_block(base, j), first) by {
                 assert(cursor_block(first.base, itb + j) == cursor_block(base, j));
                 assert(s0.root_table_block(process, cursor_block(first.base, itb + j)));
             }
         }
-        let b1 = base + 32768;
-        let bf = b1 + 8192;
-        let b2 = b1 + 32768;
-        let bq = b2 + 98304;
-        let b6 = bq + 32768;
+        let b1 = base + PROCESS_BYTES;
+        let bf = b1 + 2 * PAGE_SZ;
+        let b2 = b1 + PROCESS_BYTES;
+        let bq = b2 + 3 * PROCESS_BYTES;
+        let b6 = bq + PROCESS_BYTES;
         let ghost fp = (bf / PAGE_SZ) as int;
         proof {
-            assert(block_bytes(3) == 32768);
-            assert(block_bytes(1) == 8192);
+            assert(block_bytes(3) == PROCESS_BYTES);
+            assert(block_bytes(1) == 2 * PAGE_SZ);
             assert(block_bytes(0) == PAGE_SZ);
             assert(cursor_block(base, 0) == base);
             assert(witness_block(s0, base, first));
-            assert(base % 32768 == 0);
+            assert(base % PROCESS_BYTES == 0);
             lemma_cursor_block(base, 1);
             lemma_cursor_block(base, 2);
             lemma_cursor_block(base, 5);
@@ -1380,8 +1400,8 @@ impl CapKernel {
             assert(witness_block(s2, cursor_block(base, 3), first));
             assert(witness_block(s2, cursor_block(base, 4), first));
             assert(witness_block(s2, b2, first));
-            assert(witness_block(s2, (b2 + 32768) as usize, first));
-            assert(witness_block(s2, (b2 + 65536) as usize, first));
+            assert(witness_block(s2, (b2 + PROCESS_BYTES) as usize, first));
+            assert(witness_block(s2, (b2 + 2 * PROCESS_BYTES) as usize, first));
         }
         let ok3 = self.witness_path(process, WITNESS_PROCESS_SLOT, base, KERNEL_MEM_END_L4INDEX, b2, Ghost(np), Ghost(2), Ghost(u), Ghost(first));
         let ghost s3 = *self;
@@ -1484,8 +1504,8 @@ impl CapKernel {
             assert(witness_block(s4, cursor_block(base, 7), first));
             assert(witness_block(s4, cursor_block(base, 8), first));
             assert(witness_block(s4, b6, first));
-            assert(witness_block(s4, (b6 + 32768) as usize, first));
-            assert(witness_block(s4, (b6 + 65536) as usize, first));
+            assert(witness_block(s4, (b6 + PROCESS_BYTES) as usize, first));
+            assert(witness_block(s4, (b6 + 2 * PROCESS_BYTES) as usize, first));
         }
         let ok5 = self.witness_path(process, WITNESS_SECOND_PROCESS_SLOT, bq, KERNEL_MEM_END_L4INDEX, b6, Ghost(nq), Ghost(2), Ghost(u), Ghost(first));
         let ghost s5 = *self;
@@ -1568,7 +1588,7 @@ impl CapKernel {
         }
 
         // The frame at the path in P's space.
-        let ghost entry = frame_map_entry(((base + 40960) / PAGE_SZ as int) as usize, FRAME_RIGHTS, false);
+        let ghost entry = frame_map_entry(((base + 10 * PAGE_SZ) / PAGE_SZ as int) as usize, FRAME_RIGHTS, false);
         proof {
             s6.lemma_walk_table_facts(base, path);
             assert(!space_mapping(a6, base).contains_key(path));
@@ -1625,7 +1645,7 @@ impl CapKernel {
             assert(space_mapping(a8, base)[path] == entry);
             assert(space_mapping(a8, bq).contains_key(path));
             assert(space_mapping(a8, bq)[path] == entry);
-            assert(bq == base + 163840);
+            assert(bq == base + 5 * PROCESS_BYTES);
         }
         ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8
     }
@@ -1664,7 +1684,7 @@ impl CapKernel {
             ({
                 let tree = tree_of(&final(self).table_pages, &final(self).spaces);
                 let path = SpacePath { l4, l3: 0, l2: 0, l1: 0 };
-                let entry = frame_map_entry(((base + 106496) / PAGE_SZ as int) as usize, FRAME_RIGHTS, false);
+                let entry = frame_map_entry(((base + 26 * PAGE_SZ) / PAGE_SZ as int) as usize, FRAME_RIGHTS, false);
                 &&& final(self).wf()
                 &&& space_mapping(tree, process) == space_mapping(tree_of(&old(self).table_pages, &old(self).spaces), process).insert(path, entry)
                 &&& space_mapping(tree, process).contains_key(path)
@@ -1706,27 +1726,27 @@ impl CapKernel {
             // The four free blocks, one after another.
             assert(s0.root_untyped(process) == u);
             lemma_pow2_pos(first.order as nat);
-            lemma_fundamental_div_mod(block_bytes(first.order), 32768);
-            lemma_mod_bound(block_bytes(first.order), 32768);
-            assert((itb + 4) * 32768 <= block_bytes(first.order));
+            lemma_fundamental_div_mod(block_bytes(first.order), PROCESS_BYTES as int);
+            lemma_mod_bound(block_bytes(first.order), PROCESS_BYTES as int);
+            assert((itb + 4) * PROCESS_BYTES <= block_bytes(first.order));
             assert(first.base + block_bytes(first.order) <= NODE_SPACE);
-            assert(base == first.base + itb * 32768);
-            assert(base + 4 * 32768 <= NODE_SPACE);
+            assert(base == first.base + itb * PROCESS_BYTES);
+            assert(base + 4 * PROCESS_BYTES <= NODE_SPACE);
             assert forall|j: int| 0 <= j < 4 implies #[trigger] witness_block(s0, cursor_block(base, j), first) by {
                 assert(cursor_block(first.base, itb + j) == cursor_block(base, j));
                 assert(s0.root_table_block(process, cursor_block(first.base, itb + j)));
             }
         }
-        let lb = base + 98304;
-        let bf = lb + 8192;
+        let lb = base + 3 * PROCESS_BYTES;
+        let bf = lb + 2 * PAGE_SZ;
         let ghost fp = (bf / PAGE_SZ) as int;
         proof {
-            assert(block_bytes(3) == 32768);
-            assert(block_bytes(1) == 8192);
+            assert(block_bytes(3) == PROCESS_BYTES);
+            assert(block_bytes(1) == 2 * PAGE_SZ);
             assert(block_bytes(0) == PAGE_SZ);
             assert(cursor_block(base, 0) == base);
             assert(witness_block(s0, base, first));
-            assert(base % 32768 == 0);
+            assert(base % PROCESS_BYTES == 0);
             lemma_cursor_block(base, 1);
             lemma_cursor_block(base, 2);
             lemma_cursor_block(base, 3);
@@ -1798,8 +1818,8 @@ impl CapKernel {
             assert(witness_block(s1, cursor_block(base, 1), first));
             assert(witness_block(s1, cursor_block(base, 2), first));
             assert(witness_block(s1, base, first));
-            assert(witness_block(s1, (base + 32768) as usize, first));
-            assert(witness_block(s1, (base + 65536) as usize, first));
+            assert(witness_block(s1, (base + PROCESS_BYTES) as usize, first));
+            assert(witness_block(s1, (base + 2 * PROCESS_BYTES) as usize, first));
         }
         let ok2 = self.witness_path(process, ROOT_PROCESS_SLOT, process, l4, base, Ghost(pn), Ghost(d), Ghost(u), Ghost(first));
         let ghost s2 = *self;
@@ -1859,7 +1879,7 @@ impl CapKernel {
         }
 
         // The frame at the path in the root's own space.
-        let ghost entry = frame_map_entry(((base + 106496) / PAGE_SZ as int) as usize, FRAME_RIGHTS, false);
+        let ghost entry = frame_map_entry(((base + 26 * PAGE_SZ) / PAGE_SZ as int) as usize, FRAME_RIGHTS, false);
         proof {
             s3.lemma_walk_table_facts(process, path);
             assert(space_mapping(a3, process) == space_mapping(a0, process));
