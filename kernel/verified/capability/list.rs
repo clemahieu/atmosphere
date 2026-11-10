@@ -382,6 +382,11 @@ impl Tree {
         self.seq@.contains(i) && i != self.seq@[0] && self.parent@[i] == c
     }
 
+    /// Node i is in c's run: c is an ancestor of it, some steps up its parents.
+    pub open spec fn in_run(&self, c: usize, i: usize) -> bool {
+        exists|k: nat| k > 0 && #[trigger] self.anc(i, k) == c
+    }
+
     /// The list cannot be longer than the ids it has to draw on.
     pub proof fn lemma_seq_fits(&self)
         requires
@@ -1321,6 +1326,53 @@ pub open spec fn revoked_one(pre: Tree, post: Tree, c: usize, r: usize) -> bool 
         #[trigger] post.nodes@[x].live == pre.nodes@[x].live
     &&& exists|p: int| 0 <= p < pre.seq@.len() && pre.seq@[p] == r
         && post.seq@ == pre.seq@.remove(p)
+}
+
+/// What revoke steps of c did to the list, from pre to post: every node live after was live before, of
+/// the same kind, and every node gone is in c's run.
+pub open spec fn run_shrunk(pre: Tree, post: Tree, c: usize) -> bool {
+    forall|x: int| #![trigger post.nodes@[x]] 0 <= x < NODE_SPACE ==> {
+        &&& post.nodes@[x].live ==> pre.nodes@[x].live && post.nodes@[x].kind == pre.nodes@[x].kind
+        &&& pre.nodes@[x].live && !post.nodes@[x].live ==> pre.in_run(c, x as usize)
+    }
+}
+
+/// Two lists with the same parents have the same ancestors.
+pub proof fn lemma_anc_parents(a: Tree, b: Tree, i: usize, k: nat)
+    requires
+        a.parent == b.parent,
+    ensures
+        a.anc(i, k) == b.anc(i, k),
+    decreases k,
+{
+    if k > 0 {
+        lemma_anc_parents(a, b, a.parent@[i], (k - 1) as nat);
+    }
+}
+
+/// One more revoke step of c, from mid to post, taking r, keeps run_shrunk from pre.
+pub proof fn lemma_run_shrunk_step(pre: Tree, mid: Tree, post: Tree, c: usize, r: usize)
+    requires
+        run_shrunk(pre, mid, c),
+        mid.parent == pre.parent,
+        mid.nodes@.len() == NODE_SPACE,
+        revoked_one(mid, post, c, r),
+        forall|x: int| 0 <= x < NODE_SPACE && #[trigger] post.nodes@[x].live ==> post.nodes@[x].kind == mid.nodes@[x].kind,
+    ensures
+        run_shrunk(pre, post, c),
+{
+    let k = (mid.d(r) - mid.d(c)) as nat;
+    lemma_anc_parents(pre, mid, r, k);
+    assert(pre.in_run(c, r));
+    assert forall|x: int| 0 <= x < NODE_SPACE implies {
+        &&& #[trigger] post.nodes@[x].live ==> pre.nodes@[x].live && post.nodes@[x].kind == pre.nodes@[x].kind
+        &&& pre.nodes@[x].live && !post.nodes@[x].live ==> pre.in_run(c, x as usize)
+    } by {
+        assert(mid.nodes@[x].live == mid.nodes@[x].live);
+        if x != r {
+            assert(post.nodes@[x].live == mid.nodes@[x].live);
+        }
+    }
 }
 
 /// A peer's work is untouched: a node outside c's run stays live across a revoke step. Outside

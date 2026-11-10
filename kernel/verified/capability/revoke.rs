@@ -236,13 +236,16 @@ impl CapKernel {
     }
 
     /// What a revoke of the capability at a position did when it was not refused, by a thread of the
-    /// process whose table is at root: the position names a capability, at most REVOKE_BUDGET nodes of
-    /// its run went, no mapping appeared, no node changed its parent, the threads bound are those that
-    /// were whose bindings are still live, and the step discharges the revoke's effect for the caller,
-    /// which commands the capability.
+    /// process whose table is at root: the position names a capability, which stays one, at most
+    /// REVOKE_BUDGET nodes of its run went and no other node, no mapping appeared, the tables are as they
+    /// were, no node changed its parent, the threads bound are those that were whose bindings are still
+    /// live, and the step discharges the revoke's effect for the caller, which commands the capability.
     pub open spec fn cap_revoking_at(pre: Self, post: Self, root: usize, at: Position) -> bool {
         let c = pre.cap_at(root, at)->0;
         &&& pre.cap_at(root, at) is Some
+        &&& post.is_cap(c)
+        &&& run_shrunk(pre.list, post.list, c)
+        &&& post.tables == pre.tables
         &&& Self::mappings_shrunk(pre, post)
         &&& pre.list.seq@.len() - post.list.seq@.len() <= REVOKE_BUDGET
         &&& post.list.parent == pre.list.parent
@@ -309,7 +312,8 @@ impl CapKernel {
                 pre.cap_at(root, at) == Some(c),
                 c < NODE_SPACE,
                 self.is_cap(c),
-                self.tables.owner == pre.tables.owner,
+                self.tables == pre.tables,
+                run_shrunk(pre.list, self.list, c),
                 self.list.parent == pre.list.parent,
                 pre.list.seq@.len() - self.list.seq@.len() == taken,
                 pre.tables.owner@[page_of(c)].0 == holder,
@@ -335,6 +339,9 @@ impl CapKernel {
             }
             proof {
                 lemma_revoke_steps_compose(pre.view(), mid.view(), self.view(), root, holder, c);
+                assert(mid.list.nodes@.len() == NODE_SPACE) by {
+                    reveal(Tree::store_wf);
+                }
                 let r = choose|r: usize| #[trigger] revoked_one(mid.list, self.list, c, r)
                     && (mid.list.nodes@[r as int].kind is Mapping ==> Self::mapping_unlinked(mid, *self, r))
                     && (mid.list.nodes@[r as int].kind is Mapping ==> Self::mapping_stale_noted(mid, *self, r))
@@ -344,6 +351,7 @@ impl CapKernel {
                     && (!(mid.list.nodes@[r as int].kind is Binding) ==> bound_threads(&self.list, &self.tables)
                         == bound_threads(&mid.list, &mid.tables));
                 Self::lemma_revoke_bound_threads(bound_threads(&pre.list, &pre.tables), mid, *self, r);
+                lemma_run_shrunk_step(pre.list, mid.list, self.list, c, r);
             }
             taken = taken + 1;
         }
@@ -376,7 +384,9 @@ impl CapKernel {
             final(self).cores == old(self).cores,
             Self::mappings_shrunk(*old(self), *final(self)),
             final(self).is_cap(c),
-            final(self).tables.owner == old(self).tables.owner,
+            final(self).tables == old(self).tables,
+            forall|x: int| 0 <= x < NODE_SPACE && #[trigger] final(self).list.nodes@[x].live
+                ==> final(self).list.nodes@[x].kind == old(self).list.nodes@[x].kind,
             final(self).list.parent == old(self).list.parent,
             done == old(self).list.childless(c),
             done ==> *final(self) == *old(self),
