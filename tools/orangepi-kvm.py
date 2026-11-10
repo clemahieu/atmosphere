@@ -2,7 +2,8 @@
 """Start one aarch64 KVM guest on orangepi5 and bring its serial log back.
 
 The launch is the one recorded for this board: pinned to the A76 cluster, QEMU virt
-with GICv3, KVM, no NIC, EDK2 as firmware, 512 MiB unless --memory-mib says otherwise.
+with GICv3, KVM, no NIC, EDK2 as firmware, 512 MiB unless --memory-mib says otherwise,
+and with --iommu an SMMUv3 in front of the PCI devices (iommu=smmuv3).
 With --esp the directory goes to the board over the same ssh session and the guest
 gets it as a FAT drive, which EDK2 boots as removable media from
 EFI/BOOT/BOOTAA64.EFI; the board's copy is removed with the run. The guest runs
@@ -18,7 +19,7 @@ exits 0. A guest that starts and then fails is a failure. atmo test runs it as
 its aarch64 boot, which takes the skip line as a pass.
 
 usage: tools/orangepi-kvm.py [--ssh-host HOST] [--connect-timeout SEC] [--boot-timeout SEC]
-                             [--esp DIR] [--memory-mib MIB] [--wait-for LINE | --until-exit]
+                             [--esp DIR] [--memory-mib MIB] [--iommu] [--wait-for LINE | --until-exit]
        tools/orangepi-kvm.py --test
 """
 
@@ -40,20 +41,21 @@ sys.dont_write_bytecode = True
 BOARD = "orangepi5"
 SHELL_MARK = "UEFI Interactive Shell"
 
-# Reads the boot timeout, the guest's memory, the awaited line, whether the run waits
+# Reads the boot timeout, the guest's memory, whether it has an SMMUv3, the awaited line, whether the run waits
 # for QEMU's exit instead, the ESP archive's size and the script's size from stdin, one per line, runs that many bytes as a
 # bash script, and leaves the rest of stdin, which starts with the ESP archive,
 # open for the script.
 BOOTSTRAP = """
 read -r boot_timeout || exit 1
 read -r memory_mib || exit 1
+read -r iommu || exit 1
 IFS= read -r wait_for || exit 1
 read -r until_exit || exit 1
 read -r esp_bytes || exit 1
 read -r n || exit 1
 script=$(mktemp)
 head -c "$n" > "$script" || exit 1
-ATMO_BOOT_TIMEOUT=$boot_timeout ATMO_MEMORY_MIB=$memory_mib ATMO_WAIT_FOR=$wait_for ATMO_UNTIL_EXIT=$until_exit ATMO_ESP_BYTES=$esp_bytes bash "$script"
+ATMO_BOOT_TIMEOUT=$boot_timeout ATMO_MEMORY_MIB=$memory_mib ATMO_IOMMU=$iommu ATMO_WAIT_FOR=$wait_for ATMO_UNTIL_EXIT=$until_exit ATMO_ESP_BYTES=$esp_bytes bash "$script"
 status=$?
 rm -f "$script"
 exit "$status"
@@ -120,12 +122,16 @@ if [ "$ATMO_ESP_BYTES" -gt 0 ]; then
     head -c "$ATMO_ESP_BYTES" | tar -x -C "$esp" || exit 1
     drive=(-drive "if=none,id=esp,format=raw,file=fat:rw:$esp" -device virtio-blk-pci,drive=esp)
 fi
+machine=virt,gic-version=3
+if [ "${ATMO_IOMMU:-0}" -eq 1 ]; then
+    machine=$machine,iommu=smmuv3
+fi
 # Own process group so stopping the guest does not signal this shell.
 set -m
 # Recorded launch: taskset -c 4-7, virt with GICv3, KVM only, no NIC, EDK2.
 # Serial goes to a file so the awaited line can be read back after QEMU exits.
 taskset -c 4-7 qemu-system-aarch64 \
-    -M virt,gic-version=3 -accel kvm -cpu host -smp 2 -m "$ATMO_MEMORY_MIB" \
+    -M "$machine" -accel kvm -cpu host -smp 2 -m "$ATMO_MEMORY_MIB" \
     -nographic -monitor none -nic none \
     -bios /usr/share/qemu-efi-aarch64/QEMU_EFI.fd \
     "${drive[@]}" \
@@ -224,10 +230,10 @@ def _esp_archive(directory):
     return buffer.getvalue()
 
 
-def _payload(boot_timeout, memory_mib, wait_for, esp, until_exit=False):
+def _payload(boot_timeout, memory_mib, wait_for, esp, until_exit=False, iommu=False):
     """What BOOTSTRAP reads from stdin: the parameters, the remote script, the ESP archive."""
     script = REMOTE.encode()
-    head = f"{boot_timeout}\n{memory_mib}\n{wait_for}\n{int(until_exit)}\n{len(esp)}\n{len(script)}\n"
+    head = f"{boot_timeout}\n{memory_mib}\n{int(iommu)}\n{wait_for}\n{int(until_exit)}\n{len(esp)}\n{len(script)}\n"
     return head.encode() + script + esp
 
 
@@ -265,7 +271,7 @@ def _held(args, payload, env, timeout, preexec_fn=None):
     return code, b"".join(out_parts), b"".join(err_parts)
 
 
-def run(ssh_host, connect_timeout, boot_timeout, memory_mib, wait_for, esp_dir, until_exit):
+def run(ssh_host, connect_timeout, boot_timeout, memory_mib, wait_for, esp_dir, until_exit, iommu):
     """Run the guest. Return a process exit code. 0 and a skip line when ssh cannot connect."""
     esp = _esp_archive(esp_dir) if esp_dir is not None else b""
     code, out, err = _held(
@@ -276,7 +282,7 @@ def run(ssh_host, connect_timeout, boot_timeout, memory_mib, wait_for, esp_dir, 
             ssh_host,
             "bash -c " + shlex.quote(BOOTSTRAP),
         ],
-        _payload(boot_timeout, memory_mib, wait_for, esp, until_exit),
+        _payload(boot_timeout, memory_mib, wait_for, esp, until_exit, iommu),
         None,
         boot_timeout + connect_timeout + 30,
         preexec_fn=_die_with_parent,
@@ -384,9 +390,20 @@ def self_test():
         recorded = argv_file.read_text() if argv_file.exists() else ""
         check("fake guest reaches the shell", code == 0 and SHELL_MARK in text and "kvm: accel kvm" in text and text.startswith("host: "), f"code={code} out={text!r} err={err!r}")
         check("fake guest is gone", gone(pid_file), f"pid file {pid_file.read_text() if pid_file.exists() else 'missing'}")
-        for needle in ("virt,gic-version=3", "-accel\nkvm\n", "-m\n512\n", "-nographic", "-nic\nnone\n", "QEMU_EFI.fd"):
+        for needle in ("-M\nvirt,gic-version=3\n", "-accel\nkvm\n", "-m\n512\n", "-nographic", "-nic\nnone\n", "QEMU_EFI.fd"):
             check(f"launch has {needle!r}", needle in recorded, recorded)
         check("launch without an ESP has no drive", "-drive" not in recorded and "-device" not in recorded, recorded)
+        check("launch without --iommu has no SMMU", "iommu" not in recorded, recorded)
+
+        argv_file.unlink()
+        code, out, err = _held(["bash", "-c", BOOTSTRAP], _payload(15, 512, SHELL_MARK, b"", iommu=True), env, 20)
+        recorded = argv_file.read_text() if argv_file.exists() else ""
+        check(
+            "launch with --iommu puts an SMMUv3 on virt",
+            code == 0 and "-M\nvirt,gic-version=3,iommu=smmuv3\n" in recorded,
+            f"code={code} argv={recorded!r} err={err!r}",
+        )
+        check("guest with an SMMUv3 is gone", gone(pid_file))
 
         # The command line, over a fake ssh that runs the remote side here: an ESP
         # directory reaches QEMU as a FAT drive, the guest gets the memory asked for,
@@ -400,7 +417,7 @@ def self_test():
         env_cli["ATMO_FAKE_SERIAL"] = f"{SHELL_MARK} v2.2\natmo: handoff to the kernel"
         cli = [sys.executable, str(Path(__file__).resolve()), "--boot-timeout", "15"]
         booted = subprocess.run(
-            cli + ["--esp", str(esp), "--memory-mib", "2560", "--wait-for", "atmo: handoff"],
+            cli + ["--esp", str(esp), "--memory-mib", "2560", "--iommu", "--wait-for", "atmo: handoff"],
             capture_output=True,
             text=True,
             env=env_cli,
@@ -415,6 +432,7 @@ def self_test():
             f"code={booted.returncode} out={booted.stdout!r} err={booted.stderr!r}",
         )
         check("launch has the memory asked for", "-m\n2560\n" in recorded, recorded)
+        check("--iommu on the command line reaches the launch", "-M\nvirt,gic-version=3,iommu=smmuv3\n" in recorded, recorded)
         check(
             "launch boots the ESP as a virtio FAT drive",
             seen.exists()
@@ -549,6 +567,7 @@ def main(argv):
     parser.add_argument("--boot-timeout", type=int, default=20)
     parser.add_argument("--esp", type=Path, metavar="DIR", help="directory the guest boots as its EFI system partition")
     parser.add_argument("--memory-mib", type=int, default=512, help="guest memory (default 512)")
+    parser.add_argument("--iommu", action="store_true", help="put an SMMUv3 in front of the guest's PCI devices")
     end = parser.add_mutually_exclusive_group()
     end.add_argument("--wait-for", default=SHELL_MARK, metavar="LINE", help="serial text that ends the run (default the UEFI shell banner)")
     end.add_argument("--until-exit", action="store_true", help="run until QEMU exits by itself and exit with its status")
@@ -568,7 +587,9 @@ def main(argv):
     if args.esp is not None and not args.esp.is_dir():
         print(f"{args.esp} is not a directory", file=sys.stderr)
         return 2
-    return run(args.ssh_host, args.connect_timeout, args.boot_timeout, args.memory_mib, args.wait_for, args.esp, args.until_exit)
+    return run(
+        args.ssh_host, args.connect_timeout, args.boot_timeout, args.memory_mib, args.wait_for, args.esp, args.until_exit, args.iommu
+    )
 
 
 if __name__ == "__main__":
