@@ -604,11 +604,12 @@ impl CapKernel {
     /// Whether nothing is left in the roots of the process at `base`: no entry of its table root names a
     /// leaf and no entry of its space root outside the kernel slots holds anything. A constant number of
     /// loads.
-    fn process_roots_clear(&self, base: usize) -> (ret: bool)
+    fn process_roots_clear(&self, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             self.wf(),
             self.processes.records@.contains_key(base),
         ensures
+            final(steps).count <= old(steps).count + ROOT_ENTRIES + (512 - KERNEL_MEM_END_L4INDEX),
             ret == ((forall|r: int| 0 <= r < ROOT_ENTRIES ==> #[trigger] self.tables.leaf(base, r) == NO_LEAF)
                 && (forall|i: usize| #![trigger self.spaces.roots@[base].value()[i]]
                     KERNEL_MEM_END_L4INDEX <= i < 512 ==> self.spaces.roots@[base].value()[i].is_empty())),
@@ -617,10 +618,13 @@ impl CapKernel {
             self.lemma_process_object(base);
             self.lemma_process_block(base);
         }
+        let ghost steps0 = steps.count;
         let mut r = 0;
         while r != ROOT_ENTRIES
             invariant
                 0 <= r <= ROOT_ENTRIES,
+                steps0 == old(steps).count,
+                steps.count == steps0 + r,
                 self.wf(),
                 self.tables.roots@.contains_key(base),
                 forall|j: int| 0 <= j < r ==> #[trigger] self.tables.leaf(base, j) == NO_LEAF,
@@ -630,12 +634,17 @@ impl CapKernel {
                 return false;
             }
             r = r + 1;
+            proof {
+                steps.step();
+            }
         }
         let ghost tree = tree_of(&self.table_pages, &self.spaces);
         let mut e = KERNEL_MEM_END_L4INDEX;
         while e != 512
             invariant
                 KERNEL_MEM_END_L4INDEX <= e <= 512,
+                steps0 == old(steps).count,
+                steps.count == steps0 + ROOT_ENTRIES + (e - KERNEL_MEM_END_L4INDEX),
                 self.wf(),
                 self.spaces.roots@.contains_key(base),
                 !self.table_pages.maps@.contains_key(base),
@@ -654,6 +663,9 @@ impl CapKernel {
                 return false;
             }
             e = e + 1;
+            proof {
+                steps.step();
+            }
         }
         true
     }
@@ -661,11 +673,12 @@ impl CapKernel {
     /// The block of the spent dead process at `base` goes back to the block table: its table root, its
     /// record, its spare pages and its space's root, record and list of cores turned back into page
     /// permissions.
-    pub fn free_spent_process(&mut self, base: usize)
+    pub fn free_spent_process(&mut self, base: usize, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).wf(),
             old(self).process_is_spent(base),
         ensures
+            final(steps).count <= old(steps).count + SMALL_PAGES_MAX,
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
             forall|k: int| 0 <= k < 8 ==> #[trigger] final(self).blocks.pages@[(base / 4096) + k].kind is Free,
@@ -749,9 +762,7 @@ impl CapKernel {
                 assert(k < 8);
             }
         }
-        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
-        let tracked mut steps = Steps::fresh();
-        self.blocks.free_block(page, Tracked(perms), Tracked(&mut steps));
+        self.blocks.free_block(page, Tracked(perms), Tracked(steps));
         proof {
             let post = *self;
             assert forall|i: int| pre.blocks.tracks(i) implies #[trigger] post.blocks.pages@[i] == (
@@ -786,12 +797,14 @@ impl CapKernel {
     /// loaded, a leaf in its table root or an entry in its space root.
     // In a solver of its own, as free_space is.
     #[verifier::spinoff_prover]
-    pub fn free_process(&mut self, c: usize, root: usize, from: usize, base: usize) -> (ret: ReclaimStep)
+    pub fn free_process(&mut self, c: usize, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: ReclaimStep)
         requires
             old(self).wf(),
             c < NUM_CPUS,
             old(self).tables.roots@.contains_key(root),
         ensures
+            final(steps).count <= old(steps).count + ROOT_ENTRIES + (512 - KERNEL_MEM_END_L4INDEX) + (NUM_CPUS + NUM_IOMMUS)
+                + SMALL_PAGES_MAX,
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
             !(ret is Unlinked),
@@ -833,12 +846,10 @@ impl CapKernel {
         if list != 0u32 {
             return ReclaimStep::Refused;
         }
-        if !self.process_roots_clear(base) {
+        if !self.process_roots_clear(base, Tracked(&mut *steps)) {
             return ReclaimStep::Refused;
         }
-        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
-        let tracked mut steps = Steps::fresh();
-        if !self.is_acknowledged(page, Tracked(&mut steps)) {
+        if !self.is_acknowledged(page, Tracked(&mut *steps)) {
             return ReclaimStep::Again;
         }
         proof {
@@ -847,7 +858,7 @@ impl CapKernel {
             pre.lemma_spent_process(base);
             pre.lemma_process_unloaded(base);
         }
-        self.free_spent_process(base);
+        self.free_spent_process(base, Tracked(steps));
         proof {
             lemma_no_change_discharges_teardown(pre.view(), root, untyped, base);
             let post = *self;

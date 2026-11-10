@@ -5,7 +5,7 @@ status: active
 tags: [multicore, lock, kernel-state, verified]
 one_line: "All of the Kernel value is under one lock with IF clear from entry to exit; every operation does a bounded amount of work and long work returns again with progress in an object, so the invariant holds at every step boundary and other cores interleave only there; per-CPU state outside the lock is only stacks, GDT, TSS and the switch decision, and only core c writes its own current thread."
 revisit_if: "The bounded-step budget measured on this kernel gives a lock hold time a workload cannot tolerate, which is the case for a smaller node rather than for preemption."
-confidence: "The non-preemptible rule is in the tree since the interrupt change that made it true; the per-CPU split is stated in kernel/verified/capability/kernel.rs; the step counter bounds the capability list's walks, the flush's IPI loop, the acknowledgement check, the stale-epoch record, the IOMMU invalidate, probe, print, a zeroing step and a small block's typing and freeing so far, not yet a whole entry; the budget's value is unmeasured."
+confidence: "The non-preemptible rule is in the tree since the interrupt change that made it true; the per-CPU split is stated in kernel/verified/capability/kernel.rs; the step counter bounds the capability list's walks, the flush's IPI loop, the acknowledgement check, the stale-epoch record, the IOMMU invalidate, probe, print, a zeroing step, a small block's typing and freeing, and the freeing of reclaimed objects so far, not yet a whole entry; the budget's value is unmeasured."
 ---
 
 # One lock, no preemption, bounded steps

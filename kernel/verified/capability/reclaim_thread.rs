@@ -324,21 +324,25 @@ impl CapKernel {
     }
 
     /// Whether no node in the node page of the thread at `base` is live. A page holds a constant number.
-    fn thread_nodes_dead(&self, base: usize) -> (ret: bool)
+    fn thread_nodes_dead(&self, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             self.wf(),
             self.threads.records@.contains_key(base),
         ensures
+            final(steps).count <= old(steps).count + NODES_PER_PAGE,
             ret == (forall|k: int| 0 <= k < NODES_PER_PAGE ==> !(#[trigger] self.list.nodes@[base + k]).live),
     {
         proof {
             assert(thread_wf(&self.list, &self.threads, &self.blocks, base));
             self.lemma_thread_node_apart(base);
         }
+        let ghost steps0 = steps.count;
         let mut k = 0;
         while k != NODES_PER_PAGE
             invariant
                 0 <= k <= NODES_PER_PAGE,
+                steps0 == old(steps).count,
+                steps.count == steps0 + k,
                 self.wf(),
                 self.threads.records@.contains_key(base),
                 base % 8192 == 0,
@@ -355,6 +359,9 @@ impl CapKernel {
                 return false;
             }
             k = k + 1;
+            proof {
+                steps.step();
+            }
         }
         true
     }
@@ -766,11 +773,12 @@ impl CapKernel {
 
     /// Frees the spent thread at `base`: its node page leaves the list, its record goes, and both pages
     /// go back to the block table, its block's teardown being finished.
-    fn free_spent_thread(&mut self, base: usize)
+    fn free_spent_thread(&mut self, base: usize, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).wf(),
             old(self).thread_is_spent(base),
         ensures
+            final(steps).count <= old(steps).count + SMALL_PAGES_MAX,
             final(self).wf(),
             Self::same_tree(*old(self), *final(self)),
             final(self).mappings == old(self).mappings,
@@ -815,9 +823,7 @@ impl CapKernel {
                 }
             }
         }
-        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
-        let tracked mut steps = Steps::fresh();
-        self.blocks.free_block(page, Tracked(perms), Tracked(&mut steps));
+        self.blocks.free_block(page, Tracked(perms), Tracked(steps));
         proof {
             let post = *self;
             assert forall|i: int| pre.blocks.tracks(i) implies #[trigger] post.blocks.pages@[i] == (
@@ -839,12 +845,13 @@ impl CapKernel {
     /// to its process and the next frees its block. A thread Running on a core, which is also the only
     /// kind with a stop pending, is refused until that core moves it off. All of these come from user
     /// space, and anything but an unlink or a free changes nothing.
-    pub fn reclaim_thread(&mut self, c: usize, root: usize, from: usize, base: usize) -> (ret: ReclaimStep)
+    pub fn reclaim_thread(&mut self, c: usize, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: ReclaimStep)
         requires
             old(self).wf(),
             c < NUM_CPUS,
             old(self).tables.roots@.contains_key(root),
         ensures
+            final(steps).count <= old(steps).count + NODES_PER_PAGE + 2 * (NUM_CPUS + NUM_IOMMUS) + SMALL_PAGES_MAX,
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
             ret is Refused || ret is Again ==> *final(self) == *old(self),
@@ -930,15 +937,13 @@ impl CapKernel {
             }
             return ReclaimStep::Slice;
         }
-        if !self.thread_nodes_dead(base) {
+        if !self.thread_nodes_dead(base, Tracked(&mut *steps)) {
             return ReclaimStep::Refused;
         }
         proof {
             pre.lemma_spent_thread(base);
         }
-        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
-        let tracked mut steps = Steps::fresh();
-        if !self.is_acknowledged(page, Tracked(&mut steps)) || !self.is_acknowledged(page + 1, Tracked(&mut steps)) {
+        if !self.is_acknowledged(page, Tracked(&mut *steps)) || !self.is_acknowledged(page + 1, Tracked(&mut *steps)) {
             return ReclaimStep::Again;
         }
         proof {
@@ -953,7 +958,7 @@ impl CapKernel {
             pre.lemma_acknowledged_is_clean(page);
             pre.lemma_acknowledged_is_clean((page + 1) as usize);
         }
-        self.free_spent_thread(base);
+        self.free_spent_thread(base, Tracked(steps));
         proof {
             let post = *self;
             lemma_no_change_discharges_teardown(pre.view(), root, untyped, base);

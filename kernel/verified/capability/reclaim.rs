@@ -150,7 +150,7 @@ spec fn holds_free_page(perms: Map<usize, PagePerm4k>, i: usize) -> bool {
 }
 
 /// Takes the five node pages of the table page at base off the list, each as its page's permission.
-fn take_table_node_pages(list: &mut Tree, base: usize) -> (ret: Tracked<Map<usize, PagePerm4k>>)
+fn take_table_node_pages(list: &mut Tree, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: Tracked<Map<usize, PagePerm4k>>)
     requires
         old(list).wf(),
         base % 32768 == 0,
@@ -159,6 +159,7 @@ fn take_table_node_pages(list: &mut Tree, base: usize) -> (ret: Tracked<Map<usiz
         forall|k: usize, i: usize| #![trigger table_node(base, k, i)] k < TABLE_NODE_PAGES && i < NODES_PER_PAGE
             ==> !old(list).nodes@[table_node(base, k, i) as int].live,
     ensures
+        final(steps).count <= old(steps).count + TABLE_NODE_PAGES,
         final(list).wf(),
         final(list).seq == old(list).seq,
         final(list).parent == old(list).parent,
@@ -173,10 +174,12 @@ fn take_table_node_pages(list: &mut Tree, base: usize) -> (ret: Tracked<Map<usiz
         lemma_table_page_aligned(base);
     }
     let tracked mut perms = Map::<usize, PagePerm4k>::tracked_empty();
+    let ghost steps0 = steps.count;
     let mut k: usize = 0;
     while k < TABLE_NODE_PAGES
         invariant
             k <= TABLE_NODE_PAGES,
+            steps.count == steps0 + k,
             base % 32768 == 0,
             base % 4096 == 0,
             base as int == 4096 * page,
@@ -228,6 +231,9 @@ fn take_table_node_pages(list: &mut Tree, base: usize) -> (ret: Tracked<Map<usiz
             }
         }
         k = k + 1;
+        proof {
+            steps.step();
+        }
     }
     Tracked(perms)
 }
@@ -729,16 +735,18 @@ impl CapKernel {
         if !self.blocks.page_tracked(page) {
             return ReclaimStep::Refused;
         }
+        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
         let object = self.blocks.pages.get(page).object;
         match object {
-            ObjectType::Frame => self.reclaim_frame(c, root, from, base),
+            ObjectType::Frame => self.reclaim_frame(c, root, from, base, Tracked(&mut steps)),
             ObjectType::TableLeaf => {
                 if self.unlink_leaf(root, from, base) {
                     ReclaimStep::Unlinked
                 } else if self.slice_leaf(root, from, base) {
                     ReclaimStep::Slice
                 } else {
-                    self.free_leaf(c, root, from, base)
+                    self.free_leaf(c, root, from, base, Tracked(&mut steps))
                 }
             },
             ObjectType::TablePage => {
@@ -747,22 +755,22 @@ impl CapKernel {
                 } else if self.slice_table(root, from, base) {
                     ReclaimStep::Slice
                 } else {
-                    self.free_table(c, root, from, base)
+                    self.free_table(c, root, from, base, Tracked(&mut steps))
                 }
             },
             ObjectType::Space => {
                 if self.cut_space_children(root, from, base) {
                     ReclaimStep::Slice
                 } else {
-                    self.free_space(c, root, from, base)
+                    self.free_space(c, root, from, base, Tracked(&mut steps))
                 }
             },
-            ObjectType::Thread => self.reclaim_thread(c, root, from, base),
+            ObjectType::Thread => self.reclaim_thread(c, root, from, base, Tracked(&mut steps)),
             ObjectType::Process => {
                 if self.cut_process_space(root, from, base) {
                     ReclaimStep::Slice
                 } else {
-                    self.free_process(c, root, from, base)
+                    self.free_process(c, root, from, base, Tracked(&mut steps))
                 }
             },
             ObjectType::None => ReclaimStep::Refused,
@@ -1329,12 +1337,13 @@ impl CapKernel {
     /// Frees the leaf at `base`, under the untyped at index `from` of the table at `root`, once its block
     /// is at zero references and no node in its page is live. All of these come from user space, and
     /// anything but a free changes nothing.
-    pub fn free_leaf(&mut self, c: usize, root: usize, from: usize, base: usize) -> (ret: ReclaimStep)
+    pub fn free_leaf(&mut self, c: usize, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: ReclaimStep)
         requires
             old(self).wf(),
             c < NUM_CPUS,
             old(self).tables.roots@.contains_key(root),
         ensures
+            final(steps).count <= old(steps).count + NODES_PER_PAGE + 2 * (NUM_CPUS + NUM_IOMMUS) + SMALL_PAGES_MAX,
             final(self).wf(),
             Self::same_tree(*old(self), *final(self)),
             !(ret is Unlinked),
@@ -1371,7 +1380,7 @@ impl CapKernel {
             lemma2_to64();
             pre.lemma_dead_leaf_block(base);
         }
-        if !leaf || !self.leaf_nodes_dead(base) {
+        if !leaf || !self.leaf_nodes_dead(base, Tracked(&mut *steps)) {
             return ReclaimStep::Refused;
         }
         proof {
@@ -1381,9 +1390,7 @@ impl CapKernel {
                 assert(page == base / 4096);
             }
         }
-        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
-        let tracked mut steps = Steps::fresh();
-        if !self.is_acknowledged(page, Tracked(&mut steps)) || !self.is_acknowledged(page + 1, Tracked(&mut steps)) {
+        if !self.is_acknowledged(page, Tracked(&mut *steps)) || !self.is_acknowledged(page + 1, Tracked(&mut *steps)) {
             return ReclaimStep::Again;
         }
         proof {
@@ -1393,7 +1400,7 @@ impl CapKernel {
             pre.lemma_acknowledged_is_clean(page);
             pre.lemma_acknowledged_is_clean((page + 1) as usize);
         }
-        self.free_empty_leaf(base);
+        self.free_empty_leaf(base, Tracked(steps));
         proof {
             let post = *self;
             assert(post.view() == pre.view());
@@ -1409,12 +1416,14 @@ impl CapKernel {
     // In a solver of its own: in the module's shared solver, the queries before it leave too little of
     // its budget.
     #[verifier::spinoff_prover]
-    pub fn free_table(&mut self, c: usize, root: usize, from: usize, base: usize) -> (ret: ReclaimStep)
+    pub fn free_table(&mut self, c: usize, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: ReclaimStep)
         requires
             old(self).wf(),
             c < NUM_CPUS,
             old(self).tables.roots@.contains_key(root),
         ensures
+            final(steps).count <= old(steps).count + TABLE_NODE_PAGES * (NODES_PER_PAGE + 1) + 512 + (NUM_CPUS + NUM_IOMMUS)
+                + (TABLE_NODE_PAGES + SMALL_PAGES_MAX),
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
             !(ret is Unlinked),
@@ -1450,18 +1459,16 @@ impl CapKernel {
             lemma2_to64();
             pre.lemma_dead_table_block(base);
         }
-        if !table || !self.table_nothing_left(base) {
+        if !table || !self.table_nothing_left(base, Tracked(&mut *steps)) {
             return ReclaimStep::Refused;
         }
-        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
-        let tracked mut steps = Steps::fresh();
-        if !self.is_acknowledged(page, Tracked(&mut steps)) {
+        if !self.is_acknowledged(page, Tracked(&mut *steps)) {
             return ReclaimStep::Again;
         }
         proof {
             pre.lemma_acknowledged_is_clean(page);
         }
-        self.free_empty_table(base);
+        self.free_empty_table(base, Tracked(steps));
         proof {
             let post = *self;
             assert(post.view() == pre.view());
@@ -1475,11 +1482,12 @@ impl CapKernel {
 
     /// Whether every node of the table page at `base` is dead and every entry empty. A table page holds a
     /// constant number of each.
-    fn table_nothing_left(&self, base: usize) -> (ret: bool)
+    fn table_nothing_left(&self, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             self.wf(),
             self.table_pages.maps@.contains_key(base),
         ensures
+            final(steps).count <= old(steps).count + TABLE_NODE_PAGES * (NODES_PER_PAGE + 1) + 512,
             ret == self.table_is_empty(base),
     {
         let ghost tree = tree_of(&self.table_pages, &self.spaces);
@@ -1487,13 +1495,16 @@ impl CapKernel {
             self.lemma_table_page_room(base);
             assert(table_page_wf(&self.list, &self.table_pages, &self.blocks, base));
         }
-        if !self.block_nodes_dead(base) {
+        if !self.block_nodes_dead(base, Tracked(&mut *steps)) {
             return false;
         }
+        let ghost steps0 = steps.count;
         let mut e = 0;
         while e != 512
             invariant
                 0 <= e <= 512,
+                steps0 <= old(steps).count + TABLE_NODE_PAGES * (NODES_PER_PAGE + 1),
+                steps.count == steps0 + e,
                 self.wf(),
                 self.table_pages.maps@.contains_key(base),
                 tree == tree_of(&self.table_pages, &self.spaces),
@@ -1512,26 +1523,33 @@ impl CapKernel {
                 return false;
             }
             e = e + 1;
+            proof {
+                steps.step();
+            }
         }
         true
     }
 
     /// Whether every node in the node pages of the table page or space at `base` is dead. The pages hold a
     /// constant number.
-    fn block_nodes_dead(&self, base: usize) -> (ret: bool)
+    fn block_nodes_dead(&self, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             self.wf(),
             base % 32768 == 0,
             self.blocks.tracks_addr_run(base, 8),
             forall|k: usize| k < TABLE_NODE_PAGES ==> self.list.pages@.dom().contains(#[trigger] table_node_page(base, k)),
         ensures
+            final(steps).count <= old(steps).count + TABLE_NODE_PAGES * (NODES_PER_PAGE + 1),
             ret == (forall|k: usize, i: usize| #![trigger table_node(base, k, i)] k < TABLE_NODE_PAGES && i < NODES_PER_PAGE
                 ==> !self.list.nodes@[table_node(base, k, i) as int].live),
     {
+        let ghost steps0 = steps.count;
         let mut k = 0;
         while k != TABLE_NODE_PAGES
             invariant
                 0 <= k <= TABLE_NODE_PAGES,
+                steps0 == old(steps).count,
+                steps.count == steps0 + k * (NODES_PER_PAGE + 1),
                 self.wf(),
                 base % 32768 == 0,
                 self.blocks.tracks_addr_run(base, 8),
@@ -1545,6 +1563,8 @@ impl CapKernel {
                 invariant
                     0 <= k < TABLE_NODE_PAGES,
                     0 <= i <= NODES_PER_PAGE,
+                    steps0 == old(steps).count,
+                    steps.count == steps0 + k * (NODES_PER_PAGE + 1) + i,
                     self.wf(),
                     base % 32768 == 0,
                     self.blocks.tracks_addr_run(base, 8),
@@ -1564,26 +1584,39 @@ impl CapKernel {
                     return false;
                 }
                 i = i + 1;
+                proof {
+                    steps.step();
+                }
+            }
+            proof {
+                assert((k + 1) * (NODES_PER_PAGE + 1) == k * (NODES_PER_PAGE + 1) + (NODES_PER_PAGE + 1)) by (nonlinear_arith);
             }
             k = k + 1;
+            proof {
+                steps.step();
+            }
         }
         true
     }
 
     /// Whether the root of the device space at `base` has no entry. A space's node pages hold no live node.
-    fn space_nothing_left(&self, base: usize) -> (ret: bool)
+    fn space_nothing_left(&self, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             self.wf(),
             self.dead_io_space(base),
             !self.table_pages.maps@.contains_key(base),
         ensures
+            final(steps).count <= old(steps).count + 512,
             ret == self.space_is_empty(base),
     {
         let ghost tree = tree_of(&self.table_pages, &self.spaces);
+        let ghost steps0 = steps.count;
         let mut e = 0;
         while e != 512
             invariant
                 0 <= e <= 512,
+                steps0 == old(steps).count,
+                steps.count == steps0 + e,
                 self.wf(),
                 self.dead_io_space(base),
                 !self.table_pages.maps@.contains_key(base),
@@ -1603,22 +1636,29 @@ impl CapKernel {
                 return false;
             }
             e = e + 1;
+            proof {
+                steps.step();
+            }
         }
         true
     }
 
     /// Whether every node of the owned leaf at `base` is dead. A leaf's page holds a constant number.
-    fn leaf_nodes_dead(&self, base: usize) -> (ret: bool)
+    fn leaf_nodes_dead(&self, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             self.wf(),
             self.tables.owner@.contains_key(base),
         ensures
+            final(steps).count <= old(steps).count + NODES_PER_PAGE,
             ret == self.leaf_is_empty(base),
     {
+        let ghost steps0 = steps.count;
         let mut k = 0;
         while k != NODES_PER_PAGE
             invariant
                 0 <= k <= NODES_PER_PAGE,
+                steps0 == old(steps).count,
+                steps.count == steps0 + k,
                 self.wf(),
                 self.tables.owner@.contains_key(base),
                 forall|j: int| 0 <= j < k ==> !(#[trigger] self.list.nodes@[base + j]).live,
@@ -1631,13 +1671,16 @@ impl CapKernel {
                 return false;
             }
             k = k + 1;
+            proof {
+                steps.step();
+            }
         }
         true
     }
 
     /// Both pages of an empty leaf go back to the block table, its block's teardown being finished, and
     /// the root entry its parent record names is cleared in the same step.
-    fn free_empty_leaf(&mut self, base: usize)
+    fn free_empty_leaf(&mut self, base: usize, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).wf(),
             old(self).leaf_is_empty(base),
@@ -1645,6 +1688,7 @@ impl CapKernel {
             old(self).no_stale_translation(base / 4096),
             old(self).no_stale_translation((base / 4096 + 1) as usize),
         ensures
+            final(steps).count <= old(steps).count + SMALL_PAGES_MAX,
             final(self).wf(),
             Self::same_tree(*old(self), *final(self)),
             final(self).blocks.pages@[(base / 4096) as int].kind is Free,
@@ -1692,9 +1736,7 @@ impl CapKernel {
             perms.tracked_insert((page + 1) as usize, payloads);
             Self::lemma_leaf_perms(perms, base);
         }
-        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
-        let tracked mut steps = Steps::fresh();
-        self.blocks.free_block(page, Tracked(perms), Tracked(&mut steps));
+        self.blocks.free_block(page, Tracked(perms), Tracked(steps));
         proof {
             let post = *self;
             assert forall|i: int| pre.blocks.tracks(i) implies #[trigger] post.blocks.pages@[i] == (
@@ -2544,13 +2586,14 @@ impl CapKernel {
 
     /// The block of the empty table page at `base` goes back to the block table: its node pages off the
     /// list, and its table, record and spare page turned back into page permissions.
-    pub fn free_empty_table(&mut self, base: usize)
+    pub fn free_empty_table(&mut self, base: usize, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).wf(),
             old(self).table_is_empty(base),
             old(self).blocks.pages@[(base / 4096) as int].refs == 0,
             old(self).no_stale_translation(base / 4096),
         ensures
+            final(steps).count <= old(steps).count + TABLE_NODE_PAGES + SMALL_PAGES_MAX,
             final(self).wf(),
             final(self).blocks.pages@[(base / 4096) as int].kind is Free,
             !final(self).table_pages.maps@.contains_key(base),
@@ -2578,7 +2621,7 @@ impl CapKernel {
         }
         self.blocks.mark_torn_down(page);
         let ghost mid = *self;
-        let Tracked(nodes) = take_table_node_pages(&mut self.list, base);
+        let Tracked(nodes) = take_table_node_pages(&mut self.list, base, Tracked(&mut *steps));
         let tracked mut perms = nodes;
         proof {
             let tracked mut map = self.table_pages.maps.borrow_mut().tracked_remove(base);
@@ -2602,9 +2645,7 @@ impl CapKernel {
                 }
             }
         }
-        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
-        let tracked mut steps = Steps::fresh();
-        self.blocks.free_block(page, Tracked(perms), Tracked(&mut steps));
+        self.blocks.free_block(page, Tracked(perms), Tracked(steps));
         proof {
             let post = *self;
             assert forall|i: int| pre.blocks.tracks(i) implies #[trigger] post.blocks.pages@[i] == (
@@ -2829,12 +2870,13 @@ impl CapKernel {
 
     /// The block of the empty space at `base` goes back to the block table: its node pages off the list,
     /// and its root, record and list of cores turned back into page permissions.
-    pub fn free_empty_space(&mut self, base: usize)
+    pub fn free_empty_space(&mut self, base: usize, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).wf(),
             old(self).space_is_empty(base),
             old(self).no_stale_translation(base / 4096),
         ensures
+            final(steps).count <= old(steps).count + TABLE_NODE_PAGES + SMALL_PAGES_MAX,
             final(self).wf(),
             final(self).blocks.pages@[(base / 4096) as int].kind is Free,
             !final(self).spaces.roots@.contains_key(base),
@@ -2862,7 +2904,7 @@ impl CapKernel {
         }
         self.blocks.mark_torn_down(page);
         let ghost mid = *self;
-        let Tracked(nodes) = take_table_node_pages(&mut self.list, base);
+        let Tracked(nodes) = take_table_node_pages(&mut self.list, base, Tracked(&mut *steps));
         let tracked mut perms = nodes;
         proof {
             let tracked mut root = self.spaces.roots.borrow_mut().tracked_remove(base);
@@ -2889,9 +2931,7 @@ impl CapKernel {
                 }
             }
         }
-        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
-        let tracked mut steps = Steps::fresh();
-        self.blocks.free_block(page, Tracked(perms), Tracked(&mut steps));
+        self.blocks.free_block(page, Tracked(perms), Tracked(steps));
         proof {
             let post = *self;
             assert forall|i: int| pre.blocks.tracks(i) implies #[trigger] post.blocks.pages@[i] == (
@@ -2939,12 +2979,13 @@ impl CapKernel {
     /// block's last unmap. It refuses a block that is anything else, a process space included.
     // In a solver of its own: beside the rest of this module it runs past its budget.
     #[verifier::spinoff_prover]
-    pub fn free_space(&mut self, c: usize, root: usize, from: usize, base: usize) -> (ret: ReclaimStep)
+    pub fn free_space(&mut self, c: usize, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: ReclaimStep)
         requires
             old(self).wf(),
             c < NUM_CPUS,
             old(self).tables.roots@.contains_key(root),
         ensures
+            final(steps).count <= old(steps).count + 512 + (NUM_CPUS + NUM_IOMMUS) + (TABLE_NODE_PAGES + SMALL_PAGES_MAX),
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
             !(ret is Unlinked),
@@ -2983,18 +3024,16 @@ impl CapKernel {
         if !dead_space {
             return ReclaimStep::Refused;
         }
-        if !self.space_nothing_left(base) {
+        if !self.space_nothing_left(base, Tracked(&mut *steps)) {
             return ReclaimStep::Refused;
         }
-        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
-        let tracked mut steps = Steps::fresh();
-        if !self.is_acknowledged(page, Tracked(&mut steps)) {
+        if !self.is_acknowledged(page, Tracked(&mut *steps)) {
             return ReclaimStep::Again;
         }
         proof {
             pre.lemma_acknowledged_is_clean(page);
         }
-        self.free_empty_space(base);
+        self.free_empty_space(base, Tracked(steps));
         proof {
             let post = *self;
             assert(post.view() == pre.view());
@@ -4278,12 +4317,13 @@ impl CapKernel {
 
     /// Reclaims the 4K block at `base`, under the untyped at index `from` of the table at `root`. All of
     /// these come from user space, and anything but a free changes nothing.
-    pub fn reclaim_frame(&mut self, c: usize, root: usize, from: usize, base: usize) -> (ret: ReclaimStep)
+    pub fn reclaim_frame(&mut self, c: usize, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: ReclaimStep)
         requires
             old(self).wf(),
             c < NUM_CPUS,
             old(self).tables.roots@.contains_key(root),
         ensures
+            final(steps).count <= old(steps).count + (NUM_CPUS + NUM_IOMMUS) + SMALL_PAGES_MAX,
             final(self).wf(),
             Self::same_tree(*old(self), *final(self)),
             !(ret is Unlinked),
@@ -4319,16 +4359,14 @@ impl CapKernel {
             assert(pre.holders@.contains_key(BlockRef::Small(page)));
             assert(block_refs(&pre.blocks, BlockRef::Small(page)) == 0);
         }
-        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
-        let tracked mut steps = Steps::fresh();
-        if !self.is_acknowledged(page, Tracked(&mut steps)) {
+        if !self.is_acknowledged(page, Tracked(&mut *steps)) {
             return ReclaimStep::Again;
         }
         proof {
             pre.lemma_dead_frame_unmapped(page);
             pre.lemma_acknowledged_is_clean(page);
         }
-        self.free_frame(c, page);
+        self.free_frame(c, page, Tracked(steps));
         proof {
             let post = *self;
             assert(post.view() == pre.view());
@@ -4356,13 +4394,14 @@ impl CapKernel {
     }
 
     /// Reclaims the 2M or 1G block at `base`, as reclaim_frame does a 4K one.
-    pub fn reclaim_large_frame(&mut self, c: usize, root: usize, from: usize, base: usize, order: u8) -> (ret: ReclaimStep)
+    pub fn reclaim_large_frame(&mut self, c: usize, root: usize, from: usize, base: usize, order: u8, Tracked(steps): Tracked<&mut Steps>) -> (ret: ReclaimStep)
         requires
             old(self).wf(),
             c < NUM_CPUS,
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(steps).count <= old(steps).count + NUM_CPUS + NUM_IOMMUS,
             final(self).wf(),
             Self::same_tree(*old(self), *final(self)),
             !(ret is Freed) ==> *final(self) == *old(self),
@@ -4401,9 +4440,7 @@ impl CapKernel {
             return ReclaimStep::Refused;
         }
         let page = base / 4096;
-        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
-        let tracked mut steps = Steps::fresh();
-        if !self.is_region_acknowledged(level, r, Tracked(&mut steps)) {
+        if !self.is_region_acknowledged(level, r, Tracked(steps)) {
             return ReclaimStep::Again;
         }
         proof {
@@ -4492,13 +4529,14 @@ impl CapKernel {
     }
 
     /// A frame has nothing to tear down, so its block frees at once, its permission going back.
-    fn free_frame(&mut self, c: usize, page: usize)
+    fn free_frame(&mut self, c: usize, page: usize, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).wf(),
             c < NUM_CPUS,
             old(self).frame_is_dead(page),
             old(self).no_stale_translation(page),
         ensures
+            final(steps).count <= old(steps).count + SMALL_PAGES_MAX,
             Self::same_tree(*old(self), *final(self)),
             Self::step_ok(*old(self), *final(self), c as int),
             final(self).list == old(self).list,
@@ -4521,9 +4559,7 @@ impl CapKernel {
             perms.tracked_insert(page, perm);
             assert(pre.blocks.pages@[page as int].order == 0);
         }
-        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
-        let tracked mut steps = Steps::fresh();
-        self.blocks.free_block(page, Tracked(perms), Tracked(&mut steps));
+        self.blocks.free_block(page, Tracked(perms), Tracked(steps));
         self.holders = Ghost(pre.holders@.remove(BlockRef::Small(page)));
         proof {
             let post = *self;
