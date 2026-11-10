@@ -145,7 +145,7 @@ pub const XAPIC_TIMER_CURRENT_COUNT: u32 = 0x390;
 pub const XAPIC_TIMER_DIV_CONF: u32 = 0x3E0;
 
 #[derive(Copy, Clone)]
-#[allow(dead_code, non_camel_case_types)]
+#[allow(non_camel_case_types)]
 enum ApicRegister {
     XAPIC_ID = XAPIC_ID as isize,
     XAPIC_VERSION = XAPIC_VERSION as isize,
@@ -194,7 +194,7 @@ enum ApicRegister {
 }
 
 /// State for the XAPIC driver.
-#[allow(clippy::clippy::upper_case_acronyms)]
+#[allow(clippy::upper_case_acronyms)]
 pub struct XAPIC {
     /// The xAPIC register page. The same physical address on every core; each core's access reaches its own.
     mmio_region: *mut u32,
