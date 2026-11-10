@@ -92,6 +92,7 @@ pub fn translation_root(boot: &BootInfo) -> u64 {
 /// every core shares, its local APIC with the IOAPIC routed to it, and the syscall entry.
 pub unsafe fn init_boot_core() {
     init_control_registers();
+    init_performance_counters();
     gdt::init_cpu();
 
     interrupt::init();
@@ -103,6 +104,7 @@ pub unsafe fn init_boot_core() {
 /// Brings up a core started after the boot core, whose [`Cpu`] is in place.
 pub unsafe fn init_core() {
     init_control_registers();
+    init_performance_counters();
     gdt::init_cpu();
     interrupt::init_ap();
     syscalls::init_cpu();
@@ -132,4 +134,36 @@ unsafe fn init_control_registers() {
     super::write_cr0(cr0);
     super::write_cr4(cr4);
     log::info!("CPU {}: CR0 {:#x}, CR4 {:#x}", crate::cpu::get_cpu_id(), cr0, cr4);
+}
+
+/// CR4.PCE, which lets RDPMC run outside ring 0. APM 2 §3.1.3, Figure 3-7.
+const CR4_PCE: u64 = 1 << 8;
+/// CPUID Fn8000_0001 ECX bit 23, PerfCtrExtCore: the six core counters at PERF_CTL0. APM 2 §13.2.2.
+const PERF_CTR_EXT_CORE: u32 = 1 << 23;
+/// PerfEvtSel0 and PerfCtr0; counter n is at twice n past each. APM 2 Appendix A.6.
+const PERF_CTL0: u32 = 0xC001_0200;
+const PERF_CTR0: u32 = 0xC001_0201;
+/// The events counters 0 to 3 count, in PerfEvtSel's format (APM 2 §13.2.1, Figure 13-11): 0x43 in
+/// bits 23:16 is EN, OS and USR, the unit mask is bits 15:8 and the event bits 7:0. The events are AMD
+/// doc 58550 Rev 0.02's: cycles not in halt, PMCx076 (p. 20); retired instructions, PMCx0C0 (p. 26);
+/// data cache fills from any source, PMCx044 with every defined unit mask bit but 7, extension memory
+/// (p. 18); and those fills that came from another CCX's cache in the same NUMA node, PMCx044 bit 2.
+const PERF_EVENTS: [u64; 4] = [0x43_0076, 0x43_00C0, 0x43_5F44, 0x43_0444];
+
+/// Counts PERF_EVENTS on counters 0 to 3 from boot on, in the kernel and in every process, and lets
+/// every process read them with RDPMC, where CPUID offers the extended core counters. That is a boot
+/// setting, not a capability: no process can change what is counted, and the counts are readable by
+/// all as the TSC is, the same timing channel. A core without the counters, under TCG or under KVM
+/// with QEMU's pmu off, keeps CR4.PCE clear, so RDPMC outside ring 0 faults there.
+unsafe fn init_performance_counters() {
+    if core::arch::x86_64::__cpuid(0x8000_0001).ecx & PERF_CTR_EXT_CORE == 0 {
+        log::info!("CPU {}: no extended core performance counters", crate::cpu::get_cpu_id());
+        return;
+    }
+    for (n, &event) in PERF_EVENTS.iter().enumerate() {
+        msr::wrmsr(PERF_CTR0 + 2 * n as u32, 0);
+        msr::wrmsr(PERF_CTL0 + 2 * n as u32, event);
+    }
+    super::write_cr4(super::read_cr4() | CR4_PCE);
+    log::info!("CPU {}: performance counters 0 to 3 count {:x?}", crate::cpu::get_cpu_id(), PERF_EVENTS);
 }
