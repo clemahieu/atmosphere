@@ -23,6 +23,74 @@ pub struct Position {
     pub index: usize,
 }
 
+/// The bits of a position word the index is in, bits 0 to 15: every index a table has, TABLE_INDICES.
+pub const POSITION_INDEX_MASK: u64 = 0xffff;
+
+/// How far up a position word the field naming the table is: bits 16 to 31 hold one more than the
+/// slot of a process capability in the caller's table, and 0 for the caller's own table.
+pub const POSITION_THROUGH_SHIFT: u64 = 16;
+
+/// How far up a position word the bits are that no position uses, all of which must be clear.
+pub const POSITION_WIDTH: u64 = 32;
+
+/// The position a word from user space names, or None when a bit above bit 31 is set. See
+/// design/syscall-abi-in-registers/.
+pub open spec fn spec_position(word: u64) -> Option<Position> {
+    let through = (word >> POSITION_THROUGH_SHIFT) & POSITION_INDEX_MASK;
+    if word >> POSITION_WIDTH != 0 {
+        None
+    } else {
+        Some(Position {
+            through: if through == 0 { None } else { Some((through - 1) as usize) },
+            index: (word & POSITION_INDEX_MASK) as usize,
+        })
+    }
+}
+
+/// Decodes a position word from user space: the position it names, or None when a bit above bit 31
+/// is set.
+pub fn position(word: u64) -> (ret: Option<Position>)
+    ensures
+        ret == spec_position(word),
+{
+    if word >> POSITION_WIDTH != 0 {
+        return None;
+    }
+    let through = (word >> POSITION_THROUGH_SHIFT) & POSITION_INDEX_MASK;
+    Some(Position {
+        through: if through == 0 { None } else { Some((through - 1) as usize) },
+        index: (word & POSITION_INDEX_MASK) as usize,
+    })
+}
+
+/// One word names one position: two words that decode to the same position are the same word.
+pub proof fn lemma_position_one_word(a: u64, b: u64)
+    requires
+        spec_position(a) is Some,
+        spec_position(a) == spec_position(b),
+    ensures
+        a == b,
+{
+    let ta = (a >> 16u64) & 0xffffu64;
+    let tb = (b >> 16u64) & 0xffffu64;
+    assert(ta == tb);
+    assert(a & 0xffffu64 == b & 0xffffu64);
+    assert((a >> 32u64 == 0 && b >> 32u64 == 0 && a & 0xffffu64 == b & 0xffffu64
+        && (a >> 16u64) & 0xffffu64 == (b >> 16u64) & 0xffffu64) ==> a == b) by (bit_vector);
+}
+
+/// A word whose index field is an index of the caller's own table and with nothing else set names that
+/// index there: a slot number passed as a word is the slot in the caller's own table.
+pub proof fn lemma_position_own(index: u64)
+    requires
+        index <= POSITION_INDEX_MASK,
+    ensures
+        spec_position(index) == Some(Position { through: None, index: index as usize }),
+{
+    assert(index <= 0xffffu64 ==> index >> 32u64 == 0 && (index >> 16u64) & 0xffffu64 == 0
+        && index & 0xffffu64 == index) by (bit_vector);
+}
+
 impl CapKernel {
     /// The table a position is in, for a caller whose table is at root: the caller's own, or the table
     /// of the process named through a capability of the caller's. There is none when `through` names no

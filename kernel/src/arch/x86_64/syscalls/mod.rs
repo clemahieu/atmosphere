@@ -20,7 +20,8 @@ const SYSCALL32_ENTRY: u64 = 0; // nein
 const SYSCALL32_ENTRY_EIP: u32 = 0; // nein
 
 // User space invokes operations by asys's numbers, reads asys's statuses and kind numbers, names a slot below asys's
-// table size and finds its first capabilities at asys's slots; they must be the ones the verified dispatch decodes and returns and boot writes.
+// table size, encodes a table position as asys does and finds its first capabilities at asys's slots; they must be the
+// ones the verified dispatch decodes and returns and boot writes.
 const _: () = {
     use asys::operation as user;
     assert!(user::STATUS_OK == operation::STATUS_OK);
@@ -48,6 +49,10 @@ const _: () = {
     assert!(user::RETYPE_FRAME == operation::RETYPE_FRAME);
     assert!(user::RETYPE_LARGE_FRAME == operation::RETYPE_LARGE_FRAME);
     assert!(user::RETYPE_TABLE_PAGE == operation::RETYPE_TABLE_PAGE);
+    assert!(user::RETYPE_LEAF == operation::RETYPE_LEAF);
+    assert!(user::POSITION_THROUGH_SHIFT == verified::capability::position::POSITION_THROUGH_SHIFT);
+    assert!(user::POSITION_WIDTH == verified::capability::position::POSITION_WIDTH);
+    assert!(user::TABLE_INDICES - 1 == verified::capability::position::POSITION_INDEX_MASK);
     assert!(user::TABLE_INDICES == table::TABLE_INDICES as u64);
     assert!(user::KIND_UNTYPED == inspect::CAP_KIND_UNTYPED);
     assert!(user::KIND_FRAME == inspect::CAP_KIND_FRAME);

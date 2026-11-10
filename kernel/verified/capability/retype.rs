@@ -853,6 +853,34 @@ impl CapKernel {
         }
     }
 
+    /// What a retype of the two pages at base as a table leaf did, under the untyped at index from of
+    /// the table at root, into the root entry at names: the retype was allowed, the leaf is in that
+    /// entry of the position's table, its hidden node the untyped's child, every slot in it empty, what
+    /// retype_keeps names is as it was but that root entry, and the step discharges the retype's
+    /// effect, into the table named through a process capability when the position names one.
+    pub open spec fn leaf_retyped(pre: Self, post: Self, root: usize, from: usize, at: Position, base: usize) -> bool {
+        let parent = pre.tables.node_of(root, from);
+        let table = pre.destination_at(root, at.through)->0;
+        &&& pre.can_retype_leaf(root, from, at, base)
+        &&& pre.view().holds_right(root, parent, Right::Retype)
+        &&& post.tables.leaf(table, at.index as int) == base
+        &&& post.list.is_child(parent, base)
+        &&& post.list.nodes@[base as int].kind is Hidden
+        &&& forall|i: usize| index_ok(i) && index_entry(i) == at.index as int ==> {
+            &&& #[trigger] post.tables.has_slot(&post.list, table, i)
+            &&& !post.list.nodes@[post.tables.node_of(table, i) as int].live
+        }
+        &&& forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x)
+        &&& post.processes == pre.processes
+        &&& Self::retype_keeps(pre, post, base, (base / 4096) as int, 1, Some((table, at.index as int)))
+        &&& discharges(
+            pre.view(),
+            post.view(),
+            root,
+            Effect::Retype { untyped: parent, object: base, into: pre.through_node(root, at.through) },
+        )
+    }
+
     /// Retypes the two free pages at `base` as a table leaf, under the untyped at index `from` of the
     /// table at root, the caller's. The leaf goes in the root entry `at` names: of the caller's own
     /// table, or of the table of a live process the caller holds a capability to with the control
@@ -870,29 +898,10 @@ impl CapKernel {
             final(self).wf(),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             Self::same_tree(*old(self), *final(self)),
+            final(self).cores == old(self).cores,
             ret == old(self).can_retype_leaf(root, from, at, base),
             !ret ==> *final(self) == *old(self),
-            ret ==> {
-                let parent = old(self).tables.node_of(root, from);
-                let table = old(self).destination_at(root, at.through)->0;
-                &&& old(self).view().holds_right(root, parent, Right::Retype)
-                &&& final(self).tables.leaf(table, at.index as int) == base
-                &&& final(self).list.is_child(parent, base)
-                &&& final(self).list.nodes@[base as int].kind is Hidden
-                &&& forall|i: usize| index_ok(i) && index_entry(i) == at.index as int ==> {
-                    &&& #[trigger] final(self).tables.has_slot(&final(self).list, table, i)
-                    &&& !final(self).list.nodes@[final(self).tables.node_of(table, i) as int].live
-                }
-                &&& forall|x: usize| #[trigger] final(self).is_cap(x) == old(self).is_cap(x)
-                &&& final(self).processes == old(self).processes
-                &&& Self::retype_keeps(*old(self), *final(self), base, (base / 4096) as int, 1, Some((table, at.index as int)))
-                &&& discharges(
-                    old(self).view(),
-                    final(self).view(),
-                    root,
-                    Effect::Retype { untyped: parent, object: base, into: old(self).through_node(root, at.through) },
-                )
-            },
+            ret ==> Self::leaf_retyped(*old(self), *final(self), root, from, at, base),
     {
         let ghost pre = *old(self);
         let r = at.index;
@@ -974,6 +983,7 @@ impl CapKernel {
         ensures
             final(self).wf(),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
+            final(self).cores == old(self).cores,
             Self::same_tree(*old(self), *final(self)),
             !ret ==> *final(self) == *old(self),
             ret == old(self).blocks.small_free((base / 4096) as int, 1),

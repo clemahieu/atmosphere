@@ -75,14 +75,23 @@ const MAX_ORDER: u64 = 36;
 /// The last slot of the table's first leaf, where boot's untyped end.
 const FIRST_LEAF_END: u64 = operation::ROOT_FRAME_SLOT - 2;
 
-/// The first slot after the untyped, once inspect says the console slot holds a console and the power
-/// slot a power capability, and every slot from the first untyped holds an untyped whose base is
+/// A word with a bit set above those a table position uses, so it names no position.
+const NO_POSITION: u64 = 1 << operation::POSITION_WIDTH;
+
+/// The first slot after the untyped, once inspect says the console slot holds a console, also when named
+/// through the root's own process capability, and refuses a word naming no position, the power slot
+/// holds a power capability, and every slot from the first untyped holds an untyped whose base is
 /// aligned to its order, at least one, up to that slot, which inspect refuses because it holds nothing.
 /// Boot fills the untyped slots from the first and leaves the rest of the leaf empty,
 /// design/root-process-at-boot/; a leaf full of untyped leaves no empty slot in it to read, and fails.
 fn first_empty_slot() -> Option<u64> {
     let console = operation::inspect(operation::ROOT_CONSOLE_SLOT);
     if !matches!(console, Ok(capability) if capability.kind == operation::KIND_CONSOLE) {
+        return None;
+    }
+    if operation::inspect(operation::through(operation::ROOT_PROCESS_SLOT, operation::ROOT_CONSOLE_SLOT)) != console
+        || operation::inspect(NO_POSITION | operation::ROOT_CONSOLE_SLOT) != Err(operation::STATUS_REFUSED)
+    {
         return None;
     }
     let power = operation::inspect(operation::ROOT_POWER_SLOT);
@@ -594,7 +603,7 @@ const REVOKED_MAPPINGS: u64 = 64;
 /// Whether dom0 revokes the 2M frame at `large` once its child at `child` is mapped REVOKED_MAPPINGS
 /// times, from the entry after PATH_ADDRESS up, repeating while revoke returns again, and prints how many
 /// again returns that took: each map is accepted and the first mapping reads the zero the 2M retype left,
-/// a revoke of the empty slot `empty` and of a slot past the table is refused, the revoke returns again
+/// a revoke of the empty slot `empty` and of a word naming no position is refused, the revoke returns again
 /// at least once and then ok, the child's slot is refused by inspect, a map through it and an unmap at
 /// its first mapping are refused, and inspect still finds the 2M frame. Each again removes at least one
 /// node of the run, so a revoke still returning again after REVOKED_MAPPINGS + 1 has stopped going on,
@@ -609,9 +618,9 @@ fn revoked_frame_held(large: u64, empty: u64, child: u64) -> bool {
     if unsafe { (address(1) as *const u64).read_volatile() } != 0 {
         return false;
     }
-    // Nothing dom0 uses is mapped through either slot: the first is empty, the second past the table.
+    // Nothing dom0 uses is mapped through either: the slot is empty, and the word names no position.
     let revoke = |slot: u64| unsafe { operation::revoke(slot) };
-    if revoke(empty) != operation::STATUS_REFUSED || revoke(operation::TABLE_INDICES) != operation::STATUS_REFUSED {
+    if revoke(empty) != operation::STATUS_REFUSED || revoke(NO_POSITION | large) != operation::STATUS_REFUSED {
         return false;
     }
     let mut again = 0;
@@ -636,7 +645,7 @@ fn revoked_frame_held(large: u64, empty: u64, child: u64) -> bool {
 /// Whether dom0 deletes the 2M frame at `large` and a child it derives from it into the empty slot
 /// `child`: the derive is accepted, a delete of the frame with that child below it is refused, the
 /// child's delete is accepted and inspect then refuses its slot, the frame's delete is accepted, and
-/// inspect and a second delete then refuse the frame's slot, as does a delete of a slot past the table.
+/// inspect and a second delete then refuse the frame's slot, as does a delete of a word naming no position.
 fn deleted_frames_held(large: u64, child: u64) -> bool {
     let parent = match operation::inspect(large) {
         Ok(capability) => capability,
@@ -649,7 +658,7 @@ fn deleted_frames_held(large: u64, child: u64) -> bool {
         && operation::delete(large) == operation::STATUS_OK
         && matches!(operation::inspect(large), Err(operation::STATUS_REFUSED))
         && operation::delete(large) == operation::STATUS_REFUSED
-        && operation::delete(operation::TABLE_INDICES) == operation::STATUS_REFUSED
+        && operation::delete(NO_POSITION) == operation::STATUS_REFUSED
 }
 
 /// Print through `slot`. The status is the low half of what the invocation returns.

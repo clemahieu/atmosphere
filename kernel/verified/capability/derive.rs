@@ -142,15 +142,9 @@ impl CapKernel {
             block_refs(&self.blocks, block_ref(&self.blocks, self.payload_of(parent).base / 4096)) != usize::MAX
     }
 
-    /// The refusals of a derive within the table at root.
-    pub open spec fn can_derive(&self, root: usize, from: usize, to: usize, rights: u32, base: usize, order: u8) -> bool {
-        self.can_derive_between(root, from, root, to, rights, base, order)
-    }
-
     /// The refusals of a derive from index from of the caller's table, at root, into a position: one
     /// in no table, or in the table of a dead process, to which nothing is given since it cannot use
-    /// it, and then a derive's between the two tables. In the caller's own table that is can_derive of
-    /// the position's index.
+    /// it, and then a derive's between the two tables.
     pub open spec fn can_derive_at(&self, root: usize, from: usize, to: Position, rights: u32, base: usize, order: u8) -> bool {
         let dst = self.table_at(root, to.through);
         &&& dst is Some
@@ -176,13 +170,6 @@ impl CapKernel {
         &&& post.list.nodes@[child as int].depth <= MAX_DEPTH
     }
 
-    /// What a derive within the table at root did: a derive between its indices from and to, and the
-    /// step discharges a local effect.
-    pub open spec fn cap_derived(pre: Self, post: Self, root: usize, from: usize, to: usize, rights: u32, base: usize, order: u8) -> bool {
-        &&& Self::cap_derived_between(pre, post, root, from, root, to, rights, base, order)
-        &&& discharges(pre.view(), post.view(), root, Effect::Local)
-    }
-
     /// What a derive into a position is to reach: a local step in the caller's own table, and through a
     /// process capability a placement through it of a child of the caller's capability.
     pub open spec fn derive_effect(&self, root: usize, from: usize, to: Position) -> Effect {
@@ -194,23 +181,11 @@ impl CapKernel {
 
     /// What a derive from the capability at index from of the caller's table, at root, into the empty
     /// position to did: the derive was allowed, the child is in the position's table, and the step
-    /// discharges the derive's effect there. In the caller's own table that is cap_derived of the
-    /// position's index.
+    /// discharges the derive's effect there, a local step in the caller's own table.
     pub open spec fn cap_derived_at(pre: Self, post: Self, root: usize, from: usize, to: Position, rights: u32, base: usize, order: u8) -> bool {
         &&& pre.can_derive_at(root, from, to, rights, base, order)
         &&& Self::cap_derived_between(pre, post, root, from, pre.table_at(root, to.through)->0, to.index, rights, base, order)
         &&& discharges(pre.view(), post.view(), root, pre.derive_effect(root, from, to))
-    }
-
-    /// In the caller's own table a derive into a position is the derive into its index, refused and
-    /// done exactly as that is.
-    pub proof fn lemma_derive_own(pre: Self, post: Self, root: usize, from: usize, to: usize, rights: u32, base: usize, order: u8)
-        ensures
-            pre.can_derive_at(root, from, Position { through: None, index: to }, rights, base, order)
-                == pre.can_derive(root, from, to, rights, base, order),
-            Self::cap_derived_at(pre, post, root, from, Position { through: None, index: to }, rights, base, order)
-                == Self::cap_derived(pre, post, root, from, to, rights, base, order),
-    {
     }
 
     /// Derives the capability at index `from` of the caller's table, at `root`, into the empty position

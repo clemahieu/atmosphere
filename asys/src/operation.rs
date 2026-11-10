@@ -19,19 +19,19 @@ pub const STATUS_UNKNOWN: u64 = 2;
 pub const STATUS_AGAIN: u64 = 3;
 
 pub const RETYPE: u64 = 1;
-/// Derives from the capability in the slot a child into the empty slot in argument 1, with the rights in
-/// argument 2 and the block of the order in argument 4 at the base in argument 3, which must lie within
-/// the parent's rights and block.
+/// Derives from the capability at the position the slot's word names, in the caller's own table, a child
+/// into the empty position the word in argument 1 names, with the rights in argument 2 and the block of
+/// the order in argument 4 at the base in argument 3, which must lie within the parent's rights and block.
 pub const DERIVE: u64 = 2;
-/// Moves the capability in the slot to the empty slot in argument 1, children and all, leaving the slot
-/// empty.
+/// Moves the capability at the position the slot's word names to the empty position the word in argument
+/// 1 names, children and all, leaving the first empty.
 pub const MOVE: u64 = 3;
-/// Deletes the capability in the slot, which must have nothing below it: no capability derived from it, no
-/// mapping made through it and no binding. A holder revokes first.
+/// Deletes the capability at the position the slot's word names, which must have nothing below it: no
+/// capability derived from it, no mapping made through it and no binding. A holder revokes first.
 pub const DELETE: u64 = 5;
-/// Removes everything below the capability in the slot, the capabilities derived from it and the mappings
-/// made through it or them, a bounded number of steps at a time: again while some is left, ok once none
-/// is. The capability itself stays.
+/// Removes everything below the capability at the position the slot's word names, the capabilities
+/// derived from it and the mappings made through it or them, a bounded number of steps at a time: again
+/// while some is left, ok once none is. The capability itself stays.
 pub const REVOKE: u64 = 6;
 /// Maps into the entry of the space in the slot that the virtual address in argument 1 and the level in
 /// argument 2 name the page at the page offset in argument 4 of the frame in argument 3: a 4K page at
@@ -51,8 +51,8 @@ pub const REPLY_RECV: u64 = 13;
 /// slot: each word's eight bytes from its lowest, argument 1's first, up to the first zero byte, so 40
 /// bytes at most.
 pub const PRINT: u64 = 14;
-/// Returns the kind, base, order and rights of the capability the caller holds in the slot in results 1
-/// to 4; refused for a slot that holds none. It asks for no right.
+/// Returns the kind, base, order and rights of the capability at the position the slot's word names in
+/// results 1 to 4; refused for a position that holds none. It asks for no right.
 pub const INSPECT: u64 = 15;
 /// Links the unlinked table page at the physical base in argument 4 into the entry of the space in the
 /// slot that the virtual address in argument 1 and the level in argument 2 name, on the authority of the
@@ -86,6 +86,11 @@ pub const RETYPE_LARGE_FRAME: u64 = 1;
 /// 3, at the base in argument 2. No capability names it, so it takes no slot; link names it by its base.
 pub const RETYPE_TABLE_PAGE: u64 = 2;
 
+/// Retype's kind in argument 1 for a table leaf: the two free pages at the base in argument 2, as the
+/// leaf of the empty root entry the position word in argument 3 names, which gives that entry's slots to
+/// its table.
+pub const RETYPE_LEAF: u64 = 3;
+
 /// The kind numbers inspect returns in result 1.
 pub const KIND_UNTYPED: u64 = 0;
 pub const KIND_FRAME: u64 = 1;
@@ -101,6 +106,24 @@ pub const KIND_POWER: u64 = 10;
 
 /// The indices a capability table has: 512 root entries of 128 positions. Every slot is below this.
 pub const TABLE_INDICES: u64 = 65536;
+
+/// How far up a position word its table field is. A position word names an index of a table: the index in
+/// bits 0 to 15, and in bits 16 to 31 one more than the slot of a process capability with the control
+/// right in the caller's own table, whose process's table the index is in, or 0 for the caller's own
+/// table. A word with a bit above bit 31 set is refused. A slot of the caller's own table is its own
+/// position word. See design/syscall-abi-in-registers/.
+pub const POSITION_THROUGH_SHIFT: u64 = 16;
+
+/// How far up a position word the bits are that must be clear.
+pub const POSITION_WIDTH: u64 = 32;
+
+/// The position word naming `index` in the table of the process whose capability, with the control right,
+/// is at `process` in the caller's own table.
+pub const fn through(process: u64, index: u64) -> u64 {
+    assert!(process + 1 < TABLE_INDICES, "a position's table field holds one more than the process's slot");
+    assert!(index < TABLE_INDICES, "a position's index is an index of a table");
+    (process + 1) << POSITION_THROUGH_SHIFT | index
+}
 
 /// The root's slot holding its own process, with control, as boot leaves it. See
 /// design/root-process-at-boot/.
@@ -174,8 +197,8 @@ pub struct Capability {
     pub rights: u64,
 }
 
-/// Inspects the capability at `slot`: what it says, or the status inspect returned when the slot holds
-/// none.
+/// Inspects the capability at position `slot`: what it says, or the status inspect returned when the
+/// position holds none.
 pub fn inspect(slot: u64) -> Result<Capability, u64> {
     // Inspect changes nothing, the caller's address space included.
     let (word, [kind, base, order, rights]) = unsafe { invoke_returning(INSPECT, slot, [0; 5]) };
@@ -205,6 +228,14 @@ pub fn retype_large_frame(untyped: u64, base: u64, destination: u64) -> u64 {
 pub fn retype_table_page(untyped: u64, base: u64, level: u64) -> u64 {
     // A retype changes the caller's table and the block's memory, never its address space.
     status(unsafe { invoke(RETYPE, untyped, [RETYPE_TABLE_PAGE, base, 0, level, 0]) })
+}
+
+/// Retypes the two free pages at `base`, inside the block of the untyped at `untyped`, as a table leaf in
+/// the empty root entry at position `entry`: of the caller's own table, or of that of a live process it
+/// controls. The status is the low half of what returns.
+pub fn retype_leaf(untyped: u64, base: u64, entry: u64) -> u64 {
+    // A retype changes a table and the block's memory, never the caller's address space.
+    status(unsafe { invoke(RETYPE, untyped, [RETYPE_LEAF, base, entry, 0, 0]) })
 }
 
 /// Links the unlinked table page at `table`, covered by the untyped at `untyped`, into the entry at
@@ -289,28 +320,29 @@ pub fn power_off(power: u64, success: bool) -> u64 {
     status(unsafe { invoke(POWER_OFF, power, [success as u64, 0, 0, 0, 0]) })
 }
 
-/// Moves the capability at `from` to the empty slot `to`, children and all, leaving `from` empty. The
-/// status is the low half of what returns.
+/// Moves the capability at position `from` to the empty position `to`, children and all, leaving `from`
+/// empty. The status is the low half of what returns.
 pub fn move_capability(from: u64, to: u64) -> u64 {
     // A move changes slots, not the caller's address space.
     status(unsafe { invoke(MOVE, from, [to, 0, 0, 0, 0]) })
 }
 
-/// Derives from the capability at `from` a child into the empty slot `to`, with `rights` and the block of
-/// `order` at `base`, which must lie within the parent's. The status is the low half of what returns.
+/// Derives from the capability at position `from`, in the caller's own table, a child into the empty
+/// position `to`, with `rights` and the block of `order` at `base`, which must lie within the parent's. The
+/// status is the low half of what returns.
 pub fn derive(from: u64, to: u64, rights: u64, base: u64, order: u64) -> u64 {
     // A derive changes slots, not the caller's address space.
     status(unsafe { invoke(DERIVE, from, [to, rights, base, order, 0]) })
 }
 
-/// Deletes the capability at `slot`, which must have nothing below it. The status is the low half of
-/// what returns.
+/// Deletes the capability at position `slot`, which must have nothing below it. The status is the low half
+/// of what returns.
 pub fn delete(slot: u64) -> u64 {
     // A delete of a capability with no mapping below it changes slots, not the caller's address space.
     status(unsafe { invoke(DELETE, slot, [0; 5]) })
 }
 
-/// Takes a bounded number of steps of removing everything below the capability at `slot`, the
+/// Takes a bounded number of steps of removing everything below the capability at position `slot`, the
 /// capabilities derived from it and the mappings made through it or them: again while some is left, ok
 /// once none is. The status is the low half of what returns.
 ///

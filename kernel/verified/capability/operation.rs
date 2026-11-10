@@ -59,9 +59,12 @@ pub const RETYPE_FRAME: u64 = 0;
 /// Retype's kind in argument 1 for a 2M frame, a block of order 9.
 pub const RETYPE_LARGE_FRAME: u64 = 1;
 
-/// Retype's kind in argument 1 for a table page, of the level in argument 4. Every other kind is
-/// refused until it is wired.
+/// Retype's kind in argument 1 for a table page, of the level in argument 4.
 pub const RETYPE_TABLE_PAGE: u64 = 2;
+
+/// Retype's kind in argument 1 for a table leaf, at the base in argument 2, in the root entry the
+/// position word in argument 3 names. Every other kind is refused until it is wired.
+pub const RETYPE_LEAF: u64 = 3;
 
 /// What an invocation returns to its thread: the status word and results 1 to 4, which
 /// Registers::write_outcome puts at their positions in the frame.
@@ -248,7 +251,8 @@ impl CapKernel {
     /// What the invocation in frame returns to a thread of the process whose table is at root, for an
     /// operation that leaves the kernel unchanged: for print, ok exactly when the slot holds a console
     /// capability and refused otherwise; for power-off, ok exactly when the slot holds a power capability
-    /// and refused otherwise; inspect's outcome for inspect; refused for every operation not wired yet;
+    /// and refused otherwise; for inspect, its outcome at the position the slot's word names, and
+    /// refused for a word that names none; refused for every operation not wired yet;
     /// and unknown for a number no operation has. Print's words are arguments 1 to 5 and power-off's
     /// word is argument 1, as design/syscall-abi-in-registers/ places them; neither decides the status.
     pub open spec fn spec_outcome(&self, root: usize, frame: Registers) -> Outcome {
@@ -259,7 +263,10 @@ impl CapKernel {
             Some(Operation::PowerOff) => status_only(
                 if self.holds_power(root, frame.slot() as usize) { STATUS_OK } else { STATUS_REFUSED },
             ),
-            Some(Operation::Inspect) => self.spec_inspect(root, frame.slot() as usize),
+            Some(Operation::Inspect) => match spec_position(frame.slot()) {
+                Some(at) => self.spec_inspect_at(root, at),
+                None => status_only(STATUS_REFUSED),
+            },
             Some(_) => status_only(STATUS_REFUSED),
             None => status_only(STATUS_UNKNOWN),
         }
@@ -270,9 +277,11 @@ impl CapKernel {
     /// at the base in argument 2 retyped under the untyped in the slot into the slot in argument 3; for
     /// the 2M frame kind, again with the block at the base in argument 2 a step further zeroed and no
     /// slot changed, or ok with the 2M frame retyped into the slot in argument 3 once the block is all
-    /// zero; or, for the table page kind, ok with an unlinked table page of the level in argument 4 at
-    /// the base in argument 2 under the untyped in the slot. A
-    /// retype the arguments allow can still be refused, when the block table finds the memory is not free.
+    /// zero; for the table page kind, ok with an unlinked table page of the level in argument 4 at the
+    /// base in argument 2 under the untyped in the slot; or, for the leaf kind, ok with a table leaf at
+    /// the base in argument 2 under the untyped in the slot, in the root entry the position word in
+    /// argument 3 names. A retype the arguments allow can still be refused, when the block table finds
+    /// the memory is not free.
     pub open spec fn spec_retyped(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         ||| out == status_only(STATUS_REFUSED) && post == pre
         ||| {
@@ -294,6 +303,12 @@ impl CapKernel {
             &&& frame.argument(1) == RETYPE_TABLE_PAGE
             &&& out == status_only(STATUS_OK)
             &&& Self::table_page_retyped(pre, post, root, frame.slot() as usize, frame.argument(2) as usize, frame.argument(4) as usize)
+        }
+        ||| {
+            &&& frame.argument(1) == RETYPE_LEAF
+            &&& out == status_only(STATUS_OK)
+            &&& spec_position(frame.argument(3)) is Some
+            &&& Self::leaf_retyped(pre, post, root, frame.slot() as usize, spec_position(frame.argument(3))->0, frame.argument(2) as usize)
         }
     }
 
@@ -374,60 +389,76 @@ impl CapKernel {
     }
 
     /// A derive in frame by a thread of the process whose table is at root, from pre to post with out
-    /// returned: refused with nothing changed, or ok with a child of the capability in the slot put in
-    /// the slot in argument 1, with the rights in argument 2 and the block of the order in argument 4 at
-    /// the base in argument 3. Rights wider than 32 bits and an order wider than 8 are refused, since no
-    /// capability holds them.
+    /// returned: refused with nothing changed, or ok with a child of the capability at the position the
+    /// slot's word names, in the caller's own table, put at the position the word in argument 1 names,
+    /// with the rights in argument 2 and the block of the order in argument 4 at the base in argument 3.
+    /// Rights wider than 32 bits and an order wider than 8 are refused, since no capability holds them,
+    /// and so is a source word naming another process's table: derive takes its parent from the
+    /// caller's own.
     pub open spec fn spec_derived(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
+        let from = spec_position(frame.slot());
+        let to = spec_position(frame.argument(1));
         ||| out == status_only(STATUS_REFUSED) && post == pre
         ||| {
             &&& out == status_only(STATUS_OK)
             &&& frame.argument(2) <= u32::MAX as u64
             &&& frame.argument(4) <= u8::MAX as u64
-            &&& Self::cap_derived(pre, post, root, frame.slot() as usize, frame.argument(1) as usize, frame.argument(2) as u32, frame.argument(3) as usize, frame.argument(4) as u8)
+            &&& from is Some
+            &&& from->0.through is None
+            &&& to is Some
+            &&& Self::cap_derived_at(pre, post, root, from->0.index, to->0, frame.argument(2) as u32, frame.argument(3) as usize, frame.argument(4) as u8)
         }
     }
 
     /// A move in frame by a thread of the process whose table is at root, from pre to post with out
-    /// returned: refused with nothing changed, or ok with the capability in the slot moved to the slot
-    /// in argument 1.
+    /// returned: refused with nothing changed, or ok with the capability at the position the slot's
+    /// word names moved to the position the word in argument 1 names.
     pub open spec fn spec_moved(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
+        let from = spec_position(frame.slot());
+        let to = spec_position(frame.argument(1));
         ||| out == status_only(STATUS_REFUSED) && post == pre
         ||| {
             &&& out == status_only(STATUS_OK)
-            &&& Self::cap_moved(pre, post, root, frame.slot() as usize, frame.argument(1) as usize)
+            &&& from is Some
+            &&& to is Some
+            &&& Self::cap_moved_at(pre, post, root, from->0, to->0)
         }
     }
 
     /// A delete in frame by a thread of the process whose table is at root, from pre to post with out
-    /// returned: refused with nothing changed, or ok with the childless capability in the slot gone.
+    /// returned: refused with nothing changed, or ok with the childless capability at the position the
+    /// slot's word names gone.
     pub open spec fn spec_deleted(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
+        let at = spec_position(frame.slot());
         ||| out == status_only(STATUS_REFUSED) && post == pre
-        ||| out == status_only(STATUS_OK) && Self::cap_deleted(pre, post, root, frame.slot() as usize)
+        ||| out == status_only(STATUS_OK) && at is Some && Self::cap_deleted_at(pre, post, root, at->0)
     }
 
     /// A revoke in frame by a thread of the process whose table is at root, from pre to post with out
     /// returned: refused with nothing changed; refused with the flush epoch at its limit, after the steps
-    /// it took on the run of the capability in the slot; again with a step of that run taken and some of
-    /// it left; or ok with the run empty. See design/revoke-by-depth-first-list/.
+    /// it took on the run of the capability at the position the slot's word names; again with a step of
+    /// that run taken and some of it left; or ok with the run empty. See
+    /// design/revoke-by-depth-first-list/.
     pub open spec fn spec_revoked(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
-        let i = frame.slot() as usize;
+        let at = spec_position(frame.slot());
         ||| out == status_only(STATUS_REFUSED) && post == pre
         ||| {
             &&& out == status_only(STATUS_REFUSED)
+            &&& at is Some
             &&& post.flush_epoch == usize::MAX
-            &&& Self::cap_revoking(pre, post, root, i)
+            &&& Self::cap_revoking_at(pre, post, root, at->0)
         }
         ||| {
             &&& out == status_only(STATUS_AGAIN)
-            &&& !post.list.childless(pre.tables.node_of(root, i))
-            &&& Self::cap_revoking(pre, post, root, i)
+            &&& at is Some
+            &&& !post.list.childless(pre.cap_at(root, at->0)->0)
+            &&& Self::cap_revoking_at(pre, post, root, at->0)
         }
-        ||| out == status_only(STATUS_OK) && Self::cap_revoked(pre, post, root, i)
+        ||| out == status_only(STATUS_OK) && at is Some && Self::cap_revoked_at(pre, post, root, at->0)
     }
 
     /// What the invocation in frame by a thread of the process whose table is at root did, from pre to
-    /// post with out returned: a retype's effect for retype, a derive's for derive, a move's for move, a
+    /// post with out returned, with each table position decoded from its word: a retype's effect for retype, a derive's for derive, a move's for move, a
     /// delete's for delete, a revoke's for revoke, a link's for link, a map's for map, an unmap's for
     /// unmap, a probe's for probe, and for every other operation the kernel unchanged with spec_outcome returned.
     pub open spec fn invoked(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
@@ -443,6 +474,24 @@ impl CapKernel {
             Some(Operation::Probe) => Self::spec_probed(pre, post, root, frame, out),
             _ => post == pre && out == pre.spec_outcome(root, frame),
         }
+    }
+
+    /// A word with a bit above bit 31 set, where derive, move, delete, revoke or inspect reads a position,
+    /// or where retype's leaf kind reads its root entry, is refused with the kernel unchanged.
+    pub proof fn lemma_wide_position_refused(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            Self::invoked(pre, post, root, frame, out),
+            ({
+                let op = spec_operation(frame.operation_number());
+                ||| (op == Some(Operation::Derive) || op == Some(Operation::Move) || op == Some(Operation::Delete)
+                    || op == Some(Operation::Revoke) || op == Some(Operation::Inspect)) && frame.slot() >> POSITION_WIDTH != 0
+                ||| (op == Some(Operation::Derive) || op == Some(Operation::Move)) && frame.argument(1) >> POSITION_WIDTH != 0
+                ||| op == Some(Operation::Retype) && frame.argument(1) == RETYPE_LEAF && frame.argument(3) >> POSITION_WIDTH != 0
+            }),
+        ensures
+            out == status_only(STATUS_REFUSED),
+            post == pre,
+    {
     }
 
     /// Core c's step for the invocation its current thread entered the kernel with, in frame. The
@@ -501,43 +550,56 @@ impl CapKernel {
                     } else {
                         STATUS_REFUSED
                     }
+                } else if frame.argument(1) == RETYPE_LEAF {
+                    match position(frame.argument(3)) {
+                        Some(at) => {
+                            if self.retype_leaf(root, frame.slot() as usize, at, frame.argument(2) as usize) {
+                                STATUS_OK
+                            } else {
+                                STATUS_REFUSED
+                            }
+                        },
+                        None => STATUS_REFUSED,
+                    }
                 } else {
                     STATUS_REFUSED
                 };
                 Some(status_only_outcome(status))
             },
             Some(Operation::Derive) => {
-                let done = frame.argument(2) <= u32::MAX as u64 && frame.argument(4) <= u8::MAX as u64 && self.derive(
-                    root,
-                    frame.slot() as usize,
-                    Position { through: None, index: frame.argument(1) as usize },
-                    frame.argument(2) as u32,
-                    frame.argument(3) as usize,
-                    frame.argument(4) as u8,
-                );
+                let from = match position(frame.slot()) {
+                    Some(Position { through: None, index }) => Some(index),
+                    _ => None,
+                };
+                let done = match (from, position(frame.argument(1))) {
+                    (Some(from), Some(to)) => frame.argument(2) <= u32::MAX as u64 && frame.argument(4) <= u8::MAX as u64
+                        && self.derive(root, from, to, frame.argument(2) as u32, frame.argument(3) as usize, frame.argument(4) as u8),
+                    _ => false,
+                };
                 Some(status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED }))
             },
             Some(Operation::Move) => {
-                let ghost pre = *self;
-                let done = self.move_cap(
-                    root,
-                    Position { through: None, index: frame.slot() as usize },
-                    Position { through: None, index: frame.argument(1) as usize },
-                );
-                proof {
-                    Self::lemma_move_own(pre, *self, root, frame.slot() as usize, frame.argument(1) as usize);
-                }
+                let done = match (position(frame.slot()), position(frame.argument(1))) {
+                    (Some(from), Some(to)) => self.move_cap(root, from, to),
+                    _ => false,
+                };
                 Some(status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED }))
             },
             Some(Operation::Delete) => {
-                let done = self.delete(root, Position { through: None, index: frame.slot() as usize }).is_some();
+                let done = match position(frame.slot()) {
+                    Some(at) => self.delete(root, at).is_some(),
+                    None => false,
+                };
                 Some(status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED }))
             },
             Some(Operation::Revoke) => {
-                let status = match self.revoke(root, Position { through: None, index: frame.slot() as usize }) {
-                    RevokeStep::Done => STATUS_OK,
-                    RevokeStep::Again => STATUS_AGAIN,
-                    RevokeStep::Refused | RevokeStep::Exhausted => STATUS_REFUSED,
+                let status = match position(frame.slot()) {
+                    Some(at) => match self.revoke(root, at) {
+                        RevokeStep::Done => STATUS_OK,
+                        RevokeStep::Again => STATUS_AGAIN,
+                        RevokeStep::Refused | RevokeStep::Exhausted => STATUS_REFUSED,
+                    },
+                    None => STATUS_REFUSED,
                 };
                 Some(status_only_outcome(status))
             },
@@ -581,7 +643,10 @@ impl CapKernel {
                 ),
             ),
             Some(Operation::PowerOff) => Some(status_only_outcome(self.power_off(root, frame.slot() as usize))),
-            Some(Operation::Inspect) => Some(self.inspect(root, Position { through: None, index: frame.slot() as usize })),
+            Some(Operation::Inspect) => match position(frame.slot()) {
+                Some(at) => Some(self.inspect(root, at)),
+                None => Some(status_only_outcome(STATUS_REFUSED)),
+            },
             Some(_) => Some(status_only_outcome(STATUS_REFUSED)),
             None => Some(status_only_outcome(STATUS_UNKNOWN)),
         }

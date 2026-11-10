@@ -32,18 +32,6 @@ impl CapKernel {
         &&& self.list.childless(n)
     }
 
-    /// What a delete of the capability at index i of the table at root did: the delete was allowed, the
-    /// node had no child, it holds no capability now, every other node is as it was, and the step
-    /// discharges a local effect.
-    pub open spec fn cap_deleted(pre: Self, post: Self, root: usize, i: usize) -> bool {
-        let n = pre.tables.node_of(root, i);
-        &&& pre.can_delete(root, i)
-        &&& forall|c: usize| !#[trigger] pre.list.is_child(n, c)
-        &&& !post.is_cap(n)
-        &&& Self::caps_frame(pre, post, n, n)
-        &&& discharges(pre.view(), post.view(), root, Effect::Local)
-    }
-
     /// The refusals of a delete at a position: one that names no capability, the list's first node,
     /// which has depth 0, or a capability with something below it. In the caller's own table that is
     /// can_delete of the position's index.
@@ -57,7 +45,7 @@ impl CapKernel {
     /// What a delete of the capability at a position did, by a thread of the process whose table is at
     /// root: the delete was allowed, the node had no child, it holds no capability now, every other
     /// node is as it was, and the step discharges a local effect for the caller, which commands the
-    /// slot. In the caller's own table that is cap_deleted of the position's index.
+    /// slot.
     pub open spec fn cap_deleted_at(pre: Self, post: Self, root: usize, at: Position) -> bool {
         let n = pre.cap_at(root, at)->0;
         &&& pre.can_delete_at(root, at)
@@ -65,15 +53,6 @@ impl CapKernel {
         &&& !post.is_cap(n)
         &&& Self::caps_frame(pre, post, n, n)
         &&& discharges(pre.view(), post.view(), root, Effect::Local)
-    }
-
-    /// In the caller's own table a delete at a position is the delete of its index, refused and done
-    /// exactly as that is.
-    pub proof fn lemma_delete_own(pre: Self, post: Self, root: usize, i: usize)
-        ensures
-            pre.can_delete_at(root, Position { through: None, index: i }) == pre.can_delete(root, i),
-            Self::cap_deleted_at(pre, post, root, Position { through: None, index: i }) == Self::cap_deleted(pre, post, root, i),
-    {
     }
 
     /// Deletes the capability at a position: an index of the caller's table, at root, or of the table

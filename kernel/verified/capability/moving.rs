@@ -34,19 +34,11 @@ impl CapKernel {
         &&& !self.list.nodes@[self.tables.node_of(dst, to) as int].live
     }
 
-    /// The refusals of a move within the table at root, beyond those between two tables: a source
-    /// naming a dead process or thread.
-    pub open spec fn can_move(&self, root: usize, from: usize, to: usize) -> bool {
-        &&& self.can_move_between(root, from, root, to)
-        &&& !self.cap_dead(self.tables.node_of(root, from))
-    }
-
     /// The refusals of a move from one position to another, for a caller whose table is at root: a
     /// source in no table, a destination in none or in the table of a dead process, to which nothing
     /// is given since it cannot use it, a move's between the two tables, and a source in the caller's
     /// own table naming a dead process or thread. A source in a controlled table is taken whatever it
-    /// names and whether or not its process is dead. Within the caller's own table that is can_move
-    /// of the two indices.
+    /// names and whether or not its process is dead.
     pub open spec fn can_move_at(&self, root: usize, from: Position, to: Position) -> bool {
         let src = self.table_at(root, from.through);
         let dst = self.destination_at(root, to.through);
@@ -73,16 +65,6 @@ impl CapKernel {
         &&& Self::caps_frame(pre, post, i, n)
     }
 
-    /// What a move of the capability at index from of the table at root to index to did: the move was
-    /// allowed, the node kept its place between the two slots, reach is unchanged, and the step
-    /// discharges a local effect.
-    pub open spec fn cap_moved(pre: Self, post: Self, root: usize, from: usize, to: usize) -> bool {
-        &&& pre.can_move(root, from, to)
-        &&& Self::cap_moved_between(pre, post, root, from, root, to)
-        &&& forall|r: ObjectId, o: ObjectId| #[trigger] post.view().reach(r, o) == pre.view().reach(r, o)
-        &&& discharges(pre.view(), post.view(), root, Effect::Local)
-    }
-
     /// What a move from one position to another is to reach. Into a table named through a process
     /// capability it is a placement through that capability of the node moved, wherever it came
     /// from. Into the caller's own table it is a claim when the source is named through a process
@@ -100,8 +82,7 @@ impl CapKernel {
 
     /// What a move from position from to the empty position to did: the move was allowed, the node
     /// kept its place between the two slots, and the step discharges the move's effect, with reach
-    /// unchanged when both positions are in the caller's own table. Within that table it is
-    /// cap_moved of the two indices.
+    /// unchanged when both positions are in the caller's own table.
     pub open spec fn cap_moved_at(pre: Self, post: Self, root: usize, from: Position, to: Position) -> bool {
         &&& pre.can_move_at(root, from, to)
         &&& Self::cap_moved_between(
@@ -115,17 +96,6 @@ impl CapKernel {
         &&& discharges(pre.view(), post.view(), root, pre.move_effect(root, from, to))
         &&& from.through is None && to.through is None ==>
             forall|r: ObjectId, o: ObjectId| #[trigger] post.view().reach(r, o) == pre.view().reach(r, o)
-    }
-
-    /// In the caller's own table a move between positions is the move between their indices, refused
-    /// and done exactly as that is.
-    pub proof fn lemma_move_own(pre: Self, post: Self, root: usize, from: usize, to: usize)
-        ensures
-            pre.can_move_at(root, Position { through: None, index: from }, Position { through: None, index: to })
-                == pre.can_move(root, from, to),
-            Self::cap_moved_at(pre, post, root, Position { through: None, index: from }, Position { through: None, index: to })
-                == Self::cap_moved(pre, post, root, from, to),
-    {
     }
 
     /// A move into the caller's own table grows nobody's reach, whether its source is there too or in

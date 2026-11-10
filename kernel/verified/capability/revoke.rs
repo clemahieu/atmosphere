@@ -234,36 +234,11 @@ impl CapKernel {
         word
     }
 
-    /// What a revoke of the capability at index i of the table at root did when it was not refused: the
-    /// index names a capability, at most REVOKE_BUDGET nodes of its run went, no mapping appeared, no
-    /// node changed its parent, the threads bound are those that were whose bindings are still live,
-    /// and the step discharges the revoke's effect.
-    pub open spec fn cap_revoking(pre: Self, post: Self, root: usize, i: usize) -> bool {
-        let c = pre.tables.node_of(root, i);
-        &&& pre.tables.has_slot(&pre.list, root, i)
-        &&& pre.is_cap(c)
-        &&& Self::mappings_shrunk(pre, post)
-        &&& pre.list.seq@.len() - post.list.seq@.len() <= REVOKE_BUDGET
-        &&& post.list.parent == pre.list.parent
-        &&& discharges(pre.view(), post.view(), root, Effect::Revoke { cap: c })
-        &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables).restrict(live_nodes(&post.list))
-    }
-
-    /// What a revoke of the capability at index i of the table at root did when it finished: as
-    /// cap_revoking says, and the capability has no child left.
-    pub open spec fn cap_revoked(pre: Self, post: Self, root: usize, i: usize) -> bool {
-        let c = pre.tables.node_of(root, i);
-        &&& Self::cap_revoking(pre, post, root, i)
-        &&& post.list.childless(c)
-        &&& forall|x: usize| !#[trigger] post.list.is_child(c, x)
-    }
-
     /// What a revoke of the capability at a position did when it was not refused, by a thread of the
     /// process whose table is at root: the position names a capability, at most REVOKE_BUDGET nodes of
     /// its run went, no mapping appeared, no node changed its parent, the threads bound are those that
     /// were whose bindings are still live, and the step discharges the revoke's effect for the caller,
-    /// which commands the capability. In the caller's own table that is cap_revoking of the position's
-    /// index.
+    /// which commands the capability.
     pub open spec fn cap_revoking_at(pre: Self, post: Self, root: usize, at: Position) -> bool {
         let c = pre.cap_at(root, at)->0;
         &&& pre.cap_at(root, at) is Some
@@ -281,14 +256,6 @@ impl CapKernel {
         &&& Self::cap_revoking_at(pre, post, root, at)
         &&& post.list.childless(c)
         &&& forall|x: usize| !#[trigger] post.list.is_child(c, x)
-    }
-
-    /// In the caller's own table a revoke at a position is the revoke of its index.
-    pub proof fn lemma_revoke_own(pre: Self, post: Self, root: usize, i: usize)
-        ensures
-            Self::cap_revoking_at(pre, post, root, Position { through: None, index: i }) == Self::cap_revoking(pre, post, root, i),
-            Self::cap_revoked_at(pre, post, root, Position { through: None, index: i }) == Self::cap_revoked(pre, post, root, i),
-    {
     }
 
     /// Revokes the capability at a position, an index of the caller's table, at root, or of the table

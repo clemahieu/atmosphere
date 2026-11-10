@@ -3,7 +3,7 @@ title: "One syscall entry, and every operation carries its arguments in register
 date: 2026-11-10
 status: active
 tags: [abi, ipc, memory, portability]
-one_line: "One entry, by position: the operation number, the capability's slot and five arguments in; a status word (status in its low 16 bits, ok 0, refused 1, unknown 2, again 3, and a badge in the upper 48) and five result words out, each output in the register of the input at its position. A table per target names the registers: syscall on x86_64, svc on aarch64. A send carries five words, four with a grant; the kernel copies nothing from user memory, and larger data goes through shared frames. A place in a space is a virtual address and a level, which the kernel splits into the path. Inspect, operation 15, returns a held capability's kind, base, order and rights in results 1 to 4. Unmap returns the cleared entry's accessed and dirty bits in results 1 and 2. Probe, operation 17, reads and clears the accessed and dirty bits of up to 64 level 1 entries and returns them as two masks in results 1 and 2. Power-off, operation 18, ends the run through a power capability, with argument 1 saying whether the run succeeded."
+one_line: "One entry, by position: the operation number, the capability's slot and five arguments in; a status word (status in its low 16 bits, ok 0, refused 1, unknown 2, again 3, and a badge in the upper 48) and five result words out, each output in the register of the input at its position. A table per target names the registers: syscall on x86_64, svc on aarch64. A send carries five words, four with a grant; the kernel copies nothing from user memory, and larger data goes through shared frames. A place in a space is a virtual address and a level, which the kernel splits into the path. A table position is one word: the index in bits 0 to 15, and in bits 16 to 31 one more than the slot of a process capability with control in the caller's table, or 0 for the caller's own; any higher bit is refused. Inspect, operation 15, returns a held capability's kind, base, order and rights in results 1 to 4. Unmap returns the cleared entry's accessed and dirty bits in results 1 and 2. Probe, operation 17, reads and clears the accessed and dirty bits of up to 64 level 1 entries and returns them as two masks in results 1 and 2. Power-off, operation 18, ends the run through a power capability, with argument 1 saying whether the run succeeded."
 revisit_if: "A message that does not fit five words is on a hot path and the shared-frame ring is measured as its cost, an operation needs more than five argument words, a second entry is needed for a different privilege transition, or a target's instruction leaves fewer than seven registers free to carry an invocation."
 confidence: "A packing judgement; each target's preserved set is the one its C convention keeps across a call, the memory operations' positions are counted against the verified functions' parameters in kernel/verified/capability, and the aarch64 table is written from the Arm Architecture Reference Manual; dom0's checks run through it at EL0 under KVM on a Cortex-A76, which tests the positions and that an immediate other than 0 returns unknown."
 ---
@@ -72,17 +72,29 @@ A send carries five message words in arguments 1 to 5; with a grant, argument 5 
 
 The kernel copies nothing from user memory for IPC. Larger data goes through shared frames. The thread's saved set is the preserved registers plus the seven positions, so a blocked thread's partial frame copy is well defined. Debug print is an operation on a console capability that takes words.
 
+### Table positions
+
+A table position names a slot, or a root entry for a leaf, in the caller's own table or, through a process capability with the control right in the caller's own table, in that process's table, `design/process-holds-capabilities/`. It travels as one word:
+
+| Bits | What |
+|---|---|
+| 0 to 15 | the index: a slot's, or a root entry's |
+| 16 to 31 | 0 for the caller's own table; otherwise one more than the slot of the process capability whose process's table the index is in |
+| 32 to 63 | zero; a word with any of them set is refused |
+
+So one word names one position, and a slot number of the caller's own table is its own position word. The capability a position goes through is always in the caller's own table, so a slot from 0 to 65534 can be gone through. Derive reads its source, in the slot, and its destination, in argument 1, as positions; move its source and destination the same way; delete, revoke and inspect the capability in the slot; and retype's leaf kind its root entry, in argument 3. A derive whose source names another process's table is refused: derive's parent is the caller's own. Every other operation names the capability it exercises by an index in the caller's own table.
+
 ### Memory operations
 
-A slot is an index in the caller's capability table. A base is a physical address inside the block of the capability that authorises the operation, as `design/capability-names-a-block/` defines it. A page offset counts 4K pages from the start of a frame capability's block.
+A slot is an index in the caller's capability table, and a position is the word above. A base is a physical address inside the block of the capability that authorises the operation, as `design/capability-names-a-block/` defines it. A page offset counts 4K pages from the start of a frame capability's block.
 
 | Operation | Slot | Argument 1 | Argument 2 | Argument 3 | Argument 4 |
 |---|---|---|---|---|---|
 | retype | untyped | kind | base | destination slot | table level |
-| derive | source | destination slot | rights | base | order |
-| move | source | destination slot | | | |
-| delete | the capability | | | | |
-| revoke | the capability | | | | |
+| derive | source position | destination position | rights | base | order |
+| move | source position | destination position | | | |
+| delete | the capability's position | | | | |
+| revoke | the capability's position | | | | |
 | map | space | virtual address | level | frame | page offset |
 | link | space | virtual address | level | untyped | table page base |
 | unmap | space | virtual address | level | | |
@@ -95,6 +107,7 @@ Retype's kind in argument 1:
 | 4K frame | 0 | base, destination slot | A frame capability of order 0 in the slot. |
 | 2M frame | 1 | base, destination slot | `again` while the block is zeroed a slice at a time, then ok with a frame capability of order 9 in the slot. A later retype naming the same block goes on where an earlier one stopped. |
 | table page | 2 | base, table level | An unlinked table page of level 1, 2 or 3 at the base. No capability names it, so it takes no slot; link names it by its base. |
+| table leaf | 3 | base, the root entry's position in argument 3 | A table leaf of the two pages at the base in the empty root entry: of the caller's table, or of a live process's it controls, whose table it gives that entry's 127 slots. No capability names it, so it takes no slot. |
 
 Any other kind is refused. Revoke returns `again` while its run is not empty after its budget of steps, ok when it is, and refused when the slot names no capability, or when the flush epoch is at its limit, since a further step could not record its staleness.
 
@@ -140,7 +153,7 @@ Power-off is operation 18. It names a power capability in the slot, which boot h
 
 ### Inspect
 
-Inspect is operation 15. It names a capability in the slot and asks for no right but holding it. It returns ok with the capability's kind in result 1, the physical base of its block in result 2, its order in result 3 and its rights in result 4, and refused when the slot holds no capability. It changes nothing.
+Inspect is operation 15. It names a capability by the position in the slot and asks for no right but commanding it: holding it, or controlling the process that does. It returns ok with the capability's kind in result 1, the physical base of its block in result 2, its order in result 3 and its rights in result 4, and refused when the position holds no capability. It changes nothing.
 
 The kinds in result 1:
 
@@ -175,6 +188,8 @@ Unmap returns the bits because it reads and clears the entry anyway: a pager evi
 Probe returns its masks in result words because 64 entries' two bits are 128 bits, which two words carry, and reading them into user memory would be the copy this record rules out. It reads at most 64 entries under the lock, a bounded step, `design/one-lock-bounded-steps/`, and stays in one level 1 table so the walk to it is one, as map's is. It does not flush because the bits are a sample a pager reads repeatedly: a flush per probe would cost the IPIs the bits exist to avoid, and a write always reaches the entry, since the processor walks to set dirty through a translation cached with it clear.
 
 Power-off is an operation because ending the run is the machine's to do, and a process holds no port, no firmware call and no I/O privilege to do it with: the root reports how its run ended and the kernel's glue does the rest, the same way on every target. It asks for a power capability, a kind of its own, and not for the console, so that a process handed the console to print through cannot stop the machine, `design/root-process-at-boot/`; a process without a power capability cannot.
+
+A table position is one word of two 16-bit fields because a table has 65,536 indices and a position goes through at most one capability, which is in the caller's own table: both fit with room to spare, so no operation that takes a position needs a second argument for it and none changed its argument count. The table field holds one more than the slot so that 0, the value of every slot number a process already passes, names the caller's own table. Refusing every bit above bit 31 keeps one word to one position, as the address rule keeps one address to one entry.
 
 Retype is one operation whose kind is an argument, since every kind consumes the same authority, an untyped and a base; separate numbers per kind would spend operation numbers on what is one check. A large frame and a revoke return `again` because both do more work than one bounded step allows.
 

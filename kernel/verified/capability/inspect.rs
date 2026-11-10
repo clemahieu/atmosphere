@@ -82,16 +82,6 @@ impl CapKernel {
         &&& self.is_cap(self.tables.node_of(root, i))
     }
 
-    /// What inspect returns for index i of the table at root: the capability's payload when the index
-    /// names a live capability, and refused otherwise.
-    pub open spec fn spec_inspect(&self, root: usize, i: usize) -> Outcome {
-        if self.can_inspect(root, i) {
-            inspected(self.payload_of(self.tables.node_of(root, i)))
-        } else {
-            status_only(STATUS_REFUSED)
-        }
-    }
-
     /// The kind of the capability at index i of the table at root, for an operation whose whole
     /// authority is holding a capability of one kind. The index comes from user space, so it can name
     /// no slot or an empty one, and then there is none.
@@ -124,19 +114,12 @@ impl CapKernel {
     }
 
     /// What inspect returns for a position: the payload of the capability there, and refused when the
-    /// position names none. In the caller's own table that is spec_inspect of the position's index.
+    /// position names none.
     pub open spec fn spec_inspect_at(&self, root: usize, at: Position) -> Outcome {
         match self.cap_at(root, at) {
             Some(n) => inspected(self.payload_of(n)),
             None => status_only(STATUS_REFUSED),
         }
-    }
-
-    /// In the caller's own table an inspect at a position is the inspect of its index.
-    pub proof fn lemma_inspect_own(&self, root: usize, i: usize)
-        ensures
-            self.spec_inspect_at(root, Position { through: None, index: i }) == self.spec_inspect(root, i),
-    {
     }
 
     /// Inspects the capability at a position: an index of the caller's table, at root, or of the table
