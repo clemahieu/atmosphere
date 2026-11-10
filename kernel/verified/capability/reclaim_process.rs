@@ -229,8 +229,8 @@ impl CapKernel {
     /// What freeing the spent dead process at `base` did to self: no core had its space loaded or a
     /// translation of it, its block is free, and it is gone from the processes, the tables and the
     /// spaces, with no leaf left naming it. It held no capability, so the view is as it was, and the
-    /// list, every other table root, every leaf and its payload, every tracked page outside its block,
-    /// and the 2 MiB and 1 GiB regions are as they were.
+    /// list, every other process record, every other table root, every leaf and its payload, every
+    /// tracked page outside its block, and the 2 MiB and 1 GiB regions are as they were.
     pub open spec fn process_freed(&self, post: Self, c: usize, root: usize, from: usize, base: usize) -> bool {
         let untyped = self.tables.node_of(root, from);
         let page = base / PAGE_SZ;
@@ -245,6 +245,7 @@ impl CapKernel {
         &&& !post.spaces.roots@.contains_key(base)
         &&& forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) ==> post.tables.owner@[l].0 != base
         &&& post.list == self.list
+        &&& post.processes.records@ == self.processes.records@.remove(base)
         &&& post.tables.roots@ == self.tables.roots@.remove(base)
         &&& post.tables.owner == self.tables.owner
         &&& post.tables.payloads == self.tables.payloads
@@ -690,6 +691,7 @@ impl CapKernel {
             Self::mappings_shrunk(*old(self), *final(self)),
             forall|k: int| 0 <= k < 8 ==> #[trigger] final(self).blocks.pages@[(base / PAGE_SZ) + k].kind is Free,
             !final(self).processes.records@.contains_key(base),
+            final(self).processes.records@ == old(self).processes.records@.remove(base),
             !final(self).tables.roots@.contains_key(base),
             !final(self).spaces.roots@.contains_key(base),
             forall|l: usize| #[trigger] final(self).tables.owner@.contains_key(l) ==> final(self).tables.owner@[l].0 != base,
