@@ -18,7 +18,9 @@
 //! it was, a new span is reserved (`took_span`), and a span given back is released (`gave_span`), so
 //! a sequence that frees every run it cut ends at the view it started from.
 //!
-//! `lemma_view` states the invariant on the view. The page buddy does not back the runs it returns.
+//! `lemma_view` states the invariant on the view, among it that a held span with no run is the
+//! initial block, so `lemma_idle_fits` shows a run of any order fits while such a span is held. The
+//! page buddy does not back the runs it returns.
 use vstd::arithmetic::div_mod::*;
 use vstd::arithmetic::mul::*;
 use vstd::layout::*;
@@ -423,6 +425,7 @@ impl<S: SpanSource> PageBuddy<S> {
                     &&& partitioned(self.spans()[b])
                     &&& coalesced(self.spans()[b])
                     &&& self.used()[b] == used_of(self.spans()[b])
+                    &&& self.used()[b].dom() == Set::<int>::empty() ==> self.spans()[b] == initial()
                     &&& b > 0
                     &&& b % BLOCK_BYTES as int == 0
                     &&& held(self.source(), b)
@@ -441,6 +444,7 @@ impl<S: SpanSource> PageBuddy<S> {
             &&& partitioned(self.spans()[b])
             &&& coalesced(self.spans()[b])
             &&& self.used()[b] == used_of(self.spans()[b])
+            &&& self.used()[b].dom() == Set::<int>::empty() ==> self.spans()[b] == initial()
             &&& b > 0
             &&& b % BLOCK_BYTES as int == 0
             &&& held(self.source(), b)
@@ -452,8 +456,27 @@ impl<S: SpanSource> PageBuddy<S> {
             assert(self.meta_wf(m));
             self.rec(i).lemma_view();
             lemma_used_of(self.rec(i));
+            if self.used()[b].dom() == Set::<int>::empty() {
+                self.rec(i).lemma_idle();
+            }
             assert(self.source@.released_span(b).fits(b, self.source@.spans[b].blocks));
         }
+    }
+
+    /// A held span with no run allocated is one free block of order BLOCK_ORDER, so a run of any
+    /// order fits while it is held.
+    pub proof fn lemma_idle_fits(&self, b: int, k: nat)
+        requires
+            self.wf(),
+            self.spans().contains_key(b),
+            self.used()[b].dom() == Set::<int>::empty(),
+            k <= BLOCK_ORDER,
+        ensures
+            self.fits(k),
+    {
+        self.lemma_view();
+        assert(self.spans()[b] == initial());
+        assert(self.spans()[b].contains_key(0));
     }
 
     /// A page buddy holding no span, over `source`, keeping `spares` idle spans.

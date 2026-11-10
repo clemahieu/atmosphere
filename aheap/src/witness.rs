@@ -8,7 +8,9 @@
 //!
 //! The page buddy's witness, over any well-formed source and with no spares, cuts a run of order 0
 //! and one of order BLOCK_ORDER, frees both, and ends holding no span, with the source's view the one
-//! it started with. A refusal stops the sequence after freeing what it cut.
+//! it started with. A refusal stops the sequence after freeing what it cut. Its second witness, with
+//! one spare, cuts a run, frees it so its span stays as the spare, and cuts again, which is shown to
+//! succeed whatever the source does.
 use vstd::prelude::*;
 use vstd::layout::*;
 use vstd::raw_ptr::*;
@@ -237,6 +239,59 @@ pub fn witness_page_buddy<S: SpanSource>(src: S) -> (pb: PageBuddy<S>)
     proof {
         pb.lemma_view();
     }
+    pb
+}
+
+/// Cuts a run from a page buddy over `src` keeping one spare, frees it, so its span stays as the
+/// spare, and cuts a run again, which the idle spare provably gives without asking the source; then
+/// frees that run and returns the page buddy, every held span of it idle.
+pub fn witness_page_buddy_spare<S: SpanSource>(src: S) -> (pb: PageBuddy<S>)
+    requires
+        src@.wf(),
+    ensures
+        pb.wf(),
+        pb.spares() == 1,
+        forall|b: int| #[trigger] pb.used().contains_key(b) ==> pb.used()[b].dom() == Set::<int>::empty(),
+{
+    let mut pb = PageBuddy::new(src, 1);
+    let first = match pb.alloc_run(0) {
+        Err(_) => {
+            assert(pb.used().dom() =~= Set::<int>::empty());
+            return pb;
+        },
+        Ok(p) => p,
+    };
+    let ghost b1 = span_of(first as int);
+    let ghost h1 = page_of(first as int);
+    let ghost one = Map::<int, nat>::empty().insert(h1, 0nat);
+    assert(pb.used() == Map::<int, Map<int, nat>>::empty().insert(b1, one));
+    assert(one.remove(h1) =~= Map::<int, nat>::empty());
+    assert(pb.idle_spans() =~= Set::<int>::empty()) by {
+        assert(pb.used()[b1].contains_key(h1));
+    }
+    pb.free_run(first);
+    let ghost spare = Map::<int, Map<int, nat>>::empty().insert(b1, Map::<int, nat>::empty());
+    assert(pb.used() =~= spare);
+    proof {
+        pb.lemma_view();
+        pb.lemma_idle_fits(b1, 0);
+    }
+    let again = pb.alloc_run(0);
+    assert(again is Ok);
+    let second = match again {
+        Ok(p) => p,
+        Err(_) => return pb,
+    };
+    assert(span_of(second as int) == b1);
+    let ghost h2 = page_of(second as int);
+    let ghost two = Map::<int, nat>::empty().insert(h2, 0nat);
+    assert(pb.used() == spare.insert(b1, two));
+    assert(two.remove(h2) =~= Map::<int, nat>::empty());
+    assert(pb.idle_spans() =~= Set::<int>::empty()) by {
+        assert(pb.used()[b1].contains_key(h2));
+    }
+    pb.free_run(second);
+    assert(pb.used() =~= spare);
     pb
 }
 
