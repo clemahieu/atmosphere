@@ -11,6 +11,7 @@ use vstd::prelude::*;
 
 verus! {
 
+#[cfg(verus_keep_ghost)]
 use crate::capability::block::*;
 use crate::capability::boot::*;
 use crate::capability::boot_image::*;
@@ -41,6 +42,7 @@ use crate::capability::steps::Steps;
 use crate::capability::view::*;
 #[cfg(verus_keep_ghost)]
 use crate::pagetable::entry::PageEntry;
+use crate::define::{PAGES_PER_1G, PAGES_PER_2M};
 
 /// The physical page virtual page x of run maps.
 pub open spec fn image_frame(run: ImageRun, x: int) -> usize {

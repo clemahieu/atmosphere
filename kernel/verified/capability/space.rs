@@ -2126,6 +2126,8 @@ impl CapKernel {
             },
             forall|r: ObjectId, o: ObjectId| #[trigger] post.view().reach(r, o) == pre.view().reach(r, o),
     {
+        // lemma_table_page_blocks proves the block counts; this body only carries them.
+        hide(BlockTable::counts_wf);
         lemma_table_page_base(base, page);
         pre.lemma_slot(root, from);
         pre.lemma_slot_bound(parent);

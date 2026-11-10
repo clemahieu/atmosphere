@@ -18,7 +18,6 @@ use crate::capability::list::*;
 use crate::capability::table::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::zero::*;
-#[cfg(verus_keep_ghost)]
 use crate::define::*;
 
 /// A typed block: a small block by its base page, or a large one by its region.

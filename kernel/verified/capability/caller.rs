@@ -12,7 +12,9 @@ verus! {
 #[cfg(verus_keep_ghost)]
 use crate::arch::Registers;
 #[cfg(verus_keep_ghost)]
-use crate::capability::block::{Large, NUM_2M, PAGES_PER_2M};
+use crate::capability::block::{Large, NUM_2M};
+#[cfg(verus_keep_ghost)]
+use crate::define::PAGES_PER_2M;
 #[cfg(verus_keep_ghost)]
 use crate::capability::derive::*;
 #[cfg(verus_keep_ghost)]

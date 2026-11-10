@@ -13,12 +13,13 @@ use crate::capability::thread::ThreadRecord;
 use crate::capability::thread::XSAVE_OFFSET;
 #[cfg(verus_keep_ghost)]
 use crate::define::PagePerm4k;
+use crate::define::PAGE_SZ;
 use crate::pagetable::pagemap::PageMap;
 #[cfg(verus_keep_ghost)]
 use crate::pptr::PointsTo;
 
 /// The contents of a 4K page. The layout directive takes a name, not an array type.
-pub type PageBytes = [u8; 4096];
+pub type PageBytes = [u8; PAGE_SZ];
 
 verus! {
 
@@ -40,7 +41,7 @@ global layout ProcessRecord is size == 1, align == 1;
 pub proof fn page_into_node_page(tracked page: PagePerm4k) -> (tracked ret: PointsTo<NodePage>)
     requires
         page.is_uninit(),
-        page.addr() % 4096 == 0,
+        page.addr() % PAGE_SZ == 0,
     ensures
         ret.addr() == page.addr(),
         ret.is_uninit(),
@@ -52,7 +53,7 @@ pub proof fn page_into_node_page(tracked page: PagePerm4k) -> (tracked ret: Poin
 pub proof fn page_into_table_root(tracked page: PagePerm4k) -> (tracked ret: PointsTo<TableRoot>)
     requires
         page.is_uninit(),
-        page.addr() % 4096 == 0,
+        page.addr() % PAGE_SZ == 0,
     ensures
         ret.addr() == page.addr(),
         ret.is_uninit(),
@@ -64,7 +65,7 @@ pub proof fn page_into_table_root(tracked page: PagePerm4k) -> (tracked ret: Poi
 pub proof fn page_into_space_record(tracked page: PagePerm4k) -> (tracked ret: PointsTo<SpaceRecord>)
     requires
         page.is_uninit(),
-        page.addr() % 4096 == 0,
+        page.addr() % PAGE_SZ == 0,
     ensures
         ret.addr() == page.addr(),
         ret.is_uninit(),
@@ -77,7 +78,7 @@ pub proof fn page_into_space_record(tracked page: PagePerm4k) -> (tracked ret: P
 pub proof fn page_into_thread_record(tracked page: PagePerm4k) -> (tracked ret: PointsTo<ThreadRecord>)
     requires
         page.is_uninit(),
-        page.addr() % 4096 == 0,
+        page.addr() % PAGE_SZ == 0,
     ensures
         ret.addr() == page.addr(),
         ret.is_uninit(),
@@ -89,7 +90,7 @@ pub proof fn page_into_thread_record(tracked page: PagePerm4k) -> (tracked ret: 
 pub proof fn page_into_process_record(tracked page: PagePerm4k) -> (tracked ret: PointsTo<ProcessRecord>)
     requires
         page.is_uninit(),
-        page.addr() % 4096 == 0,
+        page.addr() % PAGE_SZ == 0,
     ensures
         ret.addr() == page.addr(),
         ret.is_uninit(),
@@ -101,7 +102,7 @@ pub proof fn page_into_process_record(tracked page: PagePerm4k) -> (tracked ret:
 pub proof fn page_into_core_list(tracked page: PagePerm4k) -> (tracked ret: PointsTo<SpaceCores>)
     requires
         page.is_uninit(),
-        page.addr() % 4096 == 0,
+        page.addr() % PAGE_SZ == 0,
     ensures
         ret.addr() == page.addr(),
         ret.is_uninit(),
@@ -113,7 +114,7 @@ pub proof fn page_into_core_list(tracked page: PagePerm4k) -> (tracked ret: Poin
 pub proof fn page_into_table_record(tracked page: PagePerm4k) -> (tracked ret: PointsTo<TableRecord>)
     requires
         page.is_uninit(),
-        page.addr() % 4096 == 0,
+        page.addr() % PAGE_SZ == 0,
     ensures
         ret.addr() == page.addr(),
         ret.is_uninit(),
@@ -125,7 +126,7 @@ pub proof fn page_into_table_record(tracked page: PagePerm4k) -> (tracked ret: P
 pub proof fn page_into_payload_page(tracked page: PagePerm4k) -> (tracked ret: PointsTo<PayloadPage>)
     requires
         page.is_uninit(),
-        page.addr() % 4096 == 0,
+        page.addr() % PAGE_SZ == 0,
     ensures
         ret.addr() == page.addr(),
         ret.is_uninit(),
@@ -148,42 +149,42 @@ pub proof fn node_page_into_page(tracked nodes: PointsTo<NodePage>) -> (tracked 
 /// table page's block.
 pub proof fn lemma_table_block_layouts()
     ensures
-        vstd::layout::size_of::<NodePage>() == 4096,
-        vstd::layout::size_of::<PageMap>() == 4096,
+        vstd::layout::size_of::<NodePage>() == PAGE_SZ,
+        vstd::layout::size_of::<PageMap>() == PAGE_SZ,
         vstd::layout::size_of::<TableRecord>() == 56,
-        vstd::layout::size_of::<PageBytes>() == 4096,
+        vstd::layout::size_of::<PageBytes>() == PAGE_SZ,
 {
 }
 
 /// The sizes a space block's pages need when they turn back into page permissions.
 pub proof fn lemma_space_block_layouts()
     ensures
-        vstd::layout::size_of::<NodePage>() == 4096,
-        vstd::layout::size_of::<PageMap>() == 4096,
+        vstd::layout::size_of::<NodePage>() == PAGE_SZ,
+        vstd::layout::size_of::<PageMap>() == PAGE_SZ,
         vstd::layout::size_of::<SpaceRecord>() == 72,
         vstd::layout::size_of::<SpaceCores>() == 264,
-        vstd::layout::size_of::<PageBytes>() == 4096,
+        vstd::layout::size_of::<PageBytes>() == PAGE_SZ,
 {
 }
 
 /// The sizes a process block's pages need when they turn back into page permissions.
 pub proof fn lemma_process_block_layouts()
     ensures
-        vstd::layout::size_of::<NodePage>() == 4096,
-        vstd::layout::size_of::<TableRoot>() == 4096,
+        vstd::layout::size_of::<NodePage>() == PAGE_SZ,
+        vstd::layout::size_of::<TableRoot>() == PAGE_SZ,
         vstd::layout::size_of::<ProcessRecord>() == 1,
-        vstd::layout::size_of::<PageMap>() == 4096,
+        vstd::layout::size_of::<PageMap>() == PAGE_SZ,
         vstd::layout::size_of::<SpaceRecord>() == 72,
         vstd::layout::size_of::<SpaceCores>() == 264,
-        vstd::layout::size_of::<PageBytes>() == 4096,
+        vstd::layout::size_of::<PageBytes>() == PAGE_SZ,
 {
 }
 
 /// What a thread's retype needs to tell its node page's permission from a table root's.
 pub proof fn lemma_thread_block_layouts()
     ensures
-        vstd::layout::size_of::<PageBytes>() == 4096,
-        vstd::layout::size_of::<TableRoot>() == 4096,
+        vstd::layout::size_of::<PageBytes>() == PAGE_SZ,
+        vstd::layout::size_of::<TableRoot>() == PAGE_SZ,
         vstd::layout::size_of::<ThreadRecord>() <= XSAVE_OFFSET,
 {
 }

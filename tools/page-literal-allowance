@@ -40,8 +40,3 @@ capability/unmap.rs
 capability/view.rs
 capability/witness.rs
 capability/zero.rs
-layouts.rs
-pagetable/pagemap.rs
-pagetable/pagemap_util_t.rs
-pptr.rs
-util/page_ptr_util_u.rs

@@ -3,6 +3,7 @@ verus! {
 
 use crate::arch::*;
 use crate::array::*;
+use crate::define::ENTRIES;
 #[cfg(verus_keep_ghost)]
 use crate::util::page_ptr_util_u::*;
 use crate::capability::steps::Steps;
@@ -10,7 +11,7 @@ use crate::capability::steps::Steps;
 use crate::pagetable::entry::*;
 
 pub struct PageMap {
-    pub ar: Array<usize, 512>,
+    pub ar: Array<usize, ENTRIES>,
     pub spec_seq: Ghost<Seq<PageEntry>>,
     /// The table's level in the kernel's numbering on every target: 4 for a root, 1 for a table of 4K
     /// leaves. Ghost, so the struct stays the hardware page.
@@ -21,20 +22,20 @@ impl PageMap {
     pub fn init(&mut self, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).ar.wf(),
-            old(self).spec_seq@.len() == 512,
+            old(self).spec_seq@.len() == ENTRIES,
         ensures
-            final(steps).count <= old(steps).count + 512,
+            final(steps).count <= old(steps).count + ENTRIES,
             final(self).wf(),
             final(self).level == old(self).level,
-            forall|i: int| #![trigger final(self)@[i].is_empty()] 0 <= i < 512 ==> final(self)@[i].is_empty(),
+            forall|i: int| #![trigger final(self)@[i].is_empty()] 0 <= i < ENTRIES ==> final(self)@[i].is_empty(),
     {
         let ghost start = steps.count;
-        for i in 0..512
+        for i in 0..ENTRIES
             invariant
-                0 <= i <= 512,
+                0 <= i <= ENTRIES,
                 steps.count == start + i,
                 self.ar.wf(),
-                self.spec_seq@.len() == 512,
+                self.spec_seq@.len() == ENTRIES,
                 forall|j: int|
                     #![trigger usize2page_entry(self.ar@[j], self.level@)]
                     0 <= j < i ==> (usize2page_entry(self.ar@[j], self.level@) =~= self.spec_seq@[j]),
@@ -56,10 +57,10 @@ impl PageMap {
 
     pub open spec fn wf(&self) -> bool {
         &&& self.ar.wf()
-        &&& self.spec_seq@.len() == 512
+        &&& self.spec_seq@.len() == ENTRIES
         &&& forall|i: int|
             #![trigger usize2page_entry(self.ar@[i], self.level@)]
-            0 <= i < 512 ==> (usize2page_entry(self.ar@[i], self.level@) =~= self.spec_seq@[i])
+            0 <= i < ENTRIES ==> (usize2page_entry(self.ar@[i], self.level@) =~= self.spec_seq@[i])
 
     }
 
@@ -85,21 +86,21 @@ impl PageMap {
             other.level == self.level,
             forall|i: int|
                 #![trigger other.ar@[i]]
-                0 <= i < 512 ==> spec_without_status(other.ar@[i]) == spec_without_status(self.ar@[i]),
+                0 <= i < ENTRIES ==> spec_without_status(other.ar@[i]) == spec_without_status(self.ar@[i]),
         ensures
             other.wf(),
             other@ == self@,
     {
         assert forall|i: int|
             #![trigger usize2page_entry(other.ar@[i], other.level@)]
-            0 <= i < 512 implies usize2page_entry(other.ar@[i], other.level@) =~= other.spec_seq@[i] by {
+            0 <= i < ENTRIES implies usize2page_entry(other.ar@[i], other.level@) =~= other.spec_seq@[i] by {
             lemma_status_outside_entry(other.ar@[i], self.ar@[i], self.level@);
         }
     }
 
     pub open spec fn spec_index(&self, index: usize) -> PageEntry
         recommends
-            0 <= index < 512,
+            0 <= index < ENTRIES,
     {
         self.spec_seq@[index as int]
     }
@@ -108,14 +109,14 @@ impl PageMap {
         recommends
             self.wf(),
     {
-        forall|x: u16| #![auto] 0 <= x < 512 ==> self.spec_seq@[x as int].perm.present == false
+        forall|x: u16| #![auto] 0 <= x < ENTRIES ==> self.spec_seq@[x as int].perm.present == false
     }
 
     pub fn set(&mut self, index: usize, value: PageEntry, level: usize)
         requires
             old(self).wf(),
             level == old(self).level@,
-            0 <= index < 512,
+            0 <= index < ENTRIES,
             value.perm.present ==> mem_valid(value.addr),
             value.perm.present == false ==> value.is_empty(),
         ensures
@@ -146,7 +147,7 @@ impl PageMap {
     pub fn get(&self, index: usize, level: usize) -> (ret: PageEntry)
         requires
             self.wf(),
-            0 <= index < 512,
+            0 <= index < ENTRIES,
             level == self.level@,
         ensures
             ret =~= self[index],

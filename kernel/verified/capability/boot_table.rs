@@ -11,6 +11,7 @@ use vstd::prelude::*;
 
 verus! {
 
+#[cfg(verus_keep_ghost)]
 use crate::capability::block::*;
 use crate::capability::boot::*;
 use crate::capability::boot_image::*;

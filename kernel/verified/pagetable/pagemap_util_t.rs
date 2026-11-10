@@ -35,7 +35,7 @@ pub fn page_map_set_kernel_entry_range(
         final(page_map_perm).value().wf(),
         forall|i: usize|
             #![trigger final(page_map_perm).value()[i]]
-            KERNEL_MEM_END_L4INDEX <= i < 512 ==> final(page_map_perm).value()[i] =~= old(
+            KERNEL_MEM_END_L4INDEX <= i < ENTRIES ==> final(page_map_perm).value()[i] =~= old(
                 page_map_perm,
             ).value()[i],
         forall|i: usize|
@@ -59,7 +59,7 @@ pub fn page_map_set_kernel_entry_range(
             page_map_perm.value().level@ == 4,
             forall|i: usize|
                 #![trigger page_map_perm.value()[i]]
-                KERNEL_MEM_END_L4INDEX <= i < 512 ==> page_map_perm.value()[i] =~= old(
+                KERNEL_MEM_END_L4INDEX <= i < ENTRIES ==> page_map_perm.value()[i] =~= old(
                     page_map_perm,
                 ).value()[i],
             forall|i: usize|
@@ -96,7 +96,7 @@ pub fn page_map_set_no_requires(
         old(page_map_perm).is_init(),
         old(page_map_perm).value().wf(),
         level == old(page_map_perm).value().level@,
-        0 <= index < 512,
+        0 <= index < ENTRIES,
     ensures
         final(page_map_perm).addr() == page_map_ptr,
         final(page_map_perm).is_init(),
@@ -104,7 +104,7 @@ pub fn page_map_set_no_requires(
         final(page_map_perm).value().wf(),
         forall|i: usize|
             #![trigger final(page_map_perm).value()[i]]
-            0 <= i < 512 && i != index ==> final(page_map_perm).value()[i] =~= old(
+            0 <= i < ENTRIES && i != index ==> final(page_map_perm).value()[i] =~= old(
                 page_map_perm,
             ).value()[i],
         final(page_map_perm).value()[index] =~= value,
@@ -131,7 +131,7 @@ pub fn page_map_set(
         level == old(page_map_perm).value().level@,
         value.perm.present ==> mem_valid(value.addr),
         value.perm.present == false ==> value.is_empty(),
-        0 <= index < 512,
+        0 <= index < ENTRIES,
     ensures
         final(page_map_perm).addr() == page_map_ptr,
         final(page_map_perm).is_init(),
@@ -139,7 +139,7 @@ pub fn page_map_set(
         final(page_map_perm).value().wf(),
         forall|i: usize|
             #![trigger final(page_map_perm).value()[i]]
-            0 <= i < 512 && i != index ==> final(page_map_perm).value()[i] =~= old(
+            0 <= i < ENTRIES && i != index ==> final(page_map_perm).value()[i] =~= old(
                 page_map_perm,
             ).value()[i],
         final(page_map_perm).value()[index] =~= value,
@@ -162,7 +162,7 @@ pub fn page_map_take_status(
         old(page_map_perm).addr() == page_map_ptr,
         old(page_map_perm).is_init(),
         old(page_map_perm).value().wf(),
-        index < 512,
+        index < ENTRIES,
     ensures
         final(page_map_perm).addr() == page_map_ptr,
         final(page_map_perm).is_init(),
@@ -190,7 +190,7 @@ pub fn page_map_clear_status(
         old(page_map_perm).addr() == page_map_ptr,
         old(page_map_perm).is_init(),
         old(page_map_perm).value().wf(),
-        index < 512,
+        index < ENTRIES,
     ensures
         final(page_map_perm).addr() == page_map_ptr,
         final(page_map_perm).is_init(),
@@ -200,7 +200,7 @@ pub fn page_map_clear_status(
         final(page_map_perm).value().status(index as int).is_clear(),
         forall|j: int|
             #![trigger final(page_map_perm).value().ar@[j]]
-            0 <= j < 512 && j != index ==> final(page_map_perm).value().ar@[j] == old(page_map_perm).value().ar@[j],
+            0 <= j < ENTRIES && j != index ==> final(page_map_perm).value().ar@[j] == old(page_map_perm).value().ar@[j],
         spec_usize2page_entry(ret, old(page_map_perm).value().level@) == old(page_map_perm).value()@[index as int],
 {
     let ghost before = page_map_perm.value();
@@ -211,7 +211,7 @@ pub fn page_map_clear_status(
         lemma_without_status(ret, before.level@);
         assert forall|i: int|
             #![trigger after.ar@[i]]
-            0 <= i < 512 implies spec_without_status(after.ar@[i]) == spec_without_status(before.ar@[i]) by {}
+            0 <= i < ENTRIES implies spec_without_status(after.ar@[i]) == spec_without_status(before.ar@[i]) by {}
         before.lemma_status_outside_view(&after);
         lemma_status_outside_entry(ret, w, before.level@);
         assert(usize2page_entry(before.ar@[index as int], before.level@) =~= before.spec_seq@[index as int]);
@@ -230,7 +230,7 @@ pub fn page_map_take(
         old(page_map_perm).addr() == page_map_ptr,
         old(page_map_perm).is_init(),
         old(page_map_perm).value().wf(),
-        index < 512,
+        index < ENTRIES,
     ensures
         final(page_map_perm).addr() == page_map_ptr,
         final(page_map_perm).is_init(),
@@ -257,7 +257,7 @@ pub fn page_map_clear_take(
         old(page_map_perm).addr() == page_map_ptr,
         old(page_map_perm).is_init(),
         old(page_map_perm).value().wf(),
-        index < 512,
+        index < ENTRIES,
     ensures
         final(page_map_perm).addr() == page_map_ptr,
         final(page_map_perm).is_init(),
@@ -265,7 +265,7 @@ pub fn page_map_clear_take(
         final(page_map_perm).value().wf(),
         forall|i: usize|
             #![trigger final(page_map_perm).value()[i]]
-            0 <= i < 512 && i != index ==> final(page_map_perm).value()[i] =~= old(
+            0 <= i < ENTRIES && i != index ==> final(page_map_perm).value()[i] =~= old(
                 page_map_perm,
             ).value()[i],
         final(page_map_perm).value()[index].is_empty(),
@@ -281,7 +281,7 @@ pub fn page_map_clear_take(
         zero_leads_is_empty_page_entry(level);
         assert forall|i: int|
             #![trigger usize2page_entry(after.ar@[i], after.level@)]
-            0 <= i < 512 implies usize2page_entry(after.ar@[i], after.level@) =~= after.spec_seq@[i] by {
+            0 <= i < ENTRIES implies usize2page_entry(after.ar@[i], after.level@) =~= after.spec_seq@[i] by {
             if i != index as int {
                 assert(usize2page_entry(before.ar@[i], level) =~= before.spec_seq@[i]);
             }
@@ -303,7 +303,7 @@ pub fn page_perm_to_page_map(page_ptr: PagePtr, level: Ghost<usize>, Tracked(pag
         page_perm.is_uninit(),
         page_perm.addr() == page_ptr,
     ensures
-        final(steps).count <= old(steps).count + 512,
+        final(steps).count <= old(steps).count + ENTRIES,
         ret.0 == page_ptr,
         ret.1@.addr() == ret.0,
         ret.1@.is_init(),
@@ -311,7 +311,7 @@ pub fn page_perm_to_page_map(page_ptr: PagePtr, level: Ghost<usize>, Tracked(pag
         ret.1@.value().level == level,
         forall|i: usize|
             #![trigger ret.1@.value()[i].is_empty()]
-            0 <= i < 512 ==> ret.1@.value()[i].is_empty(),
+            0 <= i < ENTRIES ==> ret.1@.value()[i].is_empty(),
 {
     unsafe {
         let uptr = page_ptr as *mut MaybeUninit<PageMap>;

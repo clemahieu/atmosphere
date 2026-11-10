@@ -35,6 +35,8 @@ use vstd::raw_ptr::*;
 use vstd::set_lib::*;
 use core::marker::PhantomData;
 
+use crate::define::PAGE_SZ;
+
 verus! {
 
 /// `PPtr` (which stands for "permissioned pointer")
@@ -225,9 +227,9 @@ impl<V> PointsTo<V> {
     closed spec fn wf(self) -> bool {
         &&& self.points_to.ptr()@.provenance == self.exposed.provenance()
         &&& self.points_to.ptr().addr() != 0
-        &&& size_of::<V>() <= 4096 ==> self.rest.is_range(
+        &&& size_of::<V>() <= PAGE_SZ ==> self.rest.is_range(
             self.points_to.ptr().addr() + size_of::<V>(),
-            4096 - size_of::<V>(),
+            PAGE_SZ - size_of::<V>(),
         )
         &&& self.rest.provenance() == self.exposed.provenance()
     }
@@ -478,11 +480,11 @@ pub use raw_ptr::MemContents;
 
 /// Turns the permission for an uninitialised 4K page into a typed permission for the object at its
 /// start. The rest of the page travels inside the permission.
-pub proof fn page_into_typed<W>(tracked page: PointsTo<[u8; 4096]>) -> (tracked ret: PointsTo<W>)
+pub proof fn page_into_typed<W>(tracked page: PointsTo<[u8; PAGE_SZ]>) -> (tracked ret: PointsTo<W>)
     requires
         page.is_uninit(),
-        size_of::<[u8; 4096]>() == 4096,
-        size_of::<W>() <= 4096,
+        size_of::<[u8; PAGE_SZ]>() == PAGE_SZ,
+        size_of::<W>() <= PAGE_SZ,
         page.addr() as int % align_of::<W>() as int == 0,
     ensures
         ret.addr() == page.addr(),
@@ -497,12 +499,12 @@ pub proof fn page_into_typed<W>(tracked page: PointsTo<[u8; 4096]>) -> (tracked 
 }
 
 /// Gives an uninitialised typed permission back as the permission for its whole 4K page.
-pub proof fn typed_into_page<W>(tracked typed: PointsTo<W>) -> (tracked ret: PointsTo<[u8; 4096]>)
+pub proof fn typed_into_page<W>(tracked typed: PointsTo<W>) -> (tracked ret: PointsTo<[u8; PAGE_SZ]>)
     requires
         typed.is_uninit(),
-        size_of::<[u8; 4096]>() == 4096,
-        align_of::<[u8; 4096]>() == 1,
-        size_of::<W>() <= 4096,
+        size_of::<[u8; PAGE_SZ]>() == PAGE_SZ,
+        align_of::<[u8; PAGE_SZ]>() == 1,
+        size_of::<W>() <= PAGE_SZ,
     ensures
         ret.addr() == typed.addr(),
         ret.is_uninit(),
@@ -511,18 +513,18 @@ pub proof fn typed_into_page<W>(tracked typed: PointsTo<W>) -> (tracked ret: Poi
     let addr = typed.addr();
     let tracked PointsTo { points_to, exposed, rest } = typed;
     let tracked raw = points_to.into_raw().join(rest);
-    let tracked points_to = raw.into_typed::<[u8; 4096]>(addr);
+    let tracked points_to = raw.into_typed::<[u8; PAGE_SZ]>(addr);
     let tracked empty = PointsToRaw::empty(exposed.provenance());
     PointsTo { points_to, exposed, rest: empty }
 }
 
 /// A page survives the round trip through a typed permission at the same address.
-proof fn page_round_trip<W>(tracked page: PointsTo<[u8; 4096]>) -> (tracked ret: PointsTo<[u8; 4096]>)
+proof fn page_round_trip<W>(tracked page: PointsTo<[u8; PAGE_SZ]>) -> (tracked ret: PointsTo<[u8; PAGE_SZ]>)
     requires
         page.is_uninit(),
-        size_of::<[u8; 4096]>() == 4096,
-        align_of::<[u8; 4096]>() == 1,
-        size_of::<W>() <= 4096,
+        size_of::<[u8; PAGE_SZ]>() == PAGE_SZ,
+        align_of::<[u8; PAGE_SZ]>() == 1,
+        size_of::<W>() <= PAGE_SZ,
         page.addr() as int % align_of::<W>() as int == 0,
     ensures
         ret.addr() == page.addr(),
@@ -531,12 +533,12 @@ proof fn page_round_trip<W>(tracked page: PointsTo<[u8; 4096]>) -> (tracked ret:
     typed_into_page(page_into_typed::<W>(page))
 }
 
-pub open spec fn page_is_zero(page: [u8; 4096]) -> bool {
-    forall|i: int| 0 <= i < 4096 ==> #[trigger] page@[i] == 0
+pub open spec fn page_is_zero(page: [u8; PAGE_SZ]) -> bool {
+    forall|i: int| 0 <= i < PAGE_SZ ==> #[trigger] page@[i] == 0
 }
 
 /// Clears an uninitialised 4K page through its permission.
-pub fn zero_page(addr: usize, Tracked(perm): Tracked<&mut PointsTo<[u8; 4096]>>)
+pub fn zero_page(addr: usize, Tracked(perm): Tracked<&mut PointsTo<[u8; PAGE_SZ]>>)
     requires
         old(perm).is_uninit(),
         old(perm).addr() == addr,
@@ -545,7 +547,7 @@ pub fn zero_page(addr: usize, Tracked(perm): Tracked<&mut PointsTo<[u8; 4096]>>)
         final(perm).addr() == addr,
         page_is_zero(final(perm).value()),
 {
-    PPtr::<[u8; 4096]>::from_usize(addr).put(Tracked(perm), [0u8; 4096]);
+    PPtr::<[u8; PAGE_SZ]>::from_usize(addr).put(Tracked(perm), [0u8; PAGE_SZ]);
 }
 
 } // verus!
