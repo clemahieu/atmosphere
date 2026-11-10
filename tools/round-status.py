@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""The status line of a Claude Code session in this tree: the issue the session holds, the stage its
-round is at, and how long it has been at that stage.
+"""The status line of a Claude Code session in this tree: the session's Beads actor, the issue the
+session holds, the stage its round is at, and how long it has been at that stage.
 
 .claude/settings.json runs this once a second in every session. A session is the Beads actor
 claude-<pid> (.claude/hooks/beads-actor.sh), so the issue it holds is the one in progress under that
-name. The stage is read from what a round leaves behind as it works, which costs the round nothing
+name, and the line starts with the actor so an assignee read from bd can be matched to its terminal.
+The stage is read from what a round leaves behind as it works, which costs the round nothing
 and cannot disagree with what it is doing:
 
   read      the issue is claimed and has no worktree
@@ -141,7 +142,7 @@ def clock(seconds):
 
 
 def render(issue, others, name, elapsed, columns):
-    """The line: the id, the stage and its clock in bold, and as much of the title as the width leaves, dimmed."""
+    """What the session holds: the id, the stage and its clock in bold, and as much of the title as the width leaves, dimmed."""
     if issue is None:
         return f"no ticket {clock(elapsed)}"
     head = f"{issue['id']}{f' (+{others})' if others else ''} · "
@@ -152,16 +153,18 @@ def render(issue, others, name, elapsed, columns):
 
 
 def line(root, state, actor, transcript, now, columns):
+    """The session's line: its actor, then what it holds."""
+    start = f"{actor} · "
     listing = state / LIST
     if not listing.exists():
-        return "reading beads"
+        return f"{start}reading beads"
     issue, others = held(json.loads(listing.read_text()), actor)
     name = None
     if issue is not None:
         worktree = root / issue["id"]
         name = stage(agent(transcript), scripts(worktree), gate_exit(root / "logs" / f"{issue['id']}-gate.log"), worktree.is_dir())
     key = f"{issue['id']} {name}" if issue else ""
-    text = render(issue, others, name, now - since(state / f"{actor}.json", key, now), columns)
+    text = start + render(issue, others, name, now - since(state / f"{actor}.json", key, now), columns - len(start))
     age = int(now - listing.stat().st_mtime)
     return text if age <= 4 * LIST_AGE else f"{text} · beads last read {clock(age)} ago"
 
@@ -303,11 +306,11 @@ class Tests(unittest.TestCase):
         self.assertEqual(render(None, 0, None, 83, 80), "no ticket 01:23")
 
     def test_a_session_reads_its_own_issue_and_stage_from_the_shared_list(self):
-        self.assertEqual(line(self.root, self.state, "claude-1", self.transcript, 1000, 80), "reading beads")
+        self.assertEqual(line(self.root, self.state, "claude-1", self.transcript, 1000, 80), "claude-1 · reading beads")
         listing = self.state / LIST
         write(listing, [self.issue("a-1", "claude-1", title="One"), self.issue("a-2", "claude-2", title="Two")])
         os.utime(listing, (1000, 1000))
-        self.assertEqual(line(self.root, self.state, "claude-1", self.transcript, 1000, 80), "a-1 · \033[1mread 00:00\033[22m · \033[2mOne\033[22m")
+        self.assertEqual(line(self.root, self.state, "claude-1", self.transcript, 1000, 80), "claude-1 · a-1 · \033[1mread 00:00\033[22m · \033[2mOne\033[22m")
         (self.root / "a-1").mkdir()
         self.assertIn("work 00:00", line(self.root, self.state, "claude-1", self.transcript, 1010, 80))
         self.assertIn("work 00:05", line(self.root, self.state, "claude-1", self.transcript, 1015, 80))
@@ -318,16 +321,25 @@ class Tests(unittest.TestCase):
         self.assertIn("prover 00:10", line(self.root, self.state, "claude-1", self.transcript, 1040, 80))
         # Each session has its own clock, and one that holds nothing says so.
         other = self.root / "transcripts" / "other.jsonl"
-        self.assertIn("a-2 · \033[1mread 00:00", line(self.root, self.state, "claude-2", other, 1040, 80))
-        self.assertEqual(line(self.root, self.state, "claude-3", self.transcript, 1040, 80), "no ticket 00:00")
-        self.assertEqual(line(self.root, self.state, "claude-3", self.transcript, 1055, 80), "no ticket 00:15")
+        self.assertTrue(line(self.root, self.state, "claude-2", other, 1040, 80).startswith("claude-2 · a-2 · \033[1mread 00:00"))
+        self.assertEqual(line(self.root, self.state, "claude-3", self.transcript, 1040, 80), "claude-3 · no ticket 00:00")
+        self.assertEqual(line(self.root, self.state, "claude-3", self.transcript, 1055, 80), "claude-3 · no ticket 00:15")
+
+    def test_the_actor_at_the_start_leaves_the_title_less_room(self):
+        listing = self.state / LIST
+        write(listing, [self.issue("atmo-1.2", "claude-1234567", title="Keep interrupts masked outside idle")])
+        os.utime(listing, (1000, 1000))
+        plain = lambda text: text.replace("\033[1m", "").replace("\033[2m", "").replace("\033[22m", "")
+        self.assertEqual(plain(line(self.root, self.state, "claude-1234567", self.transcript, 1000, 80)), "claude-1234567 · atmo-1.2 · read 00:00 · Keep interrupts masked outside idle")
+        self.assertEqual(plain(line(self.root, self.state, "claude-1234567", self.transcript, 1000, 50)), "claude-1234567 · atmo-1.2 · read 00:00 · Keep int…")
+        self.assertEqual(len(plain(line(self.root, self.state, "claude-1234567", self.transcript, 1000, 50))), 50)
 
     def test_a_list_nothing_has_rewritten_says_how_old_it_is(self):
         listing = self.state / LIST
         write(listing, [])
         os.utime(listing, (1000, 1000))
-        self.assertEqual(line(self.root, self.state, "claude-1", self.transcript, 1000 + 4 * LIST_AGE, 80), "no ticket 00:00")
-        self.assertEqual(line(self.root, self.state, "claude-1", self.transcript, 1125, 80), "no ticket 01:05 · beads last read 02:05 ago")
+        self.assertEqual(line(self.root, self.state, "claude-1", self.transcript, 1000 + 4 * LIST_AGE, 80), "claude-1 · no ticket 00:00")
+        self.assertEqual(line(self.root, self.state, "claude-1", self.transcript, 1125, 80), "claude-1 · no ticket 01:05 · beads last read 02:05 ago")
 
     def test_the_gate_stage_is_a_landing_running_in_the_issues_worktree(self):
         write(self.state / LIST, [self.issue("a-1", "claude-1")])
