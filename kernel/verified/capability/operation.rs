@@ -413,13 +413,15 @@ impl CapKernel {
     /// A derive in frame by a thread of the process whose table is at root, from pre to post with out
     /// returned: refused with nothing changed, exactly when allows_derive fails, or ok with a child of the capability at the position the
     /// slot's word names, in the caller's own table, put at the position the word in argument 1 names,
-    /// with the rights in argument 2 and the block of the order in argument 4 at the base in argument 3.
-    /// Rights wider than 32 bits and an order wider than 8 are refused, since no capability holds them,
-    /// and so is a source word naming another process's table: derive takes its parent from the
-    /// caller's own.
+    /// with the rights in argument 2 and the block of the order in argument 4 at the base in argument 3,
+    /// the one entry the parent map gains and the only node whose kind, liveness or capability changed,
+    /// and no root entry changed. Rights wider than 32 bits and an order wider than 8 are refused, since
+    /// no capability holds them, and so is a source word naming another process's table: derive takes
+    /// its parent from the caller's own.
     pub open spec fn spec_derived(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         let from = spec_position(frame.slot());
         let to = spec_position(frame.argument(1));
+        let child = pre.tables.node_of(pre.table_at(root, to->0.through)->0, to->0.index);
         ||| !pre.allows_derive(root, frame) && out == status_only(STATUS_REFUSED) && post == pre
         ||| {
             &&& out == status_only(STATUS_OK)
@@ -429,6 +431,9 @@ impl CapKernel {
             &&& from->0.through is None
             &&& to is Some
             &&& Self::cap_derived_at(pre, post, root, from->0.index, to->0, frame.argument(2) as u32, frame.argument(3) as usize, frame.argument(4) as u8)
+            &&& post.list.parent@ == pre.list.parent@.insert(child, pre.tables.node_of(root, from->0.index))
+            &&& post.tables.roots == pre.tables.roots
+            &&& Self::caps_frame(pre, post, child, child)
         }
     }
 
