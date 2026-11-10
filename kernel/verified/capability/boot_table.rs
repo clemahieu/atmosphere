@@ -63,13 +63,13 @@ pub proof fn lemma_nodes_kept_trans(a: Tree, b: Tree, c: Tree)
 
 /// The k-th order-3 block from the cursor.
 pub open spec fn cursor_block(cursor: usize, k: int) -> usize {
-    (cursor + k * 32768) as usize
+    (cursor + k * TABLE_PAGE_BYTES as int) as usize
 }
 
 /// t is one of the blocks from cursor up to next, which a table step has made table pages.
 pub open spec fn made_from(cursor: usize, next: usize, t: usize) -> bool {
     &&& t < next
-    &&& t == cursor || t == cursor + 32768 || t == cursor + 65536
+    &&& t == cursor || t == cursor + TABLE_PAGE_BYTES || t == cursor + 2 * TABLE_PAGE_BYTES
 }
 
 /// Every table of a is a table of b, of the same kind and level, and every entry of a that names a child
@@ -143,16 +143,16 @@ pub proof fn lemma_steps_kept_trans(a: TableTree, b: TableTree, c: TableTree)
 /// Two different order-3 blocks share no page.
 pub proof fn lemma_blocks_apart(b: usize, c: usize)
     requires
-        b % 32768 == 0,
-        c % 32768 == 0,
+        b % TABLE_PAGE_BYTES == 0,
+        c % TABLE_PAGE_BYTES == 0,
         b != c,
     ensures
         b / PAGE_SZ + 8 <= c / PAGE_SZ || c / PAGE_SZ + 8 <= b / PAGE_SZ,
 {
     assert(b / PAGE_SZ + 8 <= c / PAGE_SZ || c / PAGE_SZ + 8 <= b / PAGE_SZ) by (nonlinear_arith)
         requires
-            b % 32768 == 0,
-            c % 32768 == 0,
+            b % TABLE_PAGE_BYTES == 0,
+            c % TABLE_PAGE_BYTES == 0,
             b != c,
     {
     }
@@ -208,7 +208,7 @@ pub open spec fn image_tables_bound(runs: Seq<ImageRun>) -> int
 
 /// How many order-3 blocks a block of memory holds.
 pub open spec fn untyped_tables(p: Payload) -> int {
-    block_bytes(p.order) / 32768
+    block_bytes(p.order) / TABLE_PAGE_BYTES as int
 }
 
 /// The bound over the first r + 1 runs is the bound over the first r and run r's.
@@ -336,34 +336,34 @@ proof fn lemma_untyped_block(p: Payload, j: int)
         payload_wf(p),
         0 <= j < untyped_tables(p),
     ensures
-        cursor_block(p.base, j) as int == p.base + j * 32768,
-        cursor_block(p.base, j) % 32768 == 0,
-        p.base + (j + 1) * 32768 <= NODE_SPACE,
+        cursor_block(p.base, j) as int == p.base + j * TABLE_PAGE_BYTES as int,
+        cursor_block(p.base, j) % TABLE_PAGE_BYTES == 0,
+        p.base + (j + 1) * TABLE_PAGE_BYTES as int <= NODE_SPACE,
         block_within(cursor_block(p.base, j), 3, p),
 {
     lemma2_to64();
-    assert(block_bytes(3) == 32768);
+    assert(block_bytes(3) == TABLE_PAGE_BYTES);
     if p.order < 3 {
-        assert(block_bytes(p.order) <= 16384);
+        assert(block_bytes(p.order) <= PAGE_SZ * 4);
         assert(false);
     }
     let e = (p.order - 3) as nat;
     let m = pow2(e) as int;
     lemma_pow2_adds(e, 3);
     lemma_pow2_pos(e);
-    assert(block_bytes(p.order) == 32768 * m) by (nonlinear_arith)
+    assert(block_bytes(p.order) == TABLE_PAGE_BYTES as int * m) by (nonlinear_arith)
         requires
             block_bytes(p.order) == pow2(p.order as nat) as int * PAGE_SZ,
             pow2(p.order as nat) == m * 8,
     ;
-    lemma_div_multiples_vanish(m, 32768);
+    lemma_div_multiples_vanish(m, TABLE_PAGE_BYTES as int);
     assert(j < m);
-    assert((j + 1) * 32768 <= 32768 * m) by (nonlinear_arith)
+    assert((j + 1) * TABLE_PAGE_BYTES as int <= TABLE_PAGE_BYTES as int * m) by (nonlinear_arith)
         requires
             j < m,
     ;
-    lemma_mod_mod(p.base as int, 32768, m);
-    lemma_mod_multiples_vanish(j, p.base as int, 32768);
+    lemma_mod_mod(p.base as int, TABLE_PAGE_BYTES as int, m);
+    lemma_mod_multiples_vanish(j, p.base as int, TABLE_PAGE_BYTES as int);
 }
 
 /// Whether the runs' virtual pages all lie past the kernel's level 4 entries and the tables they need fit
@@ -474,7 +474,7 @@ impl CapKernel {
         ensures
             self.blocks.pages@[(t / PAGE_SZ) as int].kind is Base,
             self.blocks.tracks_addr(t),
-            t % 32768 == 0,
+            t % TABLE_PAGE_BYTES == 0,
             tree_of(&self.table_pages, &self.spaces).is_page(t) ==> !tree_of(&self.table_pages, &self.spaces).is_root(t),
             tree_of(&self.table_pages, &self.spaces).is_root(t) ==> {
                 &&& tree_of(&self.table_pages, &self.spaces).record(t).space == Some(t)
@@ -608,7 +608,7 @@ impl CapKernel {
             post.tables == pre.tables,
             post.blocks.regions_2m@ == pre.blocks.regions_2m@,
             post.blocks.regions_1g@ == pre.blocks.regions_1g@,
-            used % 32768 == 0,
+            used % TABLE_PAGE_BYTES == 0,
             b != used,
             forall|j: int| #![trigger post.blocks.pages@[j]] pre.blocks.tracks(j) && !(used / PAGE_SZ <= j < used / PAGE_SZ + 8)
                 ==> post.blocks.pages@[j] == pre.blocks.pages@[j],
@@ -616,7 +616,7 @@ impl CapKernel {
             post.root_table_block(process, b),
     {
         lemma2_to64();
-        assert(block_bytes(3) == 32768);
+        assert(block_bytes(3) == TABLE_PAGE_BYTES);
         lemma_blocks_apart(b, used);
         assert forall|k: int| 0 <= k < 8 implies #[trigger] post.blocks.pages@[b / PAGE_SZ + k].kind is Free by {
             assert(pre.blocks.pages@[b / PAGE_SZ + k].kind is Free);
@@ -772,7 +772,7 @@ impl CapKernel {
         proof {
             assert(a.entry(t, i).is_empty());
             lemma2_to64();
-            assert(block_bytes(3) == 32768);
+            assert(block_bytes(3) == TABLE_PAGE_BYTES);
             assert(pre.blocks.pages@[cursor / PAGE_SZ + 0].kind is Free);
             pre.lemma_free_not_table(cursor, cursor / PAGE_SZ);
             pre.lemma_slot(process, ROOT_UNTYPED_SLOT);
@@ -860,7 +860,7 @@ impl CapKernel {
             KERNEL_MEM_END_L4INDEX <= l4 < ENTRIES,
             l3 < ENTRIES,
             l2 < ENTRIES,
-            cursor + 3 * 32768 <= old(self).blocks.page_count() * PAGE_SZ,
+            cursor + 3 * TABLE_PAGE_BYTES <= old(self).blocks.page_count() * PAGE_SZ,
             forall|k: int| 0 <= k < 3 ==> #[trigger] old(self).root_table_block(process, cursor_block(cursor, k)),
             !space_mapping(tree_of(&old(self).table_pages, &old(self).spaces), s).contains_key(SpacePath { l4, l3, l2, l1: 0 }),
         ensures
@@ -874,7 +874,7 @@ impl CapKernel {
             final(self).spaces.roots@.dom() == old(self).spaces.roots@.dom(),
             final(self).blocks.regions_2m@ == old(self).blocks.regions_2m@,
             final(self).blocks.regions_1g@ == old(self).blocks.regions_1g@,
-            ret == cursor || ret == cursor + 32768 || ret == cursor + 65536 || ret == cursor + 98304,
+            ret == cursor || ret == cursor + TABLE_PAGE_BYTES || ret == cursor + 2 * TABLE_PAGE_BYTES || ret == cursor + 3 * TABLE_PAGE_BYTES,
             nodes_kept(old(self).list, final(self).list),
             forall|t: usize| #[trigger] final(self).table_pages.maps@.contains_key(t)
                 <==> (old(self).table_pages.maps@.contains_key(t) || made_from(cursor, ret, t)),
@@ -930,10 +930,10 @@ impl CapKernel {
         let (t3, m3) = self.boot_root_table(process, s, s, true, l4, 3, cursor);
         let ghost s1 = *self;
         let ghost b1 = tree_of(&s1.table_pages, &s1.spaces);
-        let c1 = if m3 { cursor + 32768 } else { cursor };
+        let c1 = if m3 { cursor + TABLE_PAGE_BYTES } else { cursor };
         proof {
             lemma2_to64();
-            assert(block_bytes(3) == 32768);
+            assert(block_bytes(3) == TABLE_PAGE_BYTES);
             assert(pre.root_table_block(process, cursor_block(cursor, 1)));
             assert(pre.root_table_block(process, cursor_block(cursor, 2)));
             assert(s1.root_table_block(process, cursor_block(cursor, 1)));
@@ -948,7 +948,7 @@ impl CapKernel {
         let (t2, m2) = self.boot_root_table(process, s, t3, false, l3, 2, c1);
         let ghost s2 = *self;
         let ghost b2 = tree_of(&s2.table_pages, &s2.spaces);
-        let c2 = if m2 { c1 + 32768 } else { c1 };
+        let c2 = if m2 { c1 + TABLE_PAGE_BYTES } else { c1 };
         proof {
             assert(s2.root_table_block(process, cursor_block(cursor, 2)));
             if !m2 {
@@ -967,7 +967,7 @@ impl CapKernel {
             s2.lemma_entry_shape(t2, l2);
         }
         let (t1, m1) = self.boot_root_table(process, s, t2, false, l2, 1, c2);
-        let c3 = if m1 { c2 + 32768 } else { c2 };
+        let c3 = if m1 { c2 + TABLE_PAGE_BYTES } else { c2 };
         proof {
             let post = *self;
             let b3 = tree_of(&post.table_pages, &post.spaces);
@@ -1108,17 +1108,19 @@ impl CapKernel {
             cap == untyped_tables(u),
             0 <= k,
             k + 3 <= cap,
-            cursor as int == u.base + k * 32768,
+            cursor as int == u.base + k * TABLE_PAGE_BYTES as int,
             forall|j: int| k <= j < cap ==> #[trigger] self.root_table_block(process, cursor_block(u.base, j)),
         ensures
-            cursor + 3 * 32768 <= self.blocks.page_count() * PAGE_SZ,
+            cursor + 3 * TABLE_PAGE_BYTES <= self.blocks.page_count() * PAGE_SZ,
             forall|i: int| 0 <= i < 3 ==> #[trigger] self.root_table_block(process, cursor_block(cursor, i)),
     {
         assert forall|i: int| 0 <= i < 3 implies #[trigger] self.root_table_block(process, cursor_block(cursor, i)) by {
             lemma_untyped_block(u, k + i);
+            vstd::arithmetic::mul::lemma_mul_is_distributive_add_other_way(TABLE_PAGE_BYTES as int, k, i);
             assert(cursor_block(cursor, i) == cursor_block(u.base, k + i));
         }
         lemma_untyped_block(u, k + 2);
+        vstd::arithmetic::mul::lemma_mul_is_distributive_add_other_way(TABLE_PAGE_BYTES as int, k, 2);
         let b2 = cursor_block(u.base, k + 2);
         assert(self.root_table_block(process, b2));
         lemma_mod_mod(b2 as int, PAGE_SZ as int, 8);
@@ -1135,8 +1137,8 @@ impl CapKernel {
             cap == untyped_tables(u),
             0 <= k,
             k + 3 <= cap,
-            cursor as int == u.base + k * 32768,
-            next == cursor || next == cursor + 32768 || next == cursor + 65536 || next == cursor + 98304,
+            cursor as int == u.base + k * TABLE_PAGE_BYTES as int,
+            next == cursor || next == cursor + TABLE_PAGE_BYTES || next == cursor + 2 * TABLE_PAGE_BYTES || next == cursor + 3 * TABLE_PAGE_BYTES,
             forall|j: int| k <= j < cap ==> #[trigger] cur.root_table_block(process, cursor_block(u.base, j)),
             post.tables == cur.tables,
             post.blocks.regions_2m@ == cur.blocks.regions_2m@,
@@ -1147,14 +1149,18 @@ impl CapKernel {
                 ==> cur.blocks.pages@[j] == pre.blocks.pages@[j],
         ensures
             k <= k2 <= k + 3,
-            next as int == u.base + k2 * 32768,
+            next as int == u.base + k2 * TABLE_PAGE_BYTES as int,
             forall|j: int| k2 <= j < cap ==> #[trigger] post.root_table_block(process, cursor_block(u.base, j)),
             forall|j: int| #![trigger post.blocks.pages@[j]] pre.blocks.tracks(j) && !(u.base / PAGE_SZ <= j < next / PAGE_SZ)
                 ==> post.blocks.pages@[j] == pre.blocks.pages@[j],
     {
-        let k2 = if next == cursor { k } else if next == cursor + 32768 { k + 1 } else if next == cursor + 65536 { k + 2 } else { k + 3 };
+        let k2 = if next == cursor { k } else if next == cursor + TABLE_PAGE_BYTES { k + 1 } else if next == cursor + 2 * TABLE_PAGE_BYTES { k + 2 } else { k + 3 };
+        vstd::arithmetic::mul::lemma_mul_is_distributive_add_other_way(TABLE_PAGE_BYTES as int, k, 1);
+        vstd::arithmetic::mul::lemma_mul_is_distributive_add_other_way(TABLE_PAGE_BYTES as int, k, 2);
+        vstd::arithmetic::mul::lemma_mul_is_distributive_add_other_way(TABLE_PAGE_BYTES as int, k, 3);
         assert forall|j: int| k2 <= j < cap implies #[trigger] post.root_table_block(process, cursor_block(u.base, j)) by {
             lemma_untyped_block(u, j);
+            vstd::arithmetic::mul::lemma_mul_inequality(k2, j, TABLE_PAGE_BYTES as int);
             Self::lemma_block_past(cur, post, process, cursor_block(u.base, j), cursor, next);
         }
         assert forall|j: int| #![trigger post.blocks.pages@[j]] pre.blocks.tracks(j) && !(u.base / PAGE_SZ <= j < next / PAGE_SZ)
@@ -1259,7 +1265,7 @@ impl CapKernel {
         let ghost a = tree_of(&pre.table_pages, &pre.spaces);
         let ghost u = pre.payload_of(pre.root_untyped(process));
         let (s, untyped) = self.root_space_and_untyped(process);
-        let cap = order_bytes(untyped.order) / 32768;
+        let cap = order_bytes(untyped.order) / TABLE_PAGE_BYTES;
         // The up-front check, before any write.
         if !image_tables_fit(runs, cap) {
             return false;
@@ -1289,7 +1295,7 @@ impl CapKernel {
                 payload_wf(u),
                 cap as int == untyped_tables(u),
                 image_tables_bound(runs@) <= cap,
-                cursor as int == u.base + k * 32768,
+                cursor as int == u.base + k * TABLE_PAGE_BYTES as int,
                 0 <= k <= image_tables_bound(runs@.take(r as int)),
                 forall|j: int| k <= j < cap ==> #[trigger] self.root_table_block(process, cursor_block(u.base, j)),
                 self.wf(),
@@ -1347,7 +1353,7 @@ impl CapKernel {
                     cap as int == untyped_tables(u),
                     image_tables_bound(runs@.take(r as int + 1)) == image_tables_bound(runs@.take(r as int)) + 3 * run_regions(runs@[r as int]),
                     image_tables_bound(runs@.take(r as int + 1)) <= cap,
-                    cursor as int == u.base + k * 32768,
+                    cursor as int == u.base + k * TABLE_PAGE_BYTES as int,
                     0 <= k <= image_tables_bound(runs@.take(r as int)) + 3 * (q - v as int / PAGES_PER_2M as int),
                     forall|j: int| k <= j < cap ==> #[trigger] self.root_table_block(process, cursor_block(u.base, j)),
                     self.wf(),
