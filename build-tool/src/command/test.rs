@@ -2,6 +2,7 @@
 
 use std::io::ErrorKind;
 use std::process::{ExitCode, Stdio};
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context};
 use clap::Parser;
@@ -159,27 +160,39 @@ pub(super) async fn run(global: GlobalOpts) -> Result<()> {
     let local = unwrap_command!(global, SubCommand::Test);
     let project = Project::discover()?;
 
+    let gate = Instant::now();
     let mut results = Vec::new();
     for step in steps(local.target) {
-        results.push((step.name(), step.run(&project, local.boot_timeout).await));
+        let start = Instant::now();
+        let result = step.run(&project, local.boot_timeout).await;
+        results.push((step.name(), result, start.elapsed()));
     }
+    let total = gate.elapsed();
 
-    let mut passed = true;
     println!();
-    for (name, result) in &results {
-        match result {
-            Ok(detail) => println!("gate {}: ok: {}", name, detail),
-            Err(error) => {
-                passed = false;
-                println!("gate {}: FAIL: {:#}", name, error);
-            }
-        }
+    for (name, result, elapsed) in &results {
+        println!("{}", step_line(name, result, *elapsed));
     }
+    println!("{}", total_line(total));
 
-    if !passed {
+    if results.iter().any(|(_, result, _)| result.is_err()) {
         quit::with_code(ExitCode::FAILURE);
     }
     Ok(())
+}
+
+/// A step's result line, with its wall time, so a log shows what each step costs.
+fn step_line(name: &str, result: &Result<String>, elapsed: Duration) -> String {
+    let seconds = elapsed.as_secs_f64();
+    match result {
+        Ok(detail) => format!("gate {}: ok in {:.1} s: {}", name, seconds, detail),
+        Err(error) => format!("gate {}: FAIL in {:.1} s: {:#}", name, seconds, error),
+    }
+}
+
+/// The gate's last line: its wall time from the first step's start to the last step's end.
+fn total_line(elapsed: Duration) -> String {
+    format!("gate total: {:.1} s", elapsed.as_secs_f64())
 }
 
 /// Looks at everything `git add -A` would take, tracked or not, since the gate runs before the commit.
@@ -615,6 +628,21 @@ pub(super) mod tests {
         let both = steps(None);
         assert_eq!(both.len(), x86_64.len() + 2);
         assert_eq!(both.last(), Some(&Step::Aarch64Boot));
+    }
+
+    /// Each step's line names its wall time in seconds, whether it passed or failed, and the last line
+    /// names the whole gate's.
+    #[test]
+    fn each_step_line_carries_its_wall_time() {
+        let passed = Ok("0 errors, allowance 0".to_string());
+        assert_eq!(
+            step_line("verify", &passed, Duration::from_millis(212_449)),
+            "gate verify: ok in 212.4 s: 0 errors, allowance 0"
+        );
+        let failed = Err(anyhow!("no exit within 120 s"));
+        assert_eq!(step_line("boot", &failed, Duration::from_millis(120_051)), "gate boot: FAIL in 120.1 s: no exit within 120 s");
+        assert_eq!(step_line("hooks", &passed, Duration::ZERO), "gate hooks: ok in 0.0 s: 0 errors, allowance 0");
+        assert_eq!(total_line(Duration::from_millis(431_960)), "gate total: 432.0 s");
     }
 
     #[test]
