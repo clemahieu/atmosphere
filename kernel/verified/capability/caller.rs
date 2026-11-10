@@ -15,9 +15,12 @@ use crate::capability::kernel::*;
 use crate::capability::link::*;
 use crate::capability::list::*;
 use crate::capability::map::*;
+use crate::capability::mapping::*;
 use crate::capability::operation::*;
 use crate::capability::position::*;
 use crate::capability::reach::*;
+use crate::capability::refs::*;
+use crate::capability::space::*;
 use crate::capability::table::*;
 use crate::capability::view::*;
 
@@ -59,6 +62,11 @@ pub open spec fn view_retypes(v: SlotView, base: usize, order: u8) -> bool {
     &&& v.base <= base
     &&& base as int % block_bytes(order) == 0
     &&& base as int + block_bytes(order) <= v.base as int + block_bytes(v.order)
+}
+
+/// The page at this offset of the block a slot's frame capability names, as frame_of reads it.
+pub open spec fn view_frame(v: SlotView, page: usize) -> usize {
+    (v.base / 4096 + page) as usize
 }
 
 impl CapKernel {
@@ -325,6 +333,167 @@ impl CapKernel {
                 && (post.table_view(t).contains_key(j) ==> post.table_view(t)[j] == pre.table_view(t)[j]) by {
                 pre.lemma_table_view(t, j);
                 post.lemma_table_view(t, j);
+            }
+            assert(post.table_view(t) =~= pre.table_view(t));
+        }
+    }
+
+    /// Whether a page can be mapped into the entry the address va and the level name in the space whose
+    /// root is s, as the kernel reads it beyond any table's view: at level 1 the walk reaches a live level
+    /// 1 table whose entry is empty, and at level 2 a live level 2 table whose entry is empty, the address
+    /// naming no level 1 entry below it.
+    pub open spec fn map_fits(&self, s: usize, va: u64, level: u64) -> bool {
+        let tree = tree_of(&self.table_pages, &self.spaces);
+        let p = address_path(va);
+        ||| {
+            let t = walk_table(tree, s, p)->0;
+            &&& level == 1
+            &&& walk_table(tree, s, p) is Some
+            &&& !self.blocks.pages@[(t / 4096) as int].dead
+            &&& p.l1 < 512
+            &&& tree.entry(t, p.l1).is_empty()
+        }
+        ||| {
+            let t = walk_large_table(tree, s, p)->0;
+            &&& level == 2
+            &&& walk_large_table(tree, s, p) is Some
+            &&& !self.blocks.pages@[(t / 4096) as int].dead
+            &&& p.l2 < 512
+            &&& p.l1 == 0
+            &&& tree.entry(t, p.l2).is_empty()
+        }
+    }
+
+    /// Map's condition over the caller's view, for the space capability at index slot and the frame at
+    /// index from of the caller's table at root: the address names an entry at level 1 or 2; the slot
+    /// holds a capability that may change its space, naming no dead process and a process's space; the
+    /// frame's slot holds a frame capability with the read right whose block holds the page at the
+    /// offset, the 2M run of 512 pages from a 512-aligned offset of a 2M or 1G frame at level 2; the
+    /// frame's capability is above the deepest depth and the page's block is below the reference limit;
+    /// and map_fits holds in that space. The process's liveness, the space's kind, the depth, the block's
+    /// count and map_fits read the kernel outside the view.
+    pub open spec fn map_allowed(&self, root: usize, slot: usize, va: u64, level: u64, from: usize, page: usize) -> bool {
+        let v = self.table_view(root);
+        &&& names_entry(va, level)
+        &&& v.contains_key(slot)
+        &&& view_writes_space(v[slot])
+        &&& !self.cap_dead(self.tables.node_of(root, slot))
+        &&& self.spaces.records@[v[slot].base].value().kind == SpaceKind::Process
+        &&& v.contains_key(from)
+        &&& v[from].kind is Frame
+        &&& v[from].rights & right_bit(Right::Read) != 0
+        &&& {
+            ||| level == 1 && (page as int) * 4096 < block_bytes(v[from].order)
+            ||| {
+                &&& level == 2
+                &&& v[from].order == 9 || v[from].order == 18
+                &&& page % 512 == 0
+                &&& (page as int) * 4096 + 512 * 4096 <= block_bytes(v[from].order)
+            }
+        }
+        &&& self.list.nodes@[self.tables.node_of(root, from) as int].depth < MAX_DEPTH
+        &&& block_refs(&self.blocks, block_ref(&self.blocks, view_frame(v[from], page))) != usize::MAX
+        &&& self.map_fits(v[slot].base, va, level)
+    }
+
+    /// Map's contract over the caller's view: no slot of any table changes, whatever the status. Refused,
+    /// with every space's tables as they were, exactly when map_allowed fails; otherwise ok, with the
+    /// space the slot names gaining, at the path the address names, the entry that maps the frame's page
+    /// with the frame's rights, large at level 2, and every other space's mappings as they were.
+    pub open spec fn map_contract(pre: Self, post: Self, root: usize, slot: usize, va: u64, level: u64, from: usize, page: usize, out: Outcome) -> bool {
+        &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
+        &&& {
+            ||| {
+                &&& !pre.map_allowed(root, slot, va, level, from, page)
+                &&& out == status_only(STATUS_REFUSED)
+                &&& tree_of(&post.table_pages, &post.spaces) == tree_of(&pre.table_pages, &pre.spaces)
+            }
+            ||| {
+                let v = pre.table_view(root);
+                let s = v[slot].base;
+                let a = tree_of(&pre.table_pages, &pre.spaces);
+                let b = tree_of(&post.table_pages, &post.spaces);
+                &&& pre.map_allowed(root, slot, va, level, from, page)
+                &&& out == status_only(STATUS_OK)
+                &&& space_mapping(b, s) == space_mapping(a, s).insert(address_path(va), frame_map_entry(view_frame(v[from], page), v[from].rights, level == 2))
+                &&& forall|r: usize| r != s ==> #[trigger] space_mapping(b, r) == space_mapping(a, r)
+            }
+        }
+    }
+
+    /// Map's specification implies its contract.
+    pub proof fn lemma_map_contract(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            pre.wf(),
+            Self::spec_mapped(pre, post, root, frame, out),
+        ensures
+            Self::map_contract(pre, post, root, frame.slot() as usize, frame.argument(1), frame.argument(2), frame.argument(3) as usize, frame.argument(4) as usize, out),
+    {
+        let slot = frame.slot() as usize;
+        let from = frame.argument(3) as usize;
+        let va = frame.argument(1);
+        let level = frame.argument(2);
+        let page = frame.argument(4) as usize;
+        pre.lemma_table_view(root, slot);
+        pre.lemma_table_view(root, from);
+        assert(pre.map_allowed(root, slot, va, level, from, page) == pre.allows_map(root, frame));
+        if out == status_only(STATUS_OK) {
+            let tree = tree_of(&pre.table_pages, &pre.spaces);
+            let s = pre.payload_of(pre.tables.node_of(root, slot)).base;
+            let f = pre.tables.node_of(root, from);
+            let p = address_path(va);
+            if level == 1 {
+                pre.lemma_walk_table_facts(s, p);
+                let t = walk_table(tree, s, p)->0;
+                pre.lemma_map_node_place(t, p.l1);
+                Self::lemma_map_slots(pre, post, mapping_node(t, p.l1), f);
+            } else {
+                let t3 = step(tree, s, p.l4)->0;
+                pre.lemma_child_facts(s, p.l4);
+                pre.lemma_child_facts(t3, p.l3);
+                let t = walk_large_table(tree, s, p)->0;
+                pre.lemma_map_node_place(t, p.l2);
+                Self::lemma_map_slots(pre, post, mapping_node(t, p.l2), f);
+            }
+        }
+    }
+
+    /// A step that leaves the tables as they were and changes no node's liveness, kind or parent but
+    /// node's, which no table's leaf holds, leaves every table's view as it was.
+    pub proof fn lemma_map_slots(pre: Self, post: Self, node: usize, f: usize)
+        requires
+            pre.wf(),
+            post.tables == pre.tables,
+            !pre.tables.owner@.contains_key(page_of(node)),
+            post.list.parent@ == pre.list.parent@.insert(node, f),
+            forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < NODE_SPACE && i != node ==> {
+                &&& post.list.nodes@[i].live == pre.list.nodes@[i].live
+                &&& post.list.nodes@[i].kind == pre.list.nodes@[i].kind
+            },
+        ensures
+            forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t),
+    {
+        assert forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t) by {
+            assert forall|j: usize| #[trigger] post.table_view(t).contains_key(j) == pre.table_view(t).contains_key(j)
+                && (post.table_view(t).contains_key(j) ==> post.table_view(t)[j] == pre.table_view(t)[j]) by {
+                pre.lemma_table_view(t, j);
+                post.lemma_table_view(t, j);
+                let leaf = pre.tables.leaf(t, index_entry(j));
+                if index_ok(j) && pre.tables.roots@.contains_key(t) && leaf != NO_LEAF {
+                    assert(0 <= index_entry(j) < ROOT_ENTRIES);
+                    pre.tables.lemma_entry(t, index_entry(j));
+                    pre.tables.lemma_leaf(&pre.list, leaf);
+                    assert(page_of(leaf) == leaf);
+                    pre.lemma_slot_bound(leaf);
+                    assert(post.list.nodes@[leaf as int].live == pre.list.nodes@[leaf as int].live);
+                }
+                if pre.tables.has_slot(&pre.list, t, j) {
+                    pre.lemma_slot(t, j);
+                    let x = pre.tables.node_of(t, j);
+                    pre.lemma_slot_bound(x);
+                    assert(post.list.nodes@[x as int].live == pre.list.nodes@[x as int].live);
+                    assert(post.list.parent@[x] == pre.list.parent@[x]);
+                }
             }
             assert(post.table_view(t) =~= pre.table_view(t));
         }
