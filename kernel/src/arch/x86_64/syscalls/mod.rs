@@ -2,7 +2,7 @@
 
 use core::arch::{asm, global_asm, naked_asm};
 
-use memoffset::offset_of;
+use core::mem::offset_of;
 use crate::arch::{msr, CoreState, Ring, SegmentSelector};
 
 use crate::cpu::Cpu;

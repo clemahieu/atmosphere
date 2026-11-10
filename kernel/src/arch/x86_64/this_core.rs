@@ -4,7 +4,7 @@
 use core::arch::asm;
 
 use astd::boot::BootInfo;
-use memoffset::offset_of;
+use core::mem::offset_of;
 
 use super::gdt::{GlobalDescriptorTable, TaskStateSegment};
 use super::{gdt, interrupt, msr, syscalls};
