@@ -2843,6 +2843,182 @@ pub proof fn lemma_derive_grant_from_send_only_does_not_discharge()
     assert(!may_hold(pre, post, Effect::Local, 11, Right::Grant));
 }
 
+/// Every live capability covers the object it names: its block starts at an aligned page and has at
+/// least one. The view gives each block 2^order pages from its base. Without this a capability of no
+/// pages would let its holder send on, or retype under, what it does not reach.
+pub open spec fn covers_own_name(s: State) -> bool {
+    forall|n: NodeId| #[trigger] s.names.contains_key(n) ==> s.covers(n, s.names[n])
+}
+
+/// a and b reach no object in common.
+pub open spec fn reach_disjoint(s: State, a: ObjectId, b: ObjectId) -> bool {
+    forall|o: ObjectId| !(#[trigger] s.reach(a, o) && s.reach(b, o))
+}
+
+/// No thread of what one of a and b reaches waits on what the other reaches, so neither can deliver
+/// to the other.
+pub open spec fn share_no_waitable(s: State, a: ObjectId, b: ObjectId) -> bool {
+    forall|w: (ObjectId, ObjectId)| #[trigger] s.waiting.contains(w) ==> {
+        &&& !(s.reach(a, w.0) && s.reach(b, s.process_behind(w.1)))
+        &&& !(s.reach(b, w.0) && s.reach(a, s.process_behind(w.1)))
+    }
+}
+
+/// Isolation of disjoint subsystems, one step: two processes whose reaches are disjoint, sharing no
+/// waitable object, keep both across a step by either that discharges its effect. Neither one's
+/// reach grows: the stepper's only by what it reached, the other's by no grant, placement or retype,
+/// each needing the two to share a waiter, a control target or an untyped's block.
+pub proof fn lemma_disjoint_step_stays_disjoint(
+    pre: State,
+    post: State,
+    a: ObjectId,
+    b: ObjectId,
+    p: ObjectId,
+    e: Effect,
+)
+    requires
+        covers_own_name(pre),
+        reach_disjoint(pre, a, b),
+        share_no_waitable(pre, a, b),
+        discharges(pre, post, p, e),
+        p == a || p == b,
+    ensures
+        reach_disjoint(post, a, b),
+        share_no_waitable(post, a, b),
+{
+    assert forall|o: ObjectId| !(#[trigger] post.reach(a, o) && post.reach(b, o)) by {
+        if post.reach(a, o) && post.reach(b, o) {
+            lemma_disjoint_step_grows_neither(pre, post, a, b, p, e, a, o);
+            lemma_disjoint_step_grows_neither(pre, post, a, b, p, e, b, o);
+        }
+    }
+    assert forall|w: (ObjectId, ObjectId)| #[trigger] post.waiting.contains(w) implies {
+        &&& !(post.reach(a, w.0) && post.reach(b, post.process_behind(w.1)))
+        &&& !(post.reach(b, w.0) && post.reach(a, post.process_behind(w.1)))
+    } by {
+        let t = post.process_behind(w.1);
+        assert(t == pre.process_behind(w.1));
+        if post.reach(a, w.0) && post.reach(b, t) {
+            lemma_disjoint_step_grows_neither(pre, post, a, b, p, e, a, w.0);
+            lemma_disjoint_step_grows_neither(pre, post, a, b, p, e, b, t);
+            lemma_new_waiter_is_the_steppers(pre, post, a, b, p, w);
+        }
+        if post.reach(b, w.0) && post.reach(a, t) {
+            lemma_disjoint_step_grows_neither(pre, post, a, b, p, e, b, w.0);
+            lemma_disjoint_step_grows_neither(pre, post, a, b, p, e, a, t);
+            lemma_new_waiter_is_the_steppers(pre, post, a, b, p, w);
+        }
+    }
+}
+
+/// The holder of a live capability reaches what it names, given `covers_own_name`.
+proof fn lemma_holder_reaches_name(s: State, p: ObjectId, c: NodeId)
+    requires
+        covers_own_name(s),
+        s.holds(p, c),
+        s.names.contains_key(c),
+    ensures
+        s.reach(p, s.names[c]),
+{
+    assert(s.descends(c, c, 0));
+    assert(s.covers(c, s.names[c]));
+    assert(s.direct(p, s.names[c]));
+    assert(s.controlled(p, p, 0));
+}
+
+/// A step by one of two processes with disjoint reach, sharing no waitable object, grows the reach of
+/// neither.
+proof fn lemma_disjoint_step_grows_neither(
+    pre: State,
+    post: State,
+    a: ObjectId,
+    b: ObjectId,
+    p: ObjectId,
+    e: Effect,
+    x: ObjectId,
+    o: ObjectId,
+)
+    requires
+        covers_own_name(pre),
+        reach_disjoint(pre, a, b),
+        share_no_waitable(pre, a, b),
+        discharges(pre, post, p, e),
+        p == a || p == b,
+        x == a || x == b,
+        post.reach(x, o),
+    ensures
+        pre.reach(x, o),
+{
+    let y = if p == a { b } else { a };
+    if !pre.reach(x, o) {
+        assert(may_grow(pre, p, e, x, o));
+        match e {
+            Effect::Deliver { cap, receiver, granted } => {
+                let t = pre.process_behind(receiver);
+                let k = choose|k: nat| #[trigger] pre.controlled(x, t, k);
+                assert(pre.reach(x, t));
+                lemma_holder_reaches_name(pre, p, cap);
+                assert(pre.waiting.contains((pre.names[cap], receiver)));
+                assert(x != p);
+                assert(x == y);
+            },
+            Effect::Place { cap, from } => {
+                let k = choose|k: nat| #[trigger] pre.controlled(x, pre.names[cap], k);
+                assert(pre.reach(x, pre.names[cap]));
+                lemma_holder_reaches_name(pre, p, cap);
+                assert(x != p);
+                assert(!(pre.reach(a, pre.names[cap]) && pre.reach(b, pre.names[cap])));
+            },
+            Effect::Retype { untyped, object, into } => {
+                lemma_holder_reaches_name(pre, p, untyped);
+                if x == p {
+                    assert(pre.descends(untyped, untyped, 0));
+                    assert(pre.direct(p, object));
+                    assert(pre.controlled(p, p, 0));
+                } else {
+                    assert(!(pre.reach(a, pre.names[untyped]) && pre.reach(b, pre.names[untyped])));
+                }
+            },
+            _ => {},
+        }
+    }
+}
+
+/// A thread post lists as waiting that pre does not is a thread of the stepper, waiting on what the
+/// stepper reached; with a and b disjoint, neither reaches it from the other's side.
+proof fn lemma_new_waiter_is_the_steppers(
+    pre: State,
+    post: State,
+    a: ObjectId,
+    b: ObjectId,
+    p: ObjectId,
+    w: (ObjectId,
+    ObjectId),
+)
+    requires
+        reach_disjoint(pre, a, b),
+        share_no_waitable(pre, a, b),
+        keeps_waiters(pre, post),
+        forall|w: (ObjectId, ObjectId)| #[trigger] post.waiting.contains(w) && !pre.waiting.contains(w)
+            ==> may_wait(pre, p, w),
+        p == a || p == b,
+        post.waiting.contains(w),
+        (pre.reach(a, w.0) && pre.reach(b, pre.process_behind(w.1)))
+            || (pre.reach(b, w.0) && pre.reach(a, pre.process_behind(w.1))),
+    ensures
+        false,
+{
+    if !pre.waiting.contains(w) {
+        assert(may_wait(pre, p, w));
+        assert(pre.process_behind(w.1) == p);
+        assert(pre.reach(p, w.0));
+        assert(pre.controlled(p, p, 0));
+        assert(pre.reach(p, p));
+        assert(!(pre.reach(a, w.0) && pre.reach(b, w.0)));
+        assert(!(pre.reach(a, p) && pre.reach(b, p)));
+    }
+}
+
 /// Reach reads nothing but the authority fields, so contents do not change it.
 proof fn lemma_same_authority_same_reach(a: State, b: State, r: ObjectId, o: ObjectId)
     requires
