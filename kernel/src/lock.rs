@@ -167,7 +167,7 @@ static TOOK: Locked<[Option<Took>; 2]> = Locked::new("contention results", [None
 static ARRIVED: AtomicUsize = AtomicUsize::new(0);
 static FINISHED: AtomicUsize = AtomicUsize::new(0);
 
-/// The TSC and performance counters 0 to 3 at a moment, or how far they moved between two. The
+/// The cycle count and performance counters 0 to 3 at a moment, or how far they moved between two. The
 /// counters are what each core counts from bring-up, where it has them: cycles not in halt, retired
 /// instructions, data cache fills, and the fills that came from another CCX's cache, which on a part
 /// with one CCX per CCD are the lines that crossed a CCD.
