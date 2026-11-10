@@ -1,7 +1,9 @@
 use vstd::prelude::*;
 verus! {
 
-use crate::arch::{MEM_1g_MASK, MEM_2m_MASK, MEM_4k_MASK, MEM_MASK};
+use crate::arch::{MEM_2m_MASK, MEM_4k_MASK};
+#[cfg(verus_keep_ghost)]
+use crate::arch::{MEM_1g_MASK, MEM_MASK};
 use crate::define::*;
 
 pub open spec fn MEM_valid(v: PAddr) -> bool {

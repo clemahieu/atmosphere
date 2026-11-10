@@ -1,27 +1,37 @@
 //! Retyping free memory under an untyped. Here a 4K frame: the page is zeroed at once, and the frame
 //! capability is a child of the untyped in a slot the caller names, so revoking the untyped reaches it.
 //! See design/capability-names-a-block/ and design/teardown-driven-by-retype/.
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::div_mod::*;
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::power2::*;
 use vstd::prelude::*;
 
 verus! {
 
-use crate::capability::device::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::link::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::mapping::*;
 use crate::capability::block::*;
 use crate::capability::derive::*;
 use crate::capability::kernel::*;
 use crate::capability::list::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::steps::Steps;
 use crate::capability::position::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::space::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::refs::*;
 use crate::capability::table::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::process::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::thread::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::view::*;
 use crate::capability::zero::*;
 use crate::define::*;

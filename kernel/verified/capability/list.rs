@@ -11,6 +11,7 @@
 //! neighbours, which name theirs; and distinctness and the parent-child order pair every position
 //! with every other. Together those make the prover walk the list and square its length.
 use vstd::prelude::*;
+#[cfg(verus_keep_ghost)]
 use vstd::set_lib::*;
 
 verus! {

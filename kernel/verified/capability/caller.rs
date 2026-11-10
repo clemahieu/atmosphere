@@ -3,27 +3,43 @@
 //! from the operation's specification in invoked, and a verified user crate carries it as the ensures
 //! of the operation's syscall wrapper. See design/theorem-over-reach/ and
 //! design/process-holds-capabilities/.
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::power2::*;
 use vstd::prelude::*;
 
 verus! {
 
+#[cfg(verus_keep_ghost)]
 use crate::arch::Registers;
+#[cfg(verus_keep_ghost)]
 use crate::capability::block::{Large, NUM_2M, PAGES_PER_2M};
+#[cfg(verus_keep_ghost)]
 use crate::capability::derive::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::inspect::*;
 use crate::capability::kernel::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::link::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::list::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::map::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::mapping::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::operation::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::position::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::refs::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::retype::FRAME_RIGHTS;
+#[cfg(verus_keep_ghost)]
 use crate::capability::space::*;
 use crate::capability::table::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::view::*;
 
 /// What a slot holding a capability says to the process whose table it is in: the capability's kind,

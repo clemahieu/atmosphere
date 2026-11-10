@@ -12,11 +12,13 @@ use crate::capability::kernel::*;
 use crate::capability::list::*;
 use crate::capability::steps::Steps;
 use crate::capability::process::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
 use crate::capability::space::*;
 use crate::capability::table::*;
 use crate::capability::thread::*;
 use crate::capability::thread::ThreadState;
+#[cfg(verus_keep_ghost)]
 use crate::capability::view::*;
 use crate::define::*;
 use crate::pptr::*;

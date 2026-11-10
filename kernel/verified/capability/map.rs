@@ -2,34 +2,47 @@
 //! is written from the capability's rights, and its node is derived as a child of the capability, so
 //! revoking the capability reaches the mapping and delete is refused while it stands. See
 //! design/address-spaces-as-objects/ and design/flush-without-waiting/.
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::div_mod::*;
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::mul::*;
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::power2::*;
 use vstd::prelude::*;
 
 verus! {
 
+#[cfg(verus_keep_ghost)]
 use crate::capability::device::*;
-use crate::capability::block::{BlockTable, ObjectType, PageKind, NUM_1G, NUM_2M};
+#[cfg(verus_keep_ghost)]
+use crate::capability::block::{BlockTable, NUM_1G, NUM_2M};
+#[cfg(verus_keep_ghost)]
 use crate::capability::zero::*;
 use crate::capability::derive::*;
 use crate::capability::kernel::*;
 use crate::capability::link::*;
 use crate::capability::list::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::mapping::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
 use crate::capability::refs::*;
 use crate::capability::space::*;
 use crate::capability::table::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::process::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::thread::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::view::*;
+#[cfg(verus_keep_ghost)]
 use crate::arch::MEM_MASK;
+#[cfg(verus_keep_ghost)]
 use crate::define::*;
 use crate::pagetable::entry::*;
-use crate::pagetable::pagemap::*;
 use crate::pagetable::pagemap_util_t::*;
 use crate::pptr::*;
+#[cfg(verus_keep_ghost)]
 use crate::util::page_ptr_util_u::*;
 
 /// The table path p reaches from root s, whose entry p.l1 is the page's.

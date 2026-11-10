@@ -4,29 +4,38 @@
 //! the offsets a device space has them. A capability names a process by its block's base and carries
 //! control, and the capabilities naming it hold its block's references. See
 //! design/process-holds-capabilities/.
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::div_mod::*;
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::power2::*;
 use vstd::prelude::*;
 
 verus! {
 
 use crate::capability::block::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::derive::*;
-use crate::capability::device::*;
 use crate::capability::kernel::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::link::*;
 use crate::capability::list::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::mapping::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::steps::Steps;
+#[cfg(verus_keep_ghost)]
 use crate::capability::refs::*;
 use crate::capability::space::*;
 use crate::capability::table::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::thread::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::view::*;
 use crate::define::*;
+#[cfg(verus_keep_ghost)]
 use crate::layouts::*;
-use crate::pagetable::pagemap::*;
 use crate::pagetable::pagemap_util_t::*;
 use crate::pptr::*;
 

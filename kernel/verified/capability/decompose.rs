@@ -3,15 +3,18 @@
 //! page after that block. Boot hands the root one untyped per block of free memory, of any order, and
 //! one frame capability per block of dom0's image, of order at most 9 so that each lies in one 2M
 //! region. See design/root-process-at-boot/ and design/capability-names-a-block/.
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::div_mod::*;
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::power2::*;
 use vstd::prelude::*;
 
 verus! {
 
+#[cfg(verus_keep_ghost)]
 use crate::capability::boot::*;
-use crate::capability::list::*;
 use crate::capability::table::*;
+#[cfg(verus_keep_ghost)]
 use crate::define::*;
 use crate::capability::steps::Steps;
 

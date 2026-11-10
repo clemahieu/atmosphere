@@ -1,32 +1,39 @@
 //! Retype reclaiming memory. There is no kernel list of dead objects, and no revoke or delete drains
 //! another's teardown: a retype naming a block, by a holder of an untyped covering it, does the work.
 //! See design/teardown-driven-by-retype/.
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::div_mod::*;
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::power2::*;
 use vstd::prelude::*;
-use vstd::set_lib::*;
 
 verus! {
 
-use crate::capability::device::*;
 use crate::capability::link::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::mapping::*;
 use crate::capability::block::*;
 use crate::capability::kernel::*;
 use crate::capability::list::*;
 use crate::capability::steps::Steps;
+#[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
-use crate::capability::reclaim_process::*;
-use crate::capability::reclaim_thread::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::refs::*;
 use crate::capability::retype::*;
 use crate::capability::space::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::table::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::process::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::thread::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::view::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::zero::*;
 use crate::define::*;
+#[cfg(verus_keep_ghost)]
 use crate::pptr::PointsTo;
 
 /// Every permission of a map, uninitialised. Handing a frame's pages back only forgets what they held, so

@@ -5,12 +5,18 @@ use vstd::prelude::*;
 
 verus! {
 
-use crate::capability::kernel::{CommandBuffers, FlushTarget, Flushed};
+use crate::capability::kernel::{CommandBuffers, Flushed};
+#[cfg(verus_keep_ghost)]
+use crate::capability::kernel::FlushTarget;
 use crate::capability::operation::Outcome;
+#[cfg(verus_keep_ghost)]
 use crate::capability::console::PRINT_BYTES;
 use crate::capability::steps::Steps;
-use crate::define::{PAddr, NUM_IOMMUS};
+use crate::define::PAddr;
+#[cfg(verus_keep_ghost)]
+use crate::define::NUM_IOMMUS;
 use crate::pagetable::entry::{PageEntry, PageEntryPerm, PageEntryStatus};
+#[cfg(verus_keep_ghost)]
 use crate::util::page_ptr_util_u::*;
 
 // The page-entry encoding: the long-mode page-translation entry's bits, chapter 5. The decoders and

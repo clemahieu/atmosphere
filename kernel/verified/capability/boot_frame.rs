@@ -3,26 +3,34 @@
 //! frame, as retype types one, and the block's capability is a narrowed piece of it, as derive narrows
 //! one. The region is never retyped, since no untyped covers it. See design/root-process-at-boot/ and
 //! design/capability-names-a-block/.
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::div_mod::*;
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::mul::*;
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::power2::*;
 use vstd::prelude::*;
 
 verus! {
 
 use crate::capability::block::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::boot::*;
-use crate::capability::derive::*;
 use crate::capability::kernel::*;
 use crate::capability::list::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::process::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::refs::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::space::*;
 use crate::capability::table::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::thread::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::steps::Steps;
-use crate::capability::view::*;
 use crate::define::*;
 
 /// The frame capability boot hands the root for the block of order pages at base.

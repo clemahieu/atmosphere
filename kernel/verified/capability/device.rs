@@ -8,16 +8,18 @@ use vstd::prelude::*;
 verus! {
 
 use crate::array::Array;
-use crate::capability::derive::*;
 use crate::capability::kernel::*;
-use crate::capability::mapping::*;
 use crate::capability::list::*;
 use crate::capability::reach::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::refs::*;
 use crate::capability::steps::Steps;
+#[cfg(verus_keep_ghost)]
 use crate::capability::space::*;
 use crate::capability::table::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::process::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::thread::*;
 use crate::define::*;
 

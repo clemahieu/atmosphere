@@ -13,15 +13,18 @@ use crate::capability::destroy::*;
 use crate::capability::kernel::*;
 use crate::capability::link::*;
 use crate::capability::list::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::steps::Steps;
 use crate::capability::map::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::mapping::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
 use crate::capability::space::*;
-use crate::capability::table::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::view::*;
+#[cfg(verus_keep_ghost)]
 use crate::define::*;
-use crate::pagetable::entry::*;
 use crate::pptr::*;
 
 /// What an unmap returns: the unmapped entry's accessed and dirty bits in the word read as it was

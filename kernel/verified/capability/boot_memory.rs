@@ -2,17 +2,22 @@
 //! boundary become free pages of the block table, and each maximal aligned block of them an untyped
 //! capability at consecutive slots of the root's first leaf from ROOT_UNTYPED_SLOT. See
 //! design/root-process-at-boot/ and design/untyped-memory/.
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::div_mod::*;
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::power2::*;
 use vstd::prelude::*;
 
 verus! {
 
+#[cfg(verus_keep_ghost)]
 use crate::capability::block::*;
 use crate::capability::boot::*;
 use crate::capability::decompose::*;
 use crate::capability::kernel::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::list::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::steps::Steps;
 use crate::capability::table::*;
 use crate::define::*;

@@ -9,6 +9,7 @@
 //! The two parts of the invariant are opaque and reached through one-position lemmas: spelled out,
 //! the root clause names every entry of every root the prover has seen, and the leaf clause chains
 //! back through `owner` to the root clause again.
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::power2::*;
 use vstd::prelude::*;
 
@@ -16,6 +17,7 @@ verus! {
 
 use crate::array::Array;
 use crate::capability::list::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
 use crate::capability::steps::Steps;
 use crate::define::*;

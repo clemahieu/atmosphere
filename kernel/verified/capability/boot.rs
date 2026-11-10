@@ -1,32 +1,41 @@
 //! The boot steps that make the root process from pages boot sets aside, not from an untyped, so the
 //! blocks they type are never retyped: no untyped covers them. They run on the state init leaves. See
 //! design/root-process-at-boot/.
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::power2::*;
 use vstd::prelude::*;
 
 verus! {
 
 use crate::capability::block::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::console::*;
-use crate::capability::derive::*;
-use crate::capability::device::*;
 use crate::capability::kernel::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::link::*;
 use crate::capability::list::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::steps::Steps;
+#[cfg(verus_keep_ghost)]
 use crate::capability::mapping::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::power::*;
 use crate::capability::process::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::refs::*;
 use crate::capability::space::*;
 use crate::capability::table::*;
 use crate::capability::thread::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::view::*;
+#[cfg(verus_keep_ghost)]
 use crate::arch::*;
 use crate::define::*;
+#[cfg(verus_keep_ghost)]
 use crate::layouts::*;
-use crate::pagetable::entry::*;
+#[cfg(verus_keep_ghost)]
 use crate::pagetable::pagemap::*;
 use crate::pagetable::pagemap_util_t::*;
 use crate::pptr::*;

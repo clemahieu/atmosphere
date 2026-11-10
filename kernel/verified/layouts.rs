@@ -8,9 +8,13 @@ use crate::capability::list::NodePage;
 use crate::capability::space::{SpaceCores, SpaceRecord, TableRecord};
 use crate::capability::table::{PayloadPage, TableRoot};
 use crate::capability::process::ProcessRecord;
-use crate::capability::thread::{ThreadRecord, XSAVE_OFFSET};
+use crate::capability::thread::ThreadRecord;
+#[cfg(verus_keep_ghost)]
+use crate::capability::thread::XSAVE_OFFSET;
+#[cfg(verus_keep_ghost)]
 use crate::define::PagePerm4k;
 use crate::pagetable::pagemap::PageMap;
+#[cfg(verus_keep_ghost)]
 use crate::pptr::PointsTo;
 
 /// The contents of a 4K page. The layout directive takes a name, not an array type.

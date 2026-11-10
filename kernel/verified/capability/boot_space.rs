@@ -3,26 +3,36 @@
 //! makes each block of the image a frame capability at its fixed slot, boot_root_tables builds the
 //! tables from that untyped, and boot_root_maps maps each page from its frame capability. A refusal
 //! comes before any write. See design/root-process-at-boot/ and design/address-spaces-as-objects/.
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::power2::*;
 use vstd::prelude::*;
 
 verus! {
 
+#[cfg(verus_keep_ghost)]
 use crate::capability::block::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::boot::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::boot_frame::*;
 use crate::capability::boot_image::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::boot_map::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::boot_memory::*;
 use crate::capability::boot_table::*;
 use crate::capability::derive::*;
 use crate::capability::kernel::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::link::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::list::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::map::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::mapping::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::table::*;
-use crate::capability::view::*;
 use crate::define::*;
 
 impl CapKernel {

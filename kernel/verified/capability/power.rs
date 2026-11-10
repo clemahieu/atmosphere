@@ -5,9 +5,9 @@ use vstd::prelude::*;
 
 verus! {
 
-use crate::capability::inspect::*;
 use crate::capability::kernel::*;
 use crate::capability::operation::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
 use crate::capability::table::*;
 

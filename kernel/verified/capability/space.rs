@@ -1,31 +1,40 @@
 //! Address spaces as retyped objects. A table page is an order-3 block: 5 node pages, whose node 0 is
 //! the block's hidden node, then the table, then its record, then a spare page. So an entry finds its mapping's node
 //! in constant time, and whoever maps pays for the table. See design/address-spaces-as-objects/.
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::div_mod::*;
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::power2::*;
 use vstd::prelude::*;
 
 verus! {
 
 use crate::array::*;
-use crate::capability::device::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::mapping::*;
 use crate::capability::block::*;
 use crate::capability::kernel::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::link::*;
 use crate::capability::list::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::steps::Steps;
+#[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::refs::*;
-use crate::capability::retype::*;
 use crate::capability::table::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::process::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::thread::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::view::*;
+#[cfg(verus_keep_ghost)]
 use crate::layouts::*;
 use crate::define::*;
+#[cfg(verus_keep_ghost)]
 use crate::arch::usize2page_entry;
-use crate::pagetable::entry::*;
 use crate::pagetable::pagemap::*;
 use crate::pagetable::pagemap_util_t::*;
 use crate::pptr::*;

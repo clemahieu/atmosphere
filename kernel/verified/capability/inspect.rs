@@ -10,6 +10,7 @@ use crate::capability::kernel::*;
 use crate::capability::list::*;
 use crate::capability::operation::*;
 use crate::capability::position::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
 use crate::capability::table::*;
 

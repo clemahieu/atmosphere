@@ -24,10 +24,12 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
+#[cfg(verus_keep_ghost)]
 use vstd::layout::*;
 use vstd::prelude::*;
 use vstd::raw_ptr;
 use vstd::raw_ptr::*;
+#[cfg(verus_keep_ghost)]
 use vstd::set_lib::*;
 use core::marker::PhantomData;
 

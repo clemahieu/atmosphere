@@ -1,23 +1,29 @@
 //! What a space maps, read by walking its tables from the root. A kernel
 //! slot, which only a process's root has, leads nowhere, since child_slot excludes it. Map, unmap and detach state what they do in these
 //! terms. See design/address-spaces-as-objects/.
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::div_mod::*;
 use vstd::prelude::*;
 
 verus! {
 
 use crate::arch::flush_every_context;
+#[cfg(verus_keep_ghost)]
 use crate::capability::block::*;
 use crate::capability::kernel::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::link::*;
 use crate::capability::list::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::steps::Steps;
 use crate::capability::refs::*;
 use crate::capability::space::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::table::*;
-use crate::capability::process::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::thread::*;
 use crate::define::*;
+#[cfg(verus_keep_ghost)]
 use crate::pagetable::entry::PageEntry;
 use crate::pagetable::pagemap::*;
 use crate::pagetable::pagemap_util_t::*;

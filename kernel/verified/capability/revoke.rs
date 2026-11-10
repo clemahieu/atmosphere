@@ -5,21 +5,27 @@ use vstd::prelude::*;
 
 verus! {
 
+#[cfg(verus_keep_ghost)]
 use crate::capability::link::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::mapping::*;
-use crate::capability::block::*;
 use crate::capability::kernel::*;
 use crate::capability::list::*;
 use crate::capability::steps::Steps;
 use crate::capability::position::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::space::*;
 use crate::capability::refs::*;
 use crate::capability::table::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::process::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::thread::*;
-use crate::capability::thread::ThreadState;
+#[cfg(verus_keep_ghost)]
 use crate::capability::view::*;
+#[cfg(verus_keep_ghost)]
 use crate::define::*;
 
 /// How many steps a revoke does per kernel entry. No wait happens under the lock, so a revoke returns

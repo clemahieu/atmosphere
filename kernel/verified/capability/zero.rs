@@ -3,6 +3,7 @@
 //! whoever retypes the block next, resumes where the last one stopped. See
 //! design/teardown-driven-by-retype/.
 use vstd::prelude::*;
+#[cfg(verus_keep_ghost)]
 use vstd::set_lib::*;
 
 verus! {

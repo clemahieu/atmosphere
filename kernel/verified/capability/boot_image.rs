@@ -2,24 +2,31 @@
 //! checked at the trust boundary, decomposes into aligned blocks of at most 512 pages, and each block
 //! becomes a frame capability with its run's rights at consecutive slots of the root's second leaf from
 //! ROOT_FRAME_SLOT, by boot_root_frame. See design/root-process-at-boot/.
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::div_mod::*;
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::power2::*;
 use vstd::prelude::*;
 
 verus! {
 
+#[cfg(verus_keep_ghost)]
 use crate::capability::block::*;
 use crate::capability::boot::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::boot_frame::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::boot_memory::*;
 use crate::capability::decompose::*;
-use crate::capability::derive::*;
 use crate::capability::kernel::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::list::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::refs::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::table::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::steps::Steps;
-use crate::capability::view::*;
 use crate::define::*;
 
 /// How many frame capabilities the root's second leaf holds, from ROOT_FRAME_SLOT to its last slot.

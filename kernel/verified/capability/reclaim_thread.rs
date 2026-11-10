@@ -2,29 +2,38 @@
 //! frees the block. A thread object is not retyped while a core depends on it, so a thread Running on a
 //! core, which is also the only kind with a stop pending, is refused until that core has moved it off.
 //! See design/teardown-driven-by-retype/.
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::div_mod::*;
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::power2::*;
 use vstd::prelude::*;
 
 verus! {
 
 use crate::capability::block::*;
-use crate::capability::device::*;
 use crate::capability::kernel::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::link::*;
 use crate::capability::list::*;
 use crate::capability::steps::Steps;
+#[cfg(verus_keep_ghost)]
 use crate::capability::mapping::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::process::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
 use crate::capability::reclaim::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::refs::*;
-use crate::capability::retype::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::space::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::table::*;
 use crate::capability::thread::*;
 use crate::capability::thread::ThreadState;
+#[cfg(verus_keep_ghost)]
 use crate::capability::view::*;
+#[cfg(verus_keep_ghost)]
 use crate::define::*;
 use crate::pptr::*;
 

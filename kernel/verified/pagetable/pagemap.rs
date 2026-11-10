@@ -3,6 +3,7 @@ verus! {
 
 use crate::arch::*;
 use crate::array::*;
+#[cfg(verus_keep_ghost)]
 use crate::util::page_ptr_util_u::*;
 use crate::capability::steps::Steps;
 

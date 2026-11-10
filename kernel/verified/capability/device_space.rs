@@ -8,12 +8,16 @@ use vstd::prelude::*;
 verus! {
 
 use super::kernel::*;
+#[cfg(verus_keep_ghost)]
 use super::link::*;
-use super::map::*;
+#[cfg(verus_keep_ghost)]
 use super::mapping::*;
+#[cfg(verus_keep_ghost)]
 use super::reach::*;
 use super::space::*;
+#[cfg(verus_keep_ghost)]
 use super::view::*;
+#[cfg(verus_keep_ghost)]
 use crate::define::*;
 
 /// The first address past those a device space's four levels of table translate.

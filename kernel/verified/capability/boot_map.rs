@@ -3,7 +3,9 @@
 //! capability whose block holds its physical page, at slot ROOT_FRAME_SLOT plus that block's index, at
 //! the page's offset into the block. Each mapping is then a node under that capability and carries the
 //! run's rights. See design/root-process-at-boot/ and design/address-spaces-as-objects/.
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::div_mod::*;
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::power2::*;
 use vstd::prelude::*;
 
@@ -11,23 +13,33 @@ verus! {
 
 use crate::capability::block::*;
 use crate::capability::boot::*;
-use crate::capability::boot_frame::*;
 use crate::capability::boot_image::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::boot_memory::*;
 use crate::capability::boot_table::*;
 use crate::capability::decompose::*;
 use crate::capability::kernel::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::link::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::list::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::map::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::mapping::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::refs::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::space::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::table::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::steps::Steps;
+#[cfg(verus_keep_ghost)]
 use crate::capability::view::*;
-use crate::define::*;
+#[cfg(verus_keep_ghost)]
 use crate::pagetable::entry::PageEntry;
 
 /// The physical page virtual page x of run maps.

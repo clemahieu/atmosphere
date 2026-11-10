@@ -9,20 +9,24 @@ use vstd::prelude::*;
 verus! {
 
 use crate::arch::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::block::BlockTable;
 use crate::capability::kernel::*;
 use crate::capability::link::*;
 use crate::capability::list::*;
 use crate::capability::steps::Steps;
 use crate::capability::map::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::mapping::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::refs::*;
 use crate::capability::space::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::table::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::view::*;
-use crate::define::*;
-use crate::pagetable::entry::*;
 use crate::pagetable::pagemap::*;
 use crate::pagetable::pagemap_util_t::*;
 use crate::pptr::*;

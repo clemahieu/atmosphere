@@ -8,11 +8,11 @@ verus! {
 
 use crate::capability::kernel::*;
 use crate::capability::list::*;
-use crate::capability::process::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
 use crate::capability::table::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::view::*;
-use crate::define::*;
 
 /// A table position as its caller names it: `index` in the caller's own table when `through` is None,
 /// and otherwise in the table of the process that the capability at index `through` of the caller's

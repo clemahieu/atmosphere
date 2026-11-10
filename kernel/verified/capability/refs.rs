@@ -1,18 +1,24 @@
 //! References: each frame capability holds one on the block it lies in, and a block is dead at once when
 //! they reach zero. A ghost set of each block's holding nodes makes the count exact, which is what lets
 //! a free say no capability is left behind. See design/teardown-driven-by-retype/.
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::div_mod::*;
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::power2::*;
 use vstd::prelude::*;
-use vstd::set_lib::*;
 
 verus! {
 
 use crate::capability::block::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::kernel::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::list::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::table::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::zero::*;
+#[cfg(verus_keep_ghost)]
 use crate::define::*;
 
 /// A typed block: a small block by its base page, or a large one by its region.

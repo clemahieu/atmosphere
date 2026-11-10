@@ -2,17 +2,22 @@
 //! so what a process holds, what each capability names and which rights it carries are read from the
 //! tables here and nowhere else. The fields for mappings, threads and object contents stay empty until
 //! the objects behind them exist. See design/theorem-over-reach/.
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::power2::*;
 use vstd::prelude::*;
 
 verus! {
 
+#[cfg(verus_keep_ghost)]
 use crate::capability::device::*;
 use crate::capability::kernel::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::list::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
-use crate::capability::space::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::table::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::thread::*;
 
 /// The bit of a capability's rights word that grants this right.

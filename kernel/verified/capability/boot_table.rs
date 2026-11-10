@@ -3,7 +3,9 @@
 //! ROOT_UNTYPED_SLOT is retyped as a table page and linked through the root's process capability at
 //! ROOT_PROCESS_SLOT, as every mapper pays for its tables; a table the walk reaches is reused. See
 //! design/address-spaces-as-objects/, design/untyped-memory/ and design/process-holds-capabilities/.
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::div_mod::*;
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::power2::*;
 use vstd::prelude::*;
 
@@ -14,14 +16,19 @@ use crate::capability::boot::*;
 use crate::capability::boot_image::*;
 use crate::capability::derive::*;
 use crate::capability::kernel::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::link::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::list::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::map::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::mapping::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
-use crate::capability::retype::*;
 use crate::capability::space::*;
 use crate::capability::table::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::view::*;
 use crate::define::*;
 

@@ -5,27 +5,33 @@
 //! detached: each stays in its root entry, inert, until its own untyped's holder retypes it, and that
 //! retype's free clears the entry. Once both roots are empty, a retype frees the block. See
 //! design/teardown-driven-by-retype/.
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::div_mod::*;
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::power2::*;
 use vstd::prelude::*;
 
 verus! {
 
 use crate::capability::block::*;
-use crate::capability::device::*;
 use crate::capability::kernel::*;
 use crate::capability::link::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::list::*;
 use crate::capability::steps::Steps;
+#[cfg(verus_keep_ghost)]
 use crate::capability::mapping::*;
 use crate::capability::process::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
 use crate::capability::reclaim::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::refs::*;
-use crate::capability::retype::*;
 use crate::capability::space::*;
 use crate::capability::table::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::thread::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::view::*;
 use crate::define::*;
 use crate::pptr::*;

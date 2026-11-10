@@ -3,26 +3,37 @@
 //! and its extended register state, the XSAVE area, after it. A capability names a thread by its
 //! block's base and carries control, and the capabilities naming it hold its block's references. See
 //! design/process-holds-capabilities/.
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::power2::*;
 use vstd::prelude::*;
 
 verus! {
 
 use crate::capability::block::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::derive::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::device::*;
 use crate::capability::kernel::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::link::*;
 use crate::capability::list::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::steps::Steps;
+#[cfg(verus_keep_ghost)]
 use crate::capability::mapping::*;
 use crate::capability::process::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
 use crate::capability::refs::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::space::*;
 use crate::capability::table::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::view::*;
+#[cfg(verus_keep_ghost)]
 use crate::define::*;
+#[cfg(verus_keep_ghost)]
 use crate::layouts::*;
 use crate::pptr::*;
 use crate::arch::*;

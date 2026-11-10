@@ -18,3 +18,8 @@ workspace = true
 
 [features]
 std = []
+
+# rust_verify sets verus_keep_ghost; a cargo build does not, and the verus! macro then erases
+# specifications and proofs, so items only they use are compiled under this cfg alone.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(verus_keep_ghost)"] }

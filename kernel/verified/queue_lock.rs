@@ -20,7 +20,9 @@ use vstd::open_atomic_invariant;
 use vstd::invariant::{AtomicInvariant, InvariantPredicate};
 use vstd::prelude::*;
 use vstd::resource::ghost_var::{GhostVar, GhostVarAuth};
-use vstd::resource::set::{GhostSetAuth, GhostSingleton, GhostSubset};
+use vstd::resource::set::GhostSingleton;
+#[cfg(verus_keep_ghost)]
+use vstd::resource::set::{GhostSetAuth, GhostSubset};
 use vstd::resource::Loc;
 
 use crate::define::NUM_CPUS;

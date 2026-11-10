@@ -1,6 +1,7 @@
 //! Linking a table page into an entry of a table in a space. A table's entry and its child's record say
 //! the same thing, and a link writes both in one step, so a detach can always clear both. See
 //! design/address-spaces-as-objects/.
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::div_mod::*;
 use vstd::prelude::*;
 
@@ -9,22 +10,26 @@ verus! {
 use crate::capability::block::{ObjectType, PageKind};
 use crate::capability::kernel::*;
 use crate::capability::list::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::steps::Steps;
+#[cfg(verus_keep_ghost)]
 use crate::capability::mapping::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::refs::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
-use crate::capability::retype::*;
 use crate::capability::space::*;
 use crate::capability::table::*;
-use crate::capability::process::*;
-use crate::capability::thread::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::view::*;
+#[cfg(verus_keep_ghost)]
 use crate::arch::MEM_MASK;
 use crate::define::*;
 use crate::pagetable::entry::*;
 use crate::pagetable::pagemap::*;
 use crate::pagetable::pagemap_util_t::*;
 use crate::pptr::*;
+#[cfg(verus_keep_ghost)]
 use crate::util::page_ptr_util_u::*;
 
 /// Every table the kernel holds, whether a table page or a space's root, by its block's address.

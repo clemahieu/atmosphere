@@ -11,6 +11,7 @@ use crate::arch::invalidate_iommu_all;
 use crate::array::Array;
 use crate::capability::block::*;
 use crate::capability::device::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::link::*;
 use crate::capability::mapping::*;
 use crate::capability::list::*;

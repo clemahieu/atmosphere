@@ -5,6 +5,7 @@ verus! {
 use crate::arch::*;
 use crate::define::*;
 use crate::pptr::*;
+#[cfg(verus_keep_ghost)]
 use crate::util::page_ptr_util_u::*;
 use crate::pagetable::entry::*;
 use crate::pagetable::pagemap::*;

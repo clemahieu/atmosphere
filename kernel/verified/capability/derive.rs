@@ -2,23 +2,28 @@
 //! parent's and its depth is one greater, so whoever derived it can always revoke it. The child goes
 //! in a free slot of the caller's table, or of the table of a process the caller controls, which is
 //! a grant through control. See design/sharing-by-derive/ and design/process-holds-capabilities/.
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::power2::*;
+#[cfg(verus_keep_ghost)]
 use vstd::bits::*;
 use vstd::prelude::*;
 
 verus! {
 
-use crate::capability::device::*;
-use crate::capability::mapping::*;
 use crate::capability::kernel::*;
 use crate::capability::list::*;
 use crate::capability::position::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
 use crate::capability::refs::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::space::*;
 use crate::capability::table::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::process::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::thread::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::view::*;
 
 /// The child a derive from `parent` makes.

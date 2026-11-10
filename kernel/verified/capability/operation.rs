@@ -7,19 +7,22 @@ use vstd::prelude::*;
 
 verus! {
 
-use crate::capability::inspect::*;
 use crate::capability::kernel::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::list::NODE_SPACE;
-use crate::capability::map::*;
 use crate::capability::position::*;
 use crate::capability::probe::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
 use crate::capability::retype::RetypeStep;
 use crate::capability::revoke::RevokeStep;
+#[cfg(verus_keep_ghost)]
 use crate::capability::space::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::steps::Steps;
 use crate::capability::thread::*;
 use crate::capability::unmap::Unmapped;
+#[cfg(verus_keep_ghost)]
 use crate::define::NUM_CPUS;
 use crate::pptr::*;
 use crate::arch::Registers;

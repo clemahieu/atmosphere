@@ -8,6 +8,7 @@
 //!
 //! Untyped authorisation is a precondition its caller proves, since capabilities live a level above.
 use vstd::prelude::*;
+#[cfg(verus_keep_ghost)]
 use vstd::set_lib::*;
 
 verus! {

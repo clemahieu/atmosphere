@@ -6,9 +6,9 @@ use vstd::prelude::*;
 verus! {
 
 use crate::arch::serial_write;
-use crate::capability::inspect::*;
 use crate::capability::kernel::*;
 use crate::capability::operation::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
 use crate::capability::steps::Steps;
 use crate::capability::table::*;

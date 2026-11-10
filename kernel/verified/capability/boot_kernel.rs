@@ -3,35 +3,51 @@
 //! capabilities and dom0's image mapped in its space, each step's requires discharged by the previous
 //! steps' ensures and by what kernel/src checked at the trust boundary of the pages and runs it passes.
 //! See design/root-process-at-boot/.
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::div_mod::*;
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::power2::*;
 use vstd::prelude::*;
 
 verus! {
 
 use crate::array::Array;
+#[cfg(verus_keep_ghost)]
 use crate::capability::block::*;
 use crate::capability::boot::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::boot_frame::*;
 use crate::capability::boot_image::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::boot_map::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::boot_memory::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::boot_table::*;
 use crate::capability::console::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::decompose::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::derive::*;
 use crate::capability::kernel::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::link::*;
 use crate::capability::list::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::mapping::*;
 use crate::capability::power::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::process::*;
 use crate::capability::reach::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::space::*;
 use crate::capability::table::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::thread::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::view::*;
 use crate::define::*;
+#[cfg(verus_keep_ghost)]
 use crate::pagetable::pagemap::*;
 use crate::pptr::PointsTo;
 
