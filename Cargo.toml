@@ -20,6 +20,7 @@ members = [
   "amailbox",
   "afanin",
   "pager-policy",
+  "adivider",
 ]
 
 exclude = ["test-pass", "tools/verus"]
