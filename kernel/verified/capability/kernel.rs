@@ -44,11 +44,11 @@ pub struct CoreState {
 pub const ID_GENERATION_MAX: usize = 0xF_FFFF_FFFF_FFFF;
 
 pub open spec fn id_generation(word: usize) -> usize {
-    (word / 4096) as usize
+    (word / PCID_MAX) as usize
 }
 
 pub open spec fn id_pcid(word: usize) -> usize {
-    (word % 4096) as usize
+    (word % PCID_MAX) as usize
 }
 
 /// Space s holds a valid id on core c.
@@ -79,15 +79,15 @@ pub open spec fn ids_wf(cores: Seq<CoreState>, lists: Map<usize, PointsTo<SpaceC
 pub proof fn lemma_id_word(g: usize, p: usize)
     requires
         g <= ID_GENERATION_MAX,
-        p < 4096,
+        p < PCID_MAX,
     ensures
-        g * 4096 + p <= usize::MAX,
-        id_generation((g * 4096 + p) as usize) == g,
-        id_pcid((g * 4096 + p) as usize) == p,
+        g * PCID_MAX + p <= usize::MAX,
+        id_generation((g * PCID_MAX + p) as usize) == g,
+        id_pcid((g * PCID_MAX + p) as usize) == p,
 {
-    assert(g * 4096 + p <= usize::MAX) by (nonlinear_arith)
-        requires g <= ID_GENERATION_MAX, p < 4096;
-    vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(g * 4096 + p, 4096, g as int, p as int);
+    assert(g * PCID_MAX + p <= usize::MAX) by (nonlinear_arith)
+        requires g <= ID_GENERATION_MAX, p < PCID_MAX;
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(g * PCID_MAX + p, PCID_MAX as int, g as int, p as int);
 }
 
 /// The ids after space s's word on core c becomes w: its generation current, its PCID handed out and
@@ -346,7 +346,7 @@ pub ghost struct TlbEntry {
 pub struct CommandBuffer {
     /// The IOMMU's MMIO registers.
     pub mmio: usize,
-    /// The command ring, `len` commands of arch::IOMMU_COMMAND_SIZE bytes long, 4 KiB aligned.
+    /// The command ring, `len` commands of arch::IOMMU_COMMAND_SIZE bytes long, page aligned.
     pub ring: usize,
     pub len: usize,
     /// The ring entry the kernel writes next, which the IOMMU's tail or producer register names.
@@ -356,14 +356,14 @@ pub struct CommandBuffer {
     pub completion: usize,
 }
 
-/// The k-th 4 KiB page of b's ring.
+/// The k-th page of b's ring.
 pub open spec fn ring_page(b: CommandBuffer, k: int) -> usize {
-    (b.ring + k * 4096) as usize
+    (b.ring + k * PAGE_SZ) as usize
 }
 
-/// The 4 KiB page holding b's completion word.
+/// The page holding b's completion word.
 pub open spec fn completion_page(b: CommandBuffer) -> usize {
-    (b.completion - b.completion % 4096) as usize
+    (b.completion - b.completion % PAGE_SZ) as usize
 }
 
 /// Each IOMMU's command buffer and the pages its ring and completion word sit in. Holding those pages
@@ -389,9 +389,9 @@ impl CommandBuffers {
         &&& crate::arch::command_ring_ok(b.ring, b.len)
         &&& b.tail < b.len
         &&& b.mmio % crate::arch::IOMMU_MMIO_ALIGN == 0
-        &&& b.ring % 4096 == 0
+        &&& b.ring % PAGE_SZ == 0
         &&& b.ring + b.len * crate::arch::IOMMU_COMMAND_SIZE <= usize::MAX
-        &&& forall|k: int| 0 <= k < b.len * crate::arch::IOMMU_COMMAND_SIZE / 4096 ==> #[trigger] self.holds(i, ring_page(b, k))
+        &&& forall|k: int| 0 <= k < b.len * crate::arch::IOMMU_COMMAND_SIZE / PAGE_SZ as int ==> #[trigger] self.holds(i, ring_page(b, k))
         &&& b.completion % 8 == 0
         &&& !(b.ring <= b.completion < b.ring + b.len * crate::arch::IOMMU_COMMAND_SIZE)
         &&& self.holds(i, completion_page(b))
@@ -431,7 +431,7 @@ impl CommandBuffers {
             assert forall|j: int| 0 <= j < NUM_IOMMUS && #[trigger] present[j] implies self.buffer_wf(j) by {
                 assert(pre.buffer_wf(j));
                 let b = self.buffers@[j];
-                assert forall|k: int| 0 <= k < b.len * crate::arch::IOMMU_COMMAND_SIZE / 4096 implies #[trigger] self.holds(j, ring_page(b, k)) by {
+                assert forall|k: int| 0 <= k < b.len * crate::arch::IOMMU_COMMAND_SIZE / PAGE_SZ as int implies #[trigger] self.holds(j, ring_page(b, k)) by {
                     assert(pre.holds(j, ring_page(pre.buffers@[j], k)));
                 }
             }
@@ -922,7 +922,7 @@ pub proof fn lemma_parents_moved(pre: Tree, post: Tree, i: usize, slot: usize)
 /// tearing down a leaf only ever finds capabilities in it.
 pub open spec fn leaf_slots_are_capabilities(list: &Tree, tables: &Tables) -> bool {
     forall|n: usize| #[trigger] list.nodes@[n as int].live && tables.owner@.contains_key(page_of(n))
-        && n % 4096 != 0 && n % 4096 < NODES_PER_PAGE ==> list.nodes@[n as int].kind is Capability
+        && n % PAGE_SZ != 0 && n % PAGE_SZ < NODES_PER_PAGE ==> list.nodes@[n as int].kind is Capability
 }
 
 /// The list's first node lives outside every leaf, so whatever a leaf holds can be unlinked.
@@ -941,11 +941,11 @@ pub open spec fn capability_nodes_are_slots(list: &Tree, tables: &Tables) -> boo
 /// and is no block's member, so a leaf's second page is not one and its block can free whole.
 pub open spec fn list_pages_used(list: &Tree, blocks: &BlockTable) -> bool {
     forall|p: usize| #[trigger] list.pages@.dom().contains(p) && blocks.tracks_addr(p) ==> {
-        &&& !(blocks.pages@[(p / 4096) as int].kind is Free)
-        &&& blocks.pages@[(p / 4096) as int].kind is Member
-            ==> blocks.pages@[blocks.pages@[(p / 4096) as int].base as int].object is TablePage
-                || blocks.pages@[blocks.pages@[(p / 4096) as int].base as int].object is Space
-        &&& !(blocks.pages@[(p / 4096) as int].object is Frame)
+        &&& !(blocks.pages@[(p / PAGE_SZ) as int].kind is Free)
+        &&& blocks.pages@[(p / PAGE_SZ) as int].kind is Member
+            ==> blocks.pages@[blocks.pages@[(p / PAGE_SZ) as int].base as int].object is TablePage
+                || blocks.pages@[blocks.pages@[(p / PAGE_SZ) as int].base as int].object is Space
+        &&& !(blocks.pages@[(p / PAGE_SZ) as int].object is Frame)
     }
 }
 
@@ -966,13 +966,13 @@ pub proof fn lemma_list_pages_used_same_kinds(list: &Tree, a: &BlockTable, b: &B
         list_pages_used(list, b),
 {
     assert forall|p: usize| #[trigger] list.pages@.dom().contains(p) && b.tracks_addr(p) implies {
-        &&& !(b.pages@[(p / 4096) as int].kind is Free)
-        &&& b.pages@[(p / 4096) as int].kind is Member
-            ==> b.pages@[b.pages@[(p / 4096) as int].base as int].object is TablePage
-                || b.pages@[b.pages@[(p / 4096) as int].base as int].object is Space
-        &&& !(b.pages@[(p / 4096) as int].object is Frame)
+        &&& !(b.pages@[(p / PAGE_SZ) as int].kind is Free)
+        &&& b.pages@[(p / PAGE_SZ) as int].kind is Member
+            ==> b.pages@[b.pages@[(p / PAGE_SZ) as int].base as int].object is TablePage
+                || b.pages@[b.pages@[(p / PAGE_SZ) as int].base as int].object is Space
+        &&& !(b.pages@[(p / PAGE_SZ) as int].object is Frame)
     } by {
-        let x = p / 4096;
+        let x = p / PAGE_SZ;
         assert(b.pages@[x as int].kind == a.pages@[x as int].kind);
         if a.pages@[x as int].kind is Member {
             a.lemma_not_free_uncovered(x as int);
@@ -1118,7 +1118,7 @@ impl CapKernel {
 
     /// A frame's permission is for its own page.
     pub open spec fn frames_wf(&self) -> bool {
-        forall|i: usize| #[trigger] self.frames@.contains_key(i) ==> self.frames@[i].addr() == i * 4096
+        forall|i: usize| #[trigger] self.frames@.contains_key(i) ==> self.frames@[i].addr() == i * PAGE_SZ
     }
 
     /// No core or IOMMU can reach page f, a frame's or a table's, through something stale, under any
@@ -1359,8 +1359,8 @@ impl CapKernel {
             old(self).blocks.regions_1g.wf(),
             old(self).blocks.count_2m.wf(),
             old(self).blocks.count_1g.wf(),
-            root % 4096 == 0,
-            root + 4096 <= NODE_SPACE,
+            root % PAGE_SZ == 0,
+            root + PAGE_SZ <= NODE_SPACE,
             perm.addr() == root,
             perm.is_init(),
             perm.value().nodes.wf(),
@@ -1801,8 +1801,8 @@ impl CapKernel {
             self.wf(),
             self.list.nodes@[n as int].live,
             self.tables.owner@.contains_key(page_of(n)),
-            n % 4096 != 0,
-            n % 4096 < NODES_PER_PAGE,
+            n % PAGE_SZ != 0,
+            n % PAGE_SZ < NODES_PER_PAGE,
         ensures
             self.is_cap(n),
     {
@@ -1845,12 +1845,12 @@ impl CapKernel {
         ensures
             self.tables.owner@.contains_key(n) || self.table_pages.maps@.contains_key(n),
             self.blocks.tracks_addr(n),
-            self.tables.owner@.contains_key(n) == (self.blocks.pages@[(n / 4096) as int].object is TableLeaf),
-            self.table_pages.maps@.contains_key(n) == (self.blocks.pages@[(n / 4096) as int].object is TablePage),
-            block_typed(&self.blocks, BlockRef::Small(n / 4096)),
-            block_refs(&self.blocks, BlockRef::Small(n / 4096)) == 1,
-            !block_dead(&self.blocks, BlockRef::Small(n / 4096)),
-            !self.holders@.contains_key(BlockRef::Small(n / 4096)),
+            self.tables.owner@.contains_key(n) == (self.blocks.pages@[(n / PAGE_SZ) as int].object is TableLeaf),
+            self.table_pages.maps@.contains_key(n) == (self.blocks.pages@[(n / PAGE_SZ) as int].object is TablePage),
+            block_typed(&self.blocks, BlockRef::Small(n / PAGE_SZ)),
+            block_refs(&self.blocks, BlockRef::Small(n / PAGE_SZ)) == 1,
+            !block_dead(&self.blocks, BlockRef::Small(n / PAGE_SZ)),
+            !self.holders@.contains_key(BlockRef::Small(n / PAGE_SZ)),
     {
         if self.tables.owner@.contains_key(n) {
             lemma_leaf_block_unkeyed(&self.tables, &self.blocks, self.holders@, n);
@@ -1865,7 +1865,7 @@ impl CapKernel {
     pub proof fn lemma_slot_not_owned(&self, n: usize)
         requires
             self.wf(),
-            n % 4096 != 0,
+            n % PAGE_SZ != 0,
         ensures
             !self.tables.owner@.contains_key(n),
     {
@@ -1924,10 +1924,10 @@ impl CapKernel {
             old(self).blocks.pages@[base as int].torn_down,
             old(self).blocks.pages@[base as int].refs == 0,
             forall|p: usize| #[trigger] old(self).list.pages@.dom().contains(p) && old(self).blocks.tracks_addr(p)
-                ==> !old(self).blocks.in_block(base as int, (p / 4096) as int),
+                ==> !old(self).blocks.in_block(base as int, (p / PAGE_SZ) as int),
             forall|k: usize| k < order_pages(old(self).blocks.pages@[base as int].order) ==> {
                 &&& perms.contains_key((base + k) as usize)
-                &&& #[trigger] perms[(base + k) as usize].addr() == (base + k) * 4096
+                &&& #[trigger] perms[(base + k) as usize].addr() == (base + k) * PAGE_SZ
                 &&& perms[(base + k) as usize].is_uninit()
             },
         ensures
@@ -1938,11 +1938,11 @@ impl CapKernel {
             // The callee's clause splits, so its conjuncts need triggers of their own.
             assert forall|k: usize| k < order_pages(pre.blocks.pages@[base as int].order) implies
                 #[trigger] perms.contains_key((base + k) as usize) by {
-                assert(perms[(base + k) as usize].addr() == (base + k) * 4096);
+                assert(perms[(base + k) as usize].addr() == (base + k) * PAGE_SZ);
             }
             assert forall|k: usize| k < order_pages(pre.blocks.pages@[base as int].order) implies
                 #[trigger] perms[(base + k) as usize].is_uninit() by {
-                assert(perms[(base + k) as usize].addr() == (base + k) * 4096);
+                assert(perms[(base + k) as usize].addr() == (base + k) * PAGE_SZ);
             }
         }
         // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
@@ -1976,7 +1976,7 @@ impl CapKernel {
             post.blocks.regions_2m@ == pre.blocks.regions_2m@,
             post.blocks.regions_1g@ == pre.blocks.regions_1g@,
             forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) && pre.blocks.tracks_addr(p)
-                ==> !pre.blocks.in_block(base as int, (p / 4096) as int),
+                ==> !pre.blocks.in_block(base as int, (p / PAGE_SZ) as int),
             post.holders@ == pre.holders@.remove(BlockRef::Small(base)),
             post.list == pre.list,
             post.tables == pre.tables,
@@ -2028,17 +2028,17 @@ impl CapKernel {
         }
         assert forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) implies {
             &&& post.blocks.tracks_addr(l)
-            &&& post.blocks.pages@[(l / 4096) as int].kind is Base
-            &&& post.blocks.pages@[(l / 4096) as int].object is TableLeaf
-            &&& post.blocks.pages@[(l / 4096) as int].order == 1
+            &&& post.blocks.pages@[(l / PAGE_SZ) as int].kind is Base
+            &&& post.blocks.pages@[(l / PAGE_SZ) as int].object is TableLeaf
+            &&& post.blocks.pages@[(l / PAGE_SZ) as int].order == 1
         } by {
             pre.tables.lemma_leaf(&pre.list, l);
             assert(pre.list.pages@.dom().contains(l));
-            assert(!pre.blocks.in_block(base as int, (l / 4096) as int));
-            assert(post.blocks.pages@[(l / 4096) as int] == pre.blocks.pages@[(l / 4096) as int]);
+            assert(!pre.blocks.in_block(base as int, (l / PAGE_SZ) as int));
+            assert(post.blocks.pages@[(l / PAGE_SZ) as int] == pre.blocks.pages@[(l / PAGE_SZ) as int]);
         }
         assert forall|x: usize| post.blocks.tracks(x as int) && #[trigger] leaf_block(&post.blocks, x)
-            implies post.tables.owner@.contains_key((x * 4096) as usize) by {
+            implies post.tables.owner@.contains_key((x * PAGE_SZ) as usize) by {
             assert(!pre.blocks.in_block(base as int, x as int));
             assert(post.blocks.pages@[x as int] == pre.blocks.pages@[x as int]);
             assert(leaf_block(&pre.blocks, x));

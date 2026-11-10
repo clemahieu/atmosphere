@@ -17,7 +17,7 @@ use vstd::set_lib::*;
 verus! {
 
 use crate::array::Array;
-use crate::define::PagePerm4k;
+use crate::define::{PagePerm4k, PAGE_SZ};
 use crate::pptr::*;
 use crate::capability::steps::Steps;
 
@@ -59,7 +59,7 @@ pub struct NodePage {
 pub fn init_node_page(addr: usize, Tracked(page): Tracked<PagePerm4k>, Tracked(steps): Tracked<&mut Steps>) -> (ret: Tracked<PointsTo<NodePage>>)
     requires
         page.addr() == addr,
-        addr % 4096 == 0,
+        addr % PAGE_SZ == 0,
     ensures
         final(steps).count <= old(steps).count + NODES_PER_PAGE,
         ret@.addr() == addr,
@@ -103,7 +103,7 @@ pub struct Tree {
 }
 
 pub open spec fn page_of(i: usize) -> usize {
-    (i - i % 4096) as usize
+    (i - i % PAGE_SZ) as usize
 }
 
 /// What the ghost sequence says of an id no page holds.
@@ -130,7 +130,7 @@ impl Tree {
     /// i names a slot in a page this list holds.
     pub open spec fn valid(&self, i: usize) -> bool {
         &&& self.pages@.dom().contains(page_of(i))
-        &&& i % 4096 < NODES_PER_PAGE
+        &&& i % PAGE_SZ < NODES_PER_PAGE
     }
 
     /// The ghost sequence is what the pages hold, and only a slot in a page can be live.
@@ -138,14 +138,14 @@ impl Tree {
     pub open spec fn store_wf(&self) -> bool {
         &&& self.nodes@.len() == NODE_SPACE
         &&& forall|p: usize| #[trigger] self.pages@.dom().contains(p) ==> {
-            &&& p % 4096 == 0
-            &&& p + 4096 <= NODE_SPACE
+            &&& p % PAGE_SZ == 0
+            &&& p + PAGE_SZ <= NODE_SPACE
             &&& self.pages@[p].addr() == p
             &&& self.pages@[p].is_init()
             &&& self.pages@[p].value().nodes.wf()
         }
         &&& forall|i: usize| #[trigger] self.valid(i) ==>
-            self.nodes@[i as int] == self.pages@[page_of(i)].value().nodes@[(i % 4096) as int]
+            self.nodes@[i as int] == self.pages@[page_of(i)].value().nodes@[(i % PAGE_SZ) as int]
         &&& forall|i: int| 0 <= i < NODE_SPACE && #[trigger] self.nodes@[i].live
             ==> self.valid(i as usize)
     }
@@ -159,9 +159,9 @@ impl Tree {
             n == self.nodes@[i as int],
     {
         reveal(Tree::store_wf);
-        let page = i - i % 4096;
+        let page = i - i % PAGE_SZ;
         let tracked perm = self.pages.borrow().tracked_borrow(page);
-        *PPtr::<NodePage>::from_usize(page).borrow(Tracked(perm)).nodes.get(i % 4096)
+        *PPtr::<NodePage>::from_usize(page).borrow(Tracked(perm)).nodes.get(i % PAGE_SZ)
     }
 
     /// Overwrite the node at i.
@@ -177,10 +177,10 @@ impl Tree {
             final(self).parent == old(self).parent,
     {
         reveal(Tree::store_wf);
-        let page = i - i % 4096;
+        let page = i - i % PAGE_SZ;
         let ghost pre = *old(self);
         let tracked mut perm = self.pages.borrow_mut().tracked_remove(page);
-        PPtr::<NodePage>::from_usize(page).borrow_mut(Tracked(&mut perm)).nodes.set(i % 4096, n);
+        PPtr::<NodePage>::from_usize(page).borrow_mut(Tracked(&mut perm)).nodes.set(i % PAGE_SZ, n);
         proof {
             self.pages.borrow_mut().tracked_insert(page, perm);
         }
@@ -188,14 +188,14 @@ impl Tree {
         proof {
             assert(self.pages@.dom() =~= pre.pages@.dom());
             assert(self.pages@[page].value().nodes@
-                == pre.pages@[page].value().nodes@.update((i % 4096) as int, n));
+                == pre.pages@[page].value().nodes@.update((i % PAGE_SZ) as int, n));
             assert forall|x: usize| #[trigger] self.valid(x) implies
-                self.nodes@[x as int] == self.pages@[page_of(x)].value().nodes@[(x % 4096) as int] by {
+                self.nodes@[x as int] == self.pages@[page_of(x)].value().nodes@[(x % PAGE_SZ) as int] by {
                 assert(pre.valid(x));
                 if page_of(x) == page {
                     if x == i {
                     } else {
-                        assert(x % 4096 != i % 4096);
+                        assert(x % PAGE_SZ != i % PAGE_SZ);
                     }
                 } else {
                     assert(self.pages@[page_of(x)] == pre.pages@[page_of(x)]);
@@ -224,7 +224,7 @@ impl Tree {
     {
         reveal(Tree::store_wf);
         assert forall|i: usize| #[trigger] b.valid(i) implies
-            b.nodes@[i as int] == b.pages@[page_of(i)].value().nodes@[(i % 4096) as int] by {
+            b.nodes@[i as int] == b.pages@[page_of(i)].value().nodes@[(i % PAGE_SZ) as int] by {
             assert(a.valid(i));
         }
         assert forall|i: int| 0 <= i < NODE_SPACE && #[trigger] b.nodes@[i].live
@@ -990,8 +990,8 @@ impl Tree {
     /// A list of one node: the root, at node 0 of a page. This shows the invariant is inhabited.
     pub fn new(root: usize, Tracked(perm): Tracked<PointsTo<NodePage>>) -> (ret: Tree)
         requires
-            root % 4096 == 0,
-            root + 4096 <= NODE_SPACE,
+            root % PAGE_SZ == 0,
+            root + PAGE_SZ <= NODE_SPACE,
             perm.addr() == root,
             perm.is_init(),
             perm.value().nodes.wf(),
@@ -1014,8 +1014,8 @@ impl Tree {
         let ghost m = pages;
         let ghost one: Seq<usize> = seq![root];
         let ghost nodes = Seq::new(NODE_SPACE as nat, |i: int|
-            if m.dom().contains(page_of(i as usize)) && i % 4096 < NODES_PER_PAGE {
-                m[page_of(i as usize)].value().nodes@[i % 4096]
+            if m.dom().contains(page_of(i as usize)) && i % (PAGE_SZ as int) < NODES_PER_PAGE {
+                m[page_of(i as usize)].value().nodes@[i % PAGE_SZ as int]
             } else {
                 dead()
             });
@@ -1044,9 +1044,9 @@ impl Tree {
             assert forall|i: int| 0 <= i < NODE_SPACE && i != root
                 implies !(#[trigger] me.nodes@[i]).live by {
                 assert(me.nodes@[i] == nodes[i]);
-                if m.dom().contains(page_of(i as usize)) && i % 4096 < NODES_PER_PAGE {
+                if m.dom().contains(page_of(i as usize)) && i % (PAGE_SZ as int) < NODES_PER_PAGE {
                     assert(page_of(i as usize) == root);
-                    assert(!m[root].value().nodes@[i % 4096].live);
+                    assert(!m[root].value().nodes@[i % PAGE_SZ as int].live);
                 }
             }
             assert(nodup(s)) by { reveal(nodup); }
@@ -1060,7 +1060,7 @@ impl Tree {
             assert(me.runs()) by { reveal(Tree::runs); }
             assert(me.order());
             assert forall|x: usize| root <= x < root + NODES_PER_PAGE implies #[trigger] me.valid(x) by {
-                assert(x % 4096 == x - root);
+                assert(x % PAGE_SZ == x - root);
                 assert(page_of(x) == root);
             }
         }
@@ -1072,8 +1072,8 @@ impl Tree {
         requires
             old(self).wf(),
             !old(self).pages@.dom().contains(page),
-            page % 4096 == 0,
-            page + 4096 <= NODE_SPACE,
+            page % PAGE_SZ == 0,
+            page + PAGE_SZ <= NODE_SPACE,
             perm.addr() == page,
             perm.is_init(),
             perm.value().nodes.wf(),
@@ -1096,8 +1096,8 @@ impl Tree {
         }
         let ghost fresh = self.pages@[page].value().nodes@;
         let ghost nodes = Seq::new(NODE_SPACE as nat, |i: int|
-            if page_of(i as usize) == page && i % 4096 < NODES_PER_PAGE {
-                fresh[i % 4096]
+            if page_of(i as usize) == page && i % (PAGE_SZ as int) < NODES_PER_PAGE {
+                fresh[i % PAGE_SZ as int]
             } else {
                 pre.nodes@[i]
             });
@@ -1112,15 +1112,15 @@ impl Tree {
             assert(me.store_wf()) by {
                 reveal(Tree::store_wf);
                 assert forall|x: usize| #[trigger] me.valid(x) implies
-                    me.nodes@[x as int] == me.pages@[page_of(x)].value().nodes@[(x % 4096) as int] by {
+                    me.nodes@[x as int] == me.pages@[page_of(x)].value().nodes@[(x % PAGE_SZ) as int] by {
                     if page_of(x) != page {
                         assert(pre.valid(x));
                     }
                 }
                 assert forall|x: int| 0 <= x < NODE_SPACE && #[trigger] me.nodes@[x].live
                     implies me.valid(x as usize) by {
-                    if page_of(x as usize) == page && x % 4096 < NODES_PER_PAGE {
-                        assert(!fresh[x % 4096].live);
+                    if page_of(x as usize) == page && x % (PAGE_SZ as int) < NODES_PER_PAGE {
+                        assert(!fresh[x % PAGE_SZ as int].live);
                     } else {
                         assert(pre.nodes@[x].live);
                         pre.lemma_live_valid(x as usize);
@@ -1133,8 +1133,8 @@ impl Tree {
             }
             assert forall|i: int| 0 <= i < NODE_SPACE implies
                 #[trigger] me.nodes@[i].live == pre.nodes@[i].live by {
-                if page_of(i as usize) == page && i % 4096 < NODES_PER_PAGE {
-                    assert(!fresh[i % 4096].live);
+                if page_of(i as usize) == page && i % (PAGE_SZ as int) < NODES_PER_PAGE {
+                    assert(!fresh[i % PAGE_SZ as int].live);
                     if pre.nodes@[i].live {
                         pre.lemma_live_valid(i as usize);
                     }
@@ -1143,7 +1143,7 @@ impl Tree {
             lemma_wf_same_live(pre, me);
             assert forall|x: usize| page <= x < page + NODES_PER_PAGE implies
                 #[trigger] me.valid(x) && !me.nodes@[x as int].live by {
-                assert(x % 4096 == x - page);
+                assert(x % PAGE_SZ == x - page);
                 assert(page_of(x) == page);
             }
         }
@@ -1175,15 +1175,15 @@ impl Tree {
             assert(me.store_wf()) by {
                 reveal(Tree::store_wf);
                 assert forall|x: usize| #[trigger] me.valid(x) implies
-                    me.nodes@[x as int] == me.pages@[page_of(x)].value().nodes@[(x % 4096) as int] by {
+                    me.nodes@[x as int] == me.pages@[page_of(x)].value().nodes@[(x % PAGE_SZ) as int] by {
                     assert(pre.valid(x));
                 }
                 assert forall|x: int| 0 <= x < NODE_SPACE && #[trigger] me.nodes@[x].live
                     implies me.valid(x as usize) by {
                     pre.lemma_live_valid(x as usize);
                     if page_of(x as usize) == page {
-                        assert(x == page + x % 4096);
-                        assert(!pre.nodes@[page + x % 4096].live);
+                        assert(x == page + x % PAGE_SZ as int);
+                        assert(!pre.nodes@[page + x % PAGE_SZ as int].live);
                     }
                 }
             }
@@ -1936,8 +1936,8 @@ proof fn lemma_move_order(pre: Tree, me: Tree, i: usize, slot: usize, p: int)
 #[cfg(verus_keep_ghost)]
 fn root_and_child(root: usize, Tracked(perm): Tracked<PointsTo<NodePage>>)
     requires
-        root % 4096 == 0,
-        root + 4096 <= NODE_SPACE,
+        root % PAGE_SZ == 0,
+        root + PAGE_SZ <= NODE_SPACE,
         perm.addr() == root,
         perm.is_init(),
         perm.value().nodes.wf(),

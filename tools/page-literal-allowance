@@ -17,9 +17,7 @@ capability/derive.rs
 capability/destroy.rs
 capability/device.rs
 capability/device_space.rs
-capability/kernel.rs
 capability/link.rs
-capability/list.rs
 capability/mapping.rs
 capability/map.rs
 capability/moving.rs
@@ -35,5 +33,4 @@ capability/space.rs
 capability/table.rs
 capability/unmap.rs
 capability/view.rs
-capability/witness.rs
 capability/zero.rs
