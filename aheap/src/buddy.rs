@@ -893,6 +893,40 @@ impl BlockBuddy {
         best
     }
 
+    /// The smallest order at or above `k` that a free block has, if any.
+    pub fn fit_order(&self, k: usize) -> (r: Option<usize>)
+        requires
+            self.wf(),
+            k <= BLOCK_ORDER,
+        ensures
+            match r {
+                None => !self.fits(k as nat),
+                Some(o) => {
+                    &&& k <= o <= BLOCK_ORDER
+                    &&& exists|h: int| #[trigger]
+                        self.blocks().contains_key(h) && self.blocks()[h] == (Block {
+                            order: o as nat,
+                            free: true,
+                        })
+                    &&& forall|q: int|
+                        #[trigger] self.blocks().contains_key(q) && self.blocks()[q].free
+                            && self.blocks()[q].order >= k ==> self.blocks()[q].order >= o
+                },
+            },
+    {
+        match self.best_fit(k) {
+            None => None,
+            Some(h) => {
+                proof {
+                    assert(placed(h as int, self.blocks@[h as int]));
+                    lemma_pages_pos(self.blocks@[h as int].order);
+                    assert(self.tags@[h as int] as int == tag(self.blocks@[h as int]));
+                }
+                Some((self.tags[h] - FREE - 1) as usize)
+            },
+        }
+    }
+
     /// Cuts a run of order `k` from the free block of the smallest order at or above `k`, and
     /// returns its first page; or refuses, and changes nothing, when no free block has order `k` or
     /// more.

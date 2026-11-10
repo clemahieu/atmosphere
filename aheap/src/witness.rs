@@ -5,6 +5,10 @@
 //! its first page, writes a byte through the permission back returned and reads it again, releases
 //! the page and the span, and ends with the view it started with. A source that refuses leaves the
 //! view as it was, and the sequence stops there.
+//!
+//! The page buddy's witness, over any well-formed source and with no spares, cuts a run of order 0
+//! and one of order BLOCK_ORDER, frees both, and ends holding no span. A refusal stops the sequence
+//! after freeing what it cut.
 use vstd::prelude::*;
 use vstd::layout::*;
 use vstd::raw_ptr::*;
@@ -12,6 +16,7 @@ use vstd::set::*;
 
 use crate::arch::*;
 use crate::buddy::*;
+use crate::page::*;
 use crate::source::*;
 
 verus! {
@@ -119,6 +124,71 @@ pub fn witness_block_buddy() -> (b: BlockBuddy)
     let idle = b.is_idle();
     assert(idle);
     b
+}
+
+} // verus!
+
+verus! {
+
+/// Cuts a small run and a whole block from a page buddy over `src` keeping no spare, frees both, and
+/// returns the page buddy, which then holds no span.
+pub fn witness_page_buddy<S: SpanSource>(src: S) -> (pb: PageBuddy<S>)
+    requires
+        src@.wf(),
+    ensures
+        pb.wf(),
+        pb.spans().dom() == Set::<int>::empty(),
+        pb.meta() is None,
+{
+    let mut pb = PageBuddy::new(src, 0);
+    let small = match pb.alloc_run(0) {
+        Err(_) => {
+            proof {
+                pb.lemma_view();
+            }
+            return pb;
+        },
+        Ok(p) => p,
+    };
+    let ghost b1 = span_of(small as int);
+    let ghost h1 = page_of(small as int);
+    let ghost one = Map::<int, nat>::empty().insert(h1, 0nat);
+    assert(pb.used() == Map::<int, Map<int, nat>>::empty().insert(b1, one));
+    assert(one.remove(h1) =~= Map::<int, nat>::empty());
+    let ghost u1 = pb.used();
+    let whole = match pb.alloc_run(BLOCK_ORDER) {
+        Err(_) => {
+            pb.free_run(small);
+            assert(pb.used().dom() =~= Set::<int>::empty());
+            proof {
+                pb.lemma_view();
+            }
+            return pb;
+        },
+        Ok(p) => p,
+    };
+    let ghost b2 = span_of(whole as int);
+    let ghost h2 = page_of(whole as int);
+    proof {
+        lemma_block_pages();
+        if b2 == b1 {
+            assert(u1[b2].contains_key(h1));
+            assert(placed(h1, Block { order: 0, free: false }));
+            assert(h2 + pages(BLOCK_ORDER as nat) <= h1 || h1 + pages(0) <= h2);
+        }
+    }
+    let ghost u2 = pb.used();
+    let ghost whole_run = Map::<int, nat>::empty().insert(h2, BLOCK_ORDER as nat);
+    assert(u2 == Map::<int, Map<int, nat>>::empty().insert(b1, one).insert(b2, whole_run));
+    assert(whole_run.remove(h2) =~= Map::<int, nat>::empty());
+    pb.free_run(whole);
+    assert(pb.used() =~= Map::<int, Map<int, nat>>::empty().insert(b1, one));
+    pb.free_run(small);
+    assert(pb.used().dom() =~= Set::<int>::empty());
+    proof {
+        pb.lemma_view();
+    }
+    pb
 }
 
 } // verus!
