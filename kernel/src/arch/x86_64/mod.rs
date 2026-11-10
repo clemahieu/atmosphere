@@ -231,14 +231,19 @@ pub unsafe fn write_cr4(cr4: u64) {
     asm!("mov cr4, {}", in(reg) cr4);
 }
 
-/// Enters user code at `pc` with stack `sp` and two entry arguments, which it finds in `rdi` and `rsi`.
+/// RFLAGS.IF, which lets the core take maskable interrupts, and bit 1, which is reserved and reads as
+/// one. APM 2 §3.1.6, Figure 3-7.
+const RFLAGS_IF: u64 = 1 << 9;
+const RFLAGS_RESERVED_ONE: u64 = 1 << 1;
+
+/// Enters user code at `pc` with stack `sp` and two entry arguments, which it finds in `rdi` and `rsi`,
+/// and with interrupts unmasked, which the kernel kept masked: SYSRET loads RFLAGS from r11 (APM 3,
+/// SYSRET), so the process starts with IF set and no other flag.
 pub unsafe fn enter_userspace(pc: *const c_void, sp: *mut c_void, rdi: u64, rsi: u64) -> ! {
-    log::info!("Going to sysret into {:x?}", pc);
     #[cfg(feature = "stray_timer")]
     crate::machine::set_timer(crate::STRAY_TIMER_TICKS);
+    log::info!("Going to sysret into {:x?}", pc);
     asm!(
-        "pushfq",
-        "pop r11",
         "mov rsp, {sp}",
         // dom0 gets its entry arguments in rdi and rsi and no kernel values.
         "xor eax, eax",
@@ -255,6 +260,7 @@ pub unsafe fn enter_userspace(pc: *const c_void, sp: *mut c_void, rdi: u64, rsi:
         "sysretq",
 
         in("rcx") pc,
+        in("r11") RFLAGS_IF | RFLAGS_RESERVED_ONE,
         sp = in(reg) sp,
         in("rdi") rdi,
         in("rsi") rsi,

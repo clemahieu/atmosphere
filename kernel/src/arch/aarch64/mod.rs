@@ -303,9 +303,9 @@ pub fn wait() {
 /// SPSR_EL1 the verified frame names for user mode, AArch64 state at EL0 with no interrupt masked.
 /// The thread's exceptions arrive on this core's syscall stack.
 pub unsafe fn enter_userspace(pc: *const c_void, sp: *mut c_void, first: u64, second: u64) -> ! {
-    log::info!("Going to eret into {:x?}", pc);
     #[cfg(feature = "stray_timer")]
     crate::machine::set_timer(crate::STRAY_TIMER_TICKS);
+    log::info!("Going to eret into {:x?}", pc);
     let frame = user_frame_of(Registers {
         x0: first,
         x1: second,

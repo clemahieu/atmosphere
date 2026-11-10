@@ -108,8 +108,9 @@ fn boot_cpu0(boot_info: *const BootInfo) -> isize {
 }
 
 /// Ticks of the machine's timer the stray_timer build arms it for as CPU 0 enters dom0, in
-/// `arch::enter_userspace` after its last line: short beside dom0's run, so the interrupt arrives
-/// before dom0 finishes, and after that line, so the report takes no lock a line in progress holds.
+/// `arch::enter_userspace` before its last line: short beside dom0's run, so the interrupt arrives
+/// before dom0 finishes, and before that line, so the report shows that the kernel takes no
+/// interrupt while a line in progress holds the console's lock.
 #[cfg(feature = "stray_timer")]
 const STRAY_TIMER_TICKS: u64 = 10_000;
 

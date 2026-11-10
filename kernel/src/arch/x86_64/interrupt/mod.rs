@@ -373,7 +373,9 @@ pub unsafe fn init() {
 
 /// Initializes per-CPU interrupt controllers.
 ///
-/// This should be called only once per CPU.
+/// This should be called only once per CPU. Interrupts stay masked: a core takes them only where it
+/// waits (`arch::wait`) or runs a process (`arch::enter_userspace`), so no handler that logs runs
+/// while the core holds the console's lock.
 pub unsafe fn init_cpu() {
     let cpu = crate::cpu::get_cpu_id();
     machine::interrupt_init_core(cpu);
@@ -381,18 +383,14 @@ pub unsafe fn init_cpu() {
 
     // Shared: init is done, so the IDT is only read from here on.
     (*&raw const GLOBAL_IDT).load();
-
-    asm!("sti");
 }
 
 /// Initializes an application processor's interrupts. The IOAPIC stays routed to CPU 0.
 ///
-/// This should be called only once per CPU.
+/// This should be called only once per CPU. Interrupts stay masked, as in [`init_cpu`].
 pub unsafe fn init_ap() {
     machine::interrupt_init_core(crate::cpu::get_cpu_id());
 
     // Shared: init is done, so the IDT is only read from here on.
     (*&raw const GLOBAL_IDT).load();
-
-    asm!("sti");
 }
