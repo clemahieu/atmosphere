@@ -1,9 +1,7 @@
 //! The aarch64 arch items, with the names, signatures and specs of the x86_64 module's. Each item's
 //! values come from the Arm Architecture Reference Manual, and the console's from the PL011's
-//! Technical Reference Manual, ARM DDI 0183. An item that has not been written from them
-//! yet is declared here and nothing more: its spec functions are uninterpreted and its executable and
-//! proof functions are external_body, counted as unproven in tools/external-body-list. See
-//! design/arch-module/.
+//! Technical Reference Manual, ARM DDI 0183. The flush and the console write are external_body glue,
+//! counted in tools/external-body-list. See design/arch-module/.
 use vstd::prelude::*;
 
 verus! {

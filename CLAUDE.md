@@ -34,7 +34,7 @@ Every epic states the tier its acceptance criteria require. Tiers rise as toolin
 
 ## Portability
 
-x86_64 on AMD is the only tested target. Code that makes another architecture or vendor implausible is not written; portability layers are not written either. Existing untestable code (Intel VT-d) stays until a tested replacement exists.
+Two targets are tested, and `atmo test` boots dom0 on both: x86_64 on AMD, the PC as QEMU q35 gives it under KVM on this host, and aarch64 under QEMU virt, under KVM on the Orange Pi. Code that makes another architecture or vendor implausible is not written. What a target fixes goes through two mechanisms and no others. The arch module holds what the instruction set fixes: one implementation per ISA, chosen by `cfg(target_arch)`, each with the same item names, signatures and specs and no trait (`kernel/verified/arch/`, `kernel/src/arch/`, and the loader's and asys's own); `design/arch-module/`. The machine glue holds what the platform fixes, one crate per machine below the kernel (`machine/pc`, `machine/virt`); `design/machine-glue-below-the-kernel/`. No other portability layer is written. Existing untestable code (Intel VT-d) stays until a tested replacement exists.
 
 ## One kernel instance
 
