@@ -13,7 +13,7 @@ use core::mem::{offset_of, size_of};
 
 use verified::arch::Registers;
 
-use super::{spin_forever, write_protect};
+use super::{interrupt, spin_forever, write_protect};
 
 // The stub stores the frame as pairs at fixed offsets: x0 to x30 in order, then SP_EL0, ELR_EL1 and
 // SPSR_EL1. The stack pointer stays 16-byte aligned under the frame, which SCTLR_EL1.SA checks on
@@ -118,13 +118,27 @@ const SOURCES: [&str; 4] = ["EL1 on SP_EL0", "EL1", "EL0", "AArch32 EL0"];
 /// The vector for a synchronous exception from EL1 on SP_EL1, which is where the kernel runs.
 const SYNCHRONOUS_FROM_EL1: u64 = 4;
 
+/// The vectors for an IRQ, from the kernel and from EL0.
+const IRQ_FROM_EL1: u64 = 5;
+const IRQ_FROM_EL0: u64 = 9;
+
+/// Checks that the timer's interrupt reaches this core through the kernel's IRQ vector.
+pub unsafe fn check_interrupt() {
+    interrupt::check(IRQ_FROM_EL1);
+}
+
 const _: () = assert!(KINDS.len() * SOURCES.len() == 16);
 
-/// Every vector's handler. The write-protect check's fault resumes past its write; anything else is
-/// logged with the syndrome, the fault address and the frame, and stops the core. ESR_EL1 is what
-/// the latest synchronous exception or SError wrote (Arm ARM D24.2.44), and FAR_EL1 the address of
-/// the latest abort or alignment fault (D24.2.47), so under an IRQ or FIQ both are older than it.
+/// Every vector's handler. An IRQ goes to the interrupt it names and resumes; the write-protect
+/// check's fault resumes past its write; anything else is logged with the syndrome, the fault
+/// address and the frame, and stops the core. ESR_EL1 is what the latest synchronous exception or
+/// SError wrote (Arm ARM D24.2.44), and FAR_EL1 the address of the latest abort or alignment fault
+/// (D24.2.47), so under an FIQ both are older than it.
 extern "C" fn exception(vector: u64, frame: &mut Registers) {
+    if vector == IRQ_FROM_EL1 || vector == IRQ_FROM_EL0 {
+        interrupt::irq(vector, frame);
+        return;
+    }
     let syndrome: u64;
     let address: u64;
     unsafe {

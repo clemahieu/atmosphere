@@ -12,8 +12,10 @@ use astd::boot::BootInfo;
 use verified::define::PCID_MAX;
 
 use crate::cpu::Cpu;
+use crate::machine;
 
 mod exception;
+mod interrupt;
 pub mod write_protect;
 
 /// The AArch64 share of a core's [`Cpu`]: nothing, since what the instruction set keeps per core is
@@ -52,18 +54,25 @@ pub fn translation_root(boot: &BootInfo) -> u64 {
     translation_base(boot.pml4 as usize, 0)
 }
 
-/// Brings up the boot core, whose [`Cpu`] is in place: its translation control and its exception
-/// vectors.
+/// Brings up the boot core, whose [`Cpu`] is in place: its translation control, its exception
+/// vectors, the machine's interrupt controller and this core's share of it, and then the check that
+/// the timer's interrupt arrives. IRQs stay masked in the kernel outside that check and [`wait`].
 pub unsafe fn init_boot_core() {
     init_translation_control();
     exception::install();
+    machine::interrupt_init();
+    let cpu = crate::cpu::get_cpu_id();
+    machine::interrupt_init_core(cpu);
+    machine::route_external(cpu);
+    exception::check_interrupt();
 }
 
-/// Brings up a core started after the boot core, whose [`Cpu`] is in place, as [`init_boot_core`]
-/// brings up the boot core.
+/// Brings up a core started after the boot core, whose [`Cpu`] is in place: its translation
+/// control, its exception vectors and its share of the interrupt controller.
 pub unsafe fn init_core() {
     init_translation_control();
     exception::install();
+    machine::interrupt_init_core(crate::cpu::get_cpu_id());
 }
 
 /// ID_AA64MMFR0_EL1.ASIDBits, bits 7:4: 0b0010 where an address-space id has 16 bits and 0b0000
