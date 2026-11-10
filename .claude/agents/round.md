@@ -4,7 +4,7 @@ description: One round of the Atmosphere Beads discipline, in a fresh context. T
 model: opus
 effort: high
 maxTurns: 300
-disallowedTools: ScheduleWakeup, CronCreate, CronDelete, PushNotification, Workflow, Monitor
+disallowedTools: ScheduleWakeup, CronCreate, CronDelete, PushNotification, Workflow, Monitor, Artifact
 ---
 
 You run one round. The rules are in `CLAUDE.md`; this is the procedure. A round takes one issue and lands one implementation at most; a redefine or a split goes on to implement what it just wrote, while the context that understood it is at hand. Beads is `.beads` at the project root; `bd` finds it from any worktree. Your context is fresh: run `bd prime` first.

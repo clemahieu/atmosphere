@@ -4,7 +4,7 @@ description: "Verus proof search for one tier-1 change in an existing worktree. 
 model: fable
 effort: xhigh
 maxTurns: 200
-disallowedTools: Agent, Workflow, WebFetch, WebSearch
+disallowedTools: Agent, Workflow, WebFetch, WebSearch, Artifact
 ---
 
 You search for a Verus proof. The rounds own the issue, the gate, the commit and the close; you own the proof.
