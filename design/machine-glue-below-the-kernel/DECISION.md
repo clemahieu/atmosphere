@@ -18,7 +18,7 @@ confidence: "A judgement from a survey of kernel/src at 569f164: the item list a
 
 ```
 machine/pc/      package machine-pc     the x86_64 PC as QEMU q35 gives it: xAPIC, IOAPIC, 8259, COM1, VT-d, INIT-SIPI
-machine/virt/    package machine-virt   QEMU virt on aarch64: GICv3, generic timer, PL011, PSCI, SMMUv3 later
+machine/virt/    package machine-virt   QEMU virt on aarch64: GICv3, generic timer, PL011, PSCI, SMMUv3 refusing every stream
 ```
 
 **Selection.** The kernel depends on each crate under its target and re-exports the one its target selects, as the arch module does:
@@ -59,7 +59,7 @@ The crate issues the instructions it needs itself: `rdmsr` and `wrmsr` of `IA32_
 | `fn send_ipi(cpu: usize, vector: u8)`: returns once this core's interrupt controller has taken it; on virt `vector` is an SGI | `interrupt/lapic.rs` |
 | `unsafe fn start_core(cpu: usize, stack: u64, entry: extern "C" fn(u64) -> !, root: u64)`: starts `cpu` on `stack`, translating through `root`, at `entry` with `cpu` as its argument; on virt PSCI `CPU_ON` for the core's MPIDR affinity, at an entry in the crate that turns translation on and calls `entry` | `interrupt/lapic.rs` `boot_ap(cpu_id: u32, stack: u64, code: u64)`; `boot/ap_start.rs` |
 | `unsafe fn shutdown(success: bool) -> !`: ends the run, then halts in its own loop | `boot/mod.rs` `shutdown` |
-| `unsafe fn iommu_init()`: with no IOMMU in `BootInfo`, does nothing; otherwise installs the tables, routes faults to CPU 0 at `IOMMU_FAULT_VECTOR` and enables translation | `iommu.rs` `init_iommu` |
+| `unsafe fn iommu_init()`: with no IOMMU in `BootInfo`, does nothing; otherwise installs the tables, routes faults to CPU 0 at `IOMMU_FAULT_VECTOR` and enables translation. On virt the SMMUv3's stream table aborts every stream, `iommu_map` and `iommu_invalidate` refuse, and its event interrupt is not yet routed, so `iommu_fault_dump` runs only when called | `iommu.rs` `init_iommu` |
 | `unsafe fn iommu_map(bus: usize, device: usize, function: usize, root: u64) -> Result<(), &'static str>` | `iommu.rs` `map` |
 | `unsafe fn iommu_invalidate(bus: usize, device: usize, function: usize, page: u64) -> Result<(), &'static str>` | `iommu.rs` `invalidate_iotlb` |
 | `fn iommu_fault_dump() -> Result<(), &'static str>` | `iommu.rs` `dump_iommu_fault`; called by the fault handler in `interrupt/mod.rs` |

@@ -1,5 +1,6 @@
-//! QEMU virt on aarch64: the PL011 console, the GICv3, the generic timer, and the PSCI power-off and
-//! start of a second core, on a machine without an IOMMU. design/machine-glue-below-the-kernel/.
+//! QEMU virt on aarch64: the PL011 console, the GICv3, the generic timer, the PSCI power-off and
+//! start of a second core, and the SMMUv3 when the machine has one, with every stream refused.
+//! design/machine-glue-below-the-kernel/.
 
 #![no_std]
 
@@ -34,10 +35,10 @@ pub use console::{console, console_init, Console};
 pub use iommu::{iommu_fault_dump, iommu_init, iommu_invalidate, iommu_map};
 pub use shutdown::{set_option, shutdown};
 
-/// Keeps nothing: what this crate drives is where QEMU virt's device tree puts it, and `boot` names no
-/// IOMMU. Once on the boot core, after the kernel copies `BootInfo`.
+/// Keeps the SMMUv3's base, when `boot` names one; the rest of what this crate drives is where QEMU
+/// virt's device tree puts it. Once on the boot core, after the kernel copies `BootInfo`.
 pub unsafe fn init(boot: &astd::boot::BootInfo) {
-    assert!(boot.iommu_base.is_none(), "machine-virt drives no IOMMU");
+    iommu::keep(boot.iommu_base);
 }
 
 static GIC: Gic = unsafe { Gic::new(interrupt::DISTRIBUTOR, interrupt::REDISTRIBUTORS) };
@@ -199,14 +200,6 @@ mod tests {
     #[test]
     fn init_takes_a_boot_info_without_an_iommu() {
         unsafe { crate::init(&BootInfo::empty()) };
-    }
-
-    #[test]
-    #[should_panic(expected = "machine-virt drives no IOMMU")]
-    fn init_refuses_a_boot_info_with_an_iommu() {
-        let mut boot = BootInfo::empty();
-        boot.iommu_base = Some(0x0905_0000);
-        unsafe { crate::init(&boot) };
     }
 
     #[test]
