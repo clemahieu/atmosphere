@@ -462,21 +462,10 @@ impl ContextTable {
         }
     }
 
-    #[allow(dead_code)]
-    unsafe fn read(self: Pin<&Self>, device: usize, function: usize) -> ContextTableEntry {
-        let index = Self::index(device, function);
-        ptr::read_volatile(self.entry(index))
-    }
-
     unsafe fn write(self: Pin<&mut Self>, device: usize, function: usize, value: ContextTableEntry) {
         let index = Self::index(device, function);
         let e = self.entry_mut(index);
         ptr::write_volatile(e, value);
-    }
-
-    #[allow(dead_code)]
-    fn entry(self: Pin<&Self>, index: usize) -> *const ContextTableEntry {
-        self.entries[index].as_ptr()
     }
 
     fn entry_mut(mut self: Pin<&mut Self>, index: usize) -> *mut ContextTableEntry {
@@ -497,16 +486,6 @@ impl RootTableEntry {
             upper: 0,
             lower: 0,
         }
-    }
-
-    #[allow(dead_code)]
-    fn present(&self) -> bool {
-        (self.lower & 0b1) == 1
-    }
-
-    #[allow(dead_code)]
-    fn address(&self) -> u64 {
-        self.lower & PHYSICAL_PAGE_MASK
     }
 
     fn with_present(mut self, present: bool) -> Self {
@@ -532,16 +511,6 @@ impl ContextTableEntry {
             upper,
             lower: 0,
         }
-    }
-
-    #[allow(dead_code)]
-    fn present(&self) -> bool {
-        (self.lower & 0b1) == 1
-    }
-
-    #[allow(dead_code)]
-    fn address(&self) -> u64 {
-        self.lower & PHYSICAL_PAGE_MASK
     }
 
     fn with_present(mut self, present: bool) -> Self {
