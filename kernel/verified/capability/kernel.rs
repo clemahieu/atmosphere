@@ -573,7 +573,7 @@ impl StaleEpochs {
             first + count <= NUM_PAGES,
             count <= PAGES_PER_2M,
         ensures
-            final(steps).count <= old(steps).count + PAGES_PER_2M,
+            final(steps).count <= old(steps).count + count,
             final(self).wf(),
             forall|g: usize| first <= g < first + count ==> #[trigger] final(self).written(epoch, g),
             forall|a: int, g: usize| a < epoch && g < NUM_PAGES && old(self).above(a, g) ==> #[trigger] final(self).above(a, g),
