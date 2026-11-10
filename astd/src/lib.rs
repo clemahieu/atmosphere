@@ -20,7 +20,6 @@
 //! synchronization-related primitives like mutexes.
 
 pub mod capability;
-pub mod cell;
 pub mod io;
 pub mod memory;
 pub mod string;
