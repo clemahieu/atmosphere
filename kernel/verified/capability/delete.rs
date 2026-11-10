@@ -44,14 +44,16 @@ impl CapKernel {
 
     /// What a delete of the capability at a position did, by a thread of the process whose table is at
     /// root: the delete was allowed, the node had no child, it holds no capability now, every other
-    /// node is as it was, and the step discharges a local effect for the caller, which commands the
-    /// slot.
+    /// node is as it was, every table and every node's parent are as they were, and the step
+    /// discharges a local effect for the caller, which commands the slot.
     pub open spec fn cap_deleted_at(pre: Self, post: Self, root: usize, at: Position) -> bool {
         let n = pre.cap_at(root, at)->0;
         &&& pre.can_delete_at(root, at)
         &&& forall|c: usize| !#[trigger] pre.list.is_child(n, c)
         &&& !post.is_cap(n)
         &&& Self::caps_frame(pre, post, n, n)
+        &&& post.tables == pre.tables
+        &&& post.list.parent@ == pre.list.parent@
         &&& discharges(pre.view(), post.view(), root, Effect::Local)
     }
 
