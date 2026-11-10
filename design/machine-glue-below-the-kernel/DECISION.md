@@ -18,7 +18,7 @@ confidence: "A judgement from a survey of kernel/src at 569f164: the item list a
 
 ```
 machine/pc/      package machine-pc     the x86_64 PC as QEMU q35 gives it: xAPIC, 8259, COM1, VT-d, INIT-SIPI
-machine/virt/    package machine-virt   QEMU virt on aarch64: GICv3, generic timer, PL011, PSCI, SMMUv3 refusing every stream
+machine/virt/    package machine-virt   QEMU virt on aarch64: GICv3, generic timer, PL011, PSCI, pvpanic, SMMUv3 refusing every stream
 ```
 
 **Selection.** The kernel depends on each crate under its target and re-exports the one its target selects, as the arch module does:
@@ -57,13 +57,15 @@ The crate issues the instructions it needs itself: `rdmsr` and `wrmsr` of `IA32_
 | `fn end_of_interrupt()`: on virt ends the interrupt this core acknowledged last | `lapic.rs` `end_of_interrupt` | `interrupt.rs`, the `Gic`'s `end` |
 | `fn send_ipi(cpu: usize, vector: u8)`: returns once this core's interrupt controller has taken it; on virt `vector` is an SGI | `lapic.rs` `send_ipi` | `interrupt.rs` `send` |
 | `unsafe fn start_core(cpu: usize, stack: u64, entry: extern "C" fn(u64) -> !, root: u64)`: starts `cpu` on `stack`, translating through `root`, at `entry` with `cpu` as its argument; on virt PSCI `CPU_ON` for the core's MPIDR affinity, at an entry in the crate that turns translation on and calls `entry` | `lapic.rs` `send_init_sipi`; `ap_start.rs` `StartTrampoline` | `start.rs` `start` |
-| `unsafe fn shutdown(success: bool) -> !`: ends the run, then halts in its own loop | `shutdown.rs` | `shutdown.rs`, PSCI `SYSTEM_OFF` |
+| `unsafe fn shutdown(success: bool) -> !`: ends the run, then halts in its own loop | `shutdown.rs` | `shutdown.rs`, PSCI `SYSTEM_OFF` after a run that succeeded, the pvpanic device after one that failed |
 | `unsafe fn iommu_init()`: with no IOMMU in `BootInfo`, does nothing; otherwise installs the tables, routes faults to CPU 0 at `IOMMU_FAULT_VECTOR` and enables translation. On virt the SMMUv3's stream table aborts every stream, `iommu_map` and `iommu_invalidate` refuse, and its event interrupt is not yet routed, so `iommu_fault_dump` runs only when called | `iommu.rs`, VT-d | `iommu.rs`, the SMMUv3 |
 | `unsafe fn iommu_map(bus: usize, device: usize, function: usize, root: u64) -> Result<(), &'static str>` | `iommu.rs` | `iommu.rs` |
 | `unsafe fn iommu_invalidate(bus: usize, device: usize, function: usize, page: u64) -> Result<(), &'static str>` | `iommu.rs`, over `invalidate_iotlb` | `iommu.rs` |
 | `fn iommu_fault_dump() -> Result<(), &'static str>`: called by the fault handler in each arch module's interrupt code | `iommu.rs` | `iommu.rs` |
 
 `root` in `start_core` is the value the new core loads into its translation base, composed by the kernel's arch module: on x86_64 the kernel's PML4 with `CR3_NO_FLUSH` when PCIDE is on, which `arch::translation_root` composes from `BootInfo`. On the PC, the trampoline turns PCIDE on when that bit is set. On aarch64 it is TTBR0_EL1's value, the kernel's root table under address-space id 0. A core `CPU_ON` starts has translation off, where every address is its own, so the crate's entry runs at its physical address, reads the calling core's TCR_EL1, MAIR_EL1 and SCTLR_EL1, `root`, the stack and `entry` from a block under the stack's top, which `CPU_ON` hands it as its context, and turns translation on where it stands: `root` maps the kernel at its physical addresses, as the loader's table does. The calling core cleans the entry and the block to memory first, since the new core reads both past the caches.
+
+A run ends with QEMU's exit status, which the runner reads: 0 after a run that succeeded, non-zero after one that failed. The PC writes QEMU's debug-exit port after a failed run, which ends QEMU with status 1, and powers off through ACPI otherwise. On virt PSCI offers a power-off, on which QEMU exits 0, so a failed run writes 1 to QEMU's pvpanic PCI device, which ends QEMU with status 1 under `-action panic=exit-failure`. The firmware leaves the device's BAR unplaced, so the crate finds the device on bus 0 by its id, places BAR 0 at the last page of virt's 32-bit PCI window and turns its decode on. It reaches bus 0's configuration space at 0x3f000000, where virt puts it under `highmem-ecam=off`, inside the loader's identity map; `tools/orangepi-kvm.py` launches the machine with both. A failed run on a machine without the device waits for the runner's timeout.
 
 The timer is a one-shot on every machine. The local APIC's stops by itself when it fires. The generic timer's interrupt is a level that stays asserted while the count is past the compare value, so on virt the acknowledgement of the timer's interrupt disables the timer, and the kernel's timer handler is the same on both: arm it again or not, then end the interrupt.
 
@@ -92,6 +94,8 @@ The machine's command-line keys go through `set_option` so the parser stays one 
 - **The aarch64 IRQ entry reading the GIC's acknowledge register itself.** The entry is the ISA's, but which register names the interrupt is the interrupt controller's, and a machine with another controller on the same ISA (bare Apple silicon) acknowledges another way. The acknowledgement sits with the end of interrupt, in the crate that owns the controller.
 - **An `acknowledge_interrupt` on the PC as well, for one list of names.** It would have nothing to return that the vector taken has not already said, and no caller.
 - **`end_of_interrupt` taking the id.** The PC's names nothing, and the signature is shared. The GIC wants the id back, so machine/virt keeps the last one each core acknowledged; the kernel takes one interrupt at a time on a core, so one slot a core is enough.
+- **PSCI `SYSTEM_RESET` under `-no-reboot` for a failed run.** QEMU 10.0.13 on the board exits 0 on it, as on `SYSTEM_OFF`, so the runner cannot tell the two apart.
+- **The ECAM where virt puts it by default, at 0x40_1000_0000.** It lies past the 4 GiB the loader identity maps, and the kernel would map it for the one write at the end of a run.
 - **A shared crate of x86 instruction wrappers for the kernel and the PC crate.** A crate for five one-line functions, each side using a few; each side keeps the ones it issues.
 
 ## What this does not settle
