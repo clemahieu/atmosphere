@@ -250,6 +250,7 @@ impl CapKernel {
         &&& self.root_live(process)
         &&& !self.blocks.pages@[(process / PAGE_SZ) as int].dead
         &&& self.flush_epoch == 0
+        &&& self.devices.count == 0
         &&& forall|r: int| 2 <= r < ROOT_ENTRIES ==> #[trigger] self.tables.leaf(process, r) == NO_LEAF
         &&& forall|j: int| image_tables_bound(image) <= j < untyped_tables(first)
             ==> #[trigger] self.root_table_block(process, cursor_block(first.base, j))

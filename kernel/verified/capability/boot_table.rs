@@ -715,6 +715,7 @@ impl CapKernel {
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).devices == old(self).devices,
             final(self).wf(),
             final(self).root_tables_ready(process),
             final(self).tables == old(self).tables,
@@ -870,6 +871,7 @@ impl CapKernel {
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).devices == old(self).devices,
             final(self).wf(),
             final(self).root_tables_ready(process),
             final(self).tables == old(self).tables,
@@ -1213,6 +1215,7 @@ impl CapKernel {
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).devices == old(self).devices,
             !ret ==> *final(self) == *old(self),
             ret == (image_virt_wf(runs@)
                 && image_tables_bound(runs@) <= untyped_tables(old(self).payload_of(old(self).root_untyped(process)))),
@@ -1290,6 +1293,7 @@ impl CapKernel {
             invariant
                 self.stale_epoch == pre.stale_epoch,
                 self.flush_epoch == pre.flush_epoch,
+                self.devices == pre.devices,
                 r <= runs@.len(),
                 image_runs_wf(runs@),
                 image_virt_wf(runs@),
@@ -1340,6 +1344,7 @@ impl CapKernel {
                 invariant
                     self.stale_epoch == pre.stale_epoch,
                     self.flush_epoch == pre.flush_epoch,
+                    self.devices == pre.devices,
                     r < runs@.len(),
                     image_runs_wf(runs@),
                     image_virt_wf(runs@),

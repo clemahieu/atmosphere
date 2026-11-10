@@ -1194,6 +1194,7 @@ impl CapKernel {
             final(steps).count <= old(steps).count + PLACE_LEAF_STEPS,
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).devices == old(self).devices,
             final(self).iommus == old(self).iommus,
             final(self).wf(),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),

@@ -1361,6 +1361,7 @@ impl CapKernel {
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).devices == old(self).devices,
             final(self).wf(),
             final(self).cores == old(self).cores,
             final(self).spaces.loaded == old(self).spaces.loaded,
@@ -1447,6 +1448,7 @@ impl CapKernel {
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).devices == old(self).devices,
             final(self).wf(),
             final(self).cores == old(self).cores,
             final(self).spaces.loaded == old(self).spaces.loaded,
@@ -1630,6 +1632,7 @@ impl CapKernel {
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).devices == old(self).devices,
             final(self).wf(),
             ret == old(self).can_link(root, slot, parent, entry, from, child),
             final(self).spaces.loaded == old(self).spaces.loaded,

@@ -999,6 +999,7 @@ impl CapKernel {
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).devices == old(self).devices,
             final(self).wf(),
             final(self).cores == old(self).cores,
             ret == old(self).can_map(root, slot, SpaceKind::Process, SpacePath { l4, l3, l2, l1 }, from, page),
@@ -1225,6 +1226,7 @@ impl CapKernel {
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).devices == old(self).devices,
             final(self).wf(),
             final(self).cores == old(self).cores,
             ret == old(self).can_map(root, slot, kind, SpacePath { l4, l3, l2, l1 }, from, page),
@@ -1508,6 +1510,7 @@ impl CapKernel {
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).devices == old(self).devices,
             final(self).wf(),
             final(self).cores == old(self).cores,
             ret == (block_refs(&old(self).blocks, block_ref(&old(self).blocks, frame)) != usize::MAX),

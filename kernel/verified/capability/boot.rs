@@ -143,6 +143,7 @@ impl CapKernel {
                 ==> #[trigger] holds(pages, i),
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
+            final(self).devices == old(self).devices,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).wf(),
             final(self).list.seq@[0] == root,
@@ -415,6 +416,7 @@ impl CapKernel {
             forall|i: usize| t / PAGE_SZ <= i < t / PAGE_SZ + 2 ==> #[trigger] holds(pages, i),
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
+            final(self).devices == old(self).devices,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).wf(),
             final(self).list.seq@[0] == root,
@@ -696,6 +698,7 @@ impl CapKernel {
             forall|i: usize| leaf / PAGE_SZ <= i < leaf / PAGE_SZ + 2 ==> #[trigger] holds(pages, i),
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
+            final(self).devices == old(self).devices,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).wf(),
             final(self).list.seq@[0] == root,
@@ -829,6 +832,7 @@ impl CapKernel {
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).devices == old(self).devices,
             final(self).wf(),
             final(self).list.seq@[0] == root,
             final(self).tables.has_slot(&final(self).list, process, ROOT_PROCESS_SLOT),
@@ -1155,6 +1159,7 @@ impl CapKernel {
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).devices == old(self).devices,
             final(self).wf(),
             final(self).list.seq@[0] == root,
             final(self).tables.roots == old(self).tables.roots,
@@ -1339,6 +1344,7 @@ impl CapKernel {
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).devices == old(self).devices,
             final(self).wf(),
             final(self).list.seq@[0] == root,
             final(self).tables.roots == old(self).tables.roots,
