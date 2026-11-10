@@ -17,7 +17,7 @@ confidence: "A judgement from a survey of kernel/src at 569f164: the item list a
 **Crates.** One crate per machine, each a `no_std` workspace member:
 
 ```
-machine/pc/      package machine-pc     the x86_64 PC as QEMU q35 gives it: xAPIC, IOAPIC, 8259, COM1, VT-d, INIT-SIPI
+machine/pc/      package machine-pc     the x86_64 PC as QEMU q35 gives it: xAPIC, 8259, COM1, VT-d, INIT-SIPI
 machine/virt/    package machine-virt   QEMU virt on aarch64: GICv3, generic timer, PL011, PSCI, SMMUv3 refusing every stream
 ```
 
@@ -50,9 +50,8 @@ The crate issues the instructions it needs itself: `rdmsr` and `wrmsr` of `IA32_
 | `unsafe fn init(boot: &BootInfo)`: once on the boot core, after the kernel copies `BootInfo`; keeps what the machine needs from it, the IOMMU base (`boot.iommu_base`) | `iommu.rs` `store_base` | `iommu.rs` `keep` |
 | `fn set_option(key: &str, value: &str) -> bool`: the kernel's command-line parser offers each key it does not own; true when the machine took the key and its value parsed, false makes the parser reject it as it rejects an unknown key | `shutdown.rs`, taking `qemu_debug_exit_io_base` and `bochs_apm_io_base` | `shutdown.rs`, taking none |
 | `unsafe fn console_init()`, then `fn console() -> Console` where each crate's `Console` implements `core::fmt::Write` and holds the port's lock while it lives; the kernel's `logging.rs` writes through it | `console.rs`, COM1's 16550 | `console.rs`, the PL011 |
-| `unsafe fn interrupt_init()`: once on the boot core before any `interrupt_init_core`; masks the 8259s and finds the IOAPIC; on virt turns the GIC's Distributor on with affinity routing and Group 1 | `lib.rs`, the 8259 masking; `mps.rs` `probe_ioapic`; `ioapic.rs` `init` | `interrupt.rs`, the `Gic`'s `init` |
+| `unsafe fn interrupt_init()`: once on the boot core before any `interrupt_init_core`; masks the 8259s and finds the local APIC; on virt turns the GIC's Distributor on with affinity routing and Group 1 | `lib.rs`, the 8259 masking; `lapic.rs` `probe` | `interrupt.rs`, the `Gic`'s `init` |
 | `unsafe fn interrupt_init_core(cpu: usize)`: once on each core; enables its local APIC and points its one-shot timer at `TIMER_VECTOR`, unarmed; on virt wakes the core's Redistributor, enables the flush SGI and the timer's PPI, turns its CPU interface on through the ICC system registers and disables its timer | `lapic.rs` `init_core`, over `x86_xapic.rs` `attach` and `tsc_enable` | `interrupt.rs`, the `Gic`'s `init_core` |
-| `unsafe fn route_external(cpu: usize)`: routes the IOAPIC's inputs to `cpu`; on virt nothing, since the crate enables no SPI | `ioapic.rs` `route` | `lib.rs`, which asserts the index and does nothing else |
 | `fn set_timer(ticks: u64)`: arms this core's one-shot timer; on virt the EL1 physical timer, `ticks` of the physical count from now | `lapic.rs` `set_timer` | `timer.rs` `arm` |
 | `fn acknowledge_interrupt() -> Option<u32>`, in machine/virt alone: acknowledges the interrupt this core took and returns its id, or nothing when none was pending, in which case there is nothing to end; called only by the aarch64 IRQ entry | none: the IDT's vector names the interrupt | `lib.rs`, over the `Gic`'s `acknowledge` and `timer.rs` `disarm` |
 | `fn end_of_interrupt()`: on virt ends the interrupt this core acknowledged last | `lapic.rs` `end_of_interrupt` | `interrupt.rs`, the `Gic`'s `end` |
@@ -99,5 +98,5 @@ The machine's command-line keys go through `set_option` so the parser stays one 
 
 - `BootInfo`'s shape on aarch64. It lives in `astd::boot`, shared with the loader, and carries ISA fields (`pml4`, `pcide`) beside the machine's (`iommu_base`); the loader's port decides it.
 - How many cores there are. `start_core` takes an index the kernel chooses, and nothing discovers the core count today (no MADT walk on the PC, no device tree walk on virt).
-- Whether the IOAPIC routes are wanted. Inputs 0 and 1 go to vectors 32 and 33, which are also the timer's and the IOMMU fault's; `route_external` keeps that.
+- How a device's interrupt reaches the kernel. No crate routes one: machine/pc leaves the IOAPIC as firmware left it and machine/virt enables no SPI, since nothing in the kernel serves a device interrupt. The item that routes them, and the vectors it uses beside the three above, come with the first driver that needs one.
 - The verified IOMMU model in `kernel/verified` beyond its command ring, which `design/arch-module/` puts in the arch module and otherwise leaves open. This record moves only the unverified driver.

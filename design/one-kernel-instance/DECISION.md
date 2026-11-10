@@ -51,5 +51,5 @@ An admin who later wants nodes for contention or isolation gets them only after 
 
 ## What this does not settle
 
-- When several instances start, which node owns the IOMMU root table and the IOAPIC, both single hardware structures that one `Kernel` value holds or drives today, and how device init, which hands every device to one root, and the machine-wide PCI names a process passes fit a per-node root. Recorded with the deferred work.
+- When several instances start, which node owns the IOMMU root table, a single hardware structure that one `Kernel` value holds today, and the IOAPIC once device interrupts are routed through it, and how device init, which hands every device to one root, and the machine-wide PCI names a process passes fit a per-node root. Recorded with the deferred work.
 - Whether a spanning library is ever written, and if so whether it is C's sibling-process shape.

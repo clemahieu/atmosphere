@@ -133,7 +133,6 @@ pub unsafe fn init_boot_core() {
     machine::interrupt_init();
     let cpu = crate::cpu::get_cpu_id();
     machine::interrupt_init_core(cpu);
-    machine::route_external(cpu);
     exception::check_interrupt();
 }
 

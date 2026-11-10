@@ -89,7 +89,7 @@ pub fn translation_root(boot: &BootInfo) -> u64 {
 }
 
 /// Brings up the boot core, whose [`Cpu`] is in place: the control bits, its GDT and TSS, the IDT
-/// every core shares, its local APIC with the IOAPIC routed to it, and the syscall entry.
+/// every core shares, its local APIC, and the syscall entry.
 pub unsafe fn init_boot_core() {
     init_control_registers();
     init_performance_counters();

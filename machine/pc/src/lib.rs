@@ -1,13 +1,11 @@
-//! The x86_64 PC machine: COM1, the xAPIC, the IOAPIC, the 8259s and the IOMMU. design/machine-glue-below-the-kernel/.
+//! The x86_64 PC machine: COM1, the xAPIC, the 8259s and the IOMMU. design/machine-glue-below-the-kernel/.
 
 #![no_std]
 
 mod ap_start;
 mod console;
-mod ioapic;
 mod iommu;
 mod lapic;
-mod mps;
 mod msr;
 mod port;
 mod shutdown;
@@ -30,7 +28,7 @@ pub use console::{console, console_init, Console};
 const PIC1_DATA: u16 = 0x21;
 const PIC2_DATA: u16 = 0xa1;
 
-/// Masks the 8259s and finds the IOAPIC. Once on the boot core, before any `interrupt_init_core`.
+/// Masks the 8259s and finds the local APIC. Once on the boot core, before any `interrupt_init_core`.
 pub unsafe fn interrupt_init() {
     let pic1 = port::inb(PIC1_DATA);
     let pic2 = port::inb(PIC2_DATA);
@@ -39,21 +37,12 @@ pub unsafe fn interrupt_init() {
     port::outb(PIC2_DATA, 0xff);
 
     lapic::probe();
-    let ioapic_base = mps::probe_ioapic();
-    ioapic::init(ioapic_base);
 }
 
 /// Enables `cpu`'s local APIC and points its one-shot timer at [`TIMER_VECTOR`], unarmed. Once on each core.
 pub unsafe fn interrupt_init_core(cpu: usize) {
     let _ = cpu;
     lapic::init_core(TIMER_VECTOR);
-}
-
-/// Routes the IOAPIC's inputs to `cpu`.
-pub unsafe fn route_external(cpu: usize) {
-    ioapic::route(cpu as u8);
-    let (id, logical) = lapic::ids();
-    log::debug!("Init CPU {} {} {}", cpu, id, logical);
 }
 
 /// Arms this core's one-shot timer.

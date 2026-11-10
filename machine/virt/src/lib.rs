@@ -56,11 +56,6 @@ pub unsafe fn interrupt_init_core(cpu: usize) {
     GIC.init_core(cpu);
 }
 
-/// Routes the external interrupts to `cpu`: none, since this crate enables no SPI.
-pub unsafe fn route_external(cpu: usize) {
-    assert!(cpu < MAX_CPUS);
-}
-
 /// Arms this core's one-shot timer to fire `ticks` of the physical count from now.
 pub fn set_timer(ticks: u64) {
     timer::arm(ticks);
@@ -116,7 +111,6 @@ mod tests {
         writer::<crate::Console>();
         let _: unsafe fn() = crate::interrupt_init;
         let _: unsafe fn(usize) = crate::interrupt_init_core;
-        let _: unsafe fn(usize) = crate::route_external;
         let _: fn(u64) = crate::set_timer;
         let _: fn() -> Option<u32> = crate::acknowledge_interrupt;
         let _: fn() = crate::end_of_interrupt;
@@ -181,12 +175,6 @@ mod tests {
         assert_eq!(crate::acknowledge(&gic), None);
 
         assert_eq!(events(), [Event::Read { register: System::IccIar1 }]);
-    }
-
-    #[test]
-    fn no_external_interrupt_is_routed() {
-        unsafe { crate::route_external(1) };
-        assert_eq!(events(), []);
     }
 
     #[test]

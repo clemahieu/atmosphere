@@ -38,11 +38,6 @@ pub fn send_ipi(cpu: usize, vector: u8) {
     unsafe { lapic().send_ipi(Icr::fixed(cpu as u8, vector)) };
 }
 
-pub fn ids() -> (u32, u32) {
-    let xapic = lapic();
-    (xapic.id(), xapic.logical_id())
-}
-
 /// Waits between start-up IPIs. The architecture asks for 10 ms and 200 us. No timer is calibrated this
 /// early, so this is a fixed spin, which only QEMU has exercised.
 fn start_delay() {

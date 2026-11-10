@@ -381,15 +381,6 @@ impl Icr {
 }
 
 impl XAPIC {
-    /// Read local APIC ID.
-    pub fn id(&self) -> u32 {
-        self.read(ApicRegister::XAPIC_ID)
-    }
-
-    pub fn logical_id(&self) -> u32 {
-        self.read(ApicRegister::XAPIC_LDR)
-    }
-
     /// End Of Interrupt -- Acknowledge interrupt delivery.
     pub fn eoi(&mut self) {
         self.write(ApicRegister::XAPIC_EOI, 0);

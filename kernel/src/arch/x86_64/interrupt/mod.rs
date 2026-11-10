@@ -379,13 +379,12 @@ pub unsafe fn init() {
 pub unsafe fn init_cpu() {
     let cpu = crate::cpu::get_cpu_id();
     machine::interrupt_init_core(cpu);
-    machine::route_external(cpu);
 
     // Shared: init is done, so the IDT is only read from here on.
     (*&raw const GLOBAL_IDT).load();
 }
 
-/// Initializes an application processor's interrupts. The IOAPIC stays routed to CPU 0.
+/// Initializes an application processor's interrupts.
 ///
 /// This should be called only once per CPU. Interrupts stay masked, as in [`init_cpu`].
 pub unsafe fn init_ap() {
