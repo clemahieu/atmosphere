@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
-"""Check the trusted surface of kernel/verified: every attribute that exempts code from a proof is
-listed in tools/external-body-list with its reason, and no assume or admit is left.
+"""Check the trusted surface of every crate marked verified: every attribute that exempts code from a
+proof is listed in tools/external-body-list with its reason, and no assume or admit is left.
 
-Two attributes exempt code: external_body, from the proof of what a function does, and
-exec_allows_no_decreases_clause, from the proof that it terminates. Each live one, spelled
-'#[verifier::<attribute>]' or '#[verifier(<attribute>)]', is followed by a line
+The crates checked are the workspace members whose Cargo.toml marks them
+'[package.metadata.atmosphere] verified = true', the crates tools/verify.py proves; each one's
+directory is scanned for Rust sources. Two attributes exempt code: external_body, from the proof of
+what a function does, and exec_allows_no_decreases_clause, from the proof that it terminates. Each
+live one, spelled '#[verifier::<attribute>]' or '#[verifier(<attribute>)]', is followed by a line
 '// <attribute>(<class>): <reason>', where the class is glue, gap or unproven (CLAUDE.md,
 Testability), and then by the function it applies to. The list holds one line per attribute: path
-under kernel/verified, item, attribute, class and reason, separated by tabs. The check passes when
+from the repository root, item, attribute, class and reason, separated by tabs. The check passes when
 the source and the list hold the same items, counting an item that appears twice in one file twice. A call
-of assume( or admit( outside a '//' comment fails the check: kernel/verified holds none, and a new
-one would be an axiom the proof rests on. The retired 'old' trees are not scanned.
+of assume( or admit( outside a '//' comment fails the check: the marked crates hold none, and a new
+one would be an axiom the proof rests on. The retired 'old' trees and build output under 'target'
+are not scanned.
 
 usage: tools/check-external-body.py           (the tree)
        tools/check-external-body.py --test    (this script's own tests)
@@ -18,6 +21,8 @@ usage: tools/check-external-body.py           (the tree)
 import json
 import re
 import sys
+import tempfile
+import tomllib
 import unittest
 from collections import Counter, namedtuple
 from pathlib import Path
@@ -26,7 +31,7 @@ sys.dont_write_bytecode = True
 
 REPO = Path(__file__).resolve().parent.parent
 LIST_PATH = "tools/external-body-list"
-VERIFIED_ROOT = "kernel/verified"
+SKIPPED_DIRECTORIES = ("old", "target")
 ATTRIBUTES = ("external_body", "exec_allows_no_decreases_clause")
 ATTRIBUTE = re.compile(r"#\[verifier(?:::(\w+)\]|\((\w+)\)\])")
 CLASSES = ("glue", "gap", "unproven")
@@ -128,29 +133,49 @@ def compare(found, listed):
 
 
 def sources(directory):
-    """The Rust sources under a directory, leaving out the retired 'old' trees."""
+    """The Rust sources under a directory, leaving out the retired 'old' trees and build output."""
     for entry in sorted(directory.iterdir()):
         if entry.is_dir():
-            if entry.name != "old":
+            if entry.name not in SKIPPED_DIRECTORIES:
                 yield from sources(entry)
         elif entry.suffix == ".rs":
             yield entry
+
+
+def marked_crates(repo):
+    """The directories, from the repository root, of the workspace members marked verified, in the
+    order the workspace lists them."""
+    with open(repo / "Cargo.toml", "rb") as manifest:
+        members = tomllib.load(manifest)["workspace"]["members"]
+    marked = []
+    for member in members:
+        with open(repo / member / "Cargo.toml", "rb") as manifest:
+            package = tomllib.load(manifest)["package"]
+        if package.get("metadata", {}).get("atmosphere", {}).get("verified", False):
+            marked.append(member)
+    return marked
+
+
+def scan_tree(repo):
+    """Each live attribute and each assume or admit in the marked crates, named from the root."""
+    found = []
+    assumed = []
+    for crate in marked_crates(repo):
+        for file in sources(repo / crate):
+            path = file.relative_to(repo).as_posix()
+            source = file.read_text(encoding="utf-8")
+            found.extend(scan(path, source))
+            assumed.extend(assumptions(path, source))
+    return found, assumed
 
 
 def main(args):
     if args:
         print(__doc__.split("usage: ")[1], file=sys.stderr)
         return 2
-    verified = REPO / VERIFIED_ROOT
     try:
         listed = parse_list((REPO / LIST_PATH).read_text(encoding="utf-8"))
-        found = []
-        assumed = []
-        for file in sources(verified):
-            path = file.relative_to(verified).as_posix()
-            source = file.read_text(encoding="utf-8")
-            found.extend(scan(path, source))
-            assumed.extend(assumptions(path, source))
+        found, assumed = scan_tree(REPO)
     except Unreadable as error:
         print(error, file=sys.stderr)
         return 1
@@ -282,6 +307,55 @@ class Tests(unittest.TestCase):
         )
         with self.assertRaises(Unreadable):
             parse_list("a.rs\tf\ttrusted\tunproven\tx\n")
+
+    def workspace(self, crates):
+        """A workspace in a temporary directory: each crate's directory, whether it is marked
+        verified, and its sources by path under the crate."""
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        repo = Path(directory.name)
+        members = ", ".join(f'"{crate}"' for crate in crates)
+        (repo / "Cargo.toml").write_text(f"[workspace]\nmembers = [{members}]\n")
+        for crate, (marked, files) in crates.items():
+            manifest = f'[package]\nname = "{crate.replace("/", "-")}"\n'
+            if marked:
+                manifest += "\n[package.metadata.atmosphere]\nverified = true\n"
+            (repo / crate).mkdir(parents=True)
+            (repo / crate / "Cargo.toml").write_text(manifest)
+            for name, source in files.items():
+                (repo / crate / name).parent.mkdir(parents=True, exist_ok=True)
+                (repo / crate / name).write_text(source)
+        return repo
+
+    def test_marked_crates_are_the_workspace_members_marked_verified(self):
+        repo = self.workspace({"kernel/verified": (True, {}), "heap": (True, {}), "dom0": (False, {})})
+        self.assertEqual(marked_crates(repo), ["kernel/verified", "heap"])
+
+    def test_every_marked_crate_is_scanned_under_its_repository_path(self):
+        glue = f"{ATTR}\n// external_body(glue): a syscall\npub fn back()\n"
+        repo = self.workspace({
+            "kernel/verified": (True, {"a.rs": f"{ATTR}\n// external_body(gap): x\nfn f()\n"}),
+            "heap": (True, {"src/source.rs": glue, "src/lib.rs": "proof fn p() { assume(false); }\n"}),
+        })
+        found, assumed = scan_tree(repo)
+        listed = [body("kernel/verified/a.rs", "f", "gap", "x")]
+        self.assertEqual(
+            compare(found, listed),
+            ["heap/src/source.rs back external_body (glue: a syscall) is not on the list"],
+        )
+        self.assertEqual(assumed, ["heap/src/lib.rs:1: proof fn p() { assume(false); }"])
+
+    def test_an_unmarked_crate_is_not_scanned(self):
+        repo = self.workspace({
+            "kernel/verified": (True, {}),
+            "dom0": (False, {"src/main.rs": f"{ATTR}\nfn f()\nfn g() {{ assume(false); }}\n"}),
+        })
+        self.assertEqual(scan_tree(repo), ([], []))
+
+    def test_old_and_target_trees_are_not_scanned(self):
+        live = f"{ATTR}\n// external_body(gap): x\nfn f()\n"
+        repo = self.workspace({"heap": (True, {"old/a.rs": "fn f() { admit(); }\n", "target/b.rs": live})})
+        self.assertEqual(scan_tree(repo), ([], []))
 
     def test_a_changed_reason_shows_on_both_sides(self):
         self.assertEqual(len(compare([body("a.rs", "f", "gap", "x")], [body("a.rs", "f", "gap", "y")])), 2)

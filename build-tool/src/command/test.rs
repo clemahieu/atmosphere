@@ -278,7 +278,7 @@ async fn check_licenses(project: &ProjectHandle) -> Result<String> {
     Ok(output.trim_end().to_string())
 }
 
-/// Runs the external_body check's own tests, then the check over kernel/verified.
+/// Runs the external_body check's own tests, then the check over every crate marked verified.
 async fn check_external_body(project: &ProjectHandle) -> Result<String> {
     run_check(project, EXTERNAL_BODY_CHECK, &["--test"]).await?;
     let output = check_output(project, EXTERNAL_BODY_CHECK).await?;
