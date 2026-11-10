@@ -70,7 +70,7 @@ pub ghost struct State {
     pub bound: Map<ObjectId, ObjectId>,
     /// (device space, frame): the device space maps the frame, so whoever sees the space reaches it.
     /// See design/device-binding-under-the-space-capability/.
-    pub shares: Set<(ObjectId, ObjectId)>,
+    pub shares: ISet<(ObjectId, ObjectId)>,
     /// The device space each bound device is bound to, whose mappings its accesses go through.
     pub binds: Map<ObjectId, ObjectId>,
     /// What a process can see of an object: a frame's bytes, a thread's registers, a notification's
@@ -422,7 +422,7 @@ proof fn lemma_sees_carries(a: State, b: State, q: ObjectId, q2: ObjectId, s: Ob
 /// So what q reaches through a space in a, q or q2 does in b, when b's spaces map what a's do.
 proof fn lemma_shared_carries(a: State, b: State, q: ObjectId, q2: ObjectId, o: ObjectId)
     requires
-        a.shares == b.shares,
+        a.shares.subset_of(b.shares),
         a.binds == b.binds,
         forall|x: ObjectId| #[trigger] a.direct(q, x) ==> b.direct(q, x) || b.direct(q2, x),
         a.shared(q, o),
@@ -443,7 +443,7 @@ proof fn lemma_shared_carries(a: State, b: State, q: ObjectId, q2: ObjectId, o: 
 /// q's direct or shared edge to o in a is q's or q2's in b, under the same conditions.
 proof fn lemma_edge_carries(a: State, b: State, q: ObjectId, q2: ObjectId, o: ObjectId)
     requires
-        a.shares == b.shares,
+        a.shares.subset_of(b.shares),
         a.binds == b.binds,
         forall|x: ObjectId| #[trigger] a.direct(q, x) ==> b.direct(q, x) || b.direct(q2, x),
         a.direct(q, o) || a.shared(q, o),
@@ -1981,25 +1981,6 @@ pub proof fn lemma_adds_share_discharges(pre: State, post: State, p: ObjectId, s
     }
 }
 
-/// A step that discharges a local one and is a share's by who may take it discharges the share: it
-/// grows no reach and gives no right a local step may not.
-pub proof fn lemma_local_is_share(pre: State, post: State, p: ObjectId, space: NodeId, from: NodeId)
-    requires
-        discharges(pre, post, p, Effect::Local),
-        authorized(pre, p, Effect::Share { space, from }),
-    ensures
-        discharges(pre, post, p, Effect::Share { space, from }),
-{
-    let e = Effect::Share { space, from };
-    assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) && !pre.reach(r, o) implies may_grow(pre, p, e, r, o) by {
-        assert(may_grow(pre, p, Effect::Local, r, o));
-    }
-    assert forall|x: NodeId, r: Right| #[trigger] post.rights.contains((x, r)) && post.names.contains_key(x)
-        implies (pre.rights.contains((x, r)) && pre.names.contains_key(x)) || may_hold(pre, post, e, x, r) by {
-        assert((pre.rights.contains((x, r)) && pre.names.contains_key(x)) || may_hold(pre, post, Effect::Local, x, r));
-    }
-}
-
 /// a's authority carries over to b through a renaming f of a's live nodes: whatever a process holds,
 /// each capability's block and rights and each live node's parent are in b under the new names.
 pub open spec fn simulates(a: State, b: State, live: spec_fn(NodeId) -> bool, f: spec_fn(NodeId) -> NodeId) -> bool {
@@ -2020,7 +2001,7 @@ pub open spec fn simulates(a: State, b: State, live: spec_fn(NodeId) -> bool, f:
         &&& b.parent[f(x)] == f(a.parent[x])
     }
     &&& a.maps == b.maps
-    &&& a.shares == b.shares
+    &&& a.shares.subset_of(b.shares)
     &&& a.binds == b.binds
     &&& a.process_of == b.process_of
     &&& adds_no_waiter(b, a)
@@ -2162,7 +2143,7 @@ pub open spec fn simulates_claim(
         &&& b.parent[f(x)] == f(a.parent[x])
     }
     &&& a.maps == b.maps
-    &&& a.shares == b.shares
+    &&& a.shares.subset_of(b.shares)
     &&& a.binds == b.binds
     &&& a.process_of == b.process_of
     &&& adds_no_waiter(b, a)
@@ -2626,6 +2607,120 @@ pub proof fn lemma_simulated_discharges_local(
     }
 }
 
+/// A map into the device space that capability `space` names, by a holder of it with the write right:
+/// post's authority is all in pre, and whatever its device spaces map beyond pre's is in that space and
+/// in the mapper's reach. What anyone gains is such a page, and only through seeing the space.
+pub proof fn lemma_simulated_discharges_share(
+    pre: State,
+    post: State,
+    p: ObjectId,
+    space: NodeId,
+    from: NodeId,
+    live: spec_fn(NodeId) -> bool,
+    f: spec_fn(NodeId) -> NodeId,
+)
+    requires
+        simulates(State { shares: pre.shares, ..post }, pre, live, f),
+        forall|x: NodeId| #[trigger] f(x) == x,
+        forall|x: NodeId| #[trigger] pre.names.contains_key(x) ==> post.names.contains_key(x),
+        forall|o: ObjectId| #[trigger] (post.contents)(o) == (pre.contents)(o),
+        authorized(pre, p, Effect::Share { space, from }),
+        forall|s: ObjectId, o: ObjectId| #[trigger] post.shares.contains((s, o)) && !pre.shares.contains((s, o))
+            ==> s == pre.names[space] && pre.reach(p, o),
+    ensures
+        discharges(pre, post, p, Effect::Share { space, from }),
+{
+    let e = Effect::Share { space, from };
+    let sp = pre.names[space];
+    let mid = State { shares: pre.shares, ..post };
+    lemma_simulated_discharges_local(pre, mid, p, live, f);
+    assert forall|o: ObjectId| #[trigger] State::changed(pre, post, o) implies may_change(pre, e, o) by {
+        assert((post.contents)(o) == (pre.contents)(o));
+    }
+    assert forall|n: NodeId| #[trigger] State::removed(pre, post, n) implies may_remove(pre, p, e, n) by {
+        assert(post.names.contains_key(n));
+    }
+    assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) && !pre.reach(r, o) implies may_grow(pre, p, e, r, o) by {
+        let (q, k) = choose|q: ObjectId, k: nat| #[trigger] post.controlled(r, q, k)
+            && (o == q || post.direct(q, o) || post.shared(q, o));
+        lemma_same_authority_same_controlled(post, mid, r, q, k);
+        lemma_simulates_controlled(mid, pre, live, f, r, q, k);
+        assert forall|x: ObjectId| #[trigger] post.direct(q, x) implies pre.direct(q, x) by {
+            lemma_same_authority_same_direct(post, mid, q, x);
+            lemma_simulates_direct(mid, pre, live, f, q, x);
+        }
+        assert(pre.controlled(r, q, k));
+        assert(o != q && !pre.direct(q, o) && !pre.shared(q, o));
+        if exists|d: ObjectId| #[trigger] post.binds.contains_key(d) && post.binds[d] == o && post.direct(q, d) {
+            let d = choose|d: ObjectId| #[trigger] post.binds.contains_key(d) && post.binds[d] == o && post.direct(q, d);
+            assert(pre.binds.contains_key(d) && pre.binds[d] == o && pre.direct(q, d));
+        } else {
+            let t = choose|t: ObjectId| #[trigger] post.shares.contains((t, o)) && post.sees(q, t);
+            if !post.direct(q, t) {
+                let d = choose|d: ObjectId| #[trigger] post.binds.contains_key(d) && post.binds[d] == t && post.direct(q, d);
+                assert(pre.binds.contains_key(d) && pre.binds[d] == t && pre.direct(q, d));
+            }
+            assert(pre.sees(q, t));
+            if pre.shares.contains((t, o)) {
+                assert(pre.shared(q, o));
+            }
+            assert(t == sp && pre.reach(p, o));
+            assert(pre.controlled(r, q, k) && pre.sees(q, sp));
+        }
+    }
+    assert forall|w: (ObjectId, ObjectId)| #[trigger] post.waiting.contains(w) && !pre.waiting.contains(w)
+        implies may_wait(pre, p, w) by {
+        assert(mid.waiting.contains(w));
+    }
+    assert forall|w: (ObjectId, ObjectId)| #[trigger] post.waiting.contains(w)
+        implies post.process_behind(w.1) == pre.process_behind(w.1) by {
+        assert(mid.waiting.contains(w));
+        assert(mid.process_behind(w.1) == pre.process_behind(w.1));
+    }
+    assert forall|x: NodeId, r: Right| #[trigger] post.rights.contains((x, r)) && post.names.contains_key(x)
+        implies (pre.rights.contains((x, r)) && pre.names.contains_key(x)) || may_hold(pre, post, e, x, r) by {
+        assert(f(x) == x);
+        assert(mid.rights.contains((x, r)));
+        assert(mid.names.contains_key(x));
+    }
+}
+
+/// post is pre with fewer pages in device spaces: a mapping of a device space went, and nothing else.
+pub open spec fn sheds_shares(pre: State, post: State) -> bool {
+    &&& post == (State { shares: post.shares, ..pre })
+    &&& post.shares.subset_of(pre.shares)
+}
+
+/// Such a step is local: reach only shrinks.
+pub proof fn lemma_sheds_shares_discharges_local(pre: State, post: State, p: ObjectId)
+    requires
+        sheds_shares(pre, post),
+    ensures
+        discharges(pre, post, p, Effect::Local),
+{
+    let live = |x: NodeId| true;
+    let f = |x: NodeId| x;
+    assert(simulates(post, pre, live, f));
+    lemma_simulated_discharges_local(pre, post, p, live, f);
+}
+
+/// So is it a slice of a teardown, by a holder of an untyped with the retype right.
+pub proof fn lemma_sheds_shares_discharges_teardown(pre: State, post: State, p: ObjectId, untyped: NodeId, object: ObjectId)
+    requires
+        sheds_shares(pre, post),
+        pre.holds_right(p, untyped, Right::Retype),
+    ensures
+        discharges(pre, post, p, Effect::Teardown { untyped, object }),
+{
+    let live = |x: NodeId| true;
+    let f = |x: NodeId| x;
+    assert(simulates(post, pre, live, f));
+    lemma_no_change_discharges_teardown(pre, p, untyped, object);
+    assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) implies pre.reach(r, o) by {
+        lemma_simulates_reach(post, pre, live, f, r, o);
+    }
+}
+
 /// Two steps of revoking one capability are one: what they remove descends from it in the first state,
 /// since a revoke changes no parent, and reach only shrinks. The authority is the first step's, the
 /// caller commanding the capability when the revoke began; the second is stated for the capability's
@@ -2742,7 +2837,7 @@ pub open spec fn example() -> State {
         process_of: Map::empty(),
         waiting: Set::empty(),
         bound: Map::empty(),
-        shares: Set::empty(),
+        shares: ISet::empty(),
         binds: Map::empty(),
         contents: |o: ObjectId| Seq::empty(),
     }
@@ -2851,7 +2946,7 @@ pub open spec fn control_example() -> State {
         process_of: map![3usize => 2usize],
         waiting: Set::empty(),
         bound: Map::empty(),
-        shares: Set::empty(),
+        shares: ISet::empty(),
         binds: Map::empty(),
         contents: |o: ObjectId| Seq::empty(),
     }
@@ -3038,7 +3133,7 @@ pub open spec fn retype_example() -> State {
         process_of: Map::empty(),
         waiting: Set::empty(),
         bound: Map::empty(),
-        shares: Set::empty(),
+        shares: ISet::empty(),
         binds: Map::empty(),
         contents: |o: ObjectId| Seq::empty(),
     }
@@ -3228,7 +3323,7 @@ pub open spec fn send_example() -> State {
         process_of: Map::empty(),
         waiting: Set::empty(),
         bound: Map::empty(),
-        shares: Set::empty(),
+        shares: ISet::empty(),
         binds: Map::empty(),
         contents: |o: ObjectId| Seq::empty(),
     }
@@ -3305,7 +3400,7 @@ pub open spec fn share_example() -> State {
         process_of: Map::empty(),
         waiting: Set::empty(),
         bound: Map::empty(),
-        shares: Set::empty(),
+        shares: ISet::empty(),
         binds: map![DEVICE_OBJECTS => EXAMPLE_BASE],
         contents: |o: ObjectId| Seq::empty(),
     }
@@ -3313,7 +3408,7 @@ pub open spec fn share_example() -> State {
 
 /// `share_example` with the frame mapped into the space at t.
 pub open spec fn shared_into(t: ObjectId) -> State {
-    State { shares: set![(t, share_frame())], ..share_example() }
+    State { shares: ISet::empty().insert((t, share_frame())), ..share_example() }
 }
 
 /// With no control right in `share_example`, a process reaches through itself alone.
@@ -3603,7 +3698,7 @@ proof fn lemma_same_authority_same_reach(a: State, b: State, r: ObjectId, o: Obj
         a.rights == b.rights,
         a.parent == b.parent,
         a.maps == b.maps,
-        a.shares == b.shares,
+        a.shares.subset_of(b.shares),
         a.binds == b.binds,
         a.process_of == b.process_of,
         a.reach(r, o),

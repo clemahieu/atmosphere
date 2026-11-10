@@ -541,6 +541,7 @@ impl CapKernel {
         assert forall|t: usize, q: SpacePath| #[trigger] walk_table(b0, t, q) == walk_table(a0, t, q) by {
             assert(walk_table(b0, t, q) == walk_table(c0, t, q));
         }
+        assert(cur.spaces.records@[s].value().kind is Process);
         assert forall|o1: ObjectId, o2: ObjectId| #[trigger] post.view().reach(o1, o2) == pre.view().reach(o1, o2) by {
             assert(post.view().reach(o1, o2) == cur.view().reach(o1, o2));
         }

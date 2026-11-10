@@ -20,6 +20,8 @@ use crate::capability::list::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::steps::Steps;
 use crate::capability::table::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::view::*;
 use crate::define::*;
 
 /// How many untyped capabilities the root's first leaf holds, from ROOT_UNTYPED_SLOT to its last slot.
@@ -493,6 +495,7 @@ impl CapKernel {
             forall|j: int| leaf + ROOT_UNTYPED_SLOT <= j < leaf + NODES_PER_PAGE ==> !#[trigger] old(self).list.nodes@[j].live,
             runs_wf(runs@),
             runs_blocks(runs@, MAX_ORDER as nat).len() <= ROOT_UNTYPED_SLOTS,
+            no_device_space(&old(self).spaces),
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).devices == old(self).devices,
@@ -562,6 +565,7 @@ impl CapKernel {
                 self.threads == pre.threads,
                 self.processes == pre.processes,
                 self.spaces == pre.spaces,
+                no_device_space(&pre.spaces),
                 self.list.pages@.dom() == pre.list.pages@.dom(),
                 forall|j: int| #![trigger self.list.nodes@[j]] 0 <= j < NODE_SPACE
                     && !(leaf + ROOT_UNTYPED_SLOT <= j < leaf + ROOT_UNTYPED_SLOT + k)
@@ -617,6 +621,7 @@ impl CapKernel {
                     self.threads == pre.threads,
                     self.processes == pre.processes,
                     self.spaces == pre.spaces,
+                    no_device_space(&pre.spaces),
                     self.list.pages@.dom() == pre.list.pages@.dom(),
                     forall|j: int| #![trigger self.list.nodes@[j]] 0 <= j < NODE_SPACE
                         && !(leaf + ROOT_UNTYPED_SLOT <= j < leaf + ROOT_UNTYPED_SLOT + k)
@@ -821,6 +826,7 @@ impl CapKernel {
             forall|i: usize| in_runs(runs@, runs@.len() as int, i as int) ==> #[trigger] holds(pages, i),
             forall|p: usize| #[trigger] old(self).list.pages@.dom().contains(p) && old(self).blocks.tracks_addr(p)
                 ==> !in_runs(runs@, runs@.len() as int, (p / PAGE_SZ) as int),
+            no_device_space(&old(self).spaces),
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,

@@ -1233,7 +1233,13 @@ impl CapKernel {
             final(self).spaces.loaded == old(self).spaces.loaded,
             !ret ==> *final(self) == *old(self),
             ret ==> Self::map_done(*old(self), *final(self), root, slot, SpacePath { l4, l3, l2, l1 }, from, page),
-            discharges(old(self).view(), final(self).view(), root, Effect::Local),
+            kind is Process ==> discharges(old(self).view(), final(self).view(), root, Effect::Local),
+            ret && kind is Device ==> discharges(
+                old(self).view(),
+                final(self).view(),
+                root,
+                Effect::Share { space: old(self).tables.node_of(root, slot), from: old(self).tables.node_of(root, from) },
+            ),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
         let ghost pre = *old(self);
@@ -1383,7 +1389,13 @@ impl CapKernel {
             final(self).spaces.loaded == old(self).spaces.loaded,
             !ret ==> *final(self) == *old(self),
             ret ==> Self::map_large_done(*old(self), *final(self), root, slot, SpacePath { l4, l3, l2, l1: 0 }, from, page),
-            discharges(old(self).view(), final(self).view(), root, Effect::Local),
+            kind is Process ==> discharges(old(self).view(), final(self).view(), root, Effect::Local),
+            ret && kind is Device ==> discharges(
+                old(self).view(),
+                final(self).view(),
+                root,
+                Effect::Share { space: old(self).tables.node_of(root, slot), from: old(self).tables.node_of(root, from) },
+            ),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
         let ghost pre = *old(self);
@@ -1517,7 +1529,8 @@ impl CapKernel {
             !ret ==> *final(self) == *old(self),
             ret ==> Self::map_written(*old(self), *final(self), t, e, f, frame, large),
             ret ==> final(self).mapped@ == old(self).mapped@.union(map_pages(frame, large)),
-            discharges(old(self).view(), final(self).view(), root, Effect::Local),
+            final(self).view().shares.subset_of(old(self).view().shares)
+                ==> discharges(old(self).view(), final(self).view(), root, Effect::Local),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
         let ghost pre = *old(self);
@@ -1546,7 +1559,9 @@ impl CapKernel {
         proof {
             assert(Self::map_written(pre, *self, t, e, f, frame, large));
             Self::lemma_map_wf(pre, *self, t, e, f, frame, large);
-            Self::lemma_leaf_added_discharges(pre, *self, root, f, node);
+            if self.view().shares.subset_of(pre.view().shares) {
+                Self::lemma_leaf_added_discharges(pre, *self, root, f, node);
+            }
         }
         true
     }
@@ -1670,7 +1685,8 @@ impl CapKernel {
     /// capability's child, names the entry, counts on the block and has the one record added; the frame
     /// is mapped. What it keeps,
     /// so that maps compose: every other node, the list's head, every other block's count, the
-    /// processes, threads and spaces, every table walk, and everyone's reach.
+    /// processes, threads and spaces, every table walk, and, in a process's space, everyone's reach: a
+    /// map into a device space is a grant to whoever sees the space.
     pub open spec fn map_done(pre: Self, post: Self, root: usize, slot: usize, p: SpacePath, from: usize, page: usize) -> bool {
         let a = tree_of(&pre.table_pages, &pre.spaces);
         let b = tree_of(&post.table_pages, &post.spaces);
@@ -1707,7 +1723,8 @@ impl CapKernel {
         &&& post.threads == pre.threads
         &&& post.spaces == pre.spaces
         &&& forall|r: usize, q: SpacePath| #[trigger] walk_table(b, r, q) == walk_table(a, r, q)
-        &&& forall|r: ObjectId, o: ObjectId| #[trigger] post.view().reach(r, o) == pre.view().reach(r, o)
+        &&& pre.spaces.records@[s].value().kind is Process
+            ==> forall|r: ObjectId, o: ObjectId| #[trigger] post.view().reach(r, o) == pre.view().reach(r, o)
     }
 
     /// What a large map leaves: the capability tables as they were; path p of the space still reaches its
@@ -1745,13 +1762,14 @@ impl CapKernel {
         }
     }
 
-    /// The writes of a map move no one's reach: the node they add is no capability, and every
-    /// capability is as it was.
+    /// The writes of a map that leaves what the device spaces map move no one's reach: the node they add
+    /// is no capability, and every capability is as it was.
     proof fn lemma_map_reach(pre: Self, post: Self, t: usize, e: usize, f: usize, frame: usize, large: bool)
         requires
             pre.wf(),
             Self::map_from(pre, t, e, f, frame, large),
             Self::map_written(pre, post, t, e, f, frame, large),
+            post.view().shares == pre.view().shares,
         ensures
             forall|r: ObjectId, o: ObjectId| #[trigger] post.view().reach(r, o) == pre.view().reach(r, o),
     {
@@ -1779,6 +1797,13 @@ impl CapKernel {
             post.mapped@ == pre.mapped@.union(map_pages(frame, false)),
         ensures
             Self::map_done(pre, post, root, slot, p, from, page),
+            kind is Process ==> post.view().shares == pre.view().shares,
+            kind is Device ==> discharges(
+                pre.view(),
+                post.view(),
+                root,
+                Effect::Share { space: pre.tables.node_of(root, slot), from: f },
+            ),
     {
         let a = tree_of(&pre.table_pages, &pre.spaces);
         let b = tree_of(&post.table_pages, &post.spaces);
@@ -1788,7 +1813,12 @@ impl CapKernel {
         assert(b.entry(t, e) == frame_map_entry(frame, pre.payload_of(f).rights, false));
         lemma_mapping_written(a, b, s, p, t);
         lemma_walk_table_entry_written(a, b, t, e);
-        Self::lemma_map_reach(pre, post, t, e, f, frame, false);
+        if kind is Process {
+            Self::lemma_map_process_shares(pre, post, s);
+            Self::lemma_map_reach(pre, post, t, e, f, frame, false);
+        } else {
+            Self::lemma_map_device_discharges(pre, post, root, slot, from, p, t, e, frame, false);
+        }
         lemma_map_pages(frame, false);
         assert(map_pages(frame, false).contains(frame));
     }
@@ -1806,6 +1836,13 @@ impl CapKernel {
             post.mapped@ == pre.mapped@.union(map_pages(frame, true)),
         ensures
             Self::map_large_done(pre, post, root, slot, p, from, page),
+            kind is Process ==> post.view().shares == pre.view().shares,
+            kind is Device ==> discharges(
+                pre.view(),
+                post.view(),
+                root,
+                Effect::Share { space: pre.tables.node_of(root, slot), from: f },
+            ),
     {
         let a = tree_of(&pre.table_pages, &pre.spaces);
         let b = tree_of(&post.table_pages, &post.spaces);
@@ -1814,6 +1851,11 @@ impl CapKernel {
         Self::lemma_map_tree(pre, post, t, e, f, frame, true);
         assert(b.entry(t, e) == frame_map_entry(frame, pre.payload_of(f).rights, true));
         lemma_large_mapping_written(a, b, s, p, t);
+        if kind is Process {
+            Self::lemma_map_process_shares(pre, post, s);
+        } else {
+            Self::lemma_map_device_discharges(pre, post, root, slot, from, p, t, e, frame, true);
+        }
         let t3 = step(a, s, p.l4)->0;
         assert(step(b, s, p.l4) == step(a, s, p.l4));
         assert(a.record(t3).level == 3);
@@ -1822,6 +1864,85 @@ impl CapKernel {
         assert forall|g: usize| frame <= g < frame + PAGES_PER_2M implies #[trigger] post.mapped@.contains(g) by {
             assert(map_pages(frame, true).contains(g));
         }
+    }
+
+    /// A map into a process's space leaves what every device space maps.
+    proof fn lemma_map_process_shares(pre: Self, post: Self, s: usize)
+        requires
+            post.spaces == pre.spaces,
+            pre.spaces.records@[s].value().kind is Process,
+            forall|r: usize| r != s ==> #[trigger] space_mapping(tree_of(&post.table_pages, &post.spaces), r)
+                == space_mapping(tree_of(&pre.table_pages, &pre.spaces), r),
+        ensures
+            post.view().shares == pre.view().shares,
+    {
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        assert forall|r: usize| #![trigger is_device(b, r)] #![trigger is_device(a, r)] is_device(b, r) == is_device(a, r) by {}
+        lemma_mapped_same_shares(a, b, s);
+    }
+
+    /// The writes of a map into a device space are a share by the mapper: what the space maps beyond
+    /// what it did is pages of the frame, which the mapper's capability covers, and the capability to
+    /// the space is one with the write right.
+    proof fn lemma_map_device_discharges(pre: Self, post: Self, root: usize, slot: usize, from: usize, p: SpacePath, t: usize, e: usize, frame: usize, large: bool)
+        requires
+            pre.wf(),
+            pre.tables.has_slot(&pre.list, root, slot),
+            pre.is_cap(pre.tables.node_of(root, slot)),
+            writes_space(pre.payload_of(pre.tables.node_of(root, slot))),
+            pre.spaces.records@[pre.payload_of(pre.tables.node_of(root, slot)).base].value().kind is Device,
+            pre.tables.has_slot(&pre.list, root, from),
+            Self::map_from(pre, t, e, pre.tables.node_of(root, from), frame, large),
+            Self::map_written(pre, post, t, e, pre.tables.node_of(root, from), frame, large),
+            ({
+                let a = tree_of(&pre.table_pages, &pre.spaces);
+                let b = tree_of(&post.table_pages, &post.spaces);
+                let s = pre.payload_of(pre.tables.node_of(root, slot)).base;
+                let cap = pre.payload_of(pre.tables.node_of(root, from));
+                &&& space_mapping(b, s) == space_mapping(a, s).insert(p, frame_map_entry(frame, cap.rights, large))
+                &&& forall|r: usize| r != s ==> #[trigger] space_mapping(b, r) == space_mapping(a, r)
+            }),
+        ensures
+            discharges(
+                pre.view(),
+                post.view(),
+                root,
+                Effect::Share { space: pre.tables.node_of(root, slot), from: pre.tables.node_of(root, from) },
+            ),
+    {
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        let n = pre.tables.node_of(root, slot);
+        let f = pre.tables.node_of(root, from);
+        let s = pre.payload_of(n).base;
+        let cap = pre.payload_of(f);
+        let v = frame_map_entry(frame, cap.rights, large);
+        let node = mapping_node(t, e);
+        let (st, pv) = (pre.view(), post.view());
+        pre.lemma_map_node_place(t, e);
+        pre.lemma_slot(root, slot);
+        pre.lemma_slot(root, from);
+        pre.lemma_written_space(n);
+        assert(st.holds_right(root, n, Right::Write));
+        assert(st.holds(root, f));
+        assert(st.names.contains_key(f));
+        assert(authorized(st, root, Effect::Share { space: n, from: f }));
+        assert forall|r: usize| #![trigger is_device(b, r)] #![trigger is_device(a, r)] is_device(b, r) == is_device(a, r) by {}
+        assert(pre.blocks.tracks(frame as int));
+        assert(v.addr == frame * PAGE_SZ);
+        assert(v.perm.ps == large);
+        assert forall|x: ObjectId, o: ObjectId| #[trigger] pv.shares.contains((x, o)) && !st.shares.contains((x, o))
+            implies x == st.names[n] && st.reach(root, o) by {
+            lemma_mapped_shares(a, b, s, p, v, (x, o));
+            assert(frame <= o / PAGE_SZ < frame + entry_pages(map_level(large)));
+            assert(cap.base <= o < cap.base + block_bytes(cap.order));
+            assert(st.covers(f, o));
+            assert(st.descends(f, f, 0));
+            assert(st.direct(root, o));
+            assert(st.controlled(root, root, 0));
+        }
+        Self::lemma_leaf_added_discharges_share(pre, post, root, n, f, f, node);
     }
 
     /// The trees before and after the writes of a map are related by entry_written.
@@ -2451,8 +2572,9 @@ impl CapKernel {
     }
 
     /// A node added that is no capability, such as a mapping or a binding, leaves what the view reads
-    /// of capabilities, and its parent link reaches nothing: a local step.
-    pub proof fn lemma_leaf_added_discharges(pre: Self, post: Self, root: usize, f: usize, node: usize)
+    /// of capabilities, and its parent link reaches nothing: apart from what the device spaces map,
+    /// post's authority is all in pre, under the renaming returned, which renames nothing.
+    pub proof fn lemma_leaf_added_simulates(pre: Self, post: Self, f: usize, node: usize) -> (m: (spec_fn(NodeId) -> bool, spec_fn(NodeId) -> NodeId))
         requires
             pre.wf(),
             post.tables == pre.tables,
@@ -2465,13 +2587,14 @@ impl CapKernel {
                 &&& post.list.nodes@[i].kind == pre.list.nodes@[i].kind
             },
         ensures
-            discharges(pre.view(), post.view(), root, Effect::Local),
+            simulates(State { shares: pre.view().shares, ..post.view() }, pre.view(), m.0, m.1),
+            forall|x: NodeId| #[trigger] (m.1)(x) == x,
             forall|x: NodeId| #[trigger] post.view().names.contains_key(x) == pre.view().names.contains_key(x),
             forall|x: NodeId, r: Right| #[trigger] post.view().rights.contains((x, r)) && post.view().names.contains_key(x)
                 ==> pre.view().rights.contains((x, r)) && pre.view().names.contains_key(x)
                 && post.view().names[x] == pre.view().names[x],
     {
-        let (a, b) = (post.view(), pre.view());
+        let (a, b) = (State { shares: pre.view().shares, ..post.view() }, pre.view());
         let live = |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live;
         let g = |x: NodeId| x;
         assert(Self::caps_frame(pre, post, node, node));
@@ -2512,11 +2635,97 @@ impl CapKernel {
             pre.list.lemma_parent_live(x);
         }
         assert(simulates(a, b, live, g));
-        assert forall|x: NodeId| #[trigger] b.names.contains_key(x) implies a.names.contains_key(x) by {
+        assert forall|x: NodeId| #[trigger] post.view().names.contains_key(x) == pre.view().names.contains_key(x) by {
             assert(post.is_cap(x) == pre.is_cap(x));
         }
+        (live, g)
+    }
+
+    /// So when the device spaces map no more, it is a local step.
+    pub proof fn lemma_leaf_added_discharges(pre: Self, post: Self, root: usize, f: usize, node: usize)
+        requires
+            pre.wf(),
+            post.tables == pre.tables,
+            node < NODE_SPACE,
+            !pre.list.nodes@[node as int].live,
+            !(post.list.nodes@[node as int].kind is Capability),
+            post.list.parent@ == pre.list.parent@.insert(node, f),
+            forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < NODE_SPACE && i != node ==> {
+                &&& post.list.nodes@[i].live == pre.list.nodes@[i].live
+                &&& post.list.nodes@[i].kind == pre.list.nodes@[i].kind
+            },
+            post.view().shares.subset_of(pre.view().shares),
+        ensures
+            discharges(pre.view(), post.view(), root, Effect::Local),
+            forall|x: NodeId| #[trigger] post.view().names.contains_key(x) == pre.view().names.contains_key(x),
+            forall|x: NodeId, r: Right| #[trigger] post.view().rights.contains((x, r)) && post.view().names.contains_key(x)
+                ==> pre.view().rights.contains((x, r)) && pre.view().names.contains_key(x)
+                && post.view().names[x] == pre.view().names[x],
+    {
+        let (a, b) = (post.view(), pre.view());
+        let m = Self::lemma_leaf_added_simulates(pre, post, f, node);
+        let mid = State { shares: b.shares, ..a };
+        assert(simulates(mid, b, m.0, m.1));
+        assert(simulates(a, b, m.0, m.1)) by {
+            assert forall|h: (ObjectId, NodeId)| #[trigger] a.held.contains(h)
+                implies (m.0)(h.1) && b.held.contains((h.0, (m.1)(h.1))) by {
+                assert(mid.held.contains(h));
+            }
+            assert forall|x: NodeId| #[trigger] a.names.contains_key(x) implies {
+                &&& (m.0)(x)
+                &&& b.names.contains_key((m.1)(x))
+                &&& b.names[(m.1)(x)] == a.names[x]
+            } by {
+                assert(mid.names.contains_key(x));
+            }
+            assert forall|x: NodeId| #[trigger] a.pages.contains_key(x) implies {
+                &&& b.pages.contains_key((m.1)(x))
+                &&& b.pages[(m.1)(x)] == a.pages[x]
+            } by {
+                assert(mid.pages.contains_key(x));
+            }
+            assert forall|x: NodeId, r: Right| #[trigger] a.rights.contains((x, r)) implies b.rights.contains(((m.1)(x), r)) by {
+                assert(mid.rights.contains((x, r)));
+            }
+            assert forall|x: NodeId| (m.0)(x) && #[trigger] a.parent.contains_key(x) implies {
+                &&& (m.0)(a.parent[x])
+                &&& b.parent.contains_key((m.1)(x))
+                &&& b.parent[(m.1)(x)] == (m.1)(a.parent[x])
+            } by {
+                assert(mid.parent.contains_key(x));
+            }
+            assert forall|w: (ObjectId, ObjectId)| #[trigger] a.waiting.contains(w) implies b.waiting.contains(w) by {
+                assert(mid.waiting.contains(w));
+            }
+        }
         assert forall|o: ObjectId| #[trigger] (a.contents)(o) == (b.contents)(o) by {}
-        lemma_simulated_discharges_local(b, a, root, live, g);
+        lemma_simulated_discharges_local(b, a, root, m.0, m.1);
+    }
+
+    /// And when what they map beyond what they did is in the space that capability `space` names, which
+    /// root holds with the write right, and in root's reach, it is a share by root.
+    pub proof fn lemma_leaf_added_discharges_share(pre: Self, post: Self, root: usize, space: usize, from: usize, f: usize, node: usize)
+        requires
+            pre.wf(),
+            post.tables == pre.tables,
+            node < NODE_SPACE,
+            !pre.list.nodes@[node as int].live,
+            !(post.list.nodes@[node as int].kind is Capability),
+            post.list.parent@ == pre.list.parent@.insert(node, f),
+            forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < NODE_SPACE && i != node ==> {
+                &&& post.list.nodes@[i].live == pre.list.nodes@[i].live
+                &&& post.list.nodes@[i].kind == pre.list.nodes@[i].kind
+            },
+            authorized(pre.view(), root, Effect::Share { space, from }),
+            forall|s: ObjectId, o: ObjectId| #[trigger] post.view().shares.contains((s, o)) && !pre.view().shares.contains((s, o))
+                ==> s == pre.view().names[space] && pre.view().reach(root, o),
+        ensures
+            discharges(pre.view(), post.view(), root, Effect::Share { space, from }),
+    {
+        let (a, b) = (post.view(), pre.view());
+        let m = Self::lemma_leaf_added_simulates(pre, post, f, node);
+        assert forall|o: ObjectId| #[trigger] (a.contents)(o) == (b.contents)(o) by {}
+        lemma_simulated_discharges_share(b, a, root, space, from, m.0, m.1);
     }
 }
 

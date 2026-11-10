@@ -1823,6 +1823,7 @@ impl CapKernel {
                 &&& post.tables.owner@[page_of(x)] == pre.tables.owner@[page_of(x)]
             },
             post.list.parent@ == pre.list.parent@.insert(n, parent),
+            post.view().shares == pre.view().shares,
             pre.view().holds_right(root, parent, Right::Retype),
             pre.can_retype_under(root, from, n, order),
             parent == pre.tables.node_of(root, from),
@@ -1846,6 +1847,7 @@ impl CapKernel {
                 &&& post.tables.owner@[page_of(x)] == pre.tables.owner@[page_of(x)]
             },
             post.list.parent@ == pre.list.parent@.insert(n, parent),
+            post.view().shares == pre.view().shares,
             pre.view().holds_right(root, parent, Right::Retype),
             pre.view().covers(parent, n),
         ensures
@@ -1904,6 +1906,7 @@ impl CapKernel {
                 &&& post.tables.owner@[page_of(x)] == pre.tables.owner@[page_of(x)]
             },
             post.list.parent@ == pre.list.parent@.insert(n, parent),
+            post.view().shares == pre.view().shares,
         ensures
             forall|r: ObjectId, o: ObjectId| #[trigger] post.view().reach(r, o) == pre.view().reach(r, o),
     {
@@ -2319,6 +2322,7 @@ impl CapKernel {
             Self::lemma_table_page_mapping_parents(pre, post, parent, base);
             Self::lemma_mappings_grown(pre, post, page, 3);
         }
+        Self::lemma_table_page_shares(pre, post, base, page);
         Self::lemma_hidden_retyped_discharges(pre, post, root, from, parent, base, 3);
         Self::lemma_hidden_added_reach(pre, post, parent, base);
         assert forall|x: usize| #![trigger post.list.nodes@[x as int]] pre.list.valid(x) && x != base implies {
@@ -2713,6 +2717,29 @@ impl CapKernel {
         lemma_frame_entries_extended(a, b);
     }
 
+    /// So a table page's retype leaves what the device spaces map.
+    proof fn lemma_table_page_shares(pre: Self, post: Self, base: usize, page: usize)
+        requires
+            pre.wf(),
+            base / PAGE_SZ == page,
+            pre.blocks.pages@[page as int].kind is Free,
+            post.table_pages.maps@ == pre.table_pages.maps@.insert(base, post.table_pages.maps@[base]),
+            post.table_pages.records@ == pre.table_pages.records@.insert(base, post.table_pages.records@[base]),
+            forall|i: usize| i < ENTRIES ==> #[trigger] post.table_pages.maps@[base].value()[i].is_empty(),
+            post.spaces == pre.spaces,
+        ensures
+            post.view().shares == pre.view().shares,
+    {
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        Self::lemma_table_page_mappings(pre, post, base, page);
+        assert forall|s: usize| #![trigger is_device(b, s)] #![trigger is_device(a, s)] is_device(b, s) == is_device(a, s) by {}
+        assert forall|s: usize| #[trigger] is_device(a, s) implies space_mapping(b, s) == space_mapping(a, s) by {
+            assert(pre.spaces.roots@.contains_key(s));
+        }
+        lemma_same_mapping_same_shares(a, b);
+    }
+
     /// A space's retype leaves every other's mapping as it was, and the new space maps nothing.
     pub proof fn lemma_space_mappings(pre: Self, post: Self, base: usize, page: usize)
         requires
@@ -2752,6 +2779,33 @@ impl CapKernel {
             lemma_mapping_extended(a, b, r);
         }
         lemma_frame_entries_extended(a, b);
+    }
+
+    /// So a space's retype leaves what the device spaces map.
+    pub proof fn lemma_space_shares(pre: Self, post: Self, base: usize, page: usize)
+        requires
+            pre.wf(),
+            base / PAGE_SZ == page,
+            pre.blocks.pages@[page as int].kind is Free,
+            post.table_pages == pre.table_pages,
+            post.spaces.roots@ == pre.spaces.roots@.insert(base, post.spaces.roots@[base]),
+            post.spaces.records@ == pre.spaces.records@.insert(base, post.spaces.records@[base]),
+            forall|i: usize| i < ENTRIES && !holds_kernel(post.spaces.records@[base].value().kind, i) ==> #[trigger] post.spaces.roots@[base].value()[i].is_empty(),
+        ensures
+            post.view().shares == pre.view().shares,
+    {
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        Self::lemma_space_mappings(pre, post, base, page);
+        pre.lemma_free_not_table(base, page);
+        assert forall|s: usize| #![trigger is_device(b, s)] #![trigger is_device(a, s)] s != base implies is_device(b, s) == is_device(a, s) by {
+            assert(post.spaces.roots@.contains_key(s) == pre.spaces.roots@.contains_key(s));
+            assert(post.spaces.records@[s] == pre.spaces.records@[s]);
+        }
+        assert forall|s: usize| #[trigger] is_device(a, s) implies space_mapping(b, s) == space_mapping(a, s) by {
+            assert(pre.spaces.roots@.contains_key(s));
+        }
+        lemma_space_added_same_shares(a, b, base);
     }
 
     /// Retypes the free order-3 block at `base` as a table page, under the untyped at index `from` of the
@@ -3523,6 +3577,7 @@ impl CapKernel {
             assert(SPACE_RIGHTS & 128 == 0) by (compute_only);
             assert(right_bit(Right::Control) == 128);
             assert(right_bit(Right::Retype) == 8);
+            Self::lemma_space_shares(pre, post, base, page);
             Self::lemma_places_child_view(pre, post, root, from, root, to);
             let live = |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live;
             assert(pre.view().holds_right(root, parent, Right::Retype));

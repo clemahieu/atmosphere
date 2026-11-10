@@ -105,7 +105,6 @@ impl CapKernel {
             ),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
-        let ghost pre = *self;
         let l4 = (r.base >> L4_SHIFT) & INDEX_MASK;
         let l3 = (r.base >> L3_SHIFT) & INDEX_MASK;
         let l2 = (r.base >> L2_SHIFT) & INDEX_MASK;
@@ -114,23 +113,6 @@ impl CapKernel {
         } else {
             self.map_kind(root, slot, SpaceKind::Device, l4, l3, l2, (r.base >> L1_SHIFT) & INDEX_MASK, from, page)
         };
-        proof {
-            if ret {
-                // The space capability is a space's with the write right: a process capability's space is
-                // a process's, not a device's.
-                let n = pre.tables.node_of(root, slot);
-                let f = pre.tables.node_of(root, from);
-                pre.lemma_slot(root, slot);
-                pre.lemma_slot(root, from);
-                if pre.payload_of(n).kind is Process {
-                    pre.lemma_process_space(n);
-                }
-                assert(pre.view().holds_right(root, n, Right::Write));
-                assert(pre.view().holds(root, f));
-                assert(pre.view().names.contains_key(f));
-                lemma_local_is_share(pre.view(), self.view(), root, n, f);
-            }
-        }
         ret
     }
 

@@ -485,8 +485,12 @@ impl CapKernel {
             assert(mid.flush_epoch <= pre.flush_epoch + 1);
             assert(Self::records_shrunk(pre, mid));
             Self::lemma_revoke_step_wf(cut, mid, *self, root, c, r);
-            assert(cut.view() == pre.view());
             if pre.hidden_table(r) {
+                // The cut took walks from a device space at most, and the rest of the step none.
+                Self::lemma_cut_sheds(pre, cut, r);
+                assert(Self::same_tree(cut, mid));
+                assert(self.view().shares == cut.view().shares);
+                Self::lemma_revoke_step(pre, *self, root, c, r);
                 Self::lemma_cut_recorded_same(pre, cut, *self, r);
                 Self::lemma_cut_shrunk(pre, cut, r);
                 Self::lemma_shrunk_compose(pre, cut, *self);
@@ -666,6 +670,15 @@ impl CapKernel {
                 ==> bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables),
     {
         post.tables.lemma_wf_same_pages(&pre.list, &post.list);
+        assert(post.view().shares.subset_of(pre.view().shares)) by {
+            assert(post.view().shares == mid.view().shares);
+            if pre.list.nodes@[r as int].kind is Mapping {
+                Self::lemma_unlinked_shrunk(pre, mid, r);
+                Self::lemma_shrunk_sheds(pre, mid);
+            } else {
+                assert(Self::same_tree(pre, mid));
+            }
+        }
         Self::lemma_revoke_step(pre, post, root, c, r);
         Self::lemma_delete_caps_wf(pre, post, r);
         assert(revoked_one(pre.list, post.list, c, r));
@@ -1443,6 +1456,7 @@ impl CapKernel {
             pre.tables.owner@[page_of(c)].0 == root,
             post.tables.owner == pre.tables.owner,
             post.list.parent == pre.list.parent,
+            post.view().shares.subset_of(pre.view().shares),
             !post.list.nodes@[r as int].live,
             has(pre.list.seq@, r),
             pre.list.d(r) > pre.list.d(c),

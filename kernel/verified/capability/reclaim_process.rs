@@ -200,6 +200,7 @@ impl CapKernel {
             let post = *self;
             let b = tree_of(&post.table_pages, &post.spaces);
             if cut != 0 {
+                Self::lemma_cuts_same_view(pre, post, base);
                 lemma_no_change_discharges_teardown(pre.view(), root, untyped, base);
                 assert forall|i: usize| #![trigger b.entry(base, i)] i < KERNEL_MEM_END_L4INDEX implies b.entry(base, i) == a.entry(base, i) by {
                     assert(!a.child_slot(base, i));
@@ -442,6 +443,9 @@ impl CapKernel {
         assert(b.pages =~= a.pages);
         assert forall|h: (NodeId, Right)| #[trigger] b.rights.contains(h) == a.rights.contains(h) by {}
         assert(b.rights =~= a.rights);
+        Self::lemma_process_freed_tree(pre, post, base);
+        lemma_space_removed_same_shares(tree_of(&pre.table_pages, &pre.spaces), tree_of(&post.table_pages, &post.spaces), base);
+        assert(b.shares == a.shares);
         assert(b == a);
     }
 

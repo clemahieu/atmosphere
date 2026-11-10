@@ -31,6 +31,8 @@ use crate::capability::table::*;
 use crate::capability::thread::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::steps::Steps;
+#[cfg(verus_keep_ghost)]
+use crate::capability::view::*;
 use crate::define::*;
 
 /// The frame capability boot hands the root for the block of order pages at base.
@@ -542,6 +544,7 @@ impl CapKernel {
             base as int % block_bytes(order) == 0,
             old(self).blocks.tracks_addr(base),
             rights & CONTROL_RIGHT == 0,
+            no_device_space(&old(self).spaces),
             forall|j: usize| #[trigger] perms.contains_key(j) ==> perms[j].addr() == j * PAGE_SZ,
             old(self).blocks.regions_2m@[frame_region(base) as int].typed ==> {
                 &&& old(self).holders@.contains_key(BlockRef::Two(frame_region(base)))

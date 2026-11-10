@@ -34,6 +34,8 @@ use crate::capability::mapping::*;
 use crate::capability::process::PROCESS_BYTES;
 #[cfg(verus_keep_ghost)]
 use crate::capability::table::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::view::*;
 use crate::define::*;
 
 impl CapKernel {
@@ -195,6 +197,7 @@ impl CapKernel {
             old(self).root_tables_ready(process),
             old(self).root_untyped_free(process),
             old(self).payload_of(old(self).tables.node_of(process, ROOT_PROCESS_SLOT)).kind is Process,
+            no_device_space(&old(self).spaces),
             forall|p: SpacePath| !#[trigger] space_mapping(
                 tree_of(&old(self).table_pages, &old(self).spaces),
                 old(self).root_space(process),

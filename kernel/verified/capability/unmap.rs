@@ -112,7 +112,7 @@ impl CapKernel {
         &&& !post.list.nodes@[node as int].live
         &&& forall|x: int| 0 <= x < NODE_SPACE && x != node ==> #[trigger] post.list.nodes@[x].live == pre.list.nodes@[x].live
         &&& post.list.seq@.len() == pre.list.seq@.len() - 1
-        &&& post.view() == pre.view()
+        &&& sheds_shares(pre.view(), post.view())
     }
 
     /// What an unmap at path p of the space named at index slot of the table at root returned: the word
@@ -401,6 +401,7 @@ impl CapKernel {
         let word = self.unlink_mapping_node(node, Tracked(steps));
         proof {
             Self::lemma_mapping_view_same(pre, *self, node);
+            lemma_sheds_shares_discharges_local(pre.view(), self.view(), root);
             Self::lemma_unlinked_shrunk(pre, *self, node);
         }
         let status = usize2page_entry_status(word, 1);

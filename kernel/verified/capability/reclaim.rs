@@ -332,14 +332,15 @@ impl CapKernel {
     }
 
     /// What unlinking the hidden node of the table page at `base` did to self: as table_unlinked says.
-    /// Every capability is as it was, so the view is too.
+    /// Every capability is as it was, and a device space shares no more, having lost the walks through
+    /// the page.
     pub open spec fn table_page_unlinked(&self, post: Self, root: usize, from: usize, base: usize) -> bool {
         let untyped = self.tables.node_of(root, from);
         &&& self.view().holds_right(root, untyped, Right::Retype)
         &&& Self::table_unlinked(*self, post, base)
         &&& Self::caps_frame(*self, post, base, base)
         &&& forall|x: usize| #[trigger] post.is_cap(x) == self.is_cap(x)
-        &&& post.view() == self.view()
+        &&& sheds_shares(self.view(), post.view())
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&self.list, &self.tables)
         &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base })
     }
@@ -1964,6 +1965,7 @@ impl CapKernel {
             post.list.nodes == pre.list.nodes,
             post.list.parent == pre.list.parent,
             post.list.pages@.dom() == pre.list.pages@.dom().remove(base),
+            Self::same_tree(pre, post),
         ensures
             post.tables.wf(&post.list),
             post.tables.caps_wf(&post.list),
@@ -2587,7 +2589,7 @@ impl CapKernel {
     }
 
     /// The capabilities and the view after the empty block at `base` goes: no capability was in a page of
-    /// it.
+    /// it. What the device spaces map is the tables' to say, which the step leaves to its caller.
     proof fn lemma_node_block_caps(pre: Self, post: Self, base: usize)
         requires
             Self::node_block_freed_step(pre, post, base),
@@ -2595,7 +2597,7 @@ impl CapKernel {
             post.tables.wf(&post.list),
             post.tables.caps_wf(&post.list),
             forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x),
-            post.view() == pre.view(),
+            post.view() == (State { shares: post.view().shares, ..pre.view() }),
     {
         pre.lemma_node_block_alone(base);
         assert(post.tables.leaves_wf(&post.list)) by {
@@ -2617,7 +2619,7 @@ impl CapKernel {
         assert(b.pages =~= a.pages);
         assert forall|h: (NodeId, Right)| #[trigger] b.rights.contains(h) == a.rights.contains(h) by {}
         assert(b.rights =~= a.rights);
-        assert(b == a);
+        assert(b == (State { shares: b.shares, ..a }));
     }
 
     /// The kernel after the empty table page at `base` frees.
@@ -2638,6 +2640,8 @@ impl CapKernel {
         Self::lemma_device_bindings_space_caps(pre, post);
         Self::lemma_devices_same_caps(pre, post);
         Self::lemma_table_freed_tree(pre, post, base);
+        lemma_table_removed_same_shares(tree_of(&pre.table_pages, &pre.spaces), tree_of(&post.table_pages, &post.spaces), base);
+        assert(post.view() == pre.view());
         Self::lemma_table_freed_pages(pre, post, base);
         Self::lemma_node_block_objects(pre, post, base);
         Self::lemma_tlb_same(pre, post);
@@ -2933,6 +2937,8 @@ impl CapKernel {
         Self::lemma_device_bindings_space_caps(pre, post);
         Self::lemma_devices_same_caps(pre, post);
         Self::lemma_space_freed_tree(pre, post, base);
+        lemma_space_removed_same_shares(tree_of(&pre.table_pages, &pre.spaces), tree_of(&post.table_pages, &post.spaces), base);
+        assert(post.view() == pre.view());
         Self::lemma_space_freed_pages(pre, post, base);
         Self::lemma_node_block_objects(pre, post, base);
         Self::lemma_tlb_space_removed(pre, post, base);
@@ -3204,6 +3210,7 @@ impl CapKernel {
             base % PAGE_SZ == 0,
             post.list.parent == pre.list.parent,
             pre.view().holds_right(root, untyped, Right::Retype),
+            Self::same_tree(pre, post),
         ensures
             forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x),
             post.view() == pre.view(),
@@ -3313,12 +3320,13 @@ impl CapKernel {
             Self::lemma_bindings_caps_frame(cut, post, base, base);
             Self::lemma_revoke_hidden_holders(cut, post, base);
             Self::lemma_tlb_same(cut, post);
+            Self::lemma_cut_sheds(pre, cut, base);
             Self::lemma_unlink_discharges(cut, post, root, untyped, base);
             Self::lemma_cut_recorded_same(pre, cut, post, base);
             Self::lemma_cut_shrunk(pre, cut, base);
             Self::lemma_same_tree_shrunk(cut, post);
             Self::lemma_shrunk_compose(pre, cut, post);
-            assert(cut.view() == pre.view());
+            lemma_sheds_shares_discharges_teardown(pre.view(), post.view(), root, untyped, base);
             Self::lemma_bound_threads_same(cut, post);
         }
         true
@@ -3347,8 +3355,8 @@ impl CapKernel {
 
     /// What cutting children of the dead table at `base` keeps: only tables, the record of each cut and the
     /// TLBs changed. A table page's cuts leave every walk finding what it did, since no walk reaches it, and
-    /// a root's end the walks through its entries. Each entry that stopped naming a child is empty and its
-    /// child is cut.
+    /// a root's end the walks through its entries and leave every other space's. Each entry that stopped
+    /// naming a child is empty and its child is cut.
     pub open spec fn table_cuts_kept(pre: Self, post: Self, base: usize) -> bool {
         let a = tree_of(&pre.table_pages, &pre.spaces);
         let b = tree_of(&post.table_pages, &post.spaces);
@@ -3381,8 +3389,51 @@ impl CapKernel {
             &&& Self::child_cut(pre, post, child_at(a, base, e))
         }
         &&& !a.is_root(base) ==> forall|r: usize, p: SpacePath| #[trigger] walk(b, r, p) == walk(a, r, p)
+        &&& a.is_root(base) ==> forall|r: usize, p: SpacePath| r != base ==> #[trigger] walk(b, r, p) == walk(a, r, p)
         &&& Self::mappings_shrunk(pre, post)
         &&& forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && #[trigger] pre.core_may_hold(c, e) ==> post.core_may_hold(c, e)
+    }
+
+    /// Such cuts share no more: they take walks away, make no space a device space and leave every
+    /// capability.
+    pub proof fn lemma_cuts_shed(pre: Self, post: Self, base: usize)
+        requires
+            Self::table_cuts_kept(pre, post, base),
+        ensures
+            sheds_shares(pre.view(), post.view()),
+    {
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        assert forall|s: usize| #[trigger] is_device(b, s) && a.is_root(s) implies is_device(a, s) by {
+            assert(b.space_records[s].value().kind == a.space_records[s].value().kind);
+        }
+        Self::lemma_shrunk_sheds(pre, post);
+        assert(post.view() == (State { shares: post.view().shares, ..pre.view() }));
+    }
+
+    /// Cuts below a table that is no device space's root leave the view: no device space's walk passed
+    /// through its entries.
+    pub proof fn lemma_cuts_same_view(pre: Self, post: Self, base: usize)
+        requires
+            Self::table_cuts_kept(pre, post, base),
+            !is_device(tree_of(&pre.table_pages, &pre.spaces), base),
+        ensures
+            post.view() == pre.view(),
+    {
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        Self::lemma_cuts_shed(pre, post, base);
+        assert forall|s: usize| #[trigger] b.is_root(s) == a.is_root(s) by {
+            assert(b.roots.contains_key(s) == a.roots.contains_key(s));
+        }
+        assert forall|s: usize, p: SpacePath| is_device(a, s) && #[trigger] walk(a, s, p) is Some
+            implies is_device(b, s) && walk(a, s, p) == walk(b, s, p) by {
+            assert(b.space_records[s].value().kind == a.space_records[s].value().kind);
+            assert(s != base);
+            assert(walk(b, s, p) == walk(a, s, p));
+        }
+        lemma_shares_kept(b, a);
+        assert(post.view().shares =~= pre.view().shares);
     }
 
     /// The table page at `base` has a child to cut: an untyped covers it, it is dead, an entry still names
@@ -3395,9 +3446,10 @@ impl CapKernel {
         &&& self.flush_epoch < usize::MAX
     }
 
-    /// What cutting children of the dead table page at `base` did to self: it cut at least one and no more
-    /// than the budget, each taking one entry off the count, and every capability is as it was.
-    pub open spec fn table_children_cut(&self, post: Self, root: usize, from: usize, base: usize) -> bool {
+    /// What cutting children of the dead table at `base` did to self: it cut at least one and no more than
+    /// the budget, each taking one entry off the count, and every capability is as it was. A device space
+    /// shares no more, having lost the walks through the cut entries.
+    pub open spec fn children_cut(&self, post: Self, root: usize, from: usize, base: usize) -> bool {
         let untyped = self.tables.node_of(root, from);
         let a = child_entries(tree_of(&self.table_pages, &self.spaces), base);
         let b = child_entries(tree_of(&post.table_pages, &post.spaces), base);
@@ -3406,9 +3458,17 @@ impl CapKernel {
         &&& b.subset_of(a)
         &&& b.len() < a.len()
         &&& a.len() - b.len() <= TABLE_SLICE_BUDGET
-        &&& post.view() == self.view()
+        &&& sheds_shares(self.view(), post.view())
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&self.list, &self.tables)
         &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base })
+    }
+
+    /// What cutting children of the dead table page at `base`, or of a process's space root, did to self:
+    /// as children_cut says, and no device space's walk passed through its entries, so the view is as it
+    /// was.
+    pub open spec fn table_children_cut(&self, post: Self, root: usize, from: usize, base: usize) -> bool {
+        &&& self.children_cut(post, root, from, base)
+        &&& post.view() == self.view()
     }
 
     /// The block test slice_table makes reads as the table page does.
@@ -3489,6 +3549,15 @@ impl CapKernel {
         reveal(walks_detached);
         if !a.is_root(base) {
             assert forall|r: usize, p: SpacePath| #[trigger] walk(b, r, p) == walk(a, r, p) by {
+                assert(walk(b, r, p) == (if passes_through(m, r, p, base, e) { None } else { walk(m, r, p) }));
+                assert(walk(m, r, p) == walk(a, r, p));
+            }
+        } else {
+            assert(!m.is_page(base)) by {
+                assert(m.maps.contains_key(base) == a.maps.contains_key(base));
+            }
+            assert forall|r: usize, p: SpacePath| r != base implies #[trigger] walk(b, r, p) == walk(a, r, p) by {
+                lemma_root_entry_not_passed(m, base, e, r, p);
                 assert(walk(b, r, p) == (if passes_through(m, r, p, base, e) { None } else { walk(m, r, p) }));
                 assert(walk(m, r, p) == walk(a, r, p));
             }
@@ -3701,6 +3770,7 @@ impl CapKernel {
         let cut = self.cut_children(base, false, Tracked(steps));
         proof {
             if cut != 0 {
+                Self::lemma_cuts_same_view(pre, *self, base);
                 lemma_no_change_discharges_teardown(pre.view(), root, untyped, base);
             }
         }
@@ -3869,10 +3939,10 @@ impl CapKernel {
         &&& self.flush_epoch < usize::MAX
     }
 
-    /// What cutting children of the dead device space at `base` did to self: as for a table page, and the
-    /// space is still there and still dead.
+    /// What cutting children of the dead device space at `base` did to self: as children_cut says, the
+    /// space sharing no more, and it is still there and still dead.
     pub open spec fn space_children_cut(&self, post: Self, root: usize, from: usize, base: usize) -> bool {
-        &&& self.table_children_cut(post, root, from, base)
+        &&& self.children_cut(post, root, from, base)
         &&& post.dead_io_space(base)
     }
 
@@ -3918,7 +3988,8 @@ impl CapKernel {
         let cut = self.cut_children(base, true, Tracked(steps));
         proof {
             if cut != 0 {
-                lemma_no_change_discharges_teardown(pre.view(), root, untyped, base);
+                Self::lemma_cuts_shed(pre, *self, base);
+                lemma_sheds_shares_discharges_teardown(pre.view(), self.view(), root, untyped, base);
             }
         }
         cut != 0
@@ -4044,18 +4115,23 @@ impl CapKernel {
         }
     }
 
-    /// A step that takes a mapping node away leaves the view as it was: the node was no capability, and
-    /// every capability says what it did under the parent it had.
+    /// A step that takes a mapping node away leaves the view as it was but for the pages the node put in
+    /// a device space: the node was no capability, and every capability says what it did under the parent
+    /// it had.
     pub proof fn lemma_mapping_view_same(pre: Self, post: Self, n: usize)
         requires
             Self::caps_frame(pre, post, n, n),
             pre.list.nodes@[n as int].kind is Mapping,
             !post.list.nodes@[n as int].live,
             post.list.parent == pre.list.parent,
+            Self::mapping_unlinked(pre, post, n),
+            post.spaces.records == pre.spaces.records,
         ensures
             forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x),
-            post.view() == pre.view(),
+            sheds_shares(pre.view(), post.view()),
     {
+        Self::lemma_unlinked_shrunk(pre, post, n);
+        Self::lemma_shrunk_sheds(pre, post);
         let (a, b) = (pre.view(), post.view());
         assert forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x)
             && (pre.is_cap(x) ==> post.payload_of(x) == pre.payload_of(x)) by {
@@ -4067,7 +4143,7 @@ impl CapKernel {
         assert(b.names =~= a.names);
         assert(b.pages =~= a.pages);
         assert(b.rights =~= a.rights);
-        assert(b == a);
+        assert(b == (State { shares: b.shares, ..a }));
     }
 
     /// Unlinks mapping node n with its entry and its frame's reference, and records the unmap. Returns the
@@ -4194,6 +4270,9 @@ impl CapKernel {
         }
         Self::lemma_table_unmap_entries(mid, post, base, e, n);
         Self::lemma_mapping_view_same(mid, post, n);
+        // No walk reaches the page, so the device spaces map what they did.
+        lemma_same_walks_same_shares(a, b);
+        assert(post.view() == pre.view());
         assert(b.maps.dom() =~= m.maps.dom());
         assert(!post.list.nodes@[base as int].live) by {
             pre.lemma_dead_base_in_nodes(base);

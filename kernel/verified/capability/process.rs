@@ -1137,6 +1137,7 @@ impl CapKernel {
             post.payload_of(pre.tables.node_of(root, to)) == process_of(base),
             block_within(base, PROCESS_ORDER, pre.payload_of(pre.tables.node_of(root, from))),
             !pre.tables.roots@.contains_key(base),
+            post.view().shares == pre.view().shares,
         ensures
             post.view().holds(root, pre.tables.node_of(root, to)),
             adds_object(
@@ -1467,6 +1468,7 @@ impl CapKernel {
             assert(right_bit(Right::Control) == 128);
             assert(right_bit(Right::Retype) == 8);
             assert(post.list.parent@ == pre.list.parent@.insert(child, parent));
+            Self::lemma_space_shares(pre, post, base, page);
             Self::lemma_process_view(pre, post, root, from, to, base);
             let live = |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live;
             assert(pre.view().holds_right(root, parent, Right::Retype));

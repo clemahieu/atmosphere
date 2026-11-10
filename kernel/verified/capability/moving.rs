@@ -591,6 +591,7 @@ impl CapKernel {
     proof fn lemma_move_simulates(pre: Self, post: Self, i: usize, n: usize)
         requires
             Self::move_step(pre, post, i, n),
+            Self::same_tree(pre, post),
             pre.tables.owner@[page_of(n)].0 == pre.tables.owner@[page_of(i)].0,
         ensures
             simulates(
@@ -652,6 +653,7 @@ impl CapKernel {
     proof fn lemma_move_simulated(pre: Self, post: Self, i: usize, n: usize)
         requires
             Self::move_step(pre, post, i, n),
+            Self::same_tree(pre, post),
         ensures
             simulates_claim(
                 post.view(),
@@ -744,6 +746,7 @@ impl CapKernel {
     proof fn lemma_move_discharges(pre: Self, post: Self, root: usize, i: usize, n: usize)
         requires
             Self::move_step(pre, post, i, n),
+            Self::same_tree(pre, post),
             pre.tables.owner@[page_of(i)].0 == root,
             pre.tables.owner@[page_of(n)].0 == root,
         ensures
@@ -794,6 +797,7 @@ impl CapKernel {
     proof fn lemma_claim_discharges(pre: Self, post: Self, root: usize, c: usize, i: usize, n: usize)
         requires
             Self::move_step(pre, post, i, n),
+            Self::same_tree(pre, post),
             pre.is_cap(c),
             pre.tables.owner@[page_of(c)].0 == root,
             pre.payload_of(c).rights & right_bit(Right::Control) != 0,
@@ -833,6 +837,7 @@ impl CapKernel {
     proof fn lemma_place_discharges(pre: Self, post: Self, root: usize, d: usize, i: usize, n: usize, j: nat)
         requires
             Self::move_step(pre, post, i, n),
+            Self::same_tree(pre, post),
             pre.view().holds_right(root, d, Right::Control),
             pre.view().names[d] == pre.tables.owner@[page_of(n)].0,
             pre.view().commands(root, i),

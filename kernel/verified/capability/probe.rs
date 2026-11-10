@@ -349,6 +349,8 @@ impl CapKernel {
         assert(hidden_nodes_are_leaves(&post.list, &post.tables, &post.table_pages));
         assert(table_nodes_are_mappings(&post.list, &post.table_pages));
         Self::lemma_tlb_same(pre, post);
+        assert forall|s: usize, q: SpacePath| #[trigger] walk(b, s, q) == walk(a, s, q) by {}
+        lemma_same_walks_same_shares(a, b);
     }
 
     /// A probe that changed only the status bits of the level 1 table t its path reaches, and read the

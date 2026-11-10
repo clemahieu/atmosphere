@@ -1862,6 +1862,7 @@ impl CapKernel {
     proof fn lemma_leaf_discharges(pre: Self, post: Self, root: usize, parent: usize, leaf: usize, into: Option<usize>)
         requires
             Self::leaf_step(pre, post, leaf),
+            Self::same_tree(pre, post),
             post.list.parent@ == pre.list.parent@.insert(leaf, parent),
             pre.view().holds_right(root, parent, Right::Retype),
             pre.view().covers(parent, leaf),

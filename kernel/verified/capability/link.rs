@@ -854,6 +854,26 @@ pub proof fn lemma_walk_detached(a: TableTree, b: TableTree, parent: usize, entr
     assert(large_entry(b, parent, entry) is None);
 }
 
+/// No path of another space passes through an entry of a space's root: a step finds a table page, and a
+/// root that is no table page is none.
+pub proof fn lemma_root_entry_not_passed(tree: TableTree, base: usize, e: usize, r: usize, p: SpacePath)
+    requires
+        table_links_wf(tree),
+        !tree.is_page(base),
+        r != base,
+    ensures
+        !passes_through(tree, r, p, base, e),
+{
+    if tree.names_child(r, p.l4) {
+        let t3 = (tree.entry(r, p.l4).addr - TABLE_NODE_PAGES * PAGE_SZ) as usize;
+        assert(tree.is_page(t3));
+        if tree.names_child(t3, p.l3) {
+            let t2 = (tree.entry(t3, p.l3).addr - TABLE_NODE_PAGES * PAGE_SZ) as usize;
+            assert(tree.is_page(t2));
+        }
+    }
+}
+
 /// A walk through the entry naming table page t finds page g.
 pub open spec fn cut_walk_finds(tree: TableTree, t: usize, g: usize) -> bool {
     let s = tree.record(t).space->0;
@@ -1604,6 +1624,7 @@ impl CapKernel {
         ensures
             forall|r: usize| #[trigger] space_mapping(tree_of(&post.table_pages, &post.spaces), r)
                 == space_mapping(tree_of(&pre.table_pages, &pre.spaces), r),
+            post.view() == pre.view(),
     {
         let a = tree_of(&pre.table_pages, &pre.spaces);
         let b = tree_of(&post.table_pages, &post.spaces);
@@ -1618,6 +1639,13 @@ impl CapKernel {
         assert forall|r: usize| #[trigger] space_mapping(b, r) == space_mapping(a, r) by {
             lemma_mapping_linked(a, b, parent, entry, child, s, r);
         }
+        assert forall|x: usize| #[trigger] is_device(b, x) == is_device(a, x) by {
+            assert(b.roots.dom().contains(x) == a.roots.dom().contains(x));
+            if a.is_root(x) {
+                assert(b.space_records[x].value().kind == a.space_records[x].value().kind);
+            }
+        }
+        lemma_same_mapping_same_shares(a, b);
     }
 
     /// Links the unlinked table page `child` into `entry` of the table `parent`, in the space named by
@@ -1655,6 +1683,7 @@ impl CapKernel {
             },
             final(self).processes == old(self).processes,
             final(self).threads == old(self).threads,
+            final(self).view() == old(self).view(),
             discharges(old(self).view(), final(self).view(), root, Effect::Local),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
@@ -1797,8 +1826,8 @@ impl CapKernel {
             self.link_page(parent, entry, child, payload.base);
         }
         proof {
-            assert(self.view() == pre.view());
             Self::lemma_link_mappings(pre, *self, root, slot, parent, entry, from, child, payload.base);
+            assert(self.view() == pre.view());
         }
         true
     }
@@ -2213,6 +2242,27 @@ impl CapKernel {
                 assert(walk(b, r, p) == (if passes_through(a, r, p, q->0.table, q->0.entry) { None } else { walk(a, r, p) }));
             }
         }
+    }
+
+    /// A cut shares no more: it takes walks away, makes no space a device space and leaves every capability.
+    pub proof fn lemma_cut_sheds(pre: Self, post: Self, t: usize)
+        requires
+            Self::tree_cut(pre, post, t),
+            post.list == pre.list,
+            post.tables == pre.tables,
+        ensures
+            sheds_shares(pre.view(), post.view()),
+    {
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        Self::lemma_cut_shrunk(pre, post, t);
+        assert forall|s: usize| #[trigger] is_device(b, s) && a.is_root(s) implies is_device(a, s) by {
+            if a.record(t).parent is Some {
+                assert(b.space_records[s].value().kind == a.space_records[s].value().kind);
+            }
+        }
+        Self::lemma_shrunk_sheds(pre, post);
+        assert(post.view() == (State { shares: post.view().shares, ..pre.view() }));
     }
 
     /// Two steps that each only take walks away take only walks away.

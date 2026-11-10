@@ -1,7 +1,8 @@
 //! The kernel as reach sees it. Every capability operation's spec states discharges over this view,
 //! so what a process holds, what each capability names and which rights it carries are read from the
-//! tables here and nowhere else. The fields for mappings, threads and object contents stay empty until
-//! the objects behind them exist. See design/theorem-over-reach/.
+//! tables here and nowhere else, beside what each device space maps, read from the walks of its tables.
+//! The fields for process mappings, threads and object contents stay empty until the objects behind
+//! them exist. See design/theorem-over-reach/ and design/device-binding-under-the-space-capability/.
 #[cfg(verus_keep_ghost)]
 use vstd::arithmetic::power2::*;
 use vstd::prelude::*;
@@ -12,15 +13,23 @@ verus! {
 use crate::capability::device::*;
 use crate::capability::kernel::*;
 #[cfg(verus_keep_ghost)]
+use crate::capability::link::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::list::*;
 #[cfg(verus_keep_ghost)]
+use crate::capability::mapping::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::space::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::table::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::thread::*;
 #[cfg(verus_keep_ghost)]
 use crate::define::*;
+#[cfg(verus_keep_ghost)]
+use crate::pagetable::entry::PageEntry;
 
 /// The bit of a capability's rights word that grants this right.
 pub open spec fn right_bit(right: Right) -> u32 {
@@ -82,9 +91,220 @@ pub proof fn lemma_bound_threads_live(list: &Tree, tables: &Tables)
     assert(bound_threads(list, tables) =~= bound_threads(list, tables).restrict(live_nodes(list)));
 }
 
-/// What the view reads: nothing but the list and the tables, so a step that leaves those alone leaves
-/// the view alone.
-pub open spec fn view_of(list: &Tree, tables: &Tables) -> State {
+/// Space s is a device space.
+pub open spec fn is_device(tree: TableTree, s: usize) -> bool {
+    &&& tree.is_root(s)
+    &&& tree.space_records[s].value().kind is Device
+}
+
+/// Device space s maps page o: a walk of s's tables finds it.
+pub open spec fn shares_page(tree: TableTree, s: ObjectId, o: ObjectId) -> bool {
+    &&& is_device(tree, s)
+    &&& o % PAGE_SZ == 0
+    &&& exists|p: SpacePath| #[trigger] walk_finds(tree, s, p, (o / PAGE_SZ) as usize)
+}
+
+/// Each device space with each page it maps: whoever sees the space reaches the page.
+/// See design/device-binding-under-the-space-capability/.
+pub open spec fn shares_of(tree: TableTree) -> ISet<(ObjectId, ObjectId)> {
+    ISet::new(|x: (ObjectId, ObjectId)| shares_page(tree, x.0, x.1))
+}
+
+/// b's device spaces map nothing a's did not: each walk of a device space of b that finds a frame is a
+/// walk of a device space of a that finds the same.
+pub open spec fn shares_kept(a: TableTree, b: TableTree) -> bool {
+    forall|s: usize, p: SpacePath| is_device(b, s) && #[trigger] walk(b, s, p) is Some
+        ==> is_device(a, s) && walk(b, s, p) == walk(a, s, p)
+}
+
+/// So b shares nothing a did not.
+pub proof fn lemma_shares_kept(a: TableTree, b: TableTree)
+    requires
+        shares_kept(a, b),
+    ensures
+        shares_of(b).subset_of(shares_of(a)),
+{
+    assert forall|x: (ObjectId, ObjectId)| #[trigger] shares_of(b).contains(x) implies shares_of(a).contains(x) by {
+        let p = choose|p: SpacePath| #[trigger] walk_finds(b, x.0, p, (x.1 / PAGE_SZ) as usize);
+        assert(walk(b, x.0, p) is Some);
+        assert(is_device(a, x.0));
+        assert(walk(b, x.0, p) == walk(a, x.0, p));
+        assert(walk_finds(a, x.0, p, (x.1 / PAGE_SZ) as usize));
+    }
+}
+
+/// Trees that keep each other's shares share the same.
+pub proof fn lemma_shares_same(a: TableTree, b: TableTree)
+    requires
+        shares_kept(a, b),
+        shares_kept(b, a),
+    ensures
+        shares_of(b) == shares_of(a),
+{
+    lemma_shares_kept(a, b);
+    lemma_shares_kept(b, a);
+    assert(shares_of(b) =~= shares_of(a));
+}
+
+/// Trees whose walks find the same, a space of both being a device space of both or of neither, share
+/// the same: a space of one alone has no walk in the other, so none in either.
+pub proof fn lemma_same_walks_same_shares(a: TableTree, b: TableTree)
+    requires
+        forall|s: usize, p: SpacePath| #[trigger] walk(b, s, p) == walk(a, s, p),
+        forall|s: usize| #![trigger is_device(b, s)] #![trigger is_device(a, s)]
+            a.is_root(s) && b.is_root(s) ==> is_device(b, s) == is_device(a, s),
+    ensures
+        shares_of(b) == shares_of(a),
+{
+    assert forall|s: usize, p: SpacePath| is_device(b, s) && #[trigger] walk(b, s, p) is Some
+        implies is_device(a, s) && walk(b, s, p) == walk(a, s, p) by {
+        assert(walk(b, s, p) == walk(a, s, p));
+        assert(a.is_root(s));
+    }
+    assert forall|s: usize, p: SpacePath| is_device(a, s) && #[trigger] walk(a, s, p) is Some
+        implies is_device(b, s) && walk(a, s, p) == walk(b, s, p) by {
+        assert(walk(b, s, p) == walk(a, s, p));
+        assert(b.is_root(s));
+    }
+    lemma_shares_same(a, b);
+}
+
+/// So do trees with the same device spaces, each mapping the same.
+pub proof fn lemma_same_mapping_same_shares(a: TableTree, b: TableTree)
+    requires
+        forall|s: usize| #![trigger is_device(b, s)] #![trigger is_device(a, s)] is_device(b, s) == is_device(a, s),
+        forall|s: usize| #[trigger] is_device(a, s) ==> space_mapping(b, s) == space_mapping(a, s),
+    ensures
+        shares_of(b) == shares_of(a),
+{
+    assert forall|s: usize, p: SpacePath| is_device(b, s) && #[trigger] walk(b, s, p) is Some
+        implies is_device(a, s) && walk(b, s, p) == walk(a, s, p) by {
+        assert(is_device(a, s));
+        assert(space_mapping(b, s).contains_key(p) == space_mapping(a, s).contains_key(p));
+        assert(space_mapping(b, s)[p] == space_mapping(a, s)[p]);
+    }
+    assert forall|s: usize, p: SpacePath| is_device(a, s) && #[trigger] walk(a, s, p) is Some
+        implies is_device(b, s) && walk(a, s, p) == walk(b, s, p) by {
+        assert(is_device(b, s));
+        assert(space_mapping(b, s).contains_key(p) == space_mapping(a, s).contains_key(p));
+        assert(space_mapping(b, s)[p] == space_mapping(a, s)[p]);
+    }
+    lemma_shares_same(a, b);
+}
+
+/// A tree with one more space, which maps nothing, shares the same when every other device space maps
+/// what it did.
+pub proof fn lemma_space_added_same_shares(a: TableTree, b: TableTree, base: usize)
+    requires
+        !a.is_root(base),
+        forall|s: usize| #![trigger is_device(b, s)] #![trigger is_device(a, s)] s != base ==> is_device(b, s) == is_device(a, s),
+        forall|s: usize| #[trigger] is_device(a, s) ==> space_mapping(b, s) == space_mapping(a, s),
+        space_mapping(b, base) == IMap::<SpacePath, PageEntry>::empty(),
+    ensures
+        shares_of(b) == shares_of(a),
+{
+    assert forall|s: usize, p: SpacePath| is_device(b, s) && #[trigger] walk(b, s, p) is Some
+        implies is_device(a, s) && walk(b, s, p) == walk(a, s, p) by {
+        if s == base {
+            assert(space_mapping(b, base).contains_key(p));
+            assert(!IMap::<SpacePath, PageEntry>::empty().contains_key(p));
+        } else {
+            assert(is_device(a, s));
+            assert(space_mapping(b, s).contains_key(p) == space_mapping(a, s).contains_key(p));
+            assert(space_mapping(b, s)[p] == space_mapping(a, s)[p]);
+        }
+    }
+    assert forall|s: usize, p: SpacePath| is_device(a, s) && #[trigger] walk(a, s, p) is Some
+        implies is_device(b, s) && walk(a, s, p) == walk(b, s, p) by {
+        assert(s != base);
+        assert(is_device(b, s));
+        assert(space_mapping(b, s).contains_key(p) == space_mapping(a, s).contains_key(p));
+        assert(space_mapping(b, s)[p] == space_mapping(a, s)[p]);
+    }
+    lemma_shares_same(a, b);
+}
+
+/// A tree without a table page that has no parent and no entry shares the same: no walk reached it.
+pub proof fn lemma_table_removed_same_shares(a: TableTree, b: TableTree, t: usize)
+    requires
+        table_removed(a, b, t),
+    ensures
+        shares_of(b) == shares_of(a),
+{
+    assert forall|s: usize, p: SpacePath| #[trigger] walk(b, s, p) == walk(a, s, p) by {
+        lemma_walk_table_removed(a, b, t, s, p);
+    }
+    lemma_same_walks_same_shares(a, b);
+}
+
+/// A tree without a space whose root names no child shares the same: the space mapped nothing.
+pub proof fn lemma_space_removed_same_shares(a: TableTree, b: TableTree, s: usize)
+    requires
+        space_removed(a, b, s),
+    ensures
+        shares_of(b) == shares_of(a),
+{
+    assert forall|r: usize, p: SpacePath| #[trigger] walk(b, r, p) == walk(a, r, p) by {
+        lemma_walk_space_removed(a, b, s, r, p);
+    }
+    assert forall|r: usize| #![trigger is_device(b, r)] #![trigger is_device(a, r)]
+        a.is_root(r) && b.is_root(r) implies is_device(b, r) == is_device(a, r) by {
+        assert(r != s);
+    }
+    lemma_same_walks_same_shares(a, b);
+}
+
+/// What a map into space s adds to the shares: pages of the frame its entry v names, under s, and only
+/// when s is a device space.
+pub proof fn lemma_mapped_shares(a: TableTree, b: TableTree, s: usize, p: SpacePath, v: PageEntry, x: (ObjectId, ObjectId))
+    requires
+        forall|r: usize| #![trigger is_device(b, r)] #![trigger is_device(a, r)] is_device(b, r) == is_device(a, r),
+        space_mapping(b, s) == space_mapping(a, s).insert(p, v),
+        forall|r: usize| r != s ==> #[trigger] space_mapping(b, r) == space_mapping(a, r),
+        shares_of(b).contains(x),
+        !shares_of(a).contains(x),
+    ensures
+        x.0 == s,
+        is_device(a, s),
+        x.1 % PAGE_SZ == 0,
+        v.addr / PAGE_SZ <= x.1 / PAGE_SZ < v.addr / PAGE_SZ + entry_pages(if v.perm.ps { 2usize } else { 1usize }),
+{
+    let g = (x.1 / PAGE_SZ) as usize;
+    let q = choose|q: SpacePath| #[trigger] walk_finds(b, x.0, q, g);
+    assert(is_device(a, x.0));
+    assert(space_mapping(b, x.0).contains_key(q));
+    if x.0 != s || q != p {
+        assert(space_mapping(a, x.0).contains_key(q));
+        assert(space_mapping(b, x.0)[q] == space_mapping(a, x.0)[q]);
+        assert(walk_finds(a, x.0, q, g));
+        assert(shares_page(a, x.0, x.1));
+    }
+    assert(space_mapping(b, s)[p] == v);
+}
+
+/// A map into a space that is no device space shares the same.
+pub proof fn lemma_mapped_same_shares(a: TableTree, b: TableTree, s: usize)
+    requires
+        forall|r: usize| #![trigger is_device(b, r)] #![trigger is_device(a, r)] is_device(b, r) == is_device(a, r),
+        !is_device(a, s),
+        forall|r: usize| r != s ==> #[trigger] space_mapping(b, r) == space_mapping(a, r),
+    ensures
+        shares_of(b) == shares_of(a),
+{
+    assert forall|r: usize| #[trigger] is_device(a, r) implies space_mapping(b, r) == space_mapping(a, r) by {
+        assert(r != s);
+    }
+    lemma_same_mapping_same_shares(a, b);
+}
+
+/// No space is a device space, as while boot builds the root, which makes none.
+pub open spec fn no_device_space(spaces: &Spaces) -> bool {
+    forall|s: usize| #[trigger] spaces.roots@.contains_key(s) ==> !(spaces.records@[s].value().kind is Device)
+}
+
+/// What the view reads: the list and the tables, and what the device spaces map through the table
+/// tree, so a step that leaves those alone leaves the view alone.
+pub open spec fn view_of(list: &Tree, tables: &Tables, tree: TableTree) -> State {
     State {
         held: ISet::new(|h: (ObjectId, NodeId)|
             tables.is_cap(list, h.1) && tables.owner@[page_of(h.1)].0 == h.0),
@@ -97,7 +317,7 @@ pub open spec fn view_of(list: &Tree, tables: &Tables) -> State {
         process_of: Map::empty(),
         waiting: Set::empty(),
         bound: Map::empty(),
-        shares: Set::empty(),
+        shares: shares_of(tree),
         binds: Map::empty(),
         contents: |o: ObjectId| Seq::empty(),
     }
@@ -112,8 +332,41 @@ impl CapKernel {
         self.tables.payload_of(n)
     }
 
+    /// A step that takes walks away and puts none in, with no new device space, shares no more.
+    pub proof fn lemma_shrunk_sheds(pre: Self, post: Self)
+        requires
+            Self::mappings_shrunk(pre, post),
+            forall|s: usize| #[trigger] is_device(tree_of(&post.table_pages, &post.spaces), s)
+                && tree_of(&pre.table_pages, &pre.spaces).is_root(s) ==> is_device(tree_of(&pre.table_pages, &pre.spaces), s),
+        ensures
+            post.view().shares.subset_of(pre.view().shares),
+    {
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        assert forall|s: usize, p: SpacePath| is_device(b, s) && #[trigger] walk(b, s, p) is Some
+            implies is_device(a, s) && walk(b, s, p) == walk(a, s, p) by {
+            assert(walk(b, s, p) == walk(a, s, p));
+            assert(a.is_root(s));
+        }
+        lemma_shares_kept(a, b);
+    }
+
     pub open spec fn view(&self) -> State {
-        view_of(&self.list, &self.tables)
+        view_of(&self.list, &self.tables, tree_of(&self.table_pages, &self.spaces))
+    }
+
+    /// Without a device space nothing is shared through one.
+    pub proof fn lemma_no_device_no_shares(&self)
+        requires
+            no_device_space(&self.spaces),
+        ensures
+            forall|x: (ObjectId, ObjectId)| !#[trigger] self.view().shares.contains(x),
+    {
+        assert forall|x: (ObjectId, ObjectId)| !#[trigger] self.view().shares.contains(x) by {
+            if self.view().shares.contains(x) {
+                assert(self.spaces.roots@.contains_key(x.0));
+            }
+        }
     }
 
     /// Where a node in a leaf's page lies.

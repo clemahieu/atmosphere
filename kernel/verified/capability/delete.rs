@@ -529,6 +529,7 @@ impl CapKernel {
             pre.is_cap(n),
             !post.list.nodes@[n as int].live,
             post.list.parent@ == pre.list.parent@,
+            Self::same_tree(pre, post),
         ensures
             removes_cap(pre.view(), post.view(), n),
     {

@@ -27,6 +27,8 @@ use crate::capability::refs::*;
 use crate::capability::table::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::steps::Steps;
+#[cfg(verus_keep_ghost)]
+use crate::capability::view::*;
 use crate::define::*;
 
 /// How many frame capabilities the root's second leaf holds, from ROOT_FRAME_SLOT to its last slot.
@@ -757,6 +759,7 @@ impl CapKernel {
             forall|j: usize| #[trigger] perms.contains_key(j) ==> perms[j].addr() == j * PAGE_SZ,
             forall|p: usize| #[trigger] old(self).list.pages@.dom().contains(p) && old(self).blocks.tracks_addr(p)
                 ==> !image_region(runs@, region_2m((p / PAGE_SZ) as int)),
+            no_device_space(&old(self).spaces),
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
@@ -875,6 +878,7 @@ impl CapKernel {
                 forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) && pre.blocks.tracks_addr(p)
                     ==> !image_region(runs@, region_2m((p / PAGE_SZ) as int)),
                 k == runs_blocks(phys.take(r as int), IMAGE_ORDER as nat).len(),
+                no_device_space(&self.spaces),
                 image_progress(*self, pre, root, process, leaf2, runs@, bs, k as int, perms),
                 forall|a: int, u: int| #![trigger run_image_blocks(runs@[a])[u]]
                     0 <= a < r && 0 <= u < run_image_blocks(runs@[a]).len() ==> self.root_frame_at(
@@ -952,6 +956,7 @@ impl CapKernel {
                         ==> bs[k + u] == #[trigger] run_blocks(s as nat, m as nat, IMAGE_ORDER as nat)[u],
                     forall|u: int| 0 <= u < run_blocks(s as nat, m as nat, IMAGE_ORDER as nat).len()
                         ==> full[k - off + u] == #[trigger] run_blocks(s as nat, m as nat, IMAGE_ORDER as nat)[u],
+                    no_device_space(&self.spaces),
                     image_progress(*self, pre, root, process, leaf2, runs@, bs, k as int, perms),
                     forall|a: int, u: int| #![trigger run_image_blocks(runs@[a])[u]]
                         0 <= a < r && 0 <= u < run_image_blocks(runs@[a]).len() ==> self.root_frame_at(

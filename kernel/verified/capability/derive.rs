@@ -724,6 +724,7 @@ impl CapKernel {
     pub proof fn lemma_places_node_view(pre: Self, post: Self, src: usize, from: usize, dst: usize, to: usize)
         requires
             Self::adds_cap(pre, post, pre.tables.node_of(dst, to)),
+            post.view().shares == pre.view().shares,
             pre.tables.has_slot(&pre.list, src, from),
             pre.tables.has_slot(&pre.list, dst, to),
             pre.is_cap(pre.tables.node_of(src, from)),
@@ -802,6 +803,7 @@ impl CapKernel {
     pub proof fn lemma_places_child_view(pre: Self, post: Self, src: usize, from: usize, dst: usize, to: usize)
         requires
             Self::adds_cap(pre, post, pre.tables.node_of(dst, to)),
+            post.view().shares == pre.view().shares,
             pre.tables.has_slot(&pre.list, src, from),
             pre.tables.has_slot(&pre.list, dst, to),
             pre.is_cap(pre.tables.node_of(src, from)),
@@ -839,6 +841,7 @@ impl CapKernel {
     proof fn lemma_derive_discharges(pre: Self, post: Self, root: usize, from: usize, to: usize)
         requires
             Self::derive_step(pre, post, pre.tables.node_of(root, to)),
+            Self::same_tree(pre, post),
             pre.tables.has_slot(&pre.list, root, from),
             pre.tables.has_slot(&pre.list, root, to),
             pre.is_cap(pre.tables.node_of(root, from)),
@@ -872,6 +875,7 @@ impl CapKernel {
     proof fn lemma_derive_into_discharges(pre: Self, post: Self, root: usize, c: usize, from: usize, d: usize, to: usize)
         requires
             Self::derive_step(pre, post, pre.tables.node_of(d, to)),
+            Self::same_tree(pre, post),
             pre.tables.has_slot(&pre.list, root, from),
             pre.tables.has_slot(&pre.list, d, to),
             pre.is_cap(pre.tables.node_of(root, from)),

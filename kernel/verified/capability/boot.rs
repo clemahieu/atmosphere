@@ -177,6 +177,7 @@ impl CapKernel {
             final(self).processes.records@.contains_key(base),
             !final(self).processes.records@[base].value().dead,
             final(self).spaces.roots@.contains_key(base),
+            no_device_space(&final(self).spaces),
             forall|c: int| 0 <= c < NUM_CPUS ==> !#[trigger] final(self).loaded(c, base),
             final(self).blocks.pages@[(base / PAGE_SZ) as int].refs == 1,
             !final(self).blocks.pages@[(base / PAGE_SZ) as int].dead,
@@ -378,6 +379,7 @@ impl CapKernel {
             }
             assert(PROCESS_RIGHTS & CONTROL_RIGHT != 0) by (compute_only);
             Self::lemma_boot_root_process(pre, post, root, base, leaf, l0, l1, l2, l3, freed, leaf_typed);
+            Self::lemma_boot_no_device(pre, post, base);
             assert(post.list.pages@.dom() =~= set![root, leaf]);
             assert forall|i: int| pre.blocks.tracks(i) && !(pb <= i < pb + 8) && !(lb <= i < lb + 2)
                 implies #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i] by {
@@ -878,6 +880,7 @@ impl CapKernel {
                 <==> (o % PAGE_SZ == 0 && ((process <= o < process + PROCESS_BYTES) || (t <= o < t + THREAD_BYTES))),
             forall|q: usize, o: usize| #[trigger] final(self).view().reach(q, o)
                 ==> o == q || final(self).view().reach(process, o),
+            no_device_space(&final(self).spaces),
             forall|k: int| 0 <= k < 8 ==> {
                 ||| (#[trigger] final(self).blocks.pages@[process / PAGE_SZ + k]).kind is Base
                 ||| final(self).blocks.pages@[process / PAGE_SZ + k].kind is Member
@@ -1055,6 +1058,10 @@ impl CapKernel {
             assert(post.tables.owner@[leaf].0 == process) by {
                 assert(mid.tables.owner@[leaf] == first.tables.owner@[leaf]);
             }
+            assert(no_device_space(&post.spaces)) by {
+                assert(mid.spaces == first.spaces);
+                assert(post.spaces == mid.spaces);
+            }
             Self::lemma_root_reach(post, process, leaf, t);
             assert(post.list.nodes@[leaf as int].live);
             assert(has(post.list.seq@, leaf));
@@ -1156,6 +1163,7 @@ impl CapKernel {
             old(self).tables.node_of(process, ROOT_PROCESS_SLOT) == leaf + 1,
             root_object(i, payload),
             !old(self).list.nodes@[leaf + i].live,
+            no_device_space(&old(self).spaces),
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
@@ -1253,6 +1261,8 @@ impl CapKernel {
     pub proof fn lemma_boot_held_view(pre: Self, post: Self, root: usize, process: usize, i: usize, child: usize)
         requires
             Self::adds_cap(pre, post, child),
+            Self::same_tree(pre, post),
+            no_device_space(&pre.spaces),
             root == pre.list.seq@[0],
             pre.tables.has_slot(&pre.list, process, i),
             pre.tables.node_of(process, i) == child,
@@ -1298,6 +1308,8 @@ impl CapKernel {
         }
         assert(!b.rights.contains((child, Right::Control)));
         assert(b.parent == a.parent.insert(child, root));
+        pre.lemma_no_device_no_shares();
+        assert(b.shares == a.shares);
         assert(adds_held(a, b, process, root, child, live));
     }
 
@@ -1341,6 +1353,7 @@ impl CapKernel {
             ROOT_POWER_SLOT < i < NODES_PER_PAGE,
             !old(self).list.nodes@[leaf + i].live,
             payload_wf(untyped_payload(base, order)),
+            no_device_space(&old(self).spaces),
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
@@ -1449,6 +1462,21 @@ impl CapKernel {
         assert(b.names[child] == base && b.pages[child] == pow2(order as nat));
     }
 
+    /// The root process's space is the first there is, and a process's: no space is a device space.
+    proof fn lemma_boot_no_device(pre: Self, post: Self, base: usize)
+        requires
+            pre.spaces.roots@ == Map::<usize, PointsTo<PageMap>>::empty(),
+            post.spaces.roots@ == pre.spaces.roots@.insert(base, post.spaces.roots@[base]),
+            post.spaces.records@[base].value().kind is Process,
+        ensures
+            no_device_space(&post.spaces),
+    {
+        assert forall|s: usize| #[trigger] post.spaces.roots@.contains_key(s)
+            implies !(post.spaces.records@[s].value().kind is Device) by {
+            assert(s == base);
+        }
+    }
+
     /// The root's reach after boot: it holds exactly its process and thread capabilities, each naming
     /// its block, and nobody else holds anything, so it reaches exactly the pages of those blocks.
     proof fn lemma_root_reach(s: Self, process: usize, leaf: usize, t: usize)
@@ -1463,6 +1491,7 @@ impl CapKernel {
             s.tables.owner@[leaf].0 == process,
             process % PAGE_SZ == 0,
             t % PAGE_SZ == 0,
+            no_device_space(&s.spaces),
         ensures
             forall|o: usize| #[trigger] s.view().reach(process, o)
                 <==> (o % PAGE_SZ == 0 && ((process <= o < process + PROCESS_BYTES) || (t <= o < t + THREAD_BYTES))),
@@ -1472,6 +1501,7 @@ impl CapKernel {
         let a = (leaf + 1) as usize;
         let b = (leaf + 2) as usize;
         lemma2_to64();
+        s.lemma_no_device_no_shares();
         assert(v.names[a] == process && v.pages[a] == 8);
         assert(v.names[b] == t && v.pages[b] == 2);
         assert(v.holds(process, a));

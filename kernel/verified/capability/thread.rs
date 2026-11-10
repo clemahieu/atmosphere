@@ -1580,6 +1580,7 @@ impl CapKernel {
             post.payload_of(pre.tables.node_of(root, to)) == thread_of(base),
             block_within(base, THREAD_ORDER, pre.payload_of(pre.tables.node_of(root, from))),
             !pre.tables.roots@.contains_key(base),
+            Self::same_tree(pre, post),
         ensures
             post.view().holds(root, pre.tables.node_of(root, to)),
             adds_object(
