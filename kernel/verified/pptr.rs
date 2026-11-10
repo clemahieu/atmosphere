@@ -187,6 +187,8 @@ pub struct PPtr<V>(pub usize, pub PhantomData<V>);
 /// `View` object, [`PointsToData`].
 ///
 /// See the [`PPtr`] documentation for more details.
+// Proofs alone read the fields, and a cargo build erases proofs.
+#[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
 pub tracked struct PointsTo<V> {
     points_to: raw_ptr::PointsTo<V>,
     exposed: raw_ptr::IsExposed,

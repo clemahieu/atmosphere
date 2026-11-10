@@ -235,7 +235,7 @@ impl CapKernel {
         }
         let mut next = cores;
         next.list = cores.list | (1u32 << (c as u32));
-        next.ids.set(c, generation * 4096 + pcid);
+        next.ids[c] = generation * 4096 + pcid;
         let tracked mut perm = self.spaces.loaded.borrow_mut().tracked_remove(s);
         ptr.write(Tracked(&mut perm), next);
         proof {

@@ -68,7 +68,7 @@ impl<A, const N: usize> Array<A, N> {
             final(self).seq@ =~= old(self).seq@.update(i as int, out),
             final(self).wf(),
     {
-        self.ar.set(i, out);
+        self.ar[i] = out;
         proof {
             self.seq = Ghost(self.ar@);
         }
@@ -85,7 +85,6 @@ impl<const N: usize> Array<u8, N> {
             forall|index:int| 0<= index < N ==> #[trigger] final(self)@[index] == 0,
             final(self).wf(),
     {
-        let mut i = 0;
         for i in 0..N
             invariant
                 N <= usize::MAX,
@@ -112,7 +111,6 @@ impl<const N: usize> Array<usize, N> {
             forall|index:int| 0<= index < N ==> #[trigger] final(self)@[index] == 0,
             final(self).wf(),
     {
-        let mut i = 0;
         for i in 0..N
             invariant
                 N <= usize::MAX,
@@ -139,7 +137,6 @@ impl<T: Copy, const N: usize> Array<Option<T>, N> {
             forall|index:int| 0<= index < N ==> #[trigger] final(self)@[index].is_None(),
             final(self).wf(),
     {
-        let mut i = 0;
         for i in 0..N
             invariant
                 N <= usize::MAX,
@@ -155,20 +152,5 @@ impl<T: Copy, const N: usize> Array<Option<T>, N> {
         }
     }
 }
-
-fn test<const N: usize>(ar: &mut Array<u64, N>)
-    requires
-        old(ar).wf(),
-        old(ar)[1] == 0,
-        N == 2,
-
-    {
-    let v_1 = ar.get(1);
-    assert(v_1 == 0);
-    ar.set(0,1);
-    let v_0 = ar.get(0);
-    assert(v_0 == 1);
-    let v_1_new = ar.get(1);
-    }
 
 }

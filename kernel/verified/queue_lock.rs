@@ -154,6 +154,8 @@ pub struct Node {
     next: PAtomicUsize,
     /// True while this core waits.
     waiting: PAtomicBool,
+    // Read only inside open_atomic_invariant!, which a cargo build erases.
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
     inv: Tracked<AtomicInvariant<NodeK, NodeInv, NodePred>>,
 }
 

@@ -264,13 +264,12 @@ pub fn page_entry2usize(page_entry: &PageEntry, level: usize) -> (ret: usize)
 {
     let mut ret: usize = page_entry.addr;
 
-    let mut ghost_addr = Ghost(page_entry.addr);
+    let ghost_addr = Ghost(page_entry.addr);
     let mut ghost_ret = Ghost(page_entry.addr);
     let ghost_present = Ghost(page_entry.perm.present);
     let ghost_ps = Ghost(page_entry.perm.ps);
     let ghost_write = Ghost(page_entry.perm.write);
     let ghost_execute_disable = Ghost(page_entry.perm.execute_disable);
-    let ghost_user = Ghost(page_entry.perm.user);
     assert(ret == ghost_addr@);
 
     if page_entry.perm.present == true {

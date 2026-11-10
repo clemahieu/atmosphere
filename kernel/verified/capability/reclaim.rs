@@ -4479,7 +4479,6 @@ impl CapKernel {
         if !entry.typed || entry.refs != 0 {
             return ReclaimStep::Refused;
         }
-        let page = base / 4096;
         if !self.is_region_acknowledged(level, r, Tracked(steps)) {
             return ReclaimStep::Again;
         }

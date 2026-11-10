@@ -1931,7 +1931,9 @@ proof fn lemma_move_order(pre: Tree, me: Tree, i: usize, slot: usize, p: int)
     }
 }
 
-/// The invariant is not vacuous: a root with one derived child, which sits in the root's run.
+/// The invariant is not vacuous: a root with one derived child, which sits in the root's run. A
+/// witness: rust_verify checks it, and no image is built with it.
+#[cfg(verus_keep_ghost)]
 fn root_and_child(root: usize, Tracked(perm): Tracked<PointsTo<NodePage>>)
     requires
         root % 4096 == 0,

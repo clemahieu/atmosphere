@@ -2632,7 +2632,7 @@ impl CapKernel {
                 &&& discharges(self.view(), self.view(), root, Effect::Control { cap: n, thread: t })
             },
     {
-        let (n, t, dead) = match self.thread_control(root, i) {
+        let (_, t, dead) = match self.thread_control(root, i) {
             Some(found) => found,
             None => { return None; },
         };
@@ -2673,7 +2673,7 @@ impl CapKernel {
         if !is_user_rip(frame.pc()) {
             return false;
         }
-        let (n, t, dead) = match self.thread_control(root, i) {
+        let (_, t, dead) = match self.thread_control(root, i) {
             Some(found) => found,
             None => { return false; },
         };
@@ -2769,7 +2769,7 @@ impl CapKernel {
             },
     {
         let ghost pre = *self;
-        let (n, t, dead) = match self.thread_control(root, i) {
+        let (_, t, dead) = match self.thread_control(root, i) {
             Some(found) => found,
             None => { return false; },
         };
@@ -2914,7 +2914,7 @@ impl CapKernel {
             },
     {
         let ghost pre = *self;
-        let (n, t, dead) = match self.thread_control(root, i) {
+        let (_, t, dead) = match self.thread_control(root, i) {
             Some(found) => found,
             None => { return SuspendStep::Refused; },
         };
