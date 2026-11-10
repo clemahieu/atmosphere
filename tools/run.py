@@ -52,11 +52,13 @@ DEBUG_EXIT_PORT = 0xf4
 # isa-debug-exit makes QEMU exit with `code << 1 | 1`, and dom0 writes 0x10 on success.
 DOM0_SUCCESS_STATUS = 33
 # Guest RAM, in MiB. The machine the gate, the boot-stack check, the pinned measurement and the
-# syscall benchmark boot: the 2 GiB the kernel tracks and 512 MiB above it for the firmware.
+# syscall benchmark boot: two whole GiB and 512 MiB above them for the firmware.
 # design/test-guest-memory/.
 MEMORY_MIB = 2560
-# The kernel tracks this much, in MiB (NUM_PAGES in kernel/verified/define.rs).
-TRACKED_MIB = 2048
+# The kernel tracks this much from address 0, in MiB (NUM_PAGES in kernel/verified/define.rs).
+TRACKED_MIB = 4096
+# Where QEMU virt's RAM starts, in MiB. The PC's starts at 0.
+VIRT_RAM_BASE_MIB = 1024
 # The only program under user/, which the loader hands dom0.
 PAYLOAD = "hello"
 # What the loader prints first: its name, then a clear screen and the cursor home
@@ -356,11 +358,14 @@ class Tests(unittest.TestCase):
         self.assertEqual(self.options(args, "-cpu"), ["Haswell-IBRS"])
         self.assertIn("stdio,id=char0,mux=on,logfile=/w/serial.log,signal=off", self.options(args, "-chardev"))
 
-    def test_guest_ram_is_the_tracked_pages_and_room_for_the_firmware(self):
-        # design/test-guest-memory/. The firmware allocates from the top of RAM, so the guest
-        # has RAM past the pages the kernel tracks, which leaves 1 to 2 GiB one free 1G block.
+    def test_the_kernel_tracks_all_of_the_guest_s_ram_on_either_machine(self):
+        # design/test-guest-memory/. The firmware allocates from the top of RAM and the loader
+        # from the bottom, so the guest has 512 MiB past two whole GiB: the second is one free 1G
+        # block on the PC, where RAM starts at 0, and the third on QEMU virt, where it starts at
+        # 1 GiB. The kernel tracks the pages of both.
         self.assertEqual(MEMORY_MIB, 2560)
-        self.assertGreater(MEMORY_MIB, TRACKED_MIB)
+        self.assertEqual(TRACKED_MIB, 4096)
+        self.assertLessEqual(VIRT_RAM_BASE_MIB + MEMORY_MIB, TRACKED_MIB)
         define = (REPO / "kernel/verified/define.rs").read_text()
         self.assertIn(f"pub const NUM_PAGES: usize = {TRACKED_MIB // 4} * 1024;", define)
         args = qemu_args(Path("/run/x"), Path("/w/serial.log"), False, False, None,

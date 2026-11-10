@@ -29,8 +29,8 @@ pub type L1Index = usize;
 //1 for now
 pub const KERNEL_MEM_END_L4INDEX: usize = 1;
 
-/// Pages the kernel tracks: 2 GiB. design/test-guest-memory/.
-pub const NUM_PAGES: usize = 512 * 1024;
+/// Pages the kernel tracks: 4 GiB from address 0. design/test-guest-memory/.
+pub const NUM_PAGES: usize = 1024 * 1024;
 
 pub const PAGE_SZ_4k: usize = 4096;
 
