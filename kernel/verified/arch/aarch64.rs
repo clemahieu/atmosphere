@@ -24,8 +24,12 @@ use crate::util::page_ptr_util_u::*;
 // Several of the hardware's bits mean what the abstract entry means when clear (bit 1, AP[2],
 // APTable): the decoders read them against bit 0, so a valid word reads them inverted and the zero
 // word is the empty entry. A writable leaf is marked DBM, and AP[2] in a word so marked is the dirty
-// state, clear once the leaf was written (D8.5.2). Its output address sits where x86_64's does, so
-// the address masks are the same.
+// state, clear once the leaf was written (D8.5.2). The user bits, AP[1] and APTable[0], govern EL0's
+// reads and writes only, so the abstract entry's user bit is also written in the execute-never bits:
+// an entry that is not user removes execution at EL0, as x86_64's U/S does, and its execute_disable
+// is the EL1 bit, PXN or PXNTable; a user leaf's is the EL0 bit, UXN, and it always carries PXN
+// (D8.4.1.2.3, D8.4.1.2.5, Table D8-65). Its output address sits where x86_64's does, so the address
+// masks are the same.
 
 /// Valid descriptor, bit 0.
 pub const DESC_VALID: u64 = 0x1;
@@ -62,14 +66,14 @@ pub const DESC_LEAF_ATTRS: u64 = 0xb00;
 /// UXN, bit 54 of a block or page descriptor: no execution at EL0 (D8.4.1.2.3).
 pub const DESC_UXN: u64 = 0x0040_0000_0000_0000;
 
-/// UXN and PXN, bits 54 and 53 of a block or page descriptor: no execution at EL0 or at EL1.
-pub const DESC_XN: u64 = 0x0060_0000_0000_0000;
+/// PXN, bit 53 of a block or page descriptor: no execution at EL1 (D8.4.1.2.3).
+pub const DESC_PXN: u64 = 0x0020_0000_0000_0000;
 
 /// UXNTable, bit 60 of a table descriptor: every leaf below it is UXN (D8.3.1.1, D8.4.1.2.5).
 pub const TABLE_UXN: u64 = 0x1000_0000_0000_0000;
 
-/// UXNTable and PXNTable, bits 60 and 59 of a table descriptor: every leaf below it is UXN and PXN.
-pub const TABLE_XN: u64 = 0x1800_0000_0000_0000;
+/// PXNTable, bit 59 of a table descriptor: every leaf below it is PXN (D8.3.1.1, D8.4.1.2.5).
+pub const TABLE_PXN: u64 = 0x0800_0000_0000_0000;
 
 /// APTable[0], bit 61 of a table descriptor: no EL0 access below it (D8.4.1.2.2, Table D8-64).
 pub const TABLE_AP_NO_EL0: u64 = 0x2000_0000_0000_0000;
@@ -153,12 +157,17 @@ pub open spec fn usize2write(v: usize, level: usize) -> bool {
     }
 }
 
-/// Not executable at EL0: UXNTable or UXN. The encoder writes the PXN bit beside it.
+/// Not executable by whoever the entry is for. A table descriptor binds both exception levels below
+/// it, as x86_64's NX in a table entry does, so it is PXNTable, beside which the encoder writes
+/// UXNTable. In a block or page descriptor it is UXN where the entry is user, and PXN where it is
+/// not: the other bit of the two is always set there, so it says nothing.
 pub open spec fn usize2execute_disable(v: usize, level: usize) -> bool {
     if usize2table(v, level) {
-        (v & TABLE_UXN as usize) != 0
-    } else {
+        (v & TABLE_PXN as usize) != 0
+    } else if usize2user(v, level) {
         (v & DESC_UXN as usize) != 0
+    } else {
+        (v & DESC_PXN as usize) != 0
     }
 }
 
@@ -168,6 +177,28 @@ pub open spec fn usize2user(v: usize, level: usize) -> bool {
         ((v & TABLE_AP_NO_EL0 as usize) != 0) != usize2present(v, level)
     } else {
         (v & DESC_AP_EL0 as usize) != 0
+    }
+}
+
+/// Whether the word removes execution at EL0 from what it maps: UXN in a block or page descriptor,
+/// and UXNTable in a table descriptor, which every leaf below it obeys (D8.4.1.2.3, D8.4.1.2.5). The
+/// user bits do not: with AP[1] clear and UXN clear EL0 still executes the page, and APTable[0]
+/// removes only EL0's reads and writes (Tables D8-64 and D8-65).
+pub open spec fn usize2el0_execute_never(v: usize, level: usize) -> bool {
+    if usize2table(v, level) {
+        (v & TABLE_UXN as usize) != 0
+    } else {
+        (v & DESC_UXN as usize) != 0
+    }
+}
+
+/// Whether the word removes execution at EL1 from what it maps: PXN in a block or page descriptor,
+/// and PXNTable in a table descriptor.
+pub open spec fn usize2el1_execute_never(v: usize, level: usize) -> bool {
+    if usize2table(v, level) {
+        (v & TABLE_PXN as usize) != 0
+    } else {
+        (v & DESC_PXN as usize) != 0
     }
 }
 
@@ -235,8 +266,9 @@ pub proof fn lemma_status_outside_entry(v: usize, w: usize, level: usize)
         && (v & 0x40usize != 0) == (w & 0x40usize != 0)
         && (v & 0x0008_0000_0000_0000usize != 0) == (w & 0x0008_0000_0000_0000usize != 0)
         && (v & 0x0008_0000_0000_0000usize == 0 ==> (v & 0x80usize != 0) == (w & 0x80usize != 0))
+        && (v & 0x0020_0000_0000_0000usize != 0) == (w & 0x0020_0000_0000_0000usize != 0)
         && (v & 0x0040_0000_0000_0000usize != 0) == (w & 0x0040_0000_0000_0000usize != 0)
-        && (v & 0x1000_0000_0000_0000usize != 0) == (w & 0x1000_0000_0000_0000usize != 0)
+        && (v & 0x0800_0000_0000_0000usize != 0) == (w & 0x0800_0000_0000_0000usize != 0)
         && (v & 0x2000_0000_0000_0000usize != 0) == (w & 0x2000_0000_0000_0000usize != 0)
         && (v & 0x4000_0000_0000_0000usize != 0) == (w & 0x4000_0000_0000_0000usize != 0))
         by (bit_vector)
@@ -296,8 +328,9 @@ pub proof fn zero_leads_is_empty_page_entry(level: usize)
         && 0usize & 0x40usize == 0
         && 0usize & 0x80usize == 0
         && 0usize & 0x400usize == 0
+        && 0usize & 0x0020_0000_0000_0000usize == 0
         && 0usize & 0x0040_0000_0000_0000usize == 0
-        && 0usize & 0x1000_0000_0000_0000usize == 0
+        && 0usize & 0x0800_0000_0000_0000usize == 0
         && 0usize & 0x2000_0000_0000_0000usize == 0
         && 0usize & 0x4000_0000_0000_0000usize == 0
         && 0usize & 0x0008_0000_0000_0000usize == 0
@@ -326,16 +359,21 @@ pub fn usize2page_entry_perm(v: usize, level: usize) -> (ret: PageEntryPerm)
             present,
             ps,
             write: ((v & TABLE_AP_RO as usize) != 0) != present,
-            execute_disable: (v & TABLE_UXN as usize) != 0,
+            execute_disable: (v & TABLE_PXN as usize) != 0,
             user: ((v & TABLE_AP_NO_EL0 as usize) != 0) != present,
         }
     } else {
+        let user = (v & DESC_AP_EL0 as usize) != 0;
         PageEntryPerm {
             present,
             ps,
             write: (v & DESC_DBM as usize) != 0 || ((v & DESC_AP_RO as usize) != 0) != present,
-            execute_disable: (v & DESC_UXN as usize) != 0,
-            user: (v & DESC_AP_EL0 as usize) != 0,
+            execute_disable: if user {
+                (v & DESC_UXN as usize) != 0
+            } else {
+                (v & DESC_PXN as usize) != 0
+            },
+            user,
         }
     }
 }
@@ -373,7 +411,8 @@ pub fn usize2pa(v: usize, level: usize) -> (ret: PAddr)
 /// The word that holds an entry in a table at `level`, with its status clear. A valid leaf is written
 /// read-only in AP[2], and DBM beside it where the entry is writable: the writable-clean state. An
 /// invalid leaf keeps write in AP[2] alone. A valid leaf also gets DESC_LEAF_ATTRS, which the decoders
-/// ignore.
+/// ignore. The last two ensures are what the hardware does with the word, which the round trip
+/// cannot say: EL0 executes nothing that an entry without user maps, and EL1 executes no user leaf.
 pub fn page_entry2usize(page_entry: &PageEntry, level: usize) -> (ret: usize)
     requires
         MEM_valid(page_entry.addr),
@@ -381,6 +420,10 @@ pub fn page_entry2usize(page_entry: &PageEntry, level: usize) -> (ret: usize)
         spec_usize2page_entry(ret, level) == *page_entry,
         spec_usize2page_entry_status(ret, level).is_clear(),
         page_entry.perm.present ==> ret != 0,
+        usize2el0_execute_never(ret, level) == (page_entry.perm.execute_disable
+            || !page_entry.perm.user),
+        usize2el1_execute_never(ret, level) == (page_entry.perm.execute_disable
+            || (page_entry.perm.user && (level == 1 || page_entry.perm.ps))),
 {
     let addr = page_entry.addr;
     let present = page_entry.perm.present;
@@ -392,26 +435,32 @@ pub fn page_entry2usize(page_entry: &PageEntry, level: usize) -> (ret: usize)
     let lw: usize = if leaf && (present || write) { DESC_AP_RO as usize } else { 0 };
     let ld: usize = if leaf && present && write { DESC_DBM as usize } else { 0 };
     let tw: usize = if !leaf && write != present { TABLE_AP_RO as usize } else { 0 };
-    let lu: usize = if leaf && page_entry.perm.user { DESC_AP_EL0 as usize } else { 0 };
-    let tu: usize = if !leaf && page_entry.perm.user != present { TABLE_AP_NO_EL0 as usize } else { 0 };
-    let lx: usize = if leaf && page_entry.perm.execute_disable { DESC_XN as usize } else { 0 };
-    let tx: usize = if !leaf && page_entry.perm.execute_disable { TABLE_XN as usize } else { 0 };
+    let user = page_entry.perm.user;
+    let xd = page_entry.perm.execute_disable;
+    let lu: usize = if leaf && user { DESC_AP_EL0 as usize } else { 0 };
+    let tu: usize = if !leaf && user != present { TABLE_AP_NO_EL0 as usize } else { 0 };
+    let lux: usize = if leaf && (xd || !user) { DESC_UXN as usize } else { 0 };
+    let lpx: usize = if leaf && (xd || user) { DESC_PXN as usize } else { 0 };
+    let tux: usize = if !leaf && (xd || !user) { TABLE_UXN as usize } else { 0 };
+    let tpx: usize = if !leaf && xd { TABLE_PXN as usize } else { 0 };
     let la: usize = if leaf && present { DESC_LEAF_ATTRS as usize } else { 0 };
-    let ret = addr | p | t | lw | ld | tw | lu | tu | lx | tx | la;
+    let ret = addr | p | t | lw | ld | tw | lu | tu | lux | lpx | tux | tpx | la;
     assert(ret & 0x1usize == p
         && ret & 0x2usize == t
         && ret & 0x40usize == lu
         && ret & 0x80usize == lw
         && ret & 0x0008_0000_0000_0000usize == ld
         && ret & 0x400usize == 0
-        && (ret & 0x0040_0000_0000_0000usize != 0) == (lx != 0)
-        && (ret & 0x1000_0000_0000_0000usize != 0) == (tx != 0)
+        && ret & 0x0040_0000_0000_0000usize == lux
+        && ret & 0x0020_0000_0000_0000usize == lpx
+        && ret & 0x1000_0000_0000_0000usize == tux
+        && ret & 0x0800_0000_0000_0000usize == tpx
         && ret & 0x2000_0000_0000_0000usize == tu
         && ret & 0x4000_0000_0000_0000usize == tw
         && ret & 0x0000_ffff_ffff_f000usize == addr
         && (p == 1 ==> ret != 0)) by (bit_vector)
         requires
-            ret == addr | p | t | lw | ld | tw | lu | tu | lx | tx | la,
+            ret == addr | p | t | lw | ld | tw | lu | tu | lux | lpx | tux | tpx | la,
             addr & (!0x0000_ffff_ffff_f000u64) as usize == 0,
             p == 0 || p == 1,
             t == 0 || t == 2,
@@ -420,8 +469,10 @@ pub fn page_entry2usize(page_entry: &PageEntry, level: usize) -> (ret: usize)
             tw == 0 || tw == 0x4000_0000_0000_0000usize,
             lu == 0 || lu == 0x40,
             tu == 0 || tu == 0x2000_0000_0000_0000usize,
-            lx == 0 || lx == 0x0060_0000_0000_0000usize,
-            tx == 0 || tx == 0x1800_0000_0000_0000usize,
+            lux == 0 || lux == 0x0040_0000_0000_0000usize,
+            lpx == 0 || lpx == 0x0020_0000_0000_0000usize,
+            tux == 0 || tux == 0x1000_0000_0000_0000usize,
+            tpx == 0 || tpx == 0x0800_0000_0000_0000usize,
             la == 0 || la == 0xb00,
     ;
     assert(spec_usize2page_entry_perm(ret, level) =~= page_entry.perm);
