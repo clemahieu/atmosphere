@@ -13,7 +13,7 @@ use crate::capability::destroy::*;
 use crate::capability::kernel::*;
 use crate::capability::link::*;
 use crate::capability::list::*;
-#[cfg(verus_keep_ghost)]
+use crate::capability::revoke::UNLINK_ARM_STEPS;
 use crate::capability::steps::Steps;
 use crate::capability::map::*;
 #[cfg(verus_keep_ghost)]
@@ -37,6 +37,19 @@ pub struct Unmapped {
     pub dirty_maintained: bool,
     pub read: Ghost<usize>,
 }
+
+// The most each part of an unmap adds to the step counter, the sum of what its callees state:
+// design/one-lock-bounded-steps/.
+/// send_flush's bound: one flush IPI per core.
+pub const SEND_FLUSH_STEPS: usize = NUM_CPUS;
+/// unmap_entry's bound: the mapping node's arm.
+pub const UNMAP_ENTRY_STEPS: usize = UNLINK_ARM_STEPS;
+/// unmap_kind's bound: clearing the entry, then the flush.
+pub const UNMAP_KIND_STEPS: usize = UNMAP_ENTRY_STEPS + SEND_FLUSH_STEPS;
+/// unmap's bound: one unmap_kind.
+pub const UNMAP_STEPS: usize = UNMAP_KIND_STEPS;
+/// unmap_at's bound: one unmap.
+pub const UNMAP_AT_STEPS: usize = UNMAP_STEPS;
 
 impl CapKernel {
     /// The refusals: an index that names no capability to a space of this kind, or none that may change
@@ -140,12 +153,13 @@ impl CapKernel {
     /// Unmaps the entry the address `va` and the level `level` name in the space of the capability at
     /// index `slot` of the table at `root`. Level 1 is the only level accepted. All of these come from
     /// user space, and a refusal changes nothing. See design/syscall-abi-in-registers/.
-    pub fn unmap_at(&mut self, root: usize, slot: usize, va: u64, level: u64) -> (ret: Option<Unmapped>)
+    pub fn unmap_at(&mut self, root: usize, slot: usize, va: u64, level: u64, Tracked(steps): Tracked<&mut Steps>) -> (ret: Option<Unmapped>)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(steps).count <= old(steps).count + UNMAP_AT_STEPS,
             final(self).wf(),
             final(self).cores == old(self).cores,
             ret is Some == old(self).can_unmap_at(root, slot, va, level),
@@ -157,17 +171,18 @@ impl CapKernel {
             return None;
         }
         let (l4, l3, l2, l1) = address_indices(va);
-        self.unmap(root, slot, l4, l3, l2, l1)
+        self.unmap(root, slot, l4, l3, l2, l1, Tracked(steps))
     }
 
     /// Unmaps entry `l1` of the level 1 table the path reaches in the space named at index `slot`. The
     /// index and the path come from user space, so either can be refused, and a refusal changes nothing.
-    pub fn unmap(&mut self, root: usize, slot: usize, l4: usize, l3: usize, l2: usize, l1: usize) -> (ret: Option<Unmapped>)
+    pub fn unmap(&mut self, root: usize, slot: usize, l4: usize, l3: usize, l2: usize, l1: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: Option<Unmapped>)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(steps).count <= old(steps).count + UNMAP_STEPS,
             final(self).wf(),
             final(self).cores == old(self).cores,
             (ret is Some) == old(self).can_unmap(root, slot, SpaceKind::Process, SpacePath { l4, l3, l2, l1 }),
@@ -178,16 +193,17 @@ impl CapKernel {
             discharges(old(self).view(), final(self).view(), root, Effect::Local),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
-        self.unmap_kind(root, slot, SpaceKind::Process, l4, l3, l2, l1)
+        self.unmap_kind(root, slot, SpaceKind::Process, l4, l3, l2, l1, Tracked(steps))
     }
 
     /// unmap, in a space that must be of this kind.
     #[verifier::spinoff_prover]
-    pub fn unmap_kind(&mut self, root: usize, slot: usize, kind: SpaceKind, l4: usize, l3: usize, l2: usize, l1: usize) -> (ret: Option<Unmapped>)
+    pub fn unmap_kind(&mut self, root: usize, slot: usize, kind: SpaceKind, l4: usize, l3: usize, l2: usize, l1: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: Option<Unmapped>)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
         ensures
+            final(steps).count <= old(steps).count + UNMAP_KIND_STEPS,
             final(self).wf(),
             final(self).cores == old(self).cores,
             (ret is Some) == old(self).can_unmap(root, slot, kind, SpacePath { l4, l3, l2, l1 }),
@@ -199,10 +215,10 @@ impl CapKernel {
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
         let ghost pre = *old(self);
-        match self.unmap_entry(root, slot, kind, l4, l3, l2, l1) {
+        match self.unmap_entry(root, slot, kind, l4, l3, l2, l1, Tracked(steps)) {
             Some((s, r)) => {
                 let ghost mid = *self;
-                self.send_flush(s, Ghost(pre.flush_ipis@));
+                self.send_flush(s, Ghost(pre.flush_ipis@), Tracked(steps));
                 proof {
                     pre.lemma_flush_targets(s);
                     assert(mid.flush_targets(s) == pre.flush_targets(s));
@@ -273,11 +289,12 @@ impl CapKernel {
 
     /// Records a flush IPI, after those in sent, to each core on space s's list of cores: one load of the
     /// list and a bounded loop over the cores. The send is ghost: see design/flush-without-waiting/.
-    fn send_flush(&mut self, s: usize, Ghost(sent): Ghost<Seq<usize>>)
+    fn send_flush(&mut self, s: usize, Ghost(sent): Ghost<Seq<usize>>, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).wf(),
             old(self).spaces.roots@.contains_key(s),
         ensures
+            final(steps).count <= old(steps).count + SEND_FLUSH_STEPS,
             final(self).wf(),
             *final(self) == (CapKernel { flush_ipis: Ghost(sent + old(self).flush_targets(s)), ..*old(self) }),
     {
@@ -288,20 +305,19 @@ impl CapKernel {
         let list = PPtr::<SpaceCores>::from_usize(s + SPACE_CORES_PAGE * PAGE_SZ).borrow(
             Tracked(self.spaces.loaded.borrow().tracked_borrow(s)),
         ).list;
-        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
-        let tracked mut steps = Steps::fresh();
-        self.flush_ipis = send_to_listed(list, Ghost(sent), Tracked(&mut steps));
+        self.flush_ipis = send_to_listed(list, Ghost(sent), Tracked(steps));
         proof {
             Self::lemma_tlb_same(pre, *self);
         }
     }
 
     /// Clears the entry for unmap_kind and returns the space it was in and what the unmap returns.
-    fn unmap_entry(&mut self, root: usize, slot: usize, kind: SpaceKind, l4: usize, l3: usize, l2: usize, l1: usize) -> (ret: Option<(usize, Unmapped)>)
+    fn unmap_entry(&mut self, root: usize, slot: usize, kind: SpaceKind, l4: usize, l3: usize, l2: usize, l1: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: Option<(usize, Unmapped)>)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
         ensures
+            final(steps).count <= old(steps).count + UNMAP_ENTRY_STEPS,
             final(self).wf(),
             final(self).cores == old(self).cores,
             ret is Some == old(self).can_unmap(root, slot, kind, SpacePath { l4, l3, l2, l1 }),
@@ -382,9 +398,7 @@ impl CapKernel {
             assert(pre.mappings@.contains_key(node));
             pre.lemma_mapping_node(node);
         }
-        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
-        let tracked mut steps = Steps::fresh();
-        let word = self.unlink_mapping_node(node, Tracked(&mut steps));
+        let word = self.unlink_mapping_node(node, Tracked(steps));
         proof {
             Self::lemma_mapping_view_same(pre, *self, node);
             Self::lemma_unlinked_shrunk(pre, *self, node);

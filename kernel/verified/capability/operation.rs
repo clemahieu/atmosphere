@@ -858,7 +858,9 @@ impl CapKernel {
             Self::spec_unmapped(*old(self), *final(self), root, frame, ret),
     {
         let ghost pre = *self;
-        match self.unmap_at(root, frame.slot() as usize, frame.argument(1), frame.argument(2)) {
+        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        match self.unmap_at(root, frame.slot() as usize, frame.argument(1), frame.argument(2), Tracked(&mut steps)) {
             Some(r) => {
                 let out = unmap_outcome(r);
                 proof {
