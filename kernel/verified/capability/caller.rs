@@ -77,6 +77,27 @@ pub open spec fn view_frame(v: SlotView, page: usize) -> usize {
     (v.base / 4096 + page) as usize
 }
 
+/// A child with these rights and this block narrows a slot's capability, as narrows reads it within one
+/// view: rights no wider and a block within its own, and a block narrower than its own only of an
+/// untyped or a frame, without control.
+pub open spec fn view_narrows(v: SlotView, rights: u32, base: usize, order: u8) -> bool {
+    &&& rights & !v.rights == 0
+    &&& order <= v.order
+    &&& v.base <= base
+    &&& base as int % block_bytes(order) == 0
+    &&& base as int + block_bytes(order) <= v.base as int + block_bytes(v.order)
+    &&& (base != v.base || order != v.order) ==> {
+        &&& v.kind is Untyped || v.kind is Frame
+        &&& rights & right_bit(Right::Control) == 0
+    }
+}
+
+/// What a slot says that holds the child a derive makes of the capability a slot's view v says, with
+/// these rights and this block, under the capability at node parent.
+pub open spec fn derived_view(v: SlotView, rights: u32, base: usize, order: u8, parent: usize) -> SlotView {
+    SlotView { kind: v.kind, base, order, rights, parent }
+}
+
 impl CapKernel {
     /// Index i of the table at root is a slot that holds a capability.
     pub open spec fn holds_slot(&self, root: usize, i: usize) -> bool {
@@ -875,6 +896,113 @@ impl CapKernel {
             let table = pre.view_table_at(root, at.through)->0;
             assert(table == pre.destination_at(root, at.through)->0);
             assert forall|i: usize| index_ok(i) && index_entry(i) == at.index as int implies #[trigger] post.empty_slot(table, i) by {}
+        }
+    }
+
+    /// Derive's condition over the caller's view, for the source position from, the destination position
+    /// to, the rights, the base and the order: the rights fit 32 bits and the order 8; the source is a
+    /// slot of the caller's own table holding a capability that is not a device's and that the child
+    /// narrows; the destination is in a table, through a process capability with control naming no dead
+    /// process when it goes through one, and its slot is empty; and the source's capability names no dead
+    /// process or thread, is above the deepest depth and, for a kind whose block counts its references,
+    /// names a block below the reference limit. The destination's emptiness, the process's and the
+    /// source's liveness, the depth and the block's count read the kernel outside the view.
+    pub open spec fn derive_allowed(&self, root: usize, from: Option<Position>, to: Option<Position>, rights: u64, base: usize, order: u64) -> bool {
+        let v = self.table_view(root);
+        let i = from->0.index;
+        let n = self.tables.node_of(root, i);
+        let table = self.view_table_at(root, to->0.through);
+        &&& rights <= u32::MAX as u64
+        &&& order <= u8::MAX as u64
+        &&& from is Some
+        &&& from->0.through is None
+        &&& to is Some
+        &&& table is Some
+        &&& to->0.through is Some ==> !self.processes.records@[table->0].value().dead
+        &&& self.empty_slot(table->0, to->0.index)
+        &&& v.contains_key(i)
+        &&& !(v[i].kind is Device)
+        &&& view_narrows(v[i], rights as u32, base, order as u8)
+        &&& !self.cap_dead(n)
+        &&& self.list.nodes@[n as int].depth < MAX_DEPTH
+        &&& (v[i].kind is Frame || v[i].kind is Space || v[i].kind is Thread || v[i].kind is Process)
+            ==> block_refs(&self.blocks, block_ref(&self.blocks, v[i].base / 4096)) != usize::MAX
+    }
+
+    /// Derive's condition over the caller's view is the one allows_derive reads.
+    pub proof fn lemma_derive_allowed(&self, root: usize, frame: Registers)
+        ensures
+            self.derive_allowed(root, spec_position(frame.slot()), spec_position(frame.argument(1)), frame.argument(2), frame.argument(3) as usize, frame.argument(4))
+                == self.allows_derive(root, frame),
+    {
+        let from = spec_position(frame.slot());
+        let to = spec_position(frame.argument(1));
+        let rights = frame.argument(2) as u32;
+        let base = frame.argument(3) as usize;
+        let order = frame.argument(4) as u8;
+        if let Some(f) = from {
+            self.lemma_table_view(root, f.index);
+            if self.holds_slot(root, f.index) {
+                let p = self.payload_of(self.tables.node_of(root, f.index));
+                assert(view_narrows(self.table_view(root)[f.index], rights, base, order) == narrows(child_of(p, rights, base, order), p));
+            }
+        }
+        if let Some(t) = to {
+            self.lemma_view_table_at(root, t.through);
+        }
+    }
+
+    /// Derive's contract over the caller's view. Refused, with every table's view as it was, exactly
+    /// when derive_allowed fails; otherwise ok, with the destination's slot now holding the source's
+    /// child, of the source's kind with the rights and the block the arguments give, and every other
+    /// slot of every table as it was, the source's included.
+    pub open spec fn derive_contract(pre: Self, post: Self, root: usize, from: Option<Position>, to: Option<Position>, rights: u64, base: usize, order: u64, out: Outcome) -> bool {
+        ||| {
+            &&& !pre.derive_allowed(root, from, to, rights, base, order)
+            &&& out == status_only(STATUS_REFUSED)
+            &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
+        }
+        ||| {
+            let i = from->0.index;
+            let table = pre.view_table_at(root, to->0.through)->0;
+            let child = derived_view(pre.table_view(root)[i], rights as u32, base, order as u8, pre.tables.node_of(root, i));
+            &&& pre.derive_allowed(root, from, to, rights, base, order)
+            &&& out == status_only(STATUS_OK)
+            &&& post.table_view(table) == pre.table_view(table).insert(to->0.index, child)
+            &&& forall|t: usize| t != table ==> #[trigger] post.table_view(t) == pre.table_view(t)
+        }
+    }
+
+    /// Derive's specification implies its contract.
+    pub proof fn lemma_derive_contract(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            pre.wf(),
+            Self::spec_derived(pre, post, root, frame, out),
+        ensures
+            Self::derive_contract(pre, post, root, spec_position(frame.slot()), spec_position(frame.argument(1)), frame.argument(2), frame.argument(3) as usize, frame.argument(4), out),
+    {
+        let from = spec_position(frame.slot());
+        let to = spec_position(frame.argument(1));
+        let rights = frame.argument(2) as u32;
+        let base = frame.argument(3) as usize;
+        let order = frame.argument(4) as u8;
+        pre.lemma_derive_allowed(root, frame);
+        if let Some(f) = from {
+            pre.lemma_table_view(root, f.index);
+        }
+        if let Some(t) = to {
+            pre.lemma_view_table_at(root, t.through);
+        }
+        if out == status_only(STATUS_REFUSED) {
+            Self::lemma_views_same(pre, post);
+        } else {
+            let i = from->0.index;
+            let table = pre.table_at(root, to->0.through)->0;
+            let child = pre.tables.node_of(table, to->0.index);
+            let v = derived_view(pre.table_view(root)[i], rights, base, order, pre.tables.node_of(root, i));
+            assert(post.is_cap(child));
+            assert(post.slot_view(table, to->0.index) == v);
+            Self::lemma_slot_added(pre, post, table, to->0.index, v);
         }
     }
 }
