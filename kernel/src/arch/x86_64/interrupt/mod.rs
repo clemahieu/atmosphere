@@ -43,8 +43,8 @@ macro_rules! wrap_interrupt_with_error_code {
             // Figure 6-7. Stack Usage on Transfers to Interrupt and Exception Handling Routines
 
             // Here rsp is at the frame the CPU pushed: [rip][cs][rflags][rsp][ss]
+            // Every gate is an interrupt gate (`idt.rs`), so the CPU cleared IF on the way in.
             naked_asm!(
-                "cli",
                 "cld",
                 "push rax",
                 "push rdi",
@@ -84,7 +84,7 @@ macro_rules! wrap_interrupt_with_error_code {
 
                 "add rsp, 8", // error_code
 
-                "sti",
+                // iretq restores the interrupted RFLAGS, IF with them.
                 "iretq",
 
                 handler = sym $handler,
@@ -105,8 +105,8 @@ macro_rules! wrap_interrupt {
             // Figure 6-7. Stack Usage on Transfers to Interrupt and Exception Handling Routines
 
             // Here rsp is at the frame the CPU pushed: [rip][cs][rflags][rsp][ss]
+            // Every gate is an interrupt gate (`idt.rs`), so the CPU cleared IF on the way in.
             naked_asm!(
-                "cli",
                 "cld",
 
                 "push 0", // error_code
@@ -149,7 +149,7 @@ macro_rules! wrap_interrupt {
 
                 "add rsp, 8", // error_code
 
-                "sti",
+                // iretq restores the interrupted RFLAGS, IF with them.
                 "iretq",
 
                 handler = sym $handler,

@@ -207,7 +207,7 @@ unsafe extern "C" fn sys_entry() -> ! {
         "xor r9d, r9d",
         "xor r10d, r10d",
 
-        "sti",
+        // sysretq loads RFLAGS, IF with them, from r11 (APM 3, SYSRET).
         "sysretq",
 
         user_ss = const GlobalDescriptorTable::USER_SS,
