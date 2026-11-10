@@ -1048,8 +1048,8 @@ impl CapKernel {
         }
         proof {
             lemma2_to64();
-            assert(block_bytes(1) == 8192);
-            assert(base % 8192 == 0);
+            assert(block_bytes(1) == LEAF_BYTES);
+            assert(base % LEAF_BYTES == 0);
             pre.lemma_slot_bound(parent);
             pre.list.lemma_live_valid(parent);
         }
@@ -1099,9 +1099,9 @@ impl CapKernel {
             r < ROOT_ENTRIES,
             old(self).tables.leaf(root, r as int) == NO_LEAF,
             base != NO_LEAF,
-            base % 8192 == 0,
+            base % LEAF_BYTES == 0,
             old(self).blocks.tracks_addr_run(base, 2),
-            base + 8192 <= NODE_SPACE,
+            base + LEAF_BYTES <= NODE_SPACE,
             parent < NODE_SPACE,
             old(self).list.nodes@[parent as int].live,
             old(self).list.nodes@[parent as int].kind is Capability,
@@ -1166,7 +1166,7 @@ impl CapKernel {
             lemma2_to64();
             assert(page % 2 == 0 && page * PAGE_SZ == base) by (nonlinear_arith)
                 requires
-                    base % 8192 == 0,
+                    base % LEAF_BYTES == 0,
                     page == base / PAGE_SZ,
             ;
         }
@@ -1628,7 +1628,7 @@ impl CapKernel {
             post.blocks.wf(),
             pre.blocks.tracks(page as int),
             pre.blocks.tracks_run(page as int, 2),
-            base % 8192 == 0,
+            base % LEAF_BYTES == 0,
             base / PAGE_SZ == page,
             post.holders == pre.holders,
             pre.blocks.pages@[page + 0int].kind is Free,

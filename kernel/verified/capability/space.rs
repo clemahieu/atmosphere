@@ -45,6 +45,9 @@ pub const TABLE_RECORD_PAGE: usize = 6;
 /// The node pages of a table page's block, first in it, so its hidden node is at its address.
 pub const TABLE_NODE_PAGES: usize = 5;
 
+/// A table page's block, eight pages, in bytes. A device space's block is as large.
+pub const TABLE_PAGE_BYTES: usize = PAGE_SZ * 8;
+
 /// The permissions of each table page's table, record and spare page, by the block's address, the spare
 /// page's by its own.
 pub struct TablePages {

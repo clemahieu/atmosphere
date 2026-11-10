@@ -170,7 +170,7 @@ impl CapKernel {
     proof fn lemma_dead_thread_block(&self, base: usize)
         requires
             self.wf(),
-            base % 8192 == 0,
+            base % THREAD_BYTES == 0,
             self.blocks.tracks_addr(base),
         ensures
             thread_block(&self.blocks, base / PAGE_SZ) == self.threads.records@.contains_key(base),
@@ -353,7 +353,7 @@ impl CapKernel {
                 steps.count == steps0 + k,
                 self.wf(),
                 self.threads.records@.contains_key(base),
-                base % 8192 == 0,
+                base % THREAD_BYTES == 0,
                 base < NODE_SPACE,
                 self.list.pages@.dom().contains(base),
                 forall|j: int| 0 <= j < k ==> !(#[trigger] self.list.nodes@[base + j]).live,
@@ -408,7 +408,7 @@ impl CapKernel {
             self.wf(),
             self.thread_is_spent(base),
         ensures
-            base % 8192 == 0,
+            base % THREAD_BYTES == 0,
             base % PAGE_SZ == 0,
             base < NODE_SPACE,
             self.blocks.tracks_addr(base),
@@ -890,7 +890,7 @@ impl CapKernel {
         let page = base / PAGE_SZ;
         proof {
             lemma2_to64();
-            assert(block_bytes(1) == 8192);
+            assert(block_bytes(THREAD_ORDER) == THREAD_BYTES);
         }
         if !self.blocks.page_tracked(page) {
             proof {
@@ -958,7 +958,7 @@ impl CapKernel {
             // On its own, for the modulus: a thread's block is two pages, aligned to them.
             assert(page % 2 == 0) by (nonlinear_arith)
                 requires
-                    base % 8192 == 0,
+                    base % THREAD_BYTES == 0,
                     page == base / PAGE_SZ,
             ;
             pre.lemma_thread_unmapped(page, page);

@@ -160,7 +160,7 @@ spec fn holds_free_page(perms: Map<usize, PagePerm4k>, i: usize) -> bool {
 fn take_table_node_pages(list: &mut Tree, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: Tracked<Map<usize, PagePerm4k>>)
     requires
         old(list).wf(),
-        base % 32768 == 0,
+        base % TABLE_PAGE_BYTES == 0,
         base / PAGE_SZ + 8 <= NUM_PAGES,
         forall|k: usize| k < TABLE_NODE_PAGES ==> old(list).pages@.dom().contains(#[trigger] table_node_page(base, k)),
         forall|k: usize, i: usize| #![trigger table_node(base, k, i)] k < TABLE_NODE_PAGES && i < NODES_PER_PAGE
@@ -187,7 +187,7 @@ fn take_table_node_pages(list: &mut Tree, base: usize, Tracked(steps): Tracked<&
         invariant
             k <= TABLE_NODE_PAGES,
             steps.count == steps0 + k,
-            base % 32768 == 0,
+            base % TABLE_PAGE_BYTES == 0,
             base % PAGE_SZ == 0,
             base as int == PAGE_SZ * page,
             page == base / PAGE_SZ,
@@ -494,7 +494,7 @@ impl CapKernel {
             self.mappings@.contains_key(n),
         ensures
             self.table_pages.maps@.contains_key(self.mappings@[n].table),
-            self.mappings@[n].table % 32768 == 0,
+            self.mappings@[n].table % TABLE_PAGE_BYTES == 0,
             self.mappings@[n].entry < ENTRIES,
             n == mapping_node(self.mappings@[n].table, self.mappings@[n].entry),
             frame_slot(tree_of(&self.table_pages, &self.spaces), self.mappings@[n].table, self.mappings@[n].entry),
@@ -957,7 +957,7 @@ impl CapKernel {
                 pre == *old(self),
                 taken <= LEAF_SLICE_BUDGET,
                 1 <= k <= NODES_PER_PAGE,
-                base % 8192 == 0,
+                base % LEAF_BYTES == 0,
                 pre.tables.owner@.contains_key(base),
                 object == pre.tables.owner@[base].0,
                 pre.view().holds_right(root, untyped, Right::Retype),
@@ -1120,7 +1120,7 @@ impl CapKernel {
     proof fn lemma_slice_kept_step(pre: Self, mid: Self, post: Self, base: usize, n: usize)
         requires
             mid.wf(),
-            base % 8192 == 0,
+            base % LEAF_BYTES == 0,
             base < n < base + NODES_PER_PAGE,
             mid.is_cap(n),
             pre.is_cap(n),
@@ -1182,7 +1182,7 @@ impl CapKernel {
             s.wf(),
             s.tables == pre.tables,
             post.tables == pre.tables,
-            base % 8192 == 0,
+            base % LEAF_BYTES == 0,
             forall|x: int| #![trigger post.list.nodes@[x]] 0 <= x < NODE_SPACE && !(base < x < base + NODES_PER_PAGE) ==> {
                 &&& post.list.nodes@[x].live == pre.list.nodes@[x].live
                 &&& post.list.nodes@[x].kind == pre.list.nodes@[x].kind
@@ -1405,7 +1405,7 @@ impl CapKernel {
         proof {
             // A leaf's block is 2 pages, aligned to them, so the second lies in the range too.
             assert(self.blocks.tracks_run(page as int, 2)) by {
-                assert(base % 8192 == 0);
+                assert(base % LEAF_BYTES == 0);
                 assert(page == base / PAGE_SZ);
             }
         }
@@ -1554,7 +1554,7 @@ impl CapKernel {
     fn block_nodes_dead(&self, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             self.wf(),
-            base % 32768 == 0,
+            base % TABLE_PAGE_BYTES == 0,
             self.blocks.tracks_addr_run(base, 8),
             forall|k: usize| k < TABLE_NODE_PAGES ==> self.list.pages@.dom().contains(#[trigger] table_node_page(base, k)),
         ensures
@@ -1570,7 +1570,7 @@ impl CapKernel {
                 steps0 == old(steps).count,
                 steps.count == steps0 + k * (NODES_PER_PAGE + 1),
                 self.wf(),
-                base % 32768 == 0,
+                base % TABLE_PAGE_BYTES == 0,
                 self.blocks.tracks_addr_run(base, 8),
                 forall|k: usize| k < TABLE_NODE_PAGES ==> self.list.pages@.dom().contains(#[trigger] table_node_page(base, k)),
                 forall|j: usize, i: usize| #![trigger table_node(base, j, i)] j < k && i < NODES_PER_PAGE
@@ -1585,7 +1585,7 @@ impl CapKernel {
                     steps0 == old(steps).count,
                     steps.count == steps0 + k * (NODES_PER_PAGE + 1) + i,
                     self.wf(),
-                    base % 32768 == 0,
+                    base % TABLE_PAGE_BYTES == 0,
                     self.blocks.tracks_addr_run(base, 8),
                     forall|k: usize| k < TABLE_NODE_PAGES ==> self.list.pages@.dom().contains(#[trigger] table_node_page(base, k)),
                     forall|j: usize, m: usize| #![trigger table_node(base, j, m)] j < k && m < NODES_PER_PAGE
@@ -1796,7 +1796,7 @@ impl CapKernel {
     proof fn lemma_dead_leaf_block(&self, base: usize)
         requires
             self.wf(),
-            base % 8192 == 0,
+            base % LEAF_BYTES == 0,
             self.blocks.tracks_addr(base),
         ensures
             (leaf_block(&self.blocks, base / PAGE_SZ) && self.blocks.pages@[(base / PAGE_SZ) as int].refs == 0)
@@ -1834,7 +1834,7 @@ impl CapKernel {
             self.wf(),
             self.leaf_is_empty(base),
         ensures
-            base % 8192 == 0,
+            base % LEAF_BYTES == 0,
             base % PAGE_SZ == 0,
             self.blocks.tracks_addr(base),
             self.blocks.tracks_addr_run(base, 2),
@@ -2164,7 +2164,7 @@ impl CapKernel {
 
     /// The block at `base` holds a table page or a space, with no reference and no live node.
     pub open spec fn empty_node_block(&self, base: usize) -> bool {
-        &&& base % 32768 == 0
+        &&& base % TABLE_PAGE_BYTES == 0
         &&& self.blocks.tracks_addr_run(base, 8)
         &&& self.blocks.pages@[(base / PAGE_SZ) as int].kind is Base
         &&& self.blocks.pages@[(base / PAGE_SZ) as int].object is TablePage
@@ -2199,7 +2199,7 @@ impl CapKernel {
             self.wf(),
             self.table_is_empty(base),
         ensures
-            base % 32768 == 0,
+            base % TABLE_PAGE_BYTES == 0,
             base % PAGE_SZ == 0,
             base as int == PAGE_SZ * (base / PAGE_SZ) as int,
             (base / PAGE_SZ) % 8 == 0,
@@ -2817,7 +2817,7 @@ impl CapKernel {
         requires
             table_pages_wf(&pre.list, &pre.table_pages, &pre.blocks),
             spaces_wf(&pre.list, &pre.tables, &pre.spaces, &pre.blocks),
-            base % 32768 == 0,
+            base % TABLE_PAGE_BYTES == 0,
             !pre.table_pages.maps@.contains_key(base),
             post.table_pages == pre.table_pages,
             post.spaces.roots@ == pre.spaces.roots@.remove(base),
@@ -3132,7 +3132,7 @@ impl CapKernel {
     proof fn lemma_live_leaf_block(&self, base: usize)
         requires
             self.wf(),
-            base % 8192 == 0,
+            base % LEAF_BYTES == 0,
             self.blocks.tracks_addr(base),
         ensures
             (leaf_block(&self.blocks, base / PAGE_SZ) && self.blocks.pages@[(base / PAGE_SZ) as int].refs == 1)
@@ -3179,7 +3179,7 @@ impl CapKernel {
     proof fn lemma_live_table_block(&self, base: usize)
         requires
             self.wf(),
-            base % 32768 == 0,
+            base % TABLE_PAGE_BYTES == 0,
             self.blocks.tracks_addr(base),
         ensures
             (table_block(&self.blocks, base / PAGE_SZ) && self.blocks.pages@[(base / PAGE_SZ) as int].refs == 1)
@@ -3187,7 +3187,7 @@ impl CapKernel {
             self.table_pages.maps@.contains_key(base) && self.list.nodes@[base as int].live
                 ==> self.list.nodes@[base as int].kind is Hidden,
     {
-        assert(base % 32768 == 0 ==> base % 8192 == 0) by (bit_vector);
+        assert(base % TABLE_PAGE_BYTES == 0 ==> base % LEAF_BYTES == 0) by (bit_vector);
         lemma_leaf_page(base);
         if table_block(&self.blocks, base / PAGE_SZ) {
             assert(self.table_pages.maps@.contains_key(((base / PAGE_SZ) * PAGE_SZ) as usize));
@@ -3365,7 +3365,7 @@ impl CapKernel {
     pub proof fn lemma_dead_table_block(&self, base: usize)
         requires
             self.wf(),
-            base % 32768 == 0,
+            base % TABLE_PAGE_BYTES == 0,
             self.blocks.tracks_addr(base),
         ensures
             (table_block(&self.blocks, base / PAGE_SZ) && self.blocks.pages@[(base / PAGE_SZ) as int].refs == 0)
@@ -3374,7 +3374,7 @@ impl CapKernel {
             self.table_pages.maps@.contains_key(base) && !self.list.nodes@[base as int].live
                 ==> self.table_pages.records@[base].value().parent is None,
     {
-        assert(base % 32768 == 0 ==> base % 8192 == 0) by (bit_vector);
+        assert(base % TABLE_PAGE_BYTES == 0 ==> base % LEAF_BYTES == 0) by (bit_vector);
         lemma_leaf_page(base);
         if table_block(&self.blocks, base / PAGE_SZ) {
             assert(self.table_pages.maps@.contains_key(((base / PAGE_SZ) * PAGE_SZ) as usize));
@@ -3400,7 +3400,7 @@ impl CapKernel {
                 == Some(TableParent { table: t, entry: e }),
             tree_of(&self.table_pages, &self.spaces).record(child_at(tree_of(&self.table_pages, &self.spaces), t, e)).space is Some,
             self.blocks.tracks_addr(child_at(tree_of(&self.table_pages, &self.spaces), t, e)),
-            child_at(tree_of(&self.table_pages, &self.spaces), t, e) % 32768 == 0,
+            child_at(tree_of(&self.table_pages, &self.spaces), t, e) % TABLE_PAGE_BYTES == 0,
     {
         let tree = tree_of(&self.table_pages, &self.spaces);
         let c = child_at(tree, t, e);
@@ -3879,7 +3879,7 @@ impl CapKernel {
     pub proof fn lemma_space_block(&self, base: usize)
         requires
             self.wf(),
-            base % 32768 == 0,
+            base % TABLE_PAGE_BYTES == 0,
             self.blocks.tracks_addr(base),
         ensures
             space_block(&self.blocks, base / PAGE_SZ)
@@ -3888,7 +3888,7 @@ impl CapKernel {
             self.spaces.roots@.contains_key(base) ==> tree_of(&self.table_pages, &self.spaces).record(base).parent is None,
             self.spaces.roots@.contains_key(base) ==> tree_of(&self.table_pages, &self.spaces).record(base).level == 4,
     {
-        assert(base % 32768 == 0 ==> base % 8192 == 0) by (bit_vector);
+        assert(base % TABLE_PAGE_BYTES == 0 ==> base % LEAF_BYTES == 0) by (bit_vector);
         lemma_leaf_page(base);
         if self.spaces.roots@.contains_key(base) {
             assert(space_wf(&self.list, &self.spaces, &self.blocks, base));
@@ -4245,7 +4245,7 @@ impl CapKernel {
                 pre.flush_epoch < usize::MAX,
                 !pre.list.nodes@[base as int].live,
                 base < NODE_SPACE,
-                base % 32768 == 0,
+                base % TABLE_PAGE_BYTES == 0,
                 self.blocks.tracks_addr(base),
                 level == a.record(base).level,
                 unlinked <= TABLE_SLICE_BUDGET,

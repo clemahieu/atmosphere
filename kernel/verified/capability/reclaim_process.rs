@@ -80,7 +80,7 @@ impl CapKernel {
     pub proof fn lemma_process_block(&self, base: usize)
         requires
             self.wf(),
-            base % 32768 == 0,
+            base % PROCESS_BYTES == 0,
             self.blocks.tracks_addr(base),
         ensures
             process_block(&self.blocks, base / PAGE_SZ) == self.processes.records@.contains_key(base),
@@ -95,7 +95,7 @@ impl CapKernel {
                 &&& tree_of(&self.table_pages, &self.spaces).record(base).level == 4
             },
     {
-        assert(base % 32768 == 0 ==> base % 8192 == 0) by (bit_vector);
+        assert(base % PROCESS_BYTES == 0 ==> base % LEAF_BYTES == 0) by (bit_vector);
         lemma_leaf_page(base);
         if process_block(&self.blocks, base / PAGE_SZ) {
             assert(self.processes.records@.contains_key(((base / PAGE_SZ) * PAGE_SZ) as usize));
@@ -114,7 +114,7 @@ impl CapKernel {
             self.wf(),
         ensures
             self.processes.records@.contains_key(base) ==> {
-                &&& base % 32768 == 0
+                &&& base % PROCESS_BYTES == 0
                 &&& self.blocks.tracks_addr(base)
                 &&& self.blocks.pages@[(base / PAGE_SZ) as int].object is Process
             },
@@ -307,7 +307,7 @@ impl CapKernel {
             self.wf(),
             self.process_is_spent(base),
         ensures
-            base % 32768 == 0,
+            base % PROCESS_BYTES == 0,
             base % PAGE_SZ == 0,
             base as int == PAGE_SZ * (base / PAGE_SZ) as int,
             self.blocks.tracks_addr_run(base, 8),
