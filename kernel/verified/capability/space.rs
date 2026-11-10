@@ -3297,9 +3297,15 @@ impl CapKernel {
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             ret == old(self).can_retype_block(root, from, to, base, 3),
             !ret ==> *final(self) == *old(self),
+            final(self).devices == old(self).devices,
+            final(self).iommus == old(self).iommus,
+            final(self).processes == old(self).processes,
+            final(self).tables.roots == old(self).tables.roots,
             ret ==> {
                 let parent = old(self).tables.node_of(root, from);
                 let child = old(self).tables.node_of(root, to);
+                &&& Self::retype_keeps(*old(self), *final(self), child, (base / PAGE_SZ) as int, 3, None)
+                &&& final(self).list.nodes@[child as int].depth == old(self).list.nodes@[parent as int].depth + 1
                 &&& old(self).view().holds_right(root, parent, Right::Retype)
                 &&& old(self).blocks.pages@[(base / PAGE_SZ) as int].kind is Free
                 &&& final(self).view().holds(root, child)
@@ -3521,6 +3527,7 @@ impl CapKernel {
             assert(pre.view().holds_right(root, parent, Right::Retype));
             assert(post.view().names[child] == base);
             lemma_adds_child_discharges_retype(pre.view(), post.view(), root, parent, child, live, base);
+            Self::lemma_order3_keeps(pre, post, mid, root, to, page as int);
         }
         true
     }

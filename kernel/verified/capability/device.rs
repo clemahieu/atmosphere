@@ -791,10 +791,19 @@ impl CapKernel {
             final(self).tables.roots == old(self).tables.roots,
             final(self).tables.owner == old(self).tables.owner,
             final(self).list.seq@[0] == old(self).list.seq@[0],
+            final(self).blocks == old(self).blocks,
+            final(self).iommus == old(self).iommus,
+            final(self).processes == old(self).processes,
+            final(self).spaces == old(self).spaces,
             ret ==> final(self).list.parent@ == old(self).list.parent@.insert(old(self).tables.node_of(root, slot), first),
             ret ==> {
                 let n = old(self).tables.node_of(root, slot);
                 let d = old(self).devices.count;
+                &&& forall|i: int| #![trigger final(self).list.nodes@[i]] 0 <= i < NODE_SPACE && i != n ==> {
+                    &&& final(self).list.nodes@[i].live == old(self).list.nodes@[i].live
+                    &&& final(self).list.nodes@[i].kind == old(self).list.nodes@[i].kind
+                    &&& final(self).list.nodes@[i].depth == old(self).list.nodes@[i].depth
+                }
                 &&& final(self).devices.count == d + 1
                 &&& final(self).devices.records@ == old(self).devices.records@.update(d as int, unbound_record(info))
                 &&& final(self).is_cap(n)

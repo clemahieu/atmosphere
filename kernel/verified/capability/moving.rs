@@ -181,6 +181,14 @@ impl CapKernel {
             !ret ==> *final(self) == *old(self),
             ret ==> Self::cap_moved_at(*old(self), *final(self), root, from, to),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
+            final(self).blocks == old(self).blocks,
+            final(self).iommus == old(self).iommus,
+            final(self).processes.records == old(self).processes.records,
+            final(self).processes.bound == old(self).processes.bound,
+            final(self).devices.records == old(self).devices.records,
+            final(self).devices.count == old(self).devices.count,
+            final(self).spaces.records == old(self).spaces.records,
+            final(self).spaces.bound == old(self).spaces.bound,
     {
         let ghost pre = *old(self);
         let src = match self.find_table(root, from.through) {
@@ -284,6 +292,14 @@ impl CapKernel {
                 &&& old(self).tables.owner@[page_of(n)].0 == dst
             },
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
+            final(self).blocks == old(self).blocks,
+            final(self).iommus == old(self).iommus,
+            final(self).processes.records == old(self).processes.records,
+            final(self).processes.bound == old(self).processes.bound,
+            final(self).devices.records == old(self).devices.records,
+            final(self).devices.count == old(self).devices.count,
+            final(self).spaces.records == old(self).spaces.records,
+            final(self).spaces.bound == old(self).spaces.bound,
     {
         let ghost pre = *old(self);
         let (i, payload) = match self.tables.lookup(&self.list, src, from) {

@@ -578,6 +578,75 @@ impl CapKernel {
             ==> #[trigger] post.blocks.pages@[i].kind == pre.blocks.pages@[i].kind
     }
 
+    /// What a retype of an order-3 block, a process or a space, leaves as it was: the list grew by node
+    /// pages at most, its derive changed the liveness of the new capability alone and no node's depth,
+    /// any table root it made is a new one, and the block table's pages outside the new block are as
+    /// they were.
+    pub proof fn lemma_order3_keeps(pre: Self, post: Self, mid: Tree, root: usize, to: usize, page: int)
+        requires
+            pre.wf(),
+            pre.tables.has_slot(&pre.list, root, to),
+            !pre.list.nodes@[pre.tables.node_of(root, to) as int].live,
+            list_grown(pre.list, mid),
+            mid.nodes@.len() == NODE_SPACE,
+            post.list.nodes@.len() == NODE_SPACE,
+            forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < mid.nodes@.len() && i != pre.tables.node_of(root, to) ==> {
+                &&& post.list.nodes@[i].live == mid.nodes@[i].live
+                &&& post.list.nodes@[i].kind == mid.nodes@[i].kind
+                &&& post.list.nodes@[i].depth == mid.nodes@[i].depth
+            },
+            forall|t: usize| #[trigger] pre.tables.roots@.contains_key(t) ==>
+                post.tables.roots@.contains_key(t) && post.tables.roots@[t] == pre.tables.roots@[t],
+            forall|x: usize| #[trigger] pre.is_cap(x) ==> post.is_cap(x) && post.payload_of(x) == pre.payload_of(x),
+            forall|p: usize| #[trigger] pre.processes.records@.contains_key(p) ==> {
+                &&& post.processes.records@.contains_key(p)
+                &&& post.processes.records@[p] == pre.processes.records@[p]
+            },
+            post.blocks.regions_2m@ == pre.blocks.regions_2m@,
+            post.blocks.regions_1g@ == pre.blocks.regions_1g@,
+            forall|i: int| post.blocks.tracks(i) && !(page <= i < page + 8) ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
+        ensures
+            Self::retype_keeps(pre, post, pre.tables.node_of(root, to), page, 3, None),
+    {
+        let child = pre.tables.node_of(root, to);
+        pre.lemma_slot(root, to);
+        pre.lemma_slot_bound(child);
+        assert forall|r: usize, i: usize| #[trigger] pre.tables.has_slot(&pre.list, r, i) implies {
+            &&& post.tables.has_slot(&post.list, r, i)
+            &&& post.tables.node_of(r, i) == pre.tables.node_of(r, i)
+            &&& pre.tables.node_of(r, i) != child && !pre.list.nodes@[pre.tables.node_of(r, i) as int].live
+                ==> !post.list.nodes@[pre.tables.node_of(r, i) as int].live
+        } by {
+            pre.lemma_slot(r, i);
+            let n = pre.tables.node_of(r, i);
+            pre.lemma_slot_bound(n);
+            let leaf = pre.tables.leaf(r, index_entry(i));
+            assert(leaf == page_of(n));
+            assert(leaf != child);
+            assert(post.tables.leaf(r, index_entry(i)) == leaf);
+            assert(post.list.nodes@[leaf as int].live == mid.nodes@[leaf as int].live);
+            assert(mid.nodes@[leaf as int].live == pre.list.nodes@[leaf as int].live);
+        }
+        assert forall|x: usize| #[trigger] pre.is_cap(x) implies {
+            &&& post.is_cap(x)
+            &&& post.payload_of(x) == pre.payload_of(x)
+            &&& post.list.nodes@[x as int].depth == pre.list.nodes@[x as int].depth
+        } by {
+            pre.lemma_slot_bound(x);
+            assert(x != child);
+            assert(post.list.nodes@[x as int].depth == mid.nodes@[x as int].depth);
+            assert(mid.nodes@[x as int] == pre.list.nodes@[x as int]);
+        }
+        assert forall|r: usize, e: int| pre.tables.roots@.contains_key(r) && 0 <= e < ROOT_ENTRIES
+            implies #[trigger] post.tables.leaf(r, e) == pre.tables.leaf(r, e) by {
+            assert(post.tables.roots@[r] == pre.tables.roots@[r]);
+        }
+        assert forall|i: int| pre.blocks.tracks(i) && !(page <= i < page + order_pages(3))
+            implies #[trigger] post.blocks.pages@[i].kind == pre.blocks.pages@[i].kind by {
+            assert(post.blocks.pages@[i] == pre.blocks.pages@[i]);
+        }
+    }
+
     /// What a retype of the page at base as a 4K frame did, under the untyped at index from of the table
     /// at root, with the capability at index to: the retype was allowed, the frame capability is the
     /// untyped's child in that slot, the one entry the parent map gains and the only node whose kind,
