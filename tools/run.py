@@ -40,6 +40,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import elfstrip
 import firmware
+from elfstrip import Tests as ElfstripTests  # --test, which the gate runs, takes these with its own
 
 REPO = Path(__file__).resolve().parent.parent
 # Where OVMF looks for an application on removable media, and where the loader looks for the initrd.

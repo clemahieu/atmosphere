@@ -13,6 +13,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import unittest
 from pathlib import Path
 
 sys.dont_write_bytecode = True
@@ -44,6 +45,18 @@ def section_names(data):
     return names
 
 
+def objcopy():
+    """The pinned toolchain's llvm-objcopy (rust-toolchain.toml's llvm-tools), which takes an ELF of
+    any architecture; the host's binutils objcopy takes only the host's."""
+    tree = Path(__file__).resolve().parent.parent
+
+    def rustc(*args):
+        return subprocess.run(["rustc", *args], cwd=tree, check=True, text=True, capture_output=True).stdout
+
+    host = next(line.split()[1] for line in rustc("-vV").splitlines() if line.startswith("host:"))
+    return f"{rustc('--print', 'sysroot').strip()}/lib/rustlib/{host}/bin/llvm-objcopy"
+
+
 def without_debug(path):
     """The bytes of `path` with .debug_* removed. `path` itself is not modified."""
     path = Path(path)
@@ -52,7 +65,7 @@ def without_debug(path):
         return data
     with tempfile.TemporaryDirectory() as directory:
         stripped = Path(directory) / "stripped"
-        subprocess.run(["objcopy", "--strip-debug", str(path), str(stripped)], check=True)
+        subprocess.run([objcopy(), "--strip-debug", str(path), str(stripped)], check=True)
         return stripped.read_bytes()
 
 
@@ -67,8 +80,12 @@ def write_initrd(destination, images):
     return size
 
 
-def elf_with_debug_section():
-    """A small ELF64 whose section table names .debug_info, for the initrd test."""
+EM_X86_64 = 62
+EM_AARCH64 = 183
+
+
+def elf_with_debug_section(machine=EM_X86_64):
+    """A small ELF64 for `machine` whose section table names .debug_info, for the initrd tests."""
     shstr = b"\0.text\0.debug_info\0.shstrtab\0"
     text = b"\x90\x90\x90\x90"
     debug = b"DEBUGINF"
@@ -89,7 +106,7 @@ def elf_with_debug_section():
     program = struct.pack("<IIQQQQQQ", 1, 5, text_off, 0, 0, len(text), len(text), 0x1000)
     header = struct.pack("<16sHHIQQQIHHHHHH",
                          b"\x7fELF\x02\x01\x01" + b"\0" * 9,
-                         3, 62, 1, 0, 64, shoff, 0, 64, 56, 1, 64, 4, 3)
+                         3, machine, 1, 0, 64, shoff, 0, 64, 56, 1, 64, 4, 3)
     blob = header + program
     blob += b"\0" * (text_off - len(blob))
     blob += text + debug + shstr
@@ -97,8 +114,45 @@ def elf_with_debug_section():
     return blob + sections
 
 
+class Tests(unittest.TestCase):
+    """tools/run.py --test runs these with its own, so the gate does."""
+
+    def stripped(self, data):
+        with tempfile.TemporaryDirectory() as directory:
+            image = Path(directory) / "image"
+            image.write_bytes(data)
+            blob = without_debug(image)
+            self.assertEqual(image.read_bytes(), data)
+            return blob
+
+    def test_an_elf_of_either_architecture_loses_its_debug_sections_and_keeps_the_rest(self):
+        for machine in (EM_X86_64, EM_AARCH64):
+            with self.subTest(machine=machine):
+                source = elf_with_debug_section(machine)
+                self.assertEqual(section_names(source), ["", ".text", ".debug_info", ".shstrtab"])
+                blob = self.stripped(source)
+                self.assertEqual(section_names(blob), ["", ".text", ".shstrtab"])
+                self.assertEqual(struct.unpack_from("<H", blob, 18)[0], machine)
+                self.assertIn(b"\x90\x90\x90\x90", blob)
+                self.assertNotIn(b"DEBUGINF", blob)
+
+    def test_a_file_that_is_not_an_elf_is_copied_unchanged(self):
+        self.assertEqual(self.stripped(b"MZ not an ELF"), b"MZ not an ELF")
+
+    def test_the_initrd_is_the_stripped_images_in_order(self):
+        with tempfile.TemporaryDirectory() as directory:
+            elf = Path(directory) / "elf"
+            elf.write_bytes(elf_with_debug_section(EM_AARCH64))
+            plain = Path(directory) / "plain"
+            plain.write_bytes(b"payload")
+            initrd = Path(directory) / "initrd"
+            size = write_initrd(initrd, [elf, plain])
+            self.assertEqual(initrd.read_bytes(), without_debug(elf) + b"payload")
+            self.assertEqual(size, initrd.stat().st_size)
+
+
 if __name__ == "__main__":
     if sys.argv[1:] == ["--test"]:
-        sys.exit("tools/elfstrip.py has no tests of its own; tools/run.py --test covers it")
+        unittest.main(argv=[sys.argv[0]])
     for image in sys.argv[1:]:
         sys.stdout.buffer.write(without_debug(image))
