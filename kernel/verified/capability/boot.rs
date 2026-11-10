@@ -129,14 +129,14 @@ impl CapKernel {
             old(self).wf(),
             old(self).boot_empty(),
             root == old(self).list.seq@[0],
-            base % 32768 == 0,
+            base % PROCESS_BYTES == 0,
             old(self).blocks.tracks_addr_run(base, 8),
-            leaf % 8192 == 0,
+            leaf % LEAF_BYTES == 0,
             leaf != NO_LEAF,
             old(self).blocks.tracks_addr_run(leaf, 2),
-            base + 32768 <= leaf || leaf + 8192 <= base,
-            !(base <= root < base + 32768),
-            !(leaf <= root < leaf + 8192),
+            base + PROCESS_BYTES <= leaf || leaf + LEAF_BYTES <= base,
+            !(base <= root < base + PROCESS_BYTES),
+            !(leaf <= root < leaf + LEAF_BYTES),
             forall|i: usize| base / PAGE_SZ <= i < base / PAGE_SZ + 8 || leaf / PAGE_SZ <= i < leaf / PAGE_SZ + 2
                 ==> #[trigger] holds(pages, i),
         ensures
@@ -193,7 +193,7 @@ impl CapKernel {
             lemma_table_page_base(base, pb);
             assert(lb % 2 == 0 && lb * PAGE_SZ == leaf) by (nonlinear_arith)
                 requires
-                    leaf % 8192 == 0,
+                    leaf % LEAF_BYTES == 0,
                     lb == leaf / PAGE_SZ,
             ;
             lemma_slot_in_leaf(leaf, 0);
@@ -395,7 +395,7 @@ impl CapKernel {
             root == old(self).list.seq@[0],
             old(self).tables.roots@.contains_key(process),
             old(self).tables.leaf(process, 0) == leaf,
-            leaf % 8192 == 0,
+            leaf % LEAF_BYTES == 0,
             leaf != NO_LEAF,
             old(self).blocks.tracks_addr_run(leaf, 2),
             old(self).list.nodes@[leaf as int].live,
@@ -404,7 +404,7 @@ impl CapKernel {
             old(self).list.nodes@[leaf + 1].depth == 1,
             !old(self).list.nodes@[leaf + 2].live,
             old(self).blocks.pages@[(process / PAGE_SZ) as int].refs == 1,
-            t % 8192 == 0,
+            t % THREAD_BYTES == 0,
             old(self).blocks.tracks_addr_run(t, 2),
             forall|i: int| t / PAGE_SZ <= i < t / PAGE_SZ + 2 ==> #[trigger] old(self).blocks.pages@[i].kind is Reserved,
             !old(self).blocks.covered((t / PAGE_SZ) as int),
@@ -477,7 +477,7 @@ impl CapKernel {
             lemma2_to64();
             assert(tb % 2 == 0 && tb * PAGE_SZ == t) by (nonlinear_arith)
                 requires
-                    t % 8192 == 0,
+                    t % THREAD_BYTES == 0,
                     tb == t / PAGE_SZ,
             ;
             lemma_slot_in_leaf(leaf, 1);
@@ -684,7 +684,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(process),
             r < ROOT_ENTRIES,
             old(self).tables.leaf(process, r as int) == NO_LEAF,
-            leaf % 8192 == 0,
+            leaf % LEAF_BYTES == 0,
             leaf != NO_LEAF,
             old(self).blocks.tracks_addr_run(leaf, 2),
             forall|i: int| leaf / PAGE_SZ <= i < leaf / PAGE_SZ + 2 ==> #[trigger] old(self).blocks.pages@[i].kind is Reserved,
@@ -742,10 +742,10 @@ impl CapKernel {
             lemma2_to64();
             assert(lb % 2 == 0 && lb * PAGE_SZ == leaf) by (nonlinear_arith)
                 requires
-                    leaf % 8192 == 0,
+                    leaf % LEAF_BYTES == 0,
                     lb == leaf / PAGE_SZ,
             ;
-            assert(leaf + 8192 <= NODE_SPACE);
+            assert(leaf + LEAF_BYTES <= NODE_SPACE);
             pre.list.lemma_link(0);
             pre.list.lemma_live_valid(root);
             pre.list.lemma_valid_bound(root);
@@ -800,26 +800,26 @@ impl CapKernel {
             old(self).wf(),
             old(self).boot_empty(),
             root == old(self).list.seq@[0],
-            process % 32768 == 0,
+            process % PROCESS_BYTES == 0,
             old(self).blocks.tracks_addr_run(process, 8),
-            leaf % 8192 == 0,
+            leaf % LEAF_BYTES == 0,
             leaf != NO_LEAF,
             old(self).blocks.tracks_addr_run(leaf, 2),
-            frames % 8192 == 0,
+            frames % LEAF_BYTES == 0,
             frames != NO_LEAF,
             old(self).blocks.tracks_addr_run(frames, 2),
-            t % 8192 == 0,
+            t % THREAD_BYTES == 0,
             old(self).blocks.tracks_addr_run(t, 2),
-            process + 32768 <= leaf || leaf + 8192 <= process,
-            process + 32768 <= frames || frames + 8192 <= process,
-            process + 32768 <= t || t + 8192 <= process,
-            leaf + 8192 <= frames || frames + 8192 <= leaf,
-            leaf + 8192 <= t || t + 8192 <= leaf,
-            frames + 8192 <= t || t + 8192 <= frames,
-            !(process <= root < process + 32768),
-            !(leaf <= root < leaf + 8192),
-            !(frames <= root < frames + 8192),
-            !(t <= root < t + 8192),
+            process + PROCESS_BYTES <= leaf || leaf + LEAF_BYTES <= process,
+            process + PROCESS_BYTES <= frames || frames + LEAF_BYTES <= process,
+            process + PROCESS_BYTES <= t || t + THREAD_BYTES <= process,
+            leaf + LEAF_BYTES <= frames || frames + LEAF_BYTES <= leaf,
+            leaf + LEAF_BYTES <= t || t + THREAD_BYTES <= leaf,
+            frames + LEAF_BYTES <= t || t + THREAD_BYTES <= frames,
+            !(process <= root < process + PROCESS_BYTES),
+            !(leaf <= root < leaf + LEAF_BYTES),
+            !(frames <= root < frames + LEAF_BYTES),
+            !(t <= root < t + THREAD_BYTES),
             forall|i: usize| process / PAGE_SZ <= i < process / PAGE_SZ + 8 || leaf / PAGE_SZ <= i < leaf / PAGE_SZ + 2
                 || frames / PAGE_SZ <= i < frames / PAGE_SZ + 2 || t / PAGE_SZ <= i < t / PAGE_SZ + 2 ==> #[trigger] holds(pages, i),
         ensures
@@ -867,7 +867,7 @@ impl CapKernel {
                 placement: None,
             }),
             forall|o: usize| #[trigger] final(self).view().reach(process, o)
-                <==> (o % PAGE_SZ == 0 && ((process <= o < process + 32768) || (t <= o < t + 8192))),
+                <==> (o % PAGE_SZ == 0 && ((process <= o < process + PROCESS_BYTES) || (t <= o < t + THREAD_BYTES))),
             forall|q: usize, o: usize| #[trigger] final(self).view().reach(q, o)
                 ==> o == q || final(self).view().reach(process, o),
             forall|k: int| 0 <= k < 8 ==> {
@@ -914,10 +914,10 @@ impl CapKernel {
             lemma2_to64();
             assert(pb * PAGE_SZ == process && lb * PAGE_SZ == leaf && fb * PAGE_SZ == frames && tb * PAGE_SZ == t) by (nonlinear_arith)
                 requires
-                    process % 32768 == 0,
-                    leaf % 8192 == 0,
-                    frames % 8192 == 0,
-                    t % 8192 == 0,
+                    process % PROCESS_BYTES == 0,
+                    leaf % LEAF_BYTES == 0,
+                    frames % LEAF_BYTES == 0,
+                    t % THREAD_BYTES == 0,
                     pb == process / PAGE_SZ,
                     lb == leaf / PAGE_SZ,
                     fb == frames / PAGE_SZ,
@@ -974,7 +974,7 @@ impl CapKernel {
             assert(!(fb <= root / PAGE_SZ < fb + 2)) by (nonlinear_arith)
                 requires
                     fb * PAGE_SZ == frames,
-                    !(frames <= root < frames + 8192),
+                    !(frames <= root < frames + LEAF_BYTES),
             ;
             assert forall|p: usize| #[trigger] first.list.pages@.dom().contains(p) && first.blocks.tracks_addr(p)
                 implies !(fb <= p / PAGE_SZ < fb + 2) by {
@@ -1008,7 +1008,7 @@ impl CapKernel {
             assert(!(tb <= root / PAGE_SZ < tb + 2)) by (nonlinear_arith)
                 requires
                     tb * PAGE_SZ == t,
-                    !(t <= root < t + 8192),
+                    !(t <= root < t + THREAD_BYTES),
             ;
             assert forall|p: usize| #[trigger] mid.list.pages@.dom().contains(p) && mid.blocks.tracks_addr(p)
                 implies !(tb <= p / PAGE_SZ < tb + 2) by {
@@ -1455,7 +1455,7 @@ impl CapKernel {
             t % PAGE_SZ == 0,
         ensures
             forall|o: usize| #[trigger] s.view().reach(process, o)
-                <==> (o % PAGE_SZ == 0 && ((process <= o < process + 32768) || (t <= o < t + 8192))),
+                <==> (o % PAGE_SZ == 0 && ((process <= o < process + PROCESS_BYTES) || (t <= o < t + THREAD_BYTES))),
             forall|q: usize, o: usize| #[trigger] s.view().reach(q, o) ==> o == q || s.view().reach(process, o),
     {
         let v = s.view();
@@ -1475,7 +1475,7 @@ impl CapKernel {
             }
         }
         assert forall|o: usize| #[trigger] v.reach(process, o)
-            <==> (o % PAGE_SZ == 0 && ((process <= o < process + 32768) || (t <= o < t + 8192))) by {
+            <==> (o % PAGE_SZ == 0 && ((process <= o < process + PROCESS_BYTES) || (t <= o < t + THREAD_BYTES))) by {
             if v.reach(process, o) {
                 let (q, k) = choose|q: usize, k: nat| #[trigger] v.controlled(process, q, k) && (o == q || v.direct(q, o));
                 assert(q == process || q == t);
@@ -1485,13 +1485,13 @@ impl CapKernel {
                     assert(s.is_cap(n));
                 }
             }
-            if o % PAGE_SZ == 0 && process <= o < process + 32768 {
+            if o % PAGE_SZ == 0 && process <= o < process + PROCESS_BYTES {
                 assert(v.descends(a, a, 0));
                 assert(v.covers(a, o));
                 assert(v.direct(process, o));
                 assert(v.controlled(process, process, 0));
             }
-            if o % PAGE_SZ == 0 && t <= o < t + 8192 {
+            if o % PAGE_SZ == 0 && t <= o < t + THREAD_BYTES {
                 assert(v.descends(b, b, 0));
                 assert(v.covers(b, o));
                 assert(v.direct(process, o));
@@ -1528,7 +1528,7 @@ impl CapKernel {
             pre.list.nodes@[root as int].live,
             pre.list.nodes@[root as int].kind is Capability,
             pre.list.nodes@[root as int].depth == 0,
-            leaf % 8192 == 0,
+            leaf % LEAF_BYTES == 0,
             pre.tables.has_slot(&pre.list, process, ROOT_THREAD_SLOT),
             pre.tables.node_of(process, ROOT_THREAD_SLOT) == leaf + 2,
             page_of((leaf + 2) as usize) == leaf,
@@ -1537,7 +1537,7 @@ impl CapKernel {
             (leaf + 2) < NODE_SPACE,
             pre.list.valid((leaf + 2) as usize),
             !pre.list.nodes@[leaf + 2].live,
-            t % 8192 == 0,
+            t % THREAD_BYTES == 0,
             (t / PAGE_SZ) * PAGE_SZ == t,
             (t / PAGE_SZ) % 2 == 0,
             pre.blocks.tracks_addr_run(t, 2),
@@ -1629,7 +1629,7 @@ impl CapKernel {
         assert(Self::space_step(pre, post, child));
         assert(post.payload_of(child) == thread_of(base));
         lemma2_to64();
-        assert(block_bytes(THREAD_ORDER) == 8192);
+        assert(block_bytes(THREAD_ORDER) == THREAD_BYTES);
         assert(payload_wf(post.payload_of(child)));
         assert(post.is_cap(child));
         Self::lemma_space_caps_wf(pre, post, child);
@@ -1976,14 +1976,14 @@ impl CapKernel {
             pre.wf(),
             pre.boot_empty(),
             root == pre.list.seq@[0],
-            base % 32768 == 0,
+            base % PROCESS_BYTES == 0,
             pre.blocks.tracks_addr_run(base, 8),
-            leaf % 8192 == 0,
+            leaf % LEAF_BYTES == 0,
             leaf != NO_LEAF,
             pre.blocks.tracks_addr_run(leaf, 2),
-            base + 32768 <= leaf || leaf + 8192 <= base,
-            !(base <= root < base + 32768),
-            !(leaf <= root < leaf + 8192),
+            base + PROCESS_BYTES <= leaf || leaf + LEAF_BYTES <= base,
+            !(base <= root < base + PROCESS_BYTES),
+            !(leaf <= root < leaf + LEAF_BYTES),
             (base / PAGE_SZ) * PAGE_SZ == base,
             (leaf / PAGE_SZ) * PAGE_SZ == leaf,
             (leaf / PAGE_SZ) % 2 == 0,
@@ -2130,7 +2130,7 @@ impl CapKernel {
         let list = post.list;
         let blocks = post.blocks;
         lemma2_to64();
-        assert(block_bytes(3) == 32768);
+        assert(block_bytes(3) == PROCESS_BYTES);
         // Init's list holds its root alone.
         pre.list.lemma_link(0);
         assert forall|i: int| 0 <= i < NODE_SPACE implies #[trigger] l0.nodes@[i].live == (i == root as int) by {
@@ -2233,8 +2233,8 @@ impl CapKernel {
                         root % PAGE_SZ == 0,
                         pb * PAGE_SZ == base,
                         lb * PAGE_SZ == leaf,
-                        !(base <= root < base + 32768),
-                        !(leaf <= root < leaf + 8192),
+                        !(base <= root < base + PROCESS_BYTES),
+                        !(leaf <= root < leaf + LEAF_BYTES),
                 ;
             } else {
                 assert(p == leaf);

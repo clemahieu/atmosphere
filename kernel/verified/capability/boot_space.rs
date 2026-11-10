@@ -31,6 +31,7 @@ use crate::capability::list::*;
 use crate::capability::map::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::mapping::*;
+use crate::capability::process::PROCESS_BYTES;
 #[cfg(verus_keep_ghost)]
 use crate::capability::table::*;
 use crate::define::*;
@@ -267,7 +268,7 @@ impl CapKernel {
         let ghost a0 = tree_of(&pre.table_pages, &pre.spaces);
         let ghost n = pre.tables.node_of(process, ROOT_PROCESS_SLOT);
         let (s, untyped) = self.root_space_and_untyped(process);
-        let cap = order_bytes(untyped.order) / 32768;
+        let cap = order_bytes(untyped.order) / PROCESS_BYTES;
         proof {
             assert(cap as int == untyped_tables(untyped));
         }

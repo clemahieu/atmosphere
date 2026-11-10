@@ -143,7 +143,7 @@ impl CapKernel {
         let pw = pow2(b0.1) as int;
         lemma2_to64();
         lemma_pow2_pos(b0.1);
-        assert(block_bytes(3) == 32768);
+        assert(block_bytes(3) == PROCESS_BYTES);
         assert forall|b: usize| #[trigger] block_within(b, 3, self.payload_of(self.root_untyped(process)))
             implies self.root_table_block(process, b) by {
             let base = b0.0 * PAGE_SZ;
@@ -154,7 +154,7 @@ impl CapKernel {
             let bp = b as int / PAGE_SZ as int;
             assert(bp * PAGE_SZ == b) by (nonlinear_arith)
                 requires
-                    b % 32768 == 0,
+                    b % PROCESS_BYTES == 0,
                     bp == b as int / PAGE_SZ as int,
             ;
             assert(b0.0 <= bp);
@@ -302,26 +302,26 @@ impl CapKernel {
             kernel_entries.wf(),
             iommus_present.wf(),
             iommu_commands.wf(iommus_present@),
-            process % 32768 == 0,
+            process % PROCESS_BYTES == 0,
             old(self).blocks.tracks_addr_run(process, 8),
-            leaf % 8192 == 0,
+            leaf % LEAF_BYTES == 0,
             leaf != NO_LEAF,
             old(self).blocks.tracks_addr_run(leaf, 2),
-            frames % 8192 == 0,
+            frames % LEAF_BYTES == 0,
             frames != NO_LEAF,
             old(self).blocks.tracks_addr_run(frames, 2),
-            t % 8192 == 0,
+            t % THREAD_BYTES == 0,
             old(self).blocks.tracks_addr_run(t, 2),
-            process + 32768 <= leaf || leaf + 8192 <= process,
-            process + 32768 <= frames || frames + 8192 <= process,
-            process + 32768 <= t || t + 8192 <= process,
-            leaf + 8192 <= frames || frames + 8192 <= leaf,
-            leaf + 8192 <= t || t + 8192 <= leaf,
-            frames + 8192 <= t || t + 8192 <= frames,
-            !(process <= root < process + 32768),
-            !(leaf <= root < leaf + 8192),
-            !(frames <= root < frames + 8192),
-            !(t <= root < t + 8192),
+            process + PROCESS_BYTES <= leaf || leaf + LEAF_BYTES <= process,
+            process + PROCESS_BYTES <= frames || frames + LEAF_BYTES <= process,
+            process + PROCESS_BYTES <= t || t + THREAD_BYTES <= process,
+            leaf + LEAF_BYTES <= frames || frames + LEAF_BYTES <= leaf,
+            leaf + LEAF_BYTES <= t || t + THREAD_BYTES <= leaf,
+            frames + LEAF_BYTES <= t || t + THREAD_BYTES <= frames,
+            !(process <= root < process + PROCESS_BYTES),
+            !(leaf <= root < leaf + LEAF_BYTES),
+            !(frames <= root < frames + LEAF_BYTES),
+            !(t <= root < t + THREAD_BYTES),
             runs_wf(free@),
             forall|j: int| #[trigger] in_runs(free@, free@.len() as int, j)
                 ==> !in_root_blocks(process, leaf, frames, t, j) && j != root / PAGE_SZ,
@@ -643,17 +643,17 @@ impl CapKernel {
                 assert(s2.view().reach(process, o) <==> (sc.view().reach(process, o) || o == POWER_OBJECT));
                 assert(sc.view().reach(process, o) <==> (s1.view().reach(process, o) || o == CONSOLE_OBJECT));
                 assert(s1.view().reach(process, o)
-                    <==> (o % PAGE_SZ == 0 && ((process <= o < process + 32768) || (t <= o < t + 8192))));
+                    <==> (o % PAGE_SZ == 0 && ((process <= o < process + PROCESS_BYTES) || (t <= o < t + THREAD_BYTES))));
                 if o % PAGE_SZ == 0 {
-                    assert((process <= o < process + 32768) <==> (process / PAGE_SZ <= o / PAGE_SZ < process / PAGE_SZ + 8))
+                    assert((process <= o < process + PROCESS_BYTES) <==> (process / PAGE_SZ <= o / PAGE_SZ < process / PAGE_SZ + 8))
                         by (nonlinear_arith)
                         requires
-                            process % 32768 == 0,
+                            process % PROCESS_BYTES == 0,
                             o % PAGE_SZ == 0,
                     ;
-                    assert((t <= o < t + 8192) <==> (t / PAGE_SZ <= o / PAGE_SZ < t / PAGE_SZ + 2)) by (nonlinear_arith)
+                    assert((t <= o < t + THREAD_BYTES) <==> (t / PAGE_SZ <= o / PAGE_SZ < t / PAGE_SZ + 2)) by (nonlinear_arith)
                         requires
-                            t % 8192 == 0,
+                            t % THREAD_BYTES == 0,
                             o % PAGE_SZ == 0,
                     ;
                 }
