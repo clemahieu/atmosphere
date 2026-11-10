@@ -8,7 +8,6 @@ verus! {
 #[cfg(verus_keep_ghost)]
 use crate::capability::device::*;
 use crate::capability::link::*;
-#[cfg(verus_keep_ghost)]
 use crate::capability::mapping::*;
 use crate::capability::kernel::*;
 use crate::capability::list::*;
@@ -34,9 +33,14 @@ use crate::define::*;
 /// theorem is about safety.
 pub const REVOKE_BUDGET: usize = 64;
 
-/// The units of one revoke step, apart from the step's own: the walk to the run's leaf and the stale
-/// note when the leaf is a table page's hidden node. See design/one-lock-bounded-steps/.
-pub const REVOKE_STEP_STEPS: usize = MAX_DEPTH + CUT_NOTE_STEPS;
+/// The units of undoing a node by its kind: a mapping's stale note, the largest, or a device
+/// binding's. Every other kind counts none. See design/one-lock-bounded-steps/.
+pub const UNLINK_ARM_STEPS: usize = MAPPING_NOTE_STEPS;
+
+/// The units of one revoke step, apart from the step's own: the walk to the run's leaf, the stale
+/// note when the leaf is a table page's hidden node, and the leaf's arm. See
+/// design/one-lock-bounded-steps/.
+pub const REVOKE_STEP_STEPS: usize = MAX_DEPTH + CUT_NOTE_STEPS + UNLINK_ARM_STEPS;
 
 pub proof fn lemma_budget_above_cores()
     ensures
@@ -68,7 +72,7 @@ impl CapKernel {
     /// process, leaves the thread with no process and drops its reference on the process's block. A
     /// device binding node leaves its device bound to nothing and drops its reference on the space's
     /// block, recording the space's root stale at a new epoch.
-    pub fn unlink_arm(&mut self, n: usize) -> (ret: usize)
+    pub fn unlink_arm(&mut self, n: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: usize)
         requires
             old(self).wf(),
             n < NODE_SPACE,
@@ -77,6 +81,9 @@ impl CapKernel {
             old(self).list.nodes@[n as int].kind is Mapping ==> old(self).flush_epoch < usize::MAX,
             old(self).list.nodes@[n as int].kind is DeviceBinding ==> old(self).flush_epoch < usize::MAX,
         ensures
+            final(steps).count <= old(steps).count + UNLINK_ARM_STEPS,
+            !(old(self).list.nodes@[n as int].kind is Mapping) && !(old(self).list.nodes@[n as int].kind is DeviceBinding)
+                ==> final(steps).count == old(steps).count,
             final(self).tables.wf(&old(self).list),
             final(self).blocks.wf(),
             final(self).list == old(self).list,
@@ -247,9 +254,9 @@ impl CapKernel {
                     _ => {},
                 }
             },
-            NodeKind::Mapping => { word = self.clear_mapping(n); },
+            NodeKind::Mapping => { word = self.clear_mapping(n, Tracked(steps)); },
             NodeKind::Binding => { self.unbind(n); },
-            NodeKind::DeviceBinding => { self.unbind_device(n); },
+            NodeKind::DeviceBinding => { self.unbind_device(n, Tracked(steps)); },
         }
         proof {
             reveal(devices_wf);
@@ -459,9 +466,9 @@ impl CapKernel {
             Some(found) => found,
             None => { return true; },
         };
-        self.cut_hidden_table(r, Tracked(steps));
+        self.cut_hidden_table(r, Tracked(&mut *steps));
         let ghost cut = *self;
-        self.unlink_arm(r);
+        self.unlink_arm(r, Tracked(steps));
         let ghost mid = *self;
         self.list.remove_leaf(r);
         proof {

@@ -274,13 +274,14 @@ impl CapKernel {
     }
 
     /// Unlinks binding node t with its thread's binding and its reference on the process's block.
-    fn unlink_binding(&mut self, t: usize)
+    fn unlink_binding(&mut self, t: usize, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).wf(),
             t < NODE_SPACE,
             old(self).list.nodes@[t as int].live,
             old(self).list.nodes@[t as int].kind is Binding,
         ensures
+            final(steps).count == old(steps).count,
             final(self).wf(),
             Self::unbound(*old(self), *final(self), t),
             Self::same_tree(*old(self), *final(self)),
@@ -308,7 +309,7 @@ impl CapKernel {
         proof {
             pre.lemma_binding_is_leaf(t);
         }
-        self.unlink_arm(t);
+        self.unlink_arm(t, Tracked(steps));
         let ghost mid = *self;
         self.list.remove_leaf(t);
         proof {
@@ -933,7 +934,7 @@ impl CapKernel {
                 reveal(thread_bound);
                 pre.lemma_bound_process(base);
             }
-            self.unlink_binding(base);
+            self.unlink_binding(base, Tracked(&mut *steps));
             proof {
                 let post = *self;
                 lemma_no_change_discharges_teardown(pre.view(), root, untyped, base);

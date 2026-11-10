@@ -18,6 +18,7 @@ use crate::capability::list::*;
 use crate::capability::steps::Steps;
 #[cfg(verus_keep_ghost)]
 use crate::capability::revoke::REVOKE_STEP_STEPS;
+use crate::capability::revoke::UNLINK_ARM_STEPS;
 #[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
 #[cfg(verus_keep_ghost)]
@@ -94,6 +95,10 @@ pub const TABLE_SLICE_BUDGET: usize = 64;
 /// The units of one slice of cuts: a step per entry looked at and a stale note per child cut.
 /// See design/one-lock-bounded-steps/.
 pub const CUT_SLICE_STEPS: usize = ENTRIES + TABLE_SLICE_BUDGET * CUT_NOTE_STEPS;
+
+/// The units of one slice of a dead table page's mappings: a step per entry looked at and a mapping
+/// node's unlink per mapping. See design/one-lock-bounded-steps/.
+pub const UNMAP_SLICE_STEPS: usize = ENTRIES + TABLE_SLICE_BUDGET * UNLINK_ARM_STEPS;
 
 /// What a reclaim did.
 pub enum ReclaimStep {
@@ -757,7 +762,7 @@ impl CapKernel {
         match object {
             ObjectType::Frame => self.reclaim_frame(c, root, from, base, Tracked(steps)),
             ObjectType::TableLeaf => {
-                if self.unlink_leaf(root, from, base) {
+                if self.unlink_leaf(root, from, base, Tracked(&mut *steps)) {
                     ReclaimStep::Unlinked
                 } else if self.slice_leaf(root, from, base, Tracked(&mut *steps)) {
                     ReclaimStep::Slice
@@ -1015,7 +1020,6 @@ impl CapKernel {
                 assert(steps.count + REVOKE_STEP_STEPS <= start + (k - 1) + (taken + 1) * (REVOKE_STEP_STEPS + 1)) by (nonlinear_arith)
                     requires
                         steps.count <= start + (k - 1) + taken * (REVOKE_STEP_STEPS + 1) + 1,
-                        REVOKE_STEP_STEPS + 1 == 257,
                 ;
             }
             let ghost mid = *self;
@@ -1043,7 +1047,7 @@ impl CapKernel {
                 taken = taken + 1;
                 continue;
             }
-            self.unlink_childless_slot(n);
+            self.unlink_childless_slot(n, Tracked(&mut *steps));
             proof {
                 Self::lemma_revoke_bound_threads(bound_threads(&pre.list, &pre.tables), mid, *self, n);
                 assert(mid.view().holds(object, n));
@@ -1074,6 +1078,10 @@ impl CapKernel {
             k = k + 1;
         }
         proof {
+            assert(taken * (REVOKE_STEP_STEPS + 1) <= LEAF_SLICE_BUDGET * (REVOKE_STEP_STEPS + 1)) by (nonlinear_arith)
+                requires
+                    taken <= LEAF_SLICE_BUDGET,
+            ;
             if few && taken != 0 {
                 if k != NODES_PER_PAGE {
                     Self::lemma_live_slots_none(*self, base, k as int);
@@ -1288,13 +1296,14 @@ impl CapKernel {
     }
 
     /// Unlinks the childless capability in slot n, and nothing more.
-    fn unlink_childless_slot(&mut self, n: usize)
+    fn unlink_childless_slot(&mut self, n: usize, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).wf(),
             n < NODE_SPACE,
             old(self).is_cap(n),
             old(self).list.childless(n),
         ensures
+            final(steps).count == old(steps).count,
             final(self).wf(),
             Self::same_tree(*old(self), *final(self)),
             final(self).tables.owner == old(self).tables.owner,
@@ -1323,7 +1332,7 @@ impl CapKernel {
         proof {
             pre.lemma_leaf_node_not_first(n);
         }
-        self.unlink_arm(n);
+        self.unlink_arm(n, Tracked(steps));
         self.list.remove_leaf(n);
         proof {
             let post = *self;
@@ -3109,11 +3118,12 @@ impl CapKernel {
     /// Unlinks the hidden node of the leaf at `base`, by the same undo as revoke's hidden arm, and
     /// nothing more. Refused, with nothing changed, unless an untyped held covers the block and the
     /// block holds a leaf with its hidden node still live.
-    pub fn unlink_leaf(&mut self, root: usize, from: usize, base: usize) -> (ret: bool)
+    pub fn unlink_leaf(&mut self, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
         ensures
+            final(steps).count == old(steps).count,
             final(self).wf(),
             Self::same_tree(*old(self), *final(self)),
             ret == old(self).can_unlink_leaf(root, from, base),
@@ -3144,7 +3154,7 @@ impl CapKernel {
         proof {
             pre.lemma_hidden_is_leaf(base);
         }
-        self.unlink_arm(base);
+        self.unlink_arm(base, Tracked(steps));
         self.list.remove_leaf(base);
         proof {
             let post = *self;
@@ -3282,13 +3292,13 @@ impl CapKernel {
         proof {
             pre.lemma_hidden_is_leaf(base);
         }
-        self.detach_stale(base, Tracked(steps));
+        self.detach_stale(base, Tracked(&mut *steps));
         let ghost cut = *self;
         proof {
             let b = tree_of(&cut.table_pages, &cut.spaces);
             assert(b.is_page(base));
         }
-        self.unlink_arm(base);
+        self.unlink_arm(base, Tracked(steps));
         self.list.remove_leaf(base);
         proof {
             let post = *self;
@@ -4062,7 +4072,7 @@ impl CapKernel {
 
     /// Unlinks mapping node n with its entry and its frame's reference, and records the unmap. Returns the
     /// entry's word as read in the step that cleared it.
-    pub fn unlink_mapping_node(&mut self, n: usize) -> (ret: usize)
+    pub fn unlink_mapping_node(&mut self, n: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: usize)
         requires
             old(self).wf(),
             n < NODE_SPACE,
@@ -4070,6 +4080,7 @@ impl CapKernel {
             old(self).list.nodes@[n as int].kind is Mapping,
             old(self).flush_epoch < usize::MAX,
         ensures
+            final(steps).count <= old(steps).count + UNLINK_ARM_STEPS,
             final(self).wf(),
             Self::mapping_unlinked(*old(self), *final(self), n),
             Self::mapping_stale_noted(*old(self), *final(self), n),
@@ -4092,7 +4103,7 @@ impl CapKernel {
         proof {
             pre.lemma_mapping_is_leaf(n);
         }
-        let word = self.unlink_arm(n);
+        let word = self.unlink_arm(n, Tracked(steps));
         let ghost mid = *self;
         self.list.remove_leaf(n);
         proof {
@@ -4227,7 +4238,7 @@ impl CapKernel {
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
         ensures
-            final(steps).count <= old(steps).count + ENTRIES,
+            final(steps).count <= old(steps).count + UNMAP_SLICE_STEPS,
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
             ret == old(self).can_unmap_table(root, from, base),
@@ -4272,7 +4283,7 @@ impl CapKernel {
         while unlinked != TABLE_SLICE_BUDGET && e != ENTRIES && self.flush_epoch != usize::MAX
             invariant
                 start == old(steps).count,
-                steps.count == start + e,
+                steps.count <= start + e + unlinked * UNLINK_ARM_STEPS,
                 self.wf(),
                 pre == *old(self),
                 pre.wf(),
@@ -4322,8 +4333,9 @@ impl CapKernel {
                 assert(mid.mappings@.contains_key(n));
                 mid.lemma_mapping_node(n);
             }
-            self.unlink_mapping_node(n);
+            self.unlink_mapping_node(n, Tracked(&mut *steps));
             proof {
+                assert((unlinked + 1) * UNLINK_ARM_STEPS == unlinked * UNLINK_ARM_STEPS + UNLINK_ARM_STEPS) by (nonlinear_arith);
                 let post = *self;
                 let b = tree_of(&post.table_pages, &post.spaces);
                 Self::lemma_table_unmap_step(pre, mid, post, base, e, n, unlinked as int);
@@ -4358,6 +4370,10 @@ impl CapKernel {
             e = e + 1;
         }
         proof {
+            assert(unlinked * UNLINK_ARM_STEPS <= TABLE_SLICE_BUDGET * UNLINK_ARM_STEPS) by (nonlinear_arith)
+                requires
+                    unlinked <= TABLE_SLICE_BUDGET,
+            ;
             if unlinked == 0 {
                 assert(*self == pre);
                 assert(e == ENTRIES);
@@ -4382,7 +4398,7 @@ impl CapKernel {
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
         ensures
-            final(steps).count <= old(steps).count + CUT_SLICE_STEPS + ENTRIES,
+            final(steps).count <= old(steps).count + CUT_SLICE_STEPS + UNMAP_SLICE_STEPS,
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
             ret == old(self).can_slice_table(root, from, base),

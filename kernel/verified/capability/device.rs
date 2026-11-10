@@ -35,6 +35,10 @@ pub const MAX_DEVICES: usize = NODES_PER_PAGE - 1;
 /// How many device numbers an IOMMU has: a DeviceID is 16 bits. AMD IOMMU specification 48882 §2.2.
 pub const IOMMU_DEVICES: usize = 0x10000; // not a page size: a count of device numbers
 
+/// The steps of unbinding a device: the one page, its space's root, that its record_run writes.
+/// See design/one-lock-bounded-steps/.
+pub const UNBIND_DEVICE_STEPS: usize = 1;
+
 /// A device capability carries no right: holding it is the authority.
 pub const DEVICE_RIGHTS: u32 = 0;
 
@@ -678,7 +682,7 @@ impl CapKernel {
     }
 
     /// Unbinds the device whose binding node n is, before n is unlinked.
-    pub fn unbind_device(&mut self, n: usize)
+    pub fn unbind_device(&mut self, n: usize, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).wf(),
             n < NODE_SPACE,
@@ -686,6 +690,7 @@ impl CapKernel {
             old(self).list.nodes@[n as int].kind is DeviceBinding,
             old(self).flush_epoch < usize::MAX,
         ensures
+            final(steps).count <= old(steps).count + UNBIND_DEVICE_STEPS,
             Self::device_unbound(*old(self), *final(self), n),
             final(self).blocks.wf(),
             final(self).devices.wf(),
@@ -731,9 +736,7 @@ impl CapKernel {
         self.spaces.bound = Ghost(pre.spaces.bound@.insert(s, pre.spaces.bound@[s].remove(d)));
         self.flush_epoch = self.flush_epoch + 1;
         let epoch = self.flush_epoch;
-        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
-        let tracked mut steps = Steps::fresh();
-        self.stale_epoch.record_run(s / PAGE_SZ, 1, epoch, Tracked(&mut steps));
+        self.stale_epoch.record_run(s / PAGE_SZ, 1, epoch, Tracked(steps));
         self.devices.unbind(d, epoch);
         proof {
             assert(self.stale_epoch.written(epoch, s / PAGE_SZ));

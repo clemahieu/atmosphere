@@ -382,7 +382,9 @@ impl CapKernel {
             assert(pre.mappings@.contains_key(node));
             pre.lemma_mapping_node(node);
         }
-        let word = self.unlink_mapping_node(node);
+        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let word = self.unlink_mapping_node(node, Tracked(&mut steps));
         proof {
             Self::lemma_mapping_view_same(pre, *self, node);
             Self::lemma_unlinked_shrunk(pre, *self, node);

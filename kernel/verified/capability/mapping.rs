@@ -14,7 +14,6 @@ use crate::capability::kernel::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::link::*;
 use crate::capability::list::*;
-#[cfg(verus_keep_ghost)]
 use crate::capability::steps::Steps;
 use crate::capability::refs::*;
 use crate::capability::space::*;
@@ -28,6 +27,10 @@ use crate::pagetable::entry::PageEntry;
 use crate::pagetable::pagemap::*;
 use crate::pagetable::pagemap_util_t::*;
 use crate::pptr::*;
+
+/// The steps of noting a mapping's unmap stale: the pages its record_run writes, a 2M mapping's
+/// PAGES_PER_2M at most. See design/one-lock-bounded-steps/.
+pub const MAPPING_NOTE_STEPS: usize = PAGES_PER_2M;
 
 /// The indices of one page of a space's virtual address, level 4 first.
 pub ghost struct SpacePath {
@@ -1359,7 +1362,7 @@ impl CapKernel {
 
     /// Undoes mapping node n: its entry and its reference go in one step, and nothing else. The node's
     /// own page says where its entry is. Returns the entry's word as read in the step that cleared it.
-    pub fn clear_mapping(&mut self, n: usize) -> (ret: usize)
+    pub fn clear_mapping(&mut self, n: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: usize)
         requires
             old(self).wf(),
             n < NODE_SPACE,
@@ -1367,6 +1370,7 @@ impl CapKernel {
             old(self).list.nodes@[n as int].kind is Mapping,
             old(self).flush_epoch < usize::MAX,
         ensures
+            final(steps).count <= old(steps).count + MAPPING_NOTE_STEPS,
             Self::mapping_unlinked(*old(self), *final(self), n),
             Self::mapping_stale_noted(*old(self), *final(self), n),
             Self::mapping_word(*old(self), n, ret),
@@ -1416,7 +1420,7 @@ impl CapKernel {
         }
         let frame = entry.addr / PAGE_SZ;
         let large = entry.perm.ps;
-        self.note_mapping_stale(n, frame, large);
+        self.note_mapping_stale(n, frame, large, Tracked(steps));
         let ghost noted = *self;
         let br = locate(&self.blocks, frame);
         let tracked mut map = self.table_pages.maps.borrow_mut().tracked_remove(t);
@@ -1497,7 +1501,7 @@ impl CapKernel {
 
     /// Records node n's unmap, while its entry still stands: the epoch is bumped first, so no core has
     /// acknowledged this one however recently it flushed. A large mapping's 512 pages take one epoch.
-    fn note_mapping_stale(&mut self, n: usize, frame: usize, large: bool)
+    fn note_mapping_stale(&mut self, n: usize, frame: usize, large: bool, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).wf(),
             old(self).mappings@.contains_key(n),
@@ -1505,6 +1509,7 @@ impl CapKernel {
             old(self).mappings@[n].large == large,
             old(self).flush_epoch < usize::MAX,
         ensures
+            final(steps).count <= old(steps).count + MAPPING_NOTE_STEPS,
             final(self).stale_epoch.wf(),
             final(self).tlb_wf(),
             Self::mapping_stale_noted(*old(self), *final(self), n),
@@ -1534,9 +1539,7 @@ impl CapKernel {
         let count: usize = if large { PAGES_PER_2M } else { 1 };
         self.flush_epoch = self.flush_epoch + 1;
         let epoch = self.flush_epoch;
-        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
-        let tracked mut steps = Steps::fresh();
-        self.stale_epoch.record_run(frame, count, epoch, Tracked(&mut steps));
+        self.stale_epoch.record_run(frame, count, epoch, Tracked(steps));
         self.tlb = Ghost(Seq::new(NUM_CPUS as nat, |d: int|
             if space is Some && pre.loaded(d, space->Some_0) {
                 pre.tlb@[d].union(stale_entries(space->Some_0, pages))
