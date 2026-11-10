@@ -4,9 +4,11 @@
 //! The check maps one kernel page read-only for one write. The exception handler recognises the
 //! fault by its instruction and resumes after it, so the write faults without stopping the machine.
 
-use core::arch::{asm, global_asm};
+use core::arch::global_asm;
 
-use verified::arch::{Registers, DESC_AP_RO, DESC_DBM, DESC_TYPE, DESC_VALID, MEM_MASK};
+use verified::arch::{Registers, DESC_AP_RO, DESC_DBM};
+
+use super::{forget, leaf_entry, TABLE_OR_PAGE};
 
 /// The page the check writes to.
 #[repr(C, align(4096))]
@@ -43,24 +45,6 @@ unsafe extern "C" {
     fn write_protect_probe(address: *mut u8) -> Fault;
     fn write_protect_probe_write();
     fn write_protect_probe_done();
-}
-
-/// A table descriptor at the levels above the last, and a page descriptor at the last: valid, with
-/// bit 1 set.
-const TABLE_OR_PAGE: u64 = DESC_VALID | DESC_TYPE;
-
-/// The page descriptor that maps address under the current TTBR0_EL1. Page tables lie in the
-/// identity map the loader built, so their physical addresses are usable as pointers.
-unsafe fn leaf_entry(address: u64) -> *mut u64 {
-    let base: u64;
-    asm!("mrs {base}, TTBR0_EL1", base = out(reg) base, options(nomem, nostack, preserves_flags));
-    let mut table = (base & super::TTBR_ADDRESS) as *mut u64;
-    for level in (1..4).rev() {
-        let entry = *table.add((address >> (12 + 9 * level)) as usize & 0x1ff);
-        assert!(entry & TABLE_OR_PAGE == TABLE_OR_PAGE, "the probe page is not mapped by a 4 KiB entry");
-        table = (entry & MEM_MASK) as *mut u64;
-    }
-    table.add((address >> 12) as usize & 0x1ff)
 }
 
 /// Whether a write through the page descriptor `leaf` is allowed: AP[2] is clear, or the
@@ -106,23 +90,6 @@ const fn refused_write(syndrome: u64) -> bool {
 const _: () = assert!(refused_write(0x9600_004f));
 const _: () = assert!(!refused_write(0x9200_004f) && !refused_write(0x9600_000f) && !refused_write(0x9600_0047));
 const _: () = assert!(!refused_write(0));
-
-/// A TLBI operand's VA[55:12], bits 43:0. Arm ARM C5.5.53.
-const TLBI_ADDRESS_MASK: u64 = (1 << 44) - 1;
-
-/// Drops this core's TLB entries for `page` under every address-space id (TLBI VAAE1, Arm ARM
-/// C5.5.53). The DSB before it orders the write of the descriptor ahead of it, and the DSB and ISB
-/// after it complete it for this core's own accesses (D8.17.8).
-unsafe fn forget(page: *mut u8) {
-    asm!(
-        "dsb ishst",
-        "tlbi vaae1, {page}",
-        "dsb ish",
-        "isb",
-        page = in(reg) page as u64 >> 12 & TLBI_ADDRESS_MASK,
-        options(nostack, preserves_flags),
-    );
-}
 
 /// Writes to a read-only page on this core and stops the machine unless the write takes a
 /// permission fault and leaves the page as it was.

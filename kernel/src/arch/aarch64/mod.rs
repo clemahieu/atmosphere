@@ -10,7 +10,7 @@ use core::ffi::c_void;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use astd::boot::BootInfo;
-use verified::arch::{user_frame_of, Registers};
+use verified::arch::{user_frame_of, Registers, DESC_TYPE, DESC_VALID, MEM_MASK};
 use verified::define::PCID_MAX;
 
 use crate::cpu::{Cpu, KernelStack};
@@ -47,10 +47,54 @@ impl CoreState {
     }
 }
 
-/// Leaves `page` mapped: on aarch64 the stacks the kernel holds have no guard yet, as
-/// design/arch-module/ says.
+/// A table descriptor at the levels above the last, and a page descriptor at the last: valid, with
+/// bit 1 set. Arm ARM D8.3.1.
+const TABLE_OR_PAGE: u64 = DESC_VALID | DESC_TYPE;
+
+/// The page descriptor that maps `address` under the current TTBR0_EL1, which must be a 4 KiB page
+/// descriptor, as the loader writes for the kernel's image. Page tables lie in the identity map the
+/// loader built, so their physical addresses are usable as pointers.
+unsafe fn leaf_entry(address: u64) -> *mut u64 {
+    let base: u64;
+    asm!("mrs {base}, TTBR0_EL1", base = out(reg) base, options(nomem, nostack, preserves_flags));
+    let mut table = (base & TTBR_ADDRESS) as *mut u64;
+    for level in (1..4).rev() {
+        let entry = *table.add((address >> (12 + 9 * level)) as usize & 0x1ff);
+        assert!(entry & TABLE_OR_PAGE == TABLE_OR_PAGE, "{:#x} is not mapped by a 4 KiB entry", address);
+        table = (entry & MEM_MASK) as *mut u64;
+    }
+    table.add((address >> 12) as usize & 0x1ff)
+}
+
+/// A TLBI operand's VA[55:12], bits 43:0. Arm ARM C5.5.53.
+const TLBI_ADDRESS_MASK: u64 = (1 << 44) - 1;
+
+/// Drops this core's TLB entries for `page` under every address-space id (TLBI VAAE1, Arm ARM
+/// C5.5.53). The DSB before it orders the write of the descriptor ahead of it, and the DSB and ISB
+/// after it complete it for this core's own accesses (D8.17.8).
+unsafe fn forget(page: *const u8) {
+    asm!(
+        "dsb ishst",
+        "tlbi vaae1, {page}",
+        "dsb ish",
+        "isb",
+        page = in(reg) page as u64 >> 12 & TLBI_ADDRESS_MASK,
+        options(nostack, preserves_flags),
+    );
+}
+
+/// Unmaps `page`, a page of the kernel's image, so that any access to it faults: its page
+/// descriptor loses its valid bit, a change from valid to invalid that asks for no
+/// break-before-make (Arm ARM D8.17.1). Every address space shares the kernel's tables, so the page
+/// is gone from all of them. This core forgets its translation; the caller runs before another core
+/// starts, so no other core holds one.
 pub unsafe fn guard(page: *const u8) {
-    let _ = page;
+    assert!(page as u64 & 0xfff == 0, "a guard is a page");
+    let entry = leaf_entry(page as u64);
+    let leaf = entry.read_volatile();
+    assert!(leaf & TABLE_OR_PAGE == TABLE_OR_PAGE, "{:p} is guarded twice", page);
+    entry.write_volatile(leaf & !DESC_VALID);
+    forget(page);
 }
 
 /// Makes `cpu` the block this core finds through [`core_pointer`]: it becomes TPIDR_EL1, the
