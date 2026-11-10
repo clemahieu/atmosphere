@@ -220,7 +220,9 @@ impl CapKernel {
 
     /// What freeing the spent dead process at `base` did to self: no core had its space loaded or a
     /// translation of it, its block is free, and it is gone from the processes, the tables and the
-    /// spaces, with no leaf left naming it. It held no capability, so the view is as it was.
+    /// spaces, with no leaf left naming it. It held no capability, so the view is as it was, and the
+    /// list, every other table root, every leaf and its payload, and every tracked page outside its
+    /// block are as they were.
     pub open spec fn process_freed(&self, post: Self, c: usize, root: usize, from: usize, base: usize) -> bool {
         let untyped = self.tables.node_of(root, from);
         let page = base / 4096;
@@ -234,6 +236,12 @@ impl CapKernel {
         &&& !post.tables.roots@.contains_key(base)
         &&& !post.spaces.roots@.contains_key(base)
         &&& forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) ==> post.tables.owner@[l].0 != base
+        &&& post.list == self.list
+        &&& post.tables.roots@ == self.tables.roots@.remove(base)
+        &&& post.tables.owner == self.tables.owner
+        &&& post.tables.payloads == self.tables.payloads
+        &&& forall|i: int| self.blocks.tracks(i) && !(page as int <= i < page + 8)
+            ==> #[trigger] post.blocks.pages@[i] == self.blocks.pages@[i]
         &&& Self::step_ok(*self, post, c as int)
         &&& post.view() == self.view()
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&self.list, &self.tables)
@@ -662,6 +670,12 @@ impl CapKernel {
             !final(self).tables.roots@.contains_key(base),
             !final(self).spaces.roots@.contains_key(base),
             forall|l: usize| #[trigger] final(self).tables.owner@.contains_key(l) ==> final(self).tables.owner@[l].0 != base,
+            final(self).list == old(self).list,
+            final(self).tables.roots@ == old(self).tables.roots@.remove(base),
+            final(self).tables.owner == old(self).tables.owner,
+            final(self).tables.payloads == old(self).tables.payloads,
+            forall|i: int| old(self).blocks.tracks(i) && !((base / 4096) as int <= i < (base / 4096) + 8)
+                ==> #[trigger] final(self).blocks.pages@[i] == old(self).blocks.pages@[i],
             final(self).cores == old(self).cores,
             final(self).view() == old(self).view(),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
@@ -752,6 +766,10 @@ impl CapKernel {
             }
             assert forall|k: int| 0 <= k < 8 implies #[trigger] post.blocks.pages@[page + k].kind is Free by {
                 assert(pre.blocks.in_block(page as int, page + k));
+            }
+            assert forall|i: int| pre.blocks.tracks(i) && !(page as int <= i < page + 8)
+                implies #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i] by {
+                assert(!pre.blocks.in_block(page as int, i));
             }
         }
     }
