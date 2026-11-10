@@ -266,8 +266,8 @@ extern "C" fn exception(vector: u64, frame: &mut Registers) {
 
 /// This core's emergency stack, from its lowest address to its top.
 fn emergency_stack() -> (u64, u64) {
-    let top = crate::cpu::get_current().arch.emergency_stack.bottom() as u64;
-    (top - size_of::<KernelStack>() as u64, top)
+    let stack = &crate::cpu::get_current().arch.emergency_stack;
+    (stack.lowest() as u64, stack.bottom() as u64)
 }
 
 /// Logs an exception nothing serves, with the syndrome, the fault address and the frame, and stops

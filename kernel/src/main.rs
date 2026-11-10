@@ -70,6 +70,7 @@ extern "C" fn main(boot_info: *const BootInfo) -> isize {
 fn boot_cpu0(boot_info: *const BootInfo) -> isize {
     unsafe {
         arch::write_protect::check();
+        cpu::guard_stacks();
         boot::init(boot_info);
         machine::init(boot::get_boot_info());
         machine::iommu_init();
@@ -97,7 +98,14 @@ fn boot_cpu0(boot_info: *const BootInfo) -> isize {
 
     let boot_info = boot::get_boot_info();
 
-    log::info!("CPU 0 syscall stack {:#x}", cpu::get_current().syscall_sp);
+    let syscall_stack = &cpu::get_current().syscall_stack;
+    log::info!(
+        "CPU 0 syscall stack {:p}-{:p}, guard {:p}-{:p}",
+        syscall_stack.lowest(),
+        syscall_stack.bottom(),
+        syscall_stack.guard(),
+        syscall_stack.lowest(),
+    );
     unsafe {
         start_second_core();
     }
@@ -119,7 +127,9 @@ fn boot_cpu0(boot_info: *const BootInfo) -> isize {
 /// Starts CPU 1, and both contend for the lock until the test is done, so that dom0's log and CPU 1's
 /// start-up log do not interleave.
 unsafe fn start_second_core() {
-    let stack = (&raw const AP_STACK).cast::<u8>().add(core::mem::size_of::<cpu::KernelStack>()) as u64;
+    let idle_stack = &*(&raw const AP_STACK);
+    arch::guard(idle_stack.guard());
+    let stack = idle_stack.bottom() as u64;
     machine::start_core(1, stack, ap_main, arch::translation_root(boot::get_boot_info()));
 
     let deadline = arch::cycles() + arch::stall_cycles();

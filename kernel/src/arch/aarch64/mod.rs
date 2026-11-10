@@ -40,6 +40,17 @@ impl CoreState {
     pub const fn new() -> Self {
         Self { spill: 0, emergency_stack: KernelStack::new() }
     }
+
+    /// The stacks this share holds: the emergency stack.
+    pub fn stacks(&self) -> &[KernelStack] {
+        core::slice::from_ref(&self.emergency_stack)
+    }
+}
+
+/// Leaves `page` mapped: on aarch64 the stacks the kernel holds have no guard yet, as
+/// design/arch-module/ says.
+pub unsafe fn guard(page: *const u8) {
+    let _ = page;
 }
 
 /// Makes `cpu` the block this core finds through [`core_pointer`]: it becomes TPIDR_EL1, the

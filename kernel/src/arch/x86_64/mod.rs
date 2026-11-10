@@ -144,6 +144,41 @@ pub const CR3_NO_FLUSH: u64 = 1 << 63;
 /// Set by boot when the processor's PCID feature is on. `switch_address_space` reads it.
 pub static mut PCIDE: u64 = 0;
 
+/// A page table entry's present and page size bits, and the address it holds. APM 2 §5.4.
+const ENTRY_PRESENT: u64 = 1 << 0;
+const ENTRY_PAGE_SIZE: u64 = 1 << 7;
+const ENTRY_ADDRESS: u64 = 0x000f_ffff_ffff_f000;
+
+/// The leaf page table entry that maps `address` under the current CR3, which must be a 4 KiB
+/// entry, as the loader writes for the kernel's image. Page tables lie in the identity map the
+/// loader built, so their physical addresses are usable as pointers.
+unsafe fn leaf_entry(address: u64) -> *mut u64 {
+    let cr3: u64;
+    asm!("mov {}, cr3", out(reg) cr3);
+    let mut table = (cr3 & ENTRY_ADDRESS) as *mut u64;
+    for level in (1..4).rev() {
+        let entry = *table.add((address >> (12 + 9 * level)) as usize & 0x1ff);
+        assert!(
+            entry & ENTRY_PRESENT != 0 && entry & ENTRY_PAGE_SIZE == 0,
+            "{:#x} is not mapped by a 4 KiB entry",
+            address,
+        );
+        table = (entry & ENTRY_ADDRESS) as *mut u64;
+    }
+    table.add((address >> 12) as usize & 0x1ff)
+}
+
+/// Unmaps `page`, a page of the kernel's image, so that any access to it faults. Every address
+/// space shares the kernel's tables, so the page is gone from all of them. This core forgets its
+/// translation; the caller runs before another core starts, so no other core holds one.
+pub unsafe fn guard(page: *const u8) {
+    assert!(page as u64 & 0xfff == 0, "a guard is a page");
+    let entry = leaf_entry(page as u64);
+    assert!(*entry & ENTRY_PRESENT != 0, "{:p} is guarded twice", page);
+    *entry &= !ENTRY_PRESENT;
+    asm!("invlpg [{}]", in(reg) page);
+}
+
 /// Enters a busy loop.
 pub unsafe fn spin_forever() -> ! {
     loop {

@@ -30,6 +30,11 @@ pub struct CoreState {
 }
 
 impl CoreState {
+    /// The stacks this share holds: the interrupt stacks.
+    pub fn stacks(&self) -> &[KernelStack] {
+        &self.ist
+    }
+
     pub const fn new() -> Self {
         Self {
             gdt: GlobalDescriptorTable::empty(),

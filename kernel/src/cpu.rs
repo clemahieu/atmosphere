@@ -23,6 +23,17 @@ static mut CPUS: [Cpu; CPU_SLOTS] = [NEW_CPU; CPU_SLOTS];
 /// design/test-guest-memory/.
 const KERNEL_STACK_SIZE: usize = 64 * 1024;
 
+/// The syscall stack. small_syscall_stack makes it shallower than a syscall, so that
+/// tools/check-boot-stack.py can force an overflow into its guard.
+#[cfg(not(feature = "small_syscall_stack"))]
+const SYSCALL_STACK_SIZE: usize = KERNEL_STACK_SIZE;
+#[cfg(feature = "small_syscall_stack")]
+const SYSCALL_STACK_SIZE: usize = 1024;
+
+/// The guard under a stack: one page, which a frame cannot jump, since the kernel probes every page
+/// of a frame larger than one.
+const GUARD_SIZE: usize = 4096;
+
 /// Per-processor data for a CPU.
 #[repr(C, align(4096))]
 pub struct Cpu {
@@ -42,7 +53,7 @@ pub struct Cpu {
     /// What this core's instruction set keeps per core.
     pub arch: arch::CoreState,
 
-    pub syscall_stack: KernelStack,
+    pub syscall_stack: Stack<SYSCALL_STACK_SIZE>,
 
     /// The stack pointer for syscalls.
     ///
@@ -50,23 +61,40 @@ pub struct Cpu {
     pub syscall_sp: u64,
 }
 
-/// A stack. Its top must be 16-byte aligned: a byte array alone could leave the syscall stack
-/// pointer misaligned.
-#[repr(C, align(16))]
-pub struct Stack<const SZ: usize>([u8; SZ]);
+/// A stack with its guard page under it. The guard is a page of its own, which [`guard_stacks`]
+/// unmaps so that a stack that runs off its end faults there instead of writing over what lies
+/// below. Its top is 16-byte aligned, as the stack pointer must be, since the stack starts on a
+/// page and its size is a multiple of 16.
+#[repr(C, align(4096))]
+pub struct Stack<const SZ: usize> {
+    guard: [u8; GUARD_SIZE],
+    bytes: [u8; SZ],
+}
 
 /// A stack the kernel runs on after it has left its boot stack.
 pub type KernelStack = Stack<KERNEL_STACK_SIZE>;
 
 impl<const SZ: usize> Stack<SZ> {
+    const ALIGNED: () = assert!(SZ % 16 == 0);
+
     pub const fn new() -> Self {
-        Self([0u8; SZ])
+        let () = Self::ALIGNED;
+        Self { guard: [0u8; GUARD_SIZE], bytes: [0u8; SZ] }
     }
 
+    /// The stack's top, where a push starts.
     pub fn bottom(&self) -> *const u8 {
-        unsafe {
-            (self.0.as_ptr() as *const u8).add(SZ)
-        }
+        unsafe { self.bytes.as_ptr().add(SZ) }
+    }
+
+    /// The stack's lowest address, the end of its guard.
+    pub fn lowest(&self) -> *const u8 {
+        self.bytes.as_ptr()
+    }
+
+    /// The guard page's address.
+    pub fn guard(&self) -> *const u8 {
+        self.guard.as_ptr()
     }
 }
 
@@ -81,8 +109,19 @@ impl Cpu {
             parked: Registers::zeroed(),
             switch_decision: SwitchDecision::NoSwitching,
             arch: arch::CoreState::new(),
-            syscall_stack: KernelStack::new(),
+            syscall_stack: Stack::new(),
             syscall_sp: 0,
+        }
+    }
+}
+
+/// Unmaps the guard under every stack in every slot's block: the syscall stack and the stacks the
+/// instruction set's share holds. Once, on the boot core, before another core starts.
+pub unsafe fn guard_stacks() {
+    for cpu in &*(&raw const CPUS) {
+        arch::guard(cpu.syscall_stack.guard());
+        for stack in cpu.arch.stacks() {
+            arch::guard(stack.guard());
         }
     }
 }

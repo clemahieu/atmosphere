@@ -3,11 +3,13 @@
 
 Memory the guest never wrote is zero, so non-zero pages show the stack's reach as a lower bound.
 
-usage: tools/check-boot-stack.py debug|release [overflow]   (from the workspace root)
+usage: tools/check-boot-stack.py debug|release [overflow|syscall-overflow]   (from the workspace root)
 
 Every build first checks that the kernel's entry point probes no large frame.
 
 With overflow, the loader gets a stack below the kernel's depth and the kernel must fault at the guard.
+With syscall-overflow, the kernel gets a syscall stack below a syscall's depth and must fault once, in the
+guard it logged under CPU 0's syscall stack.
 """
 import os
 import re
@@ -29,10 +31,11 @@ MARGIN = 512 * KIB  # the least room the stack must have left
 ENTRY_FRAME = PAGE  # main's frame stays under this: the overflow build's stack is two pages
 
 
-def build(profile, overflow=False):
+def build(profile, overflow=False, kernel_features=()):
     args = ["cargo", "build", "-q"] + (["--release"] if profile == "release" else [])
     for crate in ("kernel", "dom0", "user/hello"):
-        subprocess.run(args, cwd=crate, check=True, env={**os.environ, "RUSTC_BOOTSTRAP": "1"})
+        features = ["--features", ",".join(kernel_features)] if crate == "kernel" and kernel_features else []
+        subprocess.run(args + features, cwd=crate, check=True, env={**os.environ, "RUSTC_BOOTSTRAP": "1"})
     build_loader(profile, ["small_kernel_stack"] if overflow else [])
     check_entry_frame(f"target/x86_64-unknown-aloader/{profile}/kernel")
 
@@ -139,12 +142,50 @@ def check_overflow(profile, out):
     return 0
 
 
+def syscall_overflow_failures(log):
+    """What is wrong with the serial log of a boot whose syscall stack overflows: it must report one
+    kernel page fault, on CPU 0, inside the guard the kernel logged under CPU 0's syscall stack."""
+    guard = re.search(r"CPU 0 syscall stack 0x[0-9a-f]+-0x[0-9a-f]+, guard 0x([0-9a-f]+)-0x([0-9a-f]+)", log)
+    faults = re.findall(r"CPU (\d+): Page Fault \(address 0x([0-9a-f]+)", log)
+    if not guard:
+        return ["the kernel did not log CPU 0's syscall stack guard"]
+    low, high = int(guard.group(1), 16), int(guard.group(2), 16)
+    if len(faults) != 1:
+        return [f"{len(faults)} kernel page fault reports, not one"]
+    cpu, address = int(faults[0][0]), int(faults[0][1], 16)
+    print(f"syscall stack guard {low:#x}-{high:#x}, CPU {cpu} fault at {address:#x}, one report")
+    failures = []
+    if cpu != 0:
+        failures.append(f"the fault is on CPU {cpu}, not CPU 0")
+    if not low <= address < high:
+        failures.append("the fault is outside the guard")
+    return failures
+
+
+def check_syscall_overflow(profile, out):
+    build(profile, kernel_features=["small_syscall_stack"])
+    log, qemu, sock = boot(profile, out, marker=b"Page Fault (address")
+    time.sleep(2)  # room for a second report, which would mean the first did not stop the core
+    log = open(f"{out}/serial.log", "rb").read().decode(errors="replace")
+    sock.sendall(b"quit\n")
+    qemu.wait(timeout=30)
+    failures = syscall_overflow_failures(log)
+    for failure in failures:
+        print("FAIL:", failure)
+    print(f"{profile} syscall overflow: {'FAIL' if failures else 'ok'}")
+    return 1 if failures else 0
+
+
 def main():
+    if sys.argv[1:] == ["--test"]:
+        return test()
     profile = sys.argv[1]
     out = f"target/boot-stack-check-{profile}"
     os.makedirs(out, exist_ok=True)
     if sys.argv[2:] == ["overflow"]:
         return check_overflow(profile, out)
+    if sys.argv[2:] == ["syscall-overflow"]:
+        return check_syscall_overflow(profile, out)
     build(profile)
     log, qemu, sock = boot(profile, out)
     failures = []
@@ -180,6 +221,39 @@ def main():
         print("FAIL:", failure)
     print(f"{profile}: {'FAIL' if failures else 'ok'}")
     return 1 if failures else 0
+
+
+def test():
+    import unittest
+
+    guard = "CPU 0 syscall stack 0x10000-0x10400, guard 0xf000-0x10000\n"
+
+    def fault(cpu, address):
+        return f"CPU {cpu}: Page Fault (address {address:#x}, error code 2): Registers {{}}\n"
+
+    class SyscallOverflow(unittest.TestCase):
+        def test_one_fault_in_the_guard_passes(self):
+            self.assertEqual(syscall_overflow_failures(guard + fault(0, 0xfff8)), [])
+
+        def test_no_guard_line_fails(self):
+            self.assertEqual(syscall_overflow_failures(fault(0, 0xfff8)),
+                             ["the kernel did not log CPU 0's syscall stack guard"])
+
+        def test_no_fault_fails(self):
+            self.assertEqual(syscall_overflow_failures(guard), ["0 kernel page fault reports, not one"])
+
+        def test_two_faults_fail(self):
+            self.assertEqual(syscall_overflow_failures(guard + fault(0, 0xfff8) + fault(0, 0xfff0)),
+                             ["2 kernel page fault reports, not one"])
+
+        def test_a_fault_outside_the_guard_fails(self):
+            self.assertEqual(syscall_overflow_failures(guard + fault(0, 0x10008)), ["the fault is outside the guard"])
+
+        def test_a_fault_on_another_core_fails(self):
+            self.assertEqual(syscall_overflow_failures(guard + fault(1, 0xfff8)), ["the fault is on CPU 1, not CPU 0"])
+
+    result = unittest.TextTestRunner().run(unittest.defaultTestLoader.loadTestsFromTestCase(SyscallOverflow))
+    return 0 if result.wasSuccessful() else 1
 
 
 if __name__ == "__main__":

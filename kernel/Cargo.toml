@@ -39,3 +39,5 @@ default-features = false
 [features]
 # Time every hold of a lock and every wait for one, reported in the serial log.
 lock_stats = []
+# A syscall stack shallower than a syscall, so tools/check-boot-stack.py can force it to overflow.
+small_syscall_stack = []

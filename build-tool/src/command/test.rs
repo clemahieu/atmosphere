@@ -184,17 +184,20 @@ async fn check_hooks(project: &ProjectHandle) -> Result<String> {
 }
 
 async fn check_boot_stack(project: &ProjectHandle) -> Result<String> {
-    // Each profile's overflow build comes first, so the images left behind are the normal ones.
-    let runs: [&[&str]; 4] = [
+    // Each profile's overflow builds come first, so the images left behind are the normal ones.
+    let runs: [&[&str]; 7] = [
+        &["--test"],
         &["debug", "overflow"],
+        &["debug", "syscall-overflow"],
         &["debug"],
         &["release", "overflow"],
+        &["release", "syscall-overflow"],
         &["release"],
     ];
     for args in runs {
         run_check(project, BOOT_STACK_CHECK, args).await?;
     }
-    Ok("debug and release, normal and overflow".to_string())
+    Ok("its own tests, then debug and release, normal, boot stack overflow and syscall stack overflow".to_string())
 }
 
 /// `design/INDEX.md` is generated from the records, so a record edited without regenerating it would leave
