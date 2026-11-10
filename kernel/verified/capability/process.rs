@@ -1196,6 +1196,7 @@ impl CapKernel {
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).cores == old(self).cores,
             final(self).iommus == old(self).iommus,
+            final(self).devices == old(self).devices,
             ret == old(self).can_retype_block(root, from, to, base, PROCESS_ORDER),
             !ret ==> *final(self) == *old(self),
             ret ==> {
