@@ -382,17 +382,80 @@ const NULL_TAIL: &[u8] = b" before 102\n";
 /// The before number for a 4K map, one page per call, logs/cutover-before.log: 66926 TSC cycles per page.
 const MAP_TAIL: &[u8] = b"/p before 66926\n";
 
+/// Performance counters 0 to 3 as RDPMC reads them, where the kernel counts on them: cycles not in
+/// halt, retired instructions, data cache fills, and the fills that came from another CCX's cache.
+/// The kernel programs them at boot where CPUID offers the extended core counters, and dom0 tests the
+/// same bit first, since RDPMC faults in a process where the kernel did not; aarch64 has none here.
+fn counters() -> Option<[u64; 4]> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        /// CPUID Fn8000_0001 ECX bit 23, PerfCtrExtCore. AMD APM 2 §13.2.2.
+        const PERF_CTR_EXT_CORE: u32 = 1 << 23;
+        if unsafe { core::arch::x86_64::__cpuid(0x8000_0001) }.ecx & PERF_CTR_EXT_CORE == 0 {
+            return None;
+        }
+        let mut counts = [0; 4];
+        for (n, count) in counts.iter_mut().enumerate() {
+            let lo: u32;
+            let hi: u32;
+            unsafe {
+                core::arch::asm!(
+                    "rdpmc",
+                    in("ecx") n as u32,
+                    out("eax") lo,
+                    out("edx") hi,
+                    options(nomem, nostack, preserves_flags)
+                );
+            }
+            *count = ((hi as u64) << 32) | lo as u64;
+        }
+        Some(counts)
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        None
+    }
+}
+
+/// The head of the line for each counter counters() reads, after the head of what was counted.
+const COUNTER_HEADS: [&[u8]; 4] = [b"cycles ", b"instructions ", b"fills ", b"ccx fills "];
+
+/// Whether, when both `before` and `after` are some, a line for each counter prints `what`, the
+/// counter's head, how far it moved from `before` to `after`, and `tail`; or both are none, and
+/// nothing is printed.
+fn print_counters(what: &[u8], before: Option<[u64; 4]>, after: Option<[u64; 4]>, tail: &[u8]) -> bool {
+    match (before, after) {
+        (Some(before), Some(after)) => (0..4).all(|n| {
+            let mut head = [0u8; 18];
+            head[..what.len()].copy_from_slice(what);
+            head[what.len()..what.len() + COUNTER_HEADS[n].len()].copy_from_slice(COUNTER_HEADS[n]);
+            print_count(&head[..what.len() + COUNTER_HEADS[n].len()], after[n] - before[n], tail)
+                == operation::STATUS_OK
+        }),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+/// The tail of a counter line for the timed maps: the count is over all TIMED_MAPS of them.
+const MAPS_COUNTER_TAIL: &[u8] = b"/64\n";
+const _: () = assert!(TIMED_MAPS == 64);
+
 /// Whether dom0 times one invocation of a number no operation has, which returns unknown, and one 4K
 /// map of `frame` into each of TIMED_MAPS free entries of the level 1 table, and prints each cycle count
-/// beside its before number. The counts are not checked against those numbers. The timed maps start at
-/// the page after PATH_ADDRESS, which already holds `frame`.
+/// beside its before number, then what the performance counters counted over each, where there are
+/// any. The counts are not checked against those numbers. The timed maps start at the page after
+/// PATH_ADDRESS, which already holds `frame`.
 fn timed_beside_before(frame: u64) -> bool {
+    let null_before = counters();
     let start = rdtsc();
     let unknown = operation::status(unsafe { operation::invoke(NO_OPERATION, 0, [0; 5]) });
     let null_cycles = rdtsc() - start;
+    let null_after = counters();
     if unknown != operation::STATUS_UNKNOWN {
         return false;
     }
+    let maps_before = counters();
     let start = rdtsc();
     for k in 1..=TIMED_MAPS {
         let address = PATH_ADDRESS + 4096 * k;
@@ -400,9 +463,13 @@ fn timed_beside_before(frame: u64) -> bool {
             return false;
         }
     }
-    let per_page = (rdtsc() - start) / TIMED_MAPS;
+    let maps_cycles = rdtsc() - start;
+    let maps_after = counters();
     print_count(b"null ", null_cycles, NULL_TAIL) == operation::STATUS_OK
-        && print_count(b"4k ", per_page, MAP_TAIL) == operation::STATUS_OK
+        && print_count(b"4k ", maps_cycles / TIMED_MAPS, MAP_TAIL) == operation::STATUS_OK
+        && print_count(b"4k tsc ", maps_cycles, MAPS_COUNTER_TAIL) == operation::STATUS_OK
+        && print_counters(b"null ", null_before, null_after, b"\n")
+        && print_counters(b"4k ", maps_before, maps_after, MAPS_COUNTER_TAIL)
 }
 
 /// The entry of the level 1 table at PATH_ADDRESS that the probe check maps, the one after the timed
