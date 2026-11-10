@@ -457,6 +457,8 @@ impl CapKernel {
             final(self).frames == old(self).frames,
             final(self).zeroing == old(self).zeroing,
             final(self).holders@ == old(self).holders@.insert(block_ref(&old(self).blocks, base / PAGE_SZ), set![child]),
+            final(self).flush_epoch == old(self).flush_epoch,
+            final(self).mappings == old(self).mappings,
             final(self).view().holds(root, child),
             final(self).payload_of(child) == large_frame_of(base, order),
             final(self).list.is_child(parent, child),
@@ -633,6 +635,8 @@ impl CapKernel {
             final(self).cores == old(self).cores,
             ret == old(self).can_retype_frame(root, from, to, base),
             !ret ==> *final(self) == *old(self),
+            final(self).flush_epoch == old(self).flush_epoch,
+            final(self).mappings == old(self).mappings,
             ret ==> Self::frame_retyped(*old(self), *final(self), root, from, to, base),
             ret ==> Self::retype_keeps(*old(self), *final(self), old(self).tables.node_of(root, to), (base / PAGE_SZ) as int, 0, None),
             ret ==> {

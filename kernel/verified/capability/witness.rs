@@ -1,11 +1,12 @@
-//! The witnesses of three uses a process exists for. A creator can build a process that holds a
+//! The witnesses of four uses a process exists for. A creator can build a process that holds a
 //! capability it chose and has a thread bound to it: from the state boot leaves, the root gives itself a
 //! leaf, retypes a process and a thread bound to it, retypes a leaf into the new process's table and
 //! derives an untyped into it. The root can share memory between processes it built: it retypes two
 //! processes, gives each space the tables of one path, retypes a frame and maps it at that path in
-//! both. And the root can map memory into its own space: at a level 4 entry outside the kernel slots
-//! and the image's, it gives its space the tables of one path, retypes a frame and maps it there. Every
-//! step is proven to succeed. Only Verus compiles this module, so no image contains it.
+//! both. It can take that memory back: one revoke of the frame capability unmaps it from both. And the
+//! root can map memory into its own space: at a level 4 entry outside the kernel slots and the image's,
+//! it gives its space the tables of one path, retypes a frame and maps it there. Every step is proven
+//! to succeed. Only Verus compiles this module, so no image contains it.
 //! See design/process-holds-capabilities/.
 use vstd::arithmetic::div_mod::*;
 use vstd::arithmetic::power2::*;
@@ -32,7 +33,9 @@ use crate::capability::process::*;
 use crate::capability::reach::*;
 use crate::capability::refs::*;
 use crate::capability::retype::*;
+use crate::capability::revoke::*;
 use crate::capability::space::*;
+use crate::capability::steps::Steps;
 use crate::capability::table::*;
 use crate::capability::thread::*;
 use crate::capability::view::*;
@@ -181,6 +184,16 @@ pub open spec fn witness_root(k: CapKernel, process: usize, u: usize, first: Pay
     &&& witness_slot(k, process, ROOT_UNTYPED_SLOT, u, first, 1)
     &&& first.kind is Untyped
     &&& first.rights & right_bit(Right::Retype) != 0
+}
+
+/// Frame capability n's children are a and b, neither has a child, and every mapping record that names
+/// page g is a child of n.
+pub open spec fn frame_shared(k: CapKernel, n: usize, a: usize, b: usize, g: usize) -> bool {
+    &&& forall|y: usize| #[trigger] k.list.is_child(n, y) ==> y == a || y == b
+    &&& forall|z: usize| !#[trigger] k.list.is_child(a, z)
+    &&& forall|z: usize| !#[trigger] k.list.is_child(b, z)
+    &&& forall|m: usize| #[trigger] k.mappings@.contains_key(m) && record_pages(k.mappings@[m]).contains(g)
+        ==> k.list.is_child(n, m)
 }
 
 /// The order-3 block at b lies in first and is free.
@@ -372,6 +385,70 @@ proof fn lemma_children_kept(pre: Tree, post: Tree, a: usize, b: usize, c: usize
         assert(k != 0);
         assert(pre.parent@.contains_key(pre.seq@[k]));
     }
+}
+
+/// Across a step that adds n, dead before, under p and changes no other node's liveness or parent,
+/// n has no child after it, and every other child after it was the same child before: a live node
+/// past the first has a parent, so it was not the first before either.
+proof fn lemma_added_children(pre: Tree, post: Tree, n: usize, p: usize)
+    requires
+        pre.wf(),
+        post.wf(),
+        n < NODE_SPACE,
+        !pre.nodes@[n as int].live,
+        p != n,
+        post.parent@ == pre.parent@.insert(n, p),
+        forall|i: int| #![trigger post.nodes@[i]] 0 <= i < NODE_SPACE && i != n
+            ==> post.nodes@[i].live == pre.nodes@[i].live,
+    ensures
+        forall|x: usize| !#[trigger] post.is_child(n, x),
+        forall|c: usize, x: usize| #[trigger] post.is_child(c, x) && x != n ==> pre.is_child(c, x),
+{
+    assert forall|c: usize, x: usize| #[trigger] post.is_child(c, x) && x != n implies pre.is_child(c, x) by {
+        lemma_listed_live(post, x);
+        assert(post.nodes@[x as int].live == pre.nodes@[x as int].live);
+        assert(has(pre.seq@, x));
+        lemma_has(pre.seq@, x);
+        let k = choose|k: int| 0 <= k < pre.seq@.len() && pre.seq@[k] == x;
+        let j = choose|j: int| 0 <= j < post.seq@.len() && post.seq@[j] == x;
+        assert(j != 0);
+        assert(post.parent@.contains_key(post.seq@[j]));
+        assert(pre.parent@.contains_key(x));
+        if k == 0 {
+            assert(!pre.parent@.contains_key(pre.seq@[0]));
+        }
+        assert(pre.parent@.contains_key(pre.seq@[k]));
+    }
+    assert forall|x: usize| !#[trigger] post.is_child(n, x) by {
+        if post.is_child(n, x) {
+            if x == n {
+                assert(post.parent@[n] == p);
+            } else {
+                assert(pre.is_child(n, x));
+                pre.lemma_dead_childless(n, x);
+            }
+        }
+    }
+}
+
+/// A child stays its parent's child across a step that keeps its parent and keeps it live: it is listed,
+/// since it is live, and not first, since it has a parent.
+proof fn lemma_child_kept(pre: Tree, post: Tree, c: usize, x: usize)
+    requires
+        pre.wf(),
+        post.wf(),
+        pre.is_child(c, x),
+        pre.parent@.contains_key(x) ==> post.parent@.contains_key(x) && post.parent@[x] == pre.parent@[x],
+        x < NODE_SPACE,
+        post.nodes@[x as int].live,
+    ensures
+        post.is_child(c, x),
+{
+    let k = choose|k: int| 0 <= k < pre.seq@.len() && pre.seq@[k] == x;
+    assert(k != 0);
+    assert(pre.parent@.contains_key(pre.seq@[k]));
+    assert(has(post.seq@, x));
+    lemma_has(post.seq@, x);
 }
 
 impl CapKernel {
@@ -942,6 +1019,7 @@ impl CapKernel {
             final(self).tables == old(self).tables,
             final(self).processes == old(self).processes,
             final(self).threads == old(self).threads,
+            final(self).flush_epoch == old(self).flush_epoch,
             final(self).blocks.regions_2m@ == old(self).blocks.regions_2m@,
             final(self).blocks.regions_1g@ == old(self).blocks.regions_1g@,
             forall|j: int| #![trigger final(self).blocks.pages@[j]] old(self).blocks.tracks(j) && !(cursor / PAGE_SZ <= j < cursor / PAGE_SZ + 8)
@@ -1084,6 +1162,7 @@ impl CapKernel {
             final(self).tables == old(self).tables,
             final(self).processes == old(self).processes,
             final(self).threads == old(self).threads,
+            final(self).flush_epoch == old(self).flush_epoch,
             final(self).blocks.regions_2m@ == old(self).blocks.regions_2m@,
             final(self).blocks.regions_1g@ == old(self).blocks.regions_1g@,
             forall|j: int| #![trigger final(self).blocks.pages@[j]] old(self).blocks.tracks(j) && !(cursor / PAGE_SZ <= j < cursor / PAGE_SZ + 24)
@@ -1182,7 +1261,9 @@ impl CapKernel {
     /// at the seventh to ninth, and a frame at the second block's third page into slot 3; then map the
     /// frame at that path in P's space and in Q's. Every step succeeds, and at the end P and Q differ,
     /// neither is the root, and the path maps the one frame, with the frame capability's rights, in
-    /// both spaces.
+    /// both spaces. What a revoke of the frame capability starts from holds too: the flush epoch is as
+    /// boot left it, the root is live and slot 3 holds the capability, whose only children are the two
+    /// mappings, which have none, and no other mapping names the frame's page.
     #[verifier::spinoff_prover]
     pub fn witness_root_maps_one_frame_into_two_processes(
         &mut self,
@@ -1208,6 +1289,8 @@ impl CapKernel {
                 let q = (base + 5 * PROCESS_BYTES) as usize;
                 let path = SpacePath { l4: KERNEL_MEM_END_L4INDEX, l3: 0, l2: 0, l1: 0 };
                 let entry = frame_map_entry(((base + 10 * PAGE_SZ) / PAGE_SZ as int) as usize, FRAME_RIGHTS, false);
+                let nf = (base + PROCESS_BYTES + 3) as usize;
+                let fp = ((base + 10 * PAGE_SZ) / PAGE_SZ as int) as usize;
                 &&& final(self).wf()
                 &&& base != process
                 &&& q != process
@@ -1216,6 +1299,15 @@ impl CapKernel {
                 &&& space_mapping(tree, base)[path] == entry
                 &&& space_mapping(tree, q).contains_key(path)
                 &&& space_mapping(tree, q)[path] == entry
+                &&& walk_finds(tree, base, path, fp)
+                &&& walk_finds(tree, q, path, fp)
+                &&& final(self).flush_epoch == old(self).flush_epoch
+                &&& final(self).tables.roots@.contains_key(process)
+                &&& witness_alive(*final(self), process)
+                &&& final(self).tables.has_slot(&final(self).list, process, WITNESS_FRAME_SLOT)
+                &&& final(self).tables.node_of(process, WITNESS_FRAME_SLOT) == nf
+                &&& final(self).is_cap(nf)
+                &&& exists|m1: usize, m2: usize| #[trigger] frame_shared(*final(self), nf, m1, m2, fp)
             }),
     {
         hide(CapKernel::wf);
@@ -1646,8 +1738,216 @@ impl CapKernel {
             assert(space_mapping(a8, bq).contains_key(path));
             assert(space_mapping(a8, bq)[path] == entry);
             assert(bq == base + 5 * PROCESS_BYTES);
+            // Both walks end at the frame's page.
+            let g = fp as usize;
+            lemma_fundamental_div_mod(bf as int, PAGE_SZ as int);
+            assert(fp * PAGE_SZ == bf);
+            assert(entry.addr == bf);
+            assert(entry.addr / PAGE_SZ == g);
+            assert(walk_finds(a8, base, path, g));
+            assert(walk_finds(a8, bq, path, g));
+            // The root, its frame capability and the epoch stay.
+            let t1 = walk_table(a6, base, path)->0;
+            let t2 = walk_table(a7, bq, path)->0;
+            let m1 = mapping_node(t1, 0);
+            let m2 = mapping_node(t2, 0);
+            lemma_map_kept(s7, s8, m2, nf);
+            lemma_witness_slot_kept(s7, s8, process, WITNESS_FRAME_SLOT, nf, cap, 2);
+            assert(witness_alive(s8, process));
+            assert(s8.flush_epoch == s0.flush_epoch);
+            assert(s5.list.wf() && s6.list.wf() && s7.list.wf() && s8.list.wf()) by {
+                reveal(CapKernel::wf);
+            }
+            // No record named the frame's page before the frame was retyped: its page was free and no
+            // typed region covered it.
+            assert forall|m: usize| #[trigger] s5.mappings@.contains_key(m) implies !record_pages(s5.mappings@[m]).contains(g) by {
+                if record_pages(s5.mappings@[m]).contains(g) {
+                    assert(s5.mapped@.contains(g)) by {
+                        reveal(CapKernel::wf);
+                    }
+                    let br = s5.lemma_mapped_block(g);
+                    assert(s5.blocks.pages@[fp].kind is Free);
+                    assert(!s5.blocks.covered(fp));
+                    match br {
+                        BlockRef::Small(b) => {
+                            assert(b == g);
+                        },
+                        BlockRef::Two(r) => {
+                            lemma_fundamental_div_mod_converse(fp, PAGES_PER_2M as int, r as int, fp - r * PAGES_PER_2M);
+                            assert(region_2m(fp) == r);
+                        },
+                        BlockRef::One(r) => {
+                            lemma_fundamental_div_mod_converse(fp, PAGES_PER_1G as int, r as int, fp - r * PAGES_PER_1G);
+                            assert(region_1g(fp) == r);
+                        },
+                    }
+                }
+            }
+            // The frame capability is new and childless; each map adds one childless child under it.
+            assert(s6.mappings@ == s5.mappings@);
+            assert(!s5.list.nodes@[nf as int].live);
+            assert(s5.list.nodes@[u as int].live);
+            assert(s6.list.is_child(u, nf));
+            lemma_listed_live(s6.list, nf);
+            lemma_added_children(s5.list, s6.list, nf, u);
+            assert(s7.list.is_child(nf, m1));
+            lemma_listed_live(s7.list, m1);
+            lemma_added_children(s6.list, s7.list, m1, nf);
+            assert(s8.list.is_child(nf, m2));
+            lemma_listed_live(s8.list, m2);
+            lemma_added_children(s7.list, s8.list, m2, nf);
+            assert(s7.list.nodes@[m1 as int].live);
+            assert(m1 != m2);
+            assert(s8.list.is_child(nf, m1)) by {
+                assert(s8.list.nodes@[m1 as int].live);
+                lemma_child_kept(s7.list, s8.list, nf, m1);
+            }
+            assert(frame_shared(s8, nf, m1, m2, g)) by {
+                assert forall|y: usize| #[trigger] s8.list.is_child(nf, y) implies y == m1 || y == m2 by {
+                    if y != m1 && y != m2 {
+                        assert(s7.list.is_child(nf, y));
+                        assert(s6.list.is_child(nf, y));
+                    }
+                }
+                assert forall|z: usize| !#[trigger] s8.list.is_child(m1, z) by {
+                    if s8.list.is_child(m1, z) {
+                        if z == m2 {
+                            assert(s8.list.parent@[m2] == nf);
+                        } else {
+                            assert(s7.list.is_child(m1, z));
+                        }
+                    }
+                }
+                assert forall|m: usize| #[trigger] s8.mappings@.contains_key(m) && record_pages(s8.mappings@[m]).contains(g)
+                    implies s8.list.is_child(nf, m) by {
+                    if m != m1 && m != m2 {
+                        assert(s5.mappings@.contains_key(m));
+                        assert(s8.mappings@[m] == s5.mappings@[m]);
+                    }
+                }
+            }
         }
         ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8
+    }
+
+    /// From the state boot leaves, as the root at `process`, with the nine free blocks of
+    /// witness_root_maps_one_frame_into_two_processes: share a frame between P and Q as it does, then
+    /// revoke the frame capability in slot 3 of the root's leaf. One revoke finishes, since the
+    /// capability's run is the two mappings, within its budget and two epochs past boot's. At the end
+    /// the capability stays, neither P's space nor Q's maps the path, the frame's page is not mapped,
+    /// and no walk of any space finds it.
+    #[verifier::spinoff_prover]
+    pub fn witness_root_revokes_a_shared_frame(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: Ghost<usize>,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        base: usize,
+    ) -> (ret: bool)
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@),
+            image_tables_bound(image@) + 9 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
+            base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
+        ensures
+            ret,
+            ({
+                let tree = tree_of(&final(self).table_pages, &final(self).spaces);
+                let q = (base + 5 * PROCESS_BYTES) as usize;
+                let path = SpacePath { l4: KERNEL_MEM_END_L4INDEX, l3: 0, l2: 0, l1: 0 };
+                let nf = (base + PROCESS_BYTES + 3) as usize;
+                let fp = ((base + 10 * PAGE_SZ) / PAGE_SZ as int) as usize;
+                &&& final(self).wf()
+                &&& final(self).is_cap(nf)
+                &&& forall|x: usize| !#[trigger] final(self).list.is_child(nf, x)
+                &&& !space_mapping(tree, base).contains_key(path)
+                &&& !space_mapping(tree, q).contains_key(path)
+                &&& !final(self).mapped@.contains(fp)
+                &&& forall|r: usize, p: SpacePath| !#[trigger] walk_finds(tree, r, p, fp)
+            }),
+    {
+        hide(CapKernel::wf);
+        let shared = self.witness_root_maps_one_frame_into_two_processes(root, process, leaf, frames, t, free, image, untyped, frame, base);
+        let ghost s8 = *self;
+        let ghost nf = (base + PROCESS_BYTES + 3) as usize;
+        let ghost g = ((base + 10 * PAGE_SZ) / PAGE_SZ as int) as usize;
+        let at = Position { through: None, index: WITNESS_FRAME_SLOT };
+        proof {
+            assert(s8.cap_at(process, at) == Some(nf));
+            assert(s8.root_live(process));
+        }
+        // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let done = self.revoke(process, at, Tracked(&mut steps));
+        proof {
+            let s9 = *self;
+            let a8 = tree_of(&s8.table_pages, &s8.spaces);
+            let tree = tree_of(&s9.table_pages, &s9.spaces);
+            let q = (base + 5 * PROCESS_BYTES) as usize;
+            let path = SpacePath { l4: KERNEL_MEM_END_L4INDEX, l3: 0, l2: 0, l1: 0 };
+            assert(!(done is Refused));
+            assert(s8.list.wf() && s9.list.wf()) by {
+                reveal(CapKernel::wf);
+            }
+            let (m1, m2) = choose|m1: usize, m2: usize| frame_shared(s8, nf, m1, m2, g);
+            let gone = choose|gone: Seq<usize>| revoked_seq(s8.list, s9.list, nf, gone);
+            // Every node the revoke took was below the capability, whose children have none, so it
+            // was one of the two mappings, and it took at most two.
+            assert forall|i: int| 0 <= i < gone.len() implies #[trigger] gone[i] == m1 || gone[i] == m2 by {
+                let x = gone[i];
+                assert forall|y: usize, z: usize| #[trigger] s8.list.is_child(nf, y) implies !#[trigger] s8.list.is_child(y, z) by {
+                    assert(y == m1 || y == m2);
+                }
+                lemma_below_child(s8.list, nf, x);
+            }
+            if gone.len() > 2 {
+                assert(gone[0] == m1 || gone[0] == m2);
+                assert(gone[1] == m1 || gone[1] == m2);
+                assert(gone[2] == m1 || gone[2] == m2);
+                assert(gone[0] != gone[1] && gone[0] != gone[2] && gone[1] != gone[2]);
+            }
+            assert(s8.list.seq@.len() - s9.list.seq@.len() <= 2);
+            // So the revoke stopped neither on its budget nor on the epoch: it finished.
+            assert(s8.flush_epoch == 0);
+            assert(s9.flush_epoch <= 2);
+            assert(done is Done);
+            assert(Self::cap_revoked_at(s8, s9, process, at));
+            // A record after the revoke is one before, so it names the frame's page only as a child
+            // of the capability, which has none left.
+            assert(mapped_wf(s9.mapped@, s9.mappings@) && mappings_wf(&s9.list, &s9.tables, tree, &s9.blocks, s9.holders@, s9.mappings@)) by {
+                reveal(CapKernel::wf);
+            }
+            if s9.mapped@.contains(g) {
+                let m = choose|m: usize| #![trigger s9.mappings@[m]] s9.mappings@.contains_key(m) && record_pages(s9.mappings@[m]).contains(g);
+                assert(s8.mappings@.contains_key(m) && s8.mappings@[m] == s9.mappings@[m]);
+                assert(s8.list.is_child(nf, m));
+                assert(mapping_wf(&s9.list, &s9.tables, tree, &s9.blocks, s9.holders@, s9.mappings@, m));
+                lemma_child_kept(s8.list, s9.list, nf, m);
+            }
+            assert forall|r: usize, p: SpacePath| !#[trigger] walk_finds(tree, r, p, g) by {
+                if walk_finds(tree, r, p, g) {
+                    s9.lemma_walk_mapped(r, p, g);
+                }
+            }
+            // A walk after it is the walk before, which found the frame's page.
+            if space_mapping(tree, base).contains_key(path) {
+                assert(walk(tree, base, path) == walk(a8, base, path));
+                assert(walk_finds(tree, base, path, g));
+            }
+            if space_mapping(tree, q).contains_key(path) {
+                assert(walk(tree, q, path) == walk(a8, q, path));
+                assert(walk_finds(tree, q, path, g));
+            }
+        }
+        match done {
+            RevokeStep::Done => shared,
+            _ => false,
+        }
     }
 
     /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first

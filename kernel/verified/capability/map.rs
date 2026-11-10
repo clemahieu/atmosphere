@@ -1664,7 +1664,8 @@ impl CapKernel {
     /// What a map leaves: the capability tables as they were; path p of the space still reaches its
     /// level 1 table and gains the page's entry, written with its accessed and dirty bits clear, and
     /// nothing else changes in any space; the node is the
-    /// capability's child, names the entry and counts on the block; the frame is mapped. What it keeps,
+    /// capability's child, names the entry, counts on the block and has the one record added; the frame
+    /// is mapped. What it keeps,
     /// so that maps compose: every other node, the list's head, every other block's count, the
     /// processes, threads and spaces, every table walk, and everyone's reach.
     pub open spec fn map_done(pre: Self, post: Self, root: usize, slot: usize, p: SpacePath, from: usize, page: usize) -> bool {
@@ -1686,6 +1687,7 @@ impl CapKernel {
         &&& post.list.nodes@[node as int].kind is Mapping
         &&& post.mappings@.contains_key(node)
         &&& post.mappings@[node] == (MappingRecord { table: t, entry: p.l1, frame, large: false })
+        &&& post.mappings@ == pre.mappings@.insert(node, MappingRecord { table: t, entry: p.l1, frame, large: false })
         &&& block_refs(&post.blocks, br) == block_refs(&pre.blocks, br) + 1
         &&& post.holders@[br] == pre.holders@[br].insert(node)
         &&& post.mapped@.contains(frame)
