@@ -59,7 +59,7 @@ Atmosphere boots only CPU 0 and has no timer interrupt, so all timers run on one
 
 ## Exit status
 
-dom0 ends the run with a power-off through its console capability, which the kernel carries out as
+dom0 ends the run with a power-off through its power capability, which the kernel carries out as
 its machine's shutdown: the ACPI power-off for a run that succeeded, and a write of 0 to the
 isa-debug-exit device, which makes QEMU exit with `0 << 1 | 1`, for one that failed.
 

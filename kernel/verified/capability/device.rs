@@ -329,7 +329,7 @@ impl CapKernel {
     }
 
     /// The blocks, frames, spaces, threads and processes after a capability no record tracks is added,
-    /// an untyped's, a device's or the console's, and nothing else changed.
+    /// an untyped's, a device's, the console's or power's, and nothing else changed.
     pub proof fn lemma_add_untracked_holders(pre: Self, post: Self, child: usize)
         requires
             Self::derive_step(pre, post, child),

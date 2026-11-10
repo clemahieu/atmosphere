@@ -121,9 +121,9 @@ fn may_derive(parent: Payload, rights: u32, base: usize, order: u8) -> (ret: boo
 }
 
 impl CapKernel {
-    /// The refusals: an index that names no slot, a parent that is no capability, a device's or the
-    /// console's, a dead process's or thread's, or at the deepest depth, a child's slot in use, or a child
-    /// that does not narrow its parent.
+    /// The refusals: an index that names no slot, a parent that is no capability, a device's, the
+    /// console's or power's, a dead process's or thread's, or at the deepest depth, a child's slot in use,
+    /// or a child that does not narrow its parent.
     pub open spec fn can_derive(&self, root: usize, from: usize, to: usize, rights: u32, base: usize, order: u8) -> bool {
         let parent = self.tables.node_of(root, from);
         let child = self.tables.node_of(root, to);
@@ -214,7 +214,7 @@ impl CapKernel {
             return false;
         }
         // A device is bound to one space at a time, so its capability has no children: it moves instead.
-        // The console's names no block for a child to narrow.
+        // The console's and power's name no block for a child to narrow.
         if !is_block_kind(payload.kind) {
             return false;
         }

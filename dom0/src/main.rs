@@ -4,9 +4,10 @@
 //!
 //! Print, inspect, retype of a 4K frame, of a 2M frame and of a table page, derive, move, delete, revoke, link, map, unmap, probe and power-off are the wired
 //! operations, so each fixed slot is checked through them: the console accepts print and the process,
-//! thread, untyped and frame slots refuse it, and the process slot refuses a power-off; inspect says the console slot holds a console, and each slot
-//! from the first untyped holds an untyped whose base is aligned to its order, up to the first slot
-//! that holds nothing, which inspect refuses. Retype under an empty slot, a slot past the table and
+//! thread, power, untyped and frame slots refuse it, and the process and console slots refuse a
+//! power-off; inspect says the console slot holds a console and the power slot a power capability, and
+//! each slot from the first untyped holds an untyped whose base is aligned to its order, up to the first
+//! slot that holds nothing, which inspect refuses. Retype under an empty slot, a slot past the table and
 //! the console is refused, and retype of the last untyped's last page into that empty slot is
 //! accepted, after which inspect says the slot holds a 4K frame at that page. dom0 then retypes
 //! four table pages, after a table page of a level no table has is refused, and a retype of one of
@@ -42,9 +43,9 @@
 //! maintained. A probe of 0 entries, of 65 and of a range leaving its level 1 table is refused. It maps
 //! the frame at the next entry, writes the page and unmaps it, and the unmap returns accessed and dirty
 //! set, both maintained, which it prints. dom0 prints that result through the console, then an exit marker,
-//! and ends the run with a power-off through the console, reporting success only when every check held.
-//! On aarch64, where the instruction carries an immediate, a print through the console by `svc #1`
-//! returns unknown and prints nothing.
+//! and ends the run with a power-off through its power capability, reporting success only when every
+//! check held. On aarch64, where the instruction carries an immediate, a print through the console by
+//! `svc #1` returns unknown and prints nothing.
 
 #![no_std]
 #![no_main]
@@ -74,14 +75,18 @@ const MAX_ORDER: u64 = 36;
 /// The last slot of the table's first leaf, where boot's untyped end.
 const FIRST_LEAF_END: u64 = operation::ROOT_FRAME_SLOT - 2;
 
-/// The first slot after the untyped, once inspect says the console slot holds a console, and every slot
-/// from the first untyped holds an untyped whose base is aligned to its order, at least one, up to that
-/// slot, which inspect refuses because it holds nothing. Boot fills the untyped slots from the first and
-/// leaves the rest of the leaf empty, design/root-process-at-boot/; a leaf full of untyped leaves no
-/// empty slot in it to read, and fails.
+/// The first slot after the untyped, once inspect says the console slot holds a console and the power
+/// slot a power capability, and every slot from the first untyped holds an untyped whose base is
+/// aligned to its order, at least one, up to that slot, which inspect refuses because it holds nothing.
+/// Boot fills the untyped slots from the first and leaves the rest of the leaf empty,
+/// design/root-process-at-boot/; a leaf full of untyped leaves no empty slot in it to read, and fails.
 fn first_empty_slot() -> Option<u64> {
     let console = operation::inspect(operation::ROOT_CONSOLE_SLOT);
     if !matches!(console, Ok(capability) if capability.kind == operation::KIND_CONSOLE) {
+        return None;
+    }
+    let power = operation::inspect(operation::ROOT_POWER_SLOT);
+    if !matches!(power, Ok(capability) if capability.kind == operation::KIND_POWER) {
         return None;
     }
     let mut slot = operation::ROOT_UNTYPED_SLOT;
@@ -701,15 +706,20 @@ fn other_instruction_unknown() -> bool {
 extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
     let process = unsafe { print_slot(operation::ROOT_PROCESS_SLOT, FIRST_ARGUMENTS) };
     let thread = unsafe { print_slot(operation::ROOT_THREAD_SLOT, [0; 5]) };
+    let power = unsafe { print_slot(operation::ROOT_POWER_SLOT, [0; 5]) };
     let untyped = unsafe { print_slot(operation::ROOT_UNTYPED_SLOT, [0; 5]) };
     let frame = unsafe { print_slot(operation::ROOT_FRAME_SLOT, [0; 5]) };
     let unknown = operation::status(unsafe { operation::invoke(NO_OPERATION, 0, [0; 5]) });
-    // A power-off through a slot that holds no console is refused, and the run goes on. It reports a
-    // failure, so a kernel that took it would not end the run as a success.
-    let power = operation::power_off(operation::ROOT_PROCESS_SLOT, false);
+    // A power-off through a slot that holds no power capability is refused, the console's among them,
+    // and the run goes on. Each reports a failure, so a kernel that took one would not end the run as a
+    // success.
+    let process_off = operation::power_off(operation::ROOT_PROCESS_SLOT, false);
+    let console_off = operation::power_off(operation::ROOT_CONSOLE_SLOT, false);
     let slots_held = process == operation::STATUS_REFUSED
-        && power == operation::STATUS_REFUSED
+        && process_off == operation::STATUS_REFUSED
+        && console_off == operation::STATUS_REFUSED
         && thread == operation::STATUS_REFUSED
+        && power == operation::STATUS_REFUSED
         && untyped == operation::STATUS_REFUSED
         && frame == operation::STATUS_REFUSED
         && unknown == operation::STATUS_UNKNOWN
@@ -750,11 +760,11 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
     end_run(false)
 }
 
-/// Ends the run: a power-off through the console, reporting whether every check held. The kernel does
-/// not return from one it accepts, and how the machine reports each ending is its glue's,
+/// Ends the run: a power-off through the power capability, reporting whether every check held. The
+/// kernel does not return from one it accepts, and how the machine reports each ending is its glue's,
 /// design/syscall-abi-in-registers/. When the power-off returns, dom0 waits for the run's timeout.
 fn end_run(success: bool) -> ! {
-    operation::power_off(operation::ROOT_CONSOLE_SLOT, success);
+    operation::power_off(operation::ROOT_POWER_SLOT, success);
     loop {}
 }
 

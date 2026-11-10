@@ -38,6 +38,7 @@ pub enum CapKind {
     Space,
     Device,
     Console,
+    Power,
 }
 
 /// What a capability says, beyond its place in the list. 32 bytes.
@@ -75,10 +76,11 @@ pub open spec fn payload_wf(p: Payload) -> bool {
     &&& p.base as int + block_bytes(p.order) <= NODE_SPACE as int
 }
 
-/// A capability of this kind names a block of memory. A device's and the console's name objects above
-/// the 48-bit space instead: a device's its device, devices_wf, and the console's CONSOLE_OBJECT.
+/// A capability of this kind names a block of memory. A device's, the console's and power's name
+/// objects above the 48-bit space instead: a device's its device, devices_wf, the console's
+/// CONSOLE_OBJECT and power's POWER_OBJECT.
 pub open spec fn names_block(k: CapKind) -> bool {
-    !(k is Device) && !(k is Console)
+    !(k is Device) && !(k is Console) && !(k is Power)
 }
 
 /// A capability of this kind is a holder some record counts: a frame's in its block's holders, and a
@@ -93,16 +95,17 @@ pub fn is_block_kind(k: CapKind) -> (ret: bool)
         ret == names_block(k),
 {
     match k {
-        CapKind::Device | CapKind::Console => false,
+        CapKind::Device | CapKind::Console | CapKind::Power => false,
         _ => true,
     }
 }
 
 /// What a capability says is well formed: a block for a memory capability, the console's one page for
-/// a console's.
+/// a console's, and power's one page for a power capability's.
 pub open spec fn cap_wf(p: Payload) -> bool {
     &&& names_block(p.kind) ==> payload_wf(p)
     &&& p.kind is Console ==> p.base == CONSOLE_OBJECT && p.order == 0
+    &&& p.kind is Power ==> p.base == POWER_OBJECT && p.order == 0
 }
 
 /// The bit of a capability's rights word that grants control.

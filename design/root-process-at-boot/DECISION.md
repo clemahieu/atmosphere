@@ -1,9 +1,9 @@
 ---
 title: "Boot hands the root process every capability there is, at fixed slots, and nothing else is reachable"
-date: 2026-11-09
+date: 2026-11-10
 status: active
 tags: [boot, capability]
-one_line: "Boot writes page metadata and creates the root process, thread and table. The root holds at fixed slots untyped capabilities covering free memory as aligned blocks, frame capabilities for dom0's image and stack with the rights they were loaded with, its own process and thread, a capability per core at top priority, interrupts, devices, ports, a console, SVM and timers; the list's root is a synthetic node boot sets aside, and the root's boot objects are never retyped."
+one_line: "Boot writes page metadata and creates the root process, thread and table. The root holds at fixed slots untyped capabilities covering free memory as aligned blocks, frame capabilities for dom0's image and stack with the rights they were loaded with, its own process and thread, a capability per core at top priority, interrupts, devices, ports, a console, a power capability, SVM and timers; the list's root is a synthetic node boot sets aside, and the root's boot objects are never retyped."
 revisit_if: "Several kernel instances each need a root, in which case what boot hands each root is the open question recorded with that work; or a second boot-created process is wanted."
 confidence: "Follows from the kernel allocating nothing after boot: something must hold everything at the start, and only one thing does."
 ---
@@ -12,7 +12,9 @@ confidence: "Follows from the kernel allocating nothing after boot: something mu
 
 ## Decision
 
-Boot writes page metadata and creates the root process, thread and table. The root holds at fixed slots: untyped covering free memory as aligned blocks, frames covering dom0's image and stack, its own process and thread, a capability per core at top priority, interrupts, device and port capabilities, a console, an SVM capability, and timers. Nothing is reachable without one. The root treats these as all there is, `design/one-kernel-instance/`.
+Boot writes page metadata and creates the root process, thread and table. The root holds at fixed slots: untyped covering free memory as aligned blocks, frames covering dom0's image and stack, its own process and thread, a capability per core at top priority, interrupts, device and port capabilities, a console, a power capability, an SVM capability, and timers. Nothing is reachable without one. The root treats these as all there is, `design/one-kernel-instance/`.
+
+The first leaf of the root's table holds, at slots `asys` names: the root's process at `ROOT_PROCESS_SLOT`, 1; its thread at `ROOT_THREAD_SLOT`, 2; the console at `ROOT_CONSOLE_SLOT`, 3; power at `ROOT_POWER_SLOT`, 4; and the untyped at consecutive slots from `ROOT_UNTYPED_SLOT`, 5, to the leaf's last. The console and power are each a kind of their own with one capability, naming an object that is no memory, `design/capability-names-a-block/`: print writes through the console and power-off ends the machine's run through power, `design/syscall-abi-in-registers/`. The root moves or deletes each as it does any capability.
 
 The untyped come largest first, so the first pays for the root's space's tables (below); when free memory makes more aligned blocks than the untyped slots hold, the smallest stay unused. The kernel itself lives in a stretch of free memory boot sets aside beside the root's process, thread, table leaves and synthetic root, which no untyped covers.
 
@@ -27,6 +29,8 @@ Boot ends by making the root's thread core 0's current thread, which core 0 then
 ## Reasoning
 
 Under `design/untyped-memory/` the kernel has no authority of its own to hand out later, so everything must be in some process's hands from the first instruction of user mode, and in one lineage so that revocation reaches it, `design/revoke-by-depth-first-list/`. Fixed slots are what the root's own code and its tests can rely on without an enumerate operation the ABI does not have.
+
+Power is a kind of its own, not something the console allows, because the two are handed out differently: a root gives the console to whatever should be heard, and the authority to stop the machine to almost nothing. Were power-off an operation on the console, every process that may log could end the run.
 
 The leaf's hidden node stays because a leaf whose hidden node is gone is dead, refused by lookup, `design/teardown-driven-by-retype/`, and every live leaf having one is what lets revoking an untyped reach the leaves typed from it; a boot leaf without one would be the only leaf that rule does not cover, and every proof over leaves would carry the exception. Under the synthetic root it costs one node and changes nothing a retype or revoke can reach.
 

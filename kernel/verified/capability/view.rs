@@ -274,8 +274,8 @@ impl CapKernel {
     {
     }
 
-    /// A capability that names a block names one within the address space, so it covers no device and
-    /// not the console: each is reached only through its own capability.
+    /// A capability that names a block names one within the address space, so it covers no device, not
+    /// the console and not power: each is reached only through its own capability.
     pub proof fn lemma_covers_no_device(&self, n: usize, o: ObjectId)
         requires
             self.wf(),
@@ -287,18 +287,21 @@ impl CapKernel {
     {
     }
 
-    /// The console's capability covers the console's page alone, past memory and every device object,
-    /// and no other capability covers that page.
-    pub proof fn lemma_covers_console(&self, n: usize, o: ObjectId)
+    /// The console's capability covers the console's page alone and a power capability power's page
+    /// alone, each past memory and every device object, and no other capability covers either page.
+    pub proof fn lemma_covers_console_or_power(&self, n: usize, o: ObjectId)
         requires
             self.wf(),
             self.is_cap(n),
             self.view().covers(n, o),
         ensures
             self.payload_of(n).kind is Console ==> o == CONSOLE_OBJECT,
-            self.payload_of(n).kind is Console ==> DEVICE_OBJECTS <= o,
-            self.payload_of(n).kind is Console ==> forall|d: int| 0 <= d < MAX_DEVICES ==> o != #[trigger] device_object(d),
+            self.payload_of(n).kind is Power ==> o == POWER_OBJECT,
+            self.payload_of(n).kind is Console || self.payload_of(n).kind is Power ==> DEVICE_OBJECTS <= o,
+            self.payload_of(n).kind is Console || self.payload_of(n).kind is Power
+                ==> forall|d: int| 0 <= d < MAX_DEVICES ==> o != #[trigger] device_object(d),
             !(self.payload_of(n).kind is Console) ==> o != CONSOLE_OBJECT,
+            !(self.payload_of(n).kind is Power) ==> o != POWER_OBJECT,
     {
         let p = self.payload_of(n);
         if p.kind is Device {
@@ -310,7 +313,7 @@ impl CapKernel {
             assert(x < MAX_DEVICES * 4096) by (nonlinear_arith)
                 requires x / 4096 < MAX_DEVICES, x >= 0;
             assert(pow2(0) == 1) by { lemma2_to64(); }
-        } else if p.kind is Console {
+        } else if p.kind is Console || p.kind is Power {
             assert(pow2(0) == 1) by { lemma2_to64(); }
         }
     }

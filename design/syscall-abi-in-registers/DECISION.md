@@ -3,8 +3,8 @@ title: "One syscall entry, and every operation carries its arguments in register
 date: 2026-11-10
 status: active
 tags: [abi, ipc, memory, portability]
-one_line: "One entry, by position: the operation number, the capability's slot and five arguments in; a status word (status in its low 16 bits, ok 0, refused 1, unknown 2, again 3, and a badge in the upper 48) and five result words out, each output in the register of the input at its position. A table per target names the registers: syscall on x86_64, svc on aarch64. A send carries five words, four with a grant; the kernel copies nothing from user memory, and larger data goes through shared frames. A place in a space is a virtual address and a level, which the kernel splits into the path. Inspect, operation 15, returns a held capability's kind, base, order and rights in results 1 to 4. Unmap returns the cleared entry's accessed and dirty bits in results 1 and 2. Probe, operation 17, reads and clears the accessed and dirty bits of up to 64 level 1 entries and returns them as two masks in results 1 and 2. Power-off, operation 18, ends the run through a console capability, with argument 1 saying whether the run succeeded."
-revisit_if: "A message that does not fit five words is on a hot path and the shared-frame ring is measured as its cost, an operation needs more than five argument words, a second entry is needed for a different privilege transition, a target's instruction leaves fewer than seven registers free to carry an invocation, or a power capability exists, which power-off then asks for in place of the console."
+one_line: "One entry, by position: the operation number, the capability's slot and five arguments in; a status word (status in its low 16 bits, ok 0, refused 1, unknown 2, again 3, and a badge in the upper 48) and five result words out, each output in the register of the input at its position. A table per target names the registers: syscall on x86_64, svc on aarch64. A send carries five words, four with a grant; the kernel copies nothing from user memory, and larger data goes through shared frames. A place in a space is a virtual address and a level, which the kernel splits into the path. Inspect, operation 15, returns a held capability's kind, base, order and rights in results 1 to 4. Unmap returns the cleared entry's accessed and dirty bits in results 1 and 2. Probe, operation 17, reads and clears the accessed and dirty bits of up to 64 level 1 entries and returns them as two masks in results 1 and 2. Power-off, operation 18, ends the run through a power capability, with argument 1 saying whether the run succeeded."
+revisit_if: "A message that does not fit five words is on a hot path and the shared-frame ring is measured as its cost, an operation needs more than five argument words, a second entry is needed for a different privilege transition, or a target's instruction leaves fewer than seven registers free to carry an invocation."
 confidence: "A packing judgement; each target's preserved set is the one its C convention keeps across a call, the memory operations' positions are counted against the verified functions' parameters in kernel/verified/capability, and the aarch64 table is written from the Arm Architecture Reference Manual; dom0's checks run through it at EL0 under KVM on a Cortex-A76, which tests the positions and that an immediate other than 0 returns unknown."
 ---
 
@@ -136,7 +136,7 @@ An absent entry's bits are clear in both masks, as is every bit at or past the c
 
 ### Power-off
 
-Power-off is operation 18. It names a console capability in the slot and asks for no right but holding it, as print does. Argument 1 says how the run ended: not zero for a run that succeeded, zero for one that failed. It is refused when the slot holds no console capability, and nothing changed. Accepted, it does not return: the verified dispatch answers ok with the kernel unchanged, and the entry, once the kernel's lock is released, calls the machine's `shutdown` with that answer, `design/machine-glue-below-the-kernel/`, on every target. What each ending looks like from outside is the machine's: on the PC a success is the ACPI power-off and a failure the write to the test device named on the kernel's command line, and on QEMU virt a success is PSCI `SYSTEM_OFF`.
+Power-off is operation 18. It names a power capability in the slot, which boot hands the root at `ROOT_POWER_SLOT`, `design/root-process-at-boot/`, and asks for no right but holding it, as print asks of a console. Argument 1 says how the run ended: not zero for a run that succeeded, zero for one that failed. It is refused when the slot holds no power capability, a console among the rest, and nothing changed. Accepted, it does not return: the verified dispatch answers ok with the kernel unchanged, and the entry, once the kernel's lock is released, calls the machine's `shutdown` with that answer, `design/machine-glue-below-the-kernel/`, on every target. What each ending looks like from outside is the machine's: on the PC a success is the ACPI power-off and a failure the write to the test device named on the kernel's command line, and on QEMU virt a success is PSCI `SYSTEM_OFF`.
 
 ### Inspect
 
@@ -156,6 +156,7 @@ The kinds in result 1:
 | space | 7 |
 | device | 8 |
 | console | 9 |
+| power | 10 |
 
 ## Reasoning
 
@@ -173,7 +174,7 @@ Unmap returns the bits because it reads and clears the entry anyway: a pager evi
 
 Probe returns its masks in result words because 64 entries' two bits are 128 bits, which two words carry, and reading them into user memory would be the copy this record rules out. It reads at most 64 entries under the lock, a bounded step, `design/one-lock-bounded-steps/`, and stays in one level 1 table so the walk to it is one, as map's is. It does not flush because the bits are a sample a pager reads repeatedly: a flush per probe would cost the IPIs the bits exist to avoid, and a write always reaches the entry, since the processor walks to set dirty through a translation cached with it clear.
 
-Power-off is an operation because ending the run is the machine's to do, and a process holds no port, no firmware call and no I/O privilege to do it with: the root reports how its run ended and the kernel's glue does the rest, the same way on every target. It asks for the console capability because that is the one capability boot hands the root that names the machine rather than memory or the process itself, and print already checks for it; a process without it cannot stop the machine.
+Power-off is an operation because ending the run is the machine's to do, and a process holds no port, no firmware call and no I/O privilege to do it with: the root reports how its run ended and the kernel's glue does the rest, the same way on every target. It asks for a power capability, a kind of its own, and not for the console, so that a process handed the console to print through cannot stop the machine, `design/root-process-at-boot/`; a process without a power capability cannot.
 
 Retype is one operation whose kind is an argument, since every kind consumes the same authority, an untyped and a base; separate numbers per kind would spend operation numbers on what is one check. A large frame and a revoke return `again` because both do more work than one bounded step allows.
 
@@ -195,5 +196,4 @@ The rejected aarch64 tables are under Registers.
 - The kinds a retype of a space, a process or a thread takes, and the positions of claim, destroy and the thread and process operations: they take the next kind numbers and argument positions when they are wired, inside the five words.
 - A 1G frame: retype accepts no kind for it, since nothing maps one.
 - An unmap of a 2M entry: unmap accepts level 2 when one is proven.
-- The capability power-off asks for once power is a kind of its own: the console stands in for it until then, and the operation's number and argument stay.
 - The SIMD and floating-point registers and the user thread-pointer register: the kernel uses none of them, and where they sit in a thread's saved state is not decided here.

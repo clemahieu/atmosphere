@@ -60,9 +60,11 @@ const _: () = {
     assert!(user::KIND_SPACE == inspect::CAP_KIND_SPACE);
     assert!(user::KIND_DEVICE == inspect::CAP_KIND_DEVICE);
     assert!(user::KIND_CONSOLE == inspect::CAP_KIND_CONSOLE);
+    assert!(user::KIND_POWER == inspect::CAP_KIND_POWER);
     assert!(user::ROOT_PROCESS_SLOT == boot::ROOT_PROCESS_SLOT as u64);
     assert!(user::ROOT_THREAD_SLOT == boot::ROOT_THREAD_SLOT as u64);
     assert!(user::ROOT_CONSOLE_SLOT == boot::ROOT_CONSOLE_SLOT as u64);
+    assert!(user::ROOT_POWER_SLOT == boot::ROOT_POWER_SLOT as u64);
     assert!(user::ROOT_UNTYPED_SLOT == boot::ROOT_UNTYPED_SLOT as u64);
     assert!(user::ROOT_FRAME_SLOT == boot::ROOT_FRAME_SLOT as u64);
 };

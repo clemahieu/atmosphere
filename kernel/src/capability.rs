@@ -11,7 +11,7 @@ use core::mem::size_of;
 use astd::boot::{BootInfo, MAPPED_RUNS, PAGE_BYTES};
 use verified::array::Array;
 use verified::capability::boot::{
-    ROOT_CONSOLE_SLOT, ROOT_FRAME_SLOT, ROOT_PROCESS_SLOT, ROOT_THREAD_SLOT, ROOT_UNTYPED_SLOT,
+    ROOT_CONSOLE_SLOT, ROOT_FRAME_SLOT, ROOT_POWER_SLOT, ROOT_PROCESS_SLOT, ROOT_THREAD_SLOT, ROOT_UNTYPED_SLOT,
 };
 use verified::capability::boot_image::ImageRun;
 use verified::capability::boot_memory::ROOT_UNTYPED_SLOTS;
@@ -167,7 +167,7 @@ pub fn boot(boot_info: &BootInfo) -> Entry {
     let (untyped, frames) = held.expect("the capability kernel refused the boot memory or dom0's runs");
 
     log::info!("root holds {} untyped and {} frames", untyped, frames);
-    let fixed = [ROOT_PROCESS_SLOT, ROOT_THREAD_SLOT, ROOT_CONSOLE_SLOT]
+    let fixed = [ROOT_PROCESS_SLOT, ROOT_THREAD_SLOT, ROOT_CONSOLE_SLOT, ROOT_POWER_SLOT]
         .into_iter()
         .chain(ROOT_UNTYPED_SLOT..ROOT_UNTYPED_SLOT + untyped)
         .chain(ROOT_FRAME_SLOT..ROOT_FRAME_SLOT + frames);
@@ -253,5 +253,6 @@ fn kind_name(kind: CapKind) -> &'static str {
         CapKind::Space => "space",
         CapKind::Device => "device",
         CapKind::Console => "console",
+        CapKind::Power => "power",
     }
 }

@@ -249,15 +249,18 @@ pub fn unmap_outcome(r: Unmapped) -> (ret: Outcome)
 
 impl CapKernel {
     /// What the invocation in frame returns to a thread of the process whose table is at root, for an
-    /// operation that leaves the kernel unchanged: for print and for power-off, ok exactly when the slot
-    /// holds a console capability and refused otherwise; inspect's outcome for inspect; refused for every
-    /// operation not wired yet; and unknown for a number no operation has. Print's words are arguments 1
-    /// to 5 and power-off's word is argument 1, as design/syscall-abi-in-registers/ places them; neither
-    /// decides the status.
+    /// operation that leaves the kernel unchanged: for print, ok exactly when the slot holds a console
+    /// capability and refused otherwise; for power-off, ok exactly when the slot holds a power capability
+    /// and refused otherwise; inspect's outcome for inspect; refused for every operation not wired yet;
+    /// and unknown for a number no operation has. Print's words are arguments 1 to 5 and power-off's
+    /// word is argument 1, as design/syscall-abi-in-registers/ places them; neither decides the status.
     pub open spec fn spec_outcome(&self, root: usize, frame: Registers) -> Outcome {
         match spec_operation(frame.operation_number()) {
-            Some(Operation::Print) | Some(Operation::PowerOff) => status_only(
+            Some(Operation::Print) => status_only(
                 if self.holds_console(root, frame.slot() as usize) { STATUS_OK } else { STATUS_REFUSED },
+            ),
+            Some(Operation::PowerOff) => status_only(
+                if self.holds_power(root, frame.slot() as usize) { STATUS_OK } else { STATUS_REFUSED },
             ),
             Some(Operation::Inspect) => self.spec_inspect(root, frame.slot() as usize),
             Some(_) => status_only(STATUS_REFUSED),

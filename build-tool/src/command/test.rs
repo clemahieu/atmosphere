@@ -323,12 +323,12 @@ const ROOT_HOLDS: &str = "root holds ";
 const ROOT_SLOT: &str = "root slot ";
 
 /// The first untyped and frame slots of the root's table, design/root-process-at-boot/.
-const ROOT_UNTYPED_SLOT: usize = 4;
+const ROOT_UNTYPED_SLOT: usize = 5;
 const ROOT_FRAME_SLOT: usize = 129;
 
 /// The root's untyped and frame counts when the serial log prints, in order, one line per fixed slot
-/// with its kind: process at 1, thread at 2, console at 3, the untyped from 4 and the frames from 129,
-/// as many as the kernel says the root holds, at least one of each.
+/// with its kind: process at 1, thread at 2, console at 3, power at 4, the untyped from 5 and the
+/// frames from 129, as many as the kernel says the root holds, at least one of each.
 fn fixed_slots_printed(serial: &str) -> Result<(usize, usize)> {
     let holds = serial
         .lines()
@@ -343,7 +343,7 @@ fn fixed_slots_printed(serial: &str) -> Result<(usize, usize)> {
         (Ok(untyped), Ok(frames)) if untyped > 0 && frames > 0 => (untyped, frames),
         _ => return Err(anyhow!("the root holds no untyped or no frames: {}", holds)),
     };
-    let mut expected = vec![(1, "process"), (2, "thread"), (3, "console")];
+    let mut expected = vec![(1, "process"), (2, "thread"), (3, "console"), (4, "power")];
     expected.extend((0..untyped).map(|k| (ROOT_UNTYPED_SLOT + k, "untyped")));
     expected.extend((0..frames).map(|k| (ROOT_FRAME_SLOT + k, "frame")));
     let printed: Vec<(usize, &str)> = serial
@@ -570,6 +570,12 @@ mod tests {
         let no_slot = log.replace(" INFO root slot 2: thread\n", "");
         assert!(boot_serial_accepted(&no_slot, Arch::X86_64).is_err());
 
+        let no_power = log.replace(" INFO root slot 4: power base 0x2000000001000 order 0 rights 0x0\n", "");
+        assert!(boot_serial_accepted(&no_power, Arch::X86_64).unwrap_err().to_string().contains("root slot 4"));
+
+        let console_twice = log.replace("root slot 4: power", "root slot 4: console");
+        assert!(boot_serial_accepted(&console_twice, Arch::X86_64).unwrap_err().to_string().contains("not power"));
+
         let no_gigabyte = log.replace("base 0x40000000 order 18", "base 0x40000000 order 17");
         assert!(boot_serial_accepted(&no_gigabyte, Arch::X86_64).unwrap_err().to_string().contains("1G untyped"));
 
@@ -591,7 +597,7 @@ mod tests {
 
     #[test]
     fn console_line_is_a_line_of_its_own() {
-        assert!(console_line_printed(" INFO root slot 3: console\ndom0 slot checks held\n INFO root slot 4: untyped\n"));
+        assert!(console_line_printed(" INFO root slot 3: console\ndom0 slot checks held\n INFO root slot 4: power\n"));
         assert!(console_line_printed("x\r\ndom0 slot checks held\r\n"));
         assert!(!console_line_printed(" INFO dom0 slot checks held\n"));
         assert!(!console_line_printed("dom0 slot checks\n"));
@@ -601,8 +607,9 @@ mod tests {
     fn slot_lines(frame_kind: &str) -> String {
         format!(
             " INFO root holds 2 untyped and 1 frames\u{1b}[0m\n INFO root slot 1: process base 0x8000\n INFO root slot 2: thread\n\
-             INFO root slot 3: console\n INFO root slot 4: untyped base 0x40000000 order 18 rights 0x8\n\
-             \u{1b}[34m INFO root slot 5: untyped\u{1b}[0m\n\
+             INFO root slot 3: console\n INFO root slot 4: power base 0x2000000001000 order 0 rights 0x0\n\
+             INFO root slot 5: untyped base 0x40000000 order 18 rights 0x8\n\
+             \u{1b}[34m INFO root slot 6: untyped\u{1b}[0m\n\
              INFO root slot 129: {} order 0\n",
             frame_kind
         )
@@ -616,17 +623,17 @@ mod tests {
         assert!(gigabyte_untyped_printed(" INFO root slot 9: untyped base 0x40000000 order 18 rights 0x8\u{1b}[0m\r\n", pc));
         // Another kind, another base, another order, and a base or an order this one is a prefix of.
         assert!(!gigabyte_untyped_printed(" INFO root slot 129: frame base 0x40000000 order 18 rights 0x8\n", pc));
-        assert!(!gigabyte_untyped_printed(" INFO root slot 4: untyped base 0x0 order 18 rights 0x8\n", pc));
-        assert!(!gigabyte_untyped_printed(" INFO root slot 4: untyped base 0x40000000 order 9 rights 0x8\n", pc));
-        assert!(!gigabyte_untyped_printed(" INFO root slot 4: untyped base 0x400000000 order 18 rights 0x8\n", pc));
-        assert!(!gigabyte_untyped_printed(" INFO root slot 4: untyped base 0x40000000 order 180 rights 0x8\n", pc));
+        assert!(!gigabyte_untyped_printed(" INFO root slot 5: untyped base 0x0 order 18 rights 0x8\n", pc));
+        assert!(!gigabyte_untyped_printed(" INFO root slot 5: untyped base 0x40000000 order 9 rights 0x8\n", pc));
+        assert!(!gigabyte_untyped_printed(" INFO root slot 5: untyped base 0x400000000 order 18 rights 0x8\n", pc));
+        assert!(!gigabyte_untyped_printed(" INFO root slot 5: untyped base 0x40000000 order 180 rights 0x8\n", pc));
         assert!(!gigabyte_untyped_printed(" INFO root holds 2 untyped and 1 frames\n", pc));
 
         // The kernel's line for QEMU virt's block, where RAM starts at 1 GiB.
         let virt = free_gigabyte(Arch::Aarch64);
         assert_eq!(virt, 0x8000_0000);
-        assert!(gigabyte_untyped_printed(" INFO root slot 4: untyped base 0x80000000 order 18 rights 0x8\n", virt));
-        assert!(!gigabyte_untyped_printed(" INFO root slot 4: untyped base 0x80000000 order 16 rights 0x8\n", virt));
+        assert!(gigabyte_untyped_printed(" INFO root slot 5: untyped base 0x80000000 order 18 rights 0x8\n", virt));
+        assert!(!gigabyte_untyped_printed(" INFO root slot 5: untyped base 0x80000000 order 16 rights 0x8\n", virt));
         assert!(!gigabyte_untyped_printed(&slot_lines("frame"), virt));
     }
 

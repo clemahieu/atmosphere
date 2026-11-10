@@ -22,6 +22,7 @@ pub const CAP_KIND_NOTIFICATION: u64 = 6;
 pub const CAP_KIND_SPACE: u64 = 7;
 pub const CAP_KIND_DEVICE: u64 = 8;
 pub const CAP_KIND_CONSOLE: u64 = 9;
+pub const CAP_KIND_POWER: u64 = 10;
 
 /// The number a kind has in inspect's result 1.
 pub open spec fn spec_kind_number(kind: CapKind) -> u64 {
@@ -36,6 +37,7 @@ pub open spec fn spec_kind_number(kind: CapKind) -> u64 {
         CapKind::Space => CAP_KIND_SPACE,
         CapKind::Device => CAP_KIND_DEVICE,
         CapKind::Console => CAP_KIND_CONSOLE,
+        CapKind::Power => CAP_KIND_POWER,
     }
 }
 
@@ -55,6 +57,7 @@ pub fn kind_number(kind: CapKind) -> (ret: u64)
         CapKind::Space => CAP_KIND_SPACE,
         CapKind::Device => CAP_KIND_DEVICE,
         CapKind::Console => CAP_KIND_CONSOLE,
+        CapKind::Power => CAP_KIND_POWER,
     }
 }
 
@@ -85,6 +88,37 @@ impl CapKernel {
         } else {
             status_only(STATUS_REFUSED)
         }
+    }
+
+    /// The kind of the capability at index i of the table at root, for an operation whose whole
+    /// authority is holding a capability of one kind. The index comes from user space, so it can name
+    /// no slot or an empty one, and then there is none.
+    pub fn held_kind(&self, root: usize, i: usize) -> (ret: Option<CapKind>)
+        requires
+            self.wf(),
+            self.tables.roots@.contains_key(root),
+        ensures
+            ret is Some == self.can_inspect(root, i),
+            ret is Some ==> ret->Some_0 == self.payload_of(self.tables.node_of(root, i)).kind,
+    {
+        let (n, payload) = match self.tables.lookup(&self.list, root, i) {
+            Some(found) => found,
+            None => { return None; },
+        };
+        let node = self.list.get(n);
+        let live_cap = match node.kind {
+            NodeKind::Capability => node.live,
+            _ => false,
+        };
+        if !live_cap {
+            return None;
+        }
+        proof {
+            self.lemma_slot(root, i);
+            assert(self.tables.is_cap(&self.list, n));
+            assert(payload == self.payload_of(n));
+        }
+        Some(payload.kind)
     }
 
     /// Inspects the capability at index i of the table at root. The index comes from user space, so it

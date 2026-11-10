@@ -72,7 +72,7 @@ impl CapKernel {
         let u = pre.root_untyped(process);
         let l0 = pre.tables.leaf(process, 0);
         assert(index_entry(1usize) == 0 && index_slot(1usize) == 1) by (compute_only);
-        assert(index_entry(4usize) == 0 && index_slot(4usize) == 4) by (compute_only);
+        assert(index_entry(5usize) == 0 && index_slot(5usize) == 5) by (compute_only);
         assert(index_entry(129usize) == 1) by (compute_only);
         pre.lemma_slot(process, ROOT_PROCESS_SLOT);
         pre.lemma_slot_bound(n);
@@ -85,7 +85,7 @@ impl CapKernel {
         pre.tables.lemma_leaf(&pre.list, leaf2);
         assert(l0 != leaf2);
         assert(n == l0 + 1);
-        assert(u == l0 + 4);
+        assert(u == l0 + 5);
         assert(!(leaf2 + 1 <= l0 < leaf2 + 1 + count));
         assert(!(leaf2 + 1 <= n < leaf2 + 1 + count));
         assert(!(leaf2 + 1 <= u < leaf2 + 1 + count));

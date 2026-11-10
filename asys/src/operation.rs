@@ -66,9 +66,9 @@ pub const LINK: u64 = 16;
 /// results 3 and 4 whether the target maintains each bit, 1 when it does. It changes no mapping and does
 /// not flush, so a translation still cached may hide a use until the next walk.
 pub const PROBE: u64 = 17;
-/// Ends the run through the console capability in the slot: the machine powers off, reporting a run that
+/// Ends the run through the power capability in the slot: the machine powers off, reporting a run that
 /// succeeded when argument 1 is not zero and one that failed when it is zero. Refused unless the slot holds
-/// a console capability; accepted, it does not return.
+/// a power capability; accepted, it does not return.
 pub const POWER_OFF: u64 = 18;
 
 /// The most entries one probe reads.
@@ -98,6 +98,7 @@ pub const KIND_NOTIFICATION: u64 = 6;
 pub const KIND_SPACE: u64 = 7;
 pub const KIND_DEVICE: u64 = 8;
 pub const KIND_CONSOLE: u64 = 9;
+pub const KIND_POWER: u64 = 10;
 
 /// The indices a capability table has: 512 root entries of 128 positions. Every slot is below this.
 pub const TABLE_INDICES: u64 = 65536;
@@ -112,9 +113,13 @@ pub const ROOT_THREAD_SLOT: u64 = 2;
 /// The root's slot holding its console capability, which print writes through, as boot leaves it.
 pub const ROOT_CONSOLE_SLOT: u64 = 3;
 
+/// The root's slot holding its power capability, which power-off ends the run through, as boot leaves
+/// it.
+pub const ROOT_POWER_SLOT: u64 = 4;
+
 /// The root's first slot holding an untyped capability, as boot leaves it: one per maximal aligned
 /// block of free memory, at consecutive slots from here to the end of the table's first leaf.
-pub const ROOT_UNTYPED_SLOT: u64 = 4;
+pub const ROOT_UNTYPED_SLOT: u64 = 5;
 
 /// The root's first slot holding a frame capability for dom0's image, as boot leaves it: one per
 /// aligned block of at most 512 pages of each run the loader mapped, with the run's rights, at
@@ -278,11 +283,11 @@ pub fn probe(space: u64, address: u64, count: u64) -> Result<Probed, u64> {
     }
 }
 
-/// Powers the machine off through the console capability at `console`, reporting whether the run
+/// Powers the machine off through the power capability at `power`, reporting whether the run
 /// succeeded. It returns only when it was not accepted, with the status: the low half of what returns.
-pub fn power_off(console: u64, success: bool) -> u64 {
+pub fn power_off(power: u64, success: bool) -> u64 {
     // A power-off the kernel refuses changes nothing, and one it accepts does not return.
-    status(unsafe { invoke(POWER_OFF, console, [success as u64, 0, 0, 0, 0]) })
+    status(unsafe { invoke(POWER_OFF, power, [success as u64, 0, 0, 0, 0]) })
 }
 
 /// Moves the capability at `from` to the empty slot `to`, children and all, leaving `from` empty. The

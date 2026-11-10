@@ -1,8 +1,8 @@
 //! Boot's one verified step for the capability kernel: init on the list's synthetic root, then the root
-//! process with its table and thread, its console, its free memory as untyped capabilities and dom0's
-//! image mapped in its space, each step's requires discharged by the previous steps' ensures and by what
-//! kernel/src checked at the trust boundary of the pages and runs it passes. See
-//! design/root-process-at-boot/.
+//! process with its table and thread, its console and power capabilities, its free memory as untyped
+//! capabilities and dom0's image mapped in its space, each step's requires discharged by the previous
+//! steps' ensures and by what kernel/src checked at the trust boundary of the pages and runs it passes.
+//! See design/root-process-at-boot/.
 use vstd::arithmetic::div_mod::*;
 use vstd::arithmetic::power2::*;
 use vstd::prelude::*;
@@ -24,6 +24,7 @@ use crate::capability::kernel::*;
 use crate::capability::link::*;
 use crate::capability::list::*;
 use crate::capability::mapping::*;
+use crate::capability::power::*;
 use crate::capability::process::*;
 use crate::capability::reach::*;
 use crate::capability::space::*;
@@ -133,17 +134,18 @@ impl CapKernel {
     }
 
     /// Boot of the capability kernel, from the memory boot set aside for it: init with the list's
-    /// synthetic root at `root`, then boot_root with the root's process at `process`, its table's leaves
-    /// at `leaf` and `frames` and its thread at `t`, boot_root_console, boot_root_memory over the free
-    /// runs and boot_root_space over dom0's image runs. kernel/src checks at the trust boundary that the
-    /// four blocks, the root page, the free runs and every 2M region of the image are pairwise disjoint,
-    /// and hands over every page's permission in `pages`, which is split here between the steps. It
-    /// returns how many untyped and frame capabilities the root holds, and refuses exactly when the free
-    /// runs make no block or more than the first leaf holds, or the image does not fit the second leaf
-    /// or the first untyped block's tables. On success each fixed slot of the root's table holds its
-    /// kind, the root's space maps exactly the image, the root reaches exactly the console and the pages
-    /// of its process, its thread, the free runs and the image, and nothing else reaches anything the
-    /// root does not, besides itself. See design/root-process-at-boot/.
+    /// synthetic root at `root`, then boot_root with the root's process at `process`, its table's
+    /// leaves at `leaf` and `frames` and its thread at `t`, boot_root_object for the console and for
+    /// power, boot_root_memory over the free runs and boot_root_space over dom0's image runs.
+    /// kernel/src checks at the trust boundary that the four blocks, the root page, the free runs and
+    /// every 2M region of the image are pairwise disjoint, and hands over every page's permission in
+    /// `pages`, which is split here between the steps. It returns how many untyped and frame
+    /// capabilities the root holds, and refuses exactly when the free runs make no block or more than
+    /// the first leaf holds, or the image does not fit the second leaf or the first untyped block's
+    /// tables. On success each fixed slot of the root's table holds its kind, the root's space maps
+    /// exactly the image, the root reaches exactly the console, power and the pages of its process, its
+    /// thread, the free runs and the image, and nothing else reaches anything the root does not,
+    /// besides itself. See design/root-process-at-boot/.
     #[verifier::spinoff_prover]
     pub fn kernel_init(
         &mut self,
@@ -236,6 +238,7 @@ impl CapKernel {
                 &&& final(self).slot_holds(process, ROOT_PROCESS_SLOT, (leaf + 1) as usize, process_of(process))
                 &&& final(self).slot_holds(process, ROOT_THREAD_SLOT, (leaf + 2) as usize, thread_of(t))
                 &&& final(self).slot_holds(process, ROOT_CONSOLE_SLOT, (leaf + 3) as usize, console_payload())
+                &&& final(self).slot_holds(process, ROOT_POWER_SLOT, (leaf + 4) as usize, power_payload())
                 &&& forall|k: int| 0 <= k < untyped ==> final(self).slot_holds(
                     process,
                     (ROOT_UNTYPED_SLOT + k) as usize,
@@ -260,6 +263,7 @@ impl CapKernel {
                 }
                 &&& forall|p: SpacePath| #[trigger] space_mapping(b, process).contains_key(p) ==> image_path(image@, p)
                 &&& forall|o: usize| #[trigger] final(self).view().reach(process, o) <==> (o == CONSOLE_OBJECT
+                    || o == POWER_OBJECT
                     || (o % 4096 == 0 && root_reach_page(process, t, free@, image@, (o / 4096) as int)))
                 &&& forall|q: usize, o: usize| #[trigger] final(self).view().reach(q, o)
                     ==> o == q || final(self).view().reach(process, o)
@@ -298,17 +302,39 @@ impl CapKernel {
         }
         self.boot_root(root, process, leaf, frames, t, Tracked(root_pages));
         let ghost s1 = *self;
-        self.boot_root_console(root, process, leaf);
+        self.boot_root_object(
+            root,
+            process,
+            leaf,
+            ROOT_CONSOLE_SLOT,
+            Payload { kind: CapKind::Console, order: 0, rights: CONSOLE_RIGHTS, base: CONSOLE_OBJECT, badge: 0, reserved: 0 },
+        );
+        let ghost sc = *self;
+        proof {
+            assert(!s1.list.nodes@[leaf + 4].live);
+            assert(!sc.list.nodes@[leaf + 4].live);
+        }
+        self.boot_root_object(
+            root,
+            process,
+            leaf,
+            ROOT_POWER_SLOT,
+            Payload { kind: CapKind::Power, order: 0, rights: POWER_RIGHTS, base: POWER_OBJECT, badge: 0, reserved: 0 },
+        );
         let ghost s2 = *self;
         proof {
             assert(index_entry(ROOT_PROCESS_SLOT) == 0) by (compute_only);
             assert(index_slot(ROOT_PROCESS_SLOT) == 1) by (compute_only);
+            assert forall|j: int| 0 <= j < NODE_SPACE && #[trigger] sc.list.nodes@[j].live implies s2.list.nodes@[j].live by {
+                assert(j != leaf + 4);
+            }
             assert forall|j: int| 0 <= j < NODE_SPACE && #[trigger] s1.list.nodes@[j].live implies s2.list.nodes@[j].live by {
                 assert(j != leaf + 3);
+                assert(sc.list.nodes@[j].live);
             }
-            Self::lemma_slot_stays(s1, s2, process, ROOT_PROCESS_SLOT);
             assert forall|j: int| leaf + ROOT_UNTYPED_SLOT <= j < leaf + NODES_PER_PAGE implies !#[trigger] s2.list.nodes@[j].live by {
                 assert(!s1.list.nodes@[j].live);
+                assert(!sc.list.nodes@[j].live);
             }
             assert forall|i: int| s2.blocks.tracks(i) && in_runs(free@, len, i) implies (#[trigger] s2.blocks.pages@[i]).kind is Reserved by {
                 assert(!in_root_blocks(process, leaf, frames, t, i));
@@ -350,6 +376,7 @@ impl CapKernel {
             assert(s3.tables.roots == s1.tables.roots);
             // The root's process capability, and the untyped at ROOT_UNTYPED_SLOT.
             let n = (leaf + 1) as usize;
+            assert(sc.is_cap(n) && sc.payload_of(n) == process_of(process));
             assert(s2.is_cap(n) && s2.payload_of(n) == process_of(process));
             assert(s3.is_cap(n) && s3.payload_of(n) == process_of(process));
             assert(s3.tables.node_of(process, ROOT_PROCESS_SLOT) == n);
@@ -392,6 +419,8 @@ impl CapKernel {
                 assert(s1.tables.node_of(process, i) == j);
                 assert(!s1.list.nodes@[j].live);
                 assert(j != leaf + 3);
+                assert(!sc.list.nodes@[j].live);
+                assert(j != leaf + 4);
                 assert(!s2.list.nodes@[j].live);
                 assert(!(leaf + ROOT_UNTYPED_SLOT <= j < leaf + ROOT_UNTYPED_SLOT + untyped));
             }
@@ -446,28 +475,42 @@ impl CapKernel {
                 assert(s3.list.nodes@[j].live);
             }
             assert(s4.tables.roots == s1.tables.roots);
-            // The process, thread and console slots.
+            // The process, thread, console and power slots.
             assert(index_entry(ROOT_THREAD_SLOT) == 0) by (compute_only);
             assert(index_entry(ROOT_CONSOLE_SLOT) == 0) by (compute_only);
+            assert(index_entry(ROOT_POWER_SLOT) == 0) by (compute_only);
             assert(index_ok(ROOT_THREAD_SLOT)) by (compute_only);
             assert(index_ok(ROOT_CONSOLE_SLOT)) by (compute_only);
+            assert(index_ok(ROOT_POWER_SLOT)) by (compute_only);
             Self::lemma_slot_stays(s1, s4, process, ROOT_PROCESS_SLOT);
             Self::lemma_slot_stays(s1, s4, process, ROOT_THREAD_SLOT);
-            assert(s2.tables.has_slot(&s2.list, process, ROOT_CONSOLE_SLOT));
+            assert forall|j: int| 0 <= j < NODE_SPACE && #[trigger] sc.list.nodes@[j].live implies s4.list.nodes@[j].live by {
+                assert(s2.list.nodes@[j].live);
+                assert(s3.list.nodes@[j].live);
+            }
             assert forall|j: int| 0 <= j < NODE_SPACE && #[trigger] s2.list.nodes@[j].live implies s4.list.nodes@[j].live by {
                 assert(s3.list.nodes@[j].live);
             }
-            Self::lemma_slot_stays(s2, s4, process, ROOT_CONSOLE_SLOT);
+            assert(s4.tables.roots == sc.tables.roots);
+            Self::lemma_slot_stays(sc, s4, process, ROOT_CONSOLE_SLOT);
+            Self::lemma_slot_stays(s2, s4, process, ROOT_POWER_SLOT);
             assert(!(frames + 1 <= leaf + 1 < frames + 1 + frame));
             assert(!(frames + 1 <= leaf + 2 < frames + 1 + frame));
             assert(!(frames + 1 <= leaf + 3 < frames + 1 + frame));
+            assert(!(frames + 1 <= leaf + 4 < frames + 1 + frame));
+            assert(sc.is_cap((leaf + 2) as usize) && sc.payload_of((leaf + 2) as usize) == thread_of(t));
+            assert(sc.is_cap((leaf + 3) as usize) && sc.payload_of((leaf + 3) as usize) == console_payload());
             assert(s2.is_cap((leaf + 2) as usize) && s2.payload_of((leaf + 2) as usize) == thread_of(t));
+            assert(s2.is_cap((leaf + 3) as usize) && s2.payload_of((leaf + 3) as usize) == console_payload());
+            assert(s2.is_cap((leaf + 4) as usize) && s2.payload_of((leaf + 4) as usize) == power_payload());
             assert(s3.is_cap((leaf + 1) as usize) && s3.payload_of((leaf + 1) as usize) == process_of(process));
             assert(s3.is_cap((leaf + 2) as usize) && s3.payload_of((leaf + 2) as usize) == thread_of(t));
             assert(s3.is_cap((leaf + 3) as usize) && s3.payload_of((leaf + 3) as usize) == console_payload());
+            assert(s3.is_cap((leaf + 4) as usize) && s3.payload_of((leaf + 4) as usize) == power_payload());
             assert(s4.is_cap((leaf + 1) as usize) && s4.payload_of((leaf + 1) as usize) == process_of(process));
             assert(s4.is_cap((leaf + 2) as usize) && s4.payload_of((leaf + 2) as usize) == thread_of(t));
             assert(s4.is_cap((leaf + 3) as usize) && s4.payload_of((leaf + 3) as usize) == console_payload());
+            assert(s4.is_cap((leaf + 4) as usize) && s4.payload_of((leaf + 4) as usize) == power_payload());
             // The untyped slots.
             assert forall|k: int| 0 <= k < untyped implies s4.slot_holds(
                 process,
@@ -482,16 +525,18 @@ impl CapKernel {
                 assert(s4.is_cap(x) && s4.payload_of(x) == s3.payload_of(x));
             }
             assert(s4.threads == s1.threads);
-            // The root's reach is the four steps' growths in turn, and anyone else's grew only by
+            // The root's reach is the five steps' growths in turn, and anyone else's grew only by
             // what the root's did.
             let phys = image_phys(image@);
             assert forall|o: usize| #[trigger] s4.view().reach(process, o) <==> (o == CONSOLE_OBJECT
+                || o == POWER_OBJECT
                 || (o % 4096 == 0 && root_reach_page(process, t, free@, image@, (o / 4096) as int))) by {
                 assert(s4.view().reach(process, o) <==> (s3.view().reach(process, o)
                     || (o % 4096 == 0 && in_runs(phys, image@.len() as int, (o / 4096) as int))));
                 assert(s3.view().reach(process, o) <==> (s2.view().reach(process, o)
                     || (o % 4096 == 0 && in_runs(free@, len, (o / 4096) as int))));
-                assert(s2.view().reach(process, o) <==> (s1.view().reach(process, o) || o == CONSOLE_OBJECT));
+                assert(s2.view().reach(process, o) <==> (sc.view().reach(process, o) || o == POWER_OBJECT));
+                assert(sc.view().reach(process, o) <==> (s1.view().reach(process, o) || o == CONSOLE_OBJECT));
                 assert(s1.view().reach(process, o)
                     <==> (o % 4096 == 0 && ((process <= o < process + 32768) || (t <= o < t + 8192))));
                 if o % 4096 == 0 {
@@ -516,13 +561,20 @@ impl CapKernel {
                     assert(o % 4096 == 0 && in_runs(free@, len, (o / 4096) as int));
                     assert(s3.view().reach(process, o));
                     assert(s4.view().reach(process, o));
+                } else if !sc.view().reach(q, o) {
+                    assert(o == POWER_OBJECT);
+                    assert(s2.view().reach(process, o));
+                    assert(s3.view().reach(process, o));
+                    assert(s4.view().reach(process, o));
                 } else if !s1.view().reach(q, o) {
                     assert(o == CONSOLE_OBJECT);
+                    assert(sc.view().reach(process, o));
                     assert(s2.view().reach(process, o));
                     assert(s3.view().reach(process, o));
                     assert(s4.view().reach(process, o));
                 } else if o != q {
                     assert(s1.view().reach(process, o));
+                    assert(sc.view().reach(process, o));
                     assert(s2.view().reach(process, o));
                     assert(s3.view().reach(process, o));
                     assert(s4.view().reach(process, o));

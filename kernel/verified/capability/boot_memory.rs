@@ -17,7 +17,7 @@ use crate::capability::table::*;
 use crate::define::*;
 
 /// How many untyped capabilities the root's first leaf holds, from ROOT_UNTYPED_SLOT to its last slot.
-pub const ROOT_UNTYPED_SLOTS: usize = 124;
+pub const ROOT_UNTYPED_SLOTS: usize = 123;
 
 /// The blocks of order at most cap the runs decompose into, run by run, each as its first page and its
 /// order.
@@ -770,13 +770,13 @@ impl CapKernel {
         }
     }
 
-    /// The step after boot_root_console: the free runs, which kernel/src checked are inside NUM_PAGES,
-    /// pairwise disjoint, every page reserved with its permission handed over and no list page among
-    /// them, become free pages of the block table, and each block they decompose into an untyped
-    /// capability at consecutive slots from ROOT_UNTYPED_SLOT, below the list's synthetic root. The
-    /// root's reach grows by exactly the runs' pages, and nobody else's by anything outside them. It
-    /// returns how many blocks there are, and refuses, leaving the state as it was, when they do not
-    /// fit in the root's first leaf.
+    /// The step after the root's console and power capabilities: the free runs, which kernel/src checked
+    /// are inside NUM_PAGES, pairwise disjoint, every page reserved with its permission handed over and
+    /// no list page among them, become free pages of the block table, and each block they decompose
+    /// into an untyped capability at consecutive slots from ROOT_UNTYPED_SLOT, below the list's
+    /// synthetic root. The root's reach grows by exactly the runs' pages, and nobody else's by anything
+    /// outside them. It returns how many blocks there are, and refuses, leaving the state as it was,
+    /// when they do not fit in the root's first leaf.
     #[verifier::spinoff_prover]
     pub fn boot_root_memory(
         &mut self,

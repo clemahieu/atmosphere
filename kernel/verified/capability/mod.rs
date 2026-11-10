@@ -22,6 +22,7 @@ pub mod map;
 pub mod mapping;
 pub mod moving;
 pub mod operation;
+pub mod power;
 pub mod probe;
 pub mod process;
 pub mod reach;

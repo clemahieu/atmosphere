@@ -26,6 +26,9 @@ pub open spec fn device_object(d: int) -> ObjectId {
 /// are devices' room, and the console is the page after them.
 pub const CONSOLE_OBJECT: usize = 0x2_0000_0000_0000;
 
+/// Power, the authority to end the machine's run, is an object too: the page after the console's.
+pub const POWER_OBJECT: usize = 0x2_0000_0000_1000;
+
 /// A list node's id, as in capability::list.
 pub type NodeId = usize;
 

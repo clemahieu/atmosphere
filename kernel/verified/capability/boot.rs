@@ -14,6 +14,7 @@ use crate::capability::kernel::*;
 use crate::capability::link::*;
 use crate::capability::list::*;
 use crate::capability::mapping::*;
+use crate::capability::power::*;
 use crate::capability::process::*;
 use crate::capability::reach::*;
 use crate::capability::refs::*;
@@ -39,13 +40,23 @@ pub const ROOT_THREAD_SLOT: usize = 2;
 /// The index of the root's console capability: slot 3 of entry 0.
 pub const ROOT_CONSOLE_SLOT: usize = 3;
 
-/// The index of the root's first untyped capability: slot 4 of entry 0. Boot puts one per block of free
+/// The index of the root's power capability: slot 4 of entry 0.
+pub const ROOT_POWER_SLOT: usize = 4;
+
+/// The index of the root's first untyped capability: slot 5 of entry 0. Boot puts one per block of free
 /// memory at consecutive slots from here to the leaf's last, boot_root_memory.
-pub const ROOT_UNTYPED_SLOT: usize = 4;
+pub const ROOT_UNTYPED_SLOT: usize = 5;
 
 /// The index of the first slot of the root's second leaf, at entry 1, which boot makes for the frames
 /// dom0's image is loaded in: its slots run from here to the leaf's last, 2 * NODES_PER_PAGE - 1.
 pub const ROOT_FRAME_SLOT: usize = 129;
+
+/// What boot hands the root that is no memory, each at its fixed slot: the console capability and the
+/// power capability.
+pub open spec fn root_object(i: usize, p: Payload) -> bool {
+    ||| i == ROOT_CONSOLE_SLOT && p == console_payload()
+    ||| i == ROOT_POWER_SLOT && p == power_payload()
+}
 
 /// The rights of an untyped capability boot hands the root: retype alone. Control is no right over
 /// memory, design/sharing-by-derive/.
@@ -139,7 +150,7 @@ impl CapKernel {
             forall|x: usize| #[trigger] final(self).is_cap(x) ==> x == leaf + 1,
             !final(self).list.nodes@[leaf + 2].live,
             !final(self).list.nodes@[leaf + 3].live,
-            forall|j: int| leaf + ROOT_UNTYPED_SLOT <= j < leaf + NODES_PER_PAGE ==> !#[trigger] final(self).list.nodes@[j].live,
+            forall|j: int| leaf + ROOT_POWER_SLOT <= j < leaf + NODES_PER_PAGE ==> !#[trigger] final(self).list.nodes@[j].live,
             forall|k: int| 0 <= k < 8 ==> {
                 ||| (#[trigger] final(self).blocks.pages@[base / 4096 + k]).kind is Base
                 ||| final(self).blocks.pages@[base / 4096 + k].kind is Member
@@ -311,7 +322,7 @@ impl CapKernel {
             assert(l1.valid((leaf + 3) as usize));
             assert(!l2.nodes@[leaf + 3].live);
             assert(!l3.nodes@[leaf + 3].live);
-            assert forall|j: int| leaf + ROOT_UNTYPED_SLOT <= j < leaf + NODES_PER_PAGE implies !#[trigger] l3.nodes@[j].live by {
+            assert forall|j: int| leaf + ROOT_POWER_SLOT <= j < leaf + NODES_PER_PAGE implies !#[trigger] l3.nodes@[j].live by {
                 assert(l1.valid(j as usize));
                 assert(!l2.nodes@[j].live);
             }
@@ -856,7 +867,7 @@ impl CapKernel {
             !final(self).processes.records@[process].value().dead,
             final(self).tables.roots@.contains_key(process),
             final(self).list.pages@.dom() == set![root, leaf, frames, t],
-            forall|j: int| leaf + ROOT_UNTYPED_SLOT <= j < leaf + NODES_PER_PAGE ==> !#[trigger] final(self).list.nodes@[j].live,
+            forall|j: int| leaf + ROOT_POWER_SLOT <= j < leaf + NODES_PER_PAGE ==> !#[trigger] final(self).list.nodes@[j].live,
     {
         // The body relates four states; unfolding each one's wf would put every kernel invariant's
         // quantifiers in one query. The steps' contracts carry wf whole, so it stays folded here.
@@ -1065,7 +1076,7 @@ impl CapKernel {
             }
             // What the later steps need of the state boot_root leaves: no table page, no region typed,
             // every page outside the four blocks as it was, the process live, and the first leaf's slots
-            // from ROOT_UNTYPED_SLOT on free.
+            // from ROOT_POWER_SLOT on free.
             assert forall|i: int| pre.blocks.tracks(i) && !(pb <= i < pb + 8) && !(lb <= i < lb + 2)
                 && !(fb <= i < fb + 2) && !(tb <= i < tb + 2) implies {
                 &&& (#[trigger] post.blocks.pages@[i]).kind == pre.blocks.pages@[i].kind
@@ -1079,7 +1090,7 @@ impl CapKernel {
                 assert(post.blocks.pages@[pb as int].dead == mid.blocks.pages@[pb as int].dead);
             }
             assert(post.list.pages@.dom() =~= set![root, leaf, frames, t]);
-            assert forall|j: int| leaf + ROOT_UNTYPED_SLOT <= j < leaf + NODES_PER_PAGE implies !#[trigger] post.list.nodes@[j].live by {
+            assert forall|j: int| leaf + ROOT_POWER_SLOT <= j < leaf + NODES_PER_PAGE implies !#[trigger] post.list.nodes@[j].live by {
                 assert(j != frames && j != t && j != leaf + 2);
                 assert(!first.list.nodes@[j].live);
                 assert(!mid.list.nodes@[j].live);
@@ -1087,30 +1098,34 @@ impl CapKernel {
         }
     }
 
-    /// The step after boot_root: the root's console capability at ROOT_CONSOLE_SLOT, below the list's
-    /// synthetic root as its process and thread capabilities are. The console is no block and carries
-    /// no control, so the root's reach grows by the console's object alone, and nobody else's by
-    /// anything else. See design/root-process-at-boot/.
-    pub fn boot_root_console(&mut self, root: usize, process: usize, leaf: usize)
+    /// A step after boot_root, once for the console and once for power: the root's capability to an
+    /// object that is no memory, at its fixed slot i, below the list's synthetic root as its process and
+    /// thread capabilities are. Such a capability names no block and carries no control, so the root's
+    /// reach grows by the object alone, and nobody else's by anything else. See
+    /// design/root-process-at-boot/.
+    pub fn boot_root_object(&mut self, root: usize, process: usize, leaf: usize, i: usize, payload: Payload)
         requires
             old(self).wf(),
             root == old(self).list.seq@[0],
             old(self).tables.has_slot(&old(self).list, process, ROOT_PROCESS_SLOT),
             old(self).tables.node_of(process, ROOT_PROCESS_SLOT) == leaf + 1,
-            !old(self).list.nodes@[leaf + 3].live,
+            root_object(i, payload),
+            !old(self).list.nodes@[leaf + i].live,
         ensures
             final(self).wf(),
             final(self).list.seq@[0] == root,
             final(self).tables.roots == old(self).tables.roots,
             final(self).tables.owner == old(self).tables.owner,
-            final(self).tables.has_slot(&final(self).list, process, ROOT_CONSOLE_SLOT),
-            final(self).tables.node_of(process, ROOT_CONSOLE_SLOT) == leaf + 3,
-            final(self).is_cap((leaf + 3) as usize),
-            final(self).payload_of((leaf + 3) as usize) == console_payload(),
-            final(self).list.is_child(root, (leaf + 3) as usize),
-            final(self).list.nodes@[leaf + 3].depth == 1,
-            Self::adds_cap(*old(self), *final(self), (leaf + 3) as usize),
-            forall|j: int| #![trigger final(self).list.nodes@[j]] 0 <= j < NODE_SPACE && j != leaf + 3
+            final(self).tables.has_slot(&final(self).list, process, ROOT_PROCESS_SLOT),
+            final(self).tables.node_of(process, ROOT_PROCESS_SLOT) == leaf + 1,
+            final(self).tables.has_slot(&final(self).list, process, i),
+            final(self).tables.node_of(process, i) == leaf + i,
+            final(self).is_cap((leaf + i) as usize),
+            final(self).payload_of((leaf + i) as usize) == payload,
+            final(self).list.is_child(root, (leaf + i) as usize),
+            final(self).list.nodes@[leaf + i].depth == 1,
+            Self::adds_cap(*old(self), *final(self), (leaf + i) as usize),
+            forall|j: int| #![trigger final(self).list.nodes@[j]] 0 <= j < NODE_SPACE && j != leaf + i
                 ==> final(self).list.nodes@[j].live == old(self).list.nodes@[j].live
                 && final(self).list.nodes@[j].depth == old(self).list.nodes@[j].depth,
             final(self).table_pages == old(self).table_pages,
@@ -1120,44 +1135,41 @@ impl CapKernel {
             final(self).spaces == old(self).spaces,
             final(self).list.pages@.dom() == old(self).list.pages@.dom(),
             forall|o: usize| #[trigger] final(self).view().reach(process, o)
-                <==> (old(self).view().reach(process, o) || o == CONSOLE_OBJECT),
+                <==> (old(self).view().reach(process, o) || o == payload.base),
             forall|r: usize, o: usize| #[trigger] final(self).view().reach(r, o) && !old(self).view().reach(r, o)
-                ==> o == CONSOLE_OBJECT,
+                ==> o == payload.base,
     {
         let ghost pre = *old(self);
         proof {
             pre.lemma_slot(process, ROOT_PROCESS_SLOT);
             assert(index_entry(ROOT_PROCESS_SLOT) == 0) by (compute_only);
             assert(index_slot(ROOT_PROCESS_SLOT) == 1) by (compute_only);
-            assert(index_entry(ROOT_CONSOLE_SLOT) == 0) by (compute_only);
-            assert(index_slot(ROOT_CONSOLE_SLOT) == 3) by (compute_only);
-            assert(index_ok(ROOT_CONSOLE_SLOT)) by (compute_only);
+            assert(index_entry(i) == 0);
+            assert(index_slot(i) == i);
+            assert(index_ok(i));
             assert(pre.tables.leaf(process, 0) == leaf);
-            assert(pre.tables.has_slot(&pre.list, process, ROOT_CONSOLE_SLOT));
-            pre.lemma_slot(process, ROOT_CONSOLE_SLOT);
-            assert(pre.tables.node_of(process, ROOT_CONSOLE_SLOT) == leaf + 3);
-            pre.lemma_slot_bound((leaf + 3) as usize);
+            assert(pre.tables.has_slot(&pre.list, process, i));
+            pre.lemma_slot(process, i);
+            assert(pre.tables.node_of(process, i) == leaf + i);
+            pre.lemma_slot_bound((leaf + i) as usize);
             pre.list.lemma_link(0);
             pre.list.lemma_live_valid(root);
             pre.list.lemma_valid_bound(root);
             pre.list.lemma_seq_fits();
             assert(pre.list.nodes@[root as int].depth == 0);
         }
-        let child = leaf + 3;
+        let child = leaf + i;
         self.list.derive(root, child, NodeKind::Capability);
         proof {
             pre.tables.lemma_wf_same_pages(&pre.list, &self.list);
         }
-        self.tables.set_payload(
-            &self.list,
-            process,
-            ROOT_CONSOLE_SLOT,
-            Payload { kind: CapKind::Console, order: 0, rights: CONSOLE_RIGHTS, base: CONSOLE_OBJECT, badge: 0, reserved: 0 },
-        );
+        self.tables.set_payload(&self.list, process, i, payload);
         proof {
             let post = *self;
-            assert(post.payload_of(child) == console_payload());
+            assert(post.payload_of(child) == payload);
             assert(0u32 & 128u32 == 0) by (bit_vector);
+            assert(CONSOLE_OBJECT % 4096 == 0) by (compute_only);
+            assert(POWER_OBJECT % 4096 == 0) by (compute_only);
             Self::lemma_derive_caps_wf(pre, post, child);
             Self::lemma_hidden_frame(pre, post, child, child);
             Self::lemma_table_nodes_caps_frame(pre, post, child, child);
@@ -1171,17 +1183,19 @@ impl CapKernel {
             Self::lemma_derive_step_adds_cap(pre, post, child);
             lemma_has(post.list.seq@, child);
             assert(post.list.is_child(root, child));
-            Self::lemma_boot_held_view(pre, post, root, process, ROOT_CONSOLE_SLOT, child);
-            Self::lemma_console_covers(post, child);
+            assert(post.tables.has_slot(&post.list, process, ROOT_PROCESS_SLOT));
+            assert(post.tables.has_slot(&post.list, process, i));
+            Self::lemma_boot_held_view(pre, post, root, process, i, child);
+            Self::lemma_object_covers(post, child);
             let live = |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live;
             lemma_adds_held_reach(pre.view(), post.view(), process, root, child, live);
             assert forall|o: usize| #[trigger] post.view().reach(process, o)
-                <==> (pre.view().reach(process, o) || o == CONSOLE_OBJECT) by {
-                assert(post.view().covers(child, o) == (o == CONSOLE_OBJECT));
+                <==> (pre.view().reach(process, o) || o == payload.base) by {
+                assert(post.view().covers(child, o) == (o == payload.base));
             }
             assert forall|r: usize, o: usize| #[trigger] post.view().reach(r, o) && !pre.view().reach(r, o)
-                implies o == CONSOLE_OBJECT by {
-                assert(post.view().covers(child, o) == (o == CONSOLE_OBJECT));
+                implies o == payload.base by {
+                assert(post.view().covers(child, o) == (o == payload.base));
             }
         }
     }
@@ -1239,43 +1253,44 @@ impl CapKernel {
         assert(adds_held(a, b, process, root, child, live));
     }
 
-    /// The console's capability covers the console's object alone.
-    proof fn lemma_console_covers(s: Self, child: usize)
+    /// A capability to one page that is no memory covers that page alone.
+    proof fn lemma_object_covers(s: Self, child: usize)
         requires
             s.is_cap(child),
-            s.payload_of(child) == console_payload(),
+            s.payload_of(child).order == 0,
+            s.payload_of(child).base % 4096 == 0,
         ensures
-            forall|o: ObjectId| #[trigger] s.view().covers(child, o) <==> o == CONSOLE_OBJECT,
+            forall|o: ObjectId| #[trigger] s.view().covers(child, o) <==> o == s.payload_of(child).base,
     {
         let b = s.view();
+        let base = s.payload_of(child).base;
         assert(pow2(0) == 1) by { lemma2_to64(); }
-        assert(b.names[child] == CONSOLE_OBJECT && b.pages[child] == 1);
-        assert(CONSOLE_OBJECT % 4096 == 0) by (compute_only);
-        assert forall|o: ObjectId| #[trigger] b.covers(child, o) <==> o == CONSOLE_OBJECT by {
+        assert(b.names[child] == base && b.pages[child] == 1);
+        assert forall|o: ObjectId| #[trigger] b.covers(child, o) <==> o == base by {
             if b.covers(child, o) {
-                assert(CONSOLE_OBJECT <= o < CONSOLE_OBJECT + 4096);
-                assert(o == CONSOLE_OBJECT) by (nonlinear_arith)
+                assert(base <= o < base + 4096);
+                assert(o == base) by (nonlinear_arith)
                     requires
-                        CONSOLE_OBJECT <= o < CONSOLE_OBJECT + 4096,
+                        base <= o < base + 4096,
                         o % 4096 == 0,
-                        CONSOLE_OBJECT % 4096 == 0,
+                        base % 4096 == 0,
                 ;
             }
         }
     }
 
-    /// The step after boot_root_console, once per block of free memory: an untyped capability to the
-    /// block at base, of order pages, in slot i of the root's first leaf, below the list's synthetic
-    /// root as the root's other capabilities are. It carries the retype right and no control, so the
-    /// root's reach grows by the block's pages and nobody else's by anything outside them. See
-    /// design/root-process-at-boot/ and design/untyped-memory/.
+    /// The step after the root's console and power capabilities, once per block of free memory: an
+    /// untyped capability to the block at base, of order pages, in slot i of the root's first leaf,
+    /// below the list's synthetic root as the root's other capabilities are. It carries the retype
+    /// right and no control, so the root's reach grows by the block's pages and nobody else's by
+    /// anything outside them. See design/root-process-at-boot/ and design/untyped-memory/.
     pub fn boot_root_untyped(&mut self, root: usize, process: usize, leaf: usize, i: usize, base: usize, order: u8)
         requires
             old(self).wf(),
             root == old(self).list.seq@[0],
             old(self).tables.has_slot(&old(self).list, process, ROOT_PROCESS_SLOT),
             old(self).tables.node_of(process, ROOT_PROCESS_SLOT) == leaf + 1,
-            ROOT_CONSOLE_SLOT < i < NODES_PER_PAGE,
+            ROOT_POWER_SLOT < i < NODES_PER_PAGE,
             !old(self).list.nodes@[leaf + i].live,
             payload_wf(untyped_payload(base, order)),
         ensures

@@ -5,7 +5,7 @@ OVMF boots the loader, the UEFI application, from a directory QEMU serves as the
 partition; the loader reads the kernel, dom0 and payload ELF images concatenated in the file initrd
 beside it, and the kernel's command line from the file cmdline there (aloader/src/boot/uefi.rs). The
 command line names the port of QEMU's isa-debug-exit device, which the kernel's failure shutdown
-writes (machine/pc/src/shutdown.rs). dom0 ends the run with a power-off through its console
+writes (machine/pc/src/shutdown.rs). dom0 ends the run with a power-off through its power
 capability, which the kernel carries out as that shutdown (dom0/src/main.rs). The serial log is serial.log at the workspace root. KVM is used
 whenever /dev/kvm is writable; --no-kvm forces TCG. --iommu adds QEMU's emulated IOMMU. --gdb puts
 a gdb server on the guest and the file gdb on the ESP, which makes the loader wait before it enters
