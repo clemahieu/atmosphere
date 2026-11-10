@@ -128,6 +128,13 @@ def esp_args(run_dir, ovmf_code):
     ]
 
 
+# The guest's CPU model. Under KVM it has the host's performance counters: a named model has pmu off
+# by default, which makes KVM refuse the counters' MSRs, and perfctr-core sets the CPUID bit the kernel
+# programs counters 0 to 3 by and dom0 reads them by. TCG has neither, so its guest keeps no counters.
+CPU_TCG = "Haswell-IBRS"
+CPU_KVM = CPU_TCG + ",pmu=on,+perfctr-core"
+
+
 def qemu_args(run_dir, serial_log, kvm, iommu, gdb_socket, ovmf_code):
     args = esp_args(run_dir, ovmf_code) + [
         "-nographic",
@@ -139,7 +146,7 @@ def qemu_args(run_dir, serial_log, kvm, iommu, gdb_socket, ovmf_code):
         "-device", f"isa-debug-exit,iobase={DEBUG_EXIT_PORT:#x},iosize=0x04",
         "-no-reboot",
         "-machine", "q35,kernel_irqchip=split",
-        "-cpu", "Haswell-IBRS",
+        "-cpu", CPU_KVM if kvm else CPU_TCG,
     ]
     if iommu:
         args += ["-device", "intel-iommu,intremap=on,aw-bits=48,caching-mode=on",
@@ -363,6 +370,12 @@ class Tests(unittest.TestCase):
         self.assertEqual(self.options(args, "-smp"), ["2"])
         self.assertEqual(self.options(args, "-cpu"), ["Haswell-IBRS"])
         self.assertIn("stdio,id=char0,mux=on,logfile=/w/serial.log,signal=off", self.options(args, "-chardev"))
+
+    def test_only_a_kvm_guest_has_performance_counters(self):
+        tcg = qemu_args(Path("/run/x"), Path("/w/serial.log"), False, False, None, "/ovmf/OVMF_CODE.fd")
+        kvm = qemu_args(Path("/run/x"), Path("/w/serial.log"), True, False, None, "/ovmf/OVMF_CODE.fd")
+        self.assertEqual(self.options(tcg, "-cpu"), ["Haswell-IBRS"])
+        self.assertEqual(self.options(kvm, "-cpu"), ["Haswell-IBRS,pmu=on,+perfctr-core"])
 
     def test_the_kernel_tracks_all_of_the_guest_s_ram_on_either_machine(self):
         # design/test-guest-memory/. The firmware allocates from the top of RAM and the loader
