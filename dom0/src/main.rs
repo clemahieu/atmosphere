@@ -391,7 +391,7 @@ fn counters() -> Option<[u64; 4]> {
     {
         /// CPUID Fn8000_0001 ECX bit 23, PerfCtrExtCore. AMD APM 2 §13.2.2.
         const PERF_CTR_EXT_CORE: u32 = 1 << 23;
-        if unsafe { core::arch::x86_64::__cpuid(0x8000_0001) }.ecx & PERF_CTR_EXT_CORE == 0 {
+        if core::arch::x86_64::__cpuid(0x8000_0001).ecx & PERF_CTR_EXT_CORE == 0 {
             return None;
         }
         let mut counts = [0; 4];
