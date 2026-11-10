@@ -1,0 +1,12 @@
+[package]
+name = "aheap"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+publish = false
+
+[package.metadata.atmosphere]
+verified = true
+
+[dependencies.vstd]
+workspace = true
