@@ -1695,7 +1695,7 @@ impl CapKernel {
     /// level 2 table and, at its first page, gains the large entry, written with its accessed and dirty
     /// bits clear, and nothing else changes in any space;
     /// the node is the capability's child, names the entry and counts on the block; all 512 pages are
-    /// mapped.
+    /// mapped. Every other node keeps its liveness, kind, depth and parent.
     pub open spec fn map_large_done(pre: Self, post: Self, root: usize, slot: usize, p: SpacePath, from: usize, page: usize) -> bool {
         let a = tree_of(&pre.table_pages, &pre.spaces);
         let b = tree_of(&post.table_pages, &post.spaces);
@@ -1718,6 +1718,12 @@ impl CapKernel {
         &&& block_refs(&post.blocks, br) == block_refs(&pre.blocks, br) + 1
         &&& post.holders@[br] == pre.holders@[br].insert(node)
         &&& forall|g: usize| frame <= g < frame + 512 ==> #[trigger] post.mapped@.contains(g)
+        &&& post.list.parent@ == pre.list.parent@.insert(node, f)
+        &&& forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < NODE_SPACE && i != node ==> {
+            &&& post.list.nodes@[i].live == pre.list.nodes@[i].live
+            &&& post.list.nodes@[i].kind == pre.list.nodes@[i].kind
+            &&& post.list.nodes@[i].depth == pre.list.nodes@[i].depth
+        }
     }
 
     /// The writes of a map move no one's reach: the node they add is no capability, and every
