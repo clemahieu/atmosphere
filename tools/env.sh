@@ -19,7 +19,7 @@ export LD_LIBRARY_PATH="$VERUS_RUST_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 # The kernel crates use unstable features on a pinned nightly.
 export RUSTC_BOOTSTRAP=1
 
-export PATH="$ATMO_TOOLS/bin:$VERUS_ROOT:$PATH"
+export PATH="$VERUS_ROOT:$PATH"
 
 # OVMF and QEMU. An override already in the environment wins; otherwise the known
 # distribution paths. The Python tools import firmware.py themselves.

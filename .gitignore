@@ -16,7 +16,6 @@ build
 .verus-log
 .verus-solver-log
 
-build-tool/serial.log
 serial.log
 /tools/verus
 

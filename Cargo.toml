@@ -6,7 +6,6 @@ members = [
   "astd",
   "asys",
   "boot-host-tests",
-  "build-tool",
   "dom0",
   "kernel-logger",
   "machine/pc",

@@ -1,8 +1,0 @@
-#!/bin/bash
-# Build the current workspace's build-tool and exec its atmo with the given arguments.
-set -euo pipefail
-metadata=$(cargo metadata --format-version 1)
-root=$(echo "$metadata" | jq -r '.workspace_root')
-target_dir=$(echo "$metadata" | jq -r '.target_directory')
-(cd "$root/build-tool" && cargo build --quiet)
-exec "$target_dir/debug/atmo" "$@"
