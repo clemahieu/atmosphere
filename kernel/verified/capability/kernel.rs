@@ -633,7 +633,7 @@ fn init_cores(cores: &mut Array<CoreState, NUM_CPUS>)
     ensures
         final(cores).wf(),
         forall|c: int| 0 <= c < NUM_CPUS ==> {
-            &&& (#[trigger] final(cores)@[c]).current_thread.is_None()
+            &&& (#[trigger] final(cores)@[c]).current_thread is None
             &&& final(cores)@[c].acked_epoch == 0
             &&& final(cores)@[c].generation == 1
             &&& final(cores)@[c].next_pcid == 1
@@ -646,7 +646,7 @@ fn init_cores(cores: &mut Array<CoreState, NUM_CPUS>)
             0 <= i <= NUM_CPUS,
             cores.wf(),
             forall|c: int| 0 <= c < i ==> {
-                &&& (#[trigger] cores@[c]).current_thread.is_None()
+                &&& (#[trigger] cores@[c]).current_thread is None
                 &&& cores@[c].acked_epoch == 0
                 &&& cores@[c].generation == 1
                 &&& cores@[c].next_pcid == 1
@@ -1376,7 +1376,7 @@ impl CapKernel {
             final(self).flush_epoch == 0,
             final(self).mapped@ == Set::<usize>::empty(),
             final(self).devices.count == 0,
-            forall|c: int| 0 <= c < NUM_CPUS ==> (#[trigger] final(self).cores@[c]).current_thread.is_None(),
+            forall|c: int| 0 <= c < NUM_CPUS ==> (#[trigger] final(self).cores@[c]).current_thread is None,
             final(self).list.seq@[0] == root,
             final(self).boot_empty(),
             forall|j: int| 0 <= j < NUM_PAGES ==> #[trigger] final(self).stale_epoch.pages@[j] == 0,
@@ -1415,7 +1415,7 @@ impl CapKernel {
             reveal(current_wf);
             reveal(binding_parents);
             assert forall|c: int, t: usize| 0 <= c < NUM_CPUS && #[trigger] runs(self.cores@, c, t) implies false by {
-                assert(self.cores@[c].current_thread.is_None());
+                assert(self.cores@[c].current_thread is None);
             }
         }
     }

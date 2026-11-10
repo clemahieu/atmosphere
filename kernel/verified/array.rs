@@ -134,7 +134,7 @@ impl<T: Copy, const N: usize> Array<Option<T>, N> {
             old(self).wf(),
             N <= usize::MAX,
         ensures
-            forall|index:int| 0<= index < N ==> #[trigger] final(self)@[index].is_None(),
+            forall|index:int| 0<= index < N ==> (#[trigger] final(self)@[index]) is None,
             final(self).wf(),
     {
         for i in 0..N
@@ -142,13 +142,13 @@ impl<T: Copy, const N: usize> Array<Option<T>, N> {
                 N <= usize::MAX,
                 0<=i<=N,
                 self.wf(),
-                forall|j:int| #![auto] 0<=j<i ==> self@[j].is_None(),
+                forall|j:int| #![auto] 0<=j<i ==> self@[j] is None,
         {
             let tmp:Ghost<Seq<Option<T>>> = Ghost(self@);
-            assert(forall|j:int| #![auto] 0<=j<i ==> self@[j].is_None());
+            assert(forall|j:int| #![auto] 0<=j<i ==> self@[j] is None);
             self.set(i,None);
             assert(self@ =~= tmp@.update(i as int,None));
-            assert(forall|j:int| #![auto] 0<=j<i ==> self@[j].is_None());
+            assert(forall|j:int| #![auto] 0<=j<i ==> self@[j] is None);
         }
     }
 }
