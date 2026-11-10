@@ -42,6 +42,9 @@ use crate::pptr::*;
 /// A process's block is eight pages.
 pub const PROCESS_ORDER: u8 = 3;
 
+/// A process's block, in bytes.
+pub const PROCESS_BYTES: usize = PAGE_SZ * 8;
+
 /// The page of a process's block that holds its record. Page 0 is its table's root.
 pub const PROCESS_RECORD_PAGE: usize = 1;
 
@@ -104,29 +107,29 @@ pub open spec fn spare_kept(processes: &Processes, p: usize, k: usize) -> bool {
 /// Two blocks of order 3 are a block apart.
 pub proof fn lemma_blocks_apart(p: usize, q: usize)
     requires
-        p % 32768 == 0,
-        q % 32768 == 0,
+        p % PROCESS_BYTES == 0,
+        q % PROCESS_BYTES == 0,
         p != q,
     ensures
-        p + 32768 <= q || q + 32768 <= p,
+        p + PROCESS_BYTES <= q || q + PROCESS_BYTES <= p,
 {
-    lemma_fundamental_div_mod(p as int, 32768);
-    lemma_fundamental_div_mod(q as int, 32768);
-    let a = p as int / 32768;
-    let b = q as int / 32768;
-    assert(p as int == 32768 * a);
-    assert(q as int == 32768 * b);
+    lemma_fundamental_div_mod(p as int, PROCESS_BYTES as int);
+    lemma_fundamental_div_mod(q as int, PROCESS_BYTES as int);
+    let a = p as int / PROCESS_BYTES as int;
+    let b = q as int / PROCESS_BYTES as int;
+    assert(p as int == PROCESS_BYTES as int * a);
+    assert(q as int == PROCESS_BYTES as int * b);
     if a < b {
-        assert(32768 * a + 32768 <= 32768 * b);
+        assert(PROCESS_BYTES as int * a + PROCESS_BYTES as int <= PROCESS_BYTES as int * b);
     } else {
-        assert(32768 * b + 32768 <= 32768 * a);
+        assert(PROCESS_BYTES as int * b + PROCESS_BYTES as int <= PROCESS_BYTES as int * a);
     }
 }
 
 /// The process at p has its record and its spare pages. Its block's references are exactly its
 /// holders and the threads bound to it, and it is dead at once when they go.
 pub open spec fn process_wf(processes: &Processes, blocks: &BlockTable, p: usize) -> bool {
-    &&& p % 32768 == 0
+    &&& p % PROCESS_BYTES == 0
     &&& blocks.tracks_addr_run(p, 8)
     &&& processes.records@[p].addr() == p + PROCESS_RECORD_PAGE * PAGE_SZ
     &&& processes.records@[p].is_init()
@@ -416,11 +419,11 @@ pub proof fn lemma_processes_process_freed(
     assert(process_wf(pa, a, base));
     pa.holders@[base].lemma_len0_is_empty();
     pa.bound@[base].lemma_len0_is_empty();
-    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(base as int, 32768);
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(base as int, PROCESS_BYTES as int);
     assert forall|p: usize| #[trigger] pb.records@.contains_key(p) implies !a.in_block(page, (p / PAGE_SZ) as int) by {
         assert(pa.records@.contains_key(p));
         assert(process_wf(pa, a, p));
-        vstd::arithmetic::div_mod::lemma_fundamental_div_mod(p as int, 32768);
+        vstd::arithmetic::div_mod::lemma_fundamental_div_mod(p as int, PROCESS_BYTES as int);
         let x = (p / PAGE_SZ) as int;
         if a.in_block(page, x) && x != page {
             a.lemma_member_of(page, x);
@@ -604,7 +607,7 @@ impl CapKernel {
         ensures
             self.processes.records@.contains_key(self.payload_of(n).base),
             self.processes.holders@[self.payload_of(n).base].contains(n),
-            self.payload_of(n).base % 32768 == 0,
+            self.payload_of(n).base % PROCESS_BYTES == 0,
             self.blocks.tracks_addr(self.payload_of(n).base),
             self.payload_of(n).order == PROCESS_ORDER,
             self.blocks.pages@[(self.payload_of(n).base / PAGE_SZ) as int].object is Process,
@@ -790,7 +793,7 @@ impl CapKernel {
             post.frames == pre.frames,
             post.table_pages == pre.table_pages,
             post.blocks.wf(),
-            base % 32768 == 0,
+            base % PROCESS_BYTES == 0,
             base / PAGE_SZ == page,
             page * PAGE_SZ == base,
             page % 8 == 0,
@@ -879,7 +882,7 @@ impl CapKernel {
     proof fn lemma_spaces_process_added(pre: Self, post: Self, base: usize, page: usize, child: usize)
         requires
             Self::space_step(pre, post, child),
-            base % 32768 == 0,
+            base % PROCESS_BYTES == 0,
             base / PAGE_SZ == page,
             page * PAGE_SZ == base,
             pre.blocks.tracks_run(page as int, 8),
@@ -1006,7 +1009,7 @@ impl CapKernel {
     proof fn lemma_processes_process_added(pre: Self, post: Self, base: usize, page: usize, child: usize)
         requires
             Self::space_step(pre, post, child),
-            base % 32768 == 0,
+            base % PROCESS_BYTES == 0,
             base / PAGE_SZ == page,
             page * PAGE_SZ == base,
             pre.blocks.tracks_run(page as int, 8),
@@ -1149,17 +1152,17 @@ impl CapKernel {
         Self::lemma_places_node_view(pre, post, root, from, root, to);
         let pp = pre.payload_of(parent);
         lemma2_to64();
-        assert(block_bytes(PROCESS_ORDER) == 32768);
+        assert(block_bytes(PROCESS_ORDER) == PROCESS_BYTES);
         assert(block_bytes(pp.order) == a.pages[parent] * PAGE_SZ);
         assert(a.covers(parent, base)) by {
             assert(a.names.contains_key(parent));
             assert(a.pages.contains_key(parent));
             assert(a.names[parent] == pp.base);
             assert(block_within(base, PROCESS_ORDER, pp));
-            assert(base as int % 32768 == 0);
+            assert(base as int % PROCESS_BYTES as int == 0);
             vstd::arithmetic::div_mod::lemma_mod_mod(base as int, PAGE_SZ as int, 8);
             assert(base % PAGE_SZ == 0);
-            assert(base + 32768 <= pp.base + a.pages[parent] * PAGE_SZ);
+            assert(base + PROCESS_BYTES <= pp.base + a.pages[parent] * PAGE_SZ);
             assert(a.names[parent] <= base < a.names[parent] + a.pages[parent] * PAGE_SZ);
         }
         assert forall|x: NodeId| !#[trigger] b.held.contains((base, x)) by {
@@ -1316,8 +1319,8 @@ impl CapKernel {
         let page = base / PAGE_SZ;
         proof {
             lemma2_to64();
-            assert(block_bytes(3) == 32768);
-            assert(base % 32768 == 0);
+            assert(block_bytes(PROCESS_ORDER) == PROCESS_BYTES);
+            assert(base % PROCESS_BYTES == 0);
             lemma_table_page_base(base, page);
         }
         // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.

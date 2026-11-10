@@ -203,34 +203,34 @@ pub open spec fn same_leaf_nodes(list_a: &Tree, list_b: &Tree, tables: &Tables) 
 /// Two distinct leaves lie on distinct pages, since each is two pages aligned.
 pub proof fn lemma_leaf_pages_distinct(l: usize, m: usize)
     requires
-        l % 8192 == 0,
-        m % 8192 == 0,
+        l % LEAF_BYTES == 0,
+        m % LEAF_BYTES == 0,
         l != m,
     ensures
         l / PAGE_SZ != m / PAGE_SZ,
 {
-    lemma_fundamental_div_mod(l as int, 8192);
-    lemma_fundamental_div_mod(m as int, 8192);
-    assert(l as int == 8192 * (l as int / 8192));
-    assert(m as int == 8192 * (m as int / 8192));
-    assert(l / PAGE_SZ == 2 * (l as int / 8192)) by {
-        lemma_div_multiples_vanish_fancy(2 * (l as int / 8192), 0, PAGE_SZ as int);
+    lemma_fundamental_div_mod(l as int, LEAF_BYTES as int);
+    lemma_fundamental_div_mod(m as int, LEAF_BYTES as int);
+    assert(l as int == LEAF_BYTES as int * (l as int / LEAF_BYTES as int));
+    assert(m as int == LEAF_BYTES as int * (m as int / LEAF_BYTES as int));
+    assert(l / PAGE_SZ == 2 * (l as int / LEAF_BYTES as int)) by {
+        lemma_div_multiples_vanish_fancy(2 * (l as int / LEAF_BYTES as int), 0, PAGE_SZ as int);
     }
-    assert(m / PAGE_SZ == 2 * (m as int / 8192)) by {
-        lemma_div_multiples_vanish_fancy(2 * (m as int / 8192), 0, PAGE_SZ as int);
+    assert(m / PAGE_SZ == 2 * (m as int / LEAF_BYTES as int)) by {
+        lemma_div_multiples_vanish_fancy(2 * (m as int / LEAF_BYTES as int), 0, PAGE_SZ as int);
     }
 }
 
 /// A leaf's base, two pages aligned, is one page aligned and is its page's base.
 pub proof fn lemma_leaf_page(base: usize)
     requires
-        base % 8192 == 0,
+        base % LEAF_BYTES == 0,
     ensures
         base % PAGE_SZ == 0,
         ((base / PAGE_SZ) * PAGE_SZ) as usize == base,
 {
-    lemma_fundamental_div_mod(base as int, 8192);
-    let q = base as int / 8192;
+    lemma_fundamental_div_mod(base as int, LEAF_BYTES as int);
+    let q = base as int / LEAF_BYTES as int;
     assert(base as int == PAGE_SZ * (2 * q));
     lemma_mod_multiples_basic(2 * q, PAGE_SZ as int);
     lemma_div_multiples_vanish(2 * q, PAGE_SZ as int);

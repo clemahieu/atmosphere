@@ -40,6 +40,9 @@ use crate::arch::*;
 /// A thread's block is two pages.
 pub const THREAD_ORDER: u8 = 1;
 
+/// A thread's block, in bytes.
+pub const THREAD_BYTES: usize = PAGE_SZ * 2;
+
 /// The page of a thread's block that holds its record and its XSAVE area. Page 0 is its node page.
 pub const THREAD_RECORD_PAGE: usize = 1;
 
@@ -207,7 +210,7 @@ pub open spec fn thread_block(blocks: &BlockTable, b: usize) -> bool {
 /// The thread at t has its record and its node page. Its block's references are exactly its holders,
 /// and it is dead at once when they go.
 pub open spec fn thread_wf(list: &Tree, threads: &Threads, blocks: &BlockTable, t: usize) -> bool {
-    &&& t % 8192 == 0
+    &&& t % THREAD_BYTES == 0
     &&& blocks.tracks_addr_run(t, 2)
     &&& threads.records@[t].addr() == t + THREAD_RECORD_PAGE * PAGE_SZ
     &&& threads.records@[t].is_init()
@@ -1039,7 +1042,7 @@ impl CapKernel {
                 let p = self.threads.records@[t].value().process->Some_0;
                 &&& self.processes.records@.contains_key(p)
                 &&& self.processes.bound@[p].contains(t)
-                &&& p % 32768 == 0
+                &&& p % PROCESS_BYTES == 0
                 &&& self.blocks.tracks_addr(p)
                 &&& self.blocks.pages@[(p / PAGE_SZ) as int].object is Process
                 &&& block_typed(&self.blocks, BlockRef::Small(p / PAGE_SZ))
@@ -1165,7 +1168,7 @@ impl CapKernel {
         ensures
             self.threads.records@.contains_key(self.payload_of(n).base),
             self.threads.holders@[self.payload_of(n).base].contains(n),
-            self.payload_of(n).base % 8192 == 0,
+            self.payload_of(n).base % THREAD_BYTES == 0,
             self.blocks.tracks_addr(self.payload_of(n).base),
             self.payload_of(n).order == THREAD_ORDER,
             self.blocks.pages@[(self.payload_of(n).base / PAGE_SZ) as int].object is Thread,
@@ -1336,7 +1339,7 @@ impl CapKernel {
             post.frames == pre.frames,
             post.table_pages == pre.table_pages,
             post.blocks.wf(),
-            base % 8192 == 0,
+            base % THREAD_BYTES == 0,
             base / PAGE_SZ == page,
             page * PAGE_SZ == base,
             page % 2 == 0,
@@ -1423,7 +1426,7 @@ impl CapKernel {
     pub proof fn lemma_threads_thread_added(pre: Self, post: Self, base: usize, page: usize, child: usize)
         requires
             Self::space_step(pre, post, child),
-            base % 8192 == 0,
+            base % THREAD_BYTES == 0,
             base / PAGE_SZ == page,
             page * PAGE_SZ == base,
             pre.blocks.tracks_run(page as int, 2),
@@ -1553,17 +1556,17 @@ impl CapKernel {
         Self::lemma_places_node_view(pre, post, root, from, root, to);
         let pp = pre.payload_of(parent);
         lemma2_to64();
-        assert(block_bytes(THREAD_ORDER) == 8192);
+        assert(block_bytes(THREAD_ORDER) == THREAD_BYTES);
         assert(block_bytes(pp.order) == a.pages[parent] * PAGE_SZ);
         assert(a.covers(parent, base)) by {
             assert(a.names.contains_key(parent));
             assert(a.pages.contains_key(parent));
             assert(a.names[parent] == pp.base);
             assert(block_within(base, THREAD_ORDER, pp));
-            assert(base as int % 8192 == 0);
+            assert(base as int % THREAD_BYTES as int == 0);
             vstd::arithmetic::div_mod::lemma_mod_mod(base as int, PAGE_SZ as int, 2);
             assert(base % PAGE_SZ == 0);
-            assert(base + 8192 <= pp.base + a.pages[parent] * PAGE_SZ);
+            assert(base + THREAD_BYTES <= pp.base + a.pages[parent] * PAGE_SZ);
             assert(a.names[parent] <= base < a.names[parent] + a.pages[parent] * PAGE_SZ);
         }
         assert forall|x: NodeId| !#[trigger] b.held.contains((base, x)) by {
@@ -1592,7 +1595,7 @@ impl CapKernel {
             final(self).spaces == old(self).spaces,
             ret == old(self).can_retype_block(root, from, to, base, THREAD_ORDER),
             !ret ==> *final(self) == *old(self),
-            ret ==> base as int + 8192 <= NODE_SPACE as int,
+            ret ==> base as int + THREAD_BYTES <= NODE_SPACE as int,
             ret ==> final(self).processes == old(self).processes,
             ret ==> final(self).tables.roots == old(self).tables.roots,
             ret ==> forall|x: usize| x != base ==> #[trigger] thread_process(&final(self).threads, x) == thread_process(&old(self).threads, x),
@@ -1638,11 +1641,11 @@ impl CapKernel {
         let page = base / PAGE_SZ;
         proof {
             lemma2_to64();
-            assert(block_bytes(1) == 8192);
-            assert(base % 8192 == 0);
+            assert(block_bytes(THREAD_ORDER) == THREAD_BYTES);
+            assert(base % THREAD_BYTES == 0);
             assert(page % 2 == 0 && page * PAGE_SZ == base) by (nonlinear_arith)
                 requires
-                    base % 8192 == 0,
+                    base % THREAD_BYTES == 0,
                     page == base / PAGE_SZ,
             ;
         }

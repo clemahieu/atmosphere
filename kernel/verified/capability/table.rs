@@ -25,7 +25,9 @@ use crate::pptr::*;
 
 pub const ROOT_ENTRIES: usize = ENTRIES;
 /// Indices run over root entries and node positions, of which position 0 in a leaf is no slot.
-pub const TABLE_INDICES: usize = 65536;
+pub const TABLE_INDICES: usize = 65536; // not a page size: a count of indices
+/// A leaf's block, two pages, in bytes.
+pub const LEAF_BYTES: usize = PAGE_SZ * 2;
 /// What a root entry holds when it has no leaf. A leaf is never at address zero.
 pub const NO_LEAF: usize = 0;
 
@@ -138,10 +140,11 @@ pub struct Tables {
 /// other facts.
 proof fn lemma_payload_page_aligned(leaf: usize)
     requires
-        leaf % 8192 == 0,
+        leaf % LEAF_BYTES == 0,
     ensures
         (leaf + PAGE_SZ) % PAGE_SZ as int == 0,
 {
+    crate::capability::refs::lemma_leaf_page(leaf);
 }
 
 /// The record of a leaf's parent, held where its hidden node's payload would be, since a hidden node
@@ -154,13 +157,14 @@ pub open spec fn parent_record(root: usize, r: usize) -> Payload {
 /// Where a slot's node lies in its leaf. On its own, like the next, for the modulus.
 pub proof fn lemma_slot_in_leaf(leaf: usize, slot: usize)
     requires
-        leaf % 8192 == 0,
+        leaf % LEAF_BYTES == 0,
         slot < NODES_PER_PAGE,
         leaf + slot <= usize::MAX,
     ensures
         page_of((leaf + slot) as usize) == leaf,
         ((leaf + slot) as usize) % PAGE_SZ == slot,
 {
+    crate::capability::refs::lemma_leaf_page(leaf);
 }
 
 /// Turns a page into a leaf's payload page with every entry written, and its parent recorded.
@@ -236,7 +240,7 @@ impl Tables {
     pub open spec fn leaf_wf(&self, list: &Tree, leaf: usize) -> bool {
         let (root, r) = self.owner@[leaf];
         &&& leaf != NO_LEAF
-        &&& leaf % 8192 == 0
+        &&& leaf % LEAF_BYTES == 0
         &&& self.roots@.contains_key(root)
         &&& 0 <= r < ROOT_ENTRIES
         &&& self.leaf(root, r) == leaf
@@ -478,8 +482,8 @@ impl Tables {
             r < ROOT_ENTRIES,
             old(self).leaf(root, r as int) == NO_LEAF,
             leaf != NO_LEAF,
-            leaf % 8192 == 0,
-            leaf + 8192 <= usize::MAX,
+            leaf % LEAF_BYTES == 0,
+            leaf + LEAF_BYTES <= usize::MAX,
             list.pages@.dom().contains(leaf),
             !old(self).owner@.contains_key(leaf),
             page.addr() == leaf + PAGE_SZ,
@@ -554,7 +558,7 @@ impl Tables {
             r < ROOT_ENTRIES,
             pre.leaf(root, r as int) == NO_LEAF,
             leaf != NO_LEAF,
-            leaf % 8192 == 0,
+            leaf % LEAF_BYTES == 0,
             list.pages@.dom().contains(leaf),
             !pre.owner@.contains_key(leaf),
             me.owner@ == pre.owner@.insert(leaf, (root, r as int)),
@@ -1038,7 +1042,7 @@ impl Tables {
             assert(index_entry(i) == index_entry(j));
             assert(index_slot(i) != index_slot(j));
         } else {
-            assert(la + 8192 <= lb || lb + 8192 <= la);
+            assert(la + LEAF_BYTES <= lb || lb + LEAF_BYTES <= la);
         }
     }
 }
