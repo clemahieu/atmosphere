@@ -1589,6 +1589,7 @@ impl CapKernel {
             },
             ret ==> forall|q: int| old(self).blocks.tracks(q) && !(base / 4096 <= q < base / 4096 + 2)
                 ==> #[trigger] final(self).blocks.pages@[q] == old(self).blocks.pages@[q],
+            ret ==> Self::retype_keeps(*old(self), *final(self), old(self).tables.node_of(root, to), (base / 4096) as int, 1, None),
             ret ==> {
                 let parent = old(self).tables.node_of(root, from);
                 let child = old(self).tables.node_of(root, to);
@@ -1818,8 +1819,70 @@ impl CapKernel {
             let live = |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live;
             assert(pre.view().holds_right(root, parent, Right::Retype));
             lemma_adds_object_discharges_retype(pre.view(), post.view(), root, parent, child, live, base);
+            Self::lemma_type_thread_keeps(pre, post, mid, root, to, page as int);
         }
         true
+    }
+
+    /// What typing a thread leaves as it was: its new node page and its derive changed the liveness
+    /// of the new capability alone and no capability's depth, the table roots are the ones there were,
+    /// and the block table's pages outside the thread's block are as they were.
+    proof fn lemma_type_thread_keeps(pre: Self, post: Self, mid: Tree, root: usize, to: usize, page: int)
+        requires
+            pre.wf(),
+            pre.tables.has_slot(&pre.list, root, to),
+            !pre.list.nodes@[pre.tables.node_of(root, to) as int].live,
+            forall|i: int| 0 <= i < NODE_SPACE ==> #[trigger] mid.nodes@[i].live == pre.list.nodes@[i].live,
+            mid.nodes@.len() == NODE_SPACE,
+            forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < mid.nodes@.len() && i != pre.tables.node_of(root, to)
+                ==> post.list.nodes@[i].live == mid.nodes@[i].live,
+            forall|x: usize| #[trigger] pre.is_cap(x) ==> {
+                &&& post.is_cap(x)
+                &&& post.payload_of(x) == pre.payload_of(x)
+                &&& post.list.nodes@[x as int].depth == pre.list.nodes@[x as int].depth
+            },
+            post.tables.roots == pre.tables.roots,
+            post.processes == pre.processes,
+            post.blocks.regions_2m@ == pre.blocks.regions_2m@,
+            post.blocks.regions_1g@ == pre.blocks.regions_1g@,
+            forall|i: int| pre.blocks.tracks(i) && !(page <= i < page + 2) ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
+        ensures
+            Self::retype_keeps(pre, post, pre.tables.node_of(root, to), page, 1, None),
+    {
+        let child = pre.tables.node_of(root, to);
+        assert forall|r: usize, i: usize| #[trigger] pre.tables.has_slot(&pre.list, r, i) implies {
+            &&& post.tables.has_slot(&post.list, r, i)
+            &&& post.tables.node_of(r, i) == pre.tables.node_of(r, i)
+            &&& pre.tables.node_of(r, i) != child && !pre.list.nodes@[pre.tables.node_of(r, i) as int].live
+                ==> !post.list.nodes@[pre.tables.node_of(r, i) as int].live
+        } by {
+            pre.lemma_slot(r, i);
+            let n = pre.tables.node_of(r, i);
+            pre.lemma_slot_bound(n);
+            let leaf = pre.tables.leaf(r, index_entry(i));
+            assert(leaf == page_of(n));
+            assert(leaf != child);
+            assert(post.tables.leaf(r, index_entry(i)) == leaf);
+            assert(post.list.nodes@[leaf as int].live == mid.nodes@[leaf as int].live);
+            assert(mid.nodes@[leaf as int].live == pre.list.nodes@[leaf as int].live);
+            if n != child {
+                assert(post.list.nodes@[n as int].live == mid.nodes@[n as int].live);
+                assert(mid.nodes@[n as int].live == pre.list.nodes@[n as int].live);
+            }
+        }
+        assert forall|r: usize, e: int| pre.tables.roots@.contains_key(r) && 0 <= e < ROOT_ENTRIES
+            implies #[trigger] post.tables.leaf(r, e) == pre.tables.leaf(r, e) by {
+            assert(post.tables.roots@[r] == pre.tables.roots@[r]);
+        }
+        assert forall|p: usize| #[trigger] pre.processes.records@.contains_key(p) implies {
+            &&& post.processes.records@.contains_key(p)
+            &&& post.processes.records@[p].value().dead == pre.processes.records@[p].value().dead
+        } by {}
+        assert forall|i: int| pre.blocks.tracks(i) && !(page <= i < page + order_pages(1))
+            implies #[trigger] post.blocks.pages@[i].kind == pre.blocks.pages@[i].kind by {
+            assert(order_pages(1) == 2) by (compute_only);
+            assert(post.blocks.pages@[i] == pre.blocks.pages@[i]);
+        }
     }
 
     /// Retypes the free order-1 block at `base` as a thread in the process whose capability is at
@@ -1875,6 +1938,7 @@ impl CapKernel {
                 &&& final(self).list.is_child(parent, child)
                 &&& discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base, into: None })
                 &&& bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables).insert(base, p)
+                &&& Self::retype_keeps(*old(self), *final(self), child, page, 1, None)
             },
     {
         let ghost pre = *old(self);
@@ -1934,8 +1998,73 @@ impl CapKernel {
                 assert(thread_process(&mid.threads, x) == thread_process(&pre.threads, x));
             }
             Self::lemma_bound_threads_insert(pre, post, base, p);
+            Self::lemma_bind_keeps(pre, mid, post, child, page, n, base);
         }
         true
+    }
+
+    /// A bind after a retype leaves what the retype left as it was: it makes live only the binding,
+    /// on the first node of a page no slot lies in, changes no capability or table, and of the block
+    /// table changes only a reference count.
+    proof fn lemma_bind_keeps(pre: Self, mid: Self, post: Self, child: usize, page: int, n: usize, t: usize)
+        requires
+            pre.wf(),
+            Self::retype_keeps(pre, mid, child, page, 1, None),
+            Self::bound_to(mid, post, n, t),
+            t % 4096 == 0,
+            !mid.list.nodes@[t as int].live,
+            forall|x: usize| #[trigger] post.is_cap(x) == mid.is_cap(x),
+            forall|x: int| #![trigger post.list.nodes@[x]] 0 <= x < NODE_SPACE && x != t
+                ==> post.list.nodes@[x].depth == mid.list.nodes@[x].depth,
+            post.blocks.regions_2m@ == mid.blocks.regions_2m@,
+            post.blocks.regions_1g@ == mid.blocks.regions_1g@,
+        ensures
+            Self::retype_keeps(pre, post, child, page, 1, None),
+    {
+        assert forall|r: usize, i: usize| #[trigger] pre.tables.has_slot(&pre.list, r, i) implies {
+            &&& post.tables.has_slot(&post.list, r, i)
+            &&& post.tables.node_of(r, i) == pre.tables.node_of(r, i)
+            &&& pre.tables.node_of(r, i) != child && !pre.list.nodes@[pre.tables.node_of(r, i) as int].live
+                ==> !post.list.nodes@[pre.tables.node_of(r, i) as int].live
+        } by {
+            pre.lemma_slot(r, i);
+            let x = pre.tables.node_of(r, i);
+            pre.lemma_slot_bound(x);
+            let leaf = pre.tables.leaf(r, index_entry(i));
+            assert(mid.tables.has_slot(&mid.list, r, i));
+            assert(mid.tables.leaf(r, index_entry(i)) == leaf);
+            assert(mid.list.nodes@[leaf as int].live);
+            assert(leaf != t);
+            assert(leaf < NODE_SPACE);
+            assert(post.list.nodes@[leaf as int].live == mid.list.nodes@[leaf as int].live);
+            assert(x != t);
+            assert(post.list.nodes@[x as int].live == mid.list.nodes@[x as int].live);
+        }
+        assert forall|x: usize| #[trigger] pre.is_cap(x) implies {
+            &&& post.is_cap(x)
+            &&& post.payload_of(x) == pre.payload_of(x)
+            &&& post.list.nodes@[x as int].depth == pre.list.nodes@[x as int].depth
+        } by {
+            pre.lemma_slot_bound(x);
+            assert(mid.is_cap(x));
+            assert(x != t);
+            assert(post.list.nodes@[x as int].depth == mid.list.nodes@[x as int].depth);
+        }
+        assert forall|r: usize, e: int| pre.tables.roots@.contains_key(r) && 0 <= e < ROOT_ENTRIES
+            implies #[trigger] post.tables.leaf(r, e) == pre.tables.leaf(r, e) by {
+            assert(mid.tables.leaf(r, e) == pre.tables.leaf(r, e));
+        }
+        assert forall|p: usize| #[trigger] pre.processes.records@.contains_key(p) implies {
+            &&& post.processes.records@.contains_key(p)
+            &&& post.processes.records@[p].value().dead == pre.processes.records@[p].value().dead
+        } by {
+            assert(mid.processes.records@.contains_key(p));
+        }
+        assert forall|i: int| pre.blocks.tracks(i) && !(page <= i < page + order_pages(1))
+            implies #[trigger] post.blocks.pages@[i].kind == pre.blocks.pages@[i].kind by {
+            assert(mid.blocks.pages@[i].kind == pre.blocks.pages@[i].kind);
+            assert(mid.blocks.tracks(i));
+        }
     }
 
     /// A switch on core c touched only c's current thread and thread t's record: t's state, its saved
