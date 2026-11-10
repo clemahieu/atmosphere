@@ -60,14 +60,16 @@ impl CapKernel {
 
     /// What a move of the capability at index from of the table at src to index to of the table at
     /// dst did: the node took the empty node's place in the list at the same depth under the same
-    /// parent with the same payload, every child came along, the source holds no capability, the
-    /// destination is held by dst, and no root entry changed.
+    /// parent with the same payload, every other node kept its depth, every child came along, the
+    /// source holds no capability, the destination is held by dst, and no root entry changed.
     pub open spec fn cap_moved_between(pre: Self, post: Self, src: usize, from: usize, dst: usize, to: usize) -> bool {
         let i = pre.tables.node_of(src, from);
         let n = pre.tables.node_of(dst, to);
         &&& exists|p: int| 0 <= p < pre.list.seq@.len() && #[trigger] pre.list.seq@[p] == i
             && post.list.seq@ == pre.list.seq@.update(p, n)
         &&& post.list.nodes@[n as int].depth == pre.list.nodes@[i as int].depth
+        &&& forall|x: int| #![trigger post.list.nodes@[x]] 0 <= x < NODE_SPACE && x != i && x != n ==>
+            post.list.nodes@[x].depth == pre.list.nodes@[x].depth
         &&& post.list.parent@ == moved_parent(pre.list.parent@, i, n)
         &&& post.payload_of(n) == pre.payload_of(i)
         &&& !post.is_cap(i)
@@ -281,6 +283,8 @@ impl CapKernel {
                 &&& exists|p: int| 0 <= p < old(self).list.seq@.len() && #[trigger] old(self).list.seq@[p] == i
                     && final(self).list.seq@ == old(self).list.seq@.update(p, n)
                 &&& final(self).list.nodes@[n as int].depth == old(self).list.nodes@[i as int].depth
+                &&& forall|x: int| #![trigger final(self).list.nodes@[x]] 0 <= x < NODE_SPACE && x != i && x != n ==>
+                    final(self).list.nodes@[x].depth == old(self).list.nodes@[x].depth
                 &&& final(self).list.parent@ == moved_parent(old(self).list.parent@, i, n)
                 &&& final(self).payload_of(n) == old(self).payload_of(i)
                 &&& !final(self).is_cap(i)
