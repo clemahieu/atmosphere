@@ -814,6 +814,7 @@ impl CapKernel {
             final(self).list.nodes@[leaf as int].kind is Hidden,
             final(self).list.is_child(root, leaf),
             final(self).tables.leaf(process, 1) == frames,
+            forall|e: int| 2 <= e < ROOT_ENTRIES ==> #[trigger] final(self).tables.leaf(process, e) == NO_LEAF,
             forall|i: usize| ROOT_FRAME_SLOT <= i < 2 * NODES_PER_PAGE ==> {
                 &&& #[trigger] final(self).tables.has_slot(&final(self).list, process, i)
                 &&& !final(self).list.nodes@[final(self).tables.node_of(process, i) as int].live
@@ -1090,6 +1091,10 @@ impl CapKernel {
                 assert(post.blocks.pages@[pb as int].dead == mid.blocks.pages@[pb as int].dead);
             }
             assert(post.list.pages@.dom() =~= set![root, leaf, frames, t]);
+            assert forall|e: int| 2 <= e < ROOT_ENTRIES implies #[trigger] post.tables.leaf(process, e) == NO_LEAF by {
+                assert(first.tables.leaf(process, e) == NO_LEAF);
+                assert(mid.tables.leaf(process, e) == first.tables.leaf(process, e));
+            }
             assert forall|j: int| leaf + ROOT_POWER_SLOT <= j < leaf + NODES_PER_PAGE implies !#[trigger] post.list.nodes@[j].live by {
                 assert(j != frames && j != t && j != leaf + 2);
                 assert(!first.list.nodes@[j].live);

@@ -90,6 +90,14 @@ pub open spec fn nodes_kept(a: Tree, b: Tree) -> bool {
     }
 }
 
+/// Block table b has typed what a had and no more: every tracked page has the kind it had and every
+/// large region is typed or not as it was, so a block free in a is free in b.
+pub open spec fn kinds_kept(a: &BlockTable, b: &BlockTable) -> bool {
+    &&& forall|i: int| a.tracks(i) ==> (#[trigger] b.pages@[i]).kind == a.pages@[i].kind
+    &&& forall|x: int| 0 <= x < NUM_2M ==> (#[trigger] b.regions_2m@[x]).typed == a.regions_2m@[x].typed
+    &&& forall|x: int| 0 <= x < NUM_1G ==> (#[trigger] b.regions_1g@[x]).typed == a.regions_1g@[x].typed
+}
+
 /// A virtual page below 512 level 4 entries is the page its path names, and its level 1 index is in
 /// range.
 proof fn lemma_path_page(x: int)
@@ -226,10 +234,11 @@ impl CapKernel {
         }
     }
 
-    /// What the map step leaves: the capability tables, processes, threads and spaces as they were; the
-    /// root's space maps each virtual page of each run to its physical page with its run's rights, and
-    /// every other path as it did; every other space as it was; each mapping a child of the frame
-    /// capability of its block; every table walk, and everyone's reach, as they were.
+    /// What the map step leaves: the capability tables, processes, threads and spaces as they were, and
+    /// every block of memory typed or free as it was; the root's space maps each virtual page of each
+    /// run to its physical page with its run's rights, and every other path as it did; every other
+    /// space as it was; each mapping a child of the frame capability of its block; every table walk,
+    /// and everyone's reach, as they were.
     pub open spec fn maps_done(pre: Self, post: Self, process: usize, runs: Seq<ImageRun>) -> bool {
         let a0 = tree_of(&pre.table_pages, &pre.spaces);
         let b0 = tree_of(&post.table_pages, &post.spaces);
@@ -241,6 +250,7 @@ impl CapKernel {
         &&& post.spaces == pre.spaces
         &&& post.list.seq@[0] == pre.list.seq@[0]
         &&& nodes_kept(pre.list, post.list)
+        &&& kinds_kept(&pre.blocks, &post.blocks)
         &&& forall|a: int, x: int| 0 <= a < runs.len() && #[trigger] in_virt_at(runs, a, x) ==> {
             &&& space_mapping(b0, s).contains_key(page_path(x))
             &&& space_mapping(b0, s)[page_path(x)] == image_entry(runs[a], x)
@@ -286,6 +296,7 @@ impl CapKernel {
         &&& cur.spaces == pre.spaces
         &&& cur.list.seq@[0] == pre.list.seq@[0]
         &&& nodes_kept(pre.list, cur.list)
+        &&& kinds_kept(&pre.blocks, &cur.blocks)
         &&& forall|t: usize, q: SpacePath| #[trigger] walk_table(b0, t, q) == walk_table(a0, t, q)
         &&& forall|o1: ObjectId, o2: ObjectId| #[trigger] cur.view().reach(o1, o2) == pre.view().reach(o1, o2)
         &&& forall|t: usize| t != s ==> #[trigger] space_mapping(b0, t) == space_mapping(a0, t)

@@ -1119,7 +1119,8 @@ impl CapKernel {
     /// ROOT_UNTYPED_SLOT. Before any write it checks that every run's virtual pages lie under level 4
     /// entries past the kernel's, and that the untyped holds three order-3 blocks for each region a run
     /// touches, run by run; it refuses, changing nothing, when either fails. On success every page of
-    /// every run walks to a level 1 table of the root's space whose entry for it is empty.
+    /// every run walks to a level 1 table of the root's space whose entry for it is empty, and every
+    /// order-3 block of the untyped past the ones the check counted is free as it was.
     #[verifier::spinoff_prover]
     pub fn boot_root_tables(&mut self, process: usize, runs: &[ImageRun]) -> (ret: bool)
         requires
@@ -1149,6 +1150,8 @@ impl CapKernel {
                 &&& forall|j: int| #![trigger final(self).blocks.pages@[j]] old(self).blocks.tracks(j)
                     && !(u.base / 4096 <= j < (u.base + block_bytes(u.order)) / 4096)
                     ==> final(self).blocks.pages@[j] == old(self).blocks.pages@[j]
+                &&& forall|j: int| image_tables_bound(runs@) <= j < untyped_tables(u)
+                    ==> #[trigger] final(self).root_table_block(process, cursor_block(u.base, j))
                 &&& forall|j: int| #![trigger final(self).list.nodes@[j]] 0 <= j < NODE_SPACE && old(self).list.nodes@[j].live
                     ==> final(self).list.nodes@[j].live
                 &&& forall|x: usize| #[trigger] final(self).is_cap(x) == old(self).is_cap(x)

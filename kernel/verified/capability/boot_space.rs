@@ -122,6 +122,26 @@ impl CapKernel {
         }
     }
 
+    /// A free order-3 block of the root's untyped stays one while the capability tables stay and the
+    /// block table types nothing more.
+    proof fn lemma_table_block_kept(pre: Self, post: Self, process: usize, b: usize)
+        requires
+            pre.root_table_block(process, b),
+            post.tables == pre.tables,
+            kinds_kept(&pre.blocks, &post.blocks),
+        ensures
+            post.root_table_block(process, b),
+    {
+        let i = (b / 4096) as int;
+        assert(pre.blocks.tracks(i));
+        assert(0 <= region_2m(i) < NUM_2M);
+        assert(0 <= region_1g(i) < NUM_1G);
+        assert forall|k: int| 0 <= k < 8 implies #[trigger] post.blocks.pages@[b / 4096 + k].kind is Free by {
+            assert(pre.blocks.tracks(b / 4096 + k));
+            assert(pre.blocks.pages@[b / 4096 + k].kind is Free);
+        }
+    }
+
     /// The step after boot_root_memory that hands the root dom0's image and maps it in the root's space.
     /// It checks up front that the runs' virtual pages lie past the kernel's level 4 entries and that the
     /// root's untyped at ROOT_UNTYPED_SLOT holds the tables they need, then boot_root_image makes each
@@ -131,7 +151,8 @@ impl CapKernel {
     /// the second leaf. On success the root's space maps exactly the runs' pages, each to its physical
     /// page with its run's rights and as a child of its block's frame capability; every other space is
     /// as it was; and the root's reach has grown by exactly the runs' physical pages, since the tables
-    /// come from its own untyped.
+    /// come from its own untyped, of whose order-3 blocks every one past those the tables can take is
+    /// free as it was.
     #[verifier::spinoff_prover]
     pub fn boot_root_space(
         &mut self,
@@ -183,7 +204,15 @@ impl CapKernel {
                 &&& final(self).threads == old(self).threads
                 &&& final(self).list.seq@[0] == root
                 &&& final(self).tables.roots == old(self).tables.roots
-                &&& forall|j: int| 0 <= j < NODE_SPACE && #[trigger] old(self).list.nodes@[j].live ==> final(self).list.nodes@[j].live
+                &&& forall|j: int| 0 <= j < NODE_SPACE && #[trigger] old(self).list.nodes@[j].live ==> {
+                    &&& final(self).list.nodes@[j].live
+                    &&& final(self).list.nodes@[j].depth == old(self).list.nodes@[j].depth
+                }
+                &&& forall|j: int| image_tables_bound(runs@) <= j < untyped_tables(old(self).payload_of(old(self).root_untyped(process)))
+                    ==> #[trigger] final(self).root_table_block(
+                        process,
+                        cursor_block(old(self).payload_of(old(self).root_untyped(process)).base, j),
+                    )
                 &&& forall|a: int, u: int| #![trigger crate::capability::boot_map::frame_slot(runs@, a, u)]
                     0 <= a < runs@.len() && 0 <= u < run_image_blocks(runs@[a]).len() ==> {
                     let fb = run_image_blocks(runs@[a])[u];
@@ -338,10 +367,23 @@ impl CapKernel {
             // and each frame slot.
             assert(post.list.seq@[0] == root);
             assert(post.tables.roots == pre.tables.roots);
-            assert forall|j: int| 0 <= j < NODE_SPACE && #[trigger] pre.list.nodes@[j].live implies post.list.nodes@[j].live by {
+            assert forall|j: int| 0 <= j < NODE_SPACE && #[trigger] pre.list.nodes@[j].live implies {
+                &&& post.list.nodes@[j].live
+                &&& post.list.nodes@[j].depth == pre.list.nodes@[j].depth
+            } by {
                 assert(!(leaf2 + 1 <= j < leaf2 + 1 + count));
                 assert(mid.list.nodes@[j].live);
+                assert(mid.list.nodes@[j].depth == pre.list.nodes@[j].depth);
                 assert(tab.list.nodes@[j].live);
+                assert(tab.list.nodes@[j].depth == mid.list.nodes@[j].depth);
+                assert(post.list.nodes@[j].depth == tab.list.nodes@[j].depth);
+            }
+            // The untyped's blocks the tables left: the maps type nothing.
+            let u = pre.payload_of(pre.root_untyped(process));
+            assert forall|j: int| image_tables_bound(runs@) <= j < untyped_tables(u)
+                implies #[trigger] post.root_table_block(process, cursor_block(u.base, j)) by {
+                assert(tab.root_table_block(process, cursor_block(u.base, j)));
+                Self::lemma_table_block_kept(tab, post, process, cursor_block(u.base, j));
             }
             assert forall|a: int, u: int| #![trigger crate::capability::boot_map::frame_slot(runs@, a, u)]
                 0 <= a < runs@.len() && 0 <= u < run_image_blocks(runs@[a]).len() implies {

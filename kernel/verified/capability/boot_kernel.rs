@@ -133,6 +133,76 @@ impl CapKernel {
         }
     }
 
+    /// The state boot's composed step leaves when it succeeds, having returned `untyped` and `frame`:
+    /// what kernel_init ensures, and so what a proof about the root's first operations starts from.
+    /// Each fixed slot of the root's table holds its kind, and each untyped is at depth 1, so a
+    /// capability retyped under it is below the deepest depth; the root's process is live; every root
+    /// entry of its table past the two boot filled is empty; the root's space maps exactly the image; of
+    /// the first untyped's order-3 blocks, every one past those the image's tables can take is free;
+    /// the root reaches exactly the console, power and the pages of its process, its thread, the free
+    /// runs and the image, and nothing else reaches anything the root does not, besides itself.
+    pub open spec fn booted(
+        &self,
+        root: usize,
+        process: usize,
+        leaf: usize,
+        frames: usize,
+        t: usize,
+        free: Seq<(usize, usize)>,
+        image: Seq<ImageRun>,
+        untyped: usize,
+        frame: usize,
+    ) -> bool {
+        let bs = runs_blocks(free, MAX_ORDER as nat);
+        let b = tree_of(&self.table_pages, &self.spaces);
+        let first = page_block_payload(bs[0]);
+        &&& untyped == bs.len()
+        &&& 0 < untyped <= ROOT_UNTYPED_SLOTS
+        &&& frame == image_blocks(image).len()
+        &&& frame <= ROOT_FRAME_SLOTS
+        &&& self.wf()
+        &&& self.list.seq@[0] == root
+        &&& self.slot_holds(process, ROOT_PROCESS_SLOT, (leaf + 1) as usize, process_of(process))
+        &&& self.slot_holds(process, ROOT_THREAD_SLOT, (leaf + 2) as usize, thread_of(t))
+        &&& self.slot_holds(process, ROOT_CONSOLE_SLOT, (leaf + 3) as usize, console_payload())
+        &&& self.slot_holds(process, ROOT_POWER_SLOT, (leaf + 4) as usize, power_payload())
+        &&& forall|k: int| 0 <= k < untyped ==> {
+            &&& self.slot_holds(
+                process,
+                (ROOT_UNTYPED_SLOT + k) as usize,
+                (leaf + ROOT_UNTYPED_SLOT + k) as usize,
+                page_block_payload(#[trigger] bs[k]),
+            )
+            &&& self.list.nodes@[(leaf + ROOT_UNTYPED_SLOT + k) as usize as int].depth == 1
+        }
+        &&& forall|a: int, u: int| #![trigger crate::capability::boot_map::frame_slot(image, a, u)]
+            0 <= a < image.len() && 0 <= u < run_image_blocks(image[a]).len() ==> {
+            let fb = run_image_blocks(image[a])[u];
+            self.slot_holds(
+                process,
+                crate::capability::boot_map::frame_slot(image, a, u),
+                (frames + 1 + image_offset(image, a) + u) as usize,
+                boot_frame_payload((fb.0 * 4096) as usize, fb.1 as u8, image_rights(image[a])),
+            )
+        }
+        &&& self.threads.records@.contains_key(t)
+        &&& self.threads.records@[t].value().process == Some(process)
+        &&& forall|a: int, x: int| 0 <= a < image.len() && #[trigger] in_virt_at(image, a, x) ==> {
+            &&& space_mapping(b, process).contains_key(page_path(x))
+            &&& space_mapping(b, process)[page_path(x)] == image_entry(image[a], x)
+        }
+        &&& forall|p: SpacePath| #[trigger] space_mapping(b, process).contains_key(p) ==> image_path(image, p)
+        &&& forall|o: usize| #[trigger] self.view().reach(process, o) <==> (o == CONSOLE_OBJECT
+            || o == POWER_OBJECT
+            || (o % 4096 == 0 && root_reach_page(process, t, free, image, (o / 4096) as int)))
+        &&& forall|q: usize, o: usize| #[trigger] self.view().reach(q, o)
+            ==> o == q || self.view().reach(process, o)
+        &&& self.root_live(process)
+        &&& forall|r: int| 2 <= r < ROOT_ENTRIES ==> #[trigger] self.tables.leaf(process, r) == NO_LEAF
+        &&& forall|j: int| image_tables_bound(image) <= j < untyped_tables(first)
+            ==> #[trigger] self.root_table_block(process, cursor_block(first.base, j))
+    }
+
     /// Boot of the capability kernel, from the memory boot set aside for it: init with the list's
     /// synthetic root at `root`, then boot_root with the root's process at `process`, its table's
     /// leaves at `leaf` and `frames` and its thread at `t`, boot_root_object for the console and for
@@ -142,10 +212,7 @@ impl CapKernel {
     /// `pages`, which is split here between the steps. It returns how many untyped and frame
     /// capabilities the root holds, and refuses exactly when the free runs make no block or more than
     /// the first leaf holds, or the image does not fit the second leaf or the first untyped block's
-    /// tables. On success each fixed slot of the root's table holds its kind, the root's space maps
-    /// exactly the image, the root reaches exactly the console, power and the pages of its process, its
-    /// thread, the free runs and the image, and nothing else reaches anything the root does not,
-    /// besides itself. See design/root-process-at-boot/.
+    /// tables. On success the state is the one `booted` describes. See design/root-process-at-boot/.
     #[verifier::spinoff_prover]
     pub fn kernel_init(
         &mut self,
@@ -226,48 +293,7 @@ impl CapKernel {
                 ||| !image_virt_wf(image@)
                 ||| image_tables_bound(image@) > untyped_tables(page_block_payload(bs[0]))
             }),
-            ret matches Some((untyped, frame)) ==> {
-                let bs = runs_blocks(free@, MAX_ORDER as nat);
-                let b = tree_of(&final(self).table_pages, &final(self).spaces);
-                &&& untyped == bs.len()
-                &&& 0 < untyped <= ROOT_UNTYPED_SLOTS
-                &&& frame == image_blocks(image@).len()
-                &&& frame <= ROOT_FRAME_SLOTS
-                &&& final(self).wf()
-                &&& final(self).list.seq@[0] == root
-                &&& final(self).slot_holds(process, ROOT_PROCESS_SLOT, (leaf + 1) as usize, process_of(process))
-                &&& final(self).slot_holds(process, ROOT_THREAD_SLOT, (leaf + 2) as usize, thread_of(t))
-                &&& final(self).slot_holds(process, ROOT_CONSOLE_SLOT, (leaf + 3) as usize, console_payload())
-                &&& final(self).slot_holds(process, ROOT_POWER_SLOT, (leaf + 4) as usize, power_payload())
-                &&& forall|k: int| 0 <= k < untyped ==> final(self).slot_holds(
-                    process,
-                    (ROOT_UNTYPED_SLOT + k) as usize,
-                    (leaf + ROOT_UNTYPED_SLOT + k) as usize,
-                    page_block_payload(#[trigger] bs[k]),
-                )
-                &&& forall|a: int, u: int| #![trigger crate::capability::boot_map::frame_slot(image@, a, u)]
-                    0 <= a < image@.len() && 0 <= u < run_image_blocks(image@[a]).len() ==> {
-                    let fb = run_image_blocks(image@[a])[u];
-                    final(self).slot_holds(
-                        process,
-                        crate::capability::boot_map::frame_slot(image@, a, u),
-                        (frames + 1 + image_offset(image@, a) + u) as usize,
-                        boot_frame_payload((fb.0 * 4096) as usize, fb.1 as u8, image_rights(image@[a])),
-                    )
-                }
-                &&& final(self).threads.records@.contains_key(t)
-                &&& final(self).threads.records@[t].value().process == Some(process)
-                &&& forall|a: int, x: int| 0 <= a < image@.len() && #[trigger] in_virt_at(image@, a, x) ==> {
-                    &&& space_mapping(b, process).contains_key(page_path(x))
-                    &&& space_mapping(b, process)[page_path(x)] == image_entry(image@[a], x)
-                }
-                &&& forall|p: SpacePath| #[trigger] space_mapping(b, process).contains_key(p) ==> image_path(image@, p)
-                &&& forall|o: usize| #[trigger] final(self).view().reach(process, o) <==> (o == CONSOLE_OBJECT
-                    || o == POWER_OBJECT
-                    || (o % 4096 == 0 && root_reach_page(process, t, free@, image@, (o / 4096) as int)))
-                &&& forall|q: usize, o: usize| #[trigger] final(self).view().reach(q, o)
-                    ==> o == q || final(self).view().reach(process, o)
-            },
+            ret matches Some((untyped, frame)) ==> final(self).booted(root, process, leaf, frames, t, free@, image@, untyped, frame),
     {
         hide(CapKernel::wf);
         self.init(root, Tracked(root_perm), kernel_entries, iommus_present, iommu_commands);
@@ -512,17 +538,35 @@ impl CapKernel {
             assert(s4.is_cap((leaf + 3) as usize) && s4.payload_of((leaf + 3) as usize) == console_payload());
             assert(s4.is_cap((leaf + 4) as usize) && s4.payload_of((leaf + 4) as usize) == power_payload());
             // The untyped slots.
-            assert forall|k: int| 0 <= k < untyped implies s4.slot_holds(
-                process,
-                (ROOT_UNTYPED_SLOT + k) as usize,
-                (leaf + ROOT_UNTYPED_SLOT + k) as usize,
-                page_block_payload(#[trigger] bs[k]),
-            ) by {
+            assert forall|k: int| 0 <= k < untyped implies {
+                &&& s4.slot_holds(
+                    process,
+                    (ROOT_UNTYPED_SLOT + k) as usize,
+                    (leaf + ROOT_UNTYPED_SLOT + k) as usize,
+                    page_block_payload(#[trigger] bs[k]),
+                )
+                &&& s4.list.nodes@[(leaf + ROOT_UNTYPED_SLOT + k) as usize as int].depth == 1
+            } by {
                 let x = (leaf + ROOT_UNTYPED_SLOT + k) as usize;
                 assert(s3.root_untyped_at(root, process, leaf, k, bs[k]));
                 Self::lemma_slot_stays(s3, s4, process, (ROOT_UNTYPED_SLOT + k) as usize);
                 assert(!(frames + 1 <= x < frames + 1 + frame));
                 assert(s4.is_cap(x) && s4.payload_of(x) == s3.payload_of(x));
+                assert(s3.list.nodes@[x as int].live);
+                assert(s4.list.nodes@[x as int].depth == s3.list.nodes@[x as int].depth);
+            }
+            // The root is live, its table has no leaf past the two boot gave it, and the first
+            // untyped's blocks the tables left are free.
+            assert(s4.root_live(process)) by {
+                assert(s3.root_live(process));
+            }
+            assert forall|r: int| 2 <= r < ROOT_ENTRIES implies #[trigger] s4.tables.leaf(process, r) == NO_LEAF by {
+                assert(s1.tables.leaf(process, r) == NO_LEAF);
+            }
+            let first = page_block_payload(bs[0]);
+            assert(s3.payload_of(s3.root_untyped(process)) == first);
+            assert forall|j: int| image_tables_bound(image@) <= j < untyped_tables(first)
+                implies #[trigger] s4.root_table_block(process, cursor_block(first.base, j)) by {
             }
             assert(s4.threads == s1.threads);
             // The root's reach is the five steps' growths in turn, and anyone else's grew only by
