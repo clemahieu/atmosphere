@@ -21,6 +21,7 @@ members = [
   "pager-policy",
   "adivider",
   "aheap",
+  "aeager",
 ]
 
 exclude = ["test-pass", "tools/verus"]

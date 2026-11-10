@@ -1,0 +1,16 @@
+[package]
+name = "aeager"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+publish = false
+
+[package.metadata.atmosphere]
+verified = true
+
+[dependencies]
+aheap = { path = "../aheap" }
+asys = { path = "../asys" }
+
+[dependencies.vstd]
+workspace = true
