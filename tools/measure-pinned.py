@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Boot dom0 under KVM with its two vCPUs pinned, and print the kernel's own timing lines.
 
-usage: tools/measure-pinned.py within0|within1|across [boots] [--lock-stats] [--force]   (from the workspace root)
-       tools/measure-pinned.py --test                                                      (this script's own tests)
+usage: tools/measure-pinned.py within0|within1|across [boots] [--lock-stats] [--counters] [--force]
+                                                                         (from the workspace root)
+       tools/measure-pinned.py --test                                    (this script's own tests)
 
 Numbers from a host with other work on it do not mean much, so this reports the load average. It
 pins vCPU 0 and 1 to separate physical cores and keeps QEMU's other threads, and its own clock sampler,
@@ -31,6 +32,12 @@ in its state, is printed as fixed and does not refuse unless it fired: such an I
 NVMe queue's is, held to the CPUs that submit its I/O, and nothing submits I/O from a measured CPU
 while only a vCPU thread runs there. The CPU-local interrupts are printed and do not refuse: no
 affinity setting moves them, and only nohz_full at host boot would quiet the timer.
+
+--counters gives the guest the host's performance counters (QEMU's pmu, off by default even for the
+host model), so the kernel's lock lines carry what counters 0 to 3 counted per acquisition, the lines
+that crossed a CCD among them; without it the counters read 0. KVM's perf-based vPMU slows an exit,
+the flush IPI's round trip about threefold, so times taken with it are not comparable with times
+taken without it.
 
 What needs root to keep the host off the measured cores is tools/isolate-pinned.sh, which the human
 runs around the measurements: apply stops irqbalance, points the IRQs away from the measured CPUs and
@@ -61,7 +68,7 @@ import run as guest
 
 # What tools/isolate-pinned.sh apply changed, for its undo; its fixed lines name the IRQs it could not move.
 ISOLATION_STATE = "/run/atmo-isolate-pinned"
-LINES = re.compile(r"flush IPI|kernel lock:|contention test lock:")
+LINES = re.compile(r"lock (?:alone|contended) on CPU \d+|flush IPI|kernel lock:|contention test lock:")
 
 
 def read(path):
@@ -235,6 +242,16 @@ def check_noise(pair, force):
                  "see tools/isolate-pinned.sh, or pass --force to measure anyway")
 
 
+def timing_lines(log):
+    """The last of each kind of timing line in a serial log, without its colour codes, in the order each
+    kind first appears."""
+    last = {}
+    for line in log.splitlines():
+        if LINES.search(line):
+            last[LINES.search(line).group(0)] = re.sub(r"\x1b\[[0-9;]*m", "", line).strip()
+    return list(last.values())
+
+
 def build(lock_stats):
     subprocess.run(["cargo", "build", "-q", "--release"] + (["--features", "lock_stats"] if lock_stats else []),
                    cwd="kernel", check=True, env={**os.environ, "RUSTC_BOOTSTRAP": "1"})
@@ -328,14 +345,19 @@ def sample_clocks(paths, others, done, samples):
                 continue
 
 
-def boot(pair, others, out):
+def cpu_model(counters):
+    """QEMU's -cpu: the host's model, with its performance counters when counters is set."""
+    return "host,pmu=on" if counters else "host"
+
+
+def boot(pair, others, out, counters):
     log = f"{out}/serial.log"
     ovmf_code, ovmf_vars, qemu_bin = firmware.require("tools/measure-pinned.py")
     drives = esp(out, ovmf_code, ovmf_vars)
     if os.path.exists(log):
         os.unlink(log)
     qemu = subprocess.Popen(
-        [qemu_bin, "-enable-kvm", "-cpu", "host", "-machine", "q35,kernel_irqchip=split",
+        [qemu_bin, "-enable-kvm", "-cpu", cpu_model(counters), "-machine", "q35,kernel_irqchip=split",
          "-name", "guest=atmo,debug-threads=on", "-smp", "2", "-m", str(guest.MEMORY_MIB), "-nographic",
          "-serial", f"file:{log}", "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"] + drives,
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -366,19 +388,20 @@ def main():
     rest = sys.argv[2:]
     lock_stats = "--lock-stats" in rest
     force = "--force" in rest
+    counters = "--counters" in rest
     boots = next((int(a) for a in rest if a.isdigit()), 3)
     pair = choose(mode)
     out = "target/measure-pinned"
     os.makedirs(out, exist_ok=True)
     build(lock_stats)
     others = set(os.sched_getaffinity(0)) - set(siblings(pair))
-    print(f"{mode}: vCPUs on host CPUs {pair}, lock_stats {lock_stats}, load {os.getloadavg()[0]:.2f}")
+    print(f"{mode}: vCPUs on host CPUs {pair}, lock_stats {lock_stats}, counters {counters}, load {os.getloadavg()[0]:.2f}")
     print(f"  measured and SMT siblings: {cpu_list(siblings(pair))}; QEMU's other threads on {cpu_list(others)}")
     for cpu in pair:
         print(f"  L3 of CPU {cpu}: {read(f'/sys/devices/system/cpu/cpu{cpu}/cache/index3/shared_cpu_list')}")
     check_noise(pair, force)
     for i in range(boots):
-        log, samples, moved = boot(pair, others, out)
+        log, samples, moved = boot(pair, others, out, counters)
         if "dom0 capability done" not in log:
             sys.exit(f"FAIL: boot {i} did not finish; see {out}/serial.log")
         print(f"boot {i}, load {os.getloadavg()[0]:.2f}")
@@ -387,11 +410,7 @@ def main():
                 print(f"  WARNING: thread {tid} ({name}) could not be moved off CPUs {cpu_list(cpus)}: {refused}")
             else:
                 print(f"  moved thread {tid} ({name}) off CPUs {cpu_list(cpus)}")
-        last = {}
-        for line in log.splitlines():
-            if LINES.search(line):
-                last[LINES.search(line).group(0)] = re.sub(r"\x1b\[[0-9;]*m", "", line).strip()
-        for line in last.values():
+        for line in timing_lines(log):
             print(f"  {line}")
         for cpu, mhz in samples.items():
             if not mhz:
@@ -458,6 +477,26 @@ class Tests(unittest.TestCase):
 
     def test_fixed_irqs_is_empty_without_the_isolation(self):
         self.assertEqual(fixed_irqs("/nonexistent/atmo-isolate-pinned"), {})
+
+    def test_the_guest_has_the_hosts_counters_only_with_counters_asked_for(self):
+        self.assertEqual(cpu_model(False), "host")
+        self.assertEqual(cpu_model(True), "host,pmu=on")
+
+    def test_timing_lines_keeps_the_last_of_each_kind_with_each_cores_lock_lines_apart(self):
+        log = ("\x1b[34m INFO lock alone on CPU 0, per acquisition: 52.00 ticks, no counters\x1b[0m\n"
+               " INFO lock contended by 2 cores: pair intact at 400000\n"
+               " INFO lock contended on CPU 0, per acquisition: 200.00 ticks, no counters\n"
+               " INFO lock contended on CPU 1, per acquisition: 201.00 ticks, no counters\n"
+               " INFO flush IPI acknowledged by CPU 1 at epoch 1000: fastest 1 mean 2 cycles over 1000 rounds\n"
+               " INFO kernel lock: 4096 holds, held mean 1 max 2, waited mean 0 max 0 cycles\n"
+               " INFO kernel lock: 8192 holds, held mean 3 max 4, waited mean 0 max 0 cycles\n")
+        self.assertEqual(timing_lines(log), [
+            "INFO lock alone on CPU 0, per acquisition: 52.00 ticks, no counters",
+            "INFO lock contended on CPU 0, per acquisition: 200.00 ticks, no counters",
+            "INFO lock contended on CPU 1, per acquisition: 201.00 ticks, no counters",
+            "INFO flush IPI acknowledged by CPU 1 at epoch 1000: fastest 1 mean 2 cycles over 1000 rounds",
+            "INFO kernel lock: 8192 holds, held mean 3 max 4, waited mean 0 max 0 cycles",
+        ])
 
 
 if __name__ == "__main__":
