@@ -2675,7 +2675,9 @@ impl CapKernel {
             assert(mid.nodes@[parent as int] == pre.list.nodes@[parent as int]);
         }
         self.list.derive(parent, base, NodeKind::Hidden);
-        let (_, Tracked(map)) = page_perm_to_page_map(base + TABLE_NODE_PAGES * 4096, Ghost(level), Tracked(table));
+        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let (_, Tracked(map)) = page_perm_to_page_map(base + TABLE_NODE_PAGES * 4096, Ghost(level), Tracked(table), Tracked(&mut steps));
         let tracked mut record;
         proof {
             record = page_into_table_record(sixth);
@@ -3191,7 +3193,9 @@ impl CapKernel {
             assert(mid.nodes@[child as int] == pre.list.nodes@[child as int]);
         }
         let root_table = base + SPACE_ROOT_PAGE * 4096;
-        let (_, Tracked(map)) = page_perm_to_page_map(root_table, Ghost(4), Tracked(table));
+        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let (_, Tracked(map)) = page_perm_to_page_map(root_table, Ghost(4), Tracked(table), Tracked(&mut steps));
         let tracked map = map;
         let tracked mut typed;
         let tracked mut cores;

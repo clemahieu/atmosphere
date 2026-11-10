@@ -18,6 +18,7 @@ use crate::capability::link::*;
 use crate::capability::list::*;
 use crate::capability::mapping::*;
 use crate::capability::reach::*;
+use crate::capability::steps::Steps;
 use crate::capability::refs::*;
 use crate::capability::space::*;
 use crate::capability::table::*;
@@ -1360,7 +1361,9 @@ impl CapKernel {
             pre.list.lemma_valid_bound(child);
             pre.list.lemma_seq_fits();
         }
-        self.tables.put_root(&self.list, base, Tracked(table_root));
+        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        self.tables.put_root(&self.list, base, Tracked(table_root), Tracked(&mut steps));
         let ghost rooted = self.tables;
         let tracked mut typed_record = page_into_process_record(record);
         PPtr::<ProcessRecord>::from_usize(base + PROCESS_RECORD_PAGE * 4096).put(Tracked(&mut typed_record), ProcessRecord { dead: false });
@@ -1371,9 +1374,9 @@ impl CapKernel {
             self.processes.spare.borrow_mut().tracked_insert((base + 4 * 4096) as usize, spare4);
         }
         let root_table = base + SPACE_ROOT_PAGE * 4096;
-        let (_, Tracked(map)) = page_perm_to_page_map(root_table, Ghost(4), Tracked(space_root));
+        let (_, Tracked(map)) = page_perm_to_page_map(root_table, Ghost(4), Tracked(space_root), Tracked(&mut steps));
         let tracked mut map = map;
-        page_map_set_kernel_entry_range(&self.spaces.kernel_entries, root_table, Tracked(&mut map));
+        page_map_set_kernel_entry_range(&self.spaces.kernel_entries, root_table, Tracked(&mut map), Tracked(&mut steps));
         let tracked mut typed;
         let tracked mut cores;
         proof {

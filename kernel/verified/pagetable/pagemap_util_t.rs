@@ -11,11 +11,13 @@ use crate::pagetable::pagemap::*;
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::array::Array;
+use crate::capability::steps::Steps;
 
 pub fn page_map_set_kernel_entry_range(
     kernel_entries: &Array<usize, KERNEL_MEM_END_L4INDEX>,
     page_map_ptr: PageMapPtr,
     Tracked(page_map_perm): Tracked<&mut PointsTo<PageMap>>,
+    Tracked(steps): Tracked<&mut Steps>,
 )
     requires
         old(page_map_perm).addr() == page_map_ptr,
@@ -25,6 +27,7 @@ pub fn page_map_set_kernel_entry_range(
         kernel_entries.wf(),
         kernel_entries@.len() == KERNEL_MEM_END_L4INDEX,
     ensures
+        final(steps).count <= old(steps).count + KERNEL_MEM_END_L4INDEX,
         final(page_map_perm).addr() == page_map_ptr,
         final(page_map_perm).is_init(),
         final(page_map_perm).value().level == old(page_map_perm).value().level,
@@ -41,9 +44,11 @@ pub fn page_map_set_kernel_entry_range(
                 4,
             ),
 {
+    let ghost start = steps.count;
     for index in 0..KERNEL_MEM_END_L4INDEX
         invariant
             0 <= index <= KERNEL_MEM_END_L4INDEX,
+            steps.count == start + index,
             kernel_entries.wf(),
             kernel_entries@.len() == KERNEL_MEM_END_L4INDEX,
             page_map_perm.addr() == page_map_ptr,
@@ -70,6 +75,9 @@ pub fn page_map_set_kernel_entry_range(
             usize2page_entry(*kernel_entries.get(index), 4),
             4,
         );
+        proof {
+            steps.step();
+        }
     }
 }
 
@@ -286,7 +294,7 @@ pub fn page_map_clear_take(
 
 #[verifier(external_body)]
 // external_body(glue): writes a hardware page table through a raw pointer
-pub fn page_perm_to_page_map(page_ptr: PagePtr, level: Ghost<usize>, Tracked(page_perm): Tracked<PagePerm4k>) -> (ret: (
+pub fn page_perm_to_page_map(page_ptr: PagePtr, level: Ghost<usize>, Tracked(page_perm): Tracked<PagePerm4k>, Tracked(steps): Tracked<&mut Steps>) -> (ret: (
     PageMapPtr,
     Tracked<PointsTo<PageMap>>,
 ))
@@ -294,6 +302,7 @@ pub fn page_perm_to_page_map(page_ptr: PagePtr, level: Ghost<usize>, Tracked(pag
         page_perm.is_uninit(),
         page_perm.addr() == page_ptr,
     ensures
+        final(steps).count <= old(steps).count + 512,
         ret.0 == page_ptr,
         ret.1@.addr() == ret.0,
         ret.1@.is_init(),
@@ -305,7 +314,7 @@ pub fn page_perm_to_page_map(page_ptr: PagePtr, level: Ghost<usize>, Tracked(pag
 {
     unsafe {
         let uptr = page_ptr as *mut MaybeUninit<PageMap>;
-        (*uptr).assume_init_mut().init();
+        (*uptr).assume_init_mut().init(Tracked(steps));
     }
     (page_ptr, Tracked::assume_new())
 }

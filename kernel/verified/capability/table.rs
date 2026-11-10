@@ -17,6 +17,7 @@ verus! {
 use crate::array::Array;
 use crate::capability::list::*;
 use crate::capability::reach::*;
+use crate::capability::steps::Steps;
 use crate::define::*;
 use crate::pptr::*;
 
@@ -171,11 +172,12 @@ pub proof fn lemma_slot_in_leaf(leaf: usize, slot: usize)
 }
 
 /// Turns a page into a leaf's payload page with every entry written, and its parent recorded.
-fn new_payload_page(addr: usize, root: usize, r: usize, Tracked(page): Tracked<PagePerm4k>) -> (ret: Tracked<PointsTo<PayloadPage>>)
+fn new_payload_page(addr: usize, root: usize, r: usize, Tracked(page): Tracked<PagePerm4k>, Tracked(steps): Tracked<&mut Steps>) -> (ret: Tracked<PointsTo<PayloadPage>>)
     requires
         page.addr() == addr,
         addr % 4096 == 0,
     ensures
+        final(steps).count <= old(steps).count + NODES_PER_PAGE,
         ret@.addr() == addr,
         ret@.is_init(),
         ret@.value().entries.wf(),
@@ -183,14 +185,19 @@ fn new_payload_page(addr: usize, root: usize, r: usize, Tracked(page): Tracked<P
 {
     let mut entries = Array::<Payload, NODES_PER_PAGE>::new();
     let mut k = 0;
+    let ghost start = steps.count;
     while k != NODES_PER_PAGE
         invariant
             0 <= k <= NODES_PER_PAGE,
+            steps.count == start + k,
             entries.wf(),
         decreases NODES_PER_PAGE - k,
     {
         entries.set(k, Payload { kind: CapKind::Untyped, order: 0, rights: 0, base: 0, badge: 0, reserved: 0 });
         k = k + 1;
+        proof {
+            steps.step();
+        }
     }
     entries.set(0, Payload { kind: CapKind::Untyped, order: 0, rights: 1, base: root, badge: r, reserved: 0 });
     let tracked mut typed;
@@ -376,13 +383,14 @@ impl Tables {
 
     /// Makes the page at `root` an empty table's root. The page is the first of a process object, so
     /// only the process's retype calls this.
-    pub fn put_root(&mut self, list: &Tree, root: usize, Tracked(page): Tracked<PagePerm4k>)
+    pub fn put_root(&mut self, list: &Tree, root: usize, Tracked(page): Tracked<PagePerm4k>, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).wf(list),
             !old(self).roots@.contains_key(root),
             page.addr() == root,
             root % 4096 == 0,
         ensures
+            final(steps).count <= old(steps).count + ROOT_ENTRIES,
             final(self).wf(list),
             final(self).roots@.contains_key(root),
             forall|r: int| 0 <= r < ROOT_ENTRIES ==> #[trigger] final(self).leaf(root, r) == NO_LEAF,
@@ -397,15 +405,20 @@ impl Tables {
         let ghost pre = *old(self);
         let mut leaves = Array::<usize, ROOT_ENTRIES>::new();
         let mut r = 0;
+        let ghost start = steps.count;
         while r != ROOT_ENTRIES
             invariant
                 0 <= r <= ROOT_ENTRIES,
+                steps.count == start + r,
                 leaves.wf(),
                 forall|j: int| 0 <= j < r ==> #[trigger] leaves@[j] == NO_LEAF,
             decreases ROOT_ENTRIES - r,
         {
             leaves.set(r, NO_LEAF);
             r = r + 1;
+            proof {
+                steps.step();
+            }
         }
         let tracked mut typed;
         proof {
@@ -494,7 +507,9 @@ impl Tables {
             pre.lemma_root(root);
             lemma_payload_page_aligned(leaf);
         }
-        let Tracked(typed) = new_payload_page(leaf + 4096, root, r, Tracked(page));
+        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let Tracked(typed) = new_payload_page(leaf + 4096, root, r, Tracked(page), Tracked(&mut steps));
         proof {
             self.payloads.borrow_mut().tracked_insert(leaf, typed);
         }

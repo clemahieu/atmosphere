@@ -4,6 +4,7 @@ verus! {
 use crate::arch::*;
 use crate::array::*;
 use crate::util::page_ptr_util_u::*;
+use crate::capability::steps::Steps;
 
 use crate::pagetable::entry::*;
 
@@ -16,18 +17,21 @@ pub struct PageMap {
 }
 
 impl PageMap {
-    pub fn init(&mut self)
+    pub fn init(&mut self, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).ar.wf(),
             old(self).spec_seq@.len() == 512,
         ensures
+            final(steps).count <= old(steps).count + 512,
             final(self).wf(),
             final(self).level == old(self).level,
             forall|i: int| #![trigger final(self)@[i].is_empty()] 0 <= i < 512 ==> final(self)@[i].is_empty(),
     {
+        let ghost start = steps.count;
         for i in 0..512
             invariant
                 0 <= i <= 512,
+                steps.count == start + i,
                 self.ar.wf(),
                 self.spec_seq@.len() == 512,
                 forall|j: int|
@@ -44,6 +48,7 @@ impl PageMap {
             proof {
                 zero_leads_is_empty_page_entry(self.level@);
                 self.spec_seq@ = self.spec_seq@.update(i as int, usize2page_entry(0usize, self.level@));
+                steps.step();
             }
         }
     }
