@@ -142,10 +142,10 @@ impl GlobalDescriptorTable {
     }
 }
 
-/// A 8-byte GDT Code/Data entry.
+/// A 8-byte GDT Code/Data entry, in the segment descriptor layout of Intel SDM Volume 3A
+/// section 3.4.5. The CPU reads the fields, so `repr(C)` keeps their order and marks them used.
 #[derive(Copy, Clone, Debug)]
-#[repr(packed)]
-#[allow(dead_code)] // "field is never read" - used by platform
+#[repr(C, packed)]
 pub struct GdtEntry {
     limitl: u16,
     offsetl: u16,
@@ -174,12 +174,10 @@ impl GdtEntry {
     }
 }
 
-/// A 16-byte GDT System entry.
-///
-/// This is described in Figure 4-22 in AMD Vol. 2.
+/// A 16-byte GDT System entry, in the layout of Figure 4-22 in AMD Vol. 2. The CPU reads the
+/// fields, so `repr(C)` keeps their order and marks them used.
 #[derive(Copy, Clone, Debug)]
-#[repr(packed)]
-#[allow(dead_code)] // "field is never read" - used by platform
+#[repr(C, packed)]
 pub struct BigGdtEntry {
     limitl: u16,
     offsetl: u16,
