@@ -13,7 +13,6 @@ pub mod device;
 pub mod pptr;
 pub mod queue_lock;
 pub mod layouts;
-pub mod trap;
 pub mod array;
 pub mod pagetable;
 
