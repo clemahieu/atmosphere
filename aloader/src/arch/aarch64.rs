@@ -264,7 +264,9 @@ impl Entry {
     }
 
     /// Maps the writable frame at `paddr`, of `leaf`'s size. A user frame is EL0's to execute and
-    /// any other EL1's, never both. `cache_disable` makes the frame device memory.
+    /// any other EL1's, never both. `cache_disable` makes the frame device memory, which neither
+    /// executes: where Device memory is not execute-never the core may fetch from it speculatively,
+    /// and a read changes a device's state (D8.4.4).
     pub fn leaf(paddr: u64, leaf: Leaf, user: bool, cache_disable: bool) -> Self {
         assert!(
             paddr & !(ADDRESS & !(leaf.size() - 1)) == 0,
@@ -280,8 +282,13 @@ impl Entry {
         } else {
             ATTR_NORMAL << ATTR_INDEX_SHIFT | SH_INNER
         };
-        let el0 = if user { AP_EL0 | PXN } else { UXN };
-        Self(VALID | kind | paddr | memory | AF | NG | DBM | el0)
+        let access = if user { AP_EL0 } else { 0 };
+        let execute_never = match (cache_disable, user) {
+            (true, _) => PXN | UXN,
+            (false, true) => PXN,
+            (false, false) => UXN,
+        };
+        Self(VALID | kind | paddr | memory | AF | NG | DBM | access | execute_never)
     }
 
     pub fn present(&self) -> bool {
@@ -362,15 +369,35 @@ mod tests {
         // [6] AP[1]: EL0 reads and writes it. [53] PXN, and UXN clear: EL0 alone executes it.
         let user = Entry::leaf(FRAME, Leaf::Small, true, false);
         assert_eq!(user.0, LEAF | bit(1) | FRAME | INNER_SHAREABLE | bit(6) | bit(53));
-        // [4:2] AttrIndx 1, device memory.
-        let device = Entry::leaf(FRAME, Leaf::Small, true, true);
-        assert_eq!(device.0, LEAF | bit(1) | FRAME | OUTER_SHAREABLE | bit(2) | bit(6) | bit(53));
+        // [4:2] AttrIndx 1, device memory, which no exception level executes: [53] PXN and [54] UXN
+        // both, whether or not [6] AP[1] lets EL0 read and write it.
+        let device = Entry::leaf(FRAME, Leaf::Small, false, true);
+        assert_eq!(device.0, LEAF | bit(1) | FRAME | OUTER_SHAREABLE | bit(2) | bit(53) | bit(54));
+        let user_device = Entry::leaf(FRAME, Leaf::Small, true, true);
+        assert_eq!(user_device.0, device.0 | bit(6));
 
-        for (entry, is_user, is_device) in [(kernel, false, false), (user, true, false), (device, true, true)] {
+        for (entry, is_user, is_device) in
+            [(kernel, false, false), (user, true, false), (device, false, true), (user_device, true, true)]
+        {
             assert!(entry.present());
             assert_eq!(entry.address(), FRAME);
             assert_eq!(entry.user(), is_user);
             assert_eq!(entry.cache_disable(), is_device);
+        }
+    }
+
+    #[test]
+    fn a_device_leaf_is_execute_never_at_both_exception_levels() {
+        // [53] PXN and [54] UXN. Device memory takes both, or the core may fetch from it
+        // speculatively (D8.4.4); Normal memory keeps the one that is not its own level's.
+        const EXECUTE_NEVER: u64 = bit(53) | bit(54);
+        for leaf in [Leaf::Small, Leaf::Large] {
+            for user in [false, true] {
+                let device = Entry::leaf(FRAME, leaf, user, true);
+                assert_eq!(device.0 & EXECUTE_NEVER, EXECUTE_NEVER, "user {user}");
+                let normal = Entry::leaf(FRAME, leaf, user, false);
+                assert_eq!(normal.0 & EXECUTE_NEVER, if user { bit(53) } else { bit(54) }, "user {user}");
+            }
         }
     }
 
