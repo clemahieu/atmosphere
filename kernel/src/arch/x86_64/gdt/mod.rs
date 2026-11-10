@@ -28,6 +28,19 @@ use types::{AccessByte, SystemAccessByte, SystemDescriptorType};
 
 const GDT_F_LONG_MODE: u8 = 1 << 5;
 
+/// The access bytes of the four flat segments and the TSS.
+const KERNEL_CODE: AccessByte = AccessByte::code_data(0).executable().read_write();
+const KERNEL_DATA: AccessByte = AccessByte::code_data(0).read_write();
+const USER_CODE: AccessByte = AccessByte::code_data(3).executable().read_write();
+const USER_DATA: AccessByte = AccessByte::code_data(3).read_write();
+const TSS: SystemAccessByte = SystemAccessByte::new(SystemDescriptorType::AvailableTss, 3);
+
+// The encodings Intel SDM Volume 3A section 3.4.5 gives for a present, readable
+// code segment, a present, writable data segment and an available 64-bit TSS.
+const _: () = assert!(KERNEL_CODE.0 == 0x9a && KERNEL_DATA.0 == 0x92);
+const _: () = assert!(USER_CODE.0 == 0xfa && USER_DATA.0 == 0xf2);
+const _: () = assert!(TSS.0 == 0xe9);
+
 /// Initializes and loads the GDT.
 ///
 /// This must be called only once for each CPU reset.
@@ -50,51 +63,11 @@ pub unsafe fn init_cpu() {
     // Initialize GDT
     let gdt = &mut cpu.gdt;
 
-    gdt.kernel_code = {
-        let mut access = AccessByte::new();
-        access.set_privilege(0);
-        access.set_executable(true);
-        access.set_read_write(true);
-
-        GdtEntry::new(0, 0, access, GDT_F_LONG_MODE)
-    };
-
-    gdt.kernel_data = {
-        let mut access = AccessByte::new();
-        access.set_privilege(0);
-        access.set_read_write(true);
-
-        GdtEntry::new(0, 0, access, GDT_F_LONG_MODE)
-    };
-
-    gdt.user_code = {
-        let mut access = AccessByte::new();
-        access.set_privilege(3);
-        access.set_executable(true);
-        access.set_read_write(true);
-
-        GdtEntry::new(0, 0, access, GDT_F_LONG_MODE)
-    };
-
-    gdt.user_data = {
-        let mut access = AccessByte::new();
-        access.set_privilege(3);
-        access.set_read_write(true);
-
-        GdtEntry::new(0, 0, access, GDT_F_LONG_MODE)
-    };
-
-    gdt.tss = {
-        let mut access = SystemAccessByte::new(SystemDescriptorType::AvailableTss);
-        access.set_privilege(3);
-
-        BigGdtEntry::new(
-            tss_addr as u64,
-            mem::size_of::<TaskStateSegment>() as u32,
-            access,
-            0,
-        )
-    };
+    gdt.kernel_code = GdtEntry::new(0, 0, KERNEL_CODE, GDT_F_LONG_MODE);
+    gdt.kernel_data = GdtEntry::new(0, 0, KERNEL_DATA, GDT_F_LONG_MODE);
+    gdt.user_code = GdtEntry::new(0, 0, USER_CODE, GDT_F_LONG_MODE);
+    gdt.user_data = GdtEntry::new(0, 0, USER_DATA, GDT_F_LONG_MODE);
+    gdt.tss = BigGdtEntry::new(tss_addr as u64, mem::size_of::<TaskStateSegment>() as u32, TSS, 0);
 
     // Load GDT
     lgdt(&gdt.get_pointer());

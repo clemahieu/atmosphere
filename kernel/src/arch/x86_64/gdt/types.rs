@@ -1,79 +1,43 @@
-//! Types.
-//!
-//! Well, most of this doesn't matter at all in Long Mode anyways ¯\_(ツ)_/¯
+//! The access bytes of GDT descriptors.
 
 use core::convert::TryFrom;
 
-use bitfield::bitfield;
-
 use crate::error::{Error, Result};
 
-bitfield! {
-    /// The Access Byte for Code and Data descriptors.
-    ///
-    /// This struct is only for Code and Data descriptors.
-    /// The meaning of bits 0-3 is different for System descriptors (e.g., TSS),
-    /// and you should use [SystemAccessByte] instead.
-    pub struct AccessByte(u8);
-    impl Debug;
+/// The Present bit, set in every descriptor in use.
+const PRESENT: u8 = 1 << 7;
 
-    /// The Present bit.
-    #[inline]
-    present, set_present: 7;
+/// The descriptor privilege level, bits 6 and 5.
+const PRIVILEGE_SHIFT: u8 = 5;
 
-    /// The descriptor privilege level.
-    #[inline]
-    pub privilege, set_privilege: 6, 5;
+/// The descriptor type bit: 1 for code and data, 0 for system descriptors.
+const CODE_DATA: u8 = 1 << 4;
 
-    /// Whether this segment is Code or Data.
-    ///
-    /// This should be 1.
-    /// The meaning of bits 0-3 is different for System descriptors (e.g., TSS),
-    /// and you should use [SystemAccessByte] instead.
-    #[inline]
-    code_data, set_code_data: 4;
+/// The Executable bit of a code or data descriptor.
+const EXECUTABLE: u8 = 1 << 3;
 
-    /// Whether this segment is executable.
-    #[inline]
-    pub executable, set_executable: 3;
+/// The Readable (code) or Writable (data) bit.
+const READ_WRITE: u8 = 1 << 1;
 
-    /// The Direction (Data) or Conforming (Code) bit.
-    ///
-    /// For data segments, this is the Direction bit.
-    /// 0 means that the segment grows up.
-    ///
-    /// For code segments, this is the Confirming bit.
-    /// 0 means that the segment can only be executed from the ring set in DPL.
-    /// 1 means that the segment can only be executed from a ring equal or lower than DPL.
-    #[inline]
-    pub direction, set_direction: 2;
-
-    /// The Writable (Data) or Readable (Code) bit.
-    ///
-    /// For data segments, this is the Writable bit.
-    /// For code segments, this is the Readable bit.
-    #[inline]
-    pub read_write, set_read_write: 1;
-
-    /// The Accessed bit.
-    ///
-    /// The processor will set it to 1 internally.
-    ///
-    /// ## VT-x
-    ///
-    /// When setting the Access Bytes of a segment in the Guest-State Area,
-    /// this bit must be 1. This is because you are directly setting the
-    /// segment descriptor cache in the internal processor state.
-    #[inline]
-    accessed, set_accessed: 0;
-}
+/// The access byte of a code or data descriptor, Intel SDM Volume 3A section 3.4.5.
+#[derive(Copy, Clone)]
+pub struct AccessByte(pub(super) u8);
 
 impl AccessByte {
-    pub fn new() -> Self {
-        let mut access = Self(0);
-        access.set_present(true);
-        access.set_code_data(true);
-        access
+    /// A present data segment at the privilege level, neither writable nor executable.
+    pub const fn code_data(privilege: u8) -> Self {
+        assert!(privilege <= 3);
+        Self(PRESENT | privilege << PRIVILEGE_SHIFT | CODE_DATA)
+    }
+
+    /// The same segment, executable: a code segment.
+    pub const fn executable(self) -> Self {
+        Self(self.0 | EXECUTABLE)
+    }
+
+    /// The same segment, readable if code and writable if data.
+    pub const fn read_write(self) -> Self {
+        Self(self.0 | READ_WRITE)
     }
 
     pub const fn not_present() -> Self {
@@ -81,66 +45,31 @@ impl AccessByte {
     }
 }
 
-bitfield! {
-    /// The Access Byte for System descriptors.
-    pub struct SystemAccessByte(u8);
-    impl Debug;
-
-    /// The Present bit.
-    #[inline]
-    present, set_present: 7;
-
-    /// The descriptor privilege level.
-    #[inline]
-    pub privilege, set_privilege: 6, 5;
-
-    /// Whether this segment is Code or Data.
-    ///
-    /// This should be 0.
-    /// The meaning of bits 0-3 is different for Code and Data descriptors,
-    /// and you should use [AccessByte] instead.
-    #[inline]
-    code_data, set_code_data: 4;
-
-    /// Type of the descriptor.
-    real_descriptor_type, set_real_descriptor_type: 3, 0;
-}
+/// The access byte of a system descriptor, Intel SDM Volume 3A section 3.4.5.
+#[derive(Copy, Clone)]
+pub struct SystemAccessByte(pub(super) u8);
 
 impl SystemAccessByte {
-    pub fn new(descriptor_type: SystemDescriptorType) -> Self {
-        let mut access = Self(0);
-        access.set_present(true);
-        access.set_code_data(false);
-        access.set_descriptor_type(descriptor_type);
-        access
+    /// A present system descriptor of the type at the privilege level.
+    pub const fn new(descriptor_type: SystemDescriptorType, privilege: u8) -> Self {
+        assert!(privilege <= 3);
+        Self(PRESENT | privilege << PRIVILEGE_SHIFT | descriptor_type as u8)
     }
 
     pub const fn not_present() -> Self {
         Self(0)
     }
-
-    pub fn set_descriptor_type(&mut self, descriptor_type: SystemDescriptorType) {
-        self.set_real_descriptor_type(descriptor_type.into());
-    }
 }
 
-/// The type of a System descriptor.
+/// The type of a System descriptor, Intel SDM Volume 3A table 3-2.
 #[derive(Debug, Copy, Clone)]
+#[repr(u8)]
 pub enum SystemDescriptorType {
     /// An available TSS.
-    AvailableTss,
+    AvailableTss = 0b1001,
 
     /// A busy TSS.
-    BusyTss,
-}
-
-impl From<SystemDescriptorType> for u8 {
-    fn from(descriptor_type: SystemDescriptorType) -> u8 {
-        match descriptor_type {
-            SystemDescriptorType::AvailableTss => 0b1001,
-            SystemDescriptorType::BusyTss => 0b1011,
-        }
-    }
+    BusyTss = 0b1011,
 }
 
 impl TryFrom<u8> for SystemDescriptorType {
