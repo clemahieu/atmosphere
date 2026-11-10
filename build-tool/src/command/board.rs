@@ -202,7 +202,12 @@ fn board_run_accepted(code: Option<i32>, output: &str, command_line: Option<&str
         return Err(anyhow!("{} did not say it launched QEMU under KVM", BOARD_RUN));
     }
     if code != Some(0) {
-        return Err(anyhow!("{} exited with {:?}: QEMU did not exit 0 within the timeout", BOARD_RUN, code));
+        // The runner's last line says how QEMU ended: `qemu: exit <status>` or `qemu: still running`.
+        let ended = output.lines().filter(|line| line.starts_with("qemu: ")).last().unwrap_or("no 'qemu:' line");
+        return Err(match boot_serial_accepted(output, Arch::Aarch64) {
+            Err(failed) => anyhow!("{} exited with {:?} ({}): {}", BOARD_RUN, code, ended, failed),
+            Ok(_) => anyhow!("{} exited with {:?} ({}) after a serial log that holds every check", BOARD_RUN, code, ended),
+        });
     }
     let held = format!("on {} under KVM: {}", host, boot_serial_accepted(output, Arch::Aarch64)?);
     if !command_line.is_some_and(|line| line.split(' ').any(|component| component == FAULT_KEPT)) {
@@ -251,7 +256,17 @@ mod tests {
     #[test]
     fn a_run_still_on_at_the_timeout_fails() {
         let output = board_output().replace("qemu: exit 0\n", "qemu: still running after 60 s\n");
-        assert!(board_run_accepted(Some(1), &output, None).unwrap_err().to_string().contains("did not exit 0"));
+        let error = board_run_accepted(Some(1), &output, None).unwrap_err().to_string();
+        assert!(error.contains("qemu: still running after 60 s"), "{}", error);
+    }
+
+    #[test]
+    fn a_run_that_failed_and_ended_qemu_names_the_check_that_failed() {
+        let output = board_output()
+            .replace("dom0 slot checks held\ndom0 capability done\n", "dom0 slot checks failed\n")
+            .replace("qemu: exit 0\n", "qemu: exit 1\n");
+        let error = board_run_accepted(Some(1), &output, None).unwrap_err().to_string();
+        assert!(error.contains("qemu: exit 1") && error.contains("check line"), "{}", error);
     }
 
     #[test]
