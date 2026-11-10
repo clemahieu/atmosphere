@@ -17,24 +17,23 @@ use super::reach::*;
 use super::space::*;
 #[cfg(verus_keep_ghost)]
 use super::view::*;
-#[cfg(verus_keep_ghost)]
 use crate::define::*;
 
 /// The first address past those a device space's four levels of table translate.
-pub const DEVICE_ADDRESS_END: usize = 0x1_0000_0000_0000;
+pub const DEVICE_ADDRESS_END: usize = SIZE_512G * ENTRIES;
 
 /// The bytes of the page a device range covers, 4K or, if large, 2M.
 pub open spec fn device_range_bytes(large: bool) -> usize {
-    if large { 0x20_0000 } else { 0x1000 }
+    if large { SIZE_2M } else { PAGE_SZ }
 }
 
 /// The indices of a device address's page, level 4 first. A large page's level 1 index goes unused.
 pub open spec fn device_path(base: usize, large: bool) -> SpacePath {
     SpacePath {
-        l4: (base >> 39) & 511,
-        l3: (base >> 30) & 511,
-        l2: (base >> 21) & 511,
-        l1: if large { 0 } else { (base >> 12) & 511 },
+        l4: (base >> L4_SHIFT) & INDEX_MASK,
+        l3: (base >> L3_SHIFT) & INDEX_MASK,
+        l2: (base >> L2_SHIFT) & INDEX_MASK,
+        l1: if large { 0 } else { (base >> L1_SHIFT) & INDEX_MASK },
     }
 }
 
@@ -64,7 +63,7 @@ impl DeviceRange {
             ret is Some == (base < DEVICE_ADDRESS_END && base % device_range_bytes(large) == 0),
             ret is Some ==> ret->0.base() == base && ret->0.large() == large,
     {
-        let bytes: usize = if large { 0x20_0000 } else { 0x1000 };
+        let bytes: usize = if large { SIZE_2M } else { PAGE_SZ };
         if base >= DEVICE_ADDRESS_END || base % bytes != 0 {
             return None;
         }
@@ -101,13 +100,13 @@ impl CapKernel {
             discharges(old(self).view(), final(self).view(), root, Effect::Local),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
-        let l4 = (r.base >> 39) & 511;
-        let l3 = (r.base >> 30) & 511;
-        let l2 = (r.base >> 21) & 511;
+        let l4 = (r.base >> L4_SHIFT) & INDEX_MASK;
+        let l3 = (r.base >> L3_SHIFT) & INDEX_MASK;
+        let l2 = (r.base >> L2_SHIFT) & INDEX_MASK;
         if r.large {
             self.map_large_kind(root, slot, SpaceKind::Device, l4, l3, l2, from, page)
         } else {
-            self.map_kind(root, slot, SpaceKind::Device, l4, l3, l2, (r.base >> 12) & 511, from, page)
+            self.map_kind(root, slot, SpaceKind::Device, l4, l3, l2, (r.base >> L1_SHIFT) & INDEX_MASK, from, page)
         }
     }
 
@@ -122,7 +121,7 @@ impl CapKernel {
             ({
                 let tree = tree_of(&self.table_pages, &self.spaces);
                 let e = tree.entry(s, i);
-                e.is_empty() || (tree.names_child(s, i) && tree.is_page((e.addr - TABLE_NODE_PAGES * 4096) as usize))
+                e.is_empty() || (tree.names_child(s, i) && tree.is_page((e.addr - TABLE_NODE_PAGES * PAGE_SZ) as usize))
             }),
     {
         let tree = tree_of(&self.table_pages, &self.spaces);

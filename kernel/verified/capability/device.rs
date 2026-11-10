@@ -74,17 +74,17 @@ pub proof fn lemma_device_object(d: int)
         0 <= d < MAX_DEVICES,
     ensures
         DEVICE_OBJECTS <= device_object(d),
-        device_object(d) % 4096 == 0,
+        device_object(d) % PAGE_SZ == 0,
         device_of(device_object(d)) == d,
 {
-    assert(DEVICE_OBJECTS % 4096 == 0);
-    vstd::arithmetic::div_mod::lemma_mod_multiples_vanish(d, DEVICE_OBJECTS as int, 4096);
-    vstd::arithmetic::div_mod::lemma_div_multiples_vanish(d, 4096);
+    assert(DEVICE_OBJECTS % PAGE_SZ == 0);
+    vstd::arithmetic::div_mod::lemma_mod_multiples_vanish(d, DEVICE_OBJECTS as int, PAGE_SZ as int);
+    vstd::arithmetic::div_mod::lemma_div_multiples_vanish(d, PAGE_SZ as int);
 }
 
 /// The device whose object o is.
 pub open spec fn device_of(o: usize) -> int {
-    (o - DEVICE_OBJECTS) / 4096
+    (o - DEVICE_OBJECTS) / PAGE_SZ as int
 }
 
 impl Devices {
@@ -189,7 +189,7 @@ impl Devices {
     /// The table has a record for device object o.
     pub open spec fn names(&self, o: usize) -> bool {
         &&& DEVICE_OBJECTS <= o
-        &&& o % 4096 == 0
+        &&& o % PAGE_SZ == 0
         &&& device_of(o) < self.count
     }
 }
@@ -314,7 +314,7 @@ impl CapKernel {
             self.list.lemma_valid_bound(child);
             lemma_device_object(d as int);
         }
-        let payload = Payload { kind: CapKind::Device, order: 0, rights: DEVICE_RIGHTS, base: DEVICE_OBJECTS + d * 4096, badge: 0, reserved: 0 };
+        let payload = Payload { kind: CapKind::Device, order: 0, rights: DEVICE_RIGHTS, base: DEVICE_OBJECTS + d * PAGE_SZ, badge: 0, reserved: 0 };
         self.list.derive(first, child, NodeKind::Capability);
         proof {
             pre.tables.lemma_wf_same_pages(&pre.list, &self.list);
@@ -344,7 +344,7 @@ impl CapKernel {
     pub proof fn lemma_add_untracked_holders(pre: Self, post: Self, child: usize)
         requires
             Self::derive_step(pre, post, child),
-            child % 4096 != 0,
+            child % PAGE_SZ != 0,
             !tracked_kind(post.payload_of(child).kind),
             post.blocks == pre.blocks,
             post.holders == pre.holders,

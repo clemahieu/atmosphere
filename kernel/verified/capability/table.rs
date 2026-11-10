@@ -23,7 +23,7 @@ use crate::capability::steps::Steps;
 use crate::define::*;
 use crate::pptr::*;
 
-pub const ROOT_ENTRIES: usize = 512;
+pub const ROOT_ENTRIES: usize = ENTRIES;
 /// Indices run over root entries and node positions, of which position 0 in a leaf is no slot.
 pub const TABLE_INDICES: usize = 65536;
 /// What a root entry holds when it has no leaf. A leaf is never at address zero.
@@ -68,7 +68,7 @@ pub const MAX_ORDER: u8 = 36;
 
 /// A block of this order, in bytes.
 pub open spec fn block_bytes(order: u8) -> int {
-    pow2(order as nat) as int * 4096
+    pow2(order as nat) as int * PAGE_SZ
 }
 
 /// What a memory capability says names a block: base aligned to its size, inside the address space.
@@ -140,7 +140,7 @@ proof fn lemma_payload_page_aligned(leaf: usize)
     requires
         leaf % 8192 == 0,
     ensures
-        (leaf + 4096) % 4096 == 0,
+        (leaf + PAGE_SZ) % PAGE_SZ as int == 0,
 {
 }
 
@@ -159,7 +159,7 @@ pub proof fn lemma_slot_in_leaf(leaf: usize, slot: usize)
         leaf + slot <= usize::MAX,
     ensures
         page_of((leaf + slot) as usize) == leaf,
-        ((leaf + slot) as usize) % 4096 == slot,
+        ((leaf + slot) as usize) % PAGE_SZ == slot,
 {
 }
 
@@ -167,7 +167,7 @@ pub proof fn lemma_slot_in_leaf(leaf: usize, slot: usize)
 fn new_payload_page(addr: usize, root: usize, r: usize, Tracked(page): Tracked<PagePerm4k>, Tracked(steps): Tracked<&mut Steps>) -> (ret: Tracked<PointsTo<PayloadPage>>)
     requires
         page.addr() == addr,
-        addr % 4096 == 0,
+        addr % PAGE_SZ == 0,
     ensures
         final(steps).count <= old(steps).count + NODES_PER_PAGE,
         ret@.addr() == addr,
@@ -244,7 +244,7 @@ impl Tables {
         &&& self.record(leaf).badge as int == r
         &&& list.pages@.dom().contains(leaf)
         &&& self.payloads@.contains_key(leaf)
-        &&& self.payloads@[leaf].addr() == leaf + 4096
+        &&& self.payloads@[leaf].addr() == leaf + PAGE_SZ
         &&& self.payloads@[leaf].is_init()
         &&& self.payloads@[leaf].value().entries.wf()
     }
@@ -265,13 +265,13 @@ impl Tables {
         &&& list.nodes@[n as int].live
         &&& list.nodes@[n as int].kind is Capability
         &&& self.owner@.contains_key(page_of(n))
-        &&& n % 4096 != 0
-        &&& n % 4096 < NODES_PER_PAGE
+        &&& n % PAGE_SZ != 0
+        &&& n % PAGE_SZ < NODES_PER_PAGE
     }
 
     /// What capability n says.
     pub open spec fn payload_of(&self, n: usize) -> Payload {
-        self.payloads@[page_of(n)].value().entries@[(n % 4096) as int]
+        self.payloads@[page_of(n)].value().entries@[(n % PAGE_SZ) as int]
     }
 
     /// Every capability says something well formed.
@@ -380,7 +380,7 @@ impl Tables {
             old(self).wf(list),
             !old(self).roots@.contains_key(root),
             page.addr() == root,
-            root % 4096 == 0,
+            root % PAGE_SZ == 0,
         ensures
             final(steps).count <= old(steps).count + ROOT_ENTRIES,
             final(self).wf(list),
@@ -482,7 +482,7 @@ impl Tables {
             leaf + 8192 <= usize::MAX,
             list.pages@.dom().contains(leaf),
             !old(self).owner@.contains_key(leaf),
-            page.addr() == leaf + 4096,
+            page.addr() == leaf + PAGE_SZ,
         ensures
             final(self).wf(list),
             final(self).leaf(root, r as int) == leaf,
@@ -501,7 +501,7 @@ impl Tables {
         }
         // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
         let tracked mut steps = Steps::fresh();
-        let Tracked(typed) = new_payload_page(leaf + 4096, root, r, Tracked(page), Tracked(&mut steps));
+        let Tracked(typed) = new_payload_page(leaf + PAGE_SZ, root, r, Tracked(page), Tracked(&mut steps));
         proof {
             self.payloads.borrow_mut().tracked_insert(leaf, typed);
         }
@@ -565,7 +565,7 @@ impl Tables {
             me.roots@[root].value().leaves.wf(),
             me.roots@[root].value().leaves@ == pre.roots@[root].value().leaves@.update(r as int, leaf),
             me.payloads@ == pre.payloads@.insert(leaf, me.payloads@[leaf]),
-            me.payloads@[leaf].addr() == leaf + 4096,
+            me.payloads@[leaf].addr() == leaf + PAGE_SZ,
             me.payloads@[leaf].is_init(),
             me.payloads@[leaf].value().entries.wf(),
             me.payloads@[leaf].value().entries@[0] == parent_record(root, r),
@@ -642,7 +642,7 @@ impl Tables {
             ret is Some ==> {
                 &&& ret.unwrap().0 == self.node_of(root, i)
                 &&& list.valid(ret.unwrap().0)
-                &&& ret.unwrap().0 % 4096 != 0
+                &&& ret.unwrap().0 % PAGE_SZ != 0
                 &&& ret.unwrap().1 == self.payloads@[self.leaf(root, index_entry(i))].value().entries@[index_slot(i)]
             },
     {
@@ -668,7 +668,7 @@ impl Tables {
         if !list.get(leaf).live {
             return None;
         }
-        let payloads = PPtr::<PayloadPage>::from_usize(leaf + 4096).borrow(Tracked(self.payloads.borrow().tracked_borrow(leaf)));
+        let payloads = PPtr::<PayloadPage>::from_usize(leaf + PAGE_SZ).borrow(Tracked(self.payloads.borrow().tracked_borrow(leaf)));
         Some((leaf + slot, *payloads.entries.get(slot)))
     }
 
@@ -683,7 +683,7 @@ impl Tables {
             final(self).owner == old(self).owner,
             final(self).payload_of(old(self).node_of(root, i)) == p,
             forall|n: usize| #![trigger final(self).payload_of(n)]
-                n != old(self).node_of(root, i) && n % 4096 < NODES_PER_PAGE
+                n != old(self).node_of(root, i) && n % PAGE_SZ < NODES_PER_PAGE
                 && old(self).owner@.contains_key(page_of(n))
                 ==> final(self).payload_of(n) == old(self).payload_of(n),
     {
@@ -704,7 +704,7 @@ impl Tables {
         proof {
             perm = self.payloads.borrow_mut().tracked_remove(leaf);
         }
-        PPtr::<PayloadPage>::from_usize(leaf + 4096).borrow_mut(Tracked(&mut perm)).entries.set(slot, p);
+        PPtr::<PayloadPage>::from_usize(leaf + PAGE_SZ).borrow_mut(Tracked(&mut perm)).entries.set(slot, p);
         proof {
             self.payloads.borrow_mut().tracked_insert(leaf, perm);
             assert(self.payloads@ =~= pre.payloads@.insert(leaf, self.payloads@[leaf]));
@@ -720,7 +720,7 @@ impl Tables {
             leaf == pre.leaf(root, index_entry(i)),
             leaf == page_of(pre.node_of(root, i)),
             slot as int == index_slot(i),
-            slot == pre.node_of(root, i) % 4096,
+            slot == pre.node_of(root, i) % PAGE_SZ,
             me.roots == pre.roots,
             me.owner == pre.owner,
             me.payloads@ == pre.payloads@.insert(leaf, me.payloads@[leaf]),
@@ -732,7 +732,7 @@ impl Tables {
             me.wf(list),
             me.payload_of(pre.node_of(root, i)) == p,
             forall|n: usize| #![trigger me.payload_of(n)]
-                n != pre.node_of(root, i) && n % 4096 < NODES_PER_PAGE
+                n != pre.node_of(root, i) && n % PAGE_SZ < NODES_PER_PAGE
                 && pre.owner@.contains_key(page_of(n))
                 ==> me.payload_of(n) == pre.payload_of(n),
     {
@@ -765,10 +765,10 @@ impl Tables {
             }
         }
         assert forall|n: usize| #![trigger me.payload_of(n)]
-            n != pre.node_of(root, i) && n % 4096 < NODES_PER_PAGE && pre.owner@.contains_key(page_of(n))
+            n != pre.node_of(root, i) && n % PAGE_SZ < NODES_PER_PAGE && pre.owner@.contains_key(page_of(n))
             implies me.payload_of(n) == pre.payload_of(n) by {
             if page_of(n) == leaf {
-                assert(n % 4096 != slot);
+                assert(n % PAGE_SZ != slot);
             }
         }
     }
@@ -791,7 +791,7 @@ impl Tables {
                 ==> final(self).leaf(t, s) == old(self).leaf(t, s),
             final(self).owner@ == old(self).owner@.remove(leaf),
             final(self).payloads@ == old(self).payloads@.remove(leaf),
-            ret@.addr() == leaf + 4096,
+            ret@.addr() == leaf + PAGE_SZ,
             ret@.is_uninit(),
             forall|t: usize, i: usize| #[trigger] final(self).has_slot(list, t, i) == old(self).has_slot(list, t, i),
             forall|t: usize, i: usize| #[trigger] old(self).has_slot(list, t, i) ==> final(self).node_of(t, i) == old(self).node_of(t, i),
@@ -802,7 +802,7 @@ impl Tables {
         proof {
             pre.lemma_leaf(list, leaf);
         }
-        let record = *PPtr::<PayloadPage>::from_usize(leaf + 4096)
+        let record = *PPtr::<PayloadPage>::from_usize(leaf + PAGE_SZ)
             .borrow(Tracked(self.payloads.borrow().tracked_borrow(leaf)))
             .entries
             .get(0);
@@ -906,7 +906,7 @@ impl Tables {
         assert forall|n: usize| #[trigger] me.is_cap(list, n) == pre.is_cap(list, n) by {
             if pre.is_cap(list, n) && page_of(n) == leaf {
                 Self::lemma_node_in_leaf(leaf, n);
-                assert(list.nodes@[leaf + (n % 4096) as int] == list.nodes@[n as int]);
+                assert(list.nodes@[leaf + (n % PAGE_SZ) as int] == list.nodes@[n as int]);
             }
         }
         assert forall|n: usize| page_of(n) != leaf implies #[trigger] me.payload_of(n) == pre.payload_of(n) by {
@@ -919,7 +919,7 @@ impl Tables {
         requires
             page_of(n) == leaf,
         ensures
-            n as int == leaf + (n % 4096) as int,
+            n as int == leaf + (n % PAGE_SZ) as int,
     {
     }
 
@@ -990,14 +990,14 @@ impl Tables {
         ensures
             ret == self.payload_of(n),
     {
-        let page = n - n % 4096;
+        let page = n - n % PAGE_SZ;
         proof {
             self.lemma_leaf(list, page);
         }
-        *PPtr::<PayloadPage>::from_usize(page + 4096)
+        *PPtr::<PayloadPage>::from_usize(page + PAGE_SZ)
             .borrow(Tracked(self.payloads.borrow().tracked_borrow(page)))
             .entries
-            .get(n % 4096)
+            .get(n % PAGE_SZ)
     }
 
     /// Reads entry r of the table at root.

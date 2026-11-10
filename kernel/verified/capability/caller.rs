@@ -14,7 +14,7 @@ use crate::arch::Registers;
 #[cfg(verus_keep_ghost)]
 use crate::capability::block::{Large, NUM_2M};
 #[cfg(verus_keep_ghost)]
-use crate::define::PAGES_PER_2M;
+use crate::define::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::derive::*;
 #[cfg(verus_keep_ghost)]
@@ -92,7 +92,7 @@ pub open spec fn frame_view(base: usize, order: u8, parent: usize) -> SlotView {
 
 /// The page at this offset of the block a slot's frame capability names, as frame_of reads it.
 pub open spec fn view_frame(v: SlotView, page: usize) -> usize {
-    (v.base / 4096 + page) as usize
+    (v.base / PAGE_SZ + page) as usize
 }
 
 /// A child with these rights and this block narrows a slot's capability, as narrows reads it within one
@@ -245,8 +245,8 @@ impl CapKernel {
         requires
             Self::caps_frame(pre, post, n, m),
             post.tables.roots == pre.tables.roots,
-            n % 4096 != 0,
-            m % 4096 != 0,
+            n % PAGE_SZ != 0,
+            m % PAGE_SZ != 0,
         ensures
             post.tables.has_slot(&post.list, t, j) == pre.tables.has_slot(&pre.list, t, j),
     {
@@ -255,7 +255,7 @@ impl CapKernel {
             assert(0 <= index_entry(j) < ROOT_ENTRIES);
             pre.tables.lemma_entry(t, index_entry(j));
             pre.tables.lemma_leaf(&pre.list, leaf);
-            assert(leaf % 4096 == 0);
+            assert(leaf % PAGE_SZ == 0);
             pre.lemma_slot_bound(leaf);
             assert(post.list.nodes@[leaf as int].live == pre.list.nodes@[leaf as int].live);
         }
@@ -437,11 +437,11 @@ impl CapKernel {
             Some(place) => {
                 &&& tree.is_table(place.table)
                 &&& tree.record(place.table).space == Some(s)
-                &&& !self.blocks.pages@[(place.table / 4096) as int].dead
+                &&& !self.blocks.pages@[(place.table / PAGE_SZ) as int].dead
                 &&& tree.child_slot(place.table, place.entry)
                 &&& tree.entry(place.table, place.entry).is_empty()
                 &&& tree.is_page(child)
-                &&& !self.blocks.pages@[(child / 4096) as int].dead
+                &&& !self.blocks.pages@[(child / PAGE_SZ) as int].dead
                 &&& tree.record(child).level + 1 == tree.record(place.table).level
                 &&& tree.record(child).space is None
                 &&& tree.record(child).parent is None
@@ -523,16 +523,16 @@ impl CapKernel {
             let t = walk_table(tree, s, p)->0;
             &&& level == 1
             &&& walk_table(tree, s, p) is Some
-            &&& !self.blocks.pages@[(t / 4096) as int].dead
-            &&& p.l1 < 512
+            &&& !self.blocks.pages@[(t / PAGE_SZ) as int].dead
+            &&& p.l1 < ENTRIES
             &&& tree.entry(t, p.l1).is_empty()
         }
         ||| {
             let t = walk_large_table(tree, s, p)->0;
             &&& level == 2
             &&& walk_large_table(tree, s, p) is Some
-            &&& !self.blocks.pages@[(t / 4096) as int].dead
-            &&& p.l2 < 512
+            &&& !self.blocks.pages@[(t / PAGE_SZ) as int].dead
+            &&& p.l2 < ENTRIES
             &&& p.l1 == 0
             &&& tree.entry(t, p.l2).is_empty()
         }
@@ -557,12 +557,12 @@ impl CapKernel {
         &&& v[from].kind is Frame
         &&& v[from].rights & right_bit(Right::Read) != 0
         &&& {
-            ||| level == 1 && (page as int) * 4096 < block_bytes(v[from].order)
+            ||| level == 1 && (page as int) * PAGE_SZ < block_bytes(v[from].order)
             ||| {
                 &&& level == 2
                 &&& v[from].order == 9 || v[from].order == 18
-                &&& page % 512 == 0
-                &&& (page as int) * 4096 + 512 * 4096 <= block_bytes(v[from].order)
+                &&& page % PAGES_PER_2M == 0
+                &&& (page as int) * PAGE_SZ + SIZE_2M <= block_bytes(v[from].order)
             }
         }
         &&& self.list.nodes@[self.tables.node_of(root, from) as int].depth < MAX_DEPTH
@@ -745,14 +745,14 @@ impl CapKernel {
     /// kernel reads it outside the view.
     pub open spec fn small_block_free(&self, base: usize, order: usize) -> bool {
         &&& self.blocks.tracks_addr_run(base, crate::capability::block::order_pages(order))
-        &&& self.blocks.small_free((base / 4096) as int, order)
+        &&& self.blocks.small_free((base / PAGE_SZ) as int, order)
     }
 
     /// The 2M block at base is in a region the block table has, and is free or is the one an earlier
     /// step of this retype typed and is zeroing, as the kernel reads it outside the view.
     pub open spec fn large_block_ready(&self, base: usize) -> bool {
-        let r = base / 4096 / crate::capability::zero::level_pages(Large::Two);
-        &&& base / 4096 / PAGES_PER_2M < NUM_2M
+        let r = base / PAGE_SZ / crate::capability::zero::level_pages(Large::Two);
+        &&& base / PAGE_SZ / PAGES_PER_2M < NUM_2M
         &&& self.zeroing.active(Large::Two, r) || self.blocks.large_free(Large::Two, r as int)
     }
 
@@ -960,7 +960,7 @@ impl CapKernel {
             forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t),
     {
         let table = pre.destination_at(root, at.through)->0;
-        assert(pre.blocks.pages@[(base / 4096) as int + 0].kind is Free);
+        assert(pre.blocks.pages@[(base / PAGE_SZ) as int + 0].kind is Free);
         assert forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t) by {
             assert forall|j: usize| #[trigger] post.table_view(t).contains_key(j) == pre.table_view(t).contains_key(j)
                 && (post.table_view(t).contains_key(j) ==> post.table_view(t)[j] == pre.table_view(t)[j]) by {
@@ -981,7 +981,7 @@ impl CapKernel {
                         let leaf = pre.tables.leaf(t, e);
                         assert(post.tables.leaf(t, e) == leaf);
                         pre.tables.lemma_entry(t, e);
-                        assert(pre.blocks.pages@[(leaf / 4096) as int].kind is Base);
+                        assert(pre.blocks.pages@[(leaf / PAGE_SZ) as int].kind is Base);
                         assert(leaf != base);
                         pre.tables.lemma_leaf(&pre.list, leaf);
                         assert(page_of(leaf) == leaf);
@@ -1032,7 +1032,7 @@ impl CapKernel {
             Self::lemma_slot_added(pre, post, root, to, frame_view(base, 9, parent));
         } else if kind == RETYPE_TABLE_PAGE {
             if pre.tables.owner@.contains_key(base) {
-                assert(pre.blocks.pages@[(base / 4096) as int].kind is Base);
+                assert(pre.blocks.pages@[(base / PAGE_SZ) as int].kind is Base);
             }
             Self::lemma_unslotted_node(pre, post, base);
         } else {
@@ -1071,7 +1071,7 @@ impl CapKernel {
         &&& !self.cap_dead(n)
         &&& self.list.nodes@[n as int].depth < MAX_DEPTH
         &&& (v[i].kind is Frame || v[i].kind is Space || v[i].kind is Thread || v[i].kind is Process)
-            ==> block_refs(&self.blocks, block_ref(&self.blocks, v[i].base / 4096)) != usize::MAX
+            ==> block_refs(&self.blocks, block_ref(&self.blocks, v[i].base / PAGE_SZ)) != usize::MAX
     }
 
     /// Derive's condition over the caller's view is the one allows_derive reads.
