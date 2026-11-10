@@ -19,14 +19,22 @@ tools/setup-verus.sh writes beside the host one, and the shared crates' rlibs go
 target/verus/aarch64-unknown-none/. With no --target the crates are checked for the host, x86_64.
 design/arch-module/ says why one run per target.
 
+It first checks that tools/verus is checked out at the Verus commit the workspace Cargo.toml pins as
+vstd's revision, and exits naming both commits when it is not, since the crates would otherwise be
+checked by a Verus other than the one their vstd comes from.
+
 Expects tools/env.sh to be sourced, which puts rust_verify on PATH.
 
 usage: tools/verify.py [--target aarch64] [rust_verify argument...]
+       tools/verify.py --test    (this script's own tests)
 """
 import json
 import os
 import subprocess
 import sys
+import tempfile
+import tomllib
+import unittest
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -130,6 +138,23 @@ def verify_command(crate, depended_on, triple, verus_out, extra_args):
     return command
 
 
+def pinned_commit(manifest):
+    """The Verus commit the workspace manifest pins: its vstd dependency's git revision."""
+    with open(manifest, "rb") as file:
+        return tomllib.load(file)["workspace"]["dependencies"]["vstd"]["rev"]
+
+
+def checkout_mismatch(manifest, checkout):
+    """Why the Verus checkout is not the one the manifest pins, or None when it is."""
+    pinned = pinned_commit(manifest)
+    checked_out = subprocess.run(
+        ["git", "-C", str(checkout), "rev-parse", "HEAD"], check=True, stdout=subprocess.PIPE, text=True
+    ).stdout.strip()
+    if checked_out == pinned:
+        return None
+    return f"{checkout} is at {checked_out}, but {manifest} pins {pinned}; run tools/setup-verus.sh"
+
+
 def split_target(args):
     """The --target the script takes for itself, as a rustc triple or None, and the rest of args."""
     if args[:1] != ["--target"]:
@@ -152,6 +177,9 @@ def target_env(triple):
 
 def main(args):
     triple, extra_args = split_target(args)
+    mismatch = checkout_mismatch(REPO / "Cargo.toml", REPO / "tools" / "verus")
+    if mismatch is not None:
+        sys.exit(f"verify: {mismatch}")
     env = target_env(triple)
     verus_out = REPO / "target" / "verus"
     if triple is not None:
@@ -181,5 +209,61 @@ def main(args):
     return status
 
 
+class Tests(unittest.TestCase):
+    """The gate runs these with tools/verify.py --test before it verifies."""
+
+    def git(self, checkout, *args):
+        return subprocess.run(
+            ["git", "-C", str(checkout), "-c", "user.name=test", "-c", "user.email=test@invalid", *args],
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        ).stdout.strip()
+
+    def manifest(self, directory, rev):
+        manifest = Path(directory) / "Cargo.toml"
+        manifest.write_text(
+            '[workspace]\nmembers = []\n\n[workspace.dependencies.vstd]\n'
+            f'git = "https://github.com/verus-lang/verus"\nrev = "{rev}"\ndefault-features = false\n'
+        )
+        return manifest
+
+    def test_the_pin_is_the_workspace_vstd_revision(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(pinned_commit(self.manifest(directory, "0123abcd")), "0123abcd")
+
+    def test_the_trees_manifest_pins_a_full_commit(self):
+        self.assertRegex(pinned_commit(REPO / "Cargo.toml"), r"^[0-9a-f]{40}$")
+
+    def test_every_crate_on_vstd_takes_the_workspace_pin(self):
+        with_vstd = []
+        for package in cargo_metadata()["packages"]:
+            with open(package["manifest_path"], "rb") as manifest:
+                vstd = tomllib.load(manifest).get("dependencies", {}).get("vstd")
+            if vstd is not None:
+                with_vstd.append(package["name"])
+                self.assertEqual(vstd, {"workspace": True}, package["name"])
+        self.assertIn("verified", with_vstd)
+
+    def test_a_checkout_at_the_pin_passes_and_one_elsewhere_is_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            checkout = Path(directory) / "verus"
+            checkout.mkdir()
+            self.git(checkout, "init", "--quiet")
+            self.git(checkout, "commit", "--quiet", "--allow-empty", "-m", "pinned")
+            pinned = self.git(checkout, "rev-parse", "HEAD")
+            self.git(checkout, "commit", "--quiet", "--allow-empty", "-m", "later")
+            later = self.git(checkout, "rev-parse", "HEAD")
+            manifest = self.manifest(directory, pinned)
+            refusal = checkout_mismatch(manifest, checkout)
+            self.assertIsNotNone(refusal)
+            self.assertIn(pinned, refusal)
+            self.assertIn(later, refusal)
+            self.git(checkout, "checkout", "--quiet", pinned)
+            self.assertIsNone(checkout_mismatch(manifest, checkout))
+
+
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--test"]:
+        unittest.main(argv=[sys.argv[0]])
     sys.exit(main(sys.argv[1:]))

@@ -134,7 +134,10 @@ impl Step {
             Step::BuildToolTests => check_build_tool_tests(project).await,
             Step::License => check_licenses(project).await,
             Step::Hooks => check_hooks(project).await,
-            Step::Verify => check_verify(project, &[]).await,
+            Step::Verify => {
+                run_check(project, VERIFY, &["--test"]).await?;
+                check_verify(project, &[]).await
+            }
             Step::VerifyAarch64 => check_verify(project, &["--target", "aarch64"]).await,
             Step::ExternalBody => check_external_body(project).await,
             Step::DesignIndex => check_design_index(project).await,
@@ -347,7 +350,8 @@ async fn check_verify(project: &ProjectHandle, args: &[&str]) -> Result<String> 
     let text = String::from_utf8_lossy(&output.stdout) + String::from_utf8_lossy(&output.stderr);
     let counts: Vec<u64> = text.lines().filter_map(parse_verify_errors).collect();
     if counts.is_empty() {
-        return Err(anyhow!("{}: {}, no verification results line", command, output.status));
+        let last = text.lines().last().unwrap_or_default();
+        return Err(anyhow!("{}: {}, no verification results line: {}", command, output.status, last));
     }
     let errors: u64 = counts.iter().sum();
     if errors == 0 && !output.status.success() {
