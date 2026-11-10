@@ -118,6 +118,13 @@ proof fn lemma_block_page(b: usize, k: int)
     lemma_fundamental_div_mod_converse(8 * q, PAGES_PER_2M as int, q / in_2m, 8 * (q % in_2m));
     lemma_fundamental_div_mod(q, in_1g);
     lemma_mod_pos_bound(q, in_1g);
+    let d1 = q / in_1g;
+    let r1 = q % in_1g;
+    assert(8 * q == d1 * PAGES_PER_1G as int + 8 * r1) by (nonlinear_arith)
+        requires
+            q == in_1g * d1 + r1,
+            PAGES_PER_1G as int == 8 * in_1g,
+    ;
     lemma_fundamental_div_mod_converse(8 * q + k, PAGES_PER_1G as int, q / in_1g, 8 * (q % in_1g) + k);
     lemma_fundamental_div_mod_converse(8 * q, PAGES_PER_1G as int, q / in_1g, 8 * (q % in_1g));
     if k % 2 == 0 {
@@ -748,7 +755,9 @@ impl CapKernel {
             assert(s0.blocks.small_free((b2 / PAGE_SZ) as int, 1));
             assert(s0.can_retype_leaf(process, ROOT_UNTYPED_SLOT, at1, b2));
         }
-        let ok1 = self.retype_leaf(process, ROOT_UNTYPED_SLOT, at1, b2);
+        // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let ok1 = self.retype_leaf(process, ROOT_UNTYPED_SLOT, at1, b2, Tracked(&mut steps));
         let ghost s1 = *self;
         proof {
             assert(ok1);
@@ -787,7 +796,9 @@ impl CapKernel {
             }
             assert(s1.can_retype_block(process, ROOT_UNTYPED_SLOT, WITNESS_PROCESS_SLOT, base, PROCESS_ORDER));
         }
-        let ok2 = self.retype_process(process, ROOT_UNTYPED_SLOT, WITNESS_PROCESS_SLOT, base);
+        // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let ok2 = self.retype_process(process, ROOT_UNTYPED_SLOT, WITNESS_PROCESS_SLOT, base, Tracked(&mut steps));
         let ghost s2 = *self;
         let ghost np = (b2 + 1) as usize;
         proof {
@@ -858,7 +869,9 @@ impl CapKernel {
             }
             assert(s2.can_retype_thread(process, ROOT_UNTYPED_SLOT, WITNESS_THREAD_SLOT, bt, WITNESS_PROCESS_SLOT));
         }
-        let ok3 = self.retype_thread(process, ROOT_UNTYPED_SLOT, WITNESS_THREAD_SLOT, bt, WITNESS_PROCESS_SLOT);
+        // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let ok3 = self.retype_thread(process, ROOT_UNTYPED_SLOT, WITNESS_THREAD_SLOT, bt, WITNESS_PROCESS_SLOT, Tracked(&mut steps));
         let ghost s3 = *self;
         proof {
             assert(ok3);
@@ -930,7 +943,9 @@ impl CapKernel {
             }
             assert(s3.can_retype_leaf(process, ROOT_UNTYPED_SLOT, at2, bl));
         }
-        let ok4 = self.retype_leaf(process, ROOT_UNTYPED_SLOT, at2, bl);
+        // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let ok4 = self.retype_leaf(process, ROOT_UNTYPED_SLOT, at2, bl, Tracked(&mut steps));
         let ghost s4 = *self;
         let ghost child = (bl + 1) as usize;
         proof {
@@ -1535,7 +1550,9 @@ impl CapKernel {
         }
 
         // Retype a process at the same block into slot 257 again.
-        let ok9 = self.retype_process(process, ROOT_UNTYPED_SLOT, WITNESS_PROCESS_SLOT, base);
+        // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let ok9 = self.retype_process(process, ROOT_UNTYPED_SLOT, WITNESS_PROCESS_SLOT, base, Tracked(&mut steps));
         proof {
             assert(ok9);
             assert(np == base + 8 * PAGE_SZ + 1);
@@ -1629,7 +1646,9 @@ impl CapKernel {
             assert(t != cursor);
             lemma_aligned(cursor);
         }
-        let retyped = self.retype_table_page(process, ROOT_UNTYPED_SLOT, cursor, level);
+        // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let retyped = self.retype_table_page(process, ROOT_UNTYPED_SLOT, cursor, level, Tracked(&mut steps));
         let ghost mid = *self;
         let ghost m = tree_of(&mid.table_pages, &mid.spaces);
         proof {
@@ -1954,7 +1973,9 @@ impl CapKernel {
             }
             assert(s0.can_retype_leaf(process, ROOT_UNTYPED_SLOT, at1, b1));
         }
-        let ok1 = self.retype_leaf(process, ROOT_UNTYPED_SLOT, at1, b1);
+        // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let ok1 = self.retype_leaf(process, ROOT_UNTYPED_SLOT, at1, b1, Tracked(&mut steps));
         let ghost s1 = *self;
         proof {
             assert(ok1);
@@ -2002,7 +2023,9 @@ impl CapKernel {
             assert(s1.blocks.pages@[base / PAGE_SZ + 0].kind is Free);
             s1.lemma_free_not_table(base, base / PAGE_SZ);
         }
-        let ok2 = self.retype_process(process, ROOT_UNTYPED_SLOT, WITNESS_PROCESS_SLOT, base);
+        // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let ok2 = self.retype_process(process, ROOT_UNTYPED_SLOT, WITNESS_PROCESS_SLOT, base, Tracked(&mut steps));
         let ghost s2 = *self;
         let ghost a2 = tree_of(&s2.table_pages, &s2.spaces);
         let ghost np = (b1 + 1) as usize;
@@ -2091,7 +2114,9 @@ impl CapKernel {
             s3.lemma_free_not_table(bq, bq / PAGE_SZ);
             assert(!a3.is_table(bq));
         }
-        let ok4 = self.retype_process(process, ROOT_UNTYPED_SLOT, WITNESS_SECOND_PROCESS_SLOT, bq);
+        // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let ok4 = self.retype_process(process, ROOT_UNTYPED_SLOT, WITNESS_SECOND_PROCESS_SLOT, bq, Tracked(&mut steps));
         let ghost s4 = *self;
         let ghost a4 = tree_of(&s4.table_pages, &s4.spaces);
         let ghost nq = (b1 + 2) as usize;
@@ -2197,7 +2222,9 @@ impl CapKernel {
             }
             assert(s5.can_retype_frame(process, ROOT_UNTYPED_SLOT, WITNESS_FRAME_SLOT, bf));
         }
-        let ok6 = self.retype_frame(process, ROOT_UNTYPED_SLOT, WITNESS_FRAME_SLOT, bf);
+        // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let ok6 = self.retype_frame(process, ROOT_UNTYPED_SLOT, WITNESS_FRAME_SLOT, bf, Tracked(&mut steps));
         let ghost s6 = *self;
         let ghost a6 = tree_of(&s6.table_pages, &s6.spaces);
         let ghost nf = (b1 + 3) as usize;
@@ -2638,7 +2665,9 @@ impl CapKernel {
             }
             assert(s0.can_retype_leaf(process, ROOT_UNTYPED_SLOT, at, lb));
         }
-        let ok1 = self.retype_leaf(process, ROOT_UNTYPED_SLOT, at, lb);
+        // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let ok1 = self.retype_leaf(process, ROOT_UNTYPED_SLOT, at, lb, Tracked(&mut steps));
         let ghost s1 = *self;
         let ghost a1 = tree_of(&s1.table_pages, &s1.spaces);
         proof {
@@ -2709,7 +2738,9 @@ impl CapKernel {
             }
             assert(s2.can_retype_frame(process, ROOT_UNTYPED_SLOT, WITNESS_FRAME_SLOT, bf));
         }
-        let ok3 = self.retype_frame(process, ROOT_UNTYPED_SLOT, WITNESS_FRAME_SLOT, bf);
+        // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let ok3 = self.retype_frame(process, ROOT_UNTYPED_SLOT, WITNESS_FRAME_SLOT, bf, Tracked(&mut steps));
         let ghost s3 = *self;
         let ghost a3 = tree_of(&s3.table_pages, &s3.spaces);
         let ghost nf = (lb + 3) as usize;

@@ -30,6 +30,8 @@ pub const TABLE_INDICES: usize = 65536; // not a page size: a count of indices
 pub const LEAF_BYTES: usize = PAGE_SZ * 2;
 /// What a root entry holds when it has no leaf. A leaf is never at address zero.
 pub const NO_LEAF: usize = 0;
+/// add_leaf's bound in the step counter: writing the payload page's entries. See design/one-lock-bounded-steps/.
+pub const ADD_LEAF_STEPS: usize = NODES_PER_PAGE;
 
 #[derive(Clone, Copy)]
 pub enum CapKind {
@@ -475,6 +477,7 @@ impl Tables {
         r: usize,
         leaf: usize,
         Tracked(page): Tracked<PagePerm4k>,
+        Tracked(steps): Tracked<&mut Steps>,
     )
         requires
             old(self).wf(list),
@@ -488,6 +491,7 @@ impl Tables {
             !old(self).owner@.contains_key(leaf),
             page.addr() == leaf + PAGE_SZ,
         ensures
+            final(steps).count <= old(steps).count + ADD_LEAF_STEPS,
             final(self).wf(list),
             final(self).leaf(root, r as int) == leaf,
             forall|e: int| e != r ==> #[trigger] final(self).leaf(root, e) == old(self).leaf(root, e),
@@ -503,9 +507,7 @@ impl Tables {
             pre.lemma_root(root);
             lemma_payload_page_aligned(leaf);
         }
-        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
-        let tracked mut steps = Steps::fresh();
-        let Tracked(typed) = new_payload_page(leaf + PAGE_SZ, root, r, Tracked(page), Tracked(&mut steps));
+        let Tracked(typed) = new_payload_page(leaf + PAGE_SZ, root, r, Tracked(page), Tracked(steps));
         proof {
             self.payloads.borrow_mut().tracked_insert(leaf, typed);
         }

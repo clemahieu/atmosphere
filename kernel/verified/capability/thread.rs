@@ -18,7 +18,6 @@ use crate::capability::kernel::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::link::*;
 use crate::capability::list::*;
-#[cfg(verus_keep_ghost)]
 use crate::capability::steps::Steps;
 #[cfg(verus_keep_ghost)]
 use crate::capability::mapping::*;
@@ -42,6 +41,13 @@ pub const THREAD_ORDER: u8 = 1;
 
 /// A thread's block, in bytes.
 pub const THREAD_BYTES: usize = PAGE_SZ * 2;
+
+/// type_thread's bound in the step counter: typing the block and writing its node page. See
+/// design/one-lock-bounded-steps/.
+pub const TYPE_THREAD_STEPS: usize = 2 * SMALL_PAGES_MAX + NODES_PER_PAGE;
+
+/// retype_thread's bound in the step counter: one type_thread.
+pub const RETYPE_THREAD_STEPS: usize = TYPE_THREAD_STEPS;
 
 /// The page of a thread's block that holds its record and its XSAVE area. Page 0 is its node page.
 pub const THREAD_RECORD_PAGE: usize = 1;
@@ -1616,11 +1622,12 @@ impl CapKernel {
     /// Types the free order-1 block at `base` as a thread bound to no process, under the untyped at
     /// index `from` of the table at `root`, with its capability at the empty index `to`. A refusal
     /// changes nothing. Only retype_thread calls it, and binds the thread in the same step.
-    fn type_thread(&mut self, root: usize, from: usize, to: usize, base: usize) -> (ret: bool)
+    fn type_thread(&mut self, root: usize, from: usize, to: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
         ensures
+            final(steps).count <= old(steps).count + TYPE_THREAD_STEPS,
             final(self).wf(),
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
@@ -1683,9 +1690,7 @@ impl CapKernel {
                     page == base / PAGE_SZ,
             ;
         }
-        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
-        let tracked mut steps = Steps::fresh();
-        let Tracked(perms) = match self.blocks.try_type(page, 1, ObjectType::Thread, Tracked(&mut steps)) {
+        let Tracked(perms) = match self.blocks.try_type(page, 1, ObjectType::Thread, Tracked(&mut *steps)) {
             Some(perms) => perms,
             None => { return false; },
         };
@@ -1716,7 +1721,7 @@ impl CapKernel {
             pre.list.lemma_valid_bound(parent);
             pre.list.lemma_valid_bound(child);
         }
-        let nodes = init_node_page(base, Tracked(first), Tracked(&mut steps));
+        let nodes = init_node_page(base, Tracked(first), Tracked(steps));
         self.list.add_page(base, nodes);
         let ghost mid = self.list;
         proof {
@@ -2029,12 +2034,13 @@ impl CapKernel {
     /// come from user space; every refusal is read before the block is typed, and changes nothing.
     /// Nothing binds a thread after this, so its process is fixed for its life. See
     /// design/thread-bound-at-retype/.
-    pub fn retype_thread(&mut self, root: usize, from: usize, to: usize, base: usize, j: usize) -> (ret: bool)
+    pub fn retype_thread(&mut self, root: usize, from: usize, to: usize, base: usize, j: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(steps).count <= old(steps).count + RETYPE_THREAD_STEPS,
             final(self).wf(),
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
@@ -2092,7 +2098,7 @@ impl CapKernel {
             Some(found) => found,
             None => { return false; },
         };
-        if !self.type_thread(root, from, to, base) {
+        if !self.type_thread(root, from, to, base, Tracked(steps)) {
             return false;
         }
         let ghost mid = *self;

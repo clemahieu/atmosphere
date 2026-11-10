@@ -17,7 +17,6 @@ use crate::capability::block::*;
 use crate::capability::derive::*;
 use crate::capability::kernel::*;
 use crate::capability::list::*;
-#[cfg(verus_keep_ghost)]
 use crate::capability::steps::Steps;
 use crate::capability::position::*;
 #[cfg(verus_keep_ghost)]
@@ -39,6 +38,19 @@ use crate::pptr::*;
 
 /// Read, write and execute.
 pub const FRAME_RIGHTS: u32 = 7;
+
+// The most each retype adds to the step counter, the sum of what its callees state:
+// design/one-lock-bounded-steps/.
+/// retype_frame's bound: typing one page.
+pub const RETYPE_FRAME_STEPS: usize = 2 * SMALL_PAGES_MAX;
+/// zero_large's bound: one zeroing step.
+pub const ZERO_LARGE_STEPS: usize = ZERO_CHUNK_PAGES;
+/// retype_large_frame's bound: one zero_large.
+pub const RETYPE_LARGE_FRAME_STEPS: usize = ZERO_LARGE_STEPS;
+/// place_leaf's bound: typing the leaf's block, writing its node page and its payload page.
+pub const PLACE_LEAF_STEPS: usize = 2 * SMALL_PAGES_MAX + NODES_PER_PAGE + ADD_LEAF_STEPS;
+/// retype_leaf's bound: one place_leaf.
+pub const RETYPE_LEAF_STEPS: usize = PLACE_LEAF_STEPS;
 
 /// A 4K frame capability's payload. It has every right a frame can have, whatever the untyped's, since
 /// the untyped's holder already reaches the page.
@@ -623,12 +635,13 @@ impl CapKernel {
     /// Retypes the free page at `base` as a frame, under the untyped at index `from` of the table at
     /// `root`, with the capability at the empty index `to`. All of these come from user space, and a
     /// refusal changes nothing. The block table refuses a page that is not free.
-    pub fn retype_frame(&mut self, root: usize, from: usize, to: usize, base: usize) -> (ret: bool)
+    pub fn retype_frame(&mut self, root: usize, from: usize, to: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(steps).count <= old(steps).count + RETYPE_FRAME_STEPS,
             final(self).wf(),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             Self::same_tree(*old(self), *final(self)),
@@ -660,9 +673,7 @@ impl CapKernel {
             assert(base % PAGE_SZ == 0);
             assert(page * PAGE_SZ == base);
         }
-        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
-        let tracked mut steps = Steps::fresh();
-        let taken = self.blocks.try_type(page, 0, ObjectType::Frame, Tracked(&mut steps));
+        let taken = self.blocks.try_type(page, 0, ObjectType::Frame, Tracked(steps));
         let Tracked(perms) = match taken {
             Some(perms) => perms,
             None => { return false; },
@@ -750,11 +761,12 @@ impl CapKernel {
 
     /// Takes a large block one step towards a capability. Types the region if nobody has, then zeroes
     /// at most 64 KiB of it. Touches neither the list nor the tables.
-    fn zero_large(&mut self, level: Large, r: usize) -> (ret: RetypeStep)
+    fn zero_large(&mut self, level: Large, r: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: RetypeStep)
         requires
             old(self).wf(),
             r < level_regions(level),
         ensures
+            final(steps).count <= old(steps).count + ZERO_LARGE_STEPS,
             final(self).wf(),
             Self::same_tree(*old(self), *final(self)),
             final(self).list == old(self).list,
@@ -836,9 +848,7 @@ impl CapKernel {
             assert(holders_wf(&typed.list, &typed.tables, &typed.blocks, &typed.zeroing, typed.holders@));
             assert(typed.zeroing.active(level, r));
         }
-        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
-        let tracked mut steps = Steps::fresh();
-        let done = self.zeroing.step(base, pages, Tracked(&mut steps));
+        let done = self.zeroing.step(base, pages, Tracked(steps));
         proof {
             lemma_holders_same_active(&typed.list, &typed.tables, &typed.blocks, &typed.zeroing, &self.zeroing, typed.holders@);
         }
@@ -1012,12 +1022,13 @@ impl CapKernel {
     /// hidden node, a child of the untyped, so revoking the untyped reaches it. Both pages are written
     /// whole, once, so this takes one kernel entry. All of these come from user space, and a refusal
     /// changes nothing. The block table refuses pages that are not free.
-    pub fn retype_leaf(&mut self, root: usize, from: usize, at: Position, base: usize) -> (ret: bool)
+    pub fn retype_leaf(&mut self, root: usize, from: usize, at: Position, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(steps).count <= old(steps).count + RETYPE_LEAF_STEPS,
             final(self).wf(),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             Self::same_tree(*old(self), *final(self)),
@@ -1057,7 +1068,7 @@ impl CapKernel {
             pre.lemma_slot_bound(parent);
             pre.list.lemma_live_valid(parent);
         }
-        if !self.place_leaf(parent, table, r, base) {
+        if !self.place_leaf(parent, table, r, base, Tracked(steps)) {
             return false;
         }
         proof {
@@ -1096,7 +1107,7 @@ impl CapKernel {
     /// Types the two pages at `base` as a table leaf in entry r of the table at root, its hidden node a
     /// child of parent: an untyped's capability when a retype makes it, the list's synthetic root when
     /// boot does. The block table refuses pages that are not free, and a refusal changes nothing.
-    pub fn place_leaf(&mut self, parent: usize, root: usize, r: usize, base: usize) -> (ret: bool)
+    pub fn place_leaf(&mut self, parent: usize, root: usize, r: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
@@ -1111,6 +1122,7 @@ impl CapKernel {
             old(self).list.nodes@[parent as int].kind is Capability,
             old(self).list.nodes@[parent as int].depth < MAX_DEPTH,
         ensures
+            final(steps).count <= old(steps).count + PLACE_LEAF_STEPS,
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).iommus == old(self).iommus,
@@ -1174,9 +1186,7 @@ impl CapKernel {
                     page == base / PAGE_SZ,
             ;
         }
-        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
-        let tracked mut steps = Steps::fresh();
-        let Tracked(perms) = match self.blocks.try_type(page, 1, ObjectType::TableLeaf, Tracked(&mut steps)) {
+        let Tracked(perms) = match self.blocks.try_type(page, 1, ObjectType::TableLeaf, Tracked(&mut *steps)) {
             Some(perms) => perms,
             None => { return false; },
         };
@@ -1193,7 +1203,7 @@ impl CapKernel {
             second = perms.tracked_remove((page + 1) as usize);
         }
         let ghost before_list = self.list;
-        let nodes = init_node_page(base, Tracked(first), Tracked(&mut steps));
+        let nodes = init_node_page(base, Tracked(first), Tracked(&mut *steps));
         proof {
             assert(!pre.list.pages@.dom().contains(base)) by {
                 assert(base / PAGE_SZ == page);
@@ -1219,7 +1229,7 @@ impl CapKernel {
                 }
             }
         }
-        self.tables.add_leaf(&self.list, root, r, base, Tracked(second));
+        self.tables.add_leaf(&self.list, root, r, base, Tracked(second), Tracked(steps));
         proof {
             let post = *self;
             assert forall|x: usize| #[trigger] pre.list.valid(x) && x != base implies {
@@ -1846,12 +1856,13 @@ impl CapKernel {
     /// Retypes the 2M or 1G block at `base` as a frame, a step at a time. A later call naming the same
     /// block, by any holder of an untyped covering it, goes on from where this one stopped, so an
     /// abandoned block is not lost. The capability appears on the step that finds the block all zero.
-    pub fn retype_large_frame(&mut self, root: usize, from: usize, to: usize, base: usize, order: u8) -> (ret: RetypeStep)
+    pub fn retype_large_frame(&mut self, root: usize, from: usize, to: usize, base: usize, order: u8, Tracked(steps): Tracked<&mut Steps>) -> (ret: RetypeStep)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(steps).count <= old(steps).count + RETYPE_LARGE_FRAME_STEPS,
             final(self).wf(),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             Self::same_tree(*old(self), *final(self)),
@@ -1876,7 +1887,7 @@ impl CapKernel {
             None => { return RetypeStep::Refused; },
         };
         let page = base / PAGE_SZ;
-        let step = self.zero_large(level, r);
+        let step = self.zero_large(level, r, Tracked(steps));
         match step {
             RetypeStep::Refused => { return RetypeStep::Refused; },
             RetypeStep::Again => {

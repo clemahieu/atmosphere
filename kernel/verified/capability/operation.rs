@@ -696,20 +696,22 @@ impl CapKernel {
             final(self).cores == old(self).cores,
             Self::spec_retyped(*old(self), *final(self), root, frame, ret),
     {
+        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
         let status = if frame.argument(1) == RETYPE_FRAME {
-            if self.retype_frame(root, frame.slot() as usize, frame.argument(3) as usize, frame.argument(2) as usize) {
+            if self.retype_frame(root, frame.slot() as usize, frame.argument(3) as usize, frame.argument(2) as usize, Tracked(&mut steps)) {
                 STATUS_OK
             } else {
                 STATUS_REFUSED
             }
         } else if frame.argument(1) == RETYPE_LARGE_FRAME {
-            match self.retype_large_frame(root, frame.slot() as usize, frame.argument(3) as usize, frame.argument(2) as usize, 9) {
+            match self.retype_large_frame(root, frame.slot() as usize, frame.argument(3) as usize, frame.argument(2) as usize, 9, Tracked(&mut steps)) {
                 RetypeStep::Refused => STATUS_REFUSED,
                 RetypeStep::Again => STATUS_AGAIN,
                 RetypeStep::Done => STATUS_OK,
             }
         } else if frame.argument(1) == RETYPE_TABLE_PAGE {
-            if self.retype_table_page(root, frame.slot() as usize, frame.argument(2) as usize, frame.argument(4) as usize) {
+            if self.retype_table_page(root, frame.slot() as usize, frame.argument(2) as usize, frame.argument(4) as usize, Tracked(&mut steps)) {
                 STATUS_OK
             } else {
                 STATUS_REFUSED
@@ -717,7 +719,7 @@ impl CapKernel {
         } else if frame.argument(1) == RETYPE_LEAF {
             match position(frame.argument(3)) {
                 Some(at) => {
-                    if self.retype_leaf(root, frame.slot() as usize, at, frame.argument(2) as usize) {
+                    if self.retype_leaf(root, frame.slot() as usize, at, frame.argument(2) as usize, Tracked(&mut steps)) {
                         STATUS_OK
                     } else {
                         STATUS_REFUSED

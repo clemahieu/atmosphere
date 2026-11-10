@@ -28,6 +28,8 @@ use crate::capability::mapping::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
 use crate::capability::space::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::steps::Steps;
 use crate::capability::table::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::view::*;
@@ -785,7 +787,9 @@ impl CapKernel {
             pre.lemma_outside_block(process, cursor, (s / PAGE_SZ) as int);
             pre.lemma_outside_block(process, cursor, (t / PAGE_SZ) as int);
         }
-        let retyped = self.retype_table_page(process, ROOT_UNTYPED_SLOT, cursor, level);
+        // Boot holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let retyped = self.retype_table_page(process, ROOT_UNTYPED_SLOT, cursor, level, Tracked(&mut steps));
         let ghost mid = *self;
         let ghost m = tree_of(&mid.table_pages, &mid.spaces);
         proof {

@@ -23,7 +23,6 @@ use crate::capability::list::*;
 use crate::capability::mapping::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
-#[cfg(verus_keep_ghost)]
 use crate::capability::steps::Steps;
 #[cfg(verus_keep_ghost)]
 use crate::capability::refs::*;
@@ -47,6 +46,10 @@ pub const PROCESS_BYTES: usize = PAGE_SZ * 8;
 
 /// The page of a process's block that holds its record. Page 0 is its table's root.
 pub const PROCESS_RECORD_PAGE: usize = 1;
+
+/// retype_process's bound in the step counter: typing the block, writing its table's root and its
+/// space's root table, and copying the kernel's entries into it. See design/one-lock-bounded-steps/.
+pub const RETYPE_PROCESS_STEPS: usize = 2 * SMALL_PAGES_MAX + ROOT_ENTRIES + ENTRIES + KERNEL_MEM_END_L4INDEX;
 
 /// A process capability carries control: it may destroy the process and name its table's positions.
 pub const PROCESS_RIGHTS: u32 = 128;
@@ -1245,12 +1248,13 @@ impl CapKernel {
     /// root is the block's first page, a record that says it is live, and an address space holding the
     /// kernel's entries and nothing else, loaded on no core. All of these come from user space, and a
     /// refusal changes nothing.
-    pub fn retype_process(&mut self, root: usize, from: usize, to: usize, base: usize) -> (ret: bool)
+    pub fn retype_process(&mut self, root: usize, from: usize, to: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(steps).count <= old(steps).count + RETYPE_PROCESS_STEPS,
             final(self).wf(),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             final(self).stale_epoch == old(self).stale_epoch,
@@ -1323,9 +1327,7 @@ impl CapKernel {
             assert(base % PROCESS_BYTES == 0);
             lemma_table_page_base(base, page);
         }
-        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
-        let tracked mut steps = Steps::fresh();
-        let Tracked(perms) = match self.blocks.try_type(page, 3, ObjectType::Process, Tracked(&mut steps)) {
+        let Tracked(perms) = match self.blocks.try_type(page, 3, ObjectType::Process, Tracked(&mut *steps)) {
             Some(perms) => perms,
             None => { return false; },
         };
@@ -1373,7 +1375,7 @@ impl CapKernel {
             pre.list.lemma_valid_bound(child);
             pre.list.lemma_seq_fits();
         }
-        self.tables.put_root(&self.list, base, Tracked(table_root), Tracked(&mut steps));
+        self.tables.put_root(&self.list, base, Tracked(table_root), Tracked(&mut *steps));
         let ghost rooted = self.tables;
         let tracked mut typed_record = page_into_process_record(record);
         PPtr::<ProcessRecord>::from_usize(base + PROCESS_RECORD_PAGE * PAGE_SZ).put(Tracked(&mut typed_record), ProcessRecord { dead: false });
@@ -1384,9 +1386,9 @@ impl CapKernel {
             self.processes.spare.borrow_mut().tracked_insert((base + 4 * PAGE_SZ) as usize, spare4);
         }
         let root_table = base + SPACE_ROOT_PAGE * PAGE_SZ;
-        let (_, Tracked(map)) = page_perm_to_page_map(root_table, Ghost(4), Tracked(space_root), Tracked(&mut steps));
+        let (_, Tracked(map)) = page_perm_to_page_map(root_table, Ghost(4), Tracked(space_root), Tracked(&mut *steps));
         let tracked mut map = map;
-        page_map_set_kernel_entry_range(&self.spaces.kernel_entries, root_table, Tracked(&mut map), Tracked(&mut steps));
+        page_map_set_kernel_entry_range(&self.spaces.kernel_entries, root_table, Tracked(&mut map), Tracked(steps));
         let tracked mut typed;
         let tracked mut cores;
         proof {

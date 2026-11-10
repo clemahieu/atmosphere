@@ -17,7 +17,6 @@ use crate::capability::kernel::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::link::*;
 use crate::capability::list::*;
-#[cfg(verus_keep_ghost)]
 use crate::capability::steps::Steps;
 #[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
@@ -47,6 +46,15 @@ pub const TABLE_NODE_PAGES: usize = 5;
 
 /// A table page's block, eight pages, in bytes. A device space's block is as large.
 pub const TABLE_PAGE_BYTES: usize = PAGE_SZ * 8;
+
+// The most each of these adds to the step counter, the sum of what its callees state:
+// design/one-lock-bounded-steps/.
+/// add_node_pages's bound: writing each node page.
+pub const ADD_NODE_PAGES_STEPS: usize = TABLE_NODE_PAGES * NODES_PER_PAGE;
+/// retype_table_page's bound: typing the block, its node pages and its table's entries.
+pub const RETYPE_TABLE_PAGE_STEPS: usize = 2 * SMALL_PAGES_MAX + ADD_NODE_PAGES_STEPS + ENTRIES;
+/// retype_space's bound: typing the block, its node pages and its root table's entries.
+pub const RETYPE_SPACE_STEPS: usize = 2 * SMALL_PAGES_MAX + ADD_NODE_PAGES_STEPS + ENTRIES;
 
 /// The permissions of each table page's table, record and spare page, by the block's address, the spare
 /// page's by its own.
@@ -574,6 +582,7 @@ fn add_node_pages(
     Tracked(p2): Tracked<PagePerm4k>,
     Tracked(p3): Tracked<PagePerm4k>,
     Tracked(p4): Tracked<PagePerm4k>,
+    Tracked(steps): Tracked<&mut Steps>,
 )
     requires
         old(list).wf(),
@@ -587,6 +596,7 @@ fn add_node_pages(
         p4.addr() == base + 4 * PAGE_SZ,
         forall|k: usize| k < TABLE_NODE_PAGES ==> !old(list).pages@.dom().contains(#[trigger] table_node_page(base, k)),
     ensures
+        final(steps).count <= old(steps).count + ADD_NODE_PAGES_STEPS,
         final(list).wf(),
         list_grown(*old(list), *final(list)),
         final(list).valid(base),
@@ -607,12 +617,10 @@ fn add_node_pages(
         assert(table_node_page(base, 3) == base + 3 * PAGE_SZ);
         assert(table_node_page(base, 4) == base + 4 * PAGE_SZ);
     }
-    // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
-    let tracked mut steps = Steps::fresh();
-    let nodes = init_node_page(base, Tracked(p0), Tracked(&mut steps));
+    let nodes = init_node_page(base, Tracked(p0), Tracked(&mut *steps));
     list.add_page(base, nodes);
     let ghost l1 = *list;
-    let nodes = init_node_page(base + PAGE_SZ, Tracked(p1), Tracked(&mut steps));
+    let nodes = init_node_page(base + PAGE_SZ, Tracked(p1), Tracked(&mut *steps));
     proof {
         assert(list_grown(l0, l1));
         assert(l1.valid(base));
@@ -620,21 +628,21 @@ fn add_node_pages(
     }
     list.add_page(base + PAGE_SZ, nodes);
     let ghost l2 = *list;
-    let nodes = init_node_page(base + 2 * PAGE_SZ, Tracked(p2), Tracked(&mut steps));
+    let nodes = init_node_page(base + 2 * PAGE_SZ, Tracked(p2), Tracked(&mut *steps));
     proof {
         assert(list_grown(l1, l2));
         lemma_list_grown_trans(l0, l1, l2);
     }
     list.add_page(base + 2 * PAGE_SZ, nodes);
     let ghost l3 = *list;
-    let nodes = init_node_page(base + 3 * PAGE_SZ, Tracked(p3), Tracked(&mut steps));
+    let nodes = init_node_page(base + 3 * PAGE_SZ, Tracked(p3), Tracked(&mut *steps));
     proof {
         assert(list_grown(l2, l3));
         lemma_list_grown_trans(l0, l2, l3);
     }
     list.add_page(base + 3 * PAGE_SZ, nodes);
     let ghost l4 = *list;
-    let nodes = init_node_page(base + 4 * PAGE_SZ, Tracked(p4), Tracked(&mut steps));
+    let nodes = init_node_page(base + 4 * PAGE_SZ, Tracked(p4), Tracked(&mut *steps));
     proof {
         assert(list_grown(l3, l4));
         lemma_list_grown_trans(l0, l3, l4);
@@ -2749,12 +2757,13 @@ impl CapKernel {
     /// Retypes the free order-3 block at `base` as a table page, under the untyped at index `from` of the
     /// table at `root`. All of these come from user space, and a refusal changes nothing.
     #[verifier::spinoff_prover]
-    pub fn retype_table_page(&mut self, root: usize, from: usize, base: usize, level: usize) -> (ret: bool)
+    pub fn retype_table_page(&mut self, root: usize, from: usize, base: usize, level: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(steps).count <= old(steps).count + RETYPE_TABLE_PAGE_STEPS,
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).wf(),
@@ -2817,9 +2826,7 @@ impl CapKernel {
             assert(base % TABLE_PAGE_BYTES == 0);
             lemma_table_page_base(base, page);
         }
-        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
-        let tracked mut steps = Steps::fresh();
-        let Tracked(perms) = match self.blocks.try_type(page, 3, ObjectType::TablePage, Tracked(&mut steps)) {
+        let Tracked(perms) = match self.blocks.try_type(page, 3, ObjectType::TablePage, Tracked(&mut *steps)) {
             Some(perms) => perms,
             None => { return false; },
         };
@@ -2861,14 +2868,14 @@ impl CapKernel {
             pre.lemma_slot(root, from);
             pre.lemma_slot_bound(parent);
         }
-        add_node_pages(&mut self.list, base, Tracked(first), Tracked(second), Tracked(third), Tracked(fourth), Tracked(fifth));
+        add_node_pages(&mut self.list, base, Tracked(first), Tracked(second), Tracked(third), Tracked(fourth), Tracked(fifth), Tracked(&mut *steps));
         let ghost mid = self.list;
         proof {
             mid.lemma_seq_fits();
             assert(mid.nodes@[parent as int] == pre.list.nodes@[parent as int]);
         }
         self.list.derive(parent, base, NodeKind::Hidden);
-        let (_, Tracked(map)) = page_perm_to_page_map(base + TABLE_NODE_PAGES * PAGE_SZ, Ghost(level), Tracked(table), Tracked(&mut steps));
+        let (_, Tracked(map)) = page_perm_to_page_map(base + TABLE_NODE_PAGES * PAGE_SZ, Ghost(level), Tracked(table), Tracked(steps));
         let tracked mut record;
         proof {
             record = page_into_table_record(sixth);
@@ -3279,12 +3286,13 @@ impl CapKernel {
     /// Retypes the free block at `base` as a device space, under the untyped at index `from` of the table at
     /// `root`, with its capability at the empty index `to`. All of these come from user space, and a
     /// refusal changes nothing. A process's space is part of its process: see retype_process.
-    pub fn retype_space(&mut self, root: usize, from: usize, to: usize, base: usize) -> (ret: bool)
+    pub fn retype_space(&mut self, root: usize, from: usize, to: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(steps).count <= old(steps).count + RETYPE_SPACE_STEPS,
             final(self).wf(),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             ret == old(self).can_retype_block(root, from, to, base, 3),
@@ -3329,9 +3337,7 @@ impl CapKernel {
             assert(base % TABLE_PAGE_BYTES == 0);
             lemma_table_page_base(base, page);
         }
-        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
-        let tracked mut steps = Steps::fresh();
-        let Tracked(perms) = match self.blocks.try_type(page, 3, ObjectType::Space, Tracked(&mut steps)) {
+        let Tracked(perms) = match self.blocks.try_type(page, 3, ObjectType::Space, Tracked(&mut *steps)) {
             Some(perms) => perms,
             None => { return false; },
         };
@@ -3377,7 +3383,7 @@ impl CapKernel {
             pre.list.lemma_valid_bound(parent);
             pre.list.lemma_valid_bound(child);
         }
-        add_node_pages(&mut self.list, base, Tracked(first), Tracked(second), Tracked(third), Tracked(fourth), Tracked(fifth));
+        add_node_pages(&mut self.list, base, Tracked(first), Tracked(second), Tracked(third), Tracked(fourth), Tracked(fifth), Tracked(&mut *steps));
         let ghost mid = self.list;
         proof {
             mid.lemma_seq_fits();
@@ -3385,7 +3391,7 @@ impl CapKernel {
             assert(mid.nodes@[child as int] == pre.list.nodes@[child as int]);
         }
         let root_table = base + SPACE_ROOT_PAGE * PAGE_SZ;
-        let (_, Tracked(map)) = page_perm_to_page_map(root_table, Ghost(4), Tracked(table), Tracked(&mut steps));
+        let (_, Tracked(map)) = page_perm_to_page_map(root_table, Ghost(4), Tracked(table), Tracked(steps));
         let tracked map = map;
         let tracked mut typed;
         let tracked mut cores;

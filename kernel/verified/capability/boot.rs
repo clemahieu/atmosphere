@@ -326,7 +326,7 @@ impl CapKernel {
             assert(!l2.nodes@[cap as int].live);
             l2.lemma_seq_fits();
         }
-        self.tables.add_leaf(&self.list, base, 0, leaf, Tracked(second));
+        self.tables.add_leaf(&self.list, base, 0, leaf, Tracked(second), Tracked(&mut steps));
         let ghost leafed = self.tables;
         self.list.derive(root, cap, NodeKind::Capability);
         let ghost l3 = self.list;
@@ -763,7 +763,9 @@ impl CapKernel {
             assert forall|k: int| 0 <= k < 2 implies #[trigger] freed.blocks.pages@[lb + k].kind is Free by {}
             assert(!freed.blocks.covered(lb as int));
         }
-        let placed = self.place_leaf(root, process, r, leaf);
+        // Boot holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let placed = self.place_leaf(root, process, r, leaf, Tracked(&mut steps));
         assert(placed);
         proof {
             let post = *self;
