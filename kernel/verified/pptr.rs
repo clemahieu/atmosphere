@@ -1,6 +1,6 @@
-// Permissioned pointers for the kernel. This is vstd's simple_pptr at Verus 3e8600ac, without its
-// allocation API, which the kernel does not have, and with conversions between permission types,
-// which simple_pptr's private fields rule out. Its license follows.
+// Permissioned pointers for the kernel. This is the simple_pptr of the vstd the workspace Cargo.toml
+// pins, without its allocation API, which the kernel does not have, and with conversions between
+// permission types, which simple_pptr's private fields rule out. Its license follows.
 //
 // MIT License
 //
