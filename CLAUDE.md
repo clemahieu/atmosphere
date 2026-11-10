@@ -80,6 +80,7 @@ atmo test               # the gate
 tools/run.py            # build loader, kernel, dom0 and payload; boot under QEMU, with KVM when /dev/kvm is writable; --no-kvm forces TCG; --kernel-feature FEATURE builds the kernel with one of its features
 tools/verify.py         # Verus over kernel/verified; extra arguments go to rust_verify
 tools/check-upstream-copies.py --update   # rewrite the recorded delta of a copied upstream file after a deliberate change to it or a Verus pin that moves its upstream
+tools/check-boot-log.py --arch x86_64|aarch64 [--translation] LOG   # hold a dom0 boot's serial log to the gate's boot checks; - reads standard input
 tools/gdb.py            # attach gdb to a tools/run.py --gdb run, with the kernel's symbols
 tools/land.py           # from a task worktree: rebase onto main, gate, land by fast-forward and push; when the gate fails, say whether the change fails or main does, from the trees gates have judged (logs/gate-ledger at the project root); --judge-base gates main's commit by itself when none has judged it; a change to only what no gate step reads lands without a gate
 tools/aarch64-esp.py    # build the aarch64 loader, kernel, dom0 and payload and lay out the ESP that tools/orangepi-kvm.py --esp boots on the board
