@@ -1209,7 +1209,7 @@ impl CapKernel {
                 &&& final(self).payload_of(child) == process_of(base)
                 &&& final(self).payload_of(child).rights & right_bit(Right::Control) != 0
                 &&& final(self).list.is_child(parent, child)
-                &&& discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base })
+                &&& discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base, into: None })
             },
     {
         let ghost pre = *old(self);

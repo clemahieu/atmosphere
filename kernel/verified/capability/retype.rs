@@ -14,6 +14,7 @@ use crate::capability::block::*;
 use crate::capability::derive::*;
 use crate::capability::kernel::*;
 use crate::capability::list::*;
+use crate::capability::position::*;
 use crate::capability::reach::*;
 use crate::capability::space::*;
 use crate::capability::refs::*;
@@ -217,12 +218,15 @@ impl CapKernel {
         &&& self.blocks.small_free((base / 4096) as int, order as usize)
     }
 
-    /// And a leaf needs an empty root entry and two free pages of memory, and is never at address
-    /// zero, which means no leaf.
-    pub open spec fn can_retype_leaf(&self, root: usize, from: usize, r: usize, base: usize) -> bool {
+    /// And a leaf needs a table to go in, the caller's own or that of a live process the caller
+    /// controls, an empty root entry of it and two free pages of memory, and is never at address zero,
+    /// which means no leaf.
+    pub open spec fn can_retype_leaf(&self, root: usize, from: usize, at: Position, base: usize) -> bool {
+        let table = self.destination_at(root, at.through);
         &&& self.can_retype_under(root, from, base, 1)
-        &&& r < ROOT_ENTRIES
-        &&& self.tables.leaf(root, r as int) == NO_LEAF
+        &&& table is Some
+        &&& at.index < ROOT_ENTRIES
+        &&& self.tables.leaf(table->0, at.index as int) == NO_LEAF
         &&& base != NO_LEAF
         &&& self.blocks.tracks_addr_run(base, 2)
         &&& self.blocks.small_free((base / 4096) as int, 1)
@@ -427,7 +431,7 @@ impl CapKernel {
             final(self).payload_of(child) == large_frame_of(base, order),
             final(self).list.is_child(parent, child),
             final(self).list.nodes@[child as int].depth == old(self).list.nodes@[parent as int].depth + 1,
-            discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base }),
+            discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base, into: None }),
     {
         let ghost pre = *old(self);
         proof {
@@ -489,7 +493,7 @@ impl CapKernel {
         &&& post.list.is_child(parent, child)
         &&& post.list.nodes@[child as int].depth == pre.list.nodes@[parent as int].depth + 1
         &&& holds_zero(post.frames@, base / 4096)
-        &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base })
+        &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, into: None })
     }
 
     /// What a step of a large retype that has not found its block all zero yet did, under the untyped at
@@ -502,7 +506,7 @@ impl CapKernel {
         &&& pre.view().holds_right(root, parent, Right::Retype)
         &&& post.list == pre.list
         &&& post.tables == pre.tables
-        &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base })
+        &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, into: None })
     }
 
     /// What the step of a large retype that found its block all zero did: the retype was allowed, the
@@ -518,7 +522,7 @@ impl CapKernel {
         &&& post.list.is_child(parent, child)
         &&& post.list.nodes@[child as int].depth == pre.list.nodes@[parent as int].depth + 1
         &&& forall|k: usize| k < pow2(order as nat) ==> #[trigger] holds_zero(post.frames@, (base / 4096 + k) as usize)
-        &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base })
+        &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, into: None })
     }
 
     /// Retypes the free page at `base` as a frame, under the untyped at index `from` of the table at
@@ -816,12 +820,15 @@ impl CapKernel {
         }
     }
 
-    /// Retypes the two free pages at `base` as a table leaf in entry r of the table at root, under the
-    /// untyped at index `from`. No capability names a leaf: its first page's node 0 is its hidden node, a
-    /// child of the untyped, so revoking the untyped reaches it. Both pages are written whole, once, so
-    /// this takes one kernel entry. All of these come from user space, and a refusal changes nothing.
-    /// The block table refuses pages that are not free.
-    pub fn retype_leaf(&mut self, root: usize, from: usize, r: usize, base: usize) -> (ret: bool)
+    /// Retypes the two free pages at `base` as a table leaf, under the untyped at index `from` of the
+    /// table at root, the caller's. The leaf goes in the root entry `at` names: of the caller's own
+    /// table, or of the table of a live process the caller holds a capability to with the control
+    /// right, which is how a new process, whose table starts with no leaf, comes to have slots. The
+    /// untyped is always the caller's own. No capability names a leaf: its first page's node 0 is its
+    /// hidden node, a child of the untyped, so revoking the untyped reaches it. Both pages are written
+    /// whole, once, so this takes one kernel entry. All of these come from user space, and a refusal
+    /// changes nothing. The block table refuses pages that are not free.
+    pub fn retype_leaf(&mut self, root: usize, from: usize, at: Position, base: usize) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
@@ -830,31 +837,47 @@ impl CapKernel {
             final(self).wf(),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             Self::same_tree(*old(self), *final(self)),
-            ret == old(self).can_retype_leaf(root, from, r, base),
+            ret == old(self).can_retype_leaf(root, from, at, base),
             !ret ==> *final(self) == *old(self),
             ret ==> {
                 let parent = old(self).tables.node_of(root, from);
+                let table = old(self).destination_at(root, at.through)->0;
                 &&& old(self).view().holds_right(root, parent, Right::Retype)
-                &&& final(self).tables.leaf(root, r as int) == base
+                &&& final(self).tables.leaf(table, at.index as int) == base
                 &&& final(self).list.is_child(parent, base)
                 &&& final(self).list.nodes@[base as int].kind is Hidden
-                &&& forall|i: usize| index_ok(i) && index_entry(i) == r as int ==> {
-                    &&& #[trigger] final(self).tables.has_slot(&final(self).list, root, i)
-                    &&& !final(self).list.nodes@[final(self).tables.node_of(root, i) as int].live
+                &&& forall|i: usize| index_ok(i) && index_entry(i) == at.index as int ==> {
+                    &&& #[trigger] final(self).tables.has_slot(&final(self).list, table, i)
+                    &&& !final(self).list.nodes@[final(self).tables.node_of(table, i) as int].live
                 }
+                &&& forall|t: usize, i: usize| #[trigger] old(self).tables.has_slot(&old(self).list, t, i)
+                    ==> final(self).tables.has_slot(&final(self).list, t, i)
+                        && final(self).tables.node_of(t, i) == old(self).tables.node_of(t, i)
                 &&& forall|x: usize| #[trigger] final(self).is_cap(x) == old(self).is_cap(x)
-                &&& discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base })
+                &&& forall|x: usize| #[trigger] old(self).is_cap(x) ==> final(self).payload_of(x) == old(self).payload_of(x)
+                &&& final(self).processes == old(self).processes
+                &&& discharges(
+                    old(self).view(),
+                    final(self).view(),
+                    root,
+                    Effect::Retype { untyped: parent, object: base, into: old(self).through_node(root, at.through) },
+                )
             },
     {
         let ghost pre = *old(self);
+        let r = at.index;
         let parent = match self.retype_parent(root, from, base, 1) {
             Some(found) => found,
             None => { return false; },
         };
+        let table = match self.find_destination(root, at.through) {
+            Some(found) => found,
+            None => { return false; },
+        };
         proof {
-            pre.tables.lemma_root(root);
+            pre.tables.lemma_root(table);
         }
-        if r >= ROOT_ENTRIES || self.tables.entry(root, r) != NO_LEAF || base == NO_LEAF
+        if r >= ROOT_ENTRIES || self.tables.entry(table, r) != NO_LEAF || base == NO_LEAF
             || !self.blocks.run_tracked(base / 4096, 2) {
             return false;
         }
@@ -865,7 +888,7 @@ impl CapKernel {
             pre.lemma_slot_bound(parent);
             pre.list.lemma_live_valid(parent);
         }
-        if !self.place_leaf(parent, root, r, base) {
+        if !self.place_leaf(parent, table, r, base) {
             return false;
         }
         proof {
@@ -873,9 +896,31 @@ impl CapKernel {
             assert forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x) by {
                 Self::lemma_leaf_cap(pre, post, base, x);
             }
-            Self::lemma_leaf_discharges(pre, post, root, parent, base);
+            Self::lemma_leaf_discharges(pre, post, root, parent, base, pre.through_node(root, at.through));
         }
         true
+    }
+
+    /// A leaf is refused through a thread's capability, through a process's without the control
+    /// right, and through one to a dead process, and in the caller's own table is refused as it is
+    /// when no other table is named.
+    pub proof fn lemma_leaf_refusals(&self, root: usize, from: usize, cap: usize, r: usize, base: usize)
+        ensures
+            ({
+                let c = self.tables.node_of(root, cap);
+                ||| !(self.payload_of(c).kind is Process)
+                ||| self.payload_of(c).rights & right_bit(Right::Control) == 0
+                ||| self.processes.records@[self.payload_of(c).base].value().dead
+            }) ==> !self.can_retype_leaf(root, from, Position { through: Some(cap), index: r }, base),
+            self.can_retype_leaf(root, from, Position { through: None, index: r }, base) == {
+                &&& self.can_retype_under(root, from, base, 1)
+                &&& r < ROOT_ENTRIES
+                &&& self.tables.leaf(root, r as int) == NO_LEAF
+                &&& base != NO_LEAF
+                &&& self.blocks.tracks_addr_run(base, 2)
+                &&& self.blocks.small_free((base / 4096) as int, 1)
+            },
+    {
     }
 
     /// Types the two pages at `base` as a table leaf in entry r of the table at root, its hidden node a
@@ -1493,14 +1538,16 @@ impl CapKernel {
     }
 
     /// The view of the step: every capability is as it was, and the only new parent entry is the hidden
-    /// node's, which no capability descends from.
-    proof fn lemma_leaf_discharges(pre: Self, post: Self, root: usize, parent: usize, leaf: usize)
+    /// node's, which no capability descends from. That holds whichever table the leaf went into, so
+    /// control of the process it went into adds to the step's authority and to nothing else.
+    proof fn lemma_leaf_discharges(pre: Self, post: Self, root: usize, parent: usize, leaf: usize, into: Option<usize>)
         requires
             Self::leaf_step(pre, post, leaf),
             post.list.parent@ == pre.list.parent@.insert(leaf, parent),
             pre.view().holds_right(root, parent, Right::Retype),
+            into is Some ==> pre.view().holds_right(root, into->0, Right::Control),
         ensures
-            discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: leaf }),
+            discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: leaf, into }),
     {
         assert forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x) by {
             Self::lemma_leaf_cap(pre, post, leaf, x);
@@ -1512,6 +1559,21 @@ impl CapKernel {
             Self::lemma_leaf_cap(pre, post, leaf, x);
         }
         Self::lemma_hidden_added_discharges(pre, post, root, parent, leaf);
+        let (own, other) = (
+            Effect::Retype { untyped: parent, object: leaf, into: None },
+            Effect::Retype { untyped: parent, object: leaf, into },
+        );
+        assert(discharges(pre.view(), post.view(), root, own));
+        assert forall|o: ObjectId| #[trigger] State::changed(pre.view(), post.view(), o) implies may_change(pre.view(), other, o) by {
+            assert(may_change(pre.view(), own, o));
+        }
+        assert forall|n: NodeId| #[trigger] State::removed(pre.view(), post.view(), n) implies may_remove(pre.view(), root, other, n) by {
+            assert(may_remove(pre.view(), root, own, n));
+        }
+        assert forall|r: ObjectId, o: ObjectId| #[trigger] post.view().reach(r, o) && !pre.view().reach(r, o)
+            implies may_grow(pre.view(), root, other, r, o) by {
+            assert(may_grow(pre.view(), root, own, r, o));
+        }
     }
 
     /// A region just typed shares no page with a block being zeroed: its pages were not covered, and

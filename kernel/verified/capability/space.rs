@@ -1651,7 +1651,7 @@ impl CapKernel {
             post.list.parent@ == pre.list.parent@.insert(n, parent),
             pre.view().holds_right(root, parent, Right::Retype),
         ensures
-            discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: n }),
+            discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: n, into: None }),
     {
         let (a, b) = (post.view(), pre.view());
         let live = |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live;
@@ -2078,7 +2078,7 @@ impl CapKernel {
                 space_mapping(tree_of(&post.table_pages, &post.spaces), r)
                     == space_mapping(tree_of(&pre.table_pages, &pre.spaces), r),
             forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x),
-            discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base }),
+            discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, into: None }),
             !pre.list.nodes@[base as int].live,
             post.list.parent@ == pre.list.parent@.insert(base, parent),
             forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < NODE_SPACE && i != base
@@ -2581,7 +2581,7 @@ impl CapKernel {
                 &&& final(self).list.is_child(parent, base)
                 &&& final(self).list.nodes@[base as int].kind is Hidden
                 &&& forall|x: usize| #[trigger] final(self).is_cap(x) == old(self).is_cap(x)
-                &&& discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base })
+                &&& discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base, into: None })
                 &&& forall|r: ObjectId, o: ObjectId| #[trigger] final(self).view().reach(r, o) == old(self).view().reach(r, o)
                 &&& !old(self).list.nodes@[base as int].live
                 &&& final(self).list.parent@ == old(self).list.parent@.insert(base, parent)
@@ -3114,7 +3114,7 @@ impl CapKernel {
                 &&& final(self).spaces.bound@ == old(self).spaces.bound@.insert(base, Set::<usize>::empty())
                 &&& forall|s: usize| #[trigger] old(self).spaces.roots@.contains_key(s) ==> final(self).spaces.roots@[s] == old(self).spaces.roots@[s]
                 &&& final(self).blocks.pages@[(base / 4096) as int].refs == 1
-                &&& discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base })
+                &&& discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base, into: None })
             },
     {
         let ghost pre = *old(self);

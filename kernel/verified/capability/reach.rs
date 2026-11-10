@@ -190,8 +190,10 @@ pub ghost enum Effect {
     /// cap names: a grant through control, where Deliver's is through a rendezvous. It takes control
     /// of the process itself, not of one of its threads.
     Place { cap: NodeId, from: NodeId },
-    /// Type a free block under an untyped held.
-    Retype { untyped: NodeId, object: ObjectId },
+    /// Type a free block under an untyped held. A table leaf goes into the caller's own table, or
+    /// into the table of the process that `into`, a control capability the caller holds, names: the
+    /// process itself, not one of its threads.
+    Retype { untyped: NodeId, object: ObjectId, into: Option<NodeId> },
     /// Unlink a block's hidden node, or a slice of a dead object's teardown, under an untyped held.
     Teardown { untyped: NodeId, object: ObjectId },
 }
@@ -230,8 +232,14 @@ pub open spec fn authorized(s: State, p: ObjectId, e: Effect) -> bool {
             &&& s.holds(p, from)
             &&& s.names.contains_key(from)
         },
-        Effect::Retype { untyped, object } | Effect::Teardown { untyped, object } =>
-            s.holds_right(p, untyped, Right::Retype),
+        Effect::Retype { untyped, into, .. } => {
+            &&& s.holds_right(p, untyped, Right::Retype)
+            &&& into is Some ==> {
+                &&& s.holds_right(p, into->0, Right::Control)
+                &&& !s.process_of.contains_key(s.names[into->0])
+            }
+        },
+        Effect::Teardown { untyped, .. } => s.holds_right(p, untyped, Right::Retype),
     }
 }
 
@@ -276,7 +284,7 @@ pub open spec fn may_grow(s: State, p: ObjectId, e: Effect, r: ObjectId, o: Obje
             &&& exists|k: nat| #[trigger] s.controlled(r, s.names[cap], k)
             &&& s.reach(p, o)
         },
-        Effect::Retype { untyped, object } => o == object && s.reach(r, s.names[untyped]),
+        Effect::Retype { untyped, object, .. } => o == object && s.reach(r, s.names[untyped]),
         _ => false,
     }
 }
@@ -722,12 +730,12 @@ pub proof fn lemma_adds_child_discharges_retype(
         adds_child(pre, post, p, c, n, live),
         pre.holds_right(p, c, Right::Retype),
     ensures
-        discharges(pre, post, p, Effect::Retype { untyped: c, object }),
+        discharges(pre, post, p, Effect::Retype { untyped: c, object, into: None }),
 {
-    assert forall|o: ObjectId| #[trigger] State::changed(pre, post, o) implies may_change(pre, Effect::Retype { untyped: c, object }, o) by {
+    assert forall|o: ObjectId| #[trigger] State::changed(pre, post, o) implies may_change(pre, Effect::Retype { untyped: c, object, into: None }, o) by {
         assert((post.contents)(o) == (pre.contents)(o));
     }
-    assert forall|x: NodeId| #[trigger] State::removed(pre, post, x) implies may_remove(pre, p, Effect::Retype { untyped: c, object }, x) by {
+    assert forall|x: NodeId| #[trigger] State::removed(pre, post, x) implies may_remove(pre, p, Effect::Retype { untyped: c, object, into: None }, x) by {
         assert(x != n);
     }
     assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) implies pre.reach(r, o) by {
@@ -1137,12 +1145,12 @@ pub proof fn lemma_adds_object_discharges_retype(
         adds_object(pre, post, p, c, n, live, object),
         pre.holds_right(p, c, Right::Retype),
     ensures
-        discharges(pre, post, p, Effect::Retype { untyped: c, object }),
+        discharges(pre, post, p, Effect::Retype { untyped: c, object, into: None }),
 {
-    assert forall|o: ObjectId| #[trigger] State::changed(pre, post, o) implies may_change(pre, Effect::Retype { untyped: c, object }, o) by {
+    assert forall|o: ObjectId| #[trigger] State::changed(pre, post, o) implies may_change(pre, Effect::Retype { untyped: c, object, into: None }, o) by {
         assert((post.contents)(o) == (pre.contents)(o));
     }
-    assert forall|x: NodeId| #[trigger] State::removed(pre, post, x) implies may_remove(pre, p, Effect::Retype { untyped: c, object }, x) by {
+    assert forall|x: NodeId| #[trigger] State::removed(pre, post, x) implies may_remove(pre, p, Effect::Retype { untyped: c, object, into: None }, x) by {
         assert(x != n);
     }
     assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) implies pre.reach(r, o) by {
@@ -1155,13 +1163,13 @@ pub proof fn lemma_adds_object_discharges_retype(
 /// retype is one, its binding under the process capability being the local step.
 pub proof fn lemma_retype_then_local(a: State, b: State, c: State, p: ObjectId, untyped: NodeId, object: ObjectId)
     requires
-        discharges(a, b, p, Effect::Retype { untyped, object }),
+        discharges(a, b, p, Effect::Retype { untyped, object, into: None }),
         discharges(b, c, p, Effect::Local),
         forall|n: NodeId| #[trigger] b.names.contains_key(n) ==> c.names.contains_key(n),
     ensures
-        discharges(a, c, p, Effect::Retype { untyped, object }),
+        discharges(a, c, p, Effect::Retype { untyped, object, into: None }),
 {
-    let e = Effect::Retype { untyped, object };
+    let e = Effect::Retype { untyped, object, into: None };
     assert forall|o: ObjectId| #[trigger] State::changed(a, c, o) implies may_change(a, e, o) by {
         if !State::changed(a, b, o) {
             assert(State::changed(b, c, o));
@@ -1284,10 +1292,10 @@ pub proof fn lemma_adds_bound_object_discharges_retype(
         adds_bound_object(pre, post, p, c, n, cp, b, live, object),
         pre.holds_right(p, c, Right::Retype),
     ensures
-        discharges(pre, post, p, Effect::Retype { untyped: c, object }),
+        discharges(pre, post, p, Effect::Retype { untyped: c, object, into: None }),
 {
     let mid = without_binding(pre, post, c, n);
-    let e = Effect::Retype { untyped: c, object };
+    let e = Effect::Retype { untyped: c, object, into: None };
     assert forall|o: ObjectId| #[trigger] State::changed(pre, post, o) implies may_change(pre, e, o) by {
         assert((mid.contents)(o) == (pre.contents)(o));
     }
@@ -1801,9 +1809,9 @@ pub proof fn lemma_simulated_discharges_retype(
         forall|x: NodeId| #[trigger] pre.names.contains_key(x) ==> post.names.contains_key(x),
         forall|o: ObjectId| #[trigger] (post.contents)(o) == (pre.contents)(o),
     ensures
-        discharges(pre, post, p, Effect::Retype { untyped: c, object }),
+        discharges(pre, post, p, Effect::Retype { untyped: c, object, into: None }),
 {
-    assert forall|o: ObjectId| #[trigger] State::changed(pre, post, o) implies may_change(pre, Effect::Retype { untyped: c, object }, o) by {
+    assert forall|o: ObjectId| #[trigger] State::changed(pre, post, o) implies may_change(pre, Effect::Retype { untyped: c, object, into: None }, o) by {
         assert((post.contents)(o) == (pre.contents)(o));
     }
     assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) implies pre.reach(r, o) by {
@@ -2172,6 +2180,51 @@ pub proof fn lemma_no_place_through_a_thread()
     assert(s.process_of.contains_key(3));
 }
 
+/// control_example with process 1 also holding node 12, an untyped with the retype right on the 2M
+/// block at EXAMPLE_BASE.
+pub open spec fn leaf_example() -> State {
+    State {
+        held: ISet::new(|h: (ObjectId, NodeId)|
+            h == (1usize, 10usize) || h == (1usize, 11usize) || h == (1usize, 12usize) || h == (2usize, 20usize)),
+        names: IMap::new(
+            |n: NodeId| n == 10 || n == 11 || n == 12 || n == 20,
+            |n: NodeId| if n == 10 { 2usize } else if n == 11 { 3usize } else { EXAMPLE_BASE },
+        ),
+        pages: IMap::new(|n: NodeId| n == 10 || n == 11 || n == 12 || n == 20, |n: NodeId| if n == 12 { 512nat } else { 1nat }),
+        rights: ISet::new(|h: (NodeId, Right)|
+            ((h.0 == 10 || h.0 == 11) && h.1 == Right::Control) || h == (12usize, Right::Retype)),
+        ..control_example()
+    }
+}
+
+/// A table leaf goes into the table of a process the caller controls, under the caller's untyped, and
+/// the step changes nothing reach reads: a leaf is no capability, so nobody's reach grows.
+pub proof fn lemma_leaf_into_a_controlled_process()
+    ensures
+        discharges(leaf_example(), leaf_example(), 1, Effect::Retype { untyped: 12, object: EXAMPLE_BASE, into: Some(10) }),
+{
+    let s = leaf_example();
+    assert(s.holds_right(1, 12, Right::Retype));
+    assert(s.holds_right(1, 10, Right::Control));
+    assert(s.names[10] == 2);
+    assert(!s.process_of.contains_key(2));
+}
+
+/// No leaf goes into a table through a thread's capability, though it carries control, or through a
+/// capability without the control right: neither names a table.
+pub proof fn lemma_no_leaf_without_control_of_the_process()
+    ensures
+        authorized(leaf_example(), 1, Effect::Retype { untyped: 12, object: EXAMPLE_BASE, into: None }),
+        !authorized(leaf_example(), 1, Effect::Retype { untyped: 12, object: EXAMPLE_BASE, into: Some(11) }),
+        !authorized(leaf_example(), 1, Effect::Retype { untyped: 12, object: EXAMPLE_BASE, into: Some(12) }),
+{
+    let s = leaf_example();
+    assert(s.holds_right(1, 12, Right::Retype));
+    assert(s.names[11] == 3);
+    assert(s.process_of.contains_key(3));
+    assert(!s.rights.contains((12usize, Right::Control)));
+}
+
 /// Process 1 holds node 10, an untyped with the retype right on the 2M block at EXAMPLE_BASE, and
 /// process 2 holds node 20, on the page at EXAMPLE_PAST. Nobody holds the control right.
 pub open spec fn retype_example() -> State {
@@ -2230,8 +2283,8 @@ proof fn lemma_retype_example_controls_nothing(q: ObjectId, k: nat)
 /// process holds, which is not the new object.
 pub proof fn lemma_retype_into_uncontrolled_process_does_not_discharge()
     ensures
-        authorized(retype_example(), 1, Effect::Retype { untyped: 10, object: EXAMPLE_BASE }),
-        !discharges(retype_example(), bound_elsewhere(), 1, Effect::Retype { untyped: 10, object: EXAMPLE_BASE }),
+        authorized(retype_example(), 1, Effect::Retype { untyped: 10, object: EXAMPLE_BASE, into: None }),
+        !discharges(retype_example(), bound_elsewhere(), 1, Effect::Retype { untyped: 10, object: EXAMPLE_BASE, into: None }),
 {
     let (pre, post) = (retype_example(), bound_elsewhere());
     assert(pre.holds_right(1, 10, Right::Retype));
@@ -2253,7 +2306,7 @@ pub proof fn lemma_retype_into_uncontrolled_process_does_not_discharge()
         assert(c == n);
         assert(pre.held.contains((1usize, c)));
     }
-    assert(!may_grow(pre, 1, Effect::Retype { untyped: 10, object: EXAMPLE_BASE }, 1, EXAMPLE_PAST));
+    assert(!may_grow(pre, 1, Effect::Retype { untyped: 10, object: EXAMPLE_BASE, into: None }, 1, EXAMPLE_PAST));
 }
 
 /// Reach reads nothing but the authority fields, so contents do not change it.

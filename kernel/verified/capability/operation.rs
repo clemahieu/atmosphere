@@ -318,7 +318,7 @@ impl CapKernel {
         &&& forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x)
         &&& post.tables == pre.tables
         &&& post.spaces == pre.spaces
-        &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base })
+        &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, into: None })
     }
 
     /// A link in frame by a thread of the process whose table is at root, from pre to post with out
