@@ -1,6 +1,6 @@
 ---
 title: "A thread is retyped into its process, and its process binding is never set afterwards"
-date: 2026-11-08
+date: 2026-11-10
 status: active
 tags: [capability, thread, process, proof, verified]
 one_line: "Retyping a thread names a process capability too: the thread capability goes under the untyped and the process binding under the process capability in one step, so the only holder of the new control capability already controls the process and no reach grows. There is no bind operation. Revoking the binding leaves an inert thread that cannot be bound again; its registers stay readable, and its untyped's holder retypes its block."
@@ -54,6 +54,6 @@ Precedent, from published interfaces and not from code. Mach, NOVA and Zircon co
 ## What this does not settle
 
 - The pending stop and the IPI that moves a stopped thread off another core, `design/one-lock-bounded-steps/`.
-- Whether reach will read a vCPU's nested table or a device's space, and which of the two forms above each then takes.
+- Whether reach will read a vCPU's nested table, and which of the two forms above it then takes. A device's space takes the sole-holder form, `design/device-binding-under-the-space-capability/`.
 - Which argument word of the retype call carries the process slot.
 - The distinction between a reference-holding node and a back-pointer cleared with it, `design/teardown-driven-by-retype/`.

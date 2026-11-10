@@ -2,7 +2,7 @@
 
 # Design decisions
 
-31 records: 31 active, 0 superseded.
+32 records: 32 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -25,6 +25,9 @@ in `revisit if` what would make it worth reopening.
 - **[cut-over-on-a-branch](./cut-over-on-a-branch/DECISION.md)** (2026-11-05): New proven modules land on main beside the old kernel while boot keeps using the old one. The cut-over is a branch off main: a build feature selects old or new kernel entry and dom0, the branch gate boots both so each syscall is booted in the commit that wires it, the last commits delete the old kernel and the feature, and the branch merges with a merge commit. Main never contains the selection.
   - *confidence:* A process choice by the human after an independent review judged a single landing too large to finish in one round and its parts unable to pass the gate on their own.
   - *revisit if:* The cut-over branch has merged, when this record has done its work and the shim rule in CLAUDE.md applies to the whole tree again.
+- **[device-binding-under-the-space-capability](./device-binding-under-the-space-capability/DECISION.md)** (2026-11-10): Each device has one binding node, in a node page its table owns, live exactly while the device is bound. Bind names a device capability and a device space capability in the caller's table and derives the node under the space capability, holding one of the space block's references, so revoking that capability's lineage unbinds the device and delete of it is refused while bound. The binder is the device's only holder, since a device capability does not derive, and every holder of a device space capability reaches what the space maps, so bind grows no reach; moving a bound device grants what its space maps, and mapping into a device space is a grant by the mapper.
+  - *confidence:* Reasoned over kernel/verified/capability/device.rs, space.rs, kernel.rs and reach.rs and the landed thread binding, not yet proven: no bind exists in the tree. That bind grows no reach is arithmetic on the model once a device space's holders reach what it maps; choosing that reading over a narrower one is judgement, argued below.
+  - *revisit if:* A device must be bound to two spaces at once (PASID-tagged DMA, where one device walks several tables), which one binding node per device cannot express; or a device capability must derive, which ends the sole-holder argument and makes bind a growth the theorem does not admit.
 - **[divider-proven-by-invariant](./divider-proven-by-invariant/DECISION.md)** (2026-11-10): The rules that divide the machine between tenants are a table of grants with declared overlap, checked by a decidable layout_ok. A Verus-verified user crate establishes an invariant over the kernel's state and that table, with a state per block; with the kernel theorem it bounds each tenant from above by its rows over reach and from below by a capability for each row, and a witness shows it finishes for every layout that fits. Stage one divides at boot and ends dead while still holding; stage two serves create and destroy, then grow and shrink, then forced reclaim and core moves, each handler keeping the invariant.
   - *confidence:* The human's choice among static only, static then dynamic, and dynamic from the start, after a survey of published initialiser and policy proofs (capDL, Boyton's verified initialisation, seL4's integrity and information-flow proofs, take-grant, EROS confinement) and of hypervisors' allocation. The sizes the choice weighed are reasoned from structure, not measured; that the static case can be carried to running code is the published result, and the dynamic case is new ground.
   - *revisit if:* The caller's-view contracts cannot be proven from the kernel's operation specifications at a cost the project will pay, or a handler stage two needs cannot be written to keep one invariant, which is when the dynamic stage is reconsidered and the statement stays the static one.
@@ -91,7 +94,7 @@ in `revisit if` what would make it worth reopening.
 - **[theorem-over-reach](./theorem-over-reach/DECISION.md)** (2026-11-10): A process can read or write an object only if a capability to it is reachable from its own capabilities; every operation changes objects only by a relation of its kind over that reach; reach grows only by grant or retype. Isolation of disjoint subsystems is a corollary.
   - *confidence:* The statement is the human's choice; the definition and the per-operation shape are in the tree, kernel/verified/capability/reach.rs, and each operation's leaf discharges it as it lands. The composed theorem is not yet proven.
   - *revisit if:* A kernel operation is wanted whose effect cannot be written as a relation over the caller's reach, or a shared object must be reachable without any capability naming it.
-- **[thread-bound-at-retype](./thread-bound-at-retype/DECISION.md)** (2026-11-08): Retyping a thread names a process capability too: the thread capability goes under the untyped and the process binding under the process capability in one step, so the only holder of the new control capability already controls the process and no reach grows. There is no bind operation. Revoking the binding leaves an inert thread that cannot be bound again; its registers stay readable, and its untyped's holder retypes its block.
+- **[thread-bound-at-retype](./thread-bound-at-retype/DECISION.md)** (2026-11-10): Retyping a thread names a process capability too: the thread capability goes under the untyped and the process binding under the process capability in one step, so the only holder of the new control capability already controls the process and no reach grows. There is no bind operation. Revoking the binding leaves an inert thread that cannot be bound again; its registers stay readable, and its untyped's holder retypes its block.
   - *confidence:* Reasoned over kernel/verified/capability/reach.rs and the landed retype and bind, not yet proven: the widened retype lemma and the fact it needs are named below. That the step grows no reach is arithmetic on the model. Choosing construction over a sole-holder bind, which keeps the same theorem, is judgement.
   - *revisit if:* A workload needs a thread moved to another process without being recreated, carrying its registers in the kernel rather than through its supervisor reading and writing them; or a binding that reach reads must be set on an object that exists before the authority it binds, as a device does, for which the sole-holder rule below is the shape to use instead.
 - **[trust-boundary](./trust-boundary/DECISION.md)** (2026-11-10): The kernel's theorem holds whatever a pager does, so a swapped per-application pager needs no assurance for anyone else's safety. Isolation between two subsystems also depends on the component that divided the machine between them; that component is tier 1 by design/divider-proven-by-invariant/, and until its stage-one statement verifies the security claim states the dependence on unproven code.
@@ -111,11 +114,12 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `abi`: arch-module, one-kernel-instance, syscall-abi-in-registers
 - `address-space`: address-spaces-as-objects, vmm-over-svm
 - `boot`: machine-glue-below-the-kernel, root-process-at-boot, test-guest-memory
-- `capability`: address-spaces-as-objects, capability-names-a-block, cpu-time-as-capability, divider-proven-by-invariant, ipc-with-reply-object, process-holds-capabilities, revoke-by-depth-first-list, root-process-at-boot, schedulers-over-core-partitions, sharing-by-derive, teardown-driven-by-retype, theorem-over-reach, thread-bound-at-retype, untyped-memory, vmm-over-svm
+- `capability`: address-spaces-as-objects, capability-names-a-block, cpu-time-as-capability, device-binding-under-the-space-capability, divider-proven-by-invariant, ipc-with-reply-object, process-holds-capabilities, revoke-by-depth-first-list, root-process-at-boot, schedulers-over-core-partitions, sharing-by-derive, teardown-driven-by-retype, theorem-over-reach, thread-bound-at-retype, untyped-memory, vmm-over-svm
+- `device`: device-binding-under-the-space-capability
 - `gate`: cut-over-on-a-branch, land-without-regating, no-gate-for-what-no-step-reads
 - `glue`: machine-glue-below-the-kernel
 - `interrupt`: machine-glue-below-the-kernel
-- `iommu`: machine-glue-below-the-kernel
+- `iommu`: device-binding-under-the-space-capability, machine-glue-below-the-kernel
 - `ipc`: fan-in-over-private-rings, ipc-with-reply-object, latest-value-by-three-slot-exchange, syscall-abi-in-registers
 - `kernel-state`: multicore-kernel-shape, one-kernel-instance, one-lock-bounded-steps
 - `landing`: land-without-regating, no-gate-for-what-no-step-reads
@@ -130,6 +134,7 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `process`: cut-over-on-a-branch, land-without-regating, no-gate-for-what-no-step-reads, process-holds-capabilities, thread-bound-at-retype
 - `proof`: divider-proven-by-invariant, isolation-claim, theorem-over-reach, thread-bound-at-retype, trust-boundary
 - `purity`: untyped-memory
+- `reach`: device-binding-under-the-space-capability
 - `real-time`: schedulers-over-core-partitions
 - `revoke`: revoke-by-depth-first-list, sharing-by-derive, teardown-driven-by-retype
 - `scheduling`: cpu-time-as-capability, schedulers-over-core-partitions
@@ -138,5 +143,5 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `test`: test-guest-memory
 - `thread`: process-holds-capabilities, thread-bound-at-retype
 - `tiers`: divider-proven-by-invariant, network-stack-proven-at-tier-1, trust-boundary
-- `verified`: arch-module, cut-over-on-a-branch, fan-in-over-private-rings, flush-without-waiting, latest-value-by-three-slot-exchange, network-stack-proven-at-tier-1, one-lock-bounded-steps, revoke-by-depth-first-list, theorem-over-reach, thread-bound-at-retype
+- `verified`: arch-module, cut-over-on-a-branch, device-binding-under-the-space-capability, fan-in-over-private-rings, flush-without-waiting, latest-value-by-three-slot-exchange, network-stack-proven-at-tier-1, one-lock-bounded-steps, revoke-by-depth-first-list, theorem-over-reach, thread-bound-at-retype
 - `virtualization`: vmm-over-svm
