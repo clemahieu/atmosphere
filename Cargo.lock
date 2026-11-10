@@ -42,7 +42,6 @@ version = "0.1.0"
 dependencies = [
  "astd",
  "cfg-match",
- "displaydoc",
  "goblin",
  "log",
  "plain",
@@ -459,17 +458,6 @@ dependencies = [
  "block-buffer",
  "crypto-common",
  "subtle",
-]
-
-[[package]]
-name = "displaydoc"
-version = "0.2.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "97369cbbc041bc366949bc74d34658d6cda5621039731c6310521892a3a20ae0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
 ]
 
 [[package]]

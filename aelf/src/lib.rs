@@ -16,7 +16,6 @@ use core::slice;
 use astd::heapless::Vec as ArrayVec;
 use astd::io::{Error as IoError, Read, ReadExactError, Seek, SeekFrom};
 use cfg_match::cfg_match;
-use displaydoc::Display;
 use plain::Plain;
 
 use astd::memory::PageProtection;
@@ -62,34 +61,38 @@ use elf_types::{
 const HEADER_SIZE: usize = mem::size_of::<Header>();
 const MAX_PROGRAM_HEADERS: usize = 20;
 
-#[derive(Display, Debug)]
+#[derive(Debug)]
 pub enum Error {
-    /// Binary not long enough to have an ELF header
     TooShort,
-
-    /// Binary is not an ELF
     BadMagic,
-
-    /// Binary is for wrong architecture (expected 0x{expected:x}, got 0x{actual:x})
     WrongArchitecture { expected: u16, actual: u16 },
-
-    /// Binary is not relocatable
     NotRelocatable,
-
-    /// Binary has bad program header size {0}
     BadProgramHeaderSize(usize),
-
-    /// Too many program headers
     TooManyProgramHeaders,
-
-    /// No loadable segments
     NoLoadableSegments,
-
-    /// Failed to memory map
     MapFailed,
-
-    /// I/O error: {0}
     IoError(IoError),
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Error::TooShort => write!(f, "Binary not long enough to have an ELF header"),
+            Error::BadMagic => write!(f, "Binary is not an ELF"),
+            Error::WrongArchitecture { expected, actual } => write!(
+                f,
+                "Binary is for wrong architecture (expected 0x{expected:x}, got 0x{actual:x})"
+            ),
+            Error::NotRelocatable => write!(f, "Binary is not relocatable"),
+            Error::BadProgramHeaderSize(size) => {
+                write!(f, "Binary has bad program header size {size}")
+            }
+            Error::TooManyProgramHeaders => write!(f, "Too many program headers"),
+            Error::NoLoadableSegments => write!(f, "No loadable segments"),
+            Error::MapFailed => write!(f, "Failed to memory map"),
+            Error::IoError(e) => write!(f, "I/O error: {e}"),
+        }
+    }
 }
 
 pub trait VirtualMapper {
@@ -503,5 +506,44 @@ impl<'ph> fmt::Display for DisplayPFlags<'ph> {
         write_prot(PF_W, "W")?;
         write_prot(PF_X, "X")?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use astd::io::ErrorKind;
+
+    #[test]
+    fn error_messages() {
+        let cases = [
+            (
+                Error::TooShort,
+                "Binary not long enough to have an ELF header",
+            ),
+            (Error::BadMagic, "Binary is not an ELF"),
+            (
+                Error::WrongArchitecture {
+                    expected: 0x3e,
+                    actual: 0xb7,
+                },
+                "Binary is for wrong architecture (expected 0x3e, got 0xb7)",
+            ),
+            (Error::NotRelocatable, "Binary is not relocatable"),
+            (
+                Error::BadProgramHeaderSize(57),
+                "Binary has bad program header size 57",
+            ),
+            (Error::TooManyProgramHeaders, "Too many program headers"),
+            (Error::NoLoadableSegments, "No loadable segments"),
+            (Error::MapFailed, "Failed to memory map"),
+            (
+                Error::IoError(IoError::from_kind(ErrorKind::InvalidData)),
+                "I/O error: InvalidData",
+            ),
+        ];
+        for (error, message) in cases {
+            assert_eq!(format!("{error}"), message);
+        }
     }
 }
