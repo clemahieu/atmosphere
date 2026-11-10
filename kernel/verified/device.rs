@@ -3,7 +3,7 @@ use vstd::prelude::*;
 verus! {
 
 /// One slot per bus, device and function a PCI segment can address.
-pub const NUM_DEVICE_IDS: usize = 65536;
+pub const NUM_DEVICE_IDS: usize = 65536; // not a page size: a count of routing ids
 
 /// The slot a PCI function takes: its 16-bit routing id.
 pub open spec fn device_index(bus: int, device: int, function: int) -> int {

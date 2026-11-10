@@ -24,7 +24,7 @@ use crate::capability::steps::Steps;
 pub const NONE: usize = usize::MAX;
 
 /// A node id is below this: a page address, which is below the 48-bit boundary, plus an index.
-pub const NODE_SPACE: usize = 0x1_0000_0000_0000;
+pub const NODE_SPACE: usize = 0x1_0000_0000_0000; // not a page size: the end of the 48-bit address space
 
 pub const NODES_PER_PAGE: usize = 128;
 

@@ -205,7 +205,7 @@ pub open spec fn space_block(blocks: &BlockTable, b: usize) -> bool {
 /// block, which its process capabilities hold, so no space capability names it and no device is bound
 /// to it.
 pub open spec fn space_wf(list: &Tree, spaces: &Spaces, blocks: &BlockTable, s: usize) -> bool {
-    &&& s % 32768 == 0
+    &&& s % TABLE_PAGE_BYTES == 0
     &&& blocks.tracks_addr(s)
     &&& spaces.records@.contains_key(s)
     &&& spaces.records@[s].addr() == s + SPACE_RECORD_PAGE * PAGE_SZ
@@ -578,8 +578,8 @@ fn add_node_pages(
 )
     requires
         old(list).wf(),
-        base % 32768 == 0,
-        base + 32768 <= NODE_SPACE,
+        base % TABLE_PAGE_BYTES == 0,
+        base + TABLE_PAGE_BYTES <= NODE_SPACE,
         base / PAGE_SZ + 8 <= NUM_PAGES,
         p0.addr() == base,
         p1.addr() == base + PAGE_SZ,
@@ -714,7 +714,7 @@ pub open spec fn table_record_wf(pages: &TablePages, t: usize) -> bool {
 /// The table page at t has its table, its record, its spare page and its node pages. Its block holds one
 /// reference, its hidden node's, and is dead at once when that goes, by when no entry names it.
 pub open spec fn table_page_wf(list: &Tree, pages: &TablePages, blocks: &BlockTable, t: usize) -> bool {
-    &&& t % 32768 == 0
+    &&& t % TABLE_PAGE_BYTES == 0
     &&& blocks.tracks_addr(t)
     &&& pages.maps@[t].addr() == t + TABLE_NODE_PAGES * PAGE_SZ
     &&& pages.maps@[t].is_init()
@@ -761,14 +761,14 @@ pub open spec fn same_table_nodes(list_a: &Tree, list_b: &Tree, pages: &TablePag
 /// A table page's base, eight pages aligned, is page aligned and is its page's base.
 pub proof fn lemma_table_page_aligned(t: usize)
     requires
-        t % 32768 == 0,
+        t % TABLE_PAGE_BYTES == 0,
     ensures
         t % PAGE_SZ == 0,
         t as int == PAGE_SZ as int * (t as int / PAGE_SZ as int),
         (t / PAGE_SZ) % 8 == 0,
 {
-    lemma_fundamental_div_mod(t as int, 32768);
-    let q = t as int / 32768;
+    lemma_fundamental_div_mod(t as int, TABLE_PAGE_BYTES as int);
+    let q = t as int / TABLE_PAGE_BYTES as int;
     assert(t as int == PAGE_SZ * (8 * q));
     lemma_mod_multiples_basic(8 * q, PAGE_SZ as int);
     lemma_div_multiples_vanish(8 * q, PAGE_SZ as int);
@@ -779,8 +779,8 @@ pub proof fn lemma_table_page_aligned(t: usize)
 /// Two distinct table pages lie on distinct pages.
 pub proof fn lemma_table_pages_distinct(t: usize, u: usize)
     requires
-        t % 32768 == 0,
-        u % 32768 == 0,
+        t % TABLE_PAGE_BYTES == 0,
+        u % TABLE_PAGE_BYTES == 0,
         t != u,
     ensures
         t / PAGE_SZ != u / PAGE_SZ,
@@ -792,7 +792,7 @@ pub proof fn lemma_table_pages_distinct(t: usize, u: usize)
 /// The kth node page of a table page is the kth page of its block, page aligned.
 pub proof fn lemma_table_node_page(t: usize, k: usize)
     requires
-        t % 32768 == 0,
+        t % TABLE_PAGE_BYTES == 0,
         t / PAGE_SZ + k < NUM_PAGES,
     ensures
         table_node_page(t, k) == t + k * PAGE_SZ,
@@ -810,8 +810,8 @@ pub proof fn lemma_table_node_page(t: usize, k: usize)
 /// eight pages apart and a block's node pages are its first five.
 pub proof fn lemma_node_pages_disjoint(t: usize, u: usize, k: usize)
     requires
-        t % 32768 == 0,
-        u % 32768 == 0,
+        t % TABLE_PAGE_BYTES == 0,
+        u % TABLE_PAGE_BYTES == 0,
         t != u,
         t / PAGE_SZ < NUM_PAGES,
         k < TABLE_NODE_PAGES,
@@ -820,16 +820,16 @@ pub proof fn lemma_node_pages_disjoint(t: usize, u: usize, k: usize)
 {
     lemma_table_bound(t);
     assert(table_node_page(t, k) == t + k * PAGE_SZ);
-    lemma_fundamental_div_mod(t as int, 32768);
-    lemma_fundamental_div_mod(u as int, 32768);
-    let qt = t as int / 32768;
-    let qu = u as int / 32768;
-    assert(t as int == 32768 * qt);
-    assert(u as int == 32768 * qu);
+    lemma_fundamental_div_mod(t as int, TABLE_PAGE_BYTES as int);
+    lemma_fundamental_div_mod(u as int, TABLE_PAGE_BYTES as int);
+    let qt = t as int / TABLE_PAGE_BYTES as int;
+    let qu = u as int / TABLE_PAGE_BYTES as int;
+    assert(t as int == TABLE_PAGE_BYTES * qt);
+    assert(u as int == TABLE_PAGE_BYTES * qu);
     if qt < qu {
-        assert(32768 * qt + 32768 <= 32768 * qu);
+        assert(TABLE_PAGE_BYTES * qt + TABLE_PAGE_BYTES <= TABLE_PAGE_BYTES * qu);
     } else {
-        assert(32768 * qu + 32768 <= 32768 * qt);
+        assert(TABLE_PAGE_BYTES * qu + TABLE_PAGE_BYTES <= TABLE_PAGE_BYTES * qt);
     }
 }
 
@@ -837,8 +837,8 @@ pub proof fn lemma_node_pages_disjoint(t: usize, u: usize, k: usize)
 /// the blocks are eight pages apart and a block's node pages are its first five.
 pub proof fn lemma_node_page_names_block(t: usize, u: usize, p: usize)
     requires
-        t % 32768 == 0,
-        u % 32768 == 0,
+        t % TABLE_PAGE_BYTES == 0,
+        u % TABLE_PAGE_BYTES == 0,
         t / PAGE_SZ <= p < t / PAGE_SZ + TABLE_NODE_PAGES,
         u / PAGE_SZ <= p < u / PAGE_SZ + TABLE_NODE_PAGES,
     ensures
@@ -869,7 +869,7 @@ pub proof fn lemma_node_page_names_block(t: usize, u: usize, p: usize)
 /// The block at `base`, eight pages aligned, starts at `page`.
 pub proof fn lemma_table_page_base(base: usize, page: usize)
     requires
-        base % 32768 == 0,
+        base % TABLE_PAGE_BYTES == 0,
         page == base / PAGE_SZ,
     ensures
         page % 8 == 0,
@@ -1440,7 +1440,7 @@ impl CapKernel {
             self.spaces.roots@.contains_key(self.payload_of(n).base),
             self.spaces.holders@[self.payload_of(n).base].contains(n),
             self.spaces.records@[self.payload_of(n).base].value().kind is Device,
-            self.payload_of(n).base % 32768 == 0,
+            self.payload_of(n).base % TABLE_PAGE_BYTES == 0,
             self.blocks.tracks_addr(self.payload_of(n).base),
             self.blocks.pages@[(self.payload_of(n).base / PAGE_SZ) as int].object is Space,
             block_typed(&self.blocks, BlockRef::Small(self.payload_of(n).base / PAGE_SZ)),
@@ -2045,8 +2045,8 @@ impl CapKernel {
             pre.can_retype_under(root, from, base, 3),
             parent == pre.tables.node_of(root, from),
             pre.view().holds_right(root, parent, Right::Retype),
-            base % 32768 == 0,
-            base + 32768 <= NODE_SPACE,
+            base % TABLE_PAGE_BYTES == 0,
+            base + TABLE_PAGE_BYTES <= NODE_SPACE,
             page == base / PAGE_SZ,
             pre.blocks.tracks_run(page as int, 8),
             post.blocks.wf(),
@@ -2219,7 +2219,7 @@ impl CapKernel {
             post.zeroing == pre.zeroing,
             post.frames == pre.frames,
             post.blocks.wf(),
-            base % 32768 == 0,
+            base % TABLE_PAGE_BYTES == 0,
             base / PAGE_SZ == page,
             page * PAGE_SZ == base,
             page % 8 == 0,
@@ -2323,7 +2323,7 @@ impl CapKernel {
         requires
             pre.wf(),
             post.blocks.wf(),
-            base % 32768 == 0,
+            base % TABLE_PAGE_BYTES == 0,
             base / PAGE_SZ == page,
             pre.blocks.tracks_run(page as int, 8),
             forall|k: int| 0 <= k < 8 ==> #[trigger] pre.blocks.pages@[page + k].kind is Free,
@@ -2362,7 +2362,7 @@ impl CapKernel {
     proof fn lemma_table_page_pages(pre: Self, post: Self, base: usize, page: usize)
         requires
             Self::table_page_step(pre, post),
-            base % 32768 == 0,
+            base % TABLE_PAGE_BYTES == 0,
             base / PAGE_SZ == page,
             page * PAGE_SZ == base,
             pre.blocks.tracks_run(page as int, 8),
@@ -2430,7 +2430,7 @@ impl CapKernel {
     proof fn lemma_table_page_free_list(&self, base: usize, page: usize, k: usize)
         requires
             self.wf(),
-            base % 32768 == 0,
+            base % TABLE_PAGE_BYTES == 0,
             base / PAGE_SZ == page,
             self.blocks.tracks_run(page as int, 8),
             k < 8,
@@ -2661,8 +2661,8 @@ impl CapKernel {
         let page = base / PAGE_SZ;
         proof {
             lemma2_to64();
-            assert(block_bytes(3) == 32768);
-            assert(base % 32768 == 0);
+            assert(block_bytes(3) == TABLE_PAGE_BYTES);
+            assert(base % TABLE_PAGE_BYTES == 0);
             lemma_table_page_base(base, page);
         }
         // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
@@ -2875,7 +2875,7 @@ impl CapKernel {
     proof fn lemma_space_nodes_added(pre: Self, post: Self, base: usize, child: usize)
         requires
             pre.wf(),
-            base % 32768 == 0,
+            base % TABLE_PAGE_BYTES == 0,
             pre.blocks.tracks_addr_run(base, 8),
             post.spaces.roots@ == pre.spaces.roots@.insert(base, post.spaces.roots@[base]),
             post.spaces.records@ == pre.spaces.records@.insert(base, post.spaces.records@[base]),
@@ -2909,7 +2909,7 @@ impl CapKernel {
     proof fn lemma_spaces_space_added(pre: Self, post: Self, base: usize, page: usize, child: usize)
         requires
             Self::space_step(pre, post, child),
-            base % 32768 == 0,
+            base % TABLE_PAGE_BYTES == 0,
             base / PAGE_SZ == page,
             page * PAGE_SZ == base,
             pre.blocks.tracks_run(page as int, 8),
@@ -3041,7 +3041,7 @@ impl CapKernel {
             post.frames == pre.frames,
             post.table_pages == pre.table_pages,
             post.blocks.wf(),
-            base % 32768 == 0,
+            base % TABLE_PAGE_BYTES == 0,
             base / PAGE_SZ == page,
             page * PAGE_SZ == base,
             page % 8 == 0,
@@ -3173,8 +3173,8 @@ impl CapKernel {
         let page = base / PAGE_SZ;
         proof {
             lemma2_to64();
-            assert(block_bytes(3) == 32768);
-            assert(base % 32768 == 0);
+            assert(block_bytes(3) == TABLE_PAGE_BYTES);
+            assert(base % TABLE_PAGE_BYTES == 0);
             lemma_table_page_base(base, page);
         }
         // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.

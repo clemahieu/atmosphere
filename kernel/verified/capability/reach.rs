@@ -18,7 +18,7 @@ pub type ObjectId = usize;
 
 /// Devices are objects too, named above the 48-bit address space so that no block of memory covers
 /// one: device d is the page DEVICE_OBJECTS + d * PAGE_SZ.
-pub const DEVICE_OBJECTS: usize = 0x1_0000_0000_0000;
+pub const DEVICE_OBJECTS: usize = 0x1_0000_0000_0000; // not a page size: the end of the 48-bit address space
 
 pub open spec fn device_object(d: int) -> ObjectId {
     (DEVICE_OBJECTS + d * PAGE_SZ) as usize
@@ -26,10 +26,10 @@ pub open spec fn device_object(d: int) -> ObjectId {
 
 /// The console is an object too, named past every device object: the 2^36 pages from DEVICE_OBJECTS
 /// are devices' room, and the console is the page after them.
-pub const CONSOLE_OBJECT: usize = 0x2_0000_0000_0000;
+pub const CONSOLE_OBJECT: usize = 0x2_0000_0000_0000; // not a page size: twice DEVICE_OBJECTS, past the devices' room
 
 /// Power, the authority to end the machine's run, is an object too: the page after the console's.
-pub const POWER_OBJECT: usize = 0x2_0000_0000_1000;
+pub const POWER_OBJECT: usize = CONSOLE_OBJECT + PAGE_SZ;
 
 /// A list node's id, as in capability::list.
 pub type NodeId = usize;
@@ -2719,8 +2719,8 @@ pub proof fn lemma_retype_of_an_uncovered_page_does_not_discharge()
     assert(!pre.covers(10, EXAMPLE_PAST));
 }
 
-/// A thread object, 0x5000, outside the example block.
-pub const WAITER: usize = 0x5000;
+/// A thread object, at page 5, outside the example block.
+pub const WAITER: usize = PAGE_SZ * 5;
 
 /// `example` with WAITER a thread of process `owner`, waiting on nothing.
 pub open spec fn waiter_example(owner: ObjectId) -> State {

@@ -1087,7 +1087,7 @@ impl CapKernel {
 /// Where a mapping node lies: in node page (e + 1) / 128 of its table's block, at slot (e + 1) % 128.
 pub proof fn lemma_mapping_node_place(t: usize, e: usize)
     requires
-        t % 32768 == 0,
+        t % TABLE_PAGE_BYTES == 0,
         t / PAGE_SZ + TABLE_NODE_PAGES <= NUM_PAGES,
         e < ENTRIES,
     ensures
@@ -1899,10 +1899,10 @@ impl CapKernel {
             self.table_pages.maps@.contains_key(t),
         ensures
             table_page_wf(&self.list, &self.table_pages, &self.blocks, t),
-            t % 32768 == 0,
+            t % TABLE_PAGE_BYTES == 0,
             t % PAGE_SZ == 0,
             self.blocks.tracks_addr_run(t, 8),
-            t < 0x2_0000_0000,
+            t < NUM_PAGES * PAGE_SZ,
             self.blocks.pages@[(t / PAGE_SZ) as int].kind is Base,
             self.blocks.pages@[(t / PAGE_SZ) as int].object is TablePage,
             forall|k: int| 0 < k < 8 ==> (#[trigger] self.blocks.pages@[t / PAGE_SZ + k]).kind is Member
@@ -2120,7 +2120,7 @@ impl CapKernel {
     /// every node the list held but base keeps its liveness and kind.
     pub open spec fn page_added_step(pre: Self, post: Self, base: usize) -> bool {
         &&& pre.wf()
-        &&& base % 32768 == 0
+        &&& base % TABLE_PAGE_BYTES == 0
         &&& pre.blocks.tracks_addr_run(base, 8)
         &&& forall|t: usize| #[trigger] post.table_pages.maps@.contains_key(t)
             ==> t == base || pre.table_pages.maps@.contains_key(t)
@@ -2198,7 +2198,7 @@ impl CapKernel {
 /// Where node i of node page k of the table page at t lies: in that node page, at slot i.
 pub proof fn lemma_table_node_place(t: usize, k: usize, i: usize)
     requires
-        t % 32768 == 0,
+        t % TABLE_PAGE_BYTES == 0,
         t / PAGE_SZ + TABLE_NODE_PAGES <= NUM_PAGES,
         k < TABLE_NODE_PAGES,
         i < NODES_PER_PAGE,

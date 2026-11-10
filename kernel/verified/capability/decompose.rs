@@ -83,7 +83,7 @@ pub fn first_block(start: usize, n: usize, cap: u8, Tracked(steps): Tracked<&mut
 {
     let mut o: u8 = MAX_ORDER;
     let ghost steps0 = steps.count;
-    let mut size: usize = 0x10_0000_0000;
+    let mut size: usize = 0x10_0000_0000; // not a page size: 2^MAX_ORDER, a count of pages
     proof {
         lemma2_to64_rest();
     }

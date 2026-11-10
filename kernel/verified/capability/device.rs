@@ -27,7 +27,7 @@ use crate::define::*;
 pub const MAX_DEVICES: usize = 128;
 
 /// How many device numbers an IOMMU has: a DeviceID is 16 bits. AMD IOMMU specification 48882 §2.2.
-pub const IOMMU_DEVICES: usize = 0x10000;
+pub const IOMMU_DEVICES: usize = 0x10000; // not a page size: a count of device numbers
 
 /// A device capability carries no right: holding it is the authority.
 pub const DEVICE_RIGHTS: u32 = 0;

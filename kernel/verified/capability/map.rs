@@ -85,11 +85,14 @@ pub open spec fn entry_span(level: u64) -> u64 {
     }
 }
 
+/// The end of a space's lower half, which its first half of top-level entries covers.
+pub const LOWER_HALF_END: u64 = (SIZE_512G * ENTRIES / 2) as u64;
+
 /// Whether the address va names one entry at the level, 1 to 4: canonical in the lower half, and zero in
 /// the bits below what the entry covers. See design/syscall-abi-in-registers/.
 pub open spec fn names_entry(va: u64, level: u64) -> bool {
     &&& 1 <= level <= 4
-    &&& va < 0x8000_0000_0000
+    &&& va < LOWER_HALF_END
     &&& va % entry_span(level) == 0
 }
 
@@ -109,7 +112,7 @@ pub fn entry_named(va: u64, level: u64) -> (ret: bool)
     ensures
         ret == names_entry(va, level),
 {
-    if level == 0 || level > 4 || va >= 0x8000_0000_0000 {
+    if level == 0 || level > 4 || va >= LOWER_HALF_END {
         return false;
     }
     let span: u64 = if level == 1 {
@@ -302,7 +305,7 @@ pub proof fn lemma_frame_addr_valid(frame: usize)
     requires
         frame < NUM_PAGES,
     ensures
-        frame * PAGE_SZ < 0x2_0000_0000,
+        frame * PAGE_SZ < NUM_PAGES * PAGE_SZ,
         mem_valid((frame * PAGE_SZ) as usize),
 {
     assert(frame < NUM_PAGES ==> ((frame * PAGE_SZ) as usize) & 0xffff_0000_0000_0fffusize == 0) by (bit_vector);
@@ -313,8 +316,8 @@ pub proof fn lemma_frame_addr_valid(frame: usize)
 /// aligned and the node pages are its first five.
 pub proof fn lemma_mapping_node_injective(t: usize, e: usize, u: usize, d: usize)
     requires
-        t % 32768 == 0,
-        u % 32768 == 0,
+        t % TABLE_PAGE_BYTES == 0,
+        u % TABLE_PAGE_BYTES == 0,
         t / PAGE_SZ + TABLE_NODE_PAGES <= NUM_PAGES,
         u / PAGE_SZ + TABLE_NODE_PAGES <= NUM_PAGES,
         e < ENTRIES,

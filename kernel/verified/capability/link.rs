@@ -893,27 +893,27 @@ pub proof fn lemma_cut_pages(tree: TableTree, t: usize, g: usize)
     vstd::set_lib::range_set_properties::<usize>(0, NUM_PAGES);
 }
 
-/// An address whose page is below NUM_PAGES is below 2^33.
+/// An address whose page is below NUM_PAGES is below NUM_PAGES * PAGE_SZ.
 pub proof fn lemma_table_bound(t: usize)
     requires
         t / PAGE_SZ < NUM_PAGES,
     ensures
-        t < 0x2_0000_0000,
+        t < NUM_PAGES * PAGE_SZ,
 {
     lemma_fundamental_div_mod(t as int, (PAGE_SZ as int));
 }
 
-/// A table page's table lies within memory: its address, page aligned and below 2^33 plus five pages,
+/// A table page's table lies within memory: its address, page aligned and below NUM_PAGES * PAGE_SZ, plus five pages,
 /// has no bit outside MEM_MASK.
 pub proof fn lemma_table_addr_valid(t: usize)
     requires
         t % PAGE_SZ == 0,
-        t < 0x2_0000_0000,
+        t < NUM_PAGES * PAGE_SZ,
     ensures
-        t + TABLE_NODE_PAGES * PAGE_SZ < 0x1_0000_0000_0000,
+        t + TABLE_NODE_PAGES * PAGE_SZ < NODE_SPACE,
         mem_valid((t + TABLE_NODE_PAGES * PAGE_SZ) as usize),
 {
-    assert(t % PAGE_SZ == 0 && t < 0x2_0000_0000 ==> ((t + 0x5000) as usize) & 0xffff_0000_0000_0fffusize == 0) by (bit_vector);
+    assert(t % PAGE_SZ == 0 && t < NUM_PAGES * PAGE_SZ ==> ((t + TABLE_NODE_PAGES * PAGE_SZ) as usize) & 0xffff_0000_0000_0fffusize == 0) by (bit_vector);
     assert((!MEM_MASK) as usize == 0xffff_0000_0000_0fffusize) by (compute_only);
 }
 
@@ -1679,7 +1679,7 @@ impl CapKernel {
         if self.is_cap_dead(n, payload) {
             return false;
         }
-        if parent % 32768 != 0 || !self.blocks.page_tracked(parent / PAGE_SZ) || child % 32768 != 0 || !self.blocks.page_tracked(child / PAGE_SZ) || entry >= ENTRIES {
+        if parent % TABLE_PAGE_BYTES != 0 || !self.blocks.page_tracked(parent / PAGE_SZ) || child % TABLE_PAGE_BYTES != 0 || !self.blocks.page_tracked(child / PAGE_SZ) || entry >= ENTRIES {
             proof {
                 if tree.is_page(parent) {
                     assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, parent));
