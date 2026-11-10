@@ -13,6 +13,7 @@ use crate::capability::destroy::*;
 use crate::capability::kernel::*;
 use crate::capability::link::*;
 use crate::capability::list::*;
+use crate::capability::steps::Steps;
 use crate::capability::map::*;
 use crate::capability::mapping::*;
 use crate::capability::reach::*;
@@ -285,7 +286,9 @@ impl CapKernel {
         let list = PPtr::<SpaceCores>::from_usize(s + SPACE_CORES_PAGE * 4096).borrow(
             Tracked(self.spaces.loaded.borrow().tracked_borrow(s)),
         ).list;
-        self.flush_ipis = send_to_listed(list, Ghost(sent));
+        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        self.flush_ipis = send_to_listed(list, Ghost(sent), Tracked(&mut steps));
         proof {
             Self::lemma_tlb_same(pre, *self);
         }

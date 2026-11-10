@@ -16,6 +16,7 @@ use crate::capability::reach::*;
 use crate::capability::retype::RetypeStep;
 use crate::capability::revoke::RevokeStep;
 use crate::capability::space::*;
+use crate::capability::steps::Steps;
 use crate::capability::thread::*;
 use crate::capability::unmap::Unmapped;
 use crate::define::NUM_CPUS;
@@ -654,11 +655,13 @@ impl CapKernel {
             Some(Operation::Map) => Some(self.invoke_map(root, frame)),
             Some(Operation::Unmap) => Some(self.invoke_unmap(root, frame)),
             Some(Operation::Probe) => Some(self.invoke_probe(root, frame)),
-            Some(Operation::Print) => Some(
-                status_only_outcome(
-                    self.print(root, frame.slot() as usize, frame.argument(1), frame.argument(2), frame.argument(3), frame.argument(4), frame.argument(5)),
-                ),
-            ),
+            Some(Operation::Print) => {
+                // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
+                let tracked mut steps = Steps::fresh();
+                Some(status_only_outcome(
+                    self.print(root, frame.slot() as usize, frame.argument(1), frame.argument(2), frame.argument(3), frame.argument(4), frame.argument(5), Tracked(&mut steps)),
+                ))
+            },
             Some(Operation::PowerOff) => Some(status_only_outcome(self.power_off(root, frame.slot() as usize))),
             Some(Operation::Inspect) => match position(frame.slot()) {
                 Some(at) => Some(self.inspect(root, at)),
@@ -861,7 +864,9 @@ impl CapKernel {
             Self::spec_probed(*old(self), *final(self), root, frame, ret),
     {
         let ghost pre = *self;
-        match self.probe_at(root, frame.slot() as usize, frame.argument(1), frame.argument(2)) {
+        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        match self.probe_at(root, frame.slot() as usize, frame.argument(1), frame.argument(2), Tracked(&mut steps)) {
             Some(r) => {
                 let out = probe_outcome(r);
                 proof {

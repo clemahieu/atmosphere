@@ -10,6 +10,8 @@ verus! {
 
 use crate::capability::kernel::{FlushTarget, Flushed};
 use crate::capability::operation::Outcome;
+use crate::capability::console::PRINT_BYTES;
+use crate::capability::steps::Steps;
 use crate::define::PAddr;
 use crate::pagetable::entry::{PageEntry, PageEntryPerm, PageEntryStatus};
 use crate::util::page_ptr_util_u::*;
@@ -844,12 +846,17 @@ pub const PL011_FLAG: usize = 0x018;
 pub const PL011_TRANSMIT_FULL: u32 = 1 << 5;
 
 /// Writes to the PL011 the bytes words a to e carry: each word's eight bytes from its lowest, a's
-/// first, up to the first zero byte. Each byte waits while the transmitter is full. Each access is one
-/// load or store of a single register without writeback, the form whose stage 2 data abort reports
-/// the access in its syndrome (Arm ARM D24.2.45, ISV), which a hypervisor emulating the device needs.
+/// first, up to the first zero byte. Each byte waits while the transmitter is full, which the device
+/// sets and the kernel's state does not, so each byte is one unit: design/one-lock-bounded-steps/.
+/// Each access is one load or store of a single register without writeback, the form whose stage 2
+/// data abort reports the access in its syndrome (Arm ARM D24.2.45, ISV), which a hypervisor
+/// emulating the device needs.
 #[verifier(external_body)]
 // external_body(glue): writes the PL011 through its memory-mapped registers, which have no state a proof could see
-pub fn serial_write(a: u64, b: u64, c: u64, d: u64, e: u64) {
+pub fn serial_write(a: u64, b: u64, c: u64, d: u64, e: u64, Tracked(steps): Tracked<&mut Steps>)
+    ensures
+        final(steps).count <= old(steps).count + PRINT_BYTES,
+{
     let words = [a, b, c, d, e];
     let mut w = 0;
     while w < 5 {

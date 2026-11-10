@@ -7,6 +7,8 @@ verus! {
 
 use crate::capability::kernel::{FlushTarget, Flushed};
 use crate::capability::operation::Outcome;
+use crate::capability::console::PRINT_BYTES;
+use crate::capability::steps::Steps;
 use crate::define::PAddr;
 use crate::pagetable::entry::{PageEntry, PageEntryPerm, PageEntryStatus};
 use crate::util::page_ptr_util_u::*;
@@ -977,10 +979,14 @@ pub const SERIAL_LINE_STATUS: u16 = 5;
 pub const SERIAL_TRANSMIT_EMPTY: u8 = 1 << 5;
 
 /// Writes to COM1 the bytes words a to e carry: each word's eight bytes from its lowest, a's first, up
-/// to the first zero byte. Each byte waits for the transmit register to empty.
+/// to the first zero byte. Each byte waits for the transmit register to empty, which the port sets and
+/// the kernel's state does not, so each byte is one unit: design/one-lock-bounded-steps/.
 #[verifier(external_body)]
 // external_body(glue): writes the serial port through port I/O, which has no state a proof could see
-pub fn serial_write(a: u64, b: u64, c: u64, d: u64, e: u64) {
+pub fn serial_write(a: u64, b: u64, c: u64, d: u64, e: u64, Tracked(steps): Tracked<&mut Steps>)
+    ensures
+        final(steps).count <= old(steps).count + PRINT_BYTES,
+{
     let words = [a, b, c, d, e];
     let mut w = 0;
     while w < 5 {

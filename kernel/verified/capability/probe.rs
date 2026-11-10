@@ -13,6 +13,7 @@ use crate::capability::block::BlockTable;
 use crate::capability::kernel::*;
 use crate::capability::link::*;
 use crate::capability::list::*;
+use crate::capability::steps::Steps;
 use crate::capability::map::*;
 use crate::capability::mapping::*;
 use crate::capability::reach::*;
@@ -378,12 +379,13 @@ impl CapKernel {
     /// Reads and clears the accessed and dirty bits of `count` entries, from the one the address `va`
     /// names, of the level 1 table it reaches in the space of the capability at index `slot` of the table
     /// at `root`. All of these come from user space, and a refusal changes nothing. See
-    /// design/syscall-abi-in-registers/.
-    pub fn probe_at(&mut self, root: usize, slot: usize, va: u64, count: u64) -> (ret: Option<Probed>)
+    /// design/syscall-abi-in-registers/. Each entry is one unit, and a count over PROBE_MAX is refused.
+    pub fn probe_at(&mut self, root: usize, slot: usize, va: u64, count: u64, Tracked(steps): Tracked<&mut Steps>) -> (ret: Option<Probed>)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
         ensures
+            final(steps).count <= old(steps).count + PROBE_MAX,
             final(self).wf(),
             ret is Some == old(self).can_probe(root, slot, va, count),
             ret is None ==> *final(self) == *old(self),
@@ -463,9 +465,11 @@ impl CapKernel {
         proof {
             lemma_mask_empty();
         }
+        let ghost start = steps.count;
         while i < count
             invariant
                 0 <= i <= count <= PROBE_MAX,
+                steps.count == start + i,
                 l1 + count <= 512,
                 l1 == p.l1,
                 m0 == pre.table_pages.maps@[t],
@@ -546,6 +550,9 @@ impl CapKernel {
                 }
             }
             i = i + 1;
+            proof {
+                steps.step();
+            }
         }
         proof {
             self.table_pages.maps.borrow_mut().tracked_insert(t, map);

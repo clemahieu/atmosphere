@@ -9,6 +9,7 @@ verus! {
 use crate::capability::block::{ObjectType, PageKind};
 use crate::capability::kernel::*;
 use crate::capability::list::*;
+use crate::capability::steps::Steps;
 use crate::capability::mapping::*;
 use crate::capability::refs::*;
 use crate::capability::reach::*;
@@ -2000,7 +2001,9 @@ impl CapKernel {
         }
         self.flush_epoch = self.flush_epoch + 1;
         let epoch = self.flush_epoch;
-        self.stale_epoch.record_run(t / 4096, 1, epoch);
+        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        self.stale_epoch.record_run(t / 4096, 1, epoch, Tracked(&mut steps));
         self.tlb = Ghost(Seq::new(NUM_CPUS as nat, |d: int|
             if space is Some && pre.loaded(d, space->Some_0) {
                 pre.tlb@[d].union(stale_entries(space->Some_0, pages))

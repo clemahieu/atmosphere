@@ -13,6 +13,7 @@ use crate::capability::device::*;
 use crate::capability::link::*;
 use crate::capability::mapping::*;
 use crate::capability::list::*;
+use crate::capability::steps::Steps;
 use crate::capability::refs::*;
 use crate::capability::space::*;
 use crate::capability::table::Tables;
@@ -414,13 +415,14 @@ impl CommandBuffers {
     }
 
     /// Invalidates all of present IOMMU i's caches and waits for it to finish, as invalidate_iommu_all
-    /// does, and moves i's tail past the two commands that wrote.
-    pub fn invalidate(&mut self, Ghost(present): Ghost<Seq<bool>>, i: usize, epoch: usize) -> (ret: Tracked<Flushed>)
+    /// does, and moves i's tail past the two commands that wrote. The wait is one unit.
+    pub fn invalidate(&mut self, Ghost(present): Ghost<Seq<bool>>, i: usize, epoch: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: Tracked<Flushed>)
         requires
             old(self).wf(present),
             i < NUM_IOMMUS,
             present[i as int],
         ensures
+            final(steps).count <= old(steps).count + 1,
             final(self).wf(present),
             final(self).pages == old(self).pages,
             ret@.target == FlushTarget::Iommu(i as int),
@@ -430,7 +432,7 @@ impl CommandBuffers {
             reveal(CommandBuffers::wf);
         }
         let ghost pre = *old(self);
-        let (next, flushed) = invalidate_iommu_all(self, i, epoch);
+        let (next, flushed) = invalidate_iommu_all(self, i, epoch, Tracked(steps));
         let b = *self.buffers.get(i);
         self.buffers.set(i, CommandBuffer { mmio: b.mmio, ring: b.ring, len: b.len, tail: next, completion: b.completion });
         proof {
@@ -572,22 +574,27 @@ impl StaleEpochs {
         }
     }
 
-    /// This run of pages was unmapped at this epoch. A page above an acknowledgement older than the epoch
-    /// stays above it.
-    pub fn record_run(&mut self, first: usize, count: usize, epoch: usize)
+    /// This run of pages, at most a 2M region's, was unmapped at this epoch. A page above an
+    /// acknowledgement older than the epoch stays above it.
+    pub fn record_run(&mut self, first: usize, count: usize, epoch: usize, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).wf(),
             first + count <= NUM_PAGES,
+            count <= PAGES_PER_2M,
         ensures
+            final(steps).count <= old(steps).count + PAGES_PER_2M,
             final(self).wf(),
             forall|g: usize| first <= g < first + count ==> #[trigger] final(self).written(epoch, g),
             forall|a: int, g: usize| a < epoch && g < NUM_PAGES && old(self).above(a, g) ==> #[trigger] final(self).above(a, g),
     {
         let mut k = 0;
+        let ghost start = steps.count;
         while k != count
             invariant
                 self.wf(),
                 0 <= k <= count,
+                count <= PAGES_PER_2M,
+                steps.count == start + k,
                 first + count <= NUM_PAGES,
                 forall|g: usize| first <= g < first + k ==> #[trigger] self.written(epoch, g),
                 forall|a: int, g: usize| a < epoch && g < NUM_PAGES && old(self).above(a, g) ==> #[trigger] self.above(a, g),
@@ -596,6 +603,7 @@ impl StaleEpochs {
             let ghost mid = *self;
             self.record(first + k, epoch);
             proof {
+                steps.step();
                 let page = (first + k) as usize;
                 assert forall|g: usize| first <= g < first + k + 1 implies #[trigger] self.written(epoch, g) by {
                     if g != page {
@@ -716,15 +724,17 @@ pub const IOMMU_COMMAND_TAIL: usize = 0x2008;
 /// this writes i's ring, and each call waits for the IOMMU to read all it wrote, so the ring is empty
 /// on entry and two commands fit in it. The kernel maps memory at its physical address, as the entries
 /// it writes assume, so the completion word's address is the one the IOMMU stores to. Waiting here is
-/// not waiting for a core: design/flush-without-waiting/.
+/// not waiting for a core: design/flush-without-waiting/. The wait is on the IOMMU, which finishes two
+/// commands in a time the state does not set, so it is one unit: design/one-lock-bounded-steps/.
 #[verifier(external_body)]
 // external_body(glue): only the IOMMU can attest an invalidate, so only this makes its token
-pub fn invalidate_iommu_all(commands: &CommandBuffers, i: usize, epoch: usize) -> (ret: (usize, Tracked<Flushed>))
+pub fn invalidate_iommu_all(commands: &CommandBuffers, i: usize, epoch: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: (usize, Tracked<Flushed>))
     requires
         i < NUM_IOMMUS,
         commands.buffers.wf(),
         commands.buffer_wf(i as int),
     ensures
+        final(steps).count == old(steps).count + 1,
         ret.0 == (commands.buffers@[i as int].tail + 2) % commands.buffers@[i as int].len as int,
         ret.1@.target == FlushTarget::Iommu(i as int),
         ret.1@.epoch == epoch as int,
@@ -1540,43 +1550,49 @@ impl CapKernel {
     }
 
     /// Whether every core and IOMMU has acknowledged f's last unmap, which is a bounded number of loads.
-    pub fn is_acknowledged(&self, f: usize) -> (ret: bool)
+    pub fn is_acknowledged(&self, f: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             self.wf(),
             self.blocks.tracks(f as int),
         ensures
+            final(steps).count <= old(steps).count + NUM_CPUS + NUM_IOMMUS,
             ret == self.acknowledged(f),
     {
-        self.has_acknowledged(*self.stale_epoch.pages.get(f))
+        self.has_acknowledged(*self.stale_epoch.pages.get(f), Tracked(steps))
     }
 
     /// Whether every core and IOMMU has acknowledged the last unmap of any page of region r.
-    pub fn is_region_acknowledged(&self, level: Large, r: usize) -> (ret: bool)
+    pub fn is_region_acknowledged(&self, level: Large, r: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             self.wf(),
             r < level_regions(level),
         ensures
+            final(steps).count <= old(steps).count + NUM_CPUS + NUM_IOMMUS,
             ret == self.region_acknowledged(level, r),
     {
         let epoch = match level {
             Large::Two => *self.stale_epoch.two.get(r),
             Large::One => *self.stale_epoch.one.get(r),
         };
-        self.has_acknowledged(epoch)
+        self.has_acknowledged(epoch, Tracked(steps))
     }
 
     /// Whether every core and IOMMU has reached this epoch, which is a bounded number of loads.
-    fn has_acknowledged(&self, epoch: usize) -> (ret: bool)
+    fn has_acknowledged(&self, epoch: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             self.wf(),
         ensures
+            final(steps).count <= old(steps).count + NUM_CPUS + NUM_IOMMUS,
             ret == self.all_acknowledged(epoch as int),
     {
         let mut c = 0;
+        let ghost start = steps.count;
         while c != NUM_CPUS
             invariant
                 self.wf(),
                 0 <= c <= NUM_CPUS,
+                steps.count == start + c,
+                start == old(steps).count,
                 forall|d: int| 0 <= d < c ==> epoch <= #[trigger] self.acked(d),
             decreases NUM_CPUS - c,
         {
@@ -1585,12 +1601,17 @@ impl CapKernel {
                 return false;
             }
             c = c + 1;
+            proof {
+                steps.step();
+            }
         }
         let mut i = 0;
         while i != NUM_IOMMUS
             invariant
                 self.wf(),
                 0 <= i <= NUM_IOMMUS,
+                steps.count == start + NUM_CPUS + i,
+                start == old(steps).count,
                 forall|d: int| 0 <= d < NUM_CPUS ==> epoch <= #[trigger] self.acked(d),
                 forall|j: int| 0 <= j < i && #[trigger] self.iommu_present(j) ==> epoch <= self.iommu_acked(j),
             decreases NUM_IOMMUS - i,
@@ -1601,6 +1622,9 @@ impl CapKernel {
                 return false;
             }
             i = i + 1;
+            proof {
+                steps.step();
+            }
         }
         true
     }
@@ -2306,13 +2330,15 @@ impl CapKernel {
         }
     }
 
-    /// Present IOMMU i invalidates all it holds and acknowledges the current epoch.
-    pub fn flush_iommu(&mut self, i: usize)
+    /// Present IOMMU i invalidates all it holds and acknowledges the current epoch. The wait for the
+    /// invalidate is one unit.
+    pub fn flush_iommu(&mut self, i: usize, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).wf(),
             i < NUM_IOMMUS,
             old(self).iommu_present(i as int),
         ensures
+            final(steps).count <= old(steps).count + 1,
             final(self).wf(),
             final(self).iommu_acked(i as int) == old(self).flush_epoch,
             forall|j: int| 0 <= j < NUM_IOMMUS && j != i ==> #[trigger] final(self).iommu_acked(j) == old(self).iommu_acked(j),
@@ -2328,7 +2354,7 @@ impl CapKernel {
         let ghost pre = *old(self);
         let epoch = self.flush_epoch;
         let ghost present = self.iommus.present@;
-        let flushed = self.iommus.commands.invalidate(Ghost(present), i, epoch);
+        let flushed = self.iommus.commands.invalidate(Ghost(present), i, epoch, Tracked(steps));
         proof {
             assert forall|c: int| 0 <= c < NUM_CPUS implies #[trigger] self.acked(c) <= self.flush_epoch by {
                 assert(pre.acked(c) <= pre.flush_epoch);

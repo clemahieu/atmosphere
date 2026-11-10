@@ -10,6 +10,7 @@ verus! {
 
 use crate::capability::kernel::*;
 use crate::capability::list::*;
+use crate::capability::steps::Steps;
 use crate::capability::process::*;
 use crate::capability::reach::*;
 use crate::capability::space::*;
@@ -72,16 +73,19 @@ pub proof fn lemma_listed_cores(list: u32, n: int, c: usize)
 }
 
 /// sent with an IPI to each core on the list after it, in increasing order: one bounded loop over the
-/// cores. The send is ghost: see design/one-lock-bounded-steps/.
-pub fn send_to_listed(list: u32, Ghost(sent): Ghost<Seq<usize>>) -> (ret: Ghost<Seq<usize>>)
+/// cores, one unit per core. The send is ghost: see design/one-lock-bounded-steps/.
+pub fn send_to_listed(list: u32, Ghost(sent): Ghost<Seq<usize>>, Tracked(steps): Tracked<&mut Steps>) -> (ret: Ghost<Seq<usize>>)
     ensures
+        final(steps).count <= old(steps).count + NUM_CPUS,
         ret@ == sent + listed_cores(list, NUM_CPUS as int),
 {
     let ghost mut out = sent;
     let mut c: usize = 0;
+    let ghost start = steps.count;
     while c != NUM_CPUS
         invariant
             0 <= c <= NUM_CPUS,
+            steps.count == start + c,
             out == sent + listed_cores(list, c as int),
         decreases NUM_CPUS - c,
     {
@@ -97,6 +101,9 @@ pub fn send_to_listed(list: u32, Ghost(sent): Ghost<Seq<usize>>) -> (ret: Ghost<
             }
         }
         c = c + 1;
+        proof {
+            steps.step();
+        }
     }
     Ghost(out)
 }
@@ -368,7 +375,9 @@ impl CapKernel {
         let list = PPtr::<SpaceCores>::from_usize(p + SPACE_CORES_PAGE * 4096).borrow(
             Tracked(self.spaces.loaded.borrow().tracked_borrow(p)),
         ).list;
-        self.stop_ipis = send_to_listed(list, Ghost(pre.stop_ipis@));
+        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        self.stop_ipis = send_to_listed(list, Ghost(pre.stop_ipis@), Tracked(&mut steps));
         proof {
             let post = *self;
             assert(post.processes.records@.dom() =~= pre.processes.records@.dom());

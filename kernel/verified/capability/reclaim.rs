@@ -14,6 +14,7 @@ use crate::capability::mapping::*;
 use crate::capability::block::*;
 use crate::capability::kernel::*;
 use crate::capability::list::*;
+use crate::capability::steps::Steps;
 use crate::capability::reach::*;
 use crate::capability::reclaim_process::*;
 use crate::capability::reclaim_thread::*;
@@ -1378,7 +1379,9 @@ impl CapKernel {
                 assert(page == base / 4096);
             }
         }
-        if !self.is_acknowledged(page) || !self.is_acknowledged(page + 1) {
+        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        if !self.is_acknowledged(page, Tracked(&mut steps)) || !self.is_acknowledged(page + 1, Tracked(&mut steps)) {
             return ReclaimStep::Again;
         }
         proof {
@@ -1448,7 +1451,9 @@ impl CapKernel {
         if !table || !self.table_nothing_left(base) {
             return ReclaimStep::Refused;
         }
-        if !self.is_acknowledged(page) {
+        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        if !self.is_acknowledged(page, Tracked(&mut steps)) {
             return ReclaimStep::Again;
         }
         proof {
@@ -2973,7 +2978,9 @@ impl CapKernel {
         if !self.space_nothing_left(base) {
             return ReclaimStep::Refused;
         }
-        if !self.is_acknowledged(page) {
+        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        if !self.is_acknowledged(page, Tracked(&mut steps)) {
             return ReclaimStep::Again;
         }
         proof {
@@ -4304,7 +4311,9 @@ impl CapKernel {
             assert(pre.holders@.contains_key(BlockRef::Small(page)));
             assert(block_refs(&pre.blocks, BlockRef::Small(page)) == 0);
         }
-        if !self.is_acknowledged(page) {
+        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        if !self.is_acknowledged(page, Tracked(&mut steps)) {
             return ReclaimStep::Again;
         }
         proof {
@@ -4384,7 +4393,9 @@ impl CapKernel {
             return ReclaimStep::Refused;
         }
         let page = base / 4096;
-        if !self.is_region_acknowledged(level, r) {
+        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        if !self.is_region_acknowledged(level, r, Tracked(&mut steps)) {
             return ReclaimStep::Again;
         }
         proof {

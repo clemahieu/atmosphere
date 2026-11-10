@@ -11,6 +11,7 @@ use crate::capability::block::*;
 use crate::capability::kernel::*;
 use crate::capability::link::*;
 use crate::capability::list::*;
+use crate::capability::steps::Steps;
 use crate::capability::refs::*;
 use crate::capability::space::*;
 use crate::capability::table::*;
@@ -1527,7 +1528,9 @@ impl CapKernel {
         let count: usize = if large { 512 } else { 1 };
         self.flush_epoch = self.flush_epoch + 1;
         let epoch = self.flush_epoch;
-        self.stale_epoch.record_run(frame, count, epoch);
+        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        self.stale_epoch.record_run(frame, count, epoch, Tracked(&mut steps));
         self.tlb = Ghost(Seq::new(NUM_CPUS as nat, |d: int|
             if space is Some && pre.loaded(d, space->Some_0) {
                 pre.tlb@[d].union(stale_entries(space->Some_0, pages))

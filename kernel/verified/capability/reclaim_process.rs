@@ -16,6 +16,7 @@ use crate::capability::device::*;
 use crate::capability::kernel::*;
 use crate::capability::link::*;
 use crate::capability::list::*;
+use crate::capability::steps::Steps;
 use crate::capability::mapping::*;
 use crate::capability::process::*;
 use crate::capability::reach::*;
@@ -833,7 +834,9 @@ impl CapKernel {
         if !self.process_roots_clear(base) {
             return ReclaimStep::Refused;
         }
-        if !self.is_acknowledged(page) {
+        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        if !self.is_acknowledged(page, Tracked(&mut steps)) {
             return ReclaimStep::Again;
         }
         proof {
