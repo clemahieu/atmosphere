@@ -98,6 +98,12 @@ pub open spec fn derived_view(v: SlotView, rights: u32, base: usize, order: u8, 
     SlotView { kind: v.kind, base, order, rights, parent }
 }
 
+/// What a slot says after a move of the capability at node i to node n: a capability derived from the
+/// one moved names n as its parent.
+pub open spec fn moved_view(v: SlotView, i: usize, n: usize) -> SlotView {
+    SlotView { kind: v.kind, base: v.base, order: v.order, rights: v.rights, parent: rename(v.parent, i, n) }
+}
+
 impl CapKernel {
     /// Index i of the table at root is a slot that holds a capability.
     pub open spec fn holds_slot(&self, root: usize, i: usize) -> bool {
@@ -215,13 +221,14 @@ impl CapKernel {
         }
     }
 
-    /// A step that leaves the root entries as they were and changes no node's liveness but n's, a
-    /// slot's, leaves every table's slots as they were.
-    pub proof fn lemma_slots_stay(pre: Self, post: Self, n: usize, t: usize, j: usize)
+    /// A step that leaves the root entries as they were and changes no node's liveness but n's and m's,
+    /// slots', leaves every table's slots as they were.
+    pub proof fn lemma_slots_stay(pre: Self, post: Self, n: usize, m: usize, t: usize, j: usize)
         requires
-            Self::caps_frame(pre, post, n, n),
+            Self::caps_frame(pre, post, n, m),
             post.tables.roots == pre.tables.roots,
             n % 4096 != 0,
+            m % 4096 != 0,
         ensures
             post.tables.has_slot(&post.list, t, j) == pre.tables.has_slot(&pre.list, t, j),
     {
@@ -261,7 +268,7 @@ impl CapKernel {
                     && (post.table_view(t).contains_key(j) ==> post.table_view(t)[j] == pre.table_view(t)[j]) by {
                     pre.lemma_table_view(t, j);
                     post.lemma_table_view(t, j);
-                    Self::lemma_slots_stay(pre, post, n, t, j);
+                    Self::lemma_slots_stay(pre, post, n, n, t, j);
                     if pre.tables.has_slot(&pre.list, t, j) {
                         pre.lemma_slot(t, j);
                         let m = pre.tables.node_of(t, j);
@@ -748,7 +755,7 @@ impl CapKernel {
                 && (post.table_view(t).contains_key(j) ==> post.table_view(t)[j] == (if t == root { pre.table_view(t).insert(to, v) } else { pre.table_view(t) })[j]) by {
                 pre.lemma_table_view(t, j);
                 post.lemma_table_view(t, j);
-                Self::lemma_slots_stay(pre, post, n, t, j);
+                Self::lemma_slots_stay(pre, post, n, n, t, j);
                 if pre.tables.has_slot(&pre.list, t, j) {
                     pre.lemma_slot(t, j);
                     let m = pre.tables.node_of(t, j);
@@ -1003,6 +1010,161 @@ impl CapKernel {
             assert(post.is_cap(child));
             assert(post.slot_view(table, to->0.index) == v);
             Self::lemma_slot_added(pre, post, table, to->0.index, v);
+        }
+    }
+
+    /// A capability in a slot has a live parent other than itself.
+    pub proof fn lemma_slot_parent(&self, x: usize)
+        requires
+            self.wf(),
+            self.is_cap(x),
+        ensures
+            self.list.parent@.contains_key(x),
+            self.list.parent@[x] != x,
+            self.list.parent@[x] < NODE_SPACE,
+            self.list.nodes@[self.list.parent@[x] as int].live,
+    {
+        self.lemma_leaf_node_not_first(x);
+        self.lemma_slot_bound(x);
+        let s = self.list.seq@;
+        lemma_has(s, x);
+        let k = choose|k: int| 0 <= k < s.len() && s[k] == x;
+        assert(k != 0);
+        self.list.lemma_parent_live(x);
+    }
+
+    /// Move's condition over the caller's view, for the source position from and the destination
+    /// position to: each word names a position; the source is in a table and its slot holds a
+    /// capability; the destination is in a table, through a process capability with control naming no
+    /// dead process when it goes through one, and its slot is empty; and a source in the caller's own
+    /// table names no dead process or thread, while one in a controlled table is taken whatever it
+    /// names. The process's liveness, the destination's emptiness and the source's liveness read the
+    /// kernel outside the view.
+    pub open spec fn move_allowed(&self, root: usize, from: Option<Position>, to: Option<Position>) -> bool {
+        let src = self.view_table_at(root, from->0.through);
+        let dst = self.view_table_at(root, to->0.through);
+        &&& from is Some
+        &&& to is Some
+        &&& src is Some
+        &&& dst is Some
+        &&& to->0.through is Some ==> !self.processes.records@[dst->0].value().dead
+        &&& self.table_view(src->0).contains_key(from->0.index)
+        &&& self.empty_slot(dst->0, to->0.index)
+        &&& from->0.through is None ==> !self.cap_dead(self.tables.node_of(root, from->0.index))
+    }
+
+    /// The view of the table at t after a move of the capability at index from of the table at src to
+    /// the empty index to of the table at dst: the source's slot gone, the destination's saying what the
+    /// source's said, and every other slot saying what it said, a capability derived from the one moved
+    /// naming the destination's node as its parent.
+    pub open spec fn moved_table_view(&self, src: usize, from: usize, dst: usize, to: usize, t: usize) -> Map<usize, SlotView> {
+        let i = self.tables.node_of(src, from);
+        let n = self.tables.node_of(dst, to);
+        let kept = if t == src { self.table_view(t).dom().remove(from) } else { self.table_view(t).dom() };
+        Map::new(
+            if t == dst { kept.insert(to) } else { kept },
+            |j: usize| if t == dst && j == to { self.table_view(src)[from] } else { moved_view(self.table_view(t)[j], i, n) },
+        )
+    }
+
+    /// Move's contract over the caller's view, for the source position from and the destination
+    /// position to. Refused, with every table's view as it was, exactly when move_allowed fails;
+    /// otherwise ok, with every table's view as moved_table_view says: the capability gone from the
+    /// source's slot and in the destination's, and every other slot of every table as it was but for
+    /// the parent its children name.
+    pub open spec fn move_contract(pre: Self, post: Self, root: usize, from: Option<Position>, to: Option<Position>, out: Outcome) -> bool {
+        ||| {
+            &&& !pre.move_allowed(root, from, to)
+            &&& out == status_only(STATUS_REFUSED)
+            &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
+        }
+        ||| {
+            let src = pre.view_table_at(root, from->0.through)->0;
+            let dst = pre.view_table_at(root, to->0.through)->0;
+            &&& pre.move_allowed(root, from, to)
+            &&& out == status_only(STATUS_OK)
+            &&& forall|t: usize| #[trigger] post.table_view(t) == pre.moved_table_view(src, from->0.index, dst, to->0.index, t)
+        }
+    }
+
+    /// Move's condition over the caller's view is the one allows_move reads.
+    pub proof fn lemma_move_allowed(&self, root: usize, frame: Registers)
+        ensures
+            self.move_allowed(root, spec_position(frame.slot()), spec_position(frame.argument(1))) == self.allows_move(root, frame),
+    {
+        let from = spec_position(frame.slot());
+        let to = spec_position(frame.argument(1));
+        if let Some(f) = from {
+            self.lemma_view_table_at(root, f.through);
+            if let Some(src) = self.table_at(root, f.through) {
+                self.lemma_table_view(src, f.index);
+            }
+        }
+        if let Some(t) = to {
+            self.lemma_view_table_at(root, t.through);
+        }
+    }
+
+    /// Move's specification implies its contract.
+    pub proof fn lemma_move_contract(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            pre.wf(),
+            Self::spec_moved(pre, post, root, frame, out),
+        ensures
+            Self::move_contract(pre, post, root, spec_position(frame.slot()), spec_position(frame.argument(1)), out),
+    {
+        let from = spec_position(frame.slot());
+        let to = spec_position(frame.argument(1));
+        pre.lemma_move_allowed(root, frame);
+        if out == status_only(STATUS_REFUSED) {
+            Self::lemma_views_same(pre, post);
+        } else {
+            broadcast use vstd::map::lemma_map_new_domain, vstd::map::lemma_map_new_index;
+            let f = from->0;
+            let d = to->0;
+            pre.lemma_view_table_at(root, f.through);
+            pre.lemma_view_table_at(root, d.through);
+            let src = pre.table_at(root, f.through)->0;
+            let dst = pre.table_at(root, d.through)->0;
+            let i = pre.tables.node_of(src, f.index);
+            let n = pre.tables.node_of(dst, d.index);
+            pre.lemma_table_view(src, f.index);
+            pre.lemma_slot(src, f.index);
+            pre.lemma_slot(dst, d.index);
+            pre.lemma_slot_parent(i);
+            assert(post.is_cap(n));
+            assert(i != n);
+            assert(post.list.parent@[n] == pre.list.parent@[i]);
+            assert forall|t: usize| #[trigger] post.table_view(t) == pre.moved_table_view(src, f.index, dst, d.index, t) by {
+                let want = pre.moved_table_view(src, f.index, dst, d.index, t);
+                assert forall|j: usize| #[trigger] post.table_view(t).contains_key(j) == want.contains_key(j)
+                    && (post.table_view(t).contains_key(j) ==> post.table_view(t)[j] == want[j]) by {
+                    pre.lemma_table_view(t, j);
+                    post.lemma_table_view(t, j);
+                    Self::lemma_slots_stay(pre, post, i, n, t, j);
+                    if pre.tables.has_slot(&pre.list, t, j) {
+                        pre.lemma_slot(t, j);
+                        let m = pre.tables.node_of(t, j);
+                        pre.lemma_slot_bound(m);
+                        if m == i {
+                            pre.tables.lemma_entry(t, index_entry(j));
+                            pre.tables.lemma_entry(src, index_entry(f.index));
+                            lemma_index_parts(j, f.index);
+                        } else if m == n {
+                            pre.tables.lemma_entry(t, index_entry(j));
+                            pre.tables.lemma_entry(dst, index_entry(d.index));
+                            lemma_index_parts(j, d.index);
+                        } else {
+                            Self::lemma_caps_frame(pre, post, i, n, m);
+                            if pre.is_cap(m) {
+                                pre.lemma_slot_parent(m);
+                                assert(post.list.parent@[m] == rename(pre.list.parent@[m], i, n));
+                            }
+                        }
+                    }
+                }
+                assert(post.table_view(t) =~= want);
+            }
         }
     }
 }
