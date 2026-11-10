@@ -10,6 +10,7 @@ verus! {
 
 use crate::arch::Registers;
 use crate::capability::derive::*;
+use crate::capability::inspect::*;
 use crate::capability::kernel::*;
 use crate::capability::link::*;
 use crate::capability::list::*;
@@ -327,6 +328,49 @@ impl CapKernel {
             }
             assert(post.table_view(t) =~= pre.table_view(t));
         }
+    }
+
+    /// Inspect's condition over the caller's view: the position word names a position, the position is
+    /// in a table, and the slot there holds a capability. Nothing outside the view decides it.
+    pub open spec fn inspect_allowed(&self, root: usize, at: Option<Position>) -> bool {
+        let table = self.view_table_at(root, at->0.through);
+        &&& at is Some
+        &&& table is Some
+        &&& self.table_view(table->0).contains_key(at->0.index)
+    }
+
+    /// Inspect's contract over the caller's view, for the position word decoded to at: no slot of any
+    /// table changes, whatever the status. Refused exactly when inspect_allowed fails; otherwise ok, with
+    /// the kind's number, the base, the order and the rights the slot's view says in results 1 to 4.
+    pub open spec fn inspect_contract(pre: Self, post: Self, root: usize, at: Option<Position>, out: Outcome) -> bool {
+        &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
+        &&& {
+            ||| {
+                &&& !pre.inspect_allowed(root, at)
+                &&& out == status_only(STATUS_REFUSED)
+            }
+            ||| {
+                let v = pre.table_view(pre.view_table_at(root, at->0.through)->0)[at->0.index];
+                &&& pre.inspect_allowed(root, at)
+                &&& out == Outcome {
+                    status: STATUS_OK,
+                    result_1: spec_kind_number(v.kind),
+                    result_2: v.base as u64,
+                    result_3: v.order as u64,
+                    result_4: v.rights as u64,
+                }
+            }
+        }
+    }
+
+    /// Inspect's arm of invoked implies its contract.
+    pub proof fn lemma_inspect_contract(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            spec_operation(frame.operation_number()) == Some(Operation::Inspect),
+            Self::invoked(pre, post, root, frame, out),
+        ensures
+            Self::inspect_contract(pre, post, root, spec_position(frame.slot()), out),
+    {
     }
 }
 
