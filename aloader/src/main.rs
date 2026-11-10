@@ -34,7 +34,6 @@ use astd::boot::{
 use astd::heapless::Vec as ArrayVec;
 use astd::io::{Cursor, Read, Seek, SeekFrom};
 use astd::memory::{USERSPACE_BASE, USERSPACE_PAYLOAD_BASE};
-use constants::*;
 
 use memory::{AddressSpace, BootMemoryType, Leaf, PhysicalAllocator, UserspaceMapper, BOOTSTRAP_SIZE};
 

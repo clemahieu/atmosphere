@@ -6,7 +6,6 @@ use core::ffi::c_void;
 
 use astd::boot::{BootInfo, PAGE_BYTES};
 use bit_field::BitField;
-use constants::SPORT_ADDR;
 use ns16550a::PioSerial;
 
 use crate::memory::Leaf;
@@ -14,9 +13,12 @@ use crate::memory::Leaf;
 /// The serial device the loader logs to.
 pub type Serial = PioSerial;
 
+/// COM1's I/O port base.
+const COM1: usize = 0x3f8;
+
 /// COM1, not yet initialized.
 pub const fn serial() -> Serial {
-    unsafe { PioSerial::new(SPORT_ADDR) }
+    unsafe { PioSerial::new(COM1) }
 }
 
 /// Masks this CPU's interrupts.
