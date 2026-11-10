@@ -7,7 +7,6 @@
 use core::ptr;
 
 use crate::arch;
-use crate::thread::SwitchDecision;
 use verified::arch::Registers;
 
 const NEW_CPU: Cpu = Cpu::new();
@@ -46,9 +45,6 @@ pub struct Cpu {
 
     /// The state of the parked thread.
     pub parked: Registers,
-
-    /// The context switch decision upon exiting the kernel.
-    pub switch_decision: SwitchDecision,
 
     /// What this core's instruction set keeps per core.
     pub arch: arch::CoreState,
@@ -107,7 +103,6 @@ impl Cpu {
             self_ptr: ptr::null(),
             id: 0,
             parked: Registers::zeroed(),
-            switch_decision: SwitchDecision::NoSwitching,
             arch: arch::CoreState::new(),
             syscall_stack: Stack::new(),
             syscall_sp: 0,

@@ -7,7 +7,6 @@ use crate::arch::{msr, CoreState, Ring, SegmentSelector};
 
 use crate::cpu::Cpu;
 use crate::arch::gdt::GlobalDescriptorTable;
-use crate::thread::SwitchDecision;
 use verified::capability::{boot, inspect, operation, table};
 use verified::arch::Registers;
 
@@ -188,22 +187,9 @@ unsafe extern "C" fn sys_entry() -> ! {
         "check_entry_flags",
         "call {capability_entry}",
 
-        // Cleanup
-
-        // Two cases:
-        // 1. Return to the same thread
-        // 2. Switch to a different preempted thread
-        //
-        // Path 1 restores only part of the frame, so it clears the
-        // caller-saved registers the handler used: a process must not see them.
-        // It returns the frame's rdi, rsi, rdx and r8, where the handler
-        // wrote the invocation's result words.
-
-        "mov r10, gs:{switch_decision_offset}",
-        "cmp r10, {decision_switch_to_preempted}",
-        "je 23f",
-
-        // 1. Return to the same thread
+        // Return to the same thread. The exit restores only part of the frame, so it clears the
+        // caller-saved registers the handler used: a process must not see them. It returns the
+        // frame's rdi, rsi, rdx and r8, where the handler wrote the invocation's result words.
 
         // skip r15~r10 (8 registers)
         "mov r8, [rsp + 8*9]",   // r8
@@ -224,33 +210,10 @@ unsafe extern "C" fn sys_entry() -> ! {
         "sti",
         "sysretq",
 
-        // 2. Switch to a preempted thread (slow)
-        "23:",
-        "pop r15",
-        "pop r14",
-        "pop r13",
-        "pop r12",
-        "pop rbp",
-        "pop rbx",
-        "pop r11",
-        "pop r10",
-        "pop r9",
-        "pop r8",
-        "pop rcx",
-        "pop rdx",
-        "pop rsi",
-        "pop rdi",
-        "pop rax",
-        "add rsp, 8",
-        "iretq",
-
         user_ss = const GlobalDescriptorTable::USER_SS,
         user_cs = const GlobalDescriptorTable::USER_CS,
         syscall_sp_offset = const offset_of!(Cpu, syscall_sp),
         user_rsp_offset = const offset_of!(Cpu, arch) + offset_of!(CoreState, user_rsp),
-
-        switch_decision_offset = const offset_of!(Cpu, switch_decision),
-        decision_switch_to_preempted = const SwitchDecision::SwitchToPreempted as u64,
         capability_entry = sym capability_entry,
     );
 }

@@ -2,7 +2,6 @@
 
 use verified::arch::Registers;
 use crate::cpu;
-pub use verified::bridge::SwitchDecision;
 
 /// A time slice, in ticks of the machine's timer.
 #[derive(Debug)]

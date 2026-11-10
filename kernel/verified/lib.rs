@@ -6,7 +6,6 @@
 use vstd::prelude::verus;
 
 pub mod arch;
-pub mod bridge;
 pub mod capability;
 pub mod define;
 pub mod device;

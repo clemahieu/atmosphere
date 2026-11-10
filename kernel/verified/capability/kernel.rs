@@ -1,7 +1,7 @@
 //! The capability kernel's state, which each later module extends. `wf` holds at every step boundary:
 //! a long operation returns to the caller between steps, so other cores interleave only where it
-//! holds. One lock covers all of this. Per-CPU state outside the lock (stacks, the GDT and TSS and the
-//! switch decision) lives in kernel/src's Cpu. See design/one-lock-bounded-steps/ and
+//! holds. One lock covers all of this. Per-CPU state outside the lock (stacks, the GDT and TSS) lives
+//! in kernel/src's Cpu. See design/one-lock-bounded-steps/ and
 //! design/flush-without-waiting/.
 use vstd::prelude::*;
 
