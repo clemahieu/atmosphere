@@ -8,9 +8,11 @@ which the loader hands the kernel. tools/orangepi-kvm.py --esp takes the directo
 already there is replaced.
 
 The images are the debug build of `atmo build --target aarch64`. With --loader-feature the loader
-is then built again with those features, small_kernel_stack for a kernel stack the boot overflows.
+is then built again with those features, small_kernel_stack for a kernel stack the boot overflows,
+and with --kernel-feature the kernel, small_syscall_stack for a syscall stack a call overflows.
 
-usage: tools/aarch64-esp.py DIR [--loader-feature FEATURE ...] [--command-line LINE]   (from the workspace root)
+usage: tools/aarch64-esp.py DIR [--loader-feature FEATURE ...] [--kernel-feature FEATURE ...]
+                            [--command-line LINE]   (from the workspace root)
        tools/aarch64-esp.py --test
 """
 import argparse
@@ -29,12 +31,18 @@ import elfstrip
 TREE = Path(__file__).resolve().parent.parent
 LOADER_TARGET = "aarch64-unknown-uefi"
 LOADER = f"target/{LOADER_TARGET}/debug/aloader.efi"
+KERNEL_SPEC = "kernel/src/aarch64-unknown-aloader.json"
 IMAGES = [f"target/aarch64-unknown-aloader/debug/{name}" for name in ("kernel", "dom0", "hello")]
 
 
-def build(loader_features):
-    """Builds the four images, the loader last so that its features are the ones asked for."""
+def build(loader_features, kernel_features=()):
+    """Builds the four images, then the loader and the kernel again with the features asked for."""
     subprocess.run([str(TREE / "tools/bin/atmo"), "build", "--target", "aarch64"], cwd=TREE, check=True)
+    if kernel_features:
+        subprocess.run(
+            ["cargo", "build", "-q", "-Zjson-target-spec", "--target", str(TREE / KERNEL_SPEC),
+             "--features", ",".join(kernel_features)],
+            cwd=TREE / "kernel", check=True, env={**os.environ, "RUSTC_BOOTSTRAP": "1"})
     if loader_features:
         subprocess.run(
             ["cargo", "build", "-q", "--target", LOADER_TARGET, "--features", ",".join(loader_features)],
@@ -107,9 +115,11 @@ def main(argv):
     parser.add_argument("directory", type=Path, metavar="DIR", help="the partition's directory, replaced when present")
     parser.add_argument("--loader-feature", action="append", default=[], metavar="FEATURE",
                         help="a feature the loader is built with; may repeat")
+    parser.add_argument("--kernel-feature", action="append", default=[], metavar="FEATURE",
+                        help="a feature the kernel is built with; may repeat")
     parser.add_argument("--command-line", metavar="LINE", help="the kernel's command line, written to cmdline")
     args = parser.parse_args(argv)
-    build(args.loader_feature)
+    build(args.loader_feature, args.kernel_feature)
     size = lay_out(args.directory, TREE / LOADER, [TREE / image for image in IMAGES], args.command_line)
     print(f"{args.directory}: {LOADER} as EFI/BOOT/BOOTAA64.EFI, initrd of {size} bytes")
     return 0
