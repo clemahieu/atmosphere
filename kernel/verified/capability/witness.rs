@@ -317,6 +317,44 @@ proof fn lemma_new_root_steps_kept(a: TableTree, b: TableTree, q: usize)
     }
 }
 
+/// A listed node is in the node space and live.
+proof fn lemma_listed_live(t: Tree, x: usize)
+    requires
+        t.wf(),
+        t.seq@.contains(x),
+    ensures
+        x < NODE_SPACE,
+        t.nodes@[x as int].live,
+{
+    let k = choose|k: int| 0 <= k < t.seq@.len() && t.seq@[k] == x;
+    t.lemma_link(k);
+}
+
+/// Across a step that keeps the first node, the liveness of every node but a and b, and the parent of
+/// every other node that had one, a child of c after the step that is neither a nor b was one before:
+/// it is live, so it was live and listed before, and not first, so it had its parent then.
+proof fn lemma_children_kept(pre: Tree, post: Tree, a: usize, b: usize, c: usize)
+    requires
+        pre.wf(),
+        post.wf(),
+        post.seq@[0] == pre.seq@[0],
+        forall|i: int| #![trigger post.nodes@[i]] 0 <= i < NODE_SPACE && i != a && i != b
+            ==> post.nodes@[i].live == pre.nodes@[i].live,
+        forall|x: usize| x != a && x != b && #[trigger] pre.parent@.contains_key(x) ==> post.parent@[x] == pre.parent@[x],
+    ensures
+        forall|x: usize| #[trigger] post.is_child(c, x) && x != a && x != b ==> pre.is_child(c, x),
+{
+    assert forall|x: usize| #[trigger] post.is_child(c, x) && x != a && x != b implies pre.is_child(c, x) by {
+        lemma_listed_live(post, x);
+        assert(post.nodes@[x as int].live == pre.nodes@[x as int].live);
+        assert(has(pre.seq@, x));
+        lemma_has(pre.seq@, x);
+        let k = choose|k: int| 0 <= k < pre.seq@.len() && pre.seq@[k] == x;
+        assert(k != 0);
+        assert(pre.parent@.contains_key(pre.seq@[k]));
+    }
+}
+
 impl CapKernel {
     /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first
     /// of two free ones past those boot's tables took from the first untyped: retype a leaf into root
@@ -329,7 +367,11 @@ impl CapKernel {
     /// the thread bound to it. What a reclaim of it starts from holds too: the process block's first
     /// page and the new leaf's two are acknowledged, the thread's block holds one reference and the
     /// process's two, the capability and the binding, no core has the process's space loaded, its
-    /// table has the one leaf, and the three slots hold what the steps put there.
+    /// table has the one leaf, and the three slots hold what the steps put there. The thread
+    /// capability and the derived untyped have no child, and the process capability's only child is
+    /// the binding. The process is live, the thread inactive and bound to it, the flush epoch still 0,
+    /// the process's space empty outside the kernel's entries, and the leaf live and hidden, owned by
+    /// root entry 0 of the process's table, with no live node past its slot 1.
     pub fn witness_process_holds_capability(
         &mut self,
         root: Ghost<usize>,
@@ -372,6 +414,23 @@ impl CapKernel {
                 &&& final(self).slot_holds(process, WITNESS_PROCESS_SLOT, (base + 32769) as usize, process_of(base))
                 &&& final(self).slot_holds(process, WITNESS_THREAD_SLOT, (base + 32770) as usize, thread_of(thread))
                 &&& final(self).slot_holds(base, WITNESS_CHILD_SLOT, child, child_of(first, UNTYPED_RIGHTS, (base + 57344) as usize, 1))
+                &&& final(self).flush_epoch == 0
+                &&& witness_alive(*final(self), base)
+                &&& final(self).threads.records@.contains_key(thread)
+                &&& final(self).threads.records@[thread].value().state is Inactive
+                &&& final(self).threads.records@[thread].value().process == Some(base)
+                &&& final(self).spaces.roots@.contains_key(base)
+                &&& forall|i: usize| i < 512 && !holds_kernel(SpaceKind::Process, i)
+                    ==> #[trigger] final(self).spaces.roots@[base].value()[i].is_empty()
+                &&& final(self).list.nodes@[base + 49152].live
+                &&& final(self).list.nodes@[base + 49152].kind is Hidden
+                &&& forall|x: int| base + 49152 + 1 < x < base + 49152 + NODES_PER_PAGE ==> !#[trigger] final(self).list.nodes@[x].live
+                &&& final(self).tables.owner@[(base + 49152) as usize] == (base, 0int)
+                &&& forall|c: usize| !#[trigger] final(self).list.is_child((base + 32770) as usize, c)
+                &&& final(self).list.childless((base + 32770) as usize)
+                &&& forall|c: usize| #[trigger] final(self).list.is_child((base + 32769) as usize, c) ==> c == thread
+                &&& forall|c: usize| !#[trigger] final(self).list.is_child(child, c)
+                &&& final(self).list.childless(child)
             }),
     {
         hide(CapKernel::wf);
@@ -552,6 +611,22 @@ impl CapKernel {
                 assert(s1.blocks.tracks(i));
                 assert(s1.blocks.pages@[i].kind is Free);
             }
+            // The process capability was not live before its retype, so it has no child after it.
+            assert(s1.list.wf() && s2.list.wf()) by {
+                reveal(CapKernel::wf);
+            }
+            assert(!s1.list.nodes@[np as int].live);
+            assert(s1.list.nodes@[u as int].live);
+            assert(u != np);
+            assert(s2.list.parent@ == s1.list.parent@.insert(np, u));
+            assert forall|x: usize| x != np && x != np && #[trigger] s1.list.parent@.contains_key(x)
+                implies s2.list.parent@[x] == s1.list.parent@[x] by {}
+            lemma_children_kept(s1.list, s2.list, np, np, np);
+            assert forall|x: usize| !#[trigger] s2.list.is_child(np, x) by {
+                if s2.list.is_child(np, x) && x != np {
+                    s1.list.lemma_dead_childless(np, x);
+                }
+            }
         }
 
         // A thread, in slot 2 of the root's leaf, bound to the process.
@@ -599,6 +674,31 @@ impl CapKernel {
                 assert(s2.blocks.tracks(i));
                 assert(s2.blocks.pages@[i].kind is Free);
             }
+            // The retype adds the thread capability, under the untyped, and the binding, under the process
+            // capability. So the process capability's only child is the binding, and the thread capability,
+            // not live before, has none.
+            assert(s3.list.wf()) by {
+                reveal(CapKernel::wf);
+            }
+            let nt = (b2 + 2) as usize;
+            assert(s2.list.nodes@[u as int].live);
+            assert(u != nt);
+            assert(Self::typed_nodes(s2.list, s3.list, nt, bt));
+            assert(s3.list.parent@ == s2.list.parent@.insert(nt, u).insert(bt, np));
+            assert forall|x: usize| x != nt && x != bt && #[trigger] s2.list.parent@.contains_key(x)
+                implies s3.list.parent@[x] == s2.list.parent@[x] by {}
+            lemma_children_kept(s2.list, s3.list, nt, bt, np);
+            lemma_children_kept(s2.list, s3.list, nt, bt, nt);
+            assert forall|x: usize| #[trigger] s3.list.is_child(np, x) implies x == bt by {
+                if x != bt && x != nt {
+                    assert(s2.list.is_child(np, x));
+                }
+            }
+            assert forall|x: usize| !#[trigger] s3.list.is_child(nt, x) by {
+                if s3.list.is_child(nt, x) && x != nt && x != bt {
+                    s2.list.lemma_dead_childless(nt, x);
+                }
+            }
         }
 
         // A leaf in root entry 0 of the new process's table, through the process capability.
@@ -645,6 +745,33 @@ impl CapKernel {
             assert(s4.is_cap(np) && s4.payload_of(np) == process_of(base));
             assert(s4.root_live(process));
             assert(s4.tables.roots@.contains_key(process));
+            // The leaf's hidden node goes under the untyped, so the two capabilities keep their children.
+            assert(s4.list.wf()) by {
+                reveal(CapKernel::wf);
+            }
+            let nt = (b2 + 2) as usize;
+            assert(s4.list.parent@ == s3.list.parent@.insert(bl, u));
+            assert forall|x: usize| x != bl && x != bl && #[trigger] s3.list.parent@.contains_key(x)
+                implies s4.list.parent@[x] == s3.list.parent@[x] by {}
+            lemma_children_kept(s3.list, s4.list, bl, bl, np);
+            lemma_children_kept(s3.list, s4.list, bl, bl, nt);
+            assert forall|x: usize| #[trigger] s4.list.is_child(np, x) implies x == bt by {
+                if x != bl {
+                    assert(s3.list.is_child(np, x));
+                }
+            }
+            assert forall|x: usize| !#[trigger] s4.list.is_child(nt, x) by {
+                if s4.list.is_child(nt, x) && x != bl {
+                    assert(s3.list.is_child(nt, x));
+                }
+            }
+            // The leaf: live, hidden, its other nodes not live, owned by root entry 0 of the new table.
+            lemma_listed_live(s4.list, bl);
+            assert(s4.list.nodes@[bl as int].kind is Hidden);
+            assert(s4.tables.owner@[bl] == (base, 0int));
+            assert(s4.threads == s3.threads);
+            assert(s4.spaces == s3.spaces);
+            assert(s4.flush_epoch == s0.flush_epoch);
         }
 
         // An untyped over the second block's last two pages, derived from the root's untyped into slot 1
@@ -706,6 +833,53 @@ impl CapKernel {
             Self::lemma_acknowledged_kept(s0, s5, base / 4096);
             Self::lemma_acknowledged_kept(s0, s5, (base / 4096 + 12) as usize);
             Self::lemma_acknowledged_kept(s0, s5, (base / 4096 + 13) as usize);
+            // The derived untyped goes under the root's untyped: the two capabilities keep their children,
+            // and it, not live before, has none.
+            assert(s5.list.wf()) by {
+                reveal(CapKernel::wf);
+            }
+            let nt = (b2 + 2) as usize;
+            assert(s4.list.nodes@[u as int].live);
+            assert(u != child);
+            assert(s5.list.parent@ == s4.list.parent@.insert(child, u));
+            assert(s5.list.seq@[0] == s4.list.seq@[0]);
+            assert forall|x: usize| x != child && x != child && #[trigger] s4.list.parent@.contains_key(x)
+                implies s5.list.parent@[x] == s4.list.parent@[x] by {}
+            lemma_children_kept(s4.list, s5.list, child, child, np);
+            lemma_children_kept(s4.list, s5.list, child, child, nt);
+            lemma_children_kept(s4.list, s5.list, child, child, child);
+            assert forall|x: usize| #[trigger] s5.list.is_child(np, x) implies x == bt by {
+                if x != child {
+                    assert(s4.list.is_child(np, x));
+                }
+            }
+            assert forall|x: usize| !#[trigger] s5.list.is_child(nt, x) by {
+                if s5.list.is_child(nt, x) && x != child {
+                    assert(s4.list.is_child(nt, x));
+                }
+            }
+            assert forall|x: usize| !#[trigger] s5.list.is_child(child, x) by {
+                if s5.list.is_child(child, x) && x != child {
+                    s4.list.lemma_dead_childless(child, x);
+                }
+            }
+            assert(s5.list.nodes@[nt as int].live);
+            if !s5.list.childless(nt) {
+                s5.list.lemma_next_is_child(nt);
+            }
+            if !s5.list.childless(child) {
+                s5.list.lemma_next_is_child(child);
+            }
+            // The rest of what the reclaim reads, kept by the leaf's retype and the derive.
+            assert(s0.flush_epoch == 0);
+            assert(s5.processes == s4.processes);
+            assert(s5.threads == s4.threads);
+            assert(s5.spaces.roots@ == s4.spaces.roots@);
+            assert(s5.tables.owner == s4.tables.owner);
+            assert(s5.list.nodes@[bl as int].live && s5.list.nodes@[bl as int].kind is Hidden);
+            assert forall|x: int| bl + 1 < x < bl + NODES_PER_PAGE implies !#[trigger] s5.list.nodes@[x].live by {
+                assert(!s4.list.nodes@[x].live);
+            }
         }
         ok1 && ok2 && ok3 && ok4 && ok5
     }
