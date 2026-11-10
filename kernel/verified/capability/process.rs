@@ -1138,7 +1138,7 @@ impl CapKernel {
         let parent = pre.tables.node_of(root, from);
         let child = pre.tables.node_of(root, to);
         let (a, b) = (pre.view(), post.view());
-        Self::lemma_adds_node_view(pre, post, root, from, to);
+        Self::lemma_places_node_view(pre, post, root, from, root, to);
         let pp = pre.payload_of(parent);
         lemma2_to64();
         assert(block_bytes(PROCESS_ORDER) == 32768);

@@ -468,7 +468,7 @@ impl CapKernel {
             assert(right_bit(Right::Control) == 128);
             assert(right_bit(Right::Retype) == 8);
             Self::lemma_derive_step_adds_cap(pre, post, child);
-            Self::lemma_adds_child_view(pre, post, root, from, to);
+            Self::lemma_places_child_view(pre, post, root, from, root, to);
             let live = |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live;
             assert(pre.view().holds_right(root, parent, Right::Retype));
             lemma_adds_child_discharges_retype(pre.view(), post.view(), root, parent, child, live, base);

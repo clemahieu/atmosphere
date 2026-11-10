@@ -514,7 +514,7 @@ impl CapKernel {
                 let done = frame.argument(2) <= u32::MAX as u64 && frame.argument(4) <= u8::MAX as u64 && self.derive(
                     root,
                     frame.slot() as usize,
-                    frame.argument(1) as usize,
+                    Position { through: None, index: frame.argument(1) as usize },
                     frame.argument(2) as u32,
                     frame.argument(3) as usize,
                     frame.argument(4) as u8,

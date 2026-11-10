@@ -1,6 +1,6 @@
 ---
 title: "A capability is shared only by derive; move and claim keep a node's place; there is no copy"
-date: 2026-11-05
+date: 2026-11-10
 status: active
 tags: [capability, revoke, lifetime]
 one_line: "The only way to share a capability is derive, a child one depth deeper with rights and range within its parent's; nodes never change ancestor; move and claim relocate a node without changing its place; delete is refused while a node has children, mappings or bindings."
@@ -16,7 +16,7 @@ Derive is the only way to share: the child's rights and range lie within the par
 
 Nodes never change ancestor. Move keeps a node's place and depth, for things with one holder such as a device, whose capability derive refuses so that it has exactly one, and for cooperative upgrade: an old service moves its untyped and receive capabilities to its replacement, and every derived child comes along. Claim is that move out of another process's table: a process holding a control capability to a process, live or dead, names one of that process's slots and one of its own, and the node moves in one bounded step. Death is not a precondition; destroy before claim is a supervisor's discipline, not the kernel's rule. The claimer then holds that process's own node, the parent of everything derived from it, revocation included. Nothing enumerates the table.
 
-A grant over an endpoint places a derived child in the receiver's slot. Delete is refused while a capability has children, mappings or bindings, which are all child nodes, so a holder revokes first.
+A derived child goes in a slot of the deriver's own table, or enters another process's table in one of two ways. A grant over an endpoint places it in the receiver's slot. A placement through control places it in a slot of a process the deriver holds a process capability to with the control right: the derive names its destination as a table position, `design/process-holds-capabilities/`, and a dead process's table is refused, since nothing is given to a process that cannot use it. Either way the child is its parent's child wherever it lies, so the deriver can revoke it. Delete is refused while a capability has children, mappings or bindings, which are all child nodes, so a holder revokes first.
 
 Consequences accepted with the package: when a holder dies or is revoked, everything it granted goes too, so a pager or server that restarts takes its clients' memory with it unless a longer-lived parent granted to those clients directly; a pager that holds the untyped a live process's table pages or capability leaves came from can reclaim them, which faults or strips that process, while the roots of its address space and table go only with the process; retype from a held untyped counts beside grant as a way reach grows, `design/theorem-over-reach/`.
 
@@ -36,8 +36,11 @@ Recorded for honesty: reparenting's structural cost was overstated when first pu
 
 Why claim does not require death: the kernel decides no kill policy, so a fault with no handler stops only the faulting thread, `design/teardown-driven-by-retype/`, and crash recovery is a supervisor protocol over suspend, readable registers, claim, fault messages and revoke. Requiring death before claim would add only a kernel-enforced order that protects a supervisor from itself, which the theorem does not need, and it would stop a controller that is not the pager from reading a live child's memory for a crash dump.
 
+Why a controller may place: a creator has to give a process it builds its first capabilities, and no rendezvous can, because a receive names an endpoint in the receiver's own table and a new process's table is empty. Control already lets its holder take from the process's table, write its threads' registers and destroy it, so giving to the process grants the controller nothing. What it grants the process, and whoever else controls it, is counted as a grant, `design/theorem-over-reach/`.
+
 ## Alternatives rejected
 
+- **A new process's first capabilities by a grant over an endpoint alone.** A receive names an endpoint the receiver holds, and a new process holds nothing, so only its creator's own table could ever hold capabilities.
 - **Copy.** A peer the grantor cannot revoke; a pager that copies cannot revoke.
 - **Children survive by moving to the holder's parent.** See above.
 - **Claim only from a dead process.** See above.

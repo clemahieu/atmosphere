@@ -168,7 +168,7 @@ impl State {
 pub ghost enum Effect {
     /// A user-mode read or write of a frame.
     Access { frame: ObjectId },
-    /// Derive, move within the caller's table, map, unmap and configuration, which nothing another
+    /// Derive and move within the caller's table, map, unmap and configuration, which nothing another
     /// process can see, and delete, of a slot the caller commands.
     Local,
     /// Start, suspend or set registers through a control capability.
@@ -186,6 +186,10 @@ pub ghost enum Effect {
     /// Move one node from a slot of a process the caller controls, live or dead, into the caller's
     /// table. It takes control of the process itself, not of one of its threads.
     Claim { cap: NodeId, from: NodeId },
+    /// Put a capability derived or moved from `from`, which the caller holds, in a slot of the process
+    /// cap names: a grant through control, where Deliver's is through a rendezvous. It takes control
+    /// of the process itself, not of one of its threads.
+    Place { cap: NodeId, from: NodeId },
     /// Type a free block under an untyped held.
     Retype { untyped: NodeId, object: ObjectId },
     /// Unlink a block's hidden node, or a slice of a dead object's teardown, under an untyped held.
@@ -220,6 +224,12 @@ pub open spec fn authorized(s: State, p: ObjectId, e: Effect) -> bool {
             &&& s.holds(s.names[cap], from)
             &&& s.names.contains_key(from)
         },
+        Effect::Place { cap, from } => {
+            &&& s.holds_right(p, cap, Right::Control)
+            &&& !s.process_of.contains_key(s.names[cap])
+            &&& s.holds(p, from)
+            &&& s.names.contains_key(from)
+        },
         Effect::Retype { untyped, object } | Effect::Teardown { untyped, object } =>
             s.holds_right(p, untyped, Right::Retype),
     }
@@ -245,20 +255,25 @@ pub open spec fn may_remove(s: State, p: ObjectId, e: Effect, n: NodeId) -> bool
         Effect::Local => s.commands(p, n),
         Effect::Deliver { granted, .. } => granted == Some(n),
         Effect::Revoke { cap } => exists|k: nat| k > 0 && #[trigger] s.descends(cap, n, k),
-        Effect::Claim { from, .. } => n == from,
+        Effect::Claim { from, .. } | Effect::Place { from, .. } => n == from,
         Effect::Teardown { object, .. } =>
             exists|c: NodeId, k: nat| #[trigger] s.descends(c, n, k) && s.holds(object, c),
         _ => false,
     }
 }
 
-/// e may add o to r's reach. Reach grows only by a grant from a holder or a retype from an untyped
-/// held. A claim moves only what the claimer's reach already contains.
+/// e may add o to r's reach. Reach grows only by a grant from a holder, over an endpoint to the
+/// receiver or through control to the process controlled, or a retype from an untyped held. A claim
+/// moves only what the claimer's reach already contains.
 pub open spec fn may_grow(s: State, p: ObjectId, e: Effect, r: ObjectId, o: ObjectId) -> bool {
     match e {
         Effect::Deliver { receiver, granted, .. } => {
             &&& granted is Some
             &&& exists|k: nat| #[trigger] s.controlled(r, s.process_behind(receiver), k)
+            &&& s.reach(p, o)
+        },
+        Effect::Place { cap, .. } => {
+            &&& exists|k: nat| #[trigger] s.controlled(r, s.names[cap], k)
             &&& s.reach(p, o)
         },
         Effect::Retype { untyped, object } => o == object && s.reach(r, s.names[untyped]),
@@ -276,16 +291,24 @@ pub open spec fn discharges(pre: State, post: State, p: ObjectId, e: Effect) -> 
         ==> may_grow(pre, p, e, r, o)
 }
 
-/// post is pre with capability n added as a child of c, held by p, covering only what c covers.
-/// `live` says which nodes the list holds, and n is not among them.
-pub open spec fn adds_node(pre: State, post: State, p: ObjectId, c: NodeId, n: NodeId, live: spec_fn(NodeId) -> bool) -> bool {
+/// post is pre with capability n added as a child of c, which p holds, in a slot of d, covering only
+/// what c covers. `live` says which nodes the list holds, and n is not among them.
+pub open spec fn places_node(
+    pre: State,
+    post: State,
+    p: ObjectId,
+    d: ObjectId,
+    c: NodeId,
+    n: NodeId,
+    live: spec_fn(NodeId) -> bool,
+) -> bool {
     &&& pre.holds(p, c)
     &&& live(c)
     &&& !live(n)
     &&& forall|h: (ObjectId, NodeId)| #[trigger] pre.held.contains(h) ==> live(h.1)
     &&& forall|x: NodeId| #[trigger] pre.names.contains_key(x) ==> live(x)
     &&& forall|x: NodeId| live(x) && #[trigger] pre.parent.contains_key(x) ==> live(pre.parent[x])
-    &&& forall|h: (ObjectId, NodeId)| #[trigger] post.held.contains(h) == (pre.held.contains(h) || h == (p, n))
+    &&& forall|h: (ObjectId, NodeId)| #[trigger] post.held.contains(h) == (pre.held.contains(h) || h == (d, n))
     &&& post.parent == pre.parent.insert(n, c)
     &&& forall|x: NodeId| x != n ==> {
         &&& #[trigger] post.names.contains_key(x) == pre.names.contains_key(x)
@@ -299,16 +322,34 @@ pub open spec fn adds_node(pre: State, post: State, p: ObjectId, c: NodeId, n: N
     &&& forall|o: ObjectId| #[trigger] (post.contents)(o) == (pre.contents)(o)
 }
 
-/// Such a child, which has the control right only with what c names, since control reads the name
-/// alone.
-pub open spec fn adds_child(pre: State, post: State, p: ObjectId, c: NodeId, n: NodeId, live: spec_fn(NodeId) -> bool) -> bool {
-    &&& adds_node(pre, post, p, c, n, live)
+/// Such a child in a slot of p's own table.
+pub open spec fn adds_node(pre: State, post: State, p: ObjectId, c: NodeId, n: NodeId, live: spec_fn(NodeId) -> bool) -> bool {
+    places_node(pre, post, p, p, c, n, live)
+}
+
+/// A child placed in a slot of d, which has the control right only with what c names, since control
+/// reads the name alone.
+pub open spec fn places_child(
+    pre: State,
+    post: State,
+    p: ObjectId,
+    d: ObjectId,
+    c: NodeId,
+    n: NodeId,
+    live: spec_fn(NodeId) -> bool,
+) -> bool {
+    &&& places_node(pre, post, p, d, c, n, live)
     &&& post.process_of == pre.process_of
     &&& post.rights.contains((n, Right::Control)) ==> {
         &&& pre.rights.contains((c, Right::Control))
         &&& pre.names.contains_key(c)
         &&& post.names[n] == pre.names[c]
     }
+}
+
+/// Such a child in a slot of p's own table.
+pub open spec fn adds_child(pre: State, post: State, p: ObjectId, c: NodeId, n: NodeId, live: spec_fn(NodeId) -> bool) -> bool {
+    places_child(pre, post, p, p, c, n, live)
 }
 
 /// Such a child naming a new object inside c's block, which holds nothing, maps nothing and belongs to
@@ -480,10 +521,11 @@ pub proof fn lemma_teardown_steps_compose(a: State, b: State, c: State, p: Objec
 }
 
 /// Walking up from a live node in post walks the same nodes in pre.
-proof fn lemma_adds_child_descends(
+proof fn lemma_places_node_descends(
     pre: State,
     post: State,
     p: ObjectId,
+    d: ObjectId,
     c: NodeId,
     n: NodeId,
     live: spec_fn(NodeId) -> bool,
@@ -492,7 +534,7 @@ proof fn lemma_adds_child_descends(
     k: nat,
 )
     requires
-        adds_node(pre, post, p, c, n, live),
+        places_node(pre, post, p, d, c, n, live),
         post.descends(top, x, k),
         live(x),
     ensures
@@ -505,10 +547,59 @@ proof fn lemma_adds_child_descends(
         assert(pre.parent.contains_key(x));
         assert(post.parent[x] == pre.parent[x]);
         assert(live(pre.parent[x]));
-        lemma_adds_child_descends(pre, post, p, c, n, live, top, pre.parent[x], (k - 1) as nat);
+        lemma_places_node_descends(pre, post, p, d, c, n, live, top, pre.parent[x], (k - 1) as nat);
     }
 }
 
+/// What a process covers directly in post it did in pre, unless it is the one the child was placed
+/// with, which gains what the parent covers.
+proof fn lemma_places_node_direct(
+    pre: State,
+    post: State,
+    p: ObjectId,
+    d: ObjectId,
+    c: NodeId,
+    n: NodeId,
+    live: spec_fn(NodeId) -> bool,
+    q: ObjectId,
+    o: ObjectId,
+)
+    requires
+        places_node(pre, post, p, d, c, n, live),
+        post.direct(q, o),
+    ensures
+        pre.direct(q, o) || (q == d && pre.covers(c, o)),
+{
+    if !post.maps.contains((q, o)) {
+        let (t, x, k) = choose|t: NodeId, x: NodeId, k: nat| #[trigger] post.descends(t, x, k)
+            && post.holds(q, t) && post.covers(x, o);
+        assert(post.held.contains((q, t)));
+        if x == n {
+            assert(pre.covers(c, o));
+            if k == 0 {
+                assert(!pre.held.contains((q, n)) || live(n));
+                assert(q == d);
+            } else {
+                assert(post.parent[n] == c);
+                lemma_places_node_descends(pre, post, p, d, c, n, live, t, c, (k - 1) as nat);
+                assert(t != n);
+                assert(pre.descends(t, c, (k - 1) as nat));
+                assert(pre.held.contains((q, t)));
+                assert(pre.direct(q, o));
+            }
+        } else {
+            assert(pre.names.contains_key(x));
+            lemma_places_node_descends(pre, post, p, d, c, n, live, t, x, k);
+            assert(t != n);
+            assert(pre.held.contains((q, t)));
+            assert(pre.covers(x, o));
+            assert(pre.descends(t, x, k));
+            assert(pre.direct(q, o));
+        }
+    }
+}
+
+/// In its holder's own table the child adds nothing: the holder covered it through the parent.
 pub proof fn lemma_adds_child_direct(
     pre: State,
     post: State,
@@ -525,31 +616,9 @@ pub proof fn lemma_adds_child_direct(
     ensures
         pre.direct(q, o),
 {
-    if !post.maps.contains((q, o)) {
-        let (t, x, k) = choose|t: NodeId, x: NodeId, k: nat| #[trigger] post.descends(t, x, k)
-            && post.holds(q, t) && post.covers(x, o);
-        assert(post.held.contains((q, t)));
-        if x == n {
-            assert(pre.covers(c, o));
-            if k == 0 {
-                assert(!pre.held.contains((q, n)) || live(n));
-                assert(q == p);
-                assert(pre.descends(c, c, 0));
-            } else {
-                assert(post.parent[n] == c);
-                lemma_adds_child_descends(pre, post, p, c, n, live, t, c, (k - 1) as nat);
-                assert(t != n);
-                assert(pre.descends(t, c, (k - 1) as nat));
-                assert(pre.held.contains((q, t)));
-            }
-        } else {
-            assert(pre.names.contains_key(x));
-            lemma_adds_child_descends(pre, post, p, c, n, live, t, x, k);
-            assert(t != n);
-            assert(pre.held.contains((q, t)));
-            assert(pre.covers(x, o));
-            assert(pre.descends(t, x, k));
-        }
+    lemma_places_node_direct(pre, post, p, p, c, n, live, q, o);
+    if q == p && pre.covers(c, o) {
+        assert(pre.descends(c, c, 0));
     }
 }
 
@@ -663,6 +732,138 @@ pub proof fn lemma_adds_child_discharges_retype(
     }
     assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) implies pre.reach(r, o) by {
         lemma_adds_child_reach(pre, post, p, c, n, live, r, o);
+    }
+}
+
+/// A control chain of post is one of pre, or it passes through the new capability: then pre's chains
+/// lead to the process the child was placed with, and from the placer to the chain's end.
+proof fn lemma_places_child_controlled(
+    pre: State,
+    post: State,
+    p: ObjectId,
+    d: ObjectId,
+    c: NodeId,
+    n: NodeId,
+    live: spec_fn(NodeId) -> bool,
+    a: ObjectId,
+    b: ObjectId,
+    k: nat,
+)
+    requires
+        places_child(pre, post, p, d, c, n, live),
+        post.controlled(a, b, k),
+    ensures
+        pre.controlled(a, b, k) || ((exists|i: nat| #[trigger] pre.controlled(a, d, i))
+            && (exists|j: nat| #[trigger] pre.controlled(p, b, j))),
+    decreases k,
+{
+    if k > 0 {
+        let m = choose|m: ObjectId| #[trigger] post.controls(m, b) && post.controlled(a, m, (k - 1) as nat);
+        lemma_places_child_controlled(pre, post, p, d, c, n, live, a, m, (k - 1) as nat);
+        let t = choose|t: NodeId| #[trigger] post.holds_right(m, t, Right::Control)
+            && post.process_behind(post.names[t]) == b;
+        assert(post.held.contains((m, t)));
+        if t == n {
+            assert(!pre.held.contains((m, n)) || live(n));
+            assert(m == d);
+            assert(pre.holds_right(p, c, Right::Control));
+            assert(pre.process_behind(pre.names[c]) == b);
+            assert(pre.controls(p, b));
+            assert(pre.controlled(p, p, 0));
+            assert(pre.controlled(p, b, 1));
+            if pre.controlled(a, m, (k - 1) as nat) {
+                assert(pre.controlled(a, d, (k - 1) as nat));
+            }
+        } else {
+            assert(pre.holds_right(m, t, Right::Control));
+            assert(pre.process_behind(pre.names[t]) == b);
+            assert(pre.controls(m, b));
+            if pre.controlled(a, m, (k - 1) as nat) {
+                assert(pre.controlled(a, b, k));
+            } else {
+                let j = choose|j: nat| #[trigger] pre.controlled(p, m, j);
+                assert(pre.controlled(p, b, j + 1));
+            }
+        }
+    }
+}
+
+/// Placing such a child adds to reach only for the process it was placed with and for what controls
+/// that process, and only what the placer reached.
+proof fn lemma_places_child_reach(
+    pre: State,
+    post: State,
+    p: ObjectId,
+    d: ObjectId,
+    c: NodeId,
+    n: NodeId,
+    live: spec_fn(NodeId) -> bool,
+    r: ObjectId,
+    o: ObjectId,
+)
+    requires
+        places_child(pre, post, p, d, c, n, live),
+        post.reach(r, o),
+        !pre.reach(r, o),
+    ensures
+        exists|k: nat| #[trigger] pre.controlled(r, d, k),
+        pre.reach(p, o),
+{
+    let (q, k) = choose|q: ObjectId, k: nat| #[trigger] post.controlled(r, q, k) && (o == q || post.direct(q, o));
+    lemma_places_child_controlled(pre, post, p, d, c, n, live, r, q, k);
+    if o != q {
+        lemma_places_node_direct(pre, post, p, d, c, n, live, q, o);
+    }
+    assert(pre.controlled(p, p, 0));
+    if pre.covers(c, o) {
+        assert(pre.descends(c, c, 0));
+        assert(pre.direct(p, o));
+        assert(pre.reach(p, o));
+    }
+    if pre.controlled(r, q, k) {
+        assert(o != q);
+        assert(!pre.direct(q, o));
+        assert(q == d);
+        assert(pre.controlled(r, d, k));
+    } else {
+        let j = choose|j: nat| #[trigger] pre.controlled(p, q, j);
+        assert(pre.controlled(p, q, j));
+        assert(pre.reach(p, o));
+    }
+}
+
+/// Placing a child of a capability the placer holds in a slot of a process it controls is a
+/// placement: nothing changes that a process can see, nothing goes, and reach grows only for that
+/// process and what controls it, by what the placer reached.
+pub proof fn lemma_places_child_discharges(
+    pre: State,
+    post: State,
+    p: ObjectId,
+    d: ObjectId,
+    cap: NodeId,
+    c: NodeId,
+    n: NodeId,
+    live: spec_fn(NodeId) -> bool,
+)
+    requires
+        places_child(pre, post, p, d, c, n, live),
+        pre.holds_right(p, cap, Right::Control),
+        pre.names[cap] == d,
+        !pre.process_of.contains_key(d),
+        pre.names.contains_key(c),
+    ensures
+        discharges(pre, post, p, Effect::Place { cap, from: c }),
+{
+    let e = Effect::Place { cap, from: c };
+    assert(authorized(pre, p, e));
+    assert forall|o: ObjectId| #[trigger] State::changed(pre, post, o) implies may_change(pre, e, o) by {
+        assert((post.contents)(o) == (pre.contents)(o));
+    }
+    assert forall|x: NodeId| #[trigger] State::removed(pre, post, x) implies may_remove(pre, p, e, x) by {
+        assert(x != n);
+    }
+    assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) && !pre.reach(r, o) implies may_grow(pre, p, e, r, o) by {
+        lemma_places_child_reach(pre, post, p, d, c, n, live, r, o);
     }
 }
 
@@ -1731,7 +1932,7 @@ pub proof fn lemma_revoke_is_lineage(pre: State, post: State, p: ObjectId, cap: 
 {
 }
 
-/// Only a grant or a retype can add to anyone's reach.
+/// Only a grant, over an endpoint or through control, or a retype can add to anyone's reach.
 pub proof fn lemma_reach_grows_only_by_grant_or_retype(
     pre: State,
     post: State,
@@ -1745,6 +1946,7 @@ pub proof fn lemma_reach_grows_only_by_grant_or_retype(
         post.reach(r, o),
         !(e is Retype),
         !(e is Deliver && e->Deliver_granted is Some),
+        !(e is Place),
     ensures
         pre.reach(r, o),
 {
@@ -1946,6 +2148,28 @@ pub proof fn lemma_no_delete_or_revoke_through_a_thread()
         assert(v == 11);
         assert(s.names[11] == 3);
     }
+}
+
+/// Control of a process lets its holder place what it holds in the process's table.
+pub proof fn lemma_place_into_a_controlled_process()
+    ensures
+        authorized(control_example(), 1, Effect::Place { cap: 10, from: 11 }),
+{
+    let s = control_example();
+    assert(s.holds_right(1, 10, Right::Control));
+    assert(s.names[10] == 2);
+    assert(!s.process_of.contains_key(2));
+    assert(s.holds(1, 11));
+}
+
+/// Control of a thread does not let its holder place anything in the table of the thread's process.
+pub proof fn lemma_no_place_through_a_thread()
+    ensures
+        !authorized(control_example(), 1, Effect::Place { cap: 11, from: 10 }),
+{
+    let s = control_example();
+    assert(s.names[11] == 3);
+    assert(s.process_of.contains_key(3));
 }
 
 /// Process 1 holds node 10, an untyped with the retype right on the 2M block at EXAMPLE_BASE, and

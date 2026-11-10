@@ -1,7 +1,7 @@
 //! Deriving a capability, the only way to share one: the child's rights and range lie within its
 //! parent's and its depth is one greater, so whoever derived it can always revoke it. The child goes
-//! in a free slot of the same table; a grant across tables is atmo-6x9.16.11. See
-//! design/sharing-by-derive/.
+//! in a free slot of the caller's table, or of the table of a process the caller controls, which is
+//! a grant through control. See design/sharing-by-derive/ and design/process-holds-capabilities/.
 use vstd::arithmetic::power2::*;
 use vstd::bits::*;
 use vstd::prelude::*;
@@ -12,6 +12,7 @@ use crate::capability::device::*;
 use crate::capability::mapping::*;
 use crate::capability::kernel::*;
 use crate::capability::list::*;
+use crate::capability::position::*;
 use crate::capability::reach::*;
 use crate::capability::refs::*;
 use crate::capability::space::*;
@@ -121,14 +122,15 @@ fn may_derive(parent: Payload, rights: u32, base: usize, order: u8) -> (ret: boo
 }
 
 impl CapKernel {
-    /// The refusals: an index that names no slot, a parent that is no capability, a device's, the
-    /// console's or power's, a dead process's or thread's, or at the deepest depth, a child's slot in use,
-    /// or a child that does not narrow its parent.
-    pub open spec fn can_derive(&self, root: usize, from: usize, to: usize, rights: u32, base: usize, order: u8) -> bool {
-        let parent = self.tables.node_of(root, from);
-        let child = self.tables.node_of(root, to);
-        &&& self.tables.has_slot(&self.list, root, from)
-        &&& self.tables.has_slot(&self.list, root, to)
+    /// The refusals of a derive from index from of the table at src into index to of the table at dst:
+    /// an index that names no slot, a parent that is no capability, a device's, the console's or
+    /// power's, a dead process's or thread's, or at the deepest depth, a child's slot in use, or a child
+    /// that does not narrow its parent.
+    pub open spec fn can_derive_between(&self, src: usize, from: usize, dst: usize, to: usize, rights: u32, base: usize, order: u8) -> bool {
+        let parent = self.tables.node_of(src, from);
+        let child = self.tables.node_of(dst, to);
+        &&& self.tables.has_slot(&self.list, src, from)
+        &&& self.tables.has_slot(&self.list, dst, to)
         &&& self.is_cap(parent)
         &&& names_block(self.payload_of(parent).kind)
         &&& !self.cap_dead(parent)
@@ -140,28 +142,82 @@ impl CapKernel {
             block_refs(&self.blocks, block_ref(&self.blocks, self.payload_of(parent).base / 4096)) != usize::MAX
     }
 
-    /// What a derive from the capability at index from of the table at root into the empty index to did:
-    /// the derive was allowed, the child holds the parent's kind with these rights and this block, which
-    /// narrow the parent's, one depth below it as its child, and the step discharges a local effect.
-    pub open spec fn cap_derived(pre: Self, post: Self, root: usize, from: usize, to: usize, rights: u32, base: usize, order: u8) -> bool {
-        let parent = pre.tables.node_of(root, from);
-        let child = pre.tables.node_of(root, to);
-        &&& pre.can_derive(root, from, to, rights, base, order)
-        &&& pre.view().holds(root, parent)
-        &&& post.view().holds(root, child)
+    /// The refusals of a derive within the table at root.
+    pub open spec fn can_derive(&self, root: usize, from: usize, to: usize, rights: u32, base: usize, order: u8) -> bool {
+        self.can_derive_between(root, from, root, to, rights, base, order)
+    }
+
+    /// The refusals of a derive from index from of the caller's table, at root, into a position: one
+    /// in no table, or in the table of a dead process, to which nothing is given since it cannot use
+    /// it, and then a derive's between the two tables. In the caller's own table that is can_derive of
+    /// the position's index.
+    pub open spec fn can_derive_at(&self, root: usize, from: usize, to: Position, rights: u32, base: usize, order: u8) -> bool {
+        let dst = self.table_at(root, to.through);
+        &&& dst is Some
+        &&& to.through is Some ==> !self.processes.records@[dst->0].value().dead
+        &&& self.can_derive_between(root, from, dst->0, to.index, rights, base, order)
+    }
+
+    /// What a derive from the capability at index from of the table at src into the empty index to of
+    /// the table at dst did: the derive was allowed, and the child, in dst's table, holds the parent's
+    /// kind with these rights and this block, which narrow the parent's, one depth below it as its
+    /// child.
+    pub open spec fn cap_derived_between(pre: Self, post: Self, src: usize, from: usize, dst: usize, to: usize, rights: u32, base: usize, order: u8) -> bool {
+        let parent = pre.tables.node_of(src, from);
+        let child = pre.tables.node_of(dst, to);
+        &&& pre.can_derive_between(src, from, dst, to, rights, base, order)
+        &&& pre.view().holds(src, parent)
+        &&& post.view().holds(dst, child)
         &&& !pre.list.nodes@[child as int].live
         &&& narrows(post.payload_of(child), pre.payload_of(parent))
         &&& post.payload_of(child) == child_of(pre.payload_of(parent), rights, base, order)
         &&& post.list.is_child(parent, child)
         &&& post.list.nodes@[child as int].depth == pre.list.nodes@[parent as int].depth + 1
         &&& post.list.nodes@[child as int].depth <= MAX_DEPTH
+    }
+
+    /// What a derive within the table at root did: a derive between its indices from and to, and the
+    /// step discharges a local effect.
+    pub open spec fn cap_derived(pre: Self, post: Self, root: usize, from: usize, to: usize, rights: u32, base: usize, order: u8) -> bool {
+        &&& Self::cap_derived_between(pre, post, root, from, root, to, rights, base, order)
         &&& discharges(pre.view(), post.view(), root, Effect::Local)
     }
 
-    /// Derives the capability at index `from` of the table at `root` into the empty index `to`. All of
-    /// the indices, rights, base and order come from user space, so any of them can be refused, and a
-    /// refusal changes nothing.
-    pub fn derive(&mut self, root: usize, from: usize, to: usize, rights: u32, base: usize, order: u8) -> (ret: bool)
+    /// What a derive into a position is to reach: a local step in the caller's own table, and through a
+    /// process capability a placement through it of a child of the caller's capability.
+    pub open spec fn derive_effect(&self, root: usize, from: usize, to: Position) -> Effect {
+        match to.through {
+            None => Effect::Local,
+            Some(cap) => Effect::Place { cap: self.tables.node_of(root, cap), from: self.tables.node_of(root, from) },
+        }
+    }
+
+    /// What a derive from the capability at index from of the caller's table, at root, into the empty
+    /// position to did: the derive was allowed, the child is in the position's table, and the step
+    /// discharges the derive's effect there. In the caller's own table that is cap_derived of the
+    /// position's index.
+    pub open spec fn cap_derived_at(pre: Self, post: Self, root: usize, from: usize, to: Position, rights: u32, base: usize, order: u8) -> bool {
+        &&& pre.can_derive_at(root, from, to, rights, base, order)
+        &&& Self::cap_derived_between(pre, post, root, from, pre.table_at(root, to.through)->0, to.index, rights, base, order)
+        &&& discharges(pre.view(), post.view(), root, pre.derive_effect(root, from, to))
+    }
+
+    /// In the caller's own table a derive into a position is the derive into its index, refused and
+    /// done exactly as that is.
+    pub proof fn lemma_derive_own(pre: Self, post: Self, root: usize, from: usize, to: usize, rights: u32, base: usize, order: u8)
+        ensures
+            pre.can_derive_at(root, from, Position { through: None, index: to }, rights, base, order)
+                == pre.can_derive(root, from, to, rights, base, order),
+            Self::cap_derived_at(pre, post, root, from, Position { through: None, index: to }, rights, base, order)
+                == Self::cap_derived(pre, post, root, from, to, rights, base, order),
+    {
+    }
+
+    /// Derives the capability at index `from` of the caller's table, at `root`, into the empty position
+    /// `to`: an index of the caller's table, or of the table of a process the caller controls, which
+    /// must not be dead. The index, the position, rights, base and order come from user space, so any
+    /// of them can be refused, and a refusal changes nothing.
+    pub fn derive(&mut self, root: usize, from: usize, to: Position, rights: u32, base: usize, order: u8) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
@@ -171,20 +227,69 @@ impl CapKernel {
             final(self).cores == old(self).cores,
             Self::same_tree(*old(self), *final(self)),
             !ret ==> *final(self) == *old(self),
-            ret ==> Self::cap_derived(*old(self), *final(self), root, from, to, rights, base, order),
-            ret == old(self).can_derive(root, from, to, rights, base, order),
-            discharges(old(self).view(), final(self).view(), root, Effect::Local),
+            ret ==> Self::cap_derived_at(*old(self), *final(self), root, from, to, rights, base, order),
+            ret == old(self).can_derive_at(root, from, to, rights, base, order),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
         let ghost pre = *old(self);
-        proof {
-            pre.lemma_no_op_discharges(root);
+        let dst = match self.find_table(root, to.through) {
+            Some(table) => table,
+            None => { return false; },
+        };
+        if let Some(cap) = to.through {
+            proof {
+                pre.lemma_process_cap(pre.tables.node_of(root, cap));
+            }
+            if self.is_process_dead(dst) {
+                return false;
+            }
         }
-        let (parent, payload) = match self.tables.lookup(&self.list, root, from) {
+        let ret = self.derive_between(root, from, dst, to.index, rights, base, order);
+        if ret {
+            proof {
+                match to.through {
+                    None => {
+                        Self::lemma_derive_discharges(pre, *self, root, from, to.index);
+                    },
+                    Some(cap) => {
+                        pre.lemma_slot(root, cap);
+                        Self::lemma_derive_into_discharges(pre, *self, root, pre.tables.node_of(root, cap), from, dst, to.index);
+                    },
+                }
+            }
+        }
+        ret
+    }
+
+    /// Derives the capability at index `from` of the table at `src` into the empty index `to` of the
+    /// table at `dst`: a derive when they are one table, a placement's step when not. A refusal changes
+    /// nothing.
+    fn derive_between(&mut self, src: usize, from: usize, dst: usize, to: usize, rights: u32, base: usize, order: u8) -> (ret: bool)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(src),
+            old(self).tables.roots@.contains_key(dst),
+        ensures
+            final(self).wf(),
+            final(self).cores == old(self).cores,
+            Self::same_tree(*old(self), *final(self)),
+            !ret ==> *final(self) == *old(self),
+            ret == old(self).can_derive_between(src, from, dst, to, rights, base, order),
+            ret ==> {
+                let parent = old(self).tables.node_of(src, from);
+                let child = old(self).tables.node_of(dst, to);
+                &&& Self::cap_derived_between(*old(self), *final(self), src, from, dst, to, rights, base, order)
+                &&& Self::derive_step(*old(self), *final(self), child)
+                &&& final(self).list.parent@ == old(self).list.parent@.insert(child, parent)
+            },
+            bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
+    {
+        let ghost pre = *old(self);
+        let (parent, payload) = match self.tables.lookup(&self.list, src, from) {
             Some(found) => found,
             None => { return false; },
         };
-        let child = match self.tables.lookup(&self.list, root, to) {
+        let child = match self.tables.lookup(&self.list, dst, to) {
             Some(found) => found.0,
             None => { return false; },
         };
@@ -197,7 +302,7 @@ impl CapKernel {
             return false;
         }
         proof {
-            pre.lemma_slot(root, from);
+            pre.lemma_slot(src, from);
             assert(pre.tables.is_cap(&pre.list, parent));
             assert(payload == pre.payload_of(parent));
             if payload.kind is Space {
@@ -244,8 +349,8 @@ impl CapKernel {
         proof {
             pre.tables.lemma_wf_same_pages(&pre.list, &self.list);
             // The new node is a slot, never the leaf's hidden node, so the slot is still found.
-            pre.lemma_slot(root, to);
-            let leaf = pre.tables.leaf(root, index_entry(to));
+            pre.lemma_slot(dst, to);
+            let leaf = pre.tables.leaf(dst, index_entry(to));
             pre.tables.lemma_leaf(&pre.list, leaf);
             lemma_slot_in_leaf(leaf, 0);
             pre.list.lemma_valid_bound(leaf);
@@ -253,7 +358,7 @@ impl CapKernel {
         }
         self.tables.set_payload(
             &self.list,
-            root,
+            dst,
             to,
             Payload { kind: payload.kind, order, rights, base, badge: payload.badge, reserved: 0 },
         );
@@ -276,13 +381,13 @@ impl CapKernel {
         }
         proof {
             let post = *self;
-            pre.lemma_slot(root, to);
+            pre.lemma_slot(src, from);
+            pre.lemma_slot(dst, to);
             assert(post.payload_of(child) == child_of(payload, rights, base, order));
             let parent_rights = payload.rights;
             assert(rights & !parent_rights == 0 && rights & 128 != 0 ==> parent_rights & 128 != 0) by (bit_vector);
             assert(control_named(pre.tables.payload_of(parent)));
             Self::lemma_derive_caps_wf(pre, post, child);
-            pre.lemma_slot(root, to);
             Self::lemma_hidden_frame(pre, post, child, child);
             Self::lemma_table_nodes_caps_frame(pre, post, child, child);
             Self::lemma_space_nodes_caps_frame(pre, post, child, child);
@@ -290,9 +395,11 @@ impl CapKernel {
             Self::lemma_derive_holders(pre, post, parent, child, block);
             Self::lemma_devices_caps_frame(pre, post, child, child);
             lemma_parents_derived(pre.list, post.list, parent, child);
-            Self::lemma_derive_discharges(pre, post, root, from, to);
             Self::lemma_tlb_same(pre, post);
             Self::lemma_bound_threads_same(pre, post);
+            assert(pre.view().holds(src, parent));
+            assert(post.is_cap(child));
+            assert(post.view().holds(dst, child));
         }
         true
     }
@@ -545,29 +652,30 @@ impl CapKernel {
         }
     }
 
-    /// The view of a step that adds one child, in a slot of the caller's table, under a capability the
-    /// caller holds, covering only what its parent does.
+    /// The view of a step that adds one child, in a slot of the table at dst, under a capability held
+    /// in the table at src, covering only what its parent does.
     #[verifier::spinoff_prover]
-    pub proof fn lemma_adds_node_view(pre: Self, post: Self, root: usize, from: usize, to: usize)
+    pub proof fn lemma_places_node_view(pre: Self, post: Self, src: usize, from: usize, dst: usize, to: usize)
         requires
-            Self::adds_cap(pre, post, pre.tables.node_of(root, to)),
-            pre.tables.has_slot(&pre.list, root, from),
-            pre.tables.has_slot(&pre.list, root, to),
-            pre.is_cap(pre.tables.node_of(root, from)),
-            post.list.parent@ == pre.list.parent@.insert(pre.tables.node_of(root, to), pre.tables.node_of(root, from)),
+            Self::adds_cap(pre, post, pre.tables.node_of(dst, to)),
+            pre.tables.has_slot(&pre.list, src, from),
+            pre.tables.has_slot(&pre.list, dst, to),
+            pre.is_cap(pre.tables.node_of(src, from)),
+            post.list.parent@ == pre.list.parent@.insert(pre.tables.node_of(dst, to), pre.tables.node_of(src, from)),
             ({
-                let cp = post.payload_of(pre.tables.node_of(root, to));
-                let pp = pre.payload_of(pre.tables.node_of(root, from));
+                let cp = post.payload_of(pre.tables.node_of(dst, to));
+                let pp = pre.payload_of(pre.tables.node_of(src, from));
                 block_within(cp.base, cp.order, pp)
             }),
         ensures
-            post.view().holds(root, pre.tables.node_of(root, to)),
-            adds_node(
+            post.view().holds(dst, pre.tables.node_of(dst, to)),
+            places_node(
                 pre.view(),
                 post.view(),
-                root,
-                pre.tables.node_of(root, from),
-                pre.tables.node_of(root, to),
+                src,
+                dst,
+                pre.tables.node_of(src, from),
+                pre.tables.node_of(dst, to),
                 |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live,
             ),
     {
@@ -576,14 +684,14 @@ impl CapKernel {
         assert(pre.list.wf()) by {
             reveal(CapKernel::wf);
         }
-        let parent = pre.tables.node_of(root, from);
-        let child = pre.tables.node_of(root, to);
+        let parent = pre.tables.node_of(src, from);
+        let child = pre.tables.node_of(dst, to);
         let (a, b) = (pre.view(), post.view());
         let live = |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live;
-        pre.lemma_slot(root, from);
-        pre.lemma_slot(root, to);
-        assert(a.holds(root, parent));
-        assert(b.holds(root, child));
+        pre.lemma_slot(src, from);
+        pre.lemma_slot(dst, to);
+        assert(a.holds(src, parent));
+        assert(b.holds(dst, child));
         assert forall|h: (ObjectId, NodeId)| #[trigger] a.held.contains(h) implies live(h.1) by {
             pre.lemma_slot_bound(h.1);
         }
@@ -593,7 +701,7 @@ impl CapKernel {
         assert forall|x: NodeId| live(x) && #[trigger] a.parent.contains_key(x) implies live(a.parent[x]) by {
             pre.list.lemma_parent_live(x);
         }
-        assert forall|h: (ObjectId, NodeId)| #[trigger] b.held.contains(h) == (a.held.contains(h) || h == (root, child)) by {
+        assert forall|h: (ObjectId, NodeId)| #[trigger] b.held.contains(h) == (a.held.contains(h) || h == (dst, child)) by {
             if h.1 != child {
                 assert(post.is_cap(h.1) == pre.is_cap(h.1));
             }
@@ -621,20 +729,20 @@ impl CapKernel {
         assert(!live(child));
         assert(b.parent == a.parent.insert(child, parent));
         assert(b.maps == a.maps);
-        assert(adds_node(a, b, root, parent, child, live));
+        assert(places_node(a, b, src, dst, parent, child, live));
     }
 
     /// And has control only with its parent's name.
-    pub proof fn lemma_adds_child_view(pre: Self, post: Self, root: usize, from: usize, to: usize)
+    pub proof fn lemma_places_child_view(pre: Self, post: Self, src: usize, from: usize, dst: usize, to: usize)
         requires
-            Self::adds_cap(pre, post, pre.tables.node_of(root, to)),
-            pre.tables.has_slot(&pre.list, root, from),
-            pre.tables.has_slot(&pre.list, root, to),
-            pre.is_cap(pre.tables.node_of(root, from)),
-            post.list.parent@ == pre.list.parent@.insert(pre.tables.node_of(root, to), pre.tables.node_of(root, from)),
+            Self::adds_cap(pre, post, pre.tables.node_of(dst, to)),
+            pre.tables.has_slot(&pre.list, src, from),
+            pre.tables.has_slot(&pre.list, dst, to),
+            pre.is_cap(pre.tables.node_of(src, from)),
+            post.list.parent@ == pre.list.parent@.insert(pre.tables.node_of(dst, to), pre.tables.node_of(src, from)),
             ({
-                let cp = post.payload_of(pre.tables.node_of(root, to));
-                let pp = pre.payload_of(pre.tables.node_of(root, from));
+                let cp = post.payload_of(pre.tables.node_of(dst, to));
+                let pp = pre.payload_of(pre.tables.node_of(src, from));
                 &&& block_within(cp.base, cp.order, pp)
                 &&& cp.rights & right_bit(Right::Control) != 0 ==> {
                     &&& pp.rights & right_bit(Right::Control) != 0
@@ -642,21 +750,22 @@ impl CapKernel {
                 }
             }),
         ensures
-            post.view().holds(root, pre.tables.node_of(root, to)),
-            adds_child(
+            post.view().holds(dst, pre.tables.node_of(dst, to)),
+            places_child(
                 pre.view(),
                 post.view(),
-                root,
-                pre.tables.node_of(root, from),
-                pre.tables.node_of(root, to),
+                src,
+                dst,
+                pre.tables.node_of(src, from),
+                pre.tables.node_of(dst, to),
                 |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live,
             ),
     {
-        let parent = pre.tables.node_of(root, from);
-        let child = pre.tables.node_of(root, to);
-        Self::lemma_adds_node_view(pre, post, root, from, to);
-        pre.lemma_slot(root, from);
-        pre.lemma_slot(root, to);
+        let parent = pre.tables.node_of(src, from);
+        let child = pre.tables.node_of(dst, to);
+        Self::lemma_places_node_view(pre, post, src, from, dst, to);
+        pre.lemma_slot(src, from);
+        pre.lemma_slot(dst, to);
     }
 
     /// What derive's child owes that view: control only with the parent's name, and all its other
@@ -680,8 +789,43 @@ impl CapKernel {
         assert(child_rights & !parent_rights == 0 && child_rights & 128 != 0 ==> parent_rights & 128 != 0) by (bit_vector);
         assert(right_bit(Right::Control) == 128);
         Self::lemma_derive_step_adds_cap(pre, post, child);
-        Self::lemma_adds_child_view(pre, post, root, from, to);
+        Self::lemma_places_child_view(pre, post, root, from, root, to);
         lemma_adds_child_discharges(pre.view(), post.view(), root, parent, child, |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live);
+    }
+
+    /// The view of a derive into a controlled process's table: the caller, holding control over the
+    /// process at d through capability c, put a child of the capability at its own index from in the
+    /// slot at index to of that process's table. Reach grows only for that process and what controls
+    /// it, by what the caller reached.
+    proof fn lemma_derive_into_discharges(pre: Self, post: Self, root: usize, c: usize, from: usize, d: usize, to: usize)
+        requires
+            Self::derive_step(pre, post, pre.tables.node_of(d, to)),
+            pre.tables.has_slot(&pre.list, root, from),
+            pre.tables.has_slot(&pre.list, d, to),
+            pre.is_cap(pre.tables.node_of(root, from)),
+            post.list.parent@ == pre.list.parent@.insert(pre.tables.node_of(d, to), pre.tables.node_of(root, from)),
+            narrows(post.payload_of(pre.tables.node_of(d, to)), pre.payload_of(pre.tables.node_of(root, from))),
+            pre.is_cap(c),
+            pre.tables.owner@[page_of(c)].0 == root,
+            pre.payload_of(c).rights & right_bit(Right::Control) != 0,
+            pre.payload_of(c).base == d,
+        ensures
+            discharges(pre.view(), post.view(), root, Effect::Place { cap: c, from: pre.tables.node_of(root, from) }),
+    {
+        let parent = pre.tables.node_of(root, from);
+        let child = pre.tables.node_of(d, to);
+        let (cp, pp) = (post.payload_of(child), pre.payload_of(parent));
+        let (child_rights, parent_rights) = (cp.rights, pp.rights);
+        assert(child_rights & !parent_rights == 0 && child_rights & 128 != 0 ==> parent_rights & 128 != 0) by (bit_vector);
+        assert(right_bit(Right::Control) == 128);
+        Self::lemma_derive_step_adds_cap(pre, post, child);
+        Self::lemma_places_child_view(pre, post, root, from, d, to);
+        let a = pre.view();
+        assert(a.holds_right(root, c, Right::Control));
+        assert(a.names[c] == d);
+        assert(!a.process_of.contains_key(d));
+        assert(a.names.contains_key(parent));
+        lemma_places_child_discharges(a, post.view(), root, d, c, parent, child, |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live);
     }
 }
 

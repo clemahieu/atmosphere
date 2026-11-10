@@ -121,6 +121,22 @@ impl CapKernel {
         }
     }
 
+    /// Reads whether the process at p is dead, in one load.
+    pub fn is_process_dead(&self, p: usize) -> (ret: bool)
+        requires
+            self.wf(),
+            self.processes.records@.contains_key(p),
+        ensures
+            ret == self.processes.records@[p].value().dead,
+    {
+        proof {
+            assert(process_wf(&self.processes, &self.blocks, p));
+        }
+        PPtr::<ProcessRecord>::from_usize(p + PROCESS_RECORD_PAGE * 4096).borrow(
+            Tracked(self.processes.records.borrow().tracked_borrow(p)),
+        ).dead
+    }
+
     /// Reads cap_dead of capability n, whose payload is given, in at most two loads: the thread's
     /// record and its process's, or the process's record.
     pub fn is_cap_dead(&self, n: usize, payload: Payload) -> (ret: bool)
@@ -136,11 +152,8 @@ impl CapKernel {
                 let p = payload.base;
                 proof {
                     self.lemma_process_cap(n);
-                    assert(process_wf(&self.processes, &self.blocks, p));
                 }
-                PPtr::<ProcessRecord>::from_usize(p + PROCESS_RECORD_PAGE * 4096).borrow(
-                    Tracked(self.processes.records.borrow().tracked_borrow(p)),
-                ).dead
+                self.is_process_dead(p)
             },
             CapKind::Thread => {
                 let t = payload.base;
@@ -163,11 +176,8 @@ impl CapKernel {
                     Some(p) => {
                         proof {
                             assert(self.processes.records@.contains_key(p));
-                            assert(process_wf(&self.processes, &self.blocks, p));
                         }
-                        PPtr::<ProcessRecord>::from_usize(p + PROCESS_RECORD_PAGE * 4096).borrow(
-                            Tracked(self.processes.records.borrow().tracked_borrow(p)),
-                        ).dead
+                        self.is_process_dead(p)
                     },
                 }
             },
