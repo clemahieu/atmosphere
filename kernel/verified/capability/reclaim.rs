@@ -819,10 +819,11 @@ impl CapKernel {
     /// were.
     pub open spec fn leaf_slice_kept(&self, post: Self, base: usize) -> bool {
         &&& forall|br: BlockRef| #[trigger] block_typed(&post.blocks, br) == block_typed(&self.blocks, br)
-        &&& forall|br: BlockRef| block_typed(&self.blocks, br) && !self.leaf_slot_names(base, br) ==> {
-            &&& #[trigger] block_refs(&post.blocks, br) == block_refs(&self.blocks, br)
-            &&& block_dead(&post.blocks, br) == block_dead(&self.blocks, br)
-        }
+        &&& forall|br: BlockRef| #![trigger block_refs(&post.blocks, br)] #![trigger block_dead(&post.blocks, br)]
+            block_typed(&self.blocks, br) && !self.leaf_slot_names(base, br) ==> {
+                &&& block_refs(&post.blocks, br) == block_refs(&self.blocks, br)
+                &&& block_dead(&post.blocks, br) == block_dead(&self.blocks, br)
+            }
         &&& post.spaces.records == self.spaces.records
         &&& post.threads.records == self.threads.records
         &&& post.processes.records == self.processes.records
