@@ -37,6 +37,9 @@ const ARCH_SOURCES_CHECK: &str = "tools/check-arch-sources.py";
 /// The check that each file copied from upstream differs from it only by its record under
 /// tools/upstream-copies, relative to the project root.
 const UPSTREAM_COPIES_CHECK: &str = "tools/check-upstream-copies.py";
+/// The check that no function of a built kernel, dom0 or user ELF has a stack frame over 16 MiB, which
+/// the build runs on each, relative to the project root.
+const STACK_SIZES_CHECK: &str = "tools/check-stack-sizes.py";
 
 /// The hooks' tests, relative to the project root: the license guard's and the Beads actor's.
 const HOOK_TESTS: [&str; 2] = [".claude/hooks/license-guard-test.sh", ".claude/hooks/beads-actor-test.sh"];
@@ -258,8 +261,11 @@ fn oversized<'a>(sizes: &[(&'a str, u64)]) -> Vec<&'a str> {
     sizes.iter().filter(|(_, size)| *size > MAX_FILE_BYTES).map(|(path, _)| *path).collect()
 }
 
+/// The stack frame check's own tests, then the build, which runs that check on each ELF it makes.
 async fn check_build(project: &ProjectHandle) -> Result<String> {
-    super::build::gate_build(project).await
+    run_check(project, STACK_SIZES_CHECK, &["--test"]).await?;
+    let built = super::build::gate_build(project).await?;
+    Ok(format!("{}; no stack frame over 16 MiB in the kernel, dom0 or payload", built))
 }
 
 /// A workspace crate's whole test suite, after the build, since the dom0 run check in

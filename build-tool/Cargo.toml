@@ -11,11 +11,9 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0"
-byte-unit = "4.0.19"
 cargo_metadata = "0.17.0"
 clap = { version = "4.3.5", features = ["derive"] }
 clap_complete = "4.3.1"
 env_logger = "0.10.0"
 quit = "2.0.0"
-stack-sizes = "0.5.0"
 tokio = { version = "1.28.2", features = ["full"] }

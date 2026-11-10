@@ -8,13 +8,14 @@ use std::process::Stdio;
 use std::sync::Arc;
 
 use anyhow::anyhow;
-use byte_unit::Byte;
 
 use cargo_metadata::{Message as CargoMessage, MetadataCommand};
-use tokio::fs;
 use tokio::process::Command;
 
 use super::error::Result;
+
+/// The check that no function in an ELF has a stack frame over 16 MiB, relative to the project root.
+const STACK_SIZES_CHECK: &str = "tools/check-stack-sizes.py";
 
 /// A handle to a project.
 pub type ProjectHandle = Arc<Project>;
@@ -52,19 +53,19 @@ impl Project {
             name: "kernel".to_string(),
             crate_dir: self.root.join("kernel"),
             binary: Some("kernel".to_string()),
-            max_stack_size: Some(Byte::from_bytes(1024 * 1024 * 16)), // 16 MiB
+            stack_check: Some(self.root.join(STACK_SIZES_CHECK)),
         }
     }
 
     /// Returns the early loader crate, built as the UEFI application that OVMF boots.
     ///
-    /// The stack size check reads ELF, and this build is PE.
+    /// The stack frame check reads ELF, and this build is PE.
     pub fn loader(self: &Arc<Self>) -> Crate {
         Crate {
             name: "aloader".to_string(),
             crate_dir: self.root.join("aloader"),
             binary: Some("aloader".to_string()),
-            max_stack_size: None,
+            stack_check: None,
         }
     }
 
@@ -74,7 +75,7 @@ impl Project {
             name: "dom0".to_string(),
             crate_dir: self.root.join("dom0"),
             binary: Some("dom0".to_string()),
-            max_stack_size: Some(Byte::from_bytes(1024 * 1024 * 16)), // 16 MiB
+            stack_check: Some(self.root.join(STACK_SIZES_CHECK)),
         }
     }
 
@@ -84,7 +85,7 @@ impl Project {
             name: name.to_string(),
             crate_dir: self.root.join("user").join(name),
             binary: Some(name.to_string()),
-            max_stack_size: Some(Byte::from_bytes(1024 * 1024 * 16)), // 16 MiB
+            stack_check: Some(self.root.join(STACK_SIZES_CHECK)),
         }
     }
 
@@ -110,8 +111,8 @@ pub struct Crate {
     /// Name of the binary, if this is a binary crate.
     binary: Option<String>,
 
-    /// Maximum limit of stack sizes.
-    max_stack_size: Option<Byte>,
+    /// The stack frame check its executable must pass, when it is an ELF built with -Z emit-stack-sizes.
+    stack_check: Option<PathBuf>,
 }
 
 impl Crate {
@@ -172,32 +173,12 @@ impl Crate {
     }
 
     async fn check_stack_sizes(&self, path: &Path) -> Result<()> {
-        use stack_sizes::Function;
-
-        if let Some(limit) = self.max_stack_size {
-            let elf = fs::read(path).await?;
-            let functions = stack_sizes::analyze_executable(&elf).map_err(|e| anyhow!("{}", e))?;
-            let mut functions = functions.defined.values().collect::<Vec<&Function>>();
-
-            functions.sort_by(|a, b| a.size().cmp(&b.size()).reverse());
-
-            if let Some(top) = functions.first() {
-                if top.size() as u128 > limit.get_bytes() {
-                    eprintln!("Top stack sizes:");
-                    for func in &functions[..10] {
-                        eprintln!("{}: {:?}", func.size(), func.names());
-                    }
-
-                    return Err(anyhow!(
-                        "The stack size of function {:?} is {} bytes, which is over the limit of {:?}",
-                        top.names(),
-                        top.size(),
-                        limit,
-                    ));
-                }
+        if let Some(check) = &self.stack_check {
+            let status = Command::new(check).arg(path).stdin(Stdio::null()).status().await?;
+            if !status.success() {
+                return Err(anyhow!("{} {}: {}", check.display(), path.display(), status));
             }
         }
-
         Ok(())
     }
 }
