@@ -625,13 +625,16 @@ impl CapKernel {
 
     /// A retype naming the block at `base`, under the untyped at index `from` of the table at `root`:
     /// what it does depends on what the block holds. All of these come from user space.
-    pub fn reclaim(&mut self, c: usize, root: usize, from: usize, base: usize) -> (ret: ReclaimStep)
+    pub fn reclaim(&mut self, c: usize, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: ReclaimStep)
         requires
             old(self).wf(),
             c < NUM_CPUS,
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            // The leaf's arm, a slice and then a free, is the largest.
+            final(steps).count <= old(steps).count + (NODES_PER_PAGE - 1) + LEAF_SLICE_BUDGET * (MAX_DEPTH + 1)
+                + (NODES_PER_PAGE + 2 * (NUM_CPUS + NUM_IOMMUS) + SMALL_PAGES_MAX),
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
             ret is Refused || ret is Again ==> *final(self) == *old(self),
@@ -735,42 +738,40 @@ impl CapKernel {
         if !self.blocks.page_tracked(page) {
             return ReclaimStep::Refused;
         }
-        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
-        let tracked mut steps = Steps::fresh();
         let object = self.blocks.pages.get(page).object;
         match object {
-            ObjectType::Frame => self.reclaim_frame(c, root, from, base, Tracked(&mut steps)),
+            ObjectType::Frame => self.reclaim_frame(c, root, from, base, Tracked(steps)),
             ObjectType::TableLeaf => {
                 if self.unlink_leaf(root, from, base) {
                     ReclaimStep::Unlinked
-                } else if self.slice_leaf(root, from, base) {
+                } else if self.slice_leaf(root, from, base, Tracked(&mut *steps)) {
                     ReclaimStep::Slice
                 } else {
-                    self.free_leaf(c, root, from, base, Tracked(&mut steps))
+                    self.free_leaf(c, root, from, base, Tracked(steps))
                 }
             },
             ObjectType::TablePage => {
                 if self.unlink_table(root, from, base) {
                     ReclaimStep::Unlinked
-                } else if self.slice_table(root, from, base) {
+                } else if self.slice_table(root, from, base, Tracked(&mut *steps)) {
                     ReclaimStep::Slice
                 } else {
-                    self.free_table(c, root, from, base, Tracked(&mut steps))
+                    self.free_table(c, root, from, base, Tracked(steps))
                 }
             },
             ObjectType::Space => {
-                if self.cut_space_children(root, from, base) {
+                if self.cut_space_children(root, from, base, Tracked(&mut *steps)) {
                     ReclaimStep::Slice
                 } else {
-                    self.free_space(c, root, from, base, Tracked(&mut steps))
+                    self.free_space(c, root, from, base, Tracked(steps))
                 }
             },
-            ObjectType::Thread => self.reclaim_thread(c, root, from, base, Tracked(&mut steps)),
+            ObjectType::Thread => self.reclaim_thread(c, root, from, base, Tracked(steps)),
             ObjectType::Process => {
-                if self.cut_process_space(root, from, base) {
+                if self.cut_process_space(root, from, base, Tracked(&mut *steps)) {
                     ReclaimStep::Slice
                 } else {
-                    self.free_process(c, root, from, base, Tracked(&mut steps))
+                    self.free_process(c, root, from, base, Tracked(steps))
                 }
             },
             ObjectType::None => ReclaimStep::Refused,
@@ -885,11 +886,12 @@ impl CapKernel {
     /// whether it ran, and if not nothing changed. Dead slots stay dead while the leaf's hidden node is,
     /// since lookup refuses such a leaf, so a
     /// slice can walk them once and the next starts again from the first.
-    pub fn slice_leaf(&mut self, root: usize, from: usize, base: usize) -> (ret: bool)
+    pub fn slice_leaf(&mut self, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
         ensures
+            final(steps).count <= old(steps).count + (NODES_PER_PAGE - 1) + LEAF_SLICE_BUDGET * (MAX_DEPTH + 1),
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
             ret == old(self).can_slice_leaf(root, from, base),
@@ -935,14 +937,18 @@ impl CapKernel {
         // live slot gone; few says the budget covers all of them.
         let ghost kept = pre.leaf_slots_childless(base);
         let ghost few = kept && pre.leaf_live_slots(base) <= LEAF_SLICE_BUDGET;
-        let mut steps = 0;
+        // A slot skipped is one iteration; a slot revoked is one more and its revoke step's.
+        let ghost start = steps.count;
+        let mut taken = 0;
         let mut k = 1;
-        while steps != LEAF_SLICE_BUDGET && k != NODES_PER_PAGE && self.flush_epoch != usize::MAX
+        while taken != LEAF_SLICE_BUDGET && k != NODES_PER_PAGE && self.flush_epoch != usize::MAX
             invariant
+                start == old(steps).count,
+                steps.count <= start + (k - 1) + taken * (MAX_DEPTH + 1),
                 Self::mappings_shrunk(*old(self), *self),
                 self.wf(),
                 pre == *old(self),
-                steps <= LEAF_SLICE_BUDGET,
+                taken <= LEAF_SLICE_BUDGET,
                 1 <= k <= NODES_PER_PAGE,
                 base % 8192 == 0,
                 pre.tables.owner@.contains_key(base),
@@ -950,10 +956,10 @@ impl CapKernel {
                 pre.view().holds_right(root, untyped, Right::Retype),
                 self.tables.owner == pre.tables.owner,
                 self.list.parent == pre.list.parent,
-                pre.list.seq@.len() == self.list.seq@.len() + steps,
+                pre.list.seq@.len() == self.list.seq@.len() + taken,
                 !self.list.nodes@[base as int].live,
-                steps == 0 ==> *self == pre,
-                steps > 0 ==> !pre.leaf_is_empty(base) && pre.flush_epoch < usize::MAX,
+                taken == 0 ==> *self == pre,
+                taken > 0 ==> !pre.leaf_is_empty(base) && pre.flush_epoch < usize::MAX,
                 forall|j: int| 0 <= j < k ==> !(#[trigger] self.list.nodes@[base + j]).live,
                 discharges(pre.view(), self.view(), root, Effect::Teardown { untyped, object }),
                 forall|h: (ObjectId, NodeId)| #[trigger] self.view().held.contains(h) ==> pre.view().held.contains(h),
@@ -967,10 +973,11 @@ impl CapKernel {
                 kept ==> self.leaf_slots_childless_from(base, k as int),
                 kept ==> forall|i: usize| pre.blocks.tracks(i as int) ==> #[trigger] block_ref(&self.blocks, i) == block_ref(&pre.blocks, i),
                 kept ==> pre.leaf_slice_kept(*self, base),
-                few ==> steps + self.live_slots_from(base, k as int) == pre.leaf_live_slots(base),
-            decreases LEAF_SLICE_BUDGET - steps, NODES_PER_PAGE - k,
+                few ==> taken + self.live_slots_from(base, k as int) == pre.leaf_live_slots(base),
+            decreases LEAF_SLICE_BUDGET - taken, NODES_PER_PAGE - k,
         {
             proof {
+                steps.step();
                 self.lemma_leaf_slot_valid(base, k);
                 lemma_slot_in_leaf(base, k);
                 self.lemma_slot_bound((base + k) as usize);
@@ -985,14 +992,19 @@ impl CapKernel {
             }
             proof {
                 self.lemma_live_slot_is_cap(n);
-                if steps == 0 {
+                if taken == 0 {
                     assert(pre.list.nodes@[base + k as int].live);
                 }
             }
+            proof {
+                assert(steps.count + MAX_DEPTH <= start + (k - 1) + (taken + 1) * (MAX_DEPTH + 1)) by (nonlinear_arith)
+                    requires
+                        steps.count <= start + (k - 1) + taken * (MAX_DEPTH + 1) + 1,
+                        MAX_DEPTH + 1 == 256,
+                ;
+            }
             let ghost mid = *self;
-            // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
-            let tracked mut revoke_steps = Steps::fresh();
-            if !self.revoke_step(Ghost(object), n, Tracked(&mut revoke_steps)) {
+            if !self.revoke_step(Ghost(object), n, Tracked(&mut *steps)) {
                 proof {
                     if kept {
                         // A childless slot's revoke has nothing to do.
@@ -1013,7 +1025,7 @@ impl CapKernel {
                     Self::lemma_slice_step(pre, mid, *self, root, untyped, object);
                     Self::lemma_leaf_slots_stay_dead(mid, *self, base, k as int, r);
                 }
-                steps = steps + 1;
+                taken = taken + 1;
                 continue;
             }
             self.unlink_childless_slot(n);
@@ -1043,11 +1055,11 @@ impl CapKernel {
                     }
                 }
             }
-            steps = steps + 1;
+            taken = taken + 1;
             k = k + 1;
         }
         proof {
-            if few && steps != 0 {
+            if few && taken != 0 {
                 if k != NODES_PER_PAGE {
                     Self::lemma_live_slots_none(*self, base, k as int);
                 }
@@ -1058,7 +1070,7 @@ impl CapKernel {
                 }
             }
         }
-        steps != 0
+        taken != 0
     }
 
     /// Every live slot of the leaf at `base` from slot k on has no child.
@@ -3578,11 +3590,12 @@ impl CapKernel {
     /// entry stays empty, since can_link refuses a dead parent and no walk reaches a table with no parent,
     /// so the next slice can start again from the first entry. Returns whether it ran, and if not nothing
     /// changed.
-    pub fn cut_table_children(&mut self, root: usize, from: usize, base: usize) -> (ret: bool)
+    pub fn cut_table_children(&mut self, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
         ensures
+            final(steps).count <= old(steps).count + 512,
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
             ret == old(self).can_cut_table(root, from, base),
@@ -3624,20 +3637,20 @@ impl CapKernel {
         proof {
             assert(a.is_page(base));
         }
-        let steps = self.cut_children(base, false);
+        let cut = self.cut_children(base, false, Tracked(steps));
         proof {
-            if steps != 0 {
+            if cut != 0 {
                 lemma_no_change_discharges_teardown(pre.view(), root, untyped, base);
             }
         }
-        steps != 0
+        cut != 0
     }
 
     /// Cuts up to a budget of the children of the table at `base`, a table page or a space's root with no
     /// parent, each from the entry naming it, with what that leaves stale, and returns how many. A kernel
     /// slot names no child, so it stays, as does every entry that named none. A slice starts again from
     /// the first entry, since a cut entry stays empty.
-    pub fn cut_children(&mut self, base: usize, is_root: bool) -> (steps: usize)
+    pub fn cut_children(&mut self, base: usize, is_root: bool, Tracked(steps): Tracked<&mut Steps>) -> (cut: usize)
         requires
             old(self).wf(),
             old(self).flush_epoch < usize::MAX,
@@ -3647,16 +3660,17 @@ impl CapKernel {
             tree_of(&old(self).table_pages, &old(self).spaces).record(base).parent is None,
             tree_of(&old(self).table_pages, &old(self).spaces).record(base).level >= 2,
         ensures
+            final(steps).count <= old(steps).count + 512,
             final(self).wf(),
-            steps <= TABLE_SLICE_BUDGET,
+            cut <= TABLE_SLICE_BUDGET,
             Self::table_cuts_kept(*old(self), *final(self), base),
             child_entries(tree_of(&final(self).table_pages, &final(self).spaces), base)
                 .subset_of(child_entries(tree_of(&old(self).table_pages, &old(self).spaces), base)),
             child_entries(tree_of(&old(self).table_pages, &old(self).spaces), base).len()
-                == child_entries(tree_of(&final(self).table_pages, &final(self).spaces), base).len() + steps,
-            steps == 0 ==> *final(self) == *old(self),
-            steps == 0 ==> forall|j: usize| !#[trigger] tree_of(&old(self).table_pages, &old(self).spaces).names_child(base, j),
-            steps > 0 ==> exists|i: usize| #[trigger] tree_of(&old(self).table_pages, &old(self).spaces).names_child(base, i),
+                == child_entries(tree_of(&final(self).table_pages, &final(self).spaces), base).len() + cut,
+            cut == 0 ==> *final(self) == *old(self),
+            cut == 0 ==> forall|j: usize| !#[trigger] tree_of(&old(self).table_pages, &old(self).spaces).names_child(base, j),
+            cut > 0 ==> exists|i: usize| #[trigger] tree_of(&old(self).table_pages, &old(self).spaces).names_child(base, i),
             forall|i: usize| #![trigger tree_of(&final(self).table_pages, &final(self).spaces).entry(base, i)]
                 i < 512 && !tree_of(&old(self).table_pages, &old(self).spaces).names_child(base, i)
                 ==> tree_of(&final(self).table_pages, &final(self).spaces).entry(base, i)
@@ -3664,10 +3678,13 @@ impl CapKernel {
     {
         let ghost pre = *old(self);
         let ghost a = tree_of(&pre.table_pages, &pre.spaces);
-        let mut steps: usize = 0;
+        let ghost start = steps.count;
+        let mut cut: usize = 0;
         let mut e: usize = 0;
-        while steps != TABLE_SLICE_BUDGET && e != 512 && self.flush_epoch != usize::MAX
+        while cut != TABLE_SLICE_BUDGET && e != 512 && self.flush_epoch != usize::MAX
             invariant
+                start == old(steps).count,
+                steps.count == start + e,
                 self.wf(),
                 pre == *old(self),
                 pre.wf(),
@@ -3677,18 +3694,21 @@ impl CapKernel {
                 is_root != a.is_page(base),
                 pre.flush_epoch < usize::MAX,
                 a.record(base).level >= 2,
-                steps <= TABLE_SLICE_BUDGET,
+                cut <= TABLE_SLICE_BUDGET,
                 e <= 512,
                 Self::table_cuts_kept(pre, *self, base),
-                steps == 0 ==> *self == pre,
-                steps > 0 ==> exists|i: usize| #[trigger] a.names_child(base, i),
+                cut == 0 ==> *self == pre,
+                cut > 0 ==> exists|i: usize| #[trigger] a.names_child(base, i),
                 child_entries(tree_of(&self.table_pages, &self.spaces), base).subset_of(child_entries(a, base)),
-                child_entries(a, base).len() == child_entries(tree_of(&self.table_pages, &self.spaces), base).len() + steps,
+                child_entries(a, base).len() == child_entries(tree_of(&self.table_pages, &self.spaces), base).len() + cut,
                 forall|j: usize| j < e ==> !#[trigger] tree_of(&self.table_pages, &self.spaces).names_child(base, j),
                 forall|i: usize| #![trigger tree_of(&self.table_pages, &self.spaces).entry(base, i)]
                     i < 512 && !a.names_child(base, i) ==> tree_of(&self.table_pages, &self.spaces).entry(base, i) == a.entry(base, i),
-            decreases TABLE_SLICE_BUDGET - steps, 512 - e,
+            decreases TABLE_SLICE_BUDGET - cut, 512 - e,
         {
+            proof {
+                steps.step();
+            }
             let ghost mid = *self;
             let ghost m = tree_of(&self.table_pages, &self.spaces);
             proof {
@@ -3747,18 +3767,18 @@ impl CapKernel {
                         assert(!child_entries(b, base).contains(j));
                     }
                 }
-                if steps == 0 {
+                if cut == 0 {
                     assert(mid == pre);
                     assert(a.names_child(base, e));
                 } else {
                     assert(exists|i: usize| #[trigger] a.names_child(base, i));
                 }
             }
-            steps = steps + 1;
+            cut = cut + 1;
             e = e + 1;
         }
         proof {
-            if steps == 0 {
+            if cut == 0 {
                 assert(*self == pre);
                 assert(e == 512);
                 assert forall|j: usize| !#[trigger] a.names_child(base, j) by {
@@ -3768,7 +3788,7 @@ impl CapKernel {
                 }
             }
         }
-        steps
+        cut
     }
 
     /// A dead device space's block: nothing names the space and no device is bound to it. A process space
@@ -3798,11 +3818,12 @@ impl CapKernel {
     /// Cuts up to a budget of the child tables of the dead device space at `base`, under the untyped at index
     /// `from` of the table at `root`, each from the entry naming it, with what that leaves stale. Returns
     /// whether it ran, and if not nothing changed.
-    pub fn cut_space_children(&mut self, root: usize, from: usize, base: usize) -> (ret: bool)
+    pub fn cut_space_children(&mut self, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
         ensures
+            final(steps).count <= old(steps).count + 512,
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
             ret == old(self).can_cut_space(root, from, base),
@@ -3833,13 +3854,13 @@ impl CapKernel {
         if !dead_space {
             return false;
         }
-        let steps = self.cut_children(base, true);
+        let cut = self.cut_children(base, true, Tracked(steps));
         proof {
-            if steps != 0 {
+            if cut != 0 {
                 lemma_no_change_discharges_teardown(pre.view(), root, untyped, base);
             }
         }
-        steps != 0
+        cut != 0
     }
 
     /// A block that holds a space is that device space's: a device space's block is Base and Space, a process
@@ -4150,11 +4171,12 @@ impl CapKernel {
     /// unmap. A mapping node is always a leaf of its capability's run, so nothing else need consent. A
     /// cleared entry stays empty, since nothing maps into a dead table, so the next slice can start again
     /// from the first entry. Returns whether it ran, and if not nothing changed.
-    pub fn unlink_table_mappings(&mut self, root: usize, from: usize, base: usize) -> (ret: bool)
+    pub fn unlink_table_mappings(&mut self, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
         ensures
+            final(steps).count <= old(steps).count + 512,
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
             ret == old(self).can_unmap_table(root, from, base),
@@ -4193,10 +4215,13 @@ impl CapKernel {
         }
         let ghost mut nodes: Seq<usize> = Seq::empty();
         let ghost mut states: Seq<Self> = Seq::empty().push(pre);
-        let mut steps: usize = 0;
+        let ghost start = steps.count;
+        let mut unlinked: usize = 0;
         let mut e: usize = 0;
-        while steps != TABLE_SLICE_BUDGET && e != 512 && self.flush_epoch != usize::MAX
+        while unlinked != TABLE_SLICE_BUDGET && e != 512 && self.flush_epoch != usize::MAX
             invariant
+                start == old(steps).count,
+                steps.count == start + e,
                 self.wf(),
                 pre == *old(self),
                 pre.wf(),
@@ -4212,17 +4237,20 @@ impl CapKernel {
                 base % 32768 == 0,
                 self.blocks.tracks_addr(base),
                 level == a.record(base).level,
-                steps <= TABLE_SLICE_BUDGET,
+                unlinked <= TABLE_SLICE_BUDGET,
                 e <= 512,
-                nodes.len() == steps,
-                Self::table_unmaps_kept(pre, *self, base, steps as int),
+                nodes.len() == unlinked,
+                Self::table_unmaps_kept(pre, *self, base, unlinked as int),
                 Self::table_mapping_steps(pre, *self, base, nodes, states),
                 bound_threads(&self.list, &self.tables) == bound_threads(&pre.list, &pre.tables),
-                steps == 0 ==> *self == pre,
-                steps > 0 ==> exists|i: usize| #[trigger] frame_slot(a, base, i),
+                unlinked == 0 ==> *self == pre,
+                unlinked > 0 ==> exists|i: usize| #[trigger] frame_slot(a, base, i),
                 forall|j: usize| j < e ==> !#[trigger] frame_slot(tree_of(&self.table_pages, &self.spaces), base, j),
-            decreases TABLE_SLICE_BUDGET - steps, 512 - e,
+            decreases TABLE_SLICE_BUDGET - unlinked, 512 - e,
         {
+            proof {
+                steps.step();
+            }
             let ghost mid = *self;
             let ghost m = tree_of(&self.table_pages, &self.spaces);
             let entry = self.table_entry(base, false, e);
@@ -4247,7 +4275,7 @@ impl CapKernel {
             proof {
                 let post = *self;
                 let b = tree_of(&post.table_pages, &post.spaces);
-                Self::lemma_table_unmap_step(pre, mid, post, base, e, n, steps as int);
+                Self::lemma_table_unmap_step(pre, mid, post, base, e, n, unlinked as int);
                 assert(Self::table_mapping_step(mid, post, base, n));
                 let (old_nodes, old_states) = (nodes, states);
                 nodes = old_nodes.push(n);
@@ -4270,16 +4298,16 @@ impl CapKernel {
                         assert(!b.entry(base, e).perm.present);
                     }
                 }
-                if steps == 0 {
+                if unlinked == 0 {
                     assert(mid == pre);
                     assert(frame_slot(a, base, e));
                 }
             }
-            steps = steps + 1;
+            unlinked = unlinked + 1;
             e = e + 1;
         }
         proof {
-            if steps == 0 {
+            if unlinked == 0 {
                 assert(*self == pre);
                 assert(e == 512);
                 assert forall|j: usize| !#[trigger] frame_slot(a, base, j) by {
@@ -4292,27 +4320,28 @@ impl CapKernel {
                 assert(Self::table_mapping_steps(pre, *self, base, nodes, states));
             }
         }
-        steps != 0
+        unlinked != 0
     }
 
     /// Takes a slice of the dead table page at `base`, under the untyped at index `from` of the table at
     /// `root`: the entries naming child tables go first, then the entries mapping frames. Returns whether
     /// it ran, and if not nothing changed.
-    pub fn slice_table(&mut self, root: usize, from: usize, base: usize) -> (ret: bool)
+    pub fn slice_table(&mut self, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
         ensures
+            final(steps).count <= old(steps).count + 512 + 512,
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
             ret == old(self).can_slice_table(root, from, base),
             !ret ==> *final(self) == *old(self),
             ret ==> old(self).table_sliced(*final(self), root, from, base),
     {
-        if self.cut_table_children(root, from, base) {
+        if self.cut_table_children(root, from, base, Tracked(&mut *steps)) {
             return true;
         }
-        self.unlink_table_mappings(root, from, base)
+        self.unlink_table_mappings(root, from, base, Tracked(steps))
     }
 
     /// Reclaims the 4K block at `base`, under the untyped at index `from` of the table at `root`. All of

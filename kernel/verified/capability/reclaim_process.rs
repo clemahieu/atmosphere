@@ -140,11 +140,12 @@ impl CapKernel {
     /// untyped at index `from` of the table at `root`, each from the entry naming it, with what that
     /// leaves stale, and leaves the kernel slots. Refused while a core has the space loaded. Returns
     /// whether it ran, and if not nothing changed.
-    pub fn cut_process_space(&mut self, root: usize, from: usize, base: usize) -> (ret: bool)
+    pub fn cut_process_space(&mut self, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
         ensures
+            final(steps).count <= old(steps).count + 512,
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
             ret == old(self).can_cut_process_space(root, from, base),
@@ -186,11 +187,11 @@ impl CapKernel {
             assert(a.is_root(base));
             assert(a.space_records[base].value().kind is Process);
         }
-        let steps = self.cut_children(base, true);
+        let cut = self.cut_children(base, true, Tracked(steps));
         proof {
             let post = *self;
             let b = tree_of(&post.table_pages, &post.spaces);
-            if steps != 0 {
+            if cut != 0 {
                 lemma_no_change_discharges_teardown(pre.view(), root, untyped, base);
                 assert forall|i: usize| #![trigger b.entry(base, i)] i < KERNEL_MEM_END_L4INDEX implies b.entry(base, i) == a.entry(base, i) by {
                     assert(!a.child_slot(base, i));
@@ -205,7 +206,7 @@ impl CapKernel {
                 assert(post.processes.records@.contains_key(base));
             }
         }
-        steps != 0
+        cut != 0
     }
 
     /// Nothing is left of the dead process at `base` but its block: no core has its space loaded, no entry
