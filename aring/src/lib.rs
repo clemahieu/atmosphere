@@ -33,7 +33,7 @@ verus! {
 
 /// Indices are u32 counters that wrap at this modulus.
 pub open spec fn modulus() -> int {
-    0x1_0000_0000
+    0x1_0000_0000 // not a page size: the u32 indices' modulus, 2^32
 }
 
 /// How far index `a` is ahead of index `b`, counting across the wrap.

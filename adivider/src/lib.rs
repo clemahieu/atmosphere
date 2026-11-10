@@ -399,7 +399,7 @@ pub fn check(held: &[Block], rows: &[Row], joins: &[Join]) -> (ok: bool)
 // untyped, as boot gives dom0 today.
 
 pub open spec fn gigabyte() -> Block {
-    Block { base: 0x4000_0000, order: 18 }
+    Block { base: 0x4000_0000, order: 18 } // not a page size: an example's address
 }
 
 pub open spec fn example_held() -> Seq<Block> {
@@ -410,10 +410,10 @@ pub open spec fn example_held() -> Seq<Block> {
 /// to read and write it, tenant 2 to read it. `shared` says whether tenant 2's row declares it.
 pub open spec fn frame_rows(shared: bool) -> Seq<Row> {
     seq![
-        Row { tenant: 1, kind: Kind::Untyped, block: Block { base: 0x4000_0000, order: 9 }, rights: RETYPE, shared: false },
-        Row { tenant: 2, kind: Kind::Untyped, block: Block { base: 0x4020_0000, order: 9 }, rights: RETYPE, shared: false },
-        Row { tenant: 1, kind: Kind::Frame, block: Block { base: 0x4040_0000, order: 0 }, rights: READ | WRITE, shared: true },
-        Row { tenant: 2, kind: Kind::Frame, block: Block { base: 0x4040_0000, order: 0 }, rights: READ, shared: shared },
+        Row { tenant: 1, kind: Kind::Untyped, block: Block { base: 0x4000_0000, order: 9 }, rights: RETYPE, shared: false }, // not a page size: an example's address
+        Row { tenant: 2, kind: Kind::Untyped, block: Block { base: 0x4020_0000, order: 9 }, rights: RETYPE, shared: false }, // not a page size: an example's address
+        Row { tenant: 1, kind: Kind::Frame, block: Block { base: 0x4040_0000, order: 0 }, rights: READ | WRITE, shared: true }, // not a page size: an example's address
+        Row { tenant: 2, kind: Kind::Frame, block: Block { base: 0x4040_0000, order: 0 }, rights: READ, shared: shared }, // not a page size: an example's address
     ]
 }
 
@@ -421,8 +421,8 @@ pub open spec fn frame_rows(shared: bool) -> Seq<Row> {
 /// right, tenant 2 to receive.
 pub open spec fn endpoint_rows() -> Seq<Row> {
     seq![
-        Row { tenant: 1, kind: Kind::Endpoint, block: Block { base: 0x4060_0000, order: 0 }, rights: SEND | GRANT, shared: true },
-        Row { tenant: 2, kind: Kind::Endpoint, block: Block { base: 0x4060_0000, order: 0 }, rights: RECEIVE, shared: true },
+        Row { tenant: 1, kind: Kind::Endpoint, block: Block { base: 0x4060_0000, order: 0 }, rights: SEND | GRANT, shared: true }, // not a page size: an example's address
+        Row { tenant: 2, kind: Kind::Endpoint, block: Block { base: 0x4060_0000, order: 0 }, rights: RECEIVE, shared: true }, // not a page size: an example's address
     ]
 }
 
@@ -436,8 +436,8 @@ proof fn lemma_example_held()
     ensures
         held_ok(example_held(), 0),
         bytes(0) == PAGE_BYTES,
-        bytes(9) == 0x20_0000,
-        bytes(18) == 0x4000_0000,
+        bytes(9) == 0x20_0000, // not a page size: the example's block size, concrete for its proofs
+        bytes(18) == 0x4000_0000, // not a page size: the example's block size, concrete for its proofs
 {
     lemma2_to64();
     assert(example_held()[0] == gigabyte());
@@ -519,20 +519,20 @@ pub proof fn example_grant_joined_passes()
 mod tests {
     use super::*;
 
-    const HELD: [Block; 1] = [Block { base: 0x4000_0000, order: 18 }];
+    const HELD: [Block; 1] = [Block { base: 0x4000_0000, order: 18 }]; // not a page size: an example's address
 
     fn frame_rows(shared: bool) -> [Row; 4] {
         [
-            Row { tenant: 1, kind: Kind::Untyped, block: Block { base: 0x4000_0000, order: 9 }, rights: RETYPE, shared: false },
-            Row { tenant: 2, kind: Kind::Untyped, block: Block { base: 0x4020_0000, order: 9 }, rights: RETYPE, shared: false },
-            Row { tenant: 1, kind: Kind::Frame, block: Block { base: 0x4040_0000, order: 0 }, rights: READ | WRITE, shared: true },
-            Row { tenant: 2, kind: Kind::Frame, block: Block { base: 0x4040_0000, order: 0 }, rights: READ, shared },
+            Row { tenant: 1, kind: Kind::Untyped, block: Block { base: 0x4000_0000, order: 9 }, rights: RETYPE, shared: false }, // not a page size: an example's address
+            Row { tenant: 2, kind: Kind::Untyped, block: Block { base: 0x4020_0000, order: 9 }, rights: RETYPE, shared: false }, // not a page size: an example's address
+            Row { tenant: 1, kind: Kind::Frame, block: Block { base: 0x4040_0000, order: 0 }, rights: READ | WRITE, shared: true }, // not a page size: an example's address
+            Row { tenant: 2, kind: Kind::Frame, block: Block { base: 0x4040_0000, order: 0 }, rights: READ, shared }, // not a page size: an example's address
         ]
     }
 
     const ENDPOINT_ROWS: [Row; 2] = [
-        Row { tenant: 1, kind: Kind::Endpoint, block: Block { base: 0x4060_0000, order: 0 }, rights: SEND | GRANT, shared: true },
-        Row { tenant: 2, kind: Kind::Endpoint, block: Block { base: 0x4060_0000, order: 0 }, rights: RECEIVE, shared: true },
+        Row { tenant: 1, kind: Kind::Endpoint, block: Block { base: 0x4060_0000, order: 0 }, rights: SEND | GRANT, shared: true }, // not a page size: an example's address
+        Row { tenant: 2, kind: Kind::Endpoint, block: Block { base: 0x4060_0000, order: 0 }, rights: RECEIVE, shared: true }, // not a page size: an example's address
     ];
 
     const JOINS: [Join; 1] = [Join { a: 2, b: 1 }];
@@ -574,20 +574,20 @@ mod tests {
     #[test]
     fn row_outside_held_fails() {
         let mut rows = frame_rows(true);
-        rows[0].block.base = 0x8000_0000;
+        rows[0].block.base = 0x8000_0000; // not a page size: an example's address
         assert!(!check(&HELD, &rows, &[]));
     }
 
     #[test]
     fn misaligned_row_fails() {
         let mut rows = frame_rows(true);
-        rows[0].block.base = 0x4000_1000;
+        rows[0].block.base = 0x4000_1000; // not a page size: an example's address
         assert!(!check(&HELD, &rows, &[]));
     }
 
     #[test]
     fn misaligned_held_fails() {
-        assert!(!check(&[Block { base: 0x4000_1000, order: 18 }], &[], &[]));
+        assert!(!check(&[Block { base: 0x4000_1000, order: 18 }], &[], &[])); // not a page size: an example's address
     }
 
     #[test]

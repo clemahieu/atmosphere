@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
-"""Check that kernel/verified writes no page size, entries a level or size derived from them as a
-literal outside the definitions.
+"""Check that no crate marked verified writes a page size, entries a level or size derived from them
+as a literal outside the definitions.
+
+The crates checked are the workspace members whose Cargo.toml marks them
+'[package.metadata.atmosphere] verified = true', the crates tools/verify.py proves; each one's source
+root, the directory of its library root, is scanned for Rust sources.
 
 A literal cannot be told from an unrelated number or changed in one place, and the granule is to
 become the target's (design/arch-module/). The page-shaped values are the 4K page and its offset
@@ -8,8 +12,8 @@ mask, the entries a level and its index mask, the 2M, 1G and 512G regions and th
 the pages in a 1G and a 512G region, and every positive multiple of the page, which a block size, a
 region or a count of pages in bytes is. A number literal of any base, digit grouping or suffix
 whose value is one of them is refused, outside '//' and '/* */' comments and string literals. The
-definitions are exempt: define.rs and arch/, and the 'global layout' directives of layouts.rs,
-which Verus takes only with a literal size. A line that holds such a value for another reason says
+definitions are exempt: in each source root, define.rs and arch/, and the 'global layout' directives
+of layouts.rs, which Verus takes only with a literal size. A line that holds such a value for another reason says
 so in a comment '// not a page size: <reason>'.
 
 usage: tools/check-page-literals.py           (the tree)
@@ -17,13 +21,15 @@ usage: tools/check-page-literals.py           (the tree)
 """
 import re
 import sys
+import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
 sys.dont_write_bytecode = True
 
 REPO = Path(__file__).resolve().parent.parent
-VERIFIED_ROOT = "kernel/verified"
+DEFAULT_LIBRARY_ROOT = "src/lib.rs"
 EXEMPT_FILES = ("define.rs",)
 EXEMPT_DIRECTORIES = ("arch",)
 # The lines of a file that are definitions: a layout directive's size must be a literal.
@@ -67,11 +73,11 @@ def blank(match):
     return re.sub(r"[^\n]", " ", match.group(0))
 
 
-def literals(path, source):
-    """Each line of one file that writes a page-shaped literal, as 'path:line: text'."""
+def literals(path, source, definition=None):
+    """Each line of one file that writes a page-shaped literal, as 'path:line: text'. A line the
+    pattern 'definition' matches is a definition and passes."""
     code = STRING.sub(blank, BLOCK_COMMENT.sub(blank, source))
     found = []
-    definition = EXEMPT_LINES.get(path)
     for index, (line, original) in enumerate(zip(code.splitlines(), source.splitlines())):
         if MARKER.search(original) or (definition and definition.match(line)):
             continue
@@ -82,7 +88,7 @@ def literals(path, source):
 
 
 def exempt(path):
-    """Whether a path under kernel/verified is one of the definitions."""
+    """Whether a path under a crate's source root is one of the definitions."""
     return path in EXEMPT_FILES or path.split("/", 1)[0] in EXEMPT_DIRECTORIES
 
 
@@ -104,16 +110,34 @@ def sources(directory):
             yield entry
 
 
-def scan_tree(verified):
-    """The page-shaped literal lines of every file under kernel/verified outside the definitions."""
+def source_roots(repo):
+    """The source roots, from the repository root, of the workspace members marked verified, in the
+    order the workspace lists them. A source root is the directory of the crate's library root."""
+    with open(repo / "Cargo.toml", "rb") as manifest:
+        members = tomllib.load(manifest)["workspace"]["members"]
+    roots = []
+    for member in members:
+        with open(repo / member / "Cargo.toml", "rb") as manifest:
+            crate = tomllib.load(manifest)
+        if crate["package"].get("metadata", {}).get("atmosphere", {}).get("verified", False):
+            library = crate.get("lib", {}).get("path", DEFAULT_LIBRARY_ROOT)
+            roots.append(Path(member, library).parent.as_posix())
+    return roots
+
+
+def scan_tree(repo):
+    """The page-shaped literal lines of every marked crate's sources outside the definitions, keyed
+    by path from the repository root."""
     found = {}
-    for file in sources(verified):
-        path = file.relative_to(verified).as_posix()
-        if exempt(path):
-            continue
-        lines = literals(path, file.read_text(encoding="utf-8"))
-        if lines:
-            found[path] = lines
+    for root in source_roots(repo):
+        for file in sources(repo / root):
+            relative = file.relative_to(repo / root).as_posix()
+            if exempt(relative):
+                continue
+            path = file.relative_to(repo).as_posix()
+            lines = literals(path, file.read_text(encoding="utf-8"), EXEMPT_LINES.get(relative))
+            if lines:
+                found[path] = lines
     return found
 
 
@@ -121,12 +145,13 @@ def main(args):
     if args:
         print(__doc__.split("usage: ")[1], file=sys.stderr)
         return 2
-    failures = judge(scan_tree(REPO / VERIFIED_ROOT))
+    roots = source_roots(REPO)
+    failures = judge(scan_tree(REPO))
     for failure in failures:
         print(failure, file=sys.stderr)
     if failures:
         return 1
-    print(f"no page-shaped literal in {VERIFIED_ROOT} outside the definitions")
+    print(f"no page-shaped literal outside the definitions in {', '.join(roots)}")
     return 0
 
 
@@ -194,9 +219,10 @@ class Tests(unittest.TestCase):
 
     def test_only_the_layout_directives_of_layouts_rs_are_exempt(self):
         source = "global layout PageBytes is size == 4096, align == 1;\n    page.addr() % 4096 == 0,\n"
-        self.assertEqual(literals("layouts.rs", source), ["layouts.rs:2: page.addr() % 4096 == 0,"])
+        layouts = EXEMPT_LINES["layouts.rs"]
+        self.assertEqual(literals("layouts.rs", source, layouts), ["layouts.rs:2: page.addr() % 4096 == 0,"])
         self.assertEqual(len(literals("capability/table.rs", source)), 2)
-        self.assertEqual(len(literals("layouts.rs", "let x = 4096; // global layout \n")), 1)
+        self.assertEqual(len(literals("layouts.rs", "let x = 4096; // global layout \n", layouts)), 1)
 
     def test_each_literal_fails_with_where_it_is(self):
         found = {"a.rs": ["a.rs:3: x % 512"], "b.rs": ["b.rs:7: x * 4096"]}
@@ -208,17 +234,64 @@ class Tests(unittest.TestCase):
     def test_no_literal_passes(self):
         self.assertEqual(judge({}), [])
 
-    def test_the_tree_scan_skips_the_definitions(self):
-        import tempfile
+    def workspace(self, crates):
+        """A workspace in a temporary directory: each crate's directory, whether it is marked
+        verified, its library root when it is not src/lib.rs, and its sources by path under the
+        crate."""
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        repo = Path(directory.name)
+        members = ", ".join(f'"{crate}"' for crate in crates)
+        (repo / "Cargo.toml").write_text(f"[workspace]\nmembers = [{members}]\n")
+        for crate, (marked, library, files) in crates.items():
+            manifest = f'[package]\nname = "{crate.replace("/", "-")}"\n'
+            if marked:
+                manifest += "\n[package.metadata.atmosphere]\nverified = true\n"
+            if library:
+                manifest += f'\n[lib]\npath = "{library}"\n'
+            (repo / crate).mkdir(parents=True)
+            (repo / crate / "Cargo.toml").write_text(manifest)
+            for name, source in files.items():
+                (repo / crate / name).parent.mkdir(parents=True, exist_ok=True)
+                (repo / crate / name).write_text(source)
+        return repo
 
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / "arch").mkdir()
-            (root / "capability").mkdir()
-            (root / "define.rs").write_text("pub const PAGE_SZ: usize = 4096;\n")
-            (root / "arch" / "x86_64.rs").write_text("pub const MEM_4K_MASK: u64 = 0xfff;\n")
-            (root / "capability" / "map.rs").write_text("let l1 = (va / 0x1000) % 512;\n")
-            self.assertEqual(scan_tree(root), {"capability/map.rs": ["capability/map.rs:1: let l1 = (va / 0x1000) % 512;"]})
+    def test_the_source_roots_are_the_library_directories_of_the_marked_members(self):
+        repo = self.workspace({
+            "kernel/verified": (True, "lib.rs", {}),
+            "heap": (True, None, {}),
+            "dom0": (False, None, {}),
+        })
+        self.assertEqual(source_roots(repo), ["kernel/verified", "heap/src"])
+
+    def test_the_tree_scan_skips_the_definitions(self):
+        repo = self.workspace({"kernel/verified": (True, "lib.rs", {
+            "define.rs": "pub const PAGE_SZ: usize = 4096;\n",
+            "arch/x86_64.rs": "pub const MEM_4K_MASK: u64 = 0xfff;\n",
+            "capability/map.rs": "let l1 = (va / 0x1000) % 512;\n",
+            "layouts.rs": "global layout PageBytes is size == 4096, align == 1;\n",
+        })})
+        self.assertEqual(scan_tree(repo), {"kernel/verified/capability/map.rs": [
+            "kernel/verified/capability/map.rs:1: let l1 = (va / 0x1000) % 512;",
+        ]})
+
+    def test_a_second_marked_crate_is_scanned_with_its_own_definitions(self):
+        repo = self.workspace({
+            "kernel/verified": (True, "lib.rs", {"define.rs": "pub const PAGE_SZ: usize = 4096;\n"}),
+            "heap": (True, None, {
+                "src/lib.rs": "let run = pages * 4096;\n",
+                "src/define.rs": "pub const PAGE: usize = 4096;\n",
+                "src/arch/aarch64.rs": "pub const GRANULE: usize = 4096;\n",
+            }),
+        })
+        self.assertEqual(scan_tree(repo), {"heap/src/lib.rs": ["heap/src/lib.rs:1: let run = pages * 4096;"]})
+
+    def test_an_unmarked_crate_is_not_scanned(self):
+        repo = self.workspace({
+            "kernel/verified": (True, "lib.rs", {"lib.rs": "mod define;\n"}),
+            "dom0": (False, None, {"src/main.rs": "let page = 4096;\n"}),
+        })
+        self.assertEqual(scan_tree(repo), {})
 
 
 if __name__ == "__main__":

@@ -285,7 +285,7 @@ async fn check_external_body(project: &ProjectHandle) -> Result<String> {
     Ok(output.trim_end().to_string())
 }
 
-/// Runs the page literal check's own tests, then the check over kernel/verified.
+/// Runs the page literal check's own tests, then the check over every crate marked verified.
 async fn check_page_literals(project: &ProjectHandle) -> Result<String> {
     run_check(project, PAGE_LITERALS_CHECK, &["--test"]).await?;
     let output = check_output(project, PAGE_LITERALS_CHECK).await?;
