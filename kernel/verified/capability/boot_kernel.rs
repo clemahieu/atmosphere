@@ -54,17 +54,17 @@ use crate::pptr::PointsTo;
 /// Page i is a page of one of the four blocks boot_root takes: the root's process at `process`, its
 /// table's two leaves at `leaf` and `frames`, and its thread at `t`.
 pub open spec fn in_root_blocks(process: usize, leaf: usize, frames: usize, t: usize, i: int) -> bool {
-    ||| process / 4096 <= i < process / 4096 + 8
-    ||| leaf / 4096 <= i < leaf / 4096 + 2
-    ||| frames / 4096 <= i < frames / 4096 + 2
-    ||| t / 4096 <= i < t / 4096 + 2
+    ||| process / PAGE_SZ <= i < process / PAGE_SZ + 8
+    ||| leaf / PAGE_SZ <= i < leaf / PAGE_SZ + 2
+    ||| frames / PAGE_SZ <= i < frames / PAGE_SZ + 2
+    ||| t / PAGE_SZ <= i < t / PAGE_SZ + 2
 }
 
 /// Page i is one the root reaches after boot: a page of its process's or its thread's block, of a free
 /// run handed to it as untyped, or of one of dom0's image runs handed to it as frames.
 pub open spec fn root_reach_page(process: usize, t: usize, free: Seq<(usize, usize)>, image: Seq<ImageRun>, i: int) -> bool {
-    ||| process / 4096 <= i < process / 4096 + 8
-    ||| t / 4096 <= i < t / 4096 + 2
+    ||| process / PAGE_SZ <= i < process / PAGE_SZ + 8
+    ||| t / PAGE_SZ <= i < t / PAGE_SZ + 2
     ||| in_runs(free, free.len() as int, i)
     ||| in_runs(image_phys(image), image.len() as int, i)
 }
@@ -92,7 +92,7 @@ impl CapKernel {
         let tree = tree_of(&self.table_pages, &self.spaces);
         assert forall|p: SpacePath| !#[trigger] space_mapping(tree, s).contains_key(p) by {
             if tree.names_child(s, p.l4) {
-                let c = (tree.entry(s, p.l4).addr - TABLE_NODE_PAGES * 4096) as usize;
+                let c = (tree.entry(s, p.l4).addr - TABLE_NODE_PAGES * PAGE_SZ) as usize;
                 assert(tree.is_page(c));
                 assert(tree.maps.contains_key(c));
             }
@@ -110,17 +110,17 @@ impl CapKernel {
             self.spaces.roots@.contains_key(s),
             self.spaces.records@[s].value().kind == SpaceKind::Process,
         ensures
-            forall|j: usize| KERNEL_MEM_END_L4INDEX <= j < 512
+            forall|j: usize| KERNEL_MEM_END_L4INDEX <= j < ENTRIES
                 ==> #[trigger] tree_of(&self.table_pages, &self.spaces).entry(s, j).is_empty(),
     {
         let tree = tree_of(&self.table_pages, &self.spaces);
         self.lemma_table_base(s);
-        assert forall|j: usize| KERNEL_MEM_END_L4INDEX <= j < 512 implies #[trigger] tree.entry(s, j).is_empty() by {
+        assert forall|j: usize| KERNEL_MEM_END_L4INDEX <= j < ENTRIES implies #[trigger] tree.entry(s, j).is_empty() by {
             assert(!holds_kernel(tree.space_records[s].value().kind, j));
             assert(tree.child_slot(s, j));
             self.lemma_entry_shape(s, j);
             if tree.names_child(s, j) {
-                let c = (tree.entry(s, j).addr - TABLE_NODE_PAGES * 4096) as usize;
+                let c = (tree.entry(s, j).addr - TABLE_NODE_PAGES * PAGE_SZ) as usize;
                 assert(tree.is_page(c));
                 assert(tree.maps.contains_key(c));
             }
@@ -146,30 +146,30 @@ impl CapKernel {
         assert(block_bytes(3) == 32768);
         assert forall|b: usize| #[trigger] block_within(b, 3, self.payload_of(self.root_untyped(process)))
             implies self.root_table_block(process, b) by {
-            let base = b0.0 * 4096;
-            assert(base <= self.blocks.page_count() * 4096);
+            let base = b0.0 * PAGE_SZ;
+            assert(base <= self.blocks.page_count() * PAGE_SZ);
             assert(self.payload_of(self.root_untyped(process)).base == base);
             assert(self.payload_of(self.root_untyped(process)).order as nat == b0.1);
-            assert(block_bytes(b0.1 as u8) == pw * 4096);
-            let bp = b as int / 4096;
-            assert(bp * 4096 == b) by (nonlinear_arith)
+            assert(block_bytes(b0.1 as u8) == pw * PAGE_SZ);
+            let bp = b as int / PAGE_SZ as int;
+            assert(bp * PAGE_SZ == b) by (nonlinear_arith)
                 requires
                     b % 32768 == 0,
-                    bp == b as int / 4096,
+                    bp == b as int / PAGE_SZ as int,
             ;
             assert(b0.0 <= bp);
             assert(bp + 8 <= b0.0 + pw);
             assert(self.blocks.tracks_run(bp, 8));
-            assert(bp / 512 < NUM_2M) by (nonlinear_arith)
+            assert(bp / (PAGES_PER_2M as int) < NUM_2M) by (nonlinear_arith)
                 requires
                     self.blocks.tracks(bp),
             ;
-            assert(bp / 262144 < NUM_1G) by (nonlinear_arith)
+            assert(bp / (PAGES_PER_1G as int) < NUM_1G) by (nonlinear_arith)
                 requires
                     self.blocks.tracks(bp),
             ;
             assert(!self.blocks.covered(bp));
-            assert forall|k: int| 0 <= k < 8 implies #[trigger] self.blocks.pages@[b / 4096 + k].kind is Free by {
+            assert forall|k: int| 0 <= k < 8 implies #[trigger] self.blocks.pages@[b / PAGE_SZ + k].kind is Free by {
                 assert(b0.0 <= bp + k < b0.0 + pw);
             }
         }
@@ -230,7 +230,7 @@ impl CapKernel {
                 process,
                 crate::capability::boot_map::frame_slot(image, a, u),
                 (frames + 1 + image_offset(image, a) + u) as usize,
-                boot_frame_payload((fb.0 * 4096) as usize, fb.1 as u8, image_rights(image[a])),
+                boot_frame_payload((fb.0 * PAGE_SZ) as usize, fb.1 as u8, image_rights(image[a])),
             )
         }
         &&& self.threads.records@.contains_key(t)
@@ -242,13 +242,13 @@ impl CapKernel {
         &&& forall|p: SpacePath| #[trigger] space_mapping(b, process).contains_key(p) ==> image_path(image, p)
         &&& forall|o: usize| #[trigger] self.view().reach(process, o) <==> (o == CONSOLE_OBJECT
             || o == POWER_OBJECT
-            || (o % 4096 == 0 && root_reach_page(process, t, free, image, (o / 4096) as int)))
+            || (o % PAGE_SZ == 0 && root_reach_page(process, t, free, image, (o / PAGE_SZ) as int)))
         &&& forall|q: usize, o: usize| #[trigger] self.view().reach(q, o)
             ==> o == q || self.view().reach(process, o)
-        &&& forall|l4: usize| KERNEL_MEM_END_L4INDEX <= l4 < 512 && !image_l4(image, l4)
+        &&& forall|l4: usize| KERNEL_MEM_END_L4INDEX <= l4 < ENTRIES && !image_l4(image, l4)
             ==> #[trigger] b.entry(process, l4).is_empty()
         &&& self.root_live(process)
-        &&& !self.blocks.pages@[(process / 4096) as int].dead
+        &&& !self.blocks.pages@[(process / PAGE_SZ) as int].dead
         &&& self.flush_epoch == 0
         &&& forall|r: int| 2 <= r < ROOT_ENTRIES ==> #[trigger] self.tables.leaf(process, r) == NO_LEAF
         &&& forall|j: int| image_tables_bound(image) <= j < untyped_tables(first)
@@ -293,8 +293,8 @@ impl CapKernel {
             old(self).blocks.regions_1g.wf(),
             old(self).blocks.count_2m.wf(),
             old(self).blocks.count_1g.wf(),
-            root % 4096 == 0,
-            root + 4096 <= NODE_SPACE,
+            root % PAGE_SZ == 0,
+            root + PAGE_SZ <= NODE_SPACE,
             root_perm.addr() == root,
             root_perm.is_init(),
             root_perm.value().nodes.wf(),
@@ -324,18 +324,18 @@ impl CapKernel {
             !(t <= root < t + 8192),
             runs_wf(free@),
             forall|j: int| #[trigger] in_runs(free@, free@.len() as int, j)
-                ==> !in_root_blocks(process, leaf, frames, t, j) && j != root / 4096,
+                ==> !in_root_blocks(process, leaf, frames, t, j) && j != root / PAGE_SZ,
             image_runs_wf(image@),
             forall|j: int| #[trigger] image_region(image@, region_2m(j)) ==> {
                 &&& old(self).blocks.tracks(j)
                 &&& !in_root_blocks(process, leaf, frames, t, j)
                 &&& !in_runs(free@, free@.len() as int, j)
-                &&& j != root / 4096
+                &&& j != root / PAGE_SZ
             },
             forall|i: usize| in_root_blocks(process, leaf, frames, t, i as int) || in_runs(free@, free@.len() as int, i as int)
                 ==> #[trigger] holds(pages, i),
             forall|j: usize| image_region(image@, region_2m(j as int)) ==> #[trigger] pages.contains_key(j),
-            forall|j: usize| #[trigger] pages.contains_key(j) ==> pages[j].addr() == j * 4096,
+            forall|j: usize| #[trigger] pages.contains_key(j) ==> pages[j].addr() == j * PAGE_SZ,
         ensures
             ret is None <==> ({
                 let bs = runs_blocks(free@, MAX_ORDER as nat);
@@ -420,11 +420,11 @@ impl CapKernel {
                 assert(s0.blocks.pages@[i].kind is Reserved);
             }
             assert forall|p: usize| #[trigger] s2.list.pages@.dom().contains(p) && s2.blocks.tracks_addr(p)
-                implies !in_runs(free@, len, (p / 4096) as int) by {
+                implies !in_runs(free@, len, (p / PAGE_SZ) as int) by {
                 assert(s1.list.pages@.dom().contains(p));
-                if in_runs(free@, len, (p / 4096) as int) {
-                    assert(!in_root_blocks(process, leaf, frames, t, (p / 4096) as int));
-                    assert(p / 4096 != root / 4096);
+                if in_runs(free@, len, (p / PAGE_SZ) as int) {
+                    assert(!in_root_blocks(process, leaf, frames, t, (p / PAGE_SZ) as int));
+                    assert(p / PAGE_SZ != root / PAGE_SZ);
                     assert(p == root || p == leaf || p == frames || p == t);
                 }
             }
@@ -460,12 +460,12 @@ impl CapKernel {
             assert(s3.tables.node_of(process, ROOT_PROCESS_SLOT) == n);
             assert(s3.root_untyped_at(root, process, leaf, 0, bs[0]));
             assert(s3.root_untyped(process) == leaf + ROOT_UNTYPED_SLOT);
-            assert(!in_runs(free@, len, (process / 4096) as int)) by {
-                if in_runs(free@, len, (process / 4096) as int) {
-                    assert(!in_root_blocks(process, leaf, frames, t, (process / 4096) as int));
+            assert(!in_runs(free@, len, (process / PAGE_SZ) as int)) by {
+                if in_runs(free@, len, (process / PAGE_SZ) as int) {
+                    assert(!in_root_blocks(process, leaf, frames, t, (process / PAGE_SZ) as int));
                 }
             }
-            assert(s3.blocks.pages@[(process / 4096) as int] == s1.blocks.pages@[(process / 4096) as int]);
+            assert(s3.blocks.pages@[(process / PAGE_SZ) as int] == s1.blocks.pages@[(process / PAGE_SZ) as int]);
             assert(s3.root_tables_ready(process));
             // Every page of the first block is free, and no large block is typed.
             assert forall|j: int| bs[0].0 <= j < bs[0].0 + pow2(bs[0].1) implies (#[trigger] s3.blocks.pages@[j]).kind is Free by {
@@ -508,23 +508,23 @@ impl CapKernel {
             // are what is left of pages.
             assert forall|q: int| #[trigger] image_region(image@, q) implies {
                 &&& !s3.blocks.regions_2m@[q].typed
-                &&& forall|j: int| q * 512 <= j < (q + 1) * 512 ==> #[trigger] s3.blocks.pages@[j].kind is Reserved
-                &&& forall|j: usize| q * 512 <= j < (q + 1) * 512 ==> #[trigger] pages.contains_key(j)
+                &&& forall|j: int| q * PAGES_PER_2M <= j < (q + 1) * PAGES_PER_2M ==> #[trigger] s3.blocks.pages@[j].kind is Reserved
+                &&& forall|j: usize| q * PAGES_PER_2M <= j < (q + 1) * PAGES_PER_2M ==> #[trigger] pages.contains_key(j)
             } by {
-                lemma_fundamental_div_mod_converse(q * 512, 512, q, 0);
-                assert(region_2m(q * 512) == q);
-                assert(s3.blocks.tracks(q * 512));
+                lemma_fundamental_div_mod_converse(q * PAGES_PER_2M, PAGES_PER_2M as int, q, 0);
+                assert(region_2m(q * PAGES_PER_2M) == q);
+                assert(s3.blocks.tracks(q * PAGES_PER_2M));
                 assert(0 <= q < NUM_2M);
                 assert(s3.blocks.regions_2m@[q] == s0.blocks.regions_2m@[q]);
-                assert forall|j: int| q * 512 <= j < (q + 1) * 512 implies #[trigger] s3.blocks.pages@[j].kind is Reserved by {
-                    lemma_fundamental_div_mod_converse(j, 512, q, j - q * 512);
+                assert forall|j: int| q * PAGES_PER_2M <= j < (q + 1) * PAGES_PER_2M implies #[trigger] s3.blocks.pages@[j].kind is Reserved by {
+                    lemma_fundamental_div_mod_converse(j, PAGES_PER_2M as int, q, j - q * PAGES_PER_2M);
                     assert(region_2m(j) == q);
                     assert(image_region(image@, region_2m(j)));
                     assert(s3.blocks.pages@[j] == s2.blocks.pages@[j]);
                     assert(s1.blocks.pages@[j].kind == s0.blocks.pages@[j].kind);
                 }
-                assert forall|j: usize| q * 512 <= j < (q + 1) * 512 implies #[trigger] pages.contains_key(j) by {
-                    lemma_fundamental_div_mod_converse(j as int, 512, q, j - q * 512);
+                assert forall|j: usize| q * PAGES_PER_2M <= j < (q + 1) * PAGES_PER_2M implies #[trigger] pages.contains_key(j) by {
+                    lemma_fundamental_div_mod_converse(j as int, PAGES_PER_2M as int, q, j - q * PAGES_PER_2M);
                     assert(region_2m(j as int) == q);
                     assert(image_region(image@, region_2m(j as int)));
                     assert(given.contains_key(j));
@@ -532,14 +532,14 @@ impl CapKernel {
                     assert(!k2.contains(j));
                 }
             }
-            assert forall|j: usize| #[trigger] pages.contains_key(j) implies pages[j].addr() == j * 4096 by {
+            assert forall|j: usize| #[trigger] pages.contains_key(j) implies pages[j].addr() == j * PAGE_SZ by {
                 assert(given.contains_key(j));
             }
             assert forall|p: usize| #[trigger] s3.list.pages@.dom().contains(p) && s3.blocks.tracks_addr(p)
-                implies !image_region(image@, region_2m((p / 4096) as int)) by {
+                implies !image_region(image@, region_2m((p / PAGE_SZ) as int)) by {
                 assert(s1.list.pages@.dom().contains(p));
-                if image_region(image@, region_2m((p / 4096) as int)) {
-                    assert(!in_root_blocks(process, leaf, frames, t, (p / 4096) as int));
+                if image_region(image@, region_2m((p / PAGE_SZ) as int)) {
+                    assert(!in_root_blocks(process, leaf, frames, t, (p / PAGE_SZ) as int));
                     assert(p == root || p == leaf || p == frames || p == t);
                 }
             }
@@ -616,11 +616,11 @@ impl CapKernel {
             }
             // The root's level 4 entries outside the kernel slots that no image run reaches are as
             // boot_root_memory left them, empty.
-            assert forall|l4: usize| KERNEL_MEM_END_L4INDEX <= l4 < 512 && !image_l4(image@, l4)
+            assert forall|l4: usize| KERNEL_MEM_END_L4INDEX <= l4 < ENTRIES && !image_l4(image@, l4)
                 implies #[trigger] tree_of(&s4.table_pages, &s4.spaces).entry(process, l4).is_empty() by {
                 assert(tree_of(&s4.table_pages, &s4.spaces).entry(process, l4) == tree_of(&s3.table_pages, &s3.spaces).entry(process, l4));
             }
-            assert(!s4.blocks.pages@[(process / 4096) as int].dead);
+            assert(!s4.blocks.pages@[(process / PAGE_SZ) as int].dead);
             assert forall|r: int| 2 <= r < ROOT_ENTRIES implies #[trigger] s4.tables.leaf(process, r) == NO_LEAF by {
                 assert(s1.tables.leaf(process, r) == NO_LEAF);
             }
@@ -635,35 +635,35 @@ impl CapKernel {
             let phys = image_phys(image@);
             assert forall|o: usize| #[trigger] s4.view().reach(process, o) <==> (o == CONSOLE_OBJECT
                 || o == POWER_OBJECT
-                || (o % 4096 == 0 && root_reach_page(process, t, free@, image@, (o / 4096) as int))) by {
+                || (o % PAGE_SZ == 0 && root_reach_page(process, t, free@, image@, (o / PAGE_SZ) as int))) by {
                 assert(s4.view().reach(process, o) <==> (s3.view().reach(process, o)
-                    || (o % 4096 == 0 && in_runs(phys, image@.len() as int, (o / 4096) as int))));
+                    || (o % PAGE_SZ == 0 && in_runs(phys, image@.len() as int, (o / PAGE_SZ) as int))));
                 assert(s3.view().reach(process, o) <==> (s2.view().reach(process, o)
-                    || (o % 4096 == 0 && in_runs(free@, len, (o / 4096) as int))));
+                    || (o % PAGE_SZ == 0 && in_runs(free@, len, (o / PAGE_SZ) as int))));
                 assert(s2.view().reach(process, o) <==> (sc.view().reach(process, o) || o == POWER_OBJECT));
                 assert(sc.view().reach(process, o) <==> (s1.view().reach(process, o) || o == CONSOLE_OBJECT));
                 assert(s1.view().reach(process, o)
-                    <==> (o % 4096 == 0 && ((process <= o < process + 32768) || (t <= o < t + 8192))));
-                if o % 4096 == 0 {
-                    assert((process <= o < process + 32768) <==> (process / 4096 <= o / 4096 < process / 4096 + 8))
+                    <==> (o % PAGE_SZ == 0 && ((process <= o < process + 32768) || (t <= o < t + 8192))));
+                if o % PAGE_SZ == 0 {
+                    assert((process <= o < process + 32768) <==> (process / PAGE_SZ <= o / PAGE_SZ < process / PAGE_SZ + 8))
                         by (nonlinear_arith)
                         requires
                             process % 32768 == 0,
-                            o % 4096 == 0,
+                            o % PAGE_SZ == 0,
                     ;
-                    assert((t <= o < t + 8192) <==> (t / 4096 <= o / 4096 < t / 4096 + 2)) by (nonlinear_arith)
+                    assert((t <= o < t + 8192) <==> (t / PAGE_SZ <= o / PAGE_SZ < t / PAGE_SZ + 2)) by (nonlinear_arith)
                         requires
                             t % 8192 == 0,
-                            o % 4096 == 0,
+                            o % PAGE_SZ == 0,
                     ;
                 }
             }
             assert forall|q: usize, o: usize| #[trigger] s4.view().reach(q, o) implies o == q || s4.view().reach(process, o) by {
                 if !s3.view().reach(q, o) {
-                    assert(o % 4096 == 0 && in_runs(phys, image@.len() as int, (o / 4096) as int));
+                    assert(o % PAGE_SZ == 0 && in_runs(phys, image@.len() as int, (o / PAGE_SZ) as int));
                     assert(s4.view().reach(process, o));
                 } else if !s2.view().reach(q, o) {
-                    assert(o % 4096 == 0 && in_runs(free@, len, (o / 4096) as int));
+                    assert(o % PAGE_SZ == 0 && in_runs(free@, len, (o / PAGE_SZ) as int));
                     assert(s3.view().reach(process, o));
                     assert(s4.view().reach(process, o));
                 } else if !sc.view().reach(q, o) {

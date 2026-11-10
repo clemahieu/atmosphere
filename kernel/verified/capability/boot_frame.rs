@@ -40,7 +40,7 @@ pub open spec fn boot_frame_payload(base: usize, order: u8, rights: u32) -> Payl
 
 /// The 2M region the block at base lies in.
 pub open spec fn frame_region(base: usize) -> usize {
-    base / 4096 / PAGES_PER_2M
+    base / PAGE_SZ / PAGES_PER_2M
 }
 
 /// An aligned block of at most 512 pages lies in one 2M region, the one its first page is in.
@@ -49,9 +49,9 @@ pub proof fn lemma_block_in_2m(base: usize, order: u8)
         order <= 9,
         base as int % block_bytes(order) == 0,
     ensures
-        base % 4096 == 0,
-        frame_region(base) * 0x200000 <= base,
-        base as int + block_bytes(order) <= (frame_region(base) + 1) * 0x200000,
+        base % PAGE_SZ == 0,
+        frame_region(base) * SIZE_2M <= base,
+        base as int + block_bytes(order) <= (frame_region(base) + 1) * SIZE_2M,
 {
     crate::capability::map::lemma_block_base_aligned(base, order);
     let p = pow2(order as nat) as int;
@@ -60,18 +60,18 @@ pub proof fn lemma_block_in_2m(base: usize, order: u8)
     lemma_pow2_pos((9 - order) as nat);
     lemma2_to64();
     let k = pow2((9 - order) as nat) as int;
-    assert(p * k == 512);
+    assert(p * k == PAGES_PER_2M);
     let s = block_bytes(order);
-    assert(s == p * 4096);
-    assert(s * k == 0x200000) by (nonlinear_arith)
+    assert(s == p * PAGE_SZ);
+    assert(s * k == SIZE_2M) by (nonlinear_arith)
         requires
-            s == p * 4096,
-            p * k == 512,
+            s == p * PAGE_SZ,
+            p * k == PAGES_PER_2M,
     ;
-    lemma_div_denominator(base as int, 4096, 512);
-    assert(frame_region(base) == base as int / 0x200000);
-    lemma_fundamental_div_mod(base as int, 0x200000);
-    let m = base as int % 0x200000;
+    lemma_div_denominator(base as int, PAGE_SZ as int, PAGES_PER_2M as int);
+    assert(frame_region(base) == base as int / SIZE_2M as int);
+    lemma_fundamental_div_mod(base as int, SIZE_2M as int);
+    let m = base as int % SIZE_2M as int;
     lemma_mod_mod(base as int, s, k);
     assert(m % s == 0);
     lemma_fundamental_div_mod(m, s);
@@ -82,11 +82,11 @@ pub proof fn lemma_block_in_2m(base: usize, order: u8)
         assert(false);
     }
     lemma_mul_inequality(t + 1, k, s);
-    assert(m + s <= 0x200000) by (nonlinear_arith)
+    assert(m + s <= SIZE_2M) by (nonlinear_arith)
         requires
             m == s * t,
             (t + 1) * s <= k * s,
-            s * k == 0x200000,
+            s * k == SIZE_2M,
     ;
 }
 
@@ -101,15 +101,15 @@ impl CapKernel {
             post.blocks.wf(),
             r < NUM_2M,
             !pre.blocks.regions_2m@[r as int].typed,
-            !pre.blocks.regions_1g@[r as int / 512].typed,
+            !pre.blocks.regions_1g@[r as int / ENTRIES as int].typed,
             post.blocks.regions_2m@ == pre.blocks.regions_2m@.update(r as int,
                 RegionEntry { typed: true, dead: false, torn_down: false, refs: 1 }),
             post.blocks.regions_1g@ == pre.blocks.regions_1g@,
-            forall|i: int| r * 512 <= i < (r + 1) * 512 ==> #[trigger] pre.blocks.pages@[i].kind is Reserved,
+            forall|i: int| r * PAGES_PER_2M <= i < (r + 1) * PAGES_PER_2M ==> #[trigger] pre.blocks.pages@[i].kind is Reserved,
             forall|i: int| pre.blocks.tracks(i) ==> #[trigger] post.blocks.pages@[i]
                 == if region_2m(i) == r { free_entry() } else { pre.blocks.pages@[i] },
             forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) && pre.blocks.tracks_addr(p)
-                ==> region_2m((p / 4096) as int) != r,
+                ==> region_2m((p / PAGE_SZ) as int) != r,
             post.frames_wf(),
             forall|i: usize| #[trigger] pre.frames@.contains_key(i) ==> post.frames@.contains_key(i),
             forall|i: usize| #[trigger] block_has_page(BlockRef::Two(r), i) ==> post.frames@.contains_key(i),
@@ -199,13 +199,13 @@ impl CapKernel {
         }
         assert(list_pages_used(&post.list, &b)) by {
             assert forall|p: usize| #[trigger] post.list.pages@.dom().contains(p) && b.tracks_addr(p) implies {
-                &&& !(b.pages@[(p / 4096) as int].kind is Free)
-                &&& b.pages@[(p / 4096) as int].kind is Member
-                    ==> b.pages@[b.pages@[(p / 4096) as int].base as int].object is TablePage
-                        || b.pages@[b.pages@[(p / 4096) as int].base as int].object is Space
-                &&& !(b.pages@[(p / 4096) as int].object is Frame)
+                &&& !(b.pages@[(p / PAGE_SZ) as int].kind is Free)
+                &&& b.pages@[(p / PAGE_SZ) as int].kind is Member
+                    ==> b.pages@[b.pages@[(p / PAGE_SZ) as int].base as int].object is TablePage
+                        || b.pages@[b.pages@[(p / PAGE_SZ) as int].base as int].object is Space
+                &&& !(b.pages@[(p / PAGE_SZ) as int].object is Frame)
             } by {
-                let x = (p / 4096) as int;
+                let x = (p / PAGE_SZ) as int;
                 assert(b.pages@[x] == a.pages@[x]);
                 if a.pages@[x].kind is Member {
                     a.lemma_member(x);
@@ -216,14 +216,14 @@ impl CapKernel {
         }
         assert(holders_wf(&post.list, &post.tables, &b, &post.zeroing, post.holders@)) by {
             assert forall|m: usize| #[trigger] post.tables.is_cap(&post.list, m) && post.tables.payload_of(m).kind is Frame implies {
-                let i = post.tables.payload_of(m).base / 4096;
+                let i = post.tables.payload_of(m).base / PAGE_SZ;
                 &&& b.tracks(i as int)
                 &&& frame_in_block(block_ref(&b, i), post.tables.payload_of(m))
                 &&& post.holders@.contains_key(block_ref(&b, i))
                 &&& post.holders@[block_ref(&b, i)].contains(m)
             } by {
                 assert(pre.tables.is_cap(&pre.list, m));
-                let i = pre.tables.payload_of(m).base / 4096;
+                let i = pre.tables.payload_of(m).base / PAGE_SZ;
                 assert(block_typed(&a, block_ref(&a, i)));
             }
             assert forall|br: BlockRef| #[trigger] post.holders@.contains_key(br) implies {
@@ -239,14 +239,14 @@ impl CapKernel {
                 &&& post.tables.is_cap(&post.list, m)
                 &&& post.tables.payload_of(m).kind is Frame
                 &&& b.tracks_addr(post.tables.payload_of(m).base)
-                &&& block_ref(&b, post.tables.payload_of(m).base / 4096) == br
+                &&& block_ref(&b, post.tables.payload_of(m).base / PAGE_SZ) == br
             } || (m < NODE_SPACE && post.list.nodes@[m as int].live && post.list.nodes@[m as int].kind is Mapping)) by {
                 assert(pre.holders@.contains_key(br));
                 assert(block_typed(&a, br));
                 assert(pre.holders@[br].contains(m));
                 if pre.tables.is_cap(&pre.list, m) && pre.tables.payload_of(m).kind is Frame && a.tracks_addr(pre.tables.payload_of(m).base)
-                    && block_ref(&a, pre.tables.payload_of(m).base / 4096) == br {
-                    assert(block_ref(&b, pre.tables.payload_of(m).base / 4096) == br);
+                    && block_ref(&a, pre.tables.payload_of(m).base / PAGE_SZ) == br {
+                    assert(block_ref(&b, pre.tables.payload_of(m).base / PAGE_SZ) == br);
                 }
             }
             assert forall|x: int| 0 <= x < NUM_2M && #[trigger] post.zeroing.active_2m@[x] implies {
@@ -270,14 +270,14 @@ impl CapKernel {
             }
             assert forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) implies {
                 &&& b.tracks_addr(l)
-                &&& b.pages@[(l / 4096) as int].kind is Base
-                &&& b.pages@[(l / 4096) as int].object is TableLeaf
-                &&& b.pages@[(l / 4096) as int].order == 1
+                &&& b.pages@[(l / PAGE_SZ) as int].kind is Base
+                &&& b.pages@[(l / PAGE_SZ) as int].object is TableLeaf
+                &&& b.pages@[(l / PAGE_SZ) as int].order == 1
             } by {
-                assert(a.pages@[(l / 4096) as int].kind is Base);
+                assert(a.pages@[(l / PAGE_SZ) as int].kind is Base);
             }
             assert forall|x: usize| b.tracks(x as int) && #[trigger] leaf_block(&b, x)
-                implies post.tables.owner@.contains_key((x * 4096) as usize) by {
+                implies post.tables.owner@.contains_key((x * PAGE_SZ) as usize) by {
                 assert(b.pages@[x as int] == a.pages@[x as int]);
                 assert(leaf_block(&a, x));
             }
@@ -291,24 +291,24 @@ impl CapKernel {
             assert forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) implies {
                 &&& post.list.nodes@[l as int].live ==> {
                     &&& post.list.nodes@[l as int].kind is Hidden
-                    &&& b.pages@[(l / 4096) as int].refs == 1
-                    &&& !b.pages@[(l / 4096) as int].dead
+                    &&& b.pages@[(l / PAGE_SZ) as int].refs == 1
+                    &&& !b.pages@[(l / PAGE_SZ) as int].dead
                 }
                 &&& !post.list.nodes@[l as int].live ==> {
-                    &&& b.pages@[(l / 4096) as int].refs == 0
-                    &&& b.pages@[(l / 4096) as int].dead
+                    &&& b.pages@[(l / PAGE_SZ) as int].refs == 0
+                    &&& b.pages@[(l / PAGE_SZ) as int].dead
                 }
             } by {
-                assert(a.pages@[(l / 4096) as int].kind is Base);
+                assert(a.pages@[(l / PAGE_SZ) as int].kind is Base);
             }
         }
         assert(table_pages_wf(&post.list, &post.table_pages, &b)) by {
             assert forall|u: usize| #[trigger] post.table_pages.maps@.contains_key(u) implies table_page_wf(&post.list, &post.table_pages, &b, u) by {
                 assert(table_page_wf(&pre.list, &pre.table_pages, &a, u));
-                assert(a.pages@[(u / 4096) as int].kind is Base);
+                assert(a.pages@[(u / PAGE_SZ) as int].kind is Base);
             }
             assert forall|x: usize| b.tracks(x as int) && #[trigger] table_block(&b, x)
-                implies post.table_pages.maps@.contains_key((x * 4096) as usize) by {
+                implies post.table_pages.maps@.contains_key((x * PAGE_SZ) as usize) by {
                 assert(b.pages@[x as int] == a.pages@[x as int]);
                 assert(table_block(&a, x));
             }
@@ -316,10 +316,10 @@ impl CapKernel {
         assert(spaces_wf(&post.list, &post.tables, &post.spaces, &b)) by {
             assert forall|s: usize| #[trigger] post.spaces.roots@.contains_key(s) implies space_wf(&post.list, &post.spaces, &b, s) by {
                 assert(space_wf(&pre.list, &pre.spaces, &a, s));
-                assert(a.pages@[(s / 4096) as int].kind is Base);
+                assert(a.pages@[(s / PAGE_SZ) as int].kind is Base);
             }
             assert forall|x: usize| b.tracks(x as int) && #[trigger] space_block(&b, x)
-                implies post.spaces.roots@.contains_key((x * 4096) as usize) by {
+                implies post.spaces.roots@.contains_key((x * PAGE_SZ) as usize) by {
                 assert(b.pages@[x as int] == a.pages@[x as int]);
                 assert(space_block(&a, x));
             }
@@ -327,10 +327,10 @@ impl CapKernel {
         assert(threads_wf(&post.list, &post.tables, &post.threads, &b)) by {
             assert forall|u: usize| #[trigger] post.threads.records@.contains_key(u) implies thread_wf(&post.list, &post.threads, &b, u) by {
                 assert(thread_wf(&pre.list, &pre.threads, &a, u));
-                assert(a.pages@[(u / 4096) as int].kind is Base);
+                assert(a.pages@[(u / PAGE_SZ) as int].kind is Base);
             }
             assert forall|x: usize| b.tracks(x as int) && #[trigger] thread_block(&b, x)
-                implies post.threads.records@.contains_key((x * 4096) as usize) by {
+                implies post.threads.records@.contains_key((x * PAGE_SZ) as usize) by {
                 assert(b.pages@[x as int] == a.pages@[x as int]);
                 assert(thread_block(&a, x));
             }
@@ -338,10 +338,10 @@ impl CapKernel {
         assert(processes_wf(&post.list, &post.tables, &post.processes, &b)) by {
             assert forall|p: usize| #[trigger] post.processes.records@.contains_key(p) implies process_wf(&post.processes, &b, p) by {
                 assert(process_wf(&pre.processes, &a, p));
-                assert(a.pages@[(p / 4096) as int].kind is Base);
+                assert(a.pages@[(p / PAGE_SZ) as int].kind is Base);
             }
             assert forall|x: usize| b.tracks(x as int) && #[trigger] process_block(&b, x)
-                implies post.processes.records@.contains_key((x * 4096) as usize) by {
+                implies post.processes.records@.contains_key((x * PAGE_SZ) as usize) by {
                 assert(b.pages@[x as int] == a.pages@[x as int]);
                 assert(process_block(&a, x));
             }
@@ -358,11 +358,11 @@ impl CapKernel {
     proof fn lemma_boot_frame_new(pre: Self, post: Self, child: usize, br: BlockRef)
         requires
             Self::derive_step(pre, post, child),
-            child % 4096 != 0,
+            child % PAGE_SZ != 0,
             post.is_cap(child),
             post.payload_of(child).kind is Frame,
             pre.blocks.tracks_addr(post.payload_of(child).base),
-            block_ref(&pre.blocks, post.payload_of(child).base / 4096) == br,
+            block_ref(&pre.blocks, post.payload_of(child).base / PAGE_SZ) == br,
             frame_in_block(br, post.payload_of(child)),
             br is Two,
             !pre.holders@.contains_key(br),
@@ -438,11 +438,11 @@ impl CapKernel {
     proof fn lemma_boot_frame_joins(pre: Self, post: Self, child: usize, br: BlockRef)
         requires
             Self::derive_step(pre, post, child),
-            child % 4096 != 0,
+            child % PAGE_SZ != 0,
             post.is_cap(child),
             post.payload_of(child).kind is Frame,
             pre.blocks.tracks_addr(post.payload_of(child).base),
-            block_ref(&pre.blocks, post.payload_of(child).base / 4096) == br,
+            block_ref(&pre.blocks, post.payload_of(child).base / PAGE_SZ) == br,
             frame_in_block(br, post.payload_of(child)),
             br is Two,
             pre.holders@.contains_key(br),
@@ -542,19 +542,19 @@ impl CapKernel {
             base as int % block_bytes(order) == 0,
             old(self).blocks.tracks_addr(base),
             rights & CONTROL_RIGHT == 0,
-            forall|j: usize| #[trigger] perms.contains_key(j) ==> perms[j].addr() == j * 4096,
+            forall|j: usize| #[trigger] perms.contains_key(j) ==> perms[j].addr() == j * PAGE_SZ,
             old(self).blocks.regions_2m@[frame_region(base) as int].typed ==> {
                 &&& old(self).holders@.contains_key(BlockRef::Two(frame_region(base)))
                 &&& !old(self).blocks.regions_2m@[frame_region(base) as int].dead
                 &&& old(self).blocks.regions_2m@[frame_region(base) as int].refs < usize::MAX
             },
             !old(self).blocks.regions_2m@[frame_region(base) as int].typed ==> {
-                &&& forall|j: int| frame_region(base) * 512 <= j < (frame_region(base) + 1) * 512
+                &&& forall|j: int| frame_region(base) * PAGES_PER_2M <= j < (frame_region(base) + 1) * PAGES_PER_2M
                     ==> #[trigger] old(self).blocks.pages@[j].kind is Reserved
-                &&& forall|j: usize| frame_region(base) * 512 <= j < (frame_region(base) + 1) * 512
+                &&& forall|j: usize| frame_region(base) * PAGES_PER_2M <= j < (frame_region(base) + 1) * PAGES_PER_2M
                     ==> #[trigger] perms.contains_key(j)
                 &&& forall|p: usize| #[trigger] old(self).list.pages@.dom().contains(p) && old(self).blocks.tracks_addr(p)
-                    ==> region_2m((p / 4096) as int) != frame_region(base)
+                    ==> region_2m((p / PAGE_SZ) as int) != frame_region(base)
             },
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
@@ -602,7 +602,7 @@ impl CapKernel {
                 ==> in_block(base, order, o),
     {
         let ghost pre = *old(self);
-        let r = base / 4096 / PAGES_PER_2M;
+        let r = base / PAGE_SZ / PAGES_PER_2M;
         proof {
             lemma_block_in_2m(base, order);
             assert(r == frame_region(base));
@@ -628,7 +628,7 @@ impl CapKernel {
                 self.frames.borrow_mut().tracked_union_prefer_right(perms);
                 let me = *self;
                 assert(me.frames_wf()) by {
-                    assert forall|j: usize| #[trigger] me.frames@.contains_key(j) implies me.frames@[j].addr() == j * 4096 by {
+                    assert forall|j: usize| #[trigger] me.frames@.contains_key(j) implies me.frames@[j].addr() == j * PAGE_SZ by {
                         if !perms.contains_key(j) {
                             assert(pre.frames@.contains_key(j));
                         }
@@ -646,7 +646,7 @@ impl CapKernel {
             assert(mid.list == pre.list && mid.tables == pre.tables);
             assert(mid.view() == pre.view());
             lemma_region_2m_of_bytes(base as int, r);
-            assert(block_ref(&mid.blocks, base / 4096) == BlockRef::Two(r));
+            assert(block_ref(&mid.blocks, base / PAGE_SZ) == BlockRef::Two(r));
         }
         if typed {
             let added = self.blocks.add_large_ref(Large::Two, r);

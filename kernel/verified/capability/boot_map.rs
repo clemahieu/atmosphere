@@ -42,7 +42,7 @@ use crate::capability::steps::Steps;
 use crate::capability::view::*;
 #[cfg(verus_keep_ghost)]
 use crate::pagetable::entry::PageEntry;
-use crate::define::{PAGES_PER_1G, PAGES_PER_2M};
+use crate::define::*;
 
 /// The physical page virtual page x of run maps.
 pub open spec fn image_frame(run: ImageRun, x: int) -> usize {
@@ -117,32 +117,32 @@ pub open spec fn kinds_kept(a: &BlockTable, b: &BlockTable) -> bool {
 /// range.
 proof fn lemma_path_page(x: int)
     requires
-        0 <= x < 512 * PAGES_PER_L4,
+        0 <= x < ENTRIES * PAGES_PER_L4,
     ensures
         path_page(page_path(x)) == x,
-        page_path(x).l1 < 512,
+        page_path(x).l1 < ENTRIES,
 {
-    let q1 = x / 512;
+    let q1 = x / ENTRIES as int;
     let q2 = x / PAGES_PER_1G as int;
     let q3 = x / PAGES_PER_L4 as int;
-    lemma_fundamental_div_mod(x, 512);
-    lemma_div_denominator(x, 512, 512);
-    lemma_fundamental_div_mod(q1, 512);
-    lemma_div_denominator(x, PAGES_PER_1G as int, 512);
-    lemma_fundamental_div_mod(q2, 512);
+    lemma_fundamental_div_mod(x, ENTRIES as int);
+    lemma_div_denominator(x, ENTRIES as int, ENTRIES as int);
+    lemma_fundamental_div_mod(q1, ENTRIES as int);
+    lemma_div_denominator(x, PAGES_PER_1G as int, ENTRIES as int);
+    lemma_fundamental_div_mod(q2, ENTRIES as int);
     lemma_div_pos_is_pos(x, PAGES_PER_L4 as int);
-    lemma_div_is_ordered(x, 512 * PAGES_PER_L4 - 1, PAGES_PER_L4 as int);
-    assert((512 * PAGES_PER_L4 - 1) / PAGES_PER_L4 as int == 511) by (compute_only);
-    lemma_mod_bound(x, 512);
-    lemma_mod_bound(q1, 512);
-    lemma_mod_bound(q2, 512);
-    assert(q1 / 512 == q2);
-    assert(q2 / 512 == q3);
-    assert(x == q3 * PAGES_PER_L4 + (q2 % 512) * PAGES_PER_1G + (q1 % 512) * PAGES_PER_2M + x % 512) by (nonlinear_arith)
+    lemma_div_is_ordered(x, ENTRIES * PAGES_PER_L4 - 1, PAGES_PER_L4 as int);
+    assert((ENTRIES * PAGES_PER_L4 - 1) / PAGES_PER_L4 as int == INDEX_MASK) by (compute_only);
+    lemma_mod_bound(x, ENTRIES as int);
+    lemma_mod_bound(q1, ENTRIES as int);
+    lemma_mod_bound(q2, ENTRIES as int);
+    assert(q1 / ENTRIES as int == q2);
+    assert(q2 / ENTRIES as int == q3);
+    assert(x == q3 * PAGES_PER_L4 + (q2 % ENTRIES as int) * PAGES_PER_1G + (q1 % ENTRIES as int) * PAGES_PER_2M + x % ENTRIES as int) by (nonlinear_arith)
         requires
-            x == 512 * q1 + x % 512,
-            q1 == 512 * q2 + q1 % 512,
-            q2 == 512 * q3 + q2 % 512,
+            x == ENTRIES * q1 + x % ENTRIES as int,
+            q1 == ENTRIES * q2 + q1 % ENTRIES as int,
+            q2 == ENTRIES * q3 + q2 % ENTRIES as int,
     ;
 }
 
@@ -153,12 +153,12 @@ proof fn lemma_virt_range(runs: Seq<ImageRun>, a: int, x: int)
         0 <= a < runs.len(),
         in_virt_at(runs, a, x),
     ensures
-        0 <= x < 512 * PAGES_PER_L4,
+        0 <= x < ENTRIES * PAGES_PER_L4,
 {
-    assert((x / PAGES_PER_L4 as int) < 512);
-    if x >= 512 * PAGES_PER_L4 {
-        lemma_div_is_ordered(512 * PAGES_PER_L4 as int, x, PAGES_PER_L4 as int);
-        assert((512 * PAGES_PER_L4 as int) / PAGES_PER_L4 as int == 512) by (compute_only);
+    assert((x / PAGES_PER_L4 as int) < ENTRIES);
+    if x >= ENTRIES * PAGES_PER_L4 {
+        lemma_div_is_ordered(ENTRIES * PAGES_PER_L4 as int, x, PAGES_PER_L4 as int);
+        assert((ENTRIES * PAGES_PER_L4 as int) / PAGES_PER_L4 as int == ENTRIES) by (compute_only);
     }
 }
 
@@ -266,7 +266,7 @@ impl CapKernel {
         &&& post.list.seq@[0] == pre.list.seq@[0]
         &&& nodes_kept(pre.list, post.list)
         &&& kinds_kept(&pre.blocks, &post.blocks)
-        &&& post.blocks.pages@[(s / 4096) as int].dead == pre.blocks.pages@[(s / 4096) as int].dead
+        &&& post.blocks.pages@[(s / PAGE_SZ) as int].dead == pre.blocks.pages@[(s / PAGE_SZ) as int].dead
         &&& forall|a: int, x: int| 0 <= a < runs.len() && #[trigger] in_virt_at(runs, a, x) ==> {
             &&& space_mapping(b0, s).contains_key(page_path(x))
             &&& space_mapping(b0, s)[page_path(x)] == image_entry(runs[a], x)
@@ -313,7 +313,7 @@ impl CapKernel {
         &&& cur.list.seq@[0] == pre.list.seq@[0]
         &&& nodes_kept(pre.list, cur.list)
         &&& kinds_kept(&pre.blocks, &cur.blocks)
-        &&& cur.blocks.pages@[(s / 4096) as int].dead == pre.blocks.pages@[(s / 4096) as int].dead
+        &&& cur.blocks.pages@[(s / PAGE_SZ) as int].dead == pre.blocks.pages@[(s / PAGE_SZ) as int].dead
         &&& forall|t: usize, q: SpacePath| #[trigger] walk_table(b0, t, q) == walk_table(a0, t, q)
         &&& forall|o1: ObjectId, o2: ObjectId| #[trigger] cur.view().reach(o1, o2) == pre.view().reach(o1, o2)
         &&& forall|t: usize| t != s ==> #[trigger] space_mapping(b0, t) == space_mapping(a0, t)
@@ -412,7 +412,7 @@ impl CapKernel {
             run_image_blocks(runs[r])[k].1 <= IMAGE_ORDER,
             v == block_virt(runs[r], k, i),
             in_virt_at(runs, r, v),
-            0 <= done <= 512 * (image_offset(runs, r) + k) + i,
+            0 <= done <= PAGES_PER_2M * (image_offset(runs, r) + k) + i,
         ensures
             cur.wf(),
             cur.tables.roots@.contains_key(process),
@@ -462,9 +462,14 @@ impl CapKernel {
         let g = image_frame(runs[r], v);
         assert(g == b.0 + i);
         assert(in_run_at(phys, r, g as int));
-        lemma_div_by_multiple(b.0 as int, 4096);
+        lemma_div_by_multiple(b.0 as int, PAGE_SZ as int);
         assert(frame_of(cur.payload_of(f), i as usize) == g);
         assert(block_ref(&cur.blocks, g) == BlockRef::Two(g / PAGES_PER_2M));
+        // The maps done so far are at most a 2M region's pages a frame slot, which keeps the region's
+        // references below usize::MAX.
+        vstd::arithmetic::mul::lemma_mul_inequality(t, ROOT_FRAME_SLOTS as int, PAGES_PER_2M as int);
+        vstd::arithmetic::mul::lemma_mul_is_commutative(t, PAGES_PER_2M as int);
+        assert(ROOT_FRAME_SLOTS * PAGES_PER_2M <= u32::MAX) by (compute_only);
     }
 
     /// One map more keeps the progress, with the page added to the root's space and its node a child of
@@ -493,7 +498,7 @@ impl CapKernel {
             run_image_blocks(runs[r])[k].1 <= IMAGE_ORDER,
             v == block_virt(runs[r], k, i),
             in_virt_at(runs, r, v),
-            0 <= done <= 512 * (image_offset(runs, r) + k) + i,
+            0 <= done <= PAGES_PER_2M * (image_offset(runs, r) + k) + i,
             post.wf(),
             Self::map_done(cur, post, process, ROOT_PROCESS_SLOT, page_path(v), frame_slot(runs, r, k), i as usize),
         ensures
@@ -558,8 +563,8 @@ impl CapKernel {
         // The root's space's own page is a small block, so its dead flag is not the region's.
         assert(c0.is_root(s));
         cur.lemma_table_base(s);
-        assert(block_typed(&cur.blocks, BlockRef::Small(s / 4096)));
-        assert(block_dead(&post.blocks, BlockRef::Small(s / 4096)) == block_dead(&cur.blocks, BlockRef::Small(s / 4096)));
+        assert(block_typed(&cur.blocks, BlockRef::Small(s / PAGE_SZ)));
+        assert(block_dead(&post.blocks, BlockRef::Small(s / PAGE_SZ)) == block_dead(&cur.blocks, BlockRef::Small(s / PAGE_SZ)));
         assert forall|a: int, g: int| 0 <= a < runs.len() && #[trigger] in_run_at(image_phys(runs), a, g) implies {
             &&& post.blocks.regions_2m@[g / PAGES_PER_2M as int].typed
             &&& post.blocks.regions_2m@[g / PAGES_PER_2M as int].refs <= ROOT_FRAME_SLOTS + done + 1
@@ -751,7 +756,7 @@ impl CapKernel {
                 pre.maps_ready(root, process, leaf2, runs@),
                 r <= runs@.len(),
                 idx as int == image_offset(runs@, r as int),
-                0 <= done <= 512 * idx,
+                0 <= done <= PAGES_PER_2M * idx,
                 Self::maps_progress(*self, pre, process, runs@, r as int, 0, 0, run_start(runs@, r as int), added, done),
             decreases runs@.len() - r,
         {
@@ -781,14 +786,14 @@ impl CapKernel {
                     virt == runs@[r as int].virt,
                     pages == runs@[r as int].pages,
                     pre.blocks.tracks_run(phys as int, pages as int),
-                    virt + pages <= 512 * PAGES_PER_L4,
+                    virt + pages <= ENTRIES * PAGES_PER_L4,
                     virt <= w,
                     ps == phys + (w - virt),
                     ps + m == phys + pages,
                     0 <= k <= run_image_blocks(runs@[r as int]).len(),
                     run_image_blocks(runs@[r as int]).skip(k) == run_blocks(ps as nat, m as nat, IMAGE_ORDER as nat),
                     idx as int == image_offset(runs@, r as int) + k,
-                    0 <= done <= 512 * idx,
+                    0 <= done <= PAGES_PER_2M * idx,
                     Self::maps_progress(*self, pre, process, runs@, r as int, k, 0, w as int, added, done),
                 decreases m,
             {
@@ -829,14 +834,14 @@ impl CapKernel {
                         virt == runs@[r as int].virt,
                         pages == runs@[r as int].pages,
                         pre.blocks.tracks_run(phys as int, pages as int),
-                        virt + pages <= 512 * PAGES_PER_L4,
+                        virt + pages <= ENTRIES * PAGES_PER_L4,
                         virt <= w,
                         ps == phys + (w - virt),
                         ps + m == phys + pages,
                         size <= m,
                         size as nat == pow2(o as nat),
                         o <= IMAGE_ORDER,
-                        size <= 512,
+                        size <= PAGES_PER_2M,
                         0 <= k < run_image_blocks(runs@[r as int]).len(),
                         run_image_blocks(runs@[r as int])[k] == (ps as nat, o as nat),
                         run_image_blocks(runs@[r as int]).skip(k + 1) == run_blocks(
@@ -848,15 +853,15 @@ impl CapKernel {
                         idx < ROOT_FRAME_SLOTS,
                         from == ROOT_FRAME_SLOT + idx,
                         j <= size,
-                        0 <= done <= 512 * idx + j,
+                        0 <= done <= PAGES_PER_2M * idx + j,
                         Self::maps_progress(*self, pre, process, runs@, r as int, k, j as int, w + j, added, done),
                     decreases size - j,
                 {
                     let x = w + j;
                     let l4 = x / PAGES_PER_L4;
-                    let l3 = x / PAGES_PER_1G % 512;
-                    let l2 = x / PAGES_PER_2M % 512;
-                    let l1 = x % 512;
+                    let l3 = x / PAGES_PER_1G % ENTRIES;
+                    let l2 = x / PAGES_PER_2M % ENTRIES;
+                    let l1 = x % ENTRIES;
                     let ghost cur = *self;
                     proof {
                         assert(SpacePath { l4, l3, l2, l1 } == page_path(x as int));
@@ -876,6 +881,7 @@ impl CapKernel {
                 }
                 proof {
                     Self::lemma_block_next(*self, pre, process, runs@, r as int, k, size as int, (w + size) as int, added, done);
+                    vstd::arithmetic::mul::lemma_mul_is_distributive_add(PAGES_PER_2M as int, idx as int, 1);
                 }
                 idx = idx + 1;
                 ps = ps + size;
