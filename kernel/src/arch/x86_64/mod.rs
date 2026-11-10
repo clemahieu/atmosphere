@@ -234,6 +234,8 @@ pub unsafe fn write_cr4(cr4: u64) {
 /// Enters user code at `pc` with stack `sp` and two entry arguments, which it finds in `rdi` and `rsi`.
 pub unsafe fn enter_userspace(pc: *const c_void, sp: *mut c_void, rdi: u64, rsi: u64) -> ! {
     log::info!("Going to sysret into {:x?}", pc);
+    #[cfg(feature = "stray_timer")]
+    crate::machine::set_timer(crate::STRAY_TIMER_TICKS);
     asm!(
         "pushfq",
         "pop r11",

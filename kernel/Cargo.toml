@@ -30,3 +30,6 @@ workspace = true
 lock_stats = []
 # A syscall stack shallower than a syscall, so tools/check-boot-stack.py can force it to overflow.
 small_syscall_stack = []
+# CPU 0 arms its timer as it enters dom0, which nothing waits for, so tools/check-stray-timer.py can
+# check that the core reports the stray interrupt and stops.
+stray_timer = []

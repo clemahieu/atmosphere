@@ -108,6 +108,12 @@ fn boot_cpu0(boot_info: *const BootInfo) -> isize {
     }
 }
 
+/// Ticks of the machine's timer the stray_timer build arms it for as CPU 0 enters dom0, in
+/// `arch::enter_userspace` after its last line: short beside dom0's run, so the interrupt arrives
+/// before dom0 finishes, and after that line, so the report takes no lock a line in progress holds.
+#[cfg(feature = "stray_timer")]
+const STRAY_TIMER_TICKS: u64 = 10_000;
+
 /// Times the lock test's loop on CPU 0 alone, then starts CPU 1, and both contend for the lock until
 /// the test is done, so that dom0's log and CPU 1's start-up log do not interleave.
 unsafe fn start_second_core() {

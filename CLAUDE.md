@@ -85,6 +85,7 @@ tools/land.py           # from a task worktree: rebase onto main, gate, land by 
 tools/aarch64-esp.py    # build the aarch64 loader, kernel, dom0 and payload and lay out the ESP that tools/orangepi-kvm.py --esp boots on the board
 atmo board              # build the aarch64 images, boot dom0 on the Orange Pi under KVM until QEMU exits, and hold the exit and the serial log (target/orangepi-serial.log) to the gate's boot checks, as the gate's aarch64 boot does but failing when the board is unreachable; --command-line LINE writes the kernel's command line to the partition; --iommu puts an SMMUv3 on the machine and requires its translation enabled
 tools/orangepi-stack-overflow.py   # boot an aarch64 kernel that overflows its boot stack, or with --stack syscall its syscall stack, on the board and check its one report; not part of the gate
+tools/check-stray-timer.py   # boot a kernel built with stray_timer, which arms CPU 0's timer for nothing, under KVM here and on the board (--target picks one), and check that the core reports the interrupt once and stops; not part of the gate
 ```
 
 `tools/setup-verus.sh` builds Verus under `tools/verus`, which git ignores, at the commit the workspace `Cargo.toml` pins as vstd's revision. The host is an AMD Ryzen 9 9950X3D; `/dev/kvm` is world-writable; edk2-ovmf is at `/usr/share/edk2/ovmf`.
