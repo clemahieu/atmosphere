@@ -1576,6 +1576,10 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
         ensures
             final(self).wf(),
+            final(self).stale_epoch == old(self).stale_epoch,
+            final(self).cores == old(self).cores,
+            final(self).iommus == old(self).iommus,
+            final(self).spaces.loaded == old(self).spaces.loaded,
             ret == old(self).can_retype_block(root, from, to, base, THREAD_ORDER),
             !ret ==> *final(self) == *old(self),
             ret ==> base as int + 8192 <= NODE_SPACE as int,
@@ -1899,6 +1903,10 @@ impl CapKernel {
             old(self).root_live(root),
         ensures
             final(self).wf(),
+            final(self).stale_epoch == old(self).stale_epoch,
+            final(self).cores == old(self).cores,
+            final(self).iommus == old(self).iommus,
+            final(self).spaces.loaded == old(self).spaces.loaded,
             !ret ==> *final(self) == *old(self),
             !ret ==> bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             ret == old(self).can_retype_thread(root, from, to, base, j),
@@ -1915,6 +1923,8 @@ impl CapKernel {
                 &&& final(self).blocks.pages@[page].object is Thread
                 &&& final(self).blocks.pages@[page].order == 1
                 &&& final(self).blocks.pages@[page].refs == 1
+                &&& forall|i: int| old(self).blocks.tracks(i) && !(page <= i < page + 2) && i != p / 4096
+                    ==> #[trigger] final(self).blocks.pages@[i] == old(self).blocks.pages@[i]
                 &&& final(self).threads.records@.contains_key(base)
                 &&& final(self).threads.records@[base].value() == ThreadRecord {
                     state: ThreadState::Inactive,
@@ -3642,6 +3652,9 @@ impl CapKernel {
             !old(self).list.nodes@[t as int].live,
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
+            final(self).cores == old(self).cores,
+            final(self).iommus == old(self).iommus,
+            final(self).spaces == old(self).spaces,
             final(self).wf(),
             Self::bound_to(*old(self), *final(self), n, t),
             forall|x: usize| #[trigger] final(self).is_cap(x) == old(self).is_cap(x),
@@ -3650,6 +3663,8 @@ impl CapKernel {
             final(self).blocks.regions_2m@ == old(self).blocks.regions_2m@,
             final(self).blocks.regions_1g@ == old(self).blocks.regions_1g@,
             forall|i: int| old(self).blocks.tracks(i) ==> (#[trigger] final(self).blocks.pages@[i]).dead == old(self).blocks.pages@[i].dead,
+            forall|i: int| i != (old(self).payload_of(n).base / 4096) as int
+                ==> #[trigger] final(self).blocks.pages@[i] == old(self).blocks.pages@[i],
     {
         let ghost pre = *old(self);
         proof {

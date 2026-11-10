@@ -1305,6 +1305,26 @@ impl CapKernel {
         }
     }
 
+    /// A step that leaves the stale epochs, the cores and the IOMMUs as they were leaves every page
+    /// acknowledged that was.
+    pub proof fn lemma_acknowledged_kept(pre: Self, post: Self, f: usize)
+        requires
+            post.stale_epoch == pre.stale_epoch,
+            post.cores == pre.cores,
+            post.iommus == pre.iommus,
+            pre.acknowledged(f),
+        ensures
+            post.acknowledged(f),
+    {
+        let epoch = pre.stale_epoch.pages@[f as int] as int;
+        assert forall|c: int| 0 <= c < NUM_CPUS implies epoch <= #[trigger] post.acked(c) by {
+            assert(pre.acked(c) == post.acked(c));
+        }
+        assert forall|i: int| 0 <= i < NUM_IOMMUS && #[trigger] post.iommu_present(i) implies epoch <= post.iommu_acked(i) by {
+            assert(pre.iommu_present(i) && pre.iommu_acked(i) == post.iommu_acked(i));
+        }
+    }
+
     /// The stale check reads only present IOMMUs: with every core and every present IOMMU past an epoch,
     /// every core and IOMMU has acknowledged it, whatever an absent IOMMU's word says.
     pub proof fn lemma_present_acknowledged(&self, epoch: int)

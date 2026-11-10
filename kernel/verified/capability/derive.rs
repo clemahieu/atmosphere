@@ -200,6 +200,18 @@ impl CapKernel {
         ensures
             final(self).wf(),
             final(self).cores == old(self).cores,
+            final(self).stale_epoch == old(self).stale_epoch,
+            final(self).iommus == old(self).iommus,
+            final(self).spaces.loaded == old(self).spaces.loaded,
+            final(self).tables.roots == old(self).tables.roots,
+            ret ==> Self::derive_step(*old(self), *final(self), old(self).tables.node_of(old(self).table_at(root, to.through)->0, to.index)),
+            ret && !tracked_kind(old(self).payload_of(old(self).tables.node_of(root, from)).kind) ==> {
+                &&& final(self).blocks == old(self).blocks
+                &&& final(self).holders == old(self).holders
+                &&& final(self).spaces.holders == old(self).spaces.holders
+                &&& final(self).threads == old(self).threads
+                &&& final(self).processes == old(self).processes
+            },
             Self::same_tree(*old(self), *final(self)),
             !ret ==> *final(self) == *old(self),
             ret ==> Self::cap_derived_at(*old(self), *final(self), root, from, to, rights, base, order),
@@ -247,6 +259,17 @@ impl CapKernel {
         ensures
             final(self).wf(),
             final(self).cores == old(self).cores,
+            final(self).stale_epoch == old(self).stale_epoch,
+            final(self).iommus == old(self).iommus,
+            final(self).spaces.loaded == old(self).spaces.loaded,
+            final(self).tables.roots == old(self).tables.roots,
+            ret && !tracked_kind(old(self).payload_of(old(self).tables.node_of(src, from)).kind) ==> {
+                &&& final(self).blocks == old(self).blocks
+                &&& final(self).holders == old(self).holders
+                &&& final(self).spaces.holders == old(self).spaces.holders
+                &&& final(self).threads == old(self).threads
+                &&& final(self).processes == old(self).processes
+            },
             Self::same_tree(*old(self), *final(self)),
             !ret ==> *final(self) == *old(self),
             ret == old(self).can_derive_between(src, from, dst, to, rights, base, order),

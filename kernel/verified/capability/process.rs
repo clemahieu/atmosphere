@@ -1242,6 +1242,9 @@ impl CapKernel {
         ensures
             final(self).wf(),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
+            final(self).stale_epoch == old(self).stale_epoch,
+            final(self).cores == old(self).cores,
+            final(self).iommus == old(self).iommus,
             ret == old(self).can_retype_block(root, from, to, base, PROCESS_ORDER),
             !ret ==> *final(self) == *old(self),
             ret ==> {
@@ -1269,6 +1272,7 @@ impl CapKernel {
                 &&& kernel_slots_wf(&final(self).spaces, base)
                 &&& final(self).spaces.kernel_entries == old(self).spaces.kernel_entries
                 &&& forall|c: int| 0 <= c < NUM_CPUS ==> !#[trigger] final(self).loaded(c, base)
+                &&& final(self).process_unloaded(base)
                 &&& forall|c: int| 0 <= c < NUM_CPUS ==> !#[trigger] holds_id(final(self).cores@, final(self).spaces.loaded@, c, base)
                 &&& space_mapping(tree_of(&final(self).table_pages, &final(self).spaces), base) == IMap::<SpacePath, crate::pagetable::entry::PageEntry>::empty()
                 &&& forall|r: usize| #[trigger] old(self).spaces.roots@.contains_key(r) ==>

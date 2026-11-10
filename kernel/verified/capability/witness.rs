@@ -101,7 +101,10 @@ impl CapKernel {
     /// capability, and derive an untyped over its last two pages from the root's first untyped into
     /// slot 1 of that leaf, through the process capability. Every step succeeds, and at the end the
     /// new process is not the root, holds the derived capability, the root's untyped's child, and has
-    /// the thread bound to it.
+    /// the thread bound to it. What a reclaim of it starts from holds too: the process block's first
+    /// page and the new leaf's two are acknowledged, the thread's block holds one reference and the
+    /// process's two, the capability and the binding, no core has the process's space loaded, its
+    /// table has the one leaf, and the three slots hold what the steps put there.
     pub fn witness_process_holds_capability(
         &mut self,
         root: Ghost<usize>,
@@ -133,6 +136,17 @@ impl CapKernel {
                 &&& final(self).payload_of(child) == child_of(first, UNTYPED_RIGHTS, (base + 57344) as usize, 1)
                 &&& bound_threads(&final(self).list, &final(self).tables).contains_key(thread)
                 &&& bound_threads(&final(self).list, &final(self).tables)[thread] == base
+                &&& final(self).acknowledged(base / 4096)
+                &&& final(self).acknowledged(((base + 49152) / 4096) as usize)
+                &&& final(self).acknowledged(((base + 49152) / 4096 + 1) as usize)
+                &&& block_refs(&final(self).blocks, BlockRef::Small(thread / 4096)) == 1
+                &&& block_refs(&final(self).blocks, BlockRef::Small(base / 4096)) == 2
+                &&& final(self).process_unloaded(base)
+                &&& final(self).tables.leaf(base, 0) == (base + 49152) as usize
+                &&& forall|r: int| 1 <= r < ROOT_ENTRIES ==> #[trigger] final(self).tables.leaf(base, r) == NO_LEAF
+                &&& final(self).slot_holds(process, WITNESS_PROCESS_SLOT, (base + 32769) as usize, process_of(base))
+                &&& final(self).slot_holds(process, WITNESS_THREAD_SLOT, (base + 32770) as usize, thread_of(thread))
+                &&& final(self).slot_holds(base, WITNESS_CHILD_SLOT, child, child_of(first, UNTYPED_RIGHTS, (base + 57344) as usize, 1))
             }),
     {
         hide(CapKernel::wf);
@@ -172,6 +186,29 @@ impl CapKernel {
             assert(first.base + block_bytes(first.order) <= NODE_SPACE);
             assert(base == first.base + itb * 32768);
             assert(cursor_block(first.base, itb + 1) == base + 32768);
+            // The first untyped is the first boot block, whose pages boot left acknowledged.
+            lemma_runs_blocks(free@, MAX_ORDER as nat);
+            let b0 = bs[0];
+            assert(b0.1 <= MAX_ORDER && b0.0 + pow2(b0.1) <= NUM_PAGES);
+            assert(b0.0 * 4096 <= NUM_PAGES * 4096) by (nonlinear_arith)
+                requires
+                    b0.0 <= NUM_PAGES,
+            ;
+            assert(first.base == b0.0 * 4096);
+            assert((b0.1 as u8) as nat == b0.1);
+            assert(block_bytes(first.order) == pow2(b0.1) * 4096);
+            lemma_fundamental_div_mod_converse(base as int, 4096, b0.0 + 8 * itb, 0);
+            assert(base / 4096 == b0.0 + 8 * itb);
+            assert(8 * itb + 16 <= pow2(b0.1)) by (nonlinear_arith)
+                requires
+                    (itb + 2) * 32768 <= pow2(b0.1) * 4096,
+            ;
+            assert(in_page_block(bs[0], (base / 4096) as nat));
+            assert(in_page_block(bs[0], (base / 4096 + 12) as nat));
+            assert(in_page_block(bs[0], (base / 4096 + 13) as nat));
+            assert(s0.acknowledged(base / 4096));
+            assert(s0.acknowledged((base / 4096 + 12) as usize));
+            assert(s0.acknowledged((base / 4096 + 13) as usize));
         }
         let b2 = base + 32768;
         let bt = b2 + 8192;
@@ -310,6 +347,11 @@ impl CapKernel {
         proof {
             assert(ok3);
             assert(s2.payload_of(s2.tables.node_of(process, WITNESS_PROCESS_SLOT)).base == base);
+            // The thread holds one reference on its block and one on the process's, which the process
+            // capability holds the other of; no core has the process's space loaded.
+            assert(block_refs(&s3.blocks, BlockRef::Small(base / 4096)) == 2);
+            assert(block_refs(&s3.blocks, BlockRef::Small(bt / 4096)) == 1);
+            assert(s3.process_unloaded(base));
             assert(bound_threads(&s3.list, &s3.tables) == bound_threads(&s2.list, &s2.tables).insert(bt, base));
             assert(Self::retype_keeps(s2, s3, (b2 + 2) as usize, (bt / 4096) as int, 1, None));
             assert(s2.tables.has_slot(&s2.list, process, ROOT_UNTYPED_SLOT));
@@ -353,6 +395,13 @@ impl CapKernel {
         proof {
             assert(ok4);
             assert(Self::leaf_retyped(s3, s4, process, ROOT_UNTYPED_SLOT, at2, bl));
+            assert(s3.blocks.tracks((base / 4096) as int));
+            assert(s3.blocks.tracks((bt / 4096) as int));
+            assert(s4.blocks.pages@[(base / 4096) as int] == s3.blocks.pages@[(base / 4096) as int]);
+            assert(s4.blocks.pages@[(bt / 4096) as int] == s3.blocks.pages@[(bt / 4096) as int]);
+            assert(block_refs(&s4.blocks, BlockRef::Small(base / 4096)) == 2);
+            assert(block_refs(&s4.blocks, BlockRef::Small(bt / 4096)) == 1);
+            assert(s4.process_unloaded(base));
             assert(s4.tables.leaf(base, 0) == bl);
             assert(index_ok(WITNESS_CHILD_SLOT) && index_entry(WITNESS_CHILD_SLOT) == 0);
             assert(s4.tables.has_slot(&s4.list, base, WITNESS_CHILD_SLOT));
@@ -399,6 +448,39 @@ impl CapKernel {
             assert(child == base + 49153);
             assert(bt == base + 40960);
             assert(bd == base + 57344);
+            // An untyped's derive leaves the blocks, and no step changed an acknowledgement.
+            assert(s4.payload_of(s4.tables.node_of(process, ROOT_UNTYPED_SLOT)).kind is Untyped);
+            assert(s5.blocks == s4.blocks);
+            assert(block_refs(&s5.blocks, BlockRef::Small(base / 4096)) == 2);
+            assert(block_refs(&s5.blocks, BlockRef::Small(bt / 4096)) == 1);
+            assert(s5.process_unloaded(base));
+            assert(s5.stale_epoch == s0.stale_epoch);
+            assert(s5.cores == s0.cores);
+            assert(s5.iommus == s0.iommus);
+            assert(bl / 4096 == base / 4096 + 12);
+            assert((base + 49152) / 4096 == bl / 4096);
+            // The new table's root entries and the three slots the reclaim starts from.
+            assert(s5.tables.roots == s4.tables.roots);
+            assert forall|r: int| 1 <= r < ROOT_ENTRIES implies #[trigger] s5.tables.leaf(base, r) == NO_LEAF by {
+                assert(s3.tables.leaf(base, r) == s2.tables.leaf(base, r));
+                assert(s4.tables.leaf(base, r) == s3.tables.leaf(base, r));
+            }
+            assert(Self::derive_step(s4, s5, child));
+            Self::lemma_slot_stays(s4, s5, process, WITNESS_PROCESS_SLOT);
+            Self::lemma_slot_stays(s4, s5, process, WITNESS_THREAD_SLOT);
+            Self::lemma_caps_frame(s4, s5, child, child, np);
+            assert(s3.tables.has_slot(&s3.list, process, WITNESS_THREAD_SLOT));
+            assert(s3.is_cap((b2 + 2) as usize) && s3.payload_of((b2 + 2) as usize) == thread_of(bt));
+            assert(s4.tables.has_slot(&s4.list, process, WITNESS_THREAD_SLOT));
+            assert(s4.tables.node_of(process, WITNESS_THREAD_SLOT) == b2 + 2);
+            assert(s4.is_cap((b2 + 2) as usize) && s4.payload_of((b2 + 2) as usize) == thread_of(bt));
+            Self::lemma_caps_frame(s4, s5, child, child, (b2 + 2) as usize);
+            assert(s5.slot_holds(process, WITNESS_PROCESS_SLOT, np, process_of(base)));
+            assert(s5.slot_holds(process, WITNESS_THREAD_SLOT, (b2 + 2) as usize, thread_of(bt)));
+            assert(s5.slot_holds(base, WITNESS_CHILD_SLOT, child, child_of(first, UNTYPED_RIGHTS, bd, 1)));
+            Self::lemma_acknowledged_kept(s0, s5, base / 4096);
+            Self::lemma_acknowledged_kept(s0, s5, (base / 4096 + 12) as usize);
+            Self::lemma_acknowledged_kept(s0, s5, (base / 4096 + 13) as usize);
         }
         ok1 && ok2 && ok3 && ok4 && ok5
     }

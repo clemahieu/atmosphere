@@ -135,7 +135,7 @@ impl CapKernel {
 
     /// The state boot's composed step leaves when it succeeds, having returned `untyped` and `frame`:
     /// what kernel_init ensures, and so what a proof about the root's first operations starts from.
-    /// Each fixed slot of the root's table holds its kind, and each untyped is at depth 1, so a
+    /// The free runs are well formed, so each untyped block lies in the tracked pages. Each fixed slot of the root's table holds its kind, and each untyped is at depth 1, so a
     /// capability retyped under it is below the deepest depth; every page of the untyped blocks is
     /// acknowledged, since boot unmaps nothing, so a free of a block typed there is not refused as
     /// stale; the root's process is live; every root
@@ -158,6 +158,7 @@ impl CapKernel {
         let bs = runs_blocks(free, MAX_ORDER as nat);
         let b = tree_of(&self.table_pages, &self.spaces);
         let first = page_block_payload(bs[0]);
+        &&& runs_wf(free)
         &&& untyped == bs.len()
         &&& 0 < untyped <= ROOT_UNTYPED_SLOTS
         &&& frame == image_blocks(image).len()

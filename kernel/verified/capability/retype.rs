@@ -957,9 +957,14 @@ impl CapKernel {
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             Self::same_tree(*old(self), *final(self)),
             final(self).cores == old(self).cores,
+            final(self).stale_epoch == old(self).stale_epoch,
+            final(self).iommus == old(self).iommus,
             ret == old(self).can_retype_leaf(root, from, at, base),
             !ret ==> *final(self) == *old(self),
             ret ==> Self::leaf_retyped(*old(self), *final(self), root, from, at, base),
+            ret ==> final(self).spaces == old(self).spaces,
+            ret ==> forall|i: int| old(self).blocks.tracks(i) && !(base / 4096 <= i < base / 4096 + 2)
+                ==> #[trigger] final(self).blocks.pages@[i] == old(self).blocks.pages@[i],
     {
         let ghost pre = *old(self);
         let r = at.index;
@@ -1040,6 +1045,7 @@ impl CapKernel {
             old(self).list.nodes@[parent as int].depth < MAX_DEPTH,
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
+            final(self).iommus == old(self).iommus,
             final(self).wf(),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             final(self).cores == old(self).cores,
