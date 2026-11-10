@@ -37,7 +37,6 @@ use crate::capability::thread::*;
 use crate::capability::view::*;
 #[cfg(verus_keep_ghost)]
 use crate::arch::MEM_MASK;
-#[cfg(verus_keep_ghost)]
 use crate::define::*;
 use crate::pagetable::entry::*;
 use crate::pagetable::pagemap_util_t::*;
@@ -76,13 +75,13 @@ pub open spec fn walk_large_table(tree: TableTree, s: usize, p: SpacePath) -> Op
 /// level 4.
 pub open spec fn entry_span(level: u64) -> u64 {
     if level == 1 {
-        0x1000
+        PAGE_SZ as u64
     } else if level == 2 {
-        0x20_0000
+        SIZE_2M as u64
     } else if level == 3 {
-        0x4000_0000
+        SIZE_1G as u64
     } else {
-        0x80_0000_0000
+        SIZE_512G as u64
     }
 }
 
@@ -98,10 +97,10 @@ pub open spec fn names_entry(va: u64, level: u64) -> bool {
 /// 30, 29 to 21 and 20 to 12.
 pub open spec fn address_path(va: u64) -> SpacePath {
     SpacePath {
-        l4: ((va / 0x80_0000_0000) % 512) as usize,
-        l3: ((va / 0x4000_0000) % 512) as usize,
-        l2: ((va / 0x20_0000) % 512) as usize,
-        l1: ((va / 0x1000) % 512) as usize,
+        l4: ((va / (SIZE_512G as u64)) % (ENTRIES as u64)) as usize,
+        l3: ((va / (SIZE_1G as u64)) % (ENTRIES as u64)) as usize,
+        l2: ((va / (SIZE_2M as u64)) % (ENTRIES as u64)) as usize,
+        l1: ((va / (PAGE_SZ as u64)) % (ENTRIES as u64)) as usize,
     }
 }
 
@@ -114,13 +113,13 @@ pub fn entry_named(va: u64, level: u64) -> (ret: bool)
         return false;
     }
     let span: u64 = if level == 1 {
-        0x1000
+        PAGE_SZ as u64
     } else if level == 2 {
-        0x20_0000
+        SIZE_2M as u64
     } else if level == 3 {
-        0x4000_0000
+        SIZE_1G as u64
     } else {
-        0x80_0000_0000
+        SIZE_512G as u64
     };
     va % span == 0
 }
@@ -132,36 +131,36 @@ pub fn address_indices(va: u64) -> (ret: (usize, usize, usize, usize))
         ret.1 == address_path(va).l3,
         ret.2 == address_path(va).l2,
         ret.3 == address_path(va).l1,
-        ret.0 < 512 && ret.1 < 512 && ret.2 < 512 && ret.3 < 512,
+        ret.0 < ENTRIES && ret.1 < ENTRIES && ret.2 < ENTRIES && ret.3 < ENTRIES,
 {
     (
-        ((va / 0x80_0000_0000) % 512) as usize,
-        ((va / 0x4000_0000) % 512) as usize,
-        ((va / 0x20_0000) % 512) as usize,
-        ((va / 0x1000) % 512) as usize,
+        ((va / (SIZE_512G as u64)) % (ENTRIES as u64)) as usize,
+        ((va / (SIZE_1G as u64)) % (ENTRIES as u64)) as usize,
+        ((va / (SIZE_2M as u64)) % (ENTRIES as u64)) as usize,
+        ((va / (PAGE_SZ as u64)) % (ENTRIES as u64)) as usize,
     )
 }
 
 /// An address that names a level 2 entry has a zero level 1 index.
 pub proof fn lemma_large_entry_path(va: u64)
     requires
-        va % 0x20_0000 == 0,
+        va % (SIZE_2M as u64) == 0,
     ensures
         address_path(va).l1 == 0,
 {
-    let k = va / 0x20_0000;
-    assert(va == 0x20_0000 * k) by (nonlinear_arith)
-        requires va % 0x20_0000 == 0, k == va / 0x20_0000;
-    assert(va / 0x1000 == 512 * k) by (nonlinear_arith)
-        requires va == 0x20_0000 * k;
-    assert((512 * k) % 512 == 0) by (nonlinear_arith);
+    let k = va / (SIZE_2M as u64);
+    assert(va == SIZE_2M * k) by (nonlinear_arith)
+        requires va % (SIZE_2M as u64) == 0, k == va / (SIZE_2M as u64);
+    assert(va / (PAGE_SZ as u64) == PAGES_PER_2M * k) by (nonlinear_arith)
+        requires va == SIZE_2M * k;
+    assert((PAGES_PER_2M * k) % (PAGES_PER_2M as int) == 0) by (nonlinear_arith);
 }
 
 /// The entry a map writes for a page of a capability with these rights: writable with Write, not
 /// executable without Execute, and ps for a large frame.
 pub open spec fn frame_map_entry(frame: usize, rights: u32, large: bool) -> PageEntry {
     PageEntry {
-        addr: (frame * 4096) as usize,
+        addr: (frame * PAGE_SZ) as usize,
         perm: PageEntryPerm {
             present: true,
             ps: large,
@@ -174,7 +173,7 @@ pub open spec fn frame_map_entry(frame: usize, rights: u32, large: bool) -> Page
 
 /// The page of a frame capability at this offset.
 pub open spec fn frame_of(cap: Payload, page: usize) -> usize {
-    (cap.base / 4096 + page) as usize
+    (cap.base / PAGE_SZ + page) as usize
 }
 
 /// What writing frame mapping e of the table t changes between two trees: that entry, empty before, and
@@ -189,12 +188,12 @@ pub open spec fn entry_written(a: TableTree, b: TableTree, t: usize, e: usize) -
     &&& b.record(t).parent == a.record(t).parent
     &&& a.is_page(t)
     &&& a.record(t).level == 1 || a.record(t).level == 2
-    &&& e < 512
+    &&& e < ENTRIES
     &&& a.entry(t, e).is_empty()
     &&& b.entry(t, e).perm.present
     &&& b.entry(t, e).perm.ps == (a.record(t).level == 2)
     &&& forall|u: usize, i: usize| #![trigger b.entry(u, i)]
-        i < 512 && !(u == t && i == e) ==> b.entry(u, i) == a.entry(u, i)
+        i < ENTRIES && !(u == t && i == e) ==> b.entry(u, i) == a.entry(u, i)
 }
 
 /// A block's base is page aligned, since its size is a multiple of a page.
@@ -203,19 +202,19 @@ pub proof fn lemma_block_base_aligned(base: usize, order: u8)
         order <= MAX_ORDER,
         base as int % block_bytes(order) == 0,
     ensures
-        base % 4096 == 0,
+        base % PAGE_SZ == 0,
 {
     let m = pow2(order as nat) as int;
     lemma_pow2_pos(order as nat);
-    let d = m * 4096;
+    let d = m * PAGE_SZ;
     lemma_fundamental_div_mod(base as int, d);
     let q = base as int / d;
     assert(base as int == d * q);
-    lemma_mul_is_associative(m, 4096, q);
-    lemma_mul_is_commutative(4096, q);
-    lemma_mul_is_associative(m, q, 4096);
-    assert(base as int == (m * q) * 4096);
-    lemma_mod_multiples_basic(m * q, 4096);
+    lemma_mul_is_associative(m, (PAGE_SZ as int), q);
+    lemma_mul_is_commutative((PAGE_SZ as int), q);
+    lemma_mul_is_associative(m, q, (PAGE_SZ as int));
+    assert(base as int == (m * q) * PAGE_SZ);
+    lemma_mod_multiples_basic(m * q, (PAGE_SZ as int));
 }
 
 /// An offset is below a block's page count exactly when its byte offset is below the block's size.
@@ -224,15 +223,15 @@ pub proof fn lemma_page_within(page: usize, size: usize, order: u8)
         order <= MAX_ORDER,
         size as int == block_bytes(order),
     ensures
-        size % 4096 == 0,
-        (page < size / 4096) == ((page as int) * 4096 < block_bytes(order)),
+        size % PAGE_SZ == 0,
+        (page < size / PAGE_SZ) == ((page as int) * PAGE_SZ < block_bytes(order)),
 {
     let m = pow2(order as nat) as int;
     lemma_pow2_pos(order as nat);
-    assert(size as int == m * 4096);
-    lemma_mod_multiples_basic(m, 4096);
-    lemma_div_multiples_vanish(m, 4096);
-    assert(size as int / 4096 == m);
+    assert(size as int == m * PAGE_SZ);
+    lemma_mod_multiples_basic(m, (PAGE_SZ as int));
+    lemma_div_multiples_vanish(m, (PAGE_SZ as int));
+    assert(size as int / (PAGE_SZ as int) == m);
 }
 
 /// A 2M-aligned offset's 512 pages are within a 2M or 1G block exactly when the offset is below the
@@ -242,15 +241,15 @@ pub proof fn lemma_large_page_within(page: usize, size: usize, order: u8)
         order == 9 || order == 18,
         size as int == block_bytes(order),
     ensures
-        size % 4096 == 0,
-        (page < size / 4096 && size / 4096 - page >= 512) == ((page as int) * 4096 + 512 * 4096 <= block_bytes(order)),
+        size % PAGE_SZ == 0,
+        (page < size / PAGE_SZ && size / PAGE_SZ - page >= PAGES_PER_2M) == ((page as int) * PAGE_SZ + PAGES_PER_2M * PAGE_SZ <= block_bytes(order)),
 {
     let m = pow2(order as nat) as int;
     lemma_pow2_pos(order as nat);
-    assert(size as int == m * 4096);
-    lemma_mod_multiples_basic(m, 4096);
-    lemma_div_multiples_vanish(m, 4096);
-    assert(size as int / 4096 == m);
+    assert(size as int == m * PAGE_SZ);
+    lemma_mod_multiples_basic(m, (PAGE_SZ as int));
+    lemma_div_multiples_vanish(m, (PAGE_SZ as int));
+    assert(size as int / (PAGE_SZ as int) == m);
 }
 
 /// A block of order 9 or more has a base whose page is 2M aligned.
@@ -259,8 +258,8 @@ pub proof fn lemma_large_base_aligned(base: usize, order: u8)
         9 <= order <= MAX_ORDER,
         base as int % block_bytes(order) == 0,
     ensures
-        base % 4096 == 0,
-        (base / 4096) % 512 == 0,
+        base % PAGE_SZ == 0,
+        (base / PAGE_SZ) % PAGES_PER_2M == 0,
 {
     lemma_block_base_aligned(base, order);
     let m = pow2(order as nat) as int;
@@ -268,34 +267,34 @@ pub proof fn lemma_large_base_aligned(base: usize, order: u8)
     lemma_pow2_adds(9, (order - 9) as nat);
     lemma2_to64();
     let k = pow2((order - 9) as nat) as int;
-    assert(m == 512 * k);
-    let d = m * 4096;
+    assert(m == PAGES_PER_2M * k);
+    let d = m * PAGE_SZ;
     lemma_fundamental_div_mod(base as int, d);
     let q = base as int / d;
     assert(base as int == d * q);
-    lemma_mul_is_associative(m, 4096, q);
-    lemma_mul_is_commutative(4096, q);
-    lemma_mul_is_associative(m, q, 4096);
-    assert(base as int == (m * q) * 4096);
-    lemma_div_multiples_vanish(m * q, 4096);
-    assert(base as int / 4096 == m * q);
-    lemma_mul_is_associative(512, k, q);
-    assert(m * q == 512 * (k * q));
-    lemma_mod_multiples_basic(k * q, 512);
+    lemma_mul_is_associative(m, (PAGE_SZ as int), q);
+    lemma_mul_is_commutative((PAGE_SZ as int), q);
+    lemma_mul_is_associative(m, q, (PAGE_SZ as int));
+    assert(base as int == (m * q) * PAGE_SZ);
+    lemma_div_multiples_vanish(m * q, (PAGE_SZ as int));
+    assert(base as int / (PAGE_SZ as int) == m * q);
+    lemma_mul_is_associative((PAGES_PER_2M as int), k, q);
+    assert(m * q == PAGES_PER_2M * (k * q));
+    lemma_mod_multiples_basic(k * q, (PAGES_PER_2M as int));
 }
 
 /// The sum of two multiples of 512 is one.
 pub proof fn lemma_sum_aligned(x: int, y: int)
     requires
-        x % 512 == 0,
-        y % 512 == 0,
+        x % (PAGES_PER_2M as int) == 0,
+        y % (PAGES_PER_2M as int) == 0,
     ensures
-        (x + y) % 512 == 0,
+        (x + y) % (PAGES_PER_2M as int) == 0,
 {
-    lemma_fundamental_div_mod(x, 512);
-    lemma_fundamental_div_mod(y, 512);
-    assert(x + y == 512 * (x / 512 + y / 512));
-    lemma_mod_multiples_basic(x / 512 + y / 512, 512);
+    lemma_fundamental_div_mod(x, (PAGES_PER_2M as int));
+    lemma_fundamental_div_mod(y, (PAGES_PER_2M as int));
+    assert(x + y == PAGES_PER_2M * (x / (PAGES_PER_2M as int) + y / (PAGES_PER_2M as int)));
+    lemma_mod_multiples_basic(x / (PAGES_PER_2M as int) + y / (PAGES_PER_2M as int), (PAGES_PER_2M as int));
 }
 
 /// A page below NUM_PAGES has an address with no bit outside MEM_MASK.
@@ -303,10 +302,10 @@ pub proof fn lemma_frame_addr_valid(frame: usize)
     requires
         frame < NUM_PAGES,
     ensures
-        frame * 4096 < 0x2_0000_0000,
-        mem_valid((frame * 4096) as usize),
+        frame * PAGE_SZ < 0x2_0000_0000,
+        mem_valid((frame * PAGE_SZ) as usize),
 {
-    assert(frame < 0x200000usize ==> ((frame * 4096) as usize) & 0xffff_0000_0000_0fffusize == 0) by (bit_vector);
+    assert(frame < NUM_PAGES ==> ((frame * PAGE_SZ) as usize) & 0xffff_0000_0000_0fffusize == 0) by (bit_vector);
     assert((!MEM_MASK) as usize == 0xffff_0000_0000_0fffusize) by (compute_only);
 }
 
@@ -316,10 +315,10 @@ pub proof fn lemma_mapping_node_injective(t: usize, e: usize, u: usize, d: usize
     requires
         t % 32768 == 0,
         u % 32768 == 0,
-        t / 4096 + TABLE_NODE_PAGES <= NUM_PAGES,
-        u / 4096 + TABLE_NODE_PAGES <= NUM_PAGES,
-        e < 512,
-        d < 512,
+        t / PAGE_SZ + TABLE_NODE_PAGES <= NUM_PAGES,
+        u / PAGE_SZ + TABLE_NODE_PAGES <= NUM_PAGES,
+        e < ENTRIES,
+        d < ENTRIES,
         mapping_node(t, e) == mapping_node(u, d),
     ensures
         t == u,
@@ -331,8 +330,8 @@ pub proof fn lemma_mapping_node_injective(t: usize, e: usize, u: usize, d: usize
     lemma_table_page_aligned(u);
     let ke = (e + 1) / (NODES_PER_PAGE as int);
     let kd = (d + 1) / (NODES_PER_PAGE as int);
-    let qt = t / 4096;
-    let qu = u / 4096;
+    let qt = t / PAGE_SZ;
+    let qu = u / PAGE_SZ;
     assert(0 <= ke <= 4);
     assert(0 <= kd <= 4);
     assert(qt + ke == qu + kd);
@@ -364,7 +363,7 @@ pub proof fn lemma_table_pages_entry_written(list: &Tree, pa: &TablePages, pb: &
         pb.records@[t].value().parent == pa.records@[t].value().parent,
         pb.records@[t].value().written,
         pb.maps@[t].value()[e].perm.present,
-        forall|i: usize| i < 512 && i != e ==> #[trigger] pb.maps@[t].value()[i] == pa.maps@[t].value()[i],
+        forall|i: usize| i < ENTRIES && i != e ==> #[trigger] pb.maps@[t].value()[i] == pa.maps@[t].value()[i],
     ensures
         table_pages_wf(list, pb, blocks),
 {
@@ -372,7 +371,7 @@ pub proof fn lemma_table_pages_entry_written(list: &Tree, pa: &TablePages, pb: &
         assert(pa.maps@.contains_key(u));
         assert(table_page_wf(list, pa, blocks, u));
         if u == t {
-            assert forall|i: usize| i < 512 implies #[trigger] pb.maps@[t].value()[i].perm.present || pb.maps@[t].value()[i].is_empty() by {
+            assert forall|i: usize| i < ENTRIES implies #[trigger] pb.maps@[t].value()[i].perm.present || pb.maps@[t].value()[i].is_empty() by {
                 if i != e {
                     assert(pa.maps@[t].value()[i].perm.present || pa.maps@[t].value()[i].is_empty());
                 }
@@ -381,14 +380,14 @@ pub proof fn lemma_table_pages_entry_written(list: &Tree, pa: &TablePages, pb: &
         } else {
             assert(pb.maps@[u] == pa.maps@[u]);
             assert(pb.records@[u] == pa.records@[u]);
-            assert forall|i: usize| i < 512 && !pb.records@[u].value().written implies #[trigger] pb.maps@[u].value()[i].is_empty() by {
+            assert forall|i: usize| i < ENTRIES && !pb.records@[u].value().written implies #[trigger] pb.maps@[u].value()[i].is_empty() by {
                 assert(pa.maps@[u].value()[i].is_empty());
             }
             assert(table_record_wf(pb, u));
         }
     }
-    assert forall|b: usize| blocks.tracks(b as int) && #[trigger] table_block(blocks, b) implies pb.maps@.contains_key((b * 4096) as usize) by {
-        assert(pa.maps@.contains_key((b * 4096) as usize));
+    assert forall|b: usize| blocks.tracks(b as int) && #[trigger] table_block(blocks, b) implies pb.maps@.contains_key((b * PAGE_SZ) as usize) by {
+        assert(pa.maps@.contains_key((b * PAGE_SZ) as usize));
     }
 }
 
@@ -415,7 +414,7 @@ pub proof fn lemma_links_entry_written(a: TableTree, b: TableTree, t: usize, e: 
     assert(!b.names_child(t, e));
     assert forall|u: usize, i: usize| #![trigger b.entry(u, i)]
         b.names_child(u, i) implies {
-        let c = (b.entry(u, i).addr - TABLE_NODE_PAGES * 4096) as usize;
+        let c = (b.entry(u, i).addr - TABLE_NODE_PAGES * PAGE_SZ) as usize;
         &&& b.is_page(c)
         &&& b.record(c).parent == Some(TableParent { table: u, entry: i })
     } by {
@@ -424,7 +423,7 @@ pub proof fn lemma_links_entry_written(a: TableTree, b: TableTree, t: usize, e: 
         assert(b.entry(u, i) == a.entry(u, i));
         assert(a.names_child(u, i));
         let _ = a.entry(u, i);
-        let c = (a.entry(u, i).addr - TABLE_NODE_PAGES * 4096) as usize;
+        let c = (a.entry(u, i).addr - TABLE_NODE_PAGES * PAGE_SZ) as usize;
         assert(a.is_page(c));
         assert(b.record(c).parent == a.record(c).parent);
     }
@@ -508,7 +507,7 @@ pub proof fn lemma_walk_entry_written(a: TableTree, b: TableTree, t: usize, e: u
     }
     assert forall|u: usize, i: usize| !(u == t && i == e) implies #[trigger] frame_entry(b, u, i) == frame_entry(a, u, i)
         && large_entry(b, u, i) == large_entry(a, u, i) by {
-        if a.is_table(u) && i < 512 {
+        if a.is_table(u) && i < ENTRIES {
             assert(b.entry(u, i) == a.entry(u, i));
         }
     }
@@ -783,13 +782,13 @@ pub proof fn lemma_holders_mapping_added(
     assert(!holders[br].contains(n));
     vstd::set::lemma_set_insert_len(holders[br], n);
     assert forall|x: usize| #[trigger] tables.is_cap(list_b, x) && tables.payload_of(x).kind is Frame implies {
-        let i = tables.payload_of(x).base / 4096;
+        let i = tables.payload_of(x).base / PAGE_SZ;
         &&& blocks_b.tracks(i as int)
         &&& frame_in_block(block_ref(blocks_b, i), tables.payload_of(x))
         &&& hb.contains_key(block_ref(blocks_b, i))
         &&& hb[block_ref(blocks_b, i)].contains(x)
     } by {
-        let i = tables.payload_of(x).base / 4096;
+        let i = tables.payload_of(x).base / PAGE_SZ;
         assert(tables.is_cap(list_a, x));
         assert(block_ref(blocks_b, i) == block_ref(blocks_a, i));
     }
@@ -805,7 +804,7 @@ pub proof fn lemma_holders_mapping_added(
         &&& tables.is_cap(list_b, x)
         &&& tables.payload_of(x).kind is Frame
         &&& blocks_b.tracks_addr(tables.payload_of(x).base)
-        &&& block_ref(blocks_b, tables.payload_of(x).base / 4096) == k
+        &&& block_ref(blocks_b, tables.payload_of(x).base / PAGE_SZ) == k
     } || (x < NODE_SPACE && list_b.nodes@[x as int].live && list_b.nodes@[x as int].kind is Mapping)) by {
         assert(holders.contains_key(k));
         if k != br || x != n {
@@ -864,14 +863,14 @@ impl CapKernel {
         &&& !self.cap_dead(n)
         &&& self.spaces.records@[self.payload_of(n).base].value().kind == kind
         &&& walk_table(tree, self.payload_of(n).base, p) is Some
-        &&& !self.blocks.pages@[(t / 4096) as int].dead
-        &&& p.l1 < 512
+        &&& !self.blocks.pages@[(t / PAGE_SZ) as int].dead
+        &&& p.l1 < ENTRIES
         &&& tree.entry(t, p.l1).is_empty()
         &&& self.tables.has_slot(&self.list, root, from)
         &&& self.is_cap(f)
         &&& self.payload_of(f).kind is Frame
         &&& self.payload_of(f).rights & right_bit(Right::Read) != 0
-        &&& (page as int) * 4096 < block_bytes(self.payload_of(f).order)
+        &&& (page as int) * PAGE_SZ < block_bytes(self.payload_of(f).order)
         &&& self.list.nodes@[f as int].depth < MAX_DEPTH
         &&& block_refs(&self.blocks, block_ref(&self.blocks, frame_of(self.payload_of(f), page))) != usize::MAX
     }
@@ -890,8 +889,8 @@ impl CapKernel {
         &&& !self.cap_dead(n)
         &&& self.spaces.records@[self.payload_of(n).base].value().kind == kind
         &&& walk_large_table(tree, self.payload_of(n).base, p) is Some
-        &&& !self.blocks.pages@[(t / 4096) as int].dead
-        &&& p.l2 < 512
+        &&& !self.blocks.pages@[(t / PAGE_SZ) as int].dead
+        &&& p.l2 < ENTRIES
         &&& p.l1 == 0
         &&& tree.entry(t, p.l2).is_empty()
         &&& self.tables.has_slot(&self.list, root, from)
@@ -899,8 +898,8 @@ impl CapKernel {
         &&& self.payload_of(f).kind is Frame
         &&& self.payload_of(f).rights & right_bit(Right::Read) != 0
         &&& self.payload_of(f).order == 9 || self.payload_of(f).order == 18
-        &&& page % 512 == 0
-        &&& (page as int) * 4096 + 512 * 4096 <= block_bytes(self.payload_of(f).order)
+        &&& page % PAGES_PER_2M == 0
+        &&& (page as int) * PAGE_SZ + PAGES_PER_2M * PAGE_SZ <= block_bytes(self.payload_of(f).order)
         &&& self.list.nodes@[f as int].depth < MAX_DEPTH
         &&& block_refs(&self.blocks, block_ref(&self.blocks, frame_of(self.payload_of(f), page))) != usize::MAX
     }
@@ -912,18 +911,18 @@ impl CapKernel {
         let cap = pre.payload_of(f);
         &&& pre.table_pages.maps@.contains_key(t)
         &&& tree.record(t).level == map_level(large)
-        &&& !pre.blocks.pages@[(t / 4096) as int].dead
-        &&& e < 512
+        &&& !pre.blocks.pages@[(t / PAGE_SZ) as int].dead
+        &&& e < ENTRIES
         &&& tree.entry(t, e).is_empty()
         &&& !pre.list.nodes@[mapping_node(t, e) as int].live
         &&& pre.is_cap(f)
         &&& cap.kind is Frame
         &&& pre.list.nodes@[f as int].depth < MAX_DEPTH
         &&& pre.blocks.tracks(frame as int)
-        &&& cap.base <= frame * 4096
-        &&& frame * 4096 + entry_pages(map_level(large)) * 4096 <= cap.base as int + block_bytes(cap.order)
-        &&& large ==> frame % 512 == 0
-        &&& block_ref(&pre.blocks, frame) == block_ref(&pre.blocks, cap.base / 4096)
+        &&& cap.base <= frame * PAGE_SZ
+        &&& frame * PAGE_SZ + entry_pages(map_level(large)) * PAGE_SZ <= cap.base as int + block_bytes(cap.order)
+        &&& large ==> frame % PAGES_PER_2M == 0
+        &&& block_ref(&pre.blocks, frame) == block_ref(&pre.blocks, cap.base / PAGE_SZ)
     }
 
     /// What the writes of a map leave, apart from the mapped set: the node derived under f, the
@@ -976,14 +975,14 @@ impl CapKernel {
                 &&& tree.record(ret->0).level + 1 == tree.record(t).level
             },
     {
-        if i >= 512 || self.is_kernel_slot(t, is_root, i) {
+        if i >= ENTRIES || self.is_kernel_slot(t, is_root, i) {
             return None;
         }
         let e = self.table_entry(t, is_root, i);
         if !e.perm.present || e.perm.ps {
             return None;
         }
-        Some(e.addr - TABLE_NODE_PAGES * 4096)
+        Some(e.addr - TABLE_NODE_PAGES * PAGE_SZ)
     }
 
     /// Maps the page at offset `page` of the frame capability at index `from` into entry `l1` of the
@@ -1286,7 +1285,7 @@ impl CapKernel {
             assert(tree.record(t).level == 1);
             pre.lemma_table_page_room(t);
         }
-        if l1 >= 512 || self.blocks.pages.get(t / 4096).dead {
+        if l1 >= ENTRIES || self.blocks.pages.get(t / PAGE_SZ).dead {
             return false;
         }
         let current = self.table_entry(t, false, l1);
@@ -1322,7 +1321,7 @@ impl CapKernel {
         proof {
             lemma_page_within(page, size, cap.order);
         }
-        if page >= size / 4096 {
+        if page >= size / PAGE_SZ {
             return false;
         }
         if f_node.depth >= MAX_DEPTH {
@@ -1332,7 +1331,7 @@ impl CapKernel {
             pre.lemma_frame_page(f, page);
             pre.lemma_map_node_free(t, l1);
         }
-        let frame = cap.base / 4096 + page;
+        let frame = cap.base / PAGE_SZ + page;
         proof {
             assert(frame == frame_of(cap, page));
             assert(Self::map_from(pre, t, l1, f, frame, false));
@@ -1432,7 +1431,7 @@ impl CapKernel {
             assert(tree.record(t).level == 2);
             pre.lemma_table_page_room(t);
         }
-        if l2 >= 512 || self.blocks.pages.get(t / 4096).dead {
+        if l2 >= ENTRIES || self.blocks.pages.get(t / PAGE_SZ).dead {
             return false;
         }
         let current = self.table_entry(t, false, l2);
@@ -1471,7 +1470,7 @@ impl CapKernel {
         proof {
             lemma_large_page_within(page, size, cap.order);
         }
-        if page % 512 != 0 || page >= size / 4096 || size / 4096 - page < 512 {
+        if page % PAGES_PER_2M != 0 || page >= size / PAGE_SZ || size / PAGE_SZ - page < PAGES_PER_2M {
             return false;
         }
         if f_node.depth >= MAX_DEPTH {
@@ -1481,7 +1480,7 @@ impl CapKernel {
             pre.lemma_large_frame_page(f, page);
             pre.lemma_map_node_free(t, l2);
         }
-        let frame = cap.base / 4096 + page;
+        let frame = cap.base / PAGE_SZ + page;
         proof {
             assert(frame == frame_of(cap, page));
             assert(Self::map_from(pre, t, l2, f, frame, true));
@@ -1551,7 +1550,7 @@ impl CapKernel {
         requires
             self.wf(),
             self.table_pages.maps@.contains_key(t),
-            e < 512,
+            e < ENTRIES,
         ensures
             ret == mapping_node(t, e),
             ret < NODE_SPACE,
@@ -1560,7 +1559,7 @@ impl CapKernel {
         proof {
             self.lemma_map_node_place(t, e);
         }
-        t + ((e + 1) / NODES_PER_PAGE) * 4096 + (e + 1) % NODES_PER_PAGE
+        t + ((e + 1) / NODES_PER_PAGE) * PAGE_SZ + (e + 1) % NODES_PER_PAGE
     }
 
     /// What writing entry e of table page t does to the table pages: that entry, and t's written flag.
@@ -1570,7 +1569,7 @@ impl CapKernel {
         &&& b.maps@[t].is_init()
         &&& b.maps@[t].value().wf()
         &&& b.maps@[t].value().level == a.maps@[t].value().level
-        &&& forall|i: usize| #![trigger b.maps@[t].value()[i]] i < 512 && i != e ==> b.maps@[t].value()[i] == a.maps@[t].value()[i]
+        &&& forall|i: usize| #![trigger b.maps@[t].value()[i]] i < ENTRIES && i != e ==> b.maps@[t].value()[i] == a.maps@[t].value()[i]
         &&& b.maps@[t].value()[e] == v
         &&& b.maps@[t].value().status(e as int).is_clear()
         &&& b.records@ == a.records@.insert(t, b.records@[t])
@@ -1587,13 +1586,13 @@ impl CapKernel {
 
     /// The permissions a table page's table and record are written through.
     pub open spec fn table_page_perms(pages: TablePages, t: usize) -> bool {
-        &&& t / 4096 < NUM_PAGES
+        &&& t / PAGE_SZ < NUM_PAGES
         &&& pages.maps@.contains_key(t)
-        &&& pages.maps@[t].addr() == t + TABLE_NODE_PAGES * 4096
+        &&& pages.maps@[t].addr() == t + TABLE_NODE_PAGES * PAGE_SZ
         &&& pages.maps@[t].is_init()
         &&& pages.maps@[t].value().wf()
         &&& pages.records@.contains_key(t)
-        &&& pages.records@[t].addr() == t + TABLE_RECORD_PAGE * 4096
+        &&& pages.records@[t].addr() == t + TABLE_RECORD_PAGE * PAGE_SZ
         &&& pages.records@[t].is_init()
         &&& pages.maps@[t].value().level@ == pages.records@[t].value().level
     }
@@ -1602,7 +1601,7 @@ impl CapKernel {
     fn write_frame_entry(&mut self, t: usize, e: usize, frame: usize, rights: u32, large: bool)
         requires
             Self::table_page_perms(old(self).table_pages, t),
-            e < 512,
+            e < ENTRIES,
             old(self).blocks.tracks(frame as int),
         ensures
             Self::entry_set(old(self).table_pages, final(self).table_pages, t, e, frame_map_entry(frame, rights, large)),
@@ -1632,7 +1631,7 @@ impl CapKernel {
             assert(right_bit(Right::Execute) == 4);
         }
         let value = PageEntry {
-            addr: frame * 4096,
+            addr: frame * PAGE_SZ,
             perm: PageEntryPerm {
                 present: true,
                 ps: large,
@@ -1643,9 +1642,9 @@ impl CapKernel {
         };
         let tracked mut map = self.table_pages.maps.borrow_mut().tracked_remove(t);
         let tracked mut record = self.table_pages.records.borrow_mut().tracked_remove(t);
-        let ptr = PPtr::<TableRecord>::from_usize(t + TABLE_RECORD_PAGE * 4096);
+        let ptr = PPtr::<TableRecord>::from_usize(t + TABLE_RECORD_PAGE * PAGE_SZ);
         let table_record = *ptr.borrow(Tracked(&record));
-        page_map_set(t + TABLE_NODE_PAGES * 4096, Tracked(&mut map), e, value, table_record.level);
+        page_map_set(t + TABLE_NODE_PAGES * PAGE_SZ, Tracked(&mut map), e, value, table_record.level);
         ptr.write(
             Tracked(&mut record),
             TableRecord { level: table_record.level, space: table_record.space, parent: table_record.parent, written: true },
@@ -1729,7 +1728,7 @@ impl CapKernel {
         &&& post.mappings@[node] == (MappingRecord { table: t, entry: p.l2, frame, large: true })
         &&& block_refs(&post.blocks, br) == block_refs(&pre.blocks, br) + 1
         &&& post.holders@[br] == pre.holders@[br].insert(node)
-        &&& forall|g: usize| frame <= g < frame + 512 ==> #[trigger] post.mapped@.contains(g)
+        &&& forall|g: usize| frame <= g < frame + PAGES_PER_2M ==> #[trigger] post.mapped@.contains(g)
         &&& post.list.parent@ == pre.list.parent@.insert(node, f)
         &&& forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < NODE_SPACE && i != node ==> {
             &&& post.list.nodes@[i].live == pre.list.nodes@[i].live
@@ -1812,7 +1811,7 @@ impl CapKernel {
         assert(a.record(t3).level == 3);
         assert(step(b, t3, p.l3) == step(a, t3, p.l3));
         lemma_map_pages(frame, true);
-        assert forall|g: usize| frame <= g < frame + 512 implies #[trigger] post.mapped@.contains(g) by {
+        assert forall|g: usize| frame <= g < frame + PAGES_PER_2M implies #[trigger] post.mapped@.contains(g) by {
             assert(map_pages(frame, true).contains(g));
         }
     }
@@ -1837,7 +1836,7 @@ impl CapKernel {
             }
         }
         assert forall|u: usize, i: usize| #![trigger b.entry(u, i)]
-            i < 512 && !(u == t && i == e) implies b.entry(u, i) == a.entry(u, i) by {
+            i < ENTRIES && !(u == t && i == e) implies b.entry(u, i) == a.entry(u, i) by {
             assert(b.is_page(u) == a.is_page(u));
             if a.is_page(u) && u != t {
                 assert(post.table_pages.maps@[u] == pre.table_pages.maps@[u]);
@@ -1869,12 +1868,12 @@ impl CapKernel {
         requires
             self.wf(),
             self.table_pages.maps@.contains_key(t),
-            e < 512,
+            e < ENTRIES,
         ensures
-            mapping_node(t, e) == t + ((e + 1) / (NODES_PER_PAGE as int)) * 4096 + (e + 1) % (NODES_PER_PAGE as int),
+            mapping_node(t, e) == t + ((e + 1) / (NODES_PER_PAGE as int)) * PAGE_SZ + (e + 1) % (NODES_PER_PAGE as int),
             mapping_node(t, e) < NODE_SPACE,
-            mapping_node(t, e) % 4096 == (e + 1) % (NODES_PER_PAGE as int),
-            mapping_node(t, e) / 4096 == t / 4096 + (e + 1) / (NODES_PER_PAGE as int),
+            mapping_node(t, e) % PAGE_SZ == (e + 1) % (NODES_PER_PAGE as int),
+            mapping_node(t, e) / PAGE_SZ == t / PAGE_SZ + (e + 1) / (NODES_PER_PAGE as int),
             self.list.valid(mapping_node(t, e)),
             mapping_node(t, e) != t,
             !self.tables.owner@.contains_key(mapping_node(t, e)),
@@ -1885,22 +1884,22 @@ impl CapKernel {
         lemma_mapping_node_place(t, e);
         let n = mapping_node(t, e);
         let k = ((e + 1) / (NODES_PER_PAGE as int)) as usize;
-        let q = t / 4096;
+        let q = t / PAGE_SZ;
         assert(k < TABLE_NODE_PAGES);
         assert(page_of(n) == table_node_page(t, k));
         assert(self.list.pages@.dom().contains(table_node_page(t, k)));
         assert(self.list.valid(n));
         self.list.lemma_valid_bound(n);
         lemma_table_node_page(t, k);
-        assert(page_of(n) / 4096 == q + k);
+        assert(page_of(n) / PAGE_SZ == q + k);
         if k == 0 {
-            assert(n % 4096 == e + 1);
+            assert(n % PAGE_SZ == e + 1);
         } else {
-            assert(n / 4096 != q);
+            assert(n / PAGE_SZ != q);
         }
         if self.tables.owner@.contains_key(n) {
-            assert(self.blocks.pages@[(n / 4096) as int].kind is Base);
-            assert(self.blocks.pages@[(n / 4096) as int].object is TableLeaf);
+            assert(self.blocks.pages@[(n / PAGE_SZ) as int].kind is Base);
+            assert(self.blocks.pages@[(n / PAGE_SZ) as int].object is TableLeaf);
             if k > 0 {
                 assert(self.blocks.pages@[q + k].kind is Member);
             }
@@ -1908,8 +1907,8 @@ impl CapKernel {
         }
         if self.tables.owner@.contains_key(page_of(n)) {
             let l = page_of(n);
-            assert(self.blocks.pages@[(l / 4096) as int].kind is Base);
-            assert(self.blocks.pages@[(l / 4096) as int].object is TableLeaf);
+            assert(self.blocks.pages@[(l / PAGE_SZ) as int].kind is Base);
+            assert(self.blocks.pages@[(l / PAGE_SZ) as int].object is TableLeaf);
             if k > 0 {
                 assert(self.blocks.pages@[q + k].kind is Member);
             }
@@ -1930,7 +1929,7 @@ impl CapKernel {
         requires
             self.wf(),
             self.table_pages.maps@.contains_key(t),
-            e < 512,
+            e < ENTRIES,
             tree_of(&self.table_pages, &self.spaces).entry(t, e).is_empty(),
         ensures
             mapping_node(t, e) < NODE_SPACE,
@@ -1959,18 +1958,18 @@ impl CapKernel {
             self.wf(),
             self.is_cap(f),
             self.payload_of(f).kind is Frame,
-            (page as int) * 4096 < block_bytes(self.payload_of(f).order),
+            (page as int) * PAGE_SZ < block_bytes(self.payload_of(f).order),
         ensures
             ({
                 let cap = self.payload_of(f);
                 let frame = frame_of(cap, page);
-                &&& cap.base % 4096 == 0
-                &&& self.blocks.tracks(cap.base / 4096 + page)
-                &&& frame == cap.base / 4096 + page
-                &&& frame * 4096 == cap.base + page * 4096
-                &&& cap.base <= frame * 4096
-                &&& frame * 4096 + 4096 <= cap.base as int + block_bytes(cap.order)
-                &&& block_ref(&self.blocks, frame) == block_ref(&self.blocks, cap.base / 4096)
+                &&& cap.base % PAGE_SZ == 0
+                &&& self.blocks.tracks(cap.base / PAGE_SZ + page)
+                &&& frame == cap.base / PAGE_SZ + page
+                &&& frame * PAGE_SZ == cap.base + page * PAGE_SZ
+                &&& cap.base <= frame * PAGE_SZ
+                &&& frame * PAGE_SZ + PAGE_SZ <= cap.base as int + block_bytes(cap.order)
+                &&& block_ref(&self.blocks, frame) == block_ref(&self.blocks, cap.base / PAGE_SZ)
                 &&& self.holders@.contains_key(block_ref(&self.blocks, frame))
                 &&& block_typed(&self.blocks, block_ref(&self.blocks, frame))
             }),
@@ -1980,24 +1979,24 @@ impl CapKernel {
         assert(payload_wf(cap));
         let m = pow2(cap.order as nat) as int;
         lemma_pow2_pos(cap.order as nat);
-        assert(block_bytes(cap.order) == m * 4096);
+        assert(block_bytes(cap.order) == m * PAGE_SZ);
         lemma_block_base_aligned(cap.base, cap.order);
-        lemma_fundamental_div_mod(cap.base as int, 4096);
-        assert(cap.base as int == 4096 * (cap.base as int / 4096));
-        assert((page as int) * 4096 < m * 4096);
+        lemma_fundamental_div_mod(cap.base as int, (PAGE_SZ as int));
+        assert(cap.base as int == PAGE_SZ * (cap.base as int / (PAGE_SZ as int)));
+        assert((page as int) * PAGE_SZ < m * PAGE_SZ);
         assert(page < m);
-        let fr = cap.base as int / 4096 + page;
-        assert(fr * 4096 == cap.base + page * 4096);
-        assert(fr * 4096 + 4096 <= cap.base + m * 4096);
+        let fr = cap.base as int / (PAGE_SZ as int) + page;
+        assert(fr * PAGE_SZ == cap.base + page * PAGE_SZ);
+        assert(fr * PAGE_SZ + PAGE_SZ <= cap.base + m * PAGE_SZ);
         lemma_holder_refs(&self.list, &self.tables, &self.blocks, &self.zeroing, self.holders@, f);
-        assert(frame_in_block(block_ref(&self.blocks, cap.base / 4096), cap));
+        assert(frame_in_block(block_ref(&self.blocks, cap.base / PAGE_SZ), cap));
         lemma2_to64();
-        assert(block_bytes(0) == 4096);
-        let child = Payload { kind: cap.kind, order: 0, rights: cap.rights, base: (fr * 4096) as usize, badge: cap.badge, reserved: cap.reserved };
-        lemma_mod_multiples_basic(fr, 4096);
+        assert(block_bytes(0) == PAGE_SZ);
+        let child = Payload { kind: cap.kind, order: 0, rights: cap.rights, base: (fr * PAGE_SZ) as usize, badge: cap.badge, reserved: cap.reserved };
+        lemma_mod_multiples_basic(fr, (PAGE_SZ as int));
         lemma_child_same_block(&self.blocks, cap, child);
-        lemma_div_multiples_vanish(fr, 4096);
-        assert(child.base as int / 4096 == fr);
+        lemma_div_multiples_vanish(fr, (PAGE_SZ as int));
+        assert(child.base as int / (PAGE_SZ as int) == fr);
         assert(self.blocks.tracks(fr));
         assert(frame_of(cap, page) == fr);
     }
@@ -2010,19 +2009,19 @@ impl CapKernel {
             self.is_cap(f),
             self.payload_of(f).kind is Frame,
             self.payload_of(f).order == 9 || self.payload_of(f).order == 18,
-            page % 512 == 0,
-            (page as int) * 4096 + 512 * 4096 <= block_bytes(self.payload_of(f).order),
+            page % PAGES_PER_2M == 0,
+            (page as int) * PAGE_SZ + PAGES_PER_2M * PAGE_SZ <= block_bytes(self.payload_of(f).order),
         ensures
             ({
                 let cap = self.payload_of(f);
                 let frame = frame_of(cap, page);
-                &&& cap.base % 4096 == 0
-                &&& self.blocks.tracks(cap.base / 4096 + page)
-                &&& frame == cap.base / 4096 + page
-                &&& frame % 512 == 0
-                &&& cap.base <= frame * 4096
-                &&& frame * 4096 + 512 * 4096 <= cap.base as int + block_bytes(cap.order)
-                &&& block_ref(&self.blocks, frame) == block_ref(&self.blocks, cap.base / 4096)
+                &&& cap.base % PAGE_SZ == 0
+                &&& self.blocks.tracks(cap.base / PAGE_SZ + page)
+                &&& frame == cap.base / PAGE_SZ + page
+                &&& frame % PAGES_PER_2M == 0
+                &&& cap.base <= frame * PAGE_SZ
+                &&& frame * PAGE_SZ + PAGES_PER_2M * PAGE_SZ <= cap.base as int + block_bytes(cap.order)
+                &&& block_ref(&self.blocks, frame) == block_ref(&self.blocks, cap.base / PAGE_SZ)
                 &&& self.holders@.contains_key(block_ref(&self.blocks, frame))
                 &&& block_typed(&self.blocks, block_ref(&self.blocks, frame))
             }),
@@ -2032,26 +2031,26 @@ impl CapKernel {
         assert(payload_wf(cap));
         let m = pow2(cap.order as nat) as int;
         lemma_pow2_pos(cap.order as nat);
-        assert(block_bytes(cap.order) == m * 4096);
+        assert(block_bytes(cap.order) == m * PAGE_SZ);
         lemma_large_base_aligned(cap.base, cap.order);
-        lemma_fundamental_div_mod(cap.base as int, 4096);
-        assert(cap.base as int == 4096 * (cap.base as int / 4096));
-        let fr = cap.base as int / 4096 + page;
-        lemma_sum_aligned(cap.base as int / 4096, page as int);
-        assert(fr % 512 == 0);
-        assert(fr * 4096 == cap.base + page * 4096);
-        assert(fr * 4096 + 512 * 4096 <= cap.base + m * 4096);
+        lemma_fundamental_div_mod(cap.base as int, (PAGE_SZ as int));
+        assert(cap.base as int == PAGE_SZ * (cap.base as int / (PAGE_SZ as int)));
+        let fr = cap.base as int / (PAGE_SZ as int) + page;
+        lemma_sum_aligned(cap.base as int / (PAGE_SZ as int), page as int);
+        assert(fr % (PAGES_PER_2M as int) == 0);
+        assert(fr * PAGE_SZ == cap.base + page * PAGE_SZ);
+        assert(fr * PAGE_SZ + PAGES_PER_2M * PAGE_SZ <= cap.base + m * PAGE_SZ);
         lemma_holder_refs(&self.list, &self.tables, &self.blocks, &self.zeroing, self.holders@, f);
-        assert(frame_in_block(block_ref(&self.blocks, cap.base / 4096), cap));
+        assert(frame_in_block(block_ref(&self.blocks, cap.base / PAGE_SZ), cap));
         lemma2_to64();
-        assert(block_bytes(9) == 512 * 4096);
-        let child = Payload { kind: cap.kind, order: 9, rights: cap.rights, base: (fr * 4096) as usize, badge: cap.badge, reserved: cap.reserved };
-        lemma_fundamental_div_mod(fr, 512);
-        assert(fr * 4096 == (512 * 4096) * (fr / 512));
-        lemma_mod_multiples_basic(fr / 512, 512int * 4096);
+        assert(block_bytes(9) == PAGES_PER_2M * PAGE_SZ);
+        let child = Payload { kind: cap.kind, order: 9, rights: cap.rights, base: (fr * PAGE_SZ) as usize, badge: cap.badge, reserved: cap.reserved };
+        lemma_fundamental_div_mod(fr, (PAGES_PER_2M as int));
+        assert(fr * PAGE_SZ == (PAGES_PER_2M * PAGE_SZ) * (fr / (PAGES_PER_2M as int)));
+        lemma_mod_multiples_basic(fr / (PAGES_PER_2M as int), (PAGES_PER_2M as int) * (PAGE_SZ as int));
         lemma_child_same_block(&self.blocks, cap, child);
-        lemma_div_multiples_vanish(fr, 4096);
-        assert(child.base as int / 4096 == fr);
+        lemma_div_multiples_vanish(fr, (PAGE_SZ as int));
+        assert(child.base as int / (PAGE_SZ as int) == fr);
         assert(self.blocks.tracks(fr));
         assert(frame_of(cap, page) == fr);
     }
@@ -2128,7 +2127,7 @@ impl CapKernel {
             assert(pre.tables.is_cap(&pre.list, x));
         }
         assert forall|x: usize| #[trigger] post.list.nodes@[x as int].live && post.tables.owner@.contains_key(page_of(x))
-            && x % 4096 != 0 && x % 4096 < NODES_PER_PAGE implies post.list.nodes@[x as int].kind is Capability by {
+            && x % PAGE_SZ != 0 && x % PAGE_SZ < NODES_PER_PAGE implies post.list.nodes@[x as int].kind is Capability by {
             assert(x != node);
             pre.lemma_slot_bound(x);
             assert(pre.list.nodes@[x as int].live);

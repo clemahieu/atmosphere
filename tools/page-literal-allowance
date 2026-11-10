@@ -8,9 +8,6 @@ capability/derive.rs
 capability/destroy.rs
 capability/device.rs
 capability/device_space.rs
-capability/link.rs
-capability/mapping.rs
-capability/map.rs
 capability/moving.rs
 capability/operation.rs
 capability/probe.rs

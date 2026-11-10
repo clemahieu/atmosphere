@@ -69,7 +69,7 @@ impl TableTree {
     /// process's root has kernel slots.
     pub open spec fn child_slot(self, t: usize, i: usize) -> bool {
         &&& self.is_table(t)
-        &&& i < 512
+        &&& i < ENTRIES
         &&& self.record(t).level >= 2
         &&& self.is_root(t) ==> !holds_kernel(self.space_records[t].value().kind, i)
     }
@@ -85,7 +85,7 @@ impl TableTree {
 
 /// The address a table page's entry holds for it: its table's.
 pub open spec fn table_addr(t: usize) -> usize {
-    (t + TABLE_NODE_PAGES * 4096) as usize
+    (t + TABLE_NODE_PAGES * PAGE_SZ) as usize
 }
 
 /// A present entry above level 1, outside the kernel slots, names a child table whose record names that
@@ -95,7 +95,7 @@ pub open spec fn table_addr(t: usize) -> usize {
 pub open spec fn table_links_wf(tree: TableTree) -> bool {
     &&& forall|t: usize, i: usize| #![trigger tree.entry(t, i)]
         tree.names_child(t, i) ==> {
-        let c = (tree.entry(t, i).addr - TABLE_NODE_PAGES * 4096) as usize;
+        let c = (tree.entry(t, i).addr - TABLE_NODE_PAGES * PAGE_SZ) as usize;
         &&& tree.is_page(c)
         &&& tree.record(c).parent == Some(TableParent { table: t, entry: i })
     }
@@ -160,7 +160,7 @@ pub proof fn lemma_links_space_removed(a: TableTree, b: TableTree, s: usize)
 {
     assert forall|u: usize, i: usize| #![trigger b.entry(u, i)]
         b.names_child(u, i) implies {
-        let c = (b.entry(u, i).addr - TABLE_NODE_PAGES * 4096) as usize;
+        let c = (b.entry(u, i).addr - TABLE_NODE_PAGES * PAGE_SZ) as usize;
         &&& b.is_page(c)
         &&& b.record(c).parent == Some(TableParent { table: u, entry: i })
     } by {
@@ -168,7 +168,7 @@ pub proof fn lemma_links_space_removed(a: TableTree, b: TableTree, s: usize)
         lemma_space_removed_others(a, b, s, u);
         assert(a.names_child(u, i));
         assert(a.entry(u, i) == b.entry(u, i));
-        let c = (a.entry(u, i).addr - TABLE_NODE_PAGES * 4096) as usize;
+        let c = (a.entry(u, i).addr - TABLE_NODE_PAGES * PAGE_SZ) as usize;
         assert(a.is_page(c));
         assert(a.record(c).parent == Some(TableParent { table: u, entry: i }));
         assert(c != s);
@@ -260,7 +260,7 @@ pub open spec fn table_removed(a: TableTree, b: TableTree, t: usize) -> bool {
     &&& b.roots == a.roots
     &&& b.space_records == a.space_records
     &&& a.record(t).parent is None
-    &&& forall|i: usize| i < 512 ==> #[trigger] a.entry(t, i).is_empty()
+    &&& forall|i: usize| i < ENTRIES ==> #[trigger] a.entry(t, i).is_empty()
 }
 
 /// Every table but t reads as it did.
@@ -296,7 +296,7 @@ pub proof fn lemma_links_table_removed(a: TableTree, b: TableTree, t: usize)
 {
     assert forall|u: usize, i: usize| #![trigger b.entry(u, i)]
         b.names_child(u, i) implies {
-        let c = (b.entry(u, i).addr - TABLE_NODE_PAGES * 4096) as usize;
+        let c = (b.entry(u, i).addr - TABLE_NODE_PAGES * PAGE_SZ) as usize;
         &&& b.is_page(c)
         &&& b.record(c).parent == Some(TableParent { table: u, entry: i })
     } by {
@@ -304,7 +304,7 @@ pub proof fn lemma_links_table_removed(a: TableTree, b: TableTree, t: usize)
         lemma_table_removed_others(a, b, t, u);
         assert(a.names_child(u, i));
         assert(a.entry(u, i) == b.entry(u, i));
-        let c = (a.entry(u, i).addr - TABLE_NODE_PAGES * 4096) as usize;
+        let c = (a.entry(u, i).addr - TABLE_NODE_PAGES * PAGE_SZ) as usize;
         assert(a.is_page(c));
         assert(a.record(c).parent == Some(TableParent { table: u, entry: i }));
         assert(c != t);
@@ -360,7 +360,7 @@ pub proof fn lemma_walk_table_removed(a: TableTree, b: TableTree, t: usize, r: u
     } by {
         if u == t {
             assert(!b.is_table(t));
-            if i < 512 {
+            if i < ENTRIES {
                 assert(a.entry(t, i).is_empty());
             }
         } else {
@@ -399,13 +399,13 @@ pub proof fn lemma_links_table_added(pre: TableTree, post: TableTree, t: usize)
         post.space_records == pre.space_records,
         post.record(t).parent is None,
         post.record(t).space is None,
-        forall|i: usize| i < 512 ==> #[trigger] post.entry(t, i).is_empty(),
+        forall|i: usize| i < ENTRIES ==> #[trigger] post.entry(t, i).is_empty(),
     ensures
         table_links_wf(post),
 {
     assert forall|u: usize, i: usize| #![trigger post.entry(u, i)]
         post.names_child(u, i) implies {
-        let c = (post.entry(u, i).addr - TABLE_NODE_PAGES * 4096) as usize;
+        let c = (post.entry(u, i).addr - TABLE_NODE_PAGES * PAGE_SZ) as usize;
         &&& post.is_page(c)
         &&& post.record(c).parent == Some(TableParent { table: u, entry: i })
     } by {
@@ -416,7 +416,7 @@ pub proof fn lemma_links_table_added(pre: TableTree, post: TableTree, t: usize)
         assert(post.record(u) == pre.record(u));
         assert(post.entry(u, i) == pre.entry(u, i));
         assert(pre.names_child(u, i));
-        let c = (pre.entry(u, i).addr - TABLE_NODE_PAGES * 4096) as usize;
+        let c = (pre.entry(u, i).addr - TABLE_NODE_PAGES * PAGE_SZ) as usize;
         assert(pre.is_page(c));
         assert(c != t);
         assert(post.record(c) == pre.record(c));
@@ -468,13 +468,13 @@ pub proof fn lemma_links_root_added(pre: TableTree, post: TableTree, s: usize)
         post.roots == pre.roots.insert(s, post.roots[s]),
         post.space_records == pre.space_records.insert(s, post.space_records[s]),
         post.record(s).parent is None,
-        forall|i: usize| i < 512 && !holds_kernel(post.space_records[s].value().kind, i) ==> #[trigger] post.entry(s, i).is_empty(),
+        forall|i: usize| i < ENTRIES && !holds_kernel(post.space_records[s].value().kind, i) ==> #[trigger] post.entry(s, i).is_empty(),
     ensures
         table_links_wf(post),
 {
     assert forall|u: usize, i: usize| #![trigger post.entry(u, i)]
         post.names_child(u, i) implies {
-        let c = (post.entry(u, i).addr - TABLE_NODE_PAGES * 4096) as usize;
+        let c = (post.entry(u, i).addr - TABLE_NODE_PAGES * PAGE_SZ) as usize;
         &&& post.is_page(c)
         &&& post.record(c).parent == Some(TableParent { table: u, entry: i })
     } by {
@@ -485,7 +485,7 @@ pub proof fn lemma_links_root_added(pre: TableTree, post: TableTree, s: usize)
         assert(post.record(u) == pre.record(u));
         assert(post.entry(u, i) == pre.entry(u, i));
         assert(pre.names_child(u, i));
-        let c = (pre.entry(u, i).addr - TABLE_NODE_PAGES * 4096) as usize;
+        let c = (pre.entry(u, i).addr - TABLE_NODE_PAGES * PAGE_SZ) as usize;
         assert(pre.is_page(c));
         assert(post.record(c) == pre.record(c));
     }
@@ -538,7 +538,7 @@ pub open spec fn linked(pre: TableTree, post: TableTree, parent: usize, entry: u
     &&& post.roots.dom() == pre.roots.dom()
     &&& post.entry(parent, entry) == child_entry(child)
     &&& forall|t: usize, i: usize| #![trigger post.entry(t, i)]
-        pre.is_table(t) && i < 512 && !(t == parent && i == entry) ==> post.entry(t, i) == pre.entry(t, i)
+        pre.is_table(t) && i < ENTRIES && !(t == parent && i == entry) ==> post.entry(t, i) == pre.entry(t, i)
     &&& forall|t: usize| #![trigger post.record(t)] pre.is_table(t) ==> post.record(t).level == pre.record(t).level
     &&& forall|t: usize| #![trigger post.record(t)] pre.is_table(t) && t != child ==> {
         &&& post.record(t).space == pre.record(t).space
@@ -565,7 +565,7 @@ pub proof fn lemma_links_linked(pre: TableTree, post: TableTree, parent: usize, 
         pre.record(child).level + 1 == pre.record(parent).level,
         pre.record(parent).space == Some(s),
         pre.is_root(s),
-        child + TABLE_NODE_PAGES * 4096 <= usize::MAX,
+        child + TABLE_NODE_PAGES * PAGE_SZ <= usize::MAX,
     ensures
         table_links_wf(post),
 {
@@ -586,17 +586,17 @@ pub proof fn lemma_links_linked(pre: TableTree, post: TableTree, parent: usize, 
     }
     assert forall|u: usize, i: usize| #![trigger post.entry(u, i)]
         post.names_child(u, i) implies {
-        let c = (post.entry(u, i).addr - TABLE_NODE_PAGES * 4096) as usize;
+        let c = (post.entry(u, i).addr - TABLE_NODE_PAGES * PAGE_SZ) as usize;
         &&& post.is_page(c)
         &&& post.record(c).parent == Some(TableParent { table: u, entry: i })
     } by {
         if u == parent && i == entry {
             assert(post.entry(parent, entry) == child_entry(child));
-            assert((child_entry(child).addr - TABLE_NODE_PAGES * 4096) as usize == child);
+            assert((child_entry(child).addr - TABLE_NODE_PAGES * PAGE_SZ) as usize == child);
         } else {
             assert(post.entry(u, i) == pre.entry(u, i));
             assert(pre.names_child(u, i));
-            let c = (pre.entry(u, i).addr - TABLE_NODE_PAGES * 4096) as usize;
+            let c = (pre.entry(u, i).addr - TABLE_NODE_PAGES * PAGE_SZ) as usize;
             assert(pre.is_page(c));
             assert(pre.record(c).parent == Some(TableParent { table: u, entry: i }));
             assert(c != child);
@@ -656,7 +656,7 @@ pub open spec fn detached(pre: TableTree, post: TableTree, parent: usize, entry:
     &&& post.roots.dom() == pre.roots.dom()
     &&& post.entry(parent, entry).is_empty()
     &&& forall|t: usize, i: usize| #![trigger post.entry(t, i)]
-        pre.is_table(t) && i < 512 && !(t == parent && i == entry) ==> post.entry(t, i) == pre.entry(t, i)
+        pre.is_table(t) && i < ENTRIES && !(t == parent && i == entry) ==> post.entry(t, i) == pre.entry(t, i)
     &&& forall|t: usize| #![trigger post.record(t)] pre.is_table(t) ==> {
         &&& post.record(t).level == pre.record(t).level
         &&& post.record(t).space == pre.record(t).space
@@ -675,7 +675,7 @@ pub proof fn lemma_links_detached(pre: TableTree, post: TableTree, parent: usize
         detached(pre, post, parent, entry, child),
         pre.is_page(child),
         pre.record(child).parent == Some(TableParent { table: parent, entry }),
-        forall|c: usize| #[trigger] pre.maps.contains_key(c) ==> c + TABLE_NODE_PAGES * 4096 <= usize::MAX,
+        forall|c: usize| #[trigger] pre.maps.contains_key(c) ==> c + TABLE_NODE_PAGES * PAGE_SZ <= usize::MAX,
     ensures
         table_links_wf(post),
 {
@@ -696,14 +696,14 @@ pub proof fn lemma_links_detached(pre: TableTree, post: TableTree, parent: usize
     }
     assert forall|u: usize, i: usize| #![trigger post.entry(u, i)]
         post.names_child(u, i) implies {
-        let c = (post.entry(u, i).addr - TABLE_NODE_PAGES * 4096) as usize;
+        let c = (post.entry(u, i).addr - TABLE_NODE_PAGES * PAGE_SZ) as usize;
         &&& post.is_page(c)
         &&& post.record(c).parent == Some(TableParent { table: u, entry: i })
     } by {
         assert(!(u == parent && i == entry));
         assert(post.entry(u, i) == pre.entry(u, i));
         assert(pre.names_child(u, i));
-        let c = (pre.entry(u, i).addr - TABLE_NODE_PAGES * 4096) as usize;
+        let c = (pre.entry(u, i).addr - TABLE_NODE_PAGES * PAGE_SZ) as usize;
         assert(pre.is_page(c));
         assert(pre.record(c).parent == Some(TableParent { table: u, entry: i }));
         assert(c != child);
@@ -826,14 +826,14 @@ pub proof fn lemma_walk_detached(a: TableTree, b: TableTree, parent: usize, entr
         assert(b.roots.contains_key(t) == a.roots.contains_key(t));
     }
     assert forall|t: usize, i: usize| !(t == parent && i == entry) implies #[trigger] step(b, t, i) == step(a, t, i) by {
-        if a.is_table(t) && i < 512 {
+        if a.is_table(t) && i < ENTRIES {
             assert(b.entry(t, i) == a.entry(t, i));
             assert(b.record(t).level == a.record(t).level);
         }
     }
     assert(step(b, parent, entry) is None);
     assert forall|t: usize, i: usize| true implies #[trigger] frame_entry(b, t, i) == frame_entry(a, t, i) by {
-        if a.is_table(t) && i < 512 {
+        if a.is_table(t) && i < ENTRIES {
             assert(b.record(t).level == a.record(t).level);
             if !(t == parent && i == entry) {
                 assert(b.entry(t, i) == a.entry(t, i));
@@ -841,7 +841,7 @@ pub proof fn lemma_walk_detached(a: TableTree, b: TableTree, parent: usize, entr
         }
     }
     assert forall|t: usize, i: usize| true implies #[trigger] large_entry(b, t, i) == large_entry(a, t, i) by {
-        if a.is_table(t) && i < 512 {
+        if a.is_table(t) && i < ENTRIES {
             assert(b.record(t).level == a.record(t).level);
             if !(t == parent && i == entry) {
                 assert(b.entry(t, i) == a.entry(t, i));
@@ -862,7 +862,7 @@ pub open spec fn cut_walk_finds(tree: TableTree, t: usize, g: usize) -> bool {
 
 /// The entries of table t that name a child.
 pub open spec fn child_entries(tree: TableTree, t: usize) -> Set<usize> {
-    Set::<usize>::range(0, 512).filter(|e: usize| tree.names_child(t, e))
+    Set::<usize>::range(0, ENTRIES).filter(|e: usize| tree.names_child(t, e))
 }
 
 pub proof fn lemma_child_entries(tree: TableTree, t: usize, e: usize)
@@ -870,24 +870,24 @@ pub proof fn lemma_child_entries(tree: TableTree, t: usize, e: usize)
         child_entries(tree, t).contains(e) <==> tree.names_child(t, e),
 {
     broadcast use vstd::set::lemma_set_filter;
-    vstd::set_lib::range_set_properties::<usize>(0, 512);
+    vstd::set_lib::range_set_properties::<usize>(0, ENTRIES);
 }
 
 /// The child table entry e of table t names.
 pub open spec fn child_at(tree: TableTree, t: usize, e: usize) -> usize {
-    (tree.entry(t, e).addr - TABLE_NODE_PAGES * 4096) as usize
+    (tree.entry(t, e).addr - TABLE_NODE_PAGES * PAGE_SZ) as usize
 }
 
 /// What t's cut leaves a core or an IOMMU holding that nothing will read again: t's own page, from a
 /// paging-structure cache, and the pages the walks through the entry naming it find, from a TLB. The tables
 /// below t keep their space, so their pages stay said until they are cut in turn.
 pub open spec fn cut_pages(tree: TableTree, t: usize) -> Set<usize> {
-    Set::<usize>::range(0, NUM_PAGES).filter(|g: usize| g == t / 4096 || cut_walk_finds(tree, t, g))
+    Set::<usize>::range(0, NUM_PAGES).filter(|g: usize| g == t / PAGE_SZ || cut_walk_finds(tree, t, g))
 }
 
 pub proof fn lemma_cut_pages(tree: TableTree, t: usize, g: usize)
     ensures
-        cut_pages(tree, t).contains(g) <==> g < NUM_PAGES && (g == t / 4096 || cut_walk_finds(tree, t, g)),
+        cut_pages(tree, t).contains(g) <==> g < NUM_PAGES && (g == t / PAGE_SZ || cut_walk_finds(tree, t, g)),
 {
     broadcast use vstd::set::lemma_set_filter;
     vstd::set_lib::range_set_properties::<usize>(0, NUM_PAGES);
@@ -896,24 +896,24 @@ pub proof fn lemma_cut_pages(tree: TableTree, t: usize, g: usize)
 /// An address whose page is below NUM_PAGES is below 2^33.
 pub proof fn lemma_table_bound(t: usize)
     requires
-        t / 4096 < NUM_PAGES,
+        t / PAGE_SZ < NUM_PAGES,
     ensures
         t < 0x2_0000_0000,
 {
-    lemma_fundamental_div_mod(t as int, 4096);
+    lemma_fundamental_div_mod(t as int, (PAGE_SZ as int));
 }
 
 /// A table page's table lies within memory: its address, page aligned and below 2^33 plus five pages,
 /// has no bit outside MEM_MASK.
 pub proof fn lemma_table_addr_valid(t: usize)
     requires
-        t % 4096 == 0,
+        t % PAGE_SZ == 0,
         t < 0x2_0000_0000,
     ensures
-        t + TABLE_NODE_PAGES * 4096 < 0x1_0000_0000_0000,
-        mem_valid((t + TABLE_NODE_PAGES * 4096) as usize),
+        t + TABLE_NODE_PAGES * PAGE_SZ < 0x1_0000_0000_0000,
+        mem_valid((t + TABLE_NODE_PAGES * PAGE_SZ) as usize),
 {
-    assert(t % 4096 == 0 && t < 0x2_0000_0000 ==> ((t + 0x5000) as usize) & 0xffff_0000_0000_0fffusize == 0) by (bit_vector);
+    assert(t % PAGE_SZ == 0 && t < 0x2_0000_0000 ==> ((t + 0x5000) as usize) & 0xffff_0000_0000_0fffusize == 0) by (bit_vector);
     assert((!MEM_MASK) as usize == 0xffff_0000_0000_0fffusize) by (compute_only);
 }
 
@@ -982,12 +982,12 @@ impl CapKernel {
         &&& !self.cap_dead(n)
         &&& tree.is_table(parent)
         &&& tree.record(parent).space == Some(self.payload_of(n).base)
-        &&& !self.blocks.pages@[(parent / 4096) as int].dead
+        &&& !self.blocks.pages@[(parent / PAGE_SZ) as int].dead
         &&& tree.child_slot(parent, entry)
         &&& tree.entry(parent, entry).is_empty()
         &&& self.can_retype_under(root, from, child, 3)
         &&& tree.is_page(child)
-        &&& !self.blocks.pages@[(child / 4096) as int].dead
+        &&& !self.blocks.pages@[(child / PAGE_SZ) as int].dead
         &&& tree.record(child).level + 1 == tree.record(parent).level
         &&& tree.record(child).space is None
         &&& tree.record(child).parent is None
@@ -1119,13 +1119,13 @@ impl CapKernel {
                 &&& post.table_pages.records@[parent].value().level == pre.table_pages.records@[parent].value().level
                 &&& post.table_pages.records@[parent].value().parent == pre.table_pages.records@[parent].value().parent
                 &&& post.table_pages.records@[parent].value().written
-                &&& forall|i: usize| #![trigger post.table_pages.maps@[parent].value()[i]] i < 512
+                &&& forall|i: usize| #![trigger post.table_pages.maps@[parent].value()[i]] i < ENTRIES
                     ==> post.table_pages.maps@[parent].value()[i].perm.present || post.table_pages.maps@[parent].value()[i].is_empty()
             },
             post.table_pages.records@[child].addr() == pre.table_pages.records@[child].addr(),
             post.table_pages.records@[child].is_init(),
             post.table_pages.records@[child].value().level == pre.table_pages.records@[child].value().level,
-            !pre.blocks.pages@[(child / 4096) as int].dead,
+            !pre.blocks.pages@[(child / PAGE_SZ) as int].dead,
         ensures
             table_pages_wf(&post.list, &post.table_pages, &post.blocks),
     {
@@ -1139,21 +1139,21 @@ impl CapKernel {
                 assert(table_record_wf(pb, t));
             } else if t == child {
                 assert(pb.maps@[t] == pa.maps@[t]);
-                assert forall|i: usize| i < 512 implies #[trigger] pb.maps@[t].value()[i].is_empty() by {
+                assert forall|i: usize| i < ENTRIES implies #[trigger] pb.maps@[t].value()[i].is_empty() by {
                     assert(pa.maps@[t].value()[i].is_empty());
                 }
                 assert(table_record_wf(pb, t));
             } else {
                 assert(pb.maps@[t] == pa.maps@[t]);
                 assert(pb.records@[t] == pa.records@[t]);
-                assert forall|i: usize| i < 512 && !pb.records@[t].value().written implies #[trigger] pb.maps@[t].value()[i].is_empty() by {
+                assert forall|i: usize| i < ENTRIES && !pb.records@[t].value().written implies #[trigger] pb.maps@[t].value()[i].is_empty() by {
                     assert(pa.maps@[t].value()[i].is_empty());
                 }
                 assert(table_record_wf(pb, t));
             }
         }
-        assert forall|b: usize| post.blocks.tracks(b as int) && #[trigger] table_block(&post.blocks, b) implies pb.maps@.contains_key((b * 4096) as usize) by {
-            assert(pa.maps@.contains_key((b * 4096) as usize));
+        assert forall|b: usize| post.blocks.tracks(b as int) && #[trigger] table_block(&post.blocks, b) implies pb.maps@.contains_key((b * PAGE_SZ) as usize) by {
+            assert(pa.maps@.contains_key((b * PAGE_SZ) as usize));
         }
     }
 
@@ -1180,7 +1180,7 @@ impl CapKernel {
             post.spaces.roots@[parent].is_init(),
             post.spaces.roots@[parent].value().wf(),
             post.spaces.roots@[parent].value().level == pre.spaces.roots@[parent].value().level,
-            forall|i: usize| i < 512 && i != entry ==> #[trigger] post.spaces.roots@[parent].value()[i] == pre.spaces.roots@[parent].value()[i],
+            forall|i: usize| i < ENTRIES && i != entry ==> #[trigger] post.spaces.roots@[parent].value()[i] == pre.spaces.roots@[parent].value()[i],
             post.spaces.records@[parent].addr() == pre.spaces.records@[parent].addr(),
             post.spaces.records@[parent].is_init(),
             post.spaces.records@[parent].value().kind == pre.spaces.records@[parent].value().kind,
@@ -1208,8 +1208,8 @@ impl CapKernel {
                 assert(root_record_wf(sb, s));
             }
         }
-        assert forall|b: usize| post.blocks.tracks(b as int) && #[trigger] space_block(&post.blocks, b) implies sb.roots@.contains_key((b * 4096) as usize) by {
-            assert(sa.roots@.contains_key((b * 4096) as usize));
+        assert forall|b: usize| post.blocks.tracks(b as int) && #[trigger] space_block(&post.blocks, b) implies sb.roots@.contains_key((b * PAGE_SZ) as usize) by {
+            assert(sa.roots@.contains_key((b * PAGE_SZ) as usize));
         }
     }
 
@@ -1217,7 +1217,7 @@ impl CapKernel {
     pub fn table_entry(&self, t: usize, is_root: bool, i: usize) -> (ret: PageEntry)
         requires
             self.wf(),
-            i < 512,
+            i < ENTRIES,
             is_root ==> self.spaces.roots@.contains_key(t),
             !is_root ==> self.table_pages.maps@.contains_key(t),
             is_root ==> !self.table_pages.maps@.contains_key(t),
@@ -1226,14 +1226,14 @@ impl CapKernel {
     {
         if is_root {
             let tracked map = self.spaces.roots.borrow().tracked_borrow(t);
-            let record = PPtr::<SpaceRecord>::from_usize(t + SPACE_RECORD_PAGE * 4096).borrow(Tracked(self.spaces.records.borrow().tracked_borrow(t)));
+            let record = PPtr::<SpaceRecord>::from_usize(t + SPACE_RECORD_PAGE * PAGE_SZ).borrow(Tracked(self.spaces.records.borrow().tracked_borrow(t)));
             PPtr::<PageMap>::from_usize(record.root).borrow(Tracked(map)).get(i, 4)
         } else {
             let tracked map = self.table_pages.maps.borrow().tracked_borrow(t);
-            let level = PPtr::<TableRecord>::from_usize(t + TABLE_RECORD_PAGE * 4096)
+            let level = PPtr::<TableRecord>::from_usize(t + TABLE_RECORD_PAGE * PAGE_SZ)
                 .borrow(Tracked(self.table_pages.records.borrow().tracked_borrow(t)))
                 .level;
-            PPtr::<PageMap>::from_usize(t + TABLE_NODE_PAGES * 4096).borrow(Tracked(map)).get(i, level)
+            PPtr::<PageMap>::from_usize(t + TABLE_NODE_PAGES * PAGE_SZ).borrow(Tracked(map)).get(i, level)
         }
     }
 
@@ -1267,7 +1267,7 @@ impl CapKernel {
         proof {
             assert(space_wf(&self.list, &self.spaces, &self.blocks, s));
         }
-        PPtr::<SpaceRecord>::from_usize(s + SPACE_RECORD_PAGE * 4096).borrow(Tracked(self.spaces.records.borrow().tracked_borrow(s))).kind
+        PPtr::<SpaceRecord>::from_usize(s + SPACE_RECORD_PAGE * PAGE_SZ).borrow(Tracked(self.spaces.records.borrow().tracked_borrow(s))).kind
     }
 
     /// Reads a table's record, which the caller has found to be a root's or a table page's.
@@ -1281,9 +1281,9 @@ impl CapKernel {
             ret == tree_of(&self.table_pages, &self.spaces).record(t),
     {
         if is_root {
-            PPtr::<SpaceRecord>::from_usize(t + SPACE_RECORD_PAGE * 4096).borrow(Tracked(self.spaces.records.borrow().tracked_borrow(t))).table
+            PPtr::<SpaceRecord>::from_usize(t + SPACE_RECORD_PAGE * PAGE_SZ).borrow(Tracked(self.spaces.records.borrow().tracked_borrow(t))).table
         } else {
-            *PPtr::<TableRecord>::from_usize(t + TABLE_RECORD_PAGE * 4096).borrow(Tracked(self.table_pages.records.borrow().tracked_borrow(t)))
+            *PPtr::<TableRecord>::from_usize(t + TABLE_RECORD_PAGE * PAGE_SZ).borrow(Tracked(self.table_pages.records.borrow().tracked_borrow(t)))
         }
     }
 
@@ -1292,7 +1292,7 @@ impl CapKernel {
         requires
             old(self).table_pages.maps@.contains_key(child),
             old(self).table_pages.records@.contains_key(child),
-            old(self).table_pages.records@[child].addr() == child + TABLE_RECORD_PAGE * 4096,
+            old(self).table_pages.records@[child].addr() == child + TABLE_RECORD_PAGE * PAGE_SZ,
             old(self).table_pages.records@[child].is_init(),
             old(self).blocks.tracks_addr(child),
         ensures
@@ -1328,7 +1328,7 @@ impl CapKernel {
         proof {
             lemma_table_bound(child);
         }
-        let ptr = PPtr::<TableRecord>::from_usize(child + TABLE_RECORD_PAGE * 4096);
+        let ptr = PPtr::<TableRecord>::from_usize(child + TABLE_RECORD_PAGE * PAGE_SZ);
         let tracked mut record = self.table_pages.records.borrow_mut().tracked_remove(child);
         let level = ptr.borrow(Tracked(&record)).level;
         ptr.write(Tracked(&mut record), TableRecord { level, space: Some(s), parent: Some(TableParent { table: parent, entry }), written: false });
@@ -1345,7 +1345,7 @@ impl CapKernel {
             old(self).spaces.roots@.contains_key(parent),
             !old(self).table_pages.maps@.contains_key(parent),
             old(self).table_pages.maps@.contains_key(child),
-            !old(self).blocks.pages@[(child / 4096) as int].dead,
+            !old(self).blocks.pages@[(child / PAGE_SZ) as int].dead,
             tree_of(&old(self).table_pages, &old(self).spaces).child_slot(parent, entry),
             tree_of(&old(self).table_pages, &old(self).spaces).entry(parent, entry).is_empty(),
             tree_of(&old(self).table_pages, &old(self).spaces).record(child).parent is None,
@@ -1374,12 +1374,12 @@ impl CapKernel {
             lemma_table_addr_valid(child);
         }
         let value = PageEntry {
-            addr: child + TABLE_NODE_PAGES * 4096,
+            addr: child + TABLE_NODE_PAGES * PAGE_SZ,
             perm: PageEntryPerm { present: true, ps: false, write: true, execute_disable: false, user: true },
         };
         let tracked mut map = self.spaces.roots.borrow_mut().tracked_remove(parent);
         let tracked mut record = self.spaces.records.borrow_mut().tracked_remove(parent);
-        let ptr = PPtr::<SpaceRecord>::from_usize(parent + SPACE_RECORD_PAGE * 4096);
+        let ptr = PPtr::<SpaceRecord>::from_usize(parent + SPACE_RECORD_PAGE * PAGE_SZ);
         let space_record = *ptr.borrow(Tracked(&record));
         page_map_set(space_record.root, Tracked(&mut map), entry, value, 4);
         ptr.write(
@@ -1409,7 +1409,7 @@ impl CapKernel {
             assert(post.spaces.roots@ == pre.spaces.roots@.insert(parent, post.spaces.roots@[parent]));
             assert(post.spaces.records@ == pre.spaces.records@.insert(parent, post.spaces.records@[parent]));
             assert(post.spaces.roots@[parent].value()[entry] == value);
-            assert forall|i: usize| i < 512 && i != entry implies #[trigger] post.spaces.roots@[parent].value()[i] == pre.spaces.roots@[parent].value()[i] by {}
+            assert forall|i: usize| i < ENTRIES && i != entry implies #[trigger] post.spaces.roots@[parent].value()[i] == pre.spaces.roots@[parent].value()[i] by {}
             Self::lemma_link_spaces(pre, post, parent, entry);
             assert(post.table_pages.maps@.dom() == pre.table_pages.maps@.dom());
             assert(post.table_pages.records@.dom() == pre.table_pages.records@.dom());
@@ -1430,7 +1430,7 @@ impl CapKernel {
             old(self).table_pages.maps@.contains_key(parent),
             old(self).table_pages.maps@.contains_key(child),
             old(self).spaces.roots@.contains_key(s),
-            !old(self).blocks.pages@[(child / 4096) as int].dead,
+            !old(self).blocks.pages@[(child / PAGE_SZ) as int].dead,
             tree_of(&old(self).table_pages, &old(self).spaces).child_slot(parent, entry),
             tree_of(&old(self).table_pages, &old(self).spaces).entry(parent, entry).is_empty(),
             tree_of(&old(self).table_pages, &old(self).spaces).record(parent).space == Some(s),
@@ -1460,14 +1460,14 @@ impl CapKernel {
             lemma_table_addr_valid(child);
         }
         let value = PageEntry {
-            addr: child + TABLE_NODE_PAGES * 4096,
+            addr: child + TABLE_NODE_PAGES * PAGE_SZ,
             perm: PageEntryPerm { present: true, ps: false, write: true, execute_disable: false, user: true },
         };
         let tracked mut map = self.table_pages.maps.borrow_mut().tracked_remove(parent);
         let tracked mut record = self.table_pages.records.borrow_mut().tracked_remove(parent);
-        let ptr = PPtr::<TableRecord>::from_usize(parent + TABLE_RECORD_PAGE * 4096);
+        let ptr = PPtr::<TableRecord>::from_usize(parent + TABLE_RECORD_PAGE * PAGE_SZ);
         let parent_record = *ptr.borrow(Tracked(&record));
-        page_map_set(parent + TABLE_NODE_PAGES * 4096, Tracked(&mut map), entry, value, parent_record.level);
+        page_map_set(parent + TABLE_NODE_PAGES * PAGE_SZ, Tracked(&mut map), entry, value, parent_record.level);
         ptr.write(
             Tracked(&mut record),
             TableRecord { level: parent_record.level, space: parent_record.space, parent: parent_record.parent, written: true },
@@ -1484,7 +1484,7 @@ impl CapKernel {
             let b = tree_of(&post.table_pages, &post.spaces);
             assert(post.table_pages.maps@ == pre.table_pages.maps@.insert(parent, post.table_pages.maps@[parent]));
             assert(post.table_pages.maps@[parent].value()[entry] == value);
-            assert forall|i: usize| i < 512 && i != entry implies #[trigger] post.table_pages.maps@[parent].value()[i] == pre.table_pages.maps@[parent].value()[i] by {}
+            assert forall|i: usize| i < ENTRIES && i != entry implies #[trigger] post.table_pages.maps@[parent].value()[i] == pre.table_pages.maps@[parent].value()[i] by {}
             assert(post.table_pages.maps@.dom() == pre.table_pages.maps@.dom());
             assert(post.table_pages.records@.dom() == pre.table_pages.records@.dom());
             assert forall|t: usize| #[trigger] pre.table_pages.maps@.contains_key(t) && t != parent
@@ -1516,7 +1516,7 @@ impl CapKernel {
             },
             pre.table_pages.maps@.contains_key(parent) ==> {
                 &&& post.table_pages.maps@[parent].value()[entry] == child_entry(child)
-                &&& forall|i: usize| i < 512 && i != entry ==> #[trigger] post.table_pages.maps@[parent].value()[i] == pre.table_pages.maps@[parent].value()[i]
+                &&& forall|i: usize| i < ENTRIES && i != entry ==> #[trigger] post.table_pages.maps@[parent].value()[i] == pre.table_pages.maps@[parent].value()[i]
                 &&& post.table_pages.records@[parent].value().level == pre.table_pages.records@[parent].value().level
                 &&& post.table_pages.records@[parent].value().space == pre.table_pages.records@[parent].value().space
                 &&& post.table_pages.records@[parent].value().parent == pre.table_pages.records@[parent].value().parent
@@ -1525,7 +1525,7 @@ impl CapKernel {
             !pre.table_pages.maps@.contains_key(parent) ==> {
                 &&& post.spaces.records@[parent].value().kind == pre.spaces.records@[parent].value().kind
                 &&& post.spaces.roots@[parent].value()[entry] == child_entry(child)
-                &&& forall|i: usize| i < 512 && i != entry ==> #[trigger] post.spaces.roots@[parent].value()[i] == pre.spaces.roots@[parent].value()[i]
+                &&& forall|i: usize| i < ENTRIES && i != entry ==> #[trigger] post.spaces.roots@[parent].value()[i] == pre.spaces.roots@[parent].value()[i]
                 &&& post.spaces.records@[parent].value().table.level == pre.spaces.records@[parent].value().table.level
                 &&& post.spaces.records@[parent].value().table.space == pre.spaces.records@[parent].value().table.space
                 &&& post.spaces.records@[parent].value().table.parent == pre.spaces.records@[parent].value().table.parent
@@ -1546,7 +1546,7 @@ impl CapKernel {
         }
         assert(b.entry(parent, entry) == child_entry(child));
         assert forall|t: usize, i: usize| #![trigger b.entry(t, i)]
-            a.is_table(t) && i < 512 && !(t == parent && i == entry) implies b.entry(t, i) == a.entry(t, i) by {
+            a.is_table(t) && i < ENTRIES && !(t == parent && i == entry) implies b.entry(t, i) == a.entry(t, i) by {
             if a.is_page(t) {
                 if t == parent {
                     assert(post.table_pages.maps@[parent].value()[i] == pre.table_pages.maps@[parent].value()[i]);
@@ -1603,7 +1603,7 @@ impl CapKernel {
         assert(a.is_page(child));
         assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, child));
         assert(table_record_wf(&pre.table_pages, child));
-        assert forall|i: usize| i < 512 implies #[trigger] a.entry(child, i).is_empty() by {
+        assert forall|i: usize| i < ENTRIES implies #[trigger] a.entry(child, i).is_empty() by {
             assert(pre.table_pages.maps@[child].value()[i].is_empty());
         }
         assert(child != parent);
@@ -1679,7 +1679,7 @@ impl CapKernel {
         if self.is_cap_dead(n, payload) {
             return false;
         }
-        if parent % 32768 != 0 || !self.blocks.page_tracked(parent / 4096) || child % 32768 != 0 || !self.blocks.page_tracked(child / 4096) || entry >= 512 {
+        if parent % 32768 != 0 || !self.blocks.page_tracked(parent / PAGE_SZ) || child % 32768 != 0 || !self.blocks.page_tracked(child / PAGE_SZ) || entry >= ENTRIES {
             proof {
                 if tree.is_page(parent) {
                     assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, parent));
@@ -1695,7 +1695,7 @@ impl CapKernel {
         }
         let is_root = parent == payload.base;
         if !is_root {
-            let block = *self.blocks.pages.get(parent / 4096);
+            let block = *self.blocks.pages.get(parent / PAGE_SZ);
             let is_page = match (block.kind, block.object) {
                 (PageKind::Base, ObjectType::TablePage) => true,
                 _ => false,
@@ -1712,8 +1712,8 @@ impl CapKernel {
                 return false;
             }
             proof {
-                lemma_table_page_base(parent, parent / 4096);
-                assert(table_block(&pre.blocks, parent / 4096));
+                lemma_table_page_base(parent, parent / PAGE_SZ);
+                assert(table_block(&pre.blocks, parent / PAGE_SZ));
                 assert(tree.is_page(parent));
                 if tree.is_root(parent) {
                     assert(space_wf(&pre.list, &pre.spaces, &pre.blocks, parent));
@@ -1728,10 +1728,10 @@ impl CapKernel {
                 }
             }
         }
-        if self.blocks.pages.get(parent / 4096).dead {
+        if self.blocks.pages.get(parent / PAGE_SZ).dead {
             return false;
         }
-        let child_block = *self.blocks.pages.get(child / 4096);
+        let child_block = *self.blocks.pages.get(child / PAGE_SZ);
         let child_ok = match (child_block.kind, child_block.object) {
             (PageKind::Base, ObjectType::TablePage) => true,
             _ => false,
@@ -1745,8 +1745,8 @@ impl CapKernel {
             return false;
         }
         proof {
-            lemma_table_page_base(child, child / 4096);
-            assert(table_block(&pre.blocks, child / 4096));
+            lemma_table_page_base(child, child / PAGE_SZ);
+            assert(table_block(&pre.blocks, child / PAGE_SZ));
             assert(tree.is_page(child));
             assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, child));
         }
@@ -1846,8 +1846,8 @@ impl CapKernel {
         let pages = cut_pages(tree, t);
         let space = tree.record(t).space;
         &&& post.flush_epoch == pre.flush_epoch + 1
-        &&& post.stale_epoch.written(post.flush_epoch, t / 4096)
-        &&& !post.acknowledged(t / 4096)
+        &&& post.stale_epoch.written(post.flush_epoch, t / PAGE_SZ)
+        &&& !post.acknowledged(t / PAGE_SZ)
         &&& forall|d: int, g: usize| #![trigger post.tlb@[d].contains(TlbEntry { space: space->Some_0, page: g })]
             0 <= d < NUM_CPUS && space is Some && pre.loaded(d, space->Some_0) && pages.contains(g)
             ==> post.tlb@[d].contains(TlbEntry { space: space->Some_0, page: g })
@@ -1885,8 +1885,8 @@ impl CapKernel {
         requires
             self.wf(),
             frame_slot(tree_of(&self.table_pages, &self.spaces), t, e),
-            tree_of(&self.table_pages, &self.spaces).entry(t, e).addr / 4096 <= g,
-            g < tree_of(&self.table_pages, &self.spaces).entry(t, e).addr / 4096
+            tree_of(&self.table_pages, &self.spaces).entry(t, e).addr / PAGE_SZ <= g,
+            g < tree_of(&self.table_pages, &self.spaces).entry(t, e).addr / PAGE_SZ
                 + entry_pages(if tree_of(&self.table_pages, &self.spaces).entry(t, e).perm.ps { 2usize } else { 1usize }),
         ensures
             self.mapped@.contains(g),
@@ -1899,7 +1899,7 @@ impl CapKernel {
         let m = self.mappings@[n];
         assert(mapping_wf(&self.list, &self.tables, tree, &self.blocks, self.holders@, self.mappings@, n));
         assert(self.blocks.tracks_run(m.frame as int, entry_pages(tree.record(t).level)));
-        lemma_div_by_multiple(m.frame as int, 4096);
+        lemma_div_by_multiple(m.frame as int, (PAGE_SZ as int));
         lemma_map_pages(m.frame, m.large);
         assert(record_pages(m).contains(g));
         assert(page_named(self.mappings@, g));
@@ -2008,7 +2008,7 @@ impl CapKernel {
         let epoch = self.flush_epoch;
         // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
         let tracked mut steps = Steps::fresh();
-        self.stale_epoch.record_run(t / 4096, 1, epoch, Tracked(&mut steps));
+        self.stale_epoch.record_run(t / PAGE_SZ, 1, epoch, Tracked(&mut steps));
         self.tlb = Ghost(Seq::new(NUM_CPUS as nat, |d: int|
             if space is Some && pre.loaded(d, space->Some_0) {
                 pre.tlb@[d].union(stale_entries(space->Some_0, pages))
@@ -2025,14 +2025,14 @@ impl CapKernel {
             if space is Some {
                 lemma_stale_entries(space->Some_0, pages);
             }
-            assert(self.stale_epoch.written(epoch, t / 4096));
+            assert(self.stale_epoch.written(epoch, t / PAGE_SZ));
             assert(self.tlb@.len() == NUM_CPUS);
             assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] self.acked(d) <= self.flush_epoch by {
                 assert(pre.acked(d) <= pre.flush_epoch);
             }
             assert(pre.acked(0) <= pre.flush_epoch);
             assert(self.acked(0) == pre.acked(0));
-            assert(!self.acknowledged(t / 4096));
+            assert(!self.acknowledged(t / PAGE_SZ));
             assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] self.tlb@[d].contains(e) implies self.loaded(d, e.space) by {
                 assert(pre.loaded(d, e.space));
             }
@@ -2047,7 +2047,7 @@ impl CapKernel {
                     assert(pre.acked(d) < epoch);
                 } else {
                     lemma_cut_pages(tree, t, e.page);
-                    if e.page != t / 4096 {
+                    if e.page != t / PAGE_SZ {
                         pre.lemma_cut_walks_mapped(t, e.page);
                     }
                 }
@@ -2073,7 +2073,7 @@ impl CapKernel {
                     assert(pre.iommu_acked(i) < epoch);
                 } else {
                     lemma_cut_pages(tree, t, e.page);
-                    if e.page != t / 4096 {
+                    if e.page != t / PAGE_SZ {
                         pre.lemma_cut_walks_mapped(t, e.page);
                     }
                 }
@@ -2121,12 +2121,12 @@ impl CapKernel {
         let parent = q->0.table;
         let entry = q->0.entry;
         assert(detached(a, b, parent, entry, t));
-        if exists|u: usize| #![trigger a.record(u)] a.is_table(u) && a.record(u).space == Some(e.space) && u / 4096 == e.page {
-            let u = choose|u: usize| #![trigger a.record(u)] a.is_table(u) && a.record(u).space == Some(e.space) && u / 4096 == e.page;
+        if exists|u: usize| #![trigger a.record(u)] a.is_table(u) && a.record(u).space == Some(e.space) && u / PAGE_SZ == e.page {
+            let u = choose|u: usize| #![trigger a.record(u)] a.is_table(u) && a.record(u).space == Some(e.space) && u / PAGE_SZ == e.page;
             assert(b.maps.contains_key(u) == a.maps.contains_key(u));
             assert(b.roots.contains_key(u) == a.roots.contains_key(u));
             assert(b.record(u).space == a.record(u).space);
-            assert(b.is_table(u) && b.record(u).space == Some(e.space) && u / 4096 == e.page);
+            assert(b.is_table(u) && b.record(u).space == Some(e.space) && u / PAGE_SZ == e.page);
             return;
         }
         let p = choose|p: SpacePath| #[trigger] walk_finds(a, e.space, p, e.page);
@@ -2158,8 +2158,8 @@ impl CapKernel {
     pub open spec fn table_unlinked(pre: Self, post: Self, t: usize) -> bool {
         &&& Self::cut_recorded(pre, post, t)
         &&& !post.list.nodes@[t as int].live
-        &&& post.blocks.pages@[(t / 4096) as int].refs == 0
-        &&& post.blocks.pages@[(t / 4096) as int].dead
+        &&& post.blocks.pages@[(t / PAGE_SZ) as int].refs == 0
+        &&& post.blocks.pages@[(t / PAGE_SZ) as int].dead
     }
 
     /// What a recorded cut says stays true while nothing it names changes.
@@ -2182,7 +2182,7 @@ impl CapKernel {
     {
         assert(pre.acked(0) <= pre.flush_epoch);
         assert(post.acked(0) == pre.acked(0));
-        assert(!post.acknowledged(t / 4096));
+        assert(!post.acknowledged(t / PAGE_SZ));
         assert forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && #[trigger] pre.core_may_hold(c, e) implies post.core_may_hold(c, e) by {
             assert(mid.core_may_hold(c, e));
         }
@@ -2246,7 +2246,7 @@ impl CapKernel {
                 proof {
                     pre.lemma_hidden_block(n);
                 }
-                let object = self.blocks.pages.get(n / 4096).object;
+                let object = self.blocks.pages.get(n / PAGE_SZ).object;
                 match object {
                     ObjectType::TablePage => {
                         self.detach_stale(n);
@@ -2283,7 +2283,7 @@ impl CapKernel {
             assert(self.cores == pre.cores);
             assert(self.acked(0) == pre.acked(0));
             assert(pre.acked(0) <= pre.flush_epoch);
-            assert(!self.acknowledged(t / 4096));
+            assert(!self.acknowledged(t / PAGE_SZ));
             assert(Self::cut_stale_noted(pre, *self, t));
             assert forall|g: usize| #[trigger] cut_walk_finds(a, t, g) implies self.mapped@.contains(g) && self.blocks.tracks(g as int) by {
                 pre.lemma_cut_walks_mapped(t, g);
@@ -2322,7 +2322,7 @@ impl CapKernel {
                 assert(space_wf(&pre.list, &pre.spaces, &pre.blocks, p.table));
             }
         }
-        let object = self.blocks.pages.get(p.table / 4096).object;
+        let object = self.blocks.pages.get(p.table / PAGE_SZ).object;
         match object {
             ObjectType::TablePage => {
                 proof {
@@ -2347,7 +2347,7 @@ impl CapKernel {
     fn clear_parent(&mut self, child: usize)
         requires
             old(self).table_pages.records@.contains_key(child),
-            old(self).table_pages.records@[child].addr() == child + TABLE_RECORD_PAGE * 4096,
+            old(self).table_pages.records@[child].addr() == child + TABLE_RECORD_PAGE * PAGE_SZ,
             old(self).table_pages.records@[child].is_init(),
             old(self).blocks.tracks_addr(child),
         ensures
@@ -2383,7 +2383,7 @@ impl CapKernel {
         proof {
             lemma_table_bound(child);
         }
-        let ptr = PPtr::<TableRecord>::from_usize(child + TABLE_RECORD_PAGE * 4096);
+        let ptr = PPtr::<TableRecord>::from_usize(child + TABLE_RECORD_PAGE * PAGE_SZ);
         let tracked mut perm = self.table_pages.records.borrow_mut().tracked_remove(child);
         let record = *ptr.borrow(Tracked(&perm));
         ptr.write(Tracked(&mut perm), TableRecord { level: record.level, space: record.space, parent: None, written: record.written });
@@ -2413,9 +2413,9 @@ impl CapKernel {
                 &&& post.table_pages.maps@[parent].is_init()
                 &&& post.table_pages.maps@[parent].value().wf()
                 &&& post.table_pages.maps@[parent].value().level == pre.table_pages.maps@[parent].value().level
-                &&& entry < 512
+                &&& entry < ENTRIES
                 &&& post.table_pages.maps@[parent].value()[entry].is_empty()
-                &&& forall|i: usize| i < 512 && i != entry ==> #[trigger] post.table_pages.maps@[parent].value()[i] == pre.table_pages.maps@[parent].value()[i]
+                &&& forall|i: usize| i < ENTRIES && i != entry ==> #[trigger] post.table_pages.maps@[parent].value()[i] == pre.table_pages.maps@[parent].value()[i]
             },
             post.table_pages.records@[child].addr() == pre.table_pages.records@[child].addr(),
             post.table_pages.records@[child].is_init(),
@@ -2434,7 +2434,7 @@ impl CapKernel {
             assert(table_record_wf(pb, t)) by {
                 if !pb.records@[t].value().written {
                     assert(!pa.records@[t].value().written);
-                    assert forall|i: usize| #![trigger pb.maps@[t].value()[i]] i < 512 implies pb.maps@[t].value()[i].is_empty() by {
+                    assert forall|i: usize| #![trigger pb.maps@[t].value()[i]] i < ENTRIES implies pb.maps@[t].value()[i].is_empty() by {
                         if !(t == parent && i == entry) {
                             assert(pa.maps@[t].value()[i].is_empty());
                         }
@@ -2442,8 +2442,8 @@ impl CapKernel {
                 }
             }
         }
-        assert forall|b: usize| post.blocks.tracks(b as int) && #[trigger] table_block(&post.blocks, b) implies pb.maps@.contains_key((b * 4096) as usize) by {
-            assert(pa.maps@.contains_key((b * 4096) as usize));
+        assert forall|b: usize| post.blocks.tracks(b as int) && #[trigger] table_block(&post.blocks, b) implies pb.maps@.contains_key((b * PAGE_SZ) as usize) by {
+            assert(pa.maps@.contains_key((b * PAGE_SZ) as usize));
         }
     }
 
@@ -2481,7 +2481,7 @@ impl CapKernel {
     {
         let a = tree_of(&pre.table_pages, &pre.spaces);
         let b = tree_of(&post.table_pages, &post.spaces);
-        assert forall|c: usize| #[trigger] a.maps.contains_key(c) implies c + TABLE_NODE_PAGES * 4096 <= usize::MAX by {
+        assert forall|c: usize| #[trigger] a.maps.contains_key(c) implies c + TABLE_NODE_PAGES * PAGE_SZ <= usize::MAX by {
             assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, c));
             lemma_table_bound(c);
         }
@@ -2518,11 +2518,11 @@ impl CapKernel {
             lemma_table_bound(parent);
             lemma_table_bound(child);
         }
-        let level = PPtr::<TableRecord>::from_usize(parent + TABLE_RECORD_PAGE * 4096)
+        let level = PPtr::<TableRecord>::from_usize(parent + TABLE_RECORD_PAGE * PAGE_SZ)
             .borrow(Tracked(self.table_pages.records.borrow().tracked_borrow(parent)))
             .level;
         let tracked mut map = self.table_pages.maps.borrow_mut().tracked_remove(parent);
-        page_map_set(parent + TABLE_NODE_PAGES * 4096, Tracked(&mut map), entry, PageEntry::empty(), level);
+        page_map_set(parent + TABLE_NODE_PAGES * PAGE_SZ, Tracked(&mut map), entry, PageEntry::empty(), level);
         proof {
             self.table_pages.maps.borrow_mut().tracked_insert(parent, map);
             assert(self.table_pages.maps@ =~= pre.table_pages.maps@.insert(parent, self.table_pages.maps@[parent]));
@@ -2534,7 +2534,7 @@ impl CapKernel {
             assert(post.table_pages.maps@ == pre.table_pages.maps@.insert(parent, post.table_pages.maps@[parent]));
             assert(post.table_pages.maps@.dom() == pre.table_pages.maps@.dom());
             assert(post.table_pages.records@.dom() == pre.table_pages.records@.dom());
-            assert forall|i: usize| i < 512 && i != entry implies #[trigger] post.table_pages.maps@[parent].value()[i] == pre.table_pages.maps@[parent].value()[i] by {}
+            assert forall|i: usize| i < ENTRIES && i != entry implies #[trigger] post.table_pages.maps@[parent].value()[i] == pre.table_pages.maps@[parent].value()[i] by {}
             assert forall|t: usize| #[trigger] pre.table_pages.maps@.contains_key(t) && t != parent
                 implies post.table_pages.maps@[t] == pre.table_pages.maps@[t] by {}
             assert forall|t: usize| #[trigger] pre.table_pages.maps@.contains_key(t) && t != child
@@ -2567,7 +2567,7 @@ impl CapKernel {
             lemma_table_bound(parent);
             lemma_table_bound(child);
         }
-        let root = PPtr::<SpaceRecord>::from_usize(parent + SPACE_RECORD_PAGE * 4096)
+        let root = PPtr::<SpaceRecord>::from_usize(parent + SPACE_RECORD_PAGE * PAGE_SZ)
             .borrow(Tracked(self.spaces.records.borrow().tracked_borrow(parent)))
             .root;
         let tracked mut map = self.spaces.roots.borrow_mut().tracked_remove(parent);
@@ -2586,7 +2586,7 @@ impl CapKernel {
             }
             assert(post.spaces.roots@ == pre.spaces.roots@.insert(parent, post.spaces.roots@[parent]));
             assert(post.spaces.records@ =~= pre.spaces.records@.insert(parent, post.spaces.records@[parent]));
-            assert forall|i: usize| i < 512 && i != entry implies #[trigger] post.spaces.roots@[parent].value()[i] == pre.spaces.roots@[parent].value()[i] by {}
+            assert forall|i: usize| i < ENTRIES && i != entry implies #[trigger] post.spaces.roots@[parent].value()[i] == pre.spaces.roots@[parent].value()[i] by {}
             Self::lemma_link_spaces(pre, post, parent, entry);
             assert(post.table_pages.maps@ == pre.table_pages.maps@);
             assert(post.table_pages.records@.dom() == pre.table_pages.records@.dom());
@@ -2614,11 +2614,11 @@ impl CapKernel {
             forall|t: usize| #[trigger] pre.spaces.roots@.contains_key(t) && t != parent ==> post.spaces.roots@[t] == pre.spaces.roots@[t],
             pre.table_pages.maps@.contains_key(parent) ==> {
                 &&& post.table_pages.maps@[parent].value()[entry].is_empty()
-                &&& forall|i: usize| i < 512 && i != entry ==> #[trigger] post.table_pages.maps@[parent].value()[i] == pre.table_pages.maps@[parent].value()[i]
+                &&& forall|i: usize| i < ENTRIES && i != entry ==> #[trigger] post.table_pages.maps@[parent].value()[i] == pre.table_pages.maps@[parent].value()[i]
             },
             !pre.table_pages.maps@.contains_key(parent) ==> {
                 &&& post.spaces.roots@[parent].value()[entry].is_empty()
-                &&& forall|i: usize| i < 512 && i != entry ==> #[trigger] post.spaces.roots@[parent].value()[i] == pre.spaces.roots@[parent].value()[i]
+                &&& forall|i: usize| i < ENTRIES && i != entry ==> #[trigger] post.spaces.roots@[parent].value()[i] == pre.spaces.roots@[parent].value()[i]
             },
             post.table_pages.records@[child].value().level == pre.table_pages.records@[child].value().level,
             post.table_pages.records@[child].value().space == pre.table_pages.records@[child].value().space,
@@ -2633,7 +2633,7 @@ impl CapKernel {
         }
         assert(b.entry(parent, entry).is_empty());
         assert forall|t: usize, i: usize| #![trigger b.entry(t, i)]
-            a.is_table(t) && i < 512 && !(t == parent && i == entry) implies b.entry(t, i) == a.entry(t, i) by {
+            a.is_table(t) && i < ENTRIES && !(t == parent && i == entry) implies b.entry(t, i) == a.entry(t, i) by {
             if a.is_page(t) {
                 if t == parent {
                     assert(post.table_pages.maps@[parent].value()[i] == pre.table_pages.maps@[parent].value()[i]);
