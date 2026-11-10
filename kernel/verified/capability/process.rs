@@ -1253,6 +1253,12 @@ impl CapKernel {
                 &&& final(self).blocks.pages@[page].object is Process
                 &&& final(self).blocks.pages@[page].order == 3
                 &&& final(self).blocks.pages@[page].refs == 1
+                &&& !final(self).blocks.pages@[page].dead
+                &&& forall|i: int| old(self).blocks.tracks(i) && !(page <= i < page + 8)
+                    ==> #[trigger] final(self).blocks.pages@[i] == old(self).blocks.pages@[i]
+                &&& final(self).table_pages == old(self).table_pages
+                &&& final(self).spaces.roots@ == old(self).spaces.roots@.insert(base, final(self).spaces.roots@[base])
+                &&& final(self).spaces.records@ == old(self).spaces.records@.insert(base, final(self).spaces.records@[base])
                 &&& final(self).tables.roots@.contains_key(base)
                 &&& forall|r: int| 0 <= r < ROOT_ENTRIES ==> #[trigger] final(self).tables.leaf(base, r) == NO_LEAF
                 &&& final(self).spaces.roots@.contains_key(base)
