@@ -10,7 +10,7 @@ or the kernel logged, with the frame on the core's emergency stack, and stop. Th
 stdout, and to --log when given.
 
 When ssh cannot reach the board this prints tools/orangepi-kvm.py's skip line and exits 0. This
-command is not part of atmo test.
+command is not part of the gate.
 
 usage: tools/orangepi-stack-overflow.py [--stack boot|syscall] [--log FILE]   (from the workspace root)
        tools/orangepi-stack-overflow.py --test

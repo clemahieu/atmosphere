@@ -26,7 +26,7 @@ The gate's result depends only on the files its steps read. A change to no such 
 
 One gate step reads every file: the size check, which refuses a file over 1 MiB. The tool makes that check itself on the files the change leaves, and gates the change when one is over, so the gate reports it as it would have.
 
-The list was checked by searching what the gate runs (`build-tool/`, `tools/`, `.claude/hooks/`) for the three paths. The matches are comments that cite `CLAUDE.md`, and one hook test that passes the string `CLAUDE.md` to the license guard as a path to judge, which the guard does not open.
+The list was checked by searching what the gate runs (`tools/`, `.claude/hooks/`) for the three paths. The matches are comments that cite `CLAUDE.md`, and one hook test that passes the string `CLAUDE.md` to the license guard as a path to judge, which the guard does not open.
 
 What tests a change to these files is a session or a round running under it. The gate never did.
 

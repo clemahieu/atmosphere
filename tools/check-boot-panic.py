@@ -8,7 +8,7 @@ boot_panic on this host, and QEMU must exit within AFTER_PANIC_S of the panic li
 under KVM on orangepi5 through tools/orangepi-kvm.py --until-exit, which brings the serial log back
 only when QEMU has exited, and QEMU must exit by itself within the boot timeout; when ssh cannot
 reach the board this prints tools/orangepi-kvm.py's skip line and that target passes. This command is
-not part of atmo test.
+not part of the gate.
 
 usage: tools/check-boot-panic.py [--target x86_64|aarch64] [--log DIR]   (from the workspace root)
        tools/check-boot-panic.py --test

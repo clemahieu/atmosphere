@@ -50,7 +50,7 @@ sys.dont_write_bytecode = True
 LANDED, CHANGE_FAILS, NOT_RUN, CONFLICT, BASE_FAILS, NOT_LANDED, BASE_UNJUDGED = range(7)
 LEDGER = "logs/gate-ledger"
 BASE_LOCK = "logs/gate-base.lock"
-GATE = "atmo test"
+GATE = "tools/gate.py"
 # How often the rebase and the fast-forward are tried while other landings move main.
 MERGE_TRIES = 30
 PUSH_TRIES = 3

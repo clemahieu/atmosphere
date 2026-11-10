@@ -8,7 +8,7 @@ marker. x86_64 boots under KVM on this host, as tools/check-boot-stack.py boots;
 while after the report for a second one or the marker. aarch64 boots under KVM on orangepi5, as
 tools/orangepi-stack-overflow.py boots, and the run ends at the report; when ssh cannot reach the
 board this prints tools/orangepi-kvm.py's skip line and that target passes. This command is not part
-of atmo test.
+of the gate.
 
 usage: tools/check-stray-timer.py [--target x86_64|aarch64] [--log DIR]   (from the workspace root)
        tools/check-stray-timer.py --test

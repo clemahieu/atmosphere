@@ -17,7 +17,7 @@ a guest. The remote side watches this process's stdin and kills QEMU when
 the local side dies. A timeout here does the same.
 
 When ssh cannot reach the host, this prints one skip line naming orangepi5 and
-exits 0. A guest that starts and then fails is a failure. atmo test runs it as
+exits 0. A guest that starts and then fails is a failure. The gate runs it as
 its aarch64 boot, which takes the skip line as a pass. The output says how long the run
 waited for the lock; with --keep-failed a run that fails also writes all it printed to a file
 of its own and names it on stderr, so the gate log of a failed boot leads to where the guest stopped.
