@@ -1593,6 +1593,10 @@ impl CapKernel {
                     assert(self.list.valid(table_node(base, k, i)));
                 }
                 if self.list.get(base + k * 4096 + i).live {
+                    proof {
+                        assert(k * (NODES_PER_PAGE + 1) + i <= TABLE_NODE_PAGES * (NODES_PER_PAGE + 1)) by (nonlinear_arith)
+                            requires k < TABLE_NODE_PAGES, i <= NODES_PER_PAGE;
+                    }
                     return false;
                 }
                 i = i + 1;
