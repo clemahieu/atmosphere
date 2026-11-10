@@ -441,7 +441,7 @@ proof fn lemma_example_held()
 {
     lemma2_to64();
     assert(example_held()[0] == gigabyte());
-    assert(0x4000_0000int % 0x4000_0000int == 0);
+    assert(0x4000_0000int % 0x4000_0000int == 0); // not a page size: the example's address and block size, concrete for its proofs
 }
 
 /// A declared shared frame passes.

@@ -2314,7 +2314,7 @@ pub open spec fn example() -> State {
     State {
         held: ISet::new(|h: (ObjectId, NodeId)| h == (1usize, 10usize)),
         names: IMap::new(|n: NodeId| n == 10, |n: NodeId| EXAMPLE_BASE),
-        pages: IMap::new(|n: NodeId| n == 10, |n: NodeId| 512nat),
+        pages: IMap::new(|n: NodeId| n == 10, |n: NodeId| PAGES_PER_2M as nat),
         rights: ISet::new(|h: (NodeId, Right)| h.0 == 10 && (h.1 == Right::Read || h.1 == Right::Write)),
         parent: Map::empty(),
         maps: set![(1usize, EXAMPLE_BASE)],
@@ -2563,7 +2563,7 @@ pub open spec fn leaf_example() -> State {
             |n: NodeId| n == 10 || n == 11 || n == 12 || n == 20,
             |n: NodeId| if n == 10 { 2usize } else if n == 11 { 3usize } else { EXAMPLE_BASE },
         ),
-        pages: IMap::new(|n: NodeId| n == 10 || n == 11 || n == 12 || n == 20, |n: NodeId| if n == 12 { 512nat } else { 1nat }),
+        pages: IMap::new(|n: NodeId| n == 10 || n == 11 || n == 12 || n == 20, |n: NodeId| if n == 12 { PAGES_PER_2M as nat } else { 1nat }),
         rights: ISet::new(|h: (NodeId, Right)|
             ((h.0 == 10 || h.0 == 11) && h.1 == Right::Control) || h == (12usize, Right::Retype)),
         ..control_example()
@@ -2604,7 +2604,7 @@ pub open spec fn retype_example() -> State {
     State {
         held: ISet::new(|h: (ObjectId, NodeId)| h == (1usize, 10usize) || h == (2usize, 20usize)),
         names: IMap::new(|n: NodeId| n == 10 || n == 20, |n: NodeId| if n == 10 { EXAMPLE_BASE } else { EXAMPLE_PAST }),
-        pages: IMap::new(|n: NodeId| n == 10 || n == 20, |n: NodeId| if n == 10 { 512nat } else { 1nat }),
+        pages: IMap::new(|n: NodeId| n == 10 || n == 20, |n: NodeId| if n == 10 { PAGES_PER_2M as nat } else { 1nat }),
         rights: ISet::new(|h: (NodeId, Right)| h == (10usize, Right::Retype)),
         parent: Map::empty(),
         maps: Set::empty(),
@@ -2627,7 +2627,7 @@ pub open spec fn bound_elsewhere() -> State {
         ),
         pages: IMap::new(
             |n: NodeId| n == 10 || n == 11 || n == 20,
-            |n: NodeId| if n == 10 { 512nat } else if n == 11 { 2nat } else { 1nat },
+            |n: NodeId| if n == 10 { PAGES_PER_2M as nat } else if n == 11 { 2nat } else { 1nat },
         ),
         rights: ISet::new(|h: (NodeId, Right)| h == (10usize, Right::Retype) || h == (11usize, Right::Control)),
         parent: map![11usize => 10usize],

@@ -11,7 +11,7 @@ become the target's (design/arch-module/). The page-shaped values are the 4K pag
 mask, the entries a level and its index mask, the 2M, 1G and 512G regions and their offset masks,
 the pages in a 1G and a 512G region, and every positive multiple of the page, which a block size, a
 region or a count of pages in bytes is. A number literal of any base, digit grouping or suffix
-whose value is one of them is refused, outside '//' and '/* */' comments and string literals. The
+whose value is one of them, Rust's integer suffixes and Verus's int and nat among the suffixes, is refused, outside '//' and '/* */' comments and string literals. The
 definitions are exempt: in each source root, define.rs and arch/, and the 'global layout' directives
 of layouts.rs, which Verus takes only with a literal size. A line that holds such a value for another reason says
 so in a comment '// not a page size: <reason>'.
@@ -47,7 +47,7 @@ VALUES = frozenset(
 
 NUMBER = re.compile(
     r"\b(0x[0-9a-fA-F_]+|0o[0-7_]+|0b[01_]+|[0-9][0-9_]*)"
-    r"(?:[iu](?:8|16|32|64|128|size))?\b"
+    r"(?:[iu](?:8|16|32|64|128|size)|int|nat)?\b"
 )
 BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
 STRING = re.compile(r'"(?:\\.|[^"\\])*"')
@@ -172,6 +172,12 @@ class Tests(unittest.TestCase):
                          "0x1000u64", "4_096", "0x1FF", "0o10000", "0b1000000000"):
             with self.subTest(spelling=spelling):
                 self.assertEqual(len(literals("a.rs", f"x({spelling})\n")), 1)
+
+    def test_verus_int_and_nat_suffixes_are_caught(self):
+        for spelling in ("512nat", "0x1000int", "0x4000_0000int", "4096int", "511nat"):
+            with self.subTest(spelling=spelling):
+                self.assertEqual(literals("a.rs", f"x({spelling})\n"), [f"a.rs:1: x({spelling})"])
+        self.assertEqual(literals("a.rs", "x(5nat, 0int, 4097int, n512nat)\n"), [])
 
     def test_a_type_length_and_a_modulus_are_caught(self):
         source = "pub type PageBytes = [u8; 4096];\n    &&& page.addr() % 4096 == 0\n"
