@@ -9,7 +9,8 @@ from the guest in between. The layout is the one LLVM 23 (Rust 1.99.1) writes, r
 
 The kernel's counters are read by physical address. dom0's are read by virtual address, which works
 because dom0 is the last thing running when its exit stops the guest. A workspace member under user/
-that no image runs, as the payload the loader hands dom0 is not, is listed as not run.
+that no image runs, as the payload the loader hands dom0 is not, is listed as not run. llvm-cov reads a
+copy of each image without the unused-function records that shadow a used one (unshadowed below).
 
 Two boots of one build count the same lines and branches. A wait on the other core that may spin no
 times, depending on which core gets there first, goes through a spin_until marked #[coverage(off)]
@@ -141,6 +142,54 @@ def not_run(ran, manifest="Cargo.toml"):
     return sorted(crate for crate in user if crate not in ran)
 
 
+def covfun_records(covfun):
+    """Yields each __llvm_covfun record as (start, end, name hash, function hash). A record is the name's
+    MD5 (8 bytes), the mapping's size (4), the function's hash (8) and its file list's hash (8), then the
+    mapping, padded to 8 bytes; the section's last record may end unpadded."""
+    start = 0
+    while start < len(covfun):
+        name, size, function = struct.unpack_from("<QIQ", covfun, start)
+        end = min(start + 28 + size + (-(28 + size) % 8), len(covfun))
+        yield start, end, name, function
+        start = end
+
+
+def unshadowed(covfun):
+    """Returns __llvm_covfun without the unused-function records that shadow a used one, and how many it
+    dropped. build-std instruments core, which writes a record under hash 0 for each #[inline] function it
+    does not codegen itself, under the same name as the instance compiler_builtins codegens. llvm-cov keeps
+    the first record of a name, so when core's comes first and the instance ran, the profile holds the name
+    under another hash and llvm-cov drops the function as mismatched data."""
+    records = list(covfun_records(covfun))
+    used = {name for _, _, name, function in records if function != 0}
+    kept = [covfun[start:end] for start, end, name, function in records if function != 0 or name not in used]
+    return b"".join(kept), len(records) - len(kept)
+
+
+def unshadow(image, copy):
+    """Writes image to copy with its __llvm_covfun unshadowed and the section's size shortened to match,
+    and returns how many records it dropped."""
+    with open(image, "rb") as f:
+        elf = bytearray(f.read())
+    shoff, = struct.unpack_from("<Q", elf, 0x28)
+    shentsize, shnum, shstrndx = struct.unpack_from("<HHH", elf, 0x3A)
+    header = lambda index: shoff + index * shentsize
+    strings, = struct.unpack_from("<Q", elf, header(shstrndx) + 0x18)
+    for index in range(shnum):
+        name, = struct.unpack_from("<I", elf, header(index))
+        if elf[strings + name : elf.index(b"\0", strings + name)] == b"__llvm_covfun":
+            offset, size = struct.unpack_from("<QQ", elf, header(index) + 0x18)
+            covfun, dropped = unshadowed(bytes(elf[offset : offset + size]))
+            elf[offset : offset + size] = covfun + bytes(size - len(covfun))
+            struct.pack_into("<Q", elf, header(index) + 0x20, len(covfun))
+            break
+    else:
+        raise AssertionError(f"{image} has no __llvm_covfun")
+    with open(copy, "wb") as f:
+        f.write(elf)
+    return dropped
+
+
 def summarize(llvm_cov, image, profile):
     """Returns llvm-cov's summary of one image and each line it wrote to stderr. A warning there says what
     it could not count, as '1 functions have mismatched data' for a function whose counters it dropped."""
@@ -150,18 +199,21 @@ def summarize(llvm_cov, image, profile):
 
 
 def report(image, sock, command, bias):
-    """Returns each crate's llvm-cov summary from one image's counters, and what llvm-cov warned."""
+    """Returns each crate's llvm-cov summary from one image's counters, and its notes: how many shadowing
+    records were dropped, then what llvm-cov warned."""
     found = sections(image)
     counters_addr, _, counters_size = found["__llvm_prf_cnts"]
     counters = read_guest(sock, command, bias + counters_addr, counters_size)
     with open(image, "rb") as f:
         elf = f.read()
     name = os.path.basename(image)
-    raw, merged = f"{OUT}/{name}.profraw", f"{OUT}/{name}.profdata"
+    raw, merged, copy = f"{OUT}/{name}.profraw", f"{OUT}/{name}.profdata", f"{OUT}/{name}.unshadowed"
+    # The copy goes first: llvm-cov warns of a profile older than the object it reads.
+    dropped = unshadow(image, copy)
     with open(raw, "wb") as f:
         f.write(raw_profile(elf, found, counters))
     run(tool("llvm-profdata"), "merge", "-sparse", raw, "-o", merged)
-    export, warnings = summarize(tool("llvm-cov"), image, merged)
+    export, warnings = summarize(tool("llvm-cov"), copy, merged)
     crates = {}
     for entry in export["data"][0]["files"]:
         crate = crate_of(entry["filename"])
@@ -171,18 +223,18 @@ def report(image, sock, command, bias):
         for kind in totals:
             totals[kind][0] += entry["summary"][kind]["covered"]
             totals[kind][1] += entry["summary"][kind]["count"]
-    return crates, warnings
+    return crates, [f"{dropped} unused-function records dropped, each shadowing a used one"] + warnings
 
 
 def lines(images):
-    """The report's lines for each image: each crate's numbers, then each warning llvm-cov gave."""
+    """The report's lines for each image: each crate's numbers, then each of its notes."""
     out = []
-    for image, (crates, warnings) in images.items():
+    for image, (crates, notes) in images.items():
         for crate, totals in sorted(crates.items()):
             out.append(f"{image}/{crate}: " + ", ".join(
                 f"{kind} {covered}/{count} ({100 * covered / max(count, 1):.1f}%)"
                 for kind, (covered, count) in totals.items()))
-        out.extend(f"{image}: {warning}" for warning in warnings)
+        out.extend(f"{image}: {note}" for note in notes)
     return out
 
 
@@ -245,6 +297,47 @@ class Tests(unittest.TestCase):
         export, warnings = summarize(llvm_cov, "kernel", "kernel.profdata")
         self.assertEqual(export, {"data": [{"files": []}]})
         self.assertEqual(lines({"kernel": ({}, warnings)}), ["kernel: warning: 1 functions have mismatched data"])
+
+    @staticmethod
+    def record(name, function, mapping, last=False):
+        record = struct.pack("<QIQQ", name, len(mapping), function, 0x5eed) + mapping
+        return record if last else record + bytes(-len(record) % 8)
+
+    def covfun(self):
+        """core's unused record of name 1 ahead of compiler_builtins' instance of it, an unused record no
+        used one shares a name with, and a used record that ends the section unpadded."""
+        return [self.record(1, 0, b"core"), self.record(1, 0x899e, b"builtins"), self.record(2, 0, b"tree"),
+                self.record(3, 0x77, b"used, last", last=True)]
+
+    def test_an_unused_record_that_shadows_a_used_one_is_dropped(self):
+        core, builtins, tree, used = self.covfun()
+        covfun, dropped = unshadowed(core + builtins + tree + used)
+        self.assertEqual((covfun, dropped), (builtins + tree + used, 1))
+        hashes = {}
+        for _, _, name, function in covfun_records(covfun):
+            hashes.setdefault(name, set()).add(function)
+        self.assertEqual(hashes, {1: {0x899e}, 2: {0}, 3: {0x77}})
+
+    def test_the_copy_llvm_cov_reads_holds_the_unshadowed_section(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        core, builtins, tree, used = self.covfun()
+        covfun = core + builtins + tree + used
+        names = b"\0__llvm_covfun\0.shstrtab\0"
+        shoff = 64 + len(covfun) + len(names) + (-(len(covfun) + len(names)) % 8)
+        section = lambda name, kind, offset, size, align: struct.pack("<IIQQQQIIQQ", name, kind, 0, 0, offset,
+                                                                       size, 0, 0, align, 0)
+        elf = (b"\x7fELF\x02\x01\x01" + bytes(9) + struct.pack("<HHIQQQIHHHHHH", 1, 62, 1, 0, 0, shoff, 0, 64,
+                                                                    0, 0, 64, 3, 2)
+               + covfun + names + bytes(shoff - 64 - len(covfun) - len(names))
+               + bytes(64) + section(1, 1, 64, len(covfun), 8) + section(15, 3, 64 + len(covfun), len(names), 1))
+        image, copy = os.path.join(directory.name, "image"), os.path.join(directory.name, "copy")
+        with open(image, "wb") as f:
+            f.write(elf)
+        self.assertEqual(unshadow(image, copy), 1)
+        _, offset, size = sections(copy)["__llvm_covfun"]
+        with open(copy, "rb") as f:
+            self.assertEqual(f.read()[offset : offset + size], builtins + tree + used)
 
 
 if __name__ == "__main__":
