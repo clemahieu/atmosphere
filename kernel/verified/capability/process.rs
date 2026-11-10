@@ -1190,7 +1190,7 @@ impl CapKernel {
             post.blocks.regions_1g@ == pre.blocks.regions_1g@,
             forall|i: int| post.blocks.tracks(i) && !(page <= i < page + 8) ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
         ensures
-            Self::retype_keeps(pre, post, pre.tables.node_of(root, to), page, 3),
+            Self::retype_keeps(pre, post, pre.tables.node_of(root, to), page, 3, None),
     {
         let child = pre.tables.node_of(root, to);
         pre.lemma_slot(root, to);
@@ -1275,7 +1275,7 @@ impl CapKernel {
                 &&& final(self).payload_of(child).rights & right_bit(Right::Control) != 0
                 &&& final(self).list.is_child(parent, child)
                 &&& final(self).list.nodes@[child as int].depth == old(self).list.nodes@[parent as int].depth + 1
-                &&& Self::retype_keeps(*old(self), *final(self), child, page, 3)
+                &&& Self::retype_keeps(*old(self), *final(self), child, page, 3, None)
                 &&& discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base, into: None })
             },
     {

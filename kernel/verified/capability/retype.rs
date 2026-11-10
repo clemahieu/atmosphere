@@ -480,13 +480,15 @@ impl CapKernel {
         }
     }
 
-    /// What a retype that makes the capability child, typing the small block of the order at page,
-    /// leaves as it was, so that a later operation's success can be proven from what held before:
-    /// every slot is a slot of the node it was, every capability says what it said at the depth it
-    /// had, every empty slot but the new capability's is empty, every table has the root entries it
-    /// had, every process record has the dead flag it had, and the block table's large regions and
-    /// the kind of every tracked page outside the block are as they were.
-    pub open spec fn retype_keeps(pre: Self, post: Self, child: usize, page: int, order: usize) -> bool {
+    /// What a retype that makes the node child, typing the small block of the order at page, and
+    /// fills the root entry filled names if any, leaves as it was, so that a later operation's
+    /// success can be proven from what held before: every slot is a slot of the node it was, every
+    /// capability says what it said at the depth it had, every empty slot but child's is empty, every
+    /// table has the root entries it had but the one filled, every process record has the dead flag
+    /// it had, and the block table's large regions and the kind of every tracked page outside the
+    /// block are as they were. A retype that makes a capability fills no root entry; a leaf's makes a
+    /// hidden node, which no slot names, and fills one.
+    pub open spec fn retype_keeps(pre: Self, post: Self, child: usize, page: int, order: usize, filled: Option<(usize, int)>) -> bool {
         &&& forall|r: usize, i: usize| #[trigger] pre.tables.has_slot(&pre.list, r, i) ==> {
             &&& post.tables.has_slot(&post.list, r, i)
             &&& post.tables.node_of(r, i) == pre.tables.node_of(r, i)
@@ -499,7 +501,7 @@ impl CapKernel {
             &&& post.list.nodes@[x as int].depth == pre.list.nodes@[x as int].depth
         }
         &&& forall|r: usize| #[trigger] pre.tables.roots@.contains_key(r) ==> post.tables.roots@.contains_key(r)
-        &&& forall|r: usize, e: int| pre.tables.roots@.contains_key(r) && 0 <= e < ROOT_ENTRIES
+        &&& forall|r: usize, e: int| pre.tables.roots@.contains_key(r) && 0 <= e < ROOT_ENTRIES && filled != Some((r, e))
             ==> #[trigger] post.tables.leaf(r, e) == pre.tables.leaf(r, e)
         &&& forall|p: usize| #[trigger] pre.processes.records@.contains_key(p) ==> {
             &&& post.processes.records@.contains_key(p)
@@ -881,12 +883,9 @@ impl CapKernel {
                     &&& #[trigger] final(self).tables.has_slot(&final(self).list, table, i)
                     &&& !final(self).list.nodes@[final(self).tables.node_of(table, i) as int].live
                 }
-                &&& forall|t: usize, i: usize| #[trigger] old(self).tables.has_slot(&old(self).list, t, i)
-                    ==> final(self).tables.has_slot(&final(self).list, t, i)
-                        && final(self).tables.node_of(t, i) == old(self).tables.node_of(t, i)
                 &&& forall|x: usize| #[trigger] final(self).is_cap(x) == old(self).is_cap(x)
-                &&& forall|x: usize| #[trigger] old(self).is_cap(x) ==> final(self).payload_of(x) == old(self).payload_of(x)
                 &&& final(self).processes == old(self).processes
+                &&& Self::retype_keeps(*old(self), *final(self), base, (base / 4096) as int, 1, Some((table, at.index as int)))
                 &&& discharges(
                     old(self).view(),
                     final(self).view(),
@@ -928,6 +927,7 @@ impl CapKernel {
                 Self::lemma_leaf_cap(pre, post, base, x);
             }
             Self::lemma_leaf_discharges(pre, post, root, parent, base, pre.through_node(root, at.through));
+            Self::lemma_leaf_keeps(pre, post, table, r, base);
         }
         true
     }
@@ -983,6 +983,8 @@ impl CapKernel {
                 &&& final(self).tables.leaf(root, r as int) == base
                 &&& forall|e: int| e != r ==> #[trigger] final(self).tables.leaf(root, e) == old(self).tables.leaf(root, e)
                 &&& final(self).tables.roots@.dom() == old(self).tables.roots@.dom()
+                &&& forall|t: usize| t != root && #[trigger] old(self).tables.roots@.contains_key(t)
+                    ==> final(self).tables.roots@[t] == old(self).tables.roots@[t]
                 &&& final(self).tables.owner@ == old(self).tables.owner@.insert(base, (root, r as int))
                 &&& forall|t: usize, i: usize| #[trigger] old(self).tables.has_slot(&old(self).list, t, i)
                     ==> final(self).tables.has_slot(&final(self).list, t, i)
@@ -1530,6 +1532,65 @@ impl CapKernel {
             &&& post.list.nodes@[x as int].kind == pre.list.nodes@[x as int].kind
         }
         &&& forall|x: usize| leaf < x < leaf + NODES_PER_PAGE ==> !#[trigger] post.list.nodes@[x as int].live
+    }
+
+    /// What a leaf's retype leaves as it was: its hidden node is the only node whose liveness changed
+    /// and the depth of every live node is as it was, its root entry is the only one filled, and the
+    /// block table's pages outside its two are as they were.
+    proof fn lemma_leaf_keeps(pre: Self, post: Self, table: usize, r: usize, base: usize)
+        requires
+            pre.wf(),
+            base % 4096 == 0,
+            forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x),
+            forall|x: usize| #[trigger] pre.is_cap(x) ==> post.payload_of(x) == pre.payload_of(x),
+            forall|t: usize, i: usize| #[trigger] pre.tables.has_slot(&pre.list, t, i)
+                ==> post.tables.has_slot(&post.list, t, i) && post.tables.node_of(t, i) == pre.tables.node_of(t, i),
+            forall|x: int| #![trigger post.list.nodes@[x]] 0 <= x < NODE_SPACE && x != base ==> {
+                &&& post.list.nodes@[x].live == pre.list.nodes@[x].live
+                &&& pre.list.nodes@[x].live ==> post.list.nodes@[x].depth == pre.list.nodes@[x].depth
+            },
+            forall|e: int| e != r ==> #[trigger] post.tables.leaf(table, e) == pre.tables.leaf(table, e),
+            forall|t: usize| t != table && #[trigger] pre.tables.roots@.contains_key(t)
+                ==> post.tables.roots@[t] == pre.tables.roots@[t],
+            post.tables.roots@.dom() == pre.tables.roots@.dom(),
+            post.processes == pre.processes,
+            post.blocks.regions_2m@ == pre.blocks.regions_2m@,
+            post.blocks.regions_1g@ == pre.blocks.regions_1g@,
+            forall|i: int| pre.blocks.tracks(i) && !(base / 4096 <= i < base / 4096 + 2)
+                ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
+        ensures
+            Self::retype_keeps(pre, post, base, (base / 4096) as int, 1, Some((table, r as int))),
+    {
+        assert forall|t: usize, i: usize| #[trigger] pre.tables.has_slot(&pre.list, t, i) implies {
+            &&& post.tables.has_slot(&post.list, t, i)
+            &&& post.tables.node_of(t, i) == pre.tables.node_of(t, i)
+            &&& pre.tables.node_of(t, i) != base && !pre.list.nodes@[pre.tables.node_of(t, i) as int].live
+                ==> !post.list.nodes@[pre.tables.node_of(t, i) as int].live
+        } by {
+            pre.lemma_slot(t, i);
+            pre.lemma_slot_bound(pre.tables.node_of(t, i));
+        }
+        assert forall|x: usize| #[trigger] pre.is_cap(x) implies {
+            &&& post.is_cap(x)
+            &&& post.payload_of(x) == pre.payload_of(x)
+            &&& post.list.nodes@[x as int].depth == pre.list.nodes@[x as int].depth
+        } by {
+            pre.lemma_slot_bound(x);
+            assert(x != base);
+            assert(post.list.nodes@[x as int].depth == pre.list.nodes@[x as int].depth);
+        }
+        assert forall|t: usize, e: int| pre.tables.roots@.contains_key(t) && 0 <= e < ROOT_ENTRIES
+            && Some((table, r as int)) != Some((t, e)) implies #[trigger] post.tables.leaf(t, e) == pre.tables.leaf(t, e) by {
+            if t != table {
+                assert(post.tables.roots@[t] == pre.tables.roots@[t]);
+            } else {
+                assert(e != r);
+            }
+        }
+        assert forall|i: int| pre.blocks.tracks(i) && !((base / 4096) as int <= i < (base / 4096) as int + order_pages(1))
+            implies #[trigger] post.blocks.pages@[i].kind == pre.blocks.pages@[i].kind by {
+            assert(post.blocks.pages@[i] == pre.blocks.pages@[i]);
+        }
     }
 
     /// So the capabilities, and what they say, are as they were.

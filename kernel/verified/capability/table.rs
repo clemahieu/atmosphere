@@ -483,6 +483,7 @@ impl Tables {
             final(self).leaf(root, r as int) == leaf,
             forall|e: int| e != r ==> #[trigger] final(self).leaf(root, e) == old(self).leaf(root, e),
             final(self).roots@.dom() == old(self).roots@.dom(),
+            forall|t: usize| t != root && #[trigger] old(self).roots@.contains_key(t) ==> final(self).roots@[t] == old(self).roots@[t],
             final(self).owner@ == old(self).owner@.insert(leaf, (root, r as int)),
             final(self).payloads@ == old(self).payloads@.insert(leaf, final(self).payloads@[leaf]),
             forall|t: usize, i: usize| #[trigger] old(self).has_slot(list, t, i) ==>
