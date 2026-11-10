@@ -14,7 +14,9 @@ pub mod syscalls;
 mod this_core;
 pub mod write_protect;
 
-pub use this_core::{core_pointer, init, init_boot_core, init_core, set_core_pointer, translation_root, CoreState};
+pub use this_core::{
+    core_pointer, counters, init, init_boot_core, init_core, set_core_pointer, translation_root, CoreState,
+};
 
 /// A privilege level: a selector's RPL and a descriptor's DPL. APM 2 §4.9.1.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

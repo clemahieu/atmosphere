@@ -270,6 +270,11 @@ pub fn cycles() -> u64 {
     count
 }
 
+/// The performance counters the x86_64 kernel reads around its boot tests: none are programmed here.
+pub fn counters() -> Option<[u64; 4]> {
+    None
+}
+
 /// Seconds a boot check waits for another core, where a core that answers takes microseconds.
 const STALL_SECONDS: u64 = 5;
 

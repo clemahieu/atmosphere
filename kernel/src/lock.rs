@@ -154,27 +154,98 @@ mod stats {
     }
 }
 
-/// Increments per core in the contention test.
+/// Increments per core in the contention test, and by CPU 0 alone before it.
 const CONTENTION_ROUNDS: usize = 200_000;
 
 /// A pair that matches whenever the lock is free: holding it, a core breaks the match and restores it,
 /// so another core inside at the same moment would see them differ, or lose an increment.
 static CONTENDED: Locked<(u64, u64)> = Locked::new("contention test", (0, 0));
+/// The same, for CPU 0 to hold alone before the other core starts: the loop without a handoff.
+static ALONE: Locked<(u64, u64)> = Locked::new("alone test", (0, 0));
+/// What each core's contended loop took, by core, set before the core counts itself finished.
+static TOOK: Locked<[Option<Took>; 2]> = Locked::new("contention results", [None; 2]);
 static ARRIVED: AtomicUsize = AtomicUsize::new(0);
 static FINISHED: AtomicUsize = AtomicUsize::new(0);
 
-/// Both cores call this. Panics if the lock let them in together.
-pub fn contend() {
-    ARRIVED.fetch_add(1, Ordering::SeqCst);
-    spin_until(|| ARRIVED.load(Ordering::SeqCst) >= 2);
+/// The TSC and performance counters 0 to 3 at a moment, or how far they moved between two. The
+/// counters are what each core counts from bring-up, where it has them: cycles not in halt, retired
+/// instructions, data cache fills, and the fills that came from another CCX's cache, which on a part
+/// with one CCX per CCD are the lines that crossed a CCD.
+#[derive(Clone, Copy)]
+struct Took {
+    ticks: u64,
+    counts: Option<[u64; 4]>,
+}
+
+impl Took {
+    fn now() -> Self {
+        Self { ticks: crate::arch::cycles(), counts: crate::arch::counters() }
+    }
+
+    /// How far each moved from `start` to now. Counters zeroed at bring-up do not wrap in a boot test.
+    fn since(start: Self) -> Self {
+        let end = Self::now();
+        Self {
+            ticks: end.ticks - start.ticks,
+            counts: start.counts.zip(end.counts).map(|(a, b)| core::array::from_fn(|n| b[n] - a[n])),
+        }
+    }
+
+    /// Logs this, taken over CONTENTION_ROUNDS acquisitions, per acquisition.
+    fn log(&self, what: &str, cpu: usize) {
+        let per = PerRound;
+        match self.counts {
+            Some([cycles, instructions, fills, ccx_fills]) => log::info!(
+                "lock {} on CPU {}, per acquisition: {} ticks, {} cycles, {} instructions, {} fills, {} ccx fills",
+                what,
+                cpu,
+                per(self.ticks),
+                per(cycles),
+                per(instructions),
+                per(fills),
+                per(ccx_fills),
+            ),
+            None => log::info!("lock {} on CPU {}, per acquisition: {} ticks, no counters", what, cpu, per(self.ticks)),
+        }
+    }
+}
+
+/// A total over CONTENTION_ROUNDS, printed per round to two decimal places.
+struct PerRound(u64);
+
+impl core::fmt::Display for PerRound {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        let hundredths = self.0 * 100 / CONTENTION_ROUNDS as u64;
+        write!(f, "{}.{:02}", hundredths / 100, hundredths % 100)
+    }
+}
+
+/// Takes `locked` CONTENTION_ROUNDS times, breaking and restoring its pair each time, and returns what
+/// that took. Panics if the lock let two cores in together.
+fn hold_rounds(locked: &Locked<(u64, u64)>) -> Took {
+    let start = Took::now();
     for _ in 0..CONTENTION_ROUNDS {
-        let mut pair = CONTENDED.lock();
+        let mut pair = locked.lock();
         assert_eq!(pair.0, pair.1, "two cores inside the lock");
         // Volatile, so neither write folds into the other and the window stays open.
         unsafe { core::ptr::write_volatile(&mut pair.0, pair.0 + 1) };
         core::hint::spin_loop();
         unsafe { core::ptr::write_volatile(&mut pair.1, pair.1 + 1) };
     }
+    Took::since(start)
+}
+
+/// CPU 0 calls this before the other core starts, and logs what the loop takes with no handoff.
+pub fn time_alone() {
+    hold_rounds(&ALONE).log("alone", cpu::get_cpu_id());
+}
+
+/// Both cores call this. Panics if the lock let them in together.
+pub fn contend() {
+    ARRIVED.fetch_add(1, Ordering::SeqCst);
+    spin_until(|| ARRIVED.load(Ordering::SeqCst) >= 2);
+    let took = hold_rounds(&CONTENDED);
+    TOOK.lock()[cpu::get_cpu_id()] = Some(took);
     FINISHED.fetch_add(1, Ordering::SeqCst);
 }
 
@@ -185,4 +256,7 @@ pub fn report_contention() {
     assert_eq!(pair.0, pair.1, "two cores inside the lock");
     assert_eq!(pair.0, 2 * CONTENTION_ROUNDS as u64, "lost an increment");
     log::info!("lock contended by 2 cores: pair intact at {}", pair.0);
+    for (cpu, took) in TOOK.lock().iter().enumerate() {
+        took.expect("a core finished without its result").log("contended", cpu);
+    }
 }

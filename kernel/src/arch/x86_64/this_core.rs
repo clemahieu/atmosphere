@@ -180,3 +180,19 @@ unsafe fn init_performance_counters() {
     super::write_cr4(super::read_cr4() | CR4_PCE);
     log::info!("CPU {}: performance counters 0 to 3 count {:x?}", crate::cpu::get_cpu_id(), PERF_EVENTS);
 }
+
+/// How far counters 0 to 3 have counted PERF_EVENTS on this core, or None where the core has no
+/// extended core counters and init_performance_counters left them alone. RDPMC reads a counter in
+/// ring 0 whatever CR4.PCE says (APM 3, RDPMC).
+pub fn counters() -> Option<[u64; 4]> {
+    if core::arch::x86_64::__cpuid(0x8000_0001).ecx & PERF_CTR_EXT_CORE == 0 {
+        return None;
+    }
+    Some(core::array::from_fn(|n| {
+        let (lo, hi): (u32, u32);
+        unsafe {
+            asm!("rdpmc", in("ecx") n as u32, out("eax") lo, out("edx") hi, options(nomem, nostack, preserves_flags))
+        };
+        (hi as u64) << 32 | lo as u64
+    }))
+}

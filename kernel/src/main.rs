@@ -124,9 +124,10 @@ fn boot_cpu0(boot_info: *const BootInfo) -> isize {
     }
 }
 
-/// Starts CPU 1, and both contend for the lock until the test is done, so that dom0's log and CPU 1's
-/// start-up log do not interleave.
+/// Times the lock test's loop on CPU 0 alone, then starts CPU 1, and both contend for the lock until
+/// the test is done, so that dom0's log and CPU 1's start-up log do not interleave.
 unsafe fn start_second_core() {
+    lock::time_alone();
     let idle_stack = &*(&raw const AP_STACK);
     arch::guard(idle_stack.guard());
     let stack = idle_stack.bottom() as u64;
