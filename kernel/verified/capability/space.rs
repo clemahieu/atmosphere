@@ -1989,7 +1989,9 @@ impl CapKernel {
     /// The invariant and the retype's effect once the free order-3 block at `page` is typed as the
     /// table page at `base` under `parent`, from what the body's calls ensure: the block typed, the
     /// node pages added (mid), the hidden node derived, and the page's map, record and spare page
-    /// inserted. Its own proof fn so that the body's query stays within budget.
+    /// inserted. Its own proof fn so that the body's query stays within budget, and its own solver so
+    /// that the module's earlier queries do not push it over.
+    #[verifier::spinoff_prover]
     proof fn lemma_table_page_wf(
         pre: Self,
         mid: Tree,
