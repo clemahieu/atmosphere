@@ -9,3 +9,10 @@ license.workspace = true
 [dependencies]
 aeager = { path = "../aeager" }
 asys = { path = "../asys" }
+
+# A freestanding binary with its own panic handler: it has no host tests, and cargo test builds no
+# harness for it.
+[[bin]]
+name = "dom0"
+path = "src/main.rs"
+test = false

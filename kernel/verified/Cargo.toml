@@ -10,6 +10,8 @@ verified = true
 [lib]
 name = "verified"
 path = "lib.rs"
+# Its doc examples are Verus source, which rustdoc cannot compile.
+doctest = false
 
 [dependencies.vstd]
 workspace = true

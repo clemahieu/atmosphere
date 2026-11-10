@@ -36,3 +36,10 @@ stray_timer = []
 # CPU 0 panics once its command line is read, so tools/check-boot-panic.py can check that a panic
 # ends the run with a failure.
 boot_panic = []
+
+# A freestanding binary with its own panic handler: it has no host tests, and cargo test builds no
+# harness for it.
+[[bin]]
+name = "kernel"
+path = "src/main.rs"
+test = false

@@ -8,3 +8,10 @@ license.workspace = true
 
 [dependencies]
 asys = { path = "../../asys" }
+
+# A freestanding binary with its own panic handler: it has no host tests, and cargo test builds no
+# harness for it.
+[[bin]]
+name = "hello"
+path = "src/main.rs"
+test = false
