@@ -9,6 +9,7 @@ use vstd::prelude::*;
 verus! {
 
 use crate::arch::Registers;
+use crate::capability::block::{Large, NUM_2M, PAGES_PER_2M};
 use crate::capability::derive::*;
 use crate::capability::inspect::*;
 use crate::capability::kernel::*;
@@ -20,6 +21,7 @@ use crate::capability::operation::*;
 use crate::capability::position::*;
 use crate::capability::reach::*;
 use crate::capability::refs::*;
+use crate::capability::retype::FRAME_RIGHTS;
 use crate::capability::space::*;
 use crate::capability::table::*;
 use crate::capability::view::*;
@@ -62,6 +64,12 @@ pub open spec fn view_retypes(v: SlotView, base: usize, order: u8) -> bool {
     &&& v.base <= base
     &&& base as int % block_bytes(order) == 0
     &&& base as int + block_bytes(order) <= v.base as int + block_bytes(v.order)
+}
+
+/// What a slot says that holds the frame capability a retype makes of the block of the order at base,
+/// under the capability at node parent.
+pub open spec fn frame_view(base: usize, order: u8, parent: usize) -> SlotView {
+    SlotView { kind: CapKind::Frame, base, order, rights: FRAME_RIGHTS, parent }
 }
 
 /// The page at this offset of the block a slot's frame capability names, as frame_of reads it.
@@ -186,12 +194,12 @@ impl CapKernel {
         }
     }
 
-    /// A step that leaves the tables as they were and changes no node's liveness but n's, a slot's,
-    /// leaves every table's slots as they were.
+    /// A step that leaves the root entries as they were and changes no node's liveness but n's, a
+    /// slot's, leaves every table's slots as they were.
     pub proof fn lemma_slots_stay(pre: Self, post: Self, n: usize, t: usize, j: usize)
         requires
             Self::caps_frame(pre, post, n, n),
-            post.tables == pre.tables,
+            post.tables.roots == pre.tables.roots,
             n % 4096 != 0,
         ensures
             post.tables.has_slot(&post.list, t, j) == pre.tables.has_slot(&pre.list, t, j),
@@ -540,6 +548,334 @@ impl CapKernel {
         ensures
             Self::inspect_contract(pre, post, root, spec_position(frame.slot()), out),
     {
+    }
+
+    /// A step that leaves the list and the tables as they were leaves every table's view as it was.
+    pub proof fn lemma_views_same(pre: Self, post: Self)
+        requires
+            post.list == pre.list,
+            post.tables == pre.tables,
+        ensures
+            forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t),
+    {
+        assert forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t) by {
+            assert forall|j: usize| #[trigger] post.table_view(t).contains_key(j) == pre.table_view(t).contains_key(j)
+                && (post.table_view(t).contains_key(j) ==> post.table_view(t)[j] == pre.table_view(t)[j]) by {
+                pre.lemma_table_view(t, j);
+                post.lemma_table_view(t, j);
+            }
+            assert(post.table_view(t) =~= pre.table_view(t));
+        }
+    }
+
+    /// The slot at index i of the table at root is empty, as the kernel reads it outside the view: a
+    /// slot whose node holds nothing.
+    pub open spec fn empty_slot(&self, root: usize, i: usize) -> bool {
+        &&& self.tables.has_slot(&self.list, root, i)
+        &&& !self.list.nodes@[self.tables.node_of(root, i) as int].live
+    }
+
+    /// The small block of the order at base is free among the pages the block table tracks, as the
+    /// kernel reads it outside the view.
+    pub open spec fn small_block_free(&self, base: usize, order: usize) -> bool {
+        &&& self.blocks.tracks_addr_run(base, crate::capability::block::order_pages(order))
+        &&& self.blocks.small_free((base / 4096) as int, order)
+    }
+
+    /// The 2M block at base is in a region the block table has, and is free or is the one an earlier
+    /// step of this retype typed and is zeroing, as the kernel reads it outside the view.
+    pub open spec fn large_block_ready(&self, base: usize) -> bool {
+        let r = base / 4096 / crate::capability::zero::level_pages(Large::Two);
+        &&& base / 4096 / PAGES_PER_2M < NUM_2M
+        &&& self.zeroing.active(Large::Two, r) || self.blocks.large_free(Large::Two, r as int)
+    }
+
+    /// A retype's condition on its untyped over the caller's view: index from of the table at root is a
+    /// slot whose capability may retype the block of the order at base, above the deepest depth. The
+    /// depth reads the kernel outside the view.
+    pub open spec fn retype_under_allowed(&self, root: usize, from: usize, base: usize, order: u8) -> bool {
+        let v = self.table_view(root);
+        &&& v.contains_key(from)
+        &&& view_retypes(v[from], base, order)
+        &&& self.list.nodes@[self.tables.node_of(root, from) as int].depth < MAX_DEPTH
+    }
+
+    /// The root entry a leaf's retype fills, over the caller's view: the position is in the caller's
+    /// table or in one a process capability with control names, naming no dead process; its index is
+    /// a root entry; and that entry holds no leaf. The process's liveness and the entry read the kernel
+    /// outside the view.
+    pub open spec fn leaf_entry_free(&self, root: usize, at: Position) -> bool {
+        let table = self.view_table_at(root, at.through);
+        &&& table is Some
+        &&& at.through is Some ==> !self.cap_dead(self.tables.node_of(root, at.through->0))
+        &&& at.index < ROOT_ENTRIES
+        &&& self.tables.leaf(table->0, at.index as int) == NO_LEAF
+    }
+
+    /// Retype's condition over the caller's view, by the kind, for the untyped at index from of the
+    /// caller's table at root, the base, the word in argument 3 and the level: a 4K frame needs the
+    /// untyped to cover the page, the caller's slot the word names empty and the page free; a 2M frame
+    /// the same of its block, which is free or being zeroed by this retype; a table page needs its
+    /// order-3 block covered and free and a level a table page has; a leaf needs the word to name a
+    /// position whose root entry is free, its order-1 block covered and free, and a base that is not
+    /// zero. Every other kind is refused.
+    pub open spec fn retype_allowed(&self, root: usize, kind: u64, from: usize, base: usize, word: u64, level: usize) -> bool {
+        let at = spec_position(word);
+        ||| {
+            &&& kind == RETYPE_FRAME
+            &&& self.retype_under_allowed(root, from, base, 0)
+            &&& self.empty_slot(root, word as usize)
+            &&& self.small_block_free(base, 0)
+        }
+        ||| {
+            &&& kind == RETYPE_LARGE_FRAME
+            &&& self.retype_under_allowed(root, from, base, 9)
+            &&& self.empty_slot(root, word as usize)
+            &&& self.large_block_ready(base)
+        }
+        ||| {
+            &&& kind == RETYPE_TABLE_PAGE
+            &&& self.retype_under_allowed(root, from, base, 3)
+            &&& 1 <= level <= 3
+            &&& self.small_block_free(base, 3)
+        }
+        ||| {
+            &&& kind == RETYPE_LEAF
+            &&& at is Some
+            &&& self.retype_under_allowed(root, from, base, 1)
+            &&& self.leaf_entry_free(root, at->0)
+            &&& base != NO_LEAF
+            &&& self.small_block_free(base, 1)
+        }
+    }
+
+    /// Retype's contract over the caller's view. Refused, with every table's view as it was, exactly
+    /// when retype_allowed fails. A 4K frame: ok, with the caller's slot the word names now holding
+    /// the frame, the untyped's child, and every other slot of every table as it was. A 2M frame:
+    /// again, with every table's view as it was, or ok as a 4K frame is with the 2M block. A table
+    /// page: ok, with every table's view as it was and an empty table page of the level at base. A
+    /// leaf: ok, with every table's view as it was and every index of the root entry it fills an empty
+    /// slot of the position's table.
+    pub open spec fn retype_contract(pre: Self, post: Self, root: usize, kind: u64, from: usize, base: usize, word: u64, level: usize, out: Outcome) -> bool {
+        let allowed = pre.retype_allowed(root, kind, from, base, word, level);
+        let to = word as usize;
+        let parent = pre.tables.node_of(root, from);
+        let at = spec_position(word)->0;
+        ||| {
+            &&& !allowed
+            &&& out == status_only(STATUS_REFUSED)
+            &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
+        }
+        ||| {
+            &&& kind == RETYPE_FRAME
+            &&& allowed
+            &&& out == status_only(STATUS_OK)
+            &&& post.table_view(root) == pre.table_view(root).insert(to, frame_view(base, 0, parent))
+            &&& forall|t: usize| t != root ==> #[trigger] post.table_view(t) == pre.table_view(t)
+        }
+        ||| {
+            &&& kind == RETYPE_LARGE_FRAME
+            &&& allowed
+            &&& out == status_only(STATUS_AGAIN)
+            &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
+        }
+        ||| {
+            &&& kind == RETYPE_LARGE_FRAME
+            &&& allowed
+            &&& out == status_only(STATUS_OK)
+            &&& post.table_view(root) == pre.table_view(root).insert(to, frame_view(base, 9, parent))
+            &&& forall|t: usize| t != root ==> #[trigger] post.table_view(t) == pre.table_view(t)
+        }
+        ||| {
+            &&& kind == RETYPE_TABLE_PAGE
+            &&& allowed
+            &&& out == status_only(STATUS_OK)
+            &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
+            &&& post.table_pages.maps@.contains_key(base)
+            &&& post.table_pages.records@[base].value() == fresh_table(level)
+        }
+        ||| {
+            let table = pre.view_table_at(root, at.through)->0;
+            &&& kind == RETYPE_LEAF
+            &&& allowed
+            &&& out == status_only(STATUS_OK)
+            &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
+            &&& forall|i: usize| index_ok(i) && index_entry(i) == at.index as int ==> #[trigger] post.empty_slot(table, i)
+        }
+    }
+
+    /// A step that fills the empty slot at index to of the table at root with a capability, saying v
+    /// there, and changes no other node's liveness, kind, capability or parent and no root entry, adds
+    /// that slot to the table's view and leaves every other slot of every table as it was.
+    pub proof fn lemma_slot_added(pre: Self, post: Self, root: usize, to: usize, v: SlotView)
+        requires
+            pre.wf(),
+            pre.empty_slot(root, to),
+            Self::caps_frame(pre, post, pre.tables.node_of(root, to), pre.tables.node_of(root, to)),
+            post.tables.roots == pre.tables.roots,
+            forall|x: usize| x != pre.tables.node_of(root, to) ==> #[trigger] post.list.parent@[x] == pre.list.parent@[x],
+            post.is_cap(pre.tables.node_of(root, to)),
+            post.slot_view(root, to) == v,
+        ensures
+            post.table_view(root) == pre.table_view(root).insert(to, v),
+            forall|t: usize| t != root ==> #[trigger] post.table_view(t) == pre.table_view(t),
+    {
+        let n = pre.tables.node_of(root, to);
+        pre.lemma_slot(root, to);
+        assert forall|t: usize| #[trigger] post.table_view(t) == if t == root { pre.table_view(t).insert(to, v) } else { pre.table_view(t) } by {
+            assert forall|j: usize| #[trigger] post.table_view(t).contains_key(j) == (if t == root { pre.table_view(t).insert(to, v) } else { pre.table_view(t) }).contains_key(j)
+                && (post.table_view(t).contains_key(j) ==> post.table_view(t)[j] == (if t == root { pre.table_view(t).insert(to, v) } else { pre.table_view(t) })[j]) by {
+                pre.lemma_table_view(t, j);
+                post.lemma_table_view(t, j);
+                Self::lemma_slots_stay(pre, post, n, t, j);
+                if pre.tables.has_slot(&pre.list, t, j) {
+                    pre.lemma_slot(t, j);
+                    let m = pre.tables.node_of(t, j);
+                    pre.lemma_slot_bound(m);
+                    if m == n {
+                        pre.tables.lemma_entry(t, index_entry(j));
+                        pre.tables.lemma_entry(root, index_entry(to));
+                        lemma_index_parts(j, to);
+                    } else {
+                        Self::lemma_caps_frame(pre, post, n, n, m);
+                    }
+                }
+            }
+            assert(post.table_view(t) =~= if t == root { pre.table_view(t).insert(to, v) } else { pre.table_view(t) });
+        }
+    }
+
+    /// A step that leaves the tables as they were, changes no node's liveness and no node's parent but
+    /// the one at base, which was not live and is no leaf, and keeps every capability a capability and
+    /// every other node none, leaves every table's view as it was.
+    pub proof fn lemma_unslotted_node(pre: Self, post: Self, base: usize)
+        requires
+            pre.wf(),
+            post.tables == pre.tables,
+            !pre.list.nodes@[base as int].live,
+            !pre.tables.owner@.contains_key(base),
+            forall|x: usize| x != base ==> #[trigger] post.list.parent@[x] == pre.list.parent@[x],
+            forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < NODE_SPACE && i != base
+                ==> post.list.nodes@[i].live == pre.list.nodes@[i].live,
+            forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x),
+        ensures
+            forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t),
+    {
+        assert forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t) by {
+            assert forall|j: usize| #[trigger] post.table_view(t).contains_key(j) == pre.table_view(t).contains_key(j)
+                && (post.table_view(t).contains_key(j) ==> post.table_view(t)[j] == pre.table_view(t)[j]) by {
+                pre.lemma_table_view(t, j);
+                post.lemma_table_view(t, j);
+                let leaf = pre.tables.leaf(t, index_entry(j));
+                if index_ok(j) && pre.tables.roots@.contains_key(t) && leaf != NO_LEAF {
+                    assert(0 <= index_entry(j) < ROOT_ENTRIES);
+                    pre.tables.lemma_entry(t, index_entry(j));
+                    pre.tables.lemma_leaf(&pre.list, leaf);
+                    assert(page_of(leaf) == leaf);
+                    pre.lemma_slot_bound(leaf);
+                    assert(post.list.nodes@[leaf as int].live == pre.list.nodes@[leaf as int].live);
+                }
+                let x = pre.tables.node_of(t, j);
+                if pre.is_cap(x) {
+                    assert(x != base);
+                }
+            }
+            assert(post.table_view(t) =~= pre.table_view(t));
+        }
+    }
+
+    /// A leaf's retype leaves every table's view as it was: the slots it adds hold nothing, and every
+    /// slot outside its root entry is the slot it was, of the node it was, saying what it said.
+    pub proof fn lemma_leaf_views(pre: Self, post: Self, root: usize, from: usize, at: Position, base: usize)
+        requires
+            pre.wf(),
+            Self::leaf_retyped(pre, post, root, from, at, base),
+        ensures
+            forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t),
+    {
+        let table = pre.destination_at(root, at.through)->0;
+        assert(pre.blocks.pages@[(base / 4096) as int + 0].kind is Free);
+        assert forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t) by {
+            assert forall|j: usize| #[trigger] post.table_view(t).contains_key(j) == pre.table_view(t).contains_key(j)
+                && (post.table_view(t).contains_key(j) ==> post.table_view(t)[j] == pre.table_view(t)[j]) by {
+                pre.lemma_table_view(t, j);
+                post.lemma_table_view(t, j);
+                let e = index_entry(j);
+                if pre.tables.has_slot(&pre.list, t, j) {
+                    let x = pre.tables.node_of(t, j);
+                    assert(post.tables.has_slot(&post.list, t, j));
+                    if pre.is_cap(x) {
+                        assert(post.is_cap(x));
+                        assert(x != base);
+                    }
+                } else if post.tables.has_slot(&post.list, t, j) {
+                    assert(pre.tables.roots@.contains_key(t));
+                    assert(0 <= e < ROOT_ENTRIES);
+                    if t != table || e != at.index as int {
+                        let leaf = pre.tables.leaf(t, e);
+                        assert(post.tables.leaf(t, e) == leaf);
+                        pre.tables.lemma_entry(t, e);
+                        assert(pre.blocks.pages@[(leaf / 4096) as int].kind is Base);
+                        assert(leaf != base);
+                        pre.tables.lemma_leaf(&pre.list, leaf);
+                        assert(page_of(leaf) == leaf);
+                        pre.lemma_slot_bound(leaf);
+                        assert(false);
+                    }
+                }
+            }
+            assert(post.table_view(t) =~= pre.table_view(t));
+        }
+    }
+
+    /// Retype's specification implies its contract.
+    pub proof fn lemma_retype_contract(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            pre.wf(),
+            Self::spec_retyped(pre, post, root, frame, out),
+        ensures
+            Self::retype_contract(pre, post, root, frame.argument(1), frame.slot() as usize, frame.argument(2) as usize, frame.argument(3), frame.argument(4) as usize, out),
+    {
+        let kind = frame.argument(1);
+        let from = frame.slot() as usize;
+        let base = frame.argument(2) as usize;
+        let word = frame.argument(3);
+        let to = word as usize;
+        let level = frame.argument(4) as usize;
+        let parent = pre.tables.node_of(root, from);
+        let child = pre.tables.node_of(root, to);
+        pre.lemma_table_view(root, from);
+        if let Some(at) = spec_position(word) {
+            pre.lemma_view_table_at(root, at.through);
+            if let Some(c) = at.through {
+                pre.lemma_table_view(root, c);
+            }
+        }
+        assert(pre.retype_allowed(root, kind, from, base, word, level) == pre.allows_retype(root, frame));
+        if out == status_only(STATUS_REFUSED) {
+            Self::lemma_views_same(pre, post);
+        } else if kind == RETYPE_FRAME {
+            assert(post.is_cap(child));
+            assert(post.slot_view(root, to) == frame_view(base, 0, parent));
+            Self::lemma_slot_added(pre, post, root, to, frame_view(base, 0, parent));
+        } else if kind == RETYPE_LARGE_FRAME && out == status_only(STATUS_AGAIN) {
+            Self::lemma_views_same(pre, post);
+        } else if kind == RETYPE_LARGE_FRAME {
+            assert(post.is_cap(child));
+            assert(post.slot_view(root, to) == frame_view(base, 9, parent));
+            Self::lemma_slot_added(pre, post, root, to, frame_view(base, 9, parent));
+        } else if kind == RETYPE_TABLE_PAGE {
+            if pre.tables.owner@.contains_key(base) {
+                assert(pre.blocks.pages@[(base / 4096) as int].kind is Base);
+            }
+            Self::lemma_unslotted_node(pre, post, base);
+        } else {
+            let at = spec_position(word)->0;
+            Self::lemma_leaf_views(pre, post, root, from, at, base);
+            let table = pre.view_table_at(root, at.through)->0;
+            assert(table == pre.destination_at(root, at.through)->0);
+            assert forall|i: usize| index_ok(i) && index_entry(i) == at.index as int implies #[trigger] post.empty_slot(table, i) by {}
+        }
     }
 }
 
