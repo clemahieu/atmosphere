@@ -165,8 +165,7 @@ pub struct Spaces {
     /// most a spare IPI.
     pub loaded: Tracked<Map<usize, PointsTo<SpaceCores>>>,
     pub holders: Ghost<IMap<usize, Set<usize>>>,
-    /// The devices bound to each device space, each holding a reference to its block. atmo-6x9.16.14 binds
-    /// the first.
+    /// The devices bound to each device space, each holding a reference to its block.
     pub bound: Ghost<IMap<usize, Set<usize>>>,
     /// The kernel's entries, which every process root holds in its kernel slots.
     pub kernel_entries: Array<usize, KERNEL_MEM_END_L4INDEX>,
@@ -1646,6 +1645,82 @@ impl CapKernel {
             assert(ha[t].contains(x));
             assert(pre.tables.is_cap(&pre.list, x));
             assert(x != n);
+        }
+    }
+
+    /// The spaces after device d, bound to space s, is unbound, taking its reference on the block with
+    /// it, and no capability changed.
+    pub proof fn lemma_spaces_bound_dropped(pre: Self, post: Self, s: usize, d: usize)
+        requires
+            pre.wf(),
+            forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x),
+            forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x) ==> post.tables.payload_of(x) == pre.tables.payload_of(x),
+            pre.spaces.bound@.contains_key(s),
+            pre.spaces.bound@[s].contains(d),
+            blocks_refs_changed(
+                &pre.blocks,
+                &post.blocks,
+                BlockRef::Small(s / PAGE_SZ),
+                (block_refs(&pre.blocks, BlockRef::Small(s / PAGE_SZ)) - 1) as usize,
+                block_dead(&pre.blocks, BlockRef::Small(s / PAGE_SZ)) || block_refs(&pre.blocks, BlockRef::Small(s / PAGE_SZ)) == 1,
+            ),
+            post.spaces.roots == pre.spaces.roots,
+            post.spaces.records == pre.spaces.records,
+            post.spaces.loaded == pre.spaces.loaded,
+            post.spaces.kernel_entries == pre.spaces.kernel_entries,
+            post.spaces.holders == pre.spaces.holders,
+            post.spaces.bound@ == pre.spaces.bound@.insert(s, pre.spaces.bound@[s].remove(d)),
+            forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) ==> post.list.pages@.dom().contains(p),
+        ensures
+            spaces_wf(&post.list, &post.tables, &post.spaces, &post.blocks),
+    {
+        let ba = pre.spaces.bound@;
+        let bb = post.spaces.bound@;
+        let ha = pre.spaces.holders@;
+        let a = &pre.blocks;
+        let b = &post.blocks;
+        let br = BlockRef::Small(s / PAGE_SZ);
+        pre.lemma_bound_is_space(s, d);
+        assert(space_wf(&pre.list, &pre.spaces, a, s));
+        vstd::set::lemma_set_remove_len(ba[s], d);
+        assert(block_typed(a, br));
+        assert forall|t: usize| #[trigger] post.spaces.roots@.contains_key(t)
+            implies space_wf(&post.list, &post.spaces, b, t) by {
+            assert(space_wf(&pre.list, &pre.spaces, a, t));
+            if pre.spaces.records@[t].value().kind is Device {
+                assert forall|k: usize| k < TABLE_NODE_PAGES implies post.list.pages@.dom().contains(#[trigger] table_node_page(t, k)) by {
+                    assert(pre.list.pages@.dom().contains(table_node_page(t, k)));
+                }
+            }
+            if t != s {
+                assert(bb[t] == ba[t]);
+                if pre.spaces.records@[t].value().kind is Device {
+                    lemma_table_pages_distinct(t, s);
+                    let x = BlockRef::Small(t / PAGE_SZ);
+                    assert(block_typed(a, x));
+                    assert(x != br);
+                    assert(block_refs(b, x) == block_refs(a, x));
+                    assert(block_dead(b, x) == block_dead(a, x));
+                }
+            }
+        }
+        assert forall|x: usize| b.tracks(x as int) && #[trigger] space_block(b, x)
+            implies post.spaces.roots@.contains_key((x * PAGE_SZ) as usize) by {
+            assert(space_block(a, x));
+        }
+        assert forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) && post.tables.payload_of(x).kind is Space implies {
+            &&& post.spaces.roots@.contains_key(post.tables.payload_of(x).base)
+            &&& ha[post.tables.payload_of(x).base].contains(x)
+            &&& post.tables.payload_of(x).order == 3
+        } by {
+            assert(pre.tables.is_cap(&pre.list, x));
+        }
+        assert forall|t: usize, x: usize| post.spaces.roots@.contains_key(t) && #[trigger] ha[t].contains(x) implies {
+            &&& post.tables.is_cap(&post.list, x)
+            &&& post.tables.payload_of(x).kind is Space
+            &&& post.tables.payload_of(x).base == t
+        } by {
+            assert(pre.tables.is_cap(&pre.list, x));
         }
     }
 
@@ -3301,6 +3376,8 @@ impl CapKernel {
                 Self::lemma_space_cap_frame(pre, post, child, x);
             }
             assert(post.list.parent@ == pre.list.parent@.insert(child, parent));
+            pre.lemma_free_not_table(base, page);
+            pre.lemma_bound_kept_new_space(base);
             Self::lemma_binding_parents_same_caps(pre, post);
             Self::lemma_space_blocks(pre, post, base, page, child);
             assert(post.spaces.roots@ == pre.spaces.roots@.insert(base, post.spaces.roots@[base]));

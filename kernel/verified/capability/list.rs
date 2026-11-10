@@ -37,6 +37,9 @@ pub enum NodeKind {
     Mapping,
     Hidden,
     Binding,
+    /// A device's binding to a device space, under the space capability that bound it:
+    /// design/device-binding-under-the-space-capability/.
+    DeviceBinding,
 }
 
 #[derive(Clone, Copy)]

@@ -318,19 +318,23 @@ pub proof fn lemma_binding_parents_kept(la: &Tree, ta: &Tables, tha: &Threads, l
     }
 }
 
-/// The live binding nodes of a are those of b.
+/// The live binding nodes of a are those of b, a thread's and a device's.
 pub open spec fn same_bindings(list_a: &Tree, list_b: &Tree) -> bool {
-    forall|n: usize| #![trigger list_a.nodes@[n as int]] #![trigger list_b.nodes@[n as int]] n < NODE_SPACE ==>
-        (list_b.nodes@[n as int].live && list_b.nodes@[n as int].kind is Binding)
+    forall|n: usize| #![trigger list_a.nodes@[n as int]] #![trigger list_b.nodes@[n as int]] n < NODE_SPACE ==> {
+        &&& (list_b.nodes@[n as int].live && list_b.nodes@[n as int].kind is Binding)
             == (list_a.nodes@[n as int].live && list_a.nodes@[n as int].kind is Binding)
+        &&& (list_b.nodes@[n as int].live && list_b.nodes@[n as int].kind is DeviceBinding)
+            == (list_a.nodes@[n as int].live && list_a.nodes@[n as int].kind is DeviceBinding)
+    }
 }
 
-/// The bindings after a step that kept every binding node, every thread's process and every process's
-/// bindings, and added only threads bound to nothing and processes with no bindings.
+/// The bindings after a step that kept every thread's binding node, every thread's process and every
+/// process's bindings, and added only threads bound to nothing and processes with no bindings.
 pub proof fn lemma_bindings_kept(list_a: &Tree, list_b: &Tree, ta: &Threads, tb: &Threads, pa: &Processes, pb: &Processes)
     requires
         bindings_wf(list_a, ta, pa),
-        same_bindings(list_a, list_b),
+        forall|n: usize| n < NODE_SPACE ==> ((#[trigger] list_b.nodes@[n as int]).live && list_b.nodes@[n as int].kind is Binding)
+            == (list_a.nodes@[n as int].live && list_a.nodes@[n as int].kind is Binding),
         forall|t: usize| #[trigger] ta.records@.contains_key(t) ==> {
             &&& tb.records@.contains_key(t)
             &&& tb.records@[t].value().process == ta.records@[t].value().process
@@ -373,12 +377,13 @@ pub proof fn lemma_bindings_kept(list_a: &Tree, list_b: &Tree, ta: &Threads, tb:
     }
 }
 
-/// The bindings after a step that changed no thread's process and no process, and kept every binding
-/// node.
+/// The bindings after a step that changed no thread's process and no process, and kept every thread's
+/// binding node.
 pub proof fn lemma_bindings_same(list_a: &Tree, list_b: &Tree, threads: &Threads, processes: &Processes)
     requires
         bindings_wf(list_a, threads, processes),
-        same_bindings(list_a, list_b),
+        forall|n: usize| n < NODE_SPACE ==> ((#[trigger] list_b.nodes@[n as int]).live && list_b.nodes@[n as int].kind is Binding)
+            == (list_a.nodes@[n as int].live && list_a.nodes@[n as int].kind is Binding),
     ensures
         bindings_wf(list_b, threads, processes),
 {
@@ -578,11 +583,15 @@ pub proof fn lemma_binding_nodes_grown(a: Tree, mid: Tree, b: Tree, x: usize, y:
         !a.nodes@[y as int].live,
         !(b.nodes@[x as int].kind is Binding),
         !(b.nodes@[y as int].kind is Binding),
+        !(b.nodes@[x as int].kind is DeviceBinding),
+        !(b.nodes@[y as int].kind is DeviceBinding),
     ensures
         same_bindings(&a, &b),
 {
-    assert forall|i: usize| i < NODE_SPACE implies
-        ((#[trigger] b.nodes@[i as int]).live && b.nodes@[i as int].kind is Binding) == (a.nodes@[i as int].live && a.nodes@[i as int].kind is Binding) by {
+    assert forall|i: usize| i < NODE_SPACE implies {
+        &&& ((#[trigger] b.nodes@[i as int]).live && b.nodes@[i as int].kind is Binding) == (a.nodes@[i as int].live && a.nodes@[i as int].kind is Binding)
+        &&& (b.nodes@[i as int].live && b.nodes@[i as int].kind is DeviceBinding) == (a.nodes@[i as int].live && a.nodes@[i as int].kind is DeviceBinding)
+    } by {
         if i != x && i != y {
             assert(mid.nodes@[i as int].live == a.nodes@[i as int].live);
             if a.nodes@[i as int].live {
@@ -605,16 +614,25 @@ pub proof fn lemma_same_bindings_frame(a: &Tree, b: &Tree, n: usize, m: usize)
         },
         forall|x: usize| x < NODE_SPACE && #[trigger] b.valid(x) && !a.valid(x) && x != n && x != m
             ==> !(b.nodes@[x as int].live && b.nodes@[x as int].kind is Binding),
+        forall|x: usize| x < NODE_SPACE && #[trigger] b.valid(x) && !a.valid(x) && x != n && x != m
+            ==> !(b.nodes@[x as int].live && b.nodes@[x as int].kind is DeviceBinding),
         !(a.nodes@[n as int].live && a.nodes@[n as int].kind is Binding),
         !(b.nodes@[n as int].live && b.nodes@[n as int].kind is Binding),
         !(a.nodes@[m as int].live && a.nodes@[m as int].kind is Binding),
         !(b.nodes@[m as int].live && b.nodes@[m as int].kind is Binding),
+        !(a.nodes@[n as int].live && a.nodes@[n as int].kind is DeviceBinding),
+        !(b.nodes@[n as int].live && b.nodes@[n as int].kind is DeviceBinding),
+        !(a.nodes@[m as int].live && a.nodes@[m as int].kind is DeviceBinding),
+        !(b.nodes@[m as int].live && b.nodes@[m as int].kind is DeviceBinding),
     ensures
         same_bindings(a, b),
 {
-    assert forall|x: usize| x < NODE_SPACE implies
-        ((#[trigger] b.nodes@[x as int]).live && b.nodes@[x as int].kind is Binding)
-            == (a.nodes@[x as int].live && a.nodes@[x as int].kind is Binding) by {
+    assert forall|x: usize| x < NODE_SPACE implies {
+        &&& ((#[trigger] b.nodes@[x as int]).live && b.nodes@[x as int].kind is Binding)
+            == (a.nodes@[x as int].live && a.nodes@[x as int].kind is Binding)
+        &&& (b.nodes@[x as int].live && b.nodes@[x as int].kind is DeviceBinding)
+            == (a.nodes@[x as int].live && a.nodes@[x as int].kind is DeviceBinding)
+    } by {
         if x != n && x != m {
             if a.valid(x) {
             } else {
@@ -899,14 +917,25 @@ impl CapKernel {
                 ==> post.list.parent@.contains_key(x) && post.list.parent@[x] == rename(pre.list.parent@[x], n, m),
             pre.is_cap(n) ==> pre.list.childless(n) || (post.is_cap(m) && post.payload_of(m) == pre.payload_of(n)),
             pre.is_cap(m) && m != n ==> pre.list.childless(m),
+            !(pre.list.nodes@[n as int].live && pre.list.nodes@[n as int].kind is DeviceBinding),
+            !(post.list.nodes@[n as int].live && post.list.nodes@[n as int].kind is DeviceBinding),
+            !(pre.list.nodes@[m as int].live && pre.list.nodes@[m as int].kind is DeviceBinding),
+            !(post.list.nodes@[m as int].live && post.list.nodes@[m as int].kind is DeviceBinding),
+            device_spaces_kept(&pre.devices, &post.devices),
+            bound_kept(pre.spaces.bound@, post.spaces.bound@),
         ensures
             bindings_wf(&post.list, &post.threads, &post.processes),
             binding_parents(&post.list, &post.tables, &post.threads),
+            device_bindings_wf(&post.list, &post.tables, post.spaces.bound@, &post.devices),
     {
         Self::lemma_binding_parents_caps_frame(pre, post, n, m);
-        assert forall|x: usize| x < NODE_SPACE implies
-            ((#[trigger] post.list.nodes@[x as int]).live && post.list.nodes@[x as int].kind is Binding)
-                == (pre.list.nodes@[x as int].live && pre.list.nodes@[x as int].kind is Binding) by {
+        Self::lemma_device_bindings_caps_frame(pre, post, n, m);
+        assert forall|x: usize| x < NODE_SPACE implies {
+            &&& ((#[trigger] post.list.nodes@[x as int]).live && post.list.nodes@[x as int].kind is Binding)
+                == (pre.list.nodes@[x as int].live && pre.list.nodes@[x as int].kind is Binding)
+            &&& (post.list.nodes@[x as int].live && post.list.nodes@[x as int].kind is DeviceBinding)
+                == (pre.list.nodes@[x as int].live && pre.list.nodes@[x as int].kind is DeviceBinding)
+        } by {
             if x != n && x != m {
                 assert(post.list.nodes@[x as int].live == pre.list.nodes@[x as int].live);
                 assert(post.list.nodes@[x as int].kind == pre.list.nodes@[x as int].kind);
@@ -976,9 +1005,14 @@ impl CapKernel {
                 &&& post.threads.records@.contains_key(t)
                 &&& post.threads.records@[t].value().process == pre.threads.records@[t].value().process
             },
+            device_bindings_wf(&pre.list, &pre.tables, pre.spaces.bound@, &pre.devices),
+            device_spaces_kept(&pre.devices, &post.devices),
+            bound_kept(pre.spaces.bound@, post.spaces.bound@),
         ensures
             binding_parents(&post.list, &post.tables, &post.threads),
+            device_bindings_wf(&post.list, &post.tables, post.spaces.bound@, &post.devices),
     {
+        Self::lemma_device_bindings_same_caps(pre, post);
         assert forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x) && pre.tables.payload_of(x).kind is Process implies {
             &&& post.tables.is_cap(&post.list, x)
             &&& post.tables.payload_of(x) == pre.tables.payload_of(x)
@@ -3687,6 +3721,18 @@ impl CapKernel {
         Self::lemma_bind_nodes(pre, post, n, t);
         Self::lemma_bind_objects(pre, post, n, t);
         Self::lemma_bind_parents(pre, post, n, t);
+        assert forall|x: usize| #[trigger] pre.is_cap(x) && pre.payload_of(x).kind is Space
+            implies post.is_cap(x) && post.payload_of(x) == pre.payload_of(x) by {
+            assert(x != t);
+        }
+        assert forall|x: usize| x < NODE_SPACE implies
+            ((#[trigger] post.list.nodes@[x as int]).live && post.list.nodes@[x as int].kind is DeviceBinding)
+                == (pre.list.nodes@[x as int].live && pre.list.nodes@[x as int].kind is DeviceBinding) by {
+            if x != t {
+                assert(post.list.nodes@[x as int].live == pre.list.nodes@[x as int].live);
+            }
+        }
+        Self::lemma_device_bindings_space_caps(pre, post);
         Self::lemma_tlb_same(pre, post);
         assert(process_tables_wf(&post.tables, &post.processes));
         assert(post.frames_wf());

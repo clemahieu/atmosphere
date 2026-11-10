@@ -1521,6 +1521,7 @@ impl CapKernel {
             lemma_binding_nodes_grown(pre.list, mid, post.list, child, child);
             lemma_bindings_kept(&pre.list, &post.list, &pre.threads, &post.threads, &pre.processes, &post.processes);
             assert(post.list.parent@ == pre.list.parent@.insert(child, parent));
+            pre.lemma_bound_kept_new_space(base);
             Self::lemma_binding_parents_same_caps(pre, post);
             assert(post.wf());
             Self::lemma_bound_threads_same(pre, post);

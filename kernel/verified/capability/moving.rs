@@ -489,6 +489,7 @@ impl CapKernel {
             Self::move_step(pre, post, i, n),
             post.devices.records == pre.devices.records,
             post.devices.count == pre.devices.count,
+            post.devices.page == pre.devices.page,
             post.devices.holder@ == if pre.payload_of(i).kind is Device {
                 pre.devices.holder@.insert(pre.payload_of(i).base, n)
             } else {

@@ -1114,6 +1114,7 @@ impl CapKernel {
         &&& frames_held(self.frames@, self.holders@)
         &&& leaf_blocks_wf(&self.list, &self.tables, &self.blocks)
         &&& devices_wf(&self.list, &self.tables, &self.devices)
+        &&& device_bindings_wf(&self.list, &self.tables, self.spaces.bound@, &self.devices)
     }
 
     /// A frame's permission is for its own page.
@@ -1391,7 +1392,7 @@ impl CapKernel {
         let tracked mut steps = Steps::fresh();
         self.zeroing.init(Tracked(&mut steps));
         self.holders = Ghost(IMap::empty());
-        self.devices = Devices::new();
+        self.devices = Devices::new(root);
         self.threads = Threads::new();
         self.processes = Processes::new();
         self.blocks.init(Tracked(&mut steps));
@@ -1414,6 +1415,7 @@ impl CapKernel {
             reveal(devices_wf);
             reveal(current_wf);
             reveal(binding_parents);
+            reveal(device_bindings_wf);
             assert forall|c: int, t: usize| 0 <= c < NUM_CPUS && #[trigger] runs(self.cores@, c, t) implies false by {
                 assert(self.cores@[c].current_thread is None);
             }

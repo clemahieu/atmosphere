@@ -492,13 +492,25 @@ impl CapKernel {
         requires
             Self::caps_frame(pre, post, n, n),
             !post.list.nodes@[n as int].live,
-            post.devices == pre.devices,
+            post.devices.count == pre.devices.count,
+            post.devices.holder == pre.devices.holder,
+            post.devices == pre.devices || post.devices.wf(),
         ensures
             post.tables.caps_wf(&post.list),
             post.tables.control_wf(&post.list),
             devices_wf(&post.list, &post.tables, &post.devices),
     {
-        Self::lemma_devices_caps_frame(pre, post, n, n);
+        assert forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) && post.tables.payload_of(x).kind is Device implies {
+            &&& pre.tables.is_cap(&pre.list, x)
+            &&& pre.tables.payload_of(x) == post.tables.payload_of(x)
+        } by {
+            assert(x != n);
+            Self::lemma_caps_frame(pre, post, n, n, x);
+        }
+        lemma_devices_kept(&pre.list, &pre.tables, &post.list, &post.tables, &pre.devices);
+        if post.devices != pre.devices {
+            lemma_devices_records(&post.list, &post.tables, &pre.devices, &post.devices);
+        }
         assert forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) implies {
             &&& cap_wf(post.tables.payload_of(x))
             &&& control_named(post.tables.payload_of(x))

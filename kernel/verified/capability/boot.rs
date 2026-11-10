@@ -27,6 +27,8 @@ use crate::capability::reach::*;
 use crate::capability::refs::*;
 use crate::capability::space::*;
 use crate::capability::table::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::device::*;
 use crate::capability::thread::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::view::*;
@@ -2418,6 +2420,25 @@ impl CapKernel {
             assert forall|t: usize| t < NODE_SPACE && (#[trigger] list.nodes@[t as int]).live
                 implies !(list.nodes@[t as int].kind is Binding) by {
                 assert(t == root || t == leaf || t == cap);
+            }
+        }
+        assert(device_bindings_wf(&list, &post.tables, post.spaces.bound@, &post.devices)) by {
+            reveal(device_bindings_wf);
+            assert forall|x: usize| x < NODE_SPACE && (#[trigger] list.nodes@[x as int]).live
+                implies !(list.nodes@[x as int].kind is DeviceBinding) by {
+                assert(x == root || x == leaf || x == cap);
+            }
+            // Boot binds nothing: a bound device's binding node has a parent, and init's list has none.
+            assert forall|d: int| 0 <= d < post.devices.count implies !((#[trigger] post.devices.records@[d]).space is Some) by {
+                if pre.devices.records@[d].space is Some {
+                    let x = binding_node(&pre.devices, d);
+                    assert(x < NODE_SPACE && pre.list.nodes@[x as int].live && pre.list.nodes@[x as int].kind is DeviceBinding);
+                    assert(device_binding_parent(&pre.list, &pre.tables, x, pre.devices.records@[binding_device(&pre.devices, x)].space->Some_0));
+                }
+            }
+            assert forall|s: usize, d: usize| post.spaces.bound@.contains_key(s) && #[trigger] post.spaces.bound@[s].contains(d)
+                implies false by {
+                assert(s == base);
             }
         }
         // The space's tables, its mapping and the cores.

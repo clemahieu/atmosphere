@@ -30,6 +30,8 @@ use crate::capability::refs::*;
 use crate::capability::space::*;
 use crate::capability::table::*;
 #[cfg(verus_keep_ghost)]
+use crate::capability::device::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::thread::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::view::*;
@@ -459,6 +461,7 @@ impl CapKernel {
             process_spaces_wf(&post.spaces, &post.processes),
             bindings_wf(&post.list, &post.threads, &post.processes),
             binding_parents(&post.list, &post.tables, &post.threads),
+            device_bindings_wf(&post.list, &post.tables, post.spaces.bound@, &post.devices),
             list_pages_used(&post.list, &post.blocks),
     {
         let page = base / PAGE_SZ;
@@ -511,6 +514,15 @@ impl CapKernel {
             assert(pre.processes.bound@[p].contains(t));
         }
         lemma_binding_parents_kept(&pre.list, &pre.tables, &pre.threads, &post.list, &post.tables, &post.threads);
+        assert(pre.processes.records@.contains_key(base));
+        pre.lemma_bound_empty(base);
+        lemma_bound_kept_empty(pre.spaces.bound@, base);
+        assert forall|x: usize| #[trigger] pre.is_cap(x) && pre.payload_of(x).kind is Space
+            implies post.is_cap(x) && post.payload_of(x) == pre.payload_of(x) by {
+            assert(post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x));
+            assert(post.tables.payload_of(x) == pre.tables.payload_of(x));
+        }
+        Self::lemma_device_bindings_space_caps(pre, post);
         lemma_list_pages_used_small_freed(&post.list, &pre.blocks, &post.blocks, page);
     }
 

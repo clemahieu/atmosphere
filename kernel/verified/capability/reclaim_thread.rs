@@ -29,6 +29,8 @@ use crate::capability::refs::*;
 use crate::capability::space::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::table::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::device::*;
 use crate::capability::thread::*;
 use crate::capability::thread::ThreadState;
 #[cfg(verus_keep_ghost)]
@@ -321,6 +323,7 @@ impl CapKernel {
             lemma_parents_removed(pre.list, post.list, t);
             Self::lemma_revoke_hidden(pre, post, t);
             Self::lemma_revoke_binding_holders(pre, post, t);
+            Self::lemma_device_bindings_caps_frame(pre, post, t, t);
             Self::lemma_same_tree_shrunk(pre, post);
             Self::lemma_tlb_same(mid, post);
             assert forall|x: usize| x != t implies #[trigger] thread_process(&post.threads, x) == thread_process(&pre.threads, x) by {}
@@ -741,6 +744,7 @@ impl CapKernel {
         assert(b.rights =~= a.rights);
         assert(b == a);
         Self::lemma_devices_same_caps(pre, post);
+        Self::lemma_device_bindings_space_caps(pre, post);
         assert forall|t: usize| #[trigger] pre.threads.records@.contains_key(t) && t != base implies {
             &&& post.threads.records@.contains_key(t)
             &&& post.threads.records@[t].value().process == pre.threads.records@[t].value().process

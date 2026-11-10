@@ -2398,9 +2398,12 @@ impl CapKernel {
         assert(post.frames_wf());
         Self::lemma_map_space_nodes(pre, post, t, e, f, frame, large);
         let node = mapping_node(t, e);
-        assert forall|x: usize| x < NODE_SPACE implies
-            ((#[trigger] post.list.nodes@[x as int]).live && post.list.nodes@[x as int].kind is Binding)
-                == (pre.list.nodes@[x as int].live && pre.list.nodes@[x as int].kind is Binding) by {
+        assert forall|x: usize| x < NODE_SPACE implies {
+            &&& ((#[trigger] post.list.nodes@[x as int]).live && post.list.nodes@[x as int].kind is Binding)
+                == (pre.list.nodes@[x as int].live && pre.list.nodes@[x as int].kind is Binding)
+            &&& (post.list.nodes@[x as int].live && post.list.nodes@[x as int].kind is DeviceBinding)
+                == (pre.list.nodes@[x as int].live && pre.list.nodes@[x as int].kind is DeviceBinding)
+        } by {
             if x != node {
                 assert(post.list.nodes@[x as int].live == pre.list.nodes@[x as int].live);
                 assert(post.list.nodes@[x as int].kind == pre.list.nodes@[x as int].kind);

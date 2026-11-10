@@ -27,6 +27,8 @@ use crate::capability::table::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::process::*;
 #[cfg(verus_keep_ghost)]
+use crate::capability::device::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::thread::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::view::*;
@@ -2137,6 +2139,11 @@ impl CapKernel {
             assert(post.tables.is_cap(&pre.list, x));
         }
         lemma_binding_parents_kept(&pre.list, &pre.tables, &pre.threads, &post.list, &post.tables, &post.threads);
+        assert forall|x: usize| #[trigger] pre.is_cap(x) && pre.payload_of(x).kind is Space
+            implies post.is_cap(x) && post.payload_of(x) == pre.payload_of(x) by {
+            assert(post.tables.is_cap(&pre.list, x));
+        }
+        Self::lemma_device_bindings_space_caps(pre, post);
         Self::lemma_leaf_freed_blocks(pre, post, base);
         Self::lemma_tlb_same(pre, post);
         assert forall|n: usize| n < NODE_SPACE && (#[trigger] post.list.nodes@[n as int]).live
@@ -2438,6 +2445,34 @@ impl CapKernel {
         pre.lemma_empty_table(base);
         Self::lemma_node_block_list_pages(pre, post, base);
         assert(order_pages(3) == 8);
+        Self::lemma_table_freed_table_pages(pre, post, base);
+        assert forall|s: usize, k: usize| #[trigger] pre.spaces.roots@.contains_key(s) && pre.spaces.records@[s].value().kind is Device
+            && k < TABLE_NODE_PAGES implies post.list.pages@.dom().contains(#[trigger] table_node_page(s, k)) by {
+            assert(space_wf(&pre.list, &pre.spaces, &pre.blocks, s));
+            assert(pre.list.pages@.dom().contains(table_node_page(s, k)));
+            assert(s != base);
+            pre.blocks.lemma_base((s / PAGE_SZ) as int);
+            lemma_table_node_page(s, k);
+        }
+        assert(same_spaces(&pre.list, &pre.tables, &post.list, &post.tables));
+        lemma_spaces_small_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks, &post.blocks, page);
+        Self::lemma_node_block_threads(pre, post, base);
+        lemma_list_pages_used_subset(&pre.list, &post.list, &pre.blocks);
+        lemma_list_pages_used_small_freed(&post.list, &pre.blocks, &post.blocks, page);
+    }
+
+    /// The table pages after the empty table page at `base` goes: every other one keeps its block, its
+    /// node pages and its empty entries.
+    proof fn lemma_table_freed_table_pages(pre: Self, post: Self, base: usize)
+        requires
+            Self::table_freed_step(pre, post, base),
+        ensures
+            table_pages_wf(&post.list, &post.table_pages, &post.blocks),
+    {
+        let page = base / PAGE_SZ;
+        pre.lemma_empty_table(base);
+        Self::lemma_node_block_list_pages(pre, post, base);
+        assert(order_pages(3) == 8);
         assert forall|t: usize| #[trigger] post.table_pages.maps@.contains_key(t)
             implies table_page_wf(&post.list, &post.table_pages, &post.blocks, t) by {
             assert(t != base);
@@ -2469,19 +2504,6 @@ impl CapKernel {
             assert(x != page);
             assert((x * PAGE_SZ) as usize != base);
         }
-        assert forall|s: usize, k: usize| #[trigger] pre.spaces.roots@.contains_key(s) && pre.spaces.records@[s].value().kind is Device
-            && k < TABLE_NODE_PAGES implies post.list.pages@.dom().contains(#[trigger] table_node_page(s, k)) by {
-            assert(space_wf(&pre.list, &pre.spaces, &pre.blocks, s));
-            assert(pre.list.pages@.dom().contains(table_node_page(s, k)));
-            assert(s != base);
-            pre.blocks.lemma_base((s / PAGE_SZ) as int);
-            lemma_table_node_page(s, k);
-        }
-        assert(same_spaces(&pre.list, &pre.tables, &post.list, &post.tables));
-        lemma_spaces_small_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks, &post.blocks, page);
-        Self::lemma_node_block_threads(pre, post, base);
-        lemma_list_pages_used_subset(&pre.list, &post.list, &pre.blocks);
-        lemma_list_pages_used_small_freed(&post.list, &pre.blocks, &post.blocks, page);
     }
 
     /// The holders, the objects and the mappings after the empty block at `base` goes: no holder is on it,
@@ -2594,6 +2616,11 @@ impl CapKernel {
         pre.lemma_empty_table(base);
         Self::lemma_node_block_caps(pre, post, base);
         lemma_binding_parents_kept(&pre.list, &pre.tables, &pre.threads, &post.list, &post.tables, &post.threads);
+        assert forall|x: usize| #[trigger] pre.is_cap(x) && pre.payload_of(x).kind is Space
+            implies post.is_cap(x) && post.payload_of(x) == pre.payload_of(x) by {
+            assert(post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x));
+        }
+        Self::lemma_device_bindings_space_caps(pre, post);
         Self::lemma_devices_same_caps(pre, post);
         Self::lemma_table_freed_tree(pre, post, base);
         Self::lemma_table_freed_pages(pre, post, base);
@@ -2883,6 +2910,12 @@ impl CapKernel {
         pre.lemma_empty_space(base);
         Self::lemma_node_block_caps(pre, post, base);
         lemma_binding_parents_kept(&pre.list, &pre.tables, &pre.threads, &post.list, &post.tables, &post.threads);
+        assert forall|x: usize| #[trigger] pre.is_cap(x) && pre.payload_of(x).kind is Space
+            implies post.is_cap(x) && post.payload_of(x) == pre.payload_of(x) by {
+            assert(post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x));
+        }
+        lemma_bound_kept_empty(pre.spaces.bound@, base);
+        Self::lemma_device_bindings_space_caps(pre, post);
         Self::lemma_devices_same_caps(pre, post);
         Self::lemma_space_freed_tree(pre, post, base);
         Self::lemma_space_freed_pages(pre, post, base);

@@ -1,8 +1,10 @@
 //! Devices. A device is boot-sized and never retyped, so the table of them is filled once, at boot, from what
 //! the boot glue found, and each device gets one capability under the list's first node. A device is bound to
 //! one space at a time, so its capability moves and is never derived: at most one capability names a device.
-//! A device's IOid on its IOMMU is its device number, fixed, so nothing allocates one. See
-//! design/sharing-by-derive/, design/capability-names-a-block/ and design/address-spaces-as-objects/.
+//! A device's IOid on its IOMMU is its device number, fixed, so nothing allocates one. A device's binding to
+//! a device space is a node of the list's first page, live exactly while the device is bound, under the
+//! space capability that bound it. See design/sharing-by-derive/, design/capability-names-a-block/,
+//! design/address-spaces-as-objects/ and design/device-binding-under-the-space-capability/.
 use vstd::prelude::*;
 
 verus! {
@@ -11,7 +13,6 @@ use crate::array::Array;
 use crate::capability::kernel::*;
 use crate::capability::list::*;
 use crate::capability::reach::*;
-#[cfg(verus_keep_ghost)]
 use crate::capability::refs::*;
 use crate::capability::steps::Steps;
 #[cfg(verus_keep_ghost)]
@@ -23,8 +24,9 @@ use crate::capability::process::*;
 use crate::capability::thread::*;
 use crate::define::*;
 
-/// The most devices the table holds.
-pub const MAX_DEVICES: usize = 128;
+/// The most devices the table holds: each has a binding node in the list's first page, after its first
+/// node.
+pub const MAX_DEVICES: usize = NODES_PER_PAGE - 1;
 
 /// How many device numbers an IOMMU has: a DeviceID is 16 bits. AMD IOMMU specification 48882 §2.2.
 pub const IOMMU_DEVICES: usize = 0x10000; // not a page size: a count of device numbers
@@ -53,6 +55,8 @@ pub struct DeviceRecord {
 pub struct Devices {
     pub records: Array<DeviceRecord, MAX_DEVICES>,
     pub count: usize,
+    /// The list's first page. Device d's binding node is its node 1 + d.
+    pub page: usize,
     /// The node of the capability each device object was given at boot. A device capability is the
     /// one its object's entry names, so at most one names each device.
     pub holder: Ghost<Map<usize, usize>>,
@@ -61,6 +65,11 @@ pub struct Devices {
 /// A device's record before anything binds it.
 pub open spec fn unbound_record(info: DeviceInfo) -> DeviceRecord {
     DeviceRecord { iommu: info.iommu, number: info.number, space: None, unbound: 0 }
+}
+
+/// A record after its device's unbind at this epoch.
+pub open spec fn unbound_at(r: DeviceRecord, epoch: usize) -> DeviceRecord {
+    DeviceRecord { iommu: r.iommu, number: r.number, space: None, unbound: epoch }
 }
 
 /// What device d's capability says.
@@ -87,14 +96,28 @@ pub open spec fn device_of(o: usize) -> int {
     (o - DEVICE_OBJECTS) / PAGE_SZ as int
 }
 
+/// Device d's binding node, node 1 + d of the list's first page.
+pub open spec fn binding_node(devices: &Devices, d: int) -> usize {
+    (devices.page + 1 + d) as usize
+}
+
+/// The device whose binding node x is.
+pub open spec fn binding_device(devices: &Devices, x: usize) -> int {
+    x - devices.page - 1
+}
+
 impl Devices {
-    pub fn new() -> (ret: Self)
+    pub fn new(page: usize) -> (ret: Self)
+        requires
+            page % PAGE_SZ == 0,
+            page + PAGE_SZ <= NODE_SPACE,
         ensures
             ret.wf(),
             ret.count == 0,
+            ret.page == page,
             ret.holder@ == Map::<usize, usize>::empty(),
     {
-        Devices { records: Array::new(DeviceRecord { iommu: 0, number: 0, space: None, unbound: 0 }), count: 0, holder: Ghost(Map::empty()) }
+        Devices { records: Array::new(DeviceRecord { iommu: 0, number: 0, space: None, unbound: 0 }), count: 0, page, holder: Ghost(Map::empty()) }
     }
 
     /// Records d and e are on different IOMMUs or have different numbers.
@@ -102,10 +125,13 @@ impl Devices {
         self.records@[d].iommu != self.records@[e].iommu || self.records@[d].number != self.records@[e].number
     }
 
-    /// Each record names an IOMMU and a device number on it, and no two name the same.
+    /// Each record names an IOMMU and a device number on it, and no two name the same. The binding nodes
+    /// lie in one node page.
     pub open spec fn wf(&self) -> bool {
         &&& self.records.wf()
         &&& self.count <= MAX_DEVICES
+        &&& self.page % PAGE_SZ == 0
+        &&& self.page + PAGE_SZ <= NODE_SPACE
         &&& forall|d: int| 0 <= d < self.count ==> {
             &&& (#[trigger] self.records@[d]).iommu < NUM_IOMMUS
             &&& self.records@[d].number < IOMMU_DEVICES
@@ -163,6 +189,7 @@ impl Devices {
         ensures
             final(self).wf(),
             final(self).count == old(self).count + 1,
+            final(self).page == old(self).page,
             final(self).records@ == old(self).records@.update(old(self).count as int, unbound_record(info)),
             final(self).holder@ == old(self).holder@.insert(device_object(old(self).count as int), node),
     {
@@ -191,6 +218,33 @@ impl Devices {
         &&& DEVICE_OBJECTS <= o
         &&& o % PAGE_SZ == 0
         &&& device_of(o) < self.count
+    }
+
+    /// Device d is bound to nothing, its last unbind at this epoch.
+    pub fn unbind(&mut self, d: usize, epoch: usize)
+        requires
+            old(self).wf(),
+            d < old(self).count,
+        ensures
+            final(self).wf(),
+            final(self).count == old(self).count,
+            final(self).page == old(self).page,
+            final(self).holder == old(self).holder,
+            final(self).records@ == old(self).records@.update(
+                d as int,
+                unbound_at(old(self).records@[d as int], epoch),
+            ),
+    {
+        let ghost pre = *old(self);
+        let r = *self.records.get(d);
+        self.records.set(d, DeviceRecord { iommu: r.iommu, number: r.number, space: None, unbound: epoch });
+        proof {
+            let me = *self;
+            assert forall|x: int, y: int| #![trigger me.records@[x], me.records@[y]]
+                0 <= x < me.count && 0 <= y < me.count && x != y implies me.distinct(x, y) by {
+                assert(pre.distinct(x, y));
+            }
+        }
     }
 }
 
@@ -250,7 +304,423 @@ pub proof fn lemma_devices_kept(list_a: &Tree, tables_a: &Tables, list_b: &Tree,
     }
 }
 
+/// The device capabilities read only the device table's count and holders, so a step that changes
+/// only records' bindings keeps them.
+pub proof fn lemma_devices_records(list: &Tree, tables: &Tables, a: &Devices, b: &Devices)
+    requires
+        devices_wf(list, tables, a),
+        b.wf(),
+        b.count == a.count,
+        b.holder == a.holder,
+    ensures
+        devices_wf(list, tables, b),
+{
+    reveal(devices_wf);
+}
+
+/// Node x's parent is a live capability to the device space at s.
+pub open spec fn device_binding_parent(list: &Tree, tables: &Tables, x: usize, s: usize) -> bool {
+    let n = list.parent@[x];
+    &&& list.parent@.contains_key(x)
+    &&& tables.is_cap(list, n)
+    &&& tables.payload_of(n).kind is Space
+    &&& tables.payload_of(n).base == s
+}
+
+/// A live device binding node is the binding node of a device whose record names a space, and its parent
+/// is a capability to that space; a device whose record names a space has its binding node live and is
+/// in that space's bound set; and a member of a space's bound set is a device whose record names the space.
+/// So unlinking a device binding node finds what to undo from the node alone. Opaque, so that its node
+/// quantifier does not chain into the tables in every proof that mentions a node. See
+/// design/device-binding-under-the-space-capability/.
+#[verifier::opaque]
+pub open spec fn device_bindings_wf(list: &Tree, tables: &Tables, bound: IMap<usize, Set<usize>>, devices: &Devices) -> bool {
+    &&& forall|x: usize| x < NODE_SPACE && (#[trigger] list.nodes@[x as int]).live && list.nodes@[x as int].kind is DeviceBinding ==> {
+        let d = binding_device(devices, x);
+        &&& 0 <= d < devices.count
+        &&& devices.records@[d].space is Some
+        &&& device_binding_parent(list, tables, x, devices.records@[d].space->Some_0)
+    }
+    &&& forall|d: int| 0 <= d < devices.count && (#[trigger] devices.records@[d]).space is Some ==> {
+        let x = binding_node(devices, d);
+        let s = devices.records@[d].space->Some_0;
+        &&& x < NODE_SPACE
+        &&& list.nodes@[x as int].live
+        &&& list.nodes@[x as int].kind is DeviceBinding
+        &&& bound.contains_key(s)
+        &&& bound[s].contains(d as usize)
+    }
+    &&& forall|s: usize, d: usize| bound.contains_key(s) && #[trigger] bound[s].contains(d)
+        ==> d < devices.count && devices.records@[d as int].space == Some(s)
+}
+
+/// The device table after a step that bound and unbound nothing: the same page, each record bound as it
+/// was, and any record added bound to nothing.
+pub open spec fn device_spaces_kept(a: &Devices, b: &Devices) -> bool {
+    &&& b.page == a.page
+    &&& a.count <= b.count
+    &&& forall|d: int| 0 <= d < a.count ==> (#[trigger] b.records@[d]).space == a.records@[d].space
+    &&& forall|d: int| a.count <= d < b.count ==> (#[trigger] b.records@[d]).space is None
+}
+
+/// Each space has the same devices bound.
+pub open spec fn bound_kept(a: IMap<usize, Set<usize>>, b: IMap<usize, Set<usize>>) -> bool {
+    forall|s: usize, d: usize| #![trigger a[s].contains(d)] #![trigger b[s].contains(d)]
+        (b.contains_key(s) && b[s].contains(d)) == (a.contains_key(s) && a[s].contains(d))
+}
+
+/// A space whose bound set is empty gains or loses its entry, and the bound sets say the same.
+pub proof fn lemma_bound_kept_empty(a: IMap<usize, Set<usize>>, s: usize)
+    requires
+        a.contains_key(s) ==> a[s] == Set::<usize>::empty(),
+    ensures
+        bound_kept(a, a.insert(s, Set::<usize>::empty())),
+        bound_kept(a, a.remove(s)),
+{
+}
+
+/// The device bindings after a step that kept every live device binding node, its parent and what that
+/// says, and bound and unbound nothing.
+pub proof fn lemma_device_bindings_kept(
+    la: &Tree,
+    ta: &Tables,
+    ba: IMap<usize, Set<usize>>,
+    da: &Devices,
+    lb: &Tree,
+    tb: &Tables,
+    bb: IMap<usize, Set<usize>>,
+    db: &Devices,
+)
+    requires
+        device_bindings_wf(la, ta, ba, da),
+        forall|x: usize| x < NODE_SPACE ==> ((#[trigger] lb.nodes@[x as int]).live && lb.nodes@[x as int].kind is DeviceBinding)
+            == (la.nodes@[x as int].live && la.nodes@[x as int].kind is DeviceBinding),
+        forall|x: usize, s: usize| x < NODE_SPACE && la.nodes@[x as int].live && la.nodes@[x as int].kind is DeviceBinding
+            && #[trigger] device_binding_parent(la, ta, x, s) ==> device_binding_parent(lb, tb, x, s),
+        device_spaces_kept(da, db),
+        bound_kept(ba, bb),
+    ensures
+        device_bindings_wf(lb, tb, bb, db),
+{
+    reveal(device_bindings_wf);
+    assert forall|x: usize| x < NODE_SPACE && (#[trigger] lb.nodes@[x as int]).live && lb.nodes@[x as int].kind is DeviceBinding implies {
+        let d = binding_device(db, x);
+        &&& 0 <= d < db.count
+        &&& db.records@[d].space is Some
+        &&& device_binding_parent(lb, tb, x, db.records@[d].space->Some_0)
+    } by {
+        assert(la.nodes@[x as int].live && la.nodes@[x as int].kind is DeviceBinding);
+        let d = binding_device(da, x);
+        assert(db.records@[d].space == da.records@[d].space);
+        assert(device_binding_parent(la, ta, x, da.records@[d].space->Some_0));
+    }
+    assert forall|d: int| 0 <= d < db.count && (#[trigger] db.records@[d]).space is Some implies {
+        let x = binding_node(db, d);
+        let s = db.records@[d].space->Some_0;
+        &&& x < NODE_SPACE
+        &&& lb.nodes@[x as int].live
+        &&& lb.nodes@[x as int].kind is DeviceBinding
+        &&& bb.contains_key(s)
+        &&& bb[s].contains(d as usize)
+    } by {
+        assert(d < da.count);
+        assert(da.records@[d].space == db.records@[d].space);
+        let x = binding_node(da, d);
+        let s = da.records@[d].space->Some_0;
+        assert(la.nodes@[x as int].live && la.nodes@[x as int].kind is DeviceBinding);
+        assert(x < NODE_SPACE);
+        assert(lb.nodes@[x as int].live && lb.nodes@[x as int].kind is DeviceBinding);
+        assert(ba[s].contains(d as usize));
+    }
+    assert forall|s: usize, d: usize| bb.contains_key(s) && #[trigger] bb[s].contains(d)
+        implies d < db.count && db.records@[d as int].space == Some(s) by {
+        assert(ba.contains_key(s) && ba[s].contains(d));
+    }
+}
+
 impl CapKernel {
+    /// The device bindings after a step that changed no node but n and m, neither a device binding before
+    /// or after, renamed n to m in the parent map at most, and bound and unbound nothing. A binding's
+    /// parent is a capability with a child, so it is n or m only when n, renamed m, says the same.
+    pub proof fn lemma_device_bindings_caps_frame(pre: Self, post: Self, n: usize, m: usize)
+        requires
+            Self::caps_frame(pre, post, n, m),
+            !(pre.list.nodes@[n as int].live && pre.list.nodes@[n as int].kind is DeviceBinding),
+            !(post.list.nodes@[n as int].live && post.list.nodes@[n as int].kind is DeviceBinding),
+            !(pre.list.nodes@[m as int].live && pre.list.nodes@[m as int].kind is DeviceBinding),
+            !(post.list.nodes@[m as int].live && post.list.nodes@[m as int].kind is DeviceBinding),
+            forall|x: usize| x != n && x != m && #[trigger] pre.list.parent@.contains_key(x)
+                ==> post.list.parent@.contains_key(x) && post.list.parent@[x] == rename(pre.list.parent@[x], n, m),
+            pre.is_cap(n) ==> pre.list.childless(n) || (post.is_cap(m) && post.payload_of(m) == pre.payload_of(n)),
+            pre.is_cap(m) && m != n ==> pre.list.childless(m),
+            device_spaces_kept(&pre.devices, &post.devices),
+            bound_kept(pre.spaces.bound@, post.spaces.bound@),
+        ensures
+            device_bindings_wf(&post.list, &post.tables, post.spaces.bound@, &post.devices),
+    {
+        assert forall|x: usize| x < NODE_SPACE implies
+            ((#[trigger] post.list.nodes@[x as int]).live && post.list.nodes@[x as int].kind is DeviceBinding)
+                == (pre.list.nodes@[x as int].live && pre.list.nodes@[x as int].kind is DeviceBinding) by {
+            if x != n && x != m {
+                assert(post.list.nodes@[x as int].live == pre.list.nodes@[x as int].live);
+                assert(post.list.nodes@[x as int].kind == pre.list.nodes@[x as int].kind);
+            }
+        }
+        assert forall|x: usize, s: usize| x < NODE_SPACE && pre.list.nodes@[x as int].live
+            && pre.list.nodes@[x as int].kind is DeviceBinding && #[trigger] device_binding_parent(&pre.list, &pre.tables, x, s)
+            implies device_binding_parent(&post.list, &post.tables, x, s) by {
+            assert(x != n && x != m);
+            let a = pre.list.parent@[x];
+            assert(pre.is_cap(a));
+            let q = pre.list.seq@;
+            assert(has(q, x));
+            lemma_has(q, x);
+            assert(pre.list.nodes@[q[0] as int].kind is Capability);
+            assert(pre.list.is_child(a, x));
+            assert(pre.list.nodes@[a as int].live);
+            if a == n {
+                if pre.list.childless(n) {
+                    pre.list.lemma_childless(n, x);
+                }
+                assert(post.is_cap(m) && post.payload_of(m) == pre.payload_of(n));
+            } else if a == m {
+                pre.list.lemma_childless(m, x);
+            } else {
+                Self::lemma_caps_frame(pre, post, n, m, a);
+            }
+        }
+        lemma_device_bindings_kept(
+            &pre.list, &pre.tables, pre.spaces.bound@, &pre.devices,
+            &post.list, &post.tables, post.spaces.bound@, &post.devices,
+        );
+    }
+
+    /// The device bindings after a step that made and unlinked no device binding, kept every live node's
+    /// parent and every space capability saying the same, and bound and unbound nothing.
+    pub proof fn lemma_device_bindings_space_caps(pre: Self, post: Self)
+        requires
+            device_bindings_wf(&pre.list, &pre.tables, pre.spaces.bound@, &pre.devices),
+            forall|x: usize| x < NODE_SPACE ==> ((#[trigger] post.list.nodes@[x as int]).live && post.list.nodes@[x as int].kind is DeviceBinding)
+                == (pre.list.nodes@[x as int].live && pre.list.nodes@[x as int].kind is DeviceBinding),
+            forall|x: usize| x < NODE_SPACE && pre.list.nodes@[x as int].live && #[trigger] pre.list.parent@.contains_key(x)
+                ==> post.list.parent@.contains_key(x) && post.list.parent@[x] == pre.list.parent@[x],
+            forall|x: usize| #[trigger] pre.is_cap(x) && pre.payload_of(x).kind is Space
+                ==> post.is_cap(x) && post.payload_of(x) == pre.payload_of(x),
+            device_spaces_kept(&pre.devices, &post.devices),
+            bound_kept(pre.spaces.bound@, post.spaces.bound@),
+        ensures
+            device_bindings_wf(&post.list, &post.tables, post.spaces.bound@, &post.devices),
+    {
+        assert forall|x: usize, s: usize| x < NODE_SPACE && pre.list.nodes@[x as int].live
+            && pre.list.nodes@[x as int].kind is DeviceBinding && #[trigger] device_binding_parent(&pre.list, &pre.tables, x, s)
+            implies device_binding_parent(&post.list, &post.tables, x, s) by {
+            assert(pre.list.parent@.contains_key(x));
+            assert(pre.is_cap(pre.list.parent@[x]));
+        }
+        lemma_device_bindings_kept(
+            &pre.list, &pre.tables, pre.spaces.bound@, &pre.devices,
+            &post.list, &post.tables, post.spaces.bound@, &post.devices,
+        );
+    }
+
+    /// The device bindings after a step that made and unlinked no device binding, kept every live node's
+    /// parent and every capability saying the same, and bound and unbound nothing.
+    pub proof fn lemma_device_bindings_same_caps(pre: Self, post: Self)
+        requires
+            device_bindings_wf(&pre.list, &pre.tables, pre.spaces.bound@, &pre.devices),
+            same_bindings(&pre.list, &post.list),
+            forall|x: usize| x < NODE_SPACE && pre.list.nodes@[x as int].live && #[trigger] pre.list.parent@.contains_key(x)
+                ==> post.list.parent@.contains_key(x) && post.list.parent@[x] == pre.list.parent@[x],
+            forall|x: usize| #[trigger] pre.is_cap(x) ==> post.is_cap(x) && post.payload_of(x) == pre.payload_of(x),
+            device_spaces_kept(&pre.devices, &post.devices),
+            bound_kept(pre.spaces.bound@, post.spaces.bound@),
+        ensures
+            device_bindings_wf(&post.list, &post.tables, post.spaces.bound@, &post.devices),
+    {
+        assert forall|x: usize| x < NODE_SPACE implies
+            ((#[trigger] post.list.nodes@[x as int]).live && post.list.nodes@[x as int].kind is DeviceBinding)
+                == (pre.list.nodes@[x as int].live && pre.list.nodes@[x as int].kind is DeviceBinding) by {
+            assert(same_bindings(&pre.list, &post.list));
+        }
+        Self::lemma_device_bindings_space_caps(pre, post);
+    }
+
+    /// A device bound to s is bound through a capability to s, so s is a device space.
+    pub proof fn lemma_bound_is_space(&self, s: usize, d: usize)
+        requires
+            self.wf(),
+            self.spaces.bound@.contains_key(s),
+            self.spaces.bound@[s].contains(d),
+        ensures
+            self.spaces.roots@.contains_key(s),
+            self.spaces.records@[s].value().kind is Device,
+    {
+        reveal(device_bindings_wf);
+        reveal(devices_wf);
+        assert(self.devices.wf());
+        assert(d < self.devices.count);
+        let x = binding_node(&self.devices, d as int);
+        assert(self.devices.records@[d as int].space == Some(s));
+        assert(self.list.nodes@[x as int].live && self.list.nodes@[x as int].kind is DeviceBinding);
+        assert(binding_device(&self.devices, x) == d);
+        assert(device_binding_parent(&self.list, &self.tables, x, s));
+        self.lemma_space_cap(self.list.parent@[x]);
+    }
+
+    /// Only a device space has devices bound.
+    pub proof fn lemma_bound_empty(&self, s: usize)
+        requires
+            self.wf(),
+            !(self.spaces.roots@.contains_key(s) && self.spaces.records@[s].value().kind is Device),
+        ensures
+            self.spaces.bound@.contains_key(s) ==> self.spaces.bound@[s] == Set::<usize>::empty(),
+    {
+        let a = self.spaces.bound@;
+        if a.contains_key(s) {
+            assert forall|d: usize| !a[s].contains(d) by {
+                if a[s].contains(d) {
+                    self.lemma_bound_is_space(s, d);
+                }
+            }
+            assert(a[s] =~= Set::<usize>::empty());
+        }
+    }
+
+    /// A space that is not one yet has nothing bound, so giving it an empty bound set keeps every space's.
+    pub proof fn lemma_bound_kept_new_space(&self, s: usize)
+        requires
+            self.wf(),
+            !self.spaces.roots@.contains_key(s),
+        ensures
+            bound_kept(self.spaces.bound@, self.spaces.bound@.insert(s, Set::<usize>::empty())),
+    {
+        self.lemma_bound_empty(s);
+        lemma_bound_kept_empty(self.spaces.bound@, s);
+    }
+
+    /// What unlinking device binding node n did: the device is bound to nothing, it left its space's
+    /// bound set, the reference it held on the space's block went, the root's page is recorded stale at a
+    /// new epoch, since an IOMMU may cache a walk from a root that has no parent entry to cut, and the
+    /// device's record keeps that epoch as its last unbind. See
+    /// design/device-binding-under-the-space-capability/.
+    pub open spec fn device_unbound(pre: Self, post: Self, n: usize) -> bool {
+        let d = binding_device(&pre.devices, n);
+        let s = pre.devices.records@[d].space->Some_0;
+        let br = BlockRef::Small(s / PAGE_SZ);
+        &&& 0 <= d < pre.devices.count
+        &&& pre.devices.records@[d].space is Some
+        &&& pre.spaces.bound@.contains_key(s)
+        &&& pre.spaces.bound@[s].contains(d as usize)
+        &&& device_binding_parent(&pre.list, &pre.tables, n, s)
+        &&& post.flush_epoch == pre.flush_epoch + 1
+        &&& post.stale_epoch.written(post.flush_epoch, s / PAGE_SZ)
+        &&& post.devices.count == pre.devices.count
+        &&& post.devices.page == pre.devices.page
+        &&& post.devices.holder == pre.devices.holder
+        &&& post.devices.records@ == pre.devices.records@.update(d, unbound_at(pre.devices.records@[d], post.flush_epoch))
+        &&& post.spaces.bound@ == pre.spaces.bound@.insert(s, pre.spaces.bound@[s].remove(d as usize))
+        &&& blocks_refs_changed(
+            &pre.blocks,
+            &post.blocks,
+            br,
+            (block_refs(&pre.blocks, br) - 1) as usize,
+            block_dead(&pre.blocks, br) || block_refs(&pre.blocks, br) == 1,
+        )
+        &&& post.spaces.roots == pre.spaces.roots
+        &&& post.spaces.records == pre.spaces.records
+        &&& post.spaces.loaded == pre.spaces.loaded
+        &&& post.spaces.kernel_entries == pre.spaces.kernel_entries
+        &&& post.spaces.holders == pre.spaces.holders
+    }
+
+    /// Unbinds the device whose binding node n is, before n is unlinked.
+    pub fn unbind_device(&mut self, n: usize)
+        requires
+            old(self).wf(),
+            n < NODE_SPACE,
+            old(self).list.nodes@[n as int].live,
+            old(self).list.nodes@[n as int].kind is DeviceBinding,
+            old(self).flush_epoch < usize::MAX,
+        ensures
+            Self::device_unbound(*old(self), *final(self), n),
+            final(self).blocks.wf(),
+            final(self).devices.wf(),
+            final(self).stale_epoch.wf(),
+            final(self).tlb_wf(),
+            final(self).list == old(self).list,
+            final(self).tables == old(self).tables,
+            final(self).frames == old(self).frames,
+            final(self).zeroing == old(self).zeroing,
+            final(self).cores == old(self).cores,
+            final(self).tlb == old(self).tlb,
+            final(self).iommus == old(self).iommus,
+            final(self).mapped == old(self).mapped,
+            final(self).table_pages == old(self).table_pages,
+            final(self).mappings == old(self).mappings,
+            final(self).threads == old(self).threads,
+            final(self).processes == old(self).processes,
+            final(self).holders == old(self).holders,
+            final(self).stop_ipis == old(self).stop_ipis,
+            final(self).flush_ipis == old(self).flush_ipis,
+    {
+        let ghost pre = *old(self);
+        proof {
+            reveal(device_bindings_wf);
+            reveal(devices_wf);
+            let d = binding_device(&pre.devices, n);
+            let s = pre.devices.records@[d].space->Some_0;
+            assert(device_binding_parent(&pre.list, &pre.tables, n, s));
+            pre.lemma_space_cap(pre.list.parent@[n]);
+        }
+        let d = n - self.devices.page - 1;
+        let record = *self.devices.records.get(d);
+        let s = match record.space {
+            Some(s) => s,
+            None => {
+                proof {
+                    assert(false);
+                }
+                0
+            },
+        };
+        drop_block_ref(&mut self.blocks, BlockRef::Small(s / PAGE_SZ));
+        self.spaces.bound = Ghost(pre.spaces.bound@.insert(s, pre.spaces.bound@[s].remove(d)));
+        self.flush_epoch = self.flush_epoch + 1;
+        let epoch = self.flush_epoch;
+        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        self.stale_epoch.record_run(s / PAGE_SZ, 1, epoch, Tracked(&mut steps));
+        self.devices.unbind(d, epoch);
+        proof {
+            assert(self.stale_epoch.written(epoch, s / PAGE_SZ));
+            assert forall|c: int| 0 <= c < NUM_CPUS implies #[trigger] self.acked(c) <= self.flush_epoch by {
+                assert(pre.acked(c) <= pre.flush_epoch);
+            }
+            assert forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && #[trigger] self.tlb@[c].contains(e) implies self.loaded(c, e.space) by {
+                assert(pre.loaded(c, e.space));
+            }
+            assert forall|c: int, e: TlbEntry|
+                0 <= c < NUM_CPUS && #[trigger] self.tlb@[c].contains(e) && !self.mapped@.contains(e.page)
+                implies self.blocks.tracks(e.page as int) && self.stale_epoch.above(self.acked(c), e.page) by {
+                assert(pre.acked(c) <= pre.flush_epoch);
+                assert(pre.stale_epoch.above(pre.acked(c), e.page));
+            }
+            assert forall|i: int, e: TlbEntry| 0 <= i < NUM_IOMMUS && #[trigger] self.iommus.tlb@[i].contains(e) implies self.iommu_present(i) by {
+                assert(pre.iommus.tlb@[i].contains(e));
+            }
+            assert forall|i: int| 0 <= i < NUM_IOMMUS implies #[trigger] self.iommu_acked(i) <= self.flush_epoch by {
+                assert(pre.iommu_acked(i) <= pre.flush_epoch);
+            }
+            assert forall|i: int, e: TlbEntry|
+                0 <= i < NUM_IOMMUS && #[trigger] self.iommus.tlb@[i].contains(e) && !self.mapped@.contains(e.page)
+                implies self.blocks.tracks(e.page as int) && self.stale_epoch.above(self.iommu_acked(i), e.page) by {
+                assert(pre.iommu_acked(i) <= pre.flush_epoch);
+                assert(pre.iommus.tlb@[i].contains(e));
+                assert(pre.stale_epoch.above(pre.iommu_acked(i), e.page));
+            }
+        }
+    }
+
     /// The refusals: a full table, an IOMMU or device number out of range, a device already recorded,
     /// or an index that names no free slot. Boot's list of devices comes from firmware tables.
     pub open spec fn can_add_device(&self, root: usize, slot: usize, info: DeviceInfo) -> bool {
