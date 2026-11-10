@@ -1023,6 +1023,17 @@ impl CapKernel {
         }
     }
 
+    /// The refusals of a link of the table page at child, under the untyped at index from, into the
+    /// entry the address va and the level name in the space of the capability at index slot of the
+    /// table at root: an entry link_parent finds no table for, or can_link's at the table it finds.
+    pub open spec fn can_link_at(&self, root: usize, slot: usize, va: u64, level: u64, from: usize, child: usize) -> bool {
+        let s = self.payload_of(self.tables.node_of(root, slot)).base;
+        match self.link_parent(s, va, level) {
+            None => false,
+            Some(place) => self.can_link(root, slot, place.table, place.entry, from, child),
+        }
+    }
+
     /// What a link of the table page at child, under the untyped at index from, into the entry the
     /// address va and the level name in the space of the capability at index slot of the table at root
     /// did: the entry is one the address names, the link was allowed there, and the tables are linked.
@@ -1051,6 +1062,7 @@ impl CapKernel {
         ensures
             final(self).wf(),
             final(self).cores == old(self).cores,
+            ret == old(self).can_link_at(root, slot, va, level, from, child),
             !ret ==> *final(self) == *old(self),
             ret ==> Self::table_linked(*old(self), *final(self), root, slot, va, level, from, child),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
@@ -1063,7 +1075,12 @@ impl CapKernel {
         let (l4, l3, l2, _) = address_indices(va);
         let (n, space) = match self.tables.lookup(&self.list, root, slot) {
             Some(found) => found,
-            None => { return false; },
+            None => {
+                proof {
+                    assert(!pre.tables.has_slot(&pre.list, root, slot));
+                }
+                return false;
+            },
         };
         proof {
             pre.lemma_slot(root, slot);
@@ -1076,6 +1093,9 @@ impl CapKernel {
             _ => false,
         };
         if !node.live || !kind_ok || !may_write_space(&space) {
+            proof {
+                assert(!pre.is_cap(n) || !writes_space(pre.payload_of(n)));
+            }
             return false;
         }
         proof {
@@ -1089,14 +1109,24 @@ impl CapKernel {
         } else {
             let t3 = match self.table_step(s, true, l4) {
                 Some(t) => t,
-                None => { return false; },
+                None => {
+                    proof {
+                        assert(pre.link_parent(s, va, level) is None);
+                    }
+                    return false;
+                },
             };
             if level == 3 {
                 (t3, l3)
             } else {
                 let t2 = match self.table_step(t3, false, l3) {
                     Some(t) => t,
-                    None => { return false; },
+                    None => {
+                        proof {
+                            assert(pre.link_parent(s, va, level) is None);
+                        }
+                        return false;
+                    },
                 };
                 (t2, l2)
             }
@@ -1105,6 +1135,19 @@ impl CapKernel {
             assert(pre.link_parent(s, va, level) == Some(TableParent { table: parent, entry }));
         }
         self.link(root, slot, parent, entry, from, child)
+    }
+
+    /// The refusals of a map of the page at offset page of the frame capability at index from, into the
+    /// entry the address va and the level name in the space of the capability at index slot of the
+    /// table at root: an address that names no entry at the level, a level other than 1 or 2, or
+    /// can_map's at level 1 and can_map_large's at level 2, at the path the address names.
+    pub open spec fn can_map_at(&self, root: usize, slot: usize, va: u64, level: u64, from: usize, page: usize) -> bool {
+        let p = address_path(va);
+        &&& names_entry(va, level)
+        &&& {
+            ||| level == 1 && self.can_map(root, slot, SpaceKind::Process, p, from, page)
+            ||| level == 2 && self.can_map_large(root, slot, SpaceKind::Process, p, from, page)
+        }
     }
 
     /// What a map of the page at offset page of the frame capability at index from, into the entry the
@@ -1141,6 +1184,7 @@ impl CapKernel {
         ensures
             final(self).wf(),
             final(self).cores == old(self).cores,
+            ret == old(self).can_map_at(root, slot, va, level, from, page),
             !ret ==> *final(self) == *old(self),
             ret ==> Self::page_mapped(*old(self), *final(self), root, slot, va, level, from, page),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),

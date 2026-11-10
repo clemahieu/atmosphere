@@ -272,18 +272,32 @@ impl CapKernel {
         }
     }
 
+    /// Whether the retype in frame by a thread of the process whose table is at root is allowed, by
+    /// the kind in argument 1: a 4K frame by can_retype_frame, a 2M frame by can_retype_large, a table
+    /// page by can_retype_table_page and a leaf by can_retype_leaf, over the untyped in the slot, the
+    /// base in argument 2, the slot in argument 3, the level in argument 4 and the position word in
+    /// argument 3 as each kind reads them. Every other kind is refused.
+    pub open spec fn allows_retype(&self, root: usize, frame: Registers) -> bool {
+        let from = frame.slot() as usize;
+        let base = frame.argument(2) as usize;
+        let at = spec_position(frame.argument(3));
+        ||| frame.argument(1) == RETYPE_FRAME && self.can_retype_frame(root, from, frame.argument(3) as usize, base)
+        ||| frame.argument(1) == RETYPE_LARGE_FRAME && self.can_retype_large(root, from, frame.argument(3) as usize, base, 9)
+        ||| frame.argument(1) == RETYPE_TABLE_PAGE && self.can_retype_table_page(root, from, base, frame.argument(4) as usize)
+        ||| frame.argument(1) == RETYPE_LEAF && at is Some && self.can_retype_leaf(root, from, at->0, base)
+    }
+
     /// A retype in frame by a thread of the process whose table is at root, from pre to post with out
-    /// returned: refused with nothing changed; for the 4K frame kind in argument 1, ok with the frame
+    /// returned: refused with nothing changed, exactly when allows_retype fails; for the 4K frame kind in argument 1, ok with the frame
     /// at the base in argument 2 retyped under the untyped in the slot into the slot in argument 3; for
     /// the 2M frame kind, again with the block at the base in argument 2 a step further zeroed and no
     /// slot changed, or ok with the 2M frame retyped into the slot in argument 3 once the block is all
     /// zero; for the table page kind, ok with an unlinked table page of the level in argument 4 at the
     /// base in argument 2 under the untyped in the slot; or, for the leaf kind, ok with a table leaf at
     /// the base in argument 2 under the untyped in the slot, in the root entry the position word in
-    /// argument 3 names. A retype the arguments allow can still be refused, when the block table finds
-    /// the memory is not free.
+    /// argument 3 names.
     pub open spec fn spec_retyped(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
-        ||| out == status_only(STATUS_REFUSED) && post == pre
+        ||| !pre.allows_retype(root, frame) && out == status_only(STATUS_REFUSED) && post == pre
         ||| {
             &&& frame.argument(1) == RETYPE_FRAME
             &&& out == status_only(STATUS_OK)
@@ -318,10 +332,9 @@ impl CapKernel {
     /// step discharges the retype's effect.
     pub open spec fn table_page_retyped(pre: Self, post: Self, root: usize, from: usize, base: usize, level: usize) -> bool {
         let parent = pre.tables.node_of(root, from);
-        &&& pre.can_retype_under(root, from, base, 3)
+        &&& pre.can_retype_table_page(root, from, base, level)
         &&& pre.view().holds_right(root, parent, Right::Retype)
         &&& pre.blocks.pages@[(base / 4096) as int].kind is Free
-        &&& 1 <= level <= 3
         &&& post.table_pages.maps@.contains_key(base)
         &&& post.table_pages.records@[base].value() == fresh_table(level)
         &&& forall|i: usize| i < 512 ==> #[trigger] post.table_pages.maps@[base].value()[i].is_empty()
@@ -333,11 +346,12 @@ impl CapKernel {
     }
 
     /// A link in frame by a thread of the process whose table is at root, from pre to post with out
-    /// returned: refused with nothing changed, or ok with the table page at the base in argument 4,
+    /// returned: refused with nothing changed, exactly when can_link_at fails over the arguments, or ok
+    /// with the table page at the base in argument 4,
     /// under the untyped in argument 3, linked into the entry the address in argument 1 and the level in
     /// argument 2 name in the space of the capability in the slot.
     pub open spec fn spec_linked(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
-        ||| out == status_only(STATUS_REFUSED) && post == pre
+        ||| !pre.allows_link(root, frame) && out == status_only(STATUS_REFUSED) && post == pre
         ||| {
             &&& out == status_only(STATUS_OK)
             &&& Self::table_linked(pre, post, root, frame.slot() as usize, frame.argument(1), frame.argument(2), frame.argument(3) as usize, frame.argument(4) as usize)
@@ -345,11 +359,11 @@ impl CapKernel {
     }
 
     /// A map in frame by a thread of the process whose table is at root, from pre to post with out
-    /// returned: refused with nothing changed, or ok with the page at the offset in argument 4 of the
+    /// returned: refused with nothing changed, exactly when can_map_at fails over the arguments, or ok with the page at the offset in argument 4 of the
     /// frame in argument 3 mapped into the entry the address in argument 1 and the level in argument 2
     /// name in the space of the capability in the slot.
     pub open spec fn spec_mapped(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
-        ||| out == status_only(STATUS_REFUSED) && post == pre
+        ||| !pre.allows_map(root, frame) && out == status_only(STATUS_REFUSED) && post == pre
         ||| {
             &&& out == status_only(STATUS_OK)
             &&& Self::page_mapped(pre, post, root, frame.slot() as usize, frame.argument(1), frame.argument(2), frame.argument(3) as usize, frame.argument(4) as usize)
@@ -357,12 +371,12 @@ impl CapKernel {
     }
 
     /// An unmap in frame by a thread of the process whose table is at root, from pre to post with out
-    /// returned: refused with nothing changed, or ok with the entry the address in argument 1 and the
+    /// returned: refused with nothing changed, exactly when can_unmap_at fails over the arguments, or ok with the entry the address in argument 1 and the
     /// level in argument 2 name in the space of the capability in the slot cleared, its accessed and dirty
     /// bits as read before it was cleared in results 1 and 2, and whether the target maintains each bit in
     /// results 3 and 4, each result 1 when it holds and 0 when it does not.
     pub open spec fn spec_unmapped(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
-        ||| out == status_only(STATUS_REFUSED) && post == pre
+        ||| !pre.allows_unmap(root, frame) && out == status_only(STATUS_REFUSED) && post == pre
         ||| {
             &&& out.status == STATUS_OK
             &&& out.result_1 <= 1
@@ -374,14 +388,15 @@ impl CapKernel {
     }
 
     /// A probe in frame by a thread of the process whose table is at root, from pre to post with out
-    /// returned: refused with nothing changed, or ok with the accessed and dirty bits of the count in
+    /// returned: refused with nothing changed, exactly when can_probe fails over the arguments, or ok with the accessed and dirty bits of the count in
     /// argument 2 of level 1 entries, from the one the address in argument 1 names in the space of the
     /// capability in the slot, read and cleared, the accessed mask in result 1, the dirty mask in result 2,
     /// and whether the target maintains each bit in results 3 and 4, 1 when it does and 0 when it does not.
     pub open spec fn spec_probed(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
-        ||| out == status_only(STATUS_REFUSED) && post == pre
+        ||| !pre.allows_probe(root, frame) && out == status_only(STATUS_REFUSED) && post == pre
         ||| {
             &&& out.status == STATUS_OK
+            &&& pre.allows_probe(root, frame)
             &&& out.result_3 <= 1
             &&& out.result_4 <= 1
             &&& exists|read: Seq<usize>| Self::probe_done(pre, post, root, frame.slot() as usize, frame.argument(1), frame.argument(2), #[trigger] probed_of(out, read))
@@ -389,7 +404,7 @@ impl CapKernel {
     }
 
     /// A derive in frame by a thread of the process whose table is at root, from pre to post with out
-    /// returned: refused with nothing changed, or ok with a child of the capability at the position the
+    /// returned: refused with nothing changed, exactly when allows_derive fails, or ok with a child of the capability at the position the
     /// slot's word names, in the caller's own table, put at the position the word in argument 1 names,
     /// with the rights in argument 2 and the block of the order in argument 4 at the base in argument 3.
     /// Rights wider than 32 bits and an order wider than 8 are refused, since no capability holds them,
@@ -398,7 +413,7 @@ impl CapKernel {
     pub open spec fn spec_derived(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         let from = spec_position(frame.slot());
         let to = spec_position(frame.argument(1));
-        ||| out == status_only(STATUS_REFUSED) && post == pre
+        ||| !pre.allows_derive(root, frame) && out == status_only(STATUS_REFUSED) && post == pre
         ||| {
             &&& out == status_only(STATUS_OK)
             &&& frame.argument(2) <= u32::MAX as u64
@@ -411,12 +426,12 @@ impl CapKernel {
     }
 
     /// A move in frame by a thread of the process whose table is at root, from pre to post with out
-    /// returned: refused with nothing changed, or ok with the capability at the position the slot's
+    /// returned: refused with nothing changed, exactly when allows_move fails, or ok with the capability at the position the slot's
     /// word names moved to the position the word in argument 1 names.
     pub open spec fn spec_moved(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         let from = spec_position(frame.slot());
         let to = spec_position(frame.argument(1));
-        ||| out == status_only(STATUS_REFUSED) && post == pre
+        ||| !pre.allows_move(root, frame) && out == status_only(STATUS_REFUSED) && post == pre
         ||| {
             &&& out == status_only(STATUS_OK)
             &&& from is Some
@@ -426,22 +441,23 @@ impl CapKernel {
     }
 
     /// A delete in frame by a thread of the process whose table is at root, from pre to post with out
-    /// returned: refused with nothing changed, or ok with the childless capability at the position the
+    /// returned: refused with nothing changed, exactly when allows_delete fails, or ok with the childless capability at the position the
     /// slot's word names gone.
     pub open spec fn spec_deleted(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         let at = spec_position(frame.slot());
-        ||| out == status_only(STATUS_REFUSED) && post == pre
+        ||| !pre.allows_delete(root, frame) && out == status_only(STATUS_REFUSED) && post == pre
         ||| out == status_only(STATUS_OK) && at is Some && Self::cap_deleted_at(pre, post, root, at->0)
     }
 
     /// A revoke in frame by a thread of the process whose table is at root, from pre to post with out
-    /// returned: refused with nothing changed; refused with the flush epoch at its limit, after the steps
+    /// returned: refused with nothing changed, when allows_revoke fails; refused with the flush epoch at
+    /// its limit, after the steps
     /// it took on the run of the capability at the position the slot's word names; again with a step of
     /// that run taken and some of it left; or ok with the run empty. See
     /// design/revoke-by-depth-first-list/.
     pub open spec fn spec_revoked(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         let at = spec_position(frame.slot());
-        ||| out == status_only(STATUS_REFUSED) && post == pre
+        ||| !pre.allows_revoke(root, frame) && out == status_only(STATUS_REFUSED) && post == pre
         ||| {
             &&& out == status_only(STATUS_REFUSED)
             &&& at is Some
@@ -457,10 +473,93 @@ impl CapKernel {
         ||| out == status_only(STATUS_OK) && at is Some && Self::cap_revoked_at(pre, post, root, at->0)
     }
 
+    /// Whether the link in frame is allowed: can_link_at over the address in argument 1, the level in
+    /// argument 2, the untyped in argument 3 and the table page in argument 4, in the space of the
+    /// capability in the slot.
+    pub open spec fn allows_link(&self, root: usize, frame: Registers) -> bool {
+        self.can_link_at(root, frame.slot() as usize, frame.argument(1), frame.argument(2), frame.argument(3) as usize, frame.argument(4) as usize)
+    }
+
+    /// Whether the map in frame is allowed: can_map_at over the address in argument 1, the level in
+    /// argument 2, the frame in argument 3 and the offset in argument 4, in the space of the capability
+    /// in the slot.
+    pub open spec fn allows_map(&self, root: usize, frame: Registers) -> bool {
+        self.can_map_at(root, frame.slot() as usize, frame.argument(1), frame.argument(2), frame.argument(3) as usize, frame.argument(4) as usize)
+    }
+
+    /// Whether the unmap in frame is allowed: can_unmap_at over the address in argument 1 and the level
+    /// in argument 2, in the space of the capability in the slot.
+    pub open spec fn allows_unmap(&self, root: usize, frame: Registers) -> bool {
+        self.can_unmap_at(root, frame.slot() as usize, frame.argument(1), frame.argument(2))
+    }
+
+    /// Whether the probe in frame is allowed: can_probe over the address in argument 1 and the count in
+    /// argument 2, in the space of the capability in the slot.
+    pub open spec fn allows_probe(&self, root: usize, frame: Registers) -> bool {
+        self.can_probe(root, frame.slot() as usize, frame.argument(1), frame.argument(2))
+    }
+
+    /// Whether the derive in frame is allowed: rights that fit 32 bits in argument 2, an order that fits
+    /// 8 in argument 4, a slot word naming a position of the caller's own table and argument 1 a
+    /// position, and can_derive_at over them and the base in argument 3.
+    pub open spec fn allows_derive(&self, root: usize, frame: Registers) -> bool {
+        let from = spec_position(frame.slot());
+        let to = spec_position(frame.argument(1));
+        &&& frame.argument(2) <= u32::MAX as u64
+        &&& frame.argument(4) <= u8::MAX as u64
+        &&& from is Some
+        &&& from->0.through is None
+        &&& to is Some
+        &&& self.can_derive_at(root, from->0.index, to->0, frame.argument(2) as u32, frame.argument(3) as usize, frame.argument(4) as u8)
+    }
+
+    /// Whether the move in frame is allowed: the slot word and argument 1 each a position, and
+    /// can_move_at between them.
+    pub open spec fn allows_move(&self, root: usize, frame: Registers) -> bool {
+        let from = spec_position(frame.slot());
+        let to = spec_position(frame.argument(1));
+        &&& from is Some
+        &&& to is Some
+        &&& self.can_move_at(root, from->0, to->0)
+    }
+
+    /// Whether the delete in frame is allowed: the slot word a position, and can_delete_at there.
+    pub open spec fn allows_delete(&self, root: usize, frame: Registers) -> bool {
+        let at = spec_position(frame.slot());
+        at is Some && self.can_delete_at(root, at->0)
+    }
+
+    /// Whether the revoke in frame takes a step: the slot word a position that holds a capability.
+    pub open spec fn allows_revoke(&self, root: usize, frame: Registers) -> bool {
+        let at = spec_position(frame.slot());
+        at is Some && self.cap_at(root, at->0) is Some
+    }
+
+    /// Whether the invocation in frame by a thread of the process whose table is at root is allowed: for
+    /// an operation that can change the kernel, its allows_ predicate over the frame's decoded
+    /// arguments; for every other operation, which leaves the kernel unchanged, that spec_outcome is not
+    /// a refusal.
+    pub open spec fn allows(&self, root: usize, frame: Registers) -> bool {
+        match spec_operation(frame.operation_number()) {
+            Some(Operation::Retype) => self.allows_retype(root, frame),
+            Some(Operation::Derive) => self.allows_derive(root, frame),
+            Some(Operation::Move) => self.allows_move(root, frame),
+            Some(Operation::Delete) => self.allows_delete(root, frame),
+            Some(Operation::Revoke) => self.allows_revoke(root, frame),
+            Some(Operation::Link) => self.allows_link(root, frame),
+            Some(Operation::Map) => self.allows_map(root, frame),
+            Some(Operation::Unmap) => self.allows_unmap(root, frame),
+            Some(Operation::Probe) => self.allows_probe(root, frame),
+            _ => self.spec_outcome(root, frame) != status_only(STATUS_REFUSED),
+        }
+    }
+
     /// What the invocation in frame by a thread of the process whose table is at root did, from pre to
     /// post with out returned, with each table position decoded from its word: a retype's effect for retype, a derive's for derive, a move's for move, a
     /// delete's for delete, a revoke's for revoke, a link's for link, a map's for map, an unmap's for
-    /// unmap, a probe's for probe, and for every other operation the kernel unchanged with spec_outcome returned.
+    /// unmap, a probe's for probe, and for every other operation the kernel unchanged with spec_outcome
+    /// returned. Each is refused with nothing changed exactly when allows fails, as
+    /// lemma_refused_exactly says.
     pub open spec fn invoked(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         match spec_operation(frame.operation_number()) {
             Some(Operation::Retype) => Self::spec_retyped(pre, post, root, frame, out),
@@ -474,6 +573,21 @@ impl CapKernel {
             Some(Operation::Probe) => Self::spec_probed(pre, post, root, frame, out),
             _ => post == pre && out == pre.spec_outcome(root, frame),
         }
+    }
+
+    /// Every invocation is refused with nothing changed exactly when allows fails, but a revoke, which
+    /// is also refused with the flush epoch at its limit after the steps it took on a capability it
+    /// was allowed to revoke.
+    pub proof fn lemma_refused_exactly(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            Self::invoked(pre, post, root, frame, out),
+        ensures
+            !pre.allows(root, frame) ==> out == status_only(STATUS_REFUSED) && post == pre,
+            spec_operation(frame.operation_number()) != Some(Operation::Revoke) && out == status_only(STATUS_REFUSED)
+                ==> !pre.allows(root, frame) && post == pre,
+            spec_operation(frame.operation_number()) == Some(Operation::Revoke) && out == status_only(STATUS_REFUSED)
+                && pre.allows(root, frame) ==> post.flush_epoch == usize::MAX,
+    {
     }
 
     /// A word with a bit above bit 31 set, where derive, move, delete, revoke or inspect reads a position,
@@ -531,112 +645,15 @@ impl CapKernel {
             None => { proof { assert(false); } return None; },
         };
         match operation(frame.operation_number()) {
-            Some(Operation::Retype) => {
-                let status = if frame.argument(1) == RETYPE_FRAME {
-                    if self.retype_frame(root, frame.slot() as usize, frame.argument(3) as usize, frame.argument(2) as usize) {
-                        STATUS_OK
-                    } else {
-                        STATUS_REFUSED
-                    }
-                } else if frame.argument(1) == RETYPE_LARGE_FRAME {
-                    match self.retype_large_frame(root, frame.slot() as usize, frame.argument(3) as usize, frame.argument(2) as usize, 9) {
-                        RetypeStep::Refused => STATUS_REFUSED,
-                        RetypeStep::Again => STATUS_AGAIN,
-                        RetypeStep::Done => STATUS_OK,
-                    }
-                } else if frame.argument(1) == RETYPE_TABLE_PAGE {
-                    if self.retype_table_page(root, frame.slot() as usize, frame.argument(2) as usize, frame.argument(4) as usize) {
-                        STATUS_OK
-                    } else {
-                        STATUS_REFUSED
-                    }
-                } else if frame.argument(1) == RETYPE_LEAF {
-                    match position(frame.argument(3)) {
-                        Some(at) => {
-                            if self.retype_leaf(root, frame.slot() as usize, at, frame.argument(2) as usize) {
-                                STATUS_OK
-                            } else {
-                                STATUS_REFUSED
-                            }
-                        },
-                        None => STATUS_REFUSED,
-                    }
-                } else {
-                    STATUS_REFUSED
-                };
-                Some(status_only_outcome(status))
-            },
-            Some(Operation::Derive) => {
-                let from = match position(frame.slot()) {
-                    Some(Position { through: None, index }) => Some(index),
-                    _ => None,
-                };
-                let done = match (from, position(frame.argument(1))) {
-                    (Some(from), Some(to)) => frame.argument(2) <= u32::MAX as u64 && frame.argument(4) <= u8::MAX as u64
-                        && self.derive(root, from, to, frame.argument(2) as u32, frame.argument(3) as usize, frame.argument(4) as u8),
-                    _ => false,
-                };
-                Some(status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED }))
-            },
-            Some(Operation::Move) => {
-                let done = match (position(frame.slot()), position(frame.argument(1))) {
-                    (Some(from), Some(to)) => self.move_cap(root, from, to),
-                    _ => false,
-                };
-                Some(status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED }))
-            },
-            Some(Operation::Delete) => {
-                let done = match position(frame.slot()) {
-                    Some(at) => self.delete(root, at).is_some(),
-                    None => false,
-                };
-                Some(status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED }))
-            },
-            Some(Operation::Revoke) => {
-                let status = match position(frame.slot()) {
-                    Some(at) => match self.revoke(root, at) {
-                        RevokeStep::Done => STATUS_OK,
-                        RevokeStep::Again => STATUS_AGAIN,
-                        RevokeStep::Refused | RevokeStep::Exhausted => STATUS_REFUSED,
-                    },
-                    None => STATUS_REFUSED,
-                };
-                Some(status_only_outcome(status))
-            },
-            Some(Operation::Link) => {
-                let done = self.link_at(root, frame.slot() as usize, frame.argument(1), frame.argument(2), frame.argument(3) as usize, frame.argument(4) as usize);
-                Some(status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED }))
-            },
-            Some(Operation::Map) => {
-                let done = self.map_at(root, frame.slot() as usize, frame.argument(1), frame.argument(2), frame.argument(3) as usize, frame.argument(4) as usize);
-                Some(status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED }))
-            },
-            Some(Operation::Unmap) => {
-                let ghost pre = *self;
-                match self.unmap_at(root, frame.slot() as usize, frame.argument(1), frame.argument(2)) {
-                    Some(r) => {
-                        let out = unmap_outcome(r);
-                        proof {
-                            assert(Self::page_unmapped(pre, *self, root, frame.slot() as usize, frame.argument(1), frame.argument(2), unmapped_of(out, r.read@)));
-                        }
-                        Some(out)
-                    },
-                    None => Some(status_only_outcome(STATUS_REFUSED)),
-                }
-            },
-            Some(Operation::Probe) => {
-                let ghost pre = *self;
-                match self.probe_at(root, frame.slot() as usize, frame.argument(1), frame.argument(2)) {
-                Some(r) => {
-                    let out = probe_outcome(r);
-                    proof {
-                        assert(Self::probe_done(pre, *self, root, frame.slot() as usize, frame.argument(1), frame.argument(2), probed_of(out, r.read@)));
-                    }
-                    Some(out)
-                },
-                    None => Some(status_only_outcome(STATUS_REFUSED)),
-                }
-            },
+            Some(Operation::Retype) => Some(self.invoke_retype(root, frame)),
+            Some(Operation::Derive) => Some(self.invoke_derive(root, frame)),
+            Some(Operation::Move) => Some(self.invoke_move(root, frame)),
+            Some(Operation::Delete) => Some(self.invoke_delete(root, frame)),
+            Some(Operation::Revoke) => Some(self.invoke_revoke(root, frame)),
+            Some(Operation::Link) => Some(self.invoke_link(root, frame)),
+            Some(Operation::Map) => Some(self.invoke_map(root, frame)),
+            Some(Operation::Unmap) => Some(self.invoke_unmap(root, frame)),
+            Some(Operation::Probe) => Some(self.invoke_probe(root, frame)),
             Some(Operation::Print) => Some(
                 status_only_outcome(
                     self.print(root, frame.slot() as usize, frame.argument(1), frame.argument(2), frame.argument(3), frame.argument(4), frame.argument(5)),
@@ -649,6 +666,210 @@ impl CapKernel {
             },
             Some(_) => Some(status_only_outcome(STATUS_REFUSED)),
             None => Some(status_only_outcome(STATUS_UNKNOWN)),
+        }
+    }
+
+    /// The retype in frame, by a thread of the process whose table is at root.
+    fn invoke_retype(&mut self, root: usize, frame: Registers) -> (ret: Outcome)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
+        ensures
+            final(self).wf(),
+            final(self).cores == old(self).cores,
+            Self::spec_retyped(*old(self), *final(self), root, frame, ret),
+    {
+        let status = if frame.argument(1) == RETYPE_FRAME {
+            if self.retype_frame(root, frame.slot() as usize, frame.argument(3) as usize, frame.argument(2) as usize) {
+                STATUS_OK
+            } else {
+                STATUS_REFUSED
+            }
+        } else if frame.argument(1) == RETYPE_LARGE_FRAME {
+            match self.retype_large_frame(root, frame.slot() as usize, frame.argument(3) as usize, frame.argument(2) as usize, 9) {
+                RetypeStep::Refused => STATUS_REFUSED,
+                RetypeStep::Again => STATUS_AGAIN,
+                RetypeStep::Done => STATUS_OK,
+            }
+        } else if frame.argument(1) == RETYPE_TABLE_PAGE {
+            if self.retype_table_page(root, frame.slot() as usize, frame.argument(2) as usize, frame.argument(4) as usize) {
+                STATUS_OK
+            } else {
+                STATUS_REFUSED
+            }
+        } else if frame.argument(1) == RETYPE_LEAF {
+            match position(frame.argument(3)) {
+                Some(at) => {
+                    if self.retype_leaf(root, frame.slot() as usize, at, frame.argument(2) as usize) {
+                        STATUS_OK
+                    } else {
+                        STATUS_REFUSED
+                    }
+                },
+                None => STATUS_REFUSED,
+            }
+        } else {
+            STATUS_REFUSED
+        };
+        status_only_outcome(status)
+    }
+
+    /// The derive in frame, by a thread of the process whose table is at root.
+    fn invoke_derive(&mut self, root: usize, frame: Registers) -> (ret: Outcome)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
+        ensures
+            final(self).wf(),
+            final(self).cores == old(self).cores,
+            Self::spec_derived(*old(self), *final(self), root, frame, ret),
+    {
+        let from = match position(frame.slot()) {
+            Some(Position { through: None, index }) => Some(index),
+            _ => None,
+        };
+        let done = match (from, position(frame.argument(1))) {
+            (Some(from), Some(to)) => frame.argument(2) <= u32::MAX as u64 && frame.argument(4) <= u8::MAX as u64
+                && self.derive(root, from, to, frame.argument(2) as u32, frame.argument(3) as usize, frame.argument(4) as u8),
+            _ => false,
+        };
+        status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED })
+    }
+
+    /// The move in frame, by a thread of the process whose table is at root.
+    fn invoke_move(&mut self, root: usize, frame: Registers) -> (ret: Outcome)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
+        ensures
+            final(self).wf(),
+            final(self).cores == old(self).cores,
+            Self::spec_moved(*old(self), *final(self), root, frame, ret),
+    {
+        let done = match (position(frame.slot()), position(frame.argument(1))) {
+            (Some(from), Some(to)) => self.move_cap(root, from, to),
+            _ => false,
+        };
+        status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED })
+    }
+
+    /// The delete in frame, by a thread of the process whose table is at root.
+    fn invoke_delete(&mut self, root: usize, frame: Registers) -> (ret: Outcome)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
+        ensures
+            final(self).wf(),
+            final(self).cores == old(self).cores,
+            Self::spec_deleted(*old(self), *final(self), root, frame, ret),
+    {
+        let done = match position(frame.slot()) {
+            Some(at) => self.delete(root, at).is_some(),
+            None => false,
+        };
+        status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED })
+    }
+
+    /// The revoke in frame, by a thread of the process whose table is at root.
+    fn invoke_revoke(&mut self, root: usize, frame: Registers) -> (ret: Outcome)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
+        ensures
+            final(self).wf(),
+            final(self).cores == old(self).cores,
+            Self::spec_revoked(*old(self), *final(self), root, frame, ret),
+    {
+        let status = match position(frame.slot()) {
+            Some(at) => match self.revoke(root, at) {
+                RevokeStep::Done => STATUS_OK,
+                RevokeStep::Again => STATUS_AGAIN,
+                RevokeStep::Refused | RevokeStep::Exhausted => STATUS_REFUSED,
+            },
+            None => STATUS_REFUSED,
+        };
+        status_only_outcome(status)
+    }
+
+    /// The link in frame, by a thread of the process whose table is at root.
+    fn invoke_link(&mut self, root: usize, frame: Registers) -> (ret: Outcome)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
+        ensures
+            final(self).wf(),
+            final(self).cores == old(self).cores,
+            Self::spec_linked(*old(self), *final(self), root, frame, ret),
+    {
+        let done = self.link_at(root, frame.slot() as usize, frame.argument(1), frame.argument(2), frame.argument(3) as usize, frame.argument(4) as usize);
+        status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED })
+    }
+
+    /// The map in frame, by a thread of the process whose table is at root.
+    fn invoke_map(&mut self, root: usize, frame: Registers) -> (ret: Outcome)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
+        ensures
+            final(self).wf(),
+            final(self).cores == old(self).cores,
+            Self::spec_mapped(*old(self), *final(self), root, frame, ret),
+    {
+        let done = self.map_at(root, frame.slot() as usize, frame.argument(1), frame.argument(2), frame.argument(3) as usize, frame.argument(4) as usize);
+        status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED })
+    }
+
+    /// The unmap in frame, by a thread of the process whose table is at root.
+    fn invoke_unmap(&mut self, root: usize, frame: Registers) -> (ret: Outcome)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
+        ensures
+            final(self).wf(),
+            final(self).cores == old(self).cores,
+            Self::spec_unmapped(*old(self), *final(self), root, frame, ret),
+    {
+        let ghost pre = *self;
+        match self.unmap_at(root, frame.slot() as usize, frame.argument(1), frame.argument(2)) {
+            Some(r) => {
+                let out = unmap_outcome(r);
+                proof {
+                    assert(Self::page_unmapped(pre, *self, root, frame.slot() as usize, frame.argument(1), frame.argument(2), unmapped_of(out, r.read@)));
+                }
+                out
+            },
+            None => status_only_outcome(STATUS_REFUSED),
+        }
+    }
+
+    /// The probe in frame, by a thread of the process whose table is at root.
+    fn invoke_probe(&mut self, root: usize, frame: Registers) -> (ret: Outcome)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(root),
+        ensures
+            final(self).wf(),
+            final(self).cores == old(self).cores,
+            Self::spec_probed(*old(self), *final(self), root, frame, ret),
+    {
+        let ghost pre = *self;
+        match self.probe_at(root, frame.slot() as usize, frame.argument(1), frame.argument(2)) {
+            Some(r) => {
+                let out = probe_outcome(r);
+                proof {
+                    assert(Self::probe_done(pre, *self, root, frame.slot() as usize, frame.argument(1), frame.argument(2), probed_of(out, r.read@)));
+                }
+                out
+            },
+            None => status_only_outcome(STATUS_REFUSED),
         }
     }
 }

@@ -112,6 +112,15 @@ impl CapKernel {
         &&& r.dirty_maintained == maintains_dirty()
     }
 
+    /// The refusals of an unmap of the entry the address va and the level name, in the space of the
+    /// capability at index slot of the table at root: a level other than 1, an address that names no
+    /// level 1 entry, or can_unmap's at the path the address names.
+    pub open spec fn can_unmap_at(&self, root: usize, slot: usize, va: u64, level: u64) -> bool {
+        &&& level == 1
+        &&& names_entry(va, level)
+        &&& self.can_unmap(root, slot, SpaceKind::Process, address_path(va))
+    }
+
     /// What an unmap of the entry the address va and the level name, in the space of the capability at
     /// index slot of the table at root, did and returned: va names a level 1 entry, the unmap was allowed
     /// at the path the address names, unmap_done holds there, and r is what unmapped_read says.
@@ -136,6 +145,7 @@ impl CapKernel {
         ensures
             final(self).wf(),
             final(self).cores == old(self).cores,
+            ret is Some == old(self).can_unmap_at(root, slot, va, level),
             ret is None ==> *final(self) == *old(self),
             ret is Some ==> Self::page_unmapped(*old(self), *final(self), root, slot, va, level, ret->0),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
