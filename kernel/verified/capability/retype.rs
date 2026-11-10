@@ -432,6 +432,16 @@ impl CapKernel {
             final(self).list.is_child(parent, child),
             final(self).list.nodes@[child as int].depth == old(self).list.nodes@[parent as int].depth + 1,
             discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base, into: None }),
+            final(self).tables.roots == old(self).tables.roots,
+            final(self).processes == old(self).processes,
+            forall|i: int| #![trigger final(self).list.nodes@[i]] 0 <= i < NODE_SPACE && i != child ==> {
+                &&& final(self).list.nodes@[i].live == old(self).list.nodes@[i].live
+                &&& final(self).list.nodes@[i].depth == old(self).list.nodes@[i].depth
+            },
+            forall|x: usize| #[trigger] old(self).is_cap(x) ==> {
+                &&& final(self).is_cap(x)
+                &&& final(self).payload_of(x) == old(self).payload_of(x)
+            },
     {
         let ghost pre = *old(self);
         proof {
@@ -477,6 +487,13 @@ impl CapKernel {
             assert(pre.view().holds_right(root, parent, Right::Retype));
             lemma_adds_child_discharges_retype(pre.view(), post.view(), root, parent, child, live, base);
             Self::lemma_bound_threads_same(pre, post);
+            assert forall|x: usize| #[trigger] pre.is_cap(x) implies {
+                &&& post.is_cap(x)
+                &&& post.payload_of(x) == pre.payload_of(x)
+            } by {
+                assert(x != child);
+                Self::lemma_caps_frame(pre, post, child, child, x);
+            }
         }
     }
 
@@ -574,6 +591,13 @@ impl CapKernel {
             ret == old(self).can_retype_frame(root, from, to, base),
             !ret ==> *final(self) == *old(self),
             ret ==> Self::frame_retyped(*old(self), *final(self), root, from, to, base),
+            ret ==> Self::retype_keeps(*old(self), *final(self), old(self).tables.node_of(root, to), (base / 4096) as int, 0, None),
+            ret ==> {
+                let br = block_ref(&final(self).blocks, base / 4096);
+                &&& block_typed(&final(self).blocks, br)
+                &&& block_refs(&final(self).blocks, br) == 1
+                &&& !block_dead(&final(self).blocks, br)
+            },
     {
         let ghost pre = *old(self);
         let (parent, child) = match self.retype_slots(root, from, to, base, 0) {
@@ -637,7 +661,41 @@ impl CapKernel {
                 assert(block_ref(&self.blocks, page) == BlockRef::Small(page));
             }
         }
+        let ghost mid = *self;
         self.add_frame_cap(root, from, to, parent, child, base, 0);
+        proof {
+            let post = *self;
+            pre.lemma_slot(root, to);
+            pre.lemma_slot_bound(child);
+            assert forall|r: usize, i: usize| #[trigger] pre.tables.has_slot(&pre.list, r, i) implies {
+                &&& post.tables.has_slot(&post.list, r, i)
+                &&& post.tables.node_of(r, i) == pre.tables.node_of(r, i)
+                &&& pre.tables.node_of(r, i) != child && !pre.list.nodes@[pre.tables.node_of(r, i) as int].live
+                    ==> !post.list.nodes@[pre.tables.node_of(r, i) as int].live
+            } by {
+                pre.lemma_slot(r, i);
+                let n = pre.tables.node_of(r, i);
+                pre.lemma_slot_bound(n);
+                let leaf = pre.tables.leaf(r, index_entry(i));
+                assert(leaf == page_of(n));
+                assert(leaf != child);
+                assert(post.list.nodes@[leaf as int].live == pre.list.nodes@[leaf as int].live);
+            }
+            assert forall|x: usize| #[trigger] pre.is_cap(x) implies {
+                &&& post.is_cap(x)
+                &&& post.payload_of(x) == pre.payload_of(x)
+                &&& post.list.nodes@[x as int].depth == pre.list.nodes@[x as int].depth
+            } by {
+                pre.lemma_slot_bound(x);
+                assert(mid.is_cap(x));
+                assert(x != child);
+            }
+            assert forall|i: int| pre.blocks.tracks(i) && !(page <= i < page + order_pages(0))
+                implies #[trigger] post.blocks.pages@[i].kind == pre.blocks.pages@[i].kind by {
+                assert(post.blocks.pages@[i] == pre.blocks.pages@[i]);
+            }
+            assert(Self::retype_keeps(pre, post, child, page as int, 0, None));
+        }
         true
     }
 
