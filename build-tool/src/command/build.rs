@@ -24,7 +24,7 @@ pub struct Opts {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-enum Arch {
+pub(super) enum Arch {
     #[value(name = "x86_64")]
     X86_64,
     #[value(name = "aarch64")]

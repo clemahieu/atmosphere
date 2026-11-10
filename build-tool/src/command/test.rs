@@ -8,6 +8,7 @@ use clap::Parser;
 use tokio::fs;
 use tokio::process::Command;
 
+use super::build::Arch;
 use super::{GlobalOpts, SubCommand};
 use crate::error::Result;
 use crate::project::{Project, ProjectHandle};
@@ -364,17 +365,24 @@ fn fixed_slots_printed(serial: &str) -> Result<(usize, usize)> {
     }
 }
 
-/// What follows the slot number on the kernel's line for the untyped that is all of 1 to 2 GiB, up to
-/// its rights. The kernel tracks 2 GiB and the firmware and the loader keep out of the second:
+/// The base of the 1G region the test guest leaves wholly free. The loader allocates in the first GiB
+/// of RAM and the firmware above the second, and RAM starts at 0 on the PC and at 1 GiB on QEMU virt:
 /// design/test-guest-memory/.
-const GIGABYTE_UNTYPED: &str = ": untyped base 0x40000000 order 18 ";
+fn free_gigabyte(arch: Arch) -> u64 {
+    match arch {
+        Arch::X86_64 => 0x4000_0000,
+        Arch::Aarch64 => 0x8000_0000,
+    }
+}
 
-/// Whether the serial log shows the root holding 1 to 2 GiB as one untyped, a 1G block.
-fn gigabyte_untyped_printed(serial: &str) -> bool {
+/// Whether the serial log shows the root holding the 1G region at `base` as one untyped, a 1G block.
+fn gigabyte_untyped_printed(serial: &str, base: u64) -> bool {
+    // What follows the slot number on the kernel's line for that untyped, up to its rights.
+    let untyped = format!(": untyped base {:#x} order 18 ", base);
     serial
         .lines()
         .filter_map(|line| line.find(ROOT_SLOT).map(|at| &line[at + ROOT_SLOT.len()..]))
-        .any(|slot| slot.trim_start_matches(|c: char| c.is_ascii_digit()).starts_with(GIGABYTE_UNTYPED))
+        .any(|slot| slot.trim_start_matches(|c: char| c.is_ascii_digit()).starts_with(&untyped))
 }
 
 /// Runs tools/run.py with `args` and returns the serial log of a boot in which dom0 exited with
@@ -383,16 +391,18 @@ fn gigabyte_untyped_printed(serial: &str) -> bool {
 /// them, dom0's check line and exit marker, and CPU 1 idle beside it.
 async fn boot(project: &ProjectHandle, timeout: u64, args: &[&str]) -> Result<(String, String)> {
     let serial = run_boot(project, timeout, args).await?;
-    let held = boot_serial_accepted(&serial)?;
+    let held = boot_serial_accepted(&serial, Arch::X86_64)?;
     Ok((serial, held))
 }
 
-/// The lines a successful boot's serial log must show. The kernel may still print a capability-entry
-/// line; this does not require one.
-fn boot_serial_accepted(serial: &str) -> Result<String> {
+/// The lines the serial log of a successful boot on `arch` must show. The kernel may still print a
+/// capability-entry line; this does not require one.
+fn boot_serial_accepted(serial: &str, arch: Arch) -> Result<String> {
     let (untyped, frames) = fixed_slots_printed(serial)?;
-    if !gigabyte_untyped_printed(serial) {
-        return Err(anyhow!("the serial log does not show the root holding 1 to 2 GiB as one 1G untyped"));
+    let base = free_gigabyte(arch);
+    let gigabyte = format!("{} to {} GiB as one 1G untyped", base >> 30, (base >> 30) + 1);
+    if !gigabyte_untyped_printed(serial, base) {
+        return Err(anyhow!("the serial log does not show the root holding {}", gigabyte));
     }
     if !console_line_printed(serial) {
         return Err(anyhow!("the serial log does not hold dom0's check line"));
@@ -410,10 +420,10 @@ fn boot_serial_accepted(serial: &str) -> Result<String> {
         return Err(anyhow!("the serial log does not show both cores contending for the kernel's lock"));
     }
     Ok(format!(
-        "exit status 0, the kernel's per-slot lines with their kinds ({} untyped, {} frames), 1 to 2 GiB as \
-         one 1G untyped, dom0's check line and exit marker, CPU 1 idle on its own stack, a flush IPI \
-         acknowledged, the lock contended",
-        untyped, frames
+        "exit status 0, the kernel's per-slot lines with their kinds ({} untyped, {} frames), {}, dom0's \
+         check line and exit marker, CPU 1 idle on its own stack, a flush IPI acknowledged, the lock \
+         contended",
+        untyped, frames, gigabyte
     ))
 }
 
@@ -549,28 +559,34 @@ mod tests {
     fn a_boot_without_a_capability_entry_line_passes() {
         let log = boot_log();
         assert!(!log.contains("capability entry"));
-        assert!(boot_serial_accepted(&log).is_ok());
+        assert!(boot_serial_accepted(&log, Arch::X86_64).unwrap().contains("1 to 2 GiB as one 1G untyped"));
 
         let no_console = log.replace("dom0 slot checks held\n", "");
-        assert!(boot_serial_accepted(&no_console).unwrap_err().to_string().contains("check line"));
+        assert!(boot_serial_accepted(&no_console, Arch::X86_64).unwrap_err().to_string().contains("check line"));
 
         let no_exit = log.replace("dom0 capability done\n", "");
-        assert!(boot_serial_accepted(&no_exit).unwrap_err().to_string().contains("exit marker"));
+        assert!(boot_serial_accepted(&no_exit, Arch::X86_64).unwrap_err().to_string().contains("exit marker"));
 
         let no_slot = log.replace(" INFO root slot 2: thread\n", "");
-        assert!(boot_serial_accepted(&no_slot).is_err());
+        assert!(boot_serial_accepted(&no_slot, Arch::X86_64).is_err());
 
         let no_gigabyte = log.replace("base 0x40000000 order 18", "base 0x40000000 order 17");
-        assert!(boot_serial_accepted(&no_gigabyte).unwrap_err().to_string().contains("1G untyped"));
+        assert!(boot_serial_accepted(&no_gigabyte, Arch::X86_64).unwrap_err().to_string().contains("1G untyped"));
+
+        // QEMU virt's RAM starts at 1 GiB, so there the block is 2 to 3 GiB and the PC's does not count.
+        let virt = log.replace("base 0x40000000 order 18", "base 0x80000000 order 18");
+        assert!(boot_serial_accepted(&virt, Arch::Aarch64).unwrap().contains("2 to 3 GiB as one 1G untyped"));
+        assert!(boot_serial_accepted(&virt, Arch::X86_64).unwrap_err().to_string().contains("1 to 2 GiB as one 1G untyped"));
+        assert!(boot_serial_accepted(&log, Arch::Aarch64).unwrap_err().to_string().contains("2 to 3 GiB as one 1G untyped"));
 
         let no_idle = log.replace("CPU 1 idle, syscall stack 0x2000\n", "");
-        assert!(boot_serial_accepted(&no_idle).unwrap_err().to_string().contains("CPU 1 idle"));
+        assert!(boot_serial_accepted(&no_idle, Arch::X86_64).unwrap_err().to_string().contains("CPU 1 idle"));
 
         let no_flush = log.replace("flush IPI acknowledged by CPU 1\n", "");
-        assert!(boot_serial_accepted(&no_flush).unwrap_err().to_string().contains("flush IPI"));
+        assert!(boot_serial_accepted(&no_flush, Arch::X86_64).unwrap_err().to_string().contains("flush IPI"));
 
         let no_lock = log.replace("lock contended by 2 cores: pair intact at 400000\n", "");
-        assert!(boot_serial_accepted(&no_lock).unwrap_err().to_string().contains("contending"));
+        assert!(boot_serial_accepted(&no_lock, Arch::X86_64).unwrap_err().to_string().contains("contending"));
     }
 
     #[test]
@@ -593,16 +609,25 @@ mod tests {
     }
 
     #[test]
-    fn the_second_gigabyte_is_one_untyped() {
-        assert!(gigabyte_untyped_printed(&slot_lines("frame")));
-        assert!(gigabyte_untyped_printed(" INFO root slot 9: untyped base 0x40000000 order 18 rights 0x8\u{1b}[0m\r\n"));
+    fn the_free_gigabyte_is_one_untyped() {
+        let pc = free_gigabyte(Arch::X86_64);
+        assert_eq!(pc, 0x4000_0000);
+        assert!(gigabyte_untyped_printed(&slot_lines("frame"), pc));
+        assert!(gigabyte_untyped_printed(" INFO root slot 9: untyped base 0x40000000 order 18 rights 0x8\u{1b}[0m\r\n", pc));
         // Another kind, another base, another order, and a base or an order this one is a prefix of.
-        assert!(!gigabyte_untyped_printed(" INFO root slot 129: frame base 0x40000000 order 18 rights 0x8\n"));
-        assert!(!gigabyte_untyped_printed(" INFO root slot 4: untyped base 0x0 order 18 rights 0x8\n"));
-        assert!(!gigabyte_untyped_printed(" INFO root slot 4: untyped base 0x40000000 order 9 rights 0x8\n"));
-        assert!(!gigabyte_untyped_printed(" INFO root slot 4: untyped base 0x400000000 order 18 rights 0x8\n"));
-        assert!(!gigabyte_untyped_printed(" INFO root slot 4: untyped base 0x40000000 order 180 rights 0x8\n"));
-        assert!(!gigabyte_untyped_printed(" INFO root holds 2 untyped and 1 frames\n"));
+        assert!(!gigabyte_untyped_printed(" INFO root slot 129: frame base 0x40000000 order 18 rights 0x8\n", pc));
+        assert!(!gigabyte_untyped_printed(" INFO root slot 4: untyped base 0x0 order 18 rights 0x8\n", pc));
+        assert!(!gigabyte_untyped_printed(" INFO root slot 4: untyped base 0x40000000 order 9 rights 0x8\n", pc));
+        assert!(!gigabyte_untyped_printed(" INFO root slot 4: untyped base 0x400000000 order 18 rights 0x8\n", pc));
+        assert!(!gigabyte_untyped_printed(" INFO root slot 4: untyped base 0x40000000 order 180 rights 0x8\n", pc));
+        assert!(!gigabyte_untyped_printed(" INFO root holds 2 untyped and 1 frames\n", pc));
+
+        // The kernel's line for QEMU virt's block, where RAM starts at 1 GiB.
+        let virt = free_gigabyte(Arch::Aarch64);
+        assert_eq!(virt, 0x8000_0000);
+        assert!(gigabyte_untyped_printed(" INFO root slot 4: untyped base 0x80000000 order 18 rights 0x8\n", virt));
+        assert!(!gigabyte_untyped_printed(" INFO root slot 4: untyped base 0x80000000 order 16 rights 0x8\n", virt));
+        assert!(!gigabyte_untyped_printed(&slot_lines("frame"), virt));
     }
 
     #[test]
