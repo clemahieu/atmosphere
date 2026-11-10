@@ -776,6 +776,23 @@ impl CapKernel {
         &&& !self.list.nodes@[self.tables.node_of(root, slot) as int].live
     }
 
+    /// Device k of boot's list can be added after the ones before it: it is in range, no device
+    /// before it in the list is the same device, and index slot + k names a free slot of the table
+    /// at root. The table of devices is empty before boot fills it, so no recorded device refuses it.
+    pub open spec fn can_add_device_at(&self, root: usize, slot: usize, devices: Seq<DeviceInfo>, k: int) -> bool {
+        &&& devices[k].iommu < NUM_IOMMUS
+        &&& devices[k].number < IOMMU_DEVICES
+        &&& forall|j: int| 0 <= j < k ==> (#[trigger] devices[j]).iommu != devices[k].iommu || devices[j].number != devices[k].number
+        &&& self.tables.has_slot(&self.list, root, (slot + k) as usize)
+        &&& !self.list.nodes@[self.tables.node_of(root, (slot + k) as usize) as int].live
+    }
+
+    /// When add_devices succeeds: each of the first count devices in boot's list can be added after
+    /// the ones before it.
+    pub open spec fn can_add_devices(&self, root: usize, slot: usize, devices: Seq<DeviceInfo>, count: usize) -> bool {
+        forall|k: int| 0 <= k < count ==> #[trigger] self.can_add_device_at(root, slot, devices, k)
+    }
+
     /// Records a device boot found and puts its capability at index `slot` of the table at root, a
     /// child of the list's first node. A refusal changes nothing.
     pub fn add_device(&mut self, first: usize, root: usize, slot: usize, info: DeviceInfo, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
@@ -938,7 +955,7 @@ impl CapKernel {
 
     /// Gives each device boot found a record and a capability under the list's first node, device k
     /// at index slot + k of the table at root. Boot fills the table once, and it stops at the first
-    /// device refused, so false means boot fails.
+    /// device refused, so false means boot fails, and what the devices before it were given stays.
     pub fn add_devices(&mut self, first: usize, root: usize, slot: usize, devices: &Array<DeviceInfo, MAX_DEVICES>, count: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             old(self).wf(),
@@ -951,6 +968,14 @@ impl CapKernel {
         ensures
             final(steps).count <= old(steps).count + MAX_DEVICES * (MAX_DEVICES + 1),
             final(self).wf(),
+            ret == old(self).can_add_devices(root, slot, devices@, count),
+            final(self).tables.roots == old(self).tables.roots,
+            final(self).tables.owner == old(self).tables.owner,
+            final(self).list.seq@[0] == old(self).list.seq@[0],
+            final(self).blocks == old(self).blocks,
+            final(self).iommus == old(self).iommus,
+            final(self).processes == old(self).processes,
+            final(self).spaces == old(self).spaces,
             ret ==> {
                 &&& final(self).devices.count == count
                 &&& forall|k: int| 0 <= k < count ==> {
@@ -986,6 +1011,22 @@ impl CapKernel {
                     &&& self.payload_of(n) == device_payload(j)
                     &&& self.list.is_child(first, n)
                 },
+                pre == *old(self),
+                pre.wf(),
+                first == pre.list.seq@[0],
+                self.blocks == pre.blocks,
+                self.iommus == pre.iommus,
+                self.processes == pre.processes,
+                self.spaces == pre.spaces,
+                forall|j: int| 0 <= j < k ==> #[trigger] pre.can_add_device_at(root, slot, devices@, j),
+                // Only the devices' nodes came to life, none at the start of a page, and none of a
+                // later device's slot.
+                forall|i: int| #![trigger self.list.nodes@[i]] 0 <= i < NODE_SPACE && pre.list.nodes@[i].live ==> self.list.nodes@[i].live,
+                forall|i: int| #![trigger self.list.nodes@[i]] 0 <= i < NODE_SPACE && i % PAGE_SZ as int == 0
+                    ==> self.list.nodes@[i].live == pre.list.nodes@[i].live,
+                forall|m: int| k <= m < count && #[trigger] pre.tables.has_slot(&pre.list, root, (slot + m) as usize)
+                    ==> self.list.nodes@[pre.tables.node_of(root, (slot + m) as usize) as int].live
+                        == pre.list.nodes@[pre.tables.node_of(root, (slot + m) as usize) as int].live,
             decreases count - k,
         {
             let ghost before = *self;
@@ -1000,13 +1041,55 @@ impl CapKernel {
             }
             let info = *devices.get(k);
             if !self.add_device(first, root, slot + k, info, Tracked(steps)) {
+                proof {
+                    // Device k could be added after the ones before it, add_device would take it.
+                    let i = (slot + k) as usize;
+                    if pre.can_add_device_at(root, slot, devices@, k as int) {
+                        Self::lemma_slot_stays(pre, before, root, i);
+                        assert(pre.tables.has_slot(&pre.list, root, (slot + k) as usize));
+                        assert forall|d: int| 0 <= d < before.devices.count implies
+                            (#[trigger] before.devices.records@[d]).iommu != info.iommu || before.devices.records@[d].number != info.number by {
+                            assert(before.devices.records@[d] == unbound_record(devices@[d]));
+                        }
+                        assert(before.can_add_device(root, i, info));
+                    }
+                    assert(!pre.can_add_device_at(root, slot, devices@, k as int));
+                }
                 return false;
             }
             proof {
                 // The records' length, for the update.
                 reveal(devices_wf);
-                let n = pre.tables.node_of(root, (slot + k) as usize);
-                assert(before.tables.node_of(root, (slot + k) as usize) == n);
+                let i = (slot + k) as usize;
+                let n = pre.tables.node_of(root, i);
+                assert(before.tables.node_of(root, i) == n);
+                // Device k could be added after the ones before it: its slot is the one add_device
+                // filled, whose leaf is at the start of a page and lived before.
+                let leaf = before.tables.leaf(root, index_entry(i));
+                before.tables.lemma_entry(root, index_entry(i));
+                before.tables.lemma_leaf(&before.list, leaf);
+                before.lemma_slot(root, i);
+                before.lemma_slot_bound(n);
+                assert(leaf % PAGE_SZ == 0);
+                assert(before.list.nodes@[leaf as int].live == pre.list.nodes@[leaf as int].live);
+                assert(pre.tables.has_slot(&pre.list, root, i));
+                assert(!before.list.nodes@[n as int].live);
+                assert(!pre.list.nodes@[n as int].live);
+                assert forall|j: int| 0 <= j < k implies
+                    (#[trigger] devices@[j]).iommu != devices@[k as int].iommu || devices@[j].number != devices@[k as int].number by {
+                    assert(before.devices.records@[j] == unbound_record(devices@[j]));
+                }
+                assert(pre.can_add_device_at(root, slot, devices@, k as int));
+                // A later device's slot is not device k's.
+                assert forall|m: int| k + 1 <= m < count && #[trigger] pre.tables.has_slot(&pre.list, root, (slot + m) as usize) implies
+                    self.list.nodes@[pre.tables.node_of(root, (slot + m) as usize) as int].live
+                        == pre.list.nodes@[pre.tables.node_of(root, (slot + m) as usize) as int].live by {
+                    let im = (slot + m) as usize;
+                    Self::lemma_slot_stays(pre, before, root, im);
+                    before.tables.lemma_slots_distinct(&before.list, root, i, root, im);
+                    before.lemma_slot(root, im);
+                    before.lemma_slot_bound(pre.tables.node_of(root, im));
+                }
                 assert forall|j: int| 0 <= j < k + 1 implies {
                     let m = pre.tables.node_of(root, (slot + j) as usize);
                     &&& #[trigger] self.devices.records@[j] == unbound_record(devices@[j])
