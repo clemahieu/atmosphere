@@ -267,7 +267,7 @@ impl CapKernel {
     /// What unlinking the hidden node of the leaf at `base` did to self: that node went and its block is
     /// dead at zero, every other block as it was. The tables are as they were, so the leaf stays in its
     /// root entry, where lookup now refuses it, and every capability, the leaf's slots among them, is as
-    /// it was, so the view is too. No record, table page or epoch changed.
+    /// it was, so the view is too. No record, table page, epoch, core or IOMMU changed.
     pub open spec fn leaf_unlinked(&self, post: Self, root: usize, from: usize, base: usize) -> bool {
         let untyped = self.tables.node_of(root, from);
         let page = base / 4096;
@@ -284,6 +284,8 @@ impl CapKernel {
         &&& post.table_pages == self.table_pages
         &&& post.stale_epoch == self.stale_epoch
         &&& post.flush_epoch == self.flush_epoch
+        &&& post.cores == self.cores
+        &&& post.iommus == self.iommus
         &&& Self::caps_frame(*self, post, base, base)
         &&& forall|x: usize| #[trigger] post.is_cap(x) == self.is_cap(x)
         &&& post.view() == self.view()
@@ -830,9 +832,12 @@ impl CapKernel {
     }
 
     /// What a slice of a leaf whose live slots are childless leaves as it was: every typed block but
-    /// those its slots' capabilities name keeps its references and its dead flag, and the space,
-    /// thread and process records, the table pages, the stale epochs and the flush epoch are as they
-    /// were.
+    /// those its slots' capabilities name keeps its references and its dead flag; every space but those
+    /// its slots name keeps its holders, and the space roots, records, loaded cores, bindings and kernel
+    /// entries are as they were; the thread and process records, the table pages, the stale epochs,
+    /// the flush epoch, the cores and the IOMMUs are as they were. The tables are as they were, so is
+    /// every root entry and every payload. Only the leaf's slots die, and every node keeps its depth,
+    /// so every slot of every table, and every capability outside the leaf, is as it was.
     pub open spec fn leaf_slice_kept(&self, post: Self, base: usize) -> bool {
         &&& forall|br: BlockRef| #[trigger] block_typed(&post.blocks, br) == block_typed(&self.blocks, br)
         &&& forall|br: BlockRef| #![trigger block_refs(&post.blocks, br)] #![trigger block_dead(&post.blocks, br)]
@@ -840,12 +845,28 @@ impl CapKernel {
                 &&& block_refs(&post.blocks, br) == block_refs(&self.blocks, br)
                 &&& block_dead(&post.blocks, br) == block_dead(&self.blocks, br)
             }
+        &&& post.spaces.roots == self.spaces.roots
         &&& post.spaces.records == self.spaces.records
+        &&& post.spaces.loaded == self.spaces.loaded
+        &&& post.spaces.bound == self.spaces.bound
+        &&& post.spaces.kernel_entries == self.spaces.kernel_entries
+        &&& forall|s: usize| !self.leaf_slot_names(base, BlockRef::Small(s / 4096))
+            ==> #[trigger] post.spaces.holders@[s] == self.spaces.holders@[s]
         &&& post.threads.records == self.threads.records
         &&& post.processes.records == self.processes.records
         &&& post.table_pages == self.table_pages
         &&& post.stale_epoch == self.stale_epoch
         &&& post.flush_epoch == self.flush_epoch
+        &&& post.cores == self.cores
+        &&& post.iommus == self.iommus
+        &&& post.tables == self.tables
+        &&& forall|x: int| #![trigger post.list.nodes@[x]] 0 <= x < NODE_SPACE && !(base < x < base + NODES_PER_PAGE) ==> {
+            &&& post.list.nodes@[x].live == self.list.nodes@[x].live
+            &&& post.list.nodes@[x].kind == self.list.nodes@[x].kind
+        }
+        &&& forall|x: int| 0 <= x < NODE_SPACE ==> #[trigger] post.list.nodes@[x].depth == self.list.nodes@[x].depth
+        &&& forall|x: usize| page_of(x) != base ==> #[trigger] post.is_cap(x) == self.is_cap(x)
+        &&& forall|t: usize, i: usize| #[trigger] post.tables.has_slot(&post.list, t, i) == self.tables.has_slot(&self.list, t, i)
     }
 
     /// Takes a slice of the dead leaf at `base`, under the untyped at index `from` of the table at `root`:
@@ -1067,6 +1088,7 @@ impl CapKernel {
     proof fn lemma_slice_kept_step(pre: Self, mid: Self, post: Self, base: usize, n: usize)
         requires
             mid.wf(),
+            base % 8192 == 0,
             base < n < base + NODES_PER_PAGE,
             mid.is_cap(n),
             pre.is_cap(n),
@@ -1077,6 +1099,12 @@ impl CapKernel {
             post.table_pages == mid.table_pages,
             post.stale_epoch == mid.stale_epoch,
             post.flush_epoch == mid.flush_epoch,
+            post.tables == mid.tables,
+            post.cores == mid.cores,
+            post.iommus == mid.iommus,
+            forall|x: int| 0 <= x < NODE_SPACE && x != n ==> #[trigger] post.list.nodes@[x].live == mid.list.nodes@[x].live,
+            forall|x: int| 0 <= x < NODE_SPACE && x != n ==> #[trigger] post.list.nodes@[x].kind == mid.list.nodes@[x].kind,
+            forall|x: int| 0 <= x < NODE_SPACE ==> #[trigger] post.list.nodes@[x].depth == mid.list.nodes@[x].depth,
         ensures
             forall|i: usize| pre.blocks.tracks(i as int) ==> #[trigger] block_ref(&post.blocks, i) == block_ref(&pre.blocks, i),
             pre.leaf_slice_kept(post, base),
@@ -1091,6 +1119,68 @@ impl CapKernel {
             let br = BlockRef::Small(p.base / 4096);
             assert(pre.cap_names_block(n, br));
             assert(pre.leaf_slot_names(base, br));
+        }
+        assert forall|s: usize| !pre.leaf_slot_names(base, BlockRef::Small(s / 4096))
+            implies #[trigger] post.spaces.holders@[s] == pre.spaces.holders@[s] by {
+            assert(mid.spaces.holders@[s] == pre.spaces.holders@[s]);
+            if p.kind is Space {
+                assert(pre.cap_names_block(n, BlockRef::Small(p.base / 4096)));
+                assert(s != p.base);
+            }
+        }
+        assert forall|x: int| #![trigger post.list.nodes@[x]] 0 <= x < NODE_SPACE && !(base < x < base + NODES_PER_PAGE) implies {
+            &&& post.list.nodes@[x].live == pre.list.nodes@[x].live
+            &&& post.list.nodes@[x].kind == pre.list.nodes@[x].kind
+        } by {
+            assert(x != n);
+            assert(mid.list.nodes@[x].live == pre.list.nodes@[x].live);
+        }
+        assert forall|x: int| 0 <= x < NODE_SPACE implies #[trigger] post.list.nodes@[x].depth == pre.list.nodes@[x].depth by {
+            assert(mid.list.nodes@[x].depth == pre.list.nodes@[x].depth);
+        }
+        Self::lemma_slice_kept_slots(mid, pre, post, base);
+    }
+
+    /// A step that kills only slots of the leaf at `base` and changes no node's kind outside them, with
+    /// the tables as they were, leaves every slot of every table and every capability outside the leaf
+    /// as it was: a slot's leaf is aligned, so its hidden node is no slot of `base`. Any state s that
+    /// is well formed with the same tables bounds the nodes.
+    proof fn lemma_slice_kept_slots(s: Self, pre: Self, post: Self, base: usize)
+        requires
+            s.wf(),
+            s.tables == pre.tables,
+            post.tables == pre.tables,
+            base % 8192 == 0,
+            forall|x: int| #![trigger post.list.nodes@[x]] 0 <= x < NODE_SPACE && !(base < x < base + NODES_PER_PAGE) ==> {
+                &&& post.list.nodes@[x].live == pre.list.nodes@[x].live
+                &&& post.list.nodes@[x].kind == pre.list.nodes@[x].kind
+            },
+        ensures
+            forall|x: usize| page_of(x) != base ==> #[trigger] post.is_cap(x) == pre.is_cap(x),
+            forall|t: usize, i: usize| #[trigger] post.tables.has_slot(&post.list, t, i) == pre.tables.has_slot(&pre.list, t, i),
+    {
+        assert forall|x: usize| page_of(x) != base implies #[trigger] post.is_cap(x) == pre.is_cap(x) by {
+            if pre.tables.owner@.contains_key(page_of(x)) && x % 4096 < NODES_PER_PAGE {
+                s.lemma_slot_bound(x);
+                if base < x < base + NODES_PER_PAGE {
+                    lemma_slot_in_leaf(base, (x - base) as usize);
+                }
+                assert(post.list.nodes@[x as int].live == pre.list.nodes@[x as int].live);
+            }
+        }
+        assert forall|t: usize, i: usize| #[trigger] post.tables.has_slot(&post.list, t, i)
+            == pre.tables.has_slot(&pre.list, t, i) by {
+            let leaf = pre.tables.leaf(t, index_entry(i));
+            if index_ok(i) && pre.tables.roots@.contains_key(t) && leaf != NO_LEAF {
+                s.tables.lemma_entry(t, index_entry(i));
+                s.tables.lemma_leaf(&s.list, leaf);
+                lemma_slot_in_leaf(leaf, 0);
+                s.lemma_slot_bound(leaf);
+                if base < leaf < base + NODES_PER_PAGE {
+                    lemma_slot_in_leaf(base, (leaf - base) as usize);
+                }
+                assert(post.list.nodes@[leaf as int].live == pre.list.nodes@[leaf as int].live);
+            }
         }
     }
 
@@ -1183,6 +1273,11 @@ impl CapKernel {
             final(self).flush_epoch == old(self).flush_epoch,
             forall|x: usize| x != n && x < NODE_SPACE && old(self).list.nodes@[x as int].live && old(self).list.childless(x)
                 ==> #[trigger] final(self).list.childless(x),
+            final(self).cores == old(self).cores,
+            final(self).iommus == old(self).iommus,
+            forall|x: int| 0 <= x < NODE_SPACE && x != n ==>
+                #[trigger] final(self).list.nodes@[x].kind == old(self).list.nodes@[x].kind,
+            forall|x: int| 0 <= x < NODE_SPACE ==> #[trigger] final(self).list.nodes@[x].depth == old(self).list.nodes@[x].depth,
     {
         let ghost pre = *old(self);
         proof {
