@@ -72,17 +72,6 @@ fn load(rsdp: u64, wait_for_debugger: bool) -> ! {
 
     let mut address_space = AddressSpace::new(bootstrap_allocator);
 
-    let mut address_space_iommu = AddressSpace::new(bootstrap_allocator);
-
-    let mut cur = 0xFEBD4000;
-    let virt_base = USERSPACE_BASE;
-    while cur < 0xFEBD4000 + 0x4000 {
-        unsafe {
-            address_space_iommu.map(bootstrap_allocator, cur + virt_base, cur, true, Leaf::Small, true);
-            cur = cur + PAGE_BYTES;
-        }
-    }
-
     log::info!("Mapping all physical memory");
     unsafe {
         address_space.map_identity(bootstrap_allocator, IDENTITY_MAP_END, arch::device);

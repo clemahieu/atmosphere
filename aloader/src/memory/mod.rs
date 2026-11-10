@@ -34,10 +34,10 @@ pub use paging::AddressSpace;
 pub use userspace::UserspaceMapper;
 
 pub const MAX_PHYSICAL_MEMORY: usize = 16 * 1024 * 1024 * 1024; // 16 GiB
-/// The loader's page tables are at most 28 pages: 6 for the 4 GiB identity map, 5 for the 4K
-/// entries of a kernel image at its bound and the stack's guard, 7 MiB wherever they start, 4 for
-/// the IOMMU's space and 13 for dom0's window. The pool is 128 pages, so the upper half stays
-/// unwritten: tools/check-boot-stack.py. design/test-guest-memory/.
+/// The loader's page tables are at most 24 pages: 6 for the 4 GiB identity map, 5 for the 4K
+/// entries of a kernel image at its bound and the stack's guard, 7 MiB wherever they start, and
+/// 13 for dom0's window. The pool is 128 pages, so the upper half stays unwritten:
+/// tools/check-boot-stack.py. design/test-guest-memory/.
 pub const BOOTSTRAP_SIZE: usize = 512 * 1024; // 512 KiB
 /// The kernel window and dom0's window, which are all the loader reserves from it: 24 MiB.
 /// design/test-guest-memory/.
