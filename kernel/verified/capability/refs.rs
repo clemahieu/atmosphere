@@ -113,7 +113,6 @@ pub open spec fn holders_wf(
         &&& holders[block_ref(blocks, i)].contains(n)
     }
     &&& forall|br: BlockRef| #[trigger] holders.contains_key(br) ==> {
-        &&& holders[br].finite()
         &&& holders[br].len() == block_refs(blocks, br)
         &&& block_typed(blocks, br)
         &&& block_refs(blocks, br) == 0 ==> block_dead(blocks, br)
@@ -1200,7 +1199,6 @@ pub proof fn lemma_holders_frame_added(
         }
     }
     assert forall|k: BlockRef| #[trigger] hb.contains_key(k) implies {
-        &&& hb[k].finite()
         &&& hb[k].len() == block_refs(blocks_b, k)
         &&& block_typed(blocks_b, k)
         &&& block_refs(blocks_b, k) == 0 ==> block_dead(blocks_b, k)
@@ -1292,7 +1290,6 @@ pub proof fn lemma_holders_frame_dropped(
         assert(block_ref(blocks_b, i) == block_ref(blocks_a, i));
     }
     assert forall|k: BlockRef| #[trigger] hb.contains_key(k) implies {
-        &&& hb[k].finite()
         &&& hb[k].len() == block_refs(blocks_b, k)
         &&& block_typed(blocks_b, k)
         &&& block_refs(blocks_b, k) == 0 ==> block_dead(blocks_b, k)
@@ -1388,7 +1385,6 @@ pub proof fn lemma_holders_mapping_dropped(
         assert(block_ref(blocks_b, i) == block_ref(blocks_a, i));
     }
     assert forall|k: BlockRef| #[trigger] hb.contains_key(k) implies {
-        &&& hb[k].finite()
         &&& hb[k].len() == block_refs(blocks_b, k)
         &&& block_typed(blocks_b, k)
         &&& block_refs(blocks_b, k) == 0 ==> block_dead(blocks_b, k)
@@ -1559,7 +1555,6 @@ pub proof fn lemma_holders_small_freed(
         assert(blocks_b.pages@[i as int] == blocks_a.pages@[i as int]);
     }
     assert forall|k: BlockRef| #[trigger] hb.contains_key(k) implies {
-        &&& hb[k].finite()
         &&& hb[k].len() == block_refs(blocks_b, k)
         &&& block_typed(blocks_b, k)
         &&& block_refs(blocks_b, k) == 0 ==> block_dead(blocks_b, k)
@@ -1616,7 +1611,6 @@ pub proof fn lemma_holders_2m_freed(
         assert(i / PAGES_PER_2M != r);
     }
     assert forall|k: BlockRef| #[trigger] hb.contains_key(k) implies {
-        &&& hb[k].finite()
         &&& hb[k].len() == block_refs(blocks_b, k)
         &&& block_typed(blocks_b, k)
         &&& block_refs(blocks_b, k) == 0 ==> block_dead(blocks_b, k)
@@ -1675,7 +1669,6 @@ pub proof fn lemma_holders_1g_freed(
         }
     }
     assert forall|k: BlockRef| #[trigger] hb.contains_key(k) implies {
-        &&& hb[k].finite()
         &&& hb[k].len() == block_refs(blocks_b, k)
         &&& block_typed(blocks_b, k)
         &&& block_refs(blocks_b, k) == 0 ==> block_dead(blocks_b, k)
@@ -1747,7 +1740,6 @@ pub proof fn lemma_holders_frame_new(
         }
     }
     assert forall|k: BlockRef| #[trigger] hb.contains_key(k) implies {
-        &&& hb[k].finite()
         &&& hb[k].len() == block_refs(blocks, k)
         &&& block_typed(blocks, k)
         &&& block_refs(blocks, k) == 0 ==> block_dead(blocks, k)

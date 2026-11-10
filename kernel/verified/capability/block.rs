@@ -204,13 +204,11 @@ impl BlockTable {
         &&& self.in_2m@.len() == NUM_2M
         &&& self.in_1g@.len() == NUM_1G
         &&& forall|r: int| 0 <= r < NUM_2M ==> {
-            &&& (#[trigger] self.in_2m@[r]).finite()
-            &&& self.in_2m@[r].len() == self.count_2m@[r]
+            &&& (#[trigger] self.in_2m@[r]).len() == self.count_2m@[r]
             &&& self.in_2m@[r].subset_of(set_int_range(r * 512, (r + 1) * 512))
         }
         &&& forall|r: int| 0 <= r < NUM_1G ==> {
-            &&& (#[trigger] self.in_1g@[r]).finite()
-            &&& self.in_1g@[r].len() == self.count_1g@[r]
+            &&& (#[trigger] self.in_1g@[r]).len() == self.count_1g@[r]
             &&& self.in_1g@[r].subset_of(set_int_range(r * 262144, (r + 1) * 262144))
         }
         &&& forall|i: int| self.tracks(i) ==> {
@@ -658,15 +656,13 @@ impl BlockTable {
         self.free_perms = Tracked(Map::tracked_empty());
         proof {
             assert forall|r: int| 0 <= r < NUM_2M implies {
-                &&& (#[trigger] self.in_2m@[r]).finite()
-                &&& self.in_2m@[r].len() == self.count_2m@[r]
+                &&& (#[trigger] self.in_2m@[r]).len() == self.count_2m@[r]
                 &&& self.in_2m@[r].subset_of(set_int_range(r * 512, (r + 1) * 512))
             } by {
                 lemma_int_range(r * 512, (r + 1) * 512);
             }
             assert forall|r: int| 0 <= r < NUM_1G implies {
-                &&& (#[trigger] self.in_1g@[r]).finite()
-                &&& self.in_1g@[r].len() == self.count_1g@[r]
+                &&& (#[trigger] self.in_1g@[r]).len() == self.count_1g@[r]
                 &&& self.in_1g@[r].subset_of(set_int_range(r * 262144, (r + 1) * 262144))
             } by {
                 lemma_int_range(r * 262144, (r + 1) * 262144);
@@ -702,8 +698,6 @@ impl BlockTable {
             assert(pre.in_2m@[region_2m(i as int)].contains(i as int) == !(pre.pages@[i as int].kind is Free));
             assert(pre.in_2m@[r2 as int].contains(i as int));
             assert(pre.in_1g@[r1 as int].contains(i as int));
-            assert(pre.in_2m@[r2 as int].finite());
-            assert(pre.in_1g@[r1 as int].finite());
             vstd::set::lemma_set_remove_len(pre.in_2m@[r2 as int], i as int);
             vstd::set::lemma_set_remove_len(pre.in_1g@[r1 as int], i as int);
         }
@@ -726,18 +720,14 @@ impl BlockTable {
             let me = *self;
             assert(me.pages@ =~= pre.pages@.update(i as int, free_entry()));
             assert forall|r: int| 0 <= r < NUM_2M implies {
-                &&& (#[trigger] me.in_2m@[r]).finite()
-                &&& me.in_2m@[r].len() == me.count_2m@[r]
+                &&& (#[trigger] me.in_2m@[r]).len() == me.count_2m@[r]
                 &&& me.in_2m@[r].subset_of(set_int_range(r * 512, (r + 1) * 512))
             } by {
-                assert(pre.in_2m@[r].finite());
             }
             assert forall|r: int| 0 <= r < NUM_1G implies {
-                &&& (#[trigger] me.in_1g@[r]).finite()
-                &&& me.in_1g@[r].len() == me.count_1g@[r]
+                &&& (#[trigger] me.in_1g@[r]).len() == me.count_1g@[r]
                 &&& me.in_1g@[r].subset_of(set_int_range(r * 262144, (r + 1) * 262144))
             } by {
-                assert(pre.in_1g@[r].finite());
             }
             assert forall|j: int| me.tracks(j) implies {
                 &&& me.in_2m@[region_2m(j)].contains(j) == !(#[trigger] me.pages@[j].kind is Free)
@@ -791,8 +781,6 @@ impl BlockTable {
             assert(pre.in_2m@[region_2m(i as int)].contains(i as int) == !(pre.pages@[i as int].kind is Free));
             assert(!pre.in_2m@[r2 as int].contains(i as int));
             assert(!pre.in_1g@[r1 as int].contains(i as int));
-            assert(pre.in_2m@[r2 as int].finite());
-            assert(pre.in_1g@[r1 as int].finite());
             lemma_int_range(r2 * 512, (r2 + 1) * 512);
             lemma_int_range(r1 * 262144, (r1 + 1) * 262144);
             lemma_len_subset(pre.in_2m@[r2 as int], set_int_range(r2 * 512, (r2 + 1) * 512));
@@ -813,18 +801,14 @@ impl BlockTable {
             let me = *self;
             assert(me.pages@ =~= pre.pages@.update(i as int, entry));
             assert forall|r: int| 0 <= r < NUM_2M implies {
-                &&& (#[trigger] me.in_2m@[r]).finite()
-                &&& me.in_2m@[r].len() == me.count_2m@[r]
+                &&& (#[trigger] me.in_2m@[r]).len() == me.count_2m@[r]
                 &&& me.in_2m@[r].subset_of(set_int_range(r * 512, (r + 1) * 512))
             } by {
-                assert(pre.in_2m@[r].finite());
             }
             assert forall|r: int| 0 <= r < NUM_1G implies {
-                &&& (#[trigger] me.in_1g@[r]).finite()
-                &&& me.in_1g@[r].len() == me.count_1g@[r]
+                &&& (#[trigger] me.in_1g@[r]).len() == me.count_1g@[r]
                 &&& me.in_1g@[r].subset_of(set_int_range(r * 262144, (r + 1) * 262144))
             } by {
-                assert(pre.in_1g@[r].finite());
             }
             assert forall|j: int| me.tracks(j) implies {
                 &&& me.in_2m@[region_2m(j)].contains(j) == !(#[trigger] me.pages@[j].kind is Free)
@@ -1126,11 +1110,9 @@ impl BlockTable {
                 }
             }
             assert forall|j: int| 0 <= j < NUM_1G implies {
-                &&& (#[trigger] me.in_1g@[j]).finite()
-                &&& me.in_1g@[j].len() == me.count_1g@[j]
+                &&& (#[trigger] me.in_1g@[j]).len() == me.count_1g@[j]
                 &&& me.in_1g@[j].subset_of(set_int_range(j * 262144, (j + 1) * 262144))
             } by {
-                assert(pre.in_1g@[j].finite());
             }
             assert forall|j: int| 0 <= j < NUM_2M && (#[trigger] me.regions_2m@[j]).typed implies {
                 &&& me.count_2m@[j] == 0
@@ -1235,7 +1217,6 @@ impl BlockTable {
         let ghost gone = set_int_range(first + 1, first + 512);
         proof {
             lemma_int_range(first + 1, first + 512);
-            assert(pre.in_1g@[r1 as int].finite());
             assert forall|j: int| gone.contains(j) implies #[trigger] pre.in_1g@[r1 as int].contains(j) by {
                 assert(region_1g(j) == r1);
                 assert(pre.pages@[j].kind is Reserved);
@@ -1245,7 +1226,6 @@ impl BlockTable {
             assert(kept + gone =~= pre.in_1g@[r1 as int]);
             assert(kept.disjoint(gone));
             vstd::set_lib::lemma_set_disjoint_lens(kept, gone);
-            assert(kept.finite());
         }
         let c1 = *self.count_1g.get(r1);
         self.count_1g.set(r1, c1 - 511);
@@ -1260,18 +1240,14 @@ impl BlockTable {
                 assert((first <= i < first + 512) == (region_2m(i) == r));
             }
             assert forall|j: int| 0 <= j < NUM_2M implies {
-                &&& (#[trigger] me.in_2m@[j]).finite()
-                &&& me.in_2m@[j].len() == me.count_2m@[j]
+                &&& (#[trigger] me.in_2m@[j]).len() == me.count_2m@[j]
                 &&& me.in_2m@[j].subset_of(set_int_range(j * 512, (j + 1) * 512))
             } by {
-                assert(pre.in_2m@[j].finite());
             }
             assert forall|j: int| 0 <= j < NUM_1G implies {
-                &&& (#[trigger] me.in_1g@[j]).finite()
-                &&& me.in_1g@[j].len() == me.count_1g@[j]
+                &&& (#[trigger] me.in_1g@[j]).len() == me.count_1g@[j]
                 &&& me.in_1g@[j].subset_of(set_int_range(j * 262144, (j + 1) * 262144))
             } by {
-                assert(pre.in_1g@[j].finite());
             }
             assert forall|j: int| me.tracks(j) implies {
                 &&& me.in_2m@[region_2m(j)].contains(j) == !(#[trigger] me.pages@[j].kind is Free)
@@ -1466,11 +1442,9 @@ impl BlockTable {
                 }
             }
             assert forall|j: int| 0 <= j < NUM_1G implies {
-                &&& (#[trigger] me.in_1g@[j]).finite()
-                &&& me.in_1g@[j].len() == me.count_1g@[j]
+                &&& (#[trigger] me.in_1g@[j]).len() == me.count_1g@[j]
                 &&& me.in_1g@[j].subset_of(set_int_range(j * 262144, (j + 1) * 262144))
             } by {
-                assert(pre.in_1g@[j].finite());
             }
             assert forall|j: int| 0 <= j < NUM_2M && (#[trigger] me.regions_2m@[j]).typed implies {
                 &&& me.count_2m@[j] == 0

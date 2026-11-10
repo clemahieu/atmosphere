@@ -224,9 +224,7 @@ pub open spec fn space_wf(list: &Tree, spaces: &Spaces, blocks: &BlockTable, s: 
         ==> forall|k: usize| k < TABLE_NODE_PAGES ==> list.pages@.dom().contains(#[trigger] table_node_page(s, k))
     &&& spaces.holders@.contains_key(s)
     &&& kernel_slots_wf(spaces, s)
-    &&& spaces.holders@[s].finite()
     &&& spaces.bound@.contains_key(s)
-    &&& spaces.bound@[s].finite()
     &&& spaces.records@[s].value().kind is Process ==> spaces.bound@[s] == Set::<usize>::empty()
     &&& spaces.records@[s].value().kind is Process ==> spaces.holders@[s] == Set::<usize>::empty()
     &&& spaces.records@[s].value().kind is Device
@@ -2966,7 +2964,6 @@ impl CapKernel {
         assert forall|s: usize| #[trigger] sb.roots@.contains_key(s) implies space_wf(&post.list, sb, b, s) by {
             if s == base {
                 assert(sb.holders@[base] == set![child]);
-                assert(sb.holders@[base].finite());
             } else {
                 assert(sa.roots@.contains_key(s));
                 assert(space_wf(&pre.list, sa, a, s));

@@ -217,7 +217,6 @@ pub open spec fn thread_wf(list: &Tree, threads: &Threads, blocks: &BlockTable, 
     &&& blocks.pages@[(t / 4096) as int].order == 1
     &&& list.pages@.dom().contains(t)
     &&& threads.holders@.contains_key(t)
-    &&& threads.holders@[t].finite()
     &&& threads.holders@[t].len() == blocks.pages@[(t / 4096) as int].refs
     &&& blocks.pages@[(t / 4096) as int].refs == 0 ==> blocks.pages@[(t / 4096) as int].dead
 }
@@ -1471,7 +1470,6 @@ impl CapKernel {
         assert forall|t: usize| #[trigger] tb.records@.contains_key(t) implies thread_wf(&post.list, tb, b, t) by {
             if t == base {
                 assert(tb.holders@[base] == set![child]);
-                assert(tb.holders@[base].finite());
             } else {
                 assert(ta.records@.contains_key(t));
                 assert(thread_wf(&pre.list, ta, a, t));

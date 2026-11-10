@@ -1845,7 +1845,6 @@ impl CapKernel {
                 assert(pre.tables.is_cap(&pre.list, m));
             }
             assert forall|br: BlockRef| #[trigger] post.holders@.contains_key(br) implies {
-                &&& post.holders@[br].finite()
                 &&& post.holders@[br].len() == block_refs(&b, br)
                 &&& block_typed(&b, br)
                 &&& block_refs(&b, br) == 0 ==> block_dead(&b, br)

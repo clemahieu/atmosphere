@@ -408,7 +408,6 @@ impl CapKernel {
             }
         }
         assert forall|k: BlockRef| #[trigger] hb.contains_key(k) implies {
-            &&& hb[k].finite()
             &&& hb[k].len() == block_refs(blocks, k)
             &&& block_typed(blocks, k)
             &&& block_refs(blocks, k) == 0 ==> block_dead(blocks, k)
@@ -847,7 +846,6 @@ proof fn lemma_moved_parent(p: Map<usize, usize>, i: usize, n: usize, x: usize)
     requires
         p.contains_key(x),
         x != n,
-        p.dom().finite(),
     ensures
         moved_parent(p, i, n).contains_key(rename(x, i, n)),
         moved_parent(p, i, n)[rename(x, i, n)] == rename(p[x], i, n),
@@ -862,7 +860,6 @@ proof fn lemma_moved_parent(p: Map<usize, usize>, i: usize, n: usize, x: usize)
 proof fn lemma_moved_parent_back(p: Map<usize, usize>, i: usize, n: usize, x: usize)
     requires
         moved_parent(p, i, n).contains_key(x),
-        p.dom().finite(),
     ensures
         p.contains_key(rename(x, n, i)),
         moved_parent(p, i, n)[x] == rename(p[rename(x, n, i)], i, n),

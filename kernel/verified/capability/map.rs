@@ -794,7 +794,6 @@ pub proof fn lemma_holders_mapping_added(
         assert(block_ref(blocks_b, i) == block_ref(blocks_a, i));
     }
     assert forall|k: BlockRef| #[trigger] hb.contains_key(k) implies {
-        &&& hb[k].finite()
         &&& hb[k].len() == block_refs(blocks_b, k)
         &&& block_typed(blocks_b, k)
         &&& block_refs(blocks_b, k) == 0 ==> block_dead(blocks_b, k)

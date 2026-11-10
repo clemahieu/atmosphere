@@ -137,9 +137,7 @@ pub open spec fn process_wf(processes: &Processes, blocks: &BlockTable, p: usize
     &&& blocks.pages@[(p / 4096) as int].object is Process
     &&& blocks.pages@[(p / 4096) as int].order == 3
     &&& processes.holders@.contains_key(p)
-    &&& processes.holders@[p].finite()
     &&& processes.bound@.contains_key(p)
-    &&& processes.bound@[p].finite()
     &&& processes.holders@[p].len() + processes.bound@[p].len() == blocks.pages@[(p / 4096) as int].refs
     &&& blocks.pages@[(p / 4096) as int].refs == 0 ==> blocks.pages@[(p / 4096) as int].dead
 }
@@ -1061,7 +1059,6 @@ impl CapKernel {
         assert forall|p: usize| #[trigger] pb.records@.contains_key(p) implies process_wf(pb, b, p) by {
             if p == base {
                 assert(pb.holders@[base] == set![child]);
-                assert(pb.holders@[base].finite());
                 assert(pb.bound@[base] == Set::<usize>::empty());
                 assert(pb.bound@[base].len() == 0);
             } else {

@@ -63,7 +63,6 @@ pub proof fn lemma_level_pages(level: Large, r: usize)
     requires
         r < level_regions(level),
     ensures
-        BlockTable::large_pages(level, r as int).finite(),
         forall|i: usize| #[trigger] BlockTable::large_pages(level, r as int).contains(i)
             == (level_base(level, r) <= i < level_base(level, r) + level_pages(level)),
 {
