@@ -21,8 +21,9 @@ pub mod util;
 
 verus! {
 
-// A cargo build checks the size with a block the lint calls unnecessary braces.
-#[allow(unused_braces)]
+// A cargo build checks the size with a block the lint calls unnecessary braces. Verus expands the
+// global to a macro invocation, where the attribute would be unused.
+#[cfg_attr(not(verus_keep_ghost), allow(unused_braces))]
 global size_of usize == 8;
 
 }
