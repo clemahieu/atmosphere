@@ -39,7 +39,7 @@ impl fmt::Display for Error {
 
 impl eio::Error for Error {
     fn kind(&self) -> eio::ErrorKind {
-        eio::ErrorKind::Other
+        self.kind
     }
 }
 
@@ -145,5 +145,11 @@ mod tests {
         let mut text = heapless::String::<32>::new();
         write!(text, "{}", Error::from_kind(ErrorKind::InvalidInput)).unwrap();
         assert_eq!(text.as_str(), "InvalidInput");
+    }
+
+    #[test]
+    fn error_reports_its_kind() {
+        let error = Error::from_kind(ErrorKind::InvalidInput);
+        assert_eq!(eio::Error::kind(&error), ErrorKind::InvalidInput);
     }
 }
