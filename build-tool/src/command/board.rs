@@ -29,30 +29,47 @@ const SERIAL_LOG: &str = "target/orangepi-serial.log";
 /// The guest's memory: enough that 2 to 3 GiB is free RAM on virt, design/test-guest-memory/.
 const MEMORY_MIB: &str = "2560";
 
+/// The command-line key under which the kernel leaves `TCR_EL1.HA` and `HD` clear, so that its own
+/// faults keep the access flag and the dirty state. design/arch-module/ item 5.
+const FAULT_KEPT: &str = "access_dirty=fault";
+
+/// What the kernel logs at the power-off of a run: the faults it served in the walker's place.
+const FAULTS_SERVED: &str = "Served from EL0: ";
+
 /// Boot dom0 on the board and check its serial log.
 #[derive(Debug, Parser)]
 pub struct Opts {
     /// Seconds the guest has to boot, finish and power off before the run counts as a failure.
     #[clap(long, default_value_t = 60)]
     boot_timeout: u64,
+
+    /// The kernel's command line, which the partition's cmdline file holds. With access_dirty=fault
+    /// the run must also show that the kernel served both kinds of fault that stand in for the walker.
+    #[clap(long)]
+    command_line: Option<String>,
 }
 
 pub(super) async fn run(global: GlobalOpts) -> Result<()> {
     let local = unwrap_command!(global, SubCommand::Board);
     let project = Project::discover()?;
-    let (code, output) = boot(&project, local.boot_timeout).await?;
+    let command_line = local.command_line.as_deref();
+    let (code, output) = boot(&project, local.boot_timeout, command_line).await?;
     println!("board serial log: {}", project.root().join(SERIAL_LOG).display());
-    let held = board_run_accepted(code, &output)?;
+    let held = board_run_accepted(code, &output, command_line)?;
     println!("board: ok: {}", held);
     Ok(())
 }
 
 /// Builds the partition, boots it on the board until QEMU exits, and returns the runner's exit code
 /// and what it printed, which it also writes to the serial log.
-async fn boot(project: &ProjectHandle, timeout: u64) -> Result<(Option<i32>, String)> {
+async fn boot(project: &ProjectHandle, timeout: u64, command_line: Option<&str>) -> Result<(Option<i32>, String)> {
     let root = project.root();
-    let built = Command::new(root.join(ESP_BUILD))
-        .arg(ESP)
+    let mut build = Command::new(root.join(ESP_BUILD));
+    build.arg(ESP);
+    if let Some(line) = command_line {
+        build.args(["--command-line", line]);
+    }
+    let built = build
         .current_dir(&root)
         .stdin(Stdio::null())
         .status()
@@ -76,15 +93,39 @@ async fn boot(project: &ProjectHandle, timeout: u64) -> Result<(Option<i32>, Str
 
 /// Whether the board run is a successful boot: the board was reached, QEMU exited by itself with
 /// status 0, which on virt follows only the power-off of a run that succeeded, and the serial log
-/// shows what the gate requires of the x86_64 boot's.
-fn board_run_accepted(code: Option<i32>, output: &str) -> Result<String> {
+/// shows what the gate requires of the x86_64 boot's. Under `command_line` holding [`FAULT_KEPT`] it
+/// also shows that the kernel served at least one access-flag fault and one dirty-state fault.
+fn board_run_accepted(code: Option<i32>, output: &str, command_line: Option<&str>) -> Result<String> {
     if let Some(skip) = output.lines().find(|line| line.starts_with("skip: ")) {
         return Err(anyhow!("no run: {}", skip));
     }
     if code != Some(0) {
         return Err(anyhow!("{} exited with {:?}: QEMU did not exit 0 within the timeout", BOARD_RUN, code));
     }
-    boot_serial_accepted(output, Arch::Aarch64)
+    let held = boot_serial_accepted(output, Arch::Aarch64)?;
+    if !command_line.is_some_and(|line| line.split(' ').any(|component| component == FAULT_KEPT)) {
+        return Ok(held);
+    }
+    match faults_served(output) {
+        Some((access, dirty)) if access > 0 && dirty > 0 => {
+            Ok(format!("{}; {} access-flag and {} dirty-state faults served", held, access, dirty))
+        }
+        Some((access, dirty)) => Err(anyhow!(
+            "under {} the kernel served {} access-flag and {} dirty-state faults, and both kinds must reach it",
+            FAULT_KEPT,
+            access,
+            dirty
+        )),
+        None => Err(anyhow!("under {} the log has no line '{}'", FAULT_KEPT, FAULTS_SERVED.trim_end())),
+    }
+}
+
+/// The counts of the kernel's line `Served from EL0: <a> access-flag faults, <d> dirty-state faults`.
+fn faults_served(output: &str) -> Option<(u64, u64)> {
+    let line = output.lines().find_map(|line| line.split_once(FAULTS_SERVED))?.1;
+    let (access, dirty) = line.split_once(" access-flag faults, ")?;
+    let dirty = dirty.split_once(" dirty-state faults")?.0;
+    Some((access.parse().ok()?, dirty.parse().ok()?))
 }
 
 #[cfg(test)]
@@ -102,31 +143,67 @@ mod tests {
 
     #[test]
     fn a_run_that_powered_off_after_every_check_passes() {
-        assert!(board_run_accepted(Some(0), &board_output()).unwrap().contains("2 to 3 GiB as one 1G untyped"));
+        assert!(board_run_accepted(Some(0), &board_output(), None).unwrap().contains("2 to 3 GiB as one 1G untyped"));
     }
 
     #[test]
     fn a_run_still_on_at_the_timeout_fails() {
         let output = board_output().replace("qemu: exit 0\n", "qemu: still running after 60 s\n");
-        assert!(board_run_accepted(Some(1), &output).unwrap_err().to_string().contains("did not exit 0"));
+        assert!(board_run_accepted(Some(1), &output, None).unwrap_err().to_string().contains("did not exit 0"));
     }
 
     #[test]
     fn a_run_whose_checks_failed_fails_whatever_qemu_did() {
         let output = board_output().replace("dom0 slot checks held\ndom0 capability done\n", "dom0 slot checks failed\n");
-        assert!(board_run_accepted(Some(1), &output).is_err());
-        assert!(board_run_accepted(Some(0), &output).unwrap_err().to_string().contains("check line"));
+        assert!(board_run_accepted(Some(1), &output, None).is_err());
+        assert!(board_run_accepted(Some(0), &output, None).unwrap_err().to_string().contains("check line"));
     }
 
     #[test]
     fn a_run_on_the_pc_s_memory_map_fails() {
         let output = board_output().replace("base 0x80000000 order 18", "base 0x40000000 order 18");
-        assert!(board_run_accepted(Some(0), &output).unwrap_err().to_string().contains("2 to 3 GiB"));
+        assert!(board_run_accepted(Some(0), &output, None).unwrap_err().to_string().contains("2 to 3 GiB"));
+    }
+
+    /// A board run under the key, with the kernel's line of the faults it served.
+    fn fault_kept_output(access: u64, dirty: u64) -> String {
+        board_output().replace(
+            "\u{1b}[34m INFO The system is shutting down",
+            &format!(
+                "\u{1b}[34m INFO Served from EL0: {} access-flag faults, {} dirty-state faults\u{1b}[0m\n\u{1b}[34m INFO The system is shutting down",
+                access, dirty
+            ),
+        )
+    }
+
+    #[test]
+    fn a_run_under_the_key_that_served_both_faults_passes() {
+        let held = board_run_accepted(Some(0), &fault_kept_output(310, 42), Some("nologo access_dirty=fault")).unwrap();
+        assert!(held.contains("310 access-flag and 42 dirty-state faults served"), "{}", held);
+    }
+
+    #[test]
+    fn a_run_under_the_key_that_served_none_of_a_kind_fails() {
+        let error = board_run_accepted(Some(0), &fault_kept_output(310, 0), Some("access_dirty=fault")).unwrap_err();
+        assert!(error.to_string().contains("310 access-flag and 0 dirty-state"), "{}", error);
+        assert!(board_run_accepted(Some(0), &fault_kept_output(0, 42), Some("access_dirty=fault")).is_err());
+    }
+
+    #[test]
+    fn a_run_under_the_key_without_the_line_fails() {
+        let error = board_run_accepted(Some(0), &board_output(), Some("access_dirty=fault")).unwrap_err();
+        assert!(error.to_string().contains("has no line"), "{}", error);
+    }
+
+    #[test]
+    fn the_line_is_not_asked_of_a_run_without_the_key() {
+        assert!(board_run_accepted(Some(0), &board_output(), Some("nologo")).is_ok());
+        assert!(board_run_accepted(Some(0), &fault_kept_output(0, 0), None).is_ok());
     }
 
     #[test]
     fn an_unreachable_board_is_no_run() {
         let output = "skip: orangepi5 unreachable\n";
-        assert!(board_run_accepted(Some(0), output).unwrap_err().to_string().contains("no run: skip: orangepi5 unreachable"));
+        assert!(board_run_accepted(Some(0), output, None).unwrap_err().to_string().contains("no run: skip: orangepi5 unreachable"));
     }
 }

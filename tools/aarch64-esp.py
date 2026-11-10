@@ -3,13 +3,14 @@
 
 The directory gets EFI/BOOT/BOOTAA64.EFI, the loader, which EDK2 boots as removable media, and
 initrd, the kernel, dom0 and the payload with their debug sections dropped, concatenated as the
-loader reads them. tools/orangepi-kvm.py --esp takes the directory. A directory already there is
-replaced.
+loader reads them. With --command-line the directory also gets cmdline, the kernel's command line,
+which the loader hands the kernel. tools/orangepi-kvm.py --esp takes the directory. A directory
+already there is replaced.
 
 The images are the debug build of `atmo build --target aarch64`. With --loader-feature the loader
 is then built again with those features, small_kernel_stack for a kernel stack the boot overflows.
 
-usage: tools/aarch64-esp.py DIR [--loader-feature FEATURE ...]   (from the workspace root)
+usage: tools/aarch64-esp.py DIR [--loader-feature FEATURE ...] [--command-line LINE]   (from the workspace root)
        tools/aarch64-esp.py --test
 """
 import argparse
@@ -40,13 +41,15 @@ def build(loader_features):
             cwd=TREE / "aloader", check=True, env={**os.environ, "RUSTC_BOOTSTRAP": "1"})
 
 
-def lay_out(directory, loader, images):
-    """Makes `directory` the partition: the loader where the firmware looks for it, and the initrd.
-    Returns the initrd's size."""
+def lay_out(directory, loader, images, command_line=None):
+    """Makes `directory` the partition: the loader where the firmware looks for it, the initrd, and
+    the command-line file when `command_line` is given. Returns the initrd's size."""
     directory = Path(directory)
     shutil.rmtree(directory, ignore_errors=True)
     (directory / "EFI" / "BOOT").mkdir(parents=True)
     shutil.copy(loader, directory / "EFI" / "BOOT" / "BOOTAA64.EFI")
+    if command_line is not None:
+        (directory / "cmdline").write_text(command_line + "\n")
     return elfstrip.write_initrd(directory / "initrd", images)
 
 
@@ -80,6 +83,15 @@ class Tests(unittest.TestCase):
             self.assertEqual(self.files(tmp / "esp"), ["EFI/BOOT/BOOTAA64.EFI", "initrd"])
             self.assertEqual((tmp / "esp/EFI/BOOT/BOOTAA64.EFI").read_bytes(), b"new loader")
 
+    def test_a_command_line_is_the_cmdline_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            (tmp / "loader").write_bytes(b"loader")
+            (tmp / "kernel").write_bytes(b"kernel")
+            lay_out(tmp / "esp", tmp / "loader", [tmp / "kernel"], "access_dirty=fault")
+            self.assertEqual(self.files(tmp / "esp"), ["EFI/BOOT/BOOTAA64.EFI", "cmdline", "initrd"])
+            self.assertEqual((tmp / "esp/cmdline").read_text(), "access_dirty=fault\n")
+
     def test_an_image_that_is_missing_stops_the_layout(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
@@ -95,9 +107,10 @@ def main(argv):
     parser.add_argument("directory", type=Path, metavar="DIR", help="the partition's directory, replaced when present")
     parser.add_argument("--loader-feature", action="append", default=[], metavar="FEATURE",
                         help="a feature the loader is built with; may repeat")
+    parser.add_argument("--command-line", metavar="LINE", help="the kernel's command line, written to cmdline")
     args = parser.parse_args(argv)
     build(args.loader_feature)
-    size = lay_out(args.directory, TREE / LOADER, [TREE / image for image in IMAGES])
+    size = lay_out(args.directory, TREE / LOADER, [TREE / image for image in IMAGES], args.command_line)
     print(f"{args.directory}: {LOADER} as EFI/BOOT/BOOTAA64.EFI, initrd of {size} bytes")
     return 0
 
