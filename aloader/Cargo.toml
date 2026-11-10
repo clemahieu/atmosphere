@@ -4,13 +4,15 @@ version = "0.1.0"
 edition = "2021"
 license.workspace = true
 
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+ns16550a = { path = "../ns16550a" }
+bit_field = "0.10.2"
+
 [dependencies]
 aelf = { path = "../aelf" }
 astd = { path = "../astd", features = ["kernel"] }
-ns16550a = { path = "../ns16550a" }
 kernel-logger = { path = "../kernel-logger" }
 
-bit_field = "0.10.2"
 log = "0.4.19"
 acpi = { version = "5.0.0", default-features = false }
 uefi-raw = "0.17.0"
