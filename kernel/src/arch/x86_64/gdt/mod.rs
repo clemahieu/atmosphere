@@ -10,8 +10,8 @@
 //! ## GDT Entries
 //!
 //! * 0 - Null
-//! * 1 - Kernel Data
-//! * 2 - Kernel Code
+//! * 1 - Kernel Code
+//! * 2 - Kernel Data
 //! * 3 - User Data
 //! * 4 - User Code
 //! * 5,6 - TSS
@@ -82,9 +82,10 @@ pub unsafe fn init_cpu() {
     load_tr(SegmentSelector::new(GDT::TSS_INDEX, Ring::Ring0));
 }
 
-/// A Global Descriptor Table.
+/// A Global Descriptor Table. The CPU indexes it by selector, so `repr(C)` keeps the field
+/// order, and the assertions below tie each field's offset to the index its selector names.
 #[derive(Debug)]
-#[repr(packed)]
+#[repr(C, packed)]
 pub struct GlobalDescriptorTable {
     /// Null entry.
     _null: GdtEntry,
@@ -117,6 +118,11 @@ impl GlobalDescriptorTable {
     pub const USER_CS: u16 = SegmentSelector::new(Self::USER_CODE_INDEX, Ring::Ring3).bits();
     pub const USER_SS: u16 = SegmentSelector::new(Self::USER_DATA_INDEX, Ring::Ring3).bits();
 
+    /// The offset of the entry a selector index names.
+    const fn entry_offset(index: u16) -> usize {
+        index as usize * mem::size_of::<GdtEntry>()
+    }
+
     /// Zero-initializes the GDT.
     ///
     /// It must be correctly initialized before being loaded.
@@ -141,6 +147,18 @@ impl GlobalDescriptorTable {
         }
     }
 }
+
+const _: () = {
+    use mem::offset_of;
+    use GlobalDescriptorTable as GDT;
+    assert!(mem::size_of::<GdtEntry>() == 8 && mem::size_of::<BigGdtEntry>() == 16);
+    assert!(offset_of!(GDT, kernel_code) == GDT::entry_offset(GDT::KERNEL_CODE_INDEX));
+    assert!(offset_of!(GDT, kernel_data) == GDT::entry_offset(GDT::KERNEL_DATA_INDEX));
+    assert!(offset_of!(GDT, user_data) == GDT::entry_offset(GDT::USER_DATA_INDEX));
+    assert!(offset_of!(GDT, user_code) == GDT::entry_offset(GDT::USER_CODE_INDEX));
+    assert!(offset_of!(GDT, tss) == GDT::entry_offset(GDT::TSS_INDEX));
+    assert!(mem::size_of::<GDT>() == GDT::entry_offset(GDT::TSS_INDEX) + mem::size_of::<BigGdtEntry>());
+};
 
 /// A 8-byte GDT Code/Data entry, in the segment descriptor layout of Intel SDM Volume 3A
 /// section 3.4.5. The CPU reads the fields, so `repr(C)` keeps their order and marks them used.
