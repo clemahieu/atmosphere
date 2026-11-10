@@ -1,6 +1,7 @@
-//! Deleting a capability: one slot of the caller's table goes, refused while the capability has
-//! children, mappings or bindings, which are all child nodes, so a holder revokes first. What the
-//! capability said is returned, for reference counting to act on. See design/sharing-by-derive/.
+//! Deleting a capability: one slot goes, of the caller's table or of the table of a process the caller
+//! controls, refused while the capability has children, mappings or bindings, which are all child
+//! nodes, so a holder revokes first. What the capability said is returned, for reference counting to
+//! act on. See design/sharing-by-derive/ and design/process-holds-capabilities/.
 use vstd::prelude::*;
 
 verus! {
@@ -10,6 +11,7 @@ use crate::capability::mapping::*;
 use crate::capability::kernel::*;
 use crate::capability::link::*;
 use crate::capability::list::*;
+use crate::capability::position::*;
 use crate::capability::reach::*;
 use crate::capability::refs::*;
 use crate::capability::space::*;
@@ -42,9 +44,42 @@ impl CapKernel {
         &&& discharges(pre.view(), post.view(), root, Effect::Local)
     }
 
-    /// Deletes the capability at index i of the table at root. The index comes from user space, so it
-    /// can be refused, and a refusal changes nothing.
-    pub fn delete(&mut self, root: usize, i: usize) -> (ret: Option<Payload>)
+    /// The refusals of a delete at a position: one that names no capability, the list's first node,
+    /// which has depth 0, or a capability with something below it. In the caller's own table that is
+    /// can_delete of the position's index.
+    pub open spec fn can_delete_at(&self, root: usize, at: Position) -> bool {
+        let n = self.cap_at(root, at)->0;
+        &&& self.cap_at(root, at) is Some
+        &&& self.list.nodes@[n as int].depth > 0
+        &&& self.list.childless(n)
+    }
+
+    /// What a delete of the capability at a position did, by a thread of the process whose table is at
+    /// root: the delete was allowed, the node had no child, it holds no capability now, every other
+    /// node is as it was, and the step discharges a local effect for the caller, which commands the
+    /// slot. In the caller's own table that is cap_deleted of the position's index.
+    pub open spec fn cap_deleted_at(pre: Self, post: Self, root: usize, at: Position) -> bool {
+        let n = pre.cap_at(root, at)->0;
+        &&& pre.can_delete_at(root, at)
+        &&& forall|c: usize| !#[trigger] pre.list.is_child(n, c)
+        &&& !post.is_cap(n)
+        &&& Self::caps_frame(pre, post, n, n)
+        &&& discharges(pre.view(), post.view(), root, Effect::Local)
+    }
+
+    /// In the caller's own table a delete at a position is the delete of its index, refused and done
+    /// exactly as that is.
+    pub proof fn lemma_delete_own(pre: Self, post: Self, root: usize, i: usize)
+        ensures
+            pre.can_delete_at(root, Position { through: None, index: i }) == pre.can_delete(root, i),
+            Self::cap_deleted_at(pre, post, root, Position { through: None, index: i }) == Self::cap_deleted(pre, post, root, i),
+    {
+    }
+
+    /// Deletes the capability at a position: an index of the caller's table, at root, or of the table
+    /// of a process the caller controls, live or dead. The position comes from user space, so it can
+    /// be refused, and a refusal changes nothing.
+    pub fn delete(&mut self, root: usize, at: Position) -> (ret: Option<Payload>)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
@@ -53,10 +88,10 @@ impl CapKernel {
             final(self).wf(),
             final(self).cores == old(self).cores,
             Self::same_tree(*old(self), *final(self)),
-            ret is Some == old(self).can_delete(root, i),
+            ret is Some == old(self).can_delete_at(root, at),
             ret is None ==> *final(self) == *old(self),
-            ret is Some ==> ret.unwrap() == old(self).payload_of(old(self).tables.node_of(root, i)),
-            ret is Some ==> Self::cap_deleted(*old(self), *final(self), root, i),
+            ret is Some ==> ret.unwrap() == old(self).payload_of(old(self).cap_at(root, at)->0),
+            ret is Some ==> Self::cap_deleted_at(*old(self), *final(self), root, at),
             discharges(old(self).view(), final(self).view(), root, Effect::Local),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
@@ -64,25 +99,14 @@ impl CapKernel {
         proof {
             pre.lemma_no_op_discharges(root);
         }
-        let (n, payload) = match self.tables.lookup(&self.list, root, i) {
+        let (n, payload) = match self.find_cap(root, at) {
             Some(found) => found,
             None => { return None; },
         };
-        let node = self.list.get(n);
-        let kind_ok = match node.kind {
-            NodeKind::Capability => true,
-            _ => false,
-        };
-        proof {
-            self.list.lemma_valid_bound(n);
-        }
-        if !node.live || !kind_ok || node.depth == 0 || !self.list.is_childless(n) {
+        if self.list.get(n).depth == 0 || !self.list.is_childless(n) {
             return None;
         }
         proof {
-            pre.lemma_slot(root, i);
-            assert(pre.tables.is_cap(&pre.list, n));
-            assert(payload == pre.payload_of(n));
             // The list's first node has depth 0.
             assert(n != pre.list.seq@[0]);
         }
@@ -132,7 +156,8 @@ impl CapKernel {
             assert(p != 0);
             assert(post.list.seq@[0] == pre.list.seq@[0]);
             lemma_parents_removed(pre.list, post.list, n);
-            Self::lemma_delete_discharges(pre, post, root, n);
+            Self::lemma_delete_removes(pre, post, n);
+            lemma_removes_cap_discharges(pre.view(), post.view(), root, n);
             Self::lemma_tlb_same(pre, post);
         }
         Some(payload)
@@ -475,19 +500,17 @@ impl CapKernel {
         }
     }
 
-    /// The view of the step: one capability the caller held goes, and nothing else.
-    pub proof fn lemma_delete_discharges(pre: Self, post: Self, root: usize, n: usize)
+    /// The view of the step: one capability goes, and nothing else.
+    pub proof fn lemma_delete_removes(pre: Self, post: Self, n: usize)
         requires
             Self::caps_frame(pre, post, n, n),
             pre.is_cap(n),
-            pre.tables.owner@[page_of(n)].0 == root,
             !post.list.nodes@[n as int].live,
             post.list.parent@ == pre.list.parent@,
         ensures
-            discharges(pre.view(), post.view(), root, Effect::Local),
+            removes_cap(pre.view(), post.view(), n),
     {
         let (a, b) = (pre.view(), post.view());
-        assert(a.holds(root, n));
         assert forall|h: (ObjectId, NodeId)| #[trigger] b.held.contains(h) implies a.held.contains(h) by {
             assert(h.1 != n);
             Self::lemma_caps_frame(pre, post, n, n, h.1);
@@ -514,8 +537,6 @@ impl CapKernel {
             Self::lemma_caps_frame(pre, post, n, n, h.0);
         }
         assert forall|o: ObjectId| #[trigger] (b.contents)(o) == (a.contents)(o) by {}
-        assert(removes_cap(a, b, root, n));
-        lemma_removes_cap_discharges(a, b, root, n);
     }
 
     /// A capability with a child, such as a process capability with a thread's binding below it, is not

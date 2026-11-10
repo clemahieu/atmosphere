@@ -1,6 +1,6 @@
 ---
 title: "A process holds capabilities, in a two-level table that no capability names"
-date: 2026-11-08
+date: 2026-11-10
 status: active
 tags: [capability, process, thread]
 one_line: "Capabilities belong to a process, not a thread; its table is a root of 512 pointers in the process object and leaves of 127 slots retyped on demand; no capability names a table and no table holds a table, so the capability graph has no cycles and lookup is constant time. A process is an order-3 block of its table's root, its record and its address space; a thread holds no slots: it is an order-1 block of a node page for its bindings and a page for its record and XSAVE area."
@@ -25,6 +25,8 @@ A thread is bound to its process when it is retyped: the retype names, with the 
 A process is an order-3 block retyped from an untyped held. Page 0 is its table's root, so a table is named by its process's base. Page 1 holds the process's record, a dead flag. Pages 2 to 4 are kept for later per-process state. Pages 5 to 7 are its address space's root, record and list of cores, at the offsets a device space has them, so the space's invariants and the TLB model apply to it unchanged. A process's space has no node pages: a level-4 entry maps no frame, so nothing in the space needs a list node. A capability names a process by its block's base, with the control right, and the capabilities naming it hold its block's references. No space capability names a process's space: a holder links tables into it and maps frames into it through a process capability with the control right, which names the space by the same base, whether the process is the holder's own or another's. A device space is changed through its space capability with the write right. Control already lets a holder claim from the process's table and destroy it, so changing its space grants nothing a separate right would withhold.
 
 Through that control right a holder destroys the process: one bounded step sets its record dead and sends an IPI to each core on its space's list of cores, so each such core, at its next kernel entry, finds its current thread's process dead and moves the thread off; only a thread's own core moves it out of Running, `design/one-lock-bounded-steps/`. Its threads, table, space, references and capabilities stay as they were, so a holder can still claim from the dead process's table, and destroy changes nothing reach reads.
+
+Through that control right a holder deletes, revokes and inspects a slot of the process's table. An operation names the slot it acts on as a table position: an index into the caller's own table, or, through a process capability with the control right held in the caller's own table, into that process's table. It is one hop, since the capability a position goes through is always in the caller's own table, so lookup stays constant time and still no capability names a table. A thread's capability names no table, and neither does a process capability without control. Whether the process is dead is not read, so a supervisor reads a dead service's slots and clears them without spending slots of its own. The lookup is `kernel/verified/capability/position.rs`.
 
 ## Context
 

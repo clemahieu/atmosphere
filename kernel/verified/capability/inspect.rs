@@ -1,6 +1,7 @@
-//! Inspect a capability the caller holds: its kind, base, order and rights come back in the result
-//! words, and nothing the kernel holds changes. A process learns what boot handed it, and what its own
-//! retypes and derives made, this way, design/syscall-abi-in-registers/.
+//! Inspect a capability the caller holds, or one a process it controls holds: its kind, base, order
+//! and rights come back in the result words, and nothing the kernel holds changes. A process learns
+//! what boot handed it, what its own retypes and derives made, and what a process it supervises holds,
+//! this way, design/syscall-abi-in-registers/ and design/process-holds-capabilities/.
 use vstd::prelude::*;
 
 verus! {
@@ -8,6 +9,7 @@ verus! {
 use crate::capability::kernel::*;
 use crate::capability::list::*;
 use crate::capability::operation::*;
+use crate::capability::position::*;
 use crate::capability::reach::*;
 use crate::capability::table::*;
 
@@ -121,37 +123,43 @@ impl CapKernel {
         Some(payload.kind)
     }
 
-    /// Inspects the capability at index i of the table at root. The index comes from user space, so it
-    /// can name no slot or an empty one, and then inspect is refused. Holding the capability is the
-    /// whole authority: inspect asks for no right. Either way the kernel is unchanged.
-    pub fn inspect(&self, root: usize, i: usize) -> (ret: Outcome)
+    /// What inspect returns for a position: the payload of the capability there, and refused when the
+    /// position names none. In the caller's own table that is spec_inspect of the position's index.
+    pub open spec fn spec_inspect_at(&self, root: usize, at: Position) -> Outcome {
+        match self.cap_at(root, at) {
+            Some(n) => inspected(self.payload_of(n)),
+            None => status_only(STATUS_REFUSED),
+        }
+    }
+
+    /// In the caller's own table an inspect at a position is the inspect of its index.
+    pub proof fn lemma_inspect_own(&self, root: usize, i: usize)
+        ensures
+            self.spec_inspect_at(root, Position { through: None, index: i }) == self.spec_inspect(root, i),
+    {
+    }
+
+    /// Inspects the capability at a position: an index of the caller's table, at root, or of the table
+    /// of a process the caller controls, live or dead. The position comes from user space, so it can
+    /// name no capability, and then inspect is refused. Commanding the capability is the whole
+    /// authority, holding it or controlling the process that does: inspect asks for no right of the
+    /// capability itself. Either way the kernel is unchanged.
+    pub fn inspect(&self, root: usize, at: Position) -> (ret: Outcome)
         requires
             self.wf(),
             self.tables.roots@.contains_key(root),
         ensures
-            ret == self.spec_inspect(root, i),
+            ret == self.spec_inspect_at(root, at),
+            self.cap_at(root, at) is Some ==> self.view().commands(root, self.cap_at(root, at)->0),
             discharges(self.view(), self.view(), root, Effect::Local),
     {
         proof {
             self.lemma_no_op_discharges(root);
         }
-        let (n, payload) = match self.tables.lookup(&self.list, root, i) {
-            Some(found) => found,
+        let payload = match self.find_cap(root, at) {
+            Some(found) => found.1,
             None => { return status_only_outcome(STATUS_REFUSED); },
         };
-        let node = self.list.get(n);
-        let live_cap = match node.kind {
-            NodeKind::Capability => node.live,
-            _ => false,
-        };
-        if !live_cap {
-            return status_only_outcome(STATUS_REFUSED);
-        }
-        proof {
-            self.lemma_slot(root, i);
-            assert(self.tables.is_cap(&self.list, n));
-            assert(payload == self.payload_of(n));
-        }
         Outcome {
             status: STATUS_OK,
             result_1: kind_number(payload.kind),

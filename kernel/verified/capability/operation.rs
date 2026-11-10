@@ -10,6 +10,7 @@ verus! {
 use crate::capability::inspect::*;
 use crate::capability::kernel::*;
 use crate::capability::map::*;
+use crate::capability::position::*;
 use crate::capability::probe::*;
 use crate::capability::reach::*;
 use crate::capability::retype::RetypeStep;
@@ -525,11 +526,11 @@ impl CapKernel {
                 Some(status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED }))
             },
             Some(Operation::Delete) => {
-                let done = self.delete(root, frame.slot() as usize).is_some();
+                let done = self.delete(root, Position { through: None, index: frame.slot() as usize }).is_some();
                 Some(status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED }))
             },
             Some(Operation::Revoke) => {
-                let status = match self.revoke(root, frame.slot() as usize) {
+                let status = match self.revoke(root, Position { through: None, index: frame.slot() as usize }) {
                     RevokeStep::Done => STATUS_OK,
                     RevokeStep::Again => STATUS_AGAIN,
                     RevokeStep::Refused | RevokeStep::Exhausted => STATUS_REFUSED,
@@ -576,7 +577,7 @@ impl CapKernel {
                 ),
             ),
             Some(Operation::PowerOff) => Some(status_only_outcome(self.power_off(root, frame.slot() as usize))),
-            Some(Operation::Inspect) => Some(self.inspect(root, frame.slot() as usize)),
+            Some(Operation::Inspect) => Some(self.inspect(root, Position { through: None, index: frame.slot() as usize })),
             Some(_) => Some(status_only_outcome(STATUS_REFUSED)),
             None => Some(status_only_outcome(STATUS_UNKNOWN)),
         }

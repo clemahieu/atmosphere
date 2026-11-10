@@ -807,6 +807,7 @@ impl CapKernel {
                         && (!(mid.list.nodes@[r as int].kind is Binding) ==> bound_threads(&self.list, &self.tables)
                             == bound_threads(&mid.list, &mid.tables));
                     Self::lemma_revoke_bound_threads(bound_threads(&pre.list, &pre.tables), mid, *self, r);
+                    assert(mid.view().holds(object, n));
                     lemma_revoke_is_teardown(mid.view(), self.view(), object, n);
                     Self::lemma_slice_step(pre, mid, *self, root, untyped, object);
                     Self::lemma_leaf_slots_stay_dead(mid, *self, base, k as int, r);
@@ -814,10 +815,11 @@ impl CapKernel {
                 steps = steps + 1;
                 continue;
             }
-            self.unlink_childless_slot(Ghost(object), n);
+            self.unlink_childless_slot(n);
             proof {
                 Self::lemma_revoke_bound_threads(bound_threads(&pre.list, &pre.tables), mid, *self, n);
-                lemma_delete_is_teardown(mid.view(), self.view(), object);
+                assert(mid.view().holds(object, n));
+                lemma_delete_is_teardown(mid.view(), self.view(), object, n);
                 Self::lemma_slice_step(pre, mid, *self, root, untyped, object);
                 Self::lemma_leaf_slots_stay_dead(mid, *self, base, k as int, n);
             }
@@ -890,13 +892,12 @@ impl CapKernel {
         }
     }
 
-    /// Unlinks the childless capability in slot n, which the object held, and nothing more.
-    fn unlink_childless_slot(&mut self, Ghost(object): Ghost<usize>, n: usize)
+    /// Unlinks the childless capability in slot n, and nothing more.
+    fn unlink_childless_slot(&mut self, n: usize)
         requires
             old(self).wf(),
             n < NODE_SPACE,
             old(self).is_cap(n),
-            old(self).tables.owner@[page_of(n)].0 == object,
             old(self).list.childless(n),
         ensures
             final(self).wf(),
@@ -908,7 +909,7 @@ impl CapKernel {
             forall|x: int| 0 <= x < NODE_SPACE && x != n ==>
                 #[trigger] final(self).list.nodes@[x].live == old(self).list.nodes@[x].live,
             forall|x: usize| #[trigger] final(self).is_cap(x) ==> old(self).is_cap(x),
-            discharges(old(self).view(), final(self).view(), object, Effect::Local),
+            removes_cap(old(self).view(), final(self).view(), n),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
         let ghost pre = *old(self);
@@ -931,7 +932,7 @@ impl CapKernel {
             Self::lemma_bindings_caps_frame(pre, post, n, n);
             Self::lemma_delete_holders(pre, post, n);
             Self::lemma_tlb_same(pre, post);
-            Self::lemma_delete_discharges(pre, post, object, n);
+            Self::lemma_delete_removes(pre, post, n);
             assert forall|x: usize| #[trigger] post.is_cap(x) implies pre.is_cap(x) by {
                 if x != n {
                     Self::lemma_caps_frame(pre, post, n, n, x);

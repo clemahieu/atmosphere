@@ -10,6 +10,7 @@ use crate::capability::mapping::*;
 use crate::capability::block::*;
 use crate::capability::kernel::*;
 use crate::capability::list::*;
+use crate::capability::position::*;
 use crate::capability::reach::*;
 use crate::capability::space::*;
 use crate::capability::refs::*;
@@ -257,10 +258,46 @@ impl CapKernel {
         &&& forall|x: usize| !#[trigger] post.list.is_child(c, x)
     }
 
-    /// Revokes the capability at index i of the table at root, for at most REVOKE_BUDGET steps. The
-    /// index comes from user space, so it can be refused. Its own slot can leave the table during the
-    /// call, if the leaf holding it is in its run, so the steps name its node instead.
-    pub fn revoke(&mut self, root: usize, i: usize) -> (ret: RevokeStep)
+    /// What a revoke of the capability at a position did when it was not refused, by a thread of the
+    /// process whose table is at root: the position names a capability, at most REVOKE_BUDGET nodes of
+    /// its run went, no mapping appeared, no node changed its parent, the threads bound are those that
+    /// were whose bindings are still live, and the step discharges the revoke's effect for the caller,
+    /// which commands the capability. In the caller's own table that is cap_revoking of the position's
+    /// index.
+    pub open spec fn cap_revoking_at(pre: Self, post: Self, root: usize, at: Position) -> bool {
+        let c = pre.cap_at(root, at)->0;
+        &&& pre.cap_at(root, at) is Some
+        &&& Self::mappings_shrunk(pre, post)
+        &&& pre.list.seq@.len() - post.list.seq@.len() <= REVOKE_BUDGET
+        &&& post.list.parent == pre.list.parent
+        &&& discharges(pre.view(), post.view(), root, Effect::Revoke { cap: c })
+        &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables).restrict(live_nodes(&post.list))
+    }
+
+    /// What a revoke of the capability at a position did when it finished: as cap_revoking_at says,
+    /// and the capability has no child left.
+    pub open spec fn cap_revoked_at(pre: Self, post: Self, root: usize, at: Position) -> bool {
+        let c = pre.cap_at(root, at)->0;
+        &&& Self::cap_revoking_at(pre, post, root, at)
+        &&& post.list.childless(c)
+        &&& forall|x: usize| !#[trigger] post.list.is_child(c, x)
+    }
+
+    /// In the caller's own table a revoke at a position is the revoke of its index.
+    pub proof fn lemma_revoke_own(pre: Self, post: Self, root: usize, i: usize)
+        ensures
+            Self::cap_revoking_at(pre, post, root, Position { through: None, index: i }) == Self::cap_revoking(pre, post, root, i),
+            Self::cap_revoked_at(pre, post, root, Position { through: None, index: i }) == Self::cap_revoked(pre, post, root, i),
+    {
+    }
+
+    /// Revokes the capability at a position, an index of the caller's table, at root, or of the table
+    /// of a process the caller controls, live or dead, for at most REVOKE_BUDGET steps. The position
+    /// comes from user space, so it can be refused. The capability's own slot can leave its table
+    /// during the call, if the leaf holding it is in its run, and so can the capability the position
+    /// goes through, so the steps name the capability's node and the authority is the caller's when
+    /// the call began.
+    pub fn revoke(&mut self, root: usize, at: Position) -> (ret: RevokeStep)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
@@ -269,32 +306,23 @@ impl CapKernel {
             final(self).wf(),
             final(self).cores == old(self).cores,
             Self::mappings_shrunk(*old(self), *final(self)),
-            ret is Refused == !(old(self).tables.has_slot(&old(self).list, root, i) && old(self).is_cap(old(self).tables.node_of(root, i))),
+            ret is Refused == old(self).cap_at(root, at) is None,
             ret is Refused ==> *final(self) == *old(self),
             old(self).flush_epoch == usize::MAX ==> *final(self) == *old(self),
             ret is Exhausted ==> final(self).flush_epoch == usize::MAX,
-            !(ret is Refused) ==> Self::cap_revoking(*old(self), *final(self), root, i),
-            !(ret is Refused) ==> (ret is Done == final(self).list.childless(old(self).tables.node_of(root, i))),
-            ret is Done ==> Self::cap_revoked(*old(self), *final(self), root, i),
+            !(ret is Refused) ==> Self::cap_revoking_at(*old(self), *final(self), root, at),
+            !(ret is Refused) ==> (ret is Done == final(self).list.childless(old(self).cap_at(root, at)->0)),
+            ret is Done ==> Self::cap_revoked_at(*old(self), *final(self), root, at),
     {
         let ghost pre = *old(self);
-        let c = match self.tables.lookup(&self.list, root, i) {
+        let c = match self.find_cap(root, at) {
             Some(found) => found.0,
             None => { return RevokeStep::Refused; },
         };
-        let node = self.list.get(c);
-        let kind_ok = match node.kind {
-            NodeKind::Capability => node.live,
-            _ => false,
-        };
-        if !kind_ok {
-            return RevokeStep::Refused;
-        }
+        let ghost holder = pre.tables.owner@[page_of(c)].0;
         proof {
-            pre.lemma_slot(root, i);
-            assert(pre.tables.is_cap(&pre.list, c));
-            pre.lemma_slot_bound(c);
-            pre.lemma_no_change_discharges_revoke(root, c);
+            assert(pre.view().names.contains_key(c));
+            assert(discharges(pre.view(), pre.view(), root, Effect::Revoke { cap: c }));
             lemma_bound_threads_live(&pre.list, &pre.tables);
         }
         let mut steps = 0;
@@ -306,28 +334,27 @@ impl CapKernel {
                 pre == *old(self),
                 pre.flush_epoch == usize::MAX ==> *self == pre,
                 Self::mappings_shrunk(pre, *self),
-                pre.tables.has_slot(&pre.list, root, i),
-                c == pre.tables.node_of(root, i),
+                pre.cap_at(root, at) == Some(c),
                 c < NODE_SPACE,
                 self.is_cap(c),
                 self.tables.owner == pre.tables.owner,
                 self.list.parent == pre.list.parent,
                 pre.list.seq@.len() - self.list.seq@.len() == steps,
-                pre.tables.owner@[page_of(c)].0 == root,
+                pre.tables.owner@[page_of(c)].0 == holder,
                 pre.is_cap(c),
                 discharges(pre.view(), self.view(), root, Effect::Revoke { cap: c }),
                 bound_threads(&self.list, &self.tables) == bound_threads(&pre.list, &pre.tables).restrict(live_nodes(&self.list)),
             decreases REVOKE_BUDGET - steps,
         {
             let ghost mid = *self;
-            if self.revoke_step(Ghost(root), c) {
+            if self.revoke_step(Ghost(holder), c) {
                 proof {
                     assert(self.view() == mid.view());
                 }
                 return RevokeStep::Done;
             }
             proof {
-                lemma_revoke_steps_compose(pre.view(), mid.view(), self.view(), root, c);
+                lemma_revoke_steps_compose(pre.view(), mid.view(), self.view(), root, holder, c);
                 let r = choose|r: usize| #[trigger] revoked_one(mid.list, self.list, c, r)
                     && (mid.list.nodes@[r as int].kind is Mapping ==> Self::mapping_unlinked(mid, *self, r))
                     && (mid.list.nodes@[r as int].kind is Mapping ==> Self::mapping_stale_noted(mid, *self, r))

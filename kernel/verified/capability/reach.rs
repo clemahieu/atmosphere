@@ -127,6 +127,15 @@ impl State {
             && self.process_behind(self.names[c]) == b
     }
 
+    /// p may act on capability c as its holder may: p holds it, or holds a control capability over the
+    /// process that holds it, not over a thread of that process. One hop, as an operation names a table
+    /// position: see design/process-holds-capabilities/.
+    pub open spec fn commands(self, p: ObjectId, c: NodeId) -> bool {
+        ||| self.holds(p, c)
+        ||| exists|v: NodeId| #[trigger] self.holds_right(p, v, Right::Control)
+            && !self.process_of.contains_key(self.names[v]) && self.holds(self.names[v], c)
+    }
+
     /// k control links lead from a to b.
     pub open spec fn controlled(self, a: ObjectId, b: ObjectId, k: nat) -> bool
         decreases k,
@@ -159,8 +168,8 @@ impl State {
 pub ghost enum Effect {
     /// A user-mode read or write of a frame.
     Access { frame: ObjectId },
-    /// Derive, move within the caller's table, delete, map, unmap and configuration: nothing another
-    /// process can see.
+    /// Derive, move within the caller's table, map, unmap and configuration, which nothing another
+    /// process can see, and delete, of a slot the caller commands.
     Local,
     /// Start, suspend or set registers through a control capability.
     Control { cap: NodeId, thread: ObjectId },
@@ -170,7 +179,7 @@ pub ghost enum Effect {
     Reply { cap: NodeId },
     /// Set bits in a notification, and perhaps wake a waiter.
     Signal { cap: NodeId, waiter: Option<ObjectId> },
-    /// One step of revoking cap's descendants.
+    /// One step of revoking the descendants of cap, which the caller commands.
     Revoke { cap: NodeId },
     /// Mark the target dead through a control capability.
     Destroy { cap: NodeId },
@@ -203,7 +212,7 @@ pub open spec fn authorized(s: State, p: ObjectId, e: Effect) -> bool {
             &&& s.holds_right(p, cap, Right::Send)
             &&& waiter is Some ==> s.waiting.contains((s.names[cap], waiter->0))
         },
-        Effect::Revoke { cap } => s.holds(p, cap) && s.names.contains_key(cap),
+        Effect::Revoke { cap } => s.commands(p, cap) && s.names.contains_key(cap),
         Effect::Destroy { cap } => s.holds_right(p, cap, Right::Control),
         Effect::Claim { cap, from } => {
             &&& s.holds_right(p, cap, Right::Control)
@@ -233,7 +242,7 @@ pub open spec fn may_change(s: State, e: Effect, o: ObjectId) -> bool {
 /// e may remove capability n from the list.
 pub open spec fn may_remove(s: State, p: ObjectId, e: Effect, n: NodeId) -> bool {
     match e {
-        Effect::Local => s.holds(p, n),
+        Effect::Local => s.commands(p, n),
         Effect::Deliver { granted, .. } => granted == Some(n),
         Effect::Revoke { cap } => exists|k: nat| k > 0 && #[trigger] s.descends(cap, n, k),
         Effect::Claim { from, .. } => n == from,
@@ -396,6 +405,7 @@ pub proof fn lemma_no_change_discharges_teardown(s: State, p: ObjectId, untyped:
 pub proof fn lemma_revoke_is_teardown(pre: State, post: State, object: ObjectId, cap: NodeId)
     requires
         discharges(pre, post, object, Effect::Revoke { cap }),
+        pre.holds(object, cap),
     ensures
         tears_down(pre, post, object),
 {
@@ -412,17 +422,18 @@ pub proof fn lemma_revoke_is_teardown(pre: State, post: State, object: ObjectId,
 
 /// Deleting a capability the object held is a slice of its teardown too: the capability descends from
 /// itself.
-pub proof fn lemma_delete_is_teardown(pre: State, post: State, object: ObjectId)
+pub proof fn lemma_delete_is_teardown(pre: State, post: State, object: ObjectId, cap: NodeId)
     requires
-        discharges(pre, post, object, Effect::Local),
+        removes_cap(pre, post, cap),
+        pre.holds(object, cap),
     ensures
         tears_down(pre, post, object),
 {
+    lemma_removes_cap_discharges(pre, post, object, cap);
     assert forall|n: NodeId| #[trigger] State::removed(pre, post, n)
         implies exists|c: NodeId, k: nat| #[trigger] pre.descends(c, n, k) && pre.holds(object, c) by {
-        assert(may_remove(pre, object, Effect::Local, n));
-        assert(pre.descends(n, n, 0));
-        assert(pre.holds(object, n));
+        assert(n == cap);
+        assert(pre.descends(cap, cap, 0));
     }
     assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) implies pre.reach(r, o) by {
         assert(!may_grow(pre, object, Effect::Local, r, o));
@@ -1201,10 +1212,8 @@ pub proof fn lemma_unbinds_discharges_revoke(pre: State, post: State, p: ObjectI
     }
 }
 
-/// post is pre without capability n, which p held. Nothing else changes, so the parent map still says
-/// what it said.
-pub open spec fn removes_cap(pre: State, post: State, p: ObjectId, n: NodeId) -> bool {
-    &&& pre.holds(p, n)
+/// post is pre without capability n. Nothing else changes, so the parent map still says what it said.
+pub open spec fn removes_cap(pre: State, post: State, n: NodeId) -> bool {
     &&& forall|h: (ObjectId, NodeId)| #[trigger] post.held.contains(h) ==> pre.held.contains(h)
     &&& forall|x: NodeId| x != n && #[trigger] pre.names.contains_key(x) ==> post.names.contains_key(x)
     &&& forall|x: NodeId| #[trigger] post.names.contains_key(x) ==> {
@@ -1222,9 +1231,9 @@ pub open spec fn removes_cap(pre: State, post: State, p: ObjectId, n: NodeId) ->
     &&& forall|o: ObjectId| #[trigger] (post.contents)(o) == (pre.contents)(o)
 }
 
-proof fn lemma_removes_cap_controlled(pre: State, post: State, p: ObjectId, n: NodeId, a: ObjectId, b: ObjectId, k: nat)
+proof fn lemma_removes_cap_controlled(pre: State, post: State, n: NodeId, a: ObjectId, b: ObjectId, k: nat)
     requires
-        removes_cap(pre, post, p, n),
+        removes_cap(pre, post, n),
         post.controlled(a, b, k),
     ensures
         pre.controlled(a, b, k),
@@ -1232,7 +1241,7 @@ proof fn lemma_removes_cap_controlled(pre: State, post: State, p: ObjectId, n: N
 {
     if k > 0 {
         let m = choose|m: ObjectId| #[trigger] post.controls(m, b) && post.controlled(a, m, (k - 1) as nat);
-        lemma_removes_cap_controlled(pre, post, p, n, a, m, (k - 1) as nat);
+        lemma_removes_cap_controlled(pre, post, n, a, m, (k - 1) as nat);
         let t = choose|t: NodeId| #[trigger] post.holds_right(m, t, Right::Control)
             && post.process_behind(post.names[t]) == b;
         assert(post.held.contains((m, t)));
@@ -1242,10 +1251,12 @@ proof fn lemma_removes_cap_controlled(pre: State, post: State, p: ObjectId, n: N
     }
 }
 
-/// Removing a capability its holder chose to give up is a local step, and nobody's reach grows.
+/// Removing a capability by the choice of a process that commands it, its holder or a controller of
+/// its holder, is a local step, and nobody's reach grows.
 pub proof fn lemma_removes_cap_discharges(pre: State, post: State, p: ObjectId, n: NodeId)
     requires
-        removes_cap(pre, post, p, n),
+        removes_cap(pre, post, n),
+        pre.commands(p, n),
     ensures
         discharges(pre, post, p, Effect::Local),
 {
@@ -1254,7 +1265,7 @@ pub proof fn lemma_removes_cap_discharges(pre: State, post: State, p: ObjectId, 
     }
     assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) implies pre.reach(r, o) by {
         let (q, k) = choose|q: ObjectId, k: nat| #[trigger] post.controlled(r, q, k) && (o == q || post.direct(q, o));
-        lemma_removes_cap_controlled(pre, post, p, n, r, q, k);
+        lemma_removes_cap_controlled(pre, post, n, r, q, k);
         if o != q && !post.maps.contains((q, o)) {
             let (t, x, d) = choose|t: NodeId, x: NodeId, d: nat| #[trigger] post.descends(t, x, d)
                 && post.holds(q, t) && post.covers(x, o);
@@ -1610,7 +1621,7 @@ pub proof fn lemma_simulated_discharges_revoke(
 )
     requires
         simulates(post, pre, live, f),
-        pre.holds(p, c),
+        pre.commands(p, c),
         pre.names.contains_key(c),
         forall|x: NodeId| #[trigger] State::removed(pre, post, x) ==> exists|k: nat| k > 0 && #[trigger] pre.descends(c, x, k),
         forall|o: ObjectId| #[trigger] (post.contents)(o) == (pre.contents)(o),
@@ -1649,11 +1660,13 @@ pub proof fn lemma_simulated_discharges_local(
 }
 
 /// Two steps of revoking one capability are one: what they remove descends from it in the first state,
-/// since a revoke changes no parent, and reach only shrinks.
-pub proof fn lemma_revoke_steps_compose(a: State, b: State, c: State, p: ObjectId, cap: NodeId)
+/// since a revoke changes no parent, and reach only shrinks. The authority is the first step's, the
+/// caller commanding the capability when the revoke began; the second is stated for the capability's
+/// holder, since the first may have removed the capability through which the caller controls it.
+pub proof fn lemma_revoke_steps_compose(a: State, b: State, c: State, p: ObjectId, holder: ObjectId, cap: NodeId)
     requires
         discharges(a, b, p, Effect::Revoke { cap }),
-        discharges(b, c, p, Effect::Revoke { cap }),
+        discharges(b, c, holder, Effect::Revoke { cap }),
         a.parent == b.parent,
     ensures
         discharges(a, c, p, Effect::Revoke { cap }),
@@ -1676,7 +1689,7 @@ pub proof fn lemma_revoke_steps_compose(a: State, b: State, c: State, p: ObjectI
         }
     }
     assert forall|r: ObjectId, o: ObjectId| #[trigger] c.reach(r, o) implies a.reach(r, o) by {
-        assert(!may_grow(b, p, Effect::Revoke { cap }, r, o));
+        assert(!may_grow(b, holder, Effect::Revoke { cap }, r, o));
         assert(b.reach(r, o));
         assert(!may_grow(a, p, Effect::Revoke { cap }, r, o));
     }
@@ -1879,6 +1892,60 @@ pub proof fn lemma_no_claim_through_a_thread()
     let s = control_example();
     assert(s.names[11] == 3);
     assert(s.process_of.contains_key(3));
+}
+
+/// control_example without node 20, which process 2 held.
+pub open spec fn control_example_without_20() -> State {
+    State {
+        held: ISet::new(|h: (ObjectId, NodeId)| h == (1usize, 10usize) || h == (1usize, 11usize)),
+        names: IMap::new(|n: NodeId| n == 10 || n == 11, |n: NodeId| if n == 10 { 2usize } else { 3usize }),
+        pages: IMap::new(|n: NodeId| n == 10 || n == 11, |n: NodeId| 1nat),
+        ..control_example()
+    }
+}
+
+/// Control of a process lets its holder delete from the process's table and revoke what is there: the
+/// controller commands what the process holds.
+pub proof fn lemma_delete_and_revoke_through_control()
+    ensures
+        control_example().commands(1, 20),
+        discharges(control_example(), control_example_without_20(), 1, Effect::Local),
+        authorized(control_example(), 1, Effect::Revoke { cap: 20 }),
+{
+    let (s, t) = (control_example(), control_example_without_20());
+    assert(s.holds_right(1, 10, Right::Control));
+    assert(s.names[10] == 2);
+    assert(!s.process_of.contains_key(2));
+    assert(s.holds(2, 20));
+    assert(s.commands(1, 20));
+    assert(removes_cap(s, t, 20));
+    lemma_removes_cap_discharges(s, t, 1, 20);
+}
+
+/// control_example with process 1 holding only node 11, its control capability over process 2's
+/// thread.
+pub open spec fn thread_control_example() -> State {
+    State {
+        held: ISet::new(|h: (ObjectId, NodeId)| h == (1usize, 11usize) || h == (2usize, 20usize)),
+        ..control_example()
+    }
+}
+
+/// Control of a thread does not let its holder delete from the table of the thread's process or revoke
+/// what is there, though it reaches what the process holds: a table is named through a process's
+/// capability.
+pub proof fn lemma_no_delete_or_revoke_through_a_thread()
+    ensures
+        !thread_control_example().commands(1, 20),
+        !may_remove(thread_control_example(), 1, Effect::Local, 20),
+        !authorized(thread_control_example(), 1, Effect::Revoke { cap: 20 }),
+{
+    let s = thread_control_example();
+    assert(!s.holds(1, 20));
+    assert forall|v: NodeId| #[trigger] s.holds_right(1, v, Right::Control) implies s.process_of.contains_key(s.names[v]) by {
+        assert(v == 11);
+        assert(s.names[11] == 3);
+    }
 }
 
 /// Process 1 holds node 10, an untyped with the retype right on the 2M block at EXAMPLE_BASE, and
