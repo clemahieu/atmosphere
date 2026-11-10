@@ -351,7 +351,16 @@ pub open spec fn discharges(pre: State, post: State, p: ObjectId, e: Effect) -> 
         ==> may_grow(pre, p, e, r, o)
     &&& forall|w: (ObjectId, ObjectId)| #[trigger] post.waiting.contains(w) && !pre.waiting.contains(w)
         ==> may_wait(pre, p, w)
+    &&& keeps_waiters(pre, post)
     &&& keeps_rights(pre, post, e)
+}
+
+/// Every thread post lists as waiting is the thread of the process it was in pre: a step does not
+/// rebind a waiter, which would let a grant on what it waits on reach another process. A new waiter is
+/// the stepping process's own already, by `may_wait`.
+pub open spec fn keeps_waiters(pre: State, post: State) -> bool {
+    forall|w: (ObjectId, ObjectId)| #[trigger] post.waiting.contains(w)
+        ==> post.process_behind(w.1) == pre.process_behind(w.1)
 }
 
 /// post lists no thread as waiting that pre does not.
@@ -451,8 +460,8 @@ pub open spec fn without_binding(pre: State, post: State, c: NodeId, n: NodeId) 
 /// second node b, the binding, which is no capability, goes under cp, a capability p holds with the
 /// control right, and the process map gains the object as that process's. No capability with the
 /// control right names the object before, so the only control over it is the new one, and that
-/// reaches the process, which p controls already. A thread's retype makes one. See
-/// design/thread-bound-at-retype/.
+/// reaches the process, which p controls already. The object waits on nothing, so binding it rebinds
+/// no waiter. A thread's retype makes one. See design/thread-bound-at-retype/.
 pub open spec fn adds_bound_object(
     pre: State,
     post: State,
@@ -474,16 +483,19 @@ pub open spec fn adds_bound_object(
     &&& pre.holds_right(p, cp, Right::Control)
     &&& !pre.process_of.contains_key(pre.names[cp])
     &&& post.process_of == pre.process_of.insert(object, pre.names[cp])
+    &&& forall|o: ObjectId| !#[trigger] pre.waiting.contains((o, object))
     &&& forall|x: NodeId| #[trigger] pre.rights.contains((x, Right::Control)) && pre.names.contains_key(x)
         ==> pre.names[x] != object
 }
 
 /// post is pre with thread t's binding undone: the process map loses t, and the binding node b, which
-/// is no capability, leaves the parent map. Revoke's binding arm takes such a step.
+/// is no capability, leaves the parent map. t waits on nothing, so no waiter is rebound. Revoke's
+/// binding arm takes such a step.
 pub open spec fn unbinds(pre: State, post: State, t: ObjectId, b: NodeId) -> bool {
     &&& !pre.names.contains_key(b)
     &&& post.parent == pre.parent.remove(b)
     &&& post.process_of == pre.process_of.remove(t)
+    &&& forall|o: ObjectId| !#[trigger] pre.waiting.contains((o, t))
     &&& post.held == pre.held
     &&& post.names == pre.names
     &&& post.pages == pre.pages
@@ -494,14 +506,15 @@ pub open spec fn unbinds(pre: State, post: State, t: ObjectId, b: NodeId) -> boo
 }
 
 /// What a slice of an object's teardown does, apart from who may run it: it changes only what waits on
-/// the object, removes only what descends from a capability the object held, grows no reach, and gives
-/// no capability a right.
+/// the object, removes only what descends from a capability the object held, grows no reach, rebinds no
+/// waiter, and gives no capability a right.
 pub open spec fn tears_down(pre: State, post: State, object: ObjectId) -> bool {
     &&& forall|o: ObjectId| #[trigger] State::changed(pre, post, o) ==> pre.waiting.contains((object, o))
     &&& forall|n: NodeId| #[trigger] State::removed(pre, post, n)
         ==> exists|c: NodeId, k: nat| #[trigger] pre.descends(c, n, k) && pre.holds(object, c)
     &&& forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) ==> pre.reach(r, o)
     &&& adds_no_waiter(pre, post)
+    &&& keeps_waiters(pre, post)
     &&& forall|x: NodeId, r: Right| #[trigger] post.rights.contains((x, r)) && post.names.contains_key(x)
         ==> pre.rights.contains((x, r)) && pre.names.contains_key(x)
 }
@@ -1440,8 +1453,10 @@ pub proof fn lemma_adds_bound_object_discharges_retype(
         }
         assert(pre.controlled(r, q, k) && (o == q || pre.direct(q, o)));
     }
-    assert forall|w: (ObjectId, ObjectId)| #[trigger] post.waiting.contains(w) implies pre.waiting.contains(w) by {
+    assert forall|w: (ObjectId, ObjectId)| #[trigger] post.waiting.contains(w)
+        implies pre.waiting.contains(w) && post.process_behind(w.1) == pre.process_behind(w.1) by {
         assert(mid.waiting.contains(w));
+        assert(!pre.waiting.contains((w.0, object)));
     }
 }
 
@@ -1539,6 +1554,11 @@ pub proof fn lemma_unbinds_discharges_revoke(pre: State, post: State, p: ObjectI
         } else {
             assert(pre.controlled(r, q, k) && (o == q || pre.direct(q, o)));
         }
+    }
+    assert forall|w: (ObjectId, ObjectId)| #[trigger] post.waiting.contains(w)
+        implies post.process_behind(w.1) == pre.process_behind(w.1) by {
+        assert(pre.waiting.contains(w));
+        assert(!pre.waiting.contains((w.0, t)));
     }
 }
 
@@ -2744,6 +2764,23 @@ pub proof fn lemma_other_waiter_does_not_discharge()
     assert(post.waiting.contains((EXAMPLE_BASE, WAITER)));
     assert(!pre.waiting.contains((EXAMPLE_BASE, WAITER)));
     assert(!may_wait(pre, 1, (EXAMPLE_BASE, WAITER)));
+}
+
+/// `waiting_example(3)` with WAITER, a thread of process 3 listed as waiting on what process 1
+/// reaches, rebound to process 2.
+pub open spec fn rebound_example() -> State {
+    State { process_of: map![WAITER => 2usize], ..waiting_example(3) }
+}
+
+/// A step by process 1 may not rebind a thread it leaves listed as waiting: process 2's thread would
+/// then wait on what process 1 reaches, and a grant over it would reach process 2.
+pub proof fn lemma_rebinding_a_waiter_does_not_discharge()
+    ensures
+        !discharges(waiting_example(3), rebound_example(), 1, Effect::Local),
+{
+    let (pre, post) = (waiting_example(3), rebound_example());
+    assert(post.waiting.contains((EXAMPLE_BASE, WAITER)));
+    assert(post.process_behind(WAITER) != pre.process_behind(WAITER));
 }
 
 /// Process 1 holds node 10, a capability to the endpoint at EXAMPLE_PAST with the send right alone.
