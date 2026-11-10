@@ -102,8 +102,7 @@ impl std::fmt::Display for Arch {
 enum Step {
     FileSizes,
     Build,
-    BuildToolTests,
-    BootHostTests,
+    WorkspaceTests,
     License,
     Hooks,
     Verify,
@@ -121,11 +120,10 @@ enum Step {
 }
 
 impl Step {
-    const ALL: [Step; 18] = [
+    const ALL: [Step; 17] = [
         Step::FileSizes,
         Step::Build,
-        Step::BuildToolTests,
-        Step::BootHostTests,
+        Step::WorkspaceTests,
         Step::License,
         Step::Hooks,
         Step::Verify,
@@ -146,8 +144,7 @@ impl Step {
         match self {
             Step::FileSizes => "file sizes",
             Step::Build => "build",
-            Step::BuildToolTests => "build-tool tests",
-            Step::BootHostTests => "boot host tests",
+            Step::WorkspaceTests => "workspace tests",
             Step::License => "license",
             Step::Hooks => "hooks",
             Step::Verify => "verify",
@@ -178,12 +175,7 @@ impl Step {
         match self {
             Step::FileSizes => check_file_sizes(project).await,
             Step::Build => check_build(project).await,
-            Step::BuildToolTests => {
-                check_tests(project, "build-tool", "its own unit tests").await
-            }
-            Step::BootHostTests => {
-                check_tests(project, "boot-host-tests", "loader map and dom0 run checks").await
-            }
+            Step::WorkspaceTests => check_workspace_tests(project).await,
             Step::License => check_licenses(project).await,
             Step::Hooks => check_hooks(project).await,
             Step::Verify => {
@@ -302,30 +294,31 @@ async fn check_build(project: &ProjectHandle) -> Result<String> {
     Ok(last.to_string())
 }
 
-/// A workspace crate's whole test suite, after the build, since the dom0 run check in
-/// boot-host-tests reads the built dom0. boot-host-tests holds the loader map check, whose lines
-/// start with `free page ranges:`, and the dom0 run check, whose lines start with `mapped runs:`.
-/// The detail carries each test binary's result line.
-async fn check_tests(project: &ProjectHandle, krate: &str, what: &str) -> Result<String> {
-    let manifest = format!("{krate}/Cargo.toml");
+/// Every workspace member's host tests, unit, integration and doc, by one cargo test from the root:
+/// a member built for bare metal runs its tests here as a host program. After the build, since the
+/// dom0 run check in boot-host-tests reads the built dom0. boot-host-tests holds the loader map
+/// check, whose lines start with `free page ranges:`, and the dom0 run check, whose lines start
+/// with `mapped runs:`. The detail counts the tests and the test binaries that hold one.
+async fn check_workspace_tests(project: &ProjectHandle) -> Result<String> {
     let output = Command::new("cargo")
-        .args(["test", "--manifest-path", &manifest, "--", "--nocapture"])
+        .args(WORKSPACE_TESTS)
         .current_dir(project.root())
         .stdin(Stdio::null())
         .stderr(Stdio::inherit())
         .output()
         .await
-        .with_context(|| format!("{krate} tests"))?;
+        .context("workspace tests")?;
     let text = String::from_utf8_lossy(&output.stdout);
     print!("{}", text);
-    let results = marked_lines(&text, TEST_RESULT);
     if !output.status.success() {
-        return Err(anyhow!("cargo test of {}: {}{}", krate, output.status, results));
+        let failed = marked_lines(&text, TEST_FAILED);
+        return Err(anyhow!("cargo {}: {}{}", WORKSPACE_TESTS.join(" "), output.status, failed));
     }
-    if results.is_empty() {
-        return Err(anyhow!("cargo test of {}: no test result line", krate));
+    let (passed, binaries) = test_totals(&text)?;
+    if passed == 0 {
+        return Err(anyhow!("cargo {}: no test ran", WORKSPACE_TESTS.join(" ")));
     }
-    Ok(format!("{}{}", what, results))
+    Ok(format!("{} tests passed in {} test binaries", passed, binaries))
 }
 
 /// Runs the license check's own tests, then the check over the workspace's graph.
@@ -565,8 +558,32 @@ fn parse_verify_errors(output: &str) -> Option<u64> {
 /// Marks Verus's results line, one per crate.
 const VERIFY_RESULTS: &str = "verification results:: ";
 
+/// cargo's arguments for every workspace member's tests, each test's output in the log.
+const WORKSPACE_TESTS: [&str; 4] = ["test", "--workspace", "--", "--nocapture"];
+
 /// Marks cargo test's result line, one per test binary.
 const TEST_RESULT: &str = "test result: ";
+
+/// Marks the result line of a test binary with a failing test.
+const TEST_FAILED: &str = "test result: FAILED";
+
+/// What cargo test's result lines add up to: the tests that passed, and the test binaries that ran
+/// one.
+fn test_totals(output: &str) -> Result<(u64, usize)> {
+    let (mut passed, mut binaries) = (0, 0);
+    for line in output.lines().filter(|line| line.contains(TEST_RESULT)) {
+        let words: Vec<&str> = line.split_whitespace().collect();
+        let count: u64 = words
+            .iter()
+            .position(|word| *word == "passed;")
+            .and_then(|at| at.checked_sub(1))
+            .and_then(|at| words[at].parse().ok())
+            .ok_or_else(|| anyhow!("no count of passed tests in: {}", line.trim()))?;
+        passed += count;
+        binaries += usize::from(count > 0);
+    }
+    Ok((passed, binaries))
+}
 
 /// The lines of a run's output that hold `marker`, each on a line of its own.
 fn marked_lines(output: &str, marker: &str) -> String {
@@ -598,9 +615,9 @@ mod tests {
         let x86_64 = steps(Some(Arch::X86_64));
         assert!(x86_64.contains(&Step::Boot) && x86_64.contains(&Step::Verify));
         assert!(x86_64.contains(&Step::PageLiterals) && x86_64.contains(&Step::ArchSources));
-        // The dom0 run check reads the built dom0.
+        // The dom0 run check among the workspace's tests reads the built dom0.
         let at = |step| x86_64.iter().position(|s| *s == step).unwrap();
-        assert!(at(Step::Build) < at(Step::BootHostTests));
+        assert!(at(Step::Build) < at(Step::WorkspaceTests));
         assert!(!x86_64.contains(&Step::VerifyAarch64) && !x86_64.contains(&Step::Aarch64Boot));
         let both = steps(None);
         assert_eq!(both.len(), x86_64.len() + 2);
@@ -653,14 +670,21 @@ mod tests {
         );
     }
 
-    /// cargo test prints one result line per test binary, so each one reaches the gate log's detail.
+    /// cargo test prints one result line per test binary, most of them a member's that holds no test,
+    /// so the detail adds them up and counts the binaries that ran one.
     #[test]
-    fn test_result_lines_are_each_binarys_line() {
-        let output = "running 2 tests\ntest a ... ok\nfree page ranges: rejected x\ntest result: ok. 2 passed; 0 failed\n\nrunning 0 tests\ntest result: ok. 0 passed; 0 failed\n";
-        assert_eq!(
-            marked_lines(output, TEST_RESULT),
-            "\n  test result: ok. 2 passed; 0 failed\n  test result: ok. 0 passed; 0 failed"
-        );
+    fn test_totals_add_up_each_binarys_line() {
+        let output = "running 2 tests\ntest a ... ok\nfree page ranges: rejected x\ntest result: ok. 2 passed; 0 failed; 0 ignored\n\nrunning 0 tests\ntest result: ok. 0 passed; 0 failed; 0 ignored\n\ntest result: ok. 61 passed; 0 failed; 0 ignored\n";
+        assert_eq!(test_totals(output).unwrap(), (63, 2));
+        assert_eq!(test_totals("error: could not compile\n").unwrap(), (0, 0));
+        assert!(test_totals("test result: ok. some passed\n").is_err());
+    }
+
+    /// A failing binary's line is what a failed step shows.
+    #[test]
+    fn failed_result_lines_are_the_failing_binaries() {
+        let output = "test result: ok. 2 passed; 0 failed\ntest b ... FAILED\ntest result: FAILED. 8 passed; 1 failed\n";
+        assert_eq!(marked_lines(output, TEST_FAILED), "\n  test result: FAILED. 8 passed; 1 failed");
     }
 
     #[test]
