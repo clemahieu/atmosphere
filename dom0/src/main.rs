@@ -518,24 +518,39 @@ fn bit_digit(bit: bool) -> &'static [u8] {
 
 /// Whether a probe of the operation::PROBE_MAX entries ending at PROBED_ENTRY is accepted and finds
 /// PROBED_ENTRY's dirty bit `dirty` and, when `accessed` is some, its accessed bit that, and every other
-/// entry's bits clear, with both bits maintained; it prints `step` and PROBED_ENTRY's two bits.
+/// entry's bits clear, with both bits maintained; it prints `step` and PROBED_ENTRY's two bits, and the
+/// status of a refused probe, or both masks and the two facts of a step that does not hold.
 fn probed_step_held(step: &[u8], accessed: Option<bool>, dirty: bool) -> bool {
     let probed = match operation::probe(operation::ROOT_PROCESS_SLOT, entry_address(PROBE_FIRST), operation::PROBE_MAX) {
         Ok(probed) => probed,
-        Err(_) => return false,
+        Err(status) => {
+            print_count(b"dom0 probe refused ", status, b"\n");
+            return false;
+        }
     };
     let a = probed.accessed & PROBED_BIT != 0;
     let d = probed.dirty & PROBED_BIT != 0;
     let printed = print_parts(&[b"dom0 probe ", step, b": a", bit_digit(a), b" d", bit_digit(d), b"\n"]);
-    printed == operation::STATUS_OK
-        && probed.accessed_maintained
+    let held = probed.accessed_maintained
         && probed.dirty_maintained
         && (probed.accessed | probed.dirty) & !PROBED_BIT == 0
         && d == dirty
         && match accessed {
             Some(expected) => a == expected,
             None => true,
-        }
+        };
+    if !held {
+        print_count(b"dom0 probe a mask ", probed.accessed, b"\n");
+        print_count(b"dom0 probe d mask ", probed.dirty, b"\n");
+        print_parts(&[
+            b"dom0 probe maintained: a",
+            bit_digit(probed.accessed_maintained),
+            b" d",
+            bit_digit(probed.dirty_maintained),
+            b"\n",
+        ]);
+    }
+    printed == operation::STATUS_OK && held
 }
 
 /// Whether a probe of `count` entries from entry `first` of the level 1 table at PATH_ADDRESS is refused;
