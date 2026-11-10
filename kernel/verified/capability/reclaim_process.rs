@@ -221,8 +221,8 @@ impl CapKernel {
     /// What freeing the spent dead process at `base` did to self: no core had its space loaded or a
     /// translation of it, its block is free, and it is gone from the processes, the tables and the
     /// spaces, with no leaf left naming it. It held no capability, so the view is as it was, and the
-    /// list, every other table root, every leaf and its payload, and every tracked page outside its
-    /// block are as they were.
+    /// list, every other table root, every leaf and its payload, every tracked page outside its block,
+    /// and the 2 MiB and 1 GiB regions are as they were.
     pub open spec fn process_freed(&self, post: Self, c: usize, root: usize, from: usize, base: usize) -> bool {
         let untyped = self.tables.node_of(root, from);
         let page = base / 4096;
@@ -242,6 +242,8 @@ impl CapKernel {
         &&& post.tables.payloads == self.tables.payloads
         &&& forall|i: int| self.blocks.tracks(i) && !(page as int <= i < page + 8)
             ==> #[trigger] post.blocks.pages@[i] == self.blocks.pages@[i]
+        &&& post.blocks.regions_2m@ == self.blocks.regions_2m@
+        &&& post.blocks.regions_1g@ == self.blocks.regions_1g@
         &&& Self::step_ok(*self, post, c as int)
         &&& post.view() == self.view()
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&self.list, &self.tables)
@@ -676,6 +678,8 @@ impl CapKernel {
             final(self).tables.payloads == old(self).tables.payloads,
             forall|i: int| old(self).blocks.tracks(i) && !((base / 4096) as int <= i < (base / 4096) + 8)
                 ==> #[trigger] final(self).blocks.pages@[i] == old(self).blocks.pages@[i],
+            final(self).blocks.regions_2m@ == old(self).blocks.regions_2m@,
+            final(self).blocks.regions_1g@ == old(self).blocks.regions_1g@,
             final(self).cores == old(self).cores,
             final(self).view() == old(self).view(),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),

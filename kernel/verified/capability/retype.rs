@@ -957,6 +957,7 @@ impl CapKernel {
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             Self::same_tree(*old(self), *final(self)),
             final(self).cores == old(self).cores,
+            final(self).threads == old(self).threads,
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).iommus == old(self).iommus,
             ret == old(self).can_retype_leaf(root, from, at, base),
