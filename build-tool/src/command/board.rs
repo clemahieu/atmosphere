@@ -1,6 +1,7 @@
 //! `atmo board`: dom0 booted on QEMU virt under KVM on the Orange Pi, held to the boot checks the gate
-//! holds the x86_64 boot to. The gate's aarch64 boot is the same run, with an unreachable board taken
-//! as a skip rather than a failure.
+//! holds the x86_64 boot to. The gate's aarch64 boot is that run twice, first with an SMMUv3 on the
+//! machine, as the x86_64 boot is with an IOMMU, then without, with an unreachable board taken as a
+//! skip rather than a failure.
 
 use std::process::Stdio;
 
@@ -10,7 +11,7 @@ use tokio::fs;
 use tokio::process::Command;
 
 use super::build::Arch;
-use super::test::boot_serial_accepted;
+use super::test::{boot_serial_accepted, TRANSLATION_ENABLED};
 use super::{GlobalOpts, SubCommand};
 use crate::error::Result;
 use crate::project::{Project, ProjectHandle};
@@ -57,22 +58,31 @@ pub struct Opts {
     /// the run must also show that the kernel served both kinds of fault that stand in for the walker.
     #[clap(long)]
     command_line: Option<String>,
+
+    /// Put an SMMUv3 on the machine, and require the kernel to enable its translation.
+    #[clap(long)]
+    iommu: bool,
 }
 
 pub(super) async fn run(global: GlobalOpts) -> Result<()> {
     let local = unwrap_command!(global, SubCommand::Board);
     let project = Project::discover()?;
     let command_line = local.command_line.as_deref();
-    let (code, output) = boot(&project, local.boot_timeout, command_line).await?;
+    build(&project, command_line).await?;
+    let (code, output) = boot(&project, local.boot_timeout, local.iommu).await?;
     println!("board serial log: {}", project.root().join(SERIAL_LOG).display());
-    let held = board_run_accepted(code, &output, command_line)?;
+    let mut held = board_run_accepted(code, &output, command_line)?;
+    if local.iommu {
+        held = translation_enabled(&output, held)?;
+    }
     println!("board: ok: {}", held);
     Ok(())
 }
 
-/// The gate's aarch64 boot: the build's and the runner's own tests, then the run. A board that ssh
-/// cannot reach does not fail the gate; the runner's skip line is printed on a line of its own, which
-/// is what the round procedure looks for in a gate log, and the step reports it.
+/// The gate's aarch64 boot: the build's and the runner's own tests, then the run with an SMMUv3 and
+/// the run without, so the serial log left behind has none, as on x86_64. A board that ssh cannot
+/// reach does not fail the gate; the runner's skip line is printed on a line of its own, which is what
+/// the round procedure looks for in a gate log, and the step reports it.
 pub(super) async fn gate_boot(project: &ProjectHandle, timeout: u64) -> Result<String> {
     for program in [ESP_BUILD, BOARD_RUN] {
         let status = Command::new(project.root().join(program))
@@ -86,12 +96,28 @@ pub(super) async fn gate_boot(project: &ProjectHandle, timeout: u64) -> Result<S
             return Err(anyhow!("{} --test: {}", program, status));
         }
     }
-    let (code, output) = boot(project, timeout, None).await?;
-    let held = gate_run_accepted(code, &output)?;
-    if held.starts_with(SKIP) {
-        println!("{}", output.trim_end());
-    }
+    build(project, None).await?;
+    let (code, output) = boot(project, timeout, true).await?;
+    let held = match gate_run_accepted(code, &output)? {
+        skip if skip.starts_with(SKIP) => {
+            println!("{}", output.trim_end());
+            skip
+        }
+        held => {
+            let with = translation_enabled(&output, held)?;
+            let (code, output) = boot(project, timeout, false).await?;
+            format!("with an SMMUv3, {}; without, {}", with, board_run_accepted(code, &output, None)?)
+        }
+    };
     Ok(format!("{}'s and {}'s tests pass; {}", ESP_BUILD, BOARD_RUN, held))
+}
+
+/// What a run with an SMMUv3 holds besides [`board_run_accepted`]: the kernel enabled its translation.
+fn translation_enabled(output: &str, held: String) -> Result<String> {
+    if !output.contains(TRANSLATION_ENABLED) {
+        return Err(anyhow!("the serial log does not show the SMMUv3's translation enabled"));
+    }
+    Ok(format!("translation enabled; {}", held))
 }
 
 /// What the gate takes from a board run: the skip line of a board that was not reached, or what
@@ -108,9 +134,8 @@ fn skip_line(output: &str) -> Option<&str> {
     output.lines().find(|line| line.starts_with(SKIP))
 }
 
-/// Builds the partition, boots it on the board until QEMU exits, and returns the runner's exit code
-/// and what it printed, which it also writes to the serial log.
-async fn boot(project: &ProjectHandle, timeout: u64, command_line: Option<&str>) -> Result<(Option<i32>, String)> {
+/// Builds the partition, with `command_line` in its cmdline file when given.
+async fn build(project: &ProjectHandle, command_line: Option<&str>) -> Result<()> {
     let root = project.root();
     let mut build = Command::new(root.join(ESP_BUILD));
     build.arg(ESP);
@@ -126,9 +151,20 @@ async fn boot(project: &ProjectHandle, timeout: u64, command_line: Option<&str>)
     if !built.success() {
         return Err(anyhow!("{} {}: {}", ESP_BUILD, ESP, built));
     }
+    Ok(())
+}
+
+/// Boots the partition on the board until QEMU exits, with an SMMUv3 on the machine under `iommu`,
+/// and returns the runner's exit code and what it printed, which it also writes to the serial log.
+async fn boot(project: &ProjectHandle, timeout: u64, iommu: bool) -> Result<(Option<i32>, String)> {
+    let root = project.root();
     let timeout = timeout.to_string();
-    let ran = Command::new(root.join(BOARD_RUN))
-        .args(["--esp", ESP, "--memory-mib", MEMORY_MIB, "--boot-timeout", &timeout, "--until-exit"])
+    let mut run = Command::new(root.join(BOARD_RUN));
+    run.args(["--esp", ESP, "--memory-mib", MEMORY_MIB, "--boot-timeout", &timeout, "--until-exit"]);
+    if iommu {
+        run.arg("--iommu");
+    }
+    let ran = run
         .current_dir(&root)
         .stdin(Stdio::null())
         .stderr(Stdio::inherit())
@@ -283,6 +319,28 @@ mod tests {
         let output = board_output().replace("dom0 slot checks held\ndom0 capability done\n", "dom0 slot checks failed\n");
         assert!(gate_run_accepted(Some(1), &output).is_err());
         assert!(gate_run_accepted(Some(2), "host: orangepi5\nkvm: accel kvm\n").is_err());
+    }
+
+    /// A board run with an SMMUv3, whose kernel enabled its translation.
+    fn iommu_output() -> String {
+        board_output().replace(
+            "\u{1b}[34m INFO The system is shutting down",
+            "\u{1b}[34m INFO Enabling translation\u{1b}[0m\n\u{1b}[34m INFO The system is shutting down",
+        )
+    }
+
+    #[test]
+    fn a_run_with_an_smmu_that_enabled_translation_passes() {
+        let held = board_run_accepted(Some(0), &iommu_output(), None).unwrap();
+        let held = translation_enabled(&iommu_output(), held).unwrap();
+        assert!(held.starts_with("translation enabled; on orangepi5 under KVM: "), "{}", held);
+    }
+
+    #[test]
+    fn a_run_with_an_smmu_that_did_not_enable_translation_fails() {
+        let held = board_run_accepted(Some(0), &board_output(), None).unwrap();
+        let error = translation_enabled(&board_output(), held).unwrap_err();
+        assert!(error.to_string().contains("translation enabled"), "{}", error);
     }
 
     #[test]

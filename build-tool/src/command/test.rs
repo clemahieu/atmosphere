@@ -379,7 +379,7 @@ async fn check_iommu_boot(project: &ProjectHandle, timeout: u64) -> Result<Strin
 }
 
 /// What the kernel logs when it turns on the IOMMU's translation.
-const TRANSLATION_ENABLED: &str = "Enabling translation";
+pub(super) const TRANSLATION_ENABLED: &str = "Enabling translation";
 
 /// The line dom0 prints through its console when every fixed-slot check held.
 const CONSOLE_LINE: &str = "dom0 slot checks held";
