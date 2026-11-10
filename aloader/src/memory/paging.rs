@@ -66,6 +66,21 @@ impl AddressSpace {
         (*cur).write(index, Entry::leaf(paddr, leaf, user, cache_disable));
     }
 
+    /// Maps every 2M frame below `end` at its own address, for the kernel alone. `device` says
+    /// which of them are device memory.
+    pub unsafe fn map_identity(
+        &mut self,
+        allocator: &mut impl PhysicalAllocator,
+        end: u64,
+        device: impl Fn(u64) -> bool,
+    ) {
+        let mut cur = 0;
+        while cur < end {
+            self.map(allocator, cur, cur, false, Leaf::Large, device(cur));
+            cur += Leaf::Large.size();
+        }
+    }
+
     unsafe fn allocate_page_table(allocator: &mut impl PhysicalAllocator) -> *mut PageTable {
         let table =
             { allocator.allocate_physical(mem::size_of::<PageTable>()).0 } as *mut PageTable;
@@ -210,14 +225,11 @@ mod tests {
     const LARGE: u64 = LARGE_PAGE_SIZE as u64;
     const SMALL: u64 = PAGE_BYTES;
 
-    /// 4 GiB of 2M leaves, as `load` maps them, and the tables they took.
+    /// 4 GiB of 2M leaves, as `load` maps them where the target calls no frame a device, and the
+    /// tables they took.
     fn identity_map(pages: &mut HostPages) -> AddressSpace {
         let mut space = AddressSpace::new(pages);
-        let mut cur = 0;
-        while cur < 0x1_0000_0000 {
-            unsafe { space.map(pages, cur, cur, false, Leaf::Large, false) };
-            cur += LARGE;
-        }
+        unsafe { space.map_identity(pages, 0x1_0000_0000, |_| false) };
         space
     }
 
@@ -228,6 +240,22 @@ mod tests {
         // One PML4, one PDPT and four page directories.
         assert_eq!(pages.count, 6);
         for vaddr in [0, 0x1234_5678, 0xfee0_0000, 0xffff_ffff] {
+            assert_eq!(translate(&space, vaddr), Some((vaddr, Leaf::Large, false, false)));
+        }
+        assert_eq!(translate(&space, 0x1_0000_0000), None);
+    }
+
+    #[test]
+    fn the_identity_map_makes_the_frames_the_target_names_device_memory() {
+        let mut pages = HostPages { count: 0 };
+        let mut space = AddressSpace::new(&mut pages);
+        // A machine whose devices are below 1 GiB, with RAM from there.
+        unsafe { space.map_identity(&mut pages, 0x1_0000_0000, |paddr| paddr < 0x4000_0000) };
+        assert_eq!(pages.count, 6);
+        for vaddr in [0, 0x0900_0000, 0x3fff_ffff] {
+            assert_eq!(translate(&space, vaddr), Some((vaddr, Leaf::Large, false, true)));
+        }
+        for vaddr in [0x4000_0000, 0xffff_ffff] {
             assert_eq!(translate(&space, vaddr), Some((vaddr, Leaf::Large, false, false)));
         }
         assert_eq!(translate(&space, 0x1_0000_0000), None);

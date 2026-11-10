@@ -96,6 +96,12 @@ fn cpu_has_pcid() -> bool {
     (cpuid_1.ecx & (1 << 17)) != 0
 }
 
+/// Whether the 2M frame at `paddr` is device memory in the identity map. None is: on the PC the
+/// MTRRs the firmware set say what memory is uncached, whatever a page-table entry holds.
+pub fn device(_paddr: u64) -> bool {
+    false
+}
+
 /// Drops the TLB's entry for the page at `vaddr`, whatever the page's size, and a global one the
 /// firmware's tables left.
 pub unsafe fn flush_page(vaddr: u64) {
@@ -240,5 +246,18 @@ impl Entry {
     fn with_page_size_bit(mut self, page_size: bool) -> Self {
         self.0.set_bit(7, page_size);
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_frame_is_a_device_by_the_loader_s_tables() {
+        // RAM, the local APIC's page and the last frame the loader maps.
+        for paddr in [0, 0x4000_0000, 0xfee0_0000, 0xffe0_0000] {
+            assert!(!device(paddr), "{paddr:#x}");
+        }
     }
 }

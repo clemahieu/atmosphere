@@ -1,6 +1,15 @@
-//! AArch64 as UEFI leaves it: EL1 with the VMSAv8-64 stage-1 tables of the 4K granule.
+//! AArch64 as UEFI leaves it on QEMU virt: EL1 with the VMSAv8-64 stage-1 tables of the 4K granule.
 
 use crate::memory::Leaf;
+
+/// Where QEMU virt's RAM starts: the lowest address in the memory map its firmware reports. What is
+/// below is the machine's devices.
+const RAM_START: u64 = 0x4000_0000;
+
+/// Whether the 2M frame at `paddr` is device memory in the identity map: every frame below the RAM.
+pub fn device(paddr: u64) -> bool {
+    paddr < RAM_START
+}
 
 // The descriptor the walk writes, Arm ARM DDI 0487 M.d D8.3.1, in the bits the kernel's decoders in
 // kernel/verified/arch/aarch64.rs read. design/arch-module/.
@@ -198,6 +207,17 @@ mod tests {
             assert_eq!(block.address(), FRAME);
             assert_eq!(block.user(), user);
             assert_eq!(block.cache_disable(), device);
+        }
+    }
+
+    #[test]
+    fn the_frames_below_virt_s_ram_are_devices() {
+        // The PL011, and the last frame below 1 GiB.
+        for paddr in [0, 0x0900_0000, 0x3fe0_0000] {
+            assert!(device(paddr), "{paddr:#x}");
+        }
+        for paddr in [0x4000_0000, 0xffe0_0000] {
+            assert!(!device(paddr), "{paddr:#x}");
         }
     }
 

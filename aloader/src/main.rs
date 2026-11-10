@@ -36,10 +36,7 @@ use astd::io::{Cursor, Read, Seek, SeekFrom};
 use astd::memory::{USERSPACE_BASE, USERSPACE_PAYLOAD_BASE};
 use constants::*;
 
-use memory::{
-    AddressSpace, BootMemoryType, Leaf, PhysicalAllocator, UserspaceMapper, BOOTSTRAP_SIZE,
-    LARGE_PAGE_SIZE,
-};
+use memory::{AddressSpace, BootMemoryType, Leaf, PhysicalAllocator, UserspaceMapper, BOOTSTRAP_SIZE};
 
 /// The end of the physical memory the loader identity maps, for itself and for the kernel.
 /// The test guest's RAM ends at 2.5 GiB. The 32-bit MMIO window sits just below 4 GiB, and the
@@ -87,12 +84,8 @@ fn load(rsdp: u64, wait_for_debugger: bool) -> ! {
     }
 
     log::info!("Mapping all physical memory");
-    let mut cur = 0;
-    while cur < IDENTITY_MAP_END {
-        unsafe {
-            address_space.map(bootstrap_allocator, cur, cur, false, Leaf::Large, false);
-        }
-        cur = cur + LARGE_PAGE_SIZE as u64;
+    unsafe {
+        address_space.map_identity(bootstrap_allocator, IDENTITY_MAP_END, arch::device);
     }
 
     let mut boot_info = BootInfo::empty(); // stays on stack
