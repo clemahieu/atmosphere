@@ -34,6 +34,7 @@ pub mod refs;
 pub mod retype;
 pub mod revoke;
 pub mod space;
+pub mod steps;
 pub mod table;
 pub mod thread;
 pub mod unmap;

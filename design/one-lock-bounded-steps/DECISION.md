@@ -5,7 +5,7 @@ status: active
 tags: [multicore, lock, kernel-state, verified]
 one_line: "All of the Kernel value is under one lock with IF clear from entry to exit; every operation does a bounded amount of work and long work returns again with progress in an object, so the invariant holds at every step boundary and other cores interleave only there; per-CPU state outside the lock is only stacks, GDT, TSS and the switch decision, and only core c writes its own current thread."
 revisit_if: "The bounded-step budget measured on this kernel gives a lock hold time a workload cannot tolerate, which is the case for a smaller node rather than for preemption."
-confidence: "The non-preemptible rule is in the tree since the interrupt change that made it true; the per-CPU split is stated in kernel/verified/capability/kernel.rs; the budget's value is unmeasured."
+confidence: "The non-preemptible rule is in the tree since the interrupt change that made it true; the per-CPU split is stated in kernel/verified/capability/kernel.rs; the step counter bounds the capability list's walks so far, not yet a whole entry; the budget's value is unmeasured."
 ---
 
 # One lock, no preemption, bounded steps
@@ -13,6 +13,8 @@ confidence: "The non-preemptible rule is in the tree since the interrupt change 
 ## Decision
 
 The kernel is not preemptible: IF stays clear from kernel entry to exit. NMIs bypass IF, so the kernel generates none, and one that arrives stops the machine with a report. Every operation does a bounded amount of work: a small constant number of list steps, one page table walk, or 64 KiB of zeroing. Long work returns `again` with progress in an object, so the invariant holds at every step boundary, and other cores interleave only there.
+
+The bound is proven with a ghost step counter, `Steps` in `kernel/verified/capability/steps.rs`. Its unit is one iteration of an exec loop under the lock, whose body, apart from what its callees count, runs a number of instructions the code alone bounds: a list node read or written, a table or page-table entry read or written, a 4K page zeroed, a dead waiter skipped, an IPI sent. Straight-line code between loops is bounded by the code's size and is not counted, and glue counts what its contract does in the same units. A function that loops takes the counter as `Tracked<&mut Steps>`, adds one per iteration, and ensures the count rose by at most its bound, a constant in its specification; a callee's units add to its caller's. The counter is passed rather than held in the `Kernel` value, so a refusal that reads entries still leaves the kernel equal to what it was. Each path that holds the lock makes one counter per entry, and boot makes its own; a caller whose own work is not counted yet makes one at its call, marked so, until its bound is stated.
 
 Shared and under the lock: all of the `Kernel` value, including the per-CPU list and every thread's state. Per CPU and outside the lock: stacks, GDT and TSS and the switch decision, in `kernel/src`'s `Cpu`. A core's user-mode execution depends on its current thread and the tables it has loaded, which is what the retype rule in `design/teardown-driven-by-retype/` protects.
 
@@ -25,6 +27,9 @@ A non-preemptible kernel with bounded steps is what makes the proofs sequential:
 The old kernel's cross-core kill nulled another CPU's current thread and freed the page while that CPU still ran the thread, the deletion problem von Tessin's thesis describes; the pending-stop state designs it out from the first leaf rather than retrofitting it.
 
 ## Alternatives rejected
+
+- **The counter as a field of the `Kernel` value.** Every refusal that reads before refusing would change the kernel, and each specification that says a refusal leaves it unchanged would have to say so of every field but one.
+- **Bounding each loop by its own invariant, with no counter.** Each loop would be bounded, but the bound of an entry would be a sum taken by hand over the call graph, which nothing checks.
 
 - **A preemptible kernel.** The invariant would have to hold at every instruction a preemption could land on.
 - **Waiting under the lock** for another core to act. See `design/flush-without-waiting/`.

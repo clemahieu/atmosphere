@@ -14,6 +14,7 @@ use crate::capability::block::*;
 use crate::capability::kernel::*;
 use crate::capability::link::*;
 use crate::capability::list::*;
+use crate::capability::steps::Steps;
 use crate::capability::reach::*;
 use crate::capability::refs::*;
 use crate::capability::retype::*;
@@ -597,10 +598,12 @@ fn add_node_pages(
         assert(table_node_page(base, 3) == base + 3 * 4096);
         assert(table_node_page(base, 4) == base + 4 * 4096);
     }
-    let nodes = init_node_page(base, Tracked(p0));
+    // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
+    let tracked mut steps = Steps::fresh();
+    let nodes = init_node_page(base, Tracked(p0), Tracked(&mut steps));
     list.add_page(base, nodes);
     let ghost l1 = *list;
-    let nodes = init_node_page(base + 4096, Tracked(p1));
+    let nodes = init_node_page(base + 4096, Tracked(p1), Tracked(&mut steps));
     proof {
         assert(list_grown(l0, l1));
         assert(l1.valid(base));
@@ -608,21 +611,21 @@ fn add_node_pages(
     }
     list.add_page(base + 4096, nodes);
     let ghost l2 = *list;
-    let nodes = init_node_page(base + 2 * 4096, Tracked(p2));
+    let nodes = init_node_page(base + 2 * 4096, Tracked(p2), Tracked(&mut steps));
     proof {
         assert(list_grown(l1, l2));
         lemma_list_grown_trans(l0, l1, l2);
     }
     list.add_page(base + 2 * 4096, nodes);
     let ghost l3 = *list;
-    let nodes = init_node_page(base + 3 * 4096, Tracked(p3));
+    let nodes = init_node_page(base + 3 * 4096, Tracked(p3), Tracked(&mut steps));
     proof {
         assert(list_grown(l2, l3));
         lemma_list_grown_trans(l0, l2, l3);
     }
     list.add_page(base + 3 * 4096, nodes);
     let ghost l4 = *list;
-    let nodes = init_node_page(base + 4 * 4096, Tracked(p4));
+    let nodes = init_node_page(base + 4 * 4096, Tracked(p4), Tracked(&mut steps));
     proof {
         assert(list_grown(l3, l4));
         lemma_list_grown_trans(l0, l3, l4);

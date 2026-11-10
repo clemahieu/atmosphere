@@ -14,6 +14,7 @@ use crate::capability::block::*;
 use crate::capability::derive::*;
 use crate::capability::kernel::*;
 use crate::capability::list::*;
+use crate::capability::steps::Steps;
 use crate::capability::position::*;
 use crate::capability::reach::*;
 use crate::capability::space::*;
@@ -1139,7 +1140,9 @@ impl CapKernel {
             second = perms.tracked_remove((page + 1) as usize);
         }
         let ghost before_list = self.list;
-        let nodes = init_node_page(base, Tracked(first));
+        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let nodes = init_node_page(base, Tracked(first), Tracked(&mut steps));
         proof {
             assert(!pre.list.pages@.dom().contains(base)) by {
                 assert(base / 4096 == page);

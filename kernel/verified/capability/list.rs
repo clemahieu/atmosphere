@@ -18,6 +18,7 @@ verus! {
 use crate::array::Array;
 use crate::define::PagePerm4k;
 use crate::pptr::*;
+use crate::capability::steps::Steps;
 
 pub const NONE: usize = usize::MAX;
 
@@ -54,11 +55,12 @@ pub struct NodePage {
 /// Turns a retyped page into a node page with no live node, which is what Tree::add_page takes. The
 /// page's earlier contents do not matter, since every node is written. Built on the stack and copied
 /// into the page, one page's worth, since a permission gives no way to initialise part of a value.
-pub fn init_node_page(addr: usize, Tracked(page): Tracked<PagePerm4k>) -> (ret: Tracked<PointsTo<NodePage>>)
+pub fn init_node_page(addr: usize, Tracked(page): Tracked<PagePerm4k>, Tracked(steps): Tracked<&mut Steps>) -> (ret: Tracked<PointsTo<NodePage>>)
     requires
         page.addr() == addr,
         addr % 4096 == 0,
     ensures
+        final(steps).count <= old(steps).count + NODES_PER_PAGE,
         ret@.addr() == addr,
         ret@.is_init(),
         ret@.value().nodes.wf(),
@@ -66,15 +68,20 @@ pub fn init_node_page(addr: usize, Tracked(page): Tracked<PagePerm4k>) -> (ret: 
 {
     let mut nodes = Array::<Node, NODES_PER_PAGE>::new();
     let mut i = 0;
+    let ghost start = steps.count;
     while i != NODES_PER_PAGE
         invariant
             0 <= i <= NODES_PER_PAGE,
+            steps.count == start + i,
             nodes.wf(),
             forall|k: int| 0 <= k < i ==> !(#[trigger] nodes@[k]).live,
         decreases NODES_PER_PAGE - i,
     {
         nodes.set(i, Node { live: false, kind: NodeKind::Capability, depth: 0, next: NONE, prev: NONE });
         i = i + 1;
+        proof {
+            steps.step();
+        }
     }
     let tracked mut typed;
     proof {
@@ -878,12 +885,13 @@ impl Tree {
 
     /// Finds a node of c's run with no children, in a walk of at most 255 links, or says c's run is empty.
     /// Only a leaf can be unlinked, so no node loses its place.
-    pub fn leaf_of_run(&self, c: usize) -> (ret: Option<usize>)
+    pub fn leaf_of_run(&self, c: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: Option<usize>)
         requires
             self.wf(),
             0 <= c < self.nodes@.len(),
             self.nodes@[c as int].live,
         ensures
+            final(steps).count <= old(steps).count + MAX_DEPTH,
             ret is None == self.childless(c),
             ret is None ==> forall|i: usize| !#[trigger] self.is_child(c, i),
             ret is Some ==> {
@@ -914,6 +922,7 @@ impl Tree {
         }
         let mut cur = c;
         let ghost mut k = j;
+        let ghost start = steps.count;
         while self.get(cur).next != NONE
             && self.get(self.get(cur).next).depth > self.get(cur).depth
             invariant
@@ -932,6 +941,7 @@ impl Tree {
                 // Each link adds one to the depth, and depth is a byte, so the walk is at most 255 links.
                 k - j == pre.d(cur) - pre.d(c),
                 pre.d(cur) <= MAX_DEPTH,
+                steps.count == start + (k - j),
             decreases MAX_DEPTH - pre.d(cur),
         {
             proof {
@@ -939,6 +949,7 @@ impl Tree {
             }
             cur = self.get(cur).next;
             proof {
+                steps.step();
                 k = k + 1;
                 pre.lemma_depth_bound(k);
                 pre.lemma_link(k);

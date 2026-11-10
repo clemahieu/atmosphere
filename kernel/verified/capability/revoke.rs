@@ -10,6 +10,7 @@ use crate::capability::mapping::*;
 use crate::capability::block::*;
 use crate::capability::kernel::*;
 use crate::capability::list::*;
+use crate::capability::steps::Steps;
 use crate::capability::position::*;
 use crate::capability::reach::*;
 use crate::capability::space::*;
@@ -378,7 +379,9 @@ impl CapKernel {
         proof {
             pre.lemma_no_change_discharges_revoke(root, c);
         }
-        let r = match self.list.leaf_of_run(c) {
+        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let r = match self.list.leaf_of_run(c, Tracked(&mut steps)) {
             Some(found) => found,
             None => { return true; },
         };

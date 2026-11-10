@@ -13,6 +13,7 @@ use crate::capability::device::*;
 use crate::capability::kernel::*;
 use crate::capability::link::*;
 use crate::capability::list::*;
+use crate::capability::steps::Steps;
 use crate::capability::mapping::*;
 use crate::capability::power::*;
 use crate::capability::process::*;
@@ -292,7 +293,9 @@ impl CapKernel {
             self.spaces.records.borrow_mut().tracked_insert(base, typed);
             self.spaces.loaded.borrow_mut().tracked_insert(base, cores);
         }
-        let nodes = init_node_page(leaf, Tracked(first));
+        // Boot holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let nodes = init_node_page(leaf, Tracked(first), Tracked(&mut steps));
         proof {
             assert(!l0.pages@.dom().contains(leaf));
             l0.lemma_link(0);
@@ -520,7 +523,9 @@ impl CapKernel {
             first = perms.tracked_remove(tb);
             second = perms.tracked_remove((tb + 1) as usize);
         }
-        let nodes = init_node_page(t, Tracked(first));
+        // Boot holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let nodes = init_node_page(t, Tracked(first), Tracked(&mut steps));
         self.list.add_page(t, nodes);
         let ghost mid = self.list;
         proof {

@@ -14,6 +14,7 @@ use crate::capability::device::*;
 use crate::capability::kernel::*;
 use crate::capability::link::*;
 use crate::capability::list::*;
+use crate::capability::steps::Steps;
 use crate::capability::mapping::*;
 use crate::capability::process::*;
 use crate::capability::reach::*;
@@ -1668,7 +1669,9 @@ impl CapKernel {
             pre.list.lemma_valid_bound(parent);
             pre.list.lemma_valid_bound(child);
         }
-        let nodes = init_node_page(base, Tracked(first));
+        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let nodes = init_node_page(base, Tracked(first), Tracked(&mut steps));
         self.list.add_page(base, nodes);
         let ghost mid = self.list;
         proof {
