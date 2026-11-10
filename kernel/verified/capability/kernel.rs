@@ -7,6 +7,7 @@ use vstd::prelude::*;
 
 verus! {
 
+use crate::arch::invalidate_iommu_all;
 use crate::array::Array;
 use crate::capability::block::*;
 use crate::capability::device::*;
@@ -324,7 +325,7 @@ pub ghost enum FlushTarget {
 
 /// What a flush of `target`, started when the epoch was `epoch`, proves. Only flush glue can make one,
 /// so only it can clear a model of what the target holds: arch::flush_every_context for a core,
-/// invalidate_iommu_all for an IOMMU.
+/// arch::invalidate_iommu_all for an IOMMU.
 pub tracked struct Flushed {
     pub ghost target: FlushTarget,
     pub ghost epoch: int,
@@ -337,31 +338,20 @@ pub ghost struct TlbEntry {
     pub page: usize,
 }
 
-/// Bytes in one IOMMU command: a 4-bit opcode and two operands. AMD IOMMU specification 48882 §2.4.
-pub const IOMMU_COMMAND_SIZE: usize = 16;
-
-/// An IOMMU's MMIO registers start on a 16 KiB boundary at least. AMD IOMMU specification 48882 §3.2,
-/// IOMMU Base Address Low Register.
-pub const IOMMU_MMIO_ALIGN: usize = 16384;
-
-/// A command ring length the base register's ComLen field can say: a power of two from 256 to 32768
-/// entries. AMD IOMMU specification 48882 §3.4.1, Command Buffer Base Address Register.
-pub open spec fn command_ring_len_ok(len: usize) -> bool {
-    len == 256 || len == 512 || len == 1024 || len == 2048 || len == 4096 || len == 8192 || len == 16384 || len == 32768
-}
-
 /// What the kernel needs to send an IOMMU commands, in kernel addresses. Boot fills one for each
-/// present IOMMU and programs the ring's base register.
+/// present IOMMU and programs the ring's base register. The command encoding, the registers and which
+/// rings the IOMMU accepts are the arch module's: AMD-Vi on x86_64, SMMUv3 on aarch64.
 #[derive(Clone, Copy)]
 pub struct CommandBuffer {
     /// The IOMMU's MMIO registers.
     pub mmio: usize,
-    /// The command ring, `len` commands long, 4 KiB aligned.
+    /// The command ring, `len` commands of arch::IOMMU_COMMAND_SIZE bytes long, 4 KiB aligned.
     pub ring: usize,
     pub len: usize,
-    /// The ring entry the kernel writes next, which the tail register holds as a byte offset.
+    /// The ring entry the kernel writes next, which the IOMMU's tail or producer register names.
     pub tail: usize,
-    /// The 8-byte word a COMPLETION_WAIT stores to, outside the ring.
+    /// An 8-byte word outside the ring that the IOMMU stores to when the commands before it are done,
+    /// where the arch module's invalidate waits that way: AMD-Vi's COMPLETION_WAIT does.
     pub completion: usize,
 }
 
@@ -390,19 +380,19 @@ impl CommandBuffers {
         &&& self.pages@[(i, a)].addr() == a
     }
 
-    /// IOMMU i's ring has a length the specification allows, its tail is inside it, and its ring and
-    /// completion word are in pages it holds. The completion word is 8-byte aligned, as
+    /// IOMMU i's ring has a length and a place the IOMMU accepts, its tail is inside it, and its ring
+    /// and completion word are in pages it holds. The completion word is 8-byte aligned, as
     /// COMPLETION_WAIT's store address is (48882 §2.4.1).
     pub open spec fn buffer_wf(&self, i: int) -> bool {
         let b = self.buffers@[i];
-        &&& command_ring_len_ok(b.len)
+        &&& crate::arch::command_ring_ok(b.ring, b.len)
         &&& b.tail < b.len
-        &&& b.mmio % IOMMU_MMIO_ALIGN == 0
+        &&& b.mmio % crate::arch::IOMMU_MMIO_ALIGN == 0
         &&& b.ring % 4096 == 0
-        &&& b.ring + b.len * IOMMU_COMMAND_SIZE <= usize::MAX
-        &&& forall|k: int| 0 <= k < b.len * IOMMU_COMMAND_SIZE / 4096 ==> #[trigger] self.holds(i, ring_page(b, k))
+        &&& b.ring + b.len * crate::arch::IOMMU_COMMAND_SIZE <= usize::MAX
+        &&& forall|k: int| 0 <= k < b.len * crate::arch::IOMMU_COMMAND_SIZE / 4096 ==> #[trigger] self.holds(i, ring_page(b, k))
         &&& b.completion % 8 == 0
-        &&& !(b.ring <= b.completion < b.ring + b.len * IOMMU_COMMAND_SIZE)
+        &&& !(b.ring <= b.completion < b.ring + b.len * crate::arch::IOMMU_COMMAND_SIZE)
         &&& self.holds(i, completion_page(b))
     }
 
@@ -414,8 +404,8 @@ impl CommandBuffers {
         &&& forall|i: int| 0 <= i < NUM_IOMMUS && #[trigger] present[i] ==> self.buffer_wf(i)
     }
 
-    /// Invalidates all of present IOMMU i's caches and waits for it to finish, as invalidate_iommu_all
-    /// does, and moves i's tail past the two commands that wrote. The wait is one unit.
+    /// Invalidates all of present IOMMU i's caches and waits for it to finish, as the arch module's
+    /// invalidate_iommu_all does, and moves i's tail past the commands that wrote. The wait is one unit.
     pub fn invalidate(&mut self, Ghost(present): Ghost<Seq<bool>>, i: usize, epoch: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: Tracked<Flushed>)
         requires
             old(self).wf(present),
@@ -440,7 +430,7 @@ impl CommandBuffers {
             assert forall|j: int| 0 <= j < NUM_IOMMUS && #[trigger] present[j] implies self.buffer_wf(j) by {
                 assert(pre.buffer_wf(j));
                 let b = self.buffers@[j];
-                assert forall|k: int| 0 <= k < b.len * IOMMU_COMMAND_SIZE / 4096 implies #[trigger] self.holds(j, ring_page(b, k)) by {
+                assert forall|k: int| 0 <= k < b.len * crate::arch::IOMMU_COMMAND_SIZE / 4096 implies #[trigger] self.holds(j, ring_page(b, k)) by {
                     assert(pre.holds(j, ring_page(pre.buffers@[j], k)));
                 }
             }
@@ -705,62 +695,6 @@ pub struct CapKernel {
     /// The cores sent an IPI to flush after an unmap, in the order sent: each core on the unmapped
     /// space's list of cores. The send is ghost: see design/flush-without-waiting/.
     pub flush_ipis: Ghost<Seq<usize>>,
-}
-
-/// Opcode of INVALIDATE_IOMMU_ALL, which empties every cache of the IOMMU. AMD IOMMU specification 48882
-/// §2.4.8; the IOMMU must report IASup, MMIO 0030h, for it to be legal.
-pub const IOMMU_INVALIDATE_ALL: u64 = 0x08;
-
-/// Opcode of COMPLETION_WAIT, which finishes once every older command has, and with its s bit stores its
-/// 64-bit data at its address. 48882 §2.4.1.
-pub const IOMMU_COMPLETION_WAIT: u64 = 0x01;
-
-/// The command buffer tail register's offset in an IOMMU's MMIO registers. 48882 §3.4.15.
-pub const IOMMU_COMMAND_TAIL: usize = 0x2008;
-
-/// Invalidates all of IOMMU i's caches and returns once it has finished, with the tail after the two
-/// commands it wrote. It writes INVALIDATE_IOMMU_ALL then COMPLETION_WAIT at i's tail, clears the
-/// completion word, moves the tail register past both and spins until the IOMMU stores to the word. Only
-/// this writes i's ring, and each call waits for the IOMMU to read all it wrote, so the ring is empty
-/// on entry and two commands fit in it. The kernel maps memory at its physical address, as the entries
-/// it writes assume, so the completion word's address is the one the IOMMU stores to. Waiting here is
-/// not waiting for a core: design/flush-without-waiting/. The wait is on the IOMMU, which finishes two
-/// commands in a time the state does not set, so it is one unit: design/one-lock-bounded-steps/.
-#[verifier(external_body)]
-// external_body(glue): only the IOMMU can attest an invalidate, so only this makes its token
-pub fn invalidate_iommu_all(commands: &CommandBuffers, i: usize, epoch: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: (usize, Tracked<Flushed>))
-    requires
-        i < NUM_IOMMUS,
-        commands.buffers.wf(),
-        commands.buffer_wf(i as int),
-    ensures
-        final(steps).count == old(steps).count + 1,
-        ret.0 == (commands.buffers@[i as int].tail + 2) % commands.buffers@[i as int].len as int,
-        ret.1@.target == FlushTarget::Iommu(i as int),
-        ret.1@.epoch == epoch as int,
-{
-    let b = *commands.buffers.get(i);
-    let slot = |k: usize| (b.ring + k * IOMMU_COMMAND_SIZE) as *mut u64;
-    let first = b.tail;
-    let second = (b.tail + 1) % b.len;
-    let next = (b.tail + 2) % b.len;
-    let completion = b.completion as *mut u64;
-    // The opcode is bits 63:60 of a command's first quadword, and COMPLETION_WAIT's store address is
-    // bits 51:3 with s at bit 0. 48882 Figures 43, 44 and 51.
-    let store = (b.completion as u64 & 0x000f_ffff_ffff_fff8) | 1 | (IOMMU_COMPLETION_WAIT << 60);
-    unsafe {
-        core::ptr::write_volatile(completion, 0);
-        core::ptr::write_volatile(slot(first), IOMMU_INVALIDATE_ALL << 60);
-        core::ptr::write_volatile(slot(first).add(1), 0);
-        core::ptr::write_volatile(slot(second), store);
-        core::ptr::write_volatile(slot(second).add(1), 1);
-        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
-        core::ptr::write_volatile((b.mmio + IOMMU_COMMAND_TAIL) as *mut u64, (next * IOMMU_COMMAND_SIZE) as u64);
-        while core::ptr::read_volatile(completion) == 0 {
-            core::hint::spin_loop();
-        }
-    }
-    (next, Tracked::assume_new())
 }
 
 /// A live hidden node is node 0 of a table leaf or a table page, so unlinking it can find what it

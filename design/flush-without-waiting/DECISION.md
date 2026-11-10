@@ -1,6 +1,6 @@
 ---
 title: "The kernel never waits for another core under the lock; flushes are epochs, IPIs and return again"
-date: 2026-11-07
+date: 2026-11-10
 status: active
 tags: [multicore, lock, memory, verified]
 one_line: "A ghost per-core TLB model holds possibly stale translations keyed by space and core; unmap bumps a flush epoch, sends IPIs to exactly the cores that loaded the space and returns again; each core's handler flushes every context and records its acknowledgement on its own kernel entry; an IOMMU's invalidate waits for its completion inside the glue, since an IOMMU is not a core; retype requires every core's and present IOMMU's acknowledgement to have reached the epoch, a token only flush glue can produce."
@@ -18,7 +18,7 @@ Storage is bounded: one flush epoch, one acknowledged epoch per core in the per-
 
 The kernel never waits for another core while holding the lock. A flush bumps the epoch, sends IPIs and returns `again`. The IPIs go to the unmapped space's list of cores, exactly the cores that have loaded it. Only those may hold an entry of the space in the model, so a core that never loaded it, such as an isolated core of another partition, is never sent one; `flush_sent` in `kernel/verified/capability/unmap.rs` states it. The target's handler flushes and, entering the kernel as any entry does, records its acknowledgement under the lock, so all of this stays inside the `Kernel` value. Each kind of address space has its own flush with the same token: IPI for a process table, IOTLB invalidate for a device space, kick plus TLB_CONTROL for a nested table, `design/vmm-over-svm/`.
 
-An IOMMU is acknowledged inside the step that invalidates it. The glue writes INVALIDATE_IOMMU_ALL and a COMPLETION_WAIT to the IOMMU's command buffer, moves the tail and spins on the completion word, then returns the token for the epoch it started at; `flush_iommu` hands that token to `acknowledge_iommu` under the same lock hold.
+An IOMMU is acknowledged inside the step that invalidates it. The arch module's glue writes an invalidate of all the IOMMU's caches and a command that completes after it to the IOMMU's command ring (INVALIDATE_IOMMU_ALL and COMPLETION_WAIT on AMD-Vi, CMD_CFGI_ALL, CMD_TLBI_NSNH_ALL and CMD_SYNC on SMMUv3), moves the tail and spins until the IOMMU shows the last one done, then returns the token for the epoch it started at; `flush_iommu` hands that token to `acknowledge_iommu` under the same lock hold.
 
 ## Reasoning
 

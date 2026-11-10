@@ -5,11 +5,11 @@ use vstd::prelude::*;
 
 verus! {
 
-use crate::capability::kernel::{FlushTarget, Flushed};
+use crate::capability::kernel::{CommandBuffers, FlushTarget, Flushed};
 use crate::capability::operation::Outcome;
 use crate::capability::console::PRINT_BYTES;
 use crate::capability::steps::Steps;
-use crate::define::PAddr;
+use crate::define::{PAddr, NUM_IOMMUS};
 use crate::pagetable::entry::{PageEntry, PageEntryPerm, PageEntryStatus};
 use crate::util::page_ptr_util_u::*;
 
@@ -638,6 +638,83 @@ pub fn flush_every_context(core: usize, epoch: usize) -> (ret: Tracked<Flushed>)
         );
     }
     Tracked::assume_new()
+}
+
+// The IOMMU's command ring: AMD-Vi's, the IOMMU of the PC this target runs on. capability/kernel.rs's
+// CommandBuffers holds one ring per IOMMU, and this module says which rings the IOMMU accepts, how a
+// command is encoded and how an invalidate is sent. AMD IOMMU specification 48882.
+
+/// Bytes in one IOMMU command: a 4-bit opcode and two operands. 48882 §2.4.
+pub const IOMMU_COMMAND_SIZE: usize = 16;
+
+/// An IOMMU's MMIO registers start on a 16 KiB boundary at least. 48882 §3.2, IOMMU Base Address Low
+/// Register.
+pub const IOMMU_MMIO_ALIGN: usize = 16384;
+
+/// A ring the base register can name: a length its ComLen field can say, a power of two from 256 to
+/// 32768 entries. Its address need only be 4 KiB aligned, as CommandBuffers asks of every ring. 48882
+/// §3.4.1, Command Buffer Base Address Register.
+pub open spec fn command_ring_ok(ring: usize, len: usize) -> bool {
+    len == 256 || len == 512 || len == 1024 || len == 2048 || len == 4096 || len == 8192 || len == 16384 || len == 32768
+}
+
+/// How many commands invalidate_iommu_all writes.
+pub const IOMMU_INVALIDATE_COMMANDS: usize = 2;
+
+/// Opcode of INVALIDATE_IOMMU_ALL, which empties every cache of the IOMMU. 48882 §2.4.8; the IOMMU must
+/// report IASup, MMIO 0030h, for it to be legal.
+pub const IOMMU_INVALIDATE_ALL: u64 = 0x08;
+
+/// Opcode of COMPLETION_WAIT, which finishes once every older command has, and with its s bit stores its
+/// 64-bit data at its address. 48882 §2.4.1.
+pub const IOMMU_COMPLETION_WAIT: u64 = 0x01;
+
+/// The command buffer tail register's offset in an IOMMU's MMIO registers. 48882 §3.4.15.
+pub const IOMMU_COMMAND_TAIL: usize = 0x2008;
+
+/// Invalidates all of IOMMU i's caches and returns once it has finished, with the tail after the
+/// commands it wrote. It writes INVALIDATE_IOMMU_ALL then COMPLETION_WAIT at i's tail, clears the
+/// completion word, moves the tail register past both and spins until the IOMMU stores to the word. Only
+/// this writes i's ring, and each call waits for the IOMMU to read all it wrote, so the ring is empty
+/// on entry and two commands fit in it. The kernel maps memory at its physical address, as the entries
+/// it writes assume, so the completion word's address is the one the IOMMU stores to. Waiting here is
+/// not waiting for a core: design/flush-without-waiting/. The wait is on the IOMMU, which finishes two
+/// commands in a time the state does not set, so it is one unit: design/one-lock-bounded-steps/.
+#[verifier(external_body)]
+// external_body(glue): only the IOMMU can attest an invalidate, so only this makes its token
+pub fn invalidate_iommu_all(commands: &CommandBuffers, i: usize, epoch: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: (usize, Tracked<Flushed>))
+    requires
+        i < NUM_IOMMUS,
+        commands.buffers.wf(),
+        commands.buffer_wf(i as int),
+    ensures
+        final(steps).count == old(steps).count + 1,
+        ret.0 == (commands.buffers@[i as int].tail + IOMMU_INVALIDATE_COMMANDS) % commands.buffers@[i as int].len as int,
+        ret.1@.target == FlushTarget::Iommu(i as int),
+        ret.1@.epoch == epoch as int,
+{
+    let b = *commands.buffers.get(i);
+    let slot = |k: usize| (b.ring + k * IOMMU_COMMAND_SIZE) as *mut u64;
+    let first = b.tail;
+    let second = (b.tail + 1) % b.len;
+    let next = (b.tail + 2) % b.len;
+    let completion = b.completion as *mut u64;
+    // The opcode is bits 63:60 of a command's first quadword, and COMPLETION_WAIT's store address is
+    // bits 51:3 with s at bit 0. 48882 Figures 43, 44 and 51.
+    let store = (b.completion as u64 & 0x000f_ffff_ffff_fff8) | 1 | (IOMMU_COMPLETION_WAIT << 60);
+    unsafe {
+        core::ptr::write_volatile(completion, 0);
+        core::ptr::write_volatile(slot(first), IOMMU_INVALIDATE_ALL << 60);
+        core::ptr::write_volatile(slot(first).add(1), 0);
+        core::ptr::write_volatile(slot(second), store);
+        core::ptr::write_volatile(slot(second).add(1), 1);
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+        core::ptr::write_volatile((b.mmio + IOMMU_COMMAND_TAIL) as *mut u64, (next * IOMMU_COMMAND_SIZE) as u64);
+        while core::ptr::read_volatile(completion) == 0 {
+            core::hint::spin_loop();
+        }
+    }
+    (next, Tracked::assume_new())
 }
 
 // The trap frame and the user-return checks: what a thread record holds, what a return to user mode

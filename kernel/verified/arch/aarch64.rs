@@ -1,16 +1,17 @@
 //! The aarch64 arch items, with the names, signatures and specs of the x86_64 module's. Each item's
 //! values come from the Arm Architecture Reference Manual, and the console's from the PL011's
-//! Technical Reference Manual, ARM DDI 0183. The flush and the console write are external_body glue,
-//! counted in tools/external-body-list. See design/arch-module/.
+//! Technical Reference Manual, ARM DDI 0183, and the IOMMU's from the SMMU architecture specification
+//! v3, IHI 0070. The flushes and the console write are external_body glue, counted in
+//! tools/external-body-list. See design/arch-module/.
 use vstd::prelude::*;
 
 verus! {
 
-use crate::capability::kernel::{FlushTarget, Flushed};
+use crate::capability::kernel::{CommandBuffers, FlushTarget, Flushed};
 use crate::capability::operation::Outcome;
 use crate::capability::console::PRINT_BYTES;
 use crate::capability::steps::Steps;
-use crate::define::PAddr;
+use crate::define::{PAddr, NUM_IOMMUS};
 use crate::pagetable::entry::{PageEntry, PageEntryPerm, PageEntryStatus};
 use crate::util::page_ptr_util_u::*;
 
@@ -497,6 +498,112 @@ pub fn flush_every_context(core: usize, epoch: usize) -> (ret: Tracked<Flushed>)
         core::arch::asm!("dsb ishst", "tlbi vmalle1", "dsb ish", "isb", options(nostack, preserves_flags));
     }
     Tracked::assume_new()
+}
+
+// The IOMMU's command ring: the command queue of an SMMUv3, the IOMMU QEMU virt offers. capability/
+// kernel.rs's CommandBuffers holds one ring per IOMMU, and this module says which rings the SMMU accepts,
+// how a command is encoded and how an invalidate is sent. Arm IHI 0070 H.a, cited as SMMU; the machine
+// glue's driver, machine/virt/src/iommu.rs, gives the SMMU its queue at boot with the same encodings.
+
+/// Bytes in one SMMU command: two 64-bit words, the opcode in bits 7:0 of the first. SMMU 4.1.
+pub const IOMMU_COMMAND_SIZE: usize = 16;
+
+/// An SMMU's registers are two 64 KiB pages, starting on a 64 KiB boundary. SMMU 6.1.
+pub const IOMMU_MMIO_ALIGN: usize = 65536;
+
+/// A queue SMMU_CMDQ_BASE can name: a power of two from 256 to 32768 entries, which its LOG2SIZE
+/// field says, at an address aligned to its size in bytes (SMMU 6.3.26). The SMMU takes up to
+/// 2^IDR1.CMDQS entries, which the boot that gives it the queue checks.
+pub open spec fn command_ring_ok(ring: usize, len: usize) -> bool {
+    &&& len == 256 || len == 512 || len == 1024 || len == 2048 || len == 4096 || len == 8192 || len == 16384 || len == 32768
+    &&& ring % (len * IOMMU_COMMAND_SIZE) as usize == 0
+}
+
+/// How many commands invalidate_iommu_all writes.
+pub const IOMMU_INVALIDATE_COMMANDS: usize = 3;
+
+/// CMD_CFGI_ALL: opcode 0x04 with Range, bits 68:64, 31, which drops every STE and CD the SMMU
+/// caches. SMMU 4.3.9.
+pub const SMMU_CFGI_ALL: [u64; 2] = [0x04, 31];
+
+/// CMD_TLBI_NSNH_ALL, opcode 0x30, which drops every non-secure TLB entry outside the EL2 regime, of
+/// either stage and with any ASID or VMID, from every level of the walk. SMMU 4.4.4.1.
+pub const SMMU_TLBI_NSNH_ALL: [u64; 2] = [0x30, 0];
+
+/// CMD_SYNC, opcode 0x46, with CS, bits 13:12, 0b00: it completes once every command before it has,
+/// and the queue's consumer index passing it shows that. SMMU 4.7.3.
+pub const SMMU_SYNC: [u64; 2] = [0x46, 0];
+
+/// SMMU_CMDQ_PROD and SMMU_CMDQ_CONS, by their offset from the SMMU's base. SMMU 6.2, Table 6-1. In
+/// each, the queue's index is bits LOG2SIZE-1:0 and its wrap bit is bit LOG2SIZE (SMMU 3.5.1); CONS
+/// also holds an error code above them.
+pub const SMMU_CMDQ_PROD: usize = 0x98;
+pub const SMMU_CMDQ_CONS: usize = 0x9c;
+
+/// Invalidates all of SMMU i's caches and returns once it has finished, with the tail after the
+/// commands it wrote. It writes CMD_CFGI_ALL, CMD_TLBI_NSNH_ALL and CMD_SYNC at i's tail, moves the
+/// producer index past all three and spins until the consumer index reaches it, which it does only once
+/// CMD_SYNC has completed. The SMMU is never handed the EL2 regime, so the TLB invalidation leaves it.
+/// The completion word is not used: CMD_SYNC signals through the consumer index. Only this writes i's
+/// queue, and each call waits for the SMMU to consume all it wrote, so the queue is empty on entry and
+/// three commands fit in it. The producer register keeps the wrap bit the ring's tail leaves out, so
+/// this reads it back. The SMMU reads the queue coherently, as boot asks of it (machine/virt's CR1), so
+/// a DSB orders the commands, and every table write before them, ahead of the producer's store. Each
+/// register access is one load or store with no writeback, which a hypervisor emulating the SMMU can
+/// decode (Arm ARM D24.2.45, ISV). Waiting here is not waiting for a core: design/flush-without-waiting/.
+/// The wait is on the SMMU, which finishes three commands in a time the state does not set, so it is one
+/// unit: design/one-lock-bounded-steps/.
+#[verifier(external_body)]
+// external_body(glue): only the SMMU can attest an invalidate, so only this makes its token
+pub fn invalidate_iommu_all(commands: &CommandBuffers, i: usize, epoch: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: (usize, Tracked<Flushed>))
+    requires
+        i < NUM_IOMMUS,
+        commands.buffers.wf(),
+        commands.buffer_wf(i as int),
+    ensures
+        final(steps).count == old(steps).count + 1,
+        ret.0 == (commands.buffers@[i as int].tail + IOMMU_INVALIDATE_COMMANDS) % commands.buffers@[i as int].len as int,
+        ret.1@.target == FlushTarget::Iommu(i as int),
+        ret.1@.epoch == epoch as int,
+{
+    let b = *commands.buffers.get(i);
+    // The index and the wrap bit of a place in the queue.
+    let place_mask = (2 * b.len - 1) as u32;
+    let load = |register: usize| -> u32 {
+        let value: u32;
+        unsafe {
+            core::arch::asm!(
+                "ldr {value:w}, [{register}]",
+                register = in(reg) b.mmio + register,
+                value = out(reg) value,
+                options(nostack, readonly, preserves_flags),
+            );
+        }
+        value
+    };
+    let mut place = load(SMMU_CMDQ_PROD) & place_mask;
+    assert!(place as usize & (b.len - 1) == b.tail, "the SMMU's producer index is the ring's tail");
+    for command in [SMMU_CFGI_ALL, SMMU_TLBI_NSNH_ALL, SMMU_SYNC] {
+        let slot = (b.ring + (place as usize & (b.len - 1)) * IOMMU_COMMAND_SIZE) as *mut u64;
+        unsafe {
+            core::ptr::write_volatile(slot, command[0]);
+            core::ptr::write_volatile(slot.add(1), command[1]);
+        }
+        place = (place + 1) & place_mask;
+    }
+    unsafe {
+        core::arch::asm!(
+            "dsb st",
+            "str {place:w}, [{register}]",
+            register = in(reg) b.mmio + SMMU_CMDQ_PROD,
+            place = in(reg) place,
+            options(nostack, preserves_flags),
+        );
+    }
+    while load(SMMU_CMDQ_CONS) & place_mask != place {
+        core::hint::spin_loop();
+    }
+    ((b.tail + IOMMU_INVALIDATE_COMMANDS) % b.len, Tracked::assume_new())
 }
 
 // The trap frame and the user-return checks: what a thread record holds, what a return to user mode

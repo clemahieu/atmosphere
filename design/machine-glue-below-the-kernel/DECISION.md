@@ -100,4 +100,4 @@ The machine's command-line keys go through `set_option` so the parser stays one 
 - `BootInfo`'s shape on aarch64. It lives in `astd::boot`, shared with the loader, and carries ISA fields (`pml4`, `pcide`) beside the machine's (`iommu_base`); the loader's port decides it.
 - How many cores there are. `start_core` takes an index the kernel chooses, and nothing discovers the core count today (no MADT walk on the PC, no device tree walk on virt).
 - Whether the IOAPIC routes are wanted. Today inputs 0 and 1 go to vectors 32 and 33, which are also the timer's and the IOMMU fault's; `route_external` keeps that.
-- The verified IOMMU model in `kernel/verified`, which `design/arch-module/` leaves open. This record moves only the unverified driver.
+- The verified IOMMU model in `kernel/verified` beyond its command ring, which `design/arch-module/` puts in the arch module and otherwise leaves open. This record moves only the unverified driver.
