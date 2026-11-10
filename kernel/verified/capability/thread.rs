@@ -1577,6 +1577,7 @@ impl CapKernel {
         ensures
             final(self).wf(),
             final(self).stale_epoch == old(self).stale_epoch,
+            final(self).flush_epoch == old(self).flush_epoch,
             final(self).cores == old(self).cores,
             final(self).iommus == old(self).iommus,
             final(self).spaces == old(self).spaces,
@@ -1905,6 +1906,7 @@ impl CapKernel {
         ensures
             final(self).wf(),
             final(self).stale_epoch == old(self).stale_epoch,
+            final(self).flush_epoch == old(self).flush_epoch,
             final(self).cores == old(self).cores,
             final(self).iommus == old(self).iommus,
             final(self).spaces == old(self).spaces,
@@ -3654,6 +3656,7 @@ impl CapKernel {
             !old(self).list.nodes@[t as int].live,
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
+            final(self).flush_epoch == old(self).flush_epoch,
             final(self).cores == old(self).cores,
             final(self).iommus == old(self).iommus,
             final(self).spaces == old(self).spaces,

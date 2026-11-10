@@ -131,6 +131,7 @@ impl CapKernel {
                 ==> #[trigger] holds(pages, i),
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
+            final(self).flush_epoch == old(self).flush_epoch,
             final(self).wf(),
             final(self).list.seq@[0] == root,
             final(self).tables.roots@.contains_key(base),
@@ -400,6 +401,7 @@ impl CapKernel {
             forall|i: usize| t / 4096 <= i < t / 4096 + 2 ==> #[trigger] holds(pages, i),
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
+            final(self).flush_epoch == old(self).flush_epoch,
             final(self).wf(),
             final(self).list.seq@[0] == root,
             final(self).tables.roots == old(self).tables.roots,
@@ -668,6 +670,7 @@ impl CapKernel {
             forall|i: usize| leaf / 4096 <= i < leaf / 4096 + 2 ==> #[trigger] holds(pages, i),
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
+            final(self).flush_epoch == old(self).flush_epoch,
             final(self).wf(),
             final(self).list.seq@[0] == root,
             final(self).tables.leaf(process, r as int) == leaf,
@@ -797,6 +800,7 @@ impl CapKernel {
                 || frames / 4096 <= i < frames / 4096 + 2 || t / 4096 <= i < t / 4096 + 2 ==> #[trigger] holds(pages, i),
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
+            final(self).flush_epoch == old(self).flush_epoch,
             final(self).wf(),
             final(self).list.seq@[0] == root,
             final(self).tables.has_slot(&final(self).list, process, ROOT_PROCESS_SLOT),
@@ -1122,6 +1126,7 @@ impl CapKernel {
             !old(self).list.nodes@[leaf + i].live,
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
+            final(self).flush_epoch == old(self).flush_epoch,
             final(self).wf(),
             final(self).list.seq@[0] == root,
             final(self).tables.roots == old(self).tables.roots,
@@ -1305,6 +1310,7 @@ impl CapKernel {
             payload_wf(untyped_payload(base, order)),
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
+            final(self).flush_epoch == old(self).flush_epoch,
             final(self).wf(),
             final(self).list.seq@[0] == root,
             final(self).tables.roots == old(self).tables.roots,

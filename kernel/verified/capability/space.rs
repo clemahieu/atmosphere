@@ -2562,6 +2562,7 @@ impl CapKernel {
             old(self).root_live(root),
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
+            final(self).flush_epoch == old(self).flush_epoch,
             final(self).wf(),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             final(self).cores == old(self).cores,

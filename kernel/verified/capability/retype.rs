@@ -961,6 +961,7 @@ impl CapKernel {
             final(self).cores == old(self).cores,
             final(self).threads == old(self).threads,
             final(self).stale_epoch == old(self).stale_epoch,
+            final(self).flush_epoch == old(self).flush_epoch,
             final(self).iommus == old(self).iommus,
             ret == old(self).can_retype_leaf(root, from, at, base),
             !ret ==> *final(self) == *old(self),
@@ -1048,6 +1049,7 @@ impl CapKernel {
             old(self).list.nodes@[parent as int].depth < MAX_DEPTH,
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
+            final(self).flush_epoch == old(self).flush_epoch,
             final(self).iommus == old(self).iommus,
             final(self).wf(),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),

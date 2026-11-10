@@ -102,7 +102,7 @@ impl CapKernel {
     /// the process's block lost the reference, and the list lost the binding node alone, so every other
     /// node keeps its kind and its depth, and a node whose only child was the binding has none. The node
     /// was no capability and no mapping, so the view is as it was, and so are the spaces, the table
-    /// pages, the stale epochs, the cores and the IOMMUs.
+    /// pages, the stale epochs, the flush epoch, the cores and the IOMMUs.
     pub open spec fn thread_unbound(&self, post: Self, root: usize, from: usize, base: usize) -> bool {
         let untyped = self.tables.node_of(root, from);
         &&& self.view().holds_right(root, untyped, Right::Retype)
@@ -123,6 +123,7 @@ impl CapKernel {
         &&& post.spaces == self.spaces
         &&& post.table_pages == self.table_pages
         &&& post.stale_epoch == self.stale_epoch
+        &&& post.flush_epoch == self.flush_epoch
         &&& post.thread_is_dead(base)
         &&& post.thread_work(base) < self.thread_work(base)
         &&& post.view() == self.view()
@@ -288,6 +289,7 @@ impl CapKernel {
             final(self).spaces == old(self).spaces,
             final(self).table_pages == old(self).table_pages,
             final(self).stale_epoch == old(self).stale_epoch,
+            final(self).flush_epoch == old(self).flush_epoch,
             final(self).view() == old(self).view(),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables).remove(t),
     {

@@ -1243,6 +1243,7 @@ impl CapKernel {
             final(self).wf(),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             final(self).stale_epoch == old(self).stale_epoch,
+            final(self).flush_epoch == old(self).flush_epoch,
             final(self).cores == old(self).cores,
             final(self).iommus == old(self).iommus,
             ret == old(self).can_retype_block(root, from, to, base, PROCESS_ORDER),

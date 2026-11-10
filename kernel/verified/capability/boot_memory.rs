@@ -358,6 +358,7 @@ impl CapKernel {
                 ==> !in_runs(runs@, runs@.len() as int, (p / 4096) as int),
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
+            final(self).flush_epoch == old(self).flush_epoch,
             final(self).wf(),
             final(self).list == old(self).list,
             final(self).tables == old(self).tables,
@@ -395,6 +396,7 @@ impl CapKernel {
                 self.iommus == pre.iommus,
                 self.mapped == pre.mapped,
                 self.stale_epoch == pre.stale_epoch,
+                self.flush_epoch == pre.flush_epoch,
                 self.devices == pre.devices,
                 self.threads == pre.threads,
                 self.processes == pre.processes,
@@ -484,6 +486,7 @@ impl CapKernel {
             runs_blocks(runs@, MAX_ORDER as nat).len() <= ROOT_UNTYPED_SLOTS,
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
+            final(self).flush_epoch == old(self).flush_epoch,
             final(self).wf(),
             final(self).list.seq@[0] == root,
             final(self).tables.roots == old(self).tables.roots,
@@ -530,6 +533,7 @@ impl CapKernel {
         while r < runs.len()
             invariant
                 self.stale_epoch == pre.stale_epoch,
+                self.flush_epoch == pre.flush_epoch,
                 r <= runs@.len(),
                 runs_wf(runs@),
                 bs == runs_blocks(runs@, MAX_ORDER as nat),
@@ -577,6 +581,7 @@ impl CapKernel {
             while m > 0
                 invariant
                     self.stale_epoch == pre.stale_epoch,
+                    self.flush_epoch == pre.flush_epoch,
                     r < runs@.len(),
                     runs_wf(runs@),
                     bs == runs_blocks(runs@, MAX_ORDER as nat),
@@ -804,6 +809,7 @@ impl CapKernel {
                 ==> !in_runs(runs@, runs@.len() as int, (p / 4096) as int),
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
+            final(self).flush_epoch == old(self).flush_epoch,
             ret is None ==> runs_blocks(runs@, MAX_ORDER as nat).len() > ROOT_UNTYPED_SLOTS && *final(self) == *old(self),
             ret matches Some(count) ==> {
                 let bs = runs_blocks(runs@, MAX_ORDER as nat);

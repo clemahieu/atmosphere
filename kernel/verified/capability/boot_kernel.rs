@@ -138,7 +138,7 @@ impl CapKernel {
     /// The free runs are well formed, so each untyped block lies in the tracked pages. Each fixed slot of the root's table holds its kind, and each untyped is at depth 1, so a
     /// capability retyped under it is below the deepest depth; every page of the untyped blocks is
     /// acknowledged, since boot unmaps nothing, so a free of a block typed there is not refused as
-    /// stale; the root's process is live; every root
+    /// stale; the root's process is live; no flush has run, so the flush epoch is 0; every root
     /// entry of its table past the two boot filled is empty; the root's space maps exactly the image; of
     /// the first untyped's order-3 blocks, every one past those the image's tables can take is free;
     /// the root reaches exactly the console, power and the pages of its process, its thread, the free
@@ -202,6 +202,7 @@ impl CapKernel {
         &&& forall|q: usize, o: usize| #[trigger] self.view().reach(q, o)
             ==> o == q || self.view().reach(process, o)
         &&& self.root_live(process)
+        &&& self.flush_epoch == 0
         &&& forall|r: int| 2 <= r < ROOT_ENTRIES ==> #[trigger] self.tables.leaf(process, r) == NO_LEAF
         &&& forall|j: int| image_tables_bound(image) <= j < untyped_tables(first)
             ==> #[trigger] self.root_table_block(process, cursor_block(first.base, j))

@@ -668,6 +668,7 @@ impl CapKernel {
                 && tree_of(&old(self).table_pages, &old(self).spaces).entry(t, i).perm.ps),
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
+            final(self).flush_epoch == old(self).flush_epoch,
             final(self).wf(),
             final(self).root_tables_ready(process),
             final(self).tables == old(self).tables,
@@ -810,6 +811,7 @@ impl CapKernel {
             !space_mapping(tree_of(&old(self).table_pages, &old(self).spaces), s).contains_key(SpacePath { l4, l3, l2, l1: 0 }),
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
+            final(self).flush_epoch == old(self).flush_epoch,
             final(self).wf(),
             final(self).root_tables_ready(process),
             final(self).tables == old(self).tables,
@@ -1133,6 +1135,7 @@ impl CapKernel {
             forall|p: SpacePath| !#[trigger] space_mapping(tree_of(&old(self).table_pages, &old(self).spaces), old(self).root_space(process)).contains_key(p),
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
+            final(self).flush_epoch == old(self).flush_epoch,
             !ret ==> *final(self) == *old(self),
             ret == (image_virt_wf(runs@)
                 && image_tables_bound(runs@) <= untyped_tables(old(self).payload_of(old(self).root_untyped(process)))),
@@ -1207,6 +1210,7 @@ impl CapKernel {
         while r < runs.len()
             invariant
                 self.stale_epoch == pre.stale_epoch,
+                self.flush_epoch == pre.flush_epoch,
                 r <= runs@.len(),
                 image_runs_wf(runs@),
                 image_virt_wf(runs@),
@@ -1254,6 +1258,7 @@ impl CapKernel {
             while q <= last
                 invariant
                     self.stale_epoch == pre.stale_epoch,
+                    self.flush_epoch == pre.flush_epoch,
                     r < runs@.len(),
                     image_runs_wf(runs@),
                     image_virt_wf(runs@),

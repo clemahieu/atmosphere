@@ -745,6 +745,7 @@ impl CapKernel {
                 ==> !image_region(runs@, region_2m((p / 4096) as int)),
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
+            final(self).flush_epoch == old(self).flush_epoch,
             ret is None ==> image_blocks(runs@).len() > ROOT_FRAME_SLOTS && *final(self) == *old(self),
             ret matches Some(count) ==> {
                 let bs = image_blocks(runs@);
@@ -839,6 +840,7 @@ impl CapKernel {
         while r < runs.len()
             invariant
                 self.stale_epoch == pre.stale_epoch,
+                self.flush_epoch == pre.flush_epoch,
                 r <= runs@.len(),
                 image_runs_wf(runs@),
                 phys == image_phys(runs@),
@@ -899,6 +901,7 @@ impl CapKernel {
             while m > 0
                 invariant
                     self.stale_epoch == pre.stale_epoch,
+                    self.flush_epoch == pre.flush_epoch,
                     r < runs@.len(),
                     image_runs_wf(runs@),
                     phys == image_phys(runs@),

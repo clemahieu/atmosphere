@@ -1349,6 +1349,7 @@ impl CapKernel {
                 == tree_of(&old(self).table_pages, &old(self).spaces).record(parent).level,
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
+            final(self).flush_epoch == old(self).flush_epoch,
             final(self).wf(),
             final(self).cores == old(self).cores,
             final(self).spaces.loaded == old(self).spaces.loaded,
@@ -1434,6 +1435,7 @@ impl CapKernel {
                 == tree_of(&old(self).table_pages, &old(self).spaces).record(parent).level,
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
+            final(self).flush_epoch == old(self).flush_epoch,
             final(self).wf(),
             final(self).cores == old(self).cores,
             final(self).spaces.loaded == old(self).spaces.loaded,
@@ -1616,6 +1618,7 @@ impl CapKernel {
             old(self).root_live(root),
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
+            final(self).flush_epoch == old(self).flush_epoch,
             final(self).wf(),
             ret == old(self).can_link(root, slot, parent, entry, from, child),
             final(self).spaces.loaded == old(self).spaces.loaded,
