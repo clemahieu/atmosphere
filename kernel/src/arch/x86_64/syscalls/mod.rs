@@ -190,56 +190,20 @@ unsafe extern "C" fn sys_entry() -> ! {
 
         // Cleanup
 
-        // Three cases:
-        // 1. Switch to another thread that was suspended due to a syscall
-        //    ("clean" thread)
-        // 2. Return to the same thread
-        // 3. Switch to a different preempted thread
+        // Two cases:
+        // 1. Return to the same thread
+        // 2. Switch to a different preempted thread
         //
-        // For 1, we can directly skip over restoring most registers since
-        // we trust the handler to have already restored callee-saved registers
-        //
-        // Paths 1 and 2 restore only part of the frame, so they clear the
+        // Path 1 restores only part of the frame, so it clears the
         // caller-saved registers the handler used: a process must not see them.
-        // Path 2 returns the frame's rdi, rsi, rdx and r8, where the handler
+        // It returns the frame's rdi, rsi, rdx and r8, where the handler
         // wrote the invocation's result words.
 
         "mov r10, gs:{switch_decision_offset}",
-        "cmp r10, {decision_no_switching}",
-        "je 22f",
         "cmp r10, {decision_switch_to_preempted}",
         "je 23f",
 
-        // 1. Switch to another clean thread
-        // Fast return that clobbers rcx, r11
-        "21:",
-
-        "mov r15, [rsp + 8*0]",
-        "mov r14, [rsp + 8*1]",
-        "mov r13, [rsp + 8*2]",
-        "mov r12, [rsp + 8*3]",
-        "mov rbp, [rsp + 8*4]",
-        "mov rbx, [rsp + 8*5]",
-        // skip r11~rdi (8 registers)
-        "mov rax, [rsp + 8*14]",
-        // skip error_code
-        "mov rcx, [rsp + 8*16]", // rip
-        // skip cs
-        "mov r11, [rsp + 8*18]", // rflags
-        "mov rsp, [rsp + 8*19]", // rsp
-
-        "xor edi, edi",
-        "xor esi, esi",
-        "xor edx, edx",
-        "xor r8d, r8d",
-        "xor r9d, r9d",
-        "xor r10d, r10d",
-
-        "sti",
-        "sysretq",
-
-        // 2. Return to the same thread
-        "22:",
+        // 1. Return to the same thread
 
         // skip r15~r10 (8 registers)
         "mov r8, [rsp + 8*9]",   // r8
@@ -260,7 +224,7 @@ unsafe extern "C" fn sys_entry() -> ! {
         "sti",
         "sysretq",
 
-        // 3. Switch to a preempted thread (slow)
+        // 2. Switch to a preempted thread (slow)
         "23:",
         "pop r15",
         "pop r14",
@@ -286,7 +250,6 @@ unsafe extern "C" fn sys_entry() -> ! {
         user_rsp_offset = const offset_of!(Cpu, arch) + offset_of!(CoreState, user_rsp),
 
         switch_decision_offset = const offset_of!(Cpu, switch_decision),
-        decision_no_switching = const SwitchDecision::NoSwitching as u64,
         decision_switch_to_preempted = const SwitchDecision::SwitchToPreempted as u64,
         capability_entry = sym capability_entry,
     );
@@ -296,9 +259,7 @@ unsafe extern "C" fn sys_entry() -> ! {
 /// the status and result words that return. A power-off it accepted ends the run here and returns to
 /// no thread.
 extern "C" fn capability_entry(regs: &mut Registers) {
-    use crate::bridge::Bridge;
     use crate::capability::{power_off_accepted, CAP_KERNEL};
-    use verified::bridge::TrustedBridge;
 
     let returned = CAP_KERNEL
         .lock()
@@ -318,5 +279,4 @@ extern "C" fn capability_entry(regs: &mut Registers) {
         unsafe { crate::machine::shutdown(success) }
     }
     regs.write_outcome(returned);
-    Bridge::set_switch_decision(SwitchDecision::NoSwitching);
 }

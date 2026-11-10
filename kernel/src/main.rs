@@ -24,7 +24,6 @@
 
 mod arch;
 mod boot;
-mod bridge;
 mod capability;
 mod cpu;
 mod debugger;
