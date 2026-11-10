@@ -2,7 +2,7 @@
 //! not assume it owns the machine, so several instances each with a root stay possible. Why, and
 //! what to do about a change that breaks this: design/one-kernel-instance/.
 //!
-//! Print, inspect, retype of a 4K frame, of a 2M frame and of a table page, derive, move, delete, revoke, link, map, unmap, probe and power-off are the wired
+//! Print, inspect, retype of a 4K frame, of a 2M frame, of a table page and of a table leaf, derive, move, delete, revoke, link, map, unmap, probe and power-off are the wired
 //! operations, so each fixed slot is checked through them: the console accepts print and the process,
 //! thread, power, untyped and frame slots refuse it, and the process and console slots refuse a
 //! power-off; inspect says the console slot holds a console and the power slot a power capability, and
@@ -45,7 +45,12 @@
 //! alone, then both clear, then dirty; the other 63 entries' bits stay clear and both bits are
 //! maintained. A probe of 0 entries, of 65 and of a range leaving its level 1 table is refused. It maps
 //! the frame at the next entry, writes the page and unmaps it, and the unmap returns accessed and dirty
-//! set, both maintained, which it prints. dom0 prints that result through the console, then an exit marker,
+//! set, both maintained, which it prints. It retypes a table leaf into root entry 2 of its own table, the
+//! first boot leaves empty, after a retype into the occupied entry 1, into entry 512, past the root's, by
+//! a word naming no position and of a block that is not free is refused, and a second leaf into entry 3
+//! through its own process capability, after entry 2 named through it is refused; inspect refuses each
+//! leaf's first slot until a derive of the power capability into it, after which inspect finds it there.
+//! dom0 prints that result through the console, then an exit marker,
 //! and ends the run with a power-off through its power capability, reporting success only when every
 //! check held. On aarch64, where the instruction carries an immediate, a print through the console by
 //! `svc #1` returns unknown and prints nothing.
@@ -751,6 +756,64 @@ fn derived_power_held(child: u64) -> bool {
         && operation::power_off(child, false) == operation::STATUS_REFUSED
 }
 
+/// The indices a table leaf gives its root entry: entry r holds those from r times this, of which the
+/// first is the leaf's hidden node and no slot, as slot 0 and slot 128 are.
+const LEAF_INDICES: u64 = 128;
+
+/// The root entries of a capability table.
+const ROOT_ENTRIES: u64 = operation::TABLE_INDICES / LEAF_INDICES;
+
+/// The first slot of root entry `entry`, past its leaf's hidden node.
+const fn first_slot(entry: u64) -> u64 {
+    entry * LEAF_INDICES + 1
+}
+
+/// The first root entry boot leaves empty: it fills entry 0 with the fixed slots and the untyped and
+/// entry 1 with the image's frames, design/root-process-at-boot/.
+const FIRST_EMPTY_ENTRY: u64 = 2;
+
+/// The bytes of a table leaf's block, order 1.
+const LEAF_BYTES: u64 = 2 * 4096;
+
+/// Whether the table leaf just retyped into root entry `entry` gives the entry its slots: inspect refuses
+/// the entry's first slot while it is empty, a derive of the power capability into it, named by the
+/// position word `slot`, is accepted, and inspect then finds power's capability there.
+fn leaf_slot_held(entry: u64, slot: u64) -> bool {
+    let first = first_slot(entry);
+    let power = match operation::inspect(operation::ROOT_POWER_SLOT) {
+        Ok(capability) => capability,
+        Err(_) => return false,
+    };
+    matches!(operation::inspect(first), Err(operation::STATUS_REFUSED))
+        && operation::derive(operation::ROOT_POWER_SLOT, slot, power.rights, power.base, 0) == operation::STATUS_OK
+        && operation::inspect(first) == Ok(power)
+}
+
+/// Whether dom0 retypes two table leaves under `untyped`, from the two order-1 blocks below the table
+/// page at `table`, which retype took, into root entries FIRST_EMPTY_ENTRY and the one after it of its
+/// own table: a retype into an occupied entry, into an entry past the root's, by a word naming no position
+/// and of the table page's block, which is not free, is refused; the first leaf is retyped by its bare
+/// entry and the second through dom0's own process capability, after which that entry named through it is
+/// refused, being occupied; and each leaf's first slot takes a capability that inspect reads back, the
+/// second's named through the process capability. Each check takes its pages from below the table pages,
+/// which nothing else retypes.
+fn retyped_leaves_held(untyped: u64, table: u64) -> bool {
+    let first = FIRST_EMPTY_ENTRY;
+    let second = FIRST_EMPTY_ENTRY + 1;
+    let through = |entry: u64| operation::through(operation::ROOT_PROCESS_SLOT, entry);
+    let retype = |base: u64, entry: u64| operation::retype_leaf(untyped, base, entry);
+    let base = table - LEAF_BYTES;
+    retype(base, FIRST_EMPTY_ENTRY - 1) == operation::STATUS_REFUSED
+        && retype(base, ROOT_ENTRIES) == operation::STATUS_REFUSED
+        && retype(base, NO_POSITION | first) == operation::STATUS_REFUSED
+        && retype(table, first) == operation::STATUS_REFUSED
+        && retype(base, first) == operation::STATUS_OK
+        && leaf_slot_held(first, first_slot(first))
+        && retype(base - LEAF_BYTES, through(first)) == operation::STATUS_REFUSED
+        && retype(base - LEAF_BYTES, through(second)) == operation::STATUS_OK
+        && leaf_slot_held(second, through(first_slot(second)))
+}
+
 /// Print through `slot`. The status is the low half of what the invocation returns.
 ///
 /// # Safety
@@ -839,6 +902,7 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
                             && timed_beside_before(empty + 1)
                             && probed_bits_held(empty + 1)
                             && unmapped_bits_held(empty + 1)
+                            && retyped_leaves_held(untyped, tables[3])
                     })
         });
     let console = unsafe {
