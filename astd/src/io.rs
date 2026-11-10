@@ -1,15 +1,15 @@
 //! I/O utilities.
 
 use core::convert::{AsMut, AsRef};
+use core::fmt;
 
-use displaydoc::Display;
 use embedded_io as eio;
 pub use embedded_io::{
     ErrorKind, ErrorType, Read, ReadExactError, Seek, SeekFrom, Write, WriteAllError, WriteFmtError,
 };
 
 /// An I/O error.
-#[derive(Debug, Display)]
+#[derive(Debug)]
 pub struct Error {
     kind: ErrorKind,
 }
@@ -28,6 +28,12 @@ impl Error {
     /// Returns a new Error.
     pub fn from_kind(kind: eio::ErrorKind) -> Self {
         Self { kind }
+    }
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.kind, f)
     }
 }
 
@@ -127,4 +133,17 @@ where
 
 impl<T> eio::ErrorType for Cursor<T> {
     type Error = Error;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::fmt::Write as _;
+
+    #[test]
+    fn error_displays_its_kind() {
+        let mut text = heapless::String::<32>::new();
+        write!(text, "{}", Error::from_kind(ErrorKind::InvalidInput)).unwrap();
+        assert_eq!(text.as_str(), "InvalidInput");
+    }
 }
