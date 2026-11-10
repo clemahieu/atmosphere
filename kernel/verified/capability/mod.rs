@@ -38,4 +38,6 @@ pub mod table;
 pub mod thread;
 pub mod unmap;
 pub mod view;
+#[cfg(verus_keep_ghost)]
+pub mod witness;
 pub mod zero;

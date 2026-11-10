@@ -30,6 +30,8 @@ Through that control right a holder deletes, revokes and inspects a slot of the 
 
 A process's table starts with no leaf, so the leaf its creator retypes into it is what gives it slots. The untyped the leaf is retyped under is in the creator's own table, as the capability any operation exercises is, and the leaf's hidden node is that untyped's child, so revoking the untyped takes the leaf back whichever table it went into. A leaf is no capability, so it adds to nobody's reach.
 
+That a creator can build such a process is proven. `kernel/verified/capability/witness.rs` starts from the state boot leaves and, as the root, retypes a leaf into its own table, a process and a thread bound to it into that leaf, a leaf into the new process's table through the process capability, and derives an untyped into that leaf the same way; each step is proven to succeed, and at the end the new process holds the root's untyped's child and has the thread bound to it. Only Verus compiles that module, so no image contains it.
+
 ## Context
 
 Before this, endpoints sat in per-thread slots and pages and devices in per-process tables, so authority was split between thread and process. The new table had to be found by every syscall in constant time and had to fit the depth-first list, `design/revoke-by-depth-first-list/`.
