@@ -4,7 +4,7 @@ description: One round of the Atmosphere Beads discipline, in a fresh context. T
 model: opus
 effort: high
 maxTurns: 300
-disallowedTools: ScheduleWakeup, CronCreate, CronDelete, PushNotification, Workflow
+disallowedTools: ScheduleWakeup, CronCreate, CronDelete, PushNotification, Workflow, Monitor
 ---
 
 You run one round. The rules are in `CLAUDE.md`; this is the procedure. A round takes one issue and lands one implementation at most; a redefine or a split goes on to implement what it just wrote, while the context that understood it is at hand. Beads is `.beads` at the project root; `bd` finds it from any worktree. Your context is fresh: run `bd prime` first.
@@ -51,7 +51,7 @@ An issue whose description has a line `Base: <branch>` is a leaf of that branch,
 3. Test first, at the epic's tier: a Verus specification and proof for tier 1; a test that reaches the branch, with fault injection where nothing else reaches it, for tier 2; the best test reasonable for tier 3. Run it and see it fail, make the change, see it pass. For tier 1, the round fixes what the failing verify names itself, for up to two verify runs after the change: the first failure shows what was unforeseen, the second run is the correction. When the second still fails, the proof needs a closer look, not another attempt, and the proof search goes to the prover agent (`.claude/agents/prover.md`). A round cannot wait for a background agent, so the driver runs it between rounds: `bd update <id> --append-notes "Prover input: target <the verified, errors line needed>; failing: <each error's file:line and message>; change so far: <what the worktree holds>"`, keep the worktree and the issue in progress, so no other loop takes it while the prover works in that worktree, and end the round with the report and its `Prover: <id>` line. The driver appends the prover's report to the issue and sets it open. The round that takes the issue next starts from that worktree and that report, and first triages the report's `Observations:` by section 5. One prover run ends the attempt (the bound below): continue to the gate if the report reached the target, otherwise record the report as the attempt.
 4. A tool the work needs is part of the round. When a check is slow, an output is hard to read or a step is repeated by hand, write the tool that fixes it: under `tools/`, with its own test at tier 3, under the license principle, as its own commit ahead of the change that uses it, landing with it. A tool a later round would reach for gets a line in CLAUDE.md's `Working in the tree` in that commit. A script used once stays out of the commit. A tool does not change what the gate requires; that is its own issue. Anything else the issue did not name (a dependency, a bug, more complexity, a decision only the human can make) goes through section 5. Do not widen the change.
 5. Commit: one logical change per commit; the message says why; the trailer the harness asks for. If the message needs "and", make two commits, each building on its own. Stage named paths, and read `git diff --cached --stat` before committing.
-6. Land: `tools/land.py` rebases the branch onto main, runs the gate, and when it passes rebases again, merges into main as a fast-forward and pushes. No lock is held, so the gates of several loops run side by side, and a change whose second rebase is clean lands on a main that moved without a second gate (`design/land-without-regating/`). Start it in the background from the worktree, then watch the log with `Monitor` until its last line starts with `exit`:
+6. Land: `tools/land.py` rebases the branch onto main, runs the gate, and when it passes rebases again, merges into main as a fast-forward and pushes. No lock is held, so the gates of several loops run side by side, and a change whose second rebase is clean lands on a main that moved without a second gate (`design/land-without-regating/`). Start it in the background from the worktree. The harness wakes the round when the command exits; the log is complete then, and its last line starts with `exit`:
 
    ```
    (source tools/env.sh && tools/land.py) > "$root/logs/<id>-gate.log" 2>&1; echo "exit $?" >> "$root/logs/<id>-gate.log"
@@ -93,6 +93,8 @@ A finished epic needs a skeptic pass when it has more than three children, count
 - The star never closes and never gets a split round. Its children are the human's decision.
 
 ## 7. Report
+
+A round ends with nothing of its own running. Before the report, stop each background command the round started that has not exited (`TaskStop`). The harness lists a round as running while one is alive, and the human reads that list to know when a session can be closed.
 
 End the round with, in this order and nothing else:
 
