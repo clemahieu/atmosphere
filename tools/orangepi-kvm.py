@@ -2,14 +2,15 @@
 """Start one aarch64 KVM guest on orangepi5 and bring its serial log back.
 
 The launch is the one recorded for this board: pinned to the A76 cluster, QEMU virt
-with GICv3, KVM, no NIC, EDK2 as firmware, 512 MiB unless --memory-mib says otherwise,
-and with --iommu an SMMUv3 in front of the PCI devices (iommu=smmuv3).
+with GICv3 and its PCI configuration space below 4 GiB (highmem-ecam=off), KVM, no NIC, EDK2
+as firmware, 512 MiB unless --memory-mib says otherwise, a pvpanic device whose write ends
+QEMU with status 1, and with --iommu an SMMUv3 in front of the PCI devices (iommu=smmuv3).
 With --esp the directory goes to the board over the same ssh session and the guest
 gets it as a FAT drive, which EDK2 boots as removable media from
 EFI/BOOT/BOOTAA64.EFI; the board's copy is removed with the run. The guest runs
 until the --wait-for line is in the log, the UEFI shell banner by default, or until
 the boot timeout. With --until-exit it runs until QEMU exits by itself, which it does
-when the guest powers off, and this exits with QEMU's status; a guest still on at the
+when the guest powers off or writes the pvpanic device, and this exits with QEMU's status; a guest still on at the
 boot timeout is stopped and the run fails. The board holds an exclusive lock, so it runs one guest
 at a time: a second run waits for the lock for up to the boot timeout, then fails without starting
 a guest. The remote side watches this process's stdin and kills QEMU when
@@ -131,18 +132,22 @@ if [ "$ATMO_ESP_BYTES" -gt 0 ]; then
     head -c "$ATMO_ESP_BYTES" | tar -x -C "$esp" || exit 1
     drive=(-drive "if=none,id=esp,format=raw,file=fat:rw:$esp" -device virtio-blk-pci,drive=esp)
 fi
-machine=virt,gic-version=3
+# Bus 0's configuration space at 0x3f000000, below 1 GiB, where machine/virt reaches the pvpanic
+# device that ends a failed run; design/machine-glue-below-the-kernel/.
+machine=virt,gic-version=3,highmem-ecam=off
 if [ "${ATMO_IOMMU:-0}" -eq 1 ]; then
     machine=$machine,iommu=smmuv3
 fi
 # Own process group so stopping the guest does not signal this shell.
 set -m
 # Recorded launch: taskset -c 4-7, virt with GICv3, KVM only, no NIC, EDK2.
-# Serial goes to a file so the awaited line can be read back after QEMU exits.
+# Serial goes to a file so the awaited line can be read back after QEMU exits. A guest that
+# writes the pvpanic device ends QEMU with status 1, as a guest that powers off ends it with 0.
 taskset -c 4-7 qemu-system-aarch64 \
     -M "$machine" -accel kvm -cpu host -smp 2 -m "$ATMO_MEMORY_MIB" \
     -nographic -monitor none -nic none \
     -bios /usr/share/qemu-efi-aarch64/QEMU_EFI.fd \
+    -device pvpanic-pci -action panic=exit-failure \
     "${drive[@]}" \
     -serial "file:$log" \
     < /dev/null >"$err" 2>&1 &
@@ -415,9 +420,18 @@ def self_test():
         recorded = argv_file.read_text() if argv_file.exists() else ""
         check("fake guest reaches the shell", code == 0 and SHELL_MARK in text and "kvm: accel kvm" in text and text.startswith("host: "), f"code={code} out={text!r} err={err!r}")
         check("fake guest is gone", gone(pid_file), f"pid file {pid_file.read_text() if pid_file.exists() else 'missing'}")
-        for needle in ("-M\nvirt,gic-version=3\n", "-accel\nkvm\n", "-m\n512\n", "-nographic", "-nic\nnone\n", "QEMU_EFI.fd"):
+        for needle in (
+            "-M\nvirt,gic-version=3,highmem-ecam=off\n",
+            "-accel\nkvm\n",
+            "-m\n512\n",
+            "-nographic",
+            "-nic\nnone\n",
+            "QEMU_EFI.fd",
+            "-device\npvpanic-pci\n",
+            "-action\npanic=exit-failure\n",
+        ):
             check(f"launch has {needle!r}", needle in recorded, recorded)
-        check("launch without an ESP has no drive", "-drive" not in recorded and "-device" not in recorded, recorded)
+        check("launch without an ESP has no drive", "-drive" not in recorded and "virtio-blk" not in recorded, recorded)
         check("launch without --iommu has no SMMU", "iommu" not in recorded, recorded)
 
         argv_file.unlink()
@@ -425,7 +439,7 @@ def self_test():
         recorded = argv_file.read_text() if argv_file.exists() else ""
         check(
             "launch with --iommu puts an SMMUv3 on virt",
-            code == 0 and "-M\nvirt,gic-version=3,iommu=smmuv3\n" in recorded,
+            code == 0 and "-M\nvirt,gic-version=3,highmem-ecam=off,iommu=smmuv3\n" in recorded,
             f"code={code} argv={recorded!r} err={err!r}",
         )
         check("guest with an SMMUv3 is gone", gone(pid_file))
@@ -457,7 +471,7 @@ def self_test():
             f"code={booted.returncode} out={booted.stdout!r} err={booted.stderr!r}",
         )
         check("launch has the memory asked for", "-m\n2560\n" in recorded, recorded)
-        check("--iommu on the command line reaches the launch", "-M\nvirt,gic-version=3,iommu=smmuv3\n" in recorded, recorded)
+        check("--iommu on the command line reaches the launch", "-M\nvirt,gic-version=3,highmem-ecam=off,iommu=smmuv3\n" in recorded, recorded)
         check(
             "launch boots the ESP as a virtio FAT drive",
             seen.exists()
