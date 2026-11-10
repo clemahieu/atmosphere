@@ -5,7 +5,6 @@ members = [
   "aloader",
   "astd",
   "asys",
-  "atest",
   "build-tool",
   "dom0",
   "kernel-logger",

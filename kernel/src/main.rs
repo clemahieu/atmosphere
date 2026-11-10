@@ -3,11 +3,7 @@
 //! See [`KernelCommandLine`](boot::command_line::KernelCommandLine) for a list of accepted kernel command-line options.
 
 #![no_std]
-#![feature(
-    arbitrary_self_types,
-    coverage_attribute,
-    custom_test_frameworks
-)]
+#![feature(arbitrary_self_types, coverage_attribute)]
 #![deny(
     asm_sub_register,
     deprecated,
@@ -18,8 +14,6 @@
 )]
 #![deny(clippy::from_over_into, clippy::needless_question_mark)]
 #![deny(rustdoc::bare_urls, rustdoc::broken_intra_doc_links)]
-#![reexport_test_harness_main = "test_main"]
-#![test_runner(crate::test_runner)]
 #![no_main]
 
 mod arch;
@@ -39,8 +33,6 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use core::panic::PanicInfo;
 
 use astd::boot::BootInfo;
-
-static mut SHUTDOWN_ON_PANIC: bool = false;
 
 /// CPU 1's stack while it is idle.
 static mut AP_STACK: cpu::KernelStack = cpu::KernelStack::new();
@@ -86,12 +78,6 @@ fn boot_cpu0(boot_info: *const BootInfo) -> isize {
     #[cfg(debug_assertions)]
     {
         log::info!("Atmosphere was built in debug mode.");
-    }
-
-    #[cfg(test)]
-    {
-        log::info!("Atmosphere was built with the test harness");
-        test_main();
     }
 
     let boot_info = boot::get_boot_info();
@@ -166,26 +152,6 @@ fn idle() -> ! {
     }
 }
 
-/// Runs all tests.
-#[cfg(test)]
-fn test_runner(tests: &[&dyn Fn()]) -> ! {
-    unsafe {
-        SHUTDOWN_ON_PANIC = true;
-    }
-
-    log::info!("Running {} tests", tests.len());
-
-    for test in tests {
-        test();
-    }
-
-    log::info!("All good!");
-
-    unsafe {
-        machine::shutdown(true);
-    }
-}
-
 /// Prints the Atmosphere logo.
 fn print_logo() {
     let logo = include_str!("logo.txt");
@@ -200,12 +166,6 @@ fn panic(info: &PanicInfo) -> ! {
     log::error!("panic! {:x?}", info);
 
     debugger::breakpoint(1);
-
-    unsafe {
-        if SHUTDOWN_ON_PANIC {
-            machine::shutdown(false);
-        }
-    }
 
     // FIXME: Signal all other CPUs to halt
 
