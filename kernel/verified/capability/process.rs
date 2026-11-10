@@ -97,8 +97,8 @@ pub open spec fn process_block(blocks: &BlockTable, b: usize) -> bool {
 
 /// Page k of the block at p is a spare page the processes keep.
 pub open spec fn spare_kept(processes: &Processes, p: usize, k: usize) -> bool {
-    &&& processes.spare@.contains_key((p + k * 4096) as usize)
-    &&& processes.spare@[(p + k * 4096) as usize].addr() == p + k * 4096
+    &&& processes.spare@.contains_key((p + k * PAGE_SZ) as usize)
+    &&& processes.spare@[(p + k * PAGE_SZ) as usize].addr() == p + k * PAGE_SZ
 }
 
 /// Two blocks of order 3 are a block apart.
@@ -128,18 +128,18 @@ pub proof fn lemma_blocks_apart(p: usize, q: usize)
 pub open spec fn process_wf(processes: &Processes, blocks: &BlockTable, p: usize) -> bool {
     &&& p % 32768 == 0
     &&& blocks.tracks_addr_run(p, 8)
-    &&& processes.records@[p].addr() == p + PROCESS_RECORD_PAGE * 4096
+    &&& processes.records@[p].addr() == p + PROCESS_RECORD_PAGE * PAGE_SZ
     &&& processes.records@[p].is_init()
     &&& spare_kept(processes, p, 2)
     &&& spare_kept(processes, p, 3)
     &&& spare_kept(processes, p, 4)
-    &&& blocks.pages@[(p / 4096) as int].kind is Base
-    &&& blocks.pages@[(p / 4096) as int].object is Process
-    &&& blocks.pages@[(p / 4096) as int].order == 3
+    &&& blocks.pages@[(p / PAGE_SZ) as int].kind is Base
+    &&& blocks.pages@[(p / PAGE_SZ) as int].object is Process
+    &&& blocks.pages@[(p / PAGE_SZ) as int].order == 3
     &&& processes.holders@.contains_key(p)
     &&& processes.bound@.contains_key(p)
-    &&& processes.holders@[p].len() + processes.bound@[p].len() == blocks.pages@[(p / 4096) as int].refs
-    &&& blocks.pages@[(p / 4096) as int].refs == 0 ==> blocks.pages@[(p / 4096) as int].dead
+    &&& processes.holders@[p].len() + processes.bound@[p].len() == blocks.pages@[(p / PAGE_SZ) as int].refs
+    &&& blocks.pages@[(p / PAGE_SZ) as int].refs == 0 ==> blocks.pages@[(p / PAGE_SZ) as int].dead
 }
 
 /// Each process is well formed, a process's block is one of these, and the capabilities of kind
@@ -147,7 +147,7 @@ pub open spec fn process_wf(processes: &Processes, blocks: &BlockTable, p: usize
 pub open spec fn processes_wf(list: &Tree, tables: &Tables, processes: &Processes, blocks: &BlockTable) -> bool {
     &&& forall|p: usize| #[trigger] processes.records@.contains_key(p) ==> process_wf(processes, blocks, p)
     &&& forall|b: usize| blocks.tracks(b as int) && #[trigger] process_block(blocks, b)
-        ==> processes.records@.contains_key((b * 4096) as usize)
+        ==> processes.records@.contains_key((b * PAGE_SZ) as usize)
     &&& forall|n: usize| #[trigger] tables.is_cap(list, n) && tables.payload_of(n).kind is Process ==> {
         &&& processes.records@.contains_key(tables.payload_of(n).base)
         &&& processes.holders@[tables.payload_of(n).base].contains(n)
@@ -237,7 +237,7 @@ pub proof fn lemma_processes_same_pages(list: &Tree, tables: &Tables, processes:
     assert forall|p: usize| #[trigger] processes.records@.contains_key(p) implies process_wf(processes, b, p) by {
         assert(process_wf(processes, a, p));
     }
-    assert forall|x: usize| b.tracks(x as int) && #[trigger] process_block(b, x) implies processes.records@.contains_key((x * 4096) as usize) by {
+    assert forall|x: usize| b.tracks(x as int) && #[trigger] process_block(b, x) implies processes.records@.contains_key((x * PAGE_SZ) as usize) by {
         assert(process_block(a, x));
     }
 }
@@ -270,13 +270,13 @@ pub proof fn lemma_processes_refs_changed(
     lemma_processes_same_caps(list_a, tables_a, list_b, tables_b, processes, a);
     assert forall|p: usize| #[trigger] processes.records@.contains_key(p) implies process_wf(processes, b, p) by {
         assert(process_wf(processes, a, p));
-        let x = BlockRef::Small(p / 4096);
+        let x = BlockRef::Small(p / PAGE_SZ);
         assert(block_typed(a, x));
         assert(x != br);
         assert(block_refs(b, x) == block_refs(a, x));
         assert(block_dead(b, x) == block_dead(a, x));
     }
-    assert forall|x: usize| b.tracks(x as int) && #[trigger] process_block(b, x) implies processes.records@.contains_key((x * 4096) as usize) by {
+    assert forall|x: usize| b.tracks(x as int) && #[trigger] process_block(b, x) implies processes.records@.contains_key((x * PAGE_SZ) as usize) by {
         assert(process_block(a, x));
     }
 }
@@ -306,13 +306,13 @@ pub proof fn lemma_processes_small_typed(
     lemma_processes_same_caps(list_a, tables_a, list_b, tables_b, processes, a);
     assert forall|p: usize| #[trigger] processes.records@.contains_key(p) implies process_wf(processes, b, p) by {
         assert(process_wf(processes, a, p));
-        let x = (p / 4096) as int;
+        let x = (p / PAGE_SZ) as int;
         if base <= x < base + size {
             assert(a.pages@[base + (x - base)].kind is Free);
         }
         assert(b.pages@[x] == a.pages@[x]);
     }
-    assert forall|x: usize| b.tracks(x as int) && #[trigger] process_block(b, x) implies processes.records@.contains_key((x * 4096) as usize) by {
+    assert forall|x: usize| b.tracks(x as int) && #[trigger] process_block(b, x) implies processes.records@.contains_key((x * PAGE_SZ) as usize) by {
         if base <= x < base + size {
             assert(!(b.pages@[base + (x - base)].object is Process));
         }
@@ -330,11 +330,11 @@ pub proof fn lemma_processes_outside_block(list: &Tree, tables: &Tables, process
         blocks.pages@[base as int].kind is Base,
         !(blocks.pages@[base as int].object is Process),
     ensures
-        forall|p: usize| #[trigger] processes.records@.contains_key(p) ==> !blocks.in_block(base as int, (p / 4096) as int),
+        forall|p: usize| #[trigger] processes.records@.contains_key(p) ==> !blocks.in_block(base as int, (p / PAGE_SZ) as int),
 {
-    assert forall|p: usize| #[trigger] processes.records@.contains_key(p) implies !blocks.in_block(base as int, (p / 4096) as int) by {
+    assert forall|p: usize| #[trigger] processes.records@.contains_key(p) implies !blocks.in_block(base as int, (p / PAGE_SZ) as int) by {
         assert(process_wf(processes, blocks, p));
-        let x = (p / 4096) as int;
+        let x = (p / PAGE_SZ) as int;
         if blocks.in_block(base as int, x) && x != base {
             blocks.lemma_member_of(base as int, x);
         }
@@ -368,10 +368,10 @@ pub proof fn lemma_processes_small_freed(
     lemma_processes_same_caps(list_a, tables_a, list_b, tables_b, processes, a);
     assert forall|p: usize| #[trigger] processes.records@.contains_key(p) implies process_wf(processes, b, p) by {
         assert(process_wf(processes, a, p));
-        assert(!a.in_block(base as int, (p / 4096) as int));
-        assert(b.pages@[(p / 4096) as int] == a.pages@[(p / 4096) as int]);
+        assert(!a.in_block(base as int, (p / PAGE_SZ) as int));
+        assert(b.pages@[(p / PAGE_SZ) as int] == a.pages@[(p / PAGE_SZ) as int]);
     }
-    assert forall|x: usize| b.tracks(x as int) && #[trigger] process_block(b, x) implies processes.records@.contains_key((x * 4096) as usize) by {
+    assert forall|x: usize| b.tracks(x as int) && #[trigger] process_block(b, x) implies processes.records@.contains_key((x * PAGE_SZ) as usize) by {
         if a.in_block(base as int, x as int) {
             assert(b.pages@[x as int] == free_entry());
         }
@@ -397,31 +397,31 @@ pub proof fn lemma_processes_process_freed(
         processes_wf(list, tables_a, pa, a),
         a.wf(),
         pa.records@.contains_key(base),
-        a.pages@[(base / 4096) as int].refs == 0,
+        a.pages@[(base / PAGE_SZ) as int].refs == 0,
         forall|i: int| a.tracks(i) ==> #[trigger] b.pages@[i] == (
-            if a.in_block((base / 4096) as int, i) { free_entry() } else { a.pages@[i] }),
+            if a.in_block((base / PAGE_SZ) as int, i) { free_entry() } else { a.pages@[i] }),
         tables_b.owner == tables_a.owner,
         tables_b.payloads == tables_a.payloads,
         pb.records@ == pa.records@.remove(base),
-        pb.spare@ == pa.spare@.remove((base + 2 * 4096) as usize).remove((base + 3 * 4096) as usize).remove((base + 4 * 4096) as usize),
+        pb.spare@ == pa.spare@.remove((base + 2 * PAGE_SZ) as usize).remove((base + 3 * PAGE_SZ) as usize).remove((base + 4 * PAGE_SZ) as usize),
         pb.holders@ == pa.holders@.remove(base),
         pb.bound@ == pa.bound@.remove(base),
     ensures
         processes_wf(list, tables_b, pb, b),
         pa.holders@[base] == Set::<usize>::empty(),
         pa.bound@[base] == Set::<usize>::empty(),
-        forall|p: usize| #[trigger] pb.records@.contains_key(p) ==> !a.in_block((base / 4096) as int, (p / 4096) as int),
+        forall|p: usize| #[trigger] pb.records@.contains_key(p) ==> !a.in_block((base / PAGE_SZ) as int, (p / PAGE_SZ) as int),
 {
-    let page = (base / 4096) as int;
+    let page = (base / PAGE_SZ) as int;
     assert(process_wf(pa, a, base));
     pa.holders@[base].lemma_len0_is_empty();
     pa.bound@[base].lemma_len0_is_empty();
     vstd::arithmetic::div_mod::lemma_fundamental_div_mod(base as int, 32768);
-    assert forall|p: usize| #[trigger] pb.records@.contains_key(p) implies !a.in_block(page, (p / 4096) as int) by {
+    assert forall|p: usize| #[trigger] pb.records@.contains_key(p) implies !a.in_block(page, (p / PAGE_SZ) as int) by {
         assert(pa.records@.contains_key(p));
         assert(process_wf(pa, a, p));
         vstd::arithmetic::div_mod::lemma_fundamental_div_mod(p as int, 32768);
-        let x = (p / 4096) as int;
+        let x = (p / PAGE_SZ) as int;
         if a.in_block(page, x) && x != page {
             a.lemma_member_of(page, x);
         }
@@ -431,23 +431,23 @@ pub proof fn lemma_processes_process_freed(
         assert(process_wf(pa, a, p));
         assert(p != base);
         lemma_blocks_apart(p, base);
-        assert(b.pages@[(p / 4096) as int] == a.pages@[(p / 4096) as int]);
-        assert(pb.spare@[(p + 2 * 4096) as usize] == pa.spare@[(p + 2 * 4096) as usize]);
-        assert(pb.spare@[(p + 3 * 4096) as usize] == pa.spare@[(p + 3 * 4096) as usize]);
-        assert(pb.spare@[(p + 4 * 4096) as usize] == pa.spare@[(p + 4 * 4096) as usize]);
+        assert(b.pages@[(p / PAGE_SZ) as int] == a.pages@[(p / PAGE_SZ) as int]);
+        assert(pb.spare@[(p + 2 * PAGE_SZ) as usize] == pa.spare@[(p + 2 * PAGE_SZ) as usize]);
+        assert(pb.spare@[(p + 3 * PAGE_SZ) as usize] == pa.spare@[(p + 3 * PAGE_SZ) as usize]);
+        assert(pb.spare@[(p + 4 * PAGE_SZ) as usize] == pa.spare@[(p + 4 * PAGE_SZ) as usize]);
         assert(pb.holders@[p] == pa.holders@[p]);
         assert(pb.bound@[p] == pa.bound@[p]);
     }
-    assert forall|x: usize| b.tracks(x as int) && #[trigger] process_block(b, x) implies pb.records@.contains_key((x * 4096) as usize) by {
+    assert forall|x: usize| b.tracks(x as int) && #[trigger] process_block(b, x) implies pb.records@.contains_key((x * PAGE_SZ) as usize) by {
         if a.in_block(page, x as int) {
             assert(b.pages@[x as int] == free_entry());
         }
         assert(b.pages@[x as int] == a.pages@[x as int]);
         assert(process_block(a, x));
-        assert(pa.records@.contains_key((x * 4096) as usize));
+        assert(pa.records@.contains_key((x * PAGE_SZ) as usize));
         assert(a.in_block(page, page));
         assert(x as int != page);
-        assert((x * 4096) as usize != base);
+        assert((x * PAGE_SZ) as usize != base);
     }
     assert forall|n: usize| #[trigger] tables_b.is_cap(list, n) && tables_b.payload_of(n).kind is Process implies {
         &&& pb.records@.contains_key(tables_b.payload_of(n).base)
@@ -489,25 +489,25 @@ pub proof fn lemma_processes_bound_added(
         b.spare == a.spare,
         b.holders == a.holders,
         b.bound@ == a.bound@.insert(p, a.bound@[p].insert(t)),
-        block_refs(ba, BlockRef::Small(p / 4096)) < usize::MAX,
+        block_refs(ba, BlockRef::Small(p / PAGE_SZ)) < usize::MAX,
         blocks_refs_changed(
             ba,
             bb,
-            BlockRef::Small(p / 4096),
-            (block_refs(ba, BlockRef::Small(p / 4096)) + 1) as usize,
-            block_dead(ba, BlockRef::Small(p / 4096)),
+            BlockRef::Small(p / PAGE_SZ),
+            (block_refs(ba, BlockRef::Small(p / PAGE_SZ)) + 1) as usize,
+            block_dead(ba, BlockRef::Small(p / PAGE_SZ)),
         ),
     ensures
         processes_wf(list, tables, b, bb),
 {
-    let br = BlockRef::Small(p / 4096);
+    let br = BlockRef::Small(p / PAGE_SZ);
     assert(process_wf(a, ba, p));
     vstd::set::lemma_set_insert_len(a.bound@[p], t);
     assert forall|u: usize| #[trigger] b.records@.contains_key(u) implies process_wf(b, bb, u) by {
         assert(process_wf(a, ba, u));
         if u != p {
             lemma_table_pages_distinct(u, p);
-            let x = BlockRef::Small(u / 4096);
+            let x = BlockRef::Small(u / PAGE_SZ);
             assert(block_typed(ba, x));
             assert(x != br);
             assert(block_refs(bb, x) == block_refs(ba, x));
@@ -515,7 +515,7 @@ pub proof fn lemma_processes_bound_added(
             assert(b.bound@[u] == a.bound@[u]);
         }
     }
-    assert forall|x: usize| bb.tracks(x as int) && #[trigger] process_block(bb, x) implies b.records@.contains_key((x * 4096) as usize) by {
+    assert forall|x: usize| bb.tracks(x as int) && #[trigger] process_block(bb, x) implies b.records@.contains_key((x * PAGE_SZ) as usize) by {
         assert(process_block(ba, x));
     }
     assert forall|n: usize| #[trigger] tables.is_cap(list, n) && tables.payload_of(n).kind is Process implies {
@@ -554,21 +554,21 @@ pub proof fn lemma_processes_bound_dropped(
         blocks_refs_changed(
             ba,
             bb,
-            BlockRef::Small(p / 4096),
-            (block_refs(ba, BlockRef::Small(p / 4096)) - 1) as usize,
-            block_dead(ba, BlockRef::Small(p / 4096)) || block_refs(ba, BlockRef::Small(p / 4096)) == 1,
+            BlockRef::Small(p / PAGE_SZ),
+            (block_refs(ba, BlockRef::Small(p / PAGE_SZ)) - 1) as usize,
+            block_dead(ba, BlockRef::Small(p / PAGE_SZ)) || block_refs(ba, BlockRef::Small(p / PAGE_SZ)) == 1,
         ),
     ensures
         processes_wf(list, tables, b, bb),
 {
-    let br = BlockRef::Small(p / 4096);
+    let br = BlockRef::Small(p / PAGE_SZ);
     assert(process_wf(a, ba, p));
     vstd::set::lemma_set_remove_len(a.bound@[p], t);
     assert forall|u: usize| #[trigger] b.records@.contains_key(u) implies process_wf(b, bb, u) by {
         assert(process_wf(a, ba, u));
         if u != p {
             lemma_table_pages_distinct(u, p);
-            let x = BlockRef::Small(u / 4096);
+            let x = BlockRef::Small(u / PAGE_SZ);
             assert(block_typed(ba, x));
             assert(x != br);
             assert(block_refs(bb, x) == block_refs(ba, x));
@@ -576,7 +576,7 @@ pub proof fn lemma_processes_bound_dropped(
             assert(b.bound@[u] == a.bound@[u]);
         }
     }
-    assert forall|x: usize| bb.tracks(x as int) && #[trigger] process_block(bb, x) implies b.records@.contains_key((x * 4096) as usize) by {
+    assert forall|x: usize| bb.tracks(x as int) && #[trigger] process_block(bb, x) implies b.records@.contains_key((x * PAGE_SZ) as usize) by {
         assert(process_block(ba, x));
     }
     assert forall|n: usize| #[trigger] tables.is_cap(list, n) && tables.payload_of(n).kind is Process implies {
@@ -607,10 +607,10 @@ impl CapKernel {
             self.payload_of(n).base % 32768 == 0,
             self.blocks.tracks_addr(self.payload_of(n).base),
             self.payload_of(n).order == PROCESS_ORDER,
-            self.blocks.pages@[(self.payload_of(n).base / 4096) as int].object is Process,
-            block_typed(&self.blocks, BlockRef::Small(self.payload_of(n).base / 4096)),
-            block_refs(&self.blocks, BlockRef::Small(self.payload_of(n).base / 4096)) > 0,
-            block_ref(&self.blocks, self.payload_of(n).base / 4096) == BlockRef::Small(self.payload_of(n).base / 4096),
+            self.blocks.pages@[(self.payload_of(n).base / PAGE_SZ) as int].object is Process,
+            block_typed(&self.blocks, BlockRef::Small(self.payload_of(n).base / PAGE_SZ)),
+            block_refs(&self.blocks, BlockRef::Small(self.payload_of(n).base / PAGE_SZ)) > 0,
+            block_ref(&self.blocks, self.payload_of(n).base / PAGE_SZ) == BlockRef::Small(self.payload_of(n).base / PAGE_SZ),
     {
         let p = self.payload_of(n).base;
         assert(self.tables.is_cap(&self.list, n));
@@ -618,7 +618,7 @@ impl CapKernel {
         if self.processes.holders@[p].len() == 0 {
             self.processes.holders@[p].lemma_len0_is_empty();
         }
-        self.blocks.lemma_not_free_uncovered((p / 4096) as int);
+        self.blocks.lemma_not_free_uncovered((p / PAGE_SZ) as int);
     }
 
     /// A process capability names the process's space, keyed at its base.
@@ -647,13 +647,13 @@ impl CapKernel {
             post.payload_of(n).base == p,
             post.payload_of(n).order == PROCESS_ORDER,
             pre.processes.records@.contains_key(p),
-            block_refs(&pre.blocks, BlockRef::Small(p / 4096)) < usize::MAX,
+            block_refs(&pre.blocks, BlockRef::Small(p / PAGE_SZ)) < usize::MAX,
             blocks_refs_changed(
                 &pre.blocks,
                 &post.blocks,
-                BlockRef::Small(p / 4096),
-                (block_refs(&pre.blocks, BlockRef::Small(p / 4096)) + 1) as usize,
-                block_dead(&pre.blocks, BlockRef::Small(p / 4096)),
+                BlockRef::Small(p / PAGE_SZ),
+                (block_refs(&pre.blocks, BlockRef::Small(p / PAGE_SZ)) + 1) as usize,
+                block_dead(&pre.blocks, BlockRef::Small(p / PAGE_SZ)),
             ),
             post.processes.records == pre.processes.records,
             post.processes.spare == pre.processes.spare,
@@ -666,7 +666,7 @@ impl CapKernel {
         let hb = post.processes.holders@;
         let a = &pre.blocks;
         let b = &post.blocks;
-        let br = BlockRef::Small(p / 4096);
+        let br = BlockRef::Small(p / PAGE_SZ);
         assert(process_wf(&pre.processes, a, p));
         assert(!ha[p].contains(n));
         vstd::set::lemma_set_insert_len(ha[p], n);
@@ -675,7 +675,7 @@ impl CapKernel {
             assert(process_wf(&pre.processes, a, u));
             if u != p {
                 lemma_table_pages_distinct(u, p);
-                let x = BlockRef::Small(u / 4096);
+                let x = BlockRef::Small(u / PAGE_SZ);
                 assert(block_typed(a, x));
                 assert(x != br);
                 assert(block_refs(b, x) == block_refs(a, x));
@@ -684,7 +684,7 @@ impl CapKernel {
             }
         }
         assert forall|x: usize| b.tracks(x as int) && #[trigger] process_block(b, x)
-            implies post.processes.records@.contains_key((x * 4096) as usize) by {
+            implies post.processes.records@.contains_key((x * PAGE_SZ) as usize) by {
             assert(process_block(a, x));
         }
         assert forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) && post.tables.payload_of(x).kind is Process implies {
@@ -723,9 +723,9 @@ impl CapKernel {
             blocks_refs_changed(
                 &pre.blocks,
                 &post.blocks,
-                BlockRef::Small(p / 4096),
-                (block_refs(&pre.blocks, BlockRef::Small(p / 4096)) - 1) as usize,
-                block_dead(&pre.blocks, BlockRef::Small(p / 4096)) || block_refs(&pre.blocks, BlockRef::Small(p / 4096)) == 1,
+                BlockRef::Small(p / PAGE_SZ),
+                (block_refs(&pre.blocks, BlockRef::Small(p / PAGE_SZ)) - 1) as usize,
+                block_dead(&pre.blocks, BlockRef::Small(p / PAGE_SZ)) || block_refs(&pre.blocks, BlockRef::Small(p / PAGE_SZ)) == 1,
             ),
             post.processes.records == pre.processes.records,
             post.processes.spare == pre.processes.spare,
@@ -738,7 +738,7 @@ impl CapKernel {
         let hb = post.processes.holders@;
         let a = &pre.blocks;
         let b = &post.blocks;
-        let br = BlockRef::Small(p / 4096);
+        let br = BlockRef::Small(p / PAGE_SZ);
         pre.lemma_process_cap(n);
         assert(process_wf(&pre.processes, a, p));
         assert(ha[p].contains(n));
@@ -748,7 +748,7 @@ impl CapKernel {
             assert(process_wf(&pre.processes, a, u));
             if u != p {
                 lemma_table_pages_distinct(u, p);
-                let x = BlockRef::Small(u / 4096);
+                let x = BlockRef::Small(u / PAGE_SZ);
                 assert(block_typed(a, x));
                 assert(x != br);
                 assert(block_refs(b, x) == block_refs(a, x));
@@ -757,7 +757,7 @@ impl CapKernel {
             }
         }
         assert forall|x: usize| b.tracks(x as int) && #[trigger] process_block(b, x)
-            implies post.processes.records@.contains_key((x * 4096) as usize) by {
+            implies post.processes.records@.contains_key((x * PAGE_SZ) as usize) by {
             assert(process_block(a, x));
         }
         assert forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) && post.tables.payload_of(x).kind is Process implies {
@@ -791,8 +791,8 @@ impl CapKernel {
             post.table_pages == pre.table_pages,
             post.blocks.wf(),
             base % 32768 == 0,
-            base / 4096 == page,
-            page * 4096 == base,
+            base / PAGE_SZ == page,
+            page * PAGE_SZ == base,
             page % 8 == 0,
             pre.blocks.tracks_run(page as int, 8),
             !pre.blocks.covered(page as int),
@@ -855,7 +855,7 @@ impl CapKernel {
         lemma_leaf_blocks_same_nodes(&pre.list, &post.list, &post.tables, b);
         lemma_table_pages_small_typed(&pre.list, &pre.table_pages, a, b, page, 8);
         assert forall|x: usize| b.tracks(x as int) && #[trigger] table_block(b, x)
-            implies pre.table_pages.maps@.contains_key((x * 4096) as usize) by {
+            implies pre.table_pages.maps@.contains_key((x * PAGE_SZ) as usize) by {
             if x == page {
                 assert(b.pages@[page as int].object is Process);
             } else if page < x < page + 8 {
@@ -880,8 +880,8 @@ impl CapKernel {
         requires
             Self::space_step(pre, post, child),
             base % 32768 == 0,
-            base / 4096 == page,
-            page * 4096 == base,
+            base / PAGE_SZ == page,
+            page * PAGE_SZ == base,
             pre.blocks.tracks_run(page as int, 8),
             forall|k: int| 0 <= k < 8 ==> #[trigger] pre.blocks.pages@[page + k].kind is Free,
             forall|i: int| pre.blocks.tracks(i) && !(page <= i < page + 8) ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
@@ -891,16 +891,16 @@ impl CapKernel {
             forall|k: int| 0 < k < 8 ==> (#[trigger] post.blocks.pages@[page + k]).kind is Member,
             forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) ==> post.list.pages@.dom().contains(p),
             post.spaces.roots@ == pre.spaces.roots@.insert(base, post.spaces.roots@[base]),
-            post.spaces.roots@[base].addr() == base + SPACE_ROOT_PAGE * 4096,
+            post.spaces.roots@[base].addr() == base + SPACE_ROOT_PAGE * PAGE_SZ,
             post.spaces.roots@[base].is_init(),
             post.spaces.roots@[base].value().wf(),
             post.spaces.records@ == pre.spaces.records@.insert(base, post.spaces.records@[base]),
-            post.spaces.records@[base].addr() == base + SPACE_RECORD_PAGE * 4096,
+            post.spaces.records@[base].addr() == base + SPACE_RECORD_PAGE * PAGE_SZ,
             post.spaces.records@[base].is_init(),
-            post.spaces.records@[base].value().root == base + SPACE_ROOT_PAGE * 4096,
+            post.spaces.records@[base].value().root == base + SPACE_ROOT_PAGE * PAGE_SZ,
             post.spaces.records@[base].value().kind is Process,
             post.spaces.loaded@ == pre.spaces.loaded@.insert(base, post.spaces.loaded@[base]),
-            post.spaces.loaded@[base].addr() == base + SPACE_CORES_PAGE * 4096,
+            post.spaces.loaded@[base].addr() == base + SPACE_CORES_PAGE * PAGE_SZ,
             post.spaces.loaded@[base].is_init(),
             post.spaces.kernel_entries == pre.spaces.kernel_entries,
             kernel_slots_wf(&post.spaces, base),
@@ -937,7 +937,7 @@ impl CapKernel {
             } else {
                 assert(sa.roots@.contains_key(s));
                 assert(space_wf(&pre.list, sa, a, s));
-                let x = (s / 4096) as int;
+                let x = (s / PAGE_SZ) as int;
                 if page <= x < page + 8 {
                     assert(a.pages@[page + (x - page)].kind is Free);
                 }
@@ -965,7 +965,7 @@ impl CapKernel {
                 assert(sa.loaded@.contains_key(s));
             }
         }
-        assert forall|x: usize| b.tracks(x as int) && #[trigger] space_block(b, x) implies sb.roots@.contains_key((x * 4096) as usize) by {
+        assert forall|x: usize| b.tracks(x as int) && #[trigger] space_block(b, x) implies sb.roots@.contains_key((x * PAGE_SZ) as usize) by {
             if x == page {
                 assert(b.pages@[page as int].object is Process);
             } else if page < x < page + 8 {
@@ -1007,8 +1007,8 @@ impl CapKernel {
         requires
             Self::space_step(pre, post, child),
             base % 32768 == 0,
-            base / 4096 == page,
-            page * 4096 == base,
+            base / PAGE_SZ == page,
+            page * PAGE_SZ == base,
             pre.blocks.tracks_run(page as int, 8),
             forall|k: int| 0 <= k < 8 ==> #[trigger] pre.blocks.pages@[page + k].kind is Free,
             forall|i: int| pre.blocks.tracks(i) && !(page <= i < page + 8) ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
@@ -1019,10 +1019,10 @@ impl CapKernel {
             !post.blocks.pages@[page as int].dead,
             forall|k: int| 0 < k < 8 ==> (#[trigger] post.blocks.pages@[page + k]).kind is Member,
             post.processes.records@ == pre.processes.records@.insert(base, post.processes.records@[base]),
-            post.processes.records@[base].addr() == base + PROCESS_RECORD_PAGE * 4096,
+            post.processes.records@[base].addr() == base + PROCESS_RECORD_PAGE * PAGE_SZ,
             post.processes.records@[base].is_init(),
-            forall|q: usize| #[trigger] pre.processes.spare@.contains_key(q) && q != (base + 2 * 4096) as usize
-                && q != (base + 3 * 4096) as usize && q != (base + 4 * 4096) as usize ==> {
+            forall|q: usize| #[trigger] pre.processes.spare@.contains_key(q) && q != (base + 2 * PAGE_SZ) as usize
+                && q != (base + 3 * PAGE_SZ) as usize && q != (base + 4 * PAGE_SZ) as usize ==> {
                 &&& post.processes.spare@.contains_key(q)
                 &&& post.processes.spare@[q] == pre.processes.spare@[q]
             },
@@ -1064,7 +1064,7 @@ impl CapKernel {
             } else {
                 assert(pa.records@.contains_key(p));
                 assert(process_wf(pa, a, p));
-                let x = (p / 4096) as int;
+                let x = (p / PAGE_SZ) as int;
                 if page <= x < page + 8 {
                     assert(a.pages@[page + (x - page)].kind is Free);
                 }
@@ -1078,9 +1078,9 @@ impl CapKernel {
                 assert(spare_kept(pa, p, 4));
             }
         }
-        assert forall|x: usize| b.tracks(x as int) && #[trigger] process_block(b, x) implies pb.records@.contains_key((x * 4096) as usize) by {
+        assert forall|x: usize| b.tracks(x as int) && #[trigger] process_block(b, x) implies pb.records@.contains_key((x * PAGE_SZ) as usize) by {
             if x == page {
-                assert((x * 4096) as usize == base);
+                assert((x * PAGE_SZ) as usize == base);
             } else if page < x < page + 8 {
                 assert(b.pages@[page + (x - page)].kind is Member);
             } else {
@@ -1150,17 +1150,17 @@ impl CapKernel {
         let pp = pre.payload_of(parent);
         lemma2_to64();
         assert(block_bytes(PROCESS_ORDER) == 32768);
-        assert(block_bytes(pp.order) == a.pages[parent] * 4096);
+        assert(block_bytes(pp.order) == a.pages[parent] * PAGE_SZ);
         assert(a.covers(parent, base)) by {
             assert(a.names.contains_key(parent));
             assert(a.pages.contains_key(parent));
             assert(a.names[parent] == pp.base);
             assert(block_within(base, PROCESS_ORDER, pp));
             assert(base as int % 32768 == 0);
-            vstd::arithmetic::div_mod::lemma_mod_mod(base as int, 4096, 8);
-            assert(base % 4096 == 0);
-            assert(base + 32768 <= pp.base + a.pages[parent] * 4096);
-            assert(a.names[parent] <= base < a.names[parent] + a.pages[parent] * 4096);
+            vstd::arithmetic::div_mod::lemma_mod_mod(base as int, PAGE_SZ as int, 8);
+            assert(base % PAGE_SZ == 0);
+            assert(base + 32768 <= pp.base + a.pages[parent] * PAGE_SZ);
+            assert(a.names[parent] <= base < a.names[parent] + a.pages[parent] * PAGE_SZ);
         }
         assert forall|x: NodeId| !#[trigger] b.held.contains((base, x)) by {
             if b.held.contains((base, x)) {
@@ -1259,7 +1259,7 @@ impl CapKernel {
             ret ==> {
                 let parent = old(self).tables.node_of(root, from);
                 let child = old(self).tables.node_of(root, to);
-                let page = (base / 4096) as int;
+                let page = (base / PAGE_SZ) as int;
                 &&& old(self).view().holds_right(root, parent, Right::Retype)
                 &&& final(self).blocks.pages@[page].kind is Base
                 &&& final(self).blocks.pages@[page].object is Process
@@ -1276,7 +1276,7 @@ impl CapKernel {
                 &&& final(self).spaces.roots@.contains_key(base)
                 &&& final(self).spaces.records@[base].value().kind is Process
                 &&& final(self).spaces.records@[base].value().table == fresh_root(base)
-                &&& forall|i: usize| i < 512 && !holds_kernel(SpaceKind::Process, i)
+                &&& forall|i: usize| i < ENTRIES && !holds_kernel(SpaceKind::Process, i)
                     ==> #[trigger] final(self).spaces.roots@[base].value()[i].is_empty()
                 &&& kernel_slots_wf(&final(self).spaces, base)
                 &&& final(self).spaces.kernel_entries == old(self).spaces.kernel_entries
@@ -1310,10 +1310,10 @@ impl CapKernel {
             Some(found) => found,
             None => { return false; },
         };
-        if !self.blocks.run_tracked(base / 4096, 8) {
+        if !self.blocks.run_tracked(base / PAGE_SZ, 8) {
             return false;
         }
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         proof {
             lemma2_to64();
             assert(block_bytes(3) == 32768);
@@ -1338,7 +1338,7 @@ impl CapKernel {
         let tracked space_cores;
         proof {
             assert forall|k: usize| k < 8 implies #[trigger] holds(all, (page + k) as usize) by {
-                assert(all[(page + k) as usize].addr() == (page + k) * 4096);
+                assert(all[(page + k) as usize].addr() == (page + k) * PAGE_SZ);
             }
             assert(holds(all, (page + 0) as usize));
             assert(holds(all, (page + 1) as usize));
@@ -1373,14 +1373,14 @@ impl CapKernel {
         self.tables.put_root(&self.list, base, Tracked(table_root), Tracked(&mut steps));
         let ghost rooted = self.tables;
         let tracked mut typed_record = page_into_process_record(record);
-        PPtr::<ProcessRecord>::from_usize(base + PROCESS_RECORD_PAGE * 4096).put(Tracked(&mut typed_record), ProcessRecord { dead: false });
+        PPtr::<ProcessRecord>::from_usize(base + PROCESS_RECORD_PAGE * PAGE_SZ).put(Tracked(&mut typed_record), ProcessRecord { dead: false });
         proof {
             self.processes.records.borrow_mut().tracked_insert(base, typed_record);
-            self.processes.spare.borrow_mut().tracked_insert((base + 2 * 4096) as usize, spare2);
-            self.processes.spare.borrow_mut().tracked_insert((base + 3 * 4096) as usize, spare3);
-            self.processes.spare.borrow_mut().tracked_insert((base + 4 * 4096) as usize, spare4);
+            self.processes.spare.borrow_mut().tracked_insert((base + 2 * PAGE_SZ) as usize, spare2);
+            self.processes.spare.borrow_mut().tracked_insert((base + 3 * PAGE_SZ) as usize, spare3);
+            self.processes.spare.borrow_mut().tracked_insert((base + 4 * PAGE_SZ) as usize, spare4);
         }
-        let root_table = base + SPACE_ROOT_PAGE * 4096;
+        let root_table = base + SPACE_ROOT_PAGE * PAGE_SZ;
         let (_, Tracked(map)) = page_perm_to_page_map(root_table, Ghost(4), Tracked(space_root), Tracked(&mut steps));
         let tracked mut map = map;
         page_map_set_kernel_entry_range(&self.spaces.kernel_entries, root_table, Tracked(&mut map), Tracked(&mut steps));
@@ -1391,8 +1391,8 @@ impl CapKernel {
             cores = page_into_core_list(space_cores);
         }
         let ids = vstd::array::array_fill_for_copy_types::<usize, NUM_CPUS>(0usize);
-        PPtr::<SpaceCores>::from_usize(base + SPACE_CORES_PAGE * 4096).put(Tracked(&mut cores), SpaceCores { list: 0u32, ids });
-        PPtr::<SpaceRecord>::from_usize(base + SPACE_RECORD_PAGE * 4096).put(
+        PPtr::<SpaceCores>::from_usize(base + SPACE_CORES_PAGE * PAGE_SZ).put(Tracked(&mut cores), SpaceCores { list: 0u32, ids });
+        PPtr::<SpaceRecord>::from_usize(base + SPACE_RECORD_PAGE * PAGE_SZ).put(
             Tracked(&mut typed),
             SpaceRecord {
                 kind: SpaceKind::Process,
