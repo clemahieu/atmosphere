@@ -81,6 +81,7 @@ tools/run.py            # build loader, kernel, dom0 and payload; boot under QEM
 tools/verify.py         # Verus over kernel/verified; extra arguments go to rust_verify
 tools/gdb.py            # attach gdb to a tools/run.py --gdb run, with the kernel's symbols
 tools/aarch64-esp.py    # build the aarch64 loader, kernel, dom0 and payload and lay out the ESP that tools/orangepi-kvm.py --esp boots on the board
+atmo board              # build the aarch64 images, boot dom0 on the Orange Pi under KVM until QEMU exits, and hold the exit and the serial log (target/orangepi-serial.log) to the gate's boot checks; not part of the gate
 tools/orangepi-stack-overflow.py   # boot an aarch64 kernel that overflows its boot stack on the board and check its one report; not part of the gate
 ```
 

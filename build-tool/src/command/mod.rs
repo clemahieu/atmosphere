@@ -10,6 +10,7 @@ macro_rules! unwrap_command {
     };
 }
 
+mod board;
 mod build;
 mod test;
 
@@ -23,6 +24,7 @@ pub async fn run() -> Result<(), anyhow::Error> {
     match &opts.cmd {
         SubCommand::Test(_) => test::run(opts).await?,
         SubCommand::Build(_) => build::run(opts).await?,
+        SubCommand::Board(_) => board::run(opts).await?,
         SubCommand::GenCompletions(local) => {
             gen_completions(local.shell);
         }
@@ -43,6 +45,8 @@ enum SubCommand {
     Test(test::Opts),
 
     Build(build::Opts),
+
+    Board(board::Opts),
 
     #[clap(hide = true)]
     GenCompletions(GenCompletions),

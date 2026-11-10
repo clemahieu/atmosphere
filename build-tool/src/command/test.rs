@@ -397,7 +397,7 @@ async fn boot(project: &ProjectHandle, timeout: u64, args: &[&str]) -> Result<(S
 
 /// The lines the serial log of a successful boot on `arch` must show. The kernel may still print a
 /// capability-entry line; this does not require one.
-fn boot_serial_accepted(serial: &str, arch: Arch) -> Result<String> {
+pub(super) fn boot_serial_accepted(serial: &str, arch: Arch) -> Result<String> {
     let (untyped, frames) = fixed_slots_printed(serial)?;
     let base = free_gigabyte(arch);
     let gigabyte = format!("{} to {} GiB as one 1G untyped", base >> 30, (base >> 30) + 1);
@@ -502,7 +502,7 @@ fn syscall_stack(serial: &str, label: &str) -> Option<u64> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
     #[test]
@@ -542,7 +542,7 @@ mod tests {
     }
 
     /// A boot log with the lines the gate keeps, and no capability-entry line.
-    fn boot_log() -> String {
+    pub(in crate::command) fn boot_log() -> String {
         format!(
             "{}\
              dom0 slot checks held\n\
