@@ -77,7 +77,7 @@ A commit is tested when `atmo test` exits 0, or when it changes only what no gat
 ```
 source tools/env.sh     # Verus, RUSTC_BOOTSTRAP and tools/bin on PATH
 atmo test               # the gate
-tools/run.py            # build loader, kernel, dom0 and payload; boot under QEMU, with KVM when /dev/kvm is writable; --no-kvm forces TCG
+tools/run.py            # build loader, kernel, dom0 and payload; boot under QEMU, with KVM when /dev/kvm is writable; --no-kvm forces TCG; --kernel-feature FEATURE builds the kernel with one of its features
 tools/verify.py         # Verus over kernel/verified; extra arguments go to rust_verify
 tools/check-upstream-copies.py --update   # rewrite the recorded delta of a copied upstream file after a deliberate change to it or a Verus pin that moves its upstream
 tools/gdb.py            # attach gdb to a tools/run.py --gdb run, with the kernel's symbols
@@ -87,6 +87,7 @@ atmo board              # build the aarch64 images, boot dom0 on the Orange Pi u
 tools/orangepi-stack-overflow.py   # boot an aarch64 kernel that overflows its boot stack, or with --stack syscall its syscall stack, on the board and check its one report; not part of the gate
 tools/bead-status.py    # serve the state of the Beads tree as a page at http://127.0.0.1:8377/ (--bind and --port move it): the issues not closed over time, what each session holds and the stage of its round, the questions waiting on the human, the ready leaves and each top epic's progress; not part of the gate
 tools/check-stray-timer.py   # boot a kernel built with stray_timer, which arms CPU 0's timer for nothing, under KVM here and on the board (--target picks one), and check that the core reports the interrupt once and stops; not part of the gate
+tools/check-boot-panic.py   # boot a kernel built with boot_panic, which panics at boot, under tools/run.py here and on the board (--target picks one), and check that the panic ends QEMU with status 1 by itself, on x86_64 within seconds of the panic line; not part of the gate
 ```
 
 `tools/setup-verus.sh` builds Verus under `tools/verus`, which git ignores, at the commit the workspace `Cargo.toml` pins as vstd's revision. The host is an AMD Ryzen 9 9950X3D; `/dev/kvm` is world-writable; edk2-ovmf is at `/usr/share/edk2/ovmf`.

@@ -74,6 +74,10 @@ fn boot_cpu0(boot_info: *const BootInfo) -> isize {
     }
 
     log::info!("Command line: {}", boot::get_raw_command_line());
+    // After the command line, which names the machine's way to end a run.
+    if cfg!(feature = "boot_panic") {
+        panic!("boot_panic: the panic this build asks for");
+    }
     #[cfg(debug_assertions)]
     {
         log::info!("Atmosphere was built in debug mode.");

@@ -10,7 +10,8 @@ capability, which the kernel carries out as that shutdown (dom0/src/main.rs). Th
 whenever /dev/kvm is writable; --no-kvm forces TCG. --iommu adds QEMU's emulated IOMMU. --gdb puts
 a gdb server on the guest and the file gdb on the ESP, which makes the loader wait before it enters
 the kernel (aloader/src/debugger.rs); once the loader has logged where it loaded each binary and that
-it waits, .gdb at the workspace root holds what tools/gdb.py attaches with.
+it waits, .gdb at the workspace root holds what tools/gdb.py attaches with. --kernel-feature builds
+the kernel with a feature of its own, boot_panic for a kernel that panics at boot.
 
 The firmware's output on the terminal ends with control sequences that reset it, so everything
 before the loader's banner is dropped there; serial.log keeps it.
@@ -19,7 +20,7 @@ Exit status: 0 when the guest powers off, as it does when dom0 reports success; 
 1 when the kernel fails or dom0 reports a failure. 1 when QEMU dies by a signal, and 1 when a build
 fails.
 
-usage: tools/run.py [--no-kvm] [--iommu] [--gdb]   (from anywhere)
+usage: tools/run.py [--no-kvm] [--iommu] [--gdb] [--kernel-feature FEATURE ...]   (from anywhere)
        tools/run.py --test                         (this script's own tests)
 """
 import argparse
@@ -76,9 +77,9 @@ LOADER_MARKER = b"ALOADER\x1b[2J\x1b[0;0H"
 CARGO_ENV = {**os.environ, "RUSTC_BOOTSTRAP": "1"}
 
 
-def build(crate_dir, name):
+def build(crate_dir, name, features=()):
     """Builds a crate from its own directory, so its .cargo config applies, and returns its executable."""
-    args = ["cargo", "build", "--message-format=json-render-diagnostics"]
+    args = ["cargo", "build", "--message-format=json-render-diagnostics"] + build_features(features)
     result = subprocess.run(args, cwd=REPO / crate_dir, env=CARGO_ENV, stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, text=True)
     if result.returncode != 0:
@@ -87,6 +88,11 @@ def build(crate_dir, name):
     if path is None:
         sys.exit(f"tools/run.py: building {crate_dir} produced no executable {name}")
     return path
+
+
+def build_features(features):
+    """cargo's arguments for a build with these features."""
+    return ["--features", ",".join(features)] if features else []
 
 
 def executable(messages, name):
@@ -225,11 +231,13 @@ def main(argv):
     parser.add_argument("--no-kvm", action="store_true", help="use TCG even if /dev/kvm is writable")
     parser.add_argument("--iommu", action="store_true", help="add QEMU's emulated IOMMU")
     parser.add_argument("--gdb", action="store_true", help="wait for tools/gdb.py before entering the kernel")
+    parser.add_argument("--kernel-feature", action="append", default=[], metavar="FEATURE",
+                        help="build the kernel with this feature; may repeat")
     options = parser.parse_args(argv)
     # Fail before the build when the firmware or QEMU is not there.
     ovmf_code, ovmf_vars, qemu_bin = firmware.require("tools/run.py")
 
-    kernel = build("kernel", "kernel")
+    kernel = build("kernel", "kernel", options.kernel_feature)
     loader = build("aloader", "aloader")
     dom0 = build("dom0", "dom0")
     payload = build(f"user/{PAYLOAD}", PAYLOAD)
@@ -489,6 +497,12 @@ class Tests(unittest.TestCase):
     def test_no_biases_when_the_output_ends_before_the_wait(self):
         lines = b" INFO debugger: kernel at bias 0x14005f000\r\n"
         self.assertEqual(self.awaited(lines), (None, lines))
+
+    def test_a_build_without_features_names_none(self):
+        self.assertEqual(build_features([]), [])
+
+    def test_kernel_features_go_to_cargo_as_one_list(self):
+        self.assertEqual(build_features(["boot_panic", "lock_stats"]), ["--features", "boot_panic,lock_stats"])
 
     def test_executable_is_the_named_artifact(self):
         messages = "\n".join(json.dumps(m) for m in [
