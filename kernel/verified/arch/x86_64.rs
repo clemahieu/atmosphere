@@ -1,6 +1,5 @@
 //! The x86_64 arch items. Written from the AMD64 Architecture Programmer's Manual, Volume 2: System
 //! Programming (24593).
-use core::mem::MaybeUninit;
 use vstd::prelude::*;
 
 verus! {
@@ -756,10 +755,33 @@ pub struct Registers {
 }
 
 impl Registers {
-    #[verifier(external_body)]
-    // external_body(gap): builds a value from zeroed memory, which Verus cannot check
-    pub const fn zeroed() -> Self {
-        unsafe { MaybeUninit::zeroed().assume_init() }
+    pub const fn zeroed() -> (ret: Self)
+        ensures
+            ret == zero_registers(),
+    {
+        Self {
+            r15: 0,
+            r14: 0,
+            r13: 0,
+            r12: 0,
+            rbp: 0,
+            rbx: 0,
+            r11: 0,
+            r10: 0,
+            r9: 0,
+            r8: 0,
+            rcx: 0,
+            rdx: 0,
+            rsi: 0,
+            rdi: 0,
+            rax: 0,
+            error_code: 0,
+            rip: 0,
+            cs: 0,
+            flags: 0,
+            rsp: 0,
+            ss: 0,
+        }
     }
 
     pub fn new(input: &Registers) -> (ret: Self)
@@ -943,29 +965,7 @@ pub fn zero_frame() -> (ret: Registers)
     ensures
         ret == zero_registers(),
 {
-    Registers {
-        r15: 0,
-        r14: 0,
-        r13: 0,
-        r12: 0,
-        rbp: 0,
-        rbx: 0,
-        r11: 0,
-        r10: 0,
-        r9: 0,
-        r8: 0,
-        rcx: 0,
-        rdx: 0,
-        rsi: 0,
-        rdi: 0,
-        rax: 0,
-        error_code: 0,
-        rip: 0,
-        cs: 0,
-        flags: 0,
-        rsp: 0,
-        ss: 0,
-    }
+    Registers::zeroed()
 }
 
 /// The selectors a thread returns to user mode with: the GDT's user code and data entries, 4 and 3,
