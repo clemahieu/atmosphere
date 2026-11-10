@@ -7,8 +7,9 @@ become the target's (design/arch-module/). The page-shaped values are the 4K pag
 mask, the entries a level and its index mask, the 2M, 1G and 512G regions and their offset masks,
 and the pages in a 1G and a 512G region. A number literal of any base, digit grouping or suffix
 whose value is one of them is refused, outside '//' and '/* */' comments and string literals. The
-definitions are exempt: define.rs and arch/. A line that holds such a value for another reason
-says so in a comment '// not a page size: <reason>'.
+definitions are exempt: define.rs and arch/, and the 'global layout' directives of layouts.rs,
+which Verus takes only with a literal size. A line that holds such a value for another reason says
+so in a comment '// not a page size: <reason>'.
 
 tools/page-literal-allowance lists the files under kernel/verified not yet converted, one path a
 line, '#' starting a comment line. A literal in a listed file passes; a listed file that holds none
@@ -29,6 +30,8 @@ ALLOWANCE_PATH = "tools/page-literal-allowance"
 VERIFIED_ROOT = "kernel/verified"
 EXEMPT_FILES = ("define.rs",)
 EXEMPT_DIRECTORIES = ("arch",)
+# The lines of a file that are definitions: a layout directive's size must be a literal.
+EXEMPT_LINES = {"layouts.rs": re.compile(r"^\s*global layout ")}
 MARKER = re.compile(r"//\s*not a page size:\s*\S")
 
 PAGE = 4096
@@ -70,8 +73,9 @@ def literals(path, source):
     """Each line of one file that writes a page-shaped literal, as 'path:line: text'."""
     code = STRING.sub(blank, BLOCK_COMMENT.sub(blank, source))
     found = []
+    definition = EXEMPT_LINES.get(path)
     for index, (line, original) in enumerate(zip(code.splitlines(), source.splitlines())):
-        if MARKER.search(original):
+        if MARKER.search(original) or (definition and definition.match(line)):
             continue
         live = line.split("//", 1)[0]
         if any(value(match.group(1)) in VALUES for match in NUMBER.finditer(live)):
@@ -202,6 +206,12 @@ class Tests(unittest.TestCase):
         self.assertFalse(exempt("capability/define.rs"))
         self.assertFalse(exempt("layouts.rs"))
         self.assertFalse(exempt("archive.rs"))
+
+    def test_only_the_layout_directives_of_layouts_rs_are_exempt(self):
+        source = "global layout PageBytes is size == 4096, align == 1;\n    page.addr() % 4096 == 0,\n"
+        self.assertEqual(literals("layouts.rs", source), ["layouts.rs:2: page.addr() % 4096 == 0,"])
+        self.assertEqual(len(literals("capability/table.rs", source)), 2)
+        self.assertEqual(len(literals("layouts.rs", "let x = 4096; // global layout \n")), 1)
 
     def test_a_literal_in_an_unlisted_file_fails_with_where_it_is(self):
         found = {"b.rs": ["b.rs:7: x * 4096"]}
