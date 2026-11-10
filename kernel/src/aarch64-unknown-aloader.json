@@ -17,9 +17,10 @@
     "kind": "inline"
   },
   "features": "+v8a,+strict-align,-neon,+crt-static",
-  "relocation-model": "static",
+  "relocation-model": "pie",
   "pre-link-args": {
     "gnu-lld": [
+      "-pie",
       "--fix-cortex-a53-843419",
       "--entry=main"
     ]

@@ -130,7 +130,8 @@ const LOADER_AARCH64_TARGET: &str = "aarch64-unknown-uefi";
 /// What an image the aarch64 build makes is.
 #[derive(Debug, Clone, Copy)]
 enum Image {
-    /// What the loader loads: the kernel, dom0 and a user program.
+    /// What the loader loads: the kernel, dom0 and a user program, each a static
+    /// position-independent executable, which the loader places where it has memory.
     Elf,
     /// What the firmware starts: the loader.
     EfiApplication,
@@ -147,7 +148,11 @@ impl Image {
     /// Whether `file`'s line for an image says it is an aarch64 image of this kind.
     fn describes(self, description: &str) -> bool {
         match self {
-            Image::Elf => description.contains("ELF 64-bit") && description.contains("ARM aarch64"),
+            Image::Elf => {
+                description.contains("ELF 64-bit")
+                    && description.contains("pie executable, ARM aarch64")
+                    && description.contains("static-pie linked")
+            }
             Image::EfiApplication => description.contains("PE32+ executable for EFI (application), ARM64"),
         }
     }
@@ -203,7 +208,9 @@ mod tests {
         );
     }
 
-    /// The aarch64 spec beside each x86 spec: no OS, no red zone, soft float, static, panic abort.
+    /// The aarch64 spec beside each x86 spec: no OS, no red zone, soft float, panic abort, and the
+    /// x86 spec's relocation model, a static position-independent executable, which is the only
+    /// kind the loader places (aelf's `NotRelocatable`).
     #[test]
     fn aarch64_specs_have_the_x86_specs_role() {
         for (_, path) in AARCH64_ELF_SPECS {
@@ -214,17 +221,28 @@ mod tests {
                 "\"disable-redzone\": true",
                 "\"abi\": \"softfloat\"",
                 "\"rustc-abi\": \"softfloat\"",
-                "\"relocation-model\": \"static\"",
                 "\"panic-strategy\": \"abort\"",
             ] {
                 assert!(text.contains(needle), "{path} missing {needle}");
             }
+            let x86_path = path.replace("aarch64", "x86_64");
+            let x86 = spec_text(&x86_path);
+            assert_eq!(relocation(&x86), ["\"relocation-model\": \"pie\",", "\"-pie\","], "{x86_path}");
+            assert_eq!(relocation(&text), relocation(&x86), "{path} against {x86_path}");
         }
     }
 
+    /// A spec's lines that decide whether its executable can be placed at any address: the
+    /// relocation model the compiler generates code for, and the linker's own flag for the image.
+    fn relocation(spec: &str) -> Vec<&str> {
+        spec.lines().map(str::trim).filter(|line| line.contains("relocation-model") || line.contains("-pie")).collect()
+    }
+
     /// `file`'s line for each image the aarch64 build makes, and for the x86_64 ones beside them.
-    const AARCH64_ELF: &str = "dom0: ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), statically linked, with debug_info, not stripped";
-    const X86_64_ELF: &str = "dom0: ELF 64-bit LSB executable, x86-64, version 1 (SYSV), statically linked, with debug_info, not stripped";
+    const AARCH64_ELF: &str = "dom0: ELF 64-bit LSB pie executable, ARM aarch64, version 1 (SYSV), static-pie linked, with debug_info, not stripped";
+    /// The same image linked at a fixed address, which the loader refuses.
+    const AARCH64_FIXED_ELF: &str = "dom0: ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), statically linked, with debug_info, not stripped";
+    const X86_64_ELF: &str = "dom0: ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV), static-pie linked, with debug_info, not stripped";
     const AARCH64_EFI: &str = "aloader.efi: PE32+ executable for EFI (application), ARM64, 4 sections";
     const X86_64_EFI: &str = "aloader.efi: PE32+ executable for EFI (application), x86-64, 5 sections";
 
@@ -232,7 +250,7 @@ mod tests {
     fn an_aarch64_image_is_told_from_an_x86_64_one_and_an_elf_from_an_efi_application() {
         assert!(Image::Elf.describes(AARCH64_ELF));
         assert!(Image::EfiApplication.describes(AARCH64_EFI));
-        for other in [X86_64_ELF, AARCH64_EFI, X86_64_EFI] {
+        for other in [AARCH64_FIXED_ELF, X86_64_ELF, AARCH64_EFI, X86_64_EFI] {
             assert!(!Image::Elf.describes(other), "{other}");
         }
         for other in [AARCH64_ELF, X86_64_ELF, X86_64_EFI] {

@@ -14,9 +14,10 @@
   "crt-objects-fallback": "false",
   "max-atomic-width": 128,
   "features": "+v8a,+strict-align,-neon,+crt-static",
-  "relocation-model": "static",
+  "relocation-model": "pie",
   "pre-link-args": {
     "gnu-lld": [
+      "-pie",
       "--fix-cortex-a53-843419",
       "--entry=main"
     ]
