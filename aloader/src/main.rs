@@ -14,19 +14,17 @@
 #![cfg_attr(not(debug_assertions), deny(dead_code))]
 
 pub mod acpi;
+pub mod arch;
 pub mod boot;
 pub mod console;
 pub mod debugger;
 pub mod logging;
 pub mod memory;
 
-use core::arch::asm;
 use core::slice;
 
 #[cfg(not(test))]
 use core::panic::PanicInfo;
-
-use core::arch::x86_64::__cpuid;
 
 use aelf::{ElfHandle, LoadSegment};
 use astd::boot::{
@@ -98,31 +96,7 @@ fn load(rsdp: u64, wait_for_debugger: bool) -> ! {
     }
 
     let mut boot_info = BootInfo::empty(); // stays on stack
-    boot_info.pcide = cpu_has_pcid();
-
-    if boot_info.pcide {
-        log::info!("Enabling Tagged TLB");
-        unsafe {
-            asm!(
-                "mov {cr4}, cr4",
-                "or {cr4}, {cr4_pcide}",
-                "mov cr4, {cr4}",
-                cr4 = out(reg) _,
-                cr4_pcide = const (1 << 17),
-            );
-        }
-    } else {
-        log::warn!("CPU does not support Tagged TLB");
-    }
-
-    log::info!("Switching to PML4 @ {:x?}", address_space.pml4());
-    unsafe {
-        asm!(
-            "mov cr3, {pml4}",
-            pml4 = inout(reg) address_space.pml4() => _,
-        );
-    }
-
+    boot_info.pcide = unsafe { arch::activate(address_space.pml4()) };
     boot_info.pml4 = address_space.pml4();
     boot_info.iommu_base = acpi::probe_iommu(rsdp);
 
@@ -160,12 +134,11 @@ fn load(rsdp: u64, wait_for_debugger: bool) -> ! {
         }
         cur += PAGE_BYTES;
     }
-    // The TLB may hold the 2M leaves those stretches had, and the guard's pages. invlpg drops a
-    // page's entry whatever its size, and a global one the firmware's tables left.
+    // The TLB may hold the 2M leaves those stretches had, and the guard's pages.
     let mut cur = kernel_base as u64;
     while cur < stack_base {
         unsafe {
-            asm!("invlpg [{}]", in(reg) cur);
+            arch::flush_page(cur);
         }
         cur += PAGE_BYTES;
     }
@@ -255,43 +228,9 @@ fn load(rsdp: u64, wait_for_debugger: bool) -> ! {
         &boot_info as *const _ as u64
     );
     log::info!("Calling into kernel @ {:x?}", kernel_map.entry_point);
-    let ret: usize;
-    unsafe {
-        asm!(
-            // save state
-            "mov r15w, ds; push r15w",
-            "mov r15w, fs; push r15w",
-            "mov r15w, gs; push r15w",
-            "mov r15w, ss; push r15w",
-
-            // clear state
-            // rdi = &boot_info
-            "xor r15, r15",
-            "mov ds, r15w",
-            "mov fs, r15w",
-            "mov gs, r15w",
-            "mov ss, r15w",
-
-            "push rsp",
-            "mov rsp, rsi",
-            "xor rsi, rsi",
-
-            // call entry
-            "call rax",
-
-            // restore state
-            "pop rsp",
-            "pop r15w; mov ss, r15w",
-            "pop r15w; mov gs, r15w",
-            "pop r15w; mov fs, r15w",
-            "pop r15w; mov ds, r15w",
-
-            inout("rax") kernel_map.entry_point => ret,
-            inout("rdi") &boot_info as *const _ => _,
-            inout("rsi") stack_base + KERNEL_STACK_SIZE => _,
-            out("r15") _,
-        );
-    }
+    let ret = unsafe {
+        arch::enter_kernel(kernel_map.entry_point, &boot_info, stack_base + KERNEL_STACK_SIZE)
+    };
 
     log::info!("Returned from kernel: 0x{:x}", ret);
 
@@ -427,11 +366,6 @@ where
         remaining_file: elf,
         allocator,
     })
-}
-
-fn cpu_has_pcid() -> bool {
-    let cpuid_1 = __cpuid(0x1);
-    (cpuid_1.ecx & (1 << 17)) != 0
 }
 
 /// The kernel panic handler.

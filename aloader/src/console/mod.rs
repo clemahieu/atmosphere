@@ -3,13 +3,13 @@
 use core::fmt::Write;
 
 use astd::sync::{Mutex, MutexGuard};
-use ns16550a::PioSerial;
-use constants::*;
+
+use crate::arch::{self, Serial};
 
 /// The serial device.
-static SERIAL: Mutex<PioSerial> = Mutex::new(unsafe { PioSerial::new(SPORT_ADDR) });
+static SERIAL: Mutex<Serial> = Mutex::new(arch::serial());
 
-pub type WriterType = MutexGuard<'static, PioSerial>;
+pub type WriterType = MutexGuard<'static, Serial>;
 
 /// Returns a writer that implements `core::fmt::Write`.
 pub fn get_writer() -> WriterType {
@@ -27,7 +27,7 @@ pub unsafe fn init() {
     let mut serial = SERIAL.lock();
     let _invalid_serial = false;
 
-    *serial = PioSerial::new(SPORT_ADDR);
+    *serial = arch::serial();
 
     serial.init();
 

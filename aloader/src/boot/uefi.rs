@@ -6,7 +6,6 @@
 //! services, and runs the load on a stack of its own. A file `gdb` on that partition makes the load
 //! wait for a debugger before it enters the kernel (crate::debugger).
 
-use core::arch::asm;
 use core::ffi::c_void;
 use core::ptr;
 use core::slice;
@@ -21,6 +20,7 @@ use astd::boot::PAGE_BYTES;
 
 use super::efi_memory::region_type;
 use super::{consume_start_info, StartInfo};
+use crate::arch;
 use crate::memory::{AcpiMemoryType, MemoryRange, BOOTSTRAP_SIZE};
 
 /// The initrd's path on the partition the loader was started from, as UCS-2 with its terminator;
@@ -74,7 +74,7 @@ extern "efiapi" fn efi_main(image: Handle, system_table: *const SystemTable) -> 
 
     let memory_map = exit_boot_services(boot_services, image);
     unsafe {
-        asm!("cli");
+        arch::disable_interrupts();
     }
 
     consume_start_info(
@@ -88,22 +88,8 @@ extern "efiapi" fn efi_main(image: Handle, system_table: *const SystemTable) -> 
     unsafe {
         crate::memory::init();
 
-        asm!(
-            "mov rsp, {stack_top}",
-            "call {load}",
-            stack_top = in(reg) stack as u64 + STACK_SIZE as u64,
-            load = sym load,
-            in("rdi") rsdp,
-            in("rsi") wait_for_debugger as u64,
-            options(noreturn),
-        );
+        arch::load_on_stack(stack as u64 + STACK_SIZE as u64, rsdp, wait_for_debugger)
     }
-}
-
-/// Called on the loader's stack with the RSDP in rdi and whether to wait for a debugger in rsi. The
-/// target's C convention is Microsoft's, which passes them in rcx and rdx.
-extern "sysv64" fn load(rsdp: u64, wait_for_debugger: bool) -> ! {
-    crate::load(rsdp, wait_for_debugger)
 }
 
 /// Panics unless `status` is success.

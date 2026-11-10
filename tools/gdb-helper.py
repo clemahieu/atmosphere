@@ -7,7 +7,7 @@
 
 import gdb
 
-# What rax holds while the loader waits (aloader/src/debugger.rs).
+# What rax holds while the loader waits (aloader/src/arch/x86_64.rs).
 LOADER_WAITING = 0x6764627761697421
 # The instructions a stop may land before the wait loop sets rax: the end of the log call before it.
 MAX_STEPS_TO_WAIT = 100000

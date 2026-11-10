@@ -5,8 +5,8 @@ use core::mem::{self, MaybeUninit};
 use core::ptr;
 
 use astd::boot::PAGE_BYTES;
-use bit_field::BitField;
 
+use crate::arch::Entry;
 use crate::memory::PhysicalAllocator;
 
 pub const LARGE_PAGE_SIZE: usize = 2 * 1024 * 1024;
@@ -39,20 +39,6 @@ impl Leaf {
 
 const LEVEL_MASK: u64 = 0b1_1111_1111;
 
-/// The number of bits in a physical address.
-///
-/// This is also called M in the Intel manual.
-const MAXPHYADDR: u64 = 56;
-
-/// Bitmask to get the page in a linear address.
-const PAGE_MASK: u64 = !(PAGE_BYTES - 1);
-
-/// Bitmask to get the physical address.
-const PHYSICAL_MASK: u64 = (1u64 << MAXPHYADDR) - 1u64;
-
-/// Bitmask to get the physical page address.
-const PHYSICAL_PAGE_MASK: u64 = PAGE_MASK & PHYSICAL_MASK;
-
 pub struct AddressSpace {
     pml4: *mut PageTable,
 }
@@ -61,10 +47,6 @@ pub struct AddressSpace {
 struct PageTable {
     entries: [MaybeUninit<Entry>; 512],
 }
-
-#[repr(transparent)]
-#[derive(Clone, Copy)]
-struct Entry(u64);
 
 impl AddressSpace {
     pub fn new(allocator: &mut impl PhysicalAllocator) -> Self {
@@ -97,29 +79,17 @@ impl AddressSpace {
 
             if !entry.present() {
                 let new_table = Self::allocate_page_table(allocator);
-                entry = Entry::new()
-                    .with_present(true)
-                    .with_read_write(true)
-                    .with_address(new_table as u64)
-                    .with_user(user);
+                entry = Entry::table(new_table as u64, user);
                 (*cur).write(index, entry);
             }
 
-            assert!(!entry.page_size_bit(), "a 2M leaf maps {:#x}", vaddr);
+            assert!(!entry.large(), "a 2M leaf maps {:#x}", vaddr);
 
             cur = entry.address() as *mut PageTable;
         }
 
         let index = Self::index(vaddr, leaf.level());
-        let entry = Entry::new()
-            .with_present(true)
-            .with_read_write(true)
-            .with_address(paddr)
-            .with_page_size_bit(leaf == Leaf::Large)
-            .with_cache_disable(cache_disable)
-            .with_user(user);
-
-        (*cur).write(index, entry);
+        (*cur).write(index, Entry::leaf(paddr, leaf, user, cache_disable));
     }
 
     unsafe fn allocate_page_table(allocator: &mut impl PhysicalAllocator) -> *mut PageTable {
@@ -151,29 +121,24 @@ impl AddressSpace {
             let mut cur = self.pml4;
             for level in 0..Leaf::Large.level() {
                 let entry = (*cur).read(Self::index(vaddr, level));
-                assert!(entry.present() && !entry.page_size_bit());
+                assert!(entry.present() && !entry.large());
                 cur = entry.address() as *mut PageTable;
             }
             let index = Self::index(vaddr, Leaf::Large.level());
             let leaf = (*cur).read(index);
             assert!(leaf.present());
-            if leaf.page_size_bit() {
+            if leaf.large() {
                 let table = Self::allocate_page_table(allocator);
                 for page in 0..512 {
-                    let entry = Entry::new()
-                        .with_present(true)
-                        .with_read_write(true)
-                        .with_address(leaf.address() + page as u64 * PAGE_BYTES)
-                        .with_cache_disable(leaf.cache_disable())
-                        .with_user(leaf.user());
+                    let entry = Entry::leaf(
+                        leaf.address() + page as u64 * PAGE_BYTES,
+                        Leaf::Small,
+                        leaf.user(),
+                        leaf.cache_disable(),
+                    );
                     (*table).write(page, entry);
                 }
-                let entry = Entry::new()
-                    .with_present(true)
-                    .with_read_write(true)
-                    .with_address(table as u64)
-                    .with_user(leaf.user());
-                (*cur).write(index, entry);
+                (*cur).write(index, Entry::table(table as u64, leaf.user()));
             }
             vaddr += Leaf::Large.size();
         }
@@ -185,10 +150,10 @@ impl AddressSpace {
         let mut cur = self.pml4;
         for level in 0..3 {
             let entry = (*cur).read(Self::index(vaddr, level));
-            assert!(entry.present() && !entry.page_size_bit());
+            assert!(entry.present() && !entry.large());
             cur = entry.address() as *mut PageTable;
         }
-        (*cur).write(Self::index(vaddr, 3), Entry::new());
+        (*cur).write(Self::index(vaddr, 3), Entry::empty());
     }
 
     fn index(address: u64, level: usize) -> usize {
@@ -217,64 +182,6 @@ impl PageTable {
 
     const fn entry(&self, index: usize) -> *mut Entry {
         self.entries[index].as_ptr() as *mut Entry
-    }
-}
-
-impl Entry {
-    const fn new() -> Self {
-        Self(0)
-    }
-
-    fn present(&self) -> bool {
-        (self.0 & 0b1) == 1
-    }
-
-    fn address(&self) -> u64 {
-        PHYSICAL_PAGE_MASK & self.0
-    }
-
-    fn page_size_bit(&self) -> bool {
-        self.0.get_bit(7)
-        //(self.0 & (1 << 7)) != 0
-    }
-
-    fn with_present(mut self, present: bool) -> Self {
-        self.0 = (self.0 & !(0b1)) | (if present { 1 } else { 0 });
-        self
-    }
-
-    fn with_read_write(mut self, read_write: bool) -> Self {
-        self.0.set_bit(1, read_write);
-        self
-    }
-
-    fn user(&self) -> bool {
-        self.0.get_bit(2)
-    }
-
-    fn cache_disable(&self) -> bool {
-        self.0.get_bit(4)
-    }
-
-    fn with_user(mut self, user: bool) -> Self {
-        self.0.set_bit(2, user);
-        self
-    }
-
-    fn with_cache_disable(mut self, cache_disable: bool) -> Self {
-        self.0.set_bit(4, cache_disable);
-        self
-    }
-
-    fn with_address(mut self, address: u64) -> Self {
-        let masked = PHYSICAL_PAGE_MASK & address;
-        self.0 = self.0 & !(PHYSICAL_PAGE_MASK) | masked;
-        self
-    }
-
-    fn with_page_size_bit(mut self, page_size: bool) -> Self {
-        self.0.set_bit(7, page_size);
-        self
     }
 }
 
@@ -310,7 +217,7 @@ mod tests {
             if !entry.present() {
                 return None;
             }
-            let leaf = match (level, entry.page_size_bit()) {
+            let leaf = match (level, entry.large()) {
                 (2, true) => Leaf::Large,
                 (3, _) => Leaf::Small,
                 (_, false) => {
