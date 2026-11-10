@@ -47,6 +47,11 @@ cfg_match! {
         const EM_SELF: u16 = elf_types::header::EM_386;
         const R_RELATIVE: u32 = elf_types::reloc::R_386_RELATIVE;
     }
+    target_arch = "aarch64" => {
+        use goblin::elf64 as elf_types;
+        const EM_SELF: u16 = elf_types::header::EM_AARCH64;
+        const R_RELATIVE: u32 = elf_types::reloc::R_AARCH64_RELATIVE;
+    }
 }
 
 use elf_types::{
