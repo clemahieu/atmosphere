@@ -141,8 +141,16 @@ def not_run(ran, manifest="Cargo.toml"):
     return sorted(crate for crate in user if crate not in ran)
 
 
+def summarize(llvm_cov, image, profile):
+    """Returns llvm-cov's summary of one image and each line it wrote to stderr. A warning there says what
+    it could not count, as '1 functions have mismatched data' for a function whose counters it dropped."""
+    result = subprocess.run([llvm_cov, "export", image, f"-instr-profile={profile}", "-summary-only",
+                             f"-ignore-filename-regex={FOREIGN}"], check=True, text=True, capture_output=True)
+    return json.loads(result.stdout), result.stderr.splitlines()
+
+
 def report(image, sock, command, bias):
-    """Returns each crate's llvm-cov summary from one image's counters."""
+    """Returns each crate's llvm-cov summary from one image's counters, and what llvm-cov warned."""
     found = sections(image)
     counters_addr, _, counters_size = found["__llvm_prf_cnts"]
     counters = read_guest(sock, command, bias + counters_addr, counters_size)
@@ -153,8 +161,7 @@ def report(image, sock, command, bias):
     with open(raw, "wb") as f:
         f.write(raw_profile(elf, found, counters))
     run(tool("llvm-profdata"), "merge", "-sparse", raw, "-o", merged)
-    export = json.loads(run(tool("llvm-cov"), "export", image, f"-instr-profile={merged}", "-summary-only",
-                            f"-ignore-filename-regex={FOREIGN}"))
+    export, warnings = summarize(tool("llvm-cov"), image, merged)
     crates = {}
     for entry in export["data"][0]["files"]:
         crate = crate_of(entry["filename"])
@@ -164,7 +171,19 @@ def report(image, sock, command, bias):
         for kind in totals:
             totals[kind][0] += entry["summary"][kind]["covered"]
             totals[kind][1] += entry["summary"][kind]["count"]
-    return crates
+    return crates, warnings
+
+
+def lines(images):
+    """The report's lines for each image: each crate's numbers, then each warning llvm-cov gave."""
+    out = []
+    for image, (crates, warnings) in images.items():
+        for crate, totals in sorted(crates.items()):
+            out.append(f"{image}/{crate}: " + ", ".join(
+                f"{kind} {covered}/{count} ({100 * covered / max(count, 1):.1f}%)"
+                for kind, (covered, count) in totals.items()))
+        out.extend(f"{image}: {warning}" for warning in warnings)
+    return out
 
 
 def main():
@@ -183,12 +202,9 @@ def main():
     finally:
         sock.sendall(b"quit\n")
         qemu.wait(timeout=30)
-    for image, crates in images.items():
-        for crate, totals in sorted(crates.items()):
-            print(f"{image}/{crate}: " + ", ".join(
-                f"{kind} {covered}/{count} ({100 * covered / max(count, 1):.1f}%)"
-                for kind, (covered, count) in totals.items()))
-    for crate in not_run({crate for crates in images.values() for crate in crates}):
+    for line in lines(images):
+        print(line)
+    for crate in not_run({crate for crates, _ in images.values() for crate in crates}):
         print(f"{crate}: not run")
     return 0
 
@@ -217,6 +233,18 @@ class Tests(unittest.TestCase):
 
     def test_the_workspace_lists_its_user_crates(self):
         self.assertEqual(not_run(set(), "Cargo.toml"), ["hello"])
+
+    def test_what_llvm_cov_warns_reaches_the_report(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        llvm_cov = os.path.join(directory.name, "llvm-cov")
+        with open(llvm_cov, "w") as f:
+            f.write("#!/bin/sh\necho 'warning: 1 functions have mismatched data' >&2\n"
+                    "echo '{\"data\": [{\"files\": []}]}'\n")
+        os.chmod(llvm_cov, 0o755)
+        export, warnings = summarize(llvm_cov, "kernel", "kernel.profdata")
+        self.assertEqual(export, {"data": [{"files": []}]})
+        self.assertEqual(lines({"kernel": ({}, warnings)}), ["kernel: warning: 1 functions have mismatched data"])
 
 
 if __name__ == "__main__":
