@@ -17,10 +17,13 @@ the local side dies. A timeout here does the same.
 
 When ssh cannot reach the host, this prints one skip line naming orangepi5 and
 exits 0. A guest that starts and then fails is a failure. atmo test runs it as
-its aarch64 boot, which takes the skip line as a pass.
+its aarch64 boot, which takes the skip line as a pass. The output says how long the run
+waited for the lock; with --keep-failed a run that fails also writes all it printed to a file
+of its own and names it on stderr, so the gate log of a failed boot leads to where the guest stopped.
 
 usage: tools/orangepi-kvm.py [--ssh-host HOST] [--connect-timeout SEC] [--boot-timeout SEC]
                              [--esp DIR] [--memory-mib MIB] [--iommu] [--wait-for LINE | --until-exit]
+                             [--keep-failed PREFIX]
        tools/orangepi-kvm.py --test
 """
 
@@ -35,6 +38,7 @@ import sys
 import tarfile
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 sys.dont_write_bytecode = True
@@ -77,6 +81,7 @@ if ! flock -w "$boot_timeout" 9; then
     echo "atmo-orangepi-kvm: lock held for $boot_timeout s, not starting a second guest" >&2
     exit 2
 fi
+waited=$SECONDS
 log=
 err=
 esp=
@@ -117,6 +122,7 @@ trap cleanup EXIT
 
 echo "host: $(hostname)"
 echo "kvm: accel kvm"
+echo "lock: waited $waited s"
 log=$(mktemp)
 err=$(mktemp)
 drive=()
@@ -274,8 +280,20 @@ def _held(args, payload, env, timeout, preexec_fn=None):
     return code, b"".join(out_parts), b"".join(err_parts)
 
 
-def run(ssh_host, connect_timeout, boot_timeout, memory_mib, wait_for, esp_dir, until_exit, iommu):
-    """Run the guest. Return a process exit code. 0 and a skip line when ssh cannot connect."""
+def _keep(prefix, code, elapsed, out, err):
+    """Writes a failed run's output, stdout then stderr, to a file of its own under `prefix`, and
+    names it on stderr, so a gate log that holds that line leads to where the guest stopped."""
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    path = Path(f"{prefix}-{stamp}-{os.getpid()}.log")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(out + err + f"orangepi-kvm: exit {code} after {elapsed:.1f} s\n".encode())
+    sys.stderr.write(f"kept: {path}\n")
+
+
+def run(ssh_host, connect_timeout, boot_timeout, memory_mib, wait_for, esp_dir, until_exit, iommu, keep_failed=None):
+    """Run the guest. Return a process exit code. 0 and a skip line when ssh cannot connect. A run
+    that fails leaves its output under `keep_failed` when given."""
+    start = time.monotonic()
     esp = _esp_archive(esp_dir) if esp_dir is not None else b""
     code, out, err = _held(
         [
@@ -295,9 +313,12 @@ def run(ssh_host, connect_timeout, boot_timeout, memory_mib, wait_for, esp_dir, 
         sys.stdout.write(f"skip: {BOARD} unreachable\n")
         return 0
     sys.stdout.buffer.write(out)
+    sys.stdout.flush()
     sys.stderr.buffer.write(err)
     if code < 0:
-        return 1
+        code = 1
+    if code != 0 and keep_failed is not None:
+        _keep(keep_failed, code, time.monotonic() - start, out, err)
     return code
 
 
@@ -510,6 +531,50 @@ def self_test():
         )
         check("guest still on at the timeout is gone", gone(pid_file))
 
+        # With --keep-failed a run that fails leaves what it printed, stderr included, in a file of
+        # its own under the prefix, and names that file; a run that passes leaves none.
+        kept_dir = tmp / "logs"
+        prefix = kept_dir / "task-orangepi"
+        env_failed = dict(env_cli)
+        env_failed["ATMO_FAKE_SERIAL"] = f"{SHELL_MARK} v2.2\n{last_line}"
+        env_failed["ATMO_FAKE_EXIT"] = "0"
+        passed = subprocess.run(
+            cli + ["--until-exit", "--keep-failed", str(prefix)], capture_output=True, text=True, env=env_failed, timeout=60
+        )
+        check(
+            "run that passes keeps nothing",
+            passed.returncode == 0 and not list(kept_dir.glob("*")) and "kept: " not in passed.stderr,
+            f"code={passed.returncode} kept={list(kept_dir.glob('*'))} err={passed.stderr!r}",
+        )
+        for status, extra, last in (
+            (3, [], "qemu: exit 3\n"),
+            (None, ["--boot-timeout", "2"], "qemu: still running after 2 s\n"),
+        ):
+            for path in kept_dir.glob("*"):
+                path.unlink()
+            env_kept = dict(env_failed)
+            if status is None:
+                del env_kept["ATMO_FAKE_EXIT"]
+            else:
+                env_kept["ATMO_FAKE_EXIT"] = str(status)
+            failed = subprocess.run(
+                cli + extra + ["--until-exit", "--keep-failed", str(prefix)], capture_output=True, text=True, env=env_kept, timeout=60
+            )
+            kept = sorted(kept_dir.glob("task-orangepi-*.log"))
+            text = kept[0].read_text() if len(kept) == 1 else ""
+            check(
+                f"run that fails with {last.strip()!r} keeps its output and names the file",
+                failed.returncode != 0
+                and len(kept) == 1
+                and f"kept: {kept[0]}\n" in failed.stderr
+                and failed.stdout in text
+                and last in text
+                and "lock: waited " in text
+                and f"orangepi-kvm: exit {failed.returncode} after " in text,
+                f"code={failed.returncode} kept={kept} text={text!r} err={failed.stderr!r}",
+            )
+        check("a failed run's guest is gone", gone(pid_file))
+
         for name, extra in (
             ("ESP that is not a directory", ["--esp", str(esp / "initrd")]),
             ("empty awaited line", ["--wait-for", ""]),
@@ -603,6 +668,9 @@ def main(argv):
     end = parser.add_mutually_exclusive_group()
     end.add_argument("--wait-for", default=SHELL_MARK, metavar="LINE", help="serial text that ends the run (default the UEFI shell banner)")
     end.add_argument("--until-exit", action="store_true", help="run until QEMU exits by itself and exit with its status")
+    parser.add_argument(
+        "--keep-failed", type=Path, metavar="PREFIX", help="when the run fails, write its output to PREFIX-<time>-<pid>.log and name that file"
+    )
     parser.add_argument("--test", action="store_true", help="run this script's own tests")
     args = parser.parse_args(argv)
     if args.test:
@@ -620,7 +688,15 @@ def main(argv):
         print(f"{args.esp} is not a directory", file=sys.stderr)
         return 2
     return run(
-        args.ssh_host, args.connect_timeout, args.boot_timeout, args.memory_mib, args.wait_for, args.esp, args.until_exit, args.iommu
+        args.ssh_host,
+        args.connect_timeout,
+        args.boot_timeout,
+        args.memory_mib,
+        args.wait_for,
+        args.esp,
+        args.until_exit,
+        args.iommu,
+        args.keep_failed,
     )
 
 

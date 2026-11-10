@@ -3,6 +3,7 @@
 //! machine, as the x86_64 boot is with an IOMMU, then without, with an unreachable board taken as a
 //! skip rather than a failure.
 
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use anyhow::{anyhow, Context};
@@ -154,6 +155,14 @@ async fn build(project: &ProjectHandle, command_line: Option<&str>) -> Result<()
     Ok(())
 }
 
+/// Where the runner keeps a failed run's output: `logs/` at the project root, the worktree's parent,
+/// beside the gate logs, under the worktree's name, since the next gate in that worktree overwrites
+/// the serial log.
+fn kept_prefix(worktree: &Path) -> PathBuf {
+    let name = worktree.file_name().expect("a worktree has a name").to_string_lossy();
+    worktree.parent().expect("a worktree has a parent").join("logs").join(format!("{}-orangepi", name))
+}
+
 /// Boots the partition on the board until QEMU exits, with an SMMUv3 on the machine under `iommu`,
 /// and returns the runner's exit code and what it printed, which it also writes to the serial log.
 async fn boot(project: &ProjectHandle, timeout: u64, iommu: bool) -> Result<(Option<i32>, String)> {
@@ -161,6 +170,7 @@ async fn boot(project: &ProjectHandle, timeout: u64, iommu: bool) -> Result<(Opt
     let timeout = timeout.to_string();
     let mut run = Command::new(root.join(BOARD_RUN));
     run.args(["--esp", ESP, "--memory-mib", MEMORY_MIB, "--boot-timeout", &timeout, "--until-exit"]);
+    run.arg("--keep-failed").arg(kept_prefix(&root));
     if iommu {
         run.arg("--iommu");
     }
@@ -341,6 +351,12 @@ mod tests {
         let held = board_run_accepted(Some(0), &board_output(), None).unwrap();
         let error = translation_enabled(&board_output(), held).unwrap_err();
         assert!(error.to_string().contains("translation enabled"), "{}", error);
+    }
+
+    #[test]
+    fn a_failed_run_is_kept_beside_the_gate_logs_under_the_worktree_s_name() {
+        let prefix = kept_prefix(Path::new("/project/atmo-1.2"));
+        assert_eq!(prefix, Path::new("/project/logs/atmo-1.2-orangepi"));
     }
 
     #[test]
