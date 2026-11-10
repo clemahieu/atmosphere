@@ -476,8 +476,7 @@ async fn boot(project: &ProjectHandle, timeout: u64, args: &[&str]) -> Result<(S
     Ok((serial, held))
 }
 
-/// The lines the serial log of a successful boot on `arch` must show. The kernel may still print a
-/// capability-entry line; this does not require one.
+/// The lines the serial log of a successful boot on `arch` must show.
 pub(super) fn boot_serial_accepted(serial: &str, arch: Arch) -> Result<String> {
     let (untyped, frames) = fixed_slots_printed(serial)?;
     let base = free_gigabyte(arch);
