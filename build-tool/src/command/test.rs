@@ -62,6 +62,9 @@ const MAX_FILE_BYTES: u64 = 1024 * 1024;
 /// The boot, relative to the project root; `--test` runs its own tests.
 const RUN: &str = "tools/run.py";
 
+/// The aarch64 boot on the Orange Pi, relative to the project root; `--gate` runs the gate's.
+const BOARD: &str = "tools/board.py";
+
 /// The gdb attach to a `tools/run.py --gdb` run, relative to the project root; `--test` runs its own
 /// tests.
 const GDB: &str = "tools/gdb.py";
@@ -192,7 +195,7 @@ impl Step {
             Step::Coverage => check_coverage(project).await,
             Step::IommuBoot => check_iommu_boot(project, timeout).await,
             Step::Boot => check_boot(project, timeout).await,
-            Step::Aarch64Boot => super::board::gate_boot(project, timeout).await,
+            Step::Aarch64Boot => check_board(project, timeout).await,
         }
     }
 }
@@ -464,6 +467,28 @@ async fn check_verify(project: &ProjectHandle, args: &[&str]) -> Result<String> 
     Ok(format!("{} errors, allowance {}{}", errors, allowance, results))
 }
 
+/// The gate's aarch64 boot, run by tools/board.py --gate. Its last line on stdout is what held or what
+/// failed; the lines above it, the runner's skip line of an unreachable board among them, go to the
+/// gate's output, where the round procedure looks for that line.
+async fn check_board(project: &ProjectHandle, timeout: u64) -> Result<String> {
+    let root = project.root();
+    let output = Command::new(root.join(BOARD))
+        .args(["--gate", "--boot-timeout", &timeout.to_string()])
+        .current_dir(&root)
+        .stdin(Stdio::null())
+        .stderr(Stdio::inherit())
+        .output()
+        .await
+        .with_context(|| BOARD.to_string())?;
+    let said = String::from_utf8_lossy(&output.stdout);
+    print!("{}", said);
+    let last = said.lines().last().unwrap_or_default();
+    if !output.status.success() {
+        return Err(anyhow!("{} --gate: {}: {}", BOARD, output.status, last));
+    }
+    Ok(format!("{} --gate: {}", BOARD, last))
+}
+
 async fn check_boot(project: &ProjectHandle, timeout: u64) -> Result<String> {
     run_check(project, RUN, &["--test"]).await?;
     run_check(project, GDB, &["--test"]).await?;
@@ -490,7 +515,7 @@ const BOOT_LOG_CHECK: &str = "tools/check-boot-log.py";
 
 /// Holds a dom0 boot's serial log on `arch` to the boot log check, with the IOMMU's translation
 /// enabled under `translation`, and returns what held or the check that failed.
-pub(super) fn boot_log_accepted(root: &Path, serial: &str, arch: Arch, translation: bool) -> Result<String> {
+fn boot_log_accepted(root: &Path, serial: &str, arch: Arch, translation: bool) -> Result<String> {
     let mut check = std::process::Command::new(root.join(BOOT_LOG_CHECK));
     check.args(["--arch", &arch.to_string()]);
     if translation {
