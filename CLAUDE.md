@@ -79,6 +79,7 @@ tools/run.py            # build loader, kernel, dom0 and payload; boot under QEM
 tools/verify.py         # Verus over kernel/verified; extra arguments go to rust_verify
 tools/gdb.py            # attach gdb to a tools/run.py --gdb run, with the kernel's symbols
 tools/aarch64-esp.py    # build the aarch64 loader, kernel, dom0 and payload and lay out the ESP that tools/orangepi-kvm.py --esp boots on the board
+tools/orangepi-stack-overflow.py   # boot an aarch64 kernel that overflows its boot stack on the board and check its one report; not part of the gate
 ```
 
 `tools/setup-verus.sh` builds Verus under `tools/verus`, which git ignores. The host is an AMD Ryzen 9 9950X3D; `/dev/kvm` is world-writable; edk2-ovmf is at `/usr/share/edk2/ovmf`.

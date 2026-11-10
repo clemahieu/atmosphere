@@ -11,21 +11,30 @@ use core::ffi::c_void;
 use astd::boot::BootInfo;
 use verified::define::PCID_MAX;
 
-use crate::cpu::Cpu;
+use crate::cpu::{Cpu, KernelStack};
 use crate::machine;
 
 mod exception;
 mod interrupt;
 pub mod write_protect;
 
-/// The AArch64 share of a core's [`Cpu`]: nothing, since what the instruction set keeps per core is
-/// in the core's own system registers.
+/// The AArch64 share of a core's [`Cpu`]: what the exception vectors need to report from a core
+/// whose stack cannot take a frame. The rest of what the instruction set keeps per core is in the
+/// core's own system registers.
 #[repr(C)]
-pub struct CoreState {}
+pub struct CoreState {
+    /// Where the vector for the kernel's own synchronous exceptions keeps a register while it
+    /// decides which stack takes the frame.
+    spill: u64,
+
+    /// The stack that takes the frame of an exception the kernel stack could not take, and that
+    /// every exception's report runs on. x86_64's counterpart is the double fault's interrupt stack.
+    emergency_stack: KernelStack,
+}
 
 impl CoreState {
     pub const fn new() -> Self {
-        Self {}
+        Self { spill: 0, emergency_stack: KernelStack::new() }
     }
 }
 
