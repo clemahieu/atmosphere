@@ -97,7 +97,8 @@ impl CapKernel {
 
     /// What clearing the entry leaves: the entry the path reaches is empty, its mapping node is the only
     /// node that left the list, its record and its frame's reference went with it, its staleness is
-    /// recorded, and no capability changed.
+    /// recorded, and no capability changed. A device space shares what a walk other than the one ending
+    /// at the entry still finds: the page leaves unless another path of the space maps it too.
     pub open spec fn entry_unmapped(pre: Self, post: Self, root: usize, slot: usize, p: SpacePath) -> bool {
         let tree = tree_of(&pre.table_pages, &pre.spaces);
         let t = walk_table(tree, pre.payload_of(pre.tables.node_of(root, slot)).base, p)->0;
@@ -113,6 +114,7 @@ impl CapKernel {
         &&& forall|x: int| 0 <= x < NODE_SPACE && x != node ==> #[trigger] post.list.nodes@[x].live == pre.list.nodes@[x].live
         &&& post.list.seq@.len() == pre.list.seq@.len() - 1
         &&& sheds_shares(pre.view(), post.view())
+        &&& post.view().shares == shares_surviving(tree, |r: usize, q: SpacePath| ends_at(tree, r, q, t, p.l1))
     }
 
     /// What an unmap at path p of the space named at index slot of the table at root returned: the word
@@ -403,6 +405,7 @@ impl CapKernel {
             Self::lemma_mapping_view_same(pre, *self, node);
             lemma_sheds_shares_discharges_local(pre.view(), self.view(), root);
             Self::lemma_unlinked_shrunk(pre, *self, node);
+            Self::lemma_unlinked_shares(pre, *self, node, t, l1);
         }
         let status = usize2page_entry_status(word, 1);
         Some((s, Unmapped {

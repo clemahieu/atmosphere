@@ -264,6 +264,44 @@ pub proof fn lemma_space_removed_same_shares(a: TableTree, b: TableTree, s: usiz
     lemma_same_walks_same_shares(a, b);
 }
 
+/// What a's device spaces share through the walks `gone` does not name: each device space with each page
+/// such a walk of it finds. A step that ends exactly the walks `gone` names leaves these shared, so a
+/// page another walk of the space still finds stays.
+pub open spec fn shares_surviving(a: TableTree, gone: spec_fn(usize, SpacePath) -> bool) -> ISet<(ObjectId, ObjectId)> {
+    ISet::new(|x: (ObjectId, ObjectId)| {
+        &&& is_device(a, x.0)
+        &&& x.1 % PAGE_SZ == 0
+        &&& exists|p: SpacePath| !gone(x.0, p) && #[trigger] walk_finds(a, x.0, p, (x.1 / PAGE_SZ) as usize)
+    })
+}
+
+/// A tree whose walks are a's but for those `gone` names, which find nothing, with a's device spaces,
+/// shares what a shares through the walks that remain.
+pub proof fn lemma_walks_ended_shares(a: TableTree, b: TableTree, gone: spec_fn(usize, SpacePath) -> bool)
+    requires
+        forall|s: usize, p: SpacePath| #[trigger] walk(b, s, p) == if gone(s, p) { None } else { walk(a, s, p) },
+        forall|s: usize| #![trigger is_device(b, s)] #![trigger is_device(a, s)]
+            a.is_root(s) && b.is_root(s) ==> is_device(b, s) == is_device(a, s),
+    ensures
+        shares_of(b) == shares_surviving(a, gone),
+{
+    assert forall|x: (ObjectId, ObjectId)| #[trigger] shares_of(b).contains(x)
+        implies shares_surviving(a, gone).contains(x) by {
+        let g = (x.1 / PAGE_SZ) as usize;
+        let p = choose|p: SpacePath| #[trigger] walk_finds(b, x.0, p, g);
+        assert(walk(b, x.0, p) == if gone(x.0, p) { None } else { walk(a, x.0, p) });
+        assert(!gone(x.0, p) && walk_finds(a, x.0, p, g));
+    }
+    assert forall|x: (ObjectId, ObjectId)| #[trigger] shares_surviving(a, gone).contains(x)
+        implies shares_of(b).contains(x) by {
+        let g = (x.1 / PAGE_SZ) as usize;
+        let p = choose|p: SpacePath| !gone(x.0, p) && #[trigger] walk_finds(a, x.0, p, g);
+        assert(walk(b, x.0, p) == walk(a, x.0, p));
+        assert(walk_finds(b, x.0, p, g));
+    }
+    assert(shares_of(b) =~= shares_surviving(a, gone));
+}
+
 /// What a map into space s adds to the shares: pages of the frame its entry v names, under s, and only
 /// when s is a device space.
 pub proof fn lemma_mapped_shares(a: TableTree, b: TableTree, s: usize, p: SpacePath, v: PageEntry, x: (ObjectId, ObjectId))
@@ -395,6 +433,30 @@ impl CapKernel {
             assert(a.is_root(s));
         }
         lemma_shares_kept(a, b);
+    }
+
+    /// Unlinking the mapping of entry e of table t ends the walks that ended there, so the device spaces
+    /// share what the other walks find.
+    pub proof fn lemma_unlinked_shares(pre: Self, post: Self, n: usize, t: usize, e: usize)
+        requires
+            Self::mapping_unlinked(pre, post, n),
+            pre.mappings@[n].table == t,
+            pre.mappings@[n].entry == e,
+            post.spaces == pre.spaces,
+        ensures
+            post.view().shares == shares_surviving(
+                tree_of(&pre.table_pages, &pre.spaces),
+                |r: usize, q: SpacePath| ends_at(tree_of(&pre.table_pages, &pre.spaces), r, q, t, e),
+            ),
+    {
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        let gone = |r: usize, q: SpacePath| ends_at(a, r, q, t, e);
+        reveal(walks_cut);
+        assert forall|s: usize, q: SpacePath| #[trigger] walk(b, s, q) == if gone(s, q) { None } else { walk(a, s, q) } by {
+            assert(walk(b, s, q) == if ends_at(a, s, q, t, e) { None } else { walk(a, s, q) });
+        }
+        lemma_walks_ended_shares(a, b, gone);
     }
 
     pub open spec fn view(&self) -> State {
