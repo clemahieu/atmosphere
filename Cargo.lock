@@ -799,6 +799,7 @@ dependencies = [
  "kernel-logger",
  "log",
  "machine-pc",
+ "machine-virt",
  "memoffset",
  "num",
  "num-derive",
