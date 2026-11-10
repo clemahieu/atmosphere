@@ -2,9 +2,9 @@
 //! not assume it owns the machine, so several instances each with a root stay possible. Why, and
 //! what to do about a change that breaks this: design/one-kernel-instance/.
 //!
-//! Print, inspect, retype of a 4K frame, of a 2M frame and of a table page, derive, move, delete, revoke, link, map, unmap and probe are the wired
+//! Print, inspect, retype of a 4K frame, of a 2M frame and of a table page, derive, move, delete, revoke, link, map, unmap, probe and power-off are the wired
 //! operations, so each fixed slot is checked through them: the console accepts print and the process,
-//! thread, untyped and frame slots refuse it; inspect says the console slot holds a console, and each slot
+//! thread, untyped and frame slots refuse it, and the process slot refuses a power-off; inspect says the console slot holds a console, and each slot
 //! from the first untyped holds an untyped whose base is aligned to its order, up to the first slot
 //! that holds nothing, which inspect refuses. Retype under an empty slot, a slot past the table and
 //! the console is refused, and retype of the last untyped's last page into that empty slot is
@@ -41,8 +41,8 @@
 //! alone, then both clear, then dirty; the other 63 entries' bits stay clear and both bits are
 //! maintained. A probe of 0 entries, of 65 and of a range leaving its level 1 table is refused. It maps
 //! the frame at the next entry, writes the page and unmaps it, and the unmap returns accessed and dirty
-//! set, both maintained, which it prints. dom0 prints that result through the console, then an exit marker, and exits with success only when every
-//! check held.
+//! set, both maintained, which it prints. dom0 prints that result through the console, then an exit marker,
+//! and ends the run with a power-off through the console, reporting success only when every check held.
 
 #![no_std]
 #![no_main]
@@ -50,16 +50,6 @@
 use core::panic::PanicInfo;
 
 use asys::operation;
-
-/// The code dom0 exits with when every check held. The kernel's failure shutdown writes 0 to the
-/// same port, so zero cannot mean success here.
-const EXIT_SUCCESS: u32 = 0x10;
-
-/// The exit code when an invocation returned a status other than the one expected.
-const EXIT_UNEXPECTED_STATUS: u32 = 2;
-
-/// The exit code when dom0 panicked.
-const EXIT_PANIC: u32 = 3;
 
 /// A number past every operation's.
 const NO_OPERATION: u64 = 0xffff;
@@ -73,7 +63,7 @@ const CHECKS_HELD: [u64; 5] = operation::print_words(b"dom0 slot checks held\n")
 /// What dom0 prints through the console when a check did not hold.
 const CHECKS_FAILED: [u64; 5] = operation::print_words(b"dom0 slot checks failed\n");
 
-/// The line after the check line. dom0 exits with success only once this print is accepted.
+/// The line after the check line. dom0 reports success only once this print is accepted.
 const EXIT_MARKER: [u64; 5] = operation::print_words(b"dom0 capability done\n");
 
 /// The largest order a capability's block has: 2^36 pages reach the end of the 48-bit space.
@@ -671,7 +661,11 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
     let untyped = unsafe { print_slot(operation::ROOT_UNTYPED_SLOT, [0; 5]) };
     let frame = unsafe { print_slot(operation::ROOT_FRAME_SLOT, [0; 5]) };
     let unknown = operation::status(unsafe { operation::invoke(NO_OPERATION, 0, [0; 5]) });
+    // A power-off through a slot that holds no console is refused, and the run goes on. It reports a
+    // failure, so a kernel that took it would not end the run as a success.
+    let power = operation::power_off(operation::ROOT_PROCESS_SLOT, false);
     let slots_held = process == operation::STATUS_REFUSED
+        && power == operation::STATUS_REFUSED
         && thread == operation::STATUS_REFUSED
         && untyped == operation::STATUS_REFUSED
         && frame == operation::STATUS_REFUSED
@@ -706,26 +700,22 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
     if slots_held && console == operation::STATUS_OK {
         let marked = unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, EXIT_MARKER) };
         if marked == operation::STATUS_OK {
-            exit_qemu(EXIT_SUCCESS)
+            end_run(true)
         }
     }
-    exit_qemu(EXIT_UNEXPECTED_STATUS)
+    end_run(false)
 }
 
-/// Ends the run. On x86_64 a write to the isa-debug-exit port 0xf4 (dom0 runs with IOPL 3) makes
-/// QEMU exit with status `code << 1 | 1`. virt has no such port, so on aarch64 the core waits.
-fn exit_qemu(code: u32) -> ! {
-    #[cfg(target_arch = "x86_64")]
-    unsafe {
-        core::arch::asm!("out dx, eax", in("dx") 0xf4u16, in("eax") code);
-    }
-    #[cfg(target_arch = "aarch64")]
-    let _ = code;
+/// Ends the run: a power-off through the console, reporting whether every check held. The kernel does
+/// not return from one it accepts, and how the machine reports each ending is its glue's,
+/// design/syscall-abi-in-registers/. When the power-off returns, dom0 waits for the run's timeout.
+fn end_run(success: bool) -> ! {
+    operation::power_off(operation::ROOT_CONSOLE_SLOT, success);
     loop {}
 }
 
-/// dom0's panic handler. No console is reachable from here, so the run stops with a failure code.
+/// dom0's panic handler. It prints nothing, and the run ends reporting a failure.
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
-    exit_qemu(EXIT_PANIC)
+    end_run(false)
 }

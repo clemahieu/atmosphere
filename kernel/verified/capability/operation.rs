@@ -51,6 +51,7 @@ pub const OPERATION_PRINT: u64 = 14;
 pub const OPERATION_INSPECT: u64 = 15;
 pub const OPERATION_LINK: u64 = 16;
 pub const OPERATION_PROBE: u64 = 17;
+pub const OPERATION_POWER_OFF: u64 = 18;
 
 /// Retype's kind in argument 1 for a 4K frame.
 pub const RETYPE_FRAME: u64 = 0;
@@ -105,6 +106,7 @@ pub enum Operation {
     Inspect,
     Link,
     Probe,
+    PowerOff,
 }
 
 impl Operation {
@@ -128,6 +130,7 @@ impl Operation {
             Operation::Inspect => OPERATION_INSPECT,
             Operation::Link => OPERATION_LINK,
             Operation::Probe => OPERATION_PROBE,
+            Operation::PowerOff => OPERATION_POWER_OFF,
         }
     }
 }
@@ -171,6 +174,7 @@ pub fn operation(number: u64) -> (ret: Option<Operation>)
         OPERATION_INSPECT => Some(Operation::Inspect),
         OPERATION_LINK => Some(Operation::Link),
         OPERATION_PROBE => Some(Operation::Probe),
+        OPERATION_POWER_OFF => Some(Operation::PowerOff),
         _ => None,
     };
     proof {
@@ -245,13 +249,15 @@ pub fn unmap_outcome(r: Unmapped) -> (ret: Outcome)
 
 impl CapKernel {
     /// What the invocation in frame returns to a thread of the process whose table is at root, for an
-    /// operation that leaves the kernel unchanged: print's status for print, inspect's outcome for
-    /// inspect, refused for every operation not wired yet, and unknown for a number no operation has.
-    /// Print's words are arguments 1 to 5, as design/syscall-abi-in-registers/ places them.
+    /// operation that leaves the kernel unchanged: for print and for power-off, ok exactly when the slot
+    /// holds a console capability and refused otherwise; inspect's outcome for inspect; refused for every
+    /// operation not wired yet; and unknown for a number no operation has. Print's words are arguments 1
+    /// to 5 and power-off's word is argument 1, as design/syscall-abi-in-registers/ places them; neither
+    /// decides the status.
     pub open spec fn spec_outcome(&self, root: usize, frame: Registers) -> Outcome {
         match spec_operation(frame.operation_number()) {
-            Some(Operation::Print) => status_only(
-                if self.can_print(root, frame.slot() as usize) { STATUS_OK } else { STATUS_REFUSED },
+            Some(Operation::Print) | Some(Operation::PowerOff) => status_only(
+                if self.holds_console(root, frame.slot() as usize) { STATUS_OK } else { STATUS_REFUSED },
             ),
             Some(Operation::Inspect) => self.spec_inspect(root, frame.slot() as usize),
             Some(_) => status_only(STATUS_REFUSED),
@@ -566,6 +572,7 @@ impl CapKernel {
                     self.print(root, frame.slot() as usize, frame.argument(1), frame.argument(2), frame.argument(3), frame.argument(4), frame.argument(5)),
                 ),
             ),
+            Some(Operation::PowerOff) => Some(status_only_outcome(self.power_off(root, frame.slot() as usize))),
             Some(Operation::Inspect) => Some(self.inspect(root, frame.slot() as usize)),
             Some(_) => Some(status_only_outcome(STATUS_REFUSED)),
             None => Some(status_only_outcome(STATUS_UNKNOWN)),

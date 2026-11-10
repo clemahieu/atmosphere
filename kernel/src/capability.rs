@@ -17,8 +17,10 @@ use verified::capability::boot_image::ImageRun;
 use verified::capability::boot_memory::ROOT_UNTYPED_SLOTS;
 use verified::capability::decompose::first_block;
 use verified::capability::kernel::{CapKernel, CommandBuffers};
+use verified::capability::operation::{Outcome, OPERATION_POWER_OFF, STATUS_OK};
 use verified::capability::space::SPACE_ROOT_PAGE;
 use verified::capability::table::{CapKind, MAX_ORDER};
+use verified::arch::Registers;
 use verified::define::{KERNEL_MEM_END_L4INDEX, NUM_IOMMUS};
 use vstd::prelude::Tracked;
 
@@ -28,6 +30,14 @@ use crate::lock::Locked;
 
 /// The one capability kernel, holding every core. Why one: design/one-kernel-instance/.
 pub static CAP_KERNEL: Locked<Option<&'static mut CapKernel>> = Locked::new("capability kernel", None);
+
+/// Whether the invocation in `frame`, which the dispatch answered with `returned`, ends the run: a
+/// power-off the dispatch accepted, with whether it reports a run that succeeded, argument 1 not zero.
+/// Each target's entry asks this once the kernel's lock is released, before it writes the outcome over
+/// the frame, and calls the machine's shutdown on `Some`. design/syscall-abi-in-registers/.
+pub fn power_off_accepted(frame: &Registers, returned: &Outcome) -> Option<bool> {
+    (frame.operation_number() == OPERATION_POWER_OFF && returned.status == STATUS_OK).then(|| frame.argument(1) != 0)
+}
 
 /// Pages of the stretch boot sets aside that hold the root's boot objects, before the kernel itself:
 /// the process's block, its table's two leaves, its thread's block and the list's synthetic root, with

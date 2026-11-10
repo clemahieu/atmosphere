@@ -59,5 +59,6 @@ taskset -c 0-15 timeout 300 "$ATMO_QEMU" \
 
 grep -a -E 'null syscall:|mmap 4K:|IPC round trip:|new_thread:|dom0 benchmark (done|FAILED)|failed:' "$log" \
     | sed 's/\x1b\[[0-9;]*m//g' || true
-echo "qemu exit status: $status (33 = dom0 finished, 3 = a timer failed, 1 = the kernel failed, 124 = timeout); log: $log"
-[ "$status" -eq 33 ]
+echo "qemu exit status: $status (0 = dom0 powered off reporting success, 1 = dom0 or the kernel reported a failure, 124 = timeout); log: $log"
+# A triple fault also ends QEMU with status 0 under -no-reboot, so success is the kernel's shutdown line too.
+[ "$status" -eq 0 ] && grep -a -q 'The system is shutting down' "$log"

@@ -5,7 +5,8 @@ OVMF boots the loader, the UEFI application, from a directory QEMU serves as the
 partition; the loader reads the kernel, dom0 and payload ELF images concatenated in the file initrd
 beside it, and the kernel's command line from the file cmdline there (aloader/src/boot/uefi.rs). The
 command line names the port of QEMU's isa-debug-exit device, which the kernel's failure shutdown
-writes (machine/pc/src/shutdown.rs). The serial log is serial.log at the workspace root. KVM is used
+writes (machine/pc/src/shutdown.rs). dom0 ends the run with a power-off through its console
+capability, which the kernel carries out as that shutdown (dom0/src/main.rs). The serial log is serial.log at the workspace root. KVM is used
 whenever /dev/kvm is writable; --no-kvm forces TCG. --iommu adds QEMU's emulated IOMMU. --gdb puts
 a gdb server on the guest and the file gdb on the ESP, which makes the loader wait before it enters
 the kernel (aloader/src/debugger.rs); once the loader has logged where it loaded each binary and that
@@ -14,9 +15,9 @@ it waits, .gdb at the workspace root holds what tools/gdb.py attaches with.
 The firmware's output on the terminal ends with control sequences that reset it, so everything
 before the loader's banner is dropped there; serial.log keeps it.
 
-Exit status: 0 when dom0 reports success or the guest shuts down; otherwise QEMU's: 1 when the
-kernel fails, 5 when an invocation of dom0's returns a status it did not expect, 7 when dom0
-panics. 1 when QEMU dies by a signal, and 1 when a build fails.
+Exit status: 0 when the guest powers off, as it does when dom0 reports success; otherwise QEMU's:
+1 when the kernel fails or dom0 reports a failure. 1 when QEMU dies by a signal, and 1 when a build
+fails.
 
 usage: tools/run.py [--no-kvm] [--iommu] [--gdb]   (from anywhere)
        tools/run.py --test                         (this script's own tests)
@@ -51,13 +52,11 @@ DEBUGGER_BIAS = re.compile(rb"debugger: (\w+) at bias (0x[0-9a-f]+)")
 DEBUGGER_WAITING = b"debugger: waiting"
 # The kernel's command line, which the loader hands it (aloader/src/boot/command_line.rs).
 ESP_COMMAND_LINE = "cmdline"
-# Where isa-debug-exit sits. dom0 ends the run by writing to this port (dom0/src/main.rs), and so
-# does the kernel's failure shutdown, which learns the port from its command line, in decimal
+# Where isa-debug-exit sits. The kernel's failure shutdown writes 0 to this port, which makes QEMU
+# exit with status 1; it learns the port from its command line, in decimal
 # (machine/pc/src/shutdown.rs).
 DEBUG_EXIT_PORT = 0xf4
 COMMAND_LINE = f"qemu_debug_exit_io_base={DEBUG_EXIT_PORT}"
-# isa-debug-exit makes QEMU exit with `code << 1 | 1`, and dom0 writes 0x10 on success.
-DOM0_SUCCESS_STATUS = 33
 # Guest RAM, in MiB. The machine the gate, the boot-stack check, the pinned measurement and the
 # syscall benchmark boot: two whole GiB and 512 MiB above them for the firmware.
 # design/test-guest-memory/.
@@ -112,8 +111,6 @@ def use_kvm(no_kvm, device):
 
 def exit_status(returncode):
     """This script's exit status for QEMU's; a negative returncode is a signal."""
-    if returncode in (0, DOM0_SUCCESS_STATUS):
-        return 0
     if returncode < 0:
         return 1
     return returncode
@@ -282,18 +279,18 @@ class Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             self.assertFalse(use_kvm(False, Path(directory) / "kvm"))
 
-    def test_dom0_success_and_a_guest_shutdown_are_success(self):
-        self.assertEqual(exit_status(33), 0)
+    def test_a_guest_power_off_is_the_only_success(self):
         self.assertEqual(exit_status(0), 0)
+        for status in (1, 3, 124):
+            self.assertNotEqual(exit_status(status), 0)
 
-    def test_kernel_failure_is_status_1(self):
-        # The kernel's failure shutdown writes 0 to the isa-debug-exit port.
+    def test_failure_shutdown_is_status_1(self):
+        # The kernel's failure shutdown writes 0 to the isa-debug-exit port, for a failure of its own
+        # and for a dom0 that powers off reporting one.
         self.assertEqual(exit_status(1), 1)
 
-    def test_dom0_failure_is_its_code_shifted(self):
-        # dom0 writes 2 when a status was not the one it expected, and 3 when it panics.
-        self.assertEqual(exit_status(5), 5)
-        self.assertEqual(exit_status(7), 7)
+    def test_another_status_is_qemus(self):
+        self.assertEqual(exit_status(3), 3)
 
     def test_killed_is_failure(self):
         self.assertEqual(exit_status(-15), 1)

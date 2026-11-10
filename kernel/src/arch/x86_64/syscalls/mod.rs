@@ -44,6 +44,7 @@ const _: () = {
     assert!(user::INSPECT == operation::OPERATION_INSPECT);
     assert!(user::LINK == operation::OPERATION_LINK);
     assert!(user::PROBE == operation::OPERATION_PROBE);
+    assert!(user::POWER_OFF == operation::OPERATION_POWER_OFF);
     assert!(user::PROBE_MAX == verified::capability::probe::PROBE_MAX);
     assert!(user::RETYPE_FRAME == operation::RETYPE_FRAME);
     assert!(user::RETYPE_LARGE_FRAME == operation::RETYPE_LARGE_FRAME);
@@ -313,10 +314,11 @@ unsafe extern "C" fn sys_entry() -> ! {
 }
 
 /// The handler. The verified dispatch runs the invocation for the core's current thread and decides
-/// the status and result words that return.
+/// the status and result words that return. A power-off it accepted ends the run here and returns to
+/// no thread.
 extern "C" fn capability_entry(regs: &mut Registers) {
     use crate::bridge::Bridge;
-    use crate::capability::CAP_KERNEL;
+    use crate::capability::{power_off_accepted, CAP_KERNEL};
     use verified::bridge::TrustedBridge;
 
     let returned = CAP_KERNEL
@@ -331,6 +333,10 @@ extern "C" fn capability_entry(regs: &mut Registers) {
         | operation::STATUS_UNKNOWN
         | operation::STATUS_AGAIN => {}
         status => unreachable!("dispatch returned status {status}, which no operation returns"),
+    }
+    // The statement that ran the dispatch released the kernel's lock when it ended.
+    if let Some(success) = power_off_accepted(regs, &returned) {
+        unsafe { crate::machine::shutdown(success) }
     }
     regs.write_outcome(returned);
     Bridge::set_switch_decision(SwitchDecision::NoSwitching);

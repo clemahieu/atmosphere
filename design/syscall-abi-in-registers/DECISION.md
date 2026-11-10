@@ -1,10 +1,10 @@
 ---
 title: "One syscall entry, and every operation carries its arguments in registers"
-date: 2026-11-09
+date: 2026-11-10
 status: active
 tags: [abi, ipc, memory, portability]
-one_line: "One entry, by position: the operation number, the capability's slot and five arguments in; a status word (status in its low 16 bits, ok 0, refused 1, unknown 2, again 3, and a badge in the upper 48) and five result words out, each output in the register of the input at its position. A table per target names the registers: syscall on x86_64, svc on aarch64. A send carries five words, four with a grant; the kernel copies nothing from user memory, and larger data goes through shared frames. A place in a space is a virtual address and a level, which the kernel splits into the path. Inspect, operation 15, returns a held capability's kind, base, order and rights in results 1 to 4. Unmap returns the cleared entry's accessed and dirty bits in results 1 and 2. Probe, operation 17, reads and clears the accessed and dirty bits of up to 64 level 1 entries and returns them as two masks in results 1 and 2."
-revisit_if: "A message that does not fit five words is on a hot path and the shared-frame ring is measured as its cost, an operation needs more than five argument words, a second entry is needed for a different privilege transition, or a target's instruction leaves fewer than seven registers free to carry an invocation."
+one_line: "One entry, by position: the operation number, the capability's slot and five arguments in; a status word (status in its low 16 bits, ok 0, refused 1, unknown 2, again 3, and a badge in the upper 48) and five result words out, each output in the register of the input at its position. A table per target names the registers: syscall on x86_64, svc on aarch64. A send carries five words, four with a grant; the kernel copies nothing from user memory, and larger data goes through shared frames. A place in a space is a virtual address and a level, which the kernel splits into the path. Inspect, operation 15, returns a held capability's kind, base, order and rights in results 1 to 4. Unmap returns the cleared entry's accessed and dirty bits in results 1 and 2. Probe, operation 17, reads and clears the accessed and dirty bits of up to 64 level 1 entries and returns them as two masks in results 1 and 2. Power-off, operation 18, ends the run through a console capability, with argument 1 saying whether the run succeeded."
+revisit_if: "A message that does not fit five words is on a hot path and the shared-frame ring is measured as its cost, an operation needs more than five argument words, a second entry is needed for a different privilege transition, a target's instruction leaves fewer than seven registers free to carry an invocation, or a power capability exists, which power-off then asks for in place of the console."
 confidence: "A packing judgement; each target's preserved set is the one its C convention keeps across a call, the memory operations' positions are counted against the verified functions' parameters in kernel/verified/capability, and the aarch64 table is written from the Arm Architecture Reference Manual before any aarch64 build has run it."
 ---
 
@@ -134,6 +134,10 @@ Probe is operation 17. It names a place as map does, at level 1 always, so argum
 
 An absent entry's bits are clear in both masks, as is every bit at or past the count. A mask whose bit the target does not maintain says nothing, and a pager falls back to unmapping and taking the fault, `design/arch-module/`. Probe changes no mapping and does not flush, so a translation still cached may hide a use until its next walk: the caller treats that as sampling error, and confirms with an unmap when it matters.
 
+### Power-off
+
+Power-off is operation 18. It names a console capability in the slot and asks for no right but holding it, as print does. Argument 1 says how the run ended: not zero for a run that succeeded, zero for one that failed. It is refused when the slot holds no console capability, and nothing changed. Accepted, it does not return: the verified dispatch answers ok with the kernel unchanged, and the entry, once the kernel's lock is released, calls the machine's `shutdown` with that answer, `design/machine-glue-below-the-kernel/`, on every target. What each ending looks like from outside is the machine's: on the PC a success is the ACPI power-off and a failure the write to the test device named on the kernel's command line, and on QEMU virt a success is PSCI `SYSTEM_OFF`.
+
 ### Inspect
 
 Inspect is operation 15. It names a capability in the slot and asks for no right but holding it. It returns ok with the capability's kind in result 1, the physical base of its block in result 2, its order in result 3 and its rights in result 4, and refused when the slot holds no capability. It changes nothing.
@@ -169,6 +173,8 @@ Unmap returns the bits because it reads and clears the entry anyway: a pager evi
 
 Probe returns its masks in result words because 64 entries' two bits are 128 bits, which two words carry, and reading them into user memory would be the copy this record rules out. It reads at most 64 entries under the lock, a bounded step, `design/one-lock-bounded-steps/`, and stays in one level 1 table so the walk to it is one, as map's is. It does not flush because the bits are a sample a pager reads repeatedly: a flush per probe would cost the IPIs the bits exist to avoid, and a write always reaches the entry, since the processor walks to set dirty through a translation cached with it clear.
 
+Power-off is an operation because ending the run is the machine's to do, and a process holds no port, no firmware call and no I/O privilege to do it with: the root reports how its run ended and the kernel's glue does the rest, the same way on every target. It asks for the console capability because that is the one capability boot hands the root that names the machine rather than memory or the process itself, and print already checks for it; a process without it cannot stop the machine.
+
 Retype is one operation whose kind is an argument, since every kind consumes the same authority, an untyped and a base; separate numbers per kind would spend operation numbers on what is one check. A large frame and a revoke return `again` because both do more work than one bounded step allows.
 
 ## Alternatives rejected
@@ -179,6 +185,7 @@ Retype is one operation whose kind is an argument, since every kind consumes the
 - **Accepting the upper canonical half.** A second rule for the sign extension, for space no process needs; the lower half is where the boot check on dom0's runs already keeps every user mapping.
 - **Boot writing a description of every slot into a frame the root maps.** It needs a frame and a format, and it is stale once the root retypes, moves or deletes.
 - **Finding an untyped's base by probing retype.** One refused invocation per aligned candidate base across physical memory, per order.
+- **The root ending its run with a port write of its own.** It needs the process to run with I/O privilege, ambient authority over every port, and it exists on one machine: QEMU virt has no such port.
 - **A separate operation number for the large map.** The level already says which entry is written, and the same argument says it for link and unmap.
 
 The rejected aarch64 tables are under Registers.
@@ -188,4 +195,5 @@ The rejected aarch64 tables are under Registers.
 - The kinds a retype of a space, a process or a thread takes, and the positions of claim, destroy and the thread and process operations: they take the next kind numbers and argument positions when they are wired, inside the five words.
 - A 1G frame: retype accepts no kind for it, since nothing maps one.
 - An unmap of a 2M entry: unmap accepts level 2 when one is proven.
+- The capability power-off asks for once power is a kind of its own: the console stands in for it until then, and the operation's number and argument stay.
 - The SIMD and floating-point registers and the user thread-pointer register: the kernel uses none of them, and where they sit in a thread's saved state is not decided here.

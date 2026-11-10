@@ -66,6 +66,10 @@ pub const LINK: u64 = 16;
 /// results 3 and 4 whether the target maintains each bit, 1 when it does. It changes no mapping and does
 /// not flush, so a translation still cached may hide a use until the next walk.
 pub const PROBE: u64 = 17;
+/// Ends the run through the console capability in the slot: the machine powers off, reporting a run that
+/// succeeded when argument 1 is not zero and one that failed when it is zero. Refused unless the slot holds
+/// a console capability; accepted, it does not return.
+pub const POWER_OFF: u64 = 18;
 
 /// The most entries one probe reads.
 pub const PROBE_MAX: u64 = 64;
@@ -272,6 +276,13 @@ pub fn probe(space: u64, address: u64, count: u64) -> Result<Probed, u64> {
         }),
         refused => Err(refused),
     }
+}
+
+/// Powers the machine off through the console capability at `console`, reporting whether the run
+/// succeeded. It returns only when it was not accepted, with the status: the low half of what returns.
+pub fn power_off(console: u64, success: bool) -> u64 {
+    // A power-off the kernel refuses changes nothing, and one it accepts does not return.
+    status(unsafe { invoke(POWER_OFF, console, [success as u64, 0, 0, 0, 0]) })
 }
 
 /// Moves the capability at `from` to the empty slot `to`, children and all, leaving `from` empty. The
