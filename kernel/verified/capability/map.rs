@@ -2049,7 +2049,12 @@ impl CapKernel {
         assert(block_bytes(9) == PAGES_PER_2M * PAGE_SZ);
         let child = Payload { kind: cap.kind, order: 9, rights: cap.rights, base: (fr * PAGE_SZ) as usize, badge: cap.badge, reserved: cap.reserved };
         lemma_fundamental_div_mod(fr, (PAGES_PER_2M as int));
-        assert(fr * PAGE_SZ == (PAGES_PER_2M * PAGE_SZ) * (fr / (PAGES_PER_2M as int)));
+        let q2 = fr / (PAGES_PER_2M as int);
+        assert(fr == PAGES_PER_2M * q2);
+        lemma_mul_is_associative(PAGES_PER_2M as int, q2, PAGE_SZ as int);
+        lemma_mul_is_commutative(q2, PAGE_SZ as int);
+        lemma_mul_is_associative(PAGES_PER_2M as int, PAGE_SZ as int, q2);
+        assert(fr * PAGE_SZ == (PAGES_PER_2M * PAGE_SZ) * q2);
         lemma_mod_multiples_basic(fr / (PAGES_PER_2M as int), (PAGES_PER_2M as int) * (PAGE_SZ as int));
         lemma_child_same_block(&self.blocks, cap, child);
         lemma_div_multiples_vanish(fr, (PAGE_SZ as int));
