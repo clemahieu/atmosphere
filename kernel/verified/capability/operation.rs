@@ -38,7 +38,6 @@ pub const STATUS_AGAIN: u64 = 3;
 pub const OPERATION_RETYPE: u64 = 1;
 pub const OPERATION_DERIVE: u64 = 2;
 pub const OPERATION_MOVE: u64 = 3;
-pub const OPERATION_CLAIM: u64 = 4;
 pub const OPERATION_DELETE: u64 = 5;
 pub const OPERATION_REVOKE: u64 = 6;
 pub const OPERATION_MAP: u64 = 7;
@@ -93,7 +92,6 @@ pub enum Operation {
     Retype,
     Derive,
     Move,
-    Claim,
     Delete,
     Revoke,
     Map,
@@ -117,7 +115,6 @@ impl Operation {
             Operation::Retype => OPERATION_RETYPE,
             Operation::Derive => OPERATION_DERIVE,
             Operation::Move => OPERATION_MOVE,
-            Operation::Claim => OPERATION_CLAIM,
             Operation::Delete => OPERATION_DELETE,
             Operation::Revoke => OPERATION_REVOKE,
             Operation::Map => OPERATION_MAP,
@@ -161,7 +158,6 @@ pub fn operation(number: u64) -> (ret: Option<Operation>)
         OPERATION_RETYPE => Some(Operation::Retype),
         OPERATION_DERIVE => Some(Operation::Derive),
         OPERATION_MOVE => Some(Operation::Move),
-        OPERATION_CLAIM => Some(Operation::Claim),
         OPERATION_DELETE => Some(Operation::Delete),
         OPERATION_REVOKE => Some(Operation::Revoke),
         OPERATION_MAP => Some(Operation::Map),
@@ -522,7 +518,15 @@ impl CapKernel {
                 Some(status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED }))
             },
             Some(Operation::Move) => {
-                let done = self.move_cap(root, frame.slot() as usize, frame.argument(1) as usize);
+                let ghost pre = *self;
+                let done = self.move_cap(
+                    root,
+                    Position { through: None, index: frame.slot() as usize },
+                    Position { through: None, index: frame.argument(1) as usize },
+                );
+                proof {
+                    Self::lemma_move_own(pre, *self, root, frame.slot() as usize, frame.argument(1) as usize);
+                }
                 Some(status_only_outcome(if done { STATUS_OK } else { STATUS_REFUSED }))
             },
             Some(Operation::Delete) => {

@@ -30,7 +30,6 @@ const _: () = {
     assert!(user::RETYPE == operation::OPERATION_RETYPE);
     assert!(user::DERIVE == operation::OPERATION_DERIVE);
     assert!(user::MOVE == operation::OPERATION_MOVE);
-    assert!(user::CLAIM == operation::OPERATION_CLAIM);
     assert!(user::DELETE == operation::OPERATION_DELETE);
     assert!(user::REVOKE == operation::OPERATION_REVOKE);
     assert!(user::MAP == operation::OPERATION_MAP);

@@ -105,8 +105,8 @@ impl CapKernel {
     /// Capability n names a dead process or thread: a process whose record is dead, or a thread that is
     /// Dead, destroyed while Running, or bound to a process whose record is dead. Nothing may start or
     /// control a thread of a destroyed process, whose core moves it off at its next entry. Every
-    /// operation refuses such a capability except claim, revoke and delete: see
-    /// design/teardown-driven-by-retype/.
+    /// operation refuses such a capability except a claim, which is a move out of a controlled
+    /// process's table, a revoke and a delete: see design/teardown-driven-by-retype/.
     pub open spec fn cap_dead(&self, n: usize) -> bool {
         let o = self.payload_of(n);
         match o.kind {

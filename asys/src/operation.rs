@@ -26,7 +26,6 @@ pub const DERIVE: u64 = 2;
 /// Moves the capability in the slot to the empty slot in argument 1, children and all, leaving the slot
 /// empty.
 pub const MOVE: u64 = 3;
-pub const CLAIM: u64 = 4;
 /// Deletes the capability in the slot, which must have nothing below it: no capability derived from it, no
 /// mapping made through it and no binding. A holder revokes first.
 pub const DELETE: u64 = 5;

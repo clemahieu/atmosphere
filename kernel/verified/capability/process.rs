@@ -35,7 +35,7 @@ pub const PROCESS_ORDER: u8 = 3;
 /// The page of a process's block that holds its record. Page 0 is its table's root.
 pub const PROCESS_RECORD_PAGE: usize = 1;
 
-/// A process capability carries control: it may destroy the process and claim from its table.
+/// A process capability carries control: it may destroy the process and name its table's positions.
 pub const PROCESS_RIGHTS: u32 = 128;
 
 /// What a process keeps in its record's page.
@@ -152,8 +152,8 @@ pub open spec fn processes_wf(list: &Tree, tables: &Tables, processes: &Processe
     }
 }
 
-/// Each process has its capability table, rooted at the process's base: a claim reaches the table
-/// from a capability naming the process.
+/// Each process has its capability table, rooted at the process's base: a table position reaches
+/// the table through a capability naming the process.
 pub open spec fn process_tables_wf(tables: &Tables, processes: &Processes) -> bool {
     forall|p: usize| #[trigger] processes.records@.contains_key(p) ==> tables.roots@.contains_key(p)
 }

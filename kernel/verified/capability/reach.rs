@@ -120,8 +120,8 @@ impl State {
         }
     }
 
-    /// a holds a control capability over b. Live or dead does not matter: a controller can claim, so
-    /// what b holds counts until its slots are revoked.
+    /// a holds a control capability over b. Live or dead does not matter: a controller can move what
+    /// b holds out of b's table, so what b holds counts until its slots are revoked.
     pub open spec fn controls(self, a: ObjectId, b: ObjectId) -> bool {
         exists|c: NodeId| #[trigger] self.holds_right(a, c, Right::Control)
             && self.process_behind(self.names[c]) == b
@@ -184,11 +184,13 @@ pub ghost enum Effect {
     /// Mark the target dead through a control capability.
     Destroy { cap: NodeId },
     /// Move one node from a slot of a process the caller controls, live or dead, into the caller's
-    /// table. It takes control of the process itself, not of one of its threads.
+    /// table: a move whose source is named through cap. It takes control of the process itself, not
+    /// of one of its threads.
     Claim { cap: NodeId, from: NodeId },
-    /// Put a capability derived or moved from `from`, which the caller holds, in a slot of the process
-    /// cap names: a grant through control, where Deliver's is through a rendezvous. It takes control
-    /// of the process itself, not of one of its threads.
+    /// Put a child derived from `from`, or `from` itself by a move, in a slot of the process cap
+    /// names: a grant through control, where Deliver's is through a rendezvous. The caller commands
+    /// `from`, and a child is derived only from one it holds. It takes control of the process itself,
+    /// not of one of its threads.
     Place { cap: NodeId, from: NodeId },
     /// Type a free block under an untyped held. A table leaf goes into the caller's own table, or
     /// into the table of the process that `into`, a control capability the caller holds, names: the
@@ -229,7 +231,7 @@ pub open spec fn authorized(s: State, p: ObjectId, e: Effect) -> bool {
         Effect::Place { cap, from } => {
             &&& s.holds_right(p, cap, Right::Control)
             &&& !s.process_of.contains_key(s.names[cap])
-            &&& s.holds(p, from)
+            &&& s.commands(p, from)
             &&& s.names.contains_key(from)
         },
         Effect::Retype { untyped, into, .. } => {
@@ -272,7 +274,8 @@ pub open spec fn may_remove(s: State, p: ObjectId, e: Effect, n: NodeId) -> bool
 
 /// e may add o to r's reach. Reach grows only by a grant from a holder, over an endpoint to the
 /// receiver or through control to the process controlled, or a retype from an untyped held. A claim
-/// moves only what the claimer's reach already contains.
+/// moves only what the claimer's reach already contains, and a placement gives only what the placer's
+/// does.
 pub open spec fn may_grow(s: State, p: ObjectId, e: Effect, r: ObjectId, o: ObjectId) -> bool {
     match e {
         Effect::Deliver { receiver, granted, .. } => {
@@ -1792,6 +1795,157 @@ pub proof fn lemma_simulates_claim_discharges(
     }
 }
 
+/// A control chain in a is one in b, or it goes through a capability d holds in a that s held in b:
+/// then b's chains lead to d, and from p, which b's chains lead to s from, to the chain's end. A move
+/// into d's table, read backward.
+proof fn lemma_simulates_place_controlled(
+    a: State,
+    b: State,
+    live: spec_fn(NodeId) -> bool,
+    f: spec_fn(NodeId) -> NodeId,
+    d: ObjectId,
+    s: ObjectId,
+    p: ObjectId,
+    j: nat,
+    r: ObjectId,
+    x: ObjectId,
+    k: nat,
+)
+    requires
+        simulates_claim(a, b, live, f, d, s),
+        b.controlled(p, s, j),
+        a.controlled(r, x, k),
+    ensures
+        b.controlled(r, x, k) || ((exists|i: nat| #[trigger] b.controlled(r, d, i))
+            && (exists|i: nat| #[trigger] b.controlled(p, x, i))),
+    decreases k,
+{
+    if k > 0 {
+        let m = choose|m: ObjectId| #[trigger] a.controls(m, x) && a.controlled(r, m, (k - 1) as nat);
+        lemma_simulates_place_controlled(a, b, live, f, d, s, p, j, r, m, (k - 1) as nat);
+        let t = choose|t: NodeId| #[trigger] a.holds_right(m, t, Right::Control)
+            && a.process_behind(a.names[t]) == x;
+        assert(a.held.contains((m, t)));
+        assert(a.names.contains_key(t));
+        assert(a.rights.contains((t, Right::Control)));
+        assert(b.rights.contains((f(t), Right::Control)));
+        assert(b.names.contains_key(f(t)));
+        assert(b.process_behind(b.names[f(t)]) == x);
+        if b.held.contains((m, f(t))) {
+            assert(b.holds_right(m, f(t), Right::Control));
+            assert(b.controls(m, x));
+            if b.controlled(r, m, (k - 1) as nat) {
+                assert(b.controlled(r, x, k));
+            } else {
+                let i = choose|i: nat| #[trigger] b.controlled(p, m, i);
+                assert(b.controlled(p, x, i + 1));
+            }
+        } else {
+            assert(m == d);
+            assert(b.held.contains((s, f(t))));
+            assert(b.holds_right(s, f(t), Right::Control));
+            assert(b.controls(s, x));
+            assert(b.controlled(p, x, j + 1));
+            if b.controlled(r, m, (k - 1) as nat) {
+                assert(b.controlled(r, d, (k - 1) as nat));
+            }
+        }
+    }
+}
+
+/// Whatever a process reaches in a and not in b, b's chains lead from it to d, and p reaches it in b.
+proof fn lemma_simulates_place_reach(
+    a: State,
+    b: State,
+    live: spec_fn(NodeId) -> bool,
+    f: spec_fn(NodeId) -> NodeId,
+    d: ObjectId,
+    s: ObjectId,
+    p: ObjectId,
+    j: nat,
+    r: ObjectId,
+    o: ObjectId,
+)
+    requires
+        simulates_claim(a, b, live, f, d, s),
+        b.controlled(p, s, j),
+        a.reach(r, o),
+        !b.reach(r, o),
+    ensures
+        exists|k: nat| #[trigger] b.controlled(r, d, k),
+        b.reach(p, o),
+{
+    let (x, k) = choose|x: ObjectId, k: nat| #[trigger] a.controlled(r, x, k) && (o == x || a.direct(x, o));
+    lemma_simulates_place_controlled(a, b, live, f, d, s, p, j, r, x, k);
+    if o != x && !a.maps.contains((x, o)) {
+        let (t, y, h) = choose|t: NodeId, y: NodeId, h: nat| #[trigger] a.descends(t, y, h)
+            && a.holds(x, t) && a.covers(y, o);
+        assert(a.names.contains_key(y));
+        assert(a.pages.contains_key(y));
+        assert(a.held.contains((x, t)));
+        lemma_simulates_claim_descends(a, b, live, f, d, s, t, y, h);
+        assert(b.covers(f(y), o));
+        if b.held.contains((x, f(t))) {
+            assert(b.holds(x, f(t)));
+            assert(b.direct(x, o));
+        } else {
+            assert(x == d);
+            assert(b.holds(s, f(t)));
+            assert(b.direct(s, o));
+        }
+    }
+    assert(o == x || b.direct(x, o) || (x == d && b.direct(s, o)));
+    if b.controlled(r, x, k) {
+        assert(!(o == x || b.direct(x, o)));
+        assert(b.controlled(r, d, k));
+        assert(b.controlled(p, s, j) && (o == s || b.direct(s, o)));
+    } else {
+        let i = choose|i: nat| #[trigger] b.controlled(p, x, i);
+        if o == x || b.direct(x, o) {
+            assert(b.controlled(p, x, i) && (o == x || b.direct(x, o)));
+        } else {
+            assert(b.controlled(p, s, j) && (o == s || b.direct(s, o)));
+        }
+    }
+}
+
+/// A move's step into the table of the process cap names: post's authority is all in pre, once what
+/// that process holds is read as held by s, which is p or a process p's control chains lead to. Only
+/// the node moved goes, and reach grows only for that process and what controls it, by what p
+/// reached.
+pub proof fn lemma_simulates_place_discharges(
+    pre: State,
+    post: State,
+    p: ObjectId,
+    cap: NodeId,
+    from: NodeId,
+    s: ObjectId,
+    j: nat,
+    live: spec_fn(NodeId) -> bool,
+    f: spec_fn(NodeId) -> NodeId,
+)
+    requires
+        simulates_claim(post, pre, live, f, pre.names[cap], s),
+        pre.holds_right(p, cap, Right::Control),
+        !pre.process_of.contains_key(pre.names[cap]),
+        pre.commands(p, from),
+        pre.names.contains_key(from),
+        pre.controlled(p, s, j),
+        forall|x: NodeId| #[trigger] State::removed(pre, post, x) ==> x == from,
+        forall|o: ObjectId| #[trigger] (post.contents)(o) == (pre.contents)(o),
+    ensures
+        discharges(pre, post, p, Effect::Place { cap, from }),
+{
+    let e = Effect::Place { cap, from };
+    assert(authorized(pre, p, e));
+    assert forall|o: ObjectId| #[trigger] State::changed(pre, post, o) implies may_change(pre, e, o) by {
+        assert((post.contents)(o) == (pre.contents)(o));
+    }
+    assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) && !pre.reach(r, o) implies may_grow(pre, p, e, r, o) by {
+        lemma_simulates_place_reach(post, pre, live, f, pre.names[cap], s, p, j, r, o);
+    }
+}
+
 /// A retype that names no new capability, only a node nobody holds: post's authority is all in pre,
 /// and every capability of pre is still there.
 pub proof fn lemma_simulated_discharges_retype(
@@ -2158,16 +2312,41 @@ pub proof fn lemma_no_delete_or_revoke_through_a_thread()
     }
 }
 
-/// Control of a process lets its holder place what it holds in the process's table.
+/// Control of a process lets its holder place what it holds in the process's table, and move what
+/// the process holds to another of its slots.
 pub proof fn lemma_place_into_a_controlled_process()
     ensures
         authorized(control_example(), 1, Effect::Place { cap: 10, from: 11 }),
+        authorized(control_example(), 1, Effect::Place { cap: 10, from: 20 }),
 {
     let s = control_example();
     assert(s.holds_right(1, 10, Right::Control));
     assert(s.names[10] == 2);
     assert(!s.process_of.contains_key(2));
     assert(s.holds(1, 11));
+    assert(s.holds(2, 20));
+    assert(s.commands(1, 20));
+}
+
+/// Nothing is placed that the placer does not command: process 2 controls nothing, so it cannot place
+/// what process 1 holds, and holding control of a thread of process 2 does not let a process place
+/// what process 2 holds.
+pub proof fn lemma_no_place_of_what_is_not_commanded()
+    ensures
+        !authorized(control_example(), 2, Effect::Place { cap: 20, from: 11 }),
+        !authorized(thread_control_example(), 1, Effect::Place { cap: 11, from: 20 }),
+        !thread_control_example().commands(1, 20),
+{
+    let s = control_example();
+    assert(!s.rights.contains((20usize, Right::Control)));
+    let t = thread_control_example();
+    assert(t.names[11] == 3);
+    assert(t.process_of.contains_key(3));
+    assert(!t.holds(1, 20));
+    assert forall|v: NodeId| #[trigger] t.holds_right(1, v, Right::Control) implies t.process_of.contains_key(t.names[v]) by {
+        assert(v == 11);
+        assert(t.names[11] == 3);
+    }
 }
 
 /// Control of a thread does not let its holder place anything in the table of the thread's process.

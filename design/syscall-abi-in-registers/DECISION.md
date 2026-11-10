@@ -193,7 +193,7 @@ The rejected aarch64 tables are under Registers.
 
 ## What this does not settle
 
-- The kinds a retype of a space, a process or a thread takes, and the positions of claim, destroy and the thread and process operations: they take the next kind numbers and argument positions when they are wired, inside the five words.
+- The kinds a retype of a space, a process or a thread takes, and the positions of destroy and the thread and process operations: they take the next kind numbers and argument positions when they are wired, inside the five words.
 - A 1G frame: retype accepts no kind for it, since nothing maps one.
 - An unmap of a 2M entry: unmap accepts level 2 when one is proven.
 - The SIMD and floating-point registers and the user thread-pointer register: the kernel uses none of them, and where they sit in a thread's saved state is not decided here.
