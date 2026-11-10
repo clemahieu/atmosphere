@@ -1,27 +1,33 @@
 ---
-title: "The kernel theorem assumes nothing about user code; the component that divides memory is tier 3 and the claim says so"
-date: 2026-11-05
+title: "The kernel theorem assumes nothing about user code; the component that divides the machine is tier 1, and the claim depends on it until its first statement verifies"
+date: 2026-11-10
 status: active
 tags: [security, proof, tiers]
-one_line: "The kernel's theorem holds whatever a pager does, so a swapped per-application pager needs no assurance for anyone else's safety. Isolation between two subsystems also depends on the component that divided memory between them, which is tier 3 today, and the security claim states that dependence."
-revisit_if: "End-to-end isolation between real subsystems is required as a proven property, which means raising the divider's tier: full coverage, or a small proven divider specified under its own parent's revocation."
-confidence: "The human's choice of the cheapest option with the gap explicit. The tier can rise later; raising it is new work."
+one_line: "The kernel's theorem holds whatever a pager does, so a swapped per-application pager needs no assurance for anyone else's safety. Isolation between two subsystems also depends on the component that divided the machine between them; that component is tier 1 by design/divider-proven-by-invariant/, and until its stage-one statement verifies the security claim states the dependence on unproven code."
+revisit_if: "The divider's stage-one statement verifies, when the claim's dependence becomes the proven statement and this record says so; or the divider's tier is lowered, which is the human's decision."
+confidence: "The divider's tier is the human's choice. That the kernel theorem needs nothing of user code is the form of design/theorem-over-reach/."
 ---
 
 # The trust boundary
 
 ## Decision
 
-The kernel theorem assumes nothing about user code. A swapped pager needs no assurance for anyone else's safety, since it only holds what it was given, `design/theorem-over-reach/`. Isolation between two subsystems also depends on the component that divided memory between them, the root process and any shared pager; that component is tier 3 today, and the security claim states the dependence. Hardware and counted glue are trusted.
+The kernel theorem assumes nothing about user code. A swapped pager needs no assurance for anyone else's safety, since it only holds what it was given, `design/theorem-over-reach/`.
+
+Isolation between two subsystems also depends on the component that divided the machine between them. That component, the divider, is tier 1: `design/divider-proven-by-invariant/` says what it proves and in what order. A server shared by several subsystems, such as a pager, is not part of the divider; it is a tenant bounded by its rows, and whether it leaks between its clients is its own correctness at its own tier.
+
+Until the divider's stage-one statement verifies, the root process that divides the machine is unproven code, and the security claim states that isolation between subsystems depends on it. Once it verifies, the claim is the composed statement: each tenant reaches only its rows and the declared overlap in every state after the divider's last step, over the trusted base that record names. Hardware and counted glue are trusted.
 
 ## Context
 
-The kernel can prove that a process reaches only what it was granted, but who was granted what is decided in user space. The root process is tier 3 and the pager library is tier 3 until a higher tier is chosen, so end-to-end isolation between real subsystems is only as strong as tier 3 code. The options were tier 3 now with the dependence stated, tier 2 with full line and branch coverage for the divider, or a small proven divider from the start.
+The kernel can prove that a process reaches only what it was granted, but who was granted what is decided in user space. A native subsystem is meant to stand in for a virtual machine as an isolation boundary, which makes isolation between real subsystems a property to prove, not a dependence to state. The options were tier 3 with the dependence stated, tier 2 with full line and branch coverage for the divider, or a proven divider.
 
 ## Reasoning
 
-A proven divider from the start would put verified user-space work before the capability kernel could be called done, and would require specifying that code under its own parent's revocation, which the new theorem allows at any time. Stating the dependence costs nothing and keeps the claim honest.
+Proving the divider does not mean specifying it under its own parent's revocation, the cost that would make it large: the root's capabilities hang from a node nobody holds, so nothing revokes them, `design/root-process-at-boot/`, and the root is the divider stage one proves. Stating the dependence while the proof is built keeps the claim honest in the meantime.
 
 ## Alternatives rejected
 
-- **Tier 2 or tier 1 divider now.** New work before the kernel is done; available later.
+- **The divider at tier 3, with the dependence stated for good.** The claim would stop at the kernel, and a subsystem boundary would be only as strong as the root process's tests.
+- **The divider at tier 2.** Full coverage of the divider says its tests reached every branch, not that every layout it accepts isolates; the claim a subsystem boundary needs is the second.
+- **A pager or shared server inside the divider's proof.** It would put its whole service logic under the divider's statement; as a tenant it is bounded by the kernel theorem and its rows without it.

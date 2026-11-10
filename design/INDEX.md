@@ -2,7 +2,7 @@
 
 # Design decisions
 
-27 records: 27 active, 0 superseded.
+28 records: 28 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -25,6 +25,9 @@ in `revisit if` what would make it worth reopening.
 - **[cut-over-on-a-branch](./cut-over-on-a-branch/DECISION.md)** (2026-11-05): New proven modules land on main beside the old kernel while boot keeps using the old one. The cut-over is a branch off main: a build feature selects old or new kernel entry and dom0, the branch gate boots both so each syscall is booted in the commit that wires it, the last commits delete the old kernel and the feature, and the branch merges with a merge commit. Main never contains the selection.
   - *confidence:* A process choice by the human after an independent review judged a single landing too large to finish in one round and its parts unable to pass the gate on their own.
   - *revisit if:* The cut-over branch has merged, when this record has done its work and the shim rule in CLAUDE.md applies to the whole tree again.
+- **[divider-proven-by-invariant](./divider-proven-by-invariant/DECISION.md)** (2026-11-10): The rules that divide the machine between tenants are a table of grants with declared overlap, checked by a decidable layout_ok. A Verus-verified user crate establishes an invariant over the kernel's state and that table, with a state per block; with the kernel theorem it bounds each tenant from above by its rows over reach and from below by a capability for each row, and a witness shows it finishes for every layout that fits. Stage one divides at boot and ends dead while still holding; stage two serves create and destroy, then grow and shrink, then forced reclaim and core moves, each handler keeping the invariant.
+  - *confidence:* The human's choice among static only, static then dynamic, and dynamic from the start, after a survey of published initialiser and policy proofs (capDL, Boyton's verified initialisation, seL4's integrity and information-flow proofs, take-grant, EROS confinement) and of hypervisors' allocation. The sizes the choice weighed are reasoned from structure, not measured; that the static case can be carried to running code is the published result, and the dynamic case is new ground.
+  - *revisit if:* The caller's-view contracts cannot be proven from the kernel's operation specifications at a cost the project will pay, or a handler stage two needs cannot be written to keep one invariant, which is when the dynamic stage is reconsidered and the statement stays the static one.
 - **[fan-in-over-private-rings](./fan-in-over-private-rings/DECISION.md)** (2026-11-09): Several untrusted producers feeding one consumer get one aring each, and afanin's scan finds the first ring with a slot available from a start the caller rotates. No word is written by two producers, so a wild index is rejected by its own ring alone and a producer that stops stalls only its own ring. A queue with one shared enqueue cursor is for producers inside one trust domain and is not built until a caller needs its total order.
   - *confidence:* The isolation is proven in afanin/src/lib.rs over aring's proven observe. That the shared cursor cannot reject a peer's store is an argument from the published algorithms' structure, not a proof; the cost comparison is not measured.
   - *revisit if:* A caller inside one trust domain needs one total order across producers, which the scan does not give; or the number of producers grows until a scan over every ring costs more than the shared cursor's contended line, which a measurement would show.
@@ -82,9 +85,9 @@ in `revisit if` what would make it worth reopening.
 - **[thread-bound-at-retype](./thread-bound-at-retype/DECISION.md)** (2026-11-08): Retyping a thread names a process capability too: the thread capability goes under the untyped and the process binding under the process capability in one step, so the only holder of the new control capability already controls the process and no reach grows. There is no bind operation. Revoking the binding leaves an inert thread that cannot be bound again; its registers stay readable, and its untyped's holder retypes its block.
   - *confidence:* Reasoned over kernel/verified/capability/reach.rs and the landed retype and bind, not yet proven: the widened retype lemma and the fact it needs are named below. That the step grows no reach is arithmetic on the model. Choosing construction over a sole-holder bind, which keeps the same theorem, is judgement.
   - *revisit if:* A workload needs a thread moved to another process without being recreated, carrying its registers in the kernel rather than through its supervisor reading and writing them; or a binding that reach reads must be set on an object that exists before the authority it binds, as a device does, for which the sole-holder rule below is the shape to use instead.
-- **[trust-boundary](./trust-boundary/DECISION.md)** (2026-11-05): The kernel's theorem holds whatever a pager does, so a swapped per-application pager needs no assurance for anyone else's safety. Isolation between two subsystems also depends on the component that divided memory between them, which is tier 3 today, and the security claim states that dependence.
-  - *confidence:* The human's choice of the cheapest option with the gap explicit. The tier can rise later; raising it is new work.
-  - *revisit if:* End-to-end isolation between real subsystems is required as a proven property, which means raising the divider's tier: full coverage, or a small proven divider specified under its own parent's revocation.
+- **[trust-boundary](./trust-boundary/DECISION.md)** (2026-11-10): The kernel's theorem holds whatever a pager does, so a swapped per-application pager needs no assurance for anyone else's safety. Isolation between two subsystems also depends on the component that divided the machine between them; that component is tier 1 by design/divider-proven-by-invariant/, and until its stage-one statement verifies the security claim states the dependence on unproven code.
+  - *confidence:* The divider's tier is the human's choice. That the kernel theorem needs nothing of user code is the form of design/theorem-over-reach/.
+  - *revisit if:* The divider's stage-one statement verifies, when the claim's dependence becomes the proven statement and this record says so; or the divider's tier is lowered, which is the human's decision.
 - **[untyped-memory](./untyped-memory/DECISION.md)** (2026-11-05): Physical memory is held as untyped capabilities and retyped into kernel objects and frames from user space; containers and kernel quotas are gone; mapping, paging and allocation policy live in a standard pager and allocator library an application can swap.
   - *confidence:* A purity judgement by the human with its costs priced and accepted: a user-level memory manager to build, and most of the container-based proof to rewrite.
   - *revisit if:* It follows from the purity principle in CLAUDE.md; it is wrong only if an application class cannot be served by any user-space pager, which would be a reason to revisit the principle, not this record alone.
@@ -99,7 +102,7 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `abi`: arch-module, one-kernel-instance, syscall-abi-in-registers
 - `address-space`: address-spaces-as-objects, vmm-over-svm
 - `boot`: machine-glue-below-the-kernel, root-process-at-boot, test-guest-memory
-- `capability`: address-spaces-as-objects, capability-names-a-block, cpu-time-as-capability, ipc-with-reply-object, process-holds-capabilities, revoke-by-depth-first-list, root-process-at-boot, schedulers-over-core-partitions, sharing-by-derive, teardown-driven-by-retype, theorem-over-reach, thread-bound-at-retype, untyped-memory, vmm-over-svm
+- `capability`: address-spaces-as-objects, capability-names-a-block, cpu-time-as-capability, divider-proven-by-invariant, ipc-with-reply-object, process-holds-capabilities, revoke-by-depth-first-list, root-process-at-boot, schedulers-over-core-partitions, sharing-by-derive, teardown-driven-by-retype, theorem-over-reach, thread-bound-at-retype, untyped-memory, vmm-over-svm
 - `gate`: cut-over-on-a-branch
 - `glue`: machine-glue-below-the-kernel
 - `interrupt`: machine-glue-below-the-kernel
@@ -113,15 +116,15 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `pagetable`: arch-module
 - `portability`: arch-module, machine-glue-below-the-kernel, syscall-abi-in-registers
 - `process`: cut-over-on-a-branch, process-holds-capabilities, thread-bound-at-retype
-- `proof`: isolation-claim, theorem-over-reach, thread-bound-at-retype, trust-boundary
+- `proof`: divider-proven-by-invariant, isolation-claim, theorem-over-reach, thread-bound-at-retype, trust-boundary
 - `purity`: untyped-memory
 - `real-time`: schedulers-over-core-partitions
 - `revoke`: revoke-by-depth-first-list, sharing-by-derive, teardown-driven-by-retype
 - `scheduling`: cpu-time-as-capability, schedulers-over-core-partitions
-- `security`: fan-in-over-private-rings, isolation-claim, theorem-over-reach, trust-boundary
+- `security`: divider-proven-by-invariant, fan-in-over-private-rings, isolation-claim, theorem-over-reach, trust-boundary
 - `shared-memory`: fan-in-over-private-rings, latest-value-by-three-slot-exchange
 - `test`: test-guest-memory
 - `thread`: process-holds-capabilities, thread-bound-at-retype
-- `tiers`: trust-boundary
+- `tiers`: divider-proven-by-invariant, trust-boundary
 - `verified`: arch-module, cut-over-on-a-branch, fan-in-over-private-rings, flush-without-waiting, latest-value-by-three-slot-exchange, one-lock-bounded-steps, revoke-by-depth-first-list, theorem-over-reach, thread-bound-at-retype
 - `virtualization`: vmm-over-svm
