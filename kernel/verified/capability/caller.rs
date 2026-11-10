@@ -9,8 +9,11 @@ use vstd::prelude::*;
 verus! {
 
 use crate::arch::Registers;
+use crate::capability::derive::*;
 use crate::capability::kernel::*;
+use crate::capability::link::*;
 use crate::capability::list::*;
+use crate::capability::map::*;
 use crate::capability::operation::*;
 use crate::capability::position::*;
 use crate::capability::reach::*;
@@ -37,6 +40,24 @@ proof fn lemma_index_parts(i: usize, j: usize)
 {
     assert(i == 128 * (i / 128) + i % 128) by (nonlinear_arith);
     assert(j == 128 * (j / 128) + j % 128) by (nonlinear_arith);
+}
+
+/// A slot's capability may change the space it names, as writes_space reads it: a device space's with
+/// the write right, or a process's with the control right.
+pub open spec fn view_writes_space(v: SlotView) -> bool {
+    ||| v.kind is Space && v.rights & right_bit(Right::Write) != 0
+    ||| v.kind is Process && v.rights & right_bit(Right::Control) != 0
+}
+
+/// A slot's capability may retype the block of the order at base, as can_retype_under reads it within
+/// one view: an untyped with the retype right whose block holds that one.
+pub open spec fn view_retypes(v: SlotView, base: usize, order: u8) -> bool {
+    &&& v.kind is Untyped
+    &&& v.rights & right_bit(Right::Retype) != 0
+    &&& order <= v.order
+    &&& v.base <= base
+    &&& base as int % block_bytes(order) == 0
+    &&& base as int + block_bytes(order) <= v.base as int + block_bytes(v.order)
 }
 
 impl CapKernel {
@@ -219,6 +240,92 @@ impl CapKernel {
                 }
                 assert(post.table_view(t) =~= if t == table { pre.table_view(t).remove(a.index) } else { pre.table_view(t) });
             }
+        }
+    }
+
+    /// Whether the table page at child can be linked into the entry the address va and the level name in
+    /// the space whose root is s, as the kernel reads it beyond any table's view: the walk finds a live
+    /// table of that space with that entry empty and able to hold a child, and the child is a live,
+    /// never linked or written table page one level below it.
+    pub open spec fn link_fits(&self, s: usize, va: u64, level: u64, child: usize) -> bool {
+        let tree = tree_of(&self.table_pages, &self.spaces);
+        match self.link_parent(s, va, level) {
+            None => false,
+            Some(place) => {
+                &&& tree.is_table(place.table)
+                &&& tree.record(place.table).space == Some(s)
+                &&& !self.blocks.pages@[(place.table / 4096) as int].dead
+                &&& tree.child_slot(place.table, place.entry)
+                &&& tree.entry(place.table, place.entry).is_empty()
+                &&& tree.is_page(child)
+                &&& !self.blocks.pages@[(child / 4096) as int].dead
+                &&& tree.record(child).level + 1 == tree.record(place.table).level
+                &&& tree.record(child).space is None
+                &&& tree.record(child).parent is None
+                &&& !tree.record(child).written
+            },
+        }
+    }
+
+    /// Link's condition over the caller's view, for the space capability at index slot and the untyped at
+    /// index from of the caller's table at root: the slot holds a capability that may change its space,
+    /// naming no dead process; the untyped's slot holds one that may retype the child's order-3 block,
+    /// above the deepest depth; and link_fits holds in that space. The process's liveness, the untyped's
+    /// depth and link_fits read the kernel outside the view.
+    pub open spec fn link_allowed(&self, root: usize, slot: usize, va: u64, level: u64, from: usize, child: usize) -> bool {
+        let v = self.table_view(root);
+        &&& v.contains_key(slot)
+        &&& view_writes_space(v[slot])
+        &&& !self.cap_dead(self.tables.node_of(root, slot))
+        &&& v.contains_key(from)
+        &&& view_retypes(v[from], child, 3)
+        &&& self.list.nodes@[self.tables.node_of(root, from) as int].depth < MAX_DEPTH
+        &&& self.link_fits(v[slot].base, va, level, child)
+    }
+
+    /// Link's contract over the caller's view: no slot of any table changes, whatever the status. Refused,
+    /// with every space's tables as they were, exactly when link_allowed fails; otherwise ok, with the
+    /// space the slot names gaining the child in the entry the walk found, as linked says.
+    pub open spec fn link_contract(pre: Self, post: Self, root: usize, slot: usize, va: u64, level: u64, from: usize, child: usize, out: Outcome) -> bool {
+        &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
+        &&& {
+            ||| {
+                &&& !pre.link_allowed(root, slot, va, level, from, child)
+                &&& out == status_only(STATUS_REFUSED)
+                &&& tree_of(&post.table_pages, &post.spaces) == tree_of(&pre.table_pages, &pre.spaces)
+            }
+            ||| {
+                let s = pre.table_view(root)[slot].base;
+                let place = pre.link_parent(s, va, level)->0;
+                &&& pre.link_allowed(root, slot, va, level, from, child)
+                &&& out == status_only(STATUS_OK)
+                &&& linked(tree_of(&pre.table_pages, &pre.spaces), tree_of(&post.table_pages, &post.spaces), place.table, place.entry, child, s)
+            }
+        }
+    }
+
+    /// Link's specification implies its contract.
+    pub proof fn lemma_link_contract(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            pre.wf(),
+            Self::spec_linked(pre, post, root, frame, out),
+        ensures
+            Self::link_contract(pre, post, root, frame.slot() as usize, frame.argument(1), frame.argument(2), frame.argument(3) as usize, frame.argument(4) as usize, out),
+    {
+        let slot = frame.slot() as usize;
+        let from = frame.argument(3) as usize;
+        pre.lemma_table_view(root, slot);
+        pre.lemma_table_view(root, from);
+        assert(pre.link_allowed(root, slot, frame.argument(1), frame.argument(2), from, frame.argument(4) as usize)
+            == pre.allows_link(root, frame));
+        assert(post.list == pre.list && post.tables == pre.tables);
+        assert forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t) by {
+            assert forall|j: usize| #[trigger] post.table_view(t).contains_key(j) == pre.table_view(t).contains_key(j)
+                && (post.table_view(t).contains_key(j) ==> post.table_view(t)[j] == pre.table_view(t)[j]) by {
+                pre.lemma_table_view(t, j);
+                post.lemma_table_view(t, j);
+            }
+            assert(post.table_view(t) =~= pre.table_view(t));
         }
     }
 }
