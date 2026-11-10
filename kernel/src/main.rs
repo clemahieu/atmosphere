@@ -3,7 +3,7 @@
 //! See [`KernelCommandLine`](boot::command_line::KernelCommandLine) for a list of accepted kernel command-line options.
 
 #![no_std]
-#![feature(arbitrary_self_types, coverage_attribute)]
+#![feature(coverage_attribute)]
 #![deny(
     asm_sub_register,
     deprecated,
