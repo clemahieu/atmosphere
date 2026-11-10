@@ -125,6 +125,7 @@ fn type_region(blocks: &mut BlockTable, level: Large, r: usize) -> (ret: Option<
         final(blocks).wf(),
         ret is None ==> *final(blocks) == *old(blocks),
         final(blocks).pages@ == old(blocks).pages@,
+        ret is Some == old(blocks).large_free(level, r as int),
         ret is Some ==> {
             &&& forall|i: int| level_base(level, r) <= i < level_base(level, r) + level_pages(level)
                 ==> !#[trigger] old(blocks).covered(i)
@@ -208,27 +209,55 @@ impl CapKernel {
         &&& !self.list.nodes@[self.tables.node_of(root, to) as int].live
     }
 
-    /// And a leaf needs an empty root entry and two pages of memory, and is never at address zero,
-    /// which means no leaf.
+    /// And a retype of a small block that makes a capability needs the block free, among the pages
+    /// the block table tracks.
+    pub open spec fn can_retype_block(&self, root: usize, from: usize, to: usize, base: usize, order: u8) -> bool {
+        &&& self.can_retype(root, from, to, base, order)
+        &&& self.blocks.tracks_addr_run(base, order_pages(order as usize))
+        &&& self.blocks.small_free((base / 4096) as int, order as usize)
+    }
+
+    /// And a leaf needs an empty root entry and two free pages of memory, and is never at address
+    /// zero, which means no leaf.
     pub open spec fn can_retype_leaf(&self, root: usize, from: usize, r: usize, base: usize) -> bool {
         &&& self.can_retype_under(root, from, base, 1)
         &&& r < ROOT_ENTRIES
         &&& self.tables.leaf(root, r as int) == NO_LEAF
         &&& base != NO_LEAF
         &&& self.blocks.tracks_addr_run(base, 2)
+        &&& self.blocks.small_free((base / 4096) as int, 1)
     }
 
+    /// And a table page has no capability, so needs no slot: a level a table page has, and a free
+    /// order-3 block.
+    pub open spec fn can_retype_table_page(&self, root: usize, from: usize, base: usize, level: usize) -> bool {
+        &&& self.can_retype_under(root, from, base, 3)
+        &&& 1 <= level <= 3
+        &&& self.blocks.tracks_addr_run(base, 8)
+        &&& self.blocks.small_free((base / 4096) as int, 3)
+    }
+
+    /// A 4K frame is that and no more.
     pub open spec fn can_retype_frame(&self, root: usize, from: usize, to: usize, base: usize) -> bool {
-        &&& self.can_retype(root, from, to, base, 0)
-        &&& self.blocks.tracks_addr(base)
+        self.can_retype_block(root, from, to, base, 0)
     }
 
-    /// And a large frame is 2M or 1G, in a region the block table has.
+    /// And a thread needs a process to be bound to.
+    pub open spec fn can_retype_thread(&self, root: usize, from: usize, to: usize, base: usize, j: usize) -> bool {
+        &&& self.can_hold_thread(root, j)
+        &&& self.can_retype_block(root, from, to, base, THREAD_ORDER)
+    }
+
+    /// And a large frame is 2M or 1G, in a region the block table has, whose block is free or is
+    /// the one an earlier step of this retype typed and is zeroing.
     pub open spec fn can_retype_large(&self, root: usize, from: usize, to: usize, base: usize, order: u8) -> bool {
+        let level = if order == 9 { Large::Two } else { Large::One };
+        let r = base / 4096 / level_pages(level);
         &&& self.can_retype(root, from, to, base, order)
         &&& order == 9 ==> base / 4096 / PAGES_PER_2M < NUM_2M
         &&& order == 18 ==> base / 4096 / PAGES_PER_1G < NUM_1G
         &&& order == 9 || order == 18
+        &&& self.zeroing.active(level, r) || self.blocks.large_free(level, r as int)
     }
 
     /// Checks the refusals every retype has and finds the parent's node.
@@ -505,6 +534,7 @@ impl CapKernel {
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             Self::same_tree(*old(self), *final(self)),
             final(self).cores == old(self).cores,
+            ret == old(self).can_retype_frame(root, from, to, base),
             !ret ==> *final(self) == *old(self),
             ret ==> Self::frame_retyped(*old(self), *final(self), root, from, to, base),
     {
@@ -587,6 +617,7 @@ impl CapKernel {
             final(self).tables == old(self).tables,
             final(self).holders == old(self).holders,
             final(self).cores == old(self).cores,
+            ret is Refused == (!old(self).zeroing.active(level, r) && !old(self).blocks.large_free(level, r as int)),
             ret is Refused ==> *final(self) == *old(self),
             ret is Done ==> forall|k: usize| k < level_pages(level)
                 ==> #[trigger] holds_zero(final(self).frames@, (level_base(level, r) + k) as usize),
@@ -799,7 +830,7 @@ impl CapKernel {
             final(self).wf(),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             Self::same_tree(*old(self), *final(self)),
-            ret ==> old(self).can_retype_leaf(root, from, r, base),
+            ret == old(self).can_retype_leaf(root, from, r, base),
             !ret ==> *final(self) == *old(self),
             ret ==> {
                 let parent = old(self).tables.node_of(root, from);
@@ -869,9 +900,7 @@ impl CapKernel {
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             Self::same_tree(*old(self), *final(self)),
             !ret ==> *final(self) == *old(self),
-            !old(self).blocks.covered((base / 4096) as int)
-                && (forall|k: int| 0 <= k < 2 ==> #[trigger] old(self).blocks.pages@[base / 4096 + k].kind is Free)
-                ==> ret,
+            ret == old(self).blocks.small_free((base / 4096) as int, 1),
             ret ==> {
                 &&& Self::leaf_step(*old(self), *final(self), base)
                 &&& final(self).list.parent@ == old(self).list.parent@.insert(base, parent)
@@ -901,7 +930,6 @@ impl CapKernel {
                 &&& forall|x: usize| #[trigger] final(self).is_cap(x) == old(self).is_cap(x)
                 &&& forall|x: usize| #[trigger] old(self).is_cap(x) ==> final(self).payload_of(x) == old(self).payload_of(x)
                 &&& final(self).list.pages@.dom() == old(self).list.pages@.dom().insert(base)
-                &&& forall|k: int| 0 <= k < 2 ==> #[trigger] old(self).blocks.pages@[base / 4096 + k].kind is Free
                 &&& final(self).blocks.pages@[(base / 4096) as int].kind is Base
                 &&& final(self).blocks.pages@[(base / 4096) as int].object is TableLeaf
                 &&& final(self).blocks.pages@[base / 4096 + 1].kind is Member
@@ -1528,6 +1556,7 @@ impl CapKernel {
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             Self::same_tree(*old(self), *final(self)),
             final(self).cores == old(self).cores,
+            ret is Refused == !old(self).can_retype_large(root, from, to, base, order),
             ret is Refused ==> *final(self) == *old(self),
             old(self).zeroing.blocks@.contains_key(base / 4096) ==>
                 final(self).zeroing.cursor@[(base / 4096) as int]

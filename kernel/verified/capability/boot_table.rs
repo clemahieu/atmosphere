@@ -729,7 +729,7 @@ impl CapKernel {
             pre.lemma_slot_bound(u);
             pre.lemma_slot(process, ROOT_PROCESS_SLOT);
             pre.lemma_slot_bound(n);
-            assert(pre.can_retype_under(process, ROOT_UNTYPED_SLOT, cursor, 3));
+            assert(pre.can_retype_table_page(process, ROOT_UNTYPED_SLOT, cursor, level));
             pre.lemma_written_space(n);
             pre.lemma_table_base(s);
             pre.lemma_outside_block(process, cursor, (s / 4096) as int);

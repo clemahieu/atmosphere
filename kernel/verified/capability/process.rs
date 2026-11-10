@@ -1177,14 +1177,13 @@ impl CapKernel {
         ensures
             final(self).wf(),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
+            ret == old(self).can_retype_block(root, from, to, base, PROCESS_ORDER),
             !ret ==> *final(self) == *old(self),
-            ret ==> old(self).can_retype(root, from, to, base, PROCESS_ORDER),
             ret ==> {
                 let parent = old(self).tables.node_of(root, from);
                 let child = old(self).tables.node_of(root, to);
                 let page = (base / 4096) as int;
                 &&& old(self).view().holds_right(root, parent, Right::Retype)
-                &&& forall|k: int| 0 <= k < 8 ==> #[trigger] old(self).blocks.pages@[page + k].kind is Free
                 &&& final(self).blocks.pages@[page].kind is Base
                 &&& final(self).blocks.pages@[page].object is Process
                 &&& final(self).blocks.pages@[page].order == 3

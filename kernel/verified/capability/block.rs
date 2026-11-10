@@ -167,6 +167,28 @@ impl BlockTable {
         self.regions_2m@[region_2m(i)].typed || self.regions_1g@[region_1g(i)].typed
     }
 
+    /// The small block of this order at page base is free: none of its pages is typed, and no typed
+    /// large block holds it.
+    pub open spec fn small_free(&self, base: int, order: usize) -> bool {
+        &&& !self.covered(base)
+        &&& forall|k: int| 0 <= k < order_pages(order) ==> #[trigger] self.pages@[base + k].kind is Free
+    }
+
+    /// The large block that is region r of this level is free: none of its pages is typed, and no
+    /// typed large block holds any of them.
+    pub open spec fn large_free(&self, level: Large, r: int) -> bool {
+        match level {
+            Large::Two => forall|i: int| r * 512 <= i < (r + 1) * 512 ==> {
+                &&& #[trigger] self.pages@[i].kind is Free
+                &&& !self.covered(i)
+            },
+            Large::One => forall|i: int| r * 262144 <= i < (r + 1) * 262144 ==> {
+                &&& #[trigger] self.pages@[i].kind is Free
+                &&& !self.covered(i)
+            },
+        }
+    }
+
     /// Each count is the size of its set, and the sets are exactly what they count.
     pub open spec fn counts_wf(&self) -> bool {
         &&& self.pages.wf()
@@ -429,6 +451,65 @@ impl BlockTable {
         assert(self.in_1g@[region_1g(b)].contains(b) == (!(self.pages@[b].kind is Free)
             || (b % 512 == 0 && self.regions_2m@[b / 512].typed)));
         assert(!self.in_1g@[region_1g(b)].contains(b));
+    }
+
+    /// A free 2M block's count is zero, and neither it nor the 1G block around it is typed.
+    pub proof fn lemma_free_2m_is_zero(&self, r: int)
+        requires
+            self.counts_wf(),
+            0 <= r < NUM_2M,
+            self.large_free(Large::Two, r),
+        ensures
+            self.count_2m@[r] == 0,
+            !self.regions_2m@[r].typed,
+            !self.regions_1g@[r / 512].typed,
+    {
+        assert forall|i: int| !self.in_2m@[r].contains(i) by {
+            if self.in_2m@[r].contains(i) {
+                assert(set_int_range(r * 512, (r + 1) * 512).contains(i));
+                assert(self.tracks(i));
+                assert(region_2m(i) == r);
+                assert(self.pages@[i].kind is Free);
+                assert(self.in_2m@[region_2m(i)].contains(i) == !(self.pages@[i].kind is Free));
+            }
+        }
+        assert(self.in_2m@[r] =~= Set::<int>::empty());
+        assert(self.in_2m@[r].len() == 0);
+        let b = r * 512;
+        assert(self.pages@[b].kind is Free);
+        assert(!self.covered(b));
+        assert(region_2m(b) == r);
+        assert(region_1g(b) == r / 512);
+    }
+
+    /// A free 1G block's count is zero, and it is not typed.
+    pub proof fn lemma_free_1g_is_zero(&self, r: int)
+        requires
+            self.counts_wf(),
+            0 <= r < NUM_1G,
+            self.large_free(Large::One, r),
+        ensures
+            self.count_1g@[r] == 0,
+            !self.regions_1g@[r].typed,
+    {
+        assert forall|i: int| !self.in_1g@[r].contains(i) by {
+            if self.in_1g@[r].contains(i) {
+                assert(set_int_range(r * 262144, (r + 1) * 262144).contains(i));
+                assert(self.tracks(i));
+                assert(region_1g(i) == r);
+                assert(self.pages@[i].kind is Free);
+                assert(!self.covered(i));
+                assert(region_2m(i) == i / 512);
+                assert(self.in_1g@[region_1g(i)].contains(i) == (!(self.pages@[i].kind is Free)
+                    || (i % 512 == 0 && self.regions_2m@[i / 512].typed)));
+            }
+        }
+        assert(self.in_1g@[r] =~= Set::<int>::empty());
+        assert(self.in_1g@[r].len() == 0);
+        let b = r * 262144;
+        assert(self.pages@[b].kind is Free);
+        assert(!self.covered(b));
+        assert(region_1g(b) == r);
     }
 
     /// A non-free page is in no typed large block: its regions' counts are not zero.
@@ -964,11 +1045,8 @@ impl BlockTable {
             final(self).wf(),
             final(self).pages@ == old(self).pages@,
             ret is None ==> *final(self) == *old(self),
+            ret is Some == old(self).large_free(Large::Two, r as int),
             ret is Some ==> {
-                &&& forall|i: int| r * 512 <= i < (r + 1) * 512 ==> {
-                    &&& #[trigger] old(self).pages@[i].kind is Free
-                    &&& !old(self).covered(i)
-                }
                 &&& final(self).regions_2m@[r as int] == (RegionEntry {
                     typed: true, dead: false, torn_down: false, refs: 1,
                 })
@@ -981,6 +1059,11 @@ impl BlockTable {
     {
         let r1 = r / 512;
         if *self.count_2m.get(r) != 0 || self.regions_2m.get(r).typed || self.regions_1g.get(r1).typed {
+            proof {
+                if self.large_free(Large::Two, r as int) {
+                    self.lemma_free_2m_is_zero(r as int);
+                }
+            }
             return None;
         }
         let ghost pre = *old(self);
@@ -1215,11 +1298,8 @@ impl BlockTable {
             final(self).wf(),
             final(self).pages@ == old(self).pages@,
             ret is None ==> *final(self) == *old(self),
+            ret is Some == old(self).large_free(Large::One, r as int),
             ret is Some ==> {
-                &&& forall|i: int| r * 262144 <= i < (r + 1) * 262144 ==> {
-                    &&& #[trigger] old(self).pages@[i].kind is Free
-                    &&& !old(self).covered(i)
-                }
                 &&& final(self).regions_1g@[r as int] == (RegionEntry {
                     typed: true, dead: false, torn_down: false, refs: 1,
                 })
@@ -1231,6 +1311,11 @@ impl BlockTable {
             },
     {
         if *self.count_1g.get(r) != 0 || self.regions_1g.get(r).typed {
+            proof {
+                if self.large_free(Large::One, r as int) {
+                    self.lemma_free_1g_is_zero(r as int);
+                }
+            }
             return None;
         }
         let ghost pre = *old(self);
@@ -1506,13 +1591,8 @@ impl BlockTable {
         ensures
             final(self).wf(),
             ret is None ==> *final(self) == *old(self),
-            !old(self).covered(base as int)
-                && (forall|k: int| 0 <= k < order_pages(order) ==> #[trigger] old(self).pages@[base + k].kind is Free)
-                ==> ret is Some,
+            ret is Some == old(self).small_free(base as int, order),
             ret is Some ==> {
-                &&& forall|k: int| 0 <= k < order_pages(order)
-                    ==> #[trigger] old(self).pages@[base + k].kind is Free
-                &&& !old(self).covered(base as int)
                 &&& final(self).regions_2m@ == old(self).regions_2m@
                 &&& final(self).regions_1g@ == old(self).regions_1g@
                 &&& final(self).pages@[base as int].kind is Base

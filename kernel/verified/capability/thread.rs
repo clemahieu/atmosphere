@@ -1576,8 +1576,8 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
         ensures
             final(self).wf(),
+            ret == old(self).can_retype_block(root, from, to, base, THREAD_ORDER),
             !ret ==> *final(self) == *old(self),
-            ret ==> old(self).can_retype(root, from, to, base, THREAD_ORDER),
             ret ==> base as int + 8192 <= NODE_SPACE as int,
             ret ==> final(self).processes == old(self).processes,
             ret ==> final(self).tables.roots == old(self).tables.roots,
@@ -1838,8 +1838,7 @@ impl CapKernel {
             final(self).wf(),
             !ret ==> *final(self) == *old(self),
             !ret ==> bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
-            ret ==> old(self).can_retype(root, from, to, base, THREAD_ORDER),
-            ret ==> old(self).can_hold_thread(root, j),
+            ret == old(self).can_retype_thread(root, from, to, base, j),
             ret ==> {
                 let parent = old(self).tables.node_of(root, from);
                 let child = old(self).tables.node_of(root, to);

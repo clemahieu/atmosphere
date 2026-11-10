@@ -2564,13 +2564,12 @@ impl CapKernel {
             final(self).wf(),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             final(self).cores == old(self).cores,
+            ret == old(self).can_retype_table_page(root, from, base, level),
             !ret ==> *final(self) == *old(self),
-            ret ==> old(self).can_retype_under(root, from, base, 3),
             ret ==> {
                 let parent = old(self).tables.node_of(root, from);
                 &&& old(self).view().holds_right(root, parent, Right::Retype)
                 &&& old(self).blocks.pages@[(base / 4096) as int].kind is Free
-                &&& 1 <= level <= 3
                 &&& final(self).table_pages.maps@.contains_key(base)
                 &&& final(self).table_pages.records@[base].value() == fresh_table(level)
                 &&& forall|r: usize| #[trigger] old(self).spaces.roots@.contains_key(r) ==>
@@ -2603,10 +2602,6 @@ impl CapKernel {
                 &&& forall|i: int| old(self).blocks.tracks(i) && !(base / 4096 <= i < base / 4096 + 8)
                     ==> #[trigger] final(self).blocks.pages@[i] == old(self).blocks.pages@[i]
             },
-            old(self).can_retype_under(root, from, base, 3) && 1 <= level <= 3 && old(self).blocks.tracks_addr_run(base, 8)
-                && !old(self).blocks.covered((base / 4096) as int)
-                && (forall|k: int| 0 <= k < 8 ==> #[trigger] old(self).blocks.pages@[base / 4096 + k].kind is Free)
-                ==> ret,
     {
         let ghost pre = *old(self);
         if level == 0 || level > 3 {
@@ -3095,8 +3090,8 @@ impl CapKernel {
         ensures
             final(self).wf(),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
+            ret == old(self).can_retype_block(root, from, to, base, 3),
             !ret ==> *final(self) == *old(self),
-            ret ==> old(self).can_retype(root, from, to, base, 3),
             ret ==> {
                 let parent = old(self).tables.node_of(root, from);
                 let child = old(self).tables.node_of(root, to);
