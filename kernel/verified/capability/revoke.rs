@@ -25,7 +25,6 @@ use crate::capability::process::*;
 use crate::capability::thread::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::view::*;
-#[cfg(verus_keep_ghost)]
 use crate::define::*;
 
 /// How many steps a revoke does per kernel entry. No wait happens under the lock, so a revoke returns
@@ -97,7 +96,7 @@ impl CapKernel {
             final(self).table_pages.spare == old(self).table_pages.spare,
             !(old(self).list.nodes@[n as int].kind is Mapping) ==> final(self).table_pages == old(self).table_pages,
             old(self).is_cap(n) && old(self).payload_of(n).kind is Frame ==> {
-                let br = block_ref(&old(self).blocks, old(self).payload_of(n).base / 4096);
+                let br = block_ref(&old(self).blocks, old(self).payload_of(n).base / PAGE_SZ);
                 &&& blocks_refs_changed(
                     &old(self).blocks,
                     &final(self).blocks,
@@ -109,7 +108,7 @@ impl CapKernel {
             },
             old(self).is_cap(n) && old(self).payload_of(n).kind is Space ==> {
                 let s = old(self).payload_of(n).base;
-                let br = BlockRef::Small(s / 4096);
+                let br = BlockRef::Small(s / PAGE_SZ);
                 &&& blocks_refs_changed(
                     &old(self).blocks,
                     &final(self).blocks,
@@ -123,7 +122,7 @@ impl CapKernel {
             !(old(self).is_cap(n) && old(self).payload_of(n).kind is Space) ==> final(self).spaces == old(self).spaces,
             old(self).is_cap(n) && old(self).payload_of(n).kind is Thread ==> {
                 let t = old(self).payload_of(n).base;
-                let br = BlockRef::Small(t / 4096);
+                let br = BlockRef::Small(t / PAGE_SZ);
                 &&& blocks_refs_changed(
                     &old(self).blocks,
                     &final(self).blocks,
@@ -140,7 +139,7 @@ impl CapKernel {
             old(self).list.nodes@[n as int].kind is Binding ==> Self::unbound(*old(self), *final(self), n),
             old(self).is_cap(n) && old(self).payload_of(n).kind is Process ==> {
                 let p = old(self).payload_of(n).base;
-                let br = BlockRef::Small(p / 4096);
+                let br = BlockRef::Small(p / PAGE_SZ);
                 &&& blocks_refs_changed(
                     &old(self).blocks,
                     &final(self).blocks,
@@ -167,7 +166,7 @@ impl CapKernel {
                 &&& final(self).mappings == old(self).mappings
             },
             old(self).list.nodes@[n as int].kind is Hidden ==> {
-                &&& blocks_refs_changed(&old(self).blocks, &final(self).blocks, BlockRef::Small(n / 4096), 0, true)
+                &&& blocks_refs_changed(&old(self).blocks, &final(self).blocks, BlockRef::Small(n / PAGE_SZ), 0, true)
                 &&& final(self).holders == old(self).holders
             },
             !(old(self).is_cap(n) && (old(self).payload_of(n).kind is Frame || old(self).payload_of(n).kind is Space
@@ -190,7 +189,7 @@ impl CapKernel {
                     pre.lemma_hidden_block(n);
                 }
                 // The block's one reference was the hidden node's, so it is dead at once.
-                drop_block_ref(&mut self.blocks, BlockRef::Small(n / 4096));
+                drop_block_ref(&mut self.blocks, BlockRef::Small(n / PAGE_SZ));
             },
             NodeKind::Capability => {
                 proof {
@@ -202,7 +201,7 @@ impl CapKernel {
                         proof {
                             lemma_holder_refs(&pre.list, &pre.tables, &pre.blocks, &pre.zeroing, pre.holders@, n);
                         }
-                        let br = locate(&self.blocks, payload.base / 4096);
+                        let br = locate(&self.blocks, payload.base / PAGE_SZ);
                         drop_block_ref(&mut self.blocks, br);
                         self.holders = Ghost(pre.holders@.insert(br, pre.holders@[br].remove(n)));
                     },
@@ -210,21 +209,21 @@ impl CapKernel {
                         proof {
                             pre.lemma_space_cap(n);
                         }
-                        drop_block_ref(&mut self.blocks, BlockRef::Small(payload.base / 4096));
+                        drop_block_ref(&mut self.blocks, BlockRef::Small(payload.base / PAGE_SZ));
                         self.spaces.holders = Ghost(pre.spaces.holders@.insert(payload.base, pre.spaces.holders@[payload.base].remove(n)));
                     },
                     CapKind::Thread => {
                         proof {
                             pre.lemma_thread_cap(n);
                         }
-                        drop_block_ref(&mut self.blocks, BlockRef::Small(payload.base / 4096));
+                        drop_block_ref(&mut self.blocks, BlockRef::Small(payload.base / PAGE_SZ));
                         self.threads.holders = Ghost(pre.threads.holders@.insert(payload.base, pre.threads.holders@[payload.base].remove(n)));
                     },
                     CapKind::Process => {
                         proof {
                             pre.lemma_process_cap(n);
                         }
-                        drop_block_ref(&mut self.blocks, BlockRef::Small(payload.base / 4096));
+                        drop_block_ref(&mut self.blocks, BlockRef::Small(payload.base / PAGE_SZ));
                         self.processes.holders = Ghost(pre.processes.holders@.insert(payload.base, pre.processes.holders@[payload.base].remove(n)));
                     },
                     _ => {},
@@ -471,7 +470,7 @@ impl CapKernel {
             mid.table_pages.spare == pre.table_pages.spare,
             !(pre.list.nodes@[r as int].kind is Mapping) ==> mid.table_pages == pre.table_pages,
             pre.is_cap(r) && pre.payload_of(r).kind is Frame ==> {
-                let br = block_ref(&pre.blocks, pre.payload_of(r).base / 4096);
+                let br = block_ref(&pre.blocks, pre.payload_of(r).base / PAGE_SZ);
                 &&& blocks_refs_changed(
                     &pre.blocks,
                     &mid.blocks,
@@ -483,7 +482,7 @@ impl CapKernel {
             },
             pre.is_cap(r) && pre.payload_of(r).kind is Space ==> {
                 let s = pre.payload_of(r).base;
-                let br = BlockRef::Small(s / 4096);
+                let br = BlockRef::Small(s / PAGE_SZ);
                 &&& blocks_refs_changed(
                     &pre.blocks,
                     &mid.blocks,
@@ -497,7 +496,7 @@ impl CapKernel {
             !(pre.is_cap(r) && pre.payload_of(r).kind is Space) ==> mid.spaces == pre.spaces,
             pre.is_cap(r) && pre.payload_of(r).kind is Thread ==> {
                 let t = pre.payload_of(r).base;
-                let br = BlockRef::Small(t / 4096);
+                let br = BlockRef::Small(t / PAGE_SZ);
                 &&& blocks_refs_changed(
                     &pre.blocks,
                     &mid.blocks,
@@ -514,7 +513,7 @@ impl CapKernel {
             pre.list.nodes@[r as int].kind is Binding ==> Self::unbound(pre, mid, r),
             pre.is_cap(r) && pre.payload_of(r).kind is Process ==> {
                 let p = pre.payload_of(r).base;
-                let br = BlockRef::Small(p / 4096);
+                let br = BlockRef::Small(p / PAGE_SZ);
                 &&& blocks_refs_changed(
                     &pre.blocks,
                     &mid.blocks,
@@ -542,7 +541,7 @@ impl CapKernel {
                 &&& mid.mappings == pre.mappings
             },
             pre.list.nodes@[r as int].kind is Hidden ==> {
-                &&& blocks_refs_changed(&pre.blocks, &mid.blocks, BlockRef::Small(r / 4096), 0, true)
+                &&& blocks_refs_changed(&pre.blocks, &mid.blocks, BlockRef::Small(r / PAGE_SZ), 0, true)
                 &&& mid.holders == pre.holders
             },
             !(pre.is_cap(r) && (pre.payload_of(r).kind is Frame || pre.payload_of(r).kind is Space
@@ -704,7 +703,7 @@ impl CapKernel {
             post.list.parent@ == pre.list.parent@,
             post.mappings == pre.mappings,
             pre.hidden_table(n) ==> pre.table_pages.records@[n].value().parent is None,
-            blocks_refs_changed(&pre.blocks, &post.blocks, BlockRef::Small(n / 4096), 0, true),
+            blocks_refs_changed(&pre.blocks, &post.blocks, BlockRef::Small(n / PAGE_SZ), 0, true),
             post.holders == pre.holders,
             post.spaces == pre.spaces,
             post.threads == pre.threads,
@@ -721,7 +720,7 @@ impl CapKernel {
             processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
             mappings_wf(&post.list, &post.tables, tree_of(&post.table_pages, &post.spaces), &post.blocks, post.holders@, post.mappings@),
     {
-        let br = BlockRef::Small(n / 4096);
+        let br = BlockRef::Small(n / PAGE_SZ);
         assert forall|x: usize| x != n implies {
             &&& #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x)
             &&& pre.tables.is_cap(&pre.list, x) ==> post.tables.payload_of(x) == pre.tables.payload_of(x)
@@ -743,18 +742,18 @@ impl CapKernel {
         assert(!pre.is_cap(n));
         assert(!post.is_cap(n));
         // The block is a leaf's or a table page's, so no space's, thread's or process's.
-        assert(!(pre.blocks.pages@[(n / 4096) as int].object is Space));
-        assert(!(pre.blocks.pages@[(n / 4096) as int].object is Thread));
-        assert(!(pre.blocks.pages@[(n / 4096) as int].object is Process));
+        assert(!(pre.blocks.pages@[(n / PAGE_SZ) as int].object is Space));
+        assert(!(pre.blocks.pages@[(n / PAGE_SZ) as int].object is Thread));
+        assert(!(pre.blocks.pages@[(n / PAGE_SZ) as int].object is Process));
         lemma_spaces_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.spaces, &pre.blocks, &post.blocks, br, 0, true);
         lemma_threads_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks, &post.blocks, br, 0, true);
         lemma_processes_refs_changed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks, &post.blocks, br, 0, true);
         lemma_holders_same_frames(&pre.list, &pre.tables, &post.list, &post.tables, &pre.blocks, &pre.zeroing, pre.holders@);
-        lemma_holders_unkeyed_small_changed(&post.list, &post.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, n / 4096, 0, true);
-        lemma_zeroing_typed_small_changed(&pre.zeroing, &pre.blocks, &post.blocks, n / 4096, 0, true);
+        lemma_holders_unkeyed_small_changed(&post.list, &post.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, n / PAGE_SZ, 0, true);
+        lemma_zeroing_typed_small_changed(&pre.zeroing, &pre.blocks, &post.blocks, n / PAGE_SZ, 0, true);
         lemma_list_pages_used_same_kinds(&pre.list, &pre.blocks, &post.blocks);
         assert(objects_wf(&post.tables, &pre.blocks, pre.holders@));
-        lemma_objects_unframed_block_changed(&post.tables, &pre.blocks, &post.blocks, pre.holders@, n / 4096, 0, true);
+        lemma_objects_unframed_block_changed(&post.tables, &pre.blocks, &post.blocks, pre.holders@, n / PAGE_SZ, 0, true);
         assert forall|l: usize| #[trigger] pre.tables.owner@.contains_key(l) && l != n implies {
             &&& post.list.nodes@[l as int].live == pre.list.nodes@[l as int].live
             &&& post.list.nodes@[l as int].kind == pre.list.nodes@[l as int].kind
@@ -773,7 +772,7 @@ impl CapKernel {
             lemma_leaf_blocks_leaf_dropped(&pre.list, &post.list, &pre.tables, &pre.blocks, &post.blocks, pre.holders@, n);
             lemma_table_pages_refs_changed(&pre.list, &post.list, &pre.table_pages, &pre.blocks, &post.blocks, br, 0, true);
         } else {
-            lemma_leaf_blocks_other_changed(&pre.list, &post.list, &pre.tables, &pre.blocks, &post.blocks, pre.holders@, n / 4096, 0, true);
+            lemma_leaf_blocks_other_changed(&pre.list, &post.list, &pre.tables, &pre.blocks, &post.blocks, pre.holders@, n / PAGE_SZ, 0, true);
             lemma_table_page_dropped(&pre.list, &post.list, &pre.table_pages, &pre.blocks, &post.blocks, n);
         }
     }
@@ -817,7 +816,7 @@ impl CapKernel {
         Self::lemma_binding_parents_caps_frame(pre, post, n, n);
         pre.lemma_bound_process(t);
         let p = pre.threads.records@[t].value().process->Some_0;
-        let br = BlockRef::Small(p / 4096);
+        let br = BlockRef::Small(p / PAGE_SZ);
         let refs = (block_refs(&pre.blocks, br) - 1) as usize;
         let dead = block_dead(&pre.blocks, br) || block_refs(&pre.blocks, br) == 1;
         assert forall|x: usize| x != n implies {
@@ -836,17 +835,17 @@ impl CapKernel {
         lemma_holders_same_frames(&pre.list, &pre.tables, &post.list, &post.tables, &pre.blocks, &pre.zeroing, pre.holders@);
         assert(!pre.holders@.contains_key(br)) by {
             if pre.holders@.contains_key(br) {
-                assert(pre.blocks.pages@[(p / 4096) as int].object is Frame);
+                assert(pre.blocks.pages@[(p / PAGE_SZ) as int].object is Frame);
             }
         }
-        lemma_holders_unkeyed_small_changed(&post.list, &post.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, p / 4096, refs, dead);
-        lemma_zeroing_typed_small_changed(&pre.zeroing, &pre.blocks, &post.blocks, p / 4096, refs, dead);
+        lemma_holders_unkeyed_small_changed(&post.list, &post.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, p / PAGE_SZ, refs, dead);
+        lemma_zeroing_typed_small_changed(&pre.zeroing, &pre.blocks, &post.blocks, p / PAGE_SZ, refs, dead);
         lemma_list_pages_used_same_kinds(&pre.list, &pre.blocks, &post.blocks);
         assert(objects_wf(&post.tables, &pre.blocks, pre.holders@));
-        lemma_objects_unframed_block_changed(&post.tables, &pre.blocks, &post.blocks, pre.holders@, p / 4096, refs, dead);
+        lemma_objects_unframed_block_changed(&post.tables, &pre.blocks, &post.blocks, pre.holders@, p / PAGE_SZ, refs, dead);
         // Node n is a thread's base, so no leaf's and no table page's.
         assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, t));
-        assert(pre.blocks.pages@[(t / 4096) as int].object is Thread);
+        assert(pre.blocks.pages@[(t / PAGE_SZ) as int].object is Thread);
         assert forall|l: usize| #[trigger] pre.tables.owner@.contains_key(l) implies {
             &&& post.list.nodes@[l as int].live == pre.list.nodes@[l as int].live
             &&& post.list.nodes@[l as int].kind == pre.list.nodes@[l as int].kind
@@ -854,11 +853,11 @@ impl CapKernel {
             pre.tables.lemma_leaf(&pre.list, l);
             assert(page_of(l) == l);
             pre.lemma_slot_bound(l);
-            assert(pre.blocks.pages@[(l / 4096) as int].object is TableLeaf);
+            assert(pre.blocks.pages@[(l / PAGE_SZ) as int].object is TableLeaf);
             assert(l != n);
         }
         assert(leaf_blocks_wf(&pre.list, &post.tables, &pre.blocks));
-        lemma_leaf_blocks_other_changed(&pre.list, &post.list, &post.tables, &pre.blocks, &post.blocks, pre.holders@, p / 4096, refs, dead);
+        lemma_leaf_blocks_other_changed(&pre.list, &post.list, &post.tables, &pre.blocks, &post.blocks, pre.holders@, p / PAGE_SZ, refs, dead);
         assert forall|u: usize| #[trigger] pre.table_pages.maps@.contains_key(u) implies {
             &&& post.list.nodes@[u as int].live == pre.list.nodes@[u as int].live
             &&& post.list.nodes@[u as int].kind == pre.list.nodes@[u as int].kind
@@ -991,11 +990,11 @@ impl CapKernel {
         lemma_zeroing_typed_refs_changed(&pre.list, &pre.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, br, refs, dead);
         lemma_list_pages_used_same_kinds(&pre.list, &pre.blocks, &post.blocks);
         assert forall|p: usize| #[trigger] post.list.pages@.dom().contains(p) && post.blocks.tracks_addr(p) implies {
-            &&& !(post.blocks.pages@[(p / 4096) as int].kind is Free)
-            &&& post.blocks.pages@[(p / 4096) as int].kind is Member
-                ==> post.blocks.pages@[post.blocks.pages@[(p / 4096) as int].base as int].object is TablePage
-                    || post.blocks.pages@[post.blocks.pages@[(p / 4096) as int].base as int].object is Space
-            &&& !(post.blocks.pages@[(p / 4096) as int].object is Frame)
+            &&& !(post.blocks.pages@[(p / PAGE_SZ) as int].kind is Free)
+            &&& post.blocks.pages@[(p / PAGE_SZ) as int].kind is Member
+                ==> post.blocks.pages@[post.blocks.pages@[(p / PAGE_SZ) as int].base as int].object is TablePage
+                    || post.blocks.pages@[post.blocks.pages@[(p / PAGE_SZ) as int].base as int].object is Space
+            &&& !(post.blocks.pages@[(p / PAGE_SZ) as int].object is Frame)
         } by {
             assert(pre.list.pages@.dom().contains(p));
         }
@@ -1045,7 +1044,7 @@ impl CapKernel {
             assert(pre.blocks.pages@[x as int].object is Frame);
         }
         lemma_table_pages_refs_changed(&pre.list, &post.list, &pre.table_pages, &pre.blocks, &post.blocks, br, refs, dead);
-        assert forall|i: usize| #![trigger post.table_pages.maps@[m.table].value()[i]] i < 512 && i != m.entry
+        assert forall|i: usize| #![trigger post.table_pages.maps@[m.table].value()[i]] i < ENTRIES && i != m.entry
             implies post.table_pages.maps@[m.table].value()[i] == pre.table_pages.maps@[m.table].value()[i] by {
             assert(b.entry(m.table, i) == a.entry(m.table, i));
         }

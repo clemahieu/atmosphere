@@ -7,7 +7,6 @@ capability/boot.rs
 capability/boot_space.rs
 capability/caller.rs
 capability/decompose.rs
-capability/delete.rs
 capability/derive.rs
 capability/destroy.rs
 capability/device.rs
@@ -19,11 +18,7 @@ capability/moving.rs
 capability/operation.rs
 capability/probe.rs
 capability/reach.rs
-capability/reclaim_process.rs
-capability/reclaim.rs
-capability/reclaim_thread.rs
 capability/retype.rs
-capability/revoke.rs
 capability/space.rs
 capability/table.rs
 capability/unmap.rs

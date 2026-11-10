@@ -41,7 +41,7 @@ impl CapKernel {
     /// bound to it.
     pub open spec fn process_is_dead(&self, base: usize) -> bool {
         &&& self.processes.records@.contains_key(base)
-        &&& self.blocks.pages@[(base / 4096) as int].refs == 0
+        &&& self.blocks.pages@[(base / PAGE_SZ) as int].refs == 0
     }
 
     /// No core has the space of the process at `base` on its loaded list, so none holds a translation
@@ -83,12 +83,12 @@ impl CapKernel {
             base % 32768 == 0,
             self.blocks.tracks_addr(base),
         ensures
-            process_block(&self.blocks, base / 4096) == self.processes.records@.contains_key(base),
+            process_block(&self.blocks, base / PAGE_SZ) == self.processes.records@.contains_key(base),
             self.processes.records@.contains_key(base) ==> {
                 &&& self.spaces.roots@.contains_key(base)
                 &&& self.spaces.records@[base].value().kind is Process
                 &&& self.spaces.loaded@.contains_key(base)
-                &&& self.spaces.loaded@[base].addr() == base + SPACE_CORES_PAGE * 4096
+                &&& self.spaces.loaded@[base].addr() == base + SPACE_CORES_PAGE * PAGE_SZ
                 &&& self.spaces.loaded@[base].is_init()
                 &&& !self.table_pages.maps@.contains_key(base)
                 &&& tree_of(&self.table_pages, &self.spaces).record(base).parent is None
@@ -97,8 +97,8 @@ impl CapKernel {
     {
         assert(base % 32768 == 0 ==> base % 8192 == 0) by (bit_vector);
         lemma_leaf_page(base);
-        if process_block(&self.blocks, base / 4096) {
-            assert(self.processes.records@.contains_key(((base / 4096) * 4096) as usize));
+        if process_block(&self.blocks, base / PAGE_SZ) {
+            assert(self.processes.records@.contains_key(((base / PAGE_SZ) * PAGE_SZ) as usize));
         }
         if self.processes.records@.contains_key(base) {
             assert(process_wf(&self.processes, &self.blocks, base));
@@ -116,7 +116,7 @@ impl CapKernel {
             self.processes.records@.contains_key(base) ==> {
                 &&& base % 32768 == 0
                 &&& self.blocks.tracks_addr(base)
-                &&& self.blocks.pages@[(base / 4096) as int].object is Process
+                &&& self.blocks.pages@[(base / PAGE_SZ) as int].object is Process
             },
     {
         if self.processes.records@.contains_key(base) {
@@ -151,7 +151,7 @@ impl CapKernel {
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
         ensures
-            final(steps).count <= old(steps).count + 512,
+            final(steps).count <= old(steps).count + ENTRIES,
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
             ret == old(self).can_cut_process_space(root, from, base),
@@ -167,7 +167,7 @@ impl CapKernel {
             Some(found) => found,
             None => { return false; },
         };
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         if !self.blocks.page_tracked(page) || self.flush_epoch == usize::MAX {
             return false;
         }
@@ -183,7 +183,7 @@ impl CapKernel {
         if !dead_process {
             return false;
         }
-        let list = PPtr::<SpaceCores>::from_usize(base + SPACE_CORES_PAGE * 4096).borrow(
+        let list = PPtr::<SpaceCores>::from_usize(base + SPACE_CORES_PAGE * PAGE_SZ).borrow(
             Tracked(self.spaces.loaded.borrow().tracked_borrow(base)),
         ).list;
         if list != 0u32 {
@@ -223,7 +223,7 @@ impl CapKernel {
         &&& self.process_unloaded(base)
         &&& forall|r: int| 0 <= r < ROOT_ENTRIES ==> #[trigger] self.tables.leaf(base, r) == NO_LEAF
         &&& forall|i: usize| #![trigger self.spaces.roots@[base].value()[i]]
-            KERNEL_MEM_END_L4INDEX <= i < 512 ==> self.spaces.roots@[base].value()[i].is_empty()
+            KERNEL_MEM_END_L4INDEX <= i < ENTRIES ==> self.spaces.roots@[base].value()[i].is_empty()
     }
 
     /// What freeing the spent dead process at `base` did to self: no core had its space loaded or a
@@ -233,7 +233,7 @@ impl CapKernel {
     /// and the 2 MiB and 1 GiB regions are as they were.
     pub open spec fn process_freed(&self, post: Self, c: usize, root: usize, from: usize, base: usize) -> bool {
         let untyped = self.tables.node_of(root, from);
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         &&& self.view().holds_right(root, untyped, Right::Retype)
         &&& self.process_is_spent(base)
         &&& self.no_stale_translation(page)
@@ -261,7 +261,7 @@ impl CapKernel {
     /// One step of a spent dead process going: its block frees, and its table root, record, spare pages
     /// and space go with it. The list held none of its pages, and nothing else changes.
     pub open spec fn process_freed_step(pre: Self, post: Self, base: usize) -> bool {
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         &&& pre.wf()
         &&& pre.process_is_spent(base)
         &&& post.blocks.wf()
@@ -270,7 +270,7 @@ impl CapKernel {
         &&& post.blocks.regions_2m@ == pre.blocks.regions_2m@
         &&& post.blocks.regions_1g@ == pre.blocks.regions_1g@
         &&& post.list == pre.list
-        &&& forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) ==> !(base <= p < base + 8 * 4096)
+        &&& forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) ==> !(base <= p < base + 8 * PAGE_SZ)
         &&& post.tables.wf(&post.list)
         &&& post.tables.roots@ == pre.tables.roots@.remove(base)
         &&& post.tables.owner == pre.tables.owner
@@ -283,8 +283,8 @@ impl CapKernel {
         &&& post.spaces.bound@ == pre.spaces.bound@.remove(base)
         &&& post.spaces.kernel_entries == pre.spaces.kernel_entries
         &&& post.processes.records@ == pre.processes.records@.remove(base)
-        &&& post.processes.spare@ == pre.processes.spare@.remove((base + 2 * 4096) as usize)
-            .remove((base + 3 * 4096) as usize).remove((base + 4 * 4096) as usize)
+        &&& post.processes.spare@ == pre.processes.spare@.remove((base + 2 * PAGE_SZ) as usize)
+            .remove((base + 3 * PAGE_SZ) as usize).remove((base + 4 * PAGE_SZ) as usize)
         &&& post.processes.holders@ == pre.processes.holders@.remove(base)
         &&& post.processes.bound@ == pre.processes.bound@.remove(base)
         &&& post.holders == pre.holders
@@ -308,11 +308,11 @@ impl CapKernel {
             self.process_is_spent(base),
         ensures
             base % 32768 == 0,
-            base % 4096 == 0,
-            base as int == 4096 * (base / 4096) as int,
+            base % PAGE_SZ == 0,
+            base as int == PAGE_SZ * (base / PAGE_SZ) as int,
             self.blocks.tracks_addr_run(base, 8),
             process_wf(&self.processes, &self.blocks, base),
-            self.blocks.pages@[(base / 4096) as int].dead,
+            self.blocks.pages@[(base / PAGE_SZ) as int].dead,
             self.processes.holders@[base] == Set::<usize>::empty(),
             self.processes.bound@[base] == Set::<usize>::empty(),
             self.tables.roots@.contains_key(base),
@@ -362,19 +362,19 @@ impl CapKernel {
         requires
             pre.wf(),
             pre.process_is_spent(base),
-            forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) ==> !(base <= p < base + 8 * 4096),
+            forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) ==> !(base <= p < base + 8 * PAGE_SZ),
         ensures
             forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) && pre.blocks.tracks_addr(p)
-                ==> !pre.blocks.in_block((base / 4096) as int, (p / 4096) as int),
+                ==> !pre.blocks.in_block((base / PAGE_SZ) as int, (p / PAGE_SZ) as int),
     {
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         pre.lemma_spent_process(base);
         assert(order_pages(3) == 8);
         assert forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) && pre.blocks.tracks_addr(p)
-            implies !pre.blocks.in_block(page as int, (p / 4096) as int) by {
+            implies !pre.blocks.in_block(page as int, (p / PAGE_SZ) as int) by {
             lemma_list_page(&pre.list, p);
-            lemma_fundamental_div_mod(p as int, 4096);
-            assert(!(base <= p < base + 8 * 4096));
+            lemma_fundamental_div_mod(p as int, PAGE_SZ as int);
+            assert(!(base <= p < base + 8 * PAGE_SZ));
         }
     }
 
@@ -392,7 +392,7 @@ impl CapKernel {
         let b = tree_of(&post.table_pages, &post.spaces);
         pre.lemma_spent_process(base);
         assert forall|i: usize| !#[trigger] a.names_child(base, i) by {
-            if KERNEL_MEM_END_L4INDEX <= i < 512 {
+            if KERNEL_MEM_END_L4INDEX <= i < ENTRIES {
                 assert(pre.spaces.roots@[base].value()[i].is_empty());
             }
         }
@@ -460,7 +460,7 @@ impl CapKernel {
             binding_parents(&post.list, &post.tables, &post.threads),
             list_pages_used(&post.list, &post.blocks),
     {
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         pre.lemma_spent_process(base);
         Self::lemma_process_list_pages(pre, base);
         assert(order_pages(3) == 8);
@@ -528,12 +528,12 @@ impl CapKernel {
             zeroing_typed(&post.zeroing, &post.blocks),
             mappings_wf(&post.list, &post.tables, tree_of(&post.table_pages, &post.spaces), &post.blocks, post.holders@, post.mappings@),
     {
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         pre.lemma_spent_process(base);
         assert(order_pages(3) == 8);
         assert(pre.blocks.in_block(page as int, page as int));
-        assert forall|l: usize| #[trigger] pre.tables.owner@.contains_key(l) implies !pre.blocks.in_block(page as int, (l / 4096) as int) by {
-            let x = (l / 4096) as int;
+        assert forall|l: usize| #[trigger] pre.tables.owner@.contains_key(l) implies !pre.blocks.in_block(page as int, (l / PAGE_SZ) as int) by {
+            let x = (l / PAGE_SZ) as int;
             assert(pre.blocks.pages@[x].object is TableLeaf);
             if pre.blocks.in_block(page as int, x) && x != page {
                 pre.blocks.lemma_member_of(page as int, x);
@@ -578,12 +578,12 @@ impl CapKernel {
         }
         assert forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) implies {
             &&& post.blocks.tracks_addr(l)
-            &&& post.blocks.pages@[(l / 4096) as int] == pre.blocks.pages@[(l / 4096) as int]
+            &&& post.blocks.pages@[(l / PAGE_SZ) as int] == pre.blocks.pages@[(l / PAGE_SZ) as int]
         } by {
             assert(pre.tables.owner@.contains_key(l));
         }
         assert forall|b: usize| post.blocks.tracks(b as int) && #[trigger] leaf_block(&post.blocks, b)
-            implies post.tables.owner@.contains_key((b * 4096) as usize) by {
+            implies post.tables.owner@.contains_key((b * PAGE_SZ) as usize) by {
             assert(post.blocks.pages@[b as int] == pre.blocks.pages@[b as int]);
             assert(leaf_block(&pre.blocks, b));
             lemma_page_base(b);
@@ -616,10 +616,10 @@ impl CapKernel {
             self.wf(),
             self.processes.records@.contains_key(base),
         ensures
-            final(steps).count <= old(steps).count + ROOT_ENTRIES + (512 - KERNEL_MEM_END_L4INDEX),
+            final(steps).count <= old(steps).count + ROOT_ENTRIES + (ENTRIES - KERNEL_MEM_END_L4INDEX),
             ret == ((forall|r: int| 0 <= r < ROOT_ENTRIES ==> #[trigger] self.tables.leaf(base, r) == NO_LEAF)
                 && (forall|i: usize| #![trigger self.spaces.roots@[base].value()[i]]
-                    KERNEL_MEM_END_L4INDEX <= i < 512 ==> self.spaces.roots@[base].value()[i].is_empty())),
+                    KERNEL_MEM_END_L4INDEX <= i < ENTRIES ==> self.spaces.roots@[base].value()[i].is_empty())),
     {
         proof {
             self.lemma_process_object(base);
@@ -647,9 +647,9 @@ impl CapKernel {
         }
         let ghost tree = tree_of(&self.table_pages, &self.spaces);
         let mut e = KERNEL_MEM_END_L4INDEX;
-        while e != 512
+        while e != ENTRIES
             invariant
-                KERNEL_MEM_END_L4INDEX <= e <= 512,
+                KERNEL_MEM_END_L4INDEX <= e <= ENTRIES,
                 steps0 == old(steps).count,
                 steps.count == steps0 + ROOT_ENTRIES + (e - KERNEL_MEM_END_L4INDEX),
                 self.wf(),
@@ -659,7 +659,7 @@ impl CapKernel {
                 forall|j: int| 0 <= j < ROOT_ENTRIES ==> #[trigger] self.tables.leaf(base, j) == NO_LEAF,
                 forall|j: usize| #![trigger self.spaces.roots@[base].value()[j]]
                     KERNEL_MEM_END_L4INDEX <= j < e ==> self.spaces.roots@[base].value()[j].is_empty(),
-            decreases 512 - e,
+            decreases ENTRIES - e,
         {
             let entry = self.table_entry(base, true, e);
             proof {
@@ -688,7 +688,7 @@ impl CapKernel {
             final(steps).count <= old(steps).count + SMALL_PAGES_MAX,
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
-            forall|k: int| 0 <= k < 8 ==> #[trigger] final(self).blocks.pages@[(base / 4096) + k].kind is Free,
+            forall|k: int| 0 <= k < 8 ==> #[trigger] final(self).blocks.pages@[(base / PAGE_SZ) + k].kind is Free,
             !final(self).processes.records@.contains_key(base),
             !final(self).tables.roots@.contains_key(base),
             !final(self).spaces.roots@.contains_key(base),
@@ -697,7 +697,7 @@ impl CapKernel {
             final(self).tables.roots@ == old(self).tables.roots@.remove(base),
             final(self).tables.owner == old(self).tables.owner,
             final(self).tables.payloads == old(self).tables.payloads,
-            forall|i: int| old(self).blocks.tracks(i) && !((base / 4096) as int <= i < (base / 4096) + 8)
+            forall|i: int| old(self).blocks.tracks(i) && !((base / PAGE_SZ) as int <= i < (base / PAGE_SZ) + 8)
                 ==> #[trigger] final(self).blocks.pages@[i] == old(self).blocks.pages@[i],
             final(self).blocks.regions_2m@ == old(self).blocks.regions_2m@,
             final(self).blocks.regions_1g@ == old(self).blocks.regions_1g@,
@@ -706,7 +706,7 @@ impl CapKernel {
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
         let ghost pre = *old(self);
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         proof {
             pre.lemma_spent_process(base);
             pre.tables.lemma_root(base);
@@ -716,13 +716,13 @@ impl CapKernel {
             }
             lemma_list_page_apart(self.list.pages.borrow_mut(), self.tables.roots.borrow().tracked_borrow(base));
             lemma_list_page_apart(self.list.pages.borrow_mut(), self.processes.records.borrow().tracked_borrow(base));
-            lemma_list_page_apart(self.list.pages.borrow_mut(), self.processes.spare.borrow().tracked_borrow((base + 2 * 4096) as usize));
-            lemma_list_page_apart(self.list.pages.borrow_mut(), self.processes.spare.borrow().tracked_borrow((base + 3 * 4096) as usize));
-            lemma_list_page_apart(self.list.pages.borrow_mut(), self.processes.spare.borrow().tracked_borrow((base + 4 * 4096) as usize));
+            lemma_list_page_apart(self.list.pages.borrow_mut(), self.processes.spare.borrow().tracked_borrow((base + 2 * PAGE_SZ) as usize));
+            lemma_list_page_apart(self.list.pages.borrow_mut(), self.processes.spare.borrow().tracked_borrow((base + 3 * PAGE_SZ) as usize));
+            lemma_list_page_apart(self.list.pages.borrow_mut(), self.processes.spare.borrow().tracked_borrow((base + 4 * PAGE_SZ) as usize));
             lemma_list_page_apart(self.list.pages.borrow_mut(), self.spaces.roots.borrow().tracked_borrow(base));
             lemma_list_page_apart(self.list.pages.borrow_mut(), self.spaces.records.borrow().tracked_borrow(base));
             lemma_list_page_apart(self.list.pages.borrow_mut(), self.spaces.loaded.borrow().tracked_borrow(base));
-            assert forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) implies !(base <= p < base + 8 * 4096) by {
+            assert forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) implies !(base <= p < base + 8 * PAGE_SZ) by {
                 lemma_list_page(&pre.list, p);
             }
         }
@@ -732,9 +732,9 @@ impl CapKernel {
         let tracked mut perms: Map<usize, PagePerm4k>;
         proof {
             let tracked mut record = self.processes.records.borrow_mut().tracked_remove(base);
-            let tracked mut spare2 = self.processes.spare.borrow_mut().tracked_remove((base + 2 * 4096) as usize);
-            let tracked mut spare3 = self.processes.spare.borrow_mut().tracked_remove((base + 3 * 4096) as usize);
-            let tracked mut spare4 = self.processes.spare.borrow_mut().tracked_remove((base + 4 * 4096) as usize);
+            let tracked mut spare2 = self.processes.spare.borrow_mut().tracked_remove((base + 2 * PAGE_SZ) as usize);
+            let tracked mut spare3 = self.processes.spare.borrow_mut().tracked_remove((base + 3 * PAGE_SZ) as usize);
+            let tracked mut spare4 = self.processes.spare.borrow_mut().tracked_remove((base + 4 * PAGE_SZ) as usize);
             let tracked mut root = self.spaces.roots.borrow_mut().tracked_remove(base);
             let tracked mut space_record = self.spaces.records.borrow_mut().tracked_remove(base);
             let tracked mut cores = self.spaces.loaded.borrow_mut().tracked_remove(base);
@@ -763,7 +763,7 @@ impl CapKernel {
             assert forall|k: usize| #![trigger perms.contains_key((page + k) as usize)] #![trigger perms[(page + k) as usize]]
                 k < order_pages(self.blocks.pages@[page as int].order) implies {
                 &&& perms.contains_key((page + k) as usize)
-                &&& perms[(page + k) as usize].addr() == (page + k) * 4096
+                &&& perms[(page + k) as usize].addr() == (page + k) * PAGE_SZ
                 &&& perms[(page + k) as usize].is_uninit()
             } by {
                 assert(k < 8);
@@ -779,8 +779,8 @@ impl CapKernel {
                     assert(mid.blocks.pages@[i] == pre.blocks.pages@[i]);
                 }
             }
-            assert(post.processes.spare@ == pre.processes.spare@.remove((base + 2 * 4096) as usize)
-                .remove((base + 3 * 4096) as usize).remove((base + 4 * 4096) as usize));
+            assert(post.processes.spare@ == pre.processes.spare@.remove((base + 2 * PAGE_SZ) as usize)
+                .remove((base + 3 * PAGE_SZ) as usize).remove((base + 4 * PAGE_SZ) as usize));
             assert(Self::process_freed_step(pre, post, base));
             Self::lemma_process_freed(pre, post, base);
             Self::lemma_bound_threads_same(pre, post);
@@ -810,7 +810,7 @@ impl CapKernel {
             c < NUM_CPUS,
             old(self).tables.roots@.contains_key(root),
         ensures
-            final(steps).count <= old(steps).count + ROOT_ENTRIES + (512 - KERNEL_MEM_END_L4INDEX) + (NUM_CPUS + NUM_IOMMUS)
+            final(steps).count <= old(steps).count + ROOT_ENTRIES + (ENTRIES - KERNEL_MEM_END_L4INDEX) + (NUM_CPUS + NUM_IOMMUS)
                 + SMALL_PAGES_MAX,
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
@@ -819,8 +819,8 @@ impl CapKernel {
             !(ret is Freed) ==> *final(self) == *old(self),
             !(old(self).can_retype_under(root, from, base, PROCESS_ORDER) && old(self).process_is_spent(base)) ==> ret is Refused,
             old(self).can_retype_under(root, from, base, PROCESS_ORDER) && old(self).process_is_spent(base)
-                ==> if old(self).acknowledged(base / 4096) { ret is Freed } else { ret is Again },
-            ret is Again ==> !old(self).acknowledged(base / 4096),
+                ==> if old(self).acknowledged(base / PAGE_SZ) { ret is Freed } else { ret is Again },
+            ret is Again ==> !old(self).acknowledged(base / PAGE_SZ),
             ret is Freed ==> old(self).process_freed(*final(self), c, root, from, base),
     {
         let ghost pre = *old(self);
@@ -831,7 +831,7 @@ impl CapKernel {
             Some(found) => found,
             None => { return ReclaimStep::Refused; },
         };
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         if !self.blocks.page_tracked(page) {
             return ReclaimStep::Refused;
         }
@@ -847,7 +847,7 @@ impl CapKernel {
         if !dead_process {
             return ReclaimStep::Refused;
         }
-        let list = PPtr::<SpaceCores>::from_usize(base + SPACE_CORES_PAGE * 4096).borrow(
+        let list = PPtr::<SpaceCores>::from_usize(base + SPACE_CORES_PAGE * PAGE_SZ).borrow(
             Tracked(self.spaces.loaded.borrow().tracked_borrow(base)),
         ).list;
         if list != 0u32 {

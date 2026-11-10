@@ -111,8 +111,8 @@ pub proof fn lemma_list_page(list: &Tree, p: usize)
         list.store_wf(),
         list.pages@.dom().contains(p),
     ensures
-        p % 4096 == 0,
-        p + 4096 <= NODE_SPACE,
+        p % PAGE_SZ == 0,
+        p + PAGE_SZ <= NODE_SPACE,
         list.pages@[p].addr() == p,
         list.pages@[p].is_init(),
 {
@@ -122,14 +122,14 @@ pub proof fn lemma_list_page(list: &Tree, p: usize)
 /// Two page-aligned addresses on one page are one address.
 proof fn lemma_same_page(p: usize, base: usize)
     requires
-        p % 4096 == 0,
-        base % 4096 == 0,
-        p / 4096 == base / 4096,
+        p % PAGE_SZ == 0,
+        base % PAGE_SZ == 0,
+        p / PAGE_SZ == base / PAGE_SZ,
     ensures
         p == base,
 {
-    lemma_fundamental_div_mod(p as int, 4096);
-    lemma_fundamental_div_mod(base as int, 4096);
+    lemma_fundamental_div_mod(p as int, PAGE_SZ as int);
+    lemma_fundamental_div_mod(base as int, PAGE_SZ as int);
 }
 
 /// A permission something else holds is no page of the list: two permissions never share an address.
@@ -152,7 +152,7 @@ pub proof fn lemma_list_page_apart<V>(tracked pages: &mut Map<usize, PointsTo<No
 /// perms holds page i's permission, at its address and uninitialised.
 spec fn holds_free_page(perms: Map<usize, PagePerm4k>, i: usize) -> bool {
     &&& perms.contains_key(i)
-    &&& perms[i].addr() == i * 4096
+    &&& perms[i].addr() == i * PAGE_SZ
     &&& perms[i].is_uninit()
 }
 
@@ -161,7 +161,7 @@ fn take_table_node_pages(list: &mut Tree, base: usize, Tracked(steps): Tracked<&
     requires
         old(list).wf(),
         base % 32768 == 0,
-        base / 4096 + 8 <= NUM_PAGES,
+        base / PAGE_SZ + 8 <= NUM_PAGES,
         forall|k: usize| k < TABLE_NODE_PAGES ==> old(list).pages@.dom().contains(#[trigger] table_node_page(base, k)),
         forall|k: usize, i: usize| #![trigger table_node(base, k, i)] k < TABLE_NODE_PAGES && i < NODES_PER_PAGE
             ==> !old(list).nodes@[table_node(base, k, i) as int].live,
@@ -172,11 +172,11 @@ fn take_table_node_pages(list: &mut Tree, base: usize, Tracked(steps): Tracked<&
         final(list).parent == old(list).parent,
         final(list).nodes == old(list).nodes,
         forall|p: usize| #[trigger] final(list).pages@.dom().contains(p)
-            == (old(list).pages@.dom().contains(p) && !(base <= p < base + TABLE_NODE_PAGES * 4096)),
-        forall|i: usize| base / 4096 <= i < base / 4096 + TABLE_NODE_PAGES ==> #[trigger] holds_free_page(ret@, i),
+            == (old(list).pages@.dom().contains(p) && !(base <= p < base + TABLE_NODE_PAGES * PAGE_SZ)),
+        forall|i: usize| base / PAGE_SZ <= i < base / PAGE_SZ + TABLE_NODE_PAGES ==> #[trigger] holds_free_page(ret@, i),
 {
     let ghost pre = *old(list);
-    let ghost page = base / 4096;
+    let ghost page = base / PAGE_SZ;
     proof {
         lemma_table_page_aligned(base);
     }
@@ -188,9 +188,9 @@ fn take_table_node_pages(list: &mut Tree, base: usize, Tracked(steps): Tracked<&
             k <= TABLE_NODE_PAGES,
             steps.count == steps0 + k,
             base % 32768 == 0,
-            base % 4096 == 0,
-            base as int == 4096 * page,
-            page == base / 4096,
+            base % PAGE_SZ == 0,
+            base as int == PAGE_SZ * page,
+            page == base / PAGE_SZ,
             page + 8 <= NUM_PAGES,
             list.wf(),
             list.seq == pre.seq,
@@ -201,13 +201,13 @@ fn take_table_node_pages(list: &mut Tree, base: usize, Tracked(steps): Tracked<&
             forall|j: usize, i: usize| #![trigger table_node(base, j, i)] j < TABLE_NODE_PAGES && i < NODES_PER_PAGE
                 ==> !pre.nodes@[table_node(base, j, i) as int].live,
             forall|p: usize| #[trigger] list.pages@.dom().contains(p)
-                == (pre.pages@.dom().contains(p) && !(base <= p < base + k * 4096)),
+                == (pre.pages@.dom().contains(p) && !(base <= p < base + k * PAGE_SZ)),
             forall|i: usize| page <= i < page + k ==> #[trigger] holds_free_page(perms, i),
         decreases TABLE_NODE_PAGES - k,
     {
         let ghost before = *list;
         let ghost held = perms;
-        let p = base + k * 4096;
+        let p = base + k * PAGE_SZ;
         proof {
             lemma_table_node_page(base, k);
             assert(p == table_node_page(base, k));
@@ -226,8 +226,8 @@ fn take_table_node_pages(list: &mut Tree, base: usize, Tracked(steps): Tracked<&
             let tracked free = crate::layouts::node_page_into_page(nodes);
             perms.tracked_insert((page + k) as usize, free);
             assert forall|q: usize| #[trigger] list.pages@.dom().contains(q)
-                == (pre.pages@.dom().contains(q) && !(base <= q < base + (k + 1) * 4096)) by {
-                if pre.pages@.dom().contains(q) && p <= q < p + 4096 {
+                == (pre.pages@.dom().contains(q) && !(base <= q < base + (k + 1) * PAGE_SZ)) by {
+                if pre.pages@.dom().contains(q) && p <= q < p + PAGE_SZ {
                     lemma_list_page(&pre, q);
                 }
             }
@@ -259,7 +259,7 @@ impl CapKernel {
     /// at `root`.
     pub open spec fn frame_freed(&self, post: Self, c: usize, root: usize, from: usize, base: usize) -> bool {
         let untyped = self.tables.node_of(root, from);
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         &&& self.view().holds_right(root, untyped, Right::Retype)
         &&& self.frame_is_dead(page)
         &&& self.no_stale_translation(page)
@@ -285,7 +285,7 @@ impl CapKernel {
     /// view is too. No record, table page, epoch, core or IOMMU changed.
     pub open spec fn leaf_unlinked(&self, post: Self, root: usize, from: usize, base: usize) -> bool {
         let untyped = self.tables.node_of(root, from);
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         &&& self.view().holds_right(root, untyped, Right::Retype)
         &&& !post.list.nodes@[base as int].live
         &&& post.list.parent@ == self.list.parent@
@@ -335,7 +335,7 @@ impl CapKernel {
     /// so the view is as it was.
     pub open spec fn table_freed(&self, post: Self, c: usize, root: usize, from: usize, base: usize) -> bool {
         let untyped = self.tables.node_of(root, from);
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         &&& self.view().holds_right(root, untyped, Right::Retype)
         &&& self.table_is_empty(base)
         &&& self.blocks.pages@[page as int].refs == 0
@@ -362,7 +362,7 @@ impl CapKernel {
     /// its block, the epochs, the cores, the IOMMUs and the records are as they were.
     pub open spec fn leaf_freed(&self, post: Self, c: usize, root: usize, from: usize, base: usize) -> bool {
         let untyped = self.tables.node_of(root, from);
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         let (owner, r) = self.tables.owner@[base];
         &&& self.view().holds_right(root, untyped, Right::Retype)
         &&& self.leaf_is_empty(base)
@@ -450,11 +450,11 @@ impl CapKernel {
             self.table_is_spent(base),
         ensures
             forall|i: usize| #![trigger self.table_pages.maps@[base].value()[i]]
-                i < 512 ==> self.table_pages.maps@[base].value()[i].is_empty(),
+                i < ENTRIES ==> self.table_pages.maps@[base].value()[i].is_empty(),
     {
         let tree = tree_of(&self.table_pages, &self.spaces);
         assert forall|i: usize| #![trigger self.table_pages.maps@[base].value()[i]]
-            i < 512 implies self.table_pages.maps@[base].value()[i].is_empty() by {
+            i < ENTRIES implies self.table_pages.maps@[base].value()[i].is_empty() by {
             if tree.entry(base, i).perm.present {
                 if tree.record(base).level >= 2 {
                     if tree.entry(base, i).perm.ps {
@@ -495,7 +495,7 @@ impl CapKernel {
         ensures
             self.table_pages.maps@.contains_key(self.mappings@[n].table),
             self.mappings@[n].table % 32768 == 0,
-            self.mappings@[n].entry < 512,
+            self.mappings@[n].entry < ENTRIES,
             n == mapping_node(self.mappings@[n].table, self.mappings@[n].entry),
             frame_slot(tree_of(&self.table_pages, &self.spaces), self.mappings@[n].table, self.mappings@[n].entry),
     {
@@ -525,7 +525,7 @@ impl CapKernel {
         assert(self.list.nodes@[n as int].kind is Mapping);
         assert(self.mappings@.contains_key(n));
         self.lemma_mapping_in_table(n);
-        lemma_node_page_names_block(base, self.mappings@[n].table, n / 4096);
+        lemma_node_page_names_block(base, self.mappings@[n].table, n / PAGE_SZ);
     }
 
     /// A retype's parent carries the right: the capability it names holds Retype.
@@ -592,7 +592,7 @@ impl CapKernel {
                             r * PAGES_PER_2M <= g < (r + 1) * PAGES_PER_2M,
                             g == page || g == page + 1,
                             page % 2 == 0,
-                            PAGES_PER_2M == 512,
+                            PAGES_PER_2M % 2 == 0,
                     ;
                     lemma_large_block_alone(&self.blocks, Large::Two, r, BlockRef::Small(page), page);
                 },
@@ -602,7 +602,7 @@ impl CapKernel {
                             r * PAGES_PER_1G <= g < (r + 1) * PAGES_PER_1G,
                             g == page || g == page + 1,
                             page % 2 == 0,
-                            PAGES_PER_1G == 262144,
+                            PAGES_PER_1G % 2 == 0,
                     ;
                     lemma_large_block_alone(&self.blocks, Large::One, r, BlockRef::Small(page), page);
                 },
@@ -645,7 +645,7 @@ impl CapKernel {
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
             ret is Refused || ret is Again ==> *final(self) == *old(self),
-            !((old(self).can_retype_under(root, from, base, 0) && old(self).frame_is_dead(base / 4096))
+            !((old(self).can_retype_under(root, from, base, 0) && old(self).frame_is_dead(base / PAGE_SZ))
                 || old(self).can_unlink_leaf(root, from, base)
                 || (old(self).can_retype_under(root, from, base, 1) && old(self).leaf_is_empty(base))
                 || old(self).can_slice_leaf(root, from, base)
@@ -664,12 +664,12 @@ impl CapKernel {
                 && !(old(self).can_retype_under(root, from, base, PROCESS_ORDER) && old(self).process_is_spent(base)) ==> ret is Refused,
             old(self).can_cut_space(root, from, base) ==> ret is Slice,
             old(self).can_retype_under(root, from, base, 3) && old(self).space_is_empty(base)
-                ==> if old(self).acknowledged(base / 4096) { ret is Freed } else { ret is Again },
+                ==> if old(self).acknowledged(base / PAGE_SZ) { ret is Freed } else { ret is Again },
             old(self).can_retype_under(root, from, base, 3) && old(self).space_is_spent(base) ==> ret is Again || ret is Freed,
             old(self).spaces.roots@.contains_key(base) && old(self).spaces.records@[base].value().kind is Device && ret is Slice
                 ==> old(self).space_children_cut(*final(self), root, from, base),
             old(self).processes.records@.contains_key(base)
-                && (old(self).blocks.pages@[(base / 4096) as int].refs != 0
+                && (old(self).blocks.pages@[(base / PAGE_SZ) as int].refs != 0
                     || exists|d: int| 0 <= d < NUM_CPUS && #[trigger] old(self).loaded(d, base)
                     || exists|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && e.space == base && #[trigger] old(self).tlb@[d].contains(e))
                 ==> ret is Refused,
@@ -677,7 +677,7 @@ impl CapKernel {
             old(self).processes.records@.contains_key(base) && ret is Slice
                 ==> old(self).process_space_cut(*final(self), root, from, base),
             old(self).can_retype_under(root, from, base, PROCESS_ORDER) && old(self).process_is_spent(base)
-                ==> if old(self).acknowledged(base / 4096) { ret is Freed } else { ret is Again },
+                ==> if old(self).acknowledged(base / PAGE_SZ) { ret is Freed } else { ret is Again },
             old(self).processes.records@.contains_key(base) && ret is Freed
                 ==> old(self).process_freed(*final(self), c, root, from, base),
             old(self).spaces.roots@.contains_key(base) && old(self).spaces.records@[base].value().kind is Device && ret is Freed
@@ -685,7 +685,7 @@ impl CapKernel {
             old(self).can_unlink_table(root, from, base) ==> ret is Unlinked,
             old(self).can_slice_table(root, from, base) ==> ret is Slice,
             old(self).can_retype_under(root, from, base, 3) && old(self).table_is_empty(base)
-                ==> if old(self).acknowledged(base / 4096) { ret is Freed } else { ret is Again },
+                ==> if old(self).acknowledged(base / PAGE_SZ) { ret is Freed } else { ret is Again },
             old(self).can_retype_under(root, from, base, 3) && old(self).table_is_spent(base) ==> ret is Again || ret is Freed,
             old(self).table_pages.maps@.contains_key(base) && ret is Unlinked ==> old(self).table_page_unlinked(*final(self), root, from, base),
             old(self).table_pages.maps@.contains_key(base) && ret is Slice ==> old(self).table_sliced(*final(self), root, from, base),
@@ -700,12 +700,12 @@ impl CapKernel {
             old(self).can_slice_leaf(root, from, base) && old(self).leaf_slots_childless(base)
                 && old(self).leaf_live_slots(base) <= LEAF_SLICE_BUDGET ==> final(self).leaf_is_empty(base),
             old(self).can_retype_under(root, from, base, 1) && old(self).leaf_is_empty(base)
-                ==> if old(self).acknowledged(base / 4096) && old(self).acknowledged((base / 4096 + 1) as usize) {
+                ==> if old(self).acknowledged(base / PAGE_SZ) && old(self).acknowledged((base / PAGE_SZ + 1) as usize) {
                     ret is Freed && old(self).leaf_freed(*final(self), c, root, from, base)
                 } else {
                     ret is Again
                 },
-            ret is Again ==> !old(self).acknowledged(base / 4096) || !old(self).acknowledged((base / 4096 + 1) as usize),
+            ret is Again ==> !old(self).acknowledged(base / PAGE_SZ) || !old(self).acknowledged((base / PAGE_SZ + 1) as usize),
             ret is Freed ==> old(self).frame_freed(*final(self), c, root, from, base)
                 || old(self).leaf_freed(*final(self), c, root, from, base)
                 || old(self).table_freed(*final(self), c, root, from, base)
@@ -741,7 +741,7 @@ impl CapKernel {
                 }
             }
         }
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         if !self.blocks.page_tracked(page) {
             return ReclaimStep::Refused;
         }
@@ -840,8 +840,8 @@ impl CapKernel {
         let p = self.payload_of(n);
         &&& self.is_cap(n)
         &&& {
-            ||| p.kind is Frame && br == block_ref(&self.blocks, p.base / 4096)
-            ||| (p.kind is Space || p.kind is Thread || p.kind is Process) && br == BlockRef::Small(p.base / 4096)
+            ||| p.kind is Frame && br == block_ref(&self.blocks, p.base / PAGE_SZ)
+            ||| (p.kind is Space || p.kind is Thread || p.kind is Process) && br == BlockRef::Small(p.base / PAGE_SZ)
         }
     }
 
@@ -869,7 +869,7 @@ impl CapKernel {
         &&& post.spaces.loaded == self.spaces.loaded
         &&& post.spaces.bound == self.spaces.bound
         &&& post.spaces.kernel_entries == self.spaces.kernel_entries
-        &&& forall|s: usize| !self.leaf_slot_names(base, BlockRef::Small(s / 4096))
+        &&& forall|s: usize| !self.leaf_slot_names(base, BlockRef::Small(s / PAGE_SZ))
             ==> #[trigger] post.spaces.holders@[s] == self.spaces.holders@[s]
         &&& post.threads.records == self.threads.records
         &&& post.processes.records == self.processes.records
@@ -913,7 +913,7 @@ impl CapKernel {
             Some(found) => found,
             None => { return false; },
         };
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         proof {
             lemma2_to64();
             pre.lemma_leaf_in_range(base);
@@ -1144,19 +1144,19 @@ impl CapKernel {
         let p = mid.payload_of(n);
         if p.kind is Frame {
             lemma_holder_refs(&mid.list, &mid.tables, &mid.blocks, &mid.zeroing, mid.holders@, n);
-            let br = block_ref(&mid.blocks, p.base / 4096);
+            let br = block_ref(&mid.blocks, p.base / PAGE_SZ);
             assert(pre.cap_names_block(n, br));
             assert(pre.leaf_slot_names(base, br));
         } else if p.kind is Space || p.kind is Thread || p.kind is Process {
-            let br = BlockRef::Small(p.base / 4096);
+            let br = BlockRef::Small(p.base / PAGE_SZ);
             assert(pre.cap_names_block(n, br));
             assert(pre.leaf_slot_names(base, br));
         }
-        assert forall|s: usize| !pre.leaf_slot_names(base, BlockRef::Small(s / 4096))
+        assert forall|s: usize| !pre.leaf_slot_names(base, BlockRef::Small(s / PAGE_SZ))
             implies #[trigger] post.spaces.holders@[s] == pre.spaces.holders@[s] by {
             assert(mid.spaces.holders@[s] == pre.spaces.holders@[s]);
             if p.kind is Space {
-                assert(pre.cap_names_block(n, BlockRef::Small(p.base / 4096)));
+                assert(pre.cap_names_block(n, BlockRef::Small(p.base / PAGE_SZ)));
                 assert(s != p.base);
             }
         }
@@ -1192,7 +1192,7 @@ impl CapKernel {
             forall|t: usize, i: usize| #[trigger] post.tables.has_slot(&post.list, t, i) == pre.tables.has_slot(&pre.list, t, i),
     {
         assert forall|x: usize| page_of(x) != base implies #[trigger] post.is_cap(x) == pre.is_cap(x) by {
-            if pre.tables.owner@.contains_key(page_of(x)) && x % 4096 < NODES_PER_PAGE {
+            if pre.tables.owner@.contains_key(page_of(x)) && x % PAGE_SZ < NODES_PER_PAGE {
                 s.lemma_slot_bound(x);
                 if base < x < base + NODES_PER_PAGE {
                     lemma_slot_in_leaf(base, (x - base) as usize);
@@ -1370,12 +1370,12 @@ impl CapKernel {
             !(ret is Freed) ==> *final(self) == *old(self),
             !(old(self).can_retype_under(root, from, base, 1) && old(self).leaf_is_empty(base)) ==> ret is Refused,
             old(self).can_retype_under(root, from, base, 1) && old(self).leaf_is_empty(base)
-                ==> if old(self).acknowledged(base / 4096) && old(self).acknowledged((base / 4096 + 1) as usize) {
+                ==> if old(self).acknowledged(base / PAGE_SZ) && old(self).acknowledged((base / PAGE_SZ + 1) as usize) {
                     ret is Freed
                 } else {
                     ret is Again
                 },
-            ret is Again ==> !old(self).acknowledged(base / 4096) || !old(self).acknowledged((base / 4096 + 1) as usize),
+            ret is Again ==> !old(self).acknowledged(base / PAGE_SZ) || !old(self).acknowledged((base / PAGE_SZ + 1) as usize),
             ret is Freed ==> old(self).leaf_freed(*final(self), c, root, from, base),
     {
         let ghost pre = *old(self);
@@ -1383,7 +1383,7 @@ impl CapKernel {
             Some(found) => found,
             None => { return ReclaimStep::Refused; },
         };
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         if !self.blocks.page_tracked(page) {
             proof {
                 pre.lemma_empty_leaf_in_range(base);
@@ -1406,7 +1406,7 @@ impl CapKernel {
             // A leaf's block is 2 pages, aligned to them, so the second lies in the range too.
             assert(self.blocks.tracks_run(page as int, 2)) by {
                 assert(base % 8192 == 0);
-                assert(page == base / 4096);
+                assert(page == base / PAGE_SZ);
             }
         }
         if !self.is_acknowledged(page, Tracked(&mut *steps)) || !self.is_acknowledged(page + 1, Tracked(&mut *steps)) {
@@ -1441,7 +1441,7 @@ impl CapKernel {
             c < NUM_CPUS,
             old(self).tables.roots@.contains_key(root),
         ensures
-            final(steps).count <= old(steps).count + TABLE_NODE_PAGES * (NODES_PER_PAGE + 1) + 512 + (NUM_CPUS + NUM_IOMMUS)
+            final(steps).count <= old(steps).count + TABLE_NODE_PAGES * (NODES_PER_PAGE + 1) + ENTRIES + (NUM_CPUS + NUM_IOMMUS)
                 + (TABLE_NODE_PAGES + SMALL_PAGES_MAX),
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
@@ -1450,8 +1450,8 @@ impl CapKernel {
             !(ret is Freed) ==> *final(self) == *old(self),
             !(old(self).can_retype_under(root, from, base, 3) && old(self).table_is_empty(base)) ==> ret is Refused,
             old(self).can_retype_under(root, from, base, 3) && old(self).table_is_empty(base)
-                ==> if old(self).acknowledged(base / 4096) { ret is Freed } else { ret is Again },
-            ret is Again ==> !old(self).acknowledged(base / 4096),
+                ==> if old(self).acknowledged(base / PAGE_SZ) { ret is Freed } else { ret is Again },
+            ret is Again ==> !old(self).acknowledged(base / PAGE_SZ),
             ret is Freed ==> old(self).table_freed(*final(self), c, root, from, base),
     {
         let ghost pre = *old(self);
@@ -1465,7 +1465,7 @@ impl CapKernel {
             Some(found) => found,
             None => { return ReclaimStep::Refused; },
         };
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         if !self.blocks.page_tracked(page) {
             return ReclaimStep::Refused;
         }
@@ -1506,7 +1506,7 @@ impl CapKernel {
             self.wf(),
             self.table_pages.maps@.contains_key(base),
         ensures
-            final(steps).count <= old(steps).count + TABLE_NODE_PAGES * (NODES_PER_PAGE + 1) + 512,
+            final(steps).count <= old(steps).count + TABLE_NODE_PAGES * (NODES_PER_PAGE + 1) + ENTRIES,
             ret == self.table_is_empty(base),
     {
         let ghost tree = tree_of(&self.table_pages, &self.spaces);
@@ -1519,9 +1519,9 @@ impl CapKernel {
         }
         let ghost steps0 = steps.count;
         let mut e = 0;
-        while e != 512
+        while e != ENTRIES
             invariant
-                0 <= e <= 512,
+                0 <= e <= ENTRIES,
                 steps0 <= old(steps).count + TABLE_NODE_PAGES * (NODES_PER_PAGE + 1),
                 steps.count == steps0 + e,
                 self.wf(),
@@ -1531,7 +1531,7 @@ impl CapKernel {
                     ==> !self.list.nodes@[table_node(base, j, i) as int].live,
                 forall|j: usize| #![trigger self.table_pages.maps@[base].value()[j]]
                     j < e ==> self.table_pages.maps@[base].value()[j].is_empty(),
-            decreases 512 - e,
+            decreases ENTRIES - e,
         {
             let entry = self.table_entry(base, false, e);
             proof {
@@ -1599,7 +1599,7 @@ impl CapKernel {
                     assert(self.list.pages@.dom().contains(table_node_page(base, k)));
                     assert(self.list.valid(table_node(base, k, i)));
                 }
-                if self.list.get(base + k * 4096 + i).live {
+                if self.list.get(base + k * PAGE_SZ + i).live {
                     proof {
                         assert(k * (NODES_PER_PAGE + 1) + i <= TABLE_NODE_PAGES * (NODES_PER_PAGE + 1)) by (nonlinear_arith)
                             requires k < TABLE_NODE_PAGES, i <= NODES_PER_PAGE;
@@ -1629,15 +1629,15 @@ impl CapKernel {
             self.dead_io_space(base),
             !self.table_pages.maps@.contains_key(base),
         ensures
-            final(steps).count <= old(steps).count + 512,
+            final(steps).count <= old(steps).count + ENTRIES,
             ret == self.space_is_empty(base),
     {
         let ghost tree = tree_of(&self.table_pages, &self.spaces);
         let ghost steps0 = steps.count;
         let mut e = 0;
-        while e != 512
+        while e != ENTRIES
             invariant
-                0 <= e <= 512,
+                0 <= e <= ENTRIES,
                 steps0 == old(steps).count,
                 steps.count == steps0 + e,
                 self.wf(),
@@ -1648,7 +1648,7 @@ impl CapKernel {
                     ==> !self.list.nodes@[table_node(base, j, i) as int].live,
                 forall|j: usize| #![trigger self.spaces.roots@[base].value()[j]]
                     j < e ==> self.spaces.roots@[base].value()[j].is_empty(),
-            decreases 512 - e,
+            decreases ENTRIES - e,
         {
             let entry = self.table_entry(base, true, e);
             proof {
@@ -1707,15 +1707,15 @@ impl CapKernel {
         requires
             old(self).wf(),
             old(self).leaf_is_empty(base),
-            old(self).blocks.pages@[(base / 4096) as int].refs == 0,
-            old(self).no_stale_translation(base / 4096),
-            old(self).no_stale_translation((base / 4096 + 1) as usize),
+            old(self).blocks.pages@[(base / PAGE_SZ) as int].refs == 0,
+            old(self).no_stale_translation(base / PAGE_SZ),
+            old(self).no_stale_translation((base / PAGE_SZ + 1) as usize),
         ensures
             final(steps).count <= old(steps).count + SMALL_PAGES_MAX,
             final(self).wf(),
             Self::same_tree(*old(self), *final(self)),
-            final(self).blocks.pages@[(base / 4096) as int].kind is Free,
-            final(self).blocks.pages@[base / 4096 + 1int].kind is Free,
+            final(self).blocks.pages@[(base / PAGE_SZ) as int].kind is Free,
+            final(self).blocks.pages@[base / PAGE_SZ + 1int].kind is Free,
             final(self).tables.owner@ == old(self).tables.owner@.remove(base),
             final(self).tables.roots@.dom() == old(self).tables.roots@.dom(),
             final(self).tables.leaf(old(self).tables.owner@[base].0, old(self).tables.owner@[base].1) == NO_LEAF,
@@ -1730,7 +1730,7 @@ impl CapKernel {
             final(self).tables.payloads@.dom() == old(self).tables.payloads@.dom().remove(base),
             forall|n: usize| #[trigger] final(self).tables.is_cap(&final(self).list, n) == old(self).tables.is_cap(&old(self).list, n),
             forall|n: usize| page_of(n) != base ==> #[trigger] final(self).tables.payload_of(n) == old(self).tables.payload_of(n),
-            forall|i: int| old(self).blocks.tracks(i) && !((base / 4096) as int <= i < base / 4096 + 2)
+            forall|i: int| old(self).blocks.tracks(i) && !((base / PAGE_SZ) as int <= i < base / PAGE_SZ + 2)
                 ==> #[trigger] final(self).blocks.pages@[i] == old(self).blocks.pages@[i],
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).cores == old(self).cores,
@@ -1742,7 +1742,7 @@ impl CapKernel {
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
         let ghost pre = *old(self);
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         proof {
             pre.lemma_empty_leaf(base);
         }
@@ -1799,13 +1799,13 @@ impl CapKernel {
             base % 8192 == 0,
             self.blocks.tracks_addr(base),
         ensures
-            (leaf_block(&self.blocks, base / 4096) && self.blocks.pages@[(base / 4096) as int].refs == 0)
+            (leaf_block(&self.blocks, base / PAGE_SZ) && self.blocks.pages@[(base / PAGE_SZ) as int].refs == 0)
                 == (self.tables.owner@.contains_key(base) && !self.list.nodes@[base as int].live),
             self.leaf_is_empty(base) ==> !self.list.nodes@[base as int].live,
     {
         lemma_leaf_page(base);
-        if leaf_block(&self.blocks, base / 4096) {
-            assert(self.tables.owner@.contains_key(((base / 4096) * 4096) as usize));
+        if leaf_block(&self.blocks, base / PAGE_SZ) {
+            assert(self.tables.owner@.contains_key(((base / PAGE_SZ) * PAGE_SZ) as usize));
         }
         if self.leaf_is_empty(base) {
             assert(!self.list.nodes@[base + 0int].live);
@@ -1835,22 +1835,22 @@ impl CapKernel {
             self.leaf_is_empty(base),
         ensures
             base % 8192 == 0,
-            base % 4096 == 0,
+            base % PAGE_SZ == 0,
             self.blocks.tracks_addr(base),
             self.blocks.tracks_addr_run(base, 2),
-            (base / 4096) * 4096 == base,
-            self.blocks.pages@[(base / 4096) as int].kind is Base,
-            self.blocks.pages@[(base / 4096) as int].object is TableLeaf,
-            self.blocks.pages@[(base / 4096) as int].order == 1,
-            self.blocks.pages@[(base / 4096) as int].refs == 0,
-            self.blocks.pages@[(base / 4096) as int].dead,
-            self.blocks.pages@[base / 4096 + 1int].kind is Member,
+            (base / PAGE_SZ) * PAGE_SZ == base,
+            self.blocks.pages@[(base / PAGE_SZ) as int].kind is Base,
+            self.blocks.pages@[(base / PAGE_SZ) as int].object is TableLeaf,
+            self.blocks.pages@[(base / PAGE_SZ) as int].order == 1,
+            self.blocks.pages@[(base / PAGE_SZ) as int].refs == 0,
+            self.blocks.pages@[(base / PAGE_SZ) as int].dead,
+            self.blocks.pages@[base / PAGE_SZ + 1int].kind is Member,
             !self.list.nodes@[base as int].live,
             self.list.pages@.dom().contains(base),
             self.list.pages@[base].addr() == base,
             self.list.pages@[base].is_init(),
     {
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         self.tables.lemma_leaf(&self.list, base);
         lemma_leaf_page(base);
         lemma_list_page(&self.list, base);
@@ -1863,25 +1863,25 @@ impl CapKernel {
     /// each at its own address and uninitialised.
     proof fn lemma_leaf_perms(perms: Map<usize, PagePerm4k>, base: usize)
         requires
-            base % 4096 == 0,
-            (base / 4096) * 4096 == base,
-            perms.contains_key(base / 4096),
-            perms.contains_key((base / 4096 + 1) as usize),
-            perms[base / 4096].addr() == base,
-            perms[base / 4096].is_uninit(),
-            perms[(base / 4096 + 1) as usize].addr() == base + 4096,
-            perms[(base / 4096 + 1) as usize].is_uninit(),
+            base % PAGE_SZ == 0,
+            (base / PAGE_SZ) * PAGE_SZ == base,
+            perms.contains_key(base / PAGE_SZ),
+            perms.contains_key((base / PAGE_SZ + 1) as usize),
+            perms[base / PAGE_SZ].addr() == base,
+            perms[base / PAGE_SZ].is_uninit(),
+            perms[(base / PAGE_SZ + 1) as usize].addr() == base + PAGE_SZ,
+            perms[(base / PAGE_SZ + 1) as usize].is_uninit(),
         ensures
             forall|k: usize| k < order_pages(1) ==> {
-                &&& perms.contains_key((base / 4096 + k) as usize)
-                &&& #[trigger] perms[(base / 4096 + k) as usize].addr() == (base / 4096 + k) * 4096
-                &&& perms[(base / 4096 + k) as usize].is_uninit()
+                &&& perms.contains_key((base / PAGE_SZ + k) as usize)
+                &&& #[trigger] perms[(base / PAGE_SZ + k) as usize].addr() == (base / PAGE_SZ + k) * PAGE_SZ
+                &&& perms[(base / PAGE_SZ + k) as usize].is_uninit()
             },
     {
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         assert forall|k: usize| k < order_pages(1) implies {
             &&& perms.contains_key((page + k) as usize)
-            &&& #[trigger] perms[(page + k) as usize].addr() == (page + k) * 4096
+            &&& #[trigger] perms[(page + k) as usize].addr() == (page + k) * PAGE_SZ
             &&& perms[(page + k) as usize].is_uninit()
         } by {
             if k == 0 {
@@ -1901,28 +1901,28 @@ impl CapKernel {
             self.leaf_is_empty(base),
         ensures
             forall|l: usize| #[trigger] self.tables.owner@.contains_key(l) && l != base
-                ==> !self.blocks.in_block((base / 4096) as int, (l / 4096) as int),
+                ==> !self.blocks.in_block((base / PAGE_SZ) as int, (l / PAGE_SZ) as int),
             forall|p: usize| #[trigger] self.list.pages@.dom().contains(p) && p != base
-                ==> !self.blocks.in_block((base / 4096) as int, (p / 4096) as int),
+                ==> !self.blocks.in_block((base / PAGE_SZ) as int, (p / PAGE_SZ) as int),
             forall|b: usize| #[trigger] self.holders@.contains_key(BlockRef::Small(b))
-                ==> !self.blocks.in_block((base / 4096) as int, b as int),
+                ==> !self.blocks.in_block((base / PAGE_SZ) as int, b as int),
     {
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         self.lemma_empty_leaf(base);
         assert forall|l: usize| #[trigger] self.tables.owner@.contains_key(l) && l != base
-            implies !self.blocks.in_block(page as int, (l / 4096) as int) by {
+            implies !self.blocks.in_block(page as int, (l / PAGE_SZ) as int) by {
             self.tables.lemma_leaf(&self.list, l);
             lemma_leaf_pages_distinct(l, base);
-            assert(self.blocks.pages@[(l / 4096) as int].kind is Base);
+            assert(self.blocks.pages@[(l / PAGE_SZ) as int].kind is Base);
         }
         assert forall|p: usize| #[trigger] self.list.pages@.dom().contains(p) && p != base
-            implies !self.blocks.in_block(page as int, (p / 4096) as int) by {
+            implies !self.blocks.in_block(page as int, (p / PAGE_SZ) as int) by {
             lemma_list_page(&self.list, p);
-            if p / 4096 == page {
+            if p / PAGE_SZ == page {
                 lemma_same_page(p, base);
             }
-            if self.blocks.in_block(page as int, (p / 4096) as int) {
-                self.blocks.lemma_member_of(page as int, (p / 4096) as int);
+            if self.blocks.in_block(page as int, (p / PAGE_SZ) as int) {
+                self.blocks.lemma_member_of(page as int, (p / PAGE_SZ) as int);
                 assert(self.blocks.pages@[page as int].object is TablePage);
             }
         }
@@ -1968,8 +1968,8 @@ impl CapKernel {
         assert forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x)
             implies page_of(x) != base && post.tables.payload_of(x) == pre.tables.payload_of(x) by {
             if page_of(x) == base {
-                assert(x as int == base + (x % 4096) as int);
-                assert(!pre.list.nodes@[base + (x % 4096) as int].live);
+                assert(x as int == base + (x % PAGE_SZ) as int);
+                assert(!pre.list.nodes@[base + (x % PAGE_SZ) as int].live);
             }
         }
         let (a, b) = (pre.view(), post.view());
@@ -1998,7 +1998,7 @@ impl CapKernel {
             pre.leaf_is_empty(base),
             post.blocks.wf(),
             forall|i: int| pre.blocks.tracks(i) ==> #[trigger] post.blocks.pages@[i] == (
-                if pre.blocks.in_block((base / 4096) as int, i) { free_entry() } else { pre.blocks.pages@[i] }),
+                if pre.blocks.in_block((base / PAGE_SZ) as int, i) { free_entry() } else { pre.blocks.pages@[i] }),
             post.blocks.regions_2m@ == pre.blocks.regions_2m@,
             post.blocks.regions_1g@ == pre.blocks.regions_1g@,
             post.holders == pre.holders,
@@ -2026,7 +2026,7 @@ impl CapKernel {
             processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
             mappings_wf(&post.list, &post.tables, tree_of(&post.table_pages, &post.spaces), &post.blocks, post.holders@, post.mappings@),
     {
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         pre.lemma_empty_leaf(base);
         pre.lemma_leaf_block_alone(base);
         lemma_leaf_block_unkeyed(&pre.tables, &pre.blocks, pre.holders@, base);
@@ -2060,18 +2060,18 @@ impl CapKernel {
         }
         assert forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) implies {
             &&& post.blocks.tracks_addr(l)
-            &&& post.blocks.pages@[(l / 4096) as int] == pre.blocks.pages@[(l / 4096) as int]
+            &&& post.blocks.pages@[(l / PAGE_SZ) as int] == pre.blocks.pages@[(l / PAGE_SZ) as int]
         } by {
             assert(pre.tables.owner@.contains_key(l));
         }
         assert forall|b: usize| post.blocks.tracks(b as int) && #[trigger] leaf_block(&post.blocks, b)
-            implies post.tables.owner@.contains_key((b * 4096) as usize) by {
+            implies post.tables.owner@.contains_key((b * PAGE_SZ) as usize) by {
             assert(post.blocks.pages@[b as int] == pre.blocks.pages@[b as int]);
             assert(leaf_block(&pre.blocks, b));
             lemma_page_base(b);
         }
         assert forall|p: usize| #[trigger] post.list.pages@.dom().contains(p) && pre.blocks.tracks_addr(p)
-            implies !pre.blocks.in_block(page as int, (p / 4096) as int) by {
+            implies !pre.blocks.in_block(page as int, (p / PAGE_SZ) as int) by {
             assert(pre.list.pages@.dom().contains(p));
             assert(p != base);
         }
@@ -2094,7 +2094,7 @@ impl CapKernel {
             pre.leaf_is_empty(base),
             post.blocks.wf(),
             forall|i: int| pre.blocks.tracks(i) ==> #[trigger] post.blocks.pages@[i] == (
-                if pre.blocks.in_block((base / 4096) as int, i) { free_entry() } else { pre.blocks.pages@[i] }),
+                if pre.blocks.in_block((base / PAGE_SZ) as int, i) { free_entry() } else { pre.blocks.pages@[i] }),
             post.blocks.regions_2m@ == pre.blocks.regions_2m@,
             post.blocks.regions_1g@ == pre.blocks.regions_1g@,
             post.tables.wf(&pre.list),
@@ -2159,18 +2159,18 @@ impl CapKernel {
         &&& forall|k: usize, i: usize| #![trigger table_node(base, k, i)] k < TABLE_NODE_PAGES && i < NODES_PER_PAGE
             ==> !self.list.nodes@[table_node(base, k, i) as int].live
         &&& forall|i: usize| #![trigger self.table_pages.maps@[base].value()[i]]
-            i < 512 ==> self.table_pages.maps@[base].value()[i].is_empty()
+            i < ENTRIES ==> self.table_pages.maps@[base].value()[i].is_empty()
     }
 
     /// The block at `base` holds a table page or a space, with no reference and no live node.
     pub open spec fn empty_node_block(&self, base: usize) -> bool {
         &&& base % 32768 == 0
         &&& self.blocks.tracks_addr_run(base, 8)
-        &&& self.blocks.pages@[(base / 4096) as int].kind is Base
-        &&& self.blocks.pages@[(base / 4096) as int].object is TablePage
-            || self.blocks.pages@[(base / 4096) as int].object is Space
-        &&& self.blocks.pages@[(base / 4096) as int].order == 3
-        &&& self.blocks.pages@[(base / 4096) as int].refs == 0
+        &&& self.blocks.pages@[(base / PAGE_SZ) as int].kind is Base
+        &&& self.blocks.pages@[(base / PAGE_SZ) as int].object is TablePage
+            || self.blocks.pages@[(base / PAGE_SZ) as int].object is Space
+        &&& self.blocks.pages@[(base / PAGE_SZ) as int].order == 3
+        &&& self.blocks.pages@[(base / PAGE_SZ) as int].refs == 0
         &&& forall|k: usize, i: usize| #![trigger table_node(base, k, i)] k < TABLE_NODE_PAGES && i < NODES_PER_PAGE
             ==> !self.list.nodes@[table_node(base, k, i) as int].live
         &&& forall|k: usize| k < TABLE_NODE_PAGES ==> self.list.pages@.dom().contains(#[trigger] table_node_page(base, k))
@@ -2186,7 +2186,7 @@ impl CapKernel {
     {
         let tree = tree_of(&self.table_pages, &self.spaces);
         if self.table_is_empty(base) {
-            assert(e < 512);
+            assert(e < ENTRIES);
             assert(self.table_pages.maps@[base].value()[e].is_empty());
             assert(tree.is_page(base));
             assert(tree.entry(base, e) == self.table_pages.maps@[base].value()[e]);
@@ -2200,28 +2200,28 @@ impl CapKernel {
             self.table_is_empty(base),
         ensures
             base % 32768 == 0,
-            base % 4096 == 0,
-            base as int == 4096 * (base / 4096) as int,
-            (base / 4096) % 8 == 0,
+            base % PAGE_SZ == 0,
+            base as int == PAGE_SZ * (base / PAGE_SZ) as int,
+            (base / PAGE_SZ) % 8 == 0,
             self.blocks.tracks_addr_run(base, 8),
-            self.blocks.pages@[(base / 4096) as int].kind is Base,
-            self.blocks.pages@[(base / 4096) as int].object is TablePage,
-            self.blocks.pages@[(base / 4096) as int].order == 3,
-            self.blocks.pages@[(base / 4096) as int].refs == 0,
-            self.blocks.pages@[(base / 4096) as int].dead,
+            self.blocks.pages@[(base / PAGE_SZ) as int].kind is Base,
+            self.blocks.pages@[(base / PAGE_SZ) as int].object is TablePage,
+            self.blocks.pages@[(base / PAGE_SZ) as int].order == 3,
+            self.blocks.pages@[(base / PAGE_SZ) as int].refs == 0,
+            self.blocks.pages@[(base / PAGE_SZ) as int].dead,
             !self.list.nodes@[base as int].live,
             self.table_pages.records@[base].value().parent is None,
             !self.spaces.roots@.contains_key(base),
-            self.table_pages.maps@[base].addr() == base + 5 * 4096,
+            self.table_pages.maps@[base].addr() == base + 5 * PAGE_SZ,
             self.table_pages.records@.contains_key(base),
-            self.table_pages.records@[base].addr() == base + 6 * 4096,
-            self.table_pages.spare@.contains_key((base + 7 * 4096) as usize),
-            self.table_pages.spare@[(base + 7 * 4096) as usize].addr() == base + 7 * 4096,
-            self.table_pages.spare@[(base + 7 * 4096) as usize].is_uninit(),
+            self.table_pages.records@[base].addr() == base + 6 * PAGE_SZ,
+            self.table_pages.spare@.contains_key((base + 7 * PAGE_SZ) as usize),
+            self.table_pages.spare@[(base + 7 * PAGE_SZ) as usize].addr() == base + 7 * PAGE_SZ,
+            self.table_pages.spare@[(base + 7 * PAGE_SZ) as usize].is_uninit(),
             forall|k: usize| k < TABLE_NODE_PAGES ==> self.list.pages@.dom().contains(#[trigger] table_node_page(base, k)),
             self.empty_node_block(base),
     {
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         assert(table_page_wf(&self.list, &self.table_pages, &self.blocks, base));
         lemma_table_page_aligned(base);
         self.blocks.lemma_base(page as int);
@@ -2241,14 +2241,14 @@ impl CapKernel {
             self.list.valid(n),
             self.list.nodes@[n as int].live,
         ensures
-            !(base <= page_of(n) < base + TABLE_NODE_PAGES * 4096),
+            !(base <= page_of(n) < base + TABLE_NODE_PAGES * PAGE_SZ),
     {
         lemma_table_page_aligned(base);
         lemma_list_page(&self.list, page_of(n));
-        if base <= page_of(n) < base + TABLE_NODE_PAGES * 4096 {
-            let k = ((page_of(n) - base) / 4096) as usize;
-            let i = (n % 4096) as usize;
-            assert(page_of(n) == base + k * 4096);
+        if base <= page_of(n) < base + TABLE_NODE_PAGES * PAGE_SZ {
+            let k = ((page_of(n) - base) / PAGE_SZ as int) as usize;
+            let i = (n % PAGE_SZ) as usize;
+            assert(page_of(n) == base + k * PAGE_SZ);
             assert(n == page_of(n) + i);
             assert(k < TABLE_NODE_PAGES);
             assert(table_node(base, k, i) == n);
@@ -2263,17 +2263,17 @@ impl CapKernel {
             self.empty_node_block(base),
         ensures
             forall|l: usize| #[trigger] self.tables.owner@.contains_key(l)
-                ==> !self.blocks.in_block((base / 4096) as int, (l / 4096) as int) && !(base <= l < base + TABLE_NODE_PAGES * 4096),
+                ==> !self.blocks.in_block((base / PAGE_SZ) as int, (l / PAGE_SZ) as int) && !(base <= l < base + TABLE_NODE_PAGES * PAGE_SZ),
             forall|b: usize| #[trigger] self.holders@.contains_key(BlockRef::Small(b))
-                ==> !self.blocks.in_block((base / 4096) as int, b as int),
+                ==> !self.blocks.in_block((base / PAGE_SZ) as int, b as int),
     {
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         lemma_table_page_aligned(base);
         assert(order_pages(3) == 8);
         assert forall|l: usize| #[trigger] self.tables.owner@.contains_key(l) implies
-            !self.blocks.in_block(page as int, (l / 4096) as int) && !(base <= l < base + TABLE_NODE_PAGES * 4096) by {
+            !self.blocks.in_block(page as int, (l / PAGE_SZ) as int) && !(base <= l < base + TABLE_NODE_PAGES * PAGE_SZ) by {
             self.tables.lemma_leaf(&self.list, l);
-            let x = (l / 4096) as int;
+            let x = (l / PAGE_SZ) as int;
             assert(self.blocks.pages@[x].kind is Base);
             assert(self.blocks.pages@[x].object is TableLeaf);
             if self.blocks.in_block(page as int, x) && x != page {
@@ -2294,7 +2294,7 @@ impl CapKernel {
     /// off the list, and nothing else changed but what held its other three pages. The list held none of
     /// them.
     pub open spec fn node_block_freed_step(pre: Self, post: Self, base: usize) -> bool {
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         &&& pre.wf()
         &&& pre.empty_node_block(base)
         &&& post.blocks.wf()
@@ -2308,8 +2308,8 @@ impl CapKernel {
         &&& post.list.parent == pre.list.parent
         &&& post.list.nodes == pre.list.nodes
         &&& forall|p: usize| #[trigger] post.list.pages@.dom().contains(p)
-            == (pre.list.pages@.dom().contains(p) && !(base <= p < base + TABLE_NODE_PAGES * 4096))
-        &&& forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) ==> !(base + 5 * 4096 <= p < base + 8 * 4096)
+            == (pre.list.pages@.dom().contains(p) && !(base <= p < base + TABLE_NODE_PAGES * PAGE_SZ))
+        &&& forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) ==> !(base + 5 * PAGE_SZ <= p < base + 8 * PAGE_SZ)
         &&& post.holders == pre.holders
         &&& post.cores == pre.cores
         &&& post.flush_epoch == pre.flush_epoch
@@ -2331,7 +2331,7 @@ impl CapKernel {
         &&& pre.table_is_empty(base)
         &&& post.table_pages.maps@ == pre.table_pages.maps@.remove(base)
         &&& post.table_pages.records@ == pre.table_pages.records@.remove(base)
-        &&& post.table_pages.spare@ == pre.table_pages.spare@.remove((base + 7 * 4096) as usize)
+        &&& post.table_pages.spare@ == pre.table_pages.spare@.remove((base + 7 * PAGE_SZ) as usize)
         &&& post.spaces == pre.spaces
     }
 
@@ -2348,7 +2348,7 @@ impl CapKernel {
         let b = tree_of(&post.table_pages, &post.spaces);
         pre.lemma_empty_table(base);
         assert(a.is_page(base));
-        assert forall|i: usize| i < 512 implies #[trigger] a.entry(base, i).is_empty() by {
+        assert forall|i: usize| i < ENTRIES implies #[trigger] a.entry(base, i).is_empty() by {
             assert(pre.table_pages.maps@[base].value()[i].is_empty());
         }
         assert(table_removed(a, b, base));
@@ -2376,26 +2376,26 @@ impl CapKernel {
     proof fn lemma_node_block_threads(pre: Self, post: Self, base: usize)
         requires
             Self::node_block_freed_step(pre, post, base),
-            pre.blocks.pages@[(base / 4096) as int].kind is Base,
-            !(pre.blocks.pages@[(base / 4096) as int].object is Thread),
-            !(pre.blocks.pages@[(base / 4096) as int].object is Process),
+            pre.blocks.pages@[(base / PAGE_SZ) as int].kind is Base,
+            !(pre.blocks.pages@[(base / PAGE_SZ) as int].object is Thread),
+            !(pre.blocks.pages@[(base / PAGE_SZ) as int].object is Process),
             forall|i: int| pre.blocks.tracks(i) ==> #[trigger] post.blocks.pages@[i] == (
-                if pre.blocks.in_block((base / 4096) as int, i) { free_entry() } else { pre.blocks.pages@[i] }),
+                if pre.blocks.in_block((base / PAGE_SZ) as int, i) { free_entry() } else { pre.blocks.pages@[i] }),
             forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) == pre.tables.is_cap(&pre.list, x),
             forall|x: usize| #[trigger] pre.tables.is_cap(&pre.list, x) ==> post.tables.payload_of(x) == pre.tables.payload_of(x),
         ensures
             threads_wf(&post.list, &post.tables, &post.threads, &post.blocks),
             processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
     {
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         Self::lemma_node_block_list_pages(pre, post, base);
         lemma_table_page_aligned(base);
         assert(order_pages(3) == 8);
         lemma_threads_outside_block(&pre.list, &pre.tables, &pre.threads, &pre.blocks, page);
         assert forall|t: usize| #[trigger] pre.threads.records@.contains_key(t) implies post.list.pages@.dom().contains(t) by {
             assert(thread_wf(&pre.list, &pre.threads, &pre.blocks, t));
-            assert(!pre.blocks.in_block(page as int, (t / 4096) as int));
-            assert(!(base <= t < base + TABLE_NODE_PAGES * 4096));
+            assert(!pre.blocks.in_block(page as int, (t / PAGE_SZ) as int));
+            assert(!(base <= t < base + TABLE_NODE_PAGES * PAGE_SZ));
         }
         lemma_threads_small_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.threads, &pre.blocks, &post.blocks, page);
         lemma_processes_small_freed(&pre.list, &pre.tables, &post.list, &post.tables, &pre.processes, &pre.blocks, &post.blocks, page);
@@ -2407,17 +2407,17 @@ impl CapKernel {
             Self::node_block_freed_step(pre, post, base),
         ensures
             forall|p: usize| #[trigger] post.list.pages@.dom().contains(p) && pre.blocks.tracks_addr(p)
-                ==> !pre.blocks.in_block((base / 4096) as int, (p / 4096) as int),
+                ==> !pre.blocks.in_block((base / PAGE_SZ) as int, (p / PAGE_SZ) as int),
     {
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         lemma_table_page_aligned(base);
         assert(order_pages(3) == 8);
         assert forall|p: usize| #[trigger] post.list.pages@.dom().contains(p) && pre.blocks.tracks_addr(p)
-            implies !pre.blocks.in_block(page as int, (p / 4096) as int) by {
+            implies !pre.blocks.in_block(page as int, (p / PAGE_SZ) as int) by {
             assert(pre.list.pages@.dom().contains(p));
             lemma_list_page(&pre.list, p);
-            assert(!(base <= p < base + 5 * 4096));
-            assert(!(base + 5 * 4096 <= p < base + 8 * 4096));
+            assert(!(base <= p < base + 5 * PAGE_SZ));
+            assert(!(base + 5 * PAGE_SZ <= p < base + 8 * PAGE_SZ));
         }
     }
 
@@ -2434,7 +2434,7 @@ impl CapKernel {
             processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
             list_pages_used(&post.list, &post.blocks),
     {
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         pre.lemma_empty_table(base);
         Self::lemma_node_block_list_pages(pre, post, base);
         assert(order_pages(3) == 8);
@@ -2444,37 +2444,37 @@ impl CapKernel {
             assert(pre.table_pages.maps@.contains_key(t));
             assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, t));
             lemma_table_pages_distinct(t, base);
-            pre.blocks.lemma_base((t / 4096) as int);
-            if pre.blocks.in_block(page as int, (t / 4096) as int) && t / 4096 != page {
-                pre.blocks.lemma_member_of(page as int, (t / 4096) as int);
+            pre.blocks.lemma_base((t / PAGE_SZ) as int);
+            if pre.blocks.in_block(page as int, (t / PAGE_SZ) as int) && t / PAGE_SZ != page {
+                pre.blocks.lemma_member_of(page as int, (t / PAGE_SZ) as int);
             }
-            assert(post.blocks.pages@[(t / 4096) as int] == pre.blocks.pages@[(t / 4096) as int]);
-            assert(post.table_pages.spare@[(t + 7 * 4096) as usize] == pre.table_pages.spare@[(t + 7 * 4096) as usize]);
+            assert(post.blocks.pages@[(t / PAGE_SZ) as int] == pre.blocks.pages@[(t / PAGE_SZ) as int]);
+            assert(post.table_pages.spare@[(t + 7 * PAGE_SZ) as usize] == pre.table_pages.spare@[(t + 7 * PAGE_SZ) as usize]);
             assert forall|k: usize| k < TABLE_NODE_PAGES implies post.list.pages@.dom().contains(#[trigger] table_node_page(t, k)) by {
                 assert(pre.list.pages@.dom().contains(table_node_page(t, k)));
                 lemma_table_node_page(t, k);
             }
             assert forall|i: usize| #![trigger post.table_pages.maps@[t].value()[i]]
-                i < 512 && !post.table_pages.records@[t].value().written implies post.table_pages.maps@[t].value()[i].is_empty() by {
+                i < ENTRIES && !post.table_pages.records@[t].value().written implies post.table_pages.maps@[t].value()[i].is_empty() by {
                 assert(pre.table_pages.maps@[t].value()[i].is_empty());
             }
         }
         assert forall|x: usize| post.blocks.tracks(x as int) && #[trigger] table_block(&post.blocks, x)
-            implies post.table_pages.maps@.contains_key((x * 4096) as usize) by {
+            implies post.table_pages.maps@.contains_key((x * PAGE_SZ) as usize) by {
             if pre.blocks.in_block(page as int, x as int) {
                 assert(post.blocks.pages@[x as int] == free_entry());
             }
             assert(post.blocks.pages@[x as int] == pre.blocks.pages@[x as int]);
             assert(table_block(&pre.blocks, x));
             assert(x != page);
-            assert((x * 4096) as usize != base);
+            assert((x * PAGE_SZ) as usize != base);
         }
         assert forall|s: usize, k: usize| #[trigger] pre.spaces.roots@.contains_key(s) && pre.spaces.records@[s].value().kind is Device
             && k < TABLE_NODE_PAGES implies post.list.pages@.dom().contains(#[trigger] table_node_page(s, k)) by {
             assert(space_wf(&pre.list, &pre.spaces, &pre.blocks, s));
             assert(pre.list.pages@.dom().contains(table_node_page(s, k)));
             assert(s != base);
-            pre.blocks.lemma_base((s / 4096) as int);
+            pre.blocks.lemma_base((s / PAGE_SZ) as int);
             lemma_table_node_page(s, k);
         }
         assert(same_spaces(&pre.list, &pre.tables, &post.list, &post.tables));
@@ -2498,7 +2498,7 @@ impl CapKernel {
             zeroing_typed(&post.zeroing, &post.blocks),
             mappings_wf(&post.list, &post.tables, tree_of(&post.table_pages, &post.spaces), &post.blocks, post.holders@, post.mappings@),
     {
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         lemma_table_page_aligned(base);
         pre.lemma_node_block_alone(base);
         assert(order_pages(3) == 8);
@@ -2537,12 +2537,12 @@ impl CapKernel {
         }
         assert forall|l: usize| #[trigger] post.tables.owner@.contains_key(l) implies {
             &&& post.blocks.tracks_addr(l)
-            &&& post.blocks.pages@[(l / 4096) as int] == pre.blocks.pages@[(l / 4096) as int]
+            &&& post.blocks.pages@[(l / PAGE_SZ) as int] == pre.blocks.pages@[(l / PAGE_SZ) as int]
         } by {
             assert(pre.tables.owner@.contains_key(l));
         }
         assert forall|b: usize| post.blocks.tracks(b as int) && #[trigger] leaf_block(&post.blocks, b)
-            implies post.tables.owner@.contains_key((b * 4096) as usize) by {
+            implies post.tables.owner@.contains_key((b * PAGE_SZ) as usize) by {
             assert(post.blocks.pages@[b as int] == pre.blocks.pages@[b as int]);
             assert(leaf_block(&pre.blocks, b));
             lemma_page_base(b);
@@ -2613,12 +2613,12 @@ impl CapKernel {
         requires
             old(self).wf(),
             old(self).table_is_empty(base),
-            old(self).blocks.pages@[(base / 4096) as int].refs == 0,
-            old(self).no_stale_translation(base / 4096),
+            old(self).blocks.pages@[(base / PAGE_SZ) as int].refs == 0,
+            old(self).no_stale_translation(base / PAGE_SZ),
         ensures
             final(steps).count <= old(steps).count + TABLE_NODE_PAGES + SMALL_PAGES_MAX,
             final(self).wf(),
-            final(self).blocks.pages@[(base / 4096) as int].kind is Free,
+            final(self).blocks.pages@[(base / PAGE_SZ) as int].kind is Free,
             !final(self).table_pages.maps@.contains_key(base),
             forall|k: usize| k < TABLE_NODE_PAGES ==> !final(self).list.pages@.dom().contains(#[trigger] table_node_page(base, k)),
             forall|r: usize, p: SpacePath| #[trigger] walk(tree_of(&final(self).table_pages, &final(self).spaces), r, p)
@@ -2628,7 +2628,7 @@ impl CapKernel {
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
         let ghost pre = *old(self);
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         proof {
             pre.lemma_empty_table(base);
             crate::layouts::lemma_table_block_layouts();
@@ -2637,8 +2637,8 @@ impl CapKernel {
             }
             lemma_list_page_apart(self.list.pages.borrow_mut(), self.table_pages.maps.borrow().tracked_borrow(base));
             lemma_list_page_apart(self.list.pages.borrow_mut(), self.table_pages.records.borrow().tracked_borrow(base));
-            lemma_list_page_apart(self.list.pages.borrow_mut(), self.table_pages.spare.borrow().tracked_borrow((base + 7 * 4096) as usize));
-            assert forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) implies !(base + 5 * 4096 <= p < base + 8 * 4096) by {
+            lemma_list_page_apart(self.list.pages.borrow_mut(), self.table_pages.spare.borrow().tracked_borrow((base + 7 * PAGE_SZ) as usize));
+            assert forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) implies !(base + 5 * PAGE_SZ <= p < base + 8 * PAGE_SZ) by {
                 lemma_list_page(&pre.list, p);
             }
         }
@@ -2649,7 +2649,7 @@ impl CapKernel {
         proof {
             let tracked mut map = self.table_pages.maps.borrow_mut().tracked_remove(base);
             let tracked mut record = self.table_pages.records.borrow_mut().tracked_remove(base);
-            let tracked spare = self.table_pages.spare.borrow_mut().tracked_remove((base + 7 * 4096) as usize);
+            let tracked spare = self.table_pages.spare.borrow_mut().tracked_remove((base + 7 * PAGE_SZ) as usize);
             map.leak_contents();
             record.leak_contents();
             perms.tracked_insert((page + 5) as usize, crate::layouts::page_map_into_page(map));
@@ -2660,7 +2660,7 @@ impl CapKernel {
             assert forall|k: usize| #![trigger perms.contains_key((page + k) as usize)] #![trigger perms[(page + k) as usize]]
                 k < order_pages(self.blocks.pages@[page as int].order) implies {
                 &&& perms.contains_key((page + k) as usize)
-                &&& perms[(page + k) as usize].addr() == (page + k) * 4096
+                &&& perms[(page + k) as usize].addr() == (page + k) * PAGE_SZ
                 &&& perms[(page + k) as usize].is_uninit()
             } by {
                 if k < 5 {
@@ -2700,7 +2700,7 @@ impl CapKernel {
         &&& forall|k: usize, i: usize| #![trigger table_node(base, k, i)] k < TABLE_NODE_PAGES && i < NODES_PER_PAGE
             ==> !self.list.nodes@[table_node(base, k, i) as int].live
         &&& forall|i: usize| #![trigger self.spaces.roots@[base].value()[i]]
-            i < 512 ==> self.spaces.roots@[base].value()[i].is_empty()
+            i < ENTRIES ==> self.spaces.roots@[base].value()[i].is_empty()
     }
 
     /// The dead device space at `base` has nothing left to cut: no entry of its root names a child.
@@ -2722,7 +2722,7 @@ impl CapKernel {
             let tree = tree_of(&self.table_pages, &self.spaces);
             assert(space_wf(&self.list, &self.spaces, &self.blocks, base));
             assert forall|i: usize| #![trigger self.spaces.roots@[base].value()[i]]
-                i < 512 implies self.spaces.roots@[base].value()[i].is_empty() by {
+                i < ENTRIES implies self.spaces.roots@[base].value()[i].is_empty() by {
                 assert(tree.entry(base, i) == self.spaces.roots@[base].value()[i]);
             }
         }
@@ -2736,20 +2736,20 @@ impl CapKernel {
             self.space_is_empty(base),
         ensures
             self.empty_node_block(base),
-            base % 4096 == 0,
-            base as int == 4096 * (base / 4096) as int,
-            self.blocks.pages@[(base / 4096) as int].dead,
+            base % PAGE_SZ == 0,
+            base as int == PAGE_SZ * (base / PAGE_SZ) as int,
+            self.blocks.pages@[(base / PAGE_SZ) as int].dead,
             !self.table_pages.maps@.contains_key(base),
-            self.spaces.roots@[base].addr() == base + 5 * 4096,
+            self.spaces.roots@[base].addr() == base + 5 * PAGE_SZ,
             self.spaces.records@.contains_key(base),
-            self.spaces.records@[base].addr() == base + 6 * 4096,
+            self.spaces.records@[base].addr() == base + 6 * PAGE_SZ,
             self.spaces.loaded@.contains_key(base),
-            self.spaces.loaded@[base].addr() == base + 7 * 4096,
+            self.spaces.loaded@[base].addr() == base + 7 * PAGE_SZ,
             self.spaces.holders@[base] == Set::<usize>::empty(),
             self.spaces.bound@[base] == Set::<usize>::empty(),
             forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && e.space == base ==> !#[trigger] self.tlb@[c].contains(e),
     {
-        let page = (base / 4096) as int;
+        let page = (base / PAGE_SZ) as int;
         assert(space_wf(&self.list, &self.spaces, &self.blocks, base));
         lemma_table_page_aligned(base);
         self.blocks.lemma_base(page);
@@ -2788,7 +2788,7 @@ impl CapKernel {
         pre.lemma_empty_space(base);
         assert(!a.is_page(base));
         assert forall|i: usize| !#[trigger] a.names_child(base, i) by {
-            if i < 512 {
+            if i < ENTRIES {
                 assert(pre.spaces.roots@[base].value()[i].is_empty());
             }
         }
@@ -2823,7 +2823,7 @@ impl CapKernel {
             post.spaces.roots@ == pre.spaces.roots@.remove(base),
             post.spaces.records@ == pre.spaces.records@.remove(base),
             forall|p: usize| #[trigger] post.list.pages@.dom().contains(p)
-                == (pre.list.pages@.dom().contains(p) && !(base <= p < base + TABLE_NODE_PAGES * 4096)),
+                == (pre.list.pages@.dom().contains(p) && !(base <= p < base + TABLE_NODE_PAGES * PAGE_SZ)),
         ensures
             forall|t: usize, k: usize| #[trigger] post.table_pages.maps@.contains_key(t) && k < TABLE_NODE_PAGES
                 ==> post.list.pages@.dom().contains(#[trigger] table_node_page(t, k)),
@@ -2858,7 +2858,7 @@ impl CapKernel {
             processes_wf(&post.list, &post.tables, &post.processes, &post.blocks),
             list_pages_used(&post.list, &post.blocks),
     {
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         pre.lemma_empty_space(base);
         Self::lemma_node_block_list_pages(pre, post, base);
         assert(order_pages(3) == 8);
@@ -2897,11 +2897,11 @@ impl CapKernel {
         requires
             old(self).wf(),
             old(self).space_is_empty(base),
-            old(self).no_stale_translation(base / 4096),
+            old(self).no_stale_translation(base / PAGE_SZ),
         ensures
             final(steps).count <= old(steps).count + TABLE_NODE_PAGES + SMALL_PAGES_MAX,
             final(self).wf(),
-            final(self).blocks.pages@[(base / 4096) as int].kind is Free,
+            final(self).blocks.pages@[(base / PAGE_SZ) as int].kind is Free,
             !final(self).spaces.roots@.contains_key(base),
             forall|k: usize| k < TABLE_NODE_PAGES ==> !final(self).list.pages@.dom().contains(#[trigger] table_node_page(base, k)),
             forall|r: usize, p: SpacePath| #[trigger] walk(tree_of(&final(self).table_pages, &final(self).spaces), r, p)
@@ -2911,7 +2911,7 @@ impl CapKernel {
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
         let ghost pre = *old(self);
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         proof {
             pre.lemma_empty_space(base);
             crate::layouts::lemma_space_block_layouts();
@@ -2921,7 +2921,7 @@ impl CapKernel {
             lemma_list_page_apart(self.list.pages.borrow_mut(), self.spaces.roots.borrow().tracked_borrow(base));
             lemma_list_page_apart(self.list.pages.borrow_mut(), self.spaces.records.borrow().tracked_borrow(base));
             lemma_list_page_apart(self.list.pages.borrow_mut(), self.spaces.loaded.borrow().tracked_borrow(base));
-            assert forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) implies !(base + 5 * 4096 <= p < base + 8 * 4096) by {
+            assert forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) implies !(base + 5 * PAGE_SZ <= p < base + 8 * PAGE_SZ) by {
                 lemma_list_page(&pre.list, p);
             }
         }
@@ -2946,7 +2946,7 @@ impl CapKernel {
             assert forall|k: usize| #![trigger perms.contains_key((page + k) as usize)] #![trigger perms[(page + k) as usize]]
                 k < order_pages(self.blocks.pages@[page as int].order) implies {
                 &&& perms.contains_key((page + k) as usize)
-                &&& perms[(page + k) as usize].addr() == (page + k) * 4096
+                &&& perms[(page + k) as usize].addr() == (page + k) * PAGE_SZ
                 &&& perms[(page + k) as usize].is_uninit()
             } by {
                 if k < 5 {
@@ -2983,7 +2983,7 @@ impl CapKernel {
     /// so the view is as it was.
     pub open spec fn space_freed(&self, post: Self, c: usize, root: usize, from: usize, base: usize) -> bool {
         let untyped = self.tables.node_of(root, from);
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         &&& self.view().holds_right(root, untyped, Right::Retype)
         &&& self.space_is_empty(base)
         &&& self.blocks.pages@[page as int].refs == 0
@@ -3008,7 +3008,7 @@ impl CapKernel {
             c < NUM_CPUS,
             old(self).tables.roots@.contains_key(root),
         ensures
-            final(steps).count <= old(steps).count + 512 + (NUM_CPUS + NUM_IOMMUS) + (TABLE_NODE_PAGES + SMALL_PAGES_MAX),
+            final(steps).count <= old(steps).count + ENTRIES + (NUM_CPUS + NUM_IOMMUS) + (TABLE_NODE_PAGES + SMALL_PAGES_MAX),
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
             !(ret is Unlinked),
@@ -3016,8 +3016,8 @@ impl CapKernel {
             !(ret is Freed) ==> *final(self) == *old(self),
             !(old(self).can_retype_under(root, from, base, 3) && old(self).space_is_empty(base)) ==> ret is Refused,
             old(self).can_retype_under(root, from, base, 3) && old(self).space_is_empty(base)
-                ==> if old(self).acknowledged(base / 4096) { ret is Freed } else { ret is Again },
-            ret is Again ==> !old(self).acknowledged(base / 4096),
+                ==> if old(self).acknowledged(base / PAGE_SZ) { ret is Freed } else { ret is Again },
+            ret is Again ==> !old(self).acknowledged(base / PAGE_SZ),
             ret is Freed ==> old(self).space_freed(*final(self), c, root, from, base),
     {
         let ghost pre = *old(self);
@@ -3031,7 +3031,7 @@ impl CapKernel {
             Some(found) => found,
             None => { return ReclaimStep::Refused; },
         };
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         if !self.blocks.page_tracked(page) {
             return ReclaimStep::Refused;
         }
@@ -3086,7 +3086,7 @@ impl CapKernel {
             Some(found) => found,
             None => { return false; },
         };
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         if !self.blocks.page_tracked(page) {
             return false;
         }
@@ -3135,14 +3135,14 @@ impl CapKernel {
             base % 8192 == 0,
             self.blocks.tracks_addr(base),
         ensures
-            (leaf_block(&self.blocks, base / 4096) && self.blocks.pages@[(base / 4096) as int].refs == 1)
+            (leaf_block(&self.blocks, base / PAGE_SZ) && self.blocks.pages@[(base / PAGE_SZ) as int].refs == 1)
                 == (self.tables.owner@.contains_key(base) && self.list.nodes@[base as int].live),
             self.tables.owner@.contains_key(base) && self.list.nodes@[base as int].live
                 ==> self.list.nodes@[base as int].kind is Hidden,
     {
         lemma_leaf_page(base);
-        if leaf_block(&self.blocks, base / 4096) {
-            assert(self.tables.owner@.contains_key(((base / 4096) * 4096) as usize));
+        if leaf_block(&self.blocks, base / PAGE_SZ) {
+            assert(self.tables.owner@.contains_key(((base / PAGE_SZ) * PAGE_SZ) as usize));
         }
     }
 
@@ -3152,7 +3152,7 @@ impl CapKernel {
     proof fn lemma_unlink_discharges(pre: Self, post: Self, root: usize, untyped: usize, base: usize)
         requires
             Self::caps_frame(pre, post, base, base),
-            base % 4096 == 0,
+            base % PAGE_SZ == 0,
             post.list.parent == pre.list.parent,
             pre.view().holds_right(root, untyped, Right::Retype),
         ensures
@@ -3182,15 +3182,15 @@ impl CapKernel {
             base % 32768 == 0,
             self.blocks.tracks_addr(base),
         ensures
-            (table_block(&self.blocks, base / 4096) && self.blocks.pages@[(base / 4096) as int].refs == 1)
+            (table_block(&self.blocks, base / PAGE_SZ) && self.blocks.pages@[(base / PAGE_SZ) as int].refs == 1)
                 == (self.table_pages.maps@.contains_key(base) && self.list.nodes@[base as int].live),
             self.table_pages.maps@.contains_key(base) && self.list.nodes@[base as int].live
                 ==> self.list.nodes@[base as int].kind is Hidden,
     {
         assert(base % 32768 == 0 ==> base % 8192 == 0) by (bit_vector);
         lemma_leaf_page(base);
-        if table_block(&self.blocks, base / 4096) {
-            assert(self.table_pages.maps@.contains_key(((base / 4096) * 4096) as usize));
+        if table_block(&self.blocks, base / PAGE_SZ) {
+            assert(self.table_pages.maps@.contains_key(((base / PAGE_SZ) * PAGE_SZ) as usize));
         }
         if self.table_pages.maps@.contains_key(base) {
             assert(table_page_wf(&self.list, &self.table_pages, &self.blocks, base));
@@ -3223,7 +3223,7 @@ impl CapKernel {
             Some(found) => found,
             None => { return false; },
         };
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         if !self.blocks.page_tracked(page) || self.flush_epoch == usize::MAX {
             return false;
         }
@@ -3285,14 +3285,14 @@ impl CapKernel {
         &&& b.record(c).parent is None
         &&& b.record(c).space == s
         &&& s is Some
-        &&& post.stale_epoch.above(pre.flush_epoch as int, c / 4096)
-        &&& !post.acknowledged(c / 4096)
-        &&& forall|d: int| #![trigger post.tlb@[d].contains(TlbEntry { space: s->Some_0, page: c / 4096 })]
+        &&& post.stale_epoch.above(pre.flush_epoch as int, c / PAGE_SZ)
+        &&& !post.acknowledged(c / PAGE_SZ)
+        &&& forall|d: int| #![trigger post.tlb@[d].contains(TlbEntry { space: s->Some_0, page: c / PAGE_SZ })]
             0 <= d < NUM_CPUS && pre.loaded(d, s->Some_0)
-            ==> post.tlb@[d].contains(TlbEntry { space: s->Some_0, page: c / 4096 })
-        &&& forall|i: int| #![trigger post.iommus.tlb@[i].contains(TlbEntry { space: s->Some_0, page: c / 4096 })]
+            ==> post.tlb@[d].contains(TlbEntry { space: s->Some_0, page: c / PAGE_SZ })
+        &&& forall|i: int| #![trigger post.iommus.tlb@[i].contains(TlbEntry { space: s->Some_0, page: c / PAGE_SZ })]
             0 <= i < NUM_IOMMUS && pre.iommu_present(i) && a.is_root(s->Some_0) && pre.spaces.records@[s->Some_0].value().kind is Device
-            ==> post.iommus.tlb@[i].contains(TlbEntry { space: s->Some_0, page: c / 4096 })
+            ==> post.iommus.tlb@[i].contains(TlbEntry { space: s->Some_0, page: c / PAGE_SZ })
     }
 
     /// What cutting children of the dead table at `base` keeps: only tables, the record of each cut and the
@@ -3368,7 +3368,7 @@ impl CapKernel {
             base % 32768 == 0,
             self.blocks.tracks_addr(base),
         ensures
-            (table_block(&self.blocks, base / 4096) && self.blocks.pages@[(base / 4096) as int].refs == 0)
+            (table_block(&self.blocks, base / PAGE_SZ) && self.blocks.pages@[(base / PAGE_SZ) as int].refs == 0)
                 == (self.table_pages.maps@.contains_key(base) && !self.list.nodes@[base as int].live),
             self.table_pages.maps@.contains_key(base) ==> !self.spaces.roots@.contains_key(base),
             self.table_pages.maps@.contains_key(base) && !self.list.nodes@[base as int].live
@@ -3376,8 +3376,8 @@ impl CapKernel {
     {
         assert(base % 32768 == 0 ==> base % 8192 == 0) by (bit_vector);
         lemma_leaf_page(base);
-        if table_block(&self.blocks, base / 4096) {
-            assert(self.table_pages.maps@.contains_key(((base / 4096) * 4096) as usize));
+        if table_block(&self.blocks, base / PAGE_SZ) {
+            assert(self.table_pages.maps@.contains_key(((base / PAGE_SZ) * PAGE_SZ) as usize));
         }
         if self.table_pages.maps@.contains_key(base) {
             assert(table_page_wf(&self.list, &self.table_pages, &self.blocks, base));
@@ -3394,7 +3394,7 @@ impl CapKernel {
             self.wf(),
             tree_of(&self.table_pages, &self.spaces).names_child(t, e),
         ensures
-            tree_of(&self.table_pages, &self.spaces).entry(t, e).addr >= TABLE_NODE_PAGES * 4096,
+            tree_of(&self.table_pages, &self.spaces).entry(t, e).addr >= TABLE_NODE_PAGES * PAGE_SZ,
             self.table_pages.maps@.contains_key(child_at(tree_of(&self.table_pages, &self.spaces), t, e)),
             tree_of(&self.table_pages, &self.spaces).record(child_at(tree_of(&self.table_pages, &self.spaces), t, e)).parent
                 == Some(TableParent { table: t, entry: e }),
@@ -3498,7 +3498,7 @@ impl CapKernel {
             lemma_child_entries(m, base, i);
             assert(b.child_slot(base, i) == m.child_slot(base, i));
             if i != e {
-                if i < 512 {
+                if i < ENTRIES {
                     assert(b.entry(base, i) == m.entry(base, i));
                 } else {
                     assert(!b.names_child(base, i) && !m.names_child(base, i));
@@ -3537,7 +3537,7 @@ impl CapKernel {
     {
         let m = tree_of(&mid.table_pages, &mid.spaces);
         let s = m.record(c).space->Some_0;
-        let g = c / 4096;
+        let g = c / PAGE_SZ;
         lemma_cut_pages(m, c, g);
         assert(cut_pages(m, c).contains(g));
         assert forall|d: int| #![trigger post.tlb@[d].contains(TlbEntry { space: s, page: g })]
@@ -3574,7 +3574,7 @@ impl CapKernel {
         let b = tree_of(&post.table_pages, &post.spaces);
         pre.lemma_child_of_entry(base, i);
         let s = a.record(old_child).space->Some_0;
-        let g = old_child / 4096;
+        let g = old_child / PAGE_SZ;
         assert(old_child != c);
         assert(m.is_page(c));
         assert(detached(m, b, base, e, c));
@@ -3606,7 +3606,7 @@ impl CapKernel {
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
         ensures
-            final(steps).count <= old(steps).count + 512,
+            final(steps).count <= old(steps).count + ENTRIES,
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
             ret == old(self).can_cut_table(root, from, base),
@@ -3622,7 +3622,7 @@ impl CapKernel {
             Some(found) => found,
             None => { return false; },
         };
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         if !self.blocks.page_tracked(page) || self.flush_epoch == usize::MAX {
             return false;
         }
@@ -3671,7 +3671,7 @@ impl CapKernel {
             tree_of(&old(self).table_pages, &old(self).spaces).record(base).parent is None,
             tree_of(&old(self).table_pages, &old(self).spaces).record(base).level >= 2,
         ensures
-            final(steps).count <= old(steps).count + 512,
+            final(steps).count <= old(steps).count + ENTRIES,
             final(self).wf(),
             cut <= TABLE_SLICE_BUDGET,
             Self::table_cuts_kept(*old(self), *final(self), base),
@@ -3683,7 +3683,7 @@ impl CapKernel {
             cut == 0 ==> forall|j: usize| !#[trigger] tree_of(&old(self).table_pages, &old(self).spaces).names_child(base, j),
             cut > 0 ==> exists|i: usize| #[trigger] tree_of(&old(self).table_pages, &old(self).spaces).names_child(base, i),
             forall|i: usize| #![trigger tree_of(&final(self).table_pages, &final(self).spaces).entry(base, i)]
-                i < 512 && !tree_of(&old(self).table_pages, &old(self).spaces).names_child(base, i)
+                i < ENTRIES && !tree_of(&old(self).table_pages, &old(self).spaces).names_child(base, i)
                 ==> tree_of(&final(self).table_pages, &final(self).spaces).entry(base, i)
                     == tree_of(&old(self).table_pages, &old(self).spaces).entry(base, i),
     {
@@ -3692,7 +3692,7 @@ impl CapKernel {
         let ghost start = steps.count;
         let mut cut: usize = 0;
         let mut e: usize = 0;
-        while cut != TABLE_SLICE_BUDGET && e != 512 && self.flush_epoch != usize::MAX
+        while cut != TABLE_SLICE_BUDGET && e != ENTRIES && self.flush_epoch != usize::MAX
             invariant
                 start == old(steps).count,
                 steps.count == start + e,
@@ -3706,7 +3706,7 @@ impl CapKernel {
                 pre.flush_epoch < usize::MAX,
                 a.record(base).level >= 2,
                 cut <= TABLE_SLICE_BUDGET,
-                e <= 512,
+                e <= ENTRIES,
                 Self::table_cuts_kept(pre, *self, base),
                 cut == 0 ==> *self == pre,
                 cut > 0 ==> exists|i: usize| #[trigger] a.names_child(base, i),
@@ -3714,8 +3714,8 @@ impl CapKernel {
                 child_entries(a, base).len() == child_entries(tree_of(&self.table_pages, &self.spaces), base).len() + cut,
                 forall|j: usize| j < e ==> !#[trigger] tree_of(&self.table_pages, &self.spaces).names_child(base, j),
                 forall|i: usize| #![trigger tree_of(&self.table_pages, &self.spaces).entry(base, i)]
-                    i < 512 && !a.names_child(base, i) ==> tree_of(&self.table_pages, &self.spaces).entry(base, i) == a.entry(base, i),
-            decreases TABLE_SLICE_BUDGET - cut, 512 - e,
+                    i < ENTRIES && !a.names_child(base, i) ==> tree_of(&self.table_pages, &self.spaces).entry(base, i) == a.entry(base, i),
+            decreases TABLE_SLICE_BUDGET - cut, ENTRIES - e,
         {
             proof {
                 steps.step();
@@ -3743,7 +3743,7 @@ impl CapKernel {
             proof {
                 mid.lemma_child_of_entry(base, e);
             }
-            let child = entry.addr - TABLE_NODE_PAGES * 4096;
+            let child = entry.addr - TABLE_NODE_PAGES * PAGE_SZ;
             proof {
                 assert(child == child_at(m, base, e));
             }
@@ -3759,7 +3759,7 @@ impl CapKernel {
                     lemma_child_entries(a, base, e);
                 }
                 assert forall|i: usize| #![trigger b.entry(base, i)]
-                    i < 512 && !a.names_child(base, i) implies b.entry(base, i) == a.entry(base, i) by {
+                    i < ENTRIES && !a.names_child(base, i) implies b.entry(base, i) == a.entry(base, i) by {
                     assert(m.entry(base, i) == a.entry(base, i));
                 }
                 lemma_child_entries(m, base, e);
@@ -3791,9 +3791,9 @@ impl CapKernel {
         proof {
             if cut == 0 {
                 assert(*self == pre);
-                assert(e == 512);
+                assert(e == ENTRIES);
                 assert forall|j: usize| !#[trigger] a.names_child(base, j) by {
-                    if j < 512 {
+                    if j < ENTRIES {
                         assert(!tree_of(&self.table_pages, &self.spaces).names_child(base, j));
                     }
                 }
@@ -3807,7 +3807,7 @@ impl CapKernel {
     pub open spec fn dead_io_space(&self, base: usize) -> bool {
         &&& self.spaces.roots@.contains_key(base)
         &&& self.spaces.records@[base].value().kind is Device
-        &&& self.blocks.pages@[(base / 4096) as int].refs == 0
+        &&& self.blocks.pages@[(base / PAGE_SZ) as int].refs == 0
     }
 
     /// The device space at `base` has a child to cut: an untyped covers it, it is dead, an entry still names
@@ -3834,7 +3834,7 @@ impl CapKernel {
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
         ensures
-            final(steps).count <= old(steps).count + 512,
+            final(steps).count <= old(steps).count + ENTRIES,
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
             ret == old(self).can_cut_space(root, from, base),
@@ -3849,7 +3849,7 @@ impl CapKernel {
             Some(found) => found,
             None => { return false; },
         };
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         if !self.blocks.page_tracked(page) || self.flush_epoch == usize::MAX {
             return false;
         }
@@ -3882,7 +3882,7 @@ impl CapKernel {
             base % 32768 == 0,
             self.blocks.tracks_addr(base),
         ensures
-            space_block(&self.blocks, base / 4096)
+            space_block(&self.blocks, base / PAGE_SZ)
                 == (self.spaces.roots@.contains_key(base) && self.spaces.records@[base].value().kind is Device),
             self.spaces.roots@.contains_key(base) ==> !self.table_pages.maps@.contains_key(base),
             self.spaces.roots@.contains_key(base) ==> tree_of(&self.table_pages, &self.spaces).record(base).parent is None,
@@ -4112,7 +4112,7 @@ impl CapKernel {
             mid.mappings@.contains_key(n),
             mid.mappings@[n].table == base,
             mid.mappings@[n].entry == e,
-            forall|i: usize| i < 512 && i != e ==> #[trigger] tree_of(&post.table_pages, &post.spaces).entry(base, i) == tree_of(&mid.table_pages, &mid.spaces).entry(base, i),
+            forall|i: usize| i < ENTRIES && i != e ==> #[trigger] tree_of(&post.table_pages, &post.spaces).entry(base, i) == tree_of(&mid.table_pages, &mid.spaces).entry(base, i),
             tree_of(&post.table_pages, &post.spaces).entry(base, e).is_empty(),
     {
         let a = tree_of(&pre.table_pages, &pre.spaces);
@@ -4124,7 +4124,7 @@ impl CapKernel {
         assert(m.record(base).parent is None);
         assert(!m.is_root(base));
         assert(n != base) by {
-            assert(e < 512);
+            assert(e < ENTRIES);
             assert((e + 1) / 128 > 0 || (e + 1) % 128 > 0);
         }
         reveal(walks_cut);
@@ -4157,12 +4157,12 @@ impl CapKernel {
             mid.mappings@[n].entry == e,
             Self::mapping_unlinked(mid, post, n),
         ensures
-            forall|i: usize| i < 512 && i != e ==> #[trigger] tree_of(&post.table_pages, &post.spaces).entry(base, i) == tree_of(&mid.table_pages, &mid.spaces).entry(base, i),
+            forall|i: usize| i < ENTRIES && i != e ==> #[trigger] tree_of(&post.table_pages, &post.spaces).entry(base, i) == tree_of(&mid.table_pages, &mid.spaces).entry(base, i),
             tree_of(&post.table_pages, &post.spaces).entry(base, e).is_empty(),
     {
         reveal(entries_cleared);
         let (m, b) = (tree_of(&mid.table_pages, &mid.spaces), tree_of(&post.table_pages, &post.spaces));
-        assert forall|i: usize| i < 512 && i != e implies #[trigger] b.entry(base, i) == m.entry(base, i) by {}
+        assert forall|i: usize| i < ENTRIES && i != e implies #[trigger] b.entry(base, i) == m.entry(base, i) by {}
     }
 
     /// A table page's first node lies in the list's range.
@@ -4187,7 +4187,7 @@ impl CapKernel {
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
         ensures
-            final(steps).count <= old(steps).count + 512,
+            final(steps).count <= old(steps).count + ENTRIES,
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
             ret == old(self).can_unmap_table(root, from, base),
@@ -4203,7 +4203,7 @@ impl CapKernel {
             Some(found) => found,
             None => { return false; },
         };
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         if !self.blocks.page_tracked(page) || self.flush_epoch == usize::MAX {
             return false;
         }
@@ -4229,7 +4229,7 @@ impl CapKernel {
         let ghost start = steps.count;
         let mut unlinked: usize = 0;
         let mut e: usize = 0;
-        while unlinked != TABLE_SLICE_BUDGET && e != 512 && self.flush_epoch != usize::MAX
+        while unlinked != TABLE_SLICE_BUDGET && e != ENTRIES && self.flush_epoch != usize::MAX
             invariant
                 start == old(steps).count,
                 steps.count == start + e,
@@ -4249,7 +4249,7 @@ impl CapKernel {
                 self.blocks.tracks_addr(base),
                 level == a.record(base).level,
                 unlinked <= TABLE_SLICE_BUDGET,
-                e <= 512,
+                e <= ENTRIES,
                 nodes.len() == unlinked,
                 Self::table_unmaps_kept(pre, *self, base, unlinked as int),
                 Self::table_mapping_steps(pre, *self, base, nodes, states),
@@ -4257,7 +4257,7 @@ impl CapKernel {
                 unlinked == 0 ==> *self == pre,
                 unlinked > 0 ==> exists|i: usize| #[trigger] frame_slot(a, base, i),
                 forall|j: usize| j < e ==> !#[trigger] frame_slot(tree_of(&self.table_pages, &self.spaces), base, j),
-            decreases TABLE_SLICE_BUDGET - unlinked, 512 - e,
+            decreases TABLE_SLICE_BUDGET - unlinked, ENTRIES - e,
         {
             proof {
                 steps.step();
@@ -4276,7 +4276,7 @@ impl CapKernel {
                 e = e + 1;
                 continue;
             }
-            let n = base + ((e + 1) / NODES_PER_PAGE) * 4096 + (e + 1) % NODES_PER_PAGE;
+            let n = base + ((e + 1) / NODES_PER_PAGE) * PAGE_SZ + (e + 1) % NODES_PER_PAGE;
             proof {
                 assert(n == mapping_node(base, e));
                 assert(mid.mappings@.contains_key(n));
@@ -4301,7 +4301,7 @@ impl CapKernel {
                 assert forall|j: usize| j < e + 1 implies !#[trigger] frame_slot(b, base, j) by {
                     assert(b.record(base).level == m.record(base).level);
                     if j != e {
-                        if j < 512 {
+                        if j < ENTRIES {
                             assert(b.entry(base, j) == m.entry(base, j));
                         }
                         assert(!frame_slot(m, base, j));
@@ -4320,9 +4320,9 @@ impl CapKernel {
         proof {
             if unlinked == 0 {
                 assert(*self == pre);
-                assert(e == 512);
+                assert(e == ENTRIES);
                 assert forall|j: usize| !#[trigger] frame_slot(a, base, j) by {
-                    if j < 512 {
+                    if j < ENTRIES {
                         assert(!frame_slot(tree_of(&self.table_pages, &self.spaces), base, j));
                     }
                 }
@@ -4342,7 +4342,7 @@ impl CapKernel {
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
         ensures
-            final(steps).count <= old(steps).count + 512 + 512,
+            final(steps).count <= old(steps).count + ENTRIES + ENTRIES,
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
             ret == old(self).can_slice_table(root, from, base),
@@ -4369,8 +4369,8 @@ impl CapKernel {
             !(ret is Unlinked),
             !(ret is Slice),
             !(ret is Freed) ==> *final(self) == *old(self),
-            !(old(self).can_retype_under(root, from, base, 0) && old(self).frame_is_dead(base / 4096)) ==> ret is Refused,
-            ret is Again ==> !old(self).acknowledged(base / 4096),
+            !(old(self).can_retype_under(root, from, base, 0) && old(self).frame_is_dead(base / PAGE_SZ)) ==> ret is Refused,
+            ret is Again ==> !old(self).acknowledged(base / PAGE_SZ),
             ret is Freed ==> old(self).frame_freed(*final(self), c, root, from, base),
     {
         let ghost pre = *old(self);
@@ -4378,7 +4378,7 @@ impl CapKernel {
             Some(found) => found,
             None => { return ReclaimStep::Refused; },
         };
-        let page = base / 4096;
+        let page = base / PAGE_SZ;
         if !self.blocks.page_tracked(page) {
             return ReclaimStep::Refused;
         }
@@ -4448,12 +4448,12 @@ impl CapKernel {
             !old(self).can_retype_under(root, from, base, order) ==> ret is Refused,
             ret is Again ==> {
                 let level = if order == 9 { Large::Two } else { Large::One };
-                !old(self).region_acknowledged(level, base / 4096 / level_pages(level))
+                !old(self).region_acknowledged(level, base / PAGE_SZ / level_pages(level))
             },
             ret is Freed ==> {
                 let untyped = old(self).tables.node_of(root, from);
                 let level = if order == 9 { Large::Two } else { Large::One };
-                let r = base / 4096 / level_pages(level);
+                let r = base / PAGE_SZ / level_pages(level);
                 &&& order == 9 || order == 18
                 &&& r < level_regions(level)
                 &&& old(self).view().holds_right(root, untyped, Right::Retype)
@@ -4551,7 +4551,7 @@ impl CapKernel {
                     assert(post.blocks.regions_1g@ =~= pre.blocks.regions_1g@.update(r as int, post.blocks.regions_1g@[r as int]));
                 },
             }
-            assert forall|i: usize| #[trigger] post.frames@.contains_key(i) implies post.frames@[i].addr() == i * 4096 by {
+            assert forall|i: usize| #[trigger] post.frames@.contains_key(i) implies post.frames@[i].addr() == i * PAGE_SZ by {
                 assert(pre.frames@.contains_key(i));
             }
             assert forall|br: BlockRef, i: usize| #[trigger] post.holders@.contains_key(br) && #[trigger] block_has_page(br, i)
@@ -4591,7 +4591,7 @@ impl CapKernel {
             assert(block_has_page(BlockRef::Small(page), page));
             perm = self.frames.borrow_mut().tracked_remove(page);
             perm.leak_contents();
-            assert(perm.addr() == page * 4096);
+            assert(perm.addr() == page * PAGE_SZ);
         }
         let tracked mut perms = Map::<usize, PagePerm4k>::tracked_empty();
         proof {
@@ -4603,9 +4603,9 @@ impl CapKernel {
         proof {
             let post = *self;
             assert forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) && pre.blocks.tracks_addr(p)
-                implies !pre.blocks.in_block(page as int, (p / 4096) as int) by {
-                if pre.blocks.in_block(page as int, (p / 4096) as int) {
-                    assert((p / 4096) as int == page as int);
+                implies !pre.blocks.in_block(page as int, (p / PAGE_SZ) as int) by {
+                if pre.blocks.in_block(page as int, (p / PAGE_SZ) as int) {
+                    assert((p / PAGE_SZ) as int == page as int);
                 }
             }
             Self::lemma_small_freed(pre, post, page);
