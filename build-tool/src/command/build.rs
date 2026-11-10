@@ -1,5 +1,5 @@
-//! `atmo build`: the workspace build the gate runs, and the build of the loader and the user code
-//! for aarch64.
+//! `atmo build`: the workspace build the gate runs, and the build of the loader, the kernel and the
+//! user code for aarch64.
 
 use std::path::Path;
 use std::process::Stdio;
@@ -72,8 +72,16 @@ pub(super) async fn gate_build(project: &ProjectHandle) -> Result<String> {
     ))
 }
 
-/// The loader as an aarch64 EFI application, and dom0 and the user program that links asys as
-/// aarch64 ELFs. The kernel is not built: it has no virt machine.
+/// The ELFs the aarch64 build makes, each with its target spec: the kernel, dom0 and the user program
+/// that links asys.
+const AARCH64_ELF_SPECS: [(&str, &str); 3] = [
+    ("kernel", "kernel/src/aarch64-unknown-aloader.json"),
+    ("dom0", "dom0/src/aarch64-unknown-aloader.json"),
+    (PAYLOAD, "user/aarch64-unknown-aloader.json"),
+];
+
+/// The loader as an aarch64 EFI application, and the kernel, dom0 and the user program that links
+/// asys as aarch64 ELFs.
 async fn aarch64_build(project: &ProjectHandle) -> Result<String> {
     let root = project.root();
     let loader = project
@@ -82,20 +90,22 @@ async fn aarch64_build(project: &ProjectHandle) -> Result<String> {
         .await
         .context("loader")?
         .context("loader produced no executable")?;
-    let dom0 = project
-        .dom0()
-        .build(&spec(&root, "dom0/src/aarch64-unknown-aloader.json"))
-        .await
-        .context("dom0")?
-        .context("dom0 produced no executable")?;
-    let hello = project
-        .user(PAYLOAD)
-        .build(&spec(&root, "user/aarch64-unknown-aloader.json"))
-        .await
-        .context("hello")?
-        .context("hello produced no executable")?;
+    let mut images = vec![(loader, Image::EfiApplication)];
+    for (name, target) in AARCH64_ELF_SPECS {
+        let package = match name {
+            "kernel" => project.kernel(),
+            "dom0" => project.dom0(),
+            user => project.user(user),
+        };
+        let path = package
+            .build(&spec(&root, target))
+            .await
+            .context(name)?
+            .with_context(|| format!("{name} produced no executable"))?;
+        images.push((path, Image::Elf));
+    }
     let mut lines = Vec::new();
-    for (path, image) in [(loader, Image::EfiApplication), (dom0, Image::Elf), (hello, Image::Elf)] {
+    for (path, image) in images {
         let file = Command::new("file")
             .arg(&path)
             .output()
@@ -179,14 +189,24 @@ mod tests {
 
     use super::*;
 
+    /// The aarch64 build makes the kernel, then dom0 and the user program, each from the spec beside
+    /// its x86 one.
+    #[test]
+    fn the_aarch64_build_lists_the_kernel_with_dom0_and_the_payload() {
+        assert_eq!(
+            AARCH64_ELF_SPECS,
+            [
+                ("kernel", "kernel/src/aarch64-unknown-aloader.json"),
+                ("dom0", "dom0/src/aarch64-unknown-aloader.json"),
+                ("hello", "user/aarch64-unknown-aloader.json"),
+            ]
+        );
+    }
+
     /// The aarch64 spec beside each x86 spec: no OS, no red zone, soft float, static, panic abort.
     #[test]
     fn aarch64_specs_have_the_x86_specs_role() {
-        for path in [
-            "kernel/src/aarch64-unknown-aloader.json",
-            "dom0/src/aarch64-unknown-aloader.json",
-            "user/aarch64-unknown-aloader.json",
-        ] {
+        for (_, path) in AARCH64_ELF_SPECS {
             let text = spec_text(path);
             for needle in [
                 "\"arch\": \"aarch64\"",
