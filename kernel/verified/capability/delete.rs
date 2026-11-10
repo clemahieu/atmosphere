@@ -55,6 +55,85 @@ impl CapKernel {
         &&& discharges(pre.view(), post.view(), root, Effect::Local)
     }
 
+    /// What deleting node n did to the object it named: a frame capability's block, or a space, thread
+    /// or process capability's object's block, has one reference fewer, with n gone from its holders and
+    /// every record as it was; any other node held nothing, so the blocks and the objects are as they
+    /// were.
+    pub open spec fn object_dropped(pre: Self, post: Self, n: usize) -> bool {
+        &&& pre.is_cap(n) && pre.payload_of(n).kind is Frame ==> {
+            let br = block_ref(&pre.blocks, pre.payload_of(n).base / 4096);
+            &&& blocks_refs_changed(
+                &pre.blocks,
+                &post.blocks,
+                br,
+                (block_refs(&pre.blocks, br) - 1) as usize,
+                block_dead(&pre.blocks, br) || block_refs(&pre.blocks, br) == 1,
+            )
+            &&& post.holders@ == pre.holders@.insert(br, pre.holders@[br].remove(n))
+            &&& post.spaces == pre.spaces
+            &&& post.threads == pre.threads
+            &&& post.processes == pre.processes
+        }
+        &&& pre.is_cap(n) && pre.payload_of(n).kind is Space ==> {
+            let s = pre.payload_of(n).base;
+            let br = BlockRef::Small(s / 4096);
+            &&& blocks_refs_changed(
+                &pre.blocks,
+                &post.blocks,
+                br,
+                (block_refs(&pre.blocks, br) - 1) as usize,
+                block_dead(&pre.blocks, br) || block_refs(&pre.blocks, br) == 1,
+            )
+            &&& post.holders == pre.holders
+            &&& post.spaces.roots == pre.spaces.roots
+            &&& post.spaces.records == pre.spaces.records
+            &&& post.spaces.loaded == pre.spaces.loaded
+            &&& post.spaces.kernel_entries == pre.spaces.kernel_entries
+            &&& post.spaces.bound == pre.spaces.bound
+            &&& post.spaces.holders@ == pre.spaces.holders@.insert(s, pre.spaces.holders@[s].remove(n))
+            &&& post.threads == pre.threads
+            &&& post.processes == pre.processes
+        }
+        &&& pre.is_cap(n) && pre.payload_of(n).kind is Thread ==> {
+            let t = pre.payload_of(n).base;
+            let br = BlockRef::Small(t / 4096);
+            &&& blocks_refs_changed(
+                &pre.blocks,
+                &post.blocks,
+                br,
+                (block_refs(&pre.blocks, br) - 1) as usize,
+                block_dead(&pre.blocks, br) || block_refs(&pre.blocks, br) == 1,
+            )
+            &&& post.holders == pre.holders
+            &&& post.spaces == pre.spaces
+            &&& post.threads.records == pre.threads.records
+            &&& post.threads.holders@ == pre.threads.holders@.insert(t, pre.threads.holders@[t].remove(n))
+            &&& post.processes == pre.processes
+        }
+        &&& pre.is_cap(n) && pre.payload_of(n).kind is Process ==> {
+            let p = pre.payload_of(n).base;
+            let br = BlockRef::Small(p / 4096);
+            &&& blocks_refs_changed(
+                &pre.blocks,
+                &post.blocks,
+                br,
+                (block_refs(&pre.blocks, br) - 1) as usize,
+                block_dead(&pre.blocks, br) || block_refs(&pre.blocks, br) == 1,
+            )
+            &&& post.holders == pre.holders
+            &&& post.spaces == pre.spaces
+            &&& post.threads == pre.threads
+            &&& post.processes.records == pre.processes.records
+            &&& post.processes.spare == pre.processes.spare
+            &&& post.processes.bound == pre.processes.bound
+            &&& post.processes.holders@ == pre.processes.holders@.insert(p, pre.processes.holders@[p].remove(n))
+        }
+        &&& !(pre.is_cap(n) && (pre.payload_of(n).kind is Frame || pre.payload_of(n).kind is Space || pre.payload_of(n).kind is Thread
+            || pre.payload_of(n).kind is Process))
+            ==> post.blocks == pre.blocks && post.holders == pre.holders && post.spaces == pre.spaces && post.threads == pre.threads
+            && post.processes == pre.processes
+    }
+
     /// Deletes the capability at a position: an index of the caller's table, at root, or of the table
     /// of a process the caller controls, live or dead. The position comes from user space, so it can
     /// be refused, and a refusal changes nothing.
@@ -71,6 +150,17 @@ impl CapKernel {
             ret is None ==> *final(self) == *old(self),
             ret is Some ==> ret.unwrap() == old(self).payload_of(old(self).cap_at(root, at)->0),
             ret is Some ==> Self::cap_deleted_at(*old(self), *final(self), root, at),
+            ret is Some ==> Self::object_dropped(*old(self), *final(self), old(self).cap_at(root, at)->0),
+            final(self).flush_epoch == old(self).flush_epoch,
+            final(self).tlb == old(self).tlb,
+            final(self).iommus == old(self).iommus,
+            final(self).mapped == old(self).mapped,
+            final(self).tables == old(self).tables,
+            final(self).stale_epoch == old(self).stale_epoch,
+            final(self).table_pages == old(self).table_pages,
+            final(self).mappings == old(self).mappings,
+            final(self).zeroing == old(self).zeroing,
+            final(self).devices == old(self).devices,
             discharges(old(self).view(), final(self).view(), root, Effect::Local),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
@@ -159,78 +249,7 @@ impl CapKernel {
             post.list.pages@.dom() == pre.list.pages@.dom(),
             post.list.parent@ == pre.list.parent@,
             post.mappings == pre.mappings,
-            pre.is_cap(n) && pre.payload_of(n).kind is Frame ==> {
-                let br = block_ref(&pre.blocks, pre.payload_of(n).base / 4096);
-                &&& blocks_refs_changed(
-                    &pre.blocks,
-                    &post.blocks,
-                    br,
-                    (block_refs(&pre.blocks, br) - 1) as usize,
-                    block_dead(&pre.blocks, br) || block_refs(&pre.blocks, br) == 1,
-                )
-                &&& post.holders@ == pre.holders@.insert(br, pre.holders@[br].remove(n))
-                &&& post.spaces == pre.spaces
-                &&& post.threads == pre.threads
-                &&& post.processes == pre.processes
-            },
-            pre.is_cap(n) && pre.payload_of(n).kind is Space ==> {
-                let s = pre.payload_of(n).base;
-                let br = BlockRef::Small(s / 4096);
-                &&& blocks_refs_changed(
-                    &pre.blocks,
-                    &post.blocks,
-                    br,
-                    (block_refs(&pre.blocks, br) - 1) as usize,
-                    block_dead(&pre.blocks, br) || block_refs(&pre.blocks, br) == 1,
-                )
-                &&& post.holders == pre.holders
-                &&& post.spaces.roots == pre.spaces.roots
-                &&& post.spaces.records == pre.spaces.records
-                &&& post.spaces.loaded == pre.spaces.loaded
-                &&& post.spaces.kernel_entries == pre.spaces.kernel_entries
-                &&& post.spaces.bound == pre.spaces.bound
-                &&& post.spaces.holders@ == pre.spaces.holders@.insert(s, pre.spaces.holders@[s].remove(n))
-                &&& post.threads == pre.threads
-                &&& post.processes == pre.processes
-            },
-            pre.is_cap(n) && pre.payload_of(n).kind is Thread ==> {
-                let t = pre.payload_of(n).base;
-                let br = BlockRef::Small(t / 4096);
-                &&& blocks_refs_changed(
-                    &pre.blocks,
-                    &post.blocks,
-                    br,
-                    (block_refs(&pre.blocks, br) - 1) as usize,
-                    block_dead(&pre.blocks, br) || block_refs(&pre.blocks, br) == 1,
-                )
-                &&& post.holders == pre.holders
-                &&& post.spaces == pre.spaces
-                &&& post.threads.records == pre.threads.records
-                &&& post.threads.holders@ == pre.threads.holders@.insert(t, pre.threads.holders@[t].remove(n))
-                &&& post.processes == pre.processes
-            },
-            pre.is_cap(n) && pre.payload_of(n).kind is Process ==> {
-                let p = pre.payload_of(n).base;
-                let br = BlockRef::Small(p / 4096);
-                &&& blocks_refs_changed(
-                    &pre.blocks,
-                    &post.blocks,
-                    br,
-                    (block_refs(&pre.blocks, br) - 1) as usize,
-                    block_dead(&pre.blocks, br) || block_refs(&pre.blocks, br) == 1,
-                )
-                &&& post.holders == pre.holders
-                &&& post.spaces == pre.spaces
-                &&& post.threads == pre.threads
-                &&& post.processes.records == pre.processes.records
-                &&& post.processes.spare == pre.processes.spare
-                &&& post.processes.bound == pre.processes.bound
-                &&& post.processes.holders@ == pre.processes.holders@.insert(p, pre.processes.holders@[p].remove(n))
-            },
-            !(pre.is_cap(n) && (pre.payload_of(n).kind is Frame || pre.payload_of(n).kind is Space || pre.payload_of(n).kind is Thread
-                || pre.payload_of(n).kind is Process))
-                ==> post.blocks == pre.blocks && post.holders == pre.holders && post.spaces == pre.spaces && post.threads == pre.threads
-                && post.processes == pre.processes,
+            Self::object_dropped(pre, post, n),
         ensures
             holders_wf(&post.list, &post.tables, &post.blocks, &post.zeroing, post.holders@),
             zeroing_typed(&post.zeroing, &post.blocks),
