@@ -68,6 +68,11 @@ pub ghost struct State {
     pub waiting: Set<(ObjectId, ObjectId)>,
     /// The caller bound to each reply.
     pub bound: Map<ObjectId, ObjectId>,
+    /// (device space, frame): the device space maps the frame, so whoever sees the space reaches it.
+    /// See design/device-binding-under-the-space-capability/.
+    pub shares: Set<(ObjectId, ObjectId)>,
+    /// The device space each bound device is bound to, whose mappings its accesses go through.
+    pub binds: Map<ObjectId, ObjectId>,
     /// What a process can see of an object: a frame's bytes, a thread's registers, a notification's
     /// word.
     pub contents: spec_fn(ObjectId) -> Seq<u8>,
@@ -149,9 +154,22 @@ impl State {
         }
     }
 
-    /// The least set containing p and closed under direct reach through control.
+    /// p sees device space s: p reaches s directly, or reaches directly a device bound to s.
+    pub open spec fn sees(self, p: ObjectId, s: ObjectId) -> bool {
+        ||| self.direct(p, s)
+        ||| exists|d: ObjectId| #[trigger] self.binds.contains_key(d) && self.binds[d] == s && self.direct(p, d)
+    }
+
+    /// What p reaches through device spaces beyond its direct reach: the space a device it reaches is
+    /// bound to, and each frame a space it sees maps.
+    pub open spec fn shared(self, p: ObjectId, o: ObjectId) -> bool {
+        ||| exists|d: ObjectId| #[trigger] self.binds.contains_key(d) && self.binds[d] == o && self.direct(p, d)
+        ||| exists|s: ObjectId| #[trigger] self.shares.contains((s, o)) && self.sees(p, s)
+    }
+
+    /// The least set containing p and closed under direct and shared reach through control.
     pub open spec fn reach(self, p: ObjectId, o: ObjectId) -> bool {
-        exists|q: ObjectId, k: nat| #[trigger] self.controlled(p, q, k) && (o == q || self.direct(q, o))
+        exists|q: ObjectId, k: nat| #[trigger] self.controlled(p, q, k) && (o == q || self.direct(q, o) || self.shared(q, o))
     }
 
     /// o's contents differ between the two states.
@@ -200,6 +218,10 @@ pub ghost enum Effect {
     Retype { untyped: NodeId, object: ObjectId, into: Option<NodeId> },
     /// Unlink a block's hidden node, or a slice of a dead object's teardown, under an untyped held.
     Teardown { untyped: NodeId, object: ObjectId },
+    /// Map the frame capability `from`, which the caller holds, into the device space capability
+    /// `space` names, which it holds with the write right: a grant to whoever sees the space, whom the
+    /// caller does not pick. Otherwise a local step.
+    Share { space: NodeId, from: NodeId },
 }
 
 /// p has the authority e needs.
@@ -245,6 +267,11 @@ pub open spec fn authorized(s: State, p: ObjectId, e: Effect) -> bool {
             }
         },
         Effect::Teardown { untyped, .. } => s.holds_right(p, untyped, Right::Retype),
+        Effect::Share { space, from } => {
+            &&& s.holds_right(p, space, Right::Write)
+            &&& s.holds(p, from)
+            &&& s.names.contains_key(from)
+        },
     }
 }
 
@@ -265,7 +292,7 @@ pub open spec fn may_change(s: State, e: Effect, o: ObjectId) -> bool {
 /// e may remove capability n from the list.
 pub open spec fn may_remove(s: State, p: ObjectId, e: Effect, n: NodeId) -> bool {
     match e {
-        Effect::Local => s.commands(p, n),
+        Effect::Local | Effect::Share { .. } => s.commands(p, n),
         Effect::Deliver { granted, .. } => granted == Some(n),
         Effect::Revoke { cap } => exists|k: nat| k > 0 && #[trigger] s.descends(cap, n, k),
         Effect::Claim { from, .. } | Effect::Place { from, .. } => n == from,
@@ -276,9 +303,9 @@ pub open spec fn may_remove(s: State, p: ObjectId, e: Effect, n: NodeId) -> bool
 }
 
 /// e may add o to r's reach. Reach grows only by a grant from a holder, over an endpoint to the
-/// receiver or through control to the process controlled, or a retype from an untyped held. A claim
-/// moves only what the claimer's reach already contains, and a placement gives only what the placer's
-/// does.
+/// receiver, through control to the process controlled or through a device space to whoever sees it,
+/// or a retype from an untyped held. A claim moves only what the claimer's reach already contains, and
+/// a placement or a share gives only what the placer's or the mapper's does.
 pub open spec fn may_grow(s: State, p: ObjectId, e: Effect, r: ObjectId, o: ObjectId) -> bool {
     match e {
         Effect::Deliver { receiver, granted, .. } => {
@@ -291,6 +318,10 @@ pub open spec fn may_grow(s: State, p: ObjectId, e: Effect, r: ObjectId, o: Obje
             &&& s.reach(p, o)
         },
         Effect::Retype { untyped, object, .. } => o == object && s.reach(r, s.names[untyped]),
+        Effect::Share { space, .. } => {
+            &&& exists|q: ObjectId, k: nat| #[trigger] s.controlled(r, q, k) && s.sees(q, s.names[space])
+            &&& s.reach(p, o)
+        },
         _ => false,
     }
 }
@@ -321,7 +352,8 @@ pub open spec fn passes_right(pre: State, post: State, s: NodeId, x: NodeId) -> 
 pub open spec fn may_hold(pre: State, post: State, e: Effect, x: NodeId, r: Right) -> bool {
     &&& !pre.names.contains_key(x)
     &&& match e {
-        Effect::Local => exists|s: NodeId| #[trigger] passes_right(pre, post, s, x) && pre.rights.contains((s, r)),
+        Effect::Local | Effect::Share { .. } => exists|s: NodeId| #[trigger] passes_right(pre, post, s, x)
+            && pre.rights.contains((s, r)),
         Effect::Deliver { granted, .. } => {
             &&& granted is Some
             &&& passes_right(pre, post, granted->0, x)
@@ -370,6 +402,100 @@ pub open spec fn adds_no_waiter(pre: State, post: State) -> bool {
     forall|w: (ObjectId, ObjectId)| #[trigger] post.waiting.contains(w) ==> pre.waiting.contains(w)
 }
 
+/// What q sees in a, q or q2 sees in b, when b binds as a does and what q reaches directly in a, q or
+/// q2 reaches directly in b.
+proof fn lemma_sees_carries(a: State, b: State, q: ObjectId, q2: ObjectId, s: ObjectId)
+    requires
+        a.binds == b.binds,
+        forall|x: ObjectId| #[trigger] a.direct(q, x) ==> b.direct(q, x) || b.direct(q2, x),
+        a.sees(q, s),
+    ensures
+        b.sees(q, s) || b.sees(q2, s),
+{
+    if !a.direct(q, s) {
+        let d = choose|d: ObjectId| #[trigger] a.binds.contains_key(d) && a.binds[d] == s && a.direct(q, d);
+        assert(b.direct(q, d) || b.direct(q2, d));
+        assert(b.binds.contains_key(d) && b.binds[d] == s);
+    }
+}
+
+/// So what q reaches through a space in a, q or q2 does in b, when b's spaces map what a's do.
+proof fn lemma_shared_carries(a: State, b: State, q: ObjectId, q2: ObjectId, o: ObjectId)
+    requires
+        a.shares == b.shares,
+        a.binds == b.binds,
+        forall|x: ObjectId| #[trigger] a.direct(q, x) ==> b.direct(q, x) || b.direct(q2, x),
+        a.shared(q, o),
+    ensures
+        b.shared(q, o) || b.shared(q2, o),
+{
+    if exists|d: ObjectId| #[trigger] a.binds.contains_key(d) && a.binds[d] == o && a.direct(q, d) {
+        let d = choose|d: ObjectId| #[trigger] a.binds.contains_key(d) && a.binds[d] == o && a.direct(q, d);
+        assert(b.direct(q, d) || b.direct(q2, d));
+        assert(b.binds.contains_key(d) && b.binds[d] == o);
+    } else {
+        let s = choose|s: ObjectId| #[trigger] a.shares.contains((s, o)) && a.sees(q, s);
+        assert(b.shares.contains((s, o)));
+        lemma_sees_carries(a, b, q, q2, s);
+    }
+}
+
+/// q's direct or shared edge to o in a is q's or q2's in b, under the same conditions.
+proof fn lemma_edge_carries(a: State, b: State, q: ObjectId, q2: ObjectId, o: ObjectId)
+    requires
+        a.shares == b.shares,
+        a.binds == b.binds,
+        forall|x: ObjectId| #[trigger] a.direct(q, x) ==> b.direct(q, x) || b.direct(q2, x),
+        a.direct(q, o) || a.shared(q, o),
+    ensures
+        b.direct(q, o) || b.shared(q, o) || b.direct(q2, o) || b.shared(q2, o),
+{
+    if a.shared(q, o) {
+        lemma_shared_carries(a, b, q, q2, o);
+    }
+}
+
+/// A process that holds nothing and maps nothing reaches nothing, directly or through a space.
+proof fn lemma_empty_reaches_nothing(s: State, q: ObjectId, o: ObjectId)
+    requires
+        forall|x: NodeId| !#[trigger] s.held.contains((q, x)),
+        forall|x: ObjectId| !#[trigger] s.maps.contains((q, x)),
+    ensures
+        !s.direct(q, o),
+        !s.shared(q, o),
+{
+    assert forall|x: ObjectId| !#[trigger] s.direct(q, x) by {
+        if s.direct(q, x) {
+            assert(!s.maps.contains((q, x)));
+            let (t, y, i) = choose|t: NodeId, y: NodeId, i: nat| #[trigger] s.descends(t, y, i)
+                && s.holds(q, t) && s.covers(y, x);
+            assert(s.held.contains((q, t)));
+        }
+    }
+    lemma_no_direct_no_shared(s, q, o);
+}
+
+/// A process that reaches nothing directly reaches nothing through a space either.
+proof fn lemma_no_direct_no_shared(s: State, q: ObjectId, o: ObjectId)
+    requires
+        forall|x: ObjectId| !#[trigger] s.direct(q, x),
+    ensures
+        !s.shared(q, o),
+{
+    if s.shared(q, o) {
+        if exists|d: ObjectId| #[trigger] s.binds.contains_key(d) && s.binds[d] == o && s.direct(q, d) {
+            let d = choose|d: ObjectId| #[trigger] s.binds.contains_key(d) && s.binds[d] == o && s.direct(q, d);
+            assert(s.direct(q, d));
+        } else {
+            let x = choose|x: ObjectId| #[trigger] s.shares.contains((x, o)) && s.sees(q, x);
+            if !s.direct(q, x) {
+                let d = choose|d: ObjectId| #[trigger] s.binds.contains_key(d) && s.binds[d] == x && s.direct(q, d);
+                assert(s.direct(q, d));
+            }
+        }
+    }
+}
+
 /// post is pre with capability n added as a child of c, which p holds, in a slot of d, covering only
 /// what c covers. `live` says which nodes the list holds, and n is not among them.
 pub open spec fn places_node(
@@ -398,6 +524,8 @@ pub open spec fn places_node(
     &&& forall|x: NodeId, r: Right| x != n ==> #[trigger] post.rights.contains((x, r)) == pre.rights.contains((x, r))
     &&& forall|o: ObjectId| #[trigger] post.covers(n, o) ==> pre.covers(c, o)
     &&& post.maps == pre.maps
+    &&& post.shares == pre.shares
+    &&& post.binds == pre.binds
     &&& adds_no_waiter(pre, post)
     &&& forall|o: ObjectId| #[trigger] (post.contents)(o) == (pre.contents)(o)
 }
@@ -503,6 +631,8 @@ pub open spec fn unbinds(pre: State, post: State, t: ObjectId, b: NodeId) -> boo
     &&& post.pages == pre.pages
     &&& post.rights == pre.rights
     &&& post.maps == pre.maps
+    &&& post.shares == pre.shares
+    &&& post.binds == pre.binds
     &&& adds_no_waiter(pre, post)
     &&& forall|o: ObjectId| #[trigger] (post.contents)(o) == (pre.contents)(o)
 }
@@ -725,6 +855,29 @@ pub proof fn lemma_adds_child_direct(
     }
 }
 
+/// Nor through a space: the spaces and their bindings are pre's.
+proof fn lemma_adds_child_edge(
+    pre: State,
+    post: State,
+    p: ObjectId,
+    c: NodeId,
+    n: NodeId,
+    live: spec_fn(NodeId) -> bool,
+    q: ObjectId,
+    o: ObjectId,
+)
+    requires
+        adds_node(pre, post, p, c, n, live),
+        post.direct(q, o) || post.shared(q, o),
+    ensures
+        pre.direct(q, o) || pre.shared(q, o),
+{
+    assert forall|x: ObjectId| #[trigger] post.direct(q, x) implies pre.direct(q, x) || pre.direct(q, x) by {
+        lemma_adds_child_direct(pre, post, p, c, n, live, q, x);
+    }
+    lemma_edge_carries(post, pre, q, q, o);
+}
+
 proof fn lemma_adds_child_controlled(
     pre: State,
     post: State,
@@ -779,10 +932,11 @@ proof fn lemma_adds_child_reach(
     ensures
         pre.reach(r, o),
 {
-    let (q, k) = choose|q: ObjectId, k: nat| #[trigger] post.controlled(r, q, k) && (o == q || post.direct(q, o));
+    let (q, k) = choose|q: ObjectId, k: nat| #[trigger] post.controlled(r, q, k)
+        && (o == q || post.direct(q, o) || post.shared(q, o));
     lemma_adds_child_controlled(pre, post, p, c, n, live, r, q, k);
     if o != q {
-        lemma_adds_child_direct(pre, post, p, c, n, live, q, o);
+        lemma_adds_child_edge(pre, post, p, c, n, live, q, o);
     }
     assert(pre.controlled(r, q, k));
 }
@@ -922,25 +1076,33 @@ proof fn lemma_places_child_reach(
         exists|k: nat| #[trigger] pre.controlled(r, d, k),
         pre.reach(p, o),
 {
-    let (q, k) = choose|q: ObjectId, k: nat| #[trigger] post.controlled(r, q, k) && (o == q || post.direct(q, o));
+    let (q, k) = choose|q: ObjectId, k: nat| #[trigger] post.controlled(r, q, k)
+        && (o == q || post.direct(q, o) || post.shared(q, o));
     lemma_places_child_controlled(pre, post, p, d, c, n, live, r, q, k);
-    if o != q {
-        lemma_places_node_direct(pre, post, p, d, c, n, live, q, o);
-    }
     assert(pre.controlled(p, p, 0));
-    if pre.covers(c, o) {
-        assert(pre.descends(c, c, 0));
-        assert(pre.direct(p, o));
-        assert(pre.reach(p, o));
+    let q2 = if q == d { p } else { q };
+    if o != q {
+        assert forall|x: ObjectId| #[trigger] post.direct(q, x) implies pre.direct(q, x) || pre.direct(q2, x) by {
+            lemma_places_node_direct(pre, post, p, d, c, n, live, q, x);
+            if q == d && pre.covers(c, x) {
+                assert(pre.descends(c, c, 0));
+            }
+        }
+        lemma_edge_carries(post, pre, q, q2, o);
+        if pre.direct(p, o) || pre.shared(p, o) {
+            assert(pre.reach(p, o));
+        }
     }
     if pre.controlled(r, q, k) {
         assert(o != q);
-        assert(!pre.direct(q, o));
+        assert(!(pre.direct(q, o) || pre.shared(q, o)));
         assert(q == d);
         assert(pre.controlled(r, d, k));
     } else {
         let j = choose|j: nat| #[trigger] pre.controlled(p, q, j);
-        assert(pre.controlled(p, q, j));
+        if o == q || pre.direct(q, o) || pre.shared(q, o) {
+            assert(pre.controlled(p, q, j) && (o == q || pre.direct(q, o) || pre.shared(q, o)));
+        }
         assert(pre.reach(p, o));
     }
 }
@@ -1009,6 +1171,10 @@ pub open spec fn adds_held(pre: State, post: State, p: ObjectId, c: NodeId, n: N
     &&& post.pages.contains_key(n)
     &&& !post.rights.contains((n, Right::Control))
     &&& post.maps == pre.maps
+    &&& post.shares == pre.shares
+    &&& post.binds == pre.binds
+    &&& forall|s: ObjectId, o: ObjectId| #[trigger] post.shares.contains((s, o)) ==> !post.covers(n, s)
+    &&& forall|d: ObjectId| #[trigger] post.binds.contains_key(d) ==> !post.covers(n, d)
     &&& post.process_of == pre.process_of
 }
 
@@ -1125,6 +1291,41 @@ proof fn lemma_adds_held_direct(
     }
 }
 
+/// What a process reaches through a space in post it did in pre: the new capability covers no space
+/// that maps anything and no bound device.
+proof fn lemma_adds_held_shared(
+    pre: State,
+    post: State,
+    p: ObjectId,
+    c: NodeId,
+    n: NodeId,
+    live: spec_fn(NodeId) -> bool,
+    q: ObjectId,
+    o: ObjectId,
+)
+    requires
+        adds_held(pre, post, p, c, n, live),
+        post.shared(q, o),
+    ensures
+        pre.shared(q, o),
+{
+    if exists|d: ObjectId| #[trigger] post.binds.contains_key(d) && post.binds[d] == o && post.direct(q, d) {
+        let d = choose|d: ObjectId| #[trigger] post.binds.contains_key(d) && post.binds[d] == o && post.direct(q, d);
+        lemma_adds_held_direct(pre, post, p, c, n, live, q, d);
+        assert(pre.binds.contains_key(d) && pre.binds[d] == o && pre.direct(q, d));
+    } else {
+        let s = choose|s: ObjectId| #[trigger] post.shares.contains((s, o)) && post.sees(q, s);
+        assert(!post.covers(n, s));
+        lemma_adds_held_direct(pre, post, p, c, n, live, q, s);
+        if !post.direct(q, s) {
+            let d = choose|d: ObjectId| #[trigger] post.binds.contains_key(d) && post.binds[d] == s && post.direct(q, d);
+            lemma_adds_held_direct(pre, post, p, c, n, live, q, d);
+            assert(pre.binds.contains_key(d) && pre.binds[d] == s && pre.direct(q, d));
+        }
+        assert(pre.shares.contains((s, o)) && pre.sees(q, s));
+    }
+}
+
 /// Adding a held capability without control grows reach by what it covers alone: everybody keeps
 /// what they reached, nobody gains anything else, and the holder reaches all it covers.
 pub proof fn lemma_adds_held_reach(pre: State, post: State, p: ObjectId, c: NodeId, n: NodeId, live: spec_fn(NodeId) -> bool)
@@ -1136,15 +1337,26 @@ pub proof fn lemma_adds_held_reach(pre: State, post: State, p: ObjectId, c: Node
         forall|o: ObjectId| #[trigger] post.covers(n, o) ==> post.reach(p, o),
 {
     assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) implies pre.reach(r, o) || post.covers(n, o) by {
-        let (q, k) = choose|q: ObjectId, k: nat| #[trigger] post.controlled(r, q, k) && (o == q || post.direct(q, o));
+        let (q, k) = choose|q: ObjectId, k: nat| #[trigger] post.controlled(r, q, k)
+            && (o == q || post.direct(q, o) || post.shared(q, o));
         lemma_adds_held_controlled(pre, post, p, c, n, live, r, q, k);
         lemma_adds_held_direct(pre, post, p, c, n, live, q, o);
+        if post.shared(q, o) {
+            lemma_adds_held_shared(pre, post, p, c, n, live, q, o);
+        }
         assert(pre.controlled(r, q, k));
     }
     assert forall|r: ObjectId, o: ObjectId| #[trigger] pre.reach(r, o) implies post.reach(r, o) by {
-        let (q, k) = choose|q: ObjectId, k: nat| #[trigger] pre.controlled(r, q, k) && (o == q || pre.direct(q, o));
+        let (q, k) = choose|q: ObjectId, k: nat| #[trigger] pre.controlled(r, q, k)
+            && (o == q || pre.direct(q, o) || pre.shared(q, o));
         lemma_adds_held_controlled(pre, post, p, c, n, live, r, q, k);
         lemma_adds_held_direct(pre, post, p, c, n, live, q, o);
+        if pre.shared(q, o) {
+            assert forall|x: ObjectId| #[trigger] pre.direct(q, x) implies post.direct(q, x) || post.direct(q, x) by {
+                lemma_adds_held_direct(pre, post, p, c, n, live, q, x);
+            }
+            lemma_shared_carries(pre, post, q, q, o);
+        }
         assert(post.controlled(r, q, k));
     }
     assert forall|o: ObjectId| #[trigger] post.covers(n, o) implies post.reach(p, o) by {
@@ -1216,13 +1428,14 @@ proof fn lemma_adds_object_reach(
     ensures
         pre.reach(r, o),
 {
-    let (q, k) = choose|q: ObjectId, k: nat| #[trigger] post.controlled(r, q, k) && (o == q || post.direct(q, o));
+    let (q, k) = choose|q: ObjectId, k: nat| #[trigger] post.controlled(r, q, k)
+        && (o == q || post.direct(q, o) || post.shared(q, o));
     lemma_adds_object_controlled(pre, post, p, c, n, live, object, r, q, k);
     if pre.controlled(r, q, k) {
         if o != q {
-            lemma_adds_child_direct(pre, post, p, c, n, live, q, o);
+            lemma_adds_child_edge(pre, post, p, c, n, live, q, o);
         }
-        assert(pre.controlled(r, q, k) && (o == q || pre.direct(q, o)));
+        assert(pre.controlled(r, q, k) && (o == q || pre.direct(q, o) || pre.shared(q, o)));
     } else {
         let j = (k - 1) as nat;
         assert(pre.controlled(r, p, j));
@@ -1233,13 +1446,9 @@ proof fn lemma_adds_object_reach(
             assert(pre.covers(c, o));
             assert(pre.direct(p, o));
         } else {
-            assert(post.direct(object, o));
-            assert(!post.maps.contains((object, o)));
-            let (t, x, i) = choose|t: NodeId, x: NodeId, i: nat| #[trigger] post.descends(t, x, i)
-                && post.holds(object, t) && post.covers(x, o);
-            assert(!post.held.contains((object, t)));
+            lemma_empty_reaches_nothing(post, object, o);
         }
-        assert(pre.controlled(r, p, j) && (o == p || pre.direct(p, o)));
+        assert(pre.controlled(r, p, j) && (o == p || pre.direct(p, o) || pre.shared(p, o)));
     }
 }
 
@@ -1399,6 +1608,44 @@ proof fn lemma_adds_bound_object_controlled(
     }
 }
 
+/// What a process covers directly in post it did in pre: the new capability is under c, and the
+/// binding covers nothing.
+proof fn lemma_adds_bound_object_direct(
+    pre: State,
+    post: State,
+    p: ObjectId,
+    c: NodeId,
+    n: NodeId,
+    cp: NodeId,
+    b: NodeId,
+    live: spec_fn(NodeId) -> bool,
+    object: ObjectId,
+    q: ObjectId,
+    o: ObjectId,
+)
+    requires
+        adds_bound_object(pre, post, p, c, n, cp, b, live, object),
+        post.direct(q, o),
+    ensures
+        pre.direct(q, o),
+{
+    let mid = without_binding(pre, post, c, n);
+    if !post.maps.contains((q, o)) {
+        let (t, x, d) = choose|t: NodeId, x: NodeId, d: nat| #[trigger] post.descends(t, x, d)
+            && post.holds(q, t) && post.covers(x, o);
+        assert(mid.names.contains_key(x));
+        if x != n {
+            assert(pre.names.contains_key(x));
+        }
+        lemma_adds_bound_object_descends(pre, post, p, c, n, cp, b, live, object, t, x, d);
+        assert(mid.descends(t, x, d) && mid.holds(q, t) && mid.covers(x, o));
+        assert(mid.direct(q, o));
+    } else {
+        assert(mid.maps.contains((q, o)));
+    }
+    lemma_adds_child_direct(pre, mid, p, c, n, live, q, o);
+}
+
 /// So a retype that adds such a bound object, by a holder of the untyped with the right, discharges
 /// it: nobody's reach grows at all.
 pub proof fn lemma_adds_bound_object_discharges_retype(
@@ -1437,23 +1684,17 @@ pub proof fn lemma_adds_bound_object_discharges_retype(
         }
     }
     assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) implies pre.reach(r, o) by {
-        let (q, k) = choose|q: ObjectId, k: nat| #[trigger] post.controlled(r, q, k) && (o == q || post.direct(q, o));
+        let (q, k) = choose|q: ObjectId, k: nat| #[trigger] post.controlled(r, q, k)
+            && (o == q || post.direct(q, o) || post.shared(q, o));
         lemma_adds_bound_object_controlled(pre, post, p, c, n, cp, b, live, object, r, q, k);
-        if o != q && !post.maps.contains((q, o)) {
-            let (t, x, d) = choose|t: NodeId, x: NodeId, d: nat| #[trigger] post.descends(t, x, d)
-                && post.holds(q, t) && post.covers(x, o);
-            assert(mid.names.contains_key(x));
-            if x != n {
-                assert(pre.names.contains_key(x));
+        if o != q {
+            assert forall|x: ObjectId| #[trigger] post.direct(q, x) implies pre.direct(q, x) || pre.direct(q, x) by {
+                lemma_adds_bound_object_direct(pre, post, p, c, n, cp, b, live, object, q, x);
             }
-            lemma_adds_bound_object_descends(pre, post, p, c, n, cp, b, live, object, t, x, d);
-            assert(mid.descends(t, x, d) && mid.holds(q, t) && mid.covers(x, o));
-            assert(mid.direct(q, o));
-            lemma_adds_child_direct(pre, mid, p, c, n, live, q, o);
-        } else if o != q {
-            assert(mid.maps.contains((q, o)));
+            assert(mid.shares == pre.shares && mid.binds == pre.binds);
+            lemma_edge_carries(post, pre, q, q, o);
         }
-        assert(pre.controlled(r, q, k) && (o == q || pre.direct(q, o)));
+        assert(pre.controlled(r, q, k) && (o == q || pre.direct(q, o) || pre.shared(q, o)));
     }
     assert forall|w: (ObjectId, ObjectId)| #[trigger] post.waiting.contains(w)
         implies pre.waiting.contains(w) && post.process_behind(w.1) == pre.process_behind(w.1) by {
@@ -1513,6 +1754,22 @@ proof fn lemma_unbinds_controlled(pre: State, post: State, t: ObjectId, b: NodeI
     }
 }
 
+/// What a process covers directly in post it did in pre: the parent map only lost a binding.
+proof fn lemma_unbinds_direct(pre: State, post: State, t: ObjectId, b: NodeId, q: ObjectId, o: ObjectId)
+    requires
+        unbinds(pre, post, t, b),
+        post.direct(q, o),
+    ensures
+        pre.direct(q, o),
+{
+    if !post.maps.contains((q, o)) {
+        let (x, y, d) = choose|x: NodeId, y: NodeId, d: nat| #[trigger] post.descends(x, y, d)
+            && post.holds(q, x) && post.covers(y, o);
+        lemma_unbinds_descends(pre, post, t, b, x, y, d);
+        assert(pre.descends(x, y, d) && pre.holds(q, x) && pre.covers(y, o));
+    }
+}
+
 /// Undoing a thread's binding is a step of revoking a capability its caller holds, when the thread
 /// holds nothing, maps nothing, and every capability naming it covers it: control over the thread
 /// stops reaching its process and reaches the thread alone, which the capability's holder reached
@@ -1533,28 +1790,24 @@ pub proof fn lemma_unbinds_discharges_revoke(pre: State, post: State, p: ObjectI
         assert((post.contents)(o) == (pre.contents)(o));
     }
     assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) implies pre.reach(r, o) by {
-        let (q, k) = choose|q: ObjectId, k: nat| #[trigger] post.controlled(r, q, k) && (o == q || post.direct(q, o));
+        let (q, k) = choose|q: ObjectId, k: nat| #[trigger] post.controlled(r, q, k)
+            && (o == q || post.direct(q, o) || post.shared(q, o));
         lemma_unbinds_controlled(pre, post, t, b, r, q, k);
-        if o != q && !post.maps.contains((q, o)) {
-            let (x, y, d) = choose|x: NodeId, y: NodeId, d: nat| #[trigger] post.descends(x, y, d)
-                && post.holds(q, x) && post.covers(y, o);
-            lemma_unbinds_descends(pre, post, t, b, x, y, d);
-            assert(pre.descends(x, y, d) && pre.holds(q, x) && pre.covers(y, o));
-            assert(pre.direct(q, o));
+        if o != q {
+            assert forall|x: ObjectId| #[trigger] post.direct(q, x) implies pre.direct(q, x) || pre.direct(q, x) by {
+                lemma_unbinds_direct(pre, post, t, b, q, x);
+            }
+            lemma_edge_carries(post, pre, q, q, o);
         }
         if !pre.controlled(r, q, k) {
             assert(q == t);
             let (m, j) = choose|m: ObjectId, j: nat| #[trigger] pre.controlled(r, m, j) && pre.direct(m, t);
             if o != t {
-                assert(!pre.maps.contains((t, o)));
-                assert(post.direct(t, o));
-                let (x, y, d) = choose|x: NodeId, y: NodeId, d: nat| #[trigger] post.descends(x, y, d)
-                    && post.holds(t, x) && post.covers(y, o);
-                assert(pre.held.contains((t, x)));
+                lemma_empty_reaches_nothing(post, t, o);
             }
-            assert(pre.controlled(r, m, j) && (o == m || pre.direct(m, o)));
+            assert(pre.controlled(r, m, j) && (o == m || pre.direct(m, o) || pre.shared(m, o)));
         } else {
-            assert(pre.controlled(r, q, k) && (o == q || pre.direct(q, o)));
+            assert(pre.controlled(r, q, k) && (o == q || pre.direct(q, o) || pre.shared(q, o)));
         }
     }
     assert forall|w: (ObjectId, ObjectId)| #[trigger] post.waiting.contains(w)
@@ -1579,6 +1832,8 @@ pub open spec fn removes_cap(pre: State, post: State, n: NodeId) -> bool {
     &&& forall|h: (NodeId, Right)| #[trigger] post.rights.contains(h) ==> pre.rights.contains(h)
     &&& post.parent == pre.parent
     &&& post.maps == pre.maps
+    &&& post.shares == pre.shares
+    &&& post.binds == pre.binds
     &&& post.process_of == pre.process_of
     &&& adds_no_waiter(pre, post)
     &&& forall|o: ObjectId| #[trigger] (post.contents)(o) == (pre.contents)(o)
@@ -1617,18 +1872,131 @@ pub proof fn lemma_removes_cap_discharges(pre: State, post: State, p: ObjectId, 
         assert(x == n);
     }
     assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) implies pre.reach(r, o) by {
-        let (q, k) = choose|q: ObjectId, k: nat| #[trigger] post.controlled(r, q, k) && (o == q || post.direct(q, o));
+        let (q, k) = choose|q: ObjectId, k: nat| #[trigger] post.controlled(r, q, k)
+            && (o == q || post.direct(q, o) || post.shared(q, o));
         lemma_removes_cap_controlled(pre, post, n, r, q, k);
-        if o != q && !post.maps.contains((q, o)) {
-            let (t, x, d) = choose|t: NodeId, x: NodeId, d: nat| #[trigger] post.descends(t, x, d)
-                && post.holds(q, t) && post.covers(x, o);
-            lemma_same_parent_same_descends(post, pre, t, x, d);
-            assert(post.held.contains((q, t)));
-            assert(pre.holds(q, t));
-            assert(pre.covers(x, o));
-            assert(pre.descends(t, x, d));
+        if o != q {
+            assert forall|x: ObjectId| #[trigger] post.direct(q, x) implies pre.direct(q, x) || pre.direct(q, x) by {
+                lemma_removes_cap_direct(pre, post, n, q, x);
+            }
+            lemma_edge_carries(post, pre, q, q, o);
         }
         assert(pre.controlled(r, q, k));
+    }
+}
+
+/// What a process covers directly in post it did in pre: post only lost capability n.
+proof fn lemma_removes_cap_direct(pre: State, post: State, n: NodeId, q: ObjectId, o: ObjectId)
+    requires
+        removes_cap(pre, post, n),
+        post.direct(q, o),
+    ensures
+        pre.direct(q, o),
+{
+    if !post.maps.contains((q, o)) {
+        let (t, x, d) = choose|t: NodeId, x: NodeId, d: nat| #[trigger] post.descends(t, x, d)
+            && post.holds(q, t) && post.covers(x, o);
+        lemma_same_parent_same_descends(post, pre, t, x, d);
+        assert(post.held.contains((q, t)));
+        assert(pre.holds(q, t));
+        assert(pre.covers(x, o));
+        assert(pre.descends(t, x, d));
+    }
+}
+
+/// post is pre with frame f mapped into device space s, and nothing else changed.
+pub open spec fn adds_share(pre: State, post: State, s: ObjectId, f: ObjectId) -> bool {
+    &&& post.held == pre.held
+    &&& post.names == pre.names
+    &&& post.pages == pre.pages
+    &&& post.rights == pre.rights
+    &&& post.parent == pre.parent
+    &&& post.maps == pre.maps
+    &&& post.process_of == pre.process_of
+    &&& post.waiting == pre.waiting
+    &&& post.shares == pre.shares.insert((s, f))
+    &&& post.binds == pre.binds
+    &&& forall|o: ObjectId| #[trigger] (post.contents)(o) == (pre.contents)(o)
+}
+
+/// What a process covers directly reads no space, so states that differ only there agree on it.
+proof fn lemma_same_authority_same_direct(a: State, b: State, q: ObjectId, o: ObjectId)
+    requires
+        a.held == b.held,
+        a.names == b.names,
+        a.pages == b.pages,
+        a.parent == b.parent,
+        a.maps == b.maps,
+        a.direct(q, o),
+    ensures
+        b.direct(q, o),
+{
+    if !a.maps.contains((q, o)) {
+        let (c, n, d) = choose|c: NodeId, n: NodeId, d: nat| #[trigger] a.descends(c, n, d)
+            && a.holds(q, c) && a.covers(n, o);
+        lemma_same_parent_same_descends(a, b, c, n, d);
+    }
+}
+
+/// Mapping a frame p reaches into the device space that capability `space` names, which p holds with
+/// the write right, discharges a share: what anyone gains is the frame, and only through seeing the
+/// space.
+pub proof fn lemma_adds_share_discharges(pre: State, post: State, p: ObjectId, space: NodeId, from: NodeId, f: ObjectId)
+    requires
+        adds_share(pre, post, pre.names[space], f),
+        authorized(pre, p, Effect::Share { space, from }),
+        pre.reach(p, f),
+    ensures
+        discharges(pre, post, p, Effect::Share { space, from }),
+{
+    let e = Effect::Share { space, from };
+    let sp = pre.names[space];
+    assert forall|o: ObjectId| #[trigger] State::changed(pre, post, o) implies may_change(pre, e, o) by {
+        assert((post.contents)(o) == (pre.contents)(o));
+    }
+    assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) && !pre.reach(r, o) implies may_grow(pre, p, e, r, o) by {
+        let (q, k) = choose|q: ObjectId, k: nat| #[trigger] post.controlled(r, q, k)
+            && (o == q || post.direct(q, o) || post.shared(q, o));
+        lemma_same_authority_same_controlled(post, pre, r, q, k);
+        assert forall|x: ObjectId| #[trigger] post.direct(q, x) implies pre.direct(q, x) by {
+            lemma_same_authority_same_direct(post, pre, q, x);
+        }
+        assert(o != q && !pre.direct(q, o) && !pre.shared(q, o));
+        if exists|d: ObjectId| #[trigger] post.binds.contains_key(d) && post.binds[d] == o && post.direct(q, d) {
+            let d = choose|d: ObjectId| #[trigger] post.binds.contains_key(d) && post.binds[d] == o && post.direct(q, d);
+            assert(pre.binds.contains_key(d) && pre.binds[d] == o && pre.direct(q, d));
+        } else {
+            let t = choose|t: ObjectId| #[trigger] post.shares.contains((t, o)) && post.sees(q, t);
+            if !post.direct(q, t) {
+                let d = choose|d: ObjectId| #[trigger] post.binds.contains_key(d) && post.binds[d] == t && post.direct(q, d);
+                assert(pre.binds.contains_key(d) && pre.binds[d] == t && pre.direct(q, d));
+            }
+            assert(pre.sees(q, t));
+            if pre.shares.contains((t, o)) {
+                assert(pre.shared(q, o));
+            }
+            assert(t == sp && o == f);
+            assert(pre.controlled(r, q, k) && pre.sees(q, sp));
+        }
+    }
+}
+
+/// A step that discharges a local one and is a share's by who may take it discharges the share: it
+/// grows no reach and gives no right a local step may not.
+pub proof fn lemma_local_is_share(pre: State, post: State, p: ObjectId, space: NodeId, from: NodeId)
+    requires
+        discharges(pre, post, p, Effect::Local),
+        authorized(pre, p, Effect::Share { space, from }),
+    ensures
+        discharges(pre, post, p, Effect::Share { space, from }),
+{
+    let e = Effect::Share { space, from };
+    assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) && !pre.reach(r, o) implies may_grow(pre, p, e, r, o) by {
+        assert(may_grow(pre, p, Effect::Local, r, o));
+    }
+    assert forall|x: NodeId, r: Right| #[trigger] post.rights.contains((x, r)) && post.names.contains_key(x)
+        implies (pre.rights.contains((x, r)) && pre.names.contains_key(x)) || may_hold(pre, post, e, x, r) by {
+        assert((pre.rights.contains((x, r)) && pre.names.contains_key(x)) || may_hold(pre, post, Effect::Local, x, r));
     }
 }
 
@@ -1652,6 +2020,8 @@ pub open spec fn simulates(a: State, b: State, live: spec_fn(NodeId) -> bool, f:
         &&& b.parent[f(x)] == f(a.parent[x])
     }
     &&& a.maps == b.maps
+    &&& a.shares == b.shares
+    &&& a.binds == b.binds
     &&& a.process_of == b.process_of
     &&& adds_no_waiter(b, a)
 }
@@ -1724,9 +2094,34 @@ pub proof fn lemma_simulates_reach(
     ensures
         b.reach(r, o),
 {
-    let (q, k) = choose|q: ObjectId, k: nat| #[trigger] a.controlled(r, q, k) && (o == q || a.direct(q, o));
+    let (q, k) = choose|q: ObjectId, k: nat| #[trigger] a.controlled(r, q, k)
+        && (o == q || a.direct(q, o) || a.shared(q, o));
     lemma_simulates_controlled(a, b, live, f, r, q, k);
-    if o != q && !a.maps.contains((q, o)) {
+    if o != q {
+        assert forall|x: ObjectId| #[trigger] a.direct(q, x) implies b.direct(q, x) || b.direct(q, x) by {
+            lemma_simulates_direct(a, b, live, f, q, x);
+        }
+        lemma_edge_carries(a, b, q, q, o);
+    }
+    assert(b.controlled(r, q, k));
+}
+
+/// What a process covers directly in a it does in b.
+proof fn lemma_simulates_direct(
+    a: State,
+    b: State,
+    live: spec_fn(NodeId) -> bool,
+    f: spec_fn(NodeId) -> NodeId,
+    q: ObjectId,
+    o: ObjectId,
+)
+    requires
+        simulates(a, b, live, f),
+        a.direct(q, o),
+    ensures
+        b.direct(q, o),
+{
+    if !a.maps.contains((q, o)) {
         let (t, x, d) = choose|t: NodeId, x: NodeId, d: nat| #[trigger] a.descends(t, x, d)
             && a.holds(q, t) && a.covers(x, o);
         assert(a.names.contains_key(x));
@@ -1737,7 +2132,6 @@ pub proof fn lemma_simulates_reach(
         assert(b.covers(f(x), o));
         assert(b.descends(f(t), f(x), d));
     }
-    assert(b.controlled(r, q, k));
 }
 
 /// a's authority is in b through a renaming f, as `simulates` says, except that a capability p holds in
@@ -1768,6 +2162,8 @@ pub open spec fn simulates_claim(
         &&& b.parent[f(x)] == f(a.parent[x])
     }
     &&& a.maps == b.maps
+    &&& a.shares == b.shares
+    &&& a.binds == b.binds
     &&& a.process_of == b.process_of
     &&& adds_no_waiter(b, a)
 }
@@ -1876,12 +2272,47 @@ pub proof fn lemma_simulates_claim_reach(
     ensures
         b.reach(r, o),
 {
-    let (x, k) = choose|x: ObjectId, k: nat| #[trigger] a.controlled(r, x, k) && (o == x || a.direct(x, o));
+    let (x, k) = choose|x: ObjectId, k: nat| #[trigger] a.controlled(r, x, k)
+        && (o == x || a.direct(x, o) || a.shared(x, o));
     lemma_simulates_claim_controlled(a, b, live, f, p, q, r, x, k);
     let j = choose|j: nat| #[trigger] b.controlled(r, x, j);
-    if o == x || a.maps.contains((x, o)) {
-        assert(b.controlled(r, x, j) && (o == x || b.direct(x, o)));
+    let x2 = if x == p { q } else { x };
+    if o == x {
+        assert(b.controlled(r, x, j) && (o == x || b.direct(x, o) || b.shared(x, o)));
     } else {
+        assert forall|y: ObjectId| #[trigger] a.direct(x, y) implies b.direct(x, y) || b.direct(x2, y) by {
+            lemma_simulates_claim_direct(a, b, live, f, p, q, x, y);
+        }
+        lemma_edge_carries(a, b, x, x2, o);
+        if b.direct(x, o) || b.shared(x, o) {
+            assert(b.controlled(r, x, j) && (o == x || b.direct(x, o) || b.shared(x, o)));
+        } else {
+            assert(x == p);
+            let j1 = (j + 1) as nat;
+            assert(b.controlled(r, q, j1));
+            assert(b.controlled(r, q, j1) && (o == q || b.direct(q, o) || b.shared(q, o)));
+        }
+    }
+}
+
+/// What a process covers directly in a it does in b, or, for p, q does: what p took from q.
+proof fn lemma_simulates_claim_direct(
+    a: State,
+    b: State,
+    live: spec_fn(NodeId) -> bool,
+    f: spec_fn(NodeId) -> NodeId,
+    p: ObjectId,
+    q: ObjectId,
+    x: ObjectId,
+    o: ObjectId,
+)
+    requires
+        simulates_claim(a, b, live, f, p, q),
+        a.direct(x, o),
+    ensures
+        b.direct(x, o) || (x == p && b.direct(q, o)),
+{
+    if !a.maps.contains((x, o)) {
         let (t, y, d) = choose|t: NodeId, y: NodeId, d: nat| #[trigger] a.descends(t, y, d)
             && a.holds(x, t) && a.covers(y, o);
         assert(a.names.contains_key(y));
@@ -1892,15 +2323,11 @@ pub proof fn lemma_simulates_claim_reach(
         if b.held.contains((x, f(t))) {
             assert(b.holds(x, f(t)));
             assert(b.direct(x, o));
-            assert(b.controlled(r, x, j) && (o == x || b.direct(x, o)));
         } else {
             assert(x == p);
             assert(b.held.contains((q, f(t))));
             assert(b.holds(q, f(t)));
             assert(b.direct(q, o));
-            let j1 = (j + 1) as nat;
-            assert(b.controlled(r, q, j1));
-            assert(b.controlled(r, q, j1) && (o == q || b.direct(q, o)));
         }
     }
 }
@@ -2035,36 +2462,29 @@ proof fn lemma_simulates_place_reach(
         exists|k: nat| #[trigger] b.controlled(r, d, k),
         b.reach(p, o),
 {
-    let (x, k) = choose|x: ObjectId, k: nat| #[trigger] a.controlled(r, x, k) && (o == x || a.direct(x, o));
+    let (x, k) = choose|x: ObjectId, k: nat| #[trigger] a.controlled(r, x, k)
+        && (o == x || a.direct(x, o) || a.shared(x, o));
     lemma_simulates_place_controlled(a, b, live, f, d, s, p, j, r, x, k);
-    if o != x && !a.maps.contains((x, o)) {
-        let (t, y, h) = choose|t: NodeId, y: NodeId, h: nat| #[trigger] a.descends(t, y, h)
-            && a.holds(x, t) && a.covers(y, o);
-        assert(a.names.contains_key(y));
-        assert(a.pages.contains_key(y));
-        assert(a.held.contains((x, t)));
-        lemma_simulates_claim_descends(a, b, live, f, d, s, t, y, h);
-        assert(b.covers(f(y), o));
-        if b.held.contains((x, f(t))) {
-            assert(b.holds(x, f(t)));
-            assert(b.direct(x, o));
-        } else {
-            assert(x == d);
-            assert(b.holds(s, f(t)));
-            assert(b.direct(s, o));
+    let x2 = if x == d { s } else { x };
+    if o != x {
+        assert forall|y: ObjectId| #[trigger] a.direct(x, y) implies b.direct(x, y) || b.direct(x2, y) by {
+            lemma_simulates_claim_direct(a, b, live, f, d, s, x, y);
         }
+        lemma_edge_carries(a, b, x, x2, o);
     }
-    assert(o == x || b.direct(x, o) || (x == d && b.direct(s, o)));
+    let ex = o == x || b.direct(x, o) || b.shared(x, o);
+    let es = o == s || b.direct(s, o) || b.shared(s, o);
+    assert(ex || (x == d && es));
     if b.controlled(r, x, k) {
-        assert(!(o == x || b.direct(x, o)));
+        assert(!ex);
         assert(b.controlled(r, d, k));
-        assert(b.controlled(p, s, j) && (o == s || b.direct(s, o)));
+        assert(b.controlled(p, s, j) && es);
     } else {
         let i = choose|i: nat| #[trigger] b.controlled(p, x, i);
-        if o == x || b.direct(x, o) {
-            assert(b.controlled(p, x, i) && (o == x || b.direct(x, o)));
+        if ex {
+            assert(b.controlled(p, x, i) && ex);
         } else {
-            assert(b.controlled(p, s, j) && (o == s || b.direct(s, o)));
+            assert(b.controlled(p, s, j) && es);
         }
     }
 }
@@ -2303,6 +2723,7 @@ pub proof fn lemma_reach_grows_only_by_grant_or_retype(
         !(e is Retype),
         !(e is Deliver && e->Deliver_granted is Some),
         !(e is Place),
+        !(e is Share),
     ensures
         pre.reach(r, o),
 {
@@ -2321,6 +2742,8 @@ pub open spec fn example() -> State {
         process_of: Map::empty(),
         waiting: Set::empty(),
         bound: Map::empty(),
+        shares: Set::empty(),
+        binds: Map::empty(),
         contents: |o: ObjectId| Seq::empty(),
     }
 }
@@ -2399,8 +2822,10 @@ pub proof fn lemma_example_reaches_its_block(o: ObjectId)
         assert(s.controlled(1, 1, 0));
     }
     if s.reach(1, o) {
-        let (q, k) = choose|q: ObjectId, k: nat| #[trigger] s.controlled(1, q, k) && (o == q || s.direct(q, o));
+        let (q, k) = choose|q: ObjectId, k: nat| #[trigger] s.controlled(1, q, k)
+            && (o == q || s.direct(q, o) || s.shared(q, o));
         lemma_example_controls_nothing(q, k);
+        assert(!s.shared(q, o));
         if !s.maps.contains((1usize, o)) && o != 1 {
             let (c, n, d) = choose|c: NodeId, n: NodeId, d: nat| #[trigger] s.descends(c, n, d)
                 && s.holds(1, c) && s.covers(n, o);
@@ -2426,6 +2851,8 @@ pub open spec fn control_example() -> State {
         process_of: map![3usize => 2usize],
         waiting: Set::empty(),
         bound: Map::empty(),
+        shares: Set::empty(),
+        binds: Map::empty(),
         contents: |o: ObjectId| Seq::empty(),
     }
 }
@@ -2611,6 +3038,8 @@ pub open spec fn retype_example() -> State {
         process_of: Map::empty(),
         waiting: Set::empty(),
         bound: Map::empty(),
+        shares: Set::empty(),
+        binds: Map::empty(),
         contents: |o: ObjectId| Seq::empty(),
     }
 }
@@ -2672,8 +3101,10 @@ pub proof fn lemma_retype_into_uncontrolled_process_does_not_discharge()
     assert(post.direct(2, EXAMPLE_PAST));
     assert(post.reach(1, EXAMPLE_PAST));
     if pre.reach(1, EXAMPLE_PAST) {
-        let (q, k) = choose|q: ObjectId, k: nat| #[trigger] pre.controlled(1, q, k) && (EXAMPLE_PAST == q || pre.direct(q, EXAMPLE_PAST));
+        let (q, k) = choose|q: ObjectId, k: nat| #[trigger] pre.controlled(1, q, k)
+            && (EXAMPLE_PAST == q || pre.direct(q, EXAMPLE_PAST) || pre.shared(q, EXAMPLE_PAST));
         lemma_retype_example_controls_nothing(q, k);
+        assert(!pre.shared(q, EXAMPLE_PAST));
         let (c, n, d) = choose|c: NodeId, n: NodeId, d: nat| #[trigger] pre.descends(c, n, d)
             && pre.holds(1, c) && pre.covers(n, EXAMPLE_PAST);
         assert(c == n);
@@ -2797,6 +3228,8 @@ pub open spec fn send_example() -> State {
         process_of: Map::empty(),
         waiting: Set::empty(),
         bound: Map::empty(),
+        shares: Set::empty(),
+        binds: Map::empty(),
         contents: |o: ObjectId| Seq::empty(),
     }
 }
@@ -2843,6 +3276,133 @@ pub proof fn lemma_derive_grant_from_send_only_does_not_discharge()
         assert(!pre.rights.contains((s, Right::Grant)));
     }
     assert(!may_hold(pre, post, Effect::Local, 11, Right::Grant));
+}
+
+/// The frame `share_example`'s process 1 holds: the page after the space.
+pub open spec fn share_frame() -> ObjectId {
+    (EXAMPLE_BASE + PAGE_SZ) as usize
+}
+
+/// Process 1 holds node 10 on the device space at EXAMPLE_BASE with the write right and node 11 on the
+/// frame after it. Process 2 holds node 20 on device 0, which is bound to the space, and process 3
+/// node 30 on the page at EXAMPLE_PAST. Nobody holds the control right, and the space maps nothing.
+pub open spec fn share_example() -> State {
+    State {
+        held: ISet::new(|h: (ObjectId, NodeId)| h == (1usize, 10usize) || h == (1usize, 11usize)
+            || h == (2usize, 20usize) || h == (3usize, 30usize)),
+        names: IMap::new(
+            |n: NodeId| n == 10 || n == 11 || n == 20 || n == 30,
+            |n: NodeId| if n == 10 { EXAMPLE_BASE } else if n == 11 { share_frame() } else if n == 20 {
+                DEVICE_OBJECTS
+            } else {
+                EXAMPLE_PAST
+            },
+        ),
+        pages: IMap::new(|n: NodeId| n == 10 || n == 11 || n == 20 || n == 30, |n: NodeId| 1nat),
+        rights: ISet::new(|h: (NodeId, Right)| h == (10usize, Right::Write) || h == (11usize, Right::Read)),
+        parent: Map::empty(),
+        maps: Set::empty(),
+        process_of: Map::empty(),
+        waiting: Set::empty(),
+        bound: Map::empty(),
+        shares: Set::empty(),
+        binds: map![DEVICE_OBJECTS => EXAMPLE_BASE],
+        contents: |o: ObjectId| Seq::empty(),
+    }
+}
+
+/// `share_example` with the frame mapped into the space at t.
+pub open spec fn shared_into(t: ObjectId) -> State {
+    State { shares: set![(t, share_frame())], ..share_example() }
+}
+
+/// With no control right in `share_example`, a process reaches through itself alone.
+proof fn lemma_share_example_controls_nothing(r: ObjectId, q: ObjectId, k: nat)
+    requires
+        share_example().controlled(r, q, k) || shared_into(EXAMPLE_PAST).controlled(r, q, k),
+    ensures
+        q == r,
+{
+    if k > 0 {
+        let (s, t) = (share_example(), shared_into(EXAMPLE_PAST));
+        if s.controlled(r, q, k) {
+            let m = choose|m: ObjectId| #[trigger] s.controls(m, q) && s.controlled(r, m, (k - 1) as nat);
+            let c = choose|c: NodeId| #[trigger] s.holds_right(m, c, Right::Control) && s.process_behind(s.names[c]) == q;
+            assert(!s.rights.contains((c, Right::Control)));
+        } else {
+            let m = choose|m: ObjectId| #[trigger] t.controls(m, q) && t.controlled(r, m, (k - 1) as nat);
+            let c = choose|c: NodeId| #[trigger] t.holds_right(m, c, Right::Control) && t.process_behind(t.names[c]) == q;
+            assert(!t.rights.contains((c, Right::Control)));
+        }
+    }
+}
+
+/// Mapping the frame into the space process 1 names discharges the share, and the process holding the
+/// device bound to the space reaches the frame through it.
+pub proof fn lemma_share_to_a_seer_discharges()
+    ensures
+        discharges(share_example(), shared_into(EXAMPLE_BASE), 1, Effect::Share { space: 10, from: 11 }),
+        shared_into(EXAMPLE_BASE).reach(2, share_frame()),
+{
+    let (pre, post) = (share_example(), shared_into(EXAMPLE_BASE));
+    assert(pre.holds_right(1, 10, Right::Write));
+    assert(pre.descends(11, 11, 0));
+    assert(pre.covers(11, share_frame()));
+    assert(pre.direct(1, share_frame()));
+    assert(pre.controlled(1, 1, 0));
+    assert(pre.reach(1, share_frame()));
+    assert(post.shares =~= pre.shares.insert((EXAMPLE_BASE, share_frame())));
+    lemma_adds_share_discharges(pre, post, 1, 10, 11, share_frame());
+    assert(post.descends(20, 20, 0));
+    assert(post.covers(20, DEVICE_OBJECTS));
+    assert(post.direct(2, DEVICE_OBJECTS));
+    assert(post.binds.contains_key(DEVICE_OBJECTS) && post.binds[DEVICE_OBJECTS] == EXAMPLE_BASE);
+    assert(post.sees(2, EXAMPLE_BASE));
+    assert(post.shares.contains((EXAMPLE_BASE, share_frame())));
+    assert(post.shared(2, share_frame()));
+    assert(post.controlled(2, 2, 0));
+}
+
+/// Mapping it into a space process 3 sees, though the step names the space at EXAMPLE_BASE, does not:
+/// process 3 gains the frame without seeing the space the share names.
+pub proof fn lemma_share_to_a_non_seer_does_not_discharge()
+    ensures
+        !discharges(share_example(), shared_into(EXAMPLE_PAST), 1, Effect::Share { space: 10, from: 11 }),
+{
+    let (pre, post) = (share_example(), shared_into(EXAMPLE_PAST));
+    let f = share_frame();
+    assert(post.descends(30, 30, 0));
+    assert(post.covers(30, EXAMPLE_PAST));
+    assert(post.direct(3, EXAMPLE_PAST));
+    assert(post.sees(3, EXAMPLE_PAST));
+    assert(post.shares.contains((EXAMPLE_PAST, f)));
+    assert(post.shared(3, f));
+    assert(post.controlled(3, 3, 0));
+    assert(post.reach(3, f));
+    assert forall|x: ObjectId| #[trigger] pre.direct(3, x) implies x == EXAMPLE_PAST by {
+        let (c, n, d) = choose|c: NodeId, n: NodeId, d: nat| #[trigger] pre.descends(c, n, d)
+            && pre.holds(3, c) && pre.covers(n, x);
+        assert(c == n);
+        assert(pre.held.contains((3usize, c)));
+    }
+    if pre.reach(3, f) {
+        let (q, k) = choose|q: ObjectId, k: nat| #[trigger] pre.controlled(3, q, k)
+            && (f == q || pre.direct(q, f) || pre.shared(q, f));
+        lemma_share_example_controls_nothing(3, q, k);
+        if pre.shared(3, f) {
+            let d = choose|d: ObjectId| #[trigger] pre.binds.contains_key(d) && pre.binds[d] == f && pre.direct(3, d);
+        }
+    }
+    if exists|q: ObjectId, k: nat| #[trigger] pre.controlled(3, q, k) && pre.sees(q, EXAMPLE_BASE) {
+        let (q, k) = choose|q: ObjectId, k: nat| #[trigger] pre.controlled(3, q, k) && pre.sees(q, EXAMPLE_BASE);
+        lemma_share_example_controls_nothing(3, q, k);
+        if !pre.direct(3, EXAMPLE_BASE) {
+            let d = choose|d: ObjectId| #[trigger] pre.binds.contains_key(d) && pre.binds[d] == EXAMPLE_BASE
+                && pre.direct(3, d);
+            assert(d == DEVICE_OBJECTS);
+        }
+    }
+    assert(!may_grow(pre, 1, Effect::Share { space: 10, from: 11 }, 3, f));
 }
 
 /// Every live capability covers the object it names: its block starts at an aligned page and has at
@@ -2981,6 +3541,19 @@ proof fn lemma_disjoint_step_grows_neither(
                     assert(!(pre.reach(a, pre.names[untyped]) && pre.reach(b, pre.names[untyped])));
                 }
             },
+            Effect::Share { space, from } => {
+                let sp = pre.names[space];
+                lemma_holder_reaches_name(pre, p, space);
+                let (q, k) = choose|q: ObjectId, k: nat| #[trigger] pre.controlled(x, q, k) && pre.sees(q, sp);
+                if !pre.direct(q, sp) {
+                    let d = choose|d: ObjectId| #[trigger] pre.binds.contains_key(d) && pre.binds[d] == sp
+                        && pre.direct(q, d);
+                    assert(pre.shared(q, sp));
+                }
+                assert(pre.reach(x, sp));
+                assert(x != p);
+                assert(!(pre.reach(a, sp) && pre.reach(b, sp)));
+            },
             _ => {},
         }
     }
@@ -3030,20 +3603,25 @@ proof fn lemma_same_authority_same_reach(a: State, b: State, r: ObjectId, o: Obj
         a.rights == b.rights,
         a.parent == b.parent,
         a.maps == b.maps,
+        a.shares == b.shares,
+        a.binds == b.binds,
         a.process_of == b.process_of,
         a.reach(r, o),
     ensures
         b.reach(r, o),
 {
-    let (q, k) = choose|q: ObjectId, k: nat| #[trigger] a.controlled(r, q, k) && (o == q || a.direct(q, o));
+    let (q, k) = choose|q: ObjectId, k: nat| #[trigger] a.controlled(r, q, k)
+        && (o == q || a.direct(q, o) || a.shared(q, o));
     lemma_same_authority_same_controlled(a, b, r, q, k);
     if o != q {
-        if a.maps.contains((q, o)) {
-        } else {
-            let (c, n, d) = choose|c: NodeId, n: NodeId, d: nat| #[trigger] a.descends(c, n, d)
-                && a.holds(q, c) && a.covers(n, o);
-            lemma_same_parent_same_descends(a, b, c, n, d);
+        assert forall|x: ObjectId| #[trigger] a.direct(q, x) implies b.direct(q, x) || b.direct(q, x) by {
+            if !a.maps.contains((q, x)) {
+                let (c, n, d) = choose|c: NodeId, n: NodeId, d: nat| #[trigger] a.descends(c, n, d)
+                    && a.holds(q, c) && a.covers(n, x);
+                lemma_same_parent_same_descends(a, b, c, n, d);
+            }
         }
+        lemma_edge_carries(a, b, q, q, o);
     }
 }
 

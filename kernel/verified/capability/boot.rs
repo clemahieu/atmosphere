@@ -1481,7 +1481,9 @@ impl CapKernel {
         assert forall|o: usize| #[trigger] v.reach(process, o)
             <==> (o % PAGE_SZ == 0 && ((process <= o < process + PROCESS_BYTES) || (t <= o < t + THREAD_BYTES))) by {
             if v.reach(process, o) {
-                let (q, k) = choose|q: usize, k: nat| #[trigger] v.controlled(process, q, k) && (o == q || v.direct(q, o));
+                let (q, k) = choose|q: usize, k: nat| #[trigger] v.controlled(process, q, k)
+                    && (o == q || v.direct(q, o) || v.shared(q, o));
+                assert(!v.shared(q, o));
                 assert(q == process || q == t);
                 if o != q {
                     assert(!v.maps.contains((q, o)));
@@ -1505,7 +1507,9 @@ impl CapKernel {
         // Anyone else reaches itself, or through a control link the process or its thread, or what a
         // capability covers: each is a page of the two blocks.
         assert forall|p: usize, o: usize| #[trigger] v.reach(p, o) implies o == p || v.reach(process, o) by {
-            let (q, k) = choose|q: usize, k: nat| #[trigger] v.controlled(p, q, k) && (o == q || v.direct(q, o));
+            let (q, k) = choose|q: usize, k: nat| #[trigger] v.controlled(p, q, k)
+                && (o == q || v.direct(q, o) || v.shared(q, o));
+            assert(!v.shared(q, o));
             if o == q {
                 if k > 0 {
                     assert(q == process || q == t);
