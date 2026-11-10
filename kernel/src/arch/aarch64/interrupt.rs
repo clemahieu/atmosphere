@@ -45,16 +45,15 @@ pub fn irq(vector: u64, frame: &mut Registers) {
     machine::end_of_interrupt();
 }
 
-/// The timer's interrupt: the check's, when it is waiting for one, and otherwise the end of a time
-/// slice.
-fn timer(vector: u64, id: u32, frame: &mut Registers) {
+/// The timer's interrupt: the check's, when it is waiting for one. Nothing else arms the timer, so
+/// any other is reported, and the core stops.
+fn timer(vector: u64, id: u32, frame: &Registers) {
     let taken = vector << VECTOR_SHIFT | u64::from(id);
     if CHECK.compare_exchange(ARMED, taken, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
         return;
     }
-    if let Some(slice) = crate::thread::schedule(frame) {
-        machine::set_timer(slice.0 as u64);
-    }
+    log::error!("CPU {}: stray timer interrupt, outside the boot check: {:#x?}", crate::cpu::get_cpu_id(), frame);
+    unsafe { spin_forever() };
 }
 
 /// Shots of the timer the check takes. The second arrives only when the first was ended and the

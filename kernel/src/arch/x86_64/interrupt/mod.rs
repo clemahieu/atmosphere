@@ -257,13 +257,15 @@ unsafe extern "C" fn page_fault(regs: &mut Registers) {
     spin_forever();
 }
 
-/// Timer handler.
+/// The timer's interrupt, which nothing arms the timer for: reported, and the core stops.
 unsafe extern "C" fn timer(regs: &mut Registers) {
-    if let Some(slice) = crate::thread::schedule(regs) {
-        machine::set_timer(slice.0 as u64);
-    }
-
-    machine::end_of_interrupt();
+    log::error!(
+        "CPU {}: stray timer interrupt, which nothing armed the timer for: {:#x?}",
+        crate::cpu::get_cpu_id(),
+        regs,
+    );
+    crate::debugger::breakpoint(2);
+    spin_forever();
 }
 
 /// Flush request from another CPU.

@@ -24,7 +24,6 @@ mod debugger;
 mod error;
 mod logging;
 mod machine;
-mod thread;
 mod utils;
 mod lock;
 mod flush;
