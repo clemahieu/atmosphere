@@ -24,9 +24,7 @@ log = "0.4.14"
 path = "verified"
 
 [dependencies.vstd]
-git = "https://github.com/verus-lang/verus"
-rev = "3e8600ac3a52238dcf581a91c761e160bb6da743"
-default-features = false
+workspace = true
 
 [features]
 # Time every hold of a lock and every wait for one, reported in the serial log.

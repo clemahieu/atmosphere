@@ -12,9 +12,7 @@ name = "verified"
 path = "lib.rs"
 
 [dependencies.vstd]
-git = "https://github.com/verus-lang/verus"
-rev = "3e8600ac3a52238dcf581a91c761e160bb6da743"
-default-features = false
+workspace = true
 
 # Cannot have any other dependencies
 

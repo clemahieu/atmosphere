@@ -1,11 +1,10 @@
 #!/bin/bash
-# Build upstream Verus at the commit this tree verifies with, into tools/verus. It pins the same Rust
-# as rust-toolchain.toml.
+# Build upstream Verus at the commit this tree verifies with, the vstd revision in the workspace
+# Cargo.toml, into tools/verus. It pins the same Rust as rust-toolchain.toml.
 set -euo pipefail
 
-commit=3e8600ac3a52238dcf581a91c761e160bb6da743
-
 tools="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+commit="$(python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["workspace"]["dependencies"]["vstd"]["rev"])' "$tools/../Cargo.toml")"
 verus="$tools/verus"
 
 url=https://github.com/verus-lang/verus.git
