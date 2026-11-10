@@ -243,10 +243,15 @@ impl RemappingHardware {
             return None;
         }
 
-        let fro = 16 * self.cap.get_bits(Self::CAP_FRO) as usize;
-        let r: FaultRecording = unsafe { self.read_u128(fro).into() };
+        let r: FaultRecording = unsafe { self.read_u128(Self::fault_record_offset(self.cap, index)).into() };
 
         Some(r)
+    }
+
+    /// The register offset of the index-th Fault Recording Register: CAP.FRO counts 16-byte units from the
+    /// register base, and the 128-bit records follow one another from there.
+    fn fault_record_offset(cap: u64, index: usize) -> usize {
+        16 * cap.get_bits(Self::CAP_FRO) as usize + 16 * index
     }
 
     pub fn get_fault_index(&self) -> Option<usize> {
@@ -654,7 +659,7 @@ pub fn iommu_fault_dump() -> Result<(), &'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::FaultRecording;
+    use super::{FaultRecording, RemappingHardware};
 
     /// A fault record with every field distinct, laid out as the VT-d specification's Fault Recording Register gives it.
     const RECORD: u128 = (0xabc_dead_beef_1u128 << 12)
@@ -683,6 +688,15 @@ mod tests {
         assert_eq!(r.address_type(), 2);
         assert!(!r.t1());
         assert!(r.fault());
+    }
+
+    #[test]
+    fn each_fault_record_is_sixteen_bytes_past_the_last() {
+        // CAP.FRO of 0x22 puts the first record at 0x220.
+        let cap = 0x22u64 << 24;
+        assert_eq!(RemappingHardware::fault_record_offset(cap, 0), 0x220);
+        assert_eq!(RemappingHardware::fault_record_offset(cap, 1), 0x230);
+        assert_eq!(RemappingHardware::fault_record_offset(cap, 7), 0x290);
     }
 
     #[test]
