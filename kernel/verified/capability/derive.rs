@@ -216,6 +216,11 @@ impl CapKernel {
             Self::same_tree(*old(self), *final(self)),
             !ret ==> *final(self) == *old(self),
             ret ==> Self::cap_derived_at(*old(self), *final(self), root, from, to, rights, base, order),
+            ret ==> final(self).list.parent@ == old(self).list.parent@.insert(
+                old(self).tables.node_of(old(self).table_at(root, to.through)->0, to.index),
+                old(self).tables.node_of(root, from),
+            ),
+            ret ==> final(self).list.seq@[0] == old(self).list.seq@[0],
             ret == old(self).can_derive_at(root, from, to, rights, base, order),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
@@ -281,6 +286,7 @@ impl CapKernel {
                 &&& Self::cap_derived_between(*old(self), *final(self), src, from, dst, to, rights, base, order)
                 &&& Self::derive_step(*old(self), *final(self), child)
                 &&& final(self).list.parent@ == old(self).list.parent@.insert(child, parent)
+                &&& final(self).list.seq@[0] == old(self).list.seq@[0]
             },
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {

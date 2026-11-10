@@ -913,10 +913,11 @@ impl CapKernel {
 
     /// What a retype of the two pages at base as a table leaf did, under the untyped at index from of
     /// the table at root, into the root entry at names: the retype was allowed, the leaf is in that
-    /// entry of the position's table, its hidden node the untyped's child and the one entry the parent
-    /// map gains, every slot in it empty, what retype_keeps names is as it was but that root entry,
-    /// and the step discharges the retype's effect, into the table named through a process capability
-    /// when the position names one.
+    /// entry of the position's table and owned by that entry, its hidden node the untyped's child, the
+    /// one entry the parent map gains and the only node whose liveness changed, every other node on its
+    /// page and every slot in it empty, the list's first node and what retype_keeps names as they were
+    /// but that root entry, and the step discharges the retype's effect, into the table named through a
+    /// process capability when the position names one.
     pub open spec fn leaf_retyped(pre: Self, post: Self, root: usize, from: usize, at: Position, base: usize) -> bool {
         let parent = pre.tables.node_of(root, from);
         let table = pre.destination_at(root, at.through)->0;
@@ -925,7 +926,17 @@ impl CapKernel {
         &&& post.tables.leaf(table, at.index as int) == base
         &&& post.list.is_child(parent, base)
         &&& post.list.parent@ == pre.list.parent@.insert(base, parent)
+        &&& post.list.seq@[0] == pre.list.seq@[0]
         &&& post.list.nodes@[base as int].kind is Hidden
+        &&& forall|x: int| #![trigger post.list.nodes@[x]] 0 <= x < NODE_SPACE && x != base ==> {
+            &&& post.list.nodes@[x].live == pre.list.nodes@[x].live
+            &&& pre.list.nodes@[x].live ==> {
+                &&& post.list.nodes@[x].kind == pre.list.nodes@[x].kind
+                &&& post.list.nodes@[x].depth == pre.list.nodes@[x].depth
+            }
+        }
+        &&& forall|x: int| base < x < base + NODES_PER_PAGE ==> !#[trigger] post.list.nodes@[x].live
+        &&& post.tables.owner@ == pre.tables.owner@.insert(base, (table, at.index as int))
         &&& forall|i: usize| index_ok(i) && index_entry(i) == at.index as int ==> {
             &&& #[trigger] post.tables.has_slot(&post.list, table, i)
             &&& !post.list.nodes@[post.tables.node_of(table, i) as int].live
