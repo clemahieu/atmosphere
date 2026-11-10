@@ -790,7 +790,6 @@ dependencies = [
  "atest",
  "bit_field",
  "bitfield",
- "displaydoc",
  "kernel-logger",
  "log",
  "machine-pc",

@@ -2,20 +2,24 @@
 
 pub type Result<T> = core::result::Result<T, Error>;
 
-use displaydoc::Display;
-
 use crate::boot::command_line::Component as CommandLineComponent;
 
 /// An error.
 #[non_exhaustive]
-#[derive(Clone, Debug, Display)]
+#[derive(Clone, Debug)]
 pub enum Error {
-    /// Invalid kernel command-line component: {0:?}
+    /// An invalid kernel command-line component.
     InvalidCommandLineOption(CommandLineComponent<'static>),
 
-    /// Invalid descriptor type: {0}
+    /// An invalid system descriptor type.
     InvalidDescriptorType(u8),
+}
 
-    /// Other error.
-    Other(&'static str),
+impl core::fmt::Display for Error {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::InvalidCommandLineOption(component) => write!(f, "Invalid kernel command-line component: {component:?}"),
+            Self::InvalidDescriptorType(descriptor_type) => write!(f, "Invalid descriptor type: {descriptor_type}"),
+        }
+    }
 }
