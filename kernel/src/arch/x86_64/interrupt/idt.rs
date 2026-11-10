@@ -216,7 +216,7 @@ impl<F> Entry<F> {
         self.entry_hi = (addr >> 32) as u32;
 
         self.attributes.set_present(true);
-        self.attributes.set_gate_type(GateType::Int32);
+        self.attributes.set_interrupt_gate();
         self.selector = arch::cs().bits();
         self
     }
@@ -257,7 +257,7 @@ impl_set_handler_fn!(TrampolineHandlerFunc);
 /// - P: Present.
 /// - DPL: Descriptor Privilege Level.
 /// - Z: Zero.
-/// - GateType: Type of the IDT gate (see `GateType`).
+/// - GateType: Type of the IDT gate (see `INTERRUPT_GATE_64`).
 #[derive(Clone, Copy)]
 #[repr(transparent)]
 pub struct EntryAttributes(u8);
@@ -280,53 +280,14 @@ impl EntryAttributes {
         self
     }
 
-    /// Sets the gate type.
-    pub fn set_gate_type(&mut self, gate_type: GateType) -> &mut Self {
-        self.0.set_bits(0..4, gate_type.into());
+    /// Makes the entry a 64-bit interrupt gate.
+    fn set_interrupt_gate(&mut self) -> &mut Self {
+        self.0.set_bits(0..4, INTERRUPT_GATE_64);
         self
     }
 }
 
-/// Type of an IDT gate.
-///
-/// This is succinctly summarized by osdev.org:
-///
-/// > Trap and Interrupt gates are similar, and their descriptors are structurally the
-/// > same, they differ only in the "type" field. The difference is that for interrupt
-/// > gates, interrupts are automatically disabled upon entry and reenabled upon IRET
-/// > which restores the saved EFLAGS.
-///
-/// We mostly deal with `Int32` and `Trap32`. The GateType field is 4-bit wide.
-pub enum GateType {
-    /// 32-bit interrupt gate (0b1110).
-    ///
-    /// Interrupts are automatically disabled upon entry.
-    Int32,
-
-    /// 16-bit interrupt gate (0b0110).
-    ///
-    /// Interrupts are automatically disabled upon entry.
-    Int16,
-
-    /// 32-bit trap gate (0b1111).
-    ///
-    /// Interrupts are not disabled upon entry.
-    Trap32,
-
-    /// 16-bit trap gate (0b0111).
-    ///
-    /// Interrupts are not disabled upon entry.
-    Trap16,
-}
-
-impl From<GateType> for u8 {
-    fn from(gate_type: GateType) -> u8 {
-        match gate_type {
-            GateType::Int32 => 0b1110,
-            GateType::Trap32 => 0b1111,
-
-            GateType::Int16 => 0b0110,
-            GateType::Trap16 => 0b0111,
-        }
-    }
-}
+/// The type field of a 64-bit interrupt gate, the only gate the kernel writes: entering a handler
+/// through it clears RFLAGS.IF, so every handler starts with interrupts masked. APM 2 §4.8.3,
+/// Table 4-6 (System-Segment Descriptor Types, Long Mode).
+const INTERRUPT_GATE_64: u8 = 0b1110;
