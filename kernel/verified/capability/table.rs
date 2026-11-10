@@ -179,7 +179,7 @@ fn new_payload_page(addr: usize, root: usize, r: usize, Tracked(page): Tracked<P
         ret@.value().entries.wf(),
         ret@.value().entries@[0] == parent_record(root, r),
 {
-    let mut entries = Array::<Payload, NODES_PER_PAGE>::new();
+    let mut entries = Array::<Payload, NODES_PER_PAGE>::new(Payload { kind: CapKind::Untyped, order: 0, rights: 0, base: 0, badge: 0, reserved: 0 });
     let mut k = 0;
     let ghost start = steps.count;
     while k != NODES_PER_PAGE
@@ -399,7 +399,7 @@ impl Tables {
                 final(self).has_slot(list, t, i) && final(self).node_of(t, i) == old(self).node_of(t, i),
     {
         let ghost pre = *old(self);
-        let mut leaves = Array::<usize, ROOT_ENTRIES>::new();
+        let mut leaves = Array::<usize, ROOT_ENTRIES>::new(NO_LEAF);
         let mut r = 0;
         let ghost start = steps.count;
         while r != ROOT_ENTRIES

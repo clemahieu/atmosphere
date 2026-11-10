@@ -1,28 +1,23 @@
 use vstd::prelude::*;
 verus! {
-use core::mem::MaybeUninit;
-
 pub struct Array<A, const N: usize>{
     pub seq: Ghost<Seq<A>>,
     pub ar: [A;N]
 }
 
-impl<A, const N: usize> Array<A, N> {
-
-    #[verifier(external_body)]
-    // external_body(gap): builds a value from zeroed memory, which Verus cannot check
-    pub const fn new() -> (ret: Self)
+impl<A: Copy, const N: usize> Array<A, N> {
+    /// An array with every element fill.
+    pub fn new(fill: A) -> (ret: Self)
         ensures
             ret.wf(),
+            forall|i: int| 0 <= i < N ==> #[trigger] ret@[i] == fill,
     {
-        unsafe{
-        let ret = Self {
-            ar: MaybeUninit::zeroed().assume_init(),
-            seq: Ghost(Seq::empty()),
-        };
-        ret
-        }
+        let ar = [fill; N];
+        Self { ar, seq: Ghost(ar@) }
     }
+}
+
+impl<A, const N: usize> Array<A, N> {
 
     pub fn get(&self, i: usize) -> (out: &A)
         requires

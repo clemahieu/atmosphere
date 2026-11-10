@@ -94,7 +94,7 @@ impl Devices {
             ret.count == 0,
             ret.holder@ == Map::<usize, usize>::empty(),
     {
-        Devices { records: Array::new(), count: 0, holder: Ghost(Map::empty()) }
+        Devices { records: Array::new(DeviceRecord { iommu: 0, number: 0, space: None, unbound: 0 }), count: 0, holder: Ghost(Map::empty()) }
     }
 
     /// Records d and e are on different IOMMUs or have different numbers.

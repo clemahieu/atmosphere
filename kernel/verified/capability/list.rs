@@ -67,7 +67,7 @@ pub fn init_node_page(addr: usize, Tracked(page): Tracked<PagePerm4k>, Tracked(s
         ret@.value().nodes.wf(),
         forall|k: int| 0 <= k < NODES_PER_PAGE ==> !(#[trigger] ret@.value().nodes@[k]).live,
 {
-    let mut nodes = Array::<Node, NODES_PER_PAGE>::new();
+    let mut nodes = Array::<Node, NODES_PER_PAGE>::new(Node { live: false, kind: NodeKind::Capability, depth: 0, next: NONE, prev: NONE });
     let mut i = 0;
     let ghost start = steps.count;
     while i != NODES_PER_PAGE

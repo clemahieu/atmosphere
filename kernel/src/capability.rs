@@ -16,7 +16,7 @@ use verified::capability::boot::{
 use verified::capability::boot_image::ImageRun;
 use verified::capability::boot_memory::ROOT_UNTYPED_SLOTS;
 use verified::capability::decompose::first_block;
-use verified::capability::kernel::{CapKernel, CommandBuffers};
+use verified::capability::kernel::{CapKernel, CommandBuffer, CommandBuffers};
 use verified::capability::operation::{Outcome, OPERATION_POWER_OFF, STATUS_OK};
 use verified::capability::space::SPACE_ROOT_PAGE;
 use verified::capability::table::{CapKind, MAX_ORDER};
@@ -146,7 +146,7 @@ pub fn boot(boot_info: &BootInfo) -> Entry {
     let process = page(PROCESS_PAGE);
     let kernel = unsafe { &mut *(page(BOOT_OBJECT_PAGES) as *mut CapKernel) };
 
-    let mut kernel_entries = Array::<usize, KERNEL_MEM_END_L4INDEX>::new();
+    let mut kernel_entries = Array::<usize, KERNEL_MEM_END_L4INDEX>::new(0);
     for index in 0..KERNEL_MEM_END_L4INDEX {
         kernel_entries.set(index, unsafe { *(boot_info.pml4 as *const usize).add(index) });
     }
@@ -154,8 +154,8 @@ pub fn boot(boot_info: &BootInfo) -> Entry {
         page(LIST_ROOT_PAGE),
         Tracked::assume_new(),
         kernel_entries,
-        Array::<bool, NUM_IOMMUS>::new(),
-        CommandBuffers { buffers: Array::new(), pages: Tracked::assume_new() },
+        Array::<bool, NUM_IOMMUS>::new(false),
+        CommandBuffers { buffers: Array::new(CommandBuffer { mmio: 0, ring: 0, len: 0, tail: 0, completion: 0 }), pages: Tracked::assume_new() },
         process,
         page(LEAF_PAGE),
         page(FRAMES_PAGE),
