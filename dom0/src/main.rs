@@ -40,10 +40,10 @@
 //! its slot is refused. It times one invocation of a number no operation has,
 //! and one 4K map into each of 64 free entries of the level 1 table, and prints each cycle count beside
 //! the before number from logs/cutover-before.log, 102 and 66926. It maps the frame at the entry after
-//! those, and probes the 64 entries ending there after the map, after reading the page, again, and after
+//! those, and probes the 64 entries from there after the map, after reading the page, again, and after
 //! writing it, printing the mapped entry's accessed and dirty bits each time: both clear, then accessed
-//! alone, then both clear, then dirty; the other 63 entries' bits stay clear and both bits are
-//! maintained. A probe of 0 entries, of 65 and of a range leaving its level 1 table is refused. It maps
+//! alone, then both clear, then dirty; the other 63 entries, none of them present, have no bit set, and
+//! both bits are maintained. A probe of 0 entries, of 65 and of a range leaving its level 1 table is refused. It maps
 //! the frame at the next entry, writes the page and unmaps it, and the unmap returns accessed and dirty
 //! set, both maintained, which it prints. It retypes a table leaf into root entry 2 of its own table, the
 //! first boot leaves empty, after a retype into the occupied entry 1, into entry 512, past the root's, by
@@ -486,8 +486,12 @@ fn timed_beside_before(frame: u64) -> bool {
 /// maps'.
 const PROBED_ENTRY: u64 = TIMED_MAPS + 1;
 
-/// The first of the operation::PROBE_MAX entries the probe check reads, which end at PROBED_ENTRY.
-const PROBE_FIRST: u64 = PROBED_ENTRY + 1 - operation::PROBE_MAX;
+/// The first of the operation::PROBE_MAX entries the probe check reads, which start at PROBED_ENTRY, so
+/// that no other entry they cover is present while it probes. A present entry may have its accessed bit
+/// set by a speculative or prefetching access no instruction asked for (Arm ARM D8.5.1.2, rules RLHQRX and
+/// ILLCCB), which the timed maps' entries below PROBED_ENTRY took on the Orange Pi when dom0 read the
+/// page above them; an entry that is not present has no bits for that to set.
+const PROBE_FIRST: u64 = PROBED_ENTRY;
 
 /// The bit of each mask that is PROBED_ENTRY's.
 const PROBED_BIT: u64 = 1 << (PROBED_ENTRY - PROBE_FIRST);
@@ -516,9 +520,9 @@ fn bit_digit(bit: bool) -> &'static [u8] {
     if bit { b"1" } else { b"0" }
 }
 
-/// Whether a probe of the operation::PROBE_MAX entries ending at PROBED_ENTRY is accepted and finds
+/// Whether a probe of the operation::PROBE_MAX entries from PROBED_ENTRY is accepted and finds
 /// PROBED_ENTRY's dirty bit `dirty` and, when `accessed` is some, its accessed bit that, and every other
-/// entry's bits clear, with both bits maintained; it prints `step` and PROBED_ENTRY's two bits, and the
+/// entry's bits clear, as none of them is present, with both bits maintained; it prints `step` and PROBED_ENTRY's two bits, and the
 /// status of a refused probe, or both masks and the two facts of a step that does not hold.
 fn probed_step_held(step: &[u8], accessed: Option<bool>, dirty: bool) -> bool {
     let probed = match operation::probe(operation::ROOT_PROCESS_SLOT, entry_address(PROBE_FIRST), operation::PROBE_MAX) {
