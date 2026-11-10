@@ -53,7 +53,8 @@ Atmosphere boots only CPU 0 and has no timer interrupt, so all timers run on one
   fresh-page mmap timing.
 - The ESP, `target/bench/esp`, is the directory QEMU serves as a FAT disk, laid out as `tools/run.py`
   lays it out: OVMF boots the loader at `EFI/BOOT/BOOTX64.EFI`, and the loader reads `initrd`, the
-  kernel and dom0 ELF images concatenated.
+  kernel and dom0 ELF images concatenated, and `cmdline`, the kernel's command line, which names
+  the isa-debug-exit port for the kernel's failure shutdown.
 - `OVMF_VARS.fd` is a copy of the resolved variable store (`ATMO_OVMF_VARS`, or the distribution default), which OVMF writes.
 
 ## Exit status

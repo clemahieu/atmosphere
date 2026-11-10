@@ -28,14 +28,16 @@ dom0="$root/target/x86_64-unknown-aloader/release/dom0"
 
 # The EFI system partition as tools/run.py lays it out: OVMF boots
 # EFI/BOOT/BOOTX64.EFI from removable media, and the loader reads the kernel and dom0 ELF images
-# concatenated in the file initrd beside it; dom0 needs no payload. OVMF
-# writes its variable store, so it gets a copy.
+# concatenated in the file initrd beside it; dom0 needs no payload. The file cmdline is the kernel's
+# command line: the port of the isa-debug-exit device below, in decimal, which the kernel's failure
+# shutdown writes. OVMF writes its variable store, so it gets a copy.
 esp="$out/esp"
 rm -rf "$esp"
 mkdir -p "$esp/EFI/BOOT"
 cp "$loader" "$esp/EFI/BOOT/BOOTX64.EFI"
 # .debug_* stays in target/. Release files keep it too, so the initrd copy drops it.
 python3 "$root/tools/elfstrip.py" "$kernel" "$dom0" >"$esp/initrd"
+echo "qemu_debug_exit_io_base=$((0xf4))" >"$esp/cmdline"
 # The same resolver the Python tools import: an override wins, then the known paths.
 if ! firmware=$(python3 "$root/tools/firmware.py"); then
     exit 1

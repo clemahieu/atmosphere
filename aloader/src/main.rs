@@ -65,7 +65,7 @@ const KERNEL_STACK_SIZE: u64 = 1024 * 1024; // 1 MiB
 const KERNEL_STACK_SIZE: u64 = 8 * 1024; // 8 KiB
 
 /// Loads the kernel, dom0 and the payload from the memory map and kernel image the UEFI entry
-/// recorded, and enters the kernel. `rsdp` is the ACPI RSDP from the UEFI configuration tables;
+/// recorded, and enters the kernel with the command line it read. `rsdp` is the ACPI RSDP from the UEFI configuration tables;
 /// `wait_for_debugger` holds the kernel's entry until a debugger lets it go (debugger::wait).
 fn load(rsdp: u64, wait_for_debugger: bool) -> ! {
     let bootstrap_allocator = memory::bootstrap_allocator();
@@ -92,6 +92,7 @@ fn load(rsdp: u64, wait_for_debugger: bool) -> ! {
     boot_info.pcide = unsafe { arch::activate(address_space.pml4()) };
     boot_info.pml4 = address_space.pml4();
     boot_info.iommu_base = acpi::probe_iommu(rsdp);
+    boot_info.command_line = boot::get_command_line();
 
     let (jumbo_file, jumbo_size) = {
         let range = boot::get_kernel_image_range().expect("No kernel image was passed");

@@ -3,7 +3,9 @@
 
 OVMF boots the loader, the UEFI application, from a directory QEMU serves as the EFI system
 partition; the loader reads the kernel, dom0 and payload ELF images concatenated in the file initrd
-beside it (aloader/src/boot/uefi.rs). The serial log is serial.log at the workspace root. KVM is used
+beside it, and the kernel's command line from the file cmdline there (aloader/src/boot/uefi.rs). The
+command line names the port of QEMU's isa-debug-exit device, which the kernel's failure shutdown
+writes (machine/pc/src/shutdown.rs). The serial log is serial.log at the workspace root. KVM is used
 whenever /dev/kvm is writable; --no-kvm forces TCG. --iommu adds QEMU's emulated IOMMU. --gdb puts
 a gdb server on the guest and the file gdb on the ESP, which makes the loader wait before it enters
 the kernel (aloader/src/debugger.rs); once the loader has logged where it loaded each binary and that
@@ -47,8 +49,13 @@ ESP_GDB = "gdb"
 # What the loader logs of each binary it loads, and before it waits for gdb (aloader/src/debugger.rs).
 DEBUGGER_BIAS = re.compile(rb"debugger: (\w+) at bias (0x[0-9a-f]+)")
 DEBUGGER_WAITING = b"debugger: waiting"
-# dom0 ends the run by writing to this port (dom0/src/main.rs).
+# The kernel's command line, which the loader hands it (aloader/src/boot/command_line.rs).
+ESP_COMMAND_LINE = "cmdline"
+# Where isa-debug-exit sits. dom0 ends the run by writing to this port (dom0/src/main.rs), and so
+# does the kernel's failure shutdown, which learns the port from its command line, in decimal
+# (machine/pc/src/shutdown.rs).
 DEBUG_EXIT_PORT = 0xf4
+COMMAND_LINE = f"qemu_debug_exit_io_base={DEBUG_EXIT_PORT}"
 # isa-debug-exit makes QEMU exit with `code << 1 | 1`, and dom0 writes 0x10 on success.
 DOM0_SUCCESS_STATUS = 33
 # Guest RAM, in MiB. The machine the gate, the boot-stack check, the pinned measurement and the
@@ -201,6 +208,7 @@ def lay_out_esp(run_dir, loader, images, gdb, ovmf_vars):
     # .debug_* stays in target/: gdb and the boot-stack check read those files. The initrd copy
     # drops it, because the loader maps the payload remainder of this file into dom0.
     size = elfstrip.write_initrd(run_dir / "esp" / ESP_INITRD, images)
+    (run_dir / "esp" / ESP_COMMAND_LINE).write_text(COMMAND_LINE + "\n")
     if gdb:
         (run_dir / "esp" / ESP_GDB).touch()
     shutil.copy(ovmf_vars, run_dir / "OVMF_VARS.fd")
@@ -417,6 +425,22 @@ class Tests(unittest.TestCase):
                 self.assertEqual((run_dir / "esp" / ESP_INITRD).read_bytes(), b"\x7fELF\x7fELF")
                 self.assertEqual((run_dir / "OVMF_VARS.fd").read_bytes(), b"VARS")
                 self.assertEqual((run_dir / "esp" / ESP_GDB).exists(), gdb)
+
+    def test_the_esp_s_command_line_names_the_port_of_the_debug_exit_device(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = Path(directory)
+            loader = run_dir / "aloader.efi"
+            loader.write_bytes(b"MZ")
+            image = run_dir / "kernel"
+            image.write_bytes(b"\x7fELF")
+            vars_fd = run_dir / "vars.fd"
+            vars_fd.write_bytes(b"VARS")
+            lay_out_esp(run_dir, loader, [image], False, vars_fd)
+            # The kernel reads the port in decimal (machine/pc/src/shutdown.rs).
+            self.assertEqual((run_dir / "esp" / "cmdline").read_text(), "qemu_debug_exit_io_base=244\n")
+        args = qemu_args(Path("/run/x"), Path("/w/serial.log"), False, False, None, "/ovmf/OVMF_CODE.fd")
+        self.assertIn(f"isa-debug-exit,iobase={244:#x},iosize=0x04", self.options(args, "-device"))
+        self.assertEqual(DEBUG_EXIT_PORT, 244)
 
     def test_the_initrd_drops_debug_sections_and_leaves_the_source(self):
         with tempfile.TemporaryDirectory() as directory:

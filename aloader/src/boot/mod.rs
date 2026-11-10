@@ -1,14 +1,19 @@
 //! Boot loader integration.
 
+pub mod command_line;
 mod efi_memory;
 mod uefi;
 
 use crate::memory::init_physical_memory_map;
 use crate::memory::{AcpiMemoryType, MemoryRange};
+use astd::string::ArrayString;
 use astd::sync::Mutex;
 
 /// The kernel image passed by the bootloader.
 static KERNEL_IMAGE: Mutex<Option<MemoryRange>> = Mutex::new(None);
+
+/// The kernel's command line as the boot path read it.
+static COMMAND_LINE: Mutex<ArrayString<{ command_line::CAPACITY }>> = Mutex::new(ArrayString::empty());
 
 trait StartInfo {
     /// Creates an iterator through all memory regions.
@@ -51,8 +56,19 @@ pub fn get_kernel_image_range() -> Option<MemoryRange> {
     KERNEL_IMAGE.lock().clone()
 }
 
-/// Records the memory map and the kernel image a boot path found.
-fn consume_start_info<S: StartInfo>(start_info: S, loader_range: MemoryRange) {
+/// Returns the kernel's command line.
+pub fn get_command_line() -> ArrayString<{ command_line::CAPACITY }> {
+    COMMAND_LINE.lock().clone()
+}
+
+/// Records the memory map, the kernel image and the kernel's command line a boot path found.
+fn consume_start_info<S: StartInfo>(
+    start_info: S,
+    loader_range: MemoryRange,
+    command_line: ArrayString<{ command_line::CAPACITY }>,
+) {
+    *COMMAND_LINE.lock() = command_line;
+
     log::info!(
         "[ldr {:#016x}-{:#016x}]",
         loader_range.base(),

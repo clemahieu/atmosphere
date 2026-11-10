@@ -3,8 +3,9 @@
 //! OVMF, or a machine's firmware, starts the loader as an application from the EFI system
 //! partition. The loader reads the initrd (kernel, dom0 and payload, as tools/run.py concatenates
 //! them) from the same partition, takes the ACPI RSDP from the configuration tables, leaves boot
-//! services, and runs the load on a stack of its own. A file `gdb` on that partition makes the load
-//! wait for a debugger before it enters the kernel (crate::debugger).
+//! services, and runs the load on a stack of its own. A file `cmdline` on that partition is the
+//! kernel's command line (super::command_line), and a file `gdb` there makes the load wait for a
+//! debugger before it enters the kernel (crate::debugger).
 
 use core::ffi::c_void;
 use core::ptr;
@@ -17,9 +18,10 @@ use uefi_raw::table::system::SystemTable;
 use uefi_raw::{guid, Guid, Handle, Status};
 
 use astd::boot::PAGE_BYTES;
+use astd::string::ArrayString;
 
 use super::efi_memory::region_type;
-use super::{consume_start_info, StartInfo};
+use super::{command_line, consume_start_info, StartInfo};
 use crate::arch;
 use crate::memory::{AcpiMemoryType, MemoryRange, BOOTSTRAP_SIZE};
 
@@ -27,6 +29,12 @@ use crate::memory::{AcpiMemoryType, MemoryRange, BOOTSTRAP_SIZE};
 /// tools/run.py puts it there.
 static INITRD_PATH: [u16; 7] = [
     b'i' as u16, b'n' as u16, b'i' as u16, b't' as u16, b'r' as u16, b'd' as u16, 0,
+];
+
+/// The path, beside the initrd, of the file that holds the kernel's command line; tools/run.py puts
+/// it there.
+static COMMAND_LINE_PATH: [u16; 8] = [
+    b'c' as u16, b'm' as u16, b'd' as u16, b'l' as u16, b'i' as u16, b'n' as u16, b'e' as u16, 0,
 ];
 
 /// The path, beside the initrd, of the file that makes the loader wait for a debugger; tools/run.py
@@ -64,6 +72,7 @@ extern "efiapi" fn efi_main(image: Handle, system_table: *const SystemTable) -> 
 
     let loader_range = loader_image_range(boot_services, image);
     let initrd = read_initrd(boot_services, image);
+    let command_line = read_command_line(boot_services, image);
     let wait_for_debugger = file_exists(boot_services, image, &DEBUGGER_PATH);
     let rsdp = find_rsdp(system_table);
     log::info!("ACPI RSDP at {:#x}", rsdp);
@@ -83,6 +92,7 @@ extern "efiapi" fn efi_main(image: Handle, system_table: *const SystemTable) -> 
             initrd,
         },
         loader_range,
+        command_line,
     );
 
     unsafe {
@@ -133,19 +143,63 @@ fn open_volume(boot_services: &BootServices, image: Handle) -> *mut FileProtocol
     root
 }
 
+/// Opens the file at `path`, UCS-2 with its terminator, under `root`; `None` when there is none.
+unsafe fn open_if_present(root: *mut FileProtocolV1, path: &[u16]) -> Option<*mut FileProtocolV1> {
+    let mut file: *mut FileProtocolV1 = ptr::null_mut();
+    let status = ((*root).open)(root, &mut file, path.as_ptr(), FileMode::READ, FileAttribute::empty());
+    if status == Status::NOT_FOUND {
+        return None;
+    }
+    check(status, "open");
+    Some(file)
+}
+
 /// Whether the file at `path`, UCS-2 with its terminator, is on the loader's partition.
 fn file_exists(boot_services: &BootServices, image: Handle, path: &[u16]) -> bool {
     let root = open_volume(boot_services, image);
     unsafe {
-        let mut file: *mut FileProtocolV1 = ptr::null_mut();
-        let status = ((*root).open)(root, &mut file, path.as_ptr(), FileMode::READ, FileAttribute::empty());
-        let exists = status != Status::NOT_FOUND;
-        if exists {
-            check(status, "open");
+        let file = open_if_present(root, path);
+        if let Some(file) = file {
             check(((*file).close)(file), "close");
         }
         check(((*root).close)(root), "close volume");
-        exists
+        file.is_some()
+    }
+}
+
+/// The kernel's command line from its file on the loader's partition: empty when there is no file.
+/// Whoever prepared the partition wrote the file, so one the kernel's line cannot hold stops the
+/// boot with the reason.
+fn read_command_line(
+    boot_services: &BootServices,
+    image: Handle,
+) -> ArrayString<{ command_line::CAPACITY }> {
+    let root = open_volume(boot_services, image);
+    // One byte past the capacity shows a longer file to be longer.
+    let mut buffer = [0u8; command_line::CAPACITY + 1];
+    let read = unsafe {
+        let read = open_if_present(root, &COMMAND_LINE_PATH).map(|file| {
+            let mut read = 0;
+            while read < buffer.len() {
+                let mut n = buffer.len() - read;
+                check(
+                    ((*file).read)(file, &mut n, buffer[read..].as_mut_ptr().cast()),
+                    "read the command line",
+                );
+                if n == 0 {
+                    break;
+                }
+                read += n;
+            }
+            check(((*file).close)(file), "close the command line");
+            read
+        });
+        check(((*root).close)(root), "close volume");
+        read
+    };
+    match command_line::from_file(read.map(|read| &buffer[..read])) {
+        Ok(line) => line,
+        Err(refused) => panic!("The command line file was refused: {}", refused),
     }
 }
 
