@@ -269,56 +269,6 @@ mod tests {
         }
     }
 
-    /// What only an x86 kernel names: its instructions, registers and descriptor tables, as the
-    /// lower-case words between a source's punctuation.
-    const X86_WORDS: [&str; 24] = [
-        "x86", "rdtsc", "tsc", "msr", "gdt", "tss", "idt", "ist", "cr0", "cr3", "cr4", "pcid", "pcide", "rsp",
-        "rip", "rax", "rdi", "rsi", "apic", "ioapic", "iopl", "sysret", "lgdt", "hlt",
-    ];
-    /// The same names as the capitalised parts of a type's name, and inline assembly for any target.
-    const ARCH_ONLY_TEXT: [&str; 7] = ["Gdt", "Tss", "Idt", "Ist", "Apic", "Msr", "asm!"];
-
-    /// The kernel's sources outside arch/ build for every target, so they name no x86 item and hold
-    /// no inline assembly (design/arch-module/ item 5). A line that selects by target_arch is the
-    /// selection itself.
-    #[test]
-    fn kernel_shared_sources_name_no_x86() {
-        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../kernel/src");
-        let mut sources = Vec::new();
-        rust_sources(&src, &src.join("arch"), &mut sources);
-        assert!(sources.len() > 10, "found only {} shared sources under {}", sources.len(), src.display());
-        let mut named = Vec::new();
-        for path in sources {
-            let text = std::fs::read_to_string(&path).unwrap();
-            for (number, line) in text.lines().enumerate() {
-                if line.contains("target_arch") {
-                    continue;
-                }
-                let lower = line.to_ascii_lowercase();
-                let words = lower.split(|c: char| !c.is_ascii_alphanumeric());
-                let word = words.filter(|word| X86_WORDS.contains(word));
-                let text = ARCH_ONLY_TEXT.iter().copied().filter(|text| line.contains(text));
-                for found in word.chain(text) {
-                    named.push(format!("{}:{}: {found}", path.strip_prefix(&src).unwrap().display(), number + 1));
-                }
-            }
-        }
-        assert!(named.is_empty(), "x86 named outside kernel/src/arch:\n{}", named.join("\n"));
-    }
-
-    fn rust_sources(dir: &Path, skip: &Path, found: &mut Vec<std::path::PathBuf>) {
-        for entry in std::fs::read_dir(dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                if path != skip {
-                    rust_sources(&path, skip, found);
-                }
-            } else if path.extension().is_some_and(|extension| extension == "rs") {
-                found.push(path);
-            }
-        }
-    }
-
     fn spec_text(path: &str) -> String {
         let full = Path::new(env!("CARGO_MANIFEST_DIR")).join("../").join(path);
         std::fs::read_to_string(&full).unwrap_or_else(|error| panic!("{}: {error}", full.display()))

@@ -31,6 +31,9 @@ const EXTERNAL_BODY_CHECK: &str = "tools/check-external-body.py";
 /// The check that kernel/verified writes no page size, entries a level or size derived from them as a
 /// literal outside the definitions, relative to the project root.
 const PAGE_LITERALS_CHECK: &str = "tools/check-page-literals.py";
+/// The check that the kernel's sources outside kernel/src/arch name no x86 and hold no inline assembly,
+/// relative to the project root.
+const ARCH_SOURCES_CHECK: &str = "tools/check-arch-sources.py";
 /// The check that each file copied from upstream differs from it only by its record under
 /// tools/upstream-copies, relative to the project root.
 const UPSTREAM_COPIES_CHECK: &str = "tools/check-upstream-copies.py";
@@ -83,6 +86,7 @@ enum Step {
     VerifyAarch64,
     ExternalBody,
     PageLiterals,
+    ArchSources,
     UpstreamCopies,
     DesignIndex,
     BootStack,
@@ -93,7 +97,7 @@ enum Step {
 }
 
 impl Step {
-    const ALL: [Step; 16] = [
+    const ALL: [Step; 17] = [
         Step::FileSizes,
         Step::Build,
         Step::BuildToolTests,
@@ -103,6 +107,7 @@ impl Step {
         Step::VerifyAarch64,
         Step::ExternalBody,
         Step::PageLiterals,
+        Step::ArchSources,
         Step::UpstreamCopies,
         Step::DesignIndex,
         Step::BootStack,
@@ -123,6 +128,7 @@ impl Step {
             Step::VerifyAarch64 => "verify aarch64",
             Step::ExternalBody => "external body",
             Step::PageLiterals => "page literals",
+            Step::ArchSources => "arch sources",
             Step::UpstreamCopies => "upstream copies",
             Step::DesignIndex => "design index",
             Step::BootStack => "boot stack",
@@ -156,6 +162,7 @@ impl Step {
             Step::VerifyAarch64 => check_verify(project, &["--target", "aarch64"]).await,
             Step::ExternalBody => check_external_body(project).await,
             Step::PageLiterals => check_page_literals(project).await,
+            Step::ArchSources => check_arch_sources(project).await,
             Step::UpstreamCopies => check_upstream_copies(project).await,
             Step::DesignIndex => check_design_index(project).await,
             Step::BootStack => check_boot_stack(project).await,
@@ -248,8 +255,8 @@ async fn check_build(project: &ProjectHandle) -> Result<String> {
 }
 
 /// build-tool's whole test suite, after the build, since the dom0 run check reads the built dom0. Its
-/// tests include the loader map check, whose lines start with `free page ranges:`, the dom0 run check,
-/// whose lines start with `mapped runs:`, and the check that the kernel's shared sources name no x86.
+/// tests include the loader map check, whose lines start with `free page ranges:`, and the dom0 run
+/// check, whose lines start with `mapped runs:`.
 /// The detail carries each test binary's result line.
 async fn check_build_tool_tests(project: &ProjectHandle) -> Result<String> {
     let output = Command::new("cargo")
@@ -269,7 +276,7 @@ async fn check_build_tool_tests(project: &ProjectHandle) -> Result<String> {
     if results.is_empty() {
         return Err(anyhow!("cargo test of build-tool: no test result line"));
     }
-    Ok(format!("loader map, dom0 run and shared-source checks among them{}", results))
+    Ok(format!("loader map and dom0 run checks among them{}", results))
 }
 
 /// Runs the license check's own tests, then the check over the workspace's graph.
@@ -290,6 +297,13 @@ async fn check_external_body(project: &ProjectHandle) -> Result<String> {
 async fn check_page_literals(project: &ProjectHandle) -> Result<String> {
     run_check(project, PAGE_LITERALS_CHECK, &["--test"]).await?;
     let output = check_output(project, PAGE_LITERALS_CHECK).await?;
+    Ok(output.trim_end().to_string())
+}
+
+/// Runs the arch sources check's own tests, then the check over the kernel's shared sources.
+async fn check_arch_sources(project: &ProjectHandle) -> Result<String> {
+    run_check(project, ARCH_SOURCES_CHECK, &["--test"]).await?;
+    let output = check_output(project, ARCH_SOURCES_CHECK).await?;
     Ok(output.trim_end().to_string())
 }
 
@@ -534,7 +548,7 @@ mod tests {
         assert_eq!(steps(Some(Arch::Aarch64)), vec![Step::VerifyAarch64, Step::Aarch64Boot]);
         let x86_64 = steps(Some(Arch::X86_64));
         assert!(x86_64.contains(&Step::Boot) && x86_64.contains(&Step::Verify));
-        assert!(x86_64.contains(&Step::PageLiterals));
+        assert!(x86_64.contains(&Step::PageLiterals) && x86_64.contains(&Step::ArchSources));
         assert!(!x86_64.contains(&Step::VerifyAarch64) && !x86_64.contains(&Step::Aarch64Boot));
         let both = steps(None);
         assert_eq!(both.len(), x86_64.len() + 2);
