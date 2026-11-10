@@ -12,7 +12,7 @@ use tokio::fs;
 use tokio::process::Command;
 
 use super::build::Arch;
-use super::test::{boot_serial_accepted, TRANSLATION_ENABLED};
+use super::test::boot_log_accepted;
 use super::{GlobalOpts, SubCommand};
 use crate::error::Result;
 use crate::project::{Project, ProjectHandle};
@@ -72,10 +72,7 @@ pub(super) async fn run(global: GlobalOpts) -> Result<()> {
     build(&project, command_line).await?;
     let (code, output) = boot(&project, local.boot_timeout, local.iommu).await?;
     println!("board serial log: {}", project.root().join(SERIAL_LOG).display());
-    let mut held = board_run_accepted(code, &output, command_line)?;
-    if local.iommu {
-        held = translation_enabled(&output, held)?;
-    }
+    let held = board_run_accepted(&project.root(), code, &output, command_line, local.iommu)?;
     println!("board: ok: {}", held);
     Ok(())
 }
@@ -99,34 +96,27 @@ pub(super) async fn gate_boot(project: &ProjectHandle, timeout: u64) -> Result<S
     }
     build(project, None).await?;
     let (code, output) = boot(project, timeout, true).await?;
-    let held = match gate_run_accepted(code, &output)? {
+    let root = project.root();
+    let held = match gate_run_accepted(&root, code, &output)? {
         skip if skip.starts_with(SKIP) => {
             println!("{}", output.trim_end());
             skip
         }
-        held => {
-            let with = translation_enabled(&output, held)?;
+        with => {
             let (code, output) = boot(project, timeout, false).await?;
-            format!("with an SMMUv3, {}; without, {}", with, board_run_accepted(code, &output, None)?)
+            format!("with an SMMUv3, {}; without, {}", with, board_run_accepted(&root, code, &output, None, false)?)
         }
     };
     Ok(format!("{}'s and {}'s tests pass; {}", ESP_BUILD, BOARD_RUN, held))
 }
 
-/// What a run with an SMMUv3 holds besides [`board_run_accepted`]: the kernel enabled its translation.
-fn translation_enabled(output: &str, held: String) -> Result<String> {
-    if !output.contains(TRANSLATION_ENABLED) {
-        return Err(anyhow!("the serial log does not show the SMMUv3's translation enabled"));
-    }
-    Ok(format!("translation enabled; {}", held))
-}
-
-/// What the gate takes from a board run: the skip line of a board that was not reached, or what
-/// [`board_run_accepted`] holds of one that was.
-fn gate_run_accepted(code: Option<i32>, output: &str) -> Result<String> {
+/// What the gate takes from its first board run, the one with an SMMUv3: the skip line of a board
+/// that was not reached, or what [`board_run_accepted`] holds of one that was, the SMMUv3's
+/// translation enabled among it.
+fn gate_run_accepted(root: &Path, code: Option<i32>, output: &str) -> Result<String> {
     match skip_line(output) {
         Some(skip) if code == Some(0) => Ok(format!("{}: this commit did not boot on aarch64", skip)),
-        _ => board_run_accepted(code, output, None),
+        _ => board_run_accepted(root, code, output, None, true),
     }
 }
 
@@ -187,10 +177,17 @@ async fn boot(project: &ProjectHandle, timeout: u64, iommu: bool) -> Result<(Opt
 
 /// Whether the board run is a successful boot: the board was reached, the runner named the host and
 /// launched QEMU under KVM, QEMU exited by itself with status 0, which on virt follows only the
-/// power-off of a run that succeeded, and the serial log shows what the gate requires of the x86_64
-/// boot's. Under `command_line` holding [`FAULT_KEPT`] it
-/// also shows that the kernel served at least one access-flag fault and one dirty-state fault.
-fn board_run_accepted(code: Option<i32>, output: &str, command_line: Option<&str>) -> Result<String> {
+/// power-off of a run that succeeded, and the serial log passes the boot log check the x86_64 boot's
+/// does, with the SMMUv3's translation enabled under `translation`. Under `command_line` holding
+/// [`FAULT_KEPT`] it also shows that the kernel served at least one access-flag fault and one
+/// dirty-state fault.
+fn board_run_accepted(
+    root: &Path,
+    code: Option<i32>,
+    output: &str,
+    command_line: Option<&str>,
+    translation: bool,
+) -> Result<String> {
     if let Some(skip) = skip_line(output) {
         return Err(anyhow!("no run: {}", skip));
     }
@@ -204,12 +201,12 @@ fn board_run_accepted(code: Option<i32>, output: &str, command_line: Option<&str
     if code != Some(0) {
         // The runner's last line says how QEMU ended: `qemu: exit <status>` or `qemu: still running`.
         let ended = output.lines().filter(|line| line.starts_with("qemu: ")).last().unwrap_or("no 'qemu:' line");
-        return Err(match boot_serial_accepted(output, Arch::Aarch64) {
+        return Err(match boot_log_accepted(root, output, Arch::Aarch64, translation) {
             Err(failed) => anyhow!("{} exited with {:?} ({}): {}", BOARD_RUN, code, ended, failed),
             Ok(_) => anyhow!("{} exited with {:?} ({}) after a serial log that holds every check", BOARD_RUN, code, ended),
         });
     }
-    let held = format!("on {} under KVM: {}", host, boot_serial_accepted(output, Arch::Aarch64)?);
+    let held = format!("on {} under KVM: {}", host, boot_log_accepted(root, output, Arch::Aarch64, translation)?);
     if !command_line.is_some_and(|line| line.split(' ').any(|component| component == FAULT_KEPT)) {
         return Ok(held);
     }
@@ -238,7 +235,28 @@ fn faults_served(output: &str) -> Option<(u64, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::command::test::tests::boot_log;
+
+    /// The project root, where the boot log check is.
+    fn root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("build-tool lies in the project root").to_path_buf()
+    }
+
+    /// The serial log of a boot on the PC that passes the boot log check.
+    fn boot_log() -> String {
+        " INFO root holds 2 untyped and 1 frames\u{1b}[0m\n INFO root slot 1: process base 0x8000\n INFO root slot 2: thread\n\
+         INFO root slot 3: console\n INFO root slot 4: power base 0x2000000001000 order 0 rights 0x0\n\
+         INFO root slot 5: untyped base 0x40000000 order 18 rights 0x8\n\
+         \u{1b}[34m INFO root slot 6: untyped\u{1b}[0m\n\
+         INFO root slot 129: frame order 0\n\
+         dom0 eager backed 40\n\
+         dom0 slot checks held\n\
+         dom0 capability done\n\
+         \u{1b}[34m INFO CPU 0 syscall stack 0x1000\u{1b}[0m\n\
+         INFO CPU 1 idle, syscall stack 0x2000\n\
+         flush IPI acknowledged by CPU 1\n\
+         lock contended by 2 cores: pair intact at 400000\n"
+            .to_string()
+    }
 
     /// A board run's output: the runner's lines, the serial log of a boot on virt, and QEMU's exit.
     fn board_output() -> String {
@@ -250,13 +268,13 @@ mod tests {
 
     #[test]
     fn a_run_that_powered_off_after_every_check_passes() {
-        assert!(board_run_accepted(Some(0), &board_output(), None).unwrap().contains("2 to 3 GiB as one 1G untyped"));
+        assert!(board_run_accepted(&root(), Some(0), &board_output(), None, false).unwrap().contains("2 to 3 GiB as one 1G untyped"));
     }
 
     #[test]
     fn a_run_still_on_at_the_timeout_fails() {
         let output = board_output().replace("qemu: exit 0\n", "qemu: still running after 60 s\n");
-        let error = board_run_accepted(Some(1), &output, None).unwrap_err().to_string();
+        let error = board_run_accepted(&root(), Some(1), &output, None, false).unwrap_err().to_string();
         assert!(error.contains("qemu: still running after 60 s"), "{}", error);
     }
 
@@ -265,27 +283,27 @@ mod tests {
         let output = board_output()
             .replace("dom0 slot checks held\ndom0 capability done\n", "dom0 slot checks failed\n")
             .replace("qemu: exit 0\n", "qemu: exit 1\n");
-        let error = board_run_accepted(Some(1), &output, None).unwrap_err().to_string();
+        let error = board_run_accepted(&root(), Some(1), &output, None, false).unwrap_err().to_string();
         assert!(error.contains("qemu: exit 1") && error.contains("check line"), "{}", error);
     }
 
     #[test]
     fn a_run_whose_checks_failed_fails_whatever_qemu_did() {
         let output = board_output().replace("dom0 slot checks held\ndom0 capability done\n", "dom0 slot checks failed\n");
-        assert!(board_run_accepted(Some(1), &output, None).is_err());
-        assert!(board_run_accepted(Some(0), &output, None).unwrap_err().to_string().contains("check line"));
+        assert!(board_run_accepted(&root(), Some(1), &output, None, false).is_err());
+        assert!(board_run_accepted(&root(), Some(0), &output, None, false).unwrap_err().to_string().contains("check line"));
     }
 
     #[test]
     fn a_run_without_the_eager_source_line_fails() {
         let output = board_output().replace("dom0 eager backed 40\n", "");
-        assert!(board_run_accepted(Some(0), &output, None).unwrap_err().to_string().contains("eager source"));
+        assert!(board_run_accepted(&root(), Some(0), &output, None, false).unwrap_err().to_string().contains("eager source"));
     }
 
     #[test]
     fn a_run_on_the_pc_s_memory_map_fails() {
         let output = board_output().replace("base 0x80000000 order 18", "base 0x40000000 order 18");
-        assert!(board_run_accepted(Some(0), &output, None).unwrap_err().to_string().contains("2 to 3 GiB"));
+        assert!(board_run_accepted(&root(), Some(0), &output, None, false).unwrap_err().to_string().contains("2 to 3 GiB"));
     }
 
     /// A board run under the key, with the kernel's line of the faults it served.
@@ -301,55 +319,55 @@ mod tests {
 
     #[test]
     fn a_run_under_the_key_that_served_both_faults_passes() {
-        let held = board_run_accepted(Some(0), &fault_kept_output(310, 42), Some("nologo access_dirty=fault")).unwrap();
+        let held = board_run_accepted(&root(), Some(0), &fault_kept_output(310, 42), Some("nologo access_dirty=fault"), false).unwrap();
         assert!(held.contains("310 access-flag and 42 dirty-state faults served"), "{}", held);
     }
 
     #[test]
     fn a_run_under_the_key_that_served_none_of_a_kind_fails() {
-        let error = board_run_accepted(Some(0), &fault_kept_output(310, 0), Some("access_dirty=fault")).unwrap_err();
+        let error = board_run_accepted(&root(), Some(0), &fault_kept_output(310, 0), Some("access_dirty=fault"), false).unwrap_err();
         assert!(error.to_string().contains("310 access-flag and 0 dirty-state"), "{}", error);
-        assert!(board_run_accepted(Some(0), &fault_kept_output(0, 42), Some("access_dirty=fault")).is_err());
+        assert!(board_run_accepted(&root(), Some(0), &fault_kept_output(0, 42), Some("access_dirty=fault"), false).is_err());
     }
 
     #[test]
     fn a_run_under_the_key_without_the_line_fails() {
-        let error = board_run_accepted(Some(0), &board_output(), Some("access_dirty=fault")).unwrap_err();
+        let error = board_run_accepted(&root(), Some(0), &board_output(), Some("access_dirty=fault"), false).unwrap_err();
         assert!(error.to_string().contains("has no line"), "{}", error);
     }
 
     #[test]
     fn the_line_is_not_asked_of_a_run_without_the_key() {
-        assert!(board_run_accepted(Some(0), &board_output(), Some("nologo")).is_ok());
-        assert!(board_run_accepted(Some(0), &fault_kept_output(0, 0), None).is_ok());
+        assert!(board_run_accepted(&root(), Some(0), &board_output(), Some("nologo"), false).is_ok());
+        assert!(board_run_accepted(&root(), Some(0), &fault_kept_output(0, 0), None, false).is_ok());
     }
 
     #[test]
     fn a_run_names_the_host_it_ran_on_and_kvm() {
-        let held = board_run_accepted(Some(0), &board_output(), None).unwrap();
+        let held = board_run_accepted(&root(), Some(0), &board_output(), None, false).unwrap();
         assert!(held.starts_with("on orangepi5 under KVM: "), "{}", held);
     }
 
     #[test]
     fn a_run_that_does_not_name_its_host_or_kvm_fails() {
         let output = board_output().replace("host: orangepi5\n", "");
-        assert!(board_run_accepted(Some(0), &output, None).unwrap_err().to_string().contains("host"));
+        assert!(board_run_accepted(&root(), Some(0), &output, None, false).unwrap_err().to_string().contains("host"));
         let output = board_output().replace("kvm: accel kvm\n", "");
-        assert!(board_run_accepted(Some(0), &output, None).unwrap_err().to_string().contains("KVM"));
+        assert!(board_run_accepted(&root(), Some(0), &output, None, false).unwrap_err().to_string().contains("KVM"));
     }
 
     #[test]
     fn the_gate_takes_an_unreachable_board_as_a_skip() {
-        let held = gate_run_accepted(Some(0), "skip: orangepi5 unreachable\n").unwrap();
+        let held = gate_run_accepted(&root(), Some(0), "skip: orangepi5 unreachable\n").unwrap();
         assert!(held.starts_with("skip: orangepi5 unreachable"), "{}", held);
     }
 
     #[test]
     fn the_gate_holds_a_reached_board_to_the_boot_checks() {
-        assert!(gate_run_accepted(Some(0), &board_output()).unwrap().starts_with("on orangepi5 under KVM: "));
+        assert!(gate_run_accepted(&root(), Some(0), &iommu_output()).unwrap().starts_with("on orangepi5 under KVM: translation enabled; "));
         let output = board_output().replace("dom0 slot checks held\ndom0 capability done\n", "dom0 slot checks failed\n");
-        assert!(gate_run_accepted(Some(1), &output).is_err());
-        assert!(gate_run_accepted(Some(2), "host: orangepi5\nkvm: accel kvm\n").is_err());
+        assert!(gate_run_accepted(&root(), Some(1), &output).is_err());
+        assert!(gate_run_accepted(&root(), Some(2), "host: orangepi5\nkvm: accel kvm\n").is_err());
     }
 
     /// A board run with an SMMUv3, whose kernel enabled its translation.
@@ -362,16 +380,15 @@ mod tests {
 
     #[test]
     fn a_run_with_an_smmu_that_enabled_translation_passes() {
-        let held = board_run_accepted(Some(0), &iommu_output(), None).unwrap();
-        let held = translation_enabled(&iommu_output(), held).unwrap();
-        assert!(held.starts_with("translation enabled; on orangepi5 under KVM: "), "{}", held);
+        let held = board_run_accepted(&root(), Some(0), &iommu_output(), None, true).unwrap();
+        assert!(held.starts_with("on orangepi5 under KVM: translation enabled; "), "{}", held);
     }
 
     #[test]
     fn a_run_with_an_smmu_that_did_not_enable_translation_fails() {
-        let held = board_run_accepted(Some(0), &board_output(), None).unwrap();
-        let error = translation_enabled(&board_output(), held).unwrap_err();
+        let error = board_run_accepted(&root(), Some(0), &board_output(), None, true).unwrap_err();
         assert!(error.to_string().contains("translation enabled"), "{}", error);
+        assert!(gate_run_accepted(&root(), Some(0), &board_output()).is_err());
     }
 
     #[test]
@@ -383,6 +400,6 @@ mod tests {
     #[test]
     fn an_unreachable_board_is_no_run() {
         let output = "skip: orangepi5 unreachable\n";
-        assert!(board_run_accepted(Some(0), output, None).unwrap_err().to_string().contains("no run: skip: orangepi5 unreachable"));
+        assert!(board_run_accepted(&root(), Some(0), output, None, false).unwrap_err().to_string().contains("no run: skip: orangepi5 unreachable"));
     }
 }

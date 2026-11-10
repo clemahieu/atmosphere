@@ -1,6 +1,7 @@
 //! The gate: what makes a commit tested.
 
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Write};
+use std::path::Path;
 use std::process::{ExitCode, Stdio};
 use std::time::{Duration, Instant};
 
@@ -410,156 +411,51 @@ async fn check_verify(project: &ProjectHandle, args: &[&str]) -> Result<String> 
 async fn check_boot(project: &ProjectHandle, timeout: u64) -> Result<String> {
     run_check(project, RUN, &["--test"]).await?;
     run_check(project, GDB, &["--test"]).await?;
-    let (_, held) = boot(project, timeout, &[]).await?;
+    let held = boot(project, timeout, &[]).await?;
     Ok(format!("tools/run.py's and tools/gdb.py's tests pass; {}", held))
 }
 
 /// Boots with an IOMMU present, which the kernel enables translation on. The plain boot comes after
 /// it, so the serial.log it leaves has no IOMMU.
 async fn check_iommu_boot(project: &ProjectHandle, timeout: u64) -> Result<String> {
-    let (serial, held) = boot(project, timeout, &["--iommu"]).await?;
-    if !serial.contains(TRANSLATION_ENABLED) {
-        return Err(anyhow!("the serial log does not show the IOMMU's translation enabled"));
-    }
-    Ok(format!("translation enabled; {}", held))
+    boot(project, timeout, &["--iommu"]).await
 }
 
-/// What the kernel logs when it turns on the IOMMU's translation.
-pub(super) const TRANSLATION_ENABLED: &str = "Enabling translation";
-
-/// The line dom0 prints through its console when every fixed-slot check held.
-const CONSOLE_LINE: &str = "dom0 slot checks held";
-
-/// The line dom0 prints after that check line, and only then exits with success.
-const EXIT_MARKER: &str = "dom0 capability done";
-
-/// The line dom0 prints once its eager span source reserved a span, backed it a page at a time until
-/// the source refused, wrote and read it, released it, backed a page of it again and gave it all back:
-/// the 64 pages dom0 gives the source, less the three table pages of eight pages each the path to the
-/// span takes, are 40 frames.
-const EAGER_LINE: &str = "dom0 eager backed 40";
-
-/// Whether the serial log holds dom0's exit marker as a line of its own.
-fn exit_marker_printed(serial: &str) -> bool {
-    serial.lines().any(|line| line.trim_end_matches('\r') == EXIT_MARKER)
-}
-
-/// Whether the serial log holds dom0's console line as a line of its own.
-fn console_line_printed(serial: &str) -> bool {
-    serial.lines().any(|line| line.trim_end_matches('\r') == CONSOLE_LINE)
-}
-
-/// What the kernel logs of the root's untyped and frame capabilities, before it prints each slot.
-const ROOT_HOLDS: &str = "root holds ";
-
-/// What the kernel logs for each fixed slot of the root's table, followed by the slot and its kind.
-const ROOT_SLOT: &str = "root slot ";
-
-/// The first untyped and frame slots of the root's table, design/root-process-at-boot/.
-const ROOT_UNTYPED_SLOT: usize = 5;
-const ROOT_FRAME_SLOT: usize = 129;
-
-/// The root's untyped and frame counts when the serial log prints, in order, one line per fixed slot
-/// with its kind: process at 1, thread at 2, console at 3, power at 4, the untyped from 5 and the
-/// frames from 129, as many as the kernel says the root holds, at least one of each.
-fn fixed_slots_printed(serial: &str) -> Result<(usize, usize)> {
-    let holds = serial
-        .lines()
-        .find_map(|line| line.find(ROOT_HOLDS).map(|at| &line[at + ROOT_HOLDS.len()..]))
-        .ok_or_else(|| anyhow!("the serial log does not say what the root holds"))?;
-    let words: Vec<&str> = holds.split(|c: char| !c.is_ascii_alphanumeric()).filter(|word| !word.is_empty()).collect();
-    let (untyped, frames) = match words.as_slice() {
-        [untyped, "untyped", "and", frames, "frames", ..] => (untyped.parse::<usize>(), frames.parse::<usize>()),
-        _ => return Err(anyhow!("the root's holdings are not counted: {}", holds)),
-    };
-    let (untyped, frames) = match (untyped, frames) {
-        (Ok(untyped), Ok(frames)) if untyped > 0 && frames > 0 => (untyped, frames),
-        _ => return Err(anyhow!("the root holds no untyped or no frames: {}", holds)),
-    };
-    let mut expected = vec![(1, "process"), (2, "thread"), (3, "console"), (4, "power")];
-    expected.extend((0..untyped).map(|k| (ROOT_UNTYPED_SLOT + k, "untyped")));
-    expected.extend((0..frames).map(|k| (ROOT_FRAME_SLOT + k, "frame")));
-    let printed: Vec<(usize, &str)> = serial
-        .lines()
-        .filter_map(|line| line.find(ROOT_SLOT).map(|at| &line[at + ROOT_SLOT.len()..]))
-        .map(|slot| {
-            let (index, rest) = slot.split_once(':').unwrap_or((slot, ""));
-            (index.parse().unwrap_or(0), rest.trim_start().split(|c: char| !c.is_ascii_alphabetic()).next().unwrap_or(""))
-        })
-        .collect();
-    match printed.iter().zip(&expected).position(|(printed, expected)| printed != expected) {
-        Some(at) => Err(anyhow!("root slot {} prints as {:?}, not {}", expected[at].0, printed[at].1, expected[at].1)),
-        None if printed.len() != expected.len() => Err(anyhow!(
-            "the serial log prints {} of the root's slots, not {}",
-            printed.len(),
-            expected.len()
-        )),
-        None => Ok((untyped, frames)),
-    }
-}
-
-/// The base of the 1G region the test guest leaves wholly free. The loader allocates in the first GiB
-/// of RAM and the firmware above the second, and RAM starts at 0 on the PC and at 1 GiB on QEMU virt:
-/// design/test-guest-memory/.
-fn free_gigabyte(arch: Arch) -> u64 {
-    match arch {
-        Arch::X86_64 => 0x4000_0000,
-        Arch::Aarch64 => 0x8000_0000,
-    }
-}
-
-/// Whether the serial log shows the root holding the 1G region at `base` as one untyped, a 1G block.
-fn gigabyte_untyped_printed(serial: &str, base: u64) -> bool {
-    // What follows the slot number on the kernel's line for that untyped, up to its rights.
-    let untyped = format!(": untyped base {:#x} order 18 ", base);
-    serial
-        .lines()
-        .filter_map(|line| line.find(ROOT_SLOT).map(|at| &line[at + ROOT_SLOT.len()..]))
-        .any(|slot| slot.trim_start_matches(|c: char| c.is_ascii_digit()).starts_with(&untyped))
-}
-
-/// Runs tools/run.py with `args` and returns the serial log of a boot in which dom0 exited with
-/// success, which it does only when the kernel gave the statuses it expected, with what the gate saw
-/// of it. The serial log shows the kernel's per-slot lines with their kinds, the 1G untyped among
-/// them, dom0's check line and exit marker, and CPU 1 idle beside it.
-async fn boot(project: &ProjectHandle, timeout: u64, args: &[&str]) -> Result<(String, String)> {
+/// Runs tools/run.py with `args` and returns what the gate saw of a boot in which dom0 exited with
+/// success, which it does only when the kernel gave the statuses it expected, and whose serial log
+/// passes the boot log check, with the IOMMU's translation enabled under `--iommu`.
+async fn boot(project: &ProjectHandle, timeout: u64, args: &[&str]) -> Result<String> {
     let serial = run_boot(project, timeout, args).await?;
-    let held = boot_serial_accepted(&serial, Arch::X86_64)?;
-    Ok((serial, held))
+    boot_log_accepted(&project.root(), &serial, Arch::X86_64, args.contains(&"--iommu"))
 }
 
-/// The lines the serial log of a successful boot on `arch` must show.
-pub(super) fn boot_serial_accepted(serial: &str, arch: Arch) -> Result<String> {
-    let (untyped, frames) = fixed_slots_printed(serial)?;
-    let base = free_gigabyte(arch);
-    let gigabyte = format!("{} to {} GiB as one 1G untyped", base >> 30, (base >> 30) + 1);
-    if !gigabyte_untyped_printed(serial, base) {
-        return Err(anyhow!("the serial log does not show the root holding {}", gigabyte));
+/// The boot log check, relative to the project root.
+const BOOT_LOG_CHECK: &str = "tools/check-boot-log.py";
+
+/// Holds a dom0 boot's serial log on `arch` to the boot log check, with the IOMMU's translation
+/// enabled under `translation`, and returns what held or the check that failed.
+pub(super) fn boot_log_accepted(root: &Path, serial: &str, arch: Arch, translation: bool) -> Result<String> {
+    let mut check = std::process::Command::new(root.join(BOOT_LOG_CHECK));
+    check.args(["--arch", &arch.to_string()]);
+    if translation {
+        check.arg("--translation");
     }
-    if !console_line_printed(serial) {
-        return Err(anyhow!("the serial log does not hold dom0's check line"));
+    let mut child = check
+        .arg("-")
+        .current_dir(root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .with_context(|| BOOT_LOG_CHECK.to_string())?;
+    child.stdin.take().expect("stdin is piped").write_all(serial.as_bytes())?;
+    let output = child.wait_with_output()?;
+    let said = String::from_utf8_lossy(&output.stdout).trim_end().to_string();
+    match output.status.code() {
+        Some(0) => Ok(said),
+        Some(1) => Err(anyhow!("{}", said)),
+        _ => Err(anyhow!("{}: {}", BOOT_LOG_CHECK, output.status)),
     }
-    if !exit_marker_printed(serial) {
-        return Err(anyhow!("the serial log does not show dom0's exit marker"));
-    }
-    if !serial.lines().any(|line| line.trim_end_matches('\r') == EAGER_LINE) {
-        return Err(anyhow!("the serial log does not show dom0's eager source backing 40 pages: {:?}", EAGER_LINE));
-    }
-    if !second_core_idle(serial) {
-        return Err(anyhow!("the serial log does not show CPU 1 idle on a syscall stack of its own"));
-    }
-    if !serial.contains(FLUSH_ACKNOWLEDGED) {
-        return Err(anyhow!("the serial log does not show CPU 1 acknowledging a flush IPI"));
-    }
-    if !serial.contains(LOCK_CONTENDED) {
-        return Err(anyhow!("the serial log does not show both cores contending for the kernel's lock"));
-    }
-    Ok(format!(
-        "exit status 0, the kernel's per-slot lines with their kinds ({} untyped, {} frames), {}, dom0's \
-         check line, exit marker and eager source line, CPU 1 idle on its own stack, a flush IPI acknowledged, the lock \
-         contended",
-        untyped, frames, gigabyte
-    ))
 }
 
 /// Runs tools/run.py with `args` and returns the serial log of a run that exited with status 0.
@@ -618,32 +514,8 @@ fn marked_lines(output: &str, marker: &str) -> String {
         .collect()
 }
 
-/// Whether the serial log shows CPU 1 reaching its idle loop, on a different syscall stack from CPU 0.
-fn second_core_idle(serial: &str) -> bool {
-    match (
-        syscall_stack(serial, "CPU 0 syscall stack "),
-        syscall_stack(serial, "CPU 1 idle, syscall stack "),
-    ) {
-        (Some(first), Some(second)) => first != second,
-        _ => false,
-    }
-}
-
-/// What the kernel logs once CPU 1 has taken a flush IPI and acknowledged it.
-const FLUSH_ACKNOWLEDGED: &str = "flush IPI acknowledged by CPU 1";
-
-/// What the kernel logs once both cores have contended for its lock with the protected pair intact.
-const LOCK_CONTENDED: &str = "lock contended by 2 cores: pair intact at 400000";
-
-/// The hexadecimal address after `label` in the serial log.
-fn syscall_stack(serial: &str, label: &str) -> Option<u64> {
-    let digits = serial.split(label).nth(1)?.strip_prefix("0x")?;
-    let end = digits.find(|c: char| !c.is_ascii_hexdigit()).unwrap_or(digits.len());
-    u64::from_str_radix(&digits[..end], 16).ok()
-}
-
 #[cfg(test)]
-pub(super) mod tests {
+mod tests {
     use super::*;
 
     #[test]
@@ -728,153 +600,5 @@ pub(super) mod tests {
     #[test]
     fn no_results_line_is_not_zero_errors() {
         assert_eq!(parse_verify_errors("error: cannot find macro\n"), None);
-    }
-
-    /// A boot log with the lines the gate keeps, and no capability-entry line.
-    pub(in crate::command) fn boot_log() -> String {
-        format!(
-            "{}\
-             dom0 eager backed 40\n\
-             dom0 slot checks held\n\
-             dom0 capability done\n\
-             \u{1b}[34m INFO CPU 0 syscall stack 0x1000\u{1b}[0m\n\
-             INFO CPU 1 idle, syscall stack 0x2000\n\
-             flush IPI acknowledged by CPU 1\n\
-             lock contended by 2 cores: pair intact at 400000\n",
-            slot_lines("frame")
-        )
-    }
-
-    #[test]
-    fn a_boot_without_a_capability_entry_line_passes() {
-        let log = boot_log();
-        assert!(!log.contains("capability entry"));
-        assert!(boot_serial_accepted(&log, Arch::X86_64).unwrap().contains("1 to 2 GiB as one 1G untyped"));
-
-        let no_console = log.replace("dom0 slot checks held\n", "");
-        assert!(boot_serial_accepted(&no_console, Arch::X86_64).unwrap_err().to_string().contains("check line"));
-
-        let no_eager = log.replace("dom0 eager backed 40\n", "");
-        assert!(boot_serial_accepted(&no_eager, Arch::X86_64).unwrap_err().to_string().contains("eager source"));
-
-        let fewer_pages = log.replace("dom0 eager backed 40\n", "dom0 eager backed 39\n");
-        assert!(boot_serial_accepted(&fewer_pages, Arch::X86_64).unwrap_err().to_string().contains("eager source"));
-
-        let no_exit = log.replace("dom0 capability done\n", "");
-        assert!(boot_serial_accepted(&no_exit, Arch::X86_64).unwrap_err().to_string().contains("exit marker"));
-
-        let no_slot = log.replace(" INFO root slot 2: thread\n", "");
-        assert!(boot_serial_accepted(&no_slot, Arch::X86_64).is_err());
-
-        let no_power = log.replace(" INFO root slot 4: power base 0x2000000001000 order 0 rights 0x0\n", "");
-        assert!(boot_serial_accepted(&no_power, Arch::X86_64).unwrap_err().to_string().contains("root slot 4"));
-
-        let console_twice = log.replace("root slot 4: power", "root slot 4: console");
-        assert!(boot_serial_accepted(&console_twice, Arch::X86_64).unwrap_err().to_string().contains("not power"));
-
-        let no_gigabyte = log.replace("base 0x40000000 order 18", "base 0x40000000 order 17");
-        assert!(boot_serial_accepted(&no_gigabyte, Arch::X86_64).unwrap_err().to_string().contains("1G untyped"));
-
-        // QEMU virt's RAM starts at 1 GiB, so there the block is 2 to 3 GiB and the PC's does not count.
-        let virt = log.replace("base 0x40000000 order 18", "base 0x80000000 order 18");
-        assert!(boot_serial_accepted(&virt, Arch::Aarch64).unwrap().contains("2 to 3 GiB as one 1G untyped"));
-        assert!(boot_serial_accepted(&virt, Arch::X86_64).unwrap_err().to_string().contains("1 to 2 GiB as one 1G untyped"));
-        assert!(boot_serial_accepted(&log, Arch::Aarch64).unwrap_err().to_string().contains("2 to 3 GiB as one 1G untyped"));
-
-        let no_idle = log.replace("CPU 1 idle, syscall stack 0x2000\n", "");
-        assert!(boot_serial_accepted(&no_idle, Arch::X86_64).unwrap_err().to_string().contains("CPU 1 idle"));
-
-        let no_flush = log.replace("flush IPI acknowledged by CPU 1\n", "");
-        assert!(boot_serial_accepted(&no_flush, Arch::X86_64).unwrap_err().to_string().contains("flush IPI"));
-
-        let no_lock = log.replace("lock contended by 2 cores: pair intact at 400000\n", "");
-        assert!(boot_serial_accepted(&no_lock, Arch::X86_64).unwrap_err().to_string().contains("contending"));
-    }
-
-    #[test]
-    fn console_line_is_a_line_of_its_own() {
-        assert!(console_line_printed(" INFO root slot 3: console\ndom0 slot checks held\n INFO root slot 4: power\n"));
-        assert!(console_line_printed("x\r\ndom0 slot checks held\r\n"));
-        assert!(!console_line_printed(" INFO dom0 slot checks held\n"));
-        assert!(!console_line_printed("dom0 slot checks\n"));
-    }
-
-    /// The kernel's slot lines for a root with two untyped and one frame.
-    fn slot_lines(frame_kind: &str) -> String {
-        format!(
-            " INFO root holds 2 untyped and 1 frames\u{1b}[0m\n INFO root slot 1: process base 0x8000\n INFO root slot 2: thread\n\
-             INFO root slot 3: console\n INFO root slot 4: power base 0x2000000001000 order 0 rights 0x0\n\
-             INFO root slot 5: untyped base 0x40000000 order 18 rights 0x8\n\
-             \u{1b}[34m INFO root slot 6: untyped\u{1b}[0m\n\
-             INFO root slot 129: {} order 0\n",
-            frame_kind
-        )
-    }
-
-    #[test]
-    fn the_free_gigabyte_is_one_untyped() {
-        let pc = free_gigabyte(Arch::X86_64);
-        assert_eq!(pc, 0x4000_0000);
-        assert!(gigabyte_untyped_printed(&slot_lines("frame"), pc));
-        assert!(gigabyte_untyped_printed(" INFO root slot 9: untyped base 0x40000000 order 18 rights 0x8\u{1b}[0m\r\n", pc));
-        // Another kind, another base, another order, and a base or an order this one is a prefix of.
-        assert!(!gigabyte_untyped_printed(" INFO root slot 129: frame base 0x40000000 order 18 rights 0x8\n", pc));
-        assert!(!gigabyte_untyped_printed(" INFO root slot 5: untyped base 0x0 order 18 rights 0x8\n", pc));
-        assert!(!gigabyte_untyped_printed(" INFO root slot 5: untyped base 0x40000000 order 9 rights 0x8\n", pc));
-        assert!(!gigabyte_untyped_printed(" INFO root slot 5: untyped base 0x400000000 order 18 rights 0x8\n", pc));
-        assert!(!gigabyte_untyped_printed(" INFO root slot 5: untyped base 0x40000000 order 180 rights 0x8\n", pc));
-        assert!(!gigabyte_untyped_printed(" INFO root holds 2 untyped and 1 frames\n", pc));
-
-        // The kernel's line for QEMU virt's block, where RAM starts at 1 GiB.
-        let virt = free_gigabyte(Arch::Aarch64);
-        assert_eq!(virt, 0x8000_0000);
-        assert!(gigabyte_untyped_printed(" INFO root slot 5: untyped base 0x80000000 order 18 rights 0x8\n", virt));
-        assert!(!gigabyte_untyped_printed(" INFO root slot 5: untyped base 0x80000000 order 16 rights 0x8\n", virt));
-        assert!(!gigabyte_untyped_printed(&slot_lines("frame"), virt));
-    }
-
-    #[test]
-    fn a_log_missing_the_exit_marker_does_not_pass() {
-        let slots = slot_lines("frame");
-        assert!(fixed_slots_printed(&slots).is_ok());
-        assert!(!exit_marker_printed(&slots));
-        assert!(exit_marker_printed(&format!("{slots}dom0 capability done\n")));
-        assert!(exit_marker_printed("x\r\ndom0 capability done\r\n"));
-        assert!(!exit_marker_printed(" INFO dom0 capability done\n"));
-    }
-
-    #[test]
-    fn a_log_with_a_wrong_slot_kind_does_not_pass() {
-        assert!(fixed_slots_printed(&slot_lines("page")).is_err());
-        assert_eq!(fixed_slots_printed(&slot_lines("frame")).unwrap(), (2, 1));
-    }
-
-    #[test]
-    fn fixed_slots_are_each_printed_with_their_kind() {
-        assert_eq!(fixed_slots_printed(&slot_lines("frame")).unwrap(), (2, 1));
-        assert!(fixed_slots_printed(&slot_lines("untyped")).is_err());
-        let missing = slot_lines("frame").replace(" INFO root slot 2: thread\n", "");
-        assert!(fixed_slots_printed(&missing).is_err());
-        let extra = format!("{} INFO root slot 130: frame\n", slot_lines("frame"));
-        assert!(fixed_slots_printed(&extra).is_err());
-        let empty = slot_lines("frame").replace("holds 2 untyped", "holds 0 untyped");
-        assert!(fixed_slots_printed(&empty).is_err());
-        assert!(fixed_slots_printed(" INFO root slot 1: process\n").is_err());
-    }
-
-    #[test]
-    fn second_core_idle_on_its_own_stack() {
-        let serial = "\u{1b}[34m INFO CPU 0 syscall stack 0x1000\u{1b}[0m\n INFO CPU 1 idle, syscall stack 0x2000\n";
-        assert!(second_core_idle(serial));
-    }
-
-    #[test]
-    fn second_core_sharing_a_stack_is_not_idle() {
-        assert!(!second_core_idle("CPU 0 syscall stack 0x1000\nCPU 1 idle, syscall stack 0x1000\n"));
-    }
-
-    #[test]
-    fn no_second_core_is_not_idle() {
-        assert!(!second_core_idle("CPU 0 syscall stack 0x1000\n"));
     }
 }
