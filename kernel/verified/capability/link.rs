@@ -2293,6 +2293,37 @@ impl CapKernel {
         assert(post.view() == (State { shares: post.view().shares, ..pre.view() }));
     }
 
+    /// What a cut leaves shared: with no parent, what was; with one, what a walk not through the entry
+    /// that named t still finds.
+    pub proof fn lemma_cut_shares(pre: Self, post: Self, t: usize)
+        requires
+            Self::tree_cut(pre, post, t),
+        ensures
+            ({
+                let a = tree_of(&pre.table_pages, &pre.spaces);
+                let q = a.record(t).parent;
+                &&& q is None ==> post.view().shares == pre.view().shares
+                &&& q is Some ==> post.view().shares
+                    == shares_surviving(a, |r: usize, p: SpacePath| passes_through(a, r, p, q->0.table, q->0.entry))
+            }),
+    {
+        let a = tree_of(&pre.table_pages, &pre.spaces);
+        let b = tree_of(&post.table_pages, &post.spaces);
+        let q = a.record(t).parent;
+        if q is Some {
+            let gone = |r: usize, p: SpacePath| passes_through(a, r, p, q->0.table, q->0.entry);
+            reveal(walks_detached);
+            assert forall|s: usize, p: SpacePath| #[trigger] walk(b, s, p) == if gone(s, p) { None } else { walk(a, s, p) } by {
+                assert(walk(b, s, p) == (if passes_through(a, s, p, q->0.table, q->0.entry) { None } else { walk(a, s, p) }));
+            }
+            assert forall|s: usize| #![trigger is_device(b, s)] #![trigger is_device(a, s)]
+                a.is_root(s) && b.is_root(s) implies is_device(b, s) == is_device(a, s) by {
+                assert(b.space_records[s].value().kind == a.space_records[s].value().kind);
+            }
+            lemma_walks_ended_shares(a, b, gone);
+        }
+    }
+
     /// Two steps that each only take walks away take only walks away.
     pub proof fn lemma_shrunk_compose(a: Self, b: Self, c: Self)
         requires

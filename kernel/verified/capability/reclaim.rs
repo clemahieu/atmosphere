@@ -333,14 +333,20 @@ impl CapKernel {
 
     /// What unlinking the hidden node of the table page at `base` did to self: as table_unlinked says.
     /// Every capability is as it was, and a device space shares no more, having lost the walks through
-    /// the page.
+    /// the page: exactly what a walk not through the entry naming the page still finds, since another
+    /// path may map the same frame.
     pub open spec fn table_page_unlinked(&self, post: Self, root: usize, from: usize, base: usize) -> bool {
         let untyped = self.tables.node_of(root, from);
+        let a = tree_of(&self.table_pages, &self.spaces);
+        let q = a.record(base).parent;
         &&& self.view().holds_right(root, untyped, Right::Retype)
         &&& Self::table_unlinked(*self, post, base)
         &&& Self::caps_frame(*self, post, base, base)
         &&& forall|x: usize| #[trigger] post.is_cap(x) == self.is_cap(x)
         &&& sheds_shares(self.view(), post.view())
+        &&& q is None ==> post.view().shares == self.view().shares
+        &&& q is Some ==> post.view().shares
+            == shares_surviving(a, |r: usize, p: SpacePath| passes_through(a, r, p, q->0.table, q->0.entry))
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&self.list, &self.tables)
         &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base })
     }
@@ -3321,6 +3327,8 @@ impl CapKernel {
             Self::lemma_revoke_hidden_holders(cut, post, base);
             Self::lemma_tlb_same(cut, post);
             Self::lemma_cut_sheds(pre, cut, base);
+            Self::lemma_cut_shares(pre, cut, base);
+            assert(post.view().shares == cut.view().shares);
             Self::lemma_unlink_discharges(cut, post, root, untyped, base);
             Self::lemma_cut_recorded_same(pre, cut, post, base);
             Self::lemma_cut_shrunk(pre, cut, base);
