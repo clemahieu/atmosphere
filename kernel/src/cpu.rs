@@ -1,17 +1,12 @@
-//! The per-CPU data structure.
+//! The per-core block.
 //!
-//! The [`Cpu`] data structure is set as the `GS` base on the CPU.
-//! It currently consists of the following:
-//!
-//! - GDT
-//! - TSS
-//! - IST stack spaces
+//! Each core has a [`Cpu`]. The arch module keeps the pointer through which a core finds its own
+//! (`arch::set_core_pointer`, `arch::core_pointer`) and adds the state its instruction set needs
+//! (`arch::CoreState`). design/one-lock-bounded-steps/ says what may live here, outside the lock.
 
 use core::ptr;
 
-use crate::arch::msr;
-
-use crate::arch::gdt::{GlobalDescriptorTable, TaskStateSegment};
+use crate::arch;
 use crate::thread::SwitchDecision;
 use verified::arch::Registers;
 
@@ -26,20 +21,16 @@ static mut CPUS: [Cpu; CPU_SLOTS] = [NEW_CPU; CPU_SLOTS];
 
 /// Interrupt and syscall stacks. Boot's copy of BootInfo is on the boot stack, not on these.
 /// design/test-guest-memory/.
-const IST_STACK_SIZE: usize = 64 * 1024;
+const KERNEL_STACK_SIZE: usize = 64 * 1024;
 
 /// Per-processor data for a CPU.
 #[repr(C, align(4096))]
 pub struct Cpu {
-    /// A pointer to ourselves.
-    ///
-    /// We do a `mov rax, gs:[GS_SELF_PTR_OFFSET]` to get our own address.
-    /// We also want to be able to easily access other fields directly.
+    /// A pointer to ourselves, the first field, so that a core can load its block's address from
+    /// the block.
     pub self_ptr: *const Cpu,
 
-    /// The CPU ID.
-    ///
-    /// Currently it's the logical APIC ID.
+    /// The CPU's index.
     pub id: usize,
 
     /// The state of the parked thread.
@@ -48,27 +39,15 @@ pub struct Cpu {
     /// The context switch decision upon exiting the kernel.
     pub switch_decision: SwitchDecision,
 
-    /// The Global Descriptor Table.
-    ///
-    /// See [crate::arch::gdt] for a list of indices and their associated usages.
-    pub gdt: GlobalDescriptorTable,
+    /// What this core's instruction set keeps per core.
+    pub arch: arch::CoreState,
 
-    /// The Task State Segment.
-    pub tss: TaskStateSegment,
-
-    /// The Interrupt Stacks.
-    pub ist: [IstStack; 7],
-
-    pub syscall_stack: IstStack,
+    pub syscall_stack: KernelStack,
 
     /// The stack pointer for syscalls.
     ///
     /// We do not support nested syscalls.
     pub syscall_sp: u64,
-
-    /// The user's stack pointer, held here by the syscall entry while it switches to the syscall stack,
-    /// so that no argument register has to hold it.
-    pub user_rsp: u64,
 }
 
 /// A stack. Its top must be 16-byte aligned: a byte array alone could leave the syscall stack
@@ -76,8 +55,8 @@ pub struct Cpu {
 #[repr(C, align(16))]
 pub struct Stack<const SZ: usize>([u8; SZ]);
 
-/// An IST stack.
-pub type IstStack = Stack<IST_STACK_SIZE>;
+/// A stack the kernel runs on after it has left its boot stack.
+pub type KernelStack = Stack<KERNEL_STACK_SIZE>;
 
 impl<const SZ: usize> Stack<SZ> {
     pub const fn new() -> Self {
@@ -101,33 +80,21 @@ impl Cpu {
             id: 0,
             parked: Registers::zeroed(),
             switch_decision: SwitchDecision::NoSwitching,
-            gdt: GlobalDescriptorTable::empty(),
-            tss: TaskStateSegment::new(),
-            ist: [
-                IstStack::new(),
-                IstStack::new(),
-                IstStack::new(),
-                IstStack::new(),
-                IstStack::new(),
-                IstStack::new(),
-                IstStack::new(),
-            ],
-            syscall_stack: IstStack::new(),
+            arch: arch::CoreState::new(),
+            syscall_stack: KernelStack::new(),
             syscall_sp: 0,
-            user_rsp: 0,
         }
     }
 }
 
 /// Returns a handle to the current CPU's data structure.
 pub fn get_current() -> &'static mut Cpu {
-    let address = crate::read_current_cpu_field!(self_ptr) as *mut Cpu;
-    unsafe { &mut *address }
+    unsafe { &mut *arch::core_pointer() }
 }
 
 /// Returns the current CPU ID.
 pub fn get_cpu_id() -> usize {
-    crate::read_current_cpu_field!(id) as usize
+    unsafe { (*arch::core_pointer()).id }
 }
 
 /// Initialize the CPU-local data structure.
@@ -144,33 +111,7 @@ pub unsafe fn init_cpu(cpu_id: usize) {
     cpu.id = cpu_id;
     cpu.syscall_sp = cpu.syscall_stack.bottom() as u64;
 
-    msr::wrmsr(msr::GS_BASE, address as u64);
-}
-
-/// CR0.MP, CR0.EM, CR0.NE, CR0.WP, CR0.NW and CR0.CD.
-const CR0_MONITOR_COPROCESSOR: u64 = 1 << 1;
-const CR0_EMULATE_COPROCESSOR: u64 = 1 << 2;
-const CR0_NUMERIC_ERROR: u64 = 1 << 5;
-const CR0_WRITE_PROTECT: u64 = 1 << 16;
-const CR0_NOT_WRITE_THROUGH: u64 = 1 << 29;
-const CR0_CACHE_DISABLE: u64 = 1 << 30;
-/// CR4.OSFXSR and CR4.OSXMMEXCPT.
-const CR4_OSFXSR: u64 = 1 << 9;
-const CR4_OSXMMEXCPT: u64 = 1 << 10;
-
-/// Sets the control bits the kernel relies on. Ring 0 cannot write through a read-only mapping,
-/// caching is on, and threads can use x87 and SSE: no x87 emulation, WAIT checks CR0.TS, x87
-/// errors raise #MF, the SSE instructions and FXSAVE are on, and an unmasked SIMD exception raises
-/// #XM. Every core sets this itself, so none depends on what firmware or the trampoline left.
-pub unsafe fn init_control_registers() {
-    let mut cr0 = crate::arch::read_cr0();
-    let mut cr4 = crate::arch::read_cr4();
-    cr0 &= !(CR0_EMULATE_COPROCESSOR | CR0_NOT_WRITE_THROUGH | CR0_CACHE_DISABLE);
-    cr0 |= CR0_MONITOR_COPROCESSOR | CR0_NUMERIC_ERROR | CR0_WRITE_PROTECT;
-    cr4 |= CR4_OSFXSR | CR4_OSXMMEXCPT;
-    crate::arch::write_cr0(cr0);
-    crate::arch::write_cr4(cr4);
-    log::info!("CPU {}: CR0 {:#x}, CR4 {:#x}", get_cpu_id(), cr0, cr4);
+    arch::set_core_pointer(address);
 }
 
 /// Spins until `done`. Whether it spins at all depends on how far another core has got, so the loop

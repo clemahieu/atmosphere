@@ -31,11 +31,6 @@ pub const IST_IRQ: usize = 2;
 /// The global IDT. Written only by `init` on CPU 0, before any core loads it; only read after that.
 static mut GLOBAL_IDT: Idt = Idt::new();
 
-/// An amount of cycles.
-#[derive(Debug)]
-#[repr(transparent)]
-pub struct Cycles(pub usize);
-
 #[repr(C)]
 pub(crate) struct TrampolineMarker(());
 

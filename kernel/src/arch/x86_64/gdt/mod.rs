@@ -32,7 +32,7 @@ const GDT_F_LONG_MODE: u8 = 1 << 5;
 ///
 /// This must be called only once for each CPU reset.
 pub unsafe fn init_cpu() {
-    let cpu = crate::cpu::get_current();
+    let cpu = &mut crate::cpu::get_current().arch;
 
     // Initialize TSS
     let tss_addr = {

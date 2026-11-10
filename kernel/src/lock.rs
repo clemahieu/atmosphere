@@ -98,7 +98,7 @@ impl<T> Drop for Guard<'_, T> {
     }
 }
 
-/// Times each hold of a lock and each wait for it. A build option, since three TSC reads per hold is
+/// Times each hold of a lock and each wait for it. A build option, since three reads of the cycle counter per hold is
 /// a real share of a syscall and would change the numbers it sits beside.
 #[cfg(feature = "lock_stats")]
 mod stats {
@@ -107,7 +107,7 @@ mod stats {
     const REPORT_EVERY: u64 = 4096;
 
     pub fn now() -> u64 {
-        crate::arch::rdtsc()
+        crate::arch::cycles()
     }
 
     #[derive(Clone, Copy)]
@@ -142,7 +142,7 @@ mod stats {
 
         pub fn log(&self) {
             log::info!(
-                "{} lock: {} holds, held mean {} max {}, waited mean {} max {} TSC cycles",
+                "{} lock: {} holds, held mean {} max {}, waited mean {} max {} cycles",
                 self.name,
                 self.holds,
                 self.held_total / self.holds,

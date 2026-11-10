@@ -8,11 +8,13 @@ use core::arch::asm;
 use core::ffi::c_void;
 use core::mem::size_of;
 
-mod gs;
 pub mod gdt;
 pub mod interrupt;
 pub mod syscalls;
+mod this_core;
 pub mod write_protect;
+
+pub use this_core::{core_pointer, init, init_boot_core, init_core, set_core_pointer, translation_root, CoreState};
 
 /// A privilege level: a selector's RPL and a descriptor's DPL. APM 2 §4.9.1.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -149,9 +151,15 @@ pub unsafe fn spin_forever() -> ! {
     }
 }
 
-/// The cycle counter.
-pub fn rdtsc() -> u64 {
+/// The cycle counter: the TSC.
+pub fn cycles() -> u64 {
     unsafe { core::arch::x86_64::_rdtsc() }
+}
+
+/// How many cycles of [`cycles`] a boot check waits for another core before it reports that the core
+/// did not answer: seconds on any machine this runs on, where a core that answers takes microseconds.
+pub fn stall_cycles() -> u64 {
+    20_000_000_000
 }
 
 /// Waits for the next interrupt.
@@ -179,7 +187,7 @@ pub unsafe fn write_cr4(cr4: u64) {
     asm!("mov cr4, {}", in(reg) cr4);
 }
 
-/// Enters user code at `pc` with stack `sp`. `rdi` and `rsi` are the entry arguments.
+/// Enters user code at `pc` with stack `sp` and two entry arguments, which it finds in `rdi` and `rsi`.
 pub unsafe fn enter_userspace(pc: *const c_void, sp: *mut c_void, rdi: u64, rsi: u64) -> ! {
     log::info!("Going to sysret into {:x?}", pc);
     asm!(

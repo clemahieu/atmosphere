@@ -9,6 +9,7 @@
 use verified::arch::flush_every_context;
 use verified::define::NUM_CPUS;
 
+use crate::arch;
 use crate::cpu;
 use crate::machine::{self, FLUSH_VECTOR};
 use crate::lock::Locked;
@@ -19,9 +20,6 @@ struct FlushState {
 }
 
 static FLUSH: Locked<FlushState> = Locked::new("flush", FlushState { epoch: 0, acked: [0; NUM_CPUS] });
-
-/// How long the boot test waits, in TSC cycles.
-const ACK_CYCLES: u64 = 20_000_000_000;
 
 /// Starts a flush on `target`, returning the epoch its acknowledgement must reach.
 pub fn start(target: usize) -> usize {
@@ -56,21 +54,21 @@ pub fn check_second_core() {
     let (mut fastest, mut total) = (u64::MAX, 0);
     let mut epoch = 0;
     for _ in 0..CHECK_ROUNDS {
-        let start_tsc = crate::arch::rdtsc();
+        let started = arch::cycles();
         epoch = start(1);
         while !acknowledged(1, epoch) {
-            if crate::arch::rdtsc() - start_tsc > ACK_CYCLES {
+            if arch::cycles() - started > arch::stall_cycles() {
                 log::error!("CPU 1 did not acknowledge a flush IPI");
                 return;
             }
             core::hint::spin_loop();
         }
-        let cycles = crate::arch::rdtsc() - start_tsc;
+        let cycles = arch::cycles() - started;
         fastest = fastest.min(cycles);
         total += cycles;
     }
     log::info!(
-        "flush IPI acknowledged by CPU 1 at epoch {}: fastest {} mean {} TSC cycles over {} rounds",
+        "flush IPI acknowledged by CPU 1 at epoch {}: fastest {} mean {} cycles over {} rounds",
         epoch, fastest, total / CHECK_ROUNDS, CHECK_ROUNDS,
     );
 }

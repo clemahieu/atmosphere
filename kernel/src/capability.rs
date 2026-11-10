@@ -174,8 +174,8 @@ pub fn boot(boot_info: &BootInfo) -> Entry {
         );
     }
 
-    let pcid = kernel.load_space(0, process);
-    crate::arch::switch_address_space(process + SPACE_ROOT_PAGE * PAGE_BYTES as usize, pcid);
+    let asid = kernel.load_space(0, process);
+    crate::arch::switch_address_space(process + SPACE_ROOT_PAGE * PAGE_BYTES as usize, asid);
     kernel.enter_boot_thread(0, page(THREAD_PAGE));
     *CAP_KERNEL.lock() = Some(kernel);
 

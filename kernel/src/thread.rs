@@ -1,9 +1,13 @@
 //! Threading.
 
-use crate::arch::interrupt::Cycles;
 use verified::arch::Registers;
 use crate::cpu;
 pub use verified::bridge::SwitchDecision;
+
+/// A time slice, in ticks of the machine's timer.
+#[derive(Debug)]
+#[repr(transparent)]
+pub struct Cycles(pub usize);
 
 /// Schedules the next thread, returning its time slice.
 pub fn schedule(_regs: &mut Registers) -> Option<Cycles> {

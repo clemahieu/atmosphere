@@ -3,7 +3,7 @@
 use core::arch::{asm, global_asm, naked_asm};
 
 use memoffset::offset_of;
-use crate::arch::{msr, Ring, SegmentSelector};
+use crate::arch::{msr, CoreState, Ring, SegmentSelector};
 
 use crate::cpu::Cpu;
 use crate::arch::gdt::GlobalDescriptorTable;
@@ -303,7 +303,7 @@ unsafe extern "C" fn sys_entry() -> ! {
         user_ss = const GlobalDescriptorTable::USER_SS,
         user_cs = const GlobalDescriptorTable::USER_CS,
         syscall_sp_offset = const offset_of!(Cpu, syscall_sp),
-        user_rsp_offset = const offset_of!(Cpu, user_rsp),
+        user_rsp_offset = const offset_of!(Cpu, arch) + offset_of!(CoreState, user_rsp),
 
         switch_decision_offset = const offset_of!(Cpu, switch_decision),
         decision_no_switching = const SwitchDecision::NoSwitching as u64,
