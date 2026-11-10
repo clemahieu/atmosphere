@@ -2,7 +2,7 @@
 
 # Design decisions
 
-29 records: 29 active, 0 superseded.
+30 records: 30 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -52,6 +52,9 @@ in `revisit if` what would make it worth reopening.
 - **[multicore-kernel-shape](./multicore-kernel-shape/DECISION.md)** (2026-11-05): A node is a set of cores with one kernel instance and one queue lock; a system may have any number of nodes, laid out at boot; nothing in kernel state is shared between nodes, memory crosses only as a quiescent untyped handoff, and stealing is pager policy.
   - *confidence:* The shape is a judgement against published multicore kernels; the lock numbers below are measured on the host with user-space threads, not this kernel, and its own lock has not been measured.
   - *revisit if:* Lock hold times measured on this kernel make a one-node system's contention a real workload's problem and a smaller node is not the answer, or a workload needs kernel state shared between nodes that a handoff cannot express.
+- **[no-gate-for-what-no-step-reads](./no-gate-for-what-no-step-reads/DECISION.md)** (2026-11-10): tools/land.py lists the paths no gate step reads (.claude/agents/, .claude/skills/, CLAUDE.md); a change that touches nothing else, with no file over the size limit, is rebased, merged and pushed without running the gate, and its tree takes the base's verdict in the ledger.
+  - *confidence:* An argument, not a measurement: the gate's result is a function of the files its steps read. That no step reads the listed paths was checked by search on the day, and nothing in the gate keeps it true.
+  - *revisit if:* A gate step starts reading a listed path, which removes the path from the list in the same commit; or a main that fails by itself is traced to a commit that landed this way.
 - **[one-kernel-instance](./one-kernel-instance/DECISION.md)** (2026-11-05): One kernel instance holds every core of the machine and a process lives inside it; the kernel provides no spanning. Four rules keep a later move to several instances cheap, and breaking one is the human's decision.
   - *confidence:* A staging judgement on top of the multicore shape. That one instance pays almost nothing for the node concept is reasoned from the code, not measured: finding the instance is one per-CPU load and no syscall path gains a check.
   - *revisit if:* Lock contention measured on this kernel is one a real workload would hit, a workload needs distrusting programs separated from the shared lock's timing, or a change would break one of the four rules.
@@ -106,20 +109,20 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `address-space`: address-spaces-as-objects, vmm-over-svm
 - `boot`: machine-glue-below-the-kernel, root-process-at-boot, test-guest-memory
 - `capability`: address-spaces-as-objects, capability-names-a-block, cpu-time-as-capability, divider-proven-by-invariant, ipc-with-reply-object, process-holds-capabilities, revoke-by-depth-first-list, root-process-at-boot, schedulers-over-core-partitions, sharing-by-derive, teardown-driven-by-retype, theorem-over-reach, thread-bound-at-retype, untyped-memory, vmm-over-svm
-- `gate`: cut-over-on-a-branch, land-without-regating
+- `gate`: cut-over-on-a-branch, land-without-regating, no-gate-for-what-no-step-reads
 - `glue`: machine-glue-below-the-kernel
 - `interrupt`: machine-glue-below-the-kernel
 - `iommu`: machine-glue-below-the-kernel
 - `ipc`: fan-in-over-private-rings, ipc-with-reply-object, latest-value-by-three-slot-exchange, syscall-abi-in-registers
 - `kernel-state`: multicore-kernel-shape, one-kernel-instance, one-lock-bounded-steps
-- `landing`: land-without-regating
+- `landing`: land-without-regating, no-gate-for-what-no-step-reads
 - `lifetime`: sharing-by-derive, teardown-driven-by-retype
 - `lock`: flush-without-waiting, multicore-kernel-shape, one-lock-bounded-steps
 - `memory`: address-spaces-as-objects, capability-names-a-block, flush-without-waiting, syscall-abi-in-registers, teardown-driven-by-retype, test-guest-memory, untyped-memory
 - `multicore`: flush-without-waiting, multicore-kernel-shape, one-kernel-instance, one-lock-bounded-steps
 - `pagetable`: arch-module
 - `portability`: arch-module, machine-glue-below-the-kernel, syscall-abi-in-registers
-- `process`: cut-over-on-a-branch, land-without-regating, process-holds-capabilities, thread-bound-at-retype
+- `process`: cut-over-on-a-branch, land-without-regating, no-gate-for-what-no-step-reads, process-holds-capabilities, thread-bound-at-retype
 - `proof`: divider-proven-by-invariant, isolation-claim, theorem-over-reach, thread-bound-at-retype, trust-boundary
 - `purity`: untyped-memory
 - `real-time`: schedulers-over-core-partitions

@@ -8,6 +8,10 @@ fast-forward that main moved under and a merge while main's index is taken, so b
 from the rebase. A rebase that is clean lands without a second gate: what landed beside it is gated
 with whatever change is gated on top of it next (design/land-without-regating/).
 
+A change that touches only what no gate step reads, UNREAD below, lands without a gate: the gate
+would say of it what it says of the base (design/no-gate-for-what-no-step-reads/). Its tree joins
+the ledger with the base's verdict when the base has one.
+
 When the gate fails, the question is whether the change fails or the main it was rebased onto does.
 The ledger, logs/gate-ledger at the project root, holds a line for every tree a gate has judged:
 tree, pass or fail, the commit, the time. A base whose tree passed is sound, so the change is at
@@ -24,7 +28,7 @@ Exit status:
   2  not run: no branch, the base's own branch, or uncommitted changes
   3  the rebase stopped on a conflict; resolve it, continue the rebase and land again
   4  the base fails the gate by itself; main is broken and the change is not judged
-  5  the gate passed and the change did not reach origin: the merge or the push kept failing
+  5  the change is cleared to land and did not reach origin: the merge or the push kept failing
   6  the gate fails and no gate has judged the base: fix the change, or settle it with --judge-base
 
 usage: tools/land.py [--onto BRANCH] [--gate COMMAND]
@@ -52,6 +56,11 @@ MERGE_TRIES = 30
 PUSH_TRIES = 3
 # How far back a broken base's suspects are listed when no tree before them passed.
 SUSPECT_LIMIT = 50
+# What no gate step reads, so a change to these alone cannot move the gate's result: a file, or with
+# a closing slash everything under a directory (design/no-gate-for-what-no-step-reads/).
+UNREAD = (".claude/agents/", ".claude/skills/", "CLAUDE.md")
+# The gate's limit on a file's size, the one thing it holds every path to.
+MAX_FILE_BYTES = 1 << 20
 
 
 def say(text):
@@ -154,6 +163,17 @@ def change_branch(worktree, onto):
     return branch
 
 
+def unread(path):
+    return any(path == entry or (entry.endswith("/") and path.startswith(entry)) for entry in UNREAD)
+
+
+def needs_no_gate(worktree, base):
+    """Whether the change since the base touches only what no gate step reads, each file within the size limit."""
+    changed = git(worktree, "diff", "--name-only", "--no-renames", base, "HEAD").splitlines()
+    kept = [worktree / path for path in changed if (worktree / path).is_symlink() or (worktree / path).exists()]
+    return bool(changed) and all(map(unread, changed)) and all(path.lstat().st_size <= MAX_FILE_BYTES for path in kept)
+
+
 def judge(worktree, onto, gate_command):
     """Settles a failed gate on an unjudged base: gates the base the change stands on and says whose failure it is."""
     root = worktree.parent
@@ -177,24 +197,31 @@ def land(worktree, onto, gate_command):
     base = git(worktree, "merge-base", "HEAD", onto)
     commits = int(git(worktree, "rev-list", "--count", f"{base}..HEAD"))
     gated = git(worktree, "rev-parse", "HEAD")
-    say(f"gating {gated} on {onto} at {base}")
-    if not gate_passes(worktree, gate_command, sys.stdout):
-        known = verdicts(root).get(tree(worktree, base))
-        if known is None:
-            say(f"the gate fails and no gate has judged {base}, which the change was rebased onto: fix the change when the failing lines are its doing, otherwise tools/land.py --judge-base")
-            return BASE_UNJUDGED
-        return blame(root, worktree, onto, base, *known)
-    record(root, tree(worktree, gated), "pass", gated)
+    known = verdicts(root).get(tree(worktree, base))
+    ungated = needs_no_gate(worktree, base)
+    if ungated:
+        say(f"not gating {gated}: it changes only what no gate step reads ({', '.join(UNREAD)})")
+        # The gate would say of this tree what it said of the base, so the ledger does too.
+        if known is not None:
+            record(root, tree(worktree, gated), *known)
+    else:
+        say(f"gating {gated} on {onto} at {base}")
+        if not gate_passes(worktree, gate_command, sys.stdout):
+            if known is None:
+                say(f"the gate fails and no gate has judged {base}, which the change was rebased onto: fix the change when the failing lines are its doing, otherwise tools/land.py --judge-base")
+                return BASE_UNJUDGED
+            return blame(root, worktree, onto, base, *known)
+        record(root, tree(worktree, gated), "pass", gated)
 
     for _ in range(MERGE_TRIES):
         if not tried(worktree, "rebase", onto):
-            say(f"{onto} moved under the gate and the change conflicts with it: resolve it, git rebase --continue, and land again")
+            say(f"{onto} moved since the first rebase and the change conflicts with it: resolve it, git rebase --continue, and land again")
             return CONFLICT
         if tried(target, "merge", "--ff-only", branch):
             break
         time.sleep(1)
     else:
-        say(f"the gate passed and {onto} did not take the change in {MERGE_TRIES} tries")
+        say(f"{onto} did not take the change in {MERGE_TRIES} tries")
         return NOT_LANDED
     landed = git(worktree, "rev-parse", "HEAD")
     for _ in range(PUSH_TRIES):
@@ -206,7 +233,9 @@ def land(worktree, onto, gate_command):
         return NOT_LANDED
 
     unseen = int(git(worktree, "rev-list", "--count", f"{base}..{landed}")) - commits
-    if landed == gated:
+    if ungated:
+        say(f"{landed} landed without a gate")
+    elif landed == gated:
         say(f"{landed} landed as gated")
     else:
         say(f"{landed} landed on {unseen} commit{'' if unseen == 1 else 's'} the gate did not see: the composition is gated with the next change on it")
@@ -239,6 +268,7 @@ class Tests(unittest.TestCase):
         ).stdout.strip()
 
     def commit(self, where, name, text="x"):
+        (where / name).parent.mkdir(parents=True, exist_ok=True)
         (where / name).write_text(text)
         self.git(where, "add", name)
         self.git(where, "commit", "-q", "-m", f"add {name}")
@@ -374,6 +404,49 @@ class Tests(unittest.TestCase):
         self.assertEqual(again.returncode, BASE_FAILS, again.stdout)
         self.assertEqual(self.gates(), 4)
         self.assertIn(f"land: suspect {suspect}", again.stdout)
+
+    def test_a_change_to_paths_no_gate_step_reads_lands_without_a_gate(self):
+        self.commit(self.task, ".claude/agents/round.md")
+        self.commit(self.task, ".claude/skills/round/SKILL.md")
+        change = self.commit(self.task, "CLAUDE.md")
+        result = self.land("false")
+        self.assertEqual(result.returncode, LANDED, result.stdout)
+        self.assertFalse((self.root / "gates").exists())
+        self.assertEqual(self.git(self.main, "rev-parse", "main"), change)
+        self.assertEqual(self.origin(), change)
+        self.assertIn(f"land: {change} landed without a gate", result.stdout)
+
+    def test_a_change_that_also_touches_a_path_the_gate_reads_is_gated(self):
+        self.commit(self.task, ".claude/agents/round.md")
+        change = self.commit(self.task, ".claude/hooks/guard.sh")
+        result = self.land()
+        self.assertEqual(result.returncode, LANDED, result.stdout)
+        self.assertEqual(self.gates(), 1)
+        self.assertIn(f"land: {change} landed as gated", result.stdout)
+
+    def test_a_file_over_the_gate_s_size_limit_is_gated_whatever_its_path(self):
+        self.commit(self.task, "CLAUDE.md", "x" * (MAX_FILE_BYTES + 1))
+        result = self.land("false")
+        self.assertNotEqual(result.returncode, LANDED, result.stdout)
+        self.assertEqual(self.gates(), 1)
+
+    def test_an_ungated_change_takes_the_verdict_of_the_base_it_stands_on(self):
+        base = self.commit(self.task, "a")
+        self.assertEqual(self.land().returncode, LANDED)
+        ungated = self.commit(self.task, "CLAUDE.md")
+        self.assertEqual(self.land("false").returncode, LANDED)
+        self.assertIn([self.tree(ungated), "pass", base], self.ledger())
+        # So a change that fails on it is blamed without a gate of the base.
+        self.commit(self.task, "bad")
+        result = self.land("[ ! -e bad ]")
+        self.assertEqual(result.returncode, CHANGE_FAILS, result.stdout)
+        self.assertEqual(self.gates(), 2)
+
+    def test_an_ungated_change_on_an_unjudged_base_adds_nothing_to_the_ledger(self):
+        self.commit(self.main, "b")
+        self.commit(self.task, "CLAUDE.md")
+        self.assertEqual(self.land("false").returncode, LANDED)
+        self.assertFalse((self.root / LEDGER).exists())
 
     def test_a_worktree_with_uncommitted_changes_is_not_run(self):
         self.commit(self.task, "a")
