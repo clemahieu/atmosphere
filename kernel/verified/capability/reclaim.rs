@@ -51,6 +51,28 @@ proof fn leak_all(tracked m: Map<usize, PagePerm4k>) -> (tracked ret: Map<usize,
     rest
 }
 
+/// A node with no child keeps none when nodes leave the list and none join it, the first staying first
+/// and every parent as it was.
+proof fn lemma_childless_kept(pre: &Tree, post: &Tree, x: usize)
+    requires
+        pre.wf(),
+        post.wf(),
+        x < NODE_SPACE,
+        pre.nodes@[x as int].live,
+        post.nodes@[x as int].live,
+        pre.childless(x),
+        post.parent@ == pre.parent@,
+        post.seq@[0] == pre.seq@[0],
+        forall|c: usize| post.seq@.contains(c) ==> pre.seq@.contains(c),
+    ensures
+        post.childless(x),
+{
+    if !post.childless(x) {
+        post.lemma_next_is_child(x);
+        pre.lemma_childless(x, post.nodes@[x as int].next);
+    }
+}
+
 /// The most nodes one retype removes from a dead leaf's slots.
 pub const LEAF_SLICE_BUDGET: usize = 64;
 
@@ -636,6 +658,10 @@ impl CapKernel {
             old(self).threads.records@.contains_key(base) && ret is Freed ==> old(self).thread_freed(*final(self), c, root, from, base),
             old(self).can_unlink_leaf(root, from, base) ==> ret is Unlinked && old(self).leaf_unlinked(*final(self), root, from, base),
             old(self).can_slice_leaf(root, from, base) ==> ret is Slice && old(self).leaf_sliced(*final(self), root, from, base),
+            old(self).can_slice_leaf(root, from, base) && old(self).leaf_slots_childless(base)
+                ==> old(self).leaf_slice_kept(*final(self), base),
+            old(self).can_slice_leaf(root, from, base) && old(self).leaf_slots_childless(base)
+                && old(self).leaf_live_slots(base) <= LEAF_SLICE_BUDGET ==> final(self).leaf_is_empty(base),
             old(self).can_retype_under(root, from, base, 1) && old(self).leaf_is_empty(base)
                 ==> if old(self).acknowledged(base / 4096) && old(self).acknowledged((base / 4096 + 1) as usize) {
                     ret is Freed && old(self).leaf_freed(*final(self), c, root, from, base)
@@ -748,6 +774,63 @@ impl CapKernel {
         &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object })
     }
 
+    /// How many of the leaf's slots from slot k on hold a live node.
+    pub open spec fn live_slots_from(&self, base: usize, k: int) -> nat
+        decreases NODES_PER_PAGE - k,
+    {
+        if k < 1 || k >= NODES_PER_PAGE {
+            0
+        } else {
+            (if self.list.nodes@[base + k].live { 1nat } else { 0nat }) + self.live_slots_from(base, k + 1)
+        }
+    }
+
+    /// How many of the leaf's slots hold a live node.
+    pub open spec fn leaf_live_slots(&self, base: usize) -> nat {
+        self.live_slots_from(base, 1)
+    }
+
+    /// Every live slot of the leaf at `base` has no child, so a slice deletes each slot it reaches
+    /// rather than revoking below it.
+    pub open spec fn leaf_slots_childless(&self, base: usize) -> bool {
+        forall|j: int| 1 <= j < NODES_PER_PAGE && (#[trigger] self.list.nodes@[base + j]).live
+            ==> self.list.childless((base + j) as usize)
+    }
+
+    /// Capability n is a frame capability on block br, or a space, thread or process capability whose
+    /// object's block is br.
+    pub open spec fn cap_names_block(&self, n: usize, br: BlockRef) -> bool {
+        let p = self.payload_of(n);
+        &&& self.is_cap(n)
+        &&& {
+            ||| p.kind is Frame && br == block_ref(&self.blocks, p.base / 4096)
+            ||| (p.kind is Space || p.kind is Thread || p.kind is Process) && br == BlockRef::Small(p.base / 4096)
+        }
+    }
+
+    /// A slot of the leaf at `base` holds a capability naming block br.
+    pub open spec fn leaf_slot_names(&self, base: usize, br: BlockRef) -> bool {
+        exists|n: usize| base < n < base + NODES_PER_PAGE && #[trigger] self.cap_names_block(n, br)
+    }
+
+    /// What a slice of a leaf whose live slots are childless leaves as it was: every typed block but
+    /// those its slots' capabilities name keeps its references and its dead flag, and the space,
+    /// thread and process records, the table pages, the stale epochs and the flush epoch are as they
+    /// were.
+    pub open spec fn leaf_slice_kept(&self, post: Self, base: usize) -> bool {
+        &&& forall|br: BlockRef| #[trigger] block_typed(&post.blocks, br) == block_typed(&self.blocks, br)
+        &&& forall|br: BlockRef| block_typed(&self.blocks, br) && !self.leaf_slot_names(base, br) ==> {
+            &&& #[trigger] block_refs(&post.blocks, br) == block_refs(&self.blocks, br)
+            &&& block_dead(&post.blocks, br) == block_dead(&self.blocks, br)
+        }
+        &&& post.spaces.records == self.spaces.records
+        &&& post.threads.records == self.threads.records
+        &&& post.processes.records == self.processes.records
+        &&& post.table_pages == self.table_pages
+        &&& post.stale_epoch == self.stale_epoch
+        &&& post.flush_epoch == self.flush_epoch
+    }
+
     /// Takes a slice of the dead leaf at `base`, under the untyped at index `from` of the table at `root`:
     /// up to a budget of nodes from its slots' runs, each slot going itself once childless. Returns
     /// whether it ran, and if not nothing changed. Dead slots stay dead while the leaf's hidden node is,
@@ -763,6 +846,9 @@ impl CapKernel {
             ret == old(self).can_slice_leaf(root, from, base),
             !ret ==> *final(self) == *old(self),
             ret ==> old(self).leaf_sliced(*final(self), root, from, base),
+            ret && old(self).leaf_slots_childless(base) ==> old(self).leaf_slice_kept(*final(self), base),
+            ret && old(self).leaf_slots_childless(base) && old(self).leaf_live_slots(base) <= LEAF_SLICE_BUDGET
+                ==> final(self).leaf_is_empty(base),
     {
         let ghost pre = *old(self);
         let untyped = match self.retype_parent(root, from, base, 1) {
@@ -793,7 +879,13 @@ impl CapKernel {
             lemma_no_change_discharges_teardown(pre.view(), root, untyped, object);
             assert(!pre.list.nodes@[base + 0int].live);
             lemma_bound_threads_live(&pre.list, &pre.tables);
+            lemma_slot_in_leaf(base, (NODES_PER_PAGE - 1) as usize);
+            pre.lemma_slot_bound((base + NODES_PER_PAGE - 1) as usize);
         }
+        // With every live slot childless, each slot the slice reaches is deleted, and one step is one
+        // live slot gone; few says the budget covers all of them.
+        let ghost kept = pre.leaf_slots_childless(base);
+        let ghost few = kept && pre.leaf_live_slots(base) <= LEAF_SLICE_BUDGET;
         let mut steps = 0;
         let mut k = 1;
         while steps != LEAF_SLICE_BUDGET && k != NODES_PER_PAGE && self.flush_epoch != usize::MAX
@@ -817,6 +909,16 @@ impl CapKernel {
                 discharges(pre.view(), self.view(), root, Effect::Teardown { untyped, object }),
                 forall|h: (ObjectId, NodeId)| #[trigger] self.view().held.contains(h) ==> pre.view().held.contains(h),
                 bound_threads(&self.list, &self.tables) == bound_threads(&pre.list, &pre.tables).restrict(live_nodes(&self.list)),
+                base + NODES_PER_PAGE <= NODE_SPACE,
+                forall|x: usize| #[trigger] self.is_cap(x) ==> pre.is_cap(x),
+                few ==> kept,
+                kept ==> self.tables == pre.tables,
+                kept ==> forall|j: int| k <= j < NODES_PER_PAGE
+                    ==> (#[trigger] self.list.nodes@[base + j]).live == pre.list.nodes@[base + j].live,
+                kept ==> self.leaf_slots_childless_from(base, k as int),
+                kept ==> forall|i: usize| pre.blocks.tracks(i as int) ==> #[trigger] block_ref(&self.blocks, i) == block_ref(&pre.blocks, i),
+                kept ==> pre.leaf_slice_kept(*self, base),
+                few ==> steps + self.live_slots_from(base, k as int) == pre.leaf_live_slots(base),
             decreases LEAF_SLICE_BUDGET - steps, NODES_PER_PAGE - k,
         {
             proof {
@@ -826,6 +928,9 @@ impl CapKernel {
             }
             let n = base + k;
             if !self.list.get(n).live {
+                proof {
+                    assert(!self.list.nodes@[base + k as int].live);
+                }
                 k = k + 1;
                 continue;
             }
@@ -838,6 +943,11 @@ impl CapKernel {
             let ghost mid = *self;
             if !self.revoke_step(Ghost(object), n) {
                 proof {
+                    if kept {
+                        // A childless slot's revoke has nothing to do.
+                        assert(mid.list.nodes@[base + k as int].live);
+                        assert(mid.list.childless(n));
+                    }
                     let r = choose|r: usize| #[trigger] revoked_one(mid.list, self.list, n, r)
                         && (mid.list.nodes@[r as int].kind is Mapping ==> Self::mapping_unlinked(mid, *self, r))
                         && (mid.list.nodes@[r as int].kind is Mapping ==> Self::mapping_stale_noted(mid, *self, r))
@@ -862,11 +972,109 @@ impl CapKernel {
                 lemma_delete_is_teardown(mid.view(), self.view(), object, n);
                 Self::lemma_slice_step(pre, mid, *self, root, untyped, object);
                 Self::lemma_leaf_slots_stay_dead(mid, *self, base, k as int, n);
+                if kept {
+                    let post = *self;
+                    assert(mid.list.nodes@[base + k as int].live);
+                    assert forall|j: int| k + 1 <= j < NODES_PER_PAGE
+                        implies (#[trigger] post.list.nodes@[base + j]).live == pre.list.nodes@[base + j].live by {
+                        assert(post.list.nodes@[base + j].live == mid.list.nodes@[base + j].live);
+                    }
+                    assert forall|j: int| k + 1 <= j < NODES_PER_PAGE && (#[trigger] post.list.nodes@[base + j]).live
+                        implies post.list.childless((base + j) as usize) by {
+                        assert(mid.list.nodes@[base + j].live);
+                        assert(mid.list.nodes@[((base + j) as usize) as int].live);
+                        assert(mid.list.childless((base + j) as usize));
+                    }
+                    Self::lemma_slice_kept_step(pre, mid, post, base, n);
+                    if few {
+                        assert(mid.live_slots_from(base, k as int) == 1 + mid.live_slots_from(base, k + 1));
+                        Self::lemma_live_slots_same(mid, post, base, k + 1);
+                    }
+                }
             }
             steps = steps + 1;
             k = k + 1;
         }
+        proof {
+            if few && steps != 0 {
+                if k != NODES_PER_PAGE {
+                    Self::lemma_live_slots_none(*self, base, k as int);
+                }
+                assert forall|j: int| 0 <= j < NODES_PER_PAGE implies !(#[trigger] self.list.nodes@[base + j]).live by {
+                    if j >= k {
+                        assert(!self.list.nodes@[base + j].live);
+                    }
+                }
+            }
+        }
         steps != 0
+    }
+
+    /// Every live slot of the leaf at `base` from slot k on has no child.
+    pub open spec fn leaf_slots_childless_from(&self, base: usize, k: int) -> bool {
+        forall|j: int| k <= j < NODES_PER_PAGE && (#[trigger] self.list.nodes@[base + j]).live
+            ==> self.list.childless((base + j) as usize)
+    }
+
+    /// Counts that agree on which slots from k on are live agree.
+    proof fn lemma_live_slots_same(a: Self, b: Self, base: usize, k: int)
+        requires
+            1 <= k <= NODES_PER_PAGE,
+            forall|j: int| k <= j < NODES_PER_PAGE ==> (#[trigger] a.list.nodes@[base + j]).live == b.list.nodes@[base + j].live,
+        ensures
+            a.live_slots_from(base, k) == b.live_slots_from(base, k),
+        decreases NODES_PER_PAGE - k,
+    {
+        if k < NODES_PER_PAGE {
+            assert(a.list.nodes@[base + k].live == b.list.nodes@[base + k].live);
+            Self::lemma_live_slots_same(a, b, base, k + 1);
+        }
+    }
+
+    /// No slot from k on is live when none is counted.
+    proof fn lemma_live_slots_none(s: Self, base: usize, k: int)
+        requires
+            1 <= k <= NODES_PER_PAGE,
+            s.live_slots_from(base, k) == 0,
+        ensures
+            forall|j: int| k <= j < NODES_PER_PAGE ==> !(#[trigger] s.list.nodes@[base + j]).live,
+        decreases NODES_PER_PAGE - k,
+    {
+        if k < NODES_PER_PAGE {
+            Self::lemma_live_slots_none(s, base, k + 1);
+        }
+    }
+
+    /// Deleting the childless capability in slot n of the leaf at `base` keeps what a childless slice
+    /// keeps: the block it changes is one the leaf's slots name, and every page stays in its block.
+    proof fn lemma_slice_kept_step(pre: Self, mid: Self, post: Self, base: usize, n: usize)
+        requires
+            mid.wf(),
+            base < n < base + NODES_PER_PAGE,
+            mid.is_cap(n),
+            pre.is_cap(n),
+            mid.tables == pre.tables,
+            forall|i: usize| pre.blocks.tracks(i as int) ==> #[trigger] block_ref(&mid.blocks, i) == block_ref(&pre.blocks, i),
+            pre.leaf_slice_kept(mid, base),
+            Self::object_dropped(mid, post, n),
+            post.table_pages == mid.table_pages,
+            post.stale_epoch == mid.stale_epoch,
+            post.flush_epoch == mid.flush_epoch,
+        ensures
+            forall|i: usize| pre.blocks.tracks(i as int) ==> #[trigger] block_ref(&post.blocks, i) == block_ref(&pre.blocks, i),
+            pre.leaf_slice_kept(post, base),
+    {
+        let p = mid.payload_of(n);
+        if p.kind is Frame {
+            lemma_holder_refs(&mid.list, &mid.tables, &mid.blocks, &mid.zeroing, mid.holders@, n);
+            let br = block_ref(&mid.blocks, p.base / 4096);
+            assert(pre.cap_names_block(n, br));
+            assert(pre.leaf_slot_names(base, br));
+        } else if p.kind is Space || p.kind is Thread || p.kind is Process {
+            let br = BlockRef::Small(p.base / 4096);
+            assert(pre.cap_names_block(n, br));
+            assert(pre.leaf_slot_names(base, br));
+        }
     }
 
     /// An owned leaf's block is in the block table's range.
@@ -951,6 +1159,13 @@ impl CapKernel {
             forall|x: usize| #[trigger] final(self).is_cap(x) ==> old(self).is_cap(x),
             removes_cap(old(self).view(), final(self).view(), n),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
+            Self::object_dropped(*old(self), *final(self), n),
+            final(self).tables == old(self).tables,
+            final(self).table_pages == old(self).table_pages,
+            final(self).stale_epoch == old(self).stale_epoch,
+            final(self).flush_epoch == old(self).flush_epoch,
+            forall|x: usize| x != n && x < NODE_SPACE && old(self).list.nodes@[x as int].live && old(self).list.childless(x)
+                ==> #[trigger] final(self).list.childless(x),
     {
         let ghost pre = *old(self);
         proof {
@@ -979,6 +1194,18 @@ impl CapKernel {
                 }
             }
             Self::lemma_bound_threads_same(pre, post);
+            assert forall|c: usize| post.list.seq@.contains(c) implies pre.list.seq@.contains(c) by {
+                let i = choose|i: int| 0 <= i < post.list.seq@.len() && post.list.seq@[i] == c;
+                if i < p {
+                    assert(pre.list.seq@[i] == c);
+                } else {
+                    assert(pre.list.seq@[i + 1] == c);
+                }
+            }
+            assert forall|x: usize| x != n && x < NODE_SPACE && pre.list.nodes@[x as int].live && pre.list.childless(x)
+                implies #[trigger] post.list.childless(x) by {
+                lemma_childless_kept(&pre.list, &post.list, x);
+            }
         }
     }
 
