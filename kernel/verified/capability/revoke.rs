@@ -267,6 +267,12 @@ impl CapKernel {
         &&& forall|x: usize| !#[trigger] post.list.is_child(c, x)
     }
 
+    /// Every mapping record after was one before, the same: a revoke takes records and adds none.
+    pub open spec fn records_shrunk(pre: Self, post: Self) -> bool {
+        forall|n: usize| #[trigger] post.mappings@.contains_key(n)
+            ==> pre.mappings@.contains_key(n) && post.mappings@[n] == pre.mappings@[n]
+    }
+
     /// Revokes the capability at a position, an index of the caller's table, at root, or of the table
     /// of a process the caller controls, live or dead, for at most REVOKE_BUDGET steps. The position
     /// comes from user space, so it can be refused. The capability's own slot can leave its table
@@ -290,6 +296,12 @@ impl CapKernel {
             !(ret is Refused) ==> Self::cap_revoking_at(*old(self), *final(self), root, at),
             !(ret is Refused) ==> (ret is Done == final(self).list.childless(old(self).cap_at(root, at)->0)),
             ret is Done ==> Self::cap_revoked_at(*old(self), *final(self), root, at),
+            Self::records_shrunk(*old(self), *final(self)),
+            !(ret is Refused) ==> final(self).flush_epoch <= old(self).flush_epoch
+                + (old(self).list.seq@.len() - final(self).list.seq@.len()),
+            ret is Again ==> old(self).list.seq@.len() - final(self).list.seq@.len() == REVOKE_BUDGET,
+            !(ret is Refused) ==> exists|gone: Seq<usize>|
+                #[trigger] revoked_seq(old(self).list, final(self).list, old(self).cap_at(root, at)->0, gone),
     {
         let ghost pre = *old(self);
         let c = match self.find_cap(root, at) {
@@ -303,10 +315,15 @@ impl CapKernel {
             lemma_bound_threads_live(&pre.list, &pre.tables);
         }
         let ghost start = steps.count;
+        let ghost mut gone: Seq<usize> = Seq::empty();
         let mut taken = 0;
         while taken != REVOKE_BUDGET && self.flush_epoch != usize::MAX
             invariant
                 taken <= REVOKE_BUDGET,
+                self.flush_epoch <= pre.flush_epoch + taken,
+                Self::records_shrunk(pre, *self),
+                forall|x: int| 0 <= x < NODE_SPACE ==> #[trigger] self.list.nodes@[x].depth == pre.list.nodes@[x].depth,
+                revoked_seq(pre.list, self.list, c, gone),
                 start == old(steps).count,
                 steps.count <= start + taken * (MAX_DEPTH + 1),
                 self.wf(),
@@ -356,7 +373,9 @@ impl CapKernel {
                     && (!(mid.list.nodes@[r as int].kind is Binding) ==> bound_threads(&self.list, &self.tables)
                         == bound_threads(&mid.list, &mid.tables));
                 Self::lemma_revoke_bound_threads(bound_threads(&pre.list, &pre.tables), mid, *self, r);
+                lemma_revoked_seq_step(pre.list, mid.list, self.list, c, r, gone);
                 lemma_run_shrunk_step(pre.list, mid.list, self.list, c, r);
+                gone = gone.push(r);
             }
             taken = taken + 1;
         }
@@ -408,6 +427,8 @@ impl CapKernel {
             forall|x: int| 0 <= x < NODE_SPACE ==> #[trigger] final(self).list.nodes@[x].depth == old(self).list.nodes@[x].depth,
             forall|x: usize| #[trigger] final(self).is_cap(x) ==> old(self).is_cap(x),
             discharges(old(self).view(), final(self).view(), root, Effect::Revoke { cap: c }),
+            final(self).flush_epoch <= old(self).flush_epoch + 1,
+            Self::records_shrunk(*old(self), *final(self)),
     {
         let ghost pre = *old(self);
         proof {
@@ -423,6 +444,14 @@ impl CapKernel {
         let ghost mid = *self;
         self.list.remove_leaf(r);
         proof {
+            // A hidden table's cut records one unmap and its arm none; a mapping's arm records one.
+            if pre.hidden_table(r) {
+                assert(cut.flush_epoch == pre.flush_epoch + 1);
+                assert(cut.mappings == pre.mappings);
+                assert(!(cut.list.nodes@[r as int].kind is Mapping));
+            }
+            assert(mid.flush_epoch <= pre.flush_epoch + 1);
+            assert(Self::records_shrunk(pre, mid));
             Self::lemma_revoke_step_wf(cut, mid, *self, root, c, r);
             assert(cut.view() == pre.view());
             if pre.hidden_table(r) {

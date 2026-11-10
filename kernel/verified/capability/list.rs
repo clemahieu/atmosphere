@@ -1376,6 +1376,102 @@ pub proof fn lemma_run_shrunk_step(pre: Tree, mid: Tree, post: Tree, c: usize, r
     }
 }
 
+/// Node x lies below c: deeper than c, with c its ancestor at the depth difference.
+pub open spec fn below(t: Tree, c: usize, x: usize) -> bool {
+    t.d(x) > t.d(c) && t.anc(x, (t.d(x) - t.d(c)) as nat) == c
+}
+
+/// The nodes revoke steps of c took from pre to post, in the order taken: one per node the list lost,
+/// each listed once, live in pre and not in post, and below c in pre. Their number bounds the steps.
+pub open spec fn revoked_seq(pre: Tree, post: Tree, c: usize, gone: Seq<usize>) -> bool {
+    &&& gone.len() == pre.seq@.len() - post.seq@.len()
+    &&& gone.no_duplicates()
+    &&& forall|i: int| 0 <= i < gone.len() ==> {
+        &&& #[trigger] gone[i] < NODE_SPACE
+        &&& pre.nodes@[gone[i] as int].live
+        &&& !post.nodes@[gone[i] as int].live
+        &&& below(pre, c, gone[i])
+    }
+}
+
+/// One more revoke step of c, from mid to post, taking r, extends the nodes taken from pre by r.
+pub proof fn lemma_revoked_seq_step(pre: Tree, mid: Tree, post: Tree, c: usize, r: usize, gone: Seq<usize>)
+    requires
+        revoked_seq(pre, mid, c, gone),
+        run_shrunk(pre, mid, c),
+        mid.wf(),
+        mid.parent == pre.parent,
+        forall|x: int| 0 <= x < NODE_SPACE ==> #[trigger] mid.nodes@[x].depth == pre.nodes@[x].depth,
+        c < NODE_SPACE,
+        revoked_one(mid, post, c, r),
+        post.seq@.len() == mid.seq@.len() - 1,
+    ensures
+        revoked_seq(pre, post, c, gone.push(r)),
+{
+    lemma_has(mid.seq@, r);
+    let k = choose|k: int| 0 <= k < mid.seq@.len() && mid.seq@[k] == r;
+    mid.lemma_link(k);
+    assert(r < NODE_SPACE);
+    assert(mid.nodes@[r as int].live);
+    assert(pre.nodes@[r as int].live);
+    assert(mid.d(r) == pre.d(r) && mid.d(c) == pre.d(c));
+    lemma_anc_parents(pre, mid, r, (mid.d(r) - mid.d(c)) as nat);
+    let g = gone.push(r);
+    assert forall|i: int| 0 <= i < g.len() implies {
+        &&& #[trigger] g[i] < NODE_SPACE
+        &&& pre.nodes@[g[i] as int].live
+        &&& !post.nodes@[g[i] as int].live
+        &&& below(pre, c, g[i])
+    } by {
+        if i < gone.len() {
+            assert(g[i] == gone[i]);
+            assert(!mid.nodes@[gone[i] as int].live);
+            assert(gone[i] != r);
+            assert(post.nodes@[gone[i] as int].live == mid.nodes@[gone[i] as int].live);
+        }
+    }
+    assert forall|i: int, j: int| 0 <= i < g.len() && 0 <= j < g.len() && i != j implies g[i] != g[j] by {
+        if i < gone.len() && j < gone.len() {
+        } else if i < gone.len() {
+            assert(!mid.nodes@[gone[i] as int].live);
+        } else {
+            assert(!mid.nodes@[gone[j] as int].live);
+        }
+    }
+}
+
+/// Below c, a live node is c's child when no child of c has a child: its parent is live and below c
+/// or c itself, and a parent below c would be a child of c with a child.
+pub proof fn lemma_below_child(t: Tree, c: usize, x: usize)
+    requires
+        t.wf(),
+        x < NODE_SPACE,
+        t.nodes@[x as int].live,
+        below(t, c, x),
+        forall|y: usize, z: usize| #[trigger] t.is_child(c, y) ==> !#[trigger] t.is_child(y, z),
+    ensures
+        t.is_child(c, x),
+    decreases t.d(x) - t.d(c),
+{
+    let s = t.seq@;
+    assert(has(s, x));
+    lemma_has(s, x);
+    let k = choose|k: int| 0 <= k < s.len() && s[k] == x;
+    assert(k != 0);
+    assert(t.parent@.contains_key(s[k]));
+    let p = t.parent@[x];
+    t.lemma_parent_live(x);
+    let n = (t.d(x) - t.d(c)) as nat;
+    assert(t.anc(x, n) == t.anc(p, (n - 1) as nat));
+    if n > 1 {
+        assert(t.d(p) == t.d(x) - 1);
+        assert(below(t, c, p));
+        lemma_below_child(t, c, p);
+        assert(t.is_child(p, x));
+        assert(false);
+    }
+}
+
 /// A peer's work is untouched: a node outside c's run stays live across a revoke step. Outside
 /// the run means before c, or at or after the first node following c that is not deeper than c.
 pub proof fn lemma_peer_untouched(pre: Tree, post: Tree, c: usize, r: usize, j: int, q: int)
