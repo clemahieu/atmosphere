@@ -10,6 +10,12 @@ mod x86_64;
 #[cfg(target_arch = "x86_64")]
 pub use x86_64::*;
 
+// Built for the host's tests as well: what it holds is arithmetic.
+#[cfg(any(target_arch = "aarch64", test))]
+pub mod aarch64;
+#[cfg(target_arch = "aarch64")]
+pub use aarch64::*;
+
 #[cfg(test)]
 mod tests {
     use std::fs;

@@ -6,36 +6,10 @@ use core::ptr;
 
 use astd::boot::PAGE_BYTES;
 
-use crate::arch::Entry;
-use crate::memory::PhysicalAllocator;
-
-pub const LARGE_PAGE_SIZE: usize = 2 * 1024 * 1024;
-
-/// The page a leaf entry maps.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Leaf {
-    /// 4 KiB, by a page table's entry.
-    Small,
-    /// 2 MiB, by a page directory's entry.
-    Large,
-}
-
-impl Leaf {
-    pub const fn size(self) -> u64 {
-        match self {
-            Leaf::Small => PAGE_BYTES,
-            Leaf::Large => LARGE_PAGE_SIZE as u64,
-        }
-    }
-
-    /// The level of the table that holds the leaf, the PML4 being level 0.
-    const fn level(self) -> usize {
-        match self {
-            Leaf::Small => 3,
-            Leaf::Large => 2,
-        }
-    }
-}
+// The entry the walk writes is its parent module's: the target's, and in the host's tests the
+// aarch64 one as well.
+use super::Entry;
+use crate::memory::{Leaf, PhysicalAllocator};
 
 const LEVEL_MASK: u64 = 0b1_1111_1111;
 
@@ -192,6 +166,7 @@ mod tests {
     use aelf::PAddr;
 
     use super::*;
+    use crate::memory::LARGE_PAGE_SIZE;
 
     const PAGE: usize = PAGE_BYTES as usize;
 
