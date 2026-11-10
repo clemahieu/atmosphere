@@ -2,8 +2,8 @@
 
 use core::fmt::{self, Write};
 
+use astd::sync::{Mutex, MutexGuard};
 use ns16550a::PioSerial;
-use spin::{Mutex, MutexGuard};
 
 const COM1: usize = 0x3f8;
 

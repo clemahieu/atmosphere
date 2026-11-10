@@ -826,7 +826,6 @@ dependencies = [
  "bit_field",
  "log",
  "ns16550a",
- "spin",
 ]
 
 [[package]]
