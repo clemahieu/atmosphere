@@ -5,7 +5,8 @@ literal outside the definitions.
 A literal cannot be told from an unrelated number or changed in one place, and the granule is to
 become the target's (design/arch-module/). The page-shaped values are the 4K page and its offset
 mask, the entries a level and its index mask, the 2M, 1G and 512G regions and their offset masks,
-and the pages in a 1G and a 512G region. A number literal of any base, digit grouping or suffix
+the pages in a 1G and a 512G region, and every positive multiple of the page, which a block size, a
+region or a count of pages in bytes is. A number literal of any base, digit grouping or suffix
 whose value is one of them is refused, outside '//' and '/* */' comments and string literals. The
 definitions are exempt: define.rs and arch/, and the 'global layout' directives of layouts.rs,
 which Verus takes only with a literal size. A line that holds such a value for another reason says
@@ -55,6 +56,12 @@ def value(token):
     return int(digits)
 
 
+def page_shaped(number):
+    """Whether a value is one of the page-shaped values or a positive multiple of the page, as a block
+    size, a region or a count of pages in bytes is."""
+    return number in VALUES or (number > 0 and number % PAGE == 0)
+
+
 def blank(match):
     """The matched text with everything but its newlines turned to spaces, so lines keep their numbers."""
     return re.sub(r"[^\n]", " ", match.group(0))
@@ -69,7 +76,7 @@ def literals(path, source):
         if MARKER.search(original) or (definition and definition.match(line)):
             continue
         live = line.split("//", 1)[0]
-        if any(value(match.group(1)) in VALUES for match in NUMBER.finditer(live)):
+        if any(page_shaped(value(match.group(1))) for match in NUMBER.finditer(live)):
             found.append(f"{path}:{index + 1}: {original.strip()}")
     return found
 
@@ -149,8 +156,17 @@ class Tests(unittest.TestCase):
         ])
 
     def test_identifiers_and_longer_numbers_are_not_literals(self):
-        source = "PAGE_SZ_4K x4096 _512 40960 0x1000_0000 5120 1024 0x2000 page_4096 ret.0\n"
+        source = "PAGE_SZ_4K x4096 _512 40961 0x1000_0001 5120 1024 0x2001 page_4096 ret.0 0 0x0\n"
         self.assertEqual(literals("a.rs", source), [])
+
+    def test_each_multiple_of_the_page_is_caught(self):
+        for spelling in ("8192", "32768", "0x8000", "0x10_0000", "40960", "0x1000_0000usize"):
+            with self.subTest(spelling=spelling):
+                self.assertEqual(literals("a.rs", f"&&& t % {spelling} == 0\n"), [f"a.rs:1: &&& t % {spelling} == 0"])
+
+    def test_a_page_multiple_passes_on_a_marked_line(self):
+        self.assertEqual(literals("a.rs", "len == 65536 // not a page size: a port range\n"), [])
+        self.assertEqual(len(literals("a.rs", "len == 65536\n")), 1)
 
     def test_comments_and_strings_are_not_code(self):
         source = (
