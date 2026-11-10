@@ -481,6 +481,14 @@ impl Zeroing {
                     assert(pre.active_2m@[x as int]);
                     assert(pre.blocks@.contains_key((x * PAGES_PER_2M) as usize));
                     assert(pre.blocks@[base] == pages);
+                    match level {
+                        Large::Two => {
+                            assert(x != r);
+                            assert(x * 512 != r * 512) by (nonlinear_arith)
+                                requires x != r;
+                        },
+                        Large::One => {},
+                    }
                 }
                 assert forall|x: usize| x < NUM_1G && #[trigger] me.active_1g@[x as int] implies {
                     &&& me.blocks@.contains_key((x * PAGES_PER_1G) as usize)
