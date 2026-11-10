@@ -24,8 +24,8 @@ The native system follows the capability model without compromise: no ambient au
 
 ## Testability, in tiers
 
-- Tier 1: proven correct with Verus specifications. Required for the kernel; the target for the filesystem and network stacks.
-- Tier 2: full line and branch coverage, with fault injection where a branch cannot be reached otherwise. Accepted for the filesystem and network stacks until they reach tier 1.
+- Tier 1: proven correct with Verus specifications. Required for the kernel and the network protocol stack (`design/network-stack-proven-at-tier-1/`); the target for the filesystem stack.
+- Tier 2: full line and branch coverage, with fault injection where a branch cannot be reached otherwise. Accepted for the filesystem stack until it reaches tier 1.
 - Tier 3: best-effort tests, as extensive as reasonable. Everything else.
 
 A tier-1 proof bounds a component from both sides. From above, the component changes only what its specification allows, as the reach theorem says for the kernel. From below, each operation's specification says exactly when it refuses, and each use the component exists for has a witness: a verified sequence of its operations, built into no image, that reaches the use from any state boot can produce, beside a throwaway variant claiming more that does not verify. A specification that a component refusing everything satisfies says nothing about what it can do. A witness covers the proven model; a boot checks the glue and the hardware against it.

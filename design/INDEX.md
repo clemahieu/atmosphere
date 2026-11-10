@@ -2,7 +2,7 @@
 
 # Design decisions
 
-30 records: 30 active, 0 superseded.
+31 records: 31 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -52,6 +52,9 @@ in `revisit if` what would make it worth reopening.
 - **[multicore-kernel-shape](./multicore-kernel-shape/DECISION.md)** (2026-11-05): A node is a set of cores with one kernel instance and one queue lock; a system may have any number of nodes, laid out at boot; nothing in kernel state is shared between nodes, memory crosses only as a quiescent untyped handoff, and stealing is pager policy.
   - *confidence:* The shape is a judgement against published multicore kernels; the lock numbers below are measured on the host with user-space threads, not this kernel, and its own lock has not been measured.
   - *revisit if:* Lock hold times measured on this kernel make a one-node system's contention a real workload's problem and a smaller node is not the answer, or a workload needs kernel state shared between nodes that a handoff cannot express.
+- **[network-stack-proven-at-tier-1](./network-stack-proven-at-tier-1/DECISION.md)** (2026-11-10): The network protocol stack is tier 1 required, written in Rust inside Verus with no unverified protocol library: wire formats only through combinators proven once, nesting depths fixed in each format, per-packet work bounded linearly in the packet's length by a ghost step counter, each protocol a transition equal to a specification of its RFC state machine, and no allocation per packet.
+  - *confidence:* The tier is the human's choice, made 2026-11-10. The five rules are a judgement on how to make a tier-1 stack affordable; the first formats written in the combinators settle whether the per-format proof is as small as expected.
+  - *revisit if:* A wire format the stack must accept cannot be written in the combinators under a fixed nesting bound, or a format written in them still needs a proof as large as a hand-written parser's, which reopens rule 1; lowering the tier is the human's decision.
 - **[no-gate-for-what-no-step-reads](./no-gate-for-what-no-step-reads/DECISION.md)** (2026-11-10): tools/land.py lists the paths no gate step reads (.claude/agents/, .claude/skills/, CLAUDE.md); a change that touches nothing else, with no file over the size limit, is rebased, merged and pushed without running the gate, and its tree takes the base's verdict in the ledger.
   - *confidence:* An argument, not a measurement: the gate's result is a function of the files its steps read. That no step reads the listed paths was checked by search on the day, and nothing in the gate keeps it true.
   - *revisit if:* A gate step starts reading a listed path, which removes the path from the list in the same commit; or a main that fails by itself is traced to a commit that landed this way.
@@ -120,7 +123,9 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `lock`: flush-without-waiting, multicore-kernel-shape, one-lock-bounded-steps
 - `memory`: address-spaces-as-objects, capability-names-a-block, flush-without-waiting, syscall-abi-in-registers, teardown-driven-by-retype, test-guest-memory, untyped-memory
 - `multicore`: flush-without-waiting, multicore-kernel-shape, one-kernel-instance, one-lock-bounded-steps
+- `network`: network-stack-proven-at-tier-1
 - `pagetable`: arch-module
+- `parsing`: network-stack-proven-at-tier-1
 - `portability`: arch-module, machine-glue-below-the-kernel, syscall-abi-in-registers
 - `process`: cut-over-on-a-branch, land-without-regating, no-gate-for-what-no-step-reads, process-holds-capabilities, thread-bound-at-retype
 - `proof`: divider-proven-by-invariant, isolation-claim, theorem-over-reach, thread-bound-at-retype, trust-boundary
@@ -132,6 +137,6 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `shared-memory`: fan-in-over-private-rings, latest-value-by-three-slot-exchange
 - `test`: test-guest-memory
 - `thread`: process-holds-capabilities, thread-bound-at-retype
-- `tiers`: divider-proven-by-invariant, trust-boundary
-- `verified`: arch-module, cut-over-on-a-branch, fan-in-over-private-rings, flush-without-waiting, latest-value-by-three-slot-exchange, one-lock-bounded-steps, revoke-by-depth-first-list, theorem-over-reach, thread-bound-at-retype
+- `tiers`: divider-proven-by-invariant, network-stack-proven-at-tier-1, trust-boundary
+- `verified`: arch-module, cut-over-on-a-branch, fan-in-over-private-rings, flush-without-waiting, latest-value-by-three-slot-exchange, network-stack-proven-at-tier-1, one-lock-bounded-steps, revoke-by-depth-first-list, theorem-over-reach, thread-bound-at-retype
 - `virtualization`: vmm-over-svm
