@@ -1,5 +1,6 @@
 //! The aarch64 arch items, with the names, signatures and specs of the x86_64 module's. Each item's
-//! values come from the Arm Architecture Reference Manual. An item that has not been written from it
+//! values come from the Arm Architecture Reference Manual, and the console's from the PL011's
+//! Technical Reference Manual, ARM DDI 0183. An item that has not been written from them
 //! yet is declared here and nothing more: its spec functions are uninterpreted and its executable and
 //! proof functions are external_body, counted as unproven in tools/external-body-list. See
 //! design/arch-module/.
@@ -827,12 +828,61 @@ pub proof fn lemma_user_rip_bound()
 {
 }
 
-/// Writes the bytes words a to e carry: each word's eight bytes from its lowest, a's first, up to the
-/// first zero byte.
+/// The PL011 the console writes, at the address QEMU virt's device tree gives it: node pl011@9000000,
+/// one page, the machine's stdout-path. The kernel reads and writes the device at this address, so the
+/// address space it runs in maps the page there.
+pub const PL011: usize = 0x0900_0000;
+
+/// UARTDR, the data register: a write pushes the byte onto the transmit FIFO, or into the transmit
+/// holding register while the FIFO is disabled (DDI 0183 3.3.1).
+pub const PL011_DATA: usize = 0x000;
+
+/// UARTFR, the flag register; bit 5, TXFF, says the transmit FIFO or holding register is full (DDI 0183
+/// 3.3.3).
+pub const PL011_FLAG: usize = 0x018;
+
+pub const PL011_TRANSMIT_FULL: u32 = 1 << 5;
+
+/// Writes to the PL011 the bytes words a to e carry: each word's eight bytes from its lowest, a's
+/// first, up to the first zero byte. Each byte waits while the transmitter is full. Each access is one
+/// load or store of a single register without writeback, the form whose stage 2 data abort reports
+/// the access in its syndrome (Arm ARM D24.2.45, ISV), which a hypervisor emulating the device needs.
 #[verifier(external_body)]
-// external_body(unproven): the aarch64 placeholder for serial_write
+// external_body(glue): writes the PL011 through its memory-mapped registers, which have no state a proof could see
 pub fn serial_write(a: u64, b: u64, c: u64, d: u64, e: u64) {
-    unimplemented!()
+    let words = [a, b, c, d, e];
+    let mut w = 0;
+    while w < 5 {
+        let mut k = 0;
+        while k < 8 {
+            let byte = (words[w] >> (8 * k)) as u8;
+            if byte == 0 {
+                return;
+            }
+            unsafe {
+                loop {
+                    let flags: u32;
+                    core::arch::asm!(
+                        "ldr {flags:w}, [{register}]",
+                        register = in(reg) PL011 + PL011_FLAG,
+                        flags = out(reg) flags,
+                        options(nostack, readonly, preserves_flags),
+                    );
+                    if flags & PL011_TRANSMIT_FULL == 0 {
+                        break;
+                    }
+                }
+                core::arch::asm!(
+                    "str {byte:w}, [{register}]",
+                    register = in(reg) PL011 + PL011_DATA,
+                    byte = in(reg) byte as u32,
+                    options(nostack, preserves_flags),
+                );
+            }
+            k += 1;
+        }
+        w += 1;
+    }
 }
 
 } // verus!

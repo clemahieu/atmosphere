@@ -6,7 +6,7 @@
 # gap       uses something this Verus cannot check: a raw pointer, a conjured permission, uninit memory
 # unproven  plain code or a lemma with no proof yet, so proof debt
 arch/aarch64.rs	flush_every_context	glue	only the hardware can attest a flush, so only this makes the token
-arch/aarch64.rs	serial_write	unproven	the aarch64 placeholder for serial_write
+arch/aarch64.rs	serial_write	glue	writes the PL011 through its memory-mapped registers, which have no state a proof could see
 arch/x86_64.rs	flush_every_context	glue	only the hardware can attest a flush, so only this makes the token
 arch/x86_64.rs	serial_write	glue	writes the serial port through port I/O, which has no state a proof could see
 arch/x86_64.rs	zeroed	gap	builds a value from zeroed memory, which Verus cannot check
