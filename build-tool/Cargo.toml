@@ -16,8 +16,6 @@ cargo_metadata = "0.17.0"
 clap = { version = "4.3.5", features = ["derive"] }
 clap_complete = "4.3.1"
 env_logger = "0.10.0"
-home = "0.5.5"
-log = { version = "0.4.19", features = [] }
 quit = "2.0.0"
 stack-sizes = "0.5.0"
 tokio = { version = "1.28.2", features = ["full"] }
