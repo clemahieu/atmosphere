@@ -1,0 +1,409 @@
+<!doctype html>
+<!-- The page tools/bead-status.py serves. It draws what /data gives and asks again every POLL
+     seconds while its tab is visible. Every title and reason is put in as text, never as markup. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bead status</title>
+<link rel="icon" href="data:,">
+<style>
+:root {
+  color-scheme: light;
+  --plane: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11, 11, 11, 0.10); --wash: rgba(11, 11, 11, 0.05);
+  --open: #2a78d6; --created: #eb6834; --closed: #1baf7a; --track: #cde2fb; --serious: #ec835a;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --plane: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255, 255, 255, 0.10); --wash: rgba(255, 255, 255, 0.06);
+    --open: #3987e5; --created: #d95926; --closed: #199e70; --track: #104281; --serious: #ec835a;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; padding: 24px 16px 48px; background: var(--plane); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 1180px; margin: 0 auto; display: grid; gap: 16px; }
+header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 16px; }
+h1 { font-size: 20px; font-weight: 600; margin: 0; }
+h2 { font-size: 14px; font-weight: 600; margin: 0; }
+#fresh { color: var(--ink-2); font-size: 13px; }
+.warn::before { content: "⚠ "; color: var(--serious); }
+section { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; min-width: 0; }
+section > .head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; margin-bottom: 12px; }
+.note { color: var(--ink-2); font-size: 13px; }
+.muted { color: var(--muted); }
+.empty { color: var(--ink-2); margin: 0; }
+
+#tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+.tile { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; }
+.tile .label { color: var(--ink-2); font-size: 13px; }
+.tile .value { font-size: 28px; font-weight: 600; line-height: 1.2; }
+.tile .sub { color: var(--ink-2); font-size: 12px; min-height: 17px; }
+
+.rows { display: grid; }
+.row { display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: 2px 16px; padding: 10px 0; border-top: 1px solid var(--grid); }
+.row:first-child { border-top: 0; padding-top: 0; }
+.row:last-child { padding-bottom: 0; }
+.row.plain { grid-template-columns: minmax(0, 1fr); }
+.stage { font-weight: 600; }
+.clock { font-variant-numeric: tabular-nums; }
+.title { overflow-wrap: anywhere; }
+.id { font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ink-2); margin-right: 8px; white-space: nowrap; }
+.meta { color: var(--ink-2); font-size: 12px; overflow-wrap: anywhere; }
+.one { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.ranges { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.ranges button { font: inherit; font-size: 13px; color: var(--ink-2); background: none; border: 0; border-left: 1px solid var(--border); padding: 4px 12px; cursor: pointer; }
+.ranges button:first-child { border-left: 0; }
+.ranges button:hover { background: var(--wash); }
+.ranges button[aria-pressed="true"] { color: var(--ink); font-weight: 600; background: var(--wash); }
+.chart { position: relative; margin-top: 4px; }
+.legendrow { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 16px; margin-top: 20px; }
+.legend { display: flex; gap: 16px; color: var(--ink-2); font-size: 13px; }
+.key { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; }
+svg { display: block; width: 100%; }
+svg text { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+svg .grid { stroke: var(--grid); stroke-width: 1; }
+svg .axis { stroke: var(--axis); stroke-width: 1; }
+svg .end { fill: var(--ink); font-size: 12px; font-weight: 600; }
+.tip { position: absolute; top: 8px; pointer-events: none; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; font-size: 12px; white-space: nowrap; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12); }
+.tip .when { color: var(--ink-2); }
+.tip b { font-weight: 600; font-size: 13px; }
+.tip .stroke { display: inline-block; width: 12px; height: 2px; border-radius: 1px; vertical-align: middle; margin-right: 6px; }
+details { margin-top: 12px; }
+summary { cursor: pointer; color: var(--ink-2); font-size: 13px; }
+table { border-collapse: collapse; margin-top: 8px; font-size: 13px; font-variant-numeric: tabular-nums; }
+th, td { text-align: right; padding: 3px 12px; border-top: 1px solid var(--grid); }
+th:first-child, td:first-child { text-align: left; padding-left: 0; }
+th { font-weight: 600; color: var(--ink-2); border-top: 0; }
+
+.pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; }
+.epic { display: grid; grid-template-columns: minmax(0, 1fr) minmax(80px, 200px) 150px; gap: 12px; align-items: center; padding: 4px 0; }
+.meter { height: 8px; border-radius: 4px; background: var(--track); overflow: hidden; }
+.meter > div { height: 100%; background: var(--open); border-radius: 4px; }
+.epic .count { color: var(--ink-2); font-size: 12px; font-variant-numeric: tabular-nums; }
+@media (max-width: 640px) {
+  .row { grid-template-columns: minmax(0, 1fr); }
+  .pair { grid-template-columns: minmax(0, 1fr); }
+  .epic { grid-template-columns: minmax(0, 1fr) 90px; }
+  .epic .meter { grid-column: 1 / -1; grid-row: 2; }
+}
+</style>
+</head>
+<body>
+<main>
+  <header><h1>Bead status</h1><div id="fresh">reading beads…</div></header>
+  <div id="tiles"></div>
+  <section><div class="head"><h2>In flight</h2><span class="note" id="idle"></span></div><div class="rows" id="flights"></div></section>
+  <section><div class="head"><h2>Questions for you</h2></div><div class="rows" id="questions"></div></section>
+  <section>
+    <div class="head"><h2>Issues not closed</h2><div class="ranges" id="ranges"></div></div>
+    <div class="chart" id="open"></div>
+    <div class="legendrow">
+      <h2 id="flowtitle">Created and closed</h2>
+      <div class="legend"><span><span class="key" style="background: var(--created)"></span>Created</span><span><span class="key" style="background: var(--closed)"></span>Closed</span></div>
+    </div>
+    <div class="chart" id="flow"></div>
+    <details><summary>Table</summary><table><thead><tr><th>Period</th><th>Created</th><th>Closed</th><th>Not closed at its end</th></tr></thead><tbody id="table"></tbody></table></details>
+  </section>
+  <section><div class="head"><h2>Epics</h2><span class="note">issues closed of those below each epic under the root</span></div><div id="epics"></div></section>
+  <div class="pair">
+    <section><div class="head"><h2>Ready leaves</h2><span class="note" id="readynote"></span></div><div class="rows" id="ready"></div></section>
+    <section><div class="head"><h2>Closed last</h2></div><div class="rows" id="closed"></div></section>
+  </div>
+</main>
+<script>
+"use strict";
+const POLL = 10, HOUR = 3600, DAY = 86400, READY_SHOWN = 12;
+const RANGES = [["24 hours", DAY, HOUR], ["3 days", 3 * DAY, 3 * HOUR], ["7 days", 7 * DAY, 6 * HOUR], ["All", 0, 0]];
+const STEPS = [HOUR, 2 * HOUR, 3 * HOUR, 6 * HOUR, 12 * HOUR, DAY, 2 * DAY, 7 * DAY, 14 * DAY, 30 * DAY];
+const STAGES = {read: "reading", work: "working", verify: "verifying", gate: "in the gate", fix: "fixing a failed gate", close: "closing", prover: "prover", skeptic: "skeptic"};
+
+let data = null, failed = null, readAt = 0, skew = 0, range = 1;
+try { range = Number(localStorage.getItem("range") ?? 1); } catch (refused) {}
+
+const $ = id => document.getElementById(id);
+function build(space, tag, attributes, kids) {
+  const element = space ? document.createElementNS(space, tag) : document.createElement(tag);
+  for (const [name, value] of Object.entries(attributes || {})) element.setAttribute(name, value);
+  for (const kid of kids.flat()) if (kid !== null && kid !== undefined && kid !== false) element.append(kid);
+  return element;
+}
+const h = (tag, attributes, ...kids) => build(null, tag, attributes, kids);
+const s = (tag, attributes, ...kids) => build("http://www.w3.org/2000/svg", tag, attributes, kids);
+const fill = (id, ...kids) => $(id).replaceChildren(...kids.flat());
+
+const serverNow = () => Date.now() / 1000 + skew;
+function clock(seconds) {
+  const whole = Math.max(0, Math.floor(seconds)), pad = number => String(number).padStart(2, "0");
+  const hours = Math.floor(whole / HOUR), minutes = Math.floor(whole % HOUR / 60);
+  return hours ? `${hours}:${pad(minutes)}:${pad(whole % 60)}` : `${pad(minutes)}:${pad(whole % 60)}`;
+}
+function span(seconds) {
+  const whole = Math.max(0, seconds);
+  if (whole < 90) return `${Math.floor(whole)} s`;
+  if (whole < HOUR) return `${Math.floor(whole / 60)} min`;
+  if (whole < DAY) return `${Math.floor(whole / HOUR)} h ${Math.floor(whole % HOUR / 60)} min`;
+  return `${Math.floor(whole / DAY)} d ${Math.floor(whole % DAY / HOUR)} h`;
+}
+const date = (time, options) => new Date(time * 1000).toLocaleString(undefined, options);
+const DAYOF = {month: "short", day: "numeric"}, HOUROF = {hour: "2-digit", minute: "2-digit", hourCycle: "h23"};
+const zone = time => new Date(time * 1000).getTimezoneOffset() * 60;
+const floorTo = (time, step) => Math.floor((time - zone(time)) / step) * step + zone(time);
+const per = bucket => bucket < DAY ? (bucket === HOUR ? "hour" : `${bucket / HOUR} hours`) : (bucket === DAY ? "day" : `${bucket / DAY} days`);
+const signed = number => number > 0 ? `+${number}` : number < 0 ? `−${-number}` : "0";
+const period = (start, bucket) => bucket < DAY
+  ? `${date(start, {...DAYOF, ...HOUROF})} – ${date(start + bucket, HOUROF)}`
+  : bucket === DAY ? date(start, DAYOF) : `${date(start, DAYOF)} – ${date(start + bucket - 1, DAYOF)}`;
+
+/* The issues not closed at each change inside the window, and what each bucket of it created and closed. */
+function history(events, now, [, length, fixed]) {
+  const from = length ? now - length : (events.length ? events[0][0] : now);
+  const bucket = fixed || STEPS.find(step => (now - from) / step <= 30) || STEPS.at(-1);
+  const t0 = floorTo(from, bucket), t1 = floorTo(now, bucket) + bucket;
+  let index = 0, leaves = 0, epics = 0;
+  const count = event => { if (event[2]) epics += event[1]; else leaves += event[1]; };
+  for (; index < events.length && events[index][0] < t0; index++) count(events[index]);
+  const steps = [{t: t0, leaves, epics}], buckets = [];
+  for (let start = t0; start < t1; start += bucket) buckets.push({t: start, created: 0, closed: 0});
+  for (; index < events.length && events[index][0] <= now; index++) {
+    const [time, change] = events[index];
+    count(events[index]);
+    if (steps.at(-1).t === time) Object.assign(steps.at(-1), {leaves, epics}); else steps.push({t: time, leaves, epics});
+    buckets[Math.floor((time - t0) / bucket)][change > 0 ? "created" : "closed"]++;
+  }
+  return {t0, t1, now, bucket, steps, buckets};
+}
+function at(steps, time) {
+  let low = 0, high = steps.length - 1;
+  while (low < high) {
+    const middle = (low + high + 1) >> 1;
+    if (steps[middle].t <= time) low = middle; else high = middle - 1;
+  }
+  return steps[low];
+}
+function ticks(low, high, wanted) {
+  const raw = Math.max((high - low) / wanted, 1), magnitude = 10 ** Math.floor(Math.log10(raw));
+  const step = [1, 2, 5, 10].map(multiple => multiple * magnitude).find(candidate => candidate >= raw);
+  const first = Math.floor(low / step) * step, last = Math.max(Math.ceil(high / step) * step, first + step);
+  const found = [];
+  for (let value = first; value <= last; value += step) found.push(value);
+  return found;
+}
+
+/* The frame both charts share: the plot's box, the time scale, the gridlines and the axis labels. */
+function frame(box, past, height, values) {
+  const width = Math.max(box.clientWidth, 280), left = 40, right = 48, top = 12, bottom = 26;
+  const plot = {left, top, width: width - left - right, height: height - top - bottom};
+  const x = time => left + (time - past.t0) / (past.t1 - past.t0) * plot.width;
+  const y = value => top + plot.height - (value - values[0]) / (values.at(-1) - values[0]) * plot.height;
+  const svg = s("svg", {viewBox: `0 0 ${width} ${height}`, height, role: "img"});
+  for (const value of values) {
+    svg.append(s("line", {class: value === values[0] ? "axis" : "grid", x1: left, x2: left + plot.width, y1: y(value), y2: y(value)}));
+    svg.append(s("text", {x: left - 8, y: y(value) + 4, "text-anchor": "end"}, String(value)));
+  }
+  const most = Math.max(2, Math.floor(plot.width / 76));
+  const step = STEPS.find(candidate => (past.t1 - past.t0) / candidate <= most + 1) || STEPS.at(-1);
+  for (let time = floorTo(past.t0, step); time <= past.t1; time += step) {
+    if (time < past.t0) continue;
+    const midnight = new Date(time * 1000).getHours() === 0;
+    svg.append(s("line", {class: "axis", x1: x(time), x2: x(time), y1: top + plot.height, y2: top + plot.height + 4}));
+    svg.append(s("text", {x: x(time), y: height - 6, "text-anchor": "middle"}, date(time, step >= DAY || midnight ? DAYOF : HOUROF)));
+  }
+  const tip = h("div", {class: "tip", hidden: ""});
+  const hit = s("rect", {x: left, y: top, width: plot.width, height: plot.height, fill: "transparent"});
+  const place = where => { tip.hidden = false; tip.style.left = `${where + 12 + tip.offsetWidth > width ? where - 12 - tip.offsetWidth : where + 12}px`; };
+  box.replaceChildren(svg, tip);
+  return {svg, plot, x, y, tip, hit, place};
+}
+
+function drawOpen(past) {
+  const total = step => step.leaves + step.epics, totals = past.steps.map(total);
+  const values = ticks(Math.min(...totals), Math.max(...totals), 4);
+  const {svg, plot, x, y, tip, hit, place} = frame($("open"), past, 230, values);
+  let path = `M${x(past.t0).toFixed(1)},${y(totals[0]).toFixed(1)}`;
+  for (const step of past.steps.slice(1)) path += `H${x(step.t).toFixed(1)}V${y(total(step)).toFixed(1)}`;
+  path += `H${x(past.now).toFixed(1)}`;
+  const last = totals.at(-1);
+  const cross = s("line", {class: "axis", y1: plot.top, y2: plot.top + plot.height, visibility: "hidden"});
+  const dot = s("circle", {r: 4, fill: "var(--open)", stroke: "var(--surface)", "stroke-width": 2, visibility: "hidden"});
+  svg.append(
+    cross,
+    s("path", {d: path, fill: "none", stroke: "var(--open)", "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round"}),
+    s("circle", {cx: x(past.now), cy: y(last), r: 4, fill: "var(--open)", stroke: "var(--surface)", "stroke-width": 2}),
+    s("text", {class: "end", x: x(past.now) + 9, y: y(last) + 4}, String(last)),
+    dot, hit,
+  );
+  svg.setAttribute("aria-label", `Issues not closed over time; ${last} now.`);
+  hit.addEventListener("pointermove", event => {
+    const reach = past.t0 + (event.clientX - svg.getBoundingClientRect().left - plot.left) / plot.width * (past.t1 - past.t0);
+    const time = Math.min(past.now, Math.max(past.t0, reach)), step = at(past.steps, time);
+    for (const mark of [cross, dot]) mark.setAttribute("visibility", "visible");
+    cross.setAttribute("x1", x(time)); cross.setAttribute("x2", x(time));
+    dot.setAttribute("cx", x(time)); dot.setAttribute("cy", y(total(step)));
+    tip.replaceChildren(
+      h("div", {class: "when"}, date(time, {...DAYOF, ...HOUROF})),
+      h("div", {}, h("span", {class: "stroke", style: "background: var(--open)"}), h("b", {}, String(total(step))), " not closed"),
+      h("div", {class: "when"}, `${step.leaves} leaves, ${step.epics} epics`),
+    );
+    place(x(time));
+  });
+  hit.addEventListener("pointerleave", () => { tip.hidden = true; for (const mark of [cross, dot]) mark.setAttribute("visibility", "hidden"); });
+}
+
+function drawFlow(past) {
+  const values = ticks(0, Math.max(1, ...past.buckets.map(bucket => Math.max(bucket.created, bucket.closed))), 3);
+  const {svg, plot, y, tip, hit, place} = frame($("flow"), past, 190, values);
+  const slot = plot.width / past.buckets.length, gap = slot >= 12 ? 2 : 1, bar = Math.max(1.5, Math.min(24, (slot - gap - 4) / 2));
+  const base = y(0);
+  const column = (left, value, color) => {
+    if (!value) return null;
+    const top = y(value), round = Math.min(4, bar / 2, base - top), right = left + bar;
+    return s("path", {fill: color, d: `M${left},${base}V${top + round}Q${left},${top} ${left + round},${top}H${right - round}Q${right},${top} ${right},${top + round}V${base}Z`});
+  };
+  const wash = s("rect", {y: plot.top, width: slot, height: plot.height, fill: "var(--wash)", visibility: "hidden"});
+  svg.append(wash);
+  past.buckets.forEach((bucket, index) => {
+    const middle = plot.left + slot * (index + 0.5);
+    svg.append(...[column(middle - gap / 2 - bar, bucket.created, "var(--created)"), column(middle + gap / 2, bucket.closed, "var(--closed)")].filter(Boolean));
+  });
+  svg.append(hit);
+  svg.setAttribute("aria-label", `Issues created and closed per ${per(past.bucket)}.`);
+  hit.addEventListener("pointermove", event => {
+    const index = Math.min(past.buckets.length - 1, Math.max(0, Math.floor((event.clientX - svg.getBoundingClientRect().left - plot.left) / slot)));
+    const bucket = past.buckets[index];
+    wash.setAttribute("x", plot.left + slot * index); wash.setAttribute("visibility", "visible");
+    tip.replaceChildren(
+      h("div", {class: "when"}, period(bucket.t, past.bucket)),
+      h("div", {}, h("span", {class: "stroke", style: "background: var(--created)"}), h("b", {}, String(bucket.created)), " created"),
+      h("div", {}, h("span", {class: "stroke", style: "background: var(--closed)"}), h("b", {}, String(bucket.closed)), " closed"),
+      h("div", {class: "when"}, `net ${signed(bucket.created - bucket.closed)}`),
+    );
+    place(plot.left + slot * (index + 1) - 12);
+  });
+  hit.addEventListener("pointerleave", () => { tip.hidden = true; wash.setAttribute("visibility", "hidden"); });
+}
+
+function drawHistory() {
+  const past = history(data.events, Math.floor(data.now), RANGES[range]);
+  drawOpen(past);
+  drawFlow(past);
+  $("flowtitle").textContent = `Created and closed per ${per(past.bucket)}`;
+  fill("table", past.buckets.map(bucket => {
+    const end = at(past.steps, Math.min(bucket.t + past.bucket, past.now));
+    return h("tr", {}, h("td", {}, period(bucket.t, past.bucket)), h("td", {}, String(bucket.created)), h("td", {}, String(bucket.closed)), h("td", {}, String(end.leaves + end.epics)));
+  }).reverse());
+}
+
+const issue = row => h("div", {class: "title"}, h("span", {class: "id"}, row.id), row.title);
+const trail = row => row.trail.length ? row.trail.join(" › ") : null;
+const meta = (...parts) => parts.some(Boolean) ? h("div", {class: "meta"}, parts.filter(Boolean).join(" · ")) : null;
+
+function drawTiles() {
+  let before = 0, created = 0, closed = 0;
+  for (const [time, change] of data.events) {
+    if (time <= data.now - DAY) before += change; else if (change > 0) created++; else closed++;
+  }
+  const tile = (label, value, sub) => h("div", {class: "tile"}, h("div", {class: "label"}, label), h("div", {class: "value"}, String(value)), h("div", {class: "sub"}, sub));
+  const net = data.counts.open - before;
+  const live = data.flights.filter(row => row.alive).length + data.idle.length;
+  fill("tiles",
+    tile("Not closed", data.counts.open, `${net ? signed(net) : "no change"} in 24 hours · ${data.counts.deferred} deferred`),
+    tile("In progress", data.flights.length, `${live} live session${live === 1 ? "" : "s"}`),
+    tile("Ready leaves", data.ready.length, `and ${data.counts.ready_epics} epics for an epic round`),
+    tile("Questions for you", data.questions.length, data.questions.length ? "open until you answer" : "nothing waits on you"),
+    tile("Closed in 24 hours", closed, `${(closed / 24).toFixed(1)} an hour · ${data.counts.total - data.counts.open} in all`),
+    tile("Created in 24 hours", created, `${data.counts.total} in all`),
+  );
+}
+
+function drawFlights() {
+  fill("flights", data.flights.length ? data.flights.map(row => {
+    const ended = row.alive === false;
+    return h("div", {class: "row"},
+      h("div", {},
+        h("div", {class: "stage"}, row.stage ? STAGES[row.stage] : "held"),
+        h("div", {class: "clock muted", "data-since": row.since ?? row.started}),
+      ),
+      h("div", {},
+        issue(row),
+        meta(trail(row)),
+        h("div", {class: "meta"}, `P${row.priority} · `, h("span", ended ? {class: "warn"} : {}, ended ? `${row.actor} ended` : row.actor || "no holder"), " · held ", h("span", {"data-held": row.started})),
+        ["gate", "fix", "close"].includes(row.stage) && row.gate ? h("div", {class: "meta one", title: row.gate}, row.gate) : null,
+      ),
+    );
+  }) : h("p", {class: "empty"}, "Nothing is in progress."));
+  $("idle").textContent = data.idle.length ? `holding nothing: ${data.idle.join(", ")}` : "";
+}
+
+function drawLists() {
+  fill("questions", data.questions.length ? data.questions.map(row => h("div", {class: "row plain"}, h("div", {}, issue(row), meta(trail(row), `asked ${span(data.now - row.created)} ago`)))) : h("p", {class: "empty"}, "No question waits on you."));
+  fill("ready", data.ready.length ? data.ready.slice(0, READY_SHOWN).map(row => h("div", {class: "row plain"}, h("div", {}, issue(row), meta(`P${row.priority}`, row.type, trail(row))))) : h("p", {class: "empty"}, "No leaf is ready."));
+  $("readynote").textContent = data.ready.length > READY_SHOWN ? `the first ${READY_SHOWN} of ${data.ready.length}, in bd's order` : "in bd's order";
+  fill("closed", data.closed.map(row => h("div", {class: "row plain"}, h("div", {},
+    issue(row),
+    meta(`${span(data.now - row.at)} ago`, row.actor, trail(row)),
+    h("div", {class: "meta one", title: row.reason}, row.reason),
+  ))));
+  fill("epics", data.epics.map(row => h("div", {class: "epic", title: `${row.id} · ${row.closed} of ${row.total} closed`},
+    h("div", {class: "one"}, h("span", {class: "id"}, row.id), row.title),
+    h("div", {class: "meter"}, h("div", {style: `width: ${100 * row.closed / row.total}%`})),
+    h("div", {class: "count"}, [`${row.closed} / ${row.total}`, row.status === "closed" ? "✓ closed" : row.status === "deferred" ? "deferred" : null, row.flying ? `${row.flying} in flight` : null].filter(Boolean).join(" · ")),
+  )));
+}
+
+function tick() {
+  const now = serverNow();
+  for (const element of document.querySelectorAll("[data-since]")) element.textContent = clock(now - Number(element.dataset.since));
+  for (const element of document.querySelectorAll("[data-held]")) element.textContent = span(now - Number(element.dataset.held));
+  if (!data && !failed) return;
+  const read = data ? `read ${span((Date.now() - readAt) / 1000)} ago` : "";
+  $("fresh").className = failed ? "warn" : "";
+  $("fresh").textContent = failed ? `the last read failed: ${failed}${read ? ` · showing what was ${read}` : ""}` : read;
+}
+
+function draw() {
+  drawTiles();
+  drawFlights();
+  drawLists();
+  drawHistory();
+  document.title = `${data.flights.length} in flight${data.questions.length ? ` · ${data.questions.length} to answer` : ""} · Bead status`;
+  tick();
+}
+
+async function load() {
+  try {
+    const reply = await fetch("/data");
+    if (!reply.ok) throw new Error(await reply.text());
+    data = await reply.json();
+    readAt = Date.now();
+    skew = data.now - readAt / 1000;
+    failed = null;
+    draw();
+  } catch (failure) {
+    failed = failure.message;
+    tick();
+  }
+}
+
+fill("ranges", RANGES.map(([label], index) => {
+  const button = h("button", {type: "button", "aria-pressed": String(index === range)}, label);
+  button.addEventListener("click", () => {
+    range = index;
+    try { localStorage.setItem("range", String(index)); } catch (refused) {}
+    for (const other of $("ranges").children) other.setAttribute("aria-pressed", String(other === button));
+    if (data) drawHistory();
+  });
+  return button;
+}));
+let resized = 0;
+addEventListener("resize", () => { cancelAnimationFrame(resized); resized = requestAnimationFrame(() => data && drawHistory()); });
+document.addEventListener("visibilitychange", () => { if (!document.hidden) load(); });
+setInterval(() => { if (!document.hidden) load(); }, POLL * 1000);
+setInterval(tick, 1000);
+load();
+</script>
+</body>
+</html>
