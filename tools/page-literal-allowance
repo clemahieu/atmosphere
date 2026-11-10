@@ -2,9 +2,6 @@
 # as a literal, one path a line; tools/check-page-literals.py passes a literal here and nowhere else
 # outside the definitions. A file leaves the list when its literals become the names in define.rs.
 capability/block.rs
-capability/boot_memory.rs
-capability/boot.rs
-capability/boot_space.rs
 capability/caller.rs
 capability/decompose.rs
 capability/derive.rs

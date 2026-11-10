@@ -60,7 +60,7 @@ pub open spec fn runs_wf(runs: Seq<(usize, usize)>) -> bool {
 
 /// o is a page of block b, given as its first page and its order, as reach names pages.
 pub open spec fn block_in(b: (nat, nat), o: usize) -> bool {
-    in_block((b.0 * 4096) as usize, b.1 as u8, o)
+    in_block((b.0 * PAGE_SZ) as usize, b.1 as u8, o)
 }
 
 /// o is a page of one of the first k blocks.
@@ -253,26 +253,26 @@ pub proof fn lemma_block_in(b: (nat, nat), o: usize)
         b.1 <= MAX_ORDER,
         b.0 + pow2(b.1) <= NUM_PAGES,
     ensures
-        block_in(b, o) <==> (o % 4096 == 0 && in_page_block(b, (o / 4096) as nat)),
+        block_in(b, o) <==> (o % PAGE_SZ == 0 && in_page_block(b, (o / PAGE_SZ) as nat)),
 {
     lemma_pow2_pos(b.1);
     let p = pow2(b.1);
     assert((b.1 as u8) as nat == b.1);
-    assert(block_bytes(b.1 as u8) == p * 4096);
-    assert(b.0 * 4096 <= NUM_PAGES * 4096) by (nonlinear_arith)
+    assert(block_bytes(b.1 as u8) == p * PAGE_SZ);
+    assert(b.0 * PAGE_SZ <= NUM_PAGES * PAGE_SZ) by (nonlinear_arith)
         requires
             b.0 <= NUM_PAGES,
     ;
-    let base = (b.0 * 4096) as usize;
-    assert(base == b.0 * 4096);
-    lemma_fundamental_div_mod(o as int, 4096);
-    let q = o as int / 4096;
-    if o % 4096 == 0 {
-        assert(o == q * 4096);
-        assert((base <= o && o < base + p * 4096) <==> (b.0 <= q && q < b.0 + p)) by (nonlinear_arith)
+    let base = (b.0 * PAGE_SZ) as usize;
+    assert(base == b.0 * PAGE_SZ);
+    lemma_fundamental_div_mod(o as int, PAGE_SZ as int);
+    let q = o as int / PAGE_SZ as int;
+    if o % PAGE_SZ == 0 {
+        assert(o == q * PAGE_SZ);
+        assert((base <= o && o < base + p * PAGE_SZ) <==> (b.0 <= q && q < b.0 + p)) by (nonlinear_arith)
             requires
-                base == b.0 * 4096,
-                o == q * 4096,
+                base == b.0 * PAGE_SZ,
+                o == q * PAGE_SZ,
         ;
     }
 }
@@ -363,7 +363,7 @@ impl CapKernel {
                 ==> (#[trigger] old(self).blocks.pages@[i]).kind is Reserved,
             forall|i: usize| in_runs(runs@, runs@.len() as int, i as int) ==> #[trigger] holds(pages, i),
             forall|p: usize| #[trigger] old(self).list.pages@.dom().contains(p) && old(self).blocks.tracks_addr(p)
-                ==> !in_runs(runs@, runs@.len() as int, (p / 4096) as int),
+                ==> !in_runs(runs@, runs@.len() as int, (p / PAGE_SZ) as int),
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
@@ -421,7 +421,7 @@ impl CapKernel {
                 forall|a: int, i: usize| r <= a < runs@.len() && #[trigger] in_run_at(runs@, a, i as int)
                     ==> #[trigger] holds(pages, i),
                 forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) && pre.blocks.tracks_addr(p)
-                    ==> !in_runs(runs@, runs@.len() as int, (p / 4096) as int),
+                    ==> !in_runs(runs@, runs@.len() as int, (p / PAGE_SZ) as int),
             decreases runs@.len() - r,
         {
             let (start, n) = runs[r];
@@ -447,10 +447,10 @@ impl CapKernel {
             proof {
                 let after = *self;
                 assert forall|p: usize| #[trigger] before.list.pages@.dom().contains(p) && before.blocks.tracks_addr(p)
-                    implies !(start <= p / 4096 < start + n) by {
-                    if start <= p / 4096 < start + n {
-                        assert(in_run_at(runs@, r as int, (p / 4096) as int));
-                        assert(in_runs(runs@, runs@.len() as int, (p / 4096) as int));
+                    implies !(start <= p / PAGE_SZ < start + n) by {
+                    if start <= p / PAGE_SZ < start + n {
+                        assert(in_run_at(runs@, r as int, (p / PAGE_SZ) as int));
+                        assert(in_runs(runs@, runs@.len() as int, (p / PAGE_SZ) as int));
                     }
                 }
                 Self::lemma_reserved_freed(before, after, start, n);
@@ -638,19 +638,19 @@ impl CapKernel {
                     assert(bs[k as int] == rb[0]);
                     assert(k < bs.len());
                     assert(payload_wf(page_block_payload(bs[k as int])));
-                    assert((s as nat * 4096) as usize == s * 4096);
-                    assert(page_block_payload(bs[k as int]) == untyped_payload((s * 4096) as usize, o));
+                    assert((s as nat * PAGE_SZ) as usize == s * PAGE_SZ);
+                    assert(page_block_payload(bs[k as int]) == untyped_payload((s * PAGE_SZ) as usize, o));
                     assert(!cur.list.nodes@[leaf + (ROOT_UNTYPED_SLOT + k)].live);
                 }
-                self.boot_root_untyped(root, process, leaf, ROOT_UNTYPED_SLOT + k, s * 4096, o);
+                self.boot_root_untyped(root, process, leaf, ROOT_UNTYPED_SLOT + k, s * PAGE_SZ, o);
                 proof {
                     let post = *self;
-                    assert forall|x: usize| #[trigger] block_in(bs[k as int], x) == in_block((s * 4096) as usize, o, x) by {}
+                    assert forall|x: usize| #[trigger] block_in(bs[k as int], x) == in_block((s * PAGE_SZ) as usize, o, x) by {}
                     assert forall|u: int| 0 <= u < rest.len() implies bs[k + 1 + u] == #[trigger] rest[u] by {
                         assert(rb[u + 1] == rest[u]);
                         assert(bs[k + (u + 1)] == rb[u + 1]);
                     }
-                    Self::lemma_untyped_step(pre, cur, post, root, process, leaf, bs, k as int, (s * 4096) as usize, o);
+                    Self::lemma_untyped_step(pre, cur, post, root, process, leaf, bs, k as int, (s * PAGE_SZ) as usize, o);
                 }
                 k = k + 1;
                 s = s + size;
@@ -816,7 +816,7 @@ impl CapKernel {
                 ==> (#[trigger] old(self).blocks.pages@[i]).kind is Reserved,
             forall|i: usize| in_runs(runs@, runs@.len() as int, i as int) ==> #[trigger] holds(pages, i),
             forall|p: usize| #[trigger] old(self).list.pages@.dom().contains(p) && old(self).blocks.tracks_addr(p)
-                ==> !in_runs(runs@, runs@.len() as int, (p / 4096) as int),
+                ==> !in_runs(runs@, runs@.len() as int, (p / PAGE_SZ) as int),
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
@@ -856,10 +856,10 @@ impl CapKernel {
                 &&& final(self).spaces == old(self).spaces
                 &&& final(self).list.pages@.dom() == old(self).list.pages@.dom()
                 &&& forall|o: usize| #[trigger] final(self).view().reach(process, o)
-                    <==> (old(self).view().reach(process, o) || (o % 4096 == 0
-                        && in_runs(runs@, runs@.len() as int, (o / 4096) as int)))
+                    <==> (old(self).view().reach(process, o) || (o % PAGE_SZ == 0
+                        && in_runs(runs@, runs@.len() as int, (o / PAGE_SZ) as int)))
                 &&& forall|q: usize, o: usize| #[trigger] final(self).view().reach(q, o) && !old(self).view().reach(q, o)
-                    ==> o % 4096 == 0 && in_runs(runs@, runs@.len() as int, (o / 4096) as int)
+                    ==> o % PAGE_SZ == 0 && in_runs(runs@, runs@.len() as int, (o / PAGE_SZ) as int)
             },
     {
         let count = match count_blocks(runs) {
@@ -884,15 +884,15 @@ impl CapKernel {
                 assert(mid.is_cap(x) && mid.payload_of(x) == pre.payload_of(x));
             }
             assert forall|o: usize| #[trigger] in_blocks(bs, bs.len() as int, o)
-                <==> (o % 4096 == 0 && in_runs(runs@, len, (o / 4096) as int)) by {
+                <==> (o % PAGE_SZ == 0 && in_runs(runs@, len, (o / PAGE_SZ) as int)) by {
                 if in_blocks(bs, bs.len() as int, o) {
                     let t = choose|t: int| 0 <= t < bs.len() && #[trigger] block_in(bs[t], o);
                     lemma_block_in(bs[t], o);
-                    assert(in_page_block(bs[t], (o / 4096) as nat));
-                    assert(in_runs(runs@, len, ((o / 4096) as nat) as int));
+                    assert(in_page_block(bs[t], (o / PAGE_SZ) as nat));
+                    assert(in_runs(runs@, len, ((o / PAGE_SZ) as nat) as int));
                 }
-                if o % 4096 == 0 && in_runs(runs@, len, (o / 4096) as int) {
-                    let x = (o / 4096) as nat;
+                if o % PAGE_SZ == 0 && in_runs(runs@, len, (o / PAGE_SZ) as int) {
+                    let x = (o / PAGE_SZ) as nat;
                     assert(in_runs(runs@, len, x as int));
                     let t = choose|t: int| 0 <= t < bs.len() && #[trigger] in_page_block(bs[t], x);
                     lemma_block_in(bs[t], o);
@@ -901,11 +901,11 @@ impl CapKernel {
                 }
             }
             assert forall|o: usize| #[trigger] post.view().reach(process, o)
-                <==> (pre.view().reach(process, o) || (o % 4096 == 0 && in_runs(runs@, len, (o / 4096) as int))) by {
+                <==> (pre.view().reach(process, o) || (o % PAGE_SZ == 0 && in_runs(runs@, len, (o / PAGE_SZ) as int))) by {
                 assert(post.view().reach(process, o) <==> (mid.view().reach(process, o) || in_blocks(bs, bs.len() as int, o)));
             }
             assert forall|q: usize, o: usize| #[trigger] post.view().reach(q, o) && !pre.view().reach(q, o)
-                implies o % 4096 == 0 && in_runs(runs@, len, (o / 4096) as int) by {
+                implies o % PAGE_SZ == 0 && in_runs(runs@, len, (o / PAGE_SZ) as int) by {
                 assert(in_blocks(bs, bs.len() as int, o));
             }
         }

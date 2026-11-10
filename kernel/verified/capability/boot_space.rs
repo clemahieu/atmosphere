@@ -51,7 +51,7 @@ impl CapKernel {
             pre.tables.has_slot(&pre.list, process, ROOT_FRAME_SLOT),
             count <= ROOT_FRAME_SLOTS,
             forall|q: int| #[trigger] image_region(runs, q)
-                ==> forall|j: int| q * 512 <= j < (q + 1) * 512 ==> #[trigger] pre.blocks.pages@[j].kind is Reserved,
+                ==> forall|j: int| q * PAGES_PER_2M <= j < (q + 1) * PAGES_PER_2M ==> #[trigger] pre.blocks.pages@[j].kind is Reserved,
             post.tables.roots == pre.tables.roots,
             post.tables.owner == pre.tables.owner,
             post.processes == pre.processes,
@@ -106,7 +106,7 @@ impl CapKernel {
         assert(post.payload_of(u) == pre.payload_of(u));
         // The space's page is a typed block's base, so no image region holds it.
         pre.lemma_process_cap(n);
-        let sp = (pre.root_space(process) / 4096) as int;
+        let sp = (pre.root_space(process) / PAGE_SZ) as int;
         if image_region(runs, region_2m(sp)) {
             assert(pre.blocks.pages@[sp].kind is Reserved);
         }
@@ -116,14 +116,14 @@ impl CapKernel {
         assert forall|b: usize| #[trigger] block_within(b, 3, post.payload_of(post.root_untyped(process)))
             implies post.root_table_block(process, b) by {
             assert(pre.root_table_block(process, b));
-            assert forall|k: int| 0 <= k < 8 implies #[trigger] post.blocks.pages@[b / 4096 + k].kind is Free by {
-                let j = b / 4096 + k;
+            assert forall|k: int| 0 <= k < 8 implies #[trigger] post.blocks.pages@[b / PAGE_SZ + k].kind is Free by {
+                let j = b / PAGE_SZ + k;
                 assert(pre.blocks.pages@[j].kind is Free);
                 if image_region(runs, region_2m(j)) {
                     assert(pre.blocks.pages@[j].kind is Reserved);
                 }
             }
-            let j0 = (b / 4096) as int;
+            let j0 = (b / PAGE_SZ) as int;
             assert(pre.blocks.pages@[j0 + 0].kind is Free);
             if image_region(runs, region_2m(j0)) {
                 assert(pre.blocks.pages@[j0].kind is Reserved);
@@ -142,13 +142,13 @@ impl CapKernel {
         ensures
             post.root_table_block(process, b),
     {
-        let i = (b / 4096) as int;
+        let i = (b / PAGE_SZ) as int;
         assert(pre.blocks.tracks(i));
         assert(0 <= region_2m(i) < NUM_2M);
         assert(0 <= region_1g(i) < NUM_1G);
-        assert forall|k: int| 0 <= k < 8 implies #[trigger] post.blocks.pages@[b / 4096 + k].kind is Free by {
-            assert(pre.blocks.tracks(b / 4096 + k));
-            assert(pre.blocks.pages@[b / 4096 + k].kind is Free);
+        assert forall|k: int| 0 <= k < 8 implies #[trigger] post.blocks.pages@[b / PAGE_SZ + k].kind is Free by {
+            assert(pre.blocks.tracks(b / PAGE_SZ + k));
+            assert(pre.blocks.pages@[b / PAGE_SZ + k].kind is Free);
         }
     }
 
@@ -185,12 +185,12 @@ impl CapKernel {
             image_runs_wf(runs@),
             forall|q: int| #[trigger] image_region(runs@, q) ==> {
                 &&& !old(self).blocks.regions_2m@[q].typed
-                &&& forall|j: int| q * 512 <= j < (q + 1) * 512 ==> #[trigger] old(self).blocks.pages@[j].kind is Reserved
-                &&& forall|j: usize| q * 512 <= j < (q + 1) * 512 ==> #[trigger] perms.contains_key(j)
+                &&& forall|j: int| q * PAGES_PER_2M <= j < (q + 1) * PAGES_PER_2M ==> #[trigger] old(self).blocks.pages@[j].kind is Reserved
+                &&& forall|j: usize| q * PAGES_PER_2M <= j < (q + 1) * PAGES_PER_2M ==> #[trigger] perms.contains_key(j)
             },
-            forall|j: usize| #[trigger] perms.contains_key(j) ==> perms[j].addr() == j * 4096,
+            forall|j: usize| #[trigger] perms.contains_key(j) ==> perms[j].addr() == j * PAGE_SZ,
             forall|p: usize| #[trigger] old(self).list.pages@.dom().contains(p) && old(self).blocks.tracks_addr(p)
-                ==> !image_region(runs@, region_2m((p / 4096) as int)),
+                ==> !image_region(runs@, region_2m((p / PAGE_SZ) as int)),
             old(self).root_tables_ready(process),
             old(self).root_untyped_free(process),
             old(self).payload_of(old(self).tables.node_of(process, ROOT_PROCESS_SLOT)).kind is Process,
@@ -232,7 +232,7 @@ impl CapKernel {
                         process,
                         crate::capability::boot_map::frame_slot(runs@, a, u),
                         (leaf2 + 1 + image_offset(runs@, a) + u) as usize,
-                        boot_frame_payload((fb.0 * 4096) as usize, fb.1 as u8, image_rights(runs@[a])),
+                        boot_frame_payload((fb.0 * PAGE_SZ) as usize, fb.1 as u8, image_rights(runs@[a])),
                     )
                 }
                 &&& forall|a: int, x: int| 0 <= a < runs@.len() && #[trigger] in_virt_at(runs@, a, x) ==> {
@@ -241,25 +241,25 @@ impl CapKernel {
                 }
                 &&& forall|p: SpacePath| #[trigger] space_mapping(b0, s).contains_key(p) ==> image_path(runs@, p)
                 &&& forall|t: usize| t != s ==> #[trigger] space_mapping(b0, t) == space_mapping(a0, t)
-                &&& forall|j: usize| j < 512 && !image_l4(runs@, j) ==> #[trigger] b0.entry(s, j) == a0.entry(s, j)
-                &&& !final(self).blocks.pages@[(s / 4096) as int].dead
+                &&& forall|j: usize| j < ENTRIES && !image_l4(runs@, j) ==> #[trigger] b0.entry(s, j) == a0.entry(s, j)
+                &&& !final(self).blocks.pages@[(s / PAGE_SZ) as int].dead
                 &&& forall|a: int, u: int, j: int| #![trigger crate::capability::boot_map::frame_slot(runs@, a, u), block_virt(runs@[a], u, j)]
                     0 <= a < runs@.len() && 0 <= u < run_image_blocks(runs@[a]).len()
                     && 0 <= j < pow2(run_image_blocks(runs@[a])[u].1) ==> {
                     let n = final(self).tables.node_of(process, crate::capability::boot_map::frame_slot(runs@, a, u));
                     let fb = run_image_blocks(runs@[a])[u];
                     &&& n == leaf2 + 1 + image_offset(runs@, a) + u
-                    &&& final(self).payload_of(n) == boot_frame_payload((fb.0 * 4096) as usize, fb.1 as u8, image_rights(runs@[a]))
+                    &&& final(self).payload_of(n) == boot_frame_payload((fb.0 * PAGE_SZ) as usize, fb.1 as u8, image_rights(runs@[a]))
                     &&& final(self).list.is_child(n, page_node(b0, s, block_virt(runs@[a], u, j)))
                 }
                 &&& forall|x: usize| #![trigger old(self).is_cap(x)]
                     !(leaf2 + 1 <= x < leaf2 + 1 + count) && old(self).is_cap(x)
                     ==> final(self).is_cap(x) && final(self).payload_of(x) == old(self).payload_of(x)
                 &&& forall|o: usize| #[trigger] final(self).view().reach(process, o)
-                    <==> (old(self).view().reach(process, o) || (o % 4096 == 0
-                        && in_runs(phys, runs@.len() as int, (o / 4096) as int)))
+                    <==> (old(self).view().reach(process, o) || (o % PAGE_SZ == 0
+                        && in_runs(phys, runs@.len() as int, (o / PAGE_SZ) as int)))
                 &&& forall|q: usize, o: usize| #[trigger] final(self).view().reach(q, o) && !old(self).view().reach(q, o)
-                    ==> o % 4096 == 0 && in_runs(phys, runs@.len() as int, (o / 4096) as int)
+                    ==> o % PAGE_SZ == 0 && in_runs(phys, runs@.len() as int, (o / PAGE_SZ) as int)
             },
     {
         hide(CapKernel::wf);
@@ -353,7 +353,7 @@ impl CapKernel {
                 let nf = post.tables.node_of(process, crate::capability::boot_map::frame_slot(runs@, a, u));
                 let fb = run_image_blocks(runs@[a])[u];
                 &&& nf == leaf2 + 1 + image_offset(runs@, a) + u
-                &&& post.payload_of(nf) == boot_frame_payload((fb.0 * 4096) as usize, fb.1 as u8, image_rights(runs@[a]))
+                &&& post.payload_of(nf) == boot_frame_payload((fb.0 * PAGE_SZ) as usize, fb.1 as u8, image_rights(runs@[a]))
                 &&& post.list.is_child(nf, page_node(b0, s, block_virt(runs@[a], u, j)))
             } by {
                 let fb = run_image_blocks(runs@[a])[u];
@@ -366,7 +366,7 @@ impl CapKernel {
                 assert(crate::capability::boot_map::frame_slot(runs@, a, u) == (ROOT_FRAME_SLOT + (image_offset(runs@, a) + u)) as usize);
                 assert(nf == leaf2 + 1 + image_offset(runs@, a) + u);
                 assert(post.payload_of(nf) == tab.payload_of(nf));
-                assert(post.payload_of(nf) == boot_frame_payload((fb.0 * 4096) as usize, fb.1 as u8, image_rights(runs@[a])));
+                assert(post.payload_of(nf) == boot_frame_payload((fb.0 * PAGE_SZ) as usize, fb.1 as u8, image_rights(runs@[a])));
                 assert(post.list.is_child(tab.tables.node_of(process, crate::capability::boot_map::frame_slot(runs@, a, u)), page_node(t0, s, x)));
             }
             assert forall|x: usize| #![trigger pre.is_cap(x)]
@@ -406,7 +406,7 @@ impl CapKernel {
                     process,
                     crate::capability::boot_map::frame_slot(runs@, a, u),
                     (leaf2 + 1 + image_offset(runs@, a) + u) as usize,
-                    boot_frame_payload((fb.0 * 4096) as usize, fb.1 as u8, image_rights(runs@[a])),
+                    boot_frame_payload((fb.0 * PAGE_SZ) as usize, fb.1 as u8, image_rights(runs@[a])),
                 )
             } by {
                 let fb = run_image_blocks(runs@[a])[u];
@@ -426,10 +426,10 @@ impl CapKernel {
             assert(b0.is_root(s));
             post.lemma_table_base(s);
             tab.lemma_table_base(s);
-            assert forall|j: usize| j < 512 && !image_l4(runs@, j) implies #[trigger] b0.entry(s, j) == a0.entry(s, j) by {
+            assert forall|j: usize| j < ENTRIES && !image_l4(runs@, j) implies #[trigger] b0.entry(s, j) == a0.entry(s, j) by {
                 assert(b0.entry(s, j) == t0.entry(s, j));
             }
-            assert(!post.blocks.pages@[(s / 4096) as int].dead) by {
+            assert(!post.blocks.pages@[(s / PAGE_SZ) as int].dead) by {
                 reveal(CapKernel::root_tables_ready);
             }
             assert(post.wf());
@@ -442,13 +442,13 @@ impl CapKernel {
             } by {
             }
             assert forall|o: usize| #[trigger] post.view().reach(process, o)
-                <==> (pre.view().reach(process, o) || (o % 4096 == 0
-                    && in_runs(image_phys(runs@), runs@.len() as int, (o / 4096) as int))) by {
+                <==> (pre.view().reach(process, o) || (o % PAGE_SZ == 0
+                    && in_runs(image_phys(runs@), runs@.len() as int, (o / PAGE_SZ) as int))) by {
                 assert(post.view().reach(process, o) == tab.view().reach(process, o));
                 assert(tab.view().reach(process, o) == mid.view().reach(process, o));
             }
             assert forall|q: usize, o: usize| #[trigger] post.view().reach(q, o) && !pre.view().reach(q, o)
-                implies o % 4096 == 0 && in_runs(image_phys(runs@), runs@.len() as int, (o / 4096) as int) by {
+                implies o % PAGE_SZ == 0 && in_runs(image_phys(runs@), runs@.len() as int, (o / PAGE_SZ) as int) by {
                 assert(post.view().reach(q, o) == tab.view().reach(q, o));
                 assert(tab.view().reach(q, o) == mid.view().reach(q, o));
             }
