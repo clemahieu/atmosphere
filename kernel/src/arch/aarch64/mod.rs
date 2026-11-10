@@ -17,6 +17,7 @@ use crate::machine;
 
 mod exception;
 mod interrupt;
+mod syscall;
 pub mod write_protect;
 
 /// The AArch64 share of a core's [`Cpu`]: what the exception vectors need to report from a core

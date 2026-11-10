@@ -43,6 +43,8 @@
 //! the frame at the next entry, writes the page and unmaps it, and the unmap returns accessed and dirty
 //! set, both maintained, which it prints. dom0 prints that result through the console, then an exit marker,
 //! and ends the run with a power-off through the console, reporting success only when every check held.
+//! On aarch64, where the instruction carries an immediate, a print through the console by `svc #1`
+//! returns unknown and prints nothing.
 
 #![no_std]
 #![no_main]
@@ -654,6 +656,47 @@ unsafe fn print_slot(slot: u64, arguments: [u64; 5]) -> u64 {
     operation::status(unsafe { operation::invoke(operation::PRINT, slot, arguments) })
 }
 
+/// Whether an invocation by an instruction the ABI does not name returns unknown: on aarch64 an `svc`
+/// whose immediate is not 0, here asking for a print through the console, which `svc #0` accepts and
+/// which would show on the serial log. x86_64's `syscall` has no immediate, so there is nothing to ask.
+/// design/syscall-abi-in-registers/, the aarch64 table.
+fn other_instruction_unknown() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        true
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        let words = operation::print_words(b"dom0 svc 1 served\n");
+        let status_word: u64;
+        unsafe {
+            core::arch::asm!(
+                "svc #1",
+                inout("x8") operation::PRINT => status_word,
+                inout("x0") operation::ROOT_CONSOLE_SLOT => _,
+                inout("x1") words[0] => _,
+                inout("x2") words[1] => _,
+                inout("x3") words[2] => _,
+                inout("x4") words[3] => _,
+                inout("x5") words[4] => _,
+                out("x6") _,
+                out("x7") _,
+                out("x9") _,
+                out("x10") _,
+                out("x11") _,
+                out("x12") _,
+                out("x13") _,
+                out("x14") _,
+                out("x15") _,
+                out("x16") _,
+                out("x17") _,
+                out("x30") _,
+            );
+        }
+        operation::status(status_word) == operation::STATUS_UNKNOWN
+    }
+}
+
 #[no_mangle]
 extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
     let process = unsafe { print_slot(operation::ROOT_PROCESS_SLOT, FIRST_ARGUMENTS) };
@@ -670,6 +713,7 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
         && untyped == operation::STATUS_REFUSED
         && frame == operation::STATUS_REFUSED
         && unknown == operation::STATUS_UNKNOWN
+        && other_instruction_unknown()
         && first_empty_slot().is_some_and(|empty| {
             retyped_frame_held(empty)
                 && retyped_table_pages(empty)

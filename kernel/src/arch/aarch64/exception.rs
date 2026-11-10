@@ -19,7 +19,7 @@ use core::mem::{offset_of, size_of};
 
 use verified::arch::Registers;
 
-use super::{interrupt, spin_forever, write_protect, CoreState};
+use super::{interrupt, spin_forever, syscall, write_protect, CoreState};
 use crate::cpu::{Cpu, KernelStack};
 
 // The stub stores the frame as pairs at fixed offsets: x0 to x30 in order, then SP_EL0, ELR_EL1 and
@@ -198,6 +198,9 @@ const SOURCES: [&str; 4] = ["EL1 on SP_EL0", "EL1", "EL0", "AArch32 EL0"];
 /// The vector for a synchronous exception from EL1 on SP_EL1, which is where the kernel runs.
 const SYNCHRONOUS_FROM_EL1: u64 = 4;
 
+/// The vector for a synchronous exception from EL0, a thread's call among them.
+const SYNCHRONOUS_FROM_EL0: u64 = 8;
+
 /// The vectors for an IRQ, from the kernel and from EL0.
 const IRQ_FROM_EL1: u64 = 5;
 const IRQ_FROM_EL0: u64 = 9;
@@ -210,10 +213,11 @@ pub unsafe fn check_interrupt() {
 const _: () = assert!(KINDS.len() * SOURCES.len() == 16);
 
 /// Every vector's handler. An IRQ goes to the interrupt it names and resumes; the write-protect
-/// check's fault resumes past its write; anything else is reported and stops the core. ESR_EL1 is
-/// what the latest synchronous exception or SError wrote (Arm ARM D24.2.44), and FAR_EL1 the
-/// address of the latest abort or alignment fault (D24.2.47), so under an FIQ both are older than
-/// it.
+/// check's fault resumes past its write; an `svc` from EL0 is the thread's invocation, whose
+/// outcome is written over the frame the thread resumes with; anything else, another exception
+/// from EL0 among them, is reported and stops the core. ESR_EL1 is what the latest synchronous
+/// exception or SError wrote (Arm ARM D24.2.44), and FAR_EL1 the address of the latest abort or
+/// alignment fault (D24.2.47), so under an FIQ both are older than it.
 ///
 /// The report runs on this core's emergency stack whatever the exception, since the stack that
 /// took the frame may have no room for more: from its top, or from under the frame when the frame
@@ -231,6 +235,12 @@ extern "C" fn exception(vector: u64, frame: &mut Registers) {
     }
     if vector == SYNCHRONOUS_FROM_EL1 && write_protect::fixup(frame, syndrome, address) {
         return;
+    }
+    if vector == SYNCHRONOUS_FROM_EL0 {
+        if let Some(immediate) = syscall::svc_immediate(syndrome) {
+            syscall::invoke(frame, immediate);
+            return;
+        }
     }
     let frame = frame as *const Registers;
     let stack = if vector == FRAME_SAVE_FAULTED { frame as u64 } else { emergency_stack().1 };
