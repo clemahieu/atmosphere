@@ -3,7 +3,7 @@ verus! {
 
 use crate::define::*;
 
-#[derive(Clone,Debug)]
+#[derive(Debug)]
 pub struct PageEntryPerm {
     pub present: bool,
     pub ps: bool,
@@ -12,7 +12,7 @@ pub struct PageEntryPerm {
     pub user: bool,
 }
 
-#[derive(Clone,Debug)]
+#[derive(Debug)]
 pub struct PageEntry {
     pub addr: PAddr,
     pub perm: PageEntryPerm,
