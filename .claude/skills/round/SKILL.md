@@ -29,4 +29,4 @@ The harness also sends a task-notification when a round ends, after its hand-bac
 
 ## Several loops
 
-Loops run one per terminal, each a session of its own and so its own Beads actor: `.claude/hooks/beads-actor.sh` names the session's process in `BEADS_ACTOR` at session start, and nothing is set by hand. The actor is how a round tells an issue a finished session abandoned from one that another loop is working on; the landing lock in `round.md` keeps their gates and merges from colliding. This driver sees only its own agents, so it needs to know nothing else about the other loops.
+Loops run one per terminal, each a session of its own and so its own Beads actor: `.claude/hooks/beads-actor.sh` names the session's process in `BEADS_ACTOR` at session start, and nothing is set by hand. The actor is how a round tells an issue a finished session abandoned from one that another loop is working on; their gates run side by side, and landing is a fast-forward that git refuses when main moved, which `tools/land.py` tries again. This driver sees only its own agents, so it needs to know nothing else about the other loops.

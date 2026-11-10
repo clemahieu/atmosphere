@@ -2,7 +2,7 @@
 
 # Design decisions
 
-28 records: 28 active, 0 superseded.
+29 records: 29 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -40,6 +40,9 @@ in `revisit if` what would make it worth reopening.
 - **[isolation-claim](./isolation-claim/DECISION.md)** (2026-11-05): The kernel proves spatial isolation: a process affects only what its capabilities reach and gains authority only by grant or retype. It does not claim noninterference or freedom from timing channels, and the claim says so.
   - *confidence:* A scoping choice by the human. Noninterference is the claim the Atmosphere paper proved with unwinding conditions, so it is known to be reachable; timing needs hardware modelling the project does not have.
   - *revisit if:* A workload needs distrusting programs that cannot observe each other through status codes or timing, which is when noninterference or multiple kernel instances become required rather than later.
+- **[land-without-regating](./land-without-regating/DECISION.md)** (2026-11-10): No lock is held across the gate: a change is gated on the main it rebased onto, then rebased again and landed by a fast-forward git refuses when main moved; a clean rebase lands without a second gate, so main's tip may be a composition no gate has run on until the next change is gated on it, and tools/land.py tells that case from a failing change.
+  - *confidence:* A bet by the human on a measured cost and an inferred frequency: the lock's waits are measured over one day, the rate of failing compositions is inferred from gate durations over the same day and was zero in 19.
+  - *revisit if:* The project enters a release phase, where main's tip must be a gated tree; or compositions that fail become frequent enough that gating bases and finding the pair costs more than the lock's waits did, counted as `fail` lines in logs/gate-ledger against landings.
 - **[latest-value-by-three-slot-exchange](./latest-value-by-three-slot-exchange/DECISION.md)** (2026-11-09): amailbox gives one producer and one consumer the latest value through three slots and one atomic word holding the shared slot's index and a fresh bit: publish is one swap, observe is one load and at most one swap, nobody copies the payload or retries, and intermediate values are dropped. It is for two ends that both follow it; across a distrust boundary the path is aring.
   - *confidence:* The permutation, the fresh bit's meaning and the atomic counts are proven in amailbox/src/lib.rs. That three slots are cheaper to prove than Simpson's four is a judgement from the size of each protocol, not a measurement.
   - *revisit if:* Two ends that do not trust each other need the latest value, which a swapped word cannot protect; a caller measures the word sharing a cache line with the slots as its cost; or a target lacks an atomic swap of 32 bits.
@@ -103,19 +106,20 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `address-space`: address-spaces-as-objects, vmm-over-svm
 - `boot`: machine-glue-below-the-kernel, root-process-at-boot, test-guest-memory
 - `capability`: address-spaces-as-objects, capability-names-a-block, cpu-time-as-capability, divider-proven-by-invariant, ipc-with-reply-object, process-holds-capabilities, revoke-by-depth-first-list, root-process-at-boot, schedulers-over-core-partitions, sharing-by-derive, teardown-driven-by-retype, theorem-over-reach, thread-bound-at-retype, untyped-memory, vmm-over-svm
-- `gate`: cut-over-on-a-branch
+- `gate`: cut-over-on-a-branch, land-without-regating
 - `glue`: machine-glue-below-the-kernel
 - `interrupt`: machine-glue-below-the-kernel
 - `iommu`: machine-glue-below-the-kernel
 - `ipc`: fan-in-over-private-rings, ipc-with-reply-object, latest-value-by-three-slot-exchange, syscall-abi-in-registers
 - `kernel-state`: multicore-kernel-shape, one-kernel-instance, one-lock-bounded-steps
+- `landing`: land-without-regating
 - `lifetime`: sharing-by-derive, teardown-driven-by-retype
 - `lock`: flush-without-waiting, multicore-kernel-shape, one-lock-bounded-steps
 - `memory`: address-spaces-as-objects, capability-names-a-block, flush-without-waiting, syscall-abi-in-registers, teardown-driven-by-retype, test-guest-memory, untyped-memory
 - `multicore`: flush-without-waiting, multicore-kernel-shape, one-kernel-instance, one-lock-bounded-steps
 - `pagetable`: arch-module
 - `portability`: arch-module, machine-glue-below-the-kernel, syscall-abi-in-registers
-- `process`: cut-over-on-a-branch, process-holds-capabilities, thread-bound-at-retype
+- `process`: cut-over-on-a-branch, land-without-regating, process-holds-capabilities, thread-bound-at-retype
 - `proof`: divider-proven-by-invariant, isolation-claim, theorem-over-reach, thread-bound-at-retype, trust-boundary
 - `purity`: untyped-memory
 - `real-time`: schedulers-over-core-partitions
