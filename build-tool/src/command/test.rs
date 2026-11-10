@@ -67,8 +67,7 @@ pub struct Opts {
 enum Step {
     FileSizes,
     Build,
-    FreeRanges,
-    MappedRuns,
+    BuildToolTests,
     License,
     Hooks,
     Verify,
@@ -83,11 +82,10 @@ enum Step {
 }
 
 impl Step {
-    const ALL: [Step; 15] = [
+    const ALL: [Step; 14] = [
         Step::FileSizes,
         Step::Build,
-        Step::FreeRanges,
-        Step::MappedRuns,
+        Step::BuildToolTests,
         Step::License,
         Step::Hooks,
         Step::Verify,
@@ -105,8 +103,7 @@ impl Step {
         match self {
             Step::FileSizes => "file sizes",
             Step::Build => "build",
-            Step::FreeRanges => "free ranges",
-            Step::MappedRuns => "mapped runs",
+            Step::BuildToolTests => "build-tool tests",
             Step::License => "license",
             Step::Hooks => "hooks",
             Step::Verify => "verify",
@@ -134,8 +131,7 @@ impl Step {
         match self {
             Step::FileSizes => check_file_sizes(project).await,
             Step::Build => check_build(project).await,
-            Step::FreeRanges => check_free_ranges(project).await,
-            Step::MappedRuns => check_mapped_runs(project).await,
+            Step::BuildToolTests => check_build_tool_tests(project).await,
             Step::License => check_licenses(project).await,
             Step::Hooks => check_hooks(project).await,
             Step::Verify => check_verify(project, &[]).await,
@@ -219,34 +215,29 @@ async fn check_build(project: &ProjectHandle) -> Result<String> {
     super::build::gate_build(project).await
 }
 
-/// The loader map check. Its lines start with `free page ranges:` in this step's output.
-async fn check_free_ranges(project: &ProjectHandle) -> Result<String> {
-    let status = Command::new("cargo")
-        .args(["test", "--manifest-path", "build-tool/Cargo.toml", "--", "--nocapture", "free_page"])
+/// build-tool's whole test suite, after the build, since the dom0 run check reads the built dom0. Its
+/// tests include the loader map check, whose lines start with `free page ranges:`, the dom0 run check,
+/// whose lines start with `mapped runs:`, and the check that the kernel's shared sources name no x86.
+/// The detail carries each test binary's result line.
+async fn check_build_tool_tests(project: &ProjectHandle) -> Result<String> {
+    let output = Command::new("cargo")
+        .args(["test", "--manifest-path", "build-tool/Cargo.toml", "--", "--nocapture"])
         .current_dir(project.root())
         .stdin(Stdio::null())
-        .status()
+        .stderr(Stdio::inherit())
+        .output()
         .await
-        .context("free page ranges")?;
-    if !status.success() {
-        return Err(anyhow!("cargo test free_page: {}", status));
+        .context("build-tool tests")?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    print!("{}", text);
+    let results = marked_lines(&text, TEST_RESULT);
+    if !output.status.success() {
+        return Err(anyhow!("cargo test of build-tool: {}{}", output.status, results));
     }
-    Ok("unaligned, empty, overlapping and out-of-range ranges rejected; set-aside and untracked pages left out of the free runs".to_string())
-}
-
-/// The dom0 run check. Its lines start with `mapped runs:` in this step's output.
-async fn check_mapped_runs(project: &ProjectHandle) -> Result<String> {
-    let status = Command::new("cargo")
-        .args(["test", "--manifest-path", "build-tool/Cargo.toml", "--", "--nocapture", "mapped_run"])
-        .current_dir(project.root())
-        .stdin(Stdio::null())
-        .status()
-        .await
-        .context("mapped runs")?;
-    if !status.success() {
-        return Err(anyhow!("cargo test mapped_run: {}", status));
+    if results.is_empty() {
+        return Err(anyhow!("cargo test of build-tool: no test result line"));
     }
-    Ok("real dom0 load accepted; unaligned, empty, outside, kernel-entry and overlapping runs rejected".to_string())
+    Ok(format!("loader map, dom0 run and shared-source checks among them{}", results))
 }
 
 /// Runs the license check's own tests, then the check over the workspace's graph.
@@ -363,7 +354,7 @@ async fn check_verify(project: &ProjectHandle, args: &[&str]) -> Result<String> 
         return Err(anyhow!("{}: {} with no errors counted", command, output.status));
     }
 
-    let results = results_lines(&text);
+    let results = marked_lines(&text, VERIFY_RESULTS);
     if errors > allowance {
         return Err(anyhow!("{}: {} errors, allowance {}{}", command, errors, allowance, results));
     }
@@ -558,11 +549,17 @@ fn parse_verify_errors(output: &str) -> Option<u64> {
     })
 }
 
-/// The `verification results::` lines of a verify run, one per crate, each on a line of its own.
-fn results_lines(output: &str) -> String {
+/// Marks Verus's results line, one per crate.
+const VERIFY_RESULTS: &str = "verification results:: ";
+
+/// Marks cargo test's result line, one per test binary.
+const TEST_RESULT: &str = "test result: ";
+
+/// The lines of a run's output that hold `marker`, each on a line of its own.
+fn marked_lines(output: &str, marker: &str) -> String {
     output
         .lines()
-        .filter(|line| line.contains("verification results:: "))
+        .filter(|line| line.contains(marker))
         .map(|line| format!("\n  {}", line.trim()))
         .collect()
 }
@@ -640,11 +637,21 @@ pub(super) mod tests {
 
     /// A crate that does not compile prints no results line, which must not read as zero errors.
     #[test]
-    fn results_lines_are_each_crates_line() {
+    fn verify_results_lines_are_each_crates_line() {
         let output = "warning: x\nverification results:: 1345 verified, 0 errors\nnote: y\nverification results:: 5 verified, 0 errors\n";
         assert_eq!(
-            results_lines(output),
+            marked_lines(output, VERIFY_RESULTS),
             "\n  verification results:: 1345 verified, 0 errors\n  verification results:: 5 verified, 0 errors"
+        );
+    }
+
+    /// cargo test prints one result line per test binary, so each one reaches the gate log's detail.
+    #[test]
+    fn test_result_lines_are_each_binarys_line() {
+        let output = "running 2 tests\ntest a ... ok\nfree page ranges: rejected x\ntest result: ok. 2 passed; 0 failed\n\nrunning 0 tests\ntest result: ok. 0 passed; 0 failed\n";
+        assert_eq!(
+            marked_lines(output, TEST_RESULT),
+            "\n  test result: ok. 2 passed; 0 failed\n  test result: ok. 0 passed; 0 failed"
         );
     }
 
