@@ -340,7 +340,8 @@ impl CapKernel {
 
     /// What freeing the empty leaf at `base` did to self: its block is free, and the root entry its
     /// owner names is cleared with it, every other entry as it was. Its capabilities went earlier, so the
-    /// view is as it was.
+    /// view is as it was, and every node, every capability outside the leaf, every tracked page outside
+    /// its block, the epochs, the cores, the IOMMUs and the records are as they were.
     pub open spec fn leaf_freed(&self, post: Self, c: usize, root: usize, from: usize, base: usize) -> bool {
         let untyped = self.tables.node_of(root, from);
         let page = base / 4096;
@@ -357,6 +358,21 @@ impl CapKernel {
         &&& forall|t: usize, s: int| #![trigger post.tables.leaf(t, s)] self.tables.roots@.contains_key(t) && 0 <= s < ROOT_ENTRIES
             && !(t == owner && s == r) ==> post.tables.leaf(t, s) == self.tables.leaf(t, s)
         &&& !post.list.pages@.dom().contains(base)
+        &&& post.list.seq == self.list.seq
+        &&& post.list.parent == self.list.parent
+        &&& post.list.nodes == self.list.nodes
+        &&& post.list.pages@.dom() == self.list.pages@.dom().remove(base)
+        &&& post.tables.payloads@.dom() == self.tables.payloads@.dom().remove(base)
+        &&& forall|n: usize| #[trigger] post.tables.is_cap(&post.list, n) == self.tables.is_cap(&self.list, n)
+        &&& forall|n: usize| page_of(n) != base ==> #[trigger] post.tables.payload_of(n) == self.tables.payload_of(n)
+        &&& forall|i: int| self.blocks.tracks(i) && !(page as int <= i < page + 2)
+            ==> #[trigger] post.blocks.pages@[i] == self.blocks.pages@[i]
+        &&& post.stale_epoch == self.stale_epoch
+        &&& post.cores == self.cores
+        &&& post.iommus == self.iommus
+        &&& post.spaces == self.spaces
+        &&& post.processes == self.processes
+        &&& post.threads == self.threads
         &&& Self::step_ok(*self, post, c as int)
         &&& post.view() == self.view()
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&self.list, &self.tables)
@@ -1536,7 +1552,21 @@ impl CapKernel {
                 && 0 <= s < ROOT_ENTRIES && !(t == old(self).tables.owner@[base].0 && s == old(self).tables.owner@[base].1)
                 ==> final(self).tables.leaf(t, s) == old(self).tables.leaf(t, s),
             !final(self).list.pages@.dom().contains(base),
+            final(self).list.seq == old(self).list.seq,
+            final(self).list.parent == old(self).list.parent,
+            final(self).list.nodes == old(self).list.nodes,
+            final(self).list.pages@.dom() == old(self).list.pages@.dom().remove(base),
+            final(self).tables.payloads@.dom() == old(self).tables.payloads@.dom().remove(base),
+            forall|n: usize| #[trigger] final(self).tables.is_cap(&final(self).list, n) == old(self).tables.is_cap(&old(self).list, n),
+            forall|n: usize| page_of(n) != base ==> #[trigger] final(self).tables.payload_of(n) == old(self).tables.payload_of(n),
+            forall|i: int| old(self).blocks.tracks(i) && !((base / 4096) as int <= i < base / 4096 + 2)
+                ==> #[trigger] final(self).blocks.pages@[i] == old(self).blocks.pages@[i],
+            final(self).stale_epoch == old(self).stale_epoch,
             final(self).cores == old(self).cores,
+            final(self).iommus == old(self).iommus,
+            final(self).spaces == old(self).spaces,
+            final(self).processes == old(self).processes,
+            final(self).threads == old(self).threads,
             final(self).view() == old(self).view(),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
@@ -1569,9 +1599,14 @@ impl CapKernel {
                 }
             }
             Self::lemma_leaf_freed(pre, post, base);
+            Self::lemma_leaf_freed_caps(pre, post, base);
             Self::lemma_bound_threads_same(pre, post);
             assert(pre.blocks.in_block(page as int, page as int));
             assert(pre.blocks.in_block(page as int, page + 1int));
+            assert forall|i: int| pre.blocks.tracks(i) && !(page as int <= i < page + 2)
+                implies #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i] by {
+                assert(!pre.blocks.in_block(page as int, i));
+            }
         }
     }
 
