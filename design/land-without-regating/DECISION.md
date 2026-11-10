@@ -14,7 +14,7 @@ A round lands with `tools/land.py`. It rebases the branch onto main, runs the ga
 
 When main moved while the gate ran and the second rebase is clean, the change lands without a second gate. Main's tip is then a composition of changes that each passed a gate and that no gate has run on together. It is gated when the next change is gated on top of it. A rebase that conflicts is new content and is gated again after it is resolved.
 
-When a gate fails, the tool says whose failure it is. It keeps a ledger, `logs/gate-ledger` at the project root, of every tree a gate has judged. A failure on a base whose tree passed is the change's. A base no gate has judged is gated by itself, once across all loops, and the verdict is recorded. A base that fails by itself is a bug in main: the tool names the commits since the last gated tree, a round files the bug, and the changes that failed on that base wait on it.
+When a gate fails, the tool says whose failure it is. It keeps a ledger, `logs/gate-ledger` at the project root, of every tree a gate has judged. A failure on a base whose tree passed is the change's. On a base no gate has judged the tool says so and stops, since most failures are plainly the change's and the round can see that from the failing lines; when it cannot, `tools/land.py --judge-base` gates the base by itself, once across all loops, and the verdict is recorded. A base that fails by itself is a bug in main: the tool names the commits since the last gated tree, a round files the bug, and the changes that failed on that base wait on it.
 
 Origin's main follows local main, ungated compositions included.
 

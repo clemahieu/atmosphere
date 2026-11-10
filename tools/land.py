@@ -11,8 +11,10 @@ with whatever change is gated on top of it next (design/land-without-regating/).
 When the gate fails, the question is whether the change fails or the main it was rebased onto does.
 The ledger, logs/gate-ledger at the project root, holds a line for every tree a gate has judged:
 tree, pass or fail, the commit, the time. A base whose tree passed is sound, so the change is at
-fault. A base with no line is gated here by itself, detached in this worktree, its output in
-logs/base-<commit>-gate.log, and its verdict joins the ledger, where the other loops' landings
+fault. A base with no line is unjudged, and the tool says so and stops: most failures are plainly
+the change's, and a gate of the base would be spent to learn nothing. When the failure is not
+plainly the change's, --judge-base gates the base by itself, detached in this worktree, its output
+in logs/base-<commit>-gate.log, and its verdict joins the ledger, where the other loops' landings
 find it instead of gating the same base again. A base that fails is printed with its suspects: the
 commits since the last one on main whose tree passed.
 
@@ -23,8 +25,10 @@ Exit status:
   3  the rebase stopped on a conflict; resolve it, continue the rebase and land again
   4  the base fails the gate by itself; main is broken and the change is not judged
   5  the gate passed and the change did not reach origin: the merge or the push kept failing
+  6  the gate fails and no gate has judged the base: fix the change, or settle it with --judge-base
 
 usage: tools/land.py [--onto BRANCH] [--gate COMMAND]
+       tools/land.py --judge-base [--onto BRANCH] [--gate COMMAND]    (exits 1 or 4)
        tools/land.py --test    (this script's own tests)
 """
 import argparse
@@ -39,7 +43,7 @@ from pathlib import Path
 
 sys.dont_write_bytecode = True
 
-LANDED, CHANGE_FAILS, NOT_RUN, CONFLICT, BASE_FAILS, NOT_LANDED = range(6)
+LANDED, CHANGE_FAILS, NOT_RUN, CONFLICT, BASE_FAILS, NOT_LANDED, BASE_UNJUDGED = range(7)
 LEDGER = "logs/gate-ledger"
 BASE_LOCK = "logs/gate-base.lock"
 GATE = "atmo test"
@@ -98,7 +102,7 @@ def judge_base(root, worktree, branch, base, gate_command):
         known = verdicts(root).get(base_tree)
         if known is not None:
             return known
-        say(f"no gate has judged {base}, which the change was rebased onto: gating it by itself into {base_log(base)}")
+        say(f"gating {base} by itself into {base_log(base)}")
         git(worktree, "checkout", "-q", "--detach", base)
         try:
             with open(root / base_log(base), "w") as output:
@@ -122,8 +126,8 @@ def suspects(root, worktree, base):
     return found, False
 
 
-def blame(root, worktree, branch, onto, base, gate_command):
-    verdict, judged_as = judge_base(root, worktree, branch, base, gate_command)
+def blame(root, worktree, onto, base, verdict, judged_as):
+    """Says whose failure a failed gate is, from the base's verdict; the exit status that names it."""
     if verdict == "pass":
         say(f"the gate fails here and passes on {base}, which the change was rebased onto: the change is at fault")
         return CHANGE_FAILS
@@ -136,17 +140,35 @@ def blame(root, worktree, branch, onto, base, gate_command):
     return BASE_FAILS
 
 
-def land(worktree, onto, gate_command):
-    root = worktree.parent
-    target = root / onto
+def change_branch(worktree, onto):
+    """The branch a worktree's change is on, or None, said, when it is in no state to gate."""
     branch = subprocess.run(
         ["git", "-C", str(worktree), "symbolic-ref", "--short", "-q", "HEAD"], stdout=subprocess.PIPE, text=True
     ).stdout.strip()
     if not branch or branch == onto:
         say(f"not run: this worktree is on {branch or 'no branch'}, and a change lands from its own branch")
-        return NOT_RUN
+        return None
     if git(worktree, "status", "--porcelain"):
         say("not run: the worktree has uncommitted changes, which the gate would see and the landing would not take")
+        return None
+    return branch
+
+
+def judge(worktree, onto, gate_command):
+    """Settles a failed gate on an unjudged base: gates the base the change stands on and says whose failure it is."""
+    root = worktree.parent
+    branch = change_branch(worktree, onto)
+    if branch is None:
+        return NOT_RUN
+    base = git(worktree, "merge-base", "HEAD", onto)
+    return blame(root, worktree, onto, base, *judge_base(root, worktree, branch, base, gate_command))
+
+
+def land(worktree, onto, gate_command):
+    root = worktree.parent
+    target = root / onto
+    branch = change_branch(worktree, onto)
+    if branch is None:
         return NOT_RUN
 
     if not tried(worktree, "rebase", onto):
@@ -157,7 +179,11 @@ def land(worktree, onto, gate_command):
     gated = git(worktree, "rev-parse", "HEAD")
     say(f"gating {gated} on {onto} at {base}")
     if not gate_passes(worktree, gate_command, sys.stdout):
-        return blame(root, worktree, branch, onto, base, gate_command)
+        known = verdicts(root).get(tree(worktree, base))
+        if known is None:
+            say(f"the gate fails and no gate has judged {base}, which the change was rebased onto: fix the change when the failing lines are its doing, otherwise tools/land.py --judge-base")
+            return BASE_UNJUDGED
+        return blame(root, worktree, onto, base, *known)
     record(root, tree(worktree, gated), "pass", gated)
 
     for _ in range(MERGE_TRIES):
@@ -218,10 +244,10 @@ class Tests(unittest.TestCase):
         self.git(where, "commit", "-q", "-m", f"add {name}")
         return self.git(where, "rev-parse", "HEAD")
 
-    def land(self, gate="true"):
+    def land(self, gate="true", *arguments):
         """Runs the tool in the task worktree. Every gate run adds a line to the root's `gates`."""
         return subprocess.run(
-            [sys.executable, str(Path(__file__).resolve()), "--gate", f"echo run >> ../gates; {gate}"],
+            [sys.executable, str(Path(__file__).resolve()), "--gate", f"echo run >> ../gates; {gate}", *arguments],
             cwd=self.task,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -301,10 +327,21 @@ class Tests(unittest.TestCase):
         self.assertEqual(self.git(self.main, "rev-parse", "main"), base)
         self.assertIn("the change is at fault", result.stdout)
 
-    def test_a_failing_gate_on_an_ungated_base_gates_the_base_and_blames_the_change_when_it_passes(self):
+    def test_a_failing_gate_on_an_unjudged_base_says_so_and_leaves_the_base_ungated(self):
+        base = self.commit(self.main, "b")
+        self.commit(self.task, "bad")
+        result = self.land("[ ! -e bad ]")
+        self.assertEqual(result.returncode, BASE_UNJUDGED, result.stdout)
+        self.assertEqual(self.gates(), 1)
+        self.assertFalse((self.root / LEDGER).exists())
+        self.assertIn(f"no gate has judged {base}", result.stdout)
+        self.assertIn("--judge-base", result.stdout)
+
+    def test_judging_a_base_that_passes_blames_the_change_and_records_the_base(self):
         base = self.commit(self.main, "b")
         change = self.commit(self.task, "bad")
-        result = self.land("[ ! -e bad ]")
+        self.assertEqual(self.land("[ ! -e bad ]").returncode, BASE_UNJUDGED)
+        result = self.land("[ ! -e bad ]", "--judge-base")
         self.assertEqual(result.returncode, CHANGE_FAILS, result.stdout)
         self.assertEqual(self.gates(), 2)
         self.assertEqual(self.ledger(), [[self.tree(base), "pass", base]])
@@ -315,7 +352,7 @@ class Tests(unittest.TestCase):
         self.assertNotEqual(self.git(self.task, "rev-parse", "HEAD"), change)
         self.assertEqual(self.git(self.task, "status", "--porcelain"), "")
 
-    def test_a_base_that_fails_by_itself_is_named_with_its_suspects_and_gated_once(self):
+    def test_a_base_judged_to_fail_by_itself_is_named_with_its_suspects_and_gated_once(self):
         self.commit(self.task, "a")
         self.assertEqual(self.land().returncode, LANDED)
         gated = self.git(self.main, "rev-parse", "main")
@@ -323,7 +360,8 @@ class Tests(unittest.TestCase):
         composition = "! { [ -e a ] && [ -e b ]; }"
         suspect = self.commit(self.main, "b")
         self.commit(self.task, "c")
-        result = self.land(composition)
+        self.assertEqual(self.land(composition).returncode, BASE_UNJUDGED)
+        result = self.land(composition, "--judge-base")
         self.assertEqual(result.returncode, BASE_FAILS, result.stdout)
         self.assertEqual(self.gates(), 3)
         self.assertIn([self.tree(suspect), "fail", suspect], self.ledger())
@@ -352,9 +390,10 @@ class Tests(unittest.TestCase):
 
 
 def main():
-    parser = argparse.ArgumentParser(usage="tools/land.py [--onto BRANCH] [--gate COMMAND] | --test")
+    parser = argparse.ArgumentParser(usage="tools/land.py [--judge-base] [--onto BRANCH] [--gate COMMAND] | --test")
     parser.add_argument("--onto", default="main", help="the branch landed on, whose worktree is its sibling (default main)")
     parser.add_argument("--gate", default=GATE, help=f"the gate, a shell command run in the worktree (default {GATE!r})")
+    parser.add_argument("--judge-base", action="store_true", help="gate the base the change stands on instead of the change")
     parser.add_argument("--test", action="store_true")
     args = parser.parse_args()
     if args.test:
@@ -362,7 +401,7 @@ def main():
     worktree = subprocess.run(["git", "rev-parse", "--show-toplevel"], stdout=subprocess.PIPE, text=True)
     if worktree.returncode != 0:
         return NOT_RUN
-    return land(Path(worktree.stdout.strip()), args.onto, args.gate)
+    return (judge if args.judge_base else land)(Path(worktree.stdout.strip()), args.onto, args.gate)
 
 
 if __name__ == "__main__":
