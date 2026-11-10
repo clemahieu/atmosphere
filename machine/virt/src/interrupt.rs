@@ -114,7 +114,7 @@ const CORES_PER_CLUSTER: usize = 16;
 const MPIDR_AFFINITY: u64 = 0x00ff_00ff_ffff;
 
 /// The affinity of core `cpu`, as Aff1 and Aff0. Aff2 and Aff3 are zero.
-const fn affinity(cpu: usize) -> (u64, u64) {
+pub const fn affinity(cpu: usize) -> (u64, u64) {
     assert!(cpu < MAX_CPUS);
     ((cpu / CORES_PER_CLUSTER) as u64, (cpu % CORES_PER_CLUSTER) as u64)
 }

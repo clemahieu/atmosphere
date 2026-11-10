@@ -1,15 +1,15 @@
 //! The instructions this crate issues itself: the load and the store of a device register, the read
-//! and the write of a system register, the two barriers, the hypervisor call and the wait for an
-//! interrupt. On another architecture the crate is built for its tests, where a device register is a
-//! word of the test's own memory, a system register is a value the test's thread keeps, and each
-//! store, system register access, barrier and call is recorded.
+//! and the write of a system register, the two barriers, the clean of the data cache, the hypervisor
+//! call and the wait for an interrupt. On another architecture the crate is built for its tests,
+//! where a device register is a word of the test's own memory, a system register is a value the
+//! test's thread keeps, and each store, system register access, barrier, clean and call is recorded.
 
 #[cfg(target_arch = "aarch64")]
-pub use aarch64::{dsb, hvc, isb, load, load_wide, read, store, wait, write};
+pub use aarch64::{clean, dsb, hvc, isb, load, load_wide, read, store, wait, write};
 #[cfg(test)]
-pub use host::{events, ignore_writes, set, Block, Event};
+pub use host::{answer, events, ignore_writes, set, Block, Event};
 #[cfg(not(target_arch = "aarch64"))]
-pub use host::{dsb, hvc, isb, load, load_wide, read, store, wait, write};
+pub use host::{clean, dsb, hvc, isb, load, load_wide, read, store, wait, write};
 
 /// A system register this crate reads or writes, by its name in the Arm ARM (DDI 0487) and, for the
 /// ICC registers, in the GIC architecture specification (IHI 0069).
@@ -17,6 +17,14 @@ pub use host::{dsb, hvc, isb, load, load_wide, read, store, wait, write};
 pub enum System {
     /// MPIDR_EL1, read-only: this core's affinity. Arm ARM D24.2.137.
     Mpidr,
+    /// SCTLR_EL1: the system control, with the enables of translation and of the caches. A core
+    /// that is starting writes it in its entry, and nothing else here does. Arm ARM D24.2.174.
+    Sctlr,
+    /// TCR_EL1: the translation control, written as SCTLR_EL1 is. Arm ARM D24.2.193.
+    Tcr,
+    /// MAIR_EL1: what a descriptor's attribute index names, written as SCTLR_EL1 is. Arm ARM
+    /// D24.2.126.
+    Mair,
     /// ICC_SRE_EL1: whether the ICC system registers are in use. IHI 0069 12.2.23.
     IccSre,
     /// ICC_PMR_EL1: the priority mask. IHI 0069 12.2.19.
@@ -109,6 +117,9 @@ mod aarch64 {
         }
         match register {
             System::Mpidr => mrs!("MPIDR_EL1"),
+            System::Sctlr => mrs!("SCTLR_EL1"),
+            System::Tcr => mrs!("TCR_EL1"),
+            System::Mair => mrs!("MAIR_EL1"),
             System::IccSre => mrs!("ICC_SRE_EL1"),
             System::IccPmr => mrs!("ICC_PMR_EL1"),
             System::IccCtlr => mrs!("ICC_CTLR_EL1"),
@@ -143,6 +154,7 @@ mod aarch64 {
             System::CntpCval => msr!("CNTP_CVAL_EL0"),
             System::CntpCtl => msr!("CNTP_CTL_EL0"),
             System::Mpidr | System::IccIar1 | System::Cntpct => panic!("{:?} is read-only", register),
+            System::Sctlr | System::Tcr | System::Mair => panic!("{:?} is written by a core's entry alone", register),
         }
     }
 
@@ -161,21 +173,52 @@ mod aarch64 {
         }
     }
 
-    /// Calls the PSCI function `function`, which takes no argument.
+    /// CTR_EL0.DminLine, bits 19:16: log2 of the 4-byte words in the smallest line of any data
+    /// cache this core has. Arm ARM D24.2.41.
+    const DATA_LINE_SHIFT: u32 = 16;
+    const DATA_LINE_MASK: u64 = 0b1111;
+
+    /// Cleans the data cache's lines that hold `start..start + bytes` to memory, where an access the
+    /// caches do not serve finds what was written: DC CVAC on each line (Arm ARM C5.3.25), complete
+    /// at the DSB.
+    ///
+    /// # Safety
+    ///
+    /// The range is mapped for this core to read.
+    pub unsafe fn clean(start: usize, bytes: usize) {
+        let cache_type: u64;
+        asm!("mrs {cache_type}, CTR_EL0", cache_type = out(reg) cache_type, options(nomem, nostack, preserves_flags));
+        let line = 4usize << (cache_type >> DATA_LINE_SHIFT & DATA_LINE_MASK);
+        let mut address = start & !(line - 1);
+        while address < start + bytes {
+            asm!("dc cvac, {address}", address = in(reg) address, options(nostack, preserves_flags));
+            address += line;
+        }
+        dsb();
+    }
+
+    /// Calls the PSCI function `function` with `arguments`, and returns its result.
     ///
     /// The conduit is `hvc`, as QEMU virt's device tree says (node `psci`, `method = "hvc"`). The
-    /// function id goes in W0 and the instruction's immediate is 0 (PSCI, ARM DEN 0022, 5.2.1).
+    /// function id goes in W0, the arguments in X1 to X3, the result comes back in X0 and the
+    /// instruction's immediate is 0 (PSCI, ARM DEN 0022, 5.2.1). A function that takes fewer
+    /// arguments ignores the rest.
     ///
     /// # Safety
     ///
     /// The caller accepts what `function` does to the machine.
-    pub unsafe fn hvc(function: u32) {
+    pub unsafe fn hvc(function: u32, arguments: [u64; 3]) -> i64 {
+        let result: i64;
         asm!(
             "hvc #0",
-            inout("x0") u64::from(function) => _,
+            inout("x0") u64::from(function) => result,
+            inout("x1") arguments[0] => _,
+            inout("x2") arguments[1] => _,
+            inout("x3") arguments[2] => _,
             clobber_abi("C"),
             options(nostack),
         );
+        result
     }
 
     /// Waits for an interrupt.
@@ -203,7 +246,8 @@ mod host {
         Write { register: System, value: u64 },
         Isb,
         Dsb,
-        Hvc { function: u32 },
+        Clean { start: usize, bytes: usize },
+        Hvc { function: u32, arguments: [u64; 3] },
     }
 
     /// The system registers [`System`] names.
@@ -215,6 +259,13 @@ mod host {
         static EVENTS: RefCell<Vec<Event>> = const { RefCell::new(Vec::new()) };
         static SYSTEM: RefCell<[u64; SYSTEM_REGISTERS]> = const { RefCell::new([0; SYSTEM_REGISTERS]) };
         static IGNORED: RefCell<[bool; SYSTEM_REGISTERS]> = const { RefCell::new([false; SYSTEM_REGISTERS]) };
+        static ANSWER: RefCell<i64> = const { RefCell::new(0) };
+    }
+
+    /// Makes every [`hvc`] this thread issues from here on return `result`. It returns 0 until then.
+    #[cfg(test)]
+    pub fn answer(result: i64) {
+        ANSWER.set(result);
     }
 
     /// Makes `register` keep its value across the writes this thread makes from here on, as a
@@ -336,6 +387,11 @@ mod host {
     /// None is needed here; the signature is the aarch64 one.
     pub unsafe fn write(register: System, value: u64) {
         assert!(!matches!(register, System::Mpidr | System::IccIar1 | System::Cntpct), "{:?} is read-only", register);
+        assert!(
+            !matches!(register, System::Sctlr | System::Tcr | System::Mair),
+            "{:?} is written by a core's entry alone",
+            register
+        );
         #[cfg(test)]
         {
             EVENTS.with_borrow_mut(|events| events.push(Event::Write { register, value }));
@@ -359,16 +415,35 @@ mod host {
         EVENTS.with_borrow_mut(|events| events.push(Event::Dsb));
     }
 
-    /// Records the call. It returns, as no PSCI function that changes the machine's power does.
+    /// Records the clean.
     ///
     /// # Safety
     ///
     /// None is needed here; the signature is the aarch64 one.
-    pub unsafe fn hvc(function: u32) {
+    pub unsafe fn clean(start: usize, bytes: usize) {
         #[cfg(test)]
-        EVENTS.with_borrow_mut(|events| events.push(Event::Hvc { function }));
+        EVENTS.with_borrow_mut(|events| events.push(Event::Clean { start, bytes }));
         #[cfg(not(test))]
-        let _ = function;
+        let _ = (start, bytes);
+    }
+
+    /// Records the call and returns what the test's thread answers, 0 unless it said otherwise. It
+    /// returns, as no PSCI function that changes the machine's power does.
+    ///
+    /// # Safety
+    ///
+    /// None is needed here; the signature is the aarch64 one.
+    pub unsafe fn hvc(function: u32, arguments: [u64; 3]) -> i64 {
+        #[cfg(test)]
+        {
+            EVENTS.with_borrow_mut(|events| events.push(Event::Hvc { function, arguments }));
+            ANSWER.with_borrow(|answer| *answer)
+        }
+        #[cfg(not(test))]
+        {
+            let _ = (function, arguments);
+            0
+        }
     }
 
     /// Yields to the other threads.

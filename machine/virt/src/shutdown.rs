@@ -16,7 +16,7 @@ pub fn set_option(key: &str, value: &str) -> bool {
 /// off, which the runner reads as success, so a run that failed stays on until the runner's timeout.
 unsafe fn power_off(success: bool) {
     if success {
-        hvc(SYSTEM_OFF);
+        hvc(SYSTEM_OFF, [0; 3]);
     }
 }
 
@@ -41,7 +41,7 @@ mod tests {
     fn a_run_that_succeeded_asks_the_firmware_for_system_off() {
         unsafe { super::power_off(true) };
         // PSCI, ARM DEN 0022F.b, 5.1.9: SYSTEM_OFF's function id.
-        assert_eq!(events(), [Event::Hvc { function: 0x8400_0008 }]);
+        assert_eq!(events(), [Event::Hvc { function: 0x8400_0008, arguments: [0; 3] }]);
     }
 
     #[test]

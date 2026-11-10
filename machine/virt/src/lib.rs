@@ -1,6 +1,5 @@
-//! QEMU virt on aarch64: the PL011 console, the GICv3, the generic timer and the PSCI power-off, on a
-//! machine without an IOMMU. The start of a second core is declared and panics with its name.
-//! design/machine-glue-below-the-kernel/.
+//! QEMU virt on aarch64: the PL011 console, the GICv3, the generic timer, and the PSCI power-off and
+//! start of a second core, on a machine without an IOMMU. design/machine-glue-below-the-kernel/.
 
 #![no_std]
 
@@ -12,6 +11,7 @@ mod instruction;
 mod interrupt;
 mod iommu;
 mod shutdown;
+mod start;
 mod timer;
 
 use interrupt::Gic;
@@ -93,14 +93,11 @@ pub fn send_ipi(cpu: usize, vector: u8) {
 
 /// Starts `cpu` on `stack`, translating through `root`, at `entry` with `cpu` as its argument.
 pub unsafe fn start_core(cpu: usize, stack: u64, entry: extern "C" fn(u64) -> !, root: u64) {
-    let _ = (cpu, stack, entry, root);
-    unimplemented!("start_core");
+    start::start(cpu, stack, entry, root);
 }
 
 #[cfg(test)]
 mod tests {
-    use std::boxed::Box;
-    use std::string::String;
     use std::vec::Vec;
 
     use astd::boot::BootInfo;
@@ -141,22 +138,6 @@ mod tests {
         assert_ne!(crate::TIMER_VECTOR, crate::FLUSH_VECTOR);
         assert_ne!(crate::TIMER_VECTOR, crate::IOMMU_FAULT_VECTOR);
         assert_ne!(crate::IOMMU_FAULT_VECTOR, crate::FLUSH_VECTOR);
-    }
-
-    extern "C" fn entry(_: u64) -> ! {
-        unreachable!()
-    }
-
-    #[test]
-    fn an_item_that_is_not_written_panics_with_its_name() {
-        let items: [(&str, Box<dyn Fn() + std::panic::UnwindSafe>); 1] =
-            [("start_core", Box::new(|| unsafe { crate::start_core(1, 0, entry, 0) }))];
-        for (name, item) in items {
-            let panic = std::panic::catch_unwind(item).expect_err(name);
-            // The message is a literal once the compiler has folded the name into it.
-            let message = panic.downcast_ref::<&str>().copied().or(panic.downcast_ref::<String>().map(String::as_str));
-            assert_eq!(message, Some(std::format!("not implemented: {}", name).as_str()));
-        }
     }
 
     #[test]
