@@ -10,16 +10,12 @@ use crate::boot::command_line::Component as CommandLineComponent;
 pub enum Error {
     /// An invalid kernel command-line component.
     InvalidCommandLineOption(CommandLineComponent<'static>),
-
-    /// An invalid system descriptor type.
-    InvalidDescriptorType(u8),
 }
 
 impl core::fmt::Display for Error {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::InvalidCommandLineOption(component) => write!(f, "Invalid kernel command-line component: {component:?}"),
-            Self::InvalidDescriptorType(descriptor_type) => write!(f, "Invalid descriptor type: {descriptor_type}"),
         }
     }
 }

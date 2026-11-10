@@ -12,7 +12,6 @@ mod idt;
 use core::arch::{asm, naked_asm};
 use core::convert::{Into, TryFrom};
 
-use bit_field::BitField;
 use crate::arch::Ring;
 
 use crate::arch::spin_forever;
@@ -43,12 +42,9 @@ macro_rules! wrap_interrupt_with_error_code {
         unsafe extern "C" fn trampoline(_: TrampolineMarker) {
             // Figure 6-7. Stack Usage on Transfers to Interrupt and Exception Handling Routines
 
-            // Here rsp is at an InterruptStackFrame
-            // [rip][cs][eflags][esp][ss]
+            // Here rsp is at the frame the CPU pushed: [rip][cs][rflags][rsp][ss]
             naked_asm!(
                 "cli",
-                //"call {breakpoint}",
-
                 "cld",
                 "push rax",
                 "push rdi",
@@ -91,7 +87,6 @@ macro_rules! wrap_interrupt_with_error_code {
                 "sti",
                 "iretq",
 
-                //breakpoint = sym crate::debugger::breakpoint,
                 handler = sym $handler,
             );
         }
@@ -109,12 +104,9 @@ macro_rules! wrap_interrupt {
         unsafe extern "C" fn trampoline(_: TrampolineMarker) {
             // Figure 6-7. Stack Usage on Transfers to Interrupt and Exception Handling Routines
 
-            // Here rsp is at an InterruptStackFrame
-            // [rip][cs][eflags][esp][ss]
+            // Here rsp is at the frame the CPU pushed: [rip][cs][rflags][rsp][ss]
             naked_asm!(
                 "cli",
-                //"call {breakpoint}",
-
                 "cld",
 
                 "push 0", // error_code
@@ -160,7 +152,6 @@ macro_rules! wrap_interrupt {
                 "sti",
                 "iretq",
 
-                //breakpoint = sym crate::debugger::breakpoint,
                 handler = sym $handler,
             );
         }
@@ -169,20 +160,11 @@ macro_rules! wrap_interrupt {
     }}
 }
 
-// "x86-interrupt" is gated behind #![feature(abi_x86_interrupt)].
-
 /// A handler function for an interrupt or an exception without error code.
 pub type HandlerFunc = unsafe extern "C" fn(&mut PtRegs);
 
-/// A handler function for an exception that pushes an error code.
-pub type HandlerFuncWithErrCode = unsafe extern "x86-interrupt" fn(&mut InterruptStackFrame, u64);
-
 /// A handler function wrapped by the interrupt trampoline.
 pub type TrampolineHandlerFunc = unsafe extern "C" fn(TrampolineMarker);
-
-/// A page fault handler function that pushes a page fault error code.
-pub type PageFaultHandlerFunc =
-    unsafe extern "x86-interrupt" fn(&mut InterruptStackFrame, PageFaultErrorCode);
 
 /// Whether the CPU was in ring 3 when the exception that saved these registers happened.
 fn from_process(regs: &Registers) -> bool {
@@ -351,75 +333,6 @@ pub struct PtRegs {
     pub rsi: u64,
     pub rdi: u64,
     pub rax: u64,
-}
-
-/// An interrupt stack frame.
-#[derive(Debug, Clone)]
-#[repr(C)]
-pub struct InterruptStackFrame {
-    /// This value points to the instruction that should be executed when the interrupt
-    /// handler returns. For most interrupts, this value points to the instruction immediately
-    /// following the last executed instruction. However, for some exceptions (e.g., page faults),
-    /// this value points to the faulting instruction, so that the instruction is restarted on
-    /// return. See the documentation of the `InterruptDescriptorTable` fields for more details.
-    pub instruction_pointer: u64,
-
-    /// The code segment selector, padded with zeros.
-    pub code_segment: u64,
-
-    /// The flags register before the interrupt handler was invoked.
-    pub cpu_flags: u64,
-
-    /// The stack pointer at the time of the interrupt.
-    pub stack_pointer: u64,
-
-    /// The stack segment descriptor at the time of the interrupt (often zero in 64-bit mode).
-    pub stack_segment: u64,
-}
-
-/// A page fault error code.
-///
-/// Some ASCII art courtesy of osdev.org:
-///
-/// ```
-///  31              4   3   2   1   0
-/// +---+--  --+---+---+---+---+---+---+
-/// |   Reserved   | I | R | U | W | P |
-/// +---+--  --+---+---+---+---+---+---+
-/// ```
-///
-/// - P: Present. If not set, the accessed page does not have the Present bit set.
-/// - W: Write. If not set, the fault was caused by a read access.
-/// - U: User. If set, the fault was caused when in Ring 3.
-/// - R: Reserved Write. When set, one or more page directory entries contain reserved bits which are set to 1.
-/// - I: Instruction Fetch. When set, the fault was caused by an instruction fetch.
-///
-/// <https://wiki.osdev.org/Exceptions#Page_Fault>
-#[repr(transparent)]
-#[derive(Debug)]
-pub struct PageFaultErrorCode(u64);
-
-#[allow(dead_code)]
-impl PageFaultErrorCode {
-    /// Returns whether the fault was caused by a non-present page.
-    pub fn caused_by_non_present(&self) -> bool {
-        !self.0.get_bit(0)
-    }
-
-    /// Returns whether the fault was caused by a write operation.
-    pub fn caused_by_write(&self) -> bool {
-        self.0.get_bit(1)
-    }
-
-    /// Returns whether the fault occurred in CPL 3.
-    pub fn caused_in_user_mode(&self) -> bool {
-        self.0.get_bit(2)
-    }
-
-    /// Returns whether the fault was caused by an instruction fetch.
-    pub fn caused_by_instruction_fetch(&self) -> bool {
-        self.0.get_bit(4)
-    }
 }
 
 /// Initializes global interrupt controllers.

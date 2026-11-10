@@ -3,7 +3,6 @@
 //! See [`KernelCommandLine`](boot::command_line::KernelCommandLine) for a list of accepted kernel command-line options.
 
 #![no_std]
-#![cfg_attr(target_arch = "x86_64", feature(abi_x86_interrupt))]
 #![feature(
     arbitrary_self_types,
     coverage_attribute,

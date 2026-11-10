@@ -172,13 +172,6 @@ impl GdtEntry {
             offseth: (offset >> 24) as u8,
         }
     }
-
-    /// Returns the "Access Bytes" that VMX wants.
-    #[allow(dead_code)] // TODO: Now dead because the VMX subsystem was removed
-    pub fn access_bytes(&self) -> u32 {
-        let flags = self.flags_limith & 0b11110000;
-        (self.access as u32) | ((flags as u32) << 8)
-    }
 }
 
 /// A 16-byte GDT System entry.
@@ -216,12 +209,5 @@ impl BigGdtEntry {
             offseth: (offset >> 24) as u8,
             _reserved: 0,
         }
-    }
-
-    /// Returns the "Access Bytes" that VMX wants.
-    #[allow(dead_code)] // TODO: Now dead because the VMX subsystem was removed
-    pub fn access_bytes(&self) -> u32 {
-        let flags = self.flags_limith & 0b11110000;
-        (self.access_type as u32) | ((flags as u32) << 8)
     }
 }

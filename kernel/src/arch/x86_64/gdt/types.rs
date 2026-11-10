@@ -1,9 +1,5 @@
 //! The access bytes of GDT descriptors.
 
-use core::convert::TryFrom;
-
-use crate::error::{Error, Result};
-
 /// The Present bit, set in every descriptor in use.
 const PRESENT: u8 = 1 << 7;
 
@@ -67,19 +63,4 @@ impl SystemAccessByte {
 pub enum SystemDescriptorType {
     /// An available TSS.
     AvailableTss = 0b1001,
-
-    /// A busy TSS.
-    BusyTss = 0b1011,
-}
-
-impl TryFrom<u8> for SystemDescriptorType {
-    type Error = Error;
-
-    fn try_from(descriptor_type: u8) -> Result<Self> {
-        match descriptor_type {
-            0b1001 => Ok(Self::AvailableTss),
-            0b1011 => Ok(Self::BusyTss),
-            _ => Err(Error::InvalidDescriptorType(descriptor_type)),
-        }
-    }
 }

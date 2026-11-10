@@ -18,7 +18,7 @@ use core::mem;
 use bit_field::BitField;
 use crate::arch::{self, Ring};
 
-use super::{HandlerFunc, HandlerFuncWithErrCode, PageFaultHandlerFunc, TrampolineHandlerFunc, IST_EXCEPTION, IST_IRQ};
+use super::{HandlerFunc, TrampolineHandlerFunc, IST_EXCEPTION, IST_IRQ};
 
 /// An X86-64 Interrupt Descriptor Table.
 #[derive(Clone)]
@@ -177,7 +177,6 @@ pub struct Entry<F> {
     _phantom: PhantomData<F>,
 }
 
-#[allow(dead_code)]
 impl<F> Entry<F> {
     /// Creates a non-present IDT entry.
     pub const fn missing() -> Self {
@@ -221,12 +220,6 @@ impl<F> Entry<F> {
         self.selector = arch::cs().bits();
         self
     }
-
-    /// Sets the IST stack.
-    pub fn set_ist(&mut self, ist: u8) -> &mut Self {
-        self.ist = ist;
-        self
-    }
 }
 
 macro_rules! impl_set_handler_fn {
@@ -240,7 +233,6 @@ macro_rules! impl_set_handler_fn {
             ///
             /// The function returns a mutable reference to the entry's options that allows
             /// further customization.
-            #[allow(dead_code)]
             pub fn set_handler_fn(&mut self, handler: $h) {
                 self.set_handler_addr(handler as u64);
             }
@@ -250,8 +242,6 @@ macro_rules! impl_set_handler_fn {
 
 impl_set_handler_fn!(HandlerFunc);
 impl_set_handler_fn!(TrampolineHandlerFunc);
-impl_set_handler_fn!(HandlerFuncWithErrCode);
-impl_set_handler_fn!(PageFaultHandlerFunc);
 
 /// Attributes of an IDT entry.
 ///
@@ -272,7 +262,6 @@ impl_set_handler_fn!(PageFaultHandlerFunc);
 #[repr(transparent)]
 pub struct EntryAttributes(u8);
 
-#[allow(dead_code)]
 impl EntryAttributes {
     /// Returns an empty IDT entry (Not Present).
     const fn missing() -> Self {
@@ -308,7 +297,6 @@ impl EntryAttributes {
 /// > which restores the saved EFLAGS.
 ///
 /// We mostly deal with `Int32` and `Trap32`. The GateType field is 4-bit wide.
-#[allow(dead_code)]
 pub enum GateType {
     /// 32-bit interrupt gate (0b1110).
     ///
