@@ -14,6 +14,10 @@
 //! - `free_run(p)` takes back the run at p and never refuses. A span left with no run is given back
 //!   to the source, unless fewer than the configured spares are idle, when it stays as a spare.
 //!
+//! Each states the source's view after it exactly: a refusal and a run from a held span leave it as
+//! it was, a new span is reserved (`took_span`), and a span given back is released (`gave_span`), so
+//! a sequence that frees every run it cut ends at the view it started from.
+//!
 //! `lemma_view` states the invariant on the view. The page buddy does not back the runs it returns.
 use vstd::arithmetic::div_mod::*;
 use vstd::arithmetic::mul::*;
@@ -112,6 +116,41 @@ pub open spec fn best(spans: Map<int, Map<int, Block>>, b: int, h: int, k: nat) 
         #![trigger spans[c].contains_key(q)]
         spans.contains_key(c) && spans[c].contains_key(q) && spans[c][q].free && spans[c][q].order
             >= k ==> spans[c][q].order >= spans[b][h].order
+}
+
+/// The source went from `before` to `after` by reserving the new span at `b`, of one block, and,
+/// when no metadata span was held, by first reserving a new metadata span and backing its first
+/// page, the metadata span then held.
+pub open spec fn took_span(before: SourceView, meta: Option<int>, after: SourceView, meta_after: Option<int>, b: int) -> bool {
+    &&& !before.spans.contains_key(b)
+    &&& meta_after is Some
+    &&& match meta {
+        Some(m) => {
+            &&& meta_after == meta
+            &&& after == before.reserved(b, 1)
+        },
+        None => {
+            let m = meta_after->Some_0;
+            &&& !before.spans.contains_key(m)
+            &&& m != b
+            &&& after == before.reserved(m, 1).backed_run(m, m, 1).reserved(b, 1)
+        },
+    }
+}
+
+/// The source went from `before` to `after` by giving back the span at `b` and, when it was the
+/// `last` run span, then releasing the metadata page and giving back the metadata span, which is no
+/// longer held.
+pub open spec fn gave_span(before: SourceView, meta: Option<int>, after: SourceView, meta_after: Option<int>, b: int, last: bool) -> bool {
+    if last {
+        let m = meta->Some_0;
+        &&& meta is Some
+        &&& meta_after is None
+        &&& after == before.released_span(b).released_run(m, m, 1).released_span(m)
+    } else {
+        &&& meta_after == meta
+        &&& after == before.released_span(b)
+    }
 }
 
 /// A record is one tag byte per page of a block, and SPANS of them fill a page.
@@ -635,6 +674,10 @@ impl<S: SpanSource> PageBuddy<S> {
                 let ptr = record(m, i);
                 let tracked perm = self.records.borrow().tracked_borrow(i as int);
                 let bb = ptr_ref(ptr, Tracked(perm));
+                let ghost before = best;
+                proof {
+                    assert(*bb == self.rec(i as int));
+                }
                 match bb.fit_order(k) {
                     None => {},
                     Some(o) => {
@@ -644,6 +687,20 @@ impl<S: SpanSource> PageBuddy<S> {
                         };
                         if better {
                             best = Some((i, o));
+                        }
+                        proof {
+                            let bo = best->Some_0.1;
+                            assert forall|j2: int, q: int|
+                                #![trigger self.rec(j2).blocks().contains_key(q)]
+                                0 <= j2 < i + 1 && self.bases@[j2] != 0 && self.rec(j2).blocks().contains_key(q)
+                                    && self.rec(j2).blocks()[q].free && self.rec(j2).blocks()[q].order >= k
+                                    implies self.rec(j2).blocks()[q].order >= bo by {
+                                if j2 == i {
+                                    assert(bb.blocks().contains_key(q));
+                                } else if before is None {
+                                    assert(self.rec(j2).fits(k as nat));
+                                }
+                            }
                         }
                     },
                 }
@@ -698,6 +755,8 @@ impl<S: SpanSource> PageBuddy<S> {
             final(self).wf(),
             final(self).spares() == old(self).spares(),
             final(self).spans().dom() == old(self).spans().dom(),
+            final(self).source() == old(self).source(),
+            final(self).meta() == old(self).meta(),
             span_of(p as int) == old(self).bases@[i as int],
             cut(old(self).used(), final(self).used(), p as int, k as nat),
             ({
@@ -921,12 +980,15 @@ impl<S: SpanSource> PageBuddy<S> {
                 Err(Refused::Full) => {
                     &&& final(self).spans() == old(self).spans()
                     &&& final(self).used() == old(self).used()
+                    &&& final(self).source() == old(self).source()
+                    &&& final(self).meta() == old(self).meta()
                     &&& old(self).spans().dom().len() == SPANS
                 },
                 Err(Refused::Source) => {
                     &&& final(self).spans() == old(self).spans()
                     &&& final(self).used() == old(self).used()
                     &&& final(self).source() == old(self).source()
+                    &&& final(self).meta() == old(self).meta()
                     &&& old(self).spans().dom().len() < SPANS
                 },
                 Ok(p) => {
@@ -934,6 +996,7 @@ impl<S: SpanSource> PageBuddy<S> {
                     &&& old(self).spans().dom().len() < SPANS
                     &&& final(self).spans().dom() == old(self).spans().dom().insert(span_of(p as int))
                     &&& cut(old(self).used(), final(self).used(), p as int, k as nat)
+                    &&& took_span(old(self).source(), old(self).meta(), final(self).source(), final(self).meta(), span_of(p as int))
                 },
             },
     {
@@ -957,6 +1020,7 @@ impl<S: SpanSource> PageBuddy<S> {
                     self.drop_meta();
                     proof {
                         assert(self.source@.spans =~= start.spans);
+                        assert(self.source@ == start);
                     }
                 }
                 return Err(Refused::Source);
@@ -1027,20 +1091,27 @@ impl<S: SpanSource> PageBuddy<S> {
                     &&& old(self).spans().dom().len() == SPANS
                     &&& final(self).spans() == old(self).spans()
                     &&& final(self).used() == old(self).used()
+                    &&& final(self).source() == old(self).source()
+                    &&& final(self).meta() == old(self).meta()
                 },
                 Err(Refused::Source) => {
                     &&& !old(self).fits(k as nat)
                     &&& old(self).spans().dom().len() < SPANS
                     &&& final(self).spans() == old(self).spans()
                     &&& final(self).used() == old(self).used()
+                    &&& final(self).source() == old(self).source()
+                    &&& final(self).meta() == old(self).meta()
                 },
                 Ok(p) => {
                     &&& cut(old(self).used(), final(self).used(), p as int, k as nat)
                     &&& old(self).fits(k as nat) || old(self).spans().dom().len() < SPANS
                     &&& if old(self).spans().contains_key(span_of(p as int)) {
-                        best(old(self).spans(), span_of(p as int), page_of(p as int), k as nat)
+                        &&& best(old(self).spans(), span_of(p as int), page_of(p as int), k as nat)
+                        &&& final(self).source() == old(self).source()
+                        &&& final(self).meta() == old(self).meta()
                     } else {
-                        !old(self).fits(k as nat)
+                        &&& !old(self).fits(k as nat)
+                        &&& took_span(old(self).source(), old(self).meta(), final(self).source(), final(self).meta(), span_of(p as int))
                     }
                 },
             },
@@ -1089,9 +1160,12 @@ impl<S: SpanSource> PageBuddy<S> {
                 let b = span_of(p as int);
                 let u = old(self).used()[b].remove(page_of(p as int));
                 if u.dom() != Set::<int>::empty() || old(self).idle_spans().len() < old(self).spares() {
-                    final(self).used() == old(self).used().insert(b, u)
+                    &&& final(self).used() == old(self).used().insert(b, u)
+                    &&& final(self).source() == old(self).source()
+                    &&& final(self).meta() == old(self).meta()
                 } else {
-                    final(self).used() == old(self).used().remove(b)
+                    &&& final(self).used() == old(self).used().remove(b)
+                    &&& gave_span(old(self).source(), old(self).meta(), final(self).source(), final(self).meta(), b, old(self).used().remove(b).dom() == Set::<int>::empty())
                 }
             }),
     {

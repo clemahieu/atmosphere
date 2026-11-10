@@ -7,8 +7,8 @@
 //! view as it was, and the sequence stops there.
 //!
 //! The page buddy's witness, over any well-formed source and with no spares, cuts a run of order 0
-//! and one of order BLOCK_ORDER, frees both, and ends holding no span. A refusal stops the sequence
-//! after freeing what it cut.
+//! and one of order BLOCK_ORDER, frees both, and ends holding no span, with the source's view the one
+//! it started with. A refusal stops the sequence after freeing what it cut.
 use vstd::prelude::*;
 use vstd::layout::*;
 use vstd::raw_ptr::*;
@@ -130,8 +130,33 @@ pub fn witness_block_buddy() -> (b: BlockBuddy)
 
 verus! {
 
+/// Reserving a span and giving it back leaves the view as it was.
+proof fn lemma_reserved_released(s: SourceView, b: int)
+    requires
+        !s.spans.contains_key(b),
+    ensures
+        s.reserved(b, 1).released_span(b) == s,
+{
+    assert(s.reserved(b, 1).released_span(b).spans =~= s.spans);
+}
+
+/// Taking the metadata span, backing its page and taking a run span, then giving them back in the
+/// order free_run does, leaves the view as it was.
+proof fn lemma_meta_round_trip(s: SourceView, m: int, b: int)
+    requires
+        !s.spans.contains_key(m),
+        !s.spans.contains_key(b),
+        m != b,
+    ensures
+        s.reserved(m, 1).backed_run(m, m, 1).reserved(b, 1).released_span(b).released_run(m, m, 1).released_span(m) == s,
+{
+    let t = s.reserved(m, 1).backed_run(m, m, 1);
+    lemma_reserved_released(t, b);
+    assert(t.released_run(m, m, 1).released_span(m).spans =~= s.spans);
+}
+
 /// Cuts a small run and a whole block from a page buddy over `src` keeping no spare, frees both, and
-/// returns the page buddy, which then holds no span.
+/// returns the page buddy, which then holds no span and has given every span back to the source.
 pub fn witness_page_buddy<S: SpanSource>(src: S) -> (pb: PageBuddy<S>)
     requires
         src@.wf(),
@@ -139,8 +164,10 @@ pub fn witness_page_buddy<S: SpanSource>(src: S) -> (pb: PageBuddy<S>)
         pb.wf(),
         pb.spans().dom() == Set::<int>::empty(),
         pb.meta() is None,
+        pb.source() == src@,
 {
     let mut pb = PageBuddy::new(src, 0);
+    let ghost s0 = pb.source();
     let small = match pb.alloc_run(0) {
         Err(_) => {
             proof {
@@ -156,6 +183,17 @@ pub fn witness_page_buddy<S: SpanSource>(src: S) -> (pb: PageBuddy<S>)
     assert(pb.used() == Map::<int, Map<int, nat>>::empty().insert(b1, one));
     assert(one.remove(h1) =~= Map::<int, nat>::empty());
     let ghost u1 = pb.used();
+    let ghost s1 = pb.source();
+    let ghost m1 = pb.meta();
+    let ghost spans1 = pb.spans();
+    proof {
+        pb.lemma_view();
+        let ma = m1->Some_0;
+        assert(s1 == s0.reserved(ma, 1).backed_run(ma, ma, 1).reserved(b1, 1));
+        assert(spans1.dom() =~= set![b1]);
+        assert(u1.remove(b1).dom() =~= Set::<int>::empty());
+        lemma_meta_round_trip(s0, ma, b1);
+    }
     let whole = match pb.alloc_run(BLOCK_ORDER) {
         Err(_) => {
             pb.free_run(small);
@@ -181,8 +219,19 @@ pub fn witness_page_buddy<S: SpanSource>(src: S) -> (pb: PageBuddy<S>)
     let ghost whole_run = Map::<int, nat>::empty().insert(h2, BLOCK_ORDER as nat);
     assert(u2 == Map::<int, Map<int, nat>>::empty().insert(b1, one).insert(b2, whole_run));
     assert(whole_run.remove(h2) =~= Map::<int, nat>::empty());
+    proof {
+        assert(b2 != b1);
+        assert(!spans1.contains_key(b2));
+        assert(pb.source() == s1.reserved(b2, 1));
+        assert(pb.meta() == m1);
+        lemma_reserved_released(s1, b2);
+        assert(u2.remove(b2).contains_key(b1));
+        assert(u2.remove(b2).dom() != Set::<int>::empty());
+    }
     pb.free_run(whole);
     assert(pb.used() =~= Map::<int, Map<int, nat>>::empty().insert(b1, one));
+    assert(pb.source() == s1);
+    assert(pb.used().remove(b1).dom() =~= Set::<int>::empty());
     pb.free_run(small);
     assert(pb.used().dom() =~= Set::<int>::empty());
     proof {
