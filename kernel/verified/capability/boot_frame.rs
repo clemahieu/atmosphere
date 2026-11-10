@@ -21,6 +21,7 @@ use crate::capability::refs::*;
 use crate::capability::space::*;
 use crate::capability::table::*;
 use crate::capability::thread::*;
+use crate::capability::steps::Steps;
 use crate::capability::view::*;
 use crate::define::*;
 
@@ -613,7 +614,9 @@ impl CapKernel {
         let child = leaf2 + (i - NODES_PER_PAGE);
         let typed = self.blocks.region(Large::Two, r).typed;
         if !typed {
-            self.blocks.type_reserved_2m(r);
+            // Boot holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+            let tracked mut steps = Steps::fresh();
+            self.blocks.type_reserved_2m(r, Tracked(&mut steps));
             proof {
                 self.frames.borrow_mut().tracked_union_prefer_right(perms);
                 let me = *self;

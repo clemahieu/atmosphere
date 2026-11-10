@@ -815,7 +815,9 @@ impl CapKernel {
                 }
             }
         }
-        self.blocks.free_block(page, Tracked(perms));
+        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        self.blocks.free_block(page, Tracked(perms), Tracked(&mut steps));
         proof {
             let post = *self;
             assert forall|i: int| pre.blocks.tracks(i) implies #[trigger] post.blocks.pages@[i] == (

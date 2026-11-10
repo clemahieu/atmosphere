@@ -1452,12 +1452,14 @@ impl CapKernel {
         self.spaces = Spaces::new(kernel_entries);
         self.mappings = Ghost(IMap::empty());
         self.frames = Tracked(Map::tracked_empty());
-        self.zeroing.init();
+        // Boot holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        self.zeroing.init(Tracked(&mut steps));
         self.holders = Ghost(IMap::empty());
         self.devices = Devices::new();
         self.threads = Threads::new();
         self.processes = Processes::new();
-        self.blocks.init();
+        self.blocks.init(Tracked(&mut steps));
         init_cores(&mut self.cores);
         self.stale_epoch.zero();
         self.iommus.zero();
@@ -2008,7 +2010,9 @@ impl CapKernel {
                 assert(perms[(base + k) as usize].addr() == (base + k) * 4096);
             }
         }
-        self.blocks.free_block(base, Tracked(perms));
+        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        self.blocks.free_block(base, Tracked(perms), Tracked(&mut steps));
         self.holders = Ghost(pre.holders@.remove(BlockRef::Small(base)));
         proof {
             assert forall|br: BlockRef, i: usize| #[trigger] self.holders@.contains_key(br) && #[trigger] block_has_page(br, i)

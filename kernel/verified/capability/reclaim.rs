@@ -1690,7 +1690,9 @@ impl CapKernel {
             perms.tracked_insert((page + 1) as usize, payloads);
             Self::lemma_leaf_perms(perms, base);
         }
-        self.blocks.free_block(page, Tracked(perms));
+        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        self.blocks.free_block(page, Tracked(perms), Tracked(&mut steps));
         proof {
             let post = *self;
             assert forall|i: int| pre.blocks.tracks(i) implies #[trigger] post.blocks.pages@[i] == (
@@ -2598,7 +2600,9 @@ impl CapKernel {
                 }
             }
         }
-        self.blocks.free_block(page, Tracked(perms));
+        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        self.blocks.free_block(page, Tracked(perms), Tracked(&mut steps));
         proof {
             let post = *self;
             assert forall|i: int| pre.blocks.tracks(i) implies #[trigger] post.blocks.pages@[i] == (
@@ -2883,7 +2887,9 @@ impl CapKernel {
                 }
             }
         }
-        self.blocks.free_block(page, Tracked(perms));
+        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        self.blocks.free_block(page, Tracked(perms), Tracked(&mut steps));
         proof {
             let post = *self;
             assert forall|i: int| pre.blocks.tracks(i) implies #[trigger] post.blocks.pages@[i] == (
@@ -4513,7 +4519,9 @@ impl CapKernel {
             perms.tracked_insert(page, perm);
             assert(pre.blocks.pages@[page as int].order == 0);
         }
-        self.blocks.free_block(page, Tracked(perms));
+        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        self.blocks.free_block(page, Tracked(perms), Tracked(&mut steps));
         self.holders = Ghost(pre.holders@.remove(BlockRef::Small(page)));
         proof {
             let post = *self;

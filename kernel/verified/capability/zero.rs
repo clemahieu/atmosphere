@@ -11,6 +11,7 @@ use crate::array::Array;
 use crate::capability::block::*;
 use crate::define::*;
 use crate::pptr::*;
+use crate::capability::steps::Steps;
 
 /// The most pages one step zeroes: 64 KiB.
 pub const ZERO_CHUNK_PAGES: usize = 16;
@@ -204,21 +205,24 @@ impl Zeroing {
 
     /// Start with nothing being zeroed, in place, since the array cannot move by value. A stale
     /// cursor is harmless: `begin` resets it.
-    pub fn init(&mut self)
+    pub fn init(&mut self, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).cursor.wf(),
             old(self).active_2m.wf(),
             old(self).active_1g.wf(),
         ensures
+            final(steps).count <= old(steps).count + NUM_2M + NUM_1G,
             final(self).wf(),
             final(self).blocks@ == Map::<usize, usize>::empty(),
     {
         self.perms = Tracked(Map::tracked_empty());
         self.blocks = Ghost(Map::empty());
+        let ghost steps0 = steps.count;
         let mut r = 0;
         while r != NUM_2M
             invariant
                 r <= NUM_2M,
+                steps.count == steps0 + r,
                 self.cursor.wf(),
                 self.active_2m.wf(),
                 self.active_1g.wf(),
@@ -228,11 +232,15 @@ impl Zeroing {
         {
             self.active_2m.set(r, false);
             r = r + 1;
+            proof {
+                steps.step();
+            }
         }
         let mut r = 0;
         while r != NUM_1G
             invariant
                 r <= NUM_1G,
+                steps.count == steps0 + NUM_2M + r,
                 self.cursor.wf(),
                 self.active_2m.wf(),
                 self.active_1g.wf(),
@@ -243,6 +251,9 @@ impl Zeroing {
         {
             self.active_1g.set(r, false);
             r = r + 1;
+            proof {
+                steps.step();
+            }
         }
         proof {
             reveal(Zeroing::pages_wf);
@@ -343,12 +354,13 @@ impl Zeroing {
     }
 
     /// Zero the next pages of the block, at most 64 KiB. Returns whether it is now all zero.
-    pub fn step(&mut self, base: usize, pages: usize) -> (done: bool)
+    pub fn step(&mut self, base: usize, pages: usize, Tracked(steps): Tracked<&mut Steps>) -> (done: bool)
         requires
             old(self).wf(),
             old(self).blocks@.contains_key(base),
             old(self).blocks@[base] == pages,
         ensures
+            final(steps).count <= old(steps).count + ZERO_CHUNK_PAGES,
             final(self).wf(),
             final(self).blocks == old(self).blocks,
             final(self).active_2m == old(self).active_2m,
@@ -359,6 +371,7 @@ impl Zeroing {
     {
         let start = *self.cursor.get(base);
         let end = if pages - start < ZERO_CHUNK_PAGES { pages } else { start + ZERO_CHUNK_PAGES };
+        let ghost steps0 = steps.count;
         let mut k = start;
         while k != end
             invariant
@@ -367,6 +380,8 @@ impl Zeroing {
                 self.blocks@[base] == pages,
                 self.cursor@[base as int] == k,
                 start <= k <= end <= pages,
+                end - start <= ZERO_CHUNK_PAGES,
+                steps.count == steps0 + (k - start),
                 self.active_2m == old(self).active_2m,
                 self.active_1g == old(self).active_1g,
                 self.blocks == old(self).blocks,
@@ -386,6 +401,7 @@ impl Zeroing {
             self.cursor.set(base, k + 1);
             k = k + 1;
             proof {
+                steps.step();
                 let me = *self;
                 assert(me.blocks == pre.blocks);
                 assert(me.perms@.dom() =~= pre.perms@.dom());

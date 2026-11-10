@@ -1313,7 +1313,9 @@ impl CapKernel {
             assert(base % 32768 == 0);
             lemma_table_page_base(base, page);
         }
-        let Tracked(perms) = match self.blocks.try_type(page, 3, ObjectType::Process) {
+        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let Tracked(perms) = match self.blocks.try_type(page, 3, ObjectType::Process, Tracked(&mut steps)) {
             Some(perms) => perms,
             None => { return false; },
         };
@@ -1361,8 +1363,6 @@ impl CapKernel {
             pre.list.lemma_valid_bound(child);
             pre.list.lemma_seq_fits();
         }
-        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
-        let tracked mut steps = Steps::fresh();
         self.tables.put_root(&self.list, base, Tracked(table_root), Tracked(&mut steps));
         let ghost rooted = self.tables;
         let tracked mut typed_record = page_into_process_record(record);

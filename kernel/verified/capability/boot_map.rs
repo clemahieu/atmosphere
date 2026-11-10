@@ -25,6 +25,7 @@ use crate::capability::reach::*;
 use crate::capability::refs::*;
 use crate::capability::space::*;
 use crate::capability::table::*;
+use crate::capability::steps::Steps;
 use crate::capability::view::*;
 use crate::define::*;
 use crate::pagetable::entry::PageEntry;
@@ -777,7 +778,9 @@ impl CapKernel {
                     Self::maps_progress(*self, pre, process, runs@, r as int, k, 0, w as int, added, done),
                 decreases m,
             {
-                let (o, size) = first_block(ps, m, IMAGE_ORDER);
+                // Boot holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+                let tracked mut steps = Steps::fresh();
+                let (o, size) = first_block(ps, m, IMAGE_ORDER, Tracked(&mut steps));
                 proof {
                     lemma_order_below(ps as nat, m as nat, IMAGE_ORDER as nat);
                     let rest = run_blocks((ps + size) as nat, (m - size) as nat, IMAGE_ORDER as nat);

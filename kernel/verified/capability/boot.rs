@@ -205,7 +205,9 @@ impl CapKernel {
             assert forall|k: int| 0 <= k < 2 implies #[trigger] freed.pages@[lb + k].kind is Free by {}
             assert(!freed.covered(lb as int));
         }
-        let typed_leaf = self.blocks.try_type(lb, 1, ObjectType::TableLeaf);
+        // Boot holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let typed_leaf = self.blocks.try_type(lb, 1, ObjectType::TableLeaf, Tracked(&mut steps));
         let ghost leaf_typed = self.blocks;
         proof {
             assert forall|k: int| 0 <= k < 8 implies #[trigger] leaf_typed.pages@[pb + k].kind is Free by {
@@ -213,7 +215,7 @@ impl CapKernel {
             }
             assert(!leaf_typed.covered(pb as int));
         }
-        let typed_process = self.blocks.try_type(pb, 3, ObjectType::Process);
+        let typed_process = self.blocks.try_type(pb, 3, ObjectType::Process, Tracked(&mut steps));
         let Tracked(leaf_perms) = typed_leaf.unwrap();
         let Tracked(process_perms) = typed_process.unwrap();
         let tracked mut leaf_perms = leaf_perms;
@@ -257,8 +259,6 @@ impl CapKernel {
             space_cores = process_perms.tracked_remove((pb + 7) as usize);
         }
         let ghost l0 = self.list;
-        // Boot holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
-        let tracked mut steps = Steps::fresh();
         self.tables.put_root(&self.list, base, Tracked(table_root), Tracked(&mut steps));
         let ghost rooted = self.tables;
         let tracked mut typed_record = page_into_process_record(record);
@@ -295,8 +295,6 @@ impl CapKernel {
             self.spaces.records.borrow_mut().tracked_insert(base, typed);
             self.spaces.loaded.borrow_mut().tracked_insert(base, cores);
         }
-        // Boot holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
-        let tracked mut steps = Steps::fresh();
         let nodes = init_node_page(leaf, Tracked(first), Tracked(&mut steps));
         proof {
             assert(!l0.pages@.dom().contains(leaf));
@@ -511,7 +509,9 @@ impl CapKernel {
                 }
             }
         }
-        let typed = self.blocks.try_type(tb, 1, ObjectType::Thread);
+        // Boot holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let typed = self.blocks.try_type(tb, 1, ObjectType::Thread, Tracked(&mut steps));
         let Tracked(perms) = typed.unwrap();
         let tracked mut perms = perms;
         let tracked first;
@@ -525,8 +525,6 @@ impl CapKernel {
             first = perms.tracked_remove(tb);
             second = perms.tracked_remove((tb + 1) as usize);
         }
-        // Boot holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
-        let tracked mut steps = Steps::fresh();
         let nodes = init_node_page(t, Tracked(first), Tracked(&mut steps));
         self.list.add_page(t, nodes);
         let ghost mid = self.list;

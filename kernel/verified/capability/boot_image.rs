@@ -18,6 +18,7 @@ use crate::capability::kernel::*;
 use crate::capability::list::*;
 use crate::capability::refs::*;
 use crate::capability::table::*;
+use crate::capability::steps::Steps;
 use crate::capability::view::*;
 use crate::define::*;
 
@@ -208,7 +209,9 @@ fn count_frames(runs: &[ImageRun]) -> (ret: Option<usize>)
                 count <= ROOT_FRAME_SLOTS,
             decreases m,
         {
-            let (o, size) = first_block(s, m, IMAGE_ORDER);
+            // Boot holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+            let tracked mut steps = Steps::fresh();
+            let (o, size) = first_block(s, m, IMAGE_ORDER, Tracked(&mut steps));
             proof {
                 assert(run_blocks(s as nat, m as nat, IMAGE_ORDER as nat) == seq![(s as nat, o as nat)] + run_blocks(
                     (s + size) as nat,
@@ -955,7 +958,9 @@ impl CapKernel {
                     ),
                 decreases m,
             {
-                let (o, size) = first_block(s, m, IMAGE_ORDER);
+                // Boot holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+                let tracked mut steps = Steps::fresh();
+                let (o, size) = first_block(s, m, IMAGE_ORDER, Tracked(&mut steps));
                 let ghost cur = *self;
                 let ghost rest = run_blocks(s as nat, m as nat, IMAGE_ORDER as nat);
                 let ghost rest2 = run_blocks((s + size) as nat, (m - size) as nat, IMAGE_ORDER as nat);

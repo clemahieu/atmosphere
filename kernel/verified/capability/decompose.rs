@@ -13,6 +13,7 @@ use crate::capability::boot::*;
 use crate::capability::list::*;
 use crate::capability::table::*;
 use crate::define::*;
+use crate::capability::steps::Steps;
 
 /// The largest order at most m that page start is aligned to and n pages hold, 0 when none above 0 is.
 pub open spec fn order_below(start: nat, n: nat, m: nat) -> nat
@@ -66,17 +67,19 @@ pub open spec fn page_block_payload(b: (nat, nat)) -> Payload {
 
 /// The first block of order at most cap of the run of n pages at page start: its order and its size in
 /// pages.
-pub fn first_block(start: usize, n: usize, cap: u8) -> (ret: (u8, usize))
+pub fn first_block(start: usize, n: usize, cap: u8, Tracked(steps): Tracked<&mut Steps>) -> (ret: (u8, usize))
     requires
         0 < n,
         start + n <= NUM_PAGES,
         cap <= MAX_ORDER,
     ensures
+        final(steps).count <= old(steps).count + MAX_ORDER,
         ret.0 as nat == order_below(start as nat, n as nat, cap as nat),
         ret.1 as nat == pow2(ret.0 as nat),
         ret.1 <= n,
 {
     let mut o: u8 = MAX_ORDER;
+    let ghost steps0 = steps.count;
     let mut size: usize = 0x10_0000_0000;
     proof {
         lemma2_to64_rest();
@@ -85,10 +88,12 @@ pub fn first_block(start: usize, n: usize, cap: u8) -> (ret: (u8, usize))
         invariant
             cap <= o <= MAX_ORDER,
             size as nat == pow2(o as nat),
+            steps.count == steps0 + MAX_ORDER - o,
         decreases o,
     {
         proof {
             lemma_pow2_unfold(o as nat);
+            steps.step();
         }
         o = o - 1;
         size = size / 2;
@@ -101,12 +106,14 @@ pub fn first_block(start: usize, n: usize, cap: u8) -> (ret: (u8, usize))
             o <= MAX_ORDER,
             size as nat == pow2(o as nat),
             size > 0,
+            steps.count == steps0 + MAX_ORDER - o,
             order_below(start as nat, n as nat, o as nat) == order_below(start as nat, n as nat, cap as nat),
         decreases o,
     {
         proof {
             lemma_pow2_unfold(o as nat);
             lemma_pow2_pos((o - 1) as nat);
+            steps.step();
         }
         o = o - 1;
         size = size / 2;

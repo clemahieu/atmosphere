@@ -614,7 +614,9 @@ impl CapKernel {
             assert(base % 4096 == 0);
             assert(page * 4096 == base);
         }
-        let taken = self.blocks.try_type(page, 0, ObjectType::Frame);
+        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let taken = self.blocks.try_type(page, 0, ObjectType::Frame, Tracked(&mut steps));
         let Tracked(perms) = match taken {
             Some(perms) => perms,
             None => { return false; },
@@ -788,7 +790,9 @@ impl CapKernel {
             assert(holders_wf(&typed.list, &typed.tables, &typed.blocks, &typed.zeroing, typed.holders@));
             assert(typed.zeroing.active(level, r));
         }
-        let done = self.zeroing.step(base, pages);
+        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let done = self.zeroing.step(base, pages, Tracked(&mut steps));
         proof {
             lemma_holders_same_active(&typed.list, &typed.tables, &typed.blocks, &typed.zeroing, &self.zeroing, typed.holders@);
         }
@@ -1123,7 +1127,9 @@ impl CapKernel {
                     page == base / 4096,
             ;
         }
-        let Tracked(perms) = match self.blocks.try_type(page, 1, ObjectType::TableLeaf) {
+        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let Tracked(perms) = match self.blocks.try_type(page, 1, ObjectType::TableLeaf, Tracked(&mut steps)) {
             Some(perms) => perms,
             None => { return false; },
         };
@@ -1140,8 +1146,6 @@ impl CapKernel {
             second = perms.tracked_remove((page + 1) as usize);
         }
         let ghost before_list = self.list;
-        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
-        let tracked mut steps = Steps::fresh();
         let nodes = init_node_page(base, Tracked(first), Tracked(&mut steps));
         proof {
             assert(!pre.list.pages@.dom().contains(base)) by {

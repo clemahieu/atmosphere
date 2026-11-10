@@ -1638,7 +1638,9 @@ impl CapKernel {
                     page == base / 4096,
             ;
         }
-        let Tracked(perms) = match self.blocks.try_type(page, 1, ObjectType::Thread) {
+        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let Tracked(perms) = match self.blocks.try_type(page, 1, ObjectType::Thread, Tracked(&mut steps)) {
             Some(perms) => perms,
             None => { return false; },
         };
@@ -1669,8 +1671,6 @@ impl CapKernel {
             pre.list.lemma_valid_bound(parent);
             pre.list.lemma_valid_bound(child);
         }
-        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
-        let tracked mut steps = Steps::fresh();
         let nodes = init_node_page(base, Tracked(first), Tracked(&mut steps));
         self.list.add_page(base, nodes);
         let ghost mid = self.list;

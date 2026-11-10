@@ -13,6 +13,7 @@ use crate::capability::boot::*;
 use crate::capability::decompose::*;
 use crate::capability::kernel::*;
 use crate::capability::list::*;
+use crate::capability::steps::Steps;
 use crate::capability::table::*;
 use crate::define::*;
 
@@ -307,7 +308,9 @@ fn count_blocks(runs: &[(usize, usize)]) -> (ret: Option<usize>)
                 count <= ROOT_UNTYPED_SLOTS,
             decreases m,
         {
-            let (o, size) = first_block(s, m, MAX_ORDER);
+            // Boot holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+            let tracked mut steps = Steps::fresh();
+            let (o, size) = first_block(s, m, MAX_ORDER, Tracked(&mut steps));
             proof {
                 assert(run_blocks(s as nat, m as nat, MAX_ORDER as nat) == seq![(s as nat, o as nat)] + run_blocks(
                     (s + size) as nat,
@@ -618,7 +621,9 @@ impl CapKernel {
                     forall|q: usize, o: usize| #[trigger] self.view().reach(q, o) && !pre.view().reach(q, o) ==> in_blocks(bs, k as int, o),
                 decreases m,
             {
-                let (o, size) = first_block(s, m, MAX_ORDER);
+                // Boot holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+                let tracked mut steps = Steps::fresh();
+                let (o, size) = first_block(s, m, MAX_ORDER, Tracked(&mut steps));
                 let ghost cur = *self;
                 let ghost rb = run_blocks(s as nat, m as nat, MAX_ORDER as nat);
                 let ghost rest = run_blocks((s + size) as nat, (m - size) as nat, MAX_ORDER as nat);

@@ -14,6 +14,7 @@ verus! {
 
 use crate::array::Array;
 use crate::define::*;
+use crate::capability::steps::Steps;
 
 pub const PAGES_PER_2M: usize = 512;
 pub const PAGES_PER_1G: usize = 262144;
@@ -59,6 +60,9 @@ pub struct PageEntry {
 pub open spec fn small_order(order: usize) -> bool {
     order == 0 || order == 1 || order == 3
 }
+
+/// The most pages a small block has.
+pub const SMALL_PAGES_MAX: usize = 8;
 
 /// Pages in a small block.
 pub open spec fn order_pages(order: usize) -> int {
@@ -570,7 +574,7 @@ impl BlockTable {
     }
 
     /// Set every entry Reserved, in place, since a table this size cannot move by value.
-    pub fn init(&mut self)
+    pub fn init(&mut self, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).pages.wf(),
             old(self).count_2m.wf(),
@@ -578,6 +582,7 @@ impl BlockTable {
             old(self).regions_2m.wf(),
             old(self).regions_1g.wf(),
         ensures
+            final(steps).count <= old(steps).count + NUM_PAGES + NUM_2M + NUM_1G,
             final(self).wf(),
             forall|i: int| final(self).tracks(i) ==> #[trigger] final(self).pages@[i].kind is Reserved,
             forall|i: int| final(self).tracks(i) ==> #[trigger] final(self).pages@[i].object is None,
@@ -585,11 +590,13 @@ impl BlockTable {
             forall|r: int| 0 <= r < NUM_1G ==> !(#[trigger] final(self).regions_1g@[r]).typed,
     {
         let n = self.page_count();
+        let ghost steps0 = steps.count;
         let mut i = 0;
         while i != n
             invariant
                 n == self.page_count(),
                 i <= n,
+                steps.count == steps0 + i,
                 self.pages.wf(),
                 forall|j: int| 0 <= j < i ==> #[trigger] self.pages@[j].kind is Reserved,
                 forall|j: int| 0 <= j < i ==> #[trigger] self.pages@[j].object is None,
@@ -605,11 +612,15 @@ impl BlockTable {
                 refs: 0,
             });
             i = i + 1;
+            proof {
+                steps.step();
+            }
         }
         let mut r = 0;
         while r != NUM_2M
             invariant
                 0 <= r <= NUM_2M,
+                steps.count == steps0 + NUM_PAGES + r,
                 self.count_2m.wf(),
                 self.regions_2m.wf(),
                 forall|j: int| 0 <= j < r ==> #[trigger] self.count_2m@[j] == 512,
@@ -619,11 +630,15 @@ impl BlockTable {
             self.count_2m.set(r, PAGES_PER_2M);
             self.regions_2m.set(r, RegionEntry { typed: false, dead: false, torn_down: false, refs: 0 });
             r = r + 1;
+            proof {
+                steps.step();
+            }
         }
         let mut r = 0;
         while r != NUM_1G
             invariant
                 0 <= r <= NUM_1G,
+                steps.count == steps0 + NUM_PAGES + NUM_2M + r,
                 self.count_1g.wf(),
                 self.regions_1g.wf(),
                 forall|j: int| 0 <= j < r ==> #[trigger] self.count_1g@[j] == 262144,
@@ -633,6 +648,9 @@ impl BlockTable {
             self.count_1g.set(r, PAGES_PER_1G);
             self.regions_1g.set(r, RegionEntry { typed: false, dead: false, torn_down: false, refs: 0 });
             r = r + 1;
+            proof {
+                steps.step();
+            }
         }
         self.in_2m = Ghost(Seq::new(NUM_2M as nat, |r: int| set_int_range(r * 512, (r + 1) * 512)));
         self.in_1g = Ghost(Seq::new(NUM_1G as nat, |r: int| set_int_range(r * 262144, (r + 1) * 262144)));
@@ -1153,12 +1171,13 @@ impl BlockTable {
     /// boot's step for a region dom0's image lies in. Its pages go Reserved to Free under the typed
     /// region, as every large block's pages are, so none becomes free and free_perms is unchanged. A
     /// bounded loop of 512 page writes. See design/root-process-at-boot/.
-    pub fn type_reserved_2m(&mut self, r: usize)
+    pub fn type_reserved_2m(&mut self, r: usize, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).wf(),
             r < NUM_2M,
             forall|i: int| r * 512 <= i < (r + 1) * 512 ==> #[trigger] old(self).pages@[i].kind is Reserved,
         ensures
+            final(steps).count <= old(steps).count + PAGES_PER_2M,
             final(self).wf(),
             final(self).free_perms == old(self).free_perms,
             final(self).regions_2m@ == old(self).regions_2m@.update(r as int,
@@ -1178,10 +1197,12 @@ impl BlockTable {
             assert(pre.pages@[first as int].kind is Reserved);
             pre.lemma_not_free_uncovered(first as int);
         }
+        let ghost steps0 = steps.count;
         let mut k: usize = 0;
         while k < PAGES_PER_2M
             invariant
                 k <= PAGES_PER_2M,
+                steps.count == steps0 + k,
                 r < NUM_2M,
                 first == r * 512,
                 self.pages.wf(),
@@ -1206,6 +1227,9 @@ impl BlockTable {
                 refs: 0,
             });
             k = k + 1;
+            proof {
+                steps.step();
+            }
         }
         let ghost gone = set_int_range(first + 1, first + 512);
         proof {
@@ -1582,13 +1606,14 @@ impl BlockTable {
 
     /// Type a free block. Checks every page, at most 8, and on success holds one reference for the
     /// caller and hands back the permission of each page.
-    pub fn try_type(&mut self, base: usize, order: usize, object: ObjectType) -> (ret: Option<Tracked<Map<usize, PagePerm4k>>>)
+    pub fn try_type(&mut self, base: usize, order: usize, object: ObjectType, Tracked(steps): Tracked<&mut Steps>) -> (ret: Option<Tracked<Map<usize, PagePerm4k>>>)
         requires
             old(self).wf(),
             small_order(order),
             base % (order_pages(order) as usize) == 0,
             old(self).tracks_run(base as int, order_pages(order)),
         ensures
+            final(steps).count <= old(steps).count + 2 * SMALL_PAGES_MAX,
             final(self).wf(),
             ret is None ==> *final(self) == *old(self),
             ret is Some == old(self).small_free(base as int, order),
@@ -1616,6 +1641,7 @@ impl BlockTable {
             return None;
         }
         let size: usize = if order == 0 { 1 } else if order == 1 { 2 } else { 8 };
+        let ghost steps0 = steps.count;
         let mut k = 0;
         while k != size
             invariant
@@ -1623,6 +1649,9 @@ impl BlockTable {
                 *self == pre,
                 size as int == order_pages(order),
                 0 <= k <= size,
+                size <= SMALL_PAGES_MAX,
+                steps0 == old(steps).count,
+                steps.count == steps0 + k,
                 self.tracks_run(base as int, size as int),
                 forall|j: int| 0 <= j < k ==> #[trigger] pre.pages@[base + j].kind is Free,
             decreases size - k,
@@ -1632,6 +1661,9 @@ impl BlockTable {
                 _ => return None,
             }
             k = k + 1;
+            proof {
+                steps.step();
+            }
         }
         let tracked mut taken = Map::<usize, PagePerm4k>::tracked_empty();
         let mut k = 0;
@@ -1647,6 +1679,8 @@ impl BlockTable {
                 size as int == order_pages(order),
                 small_order(order),
                 0 <= k <= size,
+                size <= SMALL_PAGES_MAX,
+                steps.count == steps0 + size + k,
                 self.tracks_run(base as int, size as int),
                 forall|j: int| k <= j < size ==> #[trigger] self.pages@[base + j].kind is Free,
                 forall|j: int| 0 <= j < size ==> #[trigger] pre.pages@[base + j].kind is Free,
@@ -1691,6 +1725,9 @@ impl BlockTable {
                 }
             }
             k = k + 1;
+            proof {
+                steps.step();
+            }
         }
         proof {
             self.lemma_typed_blocks_wf(pre, base as int, order);
@@ -1915,7 +1952,7 @@ impl BlockTable {
 
     /// A dead block at zero references whose teardown has finished returns to free, with its
     /// permissions.
-    pub fn free_block(&mut self, base: usize, Tracked(perms): Tracked<Map<usize, PagePerm4k>>)
+    pub fn free_block(&mut self, base: usize, Tracked(perms): Tracked<Map<usize, PagePerm4k>>, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).wf(),
             old(self).tracks(base as int),
@@ -1929,6 +1966,7 @@ impl BlockTable {
                 &&& perms[(base + k) as usize].is_uninit()
             },
         ensures
+            final(steps).count <= old(steps).count + SMALL_PAGES_MAX,
             final(self).wf(),
             final(self).regions_2m@ == old(self).regions_2m@,
             final(self).regions_1g@ == old(self).regions_1g@,
@@ -1945,6 +1983,7 @@ impl BlockTable {
                 assert(perms[(base + j) as usize].addr() == (base + j) * 4096);
             }
         }
+        let ghost steps0 = steps.count;
         let mut k = 0;
         while k != size
             invariant
@@ -1956,6 +1995,8 @@ impl BlockTable {
                 order == pre.pages@[base as int].order,
                 pre.pages@[base as int].kind is Base,
                 0 <= k <= size,
+                size <= SMALL_PAGES_MAX,
+                steps.count == steps0 + k,
                 self.tracks(base as int),
                 self.tracks_run(base as int, size as int),
                 forall|j: int| 0 <= j < k ==> #[trigger] self.pages@[base + j] == free_entry(),
@@ -1984,6 +2025,9 @@ impl BlockTable {
                 }
             }
             k = k + 1;
+            proof {
+                steps.step();
+            }
         }
         proof {
             let me = *self;

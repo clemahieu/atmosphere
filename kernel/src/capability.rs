@@ -219,7 +219,7 @@ fn largest_blocks<'a>(
         let mut first = (run.first / PAGE_BYTES) as usize;
         let mut left = run.count as usize;
         while left > 0 {
-            let (order, size) = first_block(first, left, MAX_ORDER);
+            let (order, size) = first_block(first, left, MAX_ORDER, Tracked::assume_new());
             assert!(count < blocks.len(), "free memory makes more than {} blocks", blocks.len());
             blocks[count] = (first, order);
             count += 1;
