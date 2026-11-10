@@ -486,6 +486,7 @@ impl CapKernel {
             Self::lemma_places_child_view(pre, post, root, from, root, to);
             let live = |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live;
             assert(pre.view().holds_right(root, parent, Right::Retype));
+            assert(post.view().names[child] == base);
             lemma_adds_child_discharges_retype(pre.view(), post.view(), root, parent, child, live, base);
             Self::lemma_bound_threads_same(pre, post);
             assert forall|x: usize| #[trigger] pre.is_cap(x) implies {

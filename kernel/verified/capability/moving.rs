@@ -691,8 +691,24 @@ impl CapKernel {
         assert(simulates_claim(a, b, live, f, dst, src));
     }
 
+    /// The move's renaming read backward: n, new, stands for i, which went.
+    proof fn lemma_move_renames(pre: Self, post: Self, i: usize, n: usize)
+        requires
+            Self::move_step(pre, post, i, n),
+        ensures
+            renames_moved(pre.view(), post.view(), |x: NodeId| rename(x, n, i)),
+            State::removed(pre.view(), post.view(), i),
+            !pre.view().names.contains_key(n),
+    {
+        let (a, b) = (pre.view(), post.view());
+        assert(a.names.contains_key(i));
+        assert(!b.names.contains_key(i));
+        assert(!a.names.contains_key(n));
+    }
+
     /// The view of the step: the capability the caller held has a new name, and that name is the only
-    /// thing that went; reach is the same in both directions.
+    /// thing that went; reach is the same in both directions, and the new name has the rights the old
+    /// one had.
     proof fn lemma_move_discharges(pre: Self, post: Self, root: usize, i: usize, n: usize)
         requires
             Self::move_step(pre, post, i, n),
@@ -727,6 +743,17 @@ impl CapKernel {
         assert forall|o: ObjectId| #[trigger] State::changed(a, b, o) implies may_change(a, Effect::Local, o) by {
             assert((a.contents)(o) == (b.contents)(o));
         }
+        Self::lemma_move_renames(pre, post, i, n);
+        assert forall|x: NodeId, r: Right| #[trigger] b.rights.contains((x, r)) && b.names.contains_key(x)
+            implies (a.rights.contains((x, r)) && a.names.contains_key(x)) || may_hold(a, b, Effect::Local, x, r) by {
+            assert(post.is_cap(x));
+            if x == n {
+                assert(passes_right(a, b, i, n));
+            } else {
+                assert(x != i);
+                Self::lemma_caps_frame(pre, post, i, n, x);
+            }
+        }
     }
 
     /// The view of a claim's step: the caller, holding control over the process named by c, took node i
@@ -755,6 +782,7 @@ impl CapKernel {
             }
         }
         assert forall|o: ObjectId| #[trigger] (b.contents)(o) == (a.contents)(o) by {}
+        Self::lemma_move_renames(pre, post, i, n);
         lemma_simulates_claim_discharges(
             a,
             b,
@@ -789,6 +817,7 @@ impl CapKernel {
             }
         }
         assert forall|o: ObjectId| #[trigger] (b.contents)(o) == (a.contents)(o) by {}
+        Self::lemma_move_renames(pre, post, i, n);
         lemma_simulates_place_discharges(
             a,
             b,

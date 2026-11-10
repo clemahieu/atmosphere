@@ -850,7 +850,13 @@ impl CapKernel {
         assert(right_bit(Right::Control) == 128);
         Self::lemma_derive_step_adds_cap(pre, post, child);
         Self::lemma_places_child_view(pre, post, root, from, root, to);
-        lemma_adds_child_discharges(pre.view(), post.view(), root, parent, child, |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live);
+        let (a, b) = (pre.view(), post.view());
+        assert(a.names.contains_key(parent));
+        assert forall|r: Right| #[trigger] b.rights.contains((child, r)) implies a.rights.contains((parent, r)) by {
+            let bit = right_bit(r);
+            assert(child_rights & !parent_rights == 0 && child_rights & bit != 0 ==> parent_rights & bit != 0) by (bit_vector);
+        }
+        lemma_adds_child_discharges(a, b, root, parent, child, |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live);
     }
 
     /// The view of a derive into a controlled process's table: the caller, holding control over the
@@ -885,6 +891,10 @@ impl CapKernel {
         assert(a.names[c] == d);
         assert(!a.process_of.contains_key(d));
         assert(a.names.contains_key(parent));
+        assert forall|r: Right| #[trigger] post.view().rights.contains((child, r)) implies a.rights.contains((parent, r)) by {
+            let bit = right_bit(r);
+            assert(child_rights & !parent_rights == 0 && child_rights & bit != 0 ==> parent_rights & bit != 0) by (bit_vector);
+        }
         lemma_places_child_discharges(a, post.view(), root, d, c, parent, child, |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live);
     }
 }

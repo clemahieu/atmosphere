@@ -2434,6 +2434,9 @@ impl CapKernel {
         ensures
             discharges(pre.view(), post.view(), root, Effect::Local),
             forall|x: NodeId| #[trigger] post.view().names.contains_key(x) == pre.view().names.contains_key(x),
+            forall|x: NodeId, r: Right| #[trigger] post.view().rights.contains((x, r)) && post.view().names.contains_key(x)
+                ==> pre.view().rights.contains((x, r)) && pre.view().names.contains_key(x)
+                && post.view().names[x] == pre.view().names[x],
     {
         let (a, b) = (post.view(), pre.view());
         let live = |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live;

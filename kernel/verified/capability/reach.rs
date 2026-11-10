@@ -300,6 +300,46 @@ pub open spec fn may_wait(s: State, p: ObjectId, w: (ObjectId, ObjectId)) -> boo
     &&& s.reach(p, w.0)
 }
 
+/// x, a capability of post, is s's child, or takes the place of s, which the step removed, naming
+/// what s named: a derive's or a move's source.
+pub open spec fn passes_right(pre: State, post: State, s: NodeId, x: NodeId) -> bool {
+    &&& pre.names.contains_key(s)
+    &&& {
+        ||| post.parent.contains_key(x) && post.parent[x] == s
+        ||| State::removed(pre, post, s) && post.names[x] == pre.names[s]
+    }
+}
+
+/// e may give x, a capability new in post, the right r. A new capability has only rights its source
+/// had: in a local step, the parent it was derived from or the node it was moved from; in a grant, the
+/// capability granted; in a placement or a claim, the node named. A retype's new capability, naming the
+/// object typed, has what its kind allows, which the retype's own spec says. No other step makes a
+/// capability with a right, so none amplifies one: see design/theorem-over-reach/.
+pub open spec fn may_hold(pre: State, post: State, e: Effect, x: NodeId, r: Right) -> bool {
+    &&& !pre.names.contains_key(x)
+    &&& match e {
+        Effect::Local => exists|s: NodeId| #[trigger] passes_right(pre, post, s, x) && pre.rights.contains((s, r)),
+        Effect::Deliver { granted, .. } => {
+            &&& granted is Some
+            &&& passes_right(pre, post, granted->0, x)
+            &&& pre.rights.contains((granted->0, r))
+        },
+        Effect::Claim { from, .. } | Effect::Place { from, .. } => {
+            &&& passes_right(pre, post, from, x)
+            &&& pre.rights.contains((from, r))
+        },
+        Effect::Retype { object, .. } => post.names[x] == object,
+        _ => false,
+    }
+}
+
+/// Every right a capability of post has, it had as a capability of pre, or e may give it: rights on a
+/// capability only shrink, and a new one's come from its source.
+pub open spec fn keeps_rights(pre: State, post: State, e: Effect) -> bool {
+    forall|x: NodeId, r: Right| #[trigger] post.rights.contains((x, r)) && post.names.contains_key(x)
+        ==> (pre.rights.contains((x, r)) && pre.names.contains_key(x)) || may_hold(pre, post, e, x, r)
+}
+
 /// What every operation's spec ensures of a step by a thread of p. The theorem in
 /// design/theorem-over-reach/ composes these.
 pub open spec fn discharges(pre: State, post: State, p: ObjectId, e: Effect) -> bool {
@@ -310,6 +350,7 @@ pub open spec fn discharges(pre: State, post: State, p: ObjectId, e: Effect) -> 
         ==> may_grow(pre, p, e, r, o)
     &&& forall|w: (ObjectId, ObjectId)| #[trigger] post.waiting.contains(w) && !pre.waiting.contains(w)
         ==> may_wait(pre, p, w)
+    &&& keeps_rights(pre, post, e)
 }
 
 /// post lists no thread as waiting that pre does not.
@@ -452,13 +493,16 @@ pub open spec fn unbinds(pre: State, post: State, t: ObjectId, b: NodeId) -> boo
 }
 
 /// What a slice of an object's teardown does, apart from who may run it: it changes only what waits on
-/// the object, removes only what descends from a capability the object held, and grows no reach.
+/// the object, removes only what descends from a capability the object held, grows no reach, and gives
+/// no capability a right.
 pub open spec fn tears_down(pre: State, post: State, object: ObjectId) -> bool {
     &&& forall|o: ObjectId| #[trigger] State::changed(pre, post, o) ==> pre.waiting.contains((object, o))
     &&& forall|n: NodeId| #[trigger] State::removed(pre, post, n)
         ==> exists|c: NodeId, k: nat| #[trigger] pre.descends(c, n, k) && pre.holds(object, c)
     &&& forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) ==> pre.reach(r, o)
     &&& adds_no_waiter(pre, post)
+    &&& forall|x: NodeId, r: Right| #[trigger] post.rights.contains((x, r)) && post.names.contains_key(x)
+        ==> pre.rights.contains((x, r)) && pre.names.contains_key(x)
 }
 
 /// A step that changes nothing, by a holder of an untyped with the retype right, discharges a teardown.
@@ -488,6 +532,10 @@ pub proof fn lemma_revoke_is_teardown(pre: State, post: State, object: ObjectId,
     }
     assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) implies pre.reach(r, o) by {
         assert(!may_grow(pre, object, Effect::Revoke { cap }, r, o));
+    }
+    assert forall|x: NodeId, r: Right| #[trigger] post.rights.contains((x, r)) && post.names.contains_key(x)
+        implies pre.rights.contains((x, r)) && pre.names.contains_key(x) by {
+        assert(!may_hold(pre, post, Effect::Revoke { cap }, x, r));
     }
 }
 
@@ -543,6 +591,11 @@ pub proof fn lemma_teardown_steps_compose(a: State, b: State, c: State, p: Objec
             assert(b.held.contains((object, t)));
             assert(a.descends(t, n, k) && a.holds(object, t));
         }
+    }
+    assert forall|x: NodeId, r: Right| #[trigger] c.rights.contains((x, r)) && c.names.contains_key(x)
+        implies (a.rights.contains((x, r)) && a.names.contains_key(x)) || may_hold(a, c, e, x, r) by {
+        assert(b.rights.contains((x, r)) && b.names.contains_key(x));
+        assert(!may_hold(a, b, e, x, r));
     }
     assert forall|r: ObjectId, o: ObjectId| #[trigger] c.reach(r, o) implies a.reach(r, o) by {
         assert(b.reach(r, o));
@@ -730,11 +783,19 @@ pub proof fn lemma_adds_child_discharges(
 )
     requires
         adds_child(pre, post, p, c, n, live),
+        pre.names.contains_key(c),
+        forall|r: Right| #[trigger] post.rights.contains((n, r)) ==> pre.rights.contains((c, r)),
     ensures
         discharges(pre, post, p, Effect::Local),
 {
     assert forall|x: NodeId| #[trigger] State::removed(pre, post, x) implies may_remove(pre, p, Effect::Local, x) by {
         assert(x != n);
+    }
+    assert forall|x: NodeId, r: Right| #[trigger] post.rights.contains((x, r)) && post.names.contains_key(x)
+        implies (pre.rights.contains((x, r)) && pre.names.contains_key(x)) || may_hold(pre, post, Effect::Local, x, r) by {
+        if x == n {
+            assert(passes_right(pre, post, c, n));
+        }
     }
     assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) implies pre.reach(r, o) by {
         lemma_adds_child_reach(pre, post, p, c, n, live, r, o);
@@ -755,6 +816,7 @@ pub proof fn lemma_adds_child_discharges_retype(
     requires
         adds_child(pre, post, p, c, n, live),
         pre.holds_right(p, c, Right::Retype),
+        post.names[n] == object,
     ensures
         discharges(pre, post, p, Effect::Retype { untyped: c, object, into: None }),
 {
@@ -885,6 +947,7 @@ pub proof fn lemma_places_child_discharges(
         pre.names[cap] == d,
         !pre.process_of.contains_key(d),
         pre.names.contains_key(c),
+        forall|r: Right| #[trigger] post.rights.contains((n, r)) ==> pre.rights.contains((c, r)),
     ensures
         discharges(pre, post, p, Effect::Place { cap, from: c }),
 {
@@ -898,6 +961,12 @@ pub proof fn lemma_places_child_discharges(
     }
     assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) && !pre.reach(r, o) implies may_grow(pre, p, e, r, o) by {
         lemma_places_child_reach(pre, post, p, d, c, n, live, r, o);
+    }
+    assert forall|x: NodeId, r: Right| #[trigger] post.rights.contains((x, r)) && post.names.contains_key(x)
+        implies (pre.rights.contains((x, r)) && pre.names.contains_key(x)) || may_hold(pre, post, e, x, r) by {
+        if x == n {
+            assert(passes_right(pre, post, c, n));
+        }
     }
 }
 
@@ -1184,15 +1253,18 @@ pub proof fn lemma_adds_object_discharges_retype(
     }
 }
 
-/// A retype followed by a local step that removes no capability is one retype: the local step changes
-/// nothing a process can see and grows no reach, so what the two do is what the retype may. A thread's
-/// retype is one, its binding under the process capability being the local step.
+/// A retype followed by a local step that removes no capability and gives none a right is one retype:
+/// the local step changes nothing a process can see and grows no reach, so what the two do is what the
+/// retype may. A thread's retype is one, its binding under the process capability being the local
+/// step.
 pub proof fn lemma_retype_then_local(a: State, b: State, c: State, p: ObjectId, untyped: NodeId, object: ObjectId)
     requires
         discharges(a, b, p, Effect::Retype { untyped, object, into: None }),
         discharges(b, c, p, Effect::Local),
         forall|n: NodeId| #[trigger] b.names.contains_key(n) ==> c.names.contains_key(n),
         adds_no_waiter(b, c),
+        forall|n: NodeId, r: Right| #[trigger] c.rights.contains((n, r)) && c.names.contains_key(n)
+            ==> b.rights.contains((n, r)) && b.names.contains_key(n) && c.names[n] == b.names[n],
     ensures
         discharges(a, c, p, Effect::Retype { untyped, object, into: None }),
 {
@@ -1214,6 +1286,10 @@ pub proof fn lemma_retype_then_local(a: State, b: State, c: State, p: ObjectId, 
     assert forall|w: (ObjectId, ObjectId)| #[trigger] c.waiting.contains(w) && !a.waiting.contains(w)
         implies may_wait(a, p, w) by {
         assert(b.waiting.contains(w));
+    }
+    assert forall|x: NodeId, r: Right| #[trigger] c.rights.contains((x, r)) && c.names.contains_key(x)
+        implies (a.rights.contains((x, r)) && a.names.contains_key(x)) || may_hold(a, c, e, x, r) by {
+        assert(b.rights.contains((x, r)) && b.names.contains_key(x));
     }
 }
 
@@ -1333,6 +1409,15 @@ pub proof fn lemma_adds_bound_object_discharges_retype(
     assert forall|x: NodeId| #[trigger] State::removed(pre, post, x) implies may_remove(pre, p, e, x) by {
         assert(x != n);
         assert(mid.names.contains_key(x) == pre.names.contains_key(x));
+    }
+    assert forall|x: NodeId, r: Right| #[trigger] post.rights.contains((x, r)) && post.names.contains_key(x)
+        implies (pre.rights.contains((x, r)) && pre.names.contains_key(x)) || may_hold(pre, post, e, x, r) by {
+        assert(mid.rights.contains((x, r)) && mid.names.contains_key(x));
+        if x != n {
+            assert(pre.rights.contains((x, r)) && pre.names.contains_key(x));
+        } else {
+            assert(!pre.names.contains_key(n));
+        }
     }
     assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) implies pre.reach(r, o) by {
         let (q, k) = choose|q: ObjectId, k: nat| #[trigger] post.controlled(r, q, k) && (o == q || post.direct(q, o));
@@ -1796,8 +1881,16 @@ pub proof fn lemma_simulates_claim_reach(
     }
 }
 
+/// f names each capability of post by itself in pre, or, for one new in post, by a capability the step
+/// removed: a move's renaming read backward.
+pub open spec fn renames_moved(pre: State, post: State, f: spec_fn(NodeId) -> NodeId) -> bool {
+    forall|x: NodeId| #[trigger] post.names.contains_key(x) && f(x) != x
+        ==> !pre.names.contains_key(x) && State::removed(pre, post, f(x))
+}
+
 /// A claim's step: post's authority is all in pre, once what p took is read as q's, and p controls q,
-/// so nobody's reach grows. Only the node claimed goes.
+/// so nobody's reach grows. Only the node claimed goes, and the node that takes its place has its
+/// rights.
 pub proof fn lemma_simulates_claim_discharges(
     pre: State,
     post: State,
@@ -1809,6 +1902,7 @@ pub proof fn lemma_simulates_claim_discharges(
 )
     requires
         simulates_claim(post, pre, live, f, p, pre.names[c]),
+        renames_moved(pre, post, f),
         pre.holds_right(p, c, Right::Control),
         !pre.process_of.contains_key(pre.names[c]),
         pre.holds(pre.names[c], from),
@@ -1826,6 +1920,14 @@ pub proof fn lemma_simulates_claim_discharges(
     }
     assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) implies pre.reach(r, o) by {
         lemma_simulates_claim_reach(post, pre, live, f, p, q, r, o);
+    }
+    assert forall|x: NodeId, r: Right| #[trigger] post.rights.contains((x, r)) && post.names.contains_key(x)
+        implies (pre.rights.contains((x, r)) && pre.names.contains_key(x))
+        || may_hold(pre, post, Effect::Claim { cap: c, from }, x, r) by {
+        if f(x) != x {
+            assert(State::removed(pre, post, f(x)));
+            assert(passes_right(pre, post, from, x));
+        }
     }
 }
 
@@ -1960,6 +2062,7 @@ pub proof fn lemma_simulates_place_discharges(
 )
     requires
         simulates_claim(post, pre, live, f, pre.names[cap], s),
+        renames_moved(pre, post, f),
         pre.holds_right(p, cap, Right::Control),
         !pre.process_of.contains_key(pre.names[cap]),
         pre.commands(p, from),
@@ -1978,6 +2081,13 @@ pub proof fn lemma_simulates_place_discharges(
     assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) && !pre.reach(r, o) implies may_grow(pre, p, e, r, o) by {
         lemma_simulates_place_reach(post, pre, live, f, pre.names[cap], s, p, j, r, o);
     }
+    assert forall|x: NodeId, r: Right| #[trigger] post.rights.contains((x, r)) && post.names.contains_key(x)
+        implies (pre.rights.contains((x, r)) && pre.names.contains_key(x)) || may_hold(pre, post, e, x, r) by {
+        if f(x) != x {
+            assert(State::removed(pre, post, f(x)));
+            assert(passes_right(pre, post, from, x));
+        }
+    }
 }
 
 /// A retype that names no new capability, only a node nobody holds: post's authority is all in pre,
@@ -1993,6 +2103,7 @@ pub proof fn lemma_simulated_discharges_retype(
 )
     requires
         simulates(post, pre, live, f),
+        forall|x: NodeId| #[trigger] f(x) == x,
         pre.holds_right(p, c, Right::Retype),
         forall|x: NodeId| #[trigger] pre.names.contains_key(x) ==> post.names.contains_key(x),
         forall|o: ObjectId| #[trigger] (post.contents)(o) == (pre.contents)(o),
@@ -2004,6 +2115,10 @@ pub proof fn lemma_simulated_discharges_retype(
     }
     assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) implies pre.reach(r, o) by {
         lemma_simulates_reach(post, pre, live, f, r, o);
+    }
+    assert forall|x: NodeId, r: Right| #[trigger] post.rights.contains((x, r)) && post.names.contains_key(x)
+        implies pre.rights.contains((x, r)) && pre.names.contains_key(x) by {
+        assert(f(x) == x);
     }
 }
 
@@ -2018,6 +2133,7 @@ pub proof fn lemma_simulated_discharges_revoke(
 )
     requires
         simulates(post, pre, live, f),
+        forall|x: NodeId| #[trigger] f(x) == x,
         pre.commands(p, c),
         pre.names.contains_key(c),
         forall|x: NodeId| #[trigger] State::removed(pre, post, x) ==> exists|k: nat| k > 0 && #[trigger] pre.descends(c, x, k),
@@ -2031,6 +2147,10 @@ pub proof fn lemma_simulated_discharges_revoke(
     assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) implies pre.reach(r, o) by {
         lemma_simulates_reach(post, pre, live, f, r, o);
     }
+    assert forall|x: NodeId, r: Right| #[trigger] post.rights.contains((x, r)) && post.names.contains_key(x)
+        implies pre.rights.contains((x, r)) && pre.names.contains_key(x) by {
+        assert(f(x) == x);
+    }
 }
 
 /// A local step that names no capability and removes none: post's authority is all in pre.
@@ -2043,6 +2163,7 @@ pub proof fn lemma_simulated_discharges_local(
 )
     requires
         simulates(post, pre, live, f),
+        forall|x: NodeId| #[trigger] f(x) == x,
         forall|x: NodeId| #[trigger] pre.names.contains_key(x) ==> post.names.contains_key(x),
         forall|o: ObjectId| #[trigger] (post.contents)(o) == (pre.contents)(o),
     ensures
@@ -2053,6 +2174,10 @@ pub proof fn lemma_simulated_discharges_local(
     }
     assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) implies pre.reach(r, o) by {
         lemma_simulates_reach(post, pre, live, f, r, o);
+    }
+    assert forall|x: NodeId, r: Right| #[trigger] post.rights.contains((x, r)) && post.names.contains_key(x)
+        implies pre.rights.contains((x, r)) && pre.names.contains_key(x) by {
+        assert(f(x) == x);
     }
 }
 
@@ -2094,6 +2219,11 @@ pub proof fn lemma_revoke_steps_compose(a: State, b: State, c: State, p: ObjectI
     assert forall|w: (ObjectId, ObjectId)| #[trigger] c.waiting.contains(w) && !a.waiting.contains(w)
         implies may_wait(a, p, w) by {
         assert(b.waiting.contains(w));
+    }
+    assert forall|x: NodeId, r: Right| #[trigger] c.rights.contains((x, r)) && c.names.contains_key(x)
+        implies a.rights.contains((x, r)) && a.names.contains_key(x) by {
+        assert(!may_hold(b, c, Effect::Revoke { cap }, x, r));
+        assert(!may_hold(a, b, Effect::Revoke { cap }, x, r));
     }
 }
 
@@ -2574,6 +2704,66 @@ pub proof fn lemma_other_waiter_does_not_discharge()
     assert(post.waiting.contains((EXAMPLE_BASE, WAITER)));
     assert(!pre.waiting.contains((EXAMPLE_BASE, WAITER)));
     assert(!may_wait(pre, 1, (EXAMPLE_BASE, WAITER)));
+}
+
+/// Process 1 holds node 10, a capability to the endpoint at EXAMPLE_PAST with the send right alone.
+pub open spec fn send_example() -> State {
+    State {
+        held: ISet::new(|h: (ObjectId, NodeId)| h == (1usize, 10usize)),
+        names: IMap::new(|n: NodeId| n == 10, |n: NodeId| EXAMPLE_PAST),
+        pages: IMap::new(|n: NodeId| n == 10, |n: NodeId| 1nat),
+        rights: ISet::new(|h: (NodeId, Right)| h == (10usize, Right::Send)),
+        parent: Map::empty(),
+        maps: Set::empty(),
+        process_of: Map::empty(),
+        waiting: Set::empty(),
+        bound: Map::empty(),
+        contents: |o: ObjectId| Seq::empty(),
+    }
+}
+
+/// `send_example` after process 1 derives node 11 from node 10 into its own table, with the send right,
+/// and with the grant right too when `grant` says so.
+pub open spec fn derived_from_send(grant: bool) -> State {
+    State {
+        held: ISet::new(|h: (ObjectId, NodeId)| h == (1usize, 10usize) || h == (1usize, 11usize)),
+        names: IMap::new(|n: NodeId| n == 10 || n == 11, |n: NodeId| EXAMPLE_PAST),
+        pages: IMap::new(|n: NodeId| n == 10 || n == 11, |n: NodeId| 1nat),
+        rights: ISet::new(
+            |h: (NodeId, Right)| h == (10usize, Right::Send) || h == (11usize, Right::Send)
+                || (grant && h == (11usize, Right::Grant)),
+        ),
+        parent: map![11usize => 10usize],
+        ..send_example()
+    }
+}
+
+/// Deriving the send right from a send-only capability discharges a local step.
+pub proof fn lemma_derive_send_discharges()
+    ensures
+        discharges(send_example(), derived_from_send(false), 1, Effect::Local),
+{
+    let (pre, post) = (send_example(), derived_from_send(false));
+    let live = |x: NodeId| x == 10;
+    assert(post.parent =~= pre.parent.insert(11, 10));
+    assert(adds_child(pre, post, 1, 10, 11, live));
+    lemma_adds_child_discharges(pre, post, 1, 10, 11, live);
+}
+
+/// Deriving the grant right from it does not, though the child covers only what its parent covers and
+/// grows nobody's reach: with grant, its holder could pass capabilities over an endpoint it was given
+/// only to send on.
+pub proof fn lemma_derive_grant_from_send_only_does_not_discharge()
+    ensures
+        !discharges(send_example(), derived_from_send(true), 1, Effect::Local),
+{
+    let (pre, post) = (send_example(), derived_from_send(true));
+    assert(post.rights.contains((11usize, Right::Grant)) && post.names.contains_key(11));
+    assert(!pre.names.contains_key(11));
+    assert forall|s: NodeId| !(#[trigger] passes_right(pre, post, s, 11) && pre.rights.contains((s, Right::Grant))) by {
+        assert(!pre.rights.contains((s, Right::Grant)));
+    }
+    assert(!may_hold(pre, post, Effect::Local, 11, Right::Grant));
 }
 
 /// Reach reads nothing but the authority fields, so contents do not change it.
