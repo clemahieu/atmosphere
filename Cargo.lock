@@ -287,11 +287,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "boot-host-tests"
+version = "0.1.0"
+dependencies = [
+ "astd",
+]
+
+[[package]]
 name = "build-tool"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "astd",
  "byte-unit",
  "cargo_metadata",
  "clap",

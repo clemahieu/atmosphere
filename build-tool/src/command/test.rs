@@ -80,6 +80,7 @@ enum Step {
     FileSizes,
     Build,
     BuildToolTests,
+    BootHostTests,
     License,
     Hooks,
     Verify,
@@ -97,10 +98,11 @@ enum Step {
 }
 
 impl Step {
-    const ALL: [Step; 17] = [
+    const ALL: [Step; 18] = [
         Step::FileSizes,
         Step::Build,
         Step::BuildToolTests,
+        Step::BootHostTests,
         Step::License,
         Step::Hooks,
         Step::Verify,
@@ -122,6 +124,7 @@ impl Step {
             Step::FileSizes => "file sizes",
             Step::Build => "build",
             Step::BuildToolTests => "build-tool tests",
+            Step::BootHostTests => "boot host tests",
             Step::License => "license",
             Step::Hooks => "hooks",
             Step::Verify => "verify",
@@ -152,7 +155,12 @@ impl Step {
         match self {
             Step::FileSizes => check_file_sizes(project).await,
             Step::Build => check_build(project).await,
-            Step::BuildToolTests => check_build_tool_tests(project).await,
+            Step::BuildToolTests => {
+                check_tests(project, "build-tool", "its own unit tests").await
+            }
+            Step::BootHostTests => {
+                check_tests(project, "boot-host-tests", "loader map and dom0 run checks").await
+            }
             Step::License => check_licenses(project).await,
             Step::Hooks => check_hooks(project).await,
             Step::Verify => {
@@ -254,29 +262,30 @@ async fn check_build(project: &ProjectHandle) -> Result<String> {
     super::build::gate_build(project).await
 }
 
-/// build-tool's whole test suite, after the build, since the dom0 run check reads the built dom0. Its
-/// tests include the loader map check, whose lines start with `free page ranges:`, and the dom0 run
-/// check, whose lines start with `mapped runs:`.
+/// A workspace crate's whole test suite, after the build, since the dom0 run check in
+/// boot-host-tests reads the built dom0. boot-host-tests holds the loader map check, whose lines
+/// start with `free page ranges:`, and the dom0 run check, whose lines start with `mapped runs:`.
 /// The detail carries each test binary's result line.
-async fn check_build_tool_tests(project: &ProjectHandle) -> Result<String> {
+async fn check_tests(project: &ProjectHandle, krate: &str, what: &str) -> Result<String> {
+    let manifest = format!("{krate}/Cargo.toml");
     let output = Command::new("cargo")
-        .args(["test", "--manifest-path", "build-tool/Cargo.toml", "--", "--nocapture"])
+        .args(["test", "--manifest-path", &manifest, "--", "--nocapture"])
         .current_dir(project.root())
         .stdin(Stdio::null())
         .stderr(Stdio::inherit())
         .output()
         .await
-        .context("build-tool tests")?;
+        .with_context(|| format!("{krate} tests"))?;
     let text = String::from_utf8_lossy(&output.stdout);
     print!("{}", text);
     let results = marked_lines(&text, TEST_RESULT);
     if !output.status.success() {
-        return Err(anyhow!("cargo test of build-tool: {}{}", output.status, results));
+        return Err(anyhow!("cargo test of {}: {}{}", krate, output.status, results));
     }
     if results.is_empty() {
-        return Err(anyhow!("cargo test of build-tool: no test result line"));
+        return Err(anyhow!("cargo test of {}: no test result line", krate));
     }
-    Ok(format!("loader map and dom0 run checks among them{}", results))
+    Ok(format!("{}{}", what, results))
 }
 
 /// Runs the license check's own tests, then the check over the workspace's graph.
@@ -549,6 +558,9 @@ mod tests {
         let x86_64 = steps(Some(Arch::X86_64));
         assert!(x86_64.contains(&Step::Boot) && x86_64.contains(&Step::Verify));
         assert!(x86_64.contains(&Step::PageLiterals) && x86_64.contains(&Step::ArchSources));
+        // The dom0 run check reads the built dom0.
+        let at = |step| x86_64.iter().position(|s| *s == step).unwrap();
+        assert!(at(Step::Build) < at(Step::BootHostTests));
         assert!(!x86_64.contains(&Step::VerifyAarch64) && !x86_64.contains(&Step::Aarch64Boot));
         let both = steps(None);
         assert_eq!(both.len(), x86_64.len() + 2);

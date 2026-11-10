@@ -1,0 +1,11 @@
+[package]
+name = "boot-host-tests"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+publish = false
+
+# Host runs of the kernel's boot checks, which compile the kernel's own files; nothing else uses
+# the crate.
+[dev-dependencies]
+astd = { path = "../astd", features = ["kernel"] }
