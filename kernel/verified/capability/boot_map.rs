@@ -708,6 +708,7 @@ impl CapKernel {
         requires
             old(self).maps_ready(root, process, leaf2, runs@),
         ensures
+            final(self).stale_epoch == old(self).stale_epoch,
             Self::maps_done(*old(self), *final(self), process, runs@),
     {
         hide(CapKernel::wf);
@@ -722,6 +723,7 @@ impl CapKernel {
         let mut r: usize = 0;
         while r < runs.len()
             invariant
+                self.stale_epoch == pre.stale_epoch,
                 pre.maps_ready(root, process, leaf2, runs@),
                 r <= runs@.len(),
                 idx as int == image_offset(runs@, r as int),
@@ -747,6 +749,7 @@ impl CapKernel {
             let ghost mut k: int = 0;
             while m > 0
                 invariant
+                    self.stale_epoch == pre.stale_epoch,
                     pre.maps_ready(root, process, leaf2, runs@),
                     r < runs@.len(),
                     phys == runs@[r as int].phys,
@@ -791,6 +794,7 @@ impl CapKernel {
                 let mut j: usize = 0;
                 while j < size
                     invariant
+                        self.stale_epoch == pre.stale_epoch,
                         pre.maps_ready(root, process, leaf2, runs@),
                         r < runs@.len(),
                         phys == runs@[r as int].phys,

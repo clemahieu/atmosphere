@@ -530,12 +530,16 @@ impl StaleEpochs {
             old(self).wf(),
         ensures
             final(self).wf(),
+            forall|j: int| 0 <= j < NUM_PAGES ==> #[trigger] final(self).pages@[j] == 0,
+            forall|r: int| 0 <= r < NUM_2M ==> #[trigger] final(self).two@[r] == 0,
+            forall|r: int| 0 <= r < NUM_1G ==> #[trigger] final(self).one@[r] == 0,
     {
         let mut i = 0;
         while i != NUM_PAGES
             invariant
                 0 <= i <= NUM_PAGES,
                 self.wf(),
+                forall|j: int| 0 <= j < i ==> #[trigger] self.pages@[j] == 0,
             decreases NUM_PAGES - i,
         {
             self.pages.set(i, 0);
@@ -546,6 +550,8 @@ impl StaleEpochs {
             invariant
                 0 <= i <= NUM_2M,
                 self.wf(),
+                forall|j: int| 0 <= j < NUM_PAGES ==> #[trigger] self.pages@[j] == 0,
+                forall|r: int| 0 <= r < i ==> #[trigger] self.two@[r] == 0,
             decreases NUM_2M - i,
         {
             self.two.set(i, 0);
@@ -556,6 +562,9 @@ impl StaleEpochs {
             invariant
                 0 <= i <= NUM_1G,
                 self.wf(),
+                forall|j: int| 0 <= j < NUM_PAGES ==> #[trigger] self.pages@[j] == 0,
+                forall|r: int| 0 <= r < NUM_2M ==> #[trigger] self.two@[r] == 0,
+                forall|r: int| 0 <= r < i ==> #[trigger] self.one@[r] == 0,
             decreases NUM_1G - i,
         {
             self.one.set(i, 0);
@@ -1363,8 +1372,8 @@ impl CapKernel {
     }
 
     /// Makes this a kernel with one root capability, no mappings, no core running anything, every page
-    /// Reserved and the IOMMUs boot found present with their command buffers. In place, since the block
-    /// table is too large to move by value.
+    /// Reserved with no unmap recorded, and the IOMMUs boot found present with their command buffers.
+    /// In place, since the block table is too large to move by value.
     pub fn init(
         &mut self,
         root: usize,
@@ -1405,6 +1414,7 @@ impl CapKernel {
             forall|c: int| 0 <= c < NUM_CPUS ==> (#[trigger] final(self).cores@[c]).current_thread.is_None(),
             final(self).list.seq@[0] == root,
             final(self).boot_empty(),
+            forall|j: int| 0 <= j < NUM_PAGES ==> #[trigger] final(self).stale_epoch.pages@[j] == 0,
     {
         self.list = Tree::new(root, Tracked(perm));
         self.tables = Tables::new();

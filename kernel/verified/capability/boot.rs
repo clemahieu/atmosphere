@@ -130,6 +130,7 @@ impl CapKernel {
             forall|i: usize| base / 4096 <= i < base / 4096 + 8 || leaf / 4096 <= i < leaf / 4096 + 2
                 ==> #[trigger] holds(pages, i),
         ensures
+            final(self).stale_epoch == old(self).stale_epoch,
             final(self).wf(),
             final(self).list.seq@[0] == root,
             final(self).tables.roots@.contains_key(base),
@@ -398,6 +399,7 @@ impl CapKernel {
                 ==> !(t / 4096 <= p / 4096 < t / 4096 + 2),
             forall|i: usize| t / 4096 <= i < t / 4096 + 2 ==> #[trigger] holds(pages, i),
         ensures
+            final(self).stale_epoch == old(self).stale_epoch,
             final(self).wf(),
             final(self).list.seq@[0] == root,
             final(self).tables.roots == old(self).tables.roots,
@@ -665,6 +667,7 @@ impl CapKernel {
                 ==> !(leaf / 4096 <= p / 4096 < leaf / 4096 + 2),
             forall|i: usize| leaf / 4096 <= i < leaf / 4096 + 2 ==> #[trigger] holds(pages, i),
         ensures
+            final(self).stale_epoch == old(self).stale_epoch,
             final(self).wf(),
             final(self).list.seq@[0] == root,
             final(self).tables.leaf(process, r as int) == leaf,
@@ -793,6 +796,7 @@ impl CapKernel {
             forall|i: usize| process / 4096 <= i < process / 4096 + 8 || leaf / 4096 <= i < leaf / 4096 + 2
                 || frames / 4096 <= i < frames / 4096 + 2 || t / 4096 <= i < t / 4096 + 2 ==> #[trigger] holds(pages, i),
         ensures
+            final(self).stale_epoch == old(self).stale_epoch,
             final(self).wf(),
             final(self).list.seq@[0] == root,
             final(self).tables.has_slot(&final(self).list, process, ROOT_PROCESS_SLOT),
@@ -1117,6 +1121,7 @@ impl CapKernel {
             root_object(i, payload),
             !old(self).list.nodes@[leaf + i].live,
         ensures
+            final(self).stale_epoch == old(self).stale_epoch,
             final(self).wf(),
             final(self).list.seq@[0] == root,
             final(self).tables.roots == old(self).tables.roots,
@@ -1299,6 +1304,7 @@ impl CapKernel {
             !old(self).list.nodes@[leaf + i].live,
             payload_wf(untyped_payload(base, order)),
         ensures
+            final(self).stale_epoch == old(self).stale_epoch,
             final(self).wf(),
             final(self).list.seq@[0] == root,
             final(self).tables.roots == old(self).tables.roots,

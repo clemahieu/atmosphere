@@ -549,6 +549,7 @@ impl CapKernel {
                     ==> region_2m((p / 4096) as int) != frame_region(base)
             },
         ensures
+            final(self).stale_epoch == old(self).stale_epoch,
             final(self).wf(),
             final(self).list.seq@[0] == root,
             final(self).tables.roots == old(self).tables.roots,

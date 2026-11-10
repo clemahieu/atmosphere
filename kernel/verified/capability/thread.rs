@@ -3641,6 +3641,7 @@ impl CapKernel {
             old(self).threads.records@[t].value().process is None,
             !old(self).list.nodes@[t as int].live,
         ensures
+            final(self).stale_epoch == old(self).stale_epoch,
             final(self).wf(),
             Self::bound_to(*old(self), *final(self), n, t),
             forall|x: usize| #[trigger] final(self).is_cap(x) == old(self).is_cap(x),

@@ -983,6 +983,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
+            final(self).stale_epoch == old(self).stale_epoch,
             final(self).wf(),
             final(self).cores == old(self).cores,
             ret == old(self).can_map(root, slot, SpaceKind::Process, SpacePath { l4, l3, l2, l1 }, from, page),
@@ -1163,6 +1164,7 @@ impl CapKernel {
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
         ensures
+            final(self).stale_epoch == old(self).stale_epoch,
             final(self).wf(),
             final(self).cores == old(self).cores,
             ret == old(self).can_map(root, slot, kind, SpacePath { l4, l3, l2, l1 }, from, page),
@@ -1444,6 +1446,7 @@ impl CapKernel {
             Self::map_from(*old(self), t, e, f, frame, large),
             rights == old(self).payload_of(f).rights,
         ensures
+            final(self).stale_epoch == old(self).stale_epoch,
             final(self).wf(),
             final(self).cores == old(self).cores,
             ret == (block_refs(&old(self).blocks, block_ref(&old(self).blocks, frame)) != usize::MAX),

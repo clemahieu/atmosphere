@@ -981,6 +981,7 @@ impl CapKernel {
             old(self).list.nodes@[parent as int].kind is Capability,
             old(self).list.nodes@[parent as int].depth < MAX_DEPTH,
         ensures
+            final(self).stale_epoch == old(self).stale_epoch,
             final(self).wf(),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             final(self).cores == old(self).cores,

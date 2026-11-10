@@ -136,7 +136,9 @@ impl CapKernel {
     /// The state boot's composed step leaves when it succeeds, having returned `untyped` and `frame`:
     /// what kernel_init ensures, and so what a proof about the root's first operations starts from.
     /// Each fixed slot of the root's table holds its kind, and each untyped is at depth 1, so a
-    /// capability retyped under it is below the deepest depth; the root's process is live; every root
+    /// capability retyped under it is below the deepest depth; every page of the untyped blocks is
+    /// acknowledged, since boot unmaps nothing, so a free of a block typed there is not refused as
+    /// stale; the root's process is live; every root
     /// entry of its table past the two boot filled is empty; the root's space maps exactly the image; of
     /// the first untyped's order-3 blocks, every one past those the image's tables can take is free;
     /// the root reaches exactly the console, power and the pages of its process, its thread, the free
@@ -175,6 +177,7 @@ impl CapKernel {
             )
             &&& self.list.nodes@[(leaf + ROOT_UNTYPED_SLOT + k) as usize as int].depth == 1
         }
+        &&& forall|k: int, j: nat| 0 <= k < untyped && #[trigger] in_page_block(bs[k], j) ==> self.acknowledged(j as usize)
         &&& forall|a: int, u: int| #![trigger crate::capability::boot_map::frame_slot(image, a, u)]
             0 <= a < image.len() && 0 <= u < run_image_blocks(image[a]).len() ==> {
             let fb = run_image_blocks(image[a])[u];
@@ -623,6 +626,14 @@ impl CapKernel {
                     assert(s3.view().reach(process, o));
                     assert(s4.view().reach(process, o));
                 }
+            }
+            // No step unmapped anything, so every word init zeroed is still zero, and every core and
+            // IOMMU is at or past epoch zero.
+            assert forall|k: int, j: nat| 0 <= k < untyped && #[trigger] in_page_block(bs[k], j)
+                implies s4.acknowledged(j as usize) by {
+                assert(bs[k].0 + pow2(bs[k].1) <= NUM_PAGES);
+                assert(s4.stale_epoch == s0.stale_epoch);
+                assert(s0.stale_epoch.pages@[j as usize as int] == 0);
             }
         }
         Some((untyped, frame))

@@ -529,8 +529,27 @@ impl CapKernel {
                         self.blocks.lemma_member_of(page as int, g as int);
                     }
                 },
-                BlockRef::Two(r) => { lemma_large_block_alone(&self.blocks, Large::Two, r, BlockRef::Small(page), page); },
-                BlockRef::One(r) => { lemma_large_block_alone(&self.blocks, Large::One, r, BlockRef::Small(page), page); },
+                BlockRef::Two(r) => {
+                    // The block's two pages share every region, since it starts on an even page.
+                    assert(r * PAGES_PER_2M <= page < (r + 1) * PAGES_PER_2M) by (nonlinear_arith)
+                        requires
+                            r * PAGES_PER_2M <= g < (r + 1) * PAGES_PER_2M,
+                            g == page || g == page + 1,
+                            page % 2 == 0,
+                            PAGES_PER_2M == 512,
+                    ;
+                    lemma_large_block_alone(&self.blocks, Large::Two, r, BlockRef::Small(page), page);
+                },
+                BlockRef::One(r) => {
+                    assert(r * PAGES_PER_1G <= page < (r + 1) * PAGES_PER_1G) by (nonlinear_arith)
+                        requires
+                            r * PAGES_PER_1G <= g < (r + 1) * PAGES_PER_1G,
+                            g == page || g == page + 1,
+                            page % 2 == 0,
+                            PAGES_PER_1G == 262144,
+                    ;
+                    lemma_large_block_alone(&self.blocks, Large::One, r, BlockRef::Small(page), page);
+                },
             }
         }
     }
