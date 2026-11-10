@@ -495,6 +495,8 @@ impl CapKernel {
             post.devices.count == pre.devices.count,
             post.devices.holder == pre.devices.holder,
             post.devices == pre.devices || post.devices.wf(),
+            post.devices.page == pre.devices.page,
+            post.list.parent@ == pre.list.parent@,
         ensures
             post.tables.caps_wf(&post.list),
             post.tables.control_wf(&post.list),

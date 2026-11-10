@@ -520,18 +520,31 @@ impl CapKernel {
     {
         reveal(devices_wf);
         let (pp, base) = (pre.payload_of(i), pre.payload_of(i).base);
+        // The first node is no slot, so not i: the move renames no device capability's parent.
+        pre.lemma_first_page_apart();
+        assert(i != pre.devices.page);
+        pre.lemma_slot_bound(n);
         assert forall|x: usize| #[trigger] post.tables.is_cap(&post.list, x) && post.tables.payload_of(x).kind is Device implies {
             &&& post.tables.payload_of(x).order == 0
             &&& post.devices.names(post.tables.payload_of(x).base)
             &&& post.devices.holder@.contains_key(post.tables.payload_of(x).base)
             &&& post.devices.holder@[post.tables.payload_of(x).base] == x
+            &&& x < NODE_SPACE
+            &&& post.list.parent@.contains_key(x)
+            &&& post.list.parent@[x] == post.devices.page
         } by {
             if x == n {
                 assert(pre.tables.is_cap(&pre.list, i));
+                assert(pre.list.parent@.contains_key(i));
+                assert(rename(n, n, i) == i);
+                assert(post.list.parent@[n] == rename(pre.list.parent@[i], i, n));
             } else {
                 assert(x != i);
                 Self::lemma_caps_frame(pre, post, i, n, x);
                 assert(pre.tables.is_cap(&pre.list, x));
+                assert(pre.list.parent@.contains_key(x));
+                assert(rename(x, n, i) == x);
+                assert(post.list.parent@[x] == rename(pre.list.parent@[x], i, n));
                 if pp.kind is Device && post.tables.payload_of(x).base == base {
                     assert(pre.tables.is_cap(&pre.list, i));
                     lemma_device_cap_unique(&pre.list, &pre.tables, &pre.devices, i, x);

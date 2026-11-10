@@ -688,6 +688,53 @@ impl CapKernel {
         }
     }
 
+    /// Only the holder of device d's capability reaches the device directly: a capability naming a block,
+    /// the console or power covers no device object, the one capability naming d does, and its only
+    /// ancestor is the list's first node, which no process holds. So binding d to a space feeds the reach
+    /// of its holder alone. See design/device-binding-under-the-space-capability/.
+    pub proof fn lemma_direct_device_held(&self, q: ObjectId, d: int)
+        requires
+            self.wf(),
+            0 <= d < self.devices.count,
+            self.view().direct(q, device_object(d)),
+        ensures
+            self.devices.holder@.contains_key(device_object(d)),
+            self.view().holds(q, self.devices.holder@[device_object(d)]),
+    {
+        let o = device_object(d);
+        let v = self.view();
+        reveal(devices_wf);
+        assert(self.devices.count <= MAX_DEVICES);
+        lemma_device_object(d);
+        let (c, x, k) = choose|c: NodeId, x: NodeId, k: nat| #[trigger] v.descends(c, x, k) && v.holds(q, c) && v.covers(x, o);
+        assert(self.is_cap(x));
+        self.lemma_covers_console_or_power(x, o);
+        let p = self.payload_of(x);
+        if names_block(p.kind) {
+            self.lemma_covers_no_device(x, o);
+        }
+        assert(p.kind is Device);
+        assert(pow2(0) == 1) by { lemma2_to64(); }
+        let e = device_of(p.base);
+        lemma_device_object(e);
+        assert(p.base == device_object(e));
+        assert(e == d) by (nonlinear_arith)
+            requires
+                DEVICE_OBJECTS + e * PAGE_SZ <= DEVICE_OBJECTS + d * PAGE_SZ < DEVICE_OBJECTS + e * PAGE_SZ + PAGE_SZ,
+                PAGE_SZ > 0,
+        ;
+        assert(self.devices.holder@[o] == x);
+        if k > 0 {
+            let first = self.list.seq@[0];
+            assert(self.list.parent@[x] == first);
+            assert(v.descends(c, first, (k - 1) as nat));
+            assert(!self.list.parent@.contains_key(first));
+            assert(c == first);
+            assert(first_node_outside_leaves(&self.list, &self.tables));
+            assert(!self.is_cap(first));
+        }
+    }
+
     /// The binding nodes name what the thread records name: bindings_wf makes a live binding node
     /// exactly a bound thread, and binding_parents makes its parent a capability to that process.
     pub proof fn lemma_bound_threads(&self)

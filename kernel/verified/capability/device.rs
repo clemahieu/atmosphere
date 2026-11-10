@@ -286,8 +286,10 @@ impl Devices {
 }
 
 /// Every device capability names one device, a record of the table, and is the one that device was
-/// given. Opaque, so
-/// a step that leaves the list, the tables and the devices alone carries it without unfolding it.
+/// given. Its parent is the list's first node, which nobody holds, so only its holder reaches the
+/// device directly: add_device puts it there, derive refuses a device capability and a move keeps a
+/// node's parent. Opaque, so a step that leaves the list, the tables and the devices alone carries it
+/// without unfolding it.
 #[verifier::opaque]
 pub open spec fn devices_wf(list: &Tree, tables: &Tables, devices: &Devices) -> bool {
     &&& devices.wf()
@@ -296,6 +298,9 @@ pub open spec fn devices_wf(list: &Tree, tables: &Tables, devices: &Devices) -> 
         &&& devices.names(tables.payload_of(n).base)
         &&& devices.holder@.contains_key(tables.payload_of(n).base)
         &&& devices.holder@[tables.payload_of(n).base] == n
+        &&& n < NODE_SPACE
+        &&& list.parent@.contains_key(n)
+        &&& list.parent@[n] == devices.page
     }
 }
 
@@ -323,10 +328,18 @@ pub open spec fn devices_kept(list_a: &Tree, tables_a: &Tables, list_b: &Tree, t
     }
 }
 
+/// Every node live in a has the parent it had: a derive gives one only to a node that was dead, and a
+/// removal takes none away.
+pub open spec fn live_parents_kept(a: &Tree, b: &Tree) -> bool {
+    forall|x: usize| x < NODE_SPACE && a.nodes@[x as int].live && #[trigger] a.parent@.contains_key(x)
+        ==> b.parent@.contains_key(x) && b.parent@[x] == a.parent@[x]
+}
+
 pub proof fn lemma_devices_kept(list_a: &Tree, tables_a: &Tables, list_b: &Tree, tables_b: &Tables, devices: &Devices)
     requires
         devices_wf(list_a, tables_a, devices),
         devices_kept(list_a, tables_a, list_b, tables_b),
+        live_parents_kept(list_a, list_b),
     ensures
         devices_wf(list_b, tables_b, devices),
 {
@@ -336,8 +349,13 @@ pub proof fn lemma_devices_kept(list_a: &Tree, tables_a: &Tables, list_b: &Tree,
         &&& devices.names(tables_b.payload_of(n).base)
         &&& devices.holder@.contains_key(tables_b.payload_of(n).base)
         &&& devices.holder@[tables_b.payload_of(n).base] == n
+        &&& n < NODE_SPACE
+        &&& list_b.parent@.contains_key(n)
+        &&& list_b.parent@[n] == devices.page
     } by {
         assert(tables_a.is_cap(list_a, n));
+        assert(list_a.parent@.contains_key(n));
+        assert(list_b.parent@.contains_key(n));
     }
 }
 
@@ -348,6 +366,7 @@ pub proof fn lemma_devices_records(list: &Tree, tables: &Tables, a: &Devices, b:
         devices_wf(list, tables, a),
         b.wf(),
         b.count == a.count,
+        b.page == a.page,
         b.holder == a.holder,
     ensures
         devices_wf(list, tables, b),
@@ -874,6 +893,7 @@ impl CapKernel {
             Self::lemma_space_nodes_caps_frame(pre, post, child, child);
             Self::lemma_bindings_caps_frame(pre, post, child, child);
             Self::lemma_add_untracked_holders(pre, post, child);
+            pre.lemma_first_page_apart();
             Self::lemma_add_device_devices(pre, post, child, d as int);
             lemma_parents_derived(pre.list, post.list, first, child);
             Self::lemma_tlb_same(pre, post);
@@ -937,6 +957,9 @@ impl CapKernel {
             post.devices.wf(),
             post.devices.count == d + 1,
             post.devices.holder@ == pre.devices.holder@.insert(device_object(d), child),
+            post.devices.page == pre.devices.page,
+            post.list.parent@ == pre.list.parent@.insert(child, pre.devices.page),
+            child < NODE_SPACE,
         ensures
             devices_wf(&post.list, &post.tables, &post.devices),
     {
@@ -947,11 +970,15 @@ impl CapKernel {
             &&& post.devices.names(post.tables.payload_of(x).base)
             &&& post.devices.holder@.contains_key(post.tables.payload_of(x).base)
             &&& post.devices.holder@[post.tables.payload_of(x).base] == x
+            &&& x < NODE_SPACE
+            &&& post.list.parent@.contains_key(x)
+            &&& post.list.parent@[x] == post.devices.page
         } by {
             if x != child {
                 Self::lemma_caps_frame(pre, post, child, child, x);
                 assert(pre.tables.is_cap(&pre.list, x));
                 assert(device_of(pre.payload_of(x).base) < d);
+                assert(pre.list.parent@.contains_key(x));
             }
         }
     }
@@ -1142,6 +1169,7 @@ impl CapKernel {
             post.devices == pre.devices,
             forall|x: usize| #[trigger] post.is_cap(x) && post.payload_of(x).kind is Device
                 ==> pre.is_cap(x) && pre.payload_of(x) == post.payload_of(x),
+            live_parents_kept(&pre.list, &post.list),
         ensures
             devices_wf(&post.list, &post.tables, &post.devices),
     {
@@ -1160,6 +1188,7 @@ impl CapKernel {
             Self::caps_frame(pre, post, n, m),
             devices_wf(&pre.list, &pre.tables, &pre.devices),
             post.devices == pre.devices,
+            live_parents_kept(&pre.list, &post.list),
             post.is_cap(n) ==> !(post.payload_of(n).kind is Device),
             post.is_cap(m) ==> !(post.payload_of(m).kind is Device),
         ensures
@@ -1354,6 +1383,7 @@ impl CapKernel {
         &&& post.list.parent@ == pre.list.parent@.insert(x, m)
         &&& post.list.pages@.dom() == pre.list.pages@.dom()
         &&& post.list.seq@[0] == pre.list.seq@[0]
+        &&& !pre.list.nodes@[x as int].live
         &&& post.list.nodes@[x as int].live
         &&& post.list.nodes@[x as int].kind is DeviceBinding
         &&& forall|y: int| #![trigger post.list.nodes@[y]] 0 <= y < NODE_SPACE && y != x ==> {
@@ -1465,6 +1495,10 @@ impl CapKernel {
             &&& pre.tables.payload_of(y) == post.tables.payload_of(y)
         } by {
             assert(post.is_cap(y));
+        }
+        assert forall|y: usize| y < NODE_SPACE && pre.list.nodes@[y as int].live && #[trigger] pre.list.parent@.contains_key(y)
+            implies post.list.parent@.contains_key(y) && post.list.parent@[y] == pre.list.parent@[y] by {
+            assert(y != x);
         }
         lemma_devices_kept(&pre.list, &pre.tables, &post.list, &post.tables, &pre.devices);
         lemma_devices_records(&post.list, &post.tables, &pre.devices, &post.devices);
