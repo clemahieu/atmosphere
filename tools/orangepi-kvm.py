@@ -7,7 +7,9 @@ With --esp the directory goes to the board over the same ssh session and the gue
 gets it as a FAT drive, which EDK2 boots as removable media from
 EFI/BOOT/BOOTAA64.EFI; the board's copy is removed with the run. The guest runs
 until the --wait-for line is in the log, the UEFI shell banner by default, or until
-the boot timeout. The board holds an exclusive lock so a second run does not start
+the boot timeout. With --until-exit it runs until QEMU exits by itself, which it does
+when the guest powers off, and this exits with QEMU's status; a guest still on at the
+boot timeout is stopped and the run fails. The board holds an exclusive lock so a second run does not start
 a second guest. The remote side watches this process's stdin and kills QEMU when
 the local side dies. A timeout here does the same.
 
@@ -16,7 +18,7 @@ exits 0. A guest that starts and then fails is a failure. This command is not
 part of atmo test.
 
 usage: tools/orangepi-kvm.py [--ssh-host HOST] [--connect-timeout SEC] [--boot-timeout SEC]
-                             [--esp DIR] [--memory-mib MIB] [--wait-for LINE]
+                             [--esp DIR] [--memory-mib MIB] [--wait-for LINE | --until-exit]
        tools/orangepi-kvm.py --test
 """
 
@@ -38,19 +40,20 @@ sys.dont_write_bytecode = True
 BOARD = "orangepi5"
 SHELL_MARK = "UEFI Interactive Shell"
 
-# Reads the boot timeout, the guest's memory, the awaited line, the ESP archive's
-# size and the script's size from stdin, one per line, runs that many bytes as a
+# Reads the boot timeout, the guest's memory, the awaited line, whether the run waits
+# for QEMU's exit instead, the ESP archive's size and the script's size from stdin, one per line, runs that many bytes as a
 # bash script, and leaves the rest of stdin, which starts with the ESP archive,
 # open for the script.
 BOOTSTRAP = """
 read -r boot_timeout || exit 1
 read -r memory_mib || exit 1
 IFS= read -r wait_for || exit 1
+read -r until_exit || exit 1
 read -r esp_bytes || exit 1
 read -r n || exit 1
 script=$(mktemp)
 head -c "$n" > "$script" || exit 1
-ATMO_BOOT_TIMEOUT=$boot_timeout ATMO_MEMORY_MIB=$memory_mib ATMO_WAIT_FOR=$wait_for ATMO_ESP_BYTES=$esp_bytes bash "$script"
+ATMO_BOOT_TIMEOUT=$boot_timeout ATMO_MEMORY_MIB=$memory_mib ATMO_WAIT_FOR=$wait_for ATMO_UNTIL_EXIT=$until_exit ATMO_ESP_BYTES=$esp_bytes bash "$script"
 status=$?
 rm -f "$script"
 exit "$status"
@@ -74,6 +77,7 @@ case ${ATMO_BOOT_TIMEOUT:-20} in
     ''|*[!0-9]*) boot_timeout=20 ;;
     *) boot_timeout=$ATMO_BOOT_TIMEOUT ;;
 esac
+until_exit=${ATMO_UNTIL_EXIT:-0}
 
 stop_qemu() {
     if [ -n "$qpid" ]; then
@@ -136,7 +140,7 @@ fi
 echo "guest: started"
 deadline=$((SECONDS + boot_timeout))
 while kill -0 "$qpid" 2>/dev/null; do
-    if grep -q -s -F -- "$ATMO_WAIT_FOR" "$log" || grep -q -s -F -- "$ATMO_WAIT_FOR" "$err"; then
+    if [ "$until_exit" -eq 0 ] && { grep -q -s -F -- "$ATMO_WAIT_FOR" "$log" || grep -q -s -F -- "$ATMO_WAIT_FOR" "$err"; }; then
         break
     fi
     if [ "$SECONDS" -ge "$deadline" ]; then
@@ -153,6 +157,25 @@ while kill -0 "$qpid" 2>/dev/null; do
         break
     fi
 done
+if [ "$until_exit" -eq 1 ]; then
+    if [ "$aborted" -eq 1 ]; then
+        exit 1
+    fi
+    if kill -0 "$qpid" 2>/dev/null; then
+        stop_qemu
+        cat "$log"
+        cat "$err"
+        echo "qemu: still running after $boot_timeout s"
+        exit 1
+    fi
+    wait "$qpid"
+    status=$?
+    qpid=
+    cat "$log"
+    cat "$err"
+    echo "qemu: exit $status"
+    exit "$status"
+fi
 stop_qemu
 seen=0
 if [ "$aborted" -eq 0 ]; then
@@ -201,10 +224,10 @@ def _esp_archive(directory):
     return buffer.getvalue()
 
 
-def _payload(boot_timeout, memory_mib, wait_for, esp):
+def _payload(boot_timeout, memory_mib, wait_for, esp, until_exit=False):
     """What BOOTSTRAP reads from stdin: the parameters, the remote script, the ESP archive."""
     script = REMOTE.encode()
-    head = f"{boot_timeout}\n{memory_mib}\n{wait_for}\n{len(esp)}\n{len(script)}\n"
+    head = f"{boot_timeout}\n{memory_mib}\n{wait_for}\n{int(until_exit)}\n{len(esp)}\n{len(script)}\n"
     return head.encode() + script + esp
 
 
@@ -242,7 +265,7 @@ def _held(args, payload, env, timeout, preexec_fn=None):
     return code, b"".join(out_parts), b"".join(err_parts)
 
 
-def run(ssh_host, connect_timeout, boot_timeout, memory_mib, wait_for, esp_dir):
+def run(ssh_host, connect_timeout, boot_timeout, memory_mib, wait_for, esp_dir, until_exit):
     """Run the guest. Return a process exit code. 0 and a skip line when ssh cannot connect."""
     esp = _esp_archive(esp_dir) if esp_dir is not None else b""
     code, out, err = _held(
@@ -253,7 +276,7 @@ def run(ssh_host, connect_timeout, boot_timeout, memory_mib, wait_for, esp_dir):
             ssh_host,
             "bash -c " + shlex.quote(BOOTSTRAP),
         ],
-        _payload(boot_timeout, memory_mib, wait_for, esp),
+        _payload(boot_timeout, memory_mib, wait_for, esp, until_exit),
         None,
         boot_timeout + connect_timeout + 30,
         preexec_fn=_die_with_parent,
@@ -296,6 +319,7 @@ if [ -n "$esp" ]; then
   cat "$esp/EFI/BOOT/BOOTAA64.EFI" "$esp/initrd" > "$ATMO_ESP_READ"
 fi
 if [ -n "$ATMO_FAKE_SERIAL" ]; then printf '%s\n' "$ATMO_FAKE_SERIAL" >> "$log"; fi
+if [ -n "$ATMO_FAKE_EXIT" ]; then exit "$ATMO_FAKE_EXIT"; fi
 sleep 60
 """
 
@@ -438,11 +462,38 @@ def self_test():
         )
         check("guest that missed the line is gone", gone(pid_file))
 
+        # With --until-exit the run ends when QEMU does, with QEMU's status, and the awaited line
+        # does not end it: a guest that prints its last line and stays on fails at the timeout.
+        last_line = "The system is shutting down..."
+        for status in (0, 3):
+            env_exit = dict(env_cli)
+            env_exit["ATMO_FAKE_SERIAL"] = f"{SHELL_MARK} v2.2\n{last_line}"
+            env_exit["ATMO_FAKE_EXIT"] = str(status)
+            ended = subprocess.run(cli + ["--until-exit"], capture_output=True, text=True, env=env_exit, timeout=60)
+            check(
+                f"run until exit ends with QEMU's status {status}",
+                ended.returncode == status and last_line in ended.stdout and f"qemu: exit {status}\n" in ended.stdout,
+                f"code={ended.returncode} out={ended.stdout!r} err={ended.stderr!r}",
+            )
+            check(f"guest that exited with {status} is gone", gone(pid_file))
+        env_on = dict(env_cli)
+        env_on["ATMO_FAKE_SERIAL"] = f"{SHELL_MARK} v2.2\n{last_line}"
+        stayed = subprocess.run(
+            cli + ["--boot-timeout", "2", "--until-exit"], capture_output=True, text=True, env=env_on, timeout=60
+        )
+        check(
+            "run until exit fails when the guest is still on at the timeout",
+            stayed.returncode == 1 and last_line in stayed.stdout and "qemu: still running after 2 s\n" in stayed.stdout,
+            f"code={stayed.returncode} out={stayed.stdout!r} err={stayed.stderr!r}",
+        )
+        check("guest still on at the timeout is gone", gone(pid_file))
+
         for name, extra in (
             ("ESP that is not a directory", ["--esp", str(esp / "initrd")]),
             ("empty awaited line", ["--wait-for", ""]),
             ("awaited text of two lines", ["--wait-for", "one\ntwo"]),
             ("guest without memory", ["--memory-mib", "0"]),
+            ("awaited line with --until-exit", ["--until-exit", "--wait-for", "atmo: handoff"]),
         ):
             argv_file.unlink(missing_ok=True)
             refused = subprocess.run(cli + extra, capture_output=True, text=True, env=env_cli, timeout=60)
@@ -498,7 +549,9 @@ def main(argv):
     parser.add_argument("--boot-timeout", type=int, default=20)
     parser.add_argument("--esp", type=Path, metavar="DIR", help="directory the guest boots as its EFI system partition")
     parser.add_argument("--memory-mib", type=int, default=512, help="guest memory (default 512)")
-    parser.add_argument("--wait-for", default=SHELL_MARK, metavar="LINE", help="serial text that ends the run (default the UEFI shell banner)")
+    end = parser.add_mutually_exclusive_group()
+    end.add_argument("--wait-for", default=SHELL_MARK, metavar="LINE", help="serial text that ends the run (default the UEFI shell banner)")
+    end.add_argument("--until-exit", action="store_true", help="run until QEMU exits by itself and exit with its status")
     parser.add_argument("--test", action="store_true", help="run this script's own tests")
     args = parser.parse_args(argv)
     if args.test:
@@ -515,7 +568,7 @@ def main(argv):
     if args.esp is not None and not args.esp.is_dir():
         print(f"{args.esp} is not a directory", file=sys.stderr)
         return 2
-    return run(args.ssh_host, args.connect_timeout, args.boot_timeout, args.memory_mib, args.wait_for, args.esp)
+    return run(args.ssh_host, args.connect_timeout, args.boot_timeout, args.memory_mib, args.wait_for, args.esp, args.until_exit)
 
 
 if __name__ == "__main__":
