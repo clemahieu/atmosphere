@@ -288,6 +288,126 @@ impl CapKernel {
         }
     }
 
+    /// A slot a revoke of capability c may take from the table at t, as the kernel reads it beyond any
+    /// table's view: the capability in it is in c's run, or the leaf holding it is.
+    pub open spec fn revokes_slot(&self, c: usize, t: usize, j: usize) -> bool {
+        ||| self.list.in_run(c, self.tables.node_of(t, j))
+        ||| self.list.in_run(c, self.tables.leaf(t, index_entry(j)))
+    }
+
+    /// Revoke's condition over the caller's view: the position word names a position, the position is
+    /// in a table, and the slot there holds a capability. Nothing outside the view decides it.
+    pub open spec fn revoke_allowed(&self, root: usize, at: Option<Position>) -> bool {
+        let table = self.view_table_at(root, at->0.through);
+        &&& at is Some
+        &&& table is Some
+        &&& self.table_view(table->0).contains_key(at->0.index)
+    }
+
+    /// What revoking capability c kept of every table: each slot after was a slot before, saying the
+    /// same, and each slot gone is one revokes_slot names.
+    pub open spec fn revoke_kept(pre: Self, post: Self, c: usize) -> bool {
+        &&& forall|t: usize, j: usize| #[trigger] post.table_view(t).contains_key(j)
+            ==> pre.table_view(t).contains_key(j) && post.table_view(t)[j] == pre.table_view(t)[j]
+        &&& forall|t: usize, j: usize| #[trigger] pre.table_view(t).contains_key(j) && !post.table_view(t).contains_key(j)
+            ==> pre.revokes_slot(c, t, j)
+    }
+
+    /// Revoke's contract over the caller's view, for the position word decoded to at: refused, with every
+    /// table's view as it was, exactly when revoke_allowed fails. Otherwise the capability c at the
+    /// position lost some of its run: only slots revokes_slot names left any table, every other slot
+    /// says what it said, and c's own slot stays unless the leaf holding it was in the run. Then refused
+    /// with the flush epoch at its limit, again with some of the run left, or ok with c childless.
+    /// The epoch and c's run read the kernel outside the view.
+    pub open spec fn revoke_contract(pre: Self, post: Self, root: usize, at: Option<Position>, out: Outcome) -> bool {
+        ||| {
+            &&& !pre.revoke_allowed(root, at)
+            &&& out == status_only(STATUS_REFUSED)
+            &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
+        }
+        ||| {
+            let table = pre.view_table_at(root, at->0.through)->0;
+            let i = at->0.index;
+            let c = pre.tables.node_of(table, i);
+            &&& pre.revoke_allowed(root, at)
+            &&& Self::revoke_kept(pre, post, c)
+            &&& !pre.list.in_run(c, pre.tables.leaf(table, index_entry(i))) ==> post.table_view(table).contains_key(i)
+            &&& {
+                ||| out == status_only(STATUS_REFUSED) && post.flush_epoch == usize::MAX
+                ||| out == status_only(STATUS_AGAIN) && !post.list.childless(c)
+                ||| {
+                    &&& out == status_only(STATUS_OK)
+                    &&& post.list.childless(c)
+                    &&& forall|x: usize| !#[trigger] post.list.is_child(c, x)
+                }
+            }
+        }
+    }
+
+    /// Revoke's specification implies its contract.
+    pub proof fn lemma_revoke_contract(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            pre.wf(),
+            Self::spec_revoked(pre, post, root, frame, out),
+        ensures
+            Self::revoke_contract(pre, post, root, spec_position(frame.slot()), out),
+    {
+        let at = spec_position(frame.slot());
+        if let Some(a) = at {
+            pre.lemma_view_table_at(root, a.through);
+            if let Some(table) = pre.table_at(root, a.through) {
+                pre.lemma_table_view(table, a.index);
+            }
+        }
+        if pre.allows_revoke(root, frame) {
+            let a = at->0;
+            let table = pre.table_at(root, a.through)->0;
+            let c = pre.cap_at(root, a)->0;
+            assert(post.tables == pre.tables);
+            assert forall|t: usize, j: usize| #[trigger] post.table_view(t).contains_key(j) || #[trigger] pre.table_view(t).contains_key(j) implies {
+                &&& post.table_view(t).contains_key(j) ==> pre.table_view(t).contains_key(j) && post.table_view(t)[j] == pre.table_view(t)[j]
+                &&& pre.table_view(t).contains_key(j) && !post.table_view(t).contains_key(j) ==> pre.revokes_slot(c, t, j)
+            } by {
+                Self::lemma_revoke_slot(pre, post, c, t, j);
+            }
+            Self::lemma_revoke_slot(pre, post, c, table, a.index);
+        }
+    }
+
+    /// One slot across a revoke of c: a slot after was a slot before, saying the same, and a slot gone
+    /// is one revokes_slot names.
+    proof fn lemma_revoke_slot(pre: Self, post: Self, c: usize, t: usize, j: usize)
+        requires
+            pre.wf(),
+            post.tables == pre.tables,
+            post.list.parent == pre.list.parent,
+            run_shrunk(pre.list, post.list, c),
+        ensures
+            post.table_view(t).contains_key(j) ==> pre.table_view(t).contains_key(j) && post.table_view(t)[j] == pre.table_view(t)[j],
+            pre.table_view(t).contains_key(j) && !post.table_view(t).contains_key(j) ==> pre.revokes_slot(c, t, j),
+            pre.tables.has_slot(&pre.list, t, j) && !pre.list.in_run(c, pre.tables.leaf(t, index_entry(j)))
+                ==> post.tables.has_slot(&post.list, t, j),
+    {
+        pre.lemma_table_view(t, j);
+        post.lemma_table_view(t, j);
+        let leaf = pre.tables.leaf(t, index_entry(j));
+        if index_ok(j) && pre.tables.roots@.contains_key(t) && leaf != NO_LEAF {
+            assert(0 <= index_entry(j) < ROOT_ENTRIES);
+            pre.tables.lemma_entry(t, index_entry(j));
+            pre.tables.lemma_leaf(&pre.list, leaf);
+            assert(page_of(leaf) == leaf);
+            pre.lemma_slot_bound(leaf);
+            assert(post.list.nodes@[leaf as int].live ==> pre.list.nodes@[leaf as int].live);
+        }
+        if pre.tables.has_slot(&pre.list, t, j) {
+            pre.lemma_slot(t, j);
+            let x = pre.tables.node_of(t, j);
+            pre.lemma_slot_bound(x);
+            assert(post.list.nodes@[x as int].live ==> pre.list.nodes@[x as int].live
+                && post.list.nodes@[x as int].kind == pre.list.nodes@[x as int].kind);
+        }
+    }
+
     /// Whether the table page at child can be linked into the entry the address va and the level name in
     /// the space whose root is s, as the kernel reads it beyond any table's view: the walk finds a live
     /// table of that space with that entry empty and able to hold a child, and the child is a live,
