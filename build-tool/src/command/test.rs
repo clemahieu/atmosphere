@@ -22,8 +22,8 @@ const VERIFY: &str = "tools/verify.py";
 /// The license check over every package in Cargo.lock, relative to the project root.
 const LICENSE_CHECK: &str = "tools/check-licenses.py";
 
-/// The check that every external_body in kernel/verified is listed with its reason and that no assume
-/// or admit is left there, relative to the project root.
+/// The check that every external_body and exec_allows_no_decreases_clause in kernel/verified is listed
+/// with its reason and that no assume or admit is left there, relative to the project root.
 const EXTERNAL_BODY_CHECK: &str = "tools/check-external-body.py";
 
 /// The hooks' tests, relative to the project root: the license guard's and the Beads actor's.

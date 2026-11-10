@@ -490,6 +490,7 @@ impl QueueLock {
     /// Waits for the lock on behalf of `cpu`, which must not hold it. The spin ends when the holder
     /// hands over, so it has no bound of its own.
     #[verifier::exec_allows_no_decreases_clause]
+    // exec_allows_no_decreases_clause(unproven): the spin waits for the holder to hand over, and bounded overtaking is not yet proven
     pub fn acquire(&self, cpu: usize, Tracked(core): Tracked<&mut Core>)
         requires
             self.wf(),
@@ -584,6 +585,7 @@ impl QueueLock {
     /// Hands the lock on from `cpu`, which must hold it. The spin ends when the waiter that swapped
     /// the tail links itself, so it has no bound of its own.
     #[verifier::exec_allows_no_decreases_clause]
+    // exec_allows_no_decreases_clause(unproven): the spin waits for the successor to link itself, and bounded overtaking is not yet proven
     pub fn release(&self, cpu: usize, Tracked(core): Tracked<&mut Core>)
         requires
             self.wf(),

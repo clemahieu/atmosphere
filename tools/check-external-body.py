@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Check the trusted surface of kernel/verified: every external_body is listed in
-tools/external-body-list with its reason, and no assume or admit is left.
+"""Check the trusted surface of kernel/verified: every attribute that exempts code from a proof is
+listed in tools/external-body-list with its reason, and no assume or admit is left.
 
-Each live '#[verifier(external_body)]' attribute is followed by a line
-'// external_body(<class>): <reason>', where the class is glue, gap or unproven (CLAUDE.md,
+Two attributes exempt code: external_body, from the proof of what a function does, and
+exec_allows_no_decreases_clause, from the proof that it terminates. Each live one, spelled
+'#[verifier::<attribute>]' or '#[verifier(<attribute>)]', is followed by a line
+'// <attribute>(<class>): <reason>', where the class is glue, gap or unproven (CLAUDE.md,
 Testability), and then by the function it applies to. The list holds one line per attribute: path
-under kernel/verified, item, class and reason, separated by tabs. The check passes when the source
-and the list hold the same items, counting an item that appears twice in one file twice. A call
+under kernel/verified, item, attribute, class and reason, separated by tabs. The check passes when
+the source and the list hold the same items, counting an item that appears twice in one file twice. A call
 of assume( or admit( outside a '//' comment fails the check: kernel/verified holds none, and a new
 one would be an axiom the proof rests on. The retired 'old' trees are not scanned.
 
@@ -25,12 +27,13 @@ sys.dont_write_bytecode = True
 REPO = Path(__file__).resolve().parent.parent
 LIST_PATH = "tools/external-body-list"
 VERIFIED_ROOT = "kernel/verified"
-ATTRIBUTE = "#[verifier(external_body)]"
+ATTRIBUTES = ("external_body", "exec_allows_no_decreases_clause")
+ATTRIBUTE = re.compile(r"#\[verifier(?:::(\w+)\]|\((\w+)\)\])")
 CLASSES = ("glue", "gap", "unproven")
 ASSUMPTION = re.compile(r"\b(assume|admit)\s*\(")
 
 # One attribute, as the list and the source both state it.
-Item = namedtuple("Item", "path name kind reason")
+Item = namedtuple("Item", "path name attribute kind reason")
 
 
 class Unreadable(Exception):
@@ -43,15 +46,23 @@ def parse_list(text):
         if not line.strip() or line.startswith("#"):
             continue
         fields = line.split("\t")
-        if len(fields) != 4 or fields[2] not in CLASSES or not fields[3].strip():
+        readable = len(fields) == 5 and fields[2] in ATTRIBUTES and fields[3] in CLASSES and fields[4].strip()
+        if not readable:
             raise Unreadable(f"{LIST_PATH}: cannot read {json.dumps(line)}")
         items.append(Item(*fields))
     return items
 
 
-def parse_reason(line):
-    """The class and the reason a reason line states, or None when it is not one."""
-    prefix = "// external_body("
+def attribute(line):
+    """The exempting attribute a line opens with, or None when it opens with none."""
+    match = ATTRIBUTE.match(line)
+    name = match and (match.group(1) or match.group(2))
+    return name if name in ATTRIBUTES else None
+
+
+def parse_reason(attribute, line):
+    """The class and the reason a reason line for an attribute states, or None when it is not one."""
+    prefix = f"// {attribute}("
     if not line.startswith(prefix) or "): " not in line:
         return None
     kind, reason = line[len(prefix):].split("): ", 1)
@@ -74,16 +85,17 @@ def scan(path, source):
     lines = [line.strip() for line in source.splitlines()]
     items = []
     for index, line in enumerate(lines):
-        if not line.startswith(ATTRIBUTE):
+        exempting = attribute(line)
+        if exempting is None:
             continue
         at = f"{path}:{index + 1}"
-        stated = parse_reason(lines[index + 1] if index + 1 < len(lines) else "")
+        stated = parse_reason(exempting, lines[index + 1] if index + 1 < len(lines) else "")
         if stated is None:
-            raise Unreadable(f"{at}: no reason line in the form // external_body(<class>): <reason>")
+            raise Unreadable(f"{at}: no reason line in the form // {exempting}(<class>): <reason>")
         name = next(filter(None, map(item_name, lines[index + 2:])), None)
         if name is None:
             raise Unreadable(f"{at}: no item follows")
-        items.append(Item(path, name, *stated))
+        items.append(Item(path, name, exempting, *stated))
     return items
 
 
@@ -99,7 +111,7 @@ def assumptions(path, source):
 def compare(found, listed):
     """Describes every item only one side has, counting an item once per occurrence."""
     def describe(item):
-        return f"{item.path} {item.name} ({item.kind}: {item.reason})"
+        return f"{item.path} {item.name} {item.attribute} ({item.kind}: {item.reason})"
 
     remaining = Counter(listed)
     differences = []
@@ -147,58 +159,70 @@ def main(args):
         print(difference, file=sys.stderr)
     if differences:
         return 1
-    kinds = Counter(item.kind for item in found)
-    totals = ", ".join(f"{count} {kind}" for kind, count in sorted(kinds.items()))
-    print(f"{len(found)} items listed: {totals}; no assume or admit")
+    summaries = []
+    for exempting in ATTRIBUTES:
+        kinds = Counter(item.kind for item in found if item.attribute == exempting)
+        totals = ", ".join(f"{count} {kind}" for kind, count in sorted(kinds.items()))
+        summaries.append(f"{sum(kinds.values())} {exempting}" + (f" ({totals})" if totals else ""))
+    print(f"{'; '.join(summaries)} listed; no assume or admit")
     return 0
+
+
+ATTR = "#[verifier(external_body)]"
+
+
+def body(path, name, kind, reason):
+    """An external_body item, as the tests that predate the second attribute state it."""
+    return Item(path, name, "external_body", kind, reason)
 
 
 class Tests(unittest.TestCase):
     def test_scan_reads_the_reason_and_the_item(self):
-        source = f"{ATTRIBUTE}\n// external_body(gap): raw write\npub fn set_state(x: u8)\n    ensures true,\n{{}}\n"
-        self.assertEqual(scan("a.rs", source), [Item("a.rs", "set_state", "gap", "raw write")])
+        source = f"{ATTR}\n// external_body(gap): raw write\npub fn set_state(x: u8)\n    ensures true,\n{{}}\n"
+        self.assertEqual(scan("a.rs", source), [body("a.rs", "set_state", "gap", "raw write")])
 
     def test_scan_handles_proof_fns_and_a_trailing_comment_on_the_attribute(self):
-        source = f"    {ATTRIBUTE} // a note\n    // external_body(unproven): axiom\n    pub proof fn page_lemma()\n"
-        self.assertEqual(scan("a.rs", source), [Item("a.rs", "page_lemma", "unproven", "axiom")])
+        source = f"    {ATTR} // a note\n    // external_body(unproven): axiom\n    pub proof fn page_lemma()\n"
+        self.assertEqual(scan("a.rs", source), [body("a.rs", "page_lemma", "unproven", "axiom")])
 
     def test_scan_skips_other_attributes_before_the_item(self):
-        source = f"{ATTRIBUTE}\n// external_body(glue): hw\n#[inline(always)]\npub const fn zeroed() -> Self {{}}\n"
-        self.assertEqual(scan("a.rs", source), [Item("a.rs", "zeroed", "glue", "hw")])
+        source = f"{ATTR}\n// external_body(glue): hw\n#[inline(always)]\npub const fn zeroed() -> Self {{}}\n"
+        self.assertEqual(scan("a.rs", source), [body("a.rs", "zeroed", "glue", "hw")])
 
     def test_scan_ignores_a_commented_attribute(self):
-        self.assertEqual(scan("a.rs", f"// {ATTRIBUTE}\npub fn f() {{}}\n"), [])
+        self.assertEqual(scan("a.rs", f"// {ATTR}\npub fn f() {{}}\n"), [])
 
     def test_scan_rejects_a_missing_reason(self):
         with self.assertRaisesRegex(Unreadable, r"^a\.rs:1: no reason line"):
-            scan("a.rs", f"{ATTRIBUTE}\npub fn f() {{}}\n")
+            scan("a.rs", f"{ATTR}\npub fn f() {{}}\n")
 
     def test_scan_rejects_an_unknown_class_and_an_empty_reason(self):
         with self.assertRaises(Unreadable):
-            scan("a.rs", f"{ATTRIBUTE}\n// external_body(later): x\npub fn f() {{}}\n")
+            scan("a.rs", f"{ATTR}\n// external_body(later): x\npub fn f() {{}}\n")
         with self.assertRaises(Unreadable):
-            scan("a.rs", f"{ATTRIBUTE}\n// external_body(gap): \npub fn f() {{}}\n")
+            scan("a.rs", f"{ATTR}\n// external_body(gap): \npub fn f() {{}}\n")
 
     def test_scan_rejects_an_attribute_with_no_item(self):
         with self.assertRaisesRegex(Unreadable, r"^a\.rs:2: no item follows"):
-            scan("a.rs", f"\n{ATTRIBUTE}\n// external_body(gap): x\n")
+            scan("a.rs", f"\n{ATTR}\n// external_body(gap): x\n")
 
-    def test_list_has_four_tab_separated_fields(self):
-        self.assertEqual(parse_list("# note\n\na.rs\tf\tgap\traw write\n"), [Item("a.rs", "f", "gap", "raw write")])
+    def test_list_has_five_tab_separated_fields(self):
+        listed = parse_list("# note\n\na.rs\tf\texternal_body\tgap\traw write\n")
+        self.assertEqual(listed, [body("a.rs", "f", "gap", "raw write")])
         with self.assertRaises(Unreadable):
-            parse_list("a.rs\tf\tgap\n")
+            parse_list("a.rs\tf\tgap\traw write\n")
         with self.assertRaises(Unreadable):
-            parse_list("a.rs\tf\tlater\tx\n")
+            parse_list("a.rs\tf\texternal_body\tlater\tx\n")
 
     def test_compare_reports_each_side(self):
-        a = Item("a.rs", "f", "gap", "x")
-        b = Item("a.rs", "g", "gap", "x")
+        a = body("a.rs", "f", "gap", "x")
+        b = body("a.rs", "g", "gap", "x")
         self.assertEqual(compare([a], [a]), [])
-        self.assertEqual(compare([a, b], [a]), ["a.rs g (gap: x) is not on the list"])
-        self.assertEqual(compare([a], [a, b]), ["a.rs g (gap: x) is not in the source"])
+        self.assertEqual(compare([a, b], [a]), ["a.rs g external_body (gap: x) is not on the list"])
+        self.assertEqual(compare([a], [a, b]), ["a.rs g external_body (gap: x) is not in the source"])
 
     def test_compare_counts_duplicates_in_one_file(self):
-        a = Item("trap.rs", "set_self_fast", "unproven", "x")
+        a = body("trap.rs", "set_self_fast", "unproven", "x")
         self.assertNotEqual(compare([a, a], [a]), [])
         self.assertEqual(compare([a, a], [a, a]), [])
 
@@ -217,8 +241,50 @@ class Tests(unittest.TestCase):
         source = "(page_ptr, Tracked::assume_new())\nMaybeUninit::zeroed().assume_init()\nreadmit(x)\n"
         self.assertEqual(assumptions("a.rs", source), [])
 
+    def test_scan_reads_an_exec_allows_no_decreases_clause(self):
+        source = (
+            "    #[verifier::exec_allows_no_decreases_clause]\n"
+            "    // exec_allows_no_decreases_clause(unproven): spins until the holder hands over\n"
+            "    pub fn acquire(&self)\n"
+        )
+        found = scan("lock.rs", source)
+        reason = "spins until the holder hands over"
+        self.assertEqual(found, [Item("lock.rs", "acquire", "exec_allows_no_decreases_clause", "unproven", reason)])
+        self.assertEqual(compare(found, found), [])
+
+    def test_an_unlisted_exec_allows_no_decreases_clause_fails(self):
+        source = (
+            "#[verifier::exec_allows_no_decreases_clause]\n"
+            "// exec_allows_no_decreases_clause(unproven): x\n"
+            "fn f()\n"
+        )
+        self.assertEqual(
+            compare(scan("a.rs", source), []),
+            ["a.rs f exec_allows_no_decreases_clause (unproven: x) is not on the list"],
+        )
+
+    def test_an_exec_allows_no_decreases_clause_needs_its_own_reason_line(self):
+        with self.assertRaisesRegex(Unreadable, r"^a\.rs:1: no reason line"):
+            scan("a.rs", "#[verifier::exec_allows_no_decreases_clause]\nfn f()\n")
+        with self.assertRaisesRegex(Unreadable, r"^a\.rs:1: no reason line"):
+            scan("a.rs", "#[verifier::exec_allows_no_decreases_clause]\n// external_body(unproven): x\nfn f()\n")
+
+    def test_scan_reads_both_spellings_of_each_attribute(self):
+        for attribute in ATTRIBUTES:
+            for spelling in (f"#[verifier::{attribute}]", f"#[verifier({attribute})]"):
+                source = f"{spelling}\n// {attribute}(gap): x\nfn f()\n"
+                self.assertEqual(scan("a.rs", source), [Item("a.rs", "f", attribute, "gap", "x")])
+
+    def test_the_list_names_the_attribute(self):
+        self.assertEqual(
+            parse_list("a.rs\tf\texec_allows_no_decreases_clause\tunproven\tx\n"),
+            [Item("a.rs", "f", "exec_allows_no_decreases_clause", "unproven", "x")],
+        )
+        with self.assertRaises(Unreadable):
+            parse_list("a.rs\tf\ttrusted\tunproven\tx\n")
+
     def test_a_changed_reason_shows_on_both_sides(self):
-        self.assertEqual(len(compare([Item("a.rs", "f", "gap", "x")], [Item("a.rs", "f", "gap", "y")])), 2)
+        self.assertEqual(len(compare([body("a.rs", "f", "gap", "x")], [body("a.rs", "f", "gap", "y")])), 2)
 
 
 if __name__ == "__main__":
