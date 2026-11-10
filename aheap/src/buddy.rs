@@ -345,7 +345,7 @@ proof fn lemma_same_block(h: int, s: int, o: nat)
 }
 
 /// The pages of a run of order `o`.
-fn order_pages(o: usize) -> (r: usize)
+pub(crate) fn order_pages(o: usize) -> (r: usize)
     requires
         o <= BLOCK_ORDER,
     ensures

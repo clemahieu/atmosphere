@@ -11,6 +11,10 @@
 //! it started with. A refusal stops the sequence after freeing what it cut. Its second witness, with
 //! one spare, cuts a run, frees it so its span stays as the spare, and cuts again, which is shown to
 //! succeed whatever the source does.
+//!
+//! The backed run's witness, over any well-formed source and with no spares, cuts a run of order 0,
+//! backs it, writes a byte through the permission and reads it again, releases the run's page and
+//! frees the run, ending as the page buddy's witness does.
 use vstd::prelude::*;
 use vstd::layout::*;
 use vstd::raw_ptr::*;
@@ -292,6 +296,79 @@ pub fn witness_page_buddy_spare<S: SpanSource>(src: S) -> (pb: PageBuddy<S>)
     }
     pb.free_run(second);
     assert(pb.used() =~= spare);
+    pb
+}
+
+/// Cuts a run of order 0 from a page buddy over `src` keeping no spare, backs it, writes a byte
+/// through the permission and reads it again, releases the run's page and frees the run, and returns
+/// the page buddy, which then holds no span and has given every span back to the source.
+pub fn witness_backed_run<S: SpanSource>(src: S) -> (pb: PageBuddy<S>)
+    requires
+        src@.wf(),
+    ensures
+        pb.wf(),
+        pb.spans().dom() == Set::<int>::empty(),
+        pb.meta() is None,
+        pb.source() == src@,
+{
+    let mut pb = PageBuddy::new(src, 0);
+    let ghost s0 = pb.source();
+    let p = match pb.alloc_run(0) {
+        Err(_) => {
+            proof {
+                pb.lemma_view();
+            }
+            return pb;
+        },
+        Ok(p) => p,
+    };
+    let ghost b = span_of(p as int);
+    let ghost h = page_of(p as int);
+    let ghost one = Map::<int, nat>::empty().insert(h, 0nat);
+    assert(pb.used() == Map::<int, Map<int, nat>>::empty().insert(b, one));
+    assert(one.remove(h) =~= Map::<int, nat>::empty());
+    let ghost s1 = pb.source();
+    proof {
+        pb.lemma_view();
+        let ma = pb.meta()->Some_0;
+        assert(s1 == s0.reserved(ma, 1).backed_run(ma, ma, 1).reserved(b, 1));
+        assert(pb.used().remove(b).dom() =~= Set::<int>::empty());
+        lemma_meta_round_trip(s0, ma, b);
+        assert(pages(0) == 1);
+    }
+    let (ptr, perm) = match pb.back_run(p, 0) {
+        None => {
+            pb.free_run(p);
+            assert(pb.used().dom() =~= Set::<int>::empty());
+            proof {
+                pb.lemma_view();
+            }
+            return pb;
+        },
+        Some(backed) => backed,
+    };
+    let tracked run = perm.get();
+    let ghost first = Set::range(p as int, p as int + 1);
+    let tracked (one_byte, rest) = run.split(first);
+    assert(size_of::<u8>() == 1 && align_of::<u8>() == 1) by {
+        broadcast use layout_of_primitives, align_of_u8;
+    }
+    assert(one_byte.is_range(p as int, size_of::<u8>() as int));
+    let tracked mut byte = one_byte.into_typed::<u8>(p);
+    ptr_mut_write(ptr, Tracked(&mut byte), 7u8);
+    let v = ptr_mut_read(ptr, Tracked(&mut byte));
+    assert(v == 7u8);
+    let tracked raw = byte.into_raw();
+    let tracked whole = raw.join(rest);
+    assert(whole.dom() =~= Set::range(p as int, p as int + PAGE_BYTES as int));
+    pb.release_run(p, 0, Tracked(whole));
+    assert(pb.source().spans[b].backed =~= Set::<int>::empty());
+    assert(pb.source().spans =~= s1.spans);
+    pb.free_run(p);
+    assert(pb.used().dom() =~= Set::<int>::empty());
+    proof {
+        pb.lemma_view();
+    }
     pb
 }
 
