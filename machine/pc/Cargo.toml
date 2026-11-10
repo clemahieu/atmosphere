@@ -8,7 +8,6 @@ publish = false
 [dependencies]
 astd = { path = "../../astd", features = ["kernel"] }
 bit_field = "0.10.1"
-bitfield-struct = "0.6"
 log = "0.4.14"
 ns16550a = { path = "../../ns16550a" }
 spin = "0.9.8"

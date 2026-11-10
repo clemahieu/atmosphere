@@ -271,17 +271,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc827186963e592360843fb5ba4b973e145841266c1357f7180c43526f2e5b61"
 
 [[package]]
-name = "bitfield-struct"
-version = "0.6.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "adc0846593a56638b74e136a45610f9934c052e14761bebca6b092d5522599e3"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
 name = "bitflags"
 version = "2.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -857,7 +846,6 @@ version = "0.1.0"
 dependencies = [
  "astd",
  "bit_field",
- "bitfield-struct",
  "log",
  "ns16550a",
  "spin",

@@ -11,7 +11,6 @@ use core::pin::Pin;
 use core::ptr;
 
 use bit_field::BitField;
-use bitfield_struct::bitfield;
 
 use astd::sync::Mutex;
 
@@ -85,46 +84,78 @@ struct ContextTableEntry {
     upper: u64,
 }
 
-#[bitfield(u128)]
-pub(crate) struct FaultRecording {
-    #[bits(12, default = 0)]
-    _reserved: u16,
+/// One Fault Recording Register, as the VT-d specification lays it out.
+#[derive(Clone, Copy)]
+pub(crate) struct FaultRecording(u128);
 
-    #[bits(52)]
-    fault_info: u64,
+impl From<u128> for FaultRecording {
+    fn from(raw: u128) -> Self {
+        Self(raw)
+    }
+}
 
-    #[bits(16)]
-    source_id: u16,
+impl FaultRecording {
+    fn fault_info(&self) -> u64 {
+        self.0.get_bits(12..64) as u64
+    }
 
-    #[bits(12, default = 0)]
-    _reserved2: u16,
+    fn source_id(&self) -> u16 {
+        self.0.get_bits(64..80) as u16
+    }
 
-    #[bits(1)]
-    t2: bool,
+    fn t2(&self) -> bool {
+        self.0.get_bit(92)
+    }
 
-    #[bits(1)]
-    privileged_requested: bool,
+    fn privileged_requested(&self) -> bool {
+        self.0.get_bit(93)
+    }
 
-    #[bits(1)]
-    exec_requested: bool,
+    fn exec_requested(&self) -> bool {
+        self.0.get_bit(94)
+    }
 
-    #[bits(1)]
-    pasid_present: bool,
+    fn pasid_present(&self) -> bool {
+        self.0.get_bit(95)
+    }
 
-    #[bits(8)]
-    fault_reason: u8,
+    fn fault_reason(&self) -> u8 {
+        self.0.get_bits(96..104) as u8
+    }
 
-    #[bits(20)]
-    pasid: u32,
+    fn pasid(&self) -> u32 {
+        self.0.get_bits(104..124) as u32
+    }
 
-    #[bits(2)]
-    address_type: u8,
+    fn address_type(&self) -> u8 {
+        self.0.get_bits(124..126) as u8
+    }
 
-    #[bits(1)]
-    t1: bool,
+    fn t1(&self) -> bool {
+        self.0.get_bit(126)
+    }
 
-    #[bits(1)]
-    fault: bool,
+    fn fault(&self) -> bool {
+        self.0.get_bit(127)
+    }
+}
+
+impl Debug for FaultRecording {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("FaultRecording")
+            .field("fault_info", &self.fault_info())
+            .field("source_id", &self.source_id())
+            .field("t2", &self.t2())
+            .field("privileged_requested", &self.privileged_requested())
+            .field("exec_requested", &self.exec_requested())
+            .field("pasid_present", &self.pasid_present())
+            .field("fault_reason", &self.fault_reason())
+            .field("pasid", &self.pasid())
+            .field("address_type", &self.address_type())
+            .field("t1", &self.t1())
+            .field("fault", &self.fault())
+            .finish()
+    }
 }
 
 impl RemappingHardware {
@@ -619,4 +650,47 @@ pub fn iommu_fault_dump() -> Result<(), &'static str> {
     log::error!("{:#x?}", recording);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FaultRecording;
+
+    /// A fault record with every field distinct, laid out as the VT-d specification's Fault Recording Register gives it.
+    const RECORD: u128 = (0xabc_dead_beef_1u128 << 12)
+        | (0x1234u128 << 64)
+        | (1u128 << 92)
+        | (0u128 << 93)
+        | (1u128 << 94)
+        | (1u128 << 95)
+        | (0x5au128 << 96)
+        | (0xf00d5u128 << 104)
+        | (2u128 << 124)
+        | (0u128 << 126)
+        | (1u128 << 127);
+
+    #[test]
+    fn a_fault_record_decodes_each_field() {
+        let r = FaultRecording::from(RECORD);
+        assert_eq!(r.fault_info(), 0xabc_dead_beef_1);
+        assert_eq!(r.source_id(), 0x1234);
+        assert!(r.t2());
+        assert!(!r.privileged_requested());
+        assert!(r.exec_requested());
+        assert!(r.pasid_present());
+        assert_eq!(r.fault_reason(), 0x5a);
+        assert_eq!(r.pasid(), 0xf00d5);
+        assert_eq!(r.address_type(), 2);
+        assert!(!r.t1());
+        assert!(r.fault());
+    }
+
+    #[test]
+    fn a_fault_record_prints_its_fields() {
+        extern crate std;
+        let s = std::format!("{:x?}", FaultRecording::from(RECORD));
+        for field in ["fault_info: abcdeadbeef1", "source_id: 1234", "fault_reason: 5a", "pasid: f00d5", "address_type: 2", "fault: true"] {
+            assert!(s.contains(field), "{s}");
+        }
+    }
 }
