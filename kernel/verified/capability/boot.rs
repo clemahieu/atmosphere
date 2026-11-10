@@ -457,6 +457,9 @@ impl CapKernel {
             final(self).blocks.regions_1g@ == old(self).blocks.regions_1g@,
             final(self).table_pages == old(self).table_pages,
     {
+        // Four states pass through this proof, and wf unfolded in each fills the solver's search; the
+        // proof reveals the parts it reads, of the state before, and the rest stays folded.
+        hide(CapKernel::wf);
         let ghost pre = *old(self);
         let tb = t / 4096;
         let n = leaf + 1;
@@ -479,15 +482,22 @@ impl CapKernel {
             assert(pre.tables.owner@.contains_key(leaf));
             pre.lemma_slot_bound(n);
             pre.lemma_slot_bound(cap);
+            assert(pre.list.wf() && pre.blocks.wf() && pre.tables.wf(&pre.list)) by {
+                reveal(CapKernel::wf);
+            }
             pre.list.lemma_link(0);
             pre.list.lemma_live_valid(root);
-            assert(pre.list.nodes@[root as int].kind is Capability);
-            assert(pre.list.nodes@[root as int].depth == 0);
-            assert(root != cap) by {
-                assert(!pre.tables.owner@.contains_key(page_of(root)));
+            assert({
+                &&& pre.list.nodes@[root as int].kind is Capability
+                &&& pre.list.nodes@[root as int].depth == 0
+                &&& !pre.tables.owner@.contains_key(page_of(root))
+            }) by {
+                reveal(CapKernel::wf);
             }
+            assert(root != cap);
             // The process's block is a base, so outside the thread's reserved pages.
             assert(process_wf(&pre.processes, &pre.blocks, process)) by {
+                reveal(CapKernel::wf);
                 pre.lemma_process_cap(n);
             }
             assert(!(tb <= process / 4096 < tb + 2)) by {
