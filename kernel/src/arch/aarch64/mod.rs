@@ -9,6 +9,7 @@ use core::arch::asm;
 use core::ffi::c_void;
 
 use astd::boot::BootInfo;
+use verified::arch::{user_frame_of, Registers};
 use verified::define::PCID_MAX;
 
 use crate::cpu::{Cpu, KernelStack};
@@ -63,11 +64,13 @@ pub fn translation_root(boot: &BootInfo) -> u64 {
     translation_base(boot.pml4 as usize, 0)
 }
 
-/// Brings up the boot core, whose [`Cpu`] is in place: its translation control, its exception
-/// vectors, the machine's interrupt controller and this core's share of it, and then the check that
-/// the timer's interrupt arrives. IRQs stay masked in the kernel outside that check and [`wait`].
+/// Brings up the boot core, whose [`Cpu`] is in place: its translation control, what EL0 reaches of
+/// the timer, its exception vectors, the machine's interrupt controller and this core's share of
+/// it, and then the check that the timer's interrupt arrives. IRQs stay masked in the kernel
+/// outside that check and [`wait`].
 pub unsafe fn init_boot_core() {
     init_translation_control();
+    init_counter_access();
     exception::install();
     machine::interrupt_init();
     let cpu = crate::cpu::get_cpu_id();
@@ -77,9 +80,11 @@ pub unsafe fn init_boot_core() {
 }
 
 /// Brings up a core started after the boot core, whose [`Cpu`] is in place: its translation
-/// control, its exception vectors and its share of the interrupt controller.
+/// control, what EL0 reaches of the timer, its exception vectors and its share of the interrupt
+/// controller.
 pub unsafe fn init_core() {
     init_translation_control();
+    init_counter_access();
     exception::install();
     machine::interrupt_init_core(crate::cpu::get_cpu_id());
 }
@@ -128,6 +133,24 @@ unsafe fn init_translation_control() {
     log::info!("CPU {}: TCR_EL1 {:#x}", crate::cpu::get_cpu_id(), control);
 }
 
+/// CNTKCTL_EL1.EL0VCTEN, bit 1. Set, EL0 reads the virtual count, CNTVCT_EL0, and the counter's
+/// frequency, CNTFRQ_EL0, without a trap. Arm ARM D24.10.15.
+const COUNTER_EL0_VIRTUAL_COUNT: u64 = 1 << 1;
+
+/// Sets what EL0 reaches of the generic timer: the virtual count and its frequency, the cycle
+/// counter a process times itself by as x86_64's reads the TSC, and nothing else. With every other
+/// bit of CNTKCTL_EL1 clear the physical count and both timers' registers trap from EL0, and the
+/// count raises no event stream. The register's reset value is not known, so every core writes it.
+unsafe fn init_counter_access() {
+    // A change to a system register binds the instructions after the next ISB. Arm ARM B2.6.1.
+    asm!(
+        "msr CNTKCTL_EL1, {control}",
+        "isb",
+        control = in(reg) COUNTER_EL0_VIRTUAL_COUNT,
+        options(nomem, nostack, preserves_flags)
+    );
+}
+
 /// Stops this core: every interrupt masked (MSR DAIFSet, Arm ARM C6.2.288, whose operand's bits are
 /// D, A, I and F), then WFI for good.
 pub unsafe fn spin_forever() -> ! {
@@ -168,11 +191,20 @@ pub fn wait() {
     unsafe { asm!("msr DAIFClr, #0b0010", "wfi", options(nomem, nostack, preserves_flags)) };
 }
 
-/// Enters user code at `pc` with stack `sp` and two entry arguments. Nothing returns to EL0, and
-/// the exception vectors stop on a call from it, so this stops, naming itself.
+/// Enters user code at `pc` with stack `sp` and two entry arguments, which it finds in x0 and x1,
+/// and every other general register zero: an exception return to EL0 through ELR_EL1 and the
+/// SPSR_EL1 the verified frame names for user mode, AArch64 state at EL0 with no interrupt masked.
+/// The thread's exceptions arrive on this core's syscall stack.
 pub unsafe fn enter_userspace(pc: *const c_void, sp: *mut c_void, first: u64, second: u64) -> ! {
-    let _ = (pc, sp, first, second);
-    unimplemented!("enter_userspace");
+    log::info!("Going to eret into {:x?}", pc);
+    let frame = user_frame_of(Registers {
+        x0: first,
+        x1: second,
+        sp_el0: sp as u64,
+        elr_el1: pc as u64,
+        ..Registers::zeroed()
+    });
+    exception::enter(&frame, crate::cpu::get_current().syscall_sp)
 }
 
 /// TTBR0_EL1's ASID field, bits 63:48. Arm ARM D24.2.208.

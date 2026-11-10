@@ -51,7 +51,8 @@ const FRAME_SAVE_FAULTED: u64 = 16;
 // Each vector makes room for the frame, saves x0 and x1, and branches to the shared stub with its
 // index in x0. The stub saves the rest and calls the handler with the index and the frame; when
 // the handler returns, the stub restores the frame, which the handler may have changed, and returns
-// from the exception (ERET, C6.2.157; D1.4.4). VBAR_EL1 holds bits 63:11 of the table's address, so
+// from the exception (ERET, C6.2.157; D1.4.4). That restore is `exception_return`, which [`enter`]
+// branches to with a frame no vector saved. VBAR_EL1 holds bits 63:11 of the table's address, so
 // the table is aligned to 0x800 (D24.2.213).
 //
 // The vector for a synchronous exception from EL1 on SP_EL1, index 4, first decides which stack
@@ -123,6 +124,8 @@ global_asm!(
     stp x1, x2, [sp, #256]
     mov x1, sp
     bl {handler}
+    .global exception_return
+    exception_return:
     ldp x1, x2, [sp, #256]
     msr ELR_EL1, x1
     msr SPSR_EL1, x2
@@ -174,6 +177,17 @@ pub unsafe fn install() {
     asm!("msr TPIDRRO_EL0, xzr", options(nomem, nostack, preserves_flags));
     // A change to a system register binds the instructions after the next ISB. Arm ARM B2.6.1.
     asm!("msr VBAR_EL1, {base}", "isb", base = in(reg) base, options(nomem, nostack, preserves_flags));
+}
+
+/// Leaves EL1 for the thread whose frame is `frame`, as the return from an exception taken from the
+/// thread would: the frame goes under `stack`'s top, where a vector would have saved it, and the
+/// stub restores it and returns. SP_EL1 is `stack`'s top again once the frame is restored, so the
+/// thread's next exception saves its frame there.
+pub unsafe fn enter(frame: &Registers, stack: u64) -> ! {
+    assert!(stack % 16 == 0, "a stack's top is 16-byte aligned");
+    let saved = (stack as *mut Registers).sub(1);
+    saved.write(*frame);
+    asm!("mov sp, {saved}", "b exception_return", saved = in(reg) saved, options(noreturn));
 }
 
 /// What a vector's index says: the kind is the index modulo four and the source the index over
