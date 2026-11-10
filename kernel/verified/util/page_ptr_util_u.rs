@@ -6,7 +6,7 @@ use crate::arch::{MEM_2M_MASK, MEM_4K_MASK};
 use crate::arch::{MEM_1G_MASK, MEM_MASK};
 use crate::define::*;
 
-pub open spec fn MEM_valid(v: PAddr) -> bool {
+pub open spec fn mem_valid(v: PAddr) -> bool {
     v & (!MEM_MASK) as usize == 0
 }
 

@@ -395,7 +395,7 @@ pub open spec fn spec_usize2page_entry(v: usize, level: usize) -> PageEntry {
 pub fn usize2page_entry(v: usize, level: usize) -> (ret: PageEntry)
     ensures
         ret =~= spec_usize2page_entry(v, level),
-        MEM_valid(ret.addr),
+        mem_valid(ret.addr),
 {
     PageEntry { addr: usize2pa(v, level), perm: usize2page_entry_perm(v, level) }
 }
@@ -408,7 +408,7 @@ pub open spec fn spec_usize2pa(v: usize, level: usize) -> PAddr {
 pub fn usize2pa(v: usize, level: usize) -> (ret: PAddr)
     ensures
         ret =~= spec_usize2pa(v, level),
-        MEM_valid(ret),
+        mem_valid(ret),
 {
     let ret = v & MEM_MASK as usize;
     assert(v & 0x0000_ffff_ffff_f000u64 as usize & (!0x0000_ffff_ffff_f000u64) as usize == 0)
@@ -423,7 +423,7 @@ pub fn usize2pa(v: usize, level: usize) -> (ret: PAddr)
 /// cannot say: EL0 executes nothing that an entry without user maps, and EL1 executes no user leaf.
 pub fn page_entry2usize(page_entry: &PageEntry, level: usize) -> (ret: usize)
     requires
-        MEM_valid(page_entry.addr),
+        mem_valid(page_entry.addr),
     ensures
         spec_usize2page_entry(ret, level) == *page_entry,
         spec_usize2page_entry_status(ret, level).is_clear(),

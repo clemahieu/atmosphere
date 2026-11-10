@@ -304,7 +304,7 @@ pub proof fn lemma_frame_addr_valid(frame: usize)
         frame < NUM_PAGES,
     ensures
         frame * 4096 < 0x2_0000_0000,
-        MEM_valid((frame * 4096) as usize),
+        mem_valid((frame * 4096) as usize),
 {
     assert(frame < 0x200000usize ==> ((frame * 4096) as usize) & 0xffff_0000_0000_0fffusize == 0) by (bit_vector);
     assert((!MEM_MASK) as usize == 0xffff_0000_0000_0fffusize) by (compute_only);

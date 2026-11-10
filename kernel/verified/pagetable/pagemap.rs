@@ -116,7 +116,7 @@ impl PageMap {
             old(self).wf(),
             level == old(self).level@,
             0 <= index < 512,
-            value.perm.present ==> MEM_valid(value.addr),
+            value.perm.present ==> mem_valid(value.addr),
             value.perm.present == false ==> value.is_empty(),
         ensures
             final(self).wf(),

@@ -911,7 +911,7 @@ pub proof fn lemma_table_addr_valid(t: usize)
         t < 0x2_0000_0000,
     ensures
         t + TABLE_NODE_PAGES * 4096 < 0x1_0000_0000_0000,
-        MEM_valid((t + TABLE_NODE_PAGES * 4096) as usize),
+        mem_valid((t + TABLE_NODE_PAGES * 4096) as usize),
 {
     assert(t % 4096 == 0 && t < 0x2_0000_0000 ==> ((t + 0x5000) as usize) & 0xffff_0000_0000_0fffusize == 0) by (bit_vector);
     assert((!MEM_MASK) as usize == 0xffff_0000_0000_0fffusize) by (compute_only);

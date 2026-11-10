@@ -129,7 +129,7 @@ pub fn page_map_set(
         old(page_map_perm).is_init(),
         old(page_map_perm).value().wf(),
         level == old(page_map_perm).value().level@,
-        value.perm.present ==> MEM_valid(value.addr),
+        value.perm.present ==> mem_valid(value.addr),
         value.perm.present == false ==> value.is_empty(),
         0 <= index < 512,
     ensures
