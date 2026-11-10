@@ -50,8 +50,8 @@ impl CapKernel {
 
     /// What a move of the capability at index from of the table at src to index to of the table at
     /// dst did: the node took the empty node's place in the list at the same depth under the same
-    /// parent with the same payload, every child came along, the source holds no capability and the
-    /// destination is held by dst.
+    /// parent with the same payload, every child came along, the source holds no capability, the
+    /// destination is held by dst, and no root entry changed.
     pub open spec fn cap_moved_between(pre: Self, post: Self, src: usize, from: usize, dst: usize, to: usize) -> bool {
         let i = pre.tables.node_of(src, from);
         let n = pre.tables.node_of(dst, to);
@@ -63,6 +63,7 @@ impl CapKernel {
         &&& !post.is_cap(i)
         &&& post.view().holds(dst, n)
         &&& Self::caps_frame(pre, post, i, n)
+        &&& post.tables.roots == pre.tables.roots
     }
 
     /// What a move from one position to another is to reach. Into a table named through a process
@@ -267,6 +268,7 @@ impl CapKernel {
                 &&& !final(self).is_cap(i)
                 &&& final(self).view().holds(dst, n)
                 &&& Self::caps_frame(*old(self), *final(self), i, n)
+                &&& final(self).tables.roots == old(self).tables.roots
                 &&& Self::move_step(*old(self), *final(self), i, n)
                 &&& old(self).tables.owner@[page_of(i)].0 == src
                 &&& old(self).tables.owner@[page_of(n)].0 == dst
