@@ -204,6 +204,25 @@ impl CapKernel {
         &&& block_within(base, order, self.payload_of(parent))
     }
 
+    /// A block a retype may type lies in its untyped's block, so the untyped covers the block's first
+    /// page, the object the retype names.
+    pub proof fn lemma_retype_covers(&self, root: usize, from: usize, base: usize, order: u8)
+        requires
+            self.can_retype_under(root, from, base, order),
+        ensures
+            self.view().covers(self.tables.node_of(root, from), base),
+    {
+        let p = self.payload_of(self.tables.node_of(root, from));
+        let size = pow2(order as nat) as int;
+        lemma_pow2_pos(order as nat);
+        lemma_pow2_pos(p.order as nat);
+        assert(block_bytes(order) == 4096 * size) by (nonlinear_arith)
+            requires block_bytes(order) == size * 4096;
+        lemma_mod_mod(base as int, 4096, size);
+        assert(block_bytes(order) >= 4096) by (nonlinear_arith)
+            requires block_bytes(order) == 4096 * size, size > 0;
+    }
+
     /// And a retype that makes a capability needs an empty slot for it.
     pub open spec fn can_retype(&self, root: usize, from: usize, to: usize, base: usize, order: u8) -> bool {
         &&& self.can_retype_under(root, from, base, order)
@@ -487,6 +506,7 @@ impl CapKernel {
             let live = |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live;
             assert(pre.view().holds_right(root, parent, Right::Retype));
             assert(post.view().names[child] == base);
+            pre.lemma_retype_covers(root, from, base, order);
             lemma_adds_child_discharges_retype(pre.view(), post.view(), root, parent, child, live, base);
             Self::lemma_bound_threads_same(pre, post);
             assert forall|x: usize| #[trigger] pre.is_cap(x) implies {
@@ -1736,6 +1756,7 @@ impl CapKernel {
             Self::leaf_step(pre, post, leaf),
             post.list.parent@ == pre.list.parent@.insert(leaf, parent),
             pre.view().holds_right(root, parent, Right::Retype),
+            pre.view().covers(parent, leaf),
             into is Some ==> pre.view().holds_right(root, into->0, Right::Control),
         ensures
             discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: leaf, into }),
@@ -1836,6 +1857,7 @@ impl CapKernel {
                 proof {
                     assert(self.view() == pre.view());
                     assert(pre.view().holds_right(root, parent, Right::Retype));
+                    pre.lemma_retype_covers(root, from, base, order);
                 }
                 return RetypeStep::Again;
             },

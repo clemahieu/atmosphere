@@ -192,9 +192,9 @@ pub ghost enum Effect {
     /// `from`, and a child is derived only from one it holds. It takes control of the process itself,
     /// not of one of its threads.
     Place { cap: NodeId, from: NodeId },
-    /// Type a free block under an untyped held. A table leaf goes into the caller's own table, or
-    /// into the table of the process that `into`, a control capability the caller holds, names: the
-    /// process itself, not one of its threads.
+    /// Type a free block under an untyped held, object being the block's first page, which the untyped
+    /// covers. A table leaf goes into the caller's own table, or into the table of the process that
+    /// `into`, a control capability the caller holds, names: the process itself, not one of its threads.
     Retype { untyped: NodeId, object: ObjectId, into: Option<NodeId> },
     /// Unlink a block's hidden node, or a slice of a dead object's teardown, under an untyped held.
     Teardown { untyped: NodeId, object: ObjectId },
@@ -234,8 +234,9 @@ pub open spec fn authorized(s: State, p: ObjectId, e: Effect) -> bool {
             &&& s.commands(p, from)
             &&& s.names.contains_key(from)
         },
-        Effect::Retype { untyped, into, .. } => {
+        Effect::Retype { untyped, object, into } => {
             &&& s.holds_right(p, untyped, Right::Retype)
+            &&& s.covers(untyped, object)
             &&& into is Some ==> {
                 &&& s.holds_right(p, into->0, Right::Control)
                 &&& !s.process_of.contains_key(s.names[into->0])
@@ -817,6 +818,7 @@ pub proof fn lemma_adds_child_discharges_retype(
         adds_child(pre, post, p, c, n, live),
         pre.holds_right(p, c, Right::Retype),
         post.names[n] == object,
+        pre.covers(c, object),
     ensures
         discharges(pre, post, p, Effect::Retype { untyped: c, object, into: None }),
 {
@@ -2105,6 +2107,7 @@ pub proof fn lemma_simulated_discharges_retype(
         simulates(post, pre, live, f),
         forall|x: NodeId| #[trigger] f(x) == x,
         pre.holds_right(p, c, Right::Retype),
+        pre.covers(c, object),
         forall|x: NodeId| #[trigger] pre.names.contains_key(x) ==> post.names.contains_key(x),
         forall|o: ObjectId| #[trigger] (post.contents)(o) == (pre.contents)(o),
     ensures
@@ -2655,6 +2658,43 @@ pub proof fn lemma_retype_into_uncontrolled_process_does_not_discharge()
         assert(pre.held.contains((1usize, c)));
     }
     assert(!may_grow(pre, 1, Effect::Retype { untyped: 10, object: EXAMPLE_BASE, into: None }, 1, EXAMPLE_PAST));
+}
+
+/// `retype_example` after a retype types the page at o, which changes what a process sees of it.
+pub open spec fn retyped_at(o: ObjectId) -> State {
+    State {
+        contents: |x: ObjectId| if x == o { seq![0u8] } else { Seq::empty() },
+        ..retype_example()
+    }
+}
+
+/// Process 1 may type a page its untyped covers.
+pub proof fn lemma_retype_of_a_covered_page_discharges()
+    ensures
+        discharges(retype_example(), retyped_at(EXAMPLE_BASE), 1, Effect::Retype { untyped: 10, object: EXAMPLE_BASE, into: None }),
+{
+    let (pre, post) = (retype_example(), retyped_at(EXAMPLE_BASE));
+    let e = Effect::Retype { untyped: 10, object: EXAMPLE_BASE, into: None };
+    assert(pre.holds_right(1, 10, Right::Retype));
+    assert(pre.covers(10, EXAMPLE_BASE));
+    assert forall|o: ObjectId| #[trigger] State::changed(pre, post, o) implies may_change(pre, e, o) by {
+        if o != EXAMPLE_BASE {
+            assert((post.contents)(o) =~= (pre.contents)(o));
+        }
+    }
+    assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) implies pre.reach(r, o) by {
+        lemma_same_authority_same_reach(post, pre, r, o);
+    }
+}
+
+/// But not a page its untyped does not cover, such as the one process 2's capability covers, which
+/// process 2 would see the retype change.
+pub proof fn lemma_retype_of_an_uncovered_page_does_not_discharge()
+    ensures
+        !discharges(retype_example(), retyped_at(EXAMPLE_PAST), 1, Effect::Retype { untyped: 10, object: EXAMPLE_PAST, into: None }),
+{
+    let pre = retype_example();
+    assert(!pre.covers(10, EXAMPLE_PAST));
 }
 
 /// A thread object, 0x5000, outside the example block.

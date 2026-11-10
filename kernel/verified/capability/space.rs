@@ -1639,6 +1639,30 @@ impl CapKernel {
         }
     }
 
+    /// `lemma_hidden_added_discharges` for a hidden node at the block a retype under `from` names,
+    /// which the untyped covers. Its own proof fn so that the covers fact stays out of its caller's
+    /// query.
+    pub proof fn lemma_hidden_retyped_discharges(pre: Self, post: Self, root: usize, from: usize, parent: usize, n: usize, order: u8)
+        requires
+            pre.wf(),
+            n < NODE_SPACE,
+            !pre.list.nodes@[n as int].live,
+            forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x),
+            forall|x: usize| #[trigger] pre.is_cap(x) ==> {
+                &&& post.payload_of(x) == pre.payload_of(x)
+                &&& post.tables.owner@[page_of(x)] == pre.tables.owner@[page_of(x)]
+            },
+            post.list.parent@ == pre.list.parent@.insert(n, parent),
+            pre.view().holds_right(root, parent, Right::Retype),
+            pre.can_retype_under(root, from, n, order),
+            parent == pre.tables.node_of(root, from),
+        ensures
+            discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: n, into: None }),
+    {
+        pre.lemma_retype_covers(root, from, n, order);
+        Self::lemma_hidden_added_discharges(pre, post, root, parent, n);
+    }
+
     /// The view after a hidden node joins under a capability: every capability is as it was, and the
     /// only new parent entry is the hidden node's, which no capability descends from.
     pub proof fn lemma_hidden_added_discharges(pre: Self, post: Self, root: usize, parent: usize, n: usize)
@@ -1653,6 +1677,7 @@ impl CapKernel {
             },
             post.list.parent@ == pre.list.parent@.insert(n, parent),
             pre.view().holds_right(root, parent, Right::Retype),
+            pre.view().covers(parent, n),
         ensures
             discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: n, into: None }),
     {
@@ -2122,7 +2147,7 @@ impl CapKernel {
             Self::lemma_table_page_mapping_parents(pre, post, parent, base);
             Self::lemma_mappings_grown(pre, post, page, 3);
         }
-        Self::lemma_hidden_added_discharges(pre, post, root, parent, base);
+        Self::lemma_hidden_retyped_discharges(pre, post, root, from, parent, base, 3);
         Self::lemma_hidden_added_reach(pre, post, parent, base);
         assert forall|x: usize| #![trigger post.list.nodes@[x as int]] pre.list.valid(x) && x != base implies {
             &&& post.list.nodes@[x as int].kind == pre.list.nodes@[x as int].kind
