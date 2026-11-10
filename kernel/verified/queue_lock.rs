@@ -17,7 +17,9 @@ use vstd::atomic::{PAtomicBool, PAtomicUsize, PermissionBool, PermissionUsize};
 use vstd::atomic_ghost::{AtomicInvariantPredicate, AtomicUsize};
 use vstd::atomic_with_ghost;
 use vstd::open_atomic_invariant;
-use vstd::invariant::{AtomicInvariant, InvariantPredicate};
+#[cfg(verus_keep_ghost)]
+use vstd::invariant::AtomicInvariant;
+use vstd::invariant::InvariantPredicate;
 use vstd::prelude::*;
 use vstd::resource::ghost_var::{GhostVar, GhostVarAuth};
 use vstd::resource::set::GhostSingleton;
@@ -154,8 +156,8 @@ pub struct Node {
     next: PAtomicUsize,
     /// True while this core waits.
     waiting: PAtomicBool,
-    // Read only inside open_atomic_invariant!, which a cargo build erases.
-    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    // Read only inside open_atomic_invariant!, which a cargo build erases, so only Verus compiles it.
+    #[cfg(verus_keep_ghost)]
     inv: Tracked<AtomicInvariant<NodeK, NodeInv, NodePred>>,
 }
 
@@ -207,7 +209,12 @@ impl Node {
             succ: None,
         };
         let tracked inv = AtomicInvariant::new(k, v, 1);
-        Node { next, waiting, inv: Tracked(inv) }
+        Node {
+            next,
+            waiting,
+            #[cfg(verus_keep_ghost)]
+            inv: Tracked(inv),
+        }
     }
 }
 

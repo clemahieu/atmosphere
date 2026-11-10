@@ -187,13 +187,18 @@ pub struct PPtr<V>(pub usize, pub PhantomData<V>);
 /// `View` object, [`PointsToData`].
 ///
 /// See the [`PPtr`] documentation for more details.
-// Proofs alone read the fields, and a cargo build erases proofs.
-#[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+// Proofs alone read the fields, and a cargo build erases proofs, so only Verus compiles them; a
+// cargo build keeps the type, which exec signatures name, with a marker for `V`.
 pub tracked struct PointsTo<V> {
+    #[cfg(verus_keep_ghost)]
     points_to: raw_ptr::PointsTo<V>,
+    #[cfg(verus_keep_ghost)]
     exposed: raw_ptr::IsExposed,
     /// The raw bytes after the value, up to the end of its 4K page, when it fits one.
+    #[cfg(verus_keep_ghost)]
     rest: PointsToRaw,
+    #[cfg(not(verus_keep_ghost))]
+    v: PhantomData<V>,
 }
 
 #[verusfmt::skip]
