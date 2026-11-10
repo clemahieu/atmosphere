@@ -14,11 +14,14 @@
 //! also targeting RISC-V (and also GBA!)
 //!
 //! # Example
-//! ```
-//! let serial = unsafe { MmioSerial::new(0x1000_0000) };
+//! ```no_run
+//! use core::fmt::Write;
+//! use ns16550a::MmioSerial;
+//!
+//! let mut serial = unsafe { MmioSerial::new(0x1000_0000) };
 //! serial.init();
-//! writeln!(serial, "meow");
-//! serial.putc('?' as u8);
+//! writeln!(serial, "meow").unwrap();
+//! serial.putc(b'?');
 //! let cat = serial.getc();
 //! ```
 //!
