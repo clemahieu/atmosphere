@@ -874,6 +874,34 @@ pub proof fn lemma_root_entry_not_passed(tree: TableTree, base: usize, e: usize,
     }
 }
 
+/// A path of a space passes through an entry of its own root exactly when its first index is that entry:
+/// a step finds a table page, and the root is none.
+pub proof fn lemma_root_entry_passed(tree: TableTree, base: usize, e: usize, p: SpacePath)
+    requires
+        table_links_wf(tree),
+        tree.is_root(base),
+        !tree.is_page(base),
+    ensures
+        passes_through(tree, base, p, base, e) == (p.l4 == e),
+{
+    if tree.names_child(base, p.l4) {
+        let t3 = (tree.entry(base, p.l4).addr - TABLE_NODE_PAGES * PAGE_SZ) as usize;
+        assert(tree.is_page(t3));
+        if tree.names_child(t3, p.l3) {
+            let t2 = (tree.entry(t3, p.l3).addr - TABLE_NODE_PAGES * PAGE_SZ) as usize;
+            assert(tree.is_page(t2));
+        }
+    }
+}
+
+/// Path q of space r is a walk of the root `base` through an entry that named a child in a and names
+/// none in b: one that cutting children of the root ends.
+pub open spec fn cut_through(a: TableTree, b: TableTree, base: usize, r: usize, q: SpacePath) -> bool {
+    &&& r == base
+    &&& a.names_child(base, q.l4)
+    &&& !b.names_child(base, q.l4)
+}
+
 /// A walk through the entry naming table page t finds page g.
 pub open spec fn cut_walk_finds(tree: TableTree, t: usize, g: usize) -> bool {
     let s = tree.record(t).space->0;

@@ -200,6 +200,7 @@ impl CapKernel {
             let post = *self;
             let b = tree_of(&post.table_pages, &post.spaces);
             if cut != 0 {
+                Self::lemma_cuts_shed(pre, post, base);
                 Self::lemma_cuts_same_view(pre, post, base);
                 lemma_no_change_discharges_teardown(pre.view(), root, untyped, base);
                 assert forall|i: usize| #![trigger b.entry(base, i)] i < KERNEL_MEM_END_L4INDEX implies b.entry(base, i) == a.entry(base, i) by {

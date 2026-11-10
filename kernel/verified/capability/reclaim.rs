@@ -3355,8 +3355,8 @@ impl CapKernel {
 
     /// What cutting children of the dead table at `base` keeps: only tables, the record of each cut and the
     /// TLBs changed. A table page's cuts leave every walk finding what it did, since no walk reaches it, and
-    /// a root's end the walks through its entries and leave every other space's. Each entry that stopped
-    /// naming a child is empty and its child is cut.
+    /// a root's end its walks through the entries they cut and leave every other walk. Each entry that
+    /// stopped naming a child is empty and its child is cut.
     pub open spec fn table_cuts_kept(pre: Self, post: Self, base: usize) -> bool {
         let a = tree_of(&pre.table_pages, &pre.spaces);
         let b = tree_of(&post.table_pages, &post.spaces);
@@ -3390,17 +3390,23 @@ impl CapKernel {
         }
         &&& !a.is_root(base) ==> forall|r: usize, p: SpacePath| #[trigger] walk(b, r, p) == walk(a, r, p)
         &&& a.is_root(base) ==> forall|r: usize, p: SpacePath| r != base ==> #[trigger] walk(b, r, p) == walk(a, r, p)
+        &&& a.is_root(base) ==> forall|p: SpacePath| #[trigger] walk(b, base, p)
+            == if cut_through(a, b, base, base, p) { None } else { walk(a, base, p) }
         &&& Self::mappings_shrunk(pre, post)
         &&& forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && #[trigger] pre.core_may_hold(c, e) ==> post.core_may_hold(c, e)
     }
 
     /// Such cuts share no more: they take walks away, make no space a device space and leave every
-    /// capability.
+    /// capability. What they share is what a walk not through a cut entry finds.
     pub proof fn lemma_cuts_shed(pre: Self, post: Self, base: usize)
         requires
             Self::table_cuts_kept(pre, post, base),
         ensures
             sheds_shares(pre.view(), post.view()),
+            post.view().shares == shares_surviving(
+                tree_of(&pre.table_pages, &pre.spaces),
+                |r: usize, q: SpacePath| cut_through(tree_of(&pre.table_pages, &pre.spaces), tree_of(&post.table_pages, &post.spaces), base, r, q),
+            ),
     {
         let a = tree_of(&pre.table_pages, &pre.spaces);
         let b = tree_of(&post.table_pages, &post.spaces);
@@ -3409,6 +3415,19 @@ impl CapKernel {
         }
         Self::lemma_shrunk_sheds(pre, post);
         assert(post.view() == (State { shares: post.view().shares, ..pre.view() }));
+        let gone = |r: usize, q: SpacePath| cut_through(a, b, base, r, q);
+        assert forall|s: usize, q: SpacePath| #[trigger] walk(b, s, q) == if gone(s, q) { None } else { walk(a, s, q) } by {
+            if s == base && !a.is_root(base) {
+                assert(walk(b, s, q) == walk(a, s, q));
+            } else if s != base {
+                assert(walk(b, s, q) == walk(a, s, q));
+            }
+        }
+        assert forall|s: usize| #![trigger is_device(b, s)] #![trigger is_device(a, s)]
+            a.is_root(s) && b.is_root(s) implies is_device(b, s) == is_device(a, s) by {
+            assert(b.space_records[s].value().kind == a.space_records[s].value().kind);
+        }
+        lemma_walks_ended_shares(a, b, gone);
     }
 
     /// Cuts below a table that is no device space's root leave the view: no device space's walk passed
@@ -3448,17 +3467,21 @@ impl CapKernel {
 
     /// What cutting children of the dead table at `base` did to self: it cut at least one and no more than
     /// the budget, each taking one entry off the count, and every capability is as it was. A device space
-    /// shares no more, having lost the walks through the cut entries.
+    /// shares what a walk not through a cut entry still finds: a page leaves unless another path of the
+    /// space maps it too.
     pub open spec fn children_cut(&self, post: Self, root: usize, from: usize, base: usize) -> bool {
         let untyped = self.tables.node_of(root, from);
-        let a = child_entries(tree_of(&self.table_pages, &self.spaces), base);
-        let b = child_entries(tree_of(&post.table_pages, &post.spaces), base);
+        let ta = tree_of(&self.table_pages, &self.spaces);
+        let tb = tree_of(&post.table_pages, &post.spaces);
+        let a = child_entries(ta, base);
+        let b = child_entries(tb, base);
         &&& self.view().holds_right(root, untyped, Right::Retype)
         &&& Self::table_cuts_kept(*self, post, base)
         &&& b.subset_of(a)
         &&& b.len() < a.len()
         &&& a.len() - b.len() <= TABLE_SLICE_BUDGET
         &&& sheds_shares(self.view(), post.view())
+        &&& post.view().shares == shares_surviving(ta, |r: usize, q: SpacePath| cut_through(ta, tb, base, r, q))
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&self.list, &self.tables)
         &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base })
     }
@@ -3625,6 +3648,21 @@ impl CapKernel {
             }
         }
         assert(child_entries(b, base) =~= child_entries(m, base).remove(e));
+        if a.is_root(base) {
+            assert forall|p: SpacePath| #[trigger] walk(b, base, p)
+                == if cut_through(a, b, base, base, p) { None } else { walk(a, base, p) } by {
+                lemma_root_entry_passed(m, base, e, p);
+                assert(walk(b, base, p) == (if passes_through(m, base, p, base, e) { None } else { walk(m, base, p) }));
+                assert(walk(m, base, p) == if cut_through(a, m, base, base, p) { None } else { walk(a, base, p) });
+                lemma_child_entries(b, base, p.l4);
+                lemma_child_entries(m, base, p.l4);
+                if p.l4 == e {
+                    assert(!b.names_child(base, e));
+                } else {
+                    assert(b.names_child(base, p.l4) == m.names_child(base, p.l4));
+                }
+            }
+        }
     }
 
     /// The child this step cuts satisfies child_cut.
@@ -3770,6 +3808,7 @@ impl CapKernel {
         let cut = self.cut_children(base, false, Tracked(steps));
         proof {
             if cut != 0 {
+                Self::lemma_cuts_shed(pre, *self, base);
                 Self::lemma_cuts_same_view(pre, *self, base);
                 lemma_no_change_discharges_teardown(pre.view(), root, untyped, base);
             }
