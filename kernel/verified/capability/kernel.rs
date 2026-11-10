@@ -1911,55 +1911,6 @@ impl CapKernel {
         }
     }
 
-    /// A dead small block at zero references, whose teardown has finished and which no core can reach
-    /// through a stale translation, returns to free with its permissions.
-    pub fn free_block(&mut self, c: usize, base: usize, Tracked(perms): Tracked<Map<usize, PagePerm4k>>)
-        requires
-            old(self).wf(),
-            c < NUM_CPUS,
-            old(self).blocks.tracks(base as int),
-            forall|i: usize| base <= i < base + order_pages(old(self).blocks.pages@[base as int].order)
-                ==> #[trigger] old(self).no_stale_translation(i),
-            old(self).blocks.pages@[base as int].kind is Base,
-            !(old(self).blocks.pages@[base as int].object is Process),
-            old(self).blocks.pages@[base as int].dead,
-            old(self).blocks.pages@[base as int].torn_down,
-            old(self).blocks.pages@[base as int].refs == 0,
-            forall|p: usize| #[trigger] old(self).list.pages@.dom().contains(p) && old(self).blocks.tracks_addr(p)
-                ==> !old(self).blocks.in_block(base as int, (p / PAGE_SZ) as int),
-            forall|k: usize| k < order_pages(old(self).blocks.pages@[base as int].order) ==> {
-                &&& perms.contains_key((base + k) as usize)
-                &&& #[trigger] perms[(base + k) as usize].addr() == (base + k) * PAGE_SZ
-                &&& perms[(base + k) as usize].is_uninit()
-            },
-        ensures
-            Self::step_ok(*old(self), *final(self), c as int),
-    {
-        let ghost pre = *old(self);
-        proof {
-            // The callee's clause splits, so its conjuncts need triggers of their own.
-            assert forall|k: usize| k < order_pages(pre.blocks.pages@[base as int].order) implies
-                #[trigger] perms.contains_key((base + k) as usize) by {
-                assert(perms[(base + k) as usize].addr() == (base + k) * PAGE_SZ);
-            }
-            assert forall|k: usize| k < order_pages(pre.blocks.pages@[base as int].order) implies
-                #[trigger] perms[(base + k) as usize].is_uninit() by {
-                assert(perms[(base + k) as usize].addr() == (base + k) * PAGE_SZ);
-            }
-        }
-        // The caller's work is not counted yet, so its counter starts here: design/one-lock-bounded-steps/.
-        let tracked mut steps = Steps::fresh();
-        self.blocks.free_block(base, Tracked(perms), Tracked(&mut steps));
-        self.holders = Ghost(pre.holders@.remove(BlockRef::Small(base)));
-        proof {
-            assert forall|br: BlockRef, i: usize| #[trigger] self.holders@.contains_key(br) && #[trigger] block_has_page(br, i)
-                implies self.frames@.contains_key(i) by {
-                assert(pre.holders@.contains_key(br));
-            }
-            Self::lemma_small_freed(pre, *self, base);
-        }
-    }
-
     /// The kernel after a small block frees, its holder entry going with it. What it still holds of the
     /// frames is the caller's to say, since a frame hands its pages back from there.
     pub proof fn lemma_small_freed(pre: Self, post: Self, base: usize)
@@ -2060,56 +2011,6 @@ impl CapKernel {
             }
         }
         Self::lemma_blocks_changed(pre, post);
-    }
-
-    /// As free_block, for a 2M block.
-    pub fn free_2m(&mut self, c: usize, r: usize, Tracked(perms): Tracked<Map<usize, PagePerm4k>>)
-        requires
-            old(self).wf(),
-            c < NUM_CPUS,
-            r < NUM_2M,
-            old(self).region_unmapped(Large::Two, r),
-            old(self).region_clean(Large::Two, r),
-            old(self).blocks.regions_2m@[r as int].typed,
-            old(self).blocks.regions_2m@[r as int].dead,
-            old(self).blocks.regions_2m@[r as int].torn_down,
-            old(self).blocks.regions_2m@[r as int].refs == 0,
-            forall|i: usize| BlockTable::large_pages(Large::Two, r as int).contains(i) ==> #[trigger] holds(perms, i),
-            perms.dom() == BlockTable::large_pages(Large::Two, r as int),
-        ensures
-            Self::step_ok(*old(self), *final(self), c as int),
-    {
-        let ghost pre = *old(self);
-        self.blocks.free_2m(r, Tracked(perms));
-        self.holders = Ghost(pre.holders@.remove(BlockRef::Two(r)));
-        proof {
-            Self::lemma_large_freed(pre, *self, Large::Two, r);
-        }
-    }
-
-    /// As free_block, for a 1G block.
-    pub fn free_1g(&mut self, c: usize, r: usize, Tracked(perms): Tracked<Map<usize, PagePerm4k>>)
-        requires
-            old(self).wf(),
-            c < NUM_CPUS,
-            r < NUM_1G,
-            old(self).region_unmapped(Large::One, r),
-            old(self).region_clean(Large::One, r),
-            old(self).blocks.regions_1g@[r as int].typed,
-            old(self).blocks.regions_1g@[r as int].dead,
-            old(self).blocks.regions_1g@[r as int].torn_down,
-            old(self).blocks.regions_1g@[r as int].refs == 0,
-            forall|i: usize| BlockTable::large_pages(Large::One, r as int).contains(i) ==> #[trigger] holds(perms, i),
-            perms.dom() == BlockTable::large_pages(Large::One, r as int),
-        ensures
-            Self::step_ok(*old(self), *final(self), c as int),
-    {
-        let ghost pre = *old(self);
-        self.blocks.free_1g(r, Tracked(perms));
-        self.holders = Ghost(pre.holders@.remove(BlockRef::One(r)));
-        proof {
-            Self::lemma_large_freed(pre, *self, Large::One, r);
-        }
     }
 
     /// The kernel after a dead large block frees, its holder entry going with it. A block being zeroed is
