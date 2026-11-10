@@ -292,6 +292,14 @@ pub open spec fn may_grow(s: State, p: ObjectId, e: Effect, r: ObjectId, o: Obje
     }
 }
 
+/// A step by p may list thread t as waiting on o, (o, t) being w, only when t is a thread of p and p
+/// reaches o, so a delivery or a signal on o wakes only a waiter whose process reached o already.
+pub open spec fn may_wait(s: State, p: ObjectId, w: (ObjectId, ObjectId)) -> bool {
+    &&& s.process_of.contains_key(w.1)
+    &&& s.process_of[w.1] == p
+    &&& s.reach(p, w.0)
+}
+
 /// What every operation's spec ensures of a step by a thread of p. The theorem in
 /// design/theorem-over-reach/ composes these.
 pub open spec fn discharges(pre: State, post: State, p: ObjectId, e: Effect) -> bool {
@@ -300,6 +308,13 @@ pub open spec fn discharges(pre: State, post: State, p: ObjectId, e: Effect) -> 
     &&& forall|n: NodeId| #[trigger] State::removed(pre, post, n) ==> may_remove(pre, p, e, n)
     &&& forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) && !pre.reach(r, o)
         ==> may_grow(pre, p, e, r, o)
+    &&& forall|w: (ObjectId, ObjectId)| #[trigger] post.waiting.contains(w) && !pre.waiting.contains(w)
+        ==> may_wait(pre, p, w)
+}
+
+/// post lists no thread as waiting that pre does not.
+pub open spec fn adds_no_waiter(pre: State, post: State) -> bool {
+    forall|w: (ObjectId, ObjectId)| #[trigger] post.waiting.contains(w) ==> pre.waiting.contains(w)
 }
 
 /// post is pre with capability n added as a child of c, which p holds, in a slot of d, covering only
@@ -330,6 +345,7 @@ pub open spec fn places_node(
     &&& forall|x: NodeId, r: Right| x != n ==> #[trigger] post.rights.contains((x, r)) == pre.rights.contains((x, r))
     &&& forall|o: ObjectId| #[trigger] post.covers(n, o) ==> pre.covers(c, o)
     &&& post.maps == pre.maps
+    &&& adds_no_waiter(pre, post)
     &&& forall|o: ObjectId| #[trigger] (post.contents)(o) == (pre.contents)(o)
 }
 
@@ -431,6 +447,7 @@ pub open spec fn unbinds(pre: State, post: State, t: ObjectId, b: NodeId) -> boo
     &&& post.pages == pre.pages
     &&& post.rights == pre.rights
     &&& post.maps == pre.maps
+    &&& adds_no_waiter(pre, post)
     &&& forall|o: ObjectId| #[trigger] (post.contents)(o) == (pre.contents)(o)
 }
 
@@ -441,6 +458,7 @@ pub open spec fn tears_down(pre: State, post: State, object: ObjectId) -> bool {
     &&& forall|n: NodeId| #[trigger] State::removed(pre, post, n)
         ==> exists|c: NodeId, k: nat| #[trigger] pre.descends(c, n, k) && pre.holds(object, c)
     &&& forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) ==> pre.reach(r, o)
+    &&& adds_no_waiter(pre, post)
 }
 
 /// A step that changes nothing, by a holder of an untyped with the retype right, discharges a teardown.
@@ -458,6 +476,7 @@ pub proof fn lemma_revoke_is_teardown(pre: State, post: State, object: ObjectId,
     requires
         discharges(pre, post, object, Effect::Revoke { cap }),
         pre.holds(object, cap),
+        adds_no_waiter(pre, post),
     ensures
         tears_down(pre, post, object),
 {
@@ -528,6 +547,10 @@ pub proof fn lemma_teardown_steps_compose(a: State, b: State, c: State, p: Objec
     assert forall|r: ObjectId, o: ObjectId| #[trigger] c.reach(r, o) implies a.reach(r, o) by {
         assert(b.reach(r, o));
         assert(!may_grow(a, p, e, r, o));
+    }
+    assert forall|w: (ObjectId, ObjectId)| #[trigger] c.waiting.contains(w) && !a.waiting.contains(w)
+        implies may_wait(a, p, w) by {
+        assert(b.waiting.contains(w));
     }
 }
 
@@ -1169,6 +1192,7 @@ pub proof fn lemma_retype_then_local(a: State, b: State, c: State, p: ObjectId, 
         discharges(a, b, p, Effect::Retype { untyped, object, into: None }),
         discharges(b, c, p, Effect::Local),
         forall|n: NodeId| #[trigger] b.names.contains_key(n) ==> c.names.contains_key(n),
+        adds_no_waiter(b, c),
     ensures
         discharges(a, c, p, Effect::Retype { untyped, object, into: None }),
 {
@@ -1186,6 +1210,10 @@ pub proof fn lemma_retype_then_local(a: State, b: State, c: State, p: ObjectId, 
         if !b.reach(r, o) {
             assert(may_grow(b, p, Effect::Local, r, o));
         }
+    }
+    assert forall|w: (ObjectId, ObjectId)| #[trigger] c.waiting.contains(w) && !a.waiting.contains(w)
+        implies may_wait(a, p, w) by {
+        assert(b.waiting.contains(w));
     }
 }
 
@@ -1325,6 +1353,9 @@ pub proof fn lemma_adds_bound_object_discharges_retype(
         }
         assert(pre.controlled(r, q, k) && (o == q || pre.direct(q, o)));
     }
+    assert forall|w: (ObjectId, ObjectId)| #[trigger] post.waiting.contains(w) implies pre.waiting.contains(w) by {
+        assert(mid.waiting.contains(w));
+    }
 }
 
 /// Walking up in post walks the same nodes in pre, since post's parent map is pre's less one entry.
@@ -1440,6 +1471,7 @@ pub open spec fn removes_cap(pre: State, post: State, n: NodeId) -> bool {
     &&& post.parent == pre.parent
     &&& post.maps == pre.maps
     &&& post.process_of == pre.process_of
+    &&& adds_no_waiter(pre, post)
     &&& forall|o: ObjectId| #[trigger] (post.contents)(o) == (pre.contents)(o)
 }
 
@@ -1512,6 +1544,7 @@ pub open spec fn simulates(a: State, b: State, live: spec_fn(NodeId) -> bool, f:
     }
     &&& a.maps == b.maps
     &&& a.process_of == b.process_of
+    &&& adds_no_waiter(b, a)
 }
 
 proof fn lemma_simulates_descends(
@@ -1627,6 +1660,7 @@ pub open spec fn simulates_claim(
     }
     &&& a.maps == b.maps
     &&& a.process_of == b.process_of
+    &&& adds_no_waiter(b, a)
 }
 
 /// With p and q the same process, that is `simulates`.
@@ -2031,6 +2065,7 @@ pub proof fn lemma_revoke_steps_compose(a: State, b: State, c: State, p: ObjectI
         discharges(a, b, p, Effect::Revoke { cap }),
         discharges(b, c, holder, Effect::Revoke { cap }),
         a.parent == b.parent,
+        adds_no_waiter(b, c),
     ensures
         discharges(a, c, p, Effect::Revoke { cap }),
 {
@@ -2055,6 +2090,10 @@ pub proof fn lemma_revoke_steps_compose(a: State, b: State, c: State, p: ObjectI
         assert(!may_grow(b, holder, Effect::Revoke { cap }, r, o));
         assert(b.reach(r, o));
         assert(!may_grow(a, p, Effect::Revoke { cap }, r, o));
+    }
+    assert forall|w: (ObjectId, ObjectId)| #[trigger] c.waiting.contains(w) && !a.waiting.contains(w)
+        implies may_wait(a, p, w) by {
+        assert(b.waiting.contains(w));
     }
 }
 
@@ -2486,6 +2525,55 @@ pub proof fn lemma_retype_into_uncontrolled_process_does_not_discharge()
         assert(pre.held.contains((1usize, c)));
     }
     assert(!may_grow(pre, 1, Effect::Retype { untyped: 10, object: EXAMPLE_BASE, into: None }, 1, EXAMPLE_PAST));
+}
+
+/// A thread object, 0x5000, outside the example block.
+pub const WAITER: usize = 0x5000;
+
+/// `example` with WAITER a thread of process `owner`, waiting on nothing.
+pub open spec fn waiter_example(owner: ObjectId) -> State {
+    State { process_of: map![WAITER => owner], ..example() }
+}
+
+/// `waiter_example` with WAITER listed as waiting on EXAMPLE_BASE, which process 1 reaches.
+pub open spec fn waiting_example(owner: ObjectId) -> State {
+    State { waiting: set![(EXAMPLE_BASE, WAITER)], ..waiter_example(owner) }
+}
+
+/// A step by process 1 may list a thread of its own as waiting on an object it reaches.
+pub proof fn lemma_own_waiter_discharges()
+    ensures
+        discharges(waiter_example(1), waiting_example(1), 1, Effect::Local),
+{
+    let (pre, post) = (waiter_example(1), waiting_example(1));
+    assert(pre.descends(10, 10, 0));
+    assert(pre.holds(1, 10));
+    assert(pre.covers(10, EXAMPLE_BASE));
+    assert(pre.direct(1, EXAMPLE_BASE));
+    assert(pre.controlled(1, 1, 0));
+    assert(pre.reach(1, EXAMPLE_BASE));
+    assert forall|w: (ObjectId, ObjectId)| #[trigger] post.waiting.contains(w) && !pre.waiting.contains(w)
+        implies may_wait(pre, 1, w) by {
+        assert(w == (EXAMPLE_BASE, WAITER));
+    }
+    assert forall|o: ObjectId| #[trigger] State::changed(pre, post, o) implies may_change(pre, Effect::Local, o) by {
+        assert((post.contents)(o) == (pre.contents)(o));
+    }
+    assert forall|r: ObjectId, o: ObjectId| #[trigger] post.reach(r, o) implies pre.reach(r, o) by {
+        lemma_same_authority_same_reach(post, pre, r, o);
+    }
+}
+
+/// A step by process 1 may not list a thread of process 2 as waiting on what process 1 reaches: a
+/// grant over that object would then reach process 2.
+pub proof fn lemma_other_waiter_does_not_discharge()
+    ensures
+        !discharges(waiter_example(2), waiting_example(2), 1, Effect::Local),
+{
+    let (pre, post) = (waiter_example(2), waiting_example(2));
+    assert(post.waiting.contains((EXAMPLE_BASE, WAITER)));
+    assert(!pre.waiting.contains((EXAMPLE_BASE, WAITER)));
+    assert(!may_wait(pre, 1, (EXAMPLE_BASE, WAITER)));
 }
 
 /// Reach reads nothing but the authority fields, so contents do not change it.
