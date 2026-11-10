@@ -1284,6 +1284,7 @@ impl CapKernel {
                 &&& final(self).payload_of(child) == process_of(base)
                 &&& final(self).payload_of(child).rights & right_bit(Right::Control) != 0
                 &&& final(self).list.is_child(parent, child)
+                &&& final(self).list.parent@ == old(self).list.parent@.insert(child, parent)
                 &&& final(self).list.nodes@[child as int].depth == old(self).list.nodes@[parent as int].depth + 1
                 &&& Self::retype_keeps(*old(self), *final(self), child, page, 3, None)
                 &&& discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base, into: None })

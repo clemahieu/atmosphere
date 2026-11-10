@@ -265,14 +265,16 @@ impl CapKernel {
     }
 
     /// What unlinking the hidden node of the leaf at `base` did to self: that node went and its block is
-    /// dead at zero, every other block as it was. The tables are as they were, so the leaf stays in its
-    /// root entry, where lookup now refuses it, and every capability, the leaf's slots among them, is as
-    /// it was, so the view is too. No record, table page, epoch, core or IOMMU changed.
+    /// dead at zero, every other block as it was. The parent map is as it was: the node leaves the list
+    /// but keeps its entry. The tables are as they were, so the leaf stays in its root entry, where
+    /// lookup now refuses it, and every capability, the leaf's slots among them, is as it was, so the
+    /// view is too. No record, table page, epoch, core or IOMMU changed.
     pub open spec fn leaf_unlinked(&self, post: Self, root: usize, from: usize, base: usize) -> bool {
         let untyped = self.tables.node_of(root, from);
         let page = base / 4096;
         &&& self.view().holds_right(root, untyped, Right::Retype)
         &&& !post.list.nodes@[base as int].live
+        &&& post.list.parent@ == self.list.parent@
         &&& post.tables == self.tables
         &&& post.blocks.pages@[page as int].refs == 0
         &&& post.blocks.pages@[page as int].dead

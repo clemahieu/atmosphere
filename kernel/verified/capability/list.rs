@@ -415,6 +415,26 @@ impl Tree {
         self.lemma_link(a);
     }
 
+    /// A node that is not live is no node's parent: every listed node's parent is listed, and every
+    /// listed node is live.
+    pub proof fn lemma_dead_childless(&self, c: usize, i: usize)
+        requires
+            self.wf(),
+            !(c < NODE_SPACE && self.nodes@[c as int].live),
+        ensures
+            !self.is_child(c, i),
+    {
+        let s = self.seq@;
+        if self.is_child(c, i) {
+            let k = choose|k: int| 0 <= k < s.len() && s[k] == i;
+            assert(k != 0);
+            assert(has(s, self.parent@[s[k]]));
+            lemma_has(s, c);
+            let a = choose|a: int| 0 <= a < s.len() && s[a] == c;
+            self.lemma_link(a);
+        }
+    }
+
     /// No listed node is deeper than a byte says.
     pub proof fn lemma_depth_bound(&self, k: int)
         requires

@@ -913,9 +913,10 @@ impl CapKernel {
 
     /// What a retype of the two pages at base as a table leaf did, under the untyped at index from of
     /// the table at root, into the root entry at names: the retype was allowed, the leaf is in that
-    /// entry of the position's table, its hidden node the untyped's child, every slot in it empty, what
-    /// retype_keeps names is as it was but that root entry, and the step discharges the retype's
-    /// effect, into the table named through a process capability when the position names one.
+    /// entry of the position's table, its hidden node the untyped's child and the one entry the parent
+    /// map gains, every slot in it empty, what retype_keeps names is as it was but that root entry,
+    /// and the step discharges the retype's effect, into the table named through a process capability
+    /// when the position names one.
     pub open spec fn leaf_retyped(pre: Self, post: Self, root: usize, from: usize, at: Position, base: usize) -> bool {
         let parent = pre.tables.node_of(root, from);
         let table = pre.destination_at(root, at.through)->0;
@@ -923,6 +924,7 @@ impl CapKernel {
         &&& pre.view().holds_right(root, parent, Right::Retype)
         &&& post.tables.leaf(table, at.index as int) == base
         &&& post.list.is_child(parent, base)
+        &&& post.list.parent@ == pre.list.parent@.insert(base, parent)
         &&& post.list.nodes@[base as int].kind is Hidden
         &&& forall|i: usize| index_ok(i) && index_entry(i) == at.index as int ==> {
             &&& #[trigger] post.tables.has_slot(&post.list, table, i)

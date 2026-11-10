@@ -1612,6 +1612,7 @@ impl CapKernel {
                 &&& final(self).payload_of(child) == thread_of(base)
                 &&& final(self).payload_of(child).rights & right_bit(Right::Control) != 0
                 &&& final(self).list.is_child(parent, child)
+                &&& final(self).list.parent@ == old(self).list.parent@.insert(child, parent)
                 &&& discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base, into: None })
             },
     {
@@ -1935,6 +1936,7 @@ impl CapKernel {
                     placement: None,
                 }
                 &&& final(self).list.is_child(n, base)
+                &&& final(self).list.parent@ == old(self).list.parent@.insert(child, parent).insert(base, n)
                 &&& final(self).list.nodes@[base as int].live
                 &&& final(self).list.nodes@[base as int].kind is Binding
                 &&& forall|i: int| base < i < base + NODES_PER_PAGE ==> !#[trigger] final(self).list.nodes@[i].live

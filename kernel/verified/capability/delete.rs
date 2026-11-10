@@ -146,6 +146,7 @@ impl CapKernel {
             final(self).wf(),
             final(self).cores == old(self).cores,
             Self::same_tree(*old(self), *final(self)),
+            final(self).list.parent@ == old(self).list.parent@,
             ret is Some == old(self).can_delete_at(root, at),
             ret is None ==> *final(self) == *old(self),
             ret is Some ==> ret.unwrap() == old(self).payload_of(old(self).cap_at(root, at)->0),
