@@ -92,13 +92,13 @@ pub const TABLE_AP_RO: u64 = 0x4000_0000_0000_0000;
 /// The physical address of a 4K page or of the next table, bits 47:12.
 pub const MEM_MASK: u64 = 0x0000_ffff_ffff_f000;
 
-pub const MEM_4k_MASK: u64 = 0x0000_ffff_ffff_f000;
+pub const MEM_4K_MASK: u64 = 0x0000_ffff_ffff_f000;
 
 /// A 2M block's address, bits 47:21.
-pub const MEM_2m_MASK: u64 = 0x0000_ffff_ffe0_0000;
+pub const MEM_2M_MASK: u64 = 0x0000_ffff_ffe0_0000;
 
 /// A 1G block's address, bits 47:30.
-pub const MEM_1g_MASK: u64 = 0x0000_ffff_c000_0000;
+pub const MEM_1G_MASK: u64 = 0x0000_ffff_c000_0000;
 
 /// Whether this target maintains the accessed bit: always. The walker sets AF where TCR_EL1.HA is set
 /// (D8.5.1.2); a leaf whose AF is clear faults on its first access otherwise (D8.5.1.1), so where

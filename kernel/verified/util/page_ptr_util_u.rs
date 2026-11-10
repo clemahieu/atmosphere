@@ -1,9 +1,9 @@
 use vstd::prelude::*;
 verus! {
 
-use crate::arch::{MEM_2m_MASK, MEM_4k_MASK};
+use crate::arch::{MEM_2M_MASK, MEM_4K_MASK};
 #[cfg(verus_keep_ghost)]
-use crate::arch::{MEM_1g_MASK, MEM_MASK};
+use crate::arch::{MEM_1G_MASK, MEM_MASK};
 use crate::define::*;
 
 pub open spec fn MEM_valid(v: PAddr) -> bool {
@@ -15,12 +15,12 @@ pub fn va_4k_valid(va: usize) -> (ret: bool)
     ensures
         ret == spec_va_4k_valid(va),
 {
-    (va & (!MEM_4k_MASK) as usize == 0) && (va as u64 >> 39u64 & 0x1ffu64)
+    (va & (!MEM_4K_MASK) as usize == 0) && (va as u64 >> 39u64 & 0x1ffu64)
         >= KERNEL_MEM_END_L4INDEX as u64
 }
 
 pub open spec fn spec_va_4k_valid(va: usize) -> bool {
-    (va & (!MEM_4k_MASK) as usize == 0) && (va as u64 >> 39u64 & 0x1ffu64)
+    (va & (!MEM_4K_MASK) as usize == 0) && (va as u64 >> 39u64 & 0x1ffu64)
         >= KERNEL_MEM_END_L4INDEX as u64
 }
 
@@ -29,17 +29,17 @@ pub fn va_2m_valid(va: usize) -> (ret: bool)
     ensures
         ret == spec_va_2m_valid(va),
 {
-    (va & (!MEM_2m_MASK) as usize == 0) && (va as u64 >> 39u64 & 0x1ffu64)
+    (va & (!MEM_2M_MASK) as usize == 0) && (va as u64 >> 39u64 & 0x1ffu64)
         >= KERNEL_MEM_END_L4INDEX as u64
 }
 
 pub open spec fn spec_va_2m_valid(va: usize) -> bool {
-    (va & (!MEM_2m_MASK) as usize == 0) && (va as u64 >> 39u64 & 0x1ffu64)
+    (va & (!MEM_2M_MASK) as usize == 0) && (va as u64 >> 39u64 & 0x1ffu64)
         >= KERNEL_MEM_END_L4INDEX as u64
 }
 
 pub open spec fn spec_va_1g_valid(va: usize) -> bool {
-    (va & (!MEM_1g_MASK) as usize == 0) && (va as u64 >> 39u64 & 0x1ffu64)
+    (va & (!MEM_1G_MASK) as usize == 0) && (va as u64 >> 39u64 & 0x1ffu64)
         >= KERNEL_MEM_END_L4INDEX as u64
 }
 
@@ -89,7 +89,7 @@ pub proof fn lemma_index2va_4k_valid(l4i: L4Index, l3i: L3Index, l2i: L2Index, l
     assert(1 <= l4i < 512 && l3i < 512 && l2i < 512 && l1i < 512 ==> ((l4i << 39 | l3i << 30
         | l2i << 21 | l1i << 12) & (!0x0000_ffff_ffff_f000u64) as usize == 0) && ((l4i << 39 | l3i
         << 30 | l2i << 21 | l1i << 12) as u64 >> 39u64 & 0x1ffu64) >= 1u64) by (bit_vector);
-    assert((!MEM_4k_MASK) as usize == (!0x0000_ffff_ffff_f000u64) as usize);
+    assert((!MEM_4K_MASK) as usize == (!0x0000_ffff_ffff_f000u64) as usize);
     assert(KERNEL_MEM_END_L4INDEX as u64 == 1u64);
 }
 
@@ -108,7 +108,7 @@ pub proof fn lemma_index2va_2m_valid(l4i: L4Index, l3i: L3Index, l2i: L2Index)
     assert(1 <= l4i < 512 && l3i < 512 && l2i < 512 ==> ((l4i << 39 | l3i << 30 | l2i << 21
         | 0usize << 12) & (!0x0000_ffff_ffe0_0000u64) as usize == 0) && ((l4i << 39 | l3i << 30
         | l2i << 21 | 0usize << 12) as u64 >> 39u64 & 0x1ffu64) >= 1u64) by (bit_vector);
-    assert((!MEM_2m_MASK) as usize == (!0x0000_ffff_ffe0_0000u64) as usize);
+    assert((!MEM_2M_MASK) as usize == (!0x0000_ffff_ffe0_0000u64) as usize);
     assert(KERNEL_MEM_END_L4INDEX as u64 == 1u64);
 }
 
@@ -172,7 +172,7 @@ pub proof fn lemma_va_2m_valid_l1index(va: usize)
     ensures
         spec_v2l1index(va) == 0,
 {
-    assert((!MEM_2m_MASK) as usize == (!0x0000_ffff_ffe0_0000u64) as usize);
+    assert((!MEM_2M_MASK) as usize == (!0x0000_ffff_ffe0_0000u64) as usize);
     assert(va & (!0x0000_ffff_ffe0_0000u64) as usize == 0 ==> (va >> 12 & 0x1ff) == 0)
         by (bit_vector);
 }
@@ -185,7 +185,7 @@ pub proof fn lemma_va_1g_valid_indices(va: usize)
         spec_v2l2index(va) == 0,
         spec_v2l1index(va) == 0,
 {
-    assert((!MEM_1g_MASK) as usize == (!0x0000_ffff_c000_0000u64) as usize);
+    assert((!MEM_1G_MASK) as usize == (!0x0000_ffff_c000_0000u64) as usize);
     assert(va & (!0x0000_ffff_c000_0000u64) as usize == 0 ==> (va >> 21 & 0x1ff) == 0 && (va
         >> 12 & 0x1ff) == 0) by (bit_vector);
 }
@@ -214,7 +214,7 @@ pub proof fn lemma_va2index_index2va(va: usize)
     ensures
         spec_index2va(spec_va2index(va)) == va,
 {
-    assert((!MEM_4k_MASK) as usize == (!0x0000_ffff_ffff_f000u64) as usize);
+    assert((!MEM_4K_MASK) as usize == (!0x0000_ffff_ffff_f000u64) as usize);
     assert(va & (!0x0000_ffff_ffff_f000u64) as usize == 0 ==> ((va >> 39 & 0x1ff) << 39 | (va
         >> 30 & 0x1ff) << 30 | (va >> 21 & 0x1ff) << 21 | (va >> 12 & 0x1ff) << 12) == va)
         by (bit_vector);

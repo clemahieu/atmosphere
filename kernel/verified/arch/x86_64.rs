@@ -71,13 +71,13 @@ pub const PAGE_ENTRY_EXECUTE_MASK: u64 = 0x1u64 << 63;
 /// The physical address of a 4K page or of the next table, bits 47:12.
 pub const MEM_MASK: u64 = 0x0000_ffff_ffff_f000;
 
-pub const MEM_4k_MASK: u64 = 0x0000_ffff_ffff_f000;
+pub const MEM_4K_MASK: u64 = 0x0000_ffff_ffff_f000;
 
 /// A 2M page's address, bits 47:21.
-pub const MEM_2m_MASK: u64 = 0x0000_ffff_ffe0_0000;
+pub const MEM_2M_MASK: u64 = 0x0000_ffff_ffe0_0000;
 
 /// A 1G page's address, bits 47:30.
-pub const MEM_1g_MASK: u64 = 0x0000_ffff_c000_0000;
+pub const MEM_1G_MASK: u64 = 0x0000_ffff_c000_0000;
 
 /// The bits of an entry's word that are not the processor's accessed and dirty bits: a word ANDed with
 /// it has its status clear.

@@ -11,7 +11,7 @@ pub mod mapped_runs;
 // under that limit. The run check keeps user mappings out of the low entries that space keeps for
 // the kernel.
 const _: () = {
-    assert!(astd::boot::PAGE_BYTES == verified::define::PAGE_SZ_4k as u64);
+    assert!(astd::boot::PAGE_BYTES == verified::define::PAGE_SZ_4K as u64);
     assert!(
         free_ranges::MAX_PAGE_ADDRESS
             == verified::define::NUM_PAGES as u64 * astd::boot::PAGE_BYTES

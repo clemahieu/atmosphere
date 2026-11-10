@@ -8,7 +8,7 @@ pub type CpuId = usize;
 
 pub type PagePtr = usize;
 
-pub type PagePerm4k = PointsTo<[u8; PAGE_SZ_4k]>;
+pub type PagePerm4k = PointsTo<[u8; PAGE_SZ_4K]>;
 
 pub type VAddr = usize;
 
@@ -32,7 +32,7 @@ pub const KERNEL_MEM_END_L4INDEX: usize = 1;
 /// Pages the kernel tracks: 4 GiB from address 0. design/test-guest-memory/.
 pub const NUM_PAGES: usize = 1024 * 1024;
 
-pub const PAGE_SZ_4k: usize = 4096;
+pub const PAGE_SZ_4K: usize = 4096;
 
 pub const PCID_MAX: usize = 4096;
 

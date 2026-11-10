@@ -143,12 +143,12 @@ impl BlockTable {
 
     /// Address a is in a page the table tracks.
     pub open spec fn tracks_addr(&self, a: usize) -> bool {
-        a / PAGE_SZ_4k < NUM_PAGES
+        a / PAGE_SZ_4K < NUM_PAGES
     }
 
     /// The n pages from the one holding address a end within the tracked pages.
     pub open spec fn tracks_addr_run(&self, a: usize, n: int) -> bool {
-        a / PAGE_SZ_4k + n <= NUM_PAGES
+        a / PAGE_SZ_4K + n <= NUM_PAGES
     }
 
     /// Whether page i is one the table tracks.

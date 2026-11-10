@@ -107,7 +107,7 @@ pub struct DomainMapping {
     pub runs: ArrayVec<MappedRun, MAPPED_RUNS>,
 }
 
-/// Bytes in a page: the one definition outside the verified kernel, whose `PAGE_SZ_4k` the kernel's
+/// Bytes in a page: the one definition outside the verified kernel, whose `PAGE_SZ_4K` the kernel's
 /// boot code checks it against. Runs and the loader's map are in these.
 pub const PAGE_BYTES: u64 = 4096;
 
