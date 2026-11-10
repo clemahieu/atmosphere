@@ -31,16 +31,13 @@ use vstd::arithmetic::power2::*;
 use vstd::bits::*;
 use vstd::prelude::*;
 
+mod define;
+pub use define::*;
+
 verus! {
 
 /// The largest block a row can name: 2^36 pages reach the end of the 48-bit address space.
 pub const MAX_ORDER: u8 = 36;
-
-/// Device d is the page at DEVICE_OBJECTS + d pages, as in reach.rs.
-pub const DEVICE_OBJECTS: u64 = 0x1_0000_0000_0000;
-
-/// Every object is below this: memory, the devices' 2^36 pages, the console's and power's.
-pub const OBJECT_SPACE: u64 = 0x4_0000_0000_0000;
 
 /// The rights bits, as the kernel numbers them (kernel/verified/capability/view.rs).
 pub const READ: u32 = 1;
@@ -98,7 +95,7 @@ pub struct Join {
 
 /// A block of this order, in bytes.
 pub open spec fn bytes(order: u8) -> int {
-    pow2(order as nat) as int * 4096
+    pow2(order as nat) as int * PAGE_BYTES
 }
 
 /// The first byte past the block.
@@ -194,12 +191,12 @@ pub proof fn lemma_overlap_declared(held: Seq<Block>, rows: Seq<Row>, joins: Seq
     }
 }
 
-/// A block of any order up to MAX_ORDER is at least a page and fits below 2^48.
+/// A block of any order up to MAX_ORDER is at least a page and fits in memory, below 2^48.
 proof fn lemma_bytes(order: u8)
     requires
         order <= MAX_ORDER,
     ensures
-        4096 <= bytes(order) <= 0x1_0000_0000_0000,
+        PAGE_BYTES <= bytes(order) <= DEVICE_OBJECTS,
 {
     lemma_pow2_pos(order as nat);
     lemma2_to64_rest();
@@ -214,13 +211,13 @@ fn bytes_of(order: u8) -> (r: u64)
         order <= MAX_ORDER,
     ensures
         r as int == bytes(order),
-        4096 <= r <= 0x1_0000_0000_0000,
+        PAGE_BYTES <= r <= DEVICE_OBJECTS,
 {
     proof {
         lemma_bytes(order);
-        lemma_u64_shl_is_mul(4096, order as u64);
+        lemma_u64_shl_is_mul(PAGE_BYTES, order as u64);
     }
-    4096u64 << (order as u64)
+    PAGE_BYTES << (order as u64)
 }
 
 /// Decides block_ok.
@@ -438,7 +435,7 @@ pub open spec fn example_joins() -> Seq<Join> {
 proof fn lemma_example_held()
     ensures
         held_ok(example_held(), 0),
-        bytes(0) == 4096,
+        bytes(0) == PAGE_BYTES,
         bytes(9) == 0x20_0000,
         bytes(18) == 0x4000_0000,
 {
