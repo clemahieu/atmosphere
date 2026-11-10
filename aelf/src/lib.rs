@@ -15,7 +15,6 @@ use core::slice;
 
 use astd::heapless::Vec as ArrayVec;
 use astd::io::{Error as IoError, Read, ReadExactError, Seek, SeekFrom};
-use cfg_match::cfg_match;
 use plain::Plain;
 
 use astd::memory::PageProtection;
@@ -35,23 +34,17 @@ impl VAddr {
     }
 }
 
-cfg_match! {
-    target_arch = "x86_64" => {
-        use goblin::elf64 as elf_types;
-        const EM_SELF: u16 = elf_types::header::EM_X86_64;
-        const R_RELATIVE: u32 = elf_types::reloc::R_X86_64_RELATIVE;
-    }
-    target_arch = "x86" => {
-        use goblin::elf32 as elf_types;
-        const EM_SELF: u16 = elf_types::header::EM_386;
-        const R_RELATIVE: u32 = elf_types::reloc::R_386_RELATIVE;
-    }
-    target_arch = "aarch64" => {
-        use goblin::elf64 as elf_types;
-        const EM_SELF: u16 = elf_types::header::EM_AARCH64;
-        const R_RELATIVE: u32 = elf_types::reloc::R_AARCH64_RELATIVE;
-    }
-}
+use goblin::elf64 as elf_types;
+
+#[cfg(target_arch = "x86_64")]
+const EM_SELF: u16 = elf_types::header::EM_X86_64;
+#[cfg(target_arch = "x86_64")]
+const R_RELATIVE: u32 = elf_types::reloc::R_X86_64_RELATIVE;
+
+#[cfg(target_arch = "aarch64")]
+const EM_SELF: u16 = elf_types::header::EM_AARCH64;
+#[cfg(target_arch = "aarch64")]
+const R_RELATIVE: u32 = elf_types::reloc::R_AARCH64_RELATIVE;
 
 use elf_types::{
     header::{Header, ET_DYN},
@@ -545,5 +538,19 @@ mod tests {
         for (error, message) in cases {
             assert_eq!(format!("{error}"), message);
         }
+    }
+
+    // Values from the System V gABI (e_machine), the AMD64 psABI and the
+    // AArch64 ELF ABI (relocation types). Both targets load ELF64 images,
+    // whose file header is 64 bytes.
+    #[cfg(target_arch = "x86_64")]
+    const EXPECTED: (u16, u32) = (62, 8);
+    #[cfg(target_arch = "aarch64")]
+    const EXPECTED: (u16, u32) = (183, 1027);
+
+    #[test]
+    fn target_selects_its_machine_relocation_and_class() {
+        assert_eq!((EM_SELF, R_RELATIVE), EXPECTED);
+        assert_eq!(HEADER_SIZE, 64);
     }
 }

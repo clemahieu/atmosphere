@@ -6,7 +6,6 @@ license.workspace = true
 
 [dependencies]
 astd = { path = "../astd" }
-cfg-match = "0.2.1"
 log = "0.4.19"
 plain = "0.2.3"
 
