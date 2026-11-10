@@ -58,8 +58,8 @@ ESP_COMMAND_LINE = "cmdline"
 # (machine/pc/src/shutdown.rs).
 DEBUG_EXIT_PORT = 0xf4
 COMMAND_LINE = f"qemu_debug_exit_io_base={DEBUG_EXIT_PORT}"
-# Guest RAM, in MiB. The machine the gate, the boot-stack check, the pinned measurement and the
-# syscall benchmark boot: two whole GiB and 512 MiB above them for the firmware.
+# Guest RAM, in MiB. The machine the gate, the boot-stack check and the pinned measurement boot:
+# two whole GiB and 512 MiB above them for the firmware.
 # design/test-guest-memory/.
 MEMORY_MIB = 2560
 # The kernel tracks this much from address 0, in MiB (NUM_PAGES in kernel/verified/define.rs).

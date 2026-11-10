@@ -12,7 +12,7 @@ use verified::arch::Registers;
 
 const NEW_CPU: Cpu = Cpu::new();
 
-/// Slots for the CPUs the test machine boots. The benchmark starts 4 and the gate starts 2.
+/// Slots for the CPUs the test machine boots. Every boot starts 2.
 /// design/test-guest-memory/.
 const CPU_SLOTS: usize = 4;
 
