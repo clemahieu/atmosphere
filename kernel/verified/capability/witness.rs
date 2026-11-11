@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-//! The witnesses of five uses a process exists for. A creator can build a process that holds a
+//! The witnesses of six uses a process exists for. A creator can build a process that holds a
 //! capability it chose and has a thread bound to it: from the state boot leaves, the root gives itself a
 //! leaf, retypes a process and a thread bound to it, retypes a leaf into the new process's table and
 //! derives an untyped into it. The root can share memory between processes it built: it retypes two
@@ -10,6 +10,8 @@
 //! it gives its space the tables of one path, retypes a frame and maps it there. A process the root
 //! built can bind a device to a device space: the root records the device, retypes a device space,
 //! moves both capabilities into the process's table, and the process binds the one to the other.
+//! And the root can give back 2M of memory and take it again: it retypes a 2M frame, deletes its
+//! capability, frees the region through a retype under its untyped, and retypes the frame again.
 //! Every step is proven to succeed. Only Verus compiles this module, so no image contains it.
 //! See design/process-holds-capabilities/.
 use vstd::arithmetic::div_mod::*;
@@ -83,6 +85,117 @@ pub const WITNESS_BOUND_SPACE_SLOT: usize = 1;
 
 /// The index of the new process's table the device's capability is moved to: slot 2 of its root entry 0.
 pub const WITNESS_BOUND_DEVICE_SLOT: usize = 2;
+
+/// The index of the root's table a 2M frame's capability goes in, when the root frees one and types it
+/// again: slot 1 of root entry 2.
+pub const WITNESS_LARGE_FRAME_SLOT: usize = 257;
+
+/// What a 2M retype naming the block at page has left to zero: the pages past the cursor while its
+/// region is being zeroed, and the whole region otherwise. A step that says Again lowers it.
+pub open spec fn witness_zero_left(k: CapKernel, page: usize) -> int {
+    if k.zeroing.active(Large::Two, page / PAGES_PER_2M) && k.zeroing.cursor@[page as int] < PAGES_PER_2M {
+        PAGES_PER_2M - k.zeroing.cursor@[page as int]
+    } else {
+        PAGES_PER_2M as int
+    }
+}
+
+/// The 64 order-3 blocks from the jb-th past cursor, each free, are a whole 2M region when the first is
+/// 2M aligned: every page of it is free, and none is in a typed large block, since a large block holding
+/// any of them holds the first.
+proof fn lemma_free_2m(k: CapKernel, process: usize, cursor: usize, jb: int, big: usize)
+    requires
+        0 <= jb,
+        cursor % PROCESS_BYTES == 0,
+        cursor + (jb + 64) * PROCESS_BYTES <= NODE_SPACE,
+        forall|j: int| jb <= j < jb + 64 ==> #[trigger] k.root_table_block(process, cursor_block(cursor, j)),
+        big == cursor_block(cursor, jb),
+        big as int % block_bytes(9) == 0,
+    ensures
+        big / PAGE_SZ / PAGES_PER_2M < NUM_2M,
+        (big / PAGE_SZ) as int == (big / PAGE_SZ / PAGES_PER_2M) * PAGES_PER_2M,
+        k.blocks.large_free(Large::Two, (big / PAGE_SZ / PAGES_PER_2M) as int),
+{
+    lemma2_to64();
+    let g = (big / PAGE_SZ) as int;
+    let r = g / PAGES_PER_2M as int;
+    assert(block_bytes(9) == PAGES_PER_2M * PAGE_SZ);
+    lemma_fundamental_div_mod(big as int, block_bytes(9));
+    let q = big as int / block_bytes(9);
+    assert(big == (q * PAGES_PER_2M) * PAGE_SZ) by (nonlinear_arith)
+        requires
+            big == block_bytes(9) * q + big as int % block_bytes(9),
+            big as int % block_bytes(9) == 0,
+            block_bytes(9) == PAGES_PER_2M * PAGE_SZ,
+    ;
+    lemma_fundamental_div_mod_converse(big as int, PAGE_SZ as int, q * PAGES_PER_2M, 0);
+    assert(g == q * PAGES_PER_2M);
+    lemma_fundamental_div_mod_converse(g, PAGES_PER_2M as int, q, 0);
+    assert(r == q);
+    assert(jb * PROCESS_BYTES <= (jb + 64) * PROCESS_BYTES) by (nonlinear_arith);
+    lemma_cursor_block(cursor, jb);
+    assert(k.root_table_block(process, cursor_block(cursor, jb)));
+    assert(!k.blocks.covered(g));
+    assert forall|i: int| r * PAGES_PER_2M <= i < (r + 1) * PAGES_PER_2M implies {
+        &&& #[trigger] k.blocks.pages@[i].kind is Free
+        &&& !k.blocks.covered(i)
+    } by {
+        lemma_fundamental_div_mod(i - g, 8);
+        lemma_mod_bound(i - g, 8);
+        let m = (i - g) / 8;
+        let o = (i - g) % 8;
+        assert(0 <= m < 64 && 0 <= o < 8);
+        let cb = cursor_block(cursor, jb + m);
+        assert((jb + m) * PROCESS_BYTES <= (jb + 64) * PROCESS_BYTES) by (nonlinear_arith)
+            requires
+                m < 64,
+        ;
+        lemma_cursor_block(cursor, jb + m);
+        assert(k.root_table_block(process, cb));
+        assert(cb / PAGE_SZ == g + 8 * m);
+        assert(k.blocks.pages@[cb / PAGE_SZ + o].kind is Free);
+        lemma_fundamental_div_mod_converse(i, PAGES_PER_2M as int, r, i - g);
+        assert(region_2m(i) == r && region_2m(g) == r);
+        lemma_div_denominator(i, PAGES_PER_2M as int, PAGES_PER_2M as int);
+        lemma_div_denominator(g, PAGES_PER_2M as int, PAGES_PER_2M as int);
+        assert(region_1g(i) == region_1g(g));
+    }
+    let cl = cursor_block(cursor, jb + 63);
+    assert((jb + 63) * PROCESS_BYTES <= (jb + 64) * PROCESS_BYTES) by (nonlinear_arith);
+    lemma_cursor_block(cursor, jb + 63);
+    assert(k.root_table_block(process, cl));
+    assert(cl / PAGE_SZ == g + 8 * 63);
+    assert(g + PAGES_PER_2M <= NUM_PAGES);
+}
+
+/// After a 2M retype into index i of the table at root, whose node n held nothing, the slot holds the
+/// frame's capability, one deeper than the untyped, and the capability has no child.
+proof fn lemma_large_retyped_slot(pre: CapKernel, post: CapKernel, root: usize, from: usize, i: usize, n: usize, big: usize)
+    requires
+        CapKernel::large_frame_retyped(pre, post, root, from, i, big, 9),
+        post.wf(),
+        pre.tables.has_slot(&pre.list, root, i),
+        pre.tables.node_of(root, i) == n,
+        !pre.list.nodes@[n as int].live,
+        n % PAGE_SZ != 0,
+    ensures
+        post.slot_holds(root, i, n, large_frame_of(big, 9)),
+        post.list.childless(n),
+        post.list.nodes@[n as int].depth > 0,
+{
+    let parent = pre.tables.node_of(root, from);
+    lemma_slot_kept_two(pre, post, root, i, n, n);
+    assert(post.view().holds(root, n));
+    assert(post.is_cap(n));
+    pre.lemma_slot(root, i);
+    pre.lemma_slot_bound(n);
+    assert(pre.is_cap(parent));
+    assert(parent != n);
+    lemma_added_children(pre.list, post.list, n, parent);
+    if !post.list.childless(n) {
+        post.list.lemma_next_is_child(n);
+    }
+}
 
 /// The tables the runs need are never fewer than none.
 proof fn lemma_tables_bound_nonneg(runs: Seq<ImageRun>)
@@ -3473,6 +3586,343 @@ impl CapKernel {
             assert(s8.spaces.bound@[bs].contains(0));
         }
         ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8
+    }
+
+    /// Retypes the 2M block at big as a frame into index to of the table at root, under the untyped at
+    /// index from, and repeats the retype while it says Again: each Again zeroes more of the region, so
+    /// the repeats end, and the last says Done. Returns that Done and the state its step began from,
+    /// which has the list and the tables the call began with.
+    #[verifier::spinoff_prover]
+    fn witness_retype_2m(&mut self, root: usize, from: usize, to: usize, big: usize) -> (ret: (RetypeStep, Ghost<CapKernel>))
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
+            old(self).can_retype_large(root, from, to, big, 9),
+        ensures
+            ret.0 is Done,
+            Self::large_frame_retyped(ret.1@, *final(self), root, from, to, big, 9),
+            ret.1@.list == old(self).list,
+            ret.1@.tables == old(self).tables,
+            final(self).wf(),
+            final(self).processes == old(self).processes,
+            final(self).stale_epoch == old(self).stale_epoch,
+            final(self).cores == old(self).cores,
+            final(self).iommus == old(self).iommus,
+            block_typed(&final(self).blocks, BlockRef::Two(big / PAGE_SZ / PAGES_PER_2M)),
+            block_refs(&final(self).blocks, BlockRef::Two(big / PAGE_SZ / PAGES_PER_2M)) == 1,
+            !block_dead(&final(self).blocks, BlockRef::Two(big / PAGE_SZ / PAGES_PER_2M)),
+    {
+        let ghost s0 = *self;
+        let ghost mut mid = *self;
+        let mut done = false;
+        while !done
+            invariant
+                self.wf(),
+                self.processes == s0.processes,
+                self.stale_epoch == s0.stale_epoch,
+                self.cores == s0.cores,
+                self.iommus == s0.iommus,
+                self.tables.roots@.contains_key(root),
+                self.root_live(root),
+                !done ==> {
+                    &&& self.list == s0.list
+                    &&& self.tables == s0.tables
+                    &&& self.can_retype_large(root, from, to, big, 9)
+                },
+                done ==> {
+                    &&& Self::large_frame_retyped(mid, *self, root, from, to, big, 9)
+                    &&& mid.list == s0.list
+                    &&& mid.tables == s0.tables
+                    &&& block_typed(&self.blocks, BlockRef::Two(big / PAGE_SZ / PAGES_PER_2M))
+                    &&& block_refs(&self.blocks, BlockRef::Two(big / PAGE_SZ / PAGES_PER_2M)) == 1
+                    &&& !block_dead(&self.blocks, BlockRef::Two(big / PAGE_SZ / PAGES_PER_2M))
+                },
+            decreases (if done { 0 } else { 1 + witness_zero_left(*self, big / PAGE_SZ) }),
+        {
+            let ghost pre = *self;
+            // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+            let tracked mut steps = Steps::fresh();
+            let step = self.retype_large_frame(root, from, to, big, 9, Tracked(&mut steps));
+            match step {
+                RetypeStep::Refused => {
+                    proof {
+                        assert(false);
+                    }
+                },
+                RetypeStep::Again => {
+                    proof {
+                        assert(Self::large_frame_zeroing(pre, *self, root, from, to, big, 9));
+                        assert(witness_zero_left(*self, big / PAGE_SZ) < witness_zero_left(pre, big / PAGE_SZ));
+                    }
+                },
+                RetypeStep::Done => {
+                    proof {
+                        mid = pre;
+                        assert(self.tables.roots == pre.tables.roots);
+                    }
+                    done = true;
+                },
+            }
+        }
+        (RetypeStep::Done, Ghost(mid))
+    }
+
+    /// From the state boot leaves, as the root at `process`, with the 64 order-3 blocks from the jb-th
+    /// past those boot's tables took from the first untyped a 2M region at `big`, and the next block
+    /// free too: retype a leaf into root entry 2 of the root's table at that next block, retype the
+    /// region as a 2M frame into slot 1 of the leaf, delete the frame's capability, retype the region
+    /// under the root's untyped, which frees it, and retype it as a 2M frame into slot 1 again. Each
+    /// retype of the frame repeats while it says Again, until the region is zero, and then says Done;
+    /// the free says Freed, with the region free, out of every frame and not being zeroed, and at the
+    /// end the root holds the frame's capability again. Returns the states the free began and ended
+    /// in, so the free it proves is this run's, of a region dead at zero references. See
+    /// design/teardown-driven-by-retype/.
+    #[verifier::spinoff_prover]
+    pub fn witness_root_retypes_a_freed_2m_frame(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: Ghost<usize>,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        big: usize,
+        jb: Ghost<int>,
+    ) -> (ret: (RetypeStep, ReclaimStep, RetypeStep, Ghost<(CapKernel, CapKernel)>))
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
+            image_tables_bound(image@) <= jb@,
+            jb@ + 65 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
+            big == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, jb@),
+            big as int % block_bytes(9) == 0,
+        ensures
+            ret.0 is Done,
+            ret.1 is Freed,
+            ret.2 is Done,
+            ret.3@.0.region_is_dead(Large::Two, big / PAGE_SZ / PAGES_PER_2M),
+            ret.3@.0.large_frame_freed(ret.3@.1, 0, process, ROOT_UNTYPED_SLOT, big, 9),
+            final(self).wf(),
+            final(self).slot_holds(process, WITNESS_LARGE_FRAME_SLOT, (big + 64 * PROCESS_BYTES + 1) as usize, large_frame_of(big, 9)),
+            block_typed(&final(self).blocks, BlockRef::Two(big / PAGE_SZ / PAGES_PER_2M)),
+            block_refs(&final(self).blocks, BlockRef::Two(big / PAGE_SZ / PAGES_PER_2M)) == 1,
+            !block_dead(&final(self).blocks, BlockRef::Two(big / PAGE_SZ / PAGES_PER_2M)),
+    {
+        hide(CapKernel::wf);
+        let ghost s0 = *self;
+        let ghost bs = runs_blocks(free@, MAX_ORDER as nat);
+        let ghost first = page_block_payload(bs[0]);
+        let ghost itb = image_tables_bound(image@);
+        let ghost c0 = cursor_block(first.base, itb);
+        let ghost jr = jb@ - itb;
+        let ghost u = (leaf@ + ROOT_UNTYPED_SLOT) as usize;
+        let ghost r = big / PAGE_SZ / PAGES_PER_2M;
+        let ghost g = (big / PAGE_SZ) as int;
+        let at = Position { through: None, index: 2 };
+        proof {
+            lemma2_to64();
+            lemma_tables_bound_nonneg(image@);
+            // The root's first untyped.
+            assert(0 < untyped@);
+            assert(s0.slot_holds(process, ROOT_UNTYPED_SLOT, u, first));
+            assert(s0.list.nodes@[u as int].depth == 1);
+            assert(s0.tables.caps_wf(&s0.list)) by {
+                reveal(CapKernel::wf);
+            }
+            assert(cap_wf(first));
+            assert(payload_wf(first));
+            assert(first.kind is Untyped && first.rights == UNTYPED_RIGHTS);
+            assert(UNTYPED_RIGHTS & right_bit(Right::Retype) != 0) by (compute_only);
+            assert(s0.root_untyped(process) == u);
+            // The free blocks from the first past boot's tables to the leaf's, all in the untyped.
+            lemma_pow2_pos(first.order as nat);
+            lemma_fundamental_div_mod(block_bytes(first.order), PROCESS_BYTES as int);
+            lemma_mod_bound(block_bytes(first.order), PROCESS_BYTES as int);
+            assert((jb@ + 65) * PROCESS_BYTES <= block_bytes(first.order));
+            assert(first.base + block_bytes(first.order) <= NODE_SPACE);
+            assert(c0 == first.base + itb * PROCESS_BYTES);
+            assert(big == first.base + jb@ * PROCESS_BYTES);
+            assert(block_bytes(3) == PROCESS_BYTES);
+            assert(s0.root_table_block(process, c0));
+            assert(c0 % PROCESS_BYTES == 0);
+            // The untyped holds a 2M block, so its order is at least 9.
+            if first.order < 9 {
+                lemma_pow2_strictly_increases(first.order as nat, 9);
+                assert(false);
+            }
+            assert forall|j: int| 0 <= j < jr + 65 implies #[trigger] s0.root_table_block(process, cursor_block(c0, j)) by {
+                assert(cursor_block(first.base, itb + j) == cursor_block(c0, j));
+                assert(itb <= itb + j < untyped_tables(first));
+            }
+            assert(cursor_block(first.base, jb@) == cursor_block(c0, jr));
+            lemma_free_2m(s0, process, c0, jr, big);
+            lemma_cursor_block(c0, jr);
+            lemma_cursor_block(c0, jr + 64);
+            assert(big + 64 * PROCESS_BYTES == cursor_block(c0, jr + 64));
+            assert(s0.root_table_block(process, cursor_block(c0, jr + 64)));
+        }
+        let lb = big + 64 * PROCESS_BYTES;
+        let ghost nf = (lb + 1) as usize;
+        proof {
+            // The leaf's block, the one past the region.
+            assert(lb / PAGE_SZ == g + PAGES_PER_2M);
+            assert(block_bytes(1) == 2 * PAGE_SZ);
+            assert(lb % PROCESS_BYTES == 0);
+            lemma_aligned(lb);
+            lemma_block_page(lb, 0);
+            assert(lb != NO_LEAF);
+            assert(s0.destination_at(process, None) == Some(process));
+            assert(s0.tables.leaf(process, 2) == NO_LEAF);
+            assert(s0.can_retype_under(process, ROOT_UNTYPED_SLOT, lb, 1));
+            assert(s0.blocks.small_free((lb / PAGE_SZ) as int, 1)) by {
+                assert forall|k: int| 0 <= k < order_pages(1) implies #[trigger] s0.blocks.pages@[lb / PAGE_SZ + k].kind is Free by {
+                    assert(s0.blocks.pages@[lb / PAGE_SZ + k].kind is Free);
+                }
+            }
+            assert(s0.can_retype_leaf(process, ROOT_UNTYPED_SLOT, at, lb));
+        }
+
+        // A leaf for the root, in root entry 2 of its own table.
+        // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let ok1 = self.retype_leaf(process, ROOT_UNTYPED_SLOT, at, lb, Tracked(&mut steps));
+        let ghost s1 = *self;
+        proof {
+            assert(ok1);
+            assert(Self::leaf_retyped(s0, s1, process, ROOT_UNTYPED_SLOT, at, lb));
+            assert(s1.tables.leaf(process, 2) == lb);
+            assert(s0.tables.has_slot(&s0.list, process, ROOT_UNTYPED_SLOT));
+            assert(s0.is_cap(u));
+            assert(s1.tables.has_slot(&s1.list, process, ROOT_UNTYPED_SLOT));
+            assert(s1.tables.node_of(process, ROOT_UNTYPED_SLOT) == u);
+            assert(s1.is_cap(u) && s1.payload_of(u) == first && s1.list.nodes@[u as int].depth == 1);
+            assert(s1.processes == s0.processes);
+            assert(s1.tables.roots@.contains_key(process));
+            assert(s1.root_live(process));
+            assert(index_ok(WITNESS_LARGE_FRAME_SLOT) && index_entry(WITNESS_LARGE_FRAME_SLOT) == 2);
+            assert(s1.tables.has_slot(&s1.list, process, WITNESS_LARGE_FRAME_SLOT));
+            assert(s1.tables.node_of(process, WITNESS_LARGE_FRAME_SLOT) == nf);
+            assert(!s1.list.nodes@[nf as int].live);
+            // The region lies before the leaf's two pages, so it is still free.
+            assert forall|i: int| r * PAGES_PER_2M <= i < (r + 1) * PAGES_PER_2M implies {
+                &&& #[trigger] s1.blocks.pages@[i].kind is Free
+                &&& !s1.blocks.covered(i)
+            } by {
+                assert(s0.blocks.pages@[i].kind is Free && !s0.blocks.covered(i));
+                assert(s0.blocks.tracks(i));
+                assert(i < lb / PAGE_SZ);
+                assert(s1.blocks.pages@[i] == s0.blocks.pages@[i]);
+            }
+            assert(s1.blocks.large_free(Large::Two, r as int));
+            assert(block_within(big, 9, first));
+            assert(s1.can_retype_under(process, ROOT_UNTYPED_SLOT, big, 9));
+            assert(s1.can_retype_large(process, ROOT_UNTYPED_SLOT, WITNESS_LARGE_FRAME_SLOT, big, 9));
+        }
+
+        // The region as a 2M frame, in slot 1 of the leaf.
+        let (ok2, m1) = self.witness_retype_2m(process, ROOT_UNTYPED_SLOT, WITNESS_LARGE_FRAME_SLOT, big);
+        let ghost s2 = *self;
+        let at_frame = Position { through: None, index: WITNESS_LARGE_FRAME_SLOT };
+        proof {
+            let m1 = m1@;
+            assert(Self::large_frame_retyped(m1, s2, process, ROOT_UNTYPED_SLOT, WITNESS_LARGE_FRAME_SLOT, big, 9));
+            assert(m1.wf());
+            assert(m1.tables.has_slot(&m1.list, process, WITNESS_LARGE_FRAME_SLOT));
+            assert(m1.tables.has_slot(&m1.list, process, ROOT_UNTYPED_SLOT));
+            assert(m1.tables.node_of(process, ROOT_UNTYPED_SLOT) == u);
+            assert(m1.is_cap(u) && m1.payload_of(u) == first);
+            lemma_large_retyped_slot(m1, s2, process, ROOT_UNTYPED_SLOT, WITNESS_LARGE_FRAME_SLOT, nf, big);
+            assert(s2.tables.roots@.contains_key(process));
+            assert(s2.root_live(process));
+            assert(s2.table_at(process, None) == Some(process));
+            assert(s2.cap_at(process, at_frame) == Some(nf));
+            assert(s2.can_delete_at(process, at_frame));
+        }
+
+        // Delete the frame's capability: the region's one reference.
+        let ok3 = self.delete(process, at_frame);
+        let ghost s3 = *self;
+        proof {
+            let m1 = m1@;
+            assert(ok3 is Some);
+            assert(Self::cap_deleted_at(s2, s3, process, at_frame));
+            assert(Self::object_dropped(s2, s3, nf));
+            assert(s2.payload_of(nf).kind is Frame);
+            assert(s2.blocks.regions_2m@[r as int].typed);
+            assert(block_ref(&s2.blocks, big / PAGE_SZ) == BlockRef::Two(r));
+            assert(block_typed(&s3.blocks, BlockRef::Two(r)));
+            assert(s3.region_is_dead(Large::Two, r));
+            assert(s3.tables == s2.tables);
+            assert(s3.processes == s2.processes);
+            assert(s3.root_live(process));
+            assert(s3.tables.roots@.contains_key(process));
+            // The root's untyped is still its slot 5.
+            lemma_slot_kept_two(m1, s2, process, ROOT_UNTYPED_SLOT, nf, nf);
+            lemma_slot_kept_but(s2, s3, process, ROOT_UNTYPED_SLOT, nf);
+            Self::lemma_caps_frame(m1, s2, nf, nf, u);
+            Self::lemma_caps_frame(s2, s3, nf, nf, u);
+            assert(s3.is_cap(u) && s3.payload_of(u) == first);
+            // The untyped is shallower than the deepest: the leaf's hidden node is its child.
+            assert(s1.list.is_child(u, lb));
+            assert(s1.list.nodes@[lb as int].live) by {
+                reveal(CapKernel::wf);
+            }
+            assert(s2.list.nodes@[lb as int].live);
+            assert(s3.list.nodes@[lb as int].live);
+            assert(s3.list.parent@[lb] == u);
+            assert(page_of(lb) == lb);
+            assert(s3.tables.owner@.contains_key(lb));
+            lemma_owned_listed(s3, lb);
+            assert(s3.list.nodes@[u as int].depth < MAX_DEPTH);
+            assert(s3.can_retype_under(process, ROOT_UNTYPED_SLOT, big, 9));
+            assert(s3.can_reclaim_large(process, ROOT_UNTYPED_SLOT, big, 9));
+            // Boot left every 2M region acknowledged, and no step since unmapped or moved an epoch.
+            assert(s0.region_acknowledged(Large::Two, r));
+            assert(s3.stale_epoch == s0.stale_epoch && s3.cores == s0.cores && s3.iommus == s0.iommus);
+            let epoch = s0.stale_epoch.region(Large::Two, r) as int;
+            assert forall|c: int| 0 <= c < NUM_CPUS implies epoch <= #[trigger] s3.acked(c) by {
+                assert(s0.acked(c) == s3.acked(c));
+            }
+            assert forall|i: int| 0 <= i < NUM_IOMMUS && #[trigger] s3.iommu_present(i) implies epoch <= s3.iommu_acked(i) by {
+                assert(s0.iommu_present(i) && s0.iommu_acked(i) == s3.iommu_acked(i));
+            }
+            assert(s3.region_acknowledged(Large::Two, r));
+        }
+
+        // Retype the region under the root's untyped: the frame is dead, so the retype frees it.
+        let ok4 = self.reclaim(0, process, ROOT_UNTYPED_SLOT, big, Tracked(&mut steps));
+        let ghost s4 = *self;
+        proof {
+            assert(ok4 is Freed);
+            assert(s3.large_frame_freed(s4, 0, process, ROOT_UNTYPED_SLOT, big, 9));
+            assert(s4.list == s3.list && s4.tables == s3.tables && s4.processes == s3.processes);
+            assert(s4.root_live(process));
+            assert(s4.tables.roots@.contains_key(process));
+            assert(s4.blocks.large_free(Large::Two, r as int));
+            // Slot 1 of the leaf holds nothing again.
+            lemma_slot_kept_two(m1@, s2, process, WITNESS_LARGE_FRAME_SLOT, nf, nf);
+            lemma_slot_kept_but(s2, s3, process, WITNESS_LARGE_FRAME_SLOT, nf);
+            assert(s3.tables.node_of(process, WITNESS_LARGE_FRAME_SLOT) == nf);
+            lemma_deleted_dead(s3, nf);
+            assert(s4.can_retype_under(process, ROOT_UNTYPED_SLOT, big, 9));
+            assert(s4.can_retype_large(process, ROOT_UNTYPED_SLOT, WITNESS_LARGE_FRAME_SLOT, big, 9));
+        }
+
+        // The region as a 2M frame in slot 1 again.
+        let (ok5, m4) = self.witness_retype_2m(process, ROOT_UNTYPED_SLOT, WITNESS_LARGE_FRAME_SLOT, big);
+        proof {
+            let s5 = *self;
+            let m4 = m4@;
+            assert(m4.wf());
+            assert(m4.tables.has_slot(&m4.list, process, WITNESS_LARGE_FRAME_SLOT));
+            assert(m4.tables.node_of(process, WITNESS_LARGE_FRAME_SLOT) == nf);
+            lemma_large_retyped_slot(m4, s5, process, ROOT_UNTYPED_SLOT, WITNESS_LARGE_FRAME_SLOT, nf, big);
+        }
+        (ok2, ok4, ok5, Ghost((s3, s4)))
     }
 }
 
