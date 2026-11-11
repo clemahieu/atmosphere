@@ -199,6 +199,7 @@ impl CapKernel {
                 ==> #[trigger] final(self).loaded(d, r) == old(self).loaded(d, r),
             forall|e: TlbEntry| e.space == s && space_says(tree_of(&old(self).table_pages, &old(self).spaces), s, e.page)
                 ==> #[trigger] final(self).core_may_hold(c as int, e),
+            final(self).spaces.loaded@ == old(self).spaces.loaded@.insert(s, final(self).spaces.loaded@[s]),
             final(self).spaces.loaded@.dom() == old(self).spaces.loaded@.dom(),
             final(self).spaces.roots == old(self).spaces.roots,
             final(self).spaces.records == old(self).spaces.records,

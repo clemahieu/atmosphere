@@ -1307,10 +1307,11 @@ impl CapKernel {
     /// core 0's base register at it as a core that ran it would have, point core 0's base register at the
     /// kernel's own root, which no space's block holds, as an idle core does once the process it ran is
     /// dead, retype the process's block, which retires the space now that no base register names it,
-    /// retype it again, which refuses since core 0 still depends on the space, have core 0 acknowledge
-    /// the retire's flush, retype the block a third time, which frees it, and retype a process at the
-    /// same block into slot 257 again. Each step returns what a teardown driven by retype says, in this
-    /// order, and at the end the root holds a capability to a live process at the same block. See
+    /// retype it again, which refuses since core 0 still depends on the space, load the root's space on
+    /// core 0, which leaves the retire in place, have core 0 acknowledge the retire's flush, retype the
+    /// block a third time, which frees it, and retype a process at the same block into slot 257 again.
+    /// Each step returns what a teardown driven by retype says, in this order, and at the end the root
+    /// holds a capability to a live process at the same block. See
     /// design/teardown-driven-by-retype/.
     #[verifier::spinoff_prover]
     pub fn witness_process_block_retyped(
@@ -1795,10 +1796,21 @@ impl CapKernel {
         proof {
             assert(ok8b is Refused);
             assert(*self == t7);
-            assert(t7.tlb_wf()) by {
+            assert(t7.spaces.roots@.contains_key(process));
+            assert(t7.spaces.records@[process].value().kind is Process);
+            assert(t7.cores@[0].generation <= 3);
+        }
+
+        // Core 0 loads the root's space before it takes the retire's flush, as a core entering the root's
+        // thread does, and the load leaves the retire of the dead process's space in place.
+        self.load_space(0, process, Tracked(&mut steps));
+        let ghost j7 = *self;
+        proof {
+            assert(j7.spaces.loaded@[base] == t7.spaces.loaded@[base]);
+            assert(j7.tlb_wf()) by {
                 reveal(CapKernel::wf);
             }
-            assert(t7.acked(0) <= t7.flush_epoch);
+            assert(j7.acked(0) <= j7.flush_epoch);
         }
 
         // Core 0 flushes every context and acknowledges the retire's epoch.
@@ -1812,7 +1824,8 @@ impl CapKernel {
             assert(r7.acked(0) <= r7.flush_epoch);
             assert forall|d: int| 0 <= d < NUM_CPUS implies r7.acked(d) <= #[trigger] a7.acked(d) by {
                 if d != 0 {
-                    assert(a7.cores@[d] == t7.cores@[d]);
+                    assert(a7.cores@[d] == j7.cores@[d]);
+                    assert(j7.cores@[d] == t7.cores@[d]);
                     assert(l7.cores@[d] == r7.cores@[d]);
                 }
             }
@@ -1830,7 +1843,7 @@ impl CapKernel {
                 }
             }
             // Core 0 is past the retire, and no other core has the space loaded.
-            assert(a7.spaces == t7.spaces);
+            assert(a7.spaces == j7.spaces);
             assert forall|d: int| 0 <= d < NUM_CPUS implies !#[trigger] a7.depends(d, base) by {
                 if d == 0 {
                     assert(a7.past_retire(0, base));
