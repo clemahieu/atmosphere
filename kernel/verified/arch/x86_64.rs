@@ -11,8 +11,6 @@ use crate::capability::kernel::CommandBuffers;
 use crate::capability::kernel::TlbEntry;
 use crate::arch::{BaseRegister, IotlbModel, TlbModel};
 use crate::capability::operation::Outcome;
-#[cfg(verus_keep_ghost)]
-use crate::capability::console::PRINT_BYTES;
 use crate::capability::steps::Steps;
 use crate::define::PAddr;
 #[cfg(verus_keep_ghost)]
@@ -1154,50 +1152,43 @@ pub open spec fn user_frame(f: Registers) -> Registers {
     }
 }
 
-/// COM1's base port, the serial port the kernel crate's console writes.
+/// COM1's base port, the serial port the kernel crate's console writes. The PC's COM1 is a 16550 at this
+/// port, a fact of the machine.
 pub const COM1: u16 = 0x3f8;
 
-/// The line status register, five ports above the base; bit 5 says the transmit register is empty.
+/// The line status register, five ports above the base; bit 5, THRE, says the transmit holding
+/// register is empty, or with the FIFOs on the transmit FIFO (PC16550D datasheet, National
+/// Semiconductor, June 1995: the register table under A0, A1, A2, p. 11, and section 8.4).
 pub const SERIAL_LINE_STATUS: u16 = 5;
 
 pub const SERIAL_TRANSMIT_EMPTY: u8 = 1 << 5;
 
-/// Writes to COM1 the bytes words a to e carry: each word's eight bytes from its lowest, a's first, up
-/// to the first zero byte. Each byte waits for the transmit register to empty, which the port sets and
-/// the kernel's state does not, so each byte is one unit: design/one-lock-bounded-steps/.
+/// Writes one byte to COM1: waits until the line status says the transmit holding register is empty,
+/// then stores the byte in it at the base port (PC16550D datasheet, p. 11 and section 8.4). The store
+/// reaches the holding register while Line Control bit 7, DLAB, is clear, as machine/pc's console_init
+/// leaves it. The wait is on the device, which the kernel's state does not set, so the byte is one
+/// unit: design/one-lock-bounded-steps/. IN and OUT reach the I/O address space and no memory, so
+/// nothing the proof models changes.
 #[verifier(external_body)]
-// external_body(glue): writes the serial port through port I/O, which has no state a proof could see
-pub fn serial_write(a: u64, b: u64, c: u64, d: u64, e: u64, Tracked(steps): Tracked<&mut Steps>)
+// external_body(glue): waits on COM1's line status and stores one byte in its transmit holding register through port I/O, which has no state a proof could see
+pub fn serial_write_byte(byte: u8, Tracked(steps): Tracked<&mut Steps>)
     ensures
-        final(steps).count <= old(steps).count + PRINT_BYTES,
+        final(steps).count == old(steps).count + 1,
 {
-    let words = [a, b, c, d, e];
-    let mut w = 0;
-    while w < 5 {
-        let mut k = 0;
-        while k < 8 {
-            let byte = (words[w] >> (8 * k)) as u8;
-            if byte == 0 {
-                return;
+    unsafe {
+        loop {
+            let status: u8;
+            core::arch::asm!(
+                "in al, dx",
+                in("dx") COM1 + SERIAL_LINE_STATUS,
+                out("al") status,
+                options(nomem, nostack),
+            );
+            if status & SERIAL_TRANSMIT_EMPTY != 0 {
+                break;
             }
-            unsafe {
-                loop {
-                    let status: u8;
-                    core::arch::asm!(
-                        "in al, dx",
-                        in("dx") COM1 + SERIAL_LINE_STATUS,
-                        out("al") status,
-                        options(nomem, nostack),
-                    );
-                    if status & SERIAL_TRANSMIT_EMPTY != 0 {
-                        break;
-                    }
-                }
-                core::arch::asm!("out dx, al", in("dx") COM1, in("al") byte, options(nomem, nostack));
-            }
-            k += 1;
         }
-        w += 1;
+        core::arch::asm!("out dx, al", in("dx") COM1, in("al") byte, options(nomem, nostack));
     }
 }
 

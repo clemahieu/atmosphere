@@ -14,8 +14,6 @@ use crate::capability::kernel::CommandBuffers;
 use crate::capability::kernel::TlbEntry;
 use crate::arch::{BaseRegister, IotlbModel, TlbModel};
 use crate::capability::operation::Outcome;
-#[cfg(verus_keep_ghost)]
-use crate::capability::console::PRINT_BYTES;
 use crate::capability::steps::Steps;
 use crate::define::PAddr;
 #[cfg(verus_keep_ghost)]
@@ -971,50 +969,37 @@ pub const PL011_FLAG: usize = 0x018;
 
 pub const PL011_TRANSMIT_FULL: u32 = 1 << 5;
 
-/// Writes to the PL011 the bytes words a to e carry: each word's eight bytes from its lowest, a's
-/// first, up to the first zero byte. Each byte waits while the transmitter is full, which the device
-/// sets and the kernel's state does not, so each byte is one unit: design/one-lock-bounded-steps/.
-/// Each access is one load or store of a single register without writeback, the form whose stage 2
-/// data abort reports the access in its syndrome (Arm ARM D24.2.45, ISV), which a hypervisor
-/// emulating the device needs.
+/// Writes one byte to the PL011: waits while the flag register says the transmitter is full, then
+/// stores the byte in the data register (DDI 0183 3.3.1 and 3.3.3). The wait is on the device, which
+/// the kernel's state does not set, so the byte is one unit: design/one-lock-bounded-steps/. Each
+/// access is one load or store of a single register without writeback, the form whose stage 2 data
+/// abort reports the access in its syndrome (Arm ARM D24.2.45, ISV), which a hypervisor emulating the
+/// device needs.
 #[verifier(external_body)]
-// external_body(glue): writes the PL011 through its memory-mapped registers, which have no state a proof could see
-pub fn serial_write(a: u64, b: u64, c: u64, d: u64, e: u64, Tracked(steps): Tracked<&mut Steps>)
+// external_body(glue): waits on the PL011's flag register and stores one byte in its data register through memory-mapped registers, which have no state a proof could see
+pub fn serial_write_byte(byte: u8, Tracked(steps): Tracked<&mut Steps>)
     ensures
-        final(steps).count <= old(steps).count + PRINT_BYTES,
+        final(steps).count == old(steps).count + 1,
 {
-    let words = [a, b, c, d, e];
-    let mut w = 0;
-    while w < 5 {
-        let mut k = 0;
-        while k < 8 {
-            let byte = (words[w] >> (8 * k)) as u8;
-            if byte == 0 {
-                return;
+    unsafe {
+        loop {
+            let flags: u32;
+            core::arch::asm!(
+                "ldr {flags:w}, [{register}]",
+                register = in(reg) PL011 + PL011_FLAG,
+                flags = out(reg) flags,
+                options(nostack, readonly, preserves_flags),
+            );
+            if flags & PL011_TRANSMIT_FULL == 0 {
+                break;
             }
-            unsafe {
-                loop {
-                    let flags: u32;
-                    core::arch::asm!(
-                        "ldr {flags:w}, [{register}]",
-                        register = in(reg) PL011 + PL011_FLAG,
-                        flags = out(reg) flags,
-                        options(nostack, readonly, preserves_flags),
-                    );
-                    if flags & PL011_TRANSMIT_FULL == 0 {
-                        break;
-                    }
-                }
-                core::arch::asm!(
-                    "str {byte:w}, [{register}]",
-                    register = in(reg) PL011 + PL011_DATA,
-                    byte = in(reg) byte as u32,
-                    options(nostack, preserves_flags),
-                );
-            }
-            k += 1;
         }
-        w += 1;
+        core::arch::asm!(
+            "str {byte:w}, [{register}]",
+            register = in(reg) PL011 + PL011_DATA,
+            byte = in(reg) byte as u32,
+            options(nostack, preserves_flags),
+        );
     }
 }
 

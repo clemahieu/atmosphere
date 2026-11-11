@@ -7,7 +7,7 @@ use vstd::prelude::*;
 
 verus! {
 
-use crate::arch::serial_write;
+use crate::arch::serial_write_byte;
 use crate::capability::kernel::*;
 use crate::capability::operation::*;
 #[cfg(verus_keep_ghost)]
@@ -20,6 +20,42 @@ pub const CONSOLE_RIGHTS: u32 = 0;
 
 /// The most bytes one print writes: five words of eight bytes. The serial write is a unit per byte.
 pub const PRINT_BYTES: usize = 40;
+
+/// Writes to the serial port the bytes words a to e carry: each word's eight bytes from its lowest, a's
+/// first, up to the first zero byte. The arch module's serial_write_byte writes one byte and counts the
+/// iteration's one unit, its wait on the device: design/one-lock-bounded-steps/.
+pub fn serial_write(a: u64, b: u64, c: u64, d: u64, e: u64, Tracked(steps): Tracked<&mut Steps>)
+    ensures
+        final(steps).count <= old(steps).count + PRINT_BYTES,
+{
+    let ghost start = steps.count;
+    let mut i: usize = 0;
+    while i < PRINT_BYTES
+        invariant
+            i <= PRINT_BYTES,
+            start == old(steps).count,
+            steps.count == start + i,
+        decreases PRINT_BYTES - i,
+    {
+        let word = if i < 8 {
+            a
+        } else if i < 16 {
+            b
+        } else if i < 24 {
+            c
+        } else if i < 32 {
+            d
+        } else {
+            e
+        };
+        let byte = (word >> (8 * (i % 8)) as u64) as u8;
+        if byte == 0 {
+            return;
+        }
+        serial_write_byte(byte, Tracked(steps));
+        i += 1;
+    }
+}
 
 /// The console capability, naming the console's object.
 pub open spec fn console_payload() -> Payload {
