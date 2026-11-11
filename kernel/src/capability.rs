@@ -148,6 +148,8 @@ pub fn boot(boot_info: &BootInfo) -> Entry {
     let process = page(PROCESS_PAGE);
     let kernel = unsafe { &mut *(page(BOOT_OBJECT_PAGES) as *mut CapKernel) };
 
+    // kernel_init takes the loader's root as a page, the one a core naming no space is pointed back at.
+    assert!(boot_info.pml4 as u64 % PAGE_BYTES == 0, "the loader's root table is not a page");
     let mut kernel_entries = Array::<usize, KERNEL_MEM_END_L4INDEX>::new(0);
     for index in 0..KERNEL_MEM_END_L4INDEX {
         kernel_entries.set(index, unsafe { *(boot_info.pml4 as *const usize).add(index) });

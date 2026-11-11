@@ -753,7 +753,6 @@ impl CapKernel {
         requires
             old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
             old(self).spaces.kernel_root@ == kernel_root,
-            kernel_root % PAGE_SZ == 0,
         ensures
             final(self).wf(),
             final(self).cores@[0].space is None,

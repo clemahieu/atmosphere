@@ -191,7 +191,8 @@ impl CapKernel {
     /// the first untyped's order-3 blocks, every one past those the image's tables can take is free;
     /// the IOMMUs present are the `present` boot was given, which a bind needs of its device's IOMMU;
     /// the root reaches exactly the console, power and the pages of its process, its thread, the free
-    /// runs and the image, and nothing else reaches anything the root does not, besides itself.
+    /// runs and the image, and nothing else reaches anything the root does not, besides itself; the
+    /// root every core booted on is a page, so a core may be pointed back at it.
     pub open spec fn booted(
         &self,
         root: usize,
@@ -270,6 +271,7 @@ impl CapKernel {
         &&& forall|r: int| 2 <= r < ROOT_ENTRIES ==> #[trigger] self.tables.leaf(process, r) == NO_LEAF
         &&& forall|j: int| image_tables_bound(image) <= j < untyped_tables(first)
             ==> #[trigger] self.root_table_block(process, cursor_block(first.base, j))
+        &&& self.spaces.kernel_root@ % PAGE_SZ == 0
     }
 
     /// Boot of the capability kernel, from the memory boot set aside for it: init with the list's
@@ -281,8 +283,8 @@ impl CapKernel {
     /// `pages`, which is split here between the steps. It returns how many untyped and frame
     /// capabilities the root holds, and refuses exactly when the free runs make no block or more than
     /// the first leaf holds, or the image does not fit the second leaf or the first untyped block's
-    /// tables. On success the state is the one `booted` describes, with `kernel_root` as the root a core
-    /// naming no space may be pointed back at. See design/root-process-at-boot/.
+    /// tables. On success the state is the one `booted` describes, with `kernel_root`, a page, as the
+    /// root a core naming no space may be pointed back at. See design/root-process-at-boot/.
     #[verifier::spinoff_prover]
     pub fn kernel_init(
         &mut self,
@@ -305,6 +307,7 @@ impl CapKernel {
     ) -> (ret: Option<(usize, usize)>)
         requires
             boot_registers(registers, kernel_root),
+            kernel_root % PAGE_SZ == 0,
             boot_tlb(tlb),
             boot_iotlb(iotlb),
             old(self).cores.wf(),
