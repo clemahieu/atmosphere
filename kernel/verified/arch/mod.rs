@@ -18,7 +18,8 @@
 //! and what could write one where it sees none: a derive or an attribute macro outside verus!, a macro
 //! definition, a macro other than the vstd and core ones the crates use. Inside verus! it refuses a derive
 //! of any trait but Clone, Copy, Debug, PartialEq and Eq, the automatically_derived attribute and an
-//! import renaming derive or renaming something to one of those: Verus marks a derived Default
+//! import renaming derive or renaming something to one of those, and anywhere a raw identifier, which
+//! rustc reads as the name after r# (r#derive as derive): Verus marks a derived Default
 //! external, vstd's Default ensures nothing for a crate's type, and use_type_invariant would assume the
 //! invariant of the value it returns, which no verified code built. Only the glue that does what a token attests makes or changes it, but for
 //! TlbModel::grow and IotlbModel::grow, by which proof code may add entries to a model of what a TLB

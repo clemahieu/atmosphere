@@ -57,7 +57,8 @@ marks the rest external, and Debug, PartialEq and Eq build no value of the type,
 hands the proof a value no verified code built (vstd's Default ensures nothing for a crate's type), whose
 type invariant use_type_invariant then assumes. So are the automatically_derived attribute, by which
 Verus reads an impl as derived, and an import renaming derive or renaming something to one of those
-derives.
+derives. So is a raw identifier, r# and a name, anywhere: rustc reads r#derive as derive and
+r#cfg_attr as cfg_attr, while each rule above reads a name as the word it is spelled.
 vstd's proof_from_false is not refused: it requires false, which only an assumption or an exemption
 refused here can supply.
 
@@ -156,6 +157,10 @@ DERIVE_RENAME = re.compile(r"\b(?:r#)?derive\s+as\b|\bas\s+(?:r#)?(" + "|".join(
 OUTSIDE_ATTRIBUTE = re.compile(r"#\s*!?\s*\[")
 # What makes rustc compile a file the scan does not read: a path attribute, in any attribute or
 # cfg_attr, an include!, and a module named target, whose directory the scan leaves out.
+# A raw identifier, r# and a name, which rustc reads as the name itself: every rule here reads a name as
+# the word it is spelled, so r#derive or r#cfg_attr would pass as another word. A raw string, r#"...",
+# is a literal and not one. The marked crates write none.
+RAW_IDENTIFIER = re.compile(r"\br#[A-Za-z_]")
 UNREAD_FILE = re.compile(r"#\s*!?\s*\[\s*path\b|\bpath\s*=\s*(?:r#*)?\"|\binclude\s*!|"
                          r"\bmod\s+(?:r#)?target\b")
 
@@ -452,6 +457,14 @@ def unread_exemptions(path, source):
     return refused
 
 
+def raw_identifiers(path, source):
+    """Each line of one file whose code holds a raw identifier, which rustc reads as the name after r#
+    and the rules of this check would read as another word."""
+    return [f"{path}:{index + 1}: {line.strip()}"
+            for index, (line, code) in enumerate(zip(source.splitlines(), code_lines(source)))
+            if RAW_IDENTIFIER.search(code)]
+
+
 def body_lines(code, declared):
     """The indices of the lines of the body of the function declared on line declared: from the brace
     that opens it to the brace that closes it; none for a declaration with no body."""
@@ -712,6 +725,8 @@ def scan_tree(repo, documents):
             refused.extend(f"{line} states a spec of code Verus does not read, which the proof takes on trust"
                            for line in trusted_specifications(path, source))
             refused.extend(unread_items(path, source))
+            refused.extend(f"{line} names a raw identifier, which rustc reads as the name after r# and this "
+                           "check would read as another word" for line in raw_identifiers(path, source))
     return found, refused
 
 
@@ -1355,6 +1370,11 @@ class ForgeryTests(unittest.TestCase):
             "a derive of another crate's macro": "verus! {\n#[derive(asys::SkMake)]\npub struct SkTok {}\n}\n",
             "an impl marked automatically derived": ("verus! {\n#[automatically_derived]\nimpl Default for SkTok {\n"
                                                      "    fn default() -> Self { SkTok {} }\n}\n}\n"),
+            "a raw derive (a)": self.SK_BOX.replace("#[derive(Default)]", "#[r#derive(Default)]"),
+            "a raw derive (b)": self.SK_TLB.replace("#[derive(Default)]", "#[r#derive(Default)]"),
+            "a raw derive inside cfg_attr": "verus! {\n#[cfg_attr(all(), r#derive(Default))]\npub struct SkTok {}\n}\n",
+            "a raw cfg_attr": "verus! {\n#[r#cfg_attr(all(), derive(Default))]\npub struct SkTok {}\n}\n",
+            "a raw derive by its path": "verus! {\n#[::core::prelude::v1::r#derive(Default)]\npub struct SkTok {}\n}\n",
             "derive renamed": "use core::prelude::v1::derive as sk_derive;\n",
             "Default renamed to an allowed derive": "use core::default::Default as Clone;\n",
             "Default renamed in a group": "use core::default::{Default as Debug};\n",
@@ -1363,6 +1383,34 @@ class ForgeryTests(unittest.TestCase):
             with self.subTest(name):
                 refused = ForgeryTests.refused(self, "capability/mapping.rs", {"capability/mapping.rs": form})
                 self.assertEqual(len(refused), 1, (form, refused))
+
+    def test_a_raw_identifier_is_refused_wherever_a_rule_reads_a_name(self):
+        forms = {
+            "assume": "verus! {\nproof fn f() { r#assume(false); }\n}\n",
+            "admit by path": "verus! {\nproof fn f() { vstd::pervasive::r#admit(); }\n}\n",
+            "a counted attribute": "verus! {\n#[verifier::r#external_body]\nfn f() {}\n}\n",
+            "an external attribute": "verus! {\n#[r#verifier::external]\nfn f() {}\n}\n",
+            "an assumed specification": "verus! {\npub r#assume_specification [f] ();\n}\n",
+            "assume_new": "verus! {\nfn f() { let t = Tracked::r#assume_new(); }\n}\n",
+            "unsafe": "verus! {\nfn f() { r#unsafe { } }\n}\n",
+            "a trusted spec": "verus! {\nimpl r#FromSpecImpl<u8> for SkTok {}\n}\n",
+            "a feature": "#![r#feature(concat_idents)]\n",
+            "a macro": "verus! {\nr#sk_impl!(SkTok);\n}\n",
+            "a macro definition": "verus! {\nr#macro_rules! sk { () => {} }\n}\n",
+            "a rename to an allowed macro": "use asys::sk_impl as r#seq;\n",
+            "a path attribute": '#[r#path = "forge.inc"]\nmod forge;\n',
+            "an attribute outside verus!": "#[r#test]\nfn f() {}\n",
+        }
+        for name, form in forms.items():
+            with self.subTest(name):
+                refused = ForgeryTests.refused(self, "capability/mapping.rs", {"capability/mapping.rs": form},
+                                               "raw identifier")
+                self.assertEqual(len(refused), 1, (form, refused))
+
+    def test_raw_strings_are_not_raw_identifiers(self):
+        source = 'verus! {\nfn f() { let a = r#"x"#; let b = br#"y"#; let c = cr##"z"##; }\n}\n'
+        self.assertEqual(ForgeryTests.refused(self, "capability/mapping.rs", {"capability/mapping.rs": source},
+                                              "raw identifier"), [])
 
     def test_the_derives_verus_verifies_or_that_build_no_value_are_accepted(self):
         source = ("verus! {\n#[derive(Clone, Copy)]\npub struct P { x: u8 }\n#[derive(Clone, Copy, Debug)]\n"
