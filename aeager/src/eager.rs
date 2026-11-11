@@ -5,10 +5,17 @@
 //!
 //! `Spans` is the window's bookkeeping, which the contract's view rests on: which blocks of the window
 //! a span holds, and the spans by base. `Record` is what the source knows of its untyped: each page
-//! free, held as a frame for reuse, mapped, or taken by a table page or by a retype the kernel
+//! free, held as a frame for reuse, mapped, parked, or taken by a table page or by a retype the kernel
 //! refused, and which tables of the window's path are linked. The record decides nothing the view
-//! states, so its proof is that every index and address it computes is in range; whether a frame is
-//! there to back a page is the kernel's to say, and a refusal anywhere refuses the run.
+//! states, so its proof is that every index and address it computes is in range and that a parked
+//! page's permission is the one it hands out when that page's address is backed again; whether a frame
+//! is there to back a page is the kernel's to say, and a refusal anywhere refuses the run.
+//!
+//! The source never unmaps. The kernel's unmap leaves a core's translation of the page until a flush
+//! the caller cannot wait for (design/flush-without-waiting/), so a frame mapped again elsewhere, or
+//! another frame mapped at the same address, could be reached through the old translation. A released
+//! page stays mapped at its address, parked with the permission to its bytes, and backs that address
+//! again and no other: each window address is mapped once, to one frame, for the source's life.
 #[cfg(verus_keep_ghost)]
 use vstd::arithmetic::div_mod::*;
 use vstd::prelude::*;
@@ -198,14 +205,18 @@ pub const TABLE_PAGES: usize = 8;
 /// A page of the untyped nothing has retyped.
 const FREE: u8 = 0;
 
-/// A page retyped as a frame whose capability the source holds, mapped nowhere.
+/// A page retyped as a frame whose capability the source holds, mapped nowhere: a map of it was refused.
 const HELD: u8 = 1;
 
 /// A page retyped as a frame and mapped at the address the record names.
 const MAPPED: u8 = 2;
 
-/// A page the source does not use again: a table page's, or one whose retype or unmap was refused.
+/// A page the source does not use again: a table page's, or one whose retype was refused.
 const TAKEN: u8 = 3;
+
+/// A page retyped as a frame and mapped at the address the record names, in no run: its run was
+/// released, and the record holds the permission to its bytes until that address is backed again.
+const PARKED: u8 = 4;
 
 /// Scaling by a whole number of units keeps order and distributes over a sum.
 proof fn lemma_scale(a: int, b: int, c: int)
@@ -475,6 +486,10 @@ struct Record {
     tabled: [bool; WINDOW_BLOCKS],
     state: [u8; MAX_PAGES],
     owner: [usize; MAX_PAGES],
+    /// The permission to each parked page's bytes, by page.
+    parked: Tracked<Map<int, PointsToRaw>>,
+    /// The provenance of every permission the record hands out.
+    provenance: Ghost<Provenance>,
 }
 
 impl Record {
@@ -488,6 +503,11 @@ impl Record {
         &&& forall|i: int, j: int|
             0 <= i < j < self.pages ==> #[trigger] frame_slot(self.slots as int, i) < #[trigger] frame_slot(self.slots as int, j)
         &&& self.window + WINDOW_BYTES <= usize::MAX
+        &&& forall|i: int| 0 <= i < self.pages && #[trigger] self.state@[i] == PARKED ==> {
+            &&& self.parked@.contains_key(i)
+            &&& self.parked@[i].is_range(self.owner@[i] as int, PAGE_BYTES as int)
+            &&& self.parked@[i].provenance() == self.provenance@
+        }
     }
 
     /// The physical base of page `i` of the untyped.
@@ -522,6 +542,7 @@ impl Record {
         requires
             old(self).inv(),
         ensures
+            final(self).provenance == old(self).provenance,
             final(self).inv(),
             match r {
                 Some(i) => i < final(self).pages,
@@ -570,6 +591,7 @@ impl Record {
             old(self).inv(),
             2 <= level <= 4,
         ensures
+            final(self).provenance == old(self).provenance,
             final(self).inv(),
         no_unwind
     {
@@ -622,7 +644,9 @@ impl Record {
     fn back_page(&mut self, addr: usize, provenance: Ghost<Provenance>) -> (r: Option<Tracked<PointsToRaw>>)
         requires
             old(self).inv(),
+            provenance@ == old(self).provenance@,
         ensures
+            final(self).provenance == old(self).provenance,
             final(self).inv(),
             match r {
                 Some(perm) => perm@.is_range(addr as int, PAGE_BYTES as int) && perm@.provenance() == provenance@,
@@ -630,6 +654,23 @@ impl Record {
             },
         no_unwind
     {
+        let mut i: usize = 0;
+        while i < self.pages
+            invariant
+                self.inv(),
+                i <= self.pages,
+                provenance@ == self.provenance@,
+                self.provenance == old(self).provenance,
+            decreases self.pages - i,
+        {
+            if self.state[i] == PARKED && self.owner[i] == addr {
+                assert(self.state@[i as int] == PARKED && self.owner@[i as int] == addr);
+                let tracked perm = self.parked.borrow_mut().tracked_remove(i as int);
+                self.state[i] = MAPPED;
+                return Some(Tracked(perm));
+            }
+            i += 1;
+        }
         let window = self.window;
         if !self.top {
             if !self.table(window, 4) {
@@ -676,12 +717,15 @@ impl Record {
         }
     }
 
-    /// Unmaps the page at `addr`, taking the permission to its bytes, and holds its frame for reuse.
+    /// Parks the page at `addr`, taking the permission to its bytes, which it hands out again when that
+    /// address is backed. A page the record does not name as mapped there stays as it is.
     fn release_page(&mut self, addr: usize, perm: Tracked<PointsToRaw>)
         requires
             old(self).inv(),
             perm@.is_range(addr as int, PAGE_BYTES as int),
+            perm@.provenance() == old(self).provenance@,
         ensures
+            final(self).provenance == old(self).provenance,
             final(self).inv(),
         no_unwind
     {
@@ -694,23 +738,23 @@ impl Record {
         {
             i += 1;
         }
-        let unmapped = unmap_page(&mut self.caller, self.space, addr, perm);
         if i < self.pages {
-            self.state[i] = if unmapped {
-                HELD
-            } else {
-                TAKEN
-            };
+            self.state[i] = PARKED;
+            proof {
+                self.parked.borrow_mut().tracked_insert(i as int, perm.get());
+            }
         }
     }
 
-    /// Unmaps the run of `pages` pages from `start`, taking the permission to its bytes.
+    /// Parks the run of `pages` pages from `start`, taking the permission to its bytes.
     fn release_run(&mut self, start: usize, pages: usize, perm: Tracked<PointsToRaw>)
         requires
             old(self).inv(),
             start + pages * PAGE_BYTES <= usize::MAX + 1,
             perm@.is_range(start as int, pages * PAGE_BYTES),
+            perm@.provenance() == old(self).provenance@,
         ensures
+            final(self).provenance == old(self).provenance,
             final(self).inv(),
         no_unwind
     {
@@ -722,6 +766,8 @@ impl Record {
                 k <= pages,
                 start + pages * PAGE_BYTES <= usize::MAX + 1,
                 rest.dom() =~= Set::range(start + k * PAGE_BYTES, start + pages * PAGE_BYTES),
+                rest.provenance() == self.provenance@,
+                self.provenance == old(self).provenance,
             decreases pages - k,
         {
             proof {
@@ -744,8 +790,10 @@ impl Record {
     fn back_run(&mut self, start: usize, pages: usize, provenance: Ghost<Provenance>) -> (r: Option<Tracked<PointsToRaw>>)
         requires
             old(self).inv(),
+            provenance@ == old(self).provenance@,
             start + pages * PAGE_BYTES <= usize::MAX + 1,
         ensures
+            final(self).provenance == old(self).provenance,
             final(self).inv(),
             match r {
                 Some(perm) => perm@.is_range(start as int, pages * PAGE_BYTES) && perm@.provenance() == provenance@,
@@ -762,6 +810,8 @@ impl Record {
                 start + pages * PAGE_BYTES <= usize::MAX + 1,
                 run.dom() =~= Set::range(start as int, start + k * PAGE_BYTES),
                 run.provenance() == provenance@,
+                provenance@ == self.provenance@,
+                self.provenance == old(self).provenance,
             decreases pages - k,
         {
             proof {
@@ -803,7 +853,7 @@ pub struct Eager {
 impl Eager {
     #[verifier::type_invariant]
     spec fn wf(self) -> bool {
-        self.spans.inv() && self.record.inv()
+        self.spans.inv() && self.record.inv() && self.record.provenance@ == self.exposed@@
     }
 
     /// The source that backs runs in the space at `space` with frames and table pages retyped from the
@@ -873,6 +923,8 @@ impl Eager {
                 tabled: [false; WINDOW_BLOCKS],
                 state: [FREE; MAX_PAGES],
                 owner: [0; MAX_PAGES],
+                parked: Tracked(Map::tracked_empty()),
+                provenance: Ghost(exposed@@),
             },
             exposed,
             grants: Ghost(Seq::empty()),

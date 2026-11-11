@@ -6,9 +6,10 @@
 //! `Eager` hands out spans of its window and backs page runs in them at once, with no fault: it
 //! retypes frames from its untyped, retypes and links the table pages the run needs, and maps each
 //! page through acall. It keeps its own record of the untyped's pages, since a retype names a physical
-//! base: which are free, which are frames held for reuse or mapped, and which went to tables. A
-//! released run's frames go back to that record unmapped, since the kernel takes no frame back for a
-//! later retype. `glue` is the system calls, verified over acall's kernel step but for the one item
+//! base: which are free, which are frames mapped or parked, and which went to tables. A released run's
+//! pages stay mapped, parked at their addresses until those are backed again, since the kernel's unmap
+//! leaves a translation the source cannot wait to see flushed and takes no frame back for a later
+//! retype. `glue` is the system calls, verified over acall's kernel step but for the one item
 //! that turns an accepted map into the permission to the page's bytes; `exercise` is a verified use of
 //! the contract that dom0 runs at boot.
 #![no_std]

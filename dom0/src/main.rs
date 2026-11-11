@@ -901,10 +901,13 @@ const EAGER_HEAD: &[u8] = b"dom0 eager backed ";
 /// Whether dom0 runs aeager's verified exercise over an eager source of its own: from the untyped that is
 /// a gigabyte, a table leaf into root entry EAGER_ENTRY and a child untyped of EAGER_ORDER below
 /// EAGER_BELOW_TOP into its first slot, whose pages the source alone retypes, putting frame capabilities
-/// in the slots after it, and the window at EAGER_WINDOW. The exercise reserves a span, backs it a page at
-/// a time until the source refuses, writes a byte through the run and reads it back, releases the run,
-/// backs a page again and gives the span back; dom0 prints how many pages it backed, and the check holds
-/// when the source refused before the block was full, the byte read back and a page was backed again.
+/// in the slots after it, and the window at EAGER_WINDOW. The exercise reserves a span; backs, writes and
+/// releases its first page, backs and writes its second, backs and writes its first again and reads the
+/// second; backs the span a page at a time until the source refuses, writes a byte through the run and
+/// reads it back, releases the run, backs a page again and gives the span back. dom0 prints how many
+/// pages it backed, and the check holds when the second page read its own byte, so no translation of the
+/// first outlived its release, the source refused before the block was full, the byte read back and a
+/// page was backed again.
 fn eager_source_held(caller: &mut Tracked<Caller>, empty: u64) -> bool {
     let Some((untyped, block)) = untyped_of_pages(caller, empty, 1 << 18) else {
         return false;
@@ -932,6 +935,7 @@ fn eager_source_held(caller: &mut Tracked<Caller>, empty: u64) -> bool {
     };
     let seen = aeager::exercise(&mut eager);
     print_count(EAGER_HEAD, seen.backed as u64, b"\n") == operation::STATUS_OK
+        && seen.apart
         && seen.backed > 0
         && seen.refused
         && seen.read
