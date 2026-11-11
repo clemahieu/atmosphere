@@ -88,6 +88,18 @@
 //! spans it held at the start, never a run span's reserve nor its metadata page's back. The full
 //! store's witness shows the same of a record taken alone over a page buddy with a free page.
 //!
+//! The slab classes' witness keeps the smallest class and the largest over one record store and
+//! page buddy holding nothing, with no spares: it allocates a slot of each, writes a byte of each
+//! and reads it again, frees both, and ends with no slab in either class, no record taken nor any
+//! record page, the page buddy holding no span and the source's view the one it started with, the
+//! requests the sequence made granted. Each new slab, its run cut and backed and its record page
+//! when the store was full, and each retired one, its run released and freed and its record page
+//! given back when no other record lies on it, is followed through the page buddy's cuts and frees
+//! (`tracks`): every span the source holds past its start is one the page buddy holds, and every
+//! run cut is freed again (`heads_of`), so the page buddy, keeping no spare, gives every span back.
+//! A refusal stops the sequence after freeing what it took, and is the source's refusal of a
+//! request one of the two allocations made (`slab_refused`).
+//!
 //! The heap's witness gives one source to a page buddy and a large-object map: it cuts a run, then
 //! allocates an object, frees the run, then the object, and ends with both holding nothing and the
 //! source's view the one it started with, the requests for the run's span and the object's granted.
@@ -103,7 +115,7 @@ use crate::buddy::*;
 use crate::class::*;
 use crate::large::*;
 use crate::page::*;
-use crate::record::{RecordStore, back_refused, page_back_refusal, record_page};
+use crate::record::{RecordStore, back_refused, gave_back, page_back_refusal, record_page, took_page};
 use crate::slab::*;
 use crate::small::*;
 use crate::source::*;
@@ -2075,6 +2087,766 @@ proof fn lemma_witness_apart(first: SizeClass, last: SizeClass, store: RecordSto
             + class_size(last.class()) <= y by {
         first.lemma_classes_apart(&last, store, pb, src, y, z);
     }
+}
+
+/// The block and page of the run whose head is at `q`: its key in the page buddy's `used`.
+spec fn head_of(q: int) -> (int, int) {
+    (span_of(q), page_of(q))
+}
+
+/// The runs `u` holds, as the block and page of each head.
+spec fn heads_of(u: Map<int, Map<int, nat>>) -> ISet<(int, int)> {
+    ISet::new(|h: (int, int)| u.contains_key(h.0) && u[h.0].contains_key(h.1))
+}
+
+/// The source's view `s` is `start` but for the run spans the page buddy `pb` holds: the
+/// provenance and refusals of `start`, its grants and more, every span of `start` as `start` holds
+/// it, and every other span the first block of a span `pb` holds, whose base is none of `start`'s;
+/// with the shape of `pb`'s spans this rests on, which its invariant holds but an intermediate view
+/// of a call is not shown to.
+spec fn tracks(start: SourceView, pb: PageBuddy, s: SourceView) -> bool {
+    &&& s.provenance == start.provenance
+    &&& s.refusals == start.refusals
+    &&& start.grants.len() <= s.grants.len()
+    &&& s.grants.subrange(0, start.grants.len() as int) == start.grants
+    &&& forall|c: int| #[trigger]
+        start.spans.contains_key(c) ==> s.spans.contains_key(c) && s.spans[c] == start.spans[c]
+    &&& forall|c: int| #[trigger]
+        s.spans.contains_key(c) && !start.spans.contains_key(c) ==> pb.spans().contains_key(c)
+            && !pb.metas().contains(c)
+    &&& forall|c: int| #[trigger] pb.spans().contains_key(c) ==> !start.spans.contains_key(pb.span_base(c))
+    &&& forall|m: int| #[trigger]
+        pb.metas().contains(m) ==> pb.spans().contains_key(m - BLOCK_BYTES as int) && !pb.metas().contains(
+            m - BLOCK_BYTES as int,
+        )
+    &&& forall|c: int| #[trigger]
+        pb.spans().contains_key(c) && !pb.metas().contains(c) ==> pb.metas().contains(meta_page(c))
+    &&& pb.used().dom() == pb.spans().dom()
+}
+
+/// A page buddy holding no span tracks any source from its start.
+proof fn lemma_tracks_new(start: SourceView, pb: PageBuddy)
+    requires
+        pb.spans() == Map::<int, Map<int, Block>>::empty(),
+        pb.used() == Map::<int, Map<int, nat>>::empty(),
+        pb.metas() == Set::<int>::empty(),
+    ensures
+        tracks(start, pb, start),
+        heads_of(pb.used()) == ISet::<(int, int)>::empty(),
+{
+    assert(start.grants.subrange(0, start.grants.len() as int) =~= start.grants);
+    assert(pb.used().dom() =~= pb.spans().dom());
+    assert(heads_of(pb.used()) =~= ISet::<(int, int)>::empty());
+}
+
+/// The base of the span of a block `pb` holds is a first block it holds.
+proof fn lemma_tracks_base(start: SourceView, pb: PageBuddy, s: SourceView, c: int)
+    requires
+        tracks(start, pb, s),
+        pb.spans().contains_key(c),
+    ensures
+        pb.spans().contains_key(pb.span_base(c)),
+        !pb.metas().contains(pb.span_base(c)),
+        pb.metas().contains(meta_page(pb.span_base(c))),
+        c == pb.span_base(c) || c == meta_page(pb.span_base(c)),
+        !start.spans.contains_key(pb.span_base(c)),
+{
+    let b = pb.span_base(c);
+    if pb.metas().contains(c) {
+        assert(pb.spans().contains_key(c - BLOCK_BYTES as int));
+    }
+    assert(pb.spans().contains_key(b) && !pb.metas().contains(b));
+}
+
+/// Backing or releasing a run in a span the page buddy holds keeps the view tracked.
+proof fn lemma_tracks_run(start: SourceView, pb: PageBuddy, s: SourceView, t: SourceView, c: int, q: int, n: nat)
+    requires
+        tracks(start, pb, s),
+        pb.spans().contains_key(c),
+        t == s.backed_run(pb.span_base(c), q, n) || t == s.released_run(pb.span_base(c), q, n),
+    ensures
+        tracks(start, pb, t),
+{
+    lemma_tracks_base(start, pb, s, c);
+    let b = pb.span_base(c);
+    assert(t.grants.subrange(0, start.grants.len() as int) =~= start.grants) by {
+        assert(t.grants.subrange(0, start.grants.len() as int) =~= s.grants.subrange(0, start.grants.len() as int));
+    }
+    assert forall|x: int| #[trigger] start.spans.contains_key(x) implies t.spans.contains_key(x) && t.spans[x]
+        == start.spans[x] by {
+        assert(x != b);
+    }
+}
+
+/// `alloc_run` cutting the run of order `k` at `q` keeps the view tracked and adds the run.
+proof fn lemma_tracks_cut(
+    start: SourceView,
+    pb: PageBuddy,
+    pb2: PageBuddy,
+    s: SourceView,
+    t: SourceView,
+    q: int,
+    k: nat,
+)
+    requires
+        tracks(start, pb, s),
+        cut_run(pb, pb2, s, t, q, k),
+    ensures
+        tracks(start, pb2, t),
+        pb2.spans().contains_key(span_of(q)),
+        heads_of(pb2.used()) == heads_of(pb.used()).insert(head_of(q)),
+{
+    let c = span_of(q);
+    let h = page_of(q);
+    let u = pb.used();
+    let u2 = pb2.used();
+    if pb.spans().contains_key(c) {
+        assert(u.contains_key(c));
+        assert(u2.dom() =~= pb2.spans().dom());
+        assert forall|x: int| #[trigger] pb2.spans().contains_key(x) implies !start.spans.contains_key(
+            pb2.span_base(x),
+        ) by {
+            assert(pb.spans().contains_key(x));
+        }
+        assert forall|m: int| #[trigger] pb2.metas().contains(m) implies pb2.spans().contains_key(m - BLOCK_BYTES as int)
+            && !pb2.metas().contains(m - BLOCK_BYTES as int) by {
+            assert(pb.metas().contains(m));
+            assert(pb.spans().contains_key(m - BLOCK_BYTES as int));
+        }
+        assert forall|x: int| #[trigger] pb2.spans().contains_key(x) && !pb2.metas().contains(x) implies pb2.metas().contains(
+            meta_page(x),
+        ) by {
+            assert(pb.spans().contains_key(x));
+        }
+        assert forall|x: int| #[trigger] t.spans.contains_key(x) && !start.spans.contains_key(x) implies pb2.spans().contains_key(x)
+            && !pb2.metas().contains(x) by {
+            assert(pb.spans().contains_key(x));
+        }
+        assert(heads_of(u2) =~= heads_of(u).insert(head_of(q)));
+    } else {
+        let b = c;
+        let mb = meta_page(b);
+        let f = fresh(u, b);
+        assert(!u.contains_key(b) && !u.contains_key(mb));
+        assert(u2.dom() =~= pb2.spans().dom());
+        assert(t.grants.subrange(0, start.grants.len() as int) =~= start.grants) by {
+            assert(t.grants.subrange(0, start.grants.len() as int) =~= s.grants.subrange(0, start.grants.len() as int));
+        }
+        assert(!start.spans.contains_key(b));
+        assert forall|x: int| #[trigger] start.spans.contains_key(x) implies t.spans.contains_key(x) && t.spans[x]
+            == start.spans[x] by {
+            assert(x != b);
+        }
+        assert forall|x: int| #[trigger] t.spans.contains_key(x) && !start.spans.contains_key(x) implies pb2.spans().contains_key(x)
+            && !pb2.metas().contains(x) by {
+            if x != b {
+                assert(s.spans.contains_key(x));
+                assert(pb.spans().contains_key(x));
+                assert(x != mb);
+            }
+        }
+        assert forall|x: int| #[trigger] pb2.spans().contains_key(x) implies !start.spans.contains_key(
+            pb2.span_base(x),
+        ) by {
+            if x != b && x != mb {
+                assert(pb.spans().contains_key(x));
+                assert(pb2.span_base(x) == pb.span_base(x));
+            } else if x == mb {
+                assert(pb2.metas().contains(mb));
+            }
+        }
+        assert forall|m: int| #[trigger] pb2.metas().contains(m) implies pb2.spans().contains_key(m - BLOCK_BYTES as int)
+            && !pb2.metas().contains(m - BLOCK_BYTES as int) by {
+            if m != mb {
+                assert(pb.metas().contains(m));
+                assert(pb.spans().contains_key(m - BLOCK_BYTES as int));
+            }
+        }
+        assert forall|x: int| #[trigger] pb2.spans().contains_key(x) && !pb2.metas().contains(x) implies pb2.metas().contains(
+            meta_page(x),
+        ) by {
+            if x != b {
+                assert(pb.spans().contains_key(x));
+            }
+        }
+        assert(heads_of(f) =~= heads_of(u));
+        assert(heads_of(u2) =~= heads_of(u).insert(head_of(q)));
+    }
+}
+
+/// `free_run` taking back the run at `q`, which the page buddy holds a block of, keeps the view
+/// tracked and takes the run out.
+proof fn lemma_tracks_freed(start: SourceView, pb: PageBuddy, pb2: PageBuddy, s: SourceView, t: SourceView, q: int)
+    requires
+        tracks(start, pb, s),
+        pb.used().contains_key(span_of(q)),
+        freed(pb, pb2, s, t, q),
+    ensures
+        tracks(start, pb2, t),
+        heads_of(pb2.used()) == heads_of(pb.used()).remove(head_of(q)),
+{
+    let c = span_of(q);
+    let h = page_of(q);
+    let u = pb.used();
+    let u2 = pb2.used();
+    let b = pb.span_base(c);
+    let mb = meta_page(b);
+    let rest = u.insert(c, u[c].remove(h));
+    assert(pb.spans().contains_key(c));
+    lemma_tracks_base(start, pb, s, c);
+    if rest[b].dom() != Set::<int>::empty() || rest[mb].dom() != Set::<int>::empty() || pb.idle_spans().len()
+        < pb.spares() {
+        assert(u2.dom() =~= pb2.spans().dom());
+        assert forall|x: int| #[trigger] pb2.spans().contains_key(x) implies !start.spans.contains_key(
+            pb2.span_base(x),
+        ) by {
+            assert(pb.spans().contains_key(x));
+        }
+        assert forall|m: int| #[trigger] pb2.metas().contains(m) implies pb2.spans().contains_key(m - BLOCK_BYTES as int)
+            && !pb2.metas().contains(m - BLOCK_BYTES as int) by {
+            assert(pb.spans().contains_key(m - BLOCK_BYTES as int));
+        }
+        assert forall|x: int| #[trigger] pb2.spans().contains_key(x) && !pb2.metas().contains(x) implies pb2.metas().contains(
+            meta_page(x),
+        ) by {
+            assert(pb.spans().contains_key(x));
+        }
+        assert forall|x: int| #[trigger] t.spans.contains_key(x) && !start.spans.contains_key(x) implies pb2.spans().contains_key(x)
+            && !pb2.metas().contains(x) by {
+            assert(pb.spans().contains_key(x));
+        }
+        assert(heads_of(u2) =~= heads_of(u).remove(head_of(q)));
+    } else {
+        assert(u2.dom() =~= pb2.spans().dom());
+        assert forall|x: int| #[trigger] start.spans.contains_key(x) implies t.spans.contains_key(x) && t.spans[x]
+            == start.spans[x] by {
+            assert(x != b);
+        }
+        assert forall|x: int| #[trigger] t.spans.contains_key(x) && !start.spans.contains_key(x) implies pb2.spans().contains_key(x)
+            && !pb2.metas().contains(x) by {
+            assert(s.spans.contains_key(x));
+            assert(pb.spans().contains_key(x) && !pb.metas().contains(x));
+            assert(x != mb);
+        }
+        assert forall|x: int| #[trigger] pb2.spans().contains_key(x) implies !start.spans.contains_key(
+            pb2.span_base(x),
+        ) by {
+            assert(pb.spans().contains_key(x));
+            assert(x != mb);
+            assert(pb2.span_base(x) == pb.span_base(x));
+        }
+        assert forall|m: int| #[trigger] pb2.metas().contains(m) implies pb2.spans().contains_key(m - BLOCK_BYTES as int)
+            && !pb2.metas().contains(m - BLOCK_BYTES as int) by {
+            assert(pb.metas().contains(m) && m != mb);
+            assert(pb.spans().contains_key(m - BLOCK_BYTES as int));
+            assert(!pb.metas().contains(m - BLOCK_BYTES as int));
+        }
+        assert forall|x: int| #[trigger] pb2.spans().contains_key(x) && !pb2.metas().contains(x) implies pb2.metas().contains(
+            meta_page(x),
+        ) by {
+            assert(pb.spans().contains_key(x));
+            assert(x != mb && x != b);
+        }
+        assert forall|hh: (int, int)| heads_of(u2).contains(hh) == heads_of(u).remove(head_of(q)).contains(hh) by {
+            if hh.0 == b || hh.0 == mb {
+                if u.contains_key(hh.0) && u[hh.0].contains_key(hh.1) && hh != head_of(q) {
+                    assert(rest[hh.0].contains_key(hh.1));
+                }
+            }
+        }
+        assert(heads_of(u2) =~= heads_of(u).remove(head_of(q)));
+    }
+}
+
+/// `alloc_run` cutting the run of order `k` at `q`, then its pages backed, keeps the view tracked
+/// and adds the run.
+proof fn lemma_tracks_took(
+    start: SourceView,
+    pb: PageBuddy,
+    pb2: PageBuddy,
+    s: SourceView,
+    m: SourceView,
+    t: SourceView,
+    q: int,
+    k: nat,
+    n: nat,
+)
+    requires
+        tracks(start, pb, s),
+        cut_run(pb, pb2, s, m, q, k),
+        t == m.backed_run(pb2.span_base(span_of(q)), q, n),
+    ensures
+        tracks(start, pb2, t),
+        heads_of(pb2.used()) == heads_of(pb.used()).insert(head_of(q)),
+{
+    lemma_tracks_cut(start, pb, pb2, s, m, q, k);
+    lemma_tracks_run(start, pb2, m, t, span_of(q), q, n);
+}
+
+/// `alloc_small` making a new slab keeps the view tracked, and adds the slab's run and, when the
+/// store was full, its record page.
+proof fn lemma_tracks_new_slab(
+    start: SourceView,
+    st0: RecordStore,
+    st1: RecordStore,
+    pb0: PageBuddy,
+    pb1: PageBuddy,
+    s0: SourceView,
+    s1: SourceView,
+    a: int,
+    x: int,
+    k: nat,
+)
+    requires
+        tracks(start, pb0, s0),
+        new_slab(st0, st1, pb0, pb1, s0, s1, a, x, k),
+    ensures
+        tracks(start, pb1, s1),
+        heads_of(pb1.used()) == if st0.full() {
+            heads_of(pb0.used()).insert(head_of(x)).insert(head_of(record_page(a)))
+        } else {
+            heads_of(pb0.used()).insert(head_of(x))
+        },
+{
+    let (pbm, sm) = choose|pbm: PageBuddy, sm: SourceView| #[trigger]
+        took_run(pb0, pbm, s0, sm, x, k) && if st0.full() {
+            took_page(pbm, pb1, sm, s1, record_page(a))
+        } else {
+            pb1 == pbm && s1 == sm
+        };
+    let c = span_of(x);
+    let m = if pb0.spans().contains_key(c) {
+        s0
+    } else {
+        s0.reserved(c, SPAN_BLOCKS as nat).backed_run(c, meta_page(c), 1)
+    };
+    lemma_tracks_took(start, pb0, pbm, s0, m, sm, x, k, pages(k) as nat);
+    if st0.full() {
+        let q = record_page(a);
+        let cq = span_of(q);
+        let mq = if pbm.spans().contains_key(cq) {
+            sm
+        } else {
+            sm.reserved(cq, SPAN_BLOCKS as nat).backed_run(cq, meta_page(cq), 1)
+        };
+        lemma_tracks_took(start, pbm, pb1, sm, mq, s1, q, 0, 1);
+    }
+}
+
+/// `free_small` retiring a slab keeps the view tracked, and takes out the slab's run and, when no
+/// other record lay on it, its record page.
+proof fn lemma_tracks_emptied(
+    start: SourceView,
+    st0: RecordStore,
+    st1: RecordStore,
+    pb0: PageBuddy,
+    pb1: PageBuddy,
+    s0: SourceView,
+    s1: SourceView,
+    a: int,
+    x: int,
+    k: nat,
+)
+    requires
+        tracks(start, pb0, s0),
+        emptied_slab(st0, st1, pb0, pb1, s0, s1, a, x, k),
+        heads_of(pb0.used()).contains(head_of(x)),
+        heads_of(pb0.used()).contains(head_of(record_page(a))),
+        head_of(record_page(a)) != head_of(x),
+    ensures
+        tracks(start, pb1, s1),
+        heads_of(pb1.used()) == if page_shared(st0, a) {
+            heads_of(pb0.used()).remove(head_of(x))
+        } else {
+            heads_of(pb0.used()).remove(head_of(x)).remove(head_of(record_page(a)))
+        },
+{
+    let c = span_of(x);
+    let sr = s0.released_run(pb0.span_base(c), x, pages(k) as nat);
+    let (pbm, sm) = choose|pbm: PageBuddy, sm: SourceView| #[trigger]
+        freed(pb0, pbm, sr, sm, x) && if page_shared(st0, a) {
+            pb1 == pbm && s1 == sm
+        } else {
+            gave_back(pbm, pb1, sm, s1, record_page(a))
+        };
+    assert(pb0.used().contains_key(c));
+    lemma_tracks_run(start, pb0, s0, sr, c, x, pages(k) as nat);
+    lemma_tracks_freed(start, pb0, pbm, sr, sm, x);
+    if !page_shared(st0, a) {
+        let q = record_page(a);
+        let cq = span_of(q);
+        assert(heads_of(pbm.used()).contains(head_of(q)));
+        assert(pbm.used().contains_key(cq));
+        let sq = sm.released_run(pbm.span_base(cq), q, 1);
+        lemma_tracks_run(start, pbm, sm, sq, cq, q, 1);
+        lemma_tracks_freed(start, pbm, pb1, sq, s1, q);
+    }
+}
+
+/// `free_small` retiring a slab keeps the source's provenance and refusals.
+proof fn lemma_emptied_refusals(
+    st0: RecordStore,
+    st1: RecordStore,
+    pb0: PageBuddy,
+    pb1: PageBuddy,
+    s0: SourceView,
+    s1: SourceView,
+    a: int,
+    x: int,
+    k: nat,
+)
+    requires
+        emptied_slab(st0, st1, pb0, pb1, s0, s1, a, x, k),
+    ensures
+        s1.provenance == s0.provenance,
+        s1.refusals == s0.refusals,
+{
+    let sr = s0.released_run(pb0.span_base(span_of(x)), x, pages(k) as nat);
+    let (pbm, sm) = choose|pbm: PageBuddy, sm: SourceView| #[trigger]
+        freed(pb0, pbm, sr, sm, x) && if page_shared(st0, a) {
+            pb1 == pbm && s1 == sm
+        } else {
+            gave_back(pbm, pb1, sm, s1, record_page(a))
+        };
+}
+
+/// A page buddy keeping no spare and holding no run holds no span, and a view it tracks is its
+/// start with only grants added.
+proof fn lemma_tracks_end(start: SourceView, pb: PageBuddy, s: SourceView)
+    requires
+        tracks(start, pb, s),
+        pb.wf(s),
+        pb.spares() == 0,
+        heads_of(pb.used()) == ISet::<(int, int)>::empty(),
+    ensures
+        pb.spans().dom() == Set::<int>::empty(),
+        s == start.granted(s.grants.subrange(start.grants.len() as int, s.grants.len() as int)),
+{
+    pb.lemma_view(s);
+    let u = pb.used();
+    assert forall|m: int| pb.metas().contains(m) implies false by {
+        let lo = m - BLOCK_BYTES as int;
+        assert(u.contains_key(m) && u.contains_key(lo));
+        assert(u[m].dom() =~= Set::<int>::empty()) by {
+            assert forall|y: int| !u[m].contains_key(y) by {
+                assert(!heads_of(u).contains((m, y)));
+            }
+        }
+        assert(u[lo].dom() =~= Set::<int>::empty()) by {
+            assert forall|y: int| !u[lo].contains_key(y) by {
+                assert(!heads_of(u).contains((lo, y)));
+            }
+        }
+        assert(pb.idle_spans().contains(m));
+        pb.idle_spans().lemma_len0_is_empty();
+    }
+    assert(pb.spans().dom() =~= Set::<int>::empty()) by {
+        assert forall|c: int| !pb.spans().contains_key(c) by {
+            if pb.spans().contains_key(c) && !pb.metas().contains(c) {
+                assert(pb.metas().contains(meta_page(c)));
+            }
+        }
+    }
+    let g = s.grants.subrange(start.grants.len() as int, s.grants.len() as int);
+    assert(s.spans =~= start.spans) by {
+        assert forall|c: int| s.spans.contains_key(c) implies start.spans.contains_key(c) by {
+            if !start.spans.contains_key(c) {
+                assert(pb.spans().contains_key(c));
+            }
+        }
+    }
+    assert(s.grants =~= start.grants + g);
+    assert(s == start.granted(g));
+}
+
+/// Two distinct page-aligned addresses are the heads of different runs.
+proof fn lemma_heads_differ(x: int, y: int)
+    requires
+        0 <= x,
+        0 <= y,
+        x % PAGE_BYTES as int == 0,
+        y % PAGE_BYTES as int == 0,
+        x != y,
+    ensures
+        head_of(x) != head_of(y),
+{
+    lemma_head(x);
+    lemma_head(y);
+}
+
+/// Before `free_small` retires the slab of `c` whose record is `a`, the page buddy holds the slab's
+/// run and the record's page, two runs.
+proof fn lemma_free_ready(c: SizeClass, st: RecordStore, pb: PageBuddy, s: SourceView, a: int)
+    requires
+        c.wf(st, pb, s),
+        st.wf(pb, s),
+        pb.wf(s),
+        c.slabs().contains_key(a),
+        c.heads().contains(c.slabs()[a].base()@.addr as int),
+        st.taken().contains(a),
+    ensures
+        heads_of(pb.used()).contains(head_of(c.slabs()[a].base()@.addr as int)),
+        heads_of(pb.used()).contains(head_of(record_page(a))),
+        head_of(record_page(a)) != head_of(c.slabs()[a].base()@.addr as int),
+{
+    let x = c.slabs()[a].base()@.addr as int;
+    let q = record_page(a);
+    c.lemma_heads_held(st, pb, s);
+    st.lemma_view(pb, s);
+    pb.lemma_view(s);
+    assert(run_held(pb, s, x, slab_order(c.class())));
+    assert(st.pages().contains(q));
+    assert(run_held(pb, s, q, 0));
+    assert(pb.spans().contains_key(span_of(q)));
+    assert(q >= span_of(q));
+    lemma_heads_differ(q, x);
+}
+
+/// Writes a byte at `p` through the permission to the `n` bytes from it, reads it again, and
+/// returns the permission to the `n` bytes.
+fn touch(p: *mut u8, perm: Tracked<PointsToRaw>, Ghost(n): Ghost<int>) -> (r: Tracked<PointsToRaw>)
+    requires
+        n >= 1,
+        perm@.is_range(p@.addr as int, n),
+        perm@.provenance() == p@.provenance,
+    ensures
+        r@.is_range(p@.addr as int, n),
+        r@.provenance() == perm@.provenance(),
+{
+    let addr = p.addr();
+    let tracked run = perm.get();
+    let ghost first = Set::range(addr as int, addr as int + 1);
+    let tracked (one, rest) = run.split(first);
+    assert(size_of::<u8>() == 1 && align_of::<u8>() == 1) by {
+        broadcast use layout_of_primitives, align_of_u8;
+    }
+    assert(one.is_range(addr as int, size_of::<u8>() as int));
+    let tracked mut byte = one.into_typed::<u8>(addr);
+    ptr_mut_write(p, Tracked(&mut byte), 7u8);
+    let v = ptr_mut_read(p, Tracked(&mut byte));
+    assert(v == 7u8);
+    let tracked raw = byte.into_raw();
+    let tracked whole = raw.join(rest);
+    assert(whole.dom() =~= Set::range(addr as int, addr as int + n));
+    Tracked(whole)
+}
+
+/// The smallest and the largest size class over one record store and a page buddy holding nothing
+/// and keeping no spare: allocates a slot of each, writes a byte of each and reads it again, and
+/// frees both. Returns both classes, the store, the page buddy and whether both slots were given.
+/// Either way neither class has a slab and the store has no record taken at the end. When both
+/// were given, the store has no record page, the page buddy holds no span, and the source's view
+/// is the one it started with, the requests the sequence made granted. Otherwise the source refused
+/// once, a request one of the two allocations made (`slab_refused`), with the refusals it had at the
+/// start, and the sequence stopped after freeing what it took.
+pub fn witness_small_classes<S: SpanSource>(src: &mut S) -> (r: (SizeClass, SizeClass, RecordStore, PageBuddy, bool))
+    requires
+        old(src)@.wf(),
+    ensures
+        r.3.wf(final(src)@),
+        r.2.wf(r.3, final(src)@),
+        r.0.wf(r.2, r.3, final(src)@),
+        r.1.wf(r.2, r.3, final(src)@),
+        r.0.class() == 0,
+        r.1.class() == CLASSES - 1,
+        r.0.slabs() == Map::<int, Slab>::empty(),
+        r.1.slabs() == Map::<int, Slab>::empty(),
+        r.2.taken() == Set::<int>::empty(),
+        r.3.spares() == 0,
+        if r.4 {
+            &&& r.2.pages() == Set::<int>::empty()
+            &&& r.3.spans().dom() == Set::<int>::empty()
+            &&& final(src)@ == old(src)@.granted(
+                final(src)@.grants.subrange(old(src)@.grants.len() as int, final(src)@.grants.len() as int),
+            )
+        } else {
+            let f = final(src)@.refusals.last();
+            &&& final(src)@.provenance == old(src)@.provenance
+            &&& final(src)@.refusals == old(src)@.refusals.push(f)
+            &&& exists|st: RecordStore, pb: PageBuddy, s: SourceView, t: SourceView, c: nat| #[trigger]
+                slab_refused(st, pb, s, t, slab_order(c)) && (c == 0 || c == CLASSES - 1) && s.refusals
+                    == old(src)@.refusals && t.refusals.last() == f
+        },
+{
+    let ghost start = src@;
+    let mut pb = PageBuddy::new(0);
+    let mut store = RecordStore::new();
+    let mut first = SizeClass::new(0);
+    let mut last = SizeClass::new(CLASSES - 1);
+    let ghost st0 = store;
+    let ghost pb0 = pb;
+    let ghost s0 = src@;
+    let ghost f0 = first;
+    let ghost l0 = last;
+    let ghost k0 = slab_order(0);
+    let ghost k1 = slab_order((CLASSES - 1) as nat);
+    proof {
+        lemma_class(0);
+        lemma_class((CLASSES - 1) as nat);
+        lemma_tracks_new(start, pb0);
+        assert(f0.heads().disjoint(l0.heads()));
+    }
+    let r1 = first.alloc_small(&mut store, &mut pb, src);
+    proof {
+        last.lemma_frame(st0, pb0, s0, store, pb, src@);
+        lemma_heads_grew(f0, first, st0, store, pb0, pb, s0, src@, r1);
+        lemma_heads_stay_apart(f0, first, l0, st0, pb0, s0);
+    }
+    let (p1, perm1) = match r1 {
+        Some(x) => x,
+        None => {
+            proof {
+                assert(slab_refused(st0, pb0, s0, src@, slab_order(0)));
+            }
+            return (first, last, store, pb, false);
+        },
+    };
+    let ghost st1 = store;
+    let ghost pb1 = pb;
+    let ghost s1 = src@;
+    let ghost f1 = first;
+    let ghost y1 = p1@.addr as int;
+    proof {
+        assert(!exists|b: int| #[trigger]
+            f0.slabs().contains_key(b) && f0.slabs()[b].free_slots() != Set::<int>::empty());
+    }
+    let ghost a0 = choose|a: int| #[trigger]
+        f1.slabs().contains_key(a) && {
+            &&& !f0.slabs().contains_key(a)
+            &&& f1.slabs() == f0.slabs().insert(a, f1.slabs()[a])
+            &&& f1.slabs()[a].holds(y1)
+            &&& f1.heads() == f0.heads().insert(f1.slabs()[a].base()@.addr as int)
+            &&& new_slab(st0, st1, pb0, pb1, s0, s1, a, f1.slabs()[a].base()@.addr as int, k0)
+        };
+    let ghost x0 = f1.slabs()[a0].base()@.addr as int;
+    proof {
+        lemma_tracks_new_slab(start, st0, st1, pb0, pb1, s0, s1, a0, x0, k0);
+        assert(f1.slabs().dom() =~= set![a0]);
+        assert(st1.taken() =~= set![a0]);
+        assert(st1.pages() =~= set![record_page(a0)]);
+        assert(f1.slab_of(y1) == a0);
+        assert forall|z: int| #[trigger] f1.slabs()[a0].holds(z) implies z == y1 by {
+            assert(live_of(f1.slabs()).contains(z));
+            assert(f0.live().contains(z) || z == y1);
+        }
+        assert(only_live(f1.slabs()[a0], y1));
+    }
+    let perm1 = touch(p1, perm1, Ghost(class_size(0) as int));
+    let ghost l1 = last;
+    let r2 = last.alloc_small(&mut store, &mut pb, src);
+    proof {
+        first.lemma_frame(st1, pb1, s1, store, pb, src@);
+        lemma_heads_grew(l1, last, st1, store, pb1, pb, s1, src@, r2);
+        lemma_heads_stay_apart(l1, last, first, st1, pb1, s1);
+    }
+    let ghost st2 = store;
+    let ghost pb2 = pb;
+    let ghost s2 = src@;
+    let (p2, perm2) = match r2 {
+        Some(x) => x,
+        None => {
+            proof {
+                assert(slab_refused(st1, pb1, s1, s2, slab_order((CLASSES - 1) as nat)));
+                assert(first == f1);
+                assert(f1.heads().contains(x0)) by {
+                    assert(f1.slabs().contains_key(a0) && f1.slabs()[a0].base()@.addr == x0);
+                }
+            }
+            first.free_small(&mut store, &mut pb, src, p1, perm1);
+            proof {
+                last.lemma_frame_emptied(st2, pb2, s2, store, pb, src@, a0, x0);
+                lemma_emptied_refusals(st2, store, pb2, pb, s2, src@, a0, x0, k0);
+                assert(first.slabs() =~= Map::<int, Slab>::empty());
+                assert(store.taken() =~= Set::<int>::empty());
+            }
+            return (first, last, store, pb, false);
+        },
+    };
+    let ghost l2 = last;
+    let ghost y2 = p2@.addr as int;
+    proof {
+        assert(!exists|b: int| #[trigger]
+            l1.slabs().contains_key(b) && l1.slabs()[b].free_slots() != Set::<int>::empty());
+    }
+    let ghost a1 = choose|a: int| #[trigger]
+        l2.slabs().contains_key(a) && {
+            &&& !l1.slabs().contains_key(a)
+            &&& l2.slabs() == l1.slabs().insert(a, l2.slabs()[a])
+            &&& l2.slabs()[a].holds(y2)
+            &&& l2.heads() == l1.heads().insert(l2.slabs()[a].base()@.addr as int)
+            &&& new_slab(st1, st2, pb1, pb2, s1, s2, a, l2.slabs()[a].base()@.addr as int, k1)
+        };
+    let ghost x1 = l2.slabs()[a1].base()@.addr as int;
+    let ghost r0 = record_page(a0);
+    let ghost r1p = record_page(a1);
+    proof {
+        lemma_tracks_new_slab(start, st1, st2, pb1, pb2, s1, s2, a1, x1, k1);
+        assert(l2.slabs().dom() =~= set![a1]);
+        assert(st2.taken() =~= set![a0, a1]);
+        assert(a0 != a1);
+        assert(st2.taken().contains(a1));
+        st2.lemma_view(pb2, s2);
+        assert(st2.pages().contains(r1p));
+        if st1.full() {
+            assert(r1p != r0);
+        } else {
+            assert(r1p == r0);
+        }
+        assert(l2.slab_of(y2) == a1);
+        assert forall|z: int| #[trigger] l2.slabs()[a1].holds(z) implies z == y2 by {
+            assert(live_of(l2.slabs()).contains(z));
+            assert(l1.live().contains(z) || z == y2);
+        }
+        assert(only_live(l2.slabs()[a1], y2));
+        assert(first == f1);
+        assert(f1.heads().contains(x0)) by {
+            assert(f1.slabs().contains_key(a0) && f1.slabs()[a0].base()@.addr == x0);
+        }
+        assert(l2.heads().contains(x1)) by {
+            assert(l2.slabs().contains_key(a1) && l2.slabs()[a1].base()@.addr == x1);
+        }
+        lemma_free_ready(f1, st2, pb2, s2, a0);
+    }
+    let perm2 = touch(p2, perm2, Ghost(class_size((CLASSES - 1) as nat) as int));
+    first.free_small(&mut store, &mut pb, src, p1, perm1);
+    let ghost st3 = store;
+    let ghost pb3 = pb;
+    let ghost s3 = src@;
+    proof {
+        assert(!l2.slabs().contains_key(a0));
+        last.lemma_frame_emptied(st2, pb2, s2, store, pb, src@, a0, x0);
+        lemma_tracks_emptied(start, st2, st3, pb2, pb3, s2, s3, a0, x0, k0);
+        assert(st3.taken() =~= set![a1]);
+        if st1.full() {
+            assert(!page_shared(st2, a0)) by {
+                assert forall|z: int| #[trigger] st2.taken().contains(z) && z != a0 implies record_page(z) != r0 by {
+                    assert(z == a1);
+                }
+            }
+        } else {
+            assert(page_shared(st2, a0)) by {
+                assert(st2.taken().contains(a1) && a1 != a0 && record_page(a1) == record_page(a0));
+            }
+        }
+        assert(!page_shared(st3, a1)) by {
+            assert forall|z: int| #[trigger] st3.taken().contains(z) && z != a1 implies false by {}
+        }
+        assert(first.slabs() =~= Map::<int, Slab>::empty());
+        assert(first.heads() =~= ISet::<int>::empty());
+        assert(last == l2);
+        lemma_free_ready(l2, st3, pb3, s3, a1);
+    }
+    last.free_small(&mut store, &mut pb, src, p2, perm2);
+    proof {
+        first.lemma_frame_emptied(st3, pb3, s3, store, pb, src@, a1, x1);
+        lemma_tracks_emptied(start, st3, store, pb3, pb, s3, src@, a1, x1, k1);
+        assert(heads_of(pb.used()) =~= ISet::<(int, int)>::empty());
+        lemma_tracks_end(start, pb, src@);
+        assert(last.slabs() =~= Map::<int, Slab>::empty());
+        assert(store.taken() =~= Set::<int>::empty());
+        assert(store.pages() =~= Set::<int>::empty());
+    }
+    (first, last, store, pb, true)
 }
 
 } // verus!
