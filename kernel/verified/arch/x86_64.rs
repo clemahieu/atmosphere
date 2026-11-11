@@ -790,7 +790,8 @@ mod queue {
 /// that and the commands before the store of `tail` into the tail register at `tail_register`, which
 /// moves the tail past both, and spins until the IOMMU stores the wait's nonzero data to the word.
 /// COMPLETION_WAIT finishes only once every older command has, 48882 Rev 3.11 §2.4.1, and
-/// INVALIDATE_IOMMU_ALL invalidates every IOMMU TLB, §2.4.8.
+/// INVALIDATE_IOMMU_ALL invalidates every IOMMU TLB, §2.4.8. It takes `queued`, so a record is
+/// evidence for one submit and a second submit has to queue the commands again.
 #[verifier(external_body)]
 // external_body(glue): only the IOMMU can attest an invalidate, so only this empties its IOTLB model
 fn submit_invalidate(
@@ -799,7 +800,7 @@ fn submit_invalidate(
     tail_register: usize,
     tail: u64,
     completion: usize,
-    Tracked(queued): Tracked<&QueuedCommands>,
+    Tracked(queued): Tracked<QueuedCommands>,
     Tracked(model): Tracked<&mut IotlbModel>,
 )
     requires
@@ -871,7 +872,7 @@ pub fn invalidate_iommu_all(commands: &CommandBuffers, i: usize, Tracked(model):
                 b.mmio <= usize::MAX,
         ;
     }
-    submit_invalidate(commands, i, b.mmio + IOMMU_COMMAND_TAIL, (next * IOMMU_COMMAND_SIZE) as u64, b.completion, Tracked(&queued), Tracked(model));
+    submit_invalidate(commands, i, b.mmio + IOMMU_COMMAND_TAIL, (next * IOMMU_COMMAND_SIZE) as u64, b.completion, Tracked(queued), Tracked(model));
     proof {
         steps.step();
     }
