@@ -13,7 +13,7 @@ check() {
   local name=$1 ok=$2
   if [ "$ok" = 0 ]; then echo "ok   $name"; else echo "FAIL $name"; fail=1; fi
 }
-run() { env -u CLAUDE_PID -u CLAUDE_ENV_FILE -u GROK_SESSION_ID "$@" "$hook" </dev/null >/dev/null 2>&1; }
+run() { env -u CLAUDE_PID -u CLAUDE_ENV_FILE -u GROK_SESSION_ID -u BEADS_ACTOR "$@" "$hook" </dev/null >/dev/null 2>&1; }
 
 # The hook names the session's claude process in the file Claude Code runs before every Bash call.
 run CLAUDE_PID=4242 CLAUDE_ENV_FILE="$dir/env.sh"; check "exits 0" $?
@@ -30,6 +30,10 @@ run CLAUDE_ENV_FILE="$dir/other.sh"; rc=$?
 [ "$rc" != 0 ] && [ ! -e "$dir/other.sh" ]; check "no pid is an error" $?
 run CLAUDE_PID=4242; rc=$?
 [ "$rc" != 0 ]; check "no env file is an error" $?
+
+# A session tools/loop.py runs inherits the loop's actor, which the hook keeps.
+run BEADS_ACTOR=loop-77 CLAUDE_PID=4242 CLAUDE_ENV_FILE="$dir/loop.sh"; check "inherited actor exits 0" $?
+[ ! -e "$dir/loop.sh" ]; check "inherited actor is kept" $?
 
 # Under Grok, which sets GROK_SESSION_ID on every hook, the session has no env file: the hook accepts
 # the missing harness variables and writes nothing.

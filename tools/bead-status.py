@@ -199,12 +199,16 @@ def clocks(state):
 
 
 def alive(actor):
-    """Whether the session claude-<pid> still runs, as a round tells it; None for an assignee that is no session."""
+    """Whether the session claude-<pid> or the loop loop-<pid> still runs, as a round tells it; None for an assignee that is neither."""
     kind, _, pid = (actor or "").partition("-")
-    if kind != "claude" or not pid.isdigit():
+    if kind not in ("claude", "loop") or not pid.isdigit():
         return None
-    comm = Path(f"/proc/{pid}/comm")
-    return comm.exists() and comm.read_text().strip() == "claude"
+    try:
+        if kind == "claude":
+            return Path(f"/proc/{pid}/comm").read_text().strip() == "claude"
+        return any(arg.endswith("tools/loop.py") for arg in Path(f"/proc/{pid}/cmdline").read_text().split("\0"))
+    except FileNotFoundError:
+        return False
 
 
 def gate_line(log):
@@ -493,6 +497,18 @@ class Tests(unittest.TestCase):
         # This process is not named claude, and no process has a pid over the kernel's limit.
         self.assertFalse(alive(f"claude-{os.getpid()}"))
         self.assertFalse(alive("claude-4194305"))
+
+    def test_a_loop_is_alive_while_a_process_with_its_pid_runs_tools_loop_py(self):
+        self.assertIsNone(alive("loop-x"))
+        self.assertFalse(alive(f"loop-{os.getpid()}"))
+        self.assertFalse(alive("loop-4194305"))
+        loop = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)", "/somewhere/tools/loop.py"])
+        try:
+            self.assertTrue(alive(f"loop-{loop.pid}"))
+        finally:
+            loop.kill()
+            loop.wait()
+        self.assertFalse(alive(f"loop-{loop.pid}"))
 
     def test_the_last_step_of_a_landing_log_is_its_gate_line(self):
         log = self.root / "logs" / "a.1.2-gate.log"

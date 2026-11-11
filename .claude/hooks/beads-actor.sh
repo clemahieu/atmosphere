@@ -9,6 +9,11 @@
 #
 # Grok loads this hook too and sets GROK_SESSION_ID on every hook it runs. A Grok session has no env
 # file and runs no rounds, so the hook writes nothing there.
+#
+# tools/loop.py runs each round, prover and skeptic as a session of its own and names itself the actor,
+# loop-<pid>, in their environment, so what a round hands to the prover stays held between the two
+# sessions. The hook keeps an actor the environment already names.
 set -u
 [ -z "${GROK_SESSION_ID:-}" ] || exit 0
+[ -z "${BEADS_ACTOR:-}" ] || exit 0
 echo "export BEADS_ACTOR=claude-${CLAUDE_PID:?}" >> "${CLAUDE_ENV_FILE:?}"
