@@ -24,7 +24,6 @@
 //! Where the producers' heads live and how they are loaded, with an acquire load before the
 //! consumer reads the slots, is the caller's, through its `Heads`.
 #![no_std]
-#![allow(unused)]
 
 use aring::*;
 use vstd::prelude::*;
