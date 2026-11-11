@@ -230,9 +230,9 @@ pub open spec fn space_block(blocks: &BlockTable, b: usize) -> bool {
 
 /// The space at s has its record, the root table its record points at and its list of cores. A device
 /// space is a block of its own with node pages, whose references are exactly its holders and the
-/// devices bound to it, and it is dead at once when they go. A process space lies in its process's
-/// block, which its process capabilities hold, so no space capability names it and no device is bound
-/// to it.
+/// devices bound to it, and it is dead exactly when they are all gone. A process space lies in its
+/// process's block, which its process capabilities hold, so no space capability names it and no device
+/// is bound to it.
 pub open spec fn space_wf(list: &Tree, spaces: &Spaces, blocks: &BlockTable, s: usize) -> bool {
     &&& s % TABLE_PAGE_BYTES == 0
     &&& blocks.tracks_addr(s)
@@ -262,7 +262,7 @@ pub open spec fn space_wf(list: &Tree, spaces: &Spaces, blocks: &BlockTable, s: 
     &&& spaces.records@[s].value().kind is Device
         ==> spaces.holders@[s].len() + spaces.bound@[s].len() == blocks.pages@[(s / PAGE_SZ) as int].refs
     &&& spaces.records@[s].value().kind is Device
-        ==> (blocks.pages@[(s / PAGE_SZ) as int].refs == 0 ==> blocks.pages@[(s / PAGE_SZ) as int].dead)
+        ==> (blocks.pages@[(s / PAGE_SZ) as int].refs == 0) == blocks.pages@[(s / PAGE_SZ) as int].dead
 }
 
 /// Entry i of a root of this kind holds the kernel's. Kernel slots exist only in process spaces.
@@ -1475,6 +1475,7 @@ impl CapKernel {
             block_typed(&self.blocks, BlockRef::Small(self.payload_of(n).base / PAGE_SZ)),
             block_refs(&self.blocks, BlockRef::Small(self.payload_of(n).base / PAGE_SZ)) > 0,
             block_ref(&self.blocks, self.payload_of(n).base / PAGE_SZ) == BlockRef::Small(self.payload_of(n).base / PAGE_SZ),
+            !self.blocks.pages@[(self.payload_of(n).base / PAGE_SZ) as int].dead,
     {
         let s = self.payload_of(n).base;
         assert(self.tables.is_cap(&self.list, n));
@@ -1488,6 +1489,30 @@ impl CapKernel {
             self.spaces.holders@[s].lemma_len0_is_empty();
         }
         self.blocks.lemma_not_free_uncovered((s / PAGE_SZ) as int);
+    }
+
+    /// The root of the device space a space capability names takes a link from wf and the capability
+    /// alone: it is a table of that space at level 4 and no table page, none of its entries is a
+    /// kernel slot, and its block is not dead, since the capability holds a reference on it.
+    pub proof fn lemma_space_root_linkable(&self, n: usize)
+        requires
+            self.wf(),
+            self.is_cap(n),
+            self.payload_of(n).kind is Space,
+        ensures
+            tree_of(&self.table_pages, &self.spaces).is_table(self.payload_of(n).base),
+            !tree_of(&self.table_pages, &self.spaces).is_page(self.payload_of(n).base),
+            tree_of(&self.table_pages, &self.spaces).record(self.payload_of(n).base).space == Some(self.payload_of(n).base),
+            tree_of(&self.table_pages, &self.spaces).record(self.payload_of(n).base).level == 4,
+            forall|i: usize| i < ENTRIES ==> #[trigger] tree_of(&self.table_pages, &self.spaces).child_slot(self.payload_of(n).base, i),
+            !self.blocks.pages@[(self.payload_of(n).base / PAGE_SZ) as int].dead,
+    {
+        let s = self.payload_of(n).base;
+        self.lemma_space_cap(n);
+        assert(space_wf(&self.list, &self.spaces, &self.blocks, s));
+        if self.table_pages.maps@.contains_key(s) {
+            assert(table_page_wf(&self.list, &self.table_pages, &self.blocks, s));
+        }
     }
 
     /// The root of the space at s may go: its block has no reference left, so no capability names it and
@@ -1527,6 +1552,7 @@ impl CapKernel {
             pre.spaces.roots@.contains_key(s),
             pre.spaces.records@[s].value().kind is Device,
             block_refs(&pre.blocks, BlockRef::Small(s / PAGE_SZ)) < usize::MAX,
+            !block_dead(&pre.blocks, BlockRef::Small(s / PAGE_SZ)),
             blocks_refs_changed(
                 &pre.blocks,
                 &post.blocks,
@@ -1770,6 +1796,7 @@ impl CapKernel {
             pre.spaces.roots@.contains_key(s),
             pre.spaces.records@[s].value().kind is Device,
             !pre.spaces.bound@[s].contains(d),
+            !block_dead(&pre.blocks, BlockRef::Small(s / PAGE_SZ)),
             blocks_refs_changed(
                 &pre.blocks,
                 &post.blocks,

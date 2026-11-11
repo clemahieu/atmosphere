@@ -1047,6 +1047,33 @@ impl CapKernel {
         &&& !tree.record(child).written
     }
 
+    /// A link through a device space's capability into an empty entry of the space's root is allowed
+    /// from wf, the capability and the child page alone: what the root needs, wf gives.
+    pub proof fn lemma_space_link_allowed(&self, root: usize, slot: usize, entry: usize, from: usize, child: usize)
+        requires
+            self.wf(),
+            self.tables.has_slot(&self.list, root, slot),
+            self.is_cap(self.tables.node_of(root, slot)),
+            self.payload_of(self.tables.node_of(root, slot)).kind is Space,
+            writes_space(self.payload_of(self.tables.node_of(root, slot))),
+            entry < ENTRIES,
+            tree_of(&self.table_pages, &self.spaces).entry(self.payload_of(self.tables.node_of(root, slot)).base, entry).is_empty(),
+            self.can_retype_under(root, from, child, 3),
+            tree_of(&self.table_pages, &self.spaces).is_page(child),
+            !self.blocks.pages@[(child / PAGE_SZ) as int].dead,
+            tree_of(&self.table_pages, &self.spaces).record(child).level == 3,
+            tree_of(&self.table_pages, &self.spaces).record(child).space is None,
+            tree_of(&self.table_pages, &self.spaces).record(child).parent is None,
+            !tree_of(&self.table_pages, &self.spaces).record(child).written,
+        ensures
+            self.can_link(root, slot, self.payload_of(self.tables.node_of(root, slot)).base, entry, from, child),
+    {
+        let n = self.tables.node_of(root, slot);
+        let tree = tree_of(&self.table_pages, &self.spaces);
+        self.lemma_space_root_linkable(n);
+        assert(tree.child_slot(self.payload_of(n).base, entry));
+    }
+
     /// What a link leaves: the capabilities, the list and the blocks as they were, and the tables linked.
     pub open spec fn link_done(pre: Self, post: Self, parent: usize, entry: usize, child: usize, s: usize) -> bool {
         let tree = tree_of(&post.table_pages, &post.spaces);
