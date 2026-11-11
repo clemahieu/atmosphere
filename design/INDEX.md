@@ -2,7 +2,7 @@
 
 # Design decisions
 
-37 records: 37 active, 0 superseded.
+38 records: 38 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -19,6 +19,9 @@ in `revisit if` what would make it worth reopening.
 - **[capability-names-a-block](./capability-names-a-block/DECISION.md)** (2026-11-10): A memory capability names a block: a base aligned to its size and 2^order pages. Frames retype at 4K or 2M in constant time, a 2M frame derives 4K pieces, and a map names a capability, a page offset and an address, so a pager needs few slots.
   - *confidence:* Arithmetic on the page table's block sizes; the payload well-formedness is proven in kernel/verified/capability/table.rs.
   - *revisit if:* A workload needs frames that are not power-of-two aligned, or the 1G frame that pagetable does not yet map becomes necessary rather than convenient.
+- **[committer-is-not-the-adversary](./committer-is-not-the-adversary/DECISION.md)** (2026-11-11): The proof is defended against user processes, devices, other cores and a specification weaker than its intent. It is not defended against whoever writes the tree: the gate counts every exemption from the proof that is written openly, on purpose or by accident, and claims nothing about one that is disguised; a hole in what Verus trusts is reported to the Verus project; and a skeptic pass refutes a criterion by a proof hole or by what the running system allows, not by what a committer could add.
+  - *confidence:* A judgement by the human, made on one day's measurement of what the other choice cost. That no check kept in the tree holds against a committer who can edit it is an argument, not a measurement.
+  - *revisit if:* Commits land from someone the human does not direct, such as an outside contributor or a pull request, which makes the committer a party to defend against and needs a check the committer cannot edit; or an exemption that was disguised, not merely unlisted, is found in the tree.
 - **[cpu-time-as-capability](./cpu-time-as-capability/DECISION.md)** (2026-11-05): Per-core run queues, fixed priorities, turns at equal priority, one selection function and one scheduling record per thread. A core capability allows placing a thread on that core at or below its maximum priority, a derived copy may lower it, and a placement is a binding so CPU time is revocable. Budgets and periods are deferred, with three constraints kept so they stay addable.
   - *confidence:* The human's choice to defer scheduling contexts; the estimate that they cost about 600 to 900 lines of code and 2,500 to 4,000 of proof plus a one-time rework of the scheduler and IPC proofs is reasoned from structure, not measured.
   - *revisit if:* A workload needs a bound on how much time a thread can take, which fixed priorities cannot give, or temporal isolation inside a core is wanted by design/isolation-claim/.
@@ -132,7 +135,7 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `boot`: machine-glue-below-the-kernel, root-process-at-boot, test-guest-memory
 - `capability`: address-spaces-as-objects, capability-names-a-block, cpu-time-as-capability, device-binding-under-the-space-capability, divider-proven-by-invariant, ipc-with-reply-object, process-holds-capabilities, revoke-by-depth-first-list, root-process-at-boot, schedulers-over-core-partitions, sharing-by-derive, teardown-driven-by-retype, theorem-over-reach, thread-bound-at-retype, untyped-memory, vmm-over-svm
 - `device`: device-binding-under-the-space-capability
-- `gate`: cut-over-on-a-branch, land-without-regating, license-stated-in-every-source-file, no-gate-for-what-no-step-reads
+- `gate`: committer-is-not-the-adversary, cut-over-on-a-branch, land-without-regating, license-stated-in-every-source-file, no-gate-for-what-no-step-reads
 - `glue`: machine-glue-below-the-kernel
 - `heap`: heap-size-classes, page-buddy-metadata-in-the-span
 - `interrupt`: machine-glue-below-the-kernel
@@ -149,7 +152,7 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `pagetable`: arch-module
 - `parsing`: network-stack-proven-at-tier-1
 - `portability`: arch-module, machine-glue-below-the-kernel, syscall-abi-in-registers
-- `process`: cut-over-on-a-branch, land-without-regating, license-stated-in-every-source-file, no-gate-for-what-no-step-reads, process-holds-capabilities, review-is-a-leaf-of-its-epic, thread-bound-at-retype
+- `process`: committer-is-not-the-adversary, cut-over-on-a-branch, land-without-regating, license-stated-in-every-source-file, no-gate-for-what-no-step-reads, process-holds-capabilities, review-is-a-leaf-of-its-epic, thread-bound-at-retype
 - `proof`: divider-proven-by-invariant, isolation-claim, theorem-over-reach, thread-bound-at-retype, trust-boundary, who-vouches-for-an-unproven-claim
 - `purity`: untyped-memory
 - `reach`: device-binding-under-the-space-capability
@@ -158,11 +161,11 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `scheduling`: cpu-time-as-capability, schedulers-over-core-partitions
 - `security`: divider-proven-by-invariant, fan-in-over-private-rings, isolation-claim, theorem-over-reach, trust-boundary
 - `shared-memory`: fan-in-over-private-rings, latest-value-by-three-slot-exchange
-- `skeptic`: review-is-a-leaf-of-its-epic
+- `skeptic`: committer-is-not-the-adversary, review-is-a-leaf-of-its-epic
 - `test`: test-guest-memory
 - `thread`: process-holds-capabilities, thread-bound-at-retype
 - `tiers`: divider-proven-by-invariant, network-stack-proven-at-tier-1, trust-boundary
 - `tracker`: review-is-a-leaf-of-its-epic
 - `trusted-base`: who-vouches-for-an-unproven-claim
-- `verified`: arch-module, cut-over-on-a-branch, device-binding-under-the-space-capability, fan-in-over-private-rings, flush-without-waiting, heap-size-classes, latest-value-by-three-slot-exchange, network-stack-proven-at-tier-1, one-lock-bounded-steps, page-buddy-metadata-in-the-span, revoke-by-depth-first-list, theorem-over-reach, thread-bound-at-retype, who-vouches-for-an-unproven-claim
+- `verified`: arch-module, committer-is-not-the-adversary, cut-over-on-a-branch, device-binding-under-the-space-capability, fan-in-over-private-rings, flush-without-waiting, heap-size-classes, latest-value-by-three-slot-exchange, network-stack-proven-at-tier-1, one-lock-bounded-steps, page-buddy-metadata-in-the-span, revoke-by-depth-first-list, theorem-over-reach, thread-bound-at-retype, who-vouches-for-an-unproven-claim
 - `virtualization`: vmm-over-svm
