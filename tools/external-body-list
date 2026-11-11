@@ -1,10 +1,14 @@
-# Every live attribute in a crate marked verified that exempts code from a proof, checked by
-# tools/check-external-body.py against the reason line beside each attribute. external_body exempts a
-# function from the proof of what it does; exec_allows_no_decreases_clause exempts its loops and calls
-# from the proof that they end. Fields, separated by tabs: path from the repository root, item,
-# attribute, class, reason.
+# Every claim a crate marked verified takes without proving it, checked by tools/check-external-body.py
+# against the source. external_body exempts a function from the proof of what it does, and the reason
+# line beside it says why; exec_allows_no_decreases_clause exempts its loops and calls from the proof
+# that they end; assume_specification states the specification of a function Verus does not read,
+# and the citation lines above it say who vouches for it (design/who-vouches-for-an-unproven-claim/).
+# Fields, separated by tabs: path from the repository root, item, attribute, class, reason; an
+# assumed specification's reason is its citation lines' text, joined by '; '.
 #
-# glue      hardware or assembly leaf glue, the only unverified code CLAUDE.md allows
+# hardware  an assumed specification in an arch module, citing the manual passages it restates
+# kernel    an assumed specification naming the kernel item whose proof it restates
+# glue      hardware or assembly leaf glue still spelled external_body, until it is one of the two above
 # gap       uses something this Verus cannot check: a raw pointer, a conjured permission, uninit memory
 # unproven  plain code or a lemma with no proof yet, or a wait with no termination proof yet, so proof debt
 kernel/verified/arch/aarch64.rs	flush_every_context	external_body	glue	only the hardware can attest a flush, so only this empties a core's TLB model

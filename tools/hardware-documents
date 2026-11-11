@@ -1,0 +1,12 @@
+# The documents a hardware guarantee in a crate marked verified may cite, one per line, read by
+# tools/check-external-body.py. A guarantee's assumed specification carries, directly above it, one
+# line '// cite: <key> <section, figure or table>' per passage it restates, and each key is one of
+# these (design/who-vouches-for-an-unproven-claim/). A document is listed at the revision someone has
+# read. Fields, separated by tabs: key, title, publisher, number, revision.
+amd-apm2	AMD64 Architecture Programmer's Manual, Volume 2: System Programming	AMD	24593	3.46
+amd-iommu	AMD I/O Virtualization Technology (IOMMU) Specification	AMD	48882	3.11
+arm-arm	Arm Architecture Reference Manual for A-profile architecture	Arm	DDI 0487	M.d
+arm-gic	Arm Generic Interrupt Controller Architecture Specification, GIC architecture version 3 and version 4	Arm	IHI 0069	H.b
+arm-pl011	PrimeCell UART (PL011) Technical Reference Manual	Arm	DDI 0183	G (r1p5)
+arm-smmu	Arm System Memory Management Unit Architecture Specification, SMMU architecture version 3	Arm	IHI 0070	H.a
+ns-16550	PC16550D Universal Asynchronous Receiver/Transmitter with FIFOs	National Semiconductor	TL/C/8652	June 1995
