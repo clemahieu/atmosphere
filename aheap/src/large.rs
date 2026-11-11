@@ -80,11 +80,19 @@ pub open spec fn large_refusal(s: SourceView, r: Refusal, pages: nat) -> bool {
     }
 }
 
+/// The requests the source grants for an object of `pages` pages whose span is at `b`: the reserve
+/// of its span and the back of its run and record page.
+pub open spec fn large_grants(b: int, pages: nat) -> Seq<Request> {
+    seq![Request::Reserve { blocks: blocks_for(pages) }, Request::Back { span: b, start: b, pages: pages + 1 }]
+}
+
 /// `after` is `before` with one refusal recorded, of a request `alloc_large` makes for an object of
-/// `pages` pages of a source whose view is `before`.
+/// `pages` pages of a source whose view is `before`, and nothing else changed but, when the back
+/// was refused, the grant of the object's reserve before it.
 pub open spec fn large_refused(before: SourceView, after: SourceView, pages: nat) -> bool {
-    &&& after == before.recorded(after.refusals.last())
-    &&& large_refusal(before, after.refusals.last(), pages)
+    let r = after.refusals.last();
+    &&& after == before.granted(granted_before(r, blocks_for(pages))).recorded(r)
+    &&& large_refusal(before, r, pages)
 }
 
 /// An object of `size` bytes, more than one block's and no more than isize::MAX, takes more pages
@@ -513,6 +521,7 @@ impl LargeMap {
             None => {
                 proof {
                     self.lemma_frame(start, src@);
+                    lemma_granted_none(start);
                 }
                 return None;
             },
@@ -543,7 +552,8 @@ impl LargeMap {
                         request: Request::Back { span: bi, start: bi, pages: n + 1 },
                         spans: start.reserved(bi, blocks as nat).spans,
                     };
-                    assert(src@ == start.recorded(r));
+                    assert(src@.grants =~= start.grants + seq![Request::Reserve { blocks: blocks as nat }]);
+                    assert(src@ == start.granted(granted_before(r, blocks as nat)).recorded(r));
                     self.lemma_frame(start, src@);
                 }
                 return None;

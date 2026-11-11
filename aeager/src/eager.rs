@@ -615,6 +615,8 @@ pub struct Eager {
     spans: Spans,
     record: Record,
     exposed: Tracked<IsExposed>,
+    /// The requests `reserve` and `back` have granted: the view's record.
+    grants: Ghost<Seq<Request>>,
     /// The requests `reserve` and `back` have refused, each with the spans held then: the view's
     /// record.
     refusals: Ghost<Seq<Refusal>>,
@@ -672,6 +674,7 @@ impl Eager {
                 owner: [0; MAX_PAGES],
             },
             exposed,
+            grants: Ghost(Seq::empty()),
             refusals: Ghost(Seq::empty()),
         };
         assert(source@.spans =~= Map::empty());
@@ -681,7 +684,7 @@ impl Eager {
 
 impl SpanSource for Eager {
     closed spec fn view(&self) -> SourceView {
-        SourceView { provenance: self.exposed@@, spans: self.spans.map@, refusals: self.refusals@ }
+        SourceView { provenance: self.exposed@@, spans: self.spans.map@, grants: self.grants@, refusals: self.refusals@ }
     }
 
     fn reserve(&mut self, blocks: usize) -> (r: Option<*mut u8>) {
@@ -702,6 +705,7 @@ impl SpanSource for Eager {
                 proof {
                     lemma_reserved_wf(before, base as int, blocks as nat);
                 }
+                self.grants = Ghost(self.grants@.push(Request::Reserve { blocks: blocks as nat }));
                 Some(with_exposed_provenance(base, self.exposed))
             },
         }
@@ -729,6 +733,7 @@ impl SpanSource for Eager {
                     lemma_backed_run_wf(before, span@, start as int, pages as nat);
                 }
                 self.spans.rewrite(Ghost(before.backed_run(span@, start as int, pages as nat).spans));
+                self.grants = Ghost(self.grants@.push(Request::Back { span: span@, start: start as int, pages: pages as nat }));
                 Some(perm)
             },
         }

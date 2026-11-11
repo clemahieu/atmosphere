@@ -33,15 +33,17 @@
 //!   `release_run(p, k, perm)` gives them back. A run `alloc_run` returns has no page backed: the
 //!   page buddy does not back the runs it cuts, and its caller backs what it writes.
 //!
-//! Each states the source's view after it exactly: a refusal by the source leaves it as it was with
-//! the refused request recorded, with the spans it held when it refused, so `Source` answers only the
-//! source's refusal in the call of the reserve of SPAN_BLOCKS blocks, holding the spans it held when
-//! the call began, or of the back of the new span's metadata page, holding those and the new span
-//! (`span_refused`), and a `None` from `back_run` only its refusal of the back of the run's pages,
-//! holding the spans it held when the call began; a run from a held span
-//! leaves it as it was, a new span is reserved with its metadata page backed (`took_span`), and a
-//! span given back is released, so a sequence that frees every run it cut ends at the view it
-//! started from.
+//! Each states the source's view after it exactly, the requests the source granted in the call among
+//! it: a refusal by the source leaves it as it was with the refused request recorded, with the spans
+//! it held when it refused, so `Source` answers only the source's refusal in the call of the reserve
+//! of SPAN_BLOCKS blocks, holding the spans it held when the call began, or of the back of the new
+//! span's metadata page after that reserve was granted, holding those and the new span, which is
+//! given back (`span_refused`), and a `None` from `back_run` only its refusal of the back of the
+//! run's pages, holding the spans it held when the call began; a run from a held span leaves it as
+//! it was, a new span is reserved with its metadata page backed (`took_span`), the two requests the
+//! call made, and a span given back is released, so a sequence that frees every run it cut ends at
+//! the spans it started from, with the source having granted exactly the requests the sequence made
+//! and no other (`span_grants`).
 //!
 //! `lemma_view` states the invariant on the view, among it where each metadata page lies and that
 //! a held span's first block with no run is the initial block, so `lemma_idle_fits` shows a run of
@@ -94,11 +96,19 @@ pub open spec fn span_refusal(s: SourceView, r: Refusal) -> bool {
     }
 }
 
+/// The requests the source grants for the new run span at `b`: the reserve of its SPAN_BLOCKS
+/// blocks and the back of its metadata page.
+pub open spec fn span_grants(b: int) -> Seq<Request> {
+    seq![Request::Reserve { blocks: SPAN_BLOCKS as nat }, Request::Back { span: b, start: meta_page(b), pages: 1 }]
+}
+
 /// `after` is `before` with one refusal recorded, of a request `alloc_run` makes for a new run span
-/// of a source whose view is `before`.
+/// of a source whose view is `before`, and nothing else changed but, when the back of the metadata
+/// page was refused, the grant of the span's reserve before it.
 pub open spec fn span_refused(before: SourceView, after: SourceView) -> bool {
-    &&& after == before.recorded(after.refusals.last())
-    &&& span_refusal(before, after.refusals.last())
+    let r = after.refusals.last();
+    &&& after == before.granted(granted_before(r, SPAN_BLOCKS as nat)).recorded(r)
+    &&& span_refusal(before, r)
 }
 
 /// The base of the block that holds address `p`.
@@ -894,12 +904,14 @@ impl PageBuddy {
         assert(a.at(t) == self.at(t));
     }
 
-    /// The source refused in a call that changed nothing else: the page buddy is well formed with
-    /// the same view.
-    proof fn lemma_refused(&self, other: &Self, r: Refusal)
+    /// The source refused in a call that changed none of its spans: the page buddy is well formed
+    /// with the same view.
+    proof fn lemma_refused(&self, other: &Self)
         requires
             other.inv(),
-            self.view@ == other.view@.recorded(r),
+            self.view@.wf(),
+            self.view@.spans == other.view@.spans,
+            self.view@.provenance == other.view@.provenance,
             self.head == other.head,
             self.spares == other.spares,
             self.idle == other.idle,
@@ -912,7 +924,6 @@ impl PageBuddy {
             self.spans() == other.spans(),
             self.used() == other.used(),
     {
-        lemma_recorded_wf(other.view@, r);
         assert(self.spans() =~= other.spans());
         assert(self.used() =~= other.used());
         assert(self.idle_spans() == other.idle_spans());
@@ -1583,10 +1594,8 @@ impl PageBuddy {
         let base = match reserved {
             None => {
                 proof {
-                    self.lemma_refused(
-                        old(self),
-                        Refusal { request: Request::Reserve { blocks: SPAN_BLOCKS as nat }, spans: start.spans },
-                    );
+                    self.lemma_refused(old(self));
+                    lemma_granted_none(start);
                 }
                 return Err(Refused::Source);
             },
@@ -1632,8 +1641,9 @@ impl PageBuddy {
                         request: Request::Back { span: bi, start: mi, pages: 1 },
                         spans: start.reserved(bi, SPAN_BLOCKS as nat).spans,
                     };
-                    assert(self.view@ == start.recorded(r));
-                    self.lemma_refused(old(self), r);
+                    assert(self.view@.grants =~= start.grants + seq![Request::Reserve { blocks: SPAN_BLOCKS as nat }]);
+                    assert(self.view@ == start.granted(granted_before(r, SPAN_BLOCKS as nat)).recorded(r));
+                    self.lemma_refused(old(self));
                 }
                 return Err(Refused::Source);
             },
@@ -2249,13 +2259,7 @@ impl PageBuddy {
         let perm = match backed {
             None => {
                 proof {
-                    self.lemma_refused(
-                        &entry,
-                        Refusal {
-                            request: Request::Back { span: bi, start: p as int, pages: pages(k as nat) as nat },
-                            spans: start.spans,
-                        },
-                    );
+                    self.lemma_refused(&entry);
                 }
                 return None;
             },
@@ -2569,6 +2573,7 @@ pub proof fn lemma_released_keeps_held(pb: PageBuddy, s: SourceView, q: int, k: 
 
 /// Cutting the run of order `k` at `q`, any change that keeps the runs held, and freeing the run at
 /// `q` again leave the page buddy holding the runs it held.
+#[verifier::spinoff_prover]
 pub proof fn lemma_runs_restored(
     pb0: PageBuddy,
     pb1: PageBuddy,

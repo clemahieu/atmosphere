@@ -4,16 +4,17 @@
 //!
 //! A source hands out spans, block-aligned ranges of virtual addresses a whole number of blocks long,
 //! and backs page runs inside them. Its view is the spans it has reserved, keyed by base address,
-//! with the pages of each it has backed, the provenance every permission it returns carries, and the
-//! requests it has refused, in order, each with the spans it held when it refused, so a caller's
-//! specification can say whether a call refused, which request it refused and what the source held
-//! then.
+//! with the pages of each it has backed, the provenance every permission it returns carries, the
+//! requests it has granted, in order, and the requests it has refused, in order, each with the spans
+//! it held when it refused, so a caller's specification can say which requests a call made, whether
+//! it refused, which request it refused and what the source held then.
 //!
-//! - `reserve` gives a new span, unbacked and disjoint from every reserved one, or refuses, records
-//!   the reserve it refused with the spans it holds and changes nothing else.
+//! - `reserve` gives a new span, unbacked and disjoint from every reserved one, and records the
+//!   reserve it granted; or refuses, records the reserve it refused with the spans it holds and
+//!   changes nothing else.
 //! - `back` takes a page run inside a reserved span with no page backed, and returns the permission
-//!   to every byte of the run, the run now backed; or refuses, records the back it refused with the
-//!   spans it holds, backs nothing and changes nothing else.
+//!   to every byte of the run, the run now backed and the back recorded as granted; or refuses,
+//!   records the back it refused with the spans it holds, backs nothing and changes nothing else.
 //! - `release` takes a backed run with its permission and gives the run's frames up. It never
 //!   refuses.
 //! - `release_span` takes a span with no page backed and gives the range up. It never refuses.
@@ -35,7 +36,7 @@ pub ghost struct Span {
     pub backed: Set<int>,
 }
 
-/// A request a source can refuse.
+/// A request a source can grant or refuse.
 pub ghost enum Request {
     /// The reserve of a span of `blocks` blocks.
     Reserve { blocks: nat },
@@ -55,6 +56,8 @@ pub ghost struct SourceView {
     pub provenance: Provenance,
     /// The reserved spans, by base address.
     pub spans: Map<int, Span>,
+    /// The requests `reserve` and `back` have granted, the latest last.
+    pub grants: Seq<Request>,
     /// The requests `reserve` and `back` have refused, the latest last.
     pub refusals: Seq<Refusal>,
 }
@@ -116,21 +119,24 @@ impl SourceView {
         run_pages(start, pages).subset_of(self.spans[span].backed)
     }
 
-    /// The view with a new span of `blocks` blocks at `base`, no page backed.
+    /// The view with a new span of `blocks` blocks at `base`, no page backed, and its reserve
+    /// granted.
     pub open spec fn reserved(self, base: int, blocks: nat) -> Self {
         SourceView {
             spans: self.spans.insert(base, Span { blocks, backed: Set::empty() }),
+            grants: self.grants.push(Request::Reserve { blocks }),
             ..self
         }
     }
 
-    /// The view with the run's pages backed.
+    /// The view with the run's pages backed and their back granted.
     pub open spec fn backed_run(self, span: int, start: int, pages: nat) -> Self {
         SourceView {
             spans: self.spans.insert(
                 span,
                 Span { backed: self.spans[span].backed.union(run_pages(start, pages)), ..self.spans[span] },
             ),
+            grants: self.grants.push(Request::Back { span, start, pages }),
             ..self
         }
     }
@@ -151,6 +157,12 @@ impl SourceView {
         SourceView { spans: self.spans.remove(span), ..self }
     }
 
+    /// The view with the requests `gs` granted after those it records, and nothing else changed:
+    /// what a sequence that gave back every span and run it was granted leaves.
+    pub open spec fn granted(self, gs: Seq<Request>) -> Self {
+        SourceView { grants: self.grants + gs, ..self }
+    }
+
     /// The view with the refusal `r` recorded and nothing else changed.
     pub open spec fn recorded(self, r: Refusal) -> Self {
         SourceView { refusals: self.refusals.push(r), ..self }
@@ -160,6 +172,23 @@ impl SourceView {
     pub open spec fn refused(self, q: Request) -> Self {
         self.recorded(Refusal { request: q, spans: self.spans })
     }
+}
+
+/// What a source granted a call that reserves a span of `blocks` blocks and then backs a run of it,
+/// before it refused the request of `r`: the reserve, when it refused the back.
+pub open spec fn granted_before(r: Refusal, blocks: nat) -> Seq<Request> {
+    match r.request {
+        Request::Reserve { .. } => Seq::empty(),
+        Request::Back { .. } => seq![Request::Reserve { blocks }],
+    }
+}
+
+/// Granting nothing leaves the view as it was.
+pub proof fn lemma_granted_none(v: SourceView)
+    ensures
+        v.granted(Seq::empty()) == v,
+{
+    assert(v.grants + Seq::<Request>::empty() =~= v.grants);
 }
 
 /// Each change a source's success makes keeps the view well formed, so an implementation's
@@ -245,6 +274,21 @@ pub proof fn lemma_recorded_wf(v: SourceView, r: Refusal)
         v.recorded(r).wf(),
 {
     let w = v.recorded(r);
+    assert forall|b: int| #[trigger] w.spans.contains_key(b) implies w.released_span(b).fits(b, w.spans[b].blocks) by {
+        assert(v.released_span(b).fits(b, v.spans[b].blocks));
+        assert forall|o: int| #[trigger] w.released_span(b).spans.contains_key(o) implies w.released_span(b).apart(b, w.spans[b].blocks, o) by {
+            assert(v.released_span(b).spans.contains_key(o));
+        }
+    }
+}
+
+pub proof fn lemma_granted_wf(v: SourceView, gs: Seq<Request>)
+    requires
+        v.wf(),
+    ensures
+        v.granted(gs).wf(),
+{
+    let w = v.granted(gs);
     assert forall|b: int| #[trigger] w.spans.contains_key(b) implies w.released_span(b).fits(b, w.spans[b].blocks) by {
         assert(v.released_span(b).fits(b, v.spans[b].blocks));
         assert forall|o: int| #[trigger] w.released_span(b).spans.contains_key(o) implies w.released_span(b).apart(b, w.spans[b].blocks, o) by {
