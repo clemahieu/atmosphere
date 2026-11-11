@@ -8,8 +8,9 @@
 //! owns neither the record store, the page buddy nor the source. Its invariant, `wf(store, pb,
 //! src)`, is stated over theirs: each slab's record is taken in the store, and each slab's run is a
 //! run of the class's slab order that the page buddy holds allocated, every page backed
-//! (`run_held`), and is no record page. A change to the three that keeps every slab's record taken
-//! and every run so keeps the invariant (`lemma_frame`).
+//! (`run_held`), and is no record page. A change to the three that keeps every record taken, every
+//! held run held and none of them a record page, and the provenance (`kept`), keeps the invariant
+//! (`lemma_frame`), so several classes can share them.
 //!
 //! The heads of the slab runs are `heads()`. Each live slot lies inside the run at one of them
 //! (`lemma_live_in_run`), so it is apart from every run the page buddy holds at another head
@@ -24,7 +25,8 @@
 //!   when no slab has a free slot and the source refused, in this call, one request
 //!   (`slab_refused`); then the class, the store's records and the page buddy's runs are as they
 //!   were. Otherwise it returns a slot of the class's size, aligned to SLOT_MIN, with the
-//!   permission to its bytes, apart from every slot live before.
+//!   permission to its bytes, apart from every slot live before. Either way it keeps what every
+//!   class over the same store, page buddy and source stands on (`kept`).
 use vstd::prelude::*;
 use vstd::raw_ptr::*;
 
@@ -51,6 +53,26 @@ pub open spec fn slab_refused(before: SourceView, after: SourceView, k: nat) -> 
         Request::Reserve { blocks } => blocks == SPAN_BLOCKS,
         Request::Back { pages: n, .. } => n == 1 || n == pages(k),
     }
+}
+
+/// The store, the page buddy and the source's view went from `store`, `pb` and `src` to `store2`,
+/// `pb2` and `src2` keeping what a size class stands on: the provenance, every record taken, and
+/// every run held, none of them made a record page.
+pub open spec fn kept(
+    store: RecordStore,
+    pb: PageBuddy,
+    src: SourceView,
+    store2: RecordStore,
+    pb2: PageBuddy,
+    src2: SourceView,
+) -> bool {
+    &&& src2.provenance == src.provenance
+    &&& forall|a: int| #[trigger] store.taken().contains(a) ==> store2.taken().contains(a)
+    &&& forall|x: int, k: nat| #[trigger]
+        run_held(pb, src, x, k) ==> {
+            &&& run_held(pb2, src2, x, k)
+            &&& store2.pages().contains(x) ==> store.pages().contains(x)
+        }
 }
 
 /// The live slots of the slabs of `m`.
@@ -308,9 +330,9 @@ impl SizeClass {
         lemma_held_apart(pb, src, m[a].base()@.addr as int, slab_order(c), m[b].base()@.addr as int, slab_order(c));
     }
 
-    /// A change to the store, the page buddy and the source that keeps every slab's record taken,
-    /// its run held and no record page, and the provenance, keeps the invariant.
-    proof fn lemma_frame(
+    /// A change to the store, the page buddy and the source that keeps what a class stands on keeps
+    /// the invariant, whichever class or other user of the three made it.
+    pub proof fn lemma_frame(
         &self,
         store: RecordStore,
         pb: PageBuddy,
@@ -321,13 +343,7 @@ impl SizeClass {
     )
         requires
             self.wf(store, pb, src),
-            src2.provenance == src.provenance,
-            forall|a: int| #[trigger]
-                self.slabs().contains_key(a) ==> {
-                    &&& store2.taken().contains(a)
-                    &&& !store2.pages().contains(self.slabs()[a].base()@.addr as int)
-                    &&& run_held(pb2, src2, self.slabs()[a].base()@.addr as int, slab_order(self.class()))
-                },
+            kept(store, pb, src, store2, pb2, src2),
         ensures
             self.wf(store2, pb2, src2),
     {
@@ -639,6 +655,7 @@ impl SizeClass {
     /// the page buddy nor the source; or, when no slab has one, from a new slab, whose run is cut
     /// and backed and whose record is taken from the store. Refuses only when no slab has a free
     /// slot and the source refused one request in this call, and then gives back what the call took.
+    /// Either way it keeps what every class over the same three stands on.
     pub fn alloc_small<S: SpanSource>(&mut self, store: &mut RecordStore, pb: &mut PageBuddy, src: &mut S) -> (r:
         Option<(*mut u8, Tracked<PointsToRaw>)>)
         requires
@@ -651,6 +668,7 @@ impl SizeClass {
             final(self).wf(*final(store), *final(pb), final(src)@),
             final(self).class() == old(self).class(),
             final(pb).spares() == old(pb).spares(),
+            kept(*old(store), *old(pb), old(src)@, *final(store), *final(pb), final(src)@),
             match r {
                 None => {
                     &&& forall|a: int| #[trigger]
@@ -894,18 +912,18 @@ impl SizeClass {
                     assert(run_held(pb0, s0, qi, 0));
                 }
             }
-            assert forall|b: int| #[trigger] o.slabs().contains_key(b) implies {
-                &&& store.taken().contains(b)
-                &&& !store.pages().contains(o.slabs()[b].base()@.addr as int)
-                &&& run_held(pb3, s3, o.slabs()[b].base()@.addr as int, slab_order(o.class()))
-                &&& o.slabs()[b].base()@.addr != qi
+            assert forall|x: int, j: nat| #[trigger] run_held(pb0, s0, x, j) implies {
+                &&& run_held(pb3, s3, x, j)
+                &&& store.pages().contains(x) ==> st0.pages().contains(x)
             } by {
-                let xb = o.slabs()[b].base()@.addr as int;
-                assert(slab_ok(cl, o.perms@, o.slabs()[b], b, st0, pb0, s0));
-                assert(xb != qi && run_held(pb2, s2, xb, kk));
+                assert(run_held(pb2, s2, x, j));
                 if st0.full() {
-                    lemma_took_keeps_held(pb2, pb3, s2, s3, record_page(a), xb, kk);
+                    lemma_took_keeps_held(pb2, pb3, s2, s3, record_page(a), x, j);
                 }
+            }
+            assert(kept(st0, pb0, s0, *store, pb3, s3));
+            assert forall|b: int| #[trigger] o.slabs().contains_key(b) implies o.slabs()[b].base()@.addr != qi by {
+                assert(slab_ok(cl, o.perms@, o.slabs()[b], b, st0, pb0, s0));
             }
             o.lemma_frame(st0, pb0, s0, *store, pb3, s3);
             assert(!o.slabs().contains_key(a)) by {

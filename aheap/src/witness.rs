@@ -53,6 +53,12 @@
 //! source's view the one it started with. The store refuses only when the source refused the run's
 //! span or the back of the record page.
 //!
+//! The two classes' witness keeps two size classes over one record store, page buddy and source,
+//! with no spares: it allocates a slot of the first class, then of the last, then of the first
+//! again, which each makes a slab or takes a slot of one. Each class keeps its invariant across the
+//! other's alloc_small, which keeps what a class stands on (`kept`), by its frame lemma; a refusal
+//! stops the sequence, with both classes still well formed.
+//!
 //! The heap's witness gives one source to a page buddy and a large-object map: it cuts a run, then
 //! allocates an object, frees the run, then the object, and ends with both holding nothing and the
 //! source's view the one it started with. Each keeps its invariant across the other's changes to the
@@ -69,6 +75,7 @@ use crate::large::*;
 use crate::page::*;
 use crate::record::{RecordStore, back_refused, record_page};
 use crate::slab::*;
+use crate::small::*;
 use crate::source::*;
 
 verus! {
@@ -1301,6 +1308,64 @@ pub fn witness_heap<S: SpanSource>(src: &mut S) -> (r: (PageBuddy, LargeMap, boo
         assert(map.objects() =~= Map::<int, nat>::empty());
     }
     (pb, map, true)
+}
+
+/// Two size classes over one record store and page buddy keeping no spare: allocates a slot of the
+/// first class, then of the last, then of the first again, and returns both classes, the store, the
+/// page buddy and how many slots were given. Each class is well formed at the end, the first having
+/// kept its invariant across the last's alloc_small; a refusal stops the sequence.
+pub fn witness_two_classes<S: SpanSource>(src: &mut S) -> (r: (SizeClass, SizeClass, RecordStore, PageBuddy, usize))
+    requires
+        old(src)@.wf(),
+    ensures
+        r.3.wf(final(src)@),
+        r.2.wf(r.3, final(src)@),
+        r.0.wf(r.2, r.3, final(src)@),
+        r.1.wf(r.2, r.3, final(src)@),
+        r.0.class() == 0,
+        r.1.class() == CLASSES - 1,
+        r.4 <= 3,
+{
+    let mut pb = PageBuddy::new(0);
+    let mut store = RecordStore::new();
+    let mut first = SizeClass::new(0);
+    let mut last = SizeClass::new(CLASSES - 1);
+    let ghost st0 = store;
+    let ghost pb0 = pb;
+    let ghost s0 = src@;
+    if first.alloc_small(&mut store, &mut pb, src).is_none() {
+        proof {
+            last.lemma_frame(st0, pb0, s0, store, pb, src@);
+        }
+        return (first, last, store, pb, 0);
+    }
+    let ghost st1 = store;
+    let ghost pb1 = pb;
+    let ghost s1 = src@;
+    proof {
+        last.lemma_frame(st0, pb0, s0, st1, pb1, s1);
+    }
+    if last.alloc_small(&mut store, &mut pb, src).is_none() {
+        proof {
+            first.lemma_frame(st1, pb1, s1, store, pb, src@);
+        }
+        return (first, last, store, pb, 1);
+    }
+    let ghost st2 = store;
+    let ghost pb2 = pb;
+    let ghost s2 = src@;
+    proof {
+        first.lemma_frame(st1, pb1, s1, st2, pb2, s2);
+    }
+    let given = if first.alloc_small(&mut store, &mut pb, src).is_none() {
+        2
+    } else {
+        3
+    };
+    proof {
+        last.lemma_frame(st2, pb2, s2, store, pb, src@);
+    }
+    (first, last, store, pb, given)
 }
 
 } // verus!
