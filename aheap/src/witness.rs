@@ -4,17 +4,20 @@
 //! The span source's witness, from any well-formed source, reserves a span of one block, backs
 //! its first page, writes a byte through the permission back returned and reads it again, releases
 //! the page and the span, and ends with the view it started with. A source that refuses leaves the
-//! view as it was, and the sequence stops there.
+//! view as it was with the refusal counted, and the sequence stops there.
 //!
 //! The page buddy's witness, over any well-formed source and with no spares, cuts a run of order 0
 //! and one of order BLOCK_ORDER, frees both, and ends holding no span, with the source's view the one
-//! it started with. A refusal stops the sequence after freeing what it cut. Its second witness, with
+//! it started with. A refusal stops the sequence after freeing what it cut, and the page buddy refuses
+//! only when the source did, so a source that refused nothing during the sequence gave both runs. Its
+//! second witness, with
 //! one spare, cuts a run, frees it so its span stays as the spare, and cuts again, which is shown to
 //! succeed whatever the source does.
 //!
 //! The backed run's witness, over any well-formed source and with no spares, cuts a run of order 0,
 //! backs it, writes a byte through the permission and reads it again, releases the run's page and
-//! frees the run, ending as the page buddy's witness does.
+//! frees the run, ending as the page buddy's witness does: a source that refused nothing gave the
+//! byte.
 use vstd::prelude::*;
 use vstd::layout::*;
 use vstd::raw_ptr::*;
@@ -30,12 +33,16 @@ verus! {
 broadcast use group_raw_ptr_axioms;
 
 /// Writes and reads one byte of a span `src` backs, and gives the span back. Returns whether the
-/// byte was written: false when the source refused to reserve or to back.
+/// byte was written: false when the source refused to reserve or to back, which it did once.
 pub fn witness_one_page<S: SpanSource>(src: &mut S) -> (wrote: bool)
     requires
         old(src)@.wf(),
     ensures
-        final(src)@ == old(src)@,
+        final(src)@ == if wrote {
+            old(src)@
+        } else {
+            old(src)@.refused()
+        },
 {
     let ghost start = src@;
     let base = match src.reserve(1) {
@@ -49,6 +56,7 @@ pub fn witness_one_page<S: SpanSource>(src: &mut S) -> (wrote: bool)
         None => {
             src.release_span(addr);
             assert(src@.spans =~= start.spans);
+            assert(src@ == start.refused());
             return false;
         },
         Some(perm) => perm,
@@ -162,24 +170,32 @@ proof fn lemma_meta_round_trip(s: SourceView, m: int, b: int)
 }
 
 /// Cuts a small run and a whole block from a page buddy over `src` keeping no spare, frees both, and
-/// returns the page buddy, which then holds no span and has given every span back to the source.
-pub fn witness_page_buddy<S: SpanSource>(src: S) -> (pb: PageBuddy<S>)
+/// returns the page buddy, which then holds no span and has given every span back to the source, with
+/// whether both runs were cut: they were exactly when the source refused nothing, and otherwise it
+/// refused once.
+pub fn witness_page_buddy<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, bool))
     requires
         src@.wf(),
     ensures
-        pb.wf(),
-        pb.spans().dom() == Set::<int>::empty(),
-        pb.meta() is None,
-        pb.source() == src@,
+        r.0.wf(),
+        r.0.spans().dom() == Set::<int>::empty(),
+        r.0.meta() is None,
+        r.0.source() == if r.1 {
+            src@
+        } else {
+            src@.refused()
+        },
+        r.1 == (r.0.source().refusals == src@.refusals),
 {
     let mut pb = PageBuddy::new(src, 0);
     let ghost s0 = pb.source();
+    assert(pb.spans().dom() =~= Set::<int>::empty());
     let small = match pb.alloc_run(0) {
         Err(_) => {
             proof {
                 pb.lemma_view();
             }
-            return pb;
+            return (pb, false);
         },
         Ok(p) => p,
     };
@@ -199,6 +215,9 @@ pub fn witness_page_buddy<S: SpanSource>(src: S) -> (pb: PageBuddy<S>)
         assert(spans1.dom() =~= set![b1]);
         assert(u1.remove(b1).dom() =~= Set::<int>::empty());
         lemma_meta_round_trip(s0, ma, b1);
+        lemma_meta_round_trip(s0.refused(), ma, b1);
+        assert(s1.refused() == s0.refused().reserved(ma, 1).backed_run(ma, ma, 1).reserved(b1, 1));
+        assert(spans1.dom().len() == 1);
     }
     let whole = match pb.alloc_run(BLOCK_ORDER) {
         Err(_) => {
@@ -207,7 +226,7 @@ pub fn witness_page_buddy<S: SpanSource>(src: S) -> (pb: PageBuddy<S>)
             proof {
                 pb.lemma_view();
             }
-            return pb;
+            return (pb, false);
         },
         Ok(p) => p,
     };
@@ -243,7 +262,7 @@ pub fn witness_page_buddy<S: SpanSource>(src: S) -> (pb: PageBuddy<S>)
     proof {
         pb.lemma_view();
     }
-    pb
+    (pb, true)
 }
 
 /// Cuts a run from a page buddy over `src` keeping one spare, frees it, so its span stays as the
@@ -301,24 +320,32 @@ pub fn witness_page_buddy_spare<S: SpanSource>(src: S) -> (pb: PageBuddy<S>)
 
 /// Cuts a run of order 0 from a page buddy over `src` keeping no spare, backs it, writes a byte
 /// through the permission and reads it again, releases the run's page and frees the run, and returns
-/// the page buddy, which then holds no span and has given every span back to the source.
-pub fn witness_backed_run<S: SpanSource>(src: S) -> (pb: PageBuddy<S>)
+/// the page buddy, which then holds no span and has given every span back to the source, with
+/// whether the byte was written: it was exactly when the source refused nothing, and otherwise it
+/// refused once.
+pub fn witness_backed_run<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, bool))
     requires
         src@.wf(),
     ensures
-        pb.wf(),
-        pb.spans().dom() == Set::<int>::empty(),
-        pb.meta() is None,
-        pb.source() == src@,
+        r.0.wf(),
+        r.0.spans().dom() == Set::<int>::empty(),
+        r.0.meta() is None,
+        r.0.source() == if r.1 {
+            src@
+        } else {
+            src@.refused()
+        },
+        r.1 == (r.0.source().refusals == src@.refusals),
 {
     let mut pb = PageBuddy::new(src, 0);
     let ghost s0 = pb.source();
+    assert(pb.spans().dom() =~= Set::<int>::empty());
     let p = match pb.alloc_run(0) {
         Err(_) => {
             proof {
                 pb.lemma_view();
             }
-            return pb;
+            return (pb, false);
         },
         Ok(p) => p,
     };
@@ -334,6 +361,8 @@ pub fn witness_backed_run<S: SpanSource>(src: S) -> (pb: PageBuddy<S>)
         assert(s1 == s0.reserved(ma, 1).backed_run(ma, ma, 1).reserved(b, 1));
         assert(pb.used().remove(b).dom() =~= Set::<int>::empty());
         lemma_meta_round_trip(s0, ma, b);
+        lemma_meta_round_trip(s0.refused(), ma, b);
+        assert(s1.refused() == s0.refused().reserved(ma, 1).backed_run(ma, ma, 1).reserved(b, 1));
         assert(pages(0) == 1);
     }
     let (ptr, perm) = match pb.back_run(p, 0) {
@@ -343,7 +372,7 @@ pub fn witness_backed_run<S: SpanSource>(src: S) -> (pb: PageBuddy<S>)
             proof {
                 pb.lemma_view();
             }
-            return pb;
+            return (pb, false);
         },
         Some(backed) => backed,
     };
@@ -369,7 +398,7 @@ pub fn witness_backed_run<S: SpanSource>(src: S) -> (pb: PageBuddy<S>)
     proof {
         pb.lemma_view();
     }
-    pb
+    (pb, true)
 }
 
 } // verus!

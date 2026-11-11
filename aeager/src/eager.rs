@@ -97,16 +97,18 @@ impl Spans {
     }
 
     /// The first run of `blocks` blocks no span holds, as a new span with nothing backed; or none.
-    fn reserve(&mut self, blocks: usize, provenance: Ghost<Provenance>) -> (r: Option<usize>)
+    /// `view` is the source's view, whose spans these are.
+    fn reserve(&mut self, blocks: usize, view: Ghost<SourceView>) -> (r: Option<usize>)
         requires
             old(self).inv(),
             blocks > 0,
+            view@.spans == old(self).map@,
         ensures
             final(self).inv(),
             match r {
                 None => final(self).map@ == old(self).map@,
                 Some(base) => {
-                    &&& (SourceView { provenance: provenance@, spans: old(self).map@ }).fits(base as int, blocks as nat)
+                    &&& view@.fits(base as int, blocks as nat)
                     &&& final(self).map@ == old(self).map@.insert(base as int, Span { blocks: blocks as nat, backed: Set::empty() })
                 },
             },
@@ -121,6 +123,7 @@ impl Spans {
                 self == old(self),
                 self.inv(),
                 0 < blocks <= WINDOW_BLOCKS,
+                view@.spans == old(self).map@,
                 first <= WINDOW_BLOCKS,
             decreases WINDOW_BLOCKS - first,
         {
@@ -146,7 +149,7 @@ impl Spans {
                     lemma_scale(first as int, blocks as int, BLOCK_BYTES as int);
                 }
                 let base = self.window + first * BLOCK_BYTES;
-                let ghost view = SourceView { provenance: provenance@, spans: self.map@ };
+                let ghost view = view@;
                 proof {
                     lemma_mod_multiples_vanish(first as int, self.window as int, BLOCK_BYTES as int);
                     assert forall|other: int| #[trigger] view.spans.contains_key(other) implies view.apart(
@@ -231,18 +234,20 @@ impl Spans {
         }
     }
 
-    /// Gives up the span at `span`, freeing its blocks.
-    fn release(&mut self, span: usize, provenance: Ghost<Provenance>)
+    /// Gives up the span at `span`, freeing its blocks. `view` is the source's view, whose spans these
+    /// are.
+    fn release(&mut self, span: usize, view: Ghost<SourceView>)
         requires
             old(self).inv(),
             old(self).map@.contains_key(span as int),
-            (SourceView { provenance: provenance@, spans: old(self).map@ }).wf(),
+            view@.spans == old(self).map@,
+            view@.wf(),
         ensures
             final(self).inv(),
             final(self).map@ == old(self).map@.remove(span as int),
         no_unwind
     {
-        let ghost view = SourceView { provenance: provenance@, spans: self.map@ };
+        let ghost view = view@;
         let ghost j = self.index@[span as int];
         proof {
             assert(self.holds(span as int));
@@ -608,6 +613,8 @@ pub struct Eager {
     spans: Spans,
     record: Record,
     exposed: Tracked<IsExposed>,
+    /// The refusals `reserve` and `back` have made, the view's count.
+    refusals: Ghost<nat>,
 }
 
 impl Eager {
@@ -662,6 +669,7 @@ impl Eager {
                 owner: [0; MAX_PAGES],
             },
             exposed,
+            refusals: Ghost(0),
         };
         assert(source@.spans =~= Map::empty());
         Some(source)
@@ -670,7 +678,7 @@ impl Eager {
 
 impl SpanSource for Eager {
     closed spec fn view(&self) -> SourceView {
-        SourceView { provenance: self.exposed@@, spans: self.spans.map@ }
+        SourceView { provenance: self.exposed@@, spans: self.spans.map@, refusals: self.refusals@ }
     }
 
     fn reserve(&mut self, blocks: usize) -> (r: Option<*mut u8>) {
@@ -678,8 +686,14 @@ impl SpanSource for Eager {
             use_type_invariant(&*self);
         }
         let ghost before = self@;
-        match self.spans.reserve(blocks, Ghost(self.exposed@@)) {
-            None => None,
+        match self.spans.reserve(blocks, Ghost(before)) {
+            None => {
+                proof {
+                    lemma_refused_wf(before);
+                }
+                self.refusals = Ghost(self.refusals@ + 1);
+                None
+            },
             Some(base) => {
                 proof {
                     lemma_reserved_wf(before, base as int, blocks as nat);
@@ -698,7 +712,13 @@ impl SpanSource for Eager {
             assert(before.released_span(span@).fits(span@, before.spans[span@].blocks));
         }
         match self.record.back_run(start, pages, Ghost(self.exposed@@)) {
-            None => None,
+            None => {
+                proof {
+                    lemma_refused_wf(before);
+                }
+                self.refusals = Ghost(self.refusals@ + 1);
+                None
+            },
             Some(perm) => {
                 proof {
                     lemma_backed_run_wf(before, span@, start as int, pages as nat);
@@ -727,7 +747,7 @@ impl SpanSource for Eager {
             use_type_invariant(&*self);
             lemma_released_span_wf(self@, span as int);
         }
-        self.spans.release(span, Ghost(self.exposed@@));
+        self.spans.release(span, Ghost(self@));
     }
 }
 

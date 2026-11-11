@@ -2,12 +2,14 @@
 //!
 //! A source hands out spans, block-aligned ranges of virtual addresses a whole number of blocks long,
 //! and backs page runs inside them. Its view is the spans it has reserved, keyed by base address,
-//! with the pages of each it has backed, and the provenance every permission it returns carries.
+//! with the pages of each it has backed, the provenance every permission it returns carries, and the
+//! count of the refusals it has made, so a caller's specification can say whether a call refused.
 //!
-//! - `reserve` gives a new span, unbacked and disjoint from every reserved one, or refuses and changes
-//!   nothing.
+//! - `reserve` gives a new span, unbacked and disjoint from every reserved one, or refuses, counts the
+//!   refusal and changes nothing else.
 //! - `back` takes a page run inside a reserved span with no page backed, and returns the permission
-//!   to every byte of the run, the run now backed; or refuses, backs nothing and changes nothing.
+//!   to every byte of the run, the run now backed; or refuses, counts the refusal, backs nothing and
+//!   changes nothing else.
 //! - `release` takes a backed run with its permission and gives the run's frames up. It never
 //!   refuses.
 //! - `release_span` takes a span with no page backed and gives the range up. It never refuses.
@@ -35,6 +37,8 @@ pub ghost struct SourceView {
     pub provenance: Provenance,
     /// The reserved spans, by base address.
     pub spans: Map<int, Span>,
+    /// The refusals `reserve` and `back` have made.
+    pub refusals: nat,
 }
 
 /// The bytes of `blocks` blocks.
@@ -128,6 +132,11 @@ impl SourceView {
     pub open spec fn released_span(self, span: int) -> Self {
         SourceView { spans: self.spans.remove(span), ..self }
     }
+
+    /// The view with one more refusal counted and nothing else changed.
+    pub open spec fn refused(self) -> Self {
+        SourceView { refusals: self.refusals + 1, ..self }
+    }
 }
 
 /// Each change a source's success makes keeps the view well formed, so an implementation's
@@ -206,12 +215,27 @@ pub proof fn lemma_released_span_wf(v: SourceView, span: int)
     }
 }
 
+pub proof fn lemma_refused_wf(v: SourceView)
+    requires
+        v.wf(),
+    ensures
+        v.refused().wf(),
+{
+    let w = v.refused();
+    assert forall|b: int| #[trigger] w.spans.contains_key(b) implies w.released_span(b).fits(b, w.spans[b].blocks) by {
+        assert(v.released_span(b).fits(b, v.spans[b].blocks));
+        assert forall|o: int| #[trigger] w.released_span(b).spans.contains_key(o) implies w.released_span(b).apart(b, w.spans[b].blocks, o) by {
+            assert(v.released_span(b).spans.contains_key(o));
+        }
+    }
+}
+
 /// Gives the heap spans of address space and backs page runs in them.
 pub trait SpanSource {
     spec fn view(&self) -> SourceView;
 
     /// Reserves a span of `blocks` blocks, none of it backed, at the base the returned pointer
-    /// addresses; or refuses and changes nothing.
+    /// addresses; or refuses, counts the refusal and changes nothing else.
     fn reserve(&mut self, blocks: usize) -> (r: Option<*mut u8>)
         requires
             old(self)@.wf(),
@@ -219,7 +243,7 @@ pub trait SpanSource {
         ensures
             final(self)@.wf(),
             match r {
-                None => final(self)@ == old(self)@,
+                None => final(self)@ == old(self)@.refused(),
                 Some(base) => {
                     &&& base@.provenance == old(self)@.provenance
                     &&& old(self)@.fits(base@.addr as int, blocks as nat)
@@ -229,7 +253,8 @@ pub trait SpanSource {
     ;
 
     /// Backs the run of `pages` pages from `start` inside the span at `span`, and returns the
-    /// permission to exactly its bytes; or refuses, backs nothing and changes nothing.
+    /// permission to exactly its bytes; or refuses, counts the refusal, backs nothing and changes
+    /// nothing else.
     fn back(&mut self, span: Ghost<int>, start: usize, pages: usize) -> (r: Option<Tracked<PointsToRaw>>)
         requires
             old(self)@.wf(),
@@ -238,7 +263,7 @@ pub trait SpanSource {
         ensures
             final(self)@.wf(),
             match r {
-                None => final(self)@ == old(self)@,
+                None => final(self)@ == old(self)@.refused(),
                 Some(perm) => {
                     &&& perm@.is_range(start as int, pages * PAGE_BYTES)
                     &&& perm@.provenance() == old(self)@.provenance

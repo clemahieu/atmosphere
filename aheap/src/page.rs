@@ -19,9 +19,11 @@
 //!   `release_run(p, k, perm)` gives them back. A run `alloc_run` returns has no page backed: the
 //!   page buddy does not back the runs it cuts, and its caller backs what it writes.
 //!
-//! Each states the source's view after it exactly: a refusal and a run from a held span leave it as
-//! it was, a new span is reserved (`took_span`), and a span given back is released (`gave_span`), so
-//! a sequence that frees every run it cut ends at the view it started from.
+//! Each states the source's view after it exactly: a refusal by the source leaves it as it was with
+//! that one refusal counted, so `Source` and a `None` from `back_run` answer only a refusal the source
+//! made in the call; `Full` and a run from a held span leave it as it was, a new span is reserved
+//! (`took_span`), and a span given back is released (`gave_span`), so a sequence that frees every run
+//! it cut ends at the view it started from.
 //!
 //! `lemma_view` states the invariant on the view, among it that a held span with no run is the
 //! initial block, so `lemma_idle_fits` shows a run of any order fits while such a span is held.
@@ -47,7 +49,8 @@ pub const SPANS: usize = PAGE_BYTES / BLOCK_PAGES;
 pub enum Refused {
     /// SPANS spans are held and none has a free block of the order asked.
     Full,
-    /// The source refused to reserve a span, or to back the metadata page.
+    /// The source refused to reserve a span, or to back the metadata page, in this call: its view
+    /// counts one more refusal.
     Source,
 }
 
@@ -952,7 +955,7 @@ impl<S: SpanSource> PageBuddy<S> {
             final(self).used() == old(self).used(),
             match r {
                 None => {
-                    &&& final(self).source() == old(self).source()
+                    &&& final(self).source() == old(self).source().refused()
                     &&& final(self).meta is None
                     &&& old(self).meta is None
                 },
@@ -993,6 +996,7 @@ impl<S: SpanSource> PageBuddy<S> {
                 self.source.release_span(ma);
                 proof {
                     assert(self.source@.spans =~= start.spans);
+                    assert(self.source@ == start.refused());
                 }
                 return None;
             },
@@ -1091,7 +1095,7 @@ impl<S: SpanSource> PageBuddy<S> {
                 Err(Refused::Source) => {
                     &&& final(self).spans() == old(self).spans()
                     &&& final(self).used() == old(self).used()
-                    &&& final(self).source() == old(self).source()
+                    &&& final(self).source() == old(self).source().refused()
                     &&& final(self).meta() == old(self).meta()
                     &&& old(self).spans().dom().len() < SPANS
                 },
@@ -1125,7 +1129,7 @@ impl<S: SpanSource> PageBuddy<S> {
                     self.drop_meta();
                     proof {
                         assert(self.source@.spans =~= start.spans);
-                        assert(self.source@ == start);
+                        assert(self.source@ == start.refused());
                     }
                 }
                 return Err(Refused::Source);
@@ -1182,7 +1186,8 @@ impl<S: SpanSource> PageBuddy<S> {
 
     /// Cuts a run of order `k`: from the held span with a free block of the smallest order at or
     /// above `k`, or from a new span when none has one. Refuses, and changes no held span, when no
-    /// held span has one and SPANS spans are held (`Full`) or the source refused (`Source`).
+    /// held span has one and SPANS spans are held (`Full`) or the source refused in this call, which
+    /// its view counts (`Source`).
     pub fn alloc_run(&mut self, k: usize) -> (r: Result<usize, Refused>)
         requires
             old(self).wf(),
@@ -1204,7 +1209,7 @@ impl<S: SpanSource> PageBuddy<S> {
                     &&& old(self).spans().dom().len() < SPANS
                     &&& final(self).spans() == old(self).spans()
                     &&& final(self).used() == old(self).used()
-                    &&& final(self).source() == old(self).source()
+                    &&& final(self).source() == old(self).source().refused()
                     &&& final(self).meta() == old(self).meta()
                 },
                 Ok(p) => {
@@ -1405,7 +1410,9 @@ impl<S: SpanSource> PageBuddy<S> {
             final(self).used() == old(self).used(),
             final(self).meta() == old(self).meta(),
             match r {
-                None => final(self).source() == old(self).source(),
+                None => {
+                    &&& final(self).source() == old(self).source().refused()
+                },
                 Some((ptr, perm)) => {
                     &&& ptr@.addr == p
                     &&& ptr@.provenance == old(self).source().provenance

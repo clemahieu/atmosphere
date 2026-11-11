@@ -2,7 +2,8 @@
 //! image: from any well-formed source it reserves a span of one block, backs its pages one at a time
 //! until the source refuses or the block is full, writes a byte through the run's permission and reads
 //! it back, releases the run, backs one page again and releases it, and gives the span back, ending
-//! with the view it started with. What it saw is the caller's to judge: dom0 prints it.
+//! with the spans it started with; only the source's count of refusals may have grown. What it saw is
+//! the caller's to judge: dom0 prints it.
 use vstd::arithmetic::div_mod::*;
 use vstd::layout::*;
 use vstd::prelude::*;
@@ -55,12 +56,13 @@ proof fn lemma_run_grows(start: int, k: nat)
     assert((k + 1) * PAGE_BYTES == k * PAGE_BYTES + PAGE_BYTES) by (nonlinear_arith);
 }
 
-/// Exercises `src` from any well-formed view and leaves the view as it found it.
+/// Exercises `src` from any well-formed view and leaves its spans as it found them.
 pub fn exercise<S: SpanSource>(src: &mut S) -> (seen: Exercised)
     requires
         old(src)@.wf(),
     ensures
-        final(src)@ == old(src)@,
+        final(src)@.spans == old(src)@.spans,
+        final(src)@.provenance == old(src)@.provenance,
 {
     let ghost start = src@;
     let nothing = Exercised { backed: 0, refused: false, read: false, again: false };
