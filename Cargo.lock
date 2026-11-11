@@ -37,7 +37,6 @@ dependencies = [
  "astd",
  "goblin",
  "log",
- "plain",
 ]
 
 [[package]]

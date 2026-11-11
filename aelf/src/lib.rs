@@ -17,7 +17,6 @@ use core::slice;
 
 use astd::heapless::Vec as ArrayVec;
 use astd::io::{Error as IoError, Read, ReadExactError, Seek, SeekFrom};
-use plain::Plain;
 
 use astd::memory::PageProtection;
 use dynamic::Dynamic;
@@ -54,6 +53,7 @@ use elf_types::{
 };
 
 const HEADER_SIZE: usize = mem::size_of::<Header>();
+const PROGRAM_HEADER_SIZE: usize = mem::size_of::<ProgramHeader>();
 const MAX_PROGRAM_HEADERS: usize = 20;
 
 #[derive(Debug)]
@@ -193,7 +193,7 @@ where
             return Err(Error::NotRelocatable);
         }
 
-        if header.e_phentsize as usize != mem::size_of::<ProgramHeader>() {
+        if header.e_phentsize as usize != PROGRAM_HEADER_SIZE {
             return Err(Error::BadProgramHeaderSize(header.e_phentsize as usize));
         }
 
@@ -205,12 +205,10 @@ where
 
         let mut elf_len = 0;
         for _ in 0..header.e_phnum {
-            let mut ph_bytes = [0u8; mem::size_of::<ProgramHeader>()];
+            let mut ph_bytes = [0u8; PROGRAM_HEADER_SIZE];
             file.read_exact(&mut ph_bytes).map_err(Into::into)?;
 
-            let ph = <ProgramHeader as Plain>::from_bytes(&ph_bytes)
-                .unwrap()
-                .clone();
+            let ph = read_program_header(&ph_bytes);
 
             let file_end = ph.p_offset + ph.p_filesz;
             elf_len = max(elf_len, file_end as usize);
@@ -475,6 +473,23 @@ where
     }
 }
 
+/// Reads an ELF64 program header in the target's byte order, each field from its offset in
+/// the System V gABI's layout.
+fn read_program_header(bytes: &[u8; PROGRAM_HEADER_SIZE]) -> ProgramHeader {
+    let word = |at: usize| u32::from_ne_bytes(bytes[at..at + 4].try_into().unwrap());
+    let xword = |at: usize| u64::from_ne_bytes(bytes[at..at + 8].try_into().unwrap());
+    ProgramHeader {
+        p_type: word(0),
+        p_flags: word(4),
+        p_offset: xword(8),
+        p_vaddr: xword(16),
+        p_paddr: xword(24),
+        p_filesz: xword(32),
+        p_memsz: xword(40),
+        p_align: xword(48),
+    }
+}
+
 impl ProgramHeaderExt for ProgramHeader {
     #[inline(always)]
     fn prot_flags(&self) -> PageProtection {
@@ -507,7 +522,7 @@ impl<'ph> fmt::Display for DisplayPFlags<'ph> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use astd::io::ErrorKind;
+    use astd::io::{Cursor, ErrorKind};
 
     #[test]
     fn error_messages() {
@@ -554,5 +569,113 @@ mod tests {
     fn target_selects_its_machine_relocation_and_class() {
         assert_eq!((EM_SELF, R_RELATIVE), EXPECTED);
         assert_eq!(HEADER_SIZE, 64);
+    }
+
+    // An ELF64 program header, laid out as the System V gABI gives it: p_type and p_flags
+    // as 4 bytes each, then p_offset, p_vaddr, p_paddr, p_filesz, p_memsz and p_align as
+    // 8 bytes each, 56 bytes in all.
+    fn program_header_bytes(
+        p_type: u32,
+        p_flags: u32,
+        rest: [u64; 6],
+    ) -> [u8; PROGRAM_HEADER_SIZE] {
+        let mut bytes = [0u8; PROGRAM_HEADER_SIZE];
+        bytes[0..4].copy_from_slice(&p_type.to_ne_bytes());
+        bytes[4..8].copy_from_slice(&p_flags.to_ne_bytes());
+        for (i, value) in rest.iter().enumerate() {
+            bytes[8 + 8 * i..16 + 8 * i].copy_from_slice(&value.to_ne_bytes());
+        }
+        bytes
+    }
+
+    // An ELF64 file header for a position-independent image of this target, whose
+    // program header table of `phnum` entries follows it at once.
+    fn file_header_bytes(phnum: u16) -> [u8; HEADER_SIZE] {
+        let mut bytes = [0u8; HEADER_SIZE];
+        bytes[0..4].copy_from_slice(b"\x7fELF");
+        bytes[4] = 2; // ELFCLASS64
+        bytes[5] = if cfg!(target_endian = "little") { 1 } else { 2 };
+        bytes[6] = 1; // EV_CURRENT
+        bytes[16..18].copy_from_slice(&ET_DYN.to_ne_bytes());
+        bytes[18..20].copy_from_slice(&EM_SELF.to_ne_bytes());
+        bytes[20..24].copy_from_slice(&1u32.to_ne_bytes());
+        bytes[32..40].copy_from_slice(&(HEADER_SIZE as u64).to_ne_bytes());
+        bytes[52..54].copy_from_slice(&(HEADER_SIZE as u16).to_ne_bytes());
+        bytes[54..56].copy_from_slice(&(PROGRAM_HEADER_SIZE as u16).to_ne_bytes());
+        bytes[56..58].copy_from_slice(&phnum.to_ne_bytes());
+        bytes
+    }
+
+    #[test]
+    fn program_header_reads_each_field_from_its_offset() {
+        let bytes = program_header_bytes(
+            0x1111_1111,
+            0x2222_2222,
+            [
+                0x3333_3333_3333_3333,
+                0x4444_4444_4444_4444,
+                0x5555_5555_5555_5555,
+                0x6666_6666_6666_6666,
+                0x7777_7777_7777_7777,
+                0x8888_8888_8888_8888,
+            ],
+        );
+        let ph = read_program_header(&bytes);
+        assert_eq!(ph.p_type, 0x1111_1111);
+        assert_eq!(ph.p_flags, 0x2222_2222);
+        assert_eq!(ph.p_offset, 0x3333_3333_3333_3333);
+        assert_eq!(ph.p_vaddr, 0x4444_4444_4444_4444);
+        assert_eq!(ph.p_paddr, 0x5555_5555_5555_5555);
+        assert_eq!(ph.p_filesz, 0x6666_6666_6666_6666);
+        assert_eq!(ph.p_memsz, 0x7777_7777_7777_7777);
+        assert_eq!(ph.p_align, 0x8888_8888_8888_8888);
+    }
+
+    #[test]
+    fn parse_reads_a_well_formed_program_header_table() {
+        let mut image = [0u8; HEADER_SIZE + 2 * PROGRAM_HEADER_SIZE];
+        image[..HEADER_SIZE].copy_from_slice(&file_header_bytes(2));
+        image[HEADER_SIZE..HEADER_SIZE + PROGRAM_HEADER_SIZE].copy_from_slice(
+            &program_header_bytes(
+                PT_LOAD,
+                PF_R | PF_X,
+                [0, 0x1000, 0x1000, 0x800, 0x2000, 0x1000],
+            ),
+        );
+        // PT_NOTE, which parse keeps and no segment query returns.
+        image[HEADER_SIZE + PROGRAM_HEADER_SIZE..].copy_from_slice(&program_header_bytes(
+            4,
+            PF_R,
+            [0x3000, 0, 0, 0x40, 0x40, 4],
+        ));
+
+        let elf = ElfHandle::parse(Cursor::new(&image[..]), 0x1000).unwrap();
+        assert_eq!(elf.elf_len(), 0x3040);
+        let mut segments = [LoadSegment {
+            vaddr: 0,
+            memsz: 0,
+            writable: false,
+            executable: false,
+        }; 2];
+        assert_eq!(elf.loadable_segments(&mut segments), Some(1));
+        assert_eq!(segments[0].vaddr, 0x1000);
+        assert_eq!(segments[0].memsz, 0x2000);
+        assert!(!segments[0].writable);
+        assert!(segments[0].executable);
+    }
+
+    #[test]
+    fn parse_refuses_a_short_program_header_table() {
+        // The header promises two program headers; the image ends inside the second.
+        let mut image = [0u8; HEADER_SIZE + PROGRAM_HEADER_SIZE + PROGRAM_HEADER_SIZE / 2];
+        image[..HEADER_SIZE].copy_from_slice(&file_header_bytes(2));
+        image[HEADER_SIZE..HEADER_SIZE + PROGRAM_HEADER_SIZE].copy_from_slice(
+            &program_header_bytes(PT_LOAD, PF_R, [0, 0x1000, 0x1000, 0x800, 0x800, 0x1000]),
+        );
+
+        assert!(matches!(
+            ElfHandle::parse(Cursor::new(&image[..]), 0x1000),
+            Err(Error::TooShort)
+        ));
     }
 }
