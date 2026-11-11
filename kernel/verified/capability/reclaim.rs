@@ -4754,7 +4754,9 @@ impl CapKernel {
     /// What freeing the 2M or 1G frame at `base` did to self, as frame_freed says for a 4K one: every
     /// page of the region is out of frames and the block is no longer typed. The region is free and not
     /// being zeroed, and the tree, the tables, the processes and the spaces are as they were, so the next
-    /// retype of the block can succeed.
+    /// retype of the block can succeed. The epochs, the cores and the IOMMUs are as they were, and so
+    /// is the block table but for the freed region, so what a caller knew of another block, or of an
+    /// acknowledgement, holds after the free.
     pub open spec fn large_frame_freed(&self, post: Self, c: usize, root: usize, from: usize, base: usize, order: u8) -> bool {
         let untyped = self.tables.node_of(root, from);
         let level = large_level(order);
@@ -4771,6 +4773,14 @@ impl CapKernel {
         &&& post.tables == self.tables
         &&& post.processes == self.processes
         &&& post.spaces == self.spaces
+        &&& post.stale_epoch == self.stale_epoch
+        &&& post.cores == self.cores
+        &&& post.iommus == self.iommus
+        &&& post.blocks.pages@ == self.blocks.pages@
+        &&& forall|j: int| 0 <= j < NUM_2M && !(level is Two && j == r)
+            ==> #[trigger] post.blocks.regions_2m@[j] == self.blocks.regions_2m@[j]
+        &&& forall|j: int| 0 <= j < NUM_1G && !(level is One && j == r)
+            ==> #[trigger] post.blocks.regions_1g@[j] == self.blocks.regions_1g@[j]
         &&& forall|i: usize| #[trigger] block_has_page(level_ref(level, r), i) ==> !post.frames@.contains_key(i)
         &&& Self::step_ok(*self, post, c as int)
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&self.list, &self.tables)
@@ -4856,6 +4866,14 @@ impl CapKernel {
             final(self).processes == old(self).processes,
             final(self).spaces == old(self).spaces,
             final(self).zeroing == old(self).zeroing,
+            final(self).stale_epoch == old(self).stale_epoch,
+            final(self).cores == old(self).cores,
+            final(self).iommus == old(self).iommus,
+            final(self).blocks.pages@ == old(self).blocks.pages@,
+            forall|j: int| 0 <= j < NUM_2M && !(level is Two && j == r)
+                ==> #[trigger] final(self).blocks.regions_2m@[j] == old(self).blocks.regions_2m@[j],
+            forall|j: int| 0 <= j < NUM_1G && !(level is One && j == r)
+                ==> #[trigger] final(self).blocks.regions_1g@[j] == old(self).blocks.regions_1g@[j],
             !block_typed(&final(self).blocks, level_ref(level, r)),
             final(self).blocks.large_free(level, r as int),
             forall|i: usize| #[trigger] block_has_page(level_ref(level, r), i) ==> !final(self).frames@.contains_key(i),
