@@ -45,6 +45,12 @@ pub open spec fn level_pages(level: Large) -> usize {
     }
 }
 
+/// The level of a large block of this order: 2M for order 9, 1G otherwise. A function rather than
+/// the conditional itself, so a trigger over the level is a term the solver can match on.
+pub open spec fn large_level(order: u8) -> Large {
+    if order == 9 { Large::Two } else { Large::One }
+}
+
 /// How many regions this level has.
 pub open spec fn level_regions(level: Large) -> usize {
     match level {

@@ -4635,12 +4635,12 @@ impl CapKernel {
             !(ret is Freed) ==> *final(self) == *old(self),
             !old(self).can_retype_under(root, from, base, order) ==> ret is Refused,
             ret is Again ==> {
-                let level = if order == 9 { Large::Two } else { Large::One };
+                let level = large_level(order);
                 !old(self).region_acknowledged(level, base / PAGE_SZ / level_pages(level))
             },
             ret is Freed ==> {
                 let untyped = old(self).tables.node_of(root, from);
-                let level = if order == 9 { Large::Two } else { Large::One };
+                let level = large_level(order);
                 let r = base / PAGE_SZ / level_pages(level);
                 &&& order == 9 || order == 18
                 &&& r < level_regions(level)
