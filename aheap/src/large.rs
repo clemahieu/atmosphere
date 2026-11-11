@@ -124,7 +124,7 @@ proof fn lemma_sizes(size: nat)
 }
 
 /// An object of `pages` pages and its record page fit in the span `blocks_for(pages)` gives it.
-proof fn lemma_blocks_for(pages: nat)
+pub proof fn lemma_blocks_for(pages: nat)
     ensures
         blocks_for(pages) > 0,
         (pages + 1) * PAGE_BYTES <= span_bytes(blocks_for(pages)),
