@@ -610,8 +610,13 @@ mod queue {
     use vstd::prelude::*;
     use super::SmmuCommand;
     use crate::arch::IotlbModel;
+    use crate::capability::kernel::CommandBuffers;
+    #[cfg(verus_keep_ghost)]
+    use crate::define::NUM_IOMMUS;
     #[cfg(verus_keep_ghost)]
     use super::IOMMU_COMMAND_SIZE;
+    #[cfg(verus_keep_ghost)]
+    use super::SMMU_CMDQ_PROD;
 
     /// What was read from the SMMUs' producer registers and stored into their command queues since the
     /// last submit: each producer register read, by its address, and the value read; each slot
@@ -639,12 +644,18 @@ mod queue {
         }
     }
 
-    /// Reads the producer register at `register`, an SMMU's SMMU_CMDQ_PROD: the queue's index and its
-    /// wrap bit, which is where the SMMU will look for the next command. It promises nothing about the
-    /// value, and records it in `model`'s queued commands as that register's producer.
+    /// Reads the producer register at `register`, which is SMMU i's SMMU_CMDQ_PROD, so the load is of
+    /// that register and no other address: the queue's index and its wrap bit, which is where the SMMU
+    /// will look for the next command. It promises nothing about the value, and records it in
+    /// `model`'s queued commands as that register's producer.
     #[verifier(external_body)]
     // external_body(glue): a load of the SMMU's producer register, of which nothing is promised but its width
-    pub fn read_producer(register: usize, Tracked(model): Tracked<&mut IotlbModel>) -> (ret: u32)
+    pub fn read_producer(commands: &CommandBuffers, i: usize, register: usize, Tracked(model): Tracked<&mut IotlbModel>) -> (ret: u32)
+        requires
+            i < NUM_IOMMUS,
+            commands.buffers.wf(),
+            commands.buffer_wf(i as int),
+            register == commands.buffers@[i as int].mmio + SMMU_CMDQ_PROD,
         ensures
             final(model).len() == old(model).len(),
             forall|j: int| #[trigger] final(model)[j] == old(model)[j],
@@ -663,11 +674,17 @@ mod queue {
         value
     }
 
-    /// Stores `command` into the queue slot at `address`, and records it in `model`'s queued commands.
+    /// Stores `command` into the queue slot at `address`, a command's aligned 16 bytes inside SMMU i's
+    /// queue, so the store lands in a slot and nowhere else, and records it in `model`'s queued commands.
     #[verifier(external_body)]
     // external_body(glue): the SMMU reads the queue, so only this can say what one of its slots holds
-    pub fn store_command(address: usize, command: SmmuCommand, Tracked(model): Tracked<&mut IotlbModel>)
+    pub fn store_command(commands: &CommandBuffers, i: usize, address: usize, command: SmmuCommand, Tracked(model): Tracked<&mut IotlbModel>)
         requires
+            i < NUM_IOMMUS,
+            commands.buffers.wf(),
+            commands.buffer_wf(i as int),
+            commands.buffers@[i as int].ring <= address,
+            address + IOMMU_COMMAND_SIZE <= commands.buffers@[i as int].ring + commands.buffers@[i as int].len * IOMMU_COMMAND_SIZE,
             address % IOMMU_COMMAND_SIZE == 0,
         ensures
             final(model).len() == old(model).len(),
@@ -818,7 +835,7 @@ pub fn invalidate_iommu_all(commands: &CommandBuffers, i: usize, Tracked(model):
                 b.mmio <= usize::MAX,
         ;
     }
-    let read = read_producer(b.mmio + SMMU_CMDQ_PROD, Tracked(model));
+    let read = read_producer(commands, i, b.mmio + SMMU_CMDQ_PROD, Tracked(model));
     let first = read as usize % b.len;
     let second = (first + 1) % b.len;
     let third = (first + 2) % b.len;
@@ -834,9 +851,9 @@ pub fn invalidate_iommu_all(commands: &CommandBuffers, i: usize, Tracked(model):
         lemma_command_slot(b, second as int);
         lemma_command_slot(b, third as int);
     }
-    store_command(b.ring + first * IOMMU_COMMAND_SIZE, cfgi_all_command(), Tracked(model));
-    store_command(b.ring + second * IOMMU_COMMAND_SIZE, tlbi_nsnh_all_command(), Tracked(model));
-    store_command(b.ring + third * IOMMU_COMMAND_SIZE, sync_command(), Tracked(model));
+    store_command(commands, i, b.ring + first * IOMMU_COMMAND_SIZE, cfgi_all_command(), Tracked(model));
+    store_command(commands, i, b.ring + second * IOMMU_COMMAND_SIZE, tlbi_nsnh_all_command(), Tracked(model));
+    store_command(commands, i, b.ring + third * IOMMU_COMMAND_SIZE, sync_command(), Tracked(model));
     proof {
         assert(second != first && third != first && third != second) by (nonlinear_arith)
             requires

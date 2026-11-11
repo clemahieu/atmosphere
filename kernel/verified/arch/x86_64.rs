@@ -736,6 +736,9 @@ mod queue {
     use vstd::prelude::*;
     use super::IommuCommand;
     use crate::arch::IotlbModel;
+    use crate::capability::kernel::CommandBuffers;
+    #[cfg(verus_keep_ghost)]
+    use crate::define::NUM_IOMMUS;
     #[cfg(verus_keep_ghost)]
     use super::IOMMU_COMMAND_SIZE;
 
@@ -758,11 +761,17 @@ mod queue {
         }
     }
 
-    /// Stores `command` into the ring slot at `address`, and records it in `model`'s queued commands.
+    /// Stores `command` into the ring slot at `address`, a command's aligned 16 bytes inside IOMMU i's
+    /// ring, so the store lands in a slot and nowhere else, and records it in `model`'s queued commands.
     #[verifier(external_body)]
     // external_body(glue): the IOMMU reads the ring, so only this can say what one of its slots holds
-    pub fn store_command(address: usize, command: IommuCommand, Tracked(model): Tracked<&mut IotlbModel>)
+    pub fn store_command(commands: &CommandBuffers, i: usize, address: usize, command: IommuCommand, Tracked(model): Tracked<&mut IotlbModel>)
         requires
+            i < NUM_IOMMUS,
+            commands.buffers.wf(),
+            commands.buffer_wf(i as int),
+            commands.buffers@[i as int].ring <= address,
+            address + IOMMU_COMMAND_SIZE <= commands.buffers@[i as int].ring + commands.buffers@[i as int].len * IOMMU_COMMAND_SIZE,
             address % IOMMU_COMMAND_SIZE == 0,
         ensures
             final(model).len() == old(model).len(),
@@ -881,8 +890,8 @@ pub fn invalidate_iommu_all(commands: &CommandBuffers, i: usize, Tracked(model):
         lemma_command_slot(b, second as int);
         vstd::arithmetic::div_mod::lemma_small_mod(first as nat, b.len as nat);
     }
-    store_command(b.ring + first * IOMMU_COMMAND_SIZE, invalidate_all_command(), Tracked(model));
-    store_command(b.ring + second * IOMMU_COMMAND_SIZE, completion_wait_command(b.completion as u64, 1), Tracked(model));
+    store_command(commands, i, b.ring + first * IOMMU_COMMAND_SIZE, invalidate_all_command(), Tracked(model));
+    store_command(commands, i, b.ring + second * IOMMU_COMMAND_SIZE, completion_wait_command(b.completion as u64, 1), Tracked(model));
     proof {
         assert(second != first) by (nonlinear_arith)
             requires
