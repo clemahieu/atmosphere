@@ -25,8 +25,6 @@ use crate::capability::view::bound_threads;
 use crate::capability::steps::Steps;
 use crate::capability::thread::*;
 use crate::capability::unmap::Unmapped;
-#[cfg(verus_keep_ghost)]
-use crate::capability::view::bound_threads;
 use crate::define::*;
 use crate::pptr::*;
 use crate::arch::Registers;
