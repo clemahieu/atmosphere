@@ -67,22 +67,4 @@ pub fn read_only_child(caller: &mut Tracked<Caller>, untyped: u64, base: u64, fr
     Some(Inspected { kind: out.result_1, base: out.result_2, order: out.result_3, rights: out.result_4 })
 }
 
-/// A word no wider than an index names the slot at that index of the caller's own table.
-proof fn lemma_own_position(word: u64)
-    requires
-        word <= POSITION_INDEX_MASK,
-    ensures
-        spec_position(word) == Some(Position { through: None, index: word as usize }),
-{
-    assert(word >> 32u64 == 0) by (bit_vector)
-        requires
-            word <= 0xffffu64;
-    assert((word >> 16u64) & 0xffffu64 == 0) by (bit_vector)
-        requires
-            word <= 0xffffu64;
-    assert(word & 0xffffu64 == word) by (bit_vector)
-        requires
-            word <= 0xffffu64;
-}
-
 } // verus!

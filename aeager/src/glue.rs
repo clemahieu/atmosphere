@@ -11,16 +11,26 @@ use vstd::prelude::*;
 use vstd::raw_ptr::*;
 
 use acall::memory;
+#[cfg(verus_keep_ghost)]
+use acall::memory::lemma_own_position;
 use acall::step::*;
 #[cfg(verus_keep_ghost)]
 use aheap::arch::*;
+#[cfg(verus_keep_ghost)]
+use verified::capability::reach::Right;
+#[cfg(verus_keep_ghost)]
+use verified::capability::view::right_bit;
 use verified::capability::kernel::CapKernel;
 use verified::capability::operation::*;
+use verified::capability::position::POSITION_INDEX_MASK;
 
 verus! {
 
 /// The level whose entry maps one page.
 const PAGE_LEVEL: u64 = 1;
+
+/// The write right's bit, as inspect returns rights.
+const RIGHT_WRITE: u64 = 2;
 
 /// Retypes the free page at physical `base`, inside the untyped at `untyped`, as a frame whose
 /// capability goes in the empty slot `destination`. Whether the kernel accepted.
@@ -59,7 +69,10 @@ pub fn link(caller: &mut Tracked<Caller>, space: u64, address: usize, level: u64
 }
 
 /// Maps the frame whose capability is at `frame`, which no entry maps, at the page `address` in the
-/// space at `space`: on success the permission to the page's bytes, with `provenance`.
+/// space at `space`: on success the permission to the page's bytes, with `provenance`. The frame is
+/// inspected first and mapped only with the write right, so the page is one the hardware lets the
+/// caller write; a frame whose capability lacks it, or a slot no inspect of the caller's own table
+/// names, is refused here.
 pub fn map_page(caller: &mut Tracked<Caller>, space: u64, address: usize, frame: u64, provenance: Ghost<Provenance>) -> (r: Option<Tracked<PointsToRaw>>)
     requires
         old(caller)@.wf(),
@@ -71,10 +84,28 @@ pub fn map_page(caller: &mut Tracked<Caller>, space: u64, address: usize, frame:
         },
     no_unwind
 {
+    if frame > POSITION_INDEX_MASK {
+        return None;
+    }
+    proof {
+        lemma_own_position(frame);
+    }
+    let seen = memory::inspect(caller, frame);
+    if seen.status != STATUS_OK || seen.result_4 & RIGHT_WRITE == 0 {
+        return None;
+    }
     let ghost before = caller@.kernel();
+    let ghost root = caller@.root();
+    proof {
+        let rights = before.table_view(root)[frame as usize].rights;
+        assert(rights as u64 == seen.result_4);
+        assert(rights & 2u32 != 0) by (bit_vector)
+            requires
+                (rights as u64) & 2u64 != 0;
+    }
     let out = memory::map(caller, space, address as u64, PAGE_LEVEL, frame, 0);
     if out.status == STATUS_OK {
-        Some(page_permission(Ghost(before), Ghost(caller@.kernel()), Ghost(caller@.root()), space, address, frame, Ghost(out), provenance))
+        Some(page_permission(Ghost(before), Ghost(caller@.kernel()), Ghost(root), space, address, frame, Ghost(out), provenance))
     } else {
         None
     }
@@ -82,9 +113,10 @@ pub fn map_page(caller: &mut Tracked<Caller>, space: u64, address: usize, frame:
 
 /// The permission to the bytes of the page at `address`, once the kernel accepted a map of the frame
 /// at `frame` there in the space at `space`, as the map contract says of the call by the process whose
-/// table is at `root` that took the kernel from `before` to `after`.
+/// table is at `root` that took the kernel from `before` to `after`, with the frame's capability
+/// holding the write right, so the entry the map wrote is writable.
 #[verifier(external_body)]
-// external_body(gap): conjures the permission to a mapped page's bytes; the map contract puts the frame's page in the space's tables, and nothing proves that the calling thread runs in that space or that no other permission covers the page
+// external_body(gap): conjures the permission to a mapped page's bytes; the map contract puts the frame's page in the space's tables, writable since the frame's capability has the write right, and nothing proves that the calling thread runs in that space, that no other permission covers the page or that the page is memory Rust may read and write
 fn page_permission(
     before: Ghost<CapKernel>,
     after: Ghost<CapKernel>,
@@ -98,6 +130,7 @@ fn page_permission(
     requires
         out@.status == STATUS_OK,
         CapKernel::map_contract(before@, after@, root@, space as usize, address as u64, PAGE_LEVEL, frame as usize, 0, out@),
+        before@.table_view(root@)[frame as usize].rights & right_bit(Right::Write) != 0,
     ensures
         perm@.is_range(address as int, PAGE_BYTES as int),
         perm@.provenance() == provenance@,

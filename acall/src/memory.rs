@@ -11,7 +11,7 @@ use verified::arch::Registers;
 use verified::capability::kernel::CapKernel;
 use verified::capability::operation::*;
 #[cfg(verus_keep_ghost)]
-use verified::capability::position::spec_position;
+use verified::capability::position::*;
 
 use crate::step::*;
 
@@ -131,6 +131,24 @@ pub fn map(caller: &mut Tracked<Caller>, slot: u64, va: u64, level: u64, from: u
         CapKernel::lemma_map_contract(pre.kernel(), caller@.kernel(), pre.root(), frame, out);
     }
     out
+}
+
+/// A word no wider than an index names the slot at that index of the caller's own table.
+pub proof fn lemma_own_position(word: u64)
+    requires
+        word <= POSITION_INDEX_MASK,
+    ensures
+        spec_position(word) == Some(Position { through: None, index: word as usize }),
+{
+    assert(word >> 32u64 == 0) by (bit_vector)
+        requires
+            word <= 0xffffu64;
+    assert((word >> 16u64) & 0xffffu64 == 0) by (bit_vector)
+        requires
+            word <= 0xffffu64;
+    assert(word & 0xffffu64 == word) by (bit_vector)
+        requires
+            word <= 0xffffu64;
 }
 
 } // verus!
