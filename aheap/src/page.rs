@@ -1843,6 +1843,7 @@ impl PageBuddy {
     /// Takes back the run at `p`, none of whose pages is backed. A span left with no run is given
     /// back to the source with its metadata page, unless fewer than the spares are idle, when it
     /// stays as a spare.
+    #[verifier::spinoff_prover]
     pub fn free_run<S: SpanSource>(&mut self, src: &mut S, p: usize)
         requires
             old(self).wf(old(src)@),
