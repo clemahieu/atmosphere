@@ -16,11 +16,13 @@ verus! {
 /// at `root()`, filling its TLB under tag `tag()`, the PCID or ASID written with it. The kernel value
 /// holds one for each core, made at boot for the root the loader left there, and load_translation_root
 /// writes the register only through it, so what it says is the register's latest write.
-// The fields are read only by specs, which a build that is not verifying erases.
-#[allow(dead_code)]
+// Only specs read the fields, and a cargo build erases specs, so only Verus compiles them.
 pub tracked struct BaseRegister {
+    #[cfg(verus_keep_ghost)]
     ghost core: int,
+    #[cfg(verus_keep_ghost)]
     ghost root: usize,
+    #[cfg(verus_keep_ghost)]
     ghost tag: usize,
 }
 
@@ -47,10 +49,11 @@ pub ghost enum FlushTarget {
 /// What a flush of `target()`, started when the epoch was `epoch()`, proves. Only flush glue can make
 /// one, so only it can clear a model of what the target holds: flush_every_context for a core,
 /// invalidate_iommu_all for an IOMMU.
-// The fields are read only by specs, which a build that is not verifying erases.
-#[allow(dead_code)]
+// Only specs read the fields, and a cargo build erases specs, so only Verus compiles them.
 pub tracked struct Flushed {
+    #[cfg(verus_keep_ghost)]
     ghost target: FlushTarget,
+    #[cfg(verus_keep_ghost)]
     ghost epoch: int,
 }
 
