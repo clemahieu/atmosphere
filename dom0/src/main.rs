@@ -61,14 +61,37 @@
 //! and ends the run with a power-off through its power capability, reporting success only when every
 //! check held. On aarch64, where the instruction carries an immediate, a print through the console by
 //! `svc #1` returns unknown and prints nothing.
+//!
+//! dom0 invokes retype, derive, inspect, move, delete, revoke, link and map through acall's wrappers,
+//! whose ensures are the kernel's proven contracts, so the code those proofs speak of is the code that
+//! boots. dom0 is not verified: the ghost caller it threads through them erases in its build, and
+//! nothing here checks the wrappers' requires.
 
 #![no_std]
 #![no_main]
 
 use core::panic::PanicInfo;
 
+use acall::capability::{delete, move_cap, revoke};
+use acall::memory::{derive, link, map, retype};
+use acall::step::Caller;
 use asys::operation;
 use vstd::prelude::Ghost;
+
+/// What inspect says of the capability at position `slot`, through acall's wrapper, or the status it
+/// returned when the position holds none.
+fn inspect(caller: &mut Ghost<Caller>, slot: u64) -> Result<operation::Capability, u64> {
+    let out = acall::memory::inspect(caller, slot);
+    match out.status {
+        operation::STATUS_OK => Ok(operation::Capability {
+            kind: out.result_1,
+            base: out.result_2,
+            order: out.result_3,
+            rights: out.result_4,
+        }),
+        refused => Err(refused),
+    }
+}
 
 /// A number past every operation's.
 const NO_OPERATION: u64 = 0xffff;
@@ -100,23 +123,23 @@ const NO_POSITION: u64 = 1 << operation::POSITION_WIDTH;
 /// aligned to its order, at least one, up to that slot, which inspect refuses because it holds nothing.
 /// Boot fills the untyped slots from the first and leaves the rest of the leaf empty,
 /// design/root-process-at-boot/; a leaf full of untyped leaves no empty slot in it to read, and fails.
-fn first_empty_slot() -> Option<u64> {
-    let console = operation::inspect(operation::ROOT_CONSOLE_SLOT);
+fn first_empty_slot(caller: &mut Ghost<Caller>) -> Option<u64> {
+    let console = inspect(caller, operation::ROOT_CONSOLE_SLOT);
     if !matches!(console, Ok(capability) if capability.kind == operation::KIND_CONSOLE) {
         return None;
     }
-    if operation::inspect(operation::through(operation::ROOT_PROCESS_SLOT, operation::ROOT_CONSOLE_SLOT)) != console
-        || operation::inspect(NO_POSITION | operation::ROOT_CONSOLE_SLOT) != Err(operation::STATUS_REFUSED)
+    if inspect(caller, operation::through(operation::ROOT_PROCESS_SLOT, operation::ROOT_CONSOLE_SLOT)) != console
+        || inspect(caller, NO_POSITION | operation::ROOT_CONSOLE_SLOT) != Err(operation::STATUS_REFUSED)
     {
         return None;
     }
-    let power = operation::inspect(operation::ROOT_POWER_SLOT);
+    let power = inspect(caller, operation::ROOT_POWER_SLOT);
     if !matches!(power, Ok(capability) if capability.kind == operation::KIND_POWER) {
         return None;
     }
     let mut slot = operation::ROOT_UNTYPED_SLOT;
     while slot <= FIRST_LEAF_END {
-        match operation::inspect(slot) {
+        match inspect(caller, slot) {
             Ok(capability) => {
                 let aligned = capability.order <= MAX_ORDER && capability.base % (4096 << capability.order) == 0;
                 if capability.kind != operation::KIND_UNTYPED || !aligned {
@@ -138,21 +161,22 @@ fn first_empty_slot() -> Option<u64> {
 /// one before `empty`, into `empty`, which inspect then says holds a frame of order 0 at that page. Boot
 /// pays for dom0's tables from the start of the first untyped and leaves the rest free, so that page is
 /// free.
-fn retyped_frame_held(empty: u64) -> bool {
+fn retyped_frame_held(caller: &mut Ghost<Caller>, empty: u64) -> bool {
     let untyped = empty - 1;
-    let base = match operation::inspect(untyped) {
+    let base = match inspect(caller, untyped) {
         Ok(block) => block.base + (4096 << block.order) - 4096,
         Err(_) => return false,
     };
-    let refused = |slot| operation::retype_frame(slot, base, empty) == operation::STATUS_REFUSED;
-    if !refused(empty) || !refused(operation::TABLE_INDICES) || !refused(operation::ROOT_CONSOLE_SLOT) {
-        return false;
-    }
-    if operation::retype_frame(untyped, base, empty) != operation::STATUS_OK {
+    let mut retype_frame = |slot| retype(caller, slot, operation::RETYPE_FRAME, base, empty, 0).status;
+    if retype_frame(empty) != operation::STATUS_REFUSED
+        || retype_frame(operation::TABLE_INDICES) != operation::STATUS_REFUSED
+        || retype_frame(operation::ROOT_CONSOLE_SLOT) != operation::STATUS_REFUSED
+        || retype_frame(untyped) != operation::STATUS_OK
+    {
         return false;
     }
     matches!(
-        operation::inspect(empty),
+        inspect(caller, empty),
         Ok(frame) if frame.kind == operation::KIND_FRAME && frame.base == base && frame.order == 0
     )
 }
@@ -165,11 +189,11 @@ const PATH_ADDRESS: u64 = 2 << 39;
 const TABLE_PAGE_BYTES: u64 = 8 * 4096;
 
 /// The last untyped from `empty` down whose block holds at least `pages` 4K pages, if any.
-fn untyped_of_pages(empty: u64, pages: u64) -> Option<(u64, operation::Capability)> {
+fn untyped_of_pages(caller: &mut Ghost<Caller>, empty: u64, pages: u64) -> Option<(u64, operation::Capability)> {
     let mut slot = empty;
     while slot > operation::ROOT_UNTYPED_SLOT {
         slot -= 1;
-        match operation::inspect(slot) {
+        match inspect(caller, slot) {
             Ok(block) if block.kind == operation::KIND_UNTYPED && block.order < MAX_ORDER && 1 << block.order >= pages => {
                 return Some((slot, block));
             }
@@ -184,18 +208,20 @@ fn untyped_of_pages(empty: u64, pages: u64) -> Option<(u64, operation::Capabilit
 /// which the frame check may have taken; and retype of a table page of level 0 and 4, and of a block
 /// already retyped, is refused. Boot pays for dom0's tables from the start of the first untyped, so that
 /// top is free.
-fn retyped_table_pages(empty: u64) -> Option<(u64, [u64; 4])> {
-    let (untyped, block) = untyped_of_pages(empty, 64)?;
+fn retyped_table_pages(caller: &mut Ghost<Caller>, empty: u64) -> Option<(u64, [u64; 4])> {
+    let (untyped, block) = untyped_of_pages(caller, empty, 64)?;
     let top = block.base + (4096 << block.order);
     let tables = [1, 2, 3, 4].map(|k| top - TABLE_PAGE_BYTES * (k + 1));
-    let retype = |k: usize, level: u64| operation::retype_table_page(untyped, tables[k], level);
-    let held = retype(0, 0) == operation::STATUS_REFUSED
-        && retype(0, 4) == operation::STATUS_REFUSED
-        && retype(0, 3) == operation::STATUS_OK
-        && retype(1, 2) == operation::STATUS_OK
-        && retype(2, 1) == operation::STATUS_OK
-        && retype(3, 1) == operation::STATUS_OK
-        && retype(0, 3) == operation::STATUS_REFUSED;
+    let mut retype_table = |k: usize, level: u64| {
+        retype(caller, untyped, operation::RETYPE_TABLE_PAGE, tables[k], 0, level).status
+    };
+    let held = retype_table(0, 0) == operation::STATUS_REFUSED
+        && retype_table(0, 4) == operation::STATUS_REFUSED
+        && retype_table(0, 3) == operation::STATUS_OK
+        && retype_table(1, 2) == operation::STATUS_OK
+        && retype_table(2, 1) == operation::STATUS_OK
+        && retype_table(3, 1) == operation::STATUS_OK
+        && retype_table(0, 3) == operation::STATUS_REFUSED;
     held.then_some((untyped, tables))
 }
 
@@ -204,17 +230,17 @@ fn retyped_table_pages(empty: u64) -> Option<(u64, [u64; 4])> {
 /// level 3 entry, of a table into a level 2 entry whose level 2 table is not linked yet, and at an
 /// address not aligned to its level 2 entry is refused; the level 3, 2 and 1 tables link; and the fourth
 /// page, of level 1, is refused at the level 2 entry the level 1 table took.
-fn linked_path_held(untyped: u64, tables: [u64; 4]) -> bool {
-    let link = |address: u64, level: u64, k: usize| {
-        operation::link(operation::ROOT_PROCESS_SLOT, address, level, untyped, tables[k])
+fn linked_path_held(caller: &mut Ghost<Caller>, untyped: u64, tables: [u64; 4]) -> bool {
+    let mut link_table = |address: u64, level: u64, k: usize| {
+        link(caller, operation::ROOT_PROCESS_SLOT, address, level, untyped, tables[k]).status
     };
-    link(PATH_ADDRESS, 4, 0) == operation::STATUS_OK
-        && link(PATH_ADDRESS, 3, 2) == operation::STATUS_REFUSED
-        && link(PATH_ADDRESS, 2, 2) == operation::STATUS_REFUSED
-        && link(PATH_ADDRESS, 3, 1) == operation::STATUS_OK
-        && link(PATH_ADDRESS + 4096, 2, 2) == operation::STATUS_REFUSED
-        && link(PATH_ADDRESS, 2, 2) == operation::STATUS_OK
-        && link(PATH_ADDRESS, 2, 3) == operation::STATUS_REFUSED
+    link_table(PATH_ADDRESS, 4, 0) == operation::STATUS_OK
+        && link_table(PATH_ADDRESS, 3, 2) == operation::STATUS_REFUSED
+        && link_table(PATH_ADDRESS, 2, 2) == operation::STATUS_REFUSED
+        && link_table(PATH_ADDRESS, 3, 1) == operation::STATUS_OK
+        && link_table(PATH_ADDRESS + 4096, 2, 2) == operation::STATUS_REFUSED
+        && link_table(PATH_ADDRESS, 2, 2) == operation::STATUS_OK
+        && link_table(PATH_ADDRESS, 2, 3) == operation::STATUS_REFUSED
 }
 
 /// An address in the kernel's half, canonical, where no map of dom0's may go.
@@ -232,11 +258,11 @@ const MAPPED_WORD: u64 = 0x6174_6d6f_7370_6865;
 /// table the path holds, and reads back a word written through the mapping: a map at a kernel-half and at
 /// a non-canonical address is refused, the map at `PATH_ADDRESS` is accepted, and a second map at the
 /// entry it took is refused.
-fn mapped_frame_held(frame: u64) -> bool {
-    let map = |address: u64| operation::map(operation::ROOT_PROCESS_SLOT, address, 1, frame, 0);
-    if map(KERNEL_HALF_ADDRESS) != operation::STATUS_REFUSED
-        || map(NON_CANONICAL_ADDRESS) != operation::STATUS_REFUSED
-        || map(PATH_ADDRESS) != operation::STATUS_OK
+fn mapped_frame_held(caller: &mut Ghost<Caller>, frame: u64) -> bool {
+    let mut map_at = |address: u64| map(caller, operation::ROOT_PROCESS_SLOT, address, 1, frame, 0).status;
+    if map_at(KERNEL_HALF_ADDRESS) != operation::STATUS_REFUSED
+        || map_at(NON_CANONICAL_ADDRESS) != operation::STATUS_REFUSED
+        || map_at(PATH_ADDRESS) != operation::STATUS_OK
     {
         return false;
     }
@@ -246,14 +272,14 @@ fn mapped_frame_held(frame: u64) -> bool {
         word.write_volatile(MAPPED_WORD);
         word.read_volatile()
     };
-    read == MAPPED_WORD && map(PATH_ADDRESS) == operation::STATUS_REFUSED
+    read == MAPPED_WORD && map_at(PATH_ADDRESS) == operation::STATUS_REFUSED
 }
 
 /// Whether dom0 unmaps the 4K frame at `frame` that it mapped at `PATH_ADDRESS` and maps it there again:
 /// an unmap at a kernel-half address, at the empty entry after `PATH_ADDRESS` and at level 2 is refused,
 /// the unmap at `PATH_ADDRESS` is accepted and a second one refused, and a map of the frame there is
 /// accepted again and reads back the word written through the first mapping.
-fn remapped_frame_held(frame: u64) -> bool {
+fn remapped_frame_held(caller: &mut Ghost<Caller>, frame: u64) -> bool {
     // Nothing dom0 uses is at these addresses but the word at PATH_ADDRESS, which it reads only after the
     // map that follows the unmap.
     let refused = |address: u64, level: u64| {
@@ -267,7 +293,7 @@ fn remapped_frame_held(frame: u64) -> bool {
         || !refused(PATH_ADDRESS, 2)
         || unsafe { operation::unmap(operation::ROOT_PROCESS_SLOT, PATH_ADDRESS, 1) }.is_err()
         || !refused(PATH_ADDRESS, 1)
-        || operation::map(operation::ROOT_PROCESS_SLOT, PATH_ADDRESS, 1, frame, 0) != operation::STATUS_OK
+        || map(caller, operation::ROOT_PROCESS_SLOT, PATH_ADDRESS, 1, frame, 0).status != operation::STATUS_OK
     {
         return false;
     }
@@ -280,25 +306,27 @@ fn remapped_frame_held(frame: u64) -> bool {
 /// move is accepted, inspect refuses the old slot and finds the frame at its base in the new one, and
 /// once the page is unmapped, a map through the old slot is refused and one through the new slot is
 /// accepted and reads back the word written through the first mapping.
-fn moved_frame_held(frame: u64) -> bool {
+fn moved_frame_held(caller: &mut Ghost<Caller>, frame: u64) -> bool {
     let moved = frame + 1;
-    let base = match operation::inspect(frame) {
+    let base = match inspect(caller, frame) {
         Ok(capability) => capability.base,
         Err(_) => return false,
     };
-    let map = |slot: u64| operation::map(operation::ROOT_PROCESS_SLOT, PATH_ADDRESS, 1, slot, 0);
-    let held = operation::move_capability(moved, moved) == operation::STATUS_REFUSED
-        && operation::move_capability(frame, operation::ROOT_CONSOLE_SLOT) == operation::STATUS_REFUSED
-        && operation::move_capability(frame, moved) == operation::STATUS_OK
-        && matches!(operation::inspect(frame), Err(operation::STATUS_REFUSED))
+    let map_from = |caller: &mut Ghost<Caller>, slot: u64| {
+        map(caller, operation::ROOT_PROCESS_SLOT, PATH_ADDRESS, 1, slot, 0).status
+    };
+    let held = move_cap(caller, moved, moved).status == operation::STATUS_REFUSED
+        && move_cap(caller, frame, operation::ROOT_CONSOLE_SLOT).status == operation::STATUS_REFUSED
+        && move_cap(caller, frame, moved).status == operation::STATUS_OK
+        && matches!(inspect(caller, frame), Err(operation::STATUS_REFUSED))
         && matches!(
-            operation::inspect(moved),
+            inspect(caller, moved),
             Ok(capability) if capability.kind == operation::KIND_FRAME && capability.base == base && capability.order == 0
         )
         // Nothing dom0 uses is at PATH_ADDRESS but the word, which it reads only after the map that follows.
         && unsafe { operation::unmap(operation::ROOT_PROCESS_SLOT, PATH_ADDRESS, 1) }.is_ok()
-        && map(frame) == operation::STATUS_REFUSED
-        && map(moved) == operation::STATUS_OK;
+        && map_from(caller, frame) == operation::STATUS_REFUSED
+        && map_from(caller, moved) == operation::STATUS_OK;
     // The map just made the page at PATH_ADDRESS the moved frame's, which kept the word.
     held && unsafe { (PATH_ADDRESS as *const u64).read_volatile() == MAPPED_WORD }
 }
@@ -459,7 +487,7 @@ const _: () = assert!(TIMED_MAPS == 64);
 /// beside its before number, then what the performance counters counted over each, where there are
 /// any. The counts are not checked against those numbers. The timed maps start at the page after
 /// PATH_ADDRESS, which already holds `frame`.
-fn timed_beside_before(frame: u64) -> bool {
+fn timed_beside_before(caller: &mut Ghost<Caller>, frame: u64) -> bool {
     let null_before = counters();
     let start = rdtsc();
     let unknown = operation::status(unsafe { operation::invoke(NO_OPERATION, 0, [0; 5]) });
@@ -472,7 +500,7 @@ fn timed_beside_before(frame: u64) -> bool {
     let start = rdtsc();
     for k in 1..=TIMED_MAPS {
         let address = PATH_ADDRESS + 4096 * k;
-        if operation::map(operation::ROOT_PROCESS_SLOT, address, 1, frame, 0) != operation::STATUS_OK {
+        if map(caller, operation::ROOT_PROCESS_SLOT, address, 1, frame, 0).status != operation::STATUS_OK {
             return false;
         }
     }
@@ -575,9 +603,9 @@ fn probe_refused(first: u64, count: u64, what: &[u8]) -> bool {
 /// set. A write sets dirty even through a translation still cached with dirty clear, since the processor
 /// walks to set it, so that step does not depend on the TLB; whether it sets accessed again then does, and
 /// is not checked. A probe of 0 entries, of 65 and of a range that leaves the level 1 table is refused.
-fn probed_bits_held(frame: u64) -> bool {
+fn probed_bits_held(caller: &mut Ghost<Caller>, frame: u64) -> bool {
     let page = entry_address(PROBED_ENTRY) as *mut u64;
-    if operation::map(operation::ROOT_PROCESS_SLOT, page as u64, 1, frame, 0) != operation::STATUS_OK
+    if map(caller, operation::ROOT_PROCESS_SLOT, page as u64, 1, frame, 0).status != operation::STATUS_OK
         || !probed_step_held(b"mapped", Some(false), false)
     {
         return false;
@@ -602,9 +630,9 @@ const UNMAPPED_ENTRY: u64 = PROBED_ENTRY + 1;
 /// UNMAPPED_ENTRY from `frame`, writes it and unmaps it, and the unmap finds accessed and dirty set, with
 /// both maintained; it prints the two bits. The entry was never mapped before, so no translation of it was
 /// cached and the write walks to it and sets both.
-fn unmapped_bits_held(frame: u64) -> bool {
+fn unmapped_bits_held(caller: &mut Ghost<Caller>, frame: u64) -> bool {
     let page = entry_address(UNMAPPED_ENTRY) as *mut u64;
-    if operation::map(operation::ROOT_PROCESS_SLOT, page as u64, 1, frame, 0) != operation::STATUS_OK {
+    if map(caller, operation::ROOT_PROCESS_SLOT, page as u64, 1, frame, 0).status != operation::STATUS_OK {
         return false;
     }
     // The map just made the page the frame's, writable; the frame holds MAPPED_WORD, which the write puts
@@ -637,19 +665,21 @@ fn unmapped_bits_held(frame: u64) -> bool {
 /// block's pages, so a retype still returning again after 512 has stopped going on, and fails. Boot pays
 /// for dom0's tables from the start of the first untyped and the other checks take pages from the top of
 /// an untyped, so that bottom is free unless the untyped is the first.
-fn retyped_large_frame_held(empty: u64, destination: u64) -> bool {
-    let (untyped, block) = match untyped_of_pages(empty, LARGE_FRAME_PAGES) {
+fn retyped_large_frame_held(caller: &mut Ghost<Caller>, empty: u64, destination: u64) -> bool {
+    let (untyped, block) = match untyped_of_pages(caller, empty, LARGE_FRAME_PAGES) {
         Some(found) => found,
         None => return false,
     };
     let base = block.base;
-    let retype = |base: u64, destination: u64| operation::retype_large_frame(untyped, base, destination);
-    if retype(base + 4096, destination) != operation::STATUS_REFUSED {
+    let retype_large = |caller: &mut Ghost<Caller>, base: u64, destination: u64| {
+        retype(caller, untyped, operation::RETYPE_LARGE_FRAME, base, destination, 0).status
+    };
+    if retype_large(caller, base + 4096, destination) != operation::STATUS_REFUSED {
         return false;
     }
     let mut again = 0;
     let status = loop {
-        let status = retype(base, destination);
+        let status = retype_large(caller, base, destination);
         if status != operation::STATUS_AGAIN || again == LARGE_FRAME_PAGES {
             break status;
         }
@@ -658,10 +688,10 @@ fn retyped_large_frame_held(empty: u64, destination: u64) -> bool {
     let held = status == operation::STATUS_OK
         && again > 0
         && matches!(
-            operation::inspect(destination),
+            inspect(caller, destination),
             Ok(frame) if frame.kind == operation::KIND_FRAME && frame.base == base && frame.order == 9
         )
-        && retype(base, destination + 1) == operation::STATUS_REFUSED;
+        && retype_large(caller, base, destination + 1) == operation::STATUS_REFUSED;
     held && print_done_after(LARGE_FRAME_HEAD, again) == operation::STATUS_OK
 }
 
@@ -679,19 +709,19 @@ const LARGE_FRAME_BYTES: u64 = LARGE_FRAME_PAGES * 4096;
 /// rights and the retype right, of the page past the frame's block and into the occupied slot `occupied`
 /// is refused, the derive is accepted, and inspect finds a frame of order 0 at that page, with the read
 /// right alone, in `child`.
-fn derived_frame_held(large: u64, empty: u64, occupied: u64, child: u64) -> bool {
-    let parent = match operation::inspect(large) {
+fn derived_frame_held(caller: &mut Ghost<Caller>, large: u64, empty: u64, occupied: u64, child: u64) -> bool {
+    let parent = match inspect(caller, large) {
         Ok(capability) => capability,
         Err(_) => return false,
     };
     let page = parent.base + 4096;
-    operation::derive(empty, child, RIGHT_READ, page, 0) == operation::STATUS_REFUSED
-        && operation::derive(large, child, parent.rights | RIGHT_RETYPE, page, 0) == operation::STATUS_REFUSED
-        && operation::derive(large, child, RIGHT_READ, parent.base + LARGE_FRAME_BYTES, 0) == operation::STATUS_REFUSED
-        && operation::derive(large, occupied, RIGHT_READ, page, 0) == operation::STATUS_REFUSED
-        && operation::derive(large, child, RIGHT_READ, page, 0) == operation::STATUS_OK
+    derive(caller, empty, child, RIGHT_READ, page, 0).status == operation::STATUS_REFUSED
+        && derive(caller, large, child, parent.rights | RIGHT_RETYPE, page, 0).status == operation::STATUS_REFUSED
+        && derive(caller, large, child, RIGHT_READ, parent.base + LARGE_FRAME_BYTES, 0).status == operation::STATUS_REFUSED
+        && derive(caller, large, occupied, RIGHT_READ, page, 0).status == operation::STATUS_REFUSED
+        && derive(caller, large, child, RIGHT_READ, page, 0).status == operation::STATUS_OK
         && matches!(
-            operation::inspect(child),
+            inspect(caller, child),
             Ok(frame) if frame.kind == operation::KIND_FRAME && frame.base == page && frame.order == 0 && frame.rights == RIGHT_READ
         )
 }
@@ -710,10 +740,12 @@ const REVOKED_MAPPINGS: u64 = 64;
 /// its first mapping are refused, and inspect still finds the 2M frame. Each again removes at least one
 /// node of the run, so a revoke still returning again after REVOKED_MAPPINGS + 1 has stopped going on,
 /// and fails.
-fn revoked_frame_held(large: u64, empty: u64, child: u64) -> bool {
+fn revoked_frame_held(caller: &mut Ghost<Caller>, large: u64, empty: u64, child: u64) -> bool {
     let address = |k: u64| PATH_ADDRESS + 4096 * k;
-    let map = |k: u64| operation::map(operation::ROOT_PROCESS_SLOT, address(k), 1, child, 0);
-    if !(1..=REVOKED_MAPPINGS).all(|k| map(k) == operation::STATUS_OK) {
+    let map_child = |caller: &mut Ghost<Caller>, k: u64| {
+        map(caller, operation::ROOT_PROCESS_SLOT, address(k), 1, child, 0).status
+    };
+    if !(1..=REVOKED_MAPPINGS).all(|k| map_child(caller, k) == operation::STATUS_OK) {
         return false;
     }
     // The map just made the page at address(1) the child's, readable, and the 2M retype zeroed it.
@@ -721,14 +753,15 @@ fn revoked_frame_held(large: u64, empty: u64, child: u64) -> bool {
         return false;
     }
     // Nothing dom0 uses is mapped through either: the slot is empty, and the word names no position.
-    let revoke = |slot: u64| unsafe { operation::revoke(slot) };
-    if revoke(empty) != operation::STATUS_REFUSED || revoke(NO_POSITION | large) != operation::STATUS_REFUSED {
+    if revoke(caller, empty).status != operation::STATUS_REFUSED
+        || revoke(caller, NO_POSITION | large).status != operation::STATUS_REFUSED
+    {
         return false;
     }
     let mut again = 0;
     let status = loop {
         // dom0 reads nothing through the child's mappings after the read above.
-        let status = revoke(large);
+        let status = revoke(caller, large).status;
         if status != operation::STATUS_AGAIN || again > REVOKED_MAPPINGS {
             break status;
         }
@@ -737,10 +770,10 @@ fn revoked_frame_held(large: u64, empty: u64, child: u64) -> bool {
     // The revoke cleared the entry at address(1), so an unmap there finds none; dom0 uses nothing there.
     let held = status == operation::STATUS_OK
         && again > 0
-        && matches!(operation::inspect(child), Err(operation::STATUS_REFUSED))
-        && map(1) == operation::STATUS_REFUSED
+        && matches!(inspect(caller, child), Err(operation::STATUS_REFUSED))
+        && map_child(caller, 1) == operation::STATUS_REFUSED
         && matches!(unsafe { operation::unmap(operation::ROOT_PROCESS_SLOT, address(1), 1) }, Err(operation::STATUS_REFUSED))
-        && matches!(operation::inspect(large), Ok(frame) if frame.kind == operation::KIND_FRAME && frame.order == 9);
+        && matches!(inspect(caller, large), Ok(frame) if frame.kind == operation::KIND_FRAME && frame.order == 9);
     held && print_done_after(REVOKE_HEAD, again) == operation::STATUS_OK
 }
 
@@ -748,19 +781,19 @@ fn revoked_frame_held(large: u64, empty: u64, child: u64) -> bool {
 /// `child`: the derive is accepted, a delete of the frame with that child below it is refused, the
 /// child's delete is accepted and inspect then refuses its slot, the frame's delete is accepted, and
 /// inspect and a second delete then refuse the frame's slot, as does a delete of a word naming no position.
-fn deleted_frames_held(large: u64, child: u64) -> bool {
-    let parent = match operation::inspect(large) {
+fn deleted_frames_held(caller: &mut Ghost<Caller>, large: u64, child: u64) -> bool {
+    let parent = match inspect(caller, large) {
         Ok(capability) => capability,
         Err(_) => return false,
     };
-    operation::derive(large, child, RIGHT_READ, parent.base, 0) == operation::STATUS_OK
-        && operation::delete(large) == operation::STATUS_REFUSED
-        && operation::delete(child) == operation::STATUS_OK
-        && matches!(operation::inspect(child), Err(operation::STATUS_REFUSED))
-        && operation::delete(large) == operation::STATUS_OK
-        && matches!(operation::inspect(large), Err(operation::STATUS_REFUSED))
-        && operation::delete(large) == operation::STATUS_REFUSED
-        && operation::delete(NO_POSITION) == operation::STATUS_REFUSED
+    derive(caller, large, child, RIGHT_READ, parent.base, 0).status == operation::STATUS_OK
+        && delete(caller, large).status == operation::STATUS_REFUSED
+        && delete(caller, child).status == operation::STATUS_OK
+        && matches!(inspect(caller, child), Err(operation::STATUS_REFUSED))
+        && delete(caller, large).status == operation::STATUS_OK
+        && matches!(inspect(caller, large), Err(operation::STATUS_REFUSED))
+        && delete(caller, large).status == operation::STATUS_REFUSED
+        && delete(caller, NO_POSITION).status == operation::STATUS_REFUSED
 }
 
 /// Whether dom0 passes a copy of its power capability on and keeps its own: a derive from the power
@@ -768,18 +801,18 @@ fn deleted_frames_held(large: u64, child: u64) -> bool {
 /// does not carry, is refused; the derive naming power's page is accepted, after which inspect finds
 /// the same power capability in `child` and in the power slot; the child's delete is accepted, and a
 /// power-off through its slot is then refused.
-fn derived_power_held(child: u64) -> bool {
-    let power = match operation::inspect(operation::ROOT_POWER_SLOT) {
+fn derived_power_held(caller: &mut Ghost<Caller>, child: u64) -> bool {
+    let power = match inspect(caller, operation::ROOT_POWER_SLOT) {
         Ok(capability) => capability,
         Err(_) => return false,
     };
-    operation::derive(operation::ROOT_POWER_SLOT, child, power.rights, power.base + 4096, 0) == operation::STATUS_REFUSED
-        && operation::derive(operation::ROOT_POWER_SLOT, child, power.rights | RIGHT_READ, power.base, 0)
+    derive(caller, operation::ROOT_POWER_SLOT, child, power.rights, power.base + 4096, 0).status == operation::STATUS_REFUSED
+        && derive(caller, operation::ROOT_POWER_SLOT, child, power.rights | RIGHT_READ, power.base, 0).status
             == operation::STATUS_REFUSED
-        && operation::derive(operation::ROOT_POWER_SLOT, child, power.rights, power.base, 0) == operation::STATUS_OK
-        && operation::inspect(child) == Ok(power)
-        && operation::inspect(operation::ROOT_POWER_SLOT) == Ok(power)
-        && operation::delete(child) == operation::STATUS_OK
+        && derive(caller, operation::ROOT_POWER_SLOT, child, power.rights, power.base, 0).status == operation::STATUS_OK
+        && inspect(caller, child) == Ok(power)
+        && inspect(caller, operation::ROOT_POWER_SLOT) == Ok(power)
+        && delete(caller, child).status == operation::STATUS_OK
         && operation::power_off(child, false) == operation::STATUS_REFUSED
 }
 
@@ -805,15 +838,15 @@ const LEAF_BYTES: u64 = 2 * 4096;
 /// Whether the table leaf just retyped into root entry `entry` gives the entry its slots: inspect refuses
 /// the entry's first slot while it is empty, a derive of the power capability into it, named by the
 /// position word `slot`, is accepted, and inspect then finds power's capability there.
-fn leaf_slot_held(entry: u64, slot: u64) -> bool {
+fn leaf_slot_held(caller: &mut Ghost<Caller>, entry: u64, slot: u64) -> bool {
     let first = first_slot(entry);
-    let power = match operation::inspect(operation::ROOT_POWER_SLOT) {
+    let power = match inspect(caller, operation::ROOT_POWER_SLOT) {
         Ok(capability) => capability,
         Err(_) => return false,
     };
-    matches!(operation::inspect(first), Err(operation::STATUS_REFUSED))
-        && operation::derive(operation::ROOT_POWER_SLOT, slot, power.rights, power.base, 0) == operation::STATUS_OK
-        && operation::inspect(first) == Ok(power)
+    matches!(inspect(caller, first), Err(operation::STATUS_REFUSED))
+        && derive(caller, operation::ROOT_POWER_SLOT, slot, power.rights, power.base, 0).status == operation::STATUS_OK
+        && inspect(caller, first) == Ok(power)
 }
 
 /// Whether dom0 retypes two table leaves under `untyped`, from the two order-1 blocks below the table
@@ -824,21 +857,23 @@ fn leaf_slot_held(entry: u64, slot: u64) -> bool {
 /// refused, being occupied; and each leaf's first slot takes a capability that inspect reads back, the
 /// second's named through the process capability. Each check takes its pages from below the table pages,
 /// which nothing else retypes.
-fn retyped_leaves_held(untyped: u64, table: u64) -> bool {
+fn retyped_leaves_held(caller: &mut Ghost<Caller>, untyped: u64, table: u64) -> bool {
     let first = FIRST_EMPTY_ENTRY;
     let second = FIRST_EMPTY_ENTRY + 1;
     let through = |entry: u64| operation::through(operation::ROOT_PROCESS_SLOT, entry);
-    let retype = |base: u64, entry: u64| operation::retype_leaf(untyped, base, entry);
+    let retype_leaf = |caller: &mut Ghost<Caller>, base: u64, entry: u64| {
+        retype(caller, untyped, operation::RETYPE_LEAF, base, entry, 0).status
+    };
     let base = table - LEAF_BYTES;
-    retype(base, FIRST_EMPTY_ENTRY - 1) == operation::STATUS_REFUSED
-        && retype(base, ROOT_ENTRIES) == operation::STATUS_REFUSED
-        && retype(base, NO_POSITION | first) == operation::STATUS_REFUSED
-        && retype(table, first) == operation::STATUS_REFUSED
-        && retype(base, first) == operation::STATUS_OK
-        && leaf_slot_held(first, first_slot(first))
-        && retype(base - LEAF_BYTES, through(first)) == operation::STATUS_REFUSED
-        && retype(base - LEAF_BYTES, through(second)) == operation::STATUS_OK
-        && leaf_slot_held(second, through(first_slot(second)))
+    retype_leaf(caller, base, FIRST_EMPTY_ENTRY - 1) == operation::STATUS_REFUSED
+        && retype_leaf(caller, base, ROOT_ENTRIES) == operation::STATUS_REFUSED
+        && retype_leaf(caller, base, NO_POSITION | first) == operation::STATUS_REFUSED
+        && retype_leaf(caller, table, first) == operation::STATUS_REFUSED
+        && retype_leaf(caller, base, first) == operation::STATUS_OK
+        && leaf_slot_held(caller, first, first_slot(first))
+        && retype_leaf(caller, base - LEAF_BYTES, through(first)) == operation::STATUS_REFUSED
+        && retype_leaf(caller, base - LEAF_BYTES, through(second)) == operation::STATUS_OK
+        && leaf_slot_held(caller, second, through(first_slot(second)))
 }
 
 /// The root entry of dom0's table that takes the eager source's frame capabilities, the one after the
@@ -866,22 +901,21 @@ const EAGER_HEAD: &[u8] = b"dom0 eager backed ";
 /// a time until the source refuses, writes a byte through the run and reads it back, releases the run,
 /// backs a page again and gives the span back; dom0 prints how many pages it backed, and the check holds
 /// when the source refused before the block was full, the byte read back and a page was backed again.
-fn eager_source_held(empty: u64) -> bool {
-    let Some((untyped, block)) = untyped_of_pages(empty, 1 << 18) else {
+fn eager_source_held(caller: &mut Ghost<Caller>, empty: u64) -> bool {
+    let Some((untyped, block)) = untyped_of_pages(caller, empty, 1 << 18) else {
         return false;
     };
     let top = block.base + (4096 << block.order);
     let memory = top - EAGER_BELOW_TOP;
     let source = first_slot(EAGER_ENTRY);
-    if operation::retype_leaf(untyped, memory - LEAF_BYTES, EAGER_ENTRY) != operation::STATUS_OK
-        || operation::derive(untyped, source, block.rights, memory, EAGER_ORDER) != operation::STATUS_OK
+    if retype(caller, untyped, operation::RETYPE_LEAF, memory - LEAF_BYTES, EAGER_ENTRY, 0).status != operation::STATUS_OK
+        || derive(caller, untyped, source, block.rights, memory, EAGER_ORDER).status != operation::STATUS_OK
     {
         return false;
     }
-    // dom0 is not verified: the kernel's proof that each of its steps keeps its state well formed is
-    // what stands behind the ghost of the kernel the source's calls start from, which erases here.
+    // The source's calls start from the ghost dom0's own calls threaded to here, and go on from it.
     let Some(mut eager) = aeager::Eager::new(
-        Ghost::assume_new(),
+        *caller,
         operation::ROOT_PROCESS_SLOT,
         source,
         memory,
@@ -962,6 +996,9 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
     // success.
     let process_off = operation::power_off(operation::ROOT_PROCESS_SLOT, false);
     let console_off = operation::power_off(operation::ROOT_CONSOLE_SLOT, false);
+    // dom0 is not verified: the kernel's proof that each of its steps keeps its state well formed is
+    // what stands behind the ghost of the kernel its calls start from, which erases here.
+    let caller = &mut Ghost::<Caller>::assume_new();
     let slots_held = process == operation::STATUS_REFUSED
         && process_off == operation::STATUS_REFUSED
         && console_off == operation::STATUS_REFUSED
@@ -971,24 +1008,24 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
         && frame == operation::STATUS_REFUSED
         && unknown == operation::STATUS_UNKNOWN
         && other_instruction_unknown()
-        && first_empty_slot().is_some_and(|empty| {
-            retyped_frame_held(empty)
-                && retyped_table_pages(empty)
+        && first_empty_slot(caller).is_some_and(|empty| {
+            retyped_frame_held(caller, empty)
+                && retyped_table_pages(caller, empty)
                     .is_some_and(|(untyped, tables)| {
-                        linked_path_held(untyped, tables)
-                            && mapped_frame_held(empty)
-                            && remapped_frame_held(empty)
-                            && moved_frame_held(empty)
-                            && retyped_large_frame_held(empty, empty + 2)
-                            && derived_frame_held(empty + 2, empty, empty + 1, empty + 3)
-                            && revoked_frame_held(empty + 2, empty, empty + 3)
-                            && deleted_frames_held(empty + 2, empty + 3)
-                            && derived_power_held(empty + 2)
-                            && timed_beside_before(empty + 1)
-                            && probed_bits_held(empty + 1)
-                            && unmapped_bits_held(empty + 1)
-                            && retyped_leaves_held(untyped, tables[3])
-                            && eager_source_held(empty)
+                        linked_path_held(caller, untyped, tables)
+                            && mapped_frame_held(caller, empty)
+                            && remapped_frame_held(caller, empty)
+                            && moved_frame_held(caller, empty)
+                            && retyped_large_frame_held(caller, empty, empty + 2)
+                            && derived_frame_held(caller, empty + 2, empty, empty + 1, empty + 3)
+                            && revoked_frame_held(caller, empty + 2, empty, empty + 3)
+                            && deleted_frames_held(caller, empty + 2, empty + 3)
+                            && derived_power_held(caller, empty + 2)
+                            && timed_beside_before(caller, empty + 1)
+                            && probed_bits_held(caller, empty + 1)
+                            && unmapped_bits_held(caller, empty + 1)
+                            && retyped_leaves_held(caller, untyped, tables[3])
+                            && eager_source_held(caller, empty)
                     })
         });
     let console = unsafe {
