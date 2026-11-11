@@ -2,13 +2,11 @@
 
 //! I/O utilities.
 
-use core::convert::{AsMut, AsRef};
+use core::convert::AsRef;
 use core::fmt;
 
 use embedded_io as eio;
-pub use embedded_io::{
-    ErrorKind, ErrorType, Read, ReadExactError, Seek, SeekFrom, Write, WriteAllError, WriteFmtError,
-};
+pub use embedded_io::{ErrorKind, Read, ReadExactError, Seek, SeekFrom};
 
 /// An I/O error.
 #[derive(Debug)]
@@ -68,17 +66,6 @@ where
     }
 }
 
-impl<T> Cursor<T>
-where
-    T: AsMut<[u8]>,
-{
-    /// Returns the remaining slice.
-    pub fn remaining_slice_mut(&mut self) -> &mut [u8] {
-        let len = self.pos.min(self.inner.as_mut().len() as u64);
-        &mut self.inner.as_mut()[(len as usize)..]
-    }
-}
-
 impl<T> Read for Cursor<T>
 where
     T: AsRef<[u8]>,
@@ -112,24 +99,6 @@ where
                 kind: eio::ErrorKind::InvalidInput,
             }),
         }
-    }
-}
-
-impl<T> Write for Cursor<T>
-where
-    T: AsMut<[u8]>,
-{
-    fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
-        assert!(self.inner.as_mut().len() == 4096);
-        assert!(self.remaining_slice_mut().len() == 4096);
-        let n = Write::write(&mut self.remaining_slice_mut(), buf).unwrap();
-        self.pos += n as u64;
-        assert!(n == 0);
-        Ok(n)
-    }
-
-    fn flush(&mut self) -> Result<(), Self::Error> {
-        Ok(())
     }
 }
 
