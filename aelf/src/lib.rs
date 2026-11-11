@@ -8,11 +8,11 @@
 #![cfg_attr(not(test), no_std, no_main)]
 
 mod dynamic;
+mod elf;
 
 use core::cmp::max;
 use core::ffi::c_void;
 use core::fmt;
-use core::mem;
 use core::slice;
 
 use astd::heapless::Vec as ArrayVec;
@@ -35,25 +35,11 @@ impl VAddr {
     }
 }
 
-use goblin::elf64 as elf_types;
-
-#[cfg(target_arch = "x86_64")]
-const EM_SELF: u16 = elf_types::header::EM_X86_64;
-#[cfg(target_arch = "x86_64")]
-const R_RELATIVE: u32 = elf_types::reloc::R_X86_64_RELATIVE;
-
-#[cfg(target_arch = "aarch64")]
-const EM_SELF: u16 = elf_types::header::EM_AARCH64;
-#[cfg(target_arch = "aarch64")]
-const R_RELATIVE: u32 = elf_types::reloc::R_AARCH64_RELATIVE;
-
-use elf_types::{
-    header::{Header, ET_DYN},
-    program_header::{ProgramHeader, PF_R, PF_W, PF_X, PT_LOAD},
+use elf::{
+    read_header, read_program_header, ProgramHeader, EM_SELF, ET_DYN, HEADER_SIZE, PF_R, PF_W,
+    PF_X, PROGRAM_HEADER_SIZE, PT_LOAD,
 };
 
-const HEADER_SIZE: usize = mem::size_of::<Header>();
-const PROGRAM_HEADER_SIZE: usize = mem::size_of::<ProgramHeader>();
 const MAX_PROGRAM_HEADERS: usize = 20;
 
 #[derive(Debug)]
@@ -109,7 +95,7 @@ pub struct ContiguousMapping {
 
 pub struct ElfHandle<F: Read + Seek> {
     file: F,
-    header: Header,
+    header: elf::Header,
     program_headers: ArrayVec<ProgramHeader, MAX_PROGRAM_HEADERS>,
     start_pos: u64,
     page_size: usize,
@@ -176,7 +162,7 @@ where
         let mut header_bytes = [0u8; HEADER_SIZE];
         file.read_exact(&mut header_bytes).map_err(Into::into)?;
 
-        let header = Header::from_bytes(&header_bytes);
+        let header = read_header(&header_bytes);
         if &header.e_ident[..4] != b"\x7fELF".as_slice() {
             return Err(Error::BadMagic);
         }
@@ -225,7 +211,7 @@ where
 
         Ok(Self {
             file,
-            header: header.clone(),
+            header,
             program_headers,
             start_pos,
             page_size,
@@ -473,23 +459,6 @@ where
     }
 }
 
-/// Reads an ELF64 program header in the target's byte order, each field from its offset in
-/// the System V gABI's layout.
-fn read_program_header(bytes: &[u8; PROGRAM_HEADER_SIZE]) -> ProgramHeader {
-    let word = |at: usize| u32::from_ne_bytes(bytes[at..at + 4].try_into().unwrap());
-    let xword = |at: usize| u64::from_ne_bytes(bytes[at..at + 8].try_into().unwrap());
-    ProgramHeader {
-        p_type: word(0),
-        p_flags: word(4),
-        p_offset: xword(8),
-        p_vaddr: xword(16),
-        p_paddr: xword(24),
-        p_filesz: xword(32),
-        p_memsz: xword(40),
-        p_align: xword(48),
-    }
-}
-
 impl ProgramHeaderExt for ProgramHeader {
     #[inline(always)]
     fn prot_flags(&self) -> PageProtection {
@@ -557,20 +526,6 @@ mod tests {
         }
     }
 
-    // Values from the System V gABI (e_machine), the AMD64 psABI and the
-    // AArch64 ELF ABI (relocation types). Both targets load ELF64 images,
-    // whose file header is 64 bytes.
-    #[cfg(target_arch = "x86_64")]
-    const EXPECTED: (u16, u32) = (62, 8);
-    #[cfg(target_arch = "aarch64")]
-    const EXPECTED: (u16, u32) = (183, 1027);
-
-    #[test]
-    fn target_selects_its_machine_relocation_and_class() {
-        assert_eq!((EM_SELF, R_RELATIVE), EXPECTED);
-        assert_eq!(HEADER_SIZE, 64);
-    }
-
     // An ELF64 program header, laid out as the System V gABI gives it: p_type and p_flags
     // as 4 bytes each, then p_offset, p_vaddr, p_paddr, p_filesz, p_memsz and p_align as
     // 8 bytes each, 56 bytes in all.
@@ -604,31 +559,6 @@ mod tests {
         bytes[54..56].copy_from_slice(&(PROGRAM_HEADER_SIZE as u16).to_ne_bytes());
         bytes[56..58].copy_from_slice(&phnum.to_ne_bytes());
         bytes
-    }
-
-    #[test]
-    fn program_header_reads_each_field_from_its_offset() {
-        let bytes = program_header_bytes(
-            0x1111_1111,
-            0x2222_2222,
-            [
-                0x3333_3333_3333_3333,
-                0x4444_4444_4444_4444,
-                0x5555_5555_5555_5555,
-                0x6666_6666_6666_6666,
-                0x7777_7777_7777_7777,
-                0x8888_8888_8888_8888,
-            ],
-        );
-        let ph = read_program_header(&bytes);
-        assert_eq!(ph.p_type, 0x1111_1111);
-        assert_eq!(ph.p_flags, 0x2222_2222);
-        assert_eq!(ph.p_offset, 0x3333_3333_3333_3333);
-        assert_eq!(ph.p_vaddr, 0x4444_4444_4444_4444);
-        assert_eq!(ph.p_paddr, 0x5555_5555_5555_5555);
-        assert_eq!(ph.p_filesz, 0x6666_6666_6666_6666);
-        assert_eq!(ph.p_memsz, 0x7777_7777_7777_7777);
-        assert_eq!(ph.p_align, 0x8888_8888_8888_8888);
     }
 
     #[test]
