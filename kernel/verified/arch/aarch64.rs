@@ -553,40 +553,192 @@ pub open spec fn command_ring_ok(ring: usize, len: usize) -> bool {
 /// How many commands invalidate_iommu_all writes.
 pub const IOMMU_INVALIDATE_COMMANDS: usize = 3;
 
+/// A command as the queue holds it: the first 64-bit word, with the opcode in bits 7:0, then the
+/// second. SMMU 4.1.
+pub type SmmuCommand = (u64, u64);
+
 /// CMD_CFGI_ALL: opcode 0x04 with Range, bits 68:64, 31, which drops every STE and CD the SMMU
 /// caches. SMMU 4.3.9.
-pub const SMMU_CFGI_ALL: [u64; 2] = [0x04, 31];
+pub open spec fn cfgi_all_command_spec() -> SmmuCommand {
+    (0x04, 31)
+}
 
-/// CMD_TLBI_NSNH_ALL, opcode 0x30, which drops every non-secure TLB entry outside the EL2 regime, of
-/// either stage and with any ASID or VMID, from every level of the walk. SMMU 4.4.4.1.
-pub const SMMU_TLBI_NSNH_ALL: [u64; 2] = [0x30, 0];
+fn cfgi_all_command() -> (ret: SmmuCommand)
+    ensures
+        ret == cfgi_all_command_spec(),
+{
+    (0x04, 31)
+}
 
-/// CMD_SYNC, opcode 0x46, with CS, bits 13:12, 0b00: it completes once every command before it has,
-/// and the queue's consumer index passing it shows that. SMMU 4.7.3.
-pub const SMMU_SYNC: [u64; 2] = [0x46, 0];
+/// CMD_TLBI_NSNH_ALL, opcode 0x30 and every other bit zero, which drops every non-secure TLB entry
+/// outside the EL2 regime, of either stage and with any ASID or VMID, from every level of the walk.
+/// SMMU 4.4.4.1.
+pub open spec fn tlbi_nsnh_all_command_spec() -> SmmuCommand {
+    (0x30, 0)
+}
+
+fn tlbi_nsnh_all_command() -> (ret: SmmuCommand)
+    ensures
+        ret == tlbi_nsnh_all_command_spec(),
+{
+    (0x30, 0)
+}
+
+/// CMD_SYNC, opcode 0x46, with CS, bits 13:12, 0b00 and every other bit zero: it completes once
+/// every command before it has, and the queue's consumer index passing it shows that. SMMU 4.7.3.
+pub open spec fn sync_command_spec() -> SmmuCommand {
+    (0x46 | (0b00u64 << 12u64), 0)
+}
+
+fn sync_command() -> (ret: SmmuCommand)
+    ensures
+        ret == sync_command_spec(),
+{
+    (0x46 | (0b00u64 << 12u64), 0)
+}
 
 /// SMMU_CMDQ_PROD and SMMU_CMDQ_CONS, by their offset from the SMMU's base. SMMU 6.2, Table 6-1. In
 /// each, the queue's index is bits LOG2SIZE-1:0 and its wrap bit is bit LOG2SIZE (SMMU 3.5.1); CONS
-/// also holds an error code above them.
+/// also holds an error code above them. A place in the queue, its index and wrap bit together, is so
+/// a number below twice the queue's length, and the index is that number modulo the length.
 pub const SMMU_CMDQ_PROD: usize = 0x98;
 pub const SMMU_CMDQ_CONS: usize = 0x9c;
 
-/// Invalidates all of SMMU i's caches and returns once it has finished, with the tail after the
-/// commands it wrote, and empties i's set in `model`: the caller holds the lock, so no table changes
-/// while this runs, and once the invalidate finishes i holds nothing the tables no longer say. It writes CMD_CFGI_ALL, CMD_TLBI_NSNH_ALL and CMD_SYNC at i's tail, moves the
-/// producer index past all three and spins until the consumer index reaches it, which it does only once
-/// CMD_SYNC has completed. The SMMU is never handed the EL2 regime, so the TLB invalidation leaves it.
-/// The completion word is not used: CMD_SYNC signals through the consumer index. Only this writes i's
-/// queue, and each call waits for the SMMU to consume all it wrote, so the queue is empty on entry and
-/// three commands fit in it. The producer register keeps the wrap bit the ring's tail leaves out, so
-/// this reads it back. The SMMU reads the queue coherently, as boot asks of it (machine/virt's CR1), so
-/// a DSB orders the commands, and every table write before them, ahead of the producer's store. Each
-/// register access is one load or store with no writeback, which a hypervisor emulating the SMMU can
-/// decode (Arm ARM D24.2.45, ISV). Waiting here is not waiting for a core: design/flush-without-waiting/.
-/// The wait is on the SMMU, which finishes three commands in a time the state does not set, so it is one
-/// unit: design/one-lock-bounded-steps/.
+/// What one invalidate stored into an SMMU's command queue: the producer register it read, each
+/// slot it wrote, by its index from the queue's start, and the command it wrote there. It begins
+/// empty and only store_command adds to it, so a slot it names holds that command until the SMMU
+/// consumes it.
+tracked struct QueuedCommands {
+    #[cfg(verus_keep_ghost)]
+    ghost ring: usize,
+    #[cfg(verus_keep_ghost)]
+    ghost producer: u32,
+    #[cfg(verus_keep_ghost)]
+    ghost slots: Map<int, SmmuCommand>,
+}
+
+/// Reads SMMU i's producer register, at `register`. Only invalidate_iommu_all writes i's queue and
+/// each call waits for the SMMU to consume all it wrote, so the register's index is the ring's tail;
+/// it also keeps the wrap bit the tail leaves out.
+#[verifier(external_body)]
+// external_body(glue): only the SMMU's producer register holds the queue's wrap bit, and its index is the ring's tail since only the invalidate moves either
+fn read_producer(commands: &CommandBuffers, i: usize, register: usize) -> (ret: u32)
+    requires
+        i < NUM_IOMMUS,
+        commands.buffers.wf(),
+        commands.buffer_wf(i as int),
+        register == commands.buffers@[i as int].mmio + SMMU_CMDQ_PROD,
+    ensures
+        ret as int % commands.buffers@[i as int].len as int == commands.buffers@[i as int].tail,
+{
+    let value: u32;
+    unsafe {
+        core::arch::asm!(
+            "ldr {value:w}, [{register}]",
+            register = in(reg) register,
+            value = out(reg) value,
+            options(nostack, readonly, preserves_flags),
+        );
+    }
+    value
+}
+
+/// Stores `command` into slot `slot` of the queue at `queued.ring`, whose address is `address`.
+#[verifier(external_body)]
+// external_body(glue): the SMMU reads the queue, so only this can say what one of its slots holds
+fn store_command(address: usize, command: SmmuCommand, Tracked(queued): Tracked<&mut QueuedCommands>, Ghost(slot): Ghost<int>)
+    requires
+        address == old(queued).ring + slot * IOMMU_COMMAND_SIZE,
+    ensures
+        final(queued).ring == old(queued).ring,
+        final(queued).producer == old(queued).producer,
+        final(queued).slots == old(queued).slots.insert(slot, command),
+{
+    unsafe {
+        core::ptr::write_volatile(address as *mut u64, command.0);
+        core::ptr::write_volatile((address as *mut u64).add(1), command.1);
+    }
+}
+
+/// Hands SMMU i the CMD_CFGI_ALL, CMD_TLBI_NSNH_ALL and CMD_SYNC queued at its producer index and
+/// returns once the SMMU has finished them, emptying i's set in `model`. A DSB orders the commands,
+/// and every table write before them, ahead of the store of `place` into the producer register at
+/// `producer`, which moves it past all three; then it spins until the consumer register at `consumer`,
+/// masked by `place_mask` to its index and wrap bit, reaches `place`, which it does only once CMD_SYNC
+/// has completed. CMD_SYNC completes once every command before it has, SMMU 4.7.3; CMD_CFGI_ALL
+/// drops every cached STE and CD, 4.3.9; CMD_TLBI_NSNH_ALL every TLB entry outside the EL2 regime,
+/// 4.4.4.1, which the SMMU is never handed. The SMMU reads the queue coherently, as boot asks of it
+/// (machine/virt's CR1), so the DSB is enough. Each register access is one load or store with no
+/// writeback, which a hypervisor emulating the SMMU can decode (Arm ARM D24.2.45, ISV).
 #[verifier(external_body)]
 // external_body(glue): only the SMMU can attest an invalidate, so only this empties its IOTLB model
+fn submit_invalidate(
+    commands: &CommandBuffers,
+    i: usize,
+    producer: usize,
+    consumer: usize,
+    place: u32,
+    place_mask: u32,
+    Tracked(queued): Tracked<&QueuedCommands>,
+    Tracked(model): Tracked<&mut IotlbModel>,
+)
+    requires
+        i < NUM_IOMMUS,
+        commands.buffers.wf(),
+        commands.buffer_wf(i as int),
+        producer == commands.buffers@[i as int].mmio + SMMU_CMDQ_PROD,
+        consumer == commands.buffers@[i as int].mmio + SMMU_CMDQ_CONS,
+        place_mask == 2 * commands.buffers@[i as int].len - 1,
+        place == (queued.producer as int % (2 * commands.buffers@[i as int].len) + IOMMU_INVALIDATE_COMMANDS) % (2 * commands.buffers@[i as int].len),
+        queued.ring == commands.buffers@[i as int].ring,
+        queued.slots.contains_key(queued.producer as int % commands.buffers@[i as int].len as int),
+        queued.slots[queued.producer as int % commands.buffers@[i as int].len as int] == cfgi_all_command_spec(),
+        queued.slots.contains_key((queued.producer + 1) % commands.buffers@[i as int].len as int),
+        queued.slots[(queued.producer + 1) % commands.buffers@[i as int].len as int] == tlbi_nsnh_all_command_spec(),
+        queued.slots.contains_key((queued.producer + 2) % commands.buffers@[i as int].len as int),
+        queued.slots[(queued.producer + 2) % commands.buffers@[i as int].len as int] == sync_command_spec(),
+    ensures
+        final(model).len() == old(model).len(),
+        final(model)[i as int] == Set::<TlbEntry>::empty(),
+        forall|j: int| j != i ==> #[trigger] final(model)[j] == old(model)[j],
+{
+    unsafe {
+        core::arch::asm!(
+            "dsb st",
+            "str {place:w}, [{register}]",
+            register = in(reg) producer,
+            place = in(reg) place,
+            options(nostack, preserves_flags),
+        );
+    }
+    loop {
+        let value: u32;
+        unsafe {
+            core::arch::asm!(
+                "ldr {value:w}, [{register}]",
+                register = in(reg) consumer,
+                value = out(reg) value,
+                options(nostack, readonly, preserves_flags),
+            );
+        }
+        if value & place_mask == place {
+            break;
+        }
+        core::hint::spin_loop();
+    }
+}
+
+/// Invalidates all of SMMU i's caches and returns once it has finished, with the tail after the
+/// commands it wrote, and empties i's set in `model`: the caller holds the lock, so no table changes
+/// while this runs, and once the invalidate finishes i holds nothing the tables no longer say. It
+/// reads the producer register, stores CMD_CFGI_ALL, CMD_TLBI_NSNH_ALL and CMD_SYNC at its index,
+/// which is i's tail, and submits them with the producer moved past all three. The completion word is
+/// not used: CMD_SYNC signals through the consumer index. Only this writes i's queue, and each call
+/// waits for the SMMU to consume all it wrote, so the queue is empty on entry and three commands fit
+/// in it. The producer register keeps the wrap bit the ring's tail leaves out, so this reads it back.
+/// Waiting here is not waiting for a core: design/flush-without-waiting/. The wait is on the SMMU,
+/// which finishes three commands in a time the state does not set, so it is one unit:
+/// design/one-lock-bounded-steps/.
 pub fn invalidate_iommu_all(commands: &CommandBuffers, i: usize, Tracked(model): Tracked<&mut IotlbModel>, Tracked(steps): Tracked<&mut Steps>) -> (ret: usize)
     requires
         i < NUM_IOMMUS,
@@ -600,41 +752,42 @@ pub fn invalidate_iommu_all(commands: &CommandBuffers, i: usize, Tracked(model):
         forall|j: int| j != i ==> #[trigger] final(model)[j] == old(model)[j],
 {
     let b = *commands.buffers.get(i);
-    // The index and the wrap bit of a place in the queue.
-    let place_mask = (2 * b.len - 1) as u32;
-    let load = |register: usize| -> u32 {
-        let value: u32;
-        unsafe {
-            core::arch::asm!(
-                "ldr {value:w}, [{register}]",
-                register = in(reg) b.mmio + register,
-                value = out(reg) value,
-                options(nostack, readonly, preserves_flags),
-            );
-        }
-        value
-    };
-    let mut place = load(SMMU_CMDQ_PROD) & place_mask;
-    assert!(place as usize & (b.len - 1) == b.tail, "the SMMU's producer index is the ring's tail");
-    for command in [SMMU_CFGI_ALL, SMMU_TLBI_NSNH_ALL, SMMU_SYNC] {
-        let slot = (b.ring + (place as usize & (b.len - 1)) * IOMMU_COMMAND_SIZE) as *mut u64;
-        unsafe {
-            core::ptr::write_volatile(slot, command[0]);
-            core::ptr::write_volatile(slot.add(1), command[1]);
-        }
-        place = (place + 1) & place_mask;
+    let wrap = (2 * b.len) as u32;
+    let read = read_producer(commands, i, b.mmio + SMMU_CMDQ_PROD);
+    let first = b.tail;
+    let second = (b.tail + 1) % b.len;
+    let third = (b.tail + 2) % b.len;
+    let place = (read % wrap + IOMMU_INVALIDATE_COMMANDS as u32) % wrap;
+    let tracked mut queued = QueuedCommands { ring: b.ring, producer: read, slots: Map::empty() };
+    proof {
+        let len = b.len as int;
+        vstd::arithmetic::div_mod::lemma_add_mod_noop(read as int, 1, len);
+        vstd::arithmetic::div_mod::lemma_add_mod_noop(read as int, 2, len);
+        vstd::arithmetic::div_mod::lemma_add_mod_noop(b.tail as int, 1, len);
+        vstd::arithmetic::div_mod::lemma_add_mod_noop(b.tail as int, 2, len);
+        vstd::arithmetic::div_mod::lemma_small_mod(1, len as nat);
+        vstd::arithmetic::div_mod::lemma_small_mod(2, len as nat);
     }
-    unsafe {
-        core::arch::asm!(
-            "dsb st",
-            "str {place:w}, [{register}]",
-            register = in(reg) b.mmio + SMMU_CMDQ_PROD,
-            place = in(reg) place,
-            options(nostack, preserves_flags),
-        );
+    store_command(b.ring + first * IOMMU_COMMAND_SIZE, cfgi_all_command(), Tracked(&mut queued), Ghost(first as int));
+    store_command(b.ring + second * IOMMU_COMMAND_SIZE, tlbi_nsnh_all_command(), Tracked(&mut queued), Ghost(second as int));
+    store_command(b.ring + third * IOMMU_COMMAND_SIZE, sync_command(), Tracked(&mut queued), Ghost(third as int));
+    proof {
+        assert(second != first && third != first && third != second) by (nonlinear_arith)
+            requires
+                second == (first + 1) % b.len as int,
+                third == (first + 2) % b.len as int,
+                first < b.len,
+                b.len >= 256,
+        ;
+        assert(b.mmio + SMMU_CMDQ_CONS <= usize::MAX) by (nonlinear_arith)
+            requires
+                b.mmio % IOMMU_MMIO_ALIGN == 0,
+                b.mmio <= usize::MAX,
+        ;
     }
-    while load(SMMU_CMDQ_CONS) & place_mask != place {
-        core::hint::spin_loop();
+    submit_invalidate(commands, i, b.mmio + SMMU_CMDQ_PROD, b.mmio + SMMU_CMDQ_CONS, place, wrap - 1, Tracked(&queued), Tracked(model));
+    proof {
+        steps.step();
     }
     (b.tail + IOMMU_INVALIDATE_COMMANDS) % b.len
 }
