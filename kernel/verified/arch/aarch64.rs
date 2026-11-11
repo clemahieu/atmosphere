@@ -653,7 +653,7 @@ mod queue {
 
     /// Reads SMMU i's producer register, at `register`: the queue's index and its wrap bit, which is
     /// where the SMMU will look for the next command. It promises nothing about the value, and
-    /// `queued` records it as the producer.
+    /// `queued`, which must be a record of SMMU i's own queue, records it as the producer.
     #[verifier(external_body)]
     // external_body(glue): a load of the SMMU's producer register, of which nothing is promised but its width
     pub fn read_producer(commands: &CommandBuffers, i: usize, register: usize, Tracked(queued): Tracked<&mut QueuedCommands>) -> (ret: u32)
@@ -662,6 +662,7 @@ mod queue {
             commands.buffers.wf(),
             commands.buffer_wf(i as int),
             register == commands.buffers@[i as int].mmio + SMMU_CMDQ_PROD,
+            old(queued).ring() == commands.buffers@[i as int].ring,
         ensures
             final(queued).ring() == old(queued).ring(),
             final(queued).producer() == ret,
