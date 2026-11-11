@@ -615,8 +615,9 @@ pub struct Eager {
     spans: Spans,
     record: Record,
     exposed: Tracked<IsExposed>,
-    /// The requests `reserve` and `back` have refused, the view's record.
-    refusals: Ghost<Seq<Request>>,
+    /// The requests `reserve` and `back` have refused, each with the spans held then: the view's
+    /// record.
+    refusals: Ghost<Seq<Refusal>>,
 }
 
 impl Eager {
@@ -690,11 +691,11 @@ impl SpanSource for Eager {
         let ghost before = self@;
         match self.spans.reserve(blocks, Ghost(before)) {
             None => {
-                let ghost q = Request::Reserve { blocks: blocks as nat };
+                let ghost r = Refusal { request: Request::Reserve { blocks: blocks as nat }, spans: before.spans };
                 proof {
-                    lemma_refused_wf(before, q);
+                    lemma_recorded_wf(before, r);
                 }
-                self.refusals = Ghost(self.refusals@.push(q));
+                self.refusals = Ghost(self.refusals@.push(r));
                 None
             },
             Some(base) => {
@@ -716,11 +717,11 @@ impl SpanSource for Eager {
         }
         match self.record.back_run(start, pages, Ghost(self.exposed@@)) {
             None => {
-                let ghost q = Request::Back { span: span@, start: start as int, pages: pages as nat };
+                let ghost r = Refusal { request: Request::Back { span: span@, start: start as int, pages: pages as nat }, spans: before.spans };
                 proof {
-                    lemma_refused_wf(before, q);
+                    lemma_recorded_wf(before, r);
                 }
-                self.refusals = Ghost(self.refusals@.push(q));
+                self.refusals = Ghost(self.refusals@.push(r));
                 None
             },
             Some(perm) => {

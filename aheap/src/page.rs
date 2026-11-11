@@ -29,9 +29,11 @@
 //!   page buddy does not back the runs it cuts, and its caller backs what it writes.
 //!
 //! Each states the source's view after it exactly: a refusal by the source leaves it as it was with
-//! the refused request recorded, so `Source` answers only the source's refusal in the call of the
-//! reserve of SPAN_BLOCKS blocks or the back of the new span's metadata page (`span_request`), and a
-//! `None` from `back_run` only its refusal of the back of the run's pages; a run from a held span
+//! the refused request recorded, with the spans it held when it refused, so `Source` answers only the
+//! source's refusal in the call of the reserve of SPAN_BLOCKS blocks, holding the spans it held when
+//! the call began, or of the back of the new span's metadata page, holding those and the new span
+//! (`span_refused`), and a `None` from `back_run` only its refusal of the back of the run's pages,
+//! holding the spans it held when the call began; a run from a held span
 //! leaves it as it was, a new span is reserved with its metadata page backed (`took_span`), and a
 //! span given back is released, so a sequence that frees every run it cut ends at the view it
 //! started from.
@@ -61,17 +63,30 @@ pub const SPAN_BLOCKS: usize = 2;
 /// Why `alloc_run` refused.
 pub enum Refused {
     /// The source refused to reserve a span, or to back its metadata page, in this call: its view
-    /// records that request refused and nothing else changed.
+    /// records that request refused, with the spans it held then, and nothing else changed.
     Source,
 }
 
-/// A request `alloc_run` makes of the source for a new run span: the reserve of SPAN_BLOCKS blocks,
-/// or the back of the metadata page of the span at its base.
-pub open spec fn span_request(q: Request) -> bool {
-    match q {
-        Request::Reserve { blocks } => blocks == SPAN_BLOCKS,
-        Request::Back { span, start, pages } => start == meta_page(span) && pages == 1,
+/// The refusal `r` is of a request `alloc_run` makes for a new run span of a source whose view is
+/// `s`: the reserve of SPAN_BLOCKS blocks while the source held the spans `s` holds, or the back of
+/// the metadata page of a span that fits beside them, while it held them and that span, unbacked.
+pub open spec fn span_refusal(s: SourceView, r: Refusal) -> bool {
+    match r.request {
+        Request::Reserve { blocks } => blocks == SPAN_BLOCKS && r.spans == s.spans,
+        Request::Back { span, start, pages } => {
+            &&& start == meta_page(span)
+            &&& pages == 1
+            &&& s.fits(span, SPAN_BLOCKS as nat)
+            &&& r.spans == s.reserved(span, SPAN_BLOCKS as nat).spans
+        },
     }
+}
+
+/// `after` is `before` with one refusal recorded, of a request `alloc_run` makes for a new run span
+/// of a source whose view is `before`.
+pub open spec fn span_refused(before: SourceView, after: SourceView) -> bool {
+    &&& after == before.recorded(after.refusals.last())
+    &&& span_refusal(before, after.refusals.last())
 }
 
 /// The base of the block that holds address `p`.
@@ -718,10 +733,10 @@ impl<S: SpanSource> PageBuddy<S> {
 
     /// The source refused in a call that changed nothing else: the page buddy is well formed with
     /// the same view.
-    proof fn lemma_refused(&self, other: &Self, q: Request)
+    proof fn lemma_refused(&self, other: &Self, r: Refusal)
         requires
             other.wf(),
-            self.source@ == other.source@.refused(q),
+            self.source@ == other.source@.recorded(r),
             self.head == other.head,
             self.spares == other.spares,
             self.idle == other.idle,
@@ -734,7 +749,7 @@ impl<S: SpanSource> PageBuddy<S> {
             self.spans() == other.spans(),
             self.used() == other.used(),
     {
-        lemma_refused_wf(other.source@, q);
+        lemma_recorded_wf(other.source@, r);
         assert(self.spans() =~= other.spans());
         assert(self.used() =~= other.used());
         assert(self.idle_spans() == other.idle_spans());
@@ -1377,8 +1392,7 @@ impl<S: SpanSource> PageBuddy<S> {
                     &&& final(self).spans() == old(self).spans()
                     &&& final(self).used() == old(self).used()
                     &&& final(self).metas() == old(self).metas()
-                    &&& final(self).source() == old(self).source().refused(final(self).source().refusals.last())
-                    &&& span_request(final(self).source().refusals.last())
+                    &&& span_refused(old(self).source(), final(self).source())
                 },
                 Ok(p) => {
                     let b = span_of(p as int);
@@ -1400,7 +1414,10 @@ impl<S: SpanSource> PageBuddy<S> {
         let base = match self.source.reserve(SPAN_BLOCKS) {
             None => {
                 proof {
-                    self.lemma_refused(old(self), Request::Reserve { blocks: SPAN_BLOCKS as nat });
+                    self.lemma_refused(
+                        old(self),
+                        Refusal { request: Request::Reserve { blocks: SPAN_BLOCKS as nat }, spans: start.spans },
+                    );
                 }
                 return Err(Refused::Source);
             },
@@ -1439,9 +1456,12 @@ impl<S: SpanSource> PageBuddy<S> {
                 self.source.release_span(b);
                 proof {
                     assert(self.source@.spans =~= start.spans);
-                    let q = Request::Back { span: bi, start: mi, pages: 1 };
-                    assert(self.source@ == start.refused(q));
-                    self.lemma_refused(old(self), q);
+                    let r = Refusal {
+                        request: Request::Back { span: bi, start: mi, pages: 1 },
+                        spans: start.reserved(bi, SPAN_BLOCKS as nat).spans,
+                    };
+                    assert(self.source@ == start.recorded(r));
+                    self.lemma_refused(old(self), r);
                 }
                 return Err(Refused::Source);
             },
@@ -1604,8 +1624,7 @@ impl<S: SpanSource> PageBuddy<S> {
                     &&& final(self).spans() == old(self).spans()
                     &&& final(self).used() == old(self).used()
                     &&& final(self).metas() == old(self).metas()
-                    &&& final(self).source() == old(self).source().refused(final(self).source().refusals.last())
-                    &&& span_request(final(self).source().refusals.last())
+                    &&& span_refused(old(self).source(), final(self).source())
                 },
                 Ok(p) => {
                     let b = final(self).span_base(span_of(p as int));
@@ -2079,7 +2098,10 @@ impl<S: SpanSource> PageBuddy<S> {
                 proof {
                     self.lemma_refused(
                         old(self),
-                        Request::Back { span: bi, start: p as int, pages: pages(k as nat) as nat },
+                        Refusal {
+                            request: Request::Back { span: bi, start: p as int, pages: pages(k as nat) as nat },
+                            spans: start.spans,
+                        },
                     );
                 }
                 return None;

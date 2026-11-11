@@ -6,25 +6,27 @@
 //! The span source's witness, from any well-formed source, reserves a span of one block, backs
 //! its first page, writes a byte through the permission back returned and reads it again, releases
 //! the page and the span, and ends with the view it started with. A source that refuses leaves the
-//! view as it was with the refused request recorded, the reserve of one block or the back of the
-//! span's first page, and the sequence stops there.
+//! view as it was with the refused request recorded, the reserve of one block while it held what it
+//! held at the start, or the back of the span's first page while it held that and the span, and the
+//! sequence stops there.
 //!
 //! The page buddy's witness, over any well-formed source and with no spares, cuts a run of order 0
 //! and one of order BLOCK_ORDER, frees both, and ends holding no span, with the source's view the one
 //! it started with. A refusal stops the sequence after freeing what it cut, and the page buddy refuses
 //! only when the source refused a request for a new run span, the reserve of SPAN_BLOCKS blocks or the
-//! back of its metadata page, so a source that refused neither gave both runs. Its second witness,
-//! with one spare, cuts a run, frees it so its span stays as the spare, and cuts again, which is shown
-//! to succeed whatever the source does; only a refused request for the first span stops it. Its third,
-//! with no spares, cuts MANY whole blocks, each in a span of its own and all held at once, more spans
-//! than one page of block buddy records would hold, until the source refuses such a request; frees
-//! them all and ends with the source's view the one it started with, so a source that refused none
-//! gave all MANY.
+//! back of its metadata page, asked while it held what it held at the start, with the first run's span
+//! when the second run was refused; so a source that refused neither gave both runs. Its second
+//! witness, with one spare, cuts a run, frees it so its span stays as the spare, and cuts again, which
+//! is shown to succeed whatever the source does; only a refused request for the first span stops it.
+//! Its third, with no spares, cuts MANY whole blocks, each in a span of its own and all held at once,
+//! more spans than one page of block buddy records would hold, until the source refuses such a
+//! request, asked while it held what it held at the start and run spans; frees them all and ends with
+//! the source's view the one it started with, so a source that refused none gave all MANY.
 //!
 //! The backed run's witness, over any well-formed source and with no spares, cuts a run of order 0,
 //! backs it, writes a byte through the permission and reads it again, releases the run's page and
 //! frees the run, ending as the page buddy's witness does: a source that refused no request for the
-//! run's span and not the back of the run's page gave the byte.
+//! run's span and not the back of the run's page, while it held the run's span, gave the byte.
 use vstd::prelude::*;
 use vstd::layout::*;
 use vstd::raw_ptr::*;
@@ -38,12 +40,18 @@ verus! {
 
 broadcast use group_raw_ptr_axioms;
 
-/// The witness's request of a source: the reserve of one block, or the back of the first page of
-/// a span.
-pub open spec fn page_request(q: Request) -> bool {
-    match q {
-        Request::Reserve { blocks } => blocks == 1,
-        Request::Back { span, start, pages } => start == span && pages == 1,
+/// The refusal `r` is of the witness's request of a source whose view is `s`: the reserve of one
+/// block while the source held the spans `s` holds, or the back of the first page of a span of one
+/// block that fits beside them, while it held them and that span, unbacked.
+pub open spec fn page_refusal(s: SourceView, r: Refusal) -> bool {
+    match r.request {
+        Request::Reserve { blocks } => blocks == 1 && r.spans == s.spans,
+        Request::Back { span, start, pages } => {
+            &&& start == span
+            &&& pages == 1
+            &&& s.fits(span, 1)
+            &&& r.spans == s.reserved(span, 1).spans
+        },
     }
 }
 
@@ -57,8 +65,8 @@ pub fn witness_one_page<S: SpanSource>(src: &mut S) -> (wrote: bool)
         if wrote {
             final(src)@ == old(src)@
         } else {
-            &&& final(src)@ == old(src)@.refused(final(src)@.refusals.last())
-            &&& page_request(final(src)@.refusals.last())
+            &&& final(src)@ == old(src)@.recorded(final(src)@.refusals.last())
+            &&& page_refusal(old(src)@, final(src)@.refusals.last())
         },
 {
     let ghost start = src@;
@@ -73,7 +81,10 @@ pub fn witness_one_page<S: SpanSource>(src: &mut S) -> (wrote: bool)
         None => {
             src.release_span(addr);
             assert(src@.spans =~= start.spans);
-            assert(src@ == start.refused(Request::Back { span: addr as int, start: addr as int, pages: 1 }));
+            assert(src@ == start.recorded(Refusal {
+                request: Request::Back { span: addr as int, start: addr as int, pages: 1 },
+                spans: start.reserved(addr as int, 1).spans,
+            }));
             return false;
         },
         Some(perm) => perm,
@@ -161,10 +172,23 @@ pub fn witness_block_buddy() -> (b: BlockBuddy)
 
 verus! {
 
-/// `after` is `before` with one refusal recorded, of a request `alloc_run` makes for a new run span.
-pub open spec fn refused_span(before: SourceView, after: SourceView) -> bool {
-    &&& after == before.refused(after.refusals.last())
-    &&& span_request(after.refusals.last())
+/// The view `s` with the run span at `b` taken: reserved, its metadata page backed.
+pub open spec fn taken(s: SourceView, b: int) -> SourceView {
+    s.reserved(b, SPAN_BLOCKS as nat).backed_run(b, meta_page(b), 1)
+}
+
+/// A run span at `b` as `alloc_run` takes it: SPAN_BLOCKS blocks, its metadata page backed.
+pub open spec fn run_span(b: int) -> Span {
+    Span { blocks: SPAN_BLOCKS as nat, backed: run_pages(meta_page(b), 1) }
+}
+
+/// `held` holds every span `start` holds, as `start` holds it, and otherwise only run spans as
+/// `alloc_run` takes them.
+pub open spec fn holds_runs(start: SourceView, held: SourceView) -> bool {
+    &&& forall|c: int| #[trigger]
+        start.spans.contains_key(c) ==> held.spans.contains_key(c) && held.spans[c] == start.spans[c]
+    &&& forall|c: int| #[trigger]
+        held.spans.contains_key(c) ==> start.spans.contains_key(c) || held.spans[c] == run_span(c)
 }
 
 /// Taking a run span and giving it back leaves the view as it was.
@@ -172,20 +196,20 @@ proof fn lemma_took_released(s: SourceView, b: int)
     requires
         !s.spans.contains_key(b),
     ensures
-        s.reserved(b, SPAN_BLOCKS as nat).backed_run(b, meta_page(b), 1).released_span(b) == s,
+        taken(s, b).released_span(b) == s,
 {
-    assert(s.reserved(b, SPAN_BLOCKS as nat).backed_run(b, meta_page(b), 1).released_span(b).spans =~= s.spans);
+    assert(taken(s, b).released_span(b).spans =~= s.spans);
 }
 
 /// Taking a run span, having a request refused and giving the span back leaves the view as it was
 /// with that refusal recorded.
-proof fn lemma_refused_released(s: SourceView, b: int, q: Request)
+proof fn lemma_refused_released(s: SourceView, b: int, r: Refusal)
     requires
         !s.spans.contains_key(b),
     ensures
-        s.reserved(b, SPAN_BLOCKS as nat).backed_run(b, meta_page(b), 1).refused(q).released_span(b) == s.refused(q),
+        taken(s, b).recorded(r).released_span(b) == s.recorded(r),
 {
-    assert(s.reserved(b, SPAN_BLOCKS as nat).backed_run(b, meta_page(b), 1).refused(q).released_span(b).spans =~= s.spans);
+    assert(taken(s, b).recorded(r).released_span(b).spans =~= s.spans);
 }
 
 /// Freeing a run cut in a block that was held already gives back the runs from before the cut, and
@@ -224,9 +248,10 @@ proof fn lemma_whole_at_0(h: int)
 
 /// Cuts a small run and a whole block from a page buddy over `src` keeping no spare, frees both, and
 /// returns the page buddy, which then holds no span and has given every span back to the source, with
-/// whether both runs were cut: they were unless the source refused a request for a new run span, which
-/// it then did once.
-pub fn witness_page_buddy<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, bool))
+/// whether both runs were cut and the small run's address: both were cut unless the source refused a
+/// request for a new run span, which it then did once, holding what it held at the start, and the
+/// small run's span when that was cut.
+pub fn witness_page_buddy<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, bool, Ghost<int>))
     requires
         src@.wf(),
     ensures
@@ -235,7 +260,12 @@ pub fn witness_page_buddy<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, bool))
         if r.1 {
             r.0.source() == src@
         } else {
-            refused_span(src@, r.0.source())
+            let f = r.0.source().refusals.last();
+            &&& r.0.source() == src@.recorded(f)
+            &&& span_refusal(src@, f) || {
+                &&& !src@.spans.contains_key(span_of(r.2@))
+                &&& span_refusal(taken(src@, span_of(r.2@)), f)
+            }
         },
 {
     let mut pb = PageBuddy::new(src, 0);
@@ -243,7 +273,7 @@ pub fn witness_page_buddy<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, bool))
     assert(pb.spans().dom() =~= Set::<int>::empty());
     let small = match pb.alloc_run(0) {
         Err(_) => {
-            return (pb, false);
+            return (pb, false, Ghost(0));
         },
         Ok(p) => p,
     };
@@ -274,7 +304,7 @@ pub fn witness_page_buddy<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, bool))
                 pb.lemma_view();
                 lemma_refused_released(s0, b1, q);
             }
-            return (pb, false);
+            return (pb, false, Ghost(small as int));
         },
         Ok(p) => p,
     };
@@ -319,23 +349,32 @@ pub fn witness_page_buddy<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, bool))
         assert(pb.used().dom() =~= Set::<int>::empty());
         pb.lemma_view();
     }
-    (pb, true)
+    (pb, true, Ghost(small as int))
 }
 
 /// The whole blocks the many-spans witness cuts: more than one page of block buddy records would
 /// hold, so no table of records in a page bounds the spans the page buddy holds.
 pub const MANY: usize = PAGE_BYTES / BLOCK_PAGES + 1;
 
-/// The source's view `s` is `start`, with one refused request for a new run span when `refused`, and
-/// with a span for each first block `used` holds, every span of `start` as it was.
-spec fn added(start: SourceView, s: SourceView, used: Map<int, Map<int, nat>>, metas: Set<int>, refused: bool) -> bool {
+/// The source's view `s` is `start`, with one refused request for a new run span when `refused`,
+/// asked while the source held what `held` holds, and with a run span for each first block `used`
+/// holds, every span of `start` as it was.
+spec fn added(
+    start: SourceView,
+    s: SourceView,
+    used: Map<int, Map<int, nat>>,
+    metas: Set<int>,
+    refused: bool,
+    held: SourceView,
+) -> bool {
     &&& s.provenance == start.provenance
     &&& s.refusals == if refused {
         start.refusals.push(s.refusals.last())
     } else {
         start.refusals
     }
-    &&& refused ==> span_request(s.refusals.last())
+    &&& refused ==> span_refusal(held, s.refusals.last()) && holds_runs(start, held)
+    &&& forall|c: int| #[trigger] s.spans.contains_key(c) ==> start.spans.contains_key(c) || s.spans[c] == run_span(c)
     &&& forall|c: int|
         #![trigger s.spans.contains_key(c)]
         #![trigger start.spans.contains_key(c)]
@@ -349,8 +388,9 @@ spec fn added(start: SourceView, s: SourceView, used: Map<int, Map<int, nat>>, m
 /// own and all held at once, until MANY are held or the source refuses; frees them and returns the
 /// page buddy, which then holds no span and has given every span back to the source, with how many
 /// it cut: MANY unless the source refused a request for a new run span, and otherwise fewer, the
-/// source having refused once.
-pub fn witness_page_buddy_many<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, usize))
+/// source having refused once, holding then what it held at the start and run spans, which the view
+/// returned holds.
+pub fn witness_page_buddy_many<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, usize, Ghost<SourceView>))
     requires
         src@.wf(),
     ensures
@@ -360,10 +400,14 @@ pub fn witness_page_buddy_many<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, usiz
         if r.1 == MANY {
             r.0.source() == src@
         } else {
-            refused_span(src@, r.0.source())
+            let f = r.0.source().refusals.last();
+            &&& r.0.source() == src@.recorded(f)
+            &&& span_refusal(r.2@, f)
+            &&& holds_runs(src@, r.2@)
         },
 {
     let ghost start = src@;
+    let ghost mut held = start;
     let mut pb = PageBuddy::new(src, 0);
     let ghost whole = Map::<int, nat>::empty().insert(0, BLOCK_ORDER as nat);
     let mut runs = [0usize; MANY];
@@ -383,7 +427,7 @@ pub fn witness_page_buddy_many<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, usiz
             pages(BLOCK_ORDER as nat) == BLOCK_PAGES as int,
             whole == Map::<int, nat>::empty().insert(0, BLOCK_ORDER as nat),
             whole.remove(0) == Map::<int, nat>::empty(),
-            added(start, pb.source(), pb.used(), pb.metas(), !go),
+            added(start, pb.source(), pb.used(), pb.metas(), !go, held),
             forall|j: int|
                 0 <= j < n ==> {
                     &&& (#[trigger] runs@[j]) as int % BLOCK_BYTES as int == 0
@@ -409,6 +453,9 @@ pub fn witness_page_buddy_many<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, usiz
         match pb.alloc_run(BLOCK_ORDER) {
             Err(e) => {
                 assert(e is Source);
+                proof {
+                    held = s0;
+                }
                 go = false;
             },
             Ok(p) => {
@@ -474,6 +521,13 @@ pub fn witness_page_buddy_many<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, usiz
                             assert(metas0.contains(m));
                         }
                     }
+                    assert(s.spans[b].backed =~= run_pages(mb, 1));
+                    assert forall|c2: int| #[trigger] s.spans.contains_key(c2) implies start.spans.contains_key(c2)
+                        || s.spans[c2] == run_span(c2) by {
+                        if c2 != b {
+                            assert(s0.spans.contains_key(c2));
+                        }
+                    }
                 }
                 let ghost r0 = runs@;
                 runs[n] = p;
@@ -505,7 +559,7 @@ pub fn witness_page_buddy_many<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, usiz
             pages(BLOCK_ORDER as nat) == BLOCK_PAGES as int,
             whole == Map::<int, nat>::empty().insert(0, BLOCK_ORDER as nat),
             whole.remove(0) == Map::<int, nat>::empty(),
-            added(start, pb.source(), pb.used(), pb.metas(), !go),
+            added(start, pb.source(), pb.used(), pb.metas(), !go, held),
             forall|j: int|
                 0 <= j < n ==> {
                     &&& (#[trigger] runs@[j]) as int % BLOCK_BYTES as int == 0
@@ -572,6 +626,10 @@ pub fn witness_page_buddy_many<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, usiz
                 assert(c != p as int);
                 assert(pb.source().spans[c] == s0.spans[c]);
             }
+            assert forall|c: int| #[trigger] s.spans.contains_key(c) implies start.spans.contains_key(c)
+                || s.spans[c] == run_span(c) by {
+                assert(s0.spans.contains_key(c));
+            }
             assert forall|j: int| 0 <= j < n implies (#[trigger] runs@[j]) as int != mp by {
                 assert(!metas0.contains(runs@[j] as int));
             }
@@ -599,7 +657,7 @@ pub fn witness_page_buddy_many<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, usiz
         assert(s.spans.dom() =~= start.spans.dom());
         assert(s.spans =~= start.spans);
     }
-    (pb, cut)
+    (pb, cut, Ghost(held))
 }
 
 /// The block at `p`, block-aligned, has its page 0 at `p`.
@@ -618,7 +676,7 @@ proof fn lemma_block_head(p: int)
 /// spare, and cuts a run again, which the idle spare provably gives without asking the source; then
 /// frees that run and returns the page buddy, every held span of it idle, with whether both runs were
 /// cut: they were unless the source refused a request for the first run's span, which it then did
-/// once, and otherwise the source refused nothing.
+/// once, holding what it held at the start, and otherwise the source refused nothing.
 pub fn witness_page_buddy_spare<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, bool))
     requires
         src@.wf(),
@@ -629,7 +687,7 @@ pub fn witness_page_buddy_spare<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, boo
         if r.1 {
             r.0.source().refusals == src@.refusals
         } else {
-            refused_span(src@, r.0.source())
+            span_refused(src@, r.0.source())
         },
 {
     let mut pb = PageBuddy::new(src, 1);
@@ -684,7 +742,8 @@ pub fn witness_page_buddy_spare<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, boo
 /// through the permission and reads it again, releases the run's page and frees the run, and returns
 /// the page buddy, which then holds no span and has given every span back to the source, with
 /// whether the byte was written and the run's address: the byte was written unless the source refused
-/// a request for the run's span or the back of the run's page, which it then did once.
+/// a request for the run's span, holding what it held at the start, or the back of the run's page,
+/// holding that and the run's span, which it then did once.
 pub fn witness_backed_run<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, bool, Ghost<int>))
     requires
         src@.wf(),
@@ -694,9 +753,13 @@ pub fn witness_backed_run<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, bool, Gho
         if r.1 {
             r.0.source() == src@
         } else {
-            let q = r.0.source().refusals.last();
-            &&& r.0.source() == src@.refused(q)
-            &&& span_request(q) || q == (Request::Back { span: span_of(r.2@), start: r.2@, pages: 1 })
+            span_refused(src@, r.0.source()) || {
+                let b = span_of(r.2@);
+                &&& !src@.spans.contains_key(b)
+                &&& r.0.source() == src@.recorded(
+                    Refusal { request: Request::Back { span: b, start: r.2@, pages: 1 }, spans: taken(src@, b).spans },
+                )
+            }
         },
 {
     let mut pb = PageBuddy::new(src, 0);

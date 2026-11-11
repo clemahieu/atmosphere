@@ -5,14 +5,15 @@
 //! A source hands out spans, block-aligned ranges of virtual addresses a whole number of blocks long,
 //! and backs page runs inside them. Its view is the spans it has reserved, keyed by base address,
 //! with the pages of each it has backed, the provenance every permission it returns carries, and the
-//! requests it has refused, in order, so a caller's specification can say whether a call refused and
-//! which request it refused.
+//! requests it has refused, in order, each with the spans it held when it refused, so a caller's
+//! specification can say whether a call refused, which request it refused and what the source held
+//! then.
 //!
 //! - `reserve` gives a new span, unbacked and disjoint from every reserved one, or refuses, records
-//!   the reserve it refused and changes nothing else.
+//!   the reserve it refused with the spans it holds and changes nothing else.
 //! - `back` takes a page run inside a reserved span with no page backed, and returns the permission
-//!   to every byte of the run, the run now backed; or refuses, records the back it refused, backs
-//!   nothing and changes nothing else.
+//!   to every byte of the run, the run now backed; or refuses, records the back it refused with the
+//!   spans it holds, backs nothing and changes nothing else.
 //! - `release` takes a backed run with its permission and gives the run's frames up. It never
 //!   refuses.
 //! - `release_span` takes a span with no page backed and gives the range up. It never refuses.
@@ -42,6 +43,12 @@ pub ghost enum Request {
     Back { span: int, start: int, pages: nat },
 }
 
+/// A request a source refused, with the spans it held when it refused.
+pub ghost struct Refusal {
+    pub request: Request,
+    pub spans: Map<int, Span>,
+}
+
 /// What a source has handed out.
 pub ghost struct SourceView {
     /// The provenance of every pointer and permission the source gives.
@@ -49,7 +56,7 @@ pub ghost struct SourceView {
     /// The reserved spans, by base address.
     pub spans: Map<int, Span>,
     /// The requests `reserve` and `back` have refused, the latest last.
-    pub refusals: Seq<Request>,
+    pub refusals: Seq<Refusal>,
 }
 
 /// The bytes of `blocks` blocks.
@@ -144,9 +151,14 @@ impl SourceView {
         SourceView { spans: self.spans.remove(span), ..self }
     }
 
-    /// The view with the refusal of `q` recorded and nothing else changed.
+    /// The view with the refusal `r` recorded and nothing else changed.
+    pub open spec fn recorded(self, r: Refusal) -> Self {
+        SourceView { refusals: self.refusals.push(r), ..self }
+    }
+
+    /// The view with the refusal of `q` recorded, with the spans it holds, and nothing else changed.
     pub open spec fn refused(self, q: Request) -> Self {
-        SourceView { refusals: self.refusals.push(q), ..self }
+        self.recorded(Refusal { request: q, spans: self.spans })
     }
 }
 
@@ -226,13 +238,13 @@ pub proof fn lemma_released_span_wf(v: SourceView, span: int)
     }
 }
 
-pub proof fn lemma_refused_wf(v: SourceView, q: Request)
+pub proof fn lemma_recorded_wf(v: SourceView, r: Refusal)
     requires
         v.wf(),
     ensures
-        v.refused(q).wf(),
+        v.recorded(r).wf(),
 {
-    let w = v.refused(q);
+    let w = v.recorded(r);
     assert forall|b: int| #[trigger] w.spans.contains_key(b) implies w.released_span(b).fits(b, w.spans[b].blocks) by {
         assert(v.released_span(b).fits(b, v.spans[b].blocks));
         assert forall|o: int| #[trigger] w.released_span(b).spans.contains_key(o) implies w.released_span(b).apart(b, w.spans[b].blocks, o) by {
@@ -246,7 +258,8 @@ pub trait SpanSource {
     spec fn view(&self) -> SourceView;
 
     /// Reserves a span of `blocks` blocks, none of it backed, at the base the returned pointer
-    /// addresses; or refuses, records the reserve it refused and changes nothing else.
+    /// addresses; or refuses, records the reserve it refused with the spans it holds and changes
+    /// nothing else.
     fn reserve(&mut self, blocks: usize) -> (r: Option<*mut u8>)
         requires
             old(self)@.wf(),
@@ -264,8 +277,8 @@ pub trait SpanSource {
     ;
 
     /// Backs the run of `pages` pages from `start` inside the span at `span`, and returns the
-    /// permission to exactly its bytes; or refuses, records the back it refused, backs nothing and
-    /// changes nothing else.
+    /// permission to exactly its bytes; or refuses, records the back it refused with the spans it
+    /// holds, backs nothing and changes nothing else.
     fn back(&mut self, span: Ghost<int>, start: usize, pages: usize) -> (r: Option<Tracked<PointsToRaw>>)
         requires
             old(self)@.wf(),
