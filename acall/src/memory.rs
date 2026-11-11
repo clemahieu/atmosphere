@@ -27,6 +27,7 @@ pub fn retype(caller: &mut Ghost<Caller>, untyped: u64, kind: u64, base: u64, wo
         final(caller)@.wf(),
         final(caller)@.root == old(caller)@.root,
         CapKernel::retype_contract(old(caller)@.kernel, final(caller)@.kernel, final(caller)@.root, kind, untyped as usize, base as usize, word, level as usize, out),
+    no_unwind
 {
     let ghost pre = caller@;
     let out = step(caller, OPERATION_RETYPE, untyped, kind, base, word, level, 0);
@@ -49,6 +50,7 @@ pub fn derive(caller: &mut Ghost<Caller>, from: u64, to: u64, rights: u64, base:
         final(caller)@.wf(),
         final(caller)@.root == old(caller)@.root,
         CapKernel::derive_contract(old(caller)@.kernel, final(caller)@.kernel, final(caller)@.root, spec_position(from), spec_position(to), rights, base as usize, order, out),
+    no_unwind
 {
     let ghost pre = caller@;
     let out = step(caller, OPERATION_DERIVE, from, to, rights, base, order, 0);
@@ -70,6 +72,7 @@ pub fn inspect(caller: &mut Ghost<Caller>, at: u64) -> (out: Outcome)
         final(caller)@.wf(),
         final(caller)@.root == old(caller)@.root,
         CapKernel::inspect_contract(old(caller)@.kernel, final(caller)@.kernel, final(caller)@.root, spec_position(at), out),
+    no_unwind
 {
     let ghost pre = caller@;
     let out = step(caller, OPERATION_INSPECT, at, 0, 0, 0, 0, 0);
@@ -93,6 +96,7 @@ pub fn link(caller: &mut Ghost<Caller>, slot: u64, va: u64, level: u64, from: u6
         final(caller)@.wf(),
         final(caller)@.root == old(caller)@.root,
         CapKernel::link_contract(old(caller)@.kernel, final(caller)@.kernel, final(caller)@.root, slot as usize, va, level, from as usize, child as usize, out),
+    no_unwind
 {
     let ghost pre = caller@;
     let out = step(caller, OPERATION_LINK, slot, va, level, from, child, 0);
@@ -115,6 +119,7 @@ pub fn map(caller: &mut Ghost<Caller>, slot: u64, va: u64, level: u64, from: u64
         final(caller)@.wf(),
         final(caller)@.root == old(caller)@.root,
         CapKernel::map_contract(old(caller)@.kernel, final(caller)@.kernel, final(caller)@.root, slot as usize, va, level, from as usize, page as usize, out),
+    no_unwind
 {
     let ghost pre = caller@;
     let out = step(caller, OPERATION_MAP, slot, va, level, from, page, 0);

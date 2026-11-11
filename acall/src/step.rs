@@ -55,6 +55,7 @@ pub fn step(caller: &mut Ghost<Caller>, number: u64, slot: u64, a1: u64, a2: u64
         exists|frame: Registers|
             carries(frame, number, slot, a1, a2, a3, a4, a5)
                 && #[trigger] CapKernel::invoked(old(caller)@.kernel, final(caller)@.kernel, final(caller)@.root, frame, out),
+    no_unwind
 {
     // The ABI's own: every operation may change the caller's address space, which no Rust value of
     // this crate's caller lives in unless it holds the permission the wrapper's contract speaks of.
