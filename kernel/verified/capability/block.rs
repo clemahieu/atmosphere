@@ -920,17 +920,6 @@ impl BlockTable {
         }
     }
 
-    /// Reads what a small block was typed as.
-    pub fn object_of(&self, base: usize) -> (ret: ObjectType)
-        requires
-            self.wf(),
-            self.tracks(base as int),
-        ensures
-            ret == self.pages@[base as int].object,
-    {
-        self.pages.get(base).object
-    }
-
     /// Mark a large block dead.
     pub fn mark_large_dead(&mut self, level: Large, r: usize)
         requires

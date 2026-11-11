@@ -1443,62 +1443,6 @@ impl CapKernel {
     {
     }
 
-    /// An entry of space s leading to this page has left its tables, so every core that loaded s may
-    /// still hold it, and only a flush removes it. The page is mapped still, or its unmap is recorded and
-    /// no core has acknowledged it.
-    pub fn note_stale(&mut self, c: usize, s: usize, Ghost(page): Ghost<usize>)
-        requires
-            old(self).wf(),
-            c < NUM_CPUS,
-            old(self).spaces.roots@.contains_key(s),
-            old(self).blocks.tracks(page as int),
-            old(self).mapped@.contains(page)
-                || forall|d: int| 0 <= d < NUM_CPUS ==> old(self).stale_epoch.above(#[trigger] old(self).acked(d), page),
-        ensures
-            Self::step_ok(*old(self), *final(self), c as int),
-            forall|d: int| 0 <= d < NUM_CPUS ==> #[trigger] final(self).tlb@[d] == (
-                if old(self).loaded(d, s) { old(self).tlb@[d].insert(TlbEntry { space: s, page }) } else { old(self).tlb@[d] }),
-            final(self).mapped == old(self).mapped,
-            final(self).stale_epoch == old(self).stale_epoch,
-            final(self).flush_epoch == old(self).flush_epoch,
-            final(self).cores == old(self).cores,
-            final(self).iommus == old(self).iommus,
-            final(self).spaces.loaded == old(self).spaces.loaded,
-    {
-        let ghost pre = *old(self);
-        let ghost e = TlbEntry { space: s, page };
-        self.tlb = Ghost(Seq::new(NUM_CPUS as nat, |d: int| if pre.loaded(d, s) { pre.tlb@[d].insert(e) } else { pre.tlb@[d] }));
-        proof {
-            Self::lemma_iommus_same(pre, *self);
-            assert(self.tlb@.len() == NUM_CPUS);
-            assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] self.tlb@[d] == (
-                if pre.loaded(d, s) { pre.tlb@[d].insert(e) } else { pre.tlb@[d] }) by {}
-            assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] self.acked(d) <= self.flush_epoch by {
-                assert(pre.acked(d) <= pre.flush_epoch);
-            }
-            assert forall|d: int, g: TlbEntry|
-                0 <= d < NUM_CPUS && #[trigger] self.tlb@[d].contains(g) implies self.loaded(d, g.space) by {
-                if pre.loaded(d, s) && g == e {
-                    assert(pre.loaded(d, s));
-                } else {
-                    assert(pre.tlb@[d].contains(g));
-                    assert(pre.loaded(d, g.space));
-                }
-            }
-            assert forall|d: int, g: TlbEntry|
-                0 <= d < NUM_CPUS && #[trigger] self.tlb@[d].contains(g) && !self.mapped@.contains(g.page)
-                implies self.blocks.tracks(g.page as int) && self.stale_epoch.above(self.acked(d), g.page) by {
-                assert(pre.acked(d) == self.acked(d));
-                if g == e {
-                    assert(!pre.mapped@.contains(page));
-                    assert(pre.stale_epoch.above(pre.acked(d), page));
-                } else {
-                    assert(pre.tlb@[d].contains(g));
-                }
-            }
-        }
-    }
-
     /// Whether every core and IOMMU has acknowledged f's last unmap, which is a bounded number of loads.
     pub fn is_acknowledged(&self, f: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
