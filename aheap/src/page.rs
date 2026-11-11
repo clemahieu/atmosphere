@@ -268,6 +268,11 @@ pub open spec fn freed(before: PageBuddy, after: PageBuddy, s: SourceView, t: So
     }
 }
 
+/// The blocks of `u` that hold a run, with their runs.
+pub open spec fn runs(u: Map<int, Map<int, nat>>) -> Map<int, Map<int, nat>> {
+    Map::new(u.dom().filter(|c: int| u[c].dom() != Set::<int>::empty()), |c: int| u[c])
+}
+
 /// The order a best-fit search has found so far is at most `ord`.
 spec fn below(best: Option<(usize, bool, usize)>, ord: nat) -> bool {
     match best {
@@ -2419,6 +2424,190 @@ pub proof fn lemma_freed_keeps_held(
         assert(after.span_base(cx) == before.span_base(cx));
         assert(before.span_base(cx) != base);
     }
+}
+
+/// A held run of order `k` at `x` is the allocated block at its page of its block, and lies in that
+/// block, page-aligned above address 0, in the address space.
+pub proof fn lemma_held_bounds(pb: PageBuddy, s: SourceView, x: int, k: nat)
+    requires
+        pb.wf(s),
+        run_held(pb, s, x, k),
+    ensures
+        k <= BLOCK_ORDER,
+        0 < span_of(x) <= x,
+        x % PAGE_BYTES as int == 0,
+        span_of(x) % BLOCK_BYTES as int == 0,
+        x == span_of(x) + page_of(x) * PAGE_BYTES,
+        pb.spans()[span_of(x)].contains_key(page_of(x)),
+        pb.spans()[span_of(x)][page_of(x)] == (Block { order: k, free: false }),
+        x + pages(k) * PAGE_BYTES <= span_of(x) + BLOCK_BYTES,
+        span_of(x) + BLOCK_BYTES <= usize::MAX as int + 1,
+{
+    let c = span_of(x);
+    let h = page_of(x);
+    pb.lemma_view(s);
+    assert(pb.spans().contains_key(c));
+    assert(x % BLOCK_BYTES as int >= 0);
+    lemma_head(x);
+    let blocks = pb.spans()[c];
+    assert(used_of(blocks).contains_key(h));
+    assert(blocks.contains_key(h));
+    assert(placed(h, blocks[h]));
+    lemma_pages_pos(k);
+    lemma_in_block(c, h, pages(k));
+    let b = pb.span_base(c);
+    assert(s.spans.contains_key(b));
+    assert(s.released_span(b).fits(b, s.spans[b].blocks));
+}
+
+/// Two held runs at different heads share no address.
+pub proof fn lemma_held_apart(pb: PageBuddy, s: SourceView, x: int, j: nat, y: int, k: nat)
+    requires
+        pb.wf(s),
+        run_held(pb, s, x, j),
+        run_held(pb, s, y, k),
+        x != y,
+    ensures
+        x + pages(j) * PAGE_BYTES <= y || y + pages(k) * PAGE_BYTES <= x,
+{
+    lemma_held_bounds(pb, s, x, j);
+    lemma_held_bounds(pb, s, y, k);
+    let cx = span_of(x);
+    let cy = span_of(y);
+    let hx = page_of(x);
+    let hy = page_of(y);
+    let pg = PAGE_BYTES as int;
+    let bb = BLOCK_BYTES as int;
+    if cx == cy {
+        pb.lemma_view(s);
+        assert(partitioned(pb.spans()[cx]));
+        assert(hx != hy);
+        assert(hx + pages(j) <= hy || hy + pages(k) <= hx);
+        if hx + pages(j) <= hy {
+            assert(hx * pg + pages(j) * pg <= hy * pg) by (nonlinear_arith)
+                requires
+                    hx + pages(j) <= hy,
+                    pg > 0,
+            ;
+        } else {
+            assert(hy * pg + pages(k) * pg <= hx * pg) by (nonlinear_arith)
+                requires
+                    hy + pages(k) <= hx,
+                    pg > 0,
+            ;
+        }
+    } else {
+        lemma_fundamental_div_mod(cx, bb);
+        lemma_fundamental_div_mod(cy, bb);
+        let m = cx / bb;
+        let n = cy / bb;
+        if m < n {
+            assert(bb * m + bb <= bb * n) by (nonlinear_arith)
+                requires
+                    m < n,
+                    bb > 0,
+            ;
+        } else {
+            assert(m != n);
+            assert(bb * n + bb <= bb * m) by (nonlinear_arith)
+                requires
+                    n < m,
+                    bb > 0,
+            ;
+        }
+    }
+}
+
+/// Releasing the pages of the held run of order `k` at `q` keeps every other held run held.
+pub proof fn lemma_released_keeps_held(pb: PageBuddy, s: SourceView, q: int, k: nat, x: int, j: nat)
+    requires
+        pb.wf(s),
+        run_held(pb, s, q, k),
+        run_held(pb, s, x, j),
+        x != q,
+    ensures
+        run_held(pb, s.released_run(pb.span_base(span_of(q)), q, pages(k) as nat), x, j),
+{
+    let t = s.released_run(pb.span_base(span_of(q)), q, pages(k) as nat);
+    let bx = pb.span_base(span_of(x));
+    lemma_held_apart(pb, s, x, j, q, k);
+    lemma_pages_pos(k);
+    lemma_pages_pos(j);
+    assert forall|a: int| #[trigger] run_pages(x, pages(j) as nat).contains(a) implies t.spans[bx].backed.contains(a) by {
+        assert(s.spans[bx].backed.contains(a));
+        assert(x <= a < x + pages(j) * PAGE_BYTES);
+        assert(!run_pages(q, pages(k) as nat).contains(a));
+    }
+}
+
+/// Cutting the run of order `k` at `q`, any change that keeps the runs held, and freeing the run at
+/// `q` again leave the page buddy holding the runs it held.
+pub proof fn lemma_runs_restored(
+    pb0: PageBuddy,
+    pb1: PageBuddy,
+    pbm: PageBuddy,
+    pb3: PageBuddy,
+    s0: SourceView,
+    s1: SourceView,
+    sm: SourceView,
+    s3: SourceView,
+    q: int,
+    k: nat,
+)
+    requires
+        pb0.wf(s0),
+        cut_run(pb0, pb1, s0, s1, q, k),
+        runs(pbm.used()) == runs(pb1.used()),
+        freed(pbm, pb3, sm, s3, q),
+    ensures
+        runs(pb3.used()) == runs(pb0.used()),
+{
+    let c = span_of(q);
+    let h = page_of(q);
+    let u0 = pb0.used();
+    let u1 = pb1.used();
+    let um = pbm.used();
+    let rest1 = u1.insert(c, u1[c].remove(h));
+    let restm = um.insert(c, um[c].remove(h));
+    pb0.lemma_view(s0);
+    if pb0.spans().contains_key(c) {
+        lemma_uncut(u0, u1, q, k);
+        assert(rest1 == u0);
+    } else {
+        let f = fresh(u0, c);
+        assert(pb1.span_base(c) == c);
+        lemma_uncut(f, u1, q, k);
+        assert(rest1 == f);
+        assert(!u0.contains_key(c));
+        assert(!u0.contains_key(meta_page(c)));
+        assert(f[c].dom() =~= Set::<int>::empty());
+        assert(f[meta_page(c)].dom() =~= Set::<int>::empty());
+        assert(runs(f) =~= runs(u0));
+    }
+    assert(u1[c].dom().contains(h));
+    assert(runs(u1).contains_key(c));
+    assert(runs(um).contains_key(c));
+    assert(um.contains_key(c));
+    assert(runs(um)[c] == um[c]);
+    assert(runs(u1)[c] == u1[c]);
+    assert(um[c] == u1[c]);
+    assert forall|x: int| #[trigger] um.contains_key(x) && um[x].dom() != Set::<int>::empty() <==> u1.contains_key(x)
+        && u1[x].dom() != Set::<int>::empty() by {
+        assert(runs(um).contains_key(x) == runs(u1).contains_key(x));
+    }
+    assert forall|x: int| um.contains_key(x) && um[x].dom() != Set::<int>::empty() implies #[trigger] um[x] == u1[x] by {
+        assert(runs(um)[x] == runs(u1)[x]);
+    }
+    assert(runs(restm) =~= runs(rest1));
+    let b = pbm.span_base(c);
+    if restm[b].dom() != Set::<int>::empty() || restm[meta_page(b)].dom() != Set::<int>::empty()
+        || pbm.idle_spans().len() < pbm.spares() {
+        assert(pb3.used() == restm);
+    } else {
+        assert(c == b || c == meta_page(b));
+        assert(runs(pb3.used()) =~= runs(restm));
+    }
+    assert(runs(pb3.used()) =~= runs(u0));
 }
 
 } // verus!

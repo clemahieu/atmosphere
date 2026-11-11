@@ -87,11 +87,6 @@ spec fn header_ptr(b: int, provenance: Provenance) -> *mut PageHeader {
     ptr_mut_from_data(PtrData { addr: b as usize, provenance, metadata: () })
 }
 
-/// The blocks of `u` that hold a run, with their runs.
-pub open spec fn runs(u: Map<int, Map<int, nat>>) -> Map<int, Map<int, nat>> {
-    Map::new(u.dom().filter(|c: int| u[c].dom() != Set::<int>::empty()), |c: int| u[c])
-}
-
 /// The page buddy went from `before` to `after`, and the source from `s` to `t`, by cutting the run
 /// of order 0 at `q`, from a held span or a new one, and backing its page.
 pub open spec fn took_page(before: PageBuddy, after: PageBuddy, s: SourceView, t: SourceView, q: int) -> bool {
@@ -346,44 +341,6 @@ proof fn lemma_released_held(pb: PageBuddy, s: SourceView, x: int, q: int, b: in
     assert(pages(0) == 1);
     lemma_one_page(q);
     lemma_one_page(b);
-}
-
-/// Cutting the run at `q` and freeing it again leaves the page buddy holding the runs it held.
-proof fn lemma_runs_back(
-    pb0: PageBuddy,
-    pb1: PageBuddy,
-    pb3: PageBuddy,
-    s0: SourceView,
-    m: SourceView,
-    s2: SourceView,
-    s3: SourceView,
-    q: int,
-)
-    requires
-        pb0.wf(s0),
-        cut_run(pb0, pb1, s0, m, q, 0),
-        freed(pb1, pb3, s2, s3, q),
-    ensures
-        runs(pb3.used()) == runs(pb0.used()),
-{
-    let c = span_of(q);
-    let u0 = pb0.used();
-    let rest = pb1.used().insert(c, pb1.used()[c].remove(page_of(q)));
-    pb0.lemma_view(s0);
-    if pb0.spans().contains_key(c) {
-        lemma_uncut(u0, pb1.used(), q, 0);
-        assert(rest == u0);
-    } else {
-        let f = fresh(u0, c);
-        lemma_uncut(f, pb1.used(), q, 0);
-        assert(rest == f);
-        assert(!u0.contains_key(c));
-        assert(!u0.contains_key(meta_page(c)));
-        assert(f[c].dom() =~= Set::<int>::empty());
-        assert(f[meta_page(c)].dom() =~= Set::<int>::empty());
-        assert(pb1.span_base(c) == c);
-    }
-    assert(runs(pb3.used()) =~= runs(u0));
 }
 
 /// The record pages, linked from `head`, with the permission to each page's header and to the
@@ -1282,9 +1239,7 @@ impl RecordStore {
                     let pb3 = *pb;
                     let s3 = src@;
                     assert(freed(pb2, pb3, s2, s3, qi));
-                    assert(pb2.idle_spans() == pb1.idle_spans());
-                    assert(freed(pb1, pb3, s2, s3, qi));
-                    lemma_runs_back(pb0, pb1, pb3, s0, s1, s2, s3, qi);
+                    lemma_runs_restored(pb0, pb1, pb2, pb3, s0, s1, s2, s3, qi, 0);
                     assert(pb2.holds(qi));
                     assert forall|x: int, k: nat| #[trigger] run_held(pb0, s0, x, k) implies run_held(pb3, s3, x, k) by {
                         assert(x != qi && run_held(pb1, s1, x, k));
