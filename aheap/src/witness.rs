@@ -106,6 +106,16 @@
 //! Each keeps its invariant across the other's changes to the
 //! source by its frame lemma; a refusal, which the source then made once, stops the sequence after
 //! freeing what it cut.
+//!
+//! The heap's whole witness starts from `Heap::new(0)`: it allocates a slot of the smallest class,
+//! a buddy-run object of a page and a byte and a large object of a block and a byte, frees the large
+//! object, then the buddy-run object, then the slot, and ends with no slab in any class, no record
+//! taken nor any record page, the page buddy holding no span, no buddy-run or large object, and the
+//! source's view the one it started with, the requests the sequence made granted. The slab's and the
+//! buddy-run object's runs are followed through the page buddy's cuts and frees (`tracks`); the large
+//! object's span, one the source did not hold, is reserved and given back whole, which leaves the
+//! spans as they were. A refusal stops the sequence after freeing what it took, and is the source's
+//! refusal of a request one of the three allocations made (`heap_refused`).
 use vstd::prelude::*;
 use vstd::layout::*;
 use vstd::raw_ptr::*;
@@ -114,6 +124,7 @@ use crate::arch::*;
 use crate::buddy::*;
 use crate::class::*;
 use crate::large::*;
+use crate::heap::{Heap, class_for, part_refused, run_order};
 use crate::page::*;
 use crate::record::{RecordStore, back_refused, gave_back, page_back_refusal, record_page, took_page};
 use crate::slab::*;
@@ -2773,6 +2784,247 @@ pub fn witness_small_classes<S: SpanSource>(src: &mut S) -> (r: (SizeClass, Size
         assert(store.pages() =~= Set::<int>::empty());
     }
     (first, last, store, pb, true)
+}
+
+/// A view `t` holding the spans `s` holds, with `s`'s provenance and refusals and `s`'s grants
+/// followed by more, is tracked as `s` is.
+proof fn lemma_tracks_granted(start: SourceView, pb: PageBuddy, s: SourceView, t: SourceView)
+    requires
+        tracks(start, pb, s),
+        t.spans == s.spans,
+        t.provenance == s.provenance,
+        t.refusals == s.refusals,
+        s.grants.len() <= t.grants.len(),
+        t.grants.subrange(0, s.grants.len() as int) == s.grants,
+    ensures
+        tracks(start, pb, t),
+{
+    let l = start.grants.len() as int;
+    assert(t.grants.subrange(0, l) =~= s.grants.subrange(0, l)) by {
+        assert forall|i: int| 0 <= i < l implies t.grants[i] == s.grants[i] by {
+            assert(t.grants.subrange(0, s.grants.len() as int)[i] == s.grants[i]);
+        }
+    }
+}
+
+/// The refusal `t.refusals.last()` is of a request the heap's whole witness made of the heap `h0`
+/// over the view `s`, the heap going to `h1`: one `alloc` makes for a slot of the smallest class
+/// (`slab_refused`), for a buddy-run object of a page and a byte (`part_refused`), or for a large
+/// object of a block and a byte (`large_refused`).
+pub open spec fn heap_refused(h0: Heap, h1: Heap, s: SourceView, t: SourceView) -> bool {
+    let n = pages_for(PAGE_BYTES as nat + 1);
+    ||| slab_refused(h0.store(), h0.pb(), s, t, slab_order(0))
+    ||| part_refused(h0.pb(), h1.pb(), s, t, run_order(n), n)
+    ||| large_refused(s, t, pages_for(BLOCK_BYTES as nat + 1))
+}
+
+/// From `Heap::new(0)` over `src`: allocates a slot of the smallest class, a buddy-run object of a
+/// page and a byte and a large object of a block and a byte, and frees the large object, the
+/// buddy-run object and the slot. Returns the heap, with nothing live and well formed either way,
+/// and whether all three were given. When they were, no class has a slab, the store has no record
+/// taken nor any record page, the page buddy holds no span, there is no buddy-run or large object,
+/// and the source's view is the one it started with, the requests the sequence made granted.
+/// Otherwise the source refused once, a request one of the three allocations made (`heap_refused`),
+/// with the refusals it had at the start, and the sequence stopped after freeing what it took.
+pub fn witness_heap_objects<S: SpanSource>(src: &mut S) -> (r: (Heap, bool))
+    requires
+        old(src)@.wf(),
+    ensures
+        r.0.wf(final(src)@),
+        r.0.spares() == 0,
+        r.0.live() == ISet::<int>::empty(),
+        if r.1 {
+            &&& forall|i: int| 0 <= i < CLASSES ==> (#[trigger] r.0.classes()[i]).slabs() == Map::<int, Slab>::empty()
+            &&& r.0.store().taken() == Set::<int>::empty()
+            &&& r.0.store().pages() == Set::<int>::empty()
+            &&& r.0.pb().spans().dom() == Set::<int>::empty()
+            &&& r.0.parts() == Map::<int, nat>::empty()
+            &&& r.0.large() == Map::<int, nat>::empty()
+            &&& final(src)@ == old(src)@.granted(
+                final(src)@.grants.subrange(old(src)@.grants.len() as int, final(src)@.grants.len() as int),
+            )
+        } else {
+            let f = final(src)@.refusals.last();
+            &&& final(src)@.provenance == old(src)@.provenance
+            &&& final(src)@.refusals == old(src)@.refusals.push(f)
+            &&& exists|h0: Heap, h1: Heap, s: SourceView, t: SourceView| #[trigger]
+                heap_refused(h0, h1, s, t) && s.refusals == old(src)@.refusals && t.refusals.last() == f
+        },
+{
+    let ghost start = src@;
+    let mut h = Heap::new(0);
+    let ghost h0 = h;
+    let ghost k0 = slab_order(0);
+    proof {
+        lemma_tracks_new(start, h0.pb());
+        lemma_class(0);
+        assert(class_for(1, 1) == 0);
+        h0.lemma_parts(start);
+    }
+    let r1 = h.alloc(src, 1, 1);
+    let ghost h1 = h;
+    let ghost s1 = src@;
+    let (p1, perm1) = match r1 {
+        Some(x) => x,
+        None => {
+            proof {
+                assert(heap_refused(h0, h1, start, s1));
+                assert(h1.live() =~= ISet::<int>::empty());
+            }
+            return (h, false);
+        },
+    };
+    let ghost y1 = p1@.addr as int;
+    let ghost c0 = h0.classes()[0];
+    let ghost c1 = h1.classes()[0];
+    proof {
+        assert(!exists|b: int| #[trigger]
+            c0.slabs().contains_key(b) && c0.slabs()[b].free_slots() != Set::<int>::empty());
+    }
+    let ghost a0 = choose|a: int| #[trigger]
+        c1.slabs().contains_key(a) && {
+            &&& !c0.slabs().contains_key(a)
+            &&& c1.slabs() == c0.slabs().insert(a, c1.slabs()[a])
+            &&& c1.slabs()[a].holds(y1)
+            &&& c1.heads() == c0.heads().insert(c1.slabs()[a].base()@.addr as int)
+            &&& forall|y: int, j: nat| #[trigger] run_held(h0.pb(), start, y, j) ==> y != c1.slabs()[a].base()@.addr
+            &&& new_slab(
+                h0.store(),
+                h1.store(),
+                h0.pb(),
+                h1.pb(),
+                start,
+                s1,
+                a,
+                c1.slabs()[a].base()@.addr as int,
+                slab_order(c0.class()),
+            )
+        };
+    let ghost x0 = c1.slabs()[a0].base()@.addr as int;
+    proof {
+        lemma_tracks_new_slab(start, h0.store(), h1.store(), h0.pb(), h1.pb(), start, s1, a0, x0, k0);
+        assert(c1.slabs().dom() =~= set![a0]);
+        assert(h1.store().taken() =~= set![a0]);
+        assert(c1.slab_of(y1) == a0);
+        assert forall|z: int| #[trigger] c1.slabs()[a0].holds(z) implies z == y1 by {
+            assert(live_of(c1.slabs()).contains(z));
+            assert(c0.live().contains(z) || z == y1);
+        }
+        assert(only_live(c1.slabs()[a0], y1));
+    }
+    let r2 = h.alloc(src, PAGE_BYTES + 1, 1);
+    let ghost h2 = h;
+    let ghost s2 = src@;
+    let ghost n2 = pages_for(PAGE_BYTES as nat + 1);
+    let ghost k2 = run_order(n2);
+    let (p2, perm2) = match r2 {
+        Some(x) => x,
+        None => {
+            proof {
+                assert(heap_refused(h1, h2, s1, s2));
+                assert(h2.classes()[0] == c1);
+            }
+            h.free(src, p1, 1, 1, perm1);
+            proof {
+                lemma_emptied_refusals(h2.store(), h.store(), h2.pb(), h.pb(), s2, src@, a0, x0, k0);
+                assert(h.live() =~= ISet::<int>::empty());
+            }
+            return (h, false);
+        },
+    };
+    let ghost b2 = p2@.addr as int;
+    proof {
+        let sm = choose|sm: SourceView| #[trigger]
+            cut_run(h1.pb(), h2.pb(), s1, sm, b2, k2) && s2 == sm.backed_run(h2.pb().span_base(span_of(b2)), b2, n2);
+        lemma_tracks_took(start, h1.pb(), h2.pb(), s1, sm, s2, b2, k2, n2);
+        assert(h2.classes()[0] == c1);
+    }
+    let r3 = h.alloc(src, BLOCK_BYTES + 1, 1);
+    let ghost h3 = h;
+    let ghost s3 = src@;
+    let ghost n3 = pages_for(BLOCK_BYTES as nat + 1);
+    let (p3, perm3) = match r3 {
+        Some(x) => x,
+        None => {
+            proof {
+                assert(heap_refused(h2, h3, s2, s3));
+            }
+            h.free(src, p2, PAGE_BYTES + 1, 1, perm2);
+            let ghost h4 = h;
+            let ghost s4 = src@;
+            proof {
+                assert(h4.classes()[0] == c1);
+            }
+            h.free(src, p1, 1, 1, perm1);
+            proof {
+                lemma_emptied_refusals(h4.store(), h.store(), h4.pb(), h.pb(), s4, src@, a0, x0, k0);
+                assert(h.live() =~= ISet::<int>::empty());
+            }
+            return (h, false);
+        },
+    };
+    let ghost b3 = p3@.addr as int;
+    h.free(src, p3, BLOCK_BYTES + 1, 1, perm3);
+    let ghost h4 = h;
+    let ghost s4 = src@;
+    proof {
+        assert(s4.spans =~= s2.spans);
+        assert(s4.grants =~= s2.grants + large_grants(b3, n3));
+        assert(s4.grants.subrange(0, s2.grants.len() as int) =~= s2.grants);
+        lemma_tracks_granted(start, h2.pb(), s2, s4);
+        assert(h4.pb() == h2.pb());
+        let sr = s4.released_run(h4.pb().span_base(span_of(b2)), b2, n2);
+        lemma_tracks_run(start, h4.pb(), s4, sr, span_of(b2), b2, n2);
+    }
+    h.free(src, p2, PAGE_BYTES + 1, 1, perm2);
+    let ghost h5 = h;
+    let ghost s5 = src@;
+    proof {
+        let sr = s4.released_run(h4.pb().span_base(span_of(b2)), b2, n2);
+        lemma_tracks_freed(start, h4.pb(), h5.pb(), sr, s5, b2);
+        assert(h5.classes()[0] == c1);
+        assert(h5.store() == h1.store());
+        h5.lemma_parts(s5);
+        c1.lemma_head_of(a0);
+        c1.lemma_records_taken(h5.store(), h5.pb(), s5);
+        lemma_free_ready(c1, h5.store(), h5.pb(), s5, a0);
+    }
+    h.free(src, p1, 1, 1, perm1);
+    proof {
+        let h6 = h;
+        let s6 = src@;
+        assert(!page_shared(h5.store(), a0)) by {
+            assert forall|z: int| #[trigger] h5.store().taken().contains(z) && z != a0 implies false by {}
+        }
+        lemma_tracks_emptied(start, h5.store(), h6.store(), h5.pb(), h6.pb(), s5, s6, a0, x0, k0);
+        let hx = head_of(x0);
+        let hr = head_of(record_page(a0));
+        let hb = head_of(b2);
+        assert forall|e: (int, int)| !heads_of(h6.pb().used()).contains(e) by {
+            if heads_of(h6.pb().used()).contains(e) {
+                assert(heads_of(h5.pb().used()).contains(e) && e != hx && e != hr);
+                assert(heads_of(h4.pb().used()).contains(e) && e != hb);
+                assert(heads_of(h1.pb().used()).contains(e));
+            }
+        }
+        assert(heads_of(h6.pb().used()) =~= ISet::<(int, int)>::empty());
+        h6.lemma_parts(s6);
+        lemma_tracks_end(start, h6.pb(), s6);
+        assert(h6.store().taken() =~= Set::<int>::empty());
+        assert(h6.store().pages() =~= Set::<int>::empty());
+        assert forall|i: int| 0 <= i < CLASSES implies (#[trigger] h6.classes()[i]).slabs() == Map::<int, Slab>::empty() by {
+            if i == 0 {
+                h6.classes()[0].lemma_records_taken(h6.store(), h6.pb(), s6);
+                assert(h6.classes()[0].slabs() =~= Map::<int, Slab>::empty());
+            } else {
+                assert(h6.classes()[i] == h0.classes()[i]);
+            }
+        }
+        assert(h6.parts() =~= Map::<int, nat>::empty());
+        assert(h6.large() =~= Map::<int, nat>::empty());
+        assert(h6.live() =~= ISet::<int>::empty());
+    }
+    (h, true)
 }
 
 } // verus!

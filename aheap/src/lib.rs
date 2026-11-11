@@ -17,8 +17,8 @@
 //! slot from a partial slab or from a new one it cuts, backs and records. `heap` holds a size class
 //! per class over one record store and one page buddy, under one invariant, and allocates and frees
 //! slots of the class a layout fits. `witness` holds verified
-//! uses of the contract, of the buddies, of the size classes, of the slab, of the large-object map
-//! and of the record store, built into no image.
+//! uses of the contract, of the buddies, of the size classes, of the slab, of the large-object map,
+//! of the record store and of the heap, built into no image.
 #![no_std]
 // A cargo build erases specifications and proofs, so there a variable only they read looks unused.
 #![cfg_attr(not(verus_keep_ghost), allow(unused_variables))]
