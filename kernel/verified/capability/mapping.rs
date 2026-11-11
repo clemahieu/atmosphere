@@ -9,7 +9,7 @@ use vstd::prelude::*;
 
 verus! {
 
-use crate::arch::{flush_every_context, Translating};
+use crate::arch::Translating;
 #[cfg(verus_keep_ghost)]
 use crate::capability::block::*;
 use crate::capability::kernel::*;
@@ -452,9 +452,7 @@ impl CapKernel {
         }
         let state = *self.cores.get(c);
         if state.next_pcid == PCID_MAX {
-            let epoch = self.flush_epoch;
-            let flushed = flush_every_context(c, epoch);
-            self.acknowledge(c, epoch, flushed, Tracked(steps));
+            self.acknowledge(c, Tracked(steps));
             let ghost mid = *self;
             let state = *self.cores.get(c);
             self.cores.set(c, CoreState {

@@ -1826,9 +1826,7 @@ impl CapKernel {
         }
 
         // Core 0 flushes every context and acknowledges the retire's epoch.
-        let epoch = self.flush_epoch;
-        let flushed = crate::arch::flush_every_context(0, epoch);
-        self.acknowledge(0, epoch, flushed, Tracked(&mut steps));
+        self.acknowledge(0, Tracked(&mut steps));
         let ghost a7 = *self;
         proof {
             let f = base / PAGE_SZ;

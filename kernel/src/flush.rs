@@ -5,8 +5,8 @@
 //! the epoch, sends the IPI and lets go. The target's handler flushes every context and records its
 //! acknowledgement under the lock. See design/flush-without-waiting/.
 //!
-//! CapKernel holds the proven form of this state, and acknowledge takes the token flush_every_context
-//! returns. No operation that unmaps is wired to it, so this holds the state the boot test flushes by.
+//! CapKernel holds the proven form of this state, and its acknowledge makes the flush itself. No
+//! operation that unmaps is wired to it, so this holds the state the boot test flushes by.
 
 use verified::arch::flush_every_context;
 use verified::define::NUM_CPUS;

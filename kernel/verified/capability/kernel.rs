@@ -9,7 +9,7 @@ use vstd::prelude::*;
 
 verus! {
 
-use crate::arch::invalidate_iommu_all;
+use crate::arch::{flush_every_context, invalidate_iommu_all};
 use crate::arch::Flushed;
 #[cfg(verus_keep_ghost)]
 use crate::arch::FlushTarget;
@@ -56,7 +56,8 @@ pub const ID_GENERATION_MAX: usize = 0xF_FFFF_FFFF_FFFF;
 /// no space holds it: CapKernel::lemma_kernel_tag.
 pub const KERNEL_TAG: usize = 0;
 
-/// acknowledge's bound in the step counter: none, since it writes one core's state and runs no loop.
+/// acknowledge's bound in the step counter: none, since it flushes its own core and writes that core's
+/// state, and runs no loop.
 /// See design/one-lock-bounded-steps/.
 pub const ACKNOWLEDGE_STEPS: usize = 0;
 
@@ -2353,19 +2354,17 @@ impl CapKernel {
         self.acknowledge_iommu(i, epoch, flushed, Tracked(steps));
     }
 
-    /// Core c acknowledges a flush of every context it did. Between that flush and this call c runs
-    /// no user code, since IF stays clear in the kernel, so its TLB model is empty.
-    pub fn acknowledge(&mut self, c: usize, epoch: usize, Tracked(flushed): Tracked<Flushed>, Tracked(steps): Tracked<&mut Steps>)
+    /// Core c flushes every context and acknowledges the current epoch. The flush is made here, so no
+    /// register load or user code on c comes between it and the acknowledgement, and c's TLB model is
+    /// empty: design/flush-without-waiting/.
+    pub fn acknowledge(&mut self, c: usize, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).wf(),
             c < NUM_CPUS,
-            flushed.target() == FlushTarget::Core(c as int),
-            flushed.epoch() == epoch,
-            old(self).acked(c as int) <= epoch <= old(self).flush_epoch,
         ensures
             final(steps).count <= old(steps).count + ACKNOWLEDGE_STEPS,
             Self::step_ok(*old(self), *final(self), c as int),
-            final(self).acked(c as int) == epoch,
+            final(self).acked(c as int) == old(self).flush_epoch,
             final(self).tlb@[c as int] == Set::<TlbEntry>::empty(),
             forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] final(self).tlb@[d] == old(self).tlb@[d],
             final(self).mapped == old(self).mapped,
@@ -2376,6 +2375,11 @@ impl CapKernel {
             final(self).cores@[c as int].pcids_used@ == Set::<usize>::empty(),
     {
         let ghost pre = *old(self);
+        let epoch = self.flush_epoch;
+        flush_every_context(c, epoch);
+        proof {
+            assert(pre.acked(c as int) <= pre.flush_epoch);
+        }
         let state = *self.cores.get(c);
         self.cores.set(c, CoreState {
             current_thread: state.current_thread,
