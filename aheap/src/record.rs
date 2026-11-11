@@ -18,7 +18,7 @@
 //!   buddy nor the source. When every page is full it cuts a new page, backs it and returns the
 //!   page's first record (`took_page`). It refuses exactly when every page is full and either the
 //!   page buddy refused the run, which it does only when no held span has a free page
-//!   (`span_refused`), or the source refused to back it (`back_refused`);
+//!   (`span_refused`), or the source refused to back the page the page buddy cut (`back_refused`);
 //!   then it frees the run again, so the page buddy holds the runs it held (`runs`), and each run
 //!   its caller held stays allocated with every page backed (`run_held`).
 //! - `put(pb, src, p, perm)` takes back the record at `p` with the permission to its bytes and
@@ -108,15 +108,21 @@ pub open spec fn gave_back(before: PageBuddy, after: PageBuddy, s: SourceView, t
     freed(before, after, s.released_run(before.span_base(span_of(q)), q, 1), t, q)
 }
 
-/// The source went from `s` to `t` with one more refusal recorded, of the back of a run of one page,
-/// and the same provenance.
-pub open spec fn back_refused(s: SourceView, t: SourceView) -> bool {
+/// The refusal `r` is of the back of a record page's page: the page buddy, then `pb`, cut a run of
+/// order 0 at `q`, the source's view going from `s` to `m`, and `r` is the back of that page in the
+/// span the cut page buddy holds it in, while the source held the spans `m` holds.
+pub open spec fn page_back_refusal(pb: PageBuddy, s: SourceView, r: Refusal) -> bool {
+    exists|mid: PageBuddy, m: SourceView, q: int| #[trigger]
+        cut_run(pb, mid, s, m, q, 0) && r.request == (Request::Back { span: mid.span_base(span_of(q)), start: q, pages: 1 })
+            && r.spans == m.spans
+}
+
+/// The source went from `s` to `t` with one more refusal recorded, of the back of the page of the
+/// record page the page buddy `pb` cut (`page_back_refusal`), and the same provenance.
+pub open spec fn back_refused(pb: PageBuddy, s: SourceView, t: SourceView) -> bool {
     &&& t.provenance == s.provenance
     &&& t.refusals == s.refusals.push(t.refusals.last())
-    &&& match t.refusals.last().request {
-        Request::Back { pages, .. } => pages == 1,
-        Request::Reserve { .. } => false,
-    }
+    &&& page_back_refusal(pb, s, t.refusals.last())
 }
 
 /// The pointer to the header of the record page at `b`.
@@ -1174,7 +1180,7 @@ impl RecordStore {
                     &&& runs(final(pb).used()) == runs(old(pb).used())
                     &&& forall|x: int, k: nat| #[trigger]
                         run_held(*old(pb), old(src)@, x, k) ==> run_held(*final(pb), final(src)@, x, k)
-                    &&& span_refused(old(src)@, final(src)@) && !old(pb).fits(0) || back_refused(old(src)@, final(src)@)
+                    &&& span_refused(old(src)@, final(src)@) && !old(pb).fits(0) || back_refused(*old(pb), old(src)@, final(src)@)
                 },
                 Some((p, perm)) => {
                     let a = p@.addr as int;
@@ -1254,7 +1260,8 @@ impl RecordStore {
                         assert(run_held(pb0, s0, b, 0));
                     }
                     assert(s3.refusals == s0.refusals.push(s2.refusals.last()));
-                    assert(back_refused(s0, s3));
+                    assert(page_back_refusal(pb0, s0, s2.refusals.last()));
+                    assert(back_refused(pb0, s0, s3));
                 }
                 None
             },

@@ -29,7 +29,7 @@
 //!   (`slab_refused`): for the slab's run, a run span only when no held span had a free block of
 //!   the slab order, then the back of the run; for its record, only when the store was full, a run
 //!   span only when no held span had a free page once the slab's run was cut, or the back of the
-//!   record page (`run_refused`); then the class, the store's records and the page buddy's runs are as they
+//!   page cut for the record page (`run_refused`); then the class, the store's records and the page buddy's runs are as they
 //!   were. Otherwise it returns a slot of the class's size, aligned to SLOT_MIN, with the
 //!   permission to its bytes, apart from every slot live before. Either way it keeps what every
 //!   class over the same store, page buddy and source stands on (`kept`).
@@ -80,15 +80,14 @@ pub open spec fn slab_refused(store: RecordStore, pb: PageBuddy, before: SourceV
 /// slab's run of order `k` at `q` and the source's view is `s`: the back of the run's pages, while
 /// the source held the spans `s` holds; or, only when the store `store` was full, a request for a
 /// record page once the run was backed: the reserve of a run span or the back of its metadata page,
-/// only when `pb` had no free block of order 0, or the back of one page.
+/// only when `pb` had no free block of order 0, or the back of the page `pb` then cut for the record
+/// page (`page_back_refusal`).
 pub open spec fn run_refused(store: RecordStore, pb: PageBuddy, s: SourceView, r: Refusal, q: int, k: nat) -> bool {
     let b = pb.span_base(span_of(q));
+    let t = s.backed_run(b, q, pages(k) as nat);
     ||| r.request == (Request::Back { span: b, start: q, pages: pages(k) as nat }) && r.spans == s.spans
-    ||| store.full() && !pb.fits(0) && span_refusal(s.backed_run(b, q, pages(k) as nat), r)
-    ||| store.full() && match r.request {
-        Request::Back { pages: n, .. } => n == 1,
-        Request::Reserve { .. } => false,
-    }
+    ||| store.full() && !pb.fits(0) && span_refusal(t, r)
+    ||| store.full() && page_back_refusal(pb, t, r)
 }
 
 /// The store, the page buddy and the source's view went from `store`, `pb` and `src` to `store2`,
@@ -1589,6 +1588,17 @@ impl SizeClass {
                     assert(pb2.spans() == pb1.spans());
                     assert(pb2.fits(0) == pb1.fits(0));
                     assert(s2 == s1.backed_run(pb1.span_base(c), qi, pages(kk) as nat));
+                    if back_refused(pb2, s2, s3) {
+                        let r = s3.refusals.last();
+                        let (mid, m, q2) = choose|mid: PageBuddy, m: SourceView, q2: int| #[trigger]
+                            cut_run(pb2, mid, s2, m, q2, 0) && r.request == (Request::Back {
+                                span: mid.span_base(span_of(q2)),
+                                start: q2,
+                                pages: 1,
+                            }) && r.spans == m.spans;
+                        assert(cut_run(pb1, mid, s2, m, q2, 0));
+                        assert(page_back_refusal(pb1, s2, r));
+                    }
                     assert(cut_run(pb0, pb1, s0, s1, qi, kk));
                     assert(run_refused(st0, pb1, s1, s3.refusals.last(), qi, kk));
                     assert(slab_refused(st0, pb0, s0, s5, kk));

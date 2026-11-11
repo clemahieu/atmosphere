@@ -82,7 +82,11 @@
 //! slab order and a record store with a free record, and allocates a slot: a refusal then is the
 //! source's refusal of the back of the slab's run, never the reserve of a run span or the back of a
 //! page, since alloc_small asks for a span only when no held span has a free block of the order it
-//! needs, and for a record page only when the store is full.
+//! needs, and for a record page only when the store is full. Its second takes a full record store
+//! and a page buddy that still has a free page once the slab's run is cut: a refusal then is of the
+//! back of the slab's run or of the page cut for the record page, asked while the source held the
+//! spans it held at the start, never a run span's reserve nor its metadata page's back. The full
+//! store's witness shows the same of a record taken alone over a page buddy with a free page.
 //!
 //! The heap's witness gives one source to a page buddy and a large-object map: it cuts a run, then
 //! allocates an object, frees the run, then the object, and ends with both holding nothing and the
@@ -99,7 +103,7 @@ use crate::buddy::*;
 use crate::class::*;
 use crate::large::*;
 use crate::page::*;
-use crate::record::{RecordStore, back_refused, record_page};
+use crate::record::{RecordStore, back_refused, page_back_refusal, record_page};
 use crate::slab::*;
 use crate::small::*;
 use crate::source::*;
@@ -967,7 +971,7 @@ pub fn witness_record<S: SpanSource>(src: &mut S) -> (r: (PageBuddy, RecordStore
             &&& r.1.pages() == Set::<int>::empty()
             &&& r.1.taken() == Set::<int>::empty()
         } else {
-            span_refused(old(src)@, final(src)@) || back_refused(old(src)@, final(src)@)
+            span_refused(old(src)@, final(src)@) || exists|pb: PageBuddy| #[trigger] back_refused(pb, old(src)@, final(src)@)
         },
 {
     let mut pb = PageBuddy::new(0);
@@ -977,6 +981,11 @@ pub fn witness_record<S: SpanSource>(src: &mut S) -> (r: (PageBuddy, RecordStore
     assert(pb.spans().dom() =~= Set::<int>::empty());
     let (p, perm) = match store.take(&mut pb, src) {
         None => {
+            proof {
+                if !span_refused(s0, src@) {
+                    assert(back_refused(pb0, s0, src@));
+                }
+            }
             return (pb, store, false, Ghost(0));
         },
         Some(taken) => taken,
@@ -1822,6 +1831,108 @@ pub fn witness_small_fits<S: SpanSource>(
         }
     }
     got
+}
+
+/// A size class over a full record store and a page buddy with a free block of its slab order, and
+/// a free page still once the slab's run is cut from it, allocates a slot; returns whether it got
+/// one. A refusal is of the back of the slab's run or of the page cut for a record page, asked while
+/// the source held the spans it held at the start: no run span was asked for, neither its reserve nor
+/// the back of its metadata page.
+pub fn witness_small_full<S: SpanSource>(
+    c: &mut SizeClass,
+    store: &mut RecordStore,
+    pb: &mut PageBuddy,
+    src: &mut S,
+) -> (got: bool)
+    requires
+        old(pb).wf(old(src)@),
+        old(store).wf(*old(pb), old(src)@),
+        old(c).wf(*old(store), *old(pb), old(src)@),
+        old(pb).fits(slab_order(old(c).class())),
+        forall|mid: PageBuddy, s: SourceView, q: int| #[trigger]
+            cut_run(*old(pb), mid, old(src)@, s, q, slab_order(old(c).class())) ==> mid.fits(0),
+        old(store).full(),
+    ensures
+        final(c).wf(*final(store), *final(pb), final(src)@),
+        !got ==> {
+            let r = final(src)@.refusals.last();
+            &&& r.request is Back
+            &&& r.spans.dom() == old(src)@.spans.dom()
+        },
+{
+    let ghost st0 = *store;
+    let ghost pb0 = *pb;
+    let ghost s0 = src@;
+    let ghost k = slab_order(c.class());
+    let got = c.alloc_small(store, pb, src).is_some();
+    proof {
+        if !got {
+            let r = src@.refusals.last();
+            assert(slab_refused(st0, pb0, s0, src@, k));
+            assert(pb0.fits(k));
+            let (mid, s, q) = choose|mid: PageBuddy, s: SourceView, q: int| #[trigger]
+                cut_run(pb0, mid, s0, s, q, k) && run_refused(st0, mid, s, r, q, k);
+            assert(mid.fits(0));
+            assert(s == s0);
+            pb0.lemma_view(s0);
+            let b = mid.span_base(span_of(q));
+            assert(pb0.spans().contains_key(span_of(q)));
+            assert(b == pb0.span_base(span_of(q)));
+            assert(s0.spans.contains_key(b));
+            let t = s0.backed_run(b, q, pages(k) as nat);
+            assert(t.spans.dom() =~= s0.spans.dom());
+            if !(r.request == (Request::Back { span: b, start: q, pages: pages(k) as nat }) && r.spans == s.spans) {
+                assert(page_back_refusal(mid, t, r));
+                let (mid2, m, q2) = choose|mid2: PageBuddy, m: SourceView, q2: int| #[trigger]
+                    cut_run(mid, mid2, t, m, q2, 0) && r.request == (Request::Back {
+                        span: mid2.span_base(span_of(q2)),
+                        start: q2,
+                        pages: 1,
+                    }) && r.spans == m.spans;
+                assert(m == t);
+            }
+        }
+    }
+    got
+}
+
+/// A full record store over a page buddy with a free page takes a record; returns whether it got
+/// one. A refusal is of the back of the page cut for the record page, asked while the source held
+/// the spans it held at the start: no run span was asked for, neither its reserve nor the back of its
+/// metadata page.
+pub fn witness_record_full<S: SpanSource>(store: &mut RecordStore, pb: &mut PageBuddy, src: &mut S) -> (got: bool)
+    requires
+        old(pb).wf(old(src)@),
+        old(store).wf(*old(pb), old(src)@),
+        old(pb).fits(0),
+        old(store).full(),
+    ensures
+        final(store).wf(*final(pb), final(src)@),
+        !got ==> {
+            let r = final(src)@.refusals.last();
+            &&& r.request is Back
+            &&& r.spans == old(src)@.spans
+        },
+{
+    let ghost pb0 = *pb;
+    let ghost s0 = src@;
+    match store.take(pb, src) {
+        None => {
+            proof {
+                let r = src@.refusals.last();
+                assert(back_refused(pb0, s0, src@));
+                let (mid, m, q) = choose|mid: PageBuddy, m: SourceView, q: int| #[trigger]
+                    cut_run(pb0, mid, s0, m, q, 0) && r.request == (Request::Back {
+                        span: mid.span_base(span_of(q)),
+                        start: q,
+                        pages: 1,
+                    }) && r.spans == m.spans;
+                assert(m == s0);
+            }
+            false
+        },
+        Some(_) => true,
+    }
 }
 
 /// Two size classes of one slab order over one record store and page buddy keeping no spare:
