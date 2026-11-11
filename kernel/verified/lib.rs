@@ -16,7 +16,6 @@ pub mod layouts;
 pub mod array;
 pub mod pagetable;
 
-pub mod lemma;
 pub mod util;
 
 verus! {
