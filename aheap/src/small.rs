@@ -31,7 +31,10 @@
 //!   slab (`slab_of`) goes to the partial list while a slot of it is live, and the store, the page
 //!   buddy and the source are as they were. A slab whose only live slot was `p` (`only_live`) is
 //!   retired: its run released and freed, so the page buddy no longer holds it, and its record put
-//!   back in the store; every other run held at a head that is no record page stays held.
+//!   back in the store, its record page given back when no other record lies on it; the page
+//!   buddy's runs and the source change by those alone (`emptied_slab`), so `new_slab` then
+//!   `emptied_slab` leaves the page buddy's runs as they were. Every other run held at a head that
+//!   is no record page stays held.
 use vstd::prelude::*;
 use vstd::raw_ptr::*;
 
@@ -137,6 +140,54 @@ pub open spec fn new_slab(
             took_page(pbm, pb1, sm, s1, record_page(a))
         } else {
             pb1 == pbm && s1 == sm
+        }
+}
+
+/// The runs `u` holds, by block, with the run at `q` taken out of its block.
+pub open spec fn without_run(u: Map<int, Map<int, nat>>, q: int) -> Map<int, Map<int, nat>> {
+    let c = span_of(q);
+    u.insert(c, u[c].remove(page_of(q)))
+}
+
+/// Another record than `a` that the store `st` has taken lies on `a`'s record page.
+pub open spec fn page_shared(st: RecordStore, a: int) -> bool {
+    exists|y: int| #[trigger] st.taken().contains(y) && y != a && record_page(y) == record_page(a)
+}
+
+/// The store went from `st0` to `st1`, the page buddy from `pb0` to `pb1` and the source from `s0`
+/// to `s1` by `free_small` retiring the slab whose record is `a` and whose run is the run of order
+/// `k` at `x`: the run released and freed, then the record put back, its record page released and
+/// freed too when no other record taken lies on it. The store's records lose `a`, the page buddy's
+/// runs lose the slab's run and that record page's, and the source changes by those releases and
+/// frees alone. `alloc_small`'s `new_slab` followed by this is the page buddy's runs as they were.
+pub open spec fn emptied_slab(
+    st0: RecordStore,
+    st1: RecordStore,
+    pb0: PageBuddy,
+    pb1: PageBuddy,
+    s0: SourceView,
+    s1: SourceView,
+    a: int,
+    x: int,
+    k: nat,
+) -> bool {
+    &&& st0.taken().contains(a)
+    &&& st1.taken() == st0.taken().remove(a)
+    &&& if page_shared(st0, a) {
+        &&& st1.pages() == st0.pages()
+        &&& runs(pb1.used()) == runs(without_run(pb0.used(), x))
+    } else {
+        &&& st1.pages() == st0.pages().remove(record_page(a))
+        &&& runs(pb1.used()) == runs(without_run(without_run(pb0.used(), x), record_page(a)))
+    }
+    &&& exists|pbm: PageBuddy, sm: SourceView| #[trigger]
+        freed(pb0, pbm, s0.released_run(pb0.span_base(span_of(x)), x, pages(k) as nat), sm, x) && if page_shared(
+            st0,
+            a,
+        ) {
+            pb1 == pbm && s1 == sm
+        } else {
+            gave_back(pbm, pb1, sm, s1, record_page(a))
         }
 }
 
@@ -495,6 +546,77 @@ proof fn lemma_with_run_runs(u: Map<int, Map<int, nat>>, v: Map<int, Map<int, na
         } else {
             assert(runs(a).contains_key(c));
             assert(runs(b).contains_key(c));
+        }
+    }
+    assert forall|x: int| #[trigger] runs(a).contains_key(x) implies runs(a)[x] == runs(b)[x] by {
+        if x != c {
+            assert(runs(u).contains_key(x));
+            assert(runs(u)[x] == runs(v)[x]);
+        }
+    }
+    assert(runs(a) =~= runs(b));
+}
+
+/// Freeing the run at `q` takes it out of the page buddy's runs and changes them no further: a span
+/// it gives back holds no run.
+proof fn lemma_freed_runs(before: PageBuddy, after: PageBuddy, s: SourceView, t: SourceView, q: int)
+    requires
+        freed(before, after, s, t, q),
+    ensures
+        runs(after.used()) == runs(without_run(before.used(), q)),
+{
+    let c = span_of(q);
+    let b = before.span_base(c);
+    let m = meta_page(b);
+    let u = before.used();
+    let rest = without_run(u, q);
+    assert(c == b || c == m);
+    if rest[b].dom() != Set::<int>::empty() || rest[m].dom() != Set::<int>::empty() || before.idle_spans().len()
+        < before.spares() {
+        assert(after.used() == rest);
+    } else {
+        let w = after.used();
+        assert(w == u.remove(b).remove(m));
+        assert forall|x: int| #[trigger] runs(w).contains_key(x) <==> runs(rest).contains_key(x) by {
+            if x != b && x != m {
+                assert(x != c);
+                assert(w.contains_key(x) == u.contains_key(x));
+                assert(rest.contains_key(x) == u.contains_key(x));
+            }
+        }
+        assert forall|x: int| #[trigger] runs(w).contains_key(x) implies runs(w)[x] == runs(rest)[x] by {
+            assert(x != b && x != m);
+        }
+        assert(runs(w) =~= runs(rest));
+    }
+}
+
+/// Taking the run at `q` out of two maps that hold the same runs, one of them holding the run at
+/// `q`, gives maps that hold the same runs.
+proof fn lemma_without_run_runs(u: Map<int, Map<int, nat>>, v: Map<int, Map<int, nat>>, q: int)
+    requires
+        runs(u) == runs(v),
+        u.contains_key(span_of(q)),
+        u[span_of(q)].contains_key(page_of(q)),
+    ensures
+        runs(without_run(u, q)) == runs(without_run(v, q)),
+{
+    let c = span_of(q);
+    assert(u[c].dom().contains(page_of(q)));
+    assert(runs(u).contains_key(c));
+    assert(runs(v).contains_key(c));
+    assert(runs(u)[c] == u[c]);
+    assert(runs(v)[c] == v[c]);
+    let a = without_run(u, q);
+    let b = without_run(v, q);
+    assert(a[c] == b[c]);
+    assert forall|x: int| #[trigger] runs(a).contains_key(x) <==> runs(b).contains_key(x) by {
+        if x != c {
+            assert(runs(u).contains_key(x) == runs(v).contains_key(x));
+            assert(a.contains_key(x) == u.contains_key(x));
+            assert(b.contains_key(x) == v.contains_key(x));
+            assert(runs(u).contains_key(x) == (u.contains_key(x) && u[x].dom() != Set::<int>::empty()));
+            assert(runs(v).contains_key(x) == (v.contains_key(x) && v[x].dom() != Set::<int>::empty()));
         }
     }
     assert forall|x: int| #[trigger] runs(a).contains_key(x) implies runs(a)[x] == runs(b)[x] by {
@@ -1472,8 +1594,17 @@ impl SizeClass {
                     &&& final(self).slabs() == old(self).slabs().remove(a)
                     &&& !final(self).heads().contains(b)
                     &&& !final(pb).holds(b)
-                    &&& final(store).taken() == old(store).taken().remove(a)
-                    &&& final(store).pages().subset_of(old(store).pages())
+                    &&& emptied_slab(
+                        *old(store),
+                        *final(store),
+                        *old(pb),
+                        *final(pb),
+                        old(src)@,
+                        final(src)@,
+                        a,
+                        b,
+                        slab_order(old(self).class()),
+                    )
                     &&& forall|x: int, k: nat| #[trigger]
                         run_held(*old(pb), old(src)@, x, k) && x != b && !old(store).pages().contains(x)
                             ==> run_held(*final(pb), final(src)@, x, k)
@@ -1620,6 +1751,21 @@ impl SizeClass {
                         !sl0.within(x) implies (self.perms@.contains_key(x) <==> o.perms@.contains_key(x)) && (
                         o.perms@.contains_key(x) ==> self.perms@[x] == o.perms@[x]) by {
                         assert(p1.contains_key(x) <==> p0.contains_key(x));
+                    }
+                }
+                assert(emptied_slab(st0, *store, pb0, pb3, s0, s3, a, qi, kk)) by {
+                    let r = record_page(a);
+                    assert(pb1.used() == pb0.used());
+                    assert(pb1.idle_spans() == pb0.idle_spans());
+                    assert(freed(pb0, pb2, s1, s2, qi));
+                    lemma_freed_runs(pb1, pb2, s1, s2, qi);
+                    assert(st0.taken().contains(a));
+                    if !page_shared(st0, a) {
+                        assert(gave_back(pb2, pb3, s2, s3, r));
+                        st0.lemma_view(pb2, s2);
+                        assert(run_held(pb2, s2, r, 0));
+                        lemma_freed_runs(pb2, pb3, s2.released_run(pb2.span_base(span_of(r)), r, 1), s3, r);
+                        lemma_without_run_runs(pb2.used(), without_run(pb0.used(), qi), r);
                     }
                 }
                 assert(self.partial.slabs() =~= o.partial.slabs().remove(a));
