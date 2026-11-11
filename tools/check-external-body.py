@@ -45,6 +45,13 @@ impl of one of vstd's trait extensions, any name ending in SpecImpl (FromSpecImp
 IteratorSpecImpl and the rest), the StructuralEq derive and the exec_spec macros. vstd's From::from
 ensures from_spec for any impl with a FromSpecImpl, and nothing holds an impl outside verus! to it, so
 safe code there could return no token, or one it was given, while the spec says it returns another.
+So is an impl outside verus!: rust_verify takes any impl of a trait it knows as that trait's
+implementation without verifying its methods, so a call through a generic bound gets the trait's
+ensures, the crate's own trait's among them, for code nothing checked. So is what could write one
+where this check sees no word of it: a derive or any other attribute outside verus! but cfg, cfg_attr,
+no_std, test, allow and the verifier's; a macro_rules; an invocation of a macro other than the vstd and
+core ones the crates use (verus, seq, set, map, open_atomic_invariant, atomic_with_ghost, asm,
+addr_of_mut, assert, assert_eq); and an import renamed to one of those names.
 vstd's proof_from_false is not refused: it requires false, which only an assumption or an exemption
 refused here can supply.
 
@@ -110,6 +117,29 @@ UNSAFE = re.compile(r"\bunsafe\b")
 # derive, which writes a PartialEqSpecImpl for whatever PartialEq the type has; and the exec_spec macros,
 # which write one or trust their own exec code. The marked crates use none.
 TRUSTED_SPEC = re.compile(r"\b(\w*SpecImpl|StructuralEq|exec_spec(?:_verified|_unverified|_type)?)\b")
+# The verus! macro, in any of its three delimiters: what lies between them is the code Verus reads.
+VERUS_MACRO = re.compile(r"\bverus\s*!\s*([\{\(\[])")
+# An impl, which outside verus! Verus imports as an implementation of a trait it knows without verifying
+# its methods.
+IMPL = re.compile(r"\bimpl\b")
+# A macro definition: its expansion may write an impl or any other item where the scan sees no word of it.
+MACRO_RULES = re.compile(r"\bmacro_rules\b")
+# The macros the marked crates invoke, each from vstd or core, none writing an item Verus does not read
+# from the tokens it is given: any other may write one where the scan sees no word of it.
+MACROS = ("verus", "seq", "set", "map", "open_atomic_invariant", "atomic_with_ghost", "asm", "addr_of_mut",
+          "assert", "assert_eq")
+# The words before a ! that negates a parenthesised expression in Rust or in Verus's clauses: no macro.
+NEGATED_AFTER = ("if", "while", "match", "return", "in", "else", "let", "mut", "ref", "break", "yield",
+                 "implies", "ensures", "requires", "invariant", "decreases", "recommends", "by", "via", "when")
+MACRO_CALL = re.compile(r"\b(\w+)\s*!\s*[\(\[\{]")
+# An import that renames something to one of those names, so the name no longer means vstd's or core's.
+MACRO_RENAME = re.compile(r"\bas\s+(?:r#)?(" + "|".join(MACROS + NEGATED_AFTER) + r")\b")
+# The attributes the marked crates write outside verus!, none of them a macro that may write an item, and
+# the verifier's own, which are inert to rustc and which the checks above read wherever they are. A derive
+# is not among them: it writes an impl.
+OUTSIDE_ATTRIBUTES = ("cfg", "cfg_attr", "no_std", "test", "allow")
+VERIFIER_ATTRIBUTE = re.compile(r"verifier(?:::\w+)?$")
+OUTSIDE_ATTRIBUTE = re.compile(r"#\s*!?\s*\[")
 # What makes rustc compile a file the scan does not read: a path attribute, in any attribute or
 # cfg_attr, an include!, and a module named target, whose directory the scan leaves out.
 UNREAD_FILE = re.compile(r"#\s*!?\s*\[\s*path\b|\bpath\s*=\s*(?:r#*)?\"|\binclude\s*!|"
@@ -483,6 +513,96 @@ def trusted_specifications(path, source):
             if TRUSTED_SPEC.search(code)]
 
 
+def outside_verus(code):
+    """One file's code, its lines joined, with the body of every verus! macro blanked and each line
+    keeping its length: the code Verus does not read."""
+    joined = "\n".join(code)
+    text = list(joined)
+    closing = {"{": "}", "(": ")", "[": "]"}
+    at = 0
+    while (match := VERUS_MACRO.search(joined, at)) is not None:
+        opening = match.group(1)
+        depth, end = 0, match.end() - 1
+        while end < len(joined):
+            depth += {opening: 1, closing[opening]: -1}.get(joined[end], 0)
+            if depth == 0:
+                break
+            end += 1
+        for index in range(match.start(), min(end + 1, len(joined))):
+            if text[index] != "\n":
+                text[index] = " "
+        at = end + 1
+    return "".join(text)
+
+
+def attribute_names(text, start):
+    """The names of the attributes that an attribute opening at start applies, those inside a cfg_attr
+    included."""
+    opening = text.index("[", start)
+    depth, end = 0, opening
+    for end in range(opening, len(text)):
+        depth += {"[": 1, "]": -1}.get(text[end], 0)
+        if depth == 0:
+            break
+    inner = text[opening + 1:end]
+    name = re.match(r"\s*(\w+(?:\s*::\s*\w+)*)", inner)
+    names = [re.sub(r"\s", "", name.group(1))] if name else [inner.strip()]
+    if names == ["cfg_attr"] and "(" in inner and ")" in inner:
+        arguments, depth, pieces, piece = inner[inner.index("(") + 1:inner.rindex(")")], 0, [], ""
+        for char in arguments:
+            depth += {"(": 1, ")": -1, "[": 1, "]": -1}.get(char, 0)
+            if char == "," and depth == 0:
+                pieces.append(piece)
+                piece = ""
+            else:
+                piece += char
+        pieces.append(piece)
+        for piece in pieces[1:]:
+            if piece.strip():
+                names.extend(attribute_names(f"#[{piece}]", 0))
+    return names
+
+
+def unread_items(path, source):
+    """Each line of one file that holds code Verus does not read but may take on trust, or that may
+    write such code where this check sees no word of it. Outside verus!: an impl, which rust_verify
+    imports as an implementation of a trait it knows without verifying its methods, so a call through a
+    generic bound gets the trait's ensures for code nothing checked; and an attribute other than cfg,
+    cfg_attr, no_std, test, allow and the verifier's, so no derive or attribute macro writes an impl. Anywhere: a macro definition, an
+    invocation of a macro other than the vstd and core ones the crates use, and an import renaming
+    something to one of their names."""
+    lines = source.splitlines()
+    code = code_lines(source)
+    joined = "\n".join(code)
+    outside = outside_verus(code)
+
+    def line_of(offset):
+        index = joined.count("\n", 0, offset)
+        return f"{path}:{index + 1}: {lines[index].strip()}"
+
+    refused = []
+    for match in IMPL.finditer(outside):
+        refused.append(f"{line_of(match.start())} writes an impl outside verus!, whose methods Verus does "
+                       "not verify but whose trait's ensures a generic call takes on trust")
+    for match in OUTSIDE_ATTRIBUTE.finditer(outside):
+        unknown = [name for name in attribute_names(outside, match.start()) 
+                   if name not in OUTSIDE_ATTRIBUTES and not VERIFIER_ATTRIBUTE.match(name)]
+        if unknown:
+            refused.append(f"{line_of(match.start())} applies {', '.join(unknown)} outside verus!, which may "
+                           "write code Verus does not read")
+    for match in MACRO_RULES.finditer(joined):
+        refused.append(f"{line_of(match.start())} defines a macro, which may write an item this check "
+                       "sees no word of")
+    for match in MACRO_CALL.finditer(joined):
+        if match.group(1) not in MACROS + NEGATED_AFTER + ("macro_rules",):
+            refused.append(f"{line_of(match.start())} invokes {match.group(1)}!, which may write an item "
+                           "this check sees no word of")
+    for match in MACRO_RENAME.finditer(joined):
+        refused.append(f"{line_of(match.start())} renames something to {match.group(1)}, a name this "
+                       "check reads as vstd's or core's")
+    return refused
+
+
 def compare(found, listed):
     """Describes every item only one side has, counting an item once per occurrence."""
     def describe(item):
@@ -545,6 +665,7 @@ def scan_tree(repo, documents):
                            "the proof cannot see" for line in unsafe_lines(path, source))
             refused.extend(f"{line} states a spec of code Verus does not read, which the proof takes on trust"
                            for line in trusted_specifications(path, source))
+            refused.extend(unread_items(path, source))
     return found, refused
 
 
@@ -979,10 +1100,11 @@ class ForgeryTests(unittest.TestCase):
 
     FORGE = ("proof fn f() -> (tracked r: crate::arch::BaseRegister) { admit(); vstd::pervasive::proof_from_false() }\n")
 
-    def refused(self, path, files):
+    def refused(self, path, files, why=""):
+        """The refusals of one file of a marked crate, those whose reason holds why."""
         repo = Tests.workspace(self, {"kernel/verified": (True, files)})
         _, refused = scan_tree(repo, DOCUMENTS)
-        return [line for line in refused if line.startswith(f"kernel/verified/{path}:")]
+        return [line for line in refused if line.startswith(f"kernel/verified/{path}:") and why in line]
 
     def test_a_shebang_line_opening_a_block_comment_is_dropped_as_rustc_drops_it(self):
         for path in ("capability/mapping.rs", "lib.rs"):
@@ -1038,7 +1160,8 @@ class ForgeryTests(unittest.TestCase):
         for name, form in forms.items():
             with self.subTest(name):
                 source = f"{form}verus! {{\npub struct SkBox {{ pub t: Tracked<crate::arch::BaseRegister> }}\n}}\n"
-                self.assertEqual(len(self.refused("capability/mapping.rs", {"capability/mapping.rs": source})), 1)
+                self.assertEqual(len(self.refused("capability/mapping.rs", {"capability/mapping.rs": source},
+                                                  "unsafe code outside counted glue")), 1)
 
     def test_the_from_spec_duplicate_is_refused(self):
         source = ("impl<'a> From<&'a SkTok> for SkTok { fn from(v: &'a SkTok) -> SkTok { unsafe { core::ptr::read(v) } } }\n"
@@ -1047,7 +1170,11 @@ class ForgeryTests(unittest.TestCase):
                   "    open spec fn obeys_from_spec() -> bool { true }\n"
                   "    open spec fn from_spec(v: &'a SkTok) -> SkTok { *v }\n}\n}\n")
         self.assertEqual([line.split(":")[1] for line in self.refused("capability/mapping.rs",
-                                                                      {"capability/mapping.rs": source})], ["1", "5"])
+                                                                      {"capability/mapping.rs": source},
+                                                                      "outside counted glue")], ["1"])
+        self.assertEqual([line.split(":")[1] for line in self.refused("capability/mapping.rs",
+                                                                      {"capability/mapping.rs": source},
+                                                                      "spec of code Verus does not read")], ["5"])
 
     def test_a_safe_from_with_a_from_spec_impl_is_refused(self):
         source = ("impl From<SkSeed> for SkBox { fn from(_v: SkSeed) -> SkBox { SkBox { t: None, m: None } } }\n"
@@ -1061,7 +1188,8 @@ class ForgeryTests(unittest.TestCase):
                   "pub fn sk_forge() -> (r: (Tracked<crate::arch::BaseRegister>, Tracked<crate::arch::TlbModel>)) "
                   "{ let b = SkBox::from(SkSeed {}); (b.t.unwrap(), b.m.unwrap()) }\n}\n")
         self.assertEqual([line.split(":")[1] for line in self.refused("capability/mapping.rs",
-                                                                      {"capability/mapping.rs": source})], ["6"])
+                                                                      {"capability/mapping.rs": source},
+                                                                      "spec of code Verus does not read")], ["6"])
 
     def test_an_identity_from_whose_from_spec_names_a_ghost_field_is_refused(self):
         source = ("impl From<SkHold> for SkOut { fn from(v: SkHold) -> SkOut { SkOut { t: v.t } } }\n"
@@ -1072,7 +1200,8 @@ class ForgeryTests(unittest.TestCase):
                   "    open spec fn obeys_from_spec() -> bool { true }\n"
                   "    open spec fn from_spec(v: SkHold) -> SkOut { v.g@ }\n}\n}\n")
         self.assertEqual([line.split(":")[1] for line in self.refused("capability/mapping.rs",
-                                                                      {"capability/mapping.rs": source})], ["5"])
+                                                                      {"capability/mapping.rs": source},
+                                                                      "spec of code Verus does not read")], ["5"])
 
     def test_every_spec_vstd_takes_on_trust_for_unread_code_is_refused(self):
         forms = {
@@ -1089,9 +1218,81 @@ class ForgeryTests(unittest.TestCase):
         }
         for name, form in forms.items():
             with self.subTest(name):
-                self.assertEqual(len(self.refused("lib.rs", {"lib.rs": form})), 1, form)
-                self.assertTrue(all("spec of code Verus does not read" in line
-                                    for line in self.refused("lib.rs", {"lib.rs": form})))
+                self.assertEqual(len(self.refused("lib.rs", {"lib.rs": form}, "spec of code Verus does not read")),
+                                 1, form)
+
+    IMPL_OUTSIDE = "writes an impl outside verus!"
+
+    def test_a_crate_trait_implemented_outside_verus_is_refused(self):
+        forge = ("impl SkMake for SkSeed { fn make(&self) -> SkBox { SkBox { t: None, m: None } } }\n"
+                 "verus! {\npub struct SkSeed {}\n"
+                 "pub struct SkBox { pub t: Option<Tracked<crate::arch::BaseRegister>>, "
+                 "pub m: Option<Tracked<crate::arch::TlbModel>> }\n"
+                 "pub trait SkMake { fn make(&self) -> (r: SkBox) ensures r.t is Some, r.m is Some; }\n"
+                 "pub fn sk_make_via<T: SkMake>(seed: &T) -> (r: SkBox) ensures r.t is Some, r.m is Some "
+                 "{ seed.make() }\n"
+                 "pub fn sk_forge() -> (r: (Tracked<crate::arch::BaseRegister>, Tracked<crate::arch::TlbModel>)) "
+                 "{ let seed = SkSeed {}; let b = sk_make_via(&seed); (b.t.unwrap(), b.m.unwrap()) }\n}\n")
+        wipe = ("impl SkWipe for SkW { fn wipe(&self, t: Tracked<crate::arch::TlbModel>) "
+                "-> Tracked<crate::arch::TlbModel> { t } }\n"
+                "verus! {\npub struct SkW {}\n"
+                "pub trait SkWipe { fn wipe(&self, t: Tracked<crate::arch::TlbModel>) "
+                "-> (r: Tracked<crate::arch::TlbModel>)\n"
+                "    ensures r@.len() == t@.len(), forall|c: int| 0 <= c < r@.len() ==> "
+                "#[trigger] r@[c] == Set::<TlbEntry>::empty() && r@.tags(c) == Set::<usize>::empty(); }\n"
+                "pub fn sk_wipe(t: Tracked<crate::arch::TlbModel>) -> (r: Tracked<crate::arch::TlbModel>) "
+                "{ sk_wipe_via(&SkW {}, t) }\n}\n")
+        renamed = ("use crate::capability::SkMake as Made;\n"
+                   "impl<'a> Made\n    for SkSeed { fn make(&self) -> SkBox { SkBox { t: None, m: None } } }\n"
+                   "verus! {\npub struct SkSeed {}\n}\n")
+        inside_mod = "mod sk {\n    impl super::SkMake for super::SkSeed {}\n}\nverus! {\npub struct SkSeed {}\n}\n"
+        for name, source, line in (("c2", forge, "1"), ("e", wipe, "1"), ("a renamed trait", renamed, "2"),
+                                    ("in a module", inside_mod, "2")):
+            with self.subTest(name):
+                refused = self.refused("capability/mapping.rs", {"capability/mapping.rs": source},
+                                       self.IMPL_OUTSIDE)
+                self.assertEqual([entry.split(":")[1] for entry in refused], [line])
+
+    def test_an_impl_inside_verus_in_any_delimiter_is_accepted(self):
+        for opening, closing in (("{", "}"), ("(", ")"), ("[", "]")):
+            source = (f"verus! {opening}\nimpl SkMake for SkSeed {{\n    fn make(&self) -> SkBox {{ x }}\n}}\n"
+                      f"{closing}\nvstd::prelude::verus!{opening} impl Clone for SkSeed {{}} {closing}\n")
+            with self.subTest(opening):
+                self.assertEqual(unread_items("a.rs", source), [])
+
+    def test_an_impl_after_a_closing_brace_in_a_string_inside_verus_is_refused(self):
+        source = 'verus! {\nfn f() { let s = "}}"; }\n}\nimpl SkMake for SkSeed {}\n'
+        self.assertEqual([entry.split(":")[1] for entry in unread_items("a.rs", source)], ["4"])
+
+    def test_what_writes_an_impl_out_of_the_scans_sight_is_refused(self):
+        forms = {
+            "a derive outside verus!": "#[derive(Clone, Copy)]\npub struct SkTok {}\n",
+            "a derive inside cfg_attr": "#[cfg_attr(verus_keep_ghost, derive(Default))]\npub struct SkTok {}\n",
+            "an attribute macro": "#[asys::make_impl]\npub struct SkTok {}\n",
+            "an inner attribute macro": "#![asys::make_impl]\n",
+            "a macro definition": "verus! {\nmacro_rules! sk { ($t:ident) => { } }\n}\n",
+            "a macro of another crate": "asys::sk_impl! { SkTok }\n",
+            "a spaced macro": "verus! {\nsk_impl ! (SkTok);\n}\n",
+            "a rename to an allowed macro": "use asys::sk_impl as seq;\n",
+            "a rename in a group": "use asys::{sk_impl as assert};\n",
+            "a rename to a negating word": "use asys::sk_impl as ensures;\n",
+        }
+        for name, form in forms.items():
+            with self.subTest(name):
+                self.assertEqual(len(unread_items("a.rs", form)), 1, form)
+
+    def test_the_forms_the_crates_use_are_accepted(self):
+        source = ("#![no_std]\n#![cfg_attr(not(test), no_std)]\n"
+                  "#![cfg_attr(not(verus_keep_ghost), allow(unused_variables, unused_assignments))]\n"
+                  "#[cfg(verus_keep_ghost)]\nuse vstd::prelude::*;\n"
+                  "verus! {\n#[derive(Clone, Copy)]\npub struct P { x: u8 }\n"
+                  "fn f(x: bool) { if !(x) {} let s = set![1u8]; let q = seq![1u8]; let m = map![1u8 => 2u8];\n"
+                  "    assert(x implies !(x)); core::ptr::addr_of_mut!(y); }\n"
+                  "fn g() ensures !(false), { }\n}\n"
+                  "#[verifier::external_body]\npub fn h(_core: usize) { unsafe { core::arch::asm!(\"nop\") } }\n"
+                  "#[cfg(test)]\nmod tests {\n    #[test]\n    fn t() { assert!(true); assert_eq!(1, 1); }\n}\n"
+                  "let x = y as u8;\n")
+        self.assertEqual(unread_items("a.rs", source), [])
 
     def test_names_that_only_contain_a_trusted_spec_word_are_not_refused(self):
         source = ('// impl FromSpecImpl<u8> for X\nlet s = "PartialEqSpecImpl";\n'
