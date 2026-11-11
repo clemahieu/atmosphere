@@ -599,56 +599,101 @@ fn sync_command() -> (ret: SmmuCommand)
 pub const SMMU_CMDQ_PROD: usize = 0x98;
 pub const SMMU_CMDQ_CONS: usize = 0x9c;
 
-/// What one invalidate stored into an SMMU's command queue: the producer register it read, each
-/// slot it wrote, by its index from the queue's start, and the command it wrote there. It begins
-/// empty and only store_command adds to it, so a slot it names holds that command until the SMMU
-/// consumes it.
-tracked struct QueuedCommands {
-    #[cfg(verus_keep_ghost)]
-    ghost ring: usize,
-    #[cfg(verus_keep_ghost)]
-    ghost producer: u32,
-    #[cfg(verus_keep_ghost)]
-    ghost slots: Map<int, SmmuCommand>,
-}
+use queue::{QueuedCommands, read_producer, store_command};
 
-/// Reads SMMU i's producer register, at `register`: the queue's index and its wrap bit, which is
-/// where the SMMU will look for the next command. It promises nothing about the value.
-#[verifier(external_body)]
-// external_body(glue): a load of the SMMU's producer register, of which nothing is promised but its width
-fn read_producer(commands: &CommandBuffers, i: usize, register: usize) -> (ret: u32)
-    requires
-        i < NUM_IOMMUS,
-        commands.buffers.wf(),
-        commands.buffer_wf(i as int),
-        register == commands.buffers@[i as int].mmio + SMMU_CMDQ_PROD,
-{
-    let value: u32;
-    unsafe {
-        core::arch::asm!(
-            "ldr {value:w}, [{register}]",
-            register = in(reg) register,
-            value = out(reg) value,
-            options(nostack, readonly, preserves_flags),
-        );
+/// The record of what one invalidate read from and stored into an SMMU's command queue, alone in a
+/// module with the one constructor, the producer read and the one store, so its fields are private to
+/// them: code outside cannot write a record by literal, its producer is only what the register read
+/// gave, and a record names a slot only once store_command has written it.
+mod queue {
+    use vstd::prelude::*;
+    use super::{CommandBuffers, SmmuCommand};
+    #[cfg(verus_keep_ghost)]
+    use super::{IOMMU_COMMAND_SIZE, SMMU_CMDQ_PROD};
+    #[cfg(verus_keep_ghost)]
+    use crate::define::NUM_IOMMUS;
+
+    /// What one invalidate read from and stored into an SMMU's command queue: the queue's address, the
+    /// producer register as read_producer read it, each slot it wrote, by its index from the queue's
+    /// start, and the command it wrote there. new makes it with no slot and a producer nothing outside
+    /// this module can name; only read_producer sets the producer and only store_command adds a slot,
+    /// so a slot it names holds that command until the SMMU consumes it.
+    // Only specs read the fields, and a cargo build erases specs, so only Verus compiles them.
+    pub tracked struct QueuedCommands {
+        #[cfg(verus_keep_ghost)]
+        ghost ring: usize,
+        #[cfg(verus_keep_ghost)]
+        ghost producer: u32,
+        #[cfg(verus_keep_ghost)]
+        ghost slots: Map<int, SmmuCommand>,
     }
-    value
-}
 
-/// Stores `command` into slot `slot` of the queue at `queued.ring`, whose address is `address`.
-#[verifier(external_body)]
-// external_body(glue): the SMMU reads the queue, so only this can say what one of its slots holds
-fn store_command(address: usize, command: SmmuCommand, Tracked(queued): Tracked<&mut QueuedCommands>, Ghost(slot): Ghost<int>)
-    requires
-        address == old(queued).ring + slot * IOMMU_COMMAND_SIZE,
-    ensures
-        final(queued).ring == old(queued).ring,
-        final(queued).producer == old(queued).producer,
-        final(queued).slots == old(queued).slots.insert(slot, command),
-{
-    unsafe {
-        core::ptr::write_volatile(address as *mut u64, command.0);
-        core::ptr::write_volatile((address as *mut u64).add(1), command.1);
+    impl QueuedCommands {
+        pub closed spec fn ring(self) -> usize {
+            self.ring
+        }
+
+        pub closed spec fn producer(self) -> u32 {
+            self.producer
+        }
+
+        pub closed spec fn slots(self) -> Map<int, SmmuCommand> {
+            self.slots
+        }
+
+        /// A record of the queue at `ring` with no slot written and no producer read.
+        pub proof fn new(ring: usize) -> (tracked ret: QueuedCommands)
+            ensures
+                ret.ring() == ring,
+                ret.slots() == Map::<int, SmmuCommand>::empty(),
+        {
+            QueuedCommands { ring, producer: 0, slots: Map::empty() }
+        }
+    }
+
+    /// Reads SMMU i's producer register, at `register`: the queue's index and its wrap bit, which is
+    /// where the SMMU will look for the next command. It promises nothing about the value, and
+    /// `queued` records it as the producer.
+    #[verifier(external_body)]
+    // external_body(glue): a load of the SMMU's producer register, of which nothing is promised but its width
+    pub fn read_producer(commands: &CommandBuffers, i: usize, register: usize, Tracked(queued): Tracked<&mut QueuedCommands>) -> (ret: u32)
+        requires
+            i < NUM_IOMMUS,
+            commands.buffers.wf(),
+            commands.buffer_wf(i as int),
+            register == commands.buffers@[i as int].mmio + SMMU_CMDQ_PROD,
+        ensures
+            final(queued).ring() == old(queued).ring(),
+            final(queued).producer() == ret,
+            final(queued).slots() == old(queued).slots(),
+    {
+        let value: u32;
+        unsafe {
+            core::arch::asm!(
+                "ldr {value:w}, [{register}]",
+                register = in(reg) register,
+                value = out(reg) value,
+                options(nostack, readonly, preserves_flags),
+            );
+        }
+        value
+    }
+
+    /// Stores `command` into slot `slot` of the queue at `queued.ring()`, whose address is `address`.
+    #[verifier(external_body)]
+    // external_body(glue): the SMMU reads the queue, so only this can say what one of its slots holds
+    pub fn store_command(address: usize, command: SmmuCommand, Tracked(queued): Tracked<&mut QueuedCommands>, Ghost(slot): Ghost<int>)
+        requires
+            address == old(queued).ring() + slot * IOMMU_COMMAND_SIZE,
+        ensures
+            final(queued).ring() == old(queued).ring(),
+            final(queued).producer() == old(queued).producer(),
+            final(queued).slots() == old(queued).slots().insert(slot, command),
+    {
+        unsafe {
+            core::ptr::write_volatile(address as *mut u64, command.0);
+            core::ptr::write_volatile((address as *mut u64).add(1), command.1);
+        }
     }
 }
 
@@ -681,14 +726,14 @@ fn submit_invalidate(
         producer == commands.buffers@[i as int].mmio + SMMU_CMDQ_PROD,
         consumer == commands.buffers@[i as int].mmio + SMMU_CMDQ_CONS,
         place_mask == 2 * commands.buffers@[i as int].len - 1,
-        place == (queued.producer as int % (2 * commands.buffers@[i as int].len) + IOMMU_INVALIDATE_COMMANDS) % (2 * commands.buffers@[i as int].len),
-        queued.ring == commands.buffers@[i as int].ring,
-        queued.slots.contains_key(queued.producer as int % commands.buffers@[i as int].len as int),
-        queued.slots[queued.producer as int % commands.buffers@[i as int].len as int] == cfgi_all_command_spec(),
-        queued.slots.contains_key((queued.producer + 1) % commands.buffers@[i as int].len as int),
-        queued.slots[(queued.producer + 1) % commands.buffers@[i as int].len as int] == tlbi_nsnh_all_command_spec(),
-        queued.slots.contains_key((queued.producer + 2) % commands.buffers@[i as int].len as int),
-        queued.slots[(queued.producer + 2) % commands.buffers@[i as int].len as int] == sync_command_spec(),
+        place == (queued.producer() as int % (2 * commands.buffers@[i as int].len) + IOMMU_INVALIDATE_COMMANDS) % (2 * commands.buffers@[i as int].len),
+        queued.ring() == commands.buffers@[i as int].ring,
+        queued.slots().contains_key(queued.producer() as int % commands.buffers@[i as int].len as int),
+        queued.slots()[queued.producer() as int % commands.buffers@[i as int].len as int] == cfgi_all_command_spec(),
+        queued.slots().contains_key((queued.producer() + 1) % commands.buffers@[i as int].len as int),
+        queued.slots()[(queued.producer() + 1) % commands.buffers@[i as int].len as int] == tlbi_nsnh_all_command_spec(),
+        queued.slots().contains_key((queued.producer() + 2) % commands.buffers@[i as int].len as int),
+        queued.slots()[(queued.producer() + 2) % commands.buffers@[i as int].len as int] == sync_command_spec(),
     ensures
         final(model).len() == old(model).len(),
         final(model)[i as int] == Set::<TlbEntry>::empty(),
@@ -746,12 +791,12 @@ pub fn invalidate_iommu_all(commands: &CommandBuffers, i: usize, Tracked(model):
 {
     let b = *commands.buffers.get(i);
     let wrap = (2 * b.len) as u32;
-    let read = read_producer(commands, i, b.mmio + SMMU_CMDQ_PROD);
+    let tracked mut queued = QueuedCommands::new(b.ring);
+    let read = read_producer(commands, i, b.mmio + SMMU_CMDQ_PROD, Tracked(&mut queued));
     let first = read as usize % b.len;
     let second = (first + 1) % b.len;
     let third = (first + 2) % b.len;
     let place = (read % wrap + IOMMU_INVALIDATE_COMMANDS as u32) % wrap;
-    let tracked mut queued = QueuedCommands { ring: b.ring, producer: read, slots: Map::empty() };
     proof {
         let len = b.len as int;
         vstd::arithmetic::div_mod::lemma_add_mod_noop(read as int, 1, len);
