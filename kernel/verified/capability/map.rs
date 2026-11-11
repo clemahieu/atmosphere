@@ -1373,6 +1373,8 @@ impl CapKernel {
             old(self).root_live(root),
         ensures
             final(self).wf(),
+            final(self).stale_epoch == old(self).stale_epoch,
+            final(self).flush_epoch == old(self).flush_epoch,
             final(self).cores == old(self).cores,
             ret == old(self).can_map_large(root, slot, SpaceKind::Process, SpacePath { l4, l3, l2, l1: 0 }, from, page),
             final(self).spaces.loaded == old(self).spaces.loaded,
@@ -1392,6 +1394,8 @@ impl CapKernel {
             old(self).root_live(root),
         ensures
             final(self).wf(),
+            final(self).stale_epoch == old(self).stale_epoch,
+            final(self).flush_epoch == old(self).flush_epoch,
             final(self).cores == old(self).cores,
             ret == old(self).can_map_large(root, slot, kind, SpacePath { l4, l3, l2, l1: 0 }, from, page),
             final(self).spaces.loaded == old(self).spaces.loaded,
@@ -1742,8 +1746,9 @@ impl CapKernel {
     /// What a large map leaves: the capability tables as they were; path p of the space still reaches its
     /// level 2 table and, at its first page, gains the large entry, written with its accessed and dirty
     /// bits clear, and nothing else changes in any space;
-    /// the node is the capability's child, names the entry and counts on the block; all 512 pages are
-    /// mapped. Every other node keeps its liveness, kind, depth and parent. A large map into a device
+    /// the node is the capability's child, names the entry and counts on the block, and its record is the
+    /// one the mappings gain; the table page changes in that entry alone; all 512 pages are mapped. Every
+    /// other node keeps its liveness, kind, depth and parent. A large map into a device
     /// space adds the space with each of the frame's 512 pages to the shares.
     pub open spec fn map_large_done(pre: Self, post: Self, root: usize, slot: usize, p: SpacePath, from: usize, page: usize) -> bool {
         let a = tree_of(&pre.table_pages, &pre.spaces);
@@ -1756,6 +1761,7 @@ impl CapKernel {
         let node = mapping_node(t, p.l2);
         let br = block_ref(&pre.blocks, frame);
         &&& post.tables == pre.tables
+        &&& post.processes == pre.processes
         &&& walk_large_table(b, s, p) == Some(t)
         &&& space_mapping(b, s) == space_mapping(a, s).insert(p, frame_map_entry(frame, cap.rights, true))
         &&& post.table_pages.maps@[t].value().status(p.l2 as int).is_clear()
@@ -1764,6 +1770,8 @@ impl CapKernel {
         &&& post.list.nodes@[node as int].kind is Mapping
         &&& post.mappings@.contains_key(node)
         &&& post.mappings@[node] == (MappingRecord { table: t, entry: p.l2, frame, large: true })
+        &&& post.mappings@ == pre.mappings@.insert(node, MappingRecord { table: t, entry: p.l2, frame, large: true })
+        &&& Self::entry_set(pre.table_pages, post.table_pages, t, p.l2, frame_map_entry(frame, cap.rights, true))
         &&& block_refs(&post.blocks, br) == block_refs(&pre.blocks, br) + 1
         &&& post.holders@[br] == pre.holders@[br].insert(node)
         &&& forall|g: usize| frame <= g < frame + PAGES_PER_2M ==> #[trigger] post.mapped@.contains(g)

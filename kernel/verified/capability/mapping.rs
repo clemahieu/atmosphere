@@ -738,7 +738,7 @@ impl CapKernel {
     }
 
     /// Node n's unmap is recorded: the epoch rose past every acknowledgement and is written for each page
-    /// the node mapped, so no such page counts as acknowledged, each such page is in the TLB of every core
+    /// the node mapped and for no other, so no such page counts as acknowledged, each such page is in the TLB of every core
     /// that loaded the space and only a flush takes it out, and a page leaves mapped when no other mapping
     /// names it.
     pub open spec fn mapping_stale_noted(pre: Self, post: Self, n: usize) -> bool {
@@ -748,6 +748,7 @@ impl CapKernel {
         let space = tree.record(m.table).space;
         &&& post.flush_epoch == pre.flush_epoch + 1
         &&& forall|g: usize| #[trigger] pages.contains(g) ==> post.stale_epoch.written(post.flush_epoch, g)
+        &&& forall|g: int| 0 <= g < NUM_PAGES && !pages.contains(g as usize) ==> #[trigger] post.stale_epoch.pages@[g] == pre.stale_epoch.pages@[g]
         &&& forall|g: usize| #[trigger] pages.contains(g) ==> !post.acknowledged(g)
         &&& forall|d: int, g: usize| #![trigger post.tlb@[d].contains(TlbEntry { space: space->Some_0, page: g })]
             0 <= d < NUM_CPUS && space is Some && pre.depends(d, space->Some_0) && pages.contains(g)
@@ -1799,6 +1800,12 @@ impl CapKernel {
             assert forall|g: usize| #[trigger] pages.contains(g) implies !self.acknowledged(g) by {
                 assert(pre.acked(0) <= pre.flush_epoch);
                 assert(self.acked(0) == pre.acked(0));
+            }
+            assert forall|g: int| 0 <= g < NUM_PAGES && !pages.contains(g as usize)
+                implies #[trigger] self.stale_epoch.pages@[g] == pre.stale_epoch.pages@[g] by {
+                if frame <= g < frame + count {
+                    assert(pages.contains(g as usize));
+                }
             }
             assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] self.tlb@[d].contains(e) implies self.depends(d, e.space) by {
                 assert(pre.depends(d, e.space));

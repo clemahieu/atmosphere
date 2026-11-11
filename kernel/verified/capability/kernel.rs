@@ -2536,6 +2536,8 @@ impl CapKernel {
             final(self).spaces == old(self).spaces,
             final(self).devices == old(self).devices,
             final(self).processes == old(self).processes,
+            final(self).table_pages == old(self).table_pages,
+            final(self).mappings == old(self).mappings,
     {
         let ghost pre = *old(self);
         let epoch = self.flush_epoch;

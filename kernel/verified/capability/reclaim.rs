@@ -351,10 +351,13 @@ impl CapKernel {
             == shares_surviving(a, |r: usize, p: SpacePath| passes_through(a, r, p, q->0.table, q->0.entry))
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&self.list, &self.tables)
         &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base })
+        &&& post.tables == self.tables
+        &&& post.processes == self.processes
+        &&& forall|x: int| 0 <= x < NODE_SPACE ==> #[trigger] post.list.nodes@[x].depth == self.list.nodes@[x].depth
     }
 
-    /// What freeing the empty table page at `base` did to self. Its children and mappings went earlier,
-    /// so the view is as it was.
+    /// What freeing the empty table page at `base` did to self: its block is free, as table_freed_step
+    /// says. Its children and mappings went earlier, so the view is as it was.
     pub open spec fn table_freed(&self, post: Self, c: usize, root: usize, from: usize, base: usize) -> bool {
         let untyped = self.tables.node_of(root, from);
         let page = base / PAGE_SZ;
@@ -362,6 +365,7 @@ impl CapKernel {
         &&& self.table_is_empty(base)
         &&& self.blocks.pages@[page as int].refs == 0
         &&& self.no_stale_translation(page)
+        &&& Self::table_freed_step(*self, post, base)
         &&& post.blocks.pages@[page as int].kind is Free
         &&& !post.table_pages.maps@.contains_key(base)
         &&& forall|k: usize| k < TABLE_NODE_PAGES ==> !post.list.pages@.dom().contains(#[trigger] table_node_page(base, k))
@@ -804,6 +808,7 @@ impl CapKernel {
                 ==> old(self).space_freed(*final(self), c, root, from, base),
             old(self).can_unlink_table(root, from, base) ==> ret is Unlinked,
             old(self).can_slice_table(root, from, base) ==> ret is Slice,
+            old(self).can_cut_table(root, from, base) ==> ret is Slice && old(self).table_children_cut(*final(self), root, from, base),
             old(self).can_retype_under(root, from, base, 3) && old(self).table_is_empty(base)
                 ==> if old(self).acknowledged(base / PAGE_SZ) { ret is Freed } else { ret is Again },
             old(self).can_retype_under(root, from, base, 3) && old(self).table_is_spent(base) ==> ret is Again || ret is Freed,
@@ -2804,6 +2809,7 @@ impl CapKernel {
         ensures
             final(steps).count <= old(steps).count + TABLE_NODE_PAGES + SMALL_PAGES_MAX,
             final(self).wf(),
+            Self::table_freed_step(*old(self), *final(self), base),
             final(self).blocks.pages@[(base / PAGE_SZ) as int].kind is Free,
             !final(self).table_pages.maps@.contains_key(base),
             forall|k: usize| k < TABLE_NODE_PAGES ==> !final(self).list.pages@.dom().contains(#[trigger] table_node_page(base, k)),
@@ -3487,6 +3493,9 @@ impl CapKernel {
             Self::lemma_shrunk_compose(pre, cut, post);
             lemma_sheds_shares_discharges_teardown(pre.view(), post.view(), root, untyped, base);
             Self::lemma_bound_threads_same(cut, post);
+            assert(!cut.is_cap(base));
+            assert(post.processes == pre.processes);
+            assert(post.tables == pre.tables);
         }
         true
     }
@@ -3647,7 +3656,8 @@ impl CapKernel {
     }
 
     /// What cutting children of the dead table at `base` did to self: it cut at least one and no more than
-    /// the budget, each taking one entry off the count, and every capability is as it was. A device space
+    /// the budget, each taking one entry off the count and raising the flush epoch by one, and every
+    /// capability is as it was. A device space
     /// shares what a walk not through a cut entry still finds: a page leaves unless another path of the
     /// space maps it too.
     pub open spec fn children_cut(&self, post: Self, root: usize, from: usize, base: usize) -> bool {
@@ -3661,6 +3671,7 @@ impl CapKernel {
         &&& b.subset_of(a)
         &&& b.len() < a.len()
         &&& a.len() - b.len() <= TABLE_SLICE_BUDGET
+        &&& post.flush_epoch == self.flush_epoch + (a.len() - b.len())
         &&& sheds_shares(self.view(), post.view())
         &&& post.view().shares == shares_surviving(ta, |r: usize, q: SpacePath| cut_through(ta, tb, base, r, q))
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&self.list, &self.tables)
@@ -4073,6 +4084,7 @@ impl CapKernel {
             final(steps).count <= old(steps).count + CUT_SLICE_STEPS,
             final(self).wf(),
             cut <= TABLE_SLICE_BUDGET,
+            final(self).flush_epoch == old(self).flush_epoch + cut,
             Self::table_cuts_kept(*old(self), *final(self), base),
             child_entries(tree_of(&final(self).table_pages, &final(self).spaces), base)
                 .subset_of(child_entries(tree_of(&old(self).table_pages, &old(self).spaces), base)),
@@ -4106,6 +4118,7 @@ impl CapKernel {
                 a.record(base).level >= 2,
                 cut <= TABLE_SLICE_BUDGET,
                 e <= ENTRIES,
+                self.flush_epoch == pre.flush_epoch + cut,
                 Self::table_cuts_kept(pre, *self, base),
                 cut == 0 ==> *self == pre,
                 cut > 0 ==> exists|i: usize| #[trigger] a.names_child(base, i),
@@ -4151,6 +4164,8 @@ impl CapKernel {
                 let post = *self;
                 let b = tree_of(&post.table_pages, &post.spaces);
                 Self::lemma_table_cut_step(pre, mid, post, base, e);
+                assert(Self::cut_stale_noted(mid, post, child));
+                assert(post.flush_epoch == mid.flush_epoch + 1);
                 assert(m.record(child).parent == Some(TableParent { table: base, entry: e }));
                 assert(detached(m, b, base, e, child));
                 assert(a.names_child(base, e)) by {
@@ -4458,6 +4473,7 @@ impl CapKernel {
             final(self).frames == old(self).frames,
             final(self).zeroing == old(self).zeroing,
             final(self).cores == old(self).cores,
+            final(self).processes == old(self).processes,
             final(self).table_pages.records == old(self).table_pages.records,
             final(self).table_pages.spare == old(self).table_pages.spare,
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
@@ -4519,6 +4535,7 @@ impl CapKernel {
             post.frames == mid.frames,
             post.zeroing == mid.zeroing,
             post.cores == mid.cores,
+            post.processes == mid.processes,
             post.iommus.acked == mid.iommus.acked,
             post.iommus.present == mid.iommus.present,
             post.iommus.commands == mid.iommus.commands,
@@ -4775,6 +4792,7 @@ impl CapKernel {
             ret == old(self).can_slice_table(root, from, base),
             !ret ==> *final(self) == *old(self),
             ret ==> old(self).table_sliced(*final(self), root, from, base),
+            old(self).can_cut_table(root, from, base) ==> old(self).table_children_cut(*final(self), root, from, base),
     {
         if self.cut_table_children(root, from, base, Tracked(&mut *steps)) {
             return true;
