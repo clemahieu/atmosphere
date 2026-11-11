@@ -267,27 +267,27 @@ proof fn lemma_whole_at_0(h: int)
 /// whether both runs were cut and the small run's address: both were cut unless the source refused a
 /// request for a new run span, which it then did once, holding what it held at the start, and the
 /// small run's span when that was cut.
-pub fn witness_page_buddy<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, bool, Ghost<int>))
+pub fn witness_page_buddy<S: SpanSource>(src: &mut S) -> (r: (PageBuddy, bool, Ghost<int>))
     requires
-        src@.wf(),
+        old(src)@.wf(),
     ensures
-        r.0.wf(),
+        r.0.wf(final(src)@),
         r.0.spans().dom() == Set::<int>::empty(),
         if r.1 {
-            r.0.source() == src@
+            final(src)@ == old(src)@
         } else {
-            let f = r.0.source().refusals.last();
-            &&& r.0.source() == src@.recorded(f)
-            &&& span_refusal(src@, f) || {
-                &&& !src@.spans.contains_key(span_of(r.2@))
-                &&& span_refusal(taken(src@, span_of(r.2@)), f)
+            let f = final(src)@.refusals.last();
+            &&& final(src)@ == old(src)@.recorded(f)
+            &&& span_refusal(old(src)@, f) || {
+                &&& !old(src)@.spans.contains_key(span_of(r.2@))
+                &&& span_refusal(taken(old(src)@, span_of(r.2@)), f)
             }
         },
 {
-    let mut pb = PageBuddy::new(src, 0);
-    let ghost s0 = pb.source();
+    let mut pb = PageBuddy::new(0);
+    let ghost s0 = src@;
     assert(pb.spans().dom() =~= Set::<int>::empty());
-    let small = match pb.alloc_run(0) {
+    let small = match pb.alloc_run(src, 0) {
         Err(_) => {
             return (pb, false, Ghost(0));
         },
@@ -298,7 +298,7 @@ pub fn witness_page_buddy<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, bool, Gho
     let ghost h1 = page_of(small as int);
     let ghost fr1 = fresh(Map::<int, Map<int, nat>>::empty(), b1);
     let ghost u1 = pb.used();
-    let ghost s1 = pb.source();
+    let ghost s1 = src@;
     let ghost spans1 = pb.spans();
     proof {
         lemma_uncut(fr1, u1, small as int, 0);
@@ -306,18 +306,18 @@ pub fn witness_page_buddy<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, bool, Gho
         assert(u1[b1].contains_key(h1));
         assert(u1[m1] == Map::<int, nat>::empty());
         assert(spans1.dom() =~= set![b1, m1]);
-        pb.lemma_view();
+        pb.lemma_view(src@);
         lemma_pages_pos(0);
     }
-    let whole = match pb.alloc_run(BLOCK_ORDER) {
+    let whole = match pb.alloc_run(src, BLOCK_ORDER) {
         Err(_) => {
             assert(pb.used() == u1);
-            let ghost q = pb.source().refusals.last();
-            pb.free_run(small);
+            let ghost q = src@.refusals.last();
+            pb.free_run(src, small);
             proof {
                 assert(fr1[b1].dom() =~= Set::<int>::empty());
                 assert(pb.used().dom() =~= Set::<int>::empty());
-                pb.lemma_view();
+                pb.lemma_view(src@);
                 lemma_refused_released(s0, b1, q);
             }
             return (pb, false, Ghost(small as int));
@@ -342,7 +342,7 @@ pub fn witness_page_buddy<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, bool, Gho
     let ghost b2 = c2;
     let ghost m2 = meta_page(b2);
     let ghost u2 = pb.used();
-    let ghost s2 = pb.source();
+    let ghost s2 = src@;
     proof {
         assert(!spans1.contains_key(b2));
         assert(b2 != b1 && b2 != m1);
@@ -351,19 +351,19 @@ pub fn witness_page_buddy<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, bool, Gho
         assert(u2[b1] == u1[b1]);
         assert(u2[b2].remove(h2) =~= Map::<int, nat>::empty());
         assert(u2[m2] == Map::<int, nat>::empty());
-        pb.lemma_view();
+        pb.lemma_view(src@);
     }
-    pb.free_run(whole);
+    pb.free_run(src, whole);
     proof {
         assert(pb.used() =~= u1);
-        assert(pb.source() == s1);
+        assert(src@ == s1);
         assert(pb.span_base(span_of(small as int)) == b1);
     }
-    pb.free_run(small);
+    pb.free_run(src, small);
     proof {
         assert(fr1[b1].dom() =~= Set::<int>::empty());
         assert(pb.used().dom() =~= Set::<int>::empty());
-        pb.lemma_view();
+        pb.lemma_view(src@);
     }
     (pb, true, Ghost(small as int))
 }
@@ -406,25 +406,25 @@ spec fn added(
 /// it cut: MANY unless the source refused a request for a new run span, and otherwise fewer, the
 /// source having refused once, holding then what it held at the start and run spans, which the view
 /// returned holds.
-pub fn witness_page_buddy_many<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, usize, Ghost<SourceView>))
+pub fn witness_page_buddy_many<S: SpanSource>(src: &mut S) -> (r: (PageBuddy, usize, Ghost<SourceView>))
     requires
-        src@.wf(),
+        old(src)@.wf(),
     ensures
-        r.0.wf(),
+        r.0.wf(final(src)@),
         r.0.spans().dom() == Set::<int>::empty(),
         r.1 <= MANY,
         if r.1 == MANY {
-            r.0.source() == src@
+            final(src)@ == old(src)@
         } else {
-            let f = r.0.source().refusals.last();
-            &&& r.0.source() == src@.recorded(f)
+            let f = final(src)@.refusals.last();
+            &&& final(src)@ == old(src)@.recorded(f)
             &&& span_refusal(r.2@, f)
-            &&& holds_runs(src@, r.2@)
+            &&& holds_runs(old(src)@, r.2@)
         },
 {
     let ghost start = src@;
     let ghost mut held = start;
-    let mut pb = PageBuddy::new(src, 0);
+    let mut pb = PageBuddy::new(0);
     let ghost whole = Map::<int, nat>::empty().insert(0, BLOCK_ORDER as nat);
     let mut runs = [0usize; MANY];
     let mut n: usize = 0;
@@ -436,21 +436,21 @@ pub fn witness_page_buddy_many<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, usiz
     }
     while go && n < MANY
         invariant
-            pb.wf(),
+            pb.wf(src@),
             pb.spares() == 0,
             n <= MANY,
             go || n < MANY,
             pages(BLOCK_ORDER as nat) == BLOCK_PAGES as int,
             whole == Map::<int, nat>::empty().insert(0, BLOCK_ORDER as nat),
             whole.remove(0) == Map::<int, nat>::empty(),
-            added(start, pb.source(), pb.used(), pb.metas(), !go, held),
+            added(start, src@, pb.used(), pb.metas(), !go, held),
             forall|j: int|
                 0 <= j < n ==> {
                     &&& (#[trigger] runs@[j]) as int % BLOCK_BYTES as int == 0
                     &&& pb.used().contains_key(runs@[j] as int)
                     &&& pb.used()[runs@[j] as int] == whole
                     &&& !pb.metas().contains(runs@[j] as int)
-                    &&& pb.source().unbacked(runs@[j] as int, runs@[j] as int, BLOCK_PAGES as nat)
+                    &&& src@.unbacked(runs@[j] as int, runs@[j] as int, BLOCK_PAGES as nat)
                 },
             forall|i: int, j: int| 0 <= i < j < n ==> runs@[i] != runs@[j],
             forall|b: int|
@@ -460,13 +460,13 @@ pub fn witness_page_buddy_many<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, usiz
         decreases MANY - n + if go { 1int } else { 0int },
     {
         let ghost u0 = pb.used();
-        let ghost s0 = pb.source();
+        let ghost s0 = src@;
         let ghost metas0 = pb.metas();
         let ghost spans0 = pb.spans();
         proof {
-            pb.lemma_view();
+            pb.lemma_view(src@);
         }
-        match pb.alloc_run(BLOCK_ORDER) {
+        match pb.alloc_run(src, BLOCK_ORDER) {
             Err(e) => {
                 assert(e is Source);
                 proof {
@@ -498,7 +498,7 @@ pub fn witness_page_buddy_many<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, usiz
                     lemma_uncut(fresh(u0, b), pb.used(), p as int, BLOCK_ORDER as nat);
                     assert(pb.used()[b] =~= whole);
                     assert(pb.used() =~= u0.insert(b, whole).insert(mb, Map::<int, nat>::empty()));
-                    let s = pb.source();
+                    let s = src@;
                     assert(!s0.spans.contains_key(b));
                     assert(!metas0.contains(b) && !u0.contains_key(b) && !u0.contains_key(mb));
                     assert forall|c2: int| #[trigger] start.spans.contains_key(c2) implies !(pb.used().contains_key(c2)
@@ -522,7 +522,7 @@ pub fn witness_page_buddy_many<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, usiz
                             }
                         }
                     }
-                    assert forall|j: int| 0 <= j < n implies pb.source().unbacked(
+                    assert forall|j: int| #![trigger runs@[j]] 0 <= j < n implies src@.unbacked(
                         runs@[j] as int,
                         runs@[j] as int,
                         BLOCK_PAGES as nat,
@@ -530,7 +530,7 @@ pub fn witness_page_buddy_many<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, usiz
                         let c2 = runs@[j] as int;
                         assert(u0.contains_key(c2));
                         assert(s0.spans.contains_key(c2));
-                        assert(pb.source().spans[c2] == s0.spans[c2]);
+                        assert(src@.spans[c2] == s0.spans[c2]);
                     }
                     assert forall|m: int| #[trigger] pb.metas().contains(m) implies pb.used()[m] == Map::<int, nat>::empty() by {
                         if m != mb {
@@ -568,21 +568,21 @@ pub fn witness_page_buddy_many<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, usiz
     let cut = n;
     while n > 0
         invariant
-            pb.wf(),
+            pb.wf(src@),
             pb.spares() == 0,
             n <= cut <= MANY,
             go == (cut == MANY),
             pages(BLOCK_ORDER as nat) == BLOCK_PAGES as int,
             whole == Map::<int, nat>::empty().insert(0, BLOCK_ORDER as nat),
             whole.remove(0) == Map::<int, nat>::empty(),
-            added(start, pb.source(), pb.used(), pb.metas(), !go, held),
+            added(start, src@, pb.used(), pb.metas(), !go, held),
             forall|j: int|
                 0 <= j < n ==> {
                     &&& (#[trigger] runs@[j]) as int % BLOCK_BYTES as int == 0
                     &&& pb.used().contains_key(runs@[j] as int)
                     &&& pb.used()[runs@[j] as int] == whole
                     &&& !pb.metas().contains(runs@[j] as int)
-                    &&& pb.source().unbacked(runs@[j] as int, runs@[j] as int, BLOCK_PAGES as nat)
+                    &&& src@.unbacked(runs@[j] as int, runs@[j] as int, BLOCK_PAGES as nat)
                 },
             forall|i: int, j: int| 0 <= i < j < n ==> runs@[i] != runs@[j],
             forall|b: int|
@@ -594,11 +594,11 @@ pub fn witness_page_buddy_many<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, usiz
         n = n - 1;
         let p = runs[n];
         let ghost u0 = pb.used();
-        let ghost s0 = pb.source();
+        let ghost s0 = src@;
         let ghost metas0 = pb.metas();
         let ghost mp = meta_page(p as int);
         proof {
-            pb.lemma_view();
+            pb.lemma_view(src@);
             assert(runs@[n as int] == p);
             lemma_block_head(p as int);
             assert(u0[p as int] == whole);
@@ -607,9 +607,9 @@ pub fn witness_page_buddy_many<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, usiz
             assert(u0.insert(p as int, u0[p as int].remove(0))[p as int].dom() =~= Set::<int>::empty());
             assert(u0.insert(p as int, u0[p as int].remove(0))[mp].dom() =~= Set::<int>::empty());
         }
-        pb.free_run(p);
+        pb.free_run(src, p);
         proof {
-            let s = pb.source();
+            let s = src@;
             assert(pb.used() == u0.remove(p as int).remove(mp));
             assert(pb.metas() == metas0.remove(mp));
             assert(s == s0.released_span(p as int));
@@ -631,7 +631,7 @@ pub fn witness_page_buddy_many<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, usiz
                     assert(pb.used().contains_key(c) == u0.contains_key(c));
                 }
             }
-            assert forall|j: int| 0 <= j < n implies pb.source().unbacked(
+            assert forall|j: int| #![trigger runs@[j]] 0 <= j < n implies src@.unbacked(
                 runs@[j] as int,
                 runs@[j] as int,
                 BLOCK_PAGES as nat,
@@ -640,7 +640,7 @@ pub fn witness_page_buddy_many<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, usiz
                 assert(u0.contains_key(c));
                 assert(s0.spans.contains_key(c));
                 assert(c != p as int);
-                assert(pb.source().spans[c] == s0.spans[c]);
+                assert(src@.spans[c] == s0.spans[c]);
             }
             assert forall|c: int| #[trigger] s.spans.contains_key(c) implies start.spans.contains_key(c)
                 || s.spans[c] == run_span(c) by {
@@ -660,7 +660,7 @@ pub fn witness_page_buddy_many<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, usiz
         }
     }
     proof {
-        pb.lemma_view();
+        pb.lemma_view(src@);
         // A held metadata page has its span's first block held too, and that is no metadata page,
         // so it would be a run left in the list.
         assert forall|b: int| !pb.used().contains_key(b) by {
@@ -669,7 +669,7 @@ pub fn witness_page_buddy_many<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, usiz
             }
         }
         assert(pb.used().dom() =~= Set::<int>::empty());
-        let s = pb.source();
+        let s = src@;
         assert(s.spans.dom() =~= start.spans.dom());
         assert(s.spans =~= start.spans);
     }
@@ -693,21 +693,21 @@ proof fn lemma_block_head(p: int)
 /// frees that run and returns the page buddy, every held span of it idle, with whether both runs were
 /// cut: they were unless the source refused a request for the first run's span, which it then did
 /// once, holding what it held at the start, and otherwise the source refused nothing.
-pub fn witness_page_buddy_spare<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, bool))
+pub fn witness_page_buddy_spare<S: SpanSource>(src: &mut S) -> (r: (PageBuddy, bool))
     requires
-        src@.wf(),
+        old(src)@.wf(),
     ensures
-        r.0.wf(),
+        r.0.wf(final(src)@),
         r.0.spares() == 1,
         forall|b: int| #[trigger] r.0.used().contains_key(b) ==> r.0.used()[b].dom() == Set::<int>::empty(),
         if r.1 {
-            r.0.source().refusals == src@.refusals
+            final(src)@.refusals == old(src)@.refusals
         } else {
-            span_refused(src@, r.0.source())
+            span_refused(old(src)@, final(src)@)
         },
 {
-    let mut pb = PageBuddy::new(src, 1);
-    let first = match pb.alloc_run(0) {
+    let mut pb = PageBuddy::new(1);
+    let first = match pb.alloc_run(src, 0) {
         Err(_) => {
             assert(pb.used().dom() =~= Set::<int>::empty());
             return (pb, false);
@@ -726,13 +726,13 @@ pub fn witness_page_buddy_spare<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, boo
         assert(fr[b1].dom() =~= Set::<int>::empty());
         assert(fr[m1].dom() =~= Set::<int>::empty());
     }
-    pb.free_run(first);
+    pb.free_run(src, first);
     proof {
         assert(pb.used() == fr);
-        pb.lemma_view();
-        pb.lemma_idle_fits(b1, 0);
+        pb.lemma_view(src@);
+        pb.lemma_idle_fits(src@, b1, 0);
     }
-    let again = pb.alloc_run(0);
+    let again = pb.alloc_run(src, 0);
     assert(again is Ok);
     let second = match again {
         Ok(p) => p,
@@ -747,7 +747,7 @@ pub fn witness_page_buddy_spare<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, boo
             assert(pb.used()[c2].contains_key(page_of(second as int)));
         }
     }
-    pb.free_run(second);
+    pb.free_run(src, second);
     proof {
         assert(pb.used() == fr);
     }
@@ -760,28 +760,28 @@ pub fn witness_page_buddy_spare<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, boo
 /// whether the byte was written and the run's address: the byte was written unless the source refused
 /// a request for the run's span, holding what it held at the start, or the back of the run's page,
 /// holding that and the run's span, which it then did once.
-pub fn witness_backed_run<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, bool, Ghost<int>))
+pub fn witness_backed_run<S: SpanSource>(src: &mut S) -> (r: (PageBuddy, bool, Ghost<int>))
     requires
-        src@.wf(),
+        old(src)@.wf(),
     ensures
-        r.0.wf(),
+        r.0.wf(final(src)@),
         r.0.spans().dom() == Set::<int>::empty(),
         if r.1 {
-            r.0.source() == src@
+            final(src)@ == old(src)@
         } else {
-            span_refused(src@, r.0.source()) || {
+            span_refused(old(src)@, final(src)@) || {
                 let b = span_of(r.2@);
-                &&& !src@.spans.contains_key(b)
-                &&& r.0.source() == src@.recorded(
-                    Refusal { request: Request::Back { span: b, start: r.2@, pages: 1 }, spans: taken(src@, b).spans },
+                &&& !old(src)@.spans.contains_key(b)
+                &&& final(src)@ == old(src)@.recorded(
+                    Refusal { request: Request::Back { span: b, start: r.2@, pages: 1 }, spans: taken(old(src)@, b).spans },
                 )
             }
         },
 {
-    let mut pb = PageBuddy::new(src, 0);
-    let ghost s0 = pb.source();
+    let mut pb = PageBuddy::new(0);
+    let ghost s0 = src@;
     assert(pb.spans().dom() =~= Set::<int>::empty());
-    let p = match pb.alloc_run(0) {
+    let p = match pb.alloc_run(src, 0) {
         Err(_) => {
             return (pb, false, Ghost(0));
         },
@@ -790,7 +790,7 @@ pub fn witness_backed_run<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, bool, Gho
     let ghost b = span_of(p as int);
     let ghost m = meta_page(b);
     let ghost fr = fresh(Map::<int, Map<int, nat>>::empty(), b);
-    let ghost s1 = pb.source();
+    let ghost s1 = src@;
     proof {
         lemma_uncut(fr, pb.used(), p as int, 0);
         lemma_took_released(s0, b);
@@ -798,13 +798,13 @@ pub fn witness_backed_run<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, bool, Gho
         assert(fr[m].dom() =~= Set::<int>::empty());
         assert(pages(0) == 1);
     }
-    let (ptr, perm) = match pb.back_run(p, 0) {
+    let (ptr, perm) = match pb.back_run(src, p, 0) {
         None => {
-            let ghost q = pb.source().refusals.last();
-            pb.free_run(p);
+            let ghost q = src@.refusals.last();
+            pb.free_run(src, p);
             proof {
                 assert(pb.used().dom() =~= Set::<int>::empty());
-                pb.lemma_view();
+                pb.lemma_view(src@);
                 lemma_refused_released(s0, b, q);
             }
             return (pb, false, Ghost(p as int));
@@ -825,16 +825,16 @@ pub fn witness_backed_run<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, bool, Gho
     let tracked raw = byte.into_raw();
     let tracked whole = raw.join(rest);
     assert(whole.dom() =~= Set::range(p as int, p as int + PAGE_BYTES as int));
-    pb.release_run(p, 0, Tracked(whole));
+    pb.release_run(src, p, 0, Tracked(whole));
     proof {
         assert(s1.spans[b].backed.disjoint(run_pages(p as int, 1)));
-        assert(pb.source().spans[b].backed =~= s1.spans[b].backed);
-        assert(pb.source().spans =~= s1.spans);
+        assert(src@.spans[b].backed =~= s1.spans[b].backed);
+        assert(src@.spans =~= s1.spans);
     }
-    pb.free_run(p);
+    pb.free_run(src, p);
     proof {
         assert(pb.used().dom() =~= Set::<int>::empty());
-        pb.lemma_view();
+        pb.lemma_view(src@);
     }
     (pb, true, Ghost(p as int))
 }

@@ -1,14 +1,19 @@
 // SPDX-License-Identifier: MIT
 //! The page buddy: page runs cut from spans of two blocks each, a block buddy per block.
 //!
-//! It owns the span source. Each span it holds, a run span, is a reserved span of SPAN_BLOCKS
-//! blocks, and each of its blocks is cut into runs by a block buddy of its own. The span's metadata
-//! page, the first page of its second block, is that block's first run, of order 0: it is backed
-//! with the span, given back with it, and holds the span's node, the two block buddies' records and
-//! the base of the next held span. The nodes link every held span into one list from `head`, so the
-//! page buddy holds as many run spans as the source gives, and every page of a held span is in a
-//! free block, an allocated run or its metadata page. The first block holds no record, so a run span
-//! can give its whole first block; design/page-buddy-metadata-in-the-span/.
+//! It holds no span source: each operation takes the source, and `wf(src)` is the invariant over
+//! that source's view, so one source can serve the page buddy and the large-object map. `lemma_frame`
+//! keeps the invariant across a change the other makes, one that leaves every span the page buddy
+//! holds as it was.
+//!
+//! Each span it holds, a run span, is a reserved span of SPAN_BLOCKS blocks, and each of its blocks
+//! is cut into runs by a block buddy of its own. The span's metadata page, the first page of its
+//! second block, is that block's first run, of order 0: it is backed with the span, given back with
+//! it, and holds the span's node, the two block buddies' records and the base of the next held span.
+//! The nodes link every held span into one list from `head`, so the page buddy holds as many run
+//! spans as the source gives, and every page of a held span is in a free block, an allocated run or
+//! its metadata page. The first block holds no record, so a run span can give its whole first block;
+//! design/page-buddy-metadata-in-the-span/.
 //!
 //! The view is by block. `spans` maps the base of each block of each held span to its buddy's
 //! blocks, the metadata page among them as an allocated block of order 0 at page 0 of the second
@@ -438,9 +443,11 @@ fn node_at(hp: *mut u8, b: usize) -> (r: *mut Node)
     hp.with_addr(b + BLOCK_BYTES) as *mut Node
 }
 
-/// The page buddy over a span source.
-pub struct PageBuddy<S: SpanSource> {
-    source: S,
+/// The page buddy over the span source each of its operations takes.
+pub struct PageBuddy {
+    /// The source's view as the page buddy last saw it, so the proofs of an operation state the
+    /// invariant over one view; `wf(src)` is the invariant with this view `src`.
+    view: Ghost<SourceView>,
     /// The first held span, while one is held; it carries the source's provenance.
     head: Option<*mut u8>,
     /// The idle spans kept rather than given back.
@@ -460,7 +467,7 @@ pub struct PageBuddy<S: SpanSource> {
     rests: Tracked<Map<int, PointsToRaw>>,
 }
 
-impl<S: SpanSource> PageBuddy<S> {
+impl PageBuddy {
     /// The node of the held span at `b`.
     spec fn node(&self, b: int) -> Node {
         self.nodes@[b].value()
@@ -509,11 +516,6 @@ impl<S: SpanSource> PageBuddy<S> {
         self.metas@
     }
 
-    /// The source's view.
-    pub closed spec fn source(&self) -> SourceView {
-        self.source@
-    }
-
     /// The idle spans the page buddy keeps rather than gives back.
     pub closed spec fn spares(&self) -> nat {
         self.spares as nat
@@ -547,7 +549,7 @@ impl<S: SpanSource> PageBuddy<S> {
     /// The node of the held span at `b` is at its metadata page and holds its two block buddies,
     /// the second's first run the metadata page, and the rest of the metadata page is held beside it.
     spec fn node_wf(&self, b: int) -> bool {
-        let src = self.source@;
+        let src = self.view@;
         &&& self.nodes@[b].ptr() == node_ptr(b, src.provenance)
         &&& self.nodes@[b].is_init()
         &&& self.node(b).lo.wf()
@@ -569,10 +571,21 @@ impl<S: SpanSource> PageBuddy<S> {
         }
     }
 
+    /// The page buddy with the source's view `src`.
+    spec fn at(&self, src: SourceView) -> Self {
+        PageBuddy { view: Ghost(src), ..*self }
+    }
+
+    /// The invariant over the source's view `src`: the page buddy keeps no source of its own, so
+    /// its caller holds the source and passes it to each operation, and may share it.
+    pub closed spec fn wf(&self, src: SourceView) -> bool {
+        self.at(src).inv()
+    }
+
     /// The list from `head` links exactly the held spans, each node well formed, the metadata pages
     /// are the held spans' and the count of idle spans is right.
-    pub closed spec fn wf(&self) -> bool {
-        &&& self.source@.wf()
+    spec fn inv(&self) -> bool {
+        &&& self.view@.wf()
         &&& self.idle <= self.spares
         &&& self.idle as int == self.idle_spans().len()
         &&& self.chain@.no_duplicates()
@@ -589,7 +602,7 @@ impl<S: SpanSource> PageBuddy<S> {
             Some(h) => {
                 &&& self.chain@.len() > 0
                 &&& h@.addr as int == self.chain@[0]
-                &&& h@.provenance == self.source@.provenance
+                &&& h@.provenance == self.view@.provenance
             },
         }
     }
@@ -598,7 +611,7 @@ impl<S: SpanSource> PageBuddy<S> {
     /// address space, block-aligned above address 0.
     proof fn lemma_base(&self, b: int)
         requires
-            self.wf(),
+            self.inv(),
             self.nodes@.contains_key(b),
         ensures
             self.node_wf(b),
@@ -611,13 +624,13 @@ impl<S: SpanSource> PageBuddy<S> {
             b + span_bytes(SPAN_BLOCKS as nat) <= usize::MAX as int + 1,
     {
         assert(self.node_wf(b));
-        assert(self.source@.released_span(b).fits(b, self.source@.spans[b].blocks));
+        assert(self.view@.released_span(b).fits(b, self.view@.spans[b].blocks));
     }
 
     /// Two held spans are apart.
     proof fn lemma_apart(&self, b: int, c: int)
         requires
-            self.wf(),
+            self.inv(),
             self.nodes@.contains_key(b),
             self.nodes@.contains_key(c),
             b != c,
@@ -626,7 +639,7 @@ impl<S: SpanSource> PageBuddy<S> {
     {
         self.lemma_base(b);
         self.lemma_base(c);
-        let src = self.source@;
+        let src = self.view@;
         assert(src.released_span(b).fits(b, src.spans[b].blocks));
         assert(src.released_span(b).spans.contains_key(c));
         assert(src.released_span(b).apart(b, src.spans[b].blocks, c));
@@ -635,7 +648,7 @@ impl<S: SpanSource> PageBuddy<S> {
     /// A metadata page is the second block of a held span and no held span's base.
     proof fn lemma_meta_block(&self, m: int)
         requires
-            self.wf(),
+            self.inv(),
             self.metas@.contains(m),
         ensures
             self.nodes@.contains_key(m - BLOCK_BYTES as int),
@@ -651,7 +664,7 @@ impl<S: SpanSource> PageBuddy<S> {
     /// and its runs.
     proof fn lemma_block(&self, c: int)
         requires
-            self.wf(),
+            self.inv(),
             self.spans().contains_key(c),
         ensures
             self.used().contains_key(c),
@@ -680,7 +693,7 @@ impl<S: SpanSource> PageBuddy<S> {
     /// Both blocks of the held span at `b` are in the view, as its node's buddies.
     proof fn lemma_blocks_of(&self, b: int)
         requires
-            self.wf(),
+            self.inv(),
             self.nodes@.contains_key(b),
         ensures
             self.spans().contains_key(b),
@@ -702,41 +715,71 @@ impl<S: SpanSource> PageBuddy<S> {
         self.lemma_meta_block(meta_page(b));
     }
 
-    /// A page buddy that differs from a well-formed one only in its source's value, the view the
-    /// same, is well formed.
-    proof fn lemma_same_view(&self, other: &Self)
-        requires
-            other.wf(),
-            self.source@ == other.source@,
-            self.head == other.head,
-            self.spares == other.spares,
-            self.idle == other.idle,
-            self.chain == other.chain,
-            self.metas == other.metas,
-            self.nodes == other.nodes,
-            self.rests == other.rests,
+    /// The page buddy's view of its spans does not depend on the source's view.
+    proof fn lemma_viewed(&self, src: SourceView)
         ensures
-            self.wf(),
-            self.spans() == other.spans(),
-            self.used() == other.used(),
+            self.at(src).spans() == self.spans(),
+            self.at(src).used() == self.used(),
+            self.at(src).metas() == self.metas(),
+            self.at(src).spares() == self.spares(),
+            self.at(src).idle_spans() == self.idle_spans(),
     {
-        assert(self.spans() =~= other.spans());
-        assert(self.used() =~= other.used());
-        assert(self.idle_spans() == other.idle_spans());
-        assert forall|b: int| #[trigger] self.nodes@.contains_key(b) implies self.node_wf(b) by {
-            assert(other.node_wf(b));
+        assert(self.at(src).spans() =~= self.spans());
+        assert(self.at(src).used() =~= self.used());
+    }
+
+    /// A source change that leaves every held span as it was keeps the invariant over the view with
+    /// the change.
+    proof fn lemma_reviewed(&self, t: SourceView)
+        requires
+            self.inv(),
+            t.wf(),
+            t.provenance == self.view@.provenance,
+            forall|b: int| #[trigger]
+                self.nodes@.contains_key(b) ==> t.spans.contains_key(b) && t.spans[b] == self.view@.spans[b],
+        ensures
+            self.at(t).inv(),
+    {
+        let o = self.at(t);
+        self.lemma_viewed(t);
+        assert forall|b: int| #[trigger] o.nodes@.contains_key(b) implies o.node_wf(b) by {
+            assert(self.node_wf(b));
         }
-        assert forall|i: int| 0 <= i < self.chain@.len() implies #[trigger] self.linked(i) by {
-            assert(other.linked(i));
+        assert forall|i: int| 0 <= i < o.chain@.len() implies #[trigger] o.linked(i) by {
+            assert(self.linked(i));
         }
+    }
+
+    /// A change to the source that leaves every span the page buddy holds as it was, and the
+    /// provenance, keeps the invariant: the caller may change the source through spans the page
+    /// buddy does not hold between its operations, so the page buddy can share the source.
+    pub proof fn lemma_frame(&self, s: SourceView, t: SourceView)
+        requires
+            self.wf(s),
+            t.wf(),
+            t.provenance == s.provenance,
+            forall|b: int| #[trigger]
+                self.spans().contains_key(b) && !self.metas().contains(b) ==> t.spans.contains_key(b) && t.spans[b]
+                    == s.spans[b],
+        ensures
+            self.wf(t),
+    {
+        let a = self.at(s);
+        self.lemma_viewed(s);
+        assert forall|b: int| #[trigger] a.nodes@.contains_key(b) implies t.spans.contains_key(b) && t.spans[b]
+            == a.view@.spans[b] by {
+            a.lemma_blocks_of(b);
+        }
+        a.lemma_reviewed(t);
+        assert(a.at(t) == self.at(t));
     }
 
     /// The source refused in a call that changed nothing else: the page buddy is well formed with
     /// the same view.
     proof fn lemma_refused(&self, other: &Self, r: Refusal)
         requires
-            other.wf(),
-            self.source@ == other.source@.recorded(r),
+            other.inv(),
+            self.view@ == other.view@.recorded(r),
             self.head == other.head,
             self.spares == other.spares,
             self.idle == other.idle,
@@ -745,11 +788,11 @@ impl<S: SpanSource> PageBuddy<S> {
             self.nodes == other.nodes,
             self.rests == other.rests,
         ensures
-            self.wf(),
+            self.inv(),
             self.spans() == other.spans(),
             self.used() == other.used(),
     {
-        lemma_recorded_wf(other.source@, r);
+        lemma_recorded_wf(other.view@, r);
         assert(self.spans() =~= other.spans());
         assert(self.used() =~= other.used());
         assert(self.idle_spans() == other.idle_spans());
@@ -764,7 +807,7 @@ impl<S: SpanSource> PageBuddy<S> {
     /// The span at position `i` of the chain is held, its node well formed and linked.
     proof fn lemma_at(&self, i: int)
         requires
-            self.wf(),
+            self.inv(),
             0 <= i < self.chain@.len(),
         ensures
             self.nodes@.contains_key(self.chain@[i]),
@@ -783,11 +826,11 @@ impl<S: SpanSource> PageBuddy<S> {
     /// block of order 0 at page 0, and whose other backed pages lie in its blocks' runs; each block
     /// partitioned and coalesced, a first block with no run the initial block; and no more idle spans
     /// are held than the spares.
-    pub proof fn lemma_view(&self)
+    pub proof fn lemma_view(&self, src: SourceView)
         requires
-            self.wf(),
+            self.wf(src),
         ensures
-            self.source().wf(),
+            src.wf(),
             self.idle_spans().len() <= self.spares(),
             self.used().dom() == self.spans().dom(),
             forall|m: int| #[trigger]
@@ -806,55 +849,57 @@ impl<S: SpanSource> PageBuddy<S> {
                         &&& self.spans()[c].contains_key(0)
                         &&& self.spans()[c][0] == (Block { order: 0, free: false })
                         &&& self.used()[c] == used_of(self.spans()[c]).remove(0)
-                        &&& held(self.source(), c - BLOCK_BYTES as int, self.used()[c - BLOCK_BYTES as int], self.used()[c])
+                        &&& held(src, c - BLOCK_BYTES as int, self.used()[c - BLOCK_BYTES as int], self.used()[c])
                     } else {
                         &&& self.metas().contains(meta_page(c))
                         &&& self.used()[c] == used_of(self.spans()[c])
                         &&& self.used()[c].dom() == Set::<int>::empty() ==> self.spans()[c] == initial()
-                        &&& held(self.source(), c, self.used()[c], self.used()[meta_page(c)])
+                        &&& held(src, c, self.used()[c], self.used()[meta_page(c)])
                     }
                 },
     {
-        assert(self.used().dom() =~= self.spans().dom());
-        assert forall|m: int| #[trigger] self.metas().contains(m) implies {
-            &&& self.spans().contains_key(m)
-            &&& self.spans().contains_key(m - BLOCK_BYTES as int)
-            &&& !self.metas().contains(m - BLOCK_BYTES as int)
+        let a = self.at(src);
+        self.lemma_viewed(src);
+        assert(a.used().dom() =~= a.spans().dom());
+        assert forall|m: int| #[trigger] a.metas().contains(m) implies {
+            &&& a.spans().contains_key(m)
+            &&& a.spans().contains_key(m - BLOCK_BYTES as int)
+            &&& !a.metas().contains(m - BLOCK_BYTES as int)
         } by {
-            self.lemma_meta_block(m);
-            self.lemma_blocks_of(m - BLOCK_BYTES as int);
+            a.lemma_meta_block(m);
+            a.lemma_blocks_of(m - BLOCK_BYTES as int);
         }
-        assert forall|c: int| #[trigger] self.spans().contains_key(c) implies {
-            &&& partitioned(self.spans()[c])
-            &&& coalesced(self.spans()[c])
+        assert forall|c: int| #[trigger] a.spans().contains_key(c) implies {
+            &&& partitioned(a.spans()[c])
+            &&& coalesced(a.spans()[c])
             &&& c > 0
             &&& c % BLOCK_BYTES as int == 0
-            &&& if self.metas().contains(c) {
-                &&& self.spans()[c].contains_key(0)
-                &&& self.spans()[c][0] == (Block { order: 0, free: false })
-                &&& self.used()[c] == used_of(self.spans()[c]).remove(0)
-                &&& held(self.source(), c - BLOCK_BYTES as int, self.used()[c - BLOCK_BYTES as int], self.used()[c])
+            &&& if a.metas().contains(c) {
+                &&& a.spans()[c].contains_key(0)
+                &&& a.spans()[c][0] == (Block { order: 0, free: false })
+                &&& a.used()[c] == used_of(a.spans()[c]).remove(0)
+                &&& held(src, c - BLOCK_BYTES as int, a.used()[c - BLOCK_BYTES as int], a.used()[c])
             } else {
-                &&& self.metas().contains(meta_page(c))
-                &&& self.used()[c] == used_of(self.spans()[c])
-                &&& self.used()[c].dom() == Set::<int>::empty() ==> self.spans()[c] == initial()
-                &&& held(self.source(), c, self.used()[c], self.used()[meta_page(c)])
+                &&& a.metas().contains(meta_page(c))
+                &&& a.used()[c] == used_of(a.spans()[c])
+                &&& a.used()[c].dom() == Set::<int>::empty() ==> a.spans()[c] == initial()
+                &&& held(src, c, a.used()[c], a.used()[meta_page(c)])
             }
         } by {
-            self.lemma_block(c);
-            let b = self.span_base(c);
-            self.lemma_blocks_of(b);
+            a.lemma_block(c);
+            let b = a.span_base(c);
+            a.lemma_blocks_of(b);
             lemma_meta(b);
             let bb = if c == b {
-                self.node(b).lo
+                a.node(b).lo
             } else {
-                self.node(b).hi
+                a.node(b).hi
             };
-            assert(self.spans()[c] == bb.blocks());
+            assert(a.spans()[c] == bb.blocks());
             bb.lemma_view();
             lemma_used_of(bb);
             if c == b {
-                if self.used()[c].dom() == Set::<int>::empty() {
+                if a.used()[c].dom() == Set::<int>::empty() {
                     bb.lemma_idle();
                 }
             } else {
@@ -866,9 +911,9 @@ impl<S: SpanSource> PageBuddy<S> {
 
     /// A held span's first block with no run allocated is one free block of order BLOCK_ORDER, so a
     /// run of any order fits while it is held.
-    pub proof fn lemma_idle_fits(&self, b: int, k: nat)
+    pub proof fn lemma_idle_fits(&self, src: SourceView, b: int, k: nat)
         requires
-            self.wf(),
+            self.wf(src),
             self.spans().contains_key(b),
             !self.metas().contains(b),
             self.used()[b].dom() == Set::<int>::empty(),
@@ -876,25 +921,22 @@ impl<S: SpanSource> PageBuddy<S> {
         ensures
             self.fits(k),
     {
-        self.lemma_view();
+        self.lemma_view(src);
         assert(self.spans()[b] == initial());
         assert(self.spans()[b].contains_key(0));
     }
 
-    /// A page buddy holding no span, over `source`, keeping `spares` idle spans.
-    pub fn new(source: S, spares: usize) -> (r: Self)
-        requires
-            source@.wf(),
+    /// A page buddy holding no span, keeping `spares` idle spans, over any source.
+    pub fn new(spares: usize) -> (r: Self)
         ensures
-            r.wf(),
-            r.source() == source@,
+            forall|src: SourceView| #[trigger] src.wf() ==> r.wf(src),
             r.spares() == spares,
             r.spans() == Map::<int, Map<int, Block>>::empty(),
             r.used() == Map::<int, Map<int, nat>>::empty(),
             r.metas() == Set::<int>::empty(),
     {
         let r = PageBuddy {
-            source,
+            view: Ghost(arbitrary()),
             head: None,
             spares,
             idle: 0,
@@ -906,6 +948,9 @@ impl<S: SpanSource> PageBuddy<S> {
         assert(r.spans() =~= Map::<int, Map<int, Block>>::empty());
         assert(r.used() =~= Map::<int, Map<int, nat>>::empty());
         assert(r.idle_spans() =~= Set::<int>::empty());
+        assert forall|src: SourceView| #[trigger] src.wf() implies r.wf(src) by {
+            r.lemma_viewed(src);
+        }
         r
     }
 
@@ -914,7 +959,7 @@ impl<S: SpanSource> PageBuddy<S> {
     /// `k` or more.
     fn best_span(&self, k: usize) -> (r: Option<(usize, bool, usize)>)
         requires
-            self.wf(),
+            self.inv(),
             k <= BLOCK_ORDER,
         ensures
             match r {
@@ -954,7 +999,7 @@ impl<S: SpanSource> PageBuddy<S> {
         let ghost mut j: int = 0;
         while cur != 0
             invariant
-                self.wf(),
+                self.inv(),
                 k <= BLOCK_ORDER,
                 self.head == Some(hp),
                 0 <= j <= self.chain@.len(),
@@ -1122,7 +1167,7 @@ impl<S: SpanSource> PageBuddy<S> {
     /// it, or 0 when it is the first, and its base.
     fn find(&self, c: usize) -> (r: (usize, usize))
         requires
-            self.wf(),
+            self.inv(),
             self.spans().contains_key(c as int),
         ensures
             r.1 as int == self.span_base(c as int),
@@ -1148,7 +1193,7 @@ impl<S: SpanSource> PageBuddy<S> {
         }
         while cur != c && cur + BLOCK_BYTES != c
             invariant
-                self.wf(),
+                self.inv(),
                 self.spans().contains_key(c as int),
                 b == self.span_base(c as int),
                 self.head == Some(hp),
@@ -1190,16 +1235,16 @@ impl<S: SpanSource> PageBuddy<S> {
     /// `hi`, from its free block of the smallest order at or above `k`.
     fn alloc_in(&mut self, b: usize, hi: bool, k: usize) -> (p: usize)
         requires
-            old(self).wf(),
+            old(self).inv(),
             k <= BLOCK_ORDER,
             old(self).nodes@.contains_key(b as int),
             old(self).half(b as int, hi).fits(k as nat),
         ensures
-            final(self).wf(),
+            final(self).inv(),
             final(self).spares() == old(self).spares(),
             final(self).spans().dom() == old(self).spans().dom(),
             final(self).metas() == old(self).metas(),
-            final(self).source() == old(self).source(),
+            final(self).view@ == old(self).view@,
             span_of(p as int) == if hi {
                 meta_page(b as int)
             } else {
@@ -1207,7 +1252,7 @@ impl<S: SpanSource> PageBuddy<S> {
             },
             final(self).span_base(span_of(p as int)) == b,
             cut(old(self).used(), final(self).used(), p as int, k as nat),
-            final(self).source().unbacked(b as int, p as int, pages(k as nat) as nat),
+            final(self).view@.unbacked(b as int, p as int, pages(k as nat) as nat),
             ({
                 let s = old(self).spans()[span_of(p as int)];
                 let h = page_of(p as int);
@@ -1335,7 +1380,7 @@ impl<S: SpanSource> PageBuddy<S> {
             assert forall|c: int| #[trigger] self.nodes@.contains_key(c) implies self.node_wf(c) by {
                 assert(old(self).node_wf(c));
                 if c == bi {
-                    let src = self.source@;
+                    let src = self.view@;
                     assert forall|a: int| #[trigger] src.spans[bi].backed.contains(a) implies a == mi
                         || in_runs(bi, node.lo.used(), a) || in_runs(mi, node.hi.used().remove(0), a) by {
                         if in_runs(bi, n0.lo.used(), a) {
@@ -1357,7 +1402,7 @@ impl<S: SpanSource> PageBuddy<S> {
             lemma_in_block(bi, 0, 1);
             lemma_in_block(mi, 0, 1);
             lemma_one_page(mi);
-            let src = self.source@;
+            let src = self.view@;
             assert forall|a: int| #[trigger] src.spans[bi].backed.contains(a) implies !run.contains(a) by {
                 if a == mi {
                     if !hi {
@@ -1379,20 +1424,22 @@ impl<S: SpanSource> PageBuddy<S> {
     /// Cuts a run of order `k` from a new span, when no held span has a free block of order `k` or
     /// more: reserves the span, backs its metadata page, cuts the page from its second block and the
     /// run from its first, and puts its node at the head of the list.
-    fn alloc_new(&mut self, k: usize) -> (r: Result<usize, Refused>)
+    fn alloc_new<S: SpanSource>(&mut self, src: &mut S, k: usize) -> (r: Result<usize, Refused>)
         requires
-            old(self).wf(),
+            old(self).inv(),
+            old(self).view@ == old(src)@,
             k <= BLOCK_ORDER,
             !old(self).fits(k as nat),
         ensures
-            final(self).wf(),
+            final(self).inv(),
+            final(self).view@ == final(src)@,
             final(self).spares() == old(self).spares(),
             match r {
                 Err(Refused::Source) => {
                     &&& final(self).spans() == old(self).spans()
                     &&& final(self).used() == old(self).used()
                     &&& final(self).metas() == old(self).metas()
-                    &&& span_refused(old(self).source(), final(self).source())
+                    &&& span_refused(old(self).view@, final(self).view@)
                 },
                 Ok(p) => {
                     let b = span_of(p as int);
@@ -1402,16 +1449,18 @@ impl<S: SpanSource> PageBuddy<S> {
                     &&& final(self).spans().dom() == old(self).spans().dom().insert(b).insert(meta_page(b))
                     &&& final(self).metas() == old(self).metas().insert(meta_page(b))
                     &&& cut(fresh(old(self).used(), b), final(self).used(), p as int, k as nat)
-                    &&& final(self).source().unbacked(b, p as int, pages(k as nat) as nat)
-                    &&& took_span(old(self).source(), final(self).source(), b)
+                    &&& final(self).view@.unbacked(b, p as int, pages(k as nat) as nat)
+                    &&& took_span(old(self).view@, final(self).view@, b)
                 },
             },
     {
         let ghost old_used = self.used();
         let ghost old_spans = self.spans();
         let ghost old_idle = self.idle_spans();
-        let ghost start = self.source@;
-        let base = match self.source.reserve(SPAN_BLOCKS) {
+        let ghost start = self.view@;
+        let reserved = src.reserve(SPAN_BLOCKS);
+        self.view = Ghost(src@);
+        let base = match reserved {
             None => {
                 proof {
                     self.lemma_refused(
@@ -1451,16 +1500,19 @@ impl<S: SpanSource> PageBuddy<S> {
             lemma_meta(bi);
         }
         let m = b + BLOCK_BYTES;
-        let perm = match self.source.back(Ghost(bi), m, 1) {
+        let backed = src.back(Ghost(bi), m, 1);
+        self.view = Ghost(src@);
+        let perm = match backed {
             None => {
-                self.source.release_span(b);
+                src.release_span(b);
+                self.view = Ghost(src@);
                 proof {
-                    assert(self.source@.spans =~= start.spans);
+                    assert(self.view@.spans =~= start.spans);
                     let r = Refusal {
                         request: Request::Back { span: bi, start: mi, pages: 1 },
                         spans: start.reserved(bi, SPAN_BLOCKS as nat).spans,
                     };
-                    assert(self.source@ == start.recorded(r));
+                    assert(self.view@ == start.recorded(r));
                     self.lemma_refused(old(self), r);
                 }
                 return Err(Refused::Source);
@@ -1500,7 +1552,7 @@ impl<S: SpanSource> PageBuddy<S> {
         self.head = Some(base);
         let ghost x = bi;
         proof {
-            let src = self.source@;
+            let src = self.view@;
             lemma_one_page(mi);
             assert(src.spans[bi].backed =~= Set::<int>::empty().insert(mi));
             assert(lo.used() =~= Map::<int, nat>::empty().insert(h as int, k as nat));
@@ -1611,12 +1663,12 @@ impl<S: SpanSource> PageBuddy<S> {
     /// `k`, or from a new span when no held span has one. Refuses, and changes no held span, only
     /// when no held span has one and the source refused, in this call, the reserve of the span or the
     /// back of its metadata page, which its view records.
-    pub fn alloc_run(&mut self, k: usize) -> (r: Result<usize, Refused>)
+    pub fn alloc_run<S: SpanSource>(&mut self, src: &mut S, k: usize) -> (r: Result<usize, Refused>)
         requires
-            old(self).wf(),
+            old(self).wf(old(src)@),
             k <= BLOCK_ORDER,
         ensures
-            final(self).wf(),
+            final(self).wf(final(src)@),
             final(self).spares() == old(self).spares(),
             match r {
                 Err(Refused::Source) => {
@@ -1624,17 +1676,17 @@ impl<S: SpanSource> PageBuddy<S> {
                     &&& final(self).spans() == old(self).spans()
                     &&& final(self).used() == old(self).used()
                     &&& final(self).metas() == old(self).metas()
-                    &&& span_refused(old(self).source(), final(self).source())
+                    &&& span_refused(old(src)@, final(src)@)
                 },
                 Ok(p) => {
                     let b = final(self).span_base(span_of(p as int));
-                    &&& final(self).source().unbacked(b, p as int, pages(k as nat) as nat)
+                    &&& final(src)@.unbacked(b, p as int, pages(k as nat) as nat)
                     &&& if old(self).spans().contains_key(span_of(p as int)) {
                         &&& best(old(self).spans(), span_of(p as int), page_of(p as int), k as nat)
                         &&& cut(old(self).used(), final(self).used(), p as int, k as nat)
                         &&& final(self).spans().dom() == old(self).spans().dom()
                         &&& final(self).metas() == old(self).metas()
-                        &&& final(self).source() == old(self).source()
+                        &&& final(src)@ == old(src)@
                     } else {
                         &&& !old(self).fits(k as nat)
                         &&& span_of(p as int) == b
@@ -1644,11 +1696,15 @@ impl<S: SpanSource> PageBuddy<S> {
                         &&& final(self).spans().dom() == old(self).spans().dom().insert(b).insert(meta_page(b))
                         &&& final(self).metas() == old(self).metas().insert(meta_page(b))
                         &&& cut(fresh(old(self).used(), b), final(self).used(), p as int, k as nat)
-                        &&& took_span(old(self).source(), final(self).source(), b)
+                        &&& took_span(old(src)@, final(src)@, b)
                     }
                 },
             },
     {
+        self.view = Ghost(src@);
+        proof {
+            old(self).lemma_viewed(src@);
+        }
         let ghost old_spans = self.spans();
         match self.best_span(k) {
             Some((b, hi, o)) => {
@@ -1670,24 +1726,24 @@ impl<S: SpanSource> PageBuddy<S> {
                 }
                 Ok(p)
             },
-            None => self.alloc_new(k),
+            None => self.alloc_new(src, k),
         }
     }
 
     /// Takes back the run at `p`, none of whose pages is backed. A span left with no run is given
     /// back to the source with its metadata page, unless fewer than the spares are idle, when it
     /// stays as a spare.
-    pub fn free_run(&mut self, p: usize)
+    pub fn free_run<S: SpanSource>(&mut self, src: &mut S, p: usize)
         requires
-            old(self).wf(),
+            old(self).wf(old(src)@),
             old(self).holds(p as int),
-            old(self).source().unbacked(
+            old(src)@.unbacked(
                 old(self).span_base(span_of(p as int)),
                 p as int,
                 pages(old(self).used()[span_of(p as int)][page_of(p as int)]) as nat,
             ),
         ensures
-            final(self).wf(),
+            final(self).wf(final(src)@),
             final(self).spares() == old(self).spares(),
             ({
                 let c = span_of(p as int);
@@ -1698,19 +1754,24 @@ impl<S: SpanSource> PageBuddy<S> {
                     &&& final(self).used() == after
                     &&& final(self).spans().dom() == old(self).spans().dom()
                     &&& final(self).metas() == old(self).metas()
-                    &&& final(self).source() == old(self).source()
+                    &&& final(src)@ == old(src)@
                 } else {
                     &&& final(self).used() == old(self).used().remove(b).remove(meta_page(b))
                     &&& final(self).spans().dom() == old(self).spans().dom().remove(b).remove(meta_page(b))
                     &&& final(self).metas() == old(self).metas().remove(meta_page(b))
-                    &&& final(self).source() == old(self).source().released_span(b)
+                    &&& final(src)@ == old(src)@.released_span(b)
                 }
             }),
     {
+        self.view = Ghost(src@);
+        let ghost entry = *self;
+        proof {
+            old(self).lemma_viewed(src@);
+        }
         let ghost old_used = self.used();
         let ghost old_spans = self.spans();
         let ghost old_idle = self.idle_spans();
-        let ghost start = self.source@;
+        let ghost start = self.view@;
         let ghost old_chain = self.chain@;
         let c = p - p % BLOCK_BYTES;
         let h = (p % BLOCK_BYTES) / PAGE_BYTES;
@@ -1815,7 +1876,7 @@ impl<S: SpanSource> PageBuddy<S> {
             }
             assert forall|m: int| #[trigger] self.metas@.contains(m) && m != mi implies (after[m] == old_used[m]
                 && after[m - BLOCK_BYTES as int] == old_used[m - BLOCK_BYTES as int]) by {
-                old(self).lemma_meta_block(m);
+                entry.lemma_meta_block(m);
                 assert(m != bi);
                 assert(m - BLOCK_BYTES as int != mi);
             }
@@ -1852,7 +1913,8 @@ impl<S: SpanSource> PageBuddy<S> {
                 assert(raw.dom() =~= Set::range(mi, mi + PAGE_BYTES));
                 assert(start.spans[bi].backed.contains(mi));
             }
-            self.source.release(Ghost(bi), m, 1, Tracked(raw));
+            src.release(Ghost(bi), m, 1, Tracked(raw));
+            self.view = Ghost(src@);
             proof {
                 assert(node.lo.used().dom() =~= Set::<int>::empty());
                 assert(node.hi.used().remove(0).dom() =~= Set::<int>::empty());
@@ -1867,11 +1929,12 @@ impl<S: SpanSource> PageBuddy<S> {
                         }
                     }
                 }
-                assert(self.source@.spans[bi].backed =~= Set::<int>::empty());
+                assert(self.view@.spans[bi].backed =~= Set::<int>::empty());
             }
-            self.source.release_span(b);
+            src.release_span(b);
+            self.view = Ghost(src@);
             proof {
-                let src = self.source@;
+                let src = self.view@;
                 assert(src.spans =~= start.spans.remove(bi));
                 assert(src == start.released_span(bi));
                 let chain = self.chain@;
@@ -1893,10 +1956,10 @@ impl<S: SpanSource> PageBuddy<S> {
                         assert(old_chain[oi] == x);
                         assert(oi != j);
                         assert(old_chain.contains(x));
-                        assert(old(self).nodes@.contains_key(x));
+                        assert(entry.nodes@.contains_key(x));
                     }
                     if self.nodes@.contains_key(x) {
-                        assert(old(self).nodes@.contains_key(x));
+                        assert(entry.nodes@.contains_key(x));
                         assert(old_chain.contains(x));
                         let oi = choose|oi: int| 0 <= oi < n && old_chain[oi] == x;
                         assert(oi != j);
@@ -1905,33 +1968,33 @@ impl<S: SpanSource> PageBuddy<S> {
                     }
                 }
                 assert forall|x: int| #[trigger] self.nodes@.contains_key(x) implies self.metas@.contains(meta_page(x)) by {
-                    assert(old(self).metas@.contains(meta_page(x)));
+                    assert(entry.metas@.contains(meta_page(x)));
                 }
                 assert forall|x: int| #[trigger] self.metas@.contains(x) implies self.nodes@.contains_key(x - BLOCK_BYTES as int) by {
-                    assert(old(self).nodes@.contains_key(x - BLOCK_BYTES as int));
+                    assert(entry.nodes@.contains_key(x - BLOCK_BYTES as int));
                 }
                 assert forall|x: int| #[trigger] self.nodes@.contains_key(x) implies self.node_wf(x) by {
-                    assert(old(self).node_wf(x));
+                    assert(entry.node_wf(x));
                     assert(start.spans[x] == src.spans[x]);
                 }
                 assert forall|i: int| 0 <= i < chain.len() implies #[trigger] self.linked(i) by {
                     if i + 1 == j {
-                        assert(old(self).linked(j));
+                        assert(entry.linked(j));
                         if j + 1 < n {
                             assert(chain[j] == old_chain[j + 1]);
                         }
                     } else if i < j {
-                        assert(old(self).linked(i));
+                        assert(entry.linked(i));
                         assert(prev as int == old_chain[j - 1]);
                         assert(old_chain[i] != old_chain[j - 1]);
                         assert(old_chain[i] != prev as int);
                     } else {
-                        assert(old(self).linked(i + 1));
+                        assert(entry.linked(i + 1));
                         if j > 0 {
                             assert(prev as int == old_chain[j - 1]);
                             assert(old_chain[i + 1] != old_chain[j - 1]);
                         } else {
-                            old(self).lemma_at(i + 1);
+                            entry.lemma_at(i + 1);
                         }
                         assert(old_chain[i + 1] != prev as int);
                         if i + 1 < chain.len() {
@@ -1940,7 +2003,7 @@ impl<S: SpanSource> PageBuddy<S> {
                     }
                 }
                 if j == 0 {
-                    assert(old(self).linked(0));
+                    assert(entry.linked(0));
                     if n > 1 {
                         assert(chain[0] == old_chain[1]);
                     }
@@ -1948,14 +2011,14 @@ impl<S: SpanSource> PageBuddy<S> {
                 assert(self.spans().dom() =~= old_spans.dom().remove(bi).remove(mi));
                 assert(self.used() =~= old_used.remove(bi).remove(mi)) by {
                     assert forall|x: int| #[trigger] self.used().contains_key(x) implies self.used()[x] == old_used[x] by {
-                        old(self).lemma_block(x);
+                        entry.lemma_block(x);
                     }
                 }
                 assert(self.idle_spans() =~= old_idle) by {
                     assert forall|x: int| #[trigger] self.metas@.contains(x) implies (self.used()[x] == old_used[x]
                         && self.used()[x - BLOCK_BYTES as int] == old_used[x - BLOCK_BYTES as int]) by {
-                        old(self).lemma_meta_block(x);
-                        old(self).lemma_blocks_of(x - BLOCK_BYTES as int);
+                        entry.lemma_meta_block(x);
+                        entry.lemma_blocks_of(x - BLOCK_BYTES as int);
                     }
                 }
             }
@@ -1968,7 +2031,7 @@ impl<S: SpanSource> PageBuddy<S> {
                 self.idle = self.idle + 1;
             }
             proof {
-                assert(self.nodes@.dom() =~= old(self).nodes@.dom());
+                assert(self.nodes@.dom() =~= entry.nodes@.dom());
                 assert(self.used() =~= after) by {
                     assert forall|x: int| #[trigger] self.used().contains_key(x) && x != ci implies self.used()[x] == old_used[x] by {
                         if x != bi && !self.nodes@.contains_key(x) && x - BLOCK_BYTES as int == bi {
@@ -1984,10 +2047,10 @@ impl<S: SpanSource> PageBuddy<S> {
                     assert(self.idle_spans() =~= old_idle);
                 }
                 assert forall|x: int| #[trigger] self.nodes@.contains_key(x) implies self.node_wf(x) by {
-                    assert(old(self).node_wf(x));
+                    assert(entry.node_wf(x));
                 }
                 assert forall|i: int| 0 <= i < self.chain@.len() implies #[trigger] self.linked(i) by {
-                    assert(old(self).linked(i));
+                    assert(entry.linked(i));
                 }
             }
         }
@@ -1997,7 +2060,7 @@ impl<S: SpanSource> PageBuddy<S> {
     /// page `page_of(p)`, apart from the span's metadata page.
     proof fn lemma_run(&self, p: int, k: nat)
         requires
-            self.wf(),
+            self.inv(),
             self.holds(p),
             self.used()[span_of(p)][page_of(p)] == k,
         ensures
@@ -2007,7 +2070,7 @@ impl<S: SpanSource> PageBuddy<S> {
             self.head is Some,
             self.span_base(span_of(p)) + span_bytes(SPAN_BLOCKS as nat) <= usize::MAX as int + 1,
             p == span_of(p) + page_of(p) * PAGE_BYTES,
-            self.source@.runs_in(self.span_base(span_of(p)), p, pages(k) as nat),
+            self.view@.runs_in(self.span_base(span_of(p)), p, pages(k) as nat),
             !run_pages(p, pages(k) as nat).contains(meta_page(self.span_base(span_of(p)))),
             in_runs(span_of(p), self.used()[span_of(p)], p),
             forall|a: int| #[trigger] run_pages(p, pages(k) as nat).contains(a) ==> in_runs(span_of(p), self.used()[span_of(p)], a),
@@ -2016,7 +2079,7 @@ impl<S: SpanSource> PageBuddy<S> {
         let h = page_of(p);
         let pb = PAGE_BYTES as int;
         assert(self.used().dom() =~= self.spans().dom()) by {
-            self.lemma_view();
+            self.lemma_view(self.view@);
         }
         self.lemma_block(c);
         let b = self.span_base(c);
@@ -2050,20 +2113,20 @@ impl<S: SpanSource> PageBuddy<S> {
     /// Backs the pages of the allocated run of order `k` at `p`, none of them backed, through the
     /// source, and returns a pointer to the run with the permission to exactly its bytes; or
     /// refuses, backs nothing and changes nothing but the source's record of the back it refused.
-    pub fn back_run(&mut self, p: usize, k: usize) -> (r: Option<(*mut u8, Tracked<PointsToRaw>)>)
+    pub fn back_run<S: SpanSource>(&mut self, src: &mut S, p: usize, k: usize) -> (r: Option<(*mut u8, Tracked<PointsToRaw>)>)
         requires
-            old(self).wf(),
+            old(self).wf(old(src)@),
             old(self).holds(p as int),
             old(self).used()[span_of(p as int)][page_of(p as int)] == k,
-            old(self).source().unbacked(old(self).span_base(span_of(p as int)), p as int, pages(k as nat) as nat),
+            old(src)@.unbacked(old(self).span_base(span_of(p as int)), p as int, pages(k as nat) as nat),
         ensures
-            final(self).wf(),
+            final(self).wf(final(src)@),
             final(self).spares() == old(self).spares(),
             final(self).spans() == old(self).spans(),
             final(self).used() == old(self).used(),
             final(self).metas() == old(self).metas(),
             match r {
-                None => final(self).source() == old(self).source().refused(
+                None => final(src)@ == old(src)@.refused(
                     Request::Back {
                         span: old(self).span_base(span_of(p as int)),
                         start: p as int,
@@ -2072,10 +2135,10 @@ impl<S: SpanSource> PageBuddy<S> {
                 ),
                 Some((ptr, perm)) => {
                     &&& ptr@.addr == p
-                    &&& ptr@.provenance == old(self).source().provenance
+                    &&& ptr@.provenance == old(src)@.provenance
                     &&& perm@.is_range(p as int, pages(k as nat) * PAGE_BYTES)
-                    &&& perm@.provenance() == old(self).source().provenance
-                    &&& final(self).source() == old(self).source().backed_run(
+                    &&& perm@.provenance() == old(src)@.provenance
+                    &&& final(src)@ == old(src)@.backed_run(
                         old(self).span_base(span_of(p as int)),
                         p as int,
                         pages(k as nat) as nat,
@@ -2083,6 +2146,11 @@ impl<S: SpanSource> PageBuddy<S> {
                 },
             },
     {
+        self.view = Ghost(src@);
+        let ghost entry = *self;
+        proof {
+            old(self).lemma_viewed(src@);
+        }
         let ghost bi = self.span_base(span_of(p as int));
         let ghost ci = span_of(p as int);
         let ghost run = run_pages(p as int, pages(k as nat) as nat);
@@ -2092,12 +2160,14 @@ impl<S: SpanSource> PageBuddy<S> {
         }
         let hp = self.head.unwrap();
         let n = order_pages(k);
-        let ghost start = self.source@;
-        let perm = match self.source.back(Ghost(bi), p, n) {
+        let ghost start = self.view@;
+        let backed = src.back(Ghost(bi), p, n);
+        self.view = Ghost(src@);
+        let perm = match backed {
             None => {
                 proof {
                     self.lemma_refused(
-                        old(self),
+                        &entry,
                         Refusal {
                             request: Request::Back { span: bi, start: p as int, pages: pages(k as nat) as nat },
                             spans: start.spans,
@@ -2109,25 +2179,25 @@ impl<S: SpanSource> PageBuddy<S> {
             Some(perm) => perm,
         };
         proof {
-            assert(self.spans() =~= old(self).spans());
-            assert(self.used() =~= old(self).used());
+            assert(self.spans() =~= entry.spans());
+            assert(self.used() =~= entry.used());
             assert forall|c: int| #[trigger] self.nodes@.contains_key(c) implies self.node_wf(c) by {
-                assert(old(self).node_wf(c));
+                assert(entry.node_wf(c));
                 if c == bi {
                     let lo = self.node(c).lo.used();
                     let hi = self.node(c).hi.used().remove(0);
-                    assert forall|a: int| #[trigger] self.source@.spans[c].backed.contains(a) implies a
+                    assert forall|a: int| #[trigger] self.view@.spans[c].backed.contains(a) implies a
                         == meta_page(c) || in_runs(c, lo, a) || in_runs(meta_page(c), hi, a) by {
                         if run.contains(a) {
                             assert(in_runs(ci, self.used()[ci], a));
                         }
                     }
                 } else {
-                    assert(self.source@.spans[c] == start.spans[c]);
+                    assert(self.view@.spans[c] == start.spans[c]);
                 }
             }
             assert forall|i: int| 0 <= i < self.chain@.len() implies #[trigger] self.linked(i) by {
-                assert(old(self).linked(i));
+                assert(entry.linked(i));
             }
         }
         Some((hp.with_addr(p), perm))
@@ -2135,53 +2205,59 @@ impl<S: SpanSource> PageBuddy<S> {
 
     /// Gives back through the source the pages of the allocated run of order `k` at `p`, every one
     /// of them backed, taking the permission to its bytes.
-    pub fn release_run(&mut self, p: usize, k: usize, perm: Tracked<PointsToRaw>)
+    pub fn release_run<S: SpanSource>(&mut self, src: &mut S, p: usize, k: usize, perm: Tracked<PointsToRaw>)
         requires
-            old(self).wf(),
+            old(self).wf(old(src)@),
             old(self).holds(p as int),
             old(self).used()[span_of(p as int)][page_of(p as int)] == k,
-            old(self).source().backed(old(self).span_base(span_of(p as int)), p as int, pages(k as nat) as nat),
+            old(src)@.backed(old(self).span_base(span_of(p as int)), p as int, pages(k as nat) as nat),
             perm@.is_range(p as int, pages(k as nat) * PAGE_BYTES),
-            perm@.provenance() == old(self).source().provenance,
+            perm@.provenance() == old(src)@.provenance,
         ensures
-            final(self).wf(),
+            final(self).wf(final(src)@),
             final(self).spares() == old(self).spares(),
             final(self).spans() == old(self).spans(),
             final(self).used() == old(self).used(),
             final(self).metas() == old(self).metas(),
-            final(self).source() == old(self).source().released_run(
+            final(src)@ == old(src)@.released_run(
                 old(self).span_base(span_of(p as int)),
                 p as int,
                 pages(k as nat) as nat,
             ),
     {
+        self.view = Ghost(src@);
+        let ghost entry = *self;
+        proof {
+            old(self).lemma_viewed(src@);
+        }
         let ghost bi = self.span_base(span_of(p as int));
         let ghost run = run_pages(p as int, pages(k as nat) as nat);
         proof {
             self.lemma_run(p as int, k as nat);
         }
         let n = order_pages(k);
-        let ghost start = self.source@;
-        self.source.release(Ghost(bi), p, n, perm);
+        let ghost start = self.view@;
+        src.release(Ghost(bi), p, n, perm);
+        self.view = Ghost(src@);
         proof {
-            assert(self.spans() =~= old(self).spans());
-            assert(self.used() =~= old(self).used());
+            assert(self.spans() =~= entry.spans());
+            assert(self.used() =~= entry.used());
             assert forall|c: int| #[trigger] self.nodes@.contains_key(c) implies self.node_wf(c) by {
-                assert(old(self).node_wf(c));
+                assert(entry.node_wf(c));
                 if c == bi {
                     let lo = self.node(c).lo.used();
                     let hi = self.node(c).hi.used().remove(0);
                     assert(!run.contains(meta_page(c)));
-                    assert forall|a: int| #[trigger] self.source@.spans[c].backed.contains(a) implies a
+                    assert forall|a: int| #[trigger] self.view@.spans[c].backed.contains(a) implies a
                         == meta_page(c) || in_runs(c, lo, a) || in_runs(meta_page(c), hi, a) by {
                         assert(start.spans[c].backed.contains(a));
                     }
                 } else {
-                    assert(self.source@.spans[c] == start.spans[c]);
+                    assert(self.view@.spans[c] == start.spans[c]);
                 }
             }
             assert forall|i: int| 0 <= i < self.chain@.len() implies #[trigger] self.linked(i) by {
-                assert(old(self).linked(i));
+                assert(entry.linked(i));
             }
         }
     }
