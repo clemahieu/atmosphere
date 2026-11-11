@@ -11,6 +11,11 @@
 //! (`run_held`), and is no record page. A change to the three that keeps every slab's record taken
 //! and every run so keeps the invariant (`lemma_frame`).
 //!
+//! The heads of the slab runs are `heads()`. Each live slot lies inside the run at one of them
+//! (`lemma_live_in_run`), so it is apart from every run the page buddy holds at another head
+//! (`lemma_live_apart_from_run`), and from every live slot of a second class whose heads are
+//! others (`lemma_classes_apart`).
+//!
 //! - `new(c)` is class `c` with no slab.
 //! - `alloc_small(store, pb, src)` takes a slot from the first slab with a free one, which goes to
 //!   the full list when it fills, and changes neither the store, the page buddy nor the source.
@@ -263,6 +268,11 @@ impl SizeClass {
         live_of(self.slabs())
     }
 
+    /// The head of each slab's run.
+    pub closed spec fn heads(&self) -> ISet<int> {
+        ISet::new(|b: int| exists|a: int| #[trigger] self.slabs().contains_key(a) && self.slabs()[a].base()@.addr == b)
+    }
+
     /// The class is one of the size classes; both lists are well formed with the source's
     /// provenance and share no record; the partial list holds exactly the slabs with a free slot;
     /// and the slabs are the class's, over the store, the page buddy and the source's view `src`.
@@ -333,6 +343,78 @@ impl SizeClass {
         ) by {
             assert(slab_ok(self.class as nat, self.perms@, m[a], a, store, pb, src));
         }
+    }
+
+    /// The live slot `y` lies inside the run at the head `b` this returns: a head of the class, a
+    /// run of the class's slab order the page buddy holds, every page backed, and no record page.
+    pub proof fn lemma_live_in_run(&self, store: RecordStore, pb: PageBuddy, src: SourceView, y: int) -> (b: int)
+        requires
+            self.wf(store, pb, src),
+            self.live().contains(y),
+        ensures
+            self.heads().contains(b),
+            run_held(pb, src, b, slab_order(self.class())),
+            !store.pages().contains(b),
+            b <= y,
+            y + class_size(self.class()) <= b + run_bytes(slab_order(self.class())),
+    {
+        let m = self.slabs();
+        let a = choose|a: int| #[trigger] m.contains_key(a) && m[a].holds(y);
+        assert(slab_ok(self.class as nat, self.perms@, m[a], a, store, pb, src));
+        lemma_in_run(m[a], y);
+        let b = m[a].base()@.addr as int;
+        assert(m.contains_key(a) && m[a].base()@.addr == b);
+        b
+    }
+
+    /// A live slot shares no byte with a run the page buddy holds at a head that is not the class's,
+    /// such as another class's slab run or a large object's run.
+    pub proof fn lemma_live_apart_from_run(
+        &self,
+        store: RecordStore,
+        pb: PageBuddy,
+        src: SourceView,
+        y: int,
+        x: int,
+        k: nat,
+    )
+        requires
+            self.wf(store, pb, src),
+            pb.wf(src),
+            self.live().contains(y),
+            run_held(pb, src, x, k),
+            !self.heads().contains(x),
+        ensures
+            y + class_size(self.class()) <= x || x + run_bytes(k) <= y,
+    {
+        let b = self.lemma_live_in_run(store, pb, src, y);
+        lemma_held_apart(pb, src, b, slab_order(self.class()), x, k);
+    }
+
+    /// A live slot of one class shares no byte with a live slot of a second class over the same
+    /// store, page buddy and source, when no run is a slab run of both.
+    pub proof fn lemma_classes_apart(
+        &self,
+        other: &SizeClass,
+        store: RecordStore,
+        pb: PageBuddy,
+        src: SourceView,
+        y: int,
+        z: int,
+    )
+        requires
+            self.wf(store, pb, src),
+            other.wf(store, pb, src),
+            pb.wf(src),
+            self.heads().disjoint(other.heads()),
+            self.live().contains(y),
+            other.live().contains(z),
+        ensures
+            y + class_size(self.class()) <= z || z + class_size(other.class()) <= y,
+    {
+        let b = other.lemma_live_in_run(store, pb, src, z);
+        assert(!self.heads().contains(b));
+        self.lemma_live_apart_from_run(store, pb, src, y, b, slab_order(other.class()));
     }
 
     /// The slab at `a` of the partial list, after `alloc` gave its free slot at `p`, as `s1` on the
