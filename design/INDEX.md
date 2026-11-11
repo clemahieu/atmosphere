@@ -2,7 +2,7 @@
 
 # Design decisions
 
-36 records: 36 active, 0 superseded.
+37 records: 37 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -79,6 +79,9 @@ in `revisit if` what would make it worth reopening.
 - **[process-holds-capabilities](./process-holds-capabilities/DECISION.md)** (2026-11-10): Capabilities belong to a process, not a thread; its table is a root of 512 pointers in the process object and leaves of 127 slots retyped on demand; no capability names a table and no table holds a table, so the capability graph has no cycles and lookup is constant time. A process is an order-3 block of its table's root, its record and its address space; a thread holds no slots: it is an order-1 block of a node page for its bindings and a page for its record and XSAVE area.
   - *confidence:* A structural choice; the no-cycles property it buys is what rules out the delete-cascade problem Nevill's thesis describes, and the table invariant is proven in kernel/verified/capability/table.rs.
   - *revisit if:* Threads in one process need distinct authority, or a process needs more slots than the two levels give, or a table must be passed as a capability, or a supported core's XSAVE area outgrows the 3072 bytes a thread's record page leaves it.
+- **[review-is-a-leaf-of-its-epic](./review-is-a-leaf-of-its-epic/DECISION.md)** (2026-11-11): The skeptic pass that an epic closes on is its own issue: a task labelled review under the epic, waiting on the epic's other children; one review is one pass, a refuting review files a repeat, and the epic closes when its newest review passed after everything else below it closed. An epic is never claimed for a pass.
+  - *confidence:* A judgement about structure. Coverage is the same by construction: the rule for which epic needs a pass is unchanged, and tools/reviews.py refuses an epic whose review missed a later closing. Cost per pass is not expected to change.
+  - *revisit if:* The tracker lets a task wait on an epic, so a review could be written ahead for every epic and not only at a split; or reviews written at a split mostly run early or are withdrawn, counted as close reasons starting `withdrawn` against reviews closed.
 - **[revoke-by-depth-first-list](./revoke-by-depth-first-list/DECISION.md)** (2026-11-06): All capabilities, mappings and bindings derived from the boot root are one doubly linked list in depth-first order, a child straight after its parent; a node's descendants are the run after it with greater depth, and revoke unlinks leaves of that run a bounded number per kernel entry.
   - *confidence:* Proven in the tree, kernel/verified/capability/list.rs and revoke.rs: derive and unlink in constant time, depth-first order kept, a node is in a run exactly when the run's head is its ancestor, a revoke step removes one such node and nothing outside the run, with a falling measure.
   - *revisit if:* A node needs more than one parent, or a lineage must be reparented, neither of which the list can express; or the 255-link walk to a leaf is measured as the bound that sets the lock hold time.
@@ -146,7 +149,7 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `pagetable`: arch-module
 - `parsing`: network-stack-proven-at-tier-1
 - `portability`: arch-module, machine-glue-below-the-kernel, syscall-abi-in-registers
-- `process`: cut-over-on-a-branch, land-without-regating, license-stated-in-every-source-file, no-gate-for-what-no-step-reads, process-holds-capabilities, thread-bound-at-retype
+- `process`: cut-over-on-a-branch, land-without-regating, license-stated-in-every-source-file, no-gate-for-what-no-step-reads, process-holds-capabilities, review-is-a-leaf-of-its-epic, thread-bound-at-retype
 - `proof`: divider-proven-by-invariant, isolation-claim, theorem-over-reach, thread-bound-at-retype, trust-boundary, who-vouches-for-an-unproven-claim
 - `purity`: untyped-memory
 - `reach`: device-binding-under-the-space-capability
@@ -155,9 +158,11 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `scheduling`: cpu-time-as-capability, schedulers-over-core-partitions
 - `security`: divider-proven-by-invariant, fan-in-over-private-rings, isolation-claim, theorem-over-reach, trust-boundary
 - `shared-memory`: fan-in-over-private-rings, latest-value-by-three-slot-exchange
+- `skeptic`: review-is-a-leaf-of-its-epic
 - `test`: test-guest-memory
 - `thread`: process-holds-capabilities, thread-bound-at-retype
 - `tiers`: divider-proven-by-invariant, network-stack-proven-at-tier-1, trust-boundary
+- `tracker`: review-is-a-leaf-of-its-epic
 - `trusted-base`: who-vouches-for-an-unproven-claim
 - `verified`: arch-module, cut-over-on-a-branch, device-binding-under-the-space-capability, fan-in-over-private-rings, flush-without-waiting, heap-size-classes, latest-value-by-three-slot-exchange, network-stack-proven-at-tier-1, one-lock-bounded-steps, page-buddy-metadata-in-the-span, revoke-by-depth-first-list, theorem-over-reach, thread-bound-at-retype, who-vouches-for-an-unproven-claim
 - `virtualization`: vmm-over-svm

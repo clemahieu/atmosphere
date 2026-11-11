@@ -10,7 +10,7 @@ report's lines say what comes next, as the round skill reads them (.claude/skill
 
 - `Notify: <text>` (or bullets under a bare `Notify:`), each sent with notify-send and printed;
 - `Prover: <id>` runs `claude -p --agent prover`, then appends its report to the issue as
-  `Prover report:` and sets the issue open; `Skeptic: <epic>` does the same with the skeptic;
+  `Prover report:` and sets the issue open; `Skeptic: <review>` does the same with the skeptic;
 - `Loop: continue` starts the next round, `Loop: wait` waits (another loop holds the issues in
   progress), `Loop: stop` prints the questions waiting on the human and ends the loop.
 
@@ -342,7 +342,7 @@ class Loop:
                           "Your input is the issue's last Prover input note.")
         if report.skeptic:
             self.hand_off("skeptic", report.skeptic,
-                          f"Epic {report.skeptic}. Your input is the epic's last Skeptic input note.")
+                          f"Review {report.skeptic}. Your input is the review's last Skeptic input note.")
         return report.loop, run
 
     def drive(self, once=False):

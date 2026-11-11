@@ -18,7 +18,7 @@ A call goes to the issue its transcript was working:
   names it, or `bd update <id> ... --claim`) until it claims another or closes that one; a round
   that claims nothing, as one closing an epic does, works the first issue it updates or closes; a
   round's calls before its first claim go to that claim;
-- a prover's or a skeptic's, the issue or epic its first prompt names;
+- a prover's or a skeptic's, the issue or review its first prompt names;
 - any other, none, which the page counts at the root.
 
 The ledger keeps what it harvested after Claude Code removes a transcript, so the history outlives
@@ -44,7 +44,7 @@ CLAIM = re.compile(rf"\bbd\s+update\s+({ISSUE})\b[^;&|\n]*--claim\b")
 READY_CLAIM = re.compile(r"\bbd\s+ready\b[^;&|\n]*--claim\b")
 CLOSE = re.compile(rf"\bbd\s+close\s+({ISSUE})\b")
 WRITE = re.compile(rf"\bbd\s+(?:update|close)\s+({ISSUE})\b")
-PROMPTED = re.compile(rf"\b(?:Issue|Epic):?\s+({ISSUE})\b")
+PROMPTED = re.compile(rf"\b(?:Issue|Review|Epic):?\s+({ISSUE})\b")
 FIRST_ID = re.compile(rf'"id":\s*"({ISSUE})"')
 NAMED_BY_PROMPT = ("prover", "skeptic")
 SESSION = "session"
@@ -382,9 +382,9 @@ class Tests(unittest.TestCase):
         self.write(self.sessions / "r.jsonl", [{"type": "agent-setting", "agentSetting": "round", "sessionId": "r"},
                                                self.call(), self.bash("bd update atmo-1.2 --claim"), self.call()])
         self.write(self.sessions / "s.jsonl", [{"type": "agent-setting", "agentSetting": "skeptic", "sessionId": "s"},
-                                               self.prompt("Epic atmo-1. Your input is the epic's last Skeptic input note."), self.call()])
+                                               self.prompt("Review atmo-1.9. Your input is the review's last Skeptic input note."), self.call()])
         self.write(self.sessions / "i.jsonl", [self.call()])
-        self.assertEqual(self.issues(), {"atmo-1.2": [3, 30, 300, 15, 3], "atmo-1": [1, 10, 100, 5, 1], "": [1, 10, 100, 5, 1]})
+        self.assertEqual(self.issues(), {"atmo-1.2": [3, 30, 300, 15, 3], "atmo-1.9": [1, 10, 100, 5, 1], "": [1, 10, 100, 5, 1]})
         self.assertEqual([kind for _, kind, _ in spent(self.ledger)[1]], ["round", "session", "skeptic"])
 
     def test_a_call_written_on_several_lines_counts_once_at_its_largest(self):

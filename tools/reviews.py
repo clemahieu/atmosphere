@@ -9,9 +9,10 @@ parent, never closes and is not listed, nor is an epic that is not open: one in 
 round writing its review. The order is the highest priority first and, among equals, the
 deepest, depth being the number of dots in the id.
 
-A review is a child with the label `review`: one skeptic pass over the epic's acceptance criteria.
-An epic needs one when it has more than three children, counting closed ones and not its reviews, or
-is at depth 1, or carries the label `skeptic`. A review covers its epic when it is the newest one that did not close as `withdrawn`, its
+A review is a child with the label `review`: one skeptic pass over the epic's acceptance criteria
+(.claude/agents/round.md, design/review-is-a-leaf-of-its-epic/). An epic needs one when it has more
+than three children, counting closed ones and not its reviews, or is at depth 1, or carries the label
+`skeptic`. A review covers its epic when it is the newest one that did not close as `withdrawn`, its
 close reason starts `skeptic pass`, and every other issue below the epic closed before the time its
 last `Skeptic input <time>:` note carries, so the pass saw all of it. One line per finished epic:
 
