@@ -3513,8 +3513,9 @@ impl CapKernel {
     }
 
     /// What cutting children of the dead table at `base` keeps: only tables, the record of each cut and the
-    /// TLBs changed. A table page's cuts leave every walk finding what it did, since no walk reaches it, and
-    /// a root's end its walks through the entries they cut and leave every other walk. Each entry that
+    /// TLBs changed. No entry changed but one of `base` that stopped naming a child, and no parent record
+    /// but that child's. A table page's cuts leave every walk finding what it did, since no walk reaches it,
+    /// and a root's end its walks through the entries they cut and leave every other walk. Each entry that
     /// stopped naming a child is empty and its child is cut. A page's stale word changes only if it is
     /// a cut child's page, so the table's own page keeps its word.
     pub open spec fn table_cuts_kept(pre: Self, post: Self, base: usize) -> bool {
@@ -3535,7 +3536,19 @@ impl CapKernel {
         &&& post.iommus.acked == pre.iommus.acked
         &&& post.iommus.present == pre.iommus.present
         &&& post.iommus.commands == pre.iommus.commands
+        &&& post.table_pages.spare == pre.table_pages.spare
         &&& post.spaces.loaded == pre.spaces.loaded
+        &&& post.spaces.holders == pre.spaces.holders
+        &&& post.spaces.kernel_entries == pre.spaces.kernel_entries
+        &&& post.spaces.registers == pre.spaces.registers
+        &&& post.spaces.kernel_root == pre.spaces.kernel_root
+        &&& post.spaces.bound == pre.spaces.bound
+        &&& forall|t: usize, i: usize| #![trigger b.entry(t, i)]
+            a.is_table(t) && i < ENTRIES && !(t == base && a.names_child(base, i) && !b.names_child(base, i))
+            ==> b.entry(t, i) == a.entry(t, i)
+        &&& forall|t: usize| #![trigger b.record(t)]
+            a.is_table(t) && b.record(t).parent != a.record(t).parent
+            ==> exists|e: usize| #[trigger] a.names_child(base, e) && !b.names_child(base, e) && t == child_at(a, base, e)
         &&& pre.flush_epoch <= post.flush_epoch
         &&& b.maps.dom() == a.maps.dom()
         &&& b.roots.dom() == a.roots.dom()
@@ -3808,6 +3821,30 @@ impl CapKernel {
             assert(m.entry(base, e) == a.entry(base, e));
         }
         assert(a.names_child(base, e) && !b.names_child(base, e));
+        assert forall|t: usize, i: usize| #![trigger b.entry(t, i)]
+            a.is_table(t) && i < ENTRIES && !(t == base && a.names_child(base, i) && !b.names_child(base, i))
+            implies b.entry(t, i) == a.entry(t, i) by {
+            assert(m.is_table(t));
+            if t == base && a.names_child(base, i) && !m.names_child(base, i) {
+                assert(i != e);
+                assert(b.child_slot(base, i) == m.child_slot(base, i));
+                assert(b.entry(base, i) == m.entry(base, i));
+            }
+            assert(b.entry(t, i) == m.entry(t, i));
+        }
+        assert forall|t: usize| #![trigger b.record(t)]
+            a.is_table(t) && b.record(t).parent != a.record(t).parent
+            implies exists|i: usize| #[trigger] a.names_child(base, i) && !b.names_child(base, i) && t == child_at(a, base, i) by {
+            assert(m.is_table(t));
+            if t != c {
+                assert(b.record(t).parent == m.record(t).parent);
+                let i = choose|i: usize| #[trigger] a.names_child(base, i) && !m.names_child(base, i) && t == child_at(a, base, i);
+                assert(i != e);
+                assert(b.child_slot(base, i) == m.child_slot(base, i));
+                assert(b.entry(base, i) == m.entry(base, i));
+                assert(!b.names_child(base, i));
+            }
+        }
         assert forall|g: int| #![trigger post.stale_epoch.pages@[g]]
             0 <= g < NUM_PAGES && post.stale_epoch.pages@[g] != pre.stale_epoch.pages@[g]
             implies exists|i: usize| #[trigger] a.names_child(base, i) && !b.names_child(base, i) && g == child_at(a, base, i) / PAGE_SZ by {
@@ -4294,7 +4331,7 @@ impl CapKernel {
     }
 
     /// What unlinking mappings of the dead table page at `base` keeps: the list falls by exactly the count,
-    /// the capabilities and the view are as they were, and every walk finds what it did, since no walk
+    /// the capabilities, the devices, processes and threads and the view are as they were, and every walk finds what it did, since no walk
     /// reaches `base`.
     pub open spec fn table_unmaps_kept(pre: Self, post: Self, base: usize, count: int) -> bool {
         let a = tree_of(&pre.table_pages, &pre.spaces);
@@ -4307,6 +4344,9 @@ impl CapKernel {
         &&& post.iommus.acked == pre.iommus.acked
         &&& post.iommus.present == pre.iommus.present
         &&& post.iommus.commands == pre.iommus.commands
+        &&& post.devices == pre.devices
+        &&& post.processes == pre.processes
+        &&& post.threads == pre.threads
         &&& post.table_pages.records == pre.table_pages.records
         &&& post.table_pages.spare == pre.table_pages.spare
         &&& post.list.parent == pre.list.parent
@@ -4413,6 +4453,8 @@ impl CapKernel {
             final(self).tables == old(self).tables,
             final(self).spaces == old(self).spaces,
             final(self).devices == old(self).devices,
+            final(self).processes == old(self).processes,
+            final(self).threads == old(self).threads,
             final(self).frames == old(self).frames,
             final(self).zeroing == old(self).zeroing,
             final(self).cores == old(self).cores,
@@ -4472,6 +4514,8 @@ impl CapKernel {
             post.tables == mid.tables,
             post.spaces == mid.spaces,
             post.devices == mid.devices,
+            post.processes == mid.processes,
+            post.threads == mid.threads,
             post.frames == mid.frames,
             post.zeroing == mid.zeroing,
             post.cores == mid.cores,
