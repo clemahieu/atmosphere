@@ -295,8 +295,8 @@ pub fn page_map_clear_take(
     ret
 }
 
-#[verifier(external_body)]
-// external_body(glue): writes a hardware page table through a raw pointer
+/// Turns the permission for an uninitialised page into an empty table of the given level. Built on the
+/// stack and copied into the page, since a permission gives no way to initialise part of a value.
 pub fn page_perm_to_page_map(page_ptr: PagePtr, level: Ghost<usize>, Tracked(page_perm): Tracked<PagePerm4k>, Tracked(steps): Tracked<&mut Steps>) -> (ret: (
     PageMapPtr,
     Tracked<PointsTo<PageMap>>,
@@ -304,6 +304,7 @@ pub fn page_perm_to_page_map(page_ptr: PagePtr, level: Ghost<usize>, Tracked(pag
     requires
         page_perm.is_uninit(),
         page_perm.addr() == page_ptr,
+        page_ptr % PAGE_SZ == 0,
     ensures
         final(steps).count <= old(steps).count + ENTRIES,
         ret.0 == page_ptr,
@@ -315,11 +316,16 @@ pub fn page_perm_to_page_map(page_ptr: PagePtr, level: Ghost<usize>, Tracked(pag
             #![trigger ret.1@.value()[i].is_empty()]
             0 <= i < ENTRIES ==> ret.1@.value()[i].is_empty(),
 {
-    unsafe {
-        let uptr = page_ptr as *mut MaybeUninit<PageMap>;
-        (*uptr).assume_init_mut().init(Tracked(steps));
+    let ar = Array::<usize, ENTRIES>::new(0usize);
+    let ghost empty = usize2page_entry(0usize, level@);
+    let map = PageMap { ar, spec_seq: Ghost(Seq::new(ENTRIES as nat, |i: int| empty)), level };
+    proof {
+        zero_leads_is_empty_page_entry(level@);
+        assert(map.wf());
     }
-    (page_ptr, Tracked::assume_new())
+    let tracked mut typed = crate::layouts::page_into_page_map(page_perm);
+    PPtr::<PageMap>::from_usize(page_ptr).put(Tracked(&mut typed), map);
+    (page_ptr, Tracked(typed))
 }
 
 } // verus!

@@ -8,7 +8,6 @@ use crate::array::*;
 use crate::define::ENTRIES;
 #[cfg(verus_keep_ghost)]
 use crate::util::page_ptr_util_u::*;
-use crate::capability::steps::Steps;
 
 use crate::pagetable::entry::*;
 
@@ -21,42 +20,6 @@ pub struct PageMap {
 }
 
 impl PageMap {
-    pub fn init(&mut self, Tracked(steps): Tracked<&mut Steps>)
-        requires
-            old(self).ar.wf(),
-            old(self).spec_seq@.len() == ENTRIES,
-        ensures
-            final(steps).count <= old(steps).count + ENTRIES,
-            final(self).wf(),
-            final(self).level == old(self).level,
-            forall|i: int| #![trigger final(self)@[i].is_empty()] 0 <= i < ENTRIES ==> final(self)@[i].is_empty(),
-    {
-        let ghost start = steps.count;
-        for i in 0..ENTRIES
-            invariant
-                0 <= i <= ENTRIES,
-                steps.count == start + i,
-                self.ar.wf(),
-                self.spec_seq@.len() == ENTRIES,
-                forall|j: int|
-                    #![trigger usize2page_entry(self.ar@[j], self.level@)]
-                    0 <= j < i ==> (usize2page_entry(self.ar@[j], self.level@) =~= self.spec_seq@[j]),
-                forall|j: int|
-                    #![trigger self.ar@[j]]
-                    0 <= j < i ==> self.ar@[j] == 0,
-                forall|j: int| #![trigger self@[j].is_empty()] 0 <= j < i ==> self@[j].is_empty(),
-        {
-            let ghost_view = Ghost(self@);
-            self.ar.set(i, 0usize);
-            assert(self@ == ghost_view);
-            proof {
-                zero_leads_is_empty_page_entry(self.level@);
-                self.spec_seq@ = self.spec_seq@.update(i as int, usize2page_entry(0usize, self.level@));
-                steps.step();
-            }
-        }
-    }
-
     pub open spec fn wf(&self) -> bool {
         &&& self.ar.wf()
         &&& self.spec_seq@.len() == ENTRIES

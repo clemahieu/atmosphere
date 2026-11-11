@@ -136,6 +136,18 @@ pub proof fn page_into_payload_page(tracked page: PagePerm4k) -> (tracked ret: P
     crate::pptr::page_into_typed::<PayloadPage>(page)
 }
 
+/// A page becomes an uninitialised page table.
+pub proof fn page_into_page_map(tracked page: PagePerm4k) -> (tracked ret: PointsTo<PageMap>)
+    requires
+        page.is_uninit(),
+        page.addr() % PAGE_SZ == 0,
+    ensures
+        ret.addr() == page.addr(),
+        ret.is_uninit(),
+{
+    crate::pptr::page_into_typed::<PageMap>(page)
+}
+
 /// A node page with no live node becomes a free page.
 pub proof fn node_page_into_page(tracked nodes: PointsTo<NodePage>) -> (tracked ret: PagePerm4k)
     requires
