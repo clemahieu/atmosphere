@@ -512,6 +512,7 @@ pub fn load_translation_root(core: usize, root: usize, id: usize) -> (ret: Track
     ensures
         ret@.core == core as int,
         ret@.root == root,
+        ret@.tag == id,
 {
     let base = (id as u64) << 48 | root as u64;
     unsafe {

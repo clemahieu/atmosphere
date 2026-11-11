@@ -299,8 +299,9 @@ impl CapKernel {
     }
 
     /// Core c's base register now names the root of `space`, or a root that is no space's for None, as
-    /// the token from the glue that wrote it attests. A register names only a loaded space that is not
-    /// retired, and a retire refuses while one names it, so a core that has acknowledged a retire never
+    /// the token from the glue that wrote it attests. A space's root goes in under the PCID or ASID the
+    /// space holds on c, so what the core then caches is under that space's tag. A register names only
+    /// a loaded space that is not retired, and a retire refuses while one names it, so a core that has acknowledged a retire never
     /// walks the space again. See design/teardown-driven-by-retype/.
     pub fn switch_space(&mut self, c: usize, space: Option<usize>, Tracked(t): Tracked<Translating>)
         requires
@@ -312,6 +313,8 @@ impl CapKernel {
                     &&& t.root == s + SPACE_ROOT_PAGE * PAGE_SZ
                     &&& old(self).loaded(c as int, s)
                     &&& old(self).spaces.loaded@[s].value().retired == 0
+                    &&& holds_id(old(self).cores@, old(self).spaces.loaded@, c as int, s)
+                    &&& t.tag == id_pcid(old(self).spaces.loaded@[s].value().ids@[c as int])
                 },
                 None => forall|s: usize| #[trigger] old(self).spaces.roots@.contains_key(s) ==> t.root != s + SPACE_ROOT_PAGE * PAGE_SZ,
             },

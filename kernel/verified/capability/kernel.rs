@@ -84,10 +84,12 @@ pub open spec fn names_wf(space: Option<usize>, lists: Map<usize, PointsTo<Space
 }
 
 /// What a write of a core's page-table base register proves: core `core` now translates through the
-/// table whose top level is at `root`. Only arch::load_translation_root makes one.
+/// table whose top level is at `root`, filling its TLB under tag `tag`, the PCID or ASID written with
+/// it. Only arch::load_translation_root makes one.
 pub tracked struct Translating {
     pub ghost core: int,
     pub ghost root: usize,
+    pub ghost tag: usize,
 }
 
 /// No word is ahead of its core's generation, so a new generation leaves no id valid. A valid id is one

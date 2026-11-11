@@ -651,6 +651,7 @@ pub fn load_translation_root(core: usize, root: usize, id: usize) -> (ret: Track
     ensures
         ret@.core == core as int,
         ret@.root == root,
+        ret@.tag == id,
 {
     let cr4: u64;
     unsafe {
