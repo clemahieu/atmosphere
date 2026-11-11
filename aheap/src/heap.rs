@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: MIT
-//! The heap: one size class per class over one record store and one page buddy, and the
-//! large-object map, under one invariant.
+//! The heap: one size class per class over one record store and one page buddy, the buddy-run
+//! objects cut from that page buddy, and the large-object map, under one invariant.
 //!
 //! - `wf(src)` is the invariant over the source's view `src`: the page buddy and the store are well
 //!   formed over it, class `i` is the `i`-th size class and well formed over them, no two classes
-//!   share a head or a record, so a live slot of one shares no byte with a live slot of another,
-//!   and the large-object map is well formed over it, each large object's span one the page buddy
-//!   does not hold. The page buddy's callers leave every span it does not hold as it was, and the
-//!   map leaves every span it does not hold as it was, so each arm keeps the other's invariant.
-//! - `live()` is every class's live slots and every large object's base.
+//!   share a head or a record, so a live slot of one shares no byte with a live slot of another;
+//!   each buddy-run object (`parts`) is a run the page buddy holds with only the pages the object
+//!   needs backed (`run_part`), no record page and no class's slab run; and the large-object map
+//!   is well formed over it, each large object's span one the page buddy does not hold. The page
+//!   buddy's callers leave every span it does not hold as it was, and the map leaves every span it
+//!   does not hold as it was, so each arm keeps the others' invariant.
+//! - `live()` is every class's live slots, every buddy-run object's base and every large object's
+//!   base.
 //! - `alloc(src, size, align)`, for a layout of at most the page whose alignment divides the page,
 //!   takes a slot of `class_for(size, align)`, the first class whose slot holds `size` bytes and is a
 //!   multiple of `align`. It refuses exactly as that class's `alloc_small` does: only when none of
@@ -18,16 +21,25 @@
 //!   `pages_for(size)` pages, a span of its own, and refuses exactly as `alloc_large` does: only
 //!   when the source refused the span's reserve or the back of its pages in this call
 //!   (`large_refused`), with nothing else changed. Otherwise the object is block-aligned, so aligned
-//!   to `align`, and joins the large objects (`large_alloc`). Either way what it returns is apart
-//!   from every live slot and every large object, and alloc says nothing of its bytes.
+//!   to `align`, and joins the large objects (`large_alloc`). For a layout of more than the page
+//!   and at most one block whose alignment divides the page, it cuts a run of the smallest order
+//!   holding `pages_for(size)` pages and backs only those pages (`part_alloc`). It refuses exactly
+//!   when no held span had a free block of that order and the source refused the span, or the
+//!   source refused the back of the pages, when it frees the run again so the page buddy holds the
+//!   runs it held (`part_refused`). Otherwise the object is page-aligned, so aligned to `align`,
+//!   and joins the buddy-run objects. Whatever it returns is apart from every live slot, buddy-run
+//!   object and large object, and alloc says nothing of its bytes.
 //! - `free(src, p, size, align, perm)` takes back what alloc returned at `p` for that layout and
 //!   never refuses. A slab left with no live slot is retired, its run released and freed to the
 //!   page buddy, which gives back a span left with no run unless it keeps it as a spare
-//!   (`emptied_slab`). A large object's span is given back whole (`large_free`).
+//!   (`emptied_slab`). A buddy-run object's pages are released and its run freed, which gives
+//!   back a span left with no run unless the page buddy keeps it as a spare (`part_free`). A large
+//!   object's span is given back whole (`large_free`).
 use vstd::prelude::*;
 use vstd::raw_ptr::*;
 
 use crate::arch::*;
+use crate::buddy::*;
 use crate::class::*;
 use crate::large::*;
 use crate::page::*;
@@ -70,6 +82,49 @@ pub open spec fn large_layout(size: nat, align: nat) -> bool {
     &&& PAGE_BYTES as nat % align == 0
 }
 
+/// A layout a buddy run holds: more than the page and at most one block, its alignment dividing
+/// the page, so the run's page-aligned base is aligned to it.
+pub open spec fn run_layout(size: nat, align: nat) -> bool {
+    &&& PAGE_BYTES < size <= BLOCK_BYTES
+    &&& 0 < align
+    &&& PAGE_BYTES as nat % align == 0
+}
+
+/// From order `k` up, the first order whose run holds `n` pages, or BLOCK_ORDER.
+pub open spec fn order_up(n: nat, k: nat) -> nat
+    decreases BLOCK_ORDER - k,
+{
+    if k >= BLOCK_ORDER || n <= pages(k) {
+        k
+    } else {
+        order_up(n, k + 1)
+    }
+}
+
+/// The smallest order whose run holds `n` pages, `n` at most a block's.
+pub open spec fn run_order(n: nat) -> nat {
+    order_up(n, 0)
+}
+
+/// `after` is `before` with one refusal recorded, of a request `alloc` makes for a buddy-run object
+/// of `n` pages in a run of order `k` from the page buddy `pb`: the reserve of a run span or the
+/// back of its metadata page, only when `pb` had no free block of order `k` (`span_refused`); or
+/// the back of the object's `n` pages from the run `pb` cut at `q`, while the source held the spans
+/// it held once the run was cut.
+pub open spec fn part_refused(pb: PageBuddy, before: SourceView, after: SourceView, k: nat, n: nat) -> bool {
+    let r = after.refusals.last();
+    &&& after.provenance == before.provenance
+    &&& after.refusals == before.refusals.push(r)
+    &&& {
+        ||| !pb.fits(k) && span_refused(before, after)
+        ||| exists|mid: PageBuddy, s: SourceView, q: int| #[trigger]
+            cut_run(pb, mid, before, s, q, k) && r == (Refusal {
+                request: Request::Back { span: mid.span_base(span_of(q)), start: q, pages: n },
+                spans: s.spans,
+            })
+    }
+}
+
 /// Two classes share no head and no record.
 pub open spec fn apart(a: SizeClass, b: SizeClass) -> bool {
     &&& a.heads().disjoint(b.heads())
@@ -85,7 +140,8 @@ pub open spec fn records_grew(o: SizeClass, n: SizeClass, store: RecordStore) ->
 /// returning `r`: a slot of `class_for(size, align)`, or a refusal only when none of that class's
 /// slabs had a free slot and the source refused one request in the call (`slab_refused`), which
 /// leaves every class as it was. Every other class and the large objects are as they were either
-/// way. The slot is aligned to `align` and apart from every slot and large object live before.
+/// way. The slot is aligned to `align` and apart from every slot, buddy-run object and large object
+/// live before.
 pub open spec fn slot_alloc(
     h0: Heap,
     h1: Heap,
@@ -100,6 +156,7 @@ pub open spec fn slot_alloc(
     &&& c < CLASSES
     &&& size <= n
     &&& h1.large() == h0.large()
+    &&& h1.parts() == h0.parts()
     &&& forall|i: int| #![trigger h1.classes()[i]] 0 <= i < CLASSES && i != c ==> h1.classes()[i] == h0.classes()[i]
     &&& match r {
         None => {
@@ -120,6 +177,8 @@ pub open spec fn slot_alloc(
             &&& forall|i: int, y: int|
                 0 <= i < CLASSES && #[trigger] h0.classes()[i].live().contains(y) ==> p@.addr + n <= y || y
                     + class_size(i as nat) <= p@.addr
+            &&& forall|x: int| #[trigger]
+                h0.parts().contains_key(x) ==> p@.addr + n <= x || x + h0.parts()[x] * PAGE_BYTES <= p@.addr
             &&& forall|b: int| #[trigger]
                 h0.large().contains_key(b) ==> p@.addr + n <= b || b + h0.large()[b] * PAGE_BYTES <= p@.addr
         },
@@ -129,9 +188,9 @@ pub open spec fn slot_alloc(
 /// `alloc` of a large layout went from `h0` to `h1`, and the source's view from `s0` to `s1`,
 /// returning `r`: a large object of `pages_for(size)` pages, or a refusal only when the source
 /// refused the reserve of its span or the back of its pages in the call (`large_refused`), with
-/// nothing else changed. The classes, the store and the page buddy are as they were either way.
-/// The object is a new span reserved and backed, aligned to `align`, and apart from every slot and
-/// large object live before.
+/// nothing else changed. The classes, the store, the page buddy and the buddy-run objects are as
+/// they were either way. The object is a new span reserved and backed, aligned to `align`, and
+/// apart from every slot, buddy-run object and large object live before.
 pub open spec fn large_alloc(
     h0: Heap,
     h1: Heap,
@@ -145,6 +204,7 @@ pub open spec fn large_alloc(
     &&& h1.classes() == h0.classes()
     &&& h1.store() == h0.store()
     &&& h1.pb() == h0.pb()
+    &&& h1.parts() == h0.parts()
     &&& match r {
         None => {
             &&& h1.large() == h0.large()
@@ -166,13 +226,16 @@ pub open spec fn large_alloc(
                 0 <= i < CLASSES && #[trigger] h0.classes()[i].live().contains(y) ==> b + n * PAGE_BYTES <= y || y
                     + class_size(i as nat) <= b
             &&& forall|x: int| #[trigger]
+                h0.parts().contains_key(x) ==> b + n * PAGE_BYTES <= x || x + h0.parts()[x] * PAGE_BYTES <= b
+            &&& forall|x: int| #[trigger]
                 h0.large().contains_key(x) ==> b + n * PAGE_BYTES <= x || x + h0.large()[x] * PAGE_BYTES <= b
         },
     }
 }
 
 /// `free` of the slot at `p` of a small layout went from `h0` to `h1`, and the source's view from
-/// `s0` to `s1`: every other class and the large objects are as they were, and a slab left with a
+/// `s0` to `s1`: every other class, the buddy-run objects and the large objects are as they were,
+/// and a slab left with a
 /// live slot keeps the store, the page buddy and the source as they were; a slab left with none is
 /// retired (`emptied_slab`).
 pub open spec fn slot_free(h0: Heap, h1: Heap, s0: SourceView, s1: SourceView, p: int, size: nat, align: nat) -> bool {
@@ -181,6 +244,7 @@ pub open spec fn slot_free(h0: Heap, h1: Heap, s0: SourceView, s1: SourceView, p
     let a = oc.slab_of(p);
     let b = oc.slabs()[a].base()@.addr as int;
     &&& h1.large() == h0.large()
+    &&& h1.parts() == h0.parts()
     &&& forall|i: int| #![trigger h1.classes()[i]] 0 <= i < CLASSES && i != c ==> h1.classes()[i] == h0.classes()[i]
     &&& h1.classes()[c].live() == oc.live().remove(p)
     &&& if only_live(oc.slabs()[a], p) {
@@ -193,14 +257,170 @@ pub open spec fn slot_free(h0: Heap, h1: Heap, s0: SourceView, s1: SourceView, p
 }
 
 /// `free` of the large object at `p` went from `h0` to `h1`, and the source's view from `s0` to
-/// `s1`: the classes, the store and the page buddy are as they were, and the object's span is
-/// given back whole.
+/// `s1`: the classes, the store, the page buddy and the buddy-run objects are as they were, and
+/// the object's span is given back whole.
 pub open spec fn large_free(h0: Heap, h1: Heap, s0: SourceView, s1: SourceView, p: int) -> bool {
     &&& h1.classes() == h0.classes()
     &&& h1.store() == h0.store()
     &&& h1.pb() == h0.pb()
+    &&& h1.parts() == h0.parts()
     &&& h1.large() == h0.large().remove(p)
     &&& s1 == s0.released_span(p)
+}
+
+/// `alloc` of a run layout went from `h0` to `h1`, and the source's view from `s0` to `s1`,
+/// returning `r`: a buddy-run object of `n = pages_for(size)` pages in a run of the smallest order
+/// `k` holding them, or a refusal only when the source refused a request in the call
+/// (`part_refused`), which leaves the page buddy holding the runs it held. The classes, the store
+/// and the large objects are as they were either way. The object is the run `alloc_run` cut with
+/// only its first `n` pages backed, the permission to exactly those pages' bytes, page-aligned, so
+/// aligned to `align`, and apart from every slot, buddy-run object and large object live before.
+pub open spec fn part_alloc(
+    h0: Heap,
+    h1: Heap,
+    s0: SourceView,
+    s1: SourceView,
+    size: nat,
+    align: nat,
+    r: Option<(*mut u8, Tracked<PointsToRaw>)>,
+) -> bool {
+    let n = pages_for(size);
+    let k = run_order(n);
+    &&& n <= pages(k)
+    &&& k == 0 || pages((k - 1) as nat) < n
+    &&& size <= n * PAGE_BYTES
+    &&& h1.classes() == h0.classes()
+    &&& h1.store() == h0.store()
+    &&& h1.large() == h0.large()
+    &&& match r {
+        None => {
+            &&& h1.parts() == h0.parts()
+            &&& h1.live() == h0.live()
+            &&& runs(h1.pb().used()) == runs(h0.pb().used())
+            &&& part_refused(h0.pb(), s0, s1, k, n)
+        },
+        Some((p, perm)) => {
+            let b = p@.addr as int;
+            &&& perm@.is_range(b, n * PAGE_BYTES)
+            &&& perm@.provenance() == s0.provenance
+            &&& p@.provenance == s0.provenance
+            &&& b % PAGE_BYTES as int == 0
+            &&& b % align as int == 0
+            &&& !h0.live().contains(b)
+            &&& h1.live() == h0.live().insert(b)
+            &&& h1.parts() == h0.parts().insert(b, n)
+            &&& run_part(h1.pb(), s1, b, k, n)
+            &&& exists|mid: PageBuddy, sm: SourceView| #[trigger]
+                cut_run(h0.pb(), mid, s0, sm, b, k) && s1 == sm.backed_run(mid.span_base(span_of(b)), b, n)
+            &&& forall|i: int, y: int|
+                0 <= i < CLASSES && #[trigger] h0.classes()[i].live().contains(y) ==> b + n * PAGE_BYTES <= y || y
+                    + class_size(i as nat) <= b
+            &&& forall|x: int| #[trigger]
+                h0.parts().contains_key(x) ==> b + n * PAGE_BYTES <= x || x + h0.parts()[x] * PAGE_BYTES <= b
+            &&& forall|x: int| #[trigger]
+                h0.large().contains_key(x) ==> b + n * PAGE_BYTES <= x || x + h0.large()[x] * PAGE_BYTES <= b
+        },
+    }
+}
+
+/// `free` of the buddy-run object at `p` went from `h0` to `h1`, and the source's view from `s0`
+/// to `s1`: the classes, the store and the large objects are as they were; the object's pages are
+/// released, and its run freed (`freed`), which gives its span back to the source when no run is
+/// left in it and the page buddy keeps as many idle spans as its spares.
+pub open spec fn part_free(h0: Heap, h1: Heap, s0: SourceView, s1: SourceView, p: int) -> bool {
+    &&& h1.classes() == h0.classes()
+    &&& h1.store() == h0.store()
+    &&& h1.large() == h0.large()
+    &&& h1.parts() == h0.parts().remove(p)
+    &&& freed(h0.pb(), h1.pb(), s0.released_run(h0.pb().span_base(span_of(p)), p, h0.parts()[p]), s1, p)
+}
+
+/// The smallest order whose run holds `n` pages.
+fn order_for(n: usize) -> (r: usize)
+    requires
+        0 < n <= BLOCK_PAGES,
+    ensures
+        r as nat == run_order(n as nat),
+        r <= BLOCK_ORDER,
+        n <= pages(r as nat),
+        r == 0 || pages((r - 1) as nat) < n,
+{
+    proof {
+        lemma_block_pages();
+    }
+    let mut k: usize = 0;
+    loop
+        invariant
+            k <= BLOCK_ORDER,
+            0 < n <= BLOCK_PAGES,
+            pages(BLOCK_ORDER as nat) == BLOCK_PAGES as int,
+            order_up(n as nat, k as nat) == run_order(n as nat),
+            k == 0 || pages((k - 1) as nat) < n,
+        decreases BLOCK_ORDER - k,
+    {
+        if n <= order_pages(k) {
+            return k;
+        }
+        k = k + 1;
+    }
+}
+
+/// A run layout's object is of at least two pages and at most a block's, which hold its bytes.
+proof fn lemma_run_sizes(size: nat)
+    requires
+        PAGE_BYTES < size <= BLOCK_BYTES,
+    ensures
+        2 <= pages_for(size) <= BLOCK_PAGES,
+        size <= pages_for(size) * PAGE_BYTES,
+{
+    let pg = PAGE_BYTES as int;
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(size - 1, pg);
+    let q = (size - 1) / pg;
+    let m = (size - 1) % pg;
+    assert(q >= 1) by (nonlinear_arith)
+        requires
+            size - 1 == pg * q + m,
+            0 <= m < pg,
+            size - 1 >= pg,
+    ;
+    assert(q <= BLOCK_PAGES - 1) by (nonlinear_arith)
+        requires
+            size - 1 == pg * q + m,
+            0 <= m,
+            size - 1 < pg * BLOCK_PAGES,
+            pg > 0,
+    ;
+    assert(size <= (q + 1) * pg) by (nonlinear_arith)
+        requires
+            size - 1 == pg * q + m,
+            m < pg,
+    ;
+}
+
+/// `n` pages of `m` or fewer take no more bytes than `m` pages.
+proof fn lemma_page_bytes(n: int, m: int)
+    requires
+        n <= m,
+    ensures
+        n * PAGE_BYTES <= m * PAGE_BYTES,
+{
+    assert(n * PAGE_BYTES <= m * PAGE_BYTES) by (nonlinear_arith)
+        requires
+            n <= m,
+            PAGE_BYTES > 0,
+    ;
+}
+
+/// The first `n` pages of a run of `m` pages with none backed have none backed.
+proof fn lemma_fewer_unbacked(s: SourceView, b: int, q: int, n: nat, m: nat)
+    requires
+        s.unbacked(b, q, m),
+        n <= m,
+    ensures
+        s.unbacked(b, q, n),
+{
+    lemma_page_bytes(n as int, m as int);
+    assert(run_pages(q, n).subset_of(run_pages(q, m)));
 }
 
 /// The class of a small layout, its slot holding `size` bytes and a multiple of `align`.
@@ -292,8 +512,8 @@ proof fn lemma_beside_span(pb: PageBuddy, s: SourceView, c: int, b: int, blocks:
     ;
 }
 
-/// The heap: a size class per class over one record store and one page buddy, and the
-/// large-object map.
+/// The heap: a size class per class over one record store and one page buddy, the buddy-run
+/// objects, and the large-object map.
 pub struct Heap {
     /// Class `i` at index `i`.
     classes: [SizeClass; CLASSES],
@@ -303,6 +523,9 @@ pub struct Heap {
     pb: PageBuddy,
     /// The large objects, a span each.
     large: LargeMap,
+    /// The buddy-run objects, by base, with the pages each has backed: each a run of the page
+    /// buddy's, of the smallest order holding those pages.
+    parts: Ghost<Map<int, nat>>,
 }
 
 impl Heap {
@@ -326,17 +549,22 @@ impl Heap {
         self.large.objects()
     }
 
+    /// The buddy-run objects, by base, with the pages each has backed.
+    pub closed spec fn parts(&self) -> Map<int, nat> {
+        self.parts@
+    }
+
     /// The idle spans the page buddy keeps rather than give back.
     pub closed spec fn spares(&self) -> nat {
         self.pb.spares()
     }
 
-    /// The live slots of every class and the bases of the large objects.
+    /// The live slots of every class and the bases of the buddy-run objects and the large objects.
     pub open spec fn live(&self) -> ISet<int> {
         ISet::new(
             |y: int|
                 (exists|i: int| 0 <= i < CLASSES && #[trigger] self.classes()[i].live().contains(y))
-                    || self.large().contains_key(y),
+                    || self.parts().contains_key(y) || self.large().contains_key(y),
         )
     }
 
@@ -352,12 +580,153 @@ impl Heap {
             0 <= i < CLASSES && 0 <= j < CLASSES && i != j ==> #[trigger] apart(self.classes@[i], self.classes@[j])
     }
 
-    /// The slab arm's invariant, and the large-object map well formed over `src`, each large
-    /// object's span one the page buddy does not hold.
+    /// The buddy-run object at `x` is a run the page buddy holds, of the smallest order holding the
+    /// object's pages, with only those pages backed, and no record page or slab run.
+    spec fn part_ok(&self, src: SourceView, x: int) -> bool {
+        let n = self.parts@[x];
+        &&& run_part(self.pb, src, x, run_order(n), n)
+        &&& !self.store.pages().contains(x)
+        &&& forall|i: int| 0 <= i < CLASSES ==> !(#[trigger] self.classes@[i]).heads().contains(x)
+    }
+
+    /// The slab arm's invariant; each buddy-run object a run the page buddy holds with only its
+    /// pages backed; and the large-object map well formed over `src`, each large object's span one
+    /// the page buddy does not hold.
     pub closed spec fn wf(&self, src: SourceView) -> bool {
         &&& self.small_wf(src)
+        &&& forall|x: int| #[trigger] self.parts@.contains_key(x) ==> self.part_ok(src, x)
         &&& self.large.wf(src)
         &&& forall|b: int| #[trigger] self.large.objects().contains_key(b) ==> !self.pb.spans().contains_key(b)
+    }
+
+    /// A change to the page buddy and the source that keeps the provenance, every span the page
+    /// buddy does not hold, and every run it holds, whole or with only its first pages backed, but
+    /// the one at `b`, which is no record page or slab run if the page buddy holds it, keeps the
+    /// store's, every class's and the large-object map's invariants, and every other buddy-run
+    /// object.
+    proof fn lemma_pb_frame(&self, s0: SourceView, pb1: PageBuddy, s1: SourceView, b: int)
+        requires
+            self.wf(s0),
+            pb1.wf(s1),
+            s1.provenance == s0.provenance,
+            forall|x: int, j: nat| #[trigger] run_held(self.pb, s0, x, j) && x != b ==> run_held(pb1, s1, x, j),
+            forall|x: int, j: nat, n: nat| #[trigger]
+                run_part(self.pb, s0, x, j, n) && x != b ==> run_part(pb1, s1, x, j, n),
+            others_kept(self.pb, pb1, s0, s1),
+            !self.pb.holds(b) || (!self.store.pages().contains(b) && forall|i: int|
+                0 <= i < CLASSES ==> !(#[trigger] self.classes@[i]).heads().contains(b)),
+        ensures
+            self.store.wf(pb1, s1),
+            forall|i: int| 0 <= i < CLASSES ==> (#[trigger] self.classes@[i]).wf(self.store, pb1, s1),
+            self.large.wf(s1),
+            forall|c: int| #[trigger] self.large.objects().contains_key(c) ==> !pb1.spans().contains_key(c),
+            forall|x: int| #[trigger]
+                self.parts@.contains_key(x) && x != b ==> run_part(pb1, s1, x, run_order(self.parts@[x]), self.parts@[x]),
+    {
+        self.store.lemma_view(self.pb, s0);
+        assert forall|r: int| #[trigger] self.store.pages().contains(r) implies run_held(pb1, s1, r, 0) by {
+            assert(run_held(self.pb, s0, r, 0));
+        }
+        self.store.lemma_frame(self.pb, s0, pb1, s1);
+        assert forall|i: int| 0 <= i < CLASSES implies (#[trigger] self.classes@[i]).wf(self.store, pb1, s1) by {
+            let ci = self.classes@[i];
+            assert(ci.wf(self.store, self.pb, s0));
+            ci.lemma_heads_held(self.store, self.pb, s0);
+            assert(!ci.heads().contains(b)) by {
+                if ci.heads().contains(b) {
+                    assert(run_held(self.pb, s0, b, slab_order(ci.class())));
+                }
+            }
+            ci.lemma_frame_but_run(self.store, self.pb, s0, pb1, s1, b);
+        }
+        self.large.lemma_view(s0);
+        assert forall|c: int| #[trigger] self.large.objects().contains_key(c) implies {
+            &&& s1.spans.contains_key(c)
+            &&& s1.spans[c] == s0.spans[c]
+            &&& !pb1.spans().contains_key(c)
+        } by {
+            assert(s0.spans.contains_key(c));
+            assert(!self.pb.spans().contains_key(c));
+        }
+        self.large.lemma_frame(s0, s1);
+        assert forall|x: int| #[trigger] self.parts@.contains_key(x) && x != b implies run_part(
+            pb1,
+            s1,
+            x,
+            run_order(self.parts@[x]),
+            self.parts@[x],
+        ) by {
+            assert(self.part_ok(s0, x));
+        }
+    }
+
+    /// A live slot of class `i` and a buddy-run object share no byte.
+    proof fn lemma_slot_beside_part(&self, src: SourceView, i: int, y: int, x: int)
+        requires
+            self.wf(src),
+            0 <= i < CLASSES,
+            self.classes()[i].live().contains(y),
+            self.parts().contains_key(x),
+        ensures
+            y + class_size(i as nat) <= x || x + self.parts()[x] * PAGE_BYTES <= y,
+            y != x,
+    {
+        let ci = self.classes@[i];
+        let n = self.parts@[x];
+        let k = run_order(n);
+        assert(self.part_ok(src, x));
+        assert(ci.wf(self.store, self.pb, src));
+        assert(ci.class() == i);
+        assert(!ci.heads().contains(x));
+        ci.lemma_live_apart_from_run(self.store, self.pb, src, y, x, k);
+        lemma_page_bytes(n as int, pages(k));
+        lemma_class(i as nat);
+        assert(n * PAGE_BYTES > 0) by (nonlinear_arith)
+            requires
+                n > 0,
+        ;
+    }
+
+    /// A buddy-run object and a large object share no byte.
+    proof fn lemma_part_beside_large(&self, src: SourceView, x: int, b: int)
+        requires
+            self.wf(src),
+            self.parts().contains_key(x),
+            self.large().contains_key(b),
+        ensures
+            x + self.parts()[x] * PAGE_BYTES <= b || b + self.large()[b] * PAGE_BYTES <= x,
+            x != b,
+    {
+        let n = self.parts@[x];
+        let k = run_order(n);
+        assert(self.part_ok(src, x));
+        lemma_held_bounds(self.pb, src, x, k);
+        self.lemma_large_beside(src, b);
+        lemma_beside_span(self.pb, src, span_of(x), b, blocks_for(self.large()[b]));
+        lemma_page_bytes(n as int, pages(k));
+        assert(n * PAGE_BYTES > 0) by (nonlinear_arith)
+            requires
+                n > 0,
+        ;
+    }
+
+    /// Two buddy-run objects share no byte.
+    proof fn lemma_parts_apart(&self, src: SourceView, x: int, z: int)
+        requires
+            self.wf(src),
+            self.parts().contains_key(x),
+            self.parts().contains_key(z),
+            x != z,
+        ensures
+            x + self.parts()[x] * PAGE_BYTES <= z || z + self.parts()[z] * PAGE_BYTES <= x,
+    {
+        let n = self.parts@[x];
+        let m = self.parts@[z];
+        assert(self.part_ok(src, x));
+        assert(self.part_ok(src, z));
+        lemma_held_apart(self.pb, src, x, run_order(n), z, run_order(m));
+        lemma_page_bytes(n as int, pages(run_order(n)));
+        lemma_page_bytes(m as int, pages(run_order(m)));
     }
 
     /// A live slot of class `i` and one of another class `j` share no byte.
@@ -390,6 +759,7 @@ impl Heap {
                     == s.spans[x],
         ensures
             self.small_wf(t),
+            forall|x: int, k: nat, n: nat| #[trigger] run_part(self.pb, s, x, k, n) ==> run_part(self.pb, t, x, k, n),
     {
         let pb = self.pb;
         assert forall|x: int, k: nat| #[trigger] run_held(pb, s, x, k) implies run_held(pb, t, x, k) by {
@@ -506,7 +876,13 @@ impl Heap {
             SizeClass::new(26),
             SizeClass::new(27),
         ];
-        let r = Heap { classes, store: RecordStore::new(), pb: PageBuddy::new(spares), large: LargeMap::new() };
+        let r = Heap {
+            classes,
+            store: RecordStore::new(),
+            pb: PageBuddy::new(spares),
+            large: LargeMap::new(),
+            parts: Ghost(Map::empty()),
+        };
         proof {
             assert forall|i: int| 0 <= i < CLASSES implies {
                 &&& (#[trigger] r.classes@[i]).class() == i
@@ -534,6 +910,7 @@ impl Heap {
                     assert(r.classes@[i].class() == i);
                 }
                 assert(r.large.wf(src));
+                assert(r.parts@ == Map::<int, nat>::empty());
             }
             assert(r.live() =~= ISet::<int>::empty());
         }
@@ -541,18 +918,31 @@ impl Heap {
     }
 
     /// An object of `size` bytes aligned to `align`: a slot of `class_for(size, align)` for a small
-    /// layout (`slot_alloc`), a large object of `pages_for(size)` pages for a large one
-    /// (`large_alloc`); or a refusal, only when the source refused a request in this call.
+    /// layout (`slot_alloc`), a buddy-run object of `pages_for(size)` pages for a run layout
+    /// (`part_alloc`), a large object of `pages_for(size)` pages for a large one (`large_alloc`);
+    /// or a refusal, only when the source refused a request in this call.
     pub fn alloc<S: SpanSource>(&mut self, src: &mut S, size: usize, align: usize) -> (r: Option<
         (*mut u8, Tracked<PointsToRaw>),
     >)
         requires
             old(self).wf(old(src)@),
-            small_layout(size as nat, align as nat) || large_layout(size as nat, align as nat),
+            small_layout(size as nat, align as nat) || run_layout(size as nat, align as nat) || large_layout(
+                size as nat,
+                align as nat,
+            ),
         ensures
             final(self).wf(final(src)@),
             final(self).spares() == old(self).spares(),
             small_layout(size as nat, align as nat) ==> slot_alloc(
+                *old(self),
+                *final(self),
+                old(src)@,
+                final(src)@,
+                size as nat,
+                align as nat,
+                r,
+            ),
+            run_layout(size as nat, align as nat) ==> part_alloc(
                 *old(self),
                 *final(self),
                 old(src)@,
@@ -573,6 +963,8 @@ impl Heap {
     {
         if size <= PAGE_BYTES {
             self.alloc_slot(src, size, align)
+        } else if size <= BLOCK_BYTES {
+            self.alloc_part(src, size, align)
         } else {
             self.alloc_object(src, size, align)
         }
@@ -677,6 +1069,54 @@ impl Heap {
                 assert(!o.pb.spans().contains_key(b));
             }
             self.large.lemma_frame(s0, s1);
+            assert forall|x: int| #[trigger] self.parts@.contains_key(x) implies self.part_ok(s1, x) by {
+                assert(o.part_ok(s0, x));
+                let n = o.parts@[x];
+                let kx = run_order(n);
+                assert(run_part(o.pb, s0, x, kx, n));
+                assert forall|i: int| 0 <= i < CLASSES implies !(#[trigger] self.classes@[i]).heads().contains(x) by {
+                    assert(!o.classes@[i].heads().contains(x));
+                    if i == ci {
+                        match r {
+                            None => {},
+                            Some(_) => {
+                                if !exists|a: int| #[trigger]
+                                    oc.slabs().contains_key(a) && oc.slabs()[a].free_slots() != Set::<int>::empty() {
+                                    let a = choose|a: int| #[trigger]
+                                        nc.slabs().contains_key(a) && {
+                                            &&& nc.heads() == oc.heads().insert(nc.slabs()[a].base()@.addr as int)
+                                            &&& new_slab(
+                                                o.store,
+                                                self.store,
+                                                o.pb,
+                                                self.pb,
+                                                s0,
+                                                s1,
+                                                a,
+                                                nc.slabs()[a].base()@.addr as int,
+                                                slab_order(oc.class()),
+                                            )
+                                        };
+                                    let h = nc.slabs()[a].base()@.addr as int;
+                                    let k = slab_order(oc.class());
+                                    let (pbm, sm) = choose|pbm: PageBuddy, sm: SourceView| #[trigger]
+                                        took_run(o.pb, pbm, s0, sm, h, k);
+                                    let c = span_of(h);
+                                    let m = if o.pb.spans().contains_key(c) {
+                                        s0
+                                    } else {
+                                        s0.reserved(c, SPAN_BLOCKS as nat).backed_run(c, meta_page(c), 1)
+                                    };
+                                    assert(cut_run(o.pb, pbm, s0, m, h, k));
+                                    lemma_cut_keeps_part(o.pb, pbm, s0, m, h, k, x, kx, n);
+                                }
+                            },
+                        }
+                    } else {
+                        assert(self.classes@[i] == o.classes@[i]);
+                    }
+                }
+            }
             assert(self.wf(s1));
             match r {
                 None => {
@@ -703,8 +1143,14 @@ impl Heap {
                         self.lemma_large_beside(s1, x);
                         self.lemma_slot_beside(s1, ci, y0, x, blocks_for(self.large()[x]));
                     }
+                    assert forall|x: int| #[trigger] o.parts().contains_key(x) implies y0 + n <= x || x + o.parts()[x]
+                        * PAGE_BYTES <= y0 by {
+                        self.lemma_slot_beside_part(s1, ci, y0, x);
+                    }
                     assert(!o.live().contains(y0)) by {
-                        if o.large().contains_key(y0) {
+                        if o.parts().contains_key(y0) {
+                            self.lemma_slot_beside_part(s1, ci, y0, y0);
+                        } else if o.large().contains_key(y0) {
                             self.lemma_large_beside(s1, y0);
                         } else if o.live().contains(y0) {
                             let i = choose|i: int| 0 <= i < CLASSES && #[trigger] o.classes()[i].live().contains(y0);
@@ -713,7 +1159,7 @@ impl Heap {
                     }
                     assert(self.live() =~= o.live().insert(y0)) by {
                         assert forall|y: int| #[trigger] self.live().contains(y) == o.live().insert(y0).contains(y) by {
-                            if self.live().contains(y) && !self.large().contains_key(y) {
+                            if self.live().contains(y) && !self.large().contains_key(y) && !self.parts().contains_key(y) {
                                 let i = choose|i: int| 0 <= i < CLASSES && #[trigger] self.classes()[i].live().contains(y);
                                 if i != ci {
                                     assert(o.classes()[i].live().contains(y));
@@ -721,7 +1167,7 @@ impl Heap {
                                     assert(o.classes()[ci].live().contains(y));
                                 }
                             }
-                            if o.live().contains(y) && !o.large().contains_key(y) {
+                            if o.live().contains(y) && !o.large().contains_key(y) && !o.parts().contains_key(y) {
                                 let i = choose|i: int| 0 <= i < CLASSES && #[trigger] o.classes()[i].live().contains(y);
                                 if i != ci {
                                     assert(self.classes()[i].live().contains(y));
@@ -738,6 +1184,329 @@ impl Heap {
             }
         }
         r
+    }
+
+    /// The buddy-run arm of `alloc`.
+    fn alloc_part<S: SpanSource>(&mut self, src: &mut S, size: usize, align: usize) -> (r: Option<
+        (*mut u8, Tracked<PointsToRaw>),
+    >)
+        requires
+            old(self).wf(old(src)@),
+            run_layout(size as nat, align as nat),
+        ensures
+            final(self).wf(final(src)@),
+            final(self).spares() == old(self).spares(),
+            part_alloc(*old(self), *final(self), old(src)@, final(src)@, size as nat, align as nat, r),
+    {
+        let ghost o = *self;
+        let ghost pb0 = self.pb;
+        let ghost s0 = src@;
+        proof {
+            lemma_run_sizes(size as nat);
+            pb0.lemma_view(s0);
+            o.store.lemma_view(pb0, s0);
+        }
+        let n = (size - 1) / PAGE_BYTES + 1;
+        let k = order_for(n);
+        let ghost kk = k as nat;
+        let ghost nn = n as nat;
+        let q = match self.pb.alloc_run(src, k) {
+            Err(_) => {
+                proof {
+                    let pb1 = self.pb;
+                    let s1 = src@;
+                    let rf = s1.refusals.last();
+                    assert forall|x: int, j: nat| #[trigger] run_held(pb0, s0, x, j) && x != -1 implies run_held(
+                        pb1,
+                        s1,
+                        x,
+                        j,
+                    ) by {
+                        lemma_recorded_keeps_held(pb0, s0, rf, x, j);
+                    }
+                    assert forall|x: int, j: nat, m: nat| #[trigger] run_part(pb0, s0, x, j, m) && x != -1 implies run_part(
+                        pb1,
+                        s1,
+                        x,
+                        j,
+                        m,
+                    ) by {
+                        lemma_recorded_keeps_part(pb0, s0, rf, x, j, m);
+                    }
+                    assert(s1.spans == s0.spans);
+                    lemma_others_same(pb0, pb1, s0, s1);
+                    o.lemma_pb_frame(s0, pb1, s1, -1);
+                    assert forall|x: int| #[trigger] self.parts@.contains_key(x) implies self.part_ok(s1, x) by {
+                        assert(o.part_ok(s0, x));
+                    }
+                    assert(self.wf(s1));
+                    assert(self.live() =~= o.live());
+                    assert(part_refused(pb0, s0, s1, kk, nn));
+                }
+                return None;
+            },
+            Ok(q) => q,
+        };
+        let ghost qi = q as int;
+        let ghost pb1 = self.pb;
+        let ghost s1 = src@;
+        proof {
+            assert(cut_run(pb0, pb1, s0, s1, qi, kk));
+            assert(s1.refusals == s0.refusals && s1.provenance == s0.provenance);
+            assert forall|x: int, j: nat| #[trigger] run_held(pb0, s0, x, j) implies x != qi && run_held(pb1, s1, x, j) by {
+                lemma_cut_keeps_held(pb0, pb1, s0, s1, qi, kk, x, j);
+            }
+            assert forall|x: int, j: nat, m: nat| #[trigger] run_part(pb0, s0, x, j, m) implies x != qi && run_part(
+                pb1,
+                s1,
+                x,
+                j,
+                m,
+            ) by {
+                lemma_cut_keeps_part(pb0, pb1, s0, s1, qi, kk, x, j, m);
+            }
+            assert(pb1.used().contains_key(span_of(qi)));
+            assert(pb1.used()[span_of(qi)][page_of(qi)] == kk);
+            pb1.lemma_view(s1);
+            lemma_fewer_unbacked(s1, pb1.span_base(span_of(qi)), qi, nn, pages(kk) as nat);
+            lemma_cut_others(pb0, pb1, s0, s1, qi, kk);
+            assert(!o.store.pages().contains(qi)) by {
+                if o.store.pages().contains(qi) {
+                    assert(run_held(pb0, s0, qi, 0));
+                }
+            }
+            assert forall|i: int| 0 <= i < CLASSES implies !(#[trigger] o.classes@[i]).heads().contains(qi) by {
+                let ci = o.classes@[i];
+                assert(ci.wf(o.store, pb0, s0));
+                ci.lemma_heads_held(o.store, pb0, s0);
+                if ci.heads().contains(qi) {
+                    assert(run_held(pb0, s0, qi, slab_order(ci.class())));
+                }
+            }
+            assert(!o.parts@.contains_key(qi)) by {
+                if o.parts@.contains_key(qi) {
+                    assert(o.part_ok(s0, qi));
+                    assert(run_part(pb0, s0, qi, run_order(o.parts@[qi]), o.parts@[qi]));
+                }
+            }
+        }
+        let (ptr, perm) = match self.pb.back_run(src, q, k, n) {
+            None => {
+                let ghost pb2 = self.pb;
+                let ghost s2 = src@;
+                self.pb.free_run(src, q);
+                proof {
+                    let pb3 = self.pb;
+                    let s3 = src@;
+                    let rf = s2.refusals.last();
+                    assert(freed(pb2, pb3, s2, s3, qi));
+                    lemma_runs_restored(pb0, pb1, pb2, pb3, s0, s1, s2, s3, qi, kk);
+                    assert(pb2.holds(qi));
+                    assert forall|x: int, j: nat| #[trigger] run_held(pb0, s0, x, j) && x != qi implies run_held(
+                        pb3,
+                        s3,
+                        x,
+                        j,
+                    ) by {
+                        assert(run_held(pb1, s1, x, j));
+                        lemma_recorded_keeps_held(pb1, s1, rf, x, j);
+                        assert(run_held(pb2, s2, x, j));
+                        lemma_freed_keeps_held(pb2, pb3, s2, s3, qi, x, j);
+                    }
+                    assert forall|x: int, j: nat, m: nat| #[trigger] run_part(pb0, s0, x, j, m) && x != qi implies run_part(
+                        pb3,
+                        s3,
+                        x,
+                        j,
+                        m,
+                    ) by {
+                        assert(run_part(pb1, s1, x, j, m));
+                        lemma_recorded_keeps_part(pb1, s1, rf, x, j, m);
+                        assert(run_part(pb2, s2, x, j, m));
+                        lemma_freed_keeps_part(pb2, pb3, s2, s3, qi, x, j, m);
+                    }
+                    lemma_others_same(pb1, pb2, s1, s2);
+                    lemma_freed_others(pb2, pb3, s2, s2, s3, qi);
+                    lemma_others_trans(pb0, pb1, pb2, s0, s1, s2);
+                    lemma_others_trans(pb0, pb2, pb3, s0, s2, s3);
+                    o.lemma_pb_frame(s0, pb3, s3, qi);
+                    assert forall|x: int| #[trigger] self.parts@.contains_key(x) implies self.part_ok(s3, x) by {
+                        assert(o.part_ok(s0, x));
+                    }
+                    assert(self.wf(s3));
+                    assert(self.live() =~= o.live());
+                    assert(s3.refusals == s2.refusals);
+                    assert(cut_run(pb0, pb1, s0, s1, qi, kk));
+                    assert(part_refused(pb0, s0, s3, kk, nn));
+                }
+                return None;
+            },
+            Some(got) => got,
+        };
+        self.parts = Ghost(self.parts@.insert(qi, nn));
+        proof {
+            let pb2 = self.pb;
+            let s2 = src@;
+            let base = pb1.span_base(span_of(qi));
+            assert(s2 == s1.backed_run(base, qi, nn));
+            lemma_span_base(pb1, s1, span_of(qi));
+            assert forall|x: int, j: nat| #[trigger] run_held(pb0, s0, x, j) && x != qi implies run_held(
+                pb2,
+                s2,
+                x,
+                j,
+            ) by {
+                assert(run_held(pb1, s1, x, j));
+                lemma_backed_keeps_held(pb1, s1, base, qi, nn, x, j);
+            }
+            assert forall|x: int, j: nat, m: nat| #[trigger] run_part(pb0, s0, x, j, m) && x != qi implies run_part(
+                pb2,
+                s2,
+                x,
+                j,
+                m,
+            ) by {
+                assert(run_part(pb1, s1, x, j, m));
+                lemma_backed_keeps_part(pb1, s1, base, qi, nn, x, j, m);
+            }
+            assert forall|b: int| #[trigger] s1.spans.contains_key(b) && b != base implies s2.spans.contains_key(b)
+                && s2.spans[b] == s1.spans[b] by {}
+            lemma_others_at(pb1, pb2, s1, s2, base);
+            lemma_others_trans(pb0, pb1, pb2, s0, s1, s2);
+            o.lemma_pb_frame(s0, pb2, s2, qi);
+            lemma_backed_part(pb1, s1, qi, kk, nn);
+            assert(run_part(pb2, s2, qi, kk, nn));
+            assert forall|x: int| #[trigger] self.parts@.contains_key(x) implies self.part_ok(s2, x) by {
+                if x != qi {
+                    assert(o.part_ok(s0, x));
+                }
+            }
+            assert(self.wf(s2));
+            lemma_held_bounds(pb2, s2, qi, kk);
+            lemma_aligned(qi, qi, PAGE_BYTES as int, align as int);
+            assert forall|i: int, y: int|
+                0 <= i < CLASSES && #[trigger] o.classes()[i].live().contains(y) implies qi + nn * PAGE_BYTES <= y || y
+                + class_size(i as nat) <= qi by {
+                self.lemma_slot_beside_part(s2, i, y, qi);
+            }
+            assert forall|x: int| #[trigger] o.parts().contains_key(x) implies qi + nn * PAGE_BYTES <= x || x
+                + o.parts()[x] * PAGE_BYTES <= qi by {
+                self.lemma_parts_apart(s2, qi, x);
+            }
+            assert forall|x: int| #[trigger] o.large().contains_key(x) implies qi + nn * PAGE_BYTES <= x || x
+                + o.large()[x] * PAGE_BYTES <= qi by {
+                self.lemma_part_beside_large(s2, qi, x);
+            }
+            assert(!o.live().contains(qi)) by {
+                if o.large().contains_key(qi) {
+                    self.lemma_part_beside_large(s2, qi, qi);
+                } else if o.live().contains(qi) && !o.parts().contains_key(qi) {
+                    let i = choose|i: int| 0 <= i < CLASSES && #[trigger] o.classes()[i].live().contains(qi);
+                    self.lemma_slot_beside_part(s2, i, qi, qi);
+                }
+            }
+            assert(self.live() =~= o.live().insert(qi));
+            assert(cut_run(o.pb(), pb1, s0, s1, qi, kk) && s2 == s1.backed_run(pb1.span_base(span_of(qi)), qi, nn));
+        }
+        Some((ptr, perm))
+    }
+
+    /// The buddy-run arm of `free`.
+    fn free_part<S: SpanSource>(&mut self, src: &mut S, p: *mut u8, size: usize, perm: Tracked<PointsToRaw>)
+        requires
+            old(self).wf(old(src)@),
+            PAGE_BYTES < size <= BLOCK_BYTES,
+            old(self).parts().contains_key(p@.addr as int),
+            old(self).parts()[p@.addr as int] == pages_for(size as nat),
+            perm@.is_range(p@.addr as int, pages_for(size as nat) * PAGE_BYTES),
+            perm@.provenance() == old(src)@.provenance,
+        ensures
+            final(self).wf(final(src)@),
+            final(self).spares() == old(self).spares(),
+            final(self).live() == old(self).live().remove(p@.addr as int),
+            part_free(*old(self), *final(self), old(src)@, final(src)@, p@.addr as int),
+    {
+        let ghost o = *self;
+        let ghost pb0 = self.pb;
+        let ghost s0 = src@;
+        let ghost y0 = p@.addr as int;
+        proof {
+            lemma_run_sizes(size as nat);
+            assert(o.part_ok(s0, y0));
+            pb0.lemma_view(s0);
+        }
+        let n = (size - 1) / PAGE_BYTES + 1;
+        let k = order_for(n);
+        let ghost kk = k as nat;
+        let ghost nn = n as nat;
+        let q = p.addr();
+        proof {
+            assert(run_part(pb0, s0, y0, kk, nn));
+        }
+        self.pb.release_run(src, q, k, n, perm);
+        let ghost pb1 = self.pb;
+        let ghost s1 = src@;
+        let ghost base = pb0.span_base(span_of(y0));
+        proof {
+            lemma_released_part(pb0, s0, y0, kk, nn);
+            assert(s1.unbacked(pb1.span_base(span_of(y0)), y0, pages(pb1.used()[span_of(y0)][page_of(y0)]) as nat));
+        }
+        self.pb.free_run(src, q);
+        self.parts = Ghost(self.parts@.remove(y0));
+        proof {
+            let pb2 = self.pb;
+            let s2 = src@;
+            assert(freed(pb1, pb2, s1, s2, y0));
+            assert(pb1.holds(y0));
+            assert forall|x: int, j: nat, m: nat| #[trigger] run_part(pb0, s0, x, j, m) && x != y0 implies run_part(
+                pb2,
+                s2,
+                x,
+                j,
+                m,
+            ) by {
+                lemma_released_keeps_part(pb0, s0, y0, nn, x, j, m);
+                assert(run_part(pb1, s1, x, j, m));
+                lemma_freed_keeps_part(pb1, pb2, s1, s2, y0, x, j, m);
+            }
+            assert forall|x: int, j: nat| #[trigger] run_held(pb0, s0, x, j) && x != y0 implies run_held(
+                pb2,
+                s2,
+                x,
+                j,
+            ) by {
+                lemma_held_part(pb0, s0, x, j);
+                lemma_released_keeps_part(pb0, s0, y0, nn, x, j, pages(j) as nat);
+                assert(run_part(pb1, s1, x, j, pages(j) as nat));
+                lemma_held_part(pb1, s1, x, j);
+                lemma_freed_keeps_held(pb1, pb2, s1, s2, y0, x, j);
+            }
+            lemma_span_base(pb0, s0, span_of(y0));
+            assert forall|b: int| #[trigger] s0.spans.contains_key(b) && b != base implies s1.spans.contains_key(b)
+                && s1.spans[b] == s0.spans[b] by {}
+            lemma_others_at(pb0, pb1, s0, s1, base);
+            lemma_freed_others(pb1, pb2, s1, s1, s2, y0);
+            lemma_others_trans(pb0, pb1, pb2, s0, s1, s2);
+            o.lemma_pb_frame(s0, pb2, s2, y0);
+            assert forall|x: int| #[trigger] self.parts@.contains_key(x) implies self.part_ok(s2, x) by {
+                assert(o.part_ok(s0, x));
+            }
+            assert(self.wf(s2));
+            assert(freed(pb0, pb2, s1, s2, y0));
+            assert(self.live() =~= o.live().remove(y0)) by {
+                assert forall|y: int| #[trigger] self.live().contains(y) == o.live().remove(y0).contains(y) by {
+                    if y == y0 {
+                        if exists|i: int| 0 <= i < CLASSES && #[trigger] o.classes()[i].live().contains(y) {
+                            let i = choose|i: int| 0 <= i < CLASSES && #[trigger] o.classes()[i].live().contains(y);
+                            o.lemma_slot_beside_part(s0, i, y, y0);
+                        }
+                        if o.large().contains_key(y) {
+                            o.lemma_part_beside_large(s0, y0, y);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// The large arm of `alloc`.
@@ -765,6 +1534,9 @@ impl Heap {
                 None => {
                     assert(s1.spans == s0.spans);
                     o.lemma_small_frame(s0, s1);
+                    assert forall|x: int| #[trigger] self.parts@.contains_key(x) implies self.part_ok(s1, x) by {
+                        assert(o.part_ok(s0, x));
+                    }
                     assert(self.live() =~= o.live());
                 },
                 Some((p, _)) => {
@@ -792,6 +1564,9 @@ impl Heap {
                         assert(x != b);
                     }
                     o.lemma_small_frame(s0, s1);
+                    assert forall|x: int| #[trigger] self.parts@.contains_key(x) implies self.part_ok(s1, x) by {
+                        assert(o.part_ok(s0, x));
+                    }
                     assert forall|x: int| #[trigger]
                         o.pb.spans().contains_key(x) && s0.spans.contains_key(x) implies s0.apart(b, bl, x) by {}
                     assert(!o.pb.spans().contains_key(b)) by {
@@ -814,8 +1589,14 @@ impl Heap {
                         o.lemma_large_beside(s0, x);
                         assert(s0.apart(b, bl, x));
                     }
+                    assert forall|x: int| #[trigger] o.parts().contains_key(x) implies b + n * PAGE_BYTES <= x || x
+                        + o.parts()[x] * PAGE_BYTES <= b by {
+                        self.lemma_part_beside_large(s1, x, b);
+                    }
                     assert(!o.live().contains(b)) by {
-                        if o.live().contains(b) && !o.large().contains_key(b) {
+                        if o.parts().contains_key(b) {
+                            self.lemma_part_beside_large(s1, b, b);
+                        } else if o.live().contains(b) && !o.large().contains_key(b) {
                             let i = choose|i: int| 0 <= i < CLASSES && #[trigger] o.classes()[i].live().contains(b);
                             lemma_class(i as nat);
                         }
@@ -829,7 +1610,8 @@ impl Heap {
 
     /// Takes back what `alloc` returned at `p` for the layout of `size` bytes aligned to `align`,
     /// with the permission to its bytes, and never refuses: a slot for a small layout
-    /// (`slot_free`), a large object for a large one, its span given back whole (`large_free`).
+    /// (`slot_free`), a buddy-run object for a run layout, its pages released and its run freed
+    /// (`part_free`), a large object for a large one, its span given back whole (`large_free`).
     pub fn free<S: SpanSource>(
         &mut self,
         src: &mut S,
@@ -840,10 +1622,18 @@ impl Heap {
     )
         requires
             old(self).wf(old(src)@),
-            small_layout(size as nat, align as nat) || large_layout(size as nat, align as nat),
+            small_layout(size as nat, align as nat) || run_layout(size as nat, align as nat) || large_layout(
+                size as nat,
+                align as nat,
+            ),
             small_layout(size as nat, align as nat) ==> {
                 &&& old(self).classes()[class_for(size as nat, align as nat) as int].live().contains(p@.addr as int)
                 &&& perm@.is_range(p@.addr as int, class_size(class_for(size as nat, align as nat)) as int)
+            },
+            run_layout(size as nat, align as nat) ==> {
+                &&& old(self).parts().contains_key(p@.addr as int)
+                &&& old(self).parts()[p@.addr as int] == pages_for(size as nat)
+                &&& perm@.is_range(p@.addr as int, pages_for(size as nat) * PAGE_BYTES)
             },
             large_layout(size as nat, align as nat) ==> {
                 &&& old(self).large().contains_key(p@.addr as int)
@@ -863,6 +1653,13 @@ impl Heap {
                 size as nat,
                 align as nat,
             ),
+            run_layout(size as nat, align as nat) ==> part_free(
+                *old(self),
+                *final(self),
+                old(src)@,
+                final(src)@,
+                p@.addr as int,
+            ),
             large_layout(size as nat, align as nat) ==> large_free(
                 *old(self),
                 *final(self),
@@ -873,6 +1670,8 @@ impl Heap {
     {
         if size <= PAGE_BYTES {
             self.free_slot(src, p, size, align, perm);
+        } else if size <= BLOCK_BYTES {
+            self.free_part(src, p, size, perm);
         } else {
             self.free_object(src, p, perm);
         }
@@ -918,6 +1717,11 @@ impl Heap {
                     lemma_class(c as nat);
                 }
             }
+            assert(!o.parts().contains_key(y0)) by {
+                if o.parts().contains_key(y0) {
+                    o.lemma_slot_beside_part(s0, ci, y0, y0);
+                }
+            }
         }
         self.classes[c].free_small(&mut self.store, &mut self.pb, src, p, perm);
         proof {
@@ -957,9 +1761,19 @@ impl Heap {
             }
             assert(s1.provenance == s0.provenance);
             self.large.lemma_frame(s0, s1);
+            assert forall|x: int| #[trigger] self.parts@.contains_key(x) implies self.part_ok(s1, x) by {
+                assert(o.part_ok(s0, x));
+                let n = o.parts@[x];
+                assert(run_part(o.pb, s0, x, run_order(n), n));
+                assert(!oc.heads().contains(x));
+                assert forall|i: int| 0 <= i < CLASSES implies !(#[trigger] self.classes@[i]).heads().contains(x) by {
+                    assert(!o.classes@[i].heads().contains(x));
+                }
+            }
+            assert(self.wf(s1));
             assert(self.live() =~= o.live().remove(y0)) by {
                 assert forall|y: int| #[trigger] self.live().contains(y) == o.live().remove(y0).contains(y) by {
-                    if self.live().contains(y) && !self.large().contains_key(y) {
+                    if self.live().contains(y) && !self.large().contains_key(y) && !self.parts().contains_key(y) {
                         let i = choose|i: int| 0 <= i < CLASSES && #[trigger] self.classes()[i].live().contains(y);
                         assert(o.classes()[i].live().contains(y));
                         if i != ci && y == y0 {
@@ -968,7 +1782,7 @@ impl Heap {
                             lemma_class(i as nat);
                         }
                     }
-                    if o.live().contains(y) && y != y0 && !o.large().contains_key(y) {
+                    if o.live().contains(y) && y != y0 && !o.large().contains_key(y) && !o.parts().contains_key(y) {
                         let i = choose|i: int| 0 <= i < CLASSES && #[trigger] o.classes()[i].live().contains(y);
                         assert(self.classes()[i].live().contains(y));
                     }
@@ -1006,7 +1820,15 @@ impl Heap {
                 assert(x != y0);
             }
             o.lemma_small_frame(s0, s1);
+            assert forall|x: int| #[trigger] self.parts@.contains_key(x) implies self.part_ok(s1, x) by {
+                assert(o.part_ok(s0, x));
+            }
             assert(self.wf(s1));
+            assert(!o.parts().contains_key(y0)) by {
+                if o.parts().contains_key(y0) {
+                    o.lemma_part_beside_large(s0, y0, y0);
+                }
+            }
             assert(self.live() =~= o.live().remove(y0)) by {
                 assert forall|y: int| #[trigger] self.live().contains(y) == o.live().remove(y0).contains(y) by {
                     if exists|i: int| 0 <= i < CLASSES && #[trigger] o.classes()[i].live().contains(y) {

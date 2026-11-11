@@ -732,6 +732,37 @@ impl SizeClass {
         }
     }
 
+    /// A change to the page buddy and the source that keeps the store, the provenance and every run
+    /// held but the one at `b` keeps the invariant of a class with no head at `b`: every class
+    /// across the heap freeing a buddy-run object at `b`.
+    pub proof fn lemma_frame_but_run(
+        &self,
+        store: RecordStore,
+        pb: PageBuddy,
+        src: SourceView,
+        pb2: PageBuddy,
+        src2: SourceView,
+        b: int,
+    )
+        requires
+            self.wf(store, pb, src),
+            src2.provenance == src.provenance,
+            forall|x: int, k: nat| #[trigger] run_held(pb, src, x, k) && x != b ==> run_held(pb2, src2, x, k),
+            !self.heads().contains(b),
+        ensures
+            self.wf(store, pb2, src2),
+    {
+        let m = self.slabs();
+        let c = self.class as nat;
+        assert forall|r: int| #[trigger] m.contains_key(r) implies slab_ok(c, self.perms@, m[r], r, store, pb2, src2) by {
+            assert(slab_ok(c, self.perms@, m[r], r, store, pb, src));
+            let x = m[r].base()@.addr as int;
+            assert(m.contains_key(r) && m[r].base()@.addr == x);
+            assert(self.heads().contains(x));
+            assert(run_held(pb, src, x, slab_order(c)));
+        }
+    }
+
     /// No slab record of this class is one of `other`'s: each class holds its records'
     /// permissions. It changes nothing.
     pub fn records_apart(
@@ -861,8 +892,8 @@ impl SizeClass {
         }
     }
 
-    /// A live slot shares no byte with a run the page buddy holds at a head that is not the class's,
-    /// such as another class's slab run or a large object's run.
+    /// A live slot shares no byte with a run the page buddy holds allocated, backed or not, at a head
+    /// that is not the class's, such as another class's slab run or the heap's buddy-run object.
     pub proof fn lemma_live_apart_from_run(
         &self,
         store: RecordStore,
@@ -876,7 +907,8 @@ impl SizeClass {
             self.wf(store, pb, src),
             pb.wf(src),
             self.live().contains(y),
-            run_held(pb, src, x, k),
+            pb.holds(x),
+            pb.used()[span_of(x)][page_of(x)] == k,
             !self.heads().contains(x),
         ensures
             y + class_size(self.class()) <= x || x + run_bytes(k) <= y,
