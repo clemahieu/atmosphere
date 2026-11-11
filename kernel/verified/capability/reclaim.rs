@@ -3105,6 +3105,7 @@ impl CapKernel {
         ensures
             final(steps).count <= old(steps).count + TABLE_NODE_PAGES + SMALL_PAGES_MAX,
             final(self).wf(),
+            Self::space_freed_step(*old(self), *final(self), base),
             final(self).blocks.pages@[(base / PAGE_SZ) as int].kind is Free,
             !final(self).spaces.roots@.contains_key(base),
             forall|k: usize| k < TABLE_NODE_PAGES ==> !final(self).list.pages@.dom().contains(#[trigger] table_node_page(base, k)),
@@ -3183,8 +3184,9 @@ impl CapKernel {
         }
     }
 
-    /// What freeing the empty device space at `base` did to self. Its children and any device went earlier,
-    /// so the view is as it was.
+    /// What freeing the empty device space at `base` did to self: one step of an empty space going, so its
+    /// block's pages are free and the tables and the list's nodes are as they were. Its children and any
+    /// device went earlier, so the view is as it was.
     pub open spec fn space_freed(&self, post: Self, c: usize, root: usize, from: usize, base: usize) -> bool {
         let untyped = self.tables.node_of(root, from);
         let page = base / PAGE_SZ;
@@ -3193,6 +3195,7 @@ impl CapKernel {
         &&& self.blocks.pages@[page as int].refs == 0
         &&& self.spaces.bound@[base] == Set::<usize>::empty()
         &&& self.no_stale_translation(page)
+        &&& Self::space_freed_step(*self, post, base)
         &&& post.blocks.pages@[page as int].kind is Free
         &&& !post.spaces.roots@.contains_key(base)
         &&& forall|k: usize| k < TABLE_NODE_PAGES ==> !post.list.pages@.dom().contains(#[trigger] table_node_page(base, k))
