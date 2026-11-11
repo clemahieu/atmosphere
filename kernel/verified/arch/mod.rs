@@ -7,7 +7,9 @@
 //! The tokens the glue and the capability kernel pass are defined here, once for both targets. Their
 //! fields are private to this module and its per-target submodules, so no code above it can build or
 //! change one: proof code cannot write the struct, and verified code cannot call Tracked::assume_new,
-//! which Verus marks external. Only the glue that does what a token attests makes or changes it, but for
+//! which Verus marks external. Nor can code above it copy one: each holds a Unique, which is private here
+//! and neither Copy nor Clone, so rustc refuses an `impl Copy` for a token wherever it is written, and a
+//! `Clone` could only return the token it was given. Only the glue that does what a token attests makes or changes it, but for
 //! TlbModel::grow and IotlbModel::grow, by which proof code may add entries to a model of what a TLB
 //! holds, since a model that holds more claims less.
 use vstd::prelude::*;
@@ -16,10 +18,18 @@ use crate::capability::kernel::TlbEntry;
 
 verus! {
 
+/// A field each token holds so that the token is not Copy: rustc refuses `impl Copy` for a struct with a
+/// field that is not Copy, and only this module can name this type to make it Copy. Without it every
+/// field of a token is ghost, hence Copy, and any module of the crate could write `impl Copy` for the
+/// token and use one tracked token twice, keeping a register's record across a later write of it.
+// Only Verus compiles the field that holds it, as it does the tokens' other fields.
+#[cfg(verus_keep_ghost)]
+struct Unique {}
+
 /// Core `core()`'s page-table base register: the core translates through the table whose top level is
 /// at `root()`, filling its TLB under tag `tag()`, the PCID or ASID written with it. The kernel value
 /// holds one for each core, made at boot for the root the loader left there, and load_translation_root
-/// writes the register only through it, so what it says is the register's latest write.
+/// writes the register only through it, and it cannot be copied, so what it says is the register's latest write.
 // Only specs read the fields, and a cargo build erases specs, so only Verus compiles them.
 pub tracked struct BaseRegister {
     #[cfg(verus_keep_ghost)]
@@ -28,6 +38,8 @@ pub tracked struct BaseRegister {
     ghost root: usize,
     #[cfg(verus_keep_ghost)]
     ghost tag: usize,
+    #[cfg(verus_keep_ghost)]
+    unique: Unique,
 }
 
 impl BaseRegister {
@@ -56,6 +68,8 @@ pub tracked struct TlbModel {
     ghost held: Seq<Set<TlbEntry>>,
     #[cfg(verus_keep_ghost)]
     ghost tags: Seq<Set<usize>>,
+    #[cfg(verus_keep_ghost)]
+    unique: Unique,
 }
 
 impl TlbModel {
@@ -95,6 +109,8 @@ impl TlbModel {
 pub tracked struct IotlbModel {
     #[cfg(verus_keep_ghost)]
     ghost held: Seq<Set<TlbEntry>>,
+    #[cfg(verus_keep_ghost)]
+    unique: Unique,
 }
 
 impl IotlbModel {
