@@ -11,8 +11,12 @@ verus! {
 
 use crate::capability::caller::*;
 use crate::capability::kernel::*;
+use crate::capability::link::*;
+use crate::capability::map::*;
+use crate::capability::mapping::*;
 use crate::capability::operation::*;
 use crate::capability::position::*;
+use crate::capability::probe::*;
 use crate::capability::reach::*;
 use crate::capability::revoke::*;
 use crate::capability::table::*;
@@ -119,6 +123,101 @@ impl CapKernel {
                 }
             }
         }
+    }
+
+    /// A step that leaves every table's view as it was, and binds no thread it did not bind to the
+    /// process it bound it to, keeps the rely of every process.
+    pub proof fn lemma_views_kept_keeps_rely(pre: Self, post: Self, root: usize)
+        requires
+            forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t),
+            ({
+                let bound = bound_threads(&pre.list, &pre.tables);
+                let after = bound_threads(&post.list, &post.tables);
+                forall|x: usize| #[trigger] after.contains_key(x) ==> bound.contains_key(x) && after[x] == bound[x]
+            }),
+        ensures
+            Self::rely(pre, post, root),
+    {
+        if pre.sealed(root) {
+            assert forall|t: usize, j: usize| t != root && #[trigger] post.table_view(t).contains_key(j)
+                implies !post.names_process(post.table_view(t)[j], root) by {
+                assert(pre.table_view(t) == post.table_view(t));
+                assert(!pre.names_process(pre.table_view(t)[j], root));
+            }
+        }
+        assert(post.table_view(root) == pre.table_view(root));
+    }
+
+    /// A map, by any caller, keeps the rely of every process: it adds a mapping node, which is no
+    /// capability and binds no thread, and leaves every slot and every other node as it was.
+    pub proof fn lemma_map_keeps_rely(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_mapped(pre, post, caller, frame, out),
+        ensures
+            Self::rely(pre, post, root),
+    {
+        Self::lemma_map_contract(pre, post, caller, frame, out);
+        let bound = bound_threads(&pre.list, &pre.tables);
+        let after = bound_threads(&post.list, &post.tables);
+        if pre.allows_map(caller, frame) {
+            let slot = frame.slot() as usize;
+            let from = frame.argument(3) as usize;
+            let p = address_path(frame.argument(1));
+            let a = tree_of(&pre.table_pages, &pre.spaces);
+            let s = pre.payload_of(pre.tables.node_of(caller, slot)).base;
+            let node = if frame.argument(2) == 1 {
+                mapping_node(walk_table(a, s, p)->0, p.l1)
+            } else {
+                mapping_node(walk_large_table(a, s, p)->0, p.l2)
+            };
+            assert(post.list.nodes@[node as int].kind is Mapping);
+            assert forall|x: usize| #[trigger] after.contains_key(x) implies bound.contains_key(x) && after[x] == bound[x] by {
+                assert(x != node);
+                assert(post.list.parent@[x] == pre.list.parent@[x]);
+            }
+        }
+        Self::lemma_views_kept_keeps_rely(pre, post, root);
+    }
+
+    /// A link, by any caller, keeps the rely of every process: it changes no node and no slot.
+    pub proof fn lemma_link_keeps_rely(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_linked(pre, post, caller, frame, out),
+        ensures
+            Self::rely(pre, post, root),
+    {
+        Self::lemma_link_contract(pre, post, caller, frame, out);
+        assert(post.list == pre.list && post.tables == pre.tables);
+        Self::lemma_views_kept_keeps_rely(pre, post, root);
+    }
+
+    /// An inspect, by any caller, keeps the rely of every process: it changes nothing.
+    pub proof fn lemma_inspect_keeps_rely(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            spec_operation(frame.operation_number()) == Some(Operation::Inspect),
+            Self::invoked(pre, post, caller, frame, out),
+        ensures
+            Self::rely(pre, post, root),
+    {
+        Self::lemma_rely_reflexive(pre, root);
+    }
+
+    /// A probe, by any caller, keeps the rely of every process: it changes no node and no slot.
+    pub proof fn lemma_probe_keeps_rely(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_probed(pre, post, caller, frame, out),
+        ensures
+            Self::rely(pre, post, root),
+    {
+        if pre.allows_probe(caller, frame) {
+            let read = choose|read: Seq<usize>| Self::probe_done(pre, post, caller, frame.slot() as usize, frame.argument(1), frame.argument(2), #[trigger] probed_of(out, read));
+            assert(post.list == pre.list && post.tables == pre.tables);
+        }
+        Self::lemma_views_same(pre, post);
+        Self::lemma_views_kept_keeps_rely(pre, post, root);
     }
 }
 
