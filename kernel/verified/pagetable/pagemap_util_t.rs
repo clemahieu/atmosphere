@@ -117,8 +117,6 @@ pub fn page_map_set_no_requires(
     }
 }
 
-#[verifier(external_body)]
-// external_body(glue): writes a hardware page table through a raw pointer
 pub fn page_map_set(
     page_map_ptr: PageMapPtr,
     Tracked(page_map_perm): Tracked<&mut PointsTo<PageMap>>,
@@ -147,10 +145,7 @@ pub fn page_map_set(
         final(page_map_perm).value()[index] =~= value,
         final(page_map_perm).value().status(index as int).is_clear(),
 {
-    unsafe {
-        let uptr = page_map_ptr as *mut MaybeUninit<PageMap>;
-        (*uptr).assume_init_mut().set(index, value, level);
-    }
+    PPtr::<PageMap>::from_usize(page_map_ptr).borrow_mut(Tracked(page_map_perm)).set(index, value, level);
 }
 
 #[verifier(external_body)]
