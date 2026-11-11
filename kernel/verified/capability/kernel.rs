@@ -2544,6 +2544,7 @@ impl CapKernel {
             final(self).mapped == old(self).mapped,
             final(self).stale_epoch == old(self).stale_epoch,
             Self::only_core_changed(*old(self), *final(self), c as int),
+            forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] final(self).cores@[d] == old(self).cores@[d],
             final(self).cores@[c as int].generation == old(self).cores@[c as int].generation,
             final(self).cores@[c as int].next_pcid == old(self).cores@[c as int].next_pcid,
             final(self).tlb@.tags(c as int) == Set::<usize>::empty(),
