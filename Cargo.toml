@@ -24,7 +24,7 @@ members = [
   "aeager",
 ]
 
-exclude = ["test-pass", "tools/verus"]
+exclude = ["tools/verus"]
 
 [workspace.package]
 license = "MIT"
