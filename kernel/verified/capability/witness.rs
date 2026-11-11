@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-//! The witnesses of six uses a process exists for. A creator can build a process that holds a
+//! The witnesses of seven uses a process exists for. A creator can build a process that holds a
 //! capability it chose and has a thread bound to it: from the state boot leaves, the root gives itself a
 //! leaf, retypes a process and a thread bound to it, retypes a leaf into the new process's table and
 //! derives an untyped into it. The root can share memory between processes it built: it retypes two
@@ -10,6 +10,8 @@
 //! it gives its space the tables of one path, retypes a frame and maps it there. A process the root
 //! built can bind a device to a device space: the root records the device, retypes a device space,
 //! moves both capabilities into the process's table, and the process binds the one to the other.
+//! That process can hand the device to a second device space: the root gives it the second space's
+//! capability, and the process unbinds the device, lets its IOMMU acknowledge, and binds it again.
 //! And the root can give back 2M of memory and take it again: it retypes a 2M frame, deletes its
 //! capability, frees the region through a retype under its untyped, and retypes the frame again.
 //! Beside those, boot can start the root: core 0 loads the root's space and enters its thread.
@@ -32,7 +34,7 @@ use crate::capability::delete::*;
 use crate::capability::derive::*;
 use crate::capability::destroy::*;
 use crate::capability::device::{
-    binding_node, bound_record, device_of, device_payload, lemma_device_object, devices_wf, DeviceInfo, IOMMU_DEVICES, MAX_DEVICES,
+    binding_device, binding_node, bound_record, device_of, device_payload, lemma_device_object, devices_wf, DeviceInfo, IOMMU_DEVICES, MAX_DEVICES,
 };
 use crate::capability::kernel::*;
 use crate::capability::link::*;
@@ -86,6 +88,10 @@ pub const WITNESS_BOUND_SPACE_SLOT: usize = 1;
 
 /// The index of the new process's table the device's capability is moved to: slot 2 of its root entry 0.
 pub const WITNESS_BOUND_DEVICE_SLOT: usize = 2;
+
+/// The index of the new process's table a second device space's capability is moved to, when the
+/// process moves its device from one space to another: slot 3 of its root entry 0.
+pub const WITNESS_SECOND_SPACE_SLOT: usize = 3;
 
 /// The index of the root's table a 2M frame's capability goes in, when the root frees one and types it
 /// again: slot 1 of root entry 2.
@@ -3295,7 +3301,10 @@ impl CapKernel {
     /// process, bind the device to the space. Every step succeeds, and at the end the device's record
     /// names the space, the space counts the device among its bound devices, the device's binding node
     /// is a child of the space capability in the process's slot 1, and the process is live and not the
-    /// root. See design/device-binding-under-the-space-capability/.
+    /// root. The root keeps what it needs to build another device space: its untyped, its leaf's slot 2
+    /// empty again, the process capability in slot 1, and a fourth free block past the third; the
+    /// process's slot 3 is empty, and the flush epoch and the IOMMUs are as boot left them. See
+    /// design/device-binding-under-the-space-capability/.
     pub fn witness_process_binds_a_device(
         &mut self,
         root: usize,
@@ -3313,7 +3322,7 @@ impl CapKernel {
     ) -> (ret: bool)
         requires
             old(self).booted(root, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
-            image_tables_bound(image@) + 3 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
+            image_tables_bound(image@) + 4 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
             info.iommu < NUM_IOMMUS,
             info.number < IOMMU_DEVICES,
@@ -3321,10 +3330,23 @@ impl CapKernel {
         ensures
             ret,
             ({
+                let first = page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]);
+                let b1 = (base + PROCESS_BYTES) as usize;
                 let bl = (base + PROCESS_BYTES + 2 * PAGE_SZ) as usize;
                 let bs = (base + 2 * PROCESS_BYTES) as usize;
                 let sn = (bl + 1) as usize;
                 let x = binding_node(&final(self).devices, 0);
+                &&& witness_root(*final(self), process, (leaf@ + ROOT_UNTYPED_SLOT) as usize, first)
+                &&& witness_block(*final(self), (base + 3 * PROCESS_BYTES) as usize, first)
+                &&& witness_empty(*final(self), process, WITNESS_SPACE_SLOT, (b1 + 2) as usize)
+                &&& final(self).slot_holds(process, WITNESS_PROCESS_SLOT, (b1 + 1) as usize, process_of(base))
+                &&& witness_empty(*final(self), base, WITNESS_SECOND_SPACE_SLOT, (bl + 3) as usize)
+                &&& final(self).tables.roots@.contains_key(base)
+                &&& final(self).flush_epoch == old(self).flush_epoch
+                &&& final(self).iommus == old(self).iommus
+                &&& final(self).devices.count == 1
+                &&& base % PROCESS_BYTES == 0
+                &&& base + 4 * PROCESS_BYTES <= NODE_SPACE
                 &&& final(self).wf()
                 &&& base != process
                 &&& witness_alive(*final(self), base)
@@ -3369,11 +3391,11 @@ impl CapKernel {
             lemma_pow2_pos(first.order as nat);
             lemma_fundamental_div_mod(block_bytes(first.order), PROCESS_BYTES as int);
             lemma_mod_bound(block_bytes(first.order), PROCESS_BYTES as int);
-            assert((itb + 3) * PROCESS_BYTES <= block_bytes(first.order));
+            assert((itb + 4) * PROCESS_BYTES <= block_bytes(first.order));
             assert(first.base + block_bytes(first.order) <= NODE_SPACE);
             assert(base == first.base + itb * PROCESS_BYTES);
-            assert(base + 3 * PROCESS_BYTES <= NODE_SPACE);
-            assert forall|j: int| 0 <= j < 3 implies #[trigger] witness_block(s0, cursor_block(base, j), first) by {
+            assert(base + 4 * PROCESS_BYTES <= NODE_SPACE);
+            assert forall|j: int| 0 <= j < 4 implies #[trigger] witness_block(s0, cursor_block(base, j), first) by {
                 assert(cursor_block(first.base, itb + j) == cursor_block(base, j));
                 assert(s0.root_table_block(process, cursor_block(first.base, itb + j)));
             }
@@ -3381,6 +3403,7 @@ impl CapKernel {
         let b1 = base + PROCESS_BYTES;
         let bl = b1 + 2 * PAGE_SZ;
         let bs = b1 + PROCESS_BYTES;
+        let ghost bs2 = (bs + PROCESS_BYTES) as usize;
         proof {
             assert(block_bytes(3) == PROCESS_BYTES);
             assert(block_bytes(1) == 2 * PAGE_SZ);
@@ -3389,6 +3412,7 @@ impl CapKernel {
             assert(base % PROCESS_BYTES == 0);
             lemma_cursor_block(base, 1);
             lemma_cursor_block(base, 2);
+            lemma_cursor_block(base, 3);
             lemma_block_page(base, 0);
             lemma_block_page(b1, 0);
             lemma_block_page(b1, 2);
@@ -3398,6 +3422,7 @@ impl CapKernel {
             assert(b1 / PAGE_SZ == base / PAGE_SZ + 8);
             assert(bs / PAGE_SZ == base / PAGE_SZ + 16);
             assert(bl / PAGE_SZ == b1 / PAGE_SZ + 2);
+            assert(bs2 / PAGE_SZ == base / PAGE_SZ + 24);
             assert(s0.devices.count == 0);
         }
 
@@ -3444,7 +3469,7 @@ impl CapKernel {
             assert(s1.tables.node_of(process, WITNESS_DEVICE_SLOT) == b1 + 3);
             assert(witness_empty(s1, process, WITNESS_DEVICE_SLOT, (b1 + 3) as usize));
             lemma_run_kept(s0, s1, base, 0, 1, first, (b1 / PAGE_SZ) as int, b1 / PAGE_SZ + 2);
-            lemma_run_kept(s0, s1, base, 2, 3, first, (b1 / PAGE_SZ) as int, b1 / PAGE_SZ + 2);
+            lemma_run_kept(s0, s1, base, 2, 4, first, (b1 / PAGE_SZ) as int, b1 / PAGE_SZ + 2);
             assert forall|k: int| 2 <= k < 4 implies #[trigger] s1.blocks.pages@[b1 / PAGE_SZ + k].kind is Free by {
                 assert(s0.blocks.tracks(b1 / PAGE_SZ + k));
                 assert(s0.blocks.pages@[b1 / PAGE_SZ + k].kind is Free);
@@ -3499,7 +3524,7 @@ impl CapKernel {
             assert(s2.tables.has_slot(&s2.list, process, WITNESS_DEVICE_SLOT));
             assert(witness_empty(s2, process, WITNESS_DEVICE_SLOT, (b1 + 3) as usize));
             // The leaf's pages and the space's block stay free.
-            lemma_run_kept(s1, s2, base, 2, 3, first, (base / PAGE_SZ) as int, base / PAGE_SZ + 8);
+            lemma_run_kept(s1, s2, base, 2, 4, first, (base / PAGE_SZ) as int, base / PAGE_SZ + 8);
             assert forall|k: int| 2 <= k < 4 implies #[trigger] s2.blocks.pages@[b1 / PAGE_SZ + k].kind is Free by {
                 assert(s1.blocks.tracks(b1 / PAGE_SZ + k));
                 assert(s1.blocks.pages@[b1 / PAGE_SZ + k].kind is Free);
@@ -3557,8 +3582,14 @@ impl CapKernel {
             assert(s3.tables.has_slot(&s3.list, process, WITNESS_DEVICE_SLOT));
             assert(s3.tables.node_of(process, WITNESS_DEVICE_SLOT) == b1 + 3);
             assert(witness_empty(s3, process, WITNESS_DEVICE_SLOT, (b1 + 3) as usize));
-            lemma_run_kept(s2, s3, base, 2, 3, first, (bl / PAGE_SZ) as int, bl / PAGE_SZ + 2);
+            lemma_run_kept(s2, s3, base, 2, 4, first, (bl / PAGE_SZ) as int, bl / PAGE_SZ + 2);
             assert(s3.list.seq@[0] == root);
+            assert(s3.tables.has_slot(&s3.list, base, WITNESS_SECOND_SPACE_SLOT)) by {
+                assert(index_ok(WITNESS_SECOND_SPACE_SLOT) && index_entry(WITNESS_SECOND_SPACE_SLOT) == 0) by (compute_only);
+            }
+            assert(s3.tables.node_of(base, WITNESS_SECOND_SPACE_SLOT) == bl + 3);
+            assert(!s3.list.nodes@[(bl + 3) as int].live);
+            assert(s3.flush_epoch == s0.flush_epoch);
         }
 
         // The device, recorded as boot records one, its capability in slot 3 of the root's leaf.
@@ -3610,6 +3641,12 @@ impl CapKernel {
             assert(!s4.list.nodes@[(bl + 1) as int].live);
             assert(!s4.list.nodes@[(bl + 2) as int].live);
             assert(witness_block(s4, bs, first));
+            // What the root needs to build a second device space later, and the process's empty slot 3.
+            assert(u != (b1 + 2) as usize);
+            lemma_slot_kept_two(s3, s4, base, WITNESS_SECOND_SPACE_SLOT, nd, nd);
+            assert(!s4.list.nodes@[(bl + 3) as int].live);
+            assert(witness_block(s3, cursor_block(base, 3), first));
+            assert(witness_block(s4, bs2, first));
         }
 
         // A device space at the third block, in slot 2 of the root's leaf.
@@ -3658,6 +3695,17 @@ impl CapKernel {
             assert(s5.root_live(process));
             assert(witness_alive(s5, base));
             assert(s5.tables.roots@.contains_key(process));
+            assert(order_pages(3) == 8);
+            lemma_witness_block_kept(s4, s5, bs2, first, (bs / PAGE_SZ) as int, bs / PAGE_SZ + 8);
+            assert(s4.tables.has_slot(&s4.list, process, ROOT_UNTYPED_SLOT));
+            assert(s5.tables.has_slot(&s5.list, process, ROOT_UNTYPED_SLOT));
+            assert(s5.tables.node_of(process, ROOT_UNTYPED_SLOT) == u);
+            assert(s5.is_cap(u) && s5.payload_of(u) == first && s5.list.nodes@[u as int].depth == 1);
+            assert(witness_root(s5, process, u, first));
+            assert(s4.tables.has_slot(&s4.list, base, WITNESS_SECOND_SPACE_SLOT));
+            assert(s5.tables.has_slot(&s5.list, base, WITNESS_SECOND_SPACE_SLOT));
+            assert(s5.tables.node_of(base, WITNESS_SECOND_SPACE_SLOT) == bl + 3);
+            assert(!s5.list.nodes@[(bl + 3) as int].live);
         }
 
         // The device's capability, into slot 2 of the process's leaf, through the process capability.
@@ -3696,6 +3744,17 @@ impl CapKernel {
             assert(s6.processes.records == s5.processes.records);
             assert(s6.root_live(process));
             assert(witness_alive(s6, base));
+            assert(s5.is_cap(u));
+            assert(u != dn);
+            lemma_slot_kept_two(s5, s6, process, ROOT_UNTYPED_SLOT, nd, dn);
+            lemma_slot_kept_two(s5, s6, base, WITNESS_SECOND_SPACE_SLOT, nd, dn);
+            Self::lemma_caps_frame(s5, s6, nd, dn, u);
+            assert(s6.is_cap(u) && s6.payload_of(u) == first && s6.list.nodes@[u as int].depth == 1);
+            assert(s6.tables.roots@.contains_key(process));
+            assert(witness_root(s6, process, u, first));
+            assert(!s6.list.nodes@[(bl + 3) as int].live);
+            assert(witness_block(s6, bs2, first));
+            assert(u != (bl + 1) as usize);
         }
 
         // The space's capability, into slot 1 of the process's leaf, through the process capability.
@@ -3727,6 +3786,21 @@ impl CapKernel {
             assert(s7.is_cap(dn) && s7.payload_of(dn) == device_payload(0));
             assert(s7.tables.roots@.contains_key(base));
             assert(witness_alive(s7, base));
+            lemma_slot_kept_two(s6, s7, process, ROOT_UNTYPED_SLOT, ns, sn);
+            lemma_slot_kept_two(s6, s7, process, WITNESS_PROCESS_SLOT, ns, sn);
+            lemma_slot_kept_two(s6, s7, process, WITNESS_SPACE_SLOT, ns, sn);
+            lemma_slot_kept_two(s6, s7, base, WITNESS_SECOND_SPACE_SLOT, ns, sn);
+            Self::lemma_caps_frame(s6, s7, ns, sn, u);
+            Self::lemma_caps_frame(s6, s7, ns, sn, np);
+            assert(s7.is_cap(u) && s7.payload_of(u) == first && s7.list.nodes@[u as int].depth == 1);
+            assert(s7.tables.roots@.contains_key(process));
+            assert(witness_root(s7, process, u, first));
+            assert(s7.slot_holds(process, WITNESS_PROCESS_SLOT, np, process_of(base)));
+            s7.lemma_slot(process, WITNESS_SPACE_SLOT);
+            lemma_deleted_dead(s7, ns);
+            assert(witness_empty(s7, process, WITNESS_SPACE_SLOT, ns));
+            assert(!s7.list.nodes@[(bl + 3) as int].live);
+            assert(witness_block(s7, bs2, first));
         }
 
         // The process binds the device to the space.
@@ -3777,8 +3851,280 @@ impl CapKernel {
             assert(s8.spaces.records@[bs].value().kind is Device);
             assert(s8.devices.records@[0] == bound_record(crate::capability::device::unbound_record(info), bs));
             assert(s8.spaces.bound@[bs].contains(0));
+            // What the root keeps to build a second device space, and the process's empty slot 3.
+            s7.lemma_slot(process, WITNESS_SPACE_SLOT);
+            s7.lemma_slot(base, WITNESS_SECOND_SPACE_SLOT);
+            assert(index_slot(WITNESS_SPACE_SLOT) == 2 && index_slot(WITNESS_SECOND_SPACE_SLOT) == 3) by (compute_only);
+            lemma_slot_kept_two(s7, s8, process, ROOT_UNTYPED_SLOT, x, x);
+            lemma_slot_kept_two(s7, s8, process, WITNESS_PROCESS_SLOT, x, x);
+            lemma_slot_kept_two(s7, s8, process, WITNESS_SPACE_SLOT, x, x);
+            lemma_slot_kept_two(s7, s8, base, WITNESS_SECOND_SPACE_SLOT, x, x);
+            assert(s8.is_cap(u) && s8.payload_of(u) == first && s8.list.nodes@[u as int].depth == 1);
+            assert(witness_root(s8, process, u, first));
+            assert(s8.slot_holds(process, WITNESS_PROCESS_SLOT, np, process_of(base)));
+            assert(witness_empty(s8, process, WITNESS_SPACE_SLOT, ns));
+            assert(witness_empty(s8, base, WITNESS_SECOND_SPACE_SLOT, (bl + 3) as usize));
+            let p2 = bs2 / PAGE_SZ;
+            assert(s7.blocks.tracks(p2 as int));
+            assert(s8.blocks.regions_2m@[region_2m(p2 as int)].typed == s7.blocks.regions_2m@[region_2m(p2 as int)].typed);
+            assert(s8.blocks.regions_1g@[region_1g(p2 as int)].typed == s7.blocks.regions_1g@[region_1g(p2 as int)].typed);
+            assert forall|j: int| 0 <= j < 8 implies #[trigger] s8.blocks.pages@[bs2 / PAGE_SZ + j].kind is Free by {
+                assert(s7.blocks.pages@[bs2 / PAGE_SZ + j].kind is Free);
+                assert(s7.blocks.tracks(bs2 / PAGE_SZ + j));
+            }
+            assert(witness_block(s8, bs2, first));
         }
         ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8
+    }
+
+    /// From the state boot leaves, when boot was given the IOMMU the device sits behind as present, as the
+    /// root at `process`, with the order-3 block at `base` the first of four free ones past those boot's
+    /// tables took from the first untyped: build a process that binds a device to a device space, as
+    /// witness_process_binds_a_device does; retype a second device space at the fourth block into slot 2
+    /// of the root's leaf and move its capability into slot 3 of the process's leaf, through the process
+    /// capability; and, as the process, unbind the device through its capability, let the device's IOMMU
+    /// invalidate and acknowledge the unbind's epoch, and bind the device to the second space. Every step
+    /// succeeds, and at the end the device's record names the second space, which counts the device
+    /// among its bound devices, the first space no longer does, and the device's binding node is a child
+    /// of the second space's capability. The use is a VMM handing a passthrough device from one guest to
+    /// another. See design/device-binding-under-the-space-capability/.
+    pub fn witness_process_moves_a_device_between_spaces(
+        &mut self,
+        root: usize,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: Ghost<usize>,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        base: usize,
+        info: DeviceInfo,
+    ) -> (ret: bool)
+        requires
+            old(self).booted(root, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
+            image_tables_bound(image@) + 4 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
+            base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
+            info.iommu < NUM_IOMMUS,
+            info.number < IOMMU_DEVICES,
+            present@[info.iommu as int],
+        ensures
+            ret,
+            ({
+                let bl = (base + PROCESS_BYTES + 2 * PAGE_SZ) as usize;
+                let bs = (base + 2 * PROCESS_BYTES) as usize;
+                let bs2 = (base + 3 * PROCESS_BYTES) as usize;
+                let sn2 = (bl + 3) as usize;
+                let x = binding_node(&final(self).devices, 0);
+                &&& final(self).wf()
+                &&& witness_alive(*final(self), base)
+                &&& final(self).slot_holds(base, WITNESS_SECOND_SPACE_SLOT, sn2, space_of(bs2))
+                &&& final(self).slot_holds(base, WITNESS_BOUND_DEVICE_SLOT, (bl + 2) as usize, device_payload(0))
+                &&& final(self).spaces.records@[bs2].value().kind is Device
+                &&& final(self).devices.records@[0].space == Some(bs2)
+                &&& final(self).spaces.bound@[bs2].contains(0)
+                &&& !final(self).spaces.bound@[bs].contains(0)
+                &&& final(self).list.is_child(sn2, x)
+                &&& final(self).list.nodes@[x as int].kind is DeviceBinding
+            }),
+    {
+        hide(CapKernel::wf);
+        let ghost s0 = *self;
+        let ok1 = self.witness_process_binds_a_device(root, process, leaf, frames, t, free, image, untyped, frame, present, base, info);
+        let ghost s1 = *self;
+        let ghost first = page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]);
+        let ghost u = (leaf@ + ROOT_UNTYPED_SLOT) as usize;
+        let b1 = base + PROCESS_BYTES;
+        let bl = b1 + 2 * PAGE_SZ;
+        let bs = b1 + PROCESS_BYTES;
+        let bs2 = bs + PROCESS_BYTES;
+        let ghost np = (b1 + 1) as usize;
+        let ghost ns = (b1 + 2) as usize;
+        let ghost sn = (bl + 1) as usize;
+        let ghost dn = (bl + 2) as usize;
+        let ghost sn2 = (bl + 3) as usize;
+        proof {
+            lemma2_to64();
+            assert(s0.flush_epoch == 0);
+            assert(s1.flush_epoch == 0);
+            assert(block_bytes(3) == PROCESS_BYTES);
+            assert(order_pages(3) == 8);
+            lemma_cursor_block(base, 2);
+            lemma_cursor_block(base, 3);
+            assert(bs / PAGE_SZ == base / PAGE_SZ + 16);
+            assert(bs2 / PAGE_SZ == base / PAGE_SZ + 24);
+            assert(index_slot(WITNESS_BOUND_DEVICE_SLOT) == 2 && index_slot(WITNESS_SECOND_SPACE_SLOT) == 3) by (compute_only);
+        }
+
+        // A second device space at the fourth block, in slot 2 of the root's leaf.
+        proof {
+            assert(witness_root(s1, process, u, first));
+            assert(s1.root_live(process));
+            assert(witness_block(s1, bs2, first));
+            assert(s1.can_retype_under(process, ROOT_UNTYPED_SLOT, bs2, 3));
+            assert(s1.blocks.small_free((bs2 / PAGE_SZ) as int, 3)) by {
+                assert forall|k: int| 0 <= k < order_pages(3) implies #[trigger] s1.blocks.pages@[bs2 / PAGE_SZ + k].kind is Free by {
+                    assert(s1.blocks.pages@[bs2 / PAGE_SZ + k].kind is Free);
+                }
+            }
+            assert(witness_empty(s1, process, WITNESS_SPACE_SLOT, ns));
+            assert(s1.can_retype_block(process, ROOT_UNTYPED_SLOT, WITNESS_SPACE_SLOT, bs2, 3));
+        }
+        // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let ok2 = self.retype_space(process, ROOT_UNTYPED_SLOT, WITNESS_SPACE_SLOT, bs2, Tracked(&mut steps));
+        let ghost s2 = *self;
+        proof {
+            assert(ok2);
+            assert(Self::retype_keeps(s1, s2, ns, (bs2 / PAGE_SZ) as int, 3, None));
+            assert(s2.payload_of(ns) == space_of(bs2));
+            assert(s2.is_cap(ns));
+            assert(s2.tables.has_slot(&s2.list, process, WITNESS_SPACE_SLOT));
+            assert(s2.tables.node_of(process, WITNESS_SPACE_SLOT) == ns);
+            assert(s2.blocks.pages@[(bs2 / PAGE_SZ) as int].refs == 1);
+            assert(s2.spaces.records@[bs2].value().kind is Device);
+            // The process capability, the device's, and the process's empty slot 3 stay.
+            assert(s1.tables.has_slot(&s1.list, process, WITNESS_PROCESS_SLOT));
+            assert(s2.tables.has_slot(&s2.list, process, WITNESS_PROCESS_SLOT));
+            assert(s2.tables.node_of(process, WITNESS_PROCESS_SLOT) == np);
+            assert(s2.is_cap(np) && s2.payload_of(np) == process_of(base));
+            assert(s1.tables.has_slot(&s1.list, base, WITNESS_BOUND_DEVICE_SLOT));
+            assert(s2.tables.has_slot(&s2.list, base, WITNESS_BOUND_DEVICE_SLOT));
+            assert(s2.tables.node_of(base, WITNESS_BOUND_DEVICE_SLOT) == dn);
+            assert(s2.is_cap(dn) && s2.payload_of(dn) == device_payload(0));
+            assert(s1.tables.has_slot(&s1.list, base, WITNESS_SECOND_SPACE_SLOT));
+            assert(s2.tables.has_slot(&s2.list, base, WITNESS_SECOND_SPACE_SLOT));
+            assert(s2.tables.node_of(base, WITNESS_SECOND_SPACE_SLOT) == sn2);
+            assert(!s2.list.nodes@[sn2 as int].live);
+            assert(s2.root_live(process));
+            assert(witness_alive(s2, base));
+            assert(s2.tables.roots@.contains_key(process));
+            assert(s2.tables.roots@.contains_key(base));
+            assert(s2.devices == s1.devices);
+            assert(s2.spaces.bound@[bs].contains(0));
+        }
+
+        // The second space's capability, into slot 3 of the process's leaf, through the process capability.
+        let from3 = Position { through: None, index: WITNESS_SPACE_SLOT };
+        let to3 = Position { through: Some(WITNESS_PROCESS_SLOT), index: WITNESS_SECOND_SPACE_SLOT };
+        proof {
+            assert(PROCESS_RIGHTS & right_bit(Right::Control) != 0) by (compute_only);
+            assert(s2.table_at(process, Some(WITNESS_PROCESS_SLOT)) == Some(base));
+            assert(s2.destination_at(process, Some(WITNESS_PROCESS_SLOT)) == Some(base));
+            assert(!s2.cap_dead(ns));
+            assert(s2.can_move_between(process, WITNESS_SPACE_SLOT, base, WITNESS_SECOND_SPACE_SLOT));
+            assert(s2.can_move_at(process, from3, to3));
+        }
+        let ok3 = self.move_cap(process, from3, to3);
+        let ghost s3 = *self;
+        proof {
+            assert(ok3);
+            assert(Self::cap_moved_between(s2, s3, process, WITNESS_SPACE_SLOT, base, WITNESS_SECOND_SPACE_SLOT));
+            assert(Self::caps_frame(s2, s3, ns, sn2));
+            assert(s3.payload_of(sn2) == space_of(bs2));
+            assert(s3.list.nodes@[sn2 as int].depth == 2);
+            assert(s3.is_cap(sn2));
+            s2.lemma_slot(base, WITNESS_SECOND_SPACE_SLOT);
+            s2.lemma_slot(process, WITNESS_SPACE_SLOT);
+            lemma_slot_kept_two(s2, s3, base, WITNESS_SECOND_SPACE_SLOT, ns, sn2);
+            lemma_slot_kept_two(s2, s3, base, WITNESS_BOUND_DEVICE_SLOT, ns, sn2);
+            Self::lemma_caps_frame(s2, s3, ns, sn2, dn);
+            assert(s3.slot_holds(base, WITNESS_BOUND_DEVICE_SLOT, dn, device_payload(0)));
+            assert(s3.slot_holds(base, WITNESS_SECOND_SPACE_SLOT, sn2, space_of(bs2)));
+            assert(s3.tables.roots@.contains_key(base));
+            assert(witness_alive(s3, base));
+            assert(s3.root_live(base));
+        }
+
+        // The process unbinds the device through its capability.
+        let ghost x = binding_node(&s3.devices, 0);
+        proof {
+            lemma_device_object(0);
+            assert(device_of(s3.payload_of(dn).base) == 0);
+            assert(s3.devices.records@[0].space == Some(bs));
+            assert(s3.can_unbind_device(base, WITNESS_BOUND_DEVICE_SLOT));
+            // The binding node is in the devices' page, apart from every slot.
+            assert(s3.devices.wf()) by {
+                reveal(CapKernel::wf);
+                reveal(devices_wf);
+            }
+            let page = s3.devices.page;
+            lemma_fundamental_div_mod(page as int, PAGE_SZ as int);
+            lemma_fundamental_div_mod_converse(x as int, PAGE_SZ as int, page as int / PAGE_SZ as int, 1);
+            assert(x % PAGE_SZ == 1);
+            s3.lemma_slot(base, WITNESS_BOUND_DEVICE_SLOT);
+            s3.lemma_slot(base, WITNESS_SECOND_SPACE_SLOT);
+            assert(x != dn && x != sn2);
+            // The second space's block is typed and holds its one reference.
+            s3.lemma_space_cap(sn2);
+            assert(block_typed(&s3.blocks, BlockRef::Small(bs2 / PAGE_SZ)));
+            assert(block_refs(&s3.blocks, BlockRef::Small(bs2 / PAGE_SZ)) == 1);
+        }
+        // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let ok4 = self.unbind_device_at(base, WITNESS_BOUND_DEVICE_SLOT, Tracked(&mut steps));
+        let ghost s4 = *self;
+        proof {
+            assert(ok4);
+            assert(Self::device_unbound(s3, s4, x));
+            assert(binding_device(&s3.devices, x) == 0);
+            assert(s4.devices.records@[0].space is None);
+            assert(s4.devices.records@[0].unbound == s4.flush_epoch);
+            assert(s4.devices.records@[0].iommu == info.iommu);
+            assert(!s4.spaces.bound@[bs].contains(0));
+            lemma_slot_kept_two(s3, s4, base, WITNESS_BOUND_DEVICE_SLOT, x, x);
+            lemma_slot_kept_two(s3, s4, base, WITNESS_SECOND_SPACE_SLOT, x, x);
+            assert(s4.slot_holds(base, WITNESS_BOUND_DEVICE_SLOT, dn, device_payload(0)));
+            assert(s4.slot_holds(base, WITNESS_SECOND_SPACE_SLOT, sn2, space_of(bs2)));
+            assert(s4.list.nodes@[sn2 as int].depth == 2);
+            // The unbind dropped the first space's reference, not the second's.
+            assert(BlockRef::Small(bs2 / PAGE_SZ) != BlockRef::Small(bs / PAGE_SZ));
+            assert(block_refs(&s4.blocks, BlockRef::Small(bs2 / PAGE_SZ)) == 1);
+            assert(s4.iommus == s0.iommus);
+            assert(s4.iommu_present(info.iommu as int));
+            assert(witness_alive(s4, base));
+        }
+
+        // The device's IOMMU invalidates and acknowledges the unbind's epoch.
+        // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        self.flush_iommu(info.iommu, Tracked(&mut steps));
+        let ghost s5 = *self;
+
+        // The process binds the device to the second space.
+        proof {
+            assert(s5.iommu_acked(info.iommu as int) == s4.flush_epoch);
+            assert(s5.slot_holds(base, WITNESS_BOUND_DEVICE_SLOT, dn, device_payload(0)));
+            assert(s5.slot_holds(base, WITNESS_SECOND_SPACE_SLOT, sn2, space_of(bs2)));
+            assert(s5.devices.records@[0].unbound <= s5.iommu_acked(info.iommu as int));
+            assert(s5.iommu_present(info.iommu as int));
+            assert(block_refs(&s5.blocks, BlockRef::Small(bs2 / PAGE_SZ)) == 1);
+            assert(s5.list.nodes@[sn2 as int].depth < MAX_DEPTH);
+            assert(s5.tables.roots@.contains_key(base));
+            assert(s5.root_live(base));
+            assert(s5.can_bind_device(base, WITNESS_BOUND_DEVICE_SLOT, WITNESS_SECOND_SPACE_SLOT));
+        }
+        let ok5 = self.bind_device(base, WITNESS_BOUND_DEVICE_SLOT, WITNESS_SECOND_SPACE_SLOT);
+        proof {
+            let s6 = *self;
+            assert(ok5);
+            assert(Self::device_bound(s5, s6, sn2, 0));
+            assert(binding_node(&s5.devices, 0) == x);
+            assert(binding_node(&s6.devices, 0) == x);
+            assert(s6.list.is_child(sn2, x));
+            assert(s6.devices.records@[0].space == Some(bs2));
+            assert(s6.spaces.bound@[bs2].contains(0));
+            assert(!s6.spaces.bound@[bs].contains(0));
+            lemma_slot_kept_two(s5, s6, base, WITNESS_SECOND_SPACE_SLOT, x, x);
+            lemma_slot_kept_two(s5, s6, base, WITNESS_BOUND_DEVICE_SLOT, x, x);
+            assert(s6.slot_holds(base, WITNESS_SECOND_SPACE_SLOT, sn2, space_of(bs2)));
+            assert(s6.slot_holds(base, WITNESS_BOUND_DEVICE_SLOT, dn, device_payload(0)));
+            assert(witness_alive(s6, base));
+            assert(s6.spaces.records@[bs2].value().kind is Device);
+        }
+        ok1 && ok2 && ok3 && ok4 && ok5
     }
 
     /// Retypes the 2M block at big as a frame into index to of the table at root, under the untyped at
