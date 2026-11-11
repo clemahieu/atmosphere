@@ -112,12 +112,6 @@ pub fn core_pointer() -> *mut Cpu {
     cpu
 }
 
-/// Keeps nothing from `boot`: each core reads what the instruction set needs from its own ID
-/// registers. Once on the boot core, after the kernel copies `BootInfo`.
-pub unsafe fn init(boot: &BootInfo) {
-    let _ = boot;
-}
-
 /// The value a core that is starting loads as its translation base: the kernel's root table as the
 /// loader built it, as TTBR0_EL1 holds it under address-space id 0.
 pub fn translation_root(boot: &BootInfo) -> u64 {
@@ -206,7 +200,7 @@ pub fn set_option(key: &str, value: &str) -> bool {
     true
 }
 
-/// Sets the translation control [`switch_address_space`] relies on: a 16-bit address-space id, taken
+/// Sets the translation control `verified::arch::load_translation_root` relies on: a 16-bit address-space id, taken
 /// from TTBR0_EL1, and HA and HD as [`WALKER_KEEPS_STATUS`] says. Every core sets this itself, so
 /// none depends on what the loader or the start of a second core left. The id in use is 0 before and
 /// after, so no TLB entry changes meaning. The core's entries are dropped after the write (TLBI
@@ -336,12 +330,3 @@ const _: () = assert!(translation_base(0x4000_0000, 0) == 0x4000_0000);
 const _: () = assert!(translation_base(0xffff_ffff_f000, PCID_MAX - 1) == 0x0fff_ffff_ffff_f000);
 const _: () = assert!(translation_base(0x1000, 1) == 1 << 48 | 1 << 12);
 
-/// Switches this core to the page table whose top level is at physical address `root`, as address
-/// space `asid`, keeping the entries the TLB holds under `asid`: one write of TTBR0_EL1 changes the
-/// table and the id together, and flushes nothing. The kernel tracks when an address space's entries
-/// go stale and flushes them itself, design/flush-without-waiting/.
-pub fn switch_address_space(root: usize, asid: usize) {
-    let base = translation_base(root, asid);
-    // The instructions after the ISB translate through the new table. Arm ARM B2.6.1.
-    unsafe { asm!("msr TTBR0_EL1, {base}", "isb", base = in(reg) base, options(nostack, preserves_flags)) };
-}

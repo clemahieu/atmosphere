@@ -188,7 +188,8 @@ pub fn boot(boot_info: &BootInfo) -> Entry {
 
     // Boot holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
     let asid = kernel.load_space(0, process, Tracked::assume_new());
-    crate::arch::switch_address_space(process + SPACE_ROOT_PAGE * PAGE_BYTES as usize, asid);
+    let loaded = verified::arch::load_translation_root(0, process + SPACE_ROOT_PAGE * PAGE_BYTES as usize, asid);
+    kernel.switch_space(0, Some(process), loaded);
     kernel.enter_boot_thread(0, page(THREAD_PAGE));
     *CAP_KERNEL.lock() = Some(kernel);
 

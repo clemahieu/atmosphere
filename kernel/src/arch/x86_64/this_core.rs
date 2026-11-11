@@ -74,12 +74,6 @@ pub fn core_pointer() -> *mut Cpu {
     address as *mut Cpu
 }
 
-/// Keeps what the instruction set needs from `boot`: whether PCID is on. Once on the boot core,
-/// after the kernel copies `BootInfo`.
-pub unsafe fn init(boot: &BootInfo) {
-    super::PCIDE = if boot.pcide { 1 } else { 0 };
-}
-
 /// The value a core that is starting loads as its translation base: the kernel's PML4 as the loader
 /// built it, with the no-flush bit where PCID is on, which asks the trampoline to turn PCIDE on.
 pub fn translation_root(boot: &BootInfo) -> u64 {

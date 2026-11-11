@@ -17,7 +17,7 @@ mod this_core;
 pub mod write_protect;
 
 pub use this_core::{
-    core_pointer, counters, init, init_boot_core, init_core, set_core_pointer, translation_root, CoreState,
+    core_pointer, counters, init_boot_core, init_core, set_core_pointer, translation_root, CoreState,
 };
 
 /// A privilege level: a selector's RPL and a descriptor's DPL. APM 2 §4.9.1.
@@ -145,9 +145,6 @@ impl TaskStateSegment {
 /// loaded PCID; with PCIDE clear the bit is reserved. APM 2, the CR3 register in its PCID format.
 pub const CR3_NO_FLUSH: u64 = 1 << 63;
 
-/// Set by boot when the processor's PCID feature is on. `switch_address_space` reads it.
-pub static mut PCIDE: u64 = 0;
-
 /// A page table entry's present and page size bits, and the address it holds. APM 2 §5.4.
 const ENTRY_PRESENT: u64 = 1 << 0;
 const ENTRY_PAGE_SIZE: u64 = 1 << 7;
@@ -270,31 +267,6 @@ pub unsafe fn enter_userspace(pc: *const c_void, sp: *mut c_void, rdi: u64, rsi:
     );
 
     loop {}
-}
-
-/// Switches this core to the page table whose top level is at physical address `root`, as address
-/// space `asid`, keeping the entries the TLB holds under `asid`: CR3 takes the root in bits 51:12 and
-/// the PCID in bits 11:0. The kernel tracks when an address space's entries go stale and flushes them
-/// itself, design/flush-without-waiting/. Without PCIDE, which boot records, the no-flush bit is
-/// cleared before the load.
-pub fn switch_address_space(root: usize, asid: usize) {
-    assert!(root & 0xfff == 0, "a page table root is 4K-aligned");
-    assert!(asid < verified::define::PCID_MAX, "an address-space id fits a PCID");
-    let cr3 = (root | asid) as u64 | CR3_NO_FLUSH;
-    unsafe {
-        asm!(
-            "mov {tmp}, [rip + {pcide}]",
-            "test {tmp}, {tmp}",
-            "jnz 2f",
-            "btr {cr3}, 63",
-            "2:",
-            "mov cr3, {cr3}",
-            tmp = out(reg) _,
-            cr3 = inout(reg) cr3 => _,
-            pcide = sym PCIDE,
-            options(readonly, nostack),
-        );
-    }
 }
 
 /// Model-specific registers. The numbers are APM 2 Appendix A, Table A-2, except where noted.

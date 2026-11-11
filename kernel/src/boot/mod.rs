@@ -41,8 +41,6 @@ static mut BOOT_INFO: BootInfo = BootInfo::empty();
 pub unsafe fn init(boot_info: *const BootInfo) {
     BOOT_INFO = (*boot_info).clone();
     let boot_info = get_boot_info();
-    crate::arch::init(boot_info);
-
     command_line::init(boot_info.command_line.as_str()).expect("Invalid kernel command-line");
 }
 
