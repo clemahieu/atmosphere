@@ -578,7 +578,7 @@ pub ghost struct TlbEntry {
 /// rings the IOMMU accepts are the arch module's: AMD-Vi on x86_64, SMMUv3 on aarch64.
 #[derive(Clone, Copy)]
 pub struct CommandBuffer {
-    /// The IOMMU's MMIO registers.
+    /// The IOMMU's MMIO registers, where CommandBuffers' registers say boot found them.
     pub mmio: usize,
     /// The command ring, `len` commands of arch::IOMMU_COMMAND_SIZE bytes long, page aligned.
     pub ring: usize,
@@ -625,13 +625,45 @@ mod command_page {
     }
 }
 
+pub use iommu_registers::IommuRegisters;
+
+/// An IOMMU's MMIO registers as boot found them: which IOMMU, and the base of its registers. Alone in
+/// a module, so its fields are private to it: no code outside can make one or change what it says, so
+/// one names a register block only because boot handed it over, and the IOMMU it names keeps it from
+/// standing for another IOMMU's. The arch module's command glue loads and stores those registers.
+mod iommu_registers {
+    use vstd::prelude::*;
+
+    // Only specs read the fields, and a cargo build erases specs, so only Verus compiles them.
+    pub tracked struct IommuRegisters {
+        #[cfg(verus_keep_ghost)]
+        ghost iommu: int,
+        #[cfg(verus_keep_ghost)]
+        ghost base: usize,
+    }
+
+    impl IommuRegisters {
+        /// The IOMMU, by its index among the present ones.
+        pub closed spec fn iommu(self) -> int {
+            self.iommu
+        }
+
+        /// The address of its MMIO registers.
+        pub closed spec fn base(self) -> usize {
+            self.base
+        }
+    }
+}
+
 /// Each IOMMU's command buffer and the pages its ring and completion word sit in. Holding those pages
 /// keeps them out of every block the capability kernel hands out, keying them by IOMMU keeps two
 /// IOMMUs from sharing one, and holding each as a CommandPage keeps every write of a ring slot in the
-/// arch module's command glue.
+/// arch module's command glue. Each IOMMU's registers, keyed by IOMMU, fix where its buffer's mmio
+/// points, so the glue loads and stores that IOMMU's registers and no other address.
 pub struct CommandBuffers {
     pub buffers: Array<CommandBuffer, NUM_IOMMUS>,
     pub pages: Tracked<Map<(int, usize), CommandPage>>,
+    pub registers: Tracked<Map<int, IommuRegisters>>,
 }
 
 impl CommandBuffers {
@@ -641,13 +673,16 @@ impl CommandBuffers {
         &&& self.pages@[(i, a)].addr() == a
     }
 
-    /// IOMMU i's ring has a length and a place the IOMMU accepts, its tail is inside it, and its ring
-    /// and completion word are in pages it holds. The completion word is 8-byte aligned, as
-    /// COMPLETION_WAIT's store address is (48882 §2.4.1).
+    /// IOMMU i's ring has a length and a place the IOMMU accepts, its tail is inside it, its ring
+    /// and completion word are in pages it holds, and its mmio is where boot found i's registers. The
+    /// completion word is 8-byte aligned, as COMPLETION_WAIT's store address is (48882 §2.4.1).
     pub open spec fn buffer_wf(&self, i: int) -> bool {
         let b = self.buffers@[i];
         &&& crate::arch::command_ring_ok(b.ring, b.len)
         &&& b.tail < b.len
+        &&& self.registers@.contains_key(i)
+        &&& self.registers@[i].iommu() == i
+        &&& self.registers@[i].base() == b.mmio
         &&& b.mmio % crate::arch::IOMMU_MMIO_ALIGN == 0
         &&& b.ring % PAGE_SZ == 0
         &&& b.ring + b.len * crate::arch::IOMMU_COMMAND_SIZE <= usize::MAX

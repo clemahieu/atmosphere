@@ -166,7 +166,7 @@ pub fn boot(boot_info: &BootInfo) -> Entry {
         Tracked::assume_new(),
         kernel_entries,
         Array::<bool, NUM_IOMMUS>::new(false),
-        CommandBuffers { buffers: Array::new(CommandBuffer { mmio: 0, ring: 0, len: 0, tail: 0, completion: 0 }), pages: Tracked::assume_new() },
+        CommandBuffers { buffers: Array::new(CommandBuffer { mmio: 0, ring: 0, len: 0, tail: 0, completion: 0 }), pages: Tracked::assume_new(), registers: Tracked::assume_new() },
         process,
         page(LEAF_PAGE),
         page(FRAMES_PAGE),
