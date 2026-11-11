@@ -2,8 +2,6 @@
 
 //! Synchronization.
 //!
-//! We re-export `spin` types.
+//! We re-export the `spin` types the loader, the kernel and the machine crates take.
 
-pub use spin::{
-    Mutex, MutexGuard, Once, RwLock, RwLockReadGuard, RwLockUpgradableGuard, RwLockWriteGuard,
-};
+pub use spin::{Mutex, MutexGuard, RwLock};
