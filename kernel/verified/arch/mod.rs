@@ -7,8 +7,11 @@
 //! The tokens the glue and the capability kernel pass are defined here, once for both targets. Their
 //! fields are private to this module and its per-target submodules, so no code above it can build or
 //! change one: proof code cannot write the struct, and verified code cannot call Tracked::assume_new,
-//! which Verus marks external. Only the glue that does what a token attests makes or changes it.
+//! which Verus marks external. Only the glue that does what a token attests makes or changes it, but for
+//! TlbModel::grow, by which proof code may add to a TLB model, since a model that holds more claims less.
 use vstd::prelude::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::kernel::TlbEntry;
 
 verus! {
 
@@ -40,26 +43,51 @@ impl BaseRegister {
     }
 }
 
-/// What a flush cleared: every context on a core, or all of an IOMMU's IOTLB.
-pub ghost enum FlushTarget {
-    Core(int),
-    Iommu(int),
+/// What each core's TLB may hold that the kernel's model tracks: one set of entries per core, indexed
+/// by core. The kernel value holds the one boot makes, with every set empty. Proof code may add to the
+/// sets, since a model that holds more claims less, and only flush_every_context empties a set, so a
+/// core's model is emptied only by a flush of that core: design/flush-without-waiting/.
+// Only specs read the field, and a cargo build erases specs, so only Verus compiles it.
+pub tracked struct TlbModel {
+    #[cfg(verus_keep_ghost)]
+    ghost held: Seq<Set<TlbEntry>>,
 }
 
-/// What a flush of `target()`, started when the epoch was `epoch()`, proves. Only flush glue can make
-/// one, so only it can clear a model of what the target holds: flush_every_context for a core,
-/// invalidate_iommu_all for an IOMMU.
+impl TlbModel {
+    pub closed spec fn len(self) -> nat {
+        self.held.len()
+    }
+
+    pub closed spec fn spec_index(self, c: int) -> Set<TlbEntry> {
+        self.held[c]
+    }
+
+    /// Each core's model becomes `held`'s set for it, which holds all it held.
+    pub proof fn grow(tracked &mut self, held: Seq<Set<TlbEntry>>)
+        requires
+            held.len() == old(self).len(),
+            forall|c: int| 0 <= c < held.len() ==> old(self)[c].subset_of(#[trigger] held[c]),
+        ensures
+            final(self).len() == old(self).len(),
+            forall|c: int| 0 <= c < held.len() ==> #[trigger] final(self)[c] == held[c],
+    {
+        self.held = held;
+    }
+}
+
+/// What an invalidate of all of IOMMU `iommu()`'s IOTLB, started when the epoch was `epoch()`, proves.
+/// Only invalidate_iommu_all makes one, so only it can clear a model of what the IOMMU holds.
 // Only specs read the fields, and a cargo build erases specs, so only Verus compiles them.
 pub tracked struct Flushed {
     #[cfg(verus_keep_ghost)]
-    ghost target: FlushTarget,
+    ghost iommu: int,
     #[cfg(verus_keep_ghost)]
     ghost epoch: int,
 }
 
 impl Flushed {
-    pub closed spec fn target(self) -> FlushTarget {
-        self.target
+    pub closed spec fn iommu(self) -> int {
+        self.iommu
     }
 
     pub closed spec fn epoch(self) -> int {

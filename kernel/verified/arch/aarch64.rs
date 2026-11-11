@@ -10,9 +10,9 @@ use vstd::prelude::*;
 verus! {
 
 use crate::capability::kernel::CommandBuffers;
-use crate::arch::{BaseRegister, Flushed};
 #[cfg(verus_keep_ghost)]
-use crate::arch::FlushTarget;
+use crate::capability::kernel::TlbEntry;
+use crate::arch::{BaseRegister, Flushed, TlbModel};
 use crate::capability::operation::Outcome;
 #[cfg(verus_keep_ghost)]
 use crate::capability::console::PRINT_BYTES;
@@ -487,18 +487,18 @@ pub fn page_entry2usize(page_entry: &PageEntry, level: usize) -> (ret: usize)
 /// with any ASID, global ones too, from every level of the walk, and only on this core, which is the
 /// per-core flush of design/flush-without-waiting/ (Arm ARM C5.5.77). The DSB before it orders this
 /// core's table writes ahead of it, and the DSB and ISB after it complete it for this core's own
-/// translations (D8.17.8).
+/// translations (D8.17.8). `core` is the core this runs on, whose set in `model` it empties.
 #[verifier(external_body)]
-// external_body(glue): only the hardware can attest a flush, so only this makes the token
-pub fn flush_every_context(core: usize, epoch: usize) -> (ret: Tracked<Flushed>)
+// external_body(glue): only the hardware can attest a flush, so only this empties a core's TLB model
+pub fn flush_every_context(Tracked(model): Tracked<&mut TlbModel>, core: usize)
     ensures
-        ret@.target() == FlushTarget::Core(core as int),
-        ret@.epoch() == epoch as int,
+        final(model).len() == old(model).len(),
+        final(model)[core as int] == Set::<TlbEntry>::empty(),
+        forall|d: int| d != core ==> #[trigger] final(model)[d] == old(model)[d],
 {
     unsafe {
         core::arch::asm!("dsb ishst", "tlbi vmalle1", "dsb ish", "isb", options(nostack, preserves_flags));
     }
-    Tracked::assume_new()
 }
 
 /// Points this core's TTBR0_EL1 at the table whose top level is at physical address `root`, as ASID
@@ -584,7 +584,7 @@ pub fn invalidate_iommu_all(commands: &CommandBuffers, i: usize, epoch: usize, T
     ensures
         final(steps).count == old(steps).count + 1,
         ret.0 == (commands.buffers@[i as int].tail + IOMMU_INVALIDATE_COMMANDS) % commands.buffers@[i as int].len as int,
-        ret.1@.target() == FlushTarget::Iommu(i as int),
+        ret.1@.iommu() == i as int,
         ret.1@.epoch() == epoch as int,
 {
     let b = *commands.buffers.get(i);

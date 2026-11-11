@@ -10,9 +10,7 @@ use vstd::prelude::*;
 verus! {
 
 use crate::arch::{flush_every_context, invalidate_iommu_all};
-use crate::arch::{BaseRegister, Flushed};
-#[cfg(verus_keep_ghost)]
-use crate::arch::FlushTarget;
+use crate::arch::{BaseRegister, Flushed, TlbModel};
 use crate::array::Array;
 use crate::capability::block::*;
 use crate::capability::device::*;
@@ -129,6 +127,12 @@ pub open spec fn register_names(r: BaseRegister, space: Option<usize>, lists: Ma
             &&& (r.root() == kernel_root || r.root() % TABLE_PAGE_BYTES != SPACE_ROOT_PAGE * PAGE_SZ)
         },
     }
+}
+
+/// The cores' TLB model as boot makes it: one set per core, each empty, since no space is loaded yet.
+pub open spec fn boot_tlb(tlb: TlbModel) -> bool {
+    &&& tlb.len() == NUM_CPUS
+    &&& forall|c: int| 0 <= c < NUM_CPUS ==> #[trigger] tlb[c] == Set::<TlbEntry>::empty()
 }
 
 /// Every core's base register as boot leaves it: naming `kernel_root` under KERNEL_TAG.
@@ -640,7 +644,7 @@ impl CommandBuffers {
             final(steps).count <= old(steps).count + 1,
             final(self).wf(present),
             final(self).pages == old(self).pages,
-            ret@.target() == FlushTarget::Iommu(i as int),
+            ret@.iommu() == i as int,
             ret@.epoch() == epoch as int,
     {
         proof {
@@ -890,8 +894,9 @@ pub struct CapKernel {
     pub cores: Array<CoreState, NUM_CPUS>,
     pub flush_epoch: usize,
     /// For each core, what it may still hold that its space's tables no longer say. What they do say,
-    /// a core that loaded the space may hold too: see core_may_hold.
-    pub tlb: Ghost<Seq<Set<TlbEntry>>>,
+    /// a core that loaded the space may hold too: see core_may_hold. Only a flush of a core empties its
+    /// set: TlbModel.
+    pub tlb: Tracked<TlbModel>,
     pub iommus: IommuState,
     /// Frames some address space maps.
     pub mapped: Ghost<Set<usize>>,
@@ -1618,7 +1623,8 @@ impl CapKernel {
     /// Makes this a kernel with one root capability, no mappings, no core running anything and each at generation 1, every page
     /// Reserved with no unmap recorded, and the IOMMUs boot found present with their command buffers.
     /// `registers` are the cores' base registers as boot left them, each naming `kernel_root` under
-    /// KERNEL_TAG. In place, since the block table is too large to move by value.
+    /// KERNEL_TAG, and `tlb` is the cores' TLB model as boot makes it, each core's set empty. In place,
+    /// since the block table is too large to move by value.
     pub fn init(
         &mut self,
         root: usize,
@@ -1628,9 +1634,11 @@ impl CapKernel {
         iommu_commands: CommandBuffers,
         kernel_root: usize,
         Tracked(registers): Tracked<Map<int, BaseRegister>>,
+        Tracked(tlb): Tracked<TlbModel>,
     )
         requires
             boot_registers(registers, kernel_root),
+            boot_tlb(tlb),
             old(self).cores.wf(),
             old(self).iommus.acked.wf(),
             old(self).stale_epoch.wf(),
@@ -1696,7 +1704,7 @@ impl CapKernel {
             }
         }
         self.flush_epoch = 0;
-        self.tlb = Ghost(Seq::new(NUM_CPUS as nat, |c: int| Set::<TlbEntry>::empty()));
+        self.tlb = Tracked(tlb);
         self.mapped = Ghost(Set::empty());
         proof {
             reveal(ids_wf);
@@ -2355,7 +2363,7 @@ impl CapKernel {
             old(self).wf(),
             i < NUM_IOMMUS,
             old(self).iommu_present(i as int),
-            flushed.target() == FlushTarget::Iommu(i as int),
+            flushed.iommu() == i as int,
             flushed.epoch() == epoch,
             old(self).iommu_acked(i as int) <= epoch <= old(self).flush_epoch,
         ensures
@@ -2469,8 +2477,8 @@ impl CapKernel {
     }
 
     /// Core c flushes every context and acknowledges the current epoch. The flush is made here, so no
-    /// register load or user code on c comes between it and the acknowledgement, and c's TLB model is
-    /// empty: design/flush-without-waiting/.
+    /// register load or user code on c comes between it and the acknowledgement, and the flush is what
+    /// empties c's TLB model: design/flush-without-waiting/.
     pub fn acknowledge(&mut self, c: usize, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).wf(),
@@ -2490,7 +2498,7 @@ impl CapKernel {
     {
         let ghost pre = *old(self);
         let epoch = self.flush_epoch;
-        flush_every_context(c, epoch);
+        flush_every_context(Tracked(self.tlb.borrow_mut()), c);
         proof {
             assert(pre.acked(c as int) <= pre.flush_epoch);
         }
@@ -2503,7 +2511,6 @@ impl CapKernel {
             pcids_used: Ghost(Set::empty()),
             space: state.space,
         });
-        self.tlb = Ghost(self.tlb@.update(c as int, Set::empty()));
         proof {
             assert forall|d: int| 0 <= d < NUM_CPUS && d != c as int implies #[trigger] self.cores@[d] == pre.cores@[d] by {}
             Self::lemma_registers_core(pre, *self, c as int);

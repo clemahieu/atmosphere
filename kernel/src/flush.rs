@@ -10,6 +10,7 @@
 
 use verified::arch::flush_every_context;
 use verified::define::NUM_CPUS;
+use vstd::prelude::Tracked;
 
 use crate::arch;
 use crate::cpu;
@@ -44,7 +45,8 @@ pub fn handle_ipi() {
     let core = cpu::get_cpu_id();
     let mut state = FLUSH.lock();
     let epoch = state.epoch;
-    let _flushed = flush_every_context(core, epoch);
+    // This state is not CapKernel's, so no TLB model is kept for it and the one made here is dropped.
+    flush_every_context(Tracked::assume_new(), core);
     state.acked[core] = epoch;
 }
 

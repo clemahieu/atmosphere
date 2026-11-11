@@ -1760,12 +1760,14 @@ impl CapKernel {
         self.flush_epoch = self.flush_epoch + 1;
         let epoch = self.flush_epoch;
         self.stale_epoch.record_run(frame, count, epoch, Tracked(steps));
-        self.tlb = Ghost(Seq::new(NUM_CPUS as nat, |d: int|
-            if space is Some && pre.depends(d, space->Some_0) {
-                pre.tlb@[d].union(stale_entries(space->Some_0, pages))
-            } else {
-                pre.tlb@[d]
-            }));
+        proof {
+            self.tlb.borrow_mut().grow(Seq::new(NUM_CPUS as nat, |d: int|
+                if space is Some && pre.depends(d, space->Some_0) {
+                    pre.tlb@[d].union(stale_entries(space->Some_0, pages))
+                } else {
+                    pre.tlb@[d]
+                }));
+        }
         self.iommus.tlb = Ghost(Seq::new(NUM_IOMMUS as nat, |i: int|
             if pre.iommu_present(i) && space is Some && pre.spaces.records@[space->Some_0].value().kind is Device {
                 pre.iommus.tlb@[i].union(stale_entries(space->Some_0, pages))

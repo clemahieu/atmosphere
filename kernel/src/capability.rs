@@ -169,6 +169,9 @@ pub fn boot(boot_info: &BootInfo) -> Entry {
         // Every core runs on the loader's root under tag 0 until the kernel switches it, and this is the
         // one place the cores' base registers are made: design/teardown-driven-by-retype/.
         Tracked::assume_new(),
+        // No space is loaded yet, so each core's TLB model is empty, and this is the one place the model
+        // is made: design/flush-without-waiting/.
+        Tracked::assume_new(),
     );
     let (untyped, frames) = held.expect("the capability kernel refused the boot memory or dom0's runs");
 
