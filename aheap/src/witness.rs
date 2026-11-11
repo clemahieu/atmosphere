@@ -41,6 +41,12 @@
 //! only when the source refused the reserve of the object's span or the back of its run, asked while
 //! it held what it held at the start and, for the back, the new span; so a source that refused
 //! neither gave the byte.
+//!
+//! The heap's witness gives one source to a page buddy and a large-object map: it cuts a run, then
+//! allocates an object, frees the run, then the object, and ends with both holding nothing and the
+//! source's view the one it started with. Each keeps its invariant across the other's changes to the
+//! source by its frame lemma; a refusal, which the source then made once, stops the sequence after
+//! freeing what it cut.
 use vstd::prelude::*;
 use vstd::layout::*;
 use vstd::raw_ptr::*;
@@ -1079,6 +1085,96 @@ pub fn witness_large<S: SpanSource>(src: &mut S) -> (r: (LargeMap, bool))
     assert(src@.spans =~= start.spans);
     assert(map.objects() =~= Map::<int, nat>::empty());
     (map, true)
+}
+
+/// Over one source, cuts a run of order 0 from a page buddy keeping no spare, allocates an object of
+/// one byte more than a block from a large-object map, frees the run and then the object, and returns
+/// the page buddy and the map, holding nothing, with whether both were given: both were unless the
+/// source refused a request, which it then did once, the view otherwise the one it started with.
+pub fn witness_heap<S: SpanSource>(src: &mut S) -> (r: (PageBuddy, LargeMap, bool))
+    requires
+        old(src)@.wf(),
+    ensures
+        final(src)@.wf(),
+        r.0.wf(final(src)@),
+        r.1.wf(final(src)@),
+        r.0.spans().dom() == Set::<int>::empty(),
+        r.1.objects() == Map::<int, nat>::empty(),
+        if r.2 {
+            final(src)@ == old(src)@
+        } else {
+            final(src)@ == old(src)@.recorded(final(src)@.refusals.last())
+        },
+{
+    let ghost s0 = src@;
+    let mut pb = PageBuddy::new(0);
+    let mut map = LargeMap::new();
+    assert(pb.spans().dom() =~= Set::<int>::empty());
+    let small = match pb.alloc_run(src, 0) {
+        Err(_) => {
+            proof {
+                pb.lemma_view(src@);
+            }
+            return (pb, map, false);
+        },
+        Ok(p) => p,
+    };
+    let ghost b1 = span_of(small as int);
+    let ghost m1 = meta_page(b1);
+    let ghost fr1 = fresh(Map::<int, Map<int, nat>>::empty(), b1);
+    let ghost u1 = pb.used();
+    let ghost s1 = src@;
+    proof {
+        lemma_uncut(fr1, u1, small as int, 0);
+        lemma_took_released(s0, b1);
+        assert(u1[m1] == Map::<int, nat>::empty());
+        assert(pb.spans().dom() =~= set![b1, m1]);
+        assert(pb.span_base(span_of(small as int)) == b1);
+        pb.lemma_view(s1);
+        assert(s1.spans.contains_key(b1));
+    }
+    let (p, perm) = match map.alloc_large(src, BLOCK_BYTES + 1) {
+        None => {
+            let ghost q = src@.refusals.last();
+            proof {
+                pb.lemma_frame(s1, src@);
+            }
+            pb.free_run(src, small);
+            proof {
+                assert(fr1[b1].dom() =~= Set::<int>::empty());
+                assert(pb.used().dom() =~= Set::<int>::empty());
+                pb.lemma_view(src@);
+                lemma_refused_released(s0, b1, q);
+                map.lemma_frame(s1.recorded(q), src@);
+            }
+            return (pb, map, false);
+        },
+        Some(r) => r,
+    };
+    let ghost nb = p@.addr as int;
+    let ghost s2 = src@;
+    proof {
+        assert(s1.apart(nb, blocks_for(pages_for(BLOCK_BYTES as nat + 1)), b1));
+        assert(nb != b1);
+        pb.lemma_frame(s1, s2);
+    }
+    pb.free_run(src, small);
+    let ghost s3 = src@;
+    proof {
+        assert(fr1[b1].dom() =~= Set::<int>::empty());
+        assert(pb.used().dom() =~= Set::<int>::empty());
+        pb.lemma_view(s3);
+        map.lemma_frame(s2, s3);
+    }
+    let addr = p.addr();
+    assert(map.objects().contains_key(addr as int));
+    map.free_large(src, addr, perm);
+    proof {
+        assert(src@.spans =~= s0.spans);
+        pb.lemma_frame(s3, src@);
+        assert(map.objects() =~= Map::<int, nat>::empty());
+    }
+    (pb, map, true)
 }
 
 } // verus!
