@@ -27,9 +27,10 @@
 //! blocks intersect. `lemma_overlap_declared` says what `layout_ok` gives of it. The examples at the
 //! end are proven to pass or fail as a reader would expect, and the tests run `check` on them.
 #![cfg_attr(not(test), no_std)]
-#![allow(unused)]
 
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::power2::*;
+#[cfg(verus_keep_ghost)]
 use vstd::bits::*;
 use vstd::prelude::*;
 
