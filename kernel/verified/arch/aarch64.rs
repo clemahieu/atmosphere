@@ -12,7 +12,7 @@ verus! {
 use crate::capability::kernel::CommandBuffers;
 #[cfg(verus_keep_ghost)]
 use crate::capability::kernel::TlbEntry;
-use crate::arch::{BaseRegister, Flushed, TlbModel};
+use crate::arch::{BaseRegister, IotlbModel, TlbModel};
 use crate::capability::operation::Outcome;
 #[cfg(verus_keep_ghost)]
 use crate::capability::console::PRINT_BYTES;
@@ -562,7 +562,8 @@ pub const SMMU_CMDQ_PROD: usize = 0x98;
 pub const SMMU_CMDQ_CONS: usize = 0x9c;
 
 /// Invalidates all of SMMU i's caches and returns once it has finished, with the tail after the
-/// commands it wrote. It writes CMD_CFGI_ALL, CMD_TLBI_NSNH_ALL and CMD_SYNC at i's tail, moves the
+/// commands it wrote, and empties i's set in `model`: the caller holds the lock, so no table changes
+/// while this runs, and once the invalidate finishes i holds nothing the tables no longer say. It writes CMD_CFGI_ALL, CMD_TLBI_NSNH_ALL and CMD_SYNC at i's tail, moves the
 /// producer index past all three and spins until the consumer index reaches it, which it does only once
 /// CMD_SYNC has completed. The SMMU is never handed the EL2 regime, so the TLB invalidation leaves it.
 /// The completion word is not used: CMD_SYNC signals through the consumer index. Only this writes i's
@@ -575,17 +576,18 @@ pub const SMMU_CMDQ_CONS: usize = 0x9c;
 /// The wait is on the SMMU, which finishes three commands in a time the state does not set, so it is one
 /// unit: design/one-lock-bounded-steps/.
 #[verifier(external_body)]
-// external_body(glue): only the SMMU can attest an invalidate, so only this makes its token
-pub fn invalidate_iommu_all(commands: &CommandBuffers, i: usize, epoch: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: (usize, Tracked<Flushed>))
+// external_body(glue): only the SMMU can attest an invalidate, so only this empties its IOTLB model
+pub fn invalidate_iommu_all(commands: &CommandBuffers, i: usize, Tracked(model): Tracked<&mut IotlbModel>, Tracked(steps): Tracked<&mut Steps>) -> (ret: usize)
     requires
         i < NUM_IOMMUS,
         commands.buffers.wf(),
         commands.buffer_wf(i as int),
     ensures
         final(steps).count == old(steps).count + 1,
-        ret.0 == (commands.buffers@[i as int].tail + IOMMU_INVALIDATE_COMMANDS) % commands.buffers@[i as int].len as int,
-        ret.1@.iommu() == i as int,
-        ret.1@.epoch() == epoch as int,
+        ret == (commands.buffers@[i as int].tail + IOMMU_INVALIDATE_COMMANDS) % commands.buffers@[i as int].len as int,
+        final(model).len() == old(model).len(),
+        final(model)[i as int] == Set::<TlbEntry>::empty(),
+        forall|j: int| j != i ==> #[trigger] final(model)[j] == old(model)[j],
 {
     let b = *commands.buffers.get(i);
     // The index and the wrap bit of a place in the queue.
@@ -624,7 +626,7 @@ pub fn invalidate_iommu_all(commands: &CommandBuffers, i: usize, epoch: usize, T
     while load(SMMU_CMDQ_CONS) & place_mask != place {
         core::hint::spin_loop();
     }
-    ((b.tail + IOMMU_INVALIDATE_COMMANDS) % b.len, Tracked::assume_new())
+    (b.tail + IOMMU_INVALIDATE_COMMANDS) % b.len
 }
 
 // The trap frame and the user-return checks: what a thread record holds, what a return to user mode

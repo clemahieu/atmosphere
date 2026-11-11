@@ -9,7 +9,7 @@ verus! {
 use crate::capability::kernel::CommandBuffers;
 #[cfg(verus_keep_ghost)]
 use crate::capability::kernel::TlbEntry;
-use crate::arch::{BaseRegister, Flushed, TlbModel};
+use crate::arch::{BaseRegister, IotlbModel, TlbModel};
 use crate::capability::operation::Outcome;
 #[cfg(verus_keep_ghost)]
 use crate::capability::console::PRINT_BYTES;
@@ -698,7 +698,8 @@ pub const IOMMU_COMPLETION_WAIT: u64 = 0x01;
 pub const IOMMU_COMMAND_TAIL: usize = 0x2008;
 
 /// Invalidates all of IOMMU i's caches and returns once it has finished, with the tail after the
-/// commands it wrote. It writes INVALIDATE_IOMMU_ALL then COMPLETION_WAIT at i's tail, clears the
+/// commands it wrote, and empties i's set in `model`: the caller holds the lock, so no table changes
+/// while this runs, and once the invalidate finishes i holds nothing the tables no longer say. It writes INVALIDATE_IOMMU_ALL then COMPLETION_WAIT at i's tail, clears the
 /// completion word, moves the tail register past both and spins until the IOMMU stores to the word. Only
 /// this writes i's ring, and each call waits for the IOMMU to read all it wrote, so the ring is empty
 /// on entry and two commands fit in it. The kernel maps memory at its physical address, as the entries
@@ -706,17 +707,18 @@ pub const IOMMU_COMMAND_TAIL: usize = 0x2008;
 /// not waiting for a core: design/flush-without-waiting/. The wait is on the IOMMU, which finishes two
 /// commands in a time the state does not set, so it is one unit: design/one-lock-bounded-steps/.
 #[verifier(external_body)]
-// external_body(glue): only the IOMMU can attest an invalidate, so only this makes its token
-pub fn invalidate_iommu_all(commands: &CommandBuffers, i: usize, epoch: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: (usize, Tracked<Flushed>))
+// external_body(glue): only the IOMMU can attest an invalidate, so only this empties its IOTLB model
+pub fn invalidate_iommu_all(commands: &CommandBuffers, i: usize, Tracked(model): Tracked<&mut IotlbModel>, Tracked(steps): Tracked<&mut Steps>) -> (ret: usize)
     requires
         i < NUM_IOMMUS,
         commands.buffers.wf(),
         commands.buffer_wf(i as int),
     ensures
         final(steps).count == old(steps).count + 1,
-        ret.0 == (commands.buffers@[i as int].tail + IOMMU_INVALIDATE_COMMANDS) % commands.buffers@[i as int].len as int,
-        ret.1@.iommu() == i as int,
-        ret.1@.epoch() == epoch as int,
+        ret == (commands.buffers@[i as int].tail + IOMMU_INVALIDATE_COMMANDS) % commands.buffers@[i as int].len as int,
+        final(model).len() == old(model).len(),
+        final(model)[i as int] == Set::<TlbEntry>::empty(),
+        forall|j: int| j != i ==> #[trigger] final(model)[j] == old(model)[j],
 {
     let b = *commands.buffers.get(i);
     let slot = |k: usize| (b.ring + k * IOMMU_COMMAND_SIZE) as *mut u64;
@@ -739,7 +741,7 @@ pub fn invalidate_iommu_all(commands: &CommandBuffers, i: usize, epoch: usize, T
             core::hint::spin_loop();
         }
     }
-    (next, Tracked::assume_new())
+    next
 }
 
 // The trap frame and the user-return checks: what a thread record holds, what a return to user mode

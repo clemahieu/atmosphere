@@ -8,7 +8,8 @@
 //! fields are private to this module and its per-target submodules, so no code above it can build or
 //! change one: proof code cannot write the struct, and verified code cannot call Tracked::assume_new,
 //! which Verus marks external. Only the glue that does what a token attests makes or changes it, but for
-//! TlbModel::grow, by which proof code may add to a TLB model, since a model that holds more claims less.
+//! TlbModel::grow and IotlbModel::grow, by which proof code may add to a model of what a TLB holds,
+//! since a model that holds more claims less.
 use vstd::prelude::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::kernel::TlbEntry;
@@ -75,23 +76,36 @@ impl TlbModel {
     }
 }
 
-/// What an invalidate of all of IOMMU `iommu()`'s IOTLB, started when the epoch was `epoch()`, proves.
-/// Only invalidate_iommu_all makes one, so only it can clear a model of what the IOMMU holds.
-// Only specs read the fields, and a cargo build erases specs, so only Verus compiles them.
-pub tracked struct Flushed {
+/// What each IOMMU's IOTLB may hold that its device spaces' tables no longer say: one set of entries per
+/// IOMMU, indexed by IOMMU. The kernel value holds the one boot makes, with every set empty. Proof code
+/// may add to the sets, and only invalidate_iommu_all empties one, once the IOMMU has finished the
+/// invalidate, so an IOMMU's model is emptied only by an invalidate that no unmap came after:
+/// design/flush-without-waiting/.
+// Only specs read the field, and a cargo build erases specs, so only Verus compiles it.
+pub tracked struct IotlbModel {
     #[cfg(verus_keep_ghost)]
-    ghost iommu: int,
-    #[cfg(verus_keep_ghost)]
-    ghost epoch: int,
+    ghost held: Seq<Set<TlbEntry>>,
 }
 
-impl Flushed {
-    pub closed spec fn iommu(self) -> int {
-        self.iommu
+impl IotlbModel {
+    pub closed spec fn len(self) -> nat {
+        self.held.len()
     }
 
-    pub closed spec fn epoch(self) -> int {
-        self.epoch
+    pub closed spec fn spec_index(self, i: int) -> Set<TlbEntry> {
+        self.held[i]
+    }
+
+    /// Each IOMMU's model becomes `held`'s set for it, which holds all it held.
+    pub proof fn grow(tracked &mut self, held: Seq<Set<TlbEntry>>)
+        requires
+            held.len() == old(self).len(),
+            forall|i: int| 0 <= i < held.len() ==> old(self)[i].subset_of(#[trigger] held[i]),
+        ensures
+            final(self).len() == old(self).len(),
+            forall|i: int| 0 <= i < held.len() ==> #[trigger] final(self)[i] == held[i],
+    {
+        self.held = held;
     }
 }
 

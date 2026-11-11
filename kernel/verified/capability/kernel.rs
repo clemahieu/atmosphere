@@ -10,7 +10,7 @@ use vstd::prelude::*;
 verus! {
 
 use crate::arch::{flush_every_context, invalidate_iommu_all};
-use crate::arch::{BaseRegister, Flushed, TlbModel};
+use crate::arch::{BaseRegister, IotlbModel, TlbModel};
 use crate::array::Array;
 use crate::capability::block::*;
 use crate::capability::device::*;
@@ -58,10 +58,6 @@ pub const KERNEL_TAG: usize = 0;
 /// state, and runs no loop.
 /// See design/one-lock-bounded-steps/.
 pub const ACKNOWLEDGE_STEPS: usize = 0;
-
-/// acknowledge_iommu's bound in the step counter: none, since it writes one IOMMU's epoch and runs no
-/// loop.
-pub const ACKNOWLEDGE_IOMMU_STEPS: usize = 0;
 
 pub open spec fn id_generation(word: usize) -> usize {
     (word / PCID_MAX) as usize
@@ -133,6 +129,12 @@ pub open spec fn register_names(r: BaseRegister, space: Option<usize>, lists: Ma
 pub open spec fn boot_tlb(tlb: TlbModel) -> bool {
     &&& tlb.len() == NUM_CPUS
     &&& forall|c: int| 0 <= c < NUM_CPUS ==> #[trigger] tlb[c] == Set::<TlbEntry>::empty()
+}
+
+/// The IOMMUs' IOTLB model as boot makes it: one set per IOMMU, each empty, since nothing is unmapped yet.
+pub open spec fn boot_iotlb(iotlb: IotlbModel) -> bool {
+    &&& iotlb.len() == NUM_IOMMUS
+    &&& forall|i: int| 0 <= i < NUM_IOMMUS ==> #[trigger] iotlb[i] == Set::<TlbEntry>::empty()
 }
 
 /// Every core's base register as boot leaves it: naming `kernel_root` under KERNEL_TAG.
@@ -634,8 +636,9 @@ impl CommandBuffers {
     }
 
     /// Invalidates all of present IOMMU i's caches and waits for it to finish, as the arch module's
-    /// invalidate_iommu_all does, and moves i's tail past the commands that wrote. The wait is one unit.
-    pub fn invalidate(&mut self, Ghost(present): Ghost<Seq<bool>>, i: usize, epoch: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: Tracked<Flushed>)
+    /// invalidate_iommu_all does, which empties i's set in `iotlb`, and moves i's tail past the commands
+    /// that wrote. The wait is one unit.
+    pub fn invalidate(&mut self, Ghost(present): Ghost<Seq<bool>>, i: usize, Tracked(iotlb): Tracked<&mut IotlbModel>, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).wf(present),
             i < NUM_IOMMUS,
@@ -644,14 +647,15 @@ impl CommandBuffers {
             final(steps).count <= old(steps).count + 1,
             final(self).wf(present),
             final(self).pages == old(self).pages,
-            ret@.iommu() == i as int,
-            ret@.epoch() == epoch as int,
+            final(iotlb).len() == old(iotlb).len(),
+            final(iotlb)[i as int] == Set::<TlbEntry>::empty(),
+            forall|j: int| j != i ==> #[trigger] final(iotlb)[j] == old(iotlb)[j],
     {
         proof {
             reveal(CommandBuffers::wf);
         }
         let ghost pre = *old(self);
-        let (next, flushed) = invalidate_iommu_all(self, i, epoch, Tracked(steps));
+        let next = invalidate_iommu_all(self, i, Tracked(iotlb), Tracked(steps));
         let b = *self.buffers.get(i);
         self.buffers.set(i, CommandBuffer { mmio: b.mmio, ring: b.ring, len: b.len, tail: next, completion: b.completion });
         proof {
@@ -664,32 +668,30 @@ impl CommandBuffers {
                 }
             }
         }
-        flushed
     }
 }
 
 /// For each IOMMU, whether the machine has it, the epoch its last finished invalidate started at, and
-/// what it may still hold that its device spaces' tables no longer say. A device keeps translating while
-/// the kernel runs, so an IOMMU may refill from an entry between an invalidate and that entry's unmap.
-/// An absent IOMMU holds nothing and is never invalidated, so the stale check skips it. A present one
-/// takes commands through its command buffer.
+/// what it may still hold that its device spaces' tables no longer say, as an IotlbModel that only the
+/// invalidate glue empties. A device keeps translating while the kernel runs, so an IOMMU may refill
+/// from an entry between an invalidate and that entry's unmap. An absent IOMMU holds nothing and is
+/// never invalidated, so the stale check skips it. A present one takes commands through its command
+/// buffer.
 pub struct IommuState {
     pub present: Array<bool, NUM_IOMMUS>,
     pub acked: Array<usize, NUM_IOMMUS>,
-    pub tlb: Ghost<Seq<Set<TlbEntry>>>,
+    pub tlb: Tracked<IotlbModel>,
     pub commands: CommandBuffers,
 }
 
 impl IommuState {
-    /// No IOMMU has acknowledged anything or holds anything stale.
+    /// No IOMMU has acknowledged anything.
     pub fn zero(&mut self)
         requires
             old(self).acked.wf(),
         ensures
             final(self).acked.wf(),
-            final(self).tlb@.len() == NUM_IOMMUS,
             forall|i: int| 0 <= i < NUM_IOMMUS ==> #[trigger] final(self).acked@[i] == 0,
-            forall|i: int| 0 <= i < NUM_IOMMUS ==> #[trigger] final(self).tlb@[i] == Set::<TlbEntry>::empty(),
     {
         let mut i = 0;
         while i != NUM_IOMMUS
@@ -702,7 +704,6 @@ impl IommuState {
             self.acked.set(i, 0);
             i = i + 1;
         }
-        self.tlb = Ghost(Seq::new(NUM_IOMMUS as nat, |i: int| Set::<TlbEntry>::empty()));
     }
 }
 
@@ -1623,7 +1624,8 @@ impl CapKernel {
     /// Makes this a kernel with one root capability, no mappings, no core running anything or naming a space and each at generation 1, every page
     /// Reserved with no unmap recorded, and the IOMMUs boot found present with their command buffers.
     /// `registers` are the cores' base registers as boot left them, each naming `kernel_root` under
-    /// KERNEL_TAG, and `tlb` is the cores' TLB model as boot makes it, each core's set empty. In place,
+    /// KERNEL_TAG, `tlb` is the cores' TLB model as boot makes it, each core's set empty, and `iotlb` the
+    /// IOMMUs', each IOMMU's set empty. In place,
     /// since the block table is too large to move by value.
     pub fn init(
         &mut self,
@@ -1635,10 +1637,12 @@ impl CapKernel {
         kernel_root: usize,
         Tracked(registers): Tracked<Map<int, BaseRegister>>,
         Tracked(tlb): Tracked<TlbModel>,
+        Tracked(iotlb): Tracked<IotlbModel>,
     )
         requires
             boot_registers(registers, kernel_root),
             boot_tlb(tlb),
+            boot_iotlb(iotlb),
             old(self).cores.wf(),
             old(self).iommus.acked.wf(),
             old(self).stale_epoch.wf(),
@@ -1696,6 +1700,7 @@ impl CapKernel {
         init_cores(&mut self.cores);
         self.stale_epoch.zero();
         self.iommus.zero();
+        self.iommus.tlb = Tracked(iotlb);
         self.iommus.present = iommus_present;
         self.iommus.commands = iommu_commands;
         proof {
@@ -2356,27 +2361,22 @@ impl CapKernel {
         Self::lemma_blocks_changed(pre, post);
     }
 
-    /// IOMMU i acknowledges an invalidate of all it holds, which started at this epoch. A device kept
-    /// translating since, so i may hold what was unmapped after that epoch, and only what was unmapped
-    /// by then leaves its model.
-    pub fn acknowledge_iommu(&mut self, i: usize, epoch: usize, Tracked(flushed): Tracked<Flushed>, Tracked(steps): Tracked<&mut Steps>)
+    /// Present IOMMU i invalidates all it holds and acknowledges the current epoch. The epoch is read and
+    /// the invalidate made here, so no unmap comes between them, and the invalidate is what empties i's
+    /// model: design/flush-without-waiting/. The wait for the invalidate is one unit.
+    pub fn flush_iommu(&mut self, i: usize, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).wf(),
             i < NUM_IOMMUS,
             old(self).iommu_present(i as int),
-            flushed.iommu() == i as int,
-            flushed.epoch() == epoch,
-            old(self).iommu_acked(i as int) <= epoch <= old(self).flush_epoch,
         ensures
-            final(steps).count <= old(steps).count + ACKNOWLEDGE_IOMMU_STEPS,
+            final(steps).count <= old(steps).count + 1,
             final(self).wf(),
-            final(self).iommu_acked(i as int) == epoch,
-            old(self).iommu_acked(i as int) <= final(self).iommu_acked(i as int),
+            final(self).iommu_acked(i as int) == old(self).flush_epoch,
             forall|j: int| 0 <= j < NUM_IOMMUS && j != i ==> #[trigger] final(self).iommu_acked(j) == old(self).iommu_acked(j),
-            final(self).iommus.tlb@[i as int] == old(self).iommus.tlb@[i as int].filter(|e: TlbEntry| old(self).stale_epoch.above(epoch as int, e.page)),
+            final(self).iommus.tlb@[i as int] == Set::<TlbEntry>::empty(),
             forall|j: int| 0 <= j < NUM_IOMMUS && j != i ==> #[trigger] final(self).iommus.tlb@[j] == old(self).iommus.tlb@[j],
             final(self).iommus.present == old(self).iommus.present,
-            final(self).iommus.commands == old(self).iommus.commands,
             final(self).tlb == old(self).tlb,
             final(self).cores == old(self).cores,
             final(self).mapped == old(self).mapped,
@@ -2384,10 +2384,11 @@ impl CapKernel {
             final(self).flush_epoch == old(self).flush_epoch,
     {
         let ghost pre = *old(self);
+        let epoch = self.flush_epoch;
+        let ghost present = self.iommus.present@;
+        self.iommus.commands.invalidate(Ghost(present), i, Tracked(self.iommus.tlb.borrow_mut()), Tracked(steps));
         self.iommus.acked.set(i, epoch);
-        self.iommus.tlb = Ghost(pre.iommus.tlb@.update(i as int, pre.iommus.tlb@[i as int].filter(|e: TlbEntry| pre.stale_epoch.above(epoch as int, e.page))));
         proof {
-            broadcast use vstd::set::lemma_set_filter;
             assert forall|c: int| 0 <= c < NUM_CPUS implies #[trigger] self.acked(c) <= self.flush_epoch by {
                 assert(pre.acked(c) <= pre.flush_epoch);
             }
@@ -2402,6 +2403,7 @@ impl CapKernel {
                 assert(pre.acked(c) == self.acked(c));
             }
             assert forall|j: int, e: TlbEntry| 0 <= j < NUM_IOMMUS && #[trigger] self.iommus.tlb@[j].contains(e) implies self.iommu_present(j) by {
+                assert(j != i as int);
                 assert(pre.iommus.tlb@[j].contains(e));
             }
             assert forall|j: int| 0 <= j < NUM_IOMMUS implies #[trigger] self.iommu_acked(j) <= self.flush_epoch by {
@@ -2412,14 +2414,12 @@ impl CapKernel {
             assert forall|j: int, e: TlbEntry|
                 0 <= j < NUM_IOMMUS && #[trigger] self.iommus.tlb@[j].contains(e) && !self.mapped@.contains(e.page)
                 implies self.blocks.tracks(e.page as int) && self.stale_epoch.above(self.iommu_acked(j), e.page) by {
-                if j != i as int {
-                    assert(pre.iommus.tlb@[j].contains(e));
-                    assert(pre.iommu_acked(j) == self.iommu_acked(j));
-                } else {
-                    assert(pre.iommus.tlb@[j].contains(e));
-                }
+                assert(j != i as int);
+                assert(pre.iommus.tlb@[j].contains(e));
+                assert(pre.iommu_acked(j) == self.iommu_acked(j));
             }
             // An acknowledgement only rises, so a bound device's IOMMU still acknowledged its last unbind.
+            assert(pre.iommu_acked(i as int) <= pre.flush_epoch);
             assert forall|d: int| 0 <= d < self.devices.count && (#[trigger] self.devices.records@[d]).space is Some implies {
                 &&& self.iommus.present@[self.devices.records@[d].iommu as int]
                 &&& self.devices.records@[d].unbound <= self.iommus.acked@[self.devices.records@[d].iommu as int]
@@ -2431,50 +2431,6 @@ impl CapKernel {
                 }
             }
         }
-    }
-
-    /// Present IOMMU i invalidates all it holds and acknowledges the current epoch. The wait for the
-    /// invalidate is one unit.
-    pub fn flush_iommu(&mut self, i: usize, Tracked(steps): Tracked<&mut Steps>)
-        requires
-            old(self).wf(),
-            i < NUM_IOMMUS,
-            old(self).iommu_present(i as int),
-        ensures
-            final(steps).count <= old(steps).count + 1,
-            final(self).wf(),
-            final(self).iommu_acked(i as int) == old(self).flush_epoch,
-            forall|j: int| 0 <= j < NUM_IOMMUS && j != i ==> #[trigger] final(self).iommu_acked(j) == old(self).iommu_acked(j),
-            final(self).iommus.tlb@[i as int] == old(self).iommus.tlb@[i as int].filter(|e: TlbEntry| old(self).stale_epoch.above(old(self).flush_epoch as int, e.page)),
-            forall|j: int| 0 <= j < NUM_IOMMUS && j != i ==> #[trigger] final(self).iommus.tlb@[j] == old(self).iommus.tlb@[j],
-            final(self).iommus.present == old(self).iommus.present,
-            final(self).tlb == old(self).tlb,
-            final(self).cores == old(self).cores,
-            final(self).mapped == old(self).mapped,
-            final(self).stale_epoch == old(self).stale_epoch,
-            final(self).flush_epoch == old(self).flush_epoch,
-    {
-        let ghost pre = *old(self);
-        let epoch = self.flush_epoch;
-        let ghost present = self.iommus.present@;
-        let flushed = self.iommus.commands.invalidate(Ghost(present), i, epoch, Tracked(steps));
-        proof {
-            assert forall|c: int| 0 <= c < NUM_CPUS implies #[trigger] self.acked(c) <= self.flush_epoch by {
-                assert(pre.acked(c) <= pre.flush_epoch);
-            }
-            assert forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && #[trigger] self.tlb@[c].contains(e) implies self.depends(c, e.space) by {
-                assert(pre.tlb@[c].contains(e));
-                assert(pre.depends(c, e.space));
-            }
-            assert forall|c: int, e: TlbEntry|
-                0 <= c < NUM_CPUS && #[trigger] self.tlb@[c].contains(e) && !self.mapped@.contains(e.page)
-                implies self.blocks.tracks(e.page as int) && self.stale_epoch.above(self.acked(c), e.page) by {
-                assert(pre.tlb@[c].contains(e));
-                assert(pre.acked(c) == self.acked(c));
-            }
-            Self::lemma_iommus_same(pre, *self);
-        }
-        self.acknowledge_iommu(i, epoch, flushed, Tracked(steps));
     }
 
     /// Core c flushes every context and acknowledges the current epoch. The flush is made here, so no

@@ -172,6 +172,9 @@ pub fn boot(boot_info: &BootInfo) -> Entry {
         // No space is loaded yet, so each core's TLB model is empty, and this is the one place the model
         // is made: design/flush-without-waiting/.
         Tracked::assume_new(),
+        // Nothing is unmapped yet, so each IOMMU's IOTLB model is empty, and this is the one place that
+        // model is made: design/flush-without-waiting/.
+        Tracked::assume_new(),
     );
     let (untyped, frames) = held.expect("the capability kernel refused the boot memory or dom0's runs");
 

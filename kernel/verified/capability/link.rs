@@ -2101,12 +2101,14 @@ impl CapKernel {
                     pre.tlb@[d]
                 }));
         }
-        self.iommus.tlb = Ghost(Seq::new(NUM_IOMMUS as nat, |i: int|
-            if pre.iommu_present(i) && space is Some && pre.spaces.records@[space->Some_0].value().kind is Device {
-                pre.iommus.tlb@[i].union(stale_entries(space->Some_0, pages))
-            } else {
-                pre.iommus.tlb@[i]
-            }));
+        proof {
+            self.iommus.tlb.borrow_mut().grow(Seq::new(NUM_IOMMUS as nat, |i: int|
+                if pre.iommu_present(i) && space is Some && pre.spaces.records@[space->Some_0].value().kind is Device {
+                    pre.iommus.tlb@[i].union(stale_entries(space->Some_0, pages))
+                } else {
+                    pre.iommus.tlb@[i]
+                }));
+        }
         proof {
             if space is Some {
                 lemma_stale_entries(space->Some_0, pages);

@@ -13,7 +13,7 @@ use vstd::prelude::*;
 
 verus! {
 
-use crate::arch::{BaseRegister, TlbModel};
+use crate::arch::{BaseRegister, IotlbModel, TlbModel};
 use crate::array::Array;
 #[cfg(verus_keep_ghost)]
 use crate::capability::block::*;
@@ -298,10 +298,12 @@ impl CapKernel {
         kernel_root: usize,
         Tracked(registers): Tracked<Map<int, BaseRegister>>,
         Tracked(tlb): Tracked<TlbModel>,
+        Tracked(iotlb): Tracked<IotlbModel>,
     ) -> (ret: Option<(usize, usize)>)
         requires
             boot_registers(registers, kernel_root),
             boot_tlb(tlb),
+            boot_iotlb(iotlb),
             old(self).cores.wf(),
             old(self).iommus.acked.wf(),
             old(self).stale_epoch.wf(),
@@ -369,7 +371,7 @@ impl CapKernel {
             ret is Some ==> final(self).spaces.kernel_root@ == kernel_root,
     {
         hide(CapKernel::wf);
-        self.init(root, Tracked(root_perm), kernel_entries, iommus_present, iommu_commands, kernel_root, Tracked(registers), Tracked(tlb));
+        self.init(root, Tracked(root_perm), kernel_entries, iommus_present, iommu_commands, kernel_root, Tracked(registers), Tracked(tlb), Tracked(iotlb));
         let ghost s0 = *self;
         let ghost len = free@.len() as int;
         let tracked mut pages = pages;
