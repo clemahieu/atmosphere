@@ -43,6 +43,7 @@ VERIFY_RESULTS = "verification results:: "
 BUILD = "tools/build.py"
 STACK_SIZES_CHECK = "tools/check-stack-sizes.py"
 LICENSE_CHECK = "tools/check-licenses.py"
+SOURCE_LICENSE_CHECK = "tools/check-spdx.py"
 HOOK_TESTS = (".claude/hooks/license-guard-test.sh", ".claude/hooks/beads-actor-test.sh")
 EXTERNAL_BODY_CHECK = "tools/check-external-body.py"
 PAGE_LITERALS_CHECK = "tools/check-page-literals.py"
@@ -321,6 +322,7 @@ STEPS = (
     Step("build", X86_64, build),
     Step("workspace tests", X86_64, workspace_tests),
     Step("license", X86_64, self_tested(LICENSE_CHECK)),
+    Step("source licenses", X86_64, self_tested(SOURCE_LICENSE_CHECK)),
     Step("hooks", X86_64, hooks),
     Step("verify", X86_64, verify),
     Step("verify aarch64", AARCH64, verify_for("--target", AARCH64)),
@@ -426,7 +428,7 @@ class Tests(unittest.TestCase):
         names = lambda steps: [step.name for step in steps]
         self.assertEqual(names(chosen(AARCH64)), ["verify aarch64", "aarch64 boot"])
         x86_64 = names(chosen(X86_64))
-        for name in ("boot", "verify", "page literals", "arch sources"):
+        for name in ("boot", "verify", "source licenses", "page literals", "arch sources"):
             self.assertIn(name, x86_64)
         # The dom0 run check among the workspace's tests reads the built dom0.
         self.assertLess(x86_64.index("build"), x86_64.index("workspace tests"))

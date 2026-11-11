@@ -2,7 +2,7 @@
 
 # Design decisions
 
-32 records: 32 active, 0 superseded.
+33 records: 33 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -49,6 +49,9 @@ in `revisit if` what would make it worth reopening.
 - **[latest-value-by-three-slot-exchange](./latest-value-by-three-slot-exchange/DECISION.md)** (2026-11-09): amailbox gives one producer and one consumer the latest value through three slots and one atomic word holding the shared slot's index and a fresh bit: publish is one swap, observe is one load and at most one swap, nobody copies the payload or retries, and intermediate values are dropped. It is for two ends that both follow it; across a distrust boundary the path is aring.
   - *confidence:* The permutation, the fresh bit's meaning and the atomic counts are proven in amailbox/src/lib.rs. That three slots are cheaper to prove than Simpson's four is a judgement from the size of each protocol, not a measurement.
   - *revisit if:* Two ends that do not trust each other need the latest value, which a swapped word cannot protect; a caller measures the word sharing a cache line with the slots as its cost; or a target lacks an atomic swap of 32 bits.
+- **[license-stated-in-every-source-file](./license-stated-in-every-source-file/DECISION.md)** (2026-11-11): Each Rust, Python, shell, C and assembly file, and any file starting with #!, carries an SPDX-License-Identifier comment as its first line, or its second under the #! line; the gate holds the expression to tools/license-allowlist, and every other file is under LICENSE.
+  - *confidence:* A judgement about cost against a risk that has not yet occurred: no file under a second license is in the tree today. That the check holds is tested.
+  - *revisit if:* The tree is distributed in pieces whose recipients need each file's copyright holder from the file alone, or a scanner or a downstream packager asks for REUSE compliance; then the copyright tag, the LICENSES directory and the manifest are added.
 - **[machine-glue-below-the-kernel](./machine-glue-below-the-kernel/DECISION.md)** (2026-11-10): Boot discovery, the console, the interrupt controller and timer, secondary-core start, shutdown and the IOMMU driver live in one crate per machine (machine/pc for the x86_64 PC, machine/virt for aarch64 on QEMU virt), each exporting the same free functions and constants, and machine/virt one more that names the interrupt an IRQ carries, which the x86_64 IDT gives by the vector taken; the kernel depends on the crate its target selects and re-exports it as crate::machine; the crate depends on nothing in kernel/ or kernel/verified, takes cpu indices as arguments, owns the interrupt vectors and its own per-core state, and issues its own MSR and port instructions.
   - *confidence:* A judgement from a survey of kernel/src at 569f164: the item list and signatures follow today's callers. machine/virt tests that the same list fits QEMU virt: its PL011, PSCI power-off, PSCI core start, GICv3 and generic timer items are written to these signatures and run under KVM with two cores, and the list needed one item more, the acknowledgement. The Cargo constraint that rules out one renamed dependency per target was checked with cargo.
   - *revisit if:* Two machines must be supported on one architecture (bare Apple silicon beside QEMU virt), when target_arch no longer selects the crate and a cargo feature or a second build target must; or a machine needs a kernel service at interrupt or boot time that cannot be passed as an argument, which would make the dependency two-way.
@@ -58,7 +61,7 @@ in `revisit if` what would make it worth reopening.
 - **[network-stack-proven-at-tier-1](./network-stack-proven-at-tier-1/DECISION.md)** (2026-11-10): The network protocol stack is tier 1 required, written in Rust inside Verus with no unverified protocol library: wire formats only through combinators proven once, nesting depths fixed in each format, per-packet work bounded linearly in the packet's length by a ghost step counter, each protocol a transition equal to a specification of its RFC state machine, and no allocation per packet.
   - *confidence:* The tier is the human's choice, made 2026-11-10. The five rules are a judgement on how to make a tier-1 stack affordable; the first formats written in the combinators settle whether the per-format proof is as small as expected.
   - *revisit if:* A wire format the stack must accept cannot be written in the combinators under a fixed nesting bound, or a format written in them still needs a proof as large as a hand-written parser's, which reopens rule 1; lowering the tier is the human's decision.
-- **[no-gate-for-what-no-step-reads](./no-gate-for-what-no-step-reads/DECISION.md)** (2026-11-10): tools/land.py lists the paths no gate step reads (.claude/agents/, .claude/skills/, CLAUDE.md); a change that touches nothing else, with no file over the size limit, is rebased, merged and pushed without running the gate, and its tree takes the base's verdict in the ledger.
+- **[no-gate-for-what-no-step-reads](./no-gate-for-what-no-step-reads/DECISION.md)** (2026-11-11): tools/land.py lists the paths no gate step reads (.claude/agents/, .claude/skills/, CLAUDE.md); a change that touches nothing else, with no file over the size limit and no source file, is rebased, merged and pushed without running the gate, and its tree takes the base's verdict in the ledger.
   - *confidence:* An argument, not a measurement: the gate's result is a function of the files its steps read. That no step reads the listed paths was checked by search on the day, and nothing in the gate keeps it true.
   - *revisit if:* A gate step starts reading a listed path, which removes the path from the list in the same commit; or a main that fails by itself is traced to a commit that landed this way.
 - **[one-kernel-instance](./one-kernel-instance/DECISION.md)** (2026-11-05): One kernel instance holds every core of the machine and a process lives inside it; the kernel provides no spanning. Four rules keep a later move to several instances cheap, and breaking one is the human's decision.
@@ -116,13 +119,14 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `boot`: machine-glue-below-the-kernel, root-process-at-boot, test-guest-memory
 - `capability`: address-spaces-as-objects, capability-names-a-block, cpu-time-as-capability, device-binding-under-the-space-capability, divider-proven-by-invariant, ipc-with-reply-object, process-holds-capabilities, revoke-by-depth-first-list, root-process-at-boot, schedulers-over-core-partitions, sharing-by-derive, teardown-driven-by-retype, theorem-over-reach, thread-bound-at-retype, untyped-memory, vmm-over-svm
 - `device`: device-binding-under-the-space-capability
-- `gate`: cut-over-on-a-branch, land-without-regating, no-gate-for-what-no-step-reads
+- `gate`: cut-over-on-a-branch, land-without-regating, license-stated-in-every-source-file, no-gate-for-what-no-step-reads
 - `glue`: machine-glue-below-the-kernel
 - `interrupt`: machine-glue-below-the-kernel
 - `iommu`: device-binding-under-the-space-capability, machine-glue-below-the-kernel
 - `ipc`: fan-in-over-private-rings, ipc-with-reply-object, latest-value-by-three-slot-exchange, syscall-abi-in-registers
 - `kernel-state`: multicore-kernel-shape, one-kernel-instance, one-lock-bounded-steps
 - `landing`: land-without-regating, no-gate-for-what-no-step-reads
+- `license`: license-stated-in-every-source-file
 - `lifetime`: sharing-by-derive, teardown-driven-by-retype
 - `lock`: flush-without-waiting, multicore-kernel-shape, one-lock-bounded-steps
 - `memory`: address-spaces-as-objects, capability-names-a-block, flush-without-waiting, syscall-abi-in-registers, teardown-driven-by-retype, test-guest-memory, untyped-memory
@@ -131,7 +135,7 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `pagetable`: arch-module
 - `parsing`: network-stack-proven-at-tier-1
 - `portability`: arch-module, machine-glue-below-the-kernel, syscall-abi-in-registers
-- `process`: cut-over-on-a-branch, land-without-regating, no-gate-for-what-no-step-reads, process-holds-capabilities, thread-bound-at-retype
+- `process`: cut-over-on-a-branch, land-without-regating, license-stated-in-every-source-file, no-gate-for-what-no-step-reads, process-holds-capabilities, thread-bound-at-retype
 - `proof`: divider-proven-by-invariant, isolation-claim, theorem-over-reach, thread-bound-at-retype, trust-boundary
 - `purity`: untyped-memory
 - `reach`: device-binding-under-the-space-capability

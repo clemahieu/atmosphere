@@ -10,8 +10,9 @@ fast-forward that main moved under and a merge while main's index is taken, so b
 from the rebase. A rebase that is clean lands without a second gate: what landed beside it is gated
 with whatever change is gated on top of it next (design/land-without-regating/).
 
-A change that touches only what no gate step reads, UNREAD below, lands without a gate: the gate
-would say of it what it says of the base (design/no-gate-for-what-no-step-reads/). Its tree joins
+A change that touches only what no gate step reads, UNREAD below, and leaves no source file there,
+lands without a gate: the gate would say of it what it says of the base
+(design/no-gate-for-what-no-step-reads/). Its tree joins
 the ledger with the base's verdict when the base has one.
 
 When the gate fails, the question is whether the change fails or the main it was rebased onto does.
@@ -39,6 +40,7 @@ usage: tools/land.py [--onto BRANCH] [--gate COMMAND]
 """
 import argparse
 import fcntl
+import importlib.util
 import subprocess
 import sys
 import tempfile
@@ -61,8 +63,13 @@ SUSPECT_LIMIT = 50
 # What no gate step reads, so a change to these alone cannot move the gate's result: a file, or with
 # a closing slash everything under a directory (design/no-gate-for-what-no-step-reads/).
 UNREAD = (".claude/agents/", ".claude/skills/", "CLAUDE.md")
-# The gate's limit on a file's size, the one thing it holds every path to.
+# The gate's limit on a file's size, which it holds every path to, as it holds every source file to
+# stating its license; tools/check-spdx.py says which files are sources.
 MAX_FILE_BYTES = 1 << 20
+
+_spec = importlib.util.spec_from_file_location("check_spdx", Path(__file__).with_name("check-spdx.py"))
+check_spdx = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(check_spdx)
 
 
 def say(text):
@@ -169,11 +176,20 @@ def unread(path):
     return any(path == entry or (entry.endswith("/") and path.startswith(entry)) for entry in UNREAD)
 
 
+def held_everywhere(path):
+    """Whether a file the change leaves is one the gate judges whatever its path: over the size limit,
+    or a source, which must state its license."""
+    if path.lstat().st_size > MAX_FILE_BYTES:
+        return True
+    return not path.is_symlink() and check_spdx.is_source(path.name, path.read_bytes())
+
+
 def needs_no_gate(worktree, base):
-    """Whether the change since the base touches only what no gate step reads, each file within the size limit."""
+    """Whether the change since the base touches only what no gate step reads and leaves no file the
+    gate judges whatever its path."""
     changed = git(worktree, "diff", "--name-only", "--no-renames", base, "HEAD").splitlines()
     kept = [worktree / path for path in changed if (worktree / path).is_symlink() or (worktree / path).exists()]
-    return bool(changed) and all(map(unread, changed)) and all(path.lstat().st_size <= MAX_FILE_BYTES for path in kept)
+    return bool(changed) and all(map(unread, changed)) and not any(map(held_everywhere, kept))
 
 
 def judge(worktree, onto, gate_command):
@@ -431,6 +447,15 @@ class Tests(unittest.TestCase):
         result = self.land("false")
         self.assertNotEqual(result.returncode, LANDED, result.stdout)
         self.assertEqual(self.gates(), 1)
+
+    def test_a_source_file_is_gated_whatever_its_path(self):
+        for name, text in ((".claude/skills/round/run.sh", "echo\n"), (".claude/agents/run", "#!/bin/sh\necho\n")):
+            with self.subTest(name=name):
+                before = self.gates() if (self.root / "gates").exists() else 0
+                self.commit(self.task, name, text)
+                result = self.land("false")
+                self.assertNotEqual(result.returncode, LANDED, result.stdout)
+                self.assertEqual(self.gates(), before + 1)
 
     def test_an_ungated_change_takes_the_verdict_of_the_base_it_stands_on(self):
         base = self.commit(self.task, "a")

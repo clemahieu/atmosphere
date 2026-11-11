@@ -27,10 +27,14 @@ in another terminal, attaches gdb with the kernel's and dom0's symbols.
 tools/gate.py
 ```
 
-`tools/gate.py` is the gate: a commit is tested when it exits 0. It checks that the workspace builds, that every dependency's license is on `tools/license-allowlist` (`tools/check-licenses.py`), that the license guard refuses what it must, that verification reports no more errors than `tools/verify-allowance`, that the kernel's boot stack holds and an overflow faults, and that dom0 boots under KVM to a clean exit. It also reports line and branch coverage per crate from a boot, by the mechanism described in `tools/coverage.py`.
+`tools/gate.py` is the gate: a commit is tested when it exits 0. It checks that the workspace builds, that every dependency's license is on `tools/license-allowlist` (`tools/check-licenses.py`), that every source file states a license on that list (`tools/check-spdx.py`), that the license guard refuses what it must, that verification reports no more errors than `tools/verify-allowance`, that the kernel's boot stack holds and an overflow faults, and that dom0 boots under KVM to a clean exit. It also reports line and branch coverage per crate from a boot, by the mechanism described in `tools/coverage.py`.
 
 ## Run verification
 
 ```bash
 tools/verify.py
 ```
+
+## License
+
+MIT; see `LICENSE`. Each source file names its license on its first line.
