@@ -21,8 +21,8 @@ use crate::pagetable::entry::{PageEntry, PageEntryPerm, PageEntryStatus};
 use crate::util::page_ptr_util_u::*;
 
 // The page-entry encoding: the long-mode page-translation entry's bits, chapter 5. The decoders and
-// the encoder below, the address checks in util/page_ptr_util_u.rs and the address lemmas in
-// capability/map.rs and capability/link.rs read them. The accessed and dirty bits are the
+// the encoder below read them, and mem_valid in util/page_ptr_util_u.rs and the address lemmas in
+// capability/map.rs and capability/link.rs read MEM_MASK. The accessed and dirty bits are the
 // processor's, set on any core at any time; see design/arch-module/.
 
 pub const PAGE_ENTRY_PRESENT_MASK: u64 = 0x1;
@@ -71,14 +71,6 @@ pub const PAGE_ENTRY_EXECUTE_MASK: u64 = 0x1u64 << 63;
 
 /// The physical address of a 4K page or of the next table, bits 47:12.
 pub const MEM_MASK: u64 = 0x0000_ffff_ffff_f000;
-
-pub const MEM_4K_MASK: u64 = 0x0000_ffff_ffff_f000;
-
-/// A 2M page's address, bits 47:21.
-pub const MEM_2M_MASK: u64 = 0x0000_ffff_ffe0_0000;
-
-/// A 1G page's address, bits 47:30.
-pub const MEM_1G_MASK: u64 = 0x0000_ffff_c000_0000;
 
 /// The bits of an entry's word that are not the processor's accessed and dirty bits: a word ANDed with
 /// it has its status clear.

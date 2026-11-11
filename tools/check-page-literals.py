@@ -275,7 +275,7 @@ class Tests(unittest.TestCase):
     def test_the_tree_scan_skips_the_definitions(self):
         repo = self.workspace({"kernel/verified": (True, "lib.rs", {
             "define.rs": "pub const PAGE_SZ: usize = 4096;\n",
-            "arch/x86_64.rs": "pub const MEM_4K_MASK: u64 = 0xfff;\n",
+            "arch/x86_64.rs": "pub const MEM_MASK: u64 = 0xfff;\n",
             "capability/map.rs": "let l1 = (va / 0x1000) % 512;\n",
             "layouts.rs": "global layout PageBytes is size == 4096, align == 1;\n",
         })})
