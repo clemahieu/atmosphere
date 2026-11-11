@@ -320,6 +320,8 @@ version = "0.1.0"
 dependencies = [
  "acall",
  "aeager",
+ "aheap",
+ "astd",
  "asys",
  "vstd",
 ]

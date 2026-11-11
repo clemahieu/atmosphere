@@ -9,6 +9,8 @@ license.workspace = true
 [dependencies]
 acall = { path = "../acall" }
 aeager = { path = "../aeager" }
+aheap = { path = "../aheap" }
+astd = { path = "../astd", features = ["heap"] }
 asys = { path = "../asys" }
 
 [dependencies.vstd]

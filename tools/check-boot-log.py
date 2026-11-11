@@ -5,7 +5,7 @@
 
 The log shows, in order, the kernel's line for each of the root's fixed slots with its kind, among them
 the free 1G region as one untyped (1 to 2 GiB on x86_64, 2 to 3 GiB on aarch64,
-design/test-guest-memory/), dom0's check line, exit marker and eager source line, CPU 1 idle on a
+design/test-guest-memory/), dom0's check line, exit marker, eager source line and heap line, CPU 1 idle on a
 syscall stack of its own, a flush IPI acknowledged and both cores contending for the kernel's lock.
 With --translation it also shows the kernel enabling the IOMMU's translation.
 
@@ -34,6 +34,12 @@ EXIT_MARKER = "dom0 capability done"
 # pages dom0 gives the source, less the three table pages of eight pages each the path to the span takes,
 # are 40 frames.
 EAGER_LINE = "dom0 eager backed 40"
+
+# The line dom0 prints once the global allocator, aheap's heap over an eager source of its own, gave it an
+# object of the smallest class, one between a page and a block and one over a block, each written and read
+# back and freed, refused a run-sized object once its source was exhausted, and gave one again after
+# every one of them was freed.
+HEAP_LINE = "dom0 heap allocator held"
 
 # What the kernel logs of the root's untyped and frame capabilities, before it prints each slot.
 ROOT_HOLDS = "root holds "
@@ -151,6 +157,8 @@ def boot_log_accepted(serial, arch, translation=False):
         raise Refused("the serial log does not show dom0's exit marker")
     if not line_printed(serial, EAGER_LINE):
         raise Refused(f'the serial log does not show dom0\'s eager source backing 40 pages: "{EAGER_LINE}"')
+    if not line_printed(serial, HEAP_LINE):
+        raise Refused(f'the serial log does not show dom0\'s heap allocator check: "{HEAP_LINE}"')
     if not second_core_idle(serial):
         raise Refused("the serial log does not show CPU 1 idle on a syscall stack of its own")
     if FLUSH_ACKNOWLEDGED not in serial:
@@ -158,7 +166,7 @@ def boot_log_accepted(serial, arch, translation=False):
     if LOCK_CONTENDED not in serial:
         raise Refused("the serial log does not show both cores contending for the kernel's lock")
     held = (f"exit status 0, the kernel's per-slot lines with their kinds ({untyped} untyped, {frames} frames), "
-            f"{gigabyte}, dom0's check line, exit marker and eager source line, CPU 1 idle on its own stack, "
+            f"{gigabyte}, dom0's check line, exit marker, eager source line and heap line, CPU 1 idle on its own stack, "
             f"a flush IPI acknowledged, the lock contended")
     if not translation:
         return held
@@ -197,6 +205,7 @@ def boot_log():
     """A boot log with the lines the checks keep, and no capability-entry line."""
     return (slot_lines("frame")
             + "dom0 eager backed 40\n"
+            "dom0 heap allocator held\n"
             "dom0 slot checks held\n"
             "dom0 capability done\n"
             "\x1b[34m INFO CPU 0 syscall stack 0x1000\x1b[0m\n"
@@ -222,6 +231,7 @@ class Tests(unittest.TestCase):
         for removed, named in [
             ("dom0 slot checks held\n", "check line"),
             ("dom0 eager backed 40\n", "eager source"),
+            ("dom0 heap allocator held\n", "heap allocator"),
             ("dom0 capability done\n", "exit marker"),
             ("CPU 1 idle, syscall stack 0x2000\n", "CPU 1 idle"),
             ("flush IPI acknowledged by CPU 1\n", "flush IPI"),

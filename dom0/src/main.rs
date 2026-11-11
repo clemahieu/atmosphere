@@ -57,7 +57,13 @@
 //! of the gigabyte untyped, from which aeager's eager span source backs page runs of a window in root
 //! entry 3 of its space; aeager's verified exercise reserves a span, backs it a page at a time until the
 //! source refuses, writes a byte through the run and reads it back, releases it, backs a page again and
-//! gives the span back, and dom0 prints how many pages it backed.
+//! gives the span back, and dom0 prints how many pages it backed. It then gives astd's global allocator
+//! a second eager source, over a child untyped of as many pages as the source records, frame slots in
+//! the leaves of the root entries after the first source's and a window in root entry 4 of its space,
+//! and allocates through it a box of the smallest class, a vector between a page and a block and one
+//! over a block, writing and reading each back; once all three are freed it allocates run-sized
+//! objects until the allocator refuses one, frees them, allocates one again, and prints that the heap
+//! held.
 //! dom0 prints that result through the console, then an exit marker,
 //! and ends the run with a power-off through its power capability, reporting success only when every
 //! check held. On aarch64, where the instruction carries an immediate, a print through the console by
@@ -71,6 +77,11 @@
 #![no_std]
 #![no_main]
 
+extern crate alloc;
+
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+use core::alloc::Layout;
 use core::panic::PanicInfo;
 
 use acall::capability::{delete, move_cap, revoke};
@@ -978,6 +989,127 @@ fn eager_source_held(caller: &mut Tracked<Caller>, empty: u64) -> bool {
         && seen.again
 }
 
+/// The root entries of dom0's table whose leaves take the heap's source's capabilities: its untyped in
+/// the first slot of the first, and the frames for its pages in the slots after it, which the source
+/// carries on past each leaf's end into the next.
+const HEAP_ENTRY: u64 = EAGER_ENTRY + 1;
+
+/// The pages of the block dom0 gives the heap's source: as many as a source records, enough for an
+/// object over a block beside the heap's other spans and the window's tables.
+const HEAP_PAGES: usize = aeager::MAX_PAGES;
+
+/// The order of the block dom0 gives the heap's source.
+const HEAP_ORDER: u64 = HEAP_PAGES.trailing_zeros() as u64;
+
+/// The leaves the heap's source's capabilities take: the untyped and HEAP_PAGES frames, at
+/// LEAF_INDICES - 1 slots a leaf.
+const HEAP_LEAVES: u64 = (HEAP_PAGES as u64 + 1).div_ceil(LEAF_INDICES - 1);
+
+/// How far below the top of the gigabyte untyped the heap's source's block starts: below the eager
+/// source's block and its leaf, and aligned to the block's order, with its leaves under it.
+const HEAP_BELOW_TOP: u64 = 2 * (4096 << HEAP_ORDER);
+
+/// The address of the heap's source's window: the start of root entry 4 of dom0's space, past the eager
+/// source's, since a window links its own tables above its blocks.
+const HEAP_WINDOW: u64 = 4 << 39;
+
+/// The bytes of the run-sized objects dom0 allocates until its heap refuses one: a quarter of a block.
+const RUN_OBJECT: usize = aheap::arch::BLOCK_BYTES / 4;
+
+/// More run-sized objects than the heap's source has pages for, so a heap that never refuses fails.
+const RUN_OBJECTS_MAX: usize = 4 * HEAP_PAGES * aheap::arch::PAGE_BYTES / RUN_OBJECT;
+
+/// What dom0 prints through the console when its heap allocator check held, which the gate looks for.
+const HEAP_HELD: [u64; 5] = operation::print_words(b"dom0 heap allocator held\n");
+
+/// A vector of `bytes` bytes, each its index plus `seed`, or None when the allocator refuses it.
+fn filled(bytes: usize, seed: u8) -> Option<Vec<u8>> {
+    let mut vector = Vec::new();
+    vector.try_reserve_exact(bytes).ok()?;
+    vector.extend((0..bytes).map(|i| seed.wrapping_add(i as u8)));
+    Some(vector)
+}
+
+/// Whether every byte of `vector` is its index plus `seed`.
+fn reads_back(vector: &[u8], seed: u8) -> bool {
+    vector.iter().enumerate().all(|(i, &byte)| byte == seed.wrapping_add(i as u8))
+}
+
+/// How many run-sized objects the global allocator gave before it refused one, chained through their
+/// first words and then all freed; None when it gave RUN_OBJECTS_MAX without refusing.
+fn run_objects_until_refused() -> Option<usize> {
+    let layout = Layout::from_size_align(RUN_OBJECT, 8).ok()?;
+    let mut head: *mut u8 = core::ptr::null_mut();
+    let mut count = 0;
+    let refused = loop {
+        if count == RUN_OBJECTS_MAX {
+            break false;
+        }
+        let object = unsafe { alloc::alloc::alloc(layout) };
+        if object.is_null() {
+            break true;
+        }
+        unsafe { (object as *mut *mut u8).write(head) };
+        head = object;
+        count += 1;
+    };
+    while !head.is_null() {
+        let next = unsafe { (head as *mut *mut u8).read() };
+        unsafe { alloc::alloc::dealloc(head, layout) };
+        head = next;
+    }
+    refused.then_some(count)
+}
+
+/// Whether astd's global allocator, given a heap over an eager source of dom0's own, serves dom0: from
+/// the gigabyte untyped, table leaves into the HEAP_LEAVES root entries from HEAP_ENTRY and a child
+/// untyped of HEAP_ORDER at HEAP_BELOW_TOP into the first's first slot, whose pages the source alone
+/// retypes, and the window at HEAP_WINDOW. A box of the smallest class, a vector of a few pages and one
+/// over a block are written and read back and freed; run-sized objects are then allocated until the
+/// allocator refuses one, at least one given first, and all freed, after which one is given again.
+fn heap_allocator_held(caller: &mut Tracked<Caller>, empty: u64) -> bool {
+    let Some((untyped, block)) = untyped_of_pages(caller, empty, 1 << 18) else {
+        return false;
+    };
+    let memory = block.base + (4096 << block.order) - HEAP_BELOW_TOP;
+    let source = first_slot(HEAP_ENTRY);
+    for leaf in 0..HEAP_LEAVES {
+        let base = memory - (leaf + 1) * LEAF_BYTES;
+        if retype(caller, untyped, operation::RETYPE_LEAF, base, HEAP_ENTRY + leaf, 0).status != operation::STATUS_OK {
+            return false;
+        }
+    }
+    if derive(caller, untyped, source, block.rights, memory, HEAP_ORDER).status != operation::STATUS_OK {
+        return false;
+    }
+    // As for the eager source's check, the heap's source's calls go on from dom0's own.
+    let Some(eager) = aeager::Eager::new(
+        core::mem::replace(caller, Tracked::assume_new()),
+        operation::ROOT_PROCESS_SLOT,
+        source,
+        memory,
+        HEAP_PAGES,
+        source + 1,
+        HEAP_WINDOW as *mut u8,
+    ) else {
+        return false;
+    };
+    astd::heap::install(eager);
+    let small = Box::new(0x5au8);
+    let (Some(run), Some(large)) = (
+        filled(2 * aheap::arch::PAGE_BYTES + 8, 0x11),
+        filled(aheap::arch::BLOCK_BYTES + aheap::arch::PAGE_BYTES, 0x22),
+    ) else {
+        return false;
+    };
+    let objects_held = *small == 0x5a && reads_back(&run, 0x11) && reads_back(&large, 0x22);
+    drop((small, run, large));
+    objects_held
+        && run_objects_until_refused().is_some_and(|count| count > 0)
+        && filled(RUN_OBJECT, 0x33).is_some_and(|again| reads_back(&again, 0x33))
+        && unsafe { print_slot(operation::ROOT_CONSOLE_SLOT, HEAP_HELD) } == operation::STATUS_OK
+}
+
 /// Print through `slot`. The status is the low half of what the invocation returns.
 ///
 /// # Safety
@@ -1072,6 +1204,7 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
                             && remapped_other_frame_held(caller, untyped, empty + 2)
                             && retyped_leaves_held(caller, untyped, tables[3])
                             && eager_source_held(caller, empty)
+                            && heap_allocator_held(caller, empty)
                     })
         });
     let console = unsafe {

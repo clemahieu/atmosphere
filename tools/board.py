@@ -223,6 +223,7 @@ def boot_log():
             "\x1b[34m INFO root slot 6: untyped\x1b[0m\n"
             " INFO root slot 129: frame order 0\n"
             "dom0 eager backed 40\n"
+            "dom0 heap allocator held\n"
             "dom0 slot checks held\n"
             "dom0 capability done\n"
             "\x1b[34m INFO CPU 0 syscall stack 0x1000\x1b[0m\n"
@@ -282,6 +283,9 @@ class Tests(unittest.TestCase):
 
     def test_a_run_without_the_eager_source_line_fails(self):
         self.assertIn("eager source", self.failed(0, board_output().replace("dom0 eager backed 40\n", "")))
+
+    def test_a_run_without_the_heap_allocator_line_fails(self):
+        self.assertIn("heap allocator", self.failed(0, board_output().replace("dom0 heap allocator held\n", "")))
 
     def test_a_run_on_the_pc_s_memory_map_fails(self):
         output = board_output().replace("base 0x80000000 order 18", "base 0x40000000 order 18")
