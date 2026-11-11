@@ -1168,6 +1168,7 @@ impl SizeClass {
     /// and backed and whose record is taken from the store. Refuses only when no slab has a free
     /// slot and the source refused one request in this call, and then gives back what the call took.
     /// Either way it keeps what every class over the same three stands on.
+    #[verifier::spinoff_prover]
     pub fn alloc_small<S: SpanSource>(&mut self, store: &mut RecordStore, pb: &mut PageBuddy, src: &mut S) -> (r:
         Option<(*mut u8, Tracked<PointsToRaw>)>)
         requires
