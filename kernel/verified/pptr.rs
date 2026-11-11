@@ -186,25 +186,6 @@ impl<V> PPtr<V> {
         self.0
     }
 
-    /// Cast an integer to a pointer.
-    ///
-    /// Note that this does _not_ require or ensure that the pointer is valid.
-    /// Of course, if the user creates an invalid pointer, they would still not be able to
-    /// create a valid [`PointsTo`] token for it, and thus they would never
-    /// be able to access the data behind the pointer.
-    ///
-    /// This is analogous to normal Rust, where casting to a pointer is always possible,
-    /// but dereferencing a pointer is an `unsafe` operation.
-    /// With PPtr, casting to a pointer is likewise always possible,
-    /// while dereferencing it is only allowed when the right preconditions are met.
-    #[inline(always)]
-    pub fn from_addr(u: usize) -> (s: Self)
-        ensures
-            u == s.addr(),
-    {
-        PPtr(u, PhantomData)
-    }
-
     #[doc(hidden)]
     #[inline(always)]
     pub fn from_usize(u: usize) -> (s: Self)
@@ -262,14 +243,6 @@ impl<V> PointsTo<V> {
             self.is_init(),
     {
         self.mem_contents().value()
-    }
-
-    /// Guarantee that the `PointsTo` points to a non-null address.
-    pub proof fn is_nonnull(tracked &self)
-        ensures
-            self.addr() != 0,
-    {
-        use_type_invariant(self);
     }
 
     /// "Forgets" about the value stored behind the pointer.
@@ -383,29 +356,6 @@ impl<V> PPtr<V> {
         }
         let ptr: *mut V = with_exposed_provenance(self.0, Tracked(perm.exposed));
         ptr_mut_read(ptr, Tracked(&mut perm.points_to))
-    }
-
-    /// Swaps the `in_v: V` passed in as an argument with the value in memory.
-    /// Requires the memory to be initialized, and leaves it initialized with the new value.
-    #[inline(always)]
-    pub fn replace(self, Tracked(perm): Tracked<&mut PointsTo<V>>, in_v: V) -> (out_v: V)
-        requires
-            old(perm).pptr() == self,
-            old(perm).is_init(),
-        ensures
-            final(perm).pptr() == old(perm).pptr(),
-            final(perm).mem_contents() == MemContents::Init(in_v),
-            out_v == old(perm).value(),
-        opens_invariants none
-        no_unwind
-    {
-        proof {
-            use_type_invariant(&*perm);
-        }
-        let ptr: *mut V = with_exposed_provenance(self.0, Tracked(perm.exposed));
-        let out_v = ptr_mut_read(ptr, Tracked(&mut perm.points_to));
-        ptr_mut_write(ptr, Tracked(&mut perm.points_to), in_v);
-        out_v
     }
 
     /// Given a shared borrow of the `PointsTo<V>`, obtain a shared borrow of `V`.
