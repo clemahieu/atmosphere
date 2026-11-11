@@ -31,6 +31,8 @@ pub mod probe;
 pub mod process;
 pub mod reach;
 pub mod reclaim;
+#[cfg(verus_keep_ghost)]
+pub mod rely;
 pub mod reclaim_process;
 pub mod reclaim_thread;
 pub mod refs;
