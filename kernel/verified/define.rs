@@ -16,14 +16,6 @@ pub type PAddr = usize;
 
 pub type PageMapPtr = usize;
 
-pub type L4Index = usize;
-
-pub type L3Index = usize;
-
-pub type L2Index = usize;
-
-pub type L1Index = usize;
-
 //1 for now
 pub const KERNEL_MEM_END_L4INDEX: usize = 1;
 
