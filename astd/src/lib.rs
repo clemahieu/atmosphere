@@ -30,3 +30,6 @@ pub use heapless;
 
 #[cfg(feature = "kernel")]
 pub mod boot;
+
+#[cfg(feature = "heap")]
+pub mod heap;

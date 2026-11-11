@@ -9,7 +9,13 @@ publish = false
 embedded-io = "0.5.0"
 heapless = "0.7.16"
 spin = "0.9.8"
+aeager = { path = "../aeager", optional = true }
+aheap = { path = "../aheap", optional = true }
+vstd = { workspace = true }
 
 [features]
 default = []
 kernel = []
+# The global allocator, aheap's heap over an eager span source the process installs; a user process
+# turns it on, the kernel, the loader and the host tests do not.
+heap = ["dep:aeager", "dep:aheap"]

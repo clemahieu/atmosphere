@@ -174,9 +174,12 @@ dependencies = [
 name = "astd"
 version = "0.1.0"
 dependencies = [
+ "aeager",
+ "aheap",
  "embedded-io",
  "heapless",
  "spin",
+ "vstd",
 ]
 
 [[package]]
