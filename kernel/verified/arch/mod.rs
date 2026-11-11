@@ -40,7 +40,9 @@ struct Unique {}
 /// Core `core()`'s page-table base register: the core translates through the table whose top level is
 /// at `root()`, filling its TLB under tag `tag()`, the PCID or ASID written with it. The kernel value
 /// holds one for each core, made at boot for the root the loader left there, and load_translation_root
-/// writes the register only through it, and it cannot be copied, so what it says is the register's latest write.
+/// writes the register only through it, and it cannot be copied or made above this module, so no second
+/// token for the core can stand in for it while it is kept across a later write: what it says is the
+/// register's latest write.
 // Only specs read the fields, and a cargo build erases specs, so only Verus compiles them.
 pub tracked struct BaseRegister {
     #[cfg(verus_keep_ghost)]
