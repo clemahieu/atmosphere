@@ -264,6 +264,7 @@ impl CapKernel {
             final(self).devices.count == old(self).devices.count,
             final(self).spaces.records == old(self).spaces.records,
             final(self).spaces.bound == old(self).spaces.bound,
+            final(self).flush_epoch == old(self).flush_epoch,
     {
         let ghost pre = *old(self);
         let src = match self.find_table(root, from.through) {
@@ -374,6 +375,7 @@ impl CapKernel {
             final(self).devices.count == old(self).devices.count,
             final(self).spaces.records == old(self).spaces.records,
             final(self).spaces.bound == old(self).spaces.bound,
+            final(self).flush_epoch == old(self).flush_epoch,
     {
         let ghost pre = *old(self);
         let (i, payload) = match self.tables.lookup(&self.list, src, from) {

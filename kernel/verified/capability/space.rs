@@ -3392,6 +3392,7 @@ impl CapKernel {
             final(self).iommus == old(self).iommus,
             final(self).processes == old(self).processes,
             final(self).tables.roots == old(self).tables.roots,
+            final(self).flush_epoch == old(self).flush_epoch,
             ret ==> {
                 let parent = old(self).tables.node_of(root, from);
                 let child = old(self).tables.node_of(root, to);

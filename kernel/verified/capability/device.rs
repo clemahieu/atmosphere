@@ -840,6 +840,7 @@ impl CapKernel {
             final(self).iommus == old(self).iommus,
             final(self).processes == old(self).processes,
             final(self).spaces == old(self).spaces,
+            final(self).flush_epoch == old(self).flush_epoch,
             ret ==> final(self).list.parent@ == old(self).list.parent@.insert(old(self).tables.node_of(root, slot), first),
             ret ==> {
                 let n = old(self).tables.node_of(root, slot);
@@ -1395,6 +1396,7 @@ impl CapKernel {
         &&& forall|y: int| #![trigger post.list.nodes@[y]] 0 <= y < NODE_SPACE && y != x ==> {
             &&& post.list.nodes@[y].live == pre.list.nodes@[y].live
             &&& post.list.nodes@[y].kind == pre.list.nodes@[y].kind
+            &&& post.list.nodes@[y].depth == pre.list.nodes@[y].depth
         }
         &&& post.blocks.wf()
         &&& blocks_refs_changed(&pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br))
@@ -1952,6 +1954,7 @@ impl CapKernel {
                 &&& forall|y: int| #![trigger final(self).list.nodes@[y]] 0 <= y < NODE_SPACE && y != x ==> {
                     &&& final(self).list.nodes@[y].live == old(self).list.nodes@[y].live
                     &&& final(self).list.nodes@[y].kind == old(self).list.nodes@[y].kind
+                    &&& final(self).list.nodes@[y].depth == old(self).list.nodes@[y].depth
                 }
                 &&& final(self).list.parent == old(self).list.parent
                 &&& final(self).tables == old(self).tables
