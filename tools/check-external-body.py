@@ -3,7 +3,7 @@
 
 """Check the trusted surface of every crate marked verified: every claim the proof takes without
 proving it is listed in tools/external-body-list, with who vouches for it or why it stands unproven,
-and no assume or admit is left.
+and no assume, admit or other exemption is left.
 
 The crates checked are the workspace members whose Cargo.toml marks them
 '[package.metadata.atmosphere] verified = true', the crates tools/verify.py proves; each one's
@@ -27,7 +27,11 @@ specification's class is hardware or kernel, and its reason is its citation line
 '; '. The check passes when the source and the list hold the same items, counting an item that
 appears twice in one file twice. A call
 of assume( or admit( outside a '//' comment fails the check: the marked crates hold none, and a new
-one would be an axiom the proof rests on. The retired 'old' trees and build output under 'target'
+one would be an axiom the proof rests on. So does any other way to exempt code: an axiom fn or a
+broadcast axiom fn, a verifier::external fn, an external_fn_specification, an attribute above that
+does not open its line (after another attribute, inside cfg_attr, or an inner #![...]), and an
+assume_specification its line does not open; each word of these outside a '//' comment counts,
+whatever attribute or macro spells it. The retired 'old' trees and build output under 'target'
 are not scanned.
 
 usage: tools/check-external-body.py           (the tree)
@@ -57,6 +61,10 @@ CITE = "// cite: "
 KERNEL = "// kernel: "
 DOCUMENTS_PATH = "tools/hardware-documents"
 ASSUMPTION = re.compile(r"\b(assume|admit)\s*\(")
+# The words that exempt code from the proof: the two counted attributes, the assumed specification,
+# and the forms the marked crates do not use (an axiom fn, an external fn, an external_fn_specification).
+EXEMPTING = re.compile(r"\b(axiom|external|external_fn_specification|assume_specification|"
+                       r"external_body|exec_allows_no_decreases_clause)\b")
 
 # One attribute or assumed specification, as the list and the source both state it.
 Item = namedtuple("Item", "path name attribute kind reason")
@@ -211,6 +219,27 @@ def assumptions(path, source):
     return found
 
 
+def unread_exemptions(path, source):
+    """Each line of one file that exempts code from the proof in a form this check does not count.
+    The counted forms are a line opening with one counted attribute in either spelling, and a line
+    opening an assumed specification with its name in brackets. Any other word of EXEMPTING outside a
+    '//' comment is refused: an axiom fn, an external fn, an external_fn_specification, a counted
+    attribute after another attribute, inside cfg_attr or as an inner attribute, and an assumed
+    specification the line does not open."""
+    refused = []
+    for index, line in enumerate(source.splitlines()):
+        words = [match.group(1) for match in EXEMPTING.finditer(line.split("//", 1)[0])]
+        if not words:
+            continue
+        stripped = line.strip()
+        counted = len(words) == 1 and (
+            attribute(stripped) == words[0] or (words[0] == ASSUMED and SPECIFICATION.match(stripped)))
+        if not counted:
+            refused.append(f"{path}:{index + 1}: {stripped} exempts code from the proof in a form this "
+                           "check does not count")
+    return refused
+
+
 def compare(found, listed):
     """Describes every item only one side has, counting an item once per occurrence."""
     def describe(item):
@@ -255,18 +284,19 @@ def marked_crates(repo):
 
 
 def scan_tree(repo, documents):
-    """Each live attribute, each assumed specification and each assume or admit in the marked crates,
-    named from the root."""
+    """Each live attribute and each assumed specification in the marked crates, and each line there
+    that assumes, admits or exempts code in a form the list cannot count, named from the root."""
     found = []
-    assumed = []
+    refused = []
     for crate in marked_crates(repo):
         for file in sources(repo / crate):
             path = file.relative_to(repo).as_posix()
             source = file.read_text(encoding="utf-8")
             found.extend(scan(path, source))
             found.extend(specifications(path, source, documents, repo))
-            assumed.extend(assumptions(path, source))
-    return found, assumed
+            refused.extend(f"{line} assumes what the proof should show" for line in assumptions(path, source))
+            refused.extend(unread_exemptions(path, source))
+    return found, refused
 
 
 def main(args):
@@ -276,11 +306,11 @@ def main(args):
     try:
         listed = parse_list((REPO / LIST_PATH).read_text(encoding="utf-8"))
         documents = parse_documents((REPO / DOCUMENTS_PATH).read_text(encoding="utf-8"))
-        found, assumed = scan_tree(REPO, documents)
+        found, refused = scan_tree(REPO, documents)
     except Unreadable as error:
         print(error, file=sys.stderr)
         return 1
-    differences = compare(found, listed) + [f"{line} assumes what the proof should show" for line in assumed]
+    differences = compare(found, listed) + refused
     for difference in differences:
         print(difference, file=sys.stderr)
     if differences:
@@ -290,7 +320,7 @@ def main(args):
         kinds = Counter(item.kind for item in found if item.attribute == exempting)
         totals = ", ".join(f"{count} {kind}" for kind, count in sorted(kinds.items()))
         summaries.append(f"{sum(kinds.values())} {exempting}" + (f" ({totals})" if totals else ""))
-    print(f"{'; '.join(summaries)} listed; no assume or admit")
+    print(f"{'; '.join(summaries)} listed; no assume, admit or uncounted exemption")
     return 0
 
 
@@ -444,7 +474,7 @@ class Tests(unittest.TestCase):
             compare(found, listed),
             ["heap/src/source.rs back external_body (glue: a syscall) is not on the list"],
         )
-        self.assertEqual(assumed, ["heap/src/lib.rs:1: proof fn p() { assume(false); }"])
+        self.assertEqual(assumed, ["heap/src/lib.rs:1: proof fn p() { assume(false); } assumes what the proof should show"])
 
     def test_an_unmarked_crate_is_not_scanned(self):
         repo = self.workspace({
@@ -572,6 +602,69 @@ class SpecificationTests(unittest.TestCase):
             "TLB Management, Implicit Invalidations; amd-apm2 5.5.1 Process Context Identifier) is not on the list"
         ])
 
+
+class ExemptionFormTests(unittest.TestCase):
+    """Every way to exempt code from the proof that the check does not count is refused."""
+
+    FORMS = {
+        "axiom fn": "pub axiom fn forged() -> (r: Tracked<BaseRegister>);\n",
+        "broadcast axiom fn": "pub broadcast axiom fn forged(core: usize)\n    ensures false,\n;\n",
+        "uncited assume_specification on a line it does not open": (
+            "#[cfg(verus_keep_ghost)] pub assume_specification[forge](core: usize) -> Tracked<BaseRegister>;\n"
+        ),
+        "assume_specification split across lines": "pub assume_specification\n    [forge](core: usize);\n",
+        "external_fn_specification": "#[verifier::external_fn_specification]\npub fn ex_forge(core: usize) {}\n",
+        "verifier::external": "#[verifier::external]\nfn forge() -> Tracked<BaseRegister> { Tracked::assume_new() }\n",
+        "verifier(external)": "#[verifier(external)]\nfn forge() {}\n",
+        "external_body after another attribute": (
+            "#[inline] #[verifier::external_body]\n// external_body(glue): x\nfn forge() {}\n"
+        ),
+        "external_body inside cfg_attr": (
+            "#[cfg_attr(verus_keep_ghost, verifier::external_body)]\n// external_body(glue): x\nfn forge() {}\n"
+        ),
+        "external_body in an inner attribute": "#![verifier::external_body]\n",
+        "exec_allows_no_decreases_clause after another attribute": (
+            "#[inline] #[verifier::exec_allows_no_decreases_clause]\nfn spin() {}\n"
+        ),
+        "exec_allows_no_decreases_clause inside cfg_attr": (
+            "#[cfg_attr(verus_keep_ghost, verifier::exec_allows_no_decreases_clause)]\nfn spin() {}\n"
+        ),
+        "exec_allows_no_decreases_clause in an inner attribute": "#![verifier(exec_allows_no_decreases_clause)]\n",
+        "verus_verify(external_body)": "#[verus_verify(external_body)]\nfn forge() {}\n",
+    }
+
+    def test_each_uncounted_form_is_refused(self):
+        for form, source in self.FORMS.items():
+            with self.subTest(form):
+                refused = unread_exemptions("kernel/verified/capability/mapping.rs", source)
+                self.assertTrue(refused, form)
+                self.assertTrue(all(line.startswith("kernel/verified/capability/mapping.rs:") for line in refused))
+
+    def test_each_uncounted_form_fails_the_tree(self):
+        for form, source in self.FORMS.items():
+            with self.subTest(form):
+                repo = Tests.workspace(self, {"kernel/verified": (True, {"capability/mapping.rs": source})})
+                try:
+                    _, refused = scan_tree(repo, DOCUMENTS)
+                except Unreadable:
+                    continue
+                self.assertTrue(refused, form)
+
+    def test_the_counted_forms_are_not_refused(self):
+        source = (
+            f"{ATTR} // a note\n// external_body(glue): x\nfn f()\n"
+            "    #[verifier::exec_allows_no_decreases_clause]\n// exec_allows_no_decreases_clause(unproven): x\nfn g()\n"
+            + FLUSH
+        )
+        self.assertEqual(unread_exemptions(ARCH_FILE, source), [])
+
+    def test_comments_and_longer_names_are_not_refused(self):
+        source = (
+            "// #[verifier::external] and an axiom fn, in a comment\n"
+            "/// external_fn_specification\n"
+            "let axiomatic = external_bodyless; // #![verifier::external_body]\n"
+        )
+        self.assertEqual(unread_exemptions("a.rs", source), [])
 
 if __name__ == "__main__":
     if sys.argv[1:] == ["--test"]:
