@@ -5,7 +5,9 @@
 
 Claude Code writes one transcript per session under ~/.claude/projects/<the session's directory,
 every character not a letter or digit made '-'>, and one per agent the session spawned under
-<session>/subagents/, with the agent's type beside it in agent-<id>.meta.json. Every API call is an
+<session>/subagents/, with the agent's type beside it in agent-<id>.meta.json. A session started as
+an agent (`claude -p --agent round`, as tools/loop.py runs each round, prover and skeptic) counts as
+that agent: its transcript's first line names it (`"type":"agent-setting"`). Every API call is an
 assistant line carrying its request id and its usage. A harvest reads each transcript from where
 the last one stopped, whole lines only, into a SQLite ledger: one row per request id, so a call
 written on several lines counts once, and a total per issue, agent kind, model and local day, kept
@@ -67,13 +69,25 @@ def directories(projects, root):
 def transcripts(directory):
     """Each transcript in that directory with its kind: a session's, or its agent's type."""
     for path in sorted(directory.glob("*.jsonl")):
-        yield path, SESSION
+        yield path, started_as(path)
     for path in sorted(directory.glob("*/subagents/agent-*.jsonl")):
         try:
             kind = json.loads(path.with_suffix(".meta.json").read_text()).get("agentType") or "agent"
         except (OSError, ValueError):
             kind = "agent"
         yield path, kind
+
+
+def started_as(path):
+    """The agent a session was started as, from its transcript's first line; a session's kind when it was started as none."""
+    try:
+        with path.open("rb") as stream:
+            line = json.loads(stream.readline())
+    except (OSError, ValueError):
+        return SESSION  # removed since the listing, empty, or its first line still being written
+    if isinstance(line, dict) and line.get("type") == "agent-setting" and isinstance(line.get("agentSetting"), str):
+        return line["agentSetting"]
+    return SESSION
 
 
 def connect(ledger):
@@ -363,6 +377,15 @@ class Tests(unittest.TestCase):
         self.agent("skeptic", [self.prompt("Run the pass. Epic: atmo-1.2. Your input is the epic's last Skeptic input note."), self.call()], "s")
         self.agent("general-purpose", [self.prompt("Issue atmo-1.4, look"), self.call()], "g")
         self.assertEqual(self.issues(), {"atmo-1.2.3": [2, 20, 200, 10, 2], "atmo-1.2": [1, 10, 100, 5, 1], "": [1, 10, 100, 5, 1]})
+
+    def test_a_command_line_agent_session_counts_as_that_agent(self):
+        self.write(self.sessions / "r.jsonl", [{"type": "agent-setting", "agentSetting": "round", "sessionId": "r"},
+                                               self.call(), self.bash("bd update atmo-1.2 --claim"), self.call()])
+        self.write(self.sessions / "s.jsonl", [{"type": "agent-setting", "agentSetting": "skeptic", "sessionId": "s"},
+                                               self.prompt("Epic atmo-1. Your input is the epic's last Skeptic input note."), self.call()])
+        self.write(self.sessions / "i.jsonl", [self.call()])
+        self.assertEqual(self.issues(), {"atmo-1.2": [3, 30, 300, 15, 3], "atmo-1": [1, 10, 100, 5, 1], "": [1, 10, 100, 5, 1]})
+        self.assertEqual([kind for _, kind, _ in spent(self.ledger)[1]], ["round", "session", "skeptic"])
 
     def test_a_call_written_on_several_lines_counts_once_at_its_largest(self):
         self.write(self.sessions / "s1.jsonl", [self.call((1, 10, 100, 5), "req_a"), self.call((1, 10, 100, 70), "req_a")])
