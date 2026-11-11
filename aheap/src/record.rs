@@ -1166,6 +1166,7 @@ impl RecordStore {
             final(pb).wf(final(src)@),
             final(self).wf(*final(pb), final(src)@),
             final(pb).spares() == old(pb).spares(),
+            others_kept(*old(pb), *final(pb), old(src)@, final(src)@),
             !old(self).full() ==> {
                 &&& r is Some
                 &&& *final(pb) == *old(pb)
@@ -1218,6 +1219,7 @@ impl RecordStore {
                     assert forall|c: int| #[trigger] self.headers@.contains_key(c) implies run_held(*pb, src@, c, 0) by {
                         assert(run_held(pb0, s0, c, 0));
                     }
+                    lemma_others_same(pb0, *pb, s0, src@);
                 }
                 return None;
             },
@@ -1262,6 +1264,11 @@ impl RecordStore {
                     assert(s3.refusals == s0.refusals.push(s2.refusals.last()));
                     assert(page_back_refusal(pb0, s0, s2.refusals.last()));
                     assert(back_refused(pb0, s0, s3));
+                    lemma_cut_others(pb0, pb1, s0, s1, qi, 0);
+                    lemma_others_same(pb1, pb2, s1, s2);
+                    lemma_freed_others(pb2, pb3, s2, s2, s3, qi);
+                    lemma_others_trans(pb0, pb1, pb2, s0, s1, s2);
+                    lemma_others_trans(pb0, pb2, pb3, s0, s2, s3);
                 }
                 None
             },
@@ -1281,6 +1288,10 @@ impl RecordStore {
                         }
                     }
                     assert(took_page(pb0, pb2, s0, s2, qi));
+                    lemma_cut_others(pb0, pb1, s0, s1, qi, 0);
+                    lemma_span_base(pb1, s1, c);
+                    lemma_others_at(pb1, pb2, s1, s2, pb1.span_base(c));
+                    lemma_others_trans(pb0, pb1, pb2, s0, s1, s2);
                 }
                 Some((p, perm))
             },
@@ -1301,6 +1312,7 @@ impl RecordStore {
             final(pb).wf(final(src)@),
             final(self).wf(*final(pb), final(src)@),
             final(self).taken() == old(self).taken().remove(p@.addr as int),
+            others_kept(*old(pb), *final(pb), old(src)@, final(src)@),
             forall|x: int, k: nat| #[trigger]
                 run_held(*old(pb), old(src)@, x, k) && !old(self).pages().contains(x) ==> run_held(
                     *final(pb),
@@ -1367,6 +1379,11 @@ impl RecordStore {
             assert(pb1.idle_spans() == pb0.idle_spans());
             assert(freed(pb0, pb2, s1, s2, bi));
             assert(gave_back(pb0, pb2, s0, s2, bi));
+            pb0.lemma_view(s0);
+            lemma_span_base(pb0, s0, span_of(bi));
+            lemma_others_at(pb0, pb1, s0, s1, pb0.span_base(span_of(bi)));
+            lemma_freed_others(pb1, pb2, s1, s1, s2, bi);
+            lemma_others_trans(pb0, pb1, pb2, s0, s1, s2);
             assert forall|c: int| #[trigger] self.headers@.contains_key(c) implies run_held(pb2, s2, c, 0) by {
                 assert(old(self).headers@.contains_key(c));
                 self.lemma_page(c, prov);

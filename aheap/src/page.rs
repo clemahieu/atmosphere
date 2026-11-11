@@ -3088,4 +3088,139 @@ pub proof fn lemma_two_runs_restored(u: Map<int, Map<int, nat>>, q: int, k: nat,
     lemma_without_run_runs(w, without_run(with_run(w, x, j), x), q);
 }
 
+/// Every span the source held that the page buddy did not hold is as it was, and the page buddy
+/// does not hold it after: a page buddy operation leaves the spans another owner of the source
+/// holds, such as the large-object map, as they were.
+pub open spec fn others_kept(pb0: PageBuddy, pb1: PageBuddy, s0: SourceView, s1: SourceView) -> bool {
+    forall|b: int|
+        #[trigger] s0.spans.contains_key(b) && !pb0.spans().contains_key(b) ==> {
+            &&& s1.spans.contains_key(b)
+            &&& s1.spans[b] == s0.spans[b]
+            &&& !pb1.spans().contains_key(b)
+        }
+}
+
+/// `others_kept` composes.
+pub proof fn lemma_others_trans(
+    pb0: PageBuddy,
+    pb1: PageBuddy,
+    pb2: PageBuddy,
+    s0: SourceView,
+    s1: SourceView,
+    s2: SourceView,
+)
+    requires
+        others_kept(pb0, pb1, s0, s1),
+        others_kept(pb1, pb2, s1, s2),
+    ensures
+        others_kept(pb0, pb2, s0, s2),
+{
+    assert forall|b: int| #[trigger] s0.spans.contains_key(b) && !pb0.spans().contains_key(b) implies {
+        &&& s2.spans.contains_key(b)
+        &&& s2.spans[b] == s0.spans[b]
+        &&& !pb2.spans().contains_key(b)
+    } by {
+        assert(s1.spans.contains_key(b));
+    }
+}
+
+/// A change to the source at a block the page buddy holds, the page buddy's blocks kept or fewer,
+/// keeps the others' spans: a back, a release, a refusal.
+pub proof fn lemma_others_at(pb0: PageBuddy, pb1: PageBuddy, s0: SourceView, s1: SourceView, x: int)
+    requires
+        pb0.spans().contains_key(x) || !s0.spans.contains_key(x),
+        pb1.spans().dom().subset_of(pb0.spans().dom()),
+        forall|b: int| #[trigger] s0.spans.contains_key(b) && b != x ==> s1.spans.contains_key(b) && s1.spans[b] == s0.spans[b],
+    ensures
+        others_kept(pb0, pb1, s0, s1),
+{
+    assert forall|b: int| #[trigger] s0.spans.contains_key(b) && !pb0.spans().contains_key(b) implies {
+        &&& s1.spans.contains_key(b)
+        &&& s1.spans[b] == s0.spans[b]
+        &&& !pb1.spans().contains_key(b)
+    } by {
+        assert(b != x);
+        assert(!pb1.spans().dom().contains(b));
+    }
+}
+
+/// A change that keeps the source's spans and holds no block the page buddy did not keeps the
+/// others' spans: a refusal.
+pub proof fn lemma_others_same(pb0: PageBuddy, pb1: PageBuddy, s0: SourceView, s1: SourceView)
+    requires
+        s1.spans == s0.spans,
+        pb1.spans().dom().subset_of(pb0.spans().dom()),
+    ensures
+        others_kept(pb0, pb1, s0, s1),
+{
+    assert forall|b: int| #[trigger] s0.spans.contains_key(b) && !pb0.spans().contains_key(b) implies {
+        &&& s1.spans.contains_key(b)
+        &&& s1.spans[b] == s0.spans[b]
+        &&& !pb1.spans().contains_key(b)
+    } by {
+        assert(!pb1.spans().dom().contains(b));
+    }
+}
+
+/// The span a held block is in is held, by its first block, and reserved with SPAN_BLOCKS blocks,
+/// and the block lies in it.
+pub proof fn lemma_span_base(pb: PageBuddy, s: SourceView, c: int)
+    requires
+        pb.wf(s),
+        pb.spans().contains_key(c),
+    ensures
+        pb.spans().contains_key(pb.span_base(c)),
+        s.spans.contains_key(pb.span_base(c)),
+        s.spans[pb.span_base(c)].blocks == SPAN_BLOCKS,
+        pb.span_base(c) <= c <= pb.span_base(c) + BLOCK_BYTES,
+        c % BLOCK_BYTES as int == 0,
+{
+    pb.lemma_view(s);
+}
+
+/// Cutting a run keeps the others' spans: a new span is reserved where the source held none, and
+/// its metadata page's block is no span the source held.
+pub proof fn lemma_cut_others(pb0: PageBuddy, pb1: PageBuddy, s0: SourceView, s1: SourceView, q: int, k: nat)
+    requires
+        pb1.wf(s1),
+        cut_run(pb0, pb1, s0, s1, q, k),
+    ensures
+        others_kept(pb0, pb1, s0, s1),
+{
+    let c = span_of(q);
+    if !pb0.spans().contains_key(c) {
+        pb1.lemma_view(s1);
+        assert forall|b: int| #[trigger] s0.spans.contains_key(b) && !pb0.spans().contains_key(b) implies {
+            &&& s1.spans.contains_key(b)
+            &&& s1.spans[b] == s0.spans[b]
+            &&& !pb1.spans().contains_key(b)
+        } by {
+            assert(b != c);
+            assert(s1.spans.contains_key(b));
+            if b == meta_page(c) {
+                assert(s1.released_span(c).fits(c, s1.spans[c].blocks));
+                assert(s1.released_span(c).spans.contains_key(b));
+                assert(s1.apart(c, SPAN_BLOCKS as nat, b));
+            }
+            assert(!pb1.spans().dom().contains(b));
+        }
+    }
+}
+
+/// Freeing a run keeps the others' spans: a span given back is one the page buddy held.
+pub proof fn lemma_freed_others(pb0: PageBuddy, pb1: PageBuddy, s: SourceView, t0: SourceView, t1: SourceView, q: int)
+    requires
+        pb0.wf(s),
+        pb0.holds(q),
+        freed(pb0, pb1, t0, t1, q),
+    ensures
+        others_kept(pb0, pb1, t0, t1),
+{
+    let c = span_of(q);
+    pb0.lemma_view(s);
+    assert(pb0.spans().contains_key(c));
+    lemma_span_base(pb0, s, c);
+    lemma_others_at(pb0, pb1, t0, t1, pb0.span_base(c));
+}
+
 } // verus!

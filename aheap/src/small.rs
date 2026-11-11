@@ -1361,6 +1361,7 @@ impl SizeClass {
             final(self).class() == old(self).class(),
             final(pb).spares() == old(pb).spares(),
             kept(*old(store), *old(pb), old(src)@, *final(store), *final(pb), final(src)@),
+            others_kept(*old(pb), *final(pb), old(src)@, final(src)@),
             match r {
                 None => {
                     &&& forall|a: int| #[trigger]
@@ -1434,6 +1435,7 @@ impl SizeClass {
         proof {
             self.partial.lemma_view(prov);
             self.full.lemma_view(prov);
+            lemma_others_same(*pb, *pb, src@, src@);
         }
         if let Some(rp) = self.partial.first(Ghost(prov)) {
             let ghost a = rp@.addr as int;
@@ -1512,6 +1514,8 @@ impl SizeClass {
                     o.lemma_frame(st0, pb0, s0, st0, pb1, s1);
                     assert(runs(pb1.used()) == runs(pb0.used()));
                     assert(slab_refused(st0, pb0, s0, s1, kk));
+                    assert(s1.spans == s0.spans);
+                    lemma_others_same(pb0, pb1, s0, s1);
                 }
                 return None;
             },
@@ -1554,6 +1558,11 @@ impl SizeClass {
                     assert(cut_run(pb0, pb1, s0, s1, qi, kk));
                     assert(run_refused(st0, pb1, s1, s3.refusals.last(), qi, kk));
                     assert(slab_refused(st0, pb0, s0, s3, kk));
+                    lemma_cut_others(pb0, pb1, s0, s1, qi, kk);
+                    lemma_others_same(pb1, pb2, s1, s2);
+                    lemma_freed_others(pb2, pb3, s2, s2, s3, qi);
+                    lemma_others_trans(pb0, pb1, pb2, s0, s1, s2);
+                    lemma_others_trans(pb0, pb2, pb3, s0, s2, s3);
                 }
                 return None;
             },
@@ -1572,6 +1581,10 @@ impl SizeClass {
             assert(qi % SLOT_MIN as int == 0);
             assert(s2.provenance == s0.provenance);
             store.lemma_frame(pb0, s0, pb2, s2);
+            lemma_cut_others(pb0, pb1, s0, s1, qi, kk);
+            lemma_span_base(pb1, s1, c);
+            lemma_others_at(pb1, pb2, s1, s2, pb1.span_base(c));
+            lemma_others_trans(pb0, pb1, pb2, s0, s1, s2);
         }
         let mut fresh: Tracked<Map<int, PointsToRaw>> = Tracked(Map::tracked_empty());
         let mut slab = Slab::new(base, bytes, slot, run, Tracked(fresh.borrow_mut()));
@@ -1631,6 +1644,13 @@ impl SizeClass {
                     assert(cut_run(pb0, pb1, s0, s1, qi, kk));
                     assert(run_refused(st0, pb1, s1, s3.refusals.last(), qi, kk));
                     assert(slab_refused(st0, pb0, s0, s5, kk));
+                    lemma_others_trans(pb0, pb2, pb3, s0, s2, s3);
+                    lemma_held_bounds(pb3, s3, qi, kk);
+                    lemma_span_base(pb3, s3, c);
+                    lemma_others_at(pb3, pb4, s3, s4, pb3.span_base(c));
+                    lemma_freed_others(pb4, pb5, s4, s4, s5, qi);
+                    lemma_others_trans(pb0, pb3, pb4, s0, s3, s4);
+                    lemma_others_trans(pb0, pb4, pb5, s0, s4, s5);
                 }
                 return None;
             },
@@ -1668,6 +1688,7 @@ impl SizeClass {
                 }
             }
             assert(kept(st0, pb0, s0, *store, pb3, s3));
+            lemma_others_trans(pb0, pb2, pb3, s0, s2, s3);
             assert forall|b: int| #[trigger] o.slabs().contains_key(b) implies o.slabs()[b].base()@.addr != qi by {
                 assert(slab_ok(cl, o.perms@, o.slabs()[b], b, st0, pb0, s0));
             }
@@ -1776,6 +1797,7 @@ impl SizeClass {
             final(self).class() == old(self).class(),
             final(pb).spares() == old(pb).spares(),
             final(self).live() == old(self).live().remove(p@.addr as int),
+            others_kept(*old(pb), *final(pb), old(src)@, final(src)@),
             ({
                 let a = old(self).slab_of(p@.addr as int);
                 let b = old(self).slabs()[a].base()@.addr as int;
@@ -1817,6 +1839,7 @@ impl SizeClass {
         let ghost pb0 = *pb;
         let ghost s0 = src@;
         proof {
+            lemma_others_same(pb0, pb0, s0, s0);
             o.lemma_slab_of(st0, pb0, s0, y);
             self.partial.lemma_view(prov);
             self.full.lemma_view(prov);
@@ -1899,11 +1922,17 @@ impl SizeClass {
                     assert(run_held(pb0, s0, b, 0));
                 }
                 store.lemma_frame(pb0, s0, pb2, s2);
+                lemma_held_bounds(pb0, s0, qi, kk);
+                lemma_span_base(pb0, s0, span_of(qi));
+                lemma_others_at(pb0, pb1, s0, s1, pb0.span_base(span_of(qi)));
+                lemma_freed_others(pb1, pb2, s1, s1, s2, qi);
+                lemma_others_trans(pb0, pb1, pb2, s0, s1, s2);
             }
             store.put(pb, src, rp, Tracked(rperm));
             proof {
                 let pb3 = *pb;
                 let s3 = src@;
+                lemma_others_trans(pb0, pb2, pb3, s0, s2, s3);
                 assert(!pb3.holds(qi)) by {
                     let r = record_page(a);
                     if !(exists|x: int| #[trigger] st0.taken().contains(x) && x != a && record_page(x) == r) {
