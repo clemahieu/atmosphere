@@ -417,6 +417,85 @@ impl CapKernel {
         Self::lemma_views_kept_keeps_rely(pre, post, root);
     }
 
+    /// A retype, by a caller other than root, keeps the rely of root: the frame kinds add a frame
+    /// capability to the caller's table alone, which names no process and no thread, every other kind
+    /// leaves every table's view as it was, and no kind binds a thread it did not bind or rebinds one.
+    pub proof fn lemma_retype_keeps_rely(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_retyped(pre, post, caller, frame, out),
+            caller != root,
+        ensures
+            Self::rely(pre, post, root),
+    {
+        Self::lemma_retype_contract(pre, post, caller, frame, out);
+        let kind = frame.argument(1);
+        let from = frame.slot() as usize;
+        let base = frame.argument(2) as usize;
+        let to = frame.argument(3) as usize;
+        let parent = pre.tables.node_of(caller, from);
+        let child = pre.tables.node_of(caller, to);
+        let bound = bound_threads(&pre.list, &pre.tables);
+        let after = bound_threads(&post.list, &post.tables);
+        let added = out == status_only(STATUS_OK) && (kind == RETYPE_FRAME || kind == RETYPE_LARGE_FRAME);
+        if out == status_only(STATUS_REFUSED) {
+            assert(post == pre);
+        } else if kind == RETYPE_FRAME || kind == RETYPE_LARGE_FRAME {
+            if out == status_only(STATUS_AGAIN) {
+                assert(post.list == pre.list && post.tables == pre.tables);
+            } else {
+                assert(pre.empty_slot(caller, to));
+                assert(post.is_cap(child));
+                assert(Self::caps_frame(pre, post, child, child));
+                assert(post.list.parent@ == pre.list.parent@.insert(child, parent));
+                reveal(binding_parents);
+                assert forall|x: usize| #[trigger] after.contains_key(x) implies bound.contains_key(x) && after[x] == bound[x] by {
+                    assert(x < NODE_SPACE);
+                    assert(post.list.nodes@[x as int].live && post.list.nodes@[x as int].kind is Binding);
+                    assert(x != child);
+                    assert(pre.list.nodes@[x as int].live && pre.list.nodes@[x as int].kind is Binding);
+                    assert(binding_parent(&pre.list, &pre.tables, &pre.threads, x));
+                    let p = pre.list.parent@[x];
+                    assert(post.list.parent@[x] == p);
+                    assert(pre.is_cap(p));
+                    assert(p != child);
+                    Self::lemma_caps_frame(pre, post, child, child, p);
+                }
+            }
+        } else if kind == RETYPE_TABLE_PAGE {
+            assert(after == bound);
+        } else {
+            reveal(binding_parents);
+            assert forall|x: usize| #[trigger] after.contains_key(x) implies bound.contains_key(x) && after[x] == bound[x] by {
+                assert(x < NODE_SPACE);
+                assert(post.list.nodes@[x as int].live && post.list.nodes@[x as int].kind is Binding);
+                assert(x != base);
+                assert(pre.list.nodes@[x as int].live && pre.list.nodes@[x as int].kind is Binding);
+                assert(binding_parent(&pre.list, &pre.tables, &pre.threads, x));
+                let p = pre.list.parent@[x];
+                assert(post.list.parent@[x] == p);
+                assert(pre.is_cap(p));
+                assert(post.payload_of(p) == pre.payload_of(p));
+            }
+        }
+        if pre.sealed(root) {
+            assert forall|t: usize, j: usize| t != root && #[trigger] post.table_view(t).contains_key(j)
+                implies !post.names_process(post.table_view(t)[j], root) by {
+                let v = post.table_view(t)[j];
+                if added && t == caller && j == to {
+                    assert(v.kind is Frame);
+                } else {
+                    assert(pre.table_view(t).contains_key(j) && v == pre.table_view(t)[j]);
+                    assert(!pre.names_process(pre.table_view(t)[j], root));
+                    if after.contains_key(v.base) {
+                        assert(bound.contains_key(v.base) && after[v.base] == bound[v.base]);
+                    }
+                }
+            }
+        }
+        assert(post.table_view(root) == pre.table_view(root));
+    }
+
     /// A step that leaves the list and the tables as they were keeps the rely of every process: the
     /// rely reads nothing else.
     pub proof fn lemma_tables_kept_keeps_rely(pre: Self, post: Self, root: usize)
