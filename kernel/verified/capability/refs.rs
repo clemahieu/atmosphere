@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! References: each frame capability holds one on the block it lies in, and a block is dead at once when
 //! they reach zero. A ghost set of each block's holding nodes makes the count exact, which is what lets
 //! a free say no capability is left behind. See design/teardown-driven-by-retype/.

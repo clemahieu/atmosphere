@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! A table position: how an operation names the slot or the root entry it acts on. The index is into
 //! the caller's own table or, through a process capability with the control right held in the caller's
 //! own table, into that process's table. One hop, so lookup stays constant time and no capability

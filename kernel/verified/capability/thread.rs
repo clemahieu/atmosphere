@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Threads as retyped objects. A thread is an order-1 block: a node page, whose nodes are its bindings
 //! to its process, its fault endpoint and its placement, then a page holding its record at the start
 //! and its extended register state, the XSAVE area, after it. A capability names a thread by its

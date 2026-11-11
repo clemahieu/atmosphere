@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+
 """Boot a kernel that panics at boot, on both targets, and check that the panic ends the run with a failure.
 
 The kernel is built with boot_panic, which panics on CPU 0 once its command line is read. The kernel

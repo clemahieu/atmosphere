@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! A device space's map: the space a device walks through its IOMMU. A device address reaches the map
 //! only as a DeviceRange, which only DeviceRange::new makes, so no other kind of address can map as one.
 //! A space's kind decides which map it takes, and a device space has no kernel slots, so a device's

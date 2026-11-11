@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Port I/O. The kernel keeps the ports it writes itself.
 
 use core::arch::asm;

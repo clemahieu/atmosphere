@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The EL1 physical timer of the generic timer, as a one-shot. design/machine-glue-below-the-kernel/.
 //!
 //! The timer's condition is met once the physical count reaches CNTP_CVAL_EL0, and its interrupt is

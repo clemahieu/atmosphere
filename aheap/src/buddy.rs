@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The buddy of one block: it cuts page runs of order 0 up to BLOCK_ORDER out of the BLOCK_PAGES
 //! pages of a block, and takes them back.
 //!

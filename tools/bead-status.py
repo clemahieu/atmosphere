@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+
 """The state of the Beads tree as a page for a browser: how many issues are not closed over time,
 what each session holds and the stage its round is at, the questions waiting on the human, the
 graph of what waits on what, the ready leaves, each top epic's progress and what closed last. An

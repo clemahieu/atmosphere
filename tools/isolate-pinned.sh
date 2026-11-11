@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+
 # Keep the host off the CPUs tools/measure-pinned.py measures on, and put it back afterwards.
 #
 # usage: tools/isolate-pinned.sh plan CPU... | sudo tools/isolate-pinned.sh apply CPU... | sudo tools/isolate-pinned.sh undo

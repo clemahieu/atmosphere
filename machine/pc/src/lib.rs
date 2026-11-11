@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The x86_64 PC machine: COM1, the xAPIC, the 8259s and the IOMMU. design/machine-glue-below-the-kernel/.
 
 #![no_std]

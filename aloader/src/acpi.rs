@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! ACPI.
 
 use core::mem;

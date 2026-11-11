@@ -1,4 +1,6 @@
 #![no_std]
+// SPDX-License-Identifier: MIT
+
 // A cargo build erases specifications and proofs, so there a variable or an assignment that only
 // they read looks unused.
 #![cfg_attr(not(verus_keep_ghost), allow(unused_variables, unused_assignments))]

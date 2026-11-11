@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The caller's view: a table as the process it belongs to reads it, slot by slot, so a contract on an
 //! operation speaks of the caller's slots and not of the list or the tables. A contract here is proven
 //! from the operation's specification in invoked, and a verified user crate carries it as the ensures

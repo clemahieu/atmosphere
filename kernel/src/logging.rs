@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Logging facilities.
 //!
 //! The logger is available very early in boot, before allocators

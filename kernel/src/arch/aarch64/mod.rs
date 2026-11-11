@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The AArch64 instructions and system registers the kernel uses at EL1.
 //!
 //! Written from the Arm Architecture Reference Manual for A-profile architecture (DDI 0487 M.d),

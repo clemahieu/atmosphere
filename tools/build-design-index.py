@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+
 """Generate design/INDEX.md from the frontmatter of every design/*/DECISION.md.
 
 Flat: every decision appears once, in one list, and a reader picks from it and opens that record.

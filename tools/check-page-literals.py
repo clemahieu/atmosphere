@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+
 """Check that no crate marked verified writes a page size, entries a level or size derived from them
 as a literal outside the definitions.
 

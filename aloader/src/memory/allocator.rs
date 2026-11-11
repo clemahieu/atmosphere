@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Simple bump allocator.
 //!
 //! Since our only purpose is to load the microkernel and the

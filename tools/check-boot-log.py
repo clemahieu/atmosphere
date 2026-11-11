@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+
 """Hold a dom0 boot's serial log to the checks a boot must pass, on the PC or on QEMU virt.
 
 The log shows, in order, the kernel's line for each of the root's fixed slots with its kind, among them

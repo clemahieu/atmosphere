@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Logging facilities.
 
 use crate::console::{get_writer, WriterType};

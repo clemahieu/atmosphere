@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The aarch64 arch items, with the names, signatures and specs of the x86_64 module's. Each item's
 //! values come from the Arm Architecture Reference Manual, and the console's from the PL011's
 //! Technical Reference Manual, ARM DDI 0183, and the IOMMU's from the SMMU architecture specification

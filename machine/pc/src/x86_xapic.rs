@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The local APIC in xAPIC mode.
 //!
 //! The register map and the driver are vendored from `XAPIC` in the x86 crate (MIT); search for

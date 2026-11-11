@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+
 """Build the loader, kernel, dom0 and payload, and boot them under QEMU on OVMF.
 
 OVMF boots the loader, the UEFI application, from a directory QEMU serves as the EFI system

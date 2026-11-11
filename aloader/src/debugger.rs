@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Debugger integration.
 //!
 //! The loader is a PE whose debug information is a PDB, which gdb cannot read, and the firmware

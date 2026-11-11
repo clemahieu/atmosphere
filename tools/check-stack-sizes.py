@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+
 """Check that no function in an ELF executable has a stack frame over a limit.
 
 The kernel, dom0 and user crates build with -Z emit-stack-sizes, so LLVM puts each function's

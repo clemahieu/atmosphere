@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Fixed-capability strings.
 
 /// A fixed-capacity string.

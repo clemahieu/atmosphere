@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Debugger integration.
 
 use core::hint;

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+
 """Verify the crates marked for verification with Verus.
 
 A crate is marked by '[package.metadata.atmosphere] verified = true' in its Cargo.toml. Each marked

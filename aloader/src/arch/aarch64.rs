@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! AArch64 as UEFI leaves it on QEMU virt: EL1 with the VMSAv8-64 stage-1 tables of the 4K granule,
 //! and the PL011.
 //!

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Each core checks at start-up that ring 0 cannot write through a read-only mapping, which holds
 //! only while CR0.WP is set.
 //!

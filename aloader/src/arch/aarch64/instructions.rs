@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The loader's AArch64 instructions: the device accesses, the system registers and the branches.
 
 use core::arch::asm;

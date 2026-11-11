@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 /* Stock liblmdb writer. Linked against the reference objects, not the shim. */
 #include <stdio.h>
 #include <stdlib.h>

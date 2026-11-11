@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The local APIC, one register page shared by every core.
 
 use super::msr::{rdmsr, APIC_BASE};

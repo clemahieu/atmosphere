@@ -1,4 +1,6 @@
 #![allow(dead_code)]
+// SPDX-License-Identifier: MIT
+
 //! Folds the loader's memory map into the free runs boot can hand the root.
 //!
 //! The map crosses the trust boundary, so a range that is empty, is not 4 KiB aligned, runs past

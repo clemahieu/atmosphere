@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The layout of every object the kernel keeps in a 4K page. rustc checks each at compile time, and a
 //! proof that converts a page to an object can rely on it. The thread record holds the target's trap
 //! frame, arch::Registers, so its size is one per target.

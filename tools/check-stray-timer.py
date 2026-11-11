@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+
 """Boot a kernel whose timer fires for nothing, on both targets, and check that the core reports it and stops.
 
 The kernel is built with stray_timer, which arms CPU 0's timer as it enters dom0, outside the boot

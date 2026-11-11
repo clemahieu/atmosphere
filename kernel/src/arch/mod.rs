@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The instruction set this kernel is built for. design/arch-module/.
 
 #[cfg(target_arch = "x86_64")]

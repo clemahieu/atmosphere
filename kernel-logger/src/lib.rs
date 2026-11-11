@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The kernel logger.
 //!
 //! Shared logger implementation for the microkernel and the

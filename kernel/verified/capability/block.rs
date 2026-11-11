@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The block table: what each physical page is, for the kernel that allocates nothing after boot. A
 //! block is a power-of-two run of pages, aligned to its size, that goes free, typed, dead, free. The
 //! entry at its base holds its order, its reference count and whether its teardown has finished. Each

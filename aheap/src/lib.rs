@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The default heap allocator for user space, verified with Verus.
 //!
 //! The heap sits over a span source and holds no capability. `source` states the source's contract;

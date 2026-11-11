@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Retyping free memory under an untyped. Here a 4K frame: the page is zeroed at once, and the frame
 //! capability is a child of the untyped in a slot the caller names, so revoking the untyped reaches it.
 //! See design/capability-names-a-block/ and design/teardown-driven-by-retype/.

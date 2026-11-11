@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The GICv3: the Distributor, each core's Redistributor and each core's CPU interface through the
 //! ICC system registers. design/machine-glue-below-the-kernel/.
 //!

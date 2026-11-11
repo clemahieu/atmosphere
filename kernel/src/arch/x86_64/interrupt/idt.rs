@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! X86-64 IDT abstractions.
 //!
 //! Most of this is borrowed from Philipp Oppermann's BlogOS, with

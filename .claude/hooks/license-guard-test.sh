@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+
 # Tests license-guard.sh by piping tool calls to it as strings; nothing is opened. The forbidden
 # names are assembled from parts so that editing this file does not trip the guard it tests.
 # ATMO_LICENSE_GUARD_LOCAL supplies the temporary local list.

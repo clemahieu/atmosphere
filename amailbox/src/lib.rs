@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! A latest-value mailbox: one producer, one consumer, three slots and one shared atomic word,
 //! proven with Verus. design/latest-value-by-three-slot-exchange/ says why this object and not a
 //! seqlock or a one-slot ring.

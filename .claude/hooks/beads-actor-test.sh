@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+
 # Tests beads-actor.sh with a pid and an env file of its own; the session's values are not touched.
 set -u
 

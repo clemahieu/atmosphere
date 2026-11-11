@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Compile the reference mdb.c and midl.c unchanged. gcc keeps a new crate off
 // the license allowlist. --wrap sends the service fds into the shim.
 

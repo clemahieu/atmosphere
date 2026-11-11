@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Boot manager handoff.
 
 use core::ffi::c_void;

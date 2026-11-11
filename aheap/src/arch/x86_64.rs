@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! x86_64's page and block: the 4 KiB page and the 2 MiB page a page-directory entry maps, Intel SDM
 //! Volume 3A, section 4.5, and AMD APM Volume 2, section 5.3.
 use vstd::prelude::*;

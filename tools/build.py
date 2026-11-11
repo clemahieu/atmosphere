@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+
 """Build the workspace as the gate does, or the loader, kernel, dom0 and payload for aarch64.
 
 x86_64, the default, is the gate's build: `cargo build` in every workspace member's own directory,

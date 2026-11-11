@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+
 """Check the trusted surface of every crate marked verified: every attribute that exempts code from a
 proof is listed in tools/external-body-list with its reason, and no assume or admit is left.
 

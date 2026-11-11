@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! A commit through the LMDB shim is a data file the upstream tools can read,
 //! and a data file those tools wrote opens back through the shim.
 

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Ends a run. design/machine-glue-below-the-kernel/.
 
 use crate::instruction::{dsb, hvc, load, store, wait};

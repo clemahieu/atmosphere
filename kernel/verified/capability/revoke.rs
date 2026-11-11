@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Revoking a capability, a bounded number of steps per kernel entry. A step finds a node of its run with
 //! no children, undoes what that node's kind holds, and unlinks it, so revoke removes exactly the
 //! capability's lineage, leaf first. See design/revoke-by-depth-first-list/.

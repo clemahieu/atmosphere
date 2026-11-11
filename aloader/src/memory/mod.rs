@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 mod allocator;
 mod map;
 mod paging;

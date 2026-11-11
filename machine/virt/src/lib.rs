@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! QEMU virt on aarch64: the PL011 console, the GICv3, the generic timer, the PSCI power-off and
 //! start of a second core, and the SMMUv3 when the machine has one, with every stream refused.
 //! design/machine-glue-below-the-kernel/.

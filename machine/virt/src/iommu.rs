@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The IOMMU items: QEMU virt's SMMUv3, when the machine has one (`iommu=smmuv3`), with a stream
 //! table whose every entry refuses its stream. design/machine-glue-below-the-kernel/.
 //!

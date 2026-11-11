@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The boot step that gives one path of the root's space its tables: for each of the level 3, 2 and 1
 //! tables the walk of a path prefix does not reach yet, the next order-3 block of the root's untyped at
 //! ROOT_UNTYPED_SLOT is retyped as a table page and linked through the root's process capability at

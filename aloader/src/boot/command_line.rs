@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The kernel's command line.
 //!
 //! The firmware starts the loader from removable media, a path with no boot entry and so no load

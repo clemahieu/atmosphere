@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Kernel command line utilities.
 //!
 //! See the [KernelCommandLine] struct for a list of supported

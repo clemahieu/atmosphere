@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Processes as retyped objects. A process is an order-3 block: page 0 is the root of its capability
 //! table, so the table is named by the process's base; page 1 holds its record; pages 2 to 4 are kept
 //! for later per-process state; pages 5 to 7 are its address space's root, record and list of cores, at

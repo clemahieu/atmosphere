@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Each core checks at start-up that EL1 cannot write through a read-only mapping, and with it
 //! that a fault the core takes arrives at its exception vectors and returns.
 //!

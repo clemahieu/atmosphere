@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Print through a console capability: the words of the invocation go to the serial port, and nothing
 //! the kernel holds changes. Debug print is an operation on a console capability that takes words, as
 //! design/syscall-abi-in-registers/ makes it; the root holds the console, design/root-process-at-boot/.

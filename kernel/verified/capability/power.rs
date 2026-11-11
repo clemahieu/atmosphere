@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Power-off through a power capability: the authority to end the machine's run is a capability of
 //! its own kind, which boot hands the root, design/root-process-at-boot/. The kernel accepts the
 //! power-off for its entry to carry out, design/syscall-abi-in-registers/, and nothing it holds changes.

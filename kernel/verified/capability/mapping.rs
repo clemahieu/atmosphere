@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! What a space maps, read by walking its tables from the root. A kernel
 //! slot, which only a process's root has, leads nowhere, since child_slot excludes it. Map, unmap and detach state what they do in these
 //! terms. See design/address-spaces-as-objects/.

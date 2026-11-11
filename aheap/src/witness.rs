@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The witnesses: verified sequences of operations, built into no image, that reach the uses the
 //! span source and the block buddy exist for.
 //!

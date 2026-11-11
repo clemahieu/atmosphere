@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The capability kernel's state, which each later module extends. `wf` holds at every step boundary:
 //! a long operation returns to the caller between steps, so other cores interleave only where it
 //! holds. One lock covers all of this. Per-CPU state outside the lock (stacks, the GDT and TSS) lives

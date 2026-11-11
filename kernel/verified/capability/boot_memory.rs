@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The boot step that hands the root its free memory: the free runs kernel/src checked at the trust
 //! boundary become free pages of the block table, and each maximal aligned block of them an untyped
 //! capability at consecutive slots of the root's first leaf from ROOT_UNTYPED_SLOT. See

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The aarch64 table under Registers in design/syscall-abi-in-registers/: `svc #0`, with the operation
 //! number and then the status word in x8, the slot and then result 1 in x0, arguments 1 to 4 and then
 //! results 2 to 5 in x1 to x4, and argument 5 in x5. The kernel clobbers x5 to x7, x9 to x17 and x30.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Bootloader integration.
 //!
 //! The early loader (`aloader`) enters the kernel with a `BootInfo`.

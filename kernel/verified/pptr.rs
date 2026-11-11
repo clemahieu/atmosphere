@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Permissioned pointers for the kernel. This is the simple_pptr of the vstd the workspace Cargo.toml
 // pins, without its allocation API, which the kernel does not have, and with conversions between
 // permission types, which simple_pptr's private fields rule out. tools/upstream-copies/pptr.rs.patch

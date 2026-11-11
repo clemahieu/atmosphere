@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Interrupt handling.
 
 // Copyright 2021 Zhaofeng Li

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Host runs of the dom0 mapping check. The kernel builds the same file.
 
 #[path = "../../kernel/src/boot/mapped_runs.rs"]

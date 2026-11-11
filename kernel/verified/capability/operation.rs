@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The operations a process invokes through the one syscall entry, by the number in the operation
 //! position, and what returns: the status in the status word's low 16 bits and the result words. The
 //! frame's positions are the arch module's syscall register table. asys holds the same numbers for user

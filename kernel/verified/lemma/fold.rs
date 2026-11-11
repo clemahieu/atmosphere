@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Facts about summing a function over a finite set with `fold`.
 
 use vstd::prelude::*;

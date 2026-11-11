@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The payload the loader hands dom0. dom0 does not start it: no operation that starts a process is
 //! wired. Started, it prints a greeting through a console capability at the slot the root holds its
 //! own console at.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The Atmosphere early loader.
 
 #![cfg_attr(not(test), no_std, no_main)]

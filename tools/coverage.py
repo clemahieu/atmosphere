@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+
 """Report line and branch coverage per crate from a boot under KVM.
 
 The kernel and dom0 have no profiler runtime, so they cannot write a profile themselves. An

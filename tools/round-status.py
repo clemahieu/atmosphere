@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+
 """The status line of a Claude Code session in this tree: the session's Beads actor, the issue the
 session holds, the stage its round is at, and how long it has been at that stage.
 

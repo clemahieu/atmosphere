@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The queue lock holding a value, and the boot test that both cores contend for it.
 
 use core::cell::UnsafeCell;

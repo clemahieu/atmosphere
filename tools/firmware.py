@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+
 """Find OVMF and QEMU: an override wins, then the known distribution paths.
 
 ATMO_OVMF_CODE and ATMO_OVMF_VARS name the firmware files. ATMO_QEMU names the

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+
 """Drop .debug_* sections from ELF copies written into an initrd.
 
 The binaries in target/ stay as the compiler wrote them: tools/gdb.py loads those files, and

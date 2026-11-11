@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The call from EL0: `svc #0`, by the aarch64 table of design/syscall-abi-in-registers/.
 //!
 //! `svc` takes a synchronous exception to EL1 whose syndrome names its class and carries the

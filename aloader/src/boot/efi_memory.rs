@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! UEFI memory types.
 
 use crate::memory::AcpiMemoryType;

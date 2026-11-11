@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+
 """Boot dom0 under KVM with its two vCPUs pinned, and print the kernel's own timing lines.
 
 usage: tools/measure-pinned.py within0|within1|across [boots] [--lock-stats] [--counters] [--force]

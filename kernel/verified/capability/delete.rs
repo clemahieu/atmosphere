@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Deleting a capability: one slot goes, of the caller's table or of the table of a process the caller
 //! controls, refused while the capability has children, mappings or bindings, which are all child
 //! nodes, so a holder revokes first. What the capability said is returned, for reference counting to

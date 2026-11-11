@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+
 """Boot dom0 on QEMU virt under KVM on the Orange Pi and hold the run to the boot checks.
 
 The run builds the aarch64 images and lays out the partition with tools/aarch64-esp.py, boots it on the

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The default pager's replacement policy, S3-FIFO (Yang et al., SOSP 2023) on sampled reference
 //! bits, specified with Verus.
 //!

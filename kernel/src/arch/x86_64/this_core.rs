@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! This core's x86_64 state: what the instruction set adds to its [`Cpu`], the GS base that finds
 //! the block, and the order a core is brought up in.
 

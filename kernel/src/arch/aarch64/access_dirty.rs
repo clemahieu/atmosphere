@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The access flag and the dirty state of a process's leaves where the walker does not keep them.
 //!
 //! The verified encoder writes a leaf with its access flag clear, and a writable leaf marked with the

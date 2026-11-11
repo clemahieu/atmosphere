@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! A process's capability table: a root of 512 pointers and leaves retyped on demand. A leaf is two
 //! pages, an order-1 block: a node page holding the slots' list nodes, and a payload page holding what
 //! each capability says at the same index. Node 0 of a leaf is its hidden node, so a leaf has 127 slots.

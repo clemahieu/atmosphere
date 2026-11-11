@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 use vstd::prelude::*;
 verus! {
 pub struct Array<A, const N: usize>{

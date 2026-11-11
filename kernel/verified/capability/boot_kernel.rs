@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Boot's one verified step for the capability kernel: init on the list's synthetic root, then the root
 //! process with its table and thread, its console and power capabilities, its free memory as untyped
 //! capabilities and dom0's image mapped in its space, each step's requires discharged by the previous

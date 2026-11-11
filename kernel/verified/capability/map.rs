@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Mapping a 4K or 2M page of a frame capability into a space, through tables already linked. The entry
 //! is written from the capability's rights, and its node is derived as a child of the capability, so
 //! revoking the capability reaches the mapping and delete is refused while it stands. See

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The eager span source: aheap's span source contract over an untyped and a window of virtual
 //! addresses it is given, verified with Verus.
 //!

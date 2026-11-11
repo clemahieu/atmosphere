@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! A run of pages as the maximal aligned blocks of at most a given order: from the run's first page,
 //! the largest order up to the cap its page is aligned to and the run holds, then the same from the
 //! page after that block. Boot hands the root one untyped per block of free memory, of any order, and

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+
 """The gate: what makes a commit tested (CLAUDE.md, Gate).
 
 Runs every step in its order, each a check under tools/ or a cargo command from the project root,

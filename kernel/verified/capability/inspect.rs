@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Inspect a capability the caller holds, or one a process it controls holds: its kind, base, order
 //! and rights come back in the result words, and nothing the kernel holds changes. A process learns
 //! what boot handed it, what its own retypes and derives made, and what a process it supervises holds,

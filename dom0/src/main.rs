@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The root process of its kernel instance. It treats what boot gave it as all there is and does
 //! not assume it owns the machine, so several instances each with a root stay possible. Why, and
 //! what to do about a change that breaks this: design/one-kernel-instance/.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Retype reclaiming a dead process's block: a retype cuts its address space root's child tables, a
 //! slice per step, each cut two-way so the child's parent record goes with the entry. Both roots are
 //! inside the process's block, so they go only with the process, once no core has the space loaded. A

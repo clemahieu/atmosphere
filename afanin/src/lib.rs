@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Fan-in over private rings: several producers, one consumer, one aring per producer, proven with
 //! Verus against peers whose indices are untrusted. design/fan-in-over-private-rings/ says why
 //! this object and not one ring with a shared cursor.

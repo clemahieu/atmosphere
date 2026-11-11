@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Serial console.
 
 use core::fmt::Write;

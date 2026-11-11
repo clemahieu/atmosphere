@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! X86 Exceptions.
 
 use core::convert::TryFrom;

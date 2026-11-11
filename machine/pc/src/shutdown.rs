@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Ends a run. design/machine-glue-below-the-kernel/.
 
 use core::arch::asm;

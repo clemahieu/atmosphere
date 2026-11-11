@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The eager source: spans of a window of a few blocks, and frames and table pages retyped from a
 //! small untyped, with no fault delivery.
 //!

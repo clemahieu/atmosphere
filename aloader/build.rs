@@ -1,4 +1,5 @@
 #![deny(unused_must_use)]
+// SPDX-License-Identifier: MIT
 
 fn main() {
     eprintln!("Baking garlic bread...");

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The boot step that hands the root a frame capability for a block of dom0's image. dom0's pages are
 //! reserved, not free, so no untyped covers them: boot types the 2M region a block lies in as a large
 //! frame, as retype types one, and the block's capability is a narrowed piece of it, as derive narrows

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The boot step that maps dom0's image in the root's space: each virtual page of each run is mapped
 //! through map in the space of the root's process capability at ROOT_PROCESS_SLOT, from the frame
 //! capability whose block holds its physical page, at slot ROOT_FRAME_SLOT plus that block's index, at

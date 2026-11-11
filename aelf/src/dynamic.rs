@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Relocation fixups.
 
 use core::mem;

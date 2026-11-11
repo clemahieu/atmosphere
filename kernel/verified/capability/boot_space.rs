@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The boot step that hands the root dom0's image and maps it in the root's space: it checks up front
 //! that the root's untyped at ROOT_UNTYPED_SLOT pays for the tables the runs need, then boot_root_image
 //! makes each block of the image a frame capability at its fixed slot, boot_root_tables builds the

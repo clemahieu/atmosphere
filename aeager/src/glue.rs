@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The system calls the eager source makes, one item per asys wrapper. Each is trusted: what the
 //! kernel does on a call is not state this crate's proof can see. Only `map_page` and `unmap_page`
 //! say anything, and what they say is the trusted base: a map the kernel accepted puts a page of a

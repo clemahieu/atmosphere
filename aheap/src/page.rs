@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The page buddy: page runs cut from spans of one block each, a block buddy per span.
 //!
 //! It owns the span source. Each span it holds, a run span, is a reserved span of one block whose

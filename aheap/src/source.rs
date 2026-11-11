@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The span source's contract: what the heap asks of whatever gives it address space and memory.
 //!
 //! A source hands out spans, block-aligned ranges of virtual addresses a whole number of blocks long,

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Invoking a capability through the one syscall entry: the operation number, the capability's slot
 //! and arguments 1 to 5 in, the status word out, with the status in its low 16 bits, and result words
 //! after it. The registers that carry each position are the target's, in `arch`. The numbers are the

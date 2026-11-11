@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Unmapping one 4K entry of a space by its address. The entry's mapping node sits at a fixed index in
 //! its table page's block, so it is found in constant time, and it goes through the arm revoke uses: the
 //! entry clears, the unmap's staleness is recorded and the frame's reference drops. The entry's word is

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+
 """Start one aarch64 KVM guest on orangepi5 and bring its serial log back.
 
 The launch is the one recorded for this board: pinned to the A76 cluster, QEMU virt

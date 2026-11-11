@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Host runs of the loader map check. The kernel builds the same file.
 
 #[path = "../../kernel/src/boot/free_ranges.rs"]

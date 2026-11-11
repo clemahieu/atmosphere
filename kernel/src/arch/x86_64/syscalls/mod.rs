@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Syscalls.
 
 use core::arch::{global_asm, naked_asm};

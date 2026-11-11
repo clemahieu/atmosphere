@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The kernel as reach sees it. Every capability operation's spec states discharges over this view,
 //! so what a process holds, what each capability names and which rights it carries are read from the
 //! tables here and nowhere else, beside what each device space maps, read from the walks of its tables,

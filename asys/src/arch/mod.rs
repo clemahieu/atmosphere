@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The instruction that invokes a capability and the registers it carries each position in, one
 //! implementation per target, selected by target_arch. Each defines `syscall` with the same signature,
 //! so the operations above this module name positions, not registers. This is asys's copy of the tables

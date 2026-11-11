@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 use core::fmt::Debug;
 
 use astd::heapless::Vec as ArrayVec;

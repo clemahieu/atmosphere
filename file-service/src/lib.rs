@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! A file on a RedoxFS image, shared by clients through one cache.
 //!
 //! A pwrite updates that cache, so a map already held sees the bytes with no

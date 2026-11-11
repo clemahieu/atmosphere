@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Retype reclaiming memory. There is no kernel list of dead objects, and no revoke or delete drains
 //! another's teardown: a retype naming a block, by a holder of an untyped covering it, does the work.
 //! See design/teardown-driven-by-retype/.

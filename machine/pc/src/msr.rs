@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! `rdmsr` and `wrmsr` of `IA32_APIC_BASE`. The kernel keeps the MSRs it writes itself.
 
 use core::arch::asm;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The boot steps that make the root process from pages boot sets aside, not from an untyped, so the
 //! blocks they type are never retyped: no untyped covers them. They run on the state init leaves. See
 //! design/root-process-at-boot/.

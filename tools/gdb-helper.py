@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+
 # Sourced by tools/gdb.py once gdb is attached to a guest whose loader waits for it
 # (aloader/src/debugger.rs) and the kernel's and dom0's symbols are added at their biases: lets the
 # loader go on into the kernel, and stops where the kernel calls kernel::debugger::breakpoint.

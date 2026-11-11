@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Public capability interface.
 
 /// Result of a capability call.

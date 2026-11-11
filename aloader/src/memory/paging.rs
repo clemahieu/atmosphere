@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Paging.
 
 use core::ffi::c_void;

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+
 # PreToolUse hook: refuse a tool call that would open, fetch or grep a copyleft
 # source (CLAUDE.md, License). Exit 2 with the reason on stderr blocks the call
 # in Claude Code and in Grok. Machine-specific roots and parents are one path

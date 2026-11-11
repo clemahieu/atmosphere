@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Starts a second core: PSCI CPU_ON, and the entry the core runs from there to the kernel.
 //! design/machine-glue-below-the-kernel/.
 //!

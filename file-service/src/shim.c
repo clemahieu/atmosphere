@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 /* Host shim for the reference mdb.c.
  *
  * Service fds stand in for the data file, the O_DSYNC meta fd, and the lock

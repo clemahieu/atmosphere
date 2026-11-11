@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+
 """Check that each file the tree copies from upstream differs from it only by its recorded delta.
 
 A record is a unified diff under tools/upstream-copies/, one per copied file. Its '---' line names the

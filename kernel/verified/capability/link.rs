@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Linking a table page into an entry of a table in a space. A table's entry and its child's record say
 //! the same thing, and a link writes both in one step, so a detach can always clear both. See
 //! design/address-spaces-as-objects/.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The step counter: a ghost count of the work done under the kernel's lock, so a function's
 //! specification can bound it. See design/one-lock-bounded-steps/.
 use vstd::prelude::*;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! What the target fixes for the loader: its instructions, its serial device and its page-table
 //! entry.
 //!

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The Atmosphere microkernel.
 //!
 //! See [`KernelCommandLine`](boot::command_line::KernelCommandLine) for a list of accepted kernel command-line options.

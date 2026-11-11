@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! A verified use of the span source contract that runs, where the witness in aheap is built into no
 //! image: from any well-formed source it reserves a span of one block, backs its pages one at a time
 //! until the source refuses or the block is full, writes a byte through the run's permission and reads

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Probing the accessed and dirty bits the processor sets in up to 64 consecutive entries of one level 1
 //! table of a space: each present entry's bits are read and cleared, and returned as two masks. Only those
 //! bits change, so no mapping does and nothing needs a flush. A translation a TLB still holds may hide a

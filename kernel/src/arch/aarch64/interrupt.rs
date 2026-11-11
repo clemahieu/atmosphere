@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The IRQ entry: which interrupt arrived, its handler and its end, and the boot check that an
 //! interrupt arrives at all.
 //!

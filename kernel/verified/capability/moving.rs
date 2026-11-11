@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Moving a capability from one table position to another: within the caller's table, out of the
 //! table of a process the caller controls, which is a claim, or into one, which is a placement. The
 //! node keeps its place and depth, so every child comes along. A capability's identity in the view is

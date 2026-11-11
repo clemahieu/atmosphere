@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Synchronization.
 //!
 //! We re-export `spin` types.

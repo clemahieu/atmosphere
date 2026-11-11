@@ -1,4 +1,6 @@
 #![no_std]
+// SPDX-License-Identifier: MIT
+
 #![deny(unsafe_code)]
 #![deny(missing_docs)]
 // Common lint configs

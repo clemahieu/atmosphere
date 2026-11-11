@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The UEFI entry.
 //!
 //! OVMF, or a machine's firmware, starts the loader as an application from the EFI system

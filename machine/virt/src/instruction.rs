@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The instructions this crate issues itself: the load and the store of a device register, the read
 //! and the write of a system register, the two barriers, the clean of the data cache, the hypervisor
 //! call and the wait for an interrupt. On another architecture the crate is built for its tests,

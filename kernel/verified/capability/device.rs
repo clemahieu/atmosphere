@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Devices. A device is boot-sized and never retyped, so the table of them is filled once, at boot, from what
 //! the boot glue found, and each device gets one capability under the list's first node. A device is bound to
 //! one space at a time, so its capability moves and is never derived: at most one capability names a device.

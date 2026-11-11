@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Address spaces as retyped objects. A table page is an order-3 block: 5 node pages, whose node 0 is
 //! the block's hidden node, then the table, then its record, then a spare page. So an entry finds its mapping's node
 //! in constant time, and whoever maps pays for the table. See design/address-spaces-as-objects/.

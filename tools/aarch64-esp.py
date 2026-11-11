@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+
 """Build the aarch64 loader, kernel, dom0 and payload and lay out the EFI system partition they boot from.
 
 The directory gets EFI/BOOT/BOOTAA64.EFI, the loader, which EDK2 boots as removable media, and

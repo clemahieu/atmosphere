@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+
 """Boot an aarch64 kernel that overflows one of its stacks under KVM on orangepi5 and check its report.
 
 With --stack boot, the default, the loader is built with small_kernel_stack, a stack below the depth

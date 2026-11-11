@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! ELF utilities.
 //!
 //! Adapted from <https://github.com/nix-community/nix-ld-rs>.

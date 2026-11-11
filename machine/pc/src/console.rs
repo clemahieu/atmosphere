@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! COM1, the kernel's serial console. design/machine-glue-below-the-kernel/.
 
 use core::fmt::{self, Write};

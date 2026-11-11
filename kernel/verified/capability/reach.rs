@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Reach: what a process can get at, and the relation every kernel operation must keep to. The
 //! security theorem is stated over these, so a capability operation's spec is written to `discharges`
 //! rather than retrofitted. See design/theorem-over-reach/, design/isolation-claim/ and

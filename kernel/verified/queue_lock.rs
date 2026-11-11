@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The queue lock over the kernel's state. Each waiter spins on its own cache line, so the line holding
 //! the lock's word does not bounce between every waiter on each handover. On this host a lock every
 //! waiter spins on fell well below a queue lock across two CCDs, in the simulation recorded on the

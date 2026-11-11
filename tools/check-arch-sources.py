@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+
 """Check that the kernel's sources outside kernel/src/arch name no x86 item and hold no inline
 assembly.
 

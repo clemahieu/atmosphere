@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The sizes and bounds the divider counts in, written once, where tools/check-page-literals.py
 //! allows a page-shaped literal.
 

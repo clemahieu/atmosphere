@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The capability kernel: built at boot in memory boot sets aside, with dom0 as the root process.
 //!
 //! The loader's memory map and dom0's runs cross the trust boundary here, and are checked by

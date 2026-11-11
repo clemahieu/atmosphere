@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The access bytes of GDT descriptors.
 
 /// The Present bit, set in every descriptor in use.

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+
 """Attach gdb to a run started by tools/run.py --gdb, with the kernel's and dom0's symbols.
 
 tools/run.py --gdb writes .gdb at the workspace root once the loader has logged where it loaded each

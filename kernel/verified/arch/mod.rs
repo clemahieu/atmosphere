@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! What the instruction set fixes, one implementation per target, selected by target_arch. Each
 //! implementation defines the same items with the same specs, so code above this module does not know
 //! which ISA it runs on. See design/arch-module/.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! One single-producer, single-consumer ring over slots in frames the two ends share, proven with
 //! Verus against a peer whose index is untrusted.
 //!

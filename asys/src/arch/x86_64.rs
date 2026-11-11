@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The x86_64 table under Registers in design/syscall-abi-in-registers/: `syscall`, with the operation
 //! number and then the status word in rax, the slot and then result 1 in rdi, arguments 1 to 4 and then
 //! results 2 to 5 in rsi, rdx, r8 and r9, and argument 5 in r10. The instruction takes rcx and r11, and

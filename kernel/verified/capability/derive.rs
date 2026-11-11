@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Deriving a capability, the only way to share one: the child's rights and range lie within its
 //! parent's and its depth is one greater, so whoever derived it can always revoke it. The child goes
 //! in a free slot of the caller's table, or of the table of a process the caller controls, which is

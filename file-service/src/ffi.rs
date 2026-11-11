@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Process-wide file service the LMDB shim calls.
 //!
 //! `mdb.c` is linked with `--wrap` and calls these symbols through function

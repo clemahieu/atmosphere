@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The witnesses of five uses a process exists for. A creator can build a process that holds a
 //! capability it chose and has a thread bound to it: from the state boot leaves, the root gives itself a
 //! leaf, retypes a process and a thread bound to it, retypes a leaf into the new process's table and

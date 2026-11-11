@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+
 """Check the license of every package in the dependency graph against tools/license-allowlist.
 
 The allowlist is the only place the allowed set lives (CLAUDE.md, License). A package's license

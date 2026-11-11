@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The x86_64 PC as UEFI leaves it: long mode with four-level paging, and COM1.
 
 use core::arch::asm;

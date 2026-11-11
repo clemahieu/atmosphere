@@ -1,4 +1,6 @@
 #![allow(dead_code)]
+// SPDX-License-Identifier: MIT
+
 //! Checks the runs the loader recorded for dom0.
 //!
 //! The list crosses the trust boundary. A run that is empty, not 4 KiB aligned, sits outside

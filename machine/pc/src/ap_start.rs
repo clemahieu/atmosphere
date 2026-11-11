@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! AP boot trampoline.
 //!
 //! ## AP Boot ABI

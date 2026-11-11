@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The per-core block.
 //!
 //! Each core has a [`Cpu`]. The arch module keeps the pointer through which a core finds its own

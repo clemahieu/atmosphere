@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Destroy through a control capability: the target is dead in one bounded step while capabilities to
 //! it remain, and its references, capabilities and bindings stay as they were until a retype tears it
 //! down. A thread Running on a core is moved off by that core, which a pending stop tells to make it

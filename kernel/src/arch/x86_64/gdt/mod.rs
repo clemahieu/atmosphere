@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The Global Descriptor Table and related stuff.
 //!
 //! During boot, we do the following:

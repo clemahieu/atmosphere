@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The divider's layout: the table of grants by which the root divides what boot gave it between
 //! tenants, and `layout_ok`, the decidable rule a layout must meet, with `check`, proven to return
 //! exactly it.

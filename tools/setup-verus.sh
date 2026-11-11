@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+
 # Build upstream Verus at the commit this tree verifies with, the vstd revision in the workspace
 # Cargo.toml, into tools/verus. It pins the same Rust as rust-toolchain.toml.
 set -euo pipefail

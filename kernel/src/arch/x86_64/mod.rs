@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The x86_64 instructions, registers and tables the kernel uses outside the APIC.
 //!
 //! Written from the AMD64 Architecture Programmer's Manual, Volume 2: System Programming (24593),

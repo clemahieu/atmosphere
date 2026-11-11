@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The x86_64 arch items. Written from the AMD64 Architecture Programmer's Manual, Volume 2: System
 //! Programming (24593).
 use vstd::prelude::*;

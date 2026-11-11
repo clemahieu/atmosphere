@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The capability list. All capabilities, mappings and bindings derived from the boot root are one
 //! doubly linked list in depth-first order: a child goes straight after its parent. So a node's
 //! descendants are exactly the run after it with greater depth, and revoke needs no scan, mark or

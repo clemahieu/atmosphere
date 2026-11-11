@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Boot loader integration.
 
 pub mod command_line;

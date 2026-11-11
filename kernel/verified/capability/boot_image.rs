@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The boot step that hands the root dom0's image: each run the loader mapped for dom0, which kernel/src
 //! checked at the trust boundary, decomposes into aligned blocks of at most 512 pages, and each block
 //! becomes a frame capability with its run's rights at consecutive slots of the root's second leaf from

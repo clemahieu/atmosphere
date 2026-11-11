@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+
 # Source this file to get the Atmosphere toolchain on PATH.
 #
 #   source tools/env.sh

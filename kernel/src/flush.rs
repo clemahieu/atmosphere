@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Flushing another core's TLB. The kernel never waits for another core while holding a lock: that
 //! core may be spinning for the lock with interrupts off, and so could not take the IPI. A flush bumps
 //! the epoch, sends the IPI and lets go. The target's handler flushes every context and records its

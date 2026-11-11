@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+
 """Boot dom0 under KVM, dump guest memory after it finishes and check where the kernel's stack went.
 
 Memory the guest never wrote is zero, so non-zero pages show the stack's reach as a lower bound.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! The exception vectors of EL1: the table VBAR_EL1 names, the stub that saves the trap frame around
 //! the handler and restores it on return, and the handler.
 //!

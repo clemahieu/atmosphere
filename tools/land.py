@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+
 """Gate the change in this worktree and land it on main, with no lock around either.
 
 Run from a task worktree whose change is committed, with tools/env.sh sourced. The branch is rebased

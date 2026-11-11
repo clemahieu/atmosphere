@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! Retype reclaiming a dead thread's block: one retype unlinks its binding to its process, and the next
 //! frees the block. A thread object is not retyped while a core depends on it, so a thread Running on a
 //! core, which is also the only kind with a stop pending, is refused until that core has moved it off.

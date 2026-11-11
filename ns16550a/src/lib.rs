@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! A simple poll-only NS16550A driver.
 //!
 //! May be used in MMIO mode or Port IO mode (X86 only). Initializes the

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 /* The stat and dump tools reference the module loader. Encryption stays unbuilt. */
 #include <stdio.h>
 #include "lmdb.h"

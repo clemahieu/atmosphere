@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! I/O utilities.
 
 use core::convert::{AsMut, AsRef};
