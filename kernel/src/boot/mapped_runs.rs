@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 // SPDX-License-Identifier: MIT
 
 //! Checks the runs the loader recorded for dom0.

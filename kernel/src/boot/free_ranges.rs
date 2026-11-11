@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 // SPDX-License-Identifier: MIT
 
 //! Folds the loader's memory map into the free runs boot can hand the root.
