@@ -83,4 +83,49 @@ pub fn inspect(caller: &mut Ghost<Caller>, at: u64) -> (out: Outcome)
     out
 }
 
+/// Links the unlinked table page at `child`, covered by the untyped at index `from` of the caller's
+/// table, into the entry at `level` that the address `va` names in the space of the capability at index
+/// `slot`.
+pub fn link(caller: &mut Ghost<Caller>, slot: u64, va: u64, level: u64, from: u64, child: u64) -> (out: Outcome)
+    requires
+        old(caller)@.wf(),
+    ensures
+        final(caller)@.wf(),
+        final(caller)@.root == old(caller)@.root,
+        CapKernel::link_contract(old(caller)@.kernel, final(caller)@.kernel, final(caller)@.root, slot as usize, va, level, from as usize, child as usize, out),
+{
+    let ghost pre = caller@;
+    let out = step(caller, OPERATION_LINK, slot, va, level, from, child, 0);
+    proof {
+        let frame = choose|frame: Registers|
+            carries(frame, OPERATION_LINK, slot, va, level, from, child, 0)
+                && #[trigger] CapKernel::invoked(pre.kernel, caller@.kernel, pre.root, frame, out);
+        lemma_number_names_one_operation(Operation::Link);
+        CapKernel::lemma_link_contract(pre.kernel, caller@.kernel, pre.root, frame, out);
+    }
+    out
+}
+
+/// Maps the page at offset `page` of the frame capability at index `from` of the caller's table into
+/// the entry at `level` that the address `va` names in the space of the capability at index `slot`.
+pub fn map(caller: &mut Ghost<Caller>, slot: u64, va: u64, level: u64, from: u64, page: u64) -> (out: Outcome)
+    requires
+        old(caller)@.wf(),
+    ensures
+        final(caller)@.wf(),
+        final(caller)@.root == old(caller)@.root,
+        CapKernel::map_contract(old(caller)@.kernel, final(caller)@.kernel, final(caller)@.root, slot as usize, va, level, from as usize, page as usize, out),
+{
+    let ghost pre = caller@;
+    let out = step(caller, OPERATION_MAP, slot, va, level, from, page, 0);
+    proof {
+        let frame = choose|frame: Registers|
+            carries(frame, OPERATION_MAP, slot, va, level, from, page, 0)
+                && #[trigger] CapKernel::invoked(pre.kernel, caller@.kernel, pre.root, frame, out);
+        lemma_number_names_one_operation(Operation::Map);
+        CapKernel::lemma_map_contract(pre.kernel, caller@.kernel, pre.root, frame, out);
+    }
+    out
+}
+
 } // verus!
