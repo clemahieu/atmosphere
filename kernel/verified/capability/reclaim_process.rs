@@ -34,6 +34,7 @@ use crate::capability::space::*;
 use crate::capability::table::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::device::*;
+#[cfg(verus_keep_ghost)]
 use crate::capability::thread::*;
 use crate::capability::unmap::SEND_FLUSH_STEPS;
 #[cfg(verus_keep_ghost)]
