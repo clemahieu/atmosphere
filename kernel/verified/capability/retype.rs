@@ -673,13 +673,22 @@ impl CapKernel {
     /// What a step of a large retype that has not found its block all zero yet did, under the untyped at
     /// index from of the table at root, for the block at base of order into the slot at index to: the
     /// retype was allowed, no capability was made and no slot changed, and the step discharges the
-    /// retype's effect.
+    /// retype's effect. The region is being zeroed, its cursor rose, from 0 when it was not being
+    /// zeroed before, and is short of the region's pages, and the same retype is allowed again: so a
+    /// caller that repeats it while it says Again has a measure that falls and reaches Done.
     pub open spec fn large_frame_zeroing(pre: Self, post: Self, root: usize, from: usize, to: usize, base: usize, order: u8) -> bool {
         let parent = pre.tables.node_of(root, from);
+        let level = large_level(order);
+        let page = base / PAGE_SZ;
+        let r = page / level_pages(level);
         &&& pre.can_retype_large(root, from, to, base, order)
         &&& pre.view().holds_right(root, parent, Right::Retype)
         &&& post.list == pre.list
         &&& post.tables == pre.tables
+        &&& post.can_retype_large(root, from, to, base, order)
+        &&& post.zeroing.active(level, r)
+        &&& pre.zeroing.active(level, r) ==> pre.zeroing.cursor@[page as int] < post.zeroing.cursor@[page as int]
+        &&& 0 < post.zeroing.cursor@[page as int] < level_pages(level)
         &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, into: None })
     }
 
@@ -864,6 +873,13 @@ impl CapKernel {
                     <= old(self).zeroing.cursor@[level_base(level, r) as int] + ZERO_CHUNK_PAGES,
             !old(self).zeroing.blocks@.contains_key(level_base(level, r)) && !(ret is Refused) ==>
                 final(self).zeroing.cursor@[level_base(level, r) as int] <= ZERO_CHUNK_PAGES,
+            ret is Again ==> {
+                let b = level_base(level, r);
+                &&& final(self).zeroing.active(level, r)
+                &&& old(self).zeroing.active(level, r) ==>
+                    old(self).zeroing.cursor@[b as int] < final(self).zeroing.cursor@[b as int]
+                &&& 0 < final(self).zeroing.cursor@[b as int] < level_pages(level)
+            },
     {
         let ghost pre = *old(self);
         let pages = pages_of_level(level);
@@ -919,6 +935,9 @@ impl CapKernel {
         proof {
             assert(holders_wf(&typed.list, &typed.tables, &typed.blocks, &typed.zeroing, typed.holders@));
             assert(typed.zeroing.active(level, r));
+            assert(pre.zeroing.active(level, r) ==> typed.zeroing == pre.zeroing);
+            assert(!pre.zeroing.active(level, r) ==> typed.zeroing.cursor@[base as int] == 0);
+            assert(typed.zeroing.blocks@[base] == pages);
         }
         let done = self.zeroing.step(base, pages, Tracked(steps));
         proof {
@@ -933,6 +952,9 @@ impl CapKernel {
                 lemma_threads_same_pages(&pre.list, &pre.tables, &pre.threads, &pre.blocks, &self.blocks);
                 lemma_processes_same_pages(&pre.list, &pre.tables, &pre.processes, &pre.blocks, &self.blocks);
                 Self::lemma_zeroing_changed(pre, *self);
+                assert(self.zeroing.active(level, r));
+                assert(self.zeroing.cursor@[base as int] <= pages);
+                assert(typed.zeroing.cursor@[base as int] < self.zeroing.cursor@[base as int]);
             }
             return RetypeStep::Again;
         }
@@ -1972,6 +1994,9 @@ impl CapKernel {
                     assert(self.view() == pre.view());
                     assert(pre.view().holds_right(root, parent, Right::Retype));
                     pre.lemma_retype_covers(root, from, base, order);
+                    assert(level == large_level(order));
+                    assert(self.can_retype(root, from, to, base, order));
+                    assert(self.can_retype_large(root, from, to, base, order));
                 }
                 return RetypeStep::Again;
             },

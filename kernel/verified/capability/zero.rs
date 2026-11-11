@@ -374,6 +374,7 @@ impl Zeroing {
             final(self).active_2m == old(self).active_2m,
             final(self).active_1g == old(self).active_1g,
             done == (final(self).cursor@[base as int] == pages),
+            old(self).cursor@[base as int] <= final(self).cursor@[base as int],
             old(self).cursor@[base as int] < pages ==> old(self).cursor@[base as int] < final(self).cursor@[base as int],
             final(self).cursor@[base as int] <= old(self).cursor@[base as int] + ZERO_CHUNK_PAGES,
     {
