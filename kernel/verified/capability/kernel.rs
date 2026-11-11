@@ -1389,7 +1389,7 @@ impl CapKernel {
         }
     }
 
-    /// Makes this a kernel with one root capability, no mappings, no core running anything, every page
+    /// Makes this a kernel with one root capability, no mappings, no core running anything and each at generation 1, every page
     /// Reserved with no unmap recorded, and the IOMMUs boot found present with their command buffers.
     /// In place, since the block table is too large to move by value.
     pub fn init(
@@ -1429,7 +1429,10 @@ impl CapKernel {
             final(self).flush_epoch == 0,
             final(self).mapped@ == Set::<usize>::empty(),
             final(self).devices.count == 0,
-            forall|c: int| 0 <= c < NUM_CPUS ==> (#[trigger] final(self).cores@[c]).current_thread is None,
+            forall|c: int| 0 <= c < NUM_CPUS ==> {
+                &&& (#[trigger] final(self).cores@[c]).current_thread is None
+                &&& final(self).cores@[c].generation == 1
+            },
             final(self).list.seq@[0] == root,
             final(self).boot_empty(),
             forall|j: int| 0 <= j < NUM_PAGES ==> #[trigger] final(self).stale_epoch.pages@[j] == 0,

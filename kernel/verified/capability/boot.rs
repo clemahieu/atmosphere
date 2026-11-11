@@ -148,6 +148,7 @@ impl CapKernel {
             final(self).devices == old(self).devices,
             final(self).iommus.present == old(self).iommus.present,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).cores == old(self).cores,
             final(self).wf(),
             final(self).list.seq@[0] == root,
             final(self).tables.roots@.contains_key(base),
@@ -424,6 +425,7 @@ impl CapKernel {
             final(self).devices == old(self).devices,
             final(self).iommus.present == old(self).iommus.present,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).cores == old(self).cores,
             final(self).wf(),
             final(self).list.seq@[0] == root,
             final(self).tables.roots == old(self).tables.roots,
@@ -707,6 +709,7 @@ impl CapKernel {
             final(self).devices == old(self).devices,
             final(self).iommus.present == old(self).iommus.present,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).cores == old(self).cores,
             final(self).wf(),
             final(self).list.seq@[0] == root,
             final(self).tables.leaf(process, r as int) == leaf,
@@ -839,6 +842,7 @@ impl CapKernel {
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).cores == old(self).cores,
             final(self).devices == old(self).devices,
             final(self).iommus.present == old(self).iommus.present,
             final(self).wf(),
@@ -1173,6 +1177,7 @@ impl CapKernel {
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).cores == old(self).cores,
             final(self).devices == old(self).devices,
             final(self).iommus.present == old(self).iommus.present,
             final(self).wf(),
@@ -1368,6 +1373,7 @@ impl CapKernel {
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).cores == old(self).cores,
             final(self).devices == old(self).devices,
             final(self).iommus.present == old(self).iommus.present,
             final(self).wf(),

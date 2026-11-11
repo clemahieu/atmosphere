@@ -183,7 +183,7 @@ impl CapKernel {
     /// capability retyped under it is below the deepest depth; every page of the untyped blocks is
     /// acknowledged, since boot unmaps nothing, so a free of a block typed there is not refused as
     /// stale, and so is every 2M and 1G region; the root's process is live, as is the page of its space; no flush has run, so the flush
-    /// epoch is 0; every root entry of its table past the two boot filled is empty; the root's space
+    /// epoch is 0; no core runs a thread, and each is at generation 1; every root entry of its table past the two boot filled is empty; the root's space
     /// maps exactly the image, and its level 4 entries outside the kernel slots that no image run
     /// reaches are empty, so a table built there is the root's own to fill; of
     /// the first untyped's order-3 blocks, every one past those the image's tables can take is free;
@@ -256,6 +256,10 @@ impl CapKernel {
         &&& self.root_live(process)
         &&& !self.blocks.pages@[(process / PAGE_SZ) as int].dead
         &&& self.flush_epoch == 0
+        &&& forall|c: int| 0 <= c < NUM_CPUS ==> {
+            &&& (#[trigger] self.cores@[c]).current_thread is None
+            &&& self.cores@[c].generation == 1
+        }
         &&& self.devices.count == 0
         &&& self.iommus.present@ == present
         &&& forall|r: int| 2 <= r < ROOT_ENTRIES ==> #[trigger] self.tables.leaf(process, r) == NO_LEAF

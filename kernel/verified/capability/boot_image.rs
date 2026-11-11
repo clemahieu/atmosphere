@@ -765,6 +765,7 @@ impl CapKernel {
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).cores == old(self).cores,
             final(self).devices == old(self).devices,
             final(self).iommus.present == old(self).iommus.present,
             ret is None ==> image_blocks(runs@).len() > ROOT_FRAME_SLOTS && *final(self) == *old(self),
@@ -862,6 +863,7 @@ impl CapKernel {
             invariant
                 self.stale_epoch == pre.stale_epoch,
                 self.flush_epoch == pre.flush_epoch,
+                self.cores == pre.cores,
                 self.devices == pre.devices,
                 self.iommus.present == pre.iommus.present,
                 r <= runs@.len(),
@@ -926,6 +928,7 @@ impl CapKernel {
                 invariant
                     self.stale_epoch == pre.stale_epoch,
                     self.flush_epoch == pre.flush_epoch,
+                    self.cores == pre.cores,
                     self.devices == pre.devices,
                     self.iommus.present == pre.iommus.present,
                     r < runs@.len(),

@@ -1329,9 +1329,6 @@ impl CapKernel {
             old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
             image_tables_bound(image@) + 2 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
-            // As boot leaves core 0.
-            old(self).cores@[0].current_thread is None,
-            old(self).cores@[0].generation < ID_GENERATION_MAX,
         ensures
             ret.0,
             ret.1,

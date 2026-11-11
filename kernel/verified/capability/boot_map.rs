@@ -740,6 +740,7 @@ impl CapKernel {
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).cores == old(self).cores,
             final(self).devices == old(self).devices,
             final(self).iommus.present == old(self).iommus.present,
             Self::maps_done(*old(self), *final(self), process, runs@),
@@ -758,6 +759,7 @@ impl CapKernel {
             invariant
                 self.stale_epoch == pre.stale_epoch,
                 self.flush_epoch == pre.flush_epoch,
+                self.cores == pre.cores,
                 self.devices == pre.devices,
                 self.iommus.present == pre.iommus.present,
                 pre.maps_ready(root, process, leaf2, runs@),
@@ -787,6 +789,7 @@ impl CapKernel {
                 invariant
                     self.stale_epoch == pre.stale_epoch,
                     self.flush_epoch == pre.flush_epoch,
+                    self.cores == pre.cores,
                     self.devices == pre.devices,
                     self.iommus.present == pre.iommus.present,
                     pre.maps_ready(root, process, leaf2, runs@),
@@ -837,6 +840,7 @@ impl CapKernel {
                     invariant
                         self.stale_epoch == pre.stale_epoch,
                         self.flush_epoch == pre.flush_epoch,
+                        self.cores == pre.cores,
                         self.devices == pre.devices,
                         self.iommus.present == pre.iommus.present,
                         pre.maps_ready(root, process, leaf2, runs@),
