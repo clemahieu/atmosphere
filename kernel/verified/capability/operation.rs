@@ -25,6 +25,8 @@ use crate::capability::view::bound_threads;
 use crate::capability::steps::Steps;
 use crate::capability::thread::*;
 use crate::capability::unmap::Unmapped;
+#[cfg(verus_keep_ghost)]
+use crate::capability::view::bound_threads;
 use crate::define::*;
 use crate::pptr::*;
 use crate::arch::Registers;
@@ -368,8 +370,9 @@ impl CapKernel {
     /// What a retype of the order-3 block at base as a table page of level did, under the untyped at
     /// index from of the table at root: the retype was allowed and the block free, the page is an empty
     /// table of that level that no space links and no capability names, the untyped's child, its node
-    /// not live before, the one entry the parent map gains and the only node whose liveness changed,
-    /// and the step discharges the retype's effect.
+    /// not live before and hidden after, the one entry the parent map gains and the only node whose
+    /// liveness or kind changed, no thread bound but as it was, and the step discharges the retype's
+    /// effect.
     pub open spec fn table_page_retyped(pre: Self, post: Self, root: usize, from: usize, base: usize, level: usize) -> bool {
         let parent = pre.tables.node_of(root, from);
         &&& pre.can_retype_table_page(root, from, base, level)
@@ -383,6 +386,10 @@ impl CapKernel {
         &&& post.list.parent@ == pre.list.parent@.insert(base, parent)
         &&& forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < NODE_SPACE && i != base
             ==> post.list.nodes@[i].live == pre.list.nodes@[i].live
+        &&& post.list.nodes@[base as int].kind is Hidden
+        &&& forall|x: usize| #![trigger post.list.nodes@[x as int]] pre.list.valid(x) && x != base
+            ==> post.list.nodes@[x as int].kind == pre.list.nodes@[x as int].kind
+        &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
         &&& forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x)
         &&& post.tables == pre.tables
         &&& post.spaces == pre.spaces
