@@ -1,7 +1,7 @@
 ---
 name: skeptic
 description: "Fresh-context reviewer for an epic's skeptic pass. Takes an epic's acceptance criteria, its tier and where the evidence is; tries to refute each criterion from recorded evidence only; reports each criterion as standing or refuted with the evidence, and the refuted ones as issue descriptions. Read-only. Run by the round driver for a round that handed back `Skeptic: <epic>`."
-model: fable
+model: opus
 effort: xhigh
 disallowedTools: Edit, Write, NotebookEdit, Agent, Workflow, WebFetch, WebSearch, Artifact
 ---
