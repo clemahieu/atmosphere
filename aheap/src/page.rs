@@ -46,6 +46,10 @@
 //! `lemma_view` states the invariant on the view, among it where each metadata page lies and that
 //! a held span's first block with no run is the initial block, so `lemma_idle_fits` shows a run of
 //! any order fits while such a span is held.
+//!
+//! `run_held` is a caller's run, allocated with every page backed. `cut_run` and `freed` state
+//! `alloc_run` and `free_run` as predicates over the views before and after, and the `keeps_held`
+//! lemmas keep every held run held across a cut, a back, a refusal and the free of another run.
 #[cfg(verus_keep_ghost)]
 use vstd::arithmetic::div_mod::*;
 #[cfg(verus_keep_ghost)]
@@ -201,6 +205,67 @@ pub open spec fn best(spans: Map<int, Map<int, Block>>, b: int, h: int, k: nat) 
 pub open spec fn took_span(before: SourceView, after: SourceView, b: int) -> bool {
     &&& !before.spans.contains_key(b)
     &&& after == before.reserved(b, SPAN_BLOCKS as nat).backed_run(b, meta_page(b), 1)
+}
+
+/// The run of order `k` at `x` is allocated to a caller of the page buddy, in a span the source
+/// holds, with every page backed.
+pub open spec fn run_held(pb: PageBuddy, s: SourceView, x: int, k: nat) -> bool {
+    let c = span_of(x);
+    &&& pb.holds(x)
+    &&& pb.used()[c][page_of(x)] == k
+    &&& pb.spans().contains_key(c)
+    &&& s.spans.contains_key(pb.span_base(c))
+    &&& s.backed(pb.span_base(c), x, pages(k) as nat)
+}
+
+/// The page buddy went from `before` to `after`, and the source from `s` to `t`, by `alloc_run`
+/// cutting a run of order `k` at `q`: from the held block with a free block of the smallest order at
+/// or above `k`, the source as it was; or from a new span, reserved with its metadata page backed,
+/// when no held span had one. No page of the run is backed.
+pub open spec fn cut_run(before: PageBuddy, after: PageBuddy, s: SourceView, t: SourceView, q: int, k: nat) -> bool {
+    let c = span_of(q);
+    let b = after.span_base(c);
+    &&& after.spares() == before.spares()
+    &&& t.unbacked(b, q, pages(k) as nat)
+    &&& if before.spans().contains_key(c) {
+        &&& best(before.spans(), c, page_of(q), k)
+        &&& cut(before.used(), after.used(), q, k)
+        &&& after.spans().dom() == before.spans().dom()
+        &&& after.metas() == before.metas()
+        &&& t == s
+    } else {
+        &&& !before.fits(k)
+        &&& c == b
+        &&& !before.spans().contains_key(b)
+        &&& !before.spans().contains_key(meta_page(b))
+        &&& !after.metas().contains(b)
+        &&& after.spans().dom() == before.spans().dom().insert(b).insert(meta_page(b))
+        &&& after.metas() == before.metas().insert(meta_page(b))
+        &&& cut(fresh(before.used(), b), after.used(), q, k)
+        &&& took_span(s, t, b)
+    }
+}
+
+/// The page buddy went from `before` to `after`, and the source from `s` to `t`, by `free_run`
+/// taking back the run at `q`: its span kept when a run is left in it or fewer idle spans than the
+/// spares are held, the source as it was; given back to the source otherwise.
+pub open spec fn freed(before: PageBuddy, after: PageBuddy, s: SourceView, t: SourceView, q: int) -> bool {
+    let c = span_of(q);
+    let b = before.span_base(c);
+    let rest = before.used().insert(c, before.used()[c].remove(page_of(q)));
+    &&& after.spares() == before.spares()
+    &&& if rest[b].dom() != Set::<int>::empty() || rest[meta_page(b)].dom() != Set::<int>::empty()
+        || before.idle_spans().len() < before.spares() {
+        &&& after.used() == rest
+        &&& after.spans().dom() == before.spans().dom()
+        &&& after.metas() == before.metas()
+        &&& t == s
+    } else {
+        &&& after.used() == before.used().remove(b).remove(meta_page(b))
+        &&& after.spans().dom() == before.spans().dom().remove(b).remove(meta_page(b))
+        &&& after.metas() == before.metas().remove(meta_page(b))
+        &&& t == s.released_span(b)
+    }
 }
 
 /// The order a best-fit search has found so far is at most `ord`.
@@ -1701,27 +1766,7 @@ impl PageBuddy {
                     &&& final(self).metas() == old(self).metas()
                     &&& span_refused(old(src)@, final(src)@)
                 },
-                Ok(p) => {
-                    let b = final(self).span_base(span_of(p as int));
-                    &&& final(src)@.unbacked(b, p as int, pages(k as nat) as nat)
-                    &&& if old(self).spans().contains_key(span_of(p as int)) {
-                        &&& best(old(self).spans(), span_of(p as int), page_of(p as int), k as nat)
-                        &&& cut(old(self).used(), final(self).used(), p as int, k as nat)
-                        &&& final(self).spans().dom() == old(self).spans().dom()
-                        &&& final(self).metas() == old(self).metas()
-                        &&& final(src)@ == old(src)@
-                    } else {
-                        &&& !old(self).fits(k as nat)
-                        &&& span_of(p as int) == b
-                        &&& !old(self).spans().contains_key(b)
-                        &&& !old(self).spans().contains_key(meta_page(b))
-                        &&& !final(self).metas().contains(b)
-                        &&& final(self).spans().dom() == old(self).spans().dom().insert(b).insert(meta_page(b))
-                        &&& final(self).metas() == old(self).metas().insert(meta_page(b))
-                        &&& cut(fresh(old(self).used(), b), final(self).used(), p as int, k as nat)
-                        &&& took_span(old(src)@, final(src)@, b)
-                    }
-                },
+                Ok(p) => cut_run(*old(self), *final(self), old(src)@, final(src)@, p as int, k as nat),
             },
     {
         self.view = Ghost(src@);
@@ -1767,24 +1812,7 @@ impl PageBuddy {
             ),
         ensures
             final(self).wf(final(src)@),
-            final(self).spares() == old(self).spares(),
-            ({
-                let c = span_of(p as int);
-                let b = old(self).span_base(c);
-                let after = old(self).used().insert(c, old(self).used()[c].remove(page_of(p as int)));
-                if after[b].dom() != Set::<int>::empty() || after[meta_page(b)].dom() != Set::<int>::empty()
-                    || old(self).idle_spans().len() < old(self).spares() {
-                    &&& final(self).used() == after
-                    &&& final(self).spans().dom() == old(self).spans().dom()
-                    &&& final(self).metas() == old(self).metas()
-                    &&& final(src)@ == old(src)@
-                } else {
-                    &&& final(self).used() == old(self).used().remove(b).remove(meta_page(b))
-                    &&& final(self).spans().dom() == old(self).spans().dom().remove(b).remove(meta_page(b))
-                    &&& final(self).metas() == old(self).metas().remove(meta_page(b))
-                    &&& final(src)@ == old(src)@.released_span(b)
-                }
-            }),
+            freed(*old(self), *final(self), old(src)@, final(src)@, p as int),
     {
         self.view = Ghost(src@);
         let ghost entry = *self;
@@ -2283,6 +2311,113 @@ impl PageBuddy {
                 assert(entry.linked(i));
             }
         }
+    }
+}
+
+/// Cutting the run of order `k` at `q` keeps every run the page buddy held held, and `q` is the
+/// head of none of them.
+pub proof fn lemma_cut_keeps_held(
+    before: PageBuddy,
+    after: PageBuddy,
+    s: SourceView,
+    t: SourceView,
+    q: int,
+    k: nat,
+    x: int,
+    j: nat,
+)
+    requires
+        before.wf(s),
+        cut_run(before, after, s, t, q, k),
+        run_held(before, s, x, j),
+    ensures
+        x != q,
+        run_held(after, t, x, j),
+{
+    let c = span_of(q);
+    let cx = span_of(x);
+    before.lemma_view(s);
+    lemma_pages_pos(k);
+    lemma_pages_pos(j);
+    if before.spans().contains_key(c) {
+        if cx == c {
+            assert(before.used()[c].contains_key(page_of(x)));
+            assert(page_of(x) != page_of(q));
+        }
+        assert(cx == c || after.used()[cx] == before.used()[cx]);
+        assert(after.span_base(cx) == before.span_base(cx));
+    } else {
+        assert(cx != c);
+        assert(cx != meta_page(c));
+        assert(after.used()[cx] == before.used()[cx]);
+        assert(after.metas().contains(cx) == before.metas().contains(cx));
+        assert(after.span_base(cx) == before.span_base(cx));
+        assert(before.span_base(cx) != c);
+        assert(t.spans[before.span_base(cx)] == s.spans[before.span_base(cx)]);
+    }
+}
+
+/// Backing a run keeps every held run held.
+pub proof fn lemma_backed_keeps_held(pb: PageBuddy, s: SourceView, y: int, z: int, n: nat, x: int, k: nat)
+    requires
+        run_held(pb, s, x, k),
+    ensures
+        run_held(pb, s.backed_run(y, z, n), x, k),
+{
+    let base = pb.span_base(span_of(x));
+    assert(s.spans[base].backed.subset_of(s.backed_run(y, z, n).spans[base].backed));
+}
+
+/// Recording a refusal keeps every held run held.
+pub proof fn lemma_recorded_keeps_held(pb: PageBuddy, s: SourceView, r: Refusal, x: int, k: nat)
+    requires
+        run_held(pb, s, x, k),
+    ensures
+        run_held(pb, s.recorded(r), x, k),
+{
+}
+
+/// Freeing the run at `q` keeps every other held run held.
+pub proof fn lemma_freed_keeps_held(
+    before: PageBuddy,
+    after: PageBuddy,
+    s: SourceView,
+    t: SourceView,
+    q: int,
+    x: int,
+    j: nat,
+)
+    requires
+        before.wf(s),
+        freed(before, after, s, t, q),
+        before.holds(q),
+        run_held(before, s, x, j),
+        x != q,
+    ensures
+        run_held(after, t, x, j),
+{
+    let c = span_of(q);
+    let cx = span_of(x);
+    let base = before.span_base(c);
+    let rest = before.used().insert(c, before.used()[c].remove(page_of(q)));
+    before.lemma_view(s);
+    assert(before.spans().contains_key(c));
+    lemma_head(q);
+    lemma_head(x);
+    if cx == c {
+        assert(page_of(x) != page_of(q));
+    }
+    assert(rest[cx].contains_key(page_of(x)));
+    assert(rest[cx][page_of(x)] == j);
+    if rest[base].dom() != Set::<int>::empty() || rest[meta_page(base)].dom() != Set::<int>::empty()
+        || before.idle_spans().len() < before.spares() {
+    } else {
+        assert(rest[base].dom().contains(page_of(x)) ==> cx != base);
+        assert(cx != base);
+        assert(cx != meta_page(base));
+        assert(after.metas().contains(cx) == before.metas().contains(cx));
+        assert(after.span_base(cx) == before.span_base(cx));
+        assert(before.span_base(cx) != base);
     }
 }
 

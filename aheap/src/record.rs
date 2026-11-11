@@ -11,14 +11,15 @@
 //!
 //! The store owns neither the page buddy nor the source. Each operation takes both, and the
 //! store's invariant, `wf(pb, src)`, is stated over the page buddy's view and the source's: each
-//! record page is an allocated run of order 0 of the page buddy, its page backed (`page_held`). A
+//! record page is an allocated run of order 0 of the page buddy, its page backed (`run_held`). A
 //! change that keeps every record page so keeps the invariant (`lemma_frame`).
 //!
 //! - `take(pb, src)` returns an unused record of a page that has one, changing neither the page
 //!   buddy nor the source. When every page is full it cuts a new page, backs it and returns the
 //!   page's first record (`took_page`). It refuses exactly when every page is full and either the
 //!   page buddy refused the run (`span_refused`) or the source refused to back it (`back_refused`);
-//!   then it frees the run again, so the page buddy holds the runs it held (`runs`).
+//!   then it frees the run again, so the page buddy holds the runs it held (`runs`), and each run
+//!   its caller held stays allocated with every page backed (`run_held`).
 //! - `put(pb, src, p, perm)` takes back the record at `p` with the permission to its bytes and
 //!   never refuses. A page left with no record in use is given back: its page released and its run
 //!   freed (`gave_back`).
@@ -86,48 +87,9 @@ spec fn header_ptr(b: int, provenance: Provenance) -> *mut PageHeader {
     ptr_mut_from_data(PtrData { addr: b as usize, provenance, metadata: () })
 }
 
-/// The page at `b` is an allocated run of order 0 of the page buddy, in a span the source holds,
-/// with its page backed.
-pub open spec fn page_held(pb: PageBuddy, s: SourceView, b: int) -> bool {
-    let c = span_of(b);
-    &&& b % PAGE_BYTES as int == 0
-    &&& pb.spans().contains_key(c)
-    &&& pb.used().contains_key(c)
-    &&& pb.used()[c].contains_key(page_of(b))
-    &&& pb.used()[c][page_of(b)] == 0
-    &&& s.spans.contains_key(pb.span_base(c))
-    &&& s.backed(pb.span_base(c), b, 1)
-}
-
 /// The blocks of `u` that hold a run, with their runs.
 pub open spec fn runs(u: Map<int, Map<int, nat>>) -> Map<int, Map<int, nat>> {
     Map::new(u.dom().filter(|c: int| u[c].dom() != Set::<int>::empty()), |c: int| u[c])
-}
-
-/// The page buddy went from `before` to `after`, and the source from `s` to `t`, by `alloc_run`
-/// cutting a run of order 0 at `q`, as `alloc_run` states it.
-pub open spec fn cut_page(before: PageBuddy, after: PageBuddy, s: SourceView, t: SourceView, q: int) -> bool {
-    let c = span_of(q);
-    let b = after.span_base(c);
-    &&& after.spares() == before.spares()
-    &&& t.unbacked(b, q, 1)
-    &&& if before.spans().contains_key(c) {
-        &&& best(before.spans(), c, page_of(q), 0)
-        &&& cut(before.used(), after.used(), q, 0)
-        &&& after.spans().dom() == before.spans().dom()
-        &&& after.metas() == before.metas()
-        &&& t == s
-    } else {
-        &&& !before.fits(0)
-        &&& c == b
-        &&& !before.spans().contains_key(b)
-        &&& !before.spans().contains_key(meta_page(b))
-        &&& !after.metas().contains(b)
-        &&& after.spans().dom() == before.spans().dom().insert(b).insert(meta_page(b))
-        &&& after.metas() == before.metas().insert(meta_page(b))
-        &&& cut(fresh(before.used(), b), after.used(), q, 0)
-        &&& took_span(s, t, b)
-    }
 }
 
 /// The page buddy went from `before` to `after`, and the source from `s` to `t`, by cutting the run
@@ -139,29 +101,8 @@ pub open spec fn took_page(before: PageBuddy, after: PageBuddy, s: SourceView, t
     } else {
         s.reserved(c, SPAN_BLOCKS as nat).backed_run(c, meta_page(c), 1)
     };
-    &&& cut_page(before, after, s, m, q)
+    &&& cut_run(before, after, s, m, q, 0)
     &&& t == m.backed_run(after.span_base(c), q, 1)
-}
-
-/// The page buddy went from `before` to `after`, and the source from `s` to `t`, by `free_run`
-/// taking back the run at `q`, as `free_run` states it.
-pub open spec fn freed(before: PageBuddy, after: PageBuddy, s: SourceView, t: SourceView, q: int) -> bool {
-    let c = span_of(q);
-    let b = before.span_base(c);
-    let rest = before.used().insert(c, before.used()[c].remove(page_of(q)));
-    &&& after.spares() == before.spares()
-    &&& if rest[b].dom() != Set::<int>::empty() || rest[meta_page(b)].dom() != Set::<int>::empty()
-        || before.idle_spans().len() < before.spares() {
-        &&& after.used() == rest
-        &&& after.spans().dom() == before.spans().dom()
-        &&& after.metas() == before.metas()
-        &&& t == s
-    } else {
-        &&& after.used() == before.used().remove(b).remove(meta_page(b))
-        &&& after.spans().dom() == before.spans().dom().remove(b).remove(meta_page(b))
-        &&& after.metas() == before.metas().remove(meta_page(b))
-        &&& t == s.released_span(b)
-    }
 }
 
 /// The page buddy went from `before` to `after`, and the source from `s` to `t`, by releasing the
@@ -393,98 +334,18 @@ proof fn lemma_bounds(pb: PageBuddy, s: SourceView, q: int)
     assert(page_of(q) * PAGE_BYTES + PAGE_BYTES <= BLOCK_BYTES);
 }
 
-/// Cutting the run at `q` keeps every record page the page buddy held held, and `q` is none of them.
-proof fn lemma_cut_held(pb0: PageBuddy, pb1: PageBuddy, s0: SourceView, s1: SourceView, q: int, b: int)
-    requires
-        cut_page(pb0, pb1, s0, s1, q),
-        page_held(pb0, s0, b),
-        0 <= q,
-        0 <= b,
-    ensures
-        b != q,
-        page_held(pb1, s1, b),
-{
-    let c = span_of(q);
-    let cb = span_of(b);
-    lemma_head(q);
-    lemma_head(b);
-    assert(pages(0) == 1);
-    if pb0.spans().contains_key(c) {
-        if cb == c {
-            assert(pb0.used()[c].contains_key(page_of(b)));
-            assert(page_of(b) != page_of(q));
-        }
-        assert(pb1.used()[cb] == pb0.used()[cb].insert(page_of(q), 0nat) || cb != c);
-        assert(pb1.span_base(cb) == pb0.span_base(cb));
-    } else {
-        assert(cb != c);
-        assert(cb != meta_page(c));
-        assert(pb1.used()[cb] == pb0.used()[cb]);
-        assert(pb1.metas().contains(cb) == pb0.metas().contains(cb));
-        assert(pb1.span_base(cb) == pb0.span_base(cb));
-        assert(pb0.span_base(cb) != c);
-        assert(s1.spans[pb0.span_base(cb)] == s0.spans[pb0.span_base(cb)]);
-    }
-}
-
-/// Backing a run keeps a record page held.
-proof fn lemma_backed_held(pb: PageBuddy, s: SourceView, x: int, y: int, n: nat, b: int)
-    requires
-        page_held(pb, s, b),
-    ensures
-        page_held(pb, s.backed_run(x, y, n), b),
-{
-    let t = s.backed_run(x, y, n);
-    let base = pb.span_base(span_of(b));
-    assert(s.spans[base].backed.subset_of(t.spans[base].backed));
-}
-
 /// Releasing the page at `q` keeps every other record page held.
 proof fn lemma_released_held(pb: PageBuddy, s: SourceView, x: int, q: int, b: int)
     requires
-        page_held(pb, s, b),
+        run_held(pb, s, b, 0),
         b != q,
         q % PAGE_BYTES as int == 0,
     ensures
-        page_held(pb, s.released_run(x, q, 1), b),
+        run_held(pb, s.released_run(x, q, 1), b, 0),
 {
+    assert(pages(0) == 1);
     lemma_one_page(q);
     lemma_one_page(b);
-}
-
-/// Freeing the run at `q` keeps every other record page held.
-proof fn lemma_freed_held(before: PageBuddy, after: PageBuddy, s: SourceView, t: SourceView, q: int, b: int)
-    requires
-        freed(before, after, s, t, q),
-        before.holds(q),
-        page_held(before, s, b),
-        b != q,
-        0 <= q,
-        0 <= b,
-    ensures
-        page_held(after, t, b),
-{
-    let c = span_of(q);
-    let cb = span_of(b);
-    let base = before.span_base(c);
-    let rest = before.used().insert(c, before.used()[c].remove(page_of(q)));
-    lemma_head(q);
-    lemma_head(b);
-    if cb == c {
-        assert(page_of(b) != page_of(q));
-    }
-    assert(rest[cb].contains_key(page_of(b)));
-    assert(rest[cb][page_of(b)] == 0);
-    if rest[base].dom() != Set::<int>::empty() || rest[meta_page(base)].dom() != Set::<int>::empty()
-        || before.idle_spans().len() < before.spares() {
-    } else {
-        assert(rest[base].dom().contains(page_of(b)) ==> cb != base);
-        assert(cb != base);
-        assert(cb != meta_page(base));
-        assert(after.metas().contains(cb) == before.metas().contains(cb));
-        assert(after.span_base(cb) == before.span_base(cb));
-        assert(before.span_base(cb) != base);
-    }
 }
 
 /// Cutting the run at `q` and freeing it again leaves the page buddy holding the runs it held.
@@ -500,7 +361,7 @@ proof fn lemma_runs_back(
 )
     requires
         pb0.wf(s0),
-        cut_page(pb0, pb1, s0, m, q),
+        cut_run(pb0, pb1, s0, m, q, 0),
         freed(pb1, pb3, s2, s3, q),
     ensures
         runs(pb3.used()) == runs(pb0.used()),
@@ -626,7 +487,7 @@ impl RecordStore {
     /// its caller holds them and passes them to each operation, and may share them.
     pub closed spec fn wf(&self, pb: PageBuddy, src: SourceView) -> bool {
         &&& self.inv(src.provenance)
-        &&& forall|b: int| #[trigger] self.headers@.contains_key(b) ==> page_held(pb, src, b)
+        &&& forall|b: int| #[trigger] self.headers@.contains_key(b) ==> run_held(pb, src, b, 0)
     }
 
     /// A record page is in the chain, its header well formed, and the list not empty.
@@ -661,7 +522,7 @@ impl RecordStore {
         requires
             self.wf(pb, src),
         ensures
-            forall|b: int| #[trigger] self.pages().contains(b) ==> page_held(pb, src, b),
+            forall|b: int| #[trigger] self.pages().contains(b) ==> run_held(pb, src, b, 0),
             forall|a: int| #[trigger] self.taken().contains(a) ==> self.pages().contains(record_page(a)),
     {
     }
@@ -672,11 +533,11 @@ impl RecordStore {
         requires
             self.wf(pb, s),
             t.provenance == s.provenance,
-            forall|b: int| #[trigger] self.pages().contains(b) ==> page_held(pb2, t, b),
+            forall|b: int| #[trigger] self.pages().contains(b) ==> run_held(pb2, t, b, 0),
         ensures
             self.wf(pb2, t),
     {
-        assert forall|b: int| #[trigger] self.headers@.contains_key(b) implies page_held(pb2, t, b) by {
+        assert forall|b: int| #[trigger] self.headers@.contains_key(b) implies run_held(pb2, t, b, 0) by {
             assert(self.pages().contains(b));
         }
     }
@@ -1351,6 +1212,8 @@ impl RecordStore {
                     &&& final(self).pages() == old(self).pages()
                     &&& final(self).taken() == old(self).taken()
                     &&& runs(final(pb).used()) == runs(old(pb).used())
+                    &&& forall|x: int, k: nat| #[trigger]
+                        run_held(*old(pb), old(src)@, x, k) ==> run_held(*final(pb), final(src)@, x, k)
                     &&& span_refused(old(src)@, final(src)@) || back_refused(old(src)@, final(src)@)
                 },
                 Some((p, perm)) => {
@@ -1374,7 +1237,7 @@ impl RecordStore {
         if let Some((b, i)) = self.find_page(Ghost(prov)) {
             let (p, perm) = self.take_in(b, i, Ghost(prov));
             proof {
-                assert forall|c: int| #[trigger] self.headers@.contains_key(c) implies page_held(pb0, s0, c) by {
+                assert forall|c: int| #[trigger] self.headers@.contains_key(c) implies run_held(pb0, s0, c, 0) by {
                     assert(old(self).headers@.contains_key(c));
                 }
             }
@@ -1383,8 +1246,11 @@ impl RecordStore {
         let q = match pb.alloc_run(src, 0) {
             Err(_) => {
                 proof {
-                    assert forall|c: int| #[trigger] self.headers@.contains_key(c) implies page_held(*pb, src@, c) by {
-                        assert(page_held(pb0, s0, c));
+                    assert forall|x: int, k: nat| #[trigger] run_held(pb0, s0, x, k) implies run_held(*pb, src@, x, k) by {
+                        lemma_recorded_keeps_held(pb0, s0, src@.refusals.last(), x, k);
+                    }
+                    assert forall|c: int| #[trigger] self.headers@.contains_key(c) implies run_held(*pb, src@, c, 0) by {
+                        assert(run_held(pb0, s0, c, 0));
                     }
                 }
                 return None;
@@ -1397,12 +1263,14 @@ impl RecordStore {
         let ghost s1 = src@;
         proof {
             assert(pages(0) == 1);
-            assert(cut_page(pb0, pb1, s0, s1, qi));
+            assert(cut_run(pb0, pb1, s0, s1, qi, 0));
             assert(pb1.used().contains_key(c));
             lemma_bounds(pb1, s1, qi);
-            assert forall|b: int| #[trigger] self.headers@.contains_key(b) implies b != qi && page_held(pb1, s1, b) by {
-                self.lemma_page(b, prov);
-                lemma_cut_held(pb0, pb1, s0, s1, qi, b);
+            assert forall|x: int, k: nat| #[trigger] run_held(pb0, s0, x, k) implies x != qi && run_held(pb1, s1, x, k) by {
+                lemma_cut_keeps_held(pb0, pb1, s0, s1, qi, 0, x, k);
+            }
+            assert forall|b: int| #[trigger] self.headers@.contains_key(b) implies b != qi && run_held(pb1, s1, b, 0) by {
+                assert(run_held(pb0, s0, b, 0));
             }
         }
         match pb.back_run(src, q, 0) {
@@ -1418,10 +1286,14 @@ impl RecordStore {
                     assert(freed(pb1, pb3, s2, s3, qi));
                     lemma_runs_back(pb0, pb1, pb3, s0, s1, s2, s3, qi);
                     assert(pb2.holds(qi));
-                    assert forall|b: int| #[trigger] self.headers@.contains_key(b) implies page_held(pb3, s3, b) by {
-                        self.lemma_page(b, prov);
-                        assert(page_held(pb2, s2, b));
-                        lemma_freed_held(pb2, pb3, s2, s3, qi, b);
+                    assert forall|x: int, k: nat| #[trigger] run_held(pb0, s0, x, k) implies run_held(pb3, s3, x, k) by {
+                        assert(x != qi && run_held(pb1, s1, x, k));
+                        lemma_recorded_keeps_held(pb1, s1, s2.refusals.last(), x, k);
+                        assert(run_held(pb2, s2, x, k));
+                        lemma_freed_keeps_held(pb2, pb3, s2, s3, qi, x, k);
+                    }
+                    assert forall|b: int| #[trigger] self.headers@.contains_key(b) implies run_held(pb3, s3, b, 0) by {
+                        assert(run_held(pb0, s0, b, 0));
                     }
                     assert(s3.refusals == s0.refusals.push(s2.refusals.last()));
                     assert(back_refused(s0, s3));
@@ -1436,11 +1308,11 @@ impl RecordStore {
                 let (p, perm) = self.add_page(q, ptr, raw, Ghost(prov));
                 proof {
                     let pb2 = *pb;
-                    assert(page_held(pb2, s2, qi));
-                    assert forall|b: int| #[trigger] self.headers@.contains_key(b) implies page_held(pb2, s2, b) by {
+                    assert(run_held(pb2, s2, qi, 0));
+                    assert forall|b: int| #[trigger] self.headers@.contains_key(b) implies run_held(pb2, s2, b, 0) by {
                         if b != qi {
                             assert(old(self).headers@.contains_key(b));
-                            lemma_backed_held(pb1, s1, pb1.span_base(c), qi, 1, b);
+                            lemma_backed_keeps_held(pb1, s1, pb1.span_base(c), qi, 1, b, 0);
                         }
                     }
                     assert(took_page(pb0, pb2, s0, s2, qi));
@@ -1496,14 +1368,14 @@ impl RecordStore {
         }
         if !empty {
             proof {
-                assert forall|c: int| #[trigger] self.headers@.contains_key(c) implies page_held(pb0, s0, c) by {
+                assert forall|c: int| #[trigger] self.headers@.contains_key(c) implies run_held(pb0, s0, c, 0) by {
                     assert(old(self).headers@.contains_key(c));
                 }
             }
             return;
         }
         proof {
-            assert(page_held(pb0, s0, bi));
+            assert(run_held(pb0, s0, bi, 0));
             assert(pages(0) == 1);
             lemma_one_page(bi);
         }
@@ -1522,13 +1394,13 @@ impl RecordStore {
             assert(pb1.idle_spans() == pb0.idle_spans());
             assert(freed(pb0, pb2, s1, s2, bi));
             assert(gave_back(pb0, pb2, s0, s2, bi));
-            assert forall|c: int| #[trigger] self.headers@.contains_key(c) implies page_held(pb2, s2, c) by {
+            assert forall|c: int| #[trigger] self.headers@.contains_key(c) implies run_held(pb2, s2, c, 0) by {
                 assert(old(self).headers@.contains_key(c));
                 self.lemma_page(c, prov);
                 assert(c != bi);
                 lemma_released_held(pb0, s0, pb0.span_base(span_of(bi)), bi, c);
-                assert(page_held(pb1, s1, c));
-                lemma_freed_held(pb1, pb2, s1, s2, bi, c);
+                assert(run_held(pb1, s1, c, 0));
+                lemma_freed_keeps_held(pb1, pb2, s1, s2, bi, c, 0);
             }
         }
     }
