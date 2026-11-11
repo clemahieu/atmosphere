@@ -42,6 +42,12 @@
 //! it held what it held at the start and, for the back, the new span; so a source that refused
 //! neither gave the byte.
 //!
+//! The record store's witness, over any well-formed source and with no spares, takes a record,
+//! which cuts a run of order 0 and backs it as a record page, puts the record back, which releases
+//! the page and frees the run, and ends with no record page, the page buddy holding no span and the
+//! source's view the one it started with. The store refuses only when the source refused the run's
+//! span or the back of the record page.
+//!
 //! The heap's witness gives one source to a page buddy and a large-object map: it cuts a run, then
 //! allocates an object, frees the run, then the object, and ends with both holding nothing and the
 //! source's view the one it started with. Each keeps its invariant across the other's changes to the
@@ -55,6 +61,7 @@ use crate::arch::*;
 use crate::buddy::*;
 use crate::large::*;
 use crate::page::*;
+use crate::record::{RecordStore, back_refused, record_page};
 use crate::slab::*;
 use crate::source::*;
 
@@ -820,6 +827,62 @@ pub fn witness_backed_run<S: SpanSource>(src: &mut S) -> (r: (PageBuddy, bool, G
         pb.lemma_view(src@);
     }
     (pb, true, Ghost(p as int))
+}
+
+/// The record store's witness: with no spares, takes a record, which cuts and backs a record page,
+/// and puts it back, which gives the page back; ends with no record page, the page buddy holding no
+/// span and the source's view the one it started with. A refusal stops the sequence, and the store
+/// refuses only when the source refused the run's span or the back of the record page.
+pub fn witness_record<S: SpanSource>(src: &mut S) -> (r: (PageBuddy, RecordStore, bool))
+    requires
+        old(src)@.wf(),
+    ensures
+        r.0.wf(final(src)@),
+        r.1.wf(r.0, final(src)@),
+        if r.2 {
+            &&& final(src)@ == old(src)@
+            &&& r.0.spans().dom() == Set::<int>::empty()
+            &&& r.1.pages() == Set::<int>::empty()
+            &&& r.1.taken() == Set::<int>::empty()
+        } else {
+            span_refused(old(src)@, final(src)@) || back_refused(old(src)@, final(src)@)
+        },
+{
+    let mut pb = PageBuddy::new(0);
+    let mut store = RecordStore::new();
+    let ghost s0 = src@;
+    let ghost pb0 = pb;
+    assert(pb.spans().dom() =~= Set::<int>::empty());
+    let (p, perm) = match store.take(&mut pb, src) {
+        None => {
+            return (pb, store, false);
+        },
+        Some(taken) => taken,
+    };
+    let ghost q = record_page(p@.addr as int);
+    let ghost c = span_of(q);
+    let ghost pb1 = pb;
+    let ghost s1 = src@;
+    let ghost fr = fresh(Map::<int, Map<int, nat>>::empty(), c);
+    proof {
+        assert(!pb0.spans().contains_key(c));
+        lemma_uncut(fr, pb1.used(), q, 0);
+        assert(fr[c].dom() =~= Set::<int>::empty());
+        assert(fr[meta_page(c)].dom() =~= Set::<int>::empty());
+        assert(store.taken() =~= Set::<int>::empty().insert(p@.addr as int));
+    }
+    store.put(&mut pb, src, p, perm);
+    proof {
+        assert(!(exists|x: int|
+            #[trigger] Set::<int>::empty().insert(p@.addr as int).contains(x) && x != p@.addr as int
+                && record_page(x) == q));
+        assert(src@.spans =~= s0.spans);
+        assert(pb.used().dom() =~= Set::<int>::empty());
+        assert(store.pages() =~= Set::<int>::empty());
+        assert(store.taken() =~= Set::<int>::empty());
+        pb.lemma_view(src@);
+    }
+    (pb, store, true)
 }
 
 /// A page aligned to its size is aligned to the smallest slot, and holds between one and MAP_SLOTS

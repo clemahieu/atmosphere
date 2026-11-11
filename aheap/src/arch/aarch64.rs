@@ -6,6 +6,7 @@ use vstd::prelude::*;
 
 use crate::large::LargeNode;
 use crate::page::Node;
+use crate::record::{PageHeader, Record};
 
 verus! {
 
@@ -43,6 +44,35 @@ pub proof fn lemma_large_node_layout()
     ensures
         vstd::layout::size_of::<LargeNode>() == 24,
         vstd::layout::align_of::<LargeNode>() == 8,
+{
+}
+
+/// The bytes of a record page's header: the next record page and the bitmap of its records in use.
+pub const HEADER_BYTES: usize = 16;
+
+/// The bytes of one slab's record: the slab and the links of its class's list.
+pub const RECORD_BYTES: usize = 88;
+
+/// The records one record page holds after its header.
+pub const PAGE_RECORDS: usize = 46;
+
+// A record page's header: the next record page, and one bit per record of the page in use.
+global layout PageHeader is size == 16, align == 8;
+
+// A slab's record: the slab, of a pointer, four words and a bitmap of four words, and two links.
+global layout Record is size == 88, align == 8;
+
+/// A record page's header and a record are two and eleven words, word-aligned, which the layout
+/// directives above state only to this module, and a page holds the header and PAGE_RECORDS records,
+/// no more than its header's bitmap has bits for.
+pub proof fn lemma_record_layout()
+    ensures
+        vstd::layout::size_of::<PageHeader>() == HEADER_BYTES,
+        vstd::layout::align_of::<PageHeader>() == 8,
+        vstd::layout::size_of::<Record>() == RECORD_BYTES,
+        vstd::layout::align_of::<Record>() == 8,
+        HEADER_BYTES + PAGE_RECORDS * RECORD_BYTES <= PAGE_BYTES,
+        0 < PAGE_RECORDS <= 64,
 {
 }
 
