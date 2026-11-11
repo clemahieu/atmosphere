@@ -3404,6 +3404,9 @@ impl CapKernel {
                 &&& final(self).view().holds(root, child)
                 &&& final(self).payload_of(child) == space_of(base)
                 &&& final(self).list.is_child(parent, child)
+                &&& final(self).list.parent@ == old(self).list.parent@.insert(child, parent)
+                &&& forall|i: int| #![trigger final(self).list.nodes@[i]] 0 <= i < NODE_SPACE && i != child
+                    ==> final(self).list.nodes@[i].live == old(self).list.nodes@[i].live
                 &&& final(self).spaces.roots@.contains_key(base)
                 &&& final(self).spaces.records@[base].value().kind is Device
                 &&& final(self).spaces.records@[base].value().table == fresh_root(base)
@@ -3420,6 +3423,7 @@ impl CapKernel {
                 &&& final(self).spaces.bound@ == old(self).spaces.bound@.insert(base, Set::<usize>::empty())
                 &&& forall|s: usize| #[trigger] old(self).spaces.roots@.contains_key(s) ==> final(self).spaces.roots@[s] == old(self).spaces.roots@[s]
                 &&& final(self).blocks.pages@[(base / PAGE_SZ) as int].refs == 1
+                &&& !final(self).blocks.pages@[(base / PAGE_SZ) as int].dead
                 &&& discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base, into: None })
             },
     {
@@ -3515,6 +3519,11 @@ impl CapKernel {
         self.list.derive(parent, child, NodeKind::Capability);
         proof {
             pre.tables.lemma_wf_same_pages(&pre.list, &self.list);
+            assert(mid.nodes@.len() == NODE_SPACE);
+            assert forall|i: int| #![trigger self.list.nodes@[i]] 0 <= i < NODE_SPACE && i != child
+                implies self.list.nodes@[i].live == pre.list.nodes@[i].live by {
+                assert(mid.nodes@[i].live == pre.list.nodes@[i].live);
+            }
         }
         self.tables.set_payload(
             &self.list,
