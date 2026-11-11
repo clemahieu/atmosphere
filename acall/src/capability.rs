@@ -26,6 +26,7 @@ pub fn move_cap(caller: &mut Ghost<Caller>, from: u64, to: u64) -> (out: Outcome
         final(caller)@.wf(),
         final(caller)@.root == old(caller)@.root,
         CapKernel::move_contract(old(caller)@.kernel, final(caller)@.kernel, final(caller)@.root, spec_position(from), spec_position(to), out),
+    no_unwind
 {
     let ghost pre = caller@;
     let out = step(caller, OPERATION_MOVE, from, to, 0, 0, 0, 0);
@@ -47,6 +48,7 @@ pub fn delete(caller: &mut Ghost<Caller>, at: u64) -> (out: Outcome)
         final(caller)@.wf(),
         final(caller)@.root == old(caller)@.root,
         CapKernel::delete_contract(old(caller)@.kernel, final(caller)@.kernel, final(caller)@.root, spec_position(at), out),
+    no_unwind
 {
     let ghost pre = caller@;
     let out = step(caller, OPERATION_DELETE, at, 0, 0, 0, 0, 0);
@@ -69,6 +71,7 @@ pub fn revoke(caller: &mut Ghost<Caller>, at: u64) -> (out: Outcome)
         final(caller)@.wf(),
         final(caller)@.root == old(caller)@.root,
         CapKernel::revoke_contract(old(caller)@.kernel, final(caller)@.kernel, final(caller)@.root, spec_position(at), out),
+    no_unwind
 {
     let ghost pre = caller@;
     let out = step(caller, OPERATION_REVOKE, at, 0, 0, 0, 0, 0);
