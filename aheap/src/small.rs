@@ -75,6 +75,66 @@ pub open spec fn kept(
         }
 }
 
+/// The runs `u` holds, by block, with the run of order `k` at `q` added to its block.
+pub open spec fn with_run(u: Map<int, Map<int, nat>>, q: int, k: nat) -> Map<int, Map<int, nat>> {
+    let c = span_of(q);
+    u.insert(
+        c,
+        if u.contains_key(c) {
+            u[c]
+        } else {
+            Map::<int, nat>::empty()
+        }.insert(page_of(q), k),
+    )
+}
+
+/// The page buddy went from `before` to `after`, and the source from `s` to `t`, by cutting the run
+/// of order `k` at `q`, from a held span or a new one, and backing its pages.
+pub open spec fn took_run(before: PageBuddy, after: PageBuddy, s: SourceView, t: SourceView, q: int, k: nat) -> bool {
+    let c = span_of(q);
+    let m = if before.spans().contains_key(c) {
+        s
+    } else {
+        s.reserved(c, SPAN_BLOCKS as nat).backed_run(c, meta_page(c), 1)
+    };
+    &&& cut_run(before, after, s, m, q, k)
+    &&& t == m.backed_run(after.span_base(c), q, pages(k) as nat)
+}
+
+/// The store went from `st0` to `st1`, the page buddy from `pb0` to `pb1` and the source from `s0`
+/// to `s1` by `alloc_small` making a new slab whose record is `a` and whose run is the run of order
+/// `k` at `x`: the run cut and backed, then the record taken, from a new record page cut and backed
+/// when every record was in use. The store's records gain `a`, the page buddy's runs gain the slab's
+/// run and that record page's, and the source changes by those cuts and backs alone.
+pub open spec fn new_slab(
+    st0: RecordStore,
+    st1: RecordStore,
+    pb0: PageBuddy,
+    pb1: PageBuddy,
+    s0: SourceView,
+    s1: SourceView,
+    a: int,
+    x: int,
+    k: nat,
+) -> bool {
+    &&& !st0.taken().contains(a)
+    &&& st1.taken() == st0.taken().insert(a)
+    &&& if st0.full() {
+        &&& !st0.pages().contains(record_page(a))
+        &&& st1.pages() == st0.pages().insert(record_page(a))
+        &&& runs(pb1.used()) == runs(with_run(with_run(pb0.used(), x, k), record_page(a), 0))
+    } else {
+        &&& st1.pages() == st0.pages()
+        &&& runs(pb1.used()) == runs(with_run(pb0.used(), x, k))
+    }
+    &&& exists|pbm: PageBuddy, sm: SourceView| #[trigger]
+        took_run(pb0, pbm, s0, sm, x, k) && if st0.full() {
+            took_page(pbm, pb1, sm, s1, record_page(a))
+        } else {
+            pb1 == pbm && s1 == sm
+        }
+}
+
 /// The live slots of the slabs of `m`.
 pub open spec fn live_of(m: Map<int, Slab>) -> ISet<int> {
     ISet::new(|x: int| exists|a: int| #[trigger] m.contains_key(a) && m[a].holds(x))
@@ -258,6 +318,90 @@ proof fn lemma_took_keeps_held(pb2: PageBuddy, pb3: PageBuddy, s2: SourceView, s
     };
     lemma_cut_keeps_held(pb2, pb3, s2, m, r, 0, x, j);
     lemma_backed_keeps_held(pb3, m, pb3.span_base(c), r, 1, x, j);
+}
+
+/// Cutting the run of order `k` at `q` adds it to the page buddy's runs and changes them no more.
+proof fn lemma_cut_runs(pb0: PageBuddy, pb1: PageBuddy, s0: SourceView, s1: SourceView, q: int, k: nat)
+    requires
+        pb0.wf(s0),
+        cut_run(pb0, pb1, s0, s1, q, k),
+    ensures
+        runs(pb1.used()) == runs(with_run(pb0.used(), q, k)),
+{
+    let c = span_of(q);
+    let h = page_of(q);
+    let u0 = pb0.used();
+    let u1 = pb1.used();
+    pb0.lemma_view(s0);
+    if pb0.spans().contains_key(c) {
+        assert(u1 =~= with_run(u0, q, k));
+    } else {
+        let w = with_run(u0, q, k);
+        let m = meta_page(c);
+        assert(!u0.contains_key(c));
+        assert(!u0.contains_key(m));
+        assert(m != c);
+        assert(u1 =~= w.insert(m, Map::<int, nat>::empty()));
+        assert(w[c].contains_key(h));
+        assert(runs(u1).dom() =~= runs(w).dom());
+        assert(runs(u1) =~= runs(w));
+    }
+}
+
+/// Adding one run to two maps that hold the same runs gives maps that hold the same runs.
+proof fn lemma_with_run_runs(u: Map<int, Map<int, nat>>, v: Map<int, Map<int, nat>>, q: int, k: nat)
+    requires
+        runs(u) == runs(v),
+    ensures
+        runs(with_run(u, q, k)) == runs(with_run(v, q, k)),
+{
+    let c = span_of(q);
+    let bu = if u.contains_key(c) {
+        u[c]
+    } else {
+        Map::<int, nat>::empty()
+    };
+    let bv = if v.contains_key(c) {
+        v[c]
+    } else {
+        Map::<int, nat>::empty()
+    };
+    if u.contains_key(c) && u[c].dom() != Set::<int>::empty() {
+        assert(runs(u).contains_key(c));
+        assert(runs(v).contains_key(c));
+        assert(runs(u)[c] == u[c]);
+        assert(runs(v)[c] == v[c]);
+    } else if v.contains_key(c) && v[c].dom() != Set::<int>::empty() {
+        assert(runs(v).contains_key(c));
+        assert(runs(u).contains_key(c));
+    } else {
+        assert(bu =~= Map::<int, nat>::empty());
+        assert(bv =~= Map::<int, nat>::empty());
+    }
+    assert(bu == bv);
+    let a = with_run(u, q, k);
+    let b = with_run(v, q, k);
+    assert(a[c].dom().contains(page_of(q)));
+    assert(b[c].dom().contains(page_of(q)));
+    assert forall|x: int| #[trigger] runs(a).contains_key(x) <==> runs(b).contains_key(x) by {
+        if x != c {
+            assert(runs(u).contains_key(x) == runs(v).contains_key(x));
+            assert(a.contains_key(x) == u.contains_key(x));
+            assert(b.contains_key(x) == v.contains_key(x));
+            assert(runs(u).contains_key(x) == (u.contains_key(x) && u[x].dom() != Set::<int>::empty()));
+            assert(runs(v).contains_key(x) == (v.contains_key(x) && v[x].dom() != Set::<int>::empty()));
+        } else {
+            assert(runs(a).contains_key(c));
+            assert(runs(b).contains_key(c));
+        }
+    }
+    assert forall|x: int| #[trigger] runs(a).contains_key(x) implies runs(a)[x] == runs(b)[x] by {
+        if x != c {
+            assert(runs(u).contains_key(x));
+            assert(runs(u)[x] == runs(v)[x]);
+        }
+    }
+    assert(runs(a) =~= runs(b));
 }
 
 /// One size class: its partial and full slabs and the permission to each free slot of them.
@@ -692,12 +836,31 @@ impl SizeClass {
                     &&& final(self).live() == old(self).live().insert(p@.addr as int)
                     &&& forall|y: int| #[trigger]
                         old(self).live().contains(y) ==> p@.addr + n <= y || y + n <= p@.addr
-                    &&& (exists|a: int| #[trigger]
+                    &&& if exists|a: int| #[trigger]
                         old(self).slabs().contains_key(a) && old(self).slabs()[a].free_slots()
-                            != Set::<int>::empty()) ==> {
+                            != Set::<int>::empty() {
+                        &&& final(self).slabs().dom() == old(self).slabs().dom()
                         &&& *final(store) == *old(store)
                         &&& *final(pb) == *old(pb)
                         &&& final(src)@ == old(src)@
+                    } else {
+                        exists|a: int| #[trigger]
+                            final(self).slabs().contains_key(a) && {
+                                &&& !old(self).slabs().contains_key(a)
+                                &&& final(self).slabs() == old(self).slabs().insert(a, final(self).slabs()[a])
+                                &&& final(self).slabs()[a].holds(p@.addr as int)
+                                &&& new_slab(
+                                    *old(store),
+                                    *final(store),
+                                    *old(pb),
+                                    *final(pb),
+                                    old(src)@,
+                                    final(src)@,
+                                    a,
+                                    final(self).slabs()[a].base()@.addr as int,
+                                    slab_order(old(self).class()),
+                                )
+                            }
                     }
                 },
             },
@@ -749,6 +912,7 @@ impl SizeClass {
             proof {
                 SizeClass::lemma_took_slot(o, *self, *store, *pb, src@, a, s1, p@.addr as int);
                 assert forall|y: int| #[trigger] o.live().contains(y) implies y != p@.addr as int by {}
+                assert(self.slabs().dom() =~= o.slabs().dom());
             }
             return Some((p, slot));
         }
@@ -968,6 +1132,31 @@ impl SizeClass {
             assert(slab_ok(cl, fm, s1n, a, *store, pb3, s3));
             SizeClass::lemma_added_slab(o, *self, *store, pb3, s3, a, s1n, p@.addr as int, fm);
             assert forall|y: int| #[trigger] o.live().contains(y) implies y != p@.addr as int by {}
+            // What the call changed: the slab's run cut and backed, then its record taken.
+            assert(s1n.base()@.addr == qi);
+            assert(self.slabs()[a] == s1n);
+            assert(cut_run(pb0, pb2, s0, s1, qi, kk));
+            assert(took_run(pb0, pb2, s0, s2, qi, kk));
+            lemma_cut_runs(pb0, pb1, s0, s1, qi, kk);
+            if st0.full() {
+                let r = record_page(a);
+                let cr = span_of(r);
+                let m = if pb2.spans().contains_key(cr) {
+                    s2
+                } else {
+                    s2.reserved(cr, SPAN_BLOCKS as nat).backed_run(cr, meta_page(cr), 1)
+                };
+                assert(took_page(pb2, pb3, s2, s3, r));
+                lemma_cut_runs(pb2, pb3, s2, m, r, 0);
+                lemma_with_run_runs(pb2.used(), with_run(pb0.used(), qi, kk), r, 0);
+            }
+            assert(new_slab(st0, *store, pb0, pb3, s0, s3, a, qi, kk));
+            assert(self.slabs().contains_key(a) && {
+                &&& !o.slabs().contains_key(a)
+                &&& self.slabs() == o.slabs().insert(a, self.slabs()[a])
+                &&& self.slabs()[a].holds(p@.addr as int)
+                &&& new_slab(st0, *store, pb0, *pb, s0, src@, a, self.slabs()[a].base()@.addr as int, kk)
+            });
         }
         Some((p, sperm))
     }
