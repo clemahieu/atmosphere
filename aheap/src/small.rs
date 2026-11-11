@@ -41,8 +41,10 @@
 //!   back in the store, its record page given back when no other record lies on it, and its base
 //!   leaves the heads; the page
 //!   buddy's runs and the source change by those alone (`emptied_slab`), so `new_slab` then
-//!   `emptied_slab` leaves the page buddy's runs as they were. Every other run held at a head that
-//!   is no record page stays held.
+//!   `emptied_slab` leaves the page buddy's runs as they were. Every other record stays taken and
+//!   every other run held that is no record page stays held (`kept_but`), so a second class with
+//!   neither that record (`records_apart`) nor that head keeps its invariant
+//!   (`lemma_frame_emptied`).
 use vstd::prelude::*;
 use vstd::raw_ptr::*;
 
@@ -106,6 +108,30 @@ pub open spec fn kept(
         run_held(pb, src, x, k) ==> {
             &&& run_held(pb2, src2, x, k)
             &&& store2.pages().contains(x) ==> store.pages().contains(x)
+        }
+}
+
+/// The store, the page buddy and the source's view went from `store`, `pb` and `src` to `store2`,
+/// `pb2` and `src2` keeping what a size class stands on, but for the record `a` and the run at `b`:
+/// the provenance, every other record taken, and every other run held that is no record page, none
+/// of them made one. A class that holds neither `a` nor a slab run at `b` keeps its invariant
+/// across it (`lemma_frame_emptied`), as across `free_small` retiring another class's slab.
+pub open spec fn kept_but(
+    store: RecordStore,
+    pb: PageBuddy,
+    src: SourceView,
+    store2: RecordStore,
+    pb2: PageBuddy,
+    src2: SourceView,
+    a: int,
+    b: int,
+) -> bool {
+    &&& src2.provenance == src.provenance
+    &&& forall|r: int| #[trigger] store.taken().contains(r) && r != a ==> store2.taken().contains(r)
+    &&& forall|x: int, k: nat| #[trigger]
+        run_held(pb, src, x, k) && x != b && !store.pages().contains(x) ==> {
+            &&& run_held(pb2, src2, x, k)
+            &&& !store2.pages().contains(x)
         }
 }
 
@@ -640,6 +666,68 @@ impl SizeClass {
             src2,
         ) by {
             assert(slab_ok(self.class as nat, self.perms@, m[a], a, store, pb, src));
+        }
+    }
+
+    /// A change to the store, the page buddy and the source that keeps what a class stands on but
+    /// for the record `a` and the run at `b` keeps the invariant of a class that has no slab at `a`
+    /// and no head at `b`: another class across `free_small` retiring its slab at `a`, whose run is
+    /// at `b`. `records_apart` and disjoint heads give a client the first two.
+    pub proof fn lemma_frame_emptied(
+        &self,
+        store: RecordStore,
+        pb: PageBuddy,
+        src: SourceView,
+        store2: RecordStore,
+        pb2: PageBuddy,
+        src2: SourceView,
+        a: int,
+        b: int,
+    )
+        requires
+            self.wf(store, pb, src),
+            kept_but(store, pb, src, store2, pb2, src2, a, b),
+            !self.slabs().contains_key(a),
+            !self.heads().contains(b),
+        ensures
+            self.wf(store2, pb2, src2),
+    {
+        let m = self.slabs();
+        let c = self.class as nat;
+        assert forall|r: int| #[trigger] m.contains_key(r) implies slab_ok(c, self.perms@, m[r], r, store2, pb2, src2) by {
+            assert(slab_ok(c, self.perms@, m[r], r, store, pb, src));
+            let x = m[r].base()@.addr as int;
+            assert(m.contains_key(r) && m[r].base()@.addr == x);
+            assert(self.heads().contains(x));
+            assert(run_held(pb, src, x, slab_order(c)));
+        }
+    }
+
+    /// No slab record of this class is one of `other`'s: each class holds its records'
+    /// permissions. It changes nothing.
+    pub fn records_apart(
+        &mut self,
+        other: &SizeClass,
+        Ghost(store): Ghost<RecordStore>,
+        Ghost(pb): Ghost<PageBuddy>,
+        Ghost(src): Ghost<SourceView>,
+    )
+        requires
+            old(self).wf(store, pb, src),
+            other.wf(store, pb, src),
+        ensures
+            *final(self) == *old(self),
+            old(self).slabs().dom().disjoint(other.slabs().dom()),
+    {
+        let ghost o = *self;
+        let ghost prov = src.provenance;
+        self.partial.apart(&other.partial, Ghost(prov), Ghost(prov));
+        self.partial.apart(&other.full, Ghost(prov), Ghost(prov));
+        self.full.apart(&other.partial, Ghost(prov), Ghost(prov));
+        self.full.apart(&other.full, Ghost(prov), Ghost(prov));
+        proof {
+            assert(o.slabs().dom() =~= o.partial.slabs().dom().union(o.full.slabs().dom()));
+            assert(other.slabs().dom() =~= other.partial.slabs().dom().union(other.full.slabs().dom()));
         }
     }
 
@@ -1667,9 +1755,7 @@ impl SizeClass {
                         b,
                         slab_order(old(self).class()),
                     )
-                    &&& forall|x: int, k: nat| #[trigger]
-                        run_held(*old(pb), old(src)@, x, k) && x != b && !old(store).pages().contains(x)
-                            ==> run_held(*final(pb), final(src)@, x, k)
+                    &&& kept_but(*old(store), *old(pb), old(src)@, *final(store), *final(pb), final(src)@, a, b)
                 } else {
                     &&& final(self).slabs() == old(self).slabs().insert(a, final(self).slabs()[a])
                     &&& final(self).slabs()[a].base() == old(self).slabs()[a].base()

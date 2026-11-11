@@ -1824,6 +1824,126 @@ pub fn witness_small_fits<S: SpanSource>(
     got
 }
 
+/// Two size classes of one slab order over one record store and page buddy keeping no spare:
+/// allocates a slot of the first class and one of the second; frees the first's slot, which
+/// empties its slab, so its run and record go back while the second keeps its own; and allocates
+/// of the first class again. Each step keeps both classes well formed and their heads disjoint, so
+/// at the end a live slot of one is apart from every live slot of the other; a refusal stops the
+/// sequence, and the last element says whether it ran to the end.
+pub fn witness_free_emptied_two<S: SpanSource>(src: &mut S) -> (r: (SizeClass, SizeClass, RecordStore, PageBuddy, bool))
+    requires
+        old(src)@.wf(),
+    ensures
+        r.3.wf(final(src)@),
+        r.2.wf(r.3, final(src)@),
+        r.0.wf(r.2, r.3, final(src)@),
+        r.1.wf(r.2, r.3, final(src)@),
+        r.0.class() == 0,
+        r.1.class() == 1,
+        slab_order(0) == slab_order(1),
+        r.0.heads().disjoint(r.1.heads()),
+        forall|y: int, z: int|
+            #![trigger r.0.live().contains(y), r.1.live().contains(z)]
+            r.0.live().contains(y) && r.1.live().contains(z) ==> y + class_size(r.0.class()) <= z || z
+                + class_size(r.1.class()) <= y,
+{
+    proof {
+        assert(slab_order(0) == slab_order(1)) by (compute_only);
+    }
+    let mut pb = PageBuddy::new(0);
+    let mut store = RecordStore::new();
+    let mut first = SizeClass::new(0);
+    let mut second = SizeClass::new(1);
+    let ghost st0 = store;
+    let ghost pb0 = pb;
+    let ghost s0 = src@;
+    let ghost f0 = first;
+    let ghost l0 = second;
+    proof {
+        assert(f0.heads().disjoint(l0.heads()));
+    }
+    let r1 = first.alloc_small(&mut store, &mut pb, src);
+    proof {
+        second.lemma_frame(st0, pb0, s0, store, pb, src@);
+        lemma_heads_grew(f0, first, st0, store, pb0, pb, s0, src@, r1);
+        lemma_heads_stay_apart(f0, first, l0, st0, pb0, s0);
+    }
+    let (p1, perm1) = match r1 {
+        Some(x) => x,
+        None => {
+            proof {
+                lemma_witness_apart(first, second, store, pb, src@);
+            }
+            return (first, second, store, pb, false);
+        },
+    };
+    let ghost st1 = store;
+    let ghost pb1 = pb;
+    let ghost s1 = src@;
+    let ghost f1 = first;
+    let ghost l1 = second;
+    let ghost y = p1@.addr as int;
+    let ghost a = choose|a: int| #[trigger]
+        f1.slabs().contains_key(a) && {
+            &&& !f0.slabs().contains_key(a)
+            &&& f1.slabs() == f0.slabs().insert(a, f1.slabs()[a])
+            &&& f1.slabs()[a].holds(y)
+        };
+    proof {
+        assert(!exists|b: int| #[trigger]
+            f0.slabs().contains_key(b) && f0.slabs()[b].free_slots() != Set::<int>::empty());
+        assert(f1.slabs().dom() =~= set![a]);
+    }
+    let r2 = second.alloc_small(&mut store, &mut pb, src);
+    proof {
+        first.lemma_frame(st1, pb1, s1, store, pb, src@);
+        lemma_heads_grew(l1, second, st1, store, pb1, pb, s1, src@, r2);
+        lemma_heads_stay_apart(l1, second, first, st1, pb1, s1);
+    }
+    if r2.is_none() {
+        proof {
+            lemma_witness_apart(first, second, store, pb, src@);
+        }
+        return (first, second, store, pb, false);
+    }
+    let ghost st2 = store;
+    let ghost pb2 = pb;
+    let ghost s2 = src@;
+    let ghost l2 = second;
+    proof {
+        assert(first == f1);
+        assert(first.slabs().contains_key(a) && first.slabs()[a].holds(y));
+        assert(first.slab_of(y) == a);
+        assert forall|x: int| #[trigger] f1.slabs()[a].holds(x) implies x == y by {
+            assert(live_of(f1.slabs()).contains(x));
+            assert(f0.live().contains(x) || x == y);
+        }
+        assert(only_live(f1.slabs()[a], y));
+    }
+    first.records_apart(&second, Ghost(st2), Ghost(pb2), Ghost(s2));
+    proof {
+        assert(first == f1);
+        assert(f1.heads().contains(f1.slabs()[a].base()@.addr as int));
+    }
+    first.free_small(&mut store, &mut pb, src, p1, perm1);
+    proof {
+        second.lemma_frame_emptied(st2, pb2, s2, store, pb, src@, a, f1.slabs()[a].base()@.addr as int);
+        assert(first.heads().disjoint(second.heads()));
+    }
+    let ghost st3 = store;
+    let ghost pb3 = pb;
+    let ghost s3 = src@;
+    let ghost f3 = first;
+    let r3 = first.alloc_small(&mut store, &mut pb, src);
+    proof {
+        second.lemma_frame(st3, pb3, s3, store, pb, src@);
+        lemma_heads_grew(f3, first, st3, store, pb3, pb, s3, src@, r3);
+        lemma_heads_stay_apart(f3, first, second, st3, pb3, s3);
+        lemma_witness_apart(first, second, store, pb, src@);
+    }
+    (first, second, store, pb, r3.is_some())
+}
+
 /// Two well-formed classes over one store, page buddy and source with disjoint heads have every
 /// live slot of one apart from every live slot of the other.
 proof fn lemma_witness_apart(first: SizeClass, last: SizeClass, store: RecordStore, pb: PageBuddy, src: SourceView)

@@ -127,6 +127,29 @@ impl ClassList {
         assert(self.order@.contains(self.order@[i]));
     }
 
+    /// No record is on both this list and `other`: each list holds its records' permissions, and two
+    /// permissions to one record cannot be held at once. It changes nothing.
+    pub fn apart(&mut self, other: &ClassList, Ghost(prov): Ghost<Provenance>, Ghost(prov2): Ghost<Provenance>)
+        requires
+            old(self).wf(prov),
+            other.wf(prov2),
+        ensures
+            *final(self) == *old(self),
+            old(self).slabs().dom().disjoint(other.slabs().dom()),
+    {
+        proof {
+            if exists|a: int| #[trigger] self.perms@.contains_key(a) && other.perms@.contains_key(a) {
+                let a = choose|a: int| #[trigger] self.perms@.contains_key(a) && other.perms@.contains_key(a);
+                assert(self.order@.contains(a));
+                assert(other.order@.contains(a));
+                crate::arch::lemma_record_layout();
+                let tracked mut pa = self.perms.borrow_mut().tracked_remove(a);
+                pa.is_disjoint(other.perms.borrow().tracked_borrow(a));
+                assert(false);
+            }
+        }
+    }
+
     /// An empty list, well formed with any provenance.
     pub fn new() -> (r: Self)
         ensures
