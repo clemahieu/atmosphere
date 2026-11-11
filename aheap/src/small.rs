@@ -192,6 +192,47 @@ pub open spec fn new_slab(
         }
 }
 
+/// The size class went from `o` to `n`, the store from `st0` to `st1`, the page buddy from `pb0`
+/// to `pb1` and the source from `s0` to `s1` by `alloc_small` giving the slot at `p`: from a slab
+/// of `o` with a free slot, which then holds `p` too, with the store, the page buddy and the source
+/// as they were; or, when no slab of `o` had one, from a new slab whose run no run `pb0` held
+/// starts at (`new_slab`).
+pub open spec fn slot_taken(
+    o: SizeClass,
+    n: SizeClass,
+    st0: RecordStore,
+    st1: RecordStore,
+    pb0: PageBuddy,
+    pb1: PageBuddy,
+    s0: SourceView,
+    s1: SourceView,
+    p: int,
+) -> bool {
+    if exists|a: int| #[trigger] o.slabs().contains_key(a) && o.slabs()[a].free_slots() != Set::<int>::empty() {
+        &&& exists|a: int| #[trigger]
+            o.slabs().contains_key(a) && {
+                &&& n.slabs() == o.slabs().insert(a, n.slabs()[a])
+                &&& n.slabs()[a].base() == o.slabs()[a].base()
+                &&& forall|x: int| #[trigger] n.slabs()[a].holds(x) <==> (x == p || o.slabs()[a].holds(x))
+            }
+        &&& n.slabs().dom() == o.slabs().dom()
+        &&& n.heads() == o.heads()
+        &&& st1 == st0
+        &&& pb1 == pb0
+        &&& s1 == s0
+    } else {
+        exists|a: int| #[trigger]
+            n.slabs().contains_key(a) && {
+                &&& !o.slabs().contains_key(a)
+                &&& n.slabs() == o.slabs().insert(a, n.slabs()[a])
+                &&& n.slabs()[a].holds(p)
+                &&& n.heads() == o.heads().insert(n.slabs()[a].base()@.addr as int)
+                &&& forall|y: int, j: nat| #[trigger] run_held(pb0, s0, y, j) ==> y != n.slabs()[a].base()@.addr
+                &&& new_slab(st0, st1, pb0, pb1, s0, s1, a, n.slabs()[a].base()@.addr as int, slab_order(o.class()))
+            }
+    }
+}
+
 /// Another record than `a` that the store `st` has taken lies on `a`'s record page.
 pub open spec fn page_shared(st: RecordStore, a: int) -> bool {
     exists|y: int| #[trigger] st.taken().contains(y) && y != a && record_page(y) == record_page(a)
@@ -1447,46 +1488,17 @@ impl SizeClass {
                     &&& final(self).live() == old(self).live().insert(p@.addr as int)
                     &&& forall|y: int| #[trigger]
                         old(self).live().contains(y) ==> p@.addr + n <= y || y + n <= p@.addr
-                    &&& if exists|a: int| #[trigger]
-                        old(self).slabs().contains_key(a) && old(self).slabs()[a].free_slots()
-                            != Set::<int>::empty() {
-                        &&& exists|a: int| #[trigger]
-                            old(self).slabs().contains_key(a) && {
-                                &&& final(self).slabs() == old(self).slabs().insert(a, final(self).slabs()[a])
-                                &&& final(self).slabs()[a].base() == old(self).slabs()[a].base()
-                                &&& forall|x: int| #[trigger]
-                                    final(self).slabs()[a].holds(x) <==> (x == p@.addr as int
-                                        || old(self).slabs()[a].holds(x))
-                            }
-                        &&& final(self).slabs().dom() == old(self).slabs().dom()
-                        &&& final(self).heads() == old(self).heads()
-                        &&& *final(store) == *old(store)
-                        &&& *final(pb) == *old(pb)
-                        &&& final(src)@ == old(src)@
-                    } else {
-                        exists|a: int| #[trigger]
-                            final(self).slabs().contains_key(a) && {
-                                &&& !old(self).slabs().contains_key(a)
-                                &&& final(self).slabs() == old(self).slabs().insert(a, final(self).slabs()[a])
-                                &&& final(self).slabs()[a].holds(p@.addr as int)
-                                &&& final(self).heads() == old(self).heads().insert(
-                                    final(self).slabs()[a].base()@.addr as int,
-                                )
-                                &&& forall|y: int, j: nat| #[trigger]
-                                    run_held(*old(pb), old(src)@, y, j) ==> y != final(self).slabs()[a].base()@.addr
-                                &&& new_slab(
-                                    *old(store),
-                                    *final(store),
-                                    *old(pb),
-                                    *final(pb),
-                                    old(src)@,
-                                    final(src)@,
-                                    a,
-                                    final(self).slabs()[a].base()@.addr as int,
-                                    slab_order(old(self).class()),
-                                )
-                            }
-                    }
+                    &&& slot_taken(
+                        *old(self),
+                        *final(self),
+                        *old(store),
+                        *final(store),
+                        *old(pb),
+                        *final(pb),
+                        old(src)@,
+                        final(src)@,
+                        p@.addr as int,
+                    )
                 },
             },
     {

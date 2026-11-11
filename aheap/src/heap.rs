@@ -143,7 +143,8 @@ pub open spec fn records_grew(o: SizeClass, n: SizeClass, store: RecordStore) ->
 /// slabs had a free slot and the source refused one request in the call (`slab_refused`), which
 /// leaves every class as it was. Every other class and the large objects are as they were either
 /// way. The slot is aligned to `align` and apart from every slot, buddy-run object and large object
-/// live before.
+/// live before, and the class, the store, the page buddy and the source changed as `alloc_small`
+/// says (`slot_taken`).
 pub open spec fn slot_alloc(
     h0: Heap,
     h1: Heap,
@@ -176,6 +177,7 @@ pub open spec fn slot_alloc(
             &&& !h0.live().contains(p@.addr as int)
             &&& h1.live() == h0.live().insert(p@.addr as int)
             &&& h1.classes()[c].live() == h0.classes()[c].live().insert(p@.addr as int)
+            &&& slot_taken(h0.classes()[c], h1.classes()[c], h0.store(), h1.store(), h0.pb(), h1.pb(), s0, s1, p@.addr as int)
             &&& forall|i: int, y: int|
                 0 <= i < CLASSES && #[trigger] h0.classes()[i].live().contains(y) ==> p@.addr + n <= y || y
                     + class_size(i as nat) <= p@.addr
@@ -599,6 +601,35 @@ impl Heap {
         &&& forall|x: int| #[trigger] self.parts@.contains_key(x) ==> self.part_ok(src, x)
         &&& self.large.wf(src)
         &&& forall|b: int| #[trigger] self.large.objects().contains_key(b) ==> !self.pb.spans().contains_key(b)
+    }
+
+    /// The invariant's parts a caller follows a sequence by: the page buddy and the store well
+    /// formed over `src`, class `i` the `i`-th class and well formed over them, no two classes sharing
+    /// a head or a record, and each buddy-run object a run the page buddy holds, of the smallest
+    /// order holding its pages, with only those pages backed.
+    pub proof fn lemma_parts(&self, src: SourceView)
+        requires
+            self.wf(src),
+        ensures
+            self.classes().len() == CLASSES,
+            self.pb().wf(src),
+            self.store().wf(self.pb(), src),
+            forall|i: int| 0 <= i < CLASSES ==> (#[trigger] self.classes()[i]).class() == i,
+            forall|i: int| 0 <= i < CLASSES ==> (#[trigger] self.classes()[i]).wf(self.store(), self.pb(), src),
+            forall|i: int, j: int|
+                0 <= i < CLASSES && 0 <= j < CLASSES && i != j ==> #[trigger] apart(self.classes()[i], self.classes()[j]),
+            forall|x: int| #[trigger]
+                self.parts().contains_key(x) ==> run_part(self.pb(), src, x, run_order(self.parts()[x]), self.parts()[x]),
+    {
+        assert forall|x: int| #[trigger] self.parts().contains_key(x) implies run_part(
+            self.pb(),
+            src,
+            x,
+            run_order(self.parts()[x]),
+            self.parts()[x],
+        ) by {
+            assert(self.part_ok(src, x));
+        }
     }
 
     /// A change to the page buddy and the source that keeps the provenance, every span the page
