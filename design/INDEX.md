@@ -2,7 +2,7 @@
 
 # Design decisions
 
-34 records: 34 active, 0 superseded.
+35 records: 35 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -37,6 +37,9 @@ in `revisit if` what would make it worth reopening.
 - **[flush-without-waiting](./flush-without-waiting/DECISION.md)** (2026-11-10): A ghost per-core TLB model holds possibly stale translations keyed by space and core; unmap bumps a flush epoch, sends IPIs to exactly the cores that loaded the space and returns again; each core's handler flushes every context and records its acknowledgement on its own kernel entry; an IOMMU's invalidate waits for its completion inside the glue, since an IOMMU is not a core; retype requires every core's and present IOMMU's acknowledgement to have reached the epoch, a token only flush glue can produce.
   - *confidence:* The no-wait rule is forced by the lock, see reasoning; the epoch comparison and model are in kernel/verified/capability/kernel.rs and kernel/src/flush.rs, with the flush itself counted glue.
   - *revisit if:* The hardware gains a broadcast invalidation the kernel can rely on (this host reports no INVLPGB), a flush that returns again is measured as the cost that dominates unmap, or an IOMMU's completion wait is measured as the longest step under the lock.
+- **[heap-size-classes](./heap-size-classes/DECISION.md)** (2026-11-11): aheap has CLASSES size classes: the first eight multiples of 16 bytes, then four classes an even step apart in each doubling up to the page (28 with a 4 KiB page); a class's slab is a run of the smallest order whose tail after the last slot is at most an eighth of it, as long as the run holds no more slots than a slab's bitmap has bits for.
+  - *confidence:* The facts a slab needs are proven per class in aheap/src/class.rs (lemma_class, by computation over every class); the spacing and the eighth are a judgement, taken in the correctness phase without a workload to measure.
+  - *revisit if:* A measured workload's internal fragmentation or slab count points at another spacing, a target's page is not 4 KiB (CLASSES and the slab bitmap follow the page, and lemma_class stops verifying until CLASSES is set for it), or the heap's front needs an alignment above 16 bytes from a class that is not a power of two.
 - **[ipc-with-reply-object](./ipc-with-reply-object/DECISION.md)** (2026-11-06): Endpoints rendezvous with queues over the intrusive list, so there is no fixed thread bound; a reply is a retyped object named at receive and used once; a blocked receiver's reply and destination slot are stored as indices and resolved through the root pointer at the match; a match skips dead waiters a fixed number per entry.
   - *confidence:* Rendezvous and the explicit reply follow from the CPU-time decision's constraints; resolving at the match is the answer to a memory-safety finding and is a stated invariant.
   - *revisit if:* Scheduling contexts are added, which is what the explicit reply object keeps possible; or a workload needs asynchronous messages with payload, which notifications do not carry.
@@ -124,7 +127,7 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `device`: device-binding-under-the-space-capability
 - `gate`: cut-over-on-a-branch, land-without-regating, license-stated-in-every-source-file, no-gate-for-what-no-step-reads
 - `glue`: machine-glue-below-the-kernel
-- `heap`: page-buddy-metadata-in-the-span
+- `heap`: heap-size-classes, page-buddy-metadata-in-the-span
 - `interrupt`: machine-glue-below-the-kernel
 - `iommu`: device-binding-under-the-space-capability, machine-glue-below-the-kernel
 - `ipc`: fan-in-over-private-rings, ipc-with-reply-object, latest-value-by-three-slot-exchange, syscall-abi-in-registers
@@ -133,7 +136,7 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `license`: license-stated-in-every-source-file
 - `lifetime`: sharing-by-derive, teardown-driven-by-retype
 - `lock`: flush-without-waiting, multicore-kernel-shape, one-lock-bounded-steps
-- `memory`: address-spaces-as-objects, capability-names-a-block, flush-without-waiting, page-buddy-metadata-in-the-span, syscall-abi-in-registers, teardown-driven-by-retype, test-guest-memory, untyped-memory
+- `memory`: address-spaces-as-objects, capability-names-a-block, flush-without-waiting, heap-size-classes, page-buddy-metadata-in-the-span, syscall-abi-in-registers, teardown-driven-by-retype, test-guest-memory, untyped-memory
 - `multicore`: flush-without-waiting, multicore-kernel-shape, one-kernel-instance, one-lock-bounded-steps
 - `network`: network-stack-proven-at-tier-1
 - `pagetable`: arch-module
@@ -151,5 +154,5 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `test`: test-guest-memory
 - `thread`: process-holds-capabilities, thread-bound-at-retype
 - `tiers`: divider-proven-by-invariant, network-stack-proven-at-tier-1, trust-boundary
-- `verified`: arch-module, cut-over-on-a-branch, device-binding-under-the-space-capability, fan-in-over-private-rings, flush-without-waiting, latest-value-by-three-slot-exchange, network-stack-proven-at-tier-1, one-lock-bounded-steps, page-buddy-metadata-in-the-span, revoke-by-depth-first-list, theorem-over-reach, thread-bound-at-retype
+- `verified`: arch-module, cut-over-on-a-branch, device-binding-under-the-space-capability, fan-in-over-private-rings, flush-without-waiting, heap-size-classes, latest-value-by-three-slot-exchange, network-stack-proven-at-tier-1, one-lock-bounded-steps, page-buddy-metadata-in-the-span, revoke-by-depth-first-list, theorem-over-reach, thread-bound-at-retype
 - `virtualization`: vmm-over-svm

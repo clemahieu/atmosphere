@@ -47,6 +47,10 @@ pub proof fn lemma_large_node_layout()
 {
 }
 
+/// The size classes the heap's slabs are cut into: eight multiples of the smallest slot, then four
+/// for each doubling of the slot size up to the page; lemma_class shows the last is the page.
+pub const CLASSES: usize = 28;
+
 /// The bytes of a record page's header: the next record page and the bitmap of its records in use.
 pub const HEADER_BYTES: usize = 16;
 

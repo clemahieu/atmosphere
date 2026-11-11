@@ -35,6 +35,9 @@
 //! keeping their free slots in one map, and allocates a slot of the second slab and then of the
 //! first, whose ownership of the map the frame lemma carries across the second slab's operations.
 //!
+//! The size classes' witness names the class of one byte and of a page: the first class, of
+//! SLOT_MIN, and the last, of the page, each with a slab order whose run holds at least one slot.
+//!
 //! The large-object map's witness, over any well-formed source, allocates an object of one byte
 //! more than a block, writes a byte of it and reads it again, frees it, and ends with the map empty
 //! and the source's view the one it started with. A refusal stops the sequence, and the map refuses
@@ -59,6 +62,7 @@ use vstd::raw_ptr::*;
 
 use crate::arch::*;
 use crate::buddy::*;
+use crate::class::*;
 use crate::large::*;
 use crate::page::*;
 use crate::record::{RecordStore, back_refused, record_page};
@@ -1125,6 +1129,31 @@ pub fn witness_large<S: SpanSource>(src: &mut S) -> (r: (LargeMap, bool))
     assert(src@.spans =~= start.spans);
     assert(map.objects() =~= Map::<int, nat>::empty());
     (map, true)
+}
+
+/// The class of one byte and of a page: the first class and the last, with the order of each one's
+/// slabs' runs, each run holding at least one slot of its class.
+pub fn witness_classes() -> (r: (usize, usize, usize, usize))
+    ensures
+        r.0 == 0,
+        class_size(r.0 as nat) == SLOT_MIN,
+        r.1 == CLASSES - 1,
+        class_size(r.1 as nat) == PAGE_BYTES,
+        r.2 as nat == slab_order(r.0 as nat),
+        r.3 as nat == slab_order(r.1 as nat),
+        SLOT_MIN <= run_bytes(r.2 as nat),
+        PAGE_BYTES <= run_bytes(r.3 as nat),
+{
+    let small = class_of(1);
+    let large = class_of(PAGE_BYTES);
+    proof {
+        lemma_class(0);
+        lemma_class(large as nat);
+        if large + 1 < CLASSES {
+            lemma_class((large + 1) as nat);
+        }
+    }
+    (small, large, order(small), order(large))
 }
 
 /// Over one source, cuts a run of order 0 from a page buddy keeping no spare, allocates an object of
