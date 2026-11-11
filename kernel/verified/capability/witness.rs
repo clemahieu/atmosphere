@@ -1766,11 +1766,6 @@ impl CapKernel {
                 lemma_no_core_listed(d as u32);
                 assert(!r7.loaded(d, base));
             }
-            assert forall|d: int| 0 <= d < NUM_CPUS && #[trigger] l7.loaded(d, base) implies l7.core_settled(d) by {
-                if d != 0 {
-                    assert(!l7.loaded(d, base));
-                }
-            }
             assert(l7.list == r7.list && l7.tables == r7.tables && l7.blocks == r7.blocks);
             assert(l7.processes == r7.processes);
             assert(l7.can_retype_under(process, ROOT_UNTYPED_SLOT, base, PROCESS_ORDER));
