@@ -721,8 +721,8 @@ const dayName = time => { const when = new Date(time * 1000); return `${when.get
 function ledgerDays() {
   const found = new Map();
   for (let back = TOKEN_DAYS - 1; back >= 0; back--) found.set(dayName(data.now - back * DAY), Object.fromEntries(SPENDERS.map(([kind]) => [kind, [0, 0, 0, 0, 0]])));
-  for (const [day, kind, counts] of data.tokens.days) {
-    const row = found.get(day);
+  for (const [time, kind, counts] of data.tokens.hours) {
+    const row = found.get(dayName(time));
     if (!row) continue;
     const key = SPENDERS.some(([name]) => name === kind) ? kind : "other";
     row[key] = row[key].map((value, index) => value + counts[index]);

@@ -15,7 +15,8 @@ clock are the ones its status line wrote (tools/round-status.py), read from the 
 The tokens are the token ledger's (tools/token-ledger.py), which the server harvests every
 HARVEST seconds in a thread of its own, so a page never waits on a harvest. An issue's tokens are
 its own and those of every issue below it; the root epic's are every call's, since calls that name
-no issue the tree has are its own.
+no issue the tree has are its own. The page has each of the last HOURLY seconds' hours by who spent
+its tokens, and each day before them.
 
 Beads is private, so the server listens on this machine alone unless --bind says otherwise.
 
@@ -35,7 +36,7 @@ import unittest
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -47,6 +48,9 @@ PAGE = Path(__file__).with_suffix(".html")
 CLOSED_SHOWN = 10
 TEXT_SHOWN = 240
 HARVEST = 60
+# How far back the page has the tokens by the hour. It draws at most 30 periods over any stretch of
+# time, so whatever it draws from further back than 31 days is in periods of a day or more.
+HOURLY = 31 * 86400
 LEDGER = Path("logs") / "token-ledger.sqlite"
 
 
@@ -271,9 +275,9 @@ def progress(issues, spent={}):
     return sorted(rows, key=lambda row: order(row["id"]))
 
 
-def summary(issues, ready, seen, running, root, now, own={}, days=()):
+def summary(issues, ready, seen, running, root, now, own={}, hours=()):
     """What the page draws, from every issue, the ready ones in bd's order, the sessions' clocks and the
-    token ledger: each issue's own tokens and each day's by agent kind."""
+    token ledger: each issue's own tokens and each hour's by agent kind."""
     by_id = {issue["id"]: issue for issue in issues}
     spent = tokens(issues, own)
     roots = [issue["id"] for issue in issues if not issue.get("parent") and issue["id"] in spent]
@@ -296,7 +300,7 @@ def summary(issues, ready, seen, running, root, now, own={}, days=()):
         "ready": [brief(issue, by_id) for issue in ready if issue["issue_type"] != "epic"],
         "graph": graph(issues, ready),
         "epics": progress(issues, spent),
-        "tokens": {"roots": [{**brief(by_id[name], by_id), "tokens": spent[name]} for name in sorted(roots, key=order)], "days": list(days)},
+        "tokens": {"roots": [{**brief(by_id[name], by_id), "tokens": spent[name]} for name in sorted(roots, key=order)], "hours": list(hours)},
         "closed": [
             {
                 **brief(issue, by_id),
@@ -314,8 +318,8 @@ def read(root, now):
     """Every issue of the tree at this project root, each issue's own tokens, and their summary as it is now."""
     bd = lambda *arguments: json.loads(subprocess.run(["bd", *arguments, "--json", "--limit", "0"], cwd=root, check=True, capture_output=True, text=True).stdout)
     issues = bd("list", "--all")
-    own, days = token_ledger().spent(root / LEDGER)
-    return issues, own, summary(issues, bd("ready"), clocks(round_status().state_dir(root)), alive, root, now, own, days)
+    own, hours = token_ledger().spent(root / LEDGER, now - HOURLY)
+    return issues, own, summary(issues, bd("ready"), clocks(round_status().state_dir(root)), alive, root, now, own, hours)
 
 
 class Beads:
@@ -635,10 +639,10 @@ class Tests(unittest.TestCase):
         self.assertEqual([row["id"] for row in found["ready"]], ["a.10.1"])
         self.assertEqual([row["id"] for row in found["epics"]], ["a.1", "a.2", "a.10"])
         self.assertEqual(found["graph"], graph(issues, [by_id["a.3"], by_id["a.10.1"], by_id["a"]]))
-        self.assertEqual(found["tokens"], {"roots": [], "days": []})
-        days = [["2026-11-10", "round", [1, 10, 100, 5, 1]]]
-        spent = summary(issues, [], seen, alive, self.root, 0, {"a.1.2": [1, 10, 100, 5, 1], "a.1.3": [2, 0, 0, 0, 1]}, days)
-        self.assertEqual(spent["tokens"], {"roots": [{**brief(by_id["a"], by_id), "tokens": [3, 10, 100, 5, 2]}], "days": days})
+        self.assertEqual(found["tokens"], {"roots": [], "hours": []})
+        hours = [[seconds("2026-11-10T12:00:00Z"), "round", [1, 10, 100, 5, 1]]]
+        spent = summary(issues, [], seen, alive, self.root, 0, {"a.1.2": [1, 10, 100, 5, 1], "a.1.3": [2, 0, 0, 0, 1]}, hours)
+        self.assertEqual(spent["tokens"], {"roots": [{**brief(by_id["a"], by_id), "tokens": [3, 10, 100, 5, 2]}], "hours": hours})
         self.assertEqual(([row["tokens"] for row in spent["flights"]], spent["epics"][0]["tokens"], spent["closed"][0]["tokens"]),
                          ([[1, 10, 100, 5, 1]], [3, 10, 100, 5, 2], [2, 0, 0, 0, 1]))
         # What closed last comes first, with the start of its reason.
@@ -696,7 +700,7 @@ class Tests(unittest.TestCase):
             self.assertEqual(json.load(reply), detail(self.tree(), "a.1.2"))
         self.assertEqual(self.refused(f"{address}/issue/a.99"), (404, "no such issue\n"))
         self.assertEqual(self.refused(f"{address}/issue/"), (404, "no such issue\n"))
-        self.assertEqual(found["tokens"], {"roots": [], "days": []})
+        self.assertEqual(found["tokens"], {"roots": [], "hours": []})
         self.assertEqual((self.root / "calls").read_text(), "list --all --json --limit 0\nready --json --limit 0\n")
 
     def test_the_server_reads_the_tokens_out_of_the_ledger(self):
@@ -704,17 +708,21 @@ class Tests(unittest.TestCase):
         projects = self.root / "projects"
         sessions = projects / (str(self.root).replace("/", "-").replace(".", "-").replace("_", "-") + "-main")
         sessions.mkdir(parents=True)
-        call = {"type": "assistant", "requestId": "req_1", "timestamp": "2026-11-10T12:00:00Z", "message": {"model": "m", "content": [
+        # One call long ago and one this hour.
+        hour = int(time.time()) // 3600 * 3600
+        call = {"type": "assistant", "requestId": "req_1", "timestamp": "2020-01-05T12:30:00Z", "message": {"model": "m", "content": [
             {"type": "tool_use", "id": "t", "name": "Bash", "input": {"command": "bd update gone-1 --claim"}}],
             "usage": {"input_tokens": 1, "cache_creation_input_tokens": 10, "cache_read_input_tokens": 100, "output_tokens": 5}}}
-        later = {**call, "requestId": "req_2", "message": {**call["message"], "content": []}}
+        later = {**call, "requestId": "req_2", "timestamp": datetime.fromtimestamp(hour, timezone.utc).isoformat(), "message": {**call["message"], "content": []}}
         (sessions / "s.jsonl").write_text(json.dumps(call) + "\n" + json.dumps(later) + "\n")
         token_ledger().harvest(self.root / LEDGER, projects, self.root)
         address = self.serve(f'case "$1" in list) cat {self.root}/list.json;; ready) echo [];; esac')
         with urllib.request.urlopen(f"{address}/data") as reply:
             found = json.load(reply)
         self.assertEqual([(row["id"], row["tokens"]) for row in found["tokens"]["roots"]], [("a", [2, 20, 200, 10, 2])])
-        self.assertEqual(found["tokens"]["days"][0][1:], ["session", [2, 20, 200, 10, 2]])
+        # An hour older than the page draws by the hour comes as its local day.
+        day = int(datetime.fromtimestamp(seconds("2020-01-05T12:00:00Z")).replace(hour=0, minute=0).timestamp())
+        self.assertEqual(found["tokens"]["hours"], [[day, "session", [1, 10, 100, 5, 1]], [hour, "session", [1, 10, 100, 5, 1]]])
         # The issue the session claimed is not in the tree, so its call is the root's own, as the one before the claim is.
         with urllib.request.urlopen(f"{address}/issue/a") as reply:
             self.assertEqual(json.load(reply)["own_tokens"], [2, 20, 200, 10, 2])

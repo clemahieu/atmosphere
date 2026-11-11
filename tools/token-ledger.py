@@ -10,8 +10,8 @@ an agent (`claude -p --agent round`, as tools/loop.py runs each round, prover an
 that agent: its transcript's first line names it (`"type":"agent-setting"`). Every API call is an
 assistant line carrying its request id and its usage. A harvest reads each transcript from where
 the last one stopped, whole lines only, into a SQLite ledger: one row per request id, so a call
-written on several lines counts once, and a total per issue, agent kind, model and local day, kept
-as calls arrive, so what the page asks for stays small however long the history grows.
+written on several lines counts once, and a total per issue, agent kind, model and hour, kept as
+calls arrive, so what the page asks for stays small however long the history grows.
 
 A call goes to the issue its transcript was working:
 - a round agent's or a session's, from the moment it claims one (`bd ready --claim`, whose reply
@@ -34,7 +34,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 KINDS = ("input", "cache_write", "cache_read", "output")
@@ -51,12 +51,12 @@ SESSION = "session"
 
 SCHEMA = """
 create table if not exists files (path text primary key, id integer unique, offset integer, state text);
-create table if not exists calls (request text primary key, file integer, issue text, kind text, model text, day text,
+create table if not exists calls (request text primary key, file integer, issue text, kind text, model text, hour integer,
     input integer, cache_write integer, cache_read integer, output integer);
 create index if not exists calls_file on calls (file, issue);
-create table if not exists totals (issue text, kind text, model text, day text,
+create table if not exists totals (issue text, kind text, model text, hour integer,
     input integer, cache_write integer, cache_read integer, output integer, calls integer,
-    primary key (issue, kind, model, day));
+    primary key (issue, kind, model, hour));
 """
 
 
@@ -98,31 +98,23 @@ def connect(ledger):
     return db
 
 
-class Day:
-    """The local day of a UTC timestamp, remembered by the hour, since a harvest asks for few hours many times."""
-
-    def __init__(self):
-        self.hours = {}
-
-    def __call__(self, stamp):
-        hour = stamp[:13]
-        if hour not in self.hours:
-            self.hours[hour] = datetime.fromisoformat(hour + ":00:00+00:00").astimezone().date().isoformat()
-        return self.hours[hour]
+def hour_of(stamp):
+    """The hour a UTC timestamp is in, as the seconds from the epoch to its start."""
+    return int(datetime.fromisoformat(stamp[:13] + ":00:00+00:00").timestamp())
 
 
-def add(db, issue, kind, model, day, counts, calls):
+def add(db, issue, kind, model, hour, counts, calls):
     db.execute(
         "insert into totals values (?, ?, ?, ?, ?, ?, ?, ?, ?) on conflict do update set "
         "input = input + excluded.input, cache_write = cache_write + excluded.cache_write, "
         "cache_read = cache_read + excluded.cache_read, output = output + excluded.output, calls = calls + excluded.calls",
-        (issue, kind, model, day, *counts, calls),
+        (issue, kind, model, hour, *counts, calls),
     )
     if calls < 0:
-        db.execute("delete from totals where issue = ? and kind = ? and model = ? and day = ? and calls = 0", (issue, kind, model, day))
+        db.execute("delete from totals where issue = ? and kind = ? and model = ? and hour = ? and calls = 0", (issue, kind, model, hour))
 
 
-def record(db, file, state, kind, line, day):
+def record(db, file, state, kind, line):
     """Count the call an assistant line carries, under the issue the transcript is working now."""
     request = line.get("requestId")
     usage = line["message"].get("usage")
@@ -130,9 +122,9 @@ def record(db, file, state, kind, line, day):
         return
     counts = [usage.get(field) or 0 for field in USAGE]
     model = line["message"].get("model") or ""
-    old = db.execute("select input, cache_write, cache_read, output, issue, kind, model, day from calls where request = ?", (request,)).fetchone()
+    old = db.execute("select input, cache_write, cache_read, output, issue, kind, model, hour from calls where request = ?", (request,)).fetchone()
     if old is None:
-        when = day(line["timestamp"])
+        when = hour_of(line["timestamp"])
         db.execute("insert into calls values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (request, file, state["issue"], kind, model, when, *counts))
         add(db, state["issue"], kind, model, when, counts, 1)
         return
@@ -149,8 +141,8 @@ def record(db, file, state, kind, line, day):
 def claim(db, file, state, kind, issue):
     """The transcript works that issue from now; a round's calls so far, made before any claim, go to it too."""
     if kind == "round" and not state["claimed"]:
-        for row in db.execute("select kind, model, day, sum(input), sum(cache_write), sum(cache_read), sum(output), count(*) from calls "
-                              "where file = ? and issue = '' group by kind, model, day", (file,)).fetchall():
+        for row in db.execute("select kind, model, hour, sum(input), sum(cache_write), sum(cache_read), sum(output), count(*) from calls "
+                              "where file = ? and issue = '' group by kind, model, hour", (file,)).fetchall():
             add(db, "", *row[:3], [-count for count in row[3:7]], -row[7])
             add(db, issue, *row[:3], row[3:7], row[7])
         db.execute("update calls set issue = ? where file = ? and issue = ''", (issue, file))
@@ -171,12 +163,12 @@ def text(content):
     return ""
 
 
-def follow(db, file, state, kind, raw, day):
+def follow(db, file, state, kind, raw):
     """One whole line of a transcript: count its call, then see whether it moves the transcript to another issue."""
     if b'"requestId"' in raw and b'"usage"' in raw:
         line = json.loads(raw)
         if line.get("type") == "assistant":
-            record(db, file, state, kind, line, day)
+            record(db, file, state, kind, line)
     if kind in NAMED_BY_PROMPT and not state["prompted"] and b'"type":"user"' in raw:
         line = json.loads(raw)
         state["prompted"] = True
@@ -208,7 +200,7 @@ def follow(db, file, state, kind, raw, day):
                     claim(db, file, state, kind, found.group(1))
 
 
-def read(db, path, kind, day):
+def read(db, path, kind):
     """Take in what was appended to that transcript since the last harvest; the number of lines taken."""
     size = path.stat().st_size
     db.execute("begin immediate")
@@ -231,7 +223,7 @@ def read(db, path, kind, day):
             for raw in data[:whole].split(b"\n")[:-1]:
                 if raw.strip():
                     try:
-                        follow(db, file, state, kind, raw, day)
+                        follow(db, file, state, kind, raw)
                     except (ValueError, KeyError, TypeError, AttributeError):
                         pass  # a line of a shape this does not know carries nothing it counts
                     taken += 1
@@ -248,14 +240,13 @@ def harvest(ledger, projects, root):
     """Bring the ledger up to date with every transcript of this project; the number of new lines read."""
     db = connect(ledger)
     try:
-        day = Day()
         known = dict(db.execute("select path, offset from files").fetchall())
         taken = 0
         for directory in directories(projects, root):
             for path, kind in transcripts(directory):
                 try:
                     if path.stat().st_size != known.get(str(path)):
-                        taken += read(db, path, kind, day)
+                        taken += read(db, path, kind)
                 except FileNotFoundError:
                     pass  # removed by Claude Code's retention between the listing and the read
         return taken
@@ -263,17 +254,21 @@ def harvest(ledger, projects, root):
         db.close()
 
 
-def spent(ledger):
-    """What the ledger holds, as the page draws it: each issue's tokens by kind ('' for none), and each day's tokens by agent kind."""
+def spent(ledger, since=0):
+    """What the ledger holds, as the page draws it: each issue's tokens by kind ('' for none), and each
+    hour's tokens by agent kind, as the hour's start, the kind and the counts. The hours that start
+    before `since` are summed into their local days, each standing at its day's start, so the
+    reply grows by a row a day and kind for what is older, not by twenty-four."""
     if not ledger.exists():
         return {}, []
     db = connect(ledger)
     try:
         issues = {row[0]: list(row[1:]) for row in db.execute(
             "select issue, sum(input), sum(cache_write), sum(cache_read), sum(output), sum(calls) from totals group by issue")}
-        days = [[row[0], row[1], list(row[2:])] for row in db.execute(
-            "select day, kind, sum(input), sum(cache_write), sum(cache_read), sum(output), sum(calls) from totals group by day, kind order by day, kind")]
-        return issues, days
+        hours = [[row[0], row[1], list(row[2:])] for row in db.execute(
+            "select case when hour < ? then cast(strftime('%s', hour, 'unixepoch', 'localtime', 'start of day', 'utc') as integer) else hour end as start, "
+            "kind, sum(input), sum(cache_write), sum(cache_read), sum(output), sum(calls) from totals group by start, kind order by start, kind", (since,))]
+        return issues, hours
     finally:
         db.close()
 
@@ -284,10 +279,10 @@ def main(arguments):
     parser.add_argument("--ledger", type=Path, default=root / "logs" / "token-ledger.sqlite")
     options = parser.parse_args(arguments)
     taken = harvest(options.ledger, Path.home() / ".claude" / "projects", root)
-    issues, days = spent(options.ledger)
+    issues, hours = spent(options.ledger)
     print(f"read {taken} new lines; {len(issues)} issues")
     totals = {}
-    for _, kind, counts in days:
+    for _, kind, counts in hours:
         totals[kind] = [a + b for a, b in zip(totals.get(kind, [0] * 5), counts)]
     for kind, counts in sorted(totals.items()):
         print(kind, " ".join(f"{name} {count}" for name, count in zip(KINDS + ("calls",), counts)))
@@ -416,12 +411,33 @@ class Tests(unittest.TestCase):
         path.unlink()
         self.assertEqual(self.issues(), {"": [1, 10, 100, 5, 1]})
 
-    def test_a_day_is_the_local_day_of_its_calls_by_agent_kind(self):
-        self.write(self.sessions / "s1.jsonl", [self.call(stamp="2026-11-10T12:00:00Z"), self.call(stamp="2026-11-11T12:00:00Z")])
+    def test_an_hour_is_the_hour_of_its_calls_by_agent_kind(self):
+        self.write(self.sessions / "s1.jsonl", [self.call(stamp="2026-11-10T12:05:00Z"), self.call(stamp="2026-11-10T12:55:00.123Z"),
+                                               self.call(stamp="2026-11-10T13:00:00Z")])
         self.agent("round", [self.call(stamp="2026-11-10T12:30:00Z")])
         harvest(self.ledger, self.projects, self.root)
+        noon = int(datetime(2026, 11, 10, 12, tzinfo=timezone.utc).timestamp())
         self.assertEqual(spent(self.ledger)[1], [
-            ["2026-11-10", "round", [1, 10, 100, 5, 1]], ["2026-11-10", "session", [1, 10, 100, 5, 1]], ["2026-11-11", "session", [1, 10, 100, 5, 1]]])
+            [noon, "round", [1, 10, 100, 5, 1]], [noon, "session", [2, 20, 200, 10, 2]], [noon + 3600, "session", [1, 10, 100, 5, 1]]])
+
+    def test_the_hours_before_a_time_are_summed_into_their_local_days(self):
+        stamps = ["2026-11-09T03:10:00Z", "2026-11-09T04:10:00Z", "2026-11-10T20:00:00Z", "2026-11-11T12:00:00Z"]
+        self.write(self.sessions / "s1.jsonl", [self.call(stamp=stamp) for stamp in stamps])
+        harvest(self.ledger, self.projects, self.root)
+        hours = [int(datetime.fromisoformat(stamp[:13] + ":00:00+00:00").timestamp()) for stamp in stamps]
+        midnight = lambda hour: int(datetime.fromtimestamp(hour).replace(hour=0, minute=0).timestamp())
+        folded = {}
+        for hour in hours[:3]:
+            folded[midnight(hour)] = folded.get(midnight(hour), 0) + 1
+        self.assertEqual(spent(self.ledger, hours[3])[1],
+                         [[day, "session", [calls, 10 * calls, 100 * calls, 5 * calls, calls]] for day, calls in sorted(folded.items())]
+                         + [[hours[3], "session", [1, 10, 100, 5, 1]]])
+
+    def test_a_round_claim_moves_each_hours_calls_made_before_it(self):
+        self.agent("round", [self.call(stamp="2026-11-10T12:59:00Z"), self.call(stamp="2026-11-10T13:01:00Z"),
+                             self.bash("bd update atmo-1.2 --claim")])
+        self.assertEqual(self.issues(), {"atmo-1.2": [3, 30, 300, 15, 3]})
+        self.assertEqual([counts for _, _, counts in spent(self.ledger)[1]], [[2, 20, 200, 10, 2], [1, 10, 100, 5, 1]])
 
     def test_a_ledger_not_yet_harvested_holds_nothing(self):
         self.assertEqual(spent(self.ledger), ({}, []))
