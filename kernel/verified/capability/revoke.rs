@@ -547,7 +547,7 @@ impl CapKernel {
 
     /// The state after the leaf r of c's run has its arm unlinked and its node removed: well formed,
     /// with r's capability and its mapping gone and every other capability as it was.
-    proof fn lemma_revoke_step_wf(pre: Self, mid: Self, post: Self, root: usize, c: usize, r: usize)
+    pub proof fn lemma_revoke_step_wf(pre: Self, mid: Self, post: Self, root: usize, c: usize, r: usize)
         requires
             pre.wf(),
             mid.tables.roots@.dom() == pre.tables.roots@.dom(),

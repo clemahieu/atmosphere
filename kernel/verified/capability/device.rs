@@ -20,6 +20,8 @@ use crate::capability::list::*;
 use crate::capability::mapping::*;
 use crate::capability::reach::*;
 use crate::capability::refs::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::revoke::UNLINK_ARM_STEPS;
 use crate::capability::steps::Steps;
 #[cfg(verus_keep_ghost)]
 use crate::capability::space::*;
@@ -1908,6 +1910,178 @@ impl CapKernel {
                 assert(q == root);
             }
             Self::lemma_binding_added_discharges(pre, post, root, m, x, o, s);
+        }
+        true
+    }
+
+    /// The refusals of unbind through the device's capability: index i of the table at root must hold a
+    /// device capability whose device is bound, and the flush epoch must be below its limit, since the
+    /// unbind records the space's root stale at a new epoch. The index comes from user space. See
+    /// design/device-binding-under-the-space-capability/.
+    pub open spec fn can_unbind_device(&self, root: usize, i: usize) -> bool {
+        let n = self.tables.node_of(root, i);
+        &&& self.tables.has_slot(&self.list, root, i)
+        &&& self.is_cap(n)
+        &&& self.payload_of(n).kind is Device
+        &&& self.devices.records@[device_of(self.payload_of(n).base)].space is Some
+        &&& self.flush_epoch < usize::MAX
+    }
+
+    /// Unbinds the device whose capability index i of the table at root holds, the way revoking its
+    /// space capability would: revoke's arm undoes the binding and the binding node, a leaf, is unlinked.
+    /// The caller names no capability another holds and removes none, and reach only shrinks, by the
+    /// device's binding. The device is not bound again until its IOMMU acknowledges an invalidate started
+    /// at or past this unbind, since a rebind repeats its IOid. Clearing the IOMMU's device table entry is
+    /// the glue's, on success. See design/device-binding-under-the-space-capability/.
+    pub fn unbind_device_at(&mut self, root: usize, i: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
+        ensures
+            final(self).wf(),
+            final(steps).count <= old(steps).count + UNLINK_ARM_STEPS,
+            ret == old(self).can_unbind_device(root, i),
+            !ret ==> *final(self) == *old(self),
+            ret ==> {
+                let o = old(self).payload_of(old(self).tables.node_of(root, i)).base;
+                let d = device_of(o);
+                let x = binding_node(&old(self).devices, d);
+                &&& Self::device_unbound(*old(self), *final(self), x)
+                &&& !final(self).list.nodes@[x as int].live
+                &&& forall|y: int| #![trigger final(self).list.nodes@[y]] 0 <= y < NODE_SPACE && y != x ==> {
+                    &&& final(self).list.nodes@[y].live == old(self).list.nodes@[y].live
+                    &&& final(self).list.nodes@[y].kind == old(self).list.nodes@[y].kind
+                }
+                &&& final(self).list.parent == old(self).list.parent
+                &&& final(self).tables == old(self).tables
+                &&& final(self).table_pages == old(self).table_pages
+                &&& final(self).mappings == old(self).mappings
+                &&& final(self).threads == old(self).threads
+                &&& final(self).processes == old(self).processes
+                &&& final(self).holders == old(self).holders
+                &&& final(self).iommus == old(self).iommus
+                &&& final(self).cores == old(self).cores
+                &&& final(self).view().binds == old(self).view().binds.remove(o)
+                &&& forall|q: usize, a: usize, b: usize|
+                    device_of(final(self).payload_of(final(self).tables.node_of(q, a)).base) == d
+                    ==> !#[trigger] final(self).can_bind_device(q, a, b)
+            },
+            discharges(old(self).view(), final(self).view(), root, Effect::Local),
+    {
+        let ghost pre = *old(self);
+        proof {
+            pre.lemma_no_op_discharges(root);
+        }
+        let (n, device) = match self.tables.lookup(&self.list, root, i) {
+            Some(found) => found,
+            None => { return false; },
+        };
+        let node = self.list.get(n);
+        let live_device = match node.kind {
+            NodeKind::Capability => node.live,
+            _ => false,
+        };
+        if !live_device {
+            return false;
+        }
+        proof {
+            pre.lemma_slot(root, i);
+            assert(pre.tables.is_cap(&pre.list, n));
+            assert(device == pre.payload_of(n));
+        }
+        let is_device = match device.kind {
+            CapKind::Device => true,
+            _ => false,
+        };
+        if !is_device {
+            return false;
+        }
+        proof {
+            reveal(devices_wf);
+            assert(pre.devices.wf());
+            assert(pre.devices.names(device.base));
+        }
+        let d = (device.base - DEVICE_OBJECTS) / PAGE_SZ;
+        proof {
+            assert(d as int == device_of(device.base));
+            assert(d < pre.devices.count);
+        }
+        let record = *self.devices.records.get(d);
+        match record.space {
+            Some(_) => {},
+            None => { return false; },
+        }
+        if self.flush_epoch == usize::MAX {
+            return false;
+        }
+        let ghost x = binding_node(&pre.devices, d as int);
+        let ghost m = pre.list.parent@[x];
+        let ghost s = record.space->Some_0;
+        proof {
+            pre.lemma_binding_node_apart(d as int);
+            pre.list.lemma_seq_fits();
+            reveal(device_bindings_wf);
+            assert(pre.list.nodes@[x as int].live && pre.list.nodes@[x as int].kind is DeviceBinding);
+            assert(device_binding_parent(&pre.list, &pre.tables, x, s));
+            // Only a capability has children, so the binding node is a leaf.
+            if !pre.list.childless(x) {
+                pre.list.lemma_next_is_child(x);
+                let c = pre.list.nodes@[x as int].next;
+                lemma_has(pre.list.seq@, c);
+                assert(pre.list.nodes@[pre.list.parent@[c] as int].kind is Capability);
+                assert(false);
+            }
+            // It is one below its parent, the space capability.
+            lemma_has(pre.list.seq@, x);
+            let k = choose|k: int| 0 <= k < pre.list.seq@.len() && pre.list.seq@[k] == x;
+            assert(k != 0);
+            assert(pre.list.d(x) == pre.list.d(m) + 1);
+            assert(pre.list.anc(x, 1) == pre.list.anc(m, 0));
+        }
+        let x = self.devices.page + 1 + d;
+        self.unlink_arm(x, Tracked(steps));
+        let ghost mid = *self;
+        self.list.remove_leaf(x);
+        proof {
+            let post = *self;
+            let owner = pre.tables.owner@[page_of(m)].0;
+            Self::lemma_revoke_step_wf(pre, mid, post, owner, m, x);
+            assert(Self::device_unbound(pre, post, x));
+            // Every capability is as it was: the binding node was none.
+            assert(Self::caps_frame(pre, post, x, x));
+            assert forall|y: usize| #[trigger] pre.is_cap(y) implies post.is_cap(y) by {
+                Self::lemma_caps_frame(pre, post, x, x, y);
+            }
+            let o = device.base;
+            lemma_device_object(d as int);
+            let (pv, sv) = (post.view(), pre.view());
+            // The binds lose o and nothing else.
+            assert forall|y: ObjectId| #[trigger] pv.binds.contains_key(y) == sv.binds.remove(o).contains_key(y) by {
+                if y != o && pre.devices.names(y) {
+                    assert((y - DEVICE_OBJECTS) % (PAGE_SZ as int) == 0);
+                    assert((o - DEVICE_OBJECTS) % (PAGE_SZ as int) == 0);
+                    assert(device_of(y) != d as int);
+                }
+            }
+            assert forall|y: ObjectId| #[trigger] pv.binds.contains_key(y) implies pv.binds[y] == sv.binds.remove(o)[y] by {
+                assert((y - DEVICE_OBJECTS) % (PAGE_SZ as int) == 0);
+                assert((o - DEVICE_OBJECTS) % (PAGE_SZ as int) == 0);
+                assert(device_of(y) != d as int);
+            }
+            assert(pv.binds =~= sv.binds.remove(o));
+            // So the step is local: post's authority is all in pre.
+            assert(pv.shares == sv.shares);
+            let live = |z: NodeId| true;
+            let f = |z: NodeId| z;
+            assert(simulates(pv, sv, live, f));
+            assert forall|z: NodeId| #[trigger] sv.names.contains_key(z) implies pv.names.contains_key(z) by {
+                assert(pre.is_cap(z));
+            }
+            lemma_simulated_discharges_local(sv, pv, root, live, f);
+            // The device's last unbind is past its IOMMU's acknowledgement, so no bind of it is allowed.
+            assert(pre.iommu_acked(record.iommu as int) <= pre.flush_epoch);
+            assert(post.devices.records@[d as int].unbound == post.flush_epoch);
         }
         true
     }
