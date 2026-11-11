@@ -2,7 +2,7 @@
 
 # Design decisions
 
-35 records: 35 active, 0 superseded.
+36 records: 36 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -115,6 +115,9 @@ in `revisit if` what would make it worth reopening.
 - **[vmm-over-svm](./vmm-over-svm/DECISION.md)** (2026-11-09): A guest touches only what its nested table maps and what its intercept maps let through. The VMM is an ordinary process; VMRUN needs CPL 0, so the kernel runs it on the VMM's thread, owns the VMCB, and rewrites every control field from the validated request on each run. A nested table is an address space kind for revocation.
   - *confidence:* A design note against AMD APM volume 2 chapter 15 and the host's reported SVM features; no code yet. The run path's register facts (what VMRUN does and does not save) are from the manual.
   - *revisit if:* The VMM must run on a core the kernel cannot kick, a guest needs AVIC or SEV before those kernel-owned structures are designed, or a guest must span kernel instances.
+- **[who-vouches-for-an-unproven-claim](./who-vouches-for-an-unproven-claim/DECISION.md)** (2026-11-11): A hardware guarantee is a plain Rust function outside verus!, marked external, holding only the instruction or register access, with an assume_specification beside it in the arch module that cites the manual section it restates; a user-side system call is the same form naming the kernel-side item whose proof vouches for it; every external_body left in a verified crate is debt that nothing outside the proof vouches for.
+  - *confidence:* The mechanism was tried on flush_every_context on both targets: it verifies with the same counts as external_body, and dropping one conjunct of the assumed specification fails Kernel::acknowledge, so callers rest on it. That a citation is the right warrant for a hardware claim is judgement.
+  - *revisit if:* Verus drops or changes assume_specification so that it no longer binds a spec to an external function with tracked arguments, or a hardware guarantee needs a body that is more than one instruction sequence and a wait on the device, which is when the line between the leaf and the verified code above it has to be drawn again.
 
 ## By tag
 
@@ -122,6 +125,7 @@ A view of the lists above. Nothing is reachable only through a tag.
 
 - `abi`: arch-module, one-kernel-instance, syscall-abi-in-registers
 - `address-space`: address-spaces-as-objects, vmm-over-svm
+- `arch`: who-vouches-for-an-unproven-claim
 - `boot`: machine-glue-below-the-kernel, root-process-at-boot, test-guest-memory
 - `capability`: address-spaces-as-objects, capability-names-a-block, cpu-time-as-capability, device-binding-under-the-space-capability, divider-proven-by-invariant, ipc-with-reply-object, process-holds-capabilities, revoke-by-depth-first-list, root-process-at-boot, schedulers-over-core-partitions, sharing-by-derive, teardown-driven-by-retype, theorem-over-reach, thread-bound-at-retype, untyped-memory, vmm-over-svm
 - `device`: device-binding-under-the-space-capability
@@ -143,7 +147,7 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `parsing`: network-stack-proven-at-tier-1
 - `portability`: arch-module, machine-glue-below-the-kernel, syscall-abi-in-registers
 - `process`: cut-over-on-a-branch, land-without-regating, license-stated-in-every-source-file, no-gate-for-what-no-step-reads, process-holds-capabilities, thread-bound-at-retype
-- `proof`: divider-proven-by-invariant, isolation-claim, theorem-over-reach, thread-bound-at-retype, trust-boundary
+- `proof`: divider-proven-by-invariant, isolation-claim, theorem-over-reach, thread-bound-at-retype, trust-boundary, who-vouches-for-an-unproven-claim
 - `purity`: untyped-memory
 - `reach`: device-binding-under-the-space-capability
 - `real-time`: schedulers-over-core-partitions
@@ -154,5 +158,6 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `test`: test-guest-memory
 - `thread`: process-holds-capabilities, thread-bound-at-retype
 - `tiers`: divider-proven-by-invariant, network-stack-proven-at-tier-1, trust-boundary
-- `verified`: arch-module, cut-over-on-a-branch, device-binding-under-the-space-capability, fan-in-over-private-rings, flush-without-waiting, heap-size-classes, latest-value-by-three-slot-exchange, network-stack-proven-at-tier-1, one-lock-bounded-steps, page-buddy-metadata-in-the-span, revoke-by-depth-first-list, theorem-over-reach, thread-bound-at-retype
+- `trusted-base`: who-vouches-for-an-unproven-claim
+- `verified`: arch-module, cut-over-on-a-branch, device-binding-under-the-space-capability, fan-in-over-private-rings, flush-without-waiting, heap-size-classes, latest-value-by-three-slot-exchange, network-stack-proven-at-tier-1, one-lock-bounded-steps, page-buddy-metadata-in-the-span, revoke-by-depth-first-list, theorem-over-reach, thread-bound-at-retype, who-vouches-for-an-unproven-claim
 - `virtualization`: vmm-over-svm
