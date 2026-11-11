@@ -78,6 +78,12 @@
 //! emptying free's witness allocates one slot of the first class and frees it, which empties its
 //! slab, and ends with no live slot and no head, the slab's base gone from the heads.
 //!
+//! The refusal witness takes a size class over a page buddy that has a free block of the class's
+//! slab order and a record store with a free record, and allocates a slot: a refusal then is the
+//! source's refusal of the back of the slab's run, never the reserve of a run span or the back of a
+//! page, since alloc_small asks for a span only when no held span has a free block of the order it
+//! needs, and for a record page only when the store is full.
+//!
 //! The heap's witness gives one source to a page buddy and a large-object map: it cuts a run, then
 //! allocates an object, frees the run, then the object, and ends with both holding nothing and the
 //! source's view the one it started with, the requests for the run's span and the object's granted.
@@ -1776,6 +1782,46 @@ pub fn witness_free_emptied<S: SpanSource>(src: &mut S) -> (r: (SizeClass, Recor
         assert(first.heads() =~= ISet::<int>::empty());
     }
     (first, store, pb, true)
+}
+
+/// A size class over a page buddy with a free block of its slab order and a record store with a free
+/// record allocates a slot; returns whether it got one. A refusal is the source's refusal of the back
+/// of the slab's run, of its pages(k) pages: no run span was asked for, and no record page.
+pub fn witness_small_fits<S: SpanSource>(
+    c: &mut SizeClass,
+    store: &mut RecordStore,
+    pb: &mut PageBuddy,
+    src: &mut S,
+) -> (got: bool)
+    requires
+        old(pb).wf(old(src)@),
+        old(store).wf(*old(pb), old(src)@),
+        old(c).wf(*old(store), *old(pb), old(src)@),
+        old(pb).fits(slab_order(old(c).class())),
+        !old(store).full(),
+    ensures
+        final(c).wf(*final(store), *final(pb), final(src)@),
+        !got ==> match final(src)@.refusals.last().request {
+            Request::Back { pages: n, .. } => n == pages(slab_order(old(c).class())) as nat,
+            Request::Reserve { .. } => false,
+        },
+{
+    let ghost st0 = *store;
+    let ghost pb0 = *pb;
+    let ghost s0 = src@;
+    let ghost k = slab_order(c.class());
+    let got = c.alloc_small(store, pb, src).is_some();
+    proof {
+        if !got {
+            let r = src@.refusals.last();
+            assert(slab_refused(st0, pb0, s0, src@, k));
+            assert(pb0.fits(k));
+            let (mid, s, q) = choose|mid: PageBuddy, s: SourceView, q: int| #[trigger]
+                cut_run(pb0, mid, s0, s, q, k) && run_refused(st0, mid, s, r, q, k);
+            assert(run_refused(st0, mid, s, r, q, k));
+        }
+    }
+    got
 }
 
 /// Two well-formed classes over one store, page buddy and source with disjoint heads have every

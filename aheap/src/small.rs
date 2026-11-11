@@ -26,7 +26,10 @@
 //!   With no such slab it cuts a run of the slab order, backs it, makes it a slab and takes a
 //!   record for it from the store, last, so a refusal gives back only the run. It refuses exactly
 //!   when no slab has a free slot and the source refused, in this call, one request
-//!   (`slab_refused`); then the class, the store's records and the page buddy's runs are as they
+//!   (`slab_refused`): for the slab's run, a run span only when no held span had a free block of
+//!   the slab order, then the back of the run; for its record, only when the store was full, a run
+//!   span only when no held span had a free page once the slab's run was cut, or the back of the
+//!   record page (`run_refused`); then the class, the store's records and the page buddy's runs are as they
 //!   were. Otherwise it returns a slot of the class's size, aligned to SLOT_MIN, with the
 //!   permission to its bytes, apart from every slot live before. Either way it keeps what every
 //!   class over the same store, page buddy and source stands on (`kept`).
@@ -57,14 +60,32 @@ verus! {
 broadcast use {group_raw_ptr_axioms, vstd::set_lib::range_set_properties};
 
 /// `after` is `before` with one refusal recorded, of a request `alloc_small` makes for a new slab
-/// whose run is of order `k`: the reserve of a run span, the back of one page (a span's metadata
-/// page or a record page), or the back of the slab's run.
-pub open spec fn slab_refused(before: SourceView, after: SourceView, k: nat) -> bool {
+/// whose run is of order `k`, from the record store `store` and the page buddy `pb`: for the slab's
+/// run, the reserve of a run span or the back of its metadata page, only when `pb` had no free block
+/// of order `k`; or a request made after `pb` cut that run (`run_refused`).
+pub open spec fn slab_refused(store: RecordStore, pb: PageBuddy, before: SourceView, after: SourceView, k: nat) -> bool {
+    let r = after.refusals.last();
     &&& after.provenance == before.provenance
-    &&& after.refusals == before.refusals.push(after.refusals.last())
-    &&& match after.refusals.last().request {
-        Request::Reserve { blocks } => blocks == SPAN_BLOCKS,
-        Request::Back { pages: n, .. } => n == 1 || n == pages(k),
+    &&& after.refusals == before.refusals.push(r)
+    &&& {
+        ||| !pb.fits(k) && span_refusal(before, r)
+        ||| exists|mid: PageBuddy, s: SourceView, q: int| #[trigger]
+            cut_run(pb, mid, before, s, q, k) && run_refused(store, mid, s, r, q, k)
+    }
+}
+
+/// The refusal `r` is of a request `alloc_small` makes once the page buddy, then `pb`, has cut the
+/// slab's run of order `k` at `q` and the source's view is `s`: the back of the run's pages, while
+/// the source held the spans `s` holds; or, only when the store `store` was full, a request for a
+/// record page once the run was backed: the reserve of a run span or the back of its metadata page,
+/// only when `pb` had no free block of order 0, or the back of one page.
+pub open spec fn run_refused(store: RecordStore, pb: PageBuddy, s: SourceView, r: Refusal, q: int, k: nat) -> bool {
+    let b = pb.span_base(span_of(q));
+    ||| r.request == (Request::Back { span: b, start: q, pages: pages(k) as nat }) && r.spans == s.spans
+    ||| store.full() && !pb.fits(0) && span_refusal(s.backed_run(b, q, pages(k) as nat), r)
+    ||| store.full() && match r.request {
+        Request::Back { pages: n, .. } => n == 1,
+        Request::Reserve { .. } => false,
     }
 }
 
@@ -1206,7 +1227,9 @@ impl SizeClass {
     /// A slot of the class's size: from the first slab with a free one, which keeps its base, changing
     /// no other slab, nor the store, the page buddy or the source; or, when no slab has one, from a new slab, whose run is cut
     /// and backed and whose record is taken from the store. Refuses only when no slab has a free
-    /// slot and the source refused one request in this call, and then gives back what the call took.
+    /// slot and the source refused one request in this call, a run span only when no held span had a
+    /// free block of the order asked and a record page only when the store was full, and then gives
+    /// back what the call took.
     /// Either way it keeps what every class over the same three stands on.
     #[verifier::spinoff_prover]
     pub fn alloc_small<S: SpanSource>(&mut self, store: &mut RecordStore, pb: &mut PageBuddy, src: &mut S) -> (r:
@@ -1233,7 +1256,7 @@ impl SizeClass {
                     &&& runs(final(pb).used()) == runs(old(pb).used())
                     &&& forall|x: int, k: nat| #[trigger]
                         run_held(*old(pb), old(src)@, x, k) ==> run_held(*final(pb), final(src)@, x, k)
-                    &&& slab_refused(old(src)@, final(src)@, slab_order(old(self).class()))
+                    &&& slab_refused(*old(store), *old(pb), old(src)@, final(src)@, slab_order(old(self).class()))
                 },
                 Some((p, perm)) => {
                     let n = class_size(old(self).class());
@@ -1372,6 +1395,7 @@ impl SizeClass {
                     store.lemma_frame(pb0, s0, pb1, s1);
                     o.lemma_frame(st0, pb0, s0, st0, pb1, s1);
                     assert(runs(pb1.used()) == runs(pb0.used()));
+                    assert(slab_refused(st0, pb0, s0, s1, kk));
                 }
                 return None;
             },
@@ -1411,7 +1435,9 @@ impl SizeClass {
                     store.lemma_frame(pb0, s0, pb3, s3);
                     o.lemma_frame(st0, pb0, s0, st0, pb3, s3);
                     assert(s3.refusals == s0.refusals.push(s2.refusals.last()));
-                    assert(slab_refused(s0, s3, kk));
+                    assert(cut_run(pb0, pb1, s0, s1, qi, kk));
+                    assert(run_refused(st0, pb1, s1, s3.refusals.last(), qi, kk));
+                    assert(slab_refused(st0, pb0, s0, s3, kk));
                 }
                 return None;
             },
@@ -1472,7 +1498,12 @@ impl SizeClass {
                     store.lemma_frame(pb3, s3, pb5, s5);
                     o.lemma_frame(st0, pb0, s0, *store, pb5, s5);
                     assert(s5.refusals == s3.refusals);
-                    assert(slab_refused(s0, s5, kk));
+                    assert(pb2.spans() == pb1.spans());
+                    assert(pb2.fits(0) == pb1.fits(0));
+                    assert(s2 == s1.backed_run(pb1.span_base(c), qi, pages(kk) as nat));
+                    assert(cut_run(pb0, pb1, s0, s1, qi, kk));
+                    assert(run_refused(st0, pb1, s1, s3.refusals.last(), qi, kk));
+                    assert(slab_refused(st0, pb0, s0, s5, kk));
                 }
                 return None;
             },

@@ -17,7 +17,8 @@
 //! - `take(pb, src)` returns an unused record of a page that has one, changing neither the page
 //!   buddy nor the source. When every page is full it cuts a new page, backs it and returns the
 //!   page's first record (`took_page`). It refuses exactly when every page is full and either the
-//!   page buddy refused the run (`span_refused`) or the source refused to back it (`back_refused`);
+//!   page buddy refused the run, which it does only when no held span has a free page
+//!   (`span_refused`), or the source refused to back it (`back_refused`);
 //!   then it frees the run again, so the page buddy holds the runs it held (`runs`), and each run
 //!   its caller held stays allocated with every page backed (`run_held`).
 //! - `put(pb, src, p, perm)` takes back the record at `p` with the permission to its bytes and
@@ -1147,7 +1148,8 @@ impl RecordStore {
     /// Returns an unused record of a record page that has one, changing neither the page buddy nor
     /// the source; when every record is in use, cuts a run of order 0, backs it, makes it a record
     /// page and returns its first record. Refuses only when every record is in use and the page
-    /// buddy refused the run or the source refused to back it, and then frees the run again.
+    /// buddy, with no free page in a held span, refused the run, or the source refused to back it,
+    /// and then frees the run again.
     pub fn take<S: SpanSource>(&mut self, pb: &mut PageBuddy, src: &mut S) -> (r: Option<
         (*mut Record, Tracked<PointsTo<Record>>),
     >)
@@ -1172,7 +1174,7 @@ impl RecordStore {
                     &&& runs(final(pb).used()) == runs(old(pb).used())
                     &&& forall|x: int, k: nat| #[trigger]
                         run_held(*old(pb), old(src)@, x, k) ==> run_held(*final(pb), final(src)@, x, k)
-                    &&& span_refused(old(src)@, final(src)@) || back_refused(old(src)@, final(src)@)
+                    &&& span_refused(old(src)@, final(src)@) && !old(pb).fits(0) || back_refused(old(src)@, final(src)@)
                 },
                 Some((p, perm)) => {
                     let a = p@.addr as int;
