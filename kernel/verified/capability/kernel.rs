@@ -799,7 +799,7 @@ impl StaleEpochs {
     }
 
     /// This run of pages, at most a 2M region's, was unmapped at this epoch. A page above an
-    /// acknowledgement older than the epoch stays above it.
+    /// acknowledgement older than the epoch stays above it, and a page outside the run keeps its word.
     pub fn record_run(&mut self, first: usize, count: usize, epoch: usize, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).wf(),
@@ -810,6 +810,8 @@ impl StaleEpochs {
             final(self).wf(),
             forall|g: usize| first <= g < first + count ==> #[trigger] final(self).written(epoch, g),
             forall|a: int, g: usize| a < epoch && g < NUM_PAGES && old(self).above(a, g) ==> #[trigger] final(self).above(a, g),
+            forall|g: int| 0 <= g < NUM_PAGES && !(first <= g < first + count)
+                ==> #[trigger] final(self).pages@[g] == old(self).pages@[g],
     {
         let mut k = 0;
         let ghost start = steps.count;
@@ -822,6 +824,7 @@ impl StaleEpochs {
                 first + count <= NUM_PAGES,
                 forall|g: usize| first <= g < first + k ==> #[trigger] self.written(epoch, g),
                 forall|a: int, g: usize| a < epoch && g < NUM_PAGES && old(self).above(a, g) ==> #[trigger] self.above(a, g),
+                forall|g: int| 0 <= g < NUM_PAGES && !(first <= g < first + count) ==> #[trigger] self.pages@[g] == old(self).pages@[g],
             decreases count - k,
         {
             let ghost mid = *self;

@@ -3512,7 +3512,8 @@ impl CapKernel {
     /// What cutting children of the dead table at `base` keeps: only tables, the record of each cut and the
     /// TLBs changed. A table page's cuts leave every walk finding what it did, since no walk reaches it, and
     /// a root's end its walks through the entries they cut and leave every other walk. Each entry that
-    /// stopped naming a child is empty and its child is cut.
+    /// stopped naming a child is empty and its child is cut. A page's stale word changes only if it is
+    /// a cut child's page, so the table's own page keeps its word.
     pub open spec fn table_cuts_kept(pre: Self, post: Self, base: usize) -> bool {
         let a = tree_of(&pre.table_pages, &pre.spaces);
         let b = tree_of(&post.table_pages, &post.spaces);
@@ -3551,6 +3552,11 @@ impl CapKernel {
             == if cut_through(a, b, base, base, p) { None } else { walk(a, base, p) }
         &&& Self::mappings_shrunk(pre, post)
         &&& forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && #[trigger] pre.core_may_hold(c, e) ==> post.core_may_hold(c, e)
+        &&& forall|g: int| #![trigger post.stale_epoch.pages@[g]]
+            0 <= g < NUM_PAGES && post.stale_epoch.pages@[g] != pre.stale_epoch.pages@[g]
+            ==> exists|e: usize| #[trigger] a.names_child(base, e) && !b.names_child(base, e) && g == child_at(a, base, e) / PAGE_SZ
+        &&& base / PAGE_SZ < NUM_PAGES
+            ==> post.stale_epoch.pages@[(base / PAGE_SZ) as int] == pre.stale_epoch.pages@[(base / PAGE_SZ) as int]
     }
 
     /// Such cuts share no more: they take walks away, make no space a device space and leave every
@@ -3791,6 +3797,40 @@ impl CapKernel {
         }
         assert forall|d: int, h: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] pre.core_may_hold(d, h) implies post.core_may_hold(d, h) by {
             assert(mid.core_may_hold(d, h));
+        }
+        assert(Self::cut_stale_noted(mid, post, c));
+        assert(child_at(a, base, e) == c) by {
+            assert(m.entry(base, e) == a.entry(base, e));
+        }
+        assert(a.names_child(base, e) && !b.names_child(base, e));
+        assert forall|g: int| #![trigger post.stale_epoch.pages@[g]]
+            0 <= g < NUM_PAGES && post.stale_epoch.pages@[g] != pre.stale_epoch.pages@[g]
+            implies exists|i: usize| #[trigger] a.names_child(base, i) && !b.names_child(base, i) && g == child_at(a, base, i) / PAGE_SZ by {
+            if mid.stale_epoch.pages@[g] != pre.stale_epoch.pages@[g] {
+                let i = choose|i: usize| #[trigger] a.names_child(base, i) && !m.names_child(base, i) && g == child_at(a, base, i) / PAGE_SZ;
+                if b.names_child(base, i) {
+                    assert(b.child_slot(base, i) == m.child_slot(base, i));
+                    assert(i != e);
+                    assert(b.entry(base, i) == m.entry(base, i));
+                }
+                assert(!b.names_child(base, i));
+            } else {
+                assert(g == (c / PAGE_SZ) as int);
+                assert(a.names_child(base, e) && !b.names_child(base, e) && g == child_at(a, base, e) / PAGE_SZ);
+            }
+        }
+        if base / PAGE_SZ < NUM_PAGES {
+            assert(base % TABLE_PAGE_BYTES == 0) by {
+                if pre.table_pages.maps@.contains_key(base) {
+                    assert(table_page_wf(&pre.list, &pre.table_pages, &pre.blocks, base));
+                } else {
+                    assert(pre.spaces.roots@.contains_key(base));
+                    assert(space_wf(&pre.list, &pre.spaces, &pre.blocks, base));
+                }
+            }
+            assert(c % TABLE_PAGE_BYTES == 0);
+            assert(base % TABLE_PAGE_BYTES == 0 && c % TABLE_PAGE_BYTES == 0 && base != c ==> base / PAGE_SZ != c / PAGE_SZ) by (bit_vector);
+            assert(post.stale_epoch.pages@[(base / PAGE_SZ) as int] == mid.stale_epoch.pages@[(base / PAGE_SZ) as int]);
         }
         assert forall|i: usize| #[trigger] child_entries(b, base).contains(i) == child_entries(m, base).remove(e).contains(i) by {
             lemma_child_entries(b, base, i);

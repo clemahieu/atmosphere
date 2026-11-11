@@ -1926,7 +1926,7 @@ impl CapKernel {
     /// page, so that page does not count as acknowledged, and what the cut leaves is in the TLB of every
     /// core that loaded the space and, for a device space, of every IOMMU, where only a flush takes it out.
     /// What the walks lost keeps its mapping nodes, so it stays mapped, and its words are written when
-    /// those unlink.
+    /// those unlink. Every other page keeps its word.
     pub open spec fn cut_stale_noted(pre: Self, post: Self, t: usize) -> bool {
         let tree = tree_of(&pre.table_pages, &pre.spaces);
         let pages = cut_pages(tree, t);
@@ -1948,6 +1948,8 @@ impl CapKernel {
         &&& post.mapped == pre.mapped
         &&& forall|a: int, g: usize| a < post.flush_epoch && pre.blocks.tracks(g as int) && pre.stale_epoch.above(a, g)
             ==> #[trigger] post.stale_epoch.above(a, g)
+        &&& forall|g: int| 0 <= g < NUM_PAGES && g != (t / PAGE_SZ) as int
+            ==> #[trigger] post.stale_epoch.pages@[g] == pre.stale_epoch.pages@[g]
     }
 
     /// A detach with its record, and nothing else changed by it.
