@@ -1355,10 +1355,19 @@ class ForgeryTests(unittest.TestCase):
               "pub fn sk_empty() -> (r: Tracked<crate::arch::TlbModel>) ensures boot_tlb(r@) {\n"
               "    let t: SkTlb = Default::default();\n    t.sk_take()\n}\n}\n")
 
+    SK_REG = ("verus! {\n#[derive(Default)]\npub struct SkReg { t: Option<Tracked<crate::arch::BaseRegister>> }\n"
+              "impl SkReg {\n    #[verifier::type_invariant]\n"
+              "    spec fn sk_inv(self) -> bool { &&& self.t is Some &&& self.t->0@.core() == 0 &&& self.t->0@.tag() == KERNEL_TAG }\n"
+              "    pub fn sk_take(self) -> (r: Tracked<crate::arch::BaseRegister>) ensures r@.core() == 0 {\n"
+              "        proof { use_type_invariant(&self); }\n        let SkReg { t } = self;\n        t.unwrap()\n    }\n}\n"
+              "pub fn sk_forge() -> (r: Tracked<crate::arch::BaseRegister>) ensures r@.core() == 0 {\n"
+              "    let reg: SkReg = Default::default();\n    reg.sk_take()\n}\n}\n")
+
     def test_a_derive_verus_marks_external_and_that_builds_a_value_is_refused_inside_verus(self):
         forms = {
             "a derived Default on a type with an invariant (a)": self.SK_BOX,
             "a derived Default whose invariant says the model is empty (b)": self.SK_TLB,
+            "a derived Default that forges core 0's register token (c)": self.SK_REG,
             "Hash": "verus! {\n#[derive(Clone, Hash)]\npub struct SkTok { x: u8 }\n}\n",
             "Ord": "verus! {\n#[derive(PartialEq, Eq, Ord)]\npub struct SkTok { x: u8 }\n}\n",
             "PartialOrd": "verus! {\n#[derive(PartialEq, PartialOrd)]\npub struct SkTok { x: u8 }\n}\n",
@@ -1372,6 +1381,7 @@ class ForgeryTests(unittest.TestCase):
                                                      "    fn default() -> Self { SkTok {} }\n}\n}\n"),
             "a raw derive (a)": self.SK_BOX.replace("#[derive(Default)]", "#[r#derive(Default)]"),
             "a raw derive (b)": self.SK_TLB.replace("#[derive(Default)]", "#[r#derive(Default)]"),
+            "a raw derive (c)": self.SK_REG.replace("#[derive(Default)]", "#[r#derive(Default)]"),
             "a raw derive inside cfg_attr": "verus! {\n#[cfg_attr(all(), r#derive(Default))]\npub struct SkTok {}\n}\n",
             "a raw cfg_attr": "verus! {\n#[r#cfg_attr(all(), derive(Default))]\npub struct SkTok {}\n}\n",
             "a raw derive by its path": "verus! {\n#[::core::prelude::v1::r#derive(Default)]\npub struct SkTok {}\n}\n",
