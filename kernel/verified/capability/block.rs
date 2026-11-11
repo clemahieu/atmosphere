@@ -1400,6 +1400,7 @@ impl BlockTable {
             final(self).wf(),
             final(self).pages@ == old(self).pages@,
             !final(self).regions_2m@[r as int].typed,
+            final(self).large_free(Large::Two, r as int),
             final(self).regions_2m@ == old(self).regions_2m@.update(r as int, final(self).regions_2m@[r as int]),
             final(self).regions_1g@ == old(self).regions_1g@,
     {
@@ -1476,6 +1477,14 @@ impl BlockTable {
             assert forall|j: int| me.tracks(j)
                 implies Self::same_block(#[trigger] pre.pages@[j], me.pages@[j]) by {}
             Self::lemma_blocks_wf_same(pre, me);
+            assert forall|i: int| r * PAGES_PER_2M <= i < (r + 1) * PAGES_PER_2M implies {
+                &&& #[trigger] me.pages@[i].kind is Free
+                &&& !me.covered(i)
+            } by {
+                assert(region_2m(i) == r);
+                assert(region_1g(i) == r1);
+                pre.lemma_zero_2m_is_free(r as int, i);
+            }
         }
     }
 
@@ -1495,6 +1504,7 @@ impl BlockTable {
             final(self).wf(),
             final(self).pages@ == old(self).pages@,
             !final(self).regions_1g@[r as int].typed,
+            final(self).large_free(Large::One, r as int),
             final(self).regions_1g@ == old(self).regions_1g@.update(r as int, final(self).regions_1g@[r as int]),
             final(self).regions_2m@ == old(self).regions_2m@,
     {
@@ -1548,6 +1558,13 @@ impl BlockTable {
             assert forall|j: int| me.tracks(j)
                 implies Self::same_block(#[trigger] pre.pages@[j], me.pages@[j]) by {}
             Self::lemma_blocks_wf_same(pre, me);
+            assert forall|i: int| r * PAGES_PER_1G <= i < (r + 1) * PAGES_PER_1G implies {
+                &&& #[trigger] me.pages@[i].kind is Free
+                &&& !me.covered(i)
+            } by {
+                assert(region_1g(i) == r);
+                pre.lemma_zero_1g_is_free(r as int, i);
+            }
         }
     }
 

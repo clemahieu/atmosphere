@@ -4737,7 +4737,9 @@ impl CapKernel {
     }
 
     /// What freeing the 2M or 1G frame at `base` did to self, as frame_freed says for a 4K one: every
-    /// page of the region is out of frames and the block is no longer typed.
+    /// page of the region is out of frames and the block is no longer typed. The region is free and not
+    /// being zeroed, and the tree, the tables, the processes and the spaces are as they were, so the next
+    /// retype of the block can succeed.
     pub open spec fn large_frame_freed(&self, post: Self, c: usize, root: usize, from: usize, base: usize, order: u8) -> bool {
         let untyped = self.tables.node_of(root, from);
         let level = large_level(order);
@@ -4748,6 +4750,12 @@ impl CapKernel {
         &&& self.region_is_dead(level, r)
         &&& self.region_clean(level, r)
         &&& !block_typed(&post.blocks, level_ref(level, r))
+        &&& post.blocks.large_free(level, r as int)
+        &&& !post.zeroing.active(level, r)
+        &&& post.list == self.list
+        &&& post.tables == self.tables
+        &&& post.processes == self.processes
+        &&& post.spaces == self.spaces
         &&& forall|i: usize| #[trigger] block_has_page(level_ref(level, r), i) ==> !post.frames@.contains_key(i)
         &&& Self::step_ok(*self, post, c as int)
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&self.list, &self.tables)
@@ -4797,10 +4805,16 @@ impl CapKernel {
             assert(block_refs(&pre.blocks, level_ref(level, r)) == 0);
             pre.lemma_dead_region_unmapped(level, r);
             pre.lemma_region_acknowledged_is_clean(level, r);
+            // A region being zeroed is typed and not dead, so a dead one is not being zeroed.
+            let b = (r * level_pages(level)) as usize;
+            if pre.zeroing.active(level, r) {
+                assert(pre.zeroing.blocks@.contains_key(b));
+            }
         }
         self.free_large(c, level, r);
         proof {
             let post = *self;
+            assert(!post.zeroing.active(level, r));
             assert(post.view() == pre.view());
             let v = pre.view();
             let e = Effect::Teardown { untyped, object: base };
@@ -4824,7 +4838,11 @@ impl CapKernel {
             final(self).list == old(self).list,
             final(self).tables == old(self).tables,
             final(self).devices == old(self).devices,
+            final(self).processes == old(self).processes,
+            final(self).spaces == old(self).spaces,
+            final(self).zeroing == old(self).zeroing,
             !block_typed(&final(self).blocks, level_ref(level, r)),
+            final(self).blocks.large_free(level, r as int),
             forall|i: usize| #[trigger] block_has_page(level_ref(level, r), i) ==> !final(self).frames@.contains_key(i),
     {
         let ghost pre = *old(self);
