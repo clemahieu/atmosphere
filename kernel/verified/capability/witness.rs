@@ -12,6 +12,7 @@
 //! moves both capabilities into the process's table, and the process binds the one to the other.
 //! And the root can give back 2M of memory and take it again: it retypes a 2M frame, deletes its
 //! capability, frees the region through a retype under its untyped, and retypes the frame again.
+//! Beside those, boot can start the root: core 0 loads the root's space and enters its thread.
 //! Every step is proven to succeed. Only Verus compiles this module, so no image contains it.
 //! See design/process-holds-capabilities/.
 use vstd::arithmetic::div_mod::*;
@@ -801,6 +802,56 @@ impl CapKernel {
                 }
             }
         }
+    }
+
+    /// From the state boot leaves, the steps kernel/src takes to start the root: core 0 loads the root's
+    /// space, points its base register at the space's root under the tag the load gave, and enters the
+    /// root's thread, which boot left inactive. At the end core 0 runs that thread on the root's space,
+    /// and the thread is still the root process's.
+    pub fn witness_root_thread_enters(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: usize,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+    )
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t, free@, image@, untyped@, frame@, present@),
+        ensures
+            final(self).wf(),
+            final(self).cores@[0].space == Some(process),
+            final(self).spaces.registers@[0].root() == process + SPACE_ROOT_PAGE * PAGE_SZ,
+            final(self).cores@[0].current_thread == Some(t),
+            final(self).threads.records@[t].value().state == (ThreadState::Running { core: 0 }),
+            final(self).threads.records@[t].value().process == Some(process),
+    {
+        hide(CapKernel::wf);
+        let ghost s0 = *self;
+        proof {
+            reveal(CapKernel::wf);
+            assert(s0.cores@[0].space is None);
+            assert(s0.cores@[0].generation == 1);
+            assert(s0.processes.records@.contains_key(process));
+            assert(process_spaces_wf(&s0.spaces, &s0.processes));
+            assert(s0.spaces.roots@.contains_key(process));
+            assert(s0.spaces.records@[process].value().kind is Process);
+        }
+        // Boot holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let pcid = self.load_space(0, process, Tracked(&mut steps));
+        self.switch_space(0, Some(process), process + SPACE_ROOT_PAGE * PAGE_SZ, pcid);
+        let ghost s2 = *self;
+        proof {
+            assert(s2.threads == s0.threads);
+            assert(s2.cores@[0].current_thread is None);
+        }
+        self.enter_boot_thread(0, t);
     }
 
     /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first

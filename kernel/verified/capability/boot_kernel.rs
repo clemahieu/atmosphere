@@ -183,7 +183,8 @@ impl CapKernel {
     /// The free runs are well formed, so each untyped block lies in the tracked pages. Each fixed slot of the root's table holds its kind, and each untyped is at depth 1, so a
     /// capability retyped under it is below the deepest depth; every page of the untyped blocks is
     /// acknowledged, since boot unmaps nothing, so a free of a block typed there is not refused as
-    /// stale, and so is every 2M and 1G region; the root's process is live, as is the page of its space; no flush has run, so the flush
+    /// stale, and so is every 2M and 1G region; the root's thread is its process's and inactive, so a
+    /// core may enter it; the root's process is live, as is the page of its space; no flush has run, so the flush
     /// epoch is 0; no core runs a thread, and each is at generation 1 and names no space, so a load may start on any; every root entry of its table past the two boot filled is empty; the root's space
     /// maps exactly the image, and its level 4 entries outside the kernel slots that no image run
     /// reaches are empty, so a table built there is the root's own to fill; of
@@ -242,6 +243,7 @@ impl CapKernel {
         }
         &&& self.threads.records@.contains_key(t)
         &&& self.threads.records@[t].value().process == Some(process)
+        &&& self.threads.records@[t].value().state is Inactive
         &&& forall|a: int, x: int| 0 <= a < image.len() && #[trigger] in_virt_at(image, a, x) ==> {
             &&& space_mapping(b, process).contains_key(page_path(x))
             &&& space_mapping(b, process)[page_path(x)] == image_entry(image[a], x)
