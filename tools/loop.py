@@ -24,11 +24,20 @@ issue is released with a note so the next round picks it up. A second signal, or
 30 s, and the next round's orient recovers what it left. Each loop writes its pid to
 <project root>/logs/loop/<pid> while it runs; `--stop` signals each such pid that is still a loop.
 
+Tuning. Before each session the loop reads <project root>/loop.toml: a table per kind (round, prover,
+skeptic) whose keys model, autocompact, effort and fallback-model become that flag of claude -p; a key
+left out passes no flag, so the agent file's model and effort hold. An edit takes effect at the next
+session. A file that does not parse or names what claude does not take is reported, and the loop
+keeps the last values it read. SIGHUP, or `tools/loop.py --reload`, re-executes the loop after the
+run in flight and its hand-off, with the same pid and so the same actor, to take up a change to this
+script.
+
 A usage limit waits until the limit's reset and goes on. A run that fails otherwise (no report, or
 an error result) is retried after 1, 2 and 4 minutes; the fourth failure in a row ends the loop.
 
 usage: tools/loop.py [--once] [--wait SECONDS]   run rounds until the loop stops
        tools/loop.py --stop [--now] [PID...]     stop running loops, after their run in flight
+       tools/loop.py --reload [PID...]           re-execute running loops, after their run in flight
        tools/loop.py --test                      this script's own tests
 """
 import argparse
@@ -42,6 +51,7 @@ import sys
 import tempfile
 import textwrap
 import time
+import tomllib
 import unittest
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -49,6 +59,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 MAIN = ROOT / "main"
 PIDS = ROOT / "logs" / "loop"
+CONFIG = ROOT / "loop.toml"
+KINDS = ("round", "prover", "skeptic")
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
 ISSUE = r"[a-z][a-z0-9]*-[a-z0-9]+(?:\.[0-9]+)*"
 KEY = re.compile(rf"^(Loop|Prover|Skeptic|Notify):\s*(.*)$")
 DECORATION = "-*`> \t"
@@ -162,6 +175,33 @@ def follow(lines, show):
     return run
 
 
+def options(text):
+    """The claude -p flags loop.toml gives each kind. The file is the human's, so a ValueError says what is wrong."""
+    try:
+        tables = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as error:
+        raise ValueError(f"not TOML: {error}")
+    flags = {}
+    for kind, table in tables.items():
+        if kind not in KINDS or not isinstance(table, dict):
+            raise ValueError(f"{kind}: not a table of {', '.join(KINDS)}")
+        flags[kind] = []
+        for key, value in table.items():
+            if not isinstance(value, str) or not value or value.startswith("-"):
+                raise ValueError(f"{kind}.{key}: not a value")
+            if key == "autocompact":
+                size = re.fullmatch(r"([0-9]+)k|(1)m", value.lower())
+                if value != "auto" and not (size and (size.group(2) or 100 <= int(size.group(1)) <= 1000)):
+                    raise ValueError(f"{kind}.autocompact: {value} is not auto or 100k to 1M")
+            elif key == "effort":
+                if value not in EFFORTS:
+                    raise ValueError(f"{kind}.effort: {value} is not one of {', '.join(EFFORTS)}")
+            elif key not in ("model", "fallback-model"):
+                raise ValueError(f"{kind}.{key}: not model, autocompact, effort or fallback-model")
+            flags[kind] += [f"--{key}", value]
+    return flags
+
+
 def loop_alive(pid):
     """Whether the process with this pid is a loop: an argument of its argv ends in tools/loop.py."""
     try:
@@ -174,16 +214,18 @@ def loop_alive(pid):
 class Loop:
     """The driver. The commands and the clock are parameters so the tests can replace them."""
 
-    def __init__(self, claude="claude", bd="bd", notifier="notify-send", cwd=MAIN, pids=PIDS, wait=WAIT,
-                 sleep=time.sleep, now=time.time, out=sys.stdout):
+    def __init__(self, claude="claude", bd="bd", notifier="notify-send", cwd=MAIN, pids=PIDS, config=CONFIG,
+                 wait=WAIT, sleep=time.sleep, now=time.time, out=sys.stdout):
         self.claude, self.bd, self.notifier = claude, bd, notifier
-        self.cwd, self.pids, self.wait = Path(cwd), Path(pids), wait
+        self.cwd, self.pids, self.config, self.wait = Path(cwd), Path(pids), Path(config), wait
+        self.flags, self.read = {}, None
         self.sleep, self.now, self.out = sleep, now, out
         self.actor = f"loop-{os.getpid()}"
         self.env = {key: value for key, value in os.environ.items() if key != "CLAUDECODE"}
         self.env["BEADS_ACTOR"] = self.actor
         self.stopping = False
         self.halting = False
+        self.reloading = False
         self.child = None
 
     def say(self, who, text):
@@ -198,6 +240,10 @@ class Loop:
             self.stopping = True
             self.say("loop", "stopping after the run in flight (again, or --stop --now, ends it now)")
 
+    def on_reload(self, signum, frame):
+        self.reloading = True
+        self.say("loop", "re-executing after the run in flight and its hand-off")
+
     def halt(self):
         self.stopping = self.halting = True
         self.say("loop", "ending the run in flight")
@@ -208,16 +254,31 @@ class Loop:
         """Wait, unless a stop comes first. True when the wait ran out."""
         self.say("loop", f"{why}: waiting {seconds:.0f} s")
         deadline = self.now() + seconds
-        while not self.stopping and self.now() < deadline:
+        while not self.stopping and not self.reloading and self.now() < deadline:
             self.sleep(min(1.0, deadline - self.now()))
-        return not self.stopping
+        return not self.stopping and not self.reloading
 
     # Sessions.
 
+    def tune(self):
+        """Take up loop.toml when it changed since the last session; keep the last values when it is wrong."""
+        text = self.config.read_text() if self.config.exists() else ""
+        if text == self.read:
+            return
+        self.read = text
+        try:
+            self.flags = options(text)
+        except ValueError as error:
+            self.say("loop", f"{self.config.name}: {error}; keeping the last values")
+            return
+        shown = "; ".join(f"{kind} {' '.join(flags)}" for kind, flags in self.flags.items() if flags)
+        self.say("loop", f"{self.config.name}: {shown or 'no flags'}")
+
     def agent(self, kind, prompt):
         """Run one agent session in the main worktree; its stream is shown as it comes."""
+        self.tune()
         command = [self.claude, "-p", "--agent", kind, "--permission-mode", "auto",
-                   "--output-format", "stream-json", "--verbose", prompt]
+                   "--output-format", "stream-json", "--verbose", *self.flags.get(kind, []), prompt]
         started = self.now()
         self.say(kind, f"start: {prompt}")
         self.child = subprocess.Popen(command, cwd=self.cwd, env=self.env, stdin=subprocess.DEVNULL,
@@ -287,7 +348,7 @@ class Loop:
     def drive(self, once=False):
         """Rounds until the loop stops. The exit status: 0 for a stop, 1 for repeated failures."""
         failures = 0
-        while not self.stopping:
+        while not self.stopping and not self.reloading:
             loop, run = self.round()
             if loop is not None:
                 failures = 0
@@ -297,7 +358,7 @@ class Loop:
                 questions = sum(1 for line in blocked.splitlines() if re.search(ISSUE, line) and line.lstrip()[:1] in "●○◐")
                 self.notify(f"round loop stopped: {questions} questions in bd list -s blocked")
                 return 0
-            if once or self.stopping:
+            if once or self.stopping or self.reloading:
                 break
             if loop == "wait":
                 self.pause(self.wait, "nothing ready; another loop holds the issues in progress")
@@ -310,7 +371,7 @@ class Loop:
                     self.notify(f"round loop stopped: {failures} failed rounds in a row")
                     return 1
                 self.pause(60 * 2 ** (failures - 1), f"the round ended without a report (failure {failures})")
-        self.say("loop", "stopped")
+        self.say("loop", "reloading" if self.reloading and not self.stopping else "stopped")
         return 0
 
 
@@ -321,21 +382,29 @@ def main_loop(args):
     pidfile.write_text(f"{os.getpid()}\n")
     for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGUSR1):
         signal.signal(signum, loop.on_stop)
+    signal.signal(signal.SIGHUP, loop.on_reload)
     loop.say("loop", f"actor {loop.actor}; stop with Ctrl-C or tools/loop.py --stop {os.getpid()}")
     try:
-        return loop.drive(once=args.once)
+        status = loop.drive(once=args.once)
     finally:
         pidfile.unlink(missing_ok=True)
+    if loop.reloading and not loop.stopping and not args.once:
+        os.execv(sys.executable, [sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]])
+    return status
 
 
-def stop(pids, now, folder=PIDS):
+SIGNALS = {signal.SIGTERM: "stopping after its run in flight", signal.SIGUSR1: "ending now",
+           signal.SIGHUP: "re-executing after its run in flight"}
+
+
+def send(pids, signum, folder=PIDS):
     """Signal each named loop, or every loop with a pid file; a pid file whose process is no loop is removed."""
     named = [int(pid) for pid in pids] or sorted(int(path.name) for path in folder.glob("*") if path.name.isdigit())
     signalled = 0
     for pid in named:
         if loop_alive(pid):
-            os.kill(pid, signal.SIGUSR1 if now else signal.SIGTERM)
-            print(f"loop {pid}: {'ending now' if now else 'stopping after its run in flight'}")
+            os.kill(pid, signum)
+            print(f"loop {pid}: {SIGNALS[signum]}")
             signalled += 1
         else:
             (folder / str(pid)).unlink(missing_ok=True)
@@ -417,13 +486,27 @@ class Tests(unittest.TestCase):
                 with open(os.devnull, "w") as quiet:
                     sys.stdout, saved = quiet, sys.stdout
                     try:
-                        self.assertEqual(stop([], False, folder), 0)
+                        self.assertEqual(send([], signal.SIGTERM, folder), 0)
                     finally:
                         sys.stdout = saved
                 self.assertEqual(other.wait(timeout=10), 7)
             finally:
                 other.kill()
             self.assertFalse((folder / "4194305").exists())
+
+    def test_loop_toml_gives_each_kind_its_flags(self):
+        text = '[round]\nmodel = "opus"\nautocompact = "200k"\n[prover]\neffort = "xhigh"\nfallback-model = "opus"\n[skeptic]\nautocompact = "1M"\n'
+        self.assertEqual(options(text), {"round": ["--model", "opus", "--autocompact", "200k"],
+                                         "prover": ["--effort", "xhigh", "--fallback-model", "opus"],
+                                         "skeptic": ["--autocompact", "1M"]})
+        self.assertEqual(options(""), {})
+
+    def test_loop_toml_refuses_what_claude_does_not_take(self):
+        for text in ("[round\n", "[driver]\nmodel = \"opus\"\n", "model = \"opus\"\n", "[round]\nturns = \"9\"\n",
+                     "[round]\neffort = \"huge\"\n", "[round]\nautocompact = \"50k\"\n", "[round]\nautocompact = \"2m\"\n",
+                     "[round]\nautocompact = 200000\n", "[round]\nmodel = \"--dangerously\"\n"):
+            with self.assertRaises(ValueError, msg=text):
+                options(text)
 
     # The driver against a fake claude and a fake bd, which log their arguments.
 
@@ -456,7 +539,7 @@ class Tests(unittest.TestCase):
         os.environ["FAKE"] = str(folder)
         clock = [0.0]
         loop = Loop(claude=str(folder / "claude"), bd=str(folder / "bd"), notifier="no-such-notifier",
-                    cwd=folder, pids=folder, sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+                    cwd=folder, pids=folder, config=folder / "loop.toml", sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
                     now=lambda: clock[0], out=open(os.devnull, "w"), **given)
         return loop, clock
 
@@ -498,6 +581,46 @@ class Tests(unittest.TestCase):
                  "Skeptic not run: the loop stopped before it started; the next round hands it over again."],
                 ["update", "atmo-1.4", "-s", "open", "--assignee", ""]])
 
+    def test_each_session_takes_up_loop_toml_as_it_stands_and_a_wrong_edit_keeps_the_last_values(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            loop, _ = self.driver(folder, "Prover: atmo-1.2\nLoop: continue\n", "proved", "Loop: continue\n", "Loop: stop\n")
+            (folder / "loop.toml").write_text('[round]\nautocompact = "200k"\n[prover]\nmodel = "opus"\n')
+            real = loop.agent
+            edits = iter(['[round]\nautocompact = "300k"\n', '[round]\neffort = "huge"\n', None])
+
+            def agent_then_edit(kind, prompt):
+                run = real(kind, prompt)
+                edit = next(edits, None)
+                if edit:
+                    (folder / "loop.toml").write_text(edit)
+                return run
+            loop.agent = agent_then_edit
+            self.assertEqual(loop.drive(), 0)
+            flags = [(call[2], call[8:-2]) for call in self.log(folder, "claude")]
+            self.assertEqual(flags, [("round", ["--autocompact", "200k"]),
+                                     ("prover", []),
+                                     ("round", ["--autocompact", "300k"]),
+                                     ("round", ["--autocompact", "300k"])])
+
+    def test_a_reload_lets_the_round_and_its_hand_off_finish_then_ends_the_drive(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            loop, _ = self.driver(folder, "Prover: atmo-1.2\nLoop: continue\n", "proved", "Loop: stop\n")
+            real = loop.agent
+
+            def agent_then_reload(kind, prompt):
+                run = real(kind, prompt)
+                if kind == "round":
+                    loop.on_reload(signal.SIGHUP, None)
+                return run
+            loop.agent = agent_then_reload
+            self.assertEqual(loop.drive(), 0)
+            self.assertTrue(loop.reloading)
+            self.assertEqual([call[2] for call in self.log(folder, "claude")], ["round", "prover"])
+            self.assertEqual(self.log(folder, "bd"), [["update", "atmo-1.2", "--append-notes", "Prover report: proved"],
+                                                      ["update", "atmo-1.2", "-s", "open", "--assignee", ""]])
+
     def test_wait_pauses_and_failures_back_off_until_the_fourth_ends_the_loop(self):
         with tempfile.TemporaryDirectory() as folder:
             folder = Path(folder)
@@ -523,15 +646,20 @@ def main():
     parser.add_argument("--wait", type=float, default=WAIT, help="seconds to wait on 'Loop: wait'")
     parser.add_argument("--stop", action="store_true", help="stop running loops after their run in flight")
     parser.add_argument("--now", action="store_true", help="with --stop, end the run in flight too")
+    parser.add_argument("--reload", action="store_true", help="re-execute running loops after their run in flight")
     parser.add_argument("--test", action="store_true", help="run this script's own tests")
     parser.add_argument("pids", nargs="*", help="with --stop, the loops to stop; all by default")
     args = parser.parse_args()
     if args.test:
         unittest.main(argv=[sys.argv[0]], verbosity=1)
+    if args.stop and args.reload:
+        parser.error("--stop and --reload are each their own command")
     if args.stop:
-        return stop(args.pids, args.now)
+        return send(args.pids, signal.SIGUSR1 if args.now else signal.SIGTERM)
+    if args.reload:
+        return send(args.pids, signal.SIGHUP)
     if args.pids or args.now:
-        parser.error("PID and --now go with --stop")
+        parser.error("PID goes with --stop or --reload, --now with --stop")
     return main_loop(args)
 
 
