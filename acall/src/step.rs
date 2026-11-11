@@ -4,8 +4,15 @@
 //! the kernel proves of the step it takes for a thread whose call returns to it, Kernel::dispatch in
 //! kernel/verified: some frame carrying the operation number, the slot and the arguments passed takes
 //! the kernel from the state before to the state after as `invoked` says, and the state after is well
-//! formed. The ghost caller threads the kernel's state from one call to the next. See
-//! design/divider-proven-by-invariant/.
+//! formed. The ghost caller threads the kernel's state from one call to the next.
+//!
+//! That ensures holds only on a premise no proof checks: the ghost handed in is the kernel's state at
+//! this entry and the calling thread's root. The kernel proves `invoked` of its own state at entry, and
+//! nothing ties the ghost to it. Verified code can build a `Caller` from any well-formed kernel and any
+//! root, or reuse an old one, and the kernel's state at the next entry is not the state the previous
+//! call returned once another step has run between: another thread's or process's call, an ancestor's
+//! revoke, another core's acknowledge. So the step is a gap, not glue. See
+//! design/who-vouches-for-an-unproven-claim/ and design/divider-proven-by-invariant/.
 use vstd::prelude::*;
 
 use asys::operation;
@@ -45,7 +52,7 @@ pub open spec fn carries(frame: Registers, number: u64, slot: u64, a1: u64, a2: 
 /// Invokes the operation `number` on the capability at `slot` with arguments 1 to 5, and returns what
 /// the kernel put in the status and result registers.
 #[verifier::external_body]
-// external_body(glue): the system call instruction, whose ensures is what Kernel::dispatch proves of a step that returns to the calling thread
+// external_body(gap): the system call instruction, whose ensures is what Kernel::dispatch proves of a step that returns to the calling thread, on the premise that the ghost caller is the kernel's state and the caller's root at entry with no other step since the previous return, which nothing proves
 pub fn step(caller: &mut Ghost<Caller>, number: u64, slot: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> (out: Outcome)
     requires
         old(caller)@.wf(),
