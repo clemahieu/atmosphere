@@ -25,17 +25,20 @@ The list holds one line per attribute or assumed specification: path from the re
 attribute (or assume_specification), class and reason, separated by tabs. An assumed
 specification's class is hardware or kernel, and its reason is its citation lines' text, joined by
 '; '. The check passes when the source and the list hold the same items, counting an item that
-appears twice in one file twice. The
-word assume, admit or assume_ outside a '//' comment fails the check, as a call, a path or a use that
-imports it under another name: the marked crates hold none, and a new one would be an axiom the proof
-rests on. So does any other way to exempt code: an axiom fn or a broadcast axiom fn, a
+appears twice in one file twice. The word assume, admit or assume_ in code fails the check, as a call, a path or a use that imports it
+under another name: the marked crates hold none, and a new one would be an axiom the proof rests on. So does any other way to exempt code: an axiom fn or a broadcast axiom fn, a
 verifier::external fn, an external function, trait or type specification, any other verifier
-attribute whose name starts with external, an attribute above that
-does not open its line (after another attribute, inside cfg_attr, or an inner #![...]), and an
-assume_specification its line does not open; each word of these outside a '//' comment counts,
-whatever attribute or macro spells it. vstd's proof_from_false is not refused: it requires false,
-which only an assumption or an exemption refused here can supply. The retired 'old' trees and build output under 'target'
-are not scanned.
+attribute whose name starts with external, assume_termination, an attribute above that does not open
+its line (after another attribute, inside cfg_attr, or an inner #![...]), and an assume_specification
+its line does not open; each word of these in code counts, whatever attribute or macro spells it.
+vstd's proof_from_false is not refused: it requires false, which only an assumption or an exemption
+refused here can supply.
+
+A line's code is what rustc reads as code: comments, line or block, and the inside of string and
+character literals are left out, so a '//' inside a block comment or a string hides nothing after it.
+Every .rs file under a marked crate is scanned except build output under 'target', and the check
+refuses what makes rustc compile any other file: a path attribute, an include!, and a module named
+target.
 
 usage: tools/check-external-body.py           (the tree)
        tools/check-external-body.py --test    (this script's own tests)
@@ -53,7 +56,7 @@ sys.dont_write_bytecode = True
 
 REPO = Path(__file__).resolve().parent.parent
 LIST_PATH = "tools/external-body-list"
-SKIPPED_DIRECTORIES = ("old", "target")
+SKIPPED_DIRECTORY = "target"
 ATTRIBUTES = ("external_body", "exec_allows_no_decreases_clause")
 ATTRIBUTE = re.compile(r"#\[verifier(?:::(\w+)\]|\((\w+)\)\])")
 CLASSES = ("glue", "gap", "unproven")
@@ -67,12 +70,16 @@ DOCUMENTS_PATH = "tools/hardware-documents"
 ASSUMPTION = re.compile(r"\b(assume|admit|assume_)\b")
 # The words that exempt code from the proof: the two counted attributes, the assumed specification,
 # and the forms the marked crates do not use (an axiom fn, an external fn, an external function, trait
-# or type specification).
+# or type specification, a function assumed to terminate).
 EXEMPTING = re.compile(r"\b(axiom|external|external_fn_specification|external_trait_specification|"
                        r"external_type_specification|assume_specification|"
-                       r"external_body|exec_allows_no_decreases_clause)\b")
+                       r"external_body|exec_allows_no_decreases_clause|assume_termination)\b")
 # Any other verifier attribute whose name starts with external, in either spelling.
 VERIFIER_EXTERNAL = re.compile(r"verifier\s*(?:::|\()\s*(external\w*)")
+# What makes rustc compile a file the scan does not read: a path attribute, in any attribute or
+# cfg_attr, an include!, and a module named target, whose directory the scan leaves out.
+UNREAD_FILE = re.compile(r"#\s*!?\s*\[\s*path\b|\bpath\s*=\s*(?:r#*)?\"|\binclude\s*!|"
+                         r"\bmod\s+(?:r#)?target\b")
 
 # One attribute or assumed specification, as the list and the source both state it.
 Item = namedtuple("Item", "path name attribute kind reason")
@@ -96,6 +103,77 @@ def parse_list(text):
             raise Unreadable(f"{LIST_PATH}: cannot read {json.dumps(line)}")
         items.append(Item(*fields))
     return items
+
+
+def code_lines(source):
+    """Each line of one file as rustc reads its code: every comment, line or block, nested or not, and
+    the inside of every string and character literal are blanked, so a '//' inside a block comment or a
+    string opens no comment, and the code after either on the same line is read. The delimiters of a
+    literal stay, and each line keeps its length."""
+    out = list(source)
+    length = len(source)
+
+    def blank(start, end):
+        for at in range(start, end):
+            if out[at] != "\n":
+                out[at] = " "
+
+    def ident(at):
+        return 0 <= at < length and (source[at].isalnum() or source[at] == "_")
+
+    i = 0
+    while i < length:
+        char = source[i]
+        if source.startswith("//", i):
+            end = source.find("\n", i)
+            end = length if end < 0 else end
+            blank(i, end)
+            i = end
+        elif source.startswith("/*", i):
+            depth, end = 1, i + 2
+            while end < length and depth:
+                if source.startswith("/*", end):
+                    depth, end = depth + 1, end + 2
+                elif source.startswith("*/", end):
+                    depth, end = depth - 1, end + 2
+                else:
+                    end += 1
+            blank(i, end)
+            i = end
+        elif char == "r" and (not ident(i - 1) or (source[i - 1] in "bc" and not ident(i - 2))):
+            hashes = 0
+            while i + 1 + hashes < length and source[i + 1 + hashes] == "#":
+                hashes += 1
+            if i + 1 + hashes < length and source[i + 1 + hashes] == '"':
+                start = i + 2 + hashes
+                close = '"' + "#" * hashes
+                end = source.find(close, start)
+                end = length if end < 0 else end
+                blank(start, end)
+                i = end + len(close)
+            else:
+                i += 1
+        elif char == '"':
+            end = i + 1
+            while end < length and source[end] != '"':
+                end += 2 if source[end] == "\\" else 1
+            blank(i + 1, min(end, length))
+            i = end + 1
+        elif char == "'":
+            if source.startswith("\\", i + 1):
+                end = source.find("'", i + 3)
+            elif i + 2 < length and source[i + 2] == "'":
+                end = i + 2
+            else:
+                end = -1
+            if end < 0:
+                i += 1
+            else:
+                blank(i + 1, end)
+                i = end + 1
+        else:
+            i += 1
+    return "".join(out).split("\n")[:len(source.splitlines())]
 
 
 def attribute(line):
@@ -128,8 +206,9 @@ def item_name(line):
 def scan(path, source):
     """Each live attribute in one file, with the reason line after it and the item it applies to."""
     lines = [line.strip() for line in source.splitlines()]
+    code = [line.strip() for line in code_lines(source)]
     items = []
-    for index, line in enumerate(lines):
+    for index, line in enumerate(code):
         exempting = attribute(line)
         if exempting is None:
             continue
@@ -137,7 +216,7 @@ def scan(path, source):
         stated = parse_reason(exempting, lines[index + 1] if index + 1 < len(lines) else "")
         if stated is None:
             raise Unreadable(f"{at}: no reason line in the form // {exempting}(<class>): <reason>")
-        name = next(filter(None, map(item_name, lines[index + 2:])), None)
+        name = next(filter(None, map(item_name, code[index + 2:])), None)
         if name is None:
             raise Unreadable(f"{at}: no item follows")
         items.append(Item(path, name, exempting, *stated))
@@ -196,7 +275,7 @@ def specifications(path, source, documents, repo):
     """Each assumed specification in one file, with who vouches for it and the citations that say so."""
     lines = [line.strip() for line in source.splitlines()]
     items = []
-    for index, line in enumerate(lines):
+    for index, line in enumerate(line.strip() for line in code_lines(source)):
         match = SPECIFICATION.match(line)
         if match is None:
             continue
@@ -219,11 +298,11 @@ def parse_documents(text):
 
 
 def assumptions(path, source):
-    """Each line of one file that names assume, admit or assume_ outside a '//' comment, with where it
-    is."""
+    """Each line of one file that names assume, admit or assume_ in its code, outside every comment and
+    literal, with where it is."""
     found = []
-    for index, line in enumerate(source.splitlines()):
-        if ASSUMPTION.search(line.split("//", 1)[0]):
+    for index, (line, code) in enumerate(zip(source.splitlines(), code_lines(source))):
+        if ASSUMPTION.search(code):
             found.append(f"{path}:{index + 1}: {line.strip()}")
     return found
 
@@ -232,23 +311,25 @@ def unread_exemptions(path, source):
     """Each line of one file that exempts code from the proof in a form this check does not count.
     The counted forms are a line opening with one counted attribute in either spelling, and a line
     opening an assumed specification with its name in brackets. Any other word of EXEMPTING, or any
-    verifier attribute whose name starts with external, outside a '//' comment is refused: an axiom fn,
-    an external fn, an external function, trait or type specification, a counted
+    verifier attribute whose name starts with external, in a line's code is refused: an axiom fn, an
+    external fn, an external function, trait or type specification, assume_termination, a counted
     attribute after another attribute, inside cfg_attr or as an inner attribute, and an assumed
-    specification the line does not open."""
+    specification the line does not open. So is a line that makes rustc compile a file the scan does
+    not read: a path attribute, an include!, and a module named target."""
     refused = []
-    for index, line in enumerate(source.splitlines()):
-        code = line.split("//", 1)[0]
+    for index, (line, code) in enumerate(zip(source.splitlines(), code_lines(source))):
+        if UNREAD_FILE.search(code):
+            refused.append(f"{path}:{index + 1}: {line.strip()} compiles a file this check does not read")
         matches = {match.start(1): match.group(1) for match in EXEMPTING.finditer(code)}
         matches.update({match.start(1): match.group(1) for match in VERIFIER_EXTERNAL.finditer(code)})
         words = list(matches.values())
         if not words:
             continue
-        stripped = line.strip()
+        opening = code.strip()
         counted = len(words) == 1 and (
-            attribute(stripped) == words[0] or (words[0] == ASSUMED and SPECIFICATION.match(stripped)))
+            attribute(opening) == words[0] or (words[0] == ASSUMED and SPECIFICATION.match(opening)))
         if not counted:
-            refused.append(f"{path}:{index + 1}: {stripped} exempts code from the proof in a form this "
+            refused.append(f"{path}:{index + 1}: {line.strip()} exempts code from the proof in a form this "
                            "check does not count")
     return refused
 
@@ -273,10 +354,10 @@ def compare(found, listed):
 
 
 def sources(directory):
-    """The Rust sources under a directory, leaving out the retired 'old' trees and build output."""
+    """The Rust sources under a directory, leaving out build output under target."""
     for entry in sorted(directory.iterdir()):
         if entry.is_dir():
-            if entry.name not in SKIPPED_DIRECTORIES:
+            if entry.name != SKIPPED_DIRECTORY:
                 yield from sources(entry)
         elif entry.suffix == ".rs":
             yield entry
@@ -513,10 +594,17 @@ class Tests(unittest.TestCase):
         })
         self.assertEqual(scan_tree(repo, {}), ([], []))
 
-    def test_old_and_target_trees_are_not_scanned(self):
+    def test_build_output_under_target_is_not_scanned(self):
         live = f"{ATTR}\n// external_body(gap): x\nfn f()\n"
-        repo = self.workspace({"heap": (True, {"old/a.rs": "fn f() { admit(); }\n", "target/b.rs": live})})
+        repo = self.workspace({"heap": (True, {"target/b.rs": live, "target/debug/c.rs": "fn f() { admit(); }\n"})})
         self.assertEqual(scan_tree(repo, {}), ([], []))
+
+    def test_a_directory_named_old_is_scanned(self):
+        repo = self.workspace({"kernel/verified": (True, {
+            "capability/mod.rs": "pub mod old;\n", "capability/old/mod.rs": "fn f() { admit(); }\n"})})
+        _, refused = scan_tree(repo, {})
+        self.assertEqual(refused, ["kernel/verified/capability/old/mod.rs:1: fn f() { admit(); } "
+                                   "assumes what the proof should show"])
 
     def test_a_changed_reason_shows_on_both_sides(self):
         self.assertEqual(len(compare([body("a.rs", "f", "gap", "x")], [body("a.rs", "f", "gap", "y")])), 2)
@@ -696,6 +784,32 @@ class ExemptionFormTests(unittest.TestCase):
         )
         self.assertEqual(unread_exemptions(ARCH_FILE, source), [])
 
+    def test_a_file_the_scan_does_not_read_is_refused(self):
+        forms = {
+            "a #[path] module": '#[path = "forge.inc"] pub mod forge;\n',
+            "a #[path] module on its own line": '#[path = "forge.inc"]\npub mod forge;\n',
+            "a #[path] inside cfg_attr": '#[cfg_attr(verus_keep_ghost, path = "forge.inc")]\nmod forge;\n',
+            "an inner #![path]": '#![path = "forge.inc"]\n',
+            "an include!": 'include!("forge.inc");\n',
+            "an include! by path": 'verus! { core::include!("forge.inc"); }\n',
+            "a module named target": "pub mod target;\n",
+            "a raw module named target": "mod r#target { }\n",
+        }
+        for form, source in forms.items():
+            with self.subTest(form):
+                self.assertTrue(unread_exemptions("kernel/verified/capability/mod.rs", source), form)
+
+    def test_assume_termination_is_refused(self):
+        for spelling in ("#[verifier::assume_termination]", "#[verifier(assume_termination)]"):
+            source = f"{spelling}\nfn spin() -> Tracked<BaseRegister> {{ spin() }}\n"
+            self.assertTrue(unread_exemptions("a.rs", source), spelling)
+
+    def test_names_that_only_look_like_a_path_or_an_include_are_not_refused(self):
+        source = ("let ghost path = SpacePath { l4, l3: 0 };\n"
+                  "let included = include_count;\n"
+                  "mod targets;\n")
+        self.assertEqual(unread_exemptions("a.rs", source), [])
+
     def test_comments_and_longer_names_are_not_refused(self):
         source = (
             "// #[verifier::external] and an axiom fn, in a comment\n"
@@ -703,6 +817,50 @@ class ExemptionFormTests(unittest.TestCase):
             "let axiomatic = external_bodyless; // #![verifier::external_body]\n"
         )
         self.assertEqual(unread_exemptions("a.rs", source), [])
+
+class LexTests(unittest.TestCase):
+    """The check reads a line as rustc does: a comment ends at its */ and a string at its quote, so code
+    after either on the same line is read, and a // inside either opens no comment."""
+
+    FORGE = "proof fn f() -> (tracked r: crate::arch::BaseRegister) { admit(); proof_from_false() }"
+
+    def test_code_after_a_block_comment_holding_slashes_is_read(self):
+        source = f"/* // */ {self.FORGE}\n"
+        self.assertTrue(assumptions("a.rs", source))
+
+    def test_code_after_a_string_holding_slashes_is_read(self):
+        for source in (f'#[doc = "//"] {self.FORGE}\n', f'#[doc = r#"//"#] {self.FORGE}\n',
+                       f'#[doc = "\\"//"] {self.FORGE}\n', f"let c = '\"'; {self.FORGE}\n",
+                       f"let c = b'\"'; {self.FORGE}\n"):
+            with self.subTest(source):
+                self.assertTrue(assumptions("a.rs", source))
+
+    def test_a_counted_attribute_after_such_a_comment_is_counted(self):
+        source = "/* // */ #[verifier::external_body]\n// external_body(glue): x\nproof fn f() {}\n"
+        self.assertEqual(scan("a.rs", source), [body("a.rs", "f", "glue", "x")])
+        self.assertEqual(compare(scan("a.rs", source), []), ["a.rs f external_body (glue: x) is not on the list"])
+        self.assertEqual(unread_exemptions("a.rs", source), [])
+
+    def test_an_exemption_after_such_a_string_is_refused(self):
+        self.assertTrue(unread_exemptions("a.rs", '#[doc = "//"] #[verifier::external] fn f() {}\n'))
+
+    def test_comments_and_strings_hide_what_they_hold(self):
+        source = ('/* admit();\n   still a comment /* nested */ admit();\n*/ fn g() {}\n'
+                  'let s = "admit(); // #[verifier::external]";\n'
+                  'let t = "line one\n  admit();\n";\n'
+                  "fn h<'a>(x: &'a u8) -> char { 'x' } // admit();\n"
+                  "/// admit()\n")
+        self.assertEqual(assumptions("a.rs", source), [])
+        self.assertEqual(unread_exemptions("a.rs", source), [])
+
+    def test_an_attribute_inside_a_block_comment_is_not_counted(self):
+        source = "/*\n#[verifier::external_body]\n// external_body(glue): x\nfn f() {}\n*/\n"
+        self.assertEqual(scan("a.rs", source), [])
+
+    def test_lexing_keeps_every_line(self):
+        source = 'a /* x\ny */ b "s\nt" c\n'
+        self.assertEqual(code_lines(source), ["a     ", '     b " ', ' " c'])
+
 
 if __name__ == "__main__":
     if sys.argv[1:] == ["--test"]:
