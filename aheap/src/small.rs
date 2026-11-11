@@ -27,6 +27,11 @@
 //!   were. Otherwise it returns a slot of the class's size, aligned to SLOT_MIN, with the
 //!   permission to its bytes, apart from every slot live before. Either way it keeps what every
 //!   class over the same store, page buddy and source stands on (`kept`).
+//! - `free_small(store, pb, src, p, perm)` takes back the live slot at `p` and never refuses. Its
+//!   slab (`slab_of`) goes to the partial list while a slot of it is live, and the store, the page
+//!   buddy and the source are as they were. A slab whose only live slot was `p` (`only_live`) is
+//!   retired: its run released and freed, so the page buddy no longer holds it, and its record put
+//!   back in the store; every other run held at a head that is no record page stays held.
 use vstd::prelude::*;
 use vstd::raw_ptr::*;
 
@@ -287,6 +292,103 @@ proof fn lemma_live_insert(m: Map<int, Slab>, a: int, s1: Slab, p: int)
     assert(live_of(n) =~= live_of(m).insert(p));
 }
 
+/// `p` is the only live slot of the slab `s`.
+pub open spec fn only_live(s: Slab, p: int) -> bool {
+    forall|x: int| #[trigger] s.holds(x) ==> x == p
+}
+
+/// A slab after `free` took back its live slot at `p` holds what it held but `p`, has a free slot,
+/// and has every slot free exactly when `p` was its only live slot.
+proof fn lemma_free_holds(s0: Slab, s1: Slab, p: int)
+    requires
+        s0.wf(),
+        s1.wf(),
+        s1.base() == s0.base(),
+        s1.bytes() == s0.bytes(),
+        s1.slot() == s0.slot(),
+        s1.count() == s0.count(),
+        s0.holds(p),
+        s1.free_slots() == s0.free_slots().insert(s0.index(p)),
+    ensures
+        forall|x: int| #[trigger] s1.holds(x) <==> (s0.holds(x) && x != p),
+        s1.free_slots() != Set::<int>::empty(),
+        (s1.free_slots() == Set::range(0, s1.count() as int)) <==> only_live(s0, p),
+{
+    s0.lemma_slots();
+    let i = s0.index(p);
+    assert(s1.free_slots().contains(i));
+    assert(s1.live() =~= s0.live().remove(i));
+    assert forall|x: int| #[trigger] s1.holds(x) <==> (s0.holds(x) && x != p) by {
+        if s0.holds(x) && s0.index(x) == i {
+            assert(x == p);
+        }
+    }
+    if s1.free_slots() == Set::range(0, s1.count() as int) {
+        assert forall|x: int| #[trigger] s0.holds(x) implies x == p by {
+            assert(s0.live().contains(s0.index(x)));
+            assert(s1.free_slots().contains(s0.index(x)));
+        }
+    }
+    if only_live(s0, p) {
+        assert forall|j: int| #[trigger] Set::range(0, s1.count() as int).contains(j) implies s1.free_slots().contains(j) by {
+            if !s0.free_slots().contains(j) {
+                assert(s0.within(s0.addr(j)));
+                assert(s0.holds(s0.addr(j)));
+            }
+        }
+        assert(s1.free_slots() =~= Set::range(0, s1.count() as int));
+    }
+}
+
+/// The live slots of `m` with the slab at `a` made `s1`, which holds what it held but `p`, a slot no
+/// other slab holds.
+proof fn lemma_live_freed(m: Map<int, Slab>, a: int, s1: Slab, p: int)
+    requires
+        m.contains_key(a),
+        forall|x: int| #[trigger] s1.holds(x) <==> (m[a].holds(x) && x != p),
+        forall|b: int| #[trigger] m.contains_key(b) && b != a ==> !m[b].holds(p),
+    ensures
+        live_of(m.insert(a, s1)) == live_of(m).remove(p),
+{
+    let n = m.insert(a, s1);
+    assert forall|x: int| live_of(n).contains(x) <==> #[trigger] live_of(m).remove(p).contains(x) by {
+        if live_of(n).contains(x) {
+            let b = choose|b: int| #[trigger] n.contains_key(b) && n[b].holds(x);
+            assert(m.contains_key(b) && m[b].holds(x));
+        }
+        if live_of(m).remove(p).contains(x) {
+            let b = choose|b: int| #[trigger] m.contains_key(b) && m[b].holds(x);
+            assert(n.contains_key(b) && n[b].holds(x));
+        }
+    }
+    assert(live_of(n) =~= live_of(m).remove(p));
+}
+
+/// The live slots of `m` without the slab at `a`, whose only live slot is `p`, a slot no other slab
+/// holds.
+proof fn lemma_live_removed(m: Map<int, Slab>, a: int, p: int)
+    requires
+        m.contains_key(a),
+        only_live(m[a], p),
+        forall|b: int| #[trigger] m.contains_key(b) && b != a ==> !m[b].holds(p),
+    ensures
+        live_of(m.remove(a)) == live_of(m).remove(p),
+{
+    let n = m.remove(a);
+    assert forall|x: int| live_of(n).contains(x) <==> #[trigger] live_of(m).remove(p).contains(x) by {
+        if live_of(n).contains(x) {
+            let b = choose|b: int| #[trigger] n.contains_key(b) && n[b].holds(x);
+            assert(m.contains_key(b) && m[b].holds(x));
+        }
+        if live_of(m).remove(p).contains(x) {
+            let b = choose|b: int| #[trigger] m.contains_key(b) && m[b].holds(x);
+            assert(b != a);
+            assert(n.contains_key(b) && n[b].holds(x));
+        }
+    }
+    assert(live_of(n) =~= live_of(m).remove(p));
+}
+
 /// A run cut by `alloc_run` leaves the source's refusals and provenance as they were.
 proof fn lemma_cut_source(pb0: PageBuddy, pb1: PageBuddy, s0: SourceView, s1: SourceView, q: int, k: nat)
     requires
@@ -502,6 +604,33 @@ impl SizeClass {
             src2,
         ) by {
             assert(slab_ok(self.class as nat, self.perms@, m[a], a, store, pb, src));
+        }
+    }
+
+    /// The record of a slab that holds the slot `y`.
+    pub open spec fn slab_of(&self, y: int) -> int {
+        choose|a: int| #[trigger] self.slabs().contains_key(a) && self.slabs()[a].holds(y)
+    }
+
+    /// The live slot `y` is held by the slab at `slab_of(y)`, whose run is the only one of the
+    /// class's that holds `y`.
+    proof fn lemma_slab_of(&self, store: RecordStore, pb: PageBuddy, src: SourceView, y: int)
+        requires
+            self.wf(store, pb, src),
+            pb.wf(src),
+            self.live().contains(y),
+        ensures
+            self.slabs().contains_key(self.slab_of(y)),
+            self.slabs()[self.slab_of(y)].holds(y),
+            forall|b: int| #[trigger]
+                self.slabs().contains_key(b) && self.slabs()[b].within(y) ==> b == self.slab_of(y),
+    {
+        let a = self.slab_of(y);
+        assert(self.slabs().contains_key(a) && self.slabs()[a].holds(y));
+        assert forall|b: int| #[trigger] self.slabs().contains_key(b) && self.slabs()[b].within(y) implies b == a by {
+            if b != a {
+                self.lemma_apart(store, pb, src, a, b);
+            }
         }
     }
 
@@ -770,6 +899,155 @@ impl SizeClass {
             }
         }
         assert(slabs_wf(c, n.perms@, nm, store, pb, src));
+    }
+
+    /// The slab at `a`, after `free` took back its live slot at `y` and left a slot of it live, as
+    /// `s1` on the partial list: the class is well formed, the slab replaced and `y` no longer live.
+    proof fn lemma_freed_slot(
+        o: SizeClass,
+        n: SizeClass,
+        store: RecordStore,
+        pb: PageBuddy,
+        src: SourceView,
+        a: int,
+        s1: Slab,
+        y: int,
+        slot: PointsToRaw,
+    )
+        requires
+            o.wf(store, pb, src),
+            pb.wf(src),
+            o.slabs().contains_key(a),
+            o.slabs()[a].holds(y),
+            forall|b: int| #[trigger] o.slabs().contains_key(b) && o.slabs()[b].within(y) ==> b == a,
+            n.class == o.class,
+            n.partial.wf(src.provenance),
+            n.full.wf(src.provenance),
+            n.partial.slabs() == o.partial.slabs().remove(a).insert(a, s1),
+            n.full.slabs() == o.full.slabs().remove(a),
+            s1.wf(),
+            s1.base() == o.slabs()[a].base(),
+            s1.bytes() == o.slabs()[a].bytes(),
+            s1.slot() == o.slabs()[a].slot(),
+            s1.count() == o.slabs()[a].count(),
+            s1.free_slots() == o.slabs()[a].free_slots().insert(o.slabs()[a].index(y)),
+            s1.owns(n.perms@),
+            n.perms@ == o.perms@.insert(y, slot),
+        ensures
+            n.wf(store, pb, src),
+            n.slabs() == o.slabs().insert(a, s1),
+            n.live() == o.live().remove(y),
+    {
+        let m = o.slabs();
+        let c = o.class as nat;
+        let s0 = m[a];
+        assert(slab_ok(c, o.perms@, s0, a, store, pb, src));
+        lemma_free_holds(s0, s1, y);
+        assert(n.slabs() =~= m.insert(a, s1));
+        assert forall|b: int| #[trigger] m.contains_key(b) && b != a implies !m[b].holds(y) by {}
+        lemma_live_freed(m, a, s1, y);
+        let nm = n.slabs();
+        assert forall|b: int| #[trigger] nm.contains_key(b) implies slab_ok(c, n.perms@, nm[b], b, store, pb, src) by {
+            if b != a {
+                assert(slab_ok(c, o.perms@, m[b], b, store, pb, src));
+                assert(!m[b].within(y));
+                m[b].lemma_owns_frame(o.perms@, n.perms@);
+            }
+        }
+        assert forall|x: int| #[trigger] n.perms@.contains_key(x) implies exists|b: int| #[trigger]
+            nm.contains_key(b) && nm[b].within(x) by {
+            if x == y {
+                assert(nm.contains_key(a) && nm[a].within(x));
+            } else {
+                assert(o.perms@.contains_key(x));
+                let b = choose|b: int| #[trigger] m.contains_key(b) && m[b].within(x);
+                assert(nm.contains_key(b) && nm[b].within(x));
+            }
+        }
+        assert forall|b: int, d: int|
+            #![trigger nm.contains_key(b), nm.contains_key(d)]
+            nm.contains_key(b) && nm.contains_key(d) && b != d implies nm[b].base()@.addr != nm[d].base()@.addr by {
+            assert(m.contains_key(b) && m.contains_key(d));
+        }
+        assert(slabs_wf(c, n.perms@, nm, store, pb, src));
+        assert(n.partial.slabs().dom().disjoint(n.full.slabs().dom()));
+    }
+
+    /// The slab at `a`, whose only live slot `y` was taken back, retired and off both lists, with the
+    /// permissions of its run gone from the class's: over a store, page buddy and source that keep
+    /// every other slab's record taken and its run held, the class is well formed, the slab gone and
+    /// `y` no longer live.
+    proof fn lemma_removed_slab(
+        o: SizeClass,
+        n: SizeClass,
+        store: RecordStore,
+        pb: PageBuddy,
+        src: SourceView,
+        store2: RecordStore,
+        pb2: PageBuddy,
+        src2: SourceView,
+        a: int,
+        y: int,
+    )
+        requires
+            o.wf(store, pb, src),
+            pb.wf(src),
+            o.slabs().contains_key(a),
+            o.slabs()[a].holds(y),
+            only_live(o.slabs()[a], y),
+            forall|b: int| #[trigger] o.slabs().contains_key(b) && o.slabs()[b].within(y) ==> b == a,
+            n.class == o.class,
+            n.partial.wf(src2.provenance),
+            n.full.wf(src2.provenance),
+            n.partial.slabs() == o.partial.slabs().remove(a),
+            n.full.slabs() == o.full.slabs().remove(a),
+            o.slabs()[a].outside(o.perms@, n.perms@),
+            forall|x: int| #[trigger] n.perms@.contains_key(x) ==> !o.slabs()[a].within(x),
+            src2.provenance == src.provenance,
+            forall|b: int| #[trigger]
+                o.slabs().contains_key(b) && b != a ==> {
+                    &&& store2.taken().contains(b)
+                    &&& !store2.pages().contains(o.slabs()[b].base()@.addr as int)
+                    &&& run_held(pb2, src2, o.slabs()[b].base()@.addr as int, slab_order(o.class()))
+                },
+        ensures
+            n.wf(store2, pb2, src2),
+            n.slabs() == o.slabs().remove(a),
+            n.live() == o.live().remove(y),
+            !n.heads().contains(o.slabs()[a].base()@.addr as int),
+    {
+        let m = o.slabs();
+        let c = o.class as nat;
+        let s0 = m[a];
+        assert(n.slabs() =~= m.remove(a));
+        assert forall|b: int| #[trigger] m.contains_key(b) && b != a implies !m[b].holds(y) by {}
+        lemma_live_removed(m, a, y);
+        let nm = n.slabs();
+        assert forall|b: int| #[trigger] nm.contains_key(b) implies slab_ok(c, n.perms@, nm[b], b, store2, pb2, src2) by {
+            assert(m.contains_key(b) && b != a);
+            assert(slab_ok(c, o.perms@, m[b], b, store, pb, src));
+            o.lemma_apart(store, pb, src, a, b);
+            m[b].lemma_owns_frame(o.perms@, n.perms@);
+        }
+        assert forall|x: int| #[trigger] n.perms@.contains_key(x) implies exists|b: int| #[trigger]
+            nm.contains_key(b) && nm[b].within(x) by {
+            assert(o.perms@.contains_key(x));
+            let b = choose|b: int| #[trigger] m.contains_key(b) && m[b].within(x);
+            assert(nm.contains_key(b) && nm[b].within(x));
+        }
+        assert forall|b: int, d: int|
+            #![trigger nm.contains_key(b), nm.contains_key(d)]
+            nm.contains_key(b) && nm.contains_key(d) && b != d implies nm[b].base()@.addr != nm[d].base()@.addr by {
+            assert(m.contains_key(b) && m.contains_key(d));
+        }
+        assert(slabs_wf(c, n.perms@, nm, store2, pb2, src2));
+        assert(n.partial.slabs().dom().disjoint(n.full.slabs().dom()));
+        assert(!n.heads().contains(s0.base()@.addr as int)) by {
+            if n.heads().contains(s0.base()@.addr as int) {
+                let b = choose|b: int| #[trigger] nm.contains_key(b) && nm[b].base()@.addr == s0.base()@.addr;
+                assert(m.contains_key(b) && m.contains_key(a));
+            }
+        }
     }
 
     /// Size class `c` with no slab, well formed over every store, page buddy and source.
@@ -1159,6 +1437,205 @@ impl SizeClass {
             });
         }
         Some((p, sperm))
+    }
+
+    /// Takes back the live slot at `p` with the permission to its bytes, and never refuses. A slab
+    /// left with a free slot goes to the partial list, changing neither the store, the page buddy
+    /// nor the source; a slab left with every slot free is retired, its run released and freed to
+    /// the page buddy and its record put back in the store.
+    pub fn free_small<S: SpanSource>(
+        &mut self,
+        store: &mut RecordStore,
+        pb: &mut PageBuddy,
+        src: &mut S,
+        p: *mut u8,
+        perm: Tracked<PointsToRaw>,
+    )
+        requires
+            old(self).wf(*old(store), *old(pb), old(src)@),
+            old(store).wf(*old(pb), old(src)@),
+            old(pb).wf(old(src)@),
+            old(self).live().contains(p@.addr as int),
+            perm@.is_range(p@.addr as int, class_size(old(self).class()) as int),
+            perm@.provenance() == old(src)@.provenance,
+        ensures
+            final(pb).wf(final(src)@),
+            final(store).wf(*final(pb), final(src)@),
+            final(self).wf(*final(store), *final(pb), final(src)@),
+            final(self).class() == old(self).class(),
+            final(pb).spares() == old(pb).spares(),
+            final(self).live() == old(self).live().remove(p@.addr as int),
+            ({
+                let a = old(self).slab_of(p@.addr as int);
+                let b = old(self).slabs()[a].base()@.addr as int;
+                if only_live(old(self).slabs()[a], p@.addr as int) {
+                    &&& final(self).slabs() == old(self).slabs().remove(a)
+                    &&& !final(self).heads().contains(b)
+                    &&& !final(pb).holds(b)
+                    &&& final(store).taken() == old(store).taken().remove(a)
+                    &&& final(store).pages().subset_of(old(store).pages())
+                    &&& forall|x: int, k: nat| #[trigger]
+                        run_held(*old(pb), old(src)@, x, k) && x != b && !old(store).pages().contains(x)
+                            ==> run_held(*final(pb), final(src)@, x, k)
+                } else {
+                    &&& final(self).slabs().dom() == old(self).slabs().dom()
+                    &&& *final(store) == *old(store)
+                    &&& *final(pb) == *old(pb)
+                    &&& final(src)@ == old(src)@
+                }
+            }),
+    {
+        let ghost prov = src@.provenance;
+        let ghost o = *self;
+        let ghost cl = self.class as nat;
+        let ghost y = p@.addr as int;
+        let ghost a0 = o.slab_of(y);
+        let ghost st0 = *store;
+        let ghost pb0 = *pb;
+        let ghost s0 = src@;
+        proof {
+            o.lemma_slab_of(st0, pb0, s0, y);
+            self.partial.lemma_view(prov);
+            self.full.lemma_view(prov);
+            assert(slab_ok(cl, o.perms@, o.slabs()[a0], a0, st0, pb0, s0));
+        }
+        let addr = p.addr();
+        let (rp, was_full) = match self.partial.find(addr, Ghost(prov)) {
+            Some(rp) => (rp, false),
+            None => match self.full.find(addr, Ghost(prov)) {
+                Some(rp) => (rp, true),
+                None => {
+                    proof {
+                        if o.full.slabs().contains_key(a0) {
+                            assert(o.full.seq().contains(a0));
+                        } else {
+                            assert(o.partial.seq().contains(a0));
+                        }
+                        assert(false);
+                    }
+                    return ;
+                },
+            },
+        };
+        let ghost a = rp@.addr as int;
+        proof {
+            if was_full {
+                assert(o.full.slabs().contains_key(a));
+            } else {
+                assert(o.partial.slabs().contains_key(a));
+                assert(!o.full.slabs().contains_key(a));
+            }
+            assert(o.slabs().contains_key(a) && o.slabs()[a].within(y));
+            assert(a == a0);
+        }
+        let Tracked(mut rperm) = if was_full {
+            self.full.remove(rp, Ghost(prov))
+        } else {
+            self.partial.remove(rp, Ghost(prov))
+        };
+        let mut rec = ptr_mut_read(rp, Tracked(&mut rperm));
+        let ghost sl0 = rec.slab;
+        let ghost p0 = self.perms@;
+        proof {
+            assert(sl0 == o.slabs()[a]);
+        }
+        rec.slab.free(addr, perm, Tracked(self.perms.borrow_mut()));
+        let ghost sl1 = rec.slab;
+        let ghost p1 = self.perms@;
+        proof {
+            lemma_free_holds(sl0, sl1, y);
+            self.partial.lemma_view(prov);
+            self.full.lemma_view(prov);
+        }
+        if rec.slab.is_empty() {
+            let whole = rec.slab.retire(Tracked(self.perms.borrow_mut()));
+            let q = rec.slab.start().addr();
+            let k = order(self.class);
+            let ghost qi = q as int;
+            let ghost kk = k as nat;
+            proof {
+                assert(run_held(pb0, s0, qi, kk));
+            }
+            pb.release_run(src, q, k, whole);
+            let ghost pb1 = *pb;
+            let ghost s1 = src@;
+            pb.free_run(src, q);
+            let ghost pb2 = *pb;
+            let ghost s2 = src@;
+            proof {
+                assert(freed(pb1, pb2, s1, s2, qi));
+                assert(!pb2.holds(qi));
+                assert forall|x: int, j: nat| #[trigger]
+                    run_held(pb0, s0, x, j) && x != qi implies run_held(pb2, s2, x, j) by {
+                    lemma_released_keeps_held(pb0, s0, qi, kk, x, j);
+                    assert(run_held(pb1, s1, x, j));
+                    lemma_freed_keeps_held(pb1, pb2, s1, s2, qi, x, j);
+                }
+                assert forall|b: int| #[trigger] store.pages().contains(b) implies run_held(pb2, s2, b, 0) by {
+                    store.lemma_view(pb0, s0);
+                    assert(run_held(pb0, s0, b, 0));
+                }
+                store.lemma_frame(pb0, s0, pb2, s2);
+            }
+            store.put(pb, src, rp, Tracked(rperm));
+            proof {
+                let pb3 = *pb;
+                let s3 = src@;
+                assert(!pb3.holds(qi)) by {
+                    let r = record_page(a);
+                    if !(exists|x: int| #[trigger] st0.taken().contains(x) && x != a && record_page(x) == r) {
+                        let cr = span_of(r);
+                        let cq = span_of(qi);
+                        assert(gave_back(pb2, pb3, s2, s3, r));
+                        st0.lemma_view(pb2, s2);
+                        assert(st0.taken().contains(a));
+                        assert(run_held(pb2, s2, r, 0));
+                        if pb3.holds(qi) {
+                            assert(pb2.used().contains_key(cq));
+                            if cq == cr {
+                                assert(pb2.used()[cq].contains_key(page_of(qi)));
+                            } else {
+                                assert(pb3.used()[cq] == pb2.used()[cq]);
+                            }
+                        }
+                    }
+                }
+                assert forall|x: int, j: nat| #[trigger]
+                    run_held(pb0, s0, x, j) && x != qi && !st0.pages().contains(x) implies run_held(pb3, s3, x, j) by {
+                    assert(run_held(pb2, s2, x, j));
+                }
+                assert forall|b: int| #[trigger]
+                    o.slabs().contains_key(b) && b != a implies {
+                    &&& store.taken().contains(b)
+                    &&& !store.pages().contains(o.slabs()[b].base()@.addr as int)
+                    &&& run_held(pb3, s3, o.slabs()[b].base()@.addr as int, slab_order(o.class()))
+                } by {
+                    assert(slab_ok(cl, o.perms@, o.slabs()[b], b, st0, pb0, s0));
+                    assert(o.slabs()[b].base()@.addr != qi);
+                }
+                assert(sl0.outside(o.perms@, self.perms@)) by {
+                    assert forall|x: int|
+                        #![trigger self.perms@.contains_key(x)]
+                        #![trigger o.perms@.contains_key(x)]
+                        !sl0.within(x) implies (self.perms@.contains_key(x) <==> o.perms@.contains_key(x)) && (
+                        o.perms@.contains_key(x) ==> self.perms@[x] == o.perms@[x]) by {
+                        assert(p1.contains_key(x) <==> p0.contains_key(x));
+                    }
+                }
+                assert(self.partial.slabs() =~= o.partial.slabs().remove(a));
+                assert(self.full.slabs() =~= o.full.slabs().remove(a));
+                SizeClass::lemma_removed_slab(o, *self, st0, pb0, s0, *store, pb3, s3, a, y);
+            }
+            return ;
+        }
+        ptr_mut_write(rp, Tracked(&mut rperm), rec);
+        self.partial.push(rp, Tracked(rperm), Ghost(prov));
+        proof {
+            assert(self.partial.slabs() =~= o.partial.slabs().remove(a).insert(a, sl1));
+            assert(self.full.slabs() =~= o.full.slabs().remove(a));
+            SizeClass::lemma_freed_slot(o, *self, st0, pb0, s0, a, sl1, y, perm@);
+            assert(self.slabs().dom() =~= o.slabs().dom());
+        }
     }
 }
 

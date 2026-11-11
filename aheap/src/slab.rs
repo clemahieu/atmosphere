@@ -1065,6 +1065,14 @@ impl Slab {
         self.free == self.count
     }
 
+    /// The start of the run.
+    pub fn start(&self) -> (r: *mut u8)
+        ensures
+            r == self.base(),
+    {
+        self.base
+    }
+
     /// The address `a` is in the run.
     pub fn holds_address(&self, a: usize) -> (r: bool)
         ensures
