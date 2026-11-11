@@ -1153,7 +1153,6 @@ pub fn serial_write_byte(byte: u8, Tracked(steps): Tracked<&mut Steps>)
 
 } // verus!
 
-#[cfg_attr(verus_keep_ghost, verifier::external)]
 pub fn flush_every_context(_model: Tracked<&mut TlbModel>, _core: usize) {
     unsafe {
         core::arch::asm!("dsb ishst", "tlbi vmalle1", "dsb ish", "isb", options(nostack, preserves_flags));
