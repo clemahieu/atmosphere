@@ -1304,12 +1304,13 @@ impl CapKernel {
     /// slot 257, delete the thread's capability, retype the thread's block, which unbinds the thread,
     /// delete the process's capability, retype the leaf in the process's table three times, which
     /// unlinks it, slices its one capability and frees it, load the process's space on core 0 and point
-    /// core 0's base register at it as a core that ran it would have, move core 0 to the root's space as
-    /// a core does before it runs another process, retype the process's block, which retires the space
-    /// now that no base register names it, retype it again, which refuses since core 0 still depends on
-    /// the space, have core 0 acknowledge the retire's flush, retype the block a third time, which frees
-    /// it, and retype a process at the same block into slot 257 again. Each step returns what a teardown driven by retype says, in this order, and
-    /// at the end the root holds a capability to a live process at the same block. See
+    /// core 0's base register at it as a core that ran it would have, point core 0's base register at the
+    /// kernel's own root, which no space's block holds, as an idle core does once the process it ran is
+    /// dead, retype the process's block, which retires the space now that no base register names it,
+    /// retype it again, which refuses since core 0 still depends on the space, have core 0 acknowledge
+    /// the retire's flush, retype the block a third time, which frees it, and retype a process at the
+    /// same block into slot 257 again. Each step returns what a teardown driven by retype says, in this
+    /// order, and at the end the root holds a capability to a live process at the same block. See
     /// design/teardown-driven-by-retype/.
     #[verifier::spinoff_prover]
     pub fn witness_process_block_retyped(
@@ -1325,9 +1326,12 @@ impl CapKernel {
         frame: Ghost<usize>,
         present: Ghost<Seq<bool>>,
         base: usize,
+        kernel_root: usize,
     ) -> (ret: (bool, bool, ReclaimStep, bool, ReclaimStep, ReclaimStep, ReclaimStep, ReclaimStep, ReclaimStep, ReclaimStep, bool))
         requires
             old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
+            kernel_root % PAGE_SZ == 0,
+            kernel_root % TABLE_PAGE_BYTES != SPACE_ROOT_PAGE * PAGE_SZ,
             image_tables_bound(image@) + 2 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
         ensures
@@ -1732,21 +1736,16 @@ impl CapKernel {
             assert(n7.spaces == m7.spaces);
         }
 
-        // Core 0 leaves the dead process's space for the root's, as a core does before it runs another
-        // process's thread, so no base register names the space a retire would end.
-        let pcid = self.load_space(0, process, Tracked(&mut steps));
-        let ghost k7 = *self;
+        // Core 0 leaves the dead process's space for the kernel's own root, under id 0, which no space is
+        // given, so no base register names the space a retire would end.
+        let named = crate::arch::load_translation_root(0, kernel_root, 0);
         proof {
-            // The load left core 0's register on the dead process's space, and a register names only a
-            // space its core is listed on that is not retired.
-            assert(k7.cores@[0].space == Some(base));
-            k7.lemma_named_depends(0, base);
+            n7.lemma_no_space_root(kernel_root);
         }
-        let named = crate::arch::load_translation_root(0, process + SPACE_ROOT_PAGE * PAGE_SZ, pcid);
-        self.switch_space(0, Some(process), named);
+        self.switch_space(0, None, named);
         let ghost l7 = *self;
         proof {
-            assert(l7.spaces == k7.spaces);
+            assert(l7.spaces == n7.spaces);
             assert(l7.loaded(0, base));
             assert(l7.spaces.loaded@[base].value().retired == 0);
             assert(l7.depends(0, base));
@@ -1757,10 +1756,9 @@ impl CapKernel {
                 }
             }
             assert(!l7.process_space_named(base));
-            // Neither load listed another core on the dead process's space.
+            // The load listed no other core on the dead process's space.
             assert forall|d: int| 0 < d < NUM_CPUS implies !#[trigger] l7.loaded(d, base) by {
-                assert(l7.loaded(d, base) == k7.loaded(d, base));
-                assert(k7.loaded(d, base) == n7.loaded(d, base));
+                assert(l7.loaded(d, base) == n7.loaded(d, base));
                 assert(n7.loaded(d, base) == m7.loaded(d, base));
                 assert(m7.loaded(d, base) == r7.loaded(d, base));
                 lemma_no_core_listed(d as u32);

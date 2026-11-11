@@ -280,6 +280,24 @@ impl CapKernel {
         pcid
     }
 
+    /// A root at any offset of a table block but a space's root page is no space's root, since every
+    /// space starts a block of TABLE_PAGE_BYTES: switch_space may take such a root for None.
+    pub proof fn lemma_no_space_root(&self, root: usize)
+        requires
+            self.wf(),
+            root % TABLE_PAGE_BYTES != SPACE_ROOT_PAGE * PAGE_SZ,
+        ensures
+            forall|s: usize| #[trigger] self.spaces.roots@.contains_key(s) ==> root != s + SPACE_ROOT_PAGE * PAGE_SZ,
+    {
+        assert forall|s: usize| #[trigger] self.spaces.roots@.contains_key(s) implies root != s + SPACE_ROOT_PAGE * PAGE_SZ by {
+            assert(space_wf(&self.list, &self.spaces, &self.blocks, s));
+            let q = s as int / TABLE_PAGE_BYTES as int;
+            lemma_fundamental_div_mod(s as int, TABLE_PAGE_BYTES as int);
+            lemma_mod_multiples_vanish(q, (SPACE_ROOT_PAGE * PAGE_SZ) as int, TABLE_PAGE_BYTES as int);
+            lemma_small_mod((SPACE_ROOT_PAGE * PAGE_SZ) as nat, TABLE_PAGE_BYTES as nat);
+        }
+    }
+
     /// Core c's base register now names the root of `space`, or a root that is no space's for None, as
     /// the token from the glue that wrote it attests. A register names only a loaded space that is not
     /// retired, and a retire refuses while one names it, so a core that has acknowledged a retire never
