@@ -121,12 +121,12 @@ th { font-weight: 600; color: var(--ink-2); border-top: 0; }
 .node.question rect, .node.question path { stroke: var(--serious); stroke-width: 3; }
 .node.deferred rect, .node.deferred path { stroke-dasharray: 3 3; }
 .node.deferred text { fill: var(--muted); }
+.node.lit rect, .node.lit path { stroke: var(--ink); stroke-width: 2; }
 .node.chosen rect, .node.chosen path { stroke: var(--ink); stroke-width: 3; }
 .node:focus-visible { outline: 2px solid var(--open); outline-offset: 2px; }
 .edge { fill: none; stroke: var(--edge); stroke-width: 1.25; }
 .edge.through { stroke-dasharray: 4 3; }
-svg.focus .node:not(.lit), svg.focus .edge:not(.lit) { opacity: 0.2; }
-svg.focus .edge.lit { stroke: var(--ink-2); stroke-width: 1.75; }
+.edge.lit { stroke: var(--ink); stroke-width: 2; }
 .tip.wide { white-space: normal; width: max-content; max-width: 380px; z-index: 1; }
 
 #detail { position: fixed; top: 0; right: 0; bottom: 0; width: min(560px, 100vw); z-index: 2; overflow-y: auto; padding: 16px 20px 32px; background: var(--surface); border-left: 1px solid var(--border); box-shadow: -8px 0 24px rgba(0, 0, 0, 0.14); }
@@ -441,7 +441,7 @@ function drawLists() {
    layer runs down a trunk its blocker shares with its other long waits, so a layer holds bends as
    well as issues. A layer's order is the one of SWEEPS with the fewest crossings, and each vertex
    then sits as near the mean of those it is joined to as its neighbours in the layer leave room. */
-const NODE = 22, LAYER = 56, ROW = 28, GAP = 6, EDGE = 3, SMALLEST = 0.85, SWEEPS = 24, SETTLES = 40;
+const NODE = 22, LAYER = 56, ROW = 28, GAP = 6, EDGE = 3, SMALLEST = 0.85, SWEEPS = 24, SETTLES = 40, LINGER = 90;
 const FONT = "11px ui-monospace, SFMono-Regular, Menlo, monospace";
 const STATES = {ready: "ready", flying: "in progress", waiting: "waiting", question: "question for you", deferred: "deferred"};
 const state = node => node.status === "in_progress" ? "flying" : node.status === "blocked" ? "question" : node.status === "deferred" ? "deferred" : node.ready ? "ready" : "waiting";
@@ -452,7 +452,7 @@ const shape = (type, wide, tall = NODE) => type === "epic"
   ? s("path", {d: `M${tall * 0.4},0H${wide - tall * 0.4}L${wide},${tall / 2}L${wide - tall * 0.4},${tall}H${tall * 0.4}L0,${tall / 2}Z`})
   : s("rect", {width: wide, height: tall, rx: tall / 2});
 const meter = document.createElement("canvas").getContext("2d");
-let arranged = null, arrangedFor = "", drawn = "";
+let arranged = null, arrangedFor = "", drawn = "", lingering = 0;
 
 function arrange(nodes) {
   const byId = new Map(nodes.map(node => [node.id, node]));
@@ -582,20 +582,25 @@ function drawGraph() {
   const width = Math.max(room, arranged.width) + 2 * EDGE, tall = Math.max(height, 0) + 2 * EDGE;
   const svg = s("svg", {viewBox: `0 0 ${tenth(width)} ${tall}`, height: tenth(tall * scale), role: "img", "aria-label": `The ${data.graph.length} issues not closed and the ${waits.length} waits between them.`},
     s("g", {transform: `translate(${EDGE},${EDGE})`},
-      lines.map(([, line]) => line), rows,
+      s("g", {}, lines.map(([, line]) => line)), rows,
       layers.flat().filter(vertex => vertex.node).map(vertex => mark(vertex.node, left + vertex.x - vertex.w / 2, top + vertex.rank * LAYER))));
   svg.style.width = `${Math.floor(width * scale)}px`;
 
-  // An issue under the pointer lights everything it waits on, however far up, and everything that waits on it.
+  /* An issue the pointer rests on lights everything it waits on, however far up, and everything
+     that waits on it: their outlines and the lines between them darken and the rest stays as it
+     is, so the graph does not flash as the pointer crosses it. A pointer only passing lights nothing. */
   const reach = (id, links) => { const found = new Set([id]); for (const at of found) for (const next of links.get(at) ?? []) found.add(next); return found; };
-  const dim = () => { svg.classList.remove("focus"); tip.hidden = true; };
+  const dim = () => { clearTimeout(lingering); for (const lit of svg.querySelectorAll(".lit")) lit.classList.remove("lit"); tip.hidden = true; };
   for (const node of data.graph) {
     const made = marks.get(node.id);
     const light = () => {
       const up = reach(node.id, above), down = reach(node.id, under);
-      svg.classList.add("focus");
       for (const [id, other] of marks) other.classList.toggle("lit", up.has(id) || down.has(id));
-      for (const [wait, line] of lines) line.classList.toggle("lit", (up.has(wait.from) && up.has(wait.to)) || (down.has(wait.from) && down.has(wait.to)));
+      for (const [wait, line] of lines) {
+        const lit = (up.has(wait.from) && up.has(wait.to)) || (down.has(wait.from) && down.has(wait.to));
+        line.classList.toggle("lit", lit);
+        if (lit) line.parentNode.append(line);  // over the lines that are not
+      }
       tip.replaceChildren(
         h("div", {}, h("span", {class: "id"}, node.id), h("span", {class: "when"}, `${node.type} · P${node.priority} · ${STATES[state(node)]}`)),
         h("div", {}, node.title),
@@ -607,8 +612,12 @@ function drawGraph() {
       tip.style.left = `${Math.max(0, at.right + 8 + tip.offsetWidth > frame.right ? at.left - frame.left - 8 - tip.offsetWidth : at.right - frame.left + 8)}px`;
       tip.style.top = `${at.top - frame.top + (at.height - tip.offsetHeight) / 2}px`;
     };
-    for (const [on, off] of [["pointerenter", "pointerleave"], ["focus", "blur"]]) { made.addEventListener(on, light); made.addEventListener(off, dim); }
+    for (const [on, off] of [["pointerenter", "pointerleave"], ["focus", "blur"]]) {
+      made.addEventListener(on, () => { clearTimeout(lingering); lingering = setTimeout(light, LINGER); });
+      made.addEventListener(off, dim);
+    }
   }
+  clearTimeout(lingering);
   tip.hidden = true;
   box.replaceChildren(svg);
   choose();
