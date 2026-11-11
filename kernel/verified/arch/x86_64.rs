@@ -6,9 +6,10 @@ use vstd::prelude::*;
 
 verus! {
 
-use crate::capability::kernel::{CommandBuffers, Flushed, Translating};
+use crate::capability::kernel::CommandBuffers;
+use crate::arch::{Flushed, Translating};
 #[cfg(verus_keep_ghost)]
-use crate::capability::kernel::FlushTarget;
+use crate::arch::FlushTarget;
 use crate::capability::operation::Outcome;
 #[cfg(verus_keep_ghost)]
 use crate::capability::console::PRINT_BYTES;
@@ -621,8 +622,8 @@ pub fn page_entry2usize(page_entry: &PageEntry, level: usize) -> (ret: usize)
 // external_body(glue): only the hardware can attest a flush, so only this makes the token
 pub fn flush_every_context(core: usize, epoch: usize) -> (ret: Tracked<Flushed>)
     ensures
-        ret@.target == FlushTarget::Core(core as int),
-        ret@.epoch == epoch as int,
+        ret@.target() == FlushTarget::Core(core as int),
+        ret@.epoch() == epoch as int,
 {
     unsafe {
         core::arch::asm!(
@@ -649,9 +650,9 @@ pub fn load_translation_root(core: usize, root: usize, id: usize) -> (ret: Track
         root % PAGE_SZ == 0,
         id < PCID_MAX,
     ensures
-        ret@.core == core as int,
-        ret@.root == root,
-        ret@.tag == id,
+        ret@.core() == core as int,
+        ret@.root() == root,
+        ret@.tag() == id,
 {
     let cr4: u64;
     unsafe {
@@ -714,8 +715,8 @@ pub fn invalidate_iommu_all(commands: &CommandBuffers, i: usize, epoch: usize, T
     ensures
         final(steps).count == old(steps).count + 1,
         ret.0 == (commands.buffers@[i as int].tail + IOMMU_INVALIDATE_COMMANDS) % commands.buffers@[i as int].len as int,
-        ret.1@.target == FlushTarget::Iommu(i as int),
-        ret.1@.epoch == epoch as int,
+        ret.1@.target() == FlushTarget::Iommu(i as int),
+        ret.1@.epoch() == epoch as int,
 {
     let b = *commands.buffers.get(i);
     let slot = |k: usize| (b.ring + k * IOMMU_COMMAND_SIZE) as *mut u64;

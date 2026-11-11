@@ -10,6 +10,9 @@ use vstd::prelude::*;
 verus! {
 
 use crate::arch::invalidate_iommu_all;
+use crate::arch::Flushed;
+#[cfg(verus_keep_ghost)]
+use crate::arch::FlushTarget;
 use crate::array::Array;
 use crate::capability::block::*;
 use crate::capability::device::*;
@@ -88,15 +91,6 @@ pub open spec fn names_wf(space: Option<usize>, generation: usize, lists: Map<us
             &&& id_generation(lists[s].value().ids@[c]) == generation
         },
     }
-}
-
-/// What a write of a core's page-table base register proves: core `core` now translates through the
-/// table whose top level is at `root`, filling its TLB under tag `tag`, the PCID or ASID written with
-/// it. Only arch::load_translation_root makes one.
-pub tracked struct Translating {
-    pub ghost core: int,
-    pub ghost root: usize,
-    pub ghost tag: usize,
 }
 
 /// No word is ahead of its core's generation, so a new generation leaves no id valid. A valid id is one
@@ -471,20 +465,6 @@ pub proof fn lemma_ids_named(pre: Seq<CoreState>, post: Seq<CoreState>, lists: M
     }
 }
 
-/// What a flush cleared: every context on a core, or all of an IOMMU's IOTLB.
-pub ghost enum FlushTarget {
-    Core(int),
-    Iommu(int),
-}
-
-/// What a flush of `target`, started when the epoch was `epoch`, proves. Only flush glue can make one,
-/// so only it can clear a model of what the target holds: arch::flush_every_context for a core,
-/// arch::invalidate_iommu_all for an IOMMU.
-pub tracked struct Flushed {
-    pub ghost target: FlushTarget,
-    pub ghost epoch: int,
-}
-
 /// Something a core may hold in its TLB or paging-structure caches: an entry of this space's tables
 /// leading to this page, which is a frame's page or the base page of a table's block.
 pub ghost struct TlbEntry {
@@ -569,8 +549,8 @@ impl CommandBuffers {
             final(steps).count <= old(steps).count + 1,
             final(self).wf(present),
             final(self).pages == old(self).pages,
-            ret@.target == FlushTarget::Iommu(i as int),
-            ret@.epoch == epoch as int,
+            ret@.target() == FlushTarget::Iommu(i as int),
+            ret@.epoch() == epoch as int,
     {
         proof {
             reveal(CommandBuffers::wf);
@@ -2260,8 +2240,8 @@ impl CapKernel {
             old(self).wf(),
             i < NUM_IOMMUS,
             old(self).iommu_present(i as int),
-            flushed.target == FlushTarget::Iommu(i as int),
-            flushed.epoch == epoch,
+            flushed.target() == FlushTarget::Iommu(i as int),
+            flushed.epoch() == epoch,
             old(self).iommu_acked(i as int) <= epoch <= old(self).flush_epoch,
         ensures
             final(steps).count <= old(steps).count + ACKNOWLEDGE_IOMMU_STEPS,
@@ -2379,8 +2359,8 @@ impl CapKernel {
         requires
             old(self).wf(),
             c < NUM_CPUS,
-            flushed.target == FlushTarget::Core(c as int),
-            flushed.epoch == epoch,
+            flushed.target() == FlushTarget::Core(c as int),
+            flushed.epoch() == epoch,
             old(self).acked(c as int) <= epoch <= old(self).flush_epoch,
         ensures
             final(steps).count <= old(steps).count + ACKNOWLEDGE_STEPS,

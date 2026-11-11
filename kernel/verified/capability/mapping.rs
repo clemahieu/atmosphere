@@ -9,7 +9,7 @@ use vstd::prelude::*;
 
 verus! {
 
-use crate::arch::flush_every_context;
+use crate::arch::{flush_every_context, Translating};
 #[cfg(verus_keep_ghost)]
 use crate::capability::block::*;
 use crate::capability::kernel::*;
@@ -335,18 +335,18 @@ impl CapKernel {
         requires
             old(self).wf(),
             c < NUM_CPUS,
-            t.core == c as int,
+            t.core() == c as int,
             match space {
                 Some(s) => {
-                    &&& t.root == s + SPACE_ROOT_PAGE * PAGE_SZ
+                    &&& t.root() == s + SPACE_ROOT_PAGE * PAGE_SZ
                     &&& old(self).loaded(c as int, s)
                     &&& old(self).spaces.loaded@[s].value().retired == 0
                     &&& holds_id(old(self).cores@, old(self).spaces.loaded@, c as int, s)
-                    &&& t.tag == id_pcid(old(self).spaces.loaded@[s].value().ids@[c as int])
+                    &&& t.tag() == id_pcid(old(self).spaces.loaded@[s].value().ids@[c as int])
                 },
                 None => {
-                    &&& t.root % TABLE_PAGE_BYTES != SPACE_ROOT_PAGE * PAGE_SZ
-                    &&& t.tag == KERNEL_TAG
+                    &&& t.root() % TABLE_PAGE_BYTES != SPACE_ROOT_PAGE * PAGE_SZ
+                    &&& t.tag() == KERNEL_TAG
                 },
             },
         ensures
