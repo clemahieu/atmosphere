@@ -726,29 +726,62 @@ fn completion_wait_command(address: u64, data: u64) -> (ret: IommuCommand)
     ((address & 0x000f_ffff_ffff_fff8u64) | 1u64 | (IOMMU_COMPLETION_WAIT << 60u64), data)
 }
 
-/// What one invalidate stored into an IOMMU's command ring: each slot it wrote, by its index from the
-/// ring's start, and the command it wrote there. It begins empty and only store_command adds to it,
-/// so a slot it names holds that command until the IOMMU reads it.
-tracked struct QueuedCommands {
-    #[cfg(verus_keep_ghost)]
-    ghost ring: usize,
-    #[cfg(verus_keep_ghost)]
-    ghost slots: Map<int, IommuCommand>,
-}
+use queue::{QueuedCommands, store_command};
 
-/// Stores `command` into slot `slot` of the ring at `queued.ring`, whose address is `address`.
-#[verifier(external_body)]
-// external_body(glue): the IOMMU reads the ring, so only this can say what one of its slots holds
-fn store_command(address: usize, command: IommuCommand, Tracked(queued): Tracked<&mut QueuedCommands>, Ghost(slot): Ghost<int>)
-    requires
-        address == old(queued).ring + slot * IOMMU_COMMAND_SIZE,
-    ensures
-        final(queued).ring == old(queued).ring,
-        final(queued).slots == old(queued).slots.insert(slot, command),
-{
-    unsafe {
-        core::ptr::write_volatile(address as *mut u64, command.0);
-        core::ptr::write_volatile((address as *mut u64).add(1), command.1);
+/// The record of what one invalidate stored into an IOMMU's command ring, alone in a module with the
+/// one constructor and the one store, so its fields are private to them: code outside cannot write a
+/// record by literal, and a record names a slot only once store_command has written it.
+mod queue {
+    use vstd::prelude::*;
+    use super::IommuCommand;
+    #[cfg(verus_keep_ghost)]
+    use super::IOMMU_COMMAND_SIZE;
+
+    /// What one invalidate stored into an IOMMU's command ring: the ring's address, each slot it
+    /// wrote, by its index from the ring's start, and the command it wrote there. new makes it empty
+    /// and only store_command adds to it, so a slot it names holds that command until the IOMMU reads
+    /// it.
+    // Only specs read the fields, and a cargo build erases specs, so only Verus compiles them.
+    pub tracked struct QueuedCommands {
+        #[cfg(verus_keep_ghost)]
+        ghost ring: usize,
+        #[cfg(verus_keep_ghost)]
+        ghost slots: Map<int, IommuCommand>,
+    }
+
+    impl QueuedCommands {
+        pub closed spec fn ring(self) -> usize {
+            self.ring
+        }
+
+        pub closed spec fn slots(self) -> Map<int, IommuCommand> {
+            self.slots
+        }
+
+        /// A record of the ring at `ring` with no slot written.
+        pub proof fn new(ring: usize) -> (tracked ret: QueuedCommands)
+            ensures
+                ret.ring() == ring,
+                ret.slots() == Map::<int, IommuCommand>::empty(),
+        {
+            QueuedCommands { ring, slots: Map::empty() }
+        }
+    }
+
+    /// Stores `command` into slot `slot` of the ring at `queued.ring()`, whose address is `address`.
+    #[verifier(external_body)]
+    // external_body(glue): the IOMMU reads the ring, so only this can say what one of its slots holds
+    pub fn store_command(address: usize, command: IommuCommand, Tracked(queued): Tracked<&mut QueuedCommands>, Ghost(slot): Ghost<int>)
+        requires
+            address == old(queued).ring() + slot * IOMMU_COMMAND_SIZE,
+        ensures
+            final(queued).ring() == old(queued).ring(),
+            final(queued).slots() == old(queued).slots().insert(slot, command),
+    {
+        unsafe {
+            core::ptr::write_volatile(address as *mut u64, command.0);
+            core::ptr::write_volatile((address as *mut u64).add(1), command.1);
+        }
     }
 }
 
@@ -776,11 +809,11 @@ fn submit_invalidate(
         tail_register == commands.buffers@[i as int].mmio + IOMMU_COMMAND_TAIL,
         tail == (commands.buffers@[i as int].tail + IOMMU_INVALIDATE_COMMANDS) % commands.buffers@[i as int].len as int * IOMMU_COMMAND_SIZE,
         completion == commands.buffers@[i as int].completion,
-        queued.ring == commands.buffers@[i as int].ring,
-        queued.slots.contains_key(commands.buffers@[i as int].tail as int),
-        queued.slots[commands.buffers@[i as int].tail as int] == invalidate_all_command_spec(),
-        queued.slots.contains_key((commands.buffers@[i as int].tail + 1) % commands.buffers@[i as int].len as int),
-        queued.slots[(commands.buffers@[i as int].tail + 1) % commands.buffers@[i as int].len as int]
+        queued.ring() == commands.buffers@[i as int].ring,
+        queued.slots().contains_key(commands.buffers@[i as int].tail as int),
+        queued.slots()[commands.buffers@[i as int].tail as int] == invalidate_all_command_spec(),
+        queued.slots().contains_key((commands.buffers@[i as int].tail + 1) % commands.buffers@[i as int].len as int),
+        queued.slots()[(commands.buffers@[i as int].tail + 1) % commands.buffers@[i as int].len as int]
             == completion_wait_command_spec(completion as u64, 1),
     ensures
         final(model).len() == old(model).len(),
@@ -822,7 +855,7 @@ pub fn invalidate_iommu_all(commands: &CommandBuffers, i: usize, Tracked(model):
     let first = b.tail;
     let second = (b.tail + 1) % b.len;
     let next = (b.tail + IOMMU_INVALIDATE_COMMANDS) % b.len;
-    let tracked mut queued = QueuedCommands { ring: b.ring, slots: Map::empty() };
+    let tracked mut queued = QueuedCommands::new(b.ring);
     store_command(b.ring + first * IOMMU_COMMAND_SIZE, invalidate_all_command(), Tracked(&mut queued), Ghost(first as int));
     store_command(b.ring + second * IOMMU_COMMAND_SIZE, completion_wait_command(b.completion as u64, 1), Tracked(&mut queued), Ghost(second as int));
     proof {
