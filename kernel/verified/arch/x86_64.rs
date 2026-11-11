@@ -709,17 +709,117 @@ pub const IOMMU_COMPLETION_WAIT: u64 = 0x01;
 /// The command buffer tail register's offset in an IOMMU's MMIO registers. 48882 §3.4.15.
 pub const IOMMU_COMMAND_TAIL: usize = 0x2008;
 
-/// Invalidates all of IOMMU i's caches and returns once it has finished, with the tail after the
-/// commands it wrote, and empties i's set in `model`: the caller holds the lock, so no table changes
-/// while this runs, and once the invalidate finishes i holds nothing the tables no longer say. It writes INVALIDATE_IOMMU_ALL then COMPLETION_WAIT at i's tail, clears the
-/// completion word, moves the tail register past both and spins until the IOMMU stores to the word. Only
-/// this writes i's ring, and each call waits for the IOMMU to read all it wrote, so the ring is empty
-/// on entry and two commands fit in it. The kernel maps memory at its physical address, as the entries
-/// it writes assume, so the completion word's address is the one the IOMMU stores to. Waiting here is
-/// not waiting for a core: design/flush-without-waiting/. The wait is on the IOMMU, which finishes two
-/// commands in a time the state does not set, so it is one unit: design/one-lock-bounded-steps/.
+/// A command as the ring holds it: the first quadword, with the opcode in bits 63:60, then the second.
+/// 48882 Rev 3.11, Figure 43.
+pub type IommuCommand = (u64, u64);
+
+/// INVALIDATE_IOMMU_ALL: the opcode in bits 63:60 of the first quadword and every other bit reserved,
+/// so zero. 48882 Rev 3.11, Figure 51 and Table 41.
+pub open spec fn invalidate_all_command_spec() -> IommuCommand {
+    (IOMMU_INVALIDATE_ALL << 60u64, 0)
+}
+
+fn invalidate_all_command() -> (ret: IommuCommand)
+    ensures
+        ret == invalidate_all_command_spec(),
+{
+    (IOMMU_INVALIDATE_ALL << 60u64, 0)
+}
+
+/// COMPLETION_WAIT with s set and f and i clear: the opcode in bits 63:60 of the first quadword, the
+/// store address's bits 51:3 in place, s at bit 0, and the store data as the second quadword. 48882
+/// Rev 3.11, Figure 44 and Table 34.
+pub open spec fn completion_wait_command_spec(address: u64, data: u64) -> IommuCommand {
+    ((address & 0x000f_ffff_ffff_fff8u64) | 1u64 | (IOMMU_COMPLETION_WAIT << 60u64), data)
+}
+
+fn completion_wait_command(address: u64, data: u64) -> (ret: IommuCommand)
+    ensures
+        ret == completion_wait_command_spec(address, data),
+{
+    ((address & 0x000f_ffff_ffff_fff8u64) | 1u64 | (IOMMU_COMPLETION_WAIT << 60u64), data)
+}
+
+/// What one invalidate stored into an IOMMU's command ring: each slot it wrote, by its index from the
+/// ring's start, and the command it wrote there. It begins empty and only store_command adds to it,
+/// so a slot it names holds that command until the IOMMU reads it.
+tracked struct QueuedCommands {
+    #[cfg(verus_keep_ghost)]
+    ghost ring: usize,
+    #[cfg(verus_keep_ghost)]
+    ghost slots: Map<int, IommuCommand>,
+}
+
+/// Stores `command` into slot `slot` of the ring at `queued.ring`, whose address is `address`.
+#[verifier(external_body)]
+// external_body(glue): the IOMMU reads the ring, so only this can say what one of its slots holds
+fn store_command(address: usize, command: IommuCommand, Tracked(queued): Tracked<&mut QueuedCommands>, Ghost(slot): Ghost<int>)
+    requires
+        address == old(queued).ring + slot * IOMMU_COMMAND_SIZE,
+    ensures
+        final(queued).ring == old(queued).ring,
+        final(queued).slots == old(queued).slots.insert(slot, command),
+{
+    unsafe {
+        core::ptr::write_volatile(address as *mut u64, command.0);
+        core::ptr::write_volatile((address as *mut u64).add(1), command.1);
+    }
+}
+
+/// Hands IOMMU i the INVALIDATE_IOMMU_ALL and the COMPLETION_WAIT queued at its tail and returns once
+/// the IOMMU has finished them, emptying i's set in `model`. It clears the completion word, orders
+/// that and the commands before the store of `tail` into the tail register at `tail_register`, which
+/// moves the tail past both, and spins until the IOMMU stores the wait's nonzero data to the word.
+/// COMPLETION_WAIT finishes only once every older command has, 48882 Rev 3.11 §2.4.1, and
+/// INVALIDATE_IOMMU_ALL invalidates every IOMMU TLB, §2.4.8.
 #[verifier(external_body)]
 // external_body(glue): only the IOMMU can attest an invalidate, so only this empties its IOTLB model
+fn submit_invalidate(
+    commands: &CommandBuffers,
+    i: usize,
+    tail_register: usize,
+    tail: u64,
+    completion: usize,
+    Tracked(queued): Tracked<&QueuedCommands>,
+    Tracked(model): Tracked<&mut IotlbModel>,
+)
+    requires
+        i < NUM_IOMMUS,
+        commands.buffers.wf(),
+        commands.buffer_wf(i as int),
+        tail_register == commands.buffers@[i as int].mmio + IOMMU_COMMAND_TAIL,
+        tail == (commands.buffers@[i as int].tail + IOMMU_INVALIDATE_COMMANDS) % commands.buffers@[i as int].len as int * IOMMU_COMMAND_SIZE,
+        completion == commands.buffers@[i as int].completion,
+        queued.ring == commands.buffers@[i as int].ring,
+        queued.slots.contains_key(commands.buffers@[i as int].tail as int),
+        queued.slots[commands.buffers@[i as int].tail as int] == invalidate_all_command_spec(),
+        queued.slots.contains_key((commands.buffers@[i as int].tail + 1) % commands.buffers@[i as int].len as int),
+        queued.slots[(commands.buffers@[i as int].tail + 1) % commands.buffers@[i as int].len as int]
+            == completion_wait_command_spec(completion as u64, 1),
+    ensures
+        final(model).len() == old(model).len(),
+        final(model)[i as int] == Set::<TlbEntry>::empty(),
+        forall|j: int| j != i ==> #[trigger] final(model)[j] == old(model)[j],
+{
+    unsafe {
+        core::ptr::write_volatile(completion as *mut u64, 0);
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+        core::ptr::write_volatile(tail_register as *mut u64, tail);
+        while core::ptr::read_volatile(completion as *const u64) == 0 {
+            core::hint::spin_loop();
+        }
+    }
+}
+
+/// Invalidates all of IOMMU i's caches and returns once it has finished, with the tail after the
+/// commands it wrote, and empties i's set in `model`: the caller holds the lock, so no table changes
+/// while this runs, and once the invalidate finishes i holds nothing the tables no longer say. It
+/// stores INVALIDATE_IOMMU_ALL then COMPLETION_WAIT at i's tail and submits them. Only this writes i's
+/// ring, and each call waits for the IOMMU to read all it wrote, so the ring is empty on entry and two
+/// commands fit in it. The kernel maps memory at its physical address, as the entries it writes
+/// assume, so the completion word's address is the one the IOMMU stores to. Waiting here is not
+/// waiting for a core: design/flush-without-waiting/. The wait is on the IOMMU, which finishes two
+/// commands in a time the state does not set, so it is one unit: design/one-lock-bounded-steps/.
 pub fn invalidate_iommu_all(commands: &CommandBuffers, i: usize, Tracked(model): Tracked<&mut IotlbModel>, Tracked(steps): Tracked<&mut Steps>) -> (ret: usize)
     requires
         i < NUM_IOMMUS,
@@ -733,25 +833,28 @@ pub fn invalidate_iommu_all(commands: &CommandBuffers, i: usize, Tracked(model):
         forall|j: int| j != i ==> #[trigger] final(model)[j] == old(model)[j],
 {
     let b = *commands.buffers.get(i);
-    let slot = |k: usize| (b.ring + k * IOMMU_COMMAND_SIZE) as *mut u64;
     let first = b.tail;
     let second = (b.tail + 1) % b.len;
-    let next = (b.tail + 2) % b.len;
-    let completion = b.completion as *mut u64;
-    // The opcode is bits 63:60 of a command's first quadword, and COMPLETION_WAIT's store address is
-    // bits 51:3 with s at bit 0. 48882 Figures 43, 44 and 51.
-    let store = (b.completion as u64 & 0x000f_ffff_ffff_fff8) | 1 | (IOMMU_COMPLETION_WAIT << 60);
-    unsafe {
-        core::ptr::write_volatile(completion, 0);
-        core::ptr::write_volatile(slot(first), IOMMU_INVALIDATE_ALL << 60);
-        core::ptr::write_volatile(slot(first).add(1), 0);
-        core::ptr::write_volatile(slot(second), store);
-        core::ptr::write_volatile(slot(second).add(1), 1);
-        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
-        core::ptr::write_volatile((b.mmio + IOMMU_COMMAND_TAIL) as *mut u64, (next * IOMMU_COMMAND_SIZE) as u64);
-        while core::ptr::read_volatile(completion) == 0 {
-            core::hint::spin_loop();
-        }
+    let next = (b.tail + IOMMU_INVALIDATE_COMMANDS) % b.len;
+    let tracked mut queued = QueuedCommands { ring: b.ring, slots: Map::empty() };
+    store_command(b.ring + first * IOMMU_COMMAND_SIZE, invalidate_all_command(), Tracked(&mut queued), Ghost(first as int));
+    store_command(b.ring + second * IOMMU_COMMAND_SIZE, completion_wait_command(b.completion as u64, 1), Tracked(&mut queued), Ghost(second as int));
+    proof {
+        assert(second != first) by (nonlinear_arith)
+            requires
+                second == (first + 1) % b.len as int,
+                first < b.len,
+                b.len >= 2,
+        ;
+        assert(b.mmio + IOMMU_COMMAND_TAIL <= usize::MAX) by (nonlinear_arith)
+            requires
+                b.mmio % IOMMU_MMIO_ALIGN == 0,
+                b.mmio <= usize::MAX,
+        ;
+    }
+    submit_invalidate(commands, i, b.mmio + IOMMU_COMMAND_TAIL, (next * IOMMU_COMMAND_SIZE) as u64, b.completion, Tracked(&queued), Tracked(model));
+    proof {
+        steps.step();
     }
     next
 }
