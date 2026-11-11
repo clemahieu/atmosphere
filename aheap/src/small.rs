@@ -86,19 +86,6 @@ pub open spec fn kept(
         }
 }
 
-/// The runs `u` holds, by block, with the run of order `k` at `q` added to its block.
-pub open spec fn with_run(u: Map<int, Map<int, nat>>, q: int, k: nat) -> Map<int, Map<int, nat>> {
-    let c = span_of(q);
-    u.insert(
-        c,
-        if u.contains_key(c) {
-            u[c]
-        } else {
-            Map::<int, nat>::empty()
-        }.insert(page_of(q), k),
-    )
-}
-
 /// The page buddy went from `before` to `after`, and the source from `s` to `t`, by cutting the run
 /// of order `k` at `q`, from a held span or a new one, and backing its pages.
 pub open spec fn took_run(before: PageBuddy, after: PageBuddy, s: SourceView, t: SourceView, q: int, k: nat) -> bool {
@@ -144,12 +131,6 @@ pub open spec fn new_slab(
         } else {
             pb1 == pbm && s1 == sm
         }
-}
-
-/// The runs `u` holds, by block, with the run at `q` taken out of its block.
-pub open spec fn without_run(u: Map<int, Map<int, nat>>, q: int) -> Map<int, Map<int, nat>> {
-    let c = span_of(q);
-    u.insert(c, u[c].remove(page_of(q)))
 }
 
 /// Another record than `a` that the store `st` has taken lies on `a`'s record page.
@@ -504,62 +485,6 @@ proof fn lemma_cut_runs(pb0: PageBuddy, pb1: PageBuddy, s0: SourceView, s1: Sour
     }
 }
 
-/// Adding one run to two maps that hold the same runs gives maps that hold the same runs.
-proof fn lemma_with_run_runs(u: Map<int, Map<int, nat>>, v: Map<int, Map<int, nat>>, q: int, k: nat)
-    requires
-        runs(u) == runs(v),
-    ensures
-        runs(with_run(u, q, k)) == runs(with_run(v, q, k)),
-{
-    let c = span_of(q);
-    let bu = if u.contains_key(c) {
-        u[c]
-    } else {
-        Map::<int, nat>::empty()
-    };
-    let bv = if v.contains_key(c) {
-        v[c]
-    } else {
-        Map::<int, nat>::empty()
-    };
-    if u.contains_key(c) && u[c].dom() != Set::<int>::empty() {
-        assert(runs(u).contains_key(c));
-        assert(runs(v).contains_key(c));
-        assert(runs(u)[c] == u[c]);
-        assert(runs(v)[c] == v[c]);
-    } else if v.contains_key(c) && v[c].dom() != Set::<int>::empty() {
-        assert(runs(v).contains_key(c));
-        assert(runs(u).contains_key(c));
-    } else {
-        assert(bu =~= Map::<int, nat>::empty());
-        assert(bv =~= Map::<int, nat>::empty());
-    }
-    assert(bu == bv);
-    let a = with_run(u, q, k);
-    let b = with_run(v, q, k);
-    assert(a[c].dom().contains(page_of(q)));
-    assert(b[c].dom().contains(page_of(q)));
-    assert forall|x: int| #[trigger] runs(a).contains_key(x) <==> runs(b).contains_key(x) by {
-        if x != c {
-            assert(runs(u).contains_key(x) == runs(v).contains_key(x));
-            assert(a.contains_key(x) == u.contains_key(x));
-            assert(b.contains_key(x) == v.contains_key(x));
-            assert(runs(u).contains_key(x) == (u.contains_key(x) && u[x].dom() != Set::<int>::empty()));
-            assert(runs(v).contains_key(x) == (v.contains_key(x) && v[x].dom() != Set::<int>::empty()));
-        } else {
-            assert(runs(a).contains_key(c));
-            assert(runs(b).contains_key(c));
-        }
-    }
-    assert forall|x: int| #[trigger] runs(a).contains_key(x) implies runs(a)[x] == runs(b)[x] by {
-        if x != c {
-            assert(runs(u).contains_key(x));
-            assert(runs(u)[x] == runs(v)[x]);
-        }
-    }
-    assert(runs(a) =~= runs(b));
-}
-
 /// Freeing the run at `q` takes it out of the page buddy's runs and changes them no further: a span
 /// it gives back holds no run.
 proof fn lemma_freed_runs(before: PageBuddy, after: PageBuddy, s: SourceView, t: SourceView, q: int)
@@ -592,43 +517,6 @@ proof fn lemma_freed_runs(before: PageBuddy, after: PageBuddy, s: SourceView, t:
         }
         assert(runs(w) =~= runs(rest));
     }
-}
-
-/// Taking the run at `q` out of two maps that hold the same runs, one of them holding the run at
-/// `q`, gives maps that hold the same runs.
-proof fn lemma_without_run_runs(u: Map<int, Map<int, nat>>, v: Map<int, Map<int, nat>>, q: int)
-    requires
-        runs(u) == runs(v),
-        u.contains_key(span_of(q)),
-        u[span_of(q)].contains_key(page_of(q)),
-    ensures
-        runs(without_run(u, q)) == runs(without_run(v, q)),
-{
-    let c = span_of(q);
-    assert(u[c].dom().contains(page_of(q)));
-    assert(runs(u).contains_key(c));
-    assert(runs(v).contains_key(c));
-    assert(runs(u)[c] == u[c]);
-    assert(runs(v)[c] == v[c]);
-    let a = without_run(u, q);
-    let b = without_run(v, q);
-    assert(a[c] == b[c]);
-    assert forall|x: int| #[trigger] runs(a).contains_key(x) <==> runs(b).contains_key(x) by {
-        if x != c {
-            assert(runs(u).contains_key(x) == runs(v).contains_key(x));
-            assert(a.contains_key(x) == u.contains_key(x));
-            assert(b.contains_key(x) == v.contains_key(x));
-            assert(runs(u).contains_key(x) == (u.contains_key(x) && u[x].dom() != Set::<int>::empty()));
-            assert(runs(v).contains_key(x) == (v.contains_key(x) && v[x].dom() != Set::<int>::empty()));
-        }
-    }
-    assert forall|x: int| #[trigger] runs(a).contains_key(x) implies runs(a)[x] == runs(b)[x] by {
-        if x != c {
-            assert(runs(u).contains_key(x));
-            assert(runs(u)[x] == runs(v)[x]);
-        }
-    }
-    assert(runs(a) =~= runs(b));
 }
 
 /// One size class: its partial and full slabs and the permission to each free slot of them.

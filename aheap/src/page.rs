@@ -50,6 +50,9 @@
 //! `run_held` is a caller's run, allocated with every page backed. `cut_run` and `freed` state
 //! `alloc_run` and `free_run` as predicates over the views before and after, and the `keeps_held`
 //! lemmas keep every held run held across a cut, a back, a refusal and the free of another run.
+//! `runs` is what `used` holds, blocks with no run left out; `with_run` and `without_run` add and
+//! take out one run, and their lemmas let a caller undo several cuts by their frees in any order
+//! (`lemma_two_runs_restored` for two).
 #[cfg(verus_keep_ghost)]
 use vstd::arithmetic::div_mod::*;
 #[cfg(verus_keep_ghost)]
@@ -271,6 +274,30 @@ pub open spec fn freed(before: PageBuddy, after: PageBuddy, s: SourceView, t: So
 /// The blocks of `u` that hold a run, with their runs.
 pub open spec fn runs(u: Map<int, Map<int, nat>>) -> Map<int, Map<int, nat>> {
     Map::new(u.dom().filter(|c: int| u[c].dom() != Set::<int>::empty()), |c: int| u[c])
+}
+
+/// The runs `u` holds, by block, with the run of order `k` at `q` added to its block.
+pub open spec fn with_run(u: Map<int, Map<int, nat>>, q: int, k: nat) -> Map<int, Map<int, nat>> {
+    let c = span_of(q);
+    u.insert(
+        c,
+        if u.contains_key(c) {
+            u[c]
+        } else {
+            Map::<int, nat>::empty()
+        }.insert(page_of(q), k),
+    )
+}
+
+/// The runs `u` holds, by block, with the run at `q` taken out of its block.
+pub open spec fn without_run(u: Map<int, Map<int, nat>>, q: int) -> Map<int, Map<int, nat>> {
+    let c = span_of(q);
+    u.insert(c, u[c].remove(page_of(q)))
+}
+
+/// The runs `u` holds include one at `q`.
+pub open spec fn has_run(u: Map<int, Map<int, nat>>, q: int) -> bool {
+    u.contains_key(span_of(q)) && u[span_of(q)].contains_key(page_of(q))
 }
 
 /// The order a best-fit search has found so far is at most `ord`.
@@ -2608,6 +2635,193 @@ pub proof fn lemma_runs_restored(
         assert(runs(pb3.used()) =~= runs(restm));
     }
     assert(runs(pb3.used()) =~= runs(u0));
+}
+
+/// Adding one run to two maps that hold the same runs gives maps that hold the same runs.
+pub proof fn lemma_with_run_runs(u: Map<int, Map<int, nat>>, v: Map<int, Map<int, nat>>, q: int, k: nat)
+    requires
+        runs(u) == runs(v),
+    ensures
+        runs(with_run(u, q, k)) == runs(with_run(v, q, k)),
+{
+    let c = span_of(q);
+    let bu = if u.contains_key(c) {
+        u[c]
+    } else {
+        Map::<int, nat>::empty()
+    };
+    let bv = if v.contains_key(c) {
+        v[c]
+    } else {
+        Map::<int, nat>::empty()
+    };
+    if u.contains_key(c) && u[c].dom() != Set::<int>::empty() {
+        assert(runs(u).contains_key(c));
+        assert(runs(v).contains_key(c));
+        assert(runs(u)[c] == u[c]);
+        assert(runs(v)[c] == v[c]);
+    } else if v.contains_key(c) && v[c].dom() != Set::<int>::empty() {
+        assert(runs(v).contains_key(c));
+        assert(runs(u).contains_key(c));
+    } else {
+        assert(bu =~= Map::<int, nat>::empty());
+        assert(bv =~= Map::<int, nat>::empty());
+    }
+    assert(bu == bv);
+    let a = with_run(u, q, k);
+    let b = with_run(v, q, k);
+    assert(a[c].dom().contains(page_of(q)));
+    assert(b[c].dom().contains(page_of(q)));
+    assert forall|x: int| #[trigger] runs(a).contains_key(x) <==> runs(b).contains_key(x) by {
+        if x != c {
+            assert(runs(u).contains_key(x) == runs(v).contains_key(x));
+            assert(a.contains_key(x) == u.contains_key(x));
+            assert(b.contains_key(x) == v.contains_key(x));
+            assert(runs(u).contains_key(x) == (u.contains_key(x) && u[x].dom() != Set::<int>::empty()));
+            assert(runs(v).contains_key(x) == (v.contains_key(x) && v[x].dom() != Set::<int>::empty()));
+        } else {
+            assert(runs(a).contains_key(c));
+            assert(runs(b).contains_key(c));
+        }
+    }
+    assert forall|x: int| #[trigger] runs(a).contains_key(x) implies runs(a)[x] == runs(b)[x] by {
+        if x != c {
+            assert(runs(u).contains_key(x));
+            assert(runs(u)[x] == runs(v)[x]);
+        }
+    }
+    assert(runs(a) =~= runs(b));
+}
+
+/// Taking the run at `q` out of two maps that hold the same runs, one of them holding the run at
+/// `q`, gives maps that hold the same runs.
+pub proof fn lemma_without_run_runs(u: Map<int, Map<int, nat>>, v: Map<int, Map<int, nat>>, q: int)
+    requires
+        runs(u) == runs(v),
+        has_run(u, q),
+    ensures
+        runs(without_run(u, q)) == runs(without_run(v, q)),
+{
+    let c = span_of(q);
+    assert(u[c].dom().contains(page_of(q)));
+    assert(runs(u).contains_key(c));
+    assert(runs(v).contains_key(c));
+    assert(runs(u)[c] == u[c]);
+    assert(runs(v)[c] == v[c]);
+    let a = without_run(u, q);
+    let b = without_run(v, q);
+    assert(a[c] == b[c]);
+    assert forall|x: int| #[trigger] runs(a).contains_key(x) <==> runs(b).contains_key(x) by {
+        if x != c {
+            assert(runs(u).contains_key(x) == runs(v).contains_key(x));
+            assert(a.contains_key(x) == u.contains_key(x));
+            assert(b.contains_key(x) == v.contains_key(x));
+            assert(runs(u).contains_key(x) == (u.contains_key(x) && u[x].dom() != Set::<int>::empty()));
+            assert(runs(v).contains_key(x) == (v.contains_key(x) && v[x].dom() != Set::<int>::empty()));
+        }
+    }
+    assert forall|x: int| #[trigger] runs(a).contains_key(x) implies runs(a)[x] == runs(b)[x] by {
+        if x != c {
+            assert(runs(u).contains_key(x));
+            assert(runs(u)[x] == runs(v)[x]);
+        }
+    }
+    assert(runs(a) =~= runs(b));
+}
+
+/// Two distinct page-aligned addresses are different pages or in different blocks.
+proof fn lemma_pages_apart(q: int, x: int)
+    requires
+        0 <= q,
+        0 <= x,
+        q % PAGE_BYTES as int == 0,
+        x % PAGE_BYTES as int == 0,
+        q != x,
+    ensures
+        span_of(q) != span_of(x) || page_of(q) != page_of(x),
+{
+    lemma_head(q);
+    lemma_head(x);
+}
+
+/// Taking out the run at `q` just added to `u`, which held none there, leaves the runs of `u`.
+pub proof fn lemma_without_with_run(u: Map<int, Map<int, nat>>, q: int, k: nat)
+    requires
+        !has_run(u, q),
+    ensures
+        runs(without_run(with_run(u, q, k), q)) == runs(u),
+{
+    let c = span_of(q);
+    let h = page_of(q);
+    let w = without_run(with_run(u, q, k), q);
+    if u.contains_key(c) {
+        assert(u[c].insert(h, k).remove(h) =~= u[c]);
+        assert(w =~= u);
+    } else {
+        assert(Map::<int, nat>::empty().insert(h, k).remove(h) =~= Map::<int, nat>::empty());
+        assert(w == u.insert(c, Map::<int, nat>::empty()));
+        assert(w[c].dom() =~= Set::<int>::empty());
+        assert forall|y: int| #[trigger] runs(w).contains_key(y) <==> runs(u).contains_key(y) by {
+            if y != c {
+                assert(w.contains_key(y) == u.contains_key(y));
+            }
+        }
+        assert forall|y: int| #[trigger] runs(w).contains_key(y) implies runs(w)[y] == runs(u)[y] by {
+            assert(y != c);
+        }
+        assert(runs(w) =~= runs(u));
+    }
+}
+
+/// Taking out the run at `x`, which `u` holds, commutes with adding a run at another page `q`.
+pub proof fn lemma_without_with_commute(u: Map<int, Map<int, nat>>, q: int, k: nat, x: int)
+    requires
+        has_run(u, x),
+        0 <= q,
+        0 <= x,
+        q % PAGE_BYTES as int == 0,
+        x % PAGE_BYTES as int == 0,
+        q != x,
+    ensures
+        without_run(with_run(u, q, k), x) == with_run(without_run(u, x), q, k),
+{
+    lemma_pages_apart(q, x);
+    let cq = span_of(q);
+    let cx = span_of(x);
+    let l = without_run(with_run(u, q, k), x);
+    let r = with_run(without_run(u, x), q, k);
+    if cq == cx {
+        assert(u[cx].insert(page_of(q), k).remove(page_of(x)) =~= u[cx].remove(page_of(x)).insert(page_of(q), k));
+    }
+    assert(l =~= r);
+}
+
+/// Adding runs at two pages `q` and `x` where `u` holds none, then taking both out again in either
+/// order, leaves the runs of `u`: the page buddy's runs after two cuts and their frees.
+pub proof fn lemma_two_runs_restored(u: Map<int, Map<int, nat>>, q: int, k: nat, x: int, j: nat)
+    requires
+        !has_run(u, q),
+        !has_run(u, x),
+        0 <= q,
+        0 <= x,
+        q % PAGE_BYTES as int == 0,
+        x % PAGE_BYTES as int == 0,
+        q != x,
+    ensures
+        runs(without_run(without_run(with_run(with_run(u, q, k), x, j), q), x)) == runs(u),
+        runs(without_run(without_run(with_run(with_run(u, q, k), x, j), x), q)) == runs(u),
+{
+    lemma_pages_apart(q, x);
+    let w = with_run(u, q, k);
+    let v = without_run(w, q);
+    assert(has_run(w, q));
+    assert(!has_run(w, x));
+    lemma_without_with_run(u, q, k);
+    lemma_without_with_commute(w, x, j, q);
+    assert(!has_run(v, x));
+    lemma_without_with_run(v, x, j);
+    lemma_without_with_run(w, x, j);
+    lemma_without_run_runs(w, without_run(with_run(w, x, j), x), q);
 }
 
 } // verus!
