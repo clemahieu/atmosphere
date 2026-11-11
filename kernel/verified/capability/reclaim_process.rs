@@ -2,8 +2,9 @@
 
 //! Retype reclaiming a dead process's block: a retype cuts its address space root's child tables, a
 //! slice per step, each cut two-way so the child's parent record goes with the entry. Both roots are
-//! inside the process's block, so they go only with the process, once no core has the space loaded. A
-//! root maps no frame, so it holds no mapping node to unlink. Its capability table's leaves are not
+//! inside the process's block, so they go only with the process, once no core depends on the space: a
+//! retype first retires a space a core has loaded, and each such core stops depending on it when it
+//! acknowledges the retire's flush. A root maps no frame, so it holds no mapping node to unlink. Its capability table's leaves are not
 //! detached: each stays in its root entry, inert, until its own untyped's holder retypes it, and that
 //! retype's free clears the entry. Once both roots are empty, a retype frees the block. See
 //! design/teardown-driven-by-retype/.
@@ -33,12 +34,15 @@ use crate::capability::space::*;
 use crate::capability::table::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::device::*;
-#[cfg(verus_keep_ghost)]
 use crate::capability::thread::*;
+use crate::capability::unmap::SEND_FLUSH_STEPS;
 #[cfg(verus_keep_ghost)]
 use crate::capability::view::*;
 use crate::define::*;
 use crate::pptr::*;
+
+/// The units of a retire: two checks of each core on the list, and a flush IPI to each.
+pub const RETIRE_STEPS: usize = 2 * NUM_CPUS + SEND_FLUSH_STEPS;
 
 impl CapKernel {
     /// The process at `base` is dead with zero references: no capability names it and no thread is
@@ -54,20 +58,64 @@ impl CapKernel {
         self.spaces.loaded@[base].value().list == 0u32
     }
 
-    /// A retype may cut a child table of the dead process at `base`'s space root: an untyped covers its
-    /// block, no core has its space loaded, an entry of the root still names a child and the flush
+    /// No core depends on the space of the process at `base`: each core that has it loaded is past its
+    /// retire, so none holds a translation of it or can walk it.
+    pub open spec fn process_released(&self, base: usize) -> bool {
+        forall|d: int| 0 <= d < NUM_CPUS ==> !#[trigger] self.depends(d, base)
+    }
+
+    /// Core d runs no thread, or runs one bound to a process. Such a core runs nothing in the space of a
+    /// dead process, which has no bound thread: see design/teardown-driven-by-retype/.
+    pub open spec fn core_settled(&self, d: int) -> bool {
+        match self.cores@[d].current_thread {
+            None => true,
+            Some(t) => self.threads.records@[t].value().process is Some,
+        }
+    }
+
+    /// A retype may retire the space of the dead process at `base`: an untyped covers its block, it is
+    /// not yet retired, a core depends on it, every core that has it loaded is settled, and the flush
     /// epoch can rise.
+    pub open spec fn can_retire_process(&self, root: usize, from: usize, base: usize) -> bool {
+        &&& self.can_retype_under(root, from, base, PROCESS_ORDER)
+        &&& self.process_is_dead(base)
+        &&& self.spaces.loaded@[base].value().retired == 0
+        &&& !self.process_released(base)
+        &&& forall|d: int| 0 <= d < NUM_CPUS && #[trigger] self.loaded(d, base) ==> self.core_settled(d)
+        &&& self.flush_epoch < usize::MAX
+    }
+
+    /// What retiring the space of the dead process at `base` did to self: the flush epoch rose by one,
+    /// the space's retire epoch is the new epoch, a flush IPI went to each core on its list, and nothing
+    /// else changed, so every core depends on what it did before. The core that acknowledges the new
+    /// epoch no longer depends on the space.
+    pub open spec fn process_retired(&self, post: Self, base: usize) -> bool {
+        &&& post == (CapKernel { flush_epoch: post.flush_epoch, flush_ipis: post.flush_ipis, spaces: post.spaces, ..*self })
+        &&& post.flush_epoch == self.flush_epoch + 1
+        &&& post.flush_ipis@ == self.flush_ipis@ + self.flush_targets(base)
+        &&& post.spaces == (Spaces { loaded: post.spaces.loaded, ..self.spaces })
+        &&& post.spaces.loaded@ == self.spaces.loaded@.insert(base, post.spaces.loaded@[base])
+        &&& post.spaces.loaded@[base].addr() == self.spaces.loaded@[base].addr()
+        &&& post.spaces.loaded@[base].value() == (SpaceCores { retired: post.flush_epoch, ..self.spaces.loaded@[base].value() })
+        &&& forall|d: int, r: usize| 0 <= d < NUM_CPUS ==> #[trigger] post.depends(d, r) == self.depends(d, r)
+        &&& post.view() == self.view()
+        &&& post.process_is_dead(base)
+    }
+
+    /// A retype may cut a child table of the dead process at `base`'s space root: an untyped covers its
+    /// block, no core depends on its space, an entry of the root still names a child and the flush epoch
+    /// can rise.
     pub open spec fn can_cut_process_space(&self, root: usize, from: usize, base: usize) -> bool {
         &&& self.can_retype_under(root, from, base, PROCESS_ORDER)
         &&& self.process_is_dead(base)
-        &&& self.process_unloaded(base)
+        &&& self.process_released(base)
         &&& exists|e: usize| #[trigger] tree_of(&self.table_pages, &self.spaces).names_child(base, e)
         &&& self.flush_epoch < usize::MAX
     }
 
     /// What cutting children of the dead process at `base`'s space root did to self: as for a table
     /// page; the kernel slots are as they were; every table page's parent record names a table or
-    /// nothing; and the process is still dead and unloaded.
+    /// nothing; and the process is still dead and released.
     pub open spec fn process_space_cut(&self, post: Self, root: usize, from: usize, base: usize) -> bool {
         let a = tree_of(&self.table_pages, &self.spaces);
         let b = tree_of(&post.table_pages, &post.spaces);
@@ -76,7 +124,7 @@ impl CapKernel {
         &&& forall|c: usize| #![trigger b.record(c)]
             b.is_page(c) && b.record(c).parent is Some ==> b.is_table(b.record(c).parent->Some_0.table)
         &&& post.process_is_dead(base)
-        &&& post.process_unloaded(base)
+        &&& post.process_released(base)
     }
 
     /// A block at an order-3 base holds a process exactly when a process record is kept there, and a
@@ -128,34 +176,311 @@ impl CapKernel {
         }
     }
 
-    /// No core has an unloaded process space loaded, so no core holds a translation of it.
-    pub proof fn lemma_process_unloaded(&self, base: usize)
+    /// No core depends on a released process space, so no core holds a translation of it.
+    pub proof fn lemma_process_released(&self, base: usize)
         requires
             self.wf(),
-            self.spaces.loaded@.contains_key(base),
-            self.process_unloaded(base),
+            self.process_released(base),
         ensures
-            forall|d: int| 0 <= d < NUM_CPUS ==> !#[trigger] self.loaded(d, base),
             forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && e.space == base ==> !#[trigger] self.tlb@[d].contains(e),
     {
-        assert forall|d: int| 0 <= d < NUM_CPUS implies !#[trigger] self.loaded(d, base) by {
+        assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && e.space == base implies !#[trigger] self.tlb@[d].contains(e) by {
+            assert(!self.depends(d, base));
+        }
+    }
+
+    /// A process a core's current thread is bound to has a reference, and one a core may hold a
+    /// translation of is not released.
+    pub proof fn lemma_process_refused(&self, base: usize)
+        requires
+            self.wf(),
+            self.processes.records@.contains_key(base),
+        ensures
+            (exists|d: int, t: usize| #![trigger self.cores@[d], self.threads.records@[t]] 0 <= d < NUM_CPUS && self.cores@[d].current_thread == Some(t)
+                && self.threads.records@[t].value().process == Some(base))
+                ==> self.blocks.pages@[(base / PAGE_SZ) as int].refs != 0,
+            (exists|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && e.space == base && #[trigger] self.tlb@[d].contains(e))
+                ==> !self.process_released(base),
+    {
+        assert(process_wf(&self.processes, &self.blocks, base));
+        if exists|d: int, t: usize| #![trigger self.cores@[d], self.threads.records@[t]] 0 <= d < NUM_CPUS && self.cores@[d].current_thread == Some(t)
+            && self.threads.records@[t].value().process == Some(base) {
+            let (d, t) = choose|d: int, t: usize| #![trigger self.cores@[d], self.threads.records@[t]] 0 <= d < NUM_CPUS && self.cores@[d].current_thread == Some(t)
+                && self.threads.records@[t].value().process == Some(base);
+            reveal(current_wf);
+            assert(runs(self.cores@, d, t));
+            assert(self.threads.records@.contains_key(t));
+            assert(self.processes.bound@[base].contains(t));
+            if self.blocks.pages@[(base / PAGE_SZ) as int].refs == 0 {
+                self.processes.bound@[base].lemma_len0_is_empty();
+            }
+        }
+        if exists|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && e.space == base && #[trigger] self.tlb@[d].contains(e) {
+            let (d, e) = choose|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && e.space == base && #[trigger] self.tlb@[d].contains(e);
+            assert(self.depends(d, base));
+        }
+    }
+
+    /// No core has an unloaded process space loaded, so it is released.
+    pub proof fn lemma_unloaded_released(&self, base: usize)
+        requires
+            self.process_unloaded(base),
+        ensures
+            self.process_released(base),
+    {
+        assert forall|d: int| 0 <= d < NUM_CPUS implies !#[trigger] self.depends(d, base) by {
             lemma_no_core_listed(d as u32);
         }
-        assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && e.space == base implies !#[trigger] self.tlb@[d].contains(e) by {
-            assert(!self.loaded(d, base));
+    }
+
+    /// Whether the space of the process at `base` is released: one load of its list and a bounded loop
+    /// over the cores.
+    fn process_space_released(&self, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
+        requires
+            self.wf(),
+            self.spaces.roots@.contains_key(base),
+        ensures
+            final(steps).count <= old(steps).count + NUM_CPUS,
+            ret == self.process_released(base),
+    {
+        proof {
+            assert(space_wf(&self.list, &self.spaces, &self.blocks, base));
         }
+        let cores = *PPtr::<SpaceCores>::from_usize(base + SPACE_CORES_PAGE * PAGE_SZ).borrow(
+            Tracked(self.spaces.loaded.borrow().tracked_borrow(base)),
+        );
+        let ghost start = steps.count;
+        let mut d: usize = 0;
+        while d != NUM_CPUS
+            invariant
+                0 <= d <= NUM_CPUS,
+                start == old(steps).count,
+                steps.count == start + d,
+                self.wf(),
+                self.spaces.loaded@.contains_key(base),
+                cores == self.spaces.loaded@[base].value(),
+                forall|k: int| 0 <= k < d ==> !#[trigger] self.depends(k, base),
+            decreases NUM_CPUS - d,
+        {
+            if (cores.list >> (d as u32)) & 1u32 == 1u32
+                && (cores.retired == 0 || self.cores.get(d).acked_epoch < cores.retired) {
+                proof {
+                    assert(self.loaded(d as int, base));
+                    assert(self.depends(d as int, base));
+                }
+                return false;
+            }
+            proof {
+                assert(!self.depends(d as int, base));
+                steps.step();
+            }
+            d = d + 1;
+        }
+        true
+    }
+
+    /// Whether every core that has the space of the process at `base` loaded is settled: one load of its
+    /// list and a bounded loop over the cores, each reading its current thread's record.
+    fn process_cores_settled(&self, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
+        requires
+            self.wf(),
+            self.spaces.roots@.contains_key(base),
+        ensures
+            final(steps).count <= old(steps).count + NUM_CPUS,
+            ret == forall|d: int| 0 <= d < NUM_CPUS && #[trigger] self.loaded(d, base) ==> self.core_settled(d),
+    {
+        proof {
+            assert(space_wf(&self.list, &self.spaces, &self.blocks, base));
+        }
+        let list = PPtr::<SpaceCores>::from_usize(base + SPACE_CORES_PAGE * PAGE_SZ).borrow(
+            Tracked(self.spaces.loaded.borrow().tracked_borrow(base)),
+        ).list;
+        let ghost start = steps.count;
+        let mut d: usize = 0;
+        while d != NUM_CPUS
+            invariant
+                0 <= d <= NUM_CPUS,
+                start == old(steps).count,
+                steps.count == start + d,
+                self.wf(),
+                self.spaces.loaded@.contains_key(base),
+                list == self.spaces.loaded@[base].value().list,
+                forall|k: int| 0 <= k < d && #[trigger] self.loaded(k, base) ==> self.core_settled(k),
+            decreases NUM_CPUS - d,
+        {
+            if (list >> (d as u32)) & 1u32 == 1u32 {
+                match self.cores.get(d).current_thread {
+                    None => {},
+                    Some(t) => {
+                        proof {
+                            reveal(current_wf);
+                            assert(runs(self.cores@, d as int, t));
+                            assert(self.threads.records@.contains_key(t));
+                            assert(thread_wf(&self.list, &self.threads, &self.blocks, t));
+                        }
+                        let record = PPtr::<ThreadRecord>::from_usize(t + THREAD_RECORD_PAGE * PAGE_SZ).borrow(
+                            Tracked(self.threads.records.borrow().tracked_borrow(t)),
+                        );
+                        if record.process.is_none() {
+                            proof {
+                                assert(self.loaded(d as int, base));
+                                assert(!self.core_settled(d as int));
+                            }
+                            return false;
+                        }
+                    },
+                }
+            }
+            proof {
+                steps.step();
+            }
+            d = d + 1;
+        }
+        true
+    }
+
+    /// A retire changes only the space's retire epoch, to an epoch no core has acknowledged, and raises
+    /// the epoch, so the invariant holds and every core depends on what it did before.
+    proof fn lemma_process_retired(pre: Self, post: Self, s: usize)
+        requires
+            pre.wf(),
+            pre.spaces.roots@.contains_key(s),
+            pre.flush_epoch < usize::MAX,
+            pre.spaces.loaded@[s].value().retired == 0,
+            post == (CapKernel { flush_epoch: post.flush_epoch, flush_ipis: post.flush_ipis, spaces: post.spaces, ..pre }),
+            post.flush_epoch == pre.flush_epoch + 1,
+            post.spaces == (Spaces { loaded: post.spaces.loaded, ..pre.spaces }),
+            post.spaces.loaded@ == pre.spaces.loaded@.insert(s, post.spaces.loaded@[s]),
+            post.spaces.loaded@[s].addr() == pre.spaces.loaded@[s].addr(),
+            post.spaces.loaded@[s].is_init(),
+            post.spaces.loaded@[s].value() == (SpaceCores { retired: post.flush_epoch, ..pre.spaces.loaded@[s].value() }),
+        ensures
+            post.wf(),
+            forall|d: int, r: usize| 0 <= d < NUM_CPUS ==> #[trigger] post.depends(d, r) == pre.depends(d, r),
+            post.view() == pre.view(),
+    {
+        let sa = &pre.spaces;
+        let sb = &post.spaces;
+        assert(space_wf(&pre.list, sa, &pre.blocks, s));
+        assert(sa.loaded@.contains_key(s));
+        assert(sb.loaded@.dom() =~= sa.loaded@.dom());
+        assert forall|d: int, r: usize| 0 <= d < NUM_CPUS implies #[trigger] post.depends(d, r) == pre.depends(d, r) by {
+            assert(pre.acked(d) <= pre.flush_epoch);
+            assert(post.acked(d) == pre.acked(d));
+            assert(sb.loaded@.contains_key(r) == sa.loaded@.contains_key(r));
+            if r != s && sa.loaded@.contains_key(r) {
+                assert(sb.loaded@[r] == sa.loaded@[r]);
+            }
+        }
+        assert forall|r: usize| #[trigger] sb.roots@.contains_key(r) implies space_wf(&post.list, sb, &post.blocks, r) by {
+            assert(space_wf(&pre.list, sa, &pre.blocks, r));
+            if r != s {
+                assert(sb.loaded@[r] == sa.loaded@[r]);
+            }
+            assert(kernel_slots_wf(sb, r));
+            assert(root_record_wf(sb, r));
+        }
+        assert forall|r: usize| #[trigger] sb.loaded@.contains_key(r) implies sb.roots@.contains_key(r) by {
+            assert(sa.loaded@.contains_key(r));
+        }
+        assert(spaces_wf(&post.list, &post.tables, sb, &post.blocks));
+        assert(tree_of(&post.table_pages, &post.spaces) == tree_of(&pre.table_pages, &pre.spaces));
+        lemma_ids_same(pre.cores@, sa.loaded@, sb.loaded@);
+        assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] post.acked(d) <= post.flush_epoch by {
+            assert(pre.acked(d) <= pre.flush_epoch);
+        }
+        assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] post.tlb@[d].contains(e) implies post.depends(d, e.space) by {
+            assert(pre.depends(d, e.space));
+            assert(post.depends(d, e.space) == pre.depends(d, e.space));
+        }
+        assert forall|d: int, e: TlbEntry|
+            0 <= d < NUM_CPUS && #[trigger] post.tlb@[d].contains(e) && !post.mapped@.contains(e.page)
+            implies post.blocks.tracks(e.page as int) && post.stale_epoch.above(post.acked(d), e.page) by {
+            assert(pre.tlb@[d].contains(e));
+            assert(pre.acked(d) == post.acked(d));
+        }
+        Self::lemma_iommus_same(pre, post);
+        assert(post.tlb_wf());
+    }
+
+    /// Retires the space of the dead process at `base`, under the untyped at index `from` of the table at
+    /// `root`: raises the flush epoch, records it as the space's retire epoch and sends a flush IPI to
+    /// each core on the space's list. Refused unless it is not yet retired, a core depends on it and
+    /// every core that has it loaded is settled. Returns whether it ran, and if not nothing changed.
+    pub fn retire_process(&mut self, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(root),
+        ensures
+            final(steps).count <= old(steps).count + RETIRE_STEPS,
+            final(self).wf(),
+            Self::mappings_shrunk(*old(self), *final(self)),
+            ret == old(self).can_retire_process(root, from, base),
+            !ret ==> *final(self) == *old(self),
+            ret ==> old(self).process_retired(*final(self), base),
+    {
+        let ghost pre = *old(self);
+        proof {
+            Self::lemma_same_tree_shrunk(pre, pre);
+        }
+        let untyped = match self.retype_parent(root, from, base, PROCESS_ORDER) {
+            Some(found) => found,
+            None => { return false; },
+        };
+        let page = base / PAGE_SZ;
+        if !self.blocks.page_tracked(page) || self.flush_epoch == usize::MAX {
+            return false;
+        }
+        let entry = *self.blocks.pages.get(page);
+        let dead_process = match (entry.kind, entry.object) {
+            (PageKind::Base, ObjectType::Process) => entry.refs == 0,
+            _ => false,
+        };
+        proof {
+            lemma2_to64();
+            pre.lemma_process_block(base);
+        }
+        if !dead_process {
+            return false;
+        }
+        let ptr = PPtr::<SpaceCores>::from_usize(base + SPACE_CORES_PAGE * PAGE_SZ);
+        let cores = *ptr.borrow(Tracked(self.spaces.loaded.borrow().tracked_borrow(base)));
+        if cores.retired != 0 || self.process_space_released(base, Tracked(&mut *steps)) {
+            return false;
+        }
+        if !self.process_cores_settled(base, Tracked(&mut *steps)) {
+            return false;
+        }
+        let ghost sent = self.flush_ipis@;
+        self.send_flush(base, Ghost(sent), Tracked(&mut *steps));
+        let ghost mid = *self;
+        self.flush_epoch = self.flush_epoch + 1;
+        let mut next = cores;
+        next.retired = self.flush_epoch;
+        let tracked mut perm = self.spaces.loaded.borrow_mut().tracked_remove(base);
+        ptr.write(Tracked(&mut perm), next);
+        proof {
+            self.spaces.loaded.borrow_mut().tracked_insert(base, perm);
+            let post = *self;
+            assert(post.spaces.loaded@ =~= mid.spaces.loaded@.insert(base, post.spaces.loaded@[base]));
+            Self::lemma_process_retired(mid, post, base);
+            Self::lemma_same_tree_shrunk(pre, post);
+            assert(post.processes == pre.processes);
+            assert(post.blocks == pre.blocks);
+        }
+        true
     }
 
     /// Cuts up to a budget of the child tables of the dead process at `base`'s space root, under the
     /// untyped at index `from` of the table at `root`, each from the entry naming it, with what that
-    /// leaves stale, and leaves the kernel slots. Refused while a core has the space loaded. Returns
+    /// leaves stale, and leaves the kernel slots. Refused while a core depends on the space. Returns
     /// whether it ran, and if not nothing changed.
     pub fn cut_process_space(&mut self, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
         ensures
-            final(steps).count <= old(steps).count + CUT_SLICE_STEPS,
+            final(steps).count <= old(steps).count + NUM_CPUS + CUT_SLICE_STEPS,
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
             ret == old(self).can_cut_process_space(root, from, base),
@@ -187,10 +512,7 @@ impl CapKernel {
         if !dead_process {
             return false;
         }
-        let list = PPtr::<SpaceCores>::from_usize(base + SPACE_CORES_PAGE * PAGE_SZ).borrow(
-            Tracked(self.spaces.loaded.borrow().tracked_borrow(base)),
-        ).list;
-        if list != 0u32 {
+        if !self.process_space_released(base, Tracked(&mut *steps)) {
             return false;
         }
         proof {
@@ -216,23 +538,27 @@ impl CapKernel {
                 }
                 post.lemma_process_block(base);
                 assert(post.processes.records@.contains_key(base));
+                assert forall|d: int| 0 <= d < NUM_CPUS implies !#[trigger] post.depends(d, base) by {
+                    assert(post.acked(d) == pre.acked(d));
+                    assert(!pre.depends(d, base));
+                }
             }
         }
         cut != 0
     }
 
-    /// Nothing is left of the dead process at `base` but its block: no core has its space loaded, no entry
+    /// Nothing is left of the dead process at `base` but its block: no core depends on its space, no entry
     /// of its table root names a leaf, and no entry of its space root outside the kernel slots holds
     /// anything. A leaf still in its table root is one whose own untyped's holder has not yet retyped it.
     pub open spec fn process_is_spent(&self, base: usize) -> bool {
         &&& self.process_is_dead(base)
-        &&& self.process_unloaded(base)
+        &&& self.process_released(base)
         &&& forall|r: int| 0 <= r < ROOT_ENTRIES ==> #[trigger] self.tables.leaf(base, r) == NO_LEAF
         &&& forall|i: usize| #![trigger self.spaces.roots@[base].value()[i]]
             KERNEL_MEM_END_L4INDEX <= i < ENTRIES ==> self.spaces.roots@[base].value()[i].is_empty()
     }
 
-    /// What freeing the spent dead process at `base` did to self: no core had its space loaded or a
+    /// What freeing the spent dead process at `base` did to self: no core depended on its space or held a
     /// translation of it, its block is free, and it is gone from the processes, the tables and the
     /// spaces, with no leaf left naming it. It held no capability, so the view is as it was, and the
     /// list, every other process record, every other table root, every leaf and its payload, every
@@ -243,7 +569,7 @@ impl CapKernel {
         &&& self.view().holds_right(root, untyped, Right::Retype)
         &&& self.process_is_spent(base)
         &&& self.no_stale_translation(page)
-        &&& forall|d: int| 0 <= d < NUM_CPUS ==> !#[trigger] self.loaded(d, base)
+        &&& forall|d: int| 0 <= d < NUM_CPUS ==> !#[trigger] self.depends(d, base)
         &&& forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && e.space == base ==> !#[trigger] self.tlb@[d].contains(e)
         &&& forall|k: int| 0 <= k < 8 ==> #[trigger] post.blocks.pages@[page + k].kind is Free
         &&& !post.processes.records@.contains_key(base)
@@ -339,7 +665,7 @@ impl CapKernel {
         lemma_table_page_aligned(base);
         self.processes.holders@[base].lemma_len0_is_empty();
         self.processes.bound@[base].lemma_len0_is_empty();
-        self.lemma_process_unloaded(base);
+        self.lemma_process_released(base);
     }
 
     /// No page of a process's block is mapped: the only blocks a mapping names are frames'.
@@ -821,8 +1147,8 @@ impl CapKernel {
     }
 
     /// Frees the spent dead process at `base`, once every core and IOMMU has acknowledged the epoch of its
-    /// block's last unmap. Refused while anything is left of it: a reference, a core with its space
-    /// loaded, a leaf in its table root or an entry in its space root.
+    /// block's last unmap. Refused while anything is left of it: a reference, a core that depends on its
+    /// space, a leaf in its table root or an entry in its space root.
     // In a solver of its own, as free_space is.
     #[verifier::spinoff_prover]
     pub fn free_process(&mut self, c: usize, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: ReclaimStep)
@@ -831,8 +1157,8 @@ impl CapKernel {
             c < NUM_CPUS,
             old(self).tables.roots@.contains_key(root),
         ensures
-            final(steps).count <= old(steps).count + ROOT_ENTRIES + (ENTRIES - KERNEL_MEM_END_L4INDEX) + (NUM_CPUS + NUM_IOMMUS)
-                + SMALL_PAGES_MAX,
+            final(steps).count <= old(steps).count + NUM_CPUS + ROOT_ENTRIES + (ENTRIES - KERNEL_MEM_END_L4INDEX)
+                + (NUM_CPUS + NUM_IOMMUS) + SMALL_PAGES_MAX,
             final(self).wf(),
             Self::mappings_shrunk(*old(self), *final(self)),
             !(ret is Unlinked),
@@ -868,10 +1194,7 @@ impl CapKernel {
         if !dead_process {
             return ReclaimStep::Refused;
         }
-        let list = PPtr::<SpaceCores>::from_usize(base + SPACE_CORES_PAGE * PAGE_SZ).borrow(
-            Tracked(self.spaces.loaded.borrow().tracked_borrow(base)),
-        ).list;
-        if list != 0u32 {
+        if !self.process_space_released(base, Tracked(&mut *steps)) {
             return ReclaimStep::Refused;
         }
         if !self.process_roots_clear(base, Tracked(&mut *steps)) {
@@ -884,7 +1207,7 @@ impl CapKernel {
             pre.lemma_process_page_unmapped(page);
             pre.lemma_acknowledged_is_clean(page);
             pre.lemma_spent_process(base);
-            pre.lemma_process_unloaded(base);
+            pre.lemma_process_released(base);
         }
         self.free_spent_process(base, Tracked(steps));
         proof {

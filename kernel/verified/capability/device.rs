@@ -764,8 +764,8 @@ impl CapKernel {
             assert forall|c: int| 0 <= c < NUM_CPUS implies #[trigger] self.acked(c) <= self.flush_epoch by {
                 assert(pre.acked(c) <= pre.flush_epoch);
             }
-            assert forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && #[trigger] self.tlb@[c].contains(e) implies self.loaded(c, e.space) by {
-                assert(pre.loaded(c, e.space));
+            assert forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && #[trigger] self.tlb@[c].contains(e) implies self.depends(c, e.space) by {
+                assert(pre.depends(c, e.space));
             }
             assert forall|c: int, e: TlbEntry|
                 0 <= c < NUM_CPUS && #[trigger] self.tlb@[c].contains(e) && !self.mapped@.contains(e.page)

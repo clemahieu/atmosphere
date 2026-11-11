@@ -670,6 +670,7 @@ impl CapKernel {
                 &&& block_refs(&final(self).blocks, BlockRef::Small(thread / PAGE_SZ)) == 1
                 &&& block_refs(&final(self).blocks, BlockRef::Small(base / PAGE_SZ)) == 2
                 &&& final(self).process_unloaded(base)
+                &&& final(self).cores == old(self).cores
                 &&& final(self).tables.leaf(base, 0) == (base + 12 * PAGE_SZ) as usize
                 &&& forall|r: int| 1 <= r < ROOT_ENTRIES ==> #[trigger] final(self).tables.leaf(base, r) == NO_LEAF
                 &&& final(self).slot_holds(process, WITNESS_PROCESS_SLOT, (base + 8 * PAGE_SZ + 1) as usize, process_of(base))
@@ -1189,10 +1190,13 @@ impl CapKernel {
     /// From the end of the spawn witness, as the root: destroy the process through its capability in
     /// slot 257, delete the thread's capability, retype the thread's block, which unbinds the thread,
     /// delete the process's capability, retype the leaf in the process's table three times, which
-    /// unlinks it, slices its one capability and frees it, retype the process's block, which frees it,
-    /// and retype a process at the same block into slot 257 again. Each step returns what a teardown
-    /// driven by retype says, in this order, and at the end the root holds a capability to a live
-    /// process at the same block. See design/teardown-driven-by-retype/.
+    /// unlinks it, slices its one capability and frees it, load the process's space on core 0 as a core
+    /// that ran it would have, retype the process's block, which retires the space, retype it again,
+    /// which refuses since core 0 still depends on the space, have core 0 acknowledge the retire's
+    /// flush, retype the block a third time, which frees it, and retype a process at the same block
+    /// into slot 257 again. Each step returns what a teardown driven by retype says, in this order, and
+    /// at the end the root holds a capability to a live process at the same block. See
+    /// design/teardown-driven-by-retype/.
     #[verifier::spinoff_prover]
     pub fn witness_process_block_retyped(
         &mut self,
@@ -1207,11 +1211,14 @@ impl CapKernel {
         frame: Ghost<usize>,
         present: Ghost<Seq<bool>>,
         base: usize,
-    ) -> (ret: (bool, bool, ReclaimStep, bool, ReclaimStep, ReclaimStep, ReclaimStep, ReclaimStep, bool))
+    ) -> (ret: (bool, bool, ReclaimStep, bool, ReclaimStep, ReclaimStep, ReclaimStep, ReclaimStep, ReclaimStep, ReclaimStep, bool))
         requires
             old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
             image_tables_bound(image@) + 2 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
+            // As boot leaves core 0.
+            old(self).cores@[0].current_thread is None,
+            old(self).cores@[0].generation < ID_GENERATION_MAX,
         ensures
             ret.0,
             ret.1,
@@ -1220,8 +1227,10 @@ impl CapKernel {
             ret.4 is Unlinked,
             ret.5 is Slice,
             ret.6 is Freed,
-            ret.7 is Freed,
-            ret.8,
+            ret.7 is Slice,
+            ret.8 is Refused,
+            ret.9 is Freed,
+            ret.10,
             final(self).wf(),
             final(self).view().holds(process, (base + 8 * PAGE_SZ + 1) as usize),
             final(self).payload_of((base + 8 * PAGE_SZ + 1) as usize) == process_of(base),
@@ -1557,6 +1566,7 @@ impl CapKernel {
             assert(r7.blocks.pages@[(base / PAGE_SZ) as int] == r6.blocks.pages@[(base / PAGE_SZ) as int]);
             assert(r7.process_is_dead(base));
             assert(r7.process_unloaded(base));
+            r7.lemma_unloaded_released(base);
             assert forall|i: usize| KERNEL_MEM_END_L4INDEX <= i < ENTRIES implies #[trigger] r7.spaces.roots@[base].value()[i].is_empty() by {
                 assert(!holds_kernel(SpaceKind::Process, i));
                 assert(r0.spaces.roots@[base].value()[i].is_empty());
@@ -1570,20 +1580,129 @@ impl CapKernel {
                 reveal(CapKernel::wf);
             }
             r7.blocks.lemma_not_free_uncovered((base / PAGE_SZ) as int);
+            assert(r7.cores@[0].current_thread is None);
+            assert(r7.tlb_wf()) by {
+                reveal(CapKernel::wf);
+            }
         }
 
-        // Retype the process's block: the process is spent, so the retype frees it.
+        // Load the process's space on core 0, which runs nothing, as a core that ran its thread would have.
+        let _ = self.load_space(0, base, Tracked(&mut steps));
+        let ghost l7 = *self;
+        proof {
+            assert(l7.loaded(0, base));
+            assert(l7.depends(0, base));
+            assert(!l7.process_released(base));
+            assert forall|d: int| 0 <= d < NUM_CPUS && #[trigger] l7.loaded(d, base) implies l7.core_settled(d) by {
+                if d != 0 {
+                    assert(l7.loaded(d, base) == r7.loaded(d, base));
+                    lemma_no_core_listed(d as u32);
+                    assert(!r7.loaded(d, base));
+                }
+            }
+            assert(l7.list == r7.list && l7.tables == r7.tables && l7.blocks == r7.blocks);
+            assert(l7.processes == r7.processes);
+            assert(l7.can_retype_under(process, ROOT_UNTYPED_SLOT, base, PROCESS_ORDER));
+            assert(l7.process_is_dead(base));
+            assert(l7.flush_epoch == r7.flush_epoch);
+            assert(r6.flush_epoch == r5.flush_epoch);
+            assert(l7.flush_epoch == 0);
+            assert(l7.can_retire_process(process, ROOT_UNTYPED_SLOT, base));
+            assert(l7.root_live(process));
+        }
+
+        // Retype the process's block: core 0 depends on its space, so the retype retires it.
+        let ok8a = self.reclaim(0, process, ROOT_UNTYPED_SLOT, base, Tracked(&mut steps));
+        let ghost t7 = *self;
+        proof {
+            assert(ok8a is Slice);
+            assert(l7.process_retired(t7, base));
+            assert(t7.depends(0, base) == l7.depends(0, base));
+            assert(!t7.process_released(base));
+            assert(t7.spaces.loaded@[base].value().retired == 1);
+            assert(!t7.can_retire_process(process, ROOT_UNTYPED_SLOT, base));
+            assert(t7.processes.records@.contains_key(base));
+            assert(t7.tables == l7.tables);
+            assert(t7.root_live(process));
+        }
+
+        // Retype it again: core 0 has not acknowledged the retire's flush, so the retype refuses.
+        let ok8b = self.reclaim(0, process, ROOT_UNTYPED_SLOT, base, Tracked(&mut steps));
+        proof {
+            assert(ok8b is Refused);
+            assert(*self == t7);
+            assert(t7.tlb_wf()) by {
+                reveal(CapKernel::wf);
+            }
+            assert(t7.acked(0) <= t7.flush_epoch);
+        }
+
+        // Core 0 flushes every context and acknowledges the retire's epoch.
+        let epoch = self.flush_epoch;
+        let flushed = crate::arch::flush_every_context(0, epoch);
+        self.acknowledge(0, epoch, flushed, Tracked(&mut steps));
+        let ghost a7 = *self;
+        proof {
+            let f = base / PAGE_SZ;
+            assert(a7.acked(0) == 1);
+            assert(r7.acked(0) <= r7.flush_epoch);
+            assert forall|d: int| 0 <= d < NUM_CPUS implies r7.acked(d) <= #[trigger] a7.acked(d) by {
+                if d != 0 {
+                    assert(a7.cores@[d] == t7.cores@[d]);
+                    assert(l7.cores@[d] == r7.cores@[d]);
+                }
+            }
+            assert(a7.stale_epoch == r7.stale_epoch);
+            assert(a7.iommus == r7.iommus);
+            assert(a7.blocks == r7.blocks);
+            assert(a7.acknowledged(f)) by {
+                let x = r7.stale_epoch.pages@[f as int] as int;
+                assert forall|d: int| 0 <= d < NUM_CPUS implies x <= #[trigger] a7.acked(d) by {
+                    assert(x <= r7.acked(d));
+                    assert(r7.acked(d) <= a7.acked(d));
+                }
+                assert forall|i: int| 0 <= i < NUM_IOMMUS && #[trigger] a7.iommu_present(i) implies x <= a7.iommu_acked(i) by {
+                    assert(r7.iommu_present(i));
+                }
+            }
+            // Core 0 is past the retire, and no other core has the space loaded.
+            assert(a7.spaces == t7.spaces);
+            assert forall|d: int| 0 <= d < NUM_CPUS implies !#[trigger] a7.depends(d, base) by {
+                if d == 0 {
+                    assert(a7.past_retire(0, base));
+                } else {
+                    assert(t7.spaces.loaded@[base].value().list == l7.spaces.loaded@[base].value().list);
+                    assert(l7.loaded(d, base) == r7.loaded(d, base));
+                    lemma_no_core_listed(d as u32);
+                    assert(!r7.loaded(d, base));
+                    assert(!a7.loaded(d, base));
+                }
+            }
+            assert(a7.process_released(base));
+            assert(a7.list == r7.list && a7.tables == r7.tables && a7.processes == r7.processes);
+            assert(a7.spaces.roots == r7.spaces.roots);
+            assert(a7.process_is_spent(base));
+            assert(a7.can_retype_under(process, ROOT_UNTYPED_SLOT, base, PROCESS_ORDER));
+            assert(a7.root_live(process));
+            a7.lemma_process_block(base);
+            assert(a7.blocks.wf()) by {
+                reveal(CapKernel::wf);
+            }
+            a7.blocks.lemma_not_free_uncovered((base / PAGE_SZ) as int);
+        }
+
+        // Retype the process's block a third time: the process is spent, so the retype frees it.
         let ok8 = self.reclaim(0, process, ROOT_UNTYPED_SLOT, base, Tracked(&mut steps));
         let ghost r8 = *self;
         proof {
             assert(ok8 is Freed);
-            assert(r7.process_freed(r8, 0, process, ROOT_UNTYPED_SLOT, base));
-            assert(r8.tables.roots@[process] == r7.tables.roots@[process]);
+            assert(a7.process_freed(r8, 0, process, ROOT_UNTYPED_SLOT, base));
+            assert(r8.tables.roots@[process] == a7.tables.roots@[process]);
             assert(r8.tables.roots@.contains_key(process));
-            assert(r8.processes.records@[process] == r7.processes.records@[process]);
+            assert(r8.processes.records@[process] == a7.processes.records@[process]);
             assert(r8.root_live(process));
-            assert(r8.tables.leaf(process, 0) == r7.tables.leaf(process, 0));
-            assert(r8.tables.leaf(process, 2) == r7.tables.leaf(process, 2));
+            assert(r8.tables.leaf(process, 0) == a7.tables.leaf(process, 0));
+            assert(r8.tables.leaf(process, 2) == a7.tables.leaf(process, 2));
             assert(r8.tables.has_slot(&r8.list, process, ROOT_UNTYPED_SLOT));
             assert(r8.tables.has_slot(&r8.list, process, WITNESS_PROCESS_SLOT));
             assert(r8.tables.node_of(process, WITNESS_PROCESS_SLOT) == np);
@@ -1608,7 +1727,7 @@ impl CapKernel {
             assert(ok9);
             assert(np == base + 8 * PAGE_SZ + 1);
         }
-        (ok1, ok2.is_some(), ok3, ok4.is_some(), ok5, ok6, ok7, ok8, ok9)
+        (ok1, ok2.is_some(), ok3, ok4.is_some(), ok5, ok6, ok7, ok8a, ok8b, ok8, ok9)
     }
 
     /// Gives entry e of table t of space s a child table at the given level: the order-3 block at the

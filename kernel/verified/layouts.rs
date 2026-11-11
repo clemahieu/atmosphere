@@ -32,7 +32,7 @@ global layout TableRoot is size == 4096, align == 8;
 global layout SpaceRecord is size == 72, align == 8;
 global layout PageMap is size == 4096, align == 8;
 global layout TableRecord is size == 56, align == 8;
-global layout SpaceCores is size == 264, align == 8;
+global layout SpaceCores is size == 272, align == 8;
 #[cfg(target_arch = "x86_64")]
 global layout ThreadRecord is size == 224, align == 8;
 #[cfg(target_arch = "aarch64")]
@@ -164,7 +164,7 @@ pub proof fn lemma_space_block_layouts()
         vstd::layout::size_of::<NodePage>() == PAGE_SZ,
         vstd::layout::size_of::<PageMap>() == PAGE_SZ,
         vstd::layout::size_of::<SpaceRecord>() == 72,
-        vstd::layout::size_of::<SpaceCores>() == 264,
+        vstd::layout::size_of::<SpaceCores>() == 272,
         vstd::layout::size_of::<PageBytes>() == PAGE_SZ,
 {
 }
@@ -177,7 +177,7 @@ pub proof fn lemma_process_block_layouts()
         vstd::layout::size_of::<ProcessRecord>() == 1,
         vstd::layout::size_of::<PageMap>() == PAGE_SZ,
         vstd::layout::size_of::<SpaceRecord>() == 72,
-        vstd::layout::size_of::<SpaceCores>() == 264,
+        vstd::layout::size_of::<SpaceCores>() == 272,
         vstd::layout::size_of::<PageBytes>() == PAGE_SZ,
 {
 }

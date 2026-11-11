@@ -2300,8 +2300,9 @@ impl CapKernel {
         assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] post.acked(d) <= post.flush_epoch by {
             assert(pre.acked(d) <= pre.flush_epoch);
         }
-        assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] post.tlb@[d].contains(e) implies post.loaded(d, e.space) by {
+        assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] post.tlb@[d].contains(e) implies post.depends(d, e.space) by {
             assert(pre.tlb@[d].contains(e));
+            assert(pre.depends(d, e.space));
         }
         assert forall|d: int, e: TlbEntry|
             0 <= d < NUM_CPUS && #[trigger] post.tlb@[d].contains(e) && !post.mapped@.contains(e.page)

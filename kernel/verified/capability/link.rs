@@ -1921,7 +1921,7 @@ impl CapKernel {
         &&& post.stale_epoch.written(post.flush_epoch, t / PAGE_SZ)
         &&& !post.acknowledged(t / PAGE_SZ)
         &&& forall|d: int, g: usize| #![trigger post.tlb@[d].contains(TlbEntry { space: space->Some_0, page: g })]
-            0 <= d < NUM_CPUS && space is Some && pre.loaded(d, space->Some_0) && pages.contains(g)
+            0 <= d < NUM_CPUS && space is Some && pre.depends(d, space->Some_0) && pages.contains(g)
             ==> post.tlb@[d].contains(TlbEntry { space: space->Some_0, page: g })
         &&& forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] pre.tlb@[d].contains(e) ==> post.tlb@[d].contains(e)
         &&& forall|i: int, g: usize| #![trigger post.iommus.tlb@[i].contains(TlbEntry { space: space->Some_0, page: g })]
@@ -2083,7 +2083,7 @@ impl CapKernel {
         let epoch = self.flush_epoch;
         self.stale_epoch.record_run(t / PAGE_SZ, 1, epoch, Tracked(steps));
         self.tlb = Ghost(Seq::new(NUM_CPUS as nat, |d: int|
-            if space is Some && pre.loaded(d, space->Some_0) {
+            if space is Some && pre.depends(d, space->Some_0) {
                 pre.tlb@[d].union(stale_entries(space->Some_0, pages))
             } else {
                 pre.tlb@[d]
@@ -2106,8 +2106,8 @@ impl CapKernel {
             assert(pre.acked(0) <= pre.flush_epoch);
             assert(self.acked(0) == pre.acked(0));
             assert(!self.acknowledged(t / PAGE_SZ));
-            assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] self.tlb@[d].contains(e) implies self.loaded(d, e.space) by {
-                assert(pre.loaded(d, e.space));
+            assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] self.tlb@[d].contains(e) implies self.depends(d, e.space) by {
+                assert(pre.depends(d, e.space));
             }
             assert forall|d: int, e: TlbEntry|
                 0 <= d < NUM_CPUS && #[trigger] self.tlb@[d].contains(e) && !self.mapped@.contains(e.page)
@@ -2153,7 +2153,7 @@ impl CapKernel {
             }
             assert(self.tlb_wf());
             assert forall|d: int, g: usize| #![trigger self.tlb@[d].contains(TlbEntry { space: space->Some_0, page: g })]
-                0 <= d < NUM_CPUS && space is Some && pre.loaded(d, space->Some_0) && pages.contains(g)
+                0 <= d < NUM_CPUS && space is Some && pre.depends(d, space->Some_0) && pages.contains(g)
                 implies self.tlb@[d].contains(TlbEntry { space: space->Some_0, page: g }) by {
             }
             assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] pre.tlb@[d].contains(e) implies self.tlb@[d].contains(e) by {
@@ -2185,7 +2185,7 @@ impl CapKernel {
         if pre.tlb@[c].contains(e) {
             return;
         }
-        assert(post.loaded(c, e.space));
+        assert(post.depends(c, e.space));
         let q = a.record(t).parent;
         if q is None {
             assert(a == b);
@@ -2212,7 +2212,7 @@ impl CapKernel {
             assert(cut_walk_finds(a, t, e.page));
             pre.lemma_walk_mapped(e.space, p, e.page);
             lemma_cut_pages(a, t, e.page);
-            assert(pre.loaded(c, e.space));
+            assert(pre.depends(c, e.space));
             assert(post.tlb@[c].contains(TlbEntry { space: e.space, page: e.page }));
             assert(TlbEntry { space: e.space, page: e.page } == e);
         } else {

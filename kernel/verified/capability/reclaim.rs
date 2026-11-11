@@ -408,6 +408,7 @@ impl CapKernel {
         &&& forall|i: int| self.blocks.tracks(i) && !(page as int <= i < page + 2)
             ==> #[trigger] post.blocks.pages@[i] == self.blocks.pages@[i]
         &&& post.stale_epoch == self.stale_epoch
+        &&& post.flush_epoch == self.flush_epoch
         &&& post.cores == self.cores
         &&& post.iommus == self.iommus
         &&& post.spaces == self.spaces
@@ -744,6 +745,7 @@ impl CapKernel {
                 || (old(self).can_retype_under(root, from, base, 3) && old(self).table_is_empty(base))
                 || old(self).can_cut_space(root, from, base)
                 || (old(self).can_retype_under(root, from, base, 3) && old(self).space_is_empty(base))
+                || old(self).can_retire_process(root, from, base)
                 || old(self).can_cut_process_space(root, from, base)
                 || (old(self).can_retype_under(root, from, base, PROCESS_ORDER) && old(self).process_is_spent(base))
                 || old(self).can_unbind_thread(root, from, base)
@@ -764,6 +766,7 @@ impl CapKernel {
                 },
             !old(self).view().holds_right(root, old(self).tables.node_of(root, from), Right::Retype) ==> ret is Refused,
             old(self).spaces.roots@.contains_key(base) && !old(self).dead_io_space(base)
+                && !old(self).can_retire_process(root, from, base)
                 && !old(self).can_cut_process_space(root, from, base)
                 && !(old(self).can_retype_under(root, from, base, PROCESS_ORDER) && old(self).process_is_spent(base)) ==> ret is Refused,
             old(self).can_cut_space(root, from, base) ==> ret is Slice,
@@ -772,14 +775,24 @@ impl CapKernel {
             old(self).can_retype_under(root, from, base, 3) && old(self).space_is_spent(base) ==> ret is Again || ret is Freed,
             old(self).spaces.roots@.contains_key(base) && old(self).spaces.records@[base].value().kind is Device && ret is Slice
                 ==> old(self).space_children_cut(*final(self), root, from, base),
+            // A process with a reference, such as one a core's current thread is bound to, is refused. So is
+            // one a core still depends on, as one that may hold a translation of it does, unless a retire
+            // can run, which changes nothing but the epoch, the space's retire epoch and the flush IPIs.
             old(self).processes.records@.contains_key(base)
                 && (old(self).blocks.pages@[(base / PAGE_SZ) as int].refs != 0
-                    || exists|d: int| 0 <= d < NUM_CPUS && #[trigger] old(self).loaded(d, base)
-                    || exists|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && e.space == base && #[trigger] old(self).tlb@[d].contains(e))
+                    || (!old(self).process_released(base) && !old(self).can_retire_process(root, from, base)))
                 ==> ret is Refused,
+            old(self).processes.records@.contains_key(base)
+                && (exists|d: int, t: usize| #![trigger old(self).cores@[d], old(self).threads.records@[t]] 0 <= d < NUM_CPUS && old(self).cores@[d].current_thread == Some(t)
+                    && old(self).threads.records@[t].value().process == Some(base))
+                ==> ret is Refused,
+            old(self).processes.records@.contains_key(base)
+                && (exists|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && e.space == base && #[trigger] old(self).tlb@[d].contains(e))
+                ==> !old(self).process_released(base) && (ret is Refused || ret is Slice && old(self).process_retired(*final(self), base)),
+            old(self).can_retire_process(root, from, base) ==> ret is Slice && old(self).process_retired(*final(self), base),
             old(self).can_cut_process_space(root, from, base) ==> ret is Slice,
             old(self).processes.records@.contains_key(base) && ret is Slice
-                ==> old(self).process_space_cut(*final(self), root, from, base),
+                ==> old(self).process_retired(*final(self), base) || old(self).process_space_cut(*final(self), root, from, base),
             old(self).can_retype_under(root, from, base, PROCESS_ORDER) && old(self).process_is_spent(base)
                 ==> if old(self).acknowledged(base / PAGE_SZ) { ret is Freed } else { ret is Again },
             old(self).processes.records@.contains_key(base) && ret is Freed
@@ -824,6 +837,7 @@ impl CapKernel {
                 || old(self).table_sliced(*final(self), root, from, base)
                 || old(self).space_children_cut(*final(self), root, from, base)
                 || old(self).thread_unbound(*final(self), root, from, base)
+                || old(self).process_retired(*final(self), base)
                 || old(self).process_space_cut(*final(self), root, from, base),
             ret is Unlinked ==> old(self).leaf_unlinked(*final(self), root, from, base)
                 || old(self).table_page_unlinked(*final(self), root, from, base),
@@ -844,9 +858,7 @@ impl CapKernel {
             }
             if pre.processes.records@.contains_key(base) {
                 pre.lemma_process_block(base);
-                if pre.process_unloaded(base) {
-                    pre.lemma_process_unloaded(base);
-                }
+                pre.lemma_process_refused(base);
             }
             pre.lemma_retype_holds_right(root, from, base, 9);
             pre.lemma_retype_holds_right(root, from, base, 18);
@@ -899,7 +911,9 @@ impl CapKernel {
             },
             ObjectType::Thread => self.reclaim_thread(c, root, from, base, Tracked(steps)),
             ObjectType::Process => {
-                if self.cut_process_space(root, from, base, Tracked(&mut *steps)) {
+                if self.retire_process(root, from, base, Tracked(&mut *steps)) {
+                    ReclaimStep::Slice
+                } else if self.cut_process_space(root, from, base, Tracked(&mut *steps)) {
                     ReclaimStep::Slice
                 } else {
                     self.free_process(c, root, from, base, Tracked(steps))
@@ -1861,6 +1875,7 @@ impl CapKernel {
             forall|i: int| old(self).blocks.tracks(i) && !((base / PAGE_SZ) as int <= i < base / PAGE_SZ + 2)
                 ==> #[trigger] final(self).blocks.pages@[i] == old(self).blocks.pages@[i],
             final(self).stale_epoch == old(self).stale_epoch,
+            final(self).flush_epoch == old(self).flush_epoch,
             final(self).cores == old(self).cores,
             final(self).iommus == old(self).iommus,
             final(self).spaces == old(self).spaces,
@@ -3460,7 +3475,7 @@ impl CapKernel {
         &&& post.stale_epoch.above(pre.flush_epoch as int, c / PAGE_SZ)
         &&& !post.acknowledged(c / PAGE_SZ)
         &&& forall|d: int| #![trigger post.tlb@[d].contains(TlbEntry { space: s->Some_0, page: c / PAGE_SZ })]
-            0 <= d < NUM_CPUS && pre.loaded(d, s->Some_0)
+            0 <= d < NUM_CPUS && pre.depends(d, s->Some_0)
             ==> post.tlb@[d].contains(TlbEntry { space: s->Some_0, page: c / PAGE_SZ })
         &&& forall|i: int| #![trigger post.iommus.tlb@[i].contains(TlbEntry { space: s->Some_0, page: c / PAGE_SZ })]
             0 <= i < NUM_IOMMUS && pre.iommu_present(i) && a.is_root(s->Some_0) && pre.spaces.records@[s->Some_0].value().kind is Device
@@ -3813,8 +3828,8 @@ impl CapKernel {
         lemma_cut_pages(m, c, g);
         assert(cut_pages(m, c).contains(g));
         assert forall|d: int| #![trigger post.tlb@[d].contains(TlbEntry { space: s, page: g })]
-            0 <= d < NUM_CPUS && pre.loaded(d, s) implies post.tlb@[d].contains(TlbEntry { space: s, page: g }) by {
-            assert(mid.loaded(d, s));
+            0 <= d < NUM_CPUS && pre.depends(d, s) implies post.tlb@[d].contains(TlbEntry { space: s, page: g }) by {
+            assert(mid.depends(d, s));
         }
         assert forall|i: int| #![trigger post.iommus.tlb@[i].contains(TlbEntry { space: s, page: g })]
             0 <= i < NUM_IOMMUS && pre.iommu_present(i) && tree_of(&pre.table_pages, &pre.spaces).is_root(s) && pre.spaces.records@[s].value().kind is Device
@@ -3858,7 +3873,7 @@ impl CapKernel {
         assert(pre.acked(0) <= pre.flush_epoch);
         assert(post.acked(0) == pre.acked(0));
         assert forall|d: int| #![trigger post.tlb@[d].contains(TlbEntry { space: s, page: g })]
-            0 <= d < NUM_CPUS && pre.loaded(d, s) implies post.tlb@[d].contains(TlbEntry { space: s, page: g }) by {
+            0 <= d < NUM_CPUS && pre.depends(d, s) implies post.tlb@[d].contains(TlbEntry { space: s, page: g }) by {
             assert(mid.tlb@[d].contains(TlbEntry { space: s, page: g }));
         }
         assert forall|j: int| #![trigger post.iommus.tlb@[j].contains(TlbEntry { space: s, page: g })]

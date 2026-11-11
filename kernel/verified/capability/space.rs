@@ -116,10 +116,16 @@ pub const SPACE_ROOT_PAGE: usize = 5;
 pub const SPACE_RECORD_PAGE: usize = 6;
 pub const SPACE_CORES_PAGE: usize = 7;
 
-/// What a space keeps per core: the list of cores that have loaded it, and its id on each.
+/// What a space keeps per core: the list of cores that have loaded it, its id on each, and the
+/// epoch of the flush that retired it.
 #[derive(Clone, Copy)]
 pub struct SpaceCores {
     pub list: u32,
+    /// Zero, or the flush epoch a retype of the space's dead process raised to while no core on the
+    /// list ran a thread in it. A core on the list that has acknowledged that epoch holds nothing of the
+    /// space and cannot walk it, so it no longer counts. A load sets it back to zero. See
+    /// design/teardown-driven-by-retype/.
+    pub retired: usize,
     /// The space's word on each core, its PCID's generation in the high bits and the PCID in the low 12.
     /// A new space's words are zero, and generation zero is never current, so it holds no id.
     pub ids: [usize; NUM_CPUS],
@@ -172,7 +178,8 @@ pub struct Spaces {
     pub records: Tracked<Map<usize, PointsTo<SpaceRecord>>>,
     /// The cores that have loaded each space. A bit stays set after a flush, since a flush cannot
     /// visit every space in bounded time, and a core past a flush may hold nothing, which costs at
-    /// most a spare IPI.
+    /// most a spare IPI. A dead process's space is retired instead, and a listed core past its retire
+    /// epoch no longer counts: see design/teardown-driven-by-retype/.
     pub loaded: Tracked<Map<usize, PointsTo<SpaceCores>>>,
     pub holders: Ghost<IMap<usize, Set<usize>>>,
     /// The devices bound to each device space, each holding a reference to its block.
@@ -3467,7 +3474,7 @@ impl CapKernel {
             cores = page_into_core_list(spare);
         }
         let ids = vstd::array::array_fill_for_copy_types::<usize, NUM_CPUS>(0usize);
-        PPtr::<SpaceCores>::from_usize(base + SPACE_CORES_PAGE * PAGE_SZ).put(Tracked(&mut cores), SpaceCores { list: 0u32, ids });
+        PPtr::<SpaceCores>::from_usize(base + SPACE_CORES_PAGE * PAGE_SZ).put(Tracked(&mut cores), SpaceCores { list: 0u32, retired: 0, ids });
         let pptr = PPtr::<SpaceRecord>::from_usize(base + SPACE_RECORD_PAGE * PAGE_SZ);
         pptr.put(
             Tracked(&mut typed),

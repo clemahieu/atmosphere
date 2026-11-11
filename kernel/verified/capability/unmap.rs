@@ -293,7 +293,7 @@ impl CapKernel {
 
     /// Records a flush IPI, after those in sent, to each core on space s's list of cores: one load of the
     /// list and a bounded loop over the cores. The send is ghost: see design/flush-without-waiting/.
-    fn send_flush(&mut self, s: usize, Ghost(sent): Ghost<Seq<usize>>, Tracked(steps): Tracked<&mut Steps>)
+    pub(crate) fn send_flush(&mut self, s: usize, Ghost(sent): Ghost<Seq<usize>>, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).wf(),
             old(self).spaces.roots@.contains_key(s),

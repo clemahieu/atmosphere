@@ -1336,7 +1336,7 @@ impl CapKernel {
             cores = page_into_core_list(space_cores);
         }
         let ids = vstd::array::array_fill_for_copy_types::<usize, NUM_CPUS>(0usize);
-        PPtr::<SpaceCores>::from_usize(base + SPACE_CORES_PAGE * PAGE_SZ).put(Tracked(&mut cores), SpaceCores { list: 0u32, ids });
+        PPtr::<SpaceCores>::from_usize(base + SPACE_CORES_PAGE * PAGE_SZ).put(Tracked(&mut cores), SpaceCores { list: 0u32, retired: 0, ids });
         PPtr::<SpaceRecord>::from_usize(base + SPACE_RECORD_PAGE * PAGE_SZ).put(
             Tracked(&mut typed),
             SpaceRecord {
