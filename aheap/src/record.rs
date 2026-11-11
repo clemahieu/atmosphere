@@ -22,7 +22,8 @@
 //!   its caller held stays allocated with every page backed (`run_held`).
 //! - `put(pb, src, p, perm)` takes back the record at `p` with the permission to its bytes and
 //!   never refuses. A page left with no record in use is given back: its page released and its run
-//!   freed (`gave_back`).
+//!   freed (`gave_back`). Each run its caller held at a head that is no record page stays allocated
+//!   with every page backed.
 #[cfg(verus_keep_ghost)]
 use vstd::arithmetic::div_mod::*;
 #[cfg(verus_keep_ghost)]
@@ -1278,7 +1279,8 @@ impl RecordStore {
     }
 
     /// Takes back the record at `p` with the permission to its bytes; a record page left with no
-    /// record in use is given back, its page released and its run freed.
+    /// record in use is given back, its page released and its run freed. Every run held at a head
+    /// that is no record page stays held.
     pub fn put<S: SpanSource>(&mut self, pb: &mut PageBuddy, src: &mut S, p: *mut Record, perm: Tracked<PointsTo<Record>>)
         requires
             old(self).wf(*old(pb), old(src)@),
@@ -1290,6 +1292,13 @@ impl RecordStore {
             final(pb).wf(final(src)@),
             final(self).wf(*final(pb), final(src)@),
             final(self).taken() == old(self).taken().remove(p@.addr as int),
+            forall|x: int, k: nat| #[trigger]
+                run_held(*old(pb), old(src)@, x, k) && !old(self).pages().contains(x) ==> run_held(
+                    *final(pb),
+                    final(src)@,
+                    x,
+                    k,
+                ),
             if exists|x: int|
                 #[trigger] old(self).taken().contains(x) && x != p@.addr as int && record_page(x) == record_page(
                     p@.addr as int,
@@ -1356,6 +1365,12 @@ impl RecordStore {
                 lemma_released_held(pb0, s0, pb0.span_base(span_of(bi)), bi, c);
                 assert(run_held(pb1, s1, c, 0));
                 lemma_freed_keeps_held(pb1, pb2, s1, s2, bi, c, 0);
+            }
+            assert forall|x: int, k: nat| #[trigger]
+                run_held(pb0, s0, x, k) && !old(self).pages().contains(x) implies run_held(pb2, s2, x, k) by {
+                lemma_released_keeps_held(pb0, s0, bi, 0, x, k);
+                assert(run_held(pb1, s1, x, k));
+                lemma_freed_keeps_held(pb1, pb2, s1, s2, bi, x, k);
             }
         }
     }
