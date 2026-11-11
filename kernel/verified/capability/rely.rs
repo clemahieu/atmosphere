@@ -20,6 +20,7 @@ use crate::capability::probe::*;
 use crate::capability::reach::*;
 use crate::capability::revoke::*;
 use crate::capability::table::*;
+use crate::capability::thread::*;
 use crate::capability::view::*;
 use crate::arch::Registers;
 
@@ -218,6 +219,90 @@ impl CapKernel {
         }
         Self::lemma_views_same(pre, post);
         Self::lemma_views_kept_keeps_rely(pre, post, root);
+    }
+
+    /// A step that leaves the list and the tables as they were keeps the rely of every process: the
+    /// rely reads nothing else.
+    pub proof fn lemma_tables_kept_keeps_rely(pre: Self, post: Self, root: usize)
+        requires
+            post.list == pre.list,
+            post.tables == pre.tables,
+        ensures
+            Self::rely(pre, post, root),
+    {
+        assert(bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables));
+        assert forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t) by {
+            assert(post.table_view(t) =~= pre.table_view(t));
+        }
+    }
+
+    // The steps below are the kernel's entries that are no capability operation: each writes thread
+    // records, cores or the TLB model and leaves the list and the tables as they were, so each keeps
+    // the rely of every process, whichever core or thread took it. Thread control: start, suspend and
+    // write_registers through a control capability. Scheduling: switch_in, switch_out and
+    // enter_boot_thread. A flush's acknowledge. check_current, and dispatch when its caller must leave
+    // or its core runs nothing. Timer and device interrupts write no state of the kernel's: their
+    // handlers take no lock on it and call none of its functions.
+
+    /// start, refused or setting the thread Runnable.
+    pub proof fn lemma_start_keeps_rely(pre: Self, post: Self, t: usize, core: usize, root: usize)
+        requires
+            post == pre || Self::state_written(pre, post, t, ThreadState::Runnable { core }),
+        ensures
+            Self::rely(pre, post, root),
+    {
+        Self::lemma_tables_kept_keeps_rely(pre, post, root);
+    }
+
+    /// suspend, refused, or with the thread's record written Inactive, or its stop pending.
+    pub proof fn lemma_suspend_keeps_rely(pre: Self, post: Self, t: usize, r: ThreadRecord, root: usize)
+        requires
+            post == pre || Self::record_written(pre, post, t, r),
+        ensures
+            Self::rely(pre, post, root),
+    {
+        Self::lemma_tables_kept_keeps_rely(pre, post, root);
+    }
+
+    /// write_registers, refused or with the thread's saved frame written.
+    pub proof fn lemma_write_registers_keeps_rely(pre: Self, post: Self, t: usize, frame: Registers, root: usize)
+        requires
+            post == pre || Self::frame_written(pre, post, t, frame),
+        ensures
+            Self::rely(pre, post, root),
+    {
+        Self::lemma_tables_kept_keeps_rely(pre, post, root);
+    }
+
+    /// switch_in, switch_out and enter_boot_thread, on any core.
+    pub proof fn lemma_switch_keeps_rely(pre: Self, post: Self, c: int, t: usize, root: usize)
+        requires
+            Self::switch_frame(pre, post, c, t),
+        ensures
+            Self::rely(pre, post, root),
+    {
+        Self::lemma_tables_kept_keeps_rely(pre, post, root);
+    }
+
+    /// acknowledge, on any core.
+    pub proof fn lemma_acknowledge_keeps_rely(pre: Self, post: Self, c: int, root: usize)
+        requires
+            Self::only_core_changed(pre, post, c),
+        ensures
+            Self::rely(pre, post, root),
+    {
+        Self::lemma_tables_kept_keeps_rely(pre, post, root);
+    }
+
+    /// check_current, on any core, and dispatch when it reaches no operation: the core's thread moved
+    /// off, or nothing changed.
+    pub proof fn lemma_check_current_keeps_rely(pre: Self, post: Self, c: int, frame: Registers, root: usize)
+        requires
+            post == pre || Self::moved_off(pre, post, c, frame),
+        ensures
+            Self::rely(pre, post, root),
+    {
+        Self::lemma_tables_kept_keeps_rely(pre, post, root);
     }
 }
 
