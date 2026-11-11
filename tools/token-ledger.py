@@ -1,0 +1,411 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+
+"""The tokens each Beads issue cost, out of the transcripts Claude Code keeps for this project.
+
+Claude Code writes one transcript per session under ~/.claude/projects/<the session's directory,
+every character not a letter or digit made '-'>, and one per agent the session spawned under
+<session>/subagents/, with the agent's type beside it in agent-<id>.meta.json. Every API call is an
+assistant line carrying its request id and its usage. A harvest reads each transcript from where
+the last one stopped, whole lines only, into a SQLite ledger: one row per request id, so a call
+written on several lines counts once, and a total per issue, agent kind, model and local day, kept
+as calls arrive, so what the page asks for stays small however long the history grows.
+
+A call goes to the issue its transcript was working:
+- a round agent's or a session's, from the moment it claims one (`bd ready --claim`, whose reply
+  names it, or `bd update <id> ... --claim`) until it claims another or closes that one; a round
+  that claims nothing, as one closing an epic does, works the first issue it updates or closes; a
+  round's calls before its first claim go to that claim;
+- a prover's or a skeptic's, the issue or epic its first prompt names;
+- any other, none, which the page counts at the root.
+
+The ledger keeps what it harvested after Claude Code removes a transcript, so the history outlives
+the transcripts' retention.
+
+usage: tools/token-ledger.py [--ledger PATH]   (harvest this project's transcripts and print each kind's total)
+       tools/token-ledger.py --test             (this script's own tests)
+"""
+import argparse
+import json
+import re
+import sqlite3
+import sys
+import tempfile
+import unittest
+from datetime import datetime
+from pathlib import Path
+
+KINDS = ("input", "cache_write", "cache_read", "output")
+USAGE = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
+ISSUE = r"[a-z][a-z0-9]*-[a-z0-9]+(?:\.[0-9]+)*"
+CLAIM = re.compile(rf"\bbd\s+update\s+({ISSUE})\b[^;&|\n]*--claim\b")
+READY_CLAIM = re.compile(r"\bbd\s+ready\b[^;&|\n]*--claim\b")
+CLOSE = re.compile(rf"\bbd\s+close\s+({ISSUE})\b")
+WRITE = re.compile(rf"\bbd\s+(?:update|close)\s+({ISSUE})\b")
+PROMPTED = re.compile(rf"\b(?:Issue|Epic):?\s+({ISSUE})\b")
+FIRST_ID = re.compile(rf'"id":\s*"({ISSUE})"')
+NAMED_BY_PROMPT = ("prover", "skeptic")
+SESSION = "session"
+
+SCHEMA = """
+create table if not exists files (path text primary key, id integer unique, offset integer, state text);
+create table if not exists calls (request text primary key, file integer, issue text, kind text, model text, day text,
+    input integer, cache_write integer, cache_read integer, output integer);
+create index if not exists calls_file on calls (file, issue);
+create table if not exists totals (issue text, kind text, model text, day text,
+    input integer, cache_write integer, cache_read integer, output integer, calls integer,
+    primary key (issue, kind, model, day));
+"""
+
+
+def directories(projects, root):
+    """The transcript directories of sessions run at this project root or anywhere below it."""
+    name = re.sub(r"[^A-Za-z0-9]", "-", str(root))
+    return sorted(path for path in projects.glob(name + "*") if path.is_dir() and path.name[len(name):][:1] in ("", "-"))
+
+
+def transcripts(directory):
+    """Each transcript in that directory with its kind: a session's, or its agent's type."""
+    for path in sorted(directory.glob("*.jsonl")):
+        yield path, SESSION
+    for path in sorted(directory.glob("*/subagents/agent-*.jsonl")):
+        try:
+            kind = json.loads(path.with_suffix(".meta.json").read_text()).get("agentType") or "agent"
+        except (OSError, ValueError):
+            kind = "agent"
+        yield path, kind
+
+
+def connect(ledger):
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    db = sqlite3.connect(ledger, timeout=60, isolation_level=None)
+    db.execute("pragma journal_mode = wal")
+    db.executescript(SCHEMA)
+    return db
+
+
+class Day:
+    """The local day of a UTC timestamp, remembered by the hour, since a harvest asks for few hours many times."""
+
+    def __init__(self):
+        self.hours = {}
+
+    def __call__(self, stamp):
+        hour = stamp[:13]
+        if hour not in self.hours:
+            self.hours[hour] = datetime.fromisoformat(hour + ":00:00+00:00").astimezone().date().isoformat()
+        return self.hours[hour]
+
+
+def add(db, issue, kind, model, day, counts, calls):
+    db.execute(
+        "insert into totals values (?, ?, ?, ?, ?, ?, ?, ?, ?) on conflict do update set "
+        "input = input + excluded.input, cache_write = cache_write + excluded.cache_write, "
+        "cache_read = cache_read + excluded.cache_read, output = output + excluded.output, calls = calls + excluded.calls",
+        (issue, kind, model, day, *counts, calls),
+    )
+    if calls < 0:
+        db.execute("delete from totals where issue = ? and kind = ? and model = ? and day = ? and calls = 0", (issue, kind, model, day))
+
+
+def record(db, file, state, kind, line, day):
+    """Count the call an assistant line carries, under the issue the transcript is working now."""
+    request = line.get("requestId")
+    usage = line["message"].get("usage")
+    if not request or not usage:
+        return
+    counts = [usage.get(field) or 0 for field in USAGE]
+    model = line["message"].get("model") or ""
+    old = db.execute("select input, cache_write, cache_read, output, issue, kind, model, day from calls where request = ?", (request,)).fetchone()
+    if old is None:
+        when = day(line["timestamp"])
+        db.execute("insert into calls values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (request, file, state["issue"], kind, model, when, *counts))
+        add(db, state["issue"], kind, model, when, counts, 1)
+        return
+    # The same call on a later line: its usage only grows as the reply streams.
+    grown = [max(new, was) - was for new, was in zip(counts, old[:4])]
+    if any(grown):
+        db.execute(
+            "update calls set input = input + ?, cache_write = cache_write + ?, cache_read = cache_read + ?, output = output + ? where request = ?",
+            (*grown, request),
+        )
+        add(db, *old[4:], grown, 0)
+
+
+def claim(db, file, state, kind, issue):
+    """The transcript works that issue from now; a round's calls so far, made before any claim, go to it too."""
+    if kind == "round" and not state["claimed"]:
+        for row in db.execute("select kind, model, day, sum(input), sum(cache_write), sum(cache_read), sum(output), count(*) from calls "
+                              "where file = ? and issue = '' group by kind, model, day", (file,)).fetchall():
+            add(db, "", *row[:3], [-count for count in row[3:7]], -row[7])
+            add(db, issue, *row[:3], row[3:7], row[7])
+        db.execute("update calls set issue = ? where file = ? and issue = ''", (issue, file))
+    state["issue"] = issue
+    state["claimed"] = True
+
+
+def blocks(line):
+    content = line.get("message", {}).get("content")
+    return content if isinstance(content, list) else []
+
+
+def text(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(part.get("text", "") for part in content if isinstance(part, dict))
+    return ""
+
+
+def follow(db, file, state, kind, raw, day):
+    """One whole line of a transcript: count its call, then see whether it moves the transcript to another issue."""
+    if b'"requestId"' in raw and b'"usage"' in raw:
+        line = json.loads(raw)
+        if line.get("type") == "assistant":
+            record(db, file, state, kind, line, day)
+    if kind in NAMED_BY_PROMPT and not state["prompted"] and b'"type":"user"' in raw:
+        line = json.loads(raw)
+        state["prompted"] = True
+        found = PROMPTED.search(text(line.get("message", {}).get("content")))
+        if found:
+            state["issue"] = found.group(1)
+        return
+    if kind in NAMED_BY_PROMPT:
+        return
+    if b"bd " in raw and b'"tool_use"' in raw:
+        for block in blocks(json.loads(raw)):
+            command = block.get("input", {}).get("command", "") if block.get("type") == "tool_use" else ""
+            written = WRITE.search(command)
+            if kind == "round" and not state["claimed"] and written and not CLAIM.search(command):
+                claim(db, file, state, kind, written.group(1))
+            for found in CLAIM.finditer(command):
+                claim(db, file, state, kind, found.group(1))
+            if READY_CLAIM.search(command):
+                state["waiting"].append(block["id"])
+            for found in CLOSE.finditer(command):
+                if found.group(1) == state["issue"]:
+                    state["issue"] = ""
+    if state["waiting"] and b'"tool_result"' in raw:
+        for block in blocks(json.loads(raw)):
+            if block.get("type") == "tool_result" and block.get("tool_use_id") in state["waiting"]:
+                state["waiting"].remove(block["tool_use_id"])
+                found = FIRST_ID.search(text(block.get("content")))
+                if found:
+                    claim(db, file, state, kind, found.group(1))
+
+
+def read(db, path, kind, day):
+    """Take in what was appended to that transcript since the last harvest; the number of lines taken."""
+    size = path.stat().st_size
+    db.execute("begin immediate")
+    try:
+        row = db.execute("select id, offset, state from files where path = ?", (str(path),)).fetchone()
+        if row is None:
+            file = (db.execute("select coalesce(max(id), 0) + 1 from files").fetchone()[0])
+            offset, state = 0, {"issue": "", "claimed": False, "prompted": False, "waiting": []}
+        else:
+            file, offset, state = row[0], row[1], json.loads(row[2])
+            if size < offset:
+                # Rewritten from the start: read it again; the calls already counted are known by their request ids.
+                offset, state = 0, {"issue": "", "claimed": False, "prompted": False, "waiting": []}
+        taken = 0
+        if size > offset:
+            with path.open("rb") as stream:
+                stream.seek(offset)
+                data = stream.read(size - offset)
+            whole = data.rfind(b"\n") + 1
+            for raw in data[:whole].split(b"\n")[:-1]:
+                if raw.strip():
+                    try:
+                        follow(db, file, state, kind, raw, day)
+                    except (ValueError, KeyError, TypeError, AttributeError):
+                        pass  # a line of a shape this does not know carries nothing it counts
+                    taken += 1
+            offset += whole
+        db.execute("insert or replace into files values (?, ?, ?, ?)", (str(path), file, offset, json.dumps(state)))
+        db.execute("commit")
+        return taken
+    except BaseException:
+        db.execute("rollback")
+        raise
+
+
+def harvest(ledger, projects, root):
+    """Bring the ledger up to date with every transcript of this project; the number of new lines read."""
+    db = connect(ledger)
+    try:
+        day = Day()
+        known = dict(db.execute("select path, offset from files").fetchall())
+        taken = 0
+        for directory in directories(projects, root):
+            for path, kind in transcripts(directory):
+                try:
+                    if path.stat().st_size != known.get(str(path)):
+                        taken += read(db, path, kind, day)
+                except FileNotFoundError:
+                    pass  # removed by Claude Code's retention between the listing and the read
+        return taken
+    finally:
+        db.close()
+
+
+def spent(ledger):
+    """What the ledger holds, as the page draws it: each issue's tokens by kind ('' for none), and each day's tokens by agent kind."""
+    if not ledger.exists():
+        return {}, []
+    db = connect(ledger)
+    try:
+        issues = {row[0]: list(row[1:]) for row in db.execute(
+            "select issue, sum(input), sum(cache_write), sum(cache_read), sum(output), sum(calls) from totals group by issue")}
+        days = [[row[0], row[1], list(row[2:])] for row in db.execute(
+            "select day, kind, sum(input), sum(cache_write), sum(cache_read), sum(output), sum(calls) from totals group by day, kind order by day, kind")]
+        return issues, days
+    finally:
+        db.close()
+
+
+def main(arguments):
+    parser = argparse.ArgumentParser(description="Harvest this project's transcripts into the token ledger.")
+    root = Path(__file__).resolve().parents[2]
+    parser.add_argument("--ledger", type=Path, default=root / "logs" / "token-ledger.sqlite")
+    options = parser.parse_args(arguments)
+    taken = harvest(options.ledger, Path.home() / ".claude" / "projects", root)
+    issues, days = spent(options.ledger)
+    print(f"read {taken} new lines; {len(issues)} issues")
+    totals = {}
+    for _, kind, counts in days:
+        totals[kind] = [a + b for a, b in zip(totals.get(kind, [0] * 5), counts)]
+    for kind, counts in sorted(totals.items()):
+        print(kind, " ".join(f"{name} {count}" for name, count in zip(KINDS + ("calls",), counts)))
+    return 0
+
+
+class Tests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.home = Path(self.directory.name)
+        self.root = Path("/work/atmo.src")
+        self.projects = self.home / "projects"
+        self.sessions = self.projects / "-work-atmo-src-main"
+        self.sessions.mkdir(parents=True)
+        self.ledger = self.home / "logs" / "ledger.sqlite"
+        self.request = 0
+
+    def call(self, usage=(1, 10, 100, 5), request=None, stamp="2026-11-10T12:00:00Z", model="claude-opus-5-5", content=()):
+        if request is None:
+            self.request += 1
+            request = f"req_{self.request}"
+        return {"type": "assistant", "requestId": request, "timestamp": stamp, "message": {
+            "model": model, "content": list(content), "usage": dict(zip(USAGE, usage))}}
+
+    def bash(self, command, use="toolu_1"):
+        return self.call(content=[{"type": "tool_use", "id": use, "name": "Bash", "input": {"command": command}}])
+
+    def result(self, use, output):
+        return {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": use, "content": output}]}}
+
+    def prompt(self, words):
+        return {"type": "user", "message": {"role": "user", "content": words}}
+
+    def write(self, path, lines, mode="w"):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open(mode) as stream:
+            for line in lines:
+                stream.write(json.dumps(line, separators=(",", ":")) + "\n")
+
+    def agent(self, kind, lines, name="a1"):
+        path = self.sessions / "s1" / "subagents" / f"agent-{name}.jsonl"
+        self.write(path, lines)
+        path.with_suffix(".meta.json").write_text(json.dumps({"agentType": kind}))
+        return path
+
+    def issues(self):
+        harvest(self.ledger, self.projects, self.root)
+        return {issue: counts for issue, counts in spent(self.ledger)[0].items()}
+
+    def test_the_directories_are_this_roots_and_those_below_it_only(self):
+        for name in ("-work-atmo-src", "-work-atmo-src--bare", "-work-atmo-srcx", "-other"):
+            (self.projects / name).mkdir()
+        self.assertEqual([path.name for path in directories(self.projects, self.root)], ["-work-atmo-src", "-work-atmo-src--bare", "-work-atmo-src-main"])
+
+    def test_a_round_works_what_it_claims_from_before_its_first_claim(self):
+        self.agent("round", [
+            self.prompt("Run one round."),
+            self.bash("bd ready --claim --exclude-type=epic --json", "toolu_r"),
+            self.result("toolu_r", '[\n  {\n    "id": "atmo-1.2",\n    "title": "x", "parent": "atmo-1"}]'),
+            self.call(),
+            self.bash("cd main; bd update atmo-1.3 --claim"),
+            self.call(),
+        ])
+        self.assertEqual(self.issues(), {"atmo-1.2": [3, 30, 300, 15, 3], "atmo-1.3": [1, 10, 100, 5, 1]})
+
+    def test_a_round_that_claims_nothing_works_the_first_issue_it_writes(self):
+        self.agent("round", [self.call(), self.bash('bd update atmo-1 --append-notes "Skeptic input: tier 3"'), self.call(),
+                             self.bash('bd update atmo-2 --append-notes "x"'), self.call()])
+        self.assertEqual(self.issues(), {"atmo-1": [5, 50, 500, 25, 5]})
+        self.agent("round", [self.call(), self.bash("bd close atmo-3 --reason done"), self.call()], "a2")
+        self.assertEqual(self.issues()["atmo-3"], [2, 20, 200, 10, 2])
+
+    def test_a_session_works_what_it_claims_until_it_closes_it(self):
+        self.write(self.sessions / "s1.jsonl", [
+            self.call(),
+            self.bash('bd update atmo-1.2 -s in_progress --claim && echo "--claim"'),
+            self.call(),
+            self.bash("bd close atmo-1.2 --reason done"),
+            self.call(),
+        ])
+        self.assertEqual(self.issues(), {"": [3, 30, 300, 15, 3], "atmo-1.2": [2, 20, 200, 10, 2]})
+
+    def test_a_prover_and_a_skeptic_work_what_their_first_prompt_names(self):
+        self.agent("prover", [self.prompt("Issue atmo-1.2.3, worktree /x/atmo-1.2.3. Your input is ..."), self.call(),
+                              self.bash("bd update atmo-9 --claim")], "p")
+        self.agent("skeptic", [self.prompt("Run the pass. Epic: atmo-1.2. Your input is the epic's last Skeptic input note."), self.call()], "s")
+        self.agent("general-purpose", [self.prompt("Issue atmo-1.4, look"), self.call()], "g")
+        self.assertEqual(self.issues(), {"atmo-1.2.3": [2, 20, 200, 10, 2], "atmo-1.2": [1, 10, 100, 5, 1], "": [1, 10, 100, 5, 1]})
+
+    def test_a_call_written_on_several_lines_counts_once_at_its_largest(self):
+        self.write(self.sessions / "s1.jsonl", [self.call((1, 10, 100, 5), "req_a"), self.call((1, 10, 100, 70), "req_a")])
+        self.assertEqual(self.issues(), {"": [1, 10, 100, 70, 1]})
+
+    def test_a_line_still_being_written_is_read_once_it_is_whole(self):
+        path = self.sessions / "s1.jsonl"
+        self.write(path, [self.call()])
+        whole = json.dumps(self.call(), separators=(",", ":")) + "\n"
+        with path.open("a") as stream:
+            stream.write(whole[:40])
+        self.assertEqual(self.issues(), {"": [1, 10, 100, 5, 1]})
+        with path.open("a") as stream:
+            stream.write(whole[40:])
+        self.assertEqual(self.issues(), {"": [2, 20, 200, 10, 2]})
+        self.assertEqual(harvest(self.ledger, self.projects, self.root), 0)
+
+    def test_a_claim_answered_by_a_later_harvest_still_moves_the_round(self):
+        path = self.agent("round", [self.call(), self.bash("bd ready --claim --json", "toolu_r")])
+        self.assertEqual(self.issues(), {"": [2, 20, 200, 10, 2]})
+        self.write(path, [self.result("toolu_r", '[{"id": "atmo-7"}]'), self.call()], "a")
+        self.assertEqual(self.issues(), {"atmo-7": [3, 30, 300, 15, 3]})
+
+    def test_the_ledger_keeps_what_a_removed_transcript_held(self):
+        path = self.sessions / "s1.jsonl"
+        self.write(path, [self.call()])
+        self.issues()
+        path.unlink()
+        self.assertEqual(self.issues(), {"": [1, 10, 100, 5, 1]})
+
+    def test_a_day_is_the_local_day_of_its_calls_by_agent_kind(self):
+        self.write(self.sessions / "s1.jsonl", [self.call(stamp="2026-11-10T12:00:00Z"), self.call(stamp="2026-11-11T12:00:00Z")])
+        self.agent("round", [self.call(stamp="2026-11-10T12:30:00Z")])
+        harvest(self.ledger, self.projects, self.root)
+        self.assertEqual(spent(self.ledger)[1], [
+            ["2026-11-10", "round", [1, 10, 100, 5, 1]], ["2026-11-10", "session", [1, 10, 100, 5, 1]], ["2026-11-11", "session", [1, 10, 100, 5, 1]]])
+
+    def test_a_ledger_not_yet_harvested_holds_nothing(self):
+        self.assertEqual(spent(self.ledger), ({}, []))
+
+
+if __name__ == "__main__":
+    if sys.argv[1:] == ["--test"]:
+        sys.argv[1:] = []
+        unittest.main()
+    sys.exit(main(sys.argv[1:]))
