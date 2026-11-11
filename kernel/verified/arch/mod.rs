@@ -9,7 +9,9 @@
 //! change one: proof code cannot write the struct, and verified code cannot call Tracked::assume_new,
 //! which Verus marks external. Nor can code above it copy one: each holds a Unique, which is private here
 //! and neither Copy nor Clone, so rustc refuses an `impl Copy` for a token wherever it is written, and a
-//! `Clone` could only return the token it was given. Only the glue that does what a token attests makes or changes it, but for
+//! `Clone` could only return the token it was given; and tools/check-external-body.py refuses `unsafe` outside
+//! counted glue, the only way left to zero one up or read one out twice (core::mem::zeroed,
+//! core::ptr::read). Only the glue that does what a token attests makes or changes it, but for
 //! TlbModel::grow and IotlbModel::grow, by which proof code may add entries to a model of what a TLB
 //! holds, since a model that holds more claims less.
 use vstd::prelude::*;

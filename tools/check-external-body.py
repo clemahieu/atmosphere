@@ -35,7 +35,11 @@ each word of these in code counts, whatever attribute or macro spells it. An uns
 refused, since one builds an identifier from pieces and a word above need not appear. vstd's
 assume_new constructors, which make a ghost or tracked value from nothing, are refused outside the
 body of a counted external_body function, the glue whose claim the list holds; an impl outside
-verus! that Verus does not read is no such body.
+verus! that Verus does not read is no such body. So is the word unsafe, outside that body and the
+body of a function an assumed specification in the same file names: safe Rust cannot make a value of
+a type whose fields are private to another module or copy one that is neither Copy nor Clone, and
+unsafe code can (core::mem::zeroed, core::ptr::read, MaybeUninit::assume_init, transmute), in an impl
+outside verus! that verified code reaches through a trait vstd specifies, such as Default or From.
 vstd's proof_from_false is not refused: it requires false, which only an assumption or an exemption
 refused here can supply.
 
@@ -92,6 +96,9 @@ FEATURE = re.compile(r"\bfeature\s*\(")
 # vstd's constructors of a ghost or tracked value from nothing, allowed only in the body of a counted
 # external_body function, whose claim the list holds.
 CONJURE = re.compile(r"\bassume_new\w*")
+# The unsafe keyword, in a block, a fn, an impl, a trait, an extern block or an attribute: the only way
+# safe Rust leaves to make or copy a token it cannot name the fields of, allowed only in counted glue.
+UNSAFE = re.compile(r"\bunsafe\b")
 # What makes rustc compile a file the scan does not read: a path attribute, in any attribute or
 # cfg_attr, an include!, and a module named target, whose directory the scan leaves out.
 UNREAD_FILE = re.compile(r"#\s*!?\s*\[\s*path\b|\bpath\s*=\s*(?:r#*)?\"|\binclude\s*!|"
@@ -390,27 +397,45 @@ def unread_exemptions(path, source):
     return refused
 
 
+def body_lines(code, declared):
+    """The indices of the lines of the body of the function declared on line declared: from the brace
+    that opens it to the brace that closes it; none for a declaration with no body."""
+    text = "\n".join(code[declared:])
+    opening = text.find("{")
+    if opening < 0 or ";" in text[:opening]:
+        return set()
+    depth = 0
+    for at in range(opening, len(text)):
+        depth += {"{": 1, "}": -1}.get(text[at], 0)
+        if depth == 0:
+            break
+    return set(range(declared + text.count("\n", 0, opening), declared + text.count("\n", 0, at) + 1))
+
+
 def glue_bodies(code):
-    """The indices of the lines inside the body of each counted external_body function: from the brace
-    that opens the body after the function's name to the brace that closes it."""
+    """The indices of the lines inside the body of each counted external_body function."""
     inside = set()
     for index, line in enumerate(code):
         if attribute(line.strip()) != "external_body":
             continue
         declared = next((at for at in range(index + 2, len(code)) if item_name(code[at].strip())), None)
-        if declared is None:
-            continue
-        text = "\n".join(code[declared:])
-        opening = text.find("{")
-        if opening < 0 or ";" in text[:opening]:
-            continue
-        depth = 0
-        for at in range(opening, len(text)):
-            depth += {"{": 1, "}": -1}.get(text[at], 0)
-            if depth == 0:
-                break
-        first = declared + text.count("\n", 0, opening)
-        inside.update(range(first, declared + text.count("\n", 0, at) + 1))
+        if declared is not None:
+            inside |= body_lines(code, declared)
+    return inside
+
+
+def specified_bodies(code):
+    """The indices of the lines inside the body of each function an assumed specification in the same
+    file names: the hardware function or system call whose claim the list holds."""
+    named = set()
+    for line in code:
+        match = SPECIFICATION.match(line.strip())
+        if match is not None:
+            named.add(re.sub(r"\s", "", match.group(1)).rsplit("::", 1)[-1])
+    inside = set()
+    for index, line in enumerate(code):
+        if item_name(line.strip()) in named and re.search(r"\bfn\b", line):
+            inside |= body_lines(code, index)
     return inside
 
 
@@ -422,6 +447,20 @@ def conjurings(path, source):
     return [f"{path}:{index + 1}: {line.strip()}"
             for index, (line, text) in enumerate(zip(source.splitlines(), code))
             if CONJURE.search(text) and index not in allowed]
+
+
+def unsafe_lines(path, source):
+    """Each line of one file whose code says unsafe outside the body of a counted external_body
+    function and of a function an assumed specification in the file names. Safe Rust cannot make a
+    value of a type whose fields are private to another module, nor copy one that is neither Copy nor
+    Clone; only unsafe code can (core::mem::zeroed, core::ptr::read, MaybeUninit::assume_init,
+    transmute), and Verus does not read code outside verus! that verified code reaches through a
+    trait (design/flush-without-waiting/)."""
+    code = code_lines(source)
+    allowed = glue_bodies(code) | specified_bodies(code)
+    return [f"{path}:{index + 1}: {line.strip()}"
+            for index, (line, text) in enumerate(zip(source.splitlines(), code))
+            if UNSAFE.search(text) and index not in allowed]
 
 
 def compare(found, listed):
@@ -482,6 +521,8 @@ def scan_tree(repo, documents):
             refused.extend(unread_exemptions(path, source))
             refused.extend(f"{line} makes a ghost or tracked value outside counted glue"
                            for line in conjurings(path, source))
+            refused.extend(f"{line} is unsafe code outside counted glue, which may make or copy a value "
+                           "the proof cannot see" for line in unsafe_lines(path, source))
     return found, refused
 
 
@@ -960,6 +1001,55 @@ class ForgeryTests(unittest.TestCase):
                   "    -> (perm: Tracked<PointsToRaw>)\n    ensures perm@.is_range(0, 1),\n{\n"
                   "    Tracked::assume_new()\n}\nfn g() -> Tracked<T> { Tracked::assume_new() }\n")
         self.assertEqual(conjurings("a.rs", source), ["a.rs:9: fn g() -> Tracked<T> { Tracked::assume_new() }"])
+
+    def test_unsafe_outside_counted_glue_is_refused(self):
+        forms = {
+            "zeroed in a Default impl": "impl Default for SkBox { fn default() -> Self { unsafe { core::mem::zeroed() } } }\n",
+            "ptr::read in a From impl": ("impl<'a> From<&'a SkTok> for SkTok { fn from(v: &'a SkTok) -> SkTok "
+                                         "{ unsafe { core::ptr::read(v) } } }\n"),
+            "assume_init": ("impl Default for SkBox { fn default() -> Self "
+                            "{ unsafe { core::mem::MaybeUninit::uninit().assume_init() } } }\n"),
+            "transmute": "fn f(x: [u8; 0]) -> SkBox { unsafe { core::mem::transmute(x) } }\n",
+            "an unsafe impl": "unsafe impl Send for SkBox {}\n",
+            "an unsafe fn": "unsafe fn f() {}\n",
+        }
+        for name, form in forms.items():
+            with self.subTest(name):
+                source = f"{form}verus! {{\npub struct SkBox {{ pub t: Tracked<crate::arch::BaseRegister> }}\n}}\n"
+                self.assertEqual(len(self.refused("capability/mapping.rs", {"capability/mapping.rs": source})), 1)
+
+    def test_the_from_spec_duplicate_is_refused(self):
+        source = ("impl<'a> From<&'a SkTok> for SkTok { fn from(v: &'a SkTok) -> SkTok { unsafe { core::ptr::read(v) } } }\n"
+                  "verus! {\npub struct SkTok { pub t: Tracked<crate::arch::BaseRegister> }\n"
+                  "#[cfg(verus_keep_ghost)]\nimpl<'a> vstd::std_specs::convert::FromSpecImpl<&'a SkTok> for SkTok {\n"
+                  "    open spec fn obeys_from_spec() -> bool { true }\n"
+                  "    open spec fn from_spec(v: &'a SkTok) -> SkTok { *v }\n}\n}\n")
+        self.assertEqual([line.split(":")[1] for line in self.refused("capability/mapping.rs",
+                                                                      {"capability/mapping.rs": source})], ["1"])
+
+    def test_unsafe_in_a_counted_external_body_is_accepted(self):
+        source = ("#[verifier::external_body]\n// external_body(glue): hw\nfn spin_hint()\n{\n"
+                  "    unsafe { core::arch::asm!(\"pause\") }\n}\nfn g() { unsafe { core::arch::asm!(\"pause\") } }\n")
+        self.assertEqual(unsafe_lines("a.rs", source),
+                         ['a.rs:7: fn g() { unsafe { core::arch::asm!("pause") } }'])
+
+    def test_unsafe_under_a_termination_exemption_is_refused(self):
+        source = ("#[verifier::exec_allows_no_decreases_clause]\n// exec_allows_no_decreases_clause(unproven): x\n"
+                  "fn spin() {\n    unsafe { core::arch::asm!(\"pause\") }\n}\n")
+        self.assertEqual(len(unsafe_lines("a.rs", source)), 1)
+
+    def test_unsafe_in_the_function_an_assumed_specification_names_is_accepted(self):
+        source = ("verus! {\n// cite: amd-apm2 5.5.1 x\npub assume_specification[flush_every_context](core: usize)\n"
+                  "    ensures true;\n}\npub fn flush_every_context(_core: usize) {\n    unsafe {\n"
+                  "        core::arch::asm!(\"nop\");\n    }\n}\npub fn other(_core: usize) {\n"
+                  "    unsafe { core::arch::asm!(\"nop\") }\n}\n")
+        self.assertEqual(unsafe_lines("arch/x86_64.rs", source),
+                         ['arch/x86_64.rs:12: unsafe { core::arch::asm!("nop") }'])
+
+    def test_unsafe_in_a_comment_a_string_or_a_longer_name_is_not_refused(self):
+        source = ('// unsafe { core::mem::zeroed() }\nlet s = "unsafe";\nlet unsafe_count = 0;\n'
+                  "#[allow(unsafe_code)]\n")
+        self.assertEqual(unsafe_lines("a.rs", source), [])
 
     def test_assume_new_under_a_termination_exemption_is_refused(self):
         source = ("#[verifier::exec_allows_no_decreases_clause]\n// exec_allows_no_decreases_clause(unproven): x\n"
