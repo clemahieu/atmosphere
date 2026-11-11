@@ -6,11 +6,12 @@
 //! it back, releases the run, backs one page again and releases it, and gives the span back, ending
 //! with the spans it started with; only the source's count of refusals may have grown. What it saw is
 //! the caller's to judge: dom0 prints it.
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::div_mod::*;
+#[cfg(verus_keep_ghost)]
 use vstd::layout::*;
 use vstd::prelude::*;
 use vstd::raw_ptr::*;
-use vstd::set::*;
 
 use aheap::arch::*;
 use aheap::source::*;

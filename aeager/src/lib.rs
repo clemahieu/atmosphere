@@ -11,7 +11,8 @@
 //! later retype. `glue` is the system calls, the only trusted code; `exercise` is a verified use of
 //! the contract that dom0 runs at boot.
 #![no_std]
-#![allow(unused)]
+// A cargo build erases specifications and proofs, so there a variable only they read looks unused.
+#![cfg_attr(not(verus_keep_ghost), allow(unused_variables))]
 
 mod eager;
 mod exercise;

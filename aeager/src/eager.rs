@@ -9,10 +9,10 @@
 //! refused, and which tables of the window's path are linked. The record decides nothing the view
 //! states, so its proof is that every index and address it computes is in range; whether a frame is
 //! there to back a page is the kernel's to say, and a refusal anywhere refuses the run.
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::div_mod::*;
 use vstd::prelude::*;
 use vstd::raw_ptr::*;
-use vstd::set::*;
 
 use aheap::arch::*;
 use aheap::source::*;

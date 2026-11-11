@@ -8,6 +8,7 @@
 use vstd::prelude::*;
 use vstd::raw_ptr::*;
 
+#[cfg(verus_keep_ghost)]
 use aheap::arch::*;
 use asys::operation;
 
