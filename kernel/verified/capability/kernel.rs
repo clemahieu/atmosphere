@@ -1661,6 +1661,7 @@ impl CapKernel {
             final(self).iommus.commands == iommu_commands,
             final(self).flush_epoch == 0,
             final(self).spaces.kernel_root@ == kernel_root,
+            final(self).spaces.registers@ == registers,
             final(self).mapped@ == Set::<usize>::empty(),
             final(self).devices.count == 0,
             forall|c: int| 0 <= c < NUM_CPUS ==> {

@@ -257,6 +257,7 @@ impl CapKernel {
         &&& self.root_live(process)
         &&& !self.blocks.pages@[(process / PAGE_SZ) as int].dead
         &&& self.flush_epoch == 0
+        &&& boot_registers(self.spaces.registers@, self.spaces.kernel_root@)
         &&& forall|c: int| 0 <= c < NUM_CPUS ==> {
             &&& (#[trigger] self.cores@[c]).current_thread is None
             &&& self.cores@[c].generation == 1

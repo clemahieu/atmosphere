@@ -365,6 +365,7 @@ impl CapKernel {
             final(self).cores@[c as int].space == space,
             final(self).spaces.registers@[c as int].root() == root,
             final(self).spaces.registers@[c as int].tag() == tag,
+            forall|d: int| d != c ==> #[trigger] final(self).spaces.registers@[d] == old(self).spaces.registers@[d],
             final(self).cores@[c as int].current_thread == old(self).cores@[c as int].current_thread,
             final(self).cores@[c as int].acked_epoch == old(self).cores@[c as int].acked_epoch,
             final(self).cores@[c as int].generation == old(self).cores@[c as int].generation,

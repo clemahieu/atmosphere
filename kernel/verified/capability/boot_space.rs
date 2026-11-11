@@ -209,6 +209,7 @@ impl CapKernel {
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).cores == old(self).cores,
             final(self).spaces.kernel_root == old(self).spaces.kernel_root,
+            final(self).spaces.registers == old(self).spaces.registers,
             final(self).devices == old(self).devices,
             final(self).iommus.present == old(self).iommus.present,
             ret is None <==> (image_blocks(runs@).len() > ROOT_FRAME_SLOTS || !image_virt_wf(runs@)

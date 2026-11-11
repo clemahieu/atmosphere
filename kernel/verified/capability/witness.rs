@@ -733,7 +733,8 @@ impl CapKernel {
     /// loads the root's space and points its base register at the space's root under the tag the load
     /// gave; then it points the register back at `kernel_root`, the root boot was given and every core
     /// booted on, under KERNEL_TAG, as a core does when it leaves a space for none. Boot leaves every
-    /// core naming no space, so the load may start there. See design/teardown-driven-by-retype/.
+    /// core naming no space with its register on `kernel_root` under KERNEL_TAG, so the load may start
+    /// there, and at the end every core's register is there again. See design/teardown-driven-by-retype/.
     pub fn witness_boot_space_switch(
         &mut self,
         root: Ghost<usize>,
@@ -757,8 +758,10 @@ impl CapKernel {
             final(self).cores@[0].space is None,
             final(self).loaded(0, process),
             final(self).depends(0, process),
-            final(self).spaces.registers@[0].root() == kernel_root,
-            final(self).spaces.registers@[0].tag() == KERNEL_TAG,
+            forall|c: int| 0 <= c < NUM_CPUS ==> {
+                &&& (#[trigger] final(self).spaces.registers@[c]).root() == kernel_root
+                &&& final(self).spaces.registers@[c].tag() == KERNEL_TAG
+            },
     {
         hide(CapKernel::wf);
         let ghost s0 = *self;
@@ -774,6 +777,7 @@ impl CapKernel {
         // Boot holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
         let tracked mut steps = Steps::fresh();
         let pcid = self.load_space(0, process, Tracked(&mut steps));
+        let ghost s1 = *self;
         self.switch_space(0, Some(process), process + SPACE_ROOT_PAGE * PAGE_SZ, pcid);
         let ghost s2 = *self;
         proof {
@@ -785,6 +789,17 @@ impl CapKernel {
             reveal(registers_wf);
             assert(s3.spaces.registers@.contains_key(0));
             assert(register_names(s3.spaces.registers@[0], s3.cores@[0].space, s3.spaces.loaded@, 0, kernel_root));
+            // Every other core is where boot left it, on kernel_root under KERNEL_TAG.
+            assert forall|c: int| 0 <= c < NUM_CPUS implies {
+                &&& (#[trigger] s3.spaces.registers@[c]).root() == kernel_root
+                &&& s3.spaces.registers@[c].tag() == KERNEL_TAG
+            } by {
+                if c != 0 {
+                    assert(s0.spaces.registers@.contains_key(c));
+                    assert(s3.spaces.registers@[c] == s2.spaces.registers@[c]);
+                    assert(s2.spaces.registers@[c] == s1.spaces.registers@[c]);
+                }
+            }
         }
     }
 
