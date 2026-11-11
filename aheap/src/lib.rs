@@ -10,7 +10,8 @@
 //! of the runs its slabs are cut from. `slab` cuts one backed run into slots of one size, with a record
 //! that keeps no permission: its caller holds the permission to each free slot in a map. `large`
 //! keeps each object over one block in a span of its own, recorded in a node in the span's record
-//! page, the nodes linked into one list. `record` keeps each slab's record in record pages the page
+//! page, the nodes linked into one list. `list` links slab records through their links, the list of
+//! a size class's partial or full slabs, holding the permission to each. `record` keeps each slab's record in record pages the page
 //! buddy cuts and the heap backs itself, the pages linked into one list. `witness` holds verified
 //! uses of the contract, of the buddies, of the size classes, of the slab, of the large-object map
 //! and of the record store, built into no image.
@@ -22,6 +23,7 @@ pub mod arch;
 pub mod buddy;
 pub mod class;
 pub mod large;
+pub mod list;
 pub mod page;
 pub mod record;
 pub mod slab;
