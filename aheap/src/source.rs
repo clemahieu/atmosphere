@@ -21,8 +21,8 @@
 //! glue counted there; this crate trusts nothing.
 use vstd::prelude::*;
 use vstd::raw_ptr::*;
-use vstd::set::*;
 
+#[cfg(verus_keep_ghost)]
 use crate::arch::*;
 
 verus! {

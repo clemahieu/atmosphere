@@ -37,12 +37,12 @@
 //! `lemma_view` states the invariant on the view, among it where each metadata page lies and that
 //! a held span's first block with no run is the initial block, so `lemma_idle_fits` shows a run of
 //! any order fits while such a span is held.
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::div_mod::*;
-use vstd::arithmetic::mul::*;
+#[cfg(verus_keep_ghost)]
 use vstd::layout::*;
 use vstd::prelude::*;
 use vstd::raw_ptr::*;
-use vstd::set::*;
 
 use crate::arch::*;
 use crate::buddy::*;
@@ -425,9 +425,12 @@ pub struct PageBuddy<S: SpanSource> {
     chain: Ghost<Seq<int>>,
     /// The metadata pages of the held spans.
     metas: Ghost<Set<int>>,
+    // Only proofs read the nodes and the rests, and a cargo build erases them.
     /// The permission to each held span's node, by base.
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
     nodes: Tracked<Map<int, PointsTo<Node>>>,
     /// The permission to the rest of each held span's metadata page, after its node, by base.
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
     rests: Tracked<Map<int, PointsToRaw>>,
 }
 

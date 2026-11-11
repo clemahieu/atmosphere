@@ -17,7 +17,9 @@
 //!
 //! `lemma_view` states the invariant on the view: the blocks partition the pages, each aligned to
 //! its order, and no free block has a free buddy of its order.
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::div_mod::*;
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::mul::*;
 use vstd::prelude::*;
 

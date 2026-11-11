@@ -9,10 +9,12 @@
 //! first page of its second block. `witness` holds verified uses of the contract and of the buddies,
 //! built into no image.
 #![no_std]
-#![allow(unused)]
+// A cargo build erases specifications and proofs, so there a variable only they read looks unused.
+#![cfg_attr(not(verus_keep_ghost), allow(unused_variables))]
 
 pub mod arch;
 pub mod buddy;
 pub mod page;
 pub mod source;
+#[cfg(verus_keep_ghost)]
 mod witness;

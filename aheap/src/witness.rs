@@ -25,7 +25,6 @@
 use vstd::prelude::*;
 use vstd::layout::*;
 use vstd::raw_ptr::*;
-use vstd::set::*;
 
 use crate::arch::*;
 use crate::buddy::*;
