@@ -165,6 +165,45 @@ impl CapKernel {
     {
     }
 
+    /// A placement of a bound device's capability gives the receiver what the device's space maps: the
+    /// receiver now holds the capability, so it reaches the device directly and through its binding
+    /// sees the space the device is bound to, by the view's device edge. See
+    /// design/device-binding-under-the-space-capability/.
+    pub proof fn lemma_placed_device_reaches_space(pre: Self, post: Self, root: usize, from: Position, cap: usize, index: usize)
+        requires
+            Self::cap_moved_at(pre, post, root, from, Position { through: Some(cap), index }),
+            post.devices.records == pre.devices.records,
+            post.devices.count == pre.devices.count,
+            pre.view().binds.contains_key(pre.payload_of(pre.tables.node_of(pre.table_at(root, from.through)->0, from.index)).base),
+        ensures
+            post.view().reach(
+                pre.table_at(root, Some(cap))->0,
+                pre.view().binds[pre.payload_of(pre.tables.node_of(pre.table_at(root, from.through)->0, from.index)).base],
+            ),
+    {
+        let (a, b) = (pre.view(), post.view());
+        let i = pre.tables.node_of(pre.table_at(root, from.through)->0, from.index);
+        let dst = pre.table_at(root, Some(cap))->0;
+        let n = pre.tables.node_of(dst, index);
+        let o = pre.payload_of(i).base;
+        let s = a.binds[o];
+        assert(b.binds =~= a.binds);
+        assert(b.holds(dst, n));
+        assert(post.is_cap(n));
+        assert(b.names[n] == o);
+        vstd::arithmetic::power2::lemma_pow2_pos(post.payload_of(n).order as nat);
+        assert(b.pages[n] >= 1);
+        assert(b.pages[n] * PAGE_SZ >= PAGE_SZ) by (nonlinear_arith)
+            requires
+                b.pages[n] >= 1,
+        ;
+        assert(b.covers(n, o));
+        assert(b.descends(n, n, 0));
+        assert(b.direct(dst, o));
+        assert(b.shared(dst, s));
+        assert(b.controlled(dst, dst, 0));
+    }
+
     /// Moves the capability at position `from` to the empty position `to`: each an index of the
     /// caller's table, at `root`, or of the table of a process the caller controls. A source there is
     /// taken whether its process is live or dead, a claim; a destination there must not be dead. One
