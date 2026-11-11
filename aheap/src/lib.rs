@@ -12,7 +12,9 @@
 //! keeps each object over one block in a span of its own, recorded in a node in the span's record
 //! page, the nodes linked into one list. `list` links slab records through their links, the list of
 //! a size class's partial or full slabs, holding the permission to each. `record` keeps each slab's record in record pages the page
-//! buddy cuts and the heap backs itself, the pages linked into one list. `witness` holds verified
+//! buddy cuts and the heap backs itself, the pages linked into one list. `small` keeps one size
+//! class: its partial and full slabs on two lists and the permissions to their free slots, taking a
+//! slot from a partial slab or from a new one it cuts, backs and records. `witness` holds verified
 //! uses of the contract, of the buddies, of the size classes, of the slab, of the large-object map
 //! and of the record store, built into no image.
 #![no_std]
@@ -27,6 +29,7 @@ pub mod list;
 pub mod page;
 pub mod record;
 pub mod slab;
+pub mod small;
 pub mod source;
 #[cfg(verus_keep_ghost)]
 mod witness;
