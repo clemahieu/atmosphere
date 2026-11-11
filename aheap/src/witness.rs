@@ -27,6 +27,11 @@
 //! backs it, writes a byte through the permission and reads it again, releases the run's page and
 //! frees the run, ending as the page buddy's witness does: a source that refused no request for the
 //! run's span and not the back of the run's page, while it held the run's span, gave the byte.
+//!
+//! The slab's witnesses each take one backed page and make a slab of SLOT_MIN slots over it. The
+//! first allocates a slot, writes a byte of it and reads it again, frees the slot, retires the slab
+//! and holds the permission to the whole page again. The second allocates every slot, none refused,
+//! and is refused one more.
 use vstd::prelude::*;
 use vstd::layout::*;
 use vstd::raw_ptr::*;
@@ -34,6 +39,7 @@ use vstd::raw_ptr::*;
 use crate::arch::*;
 use crate::buddy::*;
 use crate::page::*;
+use crate::slab::*;
 use crate::source::*;
 
 verus! {
@@ -821,6 +827,127 @@ pub fn witness_backed_run<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, bool, Gho
         pb.lemma_view();
     }
     (pb, true, Ghost(p as int))
+}
+
+/// A page aligned to its size is aligned to the smallest slot, and holds between one and MAP_SLOTS
+/// of them.
+proof fn lemma_page_slots(page: *mut u8)
+    requires
+        page@.addr % PAGE_BYTES == 0,
+    ensures
+        page@.addr % SLOT_MIN == 0,
+        PAGE_BYTES % SLOT_MIN == 0,
+        SLOT_MIN <= PAGE_BYTES,
+        0 < PAGE_BYTES / SLOT_MIN <= MAP_SLOTS,
+{
+    assert(PAGE_BYTES == (PAGE_BYTES / SLOT_MIN) * SLOT_MIN);
+    let q = page@.addr as int / PAGE_BYTES as int;
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(page@.addr as int, PAGE_BYTES as int);
+    assert(page@.addr as int == (q * (PAGE_BYTES / SLOT_MIN) as int) * SLOT_MIN as int) by (nonlinear_arith)
+        requires
+            page@.addr as int == PAGE_BYTES as int * q + 0,
+            PAGE_BYTES as int == (PAGE_BYTES / SLOT_MIN) as int * SLOT_MIN as int,
+    ;
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(
+        page@.addr as int,
+        SLOT_MIN as int,
+        q * (PAGE_BYTES / SLOT_MIN) as int,
+        0,
+    );
+}
+
+/// Makes a slab of SLOT_MIN slots over the backed page at `page`, allocates a slot, writes a byte
+/// of it and reads it again, frees the slot, retires the slab and returns the permission to the
+/// whole page.
+pub fn witness_slab(page: *mut u8, run: Tracked<PointsToRaw>) -> (whole: Tracked<PointsToRaw>)
+    requires
+        page@.addr % PAGE_BYTES == 0,
+        page@.addr + PAGE_BYTES <= usize::MAX,
+        run@.is_range(page@.addr as int, PAGE_BYTES as int),
+        run@.provenance() == page@.provenance,
+    ensures
+        whole@.is_range(page@.addr as int, PAGE_BYTES as int),
+        whole@.provenance() == page@.provenance,
+{
+    let tracked mut perms = Map::<int, PointsToRaw>::tracked_empty();
+    proof {
+        lemma_page_slots(page);
+    }
+    let mut s = Slab::new(page, PAGE_BYTES, SLOT_MIN, run, Tracked(&mut perms));
+    let ghost s0 = s;
+    assert(s0.free_slots().contains(0));
+    let (ptr, perm) = match s.alloc(Tracked(&mut perms)) {
+        None => {
+            assert(Set::<int>::empty().contains(0));
+            unreached()
+        },
+        Some(slot) => slot,
+    };
+    let ghost s1 = s;
+    let ghost a = ptr@.addr as int;
+    let ghost i = s0.index(a);
+    let tracked raw = perm.get();
+    let tracked (one_byte, rest) = raw.split(Set::range(a, a + 1));
+    assert(size_of::<u8>() == 1 && align_of::<u8>() == 1) by {
+        broadcast use layout_of_primitives, align_of_u8;
+    }
+    assert(one_byte.is_range(a, size_of::<u8>() as int));
+    let tracked mut byte = one_byte.into_typed::<u8>(ptr@.addr);
+    ptr_mut_write(ptr, Tracked(&mut byte), 7u8);
+    let v = ptr_mut_read(ptr, Tracked(&mut byte));
+    assert(v == 7u8);
+    let tracked back = byte.into_raw().join(rest);
+    assert(back.dom() =~= Set::range(a, a + SLOT_MIN as int));
+    s.free(ptr.addr(), Tracked(back), Tracked(&mut perms));
+    assert(s.free_slots() =~= Set::range(0, s.count() as int));
+    s.retire(Tracked(&mut perms))
+}
+
+/// Makes a slab of SLOT_MIN slots over the backed page at `page`, allocates every slot, none
+/// refused, and is refused one more: returns whether it was.
+pub fn witness_slab_full(page: *mut u8, run: Tracked<PointsToRaw>) -> (refused: bool)
+    requires
+        page@.addr % PAGE_BYTES == 0,
+        page@.addr + PAGE_BYTES <= usize::MAX,
+        run@.is_range(page@.addr as int, PAGE_BYTES as int),
+        run@.provenance() == page@.provenance,
+    ensures
+        refused,
+{
+    let tracked mut perms = Map::<int, PointsToRaw>::tracked_empty();
+    proof {
+        lemma_page_slots(page);
+    }
+    let mut s = Slab::new(page, PAGE_BYTES, SLOT_MIN, run, Tracked(&mut perms));
+    let n = PAGE_BYTES / SLOT_MIN;
+    proof {
+        broadcast use vstd::set_lib::range_set_properties;
+        assert(s.free_slots().len() == n);
+    }
+    let mut k: usize = 0;
+    while k < n
+        invariant
+            s.wf(),
+            s.owns(perms),
+            k <= n,
+            s.free_slots().len() == n - k,
+        decreases n - k,
+    {
+        let ghost before = s;
+        match s.alloc(Tracked(&mut perms)) {
+            None => {
+                assert(before.free_slots().len() == 0);
+                unreached()
+            },
+            Some(_) => {},
+        }
+        k += 1;
+    }
+    let ghost full = s;
+    proof {
+        vstd::set_lib::lemma_set_empty_equivalency_len(full.free_slots());
+    }
+    s.alloc(Tracked(&mut perms)).is_none()
 }
 
 } // verus!
