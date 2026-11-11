@@ -18,7 +18,6 @@ pub struct PageEntryPerm {
 pub struct PageEntry {
     pub addr: PAddr,
     pub perm: PageEntryPerm,
-    // pub ps: bool,
 }
 
 impl PageEntry {
