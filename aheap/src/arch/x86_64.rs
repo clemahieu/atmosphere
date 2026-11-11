@@ -4,6 +4,7 @@
 //! Volume 3A, section 4.5, and AMD APM Volume 2, section 5.3.
 use vstd::prelude::*;
 
+use crate::large::LargeNode;
 use crate::page::Node;
 
 verus! {
@@ -30,6 +31,18 @@ pub proof fn lemma_node_layout()
     ensures
         vstd::layout::size_of::<Node>() == 2 * BLOCK_PAGES + 8,
         vstd::layout::align_of::<Node>() == 8,
+{
+}
+
+// A large object's node: the record page of the next large object, the object's base and its pages.
+global layout LargeNode is size == 24, align == 8;
+
+/// A large object's node is three words, word-aligned, which the layout directive above states only
+/// to this module.
+pub proof fn lemma_large_node_layout()
+    ensures
+        vstd::layout::size_of::<LargeNode>() == 24,
+        vstd::layout::align_of::<LargeNode>() == 8,
 {
 }
 

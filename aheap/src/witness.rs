@@ -32,12 +32,20 @@
 //! first allocates a slot, writes a byte of it and reads it again, frees the slot, retires the slab
 //! and holds the permission to the whole page again. The second allocates every slot, none refused,
 //! and is refused one more.
+//!
+//! The large-object map's witness, over any well-formed source, allocates an object of one byte
+//! more than a block, writes a byte of it and reads it again, frees it, and ends with the map empty
+//! and the source's view the one it started with. A refusal stops the sequence, and the map refuses
+//! only when the source refused the reserve of the object's span or the back of its run, asked while
+//! it held what it held at the start and, for the back, the new span; so a source that refused
+//! neither gave the byte.
 use vstd::prelude::*;
 use vstd::layout::*;
 use vstd::raw_ptr::*;
 
 use crate::arch::*;
 use crate::buddy::*;
+use crate::large::*;
 use crate::page::*;
 use crate::slab::*;
 use crate::source::*;
@@ -948,6 +956,56 @@ pub fn witness_slab_full(page: *mut u8, run: Tracked<PointsToRaw>) -> (refused: 
         vstd::set_lib::lemma_set_empty_equivalency_len(full.free_slots());
     }
     s.alloc(Tracked(&mut perms)).is_none()
+}
+
+} // verus!
+
+verus! {
+
+/// Allocates an object of one byte more than a block from a new large-object map over `src`, writes
+/// and reads its first byte, and frees it. Returns the map, empty again, with whether the byte was
+/// written: false when the source refused the reserve of the object's span or the back of its run,
+/// which it did once.
+pub fn witness_large<S: SpanSource>(src: &mut S) -> (r: (LargeMap, bool))
+    requires
+        old(src)@.wf(),
+    ensures
+        final(src)@.wf(),
+        r.0.wf(final(src)@),
+        r.0.objects() == Map::<int, nat>::empty(),
+        if r.1 {
+            final(src)@ == old(src)@
+        } else {
+            large_refused(old(src)@, final(src)@, pages_for(BLOCK_BYTES as nat + 1))
+        },
+{
+    let ghost start = src@;
+    let mut map = LargeMap::new();
+    let (p, perm) = match map.alloc_large(src, BLOCK_BYTES + 1) {
+        None => return (map, false),
+        Some(r) => r,
+    };
+    let addr = p.addr();
+    let ghost n = pages_for(BLOCK_BYTES as nat + 1);
+    let tracked run = perm.get();
+    let ghost first = Set::range(addr as int, addr as int + 1);
+    let tracked (one, rest) = run.split(first);
+    assert(size_of::<u8>() == 1 && align_of::<u8>() == 1) by {
+        broadcast use layout_of_primitives, align_of_u8;
+    }
+    assert(one.is_range(addr as int, size_of::<u8>() as int));
+    let tracked mut byte = one.into_typed::<u8>(addr);
+    ptr_mut_write(p, Tracked(&mut byte), 7u8);
+    let v = ptr_mut_read(p, Tracked(&mut byte));
+    assert(v == 7u8);
+    let tracked raw = byte.into_raw();
+    let tracked whole = raw.join(rest);
+    assert(whole.dom() =~= Set::range(addr as int, addr as int + n * PAGE_BYTES));
+    assert(map.objects().contains_key(addr as int));
+    map.free_large(src, addr, Tracked(whole));
+    assert(src@.spans =~= start.spans);
+    assert(map.objects() =~= Map::<int, nat>::empty());
+    (map, true)
 }
 
 } // verus!
