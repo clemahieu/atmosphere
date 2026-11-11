@@ -9,7 +9,8 @@ crate's library root goes to rust_verify as a lib crate, with a solver budget of
 those, for every crate. Marked crates run in dependency order. A marked crate that another marked
 crate depends on is also passed --crate-name, --export target/verus/<crate>.vir and --compile,
 which writes lib<crate>.rlib under target/verus/. A marked crate with marked dependencies is passed --extern and --import
-for each of them. A crate that no marked crate depends on, and that itself depends on no marked
+for each of them, and a crate with any dependency is passed -L target/verus/, where rustc finds a
+dependency's own dependencies. A crate that no marked crate depends on, and that itself depends on no marked
 crate, is invoked as before. A marked crate may also depend on a workspace member that is not marked
 and has no dependencies of its own, such as asys, whose calls the marked crate makes only from
 external_body glue: that member is compiled once by plain rustc, for the same target, into
@@ -150,6 +151,9 @@ def verify_command(crate, depended_on, triple, verus_out, extra_args):
     command = ["rust_verify", "--crate-type", "lib", crate["src"], "--rlimit", "100"]
     if triple is not None:
         command += ["--target", triple]
+    if crate["deps"] or crate["plain"]:
+        # A dependency's own dependencies are found by search, not named by --extern.
+        command += ["-L", str(verus_out)]
     for dep in crate["deps"]:
         rlib = verus_out / f"lib{dep['crate']}.rlib"
         vir = verus_out / f"{dep['crate']}.vir"
@@ -297,6 +301,20 @@ class Tests(unittest.TestCase):
         self.assertIn("aheap=/out/libaheap.rlib", command)
         self.assertNotIn("asys=/out/asys.vir", command)
         self.assertIn("aheap=/out/aheap.vir", command)
+
+    def test_a_crate_with_dependencies_searches_the_output_for_theirs(self):
+        metadata = {"packages": [
+            self.package("asys"),
+            self.package("verified", verified=True),
+            self.package("acall", verified=True, dependencies=[self.dependency("verified"), self.dependency("asys")]),
+            self.package("aeager", verified=True, dependencies=[self.dependency("acall")]),
+            self.package("aring", verified=True),
+        ]}
+        crates = {crate["package"]: crate for crate in marked_crates(metadata)}
+        out = Path("/out")
+        command = verify_command(crates["aeager"], {"acall", "verified"}, None, out, [])
+        self.assertEqual(command[command.index("-L") + 1], "/out")
+        self.assertNotIn("-L", verify_command(crates["aring"], {"acall", "verified"}, None, out, []))
 
     def test_a_plain_dependency_compiles_for_the_target(self):
         plain = {"extern": "asys", "crate": "asys", "src": "/w/asys/src/lib.rs", "edition": "2021"}
