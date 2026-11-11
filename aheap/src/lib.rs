@@ -14,7 +14,9 @@
 //! a size class's partial or full slabs, holding the permission to each. `record` keeps each slab's record in record pages the page
 //! buddy cuts and the heap backs itself, the pages linked into one list. `small` keeps one size
 //! class: its partial and full slabs on two lists and the permissions to their free slots, taking a
-//! slot from a partial slab or from a new one it cuts, backs and records. `witness` holds verified
+//! slot from a partial slab or from a new one it cuts, backs and records. `heap` holds a size class
+//! per class over one record store and one page buddy, under one invariant, and allocates and frees
+//! slots of the class a layout fits. `witness` holds verified
 //! uses of the contract, of the buddies, of the size classes, of the slab, of the large-object map
 //! and of the record store, built into no image.
 #![no_std]
@@ -24,6 +26,7 @@
 pub mod arch;
 pub mod buddy;
 pub mod class;
+pub mod heap;
 pub mod large;
 pub mod list;
 pub mod page;

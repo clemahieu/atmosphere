@@ -792,6 +792,7 @@ impl SizeClass {
             !store.pages().contains(b),
             b <= y,
             y + class_size(self.class()) <= b + run_bytes(slab_order(self.class())),
+            (y - b) % class_size(self.class()) as int == 0,
     {
         let m = self.slabs();
         let a = choose|a: int| #[trigger] m.contains_key(a) && m[a].holds(y);
@@ -799,7 +800,35 @@ impl SizeClass {
         lemma_in_run(m[a], y);
         let b = m[a].base()@.addr as int;
         assert(m.contains_key(a) && m[a].base()@.addr == b);
+        let i = m[a].index(y);
+        let n = class_size(self.class()) as int;
+        assert(y - b == i * n);
+        vstd::arithmetic::div_mod::lemma_mod_multiples_basic(i, n);
         b
+    }
+
+    /// The base of every slab's run is a head.
+    pub proof fn lemma_head_of(&self, a: int)
+        requires
+            self.slabs().contains_key(a),
+        ensures
+            self.heads().contains(self.slabs()[a].base()@.addr as int),
+    {
+        let b = self.slabs()[a].base()@.addr as int;
+        assert(self.slabs().contains_key(a) && self.slabs()[a].base()@.addr == b);
+    }
+
+    /// Every slab's record is one the store has taken.
+    pub proof fn lemma_records_taken(&self, store: RecordStore, pb: PageBuddy, src: SourceView)
+        requires
+            self.wf(store, pb, src),
+        ensures
+            forall|a: int| #[trigger] self.slabs().contains_key(a) ==> store.taken().contains(a),
+    {
+        let m = self.slabs();
+        assert forall|a: int| #[trigger] m.contains_key(a) implies store.taken().contains(a) by {
+            assert(slab_ok(self.class as nat, self.perms@, m[a], a, store, pb, src));
+        }
     }
 
     /// A live slot shares no byte with a run the page buddy holds at a head that is not the class's,
@@ -1944,6 +1973,86 @@ impl SizeClass {
             assert(self.full.slabs() =~= o.full.slabs().remove(a));
             SizeClass::lemma_freed_slot(o, *self, st0, pb0, s0, a, sl1, y, perm@);
             assert(self.slabs().dom() =~= o.slabs().dom());
+        }
+    }
+}
+
+/// After `alloc_small` took the class from `o` to `n` over the page buddy `pb` and the source's
+/// view `src` it started with, `n` has `o`'s heads and perhaps one more, which no run of `pb` was.
+pub open spec fn heads_grew(o: SizeClass, n: SizeClass, pb: PageBuddy, src: SourceView) -> bool {
+    forall|b: int| #[trigger]
+        n.heads().contains(b) ==> o.heads().contains(b) || forall|y: int, j: nat| #[trigger]
+            run_held(pb, src, y, j) ==> y != b
+}
+
+/// `alloc_small`'s ensures, whatever it returned, give `heads_grew`.
+pub proof fn lemma_heads_grew(
+    o: SizeClass,
+    n: SizeClass,
+    st0: RecordStore,
+    st1: RecordStore,
+    pb0: PageBuddy,
+    pb1: PageBuddy,
+    s0: SourceView,
+    s1: SourceView,
+    r: Option<(*mut u8, Tracked<PointsToRaw>)>,
+)
+    requires
+        match r {
+            None => n == o,
+            Some(_) => if exists|a: int| #[trigger]
+                o.slabs().contains_key(a) && o.slabs()[a].free_slots() != Set::<int>::empty() {
+                n.heads() == o.heads()
+            } else {
+                exists|a: int| #[trigger]
+                    n.slabs().contains_key(a) && {
+                        &&& n.heads() == o.heads().insert(n.slabs()[a].base()@.addr as int)
+                        &&& forall|y: int, j: nat| #[trigger]
+                            run_held(pb0, s0, y, j) ==> y != n.slabs()[a].base()@.addr
+                    }
+            },
+        },
+    ensures
+        heads_grew(o, n, pb0, s0),
+{
+    match r {
+        None => {},
+        Some(_) => {
+            if !exists|a: int| #[trigger]
+                o.slabs().contains_key(a) && o.slabs()[a].free_slots() != Set::<int>::empty() {
+                let a = choose|a: int| #[trigger]
+                    n.slabs().contains_key(a) && {
+                        &&& n.heads() == o.heads().insert(n.slabs()[a].base()@.addr as int)
+                        &&& forall|y: int, j: nat| #[trigger]
+                            run_held(pb0, s0, y, j) ==> y != n.slabs()[a].base()@.addr
+                    };
+            }
+        },
+    }
+}
+
+/// A class whose heads grew past `o`'s over the page buddy and source that a second class is well
+/// formed over stays apart from the second class's heads, when `o` was.
+pub proof fn lemma_heads_stay_apart(
+    o: SizeClass,
+    n: SizeClass,
+    other: SizeClass,
+    store: RecordStore,
+    pb: PageBuddy,
+    src: SourceView,
+)
+    requires
+        other.wf(store, pb, src),
+        o.heads().disjoint(other.heads()),
+        heads_grew(o, n, pb, src),
+    ensures
+        n.heads().disjoint(other.heads()),
+        other.heads().disjoint(n.heads()),
+{
+    other.lemma_heads_held(store, pb, src);
+    assert forall|b: int| n.heads().contains(b) implies !other.heads().contains(b) by {
+        if other.heads().contains(b) && !o.heads().contains(b) {
+            assert(run_held(pb, src, b, slab_order(other.class())));
         }
     }
 }
