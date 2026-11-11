@@ -108,11 +108,15 @@ impl TlbModel {
 /// IOMMU, indexed by IOMMU. The kernel value holds the one boot makes, with every set empty. Proof code
 /// may add to the sets, and only invalidate_iommu_all empties one, once the IOMMU has finished the
 /// invalidate, so an IOMMU's model is emptied only by an invalidate that no unmap came after:
-/// design/flush-without-waiting/.
-// Only specs read the field, and a cargo build erases specs, so only Verus compiles it.
+/// design/flush-without-waiting/. It also holds the record of the commands queued in the IOMMUs'
+/// rings and not yet submitted, so that record exists once, as the model does, and every store into a
+/// ring updates the record the submit reads.
+// Only specs read the fields, and a cargo build erases specs, so only Verus compiles them.
 pub tracked struct IotlbModel {
     #[cfg(verus_keep_ghost)]
     ghost held: Seq<Set<TlbEntry>>,
+    #[cfg(verus_keep_ghost)]
+    tracked queued: QueuedCommands,
     #[cfg(verus_keep_ghost)]
     unique: Unique,
 }
@@ -120,6 +124,11 @@ pub tracked struct IotlbModel {
 impl IotlbModel {
     pub closed spec fn len(self) -> nat {
         self.held.len()
+    }
+
+    /// The commands queued in the IOMMUs' rings since the last submit.
+    pub closed spec fn queued(self) -> QueuedCommands {
+        self.queued
     }
 
     pub closed spec fn spec_index(self, i: int) -> Set<TlbEntry> {
@@ -134,6 +143,7 @@ impl IotlbModel {
         ensures
             final(self).len() == old(self).len(),
             forall|i: int| 0 <= i < held.len() ==> #[trigger] final(self)[i] == held[i],
+            final(self).queued() == old(self).queued(),
     {
         self.held = held;
     }

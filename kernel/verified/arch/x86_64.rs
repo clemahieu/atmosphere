@@ -8,7 +8,7 @@ verus! {
 
 use crate::capability::kernel::CommandBuffers;
 #[cfg(verus_keep_ghost)]
-use crate::capability::kernel::TlbEntry;
+use crate::capability::kernel::{CommandBuffer, TlbEntry};
 use crate::arch::{BaseRegister, IotlbModel, TlbModel};
 use crate::capability::operation::Outcome;
 use crate::capability::steps::Steps;
@@ -726,57 +726,46 @@ fn completion_wait_command(address: u64, data: u64) -> (ret: IommuCommand)
     ((address & 0x000f_ffff_ffff_fff8u64) | 1u64 | (IOMMU_COMPLETION_WAIT << 60u64), data)
 }
 
-use queue::{QueuedCommands, store_command};
+pub use queue::QueuedCommands;
+use queue::store_command;
 
-/// The record of what one invalidate stored into an IOMMU's command ring, alone in a module with the
-/// one constructor and the one store, so its fields are private to them: code outside cannot write a
-/// record by literal, and a record names a slot only once store_command has written it.
+/// The record of the commands stored into the IOMMUs' command rings, alone in a module with the one
+/// store, so its fields are private to it: code outside cannot write a record by literal, and a record
+/// names a slot only once store_command has written it.
 mod queue {
     use vstd::prelude::*;
     use super::IommuCommand;
+    use crate::arch::IotlbModel;
     #[cfg(verus_keep_ghost)]
     use super::IOMMU_COMMAND_SIZE;
 
-    /// What one invalidate stored into an IOMMU's command ring: the ring's address, each slot it
-    /// wrote, by its index from the ring's start, and the command it wrote there. new makes it empty
-    /// and only store_command adds to it, so a slot it names holds that command until the IOMMU reads
-    /// it.
-    // Only specs read the fields, and a cargo build erases specs, so only Verus compiles them.
+    /// The commands stored into the IOMMUs' command rings since the last submit: each slot written, by
+    /// its address, and the command written there. The IotlbModel holds the one record, so there is
+    /// no second record a store could update instead; only store_command adds a slot, and every write
+    /// of a slot goes through it, so a slot the record names holds that command until the IOMMU reads
+    /// it. A slot is a command's aligned 16 bytes, so slots at different addresses do not overlap.
+    // Only specs read the field, and a cargo build erases specs, so only Verus compiles it.
     pub tracked struct QueuedCommands {
-        #[cfg(verus_keep_ghost)]
-        ghost ring: usize,
         #[cfg(verus_keep_ghost)]
         ghost slots: Map<int, IommuCommand>,
     }
 
     impl QueuedCommands {
-        pub closed spec fn ring(self) -> usize {
-            self.ring
-        }
-
         pub closed spec fn slots(self) -> Map<int, IommuCommand> {
             self.slots
         }
-
-        /// A record of the ring at `ring` with no slot written.
-        pub proof fn new(ring: usize) -> (tracked ret: QueuedCommands)
-            ensures
-                ret.ring() == ring,
-                ret.slots() == Map::<int, IommuCommand>::empty(),
-        {
-            QueuedCommands { ring, slots: Map::empty() }
-        }
     }
 
-    /// Stores `command` into slot `slot` of the ring at `queued.ring()`, whose address is `address`.
+    /// Stores `command` into the ring slot at `address`, and records it in `model`'s queued commands.
     #[verifier(external_body)]
     // external_body(glue): the IOMMU reads the ring, so only this can say what one of its slots holds
-    pub fn store_command(address: usize, command: IommuCommand, Tracked(queued): Tracked<&mut QueuedCommands>, Ghost(slot): Ghost<int>)
+    pub fn store_command(address: usize, command: IommuCommand, Tracked(model): Tracked<&mut IotlbModel>)
         requires
-            address == old(queued).ring() + slot * IOMMU_COMMAND_SIZE,
+            address % IOMMU_COMMAND_SIZE == 0,
         ensures
-            final(queued).ring() == old(queued).ring(),
-            final(queued).slots() == old(queued).slots().insert(slot, command),
+            final(model).len() == old(model).len(),
+            forall|j: int| #[trigger] final(model)[j] == old(model)[j],
+            final(model).queued().slots() == old(model).queued().slots().insert(address as int, command),
     {
         unsafe {
             core::ptr::write_volatile(address as *mut u64, command.0);
@@ -785,13 +774,42 @@ mod queue {
     }
 }
 
+/// The address of the ring slot `slot` names, modulo the ring's length, in the ring of `b`.
+pub open spec fn command_slot(b: CommandBuffer, slot: int) -> int {
+    b.ring + (slot % b.len as int) * IOMMU_COMMAND_SIZE
+}
+
+/// A slot of a well formed ring lies inside it and is aligned to a command.
+proof fn lemma_command_slot(b: CommandBuffer, slot: int)
+    requires
+        command_ring_ok(b.ring, b.len),
+        b.ring % PAGE_SZ == 0,
+        b.ring + b.len * IOMMU_COMMAND_SIZE <= usize::MAX,
+        0 <= slot < b.len,
+    ensures
+        b.ring + slot * IOMMU_COMMAND_SIZE + IOMMU_COMMAND_SIZE <= usize::MAX,
+        (b.ring + slot * IOMMU_COMMAND_SIZE) % IOMMU_COMMAND_SIZE as int == 0,
+{
+    assert(b.ring + slot * IOMMU_COMMAND_SIZE + IOMMU_COMMAND_SIZE <= usize::MAX) by (nonlinear_arith)
+        requires
+            0 <= slot < b.len,
+            b.ring + b.len * IOMMU_COMMAND_SIZE <= usize::MAX,
+    ;
+    assert((b.ring + slot * IOMMU_COMMAND_SIZE) % IOMMU_COMMAND_SIZE as int == 0) by (nonlinear_arith)
+        requires
+            b.ring % PAGE_SZ == 0,
+            0 <= slot,
+    ;
+}
+
 /// Hands IOMMU i the INVALIDATE_IOMMU_ALL and the COMPLETION_WAIT queued at its tail and returns once
 /// the IOMMU has finished them, emptying i's set in `model`. It clears the completion word, orders
 /// that and the commands before the store of `tail` into the tail register at `tail_register`, which
 /// moves the tail past both, and spins until the IOMMU stores the wait's nonzero data to the word.
 /// COMPLETION_WAIT finishes only once every older command has, 48882 Rev 3.11 §2.4.1, and
-/// INVALIDATE_IOMMU_ALL invalidates every IOMMU TLB, §2.4.8. It takes `queued`, so a record is
-/// evidence for one submit and a second submit has to queue the commands again.
+/// INVALIDATE_IOMMU_ALL invalidates every IOMMU TLB, §2.4.8. The IOMMU has read every queued command
+/// once it returns, so it empties the record of them in `model`, and a second submit has to queue the
+/// commands again.
 #[verifier(external_body)]
 // external_body(glue): only the IOMMU can attest an invalidate, so only this empties its IOTLB model
 fn submit_invalidate(
@@ -800,7 +818,6 @@ fn submit_invalidate(
     tail_register: usize,
     tail: u64,
     completion: usize,
-    Tracked(queued): Tracked<QueuedCommands>,
     Tracked(model): Tracked<&mut IotlbModel>,
 )
     requires
@@ -810,16 +827,17 @@ fn submit_invalidate(
         tail_register == commands.buffers@[i as int].mmio + IOMMU_COMMAND_TAIL,
         tail == (commands.buffers@[i as int].tail + IOMMU_INVALIDATE_COMMANDS) % commands.buffers@[i as int].len as int * IOMMU_COMMAND_SIZE,
         completion == commands.buffers@[i as int].completion,
-        queued.ring() == commands.buffers@[i as int].ring,
-        queued.slots().contains_key(commands.buffers@[i as int].tail as int),
-        queued.slots()[commands.buffers@[i as int].tail as int] == invalidate_all_command_spec(),
-        queued.slots().contains_key((commands.buffers@[i as int].tail + 1) % commands.buffers@[i as int].len as int),
-        queued.slots()[(commands.buffers@[i as int].tail + 1) % commands.buffers@[i as int].len as int]
+        old(model).queued().slots().contains_key(command_slot(commands.buffers@[i as int], commands.buffers@[i as int].tail as int)),
+        old(model).queued().slots()[command_slot(commands.buffers@[i as int], commands.buffers@[i as int].tail as int)]
+            == invalidate_all_command_spec(),
+        old(model).queued().slots().contains_key(command_slot(commands.buffers@[i as int], commands.buffers@[i as int].tail + 1)),
+        old(model).queued().slots()[command_slot(commands.buffers@[i as int], commands.buffers@[i as int].tail + 1)]
             == completion_wait_command_spec(completion as u64, 1),
     ensures
         final(model).len() == old(model).len(),
         final(model)[i as int] == Set::<TlbEntry>::empty(),
         forall|j: int| j != i ==> #[trigger] final(model)[j] == old(model)[j],
+        final(model).queued().slots() == Map::<int, IommuCommand>::empty(),
 {
     unsafe {
         core::ptr::write_volatile(completion as *mut u64, 0);
@@ -856,9 +874,13 @@ pub fn invalidate_iommu_all(commands: &CommandBuffers, i: usize, Tracked(model):
     let first = b.tail;
     let second = (b.tail + 1) % b.len;
     let next = (b.tail + IOMMU_INVALIDATE_COMMANDS) % b.len;
-    let tracked mut queued = QueuedCommands::new(b.ring);
-    store_command(b.ring + first * IOMMU_COMMAND_SIZE, invalidate_all_command(), Tracked(&mut queued), Ghost(first as int));
-    store_command(b.ring + second * IOMMU_COMMAND_SIZE, completion_wait_command(b.completion as u64, 1), Tracked(&mut queued), Ghost(second as int));
+    proof {
+        lemma_command_slot(b, first as int);
+        lemma_command_slot(b, second as int);
+        vstd::arithmetic::div_mod::lemma_small_mod(first as nat, b.len as nat);
+    }
+    store_command(b.ring + first * IOMMU_COMMAND_SIZE, invalidate_all_command(), Tracked(model));
+    store_command(b.ring + second * IOMMU_COMMAND_SIZE, completion_wait_command(b.completion as u64, 1), Tracked(model));
     proof {
         assert(second != first) by (nonlinear_arith)
             requires
@@ -866,13 +888,14 @@ pub fn invalidate_iommu_all(commands: &CommandBuffers, i: usize, Tracked(model):
                 first < b.len,
                 b.len >= 2,
         ;
+        assert(b.ring + first * IOMMU_COMMAND_SIZE != b.ring + second * IOMMU_COMMAND_SIZE);
         assert(b.mmio + IOMMU_COMMAND_TAIL <= usize::MAX) by (nonlinear_arith)
             requires
                 b.mmio % IOMMU_MMIO_ALIGN == 0,
                 b.mmio <= usize::MAX,
         ;
     }
-    submit_invalidate(commands, i, b.mmio + IOMMU_COMMAND_TAIL, (next * IOMMU_COMMAND_SIZE) as u64, b.completion, Tracked(queued), Tracked(model));
+    submit_invalidate(commands, i, b.mmio + IOMMU_COMMAND_TAIL, (next * IOMMU_COMMAND_SIZE) as u64, b.completion, Tracked(model));
     proof {
         steps.step();
     }
