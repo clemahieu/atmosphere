@@ -804,43 +804,6 @@ impl Registers {
         }
     }
 
-    pub fn new(input: &Registers) -> (ret: Self)
-        ensures
-            ret =~= *input,
-    {
-        let ret = Self {
-            r15: input.r15,
-            r14: input.r14,
-            r13: input.r13,
-            r12: input.r12,
-            rbp: input.rbp,
-            rbx: input.rbx,
-            r11: input.r11,
-            r10: input.r10,
-            r9: input.r9,
-            r8: input.r8,
-            rcx: input.rcx,
-            rdx: input.rdx,
-            rsi: input.rsi,
-            rdi: input.rdi,
-            rax: input.rax,
-            error_code: input.error_code,
-            rip: input.rip,
-            cs: input.cs,
-            flags: input.flags,
-            rsp: input.rsp,
-            ss: input.ss,
-        };
-        ret
-    }
-
-    pub fn set_self(&mut self, src: &Registers)
-        ensures
-            *final(self) == *src,
-    {
-        *self = *src;
-    }
-
     /// The program counter the thread returns to, rip.
     pub open spec fn spec_pc(&self) -> u64 {
         self.rip

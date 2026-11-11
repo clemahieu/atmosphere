@@ -714,20 +714,6 @@ impl Registers {
         }
     }
 
-    pub fn new(input: &Registers) -> (ret: Self)
-        ensures
-            ret =~= *input,
-    {
-        *input
-    }
-
-    pub fn set_self(&mut self, src: &Registers)
-        ensures
-            *final(self) == *src,
-    {
-        *self = *src;
-    }
-
     /// The program counter the thread returns to, ELR_EL1.
     pub open spec fn spec_pc(&self) -> u64 {
         self.elr_el1
