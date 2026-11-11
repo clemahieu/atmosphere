@@ -627,10 +627,15 @@ mod command_page {
 
 pub use iommu_registers::IommuRegisters;
 
-/// An IOMMU's MMIO registers as boot found them: which IOMMU, and the base of its registers. Alone in
-/// a module, so its fields are private to it: no code outside can make one or change what it says, so
-/// one names a register block only because boot handed it over, and the IOMMU it names keeps it from
-/// standing for another IOMMU's. The arch module's command glue loads and stores those registers.
+/// An IOMMU's MMIO registers as boot found and programmed them: which IOMMU, the base of its
+/// registers, and the command ring boot wrote into its ring base register, by the ring's address and
+/// its length in commands. The IOMMU fetches commands from that ring and no other: AMD-Vi's head and
+/// tail are offsets from the command buffer base address register, within ComLen (48882 §3.4.1,
+/// §3.4.15), and an SMMUv3's indexes are into the queue SMMU_CMDQ_BASE names, of 2^LOG2SIZE entries
+/// (IHI 0070 3.5, 6.3.26). Alone in a module, so its fields are private to it: no code outside can
+/// make one or change what it says, so one names a register block and a ring only because boot handed
+/// it over, and the IOMMU it names keeps it from standing for another IOMMU's. The arch module's
+/// command glue loads and stores those registers and writes that ring.
 mod iommu_registers {
     use vstd::prelude::*;
 
@@ -640,6 +645,10 @@ mod iommu_registers {
         ghost iommu: int,
         #[cfg(verus_keep_ghost)]
         ghost base: usize,
+        #[cfg(verus_keep_ghost)]
+        ghost ring: usize,
+        #[cfg(verus_keep_ghost)]
+        ghost len: usize,
     }
 
     impl IommuRegisters {
@@ -652,6 +661,16 @@ mod iommu_registers {
         pub closed spec fn base(self) -> usize {
             self.base
         }
+
+        /// The address of the command ring boot programmed into its ring base register.
+        pub closed spec fn ring(self) -> usize {
+            self.ring
+        }
+
+        /// The ring's length in commands, as boot programmed it.
+        pub closed spec fn len(self) -> usize {
+            self.len
+        }
     }
 }
 
@@ -659,7 +678,8 @@ mod iommu_registers {
 /// keeps them out of every block the capability kernel hands out, keying them by IOMMU keeps two
 /// IOMMUs from sharing one, and holding each as a CommandPage keeps every write of a ring slot in the
 /// arch module's command glue. Each IOMMU's registers, keyed by IOMMU, fix where its buffer's mmio
-/// points, so the glue loads and stores that IOMMU's registers and no other address.
+/// points, so the glue loads and stores that IOMMU's registers and no other address, and fix its
+/// buffer's ring and length, so the glue writes commands into the ring that IOMMU fetches from.
 pub struct CommandBuffers {
     pub buffers: Array<CommandBuffer, NUM_IOMMUS>,
     pub pages: Tracked<Map<(int, usize), CommandPage>>,
@@ -674,7 +694,9 @@ impl CommandBuffers {
     }
 
     /// IOMMU i's ring has a length and a place the IOMMU accepts, its tail is inside it, its ring
-    /// and completion word are in pages it holds, and its mmio is where boot found i's registers. The
+    /// and completion word are in pages it holds, its mmio is where boot found i's registers, and its
+    /// ring and length are the ones boot programmed into i's ring base register, the ring i fetches
+    /// from. The
     /// completion word is 8-byte aligned, as COMPLETION_WAIT's store address is (48882 §2.4.1).
     pub open spec fn buffer_wf(&self, i: int) -> bool {
         let b = self.buffers@[i];
@@ -683,6 +705,8 @@ impl CommandBuffers {
         &&& self.registers@.contains_key(i)
         &&& self.registers@[i].iommu() == i
         &&& self.registers@[i].base() == b.mmio
+        &&& self.registers@[i].ring() == b.ring
+        &&& self.registers@[i].len() == b.len
         &&& b.mmio % crate::arch::IOMMU_MMIO_ALIGN == 0
         &&& b.ring % PAGE_SZ == 0
         &&& b.ring + b.len * crate::arch::IOMMU_COMMAND_SIZE <= usize::MAX
