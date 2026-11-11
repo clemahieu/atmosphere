@@ -612,19 +612,16 @@ tracked struct QueuedCommands {
     ghost slots: Map<int, SmmuCommand>,
 }
 
-/// Reads SMMU i's producer register, at `register`. Only invalidate_iommu_all writes i's queue and
-/// each call waits for the SMMU to consume all it wrote, so the register's index is the ring's tail;
-/// it also keeps the wrap bit the tail leaves out.
+/// Reads SMMU i's producer register, at `register`: the queue's index and its wrap bit, which is
+/// where the SMMU will look for the next command. It promises nothing about the value.
 #[verifier(external_body)]
-// external_body(glue): only the SMMU's producer register holds the queue's wrap bit, and its index is the ring's tail since only the invalidate moves either
+// external_body(glue): a load of the SMMU's producer register, of which nothing is promised but its width
 fn read_producer(commands: &CommandBuffers, i: usize, register: usize) -> (ret: u32)
     requires
         i < NUM_IOMMUS,
         commands.buffers.wf(),
         commands.buffer_wf(i as int),
         register == commands.buffers@[i as int].mmio + SMMU_CMDQ_PROD,
-    ensures
-        ret as int % commands.buffers@[i as int].len as int == commands.buffers@[i as int].tail,
 {
     let value: u32;
     unsafe {
@@ -727,10 +724,11 @@ fn submit_invalidate(
 /// commands it wrote, and empties i's set in `model`: the caller holds the lock, so no table changes
 /// while this runs, and once the invalidate finishes i holds nothing the tables no longer say. It
 /// reads the producer register, stores CMD_CFGI_ALL, CMD_TLBI_NSNH_ALL and CMD_SYNC at its index,
-/// which is i's tail, and submits them with the producer moved past all three. The completion word is
-/// not used: CMD_SYNC signals through the consumer index. Only this writes i's queue, and each call
-/// waits for the SMMU to consume all it wrote, so the queue is empty on entry and three commands fit
-/// in it. The producer register keeps the wrap bit the ring's tail leaves out, so this reads it back.
+/// where the SMMU reads next, and submits them with the producer moved past all three. The completion
+/// word is not used: CMD_SYNC signals through the consumer index. Only this writes i's queue, and each
+/// call waits for the SMMU to consume all it wrote, so the queue is empty on entry and three commands
+/// fit in it. The register, not the ring's tail, places the commands: it holds the wrap bit the tail
+/// leaves out, and the returned tail is the kernel's bookkeeping, which nothing here relies on.
 /// Waiting here is not waiting for a core: design/flush-without-waiting/. The wait is on the SMMU,
 /// which finishes three commands in a time the state does not set, so it is one unit:
 /// design/one-lock-bounded-steps/.
@@ -749,17 +747,15 @@ pub fn invalidate_iommu_all(commands: &CommandBuffers, i: usize, Tracked(model):
     let b = *commands.buffers.get(i);
     let wrap = (2 * b.len) as u32;
     let read = read_producer(commands, i, b.mmio + SMMU_CMDQ_PROD);
-    let first = b.tail;
-    let second = (b.tail + 1) % b.len;
-    let third = (b.tail + 2) % b.len;
+    let first = read as usize % b.len;
+    let second = (first + 1) % b.len;
+    let third = (first + 2) % b.len;
     let place = (read % wrap + IOMMU_INVALIDATE_COMMANDS as u32) % wrap;
     let tracked mut queued = QueuedCommands { ring: b.ring, producer: read, slots: Map::empty() };
     proof {
         let len = b.len as int;
         vstd::arithmetic::div_mod::lemma_add_mod_noop(read as int, 1, len);
         vstd::arithmetic::div_mod::lemma_add_mod_noop(read as int, 2, len);
-        vstd::arithmetic::div_mod::lemma_add_mod_noop(b.tail as int, 1, len);
-        vstd::arithmetic::div_mod::lemma_add_mod_noop(b.tail as int, 2, len);
         vstd::arithmetic::div_mod::lemma_small_mod(1, len as nat);
         vstd::arithmetic::div_mod::lemma_small_mod(2, len as nat);
     }
