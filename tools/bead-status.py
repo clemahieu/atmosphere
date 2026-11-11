@@ -12,6 +12,11 @@ visible. The history is each issue's creation and close time out of one `bd list
 is recorded between runs; an issue reopened counts as open from its creation. A session's stage and
 clock are the ones its status line wrote (tools/round-status.py), read from the same files.
 
+The tokens are the token ledger's (tools/token-ledger.py), which the server harvests every
+HARVEST seconds in a thread of its own, so a page never waits on a harvest. An issue's tokens are
+its own and those of every issue below it; the root epic's are every call's, since calls that name
+no issue the tree has are its own.
+
 Beads is private, so the server listens on this machine alone unless --bind says otherwise.
 
 usage: tools/bead-status.py [--bind ADDRESS] [--port PORT]   (serve the page)
@@ -41,14 +46,49 @@ PORT = 8377
 PAGE = Path(__file__).with_suffix(".html")
 CLOSED_SHOWN = 10
 TEXT_SHOWN = 240
+HARVEST = 60
+LEDGER = Path("logs") / "token-ledger.sqlite"
+
+
+def tool(name):
+    """A script beside this one as a module."""
+    spec = importlib.util.spec_from_file_location(name.replace("-", "_"), Path(__file__).with_name(f"{name}.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def round_status():
     """tools/round-status.py as a module: it says where the status lines keep their clocks."""
-    spec = importlib.util.spec_from_file_location("round_status", Path(__file__).with_name("round-status.py"))
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return tool("round-status")
+
+
+def token_ledger():
+    return tool("token-ledger")
+
+
+def owned(issues, own):
+    """Each issue's own tokens and calls, out of the ledger's per issue: a call naming no issue of the
+    tree is the root epic's, the one made first; with no root epic it is in no issue's."""
+    names = {issue["id"] for issue in issues}
+    roots = sorted((issue for issue in issues if not issue.get("parent") and issue["issue_type"] == "epic"), key=lambda issue: issue["created_at"])
+    found = {}
+    for name, counts in own.items():
+        name = name if name in names else roots[0]["id"] if roots else None
+        if name:
+            found[name] = [a + b for a, b in zip(found.get(name, [0] * len(counts)), counts)]
+    return found
+
+
+def tokens(issues, own):
+    """Each issue's tokens and calls: its own with those of every issue below it."""
+    by_id = {issue["id"]: issue for issue in issues}
+    found = {}
+    for name, counts in owned(issues, own).items():
+        while name:
+            found[name] = [a + b for a, b in zip(found.get(name, [0] * len(counts)), counts)]
+            name = by_id[name].get("parent")
+    return found
 
 
 def seconds(stamp):
@@ -124,7 +164,7 @@ def graph(issues, ready):
     return [node(name) for name in live]
 
 
-def detail(issues, name):
+def detail(issues, name, own={}):
     """What the page shows of one issue, closed or not: its texts whole and the issues around it. None when the tree has no such issue."""
     by_id = {issue["id"]: issue for issue in issues}
     if name not in by_id:
@@ -143,6 +183,8 @@ def detail(issues, name):
         "blockers": near(by_id[other] for other in blockers(issue)),
         "dependents": near(other for other in issues if name in blockers(other)),
         "text": {key: issue.get(key, "") for key in ("description", "acceptance_criteria", "design", "notes", "close_reason")},
+        "tokens": tokens(issues, own).get(name),
+        "own_tokens": owned(issues, own).get(name),
     }
 
 
@@ -176,7 +218,7 @@ def gate_line(log):
     return steps[-1][:TEXT_SHOWN] if steps else None
 
 
-def flights(issues, by_id, seen, running, root):
+def flights(issues, by_id, seen, running, root, spent={}):
     """The issues in progress, the one held longest first, each with its holder and the stage its holder's status line names for it."""
     rows = []
     for issue in sorted((issue for issue in issues if issue["status"] == "in_progress"), key=lambda issue: issue["started_at"]):
@@ -191,11 +233,12 @@ def flights(issues, by_id, seen, running, root):
             "since": clock["since"] if mine else None,
             "started": seconds(issue["started_at"]),
             "gate": gate_line(root / "logs" / f"{issue['id']}-gate.log"),
+            "tokens": spent.get(issue["id"]),
         })
     return rows
 
 
-def progress(issues):
+def progress(issues, spent={}):
     """Each epic directly under a root that has issues below it: how many, and how many of them are closed."""
     children = {}
     for issue in issues:
@@ -219,13 +262,17 @@ def progress(issues):
                     "total": len(under),
                     "closed": sum(issue["status"] == "closed" for issue in under),
                     "flying": sum(issue["status"] == "in_progress" for issue in under),
+                    "tokens": spent.get(epic["id"]),
                 })
     return sorted(rows, key=lambda row: order(row["id"]))
 
 
-def summary(issues, ready, seen, running, root, now):
-    """What the page draws, from every issue, the ready ones in bd's order and the sessions' clocks."""
+def summary(issues, ready, seen, running, root, now, own={}, days=()):
+    """What the page draws, from every issue, the ready ones in bd's order, the sessions' clocks and the
+    token ledger: each issue's own tokens and each day's by agent kind."""
     by_id = {issue["id"]: issue for issue in issues}
+    spent = tokens(issues, own)
+    roots = [issue["id"] for issue in issues if not issue.get("parent") and issue["id"] in spent]
     count = lambda status: sum(issue["status"] == status for issue in issues)
     held = {issue.get("assignee") for issue in issues if issue["status"] == "in_progress"}
     closed = sorted((issue for issue in issues if issue["status"] == "closed"), key=lambda issue: issue["closed_at"])
@@ -239,18 +286,20 @@ def summary(issues, ready, seen, running, root, now):
             "ready_epics": sum(issue["issue_type"] == "epic" for issue in ready),
         },
         "events": events(issues),
-        "flights": flights(issues, by_id, seen, running, root),
+        "flights": flights(issues, by_id, seen, running, root, spent),
         "idle": sorted(actor for actor in seen if running(actor) and actor not in held),
         "questions": [{**brief(issue, by_id), "created": seconds(issue["created_at"])} for issue in questions],
         "ready": [brief(issue, by_id) for issue in ready if issue["issue_type"] != "epic"],
         "graph": graph(issues, ready),
-        "epics": progress(issues),
+        "epics": progress(issues, spent),
+        "tokens": {"roots": [{**brief(by_id[name], by_id), "tokens": spent[name]} for name in sorted(roots, key=order)], "days": list(days)},
         "closed": [
             {
                 **brief(issue, by_id),
                 "at": seconds(issue["closed_at"]),
                 "actor": issue.get("assignee"),
                 "reason": issue["close_reason"][:TEXT_SHOWN],
+                "tokens": spent.get(issue["id"]),
             }
             for issue in reversed(closed[-CLOSED_SHOWN:])
         ],
@@ -258,10 +307,11 @@ def summary(issues, ready, seen, running, root, now):
 
 
 def read(root, now):
-    """Every issue of the tree at this project root, and their summary as it is now."""
+    """Every issue of the tree at this project root, each issue's own tokens, and their summary as it is now."""
     bd = lambda *arguments: json.loads(subprocess.run(["bd", *arguments, "--json", "--limit", "0"], cwd=root, check=True, capture_output=True, text=True).stdout)
     issues = bd("list", "--all")
-    return issues, summary(issues, bd("ready"), clocks(round_status().state_dir(root)), alive, root, now)
+    own, days = token_ledger().spent(root / LEDGER)
+    return issues, own, summary(issues, bd("ready"), clocks(round_status().state_dir(root)), alive, root, now, own, days)
 
 
 class Beads:
@@ -272,13 +322,14 @@ class Beads:
         self.lock = threading.Lock()
         self.read_at = 0
         self.issues = []
+        self.own = {}
         self.held = b""
 
     def fresh(self):
         """Read the tree again when what is held is too old; the caller holds the lock."""
         now = time.time()
         if now - self.read_at > AGE:
-            self.issues, found = read(self.root, now)
+            self.issues, self.own, found = read(self.root, now)
             self.held = json.dumps(found).encode()
             self.read_at = now
 
@@ -291,7 +342,7 @@ class Beads:
         """The details of that issue as a body, or None when the tree has no such issue."""
         with self.lock:
             self.fresh()
-            found = detail(self.issues, name)
+            found = detail(self.issues, name, self.own)
             return found and json.dumps(found).encode()
 
 
@@ -336,12 +387,25 @@ def server(root, bind, port):
     return made
 
 
+def harvesting(root, projects):
+    """Bring the token ledger up to date every HARVEST seconds, for as long as the server runs."""
+    ledger = token_ledger()
+    while True:
+        try:
+            ledger.harvest(root / LEDGER, projects, root)
+        except Exception as failure:  # a transcript of a shape the ledger does not know stops one harvest, not the page
+            print(f"token ledger: {failure!r}", file=sys.stderr, flush=True)
+        time.sleep(HARVEST)
+
+
 def main(arguments):
     parser = argparse.ArgumentParser(description="Serve the state of the Beads tree as a page.")
     parser.add_argument("--bind", default="127.0.0.1", help="the address to listen on (default: this machine alone)")
     parser.add_argument("--port", type=int, default=PORT)
     options = parser.parse_args(arguments)
-    serving = server(Path(__file__).resolve().parents[2], options.bind, options.port)
+    root = Path(__file__).resolve().parents[2]
+    serving = server(root, options.bind, options.port)
+    threading.Thread(target=harvesting, args=(root, Path.home() / ".claude" / "projects"), daemon=True).start()
     print(f"bead status: http://{options.bind}:{serving.server_address[1]}/", flush=True)
     try:
         serving.serve_forever()
@@ -452,7 +516,7 @@ class Tests(unittest.TestCase):
         self.assertEqual(rows[1], {
             "id": "a.1.2", "title": "Title of a.1.2", "priority": 1, "type": "task", "trail": ["Title of a.1"],
             "actor": "claude-11", "alive": True, "stage": "gate", "since": 100.5, "started": seconds("2026-11-10T10:30:00Z"),
-            "gate": "gate verify: ok in 58.7 s: 0 errors, allowance 0",
+            "gate": "gate verify: ok in 58.7 s: 0 errors, allowance 0", "tokens": None,
         })
         # A clock that names another issue says nothing of this one.
         self.assertEqual((rows[0]["actor"], rows[0]["alive"], rows[0]["stage"], rows[0]["since"], rows[0]["gate"]), ("claude-12", False, None, None, None))
@@ -463,8 +527,29 @@ class Tests(unittest.TestCase):
         rows = progress(issues)
         # In the order of their numbers, and without the ones that have nothing below.
         self.assertEqual([row["id"] for row in rows], ["a.1", "a.2", "a.10", "b.1"])
-        self.assertEqual(rows[0], {"id": "a.1", "title": "Title of a.1", "status": "open", "total": 4, "closed": 3, "flying": 1})
+        self.assertEqual(rows[0], {"id": "a.1", "title": "Title of a.1", "status": "open", "total": 4, "closed": 3, "flying": 1, "tokens": None})
+        self.assertEqual(progress(issues, {"a.1": [1, 2, 3, 4, 5]})[0]["tokens"], [1, 2, 3, 4, 5])
         self.assertEqual((rows[1]["total"], rows[1]["closed"], rows[1]["flying"]), (2, 0, 0))
+
+    def test_an_issues_tokens_are_its_own_and_those_below_it(self):
+        issues = self.tree() + [self.issue("x", kind="task", created="2026-11-09T00:00:00Z"), self.issue("b", kind="epic", created="2026-11-11T00:00:00Z")]
+        own = {"a.1.2": [1, 10, 100, 5, 1], "a.1": [2, 0, 0, 0, 1], "a.10.1": [4, 0, 0, 0, 1], "": [8, 0, 0, 0, 1], "gone-1": [16, 0, 0, 0, 1], "b": [32, 0, 0, 0, 1]}
+        found = tokens(issues, own)
+        self.assertEqual(found["a.1.2"], [1, 10, 100, 5, 1])
+        self.assertEqual(found["a.1"], [3, 10, 100, 5, 2])
+        self.assertEqual(found["a.10"], [4, 0, 0, 0, 1])
+        # The root epic, the one made first and not a task, holds every call that names no issue of the tree.
+        self.assertEqual(found["a"], [31, 10, 100, 5, 5])
+        self.assertEqual((found["b"], "x" in found, "a.2" in found), ([32, 0, 0, 0, 1], False, False))
+        self.assertEqual(tokens([self.issue("x")], {"": [1]}), {})
+        self.assertEqual(owned(issues, own)["a"], [24, 0, 0, 0, 2])
+
+    def test_the_details_of_an_issue_say_its_tokens_and_its_own(self):
+        own = {"a.1.2": [1, 10, 100, 5, 1], "a.1": [2, 0, 0, 0, 1]}
+        found = detail(self.tree(), "a.1", own)
+        self.assertEqual((found["tokens"], found["own_tokens"]), ([3, 10, 100, 5, 2], [2, 0, 0, 0, 1]))
+        found = detail(self.tree(), "a.2", own)
+        self.assertEqual((found["tokens"], found["own_tokens"]), (None, None))
 
     def waits(self):
         """The tree with waits in it: a.3 on a.10.1 and on a closed issue, a.2.1 on a.3 and on a.1.2, and a.4 on a.2.1."""
@@ -534,6 +619,12 @@ class Tests(unittest.TestCase):
         self.assertEqual([row["id"] for row in found["ready"]], ["a.10.1"])
         self.assertEqual([row["id"] for row in found["epics"]], ["a.1", "a.2", "a.10"])
         self.assertEqual(found["graph"], graph(issues, [by_id["a.3"], by_id["a.10.1"], by_id["a"]]))
+        self.assertEqual(found["tokens"], {"roots": [], "days": []})
+        days = [["2026-11-10", "round", [1, 10, 100, 5, 1]]]
+        spent = summary(issues, [], seen, alive, self.root, 0, {"a.1.2": [1, 10, 100, 5, 1], "a.1.3": [2, 0, 0, 0, 1]}, days)
+        self.assertEqual(spent["tokens"], {"roots": [{**brief(by_id["a"], by_id), "tokens": [3, 10, 100, 5, 2]}], "days": days})
+        self.assertEqual(([row["tokens"] for row in spent["flights"]], spent["epics"][0]["tokens"], spent["closed"][0]["tokens"]),
+                         ([[1, 10, 100, 5, 1]], [3, 10, 100, 5, 2], [2, 0, 0, 0, 1]))
         # What closed last comes first, with the start of its reason.
         self.assertEqual([(row["id"], row["actor"], len(row["reason"])) for row in found["closed"]], [("a.1.3", "claude-12", TEXT_SHOWN), ("a.1.1", None, 4)])
         json.dumps(found)
@@ -589,7 +680,28 @@ class Tests(unittest.TestCase):
             self.assertEqual(json.load(reply), detail(self.tree(), "a.1.2"))
         self.assertEqual(self.refused(f"{address}/issue/a.99"), (404, "no such issue\n"))
         self.assertEqual(self.refused(f"{address}/issue/"), (404, "no such issue\n"))
+        self.assertEqual(found["tokens"], {"roots": [], "days": []})
         self.assertEqual((self.root / "calls").read_text(), "list --all --json --limit 0\nready --json --limit 0\n")
+
+    def test_the_server_reads_the_tokens_out_of_the_ledger(self):
+        (self.root / "list.json").write_text(json.dumps(self.tree()))
+        projects = self.root / "projects"
+        sessions = projects / (str(self.root).replace("/", "-").replace(".", "-").replace("_", "-") + "-main")
+        sessions.mkdir(parents=True)
+        call = {"type": "assistant", "requestId": "req_1", "timestamp": "2026-11-10T12:00:00Z", "message": {"model": "m", "content": [
+            {"type": "tool_use", "id": "t", "name": "Bash", "input": {"command": "bd update gone-1 --claim"}}],
+            "usage": {"input_tokens": 1, "cache_creation_input_tokens": 10, "cache_read_input_tokens": 100, "output_tokens": 5}}}
+        later = {**call, "requestId": "req_2", "message": {**call["message"], "content": []}}
+        (sessions / "s.jsonl").write_text(json.dumps(call) + "\n" + json.dumps(later) + "\n")
+        token_ledger().harvest(self.root / LEDGER, projects, self.root)
+        address = self.serve(f'case "$1" in list) cat {self.root}/list.json;; ready) echo [];; esac')
+        with urllib.request.urlopen(f"{address}/data") as reply:
+            found = json.load(reply)
+        self.assertEqual([(row["id"], row["tokens"]) for row in found["tokens"]["roots"]], [("a", [2, 20, 200, 10, 2])])
+        self.assertEqual(found["tokens"]["days"][0][1:], ["session", [2, 20, 200, 10, 2]])
+        # The issue the session claimed is not in the tree, so its call is the root's own, as the one before the claim is.
+        with urllib.request.urlopen(f"{address}/issue/a") as reply:
+            self.assertEqual(json.load(reply)["own_tokens"], [2, 20, 200, 10, 2])
 
     def test_the_server_gives_the_page_and_nothing_else(self):
         address = self.serve("exit 0")

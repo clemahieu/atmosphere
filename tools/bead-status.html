@@ -14,7 +14,7 @@
   --plane: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
   --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11, 11, 11, 0.10); --wash: rgba(11, 11, 11, 0.05);
   --open: #2a78d6; --created: #eb6834; --closed: #1baf7a; --track: #cde2fb; --serious: #ec835a;
-  --flying: #fbdccd; --edge: #b4b3a9;
+  --flying: #fbdccd; --edge: #b4b3a9; --fourth: #eda100; --fifth: #e87ba4;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -22,7 +22,7 @@
     --plane: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
     --grid: #2c2c2a; --axis: #383835; --border: rgba(255, 255, 255, 0.10); --wash: rgba(255, 255, 255, 0.06);
     --open: #3987e5; --created: #d95926; --closed: #199e70; --track: #104281; --serious: #ec835a;
-    --flying: #5e2a13; --edge: #55544f;
+    --flying: #5e2a13; --edge: #55544f; --fourth: #c98500; --fifth: #d55181;
   }
 }
 * { box-sizing: border-box; }
@@ -38,6 +38,7 @@ main > *, .rail > *, .board > * { grid-column: 1 / -1; }
 #waits { order: 2; }
 #readybox, #closedbox { order: 3; }
 #historybox, #epicsbox { order: 4; }
+#tokensbox { order: 5; }
 #questionsbox { border-color: var(--serious); }
 @media (min-width: 900px) { #readybox, #closedbox, #historybox, #epicsbox { grid-column: auto; } }
 /* Three columns between the two: the ready leaves beside what is in flight, and the closes, the charts and the epics in a row. */
@@ -145,7 +146,7 @@ th { font-weight: 600; color: var(--ink-2); border-top: 0; }
 .near a:hover .id { text-decoration: underline; }
 .near a.done { color: var(--muted); }
 
-.epic { display: grid; grid-template-columns: minmax(0, 1fr) minmax(60px, 120px) 132px; gap: 12px; align-items: center; padding: 3px 0; }
+.epic { display: grid; grid-template-columns: minmax(0, 1fr) minmax(48px, 96px) auto; gap: 12px; align-items: center; padding: 3px 0; }
 .meter { height: 8px; border-radius: 4px; background: var(--track); overflow: hidden; }
 .meter > div { height: 100%; background: var(--open); border-radius: 4px; }
 .epic .count { color: var(--ink-2); font-size: 12px; font-variant-numeric: tabular-nums; }
@@ -186,6 +187,12 @@ th { font-weight: 600; color: var(--ink-2); border-top: 0; }
       <div class="chart" id="flow"></div>
       <details><summary>Table</summary><table><thead><tr><th>Period</th><th>Created</th><th>Closed</th><th>Not closed at its end</th></tr></thead><tbody id="table"></tbody></table></details>
     </section>
+    <section id="tokensbox">
+      <div class="head"><h2>Tokens a day, by who spent them</h2><div class="legend" id="tokenkeys"></div></div>
+      <div class="chart" id="tokens"></div>
+      <p class="note" style="margin: 12px 0 0" id="tokennote"></p>
+      <details><summary>Table</summary><table><thead><tr id="tokenhead"></tr></thead><tbody id="tokentable"></tbody></table></details>
+    </section>
     <section id="epicsbox"><div class="head"><h2>Epics</h2><span class="note">issues closed of those below each</span></div><div id="epics"></div></section>
   </div>
 </main>
@@ -198,6 +205,9 @@ th { font-weight: 600; color: var(--ink-2); border-top: 0; }
 const POLL = 10, HOUR = 3600, DAY = 86400, READY_SHOWN = 12;
 const RANGES = [["24 hours", DAY, HOUR], ["3 days", 3 * DAY, 3 * HOUR], ["7 days", 7 * DAY, 6 * HOUR], ["All", 0, 0]];
 const STEPS = [HOUR, 2 * HOUR, 3 * HOUR, 6 * HOUR, 12 * HOUR, DAY, 2 * DAY, 7 * DAY, 14 * DAY, 30 * DAY];
+const TOKEN_DAYS = 30;
+/* Who spent the tokens, in the order of their colours; any other kind of agent is "other". */
+const SPENDERS = [["session", "sessions", "var(--open)"], ["round", "rounds", "var(--created)"], ["prover", "provers", "var(--closed)"], ["skeptic", "skeptics", "var(--fourth)"], ["other", "other agents", "var(--fifth)"]];
 const STAGES = {read: "reading", work: "working", verify: "verifying", gate: "in the gate", fix: "fixing a failed gate", close: "closing", prover: "prover", skeptic: "skeptic"};
 
 let data = null, failed = null, readAt = 0, skew = 0, range = 1;
@@ -377,6 +387,13 @@ function drawHistory() {
 }
 
 const issue = row => h("a", {class: "title", href: `#${row.id}`}, h("span", {class: "id"}, row.id), row.title);
+/* A ledger count is [input, cache write, cache read, output, calls]; its tokens are the first four. */
+const tokens = counts => counts ? counts[0] + counts[1] + counts[2] + counts[3] : 0;
+function short(number) {
+  for (const [size, unit] of [[1e12, "T"], [1e9, "B"], [1e6, "M"], [1e3, "k"]]) if (number >= size) return `${(number / size).toFixed(number >= 100 * size ? 0 : 1)} ${unit}`;
+  return String(number);
+}
+const spent = counts => counts ? `${short(tokens(counts))} tokens` : null;
 const trail = row => row.trail.length ? row.trail.join(" › ") : null;
 const meta = (...parts) => parts.some(Boolean) ? h("div", {class: "meta"}, parts.filter(Boolean).join(" · ")) : null;
 /* The same on one line, cut short where the row ends and whole under the pointer: a trail is long, and the details have it. */
@@ -397,6 +414,7 @@ function drawTiles() {
     tile("Questions for you", data.questions.length, data.questions.length ? "open until you answer" : "nothing waits on you"),
     tile("Closed in 24 hours", closed, `${(closed / 24).toFixed(1)} an hour · ${data.counts.total - data.counts.open} in all`),
     tile("Created in 24 hours", created, `${data.counts.total} in all`),
+    tile("Tokens", short(data.tokens.roots.reduce((sum, row) => sum + tokens(row.tokens), 0)), `${short(today())} today`),
   );
 }
 
@@ -411,7 +429,7 @@ function drawFlights() {
       h("div", {},
         issue(row),
         line(trail(row)),
-        h("div", {class: "meta"}, `P${row.priority} · `, h("span", ended ? {class: "warn"} : {}, ended ? `${row.actor} ended` : row.actor || "no holder"), " · held ", h("span", {"data-held": row.started})),
+        h("div", {class: "meta"}, `P${row.priority} · `, h("span", ended ? {class: "warn"} : {}, ended ? `${row.actor} ended` : row.actor || "no holder"), " · held ", h("span", {"data-held": row.started}), row.tokens ? ` · ${spent(row.tokens)}` : null),
         ["gate", "fix", "close"].includes(row.stage) && row.gate ? h("div", {class: "meta one", title: row.gate}, row.gate) : null,
       ),
     );
@@ -427,13 +445,13 @@ function drawLists() {
   $("readynote").textContent = data.ready.length > READY_SHOWN ? `the first ${READY_SHOWN} of ${data.ready.length}, in bd's order` : "in bd's order";
   fill("closed", data.closed.map(row => h("div", {class: "row plain"}, h("div", {},
     issue(row),
-    line(`${span(data.now - row.at)} ago`, row.actor, trail(row)),
+    line(`${span(data.now - row.at)} ago`, row.actor, spent(row.tokens), trail(row)),
     h("div", {class: "meta one", title: row.reason}, row.reason),
   ))));
   fill("epics", data.epics.map(row => h("div", {class: "epic", title: `${row.id} · ${row.closed} of ${row.total} closed`},
     h("a", {class: "one", href: `#${row.id}`}, h("span", {class: "id"}, row.id), row.title),
     h("div", {class: "meter"}, h("div", {style: `width: ${100 * row.closed / row.total}%`})),
-    h("div", {class: "count"}, [`${row.closed} / ${row.total}`, row.status === "closed" ? "✓ closed" : row.status === "deferred" ? "deferred" : null, row.flying ? `${row.flying} in flight` : null].filter(Boolean).join(" · ")),
+    h("div", {class: "count"}, [`${row.closed} / ${row.total}`, row.status === "closed" ? "✓ closed" : row.status === "deferred" ? "deferred" : null, row.flying ? `${row.flying} in flight` : null, row.tokens ? short(tokens(row.tokens)) : null].filter(Boolean).join(" · ")),
   )));
 }
 
@@ -643,6 +661,12 @@ function drawDetail(issue) {
     h("h2", {}, issue.title),
     meta(trail(issue)),
     meta(`created ${date(issue.created, when)}`, issue.closed && `closed ${date(issue.closed, when)}`),
+    issue.tokens ? [h("h3", {}, "Tokens"), h("table", {},
+      h("thead", {}, h("tr", {}, h("th", {}, ""), h("th", {}, "With what is below"), h("th", {}, "Its own"))),
+      h("tbody", {}, ["Input", "Cache write", "Cache read", "Output", "Calls"].map((name, index) =>
+        h("tr", {}, h("td", {}, name), h("td", {}, issue.tokens[index].toLocaleString()), h("td", {}, (issue.own_tokens?.[index] ?? 0).toLocaleString()))),
+        h("tr", {}, h("th", {}, "Tokens"), h("th", {}, short(tokens(issue.tokens))), h("th", {}, short(tokens(issue.own_tokens)))))),
+    ] : null,
     near("Waits on", issue.blockers), near("Waited on by", issue.dependents), near("Under", issue.parent ? [issue.parent] : []), near("Below it", issue.children),
     text("Description", issue.text.description), text("Acceptance criteria", issue.text.acceptance_criteria), text("Design", issue.text.design),
     text("Notes", issue.text.notes), text("Close reason", issue.text.close_reason),
@@ -692,12 +716,88 @@ function tick() {
   $("fresh").textContent = failed ? `the last read failed: ${failed}${read ? ` · showing what was ${read}` : ""}` : read;
 }
 
+/* Each day's tokens by who spent them, at most the last TOKEN_DAYS days through today. */
+const dayName = time => { const when = new Date(time * 1000); return `${when.getFullYear()}-${String(when.getMonth() + 1).padStart(2, "0")}-${String(when.getDate()).padStart(2, "0")}`; };
+function ledgerDays() {
+  const found = new Map();
+  for (let back = TOKEN_DAYS - 1; back >= 0; back--) found.set(dayName(data.now - back * DAY), Object.fromEntries(SPENDERS.map(([kind]) => [kind, [0, 0, 0, 0, 0]])));
+  for (const [day, kind, counts] of data.tokens.days) {
+    const row = found.get(day);
+    if (!row) continue;
+    const key = SPENDERS.some(([name]) => name === kind) ? kind : "other";
+    row[key] = row[key].map((value, index) => value + counts[index]);
+  }
+  const days = [...found].map(([day, row]) => ({day, row, total: SPENDERS.reduce((sum, [kind]) => sum + tokens(row[kind]), 0)}));
+  // From the first day the ledger holds, while that is inside the window, and today at least.
+  const first = days.findIndex(day => day.total);
+  return days.slice(first < 0 ? -1 : first);
+}
+const today = () => ledgerDays().at(-1).total;
+function drawTokens() {
+  const days = ledgerDays(), box = $("tokens"), height = 220;
+  const values = ticks(0, Math.max(1, ...days.map(day => day.total)), 4);
+  const width = Math.max(box.clientWidth, 280), left = 56, right = 12, top = 12, bottom = 26;
+  const plot = {left, top, width: width - left - right, height: height - top - bottom};
+  const y = value => top + plot.height - value / values.at(-1) * plot.height;
+  const svg = s("svg", {viewBox: `0 0 ${width} ${height}`, height, role: "img", "aria-label": `Tokens a day for the last ${TOKEN_DAYS} days, by who spent them.`});
+  for (const value of values) {
+    svg.append(s("line", {class: value ? "grid" : "axis", x1: left, x2: left + plot.width, y1: y(value), y2: y(value)}));
+    svg.append(s("text", {x: left - 8, y: y(value) + 4, "text-anchor": "end"}, short(value)));
+  }
+  const slot = plot.width / days.length, bar = Math.max(2, Math.min(28, slot - (slot >= 12 ? 4 : 1)));
+  const wash = s("rect", {y: top, width: slot, height: plot.height, fill: "var(--wash)", visibility: "hidden"});
+  svg.append(wash);
+  days.forEach((day, index) => {
+    const x = left + slot * index + (slot - bar) / 2;
+    let base = 0;
+    for (const [kind, , color] of SPENDERS) {
+      const value = tokens(day.row[kind]);
+      if (!value) continue;
+      // A gap of the surface between the segments, as between bars.
+      const low = y(base), high = y(base + value);
+      if (low - high > 2) svg.append(s("rect", {x, y: high, width: bar, height: low - high - (base ? 2 : 0), fill: color, rx: Math.min(2, bar / 4)}));
+      base += value;
+    }
+    if (index % Math.ceil(days.length / Math.max(2, Math.floor(plot.width / 64))) === 0)
+      svg.append(s("text", {x: left + slot * (index + 0.5), y: height - 6, "text-anchor": "middle"}, date(new Date(`${day.day}T12:00`) / 1000, DAYOF)));
+  });
+  const tip = h("div", {class: "tip", hidden: ""});
+  const hit = s("rect", {x: left, y: top, width: plot.width, height: plot.height, fill: "transparent"});
+  svg.append(hit);
+  box.replaceChildren(svg, tip);
+  hit.addEventListener("pointermove", event => {
+    const index = Math.min(days.length - 1, Math.max(0, Math.floor((event.clientX - svg.getBoundingClientRect().left - left) / slot)));
+    const day = days[index], output = SPENDERS.reduce((sum, [kind]) => sum + day.row[kind][3], 0);
+    wash.setAttribute("x", left + slot * index); wash.setAttribute("visibility", "visible");
+    tip.replaceChildren(
+      h("div", {class: "when"}, date(new Date(`${day.day}T12:00`) / 1000, DAYOF)),
+      SPENDERS.slice().reverse().filter(([kind]) => tokens(day.row[kind])).map(([kind, name, color]) =>
+        h("div", {}, h("span", {class: "stroke", style: `background: ${color}`}), h("b", {}, short(tokens(day.row[kind]))), ` ${name}`)),
+      h("div", {class: "when"}, `${short(day.total)} in all · ${short(output)} output`),
+    );
+    const where = left + slot * (index + 1);
+    tip.hidden = false;
+    tip.style.left = `${where + 12 + tip.offsetWidth > width ? left + slot * index - 12 - tip.offsetWidth : where + 12}px`;
+  });
+  hit.addEventListener("pointerleave", () => { tip.hidden = true; wash.setAttribute("visibility", "hidden"); });
+  fill("tokenkeys", SPENDERS.map(([, name, color]) => h("span", {}, h("span", {class: "key", style: `background: ${color}`}), name)));
+  const all = data.tokens.roots.reduce((sum, row) => row.tokens.map((value, index) => value + (sum[index] || 0)), []);
+  $("tokennote").textContent = all.length
+    ? `In all: ${short(all[0])} input, ${short(all[1])} cache write, ${short(all[2])} cache read and ${short(all[3])} output, over ${all[4].toLocaleString()} calls. An epic's tokens are its own and those of every issue below it.`
+    : "The ledger holds no calls yet.";
+  fill("tokenhead", h("th", {}, "Day"), SPENDERS.map(([, name]) => h("th", {}, name)), h("th", {}, "In all"), h("th", {}, "Output"));
+  fill("tokentable", days.slice().reverse().map(day => h("tr", {}, h("td", {}, day.day),
+    SPENDERS.map(([kind]) => h("td", {}, short(tokens(day.row[kind])))), h("td", {}, short(day.total)),
+    h("td", {}, short(SPENDERS.reduce((sum, [kind]) => sum + day.row[kind][3], 0))))));
+}
+
 function draw() {
   drawTiles();
   drawFlights();
   drawLists();
   drawGraph();
   drawHistory();
+  drawTokens();
   document.title = `${data.flights.length} in flight${data.questions.length ? ` · ${data.questions.length} to answer` : ""} · Bead status`;
   tick();
 }
@@ -729,7 +829,7 @@ fill("ranges", RANGES.map(([label], index) => {
   return button;
 }));
 let resized = 0;
-function fit() { if (data) { drawGraph(); drawHistory(); } }
+function fit() { if (data) { drawGraph(); drawHistory(); drawTokens(); } }
 addEventListener("resize", () => { cancelAnimationFrame(resized); resized = requestAnimationFrame(fit); });
 const glyph = (type, name, text) => h("span", {}, s("svg", {class: "glyph", width: 26, height: 16, viewBox: "-2 -2 26 16"}, s("g", {class: `node ${name}`}, shape(type, 22, 12))), text);
 fill("keys", glyph("task", "waiting", "leaf"), glyph("epic", "waiting", "epic"), Object.entries(STATES).map(([name, text]) => glyph("task", name, text)));
