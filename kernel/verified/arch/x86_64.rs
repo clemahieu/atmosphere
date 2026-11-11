@@ -692,8 +692,18 @@ pub const IOMMU_INVALIDATE_ALL: u64 = 0x08;
 /// 64-bit data at its address. 48882 §2.4.1.
 pub const IOMMU_COMPLETION_WAIT: u64 = 0x01;
 
+/// The command buffer head register's offset in an IOMMU's MMIO registers: the offset in the ring of
+/// the command the IOMMU reads next. 48882 Rev 3.11 §3.4.15.
+pub const IOMMU_COMMAND_HEAD: usize = 0x2000;
+
 /// The command buffer tail register's offset in an IOMMU's MMIO registers. 48882 §3.4.15.
 pub const IOMMU_COMMAND_TAIL: usize = 0x2008;
+
+/// The slot a value of the head register names: CmdHeadPtr, bits 18:4, the 16-byte aligned offset of
+/// the next command the IOMMU fetches. 48882 Rev 3.11 §3.4.15.
+pub open spec fn head_slot(head: u64) -> int {
+    ((head >> 4u64) & 0x7fffu64) as int
+}
 
 /// A command as the ring holds it: the first quadword, with the opcode in bits 63:60, then the second.
 /// 48882 Rev 3.11, Figure 43.
@@ -727,11 +737,12 @@ fn completion_wait_command(address: u64, data: u64) -> (ret: IommuCommand)
 }
 
 pub use queue::QueuedCommands;
-use queue::store_command;
+use queue::{read_head, store_command};
 
-/// The record of the commands stored into the IOMMUs' command rings, alone in a module with the one
-/// store, so its fields are private to it: code outside cannot write a record by literal, and a record
-/// names a slot only once store_command has written it.
+/// The record of what was read from the IOMMUs' head registers and stored into their command rings,
+/// alone in a module with the head read and the one store, so its fields are private to them: code
+/// outside cannot write a record by literal, a head it names is only what the register read gave, and
+/// a record names a slot only once store_command has written it.
 mod queue {
     use vstd::prelude::*;
     use super::IommuCommand;
@@ -741,24 +752,54 @@ mod queue {
     use crate::define::NUM_IOMMUS;
     #[cfg(verus_keep_ghost)]
     use super::IOMMU_COMMAND_SIZE;
+    #[cfg(verus_keep_ghost)]
+    use super::IOMMU_COMMAND_HEAD;
 
-    /// The commands stored into the IOMMUs' command rings since the last submit: each slot written, by
+    /// What was read from the IOMMUs' head registers and stored into their command rings since the
+    /// last submit: each head register read, by its address, and the value read; each slot written, by
     /// its address, and the command written there. The IotlbModel holds the one record, so there is
-    /// no second record a store could update instead; only store_command adds a slot, and every write
-    /// of a slot goes through it, since CommandBuffers holds each ring page as a CommandPage, whose
+    /// no second record a read or a store could update instead; only read_head adds a head and only
+    /// store_command a slot, and every write of a slot goes through it, since CommandBuffers holds each ring page as a CommandPage, whose
     /// permission nothing outside it can write through. So a slot the record names holds that command
     /// until the IOMMU reads it. A slot is a command's aligned 16 bytes, so slots at different
     /// addresses do not overlap.
     // Only specs read the field, and a cargo build erases specs, so only Verus compiles it.
     pub tracked struct QueuedCommands {
         #[cfg(verus_keep_ghost)]
+        ghost heads: Map<int, u64>,
+        #[cfg(verus_keep_ghost)]
         ghost slots: Map<int, IommuCommand>,
     }
 
     impl QueuedCommands {
+        pub closed spec fn heads(self) -> Map<int, u64> {
+            self.heads
+        }
+
         pub closed spec fn slots(self) -> Map<int, IommuCommand> {
             self.slots
         }
+    }
+
+    /// Reads the head register at `register`, which is IOMMU i's Command Buffer Head Pointer Register,
+    /// so the load is of that register and no other address: the offset of the command the IOMMU
+    /// fetches next. It promises nothing about the value, and records it in `model`'s queued commands
+    /// as that register's head.
+    #[verifier(external_body)]
+    // external_body(glue): a load of the IOMMU's head register, of which nothing is promised but its width
+    pub fn read_head(commands: &CommandBuffers, i: usize, register: usize, Tracked(model): Tracked<&mut IotlbModel>) -> (ret: u64)
+        requires
+            i < NUM_IOMMUS,
+            commands.buffers.wf(),
+            commands.buffer_wf(i as int),
+            register == commands.buffers@[i as int].mmio + IOMMU_COMMAND_HEAD,
+        ensures
+            final(model).len() == old(model).len(),
+            forall|j: int| #[trigger] final(model)[j] == old(model)[j],
+            final(model).queued().heads() == old(model).queued().heads().insert(register as int, ret),
+            final(model).queued().slots() == old(model).queued().slots(),
+    {
+        unsafe { core::ptr::read_volatile(register as *const u64) }
     }
 
     /// Stores `command` into the ring slot at `address`, a command's aligned 16 bytes inside IOMMU i's
@@ -776,6 +817,7 @@ mod queue {
         ensures
             final(model).len() == old(model).len(),
             forall|j: int| #[trigger] final(model)[j] == old(model)[j],
+            final(model).queued().heads() == old(model).queued().heads(),
             final(model).queued().slots() == old(model).queued().slots().insert(address as int, command),
     {
         unsafe {
@@ -813,19 +855,21 @@ proof fn lemma_command_slot(b: CommandBuffer, slot: int)
     ;
 }
 
-/// Hands IOMMU i the INVALIDATE_IOMMU_ALL and the COMPLETION_WAIT queued at its tail and returns once
-/// the IOMMU has finished them, emptying i's set in `model`. It clears the completion word, orders
+/// Hands IOMMU i the INVALIDATE_IOMMU_ALL and the COMPLETION_WAIT queued at the slot its head register
+/// read named, where it fetches next, and returns once the IOMMU has finished them, emptying i's set in
+/// `model`. It clears the completion word, orders
 /// that and the commands before the store of `tail` into the tail register at `tail_register`, which
 /// moves the tail past both, and spins until the IOMMU stores the wait's nonzero data to the word.
 /// COMPLETION_WAIT finishes only once every older command has, 48882 Rev 3.11 §2.4.1, and
 /// INVALIDATE_IOMMU_ALL invalidates every IOMMU TLB, §2.4.8. The IOMMU has read every queued command
-/// once it returns, so it empties the record of them in `model`, and a second submit has to queue the
-/// commands again.
+/// and moved its head once it returns, so it empties the record of them in `model`, and a second
+/// submit has to read the head and queue the commands again.
 #[verifier(external_body)]
 // external_body(glue): only the IOMMU can attest an invalidate, so only this empties its IOTLB model
 fn submit_invalidate(
     commands: &CommandBuffers,
     i: usize,
+    head_register: usize,
     tail_register: usize,
     tail: u64,
     completion: usize,
@@ -835,19 +879,23 @@ fn submit_invalidate(
         i < NUM_IOMMUS,
         commands.buffers.wf(),
         commands.buffer_wf(i as int),
+        head_register == commands.buffers@[i as int].mmio + IOMMU_COMMAND_HEAD,
         tail_register == commands.buffers@[i as int].mmio + IOMMU_COMMAND_TAIL,
-        tail == (commands.buffers@[i as int].tail + IOMMU_INVALIDATE_COMMANDS) % commands.buffers@[i as int].len as int * IOMMU_COMMAND_SIZE,
+        old(model).queued().heads().contains_key(head_register as int),
+        tail == (head_slot(old(model).queued().heads()[head_register as int]) % commands.buffers@[i as int].len as int + IOMMU_INVALIDATE_COMMANDS)
+            % commands.buffers@[i as int].len as int * IOMMU_COMMAND_SIZE,
         completion == commands.buffers@[i as int].completion,
-        old(model).queued().slots().contains_key(command_slot(commands.buffers@[i as int], commands.buffers@[i as int].tail as int)),
-        old(model).queued().slots()[command_slot(commands.buffers@[i as int], commands.buffers@[i as int].tail as int)]
+        old(model).queued().slots().contains_key(command_slot(commands.buffers@[i as int], head_slot(old(model).queued().heads()[head_register as int]))),
+        old(model).queued().slots()[command_slot(commands.buffers@[i as int], head_slot(old(model).queued().heads()[head_register as int]))]
             == invalidate_all_command_spec(),
-        old(model).queued().slots().contains_key(command_slot(commands.buffers@[i as int], commands.buffers@[i as int].tail + 1)),
-        old(model).queued().slots()[command_slot(commands.buffers@[i as int], commands.buffers@[i as int].tail + 1)]
+        old(model).queued().slots().contains_key(command_slot(commands.buffers@[i as int], head_slot(old(model).queued().heads()[head_register as int]) + 1)),
+        old(model).queued().slots()[command_slot(commands.buffers@[i as int], head_slot(old(model).queued().heads()[head_register as int]) + 1)]
             == completion_wait_command_spec(completion as u64, 1),
     ensures
         final(model).len() == old(model).len(),
         final(model)[i as int] == Set::<TlbEntry>::empty(),
         forall|j: int| j != i ==> #[trigger] final(model)[j] == old(model)[j],
+        final(model).queued().heads() == Map::<int, u64>::empty(),
         final(model).queued().slots() == Map::<int, IommuCommand>::empty(),
 {
     unsafe {
@@ -863,9 +911,11 @@ fn submit_invalidate(
 /// Invalidates all of IOMMU i's caches and returns once it has finished, with the tail after the
 /// commands it wrote, and empties i's set in `model`: the caller holds the lock, so no table changes
 /// while this runs, and once the invalidate finishes i holds nothing the tables no longer say. It
-/// stores INVALIDATE_IOMMU_ALL then COMPLETION_WAIT at i's tail and submits them. Only this writes i's
-/// ring, and each call waits for the IOMMU to read all it wrote, so the ring is empty on entry and two
-/// commands fit in it. The kernel maps memory at its physical address, as the entries it writes
+/// reads the head register, stores INVALIDATE_IOMMU_ALL then COMPLETION_WAIT at its slot, where the
+/// IOMMU fetches next, and submits them with the tail moved past both. Only this writes i's ring, and
+/// each call waits for the IOMMU to read all it wrote, so the ring is empty on entry and two commands
+/// fit in it. The register, not the ring's tail, places the commands: the IOMMU never refetches a
+/// command it has passed (48882 Rev 3.11 §2.4), so commands anywhere but its head would not run. The kernel maps memory at its physical address, as the entries it writes
 /// assume, so the completion word's address is the one the IOMMU stores to. Waiting here is not
 /// waiting for a core: design/flush-without-waiting/. The wait is on the IOMMU, which finishes two
 /// commands in a time the state does not set, so it is one unit: design/one-lock-bounded-steps/.
@@ -882,13 +932,30 @@ pub fn invalidate_iommu_all(commands: &CommandBuffers, i: usize, Tracked(model):
         forall|j: int| j != i ==> #[trigger] final(model)[j] == old(model)[j],
 {
     let b = *commands.buffers.get(i);
-    let first = b.tail;
-    let second = (b.tail + 1) % b.len;
-    let next = (b.tail + IOMMU_INVALIDATE_COMMANDS) % b.len;
     proof {
+        assert(b.mmio + IOMMU_COMMAND_TAIL <= usize::MAX) by (nonlinear_arith)
+            requires
+                b.mmio % IOMMU_MMIO_ALIGN == 0,
+                b.mmio <= usize::MAX,
+        ;
+    }
+    let head = read_head(commands, i, b.mmio + IOMMU_COMMAND_HEAD, Tracked(model));
+    proof {
+        assert((head >> 4u64) & 0x7fffu64 <= 0x7fffu64) by (bit_vector);
+    }
+    let first = ((head >> 4u64) & 0x7fffu64) as usize % b.len;
+    let second = (first + 1) % b.len;
+    let after = (first + IOMMU_INVALIDATE_COMMANDS) % b.len;
+    proof {
+        let len = b.len as int;
+        let h = head_slot(head);
+        assert(first as int == h % len);
+        vstd::arithmetic::div_mod::lemma_add_mod_noop(h, 1, len);
+        vstd::arithmetic::div_mod::lemma_small_mod(1, len as nat);
+        vstd::arithmetic::div_mod::lemma_mod_bound(h, len);
+        vstd::arithmetic::div_mod::lemma_small_mod(first as nat, b.len as nat);
         lemma_command_slot(b, first as int);
         lemma_command_slot(b, second as int);
-        vstd::arithmetic::div_mod::lemma_small_mod(first as nat, b.len as nat);
     }
     store_command(commands, i, b.ring + first * IOMMU_COMMAND_SIZE, invalidate_all_command(), Tracked(model));
     store_command(commands, i, b.ring + second * IOMMU_COMMAND_SIZE, completion_wait_command(b.completion as u64, 1), Tracked(model));
@@ -900,17 +967,20 @@ pub fn invalidate_iommu_all(commands: &CommandBuffers, i: usize, Tracked(model):
                 b.len >= 2,
         ;
         assert(b.ring + first * IOMMU_COMMAND_SIZE != b.ring + second * IOMMU_COMMAND_SIZE);
-        assert(b.mmio + IOMMU_COMMAND_TAIL <= usize::MAX) by (nonlinear_arith)
-            requires
-                b.mmio % IOMMU_MMIO_ALIGN == 0,
-                b.mmio <= usize::MAX,
-        ;
     }
-    submit_invalidate(commands, i, b.mmio + IOMMU_COMMAND_TAIL, (next * IOMMU_COMMAND_SIZE) as u64, b.completion, Tracked(model));
+    submit_invalidate(
+        commands,
+        i,
+        b.mmio + IOMMU_COMMAND_HEAD,
+        b.mmio + IOMMU_COMMAND_TAIL,
+        (after * IOMMU_COMMAND_SIZE) as u64,
+        b.completion,
+        Tracked(model),
+    );
     proof {
         steps.step();
     }
-    next
+    (b.tail + IOMMU_INVALIDATE_COMMANDS) % b.len
 }
 
 // The trap frame and the user-return checks: what a thread record holds, what a return to user mode

@@ -20,6 +20,7 @@ kernel/verified/arch/aarch64.rs	store_command	external_body	glue	the SMMU reads 
 kernel/verified/arch/aarch64.rs	submit_invalidate	external_body	glue	only the SMMU can attest an invalidate, so only this empties its IOTLB model
 kernel/verified/arch/x86_64.rs	flush_every_context	assume_specification	hardware	amd-apm2 5.5.1 Process Context Identifier; amd-apm2 5.5.3 TLB Management, Implicit Invalidations; amd-apm2 5.5.3 TLB Management, Caching of Upper Level Translation Table Entries
 kernel/verified/arch/x86_64.rs	load_translation_root	external_body	glue	only the hardware can attest which root a core translates through, so only this changes a BaseRegister
+kernel/verified/arch/x86_64.rs	read_head	external_body	glue	a load of the IOMMU's head register, of which nothing is promised but its width
 kernel/verified/arch/x86_64.rs	serial_write_byte	external_body	glue	waits on COM1's line status and stores one byte in its transmit holding register through port I/O, which has no state a proof could see
 kernel/verified/arch/x86_64.rs	store_command	external_body	glue	the IOMMU reads the ring, so only this can say what one of its slots holds
 kernel/verified/arch/x86_64.rs	submit_invalidate	external_body	glue	only the IOMMU can attest an invalidate, so only this empties its IOTLB model
