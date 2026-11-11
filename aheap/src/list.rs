@@ -8,6 +8,9 @@
 //! its full ones. The list writes the links of its records and nothing else of them.
 //!
 //! - `first()` is the first record, or none on an empty list.
+//! - `slab(p)` is the slab of the record at `p`, by reference.
+//! - `find(a)` walks the list from the first record to the one whose slab's run holds the address
+//!   `a`, or returns none when no record's does; linear in the list's length.
 //! - `push(p, perm)` puts the record at `p`, with the permission to it, on the front.
 //! - `remove(p)` takes the record at `p` off the list and returns the permission to it.
 //!
@@ -16,7 +19,6 @@ use vstd::prelude::*;
 use vstd::raw_ptr::*;
 
 use crate::record::Record;
-#[cfg(verus_keep_ghost)]
 use crate::slab::Slab;
 
 verus! {
@@ -153,6 +155,89 @@ impl ClassList {
             },
     {
         self.head
+    }
+
+    /// The slab of the record at `p`, by reference.
+    pub fn slab(&self, p: *mut Record, Ghost(prov): Ghost<Provenance>) -> (r: &Slab)
+        requires
+            self.wf(prov),
+            self.seq().contains(p@.addr as int),
+            p@.provenance == prov,
+        ensures
+            *r == self.slabs()[p@.addr as int],
+    {
+        let ghost a = p@.addr as int;
+        proof {
+            self.lemma_at(self.order@.index_of(a), prov);
+            assert(p == record_ptr(a, prov));
+        }
+        let tracked perm = self.perms.borrow().tracked_borrow(a);
+        &ptr_ref(p, Tracked(perm)).slab
+    }
+
+    /// The record whose slab's run holds the address `a`, or none when no record's does.
+    pub fn find(&self, a: usize, Ghost(prov): Ghost<Provenance>) -> (r: Option<*mut Record>)
+        requires
+            self.wf(prov),
+        ensures
+            match r {
+                None => forall|b: int| #[trigger] self.seq().contains(b) ==> !self.slabs()[b].within(a as int),
+                Some(p) => {
+                    &&& self.seq().contains(p@.addr as int)
+                    &&& p == record_ptr(p@.addr as int, prov)
+                    &&& self.slabs()[p@.addr as int].within(a as int)
+                },
+            },
+    {
+        let h = match self.head {
+            None => return None,
+            Some(h) => h,
+        };
+        proof {
+            self.lemma_at(0, prov);
+        }
+        let mut cur: usize = h.addr();
+        let ghost mut j: int = 0;
+        while cur != 0
+            invariant
+                self.wf(prov),
+                self.head == Some(h),
+                0 <= j <= self.order@.len(),
+                cur as int == if j < self.order@.len() { self.order@[j] } else { 0 },
+                forall|i: int| 0 <= i < j ==> !(#[trigger] self.value(self.order@[i])).slab.within(a as int),
+            decreases self.order@.len() - j,
+        {
+            proof {
+                self.lemma_at(j, prov);
+            }
+            let p = h.with_addr(cur);
+            let tracked perm = self.perms.borrow().tracked_borrow(cur as int);
+            let r = ptr_ref(p, Tracked(perm));
+            if r.slab.holds_address(a) {
+                proof {
+                    assert(self.order@.contains(cur as int));
+                    assert(p == record_ptr(cur as int, prov));
+                }
+                return Some(p);
+            }
+            cur = r.next;
+            proof {
+                j = j + 1;
+            }
+        }
+        proof {
+            if j < self.order@.len() {
+                self.lemma_at(j, prov);
+            }
+            assert forall|b: int| #[trigger] self.seq().contains(b) implies !self.slabs()[b].within(a as int) by {
+                let i = self.order@.index_of(b);
+                assert(self.order@[i] == b);
+                assert(self.perms@.contains_key(b));
+                assert(!self.value(self.order@[i]).slab.within(a as int));
+                assert(self.slabs()[b] == self.value(b).slab);
+            }
+        }
+        None
     }
 
     /// Puts the record at `p`, with the permission to it, on the front of the list.

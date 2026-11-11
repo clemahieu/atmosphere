@@ -405,8 +405,7 @@ proof fn join_slots(
 pub struct Slab {
     /// The start of the run, with the provenance of the permission to it.
     base: *mut u8,
-    /// The run's length. Only proofs read it, and a cargo build erases them.
-    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    /// The run's length.
     bytes: usize,
     /// The bytes of one slot.
     slot: usize,
@@ -1064,6 +1063,15 @@ impl Slab {
             }
         }
         self.free == self.count
+    }
+
+    /// The address `a` is in the run.
+    pub fn holds_address(&self, a: usize) -> (r: bool)
+        ensures
+            r == self.within(a as int),
+    {
+        let base = self.base.addr();
+        base <= a && a - base < self.bytes
     }
 
     /// Takes the permission to the whole run out of `perms`, every slot being free.
