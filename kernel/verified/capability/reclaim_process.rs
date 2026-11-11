@@ -393,6 +393,7 @@ impl CapKernel {
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
         ensures
             final(steps).count <= old(steps).count + RETIRE_STEPS,
             final(self).wf(),
@@ -467,6 +468,7 @@ impl CapKernel {
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
         ensures
             final(steps).count <= old(steps).count + NUM_CPUS + CUT_SLICE_STEPS,
             final(self).wf(),
@@ -1149,6 +1151,7 @@ impl CapKernel {
             old(self).wf(),
             c < NUM_CPUS,
             old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
         ensures
             final(steps).count <= old(steps).count + NUM_CPUS + ROOT_ENTRIES + (ENTRIES - KERNEL_MEM_END_L4INDEX)
                 + (NUM_CPUS + NUM_IOMMUS) + SMALL_PAGES_MAX,

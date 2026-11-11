@@ -867,6 +867,7 @@ impl CapKernel {
             old(self).wf(),
             c < NUM_CPUS,
             old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
         ensures
             final(steps).count <= old(steps).count + NODES_PER_PAGE + 2 * (NUM_CPUS + NUM_IOMMUS) + SMALL_PAGES_MAX,
             final(self).wf(),

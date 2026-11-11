@@ -206,6 +206,7 @@ impl CapKernel {
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
         ensures
             final(steps).count <= old(steps).count + UNMAP_KIND_STEPS,
             final(self).wf(),
@@ -320,6 +321,7 @@ impl CapKernel {
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
         ensures
             final(steps).count <= old(steps).count + UNMAP_ENTRY_STEPS,
             final(self).wf(),
