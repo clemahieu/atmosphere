@@ -652,8 +652,76 @@ impl CapKernel {
         }
     }
 
+    /// A typed large block shares no page with another block, so the page at `base` in it is no small
+    /// block's base, no small object lives at `base`, and the other level's region over it is not typed.
+    proof fn lemma_large_excludes_small(&self, level: Large, base: usize)
+        requires
+            self.wf(),
+            base / PAGE_SZ / level_pages(level) < level_regions(level),
+            block_typed(&self.blocks, level_ref(level, base / PAGE_SZ / level_pages(level))),
+        ensures
+            !(self.blocks.pages@[(base / PAGE_SZ) as int].kind is Base),
+            !self.tables.owner@.contains_key(base),
+            !self.table_pages.maps@.contains_key(base),
+            !self.spaces.roots@.contains_key(base),
+            !self.threads.records@.contains_key(base),
+            !self.processes.records@.contains_key(base),
+            match level {
+                Large::Two => !self.blocks.regions_1g@[(base / PAGE_SZ / PAGES_PER_1G) as int].typed,
+                Large::One => !self.blocks.regions_2m@[(base / PAGE_SZ / PAGES_PER_2M) as int].typed,
+            },
+    {
+        let page = base / PAGE_SZ;
+        let r = page / level_pages(level);
+        lemma_fundamental_div_mod(page as int, PAGES_PER_2M as int);
+        lemma_fundamental_div_mod(page as int, PAGES_PER_1G as int);
+        lemma_mod_pos_bound(page as int, PAGES_PER_2M as int);
+        lemma_mod_pos_bound(page as int, PAGES_PER_1G as int);
+        assert(block_has_page(level_ref(level, r), page));
+        assert(self.blocks.tracks(page as int));
+        if self.blocks.pages@[page as int].kind is Base {
+            assert(block_typed(&self.blocks, BlockRef::Small(page)));
+            lemma_large_block_alone(&self.blocks, level, r, BlockRef::Small(page), page);
+        }
+        if self.tables.owner@.contains_key(base) {
+            assert(self.blocks.pages@[page as int].kind is Base);
+        }
+        if self.table_pages.maps@.contains_key(base) {
+            assert(table_page_wf(&self.list, &self.table_pages, &self.blocks, base));
+        }
+        if self.spaces.roots@.contains_key(base) {
+            assert(space_wf(&self.list, &self.spaces, &self.blocks, base));
+        }
+        if self.threads.records@.contains_key(base) {
+            assert(thread_wf(&self.list, &self.threads, &self.blocks, base));
+        }
+        if self.processes.records@.contains_key(base) {
+            assert(process_wf(&self.processes, &self.blocks, base));
+        }
+        match level {
+            Large::Two => {
+                let q = page / PAGES_PER_1G;
+                if self.blocks.regions_1g@[q as int].typed {
+                    assert(q < NUM_1G);
+                    assert(block_has_page(BlockRef::One(q), page));
+                    lemma_large_block_alone(&self.blocks, level, r, BlockRef::One(q), page);
+                }
+            },
+            Large::One => {
+                let q = page / PAGES_PER_2M;
+                if self.blocks.regions_2m@[q as int].typed {
+                    assert(q < NUM_2M);
+                    assert(block_has_page(BlockRef::Two(q), page));
+                    lemma_large_block_alone(&self.blocks, level, r, BlockRef::Two(q), page);
+                }
+            },
+        }
+    }
+
     /// A retype naming the block at `base`, under the untyped at index `from` of the table at `root`:
-    /// what it does depends on what the block holds. All of these come from user space.
+    /// what it does depends on what the block holds. A large block's state is in its region's entry,
+    /// so the regions over the page come first, then the small block's object. All of these come from
+    /// user space.
     pub fn reclaim(&mut self, c: usize, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: ReclaimStep)
         requires
             old(self).wf(),
@@ -679,7 +747,21 @@ impl CapKernel {
                 || old(self).can_cut_process_space(root, from, base)
                 || (old(self).can_retype_under(root, from, base, PROCESS_ORDER) && old(self).process_is_spent(base))
                 || old(self).can_unbind_thread(root, from, base)
-                || (old(self).can_retype_under(root, from, base, 1) && old(self).thread_is_spent(base))) ==> ret is Refused,
+                || (old(self).can_retype_under(root, from, base, 1) && old(self).thread_is_spent(base))
+                || old(self).can_reclaim_large(root, from, base, 9)
+                || old(self).can_reclaim_large(root, from, base, 18)) ==> ret is Refused,
+            old(self).can_reclaim_large(root, from, base, 9)
+                ==> if old(self).region_acknowledged(Large::Two, base / PAGE_SZ / PAGES_PER_2M) {
+                    ret is Freed && old(self).large_frame_freed(*final(self), c, root, from, base, 9)
+                } else {
+                    ret is Again
+                },
+            old(self).can_reclaim_large(root, from, base, 18)
+                ==> if old(self).region_acknowledged(Large::One, base / PAGE_SZ / PAGES_PER_1G) {
+                    ret is Freed && old(self).large_frame_freed(*final(self), c, root, from, base, 18)
+                } else {
+                    ret is Again
+                },
             !old(self).view().holds_right(root, old(self).tables.node_of(root, from), Right::Retype) ==> ret is Refused,
             old(self).spaces.roots@.contains_key(base) && !old(self).dead_io_space(base)
                 && !old(self).can_cut_process_space(root, from, base)
@@ -727,8 +809,12 @@ impl CapKernel {
                 } else {
                     ret is Again
                 },
-            ret is Again ==> !old(self).acknowledged(base / PAGE_SZ) || !old(self).acknowledged((base / PAGE_SZ + 1) as usize),
+            ret is Again ==> !old(self).acknowledged(base / PAGE_SZ) || !old(self).acknowledged((base / PAGE_SZ + 1) as usize)
+                || !old(self).region_acknowledged(Large::Two, base / PAGE_SZ / PAGES_PER_2M)
+                || !old(self).region_acknowledged(Large::One, base / PAGE_SZ / PAGES_PER_1G),
             ret is Freed ==> old(self).frame_freed(*final(self), c, root, from, base)
+                || old(self).large_frame_freed(*final(self), c, root, from, base, 9)
+                || old(self).large_frame_freed(*final(self), c, root, from, base, 18)
                 || old(self).leaf_freed(*final(self), c, root, from, base)
                 || old(self).table_freed(*final(self), c, root, from, base)
                 || old(self).space_freed(*final(self), c, root, from, base)
@@ -762,6 +848,22 @@ impl CapKernel {
                     pre.lemma_process_unloaded(base);
                 }
             }
+            pre.lemma_retype_holds_right(root, from, base, 9);
+            pre.lemma_retype_holds_right(root, from, base, 18);
+            if pre.can_reclaim_large(root, from, base, 9) {
+                pre.lemma_large_excludes_small(Large::Two, base);
+            }
+            if pre.can_reclaim_large(root, from, base, 18) {
+                pre.lemma_large_excludes_small(Large::One, base);
+            }
+        }
+        match self.reclaim_large_frame(c, root, from, base, 9, Tracked(&mut *steps)) {
+            ReclaimStep::Refused => {},
+            step => { return step; },
+        }
+        match self.reclaim_large_frame(c, root, from, base, 18, Tracked(&mut *steps)) {
+            ReclaimStep::Refused => {},
+            step => { return step; },
         }
         let page = base / PAGE_SZ;
         if !self.blocks.page_tracked(page) {
@@ -4623,6 +4725,35 @@ impl CapKernel {
         }
     }
 
+    /// A retype of order 9 or 18 may free the large frame at `base`: an untyped covers the block, the
+    /// block table has its region, and the frame is dead at zero references.
+    pub open spec fn can_reclaim_large(&self, root: usize, from: usize, base: usize, order: u8) -> bool {
+        let level = large_level(order);
+        let r = base / PAGE_SZ / level_pages(level);
+        &&& order == 9 || order == 18
+        &&& self.can_retype_under(root, from, base, order)
+        &&& r < level_regions(level)
+        &&& self.region_is_dead(level, r)
+    }
+
+    /// What freeing the 2M or 1G frame at `base` did to self, as frame_freed says for a 4K one: every
+    /// page of the region is out of frames and the block is no longer typed.
+    pub open spec fn large_frame_freed(&self, post: Self, c: usize, root: usize, from: usize, base: usize, order: u8) -> bool {
+        let untyped = self.tables.node_of(root, from);
+        let level = large_level(order);
+        let r = base / PAGE_SZ / level_pages(level);
+        &&& order == 9 || order == 18
+        &&& r < level_regions(level)
+        &&& self.view().holds_right(root, untyped, Right::Retype)
+        &&& self.region_is_dead(level, r)
+        &&& self.region_clean(level, r)
+        &&& !block_typed(&post.blocks, level_ref(level, r))
+        &&& forall|i: usize| #[trigger] block_has_page(level_ref(level, r), i) ==> !post.frames@.contains_key(i)
+        &&& Self::step_ok(*self, post, c as int)
+        &&& bound_threads(&post.list, &post.tables) == bound_threads(&self.list, &self.tables)
+        &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base })
+    }
+
     /// Reclaims the 2M or 1G block at `base`, as reclaim_frame does a 4K one.
     pub fn reclaim_large_frame(&mut self, c: usize, root: usize, from: usize, base: usize, order: u8, Tracked(steps): Tracked<&mut Steps>) -> (ret: ReclaimStep)
         requires
@@ -4632,29 +4763,18 @@ impl CapKernel {
             old(self).root_live(root),
         ensures
             final(steps).count <= old(steps).count + NUM_CPUS + NUM_IOMMUS,
+            ret is Refused ==> final(steps).count == old(steps).count,
             final(self).wf(),
             Self::same_tree(*old(self), *final(self)),
             !(ret is Freed) ==> *final(self) == *old(self),
-            !old(self).can_retype_under(root, from, base, order) ==> ret is Refused,
-            ret is Again ==> {
+            !(ret is Unlinked),
+            !(ret is Slice),
+            !old(self).can_reclaim_large(root, from, base, order) ==> ret is Refused,
+            old(self).can_reclaim_large(root, from, base, order) ==> {
                 let level = large_level(order);
-                !old(self).region_acknowledged(level, base / PAGE_SZ / level_pages(level))
+                if old(self).region_acknowledged(level, base / PAGE_SZ / level_pages(level)) { ret is Freed } else { ret is Again }
             },
-            ret is Freed ==> {
-                let untyped = old(self).tables.node_of(root, from);
-                let level = large_level(order);
-                let r = base / PAGE_SZ / level_pages(level);
-                &&& order == 9 || order == 18
-                &&& r < level_regions(level)
-                &&& old(self).view().holds_right(root, untyped, Right::Retype)
-                &&& old(self).region_is_dead(level, r)
-                &&& old(self).region_clean(level, r)
-                &&& !block_typed(&final(self).blocks, level_ref(level, r))
-                &&& forall|i: usize| #[trigger] block_has_page(level_ref(level, r), i) ==> !final(self).frames@.contains_key(i)
-                &&& Self::step_ok(*old(self), *final(self), c as int)
-                &&& bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables)
-                &&& discharges(old(self).view(), final(self).view(), root, Effect::Teardown { untyped, object: base })
-            },
+            ret is Freed ==> old(self).large_frame_freed(*final(self), c, root, from, base, order),
     {
         let ghost pre = *old(self);
         let untyped = match self.retype_parent(root, from, base, order) {
