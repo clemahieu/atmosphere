@@ -182,7 +182,7 @@ impl CapKernel {
     /// The free runs are well formed, so each untyped block lies in the tracked pages. Each fixed slot of the root's table holds its kind, and each untyped is at depth 1, so a
     /// capability retyped under it is below the deepest depth; every page of the untyped blocks is
     /// acknowledged, since boot unmaps nothing, so a free of a block typed there is not refused as
-    /// stale; the root's process is live, as is the page of its space; no flush has run, so the flush
+    /// stale, and so is every 2M and 1G region; the root's process is live, as is the page of its space; no flush has run, so the flush
     /// epoch is 0; every root entry of its table past the two boot filled is empty; the root's space
     /// maps exactly the image, and its level 4 entries outside the kernel slots that no image run
     /// reaches are empty, so a table built there is the root's own to fill; of
@@ -227,6 +227,8 @@ impl CapKernel {
             &&& self.list.nodes@[(leaf + ROOT_UNTYPED_SLOT + k) as usize as int].depth == 1
         }
         &&& forall|k: int, j: nat| 0 <= k < untyped && #[trigger] in_page_block(bs[k], j) ==> self.acknowledged(j as usize)
+        &&& forall|r: usize| r < NUM_2M ==> #[trigger] self.region_acknowledged(Large::Two, r)
+        &&& forall|r: usize| r < NUM_1G ==> #[trigger] self.region_acknowledged(Large::One, r)
         &&& forall|a: int, u: int| #![trigger crate::capability::boot_map::frame_slot(image, a, u)]
             0 <= a < image.len() && 0 <= u < run_image_blocks(image[a]).len() ==> {
             let fb = run_image_blocks(image[a])[u];
@@ -698,6 +700,14 @@ impl CapKernel {
                 assert(bs[k].0 + pow2(bs[k].1) <= NUM_PAGES);
                 assert(s4.stale_epoch == s0.stale_epoch);
                 assert(s0.stale_epoch.pages@[j as usize as int] == 0);
+            }
+            assert forall|r: usize| r < NUM_2M implies #[trigger] s4.region_acknowledged(Large::Two, r) by {
+                assert(s4.stale_epoch == s0.stale_epoch);
+                assert(s0.stale_epoch.two@[r as int] == 0);
+            }
+            assert forall|r: usize| r < NUM_1G implies #[trigger] s4.region_acknowledged(Large::One, r) by {
+                assert(s4.stale_epoch == s0.stale_epoch);
+                assert(s0.stale_epoch.one@[r as int] == 0);
             }
         }
         Some((untyped, frame))

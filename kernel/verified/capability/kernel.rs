@@ -1392,6 +1392,8 @@ impl CapKernel {
             final(self).list.seq@[0] == root,
             final(self).boot_empty(),
             forall|j: int| 0 <= j < NUM_PAGES ==> #[trigger] final(self).stale_epoch.pages@[j] == 0,
+            forall|r: int| 0 <= r < NUM_2M ==> #[trigger] final(self).stale_epoch.two@[r] == 0,
+            forall|r: int| 0 <= r < NUM_1G ==> #[trigger] final(self).stale_epoch.one@[r] == 0,
     {
         self.list = Tree::new(root, Tracked(perm));
         self.tables = Tables::new();
