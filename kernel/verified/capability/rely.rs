@@ -12,6 +12,7 @@ verus! {
 use crate::capability::caller::*;
 use crate::capability::kernel::*;
 use crate::capability::link::*;
+use crate::capability::list::{page_of, NODE_SPACE};
 use crate::capability::map::*;
 use crate::capability::mapping::*;
 use crate::capability::operation::*;
@@ -179,6 +180,67 @@ impl CapKernel {
             }
         }
         Self::lemma_views_kept_keeps_rely(pre, post, root);
+    }
+
+    /// An unmap, by any caller, keeps the rely of every process: it kills one mapping node, which is no
+    /// capability and no leaf, and leaves the tables, the parents and the bound threads as they were.
+    pub proof fn lemma_unmap_keeps_rely(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_unmapped(pre, post, caller, frame, out),
+        ensures
+            Self::rely(pre, post, root),
+    {
+        Self::lemma_unmapped_frame(pre, post, caller, frame, out);
+        Self::lemma_dead_mappings_keep_views(pre, post);
+        Self::lemma_views_kept_keeps_rely(pre, post, root);
+    }
+
+    /// A step that changes the tables and the parents of no node, and changes the kind or the liveness
+    /// of no node but mapping nodes it kills, leaves every table's view as it was: a mapping node is no
+    /// capability, and no leaf, whose live node is hidden.
+    pub proof fn lemma_dead_mappings_keep_views(pre: Self, post: Self)
+        requires
+            pre.wf(),
+            post.tables == pre.tables,
+            post.list.parent == pre.list.parent,
+            forall|x: int| 0 <= x < NODE_SPACE && (#[trigger] post.list.nodes@[x].kind != pre.list.nodes@[x].kind
+                || post.list.nodes@[x].live != pre.list.nodes@[x].live) ==> pre.list.nodes@[x].kind is Mapping
+                && !post.list.nodes@[x].live,
+        ensures
+            forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t),
+    {
+        assert forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t) by {
+            assert forall|j: usize| #[trigger] post.table_view(t).contains_key(j) == pre.table_view(t).contains_key(j)
+                && (post.table_view(t).contains_key(j) ==> post.table_view(t)[j] == pre.table_view(t)[j]) by {
+                pre.lemma_table_view(t, j);
+                post.lemma_table_view(t, j);
+                let leaf = pre.tables.leaf(t, index_entry(j));
+                if index_ok(j) && pre.tables.roots@.contains_key(t) && leaf != NO_LEAF {
+                    assert(0 <= index_entry(j) < ROOT_ENTRIES);
+                    pre.tables.lemma_entry(t, index_entry(j));
+                    pre.tables.lemma_leaf(&pre.list, leaf);
+                    assert(page_of(leaf) == leaf);
+                    pre.lemma_slot_bound(leaf);
+                    if pre.list.nodes@[leaf as int].live && !(pre.list.nodes@[leaf as int].kind is Hidden) {
+                        pre.lemma_unhidden_not_owned(leaf);
+                    }
+                    assert(post.list.nodes@[leaf as int].kind == pre.list.nodes@[leaf as int].kind
+                        || !post.list.nodes@[leaf as int].live);
+                    assert(post.list.nodes@[leaf as int].live == pre.list.nodes@[leaf as int].live);
+                }
+                if pre.tables.has_slot(&pre.list, t, j) {
+                    pre.lemma_slot(t, j);
+                    let x = pre.tables.node_of(t, j);
+                    pre.lemma_slot_bound(x);
+                    assert(post.list.nodes@[x as int].kind == pre.list.nodes@[x as int].kind
+                        || !post.list.nodes@[x as int].live);
+                    assert(post.is_cap(x) == pre.is_cap(x));
+                    assert(post.list.parent@[x] == pre.list.parent@[x]);
+                }
+            }
+            assert(post.table_view(t) =~= pre.table_view(t));
+        }
     }
 
     /// A link, by any caller, keeps the rely of every process: it changes no node and no slot.

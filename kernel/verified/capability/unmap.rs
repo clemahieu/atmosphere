@@ -170,7 +170,8 @@ impl CapKernel {
             post.list.parent == pre.list.parent,
             bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables),
             forall|x: int| 0 <= x < NODE_SPACE && (#[trigger] post.list.nodes@[x].kind != pre.list.nodes@[x].kind
-                || post.list.nodes@[x].live != pre.list.nodes@[x].live) ==> pre.list.nodes@[x].kind is Mapping,
+                || post.list.nodes@[x].live != pre.list.nodes@[x].live) ==> pre.list.nodes@[x].kind is Mapping
+                && !post.list.nodes@[x].live,
     {
         let p = address_path(va);
         let tree = tree_of(&pre.table_pages, &pre.spaces);
@@ -178,7 +179,8 @@ impl CapKernel {
         let node = mapping_node(t, p.l1);
         assert(Self::entry_unmapped(pre, post, root, slot, p));
         assert forall|x: int| 0 <= x < NODE_SPACE && (#[trigger] post.list.nodes@[x].kind != pre.list.nodes@[x].kind
-            || post.list.nodes@[x].live != pre.list.nodes@[x].live) implies pre.list.nodes@[x].kind is Mapping by {
+            || post.list.nodes@[x].live != pre.list.nodes@[x].live) implies pre.list.nodes@[x].kind is Mapping
+            && !post.list.nodes@[x].live by {
             if x != node {
                 assert(post.list.nodes@[x].live == pre.list.nodes@[x].live);
             }

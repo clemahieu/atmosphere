@@ -672,7 +672,8 @@ impl CapKernel {
             post.list.parent == pre.list.parent,
             bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables),
             forall|x: int| 0 <= x < NODE_SPACE && (#[trigger] post.list.nodes@[x].kind != pre.list.nodes@[x].kind
-                || post.list.nodes@[x].live != pre.list.nodes@[x].live) ==> pre.list.nodes@[x].kind is Mapping,
+                || post.list.nodes@[x].live != pre.list.nodes@[x].live) ==> pre.list.nodes@[x].kind is Mapping
+                && !post.list.nodes@[x].live,
     {
         if post != pre {
             let read = choose|read: usize| Self::page_unmapped(pre, post, root, frame.slot() as usize, frame.argument(1), frame.argument(2), #[trigger] unmapped_of(out, read));
