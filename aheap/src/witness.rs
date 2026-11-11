@@ -2638,7 +2638,9 @@ fn touch(p: *mut u8, perm: Tracked<PointsToRaw>, Ghost(n): Ghost<int>) -> (r: Tr
 /// were given, the store has no record page, the page buddy holds no span, and the source's view
 /// is the one it started with, the requests the sequence made granted. Otherwise the source refused
 /// once, a request one of the two allocations made (`slab_refused`), with the refusals it had at the
-/// start, and the sequence stopped after freeing what it took.
+/// start, and the sequence stopped after freeing what it took: either the first allocation, from the
+/// source's starting view with no record taken, or the second, once the first had taken a record
+/// for the slab it made.
 pub fn witness_small_classes<S: SpanSource>(src: &mut S) -> (r: (SizeClass, SizeClass, RecordStore, PageBuddy, bool))
     requires
         old(src)@.wf(),
@@ -2664,8 +2666,11 @@ pub fn witness_small_classes<S: SpanSource>(src: &mut S) -> (r: (SizeClass, Size
             &&& final(src)@.provenance == old(src)@.provenance
             &&& final(src)@.refusals == old(src)@.refusals.push(f)
             &&& exists|st: RecordStore, pb: PageBuddy, s: SourceView, t: SourceView, c: nat| #[trigger]
-                slab_refused(st, pb, s, t, slab_order(c)) && (c == 0 || c == CLASSES - 1) && s.refusals
-                    == old(src)@.refusals && t.refusals.last() == f
+                slab_refused(st, pb, s, t, slab_order(c)) && s.refusals == old(src)@.refusals
+                    && t.refusals.last() == f && {
+                    ||| c == 0 && st.taken() == Set::<int>::empty() && s == old(src)@
+                    ||| c == CLASSES - 1 && st.taken() != Set::<int>::empty()
+                }
         },
 {
     let ghost start = src@;
@@ -2747,6 +2752,7 @@ pub fn witness_small_classes<S: SpanSource>(src: &mut S) -> (r: (SizeClass, Size
         None => {
             proof {
                 assert(slab_refused(st1, pb1, s1, s2, slab_order((CLASSES - 1) as nat)));
+                assert(st1.taken().contains(a0));
                 assert(first == f1);
                 assert(f1.heads().contains(x0)) by {
                     assert(f1.slabs().contains_key(a0) && f1.slabs()[a0].base()@.addr == x0);
