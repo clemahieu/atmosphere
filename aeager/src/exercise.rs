@@ -5,11 +5,12 @@
 //! byte there and releases it, backs the second page and writes another byte, backs the first page
 //! again and writes there, reads the second page's byte and releases both; backs the span's pages one
 //! at a time until the source refuses or the block is full, writes a byte through the run's permission
-//! and reads it back, releases the run, backs one page again and releases it, and gives the span back,
-//! ending with the spans it started with; only the source's count of refusals may have grown. The
-//! proof says the second page reads its own byte, since the two pages' permissions are apart; on the
-//! machine it does only while no translation of the first page outlives its release, so that is what
-//! the read checks. What it saw is the caller's to judge: dom0 prints it.
+//! and reads it back, releases the run, backs one page again and releases it, backs the page the
+//! source refused, at an address it never backed, writes and reads a byte there and releases it, and
+//! gives the span back, ending with the spans it started with; only the source's count of refusals
+//! may have grown. The proof says the second page reads its own byte, since the two pages' permissions
+//! are apart; on the machine it does only while no translation of the first page outlives its release,
+//! so that is what the read checks. What it saw is the caller's to judge: dom0 prints it.
 #[cfg(verus_keep_ghost)]
 use vstd::arithmetic::div_mod::*;
 #[cfg(verus_keep_ghost)]
@@ -37,6 +38,9 @@ pub struct Exercised {
     /// Whether a page backed after another was released, and written before that other was backed and
     /// written again, read its own byte back.
     pub apart: bool,
+    /// Whether, once the run was released after a refusal, the source backed the page it had refused,
+    /// at an address it never backed before, and a byte written there read back.
+    pub fresh: bool,
 }
 
 /// The byte at `p`, the first of the page whose bytes `perm` permits, holding `value`, and the
@@ -191,7 +195,7 @@ pub fn exercise<S: SpanSource>(src: &mut S) -> (seen: Exercised)
         final(src)@.provenance == old(src)@.provenance,
 {
     let ghost start = src@;
-    let nothing = Exercised { backed: 0, refused: false, read: false, again: false, apart: false };
+    let nothing = Exercised { backed: 0, refused: false, read: false, again: false, apart: false, fresh: false };
     let base = match src.reserve(1) {
         None => return nothing,
         Some(base) => base,
@@ -293,9 +297,33 @@ pub fn exercise<S: SpanSource>(src: &mut S) -> (seen: Exercised)
     };
     assert(src@.spans[addr as int].backed =~= Set::empty());
     assert(src@.spans =~= reserved.spans);
+    let mut fresh = false;
+    if refused {
+        proof {
+            assert(k * PAGE_BYTES + PAGE_BYTES <= BLOCK_PAGES * PAGE_BYTES) by (nonlinear_arith)
+                requires
+                    k < BLOCK_PAGES,
+            ;
+            lemma_page_aligned(addr as int, k as int);
+            lemma_run_grows(addr as int, 0);
+        }
+        let page = addr + k * PAGE_BYTES;
+        let p = base.with_addr(page);
+        match src.back(Ghost(addr as int), page, 1) {
+            None => {},
+            Some(perm) => {
+                let (byte, rest) = put(p, perm, 9);
+                let (value, perm) = take(p, byte, rest);
+                fresh = value == 9;
+                src.release(Ghost(addr as int), page, 1, perm);
+            },
+        }
+        assert(src@.spans[addr as int].backed =~= Set::empty());
+        assert(src@.spans =~= reserved.spans);
+    }
     src.release_span(addr);
     assert(src@.spans =~= start.spans);
-    Exercised { backed: k, refused, read, again, apart }
+    Exercised { backed: k, refused, read, again, apart, fresh }
 }
 
 } // verus!

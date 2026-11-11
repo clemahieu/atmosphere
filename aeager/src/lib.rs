@@ -7,9 +7,8 @@
 //! retypes frames from its untyped, retypes and links the table pages the run needs, and maps each
 //! page through acall. It keeps its own record of the untyped's pages, since a retype names a physical
 //! base: which are free, which are frames mapped or parked, and which went to tables. A released run's
-//! pages stay mapped, parked at their addresses until those are backed again, since the kernel's unmap
-//! leaves a translation the source cannot wait to see flushed and takes no frame back for a later
-//! retype. `glue` is the system calls, verified over acall's kernel step but for the one item
+//! pages stay mapped, parked at their addresses, and back those addresses again; a back elsewhere with
+//! no frame held or page free unmaps a parked page and maps its frame there. `glue` is the system calls, verified over acall's kernel step but for the one item
 //! that turns an accepted map into the permission to the page's bytes; `exercise` is a verified use of
 //! the contract that dom0 runs at boot.
 #![no_std]

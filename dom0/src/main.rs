@@ -951,10 +951,11 @@ const EAGER_HEAD: &[u8] = b"dom0 eager backed ";
 /// in the slots after it, and the window at EAGER_WINDOW. The exercise reserves a span; backs, writes and
 /// releases its first page, backs and writes its second, backs and writes its first again and reads the
 /// second; backs the span a page at a time until the source refuses, writes a byte through the run and
-/// reads it back, releases the run, backs a page again and gives the span back. dom0 prints how many
-/// pages it backed, and the check holds when the second page read its own byte, so no translation of the
-/// first outlived its release, the source refused before the block was full, the byte read back and a
-/// page was backed again.
+/// reads it back, releases the run, backs a page again, backs the page it refused and writes and reads a
+/// byte there, and gives the span back. dom0 prints how many pages it backed, and the check holds when
+/// the second page read its own byte, so no translation of the first outlived its release, the source
+/// refused before the block was full, the byte read back, a page was backed again, and the refused page
+/// was backed once the run was released, with every page of the untyped then mapped or parked.
 fn eager_source_held(caller: &mut Tracked<Caller>, empty: u64) -> bool {
     let Some((untyped, block)) = untyped_of_pages(caller, empty, 1 << 18) else {
         return false;
@@ -987,6 +988,7 @@ fn eager_source_held(caller: &mut Tracked<Caller>, empty: u64) -> bool {
         && seen.refused
         && seen.read
         && seen.again
+        && seen.fresh
 }
 
 /// The root entries of dom0's table whose leaves take the heap's source's capabilities: its untyped in

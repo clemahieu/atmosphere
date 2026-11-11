@@ -2,13 +2,15 @@
 
 //! The system calls the eager source makes, each a verified call of acall's kernel step, threading the
 //! process's ghost of the kernel from one call to the next. Retype, link and map go through acall's
-//! wrappers, whose ensures are their proven caller's-view contracts. The source makes no unmap. The one
-//! trusted item is `page_permission`: a map the kernel accepted puts the frame's page at the address in
-//! the space's tables, as the map contract says, and only this item turns that into the permission to
-//! the page's bytes. The tables are what the hardware reads only where no core holds a translation of
-//! the address left from an earlier mapping: the kernel's unmap leaves one until a flush the caller
-//! cannot wait for (design/flush-without-waiting/), so the item relies on the address never having been
-//! mapped before in the space, which the source keeps by mapping each address of its window once.
+//! wrappers, whose ensures are their proven caller's-view contracts; unmap, which has no such contract,
+//! goes through the step itself, and takes the permission to the page's bytes so that nothing the
+//! source's caller holds is in the page it unmaps. The one trusted item is `page_permission`: a map the
+//! kernel accepted puts the frame's page at the address in the space's tables, as the map contract
+//! says, and only this item turns that into the permission to the page's bytes. The tables are what the
+//! calling core reads once no translation of the address from an earlier mapping is left on it: an
+//! unmap that moves the flush epoch has the calling core acknowledge before it returns, and the other
+//! cores only once an IPI reaches them (design/flush-without-waiting/), so the item relies on the
+//! source's thread running on the core that made each of the source's unmaps.
 use vstd::prelude::*;
 use vstd::raw_ptr::*;
 
@@ -118,7 +120,7 @@ pub fn map_page(caller: &mut Tracked<Caller>, space: u64, address: usize, frame:
 /// table is at `root` that took the kernel from `before` to `after`, with the frame's capability
 /// holding the write right, so the entry the map wrote is writable.
 #[verifier(external_body)]
-// external_body(gap): conjures the permission to a mapped page's bytes; the map contract puts the frame's page in the space's tables, writable since the frame's capability has the write right, and nothing proves that the calling thread runs in that space, that no core holds a translation of the address from an earlier mapping, which the source keeps by never unmapping, that no other permission covers the page or that the page is memory Rust may read and write
+// external_body(gap): conjures the permission to a mapped page's bytes; the map contract puts the frame's page in the space's tables, writable since the frame's capability has the write right, and nothing proves that the calling thread runs in that space, that the calling core holds no translation of the address from an earlier mapping, which the kernel's unmap drops on the core that makes it before returning and the source keeps by running on that core, that no other permission covers the page or that the page is memory Rust may read and write
 fn page_permission(
     before: Ghost<CapKernel>,
     after: Ghost<CapKernel>,
@@ -139,6 +141,20 @@ fn page_permission(
     no_unwind
 {
     Tracked::assume_new()
+}
+
+/// Unmaps the page at `address` in the space at `space`, taking the permission to its bytes. Whether
+/// the kernel accepted.
+pub fn unmap_page(caller: &mut Tracked<Caller>, space: u64, address: usize, perm: Tracked<PointsToRaw>) -> bool
+    requires
+        old(caller)@.wf(),
+        perm@.is_range(address as int, PAGE_BYTES as int),
+    ensures
+        final(caller)@.wf(),
+    no_unwind
+{
+    // The caller gave up the permission to every byte of the page, so nothing it uses is there.
+    step(caller, OPERATION_UNMAP, space, address as u64, PAGE_LEVEL, 0, 0, 0).status == STATUS_OK
 }
 
 } // verus!

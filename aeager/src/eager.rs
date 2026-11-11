@@ -11,11 +11,11 @@
 //! page's permission is the one it hands out when that page's address is backed again; whether a frame
 //! is there to back a page is the kernel's to say, and a refusal anywhere refuses the run.
 //!
-//! The source never unmaps. The kernel's unmap leaves a core's translation of the page until a flush
-//! the caller cannot wait for (design/flush-without-waiting/), so a frame mapped again elsewhere, or
-//! another frame mapped at the same address, could be reached through the old translation. A released
-//! page stays mapped at its address, parked with the permission to its bytes, and backs that address
-//! again and no other: each window address is mapped once, to one frame, for the source's life.
+//! A released page stays mapped at its address, parked with the permission to its bytes, and backs
+//! that address again without a system call. A frame for another address is a held one, else a free
+//! page retyped, else a parked page unmapped: the kernel's unmap drops the calling core's translation of
+//! the page before it returns (design/flush-without-waiting/), so the frame mapped at its new address,
+//! or another frame mapped later at the old one, is what that core reads there.
 #[cfg(verus_keep_ghost)]
 use vstd::arithmetic::div_mod::*;
 use vstd::prelude::*;
@@ -205,13 +205,14 @@ pub const TABLE_PAGES: usize = 8;
 /// A page of the untyped nothing has retyped.
 const FREE: u8 = 0;
 
-/// A page retyped as a frame whose capability the source holds, mapped nowhere: a map of it was refused.
+/// A page retyped as a frame whose capability the source holds, mapped nowhere: a map of it was refused,
+/// or it was parked and unmapped.
 const HELD: u8 = 1;
 
 /// A page retyped as a frame and mapped at the address the record names.
 const MAPPED: u8 = 2;
 
-/// A page the source does not use again: a table page's, or one whose retype was refused.
+/// A page the source does not use again: a table page's, or one whose retype or unmap was refused.
 const TAKEN: u8 = 3;
 
 /// A page retyped as a frame and mapped at the address the record names, in no run: its run was
@@ -536,8 +537,9 @@ impl Record {
         frame_slot_at(self.slots, i)
     }
 
-    /// A frame the source holds, mapped nowhere: one released before, else a free page retyped as a
-    /// frame into its slot. None when no page is free or the kernel refused the retype.
+    /// A frame the source holds, mapped nowhere: one held before, else a free page retyped as a frame
+    /// into its slot, else a parked page unmapped. None when no page is free or parked, or the kernel
+    /// refused the retype or the unmap.
     fn frame(&mut self) -> (r: Option<usize>)
         requires
             old(self).inv(),
@@ -580,6 +582,26 @@ impl Record {
                 self.state[i] = TAKEN;
                 return None;
             }
+        }
+        let mut i: usize = 0;
+        while i < self.pages
+            invariant
+                self.inv(),
+                i <= self.pages,
+                self.provenance == old(self).provenance,
+            decreases self.pages - i,
+        {
+            if self.state[i] == PARKED {
+                assert(self.state@[i as int] == PARKED);
+                let tracked perm = self.parked.borrow_mut().tracked_remove(i as int);
+                if unmap_page(&mut self.caller, self.space, self.owner[i], Tracked(perm)) {
+                    self.state[i] = HELD;
+                    return Some(i);
+                }
+                self.state[i] = TAKEN;
+                return None;
+            }
+            i += 1;
         }
         None
     }
