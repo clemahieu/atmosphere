@@ -26,7 +26,7 @@
 //!   holding `pages_for(size)` pages and backs only those pages (`part_alloc`). It refuses exactly
 //!   when no held span had a free block of that order and the source refused the span, or the
 //!   source refused the back of the pages, when it frees the run again so the page buddy holds the
-//!   runs it held (`part_refused`). Otherwise the object is page-aligned, so aligned to `align`,
+//!   runs it held and the source's spans are those freeing the run leaves (`part_refused`). Otherwise the object is page-aligned, so aligned to `align`,
 //!   and joins the buddy-run objects. Whatever it returns is apart from every live slot, buddy-run
 //!   object and large object, and alloc says nothing of its bytes.
 //! - `free(src, p, size, align, perm)` takes back what alloc returned at `p` for that layout and
@@ -110,8 +110,10 @@ pub open spec fn run_order(n: nat) -> nat {
 /// of `n` pages in a run of order `k` from the page buddy `pb`: the reserve of a run span or the
 /// back of its metadata page, only when `pb` had no free block of order `k` (`span_refused`); or
 /// the back of the object's `n` pages from the run `pb` cut at `q`, while the source held the spans
-/// it held once the run was cut.
-pub open spec fn part_refused(pb: PageBuddy, before: SourceView, after: SourceView, k: nat, n: nat) -> bool {
+/// it held once the run was cut, after which the run is freed again, leaving the page buddy `fin`
+/// and the source's spans as `freed` says: as they were once the run was cut, or without the run's
+/// span when no run is left in it and the spares are kept.
+pub open spec fn part_refused(pb: PageBuddy, fin: PageBuddy, before: SourceView, after: SourceView, k: nat, n: nat) -> bool {
     let r = after.refusals.last();
     &&& after.provenance == before.provenance
     &&& after.refusals == before.refusals.push(r)
@@ -121,7 +123,7 @@ pub open spec fn part_refused(pb: PageBuddy, before: SourceView, after: SourceVi
             cut_run(pb, mid, before, s, q, k) && r == (Refusal {
                 request: Request::Back { span: mid.span_base(span_of(q)), start: q, pages: n },
                 spans: s.spans,
-            })
+            }) && freed(mid, fin, s.recorded(r), after, q)
     }
 }
 
@@ -297,7 +299,7 @@ pub open spec fn part_alloc(
             &&& h1.parts() == h0.parts()
             &&& h1.live() == h0.live()
             &&& runs(h1.pb().used()) == runs(h0.pb().used())
-            &&& part_refused(h0.pb(), s0, s1, k, n)
+            &&& part_refused(h0.pb(), h1.pb(), s0, s1, k, n)
         },
         Some((p, perm)) => {
             let b = p@.addr as int;
@@ -1241,7 +1243,7 @@ impl Heap {
                     }
                     assert(self.wf(s1));
                     assert(self.live() =~= o.live());
-                    assert(part_refused(pb0, s0, s1, kk, nn));
+                    assert(part_refused(pb0, pb1, s0, s1, kk, nn));
                 }
                 return None;
             },
@@ -1337,7 +1339,9 @@ impl Heap {
                     assert(self.live() =~= o.live());
                     assert(s3.refusals == s2.refusals);
                     assert(cut_run(pb0, pb1, s0, s1, qi, kk));
-                    assert(part_refused(pb0, s0, s3, kk, nn));
+                    assert(s2 == s1.recorded(rf));
+                    assert(freed(pb1, pb3, s1.recorded(rf), s3, qi));
+                    assert(part_refused(pb0, pb3, s0, s3, kk, nn));
                 }
                 return None;
             },
