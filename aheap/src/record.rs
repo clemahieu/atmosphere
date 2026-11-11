@@ -890,6 +890,7 @@ impl RecordStore {
 
     /// Takes back the record at `p` with the permission to its bytes, and returns its record page
     /// and whether no record of that page is in use now.
+    #[verifier::spinoff_prover]
     fn give(&mut self, p: *mut Record, perm: Tracked<PointsTo<Record>>, Ghost(prov): Ghost<Provenance>) -> (r: (usize, bool))
         requires
             old(self).inv(prov),
