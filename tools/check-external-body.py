@@ -25,13 +25,16 @@ The list holds one line per attribute or assumed specification: path from the re
 attribute (or assume_specification), class and reason, separated by tabs. An assumed
 specification's class is hardware or kernel, and its reason is its citation lines' text, joined by
 '; '. The check passes when the source and the list hold the same items, counting an item that
-appears twice in one file twice. A call
-of assume( or admit( outside a '//' comment fails the check: the marked crates hold none, and a new
-one would be an axiom the proof rests on. So does any other way to exempt code: an axiom fn or a
-broadcast axiom fn, a verifier::external fn, an external_fn_specification, an attribute above that
+appears twice in one file twice. The
+word assume, admit or assume_ outside a '//' comment fails the check, as a call, a path or a use that
+imports it under another name: the marked crates hold none, and a new one would be an axiom the proof
+rests on. So does any other way to exempt code: an axiom fn or a broadcast axiom fn, a
+verifier::external fn, an external function, trait or type specification, any other verifier
+attribute whose name starts with external, an attribute above that
 does not open its line (after another attribute, inside cfg_attr, or an inner #![...]), and an
 assume_specification its line does not open; each word of these outside a '//' comment counts,
-whatever attribute or macro spells it. The retired 'old' trees and build output under 'target'
+whatever attribute or macro spells it. vstd's proof_from_false is not refused: it requires false,
+which only an assumption or an exemption refused here can supply. The retired 'old' trees and build output under 'target'
 are not scanned.
 
 usage: tools/check-external-body.py           (the tree)
@@ -60,11 +63,16 @@ SPECIFICATION = re.compile(r"(?:pub(?:\([^)]*\))?\s+)?assume_specification\b[^\[
 CITE = "// cite: "
 KERNEL = "// kernel: "
 DOCUMENTS_PATH = "tools/hardware-documents"
-ASSUMPTION = re.compile(r"\b(assume|admit)\s*\(")
+# vstd's assume, admit and assume_, as words: a call, a path, or a use that imports one under another name.
+ASSUMPTION = re.compile(r"\b(assume|admit|assume_)\b")
 # The words that exempt code from the proof: the two counted attributes, the assumed specification,
-# and the forms the marked crates do not use (an axiom fn, an external fn, an external_fn_specification).
-EXEMPTING = re.compile(r"\b(axiom|external|external_fn_specification|assume_specification|"
+# and the forms the marked crates do not use (an axiom fn, an external fn, an external function, trait
+# or type specification).
+EXEMPTING = re.compile(r"\b(axiom|external|external_fn_specification|external_trait_specification|"
+                       r"external_type_specification|assume_specification|"
                        r"external_body|exec_allows_no_decreases_clause)\b")
+# Any other verifier attribute whose name starts with external, in either spelling.
+VERIFIER_EXTERNAL = re.compile(r"verifier\s*(?:::|\()\s*(external\w*)")
 
 # One attribute or assumed specification, as the list and the source both state it.
 Item = namedtuple("Item", "path name attribute kind reason")
@@ -211,7 +219,8 @@ def parse_documents(text):
 
 
 def assumptions(path, source):
-    """Each line of one file that calls assume or admit outside a '//' comment, with where it is."""
+    """Each line of one file that names assume, admit or assume_ outside a '//' comment, with where it
+    is."""
     found = []
     for index, line in enumerate(source.splitlines()):
         if ASSUMPTION.search(line.split("//", 1)[0]):
@@ -222,13 +231,17 @@ def assumptions(path, source):
 def unread_exemptions(path, source):
     """Each line of one file that exempts code from the proof in a form this check does not count.
     The counted forms are a line opening with one counted attribute in either spelling, and a line
-    opening an assumed specification with its name in brackets. Any other word of EXEMPTING outside a
-    '//' comment is refused: an axiom fn, an external fn, an external_fn_specification, a counted
+    opening an assumed specification with its name in brackets. Any other word of EXEMPTING, or any
+    verifier attribute whose name starts with external, outside a '//' comment is refused: an axiom fn,
+    an external fn, an external function, trait or type specification, a counted
     attribute after another attribute, inside cfg_attr or as an inner attribute, and an assumed
     specification the line does not open."""
     refused = []
     for index, line in enumerate(source.splitlines()):
-        words = [match.group(1) for match in EXEMPTING.finditer(line.split("//", 1)[0])]
+        code = line.split("//", 1)[0]
+        matches = {match.start(1): match.group(1) for match in EXEMPTING.finditer(code)}
+        matches.update({match.start(1): match.group(1) for match in VERIFIER_EXTERNAL.finditer(code)})
+        words = list(matches.values())
         if not words:
             continue
         stripped = line.strip()
@@ -392,6 +405,23 @@ class Tests(unittest.TestCase):
     def test_assumptions_ignores_comments(self):
         source = "// assume(false);\n/// admit()\nlet y = 1; // assume(y == 1)\n"
         self.assertEqual(assumptions("a.rs", source), [])
+
+    def test_assumptions_finds_admit_under_another_name_and_by_path(self):
+        source = ("use vstd::prelude::admit as settle;\n"
+                  "    vstd::prelude::admit();\n"
+                  "use vstd::pervasive::{assume};\n")
+        self.assertEqual(len(assumptions("a.rs", source)), 3)
+
+    def test_assumptions_finds_assume_underscore(self):
+        self.assertEqual(assumptions("a.rs", "    vstd::prelude::assume_(false);\n"),
+                         ["a.rs:1: vstd::prelude::assume_(false);"])
+
+    def test_assumptions_fail_the_tree(self):
+        repo = Tests.workspace(self, {"kernel/verified": (True, {
+            "capability/mapping.rs": "use vstd::prelude::admit as settle;\nfn f() { settle(); }\n"})})
+        _, refused = scan_tree(repo, DOCUMENTS)
+        self.assertEqual(refused, ["kernel/verified/capability/mapping.rs:1: use vstd::prelude::admit as settle; "
+                                   "assumes what the proof should show"])
 
     def test_assumptions_ignores_names_that_only_start_with_assume(self):
         source = "(page_ptr, Tracked::assume_new())\nMaybeUninit::zeroed().assume_init()\nreadmit(x)\n"
@@ -631,6 +661,14 @@ class ExemptionFormTests(unittest.TestCase):
         ),
         "exec_allows_no_decreases_clause in an inner attribute": "#![verifier(exec_allows_no_decreases_clause)]\n",
         "verus_verify(external_body)": "#[verus_verify(external_body)]\nfn forge() {}\n",
+        "external_trait_specification": (
+            "#[verifier::external_trait_specification]\npub trait ExForge { type ExternalTraitSpecificationFor: Forge; }\n"
+        ),
+        "external_type_specification": (
+            "#[verifier::external_type_specification]\npub struct ExForged(Forged);\n"
+        ),
+        "another verifier::external attribute": "#[verifier::external_trait_extension(F via G)]\npub trait F {}\n",
+        "another verifier(external) attribute": "#[verifier(external_derive)]\npub struct S;\n",
     }
 
     def test_each_uncounted_form_is_refused(self):
