@@ -193,7 +193,7 @@ pub open spec fn slot_alloc(
 /// returning `r`: a large object of `pages_for(size)` pages, or a refusal only when the source
 /// refused the reserve of its span or the back of its pages in the call (`large_refused`), with
 /// nothing else changed. The classes, the store, the page buddy and the buddy-run objects are as
-/// they were either way. The object is a new span reserved and backed, aligned to `align`, and
+/// they were either way. The object is a span the source did not hold, reserved and backed, aligned to `align`, and
 /// apart from every slot, buddy-run object and large object live before.
 pub open spec fn large_alloc(
     h0: Heap,
@@ -225,6 +225,7 @@ pub open spec fn large_alloc(
             &&& !h0.live().contains(b)
             &&& h1.live() == h0.live().insert(b)
             &&& h1.large() == h0.large().insert(b, n)
+            &&& !s0.spans.contains_key(b)
             &&& s1 == s0.reserved(b, blocks_for(n)).backed_run(b, b, n + 1)
             &&& forall|i: int, y: int|
                 0 <= i < CLASSES && #[trigger] h0.classes()[i].live().contains(y) ==> b + n * PAGE_BYTES <= y || y
@@ -278,7 +279,8 @@ pub open spec fn large_free(h0: Heap, h1: Heap, s0: SourceView, s1: SourceView, 
 /// (`part_refused`), which leaves the page buddy holding the runs it held. The classes, the store
 /// and the large objects are as they were either way. The object is the run `alloc_run` cut with
 /// only its first `n` pages backed, the permission to exactly those pages' bytes, page-aligned, so
-/// aligned to `align`, and apart from every slot, buddy-run object and large object live before.
+/// aligned to `align`, and apart from every slot, buddy-run object and large object live before;
+/// the page buddy is the one `alloc_run` left, the back of the pages changing only the source.
 pub open spec fn part_alloc(
     h0: Heap,
     h1: Heap,
@@ -314,8 +316,8 @@ pub open spec fn part_alloc(
             &&& h1.live() == h0.live().insert(b)
             &&& h1.parts() == h0.parts().insert(b, n)
             &&& run_part(h1.pb(), s1, b, k, n)
-            &&& exists|mid: PageBuddy, sm: SourceView| #[trigger]
-                cut_run(h0.pb(), mid, s0, sm, b, k) && s1 == sm.backed_run(mid.span_base(span_of(b)), b, n)
+            &&& exists|sm: SourceView| #[trigger]
+                cut_run(h0.pb(), h1.pb(), s0, sm, b, k) && s1 == sm.backed_run(h1.pb().span_base(span_of(b)), b, n)
             &&& forall|i: int, y: int|
                 0 <= i < CLASSES && #[trigger] h0.classes()[i].live().contains(y) ==> b + n * PAGE_BYTES <= y || y
                     + class_size(i as nat) <= b
@@ -603,7 +605,7 @@ impl Heap {
         &&& forall|b: int| #[trigger] self.large.objects().contains_key(b) ==> !self.pb.spans().contains_key(b)
     }
 
-    /// The invariant's parts a caller follows a sequence by: the page buddy and the store well
+    /// The invariant's parts a caller follows a sequence by: the spares the page buddy's, the page buddy and the store well
     /// formed over `src`, class `i` the `i`-th class and well formed over them, no two classes sharing
     /// a head or a record, and each buddy-run object a run the page buddy holds, of the smallest
     /// order holding its pages, with only those pages backed.
@@ -612,6 +614,7 @@ impl Heap {
             self.wf(src),
         ensures
             self.classes().len() == CLASSES,
+            self.spares() == self.pb().spares(),
             self.pb().wf(src),
             self.store().wf(self.pb(), src),
             forall|i: int| 0 <= i < CLASSES ==> (#[trigger] self.classes()[i]).class() == i,
@@ -869,13 +872,21 @@ impl Heap {
         lemma_beside_span(self.pb, src, span_of(h), b, blocks);
     }
 
-    /// The heap with no slab and no large object, keeping `spares` idle spans, well formed over
-    /// every well-formed source's view.
+    /// The heap with no slab, no record page, no span in the page buddy, no buddy-run object and no
+    /// large object, keeping `spares` idle spans, well formed over every well-formed source's view.
     pub fn new(spares: usize) -> (r: Self)
         ensures
             forall|src: SourceView| #[trigger] src.wf() ==> r.wf(src),
             r.spares() == spares,
             r.live() == ISet::<int>::empty(),
+            forall|i: int| 0 <= i < CLASSES ==> (#[trigger] r.classes()[i]).slabs() == Map::<int, crate::slab::Slab>::empty(),
+            r.store().pages() == Set::<int>::empty(),
+            r.store().taken() == Set::<int>::empty(),
+            r.pb().spans() == Map::<int, Map<int, Block>>::empty(),
+            r.pb().used() == Map::<int, Map<int, nat>>::empty(),
+            r.pb().metas() == Set::<int>::empty(),
+            r.parts() == Map::<int, nat>::empty(),
+            r.large() == Map::<int, nat>::empty(),
     {
         // One entry per class: the array's type fixes the count at CLASSES, so a target whose
         // CLASSES differs does not compile until the list follows it.
@@ -1441,7 +1452,9 @@ impl Heap {
                 }
             }
             assert(self.live() =~= o.live().insert(qi));
-            assert(cut_run(o.pb(), pb1, s0, s1, qi, kk) && s2 == s1.backed_run(pb1.span_base(span_of(qi)), qi, nn));
+            assert(pb2.used() == pb1.used() && pb2.spans() == pb1.spans() && pb2.metas() == pb1.metas());
+            assert(cut_run(o.pb(), pb2, s0, s1, qi, kk) && s2 == s1.backed_run(pb2.span_base(span_of(qi)), qi, nn));
+            assert(self.pb() == pb2);
         }
         Some((ptr, perm))
     }
