@@ -97,6 +97,7 @@ impl CapKernel {
         requires
             self.wf(),
             self.tables.roots@.contains_key(root),
+            self.root_live(root),
         ensures
             ret is Some == self.can_inspect(root, i),
             ret is Some ==> ret->Some_0 == self.payload_of(self.tables.node_of(root, i)).kind,
@@ -139,6 +140,7 @@ impl CapKernel {
         requires
             self.wf(),
             self.tables.roots@.contains_key(root),
+            self.root_live(root),
         ensures
             final(steps).count <= old(steps).count + INSPECT_STEPS,
             ret == self.spec_inspect_at(root, at),

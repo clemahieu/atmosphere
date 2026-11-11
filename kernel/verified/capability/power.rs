@@ -43,6 +43,7 @@ impl CapKernel {
         requires
             self.wf(),
             self.tables.roots@.contains_key(root),
+            self.root_live(root),
         ensures
             final(steps).count <= old(steps).count + POWER_OFF_STEPS,
             status == if self.holds_power(root, i) { STATUS_OK } else { STATUS_REFUSED },

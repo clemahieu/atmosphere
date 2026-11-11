@@ -910,6 +910,7 @@ impl CapKernel {
         requires
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
         ensures
             final(steps).count <= old(steps).count + INVOKE_PROBE_STEPS,
             final(self).wf(),
