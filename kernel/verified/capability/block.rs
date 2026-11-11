@@ -552,6 +552,38 @@ impl BlockTable {
         }
     }
 
+    /// post is this table changed in the entry of the large block that is region r of this level
+    /// alone: every page entry and every other region's entry, at either level, is as it was.
+    pub open spec fn kept_but_region(&self, post: BlockTable, level: Large, r: int) -> bool {
+        &&& post.pages@ == self.pages@
+        &&& match level {
+            Large::Two => {
+                &&& post.regions_2m@ == self.regions_2m@.update(r, post.regions_2m@[r])
+                &&& post.regions_1g@ == self.regions_1g@
+            },
+            Large::One => {
+                &&& post.regions_1g@ == self.regions_1g@.update(r, post.regions_1g@[r])
+                &&& post.regions_2m@ == self.regions_2m@
+            },
+        }
+    }
+
+    /// A table left as it was changed in no entry, so in none but region r's.
+    pub proof fn lemma_kept_but_region_same(&self, level: Large, r: int)
+        requires
+            match level {
+                Large::Two => 0 <= r < self.regions_2m@.len(),
+                Large::One => 0 <= r < self.regions_1g@.len(),
+            },
+        ensures
+            self.kept_but_region(*self, level, r),
+    {
+        match level {
+            Large::Two => assert(self.regions_2m@.update(r, self.regions_2m@[r]) =~= self.regions_2m@),
+            Large::One => assert(self.regions_1g@.update(r, self.regions_1g@[r]) =~= self.regions_1g@),
+        }
+    }
+
     /// The pages of a large block are those whose region it is.
     pub proof fn lemma_large_pages(level: Large, r: int)
         requires

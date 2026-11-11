@@ -677,7 +677,8 @@ impl CapKernel {
     /// retype was allowed, no capability was made and no slot changed, and the step discharges the
     /// retype's effect. The region is being zeroed, its cursor rose, from 0 when it was not being
     /// zeroed before, and is short of the region's pages, and the same retype is allowed again: so a
-    /// caller that repeats it while it says Again has a measure that falls and reaches Done.
+    /// caller that repeats it while it says Again has a measure that falls and reaches Done. The block
+    /// table changed in that region's entry alone.
     pub open spec fn large_frame_zeroing(pre: Self, post: Self, root: usize, from: usize, to: usize, base: usize, order: u8) -> bool {
         let parent = pre.tables.node_of(root, from);
         let level = large_level(order);
@@ -687,6 +688,7 @@ impl CapKernel {
         &&& pre.view().holds_right(root, parent, Right::Retype)
         &&& post.list == pre.list
         &&& post.tables == pre.tables
+        &&& pre.blocks.kept_but_region(post.blocks, level, r as int)
         &&& post.can_retype_large(root, from, to, base, order)
         &&& post.zeroing.active(level, r)
         &&& pre.zeroing.active(level, r) ==> pre.zeroing.cursor@[page as int] < post.zeroing.cursor@[page as int]
@@ -697,11 +699,14 @@ impl CapKernel {
     /// What the step of a large retype that found its block all zero did: the retype was allowed, the
     /// frame capability of that order is the untyped's child in the slot at index to, the one entry the
     /// parent map gains and the only node whose kind, liveness or capability changed, no root entry
-    /// changed, every page of the block is zero, and the step discharges the retype's effect.
+    /// changed, every page of the block is zero, the block table changed in the block's region entry
+    /// alone, and the step discharges the retype's effect.
     pub open spec fn large_frame_retyped(pre: Self, post: Self, root: usize, from: usize, to: usize, base: usize, order: u8) -> bool {
         let parent = pre.tables.node_of(root, from);
         let child = pre.tables.node_of(root, to);
+        let level = large_level(order);
         &&& pre.can_retype_large(root, from, to, base, order)
+        &&& pre.blocks.kept_but_region(post.blocks, level, (base / PAGE_SZ / level_pages(level)) as int)
         &&& pre.view().holds_right(root, parent, Right::Retype)
         &&& post.view().holds(root, child)
         &&& post.payload_of(child) == large_frame_of(base, order)
@@ -861,6 +866,7 @@ impl CapKernel {
             final(self).iommus == old(self).iommus,
             ret is Refused == (!old(self).zeroing.active(level, r) && !old(self).blocks.large_free(level, r as int)),
             ret is Refused ==> *final(self) == *old(self),
+            old(self).blocks.kept_but_region(final(self).blocks, level, r as int),
             ret is Done ==> forall|k: usize| k < level_pages(level)
                 ==> #[trigger] holds_zero(final(self).frames@, (level_base(level, r) + k) as usize),
             ret is Done ==> forall|i: usize| #[trigger] block_has_page(level_ref(level, r), i)
@@ -887,6 +893,9 @@ impl CapKernel {
             },
     {
         let ghost pre = *old(self);
+        proof {
+            pre.blocks.lemma_kept_but_region_same(level, r as int);
+        }
         let pages = pages_of_level(level);
         let base = r * pages;
         if !self.zeroing.is_active(level, r) {
