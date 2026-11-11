@@ -667,10 +667,19 @@ impl CapKernel {
         ensures
             Self::step_ok(*old(self), *final(self), c as int),
             ret is None <==> old(self).must_leave(c as int) || old(self).cores@[c as int].current_thread is None,
+            // A caller acting within a dead process reaches no operation and gets nothing back: it is
+            // moved off its core.
+            ({
+                let t = old(self).cores@[c as int].current_thread->Some_0;
+                old(self).cores@[c as int].current_thread is Some
+                    && old(self).processes.records@[old(self).threads.records@[t].value().process->Some_0].value().dead
+                    ==> ret is None
+            }),
             ret is Some ==> {
                 let t = old(self).cores@[c as int].current_thread->Some_0;
                 let root = old(self).threads.records@[t].value().process->Some_0;
-                Self::invoked(*old(self), *final(self), root, frame, ret->0)
+                &&& old(self).root_live(root)
+                &&& Self::invoked(*old(self), *final(self), root, frame, ret->0)
             },
     {
         // The one counter of this entry, on a path that holds the kernel's lock: design/one-lock-bounded-steps/.
