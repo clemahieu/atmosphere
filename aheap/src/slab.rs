@@ -482,7 +482,7 @@ impl Slab {
         &&& SLOT_MIN <= self.slot
         &&& self.slot % SLOT_MIN == 0
         &&& self.base@.addr % SLOT_MIN == 0
-        &&& self.base@.addr + self.bytes <= usize::MAX
+        &&& self.base@.addr + self.bytes <= usize::MAX + 1
         &&& self.count == self.bytes / self.slot
         &&& 0 < self.count <= MAP_SLOTS
         &&& self.map@.len() == MAP_WORDS
@@ -535,7 +535,7 @@ impl Slab {
             self.count() == self.bytes() / self.slot(),
             0 <= self.tail() < self.slot(),
             self.tail() > 0 ==> self.within(self.addr(self.count() as int)),
-            self.base()@.addr + self.bytes() <= usize::MAX,
+            self.base()@.addr + self.bytes() <= usize::MAX + 1,
             self.free_slots().subset_of(Set::range(0, self.count() as int)),
             forall|i: int|
                 0 <= i <= self.count() ==> {
@@ -687,7 +687,7 @@ impl Slab {
             SLOT_MIN <= slot,
             slot % SLOT_MIN == 0,
             base@.addr % SLOT_MIN == 0,
-            base@.addr + bytes <= usize::MAX,
+            base@.addr + bytes <= usize::MAX + 1,
             slot <= bytes,
             bytes / slot <= MAP_SLOTS,
             run@.is_range(base@.addr as int, bytes as int),

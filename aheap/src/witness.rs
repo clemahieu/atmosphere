@@ -34,6 +34,8 @@
 //! and is refused one more. The third takes two backed pages and makes a slab over each, both
 //! keeping their free slots in one map, and allocates a slot of the second slab and then of the
 //! first, whose ownership of the map the frame lemma carries across the second slab's operations.
+//! The fourth takes the last page of the address space, which a page buddy may cut at the end of a
+//! span there, and allocates every slot, the last of which ends at the top.
 //!
 //! The size classes' witness names the class of one byte and of a page: the first class, of
 //! SLOT_MIN, and the last, of the page, each with a slab order whose run holds at least one slot.
@@ -1079,6 +1081,61 @@ pub fn witness_slab_pair(
         assert(a.within(pa@.addr as int));
     }
     (pa, pb)
+}
+
+/// Makes a slab of SLOT_MIN slots over the backed page at `page`, the last page of the address
+/// space, as the page buddy may cut a run at the end of a span there, and allocates every slot, none
+/// refused: returns the slab, whose last slot, live, ends at the top.
+pub fn witness_slab_top(page: *mut u8, run: Tracked<PointsToRaw>) -> (s: Slab)
+    requires
+        page@.addr % PAGE_BYTES == 0,
+        page@.addr + PAGE_BYTES == usize::MAX + 1,
+        run@.is_range(page@.addr as int, PAGE_BYTES as int),
+        run@.provenance() == page@.provenance,
+    ensures
+        s.wf(),
+        s.holds(usize::MAX + 1 - SLOT_MIN),
+{
+    let tracked mut perms = Map::<int, PointsToRaw>::tracked_empty();
+    proof {
+        lemma_page_slots(page);
+    }
+    let mut s = Slab::new(page, PAGE_BYTES, SLOT_MIN, run, Tracked(&mut perms));
+    let n = PAGE_BYTES / SLOT_MIN;
+    proof {
+        assert(s.free_slots().len() == n);
+    }
+    let mut k: usize = 0;
+    while k < n
+        invariant
+            s.wf(),
+            s.owns(perms),
+            s.base() == page,
+            s.bytes() == PAGE_BYTES,
+            s.slot() == SLOT_MIN,
+            s.count() == n,
+            k <= n,
+            s.free_slots().len() == n - k,
+        decreases n - k,
+    {
+        let ghost before = s;
+        match s.alloc(Tracked(&mut perms)) {
+            None => {
+                assert(before.free_slots().len() == 0);
+                unreached()
+            },
+            Some(_) => {},
+        }
+        k += 1;
+    }
+    proof {
+        vstd::set_lib::lemma_set_empty_equivalency_len(s.free_slots());
+        let a = usize::MAX + 1 - SLOT_MIN;
+        assert(s.index(a) == n - 1);
+        assert(s.addr(n - 1) == a);
+        assert(s.live().contains(n - 1));
+    }
+    s
 }
 
 } // verus!
