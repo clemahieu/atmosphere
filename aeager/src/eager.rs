@@ -308,7 +308,7 @@ impl Spans {
 /// What the source knows of its untyped and of the window's tables, and the process's ghost of the
 /// kernel, which its system calls thread.
 struct Record {
-    caller: Ghost<Caller>,
+    caller: Tracked<Caller>,
     space: u64,
     untyped: u64,
     memory: u64,
@@ -636,9 +636,9 @@ impl Eager {
     /// untyped at `untyped`, whose `pages` pages from physical `memory` it alone retypes, putting
     /// frame capabilities in the empty slots from `slots`; and hands out spans of the window at
     /// `window`, which nothing maps, aligned to a region and with room for the window after it. None
-    /// when the window or the counts do not fit. `caller` is the process's ghost of the kernel, which
+    /// when the window or the counts do not fit. `caller` is the process's token of the kernel, which
     /// the source's system calls thread while it lives.
-    pub fn new(caller: Ghost<Caller>, space: u64, untyped: u64, memory: u64, pages: usize, slots: u64, window: *mut u8) -> (r: Option<Eager>)
+    pub fn new(caller: Tracked<Caller>, space: u64, untyped: u64, memory: u64, pages: usize, slots: u64, window: *mut u8) -> (r: Option<Eager>)
         requires
             caller@.wf(),
         ensures

@@ -32,21 +32,21 @@ pub struct Inspected {
 /// into the empty slot at index `frame`, derives from it a child with the read right alone into the
 /// empty slot at index `child`, and inspects the child. None when the kernel refused the retype or the
 /// derive; otherwise what the inspect said, which is the child the derive made.
-pub fn read_only_child(caller: &mut Ghost<Caller>, untyped: u64, base: u64, frame: u64, child: u64) -> (ret: Option<Inspected>)
+pub fn read_only_child(caller: &mut Tracked<Caller>, untyped: u64, base: u64, frame: u64, child: u64) -> (ret: Option<Inspected>)
     requires
         old(caller)@.wf(),
         frame <= POSITION_INDEX_MASK,
         child <= POSITION_INDEX_MASK,
     ensures
         final(caller)@.wf(),
-        final(caller)@.root == old(caller)@.root,
+        final(caller)@.root() == old(caller)@.root(),
         ret matches Some(c) ==> c.kind == CAP_KIND_FRAME && c.base == base && c.order == 0 && c.rights == RIGHT_READ,
 {
-    let ghost root = caller@.root;
+    let ghost root = caller@.root();
     if retype(caller, untyped, RETYPE_FRAME, base, frame, 0).status != STATUS_OK {
         return None;
     }
-    let ghost made = caller@.kernel.table_view(root)[frame as usize];
+    let ghost made = caller@.kernel().table_view(root)[frame as usize];
     proof {
         lemma_own_position(frame);
         lemma_own_position(child);
@@ -56,8 +56,8 @@ pub fn read_only_child(caller: &mut Ghost<Caller>, untyped: u64, base: u64, fram
         return None;
     }
     proof {
-        let v = caller@.kernel.table_view(root)[child as usize];
-        assert(caller@.kernel.table_view(root).contains_key(child as usize));
+        let v = caller@.kernel().table_view(root)[child as usize];
+        assert(caller@.kernel().table_view(root).contains_key(child as usize));
         assert(v.kind is Frame && v.base == base as usize && v.order == 0 && v.rights == RIGHT_READ as u32);
     }
     let out = inspect(caller, child);

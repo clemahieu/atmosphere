@@ -19,13 +19,13 @@ verus! {
 
 /// Moves the capability at the position `from` names, in the caller's own table, into the empty
 /// position `to` names.
-pub fn move_cap(caller: &mut Ghost<Caller>, from: u64, to: u64) -> (out: Outcome)
+pub fn move_cap(caller: &mut Tracked<Caller>, from: u64, to: u64) -> (out: Outcome)
     requires
         old(caller)@.wf(),
     ensures
         final(caller)@.wf(),
-        final(caller)@.root == old(caller)@.root,
-        CapKernel::move_contract(old(caller)@.kernel, final(caller)@.kernel, final(caller)@.root, spec_position(from), spec_position(to), out),
+        final(caller)@.root() == old(caller)@.root(),
+        CapKernel::move_contract(old(caller)@.kernel(), final(caller)@.kernel(), final(caller)@.root(), spec_position(from), spec_position(to), out),
     no_unwind
 {
     let ghost pre = caller@;
@@ -33,21 +33,21 @@ pub fn move_cap(caller: &mut Ghost<Caller>, from: u64, to: u64) -> (out: Outcome
     proof {
         let frame = choose|frame: Registers|
             carries(frame, OPERATION_MOVE, from, to, 0, 0, 0, 0)
-                && #[trigger] CapKernel::invoked(pre.kernel, caller@.kernel, pre.root, frame, out);
+                && #[trigger] CapKernel::invoked(pre.kernel(), caller@.kernel(), pre.root(), frame, out);
         lemma_number_names_one_operation(Operation::Move);
-        CapKernel::lemma_move_contract(pre.kernel, caller@.kernel, pre.root, frame, out);
+        CapKernel::lemma_move_contract(pre.kernel(), caller@.kernel(), pre.root(), frame, out);
     }
     out
 }
 
 /// Deletes the capability at the position `at` names, in the caller's own table.
-pub fn delete(caller: &mut Ghost<Caller>, at: u64) -> (out: Outcome)
+pub fn delete(caller: &mut Tracked<Caller>, at: u64) -> (out: Outcome)
     requires
         old(caller)@.wf(),
     ensures
         final(caller)@.wf(),
-        final(caller)@.root == old(caller)@.root,
-        CapKernel::delete_contract(old(caller)@.kernel, final(caller)@.kernel, final(caller)@.root, spec_position(at), out),
+        final(caller)@.root() == old(caller)@.root(),
+        CapKernel::delete_contract(old(caller)@.kernel(), final(caller)@.kernel(), final(caller)@.root(), spec_position(at), out),
     no_unwind
 {
     let ghost pre = caller@;
@@ -55,22 +55,22 @@ pub fn delete(caller: &mut Ghost<Caller>, at: u64) -> (out: Outcome)
     proof {
         let frame = choose|frame: Registers|
             carries(frame, OPERATION_DELETE, at, 0, 0, 0, 0, 0)
-                && #[trigger] CapKernel::invoked(pre.kernel, caller@.kernel, pre.root, frame, out);
+                && #[trigger] CapKernel::invoked(pre.kernel(), caller@.kernel(), pre.root(), frame, out);
         lemma_number_names_one_operation(Operation::Delete);
-        CapKernel::lemma_delete_contract(pre.kernel, caller@.kernel, pre.root, frame, out);
+        CapKernel::lemma_delete_contract(pre.kernel(), caller@.kernel(), pre.root(), frame, out);
     }
     out
 }
 
 /// Takes a bounded number of steps of removing everything below the capability at the position `at`
 /// names, in the caller's own table: again while some is left, ok once none is.
-pub fn revoke(caller: &mut Ghost<Caller>, at: u64) -> (out: Outcome)
+pub fn revoke(caller: &mut Tracked<Caller>, at: u64) -> (out: Outcome)
     requires
         old(caller)@.wf(),
     ensures
         final(caller)@.wf(),
-        final(caller)@.root == old(caller)@.root,
-        CapKernel::revoke_contract(old(caller)@.kernel, final(caller)@.kernel, final(caller)@.root, spec_position(at), out),
+        final(caller)@.root() == old(caller)@.root(),
+        CapKernel::revoke_contract(old(caller)@.kernel(), final(caller)@.kernel(), final(caller)@.root(), spec_position(at), out),
     no_unwind
 {
     let ghost pre = caller@;
@@ -78,9 +78,9 @@ pub fn revoke(caller: &mut Ghost<Caller>, at: u64) -> (out: Outcome)
     proof {
         let frame = choose|frame: Registers|
             carries(frame, OPERATION_REVOKE, at, 0, 0, 0, 0, 0)
-                && #[trigger] CapKernel::invoked(pre.kernel, caller@.kernel, pre.root, frame, out);
+                && #[trigger] CapKernel::invoked(pre.kernel(), caller@.kernel(), pre.root(), frame, out);
         lemma_number_names_one_operation(Operation::Revoke);
-        CapKernel::lemma_revoke_contract(pre.kernel, caller@.kernel, pre.root, frame, out);
+        CapKernel::lemma_revoke_contract(pre.kernel(), caller@.kernel(), pre.root(), frame, out);
     }
     out
 }
