@@ -40,6 +40,11 @@ body of a function an assumed specification in the same file names: safe Rust ca
 a type whose fields are private to another module or copy one that is neither Copy nor Clone, and
 unsafe code can (core::mem::zeroed, core::ptr::read, MaybeUninit::assume_init, transmute), in an impl
 outside verus! that verified code reaches through a trait vstd specifies, such as Default or From.
+So is any way to state the spec of exec code Verus does not read, which the proof takes on trust: an
+impl of one of vstd's trait extensions, any name ending in SpecImpl (FromSpecImpl, PartialEqSpecImpl,
+IteratorSpecImpl and the rest), the StructuralEq derive and the exec_spec macros. vstd's From::from
+ensures from_spec for any impl with a FromSpecImpl, and nothing holds an impl outside verus! to it, so
+safe code there could return no token, or one it was given, while the spec says it returns another.
 vstd's proof_from_false is not refused: it requires false, which only an assumption or an exemption
 refused here can supply.
 
@@ -99,6 +104,12 @@ CONJURE = re.compile(r"\bassume_new\w*")
 # The unsafe keyword, in a block, a fn, an impl, a trait, an extern block or an attribute: the only way
 # safe Rust leaves to make or copy a token it cannot name the fields of, allowed only in counted glue.
 UNSAFE = re.compile(r"\bunsafe\b")
+# What states the specification of exec code Verus does not read: an impl of one of vstd's trait
+# extensions (FromSpecImpl, PartialEqSpecImpl, IteratorSpecImpl and the rest), whose spec vstd's
+# specification of the trait's method ensures for an impl of the method outside verus!; the StructuralEq
+# derive, which writes a PartialEqSpecImpl for whatever PartialEq the type has; and the exec_spec macros,
+# which write one or trust their own exec code. The marked crates use none.
+TRUSTED_SPEC = re.compile(r"\b(\w*SpecImpl|StructuralEq|exec_spec(?:_verified|_unverified|_type)?)\b")
 # What makes rustc compile a file the scan does not read: a path attribute, in any attribute or
 # cfg_attr, an include!, and a module named target, whose directory the scan leaves out.
 UNREAD_FILE = re.compile(r"#\s*!?\s*\[\s*path\b|\bpath\s*=\s*(?:r#*)?\"|\binclude\s*!|"
@@ -463,6 +474,15 @@ def unsafe_lines(path, source):
             if UNSAFE.search(text) and index not in allowed]
 
 
+def trusted_specifications(path, source):
+    """Each line of one file whose code names a way to state the specification of exec code Verus does
+    not read: vstd's From::from, for one, ensures from_spec for any impl with a FromSpecImpl, and nothing
+    holds an impl outside verus! to it, so the spec can say a token comes out that the code never made."""
+    return [f"{path}:{index + 1}: {line.strip()}"
+            for index, (line, code) in enumerate(zip(source.splitlines(), code_lines(source)))
+            if TRUSTED_SPEC.search(code)]
+
+
 def compare(found, listed):
     """Describes every item only one side has, counting an item once per occurrence."""
     def describe(item):
@@ -523,6 +543,8 @@ def scan_tree(repo, documents):
                            for line in conjurings(path, source))
             refused.extend(f"{line} is unsafe code outside counted glue, which may make or copy a value "
                            "the proof cannot see" for line in unsafe_lines(path, source))
+            refused.extend(f"{line} states a spec of code Verus does not read, which the proof takes on trust"
+                           for line in trusted_specifications(path, source))
     return found, refused
 
 
@@ -1025,7 +1047,57 @@ class ForgeryTests(unittest.TestCase):
                   "    open spec fn obeys_from_spec() -> bool { true }\n"
                   "    open spec fn from_spec(v: &'a SkTok) -> SkTok { *v }\n}\n}\n")
         self.assertEqual([line.split(":")[1] for line in self.refused("capability/mapping.rs",
-                                                                      {"capability/mapping.rs": source})], ["1"])
+                                                                      {"capability/mapping.rs": source})], ["1", "5"])
+
+    def test_a_safe_from_with_a_from_spec_impl_is_refused(self):
+        source = ("impl From<SkSeed> for SkBox { fn from(_v: SkSeed) -> SkBox { SkBox { t: None, m: None } } }\n"
+                  "verus! {\npub struct SkSeed {}\n"
+                  "pub struct SkBox { pub t: Option<Tracked<crate::arch::BaseRegister>>, "
+                  "pub m: Option<Tracked<crate::arch::TlbModel>> }\n"
+                  "#[cfg(verus_keep_ghost)]\nimpl vstd::std_specs::convert::FromSpecImpl<SkSeed> for SkBox {\n"
+                  "    open spec fn obeys_from_spec() -> bool { true }\n"
+                  "    open spec fn from_spec(v: SkSeed) -> SkBox { SkBox { t: Some(vstd::pervasive::arbitrary()), "
+                  "m: Some(vstd::pervasive::arbitrary()) } }\n}\n"
+                  "pub fn sk_forge() -> (r: (Tracked<crate::arch::BaseRegister>, Tracked<crate::arch::TlbModel>)) "
+                  "{ let b = SkBox::from(SkSeed {}); (b.t.unwrap(), b.m.unwrap()) }\n}\n")
+        self.assertEqual([line.split(":")[1] for line in self.refused("capability/mapping.rs",
+                                                                      {"capability/mapping.rs": source})], ["6"])
+
+    def test_an_identity_from_whose_from_spec_names_a_ghost_field_is_refused(self):
+        source = ("impl From<SkHold> for SkOut { fn from(v: SkHold) -> SkOut { SkOut { t: v.t } } }\n"
+                  "verus! {\npub struct SkOut { pub t: Tracked<crate::arch::BaseRegister> }\n"
+                  "pub struct SkHold { pub t: Tracked<crate::arch::BaseRegister>, pub g: Ghost<SkOut> }\n"
+                  "use vstd::std_specs::convert::FromSpecImpl as Renamed;\n"
+                  "#[cfg(verus_keep_ghost)]\nimpl Renamed<SkHold> for SkOut {\n"
+                  "    open spec fn obeys_from_spec() -> bool { true }\n"
+                  "    open spec fn from_spec(v: SkHold) -> SkOut { v.g@ }\n}\n}\n")
+        self.assertEqual([line.split(":")[1] for line in self.refused("capability/mapping.rs",
+                                                                      {"capability/mapping.rs": source})], ["5"])
+
+    def test_every_spec_vstd_takes_on_trust_for_unread_code_is_refused(self):
+        forms = {
+            "PartialEqSpecImpl": ("impl PartialEq for SkTok { fn eq(&self, _o: &Self) -> bool { true } }\n"
+                                  "verus! {\nimpl vstd::std_specs::cmp::PartialEqSpecImpl for SkTok {\n"
+                                  "    open spec fn obeys_eq_spec() -> bool { true }\n"
+                                  "    open spec fn eq_spec(&self, o: &Self) -> bool { true }\n}\n}\n"),
+            "TryFromSpecImpl": "verus! {\nimpl vstd::std_specs::convert::TryFromSpecImpl<u8> for SkTok {}\n}\n",
+            "IteratorSpecImpl": "verus! {\nimpl IteratorSpecImpl for SkIter {}\n}\n",
+            "a glob over the spec traits": "use vstd::std_specs::cmp::{PartialEqSpecImpl, OrdSpecImpl};\n",
+            "StructuralEq": "verus! {\n#[derive(PartialEq, Eq, StructuralEq)]\npub struct SkTok { pub x: u8 }\n}\n",
+            "exec_spec_unverified": "exec_spec_unverified! {\n    spec fn f(x: u8) -> u8 { x }\n}\n",
+            "exec_spec_verified": "use vstd::prelude::exec_spec_verified as checked;\n",
+        }
+        for name, form in forms.items():
+            with self.subTest(name):
+                self.assertEqual(len(self.refused("lib.rs", {"lib.rs": form})), 1, form)
+                self.assertTrue(all("spec of code Verus does not read" in line
+                                    for line in self.refused("lib.rs", {"lib.rs": form})))
+
+    def test_names_that_only_contain_a_trusted_spec_word_are_not_refused(self):
+        source = ('// impl FromSpecImpl<u8> for X\nlet s = "PartialEqSpecImpl";\n'
+                  "fn from_spec_impl_count() {}\nlet exec_specs = 0;\nlet my_exec_spec = 1;\n"
+                  "pub struct StructuralEqual {}\n")
+        self.assertEqual(self.refused("lib.rs", {"lib.rs": source}), [])
 
     def test_unsafe_in_a_counted_external_body_is_accepted(self):
         source = ("#[verifier::external_body]\n// external_body(glue): hw\nfn spin_hint()\n{\n"
