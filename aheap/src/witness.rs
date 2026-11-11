@@ -31,7 +31,9 @@
 //! The slab's witnesses each take one backed page and make a slab of SLOT_MIN slots over it. The
 //! first allocates a slot, writes a byte of it and reads it again, frees the slot, retires the slab
 //! and holds the permission to the whole page again. The second allocates every slot, none refused,
-//! and is refused one more.
+//! and is refused one more. The third takes two backed pages and makes a slab over each, both
+//! keeping their free slots in one map, and allocates a slot of the second slab and then of the
+//! first, whose ownership of the map the frame lemma carries across the second slab's operations.
 //!
 //! The large-object map's witness, over any well-formed source, allocates an object of one byte
 //! more than a block, writes a byte of it and reads it again, frees it, and ends with the map empty
@@ -956,6 +958,77 @@ pub fn witness_slab_full(page: *mut u8, run: Tracked<PointsToRaw>) -> (refused: 
         vstd::set_lib::lemma_set_empty_equivalency_len(full.free_slots());
     }
     s.alloc(Tracked(&mut perms)).is_none()
+}
+
+/// Makes a slab of SLOT_MIN slots over each of the backed pages at `first` and `second`, both
+/// keeping their free slots in one map, allocates a slot of the second and then a slot of the
+/// first, whose ownership of the map the second's new and alloc left as it was: returns the two
+/// slots, each in its own page.
+pub fn witness_slab_pair(
+    first: *mut u8,
+    first_run: Tracked<PointsToRaw>,
+    second: *mut u8,
+    second_run: Tracked<PointsToRaw>,
+) -> (slots: (*mut u8, *mut u8))
+    requires
+        first@.addr % PAGE_BYTES == 0,
+        second@.addr % PAGE_BYTES == 0,
+        first@.addr + PAGE_BYTES <= second@.addr,
+        second@.addr + PAGE_BYTES <= usize::MAX,
+        first_run@.is_range(first@.addr as int, PAGE_BYTES as int),
+        first_run@.provenance() == first@.provenance,
+        second_run@.is_range(second@.addr as int, PAGE_BYTES as int),
+        second_run@.provenance() == second@.provenance,
+    ensures
+        first@.addr <= slots.0@.addr < first@.addr + PAGE_BYTES,
+        second@.addr <= slots.1@.addr < second@.addr + PAGE_BYTES,
+{
+    let tracked mut perms = Map::<int, PointsToRaw>::tracked_empty();
+    let ghost empty = perms;
+    proof {
+        lemma_page_slots(first);
+        lemma_page_slots(second);
+    }
+    let mut a = Slab::new(first, PAGE_BYTES, SLOT_MIN, first_run, Tracked(&mut perms));
+    let ghost made_a = perms;
+    proof {
+        assert forall|x: int| second@.addr <= x < second@.addr + PAGE_BYTES implies !made_a.contains_key(x) by {
+            assert(!a.within(x));
+            assert(!empty.contains_key(x));
+        }
+    }
+    let mut b = Slab::new(second, PAGE_BYTES, SLOT_MIN, second_run, Tracked(&mut perms));
+    let ghost made_b = perms;
+    proof {
+        assert forall|x: int| a.within(x) implies !b.within(x) by {}
+        a.lemma_owns_frame(made_a, made_b);
+    }
+    assert(b.free_slots().contains(0));
+    let (pb, _) = match b.alloc(Tracked(&mut perms)) {
+        None => {
+            assert(Set::<int>::empty().contains(0));
+            unreached()
+        },
+        Some(slot) => slot,
+    };
+    let ghost took_b = perms;
+    proof {
+        assert(b.within(pb@.addr as int));
+        assert forall|x: int| a.within(x) implies x != pb@.addr by {}
+        a.lemma_owns_frame(made_b, took_b);
+    }
+    assert(a.free_slots().contains(0));
+    let (pa, _) = match a.alloc(Tracked(&mut perms)) {
+        None => {
+            assert(Set::<int>::empty().contains(0));
+            unreached()
+        },
+        Some(slot) => slot,
+    };
+    proof {
+        assert(a.within(pa@.addr as int));
+    }
+    (pa, pb)
 }
 
 } // verus!

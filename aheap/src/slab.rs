@@ -535,6 +535,7 @@ impl Slab {
             0 < self.count() <= MAP_SLOTS,
             self.count() == self.bytes() / self.slot(),
             0 <= self.tail() < self.slot(),
+            self.tail() > 0 ==> self.within(self.addr(self.count() as int)),
             self.base()@.addr + self.bytes() <= usize::MAX,
             self.free_slots().subset_of(Set::range(0, self.count() as int)),
             forall|i: int|
@@ -559,6 +560,47 @@ impl Slab {
             lemma_slot(b, self.bytes as int, s, self.count as int, 0);
         }
         lemma_slot(b, self.bytes as int, s, self.count as int, 0);
+    }
+
+    /// A map that holds what `before` holds at every address inside the run is one the record owns
+    /// as well: an operation on another slab over the same map, which changes the map only inside
+    /// its own run, leaves this slab's ownership as it was.
+    pub proof fn lemma_owns_frame(&self, before: Map<int, PointsToRaw>, after: Map<int, PointsToRaw>)
+        requires
+            self.wf(),
+            self.owns(before),
+            forall|a: int|
+                #![trigger after.contains_key(a)]
+                #![trigger before.contains_key(a)]
+                self.within(a) ==> (after.contains_key(a) <==> before.contains_key(a)) && (before.contains_key(a)
+                    ==> after[a] == before[a]),
+        ensures
+            self.owns(after),
+    {
+        self.lemma_slots();
+        assert forall|i: int| 0 <= i < self.count() implies (#[trigger] after.contains_key(self.addr(i))
+            <==> self.free_slots().contains(i)) by {
+            assert(self.within(self.addr(i)));
+            assert(before.contains_key(self.addr(i)) <==> self.free_slots().contains(i));
+        }
+        assert forall|i: int| #[trigger] self.free_slots().contains(i) implies {
+            &&& after[self.addr(i)].is_range(self.addr(i), self.slot() as int)
+            &&& after[self.addr(i)].provenance() == self.base()@.provenance
+        } by {
+            assert(Set::range(0, self.count() as int).contains(i));
+            assert(self.within(self.addr(i)));
+            assert(before.contains_key(self.addr(i)));
+        }
+        if self.tail() > 0 {
+            assert(before.contains_key(self.addr(self.count() as int)));
+        }
+        assert forall|a: int| #[trigger] after.contains_key(a) && self.within(a) implies {
+            &&& a == self.addr(self.index(a))
+            &&& 0 <= self.index(a) <= self.count()
+            &&& self.index(a) == self.count() ==> self.tail() > 0
+        } by {
+            assert(before.contains_key(a));
+        }
     }
 
     /// A slot whose entry in `perms` alone changed, from free to live or from live to free, as the
