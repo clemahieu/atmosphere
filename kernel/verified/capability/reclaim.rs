@@ -3527,6 +3527,7 @@ impl CapKernel {
         &&& post.cores == pre.cores
         &&& post.mapped == pre.mapped
         &&& post.devices == pre.devices
+        &&& post.processes == pre.processes
         &&& post.iommus.acked == pre.iommus.acked
         &&& post.iommus.present == pre.iommus.present
         &&& post.iommus.commands == pre.iommus.commands
