@@ -31,10 +31,12 @@
 //!   permission to its bytes, apart from every slot live before. Either way it keeps what every
 //!   class over the same store, page buddy and source stands on (`kept`).
 //! - `free_small(store, pb, src, p, perm)` takes back the live slot at `p` and never refuses. Its
-//!   slab (`slab_of`) goes to the partial list while a slot of it is live, and the store, the page
-//!   buddy and the source are as they were. A slab whose only live slot was `p` (`only_live`) is
+//!   slab (`slab_of`) goes to the partial list while a slot of it is live, keeping its base and
+//!   holding what it held but `p`, and every other slab, the heads, the store, the page buddy and
+//!   the source are as they were. A slab whose only live slot was `p` (`only_live`) is
 //!   retired: its run released and freed, so the page buddy no longer holds it, and its record put
-//!   back in the store, its record page given back when no other record lies on it; the page
+//!   back in the store, its record page given back when no other record lies on it, and its base
+//!   leaves the heads; the page
 //!   buddy's runs and the source change by those alone (`emptied_slab`), so `new_slab` then
 //!   `emptied_slab` leaves the page buddy's runs as they were. Every other run held at a head that
 //!   is no record page stays held.
@@ -742,6 +744,36 @@ impl SizeClass {
         self.lemma_live_apart_from_run(store, pb, src, y, b, slab_order(other.class()));
     }
 
+    /// A slab of the class whose live slots are at most `y` has a free slot, when two slots of the
+    /// class fit its run.
+    pub proof fn lemma_one_live_free(&self, store: RecordStore, pb: PageBuddy, src: SourceView, a: int, y: int)
+        requires
+            self.wf(store, pb, src),
+            self.slabs().contains_key(a),
+            2 * class_size(self.class()) <= run_bytes(slab_order(self.class())),
+            forall|x: int| #[trigger] self.slabs()[a].holds(x) ==> x == y,
+        ensures
+            self.slabs()[a].free_slots() != Set::<int>::empty(),
+    {
+        let s = self.slabs()[a];
+        assert(slab_ok(self.class as nat, self.perms@, s, a, store, pb, src));
+        s.lemma_slots();
+        let n = s.bytes() as int;
+        let d = s.slot() as int;
+        assert(n / d >= 2) by {
+            vstd::arithmetic::div_mod::lemma_div_is_ordered(2 * d, n, d);
+            vstd::arithmetic::div_mod::lemma_div_multiples_vanish(2, d);
+            assert(d * 2 == 2 * d);
+        }
+        if s.free_slots() == Set::<int>::empty() {
+            assert(s.live().contains(0));
+            assert(s.live().contains(1));
+            assert(s.holds(s.addr(0)));
+            assert(s.holds(s.addr(1)));
+            assert(s.addr(0) != s.addr(1));
+        }
+    }
+
     /// A class whose slab at `a` was replaced by one with the same base has the heads it had.
     proof fn lemma_heads_replaced(o: SizeClass, n: SizeClass, a: int)
         requires
@@ -1025,6 +1057,7 @@ impl SizeClass {
             n.wf(store, pb, src),
             n.slabs() == o.slabs().insert(a, s1),
             n.live() == o.live().remove(y),
+            n.heads() == o.heads(),
     {
         let m = o.slabs();
         let c = o.class as nat;
@@ -1059,6 +1092,7 @@ impl SizeClass {
         }
         assert(slabs_wf(c, n.perms@, nm, store, pb, src));
         assert(n.partial.slabs().dom().disjoint(n.full.slabs().dom()));
+        SizeClass::lemma_heads_replaced(o, n, a);
     }
 
     /// The slab at `a`, whose only live slot `y` was taken back, retired and off both lists, with the
@@ -1102,7 +1136,7 @@ impl SizeClass {
             n.wf(store2, pb2, src2),
             n.slabs() == o.slabs().remove(a),
             n.live() == o.live().remove(y),
-            !n.heads().contains(o.slabs()[a].base()@.addr as int),
+            n.heads() == o.heads().remove(o.slabs()[a].base()@.addr as int),
     {
         let m = o.slabs();
         let c = o.class as nat;
@@ -1130,12 +1164,18 @@ impl SizeClass {
         }
         assert(slabs_wf(c, n.perms@, nm, store2, pb2, src2));
         assert(n.partial.slabs().dom().disjoint(n.full.slabs().dom()));
-        assert(!n.heads().contains(s0.base()@.addr as int)) by {
-            if n.heads().contains(s0.base()@.addr as int) {
-                let b = choose|b: int| #[trigger] nm.contains_key(b) && nm[b].base()@.addr == s0.base()@.addr;
+        let h = s0.base()@.addr as int;
+        assert forall|x: int| n.heads().contains(x) <==> #[trigger] o.heads().remove(h).contains(x) by {
+            if n.heads().contains(x) {
+                let b = choose|b: int| #[trigger] nm.contains_key(b) && nm[b].base()@.addr == x;
                 assert(m.contains_key(b) && m.contains_key(a));
             }
+            if o.heads().contains(x) && x != h {
+                let b = choose|b: int| #[trigger] m.contains_key(b) && m[b].base()@.addr == x;
+                assert(nm.contains_key(b) && nm[b].base()@.addr == x);
+            }
         }
+        assert(n.heads() =~= o.heads().remove(h));
     }
 
     /// Size class `c` with no slab, well formed over every store, page buddy and source.
@@ -1552,9 +1592,10 @@ impl SizeClass {
     }
 
     /// Takes back the live slot at `p` with the permission to its bytes, and never refuses. A slab
-    /// left with a free slot goes to the partial list, changing neither the store, the page buddy
-    /// nor the source; a slab left with every slot free is retired, its run released and freed to
-    /// the page buddy and its record put back in the store.
+    /// left with a live slot goes to the partial list, keeping its base and every other slab, the
+    /// heads, the store, the page buddy and the source; a slab left with every slot free is retired,
+    /// its run released and freed to the page buddy, its record put back in the store, and its base
+    /// gone from the heads.
     pub fn free_small<S: SpanSource>(
         &mut self,
         store: &mut RecordStore,
@@ -1582,7 +1623,7 @@ impl SizeClass {
                 let b = old(self).slabs()[a].base()@.addr as int;
                 if only_live(old(self).slabs()[a], p@.addr as int) {
                     &&& final(self).slabs() == old(self).slabs().remove(a)
-                    &&& !final(self).heads().contains(b)
+                    &&& final(self).heads() == old(self).heads().remove(b)
                     &&& !final(pb).holds(b)
                     &&& emptied_slab(
                         *old(store),
@@ -1599,6 +1640,11 @@ impl SizeClass {
                         run_held(*old(pb), old(src)@, x, k) && x != b && !old(store).pages().contains(x)
                             ==> run_held(*final(pb), final(src)@, x, k)
                 } else {
+                    &&& final(self).slabs() == old(self).slabs().insert(a, final(self).slabs()[a])
+                    &&& final(self).slabs()[a].base() == old(self).slabs()[a].base()
+                    &&& forall|x: int| #[trigger]
+                        final(self).slabs()[a].holds(x) <==> (old(self).slabs()[a].holds(x) && x != p@.addr as int)
+                    &&& final(self).heads() == old(self).heads()
                     &&& final(self).slabs().dom() == old(self).slabs().dom()
                     &&& *final(store) == *old(store)
                     &&& *final(pb) == *old(pb)
