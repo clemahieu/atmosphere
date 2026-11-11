@@ -1195,8 +1195,8 @@ impl SizeClass {
         r
     }
 
-    /// A slot of the class's size: from the first slab with a free one, changing neither the store,
-    /// the page buddy nor the source; or, when no slab has one, from a new slab, whose run is cut
+    /// A slot of the class's size: from the first slab with a free one, which keeps its base, changing
+    /// no other slab, nor the store, the page buddy or the source; or, when no slab has one, from a new slab, whose run is cut
     /// and backed and whose record is taken from the store. Refuses only when no slab has a free
     /// slot and the source refused one request in this call, and then gives back what the call took.
     /// Either way it keeps what every class over the same three stands on.
@@ -1239,6 +1239,14 @@ impl SizeClass {
                     &&& if exists|a: int| #[trigger]
                         old(self).slabs().contains_key(a) && old(self).slabs()[a].free_slots()
                             != Set::<int>::empty() {
+                        &&& exists|a: int| #[trigger]
+                            old(self).slabs().contains_key(a) && {
+                                &&& final(self).slabs() == old(self).slabs().insert(a, final(self).slabs()[a])
+                                &&& final(self).slabs()[a].base() == old(self).slabs()[a].base()
+                                &&& forall|x: int| #[trigger]
+                                    final(self).slabs()[a].holds(x) <==> (x == p@.addr as int
+                                        || old(self).slabs()[a].holds(x))
+                            }
                         &&& final(self).slabs().dom() == old(self).slabs().dom()
                         &&& *final(store) == *old(store)
                         &&& *final(pb) == *old(pb)
