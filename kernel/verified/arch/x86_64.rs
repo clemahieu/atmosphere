@@ -6,7 +6,7 @@ use vstd::prelude::*;
 
 verus! {
 
-use crate::capability::kernel::{CommandBuffers, Flushed};
+use crate::capability::kernel::{CommandBuffers, Flushed, Translating};
 #[cfg(verus_keep_ghost)]
 use crate::capability::kernel::FlushTarget;
 use crate::capability::operation::Outcome;
@@ -15,7 +15,7 @@ use crate::capability::console::PRINT_BYTES;
 use crate::capability::steps::Steps;
 use crate::define::PAddr;
 #[cfg(verus_keep_ghost)]
-use crate::define::NUM_IOMMUS;
+use crate::define::{NUM_IOMMUS, PAGE_SZ, PCID_MAX};
 use crate::pagetable::entry::{PageEntry, PageEntryPerm, PageEntryStatus};
 #[cfg(verus_keep_ghost)]
 use crate::util::page_ptr_util_u::*;
@@ -634,6 +634,31 @@ pub fn flush_every_context(core: usize, epoch: usize) -> (ret: Tracked<Flushed>)
             cr4 = out(reg) _,
             pge = const 1 << 7,
         );
+    }
+    Tracked::assume_new()
+}
+
+/// Points this core's CR3 at the table whose top level is at physical address `root`. Where CR4.PCIDE,
+/// bit 17, is set, the write tags it with PCID `id` and sets bit 63, which keeps the entries the TLB
+/// holds under every PCID; where it is clear, CR3 holds the root alone and the write flushes the
+/// non-global entries. APM 2, the CR3 register in its PCID format.
+#[verifier(external_body)]
+// external_body(glue): only the hardware can attest which root a core translates through, so only this makes the token
+pub fn load_translation_root(core: usize, root: usize, id: usize) -> (ret: Tracked<Translating>)
+    requires
+        root % PAGE_SZ == 0,
+        id < PCID_MAX,
+    ensures
+        ret@.core == core as int,
+        ret@.root == root,
+{
+    let cr4: u64;
+    unsafe {
+        core::arch::asm!("mov {cr4}, cr4", cr4 = out(reg) cr4, options(nomem, nostack, preserves_flags));
+    }
+    let cr3 = if cr4 & (1 << 17) != 0 { (root | id) as u64 | 1 << 63 } else { root as u64 };
+    unsafe {
+        core::arch::asm!("mov cr3, {cr3}", cr3 = in(reg) cr3, options(nostack, preserves_flags));
     }
     Tracked::assume_new()
 }

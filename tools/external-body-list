@@ -9,9 +9,11 @@
 # unproven  plain code or a lemma with no proof yet, or a wait with no termination proof yet, so proof debt
 kernel/verified/arch/aarch64.rs	flush_every_context	external_body	glue	only the hardware can attest a flush, so only this makes the token
 kernel/verified/arch/aarch64.rs	invalidate_iommu_all	external_body	glue	only the SMMU can attest an invalidate, so only this makes its token
+kernel/verified/arch/aarch64.rs	load_translation_root	external_body	glue	only the hardware can attest which root a core translates through, so only this makes the token
 kernel/verified/arch/aarch64.rs	serial_write	external_body	glue	writes the PL011 through its memory-mapped registers, which have no state a proof could see
 kernel/verified/arch/x86_64.rs	flush_every_context	external_body	glue	only the hardware can attest a flush, so only this makes the token
 kernel/verified/arch/x86_64.rs	invalidate_iommu_all	external_body	glue	only the IOMMU can attest an invalidate, so only this makes its token
+kernel/verified/arch/x86_64.rs	load_translation_root	external_body	glue	only the hardware can attest which root a core translates through, so only this makes the token
 kernel/verified/arch/x86_64.rs	serial_write	external_body	glue	writes the serial port through port I/O, which has no state a proof could see
 kernel/verified/pagetable/pagemap_util_t.rs	page_map_set	external_body	glue	writes a hardware page table through a raw pointer
 kernel/verified/pagetable/pagemap_util_t.rs	page_map_set_no_requires	external_body	glue	writes a hardware page table through a raw pointer

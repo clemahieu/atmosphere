@@ -9,7 +9,7 @@ use vstd::prelude::*;
 
 verus! {
 
-use crate::capability::kernel::{CommandBuffers, Flushed};
+use crate::capability::kernel::{CommandBuffers, Flushed, Translating};
 #[cfg(verus_keep_ghost)]
 use crate::capability::kernel::FlushTarget;
 use crate::capability::operation::Outcome;
@@ -18,7 +18,7 @@ use crate::capability::console::PRINT_BYTES;
 use crate::capability::steps::Steps;
 use crate::define::PAddr;
 #[cfg(verus_keep_ghost)]
-use crate::define::NUM_IOMMUS;
+use crate::define::{NUM_IOMMUS, PAGE_SZ, PCID_MAX};
 use crate::pagetable::entry::{PageEntry, PageEntryPerm, PageEntryStatus};
 #[cfg(verus_keep_ghost)]
 use crate::util::page_ptr_util_u::*;
@@ -496,6 +496,26 @@ pub fn flush_every_context(core: usize, epoch: usize) -> (ret: Tracked<Flushed>)
 {
     unsafe {
         core::arch::asm!("dsb ishst", "tlbi vmalle1", "dsb ish", "isb", options(nostack, preserves_flags));
+    }
+    Tracked::assume_new()
+}
+
+/// Points this core's TTBR0_EL1 at the table whose top level is at physical address `root`, as ASID
+/// `id` in bits 63:48: one write changes the table and the id together and flushes nothing, and the
+/// instructions after the ISB translate through the new table. Arm ARM D24.2.208, B2.6.1.
+#[verifier(external_body)]
+// external_body(glue): only the hardware can attest which root a core translates through, so only this makes the token
+pub fn load_translation_root(core: usize, root: usize, id: usize) -> (ret: Tracked<Translating>)
+    requires
+        root % PAGE_SZ == 0,
+        id < PCID_MAX,
+    ensures
+        ret@.core == core as int,
+        ret@.root == root,
+{
+    let base = (id as u64) << 48 | root as u64;
+    unsafe {
+        core::arch::asm!("msr TTBR0_EL1, {base}", "isb", base = in(reg) base, options(nostack, preserves_flags));
     }
     Tracked::assume_new()
 }

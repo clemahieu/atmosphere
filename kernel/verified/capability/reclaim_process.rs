@@ -41,8 +41,8 @@ use crate::capability::view::*;
 use crate::define::*;
 use crate::pptr::*;
 
-/// The units of a retire: two checks of each core on the list, and a flush IPI to each.
-pub const RETIRE_STEPS: usize = 2 * NUM_CPUS + SEND_FLUSH_STEPS;
+/// The units of a retire: three checks of each core, and a flush IPI to each core on the list.
+pub const RETIRE_STEPS: usize = 3 * NUM_CPUS + SEND_FLUSH_STEPS;
 
 impl CapKernel {
     /// The process at `base` is dead with zero references: no capability names it and no thread is
@@ -73,14 +73,21 @@ impl CapKernel {
         }
     }
 
+    /// Some core's base register names the space of the process at `base`: that core may walk it, and
+    /// a flush leaves it free to fill its TLB from it again.
+    pub open spec fn process_space_named(&self, base: usize) -> bool {
+        exists|d: int| 0 <= d < NUM_CPUS && #[trigger] self.cores@[d].space == Some(base)
+    }
+
     /// A retype may retire the space of the dead process at `base`: an untyped covers its block, it is
-    /// not yet retired, a core depends on it, every core that has it loaded is settled, and the flush
-    /// epoch can rise.
+    /// not yet retired, a core depends on it, no core's base register names it, every core that has it
+    /// loaded is settled, and the flush epoch can rise.
     pub open spec fn can_retire_process(&self, root: usize, from: usize, base: usize) -> bool {
         &&& self.can_retype_under(root, from, base, PROCESS_ORDER)
         &&& self.process_is_dead(base)
         &&& self.spaces.loaded@[base].value().retired == 0
         &&& !self.process_released(base)
+        &&& !self.process_space_named(base)
         &&& forall|d: int| 0 <= d < NUM_CPUS && #[trigger] self.loaded(d, base) ==> self.core_settled(d)
         &&& self.flush_epoch < usize::MAX
     }
@@ -279,6 +286,42 @@ impl CapKernel {
         true
     }
 
+    /// Whether some core's base register names the space of the process at `base`: a bounded loop over
+    /// the cores.
+    fn process_space_names(&self, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
+        requires
+            self.wf(),
+        ensures
+            final(steps).count <= old(steps).count + NUM_CPUS,
+            ret == self.process_space_named(base),
+    {
+        let ghost start = steps.count;
+        let mut d: usize = 0;
+        while d != NUM_CPUS
+            invariant
+                0 <= d <= NUM_CPUS,
+                start == old(steps).count,
+                steps.count == start + d,
+                self.wf(),
+                forall|k: int| 0 <= k < d ==> #[trigger] self.cores@[k].space != Some(base),
+            decreases NUM_CPUS - d,
+        {
+            if let Some(named) = self.cores.get(d).space {
+                if named == base {
+                    proof {
+                        assert(self.cores@[d as int].space == Some(base));
+                    }
+                    return true;
+                }
+            }
+            proof {
+                steps.step();
+            }
+            d = d + 1;
+        }
+        false
+    }
+
     /// Whether every core that has the space of the process at `base` loaded is settled: one load of its
     /// list and a bounded loop over the cores, each reading its current thread's record.
     fn process_cores_settled(&self, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
@@ -347,6 +390,7 @@ impl CapKernel {
             pre.spaces.roots@.contains_key(s),
             pre.flush_epoch < usize::MAX,
             pre.spaces.loaded@[s].value().retired == 0,
+            forall|d: int| 0 <= d < NUM_CPUS ==> #[trigger] pre.cores@[d].space != Some(s),
             post == (CapKernel { flush_epoch: post.flush_epoch, flush_ipis: post.flush_ipis, spaces: post.spaces, ..pre }),
             post.flush_epoch == pre.flush_epoch + 1,
             post.spaces == (Spaces { loaded: post.spaces.loaded, ..pre.spaces }),
@@ -385,6 +429,14 @@ impl CapKernel {
         }
         assert(spaces_wf(&post.list, &post.tables, sb, &post.blocks));
         assert(tree_of(&post.table_pages, &post.spaces) == tree_of(&pre.table_pages, &pre.spaces));
+        assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] names_wf(pre.cores@[d].space, sb.loaded@, d) by {
+            reveal(ids_wf);
+            assert(names_wf(pre.cores@[d].space, sa.loaded@, d));
+            if let Some(r) = pre.cores@[d].space {
+                assert(r != s);
+                assert(sb.loaded@[r] == sa.loaded@[r]);
+            }
+        }
         lemma_ids_same(pre.cores@, sa.loaded@, sb.loaded@);
         assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] post.acked(d) <= post.flush_epoch by {
             assert(pre.acked(d) <= pre.flush_epoch);
@@ -405,8 +457,9 @@ impl CapKernel {
 
     /// Retires the space of the dead process at `base`, under the untyped at index `from` of the table at
     /// `root`: raises the flush epoch, records it as the space's retire epoch and sends a flush IPI to
-    /// each core on the space's list. Refused unless it is not yet retired, a core depends on it and
-    /// every core that has it loaded is settled. Returns whether it ran, and if not nothing changed.
+    /// each core on the space's list. Refused unless it is not yet retired, a core depends on it, no
+    /// core's base register names it and every core that has it loaded is settled. Returns whether it
+    /// ran, and if not nothing changed.
     pub fn retire_process(&mut self, root: usize, from: usize, base: usize, Tracked(steps): Tracked<&mut Steps>) -> (ret: bool)
         requires
             old(self).wf(),
@@ -448,6 +501,9 @@ impl CapKernel {
         if cores.retired != 0 || self.process_space_released(base, Tracked(&mut *steps)) {
             return false;
         }
+        if self.process_space_names(base, Tracked(&mut *steps)) {
+            return false;
+        }
         if !self.process_cores_settled(base, Tracked(&mut *steps)) {
             return false;
         }
@@ -463,6 +519,12 @@ impl CapKernel {
             self.spaces.loaded.borrow_mut().tracked_insert(base, perm);
             let post = *self;
             assert(post.spaces.loaded@ =~= mid.spaces.loaded@.insert(base, post.spaces.loaded@[base]));
+            assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] mid.cores@[d].space != Some(base) by {
+                if mid.cores@[d].space == Some(base) {
+                    assert(pre.cores@[d].space == Some(base));
+                    assert(pre.process_space_named(base));
+                }
+            }
             Self::lemma_process_retired(mid, post, base);
             Self::lemma_same_tree_shrunk(pre, post);
             assert(post.processes == pre.processes);
@@ -951,6 +1013,11 @@ impl CapKernel {
         Self::lemma_process_freed_objects(pre, post, base);
         Self::lemma_devices_same_caps(pre, post);
         Self::lemma_tlb_space_removed(pre, post, base);
+        assert forall|c: int| 0 <= c < NUM_CPUS implies #[trigger] pre.cores@[c].space != Some(base) by {
+            if pre.cores@[c].space == Some(base) {
+                pre.lemma_named_depends(c, base);
+            }
+        }
         lemma_ids_space_removed(pre.cores@, pre.spaces.loaded@, post.spaces.loaded@, base);
     }
 

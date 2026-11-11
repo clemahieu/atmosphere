@@ -2260,6 +2260,7 @@ impl CapKernel {
         &&& post.cores@[c].generation == pre.cores@[c].generation
         &&& post.cores@[c].next_pcid == pre.cores@[c].next_pcid
         &&& post.cores@[c].pcids_used == pre.cores@[c].pcids_used
+        &&& post.cores@[c].space == pre.cores@[c].space
     }
 
     /// A switch keeps wf when it leaves the current threads matching the Running states.
@@ -2341,6 +2342,7 @@ impl CapKernel {
             generation: state.generation,
             next_pcid: state.next_pcid,
             pcids_used: state.pcids_used,
+            space: state.space,
         });
         let tracked mut perm;
         proof {
@@ -2500,6 +2502,7 @@ impl CapKernel {
             generation: state.generation,
             next_pcid: state.next_pcid,
             pcids_used: state.pcids_used,
+            space: state.space,
         });
         let tracked mut perm;
         proof {
@@ -3002,6 +3005,7 @@ impl CapKernel {
                 generation: state.generation,
                 next_pcid: state.next_pcid,
                 pcids_used: state.pcids_used,
+                space: state.space,
             });
         }
         let tracked mut perm;
@@ -3325,6 +3329,7 @@ impl CapKernel {
             generation: state.generation,
             next_pcid: state.next_pcid,
             pcids_used: state.pcids_used,
+            space: state.space,
         });
         let tracked mut perm;
         proof {

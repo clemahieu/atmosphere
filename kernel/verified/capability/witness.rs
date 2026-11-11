@@ -1303,11 +1303,12 @@ impl CapKernel {
     /// From the end of the spawn witness, as the root: destroy the process through its capability in
     /// slot 257, delete the thread's capability, retype the thread's block, which unbinds the thread,
     /// delete the process's capability, retype the leaf in the process's table three times, which
-    /// unlinks it, slices its one capability and frees it, load the process's space on core 0 as a core
-    /// that ran it would have, retype the process's block, which retires the space, retype it again,
-    /// which refuses since core 0 still depends on the space, have core 0 acknowledge the retire's
-    /// flush, retype the block a third time, which frees it, and retype a process at the same block
-    /// into slot 257 again. Each step returns what a teardown driven by retype says, in this order, and
+    /// unlinks it, slices its one capability and frees it, load the process's space on core 0 and point
+    /// core 0's base register at it as a core that ran it would have, move core 0 to the root's space as
+    /// a core does before it runs another process, retype the process's block, which retires the space
+    /// now that no base register names it, retype it again, which refuses since core 0 still depends on
+    /// the space, have core 0 acknowledge the retire's flush, retype the block a third time, which frees
+    /// it, and retype a process at the same block into slot 257 again. Each step returns what a teardown driven by retype says, in this order, and
     /// at the end the root holds a capability to a live process at the same block. See
     /// design/teardown-driven-by-retype/.
     #[verifier::spinoff_prover]
@@ -1696,18 +1697,78 @@ impl CapKernel {
             }
         }
 
-        // Load the process's space on core 0, which runs nothing, as a core that ran its thread would have.
-        let _ = self.load_space(0, base, Tracked(&mut steps));
+        // Load the process's space on core 0, which runs nothing, and point core 0's base register at it,
+        // as a core that ran its thread would have.
+        proof {
+            assert(space_wf(&r7.list, &r7.spaces, &r7.blocks, base)) by {
+                reveal(CapKernel::wf);
+            }
+            assert(r7.processes.records@.contains_key(process));
+            assert(process_spaces_wf(&r7.spaces, &r7.processes)) by {
+                reveal(CapKernel::wf);
+            }
+            assert(r7.spaces.roots@.contains_key(process));
+            assert(r7.spaces.records@[process].value().kind is Process);
+            assert(space_wf(&r7.list, &r7.spaces, &r7.blocks, process)) by {
+                reveal(CapKernel::wf);
+            }
+            assert(process != base);
+            assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] r7.cores@[d].space != Some(base) by {
+                if r7.cores@[d].space == Some(base) {
+                    r7.lemma_named_depends(d, base);
+                    lemma_no_core_listed(d as u32);
+                }
+            }
+        }
+        let pcid = self.load_space(0, base, Tracked(&mut steps));
+        let ghost m7 = *self;
+        let named = crate::arch::load_translation_root(0, base + SPACE_ROOT_PAGE * PAGE_SZ, pcid);
+        self.switch_space(0, Some(base), named);
+        let ghost n7 = *self;
+        proof {
+            assert(n7.cores@[0].space == Some(base));
+            assert(n7.cores@[0].generation <= 2);
+            assert(n7.spaces.roots@.contains_key(process));
+            assert(n7.spaces == m7.spaces);
+        }
+
+        // Core 0 leaves the dead process's space for the root's, as a core does before it runs another
+        // process's thread, so no base register names the space a retire would end.
+        let pcid = self.load_space(0, process, Tracked(&mut steps));
+        let ghost k7 = *self;
+        proof {
+            // The load left core 0's register on the dead process's space, and a register names only a
+            // space its core is listed on that is not retired.
+            assert(k7.cores@[0].space == Some(base));
+            k7.lemma_named_depends(0, base);
+        }
+        let named = crate::arch::load_translation_root(0, process + SPACE_ROOT_PAGE * PAGE_SZ, pcid);
+        self.switch_space(0, Some(process), named);
         let ghost l7 = *self;
         proof {
+            assert(l7.spaces == k7.spaces);
             assert(l7.loaded(0, base));
+            assert(l7.spaces.loaded@[base].value().retired == 0);
             assert(l7.depends(0, base));
             assert(!l7.process_released(base));
+            assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] l7.cores@[d].space != Some(base) by {
+                if d != 0 {
+                    assert(l7.cores@[d] == r7.cores@[d]);
+                }
+            }
+            assert(!l7.process_space_named(base));
+            // Neither load listed another core on the dead process's space.
+            assert forall|d: int| 0 < d < NUM_CPUS implies !#[trigger] l7.loaded(d, base) by {
+                assert(l7.loaded(d, base) == k7.loaded(d, base));
+                assert(k7.loaded(d, base) == n7.loaded(d, base));
+                assert(n7.loaded(d, base) == m7.loaded(d, base));
+                assert(m7.loaded(d, base) == r7.loaded(d, base));
+                lemma_no_core_listed(d as u32);
+                assert(!r7.loaded(d, base));
+            }
             assert forall|d: int| 0 <= d < NUM_CPUS && #[trigger] l7.loaded(d, base) implies l7.core_settled(d) by {
                 if d != 0 {
-                    assert(l7.loaded(d, base) == r7.loaded(d, base));
-                    lemma_no_core_listed(d as u32);
-                    assert(!r7.loaded(d, base));
+                    assert(!l7.loaded(d, base));
                 }
             }
             assert(l7.list == r7.list && l7.tables == r7.tables && l7.blocks == r7.blocks);
@@ -1782,9 +1843,7 @@ impl CapKernel {
                     assert(a7.past_retire(0, base));
                 } else {
                     assert(t7.spaces.loaded@[base].value().list == l7.spaces.loaded@[base].value().list);
-                    assert(l7.loaded(d, base) == r7.loaded(d, base));
-                    lemma_no_core_listed(d as u32);
-                    assert(!r7.loaded(d, base));
+                    assert(!l7.loaded(d, base));
                     assert(!a7.loaded(d, base));
                 }
             }

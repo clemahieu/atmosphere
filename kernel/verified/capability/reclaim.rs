@@ -790,6 +790,9 @@ impl CapKernel {
                 && (exists|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && e.space == base && #[trigger] old(self).tlb@[d].contains(e))
                 ==> !old(self).process_released(base) && (ret is Refused || ret is Slice && old(self).process_retired(*final(self), base)),
             old(self).can_retire_process(root, from, base) ==> ret is Slice && old(self).process_retired(*final(self), base),
+            // A process whose space a core's base register names is refused: the core may walk the space, and
+            // a retire, which ends a core's dependence when it flushes, would not end that.
+            old(self).processes.records@.contains_key(base) && old(self).process_space_named(base) ==> ret is Refused,
             old(self).can_cut_process_space(root, from, base) ==> ret is Slice,
             old(self).processes.records@.contains_key(base) && ret is Slice
                 ==> old(self).process_retired(*final(self), base) || old(self).process_space_cut(*final(self), root, from, base),
@@ -844,6 +847,11 @@ impl CapKernel {
     {
         let ghost pre = *old(self);
         proof {
+            if pre.process_space_named(base) {
+                let d = choose|d: int| 0 <= d < NUM_CPUS && #[trigger] pre.cores@[d].space == Some(base);
+                pre.lemma_named_depends(d, base);
+                assert(!pre.process_released(base));
+            }
             pre.lemma_retype_holds_right(root, from, base, 0);
             pre.lemma_retype_holds_right(root, from, base, 1);
             pre.lemma_retype_holds_right(root, from, base, 3);
@@ -2920,6 +2928,7 @@ impl CapKernel {
             self.spaces.holders@[base] == Set::<usize>::empty(),
             self.spaces.bound@[base] == Set::<usize>::empty(),
             forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && e.space == base ==> !#[trigger] self.tlb@[c].contains(e),
+            forall|c: int| 0 <= c < NUM_CPUS ==> !#[trigger] self.loaded(c, base),
     {
         let page = (base / PAGE_SZ) as int;
         assert(space_wf(&self.list, &self.spaces, &self.blocks, base));
@@ -3068,6 +3077,11 @@ impl CapKernel {
         Self::lemma_space_freed_pages(pre, post, base);
         Self::lemma_node_block_objects(pre, post, base);
         Self::lemma_tlb_space_removed(pre, post, base);
+        assert forall|c: int| 0 <= c < NUM_CPUS implies #[trigger] pre.cores@[c].space != Some(base) by {
+            if pre.cores@[c].space == Some(base) {
+                pre.lemma_named_depends(c, base);
+            }
+        }
         lemma_ids_space_removed(pre.cores@, pre.spaces.loaded@, post.spaces.loaded@, base);
     }
 

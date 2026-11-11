@@ -149,7 +149,8 @@ impl CapKernel {
     }
 
     /// Core c loads process space s: from here on it may hold what the space's tables say, and it is on
-    /// the space's list of cores, for an unmap to find. Writing the core's CR3 is the caller's.
+    /// the space's list of cores, for an unmap to find. Pointing the core's base register at it is
+    /// switch_space's.
     pub fn load_space(&mut self, c: usize, s: usize, Tracked(steps): Tracked<&mut Steps>) -> (pcid: usize)
         requires
             old(self).wf(),
@@ -193,6 +194,7 @@ impl CapKernel {
             forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] final(self).tlb@[d] == old(self).tlb@[d],
             forall|e: TlbEntry| #[trigger] final(self).tlb@[c as int].contains(e) ==> old(self).tlb@[c as int].contains(e),
             final(self).cores@[c as int].current_thread == old(self).cores@[c as int].current_thread,
+            final(self).cores@[c as int].space == old(self).cores@[c as int].space,
             forall|d: int, r: usize| 0 <= d < NUM_CPUS && !(d == c as int && r == s)
                 ==> #[trigger] final(self).loaded(d, r) == old(self).loaded(d, r),
             forall|e: TlbEntry| e.space == s && space_says(tree_of(&old(self).table_pages, &old(self).spaces), s, e.page)
@@ -264,6 +266,10 @@ impl CapKernel {
             assert(post.spaces.loaded@ =~= mid.spaces.loaded@.insert(s, post.spaces.loaded@[s]));
             assert(post.spaces.loaded@.dom() =~= mid.spaces.loaded@.dom());
             assert(mid.spaces.loaded@ == pre.spaces.loaded@);
+            assert forall|d: int| 0 <= d < NUM_CPUS && core_listed(mid.spaces.loaded@[s].value().list, d)
+                implies #[trigger] core_listed(post.spaces.loaded@[s].value().list, d) by {
+                lemma_core_added(cores.list, c as u32, d as u32);
+            }
             lemma_id_loaded(mid.cores@, mid.spaces.loaded@, post.spaces.loaded@, c as int, s, (generation * PAGE_SZ + pcid) as usize);
             Self::lemma_core_loaded(mid, post, c as int, s);
             assert forall|e: TlbEntry| e.space == s && space_says(tree_of(&pre.table_pages, &pre.spaces), s, e.page)
@@ -272,6 +278,88 @@ impl CapKernel {
             }
         }
         pcid
+    }
+
+    /// Core c's base register now names the root of `space`, or a root that is no space's for None, as
+    /// the token from the glue that wrote it attests. A register names only a loaded space that is not
+    /// retired, and a retire refuses while one names it, so a core that has acknowledged a retire never
+    /// walks the space again. See design/teardown-driven-by-retype/.
+    pub fn switch_space(&mut self, c: usize, space: Option<usize>, Tracked(t): Tracked<Translating>)
+        requires
+            old(self).wf(),
+            c < NUM_CPUS,
+            t.core == c as int,
+            match space {
+                Some(s) => {
+                    &&& t.root == s + SPACE_ROOT_PAGE * PAGE_SZ
+                    &&& old(self).loaded(c as int, s)
+                    &&& old(self).spaces.loaded@[s].value().retired == 0
+                },
+                None => forall|s: usize| #[trigger] old(self).spaces.roots@.contains_key(s) ==> t.root != s + SPACE_ROOT_PAGE * PAGE_SZ,
+            },
+        ensures
+            Self::step_ok(*old(self), *final(self), c as int),
+            final(self).cores@[c as int].space == space,
+            final(self).cores@[c as int].current_thread == old(self).cores@[c as int].current_thread,
+            final(self).cores@[c as int].acked_epoch == old(self).cores@[c as int].acked_epoch,
+            final(self).cores@[c as int].generation == old(self).cores@[c as int].generation,
+            final(self).cores@[c as int].next_pcid == old(self).cores@[c as int].next_pcid,
+            final(self).cores@[c as int].pcids_used == old(self).cores@[c as int].pcids_used,
+            forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] final(self).cores@[d] == old(self).cores@[d],
+            forall|d: int, r: usize| 0 <= d < NUM_CPUS ==> #[trigger] holds_id(final(self).cores@, final(self).spaces.loaded@, d, r) == holds_id(old(self).cores@, old(self).spaces.loaded@, d, r),
+            final(self).tlb == old(self).tlb,
+            final(self).spaces == old(self).spaces,
+            final(self).list == old(self).list,
+            final(self).tables == old(self).tables,
+            final(self).blocks == old(self).blocks,
+            final(self).holders == old(self).holders,
+            final(self).mappings == old(self).mappings,
+            final(self).table_pages == old(self).table_pages,
+            final(self).zeroing == old(self).zeroing,
+            final(self).frames == old(self).frames,
+            final(self).mapped == old(self).mapped,
+            final(self).stale_epoch == old(self).stale_epoch,
+            final(self).flush_epoch == old(self).flush_epoch,
+            final(self).iommus == old(self).iommus,
+            final(self).devices == old(self).devices,
+            final(self).threads == old(self).threads,
+            final(self).processes == old(self).processes,
+    {
+        let ghost pre = *old(self);
+        let state = *self.cores.get(c);
+        self.cores.set(c, CoreState {
+            current_thread: state.current_thread,
+            acked_epoch: state.acked_epoch,
+            generation: state.generation,
+            next_pcid: state.next_pcid,
+            pcids_used: state.pcids_used,
+            space,
+        });
+        proof {
+            let post = *self;
+            assert forall|d: int| 0 <= d < NUM_CPUS && d != c as int implies #[trigger] post.cores@[d] == pre.cores@[d] by {}
+            lemma_ids_named(pre.cores@, post.cores@, post.spaces.loaded@, c as int);
+            Self::lemma_iommus_same(pre, post);
+            assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] post.cores@[d].current_thread == pre.cores@[d].current_thread by {
+                if d != c {
+                    assert(post.cores@[d] == pre.cores@[d]);
+                }
+            }
+            lemma_current_same(pre.cores@, post.cores@, pre.threads.records@, post.threads.records@);
+            assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] post.acked(d) <= post.flush_epoch by {
+                assert(pre.acked(d) <= pre.flush_epoch);
+                assert(post.acked(d) == pre.acked(d));
+            }
+            assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] post.tlb@[d].contains(e) implies post.depends(d, e.space) by {
+                assert(pre.depends(d, e.space));
+                assert(post.acked(d) == pre.acked(d));
+            }
+            assert forall|d: int, e: TlbEntry|
+                0 <= d < NUM_CPUS && #[trigger] post.tlb@[d].contains(e) && !post.mapped@.contains(e.page)
+                implies post.blocks.tracks(e.page as int) && post.stale_epoch.above(post.acked(d), e.page) by {
+                assert(post.acked(d) == pre.acked(d));
+            }
+        }
     }
 
     /// Hands out core c's next PCID. Run out, it flushes every context on this core first and starts a
@@ -322,6 +410,7 @@ impl CapKernel {
                 generation: state.generation + 1,
                 next_pcid: 2,
                 pcids_used: state.pcids_used,
+                space: state.space,
             });
             proof {
                 let post = *self;
@@ -337,6 +426,7 @@ impl CapKernel {
                 generation: state.generation,
                 next_pcid: state.next_pcid + 1,
                 pcids_used: state.pcids_used,
+                space: state.space,
             });
             proof {
                 let post = *self;
@@ -373,6 +463,7 @@ impl CapKernel {
             generation: state.generation,
             next_pcid: state.next_pcid,
             pcids_used: Ghost(state.pcids_used@.insert(p)),
+            space: state.space,
         });
         proof {
             let post = *self;
