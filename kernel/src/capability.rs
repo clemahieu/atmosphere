@@ -179,7 +179,8 @@ pub fn boot(boot_info: &BootInfo) -> Entry {
         // one place the cores' base registers are made: design/teardown-driven-by-retype/.
         Tracked::assume_new(),
         // No space is loaded yet, so each core's TLB model holds no entry and no tag, and this is the one
-        // place the model is made: design/flush-without-waiting/.
+        // place CapKernel's model is made; flush.rs's handler makes and drops one of its own for the boot
+        // test's flush state, outside CapKernel: design/flush-without-waiting/.
         Tracked::assume_new(),
         // Nothing is unmapped yet, so each IOMMU's IOTLB model is empty, and this is the one place that
         // model is made: design/flush-without-waiting/.
