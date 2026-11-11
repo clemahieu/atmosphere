@@ -33,6 +33,25 @@ use crate::lock::Locked;
 /// The one capability kernel, holding every core. Why one: design/one-kernel-instance/.
 pub static CAP_KERNEL: Locked<Option<&'static mut CapKernel>> = Locked::new("capability kernel", None);
 
+/// Runs the invocation in `frame` for the calling core's current thread under the kernel's lock, then
+/// makes the flush its unmaps owe, which the verified dispatch records in ghost state only: the calling
+/// core acknowledges before the lock is released, and the flush IPIs go out after.
+/// design/flush-without-waiting/. Each target's entry calls this.
+pub fn dispatch(frame: Registers) -> Outcome {
+    let core = crate::cpu::get_cpu_id();
+    let (returned, targets) = {
+        let mut guard = CAP_KERNEL.lock();
+        let kernel = guard.as_deref_mut().expect("an invocation before the capability kernel was built");
+        let epoch = kernel.flush_epoch;
+        let returned = kernel
+            .dispatch(core, frame)
+            .expect("no operation is wired that moves the calling thread off its core");
+        (returned, crate::flush::owed(kernel, core, epoch))
+    };
+    crate::flush::send(targets);
+    returned
+}
+
 /// Whether the invocation in `frame`, which the dispatch answered with `returned`, ends the run: a
 /// power-off the dispatch accepted, with whether it reports a run that succeeded, argument 1 not zero.
 /// Each target's entry asks this once the kernel's lock is released, before it writes the outcome over

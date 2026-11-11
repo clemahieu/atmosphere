@@ -11,7 +11,7 @@
 use verified::arch::Registers;
 use verified::capability::operation::{self, Outcome};
 
-use crate::capability::{power_off_accepted, CAP_KERNEL};
+use crate::capability::{dispatch, power_off_accepted};
 
 /// ESR_EL1.EC, bits 31:26, the exception's class. Arm ARM D24.2.44.
 const CLASS_SHIFT: u32 = 26;
@@ -50,12 +50,7 @@ pub fn invoke(frame: &mut Registers, immediate: u64) {
         frame.write_outcome(operation::status_only_outcome(operation::STATUS_UNKNOWN));
         return;
     }
-    let returned: Outcome = CAP_KERNEL
-        .lock()
-        .as_deref_mut()
-        .expect("a call from EL0 before the capability kernel was built")
-        .dispatch(crate::cpu::get_cpu_id(), *frame)
-        .expect("no operation is wired that moves the calling thread off its core");
+    let returned: Outcome = dispatch(*frame);
     match returned.status {
         operation::STATUS_OK
         | operation::STATUS_REFUSED
@@ -63,7 +58,7 @@ pub fn invoke(frame: &mut Registers, immediate: u64) {
         | operation::STATUS_AGAIN => {}
         status => unreachable!("dispatch returned status {status}, which no operation returns"),
     }
-    // The statement that ran the dispatch released the kernel's lock when it ended.
+    // The dispatch released the kernel's lock before it returned.
     if let Some(success) = power_off_accepted(frame, &returned) {
         super::access_dirty::report();
         unsafe { crate::machine::shutdown(success) }

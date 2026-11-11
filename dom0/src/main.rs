@@ -47,8 +47,9 @@
 //! alone, then both clear, then dirty; the other 63 entries, none of them present, have no bit set, and
 //! both bits are maintained. A probe of 0 entries, of 65 and of a range leaving its level 1 table is refused. It maps
 //! the frame at the next entry, writes the page and unmaps it, and the unmap returns accessed and dirty
-//! set, both maintained, which it prints. It retypes a table leaf into root entry 2 of its own table, the
-//! first boot leaves empty, after a retype into the occupied entry 1, into entry 512, past the root's, by
+//! set, both maintained, which it prints. It retypes another 4K frame, maps it beside that page, writes a
+//! word through it, maps it at the unmapped page and reads that word there, not the old frame's. It
+//! retypes a table leaf into root entry 2 of its own table, the first boot leaves empty, after a retype into the occupied entry 1, into entry 512, past the root's, by
 //! a word naming no position and of a block that is not free is refused, and a second leaf into entry 3
 //! through its own process capability, after entry 2 named through it is refused; inspect refuses each
 //! leaf's first slot until a derive of the power capability into it, after which inspect finds it there.
@@ -657,6 +658,41 @@ fn unmapped_bits_held(caller: &mut Tracked<Caller>, frame: u64) -> bool {
         && unmapped.dirty_maintained
 }
 
+/// The word dom0 writes through the frame it maps where UNMAPPED_ENTRY's page was, unlike MAPPED_WORD.
+const OTHER_WORD: u64 = 0x6b65_726e_656c_2032;
+
+/// The pages below the top of the table check's untyped where the remap check takes its frame: the order-3
+/// block below the table pages' four blocks, the block their own top one leaves free and the leaf check's
+/// two leaves of two pages each.
+const OTHER_FRAME_BELOW_TOP: u64 = 7 * 8 * 4096;
+
+/// Whether a map after an unmap gives the new frame's bytes: dom0 retypes a page of `untyped`, the table
+/// check's, OTHER_FRAME_BELOW_TOP below its top, into the empty slot `other`, maps it at the entry after
+/// UNMAPPED_ENTRY and writes OTHER_WORD through it, then maps it at UNMAPPED_ENTRY, whose page
+/// unmapped_bits_held wrote and unmapped, and reads OTHER_WORD there. A core that kept the unmapped
+/// page's translation would read MAPPED_WORD from the old frame: the unmap's flush must reach the calling
+/// core before the map returns. See design/flush-without-waiting/.
+fn remapped_other_frame_held(caller: &mut Tracked<Caller>, untyped: u64, other: u64) -> bool {
+    let base = match inspect(caller, untyped) {
+        Ok(block) => block.base + (4096 << block.order) - OTHER_FRAME_BELOW_TOP,
+        Err(_) => return false,
+    };
+    let beside = entry_address(UNMAPPED_ENTRY + 1) as *mut u64;
+    let page = entry_address(UNMAPPED_ENTRY) as *const u64;
+    if retype(caller, untyped, operation::RETYPE_FRAME, base, other, 0).status != operation::STATUS_OK
+        || map(caller, operation::ROOT_PROCESS_SLOT, beside as u64, 1, other, 0).status != operation::STATUS_OK
+    {
+        return false;
+    }
+    // The map just made the page beside the new frame's, writable, and nothing else names it.
+    unsafe { beside.write_volatile(OTHER_WORD) };
+    if map(caller, operation::ROOT_PROCESS_SLOT, page as u64, 1, other, 0).status != operation::STATUS_OK {
+        return false;
+    }
+    // The map just made the page the new frame's, which holds OTHER_WORD.
+    unsafe { page.read_volatile() == OTHER_WORD }
+}
+
 /// Whether dom0 retypes the 2M block at the bottom of the last untyped of at least 512 pages as a frame
 /// into the empty slot `destination`, repeating while retype returns again, and prints how many again
 /// returns that took: a retype at a base not aligned to 2M is refused, the retype returns again at least
@@ -1033,6 +1069,7 @@ extern "C" fn main(_payload_base: *mut u8, _payload_size: usize) -> isize {
                             && timed_beside_before(caller, empty + 1)
                             && probed_bits_held(caller, empty + 1)
                             && unmapped_bits_held(caller, empty + 1)
+                            && remapped_other_frame_held(caller, untyped, empty + 2)
                             && retyped_leaves_held(caller, untyped, tables[3])
                             && eager_source_held(caller, empty)
                     })

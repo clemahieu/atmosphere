@@ -224,14 +224,9 @@ unsafe extern "C" fn sys_entry() -> ! {
 /// the status and result words that return. A power-off it accepted ends the run here and returns to
 /// no thread.
 extern "C" fn capability_entry(regs: &mut Registers) {
-    use crate::capability::{power_off_accepted, CAP_KERNEL};
+    use crate::capability::{dispatch, power_off_accepted};
 
-    let returned = CAP_KERNEL
-        .lock()
-        .as_deref_mut()
-        .expect("a syscall before the capability kernel was built")
-        .dispatch(crate::cpu::get_cpu_id(), *regs)
-        .expect("no operation is wired that moves the calling thread off its core");
+    let returned = dispatch(*regs);
     match returned.status {
         operation::STATUS_OK
         | operation::STATUS_REFUSED
@@ -239,7 +234,7 @@ extern "C" fn capability_entry(regs: &mut Registers) {
         | operation::STATUS_AGAIN => {}
         status => unreachable!("dispatch returned status {status}, which no operation returns"),
     }
-    // The statement that ran the dispatch released the kernel's lock when it ended.
+    // The dispatch released the kernel's lock before it returned.
     if let Some(success) = power_off_accepted(regs, &returned) {
         unsafe { crate::machine::shutdown(success) }
     }

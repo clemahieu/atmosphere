@@ -5,14 +5,18 @@
 //! the epoch, sends the IPI and lets go. The target's handler flushes every context and records its
 //! acknowledgement under the lock. See design/flush-without-waiting/.
 //!
-//! CapKernel holds the proven form of this state, and its acknowledge makes the flush itself. No
-//! operation that unmaps is wired to it, so this holds the state the boot test flushes by.
+//! CapKernel holds the proven form of this state, and its acknowledge makes the flush itself. An
+//! operation's unmaps bump its epoch and record their IPIs in ghost state; `owed` and `send` make them
+//! on the running kernel, and the IPI's handler acknowledges in CapKernel. FlushState is the boot test's
+//! own, which runs before CapKernel is built.
 
 use verified::arch::flush_every_context;
+use verified::capability::kernel::CapKernel;
 use verified::define::NUM_CPUS;
 use vstd::prelude::Tracked;
 
 use crate::arch;
+use crate::capability::CAP_KERNEL;
 use crate::cpu;
 use crate::machine::{self, FLUSH_VECTOR};
 use crate::lock::Locked;
@@ -40,14 +44,61 @@ pub fn acknowledged(target: usize, epoch: usize) -> bool {
     FLUSH.lock().acked[target] >= epoch
 }
 
-/// The flush IPI's handler. An epoch read before the flush covers every unmap up to it.
+/// The flush IPI's handler. An epoch read before the flush covers every unmap up to it. It serves the
+/// boot test's state, then CapKernel's: a core behind CapKernel's epoch acknowledges it, which flushes
+/// every context. The handler runs with interrupts closed, and no core holds the kernel's lock with them
+/// open, so it never waits on a lock its own core holds.
 pub fn handle_ipi() {
     let core = cpu::get_cpu_id();
-    let mut state = FLUSH.lock();
-    let epoch = state.epoch;
-    // This state is not CapKernel's, so no TLB model is kept for it and the one made here is dropped.
-    flush_every_context(Tracked::assume_new(), core);
-    state.acked[core] = epoch;
+    {
+        let mut state = FLUSH.lock();
+        let epoch = state.epoch;
+        // This state is not CapKernel's, so no TLB model is kept for it and the one made here is dropped.
+        flush_every_context(Tracked::assume_new(), core);
+        state.acked[core] = epoch;
+    }
+    if let Some(kernel) = CAP_KERNEL.lock().as_deref_mut() {
+        if kernel.cores.get(core).acked_epoch < kernel.flush_epoch {
+            // The handler runs on `core`, which acknowledge requires of its caller.
+            kernel.acknowledge(core, Tracked::assume_new());
+        }
+    }
+}
+
+/// The flush an operation owes, given CapKernel's epoch before it ran, as the mask of cores to send the
+/// flush IPI. Called under the kernel's lock by the core that ran the operation. An unmap bumps the
+/// epoch and records an IPI to each core that loaded the space, in ghost state only, and returns
+/// without flushing even its own core. When the epoch moved, the calling core acknowledges here, so it
+/// returns to its thread holding no translation the operation dropped, and every other core that has
+/// loaded a space and has not reached the epoch is
+/// owed the IPI, a superset of the cores the unmaps listed.
+pub fn owed(kernel: &mut CapKernel, core: usize, epoch: usize) -> u64 {
+    if kernel.flush_epoch == epoch {
+        return 0;
+    }
+    // `core` is the core running this, which acknowledge requires of its caller.
+    kernel.acknowledge(core, Tracked::assume_new());
+    let mut targets = 0;
+    for d in 0..NUM_CPUS {
+        let state = kernel.cores.get(d);
+        if arch::loaded_a_space(state) && state.acked_epoch < kernel.flush_epoch {
+            targets |= 1 << d;
+        }
+    }
+    targets
+}
+
+// `owed`'s mask has a bit for each core.
+const _: () = assert!(NUM_CPUS <= u64::BITS as usize);
+
+/// Sends the flush IPI to each core in `targets`, the mask `owed` returned, once the kernel's lock is
+/// released.
+pub fn send(targets: u64) {
+    for d in 0..NUM_CPUS {
+        if targets >> d & 1 == 1 {
+            machine::send_ipi(d, FLUSH_VECTOR);
+        }
+    }
 }
 
 /// Rounds of the boot test, so that one slow first round does not stand for the cost.
