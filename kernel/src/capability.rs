@@ -150,6 +150,13 @@ pub fn boot(boot_info: &BootInfo) -> Entry {
 
     // kernel_init takes the loader's root as a page, the one a core naming no space is pointed back at.
     assert!(boot_info.pml4 as u64 % PAGE_BYTES == 0, "the loader's root table is not a page");
+    // kernel_init hands its page to no block: the memory map keeps it out of the free runs and the
+    // stretch, and no 2M region of dom0's image may hold it.
+    let pml4 = boot_info.pml4 as u64;
+    assert!(
+        aside[1..].iter().all(|region| pml4 < region.base || region.base + region.size <= pml4),
+        "the loader's root table lies in a 2M region of dom0's image"
+    );
     let mut kernel_entries = Array::<usize, KERNEL_MEM_END_L4INDEX>::new(0);
     for index in 0..KERNEL_MEM_END_L4INDEX {
         kernel_entries.set(index, unsafe { *(boot_info.pml4 as *const usize).add(index) });

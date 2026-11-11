@@ -141,6 +141,8 @@ impl CapKernel {
             base + PROCESS_BYTES <= leaf || leaf + LEAF_BYTES <= base,
             !(base <= root < base + PROCESS_BYTES),
             !(leaf <= root < leaf + LEAF_BYTES),
+            kernel_root_apart(old(self).spaces.kernel_root@, (base / PAGE_SZ) as int, 8),
+            kernel_root_apart(old(self).spaces.kernel_root@, (leaf / PAGE_SZ) as int, 2),
             forall|i: usize| base / PAGE_SZ <= i < base / PAGE_SZ + 8 || leaf / PAGE_SZ <= i < leaf / PAGE_SZ + 2
                 ==> #[trigger] holds(pages, i),
         ensures
@@ -421,6 +423,7 @@ impl CapKernel {
             !old(self).blocks.covered((t / PAGE_SZ) as int),
             forall|p: usize| #[trigger] old(self).list.pages@.dom().contains(p) && old(self).blocks.tracks_addr(p)
                 ==> !(t / PAGE_SZ <= p / PAGE_SZ < t / PAGE_SZ + 2),
+            kernel_root_apart(old(self).spaces.kernel_root@, (t / PAGE_SZ) as int, 2),
             forall|i: usize| t / PAGE_SZ <= i < t / PAGE_SZ + 2 ==> #[trigger] holds(pages, i),
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
@@ -705,6 +708,7 @@ impl CapKernel {
             !old(self).blocks.covered((leaf / PAGE_SZ) as int),
             forall|p: usize| #[trigger] old(self).list.pages@.dom().contains(p) && old(self).blocks.tracks_addr(p)
                 ==> !(leaf / PAGE_SZ <= p / PAGE_SZ < leaf / PAGE_SZ + 2),
+            kernel_root_apart(old(self).spaces.kernel_root@, (leaf / PAGE_SZ) as int, 2),
             forall|i: usize| leaf / PAGE_SZ <= i < leaf / PAGE_SZ + 2 ==> #[trigger] holds(pages, i),
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
@@ -839,6 +843,10 @@ impl CapKernel {
             !(leaf <= root < leaf + LEAF_BYTES),
             !(frames <= root < frames + LEAF_BYTES),
             !(t <= root < t + THREAD_BYTES),
+            kernel_root_apart(old(self).spaces.kernel_root@, (process / PAGE_SZ) as int, 8),
+            kernel_root_apart(old(self).spaces.kernel_root@, (leaf / PAGE_SZ) as int, 2),
+            kernel_root_apart(old(self).spaces.kernel_root@, (frames / PAGE_SZ) as int, 2),
+            kernel_root_apart(old(self).spaces.kernel_root@, (t / PAGE_SZ) as int, 2),
             forall|i: usize| process / PAGE_SZ <= i < process / PAGE_SZ + 8 || leaf / PAGE_SZ <= i < leaf / PAGE_SZ + 2
                 || frames / PAGE_SZ <= i < frames / PAGE_SZ + 2 || t / PAGE_SZ <= i < t / PAGE_SZ + 2 ==> #[trigger] holds(pages, i),
         ensures
@@ -1804,6 +1812,7 @@ impl CapKernel {
         lemma_binding_nodes_grown(pre.list, mid, post.list, child, child);
         lemma_bindings_kept(&pre.list, &post.list, &pre.threads, &post.threads, &pre.processes, &post.processes);
         Self::lemma_binding_parents_same_caps(pre, post);
+        Self::lemma_kernel_root_typed(pre, post, (t / PAGE_SZ) as int, 2);
         assert(post.wf());
         assert forall|x: usize| #[trigger] post.is_cap(x) implies x == child || pre.is_cap(x) by {
             if x != child {
@@ -1829,6 +1838,7 @@ impl CapKernel {
                 == if start <= i < start + n { free_entry() } else { pre.blocks.pages@[i] },
             forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) && pre.blocks.tracks_addr(p)
                 ==> !(start <= p / PAGE_SZ < start + n),
+            kernel_root_apart(pre.spaces.kernel_root@, start as int, n as int),
             post.list == pre.list,
             post.tables == pre.tables,
             post.table_pages == pre.table_pages,
@@ -2022,6 +2032,7 @@ impl CapKernel {
         assert forall|i: usize| pre.blocks.tracks(i as int) && block_typed(&pre.blocks, block_ref(&pre.blocks, i))
             && block_refs(&pre.blocks, block_ref(&pre.blocks, i)) > 0
             implies #[trigger] block_ref(&post.blocks, i) == block_ref(&pre.blocks, i) by {}
+        Self::lemma_kernel_root_apart(pre, post, start as int, n as int);
         Self::lemma_blocks_changed(pre, post);
     }
 
@@ -2052,6 +2063,8 @@ impl CapKernel {
             base + PROCESS_BYTES <= leaf || leaf + LEAF_BYTES <= base,
             !(base <= root < base + PROCESS_BYTES),
             !(leaf <= root < leaf + LEAF_BYTES),
+            kernel_root_apart(pre.spaces.kernel_root@, (base / PAGE_SZ) as int, 8),
+            kernel_root_apart(pre.spaces.kernel_root@, (leaf / PAGE_SZ) as int, 2),
             (base / PAGE_SZ) * PAGE_SZ == base,
             (leaf / PAGE_SZ) * PAGE_SZ == leaf,
             (leaf / PAGE_SZ) % 2 == 0,
@@ -2525,6 +2538,14 @@ impl CapKernel {
             lemma_no_core_listed(c as u32);
         }
         Self::lemma_devices_same_caps(pre, post);
+        assert(kernel_root_reserved(&post.blocks, post.spaces.kernel_root@)) by {
+            let r = (pre.spaces.kernel_root@ / PAGE_SZ) as int;
+            if pre.blocks.tracks(r) {
+                assert(freed.pages@[r] == pre.blocks.pages@[r]);
+                assert(leaf_typed.pages@[r] == freed.pages@[r]);
+                assert(post.blocks.pages@[r] == leaf_typed.pages@[r]);
+            }
+        }
         assert(post.wf());
         assert forall|k: int| 0 <= k < 8 implies {
             ||| (#[trigger] post.blocks.pages@[base / PAGE_SZ + k]).kind is Base

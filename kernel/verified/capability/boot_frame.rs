@@ -114,6 +114,7 @@ impl CapKernel {
                 == if region_2m(i) == r { free_entry() } else { pre.blocks.pages@[i] },
             forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) && pre.blocks.tracks_addr(p)
                 ==> region_2m((p / PAGE_SZ) as int) != r,
+            pre.spaces.kernel_root@ / PAGE_SZ < NUM_PAGES ==> region_2m((pre.spaces.kernel_root@ / PAGE_SZ) as int) != r,
             post.frames_wf(),
             forall|i: usize| #[trigger] pre.frames@.contains_key(i) ==> post.frames@.contains_key(i),
             forall|i: usize| #[trigger] block_has_page(BlockRef::Two(r), i) ==> post.frames@.contains_key(i),
@@ -354,6 +355,12 @@ impl CapKernel {
         assert forall|i: usize| pre.blocks.tracks(i as int) && block_typed(&pre.blocks, block_ref(&pre.blocks, i))
             && block_refs(&pre.blocks, block_ref(&pre.blocks, i)) > 0
             implies #[trigger] block_ref(&post.blocks, i) == block_ref(&pre.blocks, i) by {}
+        assert(kernel_root_reserved(&post.blocks, post.spaces.kernel_root@)) by {
+            let kr = (pre.spaces.kernel_root@ / PAGE_SZ) as int;
+            if pre.blocks.tracks(kr) {
+                assert(post.blocks.pages@[kr] == pre.blocks.pages@[kr]);
+            }
+        }
         Self::lemma_zeroing_changed(pre, post);
     }
 
@@ -560,6 +567,8 @@ impl CapKernel {
                     ==> #[trigger] perms.contains_key(j)
                 &&& forall|p: usize| #[trigger] old(self).list.pages@.dom().contains(p) && old(self).blocks.tracks_addr(p)
                     ==> region_2m((p / PAGE_SZ) as int) != frame_region(base)
+                &&& old(self).spaces.kernel_root@ / PAGE_SZ < NUM_PAGES
+                    ==> region_2m((old(self).spaces.kernel_root@ / PAGE_SZ) as int) != frame_region(base)
             },
         ensures
             final(self).stale_epoch == old(self).stale_epoch,

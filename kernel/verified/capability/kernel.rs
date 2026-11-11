@@ -154,6 +154,19 @@ pub open spec fn boot_registers(registers: Map<int, BaseRegister>, kernel_root: 
     }
 }
 
+/// The page of the root every core boots on stays Reserved when the blocks track it: boot hands it
+/// to no block, as kernel_init requires, and nothing after boot types a Reserved page. So it lies in
+/// no block, and no space's root is it (lemma_none_names_no_root).
+pub open spec fn kernel_root_reserved(blocks: &BlockTable, kernel_root: usize) -> bool {
+    blocks.tracks_addr(kernel_root) ==> blocks.pages@[(kernel_root / PAGE_SZ) as int].kind is Reserved
+}
+
+/// The kernel root's page, when the blocks track it, is none of the `n` pages from `start`: a boot step
+/// handing those pages to the blocks leaves the root's page Reserved.
+pub open spec fn kernel_root_apart(kernel_root: usize, start: int, n: int) -> bool {
+    kernel_root / PAGE_SZ < NUM_PAGES ==> !(start <= kernel_root / PAGE_SZ < start + n)
+}
+
 /// The kernel holds each core's base register, and what each last wrote is what the core's record
 /// says it names. Only switch_space writes a register, and it writes the record in the same step, so
 /// no write the record does not show can happen: design/teardown-driven-by-retype/.
@@ -1342,6 +1355,7 @@ impl CapKernel {
         &&& self.tlb_wf()
         &&& ids_wf(self.cores@, self.spaces.loaded@)
         &&& registers_wf(self.spaces.registers@, self.cores@, self.spaces.loaded@, self.spaces.kernel_root@)
+        &&& kernel_root_reserved(&self.blocks, self.spaces.kernel_root@)
         &&& self.frames_wf()
         &&& self.zeroing.wf()
         &&& zeroing_typed(&self.zeroing, &self.blocks)
@@ -1951,11 +1965,63 @@ impl CapKernel {
         Self::lemma_mappings_same_tree(pre, post);
     }
 
+    /// Freeing the block at `base` keeps the kernel root's page Reserved: every page of a block is its
+    /// base or a member, none Reserved.
+    pub proof fn lemma_kernel_root_freed(pre: Self, post: Self, base: int)
+        requires
+            pre.wf(),
+            pre.blocks.tracks(base),
+            pre.blocks.pages@[base].kind is Base,
+            post.spaces.kernel_root == pre.spaces.kernel_root,
+            forall|i: int| pre.blocks.tracks(i) ==> #[trigger] post.blocks.pages@[i] == (
+                if pre.blocks.in_block(base, i) { free_entry() } else { pre.blocks.pages@[i] }),
+        ensures
+            kernel_root_reserved(&post.blocks, post.spaces.kernel_root@),
+    {
+        let r = (pre.spaces.kernel_root@ / PAGE_SZ) as int;
+        if pre.blocks.tracks(r) && pre.blocks.in_block(base, r) && r != base {
+            pre.blocks.lemma_member_of(base, r);
+        }
+    }
+
+    /// Typing `n` pages from `page` that were Free keeps the kernel root's page Reserved.
+    pub proof fn lemma_kernel_root_typed(pre: Self, post: Self, page: int, n: int)
+        requires
+            pre.wf(),
+            post.spaces.kernel_root == pre.spaces.kernel_root,
+            forall|k: int| 0 <= k < n ==> #[trigger] pre.blocks.pages@[page + k].kind is Free,
+            forall|i: int| pre.blocks.tracks(i) && !(page <= i < page + n) ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
+        ensures
+            kernel_root_reserved(&post.blocks, post.spaces.kernel_root@),
+    {
+        let r = (pre.spaces.kernel_root@ / PAGE_SZ) as int;
+        if pre.blocks.tracks(r) && page <= r < page + n {
+            assert(pre.blocks.pages@[page + (r - page)].kind is Free);
+        }
+    }
+
+    /// Changing only the `n` pages from `start`, none of them the kernel root's, keeps it Reserved.
+    pub proof fn lemma_kernel_root_apart(pre: Self, post: Self, start: int, n: int)
+        requires
+            pre.wf(),
+            post.spaces.kernel_root == pre.spaces.kernel_root,
+            kernel_root_apart(pre.spaces.kernel_root@, start, n),
+            forall|i: int| pre.blocks.tracks(i) && !(start <= i < start + n) ==> #[trigger] post.blocks.pages@[i] == pre.blocks.pages@[i],
+        ensures
+            kernel_root_reserved(&post.blocks, post.spaces.kernel_root@),
+    {
+        let r = (pre.spaces.kernel_root@ / PAGE_SZ) as int;
+        if pre.blocks.tracks(r) {
+            assert(post.blocks.pages@[r] == pre.blocks.pages@[r]);
+        }
+    }
+
     /// Changing only the block table, the frames and the zeroing table keeps the invariant if each of
     /// them keeps its own, every typed block keeps its pages and every holder stays in place.
     pub proof fn lemma_zeroing_changed(pre: Self, post: Self)
         requires
             pre.wf(),
+            kernel_root_reserved(&post.blocks, post.spaces.kernel_root@),
             post.blocks.wf(),
             post.frames_wf(),
             post.zeroing.wf(),
@@ -2001,6 +2067,7 @@ impl CapKernel {
     pub proof fn lemma_blocks_changed(pre: Self, post: Self)
         requires
             pre.wf(),
+            kernel_root_reserved(&post.blocks, post.spaces.kernel_root@),
             post.blocks.wf(),
             post.list == pre.list,
             post.tables == pre.tables,
@@ -2255,6 +2322,7 @@ impl CapKernel {
                 pre.holders@[br].lemma_len0_is_empty();
             }
         }
+        Self::lemma_kernel_root_freed(pre, post, base as int);
         Self::lemma_blocks_changed(pre, post);
     }
 

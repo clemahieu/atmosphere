@@ -554,6 +554,8 @@ impl CapKernel {
             },
             forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) && pre.blocks.tracks_addr(p)
                 ==> !image_region(runs, region_2m((p / PAGE_SZ) as int)),
+            pre.spaces.kernel_root@ / PAGE_SZ < NUM_PAGES
+                ==> !image_region(runs, region_2m((pre.spaces.kernel_root@ / PAGE_SZ) as int)),
         ensures
             ({
                 let r = s / PAGES_PER_2M;
@@ -574,6 +576,8 @@ impl CapKernel {
                     &&& forall|j: usize| r * PAGES_PER_2M <= j < (r + 1) * PAGES_PER_2M ==> #[trigger] perms.contains_key(j)
                     &&& forall|p: usize| #[trigger] cur.list.pages@.dom().contains(p) && cur.blocks.tracks_addr(p)
                         ==> region_2m((p / PAGE_SZ) as int) != r
+                    &&& cur.spaces.kernel_root@ / PAGE_SZ < NUM_PAGES
+                        ==> region_2m((cur.spaces.kernel_root@ / PAGE_SZ) as int) != r
                 }
             }),
     {
@@ -761,6 +765,8 @@ impl CapKernel {
             forall|j: usize| #[trigger] perms.contains_key(j) ==> perms[j].addr() == j * PAGE_SZ,
             forall|p: usize| #[trigger] old(self).list.pages@.dom().contains(p) && old(self).blocks.tracks_addr(p)
                 ==> !image_region(runs@, region_2m((p / PAGE_SZ) as int)),
+            old(self).spaces.kernel_root@ / PAGE_SZ < NUM_PAGES
+                ==> !image_region(runs@, region_2m((old(self).spaces.kernel_root@ / PAGE_SZ) as int)),
             no_device_space(&old(self).spaces),
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
@@ -883,6 +889,8 @@ impl CapKernel {
                 },
                 forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) && pre.blocks.tracks_addr(p)
                     ==> !image_region(runs@, region_2m((p / PAGE_SZ) as int)),
+                pre.spaces.kernel_root@ / PAGE_SZ < NUM_PAGES
+                    ==> !image_region(runs@, region_2m((pre.spaces.kernel_root@ / PAGE_SZ) as int)),
                 k == runs_blocks(phys.take(r as int), IMAGE_ORDER as nat).len(),
                 no_device_space(&self.spaces),
                 image_progress(*self, pre, root, process, leaf2, runs@, bs, k as int, perms),
@@ -948,6 +956,8 @@ impl CapKernel {
                     },
                     forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) && pre.blocks.tracks_addr(p)
                         ==> !image_region(runs@, region_2m((p / PAGE_SZ) as int)),
+                    pre.spaces.kernel_root@ / PAGE_SZ < NUM_PAGES
+                        ==> !image_region(runs@, region_2m((pre.spaces.kernel_root@ / PAGE_SZ) as int)),
                     phys[r as int] == (start, n),
                     start <= s,
                     s + m == start + n,

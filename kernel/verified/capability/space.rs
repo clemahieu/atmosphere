@@ -2343,6 +2343,7 @@ impl CapKernel {
         Self::lemma_table_page_mappings(pre, post, base, page);
         assert(post.wf()) by {
             pre.tables.lemma_wf_same_pages(&pre.list, &post.list);
+            Self::lemma_kernel_root_typed(pre, post, page as int, 8);
             Self::lemma_devices_same_caps(pre, post);
             Self::lemma_tlb_same(pre, post);
             Self::lemma_table_page_nodes(pre, post, mid, parent, base);

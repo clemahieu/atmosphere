@@ -368,6 +368,8 @@ impl CapKernel {
             forall|i: usize| in_runs(runs@, runs@.len() as int, i as int) ==> #[trigger] holds(pages, i),
             forall|p: usize| #[trigger] old(self).list.pages@.dom().contains(p) && old(self).blocks.tracks_addr(p)
                 ==> !in_runs(runs@, runs@.len() as int, (p / PAGE_SZ) as int),
+            old(self).spaces.kernel_root@ / PAGE_SZ < NUM_PAGES
+                ==> !in_runs(runs@, runs@.len() as int, (old(self).spaces.kernel_root@ / PAGE_SZ) as int),
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).devices == old(self).devices,
@@ -430,6 +432,8 @@ impl CapKernel {
                     ==> #[trigger] holds(pages, i),
                 forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) && pre.blocks.tracks_addr(p)
                     ==> !in_runs(runs@, runs@.len() as int, (p / PAGE_SZ) as int),
+                pre.spaces.kernel_root@ / PAGE_SZ < NUM_PAGES
+                    ==> !in_runs(runs@, runs@.len() as int, (pre.spaces.kernel_root@ / PAGE_SZ) as int),
             decreases runs@.len() - r,
         {
             let (start, n) = runs[r];
@@ -459,6 +463,13 @@ impl CapKernel {
                     if start <= p / PAGE_SZ < start + n {
                         assert(in_run_at(runs@, r as int, (p / PAGE_SZ) as int));
                         assert(in_runs(runs@, runs@.len() as int, (p / PAGE_SZ) as int));
+                    }
+                }
+                assert(kernel_root_apart(before.spaces.kernel_root@, start as int, n as int)) by {
+                    let kr = (before.spaces.kernel_root@ / PAGE_SZ) as int;
+                    if kr < NUM_PAGES && start <= kr < start + n {
+                        assert(in_run_at(runs@, r as int, kr));
+                        assert(in_runs(runs@, runs@.len() as int, kr));
                     }
                 }
                 Self::lemma_reserved_freed(before, after, start, n);
@@ -837,6 +848,8 @@ impl CapKernel {
             forall|i: usize| in_runs(runs@, runs@.len() as int, i as int) ==> #[trigger] holds(pages, i),
             forall|p: usize| #[trigger] old(self).list.pages@.dom().contains(p) && old(self).blocks.tracks_addr(p)
                 ==> !in_runs(runs@, runs@.len() as int, (p / PAGE_SZ) as int),
+            old(self).spaces.kernel_root@ / PAGE_SZ < NUM_PAGES
+                ==> !in_runs(runs@, runs@.len() as int, (old(self).spaces.kernel_root@ / PAGE_SZ) as int),
             no_device_space(&old(self).spaces),
         ensures
             final(self).stale_epoch == old(self).stale_epoch,

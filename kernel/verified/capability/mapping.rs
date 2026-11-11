@@ -316,6 +316,37 @@ impl CapKernel {
         }
     }
 
+    /// A core that names no space holds no space's root in its base register: a root at another
+    /// offset of a table block is none (lemma_no_space_root), and the root the core booted on is in a
+    /// page the blocks never type (kernel_root_reserved), while every space's root page is a member of
+    /// the space's block.
+    pub proof fn lemma_none_names_no_root(&self, c: int)
+        requires
+            self.wf(),
+            0 <= c < NUM_CPUS,
+            self.cores@[c].space is None,
+        ensures
+            forall|s: usize| #[trigger] self.spaces.roots@.contains_key(s)
+                ==> self.spaces.registers@[c].root() != s + SPACE_ROOT_PAGE * PAGE_SZ,
+    {
+        reveal(registers_wf);
+        assert(self.spaces.registers@.contains_key(c));
+        assert(register_names(self.spaces.registers@[c], self.cores@[c].space, self.spaces.loaded@, c, self.spaces.kernel_root@));
+        let root = self.spaces.registers@[c].root();
+        if root % TABLE_PAGE_BYTES != SPACE_ROOT_PAGE * PAGE_SZ {
+            self.lemma_no_space_root(root);
+        } else {
+            assert(root == self.spaces.kernel_root@);
+            assert forall|s: usize| #[trigger] self.spaces.roots@.contains_key(s) implies root != s + SPACE_ROOT_PAGE * PAGE_SZ by {
+                assert(space_wf(&self.list, &self.spaces, &self.blocks, s));
+                let b = (s / PAGE_SZ) as int;
+                self.blocks.lemma_base(b);
+                self.blocks.lemma_member_of(b, b + SPACE_ROOT_PAGE as int);
+                assert((s + SPACE_ROOT_PAGE * PAGE_SZ) as int / PAGE_SZ as int == b + SPACE_ROOT_PAGE as int);
+            }
+        }
+    }
+
     /// No space holds KERNEL_TAG on any core, so what a core caches under it is no space's.
     pub proof fn lemma_kernel_tag(&self)
         requires

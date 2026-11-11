@@ -2770,6 +2770,7 @@ impl CapKernel {
             post.view() == pre.view(),
     {
         pre.lemma_empty_table(base);
+        Self::lemma_kernel_root_freed(pre, post, (base / PAGE_SZ) as int);
         Self::lemma_node_block_caps(pre, post, base);
         lemma_binding_parents_kept(&pre.list, &pre.tables, &pre.threads, &post.list, &post.tables, &post.threads);
         assert forall|x: usize| #[trigger] pre.is_cap(x) && pre.payload_of(x).kind is Space
@@ -3069,6 +3070,7 @@ impl CapKernel {
             post.view() == pre.view(),
     {
         pre.lemma_empty_space(base);
+        Self::lemma_kernel_root_freed(pre, post, (base / PAGE_SZ) as int);
         Self::lemma_node_block_caps(pre, post, base);
         lemma_binding_parents_kept(&pre.list, &pre.tables, &pre.threads, &post.list, &post.tables, &post.threads);
         assert forall|x: usize| #[trigger] pre.is_cap(x) && pre.payload_of(x).kind is Space

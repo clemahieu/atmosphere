@@ -279,8 +279,9 @@ impl CapKernel {
     /// leaves at `leaf` and `frames` and its thread at `t`, boot_root_object for the console and for
     /// power, boot_root_memory over the free runs and boot_root_space over dom0's image runs.
     /// kernel/src checks at the trust boundary that the four blocks, the root page, the free runs and
-    /// every 2M region of the image are pairwise disjoint, and hands over every page's permission in
-    /// `pages`, which is split here between the steps. It returns how many untyped and frame
+    /// every 2M region of the image are pairwise disjoint and that none holds the page of
+    /// `kernel_root`, which boot hands to no block, and hands over every page's permission in `pages`,
+    /// which is split here between the steps. It returns how many untyped and frame
     /// capabilities the root holds, and refuses exactly when the free runs make no block or more than
     /// the first leaf holds, or the image does not fit the second leaf or the first untyped block's
     /// tables. On success the state is the one `booted` describes, with `kernel_root`, a page, as the
@@ -364,6 +365,9 @@ impl CapKernel {
                 ==> #[trigger] holds(pages, i),
             forall|j: usize| image_region(image@, region_2m(j as int)) ==> #[trigger] pages.contains_key(j),
             forall|j: usize| #[trigger] pages.contains_key(j) ==> pages[j].addr() == j * PAGE_SZ,
+            !in_root_blocks(process, leaf, frames, t, (kernel_root / PAGE_SZ) as int),
+            !in_runs(free@, free@.len() as int, (kernel_root / PAGE_SZ) as int),
+            !image_region(image@, region_2m((kernel_root / PAGE_SZ) as int)),
         ensures
             ret is None <==> ({
                 let bs = runs_blocks(free@, MAX_ORDER as nat);
