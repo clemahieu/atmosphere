@@ -304,6 +304,30 @@ impl CapKernel {
     {
         Self::lemma_tables_kept_keeps_rely(pre, post, root);
     }
+
+    /// destroy of a process, by any caller: it sets the process's record dead and sends IPIs, and
+    /// leaves the list and the tables as they were, so a destroyed process's table and every
+    /// capability naming it stay until a retype tears it down.
+    pub proof fn lemma_destroy_keeps_rely(pre: Self, post: Self, p: usize, root: usize)
+        requires
+            Self::process_destroyed(pre, post, p),
+        ensures
+            Self::rely(pre, post, root),
+    {
+        Self::lemma_tables_kept_keeps_rely(pre, post, root);
+    }
+
+    /// destroy of a thread, by any caller and from any core: it writes the thread's record Dead or
+    /// dying, and leaves the list and the tables as they were.
+    pub proof fn lemma_destroy_thread_keeps_rely(pre: Self, post: Self, c: usize, t: usize, root: usize)
+        requires
+            Self::thread_destroyed(pre, post, c, t),
+        ensures
+            Self::rely(pre, post, root),
+    {
+        assert(post.list == pre.list && post.tables == pre.tables);
+        Self::lemma_tables_kept_keeps_rely(pre, post, root);
+    }
 }
 
 } // verus!
