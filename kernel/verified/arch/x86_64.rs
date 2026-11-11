@@ -617,28 +617,16 @@ pub fn page_entry2usize(page_entry: &PageEntry, level: usize) -> (ret: usize)
 /// Flushes every context on this core, all PCIDs and paging-structure caches: changing CR4.PGE does
 /// that where a flush of the current PCID would leave entries under the others. `core` is the core this
 /// runs on, whose set in `model` it empties.
-#[verifier(external_body)]
-// external_body(glue): only the hardware can attest a flush, so only this empties a core's TLB model
-pub fn flush_every_context(Tracked(model): Tracked<&mut TlbModel>, core: usize)
+// cite: amd-apm2 5.5.1 Process Context Identifier
+// cite: amd-apm2 5.5.3 TLB Management, Implicit Invalidations
+// cite: amd-apm2 5.5.3 TLB Management, Caching of Upper Level Translation Table Entries
+pub assume_specification[flush_every_context](Tracked(model): Tracked<&mut TlbModel>, core: usize)
     ensures
         final(model).len() == old(model).len(),
         final(model)[core as int] == Set::<TlbEntry>::empty(),
         forall|d: int| d != core ==> #[trigger] final(model)[d] == old(model)[d],
         final(model).tags(core as int) == Set::<usize>::empty(),
-        forall|d: int| d != core ==> #[trigger] final(model).tags(d) == old(model).tags(d),
-{
-    unsafe {
-        core::arch::asm!(
-            "mov {cr4}, cr4",
-            "xor {cr4}, {pge}",
-            "mov cr4, {cr4}",
-            "xor {cr4}, {pge}",
-            "mov cr4, {cr4}",
-            cr4 = out(reg) _,
-            pge = const 1 << 7,
-        );
-    }
-}
+        forall|d: int| d != core ==> #[trigger] final(model).tags(d) == old(model).tags(d);
 
 /// Points this core's CR3 at the table whose top level is at physical address `root`. Where CR4.PCIDE,
 /// bit 17, is set, the write tags it with PCID `id` and sets bit 63, which keeps the entries the TLB
@@ -1193,3 +1181,18 @@ pub fn serial_write_byte(byte: u8, Tracked(steps): Tracked<&mut Steps>)
 }
 
 } // verus!
+
+#[cfg_attr(verus_keep_ghost, verifier::external)]
+pub fn flush_every_context(_model: Tracked<&mut TlbModel>, _core: usize) {
+    unsafe {
+        core::arch::asm!(
+            "mov {cr4}, cr4",
+            "xor {cr4}, {pge}",
+            "mov cr4, {cr4}",
+            "xor {cr4}, {pge}",
+            "mov cr4, {cr4}",
+            cr4 = out(reg) _,
+            pge = const 1 << 7,
+        );
+    }
+}

@@ -486,20 +486,15 @@ pub fn page_entry2usize(page_entry: &PageEntry, level: usize) -> (ret: usize)
 /// per-core flush of design/flush-without-waiting/ (Arm ARM C5.5.77). The DSB before it orders this
 /// core's table writes ahead of it, and the DSB and ISB after it complete it for this core's own
 /// translations (D8.17.8). `core` is the core this runs on, whose set in `model` it empties.
-#[verifier(external_body)]
-// external_body(glue): only the hardware can attest a flush, so only this empties a core's TLB model
-pub fn flush_every_context(Tracked(model): Tracked<&mut TlbModel>, core: usize)
+// cite: arm-arm C5.5.77 TLBI VMALLE1, TLBI VMALLE1NXS
+// cite: arm-arm D8.17.8 Ordering and completion of TLB maintenance instructions
+pub assume_specification[flush_every_context](Tracked(model): Tracked<&mut TlbModel>, core: usize)
     ensures
         final(model).len() == old(model).len(),
         final(model)[core as int] == Set::<TlbEntry>::empty(),
         forall|d: int| d != core ==> #[trigger] final(model)[d] == old(model)[d],
         final(model).tags(core as int) == Set::<usize>::empty(),
-        forall|d: int| d != core ==> #[trigger] final(model).tags(d) == old(model).tags(d),
-{
-    unsafe {
-        core::arch::asm!("dsb ishst", "tlbi vmalle1", "dsb ish", "isb", options(nostack, preserves_flags));
-    }
-}
+        forall|d: int| d != core ==> #[trigger] final(model).tags(d) == old(model).tags(d);
 
 /// Points this core's TTBR0_EL1 at the table whose top level is at physical address `root`, as ASID
 /// `id` in bits 63:48: one write changes the table and the id together and flushes nothing, and the
@@ -1157,3 +1152,10 @@ pub fn serial_write_byte(byte: u8, Tracked(steps): Tracked<&mut Steps>)
 }
 
 } // verus!
+
+#[cfg_attr(verus_keep_ghost, verifier::external)]
+pub fn flush_every_context(_model: Tracked<&mut TlbModel>, _core: usize) {
+    unsafe {
+        core::arch::asm!("dsb ishst", "tlbi vmalle1", "dsb ish", "isb", options(nostack, preserves_flags));
+    }
+}

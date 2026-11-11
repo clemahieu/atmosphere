@@ -11,13 +11,13 @@
 # glue      hardware or assembly leaf glue still spelled external_body, until it is one of the two above
 # gap       uses something this Verus cannot check: a raw pointer, a conjured permission, uninit memory
 # unproven  plain code or a lemma with no proof yet, or a wait with no termination proof yet, so proof debt
-kernel/verified/arch/aarch64.rs	flush_every_context	external_body	glue	only the hardware can attest a flush, so only this empties a core's TLB model
+kernel/verified/arch/aarch64.rs	flush_every_context	assume_specification	hardware	arm-arm C5.5.77 TLBI VMALLE1, TLBI VMALLE1NXS; arm-arm D8.17.8 Ordering and completion of TLB maintenance instructions
 kernel/verified/arch/aarch64.rs	load_translation_root	external_body	glue	only the hardware can attest which root a core translates through, so only this changes a BaseRegister
 kernel/verified/arch/aarch64.rs	read_producer	external_body	glue	only the SMMU's producer register holds the queue's wrap bit, and its index is the ring's tail since only the invalidate moves either
 kernel/verified/arch/aarch64.rs	serial_write_byte	external_body	glue	waits on the PL011's flag register and stores one byte in its data register through memory-mapped registers, which have no state a proof could see
 kernel/verified/arch/aarch64.rs	store_command	external_body	glue	the SMMU reads the queue, so only this can say what one of its slots holds
 kernel/verified/arch/aarch64.rs	submit_invalidate	external_body	glue	only the SMMU can attest an invalidate, so only this empties its IOTLB model
-kernel/verified/arch/x86_64.rs	flush_every_context	external_body	glue	only the hardware can attest a flush, so only this empties a core's TLB model
+kernel/verified/arch/x86_64.rs	flush_every_context	assume_specification	hardware	amd-apm2 5.5.1 Process Context Identifier; amd-apm2 5.5.3 TLB Management, Implicit Invalidations; amd-apm2 5.5.3 TLB Management, Caching of Upper Level Translation Table Entries
 kernel/verified/arch/x86_64.rs	load_translation_root	external_body	glue	only the hardware can attest which root a core translates through, so only this changes a BaseRegister
 kernel/verified/arch/x86_64.rs	serial_write_byte	external_body	glue	waits on COM1's line status and stores one byte in its transmit holding register through port I/O, which has no state a proof could see
 kernel/verified/arch/x86_64.rs	store_command	external_body	glue	the IOMMU reads the ring, so only this can say what one of its slots holds
