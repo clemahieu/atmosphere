@@ -26,14 +26,40 @@
   }
 }
 * { box-sizing: border-box; }
-body { margin: 0; padding: 24px 16px 48px; background: var(--plane); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
-main { max-width: 1180px; margin: 0 auto; display: grid; gap: 16px; }
+body { margin: 0; padding: 16px 16px 48px; background: var(--plane); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+/* One column of sections, the lists and the charts side by side where they fit. A wide window has two
+   panes instead: the board, with the graph and the charts, and beside it the rail, with what the
+   sessions are doing and did, which the open details lie over. */
+:root { --rail: 480px; }
+main { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
+main > *, .rail > *, .board > * { grid-column: 1 / -1; }
+.rail, .board { display: contents; }
+#questionsbox, #flightsbox { order: 1; }
+#waits { order: 2; }
+#readybox, #closedbox { order: 3; }
+#historybox, #epicsbox { order: 4; }
+#questionsbox { border-color: var(--serious); }
+@media (min-width: 900px) { #readybox, #closedbox, #historybox, #epicsbox { grid-column: auto; } }
+/* Three columns between the two: the ready leaves beside what is in flight, and the closes, the charts and the epics in a row. */
+@media (min-width: 1100px) and (max-width: 1599.98px) {
+  main { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  #flightsbox { grid-column: span 2; }
+  #readybox { order: 1; }
+  #closedbox { order: 4; }
+}
+@media (min-width: 1600px) {
+  main { grid-template: "header header" auto "tiles rail" auto "board rail" 1fr / minmax(0, 1fr) var(--rail); }
+  header { grid-area: header; }
+  #tiles { grid-area: tiles; }
+  .board { grid-area: board; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
+  .rail { grid-area: rail; display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
+}
 header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 16px; }
 h1 { font-size: 20px; font-weight: 600; margin: 0; }
 h2 { font-size: 14px; font-weight: 600; margin: 0; }
 #fresh { color: var(--ink-2); font-size: 13px; }
 .warn::before { content: "⚠ "; color: var(--serious); }
-section { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; min-width: 0; }
+section { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; min-width: 0; container-type: inline-size; }
 section > .head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; margin-bottom: 12px; }
 .note { color: var(--ink-2); font-size: 13px; }
 .muted { color: var(--muted); }
@@ -53,6 +79,8 @@ section > .head { display: flex; flex-wrap: wrap; align-items: center; justify-c
 .stage { font-weight: 600; }
 .clock { font-variant-numeric: tabular-nums; }
 .title { overflow-wrap: anywhere; }
+a.title, .epic a { display: block; color: inherit; text-decoration: none; }
+a.title:hover .id, .epic a:hover .id { text-decoration: underline; }
 .id { font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ink-2); margin-right: 8px; white-space: nowrap; }
 .meta { color: var(--ink-2); font-size: 12px; overflow-wrap: anywhere; }
 .one { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -109,22 +137,25 @@ svg.focus .edge.lit { stroke: var(--ink-2); stroke-width: 1.75; }
 #detail h2 { font-size: 16px; margin: 4px 0; overflow-wrap: anywhere; }
 #detail h3 { font-size: 12px; font-weight: 600; color: var(--ink-2); margin: 18px 0 4px; }
 #detail pre { margin: 0; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
-/* Where there is room the page makes way for the open panel, and elsewhere the panel lies over it. */
-@media (min-width: 1200px) { body.detailed { padding-right: 576px; } }
+/* Over the rail where there is one. Without one the page makes way for the panel when it has the room, and lies under it when not. */
+@media (min-width: 1200px) and (max-width: 1599.98px) { body.detailed { padding-right: 576px; } }
+@media (min-width: 1600px) { #detail { width: calc(var(--rail) + 24px); } }
 .near { display: grid; gap: 4px; }
 .near a { color: inherit; text-decoration: none; overflow-wrap: anywhere; }
 .near a:hover .id { text-decoration: underline; }
 .near a.done { color: var(--muted); }
 
-.pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; }
-.epic { display: grid; grid-template-columns: minmax(0, 1fr) minmax(80px, 200px) 150px; gap: 12px; align-items: center; padding: 4px 0; }
+.epic { display: grid; grid-template-columns: minmax(0, 1fr) minmax(60px, 120px) 132px; gap: 12px; align-items: center; padding: 3px 0; }
 .meter { height: 8px; border-radius: 4px; background: var(--track); overflow: hidden; }
 .meter > div { height: 100%; background: var(--open); border-radius: 4px; }
 .epic .count { color: var(--ink-2); font-size: 12px; font-variant-numeric: tabular-nums; }
-@media (max-width: 640px) {
+/* By the width of the section, not of the window: the rail is narrow in the widest window. */
+@container (max-width: 640px) {
   .row { grid-template-columns: minmax(0, 1fr); }
-  .pair { grid-template-columns: minmax(0, 1fr); }
-  .epic { grid-template-columns: minmax(0, 1fr) 90px; }
+  .when { display: flex; align-items: baseline; gap: 8px; }
+}
+@container (max-width: 440px) {
+  .epic { grid-template-columns: minmax(0, 1fr) auto; row-gap: 4px; padding: 5px 0; }
   .epic .meter { grid-column: 1 / -1; grid-row: 2; }
 }
 </style>
@@ -133,27 +164,29 @@ svg.focus .edge.lit { stroke: var(--ink-2); stroke-width: 1.75; }
 <main>
   <header><h1>Bead status</h1><div id="fresh">reading beads…</div></header>
   <div id="tiles"></div>
-  <section><div class="head"><h2>In flight</h2><span class="note" id="idle"></span></div><div class="rows" id="flights"></div></section>
-  <section><div class="head"><h2>Questions for you</h2></div><div class="rows" id="questions"></div></section>
-  <section id="waits">
-    <div class="head"><h2>What waits on what</h2><div class="legend keys" id="keys"></div></div>
-    <div class="chart"><div id="graph"></div><div class="tip wide" id="graphtip" hidden></div></div>
-    <p class="note" style="margin: 12px 0 0">Every issue not closed, under the ones it waits on: nothing blocks the top rows, and a line runs down from an issue to each one that waits on it, dashed when the wait is its epic's. An issue opens its details.</p>
-  </section>
-  <section>
-    <div class="head"><h2>Issues not closed</h2><div class="ranges" id="ranges"></div></div>
-    <div class="chart" id="open"></div>
-    <div class="legendrow">
-      <h2 id="flowtitle">Created and closed</h2>
-      <div class="legend"><span><span class="key" style="background: var(--created)"></span>Created</span><span><span class="key" style="background: var(--closed)"></span>Closed</span></div>
-    </div>
-    <div class="chart" id="flow"></div>
-    <details><summary>Table</summary><table><thead><tr><th>Period</th><th>Created</th><th>Closed</th><th>Not closed at its end</th></tr></thead><tbody id="table"></tbody></table></details>
-  </section>
-  <section><div class="head"><h2>Epics</h2><span class="note">issues closed of those below each epic under the root</span></div><div id="epics"></div></section>
-  <div class="pair">
-    <section><div class="head"><h2>Ready leaves</h2><span class="note" id="readynote"></span></div><div class="rows" id="ready"></div></section>
-    <section><div class="head"><h2>Closed last</h2></div><div class="rows" id="closed"></div></section>
+  <div class="rail">
+    <section id="questionsbox" hidden><div class="head"><h2>Questions for you</h2></div><div class="rows" id="questions"></div></section>
+    <section id="flightsbox"><div class="head"><h2>In flight</h2><span class="note" id="idle"></span></div><div class="rows" id="flights"></div></section>
+    <section id="readybox"><div class="head"><h2>Ready leaves</h2><span class="note" id="readynote"></span></div><div class="rows" id="ready"></div></section>
+    <section id="closedbox"><div class="head"><h2>Closed last</h2></div><div class="rows" id="closed"></div></section>
+  </div>
+  <div class="board">
+    <section id="waits">
+      <div class="head"><h2>What waits on what</h2><div class="legend keys" id="keys"></div></div>
+      <div class="chart"><div id="graph"></div><div class="tip wide" id="graphtip" hidden></div></div>
+      <p class="note" style="margin: 12px 0 0">Every issue not closed sits under the ones it waits on, so nothing blocks the top rows; a dashed line is a wait its epic passes down. Point at an issue to light its chain, and click it for its details.</p>
+    </section>
+    <section id="historybox">
+      <div class="head"><h2>Issues not closed</h2><div class="ranges" id="ranges"></div></div>
+      <div class="chart" id="open"></div>
+      <div class="legendrow">
+        <h2 id="flowtitle">Created and closed</h2>
+        <div class="legend"><span><span class="key" style="background: var(--created)"></span>Created</span><span><span class="key" style="background: var(--closed)"></span>Closed</span></div>
+      </div>
+      <div class="chart" id="flow"></div>
+      <details><summary>Table</summary><table><thead><tr><th>Period</th><th>Created</th><th>Closed</th><th>Not closed at its end</th></tr></thead><tbody id="table"></tbody></table></details>
+    </section>
+    <section id="epicsbox"><div class="head"><h2>Epics</h2><span class="note">issues closed of those below each</span></div><div id="epics"></div></section>
   </div>
 </main>
 <aside id="detail" hidden>
@@ -343,9 +376,11 @@ function drawHistory() {
   }).reverse());
 }
 
-const issue = row => h("div", {class: "title"}, h("span", {class: "id"}, row.id), row.title);
+const issue = row => h("a", {class: "title", href: `#${row.id}`}, h("span", {class: "id"}, row.id), row.title);
 const trail = row => row.trail.length ? row.trail.join(" › ") : null;
 const meta = (...parts) => parts.some(Boolean) ? h("div", {class: "meta"}, parts.filter(Boolean).join(" · ")) : null;
+/* The same on one line, cut short where the row ends and whole under the pointer: a trail is long, and the details have it. */
+const line = (...parts) => { const made = meta(...parts); if (made) { made.classList.add("one"); made.title = made.textContent; } return made; };
 
 function drawTiles() {
   let before = 0, created = 0, closed = 0;
@@ -369,13 +404,13 @@ function drawFlights() {
   fill("flights", data.flights.length ? data.flights.map(row => {
     const ended = row.alive === false;
     return h("div", {class: "row"},
-      h("div", {},
+      h("div", {class: "when"},
         h("div", {class: "stage"}, row.stage ? STAGES[row.stage] : "held"),
         h("div", {class: "clock muted", "data-since": row.since ?? row.started}),
       ),
       h("div", {},
         issue(row),
-        meta(trail(row)),
+        line(trail(row)),
         h("div", {class: "meta"}, `P${row.priority} · `, h("span", ended ? {class: "warn"} : {}, ended ? `${row.actor} ended` : row.actor || "no holder"), " · held ", h("span", {"data-held": row.started})),
         ["gate", "fix", "close"].includes(row.stage) && row.gate ? h("div", {class: "meta one", title: row.gate}, row.gate) : null,
       ),
@@ -385,16 +420,18 @@ function drawFlights() {
 }
 
 function drawLists() {
-  fill("questions", data.questions.length ? data.questions.map(row => h("div", {class: "row plain"}, h("div", {}, issue(row), meta(trail(row), `asked ${span(data.now - row.created)} ago`)))) : h("p", {class: "empty"}, "No question waits on you."));
-  fill("ready", data.ready.length ? data.ready.slice(0, READY_SHOWN).map(row => h("div", {class: "row plain"}, h("div", {}, issue(row), meta(`P${row.priority}`, row.type, trail(row))))) : h("p", {class: "empty"}, "No leaf is ready."));
+  // The tile says when no question waits; the section is there only for the ones that do.
+  $("questionsbox").hidden = !data.questions.length;
+  fill("questions", data.questions.map(row => h("div", {class: "row plain"}, h("div", {}, issue(row), line(`asked ${span(data.now - row.created)} ago`, trail(row))))));
+  fill("ready", data.ready.length ? data.ready.slice(0, READY_SHOWN).map(row => h("div", {class: "row plain"}, h("div", {}, issue(row), line(`P${row.priority}`, row.type, trail(row))))) : h("p", {class: "empty"}, "No leaf is ready."));
   $("readynote").textContent = data.ready.length > READY_SHOWN ? `the first ${READY_SHOWN} of ${data.ready.length}, in bd's order` : "in bd's order";
   fill("closed", data.closed.map(row => h("div", {class: "row plain"}, h("div", {},
     issue(row),
-    meta(`${span(data.now - row.at)} ago`, row.actor, trail(row)),
+    line(`${span(data.now - row.at)} ago`, row.actor, trail(row)),
     h("div", {class: "meta one", title: row.reason}, row.reason),
   ))));
   fill("epics", data.epics.map(row => h("div", {class: "epic", title: `${row.id} · ${row.closed} of ${row.total} closed`},
-    h("div", {class: "one"}, h("span", {class: "id"}, row.id), row.title),
+    h("a", {class: "one", href: `#${row.id}`}, h("span", {class: "id"}, row.id), row.title),
     h("div", {class: "meter"}, h("div", {style: `width: ${100 * row.closed / row.total}%`})),
     h("div", {class: "count"}, [`${row.closed} / ${row.total}`, row.status === "closed" ? "✓ closed" : row.status === "deferred" ? "deferred" : null, row.flying ? `${row.flying} in flight` : null].filter(Boolean).join(" · ")),
   )));
@@ -404,7 +441,7 @@ function drawLists() {
    layer runs down a trunk its blocker shares with its other long waits, so a layer holds bends as
    well as issues. A layer's order is the one of SWEEPS with the fewest crossings, and each vertex
    then sits as near the mean of those it is joined to as its neighbours in the layer leave room. */
-const NODE = 22, LAYER = 60, ROW = 28, GAP = 8, EDGE = 3, SWEEPS = 24, SETTLES = 40;
+const NODE = 22, LAYER = 56, ROW = 28, GAP = 6, EDGE = 3, SMALLEST = 0.85, SWEEPS = 24, SETTLES = 40;
 const FONT = "11px ui-monospace, SFMono-Regular, Menlo, monospace";
 const STATES = {ready: "ready", flying: "in progress", waiting: "waiting", question: "question for you", deferred: "deferred"};
 const state = node => node.status === "in_progress" ? "flying" : node.status === "blocked" ? "question" : node.status === "deferred" ? "deferred" : node.ready ? "ready" : "waiting";
@@ -498,22 +535,18 @@ function drawGraph() {
     meter.font = FONT;
     for (const node of data.graph) {
       node.label = root && node.id !== root ? node.id.slice(root.length + 1) : node.id;
-      node.w = Math.ceil(meter.measureText(node.label).width) + (node.type === "epic" ? 28 : 18);
+      node.w = Math.ceil(meter.measureText(node.label).width) + (node.type === "epic" ? 26 : 16);
     }
     arranged = arrange(data.graph);
     arrangedFor = key;
   }
-  const {layers, waits} = arranged, box = $("graph"), section = $("waits"), tip = $("graphtip");
-  // The section grows past the page's column, as far as the body, when the graph is wider.
-  const column = section.parentElement.clientWidth, body = getComputedStyle(document.body);
-  const most = document.body.clientWidth - parseFloat(body.paddingLeft) - parseFloat(body.paddingRight);
-  const wide = Math.max(column, Math.min(most, arranged.width + 2 * EDGE + 34));
-  section.style.width = `${wide}px`;
-  section.style.marginLeft = `${(column - wide) / 2}px`;
-  const room = box.clientWidth - 2 * EDGE;
+  const {layers, waits} = arranged, box = $("graph"), tip = $("graphtip");
   // Drawn again only when the graph or the room for it changed, so that a read leaves the pointer's issue lit.
-  if (`${room} ${key}` === drawn) return;
-  drawn = `${room} ${key}`;
+  if (`${box.clientWidth} ${key}` === drawn) return;
+  drawn = `${box.clientWidth} ${key}`;
+  // A graph wider than the box is drawn smaller to fit it, down to SMALLEST, and past that the box scrolls. The room is in the graph's own units.
+  const scale = Math.min(1, Math.max(SMALLEST, box.clientWidth / (arranged.width + 2 * EDGE)));
+  const room = box.clientWidth / scale - 2 * EDGE;
 
   const marks = new Map(), lines = [], above = new Map(), under = new Map();
   const mark = (node, x, y) => {
@@ -546,11 +579,12 @@ function drawGraph() {
     });
     lines.push([wait, s("path", {class: wait.through ? "edge through" : "edge", d})]);
   }
-  const svg = s("svg", {width: Math.max(room, arranged.width) + 2 * EDGE, height: Math.max(height, 0) + 2 * EDGE, role: "img", "aria-label": `The ${data.graph.length} issues not closed and the ${waits.length} waits between them.`},
+  const width = Math.max(room, arranged.width) + 2 * EDGE, tall = Math.max(height, 0) + 2 * EDGE;
+  const svg = s("svg", {viewBox: `0 0 ${tenth(width)} ${tall}`, height: tenth(tall * scale), role: "img", "aria-label": `The ${data.graph.length} issues not closed and the ${waits.length} waits between them.`},
     s("g", {transform: `translate(${EDGE},${EDGE})`},
       lines.map(([, line]) => line), rows,
       layers.flat().filter(vertex => vertex.node).map(vertex => mark(vertex.node, left + vertex.x - vertex.w / 2, top + vertex.rank * LAYER))));
-  svg.style.width = `${Math.max(room, arranged.width) + 2 * EDGE}px`;
+  svg.style.width = `${Math.floor(width * scale)}px`;
 
   // An issue under the pointer lights everything it waits on, however far up, and everything that waits on it.
   const reach = (id, links) => { const found = new Set([id]); for (const at of found) for (const next of links.get(at) ?? []) found.add(next); return found; };
