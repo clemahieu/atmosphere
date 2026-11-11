@@ -11,7 +11,6 @@ use crate::pptr::*;
 use crate::util::page_ptr_util_u::*;
 use crate::pagetable::entry::*;
 use crate::pagetable::pagemap::*;
-use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::array::Array;
 use crate::capability::steps::Steps;
@@ -71,49 +70,18 @@ pub fn page_map_set_kernel_entry_range(
                     4,
                 ),
     {
-        page_map_set_no_requires(
-            page_map_ptr,
-            Tracked(page_map_perm),
-            index,
-            usize2page_entry(*kernel_entries.get(index), 4),
-            4,
-        );
+        // The kernel's word is copied as it is, not decoded and encoded again, so the slot is the
+        // kernel's entry whatever bits that word holds.
+        let word = *kernel_entries.get(index);
+        let ghost before = page_map_perm.value();
+        let map = PPtr::<PageMap>::from_usize(page_map_ptr).borrow_mut(Tracked(&mut *page_map_perm));
+        map.set_word(index, word);
         proof {
+            assert forall|i: usize|
+                #![trigger page_map_perm.value()[i]]
+                i < ENTRIES && i != index implies page_map_perm.value()[i] =~= before[i] by {}
             steps.step();
         }
-    }
-}
-
-#[verifier(external_body)]
-// external_body(glue): writes a hardware page table through a raw pointer
-pub fn page_map_set_no_requires(
-    page_map_ptr: PageMapPtr,
-    Tracked(page_map_perm): Tracked<&mut PointsTo<PageMap>>,
-    index: usize,
-    value: PageEntry,
-    level: usize,
-)
-    requires
-        old(page_map_perm).addr() == page_map_ptr,
-        old(page_map_perm).is_init(),
-        old(page_map_perm).value().wf(),
-        level == old(page_map_perm).value().level@,
-        0 <= index < ENTRIES,
-    ensures
-        final(page_map_perm).addr() == page_map_ptr,
-        final(page_map_perm).is_init(),
-        final(page_map_perm).value().level == old(page_map_perm).value().level,
-        final(page_map_perm).value().wf(),
-        forall|i: usize|
-            #![trigger final(page_map_perm).value()[i]]
-            0 <= i < ENTRIES && i != index ==> final(page_map_perm).value()[i] =~= old(
-                page_map_perm,
-            ).value()[i],
-        final(page_map_perm).value()[index] =~= value,
-{
-    unsafe {
-        let uptr = page_map_ptr as *mut MaybeUninit<PageMap>;
-        (*uptr).assume_init_mut().set(index, value, level);
     }
 }
 

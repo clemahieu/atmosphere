@@ -109,6 +109,23 @@ impl PageMap {
         }
     }
 
+    /// Writes `word` to entry `index` as it is, so the entry is whatever the word decodes to: a copy of
+    /// another table's word keeps this table well formed whatever that word holds.
+    pub fn set_word(&mut self, index: usize, word: usize)
+        requires
+            old(self).wf(),
+            0 <= index < ENTRIES,
+        ensures
+            final(self).wf(),
+            final(self).level == old(self).level,
+            final(self)@ =~= old(self)@.update(index as int, usize2page_entry(word, old(self).level@)),
+    {
+        self.ar.set(index, word);
+        proof {
+            self.spec_seq@ = self.spec_seq@.update(index as int, usize2page_entry(word, self.level@));
+        }
+    }
+
     pub fn get(&self, index: usize, level: usize) -> (ret: PageEntry)
         requires
             self.wf(),
