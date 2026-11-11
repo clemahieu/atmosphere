@@ -1937,6 +1937,7 @@ impl CapKernel {
         &&& post.spaces.bound == pre.spaces.bound
         &&& post.devices == pre.devices
         &&& post.processes == pre.processes
+        &&& post.threads == pre.threads
     }
 
     /// A detach alone: only the tables changed.
@@ -2116,6 +2117,7 @@ impl CapKernel {
             final(self).cores == old(self).cores,
             final(self).devices == old(self).devices,
             final(self).processes == old(self).processes,
+            final(self).threads == old(self).threads,
     {
         let ghost pre = *old(self);
         let ghost tree = tree_of(&pre.table_pages, &pre.spaces);
