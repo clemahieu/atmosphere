@@ -726,6 +726,7 @@ impl CapKernel {
             final(self).processes == old(self).processes,
             final(self).threads == old(self).threads,
             final(self).spaces.roots@.dom() == old(self).spaces.roots@.dom(),
+            final(self).spaces.kernel_root == old(self).spaces.kernel_root,
             final(self).blocks.regions_2m@ == old(self).blocks.regions_2m@,
             final(self).blocks.regions_1g@ == old(self).blocks.regions_1g@,
             forall|j: int| #![trigger final(self).blocks.pages@[j]] old(self).blocks.tracks(j) && !(ret.1 && cursor / PAGE_SZ <= j < cursor / PAGE_SZ + 8)
@@ -884,6 +885,7 @@ impl CapKernel {
             final(self).processes == old(self).processes,
             final(self).threads == old(self).threads,
             final(self).spaces.roots@.dom() == old(self).spaces.roots@.dom(),
+            final(self).spaces.kernel_root == old(self).spaces.kernel_root,
             final(self).blocks.regions_2m@ == old(self).blocks.regions_2m@,
             final(self).blocks.regions_1g@ == old(self).blocks.regions_1g@,
             ret == cursor || ret == cursor + TABLE_PAGE_BYTES || ret == cursor + 2 * TABLE_PAGE_BYTES || ret == cursor + 3 * TABLE_PAGE_BYTES,
@@ -1222,6 +1224,7 @@ impl CapKernel {
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).cores == old(self).cores,
+            final(self).spaces.kernel_root == old(self).spaces.kernel_root,
             final(self).devices == old(self).devices,
             final(self).iommus.present == old(self).iommus.present,
             !ret ==> *final(self) == *old(self),
@@ -1322,6 +1325,7 @@ impl CapKernel {
                 self.processes == pre.processes,
                 self.threads == pre.threads,
                 self.spaces.roots@.dom() == pre.spaces.roots@.dom(),
+                self.spaces.kernel_root == pre.spaces.kernel_root,
                 self.blocks.regions_2m@ == pre.blocks.regions_2m@,
                 self.blocks.regions_1g@ == pre.blocks.regions_1g@,
                 forall|j: int| #![trigger self.blocks.pages@[j]] pre.blocks.tracks(j) && !(u.base / PAGE_SZ <= j < cursor / PAGE_SZ)
@@ -1383,6 +1387,7 @@ impl CapKernel {
                     self.processes == pre.processes,
                     self.threads == pre.threads,
                     self.spaces.roots@.dom() == pre.spaces.roots@.dom(),
+                    self.spaces.kernel_root == pre.spaces.kernel_root,
                     self.blocks.regions_2m@ == pre.blocks.regions_2m@,
                     self.blocks.regions_1g@ == pre.blocks.regions_1g@,
                     forall|j: int| #![trigger self.blocks.pages@[j]] pre.blocks.tracks(j) && !(u.base / PAGE_SZ <= j < cursor / PAGE_SZ)

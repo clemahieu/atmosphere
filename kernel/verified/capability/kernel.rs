@@ -1620,7 +1620,7 @@ impl CapKernel {
         }
     }
 
-    /// Makes this a kernel with one root capability, no mappings, no core running anything and each at generation 1, every page
+    /// Makes this a kernel with one root capability, no mappings, no core running anything or naming a space and each at generation 1, every page
     /// Reserved with no unmap recorded, and the IOMMUs boot found present with their command buffers.
     /// `registers` are the cores' base registers as boot left them, each naming `kernel_root` under
     /// KERNEL_TAG, and `tlb` is the cores' TLB model as boot makes it, each core's set empty. In place,
@@ -1671,6 +1671,7 @@ impl CapKernel {
             forall|c: int| 0 <= c < NUM_CPUS ==> {
                 &&& (#[trigger] final(self).cores@[c]).current_thread is None
                 &&& final(self).cores@[c].generation == 1
+                &&& final(self).cores@[c].space is None
             },
             final(self).list.seq@[0] == root,
             final(self).boot_empty(),

@@ -729,6 +729,65 @@ proof fn lemma_slot_kept_two(pre: CapKernel, post: CapKernel, root: usize, i: us
 }
 
 impl CapKernel {
+    /// From the state boot leaves, the steps kernel/src takes before it enters the root's thread: core 0
+    /// loads the root's space and points its base register at the space's root under the tag the load
+    /// gave; then it points the register back at `kernel_root`, the root boot was given and every core
+    /// booted on, under KERNEL_TAG, as a core does when it leaves a space for none. Boot leaves every
+    /// core naming no space, so the load may start there. See design/teardown-driven-by-retype/.
+    pub fn witness_boot_space_switch(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: Ghost<usize>,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        kernel_root: usize,
+    )
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
+            old(self).spaces.kernel_root@ == kernel_root,
+            kernel_root % PAGE_SZ == 0,
+        ensures
+            final(self).wf(),
+            final(self).cores@[0].space is None,
+            final(self).loaded(0, process),
+            final(self).depends(0, process),
+            final(self).spaces.registers@[0].root() == kernel_root,
+            final(self).spaces.registers@[0].tag() == KERNEL_TAG,
+    {
+        hide(CapKernel::wf);
+        let ghost s0 = *self;
+        proof {
+            reveal(CapKernel::wf);
+            assert(s0.cores@[0].space is None);
+            assert(s0.cores@[0].generation == 1);
+            assert(s0.processes.records@.contains_key(process));
+            assert(process_spaces_wf(&s0.spaces, &s0.processes));
+            assert(s0.spaces.roots@.contains_key(process));
+            assert(s0.spaces.records@[process].value().kind is Process);
+        }
+        // Boot holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let pcid = self.load_space(0, process, Tracked(&mut steps));
+        self.switch_space(0, Some(process), process + SPACE_ROOT_PAGE * PAGE_SZ, pcid);
+        let ghost s2 = *self;
+        proof {
+            assert(s2.cores@[0].space == Some(process));
+        }
+        self.switch_space(0, None, kernel_root, KERNEL_TAG);
+        proof {
+            let s3 = *self;
+            reveal(registers_wf);
+            assert(s3.spaces.registers@.contains_key(0));
+            assert(register_names(s3.spaces.registers@[0], s3.cores@[0].space, s3.spaces.loaded@, 0, kernel_root));
+        }
+    }
+
     /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first
     /// of two free ones past those boot's tables took from the first untyped: retype a leaf into root
     /// entry 2 of the root's table at the second block's first two pages, a process at `base` into
@@ -3404,8 +3463,8 @@ impl CapKernel {
             assert(ok3);
             assert(Self::leaf_retyped(s2, s3, process, ROOT_UNTYPED_SLOT, at2, bl));
             assert(s3.tables.leaf(base, 0) == bl);
-            assert(index_ok(WITNESS_BOUND_SPACE_SLOT) && index_entry(WITNESS_BOUND_SPACE_SLOT) == 0);
-            assert(index_ok(WITNESS_BOUND_DEVICE_SLOT) && index_entry(WITNESS_BOUND_DEVICE_SLOT) == 0);
+            assert(index_ok(WITNESS_BOUND_SPACE_SLOT) && index_entry(WITNESS_BOUND_SPACE_SLOT) == 0) by (compute_only);
+            assert(index_ok(WITNESS_BOUND_DEVICE_SLOT) && index_entry(WITNESS_BOUND_DEVICE_SLOT) == 0) by (compute_only);
             assert(s3.tables.has_slot(&s3.list, base, WITNESS_BOUND_SPACE_SLOT));
             assert(s3.tables.node_of(base, WITNESS_BOUND_SPACE_SLOT) == bl + 1);
             assert(!s3.list.nodes@[(bl + 1) as int].live);

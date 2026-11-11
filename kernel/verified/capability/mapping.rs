@@ -366,6 +366,8 @@ impl CapKernel {
         ensures
             Self::step_ok(*old(self), *final(self), c as int),
             final(self).cores@[c as int].space == space,
+            final(self).spaces.registers@[c as int].root() == root,
+            final(self).spaces.registers@[c as int].tag() == tag,
             final(self).cores@[c as int].current_thread == old(self).cores@[c as int].current_thread,
             final(self).cores@[c as int].acked_epoch == old(self).cores@[c as int].acked_epoch,
             final(self).cores@[c as int].generation == old(self).cores@[c as int].generation,

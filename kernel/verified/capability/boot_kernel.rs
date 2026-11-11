@@ -184,7 +184,7 @@ impl CapKernel {
     /// capability retyped under it is below the deepest depth; every page of the untyped blocks is
     /// acknowledged, since boot unmaps nothing, so a free of a block typed there is not refused as
     /// stale, and so is every 2M and 1G region; the root's process is live, as is the page of its space; no flush has run, so the flush
-    /// epoch is 0; no core runs a thread, and each is at generation 1; every root entry of its table past the two boot filled is empty; the root's space
+    /// epoch is 0; no core runs a thread, and each is at generation 1 and names no space, so a load may start on any; every root entry of its table past the two boot filled is empty; the root's space
     /// maps exactly the image, and its level 4 entries outside the kernel slots that no image run
     /// reaches are empty, so a table built there is the root's own to fill; of
     /// the first untyped's order-3 blocks, every one past those the image's tables can take is free;
@@ -260,6 +260,7 @@ impl CapKernel {
         &&& forall|c: int| 0 <= c < NUM_CPUS ==> {
             &&& (#[trigger] self.cores@[c]).current_thread is None
             &&& self.cores@[c].generation == 1
+            &&& self.cores@[c].space is None
         }
         &&& self.devices.count == 0
         &&& self.iommus.present@ == present
@@ -277,7 +278,8 @@ impl CapKernel {
     /// `pages`, which is split here between the steps. It returns how many untyped and frame
     /// capabilities the root holds, and refuses exactly when the free runs make no block or more than
     /// the first leaf holds, or the image does not fit the second leaf or the first untyped block's
-    /// tables. On success the state is the one `booted` describes. See design/root-process-at-boot/.
+    /// tables. On success the state is the one `booted` describes, with `kernel_root` as the root a core
+    /// naming no space may be pointed back at. See design/root-process-at-boot/.
     #[verifier::spinoff_prover]
     pub fn kernel_init(
         &mut self,
@@ -364,6 +366,7 @@ impl CapKernel {
                 ||| image_tables_bound(image@) > untyped_tables(page_block_payload(bs[0]))
             }),
             ret matches Some((untyped, frame)) ==> final(self).booted(root, process, leaf, frames, t, free@, image@, untyped, frame, iommus_present@),
+            ret is Some ==> final(self).spaces.kernel_root@ == kernel_root,
     {
         hide(CapKernel::wf);
         self.init(root, Tracked(root_perm), kernel_entries, iommus_present, iommu_commands, kernel_root, Tracked(registers), Tracked(tlb));
