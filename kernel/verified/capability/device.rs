@@ -1752,9 +1752,10 @@ impl CapKernel {
     /// Binds the device whose capability is at index i of the table at root to the device space whose
     /// capability is at index j: the device's binding node, in the list's first page, becomes a child of
     /// the space capability, holding a reference on the space's block, the space counts the device among
-    /// its bound devices, and the device's record names the space. The caller holds the device's only
-    /// capability, so no one else gains a reach. Writing the IOMMU's device table entry is the glue's, on
-    /// success. See design/device-binding-under-the-space-capability/.
+    /// its bound devices, the device's record names the space, and the view's binds gain the device bound
+    /// to the space and nothing else. The caller holds the device's only capability, so no one else gains
+    /// a reach. Writing the IOMMU's device table entry is the glue's, on success. See
+    /// design/device-binding-under-the-space-capability/.
     pub fn bind_device(&mut self, root: usize, i: usize, j: usize) -> (ret: bool)
         requires
             old(self).wf(),
@@ -1768,6 +1769,10 @@ impl CapKernel {
                 *final(self),
                 old(self).tables.node_of(root, j),
                 device_of(old(self).payload_of(old(self).tables.node_of(root, i)).base),
+            ),
+            ret ==> final(self).view().binds == old(self).view().binds.insert(
+                old(self).payload_of(old(self).tables.node_of(root, i)).base,
+                old(self).payload_of(old(self).tables.node_of(root, j)).base,
             ),
             discharges(old(self).view(), final(self).view(), root, Effect::Local),
     {
