@@ -306,13 +306,31 @@ impl CapKernel {
         }
     }
 
-    /// Core c's base register now names the root of `space`, or for None a root no space can have, now
-    /// or after any retype, as the token from the glue that wrote it attests: every space's root is at
+    /// No space holds KERNEL_TAG on any core, so what a core caches under it is no space's.
+    pub proof fn lemma_kernel_tag(&self)
+        requires
+            self.wf(),
+        ensures
+            forall|c: int, s: usize| 0 <= c < NUM_CPUS && #[trigger] holds_id(self.cores@, self.spaces.loaded@, c, s)
+                ==> id_pcid(self.spaces.loaded@[s].value().ids@[c]) != KERNEL_TAG,
+    {
+        assert forall|c: int, s: usize| 0 <= c < NUM_CPUS && #[trigger] holds_id(self.cores@, self.spaces.loaded@, c, s)
+            implies id_pcid(self.spaces.loaded@[s].value().ids@[c]) != KERNEL_TAG by {
+            self.lemma_id_handed_out(c, s, 0);
+        }
+    }
+
+    /// Core c's base register now names the root of `space`, or for None a root that is no space's
+    /// under KERNEL_TAG, which no space holds (lemma_kernel_tag), as the token from the glue that wrote
+    /// it attests. The None root is at no space's root offset: every space's root is at
     /// SPACE_ROOT_PAGE of a block of TABLE_PAGE_BYTES, so a root at another offset of such a block is
-    /// none (lemma_no_space_root). A space's root goes in under the PCID or ASID the space holds on c,
-    /// so what the core then caches is under that space's tag. A register names only a loaded space that
-    /// is not retired, and a retire refuses while one names it, so a core that has acknowledged a retire
-    /// never walks the space again. See design/teardown-driven-by-retype/.
+    /// none, now or after any retype (lemma_no_space_root), and the record never says no space while
+    /// the register names one. That it is the kernel's own root, a page outside every untyped that maps
+    /// no page a space maps, is the glue's to keep, not this model's. A space's root goes in under the
+    /// PCID or ASID the space holds on c, so what the core then caches is under that space's tag. A
+    /// register names only a loaded space that is not retired, and a retire refuses while one names it,
+    /// so a core that has acknowledged a retire never walks the space again. See
+    /// design/teardown-driven-by-retype/.
     pub fn switch_space(&mut self, c: usize, space: Option<usize>, Tracked(t): Tracked<Translating>)
         requires
             old(self).wf(),
@@ -326,7 +344,10 @@ impl CapKernel {
                     &&& holds_id(old(self).cores@, old(self).spaces.loaded@, c as int, s)
                     &&& t.tag == id_pcid(old(self).spaces.loaded@[s].value().ids@[c as int])
                 },
-                None => t.root % TABLE_PAGE_BYTES != SPACE_ROOT_PAGE * PAGE_SZ,
+                None => {
+                    &&& t.root % TABLE_PAGE_BYTES != SPACE_ROOT_PAGE * PAGE_SZ
+                    &&& t.tag == KERNEL_TAG
+                },
             },
         ensures
             Self::step_ok(*old(self), *final(self), c as int),

@@ -49,6 +49,10 @@ pub struct CoreState {
 /// The largest generation a space's word can hold above its 12 bits of PCID.
 pub const ID_GENERATION_MAX: usize = 0xF_FFFF_FFFF_FFFF;
 
+/// The PCID or ASID a base register naming no space is written under. A space is handed 1 and up, so
+/// no space holds it: CapKernel::lemma_kernel_tag.
+pub const KERNEL_TAG: usize = 0;
+
 /// acknowledge's bound in the step counter: none, since it writes one core's state and runs no loop.
 /// See design/one-lock-bounded-steps/.
 pub const ACKNOWLEDGE_STEPS: usize = 0;

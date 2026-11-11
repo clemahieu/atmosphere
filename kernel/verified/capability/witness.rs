@@ -1304,15 +1304,16 @@ impl CapKernel {
     /// slot 257, delete the thread's capability, retype the thread's block, which unbinds the thread,
     /// delete the process's capability, retype the leaf in the process's table three times, which
     /// unlinks it, slices its one capability and frees it, load the process's space on core 0 and point
-    /// core 0's base register at it as a core that ran it would have, point core 0's base register at the
-    /// kernel's own root, which no space's block holds, as an idle core does once the process it ran is
-    /// dead, retype the process's block, which retires the space now that no base register names it,
-    /// retype it again, which refuses since core 0 still depends on the space, load the root's space on
-    /// core 0, which leaves the retire in place, have core 0 acknowledge the retire's flush, retype the
-    /// block a third time, which frees it, and retype a process at the same block into slot 257 again.
+    /// core 0's base register at it as a core that ran it would have, point core 0's base register at
+    /// `kernel_root` under KERNEL_TAG, as an idle core does once the process it ran is dead, retype the
+    /// process's block, which retires the space now that no base register names it, retype it again,
+    /// which refuses since core 0 still depends on the space, load the root's space on core 0, which
+    /// leaves the retire in place, have core 0 acknowledge the retire's flush, retype the block a third
+    /// time, which frees it, and retype a process at the same block into slot 257 again.
     /// Each step returns what a teardown driven by retype says, in this order, and at the end the root
-    /// holds a capability to a live process at the same block. See
-    /// design/teardown-driven-by-retype/.
+    /// holds a capability to a live process at the same block. `kernel_root` is a page at no space's
+    /// root offset, all the model asks of a root naming no space; that it is the kernel's own, outside
+    /// every untyped, is the glue's to keep. See design/teardown-driven-by-retype/.
     #[verifier::spinoff_prover]
     pub fn witness_process_block_retyped(
         &mut self,
@@ -1725,9 +1726,9 @@ impl CapKernel {
                 }
             }
         }
-        // Core 0 points its base register at the kernel's own root first, under id 0, which no space is
-        // given: a core loads a space only while its register names no space or that one.
-        let named = crate::arch::load_translation_root(0, kernel_root, 0);
+        // Core 0 points its base register at a root naming no space first, under KERNEL_TAG, which no
+        // space holds: a core loads a space only while its register names no space or that one.
+        let named = crate::arch::load_translation_root(0, kernel_root, KERNEL_TAG);
         self.switch_space(0, None, named);
         let ghost s7 = *self;
         proof {
@@ -1746,9 +1747,9 @@ impl CapKernel {
             assert(n7.spaces == m7.spaces);
         }
 
-        // Core 0 leaves the dead process's space for the kernel's own root, under id 0, which no space is
-        // given, so no base register names the space a retire would end.
-        let named = crate::arch::load_translation_root(0, kernel_root, 0);
+        // Core 0 leaves the dead process's space for a root naming no space, under KERNEL_TAG, which no
+        // space holds, so no base register names the space a retire would end.
+        let named = crate::arch::load_translation_root(0, kernel_root, KERNEL_TAG);
         proof {
             n7.lemma_no_space_root(kernel_root);
         }
