@@ -28,14 +28,21 @@ specification's class is hardware or kernel, and its reason is its citation line
 appears twice in one file twice. The word assume, admit or assume_ in code fails the check, as a call, a path or a use that imports it
 under another name: the marked crates hold none, and a new one would be an axiom the proof rests on. So does any other way to exempt code: an axiom fn or a broadcast axiom fn, a
 verifier::external fn, an external function, trait or type specification, any other verifier
-attribute whose name starts with external, assume_termination, an attribute above that does not open
-its line (after another attribute, inside cfg_attr, or an inner #![...]), and an assume_specification
-its line does not open; each word of these in code counts, whatever attribute or macro spells it.
+attribute whose name starts with external, any attribute under verus::internal, assume_termination,
+assume_unsupported_attributes, an attribute above that does not open its line (after another
+attribute, inside cfg_attr, or an inner #![...]), and an assume_specification its line does not open;
+each word of these in code counts, whatever attribute or macro spells it. An unstable feature is
+refused, since one builds an identifier from pieces and a word above need not appear. vstd's
+assume_new constructors, which make a ghost or tracked value from nothing, are refused outside the
+body of a counted external_body function, the glue whose claim the list holds; an impl outside
+verus! that Verus does not read is no such body.
 vstd's proof_from_false is not refused: it requires false, which only an assumption or an exemption
 refused here can supply.
 
 A line's code is what rustc reads as code: comments, line or block, and the inside of string and
 character literals are left out, so a '//' inside a block comment or a string hides nothing after it.
+A first line opening #! is dropped as rustc drops it, unless the next token past whitespace and plain
+comments is [, an inner attribute; so a '#!/*' line opens no comment.
 Every .rs file under a marked crate is scanned except build output under 'target', and the check
 refuses what makes rustc compile any other file: a path attribute, an include!, and a module named
 target.
@@ -73,9 +80,18 @@ ASSUMPTION = re.compile(r"\b(assume|admit|assume_)\b")
 # or type specification, a function assumed to terminate).
 EXEMPTING = re.compile(r"\b(axiom|external|external_fn_specification|external_trait_specification|"
                        r"external_type_specification|assume_specification|"
-                       r"external_body|exec_allows_no_decreases_clause|assume_termination)\b")
-# Any other verifier attribute whose name starts with external, in either spelling.
-VERIFIER_EXTERNAL = re.compile(r"verifier\s*(?:::|\()\s*(external\w*)")
+                       r"external_body|exec_allows_no_decreases_clause|assume_termination|"
+                       r"assume_unsupported_attributes)\b")
+# Any other verifier attribute whose name starts with external, in either spelling, and any attribute
+# under verus::internal, the namespace the verus! macro writes its own attributes into.
+VERIFIER_EXTERNAL = re.compile(r"verifier\s*(?:::|\()\s*(external\w*)|\b(verus\s*::\s*internal)\b")
+# An unstable feature, which the toolchain's RUSTC_BOOTSTRAP lets a crate turn on: one of them builds an
+# identifier from pieces, so a word this check looks for need not appear in the source. The marked crates
+# turn on none.
+FEATURE = re.compile(r"\bfeature\s*\(")
+# vstd's constructors of a ghost or tracked value from nothing, allowed only in the body of a counted
+# external_body function, whose claim the list holds.
+CONJURE = re.compile(r"\bassume_new\w*")
 # What makes rustc compile a file the scan does not read: a path attribute, in any attribute or
 # cfg_attr, an include!, and a module named target, whose directory the scan leaves out.
 UNREAD_FILE = re.compile(r"#\s*!?\s*\[\s*path\b|\bpath\s*=\s*(?:r#*)?\"|\binclude\s*!|"
@@ -122,6 +138,13 @@ def code_lines(source):
         return 0 <= at < length and (source[at].isalnum() or source[at] == "_")
 
     i = 0
+    if source.startswith("\ufeff"):
+        i = 1
+    if shebang(source, i):
+        end = source.find("\n", i)
+        end = length if end < 0 else end
+        blank(0, end)
+        i = end
     while i < length:
         char = source[i]
         if source.startswith("//", i):
@@ -174,6 +197,35 @@ def code_lines(source):
         else:
             i += 1
     return "".join(out).split("\n")[:len(source.splitlines())]
+
+
+def shebang(source, start):
+    """Whether the first line, from start (after a byte order mark), is a shebang rustc drops: it opens
+    with #! and the first token after that, past whitespace and comments other than doc comments, is not
+    [, which would make it an inner attribute."""
+    if not source.startswith("#!", start):
+        return False
+    i, length = start + 2, len(source)
+    while i < length:
+        if source[i].isspace():
+            i += 1
+        elif source.startswith("//", i) and not (source.startswith("//!", i) or
+                                                (source.startswith("///", i) and not source.startswith("////", i))):
+            end = source.find("\n", i)
+            i = length if end < 0 else end
+        elif source.startswith("/*", i) and not (source.startswith("/*!", i) or (
+                source.startswith("/**", i) and not source.startswith(("/***", "/**/"), i))):
+            depth, i = 1, i + 2
+            while i < length and depth:
+                if source.startswith("/*", i):
+                    depth, i = depth + 1, i + 2
+                elif source.startswith("*/", i):
+                    depth, i = depth - 1, i + 2
+                else:
+                    i += 1
+        else:
+            break
+    return not source.startswith("[", i)
 
 
 def attribute(line):
@@ -321,7 +373,11 @@ def unread_exemptions(path, source):
         if UNREAD_FILE.search(code):
             refused.append(f"{path}:{index + 1}: {line.strip()} compiles a file this check does not read")
         matches = {match.start(1): match.group(1) for match in EXEMPTING.finditer(code)}
-        matches.update({match.start(1): match.group(1) for match in VERIFIER_EXTERNAL.finditer(code)})
+        matches.update({match.start(match.lastindex): match.group(match.lastindex)
+                        for match in VERIFIER_EXTERNAL.finditer(code)})
+        if FEATURE.search(code):
+            refused.append(f"{path}:{index + 1}: {line.strip()} turns on an unstable feature, which may build "
+                           "a word this check looks for from pieces")
         words = list(matches.values())
         if not words:
             continue
@@ -332,6 +388,40 @@ def unread_exemptions(path, source):
             refused.append(f"{path}:{index + 1}: {line.strip()} exempts code from the proof in a form this "
                            "check does not count")
     return refused
+
+
+def glue_bodies(code):
+    """The indices of the lines inside the body of each counted external_body function: from the brace
+    that opens the body after the function's name to the brace that closes it."""
+    inside = set()
+    for index, line in enumerate(code):
+        if attribute(line.strip()) != "external_body":
+            continue
+        declared = next((at for at in range(index + 2, len(code)) if item_name(code[at].strip())), None)
+        if declared is None:
+            continue
+        text = "\n".join(code[declared:])
+        opening = text.find("{")
+        if opening < 0 or ";" in text[:opening]:
+            continue
+        depth = 0
+        for at in range(opening, len(text)):
+            depth += {"{": 1, "}": -1}.get(text[at], 0)
+            if depth == 0:
+                break
+        first = declared + text.count("\n", 0, opening)
+        inside.update(range(first, declared + text.count("\n", 0, at) + 1))
+    return inside
+
+
+def conjurings(path, source):
+    """Each line of one file that makes a ghost or tracked value from nothing, outside the body of a
+    counted external_body function."""
+    code = code_lines(source)
+    allowed = glue_bodies(code)
+    return [f"{path}:{index + 1}: {line.strip()}"
+            for index, (line, text) in enumerate(zip(source.splitlines(), code))
+            if CONJURE.search(text) and index not in allowed]
 
 
 def compare(found, listed):
@@ -390,6 +480,8 @@ def scan_tree(repo, documents):
             found.extend(specifications(path, source, documents, repo))
             refused.extend(f"{line} assumes what the proof should show" for line in assumptions(path, source))
             refused.extend(unread_exemptions(path, source))
+            refused.extend(f"{line} makes a ghost or tracked value outside counted glue"
+                           for line in conjurings(path, source))
     return found, refused
 
 
@@ -817,6 +909,73 @@ class ExemptionFormTests(unittest.TestCase):
             "let axiomatic = external_bodyless; // #![verifier::external_body]\n"
         )
         self.assertEqual(unread_exemptions("a.rs", source), [])
+
+class ForgeryTests(unittest.TestCase):
+    """The forms a skeptic used to forge a BaseRegister and a TlbModel outside an arch module, each
+    refused: rustc reads them as code the check would otherwise not see as such."""
+
+    FORGE = ("proof fn f() -> (tracked r: crate::arch::BaseRegister) { admit(); vstd::pervasive::proof_from_false() }\n")
+
+    def refused(self, path, files):
+        repo = Tests.workspace(self, {"kernel/verified": (True, files)})
+        _, refused = scan_tree(repo, DOCUMENTS)
+        return [line for line in refused if line.startswith(f"kernel/verified/{path}:")]
+
+    def test_a_shebang_line_opening_a_block_comment_is_dropped_as_rustc_drops_it(self):
+        for path in ("capability/mapping.rs", "lib.rs"):
+            source = f"#!/*\n// SPDX-License-Identifier: MIT\nverus! {{\n{self.FORGE}// */\n}}\n"
+            with self.subTest(path):
+                self.assertTrue(self.refused(path, {path: source}))
+
+    def test_a_shebang_line_is_blank_and_an_inner_attribute_is_code(self):
+        self.assertEqual(code_lines("#!/* x\nadmit(); // */\n"), ["      ", "admit();      "])
+        self.assertEqual(code_lines("\ufeff#!/*\nadmit(); */\n"), ["     ", "admit(); */"])
+        for source in ("#![no_std] /*\nx */\n", "#! [no_std]\n", "#!/* c */[no_std]\n", "#!\n// c\n[no_std]\n"):
+            with self.subTest(source):
+                self.assertTrue(code_lines(source)[0].startswith("#!"), source)
+
+    def test_a_shebang_followed_by_a_doc_comment_is_dropped(self):
+        self.assertEqual(code_lines("#!/// x\n[no_std]\n")[0].strip(), "")
+
+    def test_a_feature_that_pastes_identifiers_is_refused(self):
+        for source in ("#![feature(macro_metavar_expr_concat)]\n", "#![feature(concat_idents)]\n",
+                       "#![cfg_attr(verus_keep_ghost, feature (macro_metavar_expr_concat))]\n"):
+            with self.subTest(source):
+                self.assertTrue(unread_exemptions("kernel/verified/lib.rs", source), source)
+
+    def test_a_cargo_feature_test_is_not_refused(self):
+        source = '#[cfg(feature = "lock_stats")]\nfn f() {}\nlet x = cfg!(feature = "a");\n'
+        self.assertEqual(unread_exemptions("a.rs", source), [])
+
+    def test_assume_new_in_an_impl_outside_verus_is_refused(self):
+        source = ("impl Default for SkBox { fn default() -> Self { SkBox { t: Tracked::assume_new(), "
+                  "m: Tracked::assume_new() } } }\nverus! {\npub struct SkBox { pub t: Tracked<BaseRegister> }\n}\n")
+        self.assertTrue(self.refused("capability/mapping.rs", {"capability/mapping.rs": source}))
+        for spelling in ("Ghost::assume_new()", "Tracked::assume_new_fallback(f)", "Tracked :: assume_new ()"):
+            with self.subTest(spelling):
+                self.assertTrue(conjurings("a.rs", f"fn f() -> Tracked<T> {{ {spelling} }}\n"), spelling)
+
+    def test_assume_new_in_a_counted_external_body_is_accepted(self):
+        source = ("#[verifier::external_body]\n// external_body(gap): conjures\nfn page_permission(x: u8)\n"
+                  "    -> (perm: Tracked<PointsToRaw>)\n    ensures perm@.is_range(0, 1),\n{\n"
+                  "    Tracked::assume_new()\n}\nfn g() -> Tracked<T> { Tracked::assume_new() }\n")
+        self.assertEqual(conjurings("a.rs", source), ["a.rs:9: fn g() -> Tracked<T> { Tracked::assume_new() }"])
+
+    def test_assume_new_under_a_termination_exemption_is_refused(self):
+        source = ("#[verifier::exec_allows_no_decreases_clause]\n// exec_allows_no_decreases_clause(unproven): x\n"
+                  "fn spin() -> Tracked<T> {\n    Tracked::assume_new()\n}\n")
+        self.assertEqual(len(conjurings("a.rs", source)), 1)
+
+    def test_assume_unsupported_attributes_is_refused(self):
+        source = "#[verifier::assume_unsupported_attributes]\n#[no_mangle] pub fn sk_named() {}\n"
+        self.assertTrue(unread_exemptions("a.rs", source))
+
+    def test_a_verus_internal_attribute_is_refused(self):
+        for source in ("#[verus::internal(external_trait_blanket)]\nimpl<T> F for T {}\n",
+                       "#[verus :: internal(verus_macro)]\nfn f() {}\n"):
+            with self.subTest(source):
+                self.assertTrue(unread_exemptions("a.rs", source), source)
+
 
 class LexTests(unittest.TestCase):
     """The check reads a line as rustc does: a comment ends at its */ and a string at its quote, so code
