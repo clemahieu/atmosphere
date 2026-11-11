@@ -17,6 +17,10 @@ use vstd::raw_ptr::*;
 use acall::step::Caller;
 use aheap::arch::*;
 use aheap::source::*;
+use verified::capability::list::NODES_PER_PAGE;
+#[cfg(verus_keep_ghost)]
+use verified::capability::table::index_ok;
+use verified::capability::table::TABLE_INDICES;
 
 use crate::glue::*;
 
@@ -34,8 +38,159 @@ pub const WINDOW_BYTES: usize = WINDOW_BLOCKS * BLOCK_BYTES;
 /// so its blocks share their tables above the leaf's.
 pub const REGION_BYTES: usize = BLOCK_BYTES * BLOCK_PAGES;
 
-/// The most pages of untyped the record tracks.
-pub const MAX_PAGES: usize = 64;
+/// The most pages of untyped the record tracks: enough for an object of more than a block, which aheap
+/// backs whole as a span of its own, beside the table pages of the window's path and the heap's other
+/// spans.
+pub const MAX_PAGES: usize = 2 * BLOCK_PAGES;
+
+/// The indices a capability table leaf gives its root entry, the first of which is the leaf's hidden
+/// node and no slot.
+pub const LEAF_INDICES: usize = NODES_PER_PAGE;
+
+/// The slots a leaf gives, past its hidden node.
+pub const LEAF_SLOTS: usize = LEAF_INDICES - 1;
+
+/// The slot of the capability of the frame for page `i` of the untyped, when frames go from the slot
+/// `slots` on: the `i`-th slot after it, counting only slots, so a run of frames that reaches the end of
+/// a leaf goes on past the next leaf's hidden node. The caller provides the leaves those slots lie in.
+pub open spec fn frame_slot(slots: int, i: int) -> int {
+    let n = slots % LEAF_INDICES as int - 1 + i;
+    slots - slots % LEAF_INDICES as int + (n / LEAF_SLOTS as int) * LEAF_INDICES as int + 1 + n % LEAF_SLOTS as int
+}
+
+/// From a slot, which is no leaf's hidden node, frame slots rise with the page and none is a hidden node.
+proof fn lemma_frame_slot(slots: int, i: int, j: int)
+    requires
+        slots >= 0,
+        slots % LEAF_INDICES as int != 0,
+        0 <= i <= j,
+    ensures
+        frame_slot(slots, i) % LEAF_INDICES as int != 0,
+        frame_slot(slots, i) >= slots,
+        i < j ==> frame_slot(slots, i) < frame_slot(slots, j),
+{
+    let l = LEAF_INDICES as int;
+    let m = LEAF_SLOTS as int;
+    let base = slots - slots % l;
+    let ni = slots % l - 1 + i;
+    let nj = slots % l - 1 + j;
+    lemma_fundamental_div_mod(slots, l);
+    lemma_mod_bound(slots, l);
+    lemma_fundamental_div_mod(ni, m);
+    lemma_mod_bound(ni, m);
+    lemma_fundamental_div_mod(nj, m);
+    lemma_mod_bound(nj, m);
+    lemma_div_pos_is_pos(ni, m);
+    let qi = ni / m;
+    let qj = nj / m;
+    let ri = ni % m;
+    let rj = nj % m;
+    assert(base == l * (slots / l));
+    assert((base + qi * l + 1 + ri) % l == 1 + ri) by {
+        lemma_mod_multiples_vanish(slots / l + qi, 1 + ri, l);
+        lemma_small_mod((1 + ri) as nat, l as nat);
+        assert(base + qi * l + 1 + ri == l * (slots / l + qi) + (1 + ri)) by (nonlinear_arith)
+            requires
+                base == l * (slots / l),
+        ;
+    }
+    lemma_div_is_ordered(ni, nj, m);
+    assert(qi >= 0);
+    assert(qi * l >= qi * m + qi) by (nonlinear_arith)
+        requires
+            qi >= 0,
+            l == m + 1,
+    ;
+    if i < j {
+        if qi == qj {
+            assert(ri < rj);
+        } else {
+            assert(qi + 1 <= qj);
+            assert(qi * l + l <= qj * l) by (nonlinear_arith)
+                requires
+                    qi + 1 <= qj,
+                    l > 0,
+            ;
+        }
+    }
+}
+
+/// The slot of the capability of the frame for page `i`, when frames go from the slot `slots` on.
+fn frame_slot_at(slots: u64, i: usize) -> (r: u64)
+    requires
+        slots < TABLE_INDICES,
+        slots as int % LEAF_INDICES as int != 0,
+        i <= MAX_PAGES,
+    ensures
+        r == frame_slot(slots as int, i as int),
+    no_unwind
+{
+    let offset = (slots % LEAF_INDICES as u64) as usize;
+    let n = offset - 1 + i;
+    proof {
+        let l = LEAF_INDICES as int;
+        let m = LEAF_SLOTS as int;
+        lemma_mod_bound(slots as int, l);
+        lemma_fundamental_div_mod(slots as int, l);
+        lemma_div_pos_is_pos(n as int, m);
+        lemma_fundamental_div_mod(n as int, m);
+        lemma_mod_bound(n as int, m);
+        assert(n as int / m <= n as int) by (nonlinear_arith)
+            requires
+                n as int == m * (n as int / m) + n as int % m,
+                n as int % m >= 0,
+                n as int / m >= 0,
+                m >= 1,
+        ;
+        assert((n as int / m) * l <= n as int * l) by (nonlinear_arith)
+            requires
+                n as int / m <= n as int,
+                l > 0,
+        ;
+        assert(n as int * l <= (LEAF_INDICES + MAX_PAGES) * LEAF_INDICES) by (nonlinear_arith)
+            requires
+                n < LEAF_INDICES + MAX_PAGES,
+                l == LEAF_INDICES,
+        ;
+    }
+    slots - offset as u64 + (n / LEAF_SLOTS * LEAF_INDICES) as u64 + 1 + (n % LEAF_SLOTS) as u64
+}
+
+/// Past the slots one leaf gives, frame slots lie in another leaf.
+proof fn lemma_frame_slots_cross_leaves(slots: int)
+    requires
+        slots >= 0,
+        slots % LEAF_INDICES as int != 0,
+    ensures
+        frame_slot(slots, LEAF_SLOTS as int) / LEAF_INDICES as int != frame_slot(slots, 0) / LEAF_INDICES as int,
+{
+    let l = LEAF_INDICES as int;
+    let m = LEAF_SLOTS as int;
+    let n0 = slots % l - 1;
+    lemma_mod_bound(slots, l);
+    lemma_fundamental_div_mod(slots, l);
+    assert(n0 / m == 0) by {
+        lemma_basic_div(n0, m);
+    }
+    assert((m + n0) / m == 1) by {
+        lemma_div_plus_one(n0, m);
+    }
+    assert(n0 % m == n0) by {
+        lemma_small_mod(n0 as nat, m as nat);
+    }
+    assert((m + n0) % m == n0) by {
+        lemma_mod_add_multiples_vanish(n0, m);
+    }
+    let q = slots / l;
+    assert(frame_slot(slots, 0) == l * q + 1 + n0);
+    assert(frame_slot(slots, m) == l * (q + 1) + 1 + n0) by (nonlinear_arith)
+        requires
+            frame_slot(slots, m) == slots - slots % l + l + 1 + n0,
+            slots == l * q + slots % l,
+    ;
+    lemma_div_multiples_vanish_fancy(q, 1 + n0, l);
+    lemma_div_multiples_vanish_fancy(q + 1, 1 + n0, l);
+}
 
 /// The pages of a table page's block, order 3.
 pub const TABLE_PAGES: usize = 8;
@@ -327,7 +482,11 @@ impl Record {
         &&& self.caller@.wf()
         &&& self.pages <= MAX_PAGES
         &&& self.memory + self.pages * PAGE_BYTES <= u64::MAX
-        &&& self.slots + MAX_PAGES <= u64::MAX
+        &&& self.slots < TABLE_INDICES
+        &&& self.slots as int % LEAF_INDICES as int != 0
+        &&& forall|i: int| 0 <= i < self.pages ==> index_ok(#[trigger] frame_slot(self.slots as int, i) as usize)
+        &&& forall|i: int, j: int|
+            0 <= i < j < self.pages ==> #[trigger] frame_slot(self.slots as int, i) < #[trigger] frame_slot(self.slots as int, j)
         &&& self.window + WINDOW_BYTES <= usize::MAX
     }
 
@@ -342,6 +501,19 @@ impl Record {
             lemma_scale(i as int, self.pages as int, PAGE_BYTES as int);
         }
         self.memory + i as u64 * PAGE_BYTES as u64
+    }
+
+    /// The slot of the capability of the frame for page `i` of the untyped.
+    fn slot(&self, i: usize) -> (r: u64)
+        requires
+            self.inv(),
+            i < self.pages,
+        ensures
+            r == frame_slot(self.slots as int, i as int),
+            index_ok(r as usize),
+        no_unwind
+    {
+        frame_slot_at(self.slots, i)
     }
 
     /// A frame the source holds, mapped nowhere: one released before, else a free page retyped as a
@@ -379,7 +551,8 @@ impl Record {
             i -= 1;
             if self.state[i] == FREE {
                 let base = self.page(i);
-                if retype_frame(&mut self.caller, self.untyped, base, self.slots + i as u64) {
+                let slot = self.slot(i);
+                if retype_frame(&mut self.caller, self.untyped, base, slot) {
                     self.state[i] = HELD;
                     return Some(i);
                 }
@@ -492,7 +665,8 @@ impl Record {
             Some(i) => i,
             None => return None,
         };
-        match map_page(&mut self.caller, self.space, addr, self.slots + i as u64, provenance) {
+        let slot = self.slot(i);
+        match map_page(&mut self.caller, self.space, addr, slot, provenance) {
             Some(perm) => {
                 self.state[i] = MAPPED;
                 self.owner[i] = addr;
@@ -633,10 +807,12 @@ impl Eager {
     }
 
     /// The source that backs runs in the space at `space` with frames and table pages retyped from the
-    /// untyped at `untyped`, whose `pages` pages from physical `memory` it alone retypes, putting
-    /// frame capabilities in the empty slots from `slots`; and hands out spans of the window at
+    /// untyped at `untyped`, whose `pages` pages from physical `memory` it alone retypes, putting the
+    /// capability of the frame for page i in the empty slot `frame_slot(slots, i)`, which runs on past a
+    /// leaf's end into the next leaf, so the caller provides as many consecutive leaves as `pages` frames
+    /// need; and hands out spans of the window at
     /// `window`, which nothing maps, aligned to a region and with room for the window after it. None
-    /// when the window or the counts do not fit. `caller` is the process's token of the kernel, which
+    /// when the window or the counts do not fit, or `slots` is no slot. `caller` is the process's token of the kernel, which
     /// the source's system calls thread while it lives.
     pub fn new(caller: Tracked<Caller>, space: u64, untyped: u64, memory: u64, pages: usize, slots: u64, window: *mut u8) -> (r: Option<Eager>)
         requires
@@ -648,8 +824,25 @@ impl Eager {
             },
     {
         let addr = window as usize;
-        if pages > MAX_PAGES || slots > u64::MAX - MAX_PAGES as u64 {
+        if pages > MAX_PAGES || slots >= TABLE_INDICES as u64 || slots % LEAF_INDICES as u64 == 0 {
             return None;
+        }
+        if pages > 0 && frame_slot_at(slots, pages - 1) >= TABLE_INDICES as u64 {
+            return None;
+        }
+        proof {
+            assert(MAX_PAGES >= BLOCK_PAGES + 64);
+            lemma_frame_slots_cross_leaves(slots as int);
+            assert forall|i: int| 0 <= i < pages implies index_ok(#[trigger] frame_slot(slots as int, i) as usize) by {
+                lemma_frame_slot(slots as int, i, pages - 1);
+                lemma_frame_slot(slots as int, i, i);
+            }
+            assert forall|i: int, j: int| 0 <= i < j < pages implies #[trigger] frame_slot(slots as int, i) < #[trigger] frame_slot(
+                slots as int,
+                j,
+            ) by {
+                lemma_frame_slot(slots as int, i, j);
+            }
         }
         proof {
             lemma_scale(pages as int, MAX_PAGES as int, PAGE_BYTES as int);

@@ -880,8 +880,12 @@ fn retyped_leaves_held(caller: &mut Tracked<Caller>, untyped: u64, table: u64) -
 /// leaves the leaf check retypes.
 const EAGER_ENTRY: u64 = FIRST_EMPTY_ENTRY + 2;
 
-/// The order of the block dom0 gives the eager source: as many pages as the source records.
-const EAGER_ORDER: u64 = aeager::MAX_PAGES.trailing_zeros() as u64;
+/// The pages of the block dom0 gives the eager source, whose frames all fit in the one leaf at
+/// EAGER_ENTRY after the source's untyped.
+const EAGER_PAGES: usize = 64;
+
+/// The order of the block dom0 gives the eager source.
+const EAGER_ORDER: u64 = EAGER_PAGES.trailing_zeros() as u64;
 
 /// How far below the top of the gigabyte untyped the eager source's block starts, clear of the pages the
 /// frame, table page and leaf checks take from that top.
@@ -920,7 +924,7 @@ fn eager_source_held(caller: &mut Tracked<Caller>, empty: u64) -> bool {
         operation::ROOT_PROCESS_SLOT,
         source,
         memory,
-        aeager::MAX_PAGES,
+        EAGER_PAGES,
         source + 1,
         EAGER_WINDOW as *mut u8,
     ) else {
