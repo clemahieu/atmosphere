@@ -1239,7 +1239,7 @@ impl RecordStore {
                 assert(run_held(pb0, s0, b, 0));
             }
         }
-        match pb.back_run(src, q, 0) {
+        match pb.back_run(src, q, 0, 1) {
             None => {
                 let ghost pb2 = *pb;
                 let ghost s2 = src@;
@@ -1353,7 +1353,7 @@ impl RecordStore {
             lemma_one_page(bi);
         }
         let whole = self.remove_page(b, Ghost(prov));
-        pb.release_run(src, b, 0, whole);
+        pb.release_run(src, b, 0, 1, whole);
         let ghost pb1 = *pb;
         let ghost s1 = src@;
         proof {

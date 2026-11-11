@@ -919,7 +919,7 @@ pub fn witness_backed_run<S: SpanSource>(src: &mut S) -> (r: (PageBuddy, bool, G
         assert(fr[m].dom() =~= Set::<int>::empty());
         assert(pages(0) == 1);
     }
-    let (ptr, perm) = match pb.back_run(src, p, 0) {
+    let (ptr, perm) = match pb.back_run(src, p, 0, 1) {
         None => {
             let ghost q = src@.refusals.last();
             pb.free_run(src, p);
@@ -948,7 +948,7 @@ pub fn witness_backed_run<S: SpanSource>(src: &mut S) -> (r: (PageBuddy, bool, G
     let tracked raw = byte.into_raw();
     let tracked whole = raw.join(rest);
     assert(whole.dom() =~= Set::range(p as int, p as int + PAGE_BYTES as int));
-    pb.release_run(src, p, 0, Tracked(whole));
+    pb.release_run(src, p, 0, 1, Tracked(whole));
     proof {
         assert(s1.spans[b].backed.disjoint(run_pages(p as int, 1)));
         assert(src@.spans[b].backed =~= s1.spans[b].backed);

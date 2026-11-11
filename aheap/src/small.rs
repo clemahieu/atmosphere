@@ -1531,7 +1531,7 @@ impl SizeClass {
             assert(pb1.used()[c][page_of(qi)] == kk);
             pb1.lemma_view(s1);
         }
-        let (base, run) = match pb.back_run(src, q, k) {
+        let (base, run) = match pb.back_run(src, q, k, order_pages(k)) {
             None => {
                 let ghost pb2 = *pb;
                 let ghost s2 = src@;
@@ -1590,7 +1590,7 @@ impl SizeClass {
                     assert(n0.free_slots() == Set::range(0, n0.count() as int));
                 }
                 let whole = slab.retire(Tracked(fresh.borrow_mut()));
-                pb.release_run(src, q, k, whole);
+                pb.release_run(src, q, k, order_pages(k), whole);
                 let ghost pb4 = *pb;
                 let ghost s4 = src@;
                 pb.free_run(src, q);
@@ -1879,7 +1879,7 @@ impl SizeClass {
             proof {
                 assert(run_held(pb0, s0, qi, kk));
             }
-            pb.release_run(src, q, k, whole);
+            pb.release_run(src, q, k, order_pages(k), whole);
             let ghost pb1 = *pb;
             let ghost s1 = src@;
             pb.free_run(src, q);

@@ -28,10 +28,11 @@
 //! - `free_run(p)` takes back the run at p and never refuses. A span left with no run is given back
 //!   to the source, unless fewer than the configured spares are idle, when it stays as a spare. The
 //!   run's pages must be unbacked.
-//! - `back_run(p, k)` backs the pages of the allocated run at p through the source and returns a
-//!   pointer to it with the permission to its bytes, or refuses and changes nothing else;
-//!   `release_run(p, k, perm)` gives them back. A run `alloc_run` returns has no page backed: the
-//!   page buddy does not back the runs it cuts, and its caller backs what it writes.
+//! - `back_run(p, k, n)` backs the first n pages of the allocated run at p through the source and
+//!   returns a pointer to it with the permission to their bytes, or refuses and changes nothing
+//!   else; `release_run(p, k, n, perm)` gives them back. A run `alloc_run` returns has no page
+//!   backed: the page buddy does not back the runs it cuts, and its caller backs what it writes,
+//!   the whole run or only its first pages.
 //!
 //! Each states the source's view after it exactly, the requests the source granted in the call among
 //! it: a refusal by the source leaves it as it was with the refused request recorded, with the spans
@@ -49,9 +50,12 @@
 //! a held span's first block with no run is the initial block, so `lemma_idle_fits` shows a run of
 //! any order fits while such a span is held.
 //!
-//! `run_held` is a caller's run, allocated with every page backed. `cut_run` and `freed` state
+//! `run_held` is a caller's run, allocated with every page backed, and `run_part` one with only its
+//! first n pages backed; `lemma_backed_part` and `lemma_released_part` take a run between unbacked
+//! and partly backed. `cut_run` and `freed` state
 //! `alloc_run` and `free_run` as predicates over the views before and after, and the `keeps_held`
-//! lemmas keep every held run held across a cut, a back, a refusal and the free of another run.
+//! lemmas keep every held run held, and the `keeps_part` lemmas every partly backed run as it was,
+//! across a cut, a back, a refusal, and the release and free of another run.
 //! `runs` is what `used` holds, blocks with no run left out; `with_run` and `without_run` add and
 //! take out one run, and their lemmas let a caller undo several cuts by their frees in any order
 //! (`lemma_two_runs_restored` for two).
@@ -229,6 +233,21 @@ pub open spec fn run_held(pb: PageBuddy, s: SourceView, x: int, k: nat) -> bool 
     &&& pb.spans().contains_key(c)
     &&& s.spans.contains_key(pb.span_base(c))
     &&& s.backed(pb.span_base(c), x, pages(k) as nat)
+}
+
+/// The run of order `k` at `x` is allocated to a caller of the page buddy, in a span the source
+/// holds, with its first `n` pages backed and the rest of its pages not: a run its caller backs
+/// only as far as it writes. `run_held` is the run with every page backed (`lemma_held_part`).
+pub open spec fn run_part(pb: PageBuddy, s: SourceView, x: int, k: nat, n: nat) -> bool {
+    let c = span_of(x);
+    let b = pb.span_base(c);
+    &&& pb.holds(x)
+    &&& pb.used()[c][page_of(x)] == k
+    &&& pb.spans().contains_key(c)
+    &&& s.spans.contains_key(b)
+    &&& 0 < n <= pages(k)
+    &&& s.backed(b, x, n)
+    &&& s.unbacked(b, x + n * PAGE_BYTES as int, (pages(k) - n) as nat)
 }
 
 /// The page buddy went from `before` to `after`, and the source from `s` to `t`, by `alloc_run`
@@ -2204,15 +2223,17 @@ impl PageBuddy {
         }
     }
 
-    /// Backs the pages of the allocated run of order `k` at `p`, none of them backed, through the
-    /// source, and returns a pointer to the run with the permission to exactly its bytes; or
-    /// refuses, backs nothing and changes nothing but the source's record of the back it refused.
-    pub fn back_run<S: SpanSource>(&mut self, src: &mut S, p: usize, k: usize) -> (r: Option<(*mut u8, Tracked<PointsToRaw>)>)
+    /// Backs the first `n` pages of the allocated run of order `k` at `p`, none of them backed,
+    /// through the source, and returns a pointer to the run with the permission to exactly those
+    /// pages' bytes; or refuses, backs nothing and changes nothing but the source's record of the
+    /// back it refused. A caller that writes the whole run passes `pages(k)`.
+    pub fn back_run<S: SpanSource>(&mut self, src: &mut S, p: usize, k: usize, n: usize) -> (r: Option<(*mut u8, Tracked<PointsToRaw>)>)
         requires
             old(self).wf(old(src)@),
             old(self).holds(p as int),
             old(self).used()[span_of(p as int)][page_of(p as int)] == k,
-            old(src)@.unbacked(old(self).span_base(span_of(p as int)), p as int, pages(k as nat) as nat),
+            0 < n <= pages(k as nat),
+            old(src)@.unbacked(old(self).span_base(span_of(p as int)), p as int, n as nat),
         ensures
             final(self).wf(final(src)@),
             final(self).spares() == old(self).spares(),
@@ -2221,22 +2242,14 @@ impl PageBuddy {
             final(self).metas() == old(self).metas(),
             match r {
                 None => final(src)@ == old(src)@.refused(
-                    Request::Back {
-                        span: old(self).span_base(span_of(p as int)),
-                        start: p as int,
-                        pages: pages(k as nat) as nat,
-                    },
+                    Request::Back { span: old(self).span_base(span_of(p as int)), start: p as int, pages: n as nat },
                 ),
                 Some((ptr, perm)) => {
                     &&& ptr@.addr == p
                     &&& ptr@.provenance == old(src)@.provenance
-                    &&& perm@.is_range(p as int, pages(k as nat) * PAGE_BYTES)
+                    &&& perm@.is_range(p as int, n * PAGE_BYTES)
                     &&& perm@.provenance() == old(src)@.provenance
-                    &&& final(src)@ == old(src)@.backed_run(
-                        old(self).span_base(span_of(p as int)),
-                        p as int,
-                        pages(k as nat) as nat,
-                    )
+                    &&& final(src)@ == old(src)@.backed_run(old(self).span_base(span_of(p as int)), p as int, n as nat)
                 },
             },
     {
@@ -2247,13 +2260,14 @@ impl PageBuddy {
         }
         let ghost bi = self.span_base(span_of(p as int));
         let ghost ci = span_of(p as int);
-        let ghost run = run_pages(p as int, pages(k as nat) as nat);
+        let ghost run = run_pages(p as int, n as nat);
         proof {
             self.lemma_run(p as int, k as nat);
             self.lemma_blocks_of(bi);
+            lemma_first_pages(p as int, n as nat, pages(k as nat) as nat);
+            lemma_first_pages_in(self.view@, bi, p as int, n as nat, pages(k as nat) as nat);
         }
         let hp = self.head.unwrap();
-        let n = order_pages(k);
         let ghost start = self.view@;
         let backed = src.back(Ghost(bi), p, n);
         self.view = Ghost(src@);
@@ -2277,6 +2291,7 @@ impl PageBuddy {
                     assert forall|a: int| #[trigger] self.view@.spans[c].backed.contains(a) implies a
                         == meta_page(c) || in_runs(c, lo, a) || in_runs(meta_page(c), hi, a) by {
                         if run.contains(a) {
+                            assert(run_pages(p as int, pages(k as nat) as nat).contains(a));
                             assert(in_runs(ci, self.used()[ci], a));
                         }
                     }
@@ -2291,15 +2306,16 @@ impl PageBuddy {
         Some((hp.with_addr(p), perm))
     }
 
-    /// Gives back through the source the pages of the allocated run of order `k` at `p`, every one
-    /// of them backed, taking the permission to its bytes.
-    pub fn release_run<S: SpanSource>(&mut self, src: &mut S, p: usize, k: usize, perm: Tracked<PointsToRaw>)
+    /// Gives back through the source the first `n` pages of the allocated run of order `k` at `p`,
+    /// every one of them backed, taking the permission to their bytes.
+    pub fn release_run<S: SpanSource>(&mut self, src: &mut S, p: usize, k: usize, n: usize, perm: Tracked<PointsToRaw>)
         requires
             old(self).wf(old(src)@),
             old(self).holds(p as int),
             old(self).used()[span_of(p as int)][page_of(p as int)] == k,
-            old(src)@.backed(old(self).span_base(span_of(p as int)), p as int, pages(k as nat) as nat),
-            perm@.is_range(p as int, pages(k as nat) * PAGE_BYTES),
+            0 < n <= pages(k as nat),
+            old(src)@.backed(old(self).span_base(span_of(p as int)), p as int, n as nat),
+            perm@.is_range(p as int, n * PAGE_BYTES),
             perm@.provenance() == old(src)@.provenance,
         ensures
             final(self).wf(final(src)@),
@@ -2307,11 +2323,7 @@ impl PageBuddy {
             final(self).spans() == old(self).spans(),
             final(self).used() == old(self).used(),
             final(self).metas() == old(self).metas(),
-            final(src)@ == old(src)@.released_run(
-                old(self).span_base(span_of(p as int)),
-                p as int,
-                pages(k as nat) as nat,
-            ),
+            final(src)@ == old(src)@.released_run(old(self).span_base(span_of(p as int)), p as int, n as nat),
     {
         self.view = Ghost(src@);
         let ghost entry = *self;
@@ -2319,11 +2331,12 @@ impl PageBuddy {
             old(self).lemma_viewed(src@);
         }
         let ghost bi = self.span_base(span_of(p as int));
-        let ghost run = run_pages(p as int, pages(k as nat) as nat);
+        let ghost run = run_pages(p as int, n as nat);
         proof {
             self.lemma_run(p as int, k as nat);
+            lemma_first_pages(p as int, n as nat, pages(k as nat) as nat);
+            lemma_first_pages_in(self.view@, bi, p as int, n as nat, pages(k as nat) as nat);
         }
-        let n = order_pages(k);
         let ghost start = self.view@;
         src.release(Ghost(bi), p, n, perm);
         self.view = Ghost(src@);
@@ -2335,6 +2348,7 @@ impl PageBuddy {
                 if c == bi {
                     let lo = self.node(c).lo.used();
                     let hi = self.node(c).hi.used().remove(0);
+                    assert(!run_pages(p as int, pages(k as nat) as nat).contains(meta_page(c)));
                     assert(!run.contains(meta_page(c)));
                     assert forall|a: int| #[trigger] self.view@.spans[c].backed.contains(a) implies a
                         == meta_page(c) || in_runs(c, lo, a) || in_runs(meta_page(c), hi, a) by {
@@ -2349,6 +2363,38 @@ impl PageBuddy {
             }
         }
     }
+}
+
+/// The first `n` pages of a run of `m` pages from `p`, `n` at most `m`, are pages of it, and the
+/// pages after them are the rest of it.
+proof fn lemma_first_pages(p: int, n: nat, m: nat)
+    requires
+        n <= m,
+    ensures
+        run_pages(p, n).subset_of(run_pages(p, m)),
+        run_pages(p + n * PAGE_BYTES as int, (m - n) as nat).subset_of(run_pages(p, m)),
+        n * PAGE_BYTES as int <= m * PAGE_BYTES as int,
+        p + n * PAGE_BYTES as int + (m - n) * PAGE_BYTES as int == p + m * PAGE_BYTES as int,
+        forall|a: int| #[trigger] run_pages(p, m).contains(a) ==> run_pages(p, n).contains(a) || run_pages(p + n * PAGE_BYTES as int, (m - n) as nat).contains(a),
+{
+    let pg = PAGE_BYTES as int;
+    assert(n * pg <= m * pg) by (nonlinear_arith)
+        requires
+            n <= m,
+            pg > 0,
+    ;
+    assert(n * pg + (m - n) * pg == m * pg) by (nonlinear_arith);
+}
+
+/// The first `n` pages of a run of `m` pages inside a span, `n` at least one, are a run inside it.
+proof fn lemma_first_pages_in(v: SourceView, b: int, p: int, n: nat, m: nat)
+    requires
+        v.runs_in(b, p, m),
+        0 < n <= m,
+    ensures
+        v.runs_in(b, p, n),
+{
+    lemma_first_pages(p, n, m);
 }
 
 /// Cutting the run of order `k` at `q` keeps every run the page buddy held held, and `q` is the
@@ -2458,12 +2504,13 @@ pub proof fn lemma_freed_keeps_held(
     }
 }
 
-/// A held run of order `k` at `x` is the allocated block at its page of its block, and lies in that
-/// block, page-aligned above address 0, in the address space.
+/// A run of order `k` allocated at `x`, backed or not, is the allocated block at its page of its
+/// block, and lies in that block, page-aligned above address 0, in the address space.
 pub proof fn lemma_held_bounds(pb: PageBuddy, s: SourceView, x: int, k: nat)
     requires
         pb.wf(s),
-        run_held(pb, s, x, k),
+        pb.holds(x),
+        pb.used()[span_of(x)][page_of(x)] == k,
     ensures
         k <= BLOCK_ORDER,
         0 < span_of(x) <= x,
@@ -2488,16 +2535,24 @@ pub proof fn lemma_held_bounds(pb: PageBuddy, s: SourceView, x: int, k: nat)
     lemma_pages_pos(k);
     lemma_in_block(c, h, pages(k));
     let b = pb.span_base(c);
-    assert(s.spans.contains_key(b));
+    assert(s.spans.contains_key(b)) by {
+        if pb.metas().contains(c) {
+            assert(held(s, c - BLOCK_BYTES as int, pb.used()[c - BLOCK_BYTES as int], pb.used()[c]));
+        } else {
+            assert(held(s, c, pb.used()[c], pb.used()[meta_page(c)]));
+        }
+    }
     assert(s.released_span(b).fits(b, s.spans[b].blocks));
 }
 
-/// Two held runs at different heads share no address.
+/// Two allocated runs at different heads, backed or not, share no address.
 pub proof fn lemma_held_apart(pb: PageBuddy, s: SourceView, x: int, j: nat, y: int, k: nat)
     requires
         pb.wf(s),
-        run_held(pb, s, x, j),
-        run_held(pb, s, y, k),
+        pb.holds(x),
+        pb.used()[span_of(x)][page_of(x)] == j,
+        pb.holds(y),
+        pb.used()[span_of(y)][page_of(y)] == k,
         x != y,
     ensures
         x + pages(j) * PAGE_BYTES <= y || y + pages(k) * PAGE_BYTES <= x,
@@ -2570,6 +2625,209 @@ pub proof fn lemma_released_keeps_held(pb: PageBuddy, s: SourceView, q: int, k: 
         assert(x <= a < x + pages(j) * PAGE_BYTES);
         assert(!run_pages(q, pages(k) as nat).contains(a));
     }
+}
+
+/// A held run is the run with every page backed.
+pub proof fn lemma_held_part(pb: PageBuddy, s: SourceView, x: int, k: nat)
+    ensures
+        run_held(pb, s, x, k) <==> run_part(pb, s, x, k, pages(k) as nat),
+{
+    lemma_pages_pos(k);
+    assert(run_pages(x + pages(k) * PAGE_BYTES as int, 0) =~= Set::<int>::empty());
+}
+
+/// Backing the first `n` pages of the allocated run of order `k` at `q`, none of whose pages is
+/// backed, leaves it a run with its first `n` pages backed.
+pub proof fn lemma_backed_part(pb: PageBuddy, s: SourceView, q: int, k: nat, n: nat)
+    requires
+        pb.wf(s),
+        pb.holds(q),
+        pb.used()[span_of(q)][page_of(q)] == k,
+        0 < n <= pages(k),
+        s.unbacked(pb.span_base(span_of(q)), q, pages(k) as nat),
+    ensures
+        run_part(pb, s.backed_run(pb.span_base(span_of(q)), q, n), q, k, n),
+{
+    let b = pb.span_base(span_of(q));
+    let t = s.backed_run(b, q, n);
+    lemma_held_bounds(pb, s, q, k);
+    lemma_first_pages(q, n, pages(k) as nat);
+    pb.lemma_view(s);
+    let tail = run_pages(q + n * PAGE_BYTES as int, (pages(k) - n) as nat);
+    assert(t.spans[b].backed.disjoint(tail)) by {
+        assert forall|a: int| tail.contains(a) implies !t.spans[b].backed.contains(a) by {
+            assert(run_pages(q, pages(k) as nat).contains(a));
+            assert(!run_pages(q, n).contains(a));
+        }
+    }
+}
+
+/// Releasing the backed first `n` pages of a run with only those backed leaves none of its pages
+/// backed, so the page buddy may free it.
+pub proof fn lemma_released_part(pb: PageBuddy, s: SourceView, q: int, k: nat, n: nat)
+    requires
+        run_part(pb, s, q, k, n),
+    ensures
+        s.released_run(pb.span_base(span_of(q)), q, n).unbacked(pb.span_base(span_of(q)), q, pages(k) as nat),
+{
+    let b = pb.span_base(span_of(q));
+    let t = s.released_run(b, q, n);
+    lemma_first_pages(q, n, pages(k) as nat);
+    let tail = run_pages(q + n * PAGE_BYTES as int, (pages(k) - n) as nat);
+    assert forall|a: int| run_pages(q, pages(k) as nat).contains(a) implies !t.spans[b].backed.contains(a) by {
+        if !run_pages(q, n).contains(a) {
+            assert(tail.contains(a));
+        }
+    }
+}
+
+/// Cutting the run of order `k` at `q` keeps every partly backed run as it was, and `q` is the head
+/// of none of them.
+pub proof fn lemma_cut_keeps_part(
+    before: PageBuddy,
+    after: PageBuddy,
+    s: SourceView,
+    t: SourceView,
+    q: int,
+    k: nat,
+    x: int,
+    j: nat,
+    n: nat,
+)
+    requires
+        before.wf(s),
+        cut_run(before, after, s, t, q, k),
+        run_part(before, s, x, j, n),
+    ensures
+        x != q,
+        run_part(after, t, x, j, n),
+{
+    let c = span_of(q);
+    let cx = span_of(x);
+    before.lemma_view(s);
+    lemma_pages_pos(k);
+    lemma_pages_pos(j);
+    if before.spans().contains_key(c) {
+        if cx == c {
+            assert(before.used()[c].contains_key(page_of(x)));
+            assert(page_of(x) != page_of(q));
+        }
+        assert(cx == c || after.used()[cx] == before.used()[cx]);
+        assert(after.span_base(cx) == before.span_base(cx));
+    } else {
+        assert(cx != c);
+        assert(cx != meta_page(c));
+        assert(after.used()[cx] == before.used()[cx]);
+        assert(after.metas().contains(cx) == before.metas().contains(cx));
+        assert(after.span_base(cx) == before.span_base(cx));
+        assert(before.span_base(cx) != c);
+        assert(t.spans[before.span_base(cx)] == s.spans[before.span_base(cx)]);
+    }
+}
+
+/// Backing pages of another allocated run, at most its own, keeps every partly backed run as it was.
+pub proof fn lemma_backed_keeps_part(pb: PageBuddy, s: SourceView, y: int, z: int, m: nat, x: int, k: nat, n: nat)
+    requires
+        pb.wf(s),
+        run_part(pb, s, x, k, n),
+        pb.holds(z),
+        z != x,
+        m <= pages(pb.used()[span_of(z)][page_of(z)]),
+    ensures
+        run_part(pb, s.backed_run(y, z, m), x, k, n),
+{
+    let t = s.backed_run(y, z, m);
+    let bx = pb.span_base(span_of(x));
+    let kz = pb.used()[span_of(z)][page_of(z)];
+    lemma_held_apart(pb, s, x, k, z, kz);
+    lemma_first_pages(x, n, pages(k) as nat);
+    lemma_first_pages(z, m, pages(kz) as nat);
+    let tail = run_pages(x + n * PAGE_BYTES as int, (pages(k) - n) as nat);
+    assert(s.spans[bx].backed.subset_of(t.spans[bx].backed));
+    assert forall|a: int| tail.contains(a) implies !t.spans[bx].backed.contains(a) by {
+        assert(run_pages(x, pages(k) as nat).contains(a));
+        assert(!run_pages(z, m).contains(a));
+    }
+}
+
+/// Recording a refusal keeps every partly backed run as it was.
+pub proof fn lemma_recorded_keeps_part(pb: PageBuddy, s: SourceView, r: Refusal, x: int, k: nat, n: nat)
+    requires
+        run_part(pb, s, x, k, n),
+    ensures
+        run_part(pb, s.recorded(r), x, k, n),
+{
+}
+
+/// Freeing the run at `q` keeps every other partly backed run as it was.
+pub proof fn lemma_freed_keeps_part(
+    before: PageBuddy,
+    after: PageBuddy,
+    s: SourceView,
+    t: SourceView,
+    q: int,
+    x: int,
+    j: nat,
+    n: nat,
+)
+    requires
+        before.wf(s),
+        freed(before, after, s, t, q),
+        before.holds(q),
+        run_part(before, s, x, j, n),
+        x != q,
+    ensures
+        run_part(after, t, x, j, n),
+{
+    let c = span_of(q);
+    let cx = span_of(x);
+    let base = before.span_base(c);
+    let rest = before.used().insert(c, before.used()[c].remove(page_of(q)));
+    before.lemma_view(s);
+    assert(before.spans().contains_key(c));
+    lemma_head(q);
+    lemma_head(x);
+    if cx == c {
+        assert(page_of(x) != page_of(q));
+    }
+    assert(rest[cx].contains_key(page_of(x)));
+    assert(rest[cx][page_of(x)] == j);
+    if rest[base].dom() != Set::<int>::empty() || rest[meta_page(base)].dom() != Set::<int>::empty()
+        || before.idle_spans().len() < before.spares() {
+    } else {
+        assert(rest[base].dom().contains(page_of(x)) ==> cx != base);
+        assert(cx != base);
+        assert(cx != meta_page(base));
+        assert(after.metas().contains(cx) == before.metas().contains(cx));
+        assert(after.span_base(cx) == before.span_base(cx));
+        assert(before.span_base(cx) != base);
+    }
+}
+
+/// Releasing pages of another allocated run, at most its own, keeps every partly backed run as it
+/// was.
+pub proof fn lemma_released_keeps_part(pb: PageBuddy, s: SourceView, q: int, m: nat, x: int, j: nat, n: nat)
+    requires
+        pb.wf(s),
+        pb.holds(q),
+        m <= pages(pb.used()[span_of(q)][page_of(q)]),
+        run_part(pb, s, x, j, n),
+        x != q,
+    ensures
+        run_part(pb, s.released_run(pb.span_base(span_of(q)), q, m), x, j, n),
+{
+    let t = s.released_run(pb.span_base(span_of(q)), q, m);
+    let bx = pb.span_base(span_of(x));
+    let kq = pb.used()[span_of(q)][page_of(q)];
+    lemma_held_apart(pb, s, x, j, q, kq);
+    lemma_first_pages(x, n, pages(j) as nat);
+    lemma_first_pages(q, m, pages(kq) as nat);
+    assert forall|a: int| #[trigger] run_pages(x, n).contains(a) implies t.spans[bx].backed.contains(a) by {
+        assert(s.spans[bx].backed.contains(a));
+        assert(run_pages(x, pages(j) as nat).contains(a));
+        assert(!run_pages(q, m).contains(a));
+    }
+    assert(t.spans[bx].backed.subset_of(s.spans[bx].backed));
 }
 
 /// Cutting the run of order `k` at `q`, any change that keeps the runs held, and freeing the run at
