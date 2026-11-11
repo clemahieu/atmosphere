@@ -17,6 +17,11 @@ report's lines say what comes next, as the round skill reads them (.claude/skill
 The loop is one Beads actor, loop-<pid>, for every session it runs (.claude/hooks/beads-actor.sh),
 so an issue a round hands to the prover stays held between the two sessions.
 
+Each session's temporary directory is <project root>/scratch, on disk: the loop sets TMPDIR, which the
+session's commands read, and CLAUDE_CODE_TMPDIR, under which Claude Code keeps the session's scratchpad
+and the output of its background commands. Claude Code reads both from its environment and from no
+settings file.
+
 Stopping. SIGINT (Ctrl-C) or SIGTERM, or `tools/loop.py --stop`, lets the agent run in flight finish
 and ends the loop; a prover or skeptic pass a finished round handed over is not started, and its
 issue is released with a note so the next round picks it up. A second signal, or `--stop --now`
@@ -60,6 +65,7 @@ ROOT = Path(__file__).resolve().parents[2]
 MAIN = ROOT / "main"
 PIDS = ROOT / "logs" / "loop"
 CONFIG = ROOT / "loop.toml"
+SCRATCH = ROOT / "scratch"
 KINDS = ("round", "prover", "skeptic")
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 ISSUE = r"[a-z][a-z0-9]*-[a-z0-9]+(?:\.[0-9]+)*"
@@ -215,14 +221,16 @@ class Loop:
     """The driver. The commands and the clock are parameters so the tests can replace them."""
 
     def __init__(self, claude="claude", bd="bd", notifier="notify-send", cwd=MAIN, pids=PIDS, config=CONFIG,
-                 wait=WAIT, sleep=time.sleep, now=time.time, out=sys.stdout):
+                 scratch=SCRATCH, wait=WAIT, sleep=time.sleep, now=time.time, out=sys.stdout):
         self.claude, self.bd, self.notifier = claude, bd, notifier
         self.cwd, self.pids, self.config, self.wait = Path(cwd), Path(pids), Path(config), wait
+        self.scratch = Path(scratch)
         self.flags, self.read = {}, None
         self.sleep, self.now, self.out = sleep, now, out
         self.actor = f"loop-{os.getpid()}"
         self.env = {key: value for key, value in os.environ.items() if key != "CLAUDECODE"}
         self.env["BEADS_ACTOR"] = self.actor
+        self.env["TMPDIR"] = self.env["CLAUDE_CODE_TMPDIR"] = str(self.scratch)
         self.stopping = False
         self.halting = False
         self.reloading = False
@@ -281,6 +289,7 @@ class Loop:
                    "--output-format", "stream-json", "--verbose", *self.flags.get(kind, []), prompt]
         started = self.now()
         self.say(kind, f"start: {prompt}")
+        self.scratch.mkdir(exist_ok=True)
         self.child = subprocess.Popen(command, cwd=self.cwd, env=self.env, stdin=subprocess.DEVNULL,
                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                                       start_new_session=True)
@@ -514,6 +523,8 @@ class Tests(unittest.TestCase):
         import json, os, sys, time
         folder = os.environ["FAKE"]
         open(os.path.join(folder, "claude.log"), "a").write(json.dumps(sys.argv[1:] + [os.environ["BEADS_ACTOR"]]) + "\\n")
+        temporary = [os.environ.get("TMPDIR"), os.environ.get("CLAUDE_CODE_TMPDIR")]
+        open(os.path.join(folder, "temporary.log"), "a").write(json.dumps(temporary + [os.path.isdir(temporary[0] or "")]) + "\\n")
         queue = sorted(name for name in os.listdir(folder) if name.startswith("reply-"))
         reply = open(os.path.join(folder, queue[0])).read()
         os.remove(os.path.join(folder, queue[0]))
@@ -539,7 +550,7 @@ class Tests(unittest.TestCase):
         os.environ["FAKE"] = str(folder)
         clock = [0.0]
         loop = Loop(claude=str(folder / "claude"), bd=str(folder / "bd"), notifier="no-such-notifier",
-                    cwd=folder, pids=folder, config=folder / "loop.toml", sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+                    cwd=folder, pids=folder, config=folder / "loop.toml", scratch=folder / "scratch", sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
                     now=lambda: clock[0], out=open(os.devnull, "w"), **given)
         return loop, clock
 
@@ -562,6 +573,15 @@ class Tests(unittest.TestCase):
                 ["update", "atmo-1.2", "--append-notes", "Prover report: Reached 3 verified, 0 errors."],
                 ["update", "atmo-1.2", "-s", "open", "--assignee", ""],
                 ["list", "-s", "blocked"]])
+
+    def test_each_session_keeps_its_temporary_files_in_the_scratch_directory(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            loop, _ = self.driver(folder, "Notify: none\nProver: atmo-1.2\nLoop: continue\n", "Reached 3 verified, 0 errors.",
+                                  "Notify: none\nLoop: stop\n")
+            self.assertEqual(loop.drive(), 0)
+            scratch = str(folder / "scratch")
+            self.assertEqual(self.log(folder, "temporary"), [[scratch, scratch, True]] * 3)
 
     def test_a_stop_before_a_hand_off_releases_the_issue_without_running_the_skeptic(self):
         with tempfile.TemporaryDirectory() as folder:
