@@ -658,8 +658,9 @@ impl CapKernel {
     /// Core c's step for the invocation its current thread entered the kernel with, in frame. The
     /// caller is core c's current thread and the table is its process's, never a name from user
     /// space, and check_current runs first: design/one-lock-bounded-steps/. Returns None when core c
-    /// runs no thread after the check, so nothing returns to user mode; otherwise what returns to the
-    /// thread, with the operation's effect on the kernel.
+    /// runs no thread after the check, so nothing returns to user mode, and then the step is the
+    /// check's alone: the thread moved off, or nothing when core c ran none. Otherwise what returns to
+    /// the thread, with the operation's effect on the kernel.
     pub fn dispatch(&mut self, c: usize, frame: Registers) -> (ret: Option<Outcome>)
         requires
             old(self).wf(),
@@ -667,14 +668,16 @@ impl CapKernel {
         ensures
             Self::step_ok(*old(self), *final(self), c as int),
             ret is None <==> old(self).must_leave(c as int) || old(self).cores@[c as int].current_thread is None,
-            // A caller acting within a dead process reaches no operation and gets nothing back: it is
-            // moved off its core.
+            // A caller that must leave, among them one acting within a dead process, reaches no
+            // operation and gets nothing back: it is moved off its core and nothing else changes.
             ({
                 let t = old(self).cores@[c as int].current_thread->Some_0;
                 old(self).cores@[c as int].current_thread is Some
                     && old(self).processes.records@[old(self).threads.records@[t].value().process->Some_0].value().dead
                     ==> ret is None
             }),
+            old(self).must_leave(c as int) ==> Self::moved_off(*old(self), *final(self), c as int, frame),
+            old(self).cores@[c as int].current_thread is None ==> *final(self) == *old(self),
             ret is Some ==> {
                 let t = old(self).cores@[c as int].current_thread->Some_0;
                 let root = old(self).threads.records@[t].value().process->Some_0;

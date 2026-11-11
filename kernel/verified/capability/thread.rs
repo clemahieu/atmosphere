@@ -3254,6 +3254,31 @@ impl CapKernel {
     {
     }
 
+    /// From pre to post, core c moved its current thread off with frame saved, as check_current does
+    /// for a thread that must leave: the thread's record is written Inactive, or Dead when it was marked
+    /// to die, with no stop pending and the frame it entered with; core c runs nothing; every other
+    /// object, core and record is as it was, and so is the view.
+    pub open spec fn moved_off(pre: Self, post: Self, c: int, frame: Registers) -> bool {
+        let t = pre.cores@[c].current_thread->Some_0;
+        let r = pre.threads.records@[t].value();
+        &&& pre.cores@[c].current_thread is Some
+        &&& pre.threads.records@.contains_key(t)
+        &&& r.state == (ThreadState::Running { core: c as usize })
+        &&& Self::record_written(pre, post, t, ThreadRecord {
+            state: if r.dying { ThreadState::Dead } else { ThreadState::Inactive },
+            frame,
+            pending_stop: false,
+            dying: false,
+            ..r
+        })
+        &&& post.stop_ipis == pre.stop_ipis
+        &&& post.flush_ipis == pre.flush_ipis
+        &&& post.cores@.len() == pre.cores@.len()
+        &&& forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] post.cores@[d] == pre.cores@[d]
+        &&& post.cores@[c] == CoreState { current_thread: None, ..pre.cores@[c] }
+        &&& post.view() == pre.view()
+    }
+
     /// Core c's check of its current thread on kernel entry and before returning to user mode: one load
     /// of the thread's record and one of its process's. A thread that must leave is moved off: core c
     /// saves the frame it entered with, makes it Inactive, or Dead when it was destroyed while Running,
@@ -3272,23 +3297,7 @@ impl CapKernel {
             final(self).current_live(c as int),
             final(self).view() == old(self).view(),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
-            ret ==> {
-                let t = old(self).cores@[c as int].current_thread->Some_0;
-                let r = old(self).threads.records@[t].value();
-                &&& old(self).threads.records@.contains_key(t)
-                &&& r.state == (ThreadState::Running { core: c })
-                &&& Self::record_written(*old(self), *final(self), t, ThreadRecord {
-                    state: if r.dying { ThreadState::Dead } else { ThreadState::Inactive },
-                    frame,
-                    pending_stop: false,
-                    dying: false,
-                    ..r
-                })
-                &&& final(self).stop_ipis == old(self).stop_ipis
-                &&& final(self).cores@.len() == old(self).cores@.len()
-                &&& forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] final(self).cores@[d] == old(self).cores@[d]
-                &&& final(self).cores@[c as int] == CoreState { current_thread: None, ..old(self).cores@[c as int] }
-            },
+            ret ==> Self::moved_off(*old(self), *final(self), c as int, frame),
     {
         let ghost pre = *self;
         let state = *self.cores.get(c);
