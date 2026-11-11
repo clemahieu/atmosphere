@@ -127,6 +127,140 @@ impl CapKernel {
         }
     }
 
+    /// A delete, by any caller, keeps the rely of every process: it takes one slot and gives none, every
+    /// other slot says what it said, and the bound threads are as they were.
+    pub proof fn lemma_delete_keeps_rely(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_deleted(pre, post, caller, frame, out),
+        ensures
+            Self::rely(pre, post, root),
+    {
+        Self::lemma_delete_contract(pre, post, caller, frame, out);
+        let at = spec_position(frame.slot());
+        assert forall|t: usize, j: usize| #[trigger] post.table_view(t).contains_key(j)
+            implies pre.table_view(t).contains_key(j) && post.table_view(t)[j] == pre.table_view(t)[j] by {
+            if !pre.delete_allowed(caller, at) {
+                assert(post.table_view(t) == pre.table_view(t));
+            }
+        }
+        if pre.sealed(root) {
+            assert forall|t: usize, j: usize| t != root && #[trigger] post.table_view(t).contains_key(j)
+                implies !post.names_process(post.table_view(t)[j], root) by {
+                assert(pre.table_view(t).contains_key(j));
+                assert(!pre.names_process(pre.table_view(t)[j], root));
+            }
+        }
+    }
+
+    /// The table a position names, read from the view of a caller other than root, is not root's while
+    /// root is sealed: reaching root's table takes a process capability naming root.
+    pub proof fn lemma_sealed_table_not_root(&self, caller: usize, through: Option<usize>, root: usize)
+        requires
+            self.sealed(root),
+            caller != root,
+            self.view_table_at(caller, through) is Some,
+        ensures
+            self.view_table_at(caller, through)->0 != root,
+    {
+        if let Some(cap) = through {
+            assert(self.table_view(caller).contains_key(cap));
+            assert(!self.names_process(self.table_view(caller)[cap], root));
+        }
+    }
+
+    /// A derive, by a caller other than root, keeps the rely of root's process: while root is sealed the
+    /// caller reaches no slot of root's table, and the child it places narrows a capability naming
+    /// another process, or a thread without control over root, so it names root no more than its
+    /// parent did.
+    pub proof fn lemma_derive_keeps_rely(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_derived(pre, post, caller, frame, out),
+            caller != root,
+        ensures
+            Self::rely(pre, post, root),
+    {
+        Self::lemma_derive_contract(pre, post, caller, frame, out);
+        let from = spec_position(frame.slot());
+        let to = spec_position(frame.argument(1));
+        let rights = frame.argument(2);
+        let base = frame.argument(3) as usize;
+        let order = frame.argument(4);
+        if pre.sealed(root) {
+            if pre.derive_allowed(caller, from, to, rights, base, order) {
+                let i = from->0.index;
+                let v = pre.table_view(caller)[i];
+                let table = pre.view_table_at(caller, to->0.through)->0;
+                let child = derived_view(v, rights as u32, base, order as u8, pre.tables.node_of(caller, i));
+                pre.lemma_sealed_table_not_root(caller, to->0.through, root);
+                assert(!pre.names_process(v, root));
+                let r = rights as u32;
+                let b = right_bit(Right::Control);
+                let vr = v.rights;
+                if child.kind is Thread && r & b != 0 {
+                    assert(vr & b != 0) by (bit_vector)
+                        requires
+                            r & !vr == 0u32,
+                            r & b != 0u32;
+                }
+                assert(!post.names_process(child, root));
+                assert forall|t: usize, j: usize| t != root && #[trigger] post.table_view(t).contains_key(j)
+                    implies !post.names_process(post.table_view(t)[j], root) by {
+                    if !(t == table && j == to->0.index) {
+                        assert(pre.table_view(t).contains_key(j));
+                        assert(!pre.names_process(pre.table_view(t)[j], root));
+                    }
+                }
+            }
+            assert(post.table_view(root) == pre.table_view(root));
+        }
+    }
+
+    /// A move, by a caller other than root, keeps the rely of root's process: while root is sealed
+    /// neither the source nor the destination is in root's table, root's slots say what they said but
+    /// for the parent a child of the capability moved names, and the capability moved names root in its
+    /// new slot no more than it did in its old one.
+    pub proof fn lemma_move_keeps_rely(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_moved(pre, post, caller, frame, out),
+            caller != root,
+        ensures
+            Self::rely(pre, post, root),
+    {
+        broadcast use vstd::map::lemma_map_new_domain, vstd::map::lemma_map_new_index;
+        Self::lemma_move_contract(pre, post, caller, frame, out);
+        let from = spec_position(frame.slot());
+        let to = spec_position(frame.argument(1));
+        if pre.sealed(root) {
+            if pre.move_allowed(caller, from, to) {
+                let f = from->0;
+                let d = to->0;
+                let src = pre.view_table_at(caller, f.through)->0;
+                let dst = pre.view_table_at(caller, d.through)->0;
+                pre.lemma_sealed_table_not_root(caller, f.through, root);
+                pre.lemma_sealed_table_not_root(caller, d.through, root);
+                assert forall|j: usize| #[trigger] post.table_view(root).contains_key(j)
+                    implies pre.table_view(root).contains_key(j) && same_cap(post.table_view(root)[j], pre.table_view(root)[j]) by {
+                    assert(post.table_view(root) == pre.moved_table_view(src, f.index, dst, d.index, root));
+                }
+                assert forall|t: usize, j: usize| t != root && #[trigger] post.table_view(t).contains_key(j)
+                    implies !post.names_process(post.table_view(t)[j], root) by {
+                    assert(post.table_view(t) == pre.moved_table_view(src, f.index, dst, d.index, t));
+                    if t == dst && j == d.index {
+                        assert(!pre.names_process(pre.table_view(src)[f.index], root));
+                    } else {
+                        assert(pre.table_view(t).contains_key(j));
+                        assert(!pre.names_process(pre.table_view(t)[j], root));
+                    }
+                }
+            } else {
+                assert(post.table_view(root) == pre.table_view(root));
+            }
+        }
+    }
+
     /// A step that leaves every table's view as it was, and binds no thread it did not bind to the
     /// process it bound it to, keeps the rely of every process.
     pub proof fn lemma_views_kept_keeps_rely(pre: Self, post: Self, root: usize)
