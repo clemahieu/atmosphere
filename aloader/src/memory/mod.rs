@@ -154,22 +154,6 @@ pub enum AcpiMemoryType {
     Disabled = 6,
 }
 
-impl AcpiMemoryType {
-    /// The type a memory map entry's raw type field names, or `None` for a value the table does
-    /// not define.
-    pub fn from_u32(value: u32) -> Option<Self> {
-        match value {
-            1 => Some(Self::Memory),
-            2 => Some(Self::Reserved),
-            3 => Some(Self::Acpi),
-            4 => Some(Self::Nvs),
-            5 => Some(Self::Unusable),
-            6 => Some(Self::Disabled),
-            _ => None,
-        }
-    }
-}
-
 /// A range of memory, denoted by the base address and size.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MemoryRange {
