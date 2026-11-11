@@ -4,9 +4,10 @@
 //!
 //! The heap sits over a span source and holds no capability. `source` states the source's contract;
 //! `arch` names the page and block sizes the target's translation fixes, which the rest of the crate
-//! counts in. `buddy` cuts page runs out of one block; `page` cuts them out of spans of one block it
-//! reserves from the source, a block buddy per span. `witness` holds verified uses of the contract
-//! and of the buddies, built into no image.
+//! counts in. `buddy` cuts page runs out of one block; `page` cuts them out of spans of two blocks
+//! it reserves from the source, a block buddy per block, both kept in the span's metadata page, the
+//! first page of its second block. `witness` holds verified uses of the contract and of the buddies,
+//! built into no image.
 #![no_std]
 #![allow(unused)]
 

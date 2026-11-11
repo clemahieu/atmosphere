@@ -1124,19 +1124,20 @@ impl BlockBuddy {
         }
     }
 
-    /// Whether no run is allocated, which is when the view is the initial one (`lemma_idle`).
-    pub fn is_idle(&self) -> (r: bool)
+    /// Whether no run is allocated at page `from` or above.
+    pub fn idle_from(&self, from: usize) -> (r: bool)
         requires
             self.wf(),
+            from <= BLOCK_PAGES,
         ensures
-            r == (self.used().dom() == Set::<int>::empty()),
+            r == (forall|q: int| from <= q ==> !(#[trigger] self.used().dom().contains(q))),
     {
-        let mut p: usize = 0;
+        let mut p: usize = from;
         while p < BLOCK_PAGES
             invariant
                 self.wf(),
-                p <= BLOCK_PAGES,
-                forall|q: int| 0 <= q < p ==> !(#[trigger] self.used().dom().contains(q)),
+                from <= p <= BLOCK_PAGES,
+                forall|q: int| from <= q < p ==> !(#[trigger] self.used().dom().contains(q)),
             decreases BLOCK_PAGES - p,
         {
             let t = self.tags[p];
@@ -1157,15 +1158,38 @@ impl BlockBuddy {
             p = p + 1;
         }
         proof {
-            assert forall|q: int| !self.used().dom().contains(q) by {
+            assert forall|q: int| from <= q implies !(#[trigger] self.used().dom().contains(q)) by {
                 if self.used().dom().contains(q) {
                     assert(placed(q, self.blocks@[q]));
                     lemma_pages_pos(self.blocks@[q].order);
                 }
             }
-            assert(self.used().dom() =~= Set::<int>::empty());
         }
         true
+    }
+
+    /// Whether no run is allocated, which is when the view is the initial one (`lemma_idle`).
+    pub fn is_idle(&self) -> (r: bool)
+        requires
+            self.wf(),
+        ensures
+            r == (self.used().dom() == Set::<int>::empty()),
+    {
+        let r = self.idle_from(0);
+        proof {
+            if r {
+                assert forall|q: int| !self.used().dom().contains(q) by {
+                    if self.used().dom().contains(q) {
+                        assert(placed(q, self.blocks@[q]));
+                    }
+                }
+                assert(self.used().dom() =~= Set::<int>::empty());
+            } else {
+                let q = choose|q: int| 0 <= q && #[trigger] self.used().dom().contains(q);
+                assert(self.used().dom().contains(q));
+            }
+        }
+        r
     }
 }
 

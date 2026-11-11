@@ -1,34 +1,42 @@
 // SPDX-License-Identifier: MIT
-
-//! The page buddy: page runs cut from spans of one block each, a block buddy per span.
+//! The page buddy: page runs cut from spans of two blocks each, a block buddy per block.
 //!
-//! It owns the span source. Each span it holds, a run span, is a reserved span of one block whose
-//! backed pages lie in its allocated runs, cut by the `BlockBuddy` of that span. The records of the block buddies lie in the
-//! metadata page: the first page of a metadata span of one block that the page buddy reserves and
-//! backs itself, cut into SPANS records, one per run span it can hold. No record is in a run span, so
-//! a run span can give its whole block. The metadata span is reserved and backed with the first run
-//! span, and given back with the last.
+//! It owns the span source. Each span it holds, a run span, is a reserved span of SPAN_BLOCKS
+//! blocks, and each of its blocks is cut into runs by a block buddy of its own. The span's metadata
+//! page, the first page of its second block, is that block's first run, of order 0: it is backed
+//! with the span, given back with it, and holds the span's node, the two block buddies' records and
+//! the base of the next held span. The nodes link every held span into one list from `head`, so the
+//! page buddy holds as many run spans as the source gives, and every page of a held span is in a
+//! free block, an allocated run or its metadata page. The first block holds no record, so a run span
+//! can give its whole first block; design/page-buddy-metadata-in-the-span/.
 //!
-//! - `alloc_run(k)` takes from the held span with a free block of the smallest order at or above k,
+//! The view is by block. `spans` maps the base of each block of each held span to its buddy's
+//! blocks, the metadata page among them as an allocated block of order 0 at page 0 of the second
+//! block; `used` maps it to the runs allocated to callers in it, so no metadata page is in `used`.
+//! `metas` holds the metadata pages, which are the bases of the second blocks, and `span_base` names
+//! the span a block is in.
+//!
+//! - `alloc_run(k)` takes from the block with a free block of the smallest order at or above k,
 //!   across every held span; only when none has one does it reserve a new span. It refuses, and
-//!   changes no held span, exactly when no held span has such a block and either SPANS spans are
-//!   held (`Full`) or the source refused (`Source`).
+//!   changes no held span, exactly when no held span has such a block and the source refused to
+//!   reserve the span or to back its metadata page.
 //! - `free_run(p)` takes back the run at p and never refuses. A span left with no run is given back
 //!   to the source, unless fewer than the configured spares are idle, when it stays as a spare. The
 //!   run's pages must be unbacked.
 //! - `back_run(p, k)` backs the pages of the allocated run at p through the source and returns a
-//!   pointer to it with the permission to its bytes, or refuses and changes nothing;
+//!   pointer to it with the permission to its bytes, or refuses and changes nothing else;
 //!   `release_run(p, k, perm)` gives them back. A run `alloc_run` returns has no page backed: the
 //!   page buddy does not back the runs it cuts, and its caller backs what it writes.
 //!
 //! Each states the source's view after it exactly: a refusal by the source leaves it as it was with
 //! that one refusal counted, so `Source` and a `None` from `back_run` answer only a refusal the source
-//! made in the call; `Full` and a run from a held span leave it as it was, a new span is reserved
-//! (`took_span`), and a span given back is released (`gave_span`), so a sequence that frees every run
-//! it cut ends at the view it started from.
+//! made in the call; a run from a held span leaves it as it was, a new span is reserved with its
+//! metadata page backed (`took_span`), and a span given back is released, so a sequence that frees
+//! every run it cut ends at the view it started from.
 //!
-//! `lemma_view` states the invariant on the view, among it that a held span with no run is the
-//! initial block, so `lemma_idle_fits` shows a run of any order fits while such a span is held.
+//! `lemma_view` states the invariant on the view, among it where each metadata page lies and that
+//! a held span's first block with no run is the initial block, so `lemma_idle_fits` shows a run of
+//! any order fits while such a span is held.
 use vstd::arithmetic::div_mod::*;
 use vstd::arithmetic::mul::*;
 use vstd::layout::*;
@@ -42,28 +50,33 @@ use crate::source::*;
 
 verus! {
 
-broadcast use group_raw_ptr_axioms, vstd::set_lib::range_set_properties;
+broadcast use {group_raw_ptr_axioms, vstd::set_lib::range_set_properties};
 
-/// The records one metadata page holds, and so the run spans the page buddy can hold.
-pub const SPANS: usize = PAGE_BYTES / BLOCK_PAGES;
+/// The blocks of a run span: each is cut into runs, and the second's first page is the metadata
+/// page.
+pub const SPAN_BLOCKS: usize = 2;
 
 /// Why `alloc_run` refused.
 pub enum Refused {
-    /// SPANS spans are held and none has a free block of the order asked.
-    Full,
-    /// The source refused to reserve a span, or to back the metadata page, in this call: its view
+    /// The source refused to reserve a span, or to back its metadata page, in this call: its view
     /// counts one more refusal.
     Source,
 }
 
-/// The base of the span of one block that holds address `p`.
+/// The base of the block that holds address `p`.
 pub open spec fn span_of(p: int) -> int {
     p - p % BLOCK_BYTES as int
 }
 
-/// The page of its span that address `p` is in.
+/// The page of its block that address `p` is in.
 pub open spec fn page_of(p: int) -> int {
     (p % BLOCK_BYTES as int) / PAGE_BYTES as int
+}
+
+/// The metadata page of the run span at `b`: the first page of its second block, which is that
+/// block's base.
+pub open spec fn meta_page(b: int) -> int {
+    b + BLOCK_BYTES as int
 }
 
 /// The allocated runs of a block's blocks, by head, with their orders.
@@ -71,40 +84,57 @@ pub open spec fn used_of(blocks: Map<int, Block>) -> Map<int, nat> {
     Map::new(blocks.dom().filter(|h: int| !blocks[h].free), |h: int| blocks[h].order)
 }
 
-/// The spans whose used runs `used` maps to none.
-pub open spec fn idle_of(used: Map<int, Map<int, nat>>) -> Set<int> {
-    used.dom().filter(|b: int| used[b].dom() == Set::<int>::empty())
+/// The held spans whose blocks `used` maps to no run, by metadata page.
+pub open spec fn idle_of(used: Map<int, Map<int, nat>>, metas: Set<int>) -> Set<int> {
+    metas.filter(
+        |m: int|
+            used[m].dom() == Set::<int>::empty() && used[m - BLOCK_BYTES as int].dom() == Set::<
+                int,
+            >::empty(),
+    )
 }
 
-/// The blocks of the block buddy each span's record holds.
-spec fn spans_of(slot: Map<int, int>, records: Map<int, PointsTo<BlockBuddy>>) -> Map<int, Map<int, Block>> {
-    slot.map_values(|i: int| records[i].value().blocks())
+/// The base of the span whose block is at `c`, given the metadata pages: the block before `c` when
+/// `c` is a second block.
+pub open spec fn base_in(metas: Set<int>, c: int) -> int {
+    if metas.contains(c) {
+        c - BLOCK_BYTES as int
+    } else {
+        c
+    }
 }
 
-/// The used runs of the block buddy each span's record holds.
-spec fn used_in(slot: Map<int, int>, records: Map<int, PointsTo<BlockBuddy>>) -> Map<int, Map<int, nat>> {
-    slot.map_values(|i: int| records[i].value().used())
+/// `used` with the two blocks of a new span at `b`, neither holding a run.
+pub open spec fn fresh(used: Map<int, Map<int, nat>>, b: int) -> Map<int, Map<int, nat>> {
+    used.insert(b, Map::<int, nat>::empty()).insert(meta_page(b), Map::<int, nat>::empty())
 }
 
-/// The pointer to record `i` of the metadata page at `m`.
-pub open spec fn record_ptr(m: int, provenance: Provenance, i: int) -> *mut BlockBuddy {
-    ptr_mut_from_data(PtrData { addr: (m + i * BLOCK_PAGES as int) as usize, provenance, metadata: () })
+/// The pointer to the node of the run span at `b`.
+pub open spec fn node_ptr(b: int, provenance: Provenance) -> *mut Node {
+    ptr_mut_from_data(PtrData { addr: meta_page(b) as usize, provenance, metadata: () })
 }
 
-/// Address `a` is a page of one of the runs `u` holds, by head, in the span at `b`.
-pub open spec fn in_runs(b: int, u: Map<int, nat>, a: int) -> bool {
-    exists|q: int| #[trigger] u.contains_key(q) && run_pages(b + q * PAGE_BYTES as int, pages(u[q]) as nat).contains(a)
+/// Address `a` is a page of one of the runs `u` holds, by head, in the block at `x`.
+pub open spec fn in_runs(x: int, u: Map<int, nat>, a: int) -> bool {
+    exists|q: int| #[trigger] u.contains_key(q) && run_pages(x + q * PAGE_BYTES as int, pages(u[q]) as nat).contains(a)
 }
 
-/// The span at `b` is a reserved span of one block whose backed pages lie in the runs `u` holds.
-pub open spec fn held(src: SourceView, b: int, u: Map<int, nat>) -> bool {
+/// The span at `b` is a reserved span of SPAN_BLOCKS blocks whose metadata page is backed and whose
+/// other backed pages lie in the runs `lo` holds in its first block or `hi` holds in its second.
+pub open spec fn held(src: SourceView, b: int, lo: Map<int, nat>, hi: Map<int, nat>) -> bool {
     &&& src.spans.contains_key(b)
-    &&& src.spans[b].blocks == 1
-    &&& forall|a: int| #[trigger] src.spans[b].backed.contains(a) ==> in_runs(b, u, a)
+    &&& src.spans[b].blocks == SPAN_BLOCKS
+    &&& src.spans[b].backed.contains(meta_page(b))
+    &&& forall|a: int| #[trigger]
+        src.spans[b].backed.contains(a) ==> a == meta_page(b) || in_runs(b, lo, a) || in_runs(
+            meta_page(b),
+            hi,
+            a,
+        )
 }
 
-/// `after` is `before` with a run of order `k` cut at `p`, in the span of `p`, apart from every run
-/// that span had.
+/// `after` is `before` with a run of order `k` cut at `p`, in the block of `p`, apart from every run
+/// that block had.
 pub open spec fn cut(before: Map<int, Map<int, nat>>, after: Map<int, Map<int, nat>>, p: int, k: nat) -> bool {
     let b = span_of(p);
     let h = page_of(p);
@@ -122,8 +152,8 @@ pub open spec fn cut(before: Map<int, Map<int, nat>>, after: Map<int, Map<int, n
     )
 }
 
-/// The block at `h` of the span at `b` is free, of order `k` or more, and no free block of order `k`
-/// or more in any span has a smaller order.
+/// The block at `h` of the block at `b` is free, of order `k` or more, and no free block of order `k`
+/// or more in any block has a smaller order.
 pub open spec fn best(spans: Map<int, Map<int, Block>>, b: int, h: int, k: nat) -> bool {
     &&& spans.contains_key(b)
     &&& spans[b].contains_key(h)
@@ -135,52 +165,31 @@ pub open spec fn best(spans: Map<int, Map<int, Block>>, b: int, h: int, k: nat) 
             >= k ==> spans[c][q].order >= spans[b][h].order
 }
 
-/// The source went from `before` to `after` by reserving the new span at `b`, of one block, and,
-/// when no metadata span was held, by first reserving a new metadata span and backing its first
-/// page, the metadata span then held.
-pub open spec fn took_span(before: SourceView, meta: Option<int>, after: SourceView, meta_after: Option<int>, b: int) -> bool {
+/// The source went from `before` to `after` by reserving the new run span at `b` and backing its
+/// metadata page.
+pub open spec fn took_span(before: SourceView, after: SourceView, b: int) -> bool {
     &&& !before.spans.contains_key(b)
-    &&& meta_after is Some
-    &&& match meta {
-        Some(m) => {
-            &&& meta_after == meta
-            &&& after == before.reserved(b, 1)
-        },
-        None => {
-            let m = meta_after->Some_0;
-            &&& !before.spans.contains_key(m)
-            &&& m != b
-            &&& after == before.reserved(m, 1).backed_run(m, m, 1).reserved(b, 1)
-        },
+    &&& after == before.reserved(b, SPAN_BLOCKS as nat).backed_run(b, meta_page(b), 1)
+}
+
+/// The order a best-fit search has found so far is at most `ord`.
+spec fn below(best: Option<(usize, bool, usize)>, ord: nat) -> bool {
+    match best {
+        None => false,
+        Some((_, _, o)) => o <= ord,
     }
 }
 
-/// The source went from `before` to `after` by giving back the span at `b` and, when it was the
-/// `last` run span, then releasing the metadata page and giving back the metadata span, which is no
-/// longer held.
-pub open spec fn gave_span(before: SourceView, meta: Option<int>, after: SourceView, meta_after: Option<int>, b: int, last: bool) -> bool {
-    if last {
-        let m = meta->Some_0;
-        &&& meta is Some
-        &&& meta_after is None
-        &&& after == before.released_span(b).released_run(m, m, 1).released_span(m)
-    } else {
-        &&& meta_after == meta
-        &&& after == before.released_span(b)
-    }
+/// A run span's node, at the start of its metadata page: the base of the next held span, or 0 at
+/// the end of the list, and the block buddies of its first and second blocks.
+#[repr(C)]
+pub struct Node {
+    next: usize,
+    lo: BlockBuddy,
+    hi: BlockBuddy,
 }
 
-/// A record is one tag byte per page of a block, and SPANS of them fill a page.
-proof fn lemma_layout()
-    ensures
-        size_of::<BlockBuddy>() == BLOCK_PAGES,
-        align_of::<BlockBuddy>() == 1,
-        SPANS * BLOCK_PAGES == PAGE_BYTES,
-{
-    lemma_block_buddy_layout();
-}
-
-/// The page `h` of the block-aligned span at `base` is a page whose span is `base` and whose page
+/// The page `h` of the block-aligned block at `base` is a page whose block is `base` and whose page
 /// is `h`.
 proof fn lemma_address(base: int, h: int)
     requires
@@ -209,7 +218,7 @@ proof fn lemma_address(base: int, h: int)
     lemma_fundamental_div_mod_converse_mod(p, pb, q * BLOCK_PAGES as int + h, 0);
 }
 
-/// A page-aligned address is page `page_of(p)` of the block-aligned span at `span_of(p)`: the
+/// A page-aligned address is page `page_of(p)` of the block-aligned block at `span_of(p)`: the
 /// converse of `lemma_address`.
 pub proof fn lemma_head(p: int)
     requires
@@ -240,7 +249,7 @@ pub proof fn lemma_head(p: int)
     ;
 }
 
-/// Runs of `n` pages at page `h` and of `o` pages at page `q` of the span at `b`, apart as pages,
+/// Runs of `n` pages at page `h` and of `o` pages at page `q` of the block at `b`, apart as pages,
 /// share no address.
 proof fn lemma_runs_apart(b: int, h: int, n: int, q: int, o: int)
     requires
@@ -266,72 +275,122 @@ proof fn lemma_runs_apart(b: int, h: int, n: int, q: int, o: int)
     }
 }
 
-/// Cuts the permission to records `i` up to SPANS of the metadata page at `m` into one typed,
-/// uninitialized permission per record.
-proof fn carve(tracked raw: PointsToRaw, m: int, i: int) -> (tracked r: Map<int, PointsTo<BlockBuddy>>)
+/// A run of `n` pages at page `h` of the block at `x` lies in that block, and starts past its first
+/// page when `h` is not 0.
+proof fn lemma_in_block(x: int, h: int, n: int)
     requires
-        0 <= i <= SPANS,
-        0 < m,
-        m + PAGE_BYTES <= usize::MAX,
-        raw.is_range(m + i * BLOCK_PAGES, (SPANS - i) * BLOCK_PAGES),
+        0 <= h,
+        0 <= n,
+        h + n <= BLOCK_PAGES,
     ensures
-        r.dom() == Set::range(i, SPANS as int),
-        forall|j: int|
-            i <= j < SPANS ==> #[trigger] r[j].ptr() == record_ptr(m, raw.provenance(), j)
-                && r[j].is_uninit(),
-    decreases SPANS - i,
+        x <= x + h * PAGE_BYTES as int,
+        x + h * PAGE_BYTES as int + n * PAGE_BYTES as int <= x + BLOCK_BYTES as int,
+        h > 0 ==> x + PAGE_BYTES as int <= x + h * PAGE_BYTES as int,
+        forall|a: int| #[trigger]
+            run_pages(x + h * PAGE_BYTES as int, n as nat).contains(a) ==> x <= a < x + BLOCK_BYTES as int,
+        h > 0 ==> !run_pages(x + h * PAGE_BYTES as int, n as nat).contains(x),
 {
-    lemma_layout();
-    if i == SPANS {
-        let tracked r = Map::tracked_empty();
-        assert(r.dom() =~= Set::range(i, SPANS as int));
-        r
-    } else {
-        let a = m + i * BLOCK_PAGES;
-        let tracked (one, rest) = raw.split(Set::range(a, a + BLOCK_PAGES));
-        assert(rest.dom() =~= Set::range(m + (i + 1) * BLOCK_PAGES, m + (i + 1) * BLOCK_PAGES + (SPANS
-            - (i + 1)) * BLOCK_PAGES));
-        let tracked typed = one.into_typed::<BlockBuddy>(a as usize);
-        let tracked mut r = carve(rest, m, i + 1);
-        r.tracked_insert(i, typed);
-        assert(r.dom() =~= Set::range(i, SPANS as int));
-        r
+    let pb = PAGE_BYTES as int;
+    assert(h * pb + n * pb <= BLOCK_PAGES as int * pb) by (nonlinear_arith)
+        requires
+            h + n <= BLOCK_PAGES as int,
+            pb > 0,
+    ;
+    assert(0 <= h * pb) by (nonlinear_arith)
+        requires
+            0 <= h,
+            pb > 0,
+    ;
+    if h > 0 {
+        assert(pb <= h * pb) by (nonlinear_arith)
+            requires
+                h >= 1,
+                pb > 0,
+        ;
     }
 }
 
-/// Joins the uninitialized permissions to records `i` up to SPANS of the metadata page at `m` back
-/// into one permission to their bytes.
-proof fn gather(tracked recs: Map<int, PointsTo<BlockBuddy>>, m: int, provenance: Provenance, i: int) -> (tracked raw: PointsToRaw)
+/// A page of a run `u` holds in the block at `x`, `u` being runs of the buddy `bb`, lies in that
+/// block, and outside the run cut at `bb`'s free block `h` with an order of `k` or less.
+proof fn lemma_run_page(x: int, bb: BlockBuddy, u: Map<int, nat>, a: int, h: int, k: nat)
     requires
-        0 <= i <= SPANS,
-        0 < m,
-        m + PAGE_BYTES <= usize::MAX,
-        recs.dom() == Set::range(i, SPANS as int),
-        forall|j: int|
-            i <= j < SPANS ==> #[trigger] recs[j].ptr() == record_ptr(m, provenance, j)
-                && recs[j].is_uninit(),
+        bb.wf(),
+        forall|q: int| #[trigger] u.contains_key(q) ==> bb.used().contains_key(q) && u[q] == bb.used()[q],
+        in_runs(x, u, a),
     ensures
-        raw.is_range(m + i * BLOCK_PAGES, (SPANS - i) * BLOCK_PAGES),
-        raw.provenance() == provenance,
-    decreases SPANS - i,
+        x <= a < x + BLOCK_BYTES as int,
+        bb.blocks().contains_key(h) && bb.blocks()[h].free && k <= bb.blocks()[h].order ==> !run_pages(
+            x + h * PAGE_BYTES as int,
+            pages(k) as nat,
+        ).contains(a),
 {
-    lemma_layout();
-    if i == SPANS {
-        let tracked raw = PointsToRaw::empty(provenance);
-        assert(raw.dom() =~= Set::range(m + i * BLOCK_PAGES, m + i * BLOCK_PAGES));
-        raw
-    } else {
-        let tracked mut recs = recs;
-        let tracked one = recs.tracked_remove(i);
-        assert(recs.dom() =~= Set::range(i + 1, SPANS as int));
-        assert(one.ptr() == record_ptr(m, provenance, i));
-        let tracked first = one.into_raw();
-        let tracked rest = gather(recs, m, provenance, i + 1);
-        let tracked raw = first.join(rest);
-        assert(raw.dom() =~= Set::range(m + i * BLOCK_PAGES, m + i * BLOCK_PAGES + (SPANS - i)
-            * BLOCK_PAGES));
-        raw
+    let q = choose|q: int| #[trigger] u.contains_key(q) && run_pages(x + q * PAGE_BYTES as int, pages(u[q]) as nat).contains(a);
+    bb.lemma_view();
+    assert(bb.blocks().contains_key(q) && !bb.blocks()[q].free && bb.blocks()[q].order == u[q]);
+    assert(placed(q, bb.blocks()[q]));
+    lemma_pages_pos(u[q]);
+    lemma_in_block(x, q, pages(u[q]));
+    if bb.blocks().contains_key(h) && bb.blocks()[h].free && k <= bb.blocks()[h].order {
+        assert(q != h);
+        lemma_pages(k, bb.blocks()[h].order);
+        lemma_pages_pos(k);
+        lemma_runs_apart(x, h, pages(k), q, pages(u[q]));
     }
+}
+
+/// The run of one page at a page-aligned `s` holds only `s`.
+proof fn lemma_one_page(s: int)
+    requires
+        s % PAGE_BYTES as int == 0,
+    ensures
+        run_pages(s, 1) == Set::<int>::empty().insert(s),
+{
+    let pb = PAGE_BYTES as int;
+    assert forall|a: int| #[trigger] run_pages(s, 1).contains(a) implies a == s by {
+        lemma_fundamental_div_mod(a, pb);
+        lemma_fundamental_div_mod(s, pb);
+        let qa = a / pb;
+        let qs = s / pb;
+        assert(qa == qs) by (nonlinear_arith)
+            requires
+                a == pb * qa,
+                s == pb * qs,
+                s <= a < s + pb,
+                pb > 0,
+        ;
+    }
+    assert(run_pages(s, 1).contains(s));
+    assert(run_pages(s, 1) =~= Set::<int>::empty().insert(s));
+}
+
+/// The metadata page of a block-aligned span is a page and the base of a block, aligned for a node,
+/// and a node fits in it with room to spare.
+proof fn lemma_meta(b: int)
+    requires
+        b % BLOCK_BYTES as int == 0,
+    ensures
+        meta_page(b) % BLOCK_BYTES as int == 0,
+        meta_page(b) % PAGE_BYTES as int == 0,
+        meta_page(b) % align_of::<Node>() as int == 0,
+        0 < size_of::<Node>() < PAGE_BYTES,
+{
+    let bb = BLOCK_BYTES as int;
+    let pb = PAGE_BYTES as int;
+    let m = meta_page(b);
+    lemma_node_layout();
+    lemma_mod_add_multiples_vanish(b, bb);
+    lemma_mod_mod(m, pb, BLOCK_PAGES as int);
+    let al = align_of::<Node>() as int;
+    lemma_fundamental_div_mod(m, pb);
+    lemma_fundamental_div_mod(pb, al);
+    let x = m / pb;
+    let r = pb / al;
+    assert(m == (r * x) * al) by (nonlinear_arith)
+        requires
+            m == pb * x,
+            pb == al * r,
+    ;
+    lemma_mod_multiples_basic(r * x, al);
 }
 
 /// A block buddy's runs are `used_of` its blocks.
@@ -343,48 +402,82 @@ proof fn lemma_used_of(bb: BlockBuddy)
     assert(used_of(bb.blocks()) =~= bb.used());
 }
 
-/// The pointer to record `i` of the metadata page `m` points to.
-fn record(m: *mut u8, i: usize) -> (r: *mut BlockBuddy)
+/// The pointer to the node of the span at `b`, with the provenance of `hp`.
+fn node_at(hp: *mut u8, b: usize) -> (r: *mut Node)
     requires
-        i < SPANS,
-        m@.addr + PAGE_BYTES <= usize::MAX,
+        b + BLOCK_BYTES <= usize::MAX,
     ensures
-        r == record_ptr(m@.addr as int, m@.provenance, i as int),
+        r == node_ptr(b as int, hp@.provenance),
 {
-    m.with_addr(m.addr() + i * BLOCK_PAGES) as *mut BlockBuddy
+    hp.with_addr(b + BLOCK_BYTES) as *mut Node
 }
 
 /// The page buddy over a span source.
 pub struct PageBuddy<S: SpanSource> {
     source: S,
-    /// The metadata page, while a span is held.
-    meta: Option<*mut u8>,
-    /// The base of the span each record cuts, or 0 for a free record.
-    bases: [usize; SPANS],
+    /// The first held span, while one is held; it carries the source's provenance.
+    head: Option<*mut u8>,
     /// The idle spans kept rather than given back.
     spares: usize,
     /// The held spans with no run allocated.
     idle: usize,
-    /// The record of each held span, by base.
-    slot: Ghost<Map<int, int>>,
-    /// The permission to each record, while a span is held.
-    records: Tracked<Map<int, PointsTo<BlockBuddy>>>,
+    /// The bases of the held spans, in the order their nodes link them.
+    chain: Ghost<Seq<int>>,
+    /// The metadata pages of the held spans.
+    metas: Ghost<Set<int>>,
+    /// The permission to each held span's node, by base.
+    nodes: Tracked<Map<int, PointsTo<Node>>>,
+    /// The permission to the rest of each held span's metadata page, after its node, by base.
+    rests: Tracked<Map<int, PointsToRaw>>,
 }
 
 impl<S: SpanSource> PageBuddy<S> {
-    /// The block buddy record `i` holds.
-    spec fn rec(&self, i: int) -> BlockBuddy {
-        self.records@[i].value()
+    /// The node of the held span at `b`.
+    spec fn node(&self, b: int) -> Node {
+        self.nodes@[b].value()
     }
 
-    /// The held spans, by base, with the blocks of each.
+    /// The block buddy of the held span at `b`: its second block's when `hi`, its first's otherwise.
+    spec fn half(&self, b: int, hi: bool) -> BlockBuddy {
+        if hi {
+            self.node(b).hi
+        } else {
+            self.node(b).lo
+        }
+    }
+
+    /// The blocks of the block at `c`: its span's first block's, or its second's.
+    spec fn blocks_of(&self, c: int) -> Map<int, Block> {
+        if self.nodes@.contains_key(c) {
+            self.node(c).lo.blocks()
+        } else {
+            self.node(c - BLOCK_BYTES as int).hi.blocks()
+        }
+    }
+
+    /// The runs allocated to callers in the block at `c`: every run of a first block, and every run
+    /// of a second block but its metadata page.
+    spec fn used_in(&self, c: int) -> Map<int, nat> {
+        if self.nodes@.contains_key(c) {
+            self.node(c).lo.used()
+        } else {
+            self.node(c - BLOCK_BYTES as int).hi.used().remove(0)
+        }
+    }
+
+    /// The blocks of the held spans, by base, with the blocks of each.
     pub closed spec fn spans(&self) -> Map<int, Map<int, Block>> {
-        spans_of(self.slot@, self.records@)
+        Map::new(self.nodes@.dom().union(self.metas@), |c: int| self.blocks_of(c))
     }
 
-    /// The allocated runs of each held span, by head, with their orders.
+    /// The runs allocated to callers in each block of a held span, by head, with their orders.
     pub closed spec fn used(&self) -> Map<int, Map<int, nat>> {
-        used_in(self.slot@, self.records@)
+        Map::new(self.nodes@.dom().union(self.metas@), |c: int| self.used_in(c))
+    }
+
+    /// The metadata pages of the held spans.
+    pub closed spec fn metas(&self) -> Set<int> {
+        self.metas@
     }
 
     /// The source's view.
@@ -397,20 +490,17 @@ impl<S: SpanSource> PageBuddy<S> {
         self.spares as nat
     }
 
-    /// The base of the metadata span, while one is held.
-    pub closed spec fn meta(&self) -> Option<int> {
-        match self.meta {
-            Some(m) => Some(m@.addr as int),
-            None => None,
-        }
+    /// The base of the span whose block is at `c`.
+    pub open spec fn span_base(&self, c: int) -> int {
+        base_in(self.metas(), c)
     }
 
-    /// The held spans with no run allocated.
+    /// The held spans with no run allocated, by metadata page.
     pub open spec fn idle_spans(&self) -> Set<int> {
-        idle_of(self.used())
+        idle_of(self.used(), self.metas())
     }
 
-    /// Some held span has a free block of order `k` or more.
+    /// Some block of a held span has a free block of order `k` or more.
     pub open spec fn fits(&self, k: nat) -> bool {
         exists|b: int, h: int|
             #![trigger self.spans()[b].contains_key(h)]
@@ -418,72 +508,252 @@ impl<S: SpanSource> PageBuddy<S> {
                 && self.spans()[b][h].order >= k
     }
 
-    /// `p` is the head of an allocated run.
+    /// `p` is the head of a run allocated to a caller.
     pub open spec fn holds(&self, p: int) -> bool {
         &&& p % PAGE_BYTES as int == 0
         &&& self.used().contains_key(span_of(p))
         &&& self.used()[span_of(p)].contains_key(page_of(p))
     }
 
-    /// The metadata page at `m` is backed in a span of its own, and each record is the block buddy
-    /// of the held span its base names, or uninitialized when it names none.
-    spec fn meta_wf(&self, m: *mut u8) -> bool {
+    /// The node of the held span at `b` is at its metadata page and holds its two block buddies,
+    /// the second's first run the metadata page, and the rest of the metadata page is held beside it.
+    spec fn node_wf(&self, b: int) -> bool {
         let src = self.source@;
-        let ma = m@.addr as int;
-        &&& m@.provenance == src.provenance
-        &&& src.spans.contains_key(ma)
-        &&& src.spans[ma] == (Span { blocks: 1, backed: run_pages(ma, 1) })
-        &&& !self.slot@.contains_key(ma)
-        &&& forall|i: int| 0 <= i < SPANS ==> #[trigger] self.records@.contains_key(i)
-        &&& forall|i: int|
-            #![trigger self.records@[i]]
-            0 <= i < SPANS ==> {
-                &&& self.records@[i].ptr() == record_ptr(ma, src.provenance, i)
-                &&& (self.bases@[i] == 0) == self.records@[i].is_uninit()
-            }
-        &&& forall|i: int|
-            #![trigger self.bases@[i]]
-            0 <= i < SPANS && self.bases@[i] != 0 ==> {
-                &&& self.records@[i].is_init()
-                &&& self.rec(i).wf()
-                &&& held(src, self.bases@[i] as int, self.rec(i).used())
-            }
+        &&& self.nodes@[b].ptr() == node_ptr(b, src.provenance)
+        &&& self.nodes@[b].is_init()
+        &&& self.node(b).lo.wf()
+        &&& self.node(b).hi.wf()
+        &&& self.node(b).hi.used().contains_key(0)
+        &&& self.node(b).hi.used()[0] == 0
+        &&& held(src, b, self.node(b).lo.used(), self.node(b).hi.used().remove(0))
+        &&& self.rests@.contains_key(b)
+        &&& self.rests@[b].is_range(meta_page(b) + size_of::<Node>(), PAGE_BYTES - size_of::<Node>())
+        &&& self.rests@[b].provenance() == src.provenance
     }
 
-    /// The table of records and bases agrees with itself, with the source and with the count of
-    /// idle spans.
-    spec fn table_wf(&self) -> bool {
-        &&& self.source@.wf()
-        &&& self.idle <= self.spares
-        &&& self.idle as int == self.idle_spans().len()
-        &&& forall|b: int|
-            #[trigger] self.slot@.contains_key(b) ==> {
-                &&& 0 <= self.slot@[b] < SPANS
-                &&& self.bases@[self.slot@[b]] as int == b
-                &&& b != 0
-            }
-        &&& forall|i: int|
-            #![trigger self.bases@[i]]
-            0 <= i < SPANS && self.bases@[i] != 0 ==> {
-                &&& self.slot@.contains_key(self.bases@[i] as int)
-                &&& self.slot@[self.bases@[i] as int] == i
-            }
-        &&& match self.meta {
-            None => forall|i: int| 0 <= i < SPANS ==> #[trigger] self.bases@[i] == 0,
-            Some(m) => self.meta_wf(m),
+    /// The node at position `i` of the chain links the span after it, or ends the list.
+    spec fn linked(&self, i: int) -> bool {
+        self.node(self.chain@[i]).next as int == if i + 1 < self.chain@.len() {
+            self.chain@[i + 1]
+        } else {
+            0
         }
     }
 
-    /// The table is well formed, and the metadata span is held exactly when a run span is.
+    /// The list from `head` links exactly the held spans, each node well formed, the metadata pages
+    /// are the held spans' and the count of idle spans is right.
     pub closed spec fn wf(&self) -> bool {
-        &&& self.table_wf()
-        &&& (self.meta is None) == (self.slot@.dom() == Set::<int>::empty())
+        &&& self.source@.wf()
+        &&& self.idle <= self.spares
+        &&& self.idle as int == self.idle_spans().len()
+        &&& self.chain@.no_duplicates()
+        &&& forall|b: int|
+            #![trigger self.nodes@.contains_key(b)]
+            #![trigger self.chain@.contains(b)]
+            self.nodes@.contains_key(b) <==> self.chain@.contains(b)
+        &&& forall|b: int| #[trigger] self.nodes@.contains_key(b) ==> self.metas@.contains(meta_page(b))
+        &&& forall|m: int| #[trigger] self.metas@.contains(m) ==> self.nodes@.contains_key(m - BLOCK_BYTES as int)
+        &&& forall|b: int| #[trigger] self.nodes@.contains_key(b) ==> self.node_wf(b)
+        &&& forall|i: int| 0 <= i < self.chain@.len() ==> #[trigger] self.linked(i)
+        &&& match self.head {
+            None => self.chain@.len() == 0,
+            Some(h) => {
+                &&& self.chain@.len() > 0
+                &&& h@.addr as int == self.chain@[0]
+                &&& h@.provenance == self.source@.provenance
+            },
+        }
     }
 
-    /// The invariant on the view: every held span is a reserved span of one block whose backed
-    /// pages lie in its allocated runs, apart from the metadata span, its blocks partitioned and coalesced; the metadata
-    /// span is held, its first page backed, exactly when a run span is; and no more idle spans are
-    /// held than the spares.
+    /// A held span's node is well formed, the span is in the chain, and the span fits in the
+    /// address space, block-aligned above address 0.
+    proof fn lemma_base(&self, b: int)
+        requires
+            self.wf(),
+            self.nodes@.contains_key(b),
+        ensures
+            self.node_wf(b),
+            self.chain@.contains(b),
+            self.chain@.len() > 0,
+            self.head is Some,
+            self.metas@.contains(meta_page(b)),
+            b > 0,
+            b % BLOCK_BYTES as int == 0,
+            b + span_bytes(SPAN_BLOCKS as nat) <= usize::MAX as int + 1,
+    {
+        assert(self.node_wf(b));
+        assert(self.source@.released_span(b).fits(b, self.source@.spans[b].blocks));
+    }
+
+    /// Two held spans are apart.
+    proof fn lemma_apart(&self, b: int, c: int)
+        requires
+            self.wf(),
+            self.nodes@.contains_key(b),
+            self.nodes@.contains_key(c),
+            b != c,
+        ensures
+            b + span_bytes(SPAN_BLOCKS as nat) <= c || c + span_bytes(SPAN_BLOCKS as nat) <= b,
+    {
+        self.lemma_base(b);
+        self.lemma_base(c);
+        let src = self.source@;
+        assert(src.released_span(b).fits(b, src.spans[b].blocks));
+        assert(src.released_span(b).spans.contains_key(c));
+        assert(src.released_span(b).apart(b, src.spans[b].blocks, c));
+    }
+
+    /// A metadata page is the second block of a held span and no held span's base.
+    proof fn lemma_meta_block(&self, m: int)
+        requires
+            self.wf(),
+            self.metas@.contains(m),
+        ensures
+            self.nodes@.contains_key(m - BLOCK_BYTES as int),
+            !self.nodes@.contains_key(m),
+            meta_page(m - BLOCK_BYTES as int) == m,
+    {
+        if self.nodes@.contains_key(m) {
+            self.lemma_apart(m - BLOCK_BYTES as int, m);
+        }
+    }
+
+    /// The block at `c` of a held span: the base of its span, which block of it `c` is, its blocks
+    /// and its runs.
+    proof fn lemma_block(&self, c: int)
+        requires
+            self.wf(),
+            self.spans().contains_key(c),
+        ensures
+            self.used().contains_key(c),
+            self.nodes@.contains_key(self.span_base(c)),
+            c == self.span_base(c) || c == meta_page(self.span_base(c)),
+            self.metas@.contains(c) == (c == meta_page(self.span_base(c))),
+            self.nodes@.contains_key(c) == (c == self.span_base(c)),
+            self.spans()[c] == if c == self.span_base(c) {
+                self.node(c).lo.blocks()
+            } else {
+                self.node(self.span_base(c)).hi.blocks()
+            },
+            self.used()[c] == if c == self.span_base(c) {
+                self.node(c).lo.used()
+            } else {
+                self.node(self.span_base(c)).hi.used().remove(0)
+            },
+    {
+        if self.metas@.contains(c) {
+            self.lemma_meta_block(c);
+        } else {
+            assert(self.nodes@.contains_key(c));
+        }
+    }
+
+    /// Both blocks of the held span at `b` are in the view, as its node's buddies.
+    proof fn lemma_blocks_of(&self, b: int)
+        requires
+            self.wf(),
+            self.nodes@.contains_key(b),
+        ensures
+            self.spans().contains_key(b),
+            self.spans().contains_key(meta_page(b)),
+            self.used().contains_key(b),
+            self.used().contains_key(meta_page(b)),
+            self.span_base(b) == b,
+            self.span_base(meta_page(b)) == b,
+            !self.metas@.contains(b),
+            self.spans()[b] == self.node(b).lo.blocks(),
+            self.spans()[meta_page(b)] == self.node(b).hi.blocks(),
+            self.used()[b] == self.node(b).lo.used(),
+            self.used()[meta_page(b)] == self.node(b).hi.used().remove(0),
+    {
+        self.lemma_base(b);
+        if self.metas@.contains(b) {
+            self.lemma_meta_block(b);
+        }
+        self.lemma_meta_block(meta_page(b));
+    }
+
+    /// A page buddy that differs from a well-formed one only in its source's value, the view the
+    /// same, is well formed.
+    proof fn lemma_same_view(&self, other: &Self)
+        requires
+            other.wf(),
+            self.source@ == other.source@,
+            self.head == other.head,
+            self.spares == other.spares,
+            self.idle == other.idle,
+            self.chain == other.chain,
+            self.metas == other.metas,
+            self.nodes == other.nodes,
+            self.rests == other.rests,
+        ensures
+            self.wf(),
+            self.spans() == other.spans(),
+            self.used() == other.used(),
+    {
+        assert(self.spans() =~= other.spans());
+        assert(self.used() =~= other.used());
+        assert(self.idle_spans() == other.idle_spans());
+        assert forall|b: int| #[trigger] self.nodes@.contains_key(b) implies self.node_wf(b) by {
+            assert(other.node_wf(b));
+        }
+        assert forall|i: int| 0 <= i < self.chain@.len() implies #[trigger] self.linked(i) by {
+            assert(other.linked(i));
+        }
+    }
+
+    /// The source refused in a call that changed nothing else: the page buddy is well formed with
+    /// the same view.
+    proof fn lemma_refused(&self, other: &Self)
+        requires
+            other.wf(),
+            self.source@ == other.source@.refused(),
+            self.head == other.head,
+            self.spares == other.spares,
+            self.idle == other.idle,
+            self.chain == other.chain,
+            self.metas == other.metas,
+            self.nodes == other.nodes,
+            self.rests == other.rests,
+        ensures
+            self.wf(),
+            self.spans() == other.spans(),
+            self.used() == other.used(),
+    {
+        lemma_refused_wf(other.source@);
+        assert(self.spans() =~= other.spans());
+        assert(self.used() =~= other.used());
+        assert(self.idle_spans() == other.idle_spans());
+        assert forall|b: int| #[trigger] self.nodes@.contains_key(b) implies self.node_wf(b) by {
+            assert(other.node_wf(b));
+        }
+        assert forall|i: int| 0 <= i < self.chain@.len() implies #[trigger] self.linked(i) by {
+            assert(other.linked(i));
+        }
+    }
+
+    /// The span at position `i` of the chain is held, its node well formed and linked.
+    proof fn lemma_at(&self, i: int)
+        requires
+            self.wf(),
+            0 <= i < self.chain@.len(),
+        ensures
+            self.nodes@.contains_key(self.chain@[i]),
+            self.node_wf(self.chain@[i]),
+            self.linked(i),
+            self.chain@[i] > 0,
+            self.chain@[i] % BLOCK_BYTES as int == 0,
+            self.chain@[i] + span_bytes(SPAN_BLOCKS as nat) <= usize::MAX as int + 1,
+    {
+        assert(self.chain@.contains(self.chain@[i]));
+        self.lemma_base(self.chain@[i]);
+    }
+
+    /// The invariant on the view: every held span is a reserved span of SPAN_BLOCKS blocks whose
+    /// metadata page, the first page of its second block, is backed and is that block's allocated
+    /// block of order 0 at page 0, and whose other backed pages lie in its blocks' runs; each block
+    /// partitioned and coalesced, a first block with no run the initial block; and no more idle spans
+    /// are held than the spares.
     pub proof fn lemma_view(&self)
         requires
             self.wf(),
@@ -491,56 +761,87 @@ impl<S: SpanSource> PageBuddy<S> {
             self.source().wf(),
             self.idle_spans().len() <= self.spares(),
             self.used().dom() == self.spans().dom(),
-            (self.meta() is None) == (self.spans().dom() == Set::<int>::empty()),
-            forall|b: int|
-                #[trigger] self.spans().contains_key(b) ==> {
-                    &&& partitioned(self.spans()[b])
-                    &&& coalesced(self.spans()[b])
-                    &&& self.used()[b] == used_of(self.spans()[b])
-                    &&& self.used()[b].dom() == Set::<int>::empty() ==> self.spans()[b] == initial()
-                    &&& b > 0
-                    &&& b % BLOCK_BYTES as int == 0
-                    &&& held(self.source(), b, self.used()[b])
-                    &&& self.meta() != Some(b)
+            forall|m: int| #[trigger]
+                self.metas().contains(m) ==> {
+                    &&& self.spans().contains_key(m)
+                    &&& self.spans().contains_key(m - BLOCK_BYTES as int)
+                    &&& !self.metas().contains(m - BLOCK_BYTES as int)
                 },
-            match self.meta() {
-                Some(m) => {
-                    &&& self.source().spans.contains_key(m)
-                    &&& self.source().spans[m] == (Span { blocks: 1, backed: run_pages(m, 1) })
+            forall|c: int|
+                #[trigger] self.spans().contains_key(c) ==> {
+                    &&& partitioned(self.spans()[c])
+                    &&& coalesced(self.spans()[c])
+                    &&& c > 0
+                    &&& c % BLOCK_BYTES as int == 0
+                    &&& if self.metas().contains(c) {
+                        &&& self.spans()[c].contains_key(0)
+                        &&& self.spans()[c][0] == (Block { order: 0, free: false })
+                        &&& self.used()[c] == used_of(self.spans()[c]).remove(0)
+                        &&& held(self.source(), c - BLOCK_BYTES as int, self.used()[c - BLOCK_BYTES as int], self.used()[c])
+                    } else {
+                        &&& self.metas().contains(meta_page(c))
+                        &&& self.used()[c] == used_of(self.spans()[c])
+                        &&& self.used()[c].dom() == Set::<int>::empty() ==> self.spans()[c] == initial()
+                        &&& held(self.source(), c, self.used()[c], self.used()[meta_page(c)])
+                    }
                 },
-                None => true,
-            },
     {
         assert(self.used().dom() =~= self.spans().dom());
-        assert forall|b: int| #[trigger] self.spans().contains_key(b) implies {
-            &&& partitioned(self.spans()[b])
-            &&& coalesced(self.spans()[b])
-            &&& self.used()[b] == used_of(self.spans()[b])
-            &&& self.used()[b].dom() == Set::<int>::empty() ==> self.spans()[b] == initial()
-            &&& b > 0
-            &&& b % BLOCK_BYTES as int == 0
-            &&& held(self.source(), b, self.used()[b])
-            &&& self.meta() != Some(b)
+        assert forall|m: int| #[trigger] self.metas().contains(m) implies {
+            &&& self.spans().contains_key(m)
+            &&& self.spans().contains_key(m - BLOCK_BYTES as int)
+            &&& !self.metas().contains(m - BLOCK_BYTES as int)
         } by {
-            let i = self.slot@[b];
-            assert(self.bases@[i] as int == b);
-            let m = self.meta->Some_0;
-            assert(self.meta_wf(m));
-            self.rec(i).lemma_view();
-            lemma_used_of(self.rec(i));
-            if self.used()[b].dom() == Set::<int>::empty() {
-                self.rec(i).lemma_idle();
+            self.lemma_meta_block(m);
+            self.lemma_blocks_of(m - BLOCK_BYTES as int);
+        }
+        assert forall|c: int| #[trigger] self.spans().contains_key(c) implies {
+            &&& partitioned(self.spans()[c])
+            &&& coalesced(self.spans()[c])
+            &&& c > 0
+            &&& c % BLOCK_BYTES as int == 0
+            &&& if self.metas().contains(c) {
+                &&& self.spans()[c].contains_key(0)
+                &&& self.spans()[c][0] == (Block { order: 0, free: false })
+                &&& self.used()[c] == used_of(self.spans()[c]).remove(0)
+                &&& held(self.source(), c - BLOCK_BYTES as int, self.used()[c - BLOCK_BYTES as int], self.used()[c])
+            } else {
+                &&& self.metas().contains(meta_page(c))
+                &&& self.used()[c] == used_of(self.spans()[c])
+                &&& self.used()[c].dom() == Set::<int>::empty() ==> self.spans()[c] == initial()
+                &&& held(self.source(), c, self.used()[c], self.used()[meta_page(c)])
             }
-            assert(self.source@.released_span(b).fits(b, self.source@.spans[b].blocks));
+        } by {
+            self.lemma_block(c);
+            let b = self.span_base(c);
+            self.lemma_blocks_of(b);
+            lemma_meta(b);
+            let bb = if c == b {
+                self.node(b).lo
+            } else {
+                self.node(b).hi
+            };
+            assert(self.spans()[c] == bb.blocks());
+            bb.lemma_view();
+            lemma_used_of(bb);
+            if c == b {
+                if self.used()[c].dom() == Set::<int>::empty() {
+                    bb.lemma_idle();
+                }
+            } else {
+                assert(bb.used().contains_key(0));
+                assert(bb.blocks().contains_key(0));
+            }
         }
     }
 
-    /// A held span with no run allocated is one free block of order BLOCK_ORDER, so a run of any
-    /// order fits while it is held.
+    /// A held span's first block with no run allocated is one free block of order BLOCK_ORDER, so a
+    /// run of any order fits while it is held.
     pub proof fn lemma_idle_fits(&self, b: int, k: nat)
         requires
             self.wf(),
             self.spans().contains_key(b),
+            !self.metas().contains(b),
             self.used()[b].dom() == Set::<int>::empty(),
             k <= BLOCK_ORDER,
         ensures
@@ -559,18 +860,19 @@ impl<S: SpanSource> PageBuddy<S> {
             r.wf(),
             r.source() == source@,
             r.spares() == spares,
-            r.meta() is None,
             r.spans() == Map::<int, Map<int, Block>>::empty(),
             r.used() == Map::<int, Map<int, nat>>::empty(),
+            r.metas() == Set::<int>::empty(),
     {
         let r = PageBuddy {
             source,
-            meta: None,
-            bases: [0;SPANS],
+            head: None,
             spares,
             idle: 0,
-            slot: Ghost(Map::empty()),
-            records: Tracked(Map::tracked_empty()),
+            chain: Ghost(Seq::empty()),
+            metas: Ghost(Set::empty()),
+            nodes: Tracked(Map::tracked_empty()),
+            rests: Tracked(Map::tracked_empty()),
         };
         assert(r.spans() =~= Map::<int, Map<int, Block>>::empty());
         assert(r.used() =~= Map::<int, Map<int, nat>>::empty());
@@ -578,283 +880,305 @@ impl<S: SpanSource> PageBuddy<S> {
         r
     }
 
-    /// A record no span holds; or none when every record holds one, which is when SPANS spans are
-    /// held.
-    fn free_slot(&self) -> (r: Option<usize>)
-        requires
-            self.table_wf(),
-        ensures
-            match r {
-                None => self.slot@.dom().len() == SPANS,
-                Some(i) => {
-                    &&& i < SPANS
-                    &&& self.bases@[i as int] == 0
-                    &&& self.slot@.dom().len() < SPANS
-                },
-            },
-    {
-        let mut free: Option<usize> = None;
-        let mut i: usize = 0;
-        let ghost mut seen = Set::<int>::empty();
-        let ghost mut zeros: int = 0;
-        while i < SPANS
-            invariant
-                self.table_wf(),
-                i <= SPANS,
-                seen.len() + zeros == i,
-                forall|b: int| seen.contains(b) <==> self.slot@.contains_key(b) && self.slot@[b] < i,
-                match free {
-                    None => zeros == 0,
-                    Some(j) => j < SPANS && self.bases@[j as int] == 0 && zeros >= 1,
-                },
-            decreases SPANS - i,
-        {
-            if self.bases[i] == 0 {
-                if free.is_none() {
-                    free = Some(i);
-                }
-                proof {
-                    zeros = zeros + 1;
-                    assert forall|b: int| seen.contains(b) <==> self.slot@.contains_key(b) && self.slot@[b] < i + 1 by {
-                        if self.slot@.contains_key(b) && self.slot@[b] == i {
-                            assert(self.bases@[self.slot@[b]] as int == b);
-                        }
-                    }
-                }
-            } else {
-                proof {
-                    let b = self.bases@[i as int] as int;
-                    assert(self.slot@.contains_key(b) && self.slot@[b] == i);
-                    assert(!seen.contains(b));
-                    seen = seen.insert(b);
-                    assert forall|c: int| seen.contains(c) <==> self.slot@.contains_key(c) && self.slot@[c] < i + 1 by {
-                        if self.slot@.contains_key(c) && self.slot@[c] == i {
-                            assert(self.bases@[self.slot@[c]] as int == c);
-                        }
-                    }
-                }
-            }
-            i = i + 1;
-        }
-        proof {
-            assert(seen =~= self.slot@.dom());
-        }
-        free
-    }
-
-    /// The record of the held span at `b`.
-    fn find(&self, b: usize) -> (i: usize)
-        requires
-            self.table_wf(),
-            self.slot@.contains_key(b as int),
-        ensures
-            i < SPANS,
-            self.bases@[i as int] == b,
-            self.slot@[b as int] == i,
-    {
-        let mut i: usize = 0;
-        while i < SPANS
-            invariant
-                self.table_wf(),
-                self.slot@.contains_key(b as int),
-                i <= SPANS,
-                forall|j: int| 0 <= j < i ==> self.bases@[j] != b,
-            decreases SPANS - i,
-        {
-            if self.bases[i] == b {
-                return i;
-            }
-            i = i + 1;
-        }
-        proof {
-            let j = self.slot@[b as int];
-            assert(self.bases@[j] as int == b);
-        }
-        0
-    }
-
-    /// Whether no run span is held.
-    fn none_held(&self) -> (r: bool)
-        requires
-            self.table_wf(),
-        ensures
-            r == (self.slot@.dom() == Set::<int>::empty()),
-    {
-        let mut i: usize = 0;
-        while i < SPANS
-            invariant
-                self.table_wf(),
-                i <= SPANS,
-                forall|j: int| 0 <= j < i ==> self.bases@[j] == 0,
-            decreases SPANS - i,
-        {
-            if self.bases[i] != 0 {
-                proof {
-                    assert(self.slot@.dom().contains(self.bases@[i as int] as int));
-                }
-                return false;
-            }
-            i = i + 1;
-        }
-        proof {
-            assert forall|b: int| !self.slot@.dom().contains(b) by {
-                if self.slot@.contains_key(b) {
-                    let j = self.slot@[b];
-                    assert(self.bases@[j] as int == b);
-                }
-            }
-            assert(self.slot@.dom() =~= Set::<int>::empty());
-        }
-        true
-    }
-
-    /// The record holding a free block of the smallest order at or above `k` across every held span,
-    /// with that order; or none when no held span has a free block of order `k` or more.
-    fn best_span(&self, k: usize) -> (r: Option<(usize, usize)>)
+    /// The held span and the block of it with a free block of the smallest order at or above `k`
+    /// across every held span, with that order; or none when no held span has a free block of order
+    /// `k` or more.
+    fn best_span(&self, k: usize) -> (r: Option<(usize, bool, usize)>)
         requires
             self.wf(),
             k <= BLOCK_ORDER,
         ensures
             match r {
                 None => !self.fits(k as nat),
-                Some((i, o)) => {
-                    &&& i < SPANS
-                    &&& self.bases@[i as int] != 0
+                Some((b, hi, o)) => {
+                    &&& self.nodes@.contains_key(b as int)
                     &&& k <= o <= BLOCK_ORDER
-                    &&& self.rec(i as int).fits(k as nat)
+                    &&& self.half(b as int, hi).fits(k as nat)
                     &&& exists|h: int|
-                        #[trigger] self.rec(i as int).blocks().contains_key(h)
-                            && self.rec(i as int).blocks()[h] == (Block { order: o as nat, free: true })
-                    &&& forall|b: int, q: int|
-                        #![trigger self.spans()[b].contains_key(q)]
-                        self.spans().contains_key(b) && self.spans()[b].contains_key(q)
-                            && self.spans()[b][q].free && self.spans()[b][q].order >= k
-                            ==> self.spans()[b][q].order >= o
+                        #[trigger] self.half(b as int, hi).blocks().contains_key(h) && self.half(b as int, hi).blocks()[h] == (Block { order: o as nat, free: true })
+                    &&& forall|c: int, q: int|
+                        #![trigger self.spans()[c].contains_key(q)]
+                        self.spans().contains_key(c) && self.spans()[c].contains_key(q)
+                            && self.spans()[c][q].free && self.spans()[c][q].order >= k
+                            ==> self.spans()[c][q].order >= o
                 },
             },
     {
-        let mut best: Option<(usize, usize)> = None;
-        let mut i: usize = 0;
-        while i < SPANS
+        let hp = match self.head {
+            None => {
+                proof {
+                    if self.fits(k as nat) {
+                        let (c, h) = choose|c: int, h: int|
+                            #![trigger self.spans()[c].contains_key(h)]
+                            self.spans().contains_key(c) && self.spans()[c].contains_key(h)
+                                && self.spans()[c][h].free && self.spans()[c][h].order >= k;
+                        self.lemma_block(c);
+                        self.lemma_base(self.span_base(c));
+                    }
+                }
+                return None;
+            },
+            Some(hp) => hp,
+        };
+        let mut best: Option<(usize, bool, usize)> = None;
+        let mut cur: usize = hp.addr();
+        let ghost mut j: int = 0;
+        while cur != 0
             invariant
                 self.wf(),
                 k <= BLOCK_ORDER,
-                i <= SPANS,
+                self.head == Some(hp),
+                0 <= j <= self.chain@.len(),
+                cur as int == if j < self.chain@.len() { self.chain@[j] } else { 0 },
                 match best {
-                    None => forall|j: int|
-                        #![trigger self.bases@[j]]
-                        0 <= j < i && self.bases@[j] != 0 ==> !self.rec(j).fits(k as nat),
-                    Some((j, o)) => {
-                        &&& j < i
-                        &&& self.bases@[j as int] != 0
+                    None => true,
+                    Some((c, hi, o)) => {
+                        &&& self.nodes@.contains_key(c as int)
                         &&& k <= o <= BLOCK_ORDER
                         &&& exists|h: int|
-                            #[trigger] self.rec(j as int).blocks().contains_key(h)
-                                && self.rec(j as int).blocks()[h] == (Block { order: o as nat, free: true })
-                        &&& forall|j2: int, q: int|
-                            #![trigger self.rec(j2).blocks().contains_key(q)]
-                            0 <= j2 < i && self.bases@[j2] != 0 && self.rec(j2).blocks().contains_key(q)
-                                && self.rec(j2).blocks()[q].free && self.rec(j2).blocks()[q].order >= k
-                                ==> self.rec(j2).blocks()[q].order >= o
+                            #[trigger] self.half(c as int, hi).blocks().contains_key(h) && self.half(c as int, hi).blocks()[h] == (Block { order: o as nat, free: true })
                     },
                 },
-            decreases SPANS - i,
+                forall|i: int, q: int|
+                    #![trigger self.node(self.chain@[i]).lo.blocks().contains_key(q)]
+                    0 <= i < j && self.node(self.chain@[i]).lo.blocks().contains_key(q)
+                        && self.node(self.chain@[i]).lo.blocks()[q].free
+                        && self.node(self.chain@[i]).lo.blocks()[q].order >= k ==> below(
+                        best,
+                        self.node(self.chain@[i]).lo.blocks()[q].order,
+                    ),
+                forall|i: int, q: int|
+                    #![trigger self.node(self.chain@[i]).hi.blocks().contains_key(q)]
+                    0 <= i < j && self.node(self.chain@[i]).hi.blocks().contains_key(q)
+                        && self.node(self.chain@[i]).hi.blocks()[q].free
+                        && self.node(self.chain@[i]).hi.blocks()[q].order >= k ==> below(
+                        best,
+                        self.node(self.chain@[i]).hi.blocks()[q].order,
+                    ),
+            decreases self.chain@.len() - j,
         {
-            if self.bases[i] != 0 {
-                let m = self.meta.unwrap();
-                proof {
-                    assert(self.meta_wf(m));
-                    assert(self.source@.released_span(m@.addr as int).fits(m@.addr as int, 1));
-                }
-                let ptr = record(m, i);
-                let tracked perm = self.records.borrow().tracked_borrow(i as int);
-                let bb = ptr_ref(ptr, Tracked(perm));
-                let ghost before = best;
-                proof {
-                    assert(*bb == self.rec(i as int));
-                }
-                match bb.fit_order(k) {
-                    None => {},
-                    Some(o) => {
-                        let better = match best {
-                            None => true,
-                            Some((_, bo)) => o < bo,
-                        };
-                        if better {
-                            best = Some((i, o));
-                        }
-                        proof {
-                            let bo = best->Some_0.1;
-                            assert forall|j2: int, q: int|
-                                #![trigger self.rec(j2).blocks().contains_key(q)]
-                                0 <= j2 < i + 1 && self.bases@[j2] != 0 && self.rec(j2).blocks().contains_key(q)
-                                    && self.rec(j2).blocks()[q].free && self.rec(j2).blocks()[q].order >= k
-                                    implies self.rec(j2).blocks()[q].order >= bo by {
-                                if j2 == i {
-                                    assert(bb.blocks().contains_key(q));
-                                } else if before is None {
-                                    assert(self.rec(j2).fits(k as nat));
-                                }
-                            }
-                        }
-                    },
+            proof {
+                self.lemma_at(j);
+            }
+            let ptr = node_at(hp, cur);
+            let tracked perm = self.nodes.borrow().tracked_borrow(cur as int);
+            let node = ptr_ref(ptr, Tracked(perm));
+            let ghost best0 = best;
+            proof {
+                assert(*node == self.node(cur as int));
+                assert(cur as int == self.chain@[j]);
+            }
+            let lo_o = node.lo.fit_order(k);
+            if let Some(o) = lo_o {
+                let better = match best {
+                    None => true,
+                    Some((_, _, bo)) => o < bo,
+                };
+                if better {
+                    best = Some((cur, false, o));
                 }
             }
-            i = i + 1;
+            let ghost best1 = best;
+            let hi_o = node.hi.fit_order(k);
+            if let Some(o) = hi_o {
+                let better = match best {
+                    None => true,
+                    Some((_, _, bo)) => o < bo,
+                };
+                if better {
+                    best = Some((cur, true, o));
+                }
+            }
+            proof {
+                assert forall|x: nat| below(best0, x) implies below(best, x) by {}
+                if let Some((c, hi, o)) = best {
+                    if c == cur && best != best0 {
+                        let bb = if hi { node.hi } else { node.lo };
+                        let h = choose|h: int| #[trigger]
+                            bb.blocks().contains_key(h) && bb.blocks()[h] == (Block { order: o as nat, free: true });
+                        assert(self.half(c as int, hi).blocks().contains_key(h));
+                    }
+                }
+                if let Some(o) = lo_o {
+                    assert forall|x: nat| o <= x implies below(best, x) by {
+                        assert(below(best1, x));
+                    }
+                }
+                if let Some(o) = hi_o {
+                    assert forall|x: nat| o <= x implies below(best, x) by {}
+                }
+                assert forall|i: int, q: int|
+                    #![trigger self.node(self.chain@[i]).lo.blocks().contains_key(q)]
+                    0 <= i < j + 1 && self.node(self.chain@[i]).lo.blocks().contains_key(q)
+                        && self.node(self.chain@[i]).lo.blocks()[q].free
+                        && self.node(self.chain@[i]).lo.blocks()[q].order >= k implies below(
+                        best,
+                        self.node(self.chain@[i]).lo.blocks()[q].order,
+                    ) by {
+                    if i == j {
+                        assert(node.lo.blocks().contains_key(q));
+                        assert(node.lo.fits(k as nat));
+                    }
+                }
+                assert forall|i: int, q: int|
+                    #![trigger self.node(self.chain@[i]).hi.blocks().contains_key(q)]
+                    0 <= i < j + 1 && self.node(self.chain@[i]).hi.blocks().contains_key(q)
+                        && self.node(self.chain@[i]).hi.blocks()[q].free
+                        && self.node(self.chain@[i]).hi.blocks()[q].order >= k implies below(
+                        best,
+                        self.node(self.chain@[i]).hi.blocks()[q].order,
+                    ) by {
+                    if i == j {
+                        assert(node.hi.blocks().contains_key(q));
+                        assert(node.hi.fits(k as nat));
+                    }
+                }
+            }
+            cur = node.next;
+            proof {
+                j = j + 1;
+                if j < self.chain@.len() {
+                    self.lemma_at(j);
+                }
+            }
         }
         proof {
+            if j < self.chain@.len() {
+                self.lemma_at(j);
+            }
+            assert(j == self.chain@.len());
+            assert forall|c: int, q: int|
+                #![trigger self.spans()[c].contains_key(q)]
+                self.spans().contains_key(c) && self.spans()[c].contains_key(q)
+                    && self.spans()[c][q].free && self.spans()[c][q].order >= k implies below(
+                best,
+                self.spans()[c][q].order,
+            ) by {
+                self.lemma_block(c);
+                let b = self.span_base(c);
+                self.lemma_base(b);
+                let i = choose|i: int| 0 <= i < self.chain@.len() && self.chain@[i] == b;
+                if c == b {
+                    assert(self.node(self.chain@[i]).lo.blocks().contains_key(q));
+                } else {
+                    assert(self.node(self.chain@[i]).hi.blocks().contains_key(q));
+                }
+            }
             match best {
                 None => {
                     if self.fits(k as nat) {
-                        let (b, h) = choose|b: int, h: int|
-                            #![trigger self.spans()[b].contains_key(h)]
-                            self.spans().contains_key(b) && self.spans()[b].contains_key(h)
-                                && self.spans()[b][h].free && self.spans()[b][h].order >= k;
-                        let j = self.slot@[b];
-                        assert(self.bases@[j] as int == b);
-                        assert(self.spans()[b] == self.rec(j).blocks());
-                        assert(self.rec(j).blocks().contains_key(h));
+                        let (c, h) = choose|c: int, h: int|
+                            #![trigger self.spans()[c].contains_key(h)]
+                            self.spans().contains_key(c) && self.spans()[c].contains_key(h)
+                                && self.spans()[c][h].free && self.spans()[c][h].order >= k;
+                        assert(below(best, self.spans()[c][h].order));
                     }
                 },
-                Some((j, o)) => {
-                    let h = choose|h: int|
-                        #[trigger] self.rec(j as int).blocks().contains_key(h)
-                            && self.rec(j as int).blocks()[h] == (Block { order: o as nat, free: true });
-                    assert(self.rec(j as int).blocks().contains_key(h));
-                    assert forall|b: int, q: int|
-                        #![trigger self.spans()[b].contains_key(q)]
-                        self.spans().contains_key(b) && self.spans()[b].contains_key(q)
-                            && self.spans()[b][q].free && self.spans()[b][q].order >= k
-                            implies self.spans()[b][q].order >= o by {
-                        let j2 = self.slot@[b];
-                        assert(self.bases@[j2] as int == b);
-                        assert(self.spans()[b] == self.rec(j2).blocks());
-                        assert(self.rec(j2).blocks().contains_key(q));
-                    }
+                Some((c, hi, o)) => {
+                    let bb = if hi {
+                        self.node(c as int).hi
+                    } else {
+                        self.node(c as int).lo
+                    };
+                    let h = choose|h: int| #[trigger]
+                        bb.blocks().contains_key(h) && bb.blocks()[h] == (Block { order: o as nat, free: true });
+                    assert(bb.blocks().contains_key(h));
                 },
             }
         }
         best
     }
 
-    /// Cuts a run of order `k` in the held span of record `i`, from its free block of the smallest
-    /// order at or above `k`.
-    fn alloc_in(&mut self, i: usize, k: usize) -> (p: usize)
+    /// The position of the held span whose block is at `c` in the list: the base of the span before
+    /// it, or 0 when it is the first, and its base.
+    fn find(&self, c: usize) -> (r: (usize, usize))
+        requires
+            self.wf(),
+            self.spans().contains_key(c as int),
+        ensures
+            r.1 as int == self.span_base(c as int),
+            exists|j: int|
+                0 <= j < self.chain@.len() && #[trigger] self.chain@[j] == r.1 as int && r.0 as int == if j == 0 {
+                    0
+                } else {
+                    self.chain@[j - 1]
+                },
+    {
+        let ghost b = self.span_base(c as int);
+        proof {
+            self.lemma_block(c as int);
+            self.lemma_base(b);
+        }
+        let hp = self.head.unwrap();
+        let ghost jb = choose|i: int| 0 <= i < self.chain@.len() && self.chain@[i] == b;
+        let mut prev: usize = 0;
+        let mut cur: usize = hp.addr();
+        let ghost mut j: int = 0;
+        proof {
+            self.lemma_at(0);
+        }
+        while cur != c && cur + BLOCK_BYTES != c
+            invariant
+                self.wf(),
+                self.spans().contains_key(c as int),
+                b == self.span_base(c as int),
+                self.head == Some(hp),
+                0 <= j <= jb < self.chain@.len(),
+                self.chain@[jb] == b,
+                cur as int == self.chain@[j],
+                cur + BLOCK_BYTES <= usize::MAX,
+                prev as int == if j == 0 { 0 } else { self.chain@[j - 1] },
+            decreases jb - j,
+        {
+            proof {
+                self.lemma_at(j);
+                self.lemma_block(c as int);
+                assert(j != jb);
+            }
+            let ptr = node_at(hp, cur);
+            let tracked perm = self.nodes.borrow().tracked_borrow(cur as int);
+            let node = ptr_ref(ptr, Tracked(perm));
+            prev = cur;
+            cur = node.next;
+            proof {
+                j = j + 1;
+                self.lemma_at(j);
+            }
+        }
+        proof {
+            self.lemma_block(c as int);
+            if cur as int != b {
+                self.lemma_at(j);
+                self.lemma_at(jb);
+                self.lemma_blocks_of(cur as int);
+                assert(self.chain@[j] != self.chain@[jb]);
+            }
+        }
+        (prev, cur)
+    }
+
+    /// Cuts a run of order `k` in the first block of the held span at `b`, or in its second when
+    /// `hi`, from its free block of the smallest order at or above `k`.
+    fn alloc_in(&mut self, b: usize, hi: bool, k: usize) -> (p: usize)
         requires
             old(self).wf(),
             k <= BLOCK_ORDER,
-            i < SPANS,
-            old(self).bases@[i as int] != 0,
-            old(self).rec(i as int).fits(k as nat),
+            old(self).nodes@.contains_key(b as int),
+            old(self).half(b as int, hi).fits(k as nat),
         ensures
             final(self).wf(),
             final(self).spares() == old(self).spares(),
             final(self).spans().dom() == old(self).spans().dom(),
+            final(self).metas() == old(self).metas(),
             final(self).source() == old(self).source(),
-            final(self).meta() == old(self).meta(),
-            span_of(p as int) == old(self).bases@[i as int],
+            span_of(p as int) == if hi {
+                meta_page(b as int)
+            } else {
+                b as int
+            },
+            final(self).span_base(span_of(p as int)) == b,
             cut(old(self).used(), final(self).used(), p as int, k as nat),
-            final(self).source().unbacked(span_of(p as int), p as int, pages(k as nat) as nat),
+            final(self).source().unbacked(b as int, p as int, pages(k as nat) as nat),
             ({
                 let s = old(self).spans()[span_of(p as int)];
                 let h = page_of(p as int);
@@ -869,215 +1193,163 @@ impl<S: SpanSource> PageBuddy<S> {
         let ghost old_used = self.used();
         let ghost old_spans = self.spans();
         let ghost old_idle = self.idle_spans();
-        let m = self.meta.unwrap();
-        proof {
-            assert(self.meta_wf(m));
-            assert(self.source@.released_span(m@.addr as int).fits(m@.addr as int, 1));
-        }
-        let b = self.bases[i];
         let ghost bi = b as int;
+        let ghost mi = meta_page(bi);
         proof {
-            assert(held(self.source@, bi, self.rec(i as int).used()));
-            assert(self.source@.released_span(bi).fits(bi, 1));
-            assert(self.slot@[bi] == i);
+            self.lemma_base(bi);
+            self.lemma_blocks_of(bi);
+            lemma_meta(bi);
         }
-        let ghost u0 = self.rec(i as int).used();
-        let ptr = record(m, i);
-        let tracked mut perm = self.records.borrow_mut().tracked_remove(i as int);
-        let mut bb = ptr_mut_read(ptr, Tracked(&mut perm));
-        let ghost bb0 = bb;
-        let was_idle = bb.is_idle();
-        let h = bb.alloc(k).unwrap();
-        ptr_mut_write(ptr, Tracked(&mut perm), bb);
+        let hp = self.head.unwrap();
+        let ghost n0 = self.node(bi);
+        let ptr = node_at(hp, b);
+        let tracked mut perm = self.nodes.borrow_mut().tracked_remove(bi);
+        let mut node = ptr_mut_read(ptr, Tracked(&mut perm));
+        let was_idle = node.lo.is_idle() && node.hi.idle_from(1);
+        let h = if hi {
+            node.hi.alloc(k).unwrap()
+        } else {
+            node.lo.alloc(k).unwrap()
+        };
+        ptr_mut_write(ptr, Tracked(&mut perm), node);
         proof {
-            self.records.borrow_mut().tracked_insert(i as int, perm);
-        }
-        proof {
-            assert forall|c: int| #[trigger] self.slot@.contains_key(c) && c != bi implies self.slot@[c] != i as int by {
-                assert(self.bases@[self.slot@[c]] as int == c);
-            }
-            assert(self.used() =~= old_used.insert(bi, bb.used()));
-            assert(self.spans() =~= old_spans.insert(bi, bb.blocks()));
-            assert(bb.used().contains_key(h as int));
+            self.nodes.borrow_mut().tracked_insert(bi, perm);
             if was_idle {
-                assert(self.idle_spans() =~= old_idle.remove(bi));
-            } else {
-                assert(self.idle_spans() =~= old_idle);
+                assert(old_idle.contains(mi)) by {
+                    assert(n0.lo.used().dom() == Set::<int>::empty());
+                    assert(old(self).used()[mi] == n0.hi.used().remove(0));
+                    assert(n0.hi.used().remove(0).dom() =~= Set::<int>::empty()) by {
+                        assert forall|q: int| !n0.hi.used().remove(0).dom().contains(q) by {
+                            if q != 0 && n0.hi.used().dom().contains(q) {
+                                n0.hi.lemma_view();
+                                assert(placed(q, n0.hi.blocks()[q]));
+                            }
+                        }
+                    }
+                }
             }
         }
         if was_idle {
             self.idle = self.idle - 1;
         }
+        let ghost x = if hi { mi } else { bi };
+        let ghost bb0 = if hi { n0.hi } else { n0.lo };
+        let ghost u = old_used[x];
         proof {
             lemma_pages_pos(k as nat);
-            lemma_address(bi, h as int);
             bb0.lemma_view();
-            let u = old_used[bi];
-            assert(u == bb0.used());
+            assert(bb0.blocks().contains_key(h as int));
+            assert(placed(h as int, bb0.blocks()[h as int]));
+            lemma_pages(k as nat, bb0.blocks()[h as int].order);
+            if hi {
+                assert(n0.hi.used().contains_key(0));
+                assert(h != 0);
+                assert(node.hi.used().remove(0) =~= n0.hi.used().remove(0).insert(h as int, k as nat));
+            }
+            assert(u == if hi { n0.hi.used().remove(0) } else { n0.lo.used() });
+            assert(self.nodes@.dom() =~= old(self).nodes@.dom());
+            assert(self.spans() =~= old_spans.insert(x, if hi { node.hi.blocks() } else { node.lo.blocks() })) by {
+                assert forall|c: int| #[trigger] self.spans().contains_key(c) && c != x implies self.spans()[c] == old_spans[c] by {
+                    if c != bi && !self.nodes@.contains_key(c) && c - BLOCK_BYTES as int == bi {
+                        assert(c == mi && !hi);
+                        assert(node.hi == n0.hi);
+                    }
+                }
+            }
+            assert(self.used() =~= old_used.insert(x, u.insert(h as int, k as nat))) by {
+                assert forall|c: int| #[trigger] self.used().contains_key(c) && c != x implies self.used()[c] == old_used[c] by {
+                    if c != bi && !self.nodes@.contains_key(c) && c - BLOCK_BYTES as int == bi {
+                        assert(c == mi && !hi);
+                        assert(node.hi == n0.hi);
+                    }
+                }
+            }
+            // The span was idle exactly when both its blocks held no run; it holds one now.
+            assert(old(self).used()[mi] == n0.hi.used().remove(0));
+            if was_idle {
+                assert(n0.lo.used().dom() == Set::<int>::empty());
+                assert(n0.hi.used().remove(0).dom() =~= Set::<int>::empty()) by {
+                    assert forall|q: int| !n0.hi.used().remove(0).dom().contains(q) by {
+                        if q != 0 && n0.hi.used().dom().contains(q) {
+                            n0.hi.lemma_view();
+                            assert(placed(q, n0.hi.blocks()[q]));
+                        }
+                    }
+                }
+                assert(old_idle.contains(mi));
+            } else {
+                if n0.lo.used().dom() == Set::<int>::empty() {
+                    let q = choose|q: int| 1 <= q && #[trigger] n0.hi.used().dom().contains(q);
+                    assert(n0.hi.used().remove(0).dom().contains(q));
+                }
+                assert(!old_idle.contains(mi));
+            }
+            assert(self.used()[x].contains_key(h as int));
+            assert forall|m: int| #[trigger] self.metas@.contains(m) && m != mi implies (self.used()[m] == old_used[m]
+                && self.used()[m - BLOCK_BYTES as int] == old_used[m - BLOCK_BYTES as int]) by {
+                old(self).lemma_meta_block(m);
+                assert(m != bi);
+                assert(m - BLOCK_BYTES as int != mi);
+            }
+            if was_idle {
+                assert(self.idle_spans() =~= old_idle.remove(mi));
+            } else {
+                assert(self.idle_spans() =~= old_idle);
+            }
             assert forall|q: int| #[trigger] u.contains_key(q) implies h + pages(k as nat) <= q || q
                 + pages(u[q]) <= h by {
                 assert(bb0.blocks().contains_key(q) && !bb0.blocks()[q].free);
                 assert(q != h);
-                lemma_pages(k as nat, bb0.blocks()[h as int].order);
             }
-            assert(old_used.contains_key(bi));
-            assert(self.used() == old_used.insert(bi, u.insert(h as int, k as nat)));
-            assert forall|i2: int|
-                #![trigger self.bases@[i2]]
-                0 <= i2 < SPANS && self.bases@[i2] != 0 implies held(self.source@, self.bases@[i2] as int, self.rec(i2).used()) by {
-                if i2 == i {
-                    assert forall|a: int| #[trigger] self.source@.spans[bi].backed.contains(a) implies in_runs(bi, bb.used(), a) by {
-                        let q = choose|q: int| #[trigger] u0.contains_key(q) && run_pages(bi + q * PAGE_BYTES as int, pages(u0[q]) as nat).contains(a);
-                        assert(bb.used().contains_key(q) && bb.used()[q] == u0[q]);
+            assert(self.used() == old_used.insert(x, old_used[x].insert(h as int, k as nat)));
+            lemma_address(x, h as int);
+            assert forall|c: int| #[trigger] self.nodes@.contains_key(c) implies self.node_wf(c) by {
+                assert(old(self).node_wf(c));
+                if c == bi {
+                    let src = self.source@;
+                    assert forall|a: int| #[trigger] src.spans[bi].backed.contains(a) implies a == mi
+                        || in_runs(bi, node.lo.used(), a) || in_runs(mi, node.hi.used().remove(0), a) by {
+                        if in_runs(bi, n0.lo.used(), a) {
+                            let q = choose|q: int| #[trigger] n0.lo.used().contains_key(q) && run_pages(bi + q * PAGE_BYTES as int, pages(n0.lo.used()[q]) as nat).contains(a);
+                            assert(node.lo.used().contains_key(q) && node.lo.used()[q] == n0.lo.used()[q]);
+                        } else if in_runs(mi, n0.hi.used().remove(0), a) {
+                            let q = choose|q: int| #[trigger] n0.hi.used().remove(0).contains_key(q) && run_pages(mi + q * PAGE_BYTES as int, pages(n0.hi.used().remove(0)[q]) as nat).contains(a);
+                            assert(node.hi.used().remove(0).contains_key(q) && node.hi.used().remove(0)[q] == n0.hi.used().remove(0)[q]);
+                        }
                     }
                 }
             }
-            let run = run_pages(bi + h * PAGE_BYTES as int, pages(k as nat) as nat);
-            assert forall|a: int| #[trigger] self.source@.spans[bi].backed.contains(a) implies !run.contains(a) by {
-                let q = choose|q: int| #[trigger] u0.contains_key(q) && run_pages(bi + q * PAGE_BYTES as int, pages(u0[q]) as nat).contains(a);
-                lemma_pages_pos(u0[q]);
-                lemma_runs_apart(bi, h as int, pages(k as nat), q, pages(u0[q]));
+            assert forall|i: int| 0 <= i < self.chain@.len() implies #[trigger] self.linked(i) by {
+                assert(old(self).linked(i));
             }
-        }
-        b + h * PAGE_BYTES
-    }
-
-    /// Makes sure the metadata span is held: reserves it and backs its first page when no span is
-    /// held. Returns whether it did, or none when the source refused.
-    fn ensure_meta(&mut self) -> (r: Option<bool>)
-        requires
-            old(self).wf(),
-        ensures
-            final(self).table_wf(),
-            final(self).slot == old(self).slot,
-            final(self).bases == old(self).bases,
-            final(self).spares == old(self).spares,
-            final(self).idle == old(self).idle,
-            final(self).spans() == old(self).spans(),
-            final(self).used() == old(self).used(),
-            match r {
-                None => {
-                    &&& final(self).source() == old(self).source().refused()
-                    &&& final(self).meta is None
-                    &&& old(self).meta is None
-                },
-                Some(fresh) => {
-                    &&& final(self).meta is Some
-                    &&& fresh == (old(self).meta is None)
-                    &&& !fresh ==> *final(self) == *old(self)
-                    &&& fresh ==> {
-                        let ma = final(self).meta->Some_0@.addr as int;
-                        &&& old(self).slot@.dom() == Set::<int>::empty()
-                        &&& !old(self).source().spans.contains_key(ma)
-                        &&& final(self).source() == old(self).source().reserved(ma, 1).backed_run(ma, ma, 1)
+            // The run lies in its block, apart from the metadata page and from every backed run.
+            let run = run_pages(x + h * PAGE_BYTES as int, pages(k as nat) as nat);
+            lemma_in_block(x, h as int, pages(k as nat));
+            lemma_in_block(bi, 0, 1);
+            lemma_in_block(mi, 0, 1);
+            lemma_one_page(mi);
+            let src = self.source@;
+            assert forall|a: int| #[trigger] src.spans[bi].backed.contains(a) implies !run.contains(a) by {
+                if a == mi {
+                    if !hi {
+                        assert(x + h * PAGE_BYTES as int + pages(k as nat) * PAGE_BYTES as int <= mi);
                     }
-                },
-            },
-    {
-        if self.meta.is_some() {
-            return Some(false);
-        }
-        let ghost start = self.source@;
-        let ghost old_spans = self.spans();
-        let ghost old_used = self.used();
-        let base = match self.source.reserve(1) {
-            None => return None,
-            Some(base) => base,
-        };
-        let ma = base.addr();
-        proof {
-            lemma_address(ma as int, 0);
-            assert(!start.spans.contains_key(ma as int)) by {
-                if start.spans.contains_key(ma as int) {
-                    assert(start.apart(ma as int, 1, ma as int));
+                } else if in_runs(bi, n0.lo.used(), a) {
+                    lemma_run_page(bi, n0.lo, n0.lo.used(), a, h as int, k as nat);
+                } else {
+                    assert(in_runs(mi, n0.hi.used().remove(0), a));
+                    lemma_run_page(mi, n0.hi, n0.hi.used().remove(0), a, h as int, k as nat);
                 }
             }
+            assert(old_spans[x] == bb0.blocks());
         }
-        let perm = match self.source.back(Ghost(ma as int), ma, 1) {
-            None => {
-                self.source.release_span(ma);
-                proof {
-                    assert(self.source@.spans =~= start.spans);
-                    assert(self.source@ == start.refused());
-                }
-                return None;
-            },
-            Some(perm) => perm,
-        };
-        proof {
-            lemma_layout();
-        }
-        let tracked raw = perm.get();
-        let tracked recs = carve(raw, ma as int, 0);
-        self.records = Tracked(recs);
-        self.meta = Some(base);
-        proof {
-            assert(self.slot@.dom() =~= Set::<int>::empty());
-            assert(self.spans() =~= old_spans);
-            assert(self.used() =~= old_used);
-            let s = self.source@;
-            assert(s.spans[ma as int].backed =~= run_pages(ma as int, 1));
-            assert(self.meta_wf(base));
-        }
-        Some(true)
-    }
-
-    /// Gives back the metadata span, when no run span is held.
-    fn drop_meta(&mut self)
-        requires
-            old(self).table_wf(),
-            old(self).meta is Some,
-            old(self).slot@.dom() == Set::<int>::empty(),
-        ensures
-            final(self).wf(),
-            final(self).meta is None,
-            final(self).slot == old(self).slot,
-            final(self).bases == old(self).bases,
-            final(self).spares == old(self).spares,
-            final(self).idle == old(self).idle,
-            final(self).spans() == old(self).spans(),
-            final(self).used() == old(self).used(),
-            ({
-                let ma = old(self).meta->Some_0@.addr as int;
-                final(self).source() == old(self).source().released_run(ma, ma, 1).released_span(ma)
-            }),
-    {
-        let ghost old_spans = self.spans();
-        let ghost old_used = self.used();
-        let m = self.meta.unwrap();
-        let ma = m.addr();
-        let ghost prov = m@.provenance;
-        proof {
-            assert(self.meta_wf(m));
-            assert(self.source@.released_span(ma as int).fits(ma as int, 1));
-            lemma_address(ma as int, 0);
-            lemma_layout();
-            assert forall|i: int| 0 <= i < SPANS implies #[trigger] self.bases@[i] == 0 by {
-                if self.bases@[i] != 0 {
-                    assert(self.slot@.contains_key(self.bases@[i] as int));
-                }
-            }
-        }
-        let tracked all = self.records.borrow_mut().tracked_remove_keys(Set::range(0, SPANS as int));
-        proof {
-            assert(all.dom() =~= Set::range(0, SPANS as int));
-            assert(forall|j: int| 0 <= j < SPANS ==> #[trigger] all[j] == old(self).records@[j]);
-        }
-        let tracked raw = gather(all, ma as int, prov, 0);
-        self.source.release(Ghost(ma as int), ma, 1, Tracked(raw));
-        proof {
-            assert(self.source@.spans[ma as int].backed =~= Set::<int>::empty());
-        }
-        self.source.release_span(ma);
-        self.meta = None;
-        proof {
-            assert(self.spans() =~= old_spans);
-            assert(self.used() =~= old_used);
-        }
+        let xb = if hi { b + BLOCK_BYTES } else { b };
+        xb + h * PAGE_BYTES
     }
 
     /// Cuts a run of order `k` from a new span, when no held span has a free block of order `k` or
-    /// more.
+    /// more: reserves the span, backs its metadata page, cuts the page from its second block and the
+    /// run from its first, and puts its node at the head of the list.
     fn alloc_new(&mut self, k: usize) -> (r: Result<usize, Refused>)
         requires
             old(self).wf(),
@@ -1087,27 +1359,22 @@ impl<S: SpanSource> PageBuddy<S> {
             final(self).wf(),
             final(self).spares() == old(self).spares(),
             match r {
-                Err(Refused::Full) => {
-                    &&& final(self).spans() == old(self).spans()
-                    &&& final(self).used() == old(self).used()
-                    &&& final(self).source() == old(self).source()
-                    &&& final(self).meta() == old(self).meta()
-                    &&& old(self).spans().dom().len() == SPANS
-                },
                 Err(Refused::Source) => {
                     &&& final(self).spans() == old(self).spans()
                     &&& final(self).used() == old(self).used()
+                    &&& final(self).metas() == old(self).metas()
                     &&& final(self).source() == old(self).source().refused()
-                    &&& final(self).meta() == old(self).meta()
-                    &&& old(self).spans().dom().len() < SPANS
                 },
                 Ok(p) => {
-                    &&& !old(self).spans().contains_key(span_of(p as int))
-                    &&& old(self).spans().dom().len() < SPANS
-                    &&& final(self).spans().dom() == old(self).spans().dom().insert(span_of(p as int))
-                    &&& cut(old(self).used(), final(self).used(), p as int, k as nat)
-                    &&& final(self).source().unbacked(span_of(p as int), p as int, pages(k as nat) as nat)
-                    &&& took_span(old(self).source(), old(self).meta(), final(self).source(), final(self).meta(), span_of(p as int))
+                    let b = span_of(p as int);
+                    &&& !old(self).spans().contains_key(b)
+                    &&& !old(self).spans().contains_key(meta_page(b))
+                    &&& !final(self).metas().contains(b)
+                    &&& final(self).spans().dom() == old(self).spans().dom().insert(b).insert(meta_page(b))
+                    &&& final(self).metas() == old(self).metas().insert(meta_page(b))
+                    &&& cut(fresh(old(self).used(), b), final(self).used(), p as int, k as nat)
+                    &&& final(self).source().unbacked(b, p as int, pages(k as nat) as nat)
+                    &&& took_span(old(self).source(), final(self).source(), b)
                 },
             },
     {
@@ -1115,81 +1382,198 @@ impl<S: SpanSource> PageBuddy<S> {
         let ghost old_spans = self.spans();
         let ghost old_idle = self.idle_spans();
         let ghost start = self.source@;
-        assert(old_spans.dom() == self.slot@.dom());
-        let i = match self.free_slot() {
-            None => return Err(Refused::Full),
-            Some(i) => i,
-        };
-        let fresh = match self.ensure_meta() {
-            None => return Err(Refused::Source),
-            Some(fresh) => fresh,
-        };
-        let ghost before = self.source@;
-        let base = match self.source.reserve(1) {
+        let base = match self.source.reserve(SPAN_BLOCKS) {
             None => {
-                if fresh {
-                    self.drop_meta();
-                    proof {
-                        assert(self.source@.spans =~= start.spans);
-                        assert(self.source@ == start.refused());
-                    }
+                proof {
+                    self.lemma_refused(old(self));
                 }
                 return Err(Refused::Source);
             },
             Some(base) => base,
         };
         let b = base.addr();
-        let m = self.meta.unwrap();
+        let ghost bi = b as int;
+        let ghost mi = meta_page(bi);
         proof {
-            assert(self.meta_wf(m));
-            assert(self.source@.released_span(m@.addr as int).fits(m@.addr as int, 1));
-            assert(!before.spans.contains_key(b as int)) by {
-                if before.spans.contains_key(b as int) {
-                    assert(before.apart(b as int, 1, b as int));
+            assert(!start.spans.contains_key(bi)) by {
+                if start.spans.contains_key(bi) {
+                    assert(start.apart(bi, SPAN_BLOCKS as nat, bi));
                 }
             }
-            assert(!self.slot@.contains_key(b as int)) by {
-                if self.slot@.contains_key(b as int) {
-                    let j = self.slot@[b as int];
-                    assert(self.bases@[j] as int == b as int);
+            // The new span is apart from every held one, so neither of its blocks is in the view.
+            assert forall|c: int| #[trigger] old(self).nodes@.contains_key(c) implies c + 2 * BLOCK_BYTES as int <= bi || bi + 2 * BLOCK_BYTES as int <= c by {
+                old(self).lemma_base(c);
+                assert(start.spans.contains_key(c));
+                assert(start.apart(bi, SPAN_BLOCKS as nat, c));
+            }
+            assert(!old_spans.contains_key(bi)) by {
+                if old(self).metas@.contains(bi) {
+                    assert(old(self).nodes@.contains_key(bi - BLOCK_BYTES as int));
                 }
             }
+            assert(!old_spans.contains_key(mi)) by {
+                if old(self).metas@.contains(mi) {
+                    assert(old(self).nodes@.contains_key(mi - BLOCK_BYTES as int));
+                }
+            }
+            lemma_meta(bi);
         }
-        let mut bb = BlockBuddy::new();
+        let m = b + BLOCK_BYTES;
+        let perm = match self.source.back(Ghost(bi), m, 1) {
+            None => {
+                self.source.release_span(b);
+                proof {
+                    assert(self.source@.spans =~= start.spans);
+                    assert(self.source@ == start.refused());
+                    self.lemma_refused(old(self));
+                }
+                return Err(Refused::Source);
+            },
+            Some(perm) => perm,
+        };
+        let tracked raw = perm.get();
+        let ghost first = Set::range(m as int, m as int + size_of::<Node>() as int);
+        let tracked (node_raw, rest) = raw.split(first);
+        let tracked mut typed = node_raw.into_typed::<Node>(m);
+        let ptr = base.with_addr(m) as *mut Node;
+        let next = match self.head {
+            None => 0,
+            Some(h) => h.addr(),
+        };
+        let mut lo = BlockBuddy::new();
+        let mut hi = BlockBuddy::new();
         proof {
             lemma_block_pages();
-            assert(bb.blocks().contains_key(0) && bb.blocks()[0].free);
+            assert(hi.blocks().contains_key(0) && hi.blocks()[0].free);
+            assert(lo.blocks().contains_key(0) && lo.blocks()[0].free);
         }
-        let ghost fresh_used = bb.used();
-        assert(fresh_used =~= Map::<int, nat>::empty());
-        let h = bb.alloc(k).unwrap();
-        let ptr = record(m, i);
-        let tracked mut perm = self.records.borrow_mut().tracked_remove(i as int);
-        ptr_mut_write(ptr, Tracked(&mut perm), bb);
+        let mp = hi.alloc(0).unwrap();
         proof {
-            self.records.borrow_mut().tracked_insert(i as int, perm);
+            assert(mp == 0);
+            assert(hi.used() == Map::<int, nat>::empty().insert(0, 0));
         }
-        self.bases[i] = b;
-        self.slot = Ghost(self.slot@.insert(b as int, i as int));
+        let h = lo.alloc(k).unwrap();
+        ptr_mut_write(ptr, Tracked(&mut typed), Node { next, lo, hi });
         proof {
-            let bi = b as int;
-            lemma_address(bi, h as int);
-            assert forall|c: int| #[trigger] self.slot@.contains_key(c) && c != bi implies self.slot@[c] != i as int by {
-                assert(self.bases@[self.slot@[c]] as int == c);
+            self.nodes.borrow_mut().tracked_insert(bi, typed);
+            self.rests.borrow_mut().tracked_insert(bi, rest);
+        }
+        let ghost old_chain = self.chain@;
+        self.chain = Ghost(seq![bi] + old_chain);
+        self.metas = Ghost(self.metas@.insert(mi));
+        self.head = Some(base);
+        let ghost x = bi;
+        proof {
+            let src = self.source@;
+            lemma_one_page(mi);
+            assert(src.spans[bi].backed =~= Set::<int>::empty().insert(mi));
+            assert(lo.used() =~= Map::<int, nat>::empty().insert(h as int, k as nat));
+            assert(hi.used().remove(0) =~= Map::<int, nat>::empty());
+            assert forall|i: int| 0 <= i < old_chain.len() implies old_chain[i] != bi by {
+                old(self).lemma_at(i);
             }
-            assert(self.used() =~= old_used.insert(bi, bb.used()));
-            assert(self.spans().dom() =~= old_spans.dom().insert(bi));
+            let chain = self.chain@;
+            assert forall|i: int| 0 <= i < old_chain.len() implies #[trigger] chain[i + 1] == old_chain[i] by {}
+            assert(chain[0] == bi);
+            assert(chain.no_duplicates()) by {
+                assert forall|i: int, i2: int| 0 <= i < chain.len() && 0 <= i2 < chain.len() && i != i2 implies chain[i] != chain[i2] by {
+                    if i > 0 && i2 > 0 {
+                        assert(chain[i] == old_chain[i - 1]);
+                        assert(chain[i2] == old_chain[i2 - 1]);
+                    } else if i > 0 {
+                        assert(chain[i] == old_chain[i - 1]);
+                    } else {
+                        assert(chain[i2] == old_chain[i2 - 1]);
+                    }
+                }
+            }
+            assert forall|c: int| #![trigger self.nodes@.contains_key(c)] #![trigger self.chain@.contains(c)] self.nodes@.contains_key(c) <==> self.chain@.contains(c) by {
+                if self.chain@.contains(c) {
+                    let i = choose|i: int| 0 <= i < chain.len() && chain[i] == c;
+                    if i > 0 {
+                        assert(chain[i] == old_chain[i - 1]);
+                        assert(old_chain.contains(c));
+                        assert(old(self).nodes@.contains_key(c));
+                    }
+                }
+                if self.nodes@.contains_key(c) && c != bi {
+                    assert(old(self).nodes@.contains_key(c));
+                    assert(old_chain.contains(c));
+                    let i = choose|i: int| 0 <= i < old_chain.len() && old_chain[i] == c;
+                    assert(chain[i + 1] == c);
+                }
+            }
+            assert forall|c: int| #[trigger] self.metas@.contains(c) implies self.nodes@.contains_key(c - BLOCK_BYTES as int) by {
+                if c != mi {
+                    assert(old(self).metas@.contains(c));
+                }
+            }
+            assert forall|c: int| #[trigger] self.nodes@.contains_key(c) implies self.node_wf(c) by {
+                if c != bi {
+                    assert(old(self).node_wf(c));
+                    assert(start.spans.contains_key(c));
+                    assert(src.spans[c] == start.spans[c]);
+                } else {
+                    assert(self.rests@[bi].dom() =~= Set::range(mi + size_of::<Node>(), mi + PAGE_BYTES));
+                }
+            }
+            assert forall|i: int| 0 <= i < self.chain@.len() implies #[trigger] self.linked(i) by {
+                if i > 0 {
+                    assert(old(self).linked(i - 1));
+                    assert(chain[i] == old_chain[i - 1]);
+                    if i + 1 < chain.len() {
+                        assert(chain[i + 1] == old_chain[i]);
+                    }
+                } else if old_chain.len() > 0 {
+                    assert(chain[1] == old_chain[0]);
+                }
+            }
+            // The view gains the new span's two blocks, one holding the run.
+            assert(!old(self).metas@.contains(bi));
+            assert(!old(self).metas@.contains(mi));
+            assert(!old(self).nodes@.contains_key(mi));
+            assert(!old(self).nodes@.contains_key(bi - BLOCK_BYTES as int));
+            assert(self.spans().dom() =~= old_spans.dom().insert(bi).insert(mi));
+            assert forall|c: int| #[trigger] old_spans.contains_key(c) implies self.spans()[c] == old_spans[c] && self.used()[c] == old_used[c] by {
+                old(self).lemma_block(c);
+                assert(c != bi && c != mi);
+                if !self.nodes@.contains_key(c) {
+                    assert(c - BLOCK_BYTES as int != bi);
+                }
+            }
+            let fr = fresh(old_used, bi);
+            assert(self.used() =~= fr.insert(x, fr[x].insert(h as int, k as nat))) by {
+                assert(self.used()[bi] == lo.used());
+                assert(self.used()[mi] == hi.used().remove(0));
+            }
+            assert(self.used()[x].contains_key(h as int));
+            assert forall|c: int| #[trigger] self.metas@.contains(c) && c != mi implies (self.used()[c] == old_used[c]
+                && self.used()[c - BLOCK_BYTES as int] == old_used[c - BLOCK_BYTES as int]) by {
+                old(self).lemma_meta_block(c);
+                old(self).lemma_blocks_of(c - BLOCK_BYTES as int);
+            }
+            assert(!self.idle_spans().contains(mi));
             assert(self.idle_spans() =~= old_idle);
-            assert(self.meta_wf(m));
-            assert(self.slot@.dom().contains(bi));
+            lemma_meta(bi);
+            assert(mi % BLOCK_BYTES as int == 0);
+            lemma_address(x, h as int);
+            lemma_pages_pos(k as nat);
+            assert(placed(h as int, Block { order: k as nat, free: false }));
+            let run = run_pages(x + h * PAGE_BYTES as int, pages(k as nat) as nat);
+            lemma_in_block(x, h as int, pages(k as nat));
+            assert(!run.contains(mi)) by {
+                assert(x + h * PAGE_BYTES as int + pages(k as nat) * PAGE_BYTES as int <= mi);
+            }
+            assert(src.spans[bi].backed.disjoint(run));
+            assert(self.span_base(x) == bi);
+            assert(took_span(start, src, bi));
         }
         Ok(b + h * PAGE_BYTES)
     }
 
-    /// Cuts a run of order `k`: from the held span with a free block of the smallest order at or
-    /// above `k`, or from a new span when none has one. Refuses, and changes no held span, when no
-    /// held span has one and SPANS spans are held (`Full`) or the source refused in this call, which
-    /// its view counts (`Source`).
+    /// Cuts a run of order `k`: from the block with a free block of the smallest order at or above
+    /// `k`, or from a new span when no held span has one. Refuses, and changes no held span, only
+    /// when no held span has one and the source refused in this call, which its view counts.
     pub fn alloc_run(&mut self, k: usize) -> (r: Result<usize, Refused>)
         requires
             old(self).wf(),
@@ -1198,61 +1582,54 @@ impl<S: SpanSource> PageBuddy<S> {
             final(self).wf(),
             final(self).spares() == old(self).spares(),
             match r {
-                Err(Refused::Full) => {
-                    &&& !old(self).fits(k as nat)
-                    &&& old(self).spans().dom().len() == SPANS
-                    &&& final(self).spans() == old(self).spans()
-                    &&& final(self).used() == old(self).used()
-                    &&& final(self).source() == old(self).source()
-                    &&& final(self).meta() == old(self).meta()
-                },
                 Err(Refused::Source) => {
                     &&& !old(self).fits(k as nat)
-                    &&& old(self).spans().dom().len() < SPANS
                     &&& final(self).spans() == old(self).spans()
                     &&& final(self).used() == old(self).used()
+                    &&& final(self).metas() == old(self).metas()
                     &&& final(self).source() == old(self).source().refused()
-                    &&& final(self).meta() == old(self).meta()
                 },
                 Ok(p) => {
-                    &&& cut(old(self).used(), final(self).used(), p as int, k as nat)
-                    &&& final(self).source().unbacked(span_of(p as int), p as int, pages(k as nat) as nat)
-                    &&& old(self).fits(k as nat) || old(self).spans().dom().len() < SPANS
+                    let b = final(self).span_base(span_of(p as int));
+                    &&& final(self).source().unbacked(b, p as int, pages(k as nat) as nat)
                     &&& if old(self).spans().contains_key(span_of(p as int)) {
                         &&& best(old(self).spans(), span_of(p as int), page_of(p as int), k as nat)
+                        &&& cut(old(self).used(), final(self).used(), p as int, k as nat)
+                        &&& final(self).spans().dom() == old(self).spans().dom()
+                        &&& final(self).metas() == old(self).metas()
                         &&& final(self).source() == old(self).source()
-                        &&& final(self).meta() == old(self).meta()
                     } else {
                         &&& !old(self).fits(k as nat)
-                        &&& took_span(old(self).source(), old(self).meta(), final(self).source(), final(self).meta(), span_of(p as int))
+                        &&& span_of(p as int) == b
+                        &&& !old(self).spans().contains_key(b)
+                        &&& !old(self).spans().contains_key(meta_page(b))
+                        &&& !final(self).metas().contains(b)
+                        &&& final(self).spans().dom() == old(self).spans().dom().insert(b).insert(meta_page(b))
+                        &&& final(self).metas() == old(self).metas().insert(meta_page(b))
+                        &&& cut(fresh(old(self).used(), b), final(self).used(), p as int, k as nat)
+                        &&& took_span(old(self).source(), final(self).source(), b)
                     }
                 },
             },
     {
         let ghost old_spans = self.spans();
         match self.best_span(k) {
-            Some((i, o)) => {
+            Some((b, hi, o)) => {
+                let ghost x = if hi { meta_page(b as int) } else { b as int };
                 proof {
-                    let b = self.bases@[i as int] as int;
-                    assert(self.slot@[b] == i as int);
-                    assert(old_spans.contains_key(b));
-                    assert(old_spans[b] == self.rec(i as int).blocks());
+                    self.lemma_blocks_of(b as int);
                 }
-                let p = self.alloc_in(i, k);
+                let p = self.alloc_in(b, hi, k);
                 proof {
-                    let b = span_of(p as int);
                     let h = page_of(p as int);
-                    let s = old_spans[b];
-                    assert(old_spans.contains_key(b));
+                    let s = old_spans[x];
+                    assert(span_of(p as int) == x);
+                    assert(s.contains_key(h) && s[h].free && s[h].order >= k);
                     let h0 = choose|h0: int|
-                        #[trigger] old(self).rec(i as int).blocks().contains_key(h0)
-                            && old(self).rec(i as int).blocks()[h0] == (Block { order: o as nat, free: true });
+                        #[trigger] s.contains_key(h0) && s[h0] == (Block { order: o as nat, free: true });
                     assert(s.contains_key(h0));
                     assert(s[h].order <= o);
-                    assert(s.contains_key(h) && s[h].free && s[h].order >= k);
-                    assert(old(self).fits(k as nat)) by {
-                        assert(old_spans[b].contains_key(h));
-                    }
+                    assert(old_spans.contains_key(x));
                 }
                 Ok(p)
             },
@@ -1261,13 +1638,14 @@ impl<S: SpanSource> PageBuddy<S> {
     }
 
     /// Takes back the run at `p`, none of whose pages is backed. A span left with no run is given
-    /// back to the source, unless fewer than the spares are idle, when it stays as a spare.
+    /// back to the source with its metadata page, unless fewer than the spares are idle, when it
+    /// stays as a spare.
     pub fn free_run(&mut self, p: usize)
         requires
             old(self).wf(),
             old(self).holds(p as int),
             old(self).source().unbacked(
-                span_of(p as int),
+                old(self).span_base(span_of(p as int)),
                 p as int,
                 pages(old(self).used()[span_of(p as int)][page_of(p as int)]) as nat,
             ),
@@ -1275,86 +1653,311 @@ impl<S: SpanSource> PageBuddy<S> {
             final(self).wf(),
             final(self).spares() == old(self).spares(),
             ({
-                let b = span_of(p as int);
-                let u = old(self).used()[b].remove(page_of(p as int));
-                if u.dom() != Set::<int>::empty() || old(self).idle_spans().len() < old(self).spares() {
-                    &&& final(self).used() == old(self).used().insert(b, u)
+                let c = span_of(p as int);
+                let b = old(self).span_base(c);
+                let after = old(self).used().insert(c, old(self).used()[c].remove(page_of(p as int)));
+                if after[b].dom() != Set::<int>::empty() || after[meta_page(b)].dom() != Set::<int>::empty()
+                    || old(self).idle_spans().len() < old(self).spares() {
+                    &&& final(self).used() == after
+                    &&& final(self).spans().dom() == old(self).spans().dom()
+                    &&& final(self).metas() == old(self).metas()
                     &&& final(self).source() == old(self).source()
-                    &&& final(self).meta() == old(self).meta()
                 } else {
-                    &&& final(self).used() == old(self).used().remove(b)
-                    &&& gave_span(old(self).source(), old(self).meta(), final(self).source(), final(self).meta(), b, old(self).used().remove(b).dom() == Set::<int>::empty())
+                    &&& final(self).used() == old(self).used().remove(b).remove(meta_page(b))
+                    &&& final(self).spans().dom() == old(self).spans().dom().remove(b).remove(meta_page(b))
+                    &&& final(self).metas() == old(self).metas().remove(meta_page(b))
+                    &&& final(self).source() == old(self).source().released_span(b)
                 }
             }),
     {
         let ghost old_used = self.used();
+        let ghost old_spans = self.spans();
         let ghost old_idle = self.idle_spans();
-        let b = p - p % BLOCK_BYTES;
+        let ghost start = self.source@;
+        let ghost old_chain = self.chain@;
+        let c = p - p % BLOCK_BYTES;
         let h = (p % BLOCK_BYTES) / PAGE_BYTES;
+        let ghost ci = c as int;
+        proof {
+            assert(old_spans.contains_key(ci));
+            self.lemma_block(ci);
+            lemma_head(p as int);
+        }
+        let (prev, b) = self.find(c);
         let ghost bi = b as int;
-        let i = self.find(b);
-        let m = self.meta.unwrap();
+        let ghost mi = meta_page(bi);
+        let ghost j = choose|j: int|
+            0 <= j < old_chain.len() && #[trigger] old_chain[j] == bi && prev as int == if j == 0 {
+                0
+            } else {
+                old_chain[j - 1]
+            };
         proof {
-            assert(self.meta_wf(m));
-            assert(self.source@.released_span(m@.addr as int).fits(m@.addr as int, 1));
-            assert(held(self.source@, bi, self.rec(i as int).used()));
-        }
-        let ptr = record(m, i);
-        let tracked mut perm = self.records.borrow_mut().tracked_remove(i as int);
-        let mut bb = ptr_mut_read(ptr, Tracked(&mut perm));
-        proof {
-            assert(old_used[bi] == bb.used());
-        }
-        bb.free(h);
-        let idle = bb.is_idle();
-        proof {
-            assert forall|c: int| #[trigger] self.slot@.contains_key(c) && c != bi implies self.slot@[c] != i as int by {
-                assert(self.bases@[self.slot@[c]] as int == c);
+            self.lemma_at(j);
+            if j > 0 {
+                self.lemma_at(j - 1);
             }
-            assert(!old_idle.contains(bi));
+            if j + 1 < old_chain.len() {
+                self.lemma_at(j + 1);
+            }
+            self.lemma_blocks_of(bi);
+            lemma_meta(bi);
+        }
+        let hp = self.head.unwrap();
+        let ghost n0 = self.node(bi);
+        let ghost u0 = old_used[ci];
+        let ptr = node_at(hp, b);
+        let tracked mut perm = self.nodes.borrow_mut().tracked_remove(bi);
+        let mut node = ptr_mut_read(ptr, Tracked(&mut perm));
+        let in_hi = c != b;
+        proof {
+            if in_hi {
+                assert(ci == mi);
+                assert(u0 == n0.hi.used().remove(0));
+                assert(h != 0);
+                assert(n0.hi.used().contains_key(h as int));
+            } else {
+                assert(u0 == n0.lo.used());
+            }
+        }
+        if in_hi {
+            node.hi.free(h);
+        } else {
+            node.lo.free(h);
+        }
+        let idle = node.lo.is_idle() && node.hi.idle_from(1);
+        let ghost after = old_used.insert(ci, u0.remove(h as int));
+        proof {
+            if in_hi {
+                assert(node.hi.used().remove(0) =~= u0.remove(h as int));
+                assert(node.hi.used().contains_key(0) && node.hi.used()[0] == 0);
+                assert(node.lo.used() == n0.lo.used());
+            } else {
+                assert(node.lo.used() == u0.remove(h as int));
+                assert(node.hi.used() == n0.hi.used());
+            }
+            assert(after[bi] == node.lo.used());
+            assert(after[mi] == node.hi.used().remove(0));
+            node.hi.lemma_view();
+            assert(idle == (after[bi].dom() == Set::<int>::empty() && after[mi].dom() == Set::<int>::empty())) by {
+                if node.hi.used().remove(0).dom() == Set::<int>::empty() {
+                    assert forall|q: int| 1 <= q implies !(#[trigger] node.hi.used().dom().contains(q)) by {
+                        assert(!node.hi.used().remove(0).dom().contains(q));
+                    }
+                }
+                if forall|q: int| 1 <= q ==> !(#[trigger] node.hi.used().dom().contains(q)) {
+                    assert forall|q: int| !(#[trigger] node.hi.used().remove(0).dom().contains(q)) by {
+                        if node.hi.used().remove(0).dom().contains(q) {
+                            assert(node.hi.used().dom().contains(q));
+                            assert(placed(q, node.hi.blocks()[q]));
+                        }
+                    }
+                    assert(node.hi.used().remove(0).dom() =~= Set::<int>::empty());
+                }
+            }
+            assert(!old_idle.contains(mi)) by {
+                assert(u0.contains_key(h as int));
+            }
+            // Every backed page but the metadata page is still in a run: the freed run held none.
+            let run = run_pages(p as int, pages(u0[h as int]) as nat);
+            assert forall|a: int| #[trigger] start.spans[bi].backed.contains(a) implies a == mi
+                || in_runs(bi, node.lo.used(), a) || in_runs(mi, node.hi.used().remove(0), a) by {
+                if in_runs(bi, n0.lo.used(), a) {
+                    let q = choose|q: int| #[trigger] n0.lo.used().contains_key(q) && run_pages(bi + q * PAGE_BYTES as int, pages(n0.lo.used()[q]) as nat).contains(a);
+                    if !in_hi && q == h as int {
+                        assert(run.contains(a));
+                    }
+                    assert(node.lo.used().contains_key(q) && node.lo.used()[q] == n0.lo.used()[q]);
+                } else if in_runs(mi, n0.hi.used().remove(0), a) {
+                    let q = choose|q: int| #[trigger] n0.hi.used().remove(0).contains_key(q) && run_pages(mi + q * PAGE_BYTES as int, pages(n0.hi.used().remove(0)[q]) as nat).contains(a);
+                    if in_hi && q == h as int {
+                        assert(run.contains(a));
+                    }
+                    assert(node.hi.used().remove(0).contains_key(q) && node.hi.used().remove(0)[q] == n0.hi.used().remove(0)[q]);
+                }
+            }
+            assert forall|m: int| #[trigger] self.metas@.contains(m) && m != mi implies (after[m] == old_used[m]
+                && after[m - BLOCK_BYTES as int] == old_used[m - BLOCK_BYTES as int]) by {
+                old(self).lemma_meta_block(m);
+                assert(m != bi);
+                assert(m - BLOCK_BYTES as int != mi);
+            }
         }
         if idle && self.idle >= self.spares {
+            let next = node.next;
+            if prev == 0 {
+                if next == 0 {
+                    self.head = None;
+                } else {
+                    self.head = Some(hp.with_addr(next));
+                }
+            } else {
+                proof {
+                    assert(prev as int != bi);
+                }
+                let pptr = node_at(hp, prev);
+                let tracked mut pperm = self.nodes.borrow_mut().tracked_remove(prev as int);
+                let mut pnode = ptr_mut_read(pptr, Tracked(&mut pperm));
+                pnode.next = next;
+                ptr_mut_write(pptr, Tracked(&mut pperm), pnode);
+                proof {
+                    self.nodes.borrow_mut().tracked_insert(prev as int, pperm);
+                }
+            }
+            self.chain = Ghost(old_chain.remove(j));
+            self.metas = Ghost(self.metas@.remove(mi));
+            let m = b + BLOCK_BYTES;
+            let tracked rest = self.rests.borrow_mut().tracked_remove(bi);
+            let tracked node_raw = perm.into_raw();
+            let tracked raw = node_raw.join(rest);
             proof {
-                self.records.borrow_mut().tracked_insert(i as int, perm);
+                lemma_one_page(mi);
+                assert(raw.dom() =~= Set::range(mi, mi + PAGE_BYTES));
+                assert(start.spans[bi].backed.contains(mi));
+            }
+            self.source.release(Ghost(bi), m, 1, Tracked(raw));
+            proof {
+                assert(node.lo.used().dom() =~= Set::<int>::empty());
+                assert(node.hi.used().remove(0).dom() =~= Set::<int>::empty());
+                assert forall|a: int| #[trigger] start.spans[bi].backed.contains(a) implies a == mi by {
+                    if a != mi {
+                        if in_runs(bi, node.lo.used(), a) {
+                            let q = choose|q: int| #[trigger] node.lo.used().contains_key(q) && run_pages(bi + q * PAGE_BYTES as int, pages(node.lo.used()[q]) as nat).contains(a);
+                            assert(node.lo.used().dom().contains(q));
+                        } else {
+                            let q = choose|q: int| #[trigger] node.hi.used().remove(0).contains_key(q) && run_pages(mi + q * PAGE_BYTES as int, pages(node.hi.used().remove(0)[q]) as nat).contains(a);
+                            assert(node.hi.used().remove(0).dom().contains(q));
+                        }
+                    }
+                }
+                assert(self.source@.spans[bi].backed =~= Set::<int>::empty());
             }
             self.source.release_span(b);
-            self.bases[i] = 0;
-            self.slot = Ghost(self.slot@.remove(bi));
             proof {
-                assert(self.used() =~= old_used.remove(bi));
-                assert(self.idle_spans() =~= old_idle);
-                assert(bb.used().dom() =~= Set::<int>::empty());
-                let ma = m@.addr as int;
-                assert(ma != bi);
-                assert forall|i2: int|
-                    #![trigger self.bases@[i2]]
-                    0 <= i2 < SPANS && self.bases@[i2] != 0 implies held(self.source@, self.bases@[i2] as int, self.rec(i2).used()) by {
-                    assert(self.bases@[i2] as int != bi);
+                let src = self.source@;
+                assert(src.spans =~= start.spans.remove(bi));
+                assert(src == start.released_span(bi));
+                let chain = self.chain@;
+                let n = old_chain.len();
+                assert(chain.len() == n - 1);
+                assert forall|i: int| 0 <= i < n - 1 implies #[trigger] chain[i] == if i < j { old_chain[i] } else { old_chain[i + 1] } by {}
+                assert(chain.no_duplicates()) by {
+                    assert forall|i: int, i2: int| 0 <= i < chain.len() && 0 <= i2 < chain.len() && i != i2 implies chain[i] != chain[i2] by {
+                        let oi = if i < j { i } else { i + 1 };
+                        let oi2 = if i2 < j { i2 } else { i2 + 1 };
+                        assert(chain[i] == old_chain[oi]);
+                        assert(chain[i2] == old_chain[oi2]);
+                    }
                 }
-                assert(self.meta_wf(m));
-            }
-            if self.none_held() {
-                self.drop_meta();
+                assert forall|x: int| #![trigger self.nodes@.contains_key(x)] #![trigger self.chain@.contains(x)] self.nodes@.contains_key(x) <==> self.chain@.contains(x) by {
+                    if self.chain@.contains(x) {
+                        let i = choose|i: int| 0 <= i < chain.len() && chain[i] == x;
+                        let oi = if i < j { i } else { i + 1 };
+                        assert(old_chain[oi] == x);
+                        assert(oi != j);
+                        assert(old_chain.contains(x));
+                        assert(old(self).nodes@.contains_key(x));
+                    }
+                    if self.nodes@.contains_key(x) {
+                        assert(old(self).nodes@.contains_key(x));
+                        assert(old_chain.contains(x));
+                        let oi = choose|oi: int| 0 <= oi < n && old_chain[oi] == x;
+                        assert(oi != j);
+                        let i = if oi < j { oi } else { oi - 1 };
+                        assert(chain[i] == x);
+                    }
+                }
+                assert forall|x: int| #[trigger] self.nodes@.contains_key(x) implies self.metas@.contains(meta_page(x)) by {
+                    assert(old(self).metas@.contains(meta_page(x)));
+                }
+                assert forall|x: int| #[trigger] self.metas@.contains(x) implies self.nodes@.contains_key(x - BLOCK_BYTES as int) by {
+                    assert(old(self).nodes@.contains_key(x - BLOCK_BYTES as int));
+                }
+                assert forall|x: int| #[trigger] self.nodes@.contains_key(x) implies self.node_wf(x) by {
+                    assert(old(self).node_wf(x));
+                    assert(start.spans[x] == src.spans[x]);
+                }
+                assert forall|i: int| 0 <= i < chain.len() implies #[trigger] self.linked(i) by {
+                    if i + 1 == j {
+                        assert(old(self).linked(j));
+                        if j + 1 < n {
+                            assert(chain[j] == old_chain[j + 1]);
+                        }
+                    } else if i < j {
+                        assert(old(self).linked(i));
+                        assert(prev as int == old_chain[j - 1]);
+                        assert(old_chain[i] != old_chain[j - 1]);
+                        assert(old_chain[i] != prev as int);
+                    } else {
+                        assert(old(self).linked(i + 1));
+                        if j > 0 {
+                            assert(prev as int == old_chain[j - 1]);
+                            assert(old_chain[i + 1] != old_chain[j - 1]);
+                        } else {
+                            old(self).lemma_at(i + 1);
+                        }
+                        assert(old_chain[i + 1] != prev as int);
+                        if i + 1 < chain.len() {
+                            assert(chain[i + 1] == old_chain[i + 2]);
+                        }
+                    }
+                }
+                if j == 0 {
+                    assert(old(self).linked(0));
+                    if n > 1 {
+                        assert(chain[0] == old_chain[1]);
+                    }
+                }
+                assert(self.spans().dom() =~= old_spans.dom().remove(bi).remove(mi));
+                assert(self.used() =~= old_used.remove(bi).remove(mi)) by {
+                    assert forall|x: int| #[trigger] self.used().contains_key(x) implies self.used()[x] == old_used[x] by {
+                        old(self).lemma_block(x);
+                    }
+                }
+                assert(self.idle_spans() =~= old_idle) by {
+                    assert forall|x: int| #[trigger] self.metas@.contains(x) implies (self.used()[x] == old_used[x]
+                        && self.used()[x - BLOCK_BYTES as int] == old_used[x - BLOCK_BYTES as int]) by {
+                        old(self).lemma_meta_block(x);
+                        old(self).lemma_blocks_of(x - BLOCK_BYTES as int);
+                    }
+                }
             }
         } else {
-            ptr_mut_write(ptr, Tracked(&mut perm), bb);
+            ptr_mut_write(ptr, Tracked(&mut perm), node);
             proof {
-                self.records.borrow_mut().tracked_insert(i as int, perm);
-                assert(self.used() =~= old_used.insert(bi, bb.used()));
-                if idle {
-                    assert(self.idle_spans() =~= old_idle.insert(bi));
-                } else {
-                    assert(self.idle_spans() =~= old_idle);
-                }
+                self.nodes.borrow_mut().tracked_insert(bi, perm);
             }
             if idle {
                 self.idle = self.idle + 1;
             }
+            proof {
+                assert(self.nodes@.dom() =~= old(self).nodes@.dom());
+                assert(self.used() =~= after) by {
+                    assert forall|x: int| #[trigger] self.used().contains_key(x) && x != ci implies self.used()[x] == old_used[x] by {
+                        if x != bi && !self.nodes@.contains_key(x) && x - BLOCK_BYTES as int == bi {
+                            assert(x == mi && !in_hi);
+                            assert(node.hi == n0.hi);
+                        }
+                    }
+                }
+                assert(self.spans().dom() =~= old_spans.dom());
+                if idle {
+                    assert(self.idle_spans() =~= old_idle.insert(mi));
+                } else {
+                    assert(self.idle_spans() =~= old_idle);
+                }
+                assert forall|x: int| #[trigger] self.nodes@.contains_key(x) implies self.node_wf(x) by {
+                    assert(old(self).node_wf(x));
+                }
+                assert forall|i: int| 0 <= i < self.chain@.len() implies #[trigger] self.linked(i) by {
+                    assert(old(self).linked(i));
+                }
+            }
         }
     }
 
-    /// The allocated run of order `k` at `p` lies in its span, a held span other than the metadata
-    /// span, with `p` its page `page_of(p)`.
+    /// The allocated run of order `k` at `p` lies in its block, a block of a held span, with `p` its
+    /// page `page_of(p)`, apart from the span's metadata page.
     proof fn lemma_run(&self, p: int, k: nat)
         requires
             self.wf(),
@@ -1362,109 +1965,123 @@ impl<S: SpanSource> PageBuddy<S> {
             self.used()[span_of(p)][page_of(p)] == k,
         ensures
             k <= BLOCK_ORDER,
-            self.meta is Some,
-            self.slot@.contains_key(span_of(p)),
-            span_of(p) != self.meta->Some_0@.addr,
-            self.meta_wf(self.meta->Some_0),
+            self.nodes@.contains_key(self.span_base(span_of(p))),
+            self.node_wf(self.span_base(span_of(p))),
+            self.head is Some,
+            self.span_base(span_of(p)) + span_bytes(SPAN_BLOCKS as nat) <= usize::MAX as int + 1,
             p == span_of(p) + page_of(p) * PAGE_BYTES,
-            self.source@.runs_in(span_of(p), p, pages(k) as nat),
-            self.rec(self.slot@[span_of(p)]).used() == self.used()[span_of(p)],
-            self.bases@[self.slot@[span_of(p)]] as int == span_of(p),
+            self.source@.runs_in(self.span_base(span_of(p)), p, pages(k) as nat),
+            !run_pages(p, pages(k) as nat).contains(meta_page(self.span_base(span_of(p)))),
+            in_runs(span_of(p), self.used()[span_of(p)], p),
+            forall|a: int| #[trigger] run_pages(p, pages(k) as nat).contains(a) ==> in_runs(span_of(p), self.used()[span_of(p)], a),
     {
-        let b = span_of(p);
+        let c = span_of(p);
         let h = page_of(p);
         let pb = PAGE_BYTES as int;
-        assert(self.used().dom() =~= self.slot@.dom());
-        let i = self.slot@[b];
-        assert(self.bases@[i] as int == b);
-        let m = self.meta->Some_0;
-        assert(self.meta_wf(m));
-        let r = self.rec(i);
+        assert(self.used().dom() =~= self.spans().dom()) by {
+            self.lemma_view();
+        }
+        self.lemma_block(c);
+        let b = self.span_base(c);
+        self.lemma_base(b);
+        self.lemma_blocks_of(b);
+        lemma_meta(b);
+        let r = if c == b {
+            self.node(b).lo
+        } else {
+            self.node(b).hi
+        };
         r.lemma_view();
-        lemma_used_of(r);
+        assert(r.used().contains_key(h));
         assert(r.blocks().contains_key(h) && !r.blocks()[h].free && r.blocks()[h].order == k);
         assert(placed(h, r.blocks()[h]));
         lemma_pages_pos(k);
         lemma_head(p);
-        assert(held(self.source@, b, self.rec(i).used()));
-        assert(p + pages(k) * pb <= b + BLOCK_BYTES as int) by (nonlinear_arith)
-            requires
-                p == b + h * pb,
-                h + pages(k) <= BLOCK_PAGES as int,
-                BLOCK_BYTES as int == pb * BLOCK_PAGES as int,
-                pb > 0,
-        ;
+        lemma_in_block(c, h, pages(k));
+        if c != b {
+            assert(h != 0);
+        } else {
+            assert(p + pages(k) * pb <= meta_page(b));
+        }
+        assert(self.used()[c].contains_key(h));
+        assert(run_pages(c + h * pb, pages(k) as nat).contains(p));
+        assert forall|a: int| #[trigger] run_pages(p, pages(k) as nat).contains(a) implies in_runs(c, self.used()[c], a) by {
+            assert(self.used()[c].contains_key(h));
+        }
     }
 
     /// Backs the pages of the allocated run of order `k` at `p`, none of them backed, through the
     /// source, and returns a pointer to the run with the permission to exactly its bytes; or
-    /// refuses, backs nothing and changes nothing.
+    /// refuses, backs nothing and changes nothing but the source's count of refusals.
     pub fn back_run(&mut self, p: usize, k: usize) -> (r: Option<(*mut u8, Tracked<PointsToRaw>)>)
         requires
             old(self).wf(),
             old(self).holds(p as int),
             old(self).used()[span_of(p as int)][page_of(p as int)] == k,
-            old(self).source().unbacked(span_of(p as int), p as int, pages(k as nat) as nat),
+            old(self).source().unbacked(old(self).span_base(span_of(p as int)), p as int, pages(k as nat) as nat),
         ensures
             final(self).wf(),
             final(self).spares() == old(self).spares(),
             final(self).spans() == old(self).spans(),
             final(self).used() == old(self).used(),
-            final(self).meta() == old(self).meta(),
+            final(self).metas() == old(self).metas(),
             match r {
-                None => {
-                    &&& final(self).source() == old(self).source().refused()
-                },
+                None => final(self).source() == old(self).source().refused(),
                 Some((ptr, perm)) => {
                     &&& ptr@.addr == p
                     &&& ptr@.provenance == old(self).source().provenance
                     &&& perm@.is_range(p as int, pages(k as nat) * PAGE_BYTES)
                     &&& perm@.provenance() == old(self).source().provenance
                     &&& final(self).source() == old(self).source().backed_run(
-                        span_of(p as int),
+                        old(self).span_base(span_of(p as int)),
                         p as int,
                         pages(k as nat) as nat,
                     )
                 },
             },
     {
-        let ghost bi = span_of(p as int);
+        let ghost bi = self.span_base(span_of(p as int));
+        let ghost ci = span_of(p as int);
         let ghost run = run_pages(p as int, pages(k as nat) as nat);
         proof {
             self.lemma_run(p as int, k as nat);
+            self.lemma_blocks_of(bi);
         }
-        let m = self.meta.unwrap();
+        let hp = self.head.unwrap();
         let n = order_pages(k);
         let ghost start = self.source@;
         let perm = match self.source.back(Ghost(bi), p, n) {
-            None => return None,
+            None => {
+                proof {
+                    self.lemma_refused(old(self));
+                }
+                return None;
+            },
             Some(perm) => perm,
         };
         proof {
-            let ma = m@.addr as int;
-            assert(self.source@.spans[ma] == start.spans[ma]);
-            assert forall|i2: int|
-                #![trigger self.bases@[i2]]
-                0 <= i2 < SPANS && self.bases@[i2] != 0 implies held(
-                self.source@,
-                self.bases@[i2] as int,
-                self.rec(i2).used(),
-            ) by {
-                let c = self.bases@[i2] as int;
-                assert(held(start, c, self.rec(i2).used()));
+            assert(self.spans() =~= old(self).spans());
+            assert(self.used() =~= old(self).used());
+            assert forall|c: int| #[trigger] self.nodes@.contains_key(c) implies self.node_wf(c) by {
+                assert(old(self).node_wf(c));
                 if c == bi {
-                    assert(self.slot@[c] == i2);
-                    let u = self.rec(i2).used();
-                    assert forall|a: int| #[trigger] self.source@.spans[c].backed.contains(a) implies in_runs(c, u, a) by {
+                    let lo = self.node(c).lo.used();
+                    let hi = self.node(c).hi.used().remove(0);
+                    assert forall|a: int| #[trigger] self.source@.spans[c].backed.contains(a) implies a
+                        == meta_page(c) || in_runs(c, lo, a) || in_runs(meta_page(c), hi, a) by {
                         if run.contains(a) {
-                            assert(u.contains_key(page_of(p as int)));
+                            assert(in_runs(ci, self.used()[ci], a));
                         }
                     }
+                } else {
+                    assert(self.source@.spans[c] == start.spans[c]);
                 }
             }
-            assert(self.meta_wf(m));
+            assert forall|i: int| 0 <= i < self.chain@.len() implies #[trigger] self.linked(i) by {
+                assert(old(self).linked(i));
+            }
         }
-        Some((m.with_addr(p), perm))
+        Some((hp.with_addr(p), perm))
     }
 
     /// Gives back through the source the pages of the allocated run of order `k` at `p`, every one
@@ -1474,7 +2091,7 @@ impl<S: SpanSource> PageBuddy<S> {
             old(self).wf(),
             old(self).holds(p as int),
             old(self).used()[span_of(p as int)][page_of(p as int)] == k,
-            old(self).source().backed(span_of(p as int), p as int, pages(k as nat) as nat),
+            old(self).source().backed(old(self).span_base(span_of(p as int)), p as int, pages(k as nat) as nat),
             perm@.is_range(p as int, pages(k as nat) * PAGE_BYTES),
             perm@.provenance() == old(self).source().provenance,
         ensures
@@ -1482,39 +2099,41 @@ impl<S: SpanSource> PageBuddy<S> {
             final(self).spares() == old(self).spares(),
             final(self).spans() == old(self).spans(),
             final(self).used() == old(self).used(),
-            final(self).meta() == old(self).meta(),
+            final(self).metas() == old(self).metas(),
             final(self).source() == old(self).source().released_run(
-                span_of(p as int),
+                old(self).span_base(span_of(p as int)),
                 p as int,
                 pages(k as nat) as nat,
             ),
     {
-        let ghost bi = span_of(p as int);
+        let ghost bi = self.span_base(span_of(p as int));
+        let ghost run = run_pages(p as int, pages(k as nat) as nat);
         proof {
             self.lemma_run(p as int, k as nat);
         }
-        let m = self.meta.unwrap();
         let n = order_pages(k);
         let ghost start = self.source@;
         self.source.release(Ghost(bi), p, n, perm);
         proof {
-            let ma = m@.addr as int;
-            assert(self.source@.spans[ma] == start.spans[ma]);
-            assert forall|i2: int|
-                #![trigger self.bases@[i2]]
-                0 <= i2 < SPANS && self.bases@[i2] != 0 implies held(
-                self.source@,
-                self.bases@[i2] as int,
-                self.rec(i2).used(),
-            ) by {
-                let c = self.bases@[i2] as int;
-                assert(held(start, c, self.rec(i2).used()));
-                let u = self.rec(i2).used();
-                assert forall|a: int| #[trigger] self.source@.spans[c].backed.contains(a) implies in_runs(c, u, a) by {
-                    assert(start.spans[c].backed.contains(a));
+            assert(self.spans() =~= old(self).spans());
+            assert(self.used() =~= old(self).used());
+            assert forall|c: int| #[trigger] self.nodes@.contains_key(c) implies self.node_wf(c) by {
+                assert(old(self).node_wf(c));
+                if c == bi {
+                    let lo = self.node(c).lo.used();
+                    let hi = self.node(c).hi.used().remove(0);
+                    assert(!run.contains(meta_page(c)));
+                    assert forall|a: int| #[trigger] self.source@.spans[c].backed.contains(a) implies a
+                        == meta_page(c) || in_runs(c, lo, a) || in_runs(meta_page(c), hi, a) by {
+                        assert(start.spans[c].backed.contains(a));
+                    }
+                } else {
+                    assert(self.source@.spans[c] == start.spans[c]);
                 }
             }
-            assert(self.meta_wf(m));
+            assert forall|i: int| 0 <= i < self.chain@.len() implies #[trigger] self.linked(i) by {
+                assert(old(self).linked(i));
+            }
         }
     }
 }

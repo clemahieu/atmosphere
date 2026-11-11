@@ -2,7 +2,7 @@
 
 # Design decisions
 
-33 records: 33 active, 0 superseded.
+34 records: 34 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -70,6 +70,9 @@ in `revisit if` what would make it worth reopening.
 - **[one-lock-bounded-steps](./one-lock-bounded-steps/DECISION.md)** (2026-11-06): All of the Kernel value is under one lock with IF clear from entry to exit; every operation does a bounded amount of work and long work returns again with progress in an object, so the invariant holds at every step boundary and other cores interleave only there; per-CPU state outside the lock is only stacks, GDT and TSS, and only core c writes its own current thread.
   - *confidence:* The non-preemptible rule is in the tree since the interrupt change that made it true; the per-CPU split is stated in kernel/verified/capability/kernel.rs; the step counter bounds the capability list's walks, the flush's IPI loop, the acknowledgement check, the stale-epoch record, a table page's cut, a mapping's and a device binding's stale note, the IOMMU invalidate, probe, print, a zeroing step, a small block's typing and freeing, revoke, destroy, the device table, each arm of a reclaim, each retype, and each operation dispatch runs, not yet a whole entry; the budget's value is unmeasured.
   - *revisit if:* The bounded-step budget measured on this kernel gives a lock hold time a workload cannot tolerate, which is the case for a smaller node rather than for preemption.
+- **[page-buddy-metadata-in-the-span](./page-buddy-metadata-in-the-span/DECISION.md)** (2026-11-11): aheap's page buddy reserves spans of two blocks, gives each block a block buddy of its own, and keeps both buddies' records and the link to the next held span in the span's metadata page, the first page of its second block, allocated there as a run of order 0; held spans form one list, so the only refusal is the source's and every page of a held span is a free block, a run or that page.
+  - *confidence:* Proven in the tree, aheap/src/page.rs: lemma_view states the partition of both blocks and where each metadata page lies, alloc_run refuses only when the source did, and aheap/src/witness.rs holds PAGE_BYTES / BLOCK_PAGES + 1 whole blocks at once. The two-block span is a judgement about the cost of address space against the cost of a metadata page that lives apart from what it describes.
+  - *revisit if:* A reservation from the source becomes costly enough that the second block of each span is a measured waste, a caller needs runs larger than one block, or the node outgrows one page.
 - **[process-holds-capabilities](./process-holds-capabilities/DECISION.md)** (2026-11-10): Capabilities belong to a process, not a thread; its table is a root of 512 pointers in the process object and leaves of 127 slots retyped on demand; no capability names a table and no table holds a table, so the capability graph has no cycles and lookup is constant time. A process is an order-3 block of its table's root, its record and its address space; a thread holds no slots: it is an order-1 block of a node page for its bindings and a page for its record and XSAVE area.
   - *confidence:* A structural choice; the no-cycles property it buys is what rules out the delete-cascade problem Nevill's thesis describes, and the table invariant is proven in kernel/verified/capability/table.rs.
   - *revisit if:* Threads in one process need distinct authority, or a process needs more slots than the two levels give, or a table must be passed as a capability, or a supported core's XSAVE area outgrows the 3072 bytes a thread's record page leaves it.
@@ -121,6 +124,7 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `device`: device-binding-under-the-space-capability
 - `gate`: cut-over-on-a-branch, land-without-regating, license-stated-in-every-source-file, no-gate-for-what-no-step-reads
 - `glue`: machine-glue-below-the-kernel
+- `heap`: page-buddy-metadata-in-the-span
 - `interrupt`: machine-glue-below-the-kernel
 - `iommu`: device-binding-under-the-space-capability, machine-glue-below-the-kernel
 - `ipc`: fan-in-over-private-rings, ipc-with-reply-object, latest-value-by-three-slot-exchange, syscall-abi-in-registers
@@ -129,7 +133,7 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `license`: license-stated-in-every-source-file
 - `lifetime`: sharing-by-derive, teardown-driven-by-retype
 - `lock`: flush-without-waiting, multicore-kernel-shape, one-lock-bounded-steps
-- `memory`: address-spaces-as-objects, capability-names-a-block, flush-without-waiting, syscall-abi-in-registers, teardown-driven-by-retype, test-guest-memory, untyped-memory
+- `memory`: address-spaces-as-objects, capability-names-a-block, flush-without-waiting, page-buddy-metadata-in-the-span, syscall-abi-in-registers, teardown-driven-by-retype, test-guest-memory, untyped-memory
 - `multicore`: flush-without-waiting, multicore-kernel-shape, one-kernel-instance, one-lock-bounded-steps
 - `network`: network-stack-proven-at-tier-1
 - `pagetable`: arch-module
@@ -147,5 +151,5 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `test`: test-guest-memory
 - `thread`: process-holds-capabilities, thread-bound-at-retype
 - `tiers`: divider-proven-by-invariant, network-stack-proven-at-tier-1, trust-boundary
-- `verified`: arch-module, cut-over-on-a-branch, device-binding-under-the-space-capability, fan-in-over-private-rings, flush-without-waiting, latest-value-by-three-slot-exchange, network-stack-proven-at-tier-1, one-lock-bounded-steps, revoke-by-depth-first-list, theorem-over-reach, thread-bound-at-retype
+- `verified`: arch-module, cut-over-on-a-branch, device-binding-under-the-space-capability, fan-in-over-private-rings, flush-without-waiting, latest-value-by-three-slot-exchange, network-stack-proven-at-tier-1, one-lock-bounded-steps, page-buddy-metadata-in-the-span, revoke-by-depth-first-list, theorem-over-reach, thread-bound-at-retype
 - `virtualization`: vmm-over-svm

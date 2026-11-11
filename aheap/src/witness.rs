@@ -12,9 +12,11 @@
 //! and one of order BLOCK_ORDER, frees both, and ends holding no span, with the source's view the one
 //! it started with. A refusal stops the sequence after freeing what it cut, and the page buddy refuses
 //! only when the source did, so a source that refused nothing during the sequence gave both runs. Its
-//! second witness, with
-//! one spare, cuts a run, frees it so its span stays as the spare, and cuts again, which is shown to
-//! succeed whatever the source does.
+//! second witness, with one spare, cuts a run, frees it so its span stays as the spare, and cuts
+//! again, which is shown to succeed whatever the source does. Its third, with no spares, cuts MANY
+//! whole blocks, each in a span of its own and all held at once, more spans than one page of block
+//! buddy records would hold, until the source refuses; frees them all and ends with the source's view
+//! the one it started with, so a source that refused nothing gave all MANY.
 //!
 //! The backed run's witness, over any well-formed source and with no spares, cuts a run of order 0,
 //! backs it, writes a byte through the permission and reads it again, releases the run's page and
@@ -146,29 +148,52 @@ pub fn witness_block_buddy() -> (b: BlockBuddy)
 
 verus! {
 
-/// Reserving a span and giving it back leaves the view as it was.
-proof fn lemma_reserved_released(s: SourceView, b: int)
+/// Taking a run span and giving it back leaves the view as it was.
+proof fn lemma_took_released(s: SourceView, b: int)
     requires
         !s.spans.contains_key(b),
     ensures
-        s.reserved(b, 1).released_span(b) == s,
+        s.reserved(b, SPAN_BLOCKS as nat).backed_run(b, meta_page(b), 1).released_span(b) == s,
+        s.refused().reserved(b, SPAN_BLOCKS as nat).backed_run(b, meta_page(b), 1) == s.reserved(
+            b,
+            SPAN_BLOCKS as nat,
+        ).backed_run(b, meta_page(b), 1).refused(),
 {
-    assert(s.reserved(b, 1).released_span(b).spans =~= s.spans);
+    assert(s.reserved(b, SPAN_BLOCKS as nat).backed_run(b, meta_page(b), 1).released_span(b).spans =~= s.spans);
 }
 
-/// Taking the metadata span, backing its page and taking a run span, then giving them back in the
-/// order free_run does, leaves the view as it was.
-proof fn lemma_meta_round_trip(s: SourceView, m: int, b: int)
+/// Freeing a run cut in a block that was held already gives back the runs from before the cut, and
+/// the cut run is the one at its head with its order.
+proof fn lemma_uncut(before: Map<int, Map<int, nat>>, after: Map<int, Map<int, nat>>, p: int, k: nat)
     requires
-        !s.spans.contains_key(m),
-        !s.spans.contains_key(b),
-        m != b,
+        cut(before, after, p, k),
+        before.contains_key(span_of(p)),
     ensures
-        s.reserved(m, 1).backed_run(m, m, 1).reserved(b, 1).released_span(b).released_run(m, m, 1).released_span(m) == s,
+        after.contains_key(span_of(p)),
+        after[span_of(p)].contains_key(page_of(p)),
+        after[span_of(p)][page_of(p)] == k,
+        !before[span_of(p)].contains_key(page_of(p)),
+        after.insert(span_of(p), after[span_of(p)].remove(page_of(p))) == before,
 {
-    let t = s.reserved(m, 1).backed_run(m, m, 1);
-    lemma_reserved_released(t, b);
-    assert(t.released_run(m, m, 1).released_span(m).spans =~= s.spans);
+    let b = span_of(p);
+    let h = page_of(p);
+    lemma_pages_pos(k);
+    if before[b].contains_key(h) {
+        lemma_pages_pos(before[b][h]);
+    }
+    assert(after[b].remove(h) =~= before[b]);
+    assert(after.insert(b, after[b].remove(h)) =~= before);
+}
+
+/// A run of order BLOCK_ORDER is at page 0 of its block.
+proof fn lemma_whole_at_0(h: int)
+    requires
+        placed(h, Block { order: BLOCK_ORDER as nat, free: false }),
+    ensures
+        h == 0,
+        pages(BLOCK_ORDER as nat) == BLOCK_PAGES as int,
+{
+    lemma_block_pages();
 }
 
 /// Cuts a small run and a whole block from a page buddy over `src` keeping no spare, frees both, and
@@ -181,7 +206,6 @@ pub fn witness_page_buddy<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, bool))
     ensures
         r.0.wf(),
         r.0.spans().dom() == Set::<int>::empty(),
-        r.0.meta() is None,
         r.0.source() == if r.1 {
             src@
         } else {
@@ -194,77 +218,368 @@ pub fn witness_page_buddy<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, bool))
     assert(pb.spans().dom() =~= Set::<int>::empty());
     let small = match pb.alloc_run(0) {
         Err(_) => {
-            proof {
-                pb.lemma_view();
-            }
             return (pb, false);
         },
         Ok(p) => p,
     };
     let ghost b1 = span_of(small as int);
+    let ghost m1 = meta_page(b1);
     let ghost h1 = page_of(small as int);
-    let ghost one = Map::<int, nat>::empty().insert(h1, 0nat);
-    assert(pb.used() == Map::<int, Map<int, nat>>::empty().insert(b1, one));
-    assert(one.remove(h1) =~= Map::<int, nat>::empty());
+    let ghost fr1 = fresh(Map::<int, Map<int, nat>>::empty(), b1);
     let ghost u1 = pb.used();
     let ghost s1 = pb.source();
-    let ghost m1 = pb.meta();
     let ghost spans1 = pb.spans();
     proof {
+        lemma_uncut(fr1, u1, small as int, 0);
+        lemma_took_released(s0, b1);
+        assert(u1[b1].contains_key(h1));
+        assert(u1[m1] == Map::<int, nat>::empty());
+        assert(spans1.dom() =~= set![b1, m1]);
         pb.lemma_view();
-        let ma = m1->Some_0;
-        assert(s1 == s0.reserved(ma, 1).backed_run(ma, ma, 1).reserved(b1, 1));
-        assert(spans1.dom() =~= set![b1]);
-        assert(u1.remove(b1).dom() =~= Set::<int>::empty());
-        lemma_meta_round_trip(s0, ma, b1);
-        lemma_meta_round_trip(s0.refused(), ma, b1);
-        assert(s1.refused() == s0.refused().reserved(ma, 1).backed_run(ma, ma, 1).reserved(b1, 1));
-        assert(spans1.dom().len() == 1);
+        lemma_pages_pos(0);
     }
     let whole = match pb.alloc_run(BLOCK_ORDER) {
         Err(_) => {
+            assert(pb.used() == u1);
             pb.free_run(small);
-            assert(pb.used().dom() =~= Set::<int>::empty());
             proof {
+                assert(fr1[b1].dom() =~= Set::<int>::empty());
+                assert(pb.used().dom() =~= Set::<int>::empty());
                 pb.lemma_view();
             }
             return (pb, false);
         },
         Ok(p) => p,
     };
-    let ghost b2 = span_of(whole as int);
+    let ghost c2 = span_of(whole as int);
     let ghost h2 = page_of(whole as int);
     proof {
-        lemma_block_pages();
-        if b2 == b1 {
-            assert(u1[b2].contains_key(h1));
-            assert(placed(h1, Block { order: 0, free: false }));
-            assert(h2 + pages(BLOCK_ORDER as nat) <= h1 || h1 + pages(0) <= h2);
+        lemma_whole_at_0(h2);
+        if spans1.contains_key(c2) {
+            // The only held blocks are the small run's, with no room for a whole block, and the
+            // metadata page's, whose page 0 is allocated.
+            if c2 == b1 {
+                assert(h2 + pages(BLOCK_ORDER as nat) <= h1 || h1 + pages(u1[b1][h1]) <= h2);
+            } else {
+                assert(c2 == m1);
+                assert(pb.metas().contains(m1));
+            }
         }
     }
+    let ghost b2 = c2;
+    let ghost m2 = meta_page(b2);
     let ghost u2 = pb.used();
-    let ghost whole_run = Map::<int, nat>::empty().insert(h2, BLOCK_ORDER as nat);
-    assert(u2 == Map::<int, Map<int, nat>>::empty().insert(b1, one).insert(b2, whole_run));
-    assert(whole_run.remove(h2) =~= Map::<int, nat>::empty());
+    let ghost s2 = pb.source();
     proof {
-        assert(b2 != b1);
         assert(!spans1.contains_key(b2));
-        assert(pb.source() == s1.reserved(b2, 1));
-        assert(pb.meta() == m1);
-        lemma_reserved_released(s1, b2);
-        assert(u2.remove(b2).contains_key(b1));
-        assert(u2.remove(b2).dom() != Set::<int>::empty());
+        assert(b2 != b1 && b2 != m1);
+        lemma_uncut(fresh(u1, b2), u2, whole as int, BLOCK_ORDER as nat);
+        lemma_took_released(s1, b2);
+        assert(u2[b1] == u1[b1]);
+        assert(u2[b2].remove(h2) =~= Map::<int, nat>::empty());
+        assert(u2[m2] == Map::<int, nat>::empty());
+        pb.lemma_view();
     }
     pb.free_run(whole);
-    assert(pb.used() =~= Map::<int, Map<int, nat>>::empty().insert(b1, one));
-    assert(pb.source() == s1);
-    assert(pb.used().remove(b1).dom() =~= Set::<int>::empty());
-    pb.free_run(small);
-    assert(pb.used().dom() =~= Set::<int>::empty());
     proof {
+        assert(pb.used() =~= u1);
+        assert(pb.source() == s1);
+        assert(pb.span_base(span_of(small as int)) == b1);
+    }
+    pb.free_run(small);
+    proof {
+        assert(fr1[b1].dom() =~= Set::<int>::empty());
+        assert(pb.used().dom() =~= Set::<int>::empty());
         pb.lemma_view();
     }
     (pb, true)
+}
+
+/// The whole blocks the many-spans witness cuts: more than one page of block buddy records would
+/// hold, so no table of records in a page bounds the spans the page buddy holds.
+pub const MANY: usize = PAGE_BYTES / BLOCK_PAGES + 1;
+
+/// The source's view `s` is `start`, with one more refusal when `refused`, and with a span for each
+/// first block `used` holds, every span of `start` as it was.
+spec fn added(start: SourceView, s: SourceView, used: Map<int, Map<int, nat>>, metas: Set<int>, refused: bool) -> bool {
+    &&& s.provenance == start.provenance
+    &&& s.refusals == start.refusals + if refused { 1nat } else { 0nat }
+    &&& forall|c: int|
+        #![trigger s.spans.contains_key(c)]
+        #![trigger start.spans.contains_key(c)]
+        #![trigger used.contains_key(c)]
+        s.spans.contains_key(c) <==> start.spans.contains_key(c) || (used.contains_key(c) && !metas.contains(c))
+    &&& forall|c: int| #[trigger]
+        start.spans.contains_key(c) ==> !(used.contains_key(c) && !metas.contains(c)) && s.spans[c] == start.spans[c]
+}
+
+/// Cuts runs of a whole block from a page buddy over `src` keeping no spare, each in a span of its
+/// own and all held at once, until MANY are held or the source refuses; frees them and returns the
+/// page buddy, which then holds no span and has given every span back to the source, with how many
+/// it cut: MANY exactly when the source refused nothing, and otherwise fewer, the source having
+/// refused once.
+pub fn witness_page_buddy_many<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, usize))
+    requires
+        src@.wf(),
+    ensures
+        r.0.wf(),
+        r.0.spans().dom() == Set::<int>::empty(),
+        r.1 <= MANY,
+        r.0.source() == if r.1 == MANY {
+            src@
+        } else {
+            src@.refused()
+        },
+{
+    let ghost start = src@;
+    let mut pb = PageBuddy::new(src, 0);
+    let ghost whole = Map::<int, nat>::empty().insert(0, BLOCK_ORDER as nat);
+    let mut runs = [0usize; MANY];
+    let mut n: usize = 0;
+    let mut go = true;
+    proof {
+        lemma_block_pages();
+        assert(pb.used().dom() =~= Set::<int>::empty());
+        assert(whole.remove(0) =~= Map::<int, nat>::empty());
+    }
+    while go && n < MANY
+        invariant
+            pb.wf(),
+            pb.spares() == 0,
+            n <= MANY,
+            go || n < MANY,
+            pages(BLOCK_ORDER as nat) == BLOCK_PAGES as int,
+            whole == Map::<int, nat>::empty().insert(0, BLOCK_ORDER as nat),
+            whole.remove(0) == Map::<int, nat>::empty(),
+            added(start, pb.source(), pb.used(), pb.metas(), !go),
+            forall|j: int|
+                0 <= j < n ==> {
+                    &&& (#[trigger] runs@[j]) as int % BLOCK_BYTES as int == 0
+                    &&& pb.used().contains_key(runs@[j] as int)
+                    &&& pb.used()[runs@[j] as int] == whole
+                    &&& !pb.metas().contains(runs@[j] as int)
+                    &&& pb.source().unbacked(runs@[j] as int, runs@[j] as int, BLOCK_PAGES as nat)
+                },
+            forall|i: int, j: int| 0 <= i < j < n ==> runs@[i] != runs@[j],
+            forall|b: int|
+                #[trigger] pb.used().contains_key(b) ==> pb.metas().contains(b) || exists|j: int|
+                    0 <= j < n && runs@[j] as int == b,
+            forall|m: int| #[trigger] pb.metas().contains(m) ==> pb.used()[m] == Map::<int, nat>::empty(),
+        decreases MANY - n + if go { 1int } else { 0int },
+    {
+        let ghost u0 = pb.used();
+        let ghost s0 = pb.source();
+        let ghost metas0 = pb.metas();
+        let ghost spans0 = pb.spans();
+        proof {
+            pb.lemma_view();
+        }
+        match pb.alloc_run(BLOCK_ORDER) {
+            Err(e) => {
+                assert(e is Source);
+                go = false;
+            },
+            Ok(p) => {
+                proof {
+                    let c = span_of(p as int);
+                    let h = page_of(p as int);
+                    lemma_whole_at_0(h);
+                    lemma_head(p as int);
+                    if spans0.contains_key(c) {
+                        // A held first block holds a whole run already, and a held second block's
+                        // page 0 is its metadata page.
+                        if metas0.contains(c) {
+                            assert(spans0[c][0] == (Block { order: 0, free: false }));
+                        } else {
+                            let j = choose|j: int| 0 <= j < n && runs@[j] as int == c;
+                            assert(u0[c] == whole);
+                            assert(u0[c].contains_key(0));
+                            assert(h + pages(BLOCK_ORDER as nat) <= 0 || 0 + pages(u0[c][0]) <= h);
+                        }
+                    }
+                    let b = c;
+                    let mb = meta_page(b);
+                    assert(p as int == b);
+                    lemma_uncut(fresh(u0, b), pb.used(), p as int, BLOCK_ORDER as nat);
+                    assert(pb.used()[b] =~= whole);
+                    assert(pb.used() =~= u0.insert(b, whole).insert(mb, Map::<int, nat>::empty()));
+                    let s = pb.source();
+                    assert(!s0.spans.contains_key(b));
+                    assert(!metas0.contains(b) && !u0.contains_key(b) && !u0.contains_key(mb));
+                    assert forall|c2: int| #[trigger] start.spans.contains_key(c2) implies !(pb.used().contains_key(c2)
+                        && !pb.metas().contains(c2)) && s.spans[c2] == start.spans[c2] by {
+                        assert(s0.spans.contains_key(c2));
+                    }
+                    assert forall|c2: int|
+                        #![trigger s.spans.contains_key(c2)]
+                        #![trigger start.spans.contains_key(c2)]
+                        #![trigger pb.used().contains_key(c2)]
+                        s.spans.contains_key(c2) <==> start.spans.contains_key(c2) || (pb.used().contains_key(c2)
+                            && !pb.metas().contains(c2)) by {
+                        if c2 != b && c2 != mb {
+                            assert(s.spans.contains_key(c2) == s0.spans.contains_key(c2));
+                            assert(pb.used().contains_key(c2) == u0.contains_key(c2));
+                        }
+                        if c2 == mb {
+                            assert(s.spans.contains_key(c2) == s0.spans.contains_key(c2));
+                            if !u0.contains_key(c2) && !start.spans.contains_key(c2) {
+                                assert(!s0.spans.contains_key(c2));
+                            }
+                        }
+                    }
+                    assert forall|j: int| 0 <= j < n implies pb.source().unbacked(
+                        runs@[j] as int,
+                        runs@[j] as int,
+                        BLOCK_PAGES as nat,
+                    ) by {
+                        let c2 = runs@[j] as int;
+                        assert(u0.contains_key(c2));
+                        assert(s0.spans.contains_key(c2));
+                        assert(pb.source().spans[c2] == s0.spans[c2]);
+                    }
+                    assert forall|m: int| #[trigger] pb.metas().contains(m) implies pb.used()[m] == Map::<int, nat>::empty() by {
+                        if m != mb {
+                            assert(metas0.contains(m));
+                        }
+                    }
+                }
+                let ghost r0 = runs@;
+                runs[n] = p;
+                n = n + 1;
+                proof {
+                    assert forall|c: int| #[trigger] pb.used().contains_key(c) implies pb.metas().contains(c) || exists|j: int|
+                        0 <= j < n && runs@[j] as int == c by {
+                        if c == p as int {
+                            assert(runs@[n - 1] == p);
+                        } else if c != meta_page(p as int) {
+                            assert(u0.contains_key(c));
+                            if !metas0.contains(c) {
+                                let j = choose|j: int| 0 <= j < n - 1 && r0[j] as int == c;
+                                assert(runs@[j] == r0[j]);
+                            }
+                        }
+                    }
+                }
+            },
+        }
+    }
+    let cut = n;
+    while n > 0
+        invariant
+            pb.wf(),
+            pb.spares() == 0,
+            n <= cut <= MANY,
+            go == (cut == MANY),
+            pages(BLOCK_ORDER as nat) == BLOCK_PAGES as int,
+            whole == Map::<int, nat>::empty().insert(0, BLOCK_ORDER as nat),
+            whole.remove(0) == Map::<int, nat>::empty(),
+            added(start, pb.source(), pb.used(), pb.metas(), !go),
+            forall|j: int|
+                0 <= j < n ==> {
+                    &&& (#[trigger] runs@[j]) as int % BLOCK_BYTES as int == 0
+                    &&& pb.used().contains_key(runs@[j] as int)
+                    &&& pb.used()[runs@[j] as int] == whole
+                    &&& !pb.metas().contains(runs@[j] as int)
+                    &&& pb.source().unbacked(runs@[j] as int, runs@[j] as int, BLOCK_PAGES as nat)
+                },
+            forall|i: int, j: int| 0 <= i < j < n ==> runs@[i] != runs@[j],
+            forall|b: int|
+                #[trigger] pb.used().contains_key(b) ==> pb.metas().contains(b) || exists|j: int|
+                    0 <= j < n && runs@[j] as int == b,
+            forall|m: int| #[trigger] pb.metas().contains(m) ==> pb.used()[m] == Map::<int, nat>::empty(),
+        decreases n,
+    {
+        n = n - 1;
+        let p = runs[n];
+        let ghost u0 = pb.used();
+        let ghost s0 = pb.source();
+        let ghost metas0 = pb.metas();
+        let ghost mp = meta_page(p as int);
+        proof {
+            pb.lemma_view();
+            assert(runs@[n as int] == p);
+            lemma_block_head(p as int);
+            assert(u0[p as int] == whole);
+            assert(metas0.contains(mp));
+            assert(u0[mp] == Map::<int, nat>::empty());
+            assert(u0.insert(p as int, u0[p as int].remove(0))[p as int].dom() =~= Set::<int>::empty());
+            assert(u0.insert(p as int, u0[p as int].remove(0))[mp].dom() =~= Set::<int>::empty());
+        }
+        pb.free_run(p);
+        proof {
+            let s = pb.source();
+            assert(pb.used() == u0.remove(p as int).remove(mp));
+            assert(pb.metas() == metas0.remove(mp));
+            assert(s == s0.released_span(p as int));
+            assert forall|c: int| #[trigger] start.spans.contains_key(c) implies !(pb.used().contains_key(c)
+                && !pb.metas().contains(c)) && s.spans[c] == start.spans[c] by {
+                assert(s0.spans.contains_key(c));
+                assert(c != p as int);
+            }
+            assert forall|c: int|
+                #![trigger s.spans.contains_key(c)]
+                #![trigger start.spans.contains_key(c)]
+                #![trigger pb.used().contains_key(c)]
+                s.spans.contains_key(c) <==> start.spans.contains_key(c) || (pb.used().contains_key(c)
+                    && !pb.metas().contains(c)) by {
+                assert(s.spans.contains_key(c) == (s0.spans.contains_key(c) && c != p as int));
+                if c == p as int {
+                    assert(!start.spans.contains_key(c));
+                } else if c != mp {
+                    assert(pb.used().contains_key(c) == u0.contains_key(c));
+                }
+            }
+            assert forall|j: int| 0 <= j < n implies pb.source().unbacked(
+                runs@[j] as int,
+                runs@[j] as int,
+                BLOCK_PAGES as nat,
+            ) by {
+                let c = runs@[j] as int;
+                assert(u0.contains_key(c));
+                assert(s0.spans.contains_key(c));
+                assert(c != p as int);
+                assert(pb.source().spans[c] == s0.spans[c]);
+            }
+            assert forall|j: int| 0 <= j < n implies (#[trigger] runs@[j]) as int != mp by {
+                assert(!metas0.contains(runs@[j] as int));
+            }
+            assert forall|b: int| #[trigger] pb.used().contains_key(b) implies pb.metas().contains(b) || exists|j: int|
+                0 <= j < n && runs@[j] as int == b by {
+                assert(u0.contains_key(b));
+                if !metas0.contains(b) {
+                    let j = choose|j: int| 0 <= j < n + 1 && runs@[j] as int == b;
+                    assert(j != n);
+                }
+            }
+        }
+    }
+    proof {
+        pb.lemma_view();
+        // A held metadata page has its span's first block held too, and that is no metadata page,
+        // so it would be a run left in the list.
+        assert forall|b: int| !pb.used().contains_key(b) by {
+            if pb.used().contains_key(b) && pb.metas().contains(b) {
+                assert(pb.used().contains_key(b - BLOCK_BYTES as int));
+            }
+        }
+        assert(pb.used().dom() =~= Set::<int>::empty());
+        let s = pb.source();
+        assert(s.spans.dom() =~= start.spans.dom());
+        assert(s.spans =~= start.spans);
+    }
+    (pb, cut)
+}
+
+/// The block at `p`, block-aligned, has its page 0 at `p`.
+proof fn lemma_block_head(p: int)
+    requires
+        p % BLOCK_BYTES as int == 0,
+    ensures
+        span_of(p) == p,
+        page_of(p) == 0,
+        p % PAGE_BYTES as int == 0,
+{
+    vstd::arithmetic::div_mod::lemma_mod_mod(p, PAGE_BYTES as int, BLOCK_PAGES as int);
 }
 
 /// Cuts a run from a page buddy over `src` keeping one spare, frees it, so its span stays as the
@@ -287,17 +602,20 @@ pub fn witness_page_buddy_spare<S: SpanSource>(src: S) -> (pb: PageBuddy<S>)
         Ok(p) => p,
     };
     let ghost b1 = span_of(first as int);
-    let ghost h1 = page_of(first as int);
-    let ghost one = Map::<int, nat>::empty().insert(h1, 0nat);
-    assert(pb.used() == Map::<int, Map<int, nat>>::empty().insert(b1, one));
-    assert(one.remove(h1) =~= Map::<int, nat>::empty());
-    assert(pb.idle_spans() =~= Set::<int>::empty()) by {
-        assert(pb.used()[b1].contains_key(h1));
+    let ghost m1 = meta_page(b1);
+    let ghost fr = fresh(Map::<int, Map<int, nat>>::empty(), b1);
+    proof {
+        lemma_uncut(fr, pb.used(), first as int, 0);
+        assert(pb.metas() =~= set![m1]);
+        assert(pb.idle_spans() =~= Set::<int>::empty()) by {
+            assert(pb.used()[b1].contains_key(page_of(first as int)));
+        }
+        assert(fr[b1].dom() =~= Set::<int>::empty());
+        assert(fr[m1].dom() =~= Set::<int>::empty());
     }
     pb.free_run(first);
-    let ghost spare = Map::<int, Map<int, nat>>::empty().insert(b1, Map::<int, nat>::empty());
-    assert(pb.used() =~= spare);
     proof {
+        assert(pb.used() == fr);
         pb.lemma_view();
         pb.lemma_idle_fits(b1, 0);
     }
@@ -307,16 +625,19 @@ pub fn witness_page_buddy_spare<S: SpanSource>(src: S) -> (pb: PageBuddy<S>)
         Ok(p) => p,
         Err(_) => return pb,
     };
-    assert(span_of(second as int) == b1);
-    let ghost h2 = page_of(second as int);
-    let ghost two = Map::<int, nat>::empty().insert(h2, 0nat);
-    assert(pb.used() == spare.insert(b1, two));
-    assert(two.remove(h2) =~= Map::<int, nat>::empty());
-    assert(pb.idle_spans() =~= Set::<int>::empty()) by {
-        assert(pb.used()[b1].contains_key(h2));
+    let ghost c2 = span_of(second as int);
+    proof {
+        assert(fr.contains_key(c2));
+        lemma_uncut(fr, pb.used(), second as int, 0);
+        assert(pb.metas() =~= set![m1]);
+        assert(pb.idle_spans() =~= Set::<int>::empty()) by {
+            assert(pb.used()[c2].contains_key(page_of(second as int)));
+        }
     }
     pb.free_run(second);
-    assert(pb.used() =~= spare);
+    proof {
+        assert(pb.used() == fr);
+    }
     pb
 }
 
@@ -331,7 +652,6 @@ pub fn witness_backed_run<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, bool))
     ensures
         r.0.wf(),
         r.0.spans().dom() == Set::<int>::empty(),
-        r.0.meta() is None,
         r.0.source() == if r.1 {
             src@
         } else {
@@ -344,34 +664,26 @@ pub fn witness_backed_run<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, bool))
     assert(pb.spans().dom() =~= Set::<int>::empty());
     let p = match pb.alloc_run(0) {
         Err(_) => {
-            proof {
-                pb.lemma_view();
-            }
             return (pb, false);
         },
         Ok(p) => p,
     };
     let ghost b = span_of(p as int);
-    let ghost h = page_of(p as int);
-    let ghost one = Map::<int, nat>::empty().insert(h, 0nat);
-    assert(pb.used() == Map::<int, Map<int, nat>>::empty().insert(b, one));
-    assert(one.remove(h) =~= Map::<int, nat>::empty());
+    let ghost m = meta_page(b);
+    let ghost fr = fresh(Map::<int, Map<int, nat>>::empty(), b);
     let ghost s1 = pb.source();
     proof {
-        pb.lemma_view();
-        let ma = pb.meta()->Some_0;
-        assert(s1 == s0.reserved(ma, 1).backed_run(ma, ma, 1).reserved(b, 1));
-        assert(pb.used().remove(b).dom() =~= Set::<int>::empty());
-        lemma_meta_round_trip(s0, ma, b);
-        lemma_meta_round_trip(s0.refused(), ma, b);
-        assert(s1.refused() == s0.refused().reserved(ma, 1).backed_run(ma, ma, 1).reserved(b, 1));
+        lemma_uncut(fr, pb.used(), p as int, 0);
+        lemma_took_released(s0, b);
+        assert(fr[b].dom() =~= Set::<int>::empty());
+        assert(fr[m].dom() =~= Set::<int>::empty());
         assert(pages(0) == 1);
     }
     let (ptr, perm) = match pb.back_run(p, 0) {
         None => {
             pb.free_run(p);
-            assert(pb.used().dom() =~= Set::<int>::empty());
             proof {
+                assert(pb.used().dom() =~= Set::<int>::empty());
                 pb.lemma_view();
             }
             return (pb, false);
@@ -393,11 +705,14 @@ pub fn witness_backed_run<S: SpanSource>(src: S) -> (r: (PageBuddy<S>, bool))
     let tracked whole = raw.join(rest);
     assert(whole.dom() =~= Set::range(p as int, p as int + PAGE_BYTES as int));
     pb.release_run(p, 0, Tracked(whole));
-    assert(pb.source().spans[b].backed =~= Set::<int>::empty());
-    assert(pb.source().spans =~= s1.spans);
-    pb.free_run(p);
-    assert(pb.used().dom() =~= Set::<int>::empty());
     proof {
+        assert(s1.spans[b].backed.disjoint(run_pages(p as int, 1)));
+        assert(pb.source().spans[b].backed =~= s1.spans[b].backed);
+        assert(pb.source().spans =~= s1.spans);
+    }
+    pb.free_run(p);
+    proof {
+        assert(pb.used().dom() =~= Set::<int>::empty());
         pb.lemma_view();
     }
     (pb, true)
