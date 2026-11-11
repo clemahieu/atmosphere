@@ -706,7 +706,9 @@ mod queue {
 /// drops every cached STE and CD, 4.3.9; CMD_TLBI_NSNH_ALL every TLB entry outside the EL2 regime,
 /// 4.4.4.1, which the SMMU is never handed. The SMMU reads the queue coherently, as boot asks of it
 /// (machine/virt's CR1), so the DSB is enough. Each register access is one load or store with no
-/// writeback, which a hypervisor emulating the SMMU can decode (Arm ARM D24.2.45, ISV).
+/// writeback, which a hypervisor emulating the SMMU can decode (Arm ARM D24.2.45, ISV). It takes
+/// `queued`, so a record is evidence for one submit and a second submit has to queue the commands
+/// again.
 #[verifier(external_body)]
 // external_body(glue): only the SMMU can attest an invalidate, so only this empties its IOTLB model
 fn submit_invalidate(
@@ -716,7 +718,7 @@ fn submit_invalidate(
     consumer: usize,
     place: u32,
     place_mask: u32,
-    Tracked(queued): Tracked<&QueuedCommands>,
+    Tracked(queued): Tracked<QueuedCommands>,
     Tracked(model): Tracked<&mut IotlbModel>,
 )
     requires
@@ -821,7 +823,7 @@ pub fn invalidate_iommu_all(commands: &CommandBuffers, i: usize, Tracked(model):
                 b.mmio <= usize::MAX,
         ;
     }
-    submit_invalidate(commands, i, b.mmio + SMMU_CMDQ_PROD, b.mmio + SMMU_CMDQ_CONS, place, wrap - 1, Tracked(&queued), Tracked(model));
+    submit_invalidate(commands, i, b.mmio + SMMU_CMDQ_PROD, b.mmio + SMMU_CMDQ_CONS, place, wrap - 1, Tracked(queued), Tracked(model));
     proof {
         steps.step();
     }
