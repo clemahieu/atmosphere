@@ -157,8 +157,7 @@ def qemu_args(run_dir, serial_log, kvm, iommu, gdb_socket, ovmf_code):
         "-cpu", CPU_KVM if kvm else CPU_TCG,
     ]
     if iommu:
-        args += ["-device", "intel-iommu,intremap=on,aw-bits=48,caching-mode=on",
-                 "--trace", "vtd_*", "--trace", "iommufd_*", "-D", "/tmp/qemu-log.txt"]
+        args += ["-device", "intel-iommu,intremap=on,aw-bits=48,caching-mode=on"]
     if kvm:
         args.append("-enable-kvm")
     if gdb_socket is not None:
@@ -410,6 +409,13 @@ class Tests(unittest.TestCase):
         self.assertIn("-enable-kvm", args)
         self.assertIn("intel-iommu,intremap=on,aw-bits=48,caching-mode=on", self.options(args, "-device"))
         self.assertEqual(self.options(args, "-gdb"), ["unix:/run/x/gdb.sock,server,nowait"])
+
+    def test_iommu_writes_no_trace_log(self):
+        # Nothing reads QEMU's traces, and a fixed log path would be shared by every boot on the host.
+        args = qemu_args(Path("/run/x"), Path("/w/serial.log"), True, True, None, "/ovmf/OVMF_CODE.fd")
+        for absent in ("--trace", "-trace", "-D"):
+            self.assertNotIn(absent, args)
+        self.assertFalse(any("/tmp" in arg for arg in args))
 
     def test_gdb_does_not_freeze_the_guest(self):
         # The loader waits for gdb itself, once it has logged where it loaded each binary.
