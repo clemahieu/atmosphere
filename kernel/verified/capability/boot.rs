@@ -1338,6 +1338,14 @@ impl CapKernel {
         assert(b.shares == a.shares);
         pre.lemma_no_device_no_binds();
         assert(b.binds == a.binds);
+        // Each remaining conjunct of adds_held is stated on its own, so the final assertion does not
+        // depend on the solver finding them inside the unfolded definition.
+        assert(b.names.contains_key(child));
+        assert(b.pages.contains_key(child));
+        assert(b.maps == a.maps);
+        assert(forall|s: ObjectId, o: ObjectId| #[trigger] b.shares.contains((s, o)) ==> !b.covers(child, s));
+        assert(forall|d: ObjectId| #[trigger] b.binds.contains_key(d) ==> !b.covers(child, d));
+        assert(b.process_of == a.process_of);
         assert(adds_held(a, b, process, root, child, live));
     }
 
