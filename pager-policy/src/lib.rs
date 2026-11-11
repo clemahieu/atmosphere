@@ -32,7 +32,6 @@
 //!
 //! The pager library implements this policy; this crate states it and proves its invariants.
 #![no_std]
-#![allow(unused)]
 
 use vstd::prelude::*;
 
