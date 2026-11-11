@@ -276,7 +276,8 @@ impl CapKernel {
     /// process whose table is at root: the position names a capability, which stays one, at most
     /// REVOKE_BUDGET nodes of its run went and no other node, no mapping appeared, the tables are as they
     /// were, no node changed its parent, the threads bound are those that were whose bindings are still
-    /// live, and the step discharges the revoke's effect for the caller, which commands the capability.
+    /// live, the devices unbound are those whose binding nodes went, and the step discharges the
+    /// revoke's effect for the caller, which commands the capability.
     pub open spec fn cap_revoking_at(pre: Self, post: Self, root: usize, at: Position) -> bool {
         let c = pre.cap_at(root, at)->0;
         &&& pre.cap_at(root, at) is Some
@@ -288,6 +289,24 @@ impl CapKernel {
         &&& post.list.parent == pre.list.parent
         &&& discharges(pre.view(), post.view(), root, Effect::Revoke { cap: c })
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables).restrict(live_nodes(&post.list))
+        &&& Self::devices_revoked(pre, post)
+    }
+
+    /// The devices after revoke steps from pre: a device whose binding node went is bound to nothing,
+    /// unbound at some epoch, and every other device's record is as it was.
+    pub open spec fn devices_revoked(pre: Self, post: Self) -> bool {
+        &&& post.devices.count == pre.devices.count
+        &&& post.devices.page == pre.devices.page
+        &&& post.devices.holder == pre.devices.holder
+        &&& forall|d: int| 0 <= d < pre.devices.count ==> {
+            let n = pre.devices.page + 1 + d;
+            let now = #[trigger] post.devices.records@[d];
+            if pre.list.nodes@[n].live && pre.list.nodes@[n].kind is DeviceBinding && !post.list.nodes@[n].live {
+                now == unbound_at(pre.devices.records@[d], now.unbound)
+            } else {
+                now == pre.devices.records@[d]
+            }
+        }
     }
 
     /// What a revoke of the capability at a position did when it finished: as cap_revoking_at says,
@@ -374,6 +393,7 @@ impl CapKernel {
                 pre.is_cap(c),
                 discharges(pre.view(), self.view(), root, Effect::Revoke { cap: c }),
                 bound_threads(&self.list, &self.tables) == bound_threads(&pre.list, &pre.tables).restrict(live_nodes(&self.list)),
+                Self::devices_revoked(pre, *self),
             decreases REVOKE_BUDGET - taken,
         {
             let ghost mid = *self;
@@ -397,6 +417,9 @@ impl CapKernel {
                     reveal(Tree::store_wf);
                 }
                 let r = choose|r: usize| #[trigger] revoked_one(mid.list, self.list, c, r)
+                    && mid.list.nodes@[r as int].live
+                    && (mid.list.nodes@[r as int].kind is DeviceBinding ==> Self::device_unbound(mid, *self, r))
+                    && (!(mid.list.nodes@[r as int].kind is DeviceBinding) ==> self.devices == mid.devices)
                     && (mid.list.nodes@[r as int].kind is Mapping ==> Self::mapping_unlinked(mid, *self, r))
                     && (mid.list.nodes@[r as int].kind is Mapping ==> Self::mapping_stale_noted(mid, *self, r))
                     && (mid.hidden_table(r) ==> Self::table_unlinked(mid, *self, r))
@@ -405,6 +428,10 @@ impl CapKernel {
                     && (!(mid.list.nodes@[r as int].kind is Binding) ==> bound_threads(&self.list, &self.tables)
                         == bound_threads(&mid.list, &mid.tables));
                 Self::lemma_revoke_bound_threads(bound_threads(&pre.list, &pre.tables), mid, *self, r);
+                assert(mid.devices.wf()) by {
+                    reveal(devices_wf);
+                }
+                Self::lemma_devices_revoked_step(pre, mid, *self, c, r);
                 lemma_revoked_seq_step(pre.list, mid.list, self.list, c, r, gone);
                 lemma_run_shrunk_step(pre.list, mid.list, self.list, c, r);
                 gone = gone.push(r);
@@ -449,6 +476,9 @@ impl CapKernel {
             done ==> forall|x: usize| !#[trigger] old(self).list.is_child(c, x),
             !done ==> final(self).list.seq@.len() == old(self).list.seq@.len() - 1,
             !done ==> exists|r: usize| #[trigger] revoked_one(old(self).list, final(self).list, c, r)
+                && old(self).list.nodes@[r as int].live
+                && (old(self).list.nodes@[r as int].kind is DeviceBinding ==> Self::device_unbound(*old(self), *final(self), r))
+                && (!(old(self).list.nodes@[r as int].kind is DeviceBinding) ==> final(self).devices == old(self).devices)
                 && (old(self).list.nodes@[r as int].kind is Mapping ==> Self::mapping_unlinked(*old(self), *final(self), r))
                 && (old(self).list.nodes@[r as int].kind is Mapping ==> Self::mapping_stale_noted(*old(self), *final(self), r))
                 && (old(self).hidden_table(r) ==> Self::table_unlinked(*old(self), *final(self), r))
@@ -499,6 +529,14 @@ impl CapKernel {
                 assert(Self::table_unlinked(pre, *self, r));
             }
             assert(revoked_one(pre.list, self.list, c, r));
+            // A device binding's arm unbinds its device, from a state the cut left alone; every other
+            // step leaves the devices as they were.
+            if pre.list.nodes@[r as int].kind is DeviceBinding {
+                assert(cut == pre);
+                assert(Self::device_unbound(pre, *self, r));
+            } else {
+                assert(self.devices == pre.devices);
+            }
         }
         false
     }
@@ -751,6 +789,40 @@ impl CapKernel {
             Self::lemma_bound_threads_remove(pre, post, r);
         } else {
             Self::lemma_bound_threads_same(pre, post);
+        }
+    }
+
+    /// A revoke step that took r from mid keeps the devices as devices_revoked says from the state the
+    /// revoke began in: r's device, if r is a device binding, is the one device it unbinds.
+    proof fn lemma_devices_revoked_step(pre: Self, mid: Self, post: Self, c: usize, r: usize)
+        requires
+            mid.devices.wf(),
+            mid.list.nodes@.len() == NODE_SPACE,
+            Self::devices_revoked(pre, mid),
+            run_shrunk(pre.list, mid.list, c),
+            revoked_one(mid.list, post.list, c, r),
+            mid.list.nodes@[r as int].live,
+            mid.list.nodes@[r as int].kind is DeviceBinding ==> Self::device_unbound(mid, post, r),
+            !(mid.list.nodes@[r as int].kind is DeviceBinding) ==> post.devices == mid.devices,
+        ensures
+            Self::devices_revoked(pre, post),
+    {
+        assert forall|d: int| 0 <= d < pre.devices.count implies {
+            let n = pre.devices.page + 1 + d;
+            let now = #[trigger] post.devices.records@[d];
+            if pre.list.nodes@[n].live && pre.list.nodes@[n].kind is DeviceBinding && !post.list.nodes@[n].live {
+                now == unbound_at(pre.devices.records@[d], now.unbound)
+            } else {
+                now == pre.devices.records@[d]
+            }
+        } by {
+            let n = pre.devices.page + 1 + d;
+            assert(0 <= n < NODE_SPACE);
+            assert(mid.list.nodes@[n].live ==> pre.list.nodes@[n].live && mid.list.nodes@[n].kind == pre.list.nodes@[n].kind);
+            if n != r {
+                assert(post.list.nodes@[n].live == mid.list.nodes@[n].live);
+            }
+            assert(mid.devices.records@[d] == mid.devices.records@[d]);
         }
     }
 

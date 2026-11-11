@@ -2065,6 +2065,7 @@ impl CapKernel {
             final(self).zeroing == old(self).zeroing,
             final(self).frames == old(self).frames,
             final(self).cores == old(self).cores,
+            final(self).devices == old(self).devices,
     {
         let ghost pre = *old(self);
         let ghost tree = tree_of(&pre.table_pages, &pre.spaces);
