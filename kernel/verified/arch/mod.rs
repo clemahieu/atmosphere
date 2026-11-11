@@ -16,7 +16,11 @@
 //! return a token it never made, or an earlier one. It refuses every impl outside verus! too, whose
 //! methods rust_verify does not verify though a call through a generic bound gets its trait's ensures,
 //! and what could write one where it sees none: a derive or an attribute macro outside verus!, a macro
-//! definition, a macro other than the vstd and core ones the crates use. Only the glue that does what a token attests makes or changes it, but for
+//! definition, a macro other than the vstd and core ones the crates use. Inside verus! it refuses a derive
+//! of any trait but Clone, Copy, Debug, PartialEq and Eq, the automatically_derived attribute and an
+//! import renaming derive or renaming something to one of those: Verus marks a derived Default
+//! external, vstd's Default ensures nothing for a crate's type, and use_type_invariant would assume the
+//! invariant of the value it returns, which no verified code built. Only the glue that does what a token attests makes or changes it, but for
 //! TlbModel::grow and IotlbModel::grow, by which proof code may add entries to a model of what a TLB
 //! holds, since a model that holds more claims less.
 use vstd::prelude::*;

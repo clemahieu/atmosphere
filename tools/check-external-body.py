@@ -51,7 +51,13 @@ ensures, the crate's own trait's among them, for code nothing checked. So is wha
 where this check sees no word of it: a derive or any other attribute outside verus! but cfg, cfg_attr,
 no_std, test, allow and the verifier's; a macro_rules; an invocation of a macro other than the vstd and
 core ones the crates use (verus, seq, set, map, open_atomic_invariant, atomic_with_ghost, asm,
-addr_of_mut, assert, assert_eq); and an import renamed to one of those names.
+addr_of_mut, assert, assert_eq); and an import renamed to one of those names. Anywhere, so is a
+derive of any trait but Clone, Copy, Debug, PartialEq and Eq: Verus verifies a derived Clone and Copy and
+marks the rest external, and Debug, PartialEq and Eq build no value of the type, while a derived Default
+hands the proof a value no verified code built (vstd's Default ensures nothing for a crate's type), whose
+type invariant use_type_invariant then assumes. So are the automatically_derived attribute, by which
+Verus reads an impl as derived, and an import renaming derive or renaming something to one of those
+derives.
 vstd's proof_from_false is not refused: it requires false, which only an assumption or an exemption
 refused here can supply.
 
@@ -97,7 +103,7 @@ ASSUMPTION = re.compile(r"\b(assume|admit|assume_)\b")
 EXEMPTING = re.compile(r"\b(axiom|external|external_fn_specification|external_trait_specification|"
                        r"external_type_specification|assume_specification|"
                        r"external_body|exec_allows_no_decreases_clause|assume_termination|"
-                       r"assume_unsupported_attributes)\b")
+                       r"assume_unsupported_attributes|automatically_derived)\b")
 # Any other verifier attribute whose name starts with external, in either spelling, and any attribute
 # under verus::internal, the namespace the verus! macro writes its own attributes into.
 VERIFIER_EXTERNAL = re.compile(r"verifier\s*(?:::|\()\s*(external\w*)|\b(verus\s*::\s*internal)\b")
@@ -139,6 +145,14 @@ MACRO_RENAME = re.compile(r"\bas\s+(?:r#)?(" + "|".join(MACROS + NEGATED_AFTER) 
 # is not among them: it writes an impl.
 OUTSIDE_ATTRIBUTES = ("cfg", "cfg_attr", "no_std", "test", "allow")
 VERIFIER_ATTRIBUTE = re.compile(r"verifier(?:::\w+)?$")
+# The derives the check accepts, anywhere in a marked crate: Clone and Copy, whose impls Verus verifies, and
+# Debug, PartialEq and Eq, whose impls Verus marks external but which build no value of the type. Verus
+# marks a derived Default, Hash, Ord and PartialOrd external too, and vstd's Default ensures nothing for a
+# crate's type, so a derived Default hands the proof a value no verified code built, whose type invariant
+# use_type_invariant then assumes. A derive of another crate's macro may write anything.
+DERIVES = ("Clone", "Copy", "Debug", "PartialEq", "Eq")
+# An import renaming derive, or renaming something to one of those derives.
+DERIVE_RENAME = re.compile(r"\b(?:r#)?derive\s+as\b|\bas\s+(?:r#)?(" + "|".join(DERIVES) + r")\b")
 OUTSIDE_ATTRIBUTE = re.compile(r"#\s*!?\s*\[")
 # What makes rustc compile a file the scan does not read: a path attribute, in any attribute or
 # cfg_attr, an include!, and a module named target, whose directory the scan leaves out.
@@ -535,9 +549,9 @@ def outside_verus(code):
     return "".join(text)
 
 
-def attribute_names(text, start):
-    """The names of the attributes that an attribute opening at start applies, those inside a cfg_attr
-    included."""
+def attribute_items(text, start):
+    """The attributes that an attribute opening at start applies, those inside a cfg_attr included, each
+    as its name and the text between the parentheses after it, or None when none follow."""
     opening = text.index("[", start)
     depth, end = 0, opening
     for end in range(opening, len(text)):
@@ -545,10 +559,14 @@ def attribute_names(text, start):
         if depth == 0:
             break
     inner = text[opening + 1:end]
-    name = re.match(r"\s*(\w+(?:\s*::\s*\w+)*)", inner)
-    names = [re.sub(r"\s", "", name.group(1))] if name else [inner.strip()]
-    if names == ["cfg_attr"] and "(" in inner and ")" in inner:
-        arguments, depth, pieces, piece = inner[inner.index("(") + 1:inner.rindex(")")], 0, [], ""
+    name = re.match(r"\s*((?:::\s*)?\w+(?:\s*::\s*\w+)*)", inner)
+    if not name:
+        return [(inner.strip(), None)]
+    rest = inner[name.end():].strip()
+    arguments = rest[1:rest.rindex(")")] if rest.startswith("(") and ")" in rest else None
+    items = [(re.sub(r"\s", "", name.group(1)), arguments)]
+    if items[0][0] == "cfg_attr" and arguments is not None:
+        depth, pieces, piece = 0, [], ""
         for char in arguments:
             depth += {"(": 1, ")": -1, "[": 1, "]": -1}.get(char, 0)
             if char == "," and depth == 0:
@@ -559,8 +577,25 @@ def attribute_names(text, start):
         pieces.append(piece)
         for piece in pieces[1:]:
             if piece.strip():
-                names.extend(attribute_names(f"#[{piece}]", 0))
-    return names
+                items.extend(attribute_items(f"#[{piece}]", 0))
+    return items
+
+
+def attribute_names(text, start):
+    """The names of the attributes that an attribute opening at start applies, those inside a cfg_attr
+    included."""
+    return [name for name, _ in attribute_items(text, start)]
+
+
+def unread_derives(text, start):
+    """The traits that an attribute opening at start derives, anywhere in it, that are not among DERIVES:
+    each one's impl Verus does not verify, or a macro of another crate's writes."""
+    unread = []
+    for name, arguments in attribute_items(text, start):
+        if name.split("::")[-1] == "derive":
+            traits = [re.sub(r"\s", "", piece) for piece in (arguments or "").split(",")]
+            unread.extend(name for name in traits if name and name not in DERIVES)
+    return unread
 
 
 def unread_items(path, source):
@@ -569,8 +604,9 @@ def unread_items(path, source):
     imports as an implementation of a trait it knows without verifying its methods, so a call through a
     generic bound gets the trait's ensures for code nothing checked; and an attribute other than cfg,
     cfg_attr, no_std, test, allow and the verifier's, so no derive or attribute macro writes an impl. Anywhere: a macro definition, an
-    invocation of a macro other than the vstd and core ones the crates use, and an import renaming
-    something to one of their names."""
+    invocation of a macro other than the vstd and core ones the crates use, an import renaming
+    something to one of their names, a derive inside verus! of a trait not among DERIVES, and an import
+    renaming derive or renaming something to one of DERIVES."""
     lines = source.splitlines()
     code = code_lines(source)
     joined = "\n".join(code)
@@ -590,6 +626,16 @@ def unread_items(path, source):
         if unknown:
             refused.append(f"{line_of(match.start())} applies {', '.join(unknown)} outside verus!, which may "
                            "write code Verus does not read")
+    for match in OUTSIDE_ATTRIBUTE.finditer(joined):
+        if outside[match.start()] == "#":
+            continue  # outside verus!, where every derive is refused above
+        unread = unread_derives(joined, match.start())
+        if unread:
+            refused.append(f"{line_of(match.start())} derives {', '.join(unread)}, whose impl Verus marks external "
+                           "or does not know, so the proof takes a value it returns on trust")
+    for match in DERIVE_RENAME.finditer(joined):
+        refused.append(f"{line_of(match.start())} renames derive or renames something to a derive this "
+                       "check accepts")
     for match in MACRO_RULES.finditer(joined):
         refused.append(f"{line_of(match.start())} defines a macro, which may write an item this check "
                        "sees no word of")
@@ -1280,6 +1326,50 @@ class ForgeryTests(unittest.TestCase):
         for name, form in forms.items():
             with self.subTest(name):
                 self.assertEqual(len(unread_items("a.rs", form)), 1, form)
+
+    SK_BOX = ("verus! {\n#[derive(Default)]\npub struct SkBox { t: Option<Tracked<crate::arch::BaseRegister>>,"
+              " m: Option<Tracked<crate::arch::TlbModel>> }\n"
+              "impl SkBox {\n    #[verifier::type_invariant]\n    spec fn sk_inv(self) -> bool { &&& self.t is Some &&& self.m is Some }\n}\n"
+              "pub fn sk_forge() -> (r: (Tracked<crate::arch::BaseRegister>, Tracked<crate::arch::TlbModel>)) {\n"
+              "    let b: SkBox = Default::default();\n    proof { use_type_invariant(&b); }\n"
+              "    let SkBox { t, m } = b;\n    (t.unwrap(), m.unwrap())\n}\n}\n")
+    SK_TLB = ("verus! {\n#[derive(Default)]\npub struct SkTlb { m: Option<Tracked<crate::arch::TlbModel>> }\n"
+              "impl SkTlb {\n    #[verifier::type_invariant]\n    spec fn sk_inv(self) -> bool { self.m is Some && boot_tlb(self.m->0@) }\n"
+              "    pub fn sk_take(self) -> (r: Tracked<crate::arch::TlbModel>) ensures boot_tlb(r@) {\n"
+              "        proof { use_type_invariant(&self); }\n        let SkTlb { m } = self;\n        m.unwrap()\n    }\n}\n"
+              "pub fn sk_empty() -> (r: Tracked<crate::arch::TlbModel>) ensures boot_tlb(r@) {\n"
+              "    let t: SkTlb = Default::default();\n    t.sk_take()\n}\n}\n")
+
+    def test_a_derive_verus_marks_external_and_that_builds_a_value_is_refused_inside_verus(self):
+        forms = {
+            "a derived Default on a type with an invariant (a)": self.SK_BOX,
+            "a derived Default whose invariant says the model is empty (b)": self.SK_TLB,
+            "Hash": "verus! {\n#[derive(Clone, Hash)]\npub struct SkTok { x: u8 }\n}\n",
+            "Ord": "verus! {\n#[derive(PartialEq, Eq, Ord)]\npub struct SkTok { x: u8 }\n}\n",
+            "PartialOrd": "verus! {\n#[derive(PartialEq, PartialOrd)]\npub struct SkTok { x: u8 }\n}\n",
+            "a spaced derive": "verus! {\n#[ derive ( Default ) ]\npub struct SkTok { x: u8 }\n}\n",
+            "a derive split over lines": "verus! {\n#[derive(\n    Clone,\n    Default,\n)]\npub struct SkTok {}\n}\n",
+            "a path to Default": "verus! {\n#[derive(core::default::Default)]\npub struct SkTok {}\n}\n",
+            "a derive by its path": "verus! {\n#[::core::prelude::v1::derive(Default)]\npub struct SkTok {}\n}\n",
+            "a derive inside cfg_attr": "verus! {\n#[cfg_attr(verus_keep_ghost, derive(Default))]\npub struct SkTok {}\n}\n",
+            "a derive of another crate's macro": "verus! {\n#[derive(asys::SkMake)]\npub struct SkTok {}\n}\n",
+            "an impl marked automatically derived": ("verus! {\n#[automatically_derived]\nimpl Default for SkTok {\n"
+                                                     "    fn default() -> Self { SkTok {} }\n}\n}\n"),
+            "derive renamed": "use core::prelude::v1::derive as sk_derive;\n",
+            "Default renamed to an allowed derive": "use core::default::Default as Clone;\n",
+            "Default renamed in a group": "use core::default::{Default as Debug};\n",
+        }
+        for name, form in forms.items():
+            with self.subTest(name):
+                refused = ForgeryTests.refused(self, "capability/mapping.rs", {"capability/mapping.rs": form})
+                self.assertEqual(len(refused), 1, (form, refused))
+
+    def test_the_derives_verus_verifies_or_that_build_no_value_are_accepted(self):
+        source = ("verus! {\n#[derive(Clone, Copy)]\npub struct P { x: u8 }\n#[derive(Clone, Copy, Debug)]\n"
+                  "pub struct Q { x: u8 }\n#[derive(PartialEq, Eq)]\npub enum K { A, B }\n#[derive(Debug)]\n"
+                  "pub struct R { x: u8 }\n"
+                  "fn derive(&mut self, root: usize) {}\nfn g(k: &mut K) { k.derive(0); }\n}\n")
+        self.assertEqual(ForgeryTests.refused(self, "capability/mapping.rs", {"capability/mapping.rs": source}), [])
 
     def test_the_forms_the_crates_use_are_accepted(self):
         source = ("#![no_std]\n#![cfg_attr(not(test), no_std)]\n"
