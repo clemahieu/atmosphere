@@ -23,7 +23,8 @@
 //! the other end holds, so across a distrust boundary the path is aring. Placing the slots and the
 //! word in shared frames is the caller's.
 #![no_std]
-#![allow(unused)]
+// A cargo build erases specifications and proofs, so there a variable only they read looks unused.
+#![cfg_attr(not(verus_keep_ghost), allow(unused_variables))]
 
 use vstd::atomic_ghost::*;
 use vstd::cell::pcell::{PCell, PointsTo};
@@ -227,7 +228,10 @@ impl<T> Mailbox<T> {
 /// The producing end.
 pub struct Producer<T> {
     held: u32,
+    // Only proofs read the permission and the token, and a cargo build erases them.
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
     perm: Tracked<PointsTo<T>>,
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
     token: Tracked<GhostVar<ProducerView<T>>>,
     atomics: Ghost<nat>,
 }
@@ -327,7 +331,10 @@ impl<T> Producer<T> {
 /// The consuming end.
 pub struct Consumer<T> {
     held: u32,
+    // Only proofs read the permission and the token, and a cargo build erases them.
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
     perm: Tracked<PointsTo<T>>,
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
     token: Tracked<GhostVar<ConsumerView<T>>>,
     atomics: Ghost<nat>,
 }
