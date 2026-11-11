@@ -234,29 +234,6 @@ proof fn lemma_refused_released(s: SourceView, b: int, r: Refusal)
     assert(taken(s, b).recorded(r).released_span(b).spans =~= s.spans);
 }
 
-/// Freeing a run cut in a block that was held already gives back the runs from before the cut, and
-/// the cut run is the one at its head with its order.
-proof fn lemma_uncut(before: Map<int, Map<int, nat>>, after: Map<int, Map<int, nat>>, p: int, k: nat)
-    requires
-        cut(before, after, p, k),
-        before.contains_key(span_of(p)),
-    ensures
-        after.contains_key(span_of(p)),
-        after[span_of(p)].contains_key(page_of(p)),
-        after[span_of(p)][page_of(p)] == k,
-        !before[span_of(p)].contains_key(page_of(p)),
-        after.insert(span_of(p), after[span_of(p)].remove(page_of(p))) == before,
-{
-    let b = span_of(p);
-    let h = page_of(p);
-    lemma_pages_pos(k);
-    if before[b].contains_key(h) {
-        lemma_pages_pos(before[b][h]);
-    }
-    assert(after[b].remove(h) =~= before[b]);
-    assert(after.insert(b, after[b].remove(h)) =~= before);
-}
-
 /// A run of order BLOCK_ORDER is at page 0 of its block.
 proof fn lemma_whole_at_0(h: int)
     requires
