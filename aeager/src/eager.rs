@@ -615,8 +615,8 @@ pub struct Eager {
     spans: Spans,
     record: Record,
     exposed: Tracked<IsExposed>,
-    /// The refusals `reserve` and `back` have made, the view's count.
-    refusals: Ghost<nat>,
+    /// The requests `reserve` and `back` have refused, the view's record.
+    refusals: Ghost<Seq<Request>>,
 }
 
 impl Eager {
@@ -671,7 +671,7 @@ impl Eager {
                 owner: [0; MAX_PAGES],
             },
             exposed,
-            refusals: Ghost(0),
+            refusals: Ghost(Seq::empty()),
         };
         assert(source@.spans =~= Map::empty());
         Some(source)
@@ -690,10 +690,11 @@ impl SpanSource for Eager {
         let ghost before = self@;
         match self.spans.reserve(blocks, Ghost(before)) {
             None => {
+                let ghost q = Request::Reserve { blocks: blocks as nat };
                 proof {
-                    lemma_refused_wf(before);
+                    lemma_refused_wf(before, q);
                 }
-                self.refusals = Ghost(self.refusals@ + 1);
+                self.refusals = Ghost(self.refusals@.push(q));
                 None
             },
             Some(base) => {
@@ -715,10 +716,11 @@ impl SpanSource for Eager {
         }
         match self.record.back_run(start, pages, Ghost(self.exposed@@)) {
             None => {
+                let ghost q = Request::Back { span: span@, start: start as int, pages: pages as nat };
                 proof {
-                    lemma_refused_wf(before);
+                    lemma_refused_wf(before, q);
                 }
-                self.refusals = Ghost(self.refusals@ + 1);
+                self.refusals = Ghost(self.refusals@.push(q));
                 None
             },
             Some(perm) => {
