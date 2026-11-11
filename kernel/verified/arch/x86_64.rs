@@ -626,6 +626,8 @@ pub fn flush_every_context(Tracked(model): Tracked<&mut TlbModel>, core: usize)
         final(model).len() == old(model).len(),
         final(model)[core as int] == Set::<TlbEntry>::empty(),
         forall|d: int| d != core ==> #[trigger] final(model)[d] == old(model)[d],
+        final(model).tags(core as int) == Set::<usize>::empty(),
+        forall|d: int| d != core ==> #[trigger] final(model).tags(d) == old(model).tags(d),
 {
     unsafe {
         core::arch::asm!(
@@ -644,9 +646,15 @@ pub fn flush_every_context(Tracked(model): Tracked<&mut TlbModel>, core: usize)
 /// bit 17, is set, the write tags it with PCID `id` and sets bit 63, which keeps the entries the TLB
 /// holds under every PCID; where it is clear, CR3 holds the root alone and the write flushes the
 /// non-global entries. APM 2, the CR3 register in its PCID format.
+/// From then on the core may hold entries under `id`, so the tag joins the core's tags in `model`.
 #[verifier(external_body)]
 // external_body(glue): only the hardware can attest which root a core translates through, so only this changes a BaseRegister
-pub fn load_translation_root(Tracked(register): Tracked<&mut BaseRegister>, root: usize, id: usize)
+pub fn load_translation_root(
+    Tracked(register): Tracked<&mut BaseRegister>,
+    Tracked(model): Tracked<&mut TlbModel>,
+    root: usize,
+    id: usize,
+)
     requires
         root % PAGE_SZ == 0,
         id < PCID_MAX,
@@ -654,6 +662,10 @@ pub fn load_translation_root(Tracked(register): Tracked<&mut BaseRegister>, root
         final(register).core() == old(register).core(),
         final(register).root() == root,
         final(register).tag() == id,
+        final(model).len() == old(model).len(),
+        forall|d: int| #[trigger] final(model)[d] == old(model)[d],
+        final(model).tags(old(register).core()) == old(model).tags(old(register).core()).insert(id),
+        forall|d: int| d != old(register).core() ==> #[trigger] final(model).tags(d) == old(model).tags(d),
 {
     let cr4: u64;
     unsafe {

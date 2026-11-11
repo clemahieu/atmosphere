@@ -2259,7 +2259,6 @@ impl CapKernel {
         &&& post.cores@[c].acked_epoch == pre.cores@[c].acked_epoch
         &&& post.cores@[c].generation == pre.cores@[c].generation
         &&& post.cores@[c].next_pcid == pre.cores@[c].next_pcid
-        &&& post.cores@[c].pcids_used == pre.cores@[c].pcids_used
         &&& post.cores@[c].space == pre.cores@[c].space
     }
 
@@ -2347,7 +2346,6 @@ impl CapKernel {
             acked_epoch: state.acked_epoch,
             generation: state.generation,
             next_pcid: state.next_pcid,
-            pcids_used: state.pcids_used,
             space: state.space,
         });
         let tracked mut perm;
@@ -2507,7 +2505,6 @@ impl CapKernel {
             acked_epoch: state.acked_epoch,
             generation: state.generation,
             next_pcid: state.next_pcid,
-            pcids_used: state.pcids_used,
             space: state.space,
         });
         let tracked mut perm;
@@ -3010,7 +3007,6 @@ impl CapKernel {
                 acked_epoch: state.acked_epoch,
                 generation: state.generation,
                 next_pcid: state.next_pcid,
-                pcids_used: state.pcids_used,
                 space: state.space,
             });
         }
@@ -3343,7 +3339,6 @@ impl CapKernel {
             acked_epoch: state.acked_epoch,
             generation: state.generation,
             next_pcid: state.next_pcid,
-            pcids_used: state.pcids_used,
             space: state.space,
         });
         let tracked mut perm;

@@ -495,6 +495,8 @@ pub fn flush_every_context(Tracked(model): Tracked<&mut TlbModel>, core: usize)
         final(model).len() == old(model).len(),
         final(model)[core as int] == Set::<TlbEntry>::empty(),
         forall|d: int| d != core ==> #[trigger] final(model)[d] == old(model)[d],
+        final(model).tags(core as int) == Set::<usize>::empty(),
+        forall|d: int| d != core ==> #[trigger] final(model).tags(d) == old(model).tags(d),
 {
     unsafe {
         core::arch::asm!("dsb ishst", "tlbi vmalle1", "dsb ish", "isb", options(nostack, preserves_flags));
@@ -504,9 +506,15 @@ pub fn flush_every_context(Tracked(model): Tracked<&mut TlbModel>, core: usize)
 /// Points this core's TTBR0_EL1 at the table whose top level is at physical address `root`, as ASID
 /// `id` in bits 63:48: one write changes the table and the id together and flushes nothing, and the
 /// instructions after the ISB translate through the new table. Arm ARM D24.2.208, B2.6.1.
+/// From then on the core may hold entries under `id`, so the tag joins the core's tags in `model`.
 #[verifier(external_body)]
 // external_body(glue): only the hardware can attest which root a core translates through, so only this changes a BaseRegister
-pub fn load_translation_root(Tracked(register): Tracked<&mut BaseRegister>, root: usize, id: usize)
+pub fn load_translation_root(
+    Tracked(register): Tracked<&mut BaseRegister>,
+    Tracked(model): Tracked<&mut TlbModel>,
+    root: usize,
+    id: usize,
+)
     requires
         root % PAGE_SZ == 0,
         id < PCID_MAX,
@@ -514,6 +522,10 @@ pub fn load_translation_root(Tracked(register): Tracked<&mut BaseRegister>, root
         final(register).core() == old(register).core(),
         final(register).root() == root,
         final(register).tag() == id,
+        final(model).len() == old(model).len(),
+        forall|d: int| #[trigger] final(model)[d] == old(model)[d],
+        final(model).tags(old(register).core()) == old(model).tags(old(register).core()).insert(id),
+        forall|d: int| d != old(register).core() ==> #[trigger] final(model).tags(d) == old(model).tags(d),
 {
     let base = (id as u64) << 48 | root as u64;
     unsafe {
