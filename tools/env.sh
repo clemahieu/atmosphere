@@ -5,11 +5,11 @@
 #   source tools/env.sh
 #
 # Expects: rustup (rust-toolchain.toml picks the nightly), a Verus build under
-# tools/verus made by tools/setup-verus.sh, and qemu, edk2-ovmf and gdb
-# from the system package manager.
+# verus at the project root, beside the worktrees, made by tools/setup-verus.sh,
+# and qemu, edk2-ovmf and gdb from the system package manager.
 
 ATMO_TOOLS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VERUS_SRC="$ATMO_TOOLS/verus/source"
+VERUS_SRC="$(cd "$ATMO_TOOLS/../.." && pwd)/verus/source"
 
 # Verus is built against the Rust that rust-toolchain.toml pins, and its binaries link to that sysroot.
 VERUS_RUST_LIB="$(cd "$ATMO_TOOLS" && rustc --print sysroot)/lib"

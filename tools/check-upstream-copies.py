@@ -4,10 +4,11 @@
 """Check that each file the tree copies from upstream differs from it only by its recorded delta.
 
 A record is a unified diff under tools/upstream-copies/, one per copied file. Its '---' line names the
-upstream file and its '+++' line the copy, both relative to the project root. The check applies each
-record to the upstream file as it is now, every hunk at the line its header names and every context
-and removed line matching, and passes when the result is the copy byte for byte. So it fails when the
-upstream file moves (a Verus pin that changes it) and when the copy changes without its record.
+upstream file and its '+++' line the copy, both relative to the tree, so an upstream file in the Verus
+checkout at the project root is under ../verus. The check applies each record to the upstream file as it
+is now, every hunk at the line its header names and every context and removed line matching, and passes
+when the result is the copy byte for byte. So it fails when the upstream file moves (a Verus pin that
+changes it) and when the copy changes without its record.
 
 After a deliberate change, --update rewrites every record, or the ones named, from the two files its
 header names. A new record starts as its two header lines alone.

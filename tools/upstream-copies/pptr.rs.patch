@@ -1,4 +1,4 @@
---- tools/verus/source/vstd/simple_pptr.rs
+--- ../verus/source/vstd/simple_pptr.rs
 +++ kernel/verified/pptr.rs
 @@ -1,15 +1,50 @@
 -use super::layout::*;

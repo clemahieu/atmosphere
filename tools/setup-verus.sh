@@ -2,12 +2,13 @@
 # SPDX-License-Identifier: MIT
 
 # Build upstream Verus at the commit this tree verifies with, the vstd revision in the workspace
-# Cargo.toml, into tools/verus. It pins the same Rust as rust-toolchain.toml.
+# Cargo.toml, into verus at the project root, beside the worktrees, where every worktree's tools
+# read the one build. It pins the same Rust as rust-toolchain.toml.
 set -euo pipefail
 
 tools="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 commit="$(python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["workspace"]["dependencies"]["vstd"]["rev"])' "$tools/../Cargo.toml")"
-verus="$tools/verus"
+verus="$(cd "$tools/../.." && pwd)/verus"
 
 url=https://github.com/verus-lang/verus.git
 if [ ! -d "$verus" ]; then

@@ -26,9 +26,9 @@ tools/setup-verus.sh writes beside the host one, and the shared crates' rlibs go
 target/verus/aarch64-unknown-none/. With no --target the crates are checked for the host, x86_64.
 design/arch-module/ says why one run per target.
 
-It first checks that tools/verus is checked out at the Verus commit the workspace Cargo.toml pins as
-vstd's revision, and exits naming both commits when it is not, since the crates would otherwise be
-checked by a Verus other than the one their vstd comes from.
+It first checks that the Verus checkout, verus at the project root, beside the worktrees, is at the
+Verus commit the workspace Cargo.toml pins as vstd's revision, and exits naming both commits when it is
+not, since the crates would otherwise be checked by a Verus other than the one their vstd comes from.
 
 Expects tools/env.sh to be sourced, which puts rust_verify on PATH.
 
@@ -46,8 +46,12 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 
+# The Verus checkout tools/setup-verus.sh builds and tools/env.sh puts on PATH: one at the project root,
+# outside every tree, which every worktree's tools read.
+VERUS = REPO.parent / "verus"
+
 # The rustc target each --target names. tools/setup-verus.sh builds vstd and verus_builtin for each
-# under tools/verus/source/target-verus/<triple>.
+# under source/target-verus/<triple> in the checkout.
 TARGETS = {"aarch64": "aarch64-unknown-none"}
 
 
@@ -214,7 +218,7 @@ def target_env(triple):
 
 def main(args):
     triple, extra_args = split_target(args)
-    mismatch = checkout_mismatch(REPO / "Cargo.toml", REPO / "tools" / "verus")
+    mismatch = checkout_mismatch(REPO / "Cargo.toml", VERUS)
     if mismatch is not None:
         sys.exit(f"verify: {mismatch}")
     env = target_env(triple)
@@ -350,6 +354,17 @@ class Tests(unittest.TestCase):
                 with_vstd.append(package["name"])
                 self.assertEqual(vstd, {"workspace": True}, package["name"])
         self.assertIn("verified", with_vstd)
+
+    def test_env_sh_and_this_script_read_the_one_checkout_outside_the_tree(self):
+        """A build inside a tree would be one worktree's alone; every worktree's tools read this one."""
+        self.assertNotIn(REPO, VERUS.parents)
+        root = subprocess.run(
+            ["bash", "-c", 'source "$1" && printf %s "$VERUS_ROOT"', "bash", str(REPO / "tools" / "env.sh")],
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        ).stdout
+        self.assertEqual(Path(root), VERUS / "source" / "target-verus" / "release")
 
     def test_a_checkout_at_the_pin_passes_and_one_elsewhere_is_refused(self):
         with tempfile.TemporaryDirectory() as directory:

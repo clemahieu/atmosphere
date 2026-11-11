@@ -17,7 +17,6 @@ build
 .verus-solver-log
 
 serial.log
-/tools/verus
 
 .claude/settings.local.json
 .claude/hooks/license-guard.local
