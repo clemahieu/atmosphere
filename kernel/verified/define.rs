@@ -6,8 +6,6 @@ verus! {
 
 use crate::pptr::*;
 
-pub type CpuId = usize;
-
 pub type PagePtr = usize;
 
 pub type PagePerm4k = PointsTo<[u8; PAGE_SZ]>;
@@ -17,8 +15,6 @@ pub type VAddr = usize;
 pub type PAddr = usize;
 
 pub type PageMapPtr = usize;
-
-pub type IOid = usize;
 
 pub type L4Index = usize;
 

@@ -48,54 +48,6 @@ impl PageEntry {
     }
 }
 
-pub struct MapEntry {
-    pub addr: PAddr,
-    pub write: bool,
-    pub execute_disable: bool,
-}
-
-pub open spec fn spec_page_entry_to_map_entry(p: &PageEntry) -> MapEntry {
-    MapEntry { addr: p.addr, write: p.perm.write, execute_disable: p.perm.execute_disable }
-}
-
-#[verifier(when_used_as_spec(spec_page_entry_to_map_entry))]
-pub fn page_entry_to_map_entry(p: &PageEntry) -> (ret: MapEntry)
-    ensures
-        ret =~= spec_page_entry_to_map_entry(p),
-{
-    MapEntry { addr: p.addr, write: p.perm.write, execute_disable: p.perm.execute_disable }
-}
-
-pub open spec fn spec_map_entry_to_page_entry(m: &MapEntry, ps: bool) -> PageEntry {
-    PageEntry {
-        addr: m.addr,
-        perm: PageEntryPerm {
-            present: true,
-            ps: ps,
-            write: m.write,
-            execute_disable: m.execute_disable,
-            user: true,
-        },
-    }
-}
-
-#[verifier(when_used_as_spec(spec_map_entry_to_page_entry))]
-pub fn map_entry_to_page_entry(m: &MapEntry, ps: bool) -> (ret: PageEntry)
-    ensures
-        ret == spec_map_entry_to_page_entry(m, ps),
-{
-    PageEntry {
-        addr: m.addr,
-        perm: PageEntryPerm {
-            present: true,
-            ps: ps,
-            write: m.write,
-            execute_disable: m.execute_disable,
-            user: true,
-        },
-    }
-}
-
 /// The bits the processor sets in an entry it walks: accessed on any walk through the entry, dirty on
 /// a write through a leaf. The processor sets them on any core at any time, also while this core holds
 /// the kernel, so they are not part of PageEntry, the entry the table view holds and the proofs relate:

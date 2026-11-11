@@ -534,8 +534,8 @@ impl ContextTableEntry {
     }
 }
 
-/// A caller in the kernel that passes a bad id is a bug. The kernel checks a process's id
-/// against `verified::device::DeviceId` before the call.
+/// A caller in the kernel that passes a bad id is a bug. A process names a device only through its
+/// capability, whose record holds the device number boot found (`verified::capability::device`).
 fn assert_device(bus: usize, device: usize, function: usize) {
     assert!(bus < 256 && device < 32 && function < 8, "Device id out of range");
 }

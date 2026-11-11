@@ -10,7 +10,6 @@ use vstd::prelude::verus;
 pub mod arch;
 pub mod capability;
 pub mod define;
-pub mod device;
 pub mod pptr;
 pub mod queue_lock;
 pub mod layouts;
