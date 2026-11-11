@@ -26,8 +26,8 @@
 //! The slots are a slice in this crate. Placing them and the two indices in shared frames, with a
 //! release store of an index after its slots and an acquire load before them, is the caller's.
 #![no_std]
-#![allow(unused)]
 
+#[cfg(verus_keep_ghost)]
 use vstd::arithmetic::div_mod::*;
 use vstd::prelude::*;
 
