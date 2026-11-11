@@ -1725,6 +1725,15 @@ impl CapKernel {
                 }
             }
         }
+        // Core 0 points its base register at the kernel's own root first, under id 0, which no space is
+        // given: a core loads a space only while its register names no space or that one.
+        let named = crate::arch::load_translation_root(0, kernel_root, 0);
+        self.switch_space(0, None, named);
+        let ghost s7 = *self;
+        proof {
+            assert(s7.spaces == r7.spaces);
+            assert forall|d: int| 0 <= d < NUM_CPUS && d != 0 implies #[trigger] s7.cores@[d] == r7.cores@[d] by {}
+        }
         let pcid = self.load_space(0, base, Tracked(&mut steps));
         let ghost m7 = *self;
         let named = crate::arch::load_translation_root(0, base + SPACE_ROOT_PAGE * PAGE_SZ, pcid);
@@ -1753,6 +1762,7 @@ impl CapKernel {
             assert(!l7.process_released(base));
             assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] l7.cores@[d].space != Some(base) by {
                 if d != 0 {
+                    assert(s7.cores@[d] == r7.cores@[d]);
                     assert(l7.cores@[d] == r7.cores@[d]);
                 }
             }
@@ -1761,7 +1771,8 @@ impl CapKernel {
             assert forall|d: int| 0 < d < NUM_CPUS implies !#[trigger] l7.loaded(d, base) by {
                 assert(l7.loaded(d, base) == n7.loaded(d, base));
                 assert(n7.loaded(d, base) == m7.loaded(d, base));
-                assert(m7.loaded(d, base) == r7.loaded(d, base));
+                assert(m7.loaded(d, base) == s7.loaded(d, base));
+                assert(s7.loaded(d, base) == r7.loaded(d, base));
                 lemma_no_core_listed(d as u32);
                 assert(!r7.loaded(d, base));
             }

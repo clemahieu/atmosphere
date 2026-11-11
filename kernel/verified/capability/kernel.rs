@@ -71,14 +71,17 @@ pub open spec fn holds_id(cores: Seq<CoreState>, lists: Map<usize, PointsTo<Spac
     &&& id_generation(lists[s].value().ids@[c]) == cores[c].generation
 }
 
-/// A base register that names space s names one this core is listed on and that is not retired.
-pub open spec fn names_wf(space: Option<usize>, lists: Map<usize, PointsTo<SpaceCores>>, c: int) -> bool {
+/// A base register that names space s names one this core is listed on, that is not retired, and that
+/// holds a valid id at the core's generation `generation`, so the tag the register was written under is
+/// still s's and no other space's.
+pub open spec fn names_wf(space: Option<usize>, generation: usize, lists: Map<usize, PointsTo<SpaceCores>>, c: int) -> bool {
     match space {
         None => true,
         Some(s) => {
             &&& lists.contains_key(s)
             &&& core_listed(lists[s].value().list, c)
             &&& lists[s].value().retired == 0
+            &&& id_generation(lists[s].value().ids@[c]) == generation
         },
     }
 }
@@ -94,7 +97,7 @@ pub tracked struct Translating {
 
 /// No word is ahead of its core's generation, so a new generation leaves no id valid. A valid id is one
 /// already handed out, and no two spaces hold one. Nothing is under a PCID not yet handed out. A core's
-/// base register names a space it is listed on that is not retired.
+/// base register names a space it is listed on, that is not retired and that holds a valid id there.
 #[verifier::opaque]
 pub open spec fn ids_wf(cores: Seq<CoreState>, lists: Map<usize, PointsTo<SpaceCores>>) -> bool {
     &&& forall|c: int| 0 <= c < NUM_CPUS ==> {
@@ -109,7 +112,7 @@ pub open spec fn ids_wf(cores: Seq<CoreState>, lists: Map<usize, PointsTo<SpaceC
     }
     &&& forall|c: int, s: usize, r: usize| 0 <= c < NUM_CPUS && s != r && #[trigger] holds_id(cores, lists, c, s) && #[trigger] holds_id(cores, lists, c, r)
         ==> id_pcid(lists[s].value().ids@[c]) != id_pcid(lists[r].value().ids@[c])
-    &&& forall|c: int| 0 <= c < NUM_CPUS ==> #[trigger] names_wf(cores[c].space, lists, c)
+    &&& forall|c: int| 0 <= c < NUM_CPUS ==> #[trigger] names_wf(cores[c].space, cores[c].generation, lists, c)
 }
 
 /// A word holds its generation and PCID.
@@ -134,7 +137,7 @@ pub proof fn lemma_ids_same(cores: Seq<CoreState>, pre: Map<usize, PointsTo<Spac
         ids_wf(cores, pre),
         post.dom() == pre.dom(),
         forall|r: usize| #[trigger] post.contains_key(r) ==> post[r].value().ids@ == pre[r].value().ids@,
-        forall|c: int| 0 <= c < NUM_CPUS ==> #[trigger] names_wf(cores[c].space, post, c),
+        forall|c: int| 0 <= c < NUM_CPUS ==> #[trigger] names_wf(cores[c].space, cores[c].generation, post, c),
     ensures
         ids_wf(cores, post),
 {
@@ -173,8 +176,8 @@ pub proof fn lemma_id_loaded(cores: Seq<CoreState>, pre: Map<usize, PointsTo<Spa
         ids_wf(cores, post),
 {
     reveal(ids_wf);
-    assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] names_wf(cores[d].space, post, d) by {
-        assert(names_wf(cores[d].space, pre, d));
+    assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] names_wf(cores[d].space, cores[d].generation, post, d) by {
+        assert(names_wf(cores[d].space, cores[d].generation, pre, d));
         if cores[d].space == Some(s) {
             assert(core_listed(post[s].value().list, d));
         }
@@ -230,8 +233,8 @@ pub proof fn lemma_ids_core_step(pre: Seq<CoreState>, post: Seq<CoreState>, list
         forall|s: usize| #[trigger] holds_id(post, lists, c, s) == holds_id(pre, lists, c, s),
 {
     reveal(ids_wf);
-    assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] names_wf(post[d].space, lists, d) by {
-        assert(names_wf(pre[d].space, lists, d));
+    assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] names_wf(post[d].space, post[d].generation, lists, d) by {
+        assert(names_wf(pre[d].space, pre[d].generation, lists, d));
     }
     assert forall|d: int, s: usize| 0 <= d < NUM_CPUS implies #[trigger] holds_id(post, lists, d, s) == holds_id(pre, lists, d, s) by {
         assert(post[d].generation == pre[d].generation);
@@ -264,7 +267,8 @@ pub proof fn lemma_ids_core_step(pre: Seq<CoreState>, post: Seq<CoreState>, list
     }
 }
 
-/// The ids after core c starts a new generation with nothing used: no space's id is valid there.
+/// The ids after core c starts a new generation with nothing used: no space's id is valid there, so its
+/// base register must name no space.
 pub proof fn lemma_ids_new_generation(pre: Seq<CoreState>, post: Seq<CoreState>, lists: Map<usize, PointsTo<SpaceCores>>, c: int)
     requires
         ids_wf(pre, lists),
@@ -275,14 +279,15 @@ pub proof fn lemma_ids_new_generation(pre: Seq<CoreState>, post: Seq<CoreState>,
         post[c].generation <= ID_GENERATION_MAX,
         1 <= post[c].next_pcid <= PCID_MAX,
         post[c].pcids_used@ == Set::<usize>::empty(),
+        pre[c].space is None,
         post[c].space == pre[c].space,
     ensures
         ids_wf(post, lists),
         forall|s: usize| !#[trigger] holds_id(post, lists, c, s),
 {
     reveal(ids_wf);
-    assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] names_wf(post[d].space, lists, d) by {
-        assert(names_wf(pre[d].space, lists, d));
+    assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] names_wf(post[d].space, post[d].generation, lists, d) by {
+        assert(names_wf(pre[d].space, pre[d].generation, lists, d));
     }
     assert forall|s: usize| !#[trigger] holds_id(post, lists, c, s) by {
         if lists.contains_key(s) {
@@ -330,8 +335,8 @@ pub proof fn lemma_ids_space_added(cores: Seq<CoreState>, pre: Map<usize, Points
         ids_wf(cores, post),
 {
     reveal(ids_wf);
-    assert forall|c: int| 0 <= c < NUM_CPUS implies #[trigger] names_wf(cores[c].space, post, c) by {
-        assert(names_wf(cores[c].space, pre, c));
+    assert forall|c: int| 0 <= c < NUM_CPUS implies #[trigger] names_wf(cores[c].space, cores[c].generation, post, c) by {
+        assert(names_wf(cores[c].space, cores[c].generation, pre, c));
         if let Some(r) = cores[c].space {
             assert(post[r] == pre[r]);
         }
@@ -383,8 +388,8 @@ pub proof fn lemma_ids_space_removed(cores: Seq<CoreState>, pre: Map<usize, Poin
         ids_wf(cores, post),
 {
     reveal(ids_wf);
-    assert forall|c: int| 0 <= c < NUM_CPUS implies #[trigger] names_wf(cores[c].space, post, c) by {
-        assert(names_wf(cores[c].space, pre, c));
+    assert forall|c: int| 0 <= c < NUM_CPUS implies #[trigger] names_wf(cores[c].space, cores[c].generation, post, c) by {
+        assert(names_wf(cores[c].space, cores[c].generation, pre, c));
         assert(cores[c].space != Some(base));
         if let Some(r) = cores[c].space {
             assert(post[r] == pre[r]);
@@ -423,15 +428,15 @@ pub proof fn lemma_ids_named(pre: Seq<CoreState>, post: Seq<CoreState>, lists: M
         post[c].generation == pre[c].generation,
         post[c].next_pcid == pre[c].next_pcid,
         post[c].pcids_used == pre[c].pcids_used,
-        names_wf(post[c].space, lists, c),
+        names_wf(post[c].space, post[c].generation, lists, c),
     ensures
         ids_wf(post, lists),
         forall|d: int, s: usize| 0 <= d < NUM_CPUS ==> #[trigger] holds_id(post, lists, d, s) == holds_id(pre, lists, d, s),
 {
     reveal(ids_wf);
-    assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] names_wf(post[d].space, lists, d) by {
+    assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] names_wf(post[d].space, post[d].generation, lists, d) by {
         if d != c {
-            assert(names_wf(pre[d].space, lists, d));
+            assert(names_wf(pre[d].space, pre[d].generation, lists, d));
         }
     }
     assert forall|d: int, s: usize| 0 <= d < NUM_CPUS implies #[trigger] holds_id(post, lists, d, s) == holds_id(pre, lists, d, s) by {
@@ -1181,7 +1186,8 @@ impl CapKernel {
         &&& !self.past_retire(c, s)
     }
 
-    /// A core depends on the space its base register names.
+    /// A core depends on the space its base register names, and that space holds a valid id on the core,
+    /// so the tag the register was written under is still that space's alone.
     pub proof fn lemma_named_depends(&self, c: int, s: usize)
         requires
             self.wf(),
@@ -1191,9 +1197,10 @@ impl CapKernel {
             self.loaded(c, s),
             self.spaces.loaded@[s].value().retired == 0,
             self.depends(c, s),
+            holds_id(self.cores@, self.spaces.loaded@, c, s),
     {
         reveal(ids_wf);
-        assert(names_wf(self.cores@[c].space, self.spaces.loaded@, c));
+        assert(names_wf(self.cores@[c].space, self.cores@[c].generation, self.spaces.loaded@, c));
     }
 
     /// A core holds an entry of a space only if it depends on the space. A translation to an unmapped page
@@ -1602,7 +1609,7 @@ impl CapKernel {
             assert forall|c: int, t: usize| 0 <= c < NUM_CPUS && #[trigger] runs(self.cores@, c, t) implies false by {
                 assert(self.cores@[c].current_thread is None);
             }
-            assert forall|c: int| 0 <= c < NUM_CPUS implies #[trigger] names_wf(self.cores@[c].space, self.spaces.loaded@, c) by {
+            assert forall|c: int| 0 <= c < NUM_CPUS implies #[trigger] names_wf(self.cores@[c].space, self.cores@[c].generation, self.spaces.loaded@, c) by {
                 assert(self.cores@[c].space is None);
             }
         }

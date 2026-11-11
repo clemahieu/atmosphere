@@ -150,7 +150,9 @@ impl CapKernel {
 
     /// Core c loads process space s: from here on it may hold what the space's tables say, and it is on
     /// the space's list of cores, for an unmap to find. Pointing the core's base register at it is
-    /// switch_space's.
+    /// switch_space's. The register names no space, or s already: a load that ran out of PCIDs starts a
+    /// new generation, which leaves no space's id valid, and a space the register named would keep a
+    /// tag a later load could hand to another space.
     pub fn load_space(&mut self, c: usize, s: usize, Tracked(steps): Tracked<&mut Steps>) -> (pcid: usize)
         requires
             old(self).wf(),
@@ -158,6 +160,7 @@ impl CapKernel {
             old(self).spaces.roots@.contains_key(s),
             old(self).spaces.records@[s].value().kind is Process,
             old(self).cores@[c as int].generation < ID_GENERATION_MAX,
+            old(self).cores@[c as int].space is None || old(self).cores@[c as int].space == Some(s),
         ensures
             final(steps).count <= old(steps).count + LOAD_SPACE_STEPS,
             Self::step_ok(*old(self), *final(self), c as int),
@@ -238,6 +241,10 @@ impl CapKernel {
             }
             word % PAGE_SZ
         } else {
+            proof {
+                reveal(ids_wf);
+                assert(names_wf(pre.cores@[c as int].space, pre.cores@[c as int].generation, pre.spaces.loaded@, c as int));
+            }
             self.fresh_pcid(c, Tracked(steps))
         };
         let ghost after = *self;
@@ -282,7 +289,7 @@ impl CapKernel {
     }
 
     /// A root at any offset of a table block but a space's root page is no space's root, since every
-    /// space starts a block of TABLE_PAGE_BYTES: switch_space may take such a root for None.
+    /// space starts a block of TABLE_PAGE_BYTES: the root switch_space takes for None.
     pub proof fn lemma_no_space_root(&self, root: usize)
         requires
             self.wf(),
@@ -299,11 +306,13 @@ impl CapKernel {
         }
     }
 
-    /// Core c's base register now names the root of `space`, or a root that is no space's for None, as
-    /// the token from the glue that wrote it attests. A space's root goes in under the PCID or ASID the
-    /// space holds on c, so what the core then caches is under that space's tag. A register names only
-    /// a loaded space that is not retired, and a retire refuses while one names it, so a core that has acknowledged a retire never
-    /// walks the space again. See design/teardown-driven-by-retype/.
+    /// Core c's base register now names the root of `space`, or for None a root no space can have, now
+    /// or after any retype, as the token from the glue that wrote it attests: every space's root is at
+    /// SPACE_ROOT_PAGE of a block of TABLE_PAGE_BYTES, so a root at another offset of such a block is
+    /// none (lemma_no_space_root). A space's root goes in under the PCID or ASID the space holds on c,
+    /// so what the core then caches is under that space's tag. A register names only a loaded space that
+    /// is not retired, and a retire refuses while one names it, so a core that has acknowledged a retire
+    /// never walks the space again. See design/teardown-driven-by-retype/.
     pub fn switch_space(&mut self, c: usize, space: Option<usize>, Tracked(t): Tracked<Translating>)
         requires
             old(self).wf(),
@@ -317,7 +326,7 @@ impl CapKernel {
                     &&& holds_id(old(self).cores@, old(self).spaces.loaded@, c as int, s)
                     &&& t.tag == id_pcid(old(self).spaces.loaded@[s].value().ids@[c as int])
                 },
-                None => forall|s: usize| #[trigger] old(self).spaces.roots@.contains_key(s) ==> t.root != s + SPACE_ROOT_PAGE * PAGE_SZ,
+                None => t.root % TABLE_PAGE_BYTES != SPACE_ROOT_PAGE * PAGE_SZ,
             },
         ensures
             Self::step_ok(*old(self), *final(self), c as int),
@@ -385,12 +394,13 @@ impl CapKernel {
     }
 
     /// Hands out core c's next PCID. Run out, it flushes every context on this core first and starts a
-    /// new generation, which leaves no space's id valid here.
+    /// new generation, which leaves no space's id valid here, so the core's base register names no space.
     fn fresh_pcid(&mut self, c: usize, Tracked(steps): Tracked<&mut Steps>) -> (p: usize)
         requires
             old(self).wf(),
             c < NUM_CPUS,
             old(self).cores@[c as int].generation < ID_GENERATION_MAX,
+            old(self).cores@[c as int].space is None,
         ensures
             final(steps).count <= old(steps).count + FRESH_PCID_STEPS,
             Self::step_ok(*old(self), *final(self), c as int),

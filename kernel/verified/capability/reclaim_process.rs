@@ -359,9 +359,9 @@ impl CapKernel {
         }
         assert(spaces_wf(&post.list, &post.tables, sb, &post.blocks));
         assert(tree_of(&post.table_pages, &post.spaces) == tree_of(&pre.table_pages, &pre.spaces));
-        assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] names_wf(pre.cores@[d].space, sb.loaded@, d) by {
+        assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] names_wf(pre.cores@[d].space, pre.cores@[d].generation, sb.loaded@, d) by {
             reveal(ids_wf);
-            assert(names_wf(pre.cores@[d].space, sa.loaded@, d));
+            assert(names_wf(pre.cores@[d].space, pre.cores@[d].generation, sa.loaded@, d));
             if let Some(r) = pre.cores@[d].space {
                 assert(r != s);
                 assert(sb.loaded@[r] == sa.loaded@[r]);
