@@ -1,6 +1,7 @@
 <!doctype html>
 <!-- The page tools/bead-status.py serves. It draws what /data gives and asks again every POLL
-     seconds while its tab is visible. Every title and reason is put in as text, never as markup. -->
+     seconds while its tab is visible. The issue named after the # of its address is the one whose
+     details are open, out of /issue/. Every title and text is put in as text, never as markup. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -13,6 +14,7 @@
   --plane: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
   --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11, 11, 11, 0.10); --wash: rgba(11, 11, 11, 0.05);
   --open: #2a78d6; --created: #eb6834; --closed: #1baf7a; --track: #cde2fb; --serious: #ec835a;
+  --flying: #fbdccd; --edge: #b4b3a9;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -20,6 +22,7 @@
     --plane: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
     --grid: #2c2c2a; --axis: #383835; --border: rgba(255, 255, 255, 0.10); --wash: rgba(255, 255, 255, 0.06);
     --open: #3987e5; --created: #d95926; --closed: #199e70; --track: #104281; --serious: #ec835a;
+    --flying: #5e2a13; --edge: #55544f;
   }
 }
 * { box-sizing: border-box; }
@@ -79,6 +82,40 @@ th, td { text-align: right; padding: 3px 12px; border-top: 1px solid var(--grid)
 th:first-child, td:first-child { text-align: left; padding-left: 0; }
 th { font-weight: 600; color: var(--ink-2); border-top: 0; }
 
+.legend.keys { flex-wrap: wrap; gap: 4px 16px; }
+.glyph { display: inline-block; width: auto; vertical-align: -2px; margin-right: 6px; }
+#graph { overflow-x: auto; }
+.node { cursor: pointer; }
+.node rect, .node path { fill: var(--surface); stroke: var(--muted); stroke-width: 1.5; }
+.node text { fill: var(--ink); font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.node.ready rect, .node.ready path { fill: var(--track); stroke: var(--open); }
+.node.flying rect, .node.flying path { fill: var(--flying); stroke: var(--created); }
+.node.question rect, .node.question path { stroke: var(--serious); stroke-width: 3; }
+.node.deferred rect, .node.deferred path { stroke-dasharray: 3 3; }
+.node.deferred text { fill: var(--muted); }
+.node.chosen rect, .node.chosen path { stroke: var(--ink); stroke-width: 3; }
+.node:focus-visible { outline: 2px solid var(--open); outline-offset: 2px; }
+.edge { fill: none; stroke: var(--edge); stroke-width: 1.25; }
+.edge.through { stroke-dasharray: 4 3; }
+svg.focus .node:not(.lit), svg.focus .edge:not(.lit) { opacity: 0.2; }
+svg.focus .edge.lit { stroke: var(--ink-2); stroke-width: 1.75; }
+.tip.wide { white-space: normal; width: max-content; max-width: 380px; z-index: 1; }
+
+#detail { position: fixed; top: 0; right: 0; bottom: 0; width: min(560px, 100vw); z-index: 2; overflow-y: auto; padding: 16px 20px 32px; background: var(--surface); border-left: 1px solid var(--border); box-shadow: -8px 0 24px rgba(0, 0, 0, 0.14); }
+#detail .head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 8px; }
+#detail .head .id { font-size: 13px; }
+#detail button { font: inherit; font-size: 13px; color: var(--ink-2); background: none; border: 1px solid var(--border); border-radius: 6px; padding: 4px 12px; cursor: pointer; }
+#detail button:hover { background: var(--wash); }
+#detail h2 { font-size: 16px; margin: 4px 0; overflow-wrap: anywhere; }
+#detail h3 { font-size: 12px; font-weight: 600; color: var(--ink-2); margin: 18px 0 4px; }
+#detail pre { margin: 0; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Where there is room the page makes way for the open panel, and elsewhere the panel lies over it. */
+@media (min-width: 1200px) { body.detailed { padding-right: 576px; } }
+.near { display: grid; gap: 4px; }
+.near a { color: inherit; text-decoration: none; overflow-wrap: anywhere; }
+.near a:hover .id { text-decoration: underline; }
+.near a.done { color: var(--muted); }
+
 .pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; }
 .epic { display: grid; grid-template-columns: minmax(0, 1fr) minmax(80px, 200px) 150px; gap: 12px; align-items: center; padding: 4px 0; }
 .meter { height: 8px; border-radius: 4px; background: var(--track); overflow: hidden; }
@@ -98,6 +135,11 @@ th { font-weight: 600; color: var(--ink-2); border-top: 0; }
   <div id="tiles"></div>
   <section><div class="head"><h2>In flight</h2><span class="note" id="idle"></span></div><div class="rows" id="flights"></div></section>
   <section><div class="head"><h2>Questions for you</h2></div><div class="rows" id="questions"></div></section>
+  <section id="waits">
+    <div class="head"><h2>What waits on what</h2><div class="legend keys" id="keys"></div></div>
+    <div class="chart"><div id="graph"></div><div class="tip wide" id="graphtip" hidden></div></div>
+    <p class="note" style="margin: 12px 0 0">Every issue not closed, under the ones it waits on: nothing blocks the top rows, and a line runs down from an issue to each one that waits on it, dashed when the wait is its epic's. An issue opens its details.</p>
+  </section>
   <section>
     <div class="head"><h2>Issues not closed</h2><div class="ranges" id="ranges"></div></div>
     <div class="chart" id="open"></div>
@@ -114,6 +156,10 @@ th { font-weight: 600; color: var(--ink-2); border-top: 0; }
     <section><div class="head"><h2>Closed last</h2></div><div class="rows" id="closed"></div></section>
   </div>
 </main>
+<aside id="detail" hidden>
+  <div class="head"><span class="id" id="detailid"></span><button type="button" id="close">Close</button></div>
+  <div id="detailbody"></div>
+</aside>
 <script>
 "use strict";
 const POLL = 10, HOUR = 3600, DAY = 86400, READY_SHOWN = 12;
@@ -159,7 +205,7 @@ const period = (start, bucket) => bucket < DAY
   : bucket === DAY ? date(start, DAYOF) : `${date(start, DAYOF)} – ${date(start + bucket - 1, DAYOF)}`;
 
 /* The issues not closed at each change inside the window, and what each bucket of it created and closed. */
-function history(events, now, [, length, fixed]) {
+function tally(events, now, [, length, fixed]) {
   const from = length ? now - length : (events.length ? events[0][0] : now);
   const bucket = fixed || STEPS.find(step => (now - from) / step <= 30) || STEPS.at(-1);
   const t0 = floorTo(from, bucket), t1 = floorTo(now, bucket) + bucket;
@@ -287,7 +333,7 @@ function drawFlow(past) {
 }
 
 function drawHistory() {
-  const past = history(data.events, Math.floor(data.now), RANGES[range]);
+  const past = tally(data.events, Math.floor(data.now), RANGES[range]);
   drawOpen(past);
   drawFlow(past);
   $("flowtitle").textContent = `Created and closed per ${per(past.bucket)}`;
@@ -354,6 +400,245 @@ function drawLists() {
   )));
 }
 
+/* The graph of waits. Each rank is a layer, rank 0 the top one. A wait that reaches past the next
+   layer runs down a trunk its blocker shares with its other long waits, so a layer holds bends as
+   well as issues. A layer's order is the one of SWEEPS with the fewest crossings, and each vertex
+   then sits as near the mean of those it is joined to as its neighbours in the layer leave room. */
+const NODE = 22, LAYER = 60, ROW = 28, GAP = 8, EDGE = 3, SWEEPS = 24, SETTLES = 40;
+const FONT = "11px ui-monospace, SFMono-Regular, Menlo, monospace";
+const STATES = {ready: "ready", flying: "in progress", waiting: "waiting", question: "question for you", deferred: "deferred"};
+const state = node => node.status === "in_progress" ? "flying" : node.status === "blocked" ? "question" : node.status === "deferred" ? "deferred" : node.ready ? "ready" : "waiting";
+const natural = (a, b) => a.localeCompare(b, "en", {numeric: true});
+const mean = values => values.reduce((sum, value) => sum + value, 0) / values.length;
+const tenth = value => Math.round(value * 10) / 10;
+const shape = (type, wide, tall = NODE) => type === "epic"
+  ? s("path", {d: `M${tall * 0.4},0H${wide - tall * 0.4}L${wide},${tall / 2}L${wide - tall * 0.4},${tall}H${tall * 0.4}L0,${tall / 2}Z`})
+  : s("rect", {width: wide, height: tall, rx: tall / 2});
+const meter = document.createElement("canvas").getContext("2d");
+let arranged = null, arrangedFor = "", drawn = "";
+
+function arrange(nodes) {
+  const byId = new Map(nodes.map(node => [node.id, node]));
+  const waits = nodes.flatMap(node => [...node.blockers.map(from => ({from, to: node.id})), ...(node.under ? [{from: node.under, to: node.id, through: true}] : [])]);
+  let layers = [];
+  const vertex = (rank, fields) => { const made = {rank, up: [], down: [], w: 0, ...fields}; (layers[rank] ||= []).push(made); return made; };
+  const join = (upper, lower) => { upper.down.push(lower); lower.up.push(upper); };
+  const placed = new Map();
+  const place = id => placed.get(id) ?? placed.set(id, vertex(byId.get(id).rank, {node: byId.get(id), w: byId.get(id).w})).get(id);
+  const below = new Map();
+  for (const wait of waits) below.set(wait.from, [...(below.get(wait.from) ?? []), wait]);
+  for (const [from, out] of below) {
+    const trunk = [place(from)], far = Math.max(...out.map(wait => byId.get(wait.to).rank));
+    for (let rank = trunk[0].rank + 1; rank < far; rank++) { const bend = vertex(rank, {}); join(trunk.at(-1), bend); trunk.push(bend); }
+    for (const wait of out) {
+      const end = place(wait.to);
+      wait.route = [...trunk.slice(0, end.rank - trunk[0].rank), end];
+      join(wait.route.at(-2), end);
+    }
+  }
+
+  const number = () => layers.forEach(layer => layer.forEach((vertex, at) => { vertex.at = at; }));
+  const sweep = (layer, side) => {
+    for (const vertex of layer) vertex.want = vertex[side].length ? mean(vertex[side].map(other => other.at)) : vertex.at;
+    layer.sort((a, b) => a.want - b.want || a.at - b.at).forEach((vertex, at) => { vertex.at = at; });
+  };
+  const crossings = () => layers.reduce((found, layer) => {
+    const lines = layer.flatMap(vertex => vertex.down.map(other => [vertex.at, other.at]));
+    lines.forEach((a, index) => { for (const b of lines.slice(index + 1)) if ((a[0] - b[0]) * (a[1] - b[1]) < 0) found++; });
+    return found;
+  }, 0);
+  layers[0]?.sort((a, b) => natural(a.node.id, b.node.id));
+  number();
+  let best = {count: Infinity};
+  for (let round = 0; round < SWEEPS; round++) {
+    if (round % 2) for (let rank = layers.length - 2; rank >= 0; rank--) sweep(layers[rank], "down");
+    else for (let rank = 1; rank < layers.length; rank++) sweep(layers[rank], "up");
+    const count = crossings();
+    if (count < best.count) best = {count, layers: layers.map(layer => [...layer])};
+  }
+  layers = best.layers;
+  number();
+
+  /* off is where a vertex is from the first of its layer when the layer is packed. What is left is
+     to slide runs of the layer: least squares toward each vertex's neighbours, weighed by how many
+     it has, pooling the vertices that would otherwise pass each other. */
+  for (const layer of layers) layer.forEach((vertex, at) => {
+    vertex.off = at ? layer[at - 1].off + (layer[at - 1].w + vertex.w) / 2 + GAP : 0;
+    vertex.x = vertex.off;
+  });
+  const settle = layer => {
+    const pools = [];
+    for (const vertex of layer) {
+      const near = [...vertex.up, ...vertex.down];
+      let pool = {sum: near.reduce((sum, other) => sum + other.x - vertex.off, 0), weight: near.length, members: [vertex]};
+      while (pools.length && pools.at(-1).sum / pools.at(-1).weight > pool.sum / pool.weight) {
+        const last = pools.pop();
+        pool = {sum: last.sum + pool.sum, weight: last.weight + pool.weight, members: [...last.members, ...pool.members]};
+      }
+      pools.push(pool);
+    }
+    for (const pool of pools) for (const vertex of pool.members) vertex.x = pool.sum / pool.weight + vertex.off;
+  };
+  for (let round = 0; round < SETTLES; round++) {
+    layers.forEach(settle);
+    layers.toReversed().forEach(settle);
+  }
+  const all = layers.flat(), left = Math.min(...all.map(vertex => vertex.x - vertex.w / 2));
+  for (const vertex of all) vertex.x -= left;
+  return {layers, waits, loose: nodes.filter(node => !placed.has(node.id)), width: all.length ? Math.max(...all.map(vertex => vertex.x + vertex.w / 2)) : 0};
+}
+
+function drawGraph() {
+  const key = JSON.stringify(data.graph);
+  if (key !== arrangedFor) {
+    const root = data.graph.reduce((prefix, node) => {
+      while (prefix && node.id !== prefix && !node.id.startsWith(`${prefix}.`)) prefix = prefix.slice(0, Math.max(prefix.lastIndexOf("."), 0));
+      return prefix;
+    }, data.graph[0]?.id ?? "");
+    meter.font = FONT;
+    for (const node of data.graph) {
+      node.label = root && node.id !== root ? node.id.slice(root.length + 1) : node.id;
+      node.w = Math.ceil(meter.measureText(node.label).width) + (node.type === "epic" ? 28 : 18);
+    }
+    arranged = arrange(data.graph);
+    arrangedFor = key;
+  }
+  const {layers, waits} = arranged, box = $("graph"), section = $("waits"), tip = $("graphtip");
+  // The section grows past the page's column, as far as the body, when the graph is wider.
+  const column = section.parentElement.clientWidth, body = getComputedStyle(document.body);
+  const most = document.body.clientWidth - parseFloat(body.paddingLeft) - parseFloat(body.paddingRight);
+  const wide = Math.max(column, Math.min(most, arranged.width + 2 * EDGE + 34));
+  section.style.width = `${wide}px`;
+  section.style.marginLeft = `${(column - wide) / 2}px`;
+  const room = box.clientWidth - 2 * EDGE;
+  // Drawn again only when the graph or the room for it changed, so that a read leaves the pointer's issue lit.
+  if (`${room} ${key}` === drawn) return;
+  drawn = `${room} ${key}`;
+
+  const marks = new Map(), lines = [], above = new Map(), under = new Map();
+  const mark = (node, x, y) => {
+    const made = s("a", {href: `#${node.id}`, class: `node ${state(node)}`, transform: `translate(${tenth(x)},${y})`},
+      shape(node.type, node.w), s("text", {x: node.w / 2, y: 15, "text-anchor": "middle"}, node.label));
+    marks.set(node.id, made);
+    return made;
+  };
+  // What nothing joins to anything, in rows: the ready first.
+  const states = Object.keys(STATES);
+  const loose = arranged.loose.toSorted((a, b) => states.indexOf(state(a)) - states.indexOf(state(b)) || natural(a.id, b.id));
+  let x = 0, y = 0;
+  const rows = loose.map(node => {
+    if (x && x + node.w > room) { x = 0; y += ROW; }
+    x += node.w + GAP;
+    return mark(node, x - node.w - GAP, y);
+  });
+  const top = loose.length ? y + ROW + 16 : 0, left = Math.max(0, (room - arranged.width) / 2);
+  const height = layers.length ? top + (layers.length - 1) * LAYER + NODE : top - 16 - ROW + NODE;
+  const where = vertex => [tenth(left + vertex.x), top + vertex.rank * LAYER];
+  for (const wait of waits) {
+    for (const [links, from, to] of [[above, wait.to, wait.from], [under, wait.from, wait.to]]) links.set(from, [...(links.get(from) ?? []), to]);
+    let d = "";
+    wait.route.forEach((vertex, at) => {
+      const [x1, y1] = where(vertex);
+      if (!at) { d = `M${x1},${y1 + NODE}`; return; }
+      const [x0, y0] = where(wait.route[at - 1]), bend = (y1 - y0 - NODE) / 2;
+      d += `C${x0},${y0 + NODE + bend} ${x1},${y1 - bend} ${x1},${y1}`;
+      if (!vertex.node) d += `V${y1 + NODE}`;
+    });
+    lines.push([wait, s("path", {class: wait.through ? "edge through" : "edge", d})]);
+  }
+  const svg = s("svg", {width: Math.max(room, arranged.width) + 2 * EDGE, height: Math.max(height, 0) + 2 * EDGE, role: "img", "aria-label": `The ${data.graph.length} issues not closed and the ${waits.length} waits between them.`},
+    s("g", {transform: `translate(${EDGE},${EDGE})`},
+      lines.map(([, line]) => line), rows,
+      layers.flat().filter(vertex => vertex.node).map(vertex => mark(vertex.node, left + vertex.x - vertex.w / 2, top + vertex.rank * LAYER))));
+  svg.style.width = `${Math.max(room, arranged.width) + 2 * EDGE}px`;
+
+  // An issue under the pointer lights everything it waits on, however far up, and everything that waits on it.
+  const reach = (id, links) => { const found = new Set([id]); for (const at of found) for (const next of links.get(at) ?? []) found.add(next); return found; };
+  const dim = () => { svg.classList.remove("focus"); tip.hidden = true; };
+  for (const node of data.graph) {
+    const made = marks.get(node.id);
+    const light = () => {
+      const up = reach(node.id, above), down = reach(node.id, under);
+      svg.classList.add("focus");
+      for (const [id, other] of marks) other.classList.toggle("lit", up.has(id) || down.has(id));
+      for (const [wait, line] of lines) line.classList.toggle("lit", (up.has(wait.from) && up.has(wait.to)) || (down.has(wait.from) && down.has(wait.to)));
+      tip.replaceChildren(
+        h("div", {}, h("span", {class: "id"}, node.id), h("span", {class: "when"}, `${node.type} · P${node.priority} · ${STATES[state(node)]}`)),
+        h("div", {}, node.title),
+        h("div", {class: "when"}, `waits on ${up.size - 1} · ${down.size - 1} wait on it`),
+      );
+      tip.hidden = false;
+      // Beside the issue, since what it is joined to is above and below it.
+      const at = made.getBoundingClientRect(), frame = tip.parentElement.getBoundingClientRect();
+      tip.style.left = `${Math.max(0, at.right + 8 + tip.offsetWidth > frame.right ? at.left - frame.left - 8 - tip.offsetWidth : at.right - frame.left + 8)}px`;
+      tip.style.top = `${at.top - frame.top + (at.height - tip.offsetHeight) / 2}px`;
+    };
+    for (const [on, off] of [["pointerenter", "pointerleave"], ["focus", "blur"]]) { made.addEventListener(on, light); made.addEventListener(off, dim); }
+  }
+  tip.hidden = true;
+  box.replaceChildren(svg);
+  choose();
+}
+
+/* The issue named after the # of the address: marked in the graph, its details in the panel. */
+const chosen = () => location.hash.slice(1);
+let detailed = "";
+function choose() {
+  for (const node of data ? data.graph : []) $("graph").querySelector(`a[href="#${CSS.escape(node.id)}"]`)?.classList.toggle("chosen", node.id === chosen());
+}
+function drawDetail(issue) {
+  // An issue made since the graph was read is not in it yet, and says only its status.
+  const word = row => { const node = data.graph.find(node => node.id === row.id); return node && row.status !== "closed" ? STATES[state(node)] : row.status.replace("_", " "); };
+  const near = (title, rows) => rows.length ? [h("h3", {}, title), h("div", {class: "near"}, rows.map(row =>
+    h("a", {href: `#${row.id}`, class: row.status === "closed" ? "done" : ""}, h("span", {class: "id"}, row.id), row.title, h("span", {class: "meta"}, ` · ${row.type} · ${word(row)}`))))] : [];
+  const text = (title, body) => body ? [h("h3", {}, title), h("pre", {}, body)] : [];
+  const when = {...DAYOF, ...HOUROF};
+  if ($("detailid").textContent !== issue.id) $("detail").scrollTop = 0;
+  $("detailid").textContent = issue.id;
+  fill("detailbody",
+    meta(issue.type, `P${issue.priority}`, word(issue), issue.assignee, ...issue.labels),
+    h("h2", {}, issue.title),
+    meta(trail(issue)),
+    meta(`created ${date(issue.created, when)}`, issue.closed && `closed ${date(issue.closed, when)}`),
+    near("Waits on", issue.blockers), near("Waited on by", issue.dependents), near("Under", issue.parent ? [issue.parent] : []), near("Below it", issue.children),
+    text("Description", issue.text.description), text("Acceptance criteria", issue.text.acceptance_criteria), text("Design", issue.text.design),
+    text("Notes", issue.text.notes), text("Close reason", issue.text.close_reason),
+  );
+}
+function reveal(shown) {
+  if ($("detail").hidden !== shown) return;
+  $("detail").hidden = !shown;
+  document.body.classList.toggle("detailed", shown);
+  fit();
+}
+async function showIssue() {
+  const name = chosen();
+  choose();
+  if (!name) { reveal(false); detailed = ""; return; }
+  let text;
+  try {
+    const reply = await fetch(`/issue/${encodeURIComponent(name)}`);
+    text = await reply.text();
+    if (!reply.ok) throw new Error(text.trim());
+  } catch (failure) {
+    if (name !== chosen()) return;
+    $("detailid").textContent = name;
+    fill("detailbody", h("p", {class: "empty warn"}, failure.message));
+    detailed = "";
+    reveal(true);
+    return;
+  }
+  // What is drawn stays while it is what the tree still says, so that a selection in it survives the next read.
+  if (name !== chosen() || text + arrangedFor === detailed) return;
+  detailed = text + arrangedFor;
+  drawDetail(JSON.parse(text));
+  reveal(true);
+}
+function closeIssue() {
+  history.pushState(null, "", location.pathname + location.search);
+  showIssue();
+}
+
 function tick() {
   const now = serverNow();
   for (const element of document.querySelectorAll("[data-since]")) element.textContent = clock(now - Number(element.dataset.since));
@@ -368,6 +653,7 @@ function draw() {
   drawTiles();
   drawFlights();
   drawLists();
+  drawGraph();
   drawHistory();
   document.title = `${data.flights.length} in flight${data.questions.length ? ` · ${data.questions.length} to answer` : ""} · Bead status`;
   tick();
@@ -382,6 +668,7 @@ async function load() {
     skew = data.now - readAt / 1000;
     failed = null;
     draw();
+    showIssue();
   } catch (failure) {
     failed = failure.message;
     tick();
@@ -399,7 +686,17 @@ fill("ranges", RANGES.map(([label], index) => {
   return button;
 }));
 let resized = 0;
-addEventListener("resize", () => { cancelAnimationFrame(resized); resized = requestAnimationFrame(() => data && drawHistory()); });
+function fit() { if (data) { drawGraph(); drawHistory(); } }
+addEventListener("resize", () => { cancelAnimationFrame(resized); resized = requestAnimationFrame(fit); });
+const glyph = (type, name, text) => h("span", {}, s("svg", {class: "glyph", width: 26, height: 16, viewBox: "-2 -2 26 16"}, s("g", {class: `node ${name}`}, shape(type, 22, 12))), text);
+fill("keys", glyph("task", "waiting", "leaf"), glyph("epic", "waiting", "epic"), Object.entries(STATES).map(([name, text]) => glyph("task", name, text)));
+$("close").addEventListener("click", closeIssue);
+addEventListener("keydown", event => { if (event.key === "Escape" && !$("detail").hidden) closeIssue(); });
+addEventListener("hashchange", async () => {
+  if (!data) return;
+  await showIssue();
+  $("graph").querySelector(".chosen")?.scrollIntoView({block: "nearest", inline: "nearest"});
+});
 document.addEventListener("visibilitychange", () => { if (!document.hidden) load(); });
 setInterval(() => { if (!document.hidden) load(); }, POLL * 1000);
 setInterval(tick, 1000);

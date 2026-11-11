@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """The state of the Beads tree as a page for a browser: how many issues are not closed over time,
 what each session holds and the stage its round is at, the questions waiting on the human, the
-ready leaves, each top epic's progress and what closed last.
+graph of what waits on what, the ready leaves, each top epic's progress and what closed last. An
+issue of the graph opens its details: its texts and the issues around it.
 
 The server reads Beads only while a page asks. A request for /data runs bd when what the server
 holds is older than AGE seconds, and the page (tools/bead-status.html) asks only while its tab is
@@ -25,6 +26,7 @@ import threading
 import time
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -75,6 +77,70 @@ def brief(issue, by_id):
         "priority": issue["priority"],
         "type": issue["issue_type"],
         "trail": [epic["title"] for epic in reversed(above[:-1])],
+    }
+
+
+def order(name):
+    """What sorts issue ids by their numbers, a.2 ahead of a.10."""
+    return [(int(part), "") if part.isdigit() else (0, part) for part in name.split(".")]
+
+
+def blockers(issue):
+    """The ids a `blocks` dependency of the issue names, closed or not, in their order."""
+    return sorted({link["depends_on_id"] for link in issue.get("dependencies", []) if link["type"] == "blocks"}, key=order)
+
+
+def graph(issues, ready):
+    """Every issue not closed as a node under what it waits on: its blockers, the issues not closed
+    that a `blocks` dependency of it names, and its parent when the parent waits, since bd counts
+    the child of a blocked epic as blocked by it. The rank is the longest chain of waits above the
+    issue, so rank 0 waits on nothing. Ready is bd's word, given as the issues `bd ready` lists."""
+    live = {issue["id"]: issue for issue in issues if issue["status"] != "closed"}
+    ready = {issue["id"] for issue in ready}
+    nodes = {}
+
+    def node(name):
+        if name not in nodes:
+            issue = live[name]
+            waits = [other for other in blockers(issue) if other in live]
+            parent = issue.get("parent")
+            under = parent if parent in live and node(parent)["rank"] else None
+            above = waits + [under] if under else waits
+            nodes[name] = {
+                "id": name,
+                "title": issue["title"],
+                "type": issue["issue_type"],
+                "status": issue["status"],
+                "priority": issue["priority"],
+                "ready": name in ready,
+                "blockers": waits,
+                "under": under,
+                "rank": 1 + max(node(other)["rank"] for other in above) if above else 0,
+            }
+        return nodes[name]
+
+    return [node(name) for name in live]
+
+
+def detail(issues, name):
+    """What the page shows of one issue, closed or not: its texts whole and the issues around it. None when the tree has no such issue."""
+    by_id = {issue["id"]: issue for issue in issues}
+    if name not in by_id:
+        return None
+    issue = by_id[name]
+    near = lambda found: [{"id": other["id"], "title": other["title"], "type": other["issue_type"], "status": other["status"]} for other in sorted(found, key=lambda other: order(other["id"]))]
+    return {
+        **brief(issue, by_id),
+        "status": issue["status"],
+        "assignee": issue.get("assignee"),
+        "labels": issue.get("labels", []),
+        "created": seconds(issue["created_at"]),
+        "closed": seconds(issue["closed_at"]) if issue["status"] == "closed" else None,
+        "parent": near([by_id[issue["parent"]]])[0] if "parent" in issue else None,
+        "children": near(other for other in issues if other.get("parent") == name),
+        "blockers": near(by_id[other] for other in blockers(issue)),
+        "dependents": near(other for other in issues if name in blockers(other)),
+        "text": {key: issue.get(key, "") for key in ("description", "acceptance_criteria", "design", "notes", "close_reason")},
     }
 
 
@@ -152,7 +218,7 @@ def progress(issues):
                     "closed": sum(issue["status"] == "closed" for issue in under),
                     "flying": sum(issue["status"] == "in_progress" for issue in under),
                 })
-    return sorted(rows, key=lambda row: [(int(part), "") if part.isdigit() else (0, part) for part in row["id"].split(".")])
+    return sorted(rows, key=lambda row: order(row["id"]))
 
 
 def summary(issues, ready, seen, running, root, now):
@@ -175,6 +241,7 @@ def summary(issues, ready, seen, running, root, now):
         "idle": sorted(actor for actor in seen if running(actor) and actor not in held),
         "questions": [{**brief(issue, by_id), "created": seconds(issue["created_at"])} for issue in questions],
         "ready": [brief(issue, by_id) for issue in ready if issue["issue_type"] != "epic"],
+        "graph": graph(issues, ready),
         "epics": progress(issues),
         "closed": [
             {
@@ -189,41 +256,64 @@ def summary(issues, ready, seen, running, root, now):
 
 
 def read(root, now):
-    """The summary of the tree at this project root as it is now."""
+    """Every issue of the tree at this project root, and their summary as it is now."""
     bd = lambda *arguments: json.loads(subprocess.run(["bd", *arguments, "--json", "--limit", "0"], cwd=root, check=True, capture_output=True, text=True).stdout)
-    return summary(bd("list", "--all"), bd("ready"), clocks(round_status().state_dir(root)), alive, root, now)
+    issues = bd("list", "--all")
+    return issues, summary(issues, bd("ready"), clocks(round_status().state_dir(root)), alive, root, now)
 
 
 class Beads:
-    """The summary as the body of a reply, read again once it is older than AGE however many pages ask."""
+    """The tree as the bodies of replies, read again once it is older than AGE however many pages ask."""
 
     def __init__(self, root):
         self.root = root
         self.lock = threading.Lock()
         self.read_at = 0
+        self.issues = []
         self.held = b""
+
+    def fresh(self):
+        """Read the tree again when what is held is too old; the caller holds the lock."""
+        now = time.time()
+        if now - self.read_at > AGE:
+            self.issues, found = read(self.root, now)
+            self.held = json.dumps(found).encode()
+            self.read_at = now
 
     def body(self):
         with self.lock:
-            now = time.time()
-            if now - self.read_at > AGE:
-                self.held = json.dumps(read(self.root, now)).encode()
-                self.read_at = now
+            self.fresh()
             return self.held
+
+    def issue(self, name):
+        """The details of that issue as a body, or None when the tree has no such issue."""
+        with self.lock:
+            self.fresh()
+            found = detail(self.issues, name)
+            return found and json.dumps(found).encode()
 
 
 class Page(BaseHTTPRequestHandler):
+    ISSUE = "/issue/"
+
     def do_GET(self):
-        if self.path == "/":
-            self.reply(200, "text/html; charset=utf-8", PAGE.read_bytes())
-        elif self.path == "/data":
-            try:
+        try:
+            if self.path == "/":
+                self.reply(200, "text/html; charset=utf-8", PAGE.read_bytes())
+            elif self.path == "/data":
                 self.reply(200, "application/json", self.server.beads.body())
-            except subprocess.CalledProcessError as failure:
-                # bd is another process, and it gives up when the tree's lock stays held.
-                self.reply(503, "text/plain; charset=utf-8", f"bd {failure.cmd[1]} exited {failure.returncode}: {failure.stderr.strip()}".encode())
-        else:
-            self.reply(404, "text/plain; charset=utf-8", b"not found\n")
+            elif self.path.startswith(self.ISSUE):
+                # The id is the browser's word: one the tree does not have is refused, and none reaches bd.
+                body = self.server.beads.issue(urllib.parse.unquote(self.path[len(self.ISSUE):]))
+                if body:
+                    self.reply(200, "application/json", body)
+                else:
+                    self.reply(404, "text/plain; charset=utf-8", b"no such issue\n")
+            else:
+                self.reply(404, "text/plain; charset=utf-8", b"not found\n")
+        except subprocess.CalledProcessError as failure:
+            # bd is another process, and it gives up when the tree's lock stays held.
+            self.reply(503, "text/plain; charset=utf-8", f"bd {failure.cmd[1]} exited {failure.returncode}: {failure.stderr.strip()}".encode())
 
     def reply(self, status, kind, body):
         self.send_response(status)
@@ -265,11 +355,16 @@ class Tests(unittest.TestCase):
         self.root = Path(self.directory.name).resolve()
         (self.root / "logs").mkdir()
 
-    def issue(self, name, status="open", kind="task", created="2026-11-10T10:00:00Z", **fields):
+    def issue(self, name, status="open", kind="task", created="2026-11-10T10:00:00Z", needs=(), **fields):
         parent = name.rpartition(".")[0]
         issue = {"id": name, "title": f"Title of {name}", "status": status, "priority": 1, "issue_type": kind, "created_at": created, **fields}
+        # As bd lists them: the issues a `blocks` dependency names, then the parent, and no list at all for a root.
+        links = [{"depends_on_id": other, "type": "blocks"} for other in needs]
         if parent:
             issue["parent"] = parent
+            links.append({"depends_on_id": parent, "type": "parent-child"})
+        if links:
+            issue["dependencies"] = links
         if status == "closed":
             issue.setdefault("closed_at", "2026-11-10T11:00:00Z")
             issue.setdefault("close_reason", "done")
@@ -369,6 +464,58 @@ class Tests(unittest.TestCase):
         self.assertEqual(rows[0], {"id": "a.1", "title": "Title of a.1", "status": "open", "total": 4, "closed": 3, "flying": 1})
         self.assertEqual((rows[1]["total"], rows[1]["closed"], rows[1]["flying"]), (2, 0, 0))
 
+    def waits(self):
+        """The tree with waits in it: a.3 on a.10.1 and on a closed issue, a.2.1 on a.3 and on a.1.2, and a.4 on a.2.1."""
+        issues = {issue["id"]: issue for issue in self.tree()}
+        issues["a.3"] = self.issue("a.3", kind="epic", needs=["a.10.1", "a.1.1"])
+        issues["a.3.1"] = self.issue("a.3.1")
+        issues["a.3.1.1"] = self.issue("a.3.1.1")
+        issues["a.2.1"] = self.issue("a.2.1", "blocked", needs=["a.3", "a.1.2"])
+        issues["a.4"] = self.issue("a.4", "blocked", needs=["a.2.1"])
+        return list(issues.values())
+
+    def test_the_graph_is_every_issue_not_closed_under_what_it_waits_on(self):
+        issues = self.waits()
+        by_id = {issue["id"]: issue for issue in issues}
+        found = {node["id"]: node for node in graph(issues, [by_id["a.10.1"], by_id["a.1"]])}
+        self.assertEqual(sorted(found), sorted(issue["id"] for issue in issues if issue["status"] != "closed"))
+        self.assertEqual(found["a.10.1"], {"id": "a.10.1", "title": "Title of a.10.1", "type": "task", "status": "open", "priority": 1, "ready": True, "blockers": [], "under": None, "rank": 0})
+        # An epic is a node as a leaf is, and a wait on a closed issue is no wait.
+        self.assertEqual((found["a.3"]["type"], found["a.3"]["blockers"], found["a.3"]["rank"], found["a.3"]["ready"]), ("epic", ["a.10.1"], 1, False))
+        # The rank is the longest chain of waits above the issue.
+        self.assertEqual((found["a.2.1"]["blockers"], found["a.2.1"]["rank"]), (["a.1.2", "a.3"], 2))
+        self.assertEqual((found["a.4"]["blockers"], found["a.4"]["rank"]), (["a.2.1"], 3))
+        # What an epic waits on its children wait on through it, and theirs through them.
+        self.assertEqual((found["a.3.1"]["blockers"], found["a.3.1"]["under"], found["a.3.1"]["rank"]), ([], "a.3", 2))
+        self.assertEqual((found["a.3.1.1"]["under"], found["a.3.1.1"]["rank"]), ("a.3.1", 3))
+        # An epic that waits on nothing passes nothing down, whatever waits below it.
+        self.assertEqual((found["a.2"]["rank"], found["a.2.2"]["under"], found["a.2.1"]["under"], found["a"]["rank"]), (0, None, None, 0))
+        self.assertEqual((found["a.1"]["ready"], found["a.1.2"]["ready"], found["a.1.2"]["status"]), (True, False, "in_progress"))
+
+    def test_the_details_of_an_issue_are_its_texts_and_the_issues_around_it(self):
+        issues = self.waits()
+        by_id = {issue["id"]: issue for issue in issues}
+        by_id["a.3"].update(description="What it is.", acceptance_criteria="When it is done.", notes="n" * 5000, labels=["skeptic"], assignee="claude-11")
+        found = detail(issues, "a.3")
+        self.assertEqual({key: found[key] for key in ("id", "title", "priority", "type", "trail", "status", "assignee", "labels")}, {
+            "id": "a.3", "title": "Title of a.3", "priority": 1, "type": "epic", "trail": [], "status": "open", "assignee": "claude-11", "labels": ["skeptic"],
+        })
+        self.assertEqual((found["created"], found["closed"]), (seconds("2026-11-10T10:00:00Z"), None))
+        self.assertEqual(found["parent"], {"id": "a", "title": "Title of a", "type": "epic", "status": "open"})
+        self.assertEqual([row["id"] for row in found["children"]], ["a.3.1"])
+        # A wait on a closed issue is shown as one, closed.
+        self.assertEqual([(row["id"], row["status"]) for row in found["blockers"]], [("a.1.1", "closed"), ("a.10.1", "open")])
+        self.assertEqual([(row["id"], row["status"]) for row in found["dependents"]], [("a.2.1", "blocked")])
+        # Every text whole, and an empty one for what the issue does not have.
+        self.assertEqual(found["text"], {"description": "What it is.", "acceptance_criteria": "When it is done.", "design": "", "notes": "n" * 5000, "close_reason": ""})
+        json.dumps(found)
+        closed = detail(issues, "a.1.3")
+        self.assertEqual((closed["closed"], closed["trail"], closed["text"]["close_reason"]), (seconds("2026-11-10T12:00:00Z"), ["Title of a.1"], "x" * 500))
+        self.assertEqual((detail(issues, "a")["parent"], detail(issues, "a")["blockers"]), (None, []))
+        # The children in the order of their numbers.
+        self.assertEqual([row["id"] for row in detail(issues, "a")["children"]], ["a.1", "a.2", "a.3", "a.4", "a.10"])
+        self.assertIsNone(detail(issues, "a.99"))
+
     def test_the_summary_is_what_the_page_draws(self):
         issues = self.tree()
         by_id = {issue["id"]: issue for issue in issues}
@@ -384,6 +531,7 @@ class Tests(unittest.TestCase):
         self.assertEqual([(row["id"], row["created"]) for row in found["questions"]], [("a.4", seconds("2026-11-10T09:30:00Z")), ("a.2.1", seconds("2026-11-10T10:00:00Z"))])
         self.assertEqual([row["id"] for row in found["ready"]], ["a.10.1"])
         self.assertEqual([row["id"] for row in found["epics"]], ["a.1", "a.2", "a.10"])
+        self.assertEqual(found["graph"], graph(issues, [by_id["a.3"], by_id["a.10.1"], by_id["a"]]))
         # What closed last comes first, with the start of its reason.
         self.assertEqual([(row["id"], row["actor"], len(row["reason"])) for row in found["closed"]], [("a.1.3", "claude-12", TEXT_SHOWN), ("a.1.1", None, 4)])
         json.dumps(found)
@@ -433,6 +581,12 @@ class Tests(unittest.TestCase):
         self.assertEqual([row["id"] for row in found["ready"]], ["a.10.1"])
         with urllib.request.urlopen(f"{address}/data") as reply:
             self.assertEqual(json.load(reply), found)
+        # An issue's details come out of the same read.
+        with urllib.request.urlopen(f"{address}/issue/a.1.2") as reply:
+            self.assertEqual(reply.headers["Content-Type"], "application/json")
+            self.assertEqual(json.load(reply), detail(self.tree(), "a.1.2"))
+        self.assertEqual(self.refused(f"{address}/issue/a.99"), (404, "no such issue\n"))
+        self.assertEqual(self.refused(f"{address}/issue/"), (404, "no such issue\n"))
         self.assertEqual((self.root / "calls").read_text(), "list --all --json --limit 0\nready --json --limit 0\n")
 
     def test_the_server_gives_the_page_and_nothing_else(self):
@@ -445,8 +599,8 @@ class Tests(unittest.TestCase):
 
     def test_a_bd_that_fails_is_reported_and_asked_again(self):
         address = self.serve("echo 'database is locked' >&2\nexit 3")
-        for _ in range(2):
-            self.assertEqual(self.refused(f"{address}/data"), (503, "bd list exited 3: database is locked"))
+        for path in ("/data", "/issue/a.1"):
+            self.assertEqual(self.refused(f"{address}{path}"), (503, "bd list exited 3: database is locked"))
         self.assertEqual((self.root / "calls").read_text(), "list --all --json --limit 0\n" * 2)
 
 
