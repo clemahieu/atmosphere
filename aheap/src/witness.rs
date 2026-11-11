@@ -57,7 +57,10 @@
 //! with no spares: it allocates a slot of the first class, then of the last, then of the first
 //! again, which each makes a slab or takes a slot of one. Each class keeps its invariant across the
 //! other's alloc_small, which keeps what a class stands on (`kept`), by its frame lemma; a refusal
-//! stops the sequence, with both classes still well formed.
+//! stops the sequence, with both classes still well formed. The classes' heads stay disjoint, since
+//! a class's new slab run is one the page buddy held as no run before, while each head of the other
+//! class is a run it holds; so every live slot of one class is apart from every live slot of the
+//! other (`lemma_classes_apart`).
 //!
 //! The heap's witness gives one source to a page buddy and a large-object map: it cuts a run, then
 //! allocates an object, frees the run, then the object, and ends with both holding nothing and the
@@ -1310,10 +1313,91 @@ pub fn witness_heap<S: SpanSource>(src: &mut S) -> (r: (PageBuddy, LargeMap, boo
     (pb, map, true)
 }
 
+/// After `alloc_small` took the class from `o` to `n` over the page buddy `pb` and the source's
+/// view `src` it started with, `n` has `o`'s heads and perhaps one more, which no run of `pb` was.
+pub open spec fn heads_grew(o: SizeClass, n: SizeClass, pb: PageBuddy, src: SourceView) -> bool {
+    forall|b: int| #[trigger]
+        n.heads().contains(b) ==> o.heads().contains(b) || forall|y: int, j: nat| #[trigger]
+            run_held(pb, src, y, j) ==> y != b
+}
+
+/// `alloc_small`'s ensures, whatever it returned, give `heads_grew`.
+proof fn lemma_heads_grew(
+    o: SizeClass,
+    n: SizeClass,
+    st0: RecordStore,
+    st1: RecordStore,
+    pb0: PageBuddy,
+    pb1: PageBuddy,
+    s0: SourceView,
+    s1: SourceView,
+    r: Option<(*mut u8, Tracked<PointsToRaw>)>,
+)
+    requires
+        match r {
+            None => n == o,
+            Some(_) => if exists|a: int| #[trigger]
+                o.slabs().contains_key(a) && o.slabs()[a].free_slots() != Set::<int>::empty() {
+                n.heads() == o.heads()
+            } else {
+                exists|a: int| #[trigger]
+                    n.slabs().contains_key(a) && {
+                        &&& n.heads() == o.heads().insert(n.slabs()[a].base()@.addr as int)
+                        &&& forall|y: int, j: nat| #[trigger]
+                            run_held(pb0, s0, y, j) ==> y != n.slabs()[a].base()@.addr
+                    }
+            },
+        },
+    ensures
+        heads_grew(o, n, pb0, s0),
+{
+    match r {
+        None => {},
+        Some(_) => {
+            if !exists|a: int| #[trigger]
+                o.slabs().contains_key(a) && o.slabs()[a].free_slots() != Set::<int>::empty() {
+                let a = choose|a: int| #[trigger]
+                    n.slabs().contains_key(a) && {
+                        &&& n.heads() == o.heads().insert(n.slabs()[a].base()@.addr as int)
+                        &&& forall|y: int, j: nat| #[trigger]
+                            run_held(pb0, s0, y, j) ==> y != n.slabs()[a].base()@.addr
+                    };
+            }
+        },
+    }
+}
+
+/// A class whose heads grew past `o`'s over the page buddy and source that a second class is well
+/// formed over stays apart from the second class's heads, when `o` was.
+proof fn lemma_heads_stay_apart(
+    o: SizeClass,
+    n: SizeClass,
+    other: SizeClass,
+    store: RecordStore,
+    pb: PageBuddy,
+    src: SourceView,
+)
+    requires
+        other.wf(store, pb, src),
+        o.heads().disjoint(other.heads()),
+        heads_grew(o, n, pb, src),
+    ensures
+        n.heads().disjoint(other.heads()),
+        other.heads().disjoint(n.heads()),
+{
+    other.lemma_heads_held(store, pb, src);
+    assert forall|b: int| n.heads().contains(b) implies !other.heads().contains(b) by {
+        if other.heads().contains(b) && !o.heads().contains(b) {
+            assert(run_held(pb, src, b, slab_order(other.class())));
+        }
+    }
+}
+
 /// Two size classes over one record store and page buddy keeping no spare: allocates a slot of the
 /// first class, then of the last, then of the first again, and returns both classes, the store, the
 /// page buddy and how many slots were given. Each class is well formed at the end, the first having
-/// kept its invariant across the last's alloc_small; a refusal stops the sequence.
+/// kept its invariant across the last's alloc_small; the classes' heads are disjoint, so a live
+/// slot of one is apart from every live slot of the other; a refusal stops the sequence.
 pub fn witness_two_classes<S: SpanSource>(src: &mut S) -> (r: (SizeClass, SizeClass, RecordStore, PageBuddy, usize))
     requires
         old(src)@.wf(),
@@ -1325,6 +1409,11 @@ pub fn witness_two_classes<S: SpanSource>(src: &mut S) -> (r: (SizeClass, SizeCl
         r.0.class() == 0,
         r.1.class() == CLASSES - 1,
         r.4 <= 3,
+        r.0.heads().disjoint(r.1.heads()),
+        forall|y: int, z: int|
+            #![trigger r.0.live().contains(y), r.1.live().contains(z)]
+            r.0.live().contains(y) && r.1.live().contains(z) ==> y + class_size(r.0.class()) <= z || z
+                + class_size(r.1.class()) <= y,
 {
     let mut pb = PageBuddy::new(0);
     let mut store = RecordStore::new();
@@ -1333,39 +1422,78 @@ pub fn witness_two_classes<S: SpanSource>(src: &mut S) -> (r: (SizeClass, SizeCl
     let ghost st0 = store;
     let ghost pb0 = pb;
     let ghost s0 = src@;
-    if first.alloc_small(&mut store, &mut pb, src).is_none() {
+    let ghost f0 = first;
+    let ghost l0 = last;
+    proof {
+        assert(f0.heads().disjoint(l0.heads()));
+    }
+    let r1 = first.alloc_small(&mut store, &mut pb, src);
+    proof {
+        last.lemma_frame(st0, pb0, s0, store, pb, src@);
+        lemma_heads_grew(f0, first, st0, store, pb0, pb, s0, src@, r1);
+        lemma_heads_stay_apart(f0, first, l0, st0, pb0, s0);
+    }
+    if r1.is_none() {
         proof {
-            last.lemma_frame(st0, pb0, s0, store, pb, src@);
+            lemma_witness_apart(first, last, store, pb, src@);
         }
         return (first, last, store, pb, 0);
     }
     let ghost st1 = store;
     let ghost pb1 = pb;
     let ghost s1 = src@;
+    let ghost l1 = last;
+    let r2 = last.alloc_small(&mut store, &mut pb, src);
     proof {
-        last.lemma_frame(st0, pb0, s0, st1, pb1, s1);
+        first.lemma_frame(st1, pb1, s1, store, pb, src@);
+        lemma_heads_grew(l1, last, st1, store, pb1, pb, s1, src@, r2);
+        lemma_heads_stay_apart(l1, last, first, st1, pb1, s1);
     }
-    if last.alloc_small(&mut store, &mut pb, src).is_none() {
+    if r2.is_none() {
         proof {
-            first.lemma_frame(st1, pb1, s1, store, pb, src@);
+            lemma_witness_apart(first, last, store, pb, src@);
         }
         return (first, last, store, pb, 1);
     }
     let ghost st2 = store;
     let ghost pb2 = pb;
     let ghost s2 = src@;
+    let ghost f2 = first;
+    let r3 = first.alloc_small(&mut store, &mut pb, src);
     proof {
-        first.lemma_frame(st1, pb1, s1, st2, pb2, s2);
+        last.lemma_frame(st2, pb2, s2, store, pb, src@);
+        lemma_heads_grew(f2, first, st2, store, pb2, pb, s2, src@, r3);
+        lemma_heads_stay_apart(f2, first, last, st2, pb2, s2);
+        lemma_witness_apart(first, last, store, pb, src@);
     }
-    let given = if first.alloc_small(&mut store, &mut pb, src).is_none() {
+    let given = if r3.is_none() {
         2
     } else {
         3
     };
-    proof {
-        last.lemma_frame(st2, pb2, s2, store, pb, src@);
-    }
     (first, last, store, pb, given)
+}
+
+/// Two well-formed classes over one store, page buddy and source with disjoint heads have every
+/// live slot of one apart from every live slot of the other.
+proof fn lemma_witness_apart(first: SizeClass, last: SizeClass, store: RecordStore, pb: PageBuddy, src: SourceView)
+    requires
+        pb.wf(src),
+        first.wf(store, pb, src),
+        last.wf(store, pb, src),
+        first.heads().disjoint(last.heads()),
+    ensures
+        forall|y: int, z: int|
+            #![trigger first.live().contains(y), last.live().contains(z)]
+            first.live().contains(y) && last.live().contains(z) ==> y + class_size(first.class()) <= z || z
+                + class_size(last.class()) <= y,
+{
+    assert forall|y: int, z: int|
+        #![trigger first.live().contains(y), last.live().contains(z)]
+        first.live().contains(y) && last.live().contains(z) implies y + class_size(first.class()) <= z || z
+            + class_size(last.class()) <= y by {
+        first.lemma_classes_apart(&last, store, pb, src, y, z);
+    }
 }
 
 } // verus!

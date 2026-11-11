@@ -12,12 +12,15 @@
 //! held run held and none of them a record page, and the provenance (`kept`), keeps the invariant
 //! (`lemma_frame`), so several classes can share them.
 //!
-//! The heads of the slab runs are `heads()`. Each live slot lies inside the run at one of them
+//! The heads of the slab runs are `heads()`, each a run of the class's slab order that the page
+//! buddy holds (`lemma_heads_held`). Each live slot lies inside the run at one of them
 //! (`lemma_live_in_run`), so it is apart from every run the page buddy holds at another head
 //! (`lemma_live_apart_from_run`), and from every live slot of a second class whose heads are
-//! others (`lemma_classes_apart`).
+//! others (`lemma_classes_apart`). A class starts with no head and gains one only with a new slab,
+//! whose run the page buddy held as no run before, so two classes over one page buddy keep their
+//! heads apart.
 //!
-//! - `new(c)` is class `c` with no slab.
+//! - `new(c)` is class `c` with no slab and no head.
 //! - `alloc_small(store, pb, src)` takes a slot from the first slab with a free one, which goes to
 //!   the full list when it fills, and changes neither the store, the page buddy nor the source.
 //!   With no such slab it cuts a run of the slab order, backs it, makes it a slab and takes a
@@ -756,6 +759,29 @@ impl SizeClass {
         }
     }
 
+    /// Each head is a run of the class's slab order the page buddy holds, every page backed, and no
+    /// record page.
+    pub proof fn lemma_heads_held(&self, store: RecordStore, pb: PageBuddy, src: SourceView)
+        requires
+            self.wf(store, pb, src),
+        ensures
+            forall|b: int| #[trigger]
+                self.heads().contains(b) ==> run_held(pb, src, b, slab_order(self.class())) && !store.pages().contains(
+                    b,
+                ),
+    {
+        let m = self.slabs();
+        assert forall|b: int| #[trigger] self.heads().contains(b) implies run_held(
+            pb,
+            src,
+            b,
+            slab_order(self.class()),
+        ) && !store.pages().contains(b) by {
+            let a = choose|a: int| #[trigger] m.contains_key(a) && m[a].base()@.addr == b;
+            assert(slab_ok(self.class as nat, self.perms@, m[a], a, store, pb, src));
+        }
+    }
+
     /// The live slot `y` lies inside the run at the head `b` this returns: a head of the class, a
     /// run of the class's slab order the page buddy holds, every page backed, and no record page.
     pub proof fn lemma_live_in_run(&self, store: RecordStore, pb: PageBuddy, src: SourceView, y: int) -> (b: int)
@@ -826,6 +852,58 @@ impl SizeClass {
         let b = other.lemma_live_in_run(store, pb, src, z);
         assert(!self.heads().contains(b));
         self.lemma_live_apart_from_run(store, pb, src, y, b, slab_order(other.class()));
+    }
+
+    /// A class whose slab at `a` was replaced by one with the same base has the heads it had.
+    proof fn lemma_heads_replaced(o: SizeClass, n: SizeClass, a: int)
+        requires
+            o.slabs().contains_key(a),
+            n.slabs() == o.slabs().insert(a, n.slabs()[a]),
+            n.slabs()[a].base() == o.slabs()[a].base(),
+        ensures
+            n.heads() == o.heads(),
+    {
+        let m = o.slabs();
+        let nm = n.slabs();
+        assert forall|b: int| n.heads().contains(b) <==> o.heads().contains(b) by {
+            if n.heads().contains(b) {
+                let d = choose|d: int| #[trigger] nm.contains_key(d) && nm[d].base()@.addr == b;
+                assert(m.contains_key(d) && m[d].base()@.addr == b);
+            }
+            if o.heads().contains(b) {
+                let d = choose|d: int| #[trigger] m.contains_key(d) && m[d].base()@.addr == b;
+                assert(nm.contains_key(d) && nm[d].base()@.addr == b);
+            }
+        }
+        assert(n.heads() =~= o.heads());
+    }
+
+    /// A class that gained the slab at `a` has the heads it had and that slab's base.
+    proof fn lemma_heads_added(o: SizeClass, n: SizeClass, a: int)
+        requires
+            !o.slabs().contains_key(a),
+            n.slabs() == o.slabs().insert(a, n.slabs()[a]),
+        ensures
+            n.heads() == o.heads().insert(n.slabs()[a].base()@.addr as int),
+    {
+        let m = o.slabs();
+        let nm = n.slabs();
+        let h = nm[a].base()@.addr as int;
+        assert(nm.contains_key(a));
+        assert forall|b: int| n.heads().contains(b) <==> #[trigger] o.heads().insert(h).contains(b) by {
+            if n.heads().contains(b) && b != h {
+                let d = choose|d: int| #[trigger] nm.contains_key(d) && nm[d].base()@.addr == b;
+                assert(m.contains_key(d) && m[d].base()@.addr == b);
+            }
+            if o.heads().contains(b) {
+                let d = choose|d: int| #[trigger] m.contains_key(d) && m[d].base()@.addr == b;
+                assert(nm.contains_key(d) && nm[d].base()@.addr == b);
+            }
+            if b == h {
+                assert(nm.contains_key(a) && nm[a].base()@.addr == b);
+            }
+        }
+        assert(n.heads() =~= o.heads().insert(h));
     }
 
     /// The slab at `a` of the partial list, after `alloc` gave its free slot at `p`, as `s1` on the
@@ -1180,6 +1258,7 @@ impl SizeClass {
             r.class() == c,
             r.slabs() == Map::<int, Slab>::empty(),
             r.live() == ISet::<int>::empty(),
+            r.heads() == ISet::<int>::empty(),
             forall|store: RecordStore, pb: PageBuddy, src: SourceView| #[trigger] r.wf(store, pb, src),
     {
         let r = SizeClass {
@@ -1191,6 +1270,7 @@ impl SizeClass {
         proof {
             assert(r.slabs() =~= Map::<int, Slab>::empty());
             assert(r.live() =~= ISet::<int>::empty());
+            assert(r.heads() =~= ISet::<int>::empty());
         }
         r
     }
@@ -1248,6 +1328,7 @@ impl SizeClass {
                                         || old(self).slabs()[a].holds(x))
                             }
                         &&& final(self).slabs().dom() == old(self).slabs().dom()
+                        &&& final(self).heads() == old(self).heads()
                         &&& *final(store) == *old(store)
                         &&& *final(pb) == *old(pb)
                         &&& final(src)@ == old(src)@
@@ -1257,6 +1338,11 @@ impl SizeClass {
                                 &&& !old(self).slabs().contains_key(a)
                                 &&& final(self).slabs() == old(self).slabs().insert(a, final(self).slabs()[a])
                                 &&& final(self).slabs()[a].holds(p@.addr as int)
+                                &&& final(self).heads() == old(self).heads().insert(
+                                    final(self).slabs()[a].base()@.addr as int,
+                                )
+                                &&& forall|y: int, j: nat| #[trigger]
+                                    run_held(*old(pb), old(src)@, y, j) ==> y != final(self).slabs()[a].base()@.addr
                                 &&& new_slab(
                                     *old(store),
                                     *final(store),
@@ -1321,6 +1407,7 @@ impl SizeClass {
                 SizeClass::lemma_took_slot(o, *self, *store, *pb, src@, a, s1, p@.addr as int);
                 assert forall|y: int| #[trigger] o.live().contains(y) implies y != p@.addr as int by {}
                 assert(self.slabs().dom() =~= o.slabs().dom());
+                SizeClass::lemma_heads_replaced(o, *self, a);
             }
             return Some((p, slot));
         }
@@ -1543,6 +1630,10 @@ impl SizeClass {
             // What the call changed: the slab's run cut and backed, then its record taken.
             assert(s1n.base()@.addr == qi);
             assert(self.slabs()[a] == s1n);
+            SizeClass::lemma_heads_added(o, *self, a);
+            assert forall|y: int, j: nat| #[trigger] run_held(pb0, s0, y, j) implies y != qi by {
+                lemma_cut_keeps_held(pb0, pb1, s0, s1, qi, kk, y, j);
+            }
             assert(cut_run(pb0, pb2, s0, s1, qi, kk));
             assert(took_run(pb0, pb2, s0, s2, qi, kk));
             lemma_cut_runs(pb0, pb1, s0, s1, qi, kk);
@@ -1563,6 +1654,8 @@ impl SizeClass {
                 &&& !o.slabs().contains_key(a)
                 &&& self.slabs() == o.slabs().insert(a, self.slabs()[a])
                 &&& self.slabs()[a].holds(p@.addr as int)
+                &&& self.heads() == o.heads().insert(self.slabs()[a].base()@.addr as int)
+                &&& forall|y: int, j: nat| #[trigger] run_held(pb0, s0, y, j) ==> y != self.slabs()[a].base()@.addr
                 &&& new_slab(st0, *store, pb0, *pb, s0, src@, a, self.slabs()[a].base()@.addr as int, kk)
             });
         }
