@@ -369,6 +369,7 @@ impl CapKernel {
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).devices == old(self).devices,
+            final(self).iommus.present == old(self).iommus.present,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).wf(),
             final(self).list == old(self).list,
@@ -499,6 +500,7 @@ impl CapKernel {
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).devices == old(self).devices,
+            final(self).iommus.present == old(self).iommus.present,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).wf(),
             final(self).list.seq@[0] == root,
@@ -548,6 +550,7 @@ impl CapKernel {
                 self.stale_epoch == pre.stale_epoch,
                 self.flush_epoch == pre.flush_epoch,
                 self.devices == pre.devices,
+                self.iommus.present == pre.iommus.present,
                 r <= runs@.len(),
                 runs_wf(runs@),
                 bs == runs_blocks(runs@, MAX_ORDER as nat),
@@ -612,6 +615,7 @@ impl CapKernel {
                     forall|t: int| 0 <= t < bs.len() ==> payload_wf(page_block_payload(#[trigger] bs[t])),
                     self.wf(),
                     self.devices == pre.devices,
+                    self.iommus.present == pre.iommus.present,
                     self.list.seq@[0] == root,
                     self.tables.has_slot(&self.list, process, ROOT_PROCESS_SLOT),
                     self.tables.node_of(process, ROOT_PROCESS_SLOT) == leaf + 1,
@@ -831,6 +835,7 @@ impl CapKernel {
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).devices == old(self).devices,
+            final(self).iommus.present == old(self).iommus.present,
             ret is None ==> runs_blocks(runs@, MAX_ORDER as nat).len() > ROOT_UNTYPED_SLOTS && *final(self) == *old(self),
             ret matches Some(count) ==> {
                 let bs = runs_blocks(runs@, MAX_ORDER as nat);

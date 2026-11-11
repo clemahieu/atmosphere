@@ -764,6 +764,7 @@ impl CapKernel {
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).devices == old(self).devices,
+            final(self).iommus.present == old(self).iommus.present,
             ret is None ==> image_blocks(runs@).len() > ROOT_FRAME_SLOTS && *final(self) == *old(self),
             ret matches Some(count) ==> {
                 let bs = image_blocks(runs@);
@@ -860,6 +861,7 @@ impl CapKernel {
                 self.stale_epoch == pre.stale_epoch,
                 self.flush_epoch == pre.flush_epoch,
                 self.devices == pre.devices,
+                self.iommus.present == pre.iommus.present,
                 r <= runs@.len(),
                 image_runs_wf(runs@),
                 phys == image_phys(runs@),
@@ -923,6 +925,7 @@ impl CapKernel {
                     self.stale_epoch == pre.stale_epoch,
                     self.flush_epoch == pre.flush_epoch,
                     self.devices == pre.devices,
+                    self.iommus.present == pre.iommus.present,
                     r < runs@.len(),
                     image_runs_wf(runs@),
                     phys == image_phys(runs@),

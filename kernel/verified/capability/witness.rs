@@ -641,10 +641,11 @@ impl CapKernel {
         image: Ghost<Seq<ImageRun>>,
         untyped: Ghost<usize>,
         frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
         base: usize,
     ) -> (ret: bool)
         requires
-            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@),
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
             image_tables_bound(image@) + 2 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
         ensures
@@ -1202,10 +1203,11 @@ impl CapKernel {
         image: Ghost<Seq<ImageRun>>,
         untyped: Ghost<usize>,
         frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
         base: usize,
     ) -> (ret: (bool, bool, ReclaimStep, bool, ReclaimStep, ReclaimStep, ReclaimStep, ReclaimStep, bool))
         requires
-            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@),
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
             image_tables_bound(image@) + 2 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
         ensures
@@ -1224,7 +1226,7 @@ impl CapKernel {
             witness_alive(*final(self), base),
     {
         hide(CapKernel::wf);
-        let ok0 = self.witness_process_holds_capability(root, process, leaf, frames, t, free, image, untyped, frame, base);
+        let ok0 = self.witness_process_holds_capability(root, process, leaf, frames, t, free, image, untyped, frame, present, base);
         let ghost r0 = *self;
         let ghost first = page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]);
         let ghost u = (leaf@ + ROOT_UNTYPED_SLOT) as usize;
@@ -1904,10 +1906,11 @@ impl CapKernel {
         image: Ghost<Seq<ImageRun>>,
         untyped: Ghost<usize>,
         frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
         base: usize,
     ) -> (ret: bool)
         requires
-            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@),
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
             image_tables_bound(image@) + 9 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
         ensures
@@ -2484,10 +2487,11 @@ impl CapKernel {
         image: Ghost<Seq<ImageRun>>,
         untyped: Ghost<usize>,
         frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
         base: usize,
     ) -> (ret: bool)
         requires
-            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@),
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
             image_tables_bound(image@) + 9 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
         ensures
@@ -2508,7 +2512,7 @@ impl CapKernel {
             }),
     {
         hide(CapKernel::wf);
-        let shared = self.witness_root_maps_one_frame_into_two_processes(root, process, leaf, frames, t, free, image, untyped, frame, base);
+        let shared = self.witness_root_maps_one_frame_into_two_processes(root, process, leaf, frames, t, free, image, untyped, frame, present, base);
         let ghost s8 = *self;
         let ghost nf = (base + PROCESS_BYTES + 3) as usize;
         let ghost g = ((base + 10 * PAGE_SZ) / PAGE_SZ as int) as usize;
@@ -2606,11 +2610,12 @@ impl CapKernel {
         image: Ghost<Seq<ImageRun>>,
         untyped: Ghost<usize>,
         frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
         base: usize,
         l4: usize,
     ) -> (ret: bool)
         requires
-            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@),
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
             image_tables_bound(image@) + 4 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
             KERNEL_MEM_END_L4INDEX <= l4 < ENTRIES,
@@ -2852,7 +2857,7 @@ impl CapKernel {
         ok1 && ok2 && ok3 && ok4
     }
 
-    /// From the state boot leaves, on a machine that has the IOMMU the device sits behind, as the root
+    /// From the state boot leaves, when boot was given the IOMMU the device sits behind as present, as the root
     /// at `process`, with the order-3 block at `base` the first of three free ones past those boot's
     /// tables took from the first untyped: retype a leaf into root entry 2 of the root's table at the
     /// second block's first two pages, a process at `base` into slot 1 of that leaf, and a leaf at the
@@ -2875,16 +2880,17 @@ impl CapKernel {
         image: Ghost<Seq<ImageRun>>,
         untyped: Ghost<usize>,
         frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
         base: usize,
         info: DeviceInfo,
     ) -> (ret: bool)
         requires
-            old(self).booted(root, process, leaf@, frames@, t@, free@, image@, untyped@, frame@),
+            old(self).booted(root, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
             image_tables_bound(image@) + 3 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
             info.iommu < NUM_IOMMUS,
             info.number < IOMMU_DEVICES,
-            old(self).iommu_present(info.iommu as int),
+            present@[info.iommu as int],
         ensures
             ret,
             ({

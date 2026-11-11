@@ -206,6 +206,7 @@ impl CapKernel {
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).devices == old(self).devices,
+            final(self).iommus.present == old(self).iommus.present,
             ret is None <==> (image_blocks(runs@).len() > ROOT_FRAME_SLOTS || !image_virt_wf(runs@)
                 || image_tables_bound(runs@) > untyped_tables(old(self).payload_of(old(self).root_untyped(process)))),
             ret is None ==> *final(self) == *old(self),

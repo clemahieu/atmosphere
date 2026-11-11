@@ -185,6 +185,7 @@ impl CapKernel {
     /// maps exactly the image, and its level 4 entries outside the kernel slots that no image run
     /// reaches are empty, so a table built there is the root's own to fill; of
     /// the first untyped's order-3 blocks, every one past those the image's tables can take is free;
+    /// the IOMMUs present are the `present` boot was given, which a bind needs of its device's IOMMU;
     /// the root reaches exactly the console, power and the pages of its process, its thread, the free
     /// runs and the image, and nothing else reaches anything the root does not, besides itself.
     pub open spec fn booted(
@@ -198,6 +199,7 @@ impl CapKernel {
         image: Seq<ImageRun>,
         untyped: usize,
         frame: usize,
+        present: Seq<bool>,
     ) -> bool {
         let bs = runs_blocks(free, MAX_ORDER as nat);
         let b = tree_of(&self.table_pages, &self.spaces);
@@ -251,6 +253,7 @@ impl CapKernel {
         &&& !self.blocks.pages@[(process / PAGE_SZ) as int].dead
         &&& self.flush_epoch == 0
         &&& self.devices.count == 0
+        &&& self.iommus.present@ == present
         &&& forall|r: int| 2 <= r < ROOT_ENTRIES ==> #[trigger] self.tables.leaf(process, r) == NO_LEAF
         &&& forall|j: int| image_tables_bound(image) <= j < untyped_tables(first)
             ==> #[trigger] self.root_table_block(process, cursor_block(first.base, j))
@@ -346,7 +349,7 @@ impl CapKernel {
                 ||| !image_virt_wf(image@)
                 ||| image_tables_bound(image@) > untyped_tables(page_block_payload(bs[0]))
             }),
-            ret matches Some((untyped, frame)) ==> final(self).booted(root, process, leaf, frames, t, free@, image@, untyped, frame),
+            ret matches Some((untyped, frame)) ==> final(self).booted(root, process, leaf, frames, t, free@, image@, untyped, frame, iommus_present@),
     {
         hide(CapKernel::wf);
         self.init(root, Tracked(root_perm), kernel_entries, iommus_present, iommu_commands);

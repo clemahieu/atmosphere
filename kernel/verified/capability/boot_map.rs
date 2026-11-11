@@ -739,6 +739,7 @@ impl CapKernel {
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).devices == old(self).devices,
+            final(self).iommus.present == old(self).iommus.present,
             Self::maps_done(*old(self), *final(self), process, runs@),
     {
         hide(CapKernel::wf);
@@ -756,6 +757,7 @@ impl CapKernel {
                 self.stale_epoch == pre.stale_epoch,
                 self.flush_epoch == pre.flush_epoch,
                 self.devices == pre.devices,
+                self.iommus.present == pre.iommus.present,
                 pre.maps_ready(root, process, leaf2, runs@),
                 r <= runs@.len(),
                 idx as int == image_offset(runs@, r as int),
@@ -784,6 +786,7 @@ impl CapKernel {
                     self.stale_epoch == pre.stale_epoch,
                     self.flush_epoch == pre.flush_epoch,
                     self.devices == pre.devices,
+                    self.iommus.present == pre.iommus.present,
                     pre.maps_ready(root, process, leaf2, runs@),
                     r < runs@.len(),
                     phys == runs@[r as int].phys,
@@ -833,6 +836,7 @@ impl CapKernel {
                         self.stale_epoch == pre.stale_epoch,
                         self.flush_epoch == pre.flush_epoch,
                         self.devices == pre.devices,
+                        self.iommus.present == pre.iommus.present,
                         pre.maps_ready(root, process, leaf2, runs@),
                         r < runs@.len(),
                         phys == runs@[r as int].phys,

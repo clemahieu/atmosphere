@@ -144,6 +144,7 @@ impl CapKernel {
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).devices == old(self).devices,
+            final(self).iommus.present == old(self).iommus.present,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).wf(),
             final(self).list.seq@[0] == root,
@@ -419,6 +420,7 @@ impl CapKernel {
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).devices == old(self).devices,
+            final(self).iommus.present == old(self).iommus.present,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).wf(),
             final(self).list.seq@[0] == root,
@@ -701,6 +703,7 @@ impl CapKernel {
         ensures
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).devices == old(self).devices,
+            final(self).iommus.present == old(self).iommus.present,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).wf(),
             final(self).list.seq@[0] == root,
@@ -835,6 +838,7 @@ impl CapKernel {
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).devices == old(self).devices,
+            final(self).iommus.present == old(self).iommus.present,
             final(self).wf(),
             final(self).list.seq@[0] == root,
             final(self).tables.has_slot(&final(self).list, process, ROOT_PROCESS_SLOT),
@@ -1168,6 +1172,7 @@ impl CapKernel {
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).devices == old(self).devices,
+            final(self).iommus.present == old(self).iommus.present,
             final(self).wf(),
             final(self).list.seq@[0] == root,
             final(self).tables.roots == old(self).tables.roots,
@@ -1362,6 +1367,7 @@ impl CapKernel {
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).devices == old(self).devices,
+            final(self).iommus.present == old(self).iommus.present,
             final(self).wf(),
             final(self).list.seq@[0] == root,
             final(self).tables.roots == old(self).tables.roots,
