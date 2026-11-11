@@ -395,6 +395,9 @@ impl Heap {
         assert forall|x: int, k: nat| #[trigger] run_held(pb, s, x, k) implies run_held(pb, t, x, k) by {
             lemma_span_base(pb, s, span_of(x));
         }
+        assert forall|x: int, k: nat, n: nat| #[trigger] run_part(pb, s, x, k, n) implies run_part(pb, t, x, k, n) by {
+            lemma_span_base(pb, s, span_of(x));
+        }
         assert forall|c: int| #[trigger]
             pb.spans().contains_key(c) && !pb.metas().contains(c) implies t.spans.contains_key(c) && t.spans[c]
             == s.spans[c] by {

@@ -20,11 +20,12 @@
 //!   page buddy refused the run, which it does only when no held span has a free page
 //!   (`span_refused`), or the source refused to back the page the page buddy cut (`back_refused`);
 //!   then it frees the run again, so the page buddy holds the runs it held (`runs`), and each run
-//!   its caller held stays allocated with every page backed (`run_held`).
+//!   its caller held stays allocated with every page backed (`run_held`). Whatever it returns, a
+//!   run allocated with only its first pages backed stays so (`run_part`).
 //! - `put(pb, src, p, perm)` takes back the record at `p` with the permission to its bytes and
 //!   never refuses. A page left with no record in use is given back: its page released and its run
 //!   freed (`gave_back`). Each run its caller held at a head that is no record page stays allocated
-//!   with every page backed.
+//!   with every page backed, and one with only its first pages backed stays so (`run_part`).
 #[cfg(verus_keep_ghost)]
 use vstd::arithmetic::div_mod::*;
 #[cfg(verus_keep_ghost)]
@@ -1167,6 +1168,8 @@ impl RecordStore {
             final(self).wf(*final(pb), final(src)@),
             final(pb).spares() == old(pb).spares(),
             others_kept(*old(pb), *final(pb), old(src)@, final(src)@),
+            forall|x: int, k: nat, n: nat| #[trigger]
+                run_part(*old(pb), old(src)@, x, k, n) ==> run_part(*final(pb), final(src)@, x, k, n),
             !old(self).full() ==> {
                 &&& r is Some
                 &&& *final(pb) == *old(pb)
@@ -1216,6 +1219,15 @@ impl RecordStore {
                     assert forall|x: int, k: nat| #[trigger] run_held(pb0, s0, x, k) implies run_held(*pb, src@, x, k) by {
                         lemma_recorded_keeps_held(pb0, s0, src@.refusals.last(), x, k);
                     }
+                    assert forall|x: int, k: nat, n: nat| #[trigger] run_part(pb0, s0, x, k, n) implies run_part(
+                        *pb,
+                        src@,
+                        x,
+                        k,
+                        n,
+                    ) by {
+                        lemma_recorded_keeps_part(pb0, s0, src@.refusals.last(), x, k, n);
+                    }
                     assert forall|c: int| #[trigger] self.headers@.contains_key(c) implies run_held(*pb, src@, c, 0) by {
                         assert(run_held(pb0, s0, c, 0));
                     }
@@ -1258,6 +1270,18 @@ impl RecordStore {
                         assert(run_held(pb2, s2, x, k));
                         lemma_freed_keeps_held(pb2, pb3, s2, s3, qi, x, k);
                     }
+                    assert forall|x: int, k: nat, n: nat| #[trigger] run_part(pb0, s0, x, k, n) implies run_part(
+                        pb3,
+                        s3,
+                        x,
+                        k,
+                        n,
+                    ) by {
+                        lemma_cut_keeps_part(pb0, pb1, s0, s1, qi, 0, x, k, n);
+                        lemma_recorded_keeps_part(pb1, s1, s2.refusals.last(), x, k, n);
+                        assert(run_part(pb2, s2, x, k, n));
+                        lemma_freed_keeps_part(pb2, pb3, s2, s3, qi, x, k, n);
+                    }
                     assert forall|b: int| #[trigger] self.headers@.contains_key(b) implies run_held(pb3, s3, b, 0) by {
                         assert(run_held(pb0, s0, b, 0));
                     }
@@ -1286,6 +1310,16 @@ impl RecordStore {
                             assert(old(self).headers@.contains_key(b));
                             lemma_backed_keeps_held(pb1, s1, pb1.span_base(c), qi, 1, b, 0);
                         }
+                    }
+                    assert forall|x: int, k: nat, n: nat| #[trigger] run_part(pb0, s0, x, k, n) implies run_part(
+                        pb2,
+                        s2,
+                        x,
+                        k,
+                        n,
+                    ) by {
+                        lemma_cut_keeps_part(pb0, pb1, s0, s1, qi, 0, x, k, n);
+                        lemma_backed_keeps_part(pb1, s1, pb1.span_base(c), qi, 1, x, k, n);
                     }
                     assert(took_page(pb0, pb2, s0, s2, qi));
                     lemma_cut_others(pb0, pb1, s0, s1, qi, 0);
@@ -1319,6 +1353,14 @@ impl RecordStore {
                     final(src)@,
                     x,
                     k,
+                ),
+            forall|x: int, k: nat, n: nat| #[trigger]
+                run_part(*old(pb), old(src)@, x, k, n) && !old(self).pages().contains(x) ==> run_part(
+                    *final(pb),
+                    final(src)@,
+                    x,
+                    k,
+                    n,
                 ),
             if exists|x: int|
                 #[trigger] old(self).taken().contains(x) && x != p@.addr as int && record_page(x) == record_page(
@@ -1397,6 +1439,12 @@ impl RecordStore {
                 lemma_released_keeps_held(pb0, s0, bi, 0, x, k);
                 assert(run_held(pb1, s1, x, k));
                 lemma_freed_keeps_held(pb1, pb2, s1, s2, bi, x, k);
+            }
+            assert forall|x: int, k: nat, n: nat| #[trigger]
+                run_part(pb0, s0, x, k, n) && !old(self).pages().contains(x) implies run_part(pb2, s2, x, k, n) by {
+                lemma_released_keeps_part(pb0, s0, bi, 1, x, k, n);
+                assert(run_part(pb1, s1, x, k, n));
+                lemma_freed_keeps_part(pb1, pb2, s1, s2, bi, x, k, n);
             }
         }
     }

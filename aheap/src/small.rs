@@ -92,7 +92,8 @@ pub open spec fn run_refused(store: RecordStore, pb: PageBuddy, s: SourceView, r
 
 /// The store, the page buddy and the source's view went from `store`, `pb` and `src` to `store2`,
 /// `pb2` and `src2` keeping what a size class stands on: the provenance, every record taken, and
-/// every run held, none of them made a record page.
+/// every run held, and every run held with only its first pages backed (`run_part`) held so, none of
+/// them made a record page.
 pub open spec fn kept(
     store: RecordStore,
     pb: PageBuddy,
@@ -108,13 +109,18 @@ pub open spec fn kept(
             &&& run_held(pb2, src2, x, k)
             &&& store2.pages().contains(x) ==> store.pages().contains(x)
         }
+    &&& forall|x: int, k: nat, n: nat| #[trigger]
+        run_part(pb, src, x, k, n) ==> {
+            &&& run_part(pb2, src2, x, k, n)
+            &&& store2.pages().contains(x) ==> store.pages().contains(x)
+        }
 }
 
 /// The store, the page buddy and the source's view went from `store`, `pb` and `src` to `store2`,
 /// `pb2` and `src2` keeping what a size class stands on, but for the record `a` and the run at `b`:
-/// the provenance, every other record taken, and every other run held that is no record page, none
-/// of them made one. A class that holds neither `a` nor a slab run at `b` keeps its invariant
-/// across it (`lemma_frame_emptied`), as across `free_small` retiring another class's slab.
+/// the provenance, every other record taken, and every other run held that is no record page, whole
+/// or with only its first pages backed (`run_part`), none of them made one. A class that holds
+/// neither `a` nor a slab run at `b` keeps its invariant across it (`lemma_frame_emptied`), as across `free_small` retiring another class's slab.
 pub open spec fn kept_but(
     store: RecordStore,
     pb: PageBuddy,
@@ -130,6 +136,11 @@ pub open spec fn kept_but(
     &&& forall|x: int, k: nat| #[trigger]
         run_held(pb, src, x, k) && x != b && !store.pages().contains(x) ==> {
             &&& run_held(pb2, src2, x, k)
+            &&& !store2.pages().contains(x)
+        }
+    &&& forall|x: int, k: nat, n: nat| #[trigger]
+        run_part(pb, src, x, k, n) && x != b && !store.pages().contains(x) ==> {
+            &&& run_part(pb2, src2, x, k, n)
             &&& !store2.pages().contains(x)
         }
 }
@@ -503,6 +514,25 @@ proof fn lemma_took_keeps_held(pb2: PageBuddy, pb3: PageBuddy, s2: SourceView, s
     };
     lemma_cut_keeps_held(pb2, pb3, s2, m, r, 0, x, j);
     lemma_backed_keeps_held(pb3, m, pb3.span_base(c), r, 1, x, j);
+}
+
+/// A record taken from a new record page is apart from every partly backed run: the page's run is
+/// none of them.
+proof fn lemma_took_apart(pb2: PageBuddy, pb3: PageBuddy, s2: SourceView, s3: SourceView, r: int, x: int, j: nat, n: nat)
+    requires
+        pb2.wf(s2),
+        took_page(pb2, pb3, s2, s3, r),
+        run_part(pb2, s2, x, j, n),
+    ensures
+        x != r,
+{
+    let c = span_of(r);
+    let m = if pb2.spans().contains_key(c) {
+        s2
+    } else {
+        s2.reserved(c, SPAN_BLOCKS as nat).backed_run(c, meta_page(c), 1)
+    };
+    lemma_cut_keeps_part(pb2, pb3, s2, m, r, 0, x, j, n);
 }
 
 /// Cutting the run of order `k` at `q` adds it to the page buddy's runs and changes them no more.
@@ -1510,6 +1540,15 @@ impl SizeClass {
                     assert forall|x: int, j: nat| #[trigger] run_held(pb0, s0, x, j) implies run_held(pb1, s1, x, j) by {
                         lemma_recorded_keeps_held(pb0, s0, s1.refusals.last(), x, j);
                     }
+                    assert forall|x: int, j: nat, n: nat| #[trigger] run_part(pb0, s0, x, j, n) implies run_part(
+                        pb1,
+                        s1,
+                        x,
+                        j,
+                        n,
+                    ) by {
+                        lemma_recorded_keeps_part(pb0, s0, s1.refusals.last(), x, j, n);
+                    }
                     store.lemma_frame(pb0, s0, pb1, s1);
                     o.lemma_frame(st0, pb0, s0, st0, pb1, s1);
                     assert(runs(pb1.used()) == runs(pb0.used()));
@@ -1552,6 +1591,18 @@ impl SizeClass {
                         assert(run_held(pb2, s2, x, j));
                         lemma_freed_keeps_held(pb2, pb3, s2, s3, qi, x, j);
                     }
+                    assert forall|x: int, j: nat, n: nat| #[trigger] run_part(pb0, s0, x, j, n) implies run_part(
+                        pb3,
+                        s3,
+                        x,
+                        j,
+                        n,
+                    ) by {
+                        lemma_cut_keeps_part(pb0, pb1, s0, s1, qi, kk, x, j, n);
+                        lemma_recorded_keeps_part(pb1, s1, s2.refusals.last(), x, j, n);
+                        assert(run_part(pb2, s2, x, j, n));
+                        lemma_freed_keeps_part(pb2, pb3, s2, s3, qi, x, j, n);
+                    }
                     store.lemma_frame(pb0, s0, pb3, s3);
                     o.lemma_frame(st0, pb0, s0, st0, pb3, s3);
                     assert(s3.refusals == s0.refusals.push(s2.refusals.last()));
@@ -1574,6 +1625,16 @@ impl SizeClass {
             assert forall|x: int, j: nat| #[trigger] run_held(pb0, s0, x, j) implies x != qi && run_held(pb2, s2, x, j) by {
                 assert(run_held(pb1, s1, x, j));
                 lemma_backed_keeps_held(pb1, s1, pb1.span_base(c), qi, pages(kk) as nat, x, j);
+            }
+            assert forall|x: int, j: nat, n: nat| #[trigger] run_part(pb0, s0, x, j, n) implies x != qi && run_part(
+                pb2,
+                s2,
+                x,
+                j,
+                n,
+            ) by {
+                lemma_cut_keeps_part(pb0, pb1, s0, s1, qi, kk, x, j, n);
+                lemma_backed_keeps_part(pb1, s1, pb1.span_base(c), qi, pages(kk) as nat, x, j, n);
             }
             assert(run_held(pb2, s2, qi, kk));
             lemma_held_bounds(pb2, s2, qi, kk);
@@ -1619,6 +1680,19 @@ impl SizeClass {
                         lemma_released_keeps_held(pb3, s3, qi, kk, x, j);
                         assert(run_held(pb4, s4, x, j));
                         lemma_freed_keeps_held(pb4, pb5, s4, s5, qi, x, j);
+                    }
+                    assert forall|x: int, j: nat, n: nat| #[trigger] run_part(pb0, s0, x, j, n) implies run_part(
+                        pb5,
+                        s5,
+                        x,
+                        j,
+                        n,
+                    ) by {
+                        assert(x != qi && run_part(pb2, s2, x, j, n));
+                        assert(run_part(pb3, s3, x, j, n));
+                        lemma_released_keeps_part(pb3, s3, qi, pages(kk) as nat, x, j, n);
+                        assert(run_part(pb4, s4, x, j, n));
+                        lemma_freed_keeps_part(pb4, pb5, s4, s5, qi, x, j, n);
                     }
                     assert forall|b: int| #[trigger] store.pages().contains(b) implies run_held(pb5, s5, b, 0) by {
                         assert(st0.pages().contains(b));
@@ -1685,6 +1759,15 @@ impl SizeClass {
                 assert(run_held(pb2, s2, x, j));
                 if st0.full() {
                     lemma_took_keeps_held(pb2, pb3, s2, s3, record_page(a), x, j);
+                }
+            }
+            assert forall|x: int, j: nat, n: nat| #[trigger] run_part(pb0, s0, x, j, n) implies {
+                &&& run_part(pb3, s3, x, j, n)
+                &&& store.pages().contains(x) ==> st0.pages().contains(x)
+            } by {
+                assert(run_part(pb2, s2, x, j, n));
+                if st0.full() {
+                    lemma_took_apart(pb2, pb3, s2, s3, record_page(a), x, j, n);
                 }
             }
             assert(kept(st0, pb0, s0, *store, pb3, s3));
@@ -1917,6 +2000,12 @@ impl SizeClass {
                     assert(run_held(pb1, s1, x, j));
                     lemma_freed_keeps_held(pb1, pb2, s1, s2, qi, x, j);
                 }
+                assert forall|x: int, j: nat, n: nat| #[trigger]
+                    run_part(pb0, s0, x, j, n) && x != qi implies run_part(pb2, s2, x, j, n) by {
+                    lemma_released_keeps_part(pb0, s0, qi, pages(kk) as nat, x, j, n);
+                    assert(run_part(pb1, s1, x, j, n));
+                    lemma_freed_keeps_part(pb1, pb2, s1, s2, qi, x, j, n);
+                }
                 assert forall|b: int| #[trigger] store.pages().contains(b) implies run_held(pb2, s2, b, 0) by {
                     store.lemma_view(pb0, s0);
                     assert(run_held(pb0, s0, b, 0));
@@ -1955,6 +2044,16 @@ impl SizeClass {
                 assert forall|x: int, j: nat| #[trigger]
                     run_held(pb0, s0, x, j) && x != qi && !st0.pages().contains(x) implies run_held(pb3, s3, x, j) by {
                     assert(run_held(pb2, s2, x, j));
+                }
+                assert forall|x: int, j: nat, n: nat| #[trigger]
+                    run_part(pb0, s0, x, j, n) && x != qi && !st0.pages().contains(x) implies run_part(
+                    pb3,
+                    s3,
+                    x,
+                    j,
+                    n,
+                ) by {
+                    assert(run_part(pb2, s2, x, j, n));
                 }
                 assert forall|b: int| #[trigger]
                     o.slabs().contains_key(b) && b != a implies {
