@@ -14,6 +14,7 @@ use vstd::arithmetic::div_mod::*;
 use vstd::prelude::*;
 use vstd::raw_ptr::*;
 
+use acall::step::Caller;
 use aheap::arch::*;
 use aheap::source::*;
 
@@ -304,8 +305,10 @@ impl Spans {
     }
 }
 
-/// What the source knows of its untyped and of the window's tables.
+/// What the source knows of its untyped and of the window's tables, and the process's ghost of the
+/// kernel, which its system calls thread.
 struct Record {
+    caller: Ghost<Caller>,
     space: u64,
     untyped: u64,
     memory: u64,
@@ -321,6 +324,7 @@ struct Record {
 
 impl Record {
     spec fn inv(&self) -> bool {
+        &&& self.caller@.wf()
         &&& self.pages <= MAX_PAGES
         &&& self.memory + self.pages * PAGE_BYTES <= u64::MAX
         &&& self.slots + MAX_PAGES <= u64::MAX
@@ -375,7 +379,7 @@ impl Record {
             i -= 1;
             if self.state[i] == FREE {
                 let base = self.page(i);
-                if retype_frame(self.untyped, base, self.slots + i as u64) {
+                if retype_frame(&mut self.caller, self.untyped, base, self.slots + i as u64) {
                     self.state[i] = HELD;
                     return Some(i);
                 }
@@ -433,7 +437,7 @@ impl Record {
                     k += 1;
                 }
                 let base = self.page(group);
-                return retype_table_page(self.untyped, base, level - 1) && link(self.space, address, level, self.untyped, base);
+                return retype_table_page(&mut self.caller, self.untyped, base, level - 1) && link(&mut self.caller, self.space, address, level, self.untyped, base);
             }
             group += TABLE_PAGES;
         }
@@ -488,7 +492,7 @@ impl Record {
             Some(i) => i,
             None => return None,
         };
-        match map_page(self.space, addr, self.slots + i as u64, provenance) {
+        match map_page(&mut self.caller, self.space, addr, self.slots + i as u64, provenance) {
             Some(perm) => {
                 self.state[i] = MAPPED;
                 self.owner[i] = addr;
@@ -516,7 +520,7 @@ impl Record {
         {
             i += 1;
         }
-        let unmapped = unmap_page(self.space, addr, perm);
+        let unmapped = unmap_page(&mut self.caller, self.space, addr, perm);
         if i < self.pages {
             self.state[i] = if unmapped {
                 HELD
@@ -632,8 +636,11 @@ impl Eager {
     /// untyped at `untyped`, whose `pages` pages from physical `memory` it alone retypes, putting
     /// frame capabilities in the empty slots from `slots`; and hands out spans of the window at
     /// `window`, which nothing maps, aligned to a region and with room for the window after it. None
-    /// when the window or the counts do not fit.
-    pub fn new(space: u64, untyped: u64, memory: u64, pages: usize, slots: u64, window: *mut u8) -> (r: Option<Eager>)
+    /// when the window or the counts do not fit. `caller` is the process's ghost of the kernel, which
+    /// the source's system calls thread while it lives.
+    pub fn new(caller: Ghost<Caller>, space: u64, untyped: u64, memory: u64, pages: usize, slots: u64, window: *mut u8) -> (r: Option<Eager>)
+        requires
+            caller@.wf(),
         ensures
             match r {
                 Some(source) => source@.wf() && source@.spans.is_empty() && source@.provenance == window@.provenance,
@@ -661,6 +668,7 @@ impl Eager {
                 index: Ghost(Map::empty()),
             },
             record: Record {
+                caller,
                 space,
                 untyped,
                 memory,

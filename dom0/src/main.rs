@@ -68,6 +68,7 @@
 use core::panic::PanicInfo;
 
 use asys::operation;
+use vstd::prelude::Ghost;
 
 /// A number past every operation's.
 const NO_OPERATION: u64 = 0xffff;
@@ -877,7 +878,10 @@ fn eager_source_held(empty: u64) -> bool {
     {
         return false;
     }
+    // dom0 is not verified: the kernel's proof that each of its steps keeps its state well formed is
+    // what stands behind the ghost of the kernel the source's calls start from, which erases here.
     let Some(mut eager) = aeager::Eager::new(
+        Ghost::assume_new(),
         operation::ROOT_PROCESS_SLOT,
         source,
         memory,

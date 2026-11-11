@@ -9,8 +9,9 @@ publish = false
 verified = true
 
 [dependencies]
+acall = { path = "../acall" }
 aheap = { path = "../aheap" }
-asys = { path = "../asys" }
+verified = { path = "../kernel/verified" }
 
 [dependencies.vstd]
 workspace = true

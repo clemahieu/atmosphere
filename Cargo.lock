@@ -34,8 +34,9 @@ dependencies = [
 name = "aeager"
 version = "0.1.0"
 dependencies = [
+ "acall",
  "aheap",
- "asys",
+ "verified",
  "vstd",
 ]
 
@@ -316,6 +317,7 @@ version = "0.1.0"
 dependencies = [
  "aeager",
  "asys",
+ "vstd",
 ]
 
 [[package]]
