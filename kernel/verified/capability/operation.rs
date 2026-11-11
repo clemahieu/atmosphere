@@ -20,6 +20,8 @@ use crate::capability::retype::RetypeStep;
 use crate::capability::revoke::RevokeStep;
 #[cfg(verus_keep_ghost)]
 use crate::capability::space::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::view::bound_threads;
 use crate::capability::steps::Steps;
 use crate::capability::thread::*;
 use crate::capability::unmap::Unmapped;
@@ -653,6 +655,24 @@ impl CapKernel {
             out == status_only(STATUS_REFUSED),
             post == pre,
     {
+    }
+
+    /// An unmap, allowed or refused, leaves the tables, the list's parents and the bound threads as they
+    /// were, and changes the kind or the liveness of no node but a mapping node, so no capability.
+    pub proof fn lemma_unmapped_frame(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            Self::spec_unmapped(pre, post, root, frame, out),
+        ensures
+            post.tables == pre.tables,
+            post.list.parent == pre.list.parent,
+            bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables),
+            forall|x: int| 0 <= x < NODE_SPACE && (#[trigger] post.list.nodes@[x].kind != pre.list.nodes@[x].kind
+                || post.list.nodes@[x].live != pre.list.nodes@[x].live) ==> pre.list.nodes@[x].kind is Mapping,
+    {
+        if post != pre {
+            let read = choose|read: usize| Self::page_unmapped(pre, post, root, frame.slot() as usize, frame.argument(1), frame.argument(2), #[trigger] unmapped_of(out, read));
+            Self::lemma_page_unmapped_frame(pre, post, root, frame.slot() as usize, frame.argument(1), frame.argument(2), unmapped_of(out, read));
+        }
     }
 
     /// Core c's step for the invocation its current thread entered the kernel with, in frame. The

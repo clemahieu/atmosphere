@@ -99,7 +99,8 @@ impl CapKernel {
 
     /// What clearing the entry leaves: the entry the path reaches is empty, its mapping node is the only
     /// node that left the list, its record and its frame's reference went with it, its staleness is
-    /// recorded, and no capability changed. A device space shares what a walk other than the one ending
+    /// recorded, and no capability changed: the tables, the list's parents, every other node's kind and
+    /// the bound threads are as they were. A device space shares what a walk other than the one ending
     /// at the entry still finds: the page leaves unless another path of the space maps it too.
     pub open spec fn entry_unmapped(pre: Self, post: Self, root: usize, slot: usize, p: SpacePath) -> bool {
         let tree = tree_of(&pre.table_pages, &pre.spaces);
@@ -112,8 +113,13 @@ impl CapKernel {
         &&& Self::mapping_unlinked(pre, post, node)
         &&& Self::mapping_stale_noted(pre, post, node)
         &&& Self::mappings_shrunk(pre, post)
+        &&& pre.list.nodes@[node as int].kind is Mapping
         &&& !post.list.nodes@[node as int].live
         &&& forall|x: int| 0 <= x < NODE_SPACE && x != node ==> #[trigger] post.list.nodes@[x].live == pre.list.nodes@[x].live
+            && post.list.nodes@[x].kind == pre.list.nodes@[x].kind
+        &&& post.list.parent == pre.list.parent
+        &&& post.tables == pre.tables
+        &&& bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables)
         &&& post.list.seq@.len() == pre.list.seq@.len() - 1
         &&& sheds_shares(pre.view(), post.view())
         &&& post.view().shares == shares_surviving(tree, |r: usize, q: SpacePath| ends_at(tree, r, q, t, p.l1))
@@ -152,6 +158,31 @@ impl CapKernel {
         &&& Self::unmap_done(pre, post, root, slot, p)
         &&& Self::unmapped_read(pre, root, slot, p, r)
         &&& discharges(pre.view(), post.view(), root, Effect::Local)
+    }
+
+    /// An unmap leaves the tables, the list's parents and the bound threads as they were, and changes the
+    /// kind or the liveness of no node but the mapping node it unlinked.
+    pub proof fn lemma_page_unmapped_frame(pre: Self, post: Self, root: usize, slot: usize, va: u64, level: u64, r: Unmapped)
+        requires
+            Self::page_unmapped(pre, post, root, slot, va, level, r),
+        ensures
+            post.tables == pre.tables,
+            post.list.parent == pre.list.parent,
+            bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables),
+            forall|x: int| 0 <= x < NODE_SPACE && (#[trigger] post.list.nodes@[x].kind != pre.list.nodes@[x].kind
+                || post.list.nodes@[x].live != pre.list.nodes@[x].live) ==> pre.list.nodes@[x].kind is Mapping,
+    {
+        let p = address_path(va);
+        let tree = tree_of(&pre.table_pages, &pre.spaces);
+        let t = walk_table(tree, pre.payload_of(pre.tables.node_of(root, slot)).base, p)->0;
+        let node = mapping_node(t, p.l1);
+        assert(Self::entry_unmapped(pre, post, root, slot, p));
+        assert forall|x: int| 0 <= x < NODE_SPACE && (#[trigger] post.list.nodes@[x].kind != pre.list.nodes@[x].kind
+            || post.list.nodes@[x].live != pre.list.nodes@[x].live) implies pre.list.nodes@[x].kind is Mapping by {
+            if x != node {
+                assert(post.list.nodes@[x].live == pre.list.nodes@[x].live);
+            }
+        }
     }
 
     /// Unmaps the entry the address `va` and the level `level` name in the space of the capability at
