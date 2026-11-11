@@ -102,6 +102,8 @@ impl CapKernel {
             &&& post.spaces.records == pre.spaces.records
             &&& post.spaces.loaded == pre.spaces.loaded
             &&& post.spaces.kernel_entries == pre.spaces.kernel_entries
+            &&& post.spaces.registers == pre.spaces.registers
+            &&& post.spaces.kernel_root == pre.spaces.kernel_root
             &&& post.spaces.bound == pre.spaces.bound
             &&& post.spaces.holders@ == pre.spaces.holders@.insert(s, pre.spaces.holders@[s].remove(n))
             &&& post.threads == pre.threads

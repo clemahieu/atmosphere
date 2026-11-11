@@ -1728,35 +1728,32 @@ impl CapKernel {
         }
         // Core 0 points its base register at a root naming no space first, under KERNEL_TAG, which no
         // space holds: a core loads a space only while its register names no space or that one.
-        let named = crate::arch::load_translation_root(0, kernel_root, KERNEL_TAG);
-        self.switch_space(0, None, named);
+        self.switch_space(0, None, kernel_root, KERNEL_TAG);
         let ghost s7 = *self;
         proof {
-            assert(s7.spaces == r7.spaces);
+            assert(s7.spaces == (Spaces { registers: s7.spaces.registers, ..r7.spaces }));
             assert forall|d: int| 0 <= d < NUM_CPUS && d != 0 implies #[trigger] s7.cores@[d] == r7.cores@[d] by {}
         }
         let pcid = self.load_space(0, base, Tracked(&mut steps));
         let ghost m7 = *self;
-        let named = crate::arch::load_translation_root(0, base + SPACE_ROOT_PAGE * PAGE_SZ, pcid);
-        self.switch_space(0, Some(base), named);
+        self.switch_space(0, Some(base), base + SPACE_ROOT_PAGE * PAGE_SZ, pcid);
         let ghost n7 = *self;
         proof {
             assert(n7.cores@[0].space == Some(base));
             assert(n7.cores@[0].generation <= 2);
             assert(n7.spaces.roots@.contains_key(process));
-            assert(n7.spaces == m7.spaces);
+            assert(n7.spaces == (Spaces { registers: n7.spaces.registers, ..m7.spaces }));
         }
 
         // Core 0 leaves the dead process's space for a root naming no space, under KERNEL_TAG, which no
         // space holds, so no base register names the space a retire would end.
-        let named = crate::arch::load_translation_root(0, kernel_root, KERNEL_TAG);
         proof {
             n7.lemma_no_space_root(kernel_root);
         }
-        self.switch_space(0, None, named);
+        self.switch_space(0, None, kernel_root, KERNEL_TAG);
         let ghost l7 = *self;
         proof {
-            assert(l7.spaces == n7.spaces);
+            assert(l7.spaces == (Spaces { registers: l7.spaces.registers, ..n7.spaces }));
             assert(l7.loaded(0, base));
             assert(l7.spaces.loaded@[base].value().retired == 0);
             assert(l7.depends(0, base));

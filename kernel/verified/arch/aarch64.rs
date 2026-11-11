@@ -10,7 +10,7 @@ use vstd::prelude::*;
 verus! {
 
 use crate::capability::kernel::CommandBuffers;
-use crate::arch::{Flushed, Translating};
+use crate::arch::{BaseRegister, Flushed};
 #[cfg(verus_keep_ghost)]
 use crate::arch::FlushTarget;
 use crate::capability::operation::Outcome;
@@ -505,21 +505,20 @@ pub fn flush_every_context(core: usize, epoch: usize) -> (ret: Tracked<Flushed>)
 /// `id` in bits 63:48: one write changes the table and the id together and flushes nothing, and the
 /// instructions after the ISB translate through the new table. Arm ARM D24.2.208, B2.6.1.
 #[verifier(external_body)]
-// external_body(glue): only the hardware can attest which root a core translates through, so only this makes the token
-pub fn load_translation_root(core: usize, root: usize, id: usize) -> (ret: Tracked<Translating>)
+// external_body(glue): only the hardware can attest which root a core translates through, so only this changes a BaseRegister
+pub fn load_translation_root(Tracked(register): Tracked<&mut BaseRegister>, root: usize, id: usize)
     requires
         root % PAGE_SZ == 0,
         id < PCID_MAX,
     ensures
-        ret@.core() == core as int,
-        ret@.root() == root,
-        ret@.tag() == id,
+        final(register).core() == old(register).core(),
+        final(register).root() == root,
+        final(register).tag() == id,
 {
     let base = (id as u64) << 48 | root as u64;
     unsafe {
         core::arch::asm!("msr TTBR0_EL1, {base}", "isb", base = in(reg) base, options(nostack, preserves_flags));
     }
-    Tracked::assume_new()
 }
 
 // The IOMMU's command ring: the command queue of an SMMUv3, the IOMMU QEMU virt offers. capability/

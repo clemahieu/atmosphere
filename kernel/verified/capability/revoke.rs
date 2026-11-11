@@ -190,6 +190,8 @@ impl CapKernel {
             final(self).spaces.records == old(self).spaces.records,
             final(self).spaces.loaded == old(self).spaces.loaded,
             final(self).spaces.kernel_entries == old(self).spaces.kernel_entries,
+            final(self).spaces.registers == old(self).spaces.registers,
+            final(self).spaces.kernel_root == old(self).spaces.kernel_root,
             !(old(self).list.nodes@[n as int].kind is DeviceBinding) ==> final(self).spaces.bound == old(self).spaces.bound,
             old(self).list.nodes@[n as int].kind is Mapping ==> Self::mapping_unlinked(*old(self), *final(self), n),
             !(old(self).list.nodes@[n as int].kind is Mapping) ==> {
@@ -641,6 +643,8 @@ impl CapKernel {
             mid.spaces.records == pre.spaces.records,
             mid.spaces.loaded == pre.spaces.loaded,
             mid.spaces.kernel_entries == pre.spaces.kernel_entries,
+            mid.spaces.registers == pre.spaces.registers,
+            mid.spaces.kernel_root == pre.spaces.kernel_root,
             !(pre.list.nodes@[r as int].kind is DeviceBinding) ==> mid.spaces.bound == pre.spaces.bound,
             !(pre.list.nodes@[r as int].kind is DeviceBinding) ==> mid.devices == pre.devices,
             mid.devices.wf(),

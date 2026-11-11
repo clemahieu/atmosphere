@@ -165,6 +165,10 @@ pub fn boot(boot_info: &BootInfo) -> Entry {
         free,
         image,
         Tracked::assume_new(),
+        boot_info.pml4 as usize,
+        // Every core runs on the loader's root under tag 0 until the kernel switches it, and this is the
+        // one place the cores' base registers are made: design/teardown-driven-by-retype/.
+        Tracked::assume_new(),
     );
     let (untyped, frames) = held.expect("the capability kernel refused the boot memory or dom0's runs");
 
@@ -188,8 +192,7 @@ pub fn boot(boot_info: &BootInfo) -> Entry {
 
     // Boot holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
     let asid = kernel.load_space(0, process, Tracked::assume_new());
-    let loaded = verified::arch::load_translation_root(0, process + SPACE_ROOT_PAGE * PAGE_BYTES as usize, asid);
-    kernel.switch_space(0, Some(process), loaded);
+    kernel.switch_space(0, Some(process), process + SPACE_ROOT_PAGE * PAGE_BYTES as usize, asid);
     kernel.enter_boot_thread(0, page(THREAD_PAGE));
     *CAP_KERNEL.lock() = Some(kernel);
 

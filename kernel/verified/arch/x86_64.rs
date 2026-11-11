@@ -7,7 +7,7 @@ use vstd::prelude::*;
 verus! {
 
 use crate::capability::kernel::CommandBuffers;
-use crate::arch::{Flushed, Translating};
+use crate::arch::{BaseRegister, Flushed};
 #[cfg(verus_keep_ghost)]
 use crate::arch::FlushTarget;
 use crate::capability::operation::Outcome;
@@ -644,15 +644,15 @@ pub fn flush_every_context(core: usize, epoch: usize) -> (ret: Tracked<Flushed>)
 /// holds under every PCID; where it is clear, CR3 holds the root alone and the write flushes the
 /// non-global entries. APM 2, the CR3 register in its PCID format.
 #[verifier(external_body)]
-// external_body(glue): only the hardware can attest which root a core translates through, so only this makes the token
-pub fn load_translation_root(core: usize, root: usize, id: usize) -> (ret: Tracked<Translating>)
+// external_body(glue): only the hardware can attest which root a core translates through, so only this changes a BaseRegister
+pub fn load_translation_root(Tracked(register): Tracked<&mut BaseRegister>, root: usize, id: usize)
     requires
         root % PAGE_SZ == 0,
         id < PCID_MAX,
     ensures
-        ret@.core() == core as int,
-        ret@.root() == root,
-        ret@.tag() == id,
+        final(register).core() == old(register).core(),
+        final(register).root() == root,
+        final(register).tag() == id,
 {
     let cr4: u64;
     unsafe {
@@ -662,7 +662,6 @@ pub fn load_translation_root(core: usize, root: usize, id: usize) -> (ret: Track
     unsafe {
         core::arch::asm!("mov cr3, {cr3}", cr3 = in(reg) cr3, options(nostack, preserves_flags));
     }
-    Tracked::assume_new()
 }
 
 // The IOMMU's command ring: AMD-Vi's, the IOMMU of the PC this target runs on. capability/kernel.rs's

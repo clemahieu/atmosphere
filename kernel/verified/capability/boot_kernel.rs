@@ -13,6 +13,7 @@ use vstd::prelude::*;
 
 verus! {
 
+use crate::arch::BaseRegister;
 use crate::array::Array;
 #[cfg(verus_keep_ghost)]
 use crate::capability::block::*;
@@ -292,8 +293,11 @@ impl CapKernel {
         free: &[(usize, usize)],
         image: &[ImageRun],
         Tracked(pages): Tracked<Map<usize, PagePerm4k>>,
+        kernel_root: usize,
+        Tracked(registers): Tracked<Map<int, BaseRegister>>,
     ) -> (ret: Option<(usize, usize)>)
         requires
+            boot_registers(registers, kernel_root),
             old(self).cores.wf(),
             old(self).iommus.acked.wf(),
             old(self).stale_epoch.wf(),
@@ -360,7 +364,7 @@ impl CapKernel {
             ret matches Some((untyped, frame)) ==> final(self).booted(root, process, leaf, frames, t, free@, image@, untyped, frame, iommus_present@),
     {
         hide(CapKernel::wf);
-        self.init(root, Tracked(root_perm), kernel_entries, iommus_present, iommu_commands);
+        self.init(root, Tracked(root_perm), kernel_entries, iommus_present, iommu_commands, kernel_root, Tracked(registers));
         let ghost s0 = *self;
         let ghost len = free@.len() as int;
         let tracked mut pages = pages;

@@ -1015,6 +1015,8 @@ impl CapKernel {
         &&& post.spaces.loaded == self.spaces.loaded
         &&& post.spaces.bound == self.spaces.bound
         &&& post.spaces.kernel_entries == self.spaces.kernel_entries
+        &&& post.spaces.registers == self.spaces.registers
+        &&& post.spaces.kernel_root == self.spaces.kernel_root
         &&& forall|s: usize| !self.leaf_slot_names(base, BlockRef::Small(s / PAGE_SZ))
             ==> #[trigger] post.spaces.holders@[s] == self.spaces.holders@[s]
         &&& post.threads.records == self.threads.records
@@ -2956,6 +2958,8 @@ impl CapKernel {
         &&& post.spaces.holders@ == pre.spaces.holders@.remove(base)
         &&& post.spaces.bound@ == pre.spaces.bound@.remove(base)
         &&& post.spaces.kernel_entries == pre.spaces.kernel_entries
+        &&& post.spaces.registers == pre.spaces.registers
+        &&& post.spaces.kernel_root == pre.spaces.kernel_root
     }
 
     /// The tree after the empty space at `base` goes.
@@ -3086,6 +3090,7 @@ impl CapKernel {
             }
         }
         lemma_ids_space_removed(pre.cores@, pre.spaces.loaded@, post.spaces.loaded@, base);
+        lemma_registers_lists(pre.spaces.registers@, pre.cores@, pre.spaces.loaded@, post.spaces.loaded@, pre.spaces.kernel_root@);
     }
 
     /// The block of the empty space at `base` goes back to the block table: its node pages off the list,

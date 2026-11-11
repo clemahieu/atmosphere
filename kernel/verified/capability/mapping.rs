@@ -9,7 +9,7 @@ use vstd::prelude::*;
 
 verus! {
 
-use crate::arch::Translating;
+use crate::arch::load_translation_root;
 #[cfg(verus_keep_ghost)]
 use crate::capability::block::*;
 use crate::capability::kernel::*;
@@ -208,6 +208,8 @@ impl CapKernel {
             final(self).spaces.records == old(self).spaces.records,
             final(self).spaces.holders == old(self).spaces.holders,
             final(self).spaces.kernel_entries == old(self).spaces.kernel_entries,
+            final(self).spaces.registers == old(self).spaces.registers,
+            final(self).spaces.kernel_root == old(self).spaces.kernel_root,
             final(self).spaces.bound == old(self).spaces.bound,
             final(self).list == old(self).list,
             final(self).tables == old(self).tables,
@@ -279,6 +281,17 @@ impl CapKernel {
                 lemma_core_added(cores.list, c as u32, d as u32);
             }
             lemma_id_loaded(mid.cores@, mid.spaces.loaded@, post.spaces.loaded@, c as int, s, (generation * PAGE_SZ + pcid) as usize);
+            assert forall|d: int| 0 <= d < NUM_CPUS && (#[trigger] post.cores@[d]).space is Some
+                && mid.spaces.loaded@.contains_key(post.cores@[d].space->0) implies {
+                &&& post.spaces.loaded@.contains_key(post.cores@[d].space->0)
+                &&& id_pcid(post.spaces.loaded@[post.cores@[d].space->0].value().ids@[d]) == id_pcid(mid.spaces.loaded@[post.cores@[d].space->0].value().ids@[d])
+            } by {
+                if post.cores@[d].space == Some(s) && d == c as int {
+                    assert(names_wf(mid.cores@[d].space, mid.cores@[d].generation, mid.spaces.loaded@, d));
+                    assert(held);
+                }
+            }
+            lemma_registers_kept(mid.spaces.registers@, mid.cores@, post.cores@, mid.spaces.loaded@, post.spaces.loaded@, mid.spaces.kernel_root@);
             Self::lemma_core_loaded(mid, post, c as int, s);
             assert forall|e: TlbEntry| e.space == s && space_says(tree_of(&pre.table_pages, &pre.spaces), s, e.page)
                 implies #[trigger] post.core_may_hold(c as int, e) by {
@@ -320,33 +333,34 @@ impl CapKernel {
         }
     }
 
-    /// Core c's base register now names the root of `space`, or for None a root that is no space's
-    /// under KERNEL_TAG, which no space holds (lemma_kernel_tag), as the token from the glue that wrote
-    /// it attests. The None root is at no space's root offset: every space's root is at
-    /// SPACE_ROOT_PAGE of a block of TABLE_PAGE_BYTES, so a root at another offset of such a block is
-    /// none, now or after any retype (lemma_no_space_root), and the record never says no space while
-    /// the register names one. That it is the kernel's own root, a page outside every untyped that maps
-    /// no page a space maps, is the glue's to keep, not this model's. A space's root goes in under the
-    /// PCID or ASID the space holds on c, so what the core then caches is under that space's tag. A
-    /// register names only a loaded space that is not retired, and a retire refuses while one names it,
-    /// so a core that has acknowledged a retire never walks the space again. See
-    /// design/teardown-driven-by-retype/.
-    pub fn switch_space(&mut self, c: usize, space: Option<usize>, Tracked(t): Tracked<Translating>)
+    /// Points core c's base register at `root` under `tag`, through the register the kernel holds for c,
+    /// and records the space it names in the same step, so the record is the register's latest write
+    /// (registers_wf). `root` is the root of `space`, or for None a root that is no space's under
+    /// KERNEL_TAG, which no space holds (lemma_kernel_tag): the root c booted on, or one at no space's
+    /// root offset. Every space's root is at SPACE_ROOT_PAGE of a block of TABLE_PAGE_BYTES, so a root at
+    /// another offset of such a block is none, now or after any retype (lemma_no_space_root), and the
+    /// record never says no space while the register names one. That the boot root is the kernel's own,
+    /// a page outside every untyped that maps no page a space maps, is the glue's to keep, not this
+    /// model's. A space's root goes in under the PCID or ASID the space holds on c, so what the core then
+    /// caches is under that space's tag. A register names only a loaded space that is not retired, and a
+    /// retire refuses while one names it, so a core that has acknowledged a retire never walks the space
+    /// again. See design/teardown-driven-by-retype/.
+    pub fn switch_space(&mut self, c: usize, space: Option<usize>, root: usize, tag: usize)
         requires
             old(self).wf(),
             c < NUM_CPUS,
-            t.core() == c as int,
+            root % PAGE_SZ == 0,
             match space {
                 Some(s) => {
-                    &&& t.root() == s + SPACE_ROOT_PAGE * PAGE_SZ
+                    &&& root == s + SPACE_ROOT_PAGE * PAGE_SZ
                     &&& old(self).loaded(c as int, s)
                     &&& old(self).spaces.loaded@[s].value().retired == 0
                     &&& holds_id(old(self).cores@, old(self).spaces.loaded@, c as int, s)
-                    &&& t.tag() == id_pcid(old(self).spaces.loaded@[s].value().ids@[c as int])
+                    &&& tag == id_pcid(old(self).spaces.loaded@[s].value().ids@[c as int])
                 },
                 None => {
-                    &&& t.root() % TABLE_PAGE_BYTES != SPACE_ROOT_PAGE * PAGE_SZ
-                    &&& t.tag() == KERNEL_TAG
+                    &&& root == old(self).spaces.kernel_root@ || root % TABLE_PAGE_BYTES != SPACE_ROOT_PAGE * PAGE_SZ
+                    &&& tag == KERNEL_TAG
                 },
             },
         ensures
@@ -360,7 +374,14 @@ impl CapKernel {
             forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] final(self).cores@[d] == old(self).cores@[d],
             forall|d: int, r: usize| 0 <= d < NUM_CPUS ==> #[trigger] holds_id(final(self).cores@, final(self).spaces.loaded@, d, r) == holds_id(old(self).cores@, old(self).spaces.loaded@, d, r),
             final(self).tlb == old(self).tlb,
-            final(self).spaces == old(self).spaces,
+            final(self).spaces.roots == old(self).spaces.roots,
+            final(self).spaces.records == old(self).spaces.records,
+            final(self).spaces.loaded == old(self).spaces.loaded,
+            final(self).spaces.holders == old(self).spaces.holders,
+            final(self).spaces.bound == old(self).spaces.bound,
+            final(self).spaces.kernel_entries == old(self).spaces.kernel_entries,
+            final(self).spaces.kernel_root == old(self).spaces.kernel_root,
+            final(self).spaces == (Spaces { registers: final(self).spaces.registers, ..old(self).spaces }),
             final(self).list == old(self).list,
             final(self).tables == old(self).tables,
             final(self).blocks == old(self).blocks,
@@ -388,8 +409,36 @@ impl CapKernel {
             space,
         });
         proof {
+            reveal(registers_wf);
+            assert(pre.spaces.registers@.contains_key(c as int));
+            assert(pre.spaces.registers@[c as int].core() == c as int);
+        }
+        let tracked mut register = self.spaces.registers.borrow_mut().tracked_remove(c as int);
+        load_translation_root(Tracked(&mut register), root, tag);
+        proof {
+            self.spaces.registers.borrow_mut().tracked_insert(c as int, register);
             let post = *self;
+            reveal(registers_wf);
             assert forall|d: int| 0 <= d < NUM_CPUS && d != c as int implies #[trigger] post.cores@[d] == pre.cores@[d] by {}
+            assert(post.spaces.registers@ =~= pre.spaces.registers@.insert(c as int, register));
+            assert(post.spaces.loaded@ == pre.spaces.loaded@);
+            assert forall|d: int| 0 <= d < NUM_CPUS implies {
+                &&& #[trigger] post.spaces.registers@.contains_key(d)
+                &&& register_names(post.spaces.registers@[d], post.cores@[d].space, post.spaces.loaded@, d, post.spaces.kernel_root@)
+            } by {
+                assert(pre.spaces.registers@.contains_key(d));
+                if d != c as int {
+                    assert(post.cores@[d] == pre.cores@[d]);
+                    assert(post.spaces.registers@[d] == pre.spaces.registers@[d]);
+                    assert(register_names(pre.spaces.registers@[d], pre.cores@[d].space, pre.spaces.loaded@, d, pre.spaces.kernel_root@));
+                } else {
+                    assert(post.spaces.registers@[d] == register);
+                    if let Some(s) = space {
+                        assert(holds_id(pre.cores@, pre.spaces.loaded@, c as int, s));
+                    }
+                }
+            }
+            assert(registers_wf(post.spaces.registers@, post.cores@, post.spaces.loaded@, post.spaces.kernel_root@));
             lemma_ids_named(pre.cores@, post.cores@, post.spaces.loaded@, c as int);
             Self::lemma_iommus_same(pre, post);
             assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] post.cores@[d].current_thread == pre.cores@[d].current_thread by {
@@ -544,6 +593,7 @@ impl CapKernel {
             post.wf(),
             Self::step_ok(pre, post, c),
     {
+        Self::lemma_registers_core(pre, post, c);
         Self::lemma_iommus_same(pre, post);
         assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] post.cores@[d].current_thread == pre.cores@[d].current_thread by {
             if d != c {
@@ -578,6 +628,8 @@ impl CapKernel {
             post.spaces.records == pre.spaces.records,
             post.spaces.holders == pre.spaces.holders,
             post.spaces.kernel_entries == pre.spaces.kernel_entries,
+            post.spaces.registers == pre.spaces.registers,
+            post.spaces.kernel_root == pre.spaces.kernel_root,
             post.spaces.bound == pre.spaces.bound,
             post.spaces.loaded@ == pre.spaces.loaded@.insert(s, post.spaces.loaded@[s]),
             post.spaces.loaded@[s].addr() == pre.spaces.loaded@[s].addr(),
@@ -585,6 +637,7 @@ impl CapKernel {
             post.spaces.loaded@[s].value().list == pre.spaces.loaded@[s].value().list | (1u32 << (c as u32)),
             post.spaces.loaded@[s].value().retired == 0,
             ids_wf(post.cores@, post.spaces.loaded@),
+            registers_wf(post.spaces.registers@, post.cores@, post.spaces.loaded@, post.spaces.kernel_root@),
             post.list == pre.list,
             post.tables == pre.tables,
             post.blocks == pre.blocks,

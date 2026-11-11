@@ -368,6 +368,7 @@ impl CapKernel {
             }
         }
         lemma_ids_same(pre.cores@, sa.loaded@, sb.loaded@);
+        lemma_registers_lists(sa.registers@, pre.cores@, sa.loaded@, sb.loaded@, sa.kernel_root@);
         assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] post.acked(d) <= post.flush_epoch by {
             assert(pre.acked(d) <= pre.flush_epoch);
         }
@@ -605,6 +606,8 @@ impl CapKernel {
         &&& post.spaces.holders@ == pre.spaces.holders@.remove(base)
         &&& post.spaces.bound@ == pre.spaces.bound@.remove(base)
         &&& post.spaces.kernel_entries == pre.spaces.kernel_entries
+        &&& post.spaces.registers == pre.spaces.registers
+        &&& post.spaces.kernel_root == pre.spaces.kernel_root
         &&& post.processes.records@ == pre.processes.records@.remove(base)
         &&& post.processes.spare@ == pre.processes.spare@.remove((base + 2 * PAGE_SZ) as usize)
             .remove((base + 3 * PAGE_SZ) as usize).remove((base + 4 * PAGE_SZ) as usize)
@@ -947,6 +950,7 @@ impl CapKernel {
             }
         }
         lemma_ids_space_removed(pre.cores@, pre.spaces.loaded@, post.spaces.loaded@, base);
+        lemma_registers_lists(pre.spaces.registers@, pre.cores@, pre.spaces.loaded@, post.spaces.loaded@, pre.spaces.kernel_root@);
     }
 
     /// Whether nothing is left in the roots of the process at `base`: no entry of its table root names a

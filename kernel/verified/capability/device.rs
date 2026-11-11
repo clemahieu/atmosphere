@@ -699,6 +699,8 @@ impl CapKernel {
         &&& post.spaces.records == pre.spaces.records
         &&& post.spaces.loaded == pre.spaces.loaded
         &&& post.spaces.kernel_entries == pre.spaces.kernel_entries
+        &&& post.spaces.registers == pre.spaces.registers
+        &&& post.spaces.kernel_root == pre.spaces.kernel_root
         &&& post.spaces.holders == pre.spaces.holders
     }
 
@@ -1398,6 +1400,8 @@ impl CapKernel {
         &&& post.spaces.records == pre.spaces.records
         &&& post.spaces.loaded == pre.spaces.loaded
         &&& post.spaces.kernel_entries == pre.spaces.kernel_entries
+        &&& post.spaces.registers == pre.spaces.registers
+        &&& post.spaces.kernel_root == pre.spaces.kernel_root
         &&& post.spaces.holders == pre.spaces.holders
         &&& post.spaces.bound@ == pre.spaces.bound@.insert(s, pre.spaces.bound@[s].insert(d as usize))
         &&& post.devices.wf()

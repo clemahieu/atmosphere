@@ -2131,6 +2131,8 @@ impl CapKernel {
             post.processes.holders@ == pre.processes.holders@.insert(base, set![(leaf + 1) as usize]),
             post.processes.bound@ == pre.processes.bound@.insert(base, Set::<usize>::empty()),
             post.spaces.kernel_entries == pre.spaces.kernel_entries,
+            post.spaces.registers == pre.spaces.registers,
+            post.spaces.kernel_root == pre.spaces.kernel_root,
             post.spaces.roots@ == pre.spaces.roots@.insert(base, post.spaces.roots@[base]),
             post.spaces.roots@[base].addr() == base + SPACE_ROOT_PAGE * PAGE_SZ,
             post.spaces.roots@[base].is_init(),
@@ -2514,6 +2516,7 @@ impl CapKernel {
         lemma_links_root_added(a, b, base);
         Self::lemma_tlb_same(pre, post);
         lemma_ids_space_added(pre.cores@, pre.spaces.loaded@, post.spaces.loaded@, base);
+        lemma_registers_lists(pre.spaces.registers@, pre.cores@, pre.spaces.loaded@, post.spaces.loaded@, pre.spaces.kernel_root@);
         assert forall|c: int| 0 <= c < NUM_CPUS implies !#[trigger] post.loaded(c, base) by {
             lemma_no_core_listed(c as u32);
         }

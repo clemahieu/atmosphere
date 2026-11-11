@@ -2277,6 +2277,12 @@ impl CapKernel {
     {
         reveal(ids_wf);
         lemma_ids_core_step(pre.cores@, post.cores@, pre.spaces.loaded@, c);
+        assert forall|d: int| 0 <= d < NUM_CPUS implies (#[trigger] post.cores@[d]).space == pre.cores@[d].space by {
+            if d != c {
+                assert(post.cores@[d] == pre.cores@[d]);
+            }
+        }
+        lemma_registers_kept(pre.spaces.registers@, pre.cores@, post.cores@, pre.spaces.loaded@, post.spaces.loaded@, pre.spaces.kernel_root@);
         assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] post.acked(d) == pre.acked(d) by {
             if d != c {
                 assert(post.cores@[d] == pre.cores@[d]);

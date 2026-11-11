@@ -10,7 +10,7 @@ use vstd::prelude::*;
 verus! {
 
 use crate::arch::{flush_every_context, invalidate_iommu_all};
-use crate::arch::Flushed;
+use crate::arch::{BaseRegister, Flushed};
 #[cfg(verus_keep_ghost)]
 use crate::arch::FlushTarget;
 use crate::array::Array;
@@ -44,8 +44,8 @@ pub struct CoreState {
     /// The PCIDs this core may hold entries under. Only a flush empties it.
     pub pcids_used: Ghost<Set<usize>>,
     /// The space whose root this core's page-table base register names, or None for a root that is no
-    /// space's, such as the kernel's own. Only switch_space writes it, with the token of the glue that
-    /// wrote the register. See design/teardown-driven-by-retype/.
+    /// space's, such as the kernel's own. Only switch_space writes it, in the step that writes the
+    /// register through the core's BaseRegister: registers_wf. See design/teardown-driven-by-retype/.
     pub space: Option<usize>,
 }
 
@@ -112,6 +112,96 @@ pub open spec fn ids_wf(cores: Seq<CoreState>, lists: Map<usize, PointsTo<SpaceC
     &&& forall|c: int, s: usize, r: usize| 0 <= c < NUM_CPUS && s != r && #[trigger] holds_id(cores, lists, c, s) && #[trigger] holds_id(cores, lists, c, r)
         ==> id_pcid(lists[s].value().ids@[c]) != id_pcid(lists[r].value().ids@[c])
     &&& forall|c: int| 0 <= c < NUM_CPUS ==> #[trigger] names_wf(cores[c].space, cores[c].generation, lists, c)
+}
+
+/// Core c's base register names `space`: for Some(s), s's root under the tag s holds on c; for None,
+/// under KERNEL_TAG, the root the core booted on or a root at no space's root offset.
+pub open spec fn register_names(r: BaseRegister, space: Option<usize>, lists: Map<usize, PointsTo<SpaceCores>>, c: int, kernel_root: usize) -> bool {
+    &&& r.core() == c
+    &&& match space {
+        Some(s) => {
+            &&& lists.contains_key(s)
+            &&& r.root() == s + SPACE_ROOT_PAGE * PAGE_SZ
+            &&& r.tag() == id_pcid(lists[s].value().ids@[c])
+        },
+        None => {
+            &&& r.tag() == KERNEL_TAG
+            &&& (r.root() == kernel_root || r.root() % TABLE_PAGE_BYTES != SPACE_ROOT_PAGE * PAGE_SZ)
+        },
+    }
+}
+
+/// Every core's base register as boot leaves it: naming `kernel_root` under KERNEL_TAG.
+pub open spec fn boot_registers(registers: Map<int, BaseRegister>, kernel_root: usize) -> bool {
+    forall|c: int| 0 <= c < NUM_CPUS ==> {
+        &&& #[trigger] registers.contains_key(c)
+        &&& registers[c].core() == c
+        &&& registers[c].root() == kernel_root
+        &&& registers[c].tag() == KERNEL_TAG
+    }
+}
+
+/// The kernel holds each core's base register, and what each last wrote is what the core's record
+/// says it names. Only switch_space writes a register, and it writes the record in the same step, so
+/// no write the record does not show can happen: design/teardown-driven-by-retype/.
+#[verifier::opaque]
+pub open spec fn registers_wf(registers: Map<int, BaseRegister>, cores: Seq<CoreState>, lists: Map<usize, PointsTo<SpaceCores>>, kernel_root: usize) -> bool {
+    forall|c: int| 0 <= c < NUM_CPUS ==> {
+        &&& #[trigger] registers.contains_key(c)
+        &&& register_names(registers[c], cores[c].space, lists, c, kernel_root)
+    }
+}
+
+/// The registers still name what the records say after a step that names the same space on every core
+/// and keeps the tag each named space holds there.
+pub proof fn lemma_registers_kept(
+    registers: Map<int, BaseRegister>,
+    pre: Seq<CoreState>,
+    post: Seq<CoreState>,
+    pre_lists: Map<usize, PointsTo<SpaceCores>>,
+    post_lists: Map<usize, PointsTo<SpaceCores>>,
+    kernel_root: usize,
+)
+    requires
+        registers_wf(registers, pre, pre_lists, kernel_root),
+        forall|c: int| 0 <= c < NUM_CPUS ==> (#[trigger] post[c]).space == pre[c].space,
+        forall|c: int| 0 <= c < NUM_CPUS && (#[trigger] post[c]).space is Some && pre_lists.contains_key(post[c].space->0) ==> {
+            &&& post_lists.contains_key(post[c].space->0)
+            &&& id_pcid(post_lists[post[c].space->0].value().ids@[c]) == id_pcid(pre_lists[post[c].space->0].value().ids@[c])
+        },
+    ensures
+        registers_wf(registers, post, post_lists, kernel_root),
+{
+    reveal(registers_wf);
+    assert forall|c: int| 0 <= c < NUM_CPUS implies {
+        &&& #[trigger] registers.contains_key(c)
+        &&& register_names(registers[c], post[c].space, post_lists, c, kernel_root)
+    } by {
+        assert(registers.contains_key(c));
+        assert(register_names(registers[c], pre[c].space, pre_lists, c, kernel_root));
+        assert(post[c].space == pre[c].space);
+    }
+}
+
+/// The registers still name what the records say after a change to the lists that keeps each space a
+/// register names.
+pub proof fn lemma_registers_lists(
+    registers: Map<int, BaseRegister>,
+    cores: Seq<CoreState>,
+    pre: Map<usize, PointsTo<SpaceCores>>,
+    post: Map<usize, PointsTo<SpaceCores>>,
+    kernel_root: usize,
+)
+    requires
+        registers_wf(registers, cores, pre, kernel_root),
+        forall|c: int| 0 <= c < NUM_CPUS && (#[trigger] cores[c]).space is Some && pre.contains_key(cores[c].space->0) ==> {
+            &&& post.contains_key(cores[c].space->0)
+            &&& post[cores[c].space->0] == pre[cores[c].space->0]
+        },
+    ensures
+        registers_wf(registers, cores, post, kernel_root),
+{
+    lemma_registers_kept(registers, cores, cores, pre, post, kernel_root);
 }
 
 /// A word holds its generation and PCID.
@@ -1254,6 +1344,7 @@ impl CapKernel {
         &&& self.stale_epoch.wf()
         &&& self.tlb_wf()
         &&& ids_wf(self.cores@, self.spaces.loaded@)
+        &&& registers_wf(self.spaces.registers@, self.cores@, self.spaces.loaded@, self.spaces.kernel_root@)
         &&& self.frames_wf()
         &&& self.zeroing.wf()
         &&& zeroing_typed(&self.zeroing, &self.blocks)
@@ -1397,6 +1488,23 @@ impl CapKernel {
         &&& forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] post.tlb@[d] == pre.tlb@[d]
     }
 
+    /// A step that changed only core c, and not the space its register names, keeps the registers.
+    pub proof fn lemma_registers_core(pre: Self, post: Self, c: int)
+        requires
+            pre.wf(),
+            0 <= c < NUM_CPUS,
+            Self::only_core_changed(pre, post, c),
+        ensures
+            registers_wf(post.spaces.registers@, post.cores@, post.spaces.loaded@, post.spaces.kernel_root@),
+    {
+        assert forall|d: int| 0 <= d < NUM_CPUS implies (#[trigger] post.cores@[d]).space == pre.cores@[d].space by {
+            if d != c {
+                assert(post.cores@[d] == pre.cores@[d]);
+            }
+        }
+        lemma_registers_kept(pre.spaces.registers@, pre.cores@, post.cores@, pre.spaces.loaded@, post.spaces.loaded@, pre.spaces.kernel_root@);
+    }
+
     /// An unmapped page every core and IOMMU has acknowledged is free of stale translations.
     pub proof fn lemma_acknowledged_is_clean(&self, f: usize)
         requires
@@ -1509,7 +1617,8 @@ impl CapKernel {
 
     /// Makes this a kernel with one root capability, no mappings, no core running anything and each at generation 1, every page
     /// Reserved with no unmap recorded, and the IOMMUs boot found present with their command buffers.
-    /// In place, since the block table is too large to move by value.
+    /// `registers` are the cores' base registers as boot left them, each naming `kernel_root` under
+    /// KERNEL_TAG. In place, since the block table is too large to move by value.
     pub fn init(
         &mut self,
         root: usize,
@@ -1517,8 +1626,11 @@ impl CapKernel {
         kernel_entries: Array<usize, KERNEL_MEM_END_L4INDEX>,
         iommus_present: Array<bool, NUM_IOMMUS>,
         iommu_commands: CommandBuffers,
+        kernel_root: usize,
+        Tracked(registers): Tracked<Map<int, BaseRegister>>,
     )
         requires
+            boot_registers(registers, kernel_root),
             old(self).cores.wf(),
             old(self).iommus.acked.wf(),
             old(self).stale_epoch.wf(),
@@ -1545,6 +1657,7 @@ impl CapKernel {
             final(self).iommus.present == iommus_present,
             final(self).iommus.commands == iommu_commands,
             final(self).flush_epoch == 0,
+            final(self).spaces.kernel_root@ == kernel_root,
             final(self).mapped@ == Set::<usize>::empty(),
             final(self).devices.count == 0,
             forall|c: int| 0 <= c < NUM_CPUS ==> {
@@ -1560,7 +1673,7 @@ impl CapKernel {
         self.list = Tree::new(root, Tracked(perm));
         self.tables = Tables::new();
         self.table_pages = TablePages::new();
-        self.spaces = Spaces::new(kernel_entries);
+        self.spaces = Spaces::new(kernel_entries, kernel_root, Tracked(registers));
         self.mappings = Ghost(IMap::empty());
         self.frames = Tracked(Map::tracked_empty());
         // Boot holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
@@ -1587,6 +1700,7 @@ impl CapKernel {
         self.mapped = Ghost(Set::empty());
         proof {
             reveal(ids_wf);
+            reveal(registers_wf);
             reveal(devices_wf);
             reveal(current_wf);
             reveal(binding_parents);
@@ -2391,6 +2505,8 @@ impl CapKernel {
         });
         self.tlb = Ghost(self.tlb@.update(c as int, Set::empty()));
         proof {
+            assert forall|d: int| 0 <= d < NUM_CPUS && d != c as int implies #[trigger] self.cores@[d] == pre.cores@[d] by {}
+            Self::lemma_registers_core(pre, *self, c as int);
             Self::lemma_iommus_same(pre, *self);
             reveal(ids_wf);
             assert forall|d: int| 0 <= d < NUM_CPUS && d != c as int implies #[trigger] self.cores@[d] == pre.cores@[d] by {}

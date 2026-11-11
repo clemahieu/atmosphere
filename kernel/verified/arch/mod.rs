@@ -4,26 +4,27 @@
 //! implementation defines the same items with the same specs, so code above this module does not know
 //! which ISA it runs on. See design/arch-module/.
 //!
-//! The tokens the glue hands the capability kernel are defined here, once for both targets. Their
-//! fields are private to this module and its per-target submodules, so no code above it can build
-//! one: proof code cannot write the struct, and verified code cannot call Tracked::assume_new, which
-//! Verus marks external. Only the glue that does what a token attests makes it.
+//! The tokens the glue and the capability kernel pass are defined here, once for both targets. Their
+//! fields are private to this module and its per-target submodules, so no code above it can build or
+//! change one: proof code cannot write the struct, and verified code cannot call Tracked::assume_new,
+//! which Verus marks external. Only the glue that does what a token attests makes or changes it.
 use vstd::prelude::*;
 
 verus! {
 
-/// What a write of a core's page-table base register proves: core `core()` now translates through the
-/// table whose top level is at `root()`, filling its TLB under tag `tag()`, the PCID or ASID written
-/// with it. Only load_translation_root makes one.
+/// Core `core()`'s page-table base register: the core translates through the table whose top level is
+/// at `root()`, filling its TLB under tag `tag()`, the PCID or ASID written with it. The kernel value
+/// holds one for each core, made at boot for the root the loader left there, and load_translation_root
+/// writes the register only through it, so what it says is the register's latest write.
 // The fields are read only by specs, which a build that is not verifying erases.
 #[allow(dead_code)]
-pub tracked struct Translating {
+pub tracked struct BaseRegister {
     ghost core: int,
     ghost root: usize,
     ghost tag: usize,
 }
 
-impl Translating {
+impl BaseRegister {
     pub closed spec fn core(self) -> int {
         self.core
     }

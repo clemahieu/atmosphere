@@ -34,6 +34,7 @@ use crate::capability::view::*;
 #[cfg(verus_keep_ghost)]
 use crate::layouts::*;
 use crate::define::*;
+use crate::arch::BaseRegister;
 #[cfg(verus_keep_ghost)]
 use crate::arch::usize2page_entry;
 use crate::pagetable::pagemap::*;
@@ -186,12 +187,22 @@ pub struct Spaces {
     pub bound: Ghost<IMap<usize, Set<usize>>>,
     /// The kernel's entries, which every process root holds in its kernel slots.
     pub kernel_entries: Array<usize, KERNEL_MEM_END_L4INDEX>,
+    /// Each core's page-table base register, by core, naming what the core's record says: registers_wf.
+    pub registers: Tracked<Map<int, BaseRegister>>,
+    /// The root every core booted on, which is no space's.
+    pub kernel_root: Ghost<usize>,
 }
 
 impl Spaces {
-    pub fn new(kernel_entries: Array<usize, KERNEL_MEM_END_L4INDEX>) -> (ret: Self)
+    pub fn new(
+        kernel_entries: Array<usize, KERNEL_MEM_END_L4INDEX>,
+        kernel_root: usize,
+        Tracked(registers): Tracked<Map<int, BaseRegister>>,
+    ) -> (ret: Self)
         ensures
             ret.kernel_entries == kernel_entries,
+            ret.registers@ == registers,
+            ret.kernel_root@ == kernel_root,
             ret.roots@ == Map::<usize, PointsTo<PageMap>>::empty(),
             ret.records@ == Map::<usize, PointsTo<SpaceRecord>>::empty(),
             ret.loaded@ == Map::<usize, PointsTo<SpaceCores>>::empty(),
@@ -205,6 +216,8 @@ impl Spaces {
             holders: Ghost(IMap::empty()),
             bound: Ghost(IMap::empty()),
             kernel_entries,
+            registers: Tracked(registers),
+            kernel_root: Ghost(kernel_root),
         }
     }
 }
@@ -1525,6 +1538,8 @@ impl CapKernel {
             post.spaces.records == pre.spaces.records,
             post.spaces.loaded == pre.spaces.loaded,
             post.spaces.kernel_entries == pre.spaces.kernel_entries,
+            post.spaces.registers == pre.spaces.registers,
+            post.spaces.kernel_root == pre.spaces.kernel_root,
             post.spaces.bound == pre.spaces.bound,
             post.spaces.holders@ == pre.spaces.holders@.insert(s, pre.spaces.holders@[s].insert(n)),
             forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) ==> post.list.pages@.dom().contains(p),
@@ -1607,6 +1622,8 @@ impl CapKernel {
             post.spaces.records == pre.spaces.records,
             post.spaces.loaded == pre.spaces.loaded,
             post.spaces.kernel_entries == pre.spaces.kernel_entries,
+            post.spaces.registers == pre.spaces.registers,
+            post.spaces.kernel_root == pre.spaces.kernel_root,
             post.spaces.bound == pre.spaces.bound,
             post.spaces.holders@ == pre.spaces.holders@.insert(s, pre.spaces.holders@[s].remove(n)),
             forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) ==> post.list.pages@.dom().contains(p),
@@ -1685,6 +1702,8 @@ impl CapKernel {
             post.spaces.records == pre.spaces.records,
             post.spaces.loaded == pre.spaces.loaded,
             post.spaces.kernel_entries == pre.spaces.kernel_entries,
+            post.spaces.registers == pre.spaces.registers,
+            post.spaces.kernel_root == pre.spaces.kernel_root,
             post.spaces.holders == pre.spaces.holders,
             post.spaces.bound@ == pre.spaces.bound@.insert(s, pre.spaces.bound@[s].remove(d)),
             forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) ==> post.list.pages@.dom().contains(p),
@@ -1763,6 +1782,8 @@ impl CapKernel {
             post.spaces.records == pre.spaces.records,
             post.spaces.loaded == pre.spaces.loaded,
             post.spaces.kernel_entries == pre.spaces.kernel_entries,
+            post.spaces.registers == pre.spaces.registers,
+            post.spaces.kernel_root == pre.spaces.kernel_root,
             post.spaces.holders == pre.spaces.holders,
             post.spaces.bound@ == pre.spaces.bound@.insert(s, pre.spaces.bound@[s].insert(d)),
             forall|p: usize| #[trigger] pre.list.pages@.dom().contains(p) ==> post.list.pages@.dom().contains(p),
@@ -3164,6 +3185,8 @@ impl CapKernel {
             post.spaces.loaded@[base].is_init(),
             post.spaces.loaded@[base].value().list == 0u32,
             post.spaces.kernel_entries == pre.spaces.kernel_entries,
+            post.spaces.registers == pre.spaces.registers,
+            post.spaces.kernel_root == pre.spaces.kernel_root,
             kernel_slots_wf(&post.spaces, base),
             root_record_wf(&post.spaces, base),
             post.spaces.holders@ == pre.spaces.holders@.insert(base, set![child]),
@@ -3390,6 +3413,8 @@ impl CapKernel {
                         == space_mapping(tree_of(&old(self).table_pages, &old(self).spaces), r)
                 &&& forall|i: usize| i < ENTRIES ==> #[trigger] final(self).spaces.roots@[base].value()[i].is_empty()
                 &&& final(self).spaces.kernel_entries == old(self).spaces.kernel_entries
+                &&& final(self).spaces.registers == old(self).spaces.registers
+                &&& final(self).spaces.kernel_root == old(self).spaces.kernel_root
                 &&& final(self).spaces.bound@ == old(self).spaces.bound@.insert(base, Set::<usize>::empty())
                 &&& forall|s: usize| #[trigger] old(self).spaces.roots@.contains_key(s) ==> final(self).spaces.roots@[s] == old(self).spaces.roots@[s]
                 &&& final(self).blocks.pages@[(base / PAGE_SZ) as int].refs == 1
@@ -3545,6 +3570,7 @@ impl CapKernel {
                 assert(vstd::array::spec_array_fill_for_copy_type::<usize, NUM_CPUS>(0usize).view()[c] == 0usize);
             }
             lemma_ids_space_added(pre.cores@, pre.spaces.loaded@, post.spaces.loaded@, base);
+            lemma_registers_lists(pre.spaces.registers@, pre.cores@, pre.spaces.loaded@, post.spaces.loaded@, pre.spaces.kernel_root@);
             assert forall|c: int| 0 <= c < NUM_CPUS implies !#[trigger] holds_id(post.cores@, post.spaces.loaded@, c, base) by {
                 pre.lemma_id_handed_out(c, base, 0);
                 assert(post.spaces.loaded@[base].value().ids@[c] == 0usize);

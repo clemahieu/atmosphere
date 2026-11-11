@@ -1081,6 +1081,8 @@ impl CapKernel {
             post.mappings == pre.mappings,
             post.spaces.loaded == pre.spaces.loaded,
             post.spaces.bound == pre.spaces.bound,
+            post.spaces.registers == pre.spaces.registers,
+            post.spaces.kernel_root == pre.spaces.kernel_root,
             post.zeroing == pre.zeroing,
             post.frames == pre.frames,
             post.cores == pre.cores,
@@ -1112,6 +1114,8 @@ impl CapKernel {
             post.mappings == pre.mappings,
             post.spaces.loaded == pre.spaces.loaded,
             post.spaces.bound == pre.spaces.bound,
+            post.spaces.registers == pre.spaces.registers,
+            post.spaces.kernel_root == pre.spaces.kernel_root,
             same_frame_entries(tree_of(&pre.table_pages, &pre.spaces), tree_of(&post.table_pages, &post.spaces)),
             post.zeroing == pre.zeroing,
             post.frames == pre.frames,
@@ -1224,6 +1228,8 @@ impl CapKernel {
             post.spaces.loaded == pre.spaces.loaded,
             post.spaces.holders == pre.spaces.holders,
             post.spaces.kernel_entries == pre.spaces.kernel_entries,
+            post.spaces.registers == pre.spaces.registers,
+            post.spaces.kernel_root == pre.spaces.kernel_root,
             post.spaces.bound == pre.spaces.bound,
             pre.spaces.roots@.contains_key(parent),
             !holds_kernel(pre.spaces.records@[parent].value().kind, entry),
@@ -1893,6 +1899,8 @@ impl CapKernel {
         &&& post.spaces.loaded == pre.spaces.loaded
         &&& post.spaces.holders == pre.spaces.holders
         &&& post.spaces.kernel_entries == pre.spaces.kernel_entries
+        &&& post.spaces.registers == pre.spaces.registers
+        &&& post.spaces.kernel_root == pre.spaces.kernel_root
         &&& post.spaces.bound == pre.spaces.bound
         &&& post.devices == pre.devices
     }
@@ -2597,6 +2605,8 @@ impl CapKernel {
             post.stale_epoch == pre.stale_epoch,
             post.spaces.loaded == pre.spaces.loaded,
             post.spaces.bound == pre.spaces.bound,
+            post.spaces.registers == pre.spaces.registers,
+            post.spaces.kernel_root == pre.spaces.kernel_root,
             post.table_pages.maps@.dom() == pre.table_pages.maps@.dom(),
             pre.table_pages.maps@.contains_key(child),
             tree_of(&pre.table_pages, &pre.spaces).names_child(parent, entry),

@@ -911,6 +911,8 @@ impl CapKernel {
             post.spaces.loaded@[base].addr() == base + SPACE_CORES_PAGE * PAGE_SZ,
             post.spaces.loaded@[base].is_init(),
             post.spaces.kernel_entries == pre.spaces.kernel_entries,
+            post.spaces.registers == pre.spaces.registers,
+            post.spaces.kernel_root == pre.spaces.kernel_root,
             kernel_slots_wf(&post.spaces, base),
             root_record_wf(&post.spaces, base),
             post.spaces.holders@ == pre.spaces.holders@.insert(base, Set::<usize>::empty()),
@@ -1227,6 +1229,8 @@ impl CapKernel {
                     ==> #[trigger] final(self).spaces.roots@[base].value()[i].is_empty()
                 &&& kernel_slots_wf(&final(self).spaces, base)
                 &&& final(self).spaces.kernel_entries == old(self).spaces.kernel_entries
+                &&& final(self).spaces.registers == old(self).spaces.registers
+                &&& final(self).spaces.kernel_root == old(self).spaces.kernel_root
                 &&& forall|c: int| 0 <= c < NUM_CPUS ==> !#[trigger] final(self).loaded(c, base)
                 &&& final(self).process_unloaded(base)
                 &&& forall|c: int| 0 <= c < NUM_CPUS ==> !#[trigger] holds_id(final(self).cores@, final(self).spaces.loaded@, c, base)
@@ -1411,6 +1415,7 @@ impl CapKernel {
                 assert(vstd::array::spec_array_fill_for_copy_type::<usize, NUM_CPUS>(0usize).view()[c] == 0usize);
             }
             lemma_ids_space_added(pre.cores@, pre.spaces.loaded@, post.spaces.loaded@, base);
+            lemma_registers_lists(pre.spaces.registers@, pre.cores@, pre.spaces.loaded@, post.spaces.loaded@, pre.spaces.kernel_root@);
             assert forall|c: int| 0 <= c < NUM_CPUS implies !#[trigger] holds_id(post.cores@, post.spaces.loaded@, c, base) by {
                 pre.lemma_id_handed_out(c, base, 0);
                 assert(post.spaces.loaded@[base].value().ids@[c] == 0usize);
