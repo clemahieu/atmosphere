@@ -1177,9 +1177,10 @@ impl CapKernel {
     /// position to: each word names a position; the source is in a table and its slot holds a
     /// capability; the destination is in a table, through a process capability with control naming no
     /// dead process when it goes through one, and its slot is empty; and a source in the caller's own
-    /// table names no dead process or thread, while one in a controlled table is taken whatever it
-    /// names. The process's liveness, the destination's emptiness and the source's liveness read the
-    /// kernel outside the view.
+    /// table, named directly or through a control capability to the caller's own process, names no
+    /// dead process or thread, while one in another process's table is taken whatever it names. The
+    /// process's liveness, the destination's emptiness and the source's liveness read the kernel
+    /// outside the view.
     pub open spec fn move_allowed(&self, root: usize, from: Option<Position>, to: Option<Position>) -> bool {
         let src = self.view_table_at(root, from->0.through);
         let dst = self.view_table_at(root, to->0.through);
@@ -1190,7 +1191,7 @@ impl CapKernel {
         &&& to->0.through is Some ==> !self.processes.records@[dst->0].value().dead
         &&& self.table_view(src->0).contains_key(from->0.index)
         &&& self.empty_slot(dst->0, to->0.index)
-        &&& from->0.through is None ==> !self.cap_dead(self.tables.node_of(root, from->0.index))
+        &&& src->0 == root ==> !self.cap_dead(self.tables.node_of(root, from->0.index))
     }
 
     /// The view of the table at t after a move of the capability at index from of the table at src to

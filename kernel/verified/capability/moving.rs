@@ -49,15 +49,16 @@ impl CapKernel {
     /// The refusals of a move from one position to another, for a caller whose table is at root: a
     /// source in no table, a destination in none or in the table of a dead process, to which nothing
     /// is given since it cannot use it, a move's between the two tables, and a source in the caller's
-    /// own table naming a dead process or thread. A source in a controlled table is taken whatever it
-    /// names and whether or not its process is dead.
+    /// own table naming a dead process or thread, however the position names that table: directly, or
+    /// through a control capability to the caller's own process. A source in another process's table
+    /// is a claim, taken whatever it names and whether or not its process is dead.
     pub open spec fn can_move_at(&self, root: usize, from: Position, to: Position) -> bool {
         let src = self.table_at(root, from.through);
         let dst = self.destination_at(root, to.through);
         &&& src is Some
         &&& dst is Some
         &&& self.can_move_between(src->0, from.index, dst->0, to.index)
-        &&& from.through is None ==> !self.cap_dead(self.tables.node_of(root, from.index))
+        &&& src->0 == root ==> !self.cap_dead(self.tables.node_of(root, from.index))
     }
 
     /// What a move of the capability at index from of the table at src to index to of the table at
@@ -138,6 +139,36 @@ impl CapKernel {
         self.lemma_no_destination_through(root, cap);
     }
 
+    /// A move out of the caller's own table is refused when the capability names a dead process or
+    /// thread, whether the position names that table directly or through a control capability to the
+    /// caller's own process.
+    pub proof fn lemma_no_move_of_dead_out_of_own(&self, root: usize, from: Position, to: Position)
+        requires
+            self.table_at(root, from.through) == Some(root),
+            self.cap_dead(self.tables.node_of(root, from.index)),
+        ensures
+            !self.can_move_at(root, from, to),
+    {
+    }
+
+    /// A move out of the table of another process the caller controls, a claim, is not refused for
+    /// what the capability names: its refusals are those of the move between the two tables.
+    pub proof fn lemma_claim_takes_dead(&self, root: usize, from: Position, to: Position)
+        requires
+            self.table_at(root, from.through) is Some,
+            self.table_at(root, from.through)->0 != root,
+            self.destination_at(root, to.through) is Some,
+            self.can_move_between(
+                self.table_at(root, from.through)->0,
+                from.index,
+                self.destination_at(root, to.through)->0,
+                to.index,
+            ),
+        ensures
+            self.can_move_at(root, from, to),
+    {
+    }
+
     /// A device's capability, which has no children because derive refuses it, moves from the
     /// caller's table into an empty slot of a live process the caller controls: a move's refusals do
     /// not read the kind. The slot then holds the device's capability, and the step is a placement.
@@ -207,10 +238,11 @@ impl CapKernel {
     }
 
     /// Moves the capability at position `from` to the empty position `to`: each an index of the
-    /// caller's table, at `root`, or of the table of a process the caller controls. A source there is
-    /// taken whether its process is live or dead, a claim; a destination there must not be dead. One
-    /// bounded step: nothing enumerates a table. The positions come from user space, so either can be
-    /// refused, and a refusal changes nothing.
+    /// caller's table, at `root`, or of the table of a process the caller controls. A source in the
+    /// caller's own table, however named, is refused when it names a dead process or thread; a source
+    /// in another's is taken whether its process is live or dead, a claim; a destination there must
+    /// not be dead. One bounded step: nothing enumerates a table. The positions come from user space,
+    /// so either can be refused, and a refusal changes nothing.
     pub fn move_cap(&mut self, root: usize, from: Position, to: Position) -> (ret: bool)
         requires
             old(self).wf(),
@@ -242,27 +274,24 @@ impl CapKernel {
             Some(table) => table,
             None => { return false; },
         };
-        match from.through {
-            Some(_) => {},
-            None => {
-                if let Some((i, payload)) = self.tables.lookup(&self.list, root, from.index) {
-                    let node = self.list.get(i);
-                    let kind_ok = match node.kind {
-                        NodeKind::Capability => true,
-                        _ => false,
-                    };
-                    if node.live && kind_ok {
-                        proof {
-                            pre.lemma_slot(root, from.index);
-                            assert(pre.tables.is_cap(&pre.list, i));
-                            assert(payload == pre.payload_of(i));
-                        }
-                        if self.is_cap_dead(i, payload) {
-                            return false;
-                        }
+        if src == root {
+            if let Some((i, payload)) = self.tables.lookup(&self.list, root, from.index) {
+                let node = self.list.get(i);
+                let kind_ok = match node.kind {
+                    NodeKind::Capability => true,
+                    _ => false,
+                };
+                if node.live && kind_ok {
+                    proof {
+                        pre.lemma_slot(root, from.index);
+                        assert(pre.tables.is_cap(&pre.list, i));
+                        assert(payload == pre.payload_of(i));
+                    }
+                    if self.is_cap_dead(i, payload) {
+                        return false;
                     }
                 }
-            },
+            }
         }
         let ret = self.move_between(src, from.index, dst, to.index);
         if ret {
