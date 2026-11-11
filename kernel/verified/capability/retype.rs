@@ -482,6 +482,8 @@ impl CapKernel {
             Self::caps_frame(*old(self), *final(self), child, child),
             final(self).list.parent@ == old(self).list.parent@.insert(child, parent),
             final(self).processes == old(self).processes,
+            final(self).stale_epoch == old(self).stale_epoch,
+            final(self).iommus == old(self).iommus,
             forall|i: int| #![trigger final(self).list.nodes@[i]] 0 <= i < NODE_SPACE && i != child ==> {
                 &&& final(self).list.nodes@[i].live == old(self).list.nodes@[i].live
                 &&& final(self).list.nodes@[i].depth == old(self).list.nodes@[i].depth
@@ -854,6 +856,9 @@ impl CapKernel {
             final(self).holders == old(self).holders,
             final(self).cores == old(self).cores,
             final(self).devices == old(self).devices,
+            final(self).processes == old(self).processes,
+            final(self).stale_epoch == old(self).stale_epoch,
+            final(self).iommus == old(self).iommus,
             ret is Refused == (!old(self).zeroing.active(level, r) && !old(self).blocks.large_free(level, r as int)),
             ret is Refused ==> *final(self) == *old(self),
             ret is Done ==> forall|k: usize| k < level_pages(level)
@@ -1966,6 +1971,9 @@ impl CapKernel {
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             Self::same_tree(*old(self), *final(self)),
             final(self).cores == old(self).cores,
+            final(self).processes == old(self).processes,
+            final(self).stale_epoch == old(self).stale_epoch,
+            final(self).iommus == old(self).iommus,
             ret is Refused == !old(self).can_retype_large(root, from, to, base, order),
             ret is Refused ==> *final(self) == *old(self),
             old(self).zeroing.blocks@.contains_key(base / PAGE_SZ) ==>
@@ -1975,6 +1983,13 @@ impl CapKernel {
                 final(self).zeroing.cursor@[(base / PAGE_SZ) as int] <= ZERO_CHUNK_PAGES,
             ret is Again ==> Self::large_frame_zeroing(*old(self), *final(self), root, from, to, base, order),
             ret is Done ==> Self::large_frame_retyped(*old(self), *final(self), root, from, to, base, order),
+            ret is Done ==> {
+                let level = large_level(order);
+                let br = level_ref(level, base / PAGE_SZ / level_pages(level));
+                &&& block_typed(&final(self).blocks, br)
+                &&& block_refs(&final(self).blocks, br) == 1
+                &&& !block_dead(&final(self).blocks, br)
+            },
     {
         let ghost pre = *old(self);
         let (parent, child) = match self.retype_slots(root, from, to, base, order) {
