@@ -742,8 +742,10 @@ mod queue {
     /// The commands stored into the IOMMUs' command rings since the last submit: each slot written, by
     /// its address, and the command written there. The IotlbModel holds the one record, so there is
     /// no second record a store could update instead; only store_command adds a slot, and every write
-    /// of a slot goes through it, so a slot the record names holds that command until the IOMMU reads
-    /// it. A slot is a command's aligned 16 bytes, so slots at different addresses do not overlap.
+    /// of a slot goes through it, since CommandBuffers holds each ring page as a CommandPage, whose
+    /// permission nothing outside it can write through. So a slot the record names holds that command
+    /// until the IOMMU reads it. A slot is a command's aligned 16 bytes, so slots at different
+    /// addresses do not overlap.
     // Only specs read the field, and a cargo build erases specs, so only Verus compiles it.
     pub tracked struct QueuedCommands {
         #[cfg(verus_keep_ghost)]

@@ -617,9 +617,10 @@ mod queue {
     /// last submit: each producer register read, by its address, and the value read; each slot
     /// written, by its address, and the command written there. The IotlbModel holds the one record, so
     /// there is no second record a read or a store could update instead; only read_producer adds a
-    /// producer and only store_command a slot, and every write of a slot goes through it, so a slot the
-    /// record names holds that command until the SMMU consumes it. A slot is a command's aligned 16
-    /// bytes, so slots at different addresses do not overlap.
+    /// producer and only store_command a slot, and every write of a slot goes through it, since
+    /// CommandBuffers holds each queue page as a CommandPage, whose permission nothing outside it can
+    /// write through. So a slot the record names holds that command until the SMMU consumes it. A slot
+    /// is a command's aligned 16 bytes, so slots at different addresses do not overlap.
     // Only specs read the fields, and a cargo build erases specs, so only Verus compiles them.
     pub tracked struct QueuedCommands {
         #[cfg(verus_keep_ghost)]

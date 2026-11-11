@@ -600,12 +600,38 @@ pub open spec fn completion_page(b: CommandBuffer) -> usize {
     (b.completion - b.completion % PAGE_SZ) as usize
 }
 
+pub use command_page::CommandPage;
+
+/// A page of an IOMMU's command ring or of its completion word, alone in a module with its
+/// permission, so the field is private to it: no code outside can take the permission and write the
+/// page through it. The arch module's command glue writes a ring slot by its address and records the
+/// command it wrote, so that record is the only way a slot changes, and the IOMMU reads the slot.
+mod command_page {
+    use vstd::prelude::*;
+    #[cfg(verus_keep_ghost)]
+    use crate::define::PagePerm4k;
+
+    // Only specs read the field, and a cargo build erases specs, so only Verus compiles it.
+    pub tracked struct CommandPage {
+        #[cfg(verus_keep_ghost)]
+        tracked perm: PagePerm4k,
+    }
+
+    impl CommandPage {
+        /// The page's address.
+        pub closed spec fn addr(self) -> usize {
+            self.perm.addr()
+        }
+    }
+}
+
 /// Each IOMMU's command buffer and the pages its ring and completion word sit in. Holding those pages
-/// keeps them out of every block the capability kernel hands out, and keying them by IOMMU keeps two
-/// IOMMUs from sharing one.
+/// keeps them out of every block the capability kernel hands out, keying them by IOMMU keeps two
+/// IOMMUs from sharing one, and holding each as a CommandPage keeps every write of a ring slot in the
+/// arch module's command glue.
 pub struct CommandBuffers {
     pub buffers: Array<CommandBuffer, NUM_IOMMUS>,
-    pub pages: Tracked<Map<(int, usize), PagePerm4k>>,
+    pub pages: Tracked<Map<(int, usize), CommandPage>>,
 }
 
 impl CommandBuffers {
