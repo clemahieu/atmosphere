@@ -90,6 +90,17 @@ pub open spec fn run_layout(size: nat, align: nat) -> bool {
     &&& PAGE_BYTES as nat % align == 0
 }
 
+/// Whether `alloc` and `free` take a layout of `size` bytes aligned to `align`: a slot's, a buddy
+/// run's or a large object's. The glue that serves an allocator interface asks this before it calls
+/// them.
+pub fn layout_fits(size: usize, align: usize) -> (r: bool)
+    ensures
+        r == (small_layout(size as nat, align as nat) || run_layout(size as nat, align as nat)
+            || large_layout(size as nat, align as nat)),
+{
+    size <= isize::MAX as usize && 0 < align && PAGE_BYTES % align == 0
+}
+
 /// From order `k` up, the first order whose run holds `n` pages, or BLOCK_ORDER.
 pub open spec fn order_up(n: nat, k: nat) -> nat
     decreases BLOCK_ORDER - k,
