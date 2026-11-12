@@ -577,7 +577,8 @@ impl CapKernel {
     /// otherwise ok, with the space the slot names gaining, at the path the address names, the entry that
     /// maps the frame's page with the frame's rights, large at level 2, every other space's mappings as
     /// they were, the count of the block that holds the page one higher, for the entry, and every other
-    /// block's count and every page's block as they were.
+    /// block's count and every page's block as they were, and the kernel holding the permission of the
+    /// frame's page, as it has since boot, so the page is memory.
     pub open spec fn map_contract(pre: Self, post: Self, root: usize, slot: usize, va: u64, level: u64, from: usize, page: usize, out: Outcome) -> bool {
         &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
         &&& {
@@ -598,6 +599,7 @@ impl CapKernel {
                 &&& space_mapping(b, s) == space_mapping(a, s).insert(address_path(va), frame_map_entry(view_frame(v[from], page), v[from].rights, level == 2))
                 &&& forall|r: usize| r != s ==> #[trigger] space_mapping(b, r) == space_mapping(a, r)
                 &&& blocks_refs_changed(&pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) + 1) as usize, block_dead(&pre.blocks, br))
+                &&& post.frames@.contains_key(view_frame(v[from], page))
             }
         }
     }
@@ -623,6 +625,7 @@ impl CapKernel {
             let s = pre.payload_of(pre.tables.node_of(root, slot)).base;
             let f = pre.tables.node_of(root, from);
             let p = address_path(va);
+            pre.lemma_frame_page_held(f, page);
             if level == 1 {
                 pre.lemma_walk_table_facts(s, p);
                 let t = walk_table(tree, s, p)->0;
@@ -638,6 +641,30 @@ impl CapKernel {
             }
             assert(view_frame(pre.table_view(root)[from], page) == frame_of(pre.payload_of(f), page));
         }
+    }
+
+    /// The kernel holds the permission of page `page` of frame capability f: the page lies in the block
+    /// the capability holds, and frames_held says the kernel holds every page of a block with a holder.
+    /// The permissions are those kernel_init took at boot for the memory the loader found free and for
+    /// dom0's image, so the page is memory.
+    pub proof fn lemma_frame_page_held(&self, f: usize, page: usize)
+        requires
+            self.wf(),
+            self.is_cap(f),
+            self.payload_of(f).kind is Frame,
+            (page as int) * PAGE_SZ < block_bytes(self.payload_of(f).order),
+        ensures
+            self.frames@.contains_key(frame_of(self.payload_of(f), page)),
+    {
+        let cap = self.payload_of(f);
+        let i = cap.base / PAGE_SZ;
+        self.lemma_frame_page(f, page);
+        assert(self.tables.is_cap(&self.list, f));
+        lemma_holder_refs(&self.list, &self.tables, &self.blocks, &self.zeroing, self.holders@, f);
+        let frame = frame_of(cap, page);
+        lemma_mapped_page_in_block(&self.blocks, i, cap, frame, 1, frame);
+        assert(self.holders@.contains_key(block_ref(&self.blocks, i)));
+        assert(block_has_page(block_ref(&self.blocks, i), frame));
     }
 
     /// A step that leaves the tables as they were and changes no node's liveness, kind or parent but

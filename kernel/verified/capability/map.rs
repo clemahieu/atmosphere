@@ -1736,6 +1736,7 @@ impl CapKernel {
         &&& post.processes == pre.processes
         &&& post.threads == pre.threads
         &&& post.spaces == pre.spaces
+        &&& post.frames == pre.frames
         &&& forall|r: usize, q: SpacePath| #[trigger] walk_table(b, r, q) == walk_table(a, r, q)
         &&& pre.spaces.records@[s].value().kind is Process
             ==> forall|r: ObjectId, o: ObjectId| #[trigger] post.view().reach(r, o) == pre.view().reach(r, o)
@@ -1763,6 +1764,7 @@ impl CapKernel {
         let br = block_ref(&pre.blocks, frame);
         &&& post.tables == pre.tables
         &&& post.processes == pre.processes
+        &&& post.frames == pre.frames
         &&& walk_large_table(b, s, p) == Some(t)
         &&& space_mapping(b, s) == space_mapping(a, s).insert(p, frame_map_entry(frame, cap.rights, true))
         &&& post.table_pages.maps@[t].value().status(p.l2 as int).is_clear()
