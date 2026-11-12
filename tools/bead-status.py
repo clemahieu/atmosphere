@@ -551,12 +551,14 @@ class Tests(unittest.TestCase):
         self.assertIsNone(alive("loop-x"))
         self.assertFalse(alive(f"loop-{os.getpid()}"))
         self.assertFalse(alive("loop-4194305"))
-        loop = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)", "/somewhere/tools/loop.py"])
+        loop = subprocess.Popen([sys.executable, "-c", "import time; print(flush=True); time.sleep(60)", "/somewhere/tools/loop.py"], stdout=subprocess.PIPE)
         try:
+            loop.stdout.readline()  # the child runs its command, so its cmdline is no longer the test's
             self.assertTrue(alive(f"loop-{loop.pid}"))
         finally:
             loop.kill()
             loop.wait()
+            loop.stdout.close()
         self.assertFalse(alive(f"loop-{loop.pid}"))
 
     def test_the_last_step_of_a_landing_log_is_its_gate_line(self):
