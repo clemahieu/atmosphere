@@ -2,7 +2,7 @@
 
 # Design decisions
 
-40 records: 40 active, 0 superseded.
+41 records: 41 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -22,6 +22,9 @@ in `revisit if` what would make it worth reopening.
 - **[committer-is-not-the-adversary](./committer-is-not-the-adversary/DECISION.md)** (2026-11-11): The proof is defended against user processes, devices, other cores and a specification weaker than its intent. It is not defended against whoever writes the tree: the gate counts every exemption from the proof that is written openly, on purpose or by accident, and claims nothing about one that is disguised; a hole in what Verus trusts is the tool's, kept in a backlog and not defended against in the tree; and a skeptic pass refutes a criterion by a proof hole or by what the running system allows, not by what a committer could add.
   - *confidence:* A judgement by the human, made on one day's measurement of what the other choice cost. That no check kept in the tree holds against a committer who can edit it is an argument, not a measurement.
   - *revisit if:* Commits land from someone the human does not direct, such as an outside contributor or a pull request, which makes the committer a party to defend against and needs a check the committer cannot edit; or an exemption that was disguised, not merely unlisted, is found in the tree.
+- **[core-names-a-space-while-running-its-thread](./core-names-a-space-while-running-its-thread/DECISION.md)** (2026-11-12): Past boot a core's page-table base register always names a root: the space of the thread it runs, or the kernel's own root under KERNEL_TAG when it runs none. A thread switch is one verified operation that goes from the leaving thread's root straight to the arriving thread's, passing through the kernel's root only when the arriving space needs a fresh id and the core's ids have run out; a kernel entry is no transition.
+  - *confidence:* The human's choice of policy, eager over lazy, on the cost argument below; the cost of a register write is something to measure, not cite, and no measurement has been taken.
+  - *revisit if:* The cost of the idle write is measured on a core that does not tag its TLB, or measured as mattering on one that does, so that keeping an idle core on its last space would pay for a register that outlives its thread.
 - **[cpu-time-as-capability](./cpu-time-as-capability/DECISION.md)** (2026-11-05): Per-core run queues, fixed priorities, turns at equal priority, one selection function and one scheduling record per thread. A core capability allows placing a thread on that core at or below its maximum priority, a derived copy may lower it, and a placement is a binding so CPU time is revocable. Budgets and periods are deferred, with three constraints kept so they stay addable.
   - *confidence:* The human's choice to defer scheduling contexts; the estimate that they cost about 600 to 900 lines of code and 2,500 to 4,000 of proof plus a one-time rework of the scheduler and IPC proofs is reasoned from structure, not measured.
   - *revisit if:* A workload needs a bound on how much time a thread can take, which fixed priorities cannot give, or temporal isolation inside a core is wanted by design/isolation-claim/.
@@ -136,10 +139,10 @@ in `revisit if` what would make it worth reopening.
 A view of the lists above. Nothing is reachable only through a tag.
 
 - `abi`: arch-module, one-kernel-instance, syscall-abi-in-registers
-- `address-space`: address-spaces-as-objects, region-map-owns-the-address-space, vmm-over-svm
+- `address-space`: address-spaces-as-objects, core-names-a-space-while-running-its-thread, region-map-owns-the-address-space, vmm-over-svm
 - `arch`: who-vouches-for-an-unproven-claim
 - `boot`: machine-glue-below-the-kernel, root-process-at-boot, test-guest-memory
-- `capability`: address-spaces-as-objects, capability-names-a-block, cpu-time-as-capability, device-binding-under-the-space-capability, divider-proven-by-invariant, ipc-with-reply-object, process-holds-capabilities, revoke-by-depth-first-list, root-process-at-boot, schedulers-over-core-partitions, sharing-by-derive, teardown-driven-by-retype, theorem-over-reach, thread-bound-at-retype, untyped-memory, vmm-over-svm
+- `capability`: address-spaces-as-objects, capability-names-a-block, core-names-a-space-while-running-its-thread, cpu-time-as-capability, device-binding-under-the-space-capability, divider-proven-by-invariant, ipc-with-reply-object, process-holds-capabilities, revoke-by-depth-first-list, root-process-at-boot, schedulers-over-core-partitions, sharing-by-derive, teardown-driven-by-retype, theorem-over-reach, thread-bound-at-retype, untyped-memory, vmm-over-svm
 - `device`: device-binding-under-the-space-capability
 - `gate`: committer-is-not-the-adversary, cut-over-on-a-branch, land-without-regating, license-stated-in-every-source-file, no-gate-for-what-no-step-reads
 - `glue`: machine-glue-below-the-kernel
@@ -164,7 +167,7 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `reach`: device-binding-under-the-space-capability
 - `real-time`: schedulers-over-core-partitions
 - `revoke`: revoke-by-depth-first-list, sharing-by-derive, teardown-driven-by-retype
-- `scheduling`: cpu-time-as-capability, schedulers-over-core-partitions
+- `scheduling`: core-names-a-space-while-running-its-thread, cpu-time-as-capability, schedulers-over-core-partitions
 - `security`: divider-proven-by-invariant, fan-in-over-private-rings, isolation-claim, theorem-over-reach, trust-boundary
 - `shared-memory`: fan-in-over-private-rings, latest-value-by-three-slot-exchange
 - `skeptic`: committer-is-not-the-adversary, review-is-a-leaf-of-its-epic, third-refuted-review-waits-on-the-human
@@ -174,5 +177,5 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `tracker`: review-is-a-leaf-of-its-epic, third-refuted-review-waits-on-the-human
 - `trusted-base`: region-map-owns-the-address-space, who-vouches-for-an-unproven-claim
 - `user`: region-map-owns-the-address-space
-- `verified`: arch-module, committer-is-not-the-adversary, cut-over-on-a-branch, device-binding-under-the-space-capability, fan-in-over-private-rings, flush-without-waiting, heap-size-classes, latest-value-by-three-slot-exchange, network-stack-proven-at-tier-1, one-lock-bounded-steps, page-buddy-metadata-in-the-span, revoke-by-depth-first-list, theorem-over-reach, thread-bound-at-retype, who-vouches-for-an-unproven-claim
+- `verified`: arch-module, committer-is-not-the-adversary, core-names-a-space-while-running-its-thread, cut-over-on-a-branch, device-binding-under-the-space-capability, fan-in-over-private-rings, flush-without-waiting, heap-size-classes, latest-value-by-three-slot-exchange, network-stack-proven-at-tier-1, one-lock-bounded-steps, page-buddy-metadata-in-the-span, revoke-by-depth-first-list, theorem-over-reach, thread-bound-at-retype, who-vouches-for-an-unproven-claim
 - `virtualization`: vmm-over-svm
