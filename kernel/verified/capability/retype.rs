@@ -746,6 +746,7 @@ impl CapKernel {
             ret == old(self).can_retype_frame(root, from, to, base),
             !ret ==> *final(self) == *old(self),
             final(self).flush_epoch == old(self).flush_epoch,
+            final(self).iommus == old(self).iommus,
             final(self).mappings == old(self).mappings,
             ret ==> Self::frame_retyped(*old(self), *final(self), root, from, to, base),
             ret ==> Self::retype_keeps(*old(self), *final(self), old(self).tables.node_of(root, to), (base / PAGE_SZ) as int, 0, None),

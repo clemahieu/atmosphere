@@ -472,6 +472,7 @@ impl CapKernel {
                 ==> final(self).stale_epoch.above(old(self).flush_epoch as int, g),
             final(self).iommus.acked == old(self).iommus.acked,
             final(self).iommus.present == old(self).iommus.present,
+            final(self).processes.records == old(self).processes.records,
     {
         let ghost pre = *old(self);
         proof {
@@ -523,6 +524,7 @@ impl CapKernel {
                     ==> self.stale_epoch.above(pre.flush_epoch as int, g) && (g as int) < NUM_PAGES,
                 self.iommus.acked == pre.iommus.acked,
                 self.iommus.present == pre.iommus.present,
+                self.processes.records == pre.processes.records,
             decreases REVOKE_BUDGET - taken,
         {
             let ghost mid = *self;
@@ -643,6 +645,7 @@ impl CapKernel {
                 ==> final(self).stale_epoch.above(old(self).flush_epoch as int, g) && (g as int) < NUM_PAGES,
             final(self).iommus.acked == old(self).iommus.acked,
             final(self).iommus.present == old(self).iommus.present,
+            final(self).processes.records == old(self).processes.records,
     {
         let ghost pre = *old(self);
         proof {

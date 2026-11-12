@@ -94,6 +94,10 @@ impl CapKernel {
             old(self).root_live(root),
         ensures
             final(self).wf(),
+            final(self).flush_epoch == old(self).flush_epoch,
+            final(self).stale_epoch == old(self).stale_epoch,
+            final(self).cores == old(self).cores,
+            final(self).iommus.present == old(self).iommus.present,
             ret == old(self).can_map_device(root, slot, r, from, page),
             final(self).spaces.loaded == old(self).spaces.loaded,
             !ret ==> *final(self) == *old(self),

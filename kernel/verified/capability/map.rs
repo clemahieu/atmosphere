@@ -1399,6 +1399,7 @@ impl CapKernel {
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).cores == old(self).cores,
+            final(self).iommus.present == old(self).iommus.present,
             ret == old(self).can_map_large(root, slot, kind, SpacePath { l4, l3, l2, l1: 0 }, from, page),
             final(self).spaces.loaded == old(self).spaces.loaded,
             !ret ==> *final(self) == *old(self),
