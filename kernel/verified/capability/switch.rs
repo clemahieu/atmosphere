@@ -61,7 +61,9 @@ impl CapKernel {
     /// to the arriving one, one write, except when the arriving space holds no valid id on c and c's
     /// ids have run out: the load then flushes every context and starts a new generation, so the core
     /// first leaves for the kernel's root, and no register names a tag across the flush. A thread with
-    /// a stop pending leaves by check_current, not here.
+    /// a stop pending leaves by check_current, not here. The arriving thread is live, not dying and in a
+    /// process that is not dead, so a switch never makes current a thread that cap_dead calls dead:
+    /// see design/teardown-driven-by-retype/.
     pub fn switch_thread(&mut self, c: usize, frame: Registers, next: Option<usize>, kernel_root: usize, Tracked(steps): Tracked<&mut Steps>)
         requires
             old(self).wf(),
@@ -78,6 +80,9 @@ impl CapKernel {
                     &&& old(self).threads.records@.contains_key(t)
                     &&& old(self).threads.records@[t].value().state == (ThreadState::Runnable { core: c })
                     &&& old(self).threads.records@[t].value().process is Some
+                    &&& !old(self).threads.records@[t].value().dying
+                    &&& old(self).processes.records@.contains_key(old(self).threads.records@[t].value().process->Some_0)
+                    &&& !old(self).processes.records@[old(self).threads.records@[t].value().process->Some_0].value().dead
                     &&& old(self).spaces.roots@.contains_key(old(self).threads.records@[t].value().process->Some_0)
                     &&& old(self).spaces.records@[old(self).threads.records@[t].value().process->Some_0].value().kind is Process
                     &&& old(self).cores@[c as int].generation < ID_GENERATION_MAX
@@ -119,6 +124,7 @@ impl CapKernel {
                     &&& final(self).threads.records@[o].value().state == (ThreadState::Runnable { core: c })
                     &&& final(self).threads.records@[o].value().frame == frame
                     &&& final(self).threads.records@[o].value().process == old(self).threads.records@[o].value().process
+                    &&& final(self).threads.records@[o].value().dying == old(self).threads.records@[o].value().dying
                 },
                 None => true,
             },
@@ -129,6 +135,11 @@ impl CapKernel {
                     let tag = tag_written(c as int, pcid);
                     &&& final(self).threads.records@[t].value().state == (ThreadState::Running { core: c })
                     &&& final(self).threads.records@[t].value().process == Some(p)
+                    // The thread made current is not one cap_dead calls dead: Running, not dying, and
+                    // bound to a process that is not dead.
+                    &&& !final(self).threads.records@[t].value().dying
+                    &&& !final(self).processes.records@[p].value().dead
+                    &&& final(self).current_live(c as int)
                     &&& final(self).threads.records@[t].value().frame == old(self).threads.records@[t].value().frame
                     &&& old(self).cores@[c as int].next_pcid != PCID_MAX
                         ==> final(self).cores@[c as int].next_pcid <= old(self).cores@[c as int].next_pcid + 1
@@ -222,12 +233,18 @@ impl CapKernel {
                 let ghost s4 = *self;
                 proof {
                     assert(s4.threads == s1.threads);
+                    // A stop is pending only on a Running thread, and t is Runnable.
+                    assert(!s0.threads.records@[t].value().pending_stop) by {
+                        reveal(current_wf);
+                    }
                     assert(s4.cores@[c as int].current_thread is None);
                     assert(runs_in_space(s4.cores@, s4.threads.records@, c as int, t));
                 }
                 self.switch_in(c, t);
                 proof {
                     let s5 = *self;
+                    assert(s5.processes == s0.processes);
+                    assert(s5.current_live(c as int));
                     assert forall|d: int, r: usize| 0 <= d < NUM_CPUS && !(d == c as int && r == p)
                         implies #[trigger] s5.loaded(d, r) == s0.loaded(d, r) by {
                         assert(s1.loaded(d, r) == s0.loaded(d, r));

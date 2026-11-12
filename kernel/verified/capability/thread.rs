@@ -2431,6 +2431,7 @@ impl CapKernel {
             final(self).threads.records@[t].value().frame == old(self).threads.records@[t].value().frame,
             final(self).threads.records@[t].value().pending_stop == old(self).threads.records@[t].value().pending_stop,
             final(self).threads.records@[t].value().dying == old(self).threads.records@[t].value().dying,
+            final(self).threads.records@[t].value().process == old(self).threads.records@[t].value().process,
             final(self).stop_ipis == old(self).stop_ipis,
     {
         let ghost pre = *self;
@@ -2518,6 +2519,7 @@ impl CapKernel {
             final(self).threads.records@[t].value().state == (ThreadState::Running { core: c }),
             final(self).threads.records@[t].value().pending_stop == old(self).threads.records@[t].value().pending_stop,
             final(self).threads.records@[t].value().dying == old(self).threads.records@[t].value().dying,
+            final(self).threads.records@[t].value().process == old(self).threads.records@[t].value().process,
             final(self).stop_ipis == old(self).stop_ipis,
     {
         let ghost pre = *self;
@@ -2586,6 +2588,7 @@ impl CapKernel {
                 &&& final(self).threads.records@[t].value().state == (ThreadState::Runnable { core: c })
                 &&& final(self).threads.records@[t].value().frame == frame
                 &&& !final(self).threads.records@[t].value().pending_stop
+                &&& final(self).threads.records@[t].value().dying == old(self).threads.records@[t].value().dying
                 &&& final(self).stop_ipis == old(self).stop_ipis
             }),
     {

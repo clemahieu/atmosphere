@@ -1206,6 +1206,8 @@ impl CapKernel {
         proof {
             assert(s3.cores@[0].current_thread == Some(thread));
             assert(!s3.threads.records@[thread].value().pending_stop);
+            assert(!s3.threads.records@[thread].value().dying);
+            assert(s3.processes == s1.processes);
             assert(s3.spaces == s2.spaces);
             assert(s3.cores@[0].next_pcid <= 2);
             assert(s3.cores@[0].generation == 1);
@@ -1217,6 +1219,8 @@ impl CapKernel {
             assert(s4.cores@[0].current_thread is None);
             assert(s4.threads.records@[thread].value().state == (ThreadState::Runnable { core: 0 }));
             assert(s4.threads.records@[thread].value().process == Some(base));
+            assert(!s4.threads.records@[thread].value().dying);
+            assert(s4.processes == s1.processes);
             assert(s4.cores@[0].generation == 1);
             assert(s4.spaces.roots == s1.spaces.roots);
             assert(s4.spaces.records == s1.spaces.records);
@@ -1233,6 +1237,8 @@ impl CapKernel {
             assert(s5.spaces.roots == s1.spaces.roots);
             assert(s5.spaces.records == s1.spaces.records);
             assert(s5.loaded(0, process));
+            assert(s5.processes == s1.processes);
+            assert(witness_alive(s5, base));
         }
         // The thread comes back, straight from the root's space.
         self.switch_thread(0, registers, Some(thread), kernel_root, Tracked(&mut steps));
@@ -2169,6 +2175,7 @@ impl CapKernel {
     /// capability. The claim succeeds: the root's slot holds the untyped, under the root's untyped as
     /// before, the process's slot holds nothing, and the process is still live. The use is a creator
     /// taking back a capability it gave a process it controls. See design/process-holds-capabilities/.
+    #[verifier::spinoff_prover]
     pub fn witness_root_claims_a_capability(
         &mut self,
         root: Ghost<usize>,
