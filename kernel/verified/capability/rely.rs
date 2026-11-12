@@ -676,6 +676,238 @@ impl CapKernel {
         Self::lemma_tables_kept_keeps_rely(pre, post, root);
     }
 
+    /// From pre to post, as the process at root relies on steps it does not take for its own space:
+    /// while root is sealed and a process, every entry its space's mapping holds in post it held in pre,
+    /// with the same value. Removal only, as for its slots: an ancestor's revoke may take an entry, and
+    /// no other caller can add or change one, so a page token's frame or none stays true
+    /// (design/region-map-owns-the-address-space/). A process's space is keyed at its root.
+    pub open spec fn space_kept(pre: Self, post: Self, root: usize) -> bool {
+        pre.sealed(root) && pre.processes.records@.contains_key(root) ==> {
+            let a = space_mapping(tree_of(&pre.table_pages, &pre.spaces), root);
+            let b = space_mapping(tree_of(&post.table_pages, &post.spaces), root);
+            forall|p: SpacePath| #[trigger] b.contains_key(p) ==> a.contains_key(p) && b[p] == a[p]
+        }
+    }
+
+    pub proof fn lemma_space_kept_reflexive(k: Self, root: usize)
+        ensures
+            Self::space_kept(k, k, root),
+    {
+    }
+
+    /// Composes where the middle state still has root sealed and a process, which rely gives for sealed.
+    pub proof fn lemma_space_kept_transitive(a: Self, b: Self, c: Self, root: usize)
+        requires
+            Self::space_kept(a, b, root),
+            Self::space_kept(b, c, root),
+            Self::rely(a, b, root),
+            a.processes.records@.contains_key(root) ==> b.processes.records@.contains_key(root),
+        ensures
+            Self::space_kept(a, c, root),
+    {
+        if a.sealed(root) && a.processes.records@.contains_key(root) {
+            let ma = space_mapping(tree_of(&a.table_pages, &a.spaces), root);
+            let mb = space_mapping(tree_of(&b.table_pages, &b.spaces), root);
+            let mc = space_mapping(tree_of(&c.table_pages, &c.spaces), root);
+            assert forall|p: SpacePath| #[trigger] mc.contains_key(p) implies ma.contains_key(p) && mc[p] == ma[p] by {
+                assert(mb.contains_key(p));
+            }
+        }
+    }
+
+    /// A step under which no space's mapping gains or changes an entry keeps space_kept for every process.
+    pub proof fn lemma_shrunk_keeps_space(pre: Self, post: Self, root: usize)
+        requires
+            Self::mappings_shrunk(pre, post),
+        ensures
+            Self::space_kept(pre, post, root),
+    {
+        let a = space_mapping(tree_of(&pre.table_pages, &pre.spaces), root);
+        let b = space_mapping(tree_of(&post.table_pages, &post.spaces), root);
+        assert forall|p: SpacePath| #[trigger] b.contains_key(p) implies a.contains_key(p) && b[p] == a[p] by {
+            assert(walk(tree_of(&post.table_pages, &post.spaces), root, p) is Some);
+        }
+    }
+
+    /// A step that keeps every space's mapping keeps space_kept for every process.
+    pub proof fn lemma_mappings_kept_keeps_space(pre: Self, post: Self, root: usize)
+        requires
+            Self::mappings_kept(pre, post),
+        ensures
+            Self::space_kept(pre, post, root),
+    {
+        assert(space_mapping(tree_of(&post.table_pages, &post.spaces), root)
+            == space_mapping(tree_of(&pre.table_pages, &pre.spaces), root));
+    }
+
+    /// A revoke, by any caller, keeps space_kept of every process: it only removes entries.
+    pub proof fn lemma_revoke_keeps_space(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_revoked(pre, post, caller, frame, out),
+        ensures
+            Self::space_kept(pre, post, root),
+    {
+        Self::lemma_revoke_contract(pre, post, caller, frame, out);
+        Self::lemma_shrunk_keeps_space(pre, post, root);
+    }
+
+    /// An unmap, by any caller, keeps space_kept of every process: it only removes an entry.
+    pub proof fn lemma_unmap_keeps_space(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_unmapped(pre, post, caller, frame, out),
+        ensures
+            Self::space_kept(pre, post, root),
+    {
+        Self::lemma_unmap_contract(pre, post, caller, frame, out);
+        Self::lemma_shrunk_keeps_space(pre, post, root);
+    }
+
+    /// A map, by a caller other than root, keeps space_kept of root: while root is sealed the caller
+    /// holds no capability naming root's process, and a space capability names no process's space, so
+    /// the space it writes is another.
+    pub proof fn lemma_map_keeps_space(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_mapped(pre, post, caller, frame, out),
+            caller != root,
+        ensures
+            Self::space_kept(pre, post, root),
+    {
+        Self::lemma_map_contract(pre, post, caller, frame, out);
+        if pre.sealed(root) && pre.processes.records@.contains_key(root) {
+            let slot = frame.slot() as usize;
+            if out == status_only(STATUS_OK) {
+                let n = pre.tables.node_of(caller, slot);
+                pre.lemma_table_view(caller, slot);
+                assert(pre.table_view(caller).contains_key(slot));
+                assert(!pre.names_process(pre.table_view(caller)[slot], root));
+                pre.lemma_written_space(n);
+                assert(pre.payload_of(n).base != root);
+            }
+        }
+    }
+
+    /// A link, by any caller, keeps space_kept of every process: it keeps every space's mapping.
+    pub proof fn lemma_link_keeps_space(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_linked(pre, post, caller, frame, out),
+        ensures
+            Self::space_kept(pre, post, root),
+    {
+        Self::lemma_link_contract(pre, post, caller, frame, out);
+        Self::lemma_mappings_kept_keeps_space(pre, post, root);
+    }
+
+    /// An inspect, by any caller, keeps space_kept of every process: it changes nothing.
+    pub proof fn lemma_inspect_keeps_space(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            spec_operation(frame.operation_number()) == Some(Operation::Inspect),
+            Self::invoked(pre, post, caller, frame, out),
+        ensures
+            Self::space_kept(pre, post, root),
+    {
+    }
+
+    /// A probe, by any caller, keeps space_kept of every process: it writes nothing a mapping reads.
+    pub proof fn lemma_probe_keeps_space(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_probed(pre, post, caller, frame, out),
+        ensures
+            Self::space_kept(pre, post, root),
+    {
+    }
+
+    /// A retype, by any caller, keeps space_kept of every process: it keeps every space's mapping.
+    pub proof fn lemma_retype_keeps_space(pre: Self, post: Self, caller: usize, frame: Registers, out: Outcome, root: usize)
+        requires
+            pre.wf(),
+            Self::spec_retyped(pre, post, caller, frame, out),
+        ensures
+            Self::space_kept(pre, post, root),
+    {
+        Self::lemma_retype_contract(pre, post, caller, frame, out);
+        Self::lemma_mappings_kept_keeps_space(pre, post, root);
+    }
+
+    // The kernel's entries that are no capability operation, as for the rely above: each leaves the
+    // table pages and the spaces' roots and records as they were.
+
+    /// start, refused or setting the thread Runnable.
+    pub proof fn lemma_start_keeps_space(pre: Self, post: Self, t: usize, core: usize, root: usize)
+        requires
+            post == pre || Self::state_written(pre, post, t, ThreadState::Runnable { core }),
+        ensures
+            Self::space_kept(pre, post, root),
+    {
+    }
+
+    /// suspend, refused, or with the thread's record written Inactive, or its stop pending.
+    pub proof fn lemma_suspend_keeps_space(pre: Self, post: Self, t: usize, r: ThreadRecord, root: usize)
+        requires
+            post == pre || Self::record_written(pre, post, t, r),
+        ensures
+            Self::space_kept(pre, post, root),
+    {
+    }
+
+    /// write_registers, refused or with the thread's saved frame written.
+    pub proof fn lemma_write_registers_keeps_space(pre: Self, post: Self, t: usize, frame: Registers, root: usize)
+        requires
+            post == pre || Self::frame_written(pre, post, t, frame),
+        ensures
+            Self::space_kept(pre, post, root),
+    {
+    }
+
+    /// switch_in, switch_out and enter_boot_thread, on any core.
+    pub proof fn lemma_switch_keeps_space(pre: Self, post: Self, c: int, t: usize, root: usize)
+        requires
+            Self::switch_frame(pre, post, c, t),
+        ensures
+            Self::space_kept(pre, post, root),
+    {
+    }
+
+    /// acknowledge, on any core.
+    pub proof fn lemma_acknowledge_keeps_space(pre: Self, post: Self, c: int, root: usize)
+        requires
+            Self::only_core_changed(pre, post, c),
+        ensures
+            Self::space_kept(pre, post, root),
+    {
+    }
+
+    /// check_current, on any core, and dispatch when it reaches no operation.
+    pub proof fn lemma_check_current_keeps_space(pre: Self, post: Self, c: int, frame: Registers, root: usize)
+        requires
+            post == pre || Self::moved_off(pre, post, c, frame),
+        ensures
+            Self::space_kept(pre, post, root),
+    {
+    }
+
+    /// destroy of a process, by any caller.
+    pub proof fn lemma_destroy_keeps_space(pre: Self, post: Self, p: usize, root: usize)
+        requires
+            Self::process_destroyed(pre, post, p),
+        ensures
+            Self::space_kept(pre, post, root),
+    {
+    }
+
+    /// destroy of a thread, by any caller and from any core.
+    pub proof fn lemma_destroy_thread_keeps_space(pre: Self, post: Self, c: usize, t: usize, root: usize)
+        requires
+            Self::thread_destroyed(pre, post, c, t),
+        ensures
+            Self::space_kept(pre, post, root),
+    {
+    }
+
     /// A thread bound to the process at p, as bound_threads reads the binding, is one of the threads
     /// p's record counts as bound, and its record names p.
     pub proof fn lemma_bound_thread(&self, x: usize, p: usize)
