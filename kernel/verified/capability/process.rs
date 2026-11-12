@@ -1133,6 +1133,7 @@ impl CapKernel {
     /// root was no root before and holds no leaf, so it holds nothing.
     proof fn lemma_process_view(pre: Self, post: Self, root: usize, from: usize, to: usize, base: usize)
         requires
+            post.frames@ == pre.frames@,
             Self::adds_cap(pre, post, pre.tables.node_of(root, to)),
             pre.tables.has_slot(&pre.list, root, from),
             post.devices == pre.devices,
@@ -1253,7 +1254,7 @@ impl CapKernel {
                     &&& final(self).list.nodes@[i].depth == old(self).list.nodes@[i].depth
                 }
                 &&& Self::retype_keeps(*old(self), *final(self), child, page, 3, None)
-                &&& discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base, into: None })
+                &&& discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base, pages: pow2(3), into: None })
             },
     {
         let ghost pre = *old(self);
@@ -1480,7 +1481,8 @@ impl CapKernel {
             Self::lemma_process_view(pre, post, root, from, to, base);
             let live = |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live;
             assert(pre.view().holds_right(root, parent, Right::Retype));
-            lemma_adds_object_discharges_retype(pre.view(), post.view(), root, parent, child, live, base);
+            pre.lemma_retype_covers(root, from, base, PROCESS_ORDER);
+            lemma_adds_object_discharges_retype(pre.view(), post.view(), root, parent, child, live, base, pow2(3));
             assert(post.tables.roots == rooted.roots);
             assert forall|r: int| 0 <= r < ROOT_ENTRIES implies #[trigger] post.tables.leaf(base, r) == NO_LEAF by {
                 assert(rooted.leaf(base, r) == NO_LEAF);

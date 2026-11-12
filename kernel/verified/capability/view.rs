@@ -3,9 +3,9 @@
 //! The kernel as reach sees it. Every capability operation's spec states discharges over this view,
 //! so what a process holds, what each capability names and which rights it carries are read from the
 //! tables here and nowhere else, beside what each device space maps, read from the walks of its tables,
-//! and which space each device is bound to, read from the device records.
-//! The fields for process mappings, threads and object contents stay empty until the objects behind
-//! them exist. See design/theorem-over-reach/ and design/device-binding-under-the-space-capability/.
+//! and which space each device is bound to, read from the device records, and what a process sees of
+//! a frame, read from its page's permission. The fields for process mappings and threads, and the
+//! contents of objects other than frames, stay empty until the objects behind them exist. See design/theorem-over-reach/ and design/device-binding-under-the-space-capability/.
 #[cfg(verus_keep_ghost)]
 use vstd::arithmetic::power2::*;
 use vstd::prelude::*;
@@ -398,9 +398,42 @@ pub open spec fn binds_of(devices: &Devices) -> IMap<ObjectId, ObjectId> {
     )
 }
 
-/// What the view reads: the list and the tables, what the device spaces map through the table tree
-/// and which space each device is bound to, so a step that leaves those alone leaves the view alone.
-pub open spec fn view_of(list: &Tree, tables: &Tables, tree: TableTree, devices: &Devices) -> State {
+/// What a process sees of page o: its bytes, when the kernel holds the page as a frame and it is
+/// written, and nothing otherwise. Contents are per page, so a block's pages change one by one.
+pub open spec fn frame_contents(frames: Map<usize, PagePerm4k>, o: ObjectId) -> Seq<u8> {
+    let i = (o / PAGE_SZ) as usize;
+    if o % PAGE_SZ == 0 && frames.contains_key(i) && frames[i].is_init() {
+        frames[i].value()@
+    } else {
+        Seq::empty()
+    }
+}
+
+/// Two frame maps that agree on every page outside the `pages` pages from first differ in contents
+/// only on those pages.
+pub proof fn lemma_contents_in_pages(a: Map<usize, PagePerm4k>, b: Map<usize, PagePerm4k>, first: usize, pages: nat, o: ObjectId)
+    requires
+        first % PAGE_SZ == 0,
+        forall|i: usize| !(first / PAGE_SZ <= i < first / PAGE_SZ + pages)
+            ==> (#[trigger] a.contains_key(i) == b.contains_key(i) && (a.contains_key(i) ==> a[i] == b[i])),
+        frame_contents(a, o) != frame_contents(b, o),
+    ensures
+        in_pages(first, pages, o),
+{
+    let i = (o / PAGE_SZ) as usize;
+    assert(o % PAGE_SZ == 0);
+    if !(first / PAGE_SZ <= i < first / PAGE_SZ + pages) {
+        assert(a.contains_key(i) == b.contains_key(i));
+        assert(false);
+    }
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(first as int, PAGE_SZ as int);
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(o as int, PAGE_SZ as int);
+}
+
+/// What the view reads: the list and the tables, what the device spaces map through the table tree,
+/// which space each device is bound to and the frames' pages, so a step that leaves those alone
+/// leaves the view alone.
+pub open spec fn view_of(list: &Tree, tables: &Tables, tree: TableTree, devices: &Devices, frames: Map<usize, PagePerm4k>) -> State {
     State {
         held: ISet::new(|h: (ObjectId, NodeId)|
             tables.is_cap(list, h.1) && tables.owner@[page_of(h.1)].0 == h.0),
@@ -415,7 +448,7 @@ pub open spec fn view_of(list: &Tree, tables: &Tables, tree: TableTree, devices:
         bound: Map::empty(),
         shares: shares_of(tree),
         binds: binds_of(devices),
-        contents: |o: ObjectId| Seq::empty(),
+        contents: |o: ObjectId| frame_contents(frames, o),
     }
 }
 
@@ -472,7 +505,7 @@ impl CapKernel {
     }
 
     pub open spec fn view(&self) -> State {
-        view_of(&self.list, &self.tables, tree_of(&self.table_pages, &self.spaces), &self.devices)
+        view_of(&self.list, &self.tables, tree_of(&self.table_pages, &self.spaces), &self.devices, self.frames@)
     }
 
     /// Without a device space nothing is shared through one.

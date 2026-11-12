@@ -1885,17 +1885,20 @@ impl CapKernel {
             pre.view().holds_right(root, parent, Right::Retype),
             pre.can_retype_under(root, from, n, order),
             parent == pre.tables.node_of(root, from),
+            post.frames@ == pre.frames@,
         ensures
-            discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: n, into: None }),
+            discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: n, pages: pow2(order as nat), into: None }),
     {
         pre.lemma_retype_covers(root, from, n, order);
-        Self::lemma_hidden_added_discharges(pre, post, root, parent, n);
+        Self::lemma_hidden_added_discharges(pre, post, root, parent, n, pow2(order as nat));
     }
 
     /// The view after a hidden node joins under a capability: every capability is as it was, and the
     /// only new parent entry is the hidden node's, which no capability descends from.
-    pub proof fn lemma_hidden_added_discharges(pre: Self, post: Self, root: usize, parent: usize, n: usize)
+    pub proof fn lemma_hidden_added_discharges(pre: Self, post: Self, root: usize, parent: usize, n: usize, pages: nat)
         requires
+            n + pages * PAGE_SZ <= pre.view().names[parent] + pre.view().pages[parent] * PAGE_SZ,
+            post.frames@ == pre.frames@,
             pre.wf(),
             n < NODE_SPACE,
             !pre.list.nodes@[n as int].live,
@@ -1910,7 +1913,7 @@ impl CapKernel {
             pre.view().holds_right(root, parent, Right::Retype),
             pre.view().covers(parent, n),
         ensures
-            discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: n, into: None }),
+            discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: n, pages, into: None }),
     {
         let (a, b) = (post.view(), pre.view());
         let live = |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live;
@@ -1949,7 +1952,7 @@ impl CapKernel {
             assert(post.is_cap(x) == pre.is_cap(x));
         }
         assert forall|o: ObjectId| #[trigger] (a.contents)(o) == (b.contents)(o) by {}
-        lemma_simulated_discharges_retype(b, a, root, parent, n, live, f);
+        lemma_simulated_discharges_retype(b, a, root, parent, n, pages, live, f);
     }
 
     /// Nor does anyone's reach change: every capability is as it was, the hidden node is none, and no
@@ -2341,7 +2344,7 @@ impl CapKernel {
                 space_mapping(tree_of(&post.table_pages, &post.spaces), r)
                     == space_mapping(tree_of(&pre.table_pages, &pre.spaces), r),
             forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x),
-            discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, into: None }),
+            discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, pages: pow2(3), into: None }),
             !pre.list.nodes@[base as int].live,
             post.list.parent@ == pre.list.parent@.insert(base, parent),
             forall|i: int| #![trigger post.list.nodes@[i]] 0 <= i < NODE_SPACE && i != base
@@ -2905,7 +2908,7 @@ impl CapKernel {
                 &&& final(self).list.is_child(parent, base)
                 &&& final(self).list.nodes@[base as int].kind is Hidden
                 &&& forall|x: usize| #[trigger] final(self).is_cap(x) == old(self).is_cap(x)
-                &&& discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base, into: None })
+                &&& discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base, pages: pow2(3), into: None })
                 &&& forall|r: ObjectId, o: ObjectId| #[trigger] final(self).view().reach(r, o) == old(self).view().reach(r, o)
                 &&& !old(self).list.nodes@[base as int].live
                 &&& final(self).list.parent@ == old(self).list.parent@.insert(base, parent)
@@ -3453,7 +3456,7 @@ impl CapKernel {
                 &&& forall|s: usize| #[trigger] old(self).spaces.roots@.contains_key(s) ==> final(self).spaces.roots@[s] == old(self).spaces.roots@[s]
                 &&& final(self).blocks.pages@[(base / PAGE_SZ) as int].refs == 1
                 &&& !final(self).blocks.pages@[(base / PAGE_SZ) as int].dead
-                &&& discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base, into: None })
+                &&& discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base, pages: pow2(3), into: None })
             },
     {
         let ghost pre = *old(self);
@@ -3661,7 +3664,8 @@ impl CapKernel {
             let live = |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live;
             assert(pre.view().holds_right(root, parent, Right::Retype));
             assert(post.view().names[child] == base);
-            lemma_adds_child_discharges_retype(pre.view(), post.view(), root, parent, child, live, base);
+            pre.lemma_retype_covers(root, from, base, 3);
+            lemma_adds_child_discharges_retype(pre.view(), post.view(), root, parent, child, live, base, pow2(3));
             Self::lemma_order3_keeps(pre, post, mid, root, to, page as int);
         }
         true

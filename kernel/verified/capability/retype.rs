@@ -229,12 +229,14 @@ impl CapKernel {
     }
 
     /// A block a retype may type lies in its untyped's block, so the untyped covers the block's first
-    /// page, the object the retype names.
+    /// page, the object the retype names, and every page of the block.
     pub proof fn lemma_retype_covers(&self, root: usize, from: usize, base: usize, order: u8)
         requires
             self.can_retype_under(root, from, base, order),
         ensures
             self.view().covers(self.tables.node_of(root, from), base),
+            base + pow2(order as nat) * PAGE_SZ <= self.view().names[self.tables.node_of(root, from)]
+                + self.view().pages[self.tables.node_of(root, from)] * PAGE_SZ,
     {
         let p = self.payload_of(self.tables.node_of(root, from));
         let size = pow2(order as nat) as int;
@@ -477,7 +479,7 @@ impl CapKernel {
             final(self).payload_of(child) == large_frame_of(base, order),
             final(self).list.is_child(parent, child),
             final(self).list.nodes@[child as int].depth == old(self).list.nodes@[parent as int].depth + 1,
-            discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base, into: None }),
+            discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base, pages: pow2(order as nat), into: None }),
             final(self).tables.roots == old(self).tables.roots,
             Self::caps_frame(*old(self), *final(self), child, child),
             final(self).list.parent@ == old(self).list.parent@.insert(child, parent),
@@ -537,7 +539,7 @@ impl CapKernel {
             assert(pre.view().holds_right(root, parent, Right::Retype));
             assert(post.view().names[child] == base);
             pre.lemma_retype_covers(root, from, base, order);
-            lemma_adds_child_discharges_retype(pre.view(), post.view(), root, parent, child, live, base);
+            lemma_adds_child_discharges_retype(pre.view(), post.view(), root, parent, child, live, base, pow2(order as nat));
             Self::lemma_bound_threads_same(pre, post);
             assert forall|x: usize| #[trigger] pre.is_cap(x) implies {
                 &&& post.is_cap(x)
@@ -677,7 +679,7 @@ impl CapKernel {
             &&& block_refs(&post.blocks, br) == 1
             &&& !block_dead(&post.blocks, br)
         }
-        &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, into: None })
+        &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, pages: 1, into: None })
     }
 
     /// What a step of a large retype that has not found its block all zero yet did, under the untyped at
@@ -701,7 +703,7 @@ impl CapKernel {
         &&& post.zeroing.active(level, r)
         &&& pre.zeroing.active(level, r) ==> pre.zeroing.cursor@[page as int] < post.zeroing.cursor@[page as int]
         &&& 0 < post.zeroing.cursor@[page as int] < level_pages(level)
-        &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, into: None })
+        &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, pages: pow2(order as nat), into: None })
     }
 
     /// What the step of a large retype that found its block all zero did: the retype was allowed, the
@@ -724,7 +726,7 @@ impl CapKernel {
         &&& post.tables.roots == pre.tables.roots
         &&& Self::caps_frame(pre, post, child, child)
         &&& forall|k: usize| k < pow2(order as nat) ==> #[trigger] holds_zero(post.frames@, (base / PAGE_SZ + k) as usize)
-        &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, into: None })
+        &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, pages: pow2(order as nat), into: None })
     }
 
     /// Retypes the free page at `base` as a frame, under the untyped at index `from` of the table at
@@ -804,7 +806,10 @@ impl CapKernel {
             }
             lemma_processes_small_typed(&self.list, &self.tables, &self.list, &self.tables, &self.processes, &pre.blocks, &self.blocks, page, 1);
             assert(self.wf());
-            assert(self.view() == pre.view());
+            assert(same_but_contents(pre.view(), self.view()));
+            assert forall|o: ObjectId| #[trigger] State::changed(pre.view(), self.view(), o) implies in_pages(base, 1, o) by {
+                lemma_contents_in_pages(pre.frames@, self.frames@, base, 1, o);
+            }
             assert(self.frame_block_ready(base, 0)) by {
                 assert(!pre.blocks.covered(page as int));
                 assert(block_ref(&self.blocks, page) == BlockRef::Small(page));
@@ -814,6 +819,9 @@ impl CapKernel {
         self.add_frame_cap(root, from, to, parent, child, base, 0);
         proof {
             let post = *self;
+            let e = Effect::Retype { untyped: parent, object: base, pages: 1, into: None };
+            assert(pow2(0) == 1);
+            lemma_contents_then(pre.view(), mid.view(), post.view(), root, e);
             pre.lemma_slot(root, to);
             pre.lemma_slot_bound(child);
             assert forall|r: usize, i: usize| #[trigger] pre.tables.has_slot(&pre.list, r, i) implies {
@@ -870,6 +878,11 @@ impl CapKernel {
             ret is Refused == (!old(self).zeroing.active(level, r) && !old(self).blocks.large_free(level, r as int)),
             ret is Refused ==> *final(self) == *old(self),
             old(self).blocks.kept_but_region(final(self).blocks, level, r as int),
+            !(ret is Done) ==> final(self).frames == old(self).frames,
+            forall|i: usize| !(level_base(level, r) <= i < level_base(level, r) + level_pages(level)) ==> {
+                &&& #[trigger] final(self).frames@.contains_key(i) == old(self).frames@.contains_key(i)
+                &&& old(self).frames@.contains_key(i) ==> final(self).frames@[i] == old(self).frames@[i]
+            },
             ret is Done ==> forall|k: usize| k < level_pages(level)
                 ==> #[trigger] holds_zero(final(self).frames@, (level_base(level, r) + k) as usize),
             ret is Done ==> forall|i: usize| #[trigger] block_has_page(level_ref(level, r), i)
@@ -995,6 +1008,12 @@ impl CapKernel {
                 } else {
                     assert(pre.frames@.contains_key(i));
                 }
+            }
+            assert forall|i: usize| !(base <= i < base + pages) implies {
+                &&& #[trigger] me.frames@.contains_key(i) == pre.frames@.contains_key(i)
+                &&& pre.frames@.contains_key(i) ==> me.frames@[i] == pre.frames@[i]
+            } by {
+                assert(!zeroed.dom().contains(i));
             }
             assert forall|k: usize| k < pages implies #[trigger] holds_zero(me.frames@, (base + k) as usize) by {
                 assert(holds_zero(zeroed, (base + k) as usize));
@@ -1129,7 +1148,7 @@ impl CapKernel {
             pre.view(),
             post.view(),
             root,
-            Effect::Retype { untyped: parent, object: base, into: pre.through_node(root, at.through) },
+            Effect::Retype { untyped: parent, object: base, pages: 2, into: pre.through_node(root, at.through) },
         )
     }
 
@@ -1196,6 +1215,7 @@ impl CapKernel {
             assert forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x) by {
                 Self::lemma_leaf_cap(pre, post, base, x);
             }
+            pre.lemma_retype_covers(root, from, base, 1);
             Self::lemma_leaf_discharges(pre, post, root, parent, base, pre.through_node(root, at.through));
             Self::lemma_leaf_keeps(pre, post, table, r, base);
         }
@@ -1296,6 +1316,7 @@ impl CapKernel {
                 &&& final(self).processes == old(self).processes
                 &&& final(self).spaces == old(self).spaces
                 &&& final(self).table_pages == old(self).table_pages
+                &&& final(self).frames == old(self).frames
             },
     {
         let ghost pre = *old(self);
@@ -1917,9 +1938,11 @@ impl CapKernel {
             post.devices == pre.devices,
             pre.view().holds_right(root, parent, Right::Retype),
             pre.view().covers(parent, leaf),
+            leaf + 2 * PAGE_SZ <= pre.view().names[parent] + pre.view().pages[parent] * PAGE_SZ,
+            post.frames@ == pre.frames@,
             into is Some ==> pre.view().holds_right(root, into->0, Right::Control),
         ensures
-            discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: leaf, into }),
+            discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: leaf, pages: 2, into }),
     {
         assert forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x) by {
             Self::lemma_leaf_cap(pre, post, leaf, x);
@@ -1930,10 +1953,10 @@ impl CapKernel {
         } by {
             Self::lemma_leaf_cap(pre, post, leaf, x);
         }
-        Self::lemma_hidden_added_discharges(pre, post, root, parent, leaf);
+        Self::lemma_hidden_added_discharges(pre, post, root, parent, leaf, 2);
         let (own, other) = (
-            Effect::Retype { untyped: parent, object: leaf, into: None },
-            Effect::Retype { untyped: parent, object: leaf, into },
+            Effect::Retype { untyped: parent, object: leaf, pages: 2, into: None },
+            Effect::Retype { untyped: parent, object: leaf, pages: 2, into },
         );
         assert(discharges(pre.view(), post.view(), root, own));
         assert forall|o: ObjectId| #[trigger] State::changed(pre.view(), post.view(), o) implies may_change(pre.view(), other, o) by {
@@ -2038,14 +2061,26 @@ impl CapKernel {
             },
             RetypeStep::Done => {},
         }
+        let ghost mid = *self;
         proof {
-            assert(self.view() == pre.view());
+            lemma2_to64();
+            assert(pow2(order as nat) == level_pages(level));
+            lemma_level_pages(level, r);
+            assert(same_but_contents(pre.view(), mid.view()));
+            assert forall|o: ObjectId| #[trigger] State::changed(pre.view(), mid.view(), o)
+                implies in_pages(base, pow2(order as nat), o) by {
+                lemma_contents_in_pages(pre.frames@, mid.frames@, base, pow2(order as nat), o);
+            }
             assert(self.can_retype(root, from, to, base, order));
             assert(page == r * level_pages(level));
             assert(base == page * PAGE_SZ);
             self.lemma_large_block_ready(level, r, base, order);
         }
         self.add_frame_cap(root, from, to, parent, child, base, order);
+        proof {
+            let e = Effect::Retype { untyped: parent, object: base, pages: pow2(order as nat), into: None };
+            lemma_contents_then(pre.view(), mid.view(), self.view(), root, e);
+        }
         RetypeStep::Done
     }
 }

@@ -318,6 +318,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(src),
             old(self).tables.roots@.contains_key(dst),
         ensures
+            final(self).frames == old(self).frames,
             final(self).wf(),
             final(self).cores == old(self).cores,
             final(self).stale_epoch == old(self).stale_epoch,
@@ -730,6 +731,7 @@ impl CapKernel {
     #[verifier::spinoff_prover]
     pub proof fn lemma_places_node_view(pre: Self, post: Self, src: usize, from: usize, dst: usize, to: usize)
         requires
+            post.frames@ == pre.frames@,
             Self::adds_cap(pre, post, pre.tables.node_of(dst, to)),
             post.view().shares == pre.view().shares,
             post.devices == pre.devices,
@@ -810,6 +812,7 @@ impl CapKernel {
     /// And has control only with its parent's name.
     pub proof fn lemma_places_child_view(pre: Self, post: Self, src: usize, from: usize, dst: usize, to: usize)
         requires
+            post.frames@ == pre.frames@,
             Self::adds_cap(pre, post, pre.tables.node_of(dst, to)),
             post.view().shares == pre.view().shares,
             post.devices == pre.devices,
@@ -849,6 +852,7 @@ impl CapKernel {
     /// rights the parent's too.
     proof fn lemma_derive_discharges(pre: Self, post: Self, root: usize, from: usize, to: usize)
         requires
+            post.frames@ == pre.frames@,
             Self::derive_step(pre, post, pre.tables.node_of(root, to)),
             Self::same_tree(pre, post),
             post.devices == pre.devices,
@@ -884,6 +888,7 @@ impl CapKernel {
     /// it, by what the caller reached.
     proof fn lemma_derive_into_discharges(pre: Self, post: Self, root: usize, c: usize, from: usize, d: usize, to: usize)
         requires
+            post.frames@ == pre.frames@,
             Self::derive_step(pre, post, pre.tables.node_of(d, to)),
             Self::same_tree(pre, post),
             post.devices == pre.devices,

@@ -388,6 +388,7 @@ impl CapKernel {
             old(self).tables.roots@.contains_key(src),
             old(self).tables.roots@.contains_key(dst),
         ensures
+            final(self).frames == old(self).frames,
             final(self).wf(),
             final(self).cores == old(self).cores,
             Self::same_tree(*old(self), *final(self)),
@@ -880,6 +881,7 @@ impl CapKernel {
     /// one had.
     proof fn lemma_move_discharges(pre: Self, post: Self, root: usize, i: usize, n: usize)
         requires
+            post.frames@ == pre.frames@,
             Self::move_step(pre, post, i, n),
             Self::same_tree(pre, post),
             pre.tables.owner@[page_of(i)].0 == root,
@@ -931,6 +933,7 @@ impl CapKernel {
     /// reached what i covers through c already.
     proof fn lemma_claim_discharges(pre: Self, post: Self, root: usize, c: usize, i: usize, n: usize)
         requires
+            post.frames@ == pre.frames@,
             Self::move_step(pre, post, i, n),
             Self::same_tree(pre, post),
             pre.is_cap(c),
@@ -971,6 +974,7 @@ impl CapKernel {
     /// for that process and what controls it, by what the caller reached.
     proof fn lemma_place_discharges(pre: Self, post: Self, root: usize, d: usize, i: usize, n: usize, j: nat)
         requires
+            post.frames@ == pre.frames@,
             Self::move_step(pre, post, i, n),
             Self::same_tree(pre, post),
             pre.view().holds_right(root, d, Right::Control),

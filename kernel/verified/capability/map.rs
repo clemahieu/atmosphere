@@ -1534,6 +1534,7 @@ impl CapKernel {
             Self::map_from(*old(self), t, e, f, frame, large),
             rights == old(self).payload_of(f).rights,
         ensures
+            final(self).frames == old(self).frames,
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).devices == old(self).devices,
@@ -1816,6 +1817,7 @@ impl CapKernel {
     /// The writes of a map, with the frame mapped, are what map_done says.
     proof fn lemma_map_done(pre: Self, post: Self, root: usize, slot: usize, kind: SpaceKind, p: SpacePath, from: usize, page: usize, t: usize, f: usize, frame: usize)
         requires
+            post.frames@ == pre.frames@,
             pre.wf(),
             pre.can_map(root, slot, kind, p, from, page),
             f == pre.tables.node_of(root, from),
@@ -1856,6 +1858,7 @@ impl CapKernel {
     /// The writes of a large map, with its pages mapped, are what map_large_done says.
     proof fn lemma_map_large_done(pre: Self, post: Self, root: usize, slot: usize, kind: SpaceKind, p: SpacePath, from: usize, page: usize, t: usize, f: usize, frame: usize)
         requires
+            post.frames@ == pre.frames@,
             pre.wf(),
             pre.can_map_large(root, slot, kind, p, from, page),
             f == pre.tables.node_of(root, from),
@@ -1947,6 +1950,7 @@ impl CapKernel {
     /// the space is one with the write right.
     proof fn lemma_map_device_discharges(pre: Self, post: Self, root: usize, slot: usize, from: usize, p: SpacePath, t: usize, e: usize, frame: usize, large: bool)
         requires
+            post.frames@ == pre.frames@,
             pre.wf(),
             pre.tables.has_slot(&pre.list, root, slot),
             pre.is_cap(pre.tables.node_of(root, slot)),
@@ -2704,6 +2708,7 @@ impl CapKernel {
     /// So when the device spaces map and bind no more, it is a local step.
     pub proof fn lemma_leaf_added_discharges(pre: Self, post: Self, root: usize, f: usize, node: usize)
         requires
+            post.frames@ == pre.frames@,
             pre.wf(),
             post.tables == pre.tables,
             node < NODE_SPACE,
@@ -2734,6 +2739,7 @@ impl CapKernel {
     /// already.
     pub proof fn lemma_binding_added_discharges(pre: Self, post: Self, root: usize, f: usize, node: usize, d: ObjectId, s: ObjectId)
         requires
+            post.frames@ == pre.frames@,
             pre.wf(),
             post.tables == pre.tables,
             node < NODE_SPACE,
@@ -2761,6 +2767,7 @@ impl CapKernel {
     /// root holds with the write right, and in root's reach, it is a share by root.
     pub proof fn lemma_leaf_added_discharges_share(pre: Self, post: Self, root: usize, space: usize, from: usize, f: usize, node: usize)
         requires
+            post.frames@ == pre.frames@,
             pre.wf(),
             post.tables == pre.tables,
             node < NODE_SPACE,

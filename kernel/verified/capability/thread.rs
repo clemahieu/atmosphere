@@ -1665,6 +1665,7 @@ impl CapKernel {
     /// table root is, so it holds nothing.
     proof fn lemma_thread_view(pre: Self, post: Self, root: usize, from: usize, to: usize, base: usize)
         requires
+            post.frames@ == pre.frames@,
             Self::adds_cap(pre, post, pre.tables.node_of(root, to)),
             pre.tables.has_slot(&pre.list, root, from),
             post.devices == pre.devices,
@@ -1725,6 +1726,7 @@ impl CapKernel {
             old(self).wf(),
             old(self).tables.roots@.contains_key(root),
         ensures
+            final(self).frames == old(self).frames,
             final(steps).count <= old(steps).count + TYPE_THREAD_STEPS,
             final(self).wf(),
             final(self).stale_epoch == old(self).stale_epoch,
@@ -1766,7 +1768,7 @@ impl CapKernel {
                 &&& final(self).payload_of(child).rights & right_bit(Right::Control) != 0
                 &&& final(self).list.is_child(parent, child)
                 &&& final(self).list.parent@ == old(self).list.parent@.insert(child, parent)
-                &&& discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base, into: None })
+                &&& discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base, pages: pow2(1), into: None })
             },
     {
         let ghost pre = *old(self);
@@ -1976,7 +1978,8 @@ impl CapKernel {
             Self::lemma_thread_view(pre, post, root, from, to, base);
             let live = |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live;
             assert(pre.view().holds_right(root, parent, Right::Retype));
-            lemma_adds_object_discharges_retype(pre.view(), post.view(), root, parent, child, live, base);
+            pre.lemma_retype_covers(root, from, base, THREAD_ORDER);
+            lemma_adds_object_discharges_retype(pre.view(), post.view(), root, parent, child, live, base, pow2(1));
             Self::lemma_type_thread_keeps(pre, post, mid, root, to, page as int);
             Self::lemma_typed_nodes(pre.list, mid, post.list, child, base);
         }
@@ -2186,7 +2189,7 @@ impl CapKernel {
                 &&& final(self).payload_of(child) == thread_of(base)
                 &&& final(self).payload_of(child).rights & right_bit(Right::Control) != 0
                 &&& final(self).list.is_child(parent, child)
-                &&& discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base, into: None })
+                &&& discharges(old(self).view(), final(self).view(), root, Effect::Retype { untyped: parent, object: base, pages: pow2(1), into: None })
                 &&& bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables).insert(base, p)
                 &&& Self::retype_keeps(*old(self), *final(self), child, page, 1, None)
                 &&& Self::typed_nodes(old(self).list, final(self).list, child, base)
@@ -2241,7 +2244,7 @@ impl CapKernel {
             assert forall|x: NodeId| #[trigger] mid.view().names.contains_key(x) implies post.view().names.contains_key(x) by {
                 assert(post.is_cap(x) == mid.is_cap(x));
             }
-            lemma_retype_then_local(pre.view(), mid.view(), post.view(), root, parent, base);
+            lemma_retype_then_local(pre.view(), mid.view(), post.view(), root, parent, base, pow2(1));
             assert(post.tables.node_of(root, j) == n);
             post.lemma_parent_undeletable(root, j, base);
             assert(mid.payload_of(n) == pre.payload_of(n));
@@ -3937,6 +3940,7 @@ impl CapKernel {
             old(self).threads.records@[t].value().process is None,
             !old(self).list.nodes@[t as int].live,
         ensures
+            final(self).frames == old(self).frames,
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).cores == old(self).cores,

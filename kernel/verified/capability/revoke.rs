@@ -1721,6 +1721,7 @@ impl CapKernel {
     /// What the step does to the view: only a node of c's run can leave it, and nothing is added.
     proof fn lemma_revoke_step(pre: Self, post: Self, root: usize, c: usize, r: usize)
         requires
+            post.frames@ == pre.frames@,
             pre.wf(),
             post.list.wf(),
             pre.is_cap(c),

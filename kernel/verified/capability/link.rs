@@ -1457,6 +1457,7 @@ impl CapKernel {
             tree_of(&old(self).table_pages, &old(self).spaces).record(child).level + 1
                 == tree_of(&old(self).table_pages, &old(self).spaces).record(parent).level,
         ensures
+            final(self).frames == old(self).frames,
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).devices == old(self).devices,
@@ -1547,6 +1548,7 @@ impl CapKernel {
             tree_of(&old(self).table_pages, &old(self).spaces).record(child).level + 1
                 == tree_of(&old(self).table_pages, &old(self).spaces).record(parent).level,
         ensures
+            final(self).frames == old(self).frames,
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).devices == old(self).devices,
@@ -1702,6 +1704,7 @@ impl CapKernel {
     /// A link leaves every space's mapping as it was: a child not written has no entry.
     proof fn lemma_link_mappings(pre: Self, post: Self, root: usize, slot: usize, parent: usize, entry: usize, from: usize, child: usize, s: usize)
         requires
+            post.frames@ == pre.frames@,
             pre.wf(),
             pre.can_link(root, slot, parent, entry, from, child),
             Self::link_done(pre, post, parent, entry, child, s),
@@ -2377,6 +2380,7 @@ impl CapKernel {
     /// A cut shares no more: it takes walks away, makes no space a device space and leaves every capability.
     pub proof fn lemma_cut_sheds(pre: Self, post: Self, t: usize)
         requires
+            post.frames@ == pre.frames@,
             Self::tree_cut(pre, post, t),
             post.list == pre.list,
             post.tables == pre.tables,
@@ -2450,6 +2454,7 @@ impl CapKernel {
             old(self).list.nodes@[n as int].live,
             old(self).flush_epoch < usize::MAX,
         ensures
+            final(self).frames == old(self).frames,
             final(steps).count <= old(steps).count + CUT_NOTE_STEPS,
             final(self).wf(),
             old(self).hidden_table(n) ==> Self::detach_recorded(*old(self), *final(self), n),
@@ -2491,6 +2496,7 @@ impl CapKernel {
             old(self).table_pages.maps@.contains_key(t),
             old(self).flush_epoch < usize::MAX,
         ensures
+            final(self).frames == old(self).frames,
             final(steps).count <= old(steps).count + CUT_NOTE_STEPS,
             final(self).wf(),
             Self::detach_recorded(*old(self), *final(self), t),
@@ -2523,6 +2529,7 @@ impl CapKernel {
             old(self).wf(),
             old(self).table_pages.maps@.contains_key(t),
         ensures
+            final(self).frames == old(self).frames,
             final(self).wf(),
             Self::detach_done(*old(self), *final(self), t),
     {
@@ -2572,6 +2579,7 @@ impl CapKernel {
             old(self).table_pages.records@[child].is_init(),
             old(self).blocks.tracks_addr(child),
         ensures
+            final(self).frames == old(self).frames,
             final(self).table_pages.maps == old(self).table_pages.maps,
             final(self).table_pages.spare == old(self).table_pages.spare,
             final(self).spaces == old(self).spaces,
@@ -2731,6 +2739,7 @@ impl CapKernel {
             tree_of(&old(self).table_pages, &old(self).spaces).record(child).parent == Some(TableParent { table: parent, entry }),
             child != parent,
         ensures
+            final(self).frames == old(self).frames,
             final(self).wf(),
             Self::detach_done(*old(self), *final(self), child),
     {
@@ -2780,6 +2789,7 @@ impl CapKernel {
             tree_of(&old(self).table_pages, &old(self).spaces).record(child).parent == Some(TableParent { table: parent, entry }),
             child != parent,
         ensures
+            final(self).frames == old(self).frames,
             final(self).wf(),
             Self::detach_done(*old(self), *final(self), child),
     {

@@ -282,7 +282,7 @@ impl CapKernel {
         &&& !post.frames@.contains_key(page)
         &&& Self::step_ok(*self, post, c as int)
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&self.list, &self.tables)
-        &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base })
+        &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base, pages: 1 })
     }
 
     /// A retype may unlink the hidden node of the leaf at `base`: an untyped covers its block, and the
@@ -321,7 +321,7 @@ impl CapKernel {
         &&& forall|x: usize| #[trigger] post.is_cap(x) == self.is_cap(x)
         &&& post.view() == self.view()
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&self.list, &self.tables)
-        &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base })
+        &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base, pages: 0 })
     }
 
     /// A retype may unlink the hidden node of the table page at `base`: an untyped covers its block, the
@@ -350,7 +350,7 @@ impl CapKernel {
         &&& q is Some ==> post.view().shares
             == shares_surviving(a, |r: usize, p: SpacePath| passes_through(a, r, p, q->0.table, q->0.entry))
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&self.list, &self.tables)
-        &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base })
+        &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base, pages: 0 })
         &&& post.tables == self.tables
         &&& post.processes == self.processes
         &&& forall|x: int| 0 <= x < NODE_SPACE ==> #[trigger] post.list.nodes@[x].depth == self.list.nodes@[x].depth
@@ -372,7 +372,7 @@ impl CapKernel {
         &&& Self::step_ok(*self, post, c as int)
         &&& post.view() == self.view()
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&self.list, &self.tables)
-        &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base })
+        &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base, pages: 0 })
     }
 
     /// The leaf at `base` is owned and no node in its page is live, so nothing is left of it but its two
@@ -421,7 +421,7 @@ impl CapKernel {
         &&& Self::step_ok(*self, post, c as int)
         &&& post.view() == self.view()
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&self.list, &self.tables)
-        &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base })
+        &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base, pages: 0 })
     }
 
     /// An empty table page has nothing left to unlink or slice.
@@ -971,7 +971,7 @@ impl CapKernel {
         &&& post.list.parent == self.list.parent
         &&& !post.list.nodes@[base as int].live
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&self.list, &self.tables).restrict(live_nodes(&post.list))
-        &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object })
+        &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object, pages: 0 })
     }
 
     /// How many of the leaf's slots from slot k on hold a live node.
@@ -1100,7 +1100,7 @@ impl CapKernel {
         }
         let ghost object = pre.tables.owner@[base].0;
         proof {
-            lemma_no_change_discharges_teardown(pre.view(), root, untyped, object);
+            lemma_no_change_discharges_teardown(pre.view(), root, untyped, object, 0);
             assert(!pre.list.nodes@[base + 0int].live);
             lemma_bound_threads_live(&pre.list, &pre.tables);
             lemma_slot_in_leaf(base, (NODES_PER_PAGE - 1) as usize);
@@ -1134,7 +1134,7 @@ impl CapKernel {
                 taken == 0 ==> *self == pre,
                 taken > 0 ==> !pre.leaf_is_empty(base) && pre.flush_epoch < usize::MAX,
                 forall|j: int| 0 <= j < k ==> !(#[trigger] self.list.nodes@[base + j]).live,
-                discharges(pre.view(), self.view(), root, Effect::Teardown { untyped, object }),
+                discharges(pre.view(), self.view(), root, Effect::Teardown { untyped, object, pages: 0 }),
                 forall|h: (ObjectId, NodeId)| #[trigger] self.view().held.contains(h) ==> pre.view().held.contains(h),
                 bound_threads(&self.list, &self.tables) == bound_threads(&pre.list, &pre.tables).restrict(live_nodes(&self.list)),
                 base + NODES_PER_PAGE <= NODE_SPACE,
@@ -1412,18 +1412,18 @@ impl CapKernel {
     /// teardown under the untyped, and what is held still shrinks.
     proof fn lemma_slice_step(pre: Self, mid: Self, post: Self, root: usize, untyped: usize, object: usize)
         requires
-            discharges(pre.view(), mid.view(), root, Effect::Teardown { untyped, object }),
+            discharges(pre.view(), mid.view(), root, Effect::Teardown { untyped, object, pages: 0 }),
             tears_down(mid.view(), post.view(), object),
             mid.list.parent == pre.list.parent,
             post.tables.owner == mid.tables.owner,
             forall|x: usize| #[trigger] post.is_cap(x) ==> mid.is_cap(x),
             forall|h: (ObjectId, NodeId)| #[trigger] mid.view().held.contains(h) ==> pre.view().held.contains(h),
         ensures
-            discharges(pre.view(), post.view(), root, Effect::Teardown { untyped, object }),
+            discharges(pre.view(), post.view(), root, Effect::Teardown { untyped, object, pages: 0 }),
             forall|h: (ObjectId, NodeId)| #[trigger] post.view().held.contains(h) ==> pre.view().held.contains(h),
     {
         Self::lemma_held_shrinks(mid, post);
-        lemma_teardown_steps_compose(pre.view(), mid.view(), post.view(), root, untyped, object);
+        lemma_teardown_steps_compose(pre.view(), mid.view(), post.view(), root, untyped, object, 0);
     }
 
     /// A step that removes node r alone keeps the leaf's hidden node and its first k slots dead.
@@ -1595,7 +1595,7 @@ impl CapKernel {
             let post = *self;
             assert(post.view() == pre.view());
             let v = pre.view();
-            let e = Effect::Teardown { untyped, object: base };
+            let e = Effect::Teardown { untyped, object: base, pages: 0 };
             assert(authorized(v, root, e));
         }
         ReclaimStep::Freed
@@ -1664,7 +1664,7 @@ impl CapKernel {
             let post = *self;
             assert(post.view() == pre.view());
             let v = pre.view();
-            let e = Effect::Teardown { untyped, object: base };
+            let e = Effect::Teardown { untyped, object: base, pages: 0 };
             assert(authorized(v, root, e));
             assert(pre.table_freed(post, c, root, from, base));
         }
@@ -2110,6 +2110,7 @@ impl CapKernel {
     /// was in it, so every capability is as it was and says the same.
     proof fn lemma_leaf_freed_caps(pre: Self, post: Self, base: usize)
         requires
+            post.frames@ == pre.frames@,
             pre.wf(),
             pre.leaf_is_empty(base),
             post.tables.wf(&pre.list),
@@ -3224,7 +3225,7 @@ impl CapKernel {
         &&& Self::step_ok(*self, post, c as int)
         &&& post.view() == self.view()
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&self.list, &self.tables)
-        &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base })
+        &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base, pages: 0 })
     }
 
     /// Frees the empty device space at `base`, once every core and IOMMU has acknowledged the epoch of its
@@ -3291,7 +3292,7 @@ impl CapKernel {
             let post = *self;
             assert(post.view() == pre.view());
             let v = pre.view();
-            let e = Effect::Teardown { untyped, object: base };
+            let e = Effect::Teardown { untyped, object: base, pages: 0 };
             assert(authorized(v, root, e));
         }
         ReclaimStep::Freed
@@ -3383,6 +3384,7 @@ impl CapKernel {
     /// the retype right alone.
     proof fn lemma_unlink_discharges(pre: Self, post: Self, root: usize, untyped: usize, base: usize)
         requires
+            post.frames@ == pre.frames@,
             Self::caps_frame(pre, post, base, base),
             base % PAGE_SZ == 0,
             post.list.parent == pre.list.parent,
@@ -3392,7 +3394,7 @@ impl CapKernel {
         ensures
             forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x),
             post.view() == pre.view(),
-            discharges(pre.view(), post.view(), root, Effect::Teardown { untyped, object: base }),
+            discharges(pre.view(), post.view(), root, Effect::Teardown { untyped, object: base, pages: 0 }),
     {
         let (a, b) = (pre.view(), post.view());
         assert forall|x: usize| #[trigger] post.is_cap(x) == pre.is_cap(x)
@@ -3507,7 +3509,7 @@ impl CapKernel {
             Self::lemma_cut_shrunk(pre, cut, base);
             Self::lemma_same_tree_shrunk(cut, post);
             Self::lemma_shrunk_compose(pre, cut, post);
-            lemma_sheds_shares_discharges_teardown(pre.view(), post.view(), root, untyped, base);
+            lemma_sheds_shares_discharges_teardown(pre.view(), post.view(), root, untyped, base, 0);
             Self::lemma_bound_threads_same(cut, post);
             assert(!cut.is_cap(base));
             assert(post.processes == pre.processes);
@@ -3691,7 +3693,7 @@ impl CapKernel {
         &&& sheds_shares(self.view(), post.view())
         &&& post.view().shares == shares_surviving(ta, |r: usize, q: SpacePath| cut_through(ta, tb, base, r, q))
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&self.list, &self.tables)
-        &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base })
+        &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base, pages: 0 })
     }
 
     /// What cutting children of the dead table page at `base`, or of a process's space root, did to self:
@@ -4077,7 +4079,7 @@ impl CapKernel {
             if cut != 0 {
                 Self::lemma_cuts_shed(pre, *self, base);
                 Self::lemma_cuts_same_view(pre, *self, base);
-                lemma_no_change_discharges_teardown(pre.view(), root, untyped, base);
+                lemma_no_change_discharges_teardown(pre.view(), root, untyped, base, 0);
             }
         }
         cut != 0
@@ -4300,7 +4302,7 @@ impl CapKernel {
         proof {
             if cut != 0 {
                 Self::lemma_cuts_shed(pre, *self, base);
-                lemma_sheds_shares_discharges_teardown(pre.view(), self.view(), root, untyped, base);
+                lemma_sheds_shares_discharges_teardown(pre.view(), self.view(), root, untyped, base, 0);
             }
         }
         cut != 0
@@ -4400,7 +4402,7 @@ impl CapKernel {
             &&& Self::table_unmaps_kept(*self, post, base, nodes.len() as int)
         }
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&self.list, &self.tables)
-        &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base })
+        &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base, pages: 0 })
     }
 
     /// A slice of the table page at `base` can do something: cut a child or unlink a mapping.
@@ -4434,6 +4436,7 @@ impl CapKernel {
     /// it had.
     pub proof fn lemma_mapping_view_same(pre: Self, post: Self, n: usize)
         requires
+            post.frames@ == pre.frames@,
             Self::caps_frame(pre, post, n, n),
             pre.list.nodes@[n as int].kind is Mapping,
             !post.list.nodes@[n as int].live,
@@ -4786,7 +4789,7 @@ impl CapKernel {
                     }
                 }
             } else {
-                lemma_no_change_discharges_teardown(pre.view(), root, untyped, base);
+                lemma_no_change_discharges_teardown(pre.view(), root, untyped, base, 0);
                 assert(Self::table_mapping_steps(pre, *self, base, nodes, states));
             }
         }
@@ -4877,10 +4880,16 @@ impl CapKernel {
         self.free_frame(c, page, Tracked(steps));
         proof {
             let post = *self;
-            assert(post.view() == pre.view());
             let v = pre.view();
-            let e = Effect::Teardown { untyped, object: base };
+            let e = Effect::Teardown { untyped, object: base, pages: 1 };
             assert(authorized(v, root, e));
+            lemma2_to64();
+            assert(base % PAGE_SZ == 0);
+            assert(base / PAGE_SZ == page);
+            assert forall|o: ObjectId| #[trigger] State::changed(v, post.view(), o) implies may_change(v, e, o) by {
+                lemma_contents_in_pages(pre.frames@, post.frames@, base, 1, o);
+            }
+            lemma_contents_only(v, post.view(), root, e);
         }
         ReclaimStep::Freed
     }
@@ -4945,7 +4954,7 @@ impl CapKernel {
         &&& forall|i: usize| #[trigger] block_has_page(level_ref(level, r), i) ==> !post.frames@.contains_key(i)
         &&& Self::step_ok(*self, post, c as int)
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&self.list, &self.tables)
-        &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base })
+        &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base, pages: level_pages(level) as nat })
     }
 
     /// Reclaims the 2M or 1G block at `base`, as reclaim_frame does a 4K one.
@@ -5001,10 +5010,20 @@ impl CapKernel {
         proof {
             let post = *self;
             assert(!post.zeroing.active(level, r));
-            assert(post.view() == pre.view());
             let v = pre.view();
-            let e = Effect::Teardown { untyped, object: base };
+            let e = Effect::Teardown { untyped, object: base, pages: level_pages(level) as nat };
             assert(authorized(v, root, e));
+            lemma_level_pages(level, r);
+            assert(base % PAGE_SZ == 0);
+            assert forall|i: usize| !(base / PAGE_SZ <= i < base / PAGE_SZ + level_pages(level))
+                implies (#[trigger] pre.frames@.contains_key(i) == post.frames@.contains_key(i)
+                    && (pre.frames@.contains_key(i) ==> pre.frames@[i] == post.frames@[i])) by {
+                assert(!BlockTable::large_pages(level, r as int).contains(i));
+            }
+            assert forall|o: ObjectId| #[trigger] State::changed(v, post.view(), o) implies may_change(v, e, o) by {
+                lemma_contents_in_pages(pre.frames@, post.frames@, base, level_pages(level) as nat, o);
+            }
+            lemma_contents_only(v, post.view(), root, e);
         }
         ReclaimStep::Freed
     }
@@ -5038,6 +5057,7 @@ impl CapKernel {
             !block_typed(&final(self).blocks, level_ref(level, r)),
             final(self).blocks.large_free(level, r as int),
             forall|i: usize| #[trigger] block_has_page(level_ref(level, r), i) ==> !final(self).frames@.contains_key(i),
+            final(self).frames@ == old(self).frames@.remove_keys(BlockTable::large_pages(level, r as int)),
     {
         let ghost pre = *old(self);
         let ghost keys = BlockTable::large_pages(level, r as int);
@@ -5105,7 +5125,7 @@ impl CapKernel {
             final(self).tables == old(self).tables,
             final(self).devices == old(self).devices,
             final(self).blocks.pages@[page as int].kind is Free,
-            !final(self).frames@.contains_key(page),
+            final(self).frames@ == old(self).frames@.remove(page),
     {
         let ghost pre = *old(self);
         self.blocks.mark_torn_down(page);

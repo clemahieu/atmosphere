@@ -141,7 +141,7 @@ impl CapKernel {
         &&& post.thread_work(base) < self.thread_work(base)
         &&& post.view() == self.view()
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&self.list, &self.tables).remove(base)
-        &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base })
+        &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base, pages: 0 })
     }
 
     /// What freeing the spent thread at `base` did to self: it was on no core with no stop pending, its
@@ -165,7 +165,7 @@ impl CapKernel {
         &&& Self::step_ok(*self, post, c as int)
         &&& post.view() == self.view()
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&self.list, &self.tables)
-        &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base })
+        &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base, pages: 0 })
     }
 
     /// The block test reclaim_thread makes reads as the records do: the block at a thread-aligned base
@@ -253,6 +253,7 @@ impl CapKernel {
     /// every capability says what it did under the parent it had.
     proof fn lemma_binding_view_same(pre: Self, post: Self, n: usize)
         requires
+            post.frames@ == pre.frames@,
             Self::caps_frame(pre, post, n, n),
             pre.list.nodes@[n as int].kind is Binding,
             !post.list.nodes@[n as int].live,
@@ -942,7 +943,7 @@ impl CapKernel {
             self.unlink_binding(base, Tracked(&mut *steps));
             proof {
                 let post = *self;
-                lemma_no_change_discharges_teardown(pre.view(), root, untyped, base);
+                lemma_no_change_discharges_teardown(pre.view(), root, untyped, base, 0);
                 assert(post.threads.records@.contains_key(base));
                 assert(post.blocks.pages@[page as int].refs == 0) by {
                     let p = pre.threads.records@[base].value().process->Some_0;
@@ -979,7 +980,7 @@ impl CapKernel {
         self.free_spent_thread(base, Tracked(steps));
         proof {
             let post = *self;
-            lemma_no_change_discharges_teardown(pre.view(), root, untyped, base);
+            lemma_no_change_discharges_teardown(pre.view(), root, untyped, base, 0);
             assert(pre.thread_freed(post, c, root, from, base));
         }
         ReclaimStep::Freed

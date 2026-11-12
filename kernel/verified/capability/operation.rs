@@ -5,6 +5,8 @@
 //! frame's positions are the arch module's syscall register table. asys holds the same numbers for user
 //! space, and the kernel crate checks at compile time that the two agree. See
 //! design/syscall-abi-in-registers/.
+#[cfg(verus_keep_ghost)]
+use vstd::arithmetic::power2::*;
 use vstd::prelude::*;
 
 verus! {
@@ -402,7 +404,7 @@ impl CapKernel {
         &&& forall|r: usize| #[trigger] pre.spaces.roots@.contains_key(r) ==>
             space_mapping(tree_of(&post.table_pages, &post.spaces), r) == space_mapping(tree_of(&pre.table_pages, &pre.spaces), r)
         &&& pre.blocks.kept_but_run(post.blocks, (base / PAGE_SZ) as int, 3)
-        &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, into: None })
+        &&& discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, pages: pow2(3), into: None })
     }
 
     /// A link in frame by a thread of the process whose table is at root, from pre to post with out

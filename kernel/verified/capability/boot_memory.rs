@@ -371,6 +371,7 @@ impl CapKernel {
             old(self).spaces.kernel_root@ / PAGE_SZ < NUM_PAGES
                 ==> !in_runs(runs@, runs@.len() as int, (old(self).spaces.kernel_root@ / PAGE_SZ) as int),
         ensures
+            final(self).frames == old(self).frames,
             final(self).stale_epoch == old(self).stale_epoch,
             final(self).devices == old(self).devices,
             final(self).iommus.present == old(self).iommus.present,

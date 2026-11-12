@@ -531,6 +531,7 @@ impl CapKernel {
     /// The view of the step: one capability goes, and nothing else.
     pub proof fn lemma_delete_removes(pre: Self, post: Self, n: usize)
         requires
+            post.frames@ == pre.frames@,
             Self::caps_frame(pre, post, n, n),
             pre.is_cap(n),
             !post.list.nodes@[n as int].live,

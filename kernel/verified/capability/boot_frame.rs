@@ -672,7 +672,8 @@ impl CapKernel {
         proof {
             assert(mid.wf());
             assert(mid.list == pre.list && mid.tables == pre.tables);
-            assert(mid.view() == pre.view());
+            assert(same_but_contents(pre.view(), mid.view()));
+            lemma_contents_same_reach(pre.view(), mid.view());
             lemma_region_2m_of_bytes(base as int, r);
             assert(block_ref(&mid.blocks, base / PAGE_SZ) == BlockRef::Two(r));
         }
@@ -730,6 +731,7 @@ impl CapKernel {
             assert forall|o: usize| #[trigger] post.view().reach(process, o)
                 <==> (pre.view().reach(process, o) || in_block(base, order, o)) by {
                 assert(post.view().covers(child, o) == in_block(base, order, o));
+                assert(mid.view().reach(process, o) == pre.view().reach(process, o));
             }
             assert forall|r: usize, o: usize| #[trigger] post.view().reach(r, o) && !pre.view().reach(r, o)
                 implies in_block(base, order, o) by {
