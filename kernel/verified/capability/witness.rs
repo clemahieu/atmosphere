@@ -56,6 +56,8 @@ use crate::capability::retype::*;
 use crate::capability::revoke::*;
 use crate::capability::space::*;
 use crate::capability::steps::*;
+use crate::capability::switch::*;
+use crate::arch::Registers;
 use crate::capability::table::*;
 use crate::capability::thread::*;
 use crate::capability::view::*;
@@ -979,6 +981,118 @@ impl CapKernel {
             assert(s3.loaded(0, process));
         }
         self.switch_space(0, Some(base), base + SPACE_ROOT_PAGE * PAGE_SZ, pcid);
+    }
+
+    /// From the state boot leaves, with a second process built at `base` as
+    /// witness_process_holds_capability builds it, with its thread at `base + 10 * PAGE_SZ`: core 0
+    /// loads the second space, points its register at it and enters that thread; switch_thread takes
+    /// the core to idle, on the kernel's root; the core then loads the root's space and points its
+    /// register there with no thread; and switch_thread takes it back to the thread straight from the
+    /// root's space, in one write that keeps the generation. A switch between threads of two processes
+    /// waits on a thread being placed on a core, which no verified operation does yet. See
+    /// design/core-names-a-space-while-running-its-thread/.
+    pub fn witness_thread_switch(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: Ghost<usize>,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        base: usize,
+        kernel_root: usize,
+        registers: Registers,
+    )
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
+            image_tables_bound(image@) + 2 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
+            base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
+            old(self).spaces.kernel_root@ == kernel_root,
+        ensures
+            final(self).wf(),
+            final(self).cores@[0].current_thread == Some((base + 10 * PAGE_SZ) as usize),
+            final(self).threads.records@[(base + 10 * PAGE_SZ) as usize].value().state == (ThreadState::Running { core: 0 }),
+            final(self).threads.records@[(base + 10 * PAGE_SZ) as usize].value().frame == registers,
+            final(self).cores@[0].space == Some(base),
+            final(self).spaces.registers@[0].root() == base + SPACE_ROOT_PAGE * PAGE_SZ,
+            final(self).cores@[0].generation == 1,
+            final(self).loaded(0, process),
+    {
+        hide(CapKernel::wf);
+        let ghost s0 = *self;
+        let ok = self.witness_process_holds_capability(root, process, leaf, frames, t, free, image, untyped, frame, present, base);
+        let thread = base + 10 * PAGE_SZ;
+        let ghost s1 = *self;
+        proof {
+            assert(ok);
+            assert(s1.cores == s0.cores);
+            assert(s1.cores@[0].generation == 1);
+            assert(s1.cores@[0].next_pcid == 1);
+            assert(s1.cores@[0].space is None);
+            assert(s1.cores@[0].current_thread is None);
+            assert(s1.spaces.kernel_root@ == kernel_root);
+            assert(s1.spaces.roots@.contains_key(process) && s1.spaces.records@[process].value().kind is Process
+                && s1.spaces.roots@.contains_key(base) && s1.spaces.records@[base].value().kind is Process
+                && space_wf(&s1.list, &s1.spaces, &s1.blocks, process)
+                && space_wf(&s1.list, &s1.spaces, &s1.blocks, base)
+                && !s1.threads.records@[thread].value().pending_stop) by {
+                reveal(CapKernel::wf);
+                reveal(current_wf);
+                assert(witness_alive(s1, process));
+                assert(witness_alive(s1, base));
+                assert(process_spaces_wf(&s1.spaces, &s1.processes));
+                assert(s1.processes.records@.contains_key(process));
+                assert(s1.processes.records@.contains_key(base));
+            }
+        }
+        // The steps are the witness's own; no lock bounds them: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        let pcid = self.load_space(0, base, Tracked(&mut steps));
+        self.switch_space(0, Some(base), base + SPACE_ROOT_PAGE * PAGE_SZ, pcid);
+        let ghost s2 = *self;
+        proof {
+            assert(s2.threads == s1.threads);
+            assert(s2.cores@[0].current_thread is None);
+        }
+        self.enter_boot_thread(0, thread);
+        let ghost s3 = *self;
+        proof {
+            assert(s3.cores@[0].current_thread == Some(thread));
+            assert(!s3.threads.records@[thread].value().pending_stop);
+            assert(s3.spaces == s2.spaces);
+            assert(s3.cores@[0].next_pcid <= 2);
+            assert(s3.cores@[0].generation == 1);
+        }
+        // The thread leaves, and the core goes idle on the kernel's root.
+        self.switch_thread(0, registers, None, kernel_root, Tracked(&mut steps));
+        let ghost s4 = *self;
+        proof {
+            assert(s4.cores@[0].current_thread is None);
+            assert(s4.threads.records@[thread].value().state == (ThreadState::Runnable { core: 0 }));
+            assert(s4.threads.records@[thread].value().process == Some(base));
+            assert(s4.cores@[0].generation == 1);
+            assert(s4.spaces.roots == s1.spaces.roots);
+            assert(s4.spaces.records == s1.spaces.records);
+        }
+        // The core names the root's space, with no thread of it.
+        let pcid = self.load_space(0, process, Tracked(&mut steps));
+        self.switch_space(0, Some(process), process + SPACE_ROOT_PAGE * PAGE_SZ, pcid);
+        let ghost s5 = *self;
+        proof {
+            assert(s5.threads == s4.threads);
+            assert(s5.cores@[0].current_thread is None);
+            assert(s5.cores@[0].generation == 1);
+            assert(s5.cores@[0].next_pcid != PCID_MAX);
+            assert(s5.spaces.roots == s1.spaces.roots);
+            assert(s5.spaces.records == s1.spaces.records);
+            assert(s5.loaded(0, process));
+        }
+        // The thread comes back, straight from the root's space.
+        self.switch_thread(0, registers, Some(thread), kernel_root, Tracked(&mut steps));
     }
 
     /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first
