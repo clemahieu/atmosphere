@@ -16,6 +16,7 @@ usage: tools/gate.py [--target x86_64|aarch64] [--step NAME]... [--boot-timeout 
        tools/gate.py --test    (this script's own tests)
 """
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -63,6 +64,15 @@ WORKSPACE_TESTS = ("test", "--workspace", "--", "--nocapture")
 # Marks cargo test's result line, one per test binary, and the line of a binary with a failing test.
 TEST_RESULT = "test result: "
 TEST_FAILED = "test result: FAILED"
+# The crates the forced lint check holds, each from its own directory, whose .cargo config builds
+# core, and the target specs it checks it for, relative to that directory.
+FORCED_LINT_CRATES = (
+    ("kernel/verified", ("../src/x86_64-unknown-aloader.json", "../src/aarch64-unknown-aloader.json")),
+    ("kernel", ("src/x86_64-unknown-aloader.json", "src/aarch64-unknown-aloader.json")),
+)
+# Forced, so no allow in the source hides dead code or an unused import.
+FORCED_LINT_ENV = {"RUSTFLAGS": "--force-warn dead_code --force-warn unused_imports"}
+FORCED_LINT_CHECK = ("cargo", "check", "--message-format=json", "-Zjson-target-spec", "--target")
 # timeout's status when the command it ran did not exit in time.
 TIMED_OUT = 124
 
@@ -81,15 +91,17 @@ class Gate:
         self.root = Path(root)
         self.boot_timeout = boot_timeout
 
-    def call(self, argv, capture=False, merge=False, stdin=None):
-        """Runs a program, a path relative to the root or a name on PATH, at the root: its exit
-        status, and its stdout when captured, with its stderr too under merge. Its uncaptured output
-        goes to the gate's own."""
+    def call(self, argv, capture=False, merge=False, stdin=None, cwd=None, env=None):
+        """Runs a program, a path relative to the root or a name on PATH, at the root or in its
+        directory cwd, with env added to the gate's environment: its exit status, and its stdout
+        when captured, with its stderr too under merge. Its uncaptured output goes to the gate's
+        own."""
         sys.stdout.flush()
         program = str(self.root / argv[0]) if "/" in argv[0] else argv[0]
         try:
             done = subprocess.run(
-                [program, *argv[1:]], cwd=self.root,
+                [program, *argv[1:]], cwd=self.root / (cwd or ""),
+                env={**os.environ, **env} if env else None,
                 input=stdin.encode() if stdin is not None else None,
                 stdin=subprocess.DEVNULL if stdin is None else None,
                 stdout=subprocess.PIPE if capture else None,
@@ -201,6 +213,52 @@ def workspace_tests(gate):
     if passed == 0:
         raise Failure(f"{command}: no test ran")
     return f"{passed} tests passed in {binaries} test binaries"
+
+
+def in_tree_messages(output, root):
+    """The compiler messages among cargo's JSON messages whose primary span is in the tree at root,
+    each once: its 'path:line: level: message' and its rendered text. cargo names a workspace
+    member's file relative to the root, and the toolchain's and the registry's by an absolute path
+    outside it."""
+    found = {}
+    for line in output.splitlines():
+        if not line.startswith("{"):
+            continue
+        message = json.loads(line)
+        if message.get("reason") != "compiler-message":
+            continue
+        message = message["message"]
+        for span in message["spans"]:
+            path = Path(span["file_name"])
+            if span["is_primary"] and (root / path).resolve().is_relative_to(root.resolve()):
+                where = f"{span['file_name']}:{span['line_start']}: {message['level']}: {message['message']}"
+                found.setdefault(where, message["rendered"])
+    return list(found.items())
+
+
+def forced_lints(gate):
+    """The forced lint check: cargo check of kernel/verified and kernel on both target specs with
+    dead_code and unused_imports forced to warn, which overrides any allow in the source, fails on
+    any warning located in the tree. A ghost-only item a proof reads compiles under
+    cfg(verus_keep_ghost) instead of hiding under an allow. The toolchain's build of core and the
+    registry's crates print their own warnings, which are not the tree's and do not count."""
+    found = {}
+    for directory, specs in FORCED_LINT_CRATES:
+        for spec in specs:
+            argv = [*FORCED_LINT_CHECK, spec]
+            ran = gate.call(argv, capture=True, cwd=directory, env=FORCED_LINT_ENV)
+            here = in_tree_messages(ran.stdout, gate.root)
+            if ran.code != 0:
+                # The JSON holds the diagnostics, so an error that stops the check is shown here.
+                print("".join(rendered for _, rendered in here), end="")
+                raise Failure(f"{' '.join(argv)} in {directory}: {status(ran.code)}"
+                              + "".join(f"\n  {where}" for where, _ in here))
+            found.update(here)
+    if found:
+        print("".join(found.values()), end="")
+        raise Failure(f"{len(found)} warning{'s' if len(found) > 1 else ''} located in the tree:"
+                      + "".join(f"\n  {where}" for where in found))
+    return "no warning located in the tree: kernel/verified and kernel, on the x86_64 and aarch64 specs"
 
 
 def hooks(gate):
@@ -321,6 +379,7 @@ STEPS = (
     Step("file sizes", X86_64, file_sizes),
     Step("build", X86_64, build),
     Step("workspace tests", X86_64, workspace_tests),
+    Step("forced lints", X86_64, forced_lints),
     Step("license", X86_64, self_tested(LICENSE_CHECK)),
     Step("source licenses", X86_64, self_tested(SOURCE_LICENSE_CHECK)),
     Step("hooks", X86_64, hooks),
@@ -401,9 +460,11 @@ class FakeGate(Gate):
         super().__init__(root, boot_timeout)
         self.answers = answers or {}
         self.calls = []
+        self.contexts = []
 
-    def call(self, argv, capture=False, merge=False, stdin=None):
+    def call(self, argv, capture=False, merge=False, stdin=None, cwd=None, env=None):
         self.calls.append(list(argv))
+        self.contexts.append((list(argv), cwd, env))
         code, stdout = self.answers.get(" ".join(argv), self.answers.get(argv[0], (0, "")))
         if argv[0] == "timeout" and code == 0:
             (self.root / SERIAL_LOG).write_text("")
@@ -508,6 +569,30 @@ class Tests(unittest.TestCase):
             workspace_tests(FakeGate(self.root, {cargo: (101, output)}))
         with self.assertRaisesRegex(Failure, "no test ran"):
             workspace_tests(FakeGate(self.root, {cargo: (0, "test result: ok. 0 passed; 0 failed\n")}))
+
+    def test_forced_lints_fail_on_a_warning_located_in_the_tree(self):
+        def message(level, path, line, text):
+            return json.dumps({"reason": "compiler-message", "message": {
+                "level": level, "message": text, "rendered": f"{level}: {text}\n",
+                "spans": [{"file_name": path, "line_start": line, "is_primary": True}]}})
+        outside = message("warning", "/home/u/.rustup/toolchains/t/lib/rustlib/src/rust/library/core/src/pin.rs", 925, "unused import")
+        registry = message("warning", "/home/u/.cargo/registry/src/heapless-0.7.17/src/sealed.rs", 42, "never used")
+        inside = message("warning", "kernel/verified/pptr.rs", 12, "field `perm` is never read")
+        artifact = json.dumps({"reason": "compiler-artifact"})
+        self.assertEqual(in_tree_messages("\n".join([outside, registry, artifact]), self.root), [])
+        self.assertEqual(in_tree_messages("\n".join([outside, inside, inside]), self.root),
+                         [("kernel/verified/pptr.rs:12: warning: field `perm` is never read", "warning: field `perm` is never read\n")])
+        clean = FakeGate(self.root, {"cargo": (0, outside + "\n")})
+        self.assertEqual(forced_lints(clean),
+                         "no warning located in the tree: kernel/verified and kernel, on the x86_64 and aarch64 specs")
+        # Each crate's directory, since its .cargo config holds build-std, on both specs, with the lints forced.
+        self.assertEqual([(call[-1], cwd, env) for call, cwd, env in clean.contexts],
+                         [(f"{spec}", directory, FORCED_LINT_ENV) for directory, specs in FORCED_LINT_CRATES for spec in specs])
+        with self.assertRaisesRegex(Failure, "^1 warning located in the tree:\n  kernel/verified/pptr.rs:12: warning: field `perm` is never read$"):
+            forced_lints(FakeGate(self.root, {"cargo": (0, inside + "\n")}))
+        error = message("error", "kernel/src/main.rs", 3, "cannot find value `x`")
+        with self.assertRaisesRegex(Failure, "in kernel/verified: exit status: 101\n  kernel/src/main.rs:3: error: cannot find value `x`$"):
+            forced_lints(FakeGate(self.root, {"cargo": (101, error + "\n")}))
 
     def test_a_boot_that_hangs_or_fails_its_log_check_fails(self):
         (self.root / SERIAL_LOG).write_text("old\n")
