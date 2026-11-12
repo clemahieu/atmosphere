@@ -968,6 +968,10 @@ impl CapKernel {
                 lemma_spaces_same_pages(&pre.list, &pre.tables, &pre.spaces, &pre.blocks, &self.blocks);
                 lemma_threads_same_pages(&pre.list, &pre.tables, &pre.threads, &pre.blocks, &self.blocks);
                 lemma_processes_same_pages(&pre.list, &pre.tables, &pre.processes, &pre.blocks, &self.blocks);
+                assert forall|g: usize| translatable(&pre.blocks, g) implies #[trigger] translatable(&self.blocks, g) by {
+                    assert(self.blocks.pages@[g as int] == pre.blocks.pages@[g as int]);
+                }
+                lemma_entries_translatable_kept(&pre.blocks, &self.blocks, pre.tlb@, pre.iommus.tlb@);
                 Self::lemma_zeroing_changed(pre, *self);
                 assert(self.zeroing.active(level, r));
                 assert(self.zeroing.cursor@[base as int] <= pages);
@@ -1006,6 +1010,10 @@ impl CapKernel {
             lemma_spaces_same_pages(&pre.list, &pre.tables, &pre.spaces, &pre.blocks, &me.blocks);
             lemma_threads_same_pages(&pre.list, &pre.tables, &pre.threads, &pre.blocks, &me.blocks);
             lemma_processes_same_pages(&pre.list, &pre.tables, &pre.processes, &pre.blocks, &me.blocks);
+            assert forall|g: usize| translatable(&pre.blocks, g) implies #[trigger] translatable(&me.blocks, g) by {
+                assert(me.blocks.pages@[g as int] == pre.blocks.pages@[g as int]);
+            }
+            lemma_entries_translatable_kept(&pre.blocks, &me.blocks, pre.tlb@, pre.iommus.tlb@);
             Self::lemma_zeroing_changed(pre, me);
         }
         RetypeStep::Done

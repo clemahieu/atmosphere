@@ -361,6 +361,12 @@ impl CapKernel {
                 assert(post.blocks.pages@[kr] == pre.blocks.pages@[kr]);
             }
         }
+        assert forall|g: usize| translatable(&pre.blocks, g) implies #[trigger] translatable(&post.blocks, g) by {
+            if region_2m(g as int) != r as int {
+                assert(post.blocks.pages@[g as int] == pre.blocks.pages@[g as int]);
+            }
+        }
+        lemma_entries_translatable_kept(&pre.blocks, &post.blocks, pre.tlb@, pre.iommus.tlb@);
         Self::lemma_zeroing_changed(pre, post);
     }
 

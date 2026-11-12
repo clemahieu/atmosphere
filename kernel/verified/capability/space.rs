@@ -2371,6 +2371,8 @@ impl CapKernel {
         assert(post.wf()) by {
             pre.tables.lemma_wf_same_pages(&pre.list, &post.list);
             Self::lemma_kernel_root_typed(pre, post, page as int, 8);
+            lemma_small_typed_translatable(&pre.blocks, &post.blocks, page, 3);
+            lemma_entries_translatable_kept(&pre.blocks, &post.blocks, pre.tlb@, pre.iommus.tlb@);
             Self::lemma_devices_same_caps(pre, post);
             Self::lemma_tlb_same(pre, post);
             Self::lemma_table_page_nodes(pre, post, mid, parent, base);

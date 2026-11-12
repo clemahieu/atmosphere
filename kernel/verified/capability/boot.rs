@@ -1823,6 +1823,10 @@ impl CapKernel {
         lemma_bindings_kept(&pre.list, &post.list, &pre.threads, &post.threads, &pre.processes, &post.processes);
         Self::lemma_binding_parents_same_caps(pre, post);
         Self::lemma_kernel_root_typed(pre, post, (t / PAGE_SZ) as int, 2);
+        assert(entries_translatable(&post.blocks, post.tlb@, post.iommus.tlb@)) by {
+            lemma_small_typed_translatable(&pre.blocks, &post.blocks, t / PAGE_SZ, 1);
+            lemma_entries_translatable_kept(&pre.blocks, &post.blocks, pre.tlb@, pre.iommus.tlb@);
+        }
         assert(post.wf());
         assert forall|x: usize| #[trigger] post.is_cap(x) implies x == child || pre.is_cap(x) by {
             if x != child {
@@ -2043,6 +2047,12 @@ impl CapKernel {
             && block_refs(&pre.blocks, block_ref(&pre.blocks, i)) > 0
             implies #[trigger] block_ref(&post.blocks, i) == block_ref(&pre.blocks, i) by {}
         Self::lemma_kernel_root_apart(pre, post, start as int, n as int);
+        assert forall|g: usize| translatable(&pre.blocks, g) implies #[trigger] translatable(&post.blocks, g) by {
+            if start <= g < start + n {
+                pre.blocks.lemma_not_free_uncovered(g as int);
+            }
+        }
+        lemma_entries_translatable_kept(&pre.blocks, &post.blocks, pre.tlb@, pre.iommus.tlb@);
         Self::lemma_blocks_changed(pre, post);
     }
 

@@ -938,6 +938,10 @@ impl CapKernel {
             post.wf(),
             post.view() == pre.view(),
     {
+        let page = base / PAGE_SZ;
+        pre.blocks.lemma_not_free_uncovered(page as int);
+        pre.lemma_untranslatable_clean(page);
+        Self::lemma_small_freed_translatable(pre, &post.blocks, page);
         pre.lemma_spent_process(base);
         Self::lemma_kernel_root_freed(pre, post, (base / PAGE_SZ) as int);
         Self::lemma_process_freed_caps(pre, post, base);

@@ -576,6 +576,92 @@ pub ghost struct TlbEntry {
     pub page: usize,
 }
 
+/// Page g is one a TLB entry may name: a page of a typed large block, or the base page of a small
+/// block typed as a frame or a table page, which are what a space's tables lead to. A free page is none
+/// of these, nor is a member page or a block typed as anything else, so a block can return to free only
+/// once no core or IOMMU holds an entry naming any of its pages: see CapKernel::lemma_untranslatable_clean.
+pub open spec fn translatable(blocks: &BlockTable, g: usize) -> bool {
+    &&& blocks.tracks(g as int)
+    &&& (blocks.covered(g as int) || {
+        &&& blocks.pages@[g as int].kind is Base
+        &&& (blocks.pages@[g as int].object is Frame || blocks.pages@[g as int].object is TablePage)
+    })
+}
+
+/// Every entry a core or an IOMMU may hold names a page a TLB entry may name.
+pub open spec fn entries_translatable(blocks: &BlockTable, tlb: TlbModel, iotlb: IotlbModel) -> bool {
+    &&& forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && #[trigger] tlb[c].contains(e) ==> translatable(blocks, e.page)
+    &&& forall|i: int, e: TlbEntry| 0 <= i < NUM_IOMMUS && #[trigger] iotlb[i].contains(e) ==> translatable(blocks, e.page)
+}
+
+/// A step that changes the block table but keeps every page a TLB entry may name keeps the TLB models'
+/// entries nameable.
+/// A change of one block's count and dead flag keeps every page's kind, object and typed region, so a
+/// page a core may translate stays one it may translate.
+pub proof fn lemma_refs_changed_translatable(a: &BlockTable, b: &BlockTable, br: BlockRef, refs: usize, dead: bool)
+    requires
+        blocks_refs_changed(a, b, br, refs, dead),
+    ensures
+        forall|g: usize| translatable(a, g) ==> #[trigger] translatable(b, g),
+{
+    assert forall|g: usize| translatable(a, g) implies #[trigger] translatable(b, g) by {
+        let i = g as int;
+        assert(0 <= region_2m(i) < NUM_2M);
+        assert(0 <= region_1g(i) < NUM_1G);
+        assert(b.pages@[i].kind == a.pages@[i].kind);
+        assert(b.regions_2m@[region_2m(i)].typed == a.regions_2m@[region_2m(i)].typed);
+        assert(b.regions_1g@[region_1g(i)].typed == a.regions_1g@[region_1g(i)].typed);
+    }
+}
+
+/// The same, for a change whose block and counts a specification names only inside its own bindings.
+pub proof fn lemma_some_refs_changed_translatable(a: &BlockTable, b: &BlockTable)
+    requires
+        exists|br: BlockRef, refs: usize, dead: bool| #[trigger] blocks_refs_changed(a, b, br, refs, dead),
+    ensures
+        forall|g: usize| translatable(a, g) ==> #[trigger] translatable(b, g),
+{
+    let (br, refs, dead) = choose|br: BlockRef, refs: usize, dead: bool| #[trigger] blocks_refs_changed(a, b, br, refs, dead);
+    lemma_refs_changed_translatable(a, b, br, refs, dead);
+}
+
+/// Typing a free small block keeps every page a core may translate one it may translate: a page of the
+/// block was free and in no typed region, so it was none.
+pub proof fn lemma_small_typed_translatable(pre: &BlockTable, post: &BlockTable, page: usize, order: usize)
+    requires
+        small_order(order),
+        page % (order_pages(order) as usize) == 0,
+        forall|k: int| 0 <= k < order_pages(order) ==> #[trigger] pre.pages@[page + k].kind is Free,
+        !pre.covered(page as int),
+        post.regions_2m@ == pre.regions_2m@,
+        post.regions_1g@ == pre.regions_1g@,
+        forall|i: int| pre.tracks(i) && !(page <= i < page + order_pages(order)) ==> #[trigger] post.pages@[i] == pre.pages@[i],
+    ensures
+        forall|g: usize| translatable(pre, g) ==> #[trigger] translatable(post, g),
+{
+    assert forall|g: usize| translatable(pre, g) implies #[trigger] translatable(post, g) by {
+        if page <= g < page + order_pages(order) {
+            assert(pre.pages@[page + (g - page)].kind is Free);
+            lemma_small_range_uncovered(pre, page, order, g);
+        }
+    }
+}
+
+pub proof fn lemma_entries_translatable_kept(pre: &BlockTable, post: &BlockTable, tlb: TlbModel, iotlb: IotlbModel)
+    requires
+        entries_translatable(pre, tlb, iotlb),
+        forall|g: usize| translatable(pre, g) ==> #[trigger] translatable(post, g),
+    ensures
+        entries_translatable(post, tlb, iotlb),
+{
+    assert forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && #[trigger] tlb[c].contains(e) implies translatable(post, e.page) by {
+        assert(translatable(pre, e.page));
+    }
+    assert forall|i: int, e: TlbEntry| 0 <= i < NUM_IOMMUS && #[trigger] iotlb[i].contains(e) implies translatable(post, e.page) by {
+        assert(translatable(pre, e.page));
+    }
+}
+
 /// What the kernel needs to send an IOMMU commands, in kernel addresses. Boot fills one for each
 /// present IOMMU and programs the ring's base register. The command encoding, the registers and which
 /// rings the IOMMU accepts are the arch module's: AMD-Vi on x86_64, SMMUv3 on aarch64.
@@ -1461,6 +1547,7 @@ impl CapKernel {
         &&& self.tables.control_wf(&self.list)
         &&& self.stale_epoch.wf()
         &&& self.tlb_wf()
+        &&& entries_translatable(&self.blocks, self.tlb@, self.iommus.tlb@)
         &&& ids_wf(self.cores@, self.spaces.loaded@)
         &&& registers_wf(self.spaces.registers@, self.cores@, self.spaces.loaded@, self.spaces.kernel_root@)
         &&& kernel_root_reserved(&self.blocks, self.spaces.kernel_root@)
@@ -1506,6 +1593,138 @@ impl CapKernel {
     pub open spec fn no_stale_translation(&self, f: usize) -> bool {
         &&& forall|c: int, s: usize| 0 <= c < NUM_CPUS ==> !#[trigger] self.tlb@[c].contains(TlbEntry { space: s, page: f })
         &&& forall|i: int, s: usize| 0 <= i < NUM_IOMMUS ==> !#[trigger] self.iommus.tlb@[i].contains(TlbEntry { space: s, page: f })
+    }
+
+    /// A page no TLB entry may name has no stale translation, so neither has any page of a block about
+    /// to free whose type is neither frame nor table page, nor a member page of any small block.
+    pub proof fn lemma_untranslatable_clean(&self, f: usize)
+        requires
+            self.wf(),
+            !translatable(&self.blocks, f),
+        ensures
+            self.no_stale_translation(f),
+    {
+        assert forall|c: int, s: usize| 0 <= c < NUM_CPUS implies !#[trigger] self.tlb@[c].contains(TlbEntry { space: s, page: f }) by {
+            if self.tlb@[c].contains(TlbEntry { space: s, page: f }) {
+                assert(translatable(&self.blocks, TlbEntry { space: s, page: f }.page));
+            }
+        }
+        assert forall|i: int, s: usize| 0 <= i < NUM_IOMMUS implies !#[trigger] self.iommus.tlb@[i].contains(TlbEntry { space: s, page: f }) by {
+            if self.iommus.tlb@[i].contains(TlbEntry { space: s, page: f }) {
+                assert(translatable(&self.blocks, TlbEntry { space: s, page: f }.page));
+            }
+        }
+    }
+
+    /// A free page outside every typed large block has no stale translation: a block that has returned to
+    /// free leaves no core or IOMMU an entry naming any of its pages.
+    pub proof fn lemma_free_page_clean(&self, f: usize)
+        requires
+            self.wf(),
+            self.blocks.tracks(f as int),
+            self.blocks.pages@[f as int].kind is Free,
+            !self.blocks.covered(f as int),
+        ensures
+            self.no_stale_translation(f),
+    {
+        self.lemma_untranslatable_clean(f);
+    }
+
+    /// A step that frees the large block that is region r of this level, keeping the TLB models, keeps
+    /// their entries nameable when no core or IOMMU holds an entry for any page of the block.
+    pub proof fn lemma_large_freed_translatable(pre: Self, post: &BlockTable, level: Large, r: usize)
+        requires
+            pre.wf(),
+            r < level_regions(level),
+            pre.region_clean(level, r),
+            post.pages@ == pre.blocks.pages@,
+            match level {
+                Large::Two => {
+                    &&& post.regions_2m@ == pre.blocks.regions_2m@.update(r as int, post.regions_2m@[r as int])
+                    &&& post.regions_1g@ == pre.blocks.regions_1g@
+                },
+                Large::One => {
+                    &&& post.regions_1g@ == pre.blocks.regions_1g@.update(r as int, post.regions_1g@[r as int])
+                    &&& post.regions_2m@ == pre.blocks.regions_2m@
+                },
+            },
+        ensures
+            entries_translatable(post, pre.tlb@, pre.iommus.tlb@),
+    {
+        assert forall|g: usize| translatable(&pre.blocks, g) && !block_has_page(level_ref(level, r), g)
+            implies #[trigger] translatable(post, g) by {
+            match level {
+                Large::Two => assert(region_2m(g as int) != r as int),
+                Large::One => assert(region_1g(g as int) != r as int),
+            }
+        }
+        assert forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && #[trigger] pre.tlb@[c].contains(e) implies translatable(post, e.page) by {
+            assert(translatable(&pre.blocks, e.page));
+            if block_has_page(level_ref(level, r), e.page) {
+                assert(pre.no_stale_translation(e.page));
+                assert(TlbEntry { space: e.space, page: e.page } == e);
+            }
+        }
+        assert forall|i: int, e: TlbEntry| 0 <= i < NUM_IOMMUS && #[trigger] pre.iommus.tlb@[i].contains(e) implies translatable(post, e.page) by {
+            assert(translatable(&pre.blocks, e.page));
+            if block_has_page(level_ref(level, r), e.page) {
+                assert(pre.no_stale_translation(e.page));
+                assert(TlbEntry { space: e.space, page: e.page } == e);
+            }
+        }
+    }
+
+    /// A page of the small block at base other than the base is a member, outside every typed large
+    /// block, so no TLB entry may name it.
+    pub proof fn lemma_in_freed_block_untranslatable(pre: Self, base: usize, g: usize)
+        requires
+            pre.wf(),
+            pre.blocks.tracks(base as int),
+            pre.blocks.pages@[base as int].kind is Base,
+            pre.blocks.in_block(base as int, g as int),
+            translatable(&pre.blocks, g),
+        ensures
+            g == base,
+    {
+        if g != base {
+            pre.blocks.lemma_member_of(base as int, g as int);
+            pre.blocks.lemma_not_free_uncovered(g as int);
+        }
+    }
+
+    /// A step that frees the small block at base, keeping the TLB models, keeps their entries nameable
+    /// when no core or IOMMU holds an entry for the base page: a member page and a block typed as
+    /// neither frame nor table page hold none.
+    pub proof fn lemma_small_freed_translatable(pre: Self, post: &BlockTable, base: usize)
+        requires
+            pre.wf(),
+            pre.blocks.tracks(base as int),
+            pre.blocks.pages@[base as int].kind is Base,
+            pre.no_stale_translation(base),
+            forall|i: int| pre.blocks.tracks(i) ==> #[trigger] post.pages@[i] == (
+                if pre.blocks.in_block(base as int, i) { free_entry() } else { pre.blocks.pages@[i] }),
+            post.regions_2m@ == pre.blocks.regions_2m@,
+            post.regions_1g@ == pre.blocks.regions_1g@,
+        ensures
+            entries_translatable(post, pre.tlb@, pre.iommus.tlb@),
+    {
+        assert forall|g: usize| translatable(&pre.blocks, g) && !pre.blocks.in_block(base as int, g as int)
+            implies #[trigger] translatable(post, g) by {
+        }
+        assert forall|c: int, e: TlbEntry| 0 <= c < NUM_CPUS && #[trigger] pre.tlb@[c].contains(e) implies translatable(post, e.page) by {
+            assert(translatable(&pre.blocks, e.page));
+            if pre.blocks.in_block(base as int, e.page as int) {
+                Self::lemma_in_freed_block_untranslatable(pre, base, e.page);
+                assert(TlbEntry { space: e.space, page: base } == e);
+            }
+        }
+        assert forall|i: int, e: TlbEntry| 0 <= i < NUM_IOMMUS && #[trigger] pre.iommus.tlb@[i].contains(e) implies translatable(post, e.page) by {
+            assert(translatable(&pre.blocks, e.page));
+            if pre.blocks.in_block(base as int, e.page as int) {
+                Self::lemma_in_freed_block_untranslatable(pre, base, e.page);
+                assert(TlbEntry { space: e.space, page: base } == e);
+            }
+        }
     }
 
     /// Every core and every present IOMMU has acknowledged this epoch, and an absent one holds nothing
@@ -2165,6 +2384,7 @@ impl CapKernel {
                 ==> post.holders@.contains_key(br) && post.holders@[br].contains(n),
             forall|br: BlockRef, n: usize| post.holders@.contains_key(br) && #[trigger] post.holders@[br].contains(n)
                 ==> pre.holders@.contains_key(br) && pre.holders@[br].contains(n),
+            entries_translatable(&post.blocks, post.tlb@, post.iommus.tlb@),
         ensures
             post.wf(),
     {
@@ -2211,6 +2431,7 @@ impl CapKernel {
                 ==> post.holders@.contains_key(br) && post.holders@[br].contains(n),
             forall|br: BlockRef, n: usize| post.holders@.contains_key(br) && #[trigger] post.holders@[br].contains(n)
                 ==> pre.holders@.contains_key(br) && pre.holders@[br].contains(n),
+            entries_translatable(&post.blocks, post.tlb@, post.iommus.tlb@),
         ensures
             post.wf(),
     {
@@ -2344,6 +2565,7 @@ impl CapKernel {
             pre.blocks.pages@[base as int].kind is Base,
             !(pre.blocks.pages@[base as int].object is Process),
             pre.blocks.pages@[base as int].refs == 0,
+            pre.no_stale_translation(base),
             post.blocks.wf(),
             forall|i: int| pre.blocks.tracks(i) ==> #[trigger] post.blocks.pages@[i] == (
                 if pre.blocks.in_block(base as int, i) { free_entry() } else { pre.blocks.pages@[i] }),
@@ -2369,6 +2591,7 @@ impl CapKernel {
         ensures
             post.wf(),
     {
+        Self::lemma_small_freed_translatable(pre, &post.blocks, base);
         lemma_holders_small_freed(&pre.list, &pre.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, base);
         lemma_list_pages_used_small_freed(&pre.list, &pre.blocks, &post.blocks, base);
         assert forall|t: usize, k: usize| #[trigger] pre.table_pages.maps@.contains_key(t) && k < TABLE_NODE_PAGES
@@ -2444,6 +2667,7 @@ impl CapKernel {
             post.processes == pre.processes,
             pre.wf(),
             r < level_regions(level),
+            pre.region_clean(level, r),
             post.blocks.wf(),
             post.blocks.pages@ == pre.blocks.pages@,
             match level {
@@ -2482,6 +2706,7 @@ impl CapKernel {
         ensures
             post.wf(),
     {
+        Self::lemma_large_freed_translatable(pre, &post.blocks, level, r);
         match level {
             Large::Two => lemma_holders_2m_freed(&pre.list, &pre.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, r),
             Large::One => lemma_holders_1g_freed(&pre.list, &pre.tables, &pre.blocks, &post.blocks, &pre.zeroing, pre.holders@, r),

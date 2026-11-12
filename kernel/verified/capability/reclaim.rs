@@ -2782,10 +2782,12 @@ impl CapKernel {
     proof fn lemma_table_freed(pre: Self, post: Self, base: usize)
         requires
             Self::table_freed_step(pre, post, base),
+            pre.no_stale_translation(base / PAGE_SZ),
         ensures
             post.wf(),
             post.view() == pre.view(),
     {
+        Self::lemma_small_freed_translatable(pre, &post.blocks, base / PAGE_SZ);
         pre.lemma_empty_table(base);
         Self::lemma_kernel_root_freed(pre, post, (base / PAGE_SZ) as int);
         Self::lemma_node_block_caps(pre, post, base);
@@ -3083,10 +3085,12 @@ impl CapKernel {
     proof fn lemma_space_freed(pre: Self, post: Self, base: usize)
         requires
             Self::space_freed_step(pre, post, base),
+            pre.no_stale_translation(base / PAGE_SZ),
         ensures
             post.wf(),
             post.view() == pre.view(),
     {
+        Self::lemma_small_freed_translatable(pre, &post.blocks, base / PAGE_SZ);
         pre.lemma_empty_space(base);
         Self::lemma_kernel_root_freed(pre, post, (base / PAGE_SZ) as int);
         Self::lemma_node_block_caps(pre, post, base);

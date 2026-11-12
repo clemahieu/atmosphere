@@ -1677,6 +1677,7 @@ impl CapKernel {
             Self::mapping_word(*old(self), n, ret),
             final(self).stale_epoch.wf(),
             final(self).tlb_wf(),
+            entries_translatable(&final(self).blocks, final(self).tlb@, final(self).iommus.tlb@),
             mapped_wf(final(self).mapped@, final(self).mappings@),
             final(self).tables == old(self).tables,
             final(self).blocks.wf(),
@@ -1729,10 +1730,15 @@ impl CapKernel {
         proof {
             self.table_pages.maps.borrow_mut().tracked_insert(t, map);
         }
+        let ghost before_drop = self.blocks;
         drop_block_ref(&mut self.blocks, br);
         self.holders = Ghost(pre.holders@.insert(br, pre.holders@[br].remove(n)));
         self.mappings = Ghost(pre.mappings@.remove(n));
         proof {
+            lemma_refs_changed_translatable(&before_drop, &self.blocks, br,
+                (block_refs(&before_drop, br) - 1) as usize,
+                block_dead(&before_drop, br) || block_refs(&before_drop, br) == 1);
+            lemma_entries_translatable_kept(&noted.blocks, &self.blocks, noted.tlb@, noted.iommus.tlb@);
             assert(self.table_pages.maps@ =~= pre.table_pages.maps@.insert(m.table, map));
             assert forall|i: usize| #![trigger self.table_pages.maps@[m.table].value()[i]] i < ENTRIES && i != m.entry
                 implies self.table_pages.maps@[m.table].value()[i] == pre.table_pages.maps@[m.table].value()[i] by {
@@ -1766,6 +1772,28 @@ impl CapKernel {
         assert forall|g: usize| #[trigger] pages.contains(g) implies !post.acknowledged(g) by {
             assert(pre.acked(0) <= pre.flush_epoch);
             assert(post.acked(0) == pre.acked(0));
+        }
+    }
+
+    /// A mapped page is one a TLB entry may name: a page of a typed large frame, or a small frame's page.
+    pub proof fn lemma_mapped_translatable(&self, g: usize)
+        requires
+            self.wf(),
+            self.mapped@.contains(g),
+        ensures
+            translatable(&self.blocks, g),
+    {
+        let br = self.lemma_mapped_block(g);
+        match br {
+            BlockRef::Small(b) => {
+                assert(self.blocks.pages@[b as int].object is Frame);
+            },
+            BlockRef::Two(r) => {
+                assert(region_2m(g as int) == r as int);
+            },
+            BlockRef::One(r) => {
+                assert(region_1g(g as int) == r as int);
+            },
         }
     }
 
@@ -1813,6 +1841,7 @@ impl CapKernel {
             final(steps).count <= old(steps).count + MAPPING_NOTE_STEPS,
             final(self).stale_epoch.wf(),
             final(self).tlb_wf(),
+            entries_translatable(&final(self).blocks, final(self).tlb@, final(self).iommus.tlb@),
             Self::mapping_stale_noted(*old(self), *final(self), n),
             final(self).list == old(self).list,
             final(self).tables == old(self).tables,
@@ -1942,6 +1971,28 @@ impl CapKernel {
                 implies self.iommus.tlb@[i].contains(TlbEntry { space: space->Some_0, page: g }) by {
             }
             assert forall|i: int, e: TlbEntry| 0 <= i < NUM_IOMMUS && #[trigger] pre.iommus.tlb@[i].contains(e) implies self.iommus.tlb@[i].contains(e) by {
+            }
+            assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] self.tlb@[d].contains(e)
+                implies translatable(&self.blocks, e.page) by {
+                if pre.tlb@[d].contains(e) {
+                    assert(translatable(&pre.blocks, e.page));
+                } else {
+                    assert(pages.contains(e.page));
+                    assert(pre.mappings@.contains_key(n) && record_pages(pre.mappings@[n]).contains(e.page));
+                    assert(page_named(pre.mappings@, e.page));
+                    pre.lemma_mapped_translatable(e.page);
+                }
+            }
+            assert forall|i: int, e: TlbEntry| 0 <= i < NUM_IOMMUS && #[trigger] self.iommus.tlb@[i].contains(e)
+                implies translatable(&self.blocks, e.page) by {
+                if pre.iommus.tlb@[i].contains(e) {
+                    assert(translatable(&pre.blocks, e.page));
+                } else {
+                    assert(pages.contains(e.page));
+                    assert(pre.mappings@.contains_key(n) && record_pages(pre.mappings@[n]).contains(e.page));
+                    assert(page_named(pre.mappings@, e.page));
+                    pre.lemma_mapped_translatable(e.page);
+                }
             }
         }
     }

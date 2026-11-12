@@ -6756,7 +6756,7 @@ impl CapKernel {
             ),
     {
         hide(CapKernel::wf);
-        hide(CapKernel::wf);
+        hide(entries_translatable);
         let ghost s0 = *self;
         let ghost bs = runs_blocks(free@, MAX_ORDER as nat);
         let ghost first = page_block_payload(bs[0]);

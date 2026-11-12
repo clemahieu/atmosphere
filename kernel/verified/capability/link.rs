@@ -2233,6 +2233,30 @@ impl CapKernel {
             }
             assert forall|i: int, e: TlbEntry| 0 <= i < NUM_IOMMUS && #[trigger] pre.iommus.tlb@[i].contains(e) implies self.iommus.tlb@[i].contains(e) by {
             }
+            assert forall|d: int, e: TlbEntry| 0 <= d < NUM_CPUS && #[trigger] self.tlb@[d].contains(e)
+                implies translatable(&self.blocks, e.page) by {
+                if pre.tlb@[d].contains(e) {
+                    assert(translatable(&pre.blocks, e.page));
+                } else {
+                    lemma_cut_pages(tree, t, e.page);
+                    if e.page != t / PAGE_SZ {
+                        pre.lemma_cut_walks_mapped(t, e.page);
+                        pre.lemma_mapped_translatable(e.page);
+                    }
+                }
+            }
+            assert forall|i: int, e: TlbEntry| 0 <= i < NUM_IOMMUS && #[trigger] self.iommus.tlb@[i].contains(e)
+                implies translatable(&self.blocks, e.page) by {
+                if pre.iommus.tlb@[i].contains(e) {
+                    assert(translatable(&pre.blocks, e.page));
+                } else {
+                    lemma_cut_pages(tree, t, e.page);
+                    if e.page != t / PAGE_SZ {
+                        pre.lemma_cut_walks_mapped(t, e.page);
+                        pre.lemma_mapped_translatable(e.page);
+                    }
+                }
+            }
         }
     }
 

@@ -102,6 +102,7 @@ impl CapKernel {
             final(self).iommus.acked == old(self).iommus.acked,
             final(self).stale_epoch.wf(),
             final(self).tlb_wf(),
+            entries_translatable(&final(self).blocks, final(self).tlb@, final(self).iommus.tlb@),
             mapped_wf(final(self).mapped@, final(self).mappings@),
             !(old(self).list.nodes@[n as int].kind is Mapping) ==> {
                 &&& final(self).tlb == old(self).tlb
@@ -271,6 +272,14 @@ impl CapKernel {
             assert(self.devices.wf());
             if !(node.kind is Mapping) && !(node.kind is DeviceBinding) {
                 Self::lemma_tlb_same(pre, *self);
+            }
+            if !(node.kind is Mapping) {
+                if self.blocks != pre.blocks {
+                    assert(exists|br: BlockRef, refs: usize, dead: bool|
+                        #[trigger] blocks_refs_changed(&pre.blocks, &self.blocks, br, refs, dead));
+                    lemma_some_refs_changed_translatable(&pre.blocks, &self.blocks);
+                }
+                lemma_entries_translatable_kept(&pre.blocks, &self.blocks, pre.tlb@, pre.iommus.tlb@);
             }
         }
         word
@@ -628,6 +637,7 @@ impl CapKernel {
             mid.cores == pre.cores,
             mid.stale_epoch.wf(),
             mid.tlb_wf(),
+            entries_translatable(&mid.blocks, mid.tlb@, mid.iommus.tlb@),
             mapped_wf(mid.mapped@, mid.mappings@),
             pre.list.nodes@[r as int].kind is Mapping ==> Self::mapping_stale_noted(pre, mid, r),
             mid.tables.owner == pre.tables.owner,
