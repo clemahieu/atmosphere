@@ -1292,31 +1292,13 @@ pub const SERIAL_TRANSMIT_EMPTY: u8 = 1 << 5;
 /// Writes one byte to COM1: waits until the line status says the transmit holding register is empty,
 /// then stores the byte in it at the base port (PC16550D datasheet, p. 11 and section 8.4). The store
 /// reaches the holding register while Line Control bit 7, DLAB, is clear, as machine/pc's console_init
-/// leaves it. The wait is on the device, which the kernel's state does not set, so the byte is one
-/// unit: design/one-lock-bounded-steps/. IN and OUT reach the I/O address space and no memory, so
-/// nothing the proof models changes.
-#[verifier(external_body)]
-// external_body(glue): waits on COM1's line status and stores one byte in its transmit holding register through port I/O, which has no state a proof could see
-pub fn serial_write_byte(byte: u8, Tracked(steps): Tracked<&mut Steps>)
-    ensures
-        final(steps).count == old(steps).count + 1,
-{
-    unsafe {
-        loop {
-            let status: u8;
-            core::arch::asm!(
-                "in al, dx",
-                in("dx") COM1 + SERIAL_LINE_STATUS,
-                out("al") status,
-                options(nomem, nostack),
-            );
-            if status & SERIAL_TRANSMIT_EMPTY != 0 {
-                break;
-            }
-        }
-        core::arch::asm!("out dx, al", in("dx") COM1, in("al") byte, options(nomem, nostack));
-    }
-}
+/// leaves it. The wait is on the device, which the kernel's state does not set, so the caller counts
+/// the byte as one unit: design/one-lock-bounded-steps/. IN and OUT reach the I/O address space and no memory, so
+/// nothing the proof models changes. The wait ends once THRE is set, which the UART does when it is
+/// ready to accept a character.
+// cite: ns-16550 6.0 Register addresses, A0 to A2: address 0 the Transmitter Holding Register on write, address 5 the Line Status Register
+// cite: ns-16550 8.4 Line Status Register, bit 5 THRE
+pub assume_specification[serial_write_byte](byte: u8);
 
 } // verus!
 
@@ -1331,5 +1313,23 @@ pub fn flush_every_context(_model: Tracked<&mut TlbModel>, _core: usize) {
             cr4 = out(reg) _,
             pge = const 1 << 7,
         );
+    }
+}
+
+pub fn serial_write_byte(byte: u8) {
+    unsafe {
+        loop {
+            let status: u8;
+            core::arch::asm!(
+                "in al, dx",
+                in("dx") COM1 + SERIAL_LINE_STATUS,
+                out("al") status,
+                options(nomem, nostack),
+            );
+            if status & SERIAL_TRANSMIT_EMPTY != 0 {
+                break;
+            }
+        }
+        core::arch::asm!("out dx, al", in("dx") COM1, in("al") byte, options(nomem, nostack));
     }
 }

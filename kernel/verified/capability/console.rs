@@ -22,8 +22,8 @@ pub const CONSOLE_RIGHTS: u32 = 0;
 pub const PRINT_BYTES: usize = 40;
 
 /// Writes to the serial port the bytes words a to e carry: each word's eight bytes from its lowest, a's
-/// first, up to the first zero byte. The arch module's serial_write_byte writes one byte and counts the
-/// iteration's one unit, its wait on the device: design/one-lock-bounded-steps/.
+/// first, up to the first zero byte. The arch module's serial_write_byte writes one byte, and each
+/// iteration counts one unit, its wait on the device: design/one-lock-bounded-steps/.
 pub fn serial_write(a: u64, b: u64, c: u64, d: u64, e: u64, Tracked(steps): Tracked<&mut Steps>)
     ensures
         final(steps).count <= old(steps).count + PRINT_BYTES,
@@ -52,7 +52,10 @@ pub fn serial_write(a: u64, b: u64, c: u64, d: u64, e: u64, Tracked(steps): Trac
         if byte == 0 {
             return;
         }
-        serial_write_byte(byte, Tracked(steps));
+        serial_write_byte(byte);
+        proof {
+            steps.step();
+        }
         i += 1;
     }
 }

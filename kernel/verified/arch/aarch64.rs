@@ -1202,16 +1202,24 @@ pub const PL011_TRANSMIT_FULL: u32 = 1 << 5;
 
 /// Writes one byte to the PL011: waits while the flag register says the transmitter is full, then
 /// stores the byte in the data register (DDI 0183 3.3.1 and 3.3.3). The wait is on the device, which
-/// the kernel's state does not set, so the byte is one unit: design/one-lock-bounded-steps/. Each
-/// access is one load or store of a single register without writeback, the form whose stage 2 data
-/// abort reports the access in its syndrome (Arm ARM D24.2.45, ISV), which a hypervisor emulating the
-/// device needs.
-#[verifier(external_body)]
-// external_body(glue): waits on the PL011's flag register and stores one byte in its data register through memory-mapped registers, which have no state a proof could see
-pub fn serial_write_byte(byte: u8, Tracked(steps): Tracked<&mut Steps>)
-    ensures
-        final(steps).count == old(steps).count + 1,
-{
+/// the kernel's state does not set, so the caller counts the byte as one unit:
+/// design/one-lock-bounded-steps/. It ends once TXFF is clear, which the UART makes it when its
+/// transmit FIFO has room. Each access is one load or store of a single register without writeback,
+/// the form whose stage 2 data abort reports the access in its syndrome (Arm ARM D24.2.45, ISV), which
+/// a hypervisor emulating the device needs. Nothing the proof models changes.
+// cite: arm-pl011 3.3.3 Flag register, UARTFR, bit 5 TXFF
+// cite: arm-pl011 3.3.1 Data register, UARTDR
+pub assume_specification[serial_write_byte](byte: u8);
+
+} // verus!
+
+pub fn flush_every_context(_model: Tracked<&mut TlbModel>, _core: usize) {
+    unsafe {
+        core::arch::asm!("dsb ishst", "tlbi vmalle1", "dsb ish", "isb", options(nostack, preserves_flags));
+    }
+}
+
+pub fn serial_write_byte(byte: u8) {
     unsafe {
         loop {
             let flags: u32;
@@ -1231,13 +1239,5 @@ pub fn serial_write_byte(byte: u8, Tracked(steps): Tracked<&mut Steps>)
             byte = in(reg) byte as u32,
             options(nostack, preserves_flags),
         );
-    }
-}
-
-} // verus!
-
-pub fn flush_every_context(_model: Tracked<&mut TlbModel>, _core: usize) {
-    unsafe {
-        core::arch::asm!("dsb ishst", "tlbi vmalle1", "dsb ish", "isb", options(nostack, preserves_flags));
     }
 }
