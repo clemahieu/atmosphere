@@ -10,8 +10,9 @@ The crates checked are the workspace members whose Cargo.toml marks them
 directory is scanned for Rust sources. Two attributes exempt code: external_body, from the proof of
 what a function does, and exec_allows_no_decreases_clause, from the proof that it terminates. Each
 live one, spelled '#[verifier::<attribute>]' or '#[verifier(<attribute>)]', is followed by a line
-'// <attribute>(<class>): <reason>', where the class is glue, gap or unproven (CLAUDE.md,
-Testability), and then by the function it applies to.
+'// <attribute>(<class>): <reason>', where the class is gap or unproven (CLAUDE.md, Testability),
+and then by the function it applies to. Both classes are debt: nothing outside the proof vouches for
+an exempted function, and a hardware claim is written as an assumed specification instead.
 
 An assume_specification item states the specification of a function Verus does not read, and the
 lines directly above it say who vouches for it (design/who-vouches-for-an-unproven-claim/). A
@@ -38,7 +39,7 @@ attribute, inside cfg_attr, or an inner #![...]), and an assume_specification it
 each word of these in code counts, whatever attribute or macro spells it. An unstable feature is
 refused, since one builds an identifier from pieces and a word above need not appear. vstd's
 assume_new constructors, which make a ghost or tracked value from nothing, are refused outside the
-body of a counted external_body function, the glue whose claim the list holds; an impl outside
+body of a counted external_body function, whose claim the list holds; an impl outside
 verus! that Verus does not read is no such body. So is the word unsafe, outside that body and the
 body of a function an assumed specification in the same file names: safe Rust cannot make a value of
 a type whose fields are private to another module or copy one that is neither Copy nor Clone, and
@@ -94,7 +95,7 @@ LIST_PATH = "tools/external-body-list"
 SKIPPED_DIRECTORY = "target"
 ATTRIBUTES = ("external_body", "exec_allows_no_decreases_clause")
 ATTRIBUTE = re.compile(r"#\[verifier(?:::(\w+)\]|\((\w+)\)\])")
-CLASSES = ("glue", "gap", "unproven")
+CLASSES = ("gap", "unproven")
 ASSUMED = "assume_specification"
 VOUCHERS = ("hardware", "kernel", "language")
 SPECIFICATION = re.compile(r"(?:pub(?:\([^)]*\))?\s+)?assume_specification\b[^\[]*\[([^\]]+)\]")
@@ -127,7 +128,8 @@ FEATURE = re.compile(r"\bfeature\s*\(")
 # external_body function, whose claim the list holds.
 CONJURE = re.compile(r"\bassume_new\w*")
 # The unsafe keyword, in a block, a fn, an impl, a trait, an extern block or an attribute: the only way
-# safe Rust leaves to make or copy a token it cannot name the fields of, allowed only in counted glue.
+# safe Rust leaves to make or copy a token it cannot name the fields of, allowed only in the body of a
+# counted external_body function or of a function an assumed specification names.
 UNSAFE = re.compile(r"\bunsafe\b")
 # What states the specification of exec code Verus does not read: an impl of one of vstd's trait
 # extensions (FromSpecImpl, PartialEqSpecImpl, IteratorSpecImpl and the rest), whose spec vstd's
@@ -531,7 +533,7 @@ def body_lines(code, declared):
     return set(range(declared + text.count("\n", 0, opening), declared + text.count("\n", 0, at) + 1))
 
 
-def glue_bodies(code):
+def exempted_bodies(code):
     """The indices of the lines inside the body of each counted external_body function."""
     inside = set()
     for index, line in enumerate(code):
@@ -562,7 +564,7 @@ def conjurings(path, source):
     """Each line of one file that makes a ghost or tracked value from nothing, outside the body of a
     counted external_body function."""
     code = code_lines(source)
-    allowed = glue_bodies(code)
+    allowed = exempted_bodies(code)
     return [f"{path}:{index + 1}: {line.strip()}"
             for index, (line, text) in enumerate(zip(source.splitlines(), code))
             if CONJURE.search(text) and index not in allowed]
@@ -576,7 +578,7 @@ def unsafe_lines(path, source):
     transmute), and Verus does not read code outside verus! that verified code reaches through a
     trait (design/flush-without-waiting/)."""
     code = code_lines(source)
-    allowed = glue_bodies(code) | specified_bodies(code)
+    allowed = exempted_bodies(code) | specified_bodies(code)
     return [f"{path}:{index + 1}: {line.strip()}"
             for index, (line, text) in enumerate(zip(source.splitlines(), code))
             if UNSAFE.search(text) and index not in allowed]
@@ -769,9 +771,9 @@ def scan_tree(repo, documents, rust_src=rust_source_root):
             found.extend(specifications(path, source, documents, repo, rust_src))
             refused.extend(f"{line} assumes what the proof should show" for line in assumptions(path, source))
             refused.extend(unread_exemptions(path, source))
-            refused.extend(f"{line} makes a ghost or tracked value outside counted glue"
+            refused.extend(f"{line} makes a ghost or tracked value outside a counted external_body"
                            for line in conjurings(path, source))
-            refused.extend(f"{line} is unsafe code outside counted glue, which may make or copy a value "
+            refused.extend(f"{line} is unsafe code outside a counted exemption, which may make or copy a value "
                            "the proof cannot see" for line in unsafe_lines(path, source))
             refused.extend(f"{line} states a spec of code Verus does not read, which the proof takes on trust"
                            for line in trusted_specifications(path, source))
@@ -833,11 +835,23 @@ class Tests(unittest.TestCase):
         self.assertEqual(scan("a.rs", source), [body("a.rs", "page_lemma", "unproven", "axiom")])
 
     def test_scan_skips_other_attributes_before_the_item(self):
-        source = f"{ATTR}\n// external_body(glue): hw\n#[inline(always)]\npub const fn zeroed() -> Self {{}}\n"
-        self.assertEqual(scan("a.rs", source), [body("a.rs", "zeroed", "glue", "hw")])
+        source = f"{ATTR}\n// external_body(gap): hw\n#[inline(always)]\npub const fn zeroed() -> Self {{}}\n"
+        self.assertEqual(scan("a.rs", source), [body("a.rs", "zeroed", "gap", "hw")])
 
     def test_scan_ignores_a_commented_attribute(self):
         self.assertEqual(scan("a.rs", f"// {ATTR}\npub fn f() {{}}\n"), [])
+
+    def test_scan_refuses_an_external_body_classed_glue(self):
+        # A hardware claim is a cited assume_specification in an arch module; an external_body is debt.
+        source = f"{ATTR}\n// external_body(glue): writes CR3\npub fn write_cr3(value: u64) {{}}\n"
+        with self.assertRaisesRegex(Unreadable, r"^kernel/verified/arch/x86_64\.rs:1: no reason line"):
+            scan("kernel/verified/arch/x86_64.rs", source)
+
+    def test_the_list_refuses_class_glue(self):
+        with self.assertRaises(Unreadable):
+            parse_list("kernel/verified/arch/x86_64.rs\twrite_cr3\texternal_body\tglue\twrites CR3\n")
+        with self.assertRaises(Unreadable):
+            parse_list("k/q.rs\tacquire\texec_allows_no_decreases_clause\tglue\ta wait on the device\n")
 
     def test_scan_rejects_a_missing_reason(self):
         with self.assertRaisesRegex(Unreadable, r"^a\.rs:1: no reason line"):
@@ -971,16 +985,16 @@ class Tests(unittest.TestCase):
         self.assertEqual(marked_crates(repo), ["kernel/verified", "heap"])
 
     def test_every_marked_crate_is_scanned_under_its_repository_path(self):
-        glue = f"{ATTR}\n// external_body(glue): a syscall\npub fn back()\n"
+        exempted = f"{ATTR}\n// external_body(gap): a syscall\npub fn back()\n"
         repo = self.workspace({
             "kernel/verified": (True, {"a.rs": f"{ATTR}\n// external_body(gap): x\nfn f()\n"}),
-            "heap": (True, {"src/source.rs": glue, "src/lib.rs": "proof fn p() { assume(false); }\n"}),
+            "heap": (True, {"src/source.rs": exempted, "src/lib.rs": "proof fn p() { assume(false); }\n"}),
         })
         found, assumed = scan_tree(repo, {})
         listed = [body("kernel/verified/a.rs", "f", "gap", "x")]
         self.assertEqual(
             compare(found, listed),
-            ["heap/src/source.rs back external_body (glue: a syscall) is not on the list"],
+            ["heap/src/source.rs back external_body (gap: a syscall) is not on the list"],
         )
         self.assertEqual(assumed, ["heap/src/lib.rs:1: proof fn p() { assume(false); } assumes what the proof should show"])
 
@@ -1088,7 +1102,7 @@ class SpecificationTests(unittest.TestCase):
         line = f"{ARCH_FILE}\tflush_every_context\tassume_specification\thardware\tamd-apm2 5.5.3\n"
         self.assertEqual(parse_list(line), [guarantee(ARCH_FILE, "flush_every_context", "amd-apm2 5.5.3")])
         with self.assertRaises(Unreadable):
-            parse_list(f"{ARCH_FILE}\tf\tassume_specification\tglue\tx\n")
+            parse_list(f"{ARCH_FILE}\tf\tassume_specification\tgap\tx\n")
         with self.assertRaises(Unreadable):
             parse_list(f"{ARCH_FILE}\tf\texternal_body\thardware\tx\n")
 
@@ -1132,10 +1146,10 @@ class ExemptionFormTests(unittest.TestCase):
         "verifier::external": "#[verifier::external]\nfn forge() -> Tracked<BaseRegister> { Tracked::assume_new() }\n",
         "verifier(external)": "#[verifier(external)]\nfn forge() {}\n",
         "external_body after another attribute": (
-            "#[inline] #[verifier::external_body]\n// external_body(glue): x\nfn forge() {}\n"
+            "#[inline] #[verifier::external_body]\n// external_body(gap): x\nfn forge() {}\n"
         ),
         "external_body inside cfg_attr": (
-            "#[cfg_attr(verus_keep_ghost, verifier::external_body)]\n// external_body(glue): x\nfn forge() {}\n"
+            "#[cfg_attr(verus_keep_ghost, verifier::external_body)]\n// external_body(gap): x\nfn forge() {}\n"
         ),
         "external_body in an inner attribute": "#![verifier::external_body]\n",
         "exec_allows_no_decreases_clause after another attribute": (
@@ -1175,7 +1189,7 @@ class ExemptionFormTests(unittest.TestCase):
 
     def test_the_counted_forms_are_not_refused(self):
         source = (
-            f"{ATTR} // a note\n// external_body(glue): x\nfn f()\n"
+            f"{ATTR} // a note\n// external_body(gap): x\nfn f()\n"
             "    #[verifier::exec_allows_no_decreases_clause]\n// exec_allows_no_decreases_clause(unproven): x\nfn g()\n"
             + FLUSH
         )
@@ -1267,7 +1281,7 @@ class ForgeryTests(unittest.TestCase):
                   "    Tracked::assume_new()\n}\nfn g() -> Tracked<T> { Tracked::assume_new() }\n")
         self.assertEqual(conjurings("a.rs", source), ["a.rs:9: fn g() -> Tracked<T> { Tracked::assume_new() }"])
 
-    def test_unsafe_outside_counted_glue_is_refused(self):
+    def test_unsafe_outside_a_counted_exemption_is_refused(self):
         forms = {
             "zeroed in a Default impl": "impl Default for SkBox { fn default() -> Self { unsafe { core::mem::zeroed() } } }\n",
             "ptr::read in a From impl": ("impl<'a> From<&'a SkTok> for SkTok { fn from(v: &'a SkTok) -> SkTok "
@@ -1282,7 +1296,7 @@ class ForgeryTests(unittest.TestCase):
             with self.subTest(name):
                 source = f"{form}verus! {{\npub struct SkBox {{ pub t: Tracked<crate::arch::BaseRegister> }}\n}}\n"
                 self.assertEqual(len(self.refused("capability/mapping.rs", {"capability/mapping.rs": source},
-                                                  "unsafe code outside counted glue")), 1)
+                                                  "unsafe code outside a counted exemption")), 1)
 
     def test_the_from_spec_duplicate_is_refused(self):
         source = ("impl<'a> From<&'a SkTok> for SkTok { fn from(v: &'a SkTok) -> SkTok { unsafe { core::ptr::read(v) } } }\n"
@@ -1292,7 +1306,7 @@ class ForgeryTests(unittest.TestCase):
                   "    open spec fn from_spec(v: &'a SkTok) -> SkTok { *v }\n}\n}\n")
         self.assertEqual([line.split(":")[1] for line in self.refused("capability/mapping.rs",
                                                                       {"capability/mapping.rs": source},
-                                                                      "outside counted glue")], ["1"])
+                                                                      "outside a counted exemption")], ["1"])
         self.assertEqual([line.split(":")[1] for line in self.refused("capability/mapping.rs",
                                                                       {"capability/mapping.rs": source},
                                                                       "spec of code Verus does not read")], ["5"])
@@ -1509,7 +1523,7 @@ class ForgeryTests(unittest.TestCase):
         self.assertEqual(self.refused("lib.rs", {"lib.rs": source}), [])
 
     def test_unsafe_in_a_counted_external_body_is_accepted(self):
-        source = ("#[verifier::external_body]\n// external_body(glue): hw\nfn spin_hint()\n{\n"
+        source = ("#[verifier::external_body]\n// external_body(gap): hw\nfn spin_hint()\n{\n"
                   "    unsafe { core::arch::asm!(\"pause\") }\n}\nfn g() { unsafe { core::arch::asm!(\"pause\") } }\n")
         self.assertEqual(unsafe_lines("a.rs", source),
                          ['a.rs:7: fn g() { unsafe { core::arch::asm!("pause") } }'])
@@ -1642,9 +1656,9 @@ class LexTests(unittest.TestCase):
                 self.assertTrue(assumptions("a.rs", source))
 
     def test_a_counted_attribute_after_such_a_comment_is_counted(self):
-        source = "/* // */ #[verifier::external_body]\n// external_body(glue): x\nproof fn f() {}\n"
-        self.assertEqual(scan("a.rs", source), [body("a.rs", "f", "glue", "x")])
-        self.assertEqual(compare(scan("a.rs", source), []), ["a.rs f external_body (glue: x) is not on the list"])
+        source = "/* // */ #[verifier::external_body]\n// external_body(gap): x\nproof fn f() {}\n"
+        self.assertEqual(scan("a.rs", source), [body("a.rs", "f", "gap", "x")])
+        self.assertEqual(compare(scan("a.rs", source), []), ["a.rs f external_body (gap: x) is not on the list"])
         self.assertEqual(unread_exemptions("a.rs", source), [])
 
     def test_an_exemption_after_such_a_string_is_refused(self):
@@ -1660,7 +1674,7 @@ class LexTests(unittest.TestCase):
         self.assertEqual(unread_exemptions("a.rs", source), [])
 
     def test_an_attribute_inside_a_block_comment_is_not_counted(self):
-        source = "/*\n#[verifier::external_body]\n// external_body(glue): x\nfn f() {}\n*/\n"
+        source = "/*\n#[verifier::external_body]\n// external_body(gap): x\nfn f() {}\n*/\n"
         self.assertEqual(scan("a.rs", source), [])
 
     def test_lexing_keeps_every_line(self):

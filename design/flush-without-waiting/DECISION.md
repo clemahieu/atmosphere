@@ -35,7 +35,7 @@ Keying the model by loaded space, and covering table pages, is what makes the to
 - **Wait under the lock for the IPI.** Deadlocks against a waiter with interrupts off.
 - **Flush only the current PCID.** Stale entries survive under other PCIDs and the acknowledgement proves nothing.
 - **An acknowledge counter outside the kernel value.** Invisible to the invariant.
-- **Acknowledge an IOMMU on a later entry.** Submit the invalidate, return, and read the completion word when retype next needs the epoch. It keeps the lock hold shorter by one command latency, at the cost of a second glue item and ghost state tying the stored word to a submitted epoch.
+- **Acknowledge an IOMMU on a later entry.** Submit the invalidate, return, and read the completion word when retype next needs the epoch. It keeps the lock hold shorter by one command latency, at the cost of a second hardware item and ghost state tying the stored word to a submitted epoch.
 
 ## What this does not settle
 

@@ -25,12 +25,12 @@ in logs/base-<commit>-gate.log, and its verdict joins the ledger, where the othe
 find it instead of gating the same base again. A base that fails is printed with its suspects: the
 commits since the last one on main whose tree passed.
 
-An item of class gap or unproven in tools/external-body-list is a claim nobody vouches for, and
-adding one lowers what the proof covers, which is the human's to allow (CLAUDE.md, Testability).
-So before the gate the list on the branch is compared with the list on the base, by path, item and
-attribute: an item of either class the base does not hold with that class, new or reclassed, stops
-the landing and is named, unless --approve names it, once the human's answer is on the question the
-change waits on. The committer is not the adversary (design/committer-is-not-the-adversary/), so
+An external_body or exec_allows_no_decreases_clause item in tools/external-body-list is a claim
+nobody vouches for, debt whatever class its line states, and adding one lowers what the proof covers,
+which is the human's to allow (CLAUDE.md, Testability). So before the gate the list on the branch is
+compared with the list on the base, by path, item and attribute: such an item the base does not hold,
+new or turned from an assumed specification, stops the landing and is named, unless --approve names
+it, once the human's answer is on the question the change waits on. The committer is not the adversary (design/committer-is-not-the-adversary/), so
 this is a tripwire, not a lock.
 
 Exit status:
@@ -41,7 +41,7 @@ Exit status:
   4  the base fails the gate by itself; main is broken and the change is not judged
   5  the change is cleared to land and did not reach origin: the merge or the push kept failing
   6  the gate fails and no gate has judged the base: fix the change, or settle it with --judge-base
-  7  not gated: the change adds a gap or unproven item the human has not approved
+  7  not gated: the change adds an external_body or exec_allows_no_decreases_clause item the human has not approved
 
 usage: tools/land.py [--onto BRANCH] [--gate COMMAND] [--approve PATH:ITEM:ATTRIBUTE]...
        tools/land.py --judge-base [--onto BRANCH] [--gate COMMAND]    (exits 1 or 4)
@@ -64,9 +64,10 @@ LANDED, CHANGE_FAILS, NOT_RUN, CONFLICT, BASE_FAILS, NOT_LANDED, BASE_UNJUDGED, 
 LEDGER = "logs/gate-ledger"
 BASE_LOCK = "logs/gate-base.lock"
 GATE = "tools/gate.py"
-# The list of every claim a verified crate takes unproven, and the classes of it that nobody vouches for.
+# The list of every claim a verified crate takes unproven, and the attributes of it that nobody vouches
+# for: every item but an assumed specification, which names who does.
 EXEMPTIONS = "tools/external-body-list"
-UNVOUCHED = ("gap", "unproven")
+UNVOUCHED = ("external_body", "exec_allows_no_decreases_clause")
 # How often the rebase and the fast-forward are tried while other landings move main.
 MERGE_TRIES = 30
 PUSH_TRIES = 3
@@ -212,21 +213,21 @@ def unvouched(worktree, commit):
     items = set()
     for line in listed.stdout.splitlines():
         if line and not line.startswith("#"):
-            path, item, attribute, kind = line.split("\t")[:4]
-            if kind in UNVOUCHED:
+            path, item, attribute = line.split("\t")[:3]
+            if attribute in UNVOUCHED:
                 items.add(f"{path}:{item}:{attribute}")
     return items
 
 
 def unapproved(worktree, base, approved):
-    """The gap and unproven items the change adds, new or reclassed, that the human has not approved,
-    each said; the approved ones are said too."""
+    """The unvouched items the change adds, new or turned from an assumed specification, that the
+    human has not approved, each said; the approved ones are said too."""
     added = unvouched(worktree, "HEAD") - unvouched(worktree, base)
     for item in sorted(added & approved):
         say(f"approved by the human: {item}")
     missing = sorted(added - approved)
     for item in missing:
-        say(f"not approved: {item} is a gap or unproven item {EXEMPTIONS} on {base} does not hold")
+        say(f"not approved: {item} is an unvouched item {EXEMPTIONS} on {base} does not hold")
     if missing:
         say("adding one is a decision only the human can make: file the question, and land with --approve for each item once its answer is on it")
     return missing
@@ -518,7 +519,7 @@ class Tests(unittest.TestCase):
         self.assertFalse((self.root / LEDGER).exists())
 
     LISTED = {
-        "glue": "k/a.rs\tleaf\texternal_body\tglue\tonly the hardware can say",
+        "hardware": "k/arch/a.rs\tleaf\tassume_specification\thardware\tmanual 3 PAUSE",
         "unproven": "k/q.rs\tacquire\texec_allows_no_decreases_clause\tunproven\tthe spin is not proven to end",
     }
 
@@ -526,15 +527,18 @@ class Tests(unittest.TestCase):
         """Commits an exemption list holding a header and these lines."""
         return self.commit(where, EXEMPTIONS, "".join(f"{line}\n" for line in ("# header", *lines)))
 
-    def test_a_branch_that_adds_a_gap_or_an_unproven_item_is_refused_until_the_flag_names_it(self):
-        self.listing(self.main, self.LISTED["glue"])
+    def test_a_branch_that_adds_an_external_body_or_a_wait_is_refused_until_the_flag_names_it(self):
+        # Every external_body and exec_allows_no_decreases_clause is debt, whatever class its line states.
+        self.listing(self.main, self.LISTED["hardware"])
         for kind, line, item in (
             ("gap", "u/g.rs\tstep\texternal_body\tgap\tnothing proves the premise", "u/g.rs:step:external_body"),
             ("unproven", self.LISTED["unproven"], "k/q.rs:acquire:exec_allows_no_decreases_clause"),
+            ("any other class", "k/arch/a.rs\twrite_cr3\texternal_body\tglue\twrites CR3",
+             "k/arch/a.rs:write_cr3:external_body"),
         ):
             with self.subTest(kind=kind):
                 self.git(self.task, "reset", "-q", "--hard", "main")
-                change = self.listing(self.task, self.LISTED["glue"], line)
+                change = self.listing(self.task, self.LISTED["hardware"], line)
                 before = self.gates() if (self.root / "gates").exists() else 0
                 result = self.land()
                 self.assertEqual(result.returncode, UNAPPROVED, result.stdout)
@@ -546,28 +550,30 @@ class Tests(unittest.TestCase):
                 self.assertIn(f"land: approved by the human: {item}", result.stdout)
                 self.assertEqual(self.git(self.main, "rev-parse", "main"), change)
 
-    def test_a_branch_that_reclasses_a_glue_item_to_gap_is_refused(self):
-        self.listing(self.main, self.LISTED["glue"])
+    def test_a_branch_that_turns_a_hardware_item_into_an_external_body_is_refused(self):
+        self.listing(self.main, self.LISTED["hardware"])
         self.git(self.task, "reset", "-q", "--hard", "main")
-        self.listing(self.task, "k/a.rs\tleaf\texternal_body\tgap\tnothing proves it")
+        self.listing(self.task, "k/arch/a.rs\tleaf\texternal_body\tgap\tnothing proves it")
         result = self.land()
         self.assertEqual(result.returncode, UNAPPROVED, result.stdout)
-        self.assertIn("land: not approved: k/a.rs:leaf:external_body", result.stdout)
+        self.assertIn("land: not approved: k/arch/a.rs:leaf:external_body", result.stdout)
         # Approving another item does not approve this one.
-        result = self.land("true", "--approve", "k/a.rs:leaf:exec_allows_no_decreases_clause")
+        result = self.land("true", "--approve", "k/arch/a.rs:leaf:exec_allows_no_decreases_clause")
         self.assertEqual(result.returncode, UNAPPROVED, result.stdout)
 
     def test_a_branch_that_removes_rewords_or_adds_vouched_items_lands_with_no_flag(self):
         gap = "u/g.rs\tstep\texternal_body\tgap\tnothing proves the premise"
-        self.listing(self.main, self.LISTED["glue"], self.LISTED["unproven"], gap)
+        self.listing(self.main, self.LISTED["hardware"], self.LISTED["unproven"], gap)
         changes = (
-            ("removes a gap item", (self.LISTED["glue"], self.LISTED["unproven"])),
-            ("rewords a reason", (self.LISTED["glue"], self.LISTED["unproven"].replace("not proven", "not yet proven"))),
-            ("adds glue, hardware and kernel items", (
-                self.LISTED["glue"], self.LISTED["unproven"],
-                "k/a.rs\tother\texternal_body\tglue\tonly the hardware can say",
+            ("reclasses a gap item to unproven", (self.LISTED["hardware"], self.LISTED["unproven"],
+                                                  gap.replace("\tgap\t", "\tunproven\t"))),
+            ("removes that item", (self.LISTED["hardware"], self.LISTED["unproven"])),
+            ("rewords a reason", (self.LISTED["hardware"], self.LISTED["unproven"].replace("not proven", "not yet proven"))),
+            ("adds hardware, kernel and language items", (
+                self.LISTED["hardware"], self.LISTED["unproven"],
                 "k/arch/x.rs\tpause\tassume_specification\thardware\tmanual 3 PAUSE",
                 "u/c.rs\tcall\tassume_specification\tkernel\tkernel/s.rs dispatch",
+                "u/m.rs\tread\tassume_specification\tlanguage\tcore/src/ptr/mod.rs \"a read\"",
             )),
         )
         for name, lines in changes:
@@ -599,7 +605,7 @@ def main():
     parser.add_argument("--judge-base", action="store_true", help="gate the base the change stands on instead of the change")
     parser.add_argument(
         "--approve", action="append", default=[], metavar="PATH:ITEM:ATTRIBUTE",
-        help=f"a gap or unproven item of {EXEMPTIONS} the change adds, which the human approved; once per item",
+        help=f"an external_body or exec_allows_no_decreases_clause item of {EXEMPTIONS} the change adds, which the human approved; once per item",
     )
     parser.add_argument("--test", action="store_true")
     args = parser.parse_args()
