@@ -19,6 +19,9 @@ use crate::define::PAddr;
 #[cfg(verus_keep_ghost)]
 use crate::define::{NUM_IOMMUS, PAGE_SZ, PCID_MAX};
 use crate::pagetable::entry::{PageEntry, PageEntryPerm, PageEntryStatus};
+use crate::pagetable::pagemap::PageMap;
+#[cfg(verus_keep_ghost)]
+use crate::define::ENTRIES;
 #[cfg(verus_keep_ghost)]
 use crate::util::page_ptr_util_u::*;
 
@@ -315,6 +318,24 @@ pub proof fn lemma_without_status(v: usize, level: usize)
             }),
     ;
 }
+
+/// Exchanges word `index` of `table` for `word` in one atomic read-modify-write, returning the word it
+/// replaced. The walker sets the access flag of a descriptor (D8.5.1.2) and changes a writable-clean
+/// descriptor, DBM set with AP[2] set, to writable-dirty by clearing AP[2] (D8.5.2.1), each in an
+/// atomic read-modify-write of the descriptor: another core's walk changes nothing in the word but
+/// those bits, before the exchange or after it, so the word returned is the table's but for them.
+// cite: arm-arm D8.5.1.2 Hardware management of the Access flag
+// cite: arm-arm D8.5.2.1 Hardware management of the dirty state
+pub assume_specification[exchange_table_word](table: &mut PageMap, index: usize, word: usize) -> (ret: usize)
+    requires
+        old(table).ar.wf(),
+        index < ENTRIES,
+    ensures
+        final(table).ar.wf(),
+        final(table).ar@ == old(table).ar@.update(index as int, word),
+        final(table).spec_seq == old(table).spec_seq,
+        final(table).level == old(table).level,
+        spec_without_status(ret) == spec_without_status(old(table).ar@[index as int]);
 
 /// The zero word is the empty entry with its status clear, at every level.
 pub proof fn zero_leads_is_empty_page_entry(level: usize)
@@ -1250,4 +1271,8 @@ pub fn read_producer(_commands: &CommandBuffers, _i: usize, register: usize, _mo
         );
     }
     value
+}
+
+pub fn exchange_table_word(table: &mut PageMap, index: usize, word: usize) -> usize {
+    unsafe { core::sync::atomic::AtomicUsize::from_ptr(core::ptr::addr_of_mut!(table.ar.ar[index])) }.swap(word, core::sync::atomic::Ordering::Relaxed)
 }

@@ -11,7 +11,6 @@ use crate::pptr::*;
 use crate::util::page_ptr_util_u::*;
 use crate::pagetable::entry::*;
 use crate::pagetable::pagemap::*;
-use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::array::Array;
 use crate::capability::steps::Steps;
 
@@ -116,8 +115,10 @@ pub fn page_map_set(
     PPtr::<PageMap>::from_usize(page_map_ptr).borrow_mut(Tracked(page_map_perm)).set(index, value, level);
 }
 
-#[verifier(external_body)]
-// external_body(glue): replaces a hardware page table word with the arch module's without_status of it in a compare-exchange, since another core's walk may set a status bit between a read and a write
+/// Replaces entry `index`'s word with the arch module's without_status of it, returning the word it
+/// replaced. The table's word but for its status bits is what the processor leaves it, so its
+/// without_status is the one a compare-exchange of the word read would write, and one exchange writes
+/// it whatever bits the walker sets between the read and the write.
 pub fn page_map_take_status(
     page_map_ptr: PageMapPtr,
     Tracked(page_map_perm): Tracked<&mut PointsTo<PageMap>>,
@@ -137,10 +138,9 @@ pub fn page_map_take_status(
         spec_without_status(ret) == spec_without_status(old(page_map_perm).value().ar@[index as int]),
         final(page_map_perm).value().ar@ == old(page_map_perm).value().ar@.update(index as int, spec_without_status(ret)),
 {
-    unsafe {
-        let word = core::ptr::addr_of_mut!((*(page_map_ptr as *mut PageMap)).ar.ar[index]);
-        (*(word as *const AtomicUsize)).update(Ordering::Relaxed, Ordering::Relaxed, without_status)
-    }
+    let page_map = PPtr::<PageMap>::from_usize(page_map_ptr).borrow_mut(Tracked(page_map_perm));
+    let cleared = without_status(*page_map.ar.get(index));
+    exchange_table_word(page_map, index, cleared)
 }
 
 /// Reads and clears the accessed and dirty bits of entry `index`, returning its word as read. The table
@@ -184,8 +184,8 @@ pub fn page_map_clear_status(
     ret
 }
 
-#[verifier(external_body)]
-// external_body(glue): clears a hardware page table word and returns it in one atomic exchange, since another core's walk may set the accessed or dirty bit between a read and a write
+/// Clears entry `index`'s word and returns the word it replaced, in one exchange, so the accessed and
+/// dirty bits returned are the processor's as they stood when it was cleared.
 pub fn page_map_take(
     page_map_ptr: PageMapPtr,
     Tracked(page_map_perm): Tracked<&mut PointsTo<PageMap>>,
@@ -205,10 +205,12 @@ pub fn page_map_take(
         spec_without_status(ret) == spec_without_status(old(page_map_perm).value().ar@[index as int]),
         final(page_map_perm).value().ar@ == old(page_map_perm).value().ar@.update(index as int, 0usize),
 {
-    unsafe {
-        let word = core::ptr::addr_of_mut!((*(page_map_ptr as *mut PageMap)).ar.ar[index]);
-        (*(word as *const AtomicUsize)).swap(0, Ordering::Relaxed)
+    let page_map = PPtr::<PageMap>::from_usize(page_map_ptr).borrow_mut(Tracked(page_map_perm));
+    let ret = exchange_table_word(page_map, index, 0);
+    proof {
+        page_map.spec_seq@ = page_map.spec_seq@.update(index as int, usize2page_entry(0usize, page_map.level@));
     }
+    ret
 }
 
 /// Clears entry `index`, returning its word as read in the same step: the word decodes to the entry the

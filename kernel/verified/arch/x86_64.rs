@@ -16,6 +16,9 @@ use crate::define::PAddr;
 #[cfg(verus_keep_ghost)]
 use crate::define::{NUM_IOMMUS, PAGE_SZ, PCID_MAX};
 use crate::pagetable::entry::{PageEntry, PageEntryPerm, PageEntryStatus};
+use crate::pagetable::pagemap::PageMap;
+#[cfg(verus_keep_ghost)]
+use crate::define::ENTRIES;
 #[cfg(verus_keep_ghost)]
 use crate::util::page_ptr_util_u::*;
 
@@ -172,6 +175,24 @@ pub proof fn lemma_without_status(v: usize, level: usize)
         && (v & (!((0x1u64 << 5u64) | (0x1u64 << 6u64))) as usize) & (0x1u64 << 6u64) as usize == 0)
         by (bit_vector);
 }
+
+/// Exchanges word `index` of `table` for `word` in one locked XCHG, returning the word it replaced. The
+/// processor sets the accessed and dirty bits of a table word and never clears them (APM 2, 5.4.1), and
+/// a walk sets them in an atomic read-modify-write, as XCHG is one (7.3.2, Table 7-1): another core's
+/// walk changes nothing in the word but those bits, before the exchange or after it, so the word
+/// returned is the table's but for them.
+// cite: amd-apm2 5.4.1 Field Definitions, Accessed (A) Bit and Dirty (D) Bit
+// cite: amd-apm2 7.3.2 Access Atomicity, Table 7-1
+pub assume_specification[exchange_table_word](table: &mut PageMap, index: usize, word: usize) -> (ret: usize)
+    requires
+        old(table).ar.wf(),
+        index < ENTRIES,
+    ensures
+        final(table).ar.wf(),
+        final(table).ar@ == old(table).ar@.update(index as int, word),
+        final(table).spec_seq == old(table).spec_seq,
+        final(table).level == old(table).level,
+        spec_without_status(ret) == spec_without_status(old(table).ar@[index as int]);
 
 /// The zero word is the empty entry with its status clear, at every level.
 pub proof fn zero_leads_is_empty_page_entry(level: usize)
@@ -1343,4 +1364,8 @@ pub fn spin_hint() {
 
 pub fn read_head(_commands: &CommandBuffers, _i: usize, register: usize, _model: Tracked<&mut IotlbModel>) -> u64 {
     unsafe { core::ptr::read_volatile(register as *const u64) }
+}
+
+pub fn exchange_table_word(table: &mut PageMap, index: usize, word: usize) -> usize {
+    unsafe { core::sync::atomic::AtomicUsize::from_ptr(core::ptr::addr_of_mut!(table.ar.ar[index])) }.swap(word, core::sync::atomic::Ordering::Relaxed)
 }
