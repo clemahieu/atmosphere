@@ -2128,6 +2128,9 @@ impl CapKernel {
         }
         self.flush_epoch = self.flush_epoch + 1;
         let epoch = self.flush_epoch;
+        proof {
+            assert(pre.stale_epoch.bounded(epoch as int));
+        }
         self.stale_epoch.record_run(t / PAGE_SZ, 1, epoch, Tracked(steps));
         proof {
             self.tlb.borrow_mut().grow(Seq::new(NUM_CPUS as nat, |d: int|

@@ -7,7 +7,8 @@
 //!
 //! CapKernel holds the proven form of this state, and its acknowledge makes the flush itself. An
 //! operation's unmaps bump its epoch and record their IPIs in ghost state; `owed` and `send` make them
-//! on the running kernel, and the IPI's handler acknowledges in CapKernel. FlushState is the boot test's
+//! on the running kernel, and the IPI's handler acknowledges in CapKernel, as CapKernel's entry does for
+//! the core that made the call. FlushState is the boot test's
 //! own, which runs before CapKernel is built.
 
 use verified::arch::flush_every_context;
@@ -66,18 +67,15 @@ pub fn handle_ipi() {
 }
 
 /// The flush an operation owes, given CapKernel's epoch before it ran, as the mask of cores to send the
-/// flush IPI. Called under the kernel's lock by the core that ran the operation. An unmap bumps the
-/// epoch and records an IPI to each core that loaded the space, in ghost state only, and returns
-/// without flushing even its own core. When the epoch moved, the calling core acknowledges here, so it
-/// returns to its thread holding no translation the operation dropped, and every other core that has
-/// loaded a space and has not reached the epoch is
-/// owed the IPI, a superset of the cores the unmaps listed.
-pub fn owed(kernel: &mut CapKernel, core: usize, epoch: usize) -> u64 {
+/// flush IPI. Called under the kernel's lock by the core that ran the operation, after the verified
+/// entry, which has that core acknowledge whenever it is behind the epoch. An unmap bumps the epoch and
+/// records an IPI to each core that loaded the space, in ghost state only; when the epoch moved, every
+/// other core that has loaded a space and has not reached it is owed the IPI, a superset of the cores
+/// the unmaps listed.
+pub fn owed(kernel: &CapKernel, epoch: usize) -> u64 {
     if kernel.flush_epoch == epoch {
         return 0;
     }
-    // `core` is the core running this, which acknowledge requires of its caller.
-    kernel.acknowledge(core, Tracked::assume_new());
     let mut targets = 0;
     for d in 0..NUM_CPUS {
         let state = kernel.cores.get(d);

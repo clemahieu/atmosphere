@@ -761,6 +761,9 @@ impl CapKernel {
         self.spaces.bound = Ghost(pre.spaces.bound@.insert(s, pre.spaces.bound@[s].remove(d)));
         self.flush_epoch = self.flush_epoch + 1;
         let epoch = self.flush_epoch;
+        proof {
+            assert(pre.stale_epoch.bounded(epoch as int));
+        }
         self.stale_epoch.record_run(s / PAGE_SZ, 1, epoch, Tracked(steps));
         self.devices.unbind(d, epoch);
         proof {

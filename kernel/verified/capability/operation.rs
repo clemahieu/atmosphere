@@ -699,6 +699,31 @@ impl CapKernel {
         }
     }
 
+    /// What dispatch proves of core c's step for frame, which answered ret: well formed, and the
+    /// caller's operation as invoked says when one returns to it.
+    pub open spec fn dispatched(pre: Self, post: Self, c: int, frame: Registers, ret: Option<Outcome>) -> bool {
+        &&& Self::step_ok(pre, post, c)
+        &&& (ret is None <==> pre.must_leave(c) || pre.cores@[c].current_thread is None)
+        // A caller that must leave, among them one acting within a dead process, reaches no
+        // operation and gets nothing back: it is moved off its core and nothing else changes.
+        &&& ({
+            let t = pre.cores@[c].current_thread->Some_0;
+            pre.cores@[c].current_thread is Some
+                && pre.processes.records@[pre.threads.records@[t].value().process->Some_0].value().dead
+                ==> ret is None
+        })
+        &&& (pre.must_leave(c) ==> Self::moved_off(pre, post, c, frame))
+        &&& (pre.cores@[c].current_thread is None ==> post == pre)
+        &&& (ret is Some ==> {
+            let t = pre.cores@[c].current_thread->Some_0;
+            let root = pre.threads.records@[t].value().process->Some_0;
+            &&& pre.root_live(root)
+            &&& pre.cores@[c].space == Some(root)
+            &&& post.cores@[c].space == Some(root)
+            &&& Self::invoked(pre, post, root, frame, ret->0)
+        })
+    }
+
     /// Core c's step for the invocation its current thread entered the kernel with, in frame. The
     /// caller is core c's current thread and the table is its process's, never a name from user
     /// space, and check_current runs first: design/one-lock-bounded-steps/. Returns None when core c
@@ -710,26 +735,7 @@ impl CapKernel {
             old(self).wf(),
             c < NUM_CPUS,
         ensures
-            Self::step_ok(*old(self), *final(self), c as int),
-            ret is None <==> old(self).must_leave(c as int) || old(self).cores@[c as int].current_thread is None,
-            // A caller that must leave, among them one acting within a dead process, reaches no
-            // operation and gets nothing back: it is moved off its core and nothing else changes.
-            ({
-                let t = old(self).cores@[c as int].current_thread->Some_0;
-                old(self).cores@[c as int].current_thread is Some
-                    && old(self).processes.records@[old(self).threads.records@[t].value().process->Some_0].value().dead
-                    ==> ret is None
-            }),
-            old(self).must_leave(c as int) ==> Self::moved_off(*old(self), *final(self), c as int, frame),
-            old(self).cores@[c as int].current_thread is None ==> *final(self) == *old(self),
-            ret is Some ==> {
-                let t = old(self).cores@[c as int].current_thread->Some_0;
-                let root = old(self).threads.records@[t].value().process->Some_0;
-                &&& old(self).root_live(root)
-                &&& old(self).cores@[c as int].space == Some(root)
-                &&& final(self).cores@[c as int].space == Some(root)
-                &&& Self::invoked(*old(self), *final(self), root, frame, ret->0)
-            },
+            Self::dispatched(*old(self), *final(self), c as int, frame, ret),
     {
         // The one counter of this entry, on a path that holds the kernel's lock: design/one-lock-bounded-steps/.
         let tracked mut steps = Steps::fresh();
@@ -779,6 +785,43 @@ impl CapKernel {
             Some(_) => Some(status_only_outcome(STATUS_REFUSED)),
             None => Some(status_only_outcome(STATUS_UNKNOWN)),
         }
+    }
+
+    /// Core c's entry for the invocation in frame: dispatch, then, when core c is behind the flush
+    /// epoch, its acknowledgement, which flushes it. So the core returns to whatever it runs next
+    /// holding no translation of a page that is not mapped, whichever core's unmap left it behind, and
+    /// a map that follows on it sees only what the tables say. design/flush-without-waiting/.
+    pub fn enter(&mut self, c: usize, frame: Registers) -> (ret: Option<Outcome>)
+        requires
+            old(self).wf(),
+            c < NUM_CPUS,
+        ensures
+            Self::step_ok(*old(self), *final(self), c as int),
+            exists|mid: Self| #[trigger] Self::dispatched(*old(self), mid, c as int, frame, ret)
+                && Self::only_core_changed(mid, *final(self), c as int),
+            final(self).acked(c as int) == final(self).flush_epoch,
+            forall|e: TlbEntry| #[trigger] final(self).tlb@[c as int].contains(e) ==> final(self).mapped@.contains(e.page),
+    {
+        let ret = self.dispatch(c, frame);
+        let ghost mid = *self;
+        if self.cores.get(c).acked_epoch < self.flush_epoch {
+            // The counter here is the acknowledgement's own, which takes no step of the bound.
+            let tracked mut steps = Steps::fresh();
+            self.acknowledge(c, Tracked(&mut steps));
+        }
+        proof {
+            let post = *self;
+            assert(Self::dispatched(*old(self), mid, c as int, frame, ret));
+            assert(Self::only_core_changed(mid, post, c as int));
+            assert forall|e: TlbEntry| #[trigger] post.tlb@[c as int].contains(e) implies post.mapped@.contains(e.page) by {
+                if !post.mapped@.contains(e.page) {
+                    assert(post.blocks.tracks(e.page as int));
+                    assert(post.stale_epoch.above(post.acked(c as int), e.page));
+                    assert(post.stale_epoch.pages@[e.page as int] <= post.flush_epoch);
+                }
+            }
+        }
+        ret
     }
 
     /// The retype in frame, by a thread of the process whose table is at root.

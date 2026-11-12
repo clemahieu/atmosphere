@@ -1765,6 +1765,9 @@ impl CapKernel {
         let count: usize = if large { PAGES_PER_2M } else { 1 };
         self.flush_epoch = self.flush_epoch + 1;
         let epoch = self.flush_epoch;
+        proof {
+            assert(pre.stale_epoch.bounded(epoch as int));
+        }
         self.stale_epoch.record_run(frame, count, epoch, Tracked(steps));
         proof {
             self.tlb.borrow_mut().grow(Seq::new(NUM_CPUS as nat, |d: int|

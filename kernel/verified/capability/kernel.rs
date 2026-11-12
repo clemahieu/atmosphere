@@ -816,6 +816,11 @@ impl StaleEpochs {
         &&& self.one.wf()
     }
 
+    /// No page's last unmap is later than this epoch.
+    pub open spec fn bounded(&self, epoch: int) -> bool {
+        forall|g: int| 0 <= g < NUM_PAGES ==> #[trigger] self.pages@[g] <= epoch
+    }
+
     /// A core at epoch `acked` has not acknowledged this page's last unmap, read at any level.
     pub open spec fn above(&self, acked: int, page: usize) -> bool {
         &&& acked < self.pages@[page as int]
@@ -900,6 +905,7 @@ impl StaleEpochs {
             forall|a: int, g: usize| a < epoch && g < NUM_PAGES && old(self).above(a, g) ==> #[trigger] final(self).above(a, g),
             forall|g: int| 0 <= g < NUM_PAGES && !(first <= g < first + count)
                 ==> #[trigger] final(self).pages@[g] == old(self).pages@[g],
+            forall|e: int| epoch <= e && #[trigger] old(self).bounded(e) ==> final(self).bounded(e),
     {
         let mut k = 0;
         let ghost start = steps.count;
@@ -913,6 +919,7 @@ impl StaleEpochs {
                 forall|g: usize| first <= g < first + k ==> #[trigger] self.written(epoch, g),
                 forall|a: int, g: usize| a < epoch && g < NUM_PAGES && old(self).above(a, g) ==> #[trigger] self.above(a, g),
                 forall|g: int| 0 <= g < NUM_PAGES && !(first <= g < first + count) ==> #[trigger] self.pages@[g] == old(self).pages@[g],
+                forall|e: int| epoch <= e && #[trigger] old(self).bounded(e) ==> self.bounded(e),
             decreases count - k,
         {
             let ghost mid = *self;
@@ -927,6 +934,14 @@ impl StaleEpochs {
                 }
                 assert forall|a: int, g: usize| a < epoch && g < NUM_PAGES && old(self).above(a, g) implies #[trigger] self.above(a, g) by {
                     assert(mid.above(a, g));
+                }
+                assert forall|e: int| epoch <= e && #[trigger] old(self).bounded(e) implies self.bounded(e) by {
+                    assert(mid.bounded(e));
+                    assert forall|g: int| 0 <= g < NUM_PAGES implies #[trigger] self.pages@[g] <= e by {
+                        if g != page as int {
+                            assert(mid.pages@[g] <= e);
+                        }
+                    }
                 }
             }
             k = k + 1;
@@ -1379,12 +1394,14 @@ impl CapKernel {
 
     /// A core holds an entry of a space only if it depends on the space. A translation to an unmapped page
     /// can survive on a core only if that core has not yet acknowledged the page's unmap. The strict
-    /// comparison needs unmap to bump the epoch first. A core holds entries only under PCIDs it has
+    /// comparison needs unmap to bump the epoch first, and no unmap is recorded later than the epoch, so
+    /// a core that has acknowledged it holds nothing stale. A core holds entries only under PCIDs it has
     /// handed out. The same holds of each IOMMU.
     pub open spec fn tlb_wf(&self) -> bool {
         &&& self.tlb@.len() == NUM_CPUS
         &&& tags_wf(self.cores@, self.tlb@)
         &&& forall|c: int| 0 <= c < NUM_CPUS ==> #[trigger] self.acked(c) <= self.flush_epoch
+        &&& self.stale_epoch.bounded(self.flush_epoch as int)
         &&& forall|c: int, e: TlbEntry|
             0 <= c < NUM_CPUS && #[trigger] self.tlb@[c].contains(e) ==> self.depends(c, e.space)
         &&& forall|c: int, e: TlbEntry|

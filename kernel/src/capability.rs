@@ -34,9 +34,9 @@ use crate::lock::Locked;
 pub static CAP_KERNEL: Locked<Option<&'static mut CapKernel>> = Locked::new("capability kernel", None);
 
 /// Runs the invocation in `frame` for the calling core's current thread under the kernel's lock, then
-/// makes the flush its unmaps owe, which the verified dispatch records in ghost state only: the calling
-/// core acknowledges before the lock is released, and the flush IPIs go out after.
-/// design/flush-without-waiting/. Each target's entry calls this.
+/// makes the flush its unmaps owe, which the verified entry records in ghost state only: the entry has
+/// the calling core acknowledge whenever it is behind the epoch, and the flush IPIs go out once the
+/// lock is released. design/flush-without-waiting/. Each target's entry calls this.
 pub fn dispatch(frame: Registers) -> Outcome {
     let core = crate::cpu::get_cpu_id();
     let (returned, targets) = {
@@ -44,9 +44,9 @@ pub fn dispatch(frame: Registers) -> Outcome {
         let kernel = guard.as_deref_mut().expect("an invocation before the capability kernel was built");
         let epoch = kernel.flush_epoch;
         let returned = kernel
-            .dispatch(core, frame)
+            .enter(core, frame)
             .expect("no operation is wired that moves the calling thread off its core");
-        (returned, crate::flush::owed(kernel, core, epoch))
+        (returned, crate::flush::owed(kernel, epoch))
     };
     crate::flush::send(targets);
     returned
