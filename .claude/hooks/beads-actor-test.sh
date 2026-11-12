@@ -41,4 +41,48 @@ run GROK_SESSION_ID=abc; check "grok session exits 0" $?
 run GROK_SESSION_ID=abc CLAUDE_PID=4242 CLAUDE_ENV_FILE="$dir/grok.sh"
 [ ! -e "$dir/grok.sh" ]; check "grok session writes nothing" $?
 
+# agy SessionStart hook injects root CLAUDE.md when present beside the worktree and {} otherwise,
+# and AGENTS.md + .agents/hooks.json wire shared rules and hooks for agy.
+hooks_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo="$(cd "$hooks_dir/../.." && pwd)"
+agy_start="$hooks_dir/agy-session-start.sh"
+
+mkdir -p "$dir/with-rules" "$dir/without-rules"
+cat > "$dir/with-rules/CLAUDE.md" <<'EOF'
+# Local root rules
+Line with "quotes" and $variables.
+EOF
+
+out=$(printf '{}' | ATMO_SESSION_START_ROOT="$dir/with-rules" "$agy_start" 2>/dev/null); rc=$?
+[ "$rc" = 0 ]; check "agy session-start with CLAUDE.md exits 0" $?
+got=$(printf '%s' "$out" | jq -r '.injectSteps[0].systemMessage.systemMessage' 2>/dev/null || printf 'INVALID')
+[ "$got" = "$(cat "$dir/with-rules/CLAUDE.md")" ]; check "agy session-start injects CLAUDE.md" $?
+printf '%s' "$out" | jq -e --rawfile want "$dir/with-rules/CLAUDE.md" '.injectSteps[0].systemMessage.systemMessage == $want' >/dev/null 2>&1
+check "agy session-start preserves exact bytes" $?
+
+out_absent=$(printf '{}' | ATMO_SESSION_START_ROOT="$dir/without-rules" "$agy_start" 2>/dev/null); rc=$?
+[ "$rc" = 0 ] && [ "$out_absent" = "{}" ]; check "agy session-start without CLAUDE.md emits {}" $?
+
+out_empty=$(printf '{}' | ATMO_SESSION_START_ROOT="" "$agy_start" 2>/dev/null); rc=$?
+[ "$rc" = 0 ] && [ "$out_empty" = "{}" ]; check "agy session-start empty root emits {}" $?
+
+[ -L "$repo/AGENTS.md" ] && [ "$(readlink "$repo/AGENTS.md")" = "CLAUDE.md" ]
+check "AGENTS.md symlinks to CLAUDE.md" $?
+
+jq -e '
+  .["license-guard"].PreToolUse == [{"matcher":"*","hooks":[{"type":"command","command":"../.claude/hooks/license-guard.sh","timeout":10}]}] and
+  .["root-rules"].SessionStart == [{"type":"command","command":"../.claude/hooks/agy-session-start.sh","timeout":10}]
+' "$repo/.agents/hooks.json" >/dev/null 2>&1
+check ".agents/hooks.json wires grouped PreToolUse and flat SessionStart" $?
+
+# hooks.json runs commands with cwd set to .agents/.
+pre_cmd=$(jq -r '.["license-guard"].PreToolUse[0].hooks[0].command' "$repo/.agents/hooks.json")
+start_cmd=$(jq -r '.["root-rules"].SessionStart[0].command' "$repo/.agents/hooks.json")
+out_pre=$(cd "$repo/.agents" && printf '{"hookEventName":"PreToolUse","toolCall":{"id":"t1","name":"read_file","args":{"Path":"CLAUDE.md"}}}' | sh -c "$pre_cmd" 2>/dev/null); rc=$?
+[ "$rc" = 0 ] && [ "$(printf '%s' "$out_pre" | jq -r '.decision')" = "allow" ]
+check ".agents/hooks.json PreToolUse command resolves from .agents/" $?
+out_start=$(cd "$repo/.agents" && printf '{}' | ATMO_SESSION_START_ROOT="$dir/without-rules" sh -c "$start_cmd" 2>/dev/null); rc=$?
+[ "$rc" = 0 ] && [ "$out_start" = "{}" ]
+check ".agents/hooks.json SessionStart command resolves from .agents/" $?
+
 exit $fail

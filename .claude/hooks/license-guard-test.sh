@@ -35,9 +35,28 @@ check() {
   printf '%s' "$json" | "$guard" >/dev/null 2>&1 || rc=$?
   if [ "$rc" = "$want" ]; then echo "ok   $name"; else echo "FAIL $name: exit $rc, want $want"; fail=1; fi
 }
+check_agy() {
+  local want=$1 name=$2 json=$3 out rc=0 decision="" reason_ok=0
+  out=$(printf '%s' "$json" | "$guard" 2>/dev/null) || rc=$?
+  decision=$(printf '%s' "$out" | jq -r '.decision // empty' 2>/dev/null || true)
+  if [ "$want" = "deny" ]; then
+    printf '%s' "$out" | jq -e '(.reason | type == "string") and (.reason | length > 0)' >/dev/null 2>&1 && reason_ok=1
+  else
+    reason_ok=1
+  fi
+  if [ "$rc" = 0 ] && [ "$decision" = "$want" ] && [ "$reason_ok" = 1 ]; then
+    echo "ok   $name"
+  else
+    echo "FAIL $name: exit $rc, out=$out, want decision=$want"
+    fail=1
+  fi
+}
 bash_call() { jq -n --arg c "$1" '{tool_name:"Bash",tool_input:{command:$c}}'; }
 read_call() { jq -n --arg f "$1" '{tool_name:"Read",tool_input:{file_path:$f}}'; }
 grok_call() { jq -n --arg c "$1" '{toolName:"run_terminal_command",toolInput:{command:$c}}'; }
+agy_cmd_call() { jq -n --arg c "$1" '{hookEventName:"PreToolUse",toolCall:{id:"t1",name:"run_command",args:{CommandLine:$c}}}'; }
+agy_read_call() { jq -n --arg p "$1" '{hookEventName:"PreToolUse",toolCall:{id:"t1",name:"read_file",args:{Path:$p}}}'; }
+agy_web_call() { jq -n --arg q "$1" '{hookEventName:"PreToolUse",toolCall:{id:"t1",name:"search_web",args:{query:$q}}}'; }
 
 # Direct spellings, in both harnesses' shapes, with the local list naming the directory.
 check 2 "grep"           "$(bash_call "grep -rn x ${tilde_slash}${dir}/hammer2.src")"
@@ -74,6 +93,17 @@ check 0 "this tree"      "$(read_call "CLAUDE.md")"
 check 0 "no tool input"  '{"tool_name":"Read"}'
 check 0 "not json"       'not json'
 
+# agy PreToolUse shape: always exits 0 and emits JSON decision deny (with reason) or allow on stdout.
+check_agy deny  "agy run_command local"   "$(agy_cmd_call "grep -rn x ${tilde_slash}${dir}/hammer2.src")"
+check_agy deny  "agy run_command tree"    "$(agy_cmd_call "cat ${dollar_home}/${dir}/${tree}/LICENSE")"
+check_agy deny  "agy system root"         "$(agy_cmd_call "grep -r x $sys/kernels")"
+check_agy deny  "agy parent"              "$(agy_cmd_call "grep -rn x $parent_dir")"
+check_agy deny  "agy read_file forbidden" "$(agy_read_call "${dollar_home}/${dir}/README.md")"
+check_agy deny  "agy search_web host"     "$(agy_web_call "https://$host/linux/latest/source")"
+check_agy allow "agy reference cat"       "$(agy_cmd_call "cat ${ref}/README")"
+check_agy allow "agy read_file this tree" "$(agy_read_call "CLAUDE.md")"
+check_agy allow "agy no args"             '{"hookEventName":"PreToolUse","toolCall":{"id":"t1","name":"read_file"}}'
+
 # No local list: tracked system roots and their parent still refuse, and allowed paths pass.
 export ATMO_LICENSE_GUARD_LOCAL=
 check 2 "no list system root"    "$(bash_call "grep -r x $sys/kernels")"
@@ -85,5 +115,11 @@ check 0 "no list design doc"     "$(read_call "${ref}/sys/vfs/hammer2/DESIGN")"
 check 0 "no list grep"           "$(bash_call "grep -rn x ${tilde_slash}${dir}/hammer2.src")"
 check 0 "no list read"           "$(read_call "${dollar_home}/${dir}/README.md")"
 check 0 "no list grok shape"     "$(grok_call "grep -rn x ${tilde_slash}${dir}/hammer2.src")"
+check_agy deny  "no list agy system root"   "$(agy_cmd_call "grep -r x $sys/kernels")"
+check_agy deny  "no list agy system parent" "$(agy_cmd_call "cd $sys && grep -r x kernels")"
+check_agy deny  "no list agy copyleft host" "$(agy_web_call "https://$host/linux/latest/source")"
+check_agy allow "no list agy design doc"    "$(agy_read_call "${ref}/sys/vfs/hammer2/DESIGN")"
+check_agy allow "no list agy grep"          "$(agy_cmd_call "grep -rn x ${tilde_slash}${dir}/hammer2.src")"
+check_agy allow "no list agy read"          "$(agy_read_call "${dollar_home}/${dir}/README.md")"
 
 exit $fail

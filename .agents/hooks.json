@@ -1,0 +1,25 @@
+{
+  "license-guard": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "../.claude/hooks/license-guard.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
+  "root-rules": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "../.claude/hooks/agy-session-start.sh",
+        "timeout": 10
+      }
+    ]
+  }
+}
