@@ -352,6 +352,10 @@ impl CapKernel {
                 implies #[trigger] core_listed(post.spaces.loaded@[s].value().list, d) by {
                 lemma_core_added(cores.list, c as u32, d as u32);
             }
+            assert forall|d: int| 0 <= d < NUM_CPUS && #[trigger] core_listed(post.spaces.loaded@[s].value().list, d)
+                implies d == c as int || core_listed(mid.spaces.loaded@[s].value().list, d) by {
+                lemma_core_added(cores.list, c as u32, d as u32);
+            }
             lemma_id_loaded(mid.cores@, mid.spaces.loaded@, post.spaces.loaded@, c as int, s, (generation * PAGE_SZ + pcid) as usize);
             assert forall|d: int| 0 <= d < NUM_CPUS && (#[trigger] post.cores@[d]).space is Some
                 && mid.spaces.loaded@.contains_key(post.cores@[d].space->0) implies {
