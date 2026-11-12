@@ -16,7 +16,6 @@ and notes name, a log being a path ending in `.log`, read from the project root 
     gone <issue>: <file> of <sha>      a file the commit wrote is not on main
     stale <issues>: <logs> ...         a file the logs attest has changed on main since they were made
     current <issues>: <logs>           the logs are there and nothing they attest has changed
-    witness <name>: ...                one per --witness, below
 
 A log attests the files changed by the commits of the issues that name it. One changed since the log
 was made when a commit on main, other than those, touches it and was committed after the log was last
@@ -24,16 +23,11 @@ written; the line names each such file with the newest such commit. Logs that th
 and that the same files have changed under share a line. A stale log is the record of its commit and
 not of main: most are stale in a tree that moves, and what was true at their commit is re-run on main.
 
-`--witness NAME=LOG` holds a throwaway's log to the witness it was run against: the proof function
-NAME on main and the commit that last changed its text, from its `fn` line to its closing brace. The
-line ends `current` when LOG was written after that commit, or an issue naming LOG names the commit,
-`stale` otherwise, and says `missing` for a function main does not have or a log that is not there.
-
 It finds what is absent or older than the tree, and not what is weak: whether a log shows what a
 criterion asks is the round's reading, and then the skeptic's.
 
-usage: tools/review-evidence.py EPIC [--witness NAME=LOG]...   (from `bd list --all` run in this tree)
-       tools/review-evidence.py --test                          (this script's own tests)
+usage: tools/review-evidence.py EPIC     (from `bd list --all` run in this tree)
+       tools/review-evidence.py --test   (this script's own tests)
 """
 import glob
 import json
@@ -96,13 +90,6 @@ def logs(root, issue):
     return named
 
 
-def body(text, name):
-    """The text of function `name`, from its `fn` line to the closing brace at that line's indentation."""
-    start = re.search(rf"^([ \t]*)[^\n]*\bfn {re.escape(name)}\b", text or "", re.M)
-    end = start and re.compile(rf"^{start.group(1)}\}}", re.M).search(text, start.end())
-    return text[start.start():end.end()] if end else None
-
-
 def changed_since(tree, files, moment, own):
     """For each of the files a commit on main touched after the moment, the newest such commit, those in `own` aside."""
     newest, commit = {}, None
@@ -115,26 +102,7 @@ def changed_since(tree, files, moment, own):
     return newest
 
 
-def witness(tree, root, claim, namers):
-    """The line for one --witness NAME=LOG, `namers` giving the commits of the issues that name each log path."""
-    name, _, log = claim.partition("=")
-    listed = git(tree, "grep", "-l", "-E", rf"\bfn {name}\b", "main", "--", "*.rs")
-    if not listed:
-        return f"witness {name}: missing, main has no fn {name}"
-    file = listed.splitlines()[0].partition(":")[2]
-    history = git(tree, "log", "--format=%H %ct", "main", "--", file).split("\n")[:-1]
-    texts = [body(git(tree, "show", f"{commit.split()[0]}:{file}"), name) for commit in history] + [None]
-    last, stamp = next(history[index] for index in range(len(history)) if texts[index] != texts[index + 1]).split()
-    where = f"witness {name}: {file}, last changed {last[:SHORT]}; throwaway {log}"
-    paths = glob.glob(str(Path(root) / os.path.expanduser(log.removeprefix("$root/"))))
-    if not paths:
-        return f"{where}: missing"
-    made = max(os.path.getmtime(path) for path in paths)
-    recorded = any(last in namers.get(path, ()) for path in paths)
-    return f"{where}: {'current' if made >= int(stamp) or recorded else 'stale'}"
-
-
-def evidence(issues, epic, tree, root, witnesses=()):
+def evidence(issues, epic, tree, root):
     """The lines for the epic, as the opening comment gives them."""
     found, held, wrote = [], {}, {}
     closed = below(issues, epic)
@@ -176,26 +144,20 @@ def evidence(issues, epic, tree, root, witnesses=()):
             found.append(f"stale {namers}: {', '.join(paths)}: {len(newest)} of their {count} files changed on main since: {'; '.join(shown[:LISTED])}{more}")
         else:
             current.append(f"current {namers}: {', '.join(paths)}")
-    told = [witness(tree, root, claim, {path: own for path, (_, own) in held.items()}) for claim in witnesses]
-    return found + current + told + [f"{len(closed)} closed issues, {total} commits, {len(held)} logs: {len(found)} findings"]
+    return found + current + [f"{len(closed)} closed issues, {total} commits, {len(held)} logs: {len(found)} findings"]
 
 
 def main(arguments):
     usage = __doc__.strip().split("usage: ")[1].join(["usage: ", ""])
-    if not arguments or arguments[0].startswith("-"):
+    if len(arguments) != 1 or arguments[0].startswith("-"):
         sys.exit(usage)
-    witnesses = []
-    for flag, claim in zip(arguments[1::2], arguments[2::2] + [""]):
-        if flag != "--witness" or "=" not in claim:
-            sys.exit(usage)
-        witnesses.append(claim)
     listed = subprocess.run(["bd", "list", "--all", "--json", "--limit", "0"], cwd=TREE, capture_output=True, text=True)
     if listed.returncode != 0:
         sys.exit(f"review-evidence: bd list exited {listed.returncode}: {(listed.stderr or listed.stdout).strip()}")
     issues = json.loads(listed.stdout)
     if not any(issue["id"] == arguments[0] for issue in issues):
         sys.exit(f"review-evidence: bd lists no issue {arguments[0]}")
-    for line in evidence(issues, arguments[0], TREE, TREE.parent, witnesses):
+    for line in evidence(issues, arguments[0], TREE, TREE.parent):
         print(line)
     return 0
 
@@ -239,8 +201,8 @@ class Tests(unittest.TestCase):
             listed.append(issue)
         return listed
 
-    def lines(self, *made, witnesses=()):
-        return evidence(self.issues(*made), "a.1", self.tree, self.root, witnesses)
+    def lines(self, *made):
+        return evidence(self.issues(*made), "a.1", self.tree, self.root)
 
     def test_a_commit_and_a_log_that_are_there_are_current(self):
         first = self.commit(a="1\n")
@@ -302,27 +264,6 @@ class Tests(unittest.TestCase):
         self.assertEqual(self.lines(("a.1.1", f"{wrote}: gate"), ("a.1.2", f"{removed}: gate")),
                          [f"gone a.1.1: old of {wrote}", f"gone a.1.1: test of {wrote}", "2 closed issues, 2 commits, 0 logs: 2 findings"])
 
-    def test_a_witness_is_held_to_the_commit_that_last_changed_its_text(self):
-        text = "verus! {\n\nproof fn witness_use(k: K)\n    ensures used(k),\n{\n    step(k);\n}\n\nproof fn other() {\n}\n\n}\n"
-        self.assertEqual(body(text, "witness_use"), "proof fn witness_use(k: K)\n    ensures used(k),\n{\n    step(k);\n}")
-        file = "kernel/witness.rs"
-        self.commit(**{file: text})
-        early = self.log("a.1.1-throwaway.log")
-        text = text.replace("step(k);", "step(k); more(k);")
-        own = self.commit(**{file: text})
-        made = [("a.1.1", f"{own}: throwaway {early}")]
-        claim = lambda log: self.lines(*made, witnesses=[f"witness_use={log}"])[-2]
-        self.assertEqual(claim(early), f"witness witness_use: {file}, last changed {own}; throwaway {early}: current")
-        text = text.replace("fn other() {", "fn other() {\n    lemma();")
-        self.commit(**{file: text})
-        self.assertEqual(claim(early), f"witness witness_use: {file}, last changed {own}; throwaway {early}: current")
-        changed = self.commit(**{file: text.replace("step(k);", "again(k);")})
-        self.assertEqual(claim(early), f"witness witness_use: {file}, last changed {changed}; throwaway {early}: stale")
-        late = self.log("a.1.2-throwaway.log")
-        self.assertEqual(claim(late), f"witness witness_use: {file}, last changed {changed}; throwaway {late}: current")
-        self.assertEqual(claim("logs/gone.log"), f"witness witness_use: {file}, last changed {changed}; throwaway logs/gone.log: missing")
-        self.assertEqual(self.lines(*made, witnesses=["witness_none=logs/gone.log"])[-2], "witness witness_none: missing, main has no fn witness_none")
-
     def test_the_command_reads_the_tree_bd_lists_and_refuses_an_unknown_epic(self):
         first = self.commit(a="1\n")
         (self.tree / "tools").mkdir()
@@ -334,11 +275,10 @@ class Tests(unittest.TestCase):
             ran = subprocess.run([sys.executable, str(self.tree / "tools" / "review-evidence.py"), *arguments],
                                  env={**os.environ, "PATH": f"{self.root}:{os.environ['PATH']}"}, capture_output=True, text=True)
             return ran.returncode, ran.stdout, ran.stderr
-        self.assertEqual(run("a.1", "--witness", "witness_none=logs/gone.log"),
-                         (0, "witness witness_none: missing, main has no fn witness_none\n1 closed issues, 1 commits, 0 logs: 0 findings\n", ""))
+        self.assertEqual(run("a.1"), (0, "1 closed issues, 1 commits, 0 logs: 0 findings\n", ""))
         self.assertEqual((self.root / "call").read_text(), "list --all --json --limit 0\n")
         self.assertEqual(run("a.9"), (1, "", "review-evidence: bd lists no issue a.9\n"))
-        for bad in ([], ["--witness", "a=b"], ["a.1", "--witness"], ["a.1", "--witness", "name"], ["a.1", "b"]):
+        for bad in ([], ["--witness", "a=b"], ["a.1", "--witness", "name=log"], ["a.1", "b"]):
             self.assertEqual(run(*bad)[0], 1)
             self.assertTrue(run(*bad)[2].startswith("usage: tools/review-evidence.py EPIC"))
 
