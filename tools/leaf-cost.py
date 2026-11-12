@@ -30,11 +30,18 @@ The plan does not publish what a call costs it, so RATES is measured: a call's t
 under), and a model's rate is the points the meter moved for a million weighted tokens of it. The meter is
 `cachedUsageUtilization.utilization.seven_day.utilization` in ~/.claude.json, a percentage that
 Claude Code refreshes with `fetchedAtMs` beside it. To measure again, note that figure and its time
-at both ends of a stretch of hours in which the meter did not reset (`resets_at`), sum the ledger's
-weighted tokens by model over the same hours (the `totals` table of logs/token-ledger.sqlite, every
-kind, since the meter counts sessions outside the loop too), and divide. A stretch on one model
-gives that model's rate directly; stretches that mix models give one equation each, points moved =
-the sum over models of rate times weighted millions, solved together. Put the date beside the rate.
+at both ends of a stretch of hours in which the meter did not reset, sum the ledger's weighted
+tokens by model over the same hours (the `totals` table of logs/token-ledger.sqlite, every kind,
+since the meter counts sessions outside the loop too), and divide. The meter resets at `resets_at`,
+and whenever the human spends one of the plan's resets, which lowers it and leaves `resets_at` as
+it was: a stretch is clean only when the human says it holds none, and one whose points come to far
+fewer than its tokens holds one. A stretch on one model gives that model's rate directly; stretches
+that mix models give one equation each, points moved = the sum over models of rate times weighted
+millions, solved together. The Fable models have a meter of their own beside it, the `limits` entry
+of kind `weekly_scoped`: its `percent` is of an allowance that is `allowance_percent_of_weekly`
+points (`weekly_scoped_shares`), so its movement times that share is the points Fable moved, apart
+from every other model's. A meter steps by whole percents, so a stretch that moves it a few points
+gives a rate no closer than a step at each end allows. Put the date beside the rate.
 
 usage: tools/leaf-cost.py [--since WHEN] [--until WHEN]   (local time: 2026-11-12 or 2026-11-12T20:00)
        tools/leaf-cost.py --test                          (this script's own tests)
@@ -61,7 +68,7 @@ LEDGER = Path(__file__).with_name("token-ledger.py")
 WEIGHTS = (1, 1.25, 0.1, 5)
 # Weekly points a million weighted tokens, and the day the rate was measured.
 RATES = {
-    "claude-fable-5-2": (0.40, "2026-11-10"),
+    "claude-fable-5-2": (0.57, "2026-11-12"),
     "claude-fable-5-1": (0.64, "2026-11-10"),
     "claude-opus-5-5": (0.12, "2026-11-10"),
 }
@@ -245,7 +252,7 @@ class Tests(unittest.TestCase):
         self.spend("a-2", "round", self.OPUS, sessions=("s4",), output=500_000)
         (leaf,), _, _ = self.found(self.issue("a-1"))
         self.assertEqual((leaf.id, leaf.model, leaf.rounds, leaf.closed), ("a-1", self.OPUS, 2, self.noon))
-        self.assertAlmostEqual(leaf.points, 0.12 * (5 + 1) + 0.40 * (1 + 1.25))
+        self.assertAlmostEqual(leaf.points, 0.12 * (5 + 1) + 0.57 * (1 + 1.25))
 
     def test_the_same_tokens_are_more_points_on_the_model_the_meter_charges_more_for(self):
         tokens = dict(input=1_000_000, cache_write=1_000_000, cache_read=10_000_000, output=1_000_000)
@@ -253,7 +260,7 @@ class Tests(unittest.TestCase):
         self.spend("a-2", "round", self.FABLE, sessions=("s2",), **tokens)
         opus, fable = self.found(self.issue("a-1"), self.issue("a-2"))[0]
         self.assertAlmostEqual(opus.points, 0.12 * 8.25)
-        self.assertAlmostEqual(fable.points, 0.40 * 8.25)
+        self.assertAlmostEqual(fable.points, 0.57 * 8.25)
 
     def test_a_leafs_model_is_the_one_its_rounds_cost_most_on(self):
         self.spend("a-1", "round", self.OPUS, output=100_000)
@@ -289,7 +296,7 @@ class Tests(unittest.TestCase):
         found, hours, _ = self.found(*tracker, self.issue("b-1"))
         lines = report(found, hours, tracker, -math.inf, math.inf)
         self.assertEqual(lines[1].split(), ["model", "leaves", "rework", "mean", "median", "p90", "rounds", "prover", "attempt", "recovered", "fault"])
-        self.assertEqual(lines[2].split(), [self.FABLE, "1", "0%", "0.200", "0.200", "0.200", "1.00", "0%", "0%", "0%", "0%"])
+        self.assertEqual(lines[2].split(), [self.FABLE, "1", "0%", "0.285", "0.285", "0.285", "1.00", "0%", "0%", "0%", "0%"])
         self.assertEqual(lines[3].split(), [self.OPUS, "5", "20%", "0.120", "0.090", "0.300", "1.20", "40%", "0%", "0%", "0%"])
 
     def test_a_day_is_the_loops_spend_over_its_leaves_that_are_not_rework(self):
