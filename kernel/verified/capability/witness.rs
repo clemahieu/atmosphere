@@ -5102,23 +5102,6 @@ impl CapKernel {
             assert(s4.tables.has_slot(&s4.list, process, WITNESS_FRAME_SLOT));
             assert(s4.tables.node_of(process, WITNESS_FRAME_SLOT) == nf);
             // The frame's block is its own page, with the one reference the capability holds.
-            assert(!s4.blocks.covered(fp));
-            assert(s3.blocks.kept_but_run(s4.blocks, fp, 0));
-            assert(s3.blocks.tracks(fp));
-            // The page is no member of another block: that block's base is as it was, and the page was
-            // free.
-            assert(!(s4.blocks.pages@[fp].kind is Member)) by {
-                reveal(CapKernel::wf);
-                assert(s3.blocks.wf() && s4.blocks.wf());
-                if s4.blocks.pages@[fp].kind is Member {
-                    s4.blocks.lemma_member(fp);
-                    let b = s4.blocks.pages@[fp].base as int;
-                    assert(s4.blocks.pages@[b] == s3.blocks.pages@[b]);
-                    s3.blocks.lemma_member_of(b, fp);
-                }
-            }
-            assert(block_ref(&s4.blocks, (bf / PAGE_SZ) as usize) == br);
-            assert(s4.blocks.pages@[fp].kind is Base);
             assert(block_ref(&s4.blocks, fp as usize) == br);
             assert(block_refs(&s4.blocks, br) == 1);
             // The space's capability and the untyped stay.

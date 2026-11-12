@@ -657,8 +657,8 @@ impl CapKernel {
     /// at root, with the capability at index to: the retype was allowed, the frame capability is the
     /// untyped's child in that slot, the one entry the parent map gains and the only node whose kind,
     /// liveness or capability changed, no root entry changed, the page is zero, the block table changed
-    /// in that page alone, which is a block of its own with a count of one, and the step discharges the
-    /// retype's effect.
+    /// in that page alone, which is a block of its own, Small(page) with kind Base, with a count of one,
+    /// and the step discharges the retype's effect.
     pub open spec fn frame_retyped(pre: Self, post: Self, root: usize, from: usize, to: usize, base: usize) -> bool {
         let parent = pre.tables.node_of(root, from);
         let child = pre.tables.node_of(root, to);
@@ -673,6 +673,8 @@ impl CapKernel {
         &&& Self::caps_frame(pre, post, child, child)
         &&& holds_zero(post.frames@, base / PAGE_SZ)
         &&& pre.blocks.kept_but_run(post.blocks, (base / PAGE_SZ) as int, 0)
+        &&& block_ref(&post.blocks, base / PAGE_SZ) == BlockRef::Small(base / PAGE_SZ)
+        &&& post.blocks.pages@[(base / PAGE_SZ) as int].kind is Base
         &&& {
             let br = block_ref(&post.blocks, base / PAGE_SZ);
             &&& block_typed(&post.blocks, br)
@@ -815,6 +817,7 @@ impl CapKernel {
                 assert(!pre.blocks.covered(page as int));
                 assert(block_ref(&self.blocks, page) == BlockRef::Small(page));
             }
+            assert(self.blocks.pages@[page as int].kind is Base);
         }
         let ghost mid = *self;
         self.add_frame_cap(root, from, to, parent, child, base, 0);
