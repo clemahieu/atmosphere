@@ -28,20 +28,23 @@ RATES does not hold is named on a last line, and its calls are left out.
 The plan does not publish what a call costs it, so RATES is measured: a call's tokens are weighted
 (WEIGHTS: input 1, cache write 1.25, cache read 0.1, output 5, the weights the rates were fitted
 under), and a model's rate is the points the meter moved for a million weighted tokens of it. The meter is
-`cachedUsageUtilization.utilization.seven_day.utilization` in ~/.claude.json, a percentage that
-Claude Code refreshes with `fetchedAtMs` beside it. To measure again, note that figure and its time
-at both ends of a stretch of hours in which the meter did not reset, sum the ledger's weighted
-tokens by model over the same hours (the `totals` table of logs/token-ledger.sqlite, every kind,
-since the meter counts sessions outside the loop too), and divide. The meter resets at `resets_at`,
-and whenever the human spends one of the plan's resets, which lowers it and leaves `resets_at` as
-it was: a stretch is clean only when the human says it holds none, and one whose points come to far
+the percentage of the week's limit that Claude Code fetches, and each harvest of the ledger keeps
+the newest fetch as a row of the `readings` table of logs/token-ledger.sqlite, whose columns the
+opening comment of tools/token-ledger.py gives: `fetched_ms` is its time and `percent` the meter.
+To measure again, take from that table the readings at both ends of a stretch in which the meter
+did not reset, sum the ledger's weighted tokens by model over the same hours (the `totals` table,
+every kind, since the meter counts sessions outside the loop too), and divide. The meter resets at
+`resets_at`, and whenever the human spends one of the plan's resets, which lowers it and leaves
+`resets_at` as it was: a stretch is clean when every reading in it has the same `resets_at` and none
+is lower than the one before it. Readings are as close together as the harvests were, so a reset
+between two far apart can hide under what was spent after it, and a stretch whose points come to far
 fewer than its tokens holds one. A stretch on one model gives that model's rate directly; stretches
 that mix models give one equation each, points moved = the sum over models of rate times weighted
-millions, solved together. The Fable models have a meter of their own beside it, the `limits` entry
-of kind `weekly_scoped`: its `percent` is of an allowance that is `allowance_percent_of_weekly`
-points (`weekly_scoped_shares`), so its movement times that share is the points Fable moved, apart
-from every other model's. A meter steps by whole percents, so a stretch that moves it a few points
-gives a rate no closer than a step at each end allows. Put the date beside the rate.
+millions, solved together. The Fable models have a meter of their own beside it, under `Fable` in
+the reading's `scoped`: its `percent` is of an allowance that is `share` points, so its movement
+times that share over a hundred is the points Fable moved, apart from every other model's. A meter
+steps by whole percents, so a stretch that moves it a few points gives a rate no closer than a step
+at each end allows. Put the date beside the rate.
 
 usage: tools/leaf-cost.py [--since WHEN] [--until WHEN]   (local time: 2026-11-12 or 2026-11-12T20:00)
        tools/leaf-cost.py --test                          (this script's own tests)

@@ -105,7 +105,7 @@ tools/loop.py           # run rounds until the loop stops; loop.toml at the proj
 tools/reviews.py        # the finished epics, in the order an epic round takes them, each with what it needs
 tools/review-evidence.py EPIC      # before a review goes to the skeptic: the commits and logs recorded under its epic that are missing, gone from main or older than it
 tools/bead-status.py    # serve the state of the Beads tree as a page at http://127.0.0.1:8377/
-tools/token-ledger.py   # harvest the transcripts' token counts into logs/token-ledger.sqlite at the project root
+tools/token-ledger.py   # harvest the transcripts' token counts and the plan's meter reading into logs/token-ledger.sqlite at the project root
 tools/leaf-cost.py      # what a landed leaf cost, every session counted, by the model of its rounds, with the rework beside it
 tools/witness-inventory.py         # before writing a witness or adding an operation: every way each tier-1 operation succeeds, with the witness that reaches it or none
 tools/check-stray-timer.py         # a kernel whose timer fires for nothing reports it once and stops, on both targets

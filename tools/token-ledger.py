@@ -25,6 +25,17 @@ A call goes to the issue its transcript was working:
 The ledger keeps what it harvested after Claude Code removes a transcript, so the history outlives
 the transcripts' retention.
 
+A harvest also keeps the plan's meter as Claude Code last fetched it (`cachedUsageUtilization` in
+~/.claude.json, which holds the newest fetch alone), one row of the table `readings` per fetch:
+`fetched_ms`, the fetch's time in milliseconds since the epoch; `percent`, how much of the week's
+limit every model together has used; `resets_at`, when that week ends; and `scoped`, a JSON object
+holding each scoped limit under the name of the model it is for, as `percent` of its own allowance,
+`share`, that allowance in percent of the week's limit, and its own `resets_at`. So
+`json_extract(scoped, '$.Fable.percent')` is the Fable meter. A rate is fitted between two readings
+(tools/leaf-cost.py), and a reading lower than the one before it with `resets_at` unchanged shows a
+reset the human spent between them. A fetch no harvest saw is not in the table: the readings are as
+close together as the harvests were.
+
 usage: tools/token-ledger.py [--ledger PATH]   (harvest this project's transcripts and print each kind's total)
        tools/token-ledger.py --test             (this script's own tests)
 """
@@ -59,6 +70,7 @@ create index if not exists calls_file on calls (file, issue);
 create table if not exists totals (issue text, kind text, model text, hour integer,
     input integer, cache_write integer, cache_read integer, output integer, calls integer,
     primary key (issue, kind, model, hour));
+create table if not exists readings (fetched_ms integer primary key, percent real, resets_at text, scoped text);
 """
 
 
@@ -243,13 +255,34 @@ def read(db, path, kind):
         raise
 
 
-def harvest(ledger, projects, root):
-    """Bring the ledger up to date with every transcript of this project; the number of new lines read."""
+def reading(account):
+    """The meter as Claude Code's account file holds it, as a row of `readings`; None when the file
+    holds no reading of the shape this knows."""
+    try:
+        cached = json.loads(account.read_text())["cachedUsageUtilization"]
+        meter = cached["utilization"]
+        shares = {share["limit_index"]: share["allowance_percent_of_weekly"] for share in meter.get("weekly_scoped_shares") or []}
+        scoped = {}
+        for index, limit in enumerate(meter.get("limits") or []):
+            if limit["kind"] == "weekly_scoped":
+                name = (limit["scope"].get("model") or {}).get("display_name") or json.dumps(limit["scope"], sort_keys=True)
+                scoped[name] = {"percent": limit["percent"], "share": shares.get(index), "resets_at": limit["resets_at"]}
+        return int(cached["fetchedAtMs"]), meter["seven_day"]["utilization"], meter["seven_day"]["resets_at"], json.dumps(scoped, sort_keys=True)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None  # no file, no fetch yet, an account with no weekly limit, or read while Claude Code was writing it
+
+
+def harvest(ledger, home, root):
+    """Bring the ledger up to date with every transcript of this project and with the meter, out of
+    what Claude Code keeps under that home directory; the number of new lines read."""
     db = connect(ledger)
     try:
+        found = reading(home / ".claude.json")
+        if found is not None:
+            db.execute("insert or ignore into readings values (?, ?, ?, ?)", found)
         known = dict(db.execute("select path, offset from files").fetchall())
         taken = 0
-        for directory in directories(projects, root):
+        for directory in directories(home / ".claude" / "projects", root):
             for path, kind in transcripts(directory):
                 try:
                     if path.stat().st_size != known.get(str(path)):
@@ -285,7 +318,7 @@ def main(arguments):
     root = Path(__file__).resolve().parents[2]
     parser.add_argument("--ledger", type=Path, default=root / "logs" / "token-ledger.sqlite")
     options = parser.parse_args(arguments)
-    taken = harvest(options.ledger, Path.home() / ".claude" / "projects", root)
+    taken = harvest(options.ledger, Path.home(), root)
     issues, hours = spent(options.ledger)
     print(f"read {taken} new lines; {len(issues)} issues")
     totals = {}
@@ -302,7 +335,7 @@ class Tests(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.home = Path(self.directory.name)
         self.root = Path("/work/atmo.src")
-        self.projects = self.home / "projects"
+        self.projects = self.home / ".claude" / "projects"
         self.sessions = self.projects / "-work-atmo-src-main"
         self.sessions.mkdir(parents=True)
         self.ledger = self.home / "logs" / "ledger.sqlite"
@@ -337,7 +370,7 @@ class Tests(unittest.TestCase):
         return path
 
     def issues(self):
-        harvest(self.ledger, self.projects, self.root)
+        harvest(self.ledger, self.home, self.root)
         return {issue: counts for issue, counts in spent(self.ledger)[0].items()}
 
     def test_the_directories_are_this_roots_and_those_below_it_only(self):
@@ -409,7 +442,7 @@ class Tests(unittest.TestCase):
         with path.open("a") as stream:
             stream.write(whole[40:])
         self.assertEqual(self.issues(), {"": [2, 20, 200, 10, 2]})
-        self.assertEqual(harvest(self.ledger, self.projects, self.root), 0)
+        self.assertEqual(harvest(self.ledger, self.home, self.root), 0)
 
     def test_a_claim_answered_by_a_later_harvest_still_moves_the_round(self):
         path = self.agent("round", [self.call(), self.bash("bd ready --claim --json", "toolu_r")])
@@ -428,7 +461,7 @@ class Tests(unittest.TestCase):
         self.write(self.sessions / "s1.jsonl", [self.call(stamp="2026-11-10T12:05:00Z"), self.call(stamp="2026-11-10T12:55:00.123Z"),
                                                self.call(stamp="2026-11-10T13:00:00Z")])
         self.agent("round", [self.call(stamp="2026-11-10T12:30:00Z")])
-        harvest(self.ledger, self.projects, self.root)
+        harvest(self.ledger, self.home, self.root)
         noon = int(datetime(2026, 11, 10, 12, tzinfo=timezone.utc).timestamp())
         self.assertEqual(spent(self.ledger)[1], [
             [noon, "round", [1, 10, 100, 5, 1]], [noon, "session", [2, 20, 200, 10, 2]], [noon + 3600, "session", [1, 10, 100, 5, 1]]])
@@ -436,7 +469,7 @@ class Tests(unittest.TestCase):
     def test_the_hours_before_a_time_are_summed_into_their_local_days(self):
         stamps = ["2026-11-09T03:10:00Z", "2026-11-09T04:10:00Z", "2026-11-10T20:00:00Z", "2026-11-11T12:00:00Z"]
         self.write(self.sessions / "s1.jsonl", [self.call(stamp=stamp) for stamp in stamps])
-        harvest(self.ledger, self.projects, self.root)
+        harvest(self.ledger, self.home, self.root)
         hours = [int(datetime.fromisoformat(stamp[:13] + ":00:00+00:00").timestamp()) for stamp in stamps]
         midnight = lambda hour: int(datetime.fromtimestamp(hour).replace(hour=0, minute=0).timestamp())
         folded = {}
@@ -454,6 +487,60 @@ class Tests(unittest.TestCase):
 
     def test_a_ledger_not_yet_harvested_holds_nothing(self):
         self.assertEqual(spent(self.ledger), ({}, []))
+
+    def meter(self, fetched, percent, fable, week="2026-11-15T04:59:59+00:00"):
+        """The account file as Claude Code leaves it after fetching the meter, with what else it holds left out."""
+        (self.home / ".claude.json").write_text(json.dumps({"numStartups": 7, "cachedUsageUtilization": {"fetchedAtMs": fetched, "utilization": {
+            "five_hour": None,
+            "seven_day": {"utilization": percent, "resets_at": week},
+            "limits": [
+                {"kind": "weekly_all", "group": "weekly", "percent": percent, "resets_at": week, "scope": None},
+                {"kind": "weekly_scoped", "group": "weekly", "percent": fable, "resets_at": "2026-11-15T05:00:00+00:00",
+                 "scope": {"model": {"id": None, "display_name": "Fable"}, "surface": None}},
+                {"kind": "weekly_scoped", "group": "weekly", "percent": 3, "resets_at": "2026-11-15T05:00:00+00:00",
+                 "scope": {"model": None, "surface": "desk"}},
+            ],
+            "weekly_scoped_shares": [{"limit_index": 1, "used_percent_of_weekly": 16, "allowance_percent_of_weekly": 50}],
+        }}}))
+
+    def kept(self):
+        harvest(self.ledger, self.home, self.root)
+        db = connect(self.ledger)
+        self.addCleanup(db.close)
+        return db.execute("select fetched_ms, percent, resets_at, scoped from readings order by fetched_ms").fetchall()
+
+    def test_a_harvest_keeps_the_reading_the_meter_last_gave(self):
+        self.meter(1794520654306, 97, 31)
+        [(fetched, percent, resets_at, scoped)] = self.kept()
+        self.assertEqual((fetched, percent, resets_at), (1794520654306, 97, "2026-11-15T04:59:59+00:00"))
+        self.assertEqual(json.loads(scoped), {
+            "Fable": {"percent": 31, "share": 50, "resets_at": "2026-11-15T05:00:00+00:00"},
+            # A scoped limit that names no model goes by its scope as it came, and one the shares leave out has none.
+            '{"model": null, "surface": "desk"}': {"percent": 3, "share": None, "resets_at": "2026-11-15T05:00:00+00:00"}})
+        # The Fable meter is read out of the row as SQLite reads JSON.
+        db = connect(self.ledger)
+        self.addCleanup(db.close)
+        self.assertEqual(db.execute("select json_extract(scoped, '$.Fable.percent'), json_extract(scoped, '$.Fable.share') from readings").fetchall(), [(31, 50)])
+
+    def test_a_reading_is_kept_once_and_a_reset_shows_as_a_fall(self):
+        self.meter(1000, 60, 20)
+        self.kept()
+        self.assertEqual([row[:2] for row in self.kept()], [(1000, 60)])
+        # The human spends a reset: the next fetch is lower and the week ends when it did.
+        self.meter(2000, 4, 1)
+        self.assertEqual([row[:3] for row in self.kept()], [(1000, 60, "2026-11-15T04:59:59+00:00"), (2000, 4, "2026-11-15T04:59:59+00:00")])
+
+    def test_an_account_file_with_no_reading_adds_none_and_fails_nothing(self):
+        self.write(self.sessions / "s1.jsonl", [self.call()])
+        self.assertEqual(self.kept(), [])  # no account file
+        account = self.home / ".claude.json"
+        account.write_text(json.dumps({"numStartups": 7}))
+        self.assertEqual(self.kept(), [])  # Claude Code has not fetched the meter
+        account.write_text(json.dumps({"cachedUsageUtilization": {"fetchedAtMs": 1000, "utilization": {"seven_day": None}}}))
+        self.assertEqual(self.kept(), [])  # an account with no weekly limit
+        account.write_text('{"cachedUsageUtilization": {"fetchedAtMs": 10')
+        self.assertEqual(self.kept(), [])  # read while it was being written
+        self.assertEqual(spent(self.ledger)[0], {"": [1, 10, 100, 5, 1]})
 
 
 if __name__ == "__main__":

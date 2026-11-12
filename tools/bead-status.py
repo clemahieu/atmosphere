@@ -477,12 +477,12 @@ def server(root, bind, port):
     return made
 
 
-def harvesting(root, projects):
+def harvesting(root, home):
     """Bring the token ledger up to date every HARVEST seconds, for as long as the server runs."""
     ledger = token_ledger()
     while True:
         try:
-            ledger.harvest(root / LEDGER, projects, root)
+            ledger.harvest(root / LEDGER, home, root)
         except Exception as failure:  # a transcript of a shape the ledger does not know stops one harvest, not the page
             print(f"token ledger: {failure!r}", file=sys.stderr, flush=True)
         time.sleep(HARVEST)
@@ -495,7 +495,7 @@ def main(arguments):
     options = parser.parse_args(arguments)
     root = Path(__file__).resolve().parents[2]
     serving = server(root, options.bind, options.port)
-    threading.Thread(target=harvesting, args=(root, Path.home() / ".claude" / "projects"), daemon=True).start()
+    threading.Thread(target=harvesting, args=(root, Path.home()), daemon=True).start()
     # The same command again, in this process: the listening socket closes with the old image.
     threading.Thread(target=renewing, args=(WATCHED, lambda: os.execv(sys.executable, [sys.executable, *sys.argv])), daemon=True).start()
     print(f"bead status: http://{options.bind}:{serving.server_address[1]}/", flush=True)
@@ -808,8 +808,7 @@ class Tests(unittest.TestCase):
 
     def test_the_server_reads_the_tokens_out_of_the_ledger(self):
         (self.root / "list.json").write_text(json.dumps(self.tree()))
-        projects = self.root / "projects"
-        sessions = projects / (str(self.root).replace("/", "-").replace(".", "-").replace("_", "-") + "-main")
+        sessions = self.root / ".claude" / "projects" / (str(self.root).replace("/", "-").replace(".", "-").replace("_", "-") + "-main")
         sessions.mkdir(parents=True)
         # One call long ago and one this hour.
         hour = int(time.time()) // 3600 * 3600
@@ -818,7 +817,7 @@ class Tests(unittest.TestCase):
             "usage": {"input_tokens": 1, "cache_creation_input_tokens": 10, "cache_read_input_tokens": 100, "output_tokens": 5}}}
         later = {**call, "requestId": "req_2", "timestamp": datetime.fromtimestamp(hour, timezone.utc).isoformat(), "message": {**call["message"], "content": []}}
         (sessions / "s.jsonl").write_text(json.dumps(call) + "\n" + json.dumps(later) + "\n")
-        token_ledger().harvest(self.root / LEDGER, projects, self.root)
+        token_ledger().harvest(self.root / LEDGER, self.root, self.root)
         address = self.serve(f'case "$1" in list) cat {self.root}/list.json;; ready) echo [];; esac')
         with urllib.request.urlopen(f"{address}/data") as reply:
             found = json.load(reply)
