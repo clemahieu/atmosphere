@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-//! The witnesses of eight uses a process exists for. A creator can build a process that holds a
+//! The witnesses of ten uses a process exists for. A creator can build a process that holds a
 //! capability it chose and has a thread bound to it: from the state boot leaves, the root gives itself a
 //! leaf, retypes a process and a thread bound to it, retypes a leaf into the new process's table and
 //! derives an untyped into it. The root can share memory between processes it built: it retypes two
@@ -18,6 +18,9 @@
 //! table under the space's root, binds the device and unbinds it, and deletes the space's capability;
 //! a retype under its untyped then slices the space, waits until every core and IOMMU acknowledges,
 //! frees the block, and a device space is retyped there again.
+//! A creator can take back what it gave a process it controls: it claims a capability out of the
+//! process's table into its own. And it can set and read the registers of a thread it has not started,
+//! through the thread's control capability.
 //! Beside those, boot can start the root: core 0 loads the root's space and enters its thread.
 //! Every step is proven to succeed. Only Verus compiles this module, so no image contains it.
 //! See design/process-holds-capabilities/.
@@ -57,7 +60,7 @@ use crate::capability::revoke::*;
 use crate::capability::space::*;
 use crate::capability::steps::*;
 use crate::capability::switch::*;
-use crate::arch::Registers;
+use crate::arch::{user_frame, user_rip, Registers};
 use crate::capability::table::*;
 use crate::capability::thread::*;
 use crate::capability::view::*;
@@ -79,6 +82,10 @@ pub const WITNESS_FRAME_SLOT: usize = 259;
 
 /// The index of the new process's table the derived capability goes in: slot 1 of its root entry 0.
 pub const WITNESS_CHILD_SLOT: usize = 1;
+
+/// The index of the root's table a capability claimed out of the new process's table goes in: slot 3
+/// of root entry 2.
+pub const WITNESS_CLAIM_SLOT: usize = 259;
 
 /// The index of the root's table a device space's capability goes in, when a process binds a device:
 /// slot 2 of root entry 2.
@@ -1227,6 +1234,7 @@ impl CapKernel {
                 &&& final(self).slot_holds(process, WITNESS_PROCESS_SLOT, (base + 8 * PAGE_SZ + 1) as usize, process_of(base))
                 &&& final(self).slot_holds(process, WITNESS_THREAD_SLOT, (base + 8 * PAGE_SZ + 2) as usize, thread_of(thread))
                 &&& final(self).slot_holds(base, WITNESS_CHILD_SLOT, child, child_of(first, UNTYPED_RIGHTS, (base + 14 * PAGE_SZ) as usize, 1))
+                &&& witness_empty(*final(self), process, WITNESS_CLAIM_SLOT, (base + 8 * PAGE_SZ + 3) as usize)
                 &&& final(self).flush_epoch == 0
                 &&& witness_alive(*final(self), base)
                 &&& final(self).threads.records@.contains_key(thread)
@@ -1383,6 +1391,10 @@ impl CapKernel {
             assert(!s1.list.nodes@[s1.tables.node_of(process, WITNESS_THREAD_SLOT) as int].live);
             assert(s1.tables.node_of(process, WITNESS_PROCESS_SLOT) == b2 + 1);
             assert(s1.tables.node_of(process, WITNESS_THREAD_SLOT) == b2 + 2);
+            assert(index_ok(WITNESS_CLAIM_SLOT) && index_entry(WITNESS_CLAIM_SLOT) == 2);
+            assert(s1.tables.has_slot(&s1.list, process, WITNESS_CLAIM_SLOT));
+            assert(s1.tables.node_of(process, WITNESS_CLAIM_SLOT) == b2 + 3);
+            assert(witness_empty(s1, process, WITNESS_CLAIM_SLOT, (b2 + 3) as usize));
             assert(s1.processes == s0.processes);
             assert(s1.tables.roots@.contains_key(process));
             assert(s1.root_live(process));
@@ -1437,6 +1449,8 @@ impl CapKernel {
             assert(s2.tables.has_slot(&s2.list, process, WITNESS_THREAD_SLOT));
             assert(s2.tables.node_of(process, WITNESS_THREAD_SLOT) == b2 + 2);
             assert(!s2.list.nodes@[(b2 + 2) as int].live);
+            assert(s2.tables.has_slot(&s2.list, process, WITNESS_CLAIM_SLOT));
+            assert(witness_empty(s2, process, WITNESS_CLAIM_SLOT, (b2 + 3) as usize));
             assert(s1.processes.records@.contains_key(process));
             assert(s2.processes.records@.contains_key(process));
             assert(s2.root_live(process));
@@ -1499,6 +1513,8 @@ impl CapKernel {
             assert(s3.tables.has_slot(&s3.list, process, WITNESS_PROCESS_SLOT));
             assert(s3.tables.node_of(process, WITNESS_PROCESS_SLOT) == np);
             assert(s3.is_cap(np) && s3.payload_of(np) == process_of(base));
+            assert(s3.tables.has_slot(&s3.list, process, WITNESS_CLAIM_SLOT));
+            assert(witness_empty(s3, process, WITNESS_CLAIM_SLOT, (b2 + 3) as usize));
             assert(s2.processes.records@.contains_key(process));
             assert(s3.processes.records@.contains_key(process));
             assert(s3.root_live(process));
@@ -1581,6 +1597,8 @@ impl CapKernel {
             assert(s4.tables.has_slot(&s4.list, process, WITNESS_PROCESS_SLOT));
             assert(s4.tables.node_of(process, WITNESS_PROCESS_SLOT) == np);
             assert(s4.is_cap(np) && s4.payload_of(np) == process_of(base));
+            assert(s4.tables.has_slot(&s4.list, process, WITNESS_CLAIM_SLOT));
+            assert(witness_empty(s4, process, WITNESS_CLAIM_SLOT, (b2 + 3) as usize));
             assert(s4.root_live(process));
             assert(s4.tables.roots@.contains_key(process));
             // The leaf's hidden node goes under the untyped, so the two capabilities keep their children.
@@ -1668,6 +1686,8 @@ impl CapKernel {
             assert(s5.slot_holds(process, WITNESS_PROCESS_SLOT, np, process_of(base)));
             assert(s5.slot_holds(process, WITNESS_THREAD_SLOT, (b2 + 2) as usize, thread_of(bt)));
             assert(s5.slot_holds(base, WITNESS_CHILD_SLOT, child, child_of(first, UNTYPED_RIGHTS, bd, 1)));
+            Self::lemma_slot_stays(s4, s5, process, WITNESS_CLAIM_SLOT);
+            assert(witness_empty(s5, process, WITNESS_CLAIM_SLOT, (b2 + 3) as usize));
             Self::lemma_acknowledged_kept(s0, s5, base / PAGE_SZ);
             Self::lemma_acknowledged_kept(s0, s5, (base / PAGE_SZ + 12) as usize);
             Self::lemma_acknowledged_kept(s0, s5, (base / PAGE_SZ + 13) as usize);
@@ -1892,6 +1912,146 @@ impl CapKernel {
             lemma_sealed_held_once(s3, base, pn, thread, tn);
         }
         ok0 && ok1 && ok2
+    }
+
+    /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first
+    /// of two free ones past those boot's tables took from the first untyped: build a process at `base`
+    /// holding an untyped in slot 1 of its leaf, as witness_process_holds_capability does; then claim
+    /// that untyped out of the process's table into slot 259 of the root's own, through the process
+    /// capability. The claim succeeds: the root's slot holds the untyped, under the root's untyped as
+    /// before, the process's slot holds nothing, and the process is still live. The use is a creator
+    /// taking back a capability it gave a process it controls. See design/process-holds-capabilities/.
+    pub fn witness_root_claims_a_capability(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: Ghost<usize>,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        base: usize,
+    ) -> (ret: bool)
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
+            image_tables_bound(image@) + 2 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
+            base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
+        ensures
+            ret,
+            ({
+                let first = page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]);
+                let u = (leaf@ + ROOT_UNTYPED_SLOT) as usize;
+                let child = (base + 12 * PAGE_SZ + 1) as usize;
+                let claimed = (base + 8 * PAGE_SZ + 3) as usize;
+                &&& final(self).wf()
+                &&& base != process
+                &&& final(self).slot_holds(process, WITNESS_CLAIM_SLOT, claimed, child_of(first, UNTYPED_RIGHTS, (base + 14 * PAGE_SZ) as usize, 1))
+                &&& final(self).list.is_child(u, claimed)
+                &&& final(self).tables.has_slot(&final(self).list, base, WITNESS_CHILD_SLOT)
+                &&& final(self).tables.node_of(base, WITNESS_CHILD_SLOT) == child
+                &&& !final(self).is_cap(child)
+                &&& witness_alive(*final(self), base)
+            }),
+    {
+        let ok0 = self.witness_process_holds_capability(root, process, leaf, frames, t, free, image, untyped, frame, present, base);
+        let ghost s1 = *self;
+        let ghost first = page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]);
+        let ghost u = (leaf@ + ROOT_UNTYPED_SLOT) as usize;
+        let ghost np = (base + 8 * PAGE_SZ + 1) as usize;
+        let ghost child = (base + 12 * PAGE_SZ + 1) as usize;
+        let ghost claimed = (base + 8 * PAGE_SZ + 3) as usize;
+        proof {
+            assert(PROCESS_RIGHTS & right_bit(Right::Control) != 0) by (compute_only);
+            assert(s1.root_live(process));
+            assert(s1.table_at(process, Some(WITNESS_PROCESS_SLOT)) == Some(base));
+            assert(s1.destination_at(process, None) == Some(process));
+            assert(s1.can_move_between(base, WITNESS_CHILD_SLOT, process, WITNESS_CLAIM_SLOT));
+        }
+
+        // The untyped, out of slot 1 of the process's leaf into slot 259 of the root's own table, through
+        // the process capability: a claim.
+        let from = Position { through: Some(WITNESS_PROCESS_SLOT), index: WITNESS_CHILD_SLOT };
+        let to = Position { through: None, index: WITNESS_CLAIM_SLOT };
+        let ok1 = self.move_cap(process, from, to);
+        proof {
+            let s2 = *self;
+            assert(ok1);
+            assert(Self::cap_moved_between(s1, s2, base, WITNESS_CHILD_SLOT, process, WITNESS_CLAIM_SLOT));
+            assert(s2.payload_of(claimed) == child_of(first, UNTYPED_RIGHTS, (base + 14 * PAGE_SZ) as usize, 1));
+            assert(s2.is_cap(claimed));
+            assert(child % PAGE_SZ != 0 && claimed % PAGE_SZ != 0);
+            lemma_slot_kept_two(s1, s2, process, WITNESS_CLAIM_SLOT, child, claimed);
+            lemma_slot_kept_two(s1, s2, base, WITNESS_CHILD_SLOT, child, claimed);
+            assert(s1.list.parent@[child] == u);
+            assert(s2.list.parent@ == moved_parent(s1.list.parent@, child, claimed));
+            assert(s2.list.parent@.contains_key(claimed));
+            assert(s2.list.parent@[claimed] == u);
+            assert(s2.list.is_child(u, claimed));
+        }
+        ok0 && ok1
+    }
+
+    /// From the state boot leaves, as the root at `process`, with the order-3 block at `base` the first
+    /// of two free ones past those boot's tables took from the first untyped: build a process at `base`
+    /// with an Inactive thread bound to it, as witness_process_holds_capability does; write `frame` as
+    /// the thread's registers through the thread capability with control in slot 258, then read them
+    /// back through it. The write succeeds exactly when the frame's program counter is a user address,
+    /// and then the read returns the frame as the write made it a user frame. The use is a creator
+    /// setting a thread's registers before it starts, and a handler reading a stopped thread's.
+    pub fn witness_thread_registers(
+        &mut self,
+        root: Ghost<usize>,
+        process: usize,
+        leaf: Ghost<usize>,
+        frames: Ghost<usize>,
+        t: Ghost<usize>,
+        free: Ghost<Seq<(usize, usize)>>,
+        image: Ghost<Seq<ImageRun>>,
+        untyped: Ghost<usize>,
+        frame: Ghost<usize>,
+        present: Ghost<Seq<bool>>,
+        base: usize,
+        registers: Registers,
+    ) -> (ret: (bool, Option<Registers>))
+        requires
+            old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
+            image_tables_bound(image@) + 2 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
+            base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
+        ensures
+            ret.0 == user_rip(registers.spec_pc()),
+            ret.1 is Some,
+            ret.0 ==> ret.1 == Some(user_frame(registers)),
+            final(self).wf(),
+    {
+        let ok0 = self.witness_process_holds_capability(root, process, leaf, frames, t, free, image, untyped, frame, present, base);
+        let ghost s1 = *self;
+        let ghost thread = (base + 10 * PAGE_SZ) as usize;
+        let ghost nt = (base + 8 * PAGE_SZ + 2) as usize;
+        proof {
+            assert(THREAD_RIGHTS & right_bit(Right::Control) != 0) by (compute_only);
+            assert(s1.root_live(process));
+            assert(s1.payload_of(nt) == thread_of(thread));
+            assert(!s1.cap_dead(nt));
+            assert(s1.can_set_registers(process, WITNESS_THREAD_SLOT));
+        }
+        let ok1 = self.write_registers(process, WITNESS_THREAD_SLOT, registers);
+        let ghost s2 = *self;
+        proof {
+            if ok1 {
+                assert(Self::frame_written(s1, s2, thread, user_frame(registers)));
+                assert(s2.threads.records@[thread].value().state is Inactive);
+            } else {
+                assert(s2 == s1);
+            }
+            assert(s2.tables == s1.tables && s2.list == s1.list && s2.processes == s1.processes);
+            assert(s2.root_live(process));
+            assert(s2.can_set_registers(process, WITNESS_THREAD_SLOT));
+        }
+        let read = self.read_registers(process, WITNESS_THREAD_SLOT);
+        (ok0 && ok1, read)
     }
 
     /// From the end of the spawn witness, as the root: destroy the process through its capability in
