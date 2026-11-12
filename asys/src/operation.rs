@@ -93,6 +93,11 @@ pub const RETYPE_TABLE_PAGE: u64 = 2;
 /// its table.
 pub const RETYPE_LEAF: u64 = 3;
 
+/// Retype's kind in argument 1 that frees a dead frame: the frame of the order in argument 4, 0, 9 or
+/// 18, at the base in argument 2, whose last capability is gone. Retype returns again while a core may
+/// still hold a translation to it and ok once the block is free, after which a retype can type it again.
+pub const RETYPE_FREE: u64 = 4;
+
 /// The kind numbers inspect returns in result 1.
 pub const KIND_UNTYPED: u64 = 0;
 pub const KIND_FRAME: u64 = 1;

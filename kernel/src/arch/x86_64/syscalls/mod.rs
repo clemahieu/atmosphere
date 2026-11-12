@@ -51,6 +51,7 @@ const _: () = {
     assert!(user::RETYPE_LARGE_FRAME == operation::RETYPE_LARGE_FRAME);
     assert!(user::RETYPE_TABLE_PAGE == operation::RETYPE_TABLE_PAGE);
     assert!(user::RETYPE_LEAF == operation::RETYPE_LEAF);
+    assert!(user::RETYPE_FREE == operation::RETYPE_FREE);
     assert!(user::POSITION_THROUGH_SHIFT == verified::capability::position::POSITION_THROUGH_SHIFT);
     assert!(user::POSITION_WIDTH == verified::capability::position::POSITION_WIDTH);
     assert!(user::TABLE_INDICES - 1 == verified::capability::position::POSITION_INDEX_MASK);

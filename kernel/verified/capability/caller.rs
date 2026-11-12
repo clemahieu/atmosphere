@@ -953,7 +953,8 @@ impl CapKernel {
     /// the same of its block, which is free or being zeroed by this retype; a table page needs its
     /// order-3 block covered and free and a level a table page has; a leaf needs the word to name a
     /// position whose root entry is free, its order-1 block covered and free, and a base that is not
-    /// zero. Every other kind is refused.
+    /// zero; the free kind needs the frame of the order in level at base dead under the untyped, which
+    /// reads the block table outside the view. Every other kind is refused.
     pub open spec fn retype_allowed(&self, root: usize, kind: u64, from: usize, base: usize, word: u64, level: usize) -> bool {
         let at = spec_position(word);
         ||| {
@@ -982,6 +983,7 @@ impl CapKernel {
             &&& base != NO_LEAF
             &&& self.small_block_free(base, 1)
         }
+        ||| kind == RETYPE_FREE && self.can_free_frame(root, from, base, level)
     }
 
     /// Every page of every frame capability in any table's view in pre lies in the block it did in post,
@@ -1030,7 +1032,8 @@ impl CapKernel {
     /// of the counts. A table page: ok, with every table's view and every frame capability's blocks and
     /// their counts as they were and an empty table page of the level at base. A
     /// leaf: ok, with every table's view as it was and every index of the root entry it fills an empty
-    /// slot of the position's table.
+    /// slot of the position's table. The free kind: again, with every table's view and the block table
+    /// as they were, or ok, with every table's view as it was.
     pub open spec fn retype_contract(pre: Self, post: Self, root: usize, kind: u64, from: usize, base: usize, word: u64, level: usize, out: Outcome) -> bool {
         let allowed = pre.retype_allowed(root, kind, from, base, word, level);
         let to = word as usize;
@@ -1082,6 +1085,19 @@ impl CapKernel {
                 &&& out == status_only(STATUS_OK)
                 &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
                 &&& forall|i: usize| index_ok(i) && index_entry(i) == at.index as int ==> #[trigger] post.empty_slot(table, i)
+            }
+            ||| {
+                &&& kind == RETYPE_FREE
+                &&& allowed
+                &&& out == status_only(STATUS_AGAIN)
+                &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
+                &&& post.blocks == pre.blocks
+            }
+            ||| {
+                &&& kind == RETYPE_FREE
+                &&& allowed
+                &&& out == status_only(STATUS_OK)
+                &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
             }
         }
     }
@@ -1253,6 +1269,12 @@ impl CapKernel {
             }
             Self::lemma_unslotted_node(pre, post, base);
             Self::lemma_run_keeps_frame_blocks(pre, post, (base / PAGE_SZ) as int, 3);
+        } else if kind == RETYPE_FREE {
+            if out == status_only(STATUS_OK) {
+                let c = choose|c: usize| c < NUM_CPUS && #[trigger] pre.frame_freed_of(post, c, root, from, base, level);
+                assert(post.list == pre.list && post.tables == pre.tables);
+            }
+            Self::lemma_views_same(pre, post);
         } else {
             let at = spec_position(word)->0;
             Self::lemma_leaf_views(pre, post, root, from, at, base);

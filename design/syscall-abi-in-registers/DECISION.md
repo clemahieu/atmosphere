@@ -108,6 +108,7 @@ Retype's kind in argument 1:
 | 2M frame | 1 | base, destination slot | `again` while the block is zeroed a slice at a time, then ok with a frame capability of order 9 in the slot. A later retype naming the same block goes on where an earlier one stopped. |
 | table page | 2 | base, table level | An unlinked table page of level 1, 2 or 3 at the base. No capability names it, so it takes no slot; link names it by its base. |
 | table leaf | 3 | base, the root entry's position in argument 3 | A table leaf of the two pages at the base in the empty root entry: of the caller's table, or of a live process's it controls, whose table it gives that entry's 127 slots. No capability names it, so it takes no slot. |
+| free | 4 | base, the frame's order in argument 4: 0, 9 or 18 | Frees the dead frame at the base, one whose last capability is gone: `again` while a core may still hold a translation to it, then ok with the block free, so a later retype can type it again. |
 
 Any other kind is refused. Revoke returns `again` while its run is not empty after its budget of steps, ok when it is, and refused when the slot names no capability, or when the flush epoch is at its limit, since a further step could not record its staleness.
 

@@ -22,6 +22,7 @@ use crate::capability::position::*;
 use crate::capability::probe::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::reach::*;
+use crate::capability::reclaim::ReclaimStep;
 use crate::capability::retype::RetypeStep;
 use crate::capability::revoke::RevokeStep;
 #[cfg(verus_keep_ghost)]
@@ -48,7 +49,7 @@ pub const STATUS_UNKNOWN: u64 = 2;
 /// it stopped. See design/one-lock-bounded-steps/.
 pub const STATUS_AGAIN: u64 = 3;
 
-/// invoke_retype's bound in the step counter: a table page's retype, the largest of the four kinds.
+/// invoke_retype's bound in the step counter: a table page's retype, the largest of the five kinds.
 /// See design/one-lock-bounded-steps/.
 pub const INVOKE_RETYPE_STEPS: usize = crate::capability::space::RETYPE_TABLE_PAGE_STEPS;
 
@@ -110,6 +111,10 @@ pub const RETYPE_TABLE_PAGE: u64 = 2;
 /// Retype's kind in argument 1 for a table leaf, at the base in argument 2, in the root entry the
 /// position word in argument 3 names. Every other kind is refused until it is wired.
 pub const RETYPE_LEAF: u64 = 3;
+
+/// Retype's kind in argument 1 that frees the dead frame at the base in argument 2, of the order in
+/// argument 4, 0, 9 or 18, under the untyped in the slot: the frame part of reclaim.
+pub const RETYPE_FREE: u64 = 4;
 
 /// What an invocation returns to its thread: the status word and results 1 to 4, which
 /// Registers::write_outcome puts at their positions in the frame.
@@ -321,7 +326,8 @@ impl CapKernel {
     /// the kind in argument 1: a 4K frame by can_retype_frame, a 2M frame by can_retype_large, a table
     /// page by can_retype_table_page and a leaf by can_retype_leaf, over the untyped in the slot, the
     /// base in argument 2, the slot in argument 3, the level in argument 4 and the position word in
-    /// argument 3 as each kind reads them. Every other kind is refused.
+    /// argument 3 as each kind reads them; and the free kind by can_free_frame, over the untyped in the
+    /// slot, the base in argument 2 and the order in argument 4. Every other kind is refused.
     pub open spec fn allows_retype(&self, root: usize, frame: Registers) -> bool {
         let from = frame.slot() as usize;
         let base = frame.argument(2) as usize;
@@ -330,6 +336,36 @@ impl CapKernel {
         ||| frame.argument(1) == RETYPE_LARGE_FRAME && self.can_retype_large(root, from, frame.argument(3) as usize, base, 9)
         ||| frame.argument(1) == RETYPE_TABLE_PAGE && self.can_retype_table_page(root, from, base, frame.argument(4) as usize)
         ||| frame.argument(1) == RETYPE_LEAF && at is Some && self.can_retype_leaf(root, from, at->0, base)
+        ||| frame.argument(1) == RETYPE_FREE && self.can_free_frame(root, from, base, frame.argument(4) as usize)
+    }
+
+    /// The free kind may run on the frame of the order at base, under the untyped at index from of the
+    /// table at root: a dead 4K frame the untyped covers at order 0, as reclaim_frame frees, and a dead
+    /// 2M or 1G frame at order 9 or 18, as reclaim_large_frame frees.
+    pub open spec fn can_free_frame(&self, root: usize, from: usize, base: usize, order: usize) -> bool {
+        ||| order == 0 && self.can_retype_under(root, from, base, 0) && self.frame_is_dead(base / PAGE_SZ)
+        ||| (order == 9 || order == 18) && self.can_reclaim_large(root, from, base, order as u8)
+    }
+
+    /// Every core has acknowledged the staleness of the frame of the order at base, so no core may
+    /// hold a translation to it and the free can run: the page at order 0, the region otherwise.
+    pub open spec fn frame_free_acknowledged(&self, base: usize, order: usize) -> bool {
+        if order == 0 {
+            self.acknowledged(base / PAGE_SZ)
+        } else {
+            let level = crate::capability::zero::large_level(order as u8);
+            self.region_acknowledged(level, base / PAGE_SZ / crate::capability::zero::level_pages(level))
+        }
+    }
+
+    /// What freeing the frame of the order at base did, from self to post on core c: frame_freed at
+    /// order 0, large_frame_freed otherwise.
+    pub open spec fn frame_freed_of(&self, post: Self, c: usize, root: usize, from: usize, base: usize, order: usize) -> bool {
+        if order == 0 {
+            self.frame_freed(post, c, root, from, base)
+        } else {
+            self.large_frame_freed(post, c, root, from, base, order as u8)
+        }
     }
 
     /// A retype in frame by a thread of the process whose table is at root, from pre to post with out
@@ -340,7 +376,10 @@ impl CapKernel {
     /// zero; for the table page kind, ok with an unlinked table page of the level in argument 4 at the
     /// base in argument 2 under the untyped in the slot; or, for the leaf kind, ok with a table leaf at
     /// the base in argument 2 under the untyped in the slot, in the root entry the position word in
-    /// argument 3 names. Every arm but the table page's leaves every space's tables as they were.
+    /// argument 3 names; or, for the free kind, again with nothing changed while a core has not
+    /// acknowledged the frame's staleness, and ok with the frame of the order in argument 4 at the base
+    /// in argument 2 freed by reclaim once every core has. Every arm but the table page's leaves every
+    /// space's tables as they were.
     pub open spec fn spec_retyped(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome) -> bool {
         ||| !pre.allows_retype(root, frame) && out == status_only(STATUS_REFUSED) && post == pre
         ||| {
@@ -371,6 +410,22 @@ impl CapKernel {
             &&& out == status_only(STATUS_OK)
             &&& spec_position(frame.argument(3)) is Some
             &&& Self::leaf_retyped(pre, post, root, frame.slot() as usize, spec_position(frame.argument(3))->0, frame.argument(2) as usize)
+            &&& Self::same_tree(pre, post)
+        }
+        ||| {
+            &&& frame.argument(1) == RETYPE_FREE
+            &&& pre.allows_retype(root, frame)
+            &&& !pre.frame_free_acknowledged(frame.argument(2) as usize, frame.argument(4) as usize)
+            &&& out == status_only(STATUS_AGAIN)
+            &&& post == pre
+        }
+        ||| {
+            &&& frame.argument(1) == RETYPE_FREE
+            &&& pre.allows_retype(root, frame)
+            &&& pre.frame_free_acknowledged(frame.argument(2) as usize, frame.argument(4) as usize)
+            &&& out == status_only(STATUS_OK)
+            &&& exists|c: usize| c < NUM_CPUS
+                && #[trigger] pre.frame_freed_of(post, c, root, frame.slot() as usize, frame.argument(2) as usize, frame.argument(4) as usize)
             &&& Self::same_tree(pre, post)
         }
     }
@@ -687,6 +742,32 @@ impl CapKernel {
     {
     }
 
+    /// A retype of the free kind naming a dead 4K frame reaches reclaim: refused with nothing changed
+    /// unless the caller may retype the page and its frame is dead; again with nothing changed while a
+    /// core has not acknowledged the page's staleness; ok once every core has, with the page freed by
+    /// reclaim, so the next 4K retype of it can succeed.
+    pub proof fn lemma_dead_frame_freed(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            Self::invoked(pre, post, root, frame, out),
+            spec_operation(frame.operation_number()) == Some(Operation::Retype),
+            frame.argument(1) == RETYPE_FREE,
+            frame.argument(4) == 0,
+        ensures
+            ({
+                let from = frame.slot() as usize;
+                let base = frame.argument(2) as usize;
+                let page = base / PAGE_SZ;
+                &&& !(pre.can_retype_under(root, from, base, 0) && pre.frame_is_dead(page))
+                    ==> out == status_only(STATUS_REFUSED) && post == pre
+                &&& pre.can_retype_under(root, from, base, 0) && pre.frame_is_dead(page) && !pre.acknowledged(page)
+                    ==> out == status_only(STATUS_AGAIN) && post == pre
+                &&& pre.can_retype_under(root, from, base, 0) && pre.frame_is_dead(page) && pre.acknowledged(page)
+                    ==> out == status_only(STATUS_OK) && post.blocks.small_free(page as int, 0)
+                        && exists|c: usize| c < NUM_CPUS && #[trigger] pre.frame_freed(post, c, root, from, base)
+            }),
+    {
+    }
+
     /// An unmap, allowed or refused, leaves the tables, the list's parents and the bound threads as they
     /// were, and changes the kind or the liveness of no node but a mapping node, so no capability.
     pub proof fn lemma_unmapped_frame(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
@@ -772,7 +853,7 @@ impl CapKernel {
             assert(self.cores@[c as int].space == Some(root));
         }
         match operation(frame.operation_number()) {
-            Some(Operation::Retype) => Some(self.invoke_retype(root, frame, Tracked(&mut steps))),
+            Some(Operation::Retype) => Some(self.invoke_retype(c, root, frame, Tracked(&mut steps))),
             Some(Operation::Derive) => Some(self.invoke_derive(root, frame, Tracked(&mut steps))),
             Some(Operation::Move) => Some(self.invoke_move(root, frame, Tracked(&mut steps))),
             Some(Operation::Delete) => Some(self.invoke_delete(root, frame, Tracked(&mut steps))),
@@ -832,9 +913,10 @@ impl CapKernel {
     }
 
     /// The retype in frame, by a thread of the process whose table is at root.
-    fn invoke_retype(&mut self, root: usize, frame: Registers, Tracked(steps): Tracked<&mut Steps>) -> (ret: Outcome)
+    fn invoke_retype(&mut self, c: usize, root: usize, frame: Registers, Tracked(steps): Tracked<&mut Steps>) -> (ret: Outcome)
         requires
             old(self).wf(),
+            c < NUM_CPUS,
             old(self).tables.roots@.contains_key(root),
             old(self).root_live(root),
         ensures
@@ -871,6 +953,25 @@ impl CapKernel {
                     }
                 },
                 None => STATUS_REFUSED,
+            }
+        } else if frame.argument(1) == RETYPE_FREE {
+            let order = frame.argument(4);
+            let step = if order == 0 {
+                self.reclaim_frame(c, root, frame.slot() as usize, frame.argument(2) as usize, Tracked(steps))
+            } else if order == 9 || order == 18 {
+                self.reclaim_large_frame(c, root, frame.slot() as usize, frame.argument(2) as usize, order as u8, Tracked(steps))
+            } else {
+                ReclaimStep::Refused
+            };
+            proof {
+                if step is Freed {
+                    assert(old(self).frame_freed_of(*self, c, root, frame.slot() as usize, frame.argument(2) as usize, order as usize));
+                }
+            }
+            match step {
+                ReclaimStep::Freed => STATUS_OK,
+                ReclaimStep::Again => STATUS_AGAIN,
+                _ => STATUS_REFUSED,
             }
         } else {
             STATUS_REFUSED

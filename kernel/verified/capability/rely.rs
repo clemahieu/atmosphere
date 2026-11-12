@@ -529,6 +529,12 @@ impl CapKernel {
             }
         } else if kind == RETYPE_TABLE_PAGE {
             assert(after == bound);
+        } else if kind == RETYPE_FREE {
+            if out == status_only(STATUS_OK) {
+                let c = choose|c: usize| c < crate::define::NUM_CPUS && #[trigger] pre.frame_freed_of(post, c, caller, from, base, frame.argument(4) as usize);
+                assert(post.list == pre.list && post.tables == pre.tables);
+            }
+            assert(after == bound);
         } else {
             reveal(binding_parents);
             assert forall|x: usize| #[trigger] after.contains_key(x) implies bound.contains_key(x) && after[x] == bound[x] by {
