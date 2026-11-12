@@ -3,7 +3,7 @@ title: "The committer is not the proof's adversary, and rustc, Verus and vstd ar
 date: 2026-11-11
 status: active
 tags: [process, gate, verified, skeptic]
-one_line: "The proof is defended against user processes, devices, other cores and a specification weaker than its intent. It is not defended against whoever writes the tree: the gate counts every exemption from the proof that is written openly, on purpose or by accident, and claims nothing about one that is disguised; a hole in what Verus trusts is reported to the Verus project; and a skeptic pass refutes a criterion by a proof hole or by what the running system allows, not by what a committer could add."
+one_line: "The proof is defended against user processes, devices, other cores and a specification weaker than its intent. It is not defended against whoever writes the tree: the gate counts every exemption from the proof that is written openly, on purpose or by accident, and claims nothing about one that is disguised; a hole in what Verus trusts is the tool's, kept in a backlog and not defended against in the tree; and a skeptic pass refutes a criterion by a proof hole or by what the running system allows, not by what a committer could add."
 revisit_if: "Commits land from someone the human does not direct, such as an outside contributor or a pull request, which makes the committer a party to defend against and needs a check the committer cannot edit; or an exemption that was disguised, not merely unlisted, is found in the tree."
 confidence: "A judgement by the human, made on one day's measurement of what the other choice cost. That no check kept in the tree holds against a committer who can edit it is an argument, not a measurement."
 ---
@@ -15,7 +15,7 @@ The adversaries of the proof are outside the tree: a user process, a device, ano
 Three things follow.
 
 - **The gate counts what is written openly.** `tools/check-external-body.py` holds every claim a crate marked verified takes without proving it to `tools/external-body-list`, and refuses an exemption written any other way, including the ones that arrive by accident: an attribute nobody listed, an impl or a derive that Verus takes without verifying. That is what the step is for and all that the records claim from it. It is not claimed to catch an exemption its author disguised.
-- **A hole in what Verus trusts is Verus's.** When Verus accepts code it did not verify, or accepts what it should refuse, the finding is written down for a report to the Verus project. The tree is not changed to defend against it unless ordinary code could fall into it by accident.
+- **A hole in what Verus trusts is Verus's.** When Verus accepts code it did not verify, or accepts what it should refuse, the finding is kept, with a source that shows it, in a backlog of tool hardening; whether and when it goes to the Verus project is the human's call. The tree is not changed to defend against it unless ordinary code could fall into it by accident.
 - **The skeptic attacks from outside.** A pass refutes a criterion by a proof hole or by something the running system allows, with throwaways that use the tree's items as they stand. A throwaway that adds an exemption, changes the item it then attacks, or hides something from a check by how it is spelled refutes nothing; `.claude/agents/skeptic.md` says what the pass reports instead.
 
 ## Context
