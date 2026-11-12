@@ -756,6 +756,12 @@ impl CapKernel {
                 || (old(self).can_retype_under(root, from, base, 1) && old(self).thread_is_spent(base))
                 || old(self).can_reclaim_large(root, from, base, 9)
                 || old(self).can_reclaim_large(root, from, base, 18)) ==> ret is Refused,
+            old(self).can_retype_under(root, from, base, 0) && old(self).frame_is_dead(base / PAGE_SZ)
+                ==> if old(self).acknowledged(base / PAGE_SZ) {
+                    ret is Freed && old(self).frame_freed(*final(self), c, root, from, base)
+                } else {
+                    ret is Again
+                },
             old(self).can_reclaim_large(root, from, base, 9)
                 ==> if old(self).region_acknowledged(Large::Two, base / PAGE_SZ / PAGES_PER_2M) {
                     ret is Freed && old(self).large_frame_freed(*final(self), c, root, from, base, 9)
@@ -4822,6 +4828,12 @@ impl CapKernel {
             !(ret is Slice),
             !(ret is Freed) ==> *final(self) == *old(self),
             !(old(self).can_retype_under(root, from, base, 0) && old(self).frame_is_dead(base / PAGE_SZ)) ==> ret is Refused,
+            old(self).can_retype_under(root, from, base, 0) && old(self).frame_is_dead(base / PAGE_SZ)
+                ==> if old(self).acknowledged(base / PAGE_SZ) {
+                    ret is Freed && old(self).frame_freed(*final(self), c, root, from, base)
+                } else {
+                    ret is Again
+                },
             ret is Again ==> !old(self).acknowledged(base / PAGE_SZ),
             ret is Freed ==> old(self).frame_freed(*final(self), c, root, from, base),
     {
