@@ -11,6 +11,8 @@ verus! {
 
 use crate::arch::load_translation_root;
 #[cfg(verus_keep_ghost)]
+use crate::arch::tag_written;
+#[cfg(verus_keep_ghost)]
 use crate::capability::block::*;
 use crate::capability::kernel::*;
 #[cfg(verus_keep_ghost)]
@@ -395,7 +397,7 @@ impl CapKernel {
             Self::step_ok(*old(self), *final(self), c as int),
             final(self).cores@[c as int].space == space,
             final(self).spaces.registers@[c as int].root() == root,
-            final(self).spaces.registers@[c as int].tag() == tag,
+            final(self).spaces.registers@[c as int].tag() == tag_written(c as int, tag),
             forall|d: int| d != c ==> #[trigger] final(self).spaces.registers@[d] == old(self).spaces.registers@[d],
             final(self).cores@[c as int].current_thread == old(self).cores@[c as int].current_thread,
             final(self).cores@[c as int].acked_epoch == old(self).cores@[c as int].acked_epoch,
@@ -405,7 +407,7 @@ impl CapKernel {
             forall|d: int, r: usize| 0 <= d < NUM_CPUS ==> #[trigger] holds_id(final(self).cores@, final(self).spaces.loaded@, d, r) == holds_id(old(self).cores@, old(self).spaces.loaded@, d, r),
             final(self).tlb@.len() == old(self).tlb@.len(),
             forall|d: int| #[trigger] final(self).tlb@[d] == old(self).tlb@[d],
-            final(self).tlb@.tags(c as int) == old(self).tlb@.tags(c as int).insert(tag),
+            final(self).tlb@.tags(c as int) == old(self).tlb@.tags(c as int).insert(tag_written(c as int, tag)),
             forall|d: int| d != c ==> #[trigger] final(self).tlb@.tags(d) == old(self).tlb@.tags(d),
             final(self).spaces.roots == old(self).spaces.roots,
             final(self).spaces.records == old(self).spaces.records,
@@ -455,9 +457,9 @@ impl CapKernel {
             if let Some(s) = space {
                 assert(holds_id(pre.cores@, pre.spaces.loaded@, c as int, s));
             }
-            assert(tag < pre.cores@[c as int].next_pcid);
+            assert(tag_written(c as int, tag) < pre.cores@[c as int].next_pcid);
             assert forall|d: int, q: usize| 0 <= d < NUM_CPUS && #[trigger] post.tlb@.tags(d).contains(q) implies q < post.cores@[d].next_pcid by {
-                if q != tag || d != c as int {
+                if q != tag_written(c as int, tag) || d != c as int {
                     assert(pre.tlb@.tags(d).contains(q));
                 }
             }

@@ -47,6 +47,13 @@ impl BaseRegister {
     }
 }
 
+/// The tag core `core`'s base register holds after load_translation_root writes it with `id`: `id` where
+/// the core tags its TLB entries with the id written (tags_tlb), and 0 where it does not, the one tag
+/// every entry it caches is then held under.
+pub open spec fn tag_written(core: int, id: usize) -> usize {
+    if tags_tlb(core) { id } else { 0 }
+}
+
 /// What each core's TLB may hold that the kernel's model tracks: one set of entries per core, indexed
 /// by core, and one set of the tags, PCIDs or ASIDs, it may hold entries under. The kernel value holds
 /// the one boot makes, with every set empty. Proof code may add to the sets of entries, since a model

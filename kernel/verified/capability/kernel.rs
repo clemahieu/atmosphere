@@ -11,6 +11,8 @@ verus! {
 
 use crate::arch::{flush_every_context, invalidate_iommu_all};
 use crate::arch::{BaseRegister, IotlbModel, TlbModel};
+#[cfg(verus_keep_ghost)]
+use crate::arch::tag_written;
 use crate::array::Array;
 use crate::capability::block::*;
 use crate::capability::device::*;
@@ -106,15 +108,16 @@ pub open spec fn ids_wf(cores: Seq<CoreState>, lists: Map<usize, PointsTo<SpaceC
     &&& forall|c: int| 0 <= c < NUM_CPUS ==> #[trigger] names_wf(cores[c].space, cores[c].generation, lists, c)
 }
 
-/// Core c's base register names `space`: for Some(s), s's root under the tag s holds on c; for None,
-/// under KERNEL_TAG, the root the core booted on or a root at no space's root offset.
+/// Core c's base register names `space`: for Some(s), s's root under the tag the core writes for the id
+/// s holds on c (tag_written: that id where the core tags its TLB, KERNEL_TAG where it does not); for
+/// None, under KERNEL_TAG, the root the core booted on or a root at no space's root offset.
 pub open spec fn register_names(r: BaseRegister, space: Option<usize>, lists: Map<usize, PointsTo<SpaceCores>>, c: int, kernel_root: usize) -> bool {
     &&& r.core() == c
     &&& match space {
         Some(s) => {
             &&& lists.contains_key(s)
             &&& r.root() == s + SPACE_ROOT_PAGE * PAGE_SZ
-            &&& r.tag() == id_pcid(lists[s].value().ids@[c])
+            &&& r.tag() == tag_written(c, id_pcid(lists[s].value().ids@[c]))
         },
         None => {
             &&& r.tag() == KERNEL_TAG

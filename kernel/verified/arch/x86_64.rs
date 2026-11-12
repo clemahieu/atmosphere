@@ -10,6 +10,8 @@ use crate::capability::kernel::CommandBuffers;
 #[cfg(verus_keep_ghost)]
 use crate::capability::kernel::{CommandBuffer, TlbEntry};
 use crate::arch::{BaseRegister, IotlbModel, TlbModel};
+#[cfg(verus_keep_ghost)]
+use crate::arch::tag_written;
 use crate::capability::operation::Outcome;
 use crate::capability::steps::Steps;
 use crate::define::PAddr;
@@ -654,11 +656,19 @@ pub assume_specification[flush_every_context](Tracked(model): Tracked<&mut TlbMo
         final(model).tags(core as int) == Set::<usize>::empty(),
         forall|d: int| d != core ==> #[trigger] final(model).tags(d) == old(model).tags(d);
 
+/// Whether core `core` tags its TLB entries with the PCID its CR3 is written with: CR4.PCIDE, bit 17,
+/// on that core. Where it is clear the current PCID is always 0 and every entry is held under it.
+/// APM 2 5.5.1. Glue claim: the loader sets PCIDE where CPUID reports PCID and the AP trampoline where
+/// the bootstrap core has it, before verified code runs, and no CR4 write of the kernel's clears it, so
+/// the bit is fixed for each core while verified code runs; which value it has is not known here.
+pub uninterp spec fn tags_tlb(core: int) -> bool;
+
 /// Points this core's CR3 at the table whose top level is at physical address `root`. Where CR4.PCIDE,
 /// bit 17, is set, the write tags it with PCID `id` and sets bit 63, which keeps the entries the TLB
 /// holds under every PCID; where it is clear, CR3 holds the root alone and the write flushes the
 /// non-global entries. APM 2, the CR3 register in its PCID format.
-/// From then on the core may hold entries under `id`, so the tag joins the core's tags in `model`.
+/// From then on the core may hold entries under the tag written, tag_written(core, id), so it joins the
+/// core's tags in `model`.
 #[verifier(external_body)]
 // external_body(glue): only the hardware can attest which root a core translates through, so only this changes a BaseRegister
 pub fn load_translation_root(
@@ -673,10 +683,10 @@ pub fn load_translation_root(
     ensures
         final(register).core() == old(register).core(),
         final(register).root() == root,
-        final(register).tag() == id,
+        final(register).tag() == tag_written(old(register).core(), id),
         final(model).len() == old(model).len(),
         forall|d: int| #[trigger] final(model)[d] == old(model)[d],
-        final(model).tags(old(register).core()) == old(model).tags(old(register).core()).insert(id),
+        final(model).tags(old(register).core()) == old(model).tags(old(register).core()).insert(tag_written(old(register).core(), id)),
         forall|d: int| d != old(register).core() ==> #[trigger] final(model).tags(d) == old(model).tags(d),
 {
     let cr4: u64;

@@ -13,6 +13,8 @@ use crate::capability::kernel::CommandBuffers;
 #[cfg(verus_keep_ghost)]
 use crate::capability::kernel::{CommandBuffer, TlbEntry};
 use crate::arch::{BaseRegister, IotlbModel, TlbModel};
+#[cfg(verus_keep_ghost)]
+use crate::arch::tag_written;
 use crate::capability::operation::Outcome;
 use crate::capability::steps::Steps;
 use crate::define::PAddr;
@@ -522,10 +524,18 @@ pub assume_specification[flush_every_context](Tracked(model): Tracked<&mut TlbMo
         final(model).tags(core as int) == Set::<usize>::empty(),
         forall|d: int| d != core ==> #[trigger] final(model).tags(d) == old(model).tags(d);
 
+/// Whether core `core` tags its TLB entries with the ASID its TTBR0_EL1 is written with: always, under
+/// the TCR_EL1 the kernel sets on every core before verified code runs (A1 clear, so TTBR0_EL1 holds
+/// the ASID; AS set, a 16-bit ASID). Arm ARM D8.16.
+pub open spec fn tags_tlb(core: int) -> bool {
+    true
+}
+
 /// Points this core's TTBR0_EL1 at the table whose top level is at physical address `root`, as ASID
 /// `id` in bits 63:48: one write changes the table and the id together and flushes nothing, and the
 /// instructions after the ISB translate through the new table. Arm ARM D24.2.208, B2.6.1.
-/// From then on the core may hold entries under `id`, so the tag joins the core's tags in `model`.
+/// From then on the core may hold entries under the tag written, tag_written(core, id), so it joins the
+/// core's tags in `model`.
 #[verifier(external_body)]
 // external_body(glue): only the hardware can attest which root a core translates through, so only this changes a BaseRegister
 pub fn load_translation_root(
@@ -540,10 +550,10 @@ pub fn load_translation_root(
     ensures
         final(register).core() == old(register).core(),
         final(register).root() == root,
-        final(register).tag() == id,
+        final(register).tag() == tag_written(old(register).core(), id),
         final(model).len() == old(model).len(),
         forall|d: int| #[trigger] final(model)[d] == old(model)[d],
-        final(model).tags(old(register).core()) == old(model).tags(old(register).core()).insert(id),
+        final(model).tags(old(register).core()) == old(model).tags(old(register).core()).insert(tag_written(old(register).core(), id)),
         forall|d: int| d != old(register).core() ==> #[trigger] final(model).tags(d) == old(model).tags(d),
 {
     let base = (id as u64) << 48 | root as u64;
