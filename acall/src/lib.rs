@@ -12,6 +12,7 @@
 // A cargo build erases specifications and proofs, so there a variable only they read looks unused.
 #![cfg_attr(not(verus_keep_ghost), allow(unused_variables))]
 
+pub mod arch;
 pub mod capability;
 pub mod example;
 pub mod memory;

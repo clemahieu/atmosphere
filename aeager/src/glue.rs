@@ -19,6 +19,9 @@ use vstd::prelude::*;
 use vstd::iset::ISet;
 use vstd::raw_ptr::*;
 
+#[cfg(verus_keep_ghost)]
+use acall::arch::{translates, translation_premises};
+use acall::arch::translates_page;
 use acall::memory;
 #[cfg(verus_keep_ghost)]
 use acall::memory::lemma_own_position;
@@ -40,6 +43,8 @@ use verified::capability::link::tree_of;
 use verified::capability::map::{address_path, frame_map_entry, walk_table};
 #[cfg(verus_keep_ghost)]
 use verified::capability::mapping::{space_mapping, walk};
+#[cfg(verus_keep_ghost)]
+use verified::define::NUM_CPUS;
 #[cfg(verus_keep_ghost)]
 use verified::capability::table::block_bytes;
 #[cfg(verus_keep_ghost)]
@@ -592,10 +597,74 @@ pub fn map_page(
         }
     }
     if out.status == STATUS_OK {
-        Some(page_permission(Ghost(before), Ghost(caller@.kernel()), Ghost(root), space, address, frame, Ghost(out), provenance, live))
+        Some(mapped_permission(Ghost(before), Ghost(caller@.kernel()), Ghost(root), space, address, frame, Ghost(out), provenance, live))
     } else {
         None
     }
+}
+
+/// The core a call from `pre` to `post` by the process whose space is keyed at `root` ran on and
+/// returned from clean, as returned_on says one is.
+pub open spec fn returned_core(pre: CapKernel, post: CapKernel, root: usize) -> int {
+    choose|c: int| 0 <= c < NUM_CPUS && #[trigger] pre.cores@[c].space == Some(root) && returned_clean(post, root, c)
+}
+
+/// A map of a frame whose capability holds the write right, which the kernel accepted, meets the
+/// target's translation premises on the core the call returned on: the entry it wrote is a present
+/// writable user leaf for the frame's page, and every entry above it is open, as the kernel's
+/// invariant keeps every link.
+proof fn lemma_translation(before: CapKernel, after: CapKernel, root: usize, space: u64, address: usize, frame: u64, out: Outcome)
+    requires
+        after.wf(),
+        out.status == STATUS_OK,
+        CapKernel::map_contract(before, after, root, space as usize, address as u64, PAGE_LEVEL, frame as usize, 0, out),
+        returned_on(before, after, before.table_view(root)[space as usize].base),
+        before.table_view(root)[frame as usize].rights & right_bit(Right::Write) != 0,
+    ensures
+        translation_premises(after, before.table_view(root)[space as usize].base, returned_core(before, after, before.table_view(root)[space as usize].base), address, view_frame(before.table_view(root)[frame as usize], 0)),
+{
+    let s = before.table_view(root)[space as usize].base;
+    let c = returned_core(before, after, s);
+    after.lemma_mapping_open(s, address_path(address as u64));
+    assert(0 <= c < NUM_CPUS && returned_clean(after, s, c));
+}
+
+/// The permission to the bytes of the page at `address` that page_permission gives, once the target's
+/// translation guarantee says the core the map returned on reaches the frame's page there.
+fn mapped_permission(
+    before: Ghost<CapKernel>,
+    after: Ghost<CapKernel>,
+    root: Ghost<usize>,
+    space: u64,
+    address: usize,
+    frame: u64,
+    out: Ghost<Outcome>,
+    provenance: Ghost<Provenance>,
+    live: Ghost<ISet<usize>>,
+) -> (perm: Tracked<PointsToRaw>)
+    requires
+        after@.wf(),
+        out@.status == STATUS_OK,
+        !live@.contains(address),
+        CapKernel::map_contract(before@, after@, root@, space as usize, address as u64, PAGE_LEVEL, frame as usize, 0, out@),
+        before@.table_view(root@)[space as usize].base == root@,
+        returned_on(before@, after@, before@.table_view(root@)[space as usize].base),
+        before@.table_view(root@)[frame as usize].rights & right_bit(Right::Write) != 0,
+        after@.frames@.contains_key(view_frame(before@.table_view(root@)[frame as usize], 0)),
+        frame_refs(after@, view_frame(before@.table_view(root@)[frame as usize], 0)) == 2,
+    ensures
+        perm@.is_range(address as int, PAGE_BYTES as int),
+        perm@.provenance() == provenance@,
+    no_unwind
+{
+    let ghost s = before@.table_view(root@)[space as usize].base;
+    let ghost core = returned_core(before@, after@, s);
+    let ghost page = view_frame(before@.table_view(root@)[frame as usize], 0);
+    proof {
+        lemma_translation(before@, after@, root@, space, address, frame, out@);
+    }
+    translates_page(after, Ghost(s), Ghost(core), Ghost(address), Ghost(page));
+    page_permission(before, after, root, Ghost(core), space, address, frame, out, provenance, live)
 }
 
 /// The permission to the bytes of the page at `address`, once the kernel accepted a map of the frame
@@ -606,15 +675,17 @@ pub fn map_page(
 /// capability and the entry the map wrote alone, so no other entry maps the page when the map returns;
 /// nothing proves that none comes to map it before `unmap_page` takes the permission back. The slot
 /// at `space` names the caller's own space, which a core had loaded across the call and which that core, the one the call ran on,
-/// returned from caught up on the flush epoch, holding nothing stale of the space. `live` holds every address
+/// returned from caught up on the flush epoch, holding nothing stale of the space; on that core the
+/// target's translation guarantee says user loads and stores at `address` reach the frame's page. `live` holds every address
 /// of the window whose page's permission the caller holds or has handed out, and `address` is not among
 /// them.
 #[verifier(external_body)]
-// external_body(gap): conjures the permission to a mapped page's bytes; the map contract puts the frame's page in the space's tables, writable since the frame's capability has the write right, its block counted twice, by that capability and that entry, so no other entry in any space maps it when the map returns, with the kernel holding that page's permission as it has since boot, and the core that made the call holding that space, the caller's own, loaded and caught up on the flush epoch, holding no translation of that space to a page no space maps, as the step says, and nothing proves that no permission outside the ones live names covers the page, which the creator of the source promises by handing it a window nothing else maps, that no other entry, in this space or another, comes to map the frame's page until unmap_page takes the permission back, which verified code holding the caller can make through acall's map or through a derived copy of the frame's capability mapped elsewhere, that the entry at the address keeps that frame or none until unmap_page takes the permission back, which nothing ties to the kernel's state once the map returns, that a core loads and stores the page's bytes through that entry, or that those bytes may be held as a PointsToRaw
+// external_body(gap): conjures the permission to a mapped page's bytes; the map contract puts the frame's page in the space's tables, writable since the frame's capability has the write right, its block counted twice, by that capability and that entry, so no other entry in any space maps it when the map returns, with the kernel holding that page's permission as it has since boot, and the core that made the call holding that space, the caller's own, loaded and caught up on the flush epoch, holding no translation of that space to a page no space maps, as the step says, and nothing proves that no permission outside the ones live names covers the page, which the creator of the source promises by handing it a window nothing else maps, that no other entry, in this space or another, comes to map the frame's page until unmap_page takes the permission back, which verified code holding the caller can make through acall's map or through a derived copy of the frame's capability mapped elsewhere, that the entry at the address keeps that frame or none until unmap_page takes the permission back, which nothing ties to the kernel's state once the map returns, that a core the caller's thread runs on later, other than the one the map returned on, translates the address as that one does, which the target's translation guarantee says of that core alone, or that bytes a core loads and stores through a mapping may be held as a PointsToRaw
 fn page_permission(
     before: Ghost<CapKernel>,
     after: Ghost<CapKernel>,
     root: Ghost<usize>,
+    core: Ghost<int>,
     space: u64,
     address: usize,
     frame: u64,
@@ -631,6 +702,7 @@ fn page_permission(
         before@.table_view(root@)[frame as usize].rights & right_bit(Right::Write) != 0,
         after@.frames@.contains_key(view_frame(before@.table_view(root@)[frame as usize], 0)),
         frame_refs(after@, view_frame(before@.table_view(root@)[frame as usize], 0)) == 2,
+        translates(core@, address, view_frame(before@.table_view(root@)[frame as usize], 0)),
     ensures
         perm@.is_range(address as int, PAGE_BYTES as int),
         perm@.provenance() == provenance@,
