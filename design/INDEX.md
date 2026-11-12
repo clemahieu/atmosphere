@@ -2,7 +2,7 @@
 
 # Design decisions
 
-38 records: 38 active, 0 superseded.
+39 records: 39 active, 0 superseded.
 
 Each record is what this project chose and why, on the information available at the time.
 It is not evidence. `README.md` says how a record is written and revised. Every record names
@@ -82,6 +82,9 @@ in `revisit if` what would make it worth reopening.
 - **[process-holds-capabilities](./process-holds-capabilities/DECISION.md)** (2026-11-10): Capabilities belong to a process, not a thread; its table is a root of 512 pointers in the process object and leaves of 127 slots retyped on demand; no capability names a table and no table holds a table, so the capability graph has no cycles and lookup is constant time. A process is an order-3 block of its table's root, its record and its address space; a thread holds no slots: it is an order-1 block of a node page for its bindings and a page for its record and XSAVE area.
   - *confidence:* A structural choice; the no-cycles property it buys is what rules out the delete-cascade problem Nevill's thesis describes, and the table invariant is proven in kernel/verified/capability/table.rs.
   - *revisit if:* Threads in one process need distinct authority, or a process needs more slots than the two levels give, or a table must be passed as a capability, or a supported core's XSAVE area outgrows the 3072 bytes a thread's record page leaves it.
+- **[region-map-owns-the-address-space](./region-map-owns-the-address-space/DECISION.md)** (2026-11-12): Between the kernel, which decides what can be mapped, and the heap, which carves pages it was given, a region map says which part of a program owns which addresses: built once at entry from what the kernel reports empty, it holds a tracked token per page saying which frame is mapped there or none, acall maps and unmaps in the caller's own space only against such a token, and the proof holds for a process whose code and controller keep four rules.
+  - *confidence:* The hole is measured: a throwaway against the tree verifies false, below. That page tokens close it was checked on a model outside the tree whose kernel is a bare map, not on the tree. What the tokens need of the kernel, that other callers only remove a sealed process's entries and that a call returns with nothing stale on its core, is not proven. Where the proof stops, the four rules, is the human's choice.
+  - *revisit if:* The kernel comes to keep a revoked entry claimed until its owner unmaps it, which would let the kernel's table be the only record and the tokens go; or several threads of one process must map at once, which one authority per process does not serve; or a program that keeps the four rules is found whose memory proof still fails.
 - **[review-is-a-leaf-of-its-epic](./review-is-a-leaf-of-its-epic/DECISION.md)** (2026-11-11): The skeptic pass that an epic closes on is its own issue: a task labelled review under the epic, waiting on the epic's other children; one review is one pass, a refuting review files a repeat, and the epic closes when its newest review passed after everything else below it closed. An epic is never claimed for a pass.
   - *confidence:* A judgement about structure. Coverage is the same by construction: the rule for which epic needs a pass is unchanged, and tools/reviews.py refuses an epic whose review missed a later closing. Cost per pass is not expected to change.
   - *revisit if:* The tracker lets a task wait on an epic, so a review could be written ahead for every epic and not only at a split; or reviews written at a split mostly run early or are withdrawn, counted as close reasons starting `withdrawn` against reviews closed.
@@ -130,7 +133,7 @@ in `revisit if` what would make it worth reopening.
 A view of the lists above. Nothing is reachable only through a tag.
 
 - `abi`: arch-module, one-kernel-instance, syscall-abi-in-registers
-- `address-space`: address-spaces-as-objects, vmm-over-svm
+- `address-space`: address-spaces-as-objects, region-map-owns-the-address-space, vmm-over-svm
 - `arch`: who-vouches-for-an-unproven-claim
 - `boot`: machine-glue-below-the-kernel, root-process-at-boot, test-guest-memory
 - `capability`: address-spaces-as-objects, capability-names-a-block, cpu-time-as-capability, device-binding-under-the-space-capability, divider-proven-by-invariant, ipc-with-reply-object, process-holds-capabilities, revoke-by-depth-first-list, root-process-at-boot, schedulers-over-core-partitions, sharing-by-derive, teardown-driven-by-retype, theorem-over-reach, thread-bound-at-retype, untyped-memory, vmm-over-svm
@@ -146,14 +149,14 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `license`: license-stated-in-every-source-file
 - `lifetime`: sharing-by-derive, teardown-driven-by-retype
 - `lock`: flush-without-waiting, multicore-kernel-shape, one-lock-bounded-steps
-- `memory`: address-spaces-as-objects, capability-names-a-block, flush-without-waiting, heap-size-classes, page-buddy-metadata-in-the-span, syscall-abi-in-registers, teardown-driven-by-retype, test-guest-memory, untyped-memory
+- `memory`: address-spaces-as-objects, capability-names-a-block, flush-without-waiting, heap-size-classes, page-buddy-metadata-in-the-span, region-map-owns-the-address-space, syscall-abi-in-registers, teardown-driven-by-retype, test-guest-memory, untyped-memory
 - `multicore`: flush-without-waiting, multicore-kernel-shape, one-kernel-instance, one-lock-bounded-steps
 - `network`: network-stack-proven-at-tier-1
 - `pagetable`: arch-module
 - `parsing`: network-stack-proven-at-tier-1
 - `portability`: arch-module, machine-glue-below-the-kernel, syscall-abi-in-registers
 - `process`: committer-is-not-the-adversary, cut-over-on-a-branch, land-without-regating, license-stated-in-every-source-file, no-gate-for-what-no-step-reads, process-holds-capabilities, review-is-a-leaf-of-its-epic, thread-bound-at-retype
-- `proof`: divider-proven-by-invariant, isolation-claim, theorem-over-reach, thread-bound-at-retype, trust-boundary, who-vouches-for-an-unproven-claim
+- `proof`: divider-proven-by-invariant, isolation-claim, region-map-owns-the-address-space, theorem-over-reach, thread-bound-at-retype, trust-boundary, who-vouches-for-an-unproven-claim
 - `purity`: untyped-memory
 - `reach`: device-binding-under-the-space-capability
 - `real-time`: schedulers-over-core-partitions
@@ -166,6 +169,7 @@ A view of the lists above. Nothing is reachable only through a tag.
 - `thread`: process-holds-capabilities, thread-bound-at-retype
 - `tiers`: divider-proven-by-invariant, network-stack-proven-at-tier-1, trust-boundary
 - `tracker`: review-is-a-leaf-of-its-epic
-- `trusted-base`: who-vouches-for-an-unproven-claim
+- `trusted-base`: region-map-owns-the-address-space, who-vouches-for-an-unproven-claim
+- `user`: region-map-owns-the-address-space
 - `verified`: arch-module, committer-is-not-the-adversary, cut-over-on-a-branch, device-binding-under-the-space-capability, fan-in-over-private-rings, flush-without-waiting, heap-size-classes, latest-value-by-three-slot-exchange, network-stack-proven-at-tier-1, one-lock-bounded-steps, page-buddy-metadata-in-the-span, revoke-by-depth-first-list, theorem-over-reach, thread-bound-at-retype, who-vouches-for-an-unproven-claim
 - `virtualization`: vmm-over-svm
