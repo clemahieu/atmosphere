@@ -170,6 +170,18 @@ impl Icr {
     }
 }
 
+// LOCAL MOD
+/// The LVT timer value that delivers `vector`, unmasked, in one-shot mode, from the value `lvt`
+/// the register held. Bit 16 is the mask; bits 18:17 select the timer mode (Intel SDM Vol. 3A
+/// §11.5.1, the local vector table): 00b one-shot, 01b periodic, 10b TSC-deadline.
+fn one_shot_timer_lvt(mut lvt: u32, vector: u8) -> u32 {
+    lvt &= !0xff;
+    lvt |= vector as u32;
+    lvt.set_bit(16, false);
+    lvt.set_bits(17..19, 0b00);
+    lvt
+}
+
 impl XAPIC {
     /// End Of Interrupt -- Acknowledge interrupt delivery.
     pub fn eoi(&mut self) {
@@ -178,19 +190,7 @@ impl XAPIC {
 
     /// Enable TSC timer.
     pub fn tsc_enable(&mut self, vector: u8) {
-        let mut lvt: u32 = self.read(ApicRegister::XAPIC_LVT_TIMER);
-        lvt &= !0xff;
-        lvt |= vector as u32;
-
-        lvt.set_bit(16, false);
-        lvt.set_bit(17, false);
-
-        // LOCAL MOD
-        // > Bits 18:17 selects the timer mode (see Section 11.5.4)
-        // > (00b) one-shot mode using a count-down value
-        // > (01b) periodic mode reloading a count-down value
-        // > (10b) TSC-Deadline mode using absolute target value in TSC_DEADLINE MSR
-        lvt.set_bits(17..18, 0b00); // One-shot
+        let lvt = one_shot_timer_lvt(self.read(ApicRegister::XAPIC_LVT_TIMER), vector);
 
         // Firmware may leave the timer counting: OVMF does after ExitBootServices. A zero initial
         // count stops it, so the unmasked timer fires only once set_timer arms it.
@@ -233,3 +233,18 @@ impl XAPIC {
 const _: () = assert!(Icr::init(3).0 == 0x0300_0000_0000_c500);
 const _: () = assert!(Icr::startup(1, 0x08).0 == 0x0100_0000_0000_4608);
 const _: () = assert!(Icr::fixed(1, 34).0 == 0x0100_0000_0000_4022);
+
+#[cfg(test)]
+mod tests {
+    use super::one_shot_timer_lvt;
+
+    #[test]
+    fn the_timer_is_one_shot_whatever_mode_firmware_left() {
+        // Masked, TSC-deadline mode, vector 0x30.
+        let lvt = one_shot_timer_lvt(0x0005_0030, 0xec);
+        assert_eq!(lvt, 0x0000_00ec);
+        let lvt = one_shot_timer_lvt(0xffff_ffff, 0x20);
+        assert_eq!(lvt & (0b111 << 16), 0, "mask and timer mode clear");
+        assert_eq!(lvt & 0xff, 0x20);
+    }
+}
