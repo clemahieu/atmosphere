@@ -115,6 +115,18 @@ pub open spec fn span_refused(before: SourceView, after: SourceView) -> bool {
     &&& span_refusal(before, r)
 }
 
+/// The page buddy went from `pb` to `fin`, and the source's view from `before` to `after`, by
+/// `alloc_run` refusing a run of order `k`: only when `pb` had no free block of that order, with the
+/// page buddy's spans, runs, metadata pages and spares as they were (`span_refused`).
+pub open spec fn run_span_refused(pb: PageBuddy, fin: PageBuddy, before: SourceView, after: SourceView, k: nat) -> bool {
+    &&& !pb.fits(k)
+    &&& fin.spans() == pb.spans()
+    &&& fin.used() == pb.used()
+    &&& fin.metas() == pb.metas()
+    &&& fin.spares() == pb.spares()
+    &&& span_refused(before, after)
+}
+
 /// The base of the block that holds address `p`.
 pub open spec fn span_of(p: int) -> int {
     p - p % BLOCK_BYTES as int

@@ -126,7 +126,7 @@ use crate::class::*;
 use crate::large::*;
 use crate::heap::{Heap, class_for, part_refused, run_order};
 use crate::page::*;
-use crate::record::{RecordStore, back_refused, gave_back, page_back_refusal, record_page, took_page};
+use crate::record::{RecordStore, back_refused, gave_back, page_refused, record_page, took_page};
 use crate::slab::*;
 use crate::small::*;
 use crate::source::*;
@@ -1008,7 +1008,7 @@ pub fn witness_record<S: SpanSource>(src: &mut S, token: &mut Tracked<S::Token>)
             &&& r.1.pages() == Set::<int>::empty()
             &&& r.1.taken() == Set::<int>::empty()
         } else {
-            span_refused(old(src)@, final(src)@) || exists|pb: PageBuddy| #[trigger] back_refused(pb, old(src)@, final(src)@)
+            span_refused(old(src)@, final(src)@) || exists|pb: PageBuddy, fin: PageBuddy| #[trigger] back_refused(pb, fin, old(src)@, final(src)@)
         },
 {
     let mut pb = PageBuddy::new(0);
@@ -1020,7 +1020,7 @@ pub fn witness_record<S: SpanSource>(src: &mut S, token: &mut Tracked<S::Token>)
         None => {
             proof {
                 if !span_refused(s0, src@) {
-                    assert(back_refused(pb0, s0, src@));
+                    assert(back_refused(pb0, pb, s0, src@));
                 }
             }
             return (pb, store, false, Ghost(0));
@@ -1793,11 +1793,11 @@ pub fn witness_small_fits<S: SpanSource>(
     proof {
         if !got {
             let r = src@.refusals.last();
-            assert(slab_refused(st0, pb0, s0, src@, k));
+            assert(slab_refused(st0, pb0, *pb, s0, src@, k));
             assert(pb0.fits(k));
             let (mid, s, q) = choose|mid: PageBuddy, s: SourceView, q: int| #[trigger]
-                cut_run(pb0, mid, s0, s, q, k) && run_refused(st0, mid, s, r, q, k);
-            assert(run_refused(st0, mid, s, r, q, k));
+                cut_run(pb0, mid, s0, s, q, k) && run_refused(st0, mid, *pb, s, src@, q, k);
+            assert(run_refused(st0, mid, *pb, s, src@, q, k));
         }
     }
     got
@@ -1841,10 +1841,10 @@ pub fn witness_small_full<S: SpanSource>(
     proof {
         if !got {
             let r = src@.refusals.last();
-            assert(slab_refused(st0, pb0, s0, src@, k));
+            assert(slab_refused(st0, pb0, *pb, s0, src@, k));
             assert(pb0.fits(k));
             let (mid, s, q) = choose|mid: PageBuddy, s: SourceView, q: int| #[trigger]
-                cut_run(pb0, mid, s0, s, q, k) && run_refused(st0, mid, s, r, q, k);
+                cut_run(pb0, mid, s0, s, q, k) && run_refused(st0, mid, *pb, s, src@, q, k);
             assert(mid.fits(0));
             assert(s == s0);
             pb0.lemma_view(s0);
@@ -1854,14 +1854,23 @@ pub fn witness_small_full<S: SpanSource>(
             assert(s0.spans.contains_key(b));
             let t = s0.backed_run(b, q, pages(k) as nat);
             assert(t.spans.dom() =~= s0.spans.dom());
-            if !(r.request == (Request::Back { span: b, start: q, pages: pages(k) as nat }) && r.spans == s.spans) {
-                assert(page_back_refusal(mid, t, r));
-                let (mid2, m, q2) = choose|mid2: PageBuddy, m: SourceView, q2: int| #[trigger]
-                    cut_run(mid, mid2, t, m, q2, 0) && r.request == (Request::Back {
-                        span: mid2.span_base(span_of(q2)),
-                        start: q2,
-                        pages: 1,
-                    }) && r.spans == m.spans;
+            if !(r == (Refusal { request: Request::Back { span: b, start: q, pages: pages(k) as nat }, spans: s.spans })
+                && freed(mid, *pb, s.recorded(r), src@, q)) {
+                let (mid2, v) = choose|mid2: PageBuddy, v: SourceView| #[trigger]
+                    page_refused(mid, mid2, t, v) && freed(
+                        mid2,
+                        *pb,
+                        v.released_run(mid2.span_base(span_of(q)), q, pages(k) as nat),
+                        src@,
+                        q,
+                    );
+                assert(v.refusals.last() == r);
+                assert(back_refused(mid, mid2, t, v));
+                let (mid3, m, q2) = choose|mid3: PageBuddy, m: SourceView, q2: int| #[trigger]
+                    cut_run(mid, mid3, t, m, q2, 0) && r == (Refusal {
+                        request: Request::Back { span: mid3.span_base(span_of(q2)), start: q2, pages: 1 },
+                        spans: m.spans,
+                    }) && freed(mid3, mid2, m.recorded(r), v, q2);
                 assert(m == t);
             }
         }
@@ -1895,13 +1904,12 @@ pub fn witness_record_full<S: SpanSource>(store: &mut RecordStore, pb: &mut Page
         None => {
             proof {
                 let r = src@.refusals.last();
-                assert(back_refused(pb0, s0, src@));
+                assert(back_refused(pb0, *pb, s0, src@));
                 let (mid, m, q) = choose|mid: PageBuddy, m: SourceView, q: int| #[trigger]
-                    cut_run(pb0, mid, s0, m, q, 0) && r.request == (Request::Back {
-                        span: mid.span_base(span_of(q)),
-                        start: q,
-                        pages: 1,
-                    }) && r.spans == m.spans;
+                    cut_run(pb0, mid, s0, m, q, 0) && r == (Refusal {
+                        request: Request::Back { span: mid.span_base(span_of(q)), start: q, pages: 1 },
+                        spans: m.spans,
+                    }) && freed(mid, *pb, m.recorded(r), src@, q);
                 assert(m == s0);
             }
             false
@@ -2632,8 +2640,8 @@ pub fn witness_small_classes<S: SpanSource>(src: &mut S, token: &mut Tracked<S::
             let f = final(src)@.refusals.last();
             &&& final(src)@.provenance == old(src)@.provenance
             &&& final(src)@.refusals == old(src)@.refusals.push(f)
-            &&& exists|st: RecordStore, pb: PageBuddy, s: SourceView, t: SourceView, c: nat| #[trigger]
-                slab_refused(st, pb, s, t, slab_order(c)) && s.refusals == old(src)@.refusals
+            &&& exists|st: RecordStore, pb: PageBuddy, fin: PageBuddy, s: SourceView, t: SourceView, c: nat| #[trigger]
+                slab_refused(st, pb, fin, s, t, slab_order(c)) && s.refusals == old(src)@.refusals
                     && t.refusals.last() == f && {
                     ||| c == 0 && st.taken() == Set::<int>::empty() && s == old(src)@
                     ||| c == CLASSES - 1 && st.taken() != Set::<int>::empty()
@@ -2668,7 +2676,7 @@ pub fn witness_small_classes<S: SpanSource>(src: &mut S, token: &mut Tracked<S::
         Some(x) => x,
         None => {
             proof {
-                assert(slab_refused(st0, pb0, s0, src@, slab_order(0)));
+                assert(slab_refused(st0, pb0, pb, s0, src@, slab_order(0)));
             }
             return (first, last, store, pb, false);
         },
@@ -2718,7 +2726,7 @@ pub fn witness_small_classes<S: SpanSource>(src: &mut S, token: &mut Tracked<S::
         Some(x) => x,
         None => {
             proof {
-                assert(slab_refused(st1, pb1, s1, s2, slab_order((CLASSES - 1) as nat)));
+                assert(slab_refused(st1, pb1, pb2, s1, s2, slab_order((CLASSES - 1) as nat)));
                 assert(st1.taken().contains(a0));
                 assert(first == f1);
                 assert(f1.heads().contains(x0)) by {
@@ -2843,13 +2851,199 @@ proof fn lemma_tracks_granted(start: SourceView, pb: PageBuddy, s: SourceView, t
     }
 }
 
+/// Recording a refusal in the view and in its start keeps the view tracked.
+proof fn lemma_tracks_recorded(start: SourceView, pb: PageBuddy, s: SourceView, r: Refusal)
+    requires
+        tracks(start, pb, s),
+    ensures
+        tracks(start.recorded(r), pb, s.recorded(r)),
+{
+}
+
+/// A page buddy with the spans, runs and metadata pages of one that tracks a view tracks it too.
+proof fn lemma_tracks_same(start: SourceView, pb: PageBuddy, pb2: PageBuddy, s: SourceView)
+    requires
+        tracks(start, pb, s),
+        pb2.spans() == pb.spans(),
+        pb2.used() == pb.used(),
+        pb2.metas() == pb.metas(),
+    ensures
+        tracks(start, pb2, s),
+{
+}
+
+/// Requests granted and given back, then a refusal, keep the view tracked from the start with the
+/// refusal recorded.
+proof fn lemma_tracks_refused(start: SourceView, pb: PageBuddy, s: SourceView, t: SourceView, gs: Seq<Request>, r: Refusal)
+    requires
+        tracks(start, pb, s),
+        t == s.granted(gs).recorded(r),
+    ensures
+        tracks(start.recorded(r), pb, t),
+{
+    let g = s.granted(gs);
+    assert(g.grants.subrange(0, s.grants.len() as int) =~= s.grants);
+    lemma_tracks_granted(start, pb, s, g);
+    lemma_tracks_recorded(start, pb, g, r);
+}
+
+/// The run `alloc_run` cuts is at a head the page buddy held no run at.
+proof fn lemma_cut_new_head(start: SourceView, pb: PageBuddy, pb2: PageBuddy, s: SourceView, t: SourceView, q: int, k: nat)
+    requires
+        tracks(start, pb, s),
+        cut_run(pb, pb2, s, t, q, k),
+    ensures
+        !heads_of(pb.used()).contains(head_of(q)),
+{
+    let c = span_of(q);
+    let h = page_of(q);
+    if pb.spans().contains_key(c) && pb.used()[c].contains_key(h) {
+        lemma_pages_pos(k);
+        lemma_pages_pos(pb.used()[c][h]);
+        assert(h + pages(k) <= h || h + pages(pb.used()[c][h]) <= h);
+    }
+}
+
+/// A run cut, the back of its pages refused and the run freed again keep the view tracked from the
+/// start with the refusal recorded, and the page buddy holding the runs it held.
+proof fn lemma_tracks_back_refused(
+    start: SourceView,
+    pb: PageBuddy,
+    mid: PageBuddy,
+    fin: PageBuddy,
+    s: SourceView,
+    m: SourceView,
+    t: SourceView,
+    q: int,
+    k: nat,
+    r: Refusal,
+)
+    requires
+        tracks(start, pb, s),
+        cut_run(pb, mid, s, m, q, k),
+        freed(mid, fin, m.recorded(r), t, q),
+    ensures
+        tracks(start.recorded(r), fin, t),
+        heads_of(fin.used()) == heads_of(pb.used()),
+{
+    lemma_tracks_cut(start, pb, mid, s, m, q, k);
+    lemma_cut_new_head(start, pb, mid, s, m, q, k);
+    lemma_tracks_recorded(start, mid, m, r);
+    assert(mid.used().contains_key(span_of(q)));
+    lemma_tracks_freed(start.recorded(r), mid, fin, m.recorded(r), t, q);
+    assert(heads_of(fin.used()) =~= heads_of(pb.used()));
+}
+
+/// `take` refusing a record page keeps the view tracked from the start with the refusal recorded,
+/// and the page buddy holding the runs it held.
+proof fn lemma_tracks_page_refused(start: SourceView, pb: PageBuddy, fin: PageBuddy, s: SourceView, t: SourceView)
+    requires
+        tracks(start, pb, s),
+        page_refused(pb, fin, s, t),
+    ensures
+        tracks(start.recorded(t.refusals.last()), fin, t),
+        heads_of(fin.used()) == heads_of(pb.used()),
+{
+    let r = t.refusals.last();
+    if run_span_refused(pb, fin, s, t, 0) {
+        lemma_tracks_refused(start, pb, s, t, granted_before(r, SPAN_BLOCKS as nat), r);
+        lemma_tracks_same(start.recorded(r), pb, fin, t);
+    } else {
+        let (mid, m, q) = choose|mid: PageBuddy, m: SourceView, q: int| #[trigger]
+            cut_run(pb, mid, s, m, q, 0) && r == (Refusal {
+                request: Request::Back { span: mid.span_base(span_of(q)), start: q, pages: 1 },
+                spans: m.spans,
+            }) && freed(mid, fin, m.recorded(r), t, q);
+        lemma_tracks_back_refused(start, pb, mid, fin, s, m, t, q, 0, r);
+    }
+}
+
+/// `alloc_small` refusing a new slab keeps the view tracked from the start with the refusal
+/// recorded, and the page buddy holding the runs it held.
+proof fn lemma_tracks_slab_refused(
+    start: SourceView,
+    st: RecordStore,
+    pb: PageBuddy,
+    fin: PageBuddy,
+    s: SourceView,
+    t: SourceView,
+    k: nat,
+)
+    requires
+        tracks(start, pb, s),
+        slab_refused(st, pb, fin, s, t, k),
+    ensures
+        tracks(start.recorded(t.refusals.last()), fin, t),
+        heads_of(fin.used()) == heads_of(pb.used()),
+{
+    let r = t.refusals.last();
+    if run_span_refused(pb, fin, s, t, k) {
+        lemma_tracks_refused(start, pb, s, t, granted_before(r, SPAN_BLOCKS as nat), r);
+        lemma_tracks_same(start.recorded(r), pb, fin, t);
+    } else {
+        let (mid, m, q) = choose|mid: PageBuddy, m: SourceView, q: int| #[trigger]
+            cut_run(pb, mid, s, m, q, k) && run_refused(st, mid, fin, m, t, q, k);
+        let b = mid.span_base(span_of(q));
+        let n = pages(k) as nat;
+        if r == (Refusal { request: Request::Back { span: b, start: q, pages: n }, spans: m.spans }) && freed(
+            mid,
+            fin,
+            m.recorded(r),
+            t,
+            q,
+        ) {
+            lemma_tracks_back_refused(start, pb, mid, fin, s, m, t, q, k, r);
+        } else {
+            let u = m.backed_run(b, q, n);
+            let (mid2, v) = choose|mid2: PageBuddy, v: SourceView| #[trigger]
+                page_refused(mid, mid2, u, v) && freed(mid2, fin, v.released_run(mid2.span_base(span_of(q)), q, n), t, q);
+            lemma_tracks_cut(start, pb, mid, s, m, q, k);
+            lemma_cut_new_head(start, pb, mid, s, m, q, k);
+            lemma_tracks_run(start, mid, m, u, span_of(q), q, n);
+            lemma_tracks_page_refused(start, mid, mid2, u, v);
+            let start2 = start.recorded(v.refusals.last());
+            assert(heads_of(mid2.used()).contains(head_of(q)));
+            assert(mid2.used().contains_key(span_of(q)));
+            let vr = v.released_run(mid2.span_base(span_of(q)), q, n);
+            lemma_tracks_run(start2, mid2, v, vr, span_of(q), q, n);
+            lemma_tracks_freed(start2, mid2, fin, vr, t, q);
+            assert(t.refusals.last() == v.refusals.last());
+            assert(heads_of(fin.used()) =~= heads_of(pb.used()));
+        }
+    }
+}
+
+/// `alloc` refusing a buddy-run object of `n` pages in a run of order `k` keeps the view tracked
+/// from the start with the refusal recorded, and the page buddy holding the runs it held.
+proof fn lemma_tracks_part_refused(start: SourceView, pb: PageBuddy, fin: PageBuddy, s: SourceView, t: SourceView, k: nat, n: nat)
+    requires
+        tracks(start, pb, s),
+        part_refused(pb, fin, s, t, k, n),
+    ensures
+        tracks(start.recorded(t.refusals.last()), fin, t),
+        heads_of(fin.used()) == heads_of(pb.used()),
+{
+    let r = t.refusals.last();
+    if run_span_refused(pb, fin, s, t, k) {
+        lemma_tracks_refused(start, pb, s, t, granted_before(r, SPAN_BLOCKS as nat), r);
+        lemma_tracks_same(start.recorded(r), pb, fin, t);
+    } else {
+        let (mid, m, q) = choose|mid: PageBuddy, m: SourceView, q: int| #[trigger]
+            cut_run(pb, mid, s, m, q, k) && r == (Refusal {
+                request: Request::Back { span: mid.span_base(span_of(q)), start: q, pages: n },
+                spans: m.spans,
+            }) && freed(mid, fin, m.recorded(r), t, q);
+        lemma_tracks_back_refused(start, pb, mid, fin, s, m, t, q, k, r);
+    }
+}
+
 /// The refusal `t.refusals.last()` is of a request the heap's whole witness made of the heap `h0`
 /// over the view `s`, the heap going to `h1`: one `alloc` makes for a slot of the smallest class
 /// (`slab_refused`), for a buddy-run object of a page and a byte (`part_refused`), or for a large
 /// object of a block and a byte (`large_refused`).
 pub open spec fn heap_refused(h0: Heap, h1: Heap, s: SourceView, t: SourceView) -> bool {
     let n = pages_for(PAGE_BYTES as nat + 1);
-    ||| slab_refused(h0.store(), h0.pb(), s, t, slab_order(0))
+    ||| slab_refused(h0.store(), h0.pb(), h1.pb(), s, t, slab_order(0))
     ||| part_refused(h0.pb(), h1.pb(), s, t, run_order(n), n)
     ||| large_refused(s, t, pages_for(BLOCK_BYTES as nat + 1))
 }
@@ -2861,7 +3055,8 @@ pub open spec fn heap_refused(h0: Heap, h1: Heap, s: SourceView, t: SourceView) 
 /// taken nor any record page, the page buddy holds no span, there is no buddy-run or large object,
 /// and the source's view is the one it started with, the requests the sequence made granted.
 /// Otherwise the source refused once, a request one of the three allocations made (`heap_refused`),
-/// with the refusals it had at the start, and the sequence stopped after freeing what it took.
+/// with the refusals it had at the start, and the sequence stopped after freeing what it took, so
+/// the source holds the spans it held at the start.
 pub fn witness_heap_objects<S: SpanSource>(src: &mut S, token: &mut Tracked<S::Token>) -> (r: (Heap, bool))
     requires
         old(src).serves(old(token)@),
@@ -2885,6 +3080,7 @@ pub fn witness_heap_objects<S: SpanSource>(src: &mut S, token: &mut Tracked<S::T
             let f = final(src)@.refusals.last();
             &&& final(src)@.provenance == old(src)@.provenance
             &&& final(src)@.refusals == old(src)@.refusals.push(f)
+            &&& final(src)@.spans == old(src)@.spans
             &&& exists|h0: Heap, h1: Heap, s: SourceView, t: SourceView| #[trigger]
                 heap_refused(h0, h1, s, t) && s.refusals == old(src)@.refusals && t.refusals.last() == f
         },
@@ -2908,6 +3104,9 @@ pub fn witness_heap_objects<S: SpanSource>(src: &mut S, token: &mut Tracked<S::T
             proof {
                 assert(heap_refused(h0, h1, start, s1));
                 assert(h1.live() =~= ISet::<int>::empty());
+                lemma_tracks_slab_refused(start, h0.store(), h0.pb(), h1.pb(), start, s1, k0);
+                h1.lemma_parts(s1);
+                lemma_tracks_end(start.recorded(s1.refusals.last()), h1.pb(), s1);
             }
             return (h, false);
         },
@@ -2961,11 +3160,33 @@ pub fn witness_heap_objects<S: SpanSource>(src: &mut S, token: &mut Tracked<S::T
             proof {
                 assert(heap_refused(h1, h2, s1, s2));
                 assert(h2.classes()[0] == c1);
+                lemma_tracks_part_refused(start, h1.pb(), h2.pb(), s1, s2, k2, n2);
+                assert(h2.store() == h1.store());
+                h2.lemma_parts(s2);
+                c1.lemma_head_of(a0);
+                c1.lemma_records_taken(h2.store(), h2.pb(), s2);
+                lemma_free_ready(c1, h2.store(), h2.pb(), s2, a0);
             }
             h.free(src, token, p1, 1, 1, perm1);
             proof {
                 lemma_emptied_refusals(h2.store(), h.store(), h2.pb(), h.pb(), s2, src@, a0, x0, k0);
                 assert(h.live() =~= ISet::<int>::empty());
+                let start2 = start.recorded(s2.refusals.last());
+                assert(!page_shared(h2.store(), a0)) by {
+                    assert forall|z: int| #[trigger] h2.store().taken().contains(z) && z != a0 implies false by {}
+                }
+                lemma_tracks_emptied(start2, h2.store(), h.store(), h2.pb(), h.pb(), s2, src@, a0, x0, k0);
+                let hx = head_of(x0);
+                let hr = head_of(record_page(a0));
+                assert forall|e: (int, int)| !heads_of(h.pb().used()).contains(e) by {
+                    if heads_of(h.pb().used()).contains(e) {
+                        assert(heads_of(h2.pb().used()).contains(e) && e != hx && e != hr);
+                        assert(heads_of(h1.pb().used()).contains(e));
+                    }
+                }
+                assert(heads_of(h.pb().used()) =~= ISet::<(int, int)>::empty());
+                h.lemma_parts(src@);
+                lemma_tracks_end(start2, h.pb(), src@);
             }
             return (h, false);
         },
@@ -2984,19 +3205,48 @@ pub fn witness_heap_objects<S: SpanSource>(src: &mut S, token: &mut Tracked<S::T
     let (p3, perm3) = match r3 {
         Some(x) => x,
         None => {
+            let ghost start2 = start.recorded(s3.refusals.last());
             proof {
                 assert(heap_refused(h2, h3, s2, s3));
+                lemma_tracks_refused(start, h2.pb(), s2, s3, granted_before(s3.refusals.last(), blocks_for(n3)), s3.refusals.last());
+                assert(h3.pb() == h2.pb());
+                let sr = s3.released_run(h3.pb().span_base(span_of(b2)), b2, n2);
+                lemma_tracks_run(start2, h3.pb(), s3, sr, span_of(b2), b2, n2);
             }
             h.free(src, token, p2, PAGE_BYTES + 1, 1, perm2);
             let ghost h4 = h;
             let ghost s4 = src@;
             proof {
                 assert(h4.classes()[0] == c1);
+                let sr = s3.released_run(h3.pb().span_base(span_of(b2)), b2, n2);
+                lemma_tracks_freed(start2, h3.pb(), h4.pb(), sr, s4, b2);
+                assert(h4.store() == h1.store());
+                h4.lemma_parts(s4);
+                c1.lemma_head_of(a0);
+                c1.lemma_records_taken(h4.store(), h4.pb(), s4);
+                lemma_free_ready(c1, h4.store(), h4.pb(), s4, a0);
             }
             h.free(src, token, p1, 1, 1, perm1);
             proof {
                 lemma_emptied_refusals(h4.store(), h.store(), h4.pb(), h.pb(), s4, src@, a0, x0, k0);
                 assert(h.live() =~= ISet::<int>::empty());
+                assert(!page_shared(h4.store(), a0)) by {
+                    assert forall|z: int| #[trigger] h4.store().taken().contains(z) && z != a0 implies false by {}
+                }
+                lemma_tracks_emptied(start2, h4.store(), h.store(), h4.pb(), h.pb(), s4, src@, a0, x0, k0);
+                let hx = head_of(x0);
+                let hr = head_of(record_page(a0));
+                let hb = head_of(b2);
+                assert forall|e: (int, int)| !heads_of(h.pb().used()).contains(e) by {
+                    if heads_of(h.pb().used()).contains(e) {
+                        assert(heads_of(h4.pb().used()).contains(e) && e != hx && e != hr);
+                        assert(heads_of(h2.pb().used()).contains(e) && e != hb);
+                        assert(heads_of(h1.pb().used()).contains(e));
+                    }
+                }
+                assert(heads_of(h.pb().used()) =~= ISet::<(int, int)>::empty());
+                h.lemma_parts(src@);
+                lemma_tracks_end(start2, h.pb(), src@);
             }
             return (h, false);
         },

@@ -109,21 +109,28 @@ pub open spec fn gave_back(before: PageBuddy, after: PageBuddy, s: SourceView, t
     freed(before, after, s.released_run(before.span_base(span_of(q)), q, 1), t, q)
 }
 
-/// The refusal `r` is of the back of a record page's page: the page buddy, then `pb`, cut a run of
-/// order 0 at `q`, the source's view going from `s` to `m`, and `r` is the back of that page in the
-/// span the cut page buddy holds it in, while the source held the spans `m` holds.
-pub open spec fn page_back_refusal(pb: PageBuddy, s: SourceView, r: Refusal) -> bool {
-    exists|mid: PageBuddy, m: SourceView, q: int| #[trigger]
-        cut_run(pb, mid, s, m, q, 0) && r.request == (Request::Back { span: mid.span_base(span_of(q)), start: q, pages: 1 })
-            && r.spans == m.spans
+/// The source went from `s` to `t`, and the page buddy from `pb` to `fin`, by the refusal of the
+/// back of a record page's page and the freeing of its run: the page buddy, then `mid`, cut a run of
+/// order 0 at `q`, the source's view going from `s` to `m`; the source refused the back of that page
+/// in the span `mid` holds it in, while it held the spans `m` holds; and freeing the run left `fin`
+/// and `t` (`freed`).
+pub open spec fn back_refused(pb: PageBuddy, fin: PageBuddy, s: SourceView, t: SourceView) -> bool {
+    let r = t.refusals.last();
+    &&& t.provenance == s.provenance
+    &&& t.refusals == s.refusals.push(r)
+    &&& exists|mid: PageBuddy, m: SourceView, q: int| #[trigger]
+        cut_run(pb, mid, s, m, q, 0) && r == (Refusal {
+            request: Request::Back { span: mid.span_base(span_of(q)), start: q, pages: 1 },
+            spans: m.spans,
+        }) && freed(mid, fin, m.recorded(r), t, q)
 }
 
-/// The source went from `s` to `t` with one more refusal recorded, of the back of the page of the
-/// record page the page buddy `pb` cut (`page_back_refusal`), and the same provenance.
-pub open spec fn back_refused(pb: PageBuddy, s: SourceView, t: SourceView) -> bool {
-    &&& t.provenance == s.provenance
-    &&& t.refusals == s.refusals.push(t.refusals.last())
-    &&& page_back_refusal(pb, s, t.refusals.last())
+/// The source went from `s` to `t`, and the page buddy from `pb` to `fin`, by `take` refusing a
+/// record page: the reserve of a run span or the back of its metadata page, only when `pb` had no
+/// free page (`run_span_refused`); or the back of the page it cut (`back_refused`).
+pub open spec fn page_refused(pb: PageBuddy, fin: PageBuddy, s: SourceView, t: SourceView) -> bool {
+    ||| run_span_refused(pb, fin, s, t, 0)
+    ||| back_refused(pb, fin, s, t)
 }
 
 /// The pointer to the header of the record page at `b`.
@@ -1187,7 +1194,7 @@ impl RecordStore {
                     &&& runs(final(pb).used()) == runs(old(pb).used())
                     &&& forall|x: int, k: nat| #[trigger]
                         run_held(*old(pb), old(src)@, x, k) ==> run_held(*final(pb), final(src)@, x, k)
-                    &&& span_refused(old(src)@, final(src)@) && !old(pb).fits(0) || back_refused(*old(pb), old(src)@, final(src)@)
+                    &&& page_refused(*old(pb), *final(pb), old(src)@, final(src)@)
                 },
                 Some((p, perm)) => {
                     let a = p@.addr as int;
@@ -1289,8 +1296,10 @@ impl RecordStore {
                         assert(run_held(pb0, s0, b, 0));
                     }
                     assert(s3.refusals == s0.refusals.push(s2.refusals.last()));
-                    assert(page_back_refusal(pb0, s0, s2.refusals.last()));
-                    assert(back_refused(pb0, s0, s3));
+                    let rf = s2.refusals.last();
+                    assert(s2 == s1.recorded(rf));
+                    assert(freed(pb1, pb3, s1.recorded(rf), s3, qi));
+                    assert(back_refused(pb0, pb3, s0, s3));
                     lemma_cut_others(pb0, pb1, s0, s1, qi, 0);
                     lemma_others_same(pb1, pb2, s1, s2);
                     lemma_freed_others(pb2, pb3, s2, s2, s3, qi);

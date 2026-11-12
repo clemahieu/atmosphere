@@ -30,7 +30,7 @@
 //!   the slab order, then the back of the run; for its record, only when the store was full, a run
 //!   span only when no held span had a free page once the slab's run was cut, or the back of the
 //!   page cut for the record page (`run_refused`); then the class, the store's records and the page buddy's runs are as they
-//!   were. Otherwise it returns a slot of the class's size, aligned to SLOT_MIN, with the
+//!   were, and the source's view is the one giving back the run leaves. Otherwise it returns a slot of the class's size, aligned to SLOT_MIN, with the
 //!   permission to its bytes, apart from every slot live before. Either way it keeps what every
 //!   class over the same store, page buddy and source stands on (`kept`).
 //! - `free_small(store, pb, src, p, perm)` takes back the live slot at `p` and never refuses. Its
@@ -62,32 +62,36 @@ verus! {
 broadcast use {group_raw_ptr_axioms, vstd::set_lib::range_set_properties};
 
 /// `after` is `before` with one refusal recorded, of a request `alloc_small` makes for a new slab
-/// whose run is of order `k`, from the record store `store` and the page buddy `pb`: for the slab's
-/// run, the reserve of a run span or the back of its metadata page, only when `pb` had no free block
-/// of order `k`; or a request made after `pb` cut that run (`run_refused`).
-pub open spec fn slab_refused(store: RecordStore, pb: PageBuddy, before: SourceView, after: SourceView, k: nat) -> bool {
+/// whose run is of order `k`, from the record store `store` and the page buddy `pb`, the page buddy
+/// left `fin`: for the slab's run, the reserve of a run span or the back of its metadata page, only
+/// when `pb` had no free block of order `k`, and nothing else changed but the grant before it
+/// (`run_span_refused`); or a request made after `pb` cut that run, after which the run is given back
+/// (`run_refused`).
+pub open spec fn slab_refused(store: RecordStore, pb: PageBuddy, fin: PageBuddy, before: SourceView, after: SourceView, k: nat) -> bool {
     let r = after.refusals.last();
     &&& after.provenance == before.provenance
     &&& after.refusals == before.refusals.push(r)
     &&& {
-        ||| !pb.fits(k) && span_refusal(before, r)
+        ||| run_span_refused(pb, fin, before, after, k)
         ||| exists|mid: PageBuddy, s: SourceView, q: int| #[trigger]
-            cut_run(pb, mid, before, s, q, k) && run_refused(store, mid, s, r, q, k)
+            cut_run(pb, mid, before, s, q, k) && run_refused(store, mid, fin, s, after, q, k)
     }
 }
 
-/// The refusal `r` is of a request `alloc_small` makes once the page buddy, then `pb`, has cut the
-/// slab's run of order `k` at `q` and the source's view is `s`: the back of the run's pages, while
-/// the source held the spans `s` holds; or, only when the store `store` was full, a request for a
-/// record page once the run was backed: the reserve of a run span or the back of its metadata page,
-/// only when `pb` had no free block of order 0, or the back of the page `pb` then cut for the record
-/// page (`page_back_refusal`).
-pub open spec fn run_refused(store: RecordStore, pb: PageBuddy, s: SourceView, r: Refusal, q: int, k: nat) -> bool {
+/// The source went from `s` to `t`, and the page buddy from `pb` to `fin`, by a refusal of a request
+/// `alloc_small` makes once the page buddy, then `pb`, has cut the slab's run of order `k` at `q`,
+/// and by giving the run back: the back of the run's pages refused while the source held the spans
+/// `s` holds, then the run freed (`freed`); or, only when the store `store` was full, the run backed,
+/// `take` refusing its record page and leaving the page buddy `mid` (`page_refused`), then the run's
+/// pages released and the run freed.
+pub open spec fn run_refused(store: RecordStore, pb: PageBuddy, fin: PageBuddy, s: SourceView, t: SourceView, q: int, k: nat) -> bool {
     let b = pb.span_base(span_of(q));
-    let t = s.backed_run(b, q, pages(k) as nat);
-    ||| r.request == (Request::Back { span: b, start: q, pages: pages(k) as nat }) && r.spans == s.spans
-    ||| store.full() && !pb.fits(0) && span_refusal(t, r)
-    ||| store.full() && page_back_refusal(pb, t, r)
+    let u = s.backed_run(b, q, pages(k) as nat);
+    let r = t.refusals.last();
+    ||| r == (Refusal { request: Request::Back { span: b, start: q, pages: pages(k) as nat }, spans: s.spans })
+        && freed(pb, fin, s.recorded(r), t, q)
+    ||| store.full() && exists|mid: PageBuddy, v: SourceView| #[trigger]
+        page_refused(pb, mid, u, v) && freed(mid, fin, v.released_run(mid.span_base(span_of(q)), q, pages(k) as nat), t, q)
 }
 
 /// The store, the page buddy and the source's view went from `store`, `pb` and `src` to `store2`,
@@ -1478,7 +1482,7 @@ impl SizeClass {
                     &&& runs(final(pb).used()) == runs(old(pb).used())
                     &&& forall|x: int, k: nat| #[trigger]
                         run_held(*old(pb), old(src)@, x, k) ==> run_held(*final(pb), final(src)@, x, k)
-                    &&& slab_refused(*old(store), *old(pb), old(src)@, final(src)@, slab_order(old(self).class()))
+                    &&& slab_refused(*old(store), *old(pb), *final(pb), old(src)@, final(src)@, slab_order(old(self).class()))
                 },
                 Some((p, perm)) => {
                     let n = class_size(old(self).class());
@@ -1598,7 +1602,7 @@ impl SizeClass {
                     store.lemma_frame(pb0, s0, pb1, s1);
                     o.lemma_frame(st0, pb0, s0, st0, pb1, s1);
                     assert(runs(pb1.used()) == runs(pb0.used()));
-                    assert(slab_refused(st0, pb0, s0, s1, kk));
+                    assert(slab_refused(st0, pb0, pb1, s0, s1, kk));
                     assert(s1.spans == s0.spans);
                     lemma_others_same(pb0, pb1, s0, s1);
                 }
@@ -1653,8 +1657,12 @@ impl SizeClass {
                     o.lemma_frame(st0, pb0, s0, st0, pb3, s3);
                     assert(s3.refusals == s0.refusals.push(s2.refusals.last()));
                     assert(cut_run(pb0, pb1, s0, s1, qi, kk));
-                    assert(run_refused(st0, pb1, s1, s3.refusals.last(), qi, kk));
-                    assert(slab_refused(st0, pb0, s0, s3, kk));
+                    let rf = s2.refusals.last();
+                    assert(s2 == s1.recorded(rf));
+                    assert(s3.refusals.last() == rf);
+                    assert(freed(pb1, pb3, s1.recorded(rf), s3, qi));
+                    assert(run_refused(st0, pb1, pb3, s1, s3, qi, kk));
+                    assert(slab_refused(st0, pb0, pb3, s0, s3, kk));
                     lemma_cut_others(pb0, pb1, s0, s1, qi, kk);
                     lemma_others_same(pb1, pb2, s1, s2);
                     lemma_freed_others(pb2, pb3, s2, s2, s3, qi);
@@ -1750,20 +1758,24 @@ impl SizeClass {
                     assert(pb2.spans() == pb1.spans());
                     assert(pb2.fits(0) == pb1.fits(0));
                     assert(s2 == s1.backed_run(pb1.span_base(c), qi, pages(kk) as nat));
-                    if back_refused(pb2, s2, s3) {
+                    if back_refused(pb2, pb3, s2, s3) {
                         let r = s3.refusals.last();
                         let (mid, m, q2) = choose|mid: PageBuddy, m: SourceView, q2: int| #[trigger]
-                            cut_run(pb2, mid, s2, m, q2, 0) && r.request == (Request::Back {
-                                span: mid.span_base(span_of(q2)),
-                                start: q2,
-                                pages: 1,
-                            }) && r.spans == m.spans;
+                            cut_run(pb2, mid, s2, m, q2, 0) && r == (Refusal {
+                                request: Request::Back { span: mid.span_base(span_of(q2)), start: q2, pages: 1 },
+                                spans: m.spans,
+                            }) && freed(mid, pb3, m.recorded(r), s3, q2);
                         assert(cut_run(pb1, mid, s2, m, q2, 0));
-                        assert(page_back_refusal(pb1, s2, r));
+                        assert(back_refused(pb1, pb3, s2, s3));
                     }
+                    assert(page_refused(pb1, pb3, s2, s3));
+                    assert(st0.full());
+                    assert(s4 == s3.released_run(pb3.span_base(c), qi, pages(kk) as nat));
+                    assert(freed(pb3, pb5, s3.released_run(pb3.span_base(c), qi, pages(kk) as nat), s5, qi));
+                    assert(s5.refusals.last() == s3.refusals.last());
                     assert(cut_run(pb0, pb1, s0, s1, qi, kk));
-                    assert(run_refused(st0, pb1, s1, s3.refusals.last(), qi, kk));
-                    assert(slab_refused(st0, pb0, s0, s5, kk));
+                    assert(run_refused(st0, pb1, pb5, s1, s5, qi, kk));
+                    assert(slab_refused(st0, pb0, pb5, s0, s5, kk));
                     lemma_others_trans(pb0, pb2, pb3, s0, s2, s3);
                     lemma_held_bounds(pb3, s3, qi, kk);
                     lemma_span_base(pb3, s3, c);

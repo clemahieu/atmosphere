@@ -15,8 +15,9 @@
 //! - `alloc(src, token, size, align)`, for a layout of at most the page whose alignment divides the page,
 //!   takes a slot of `class_for(size, align)`, the first class whose slot holds `size` bytes and is a
 //!   multiple of `align`. It refuses exactly as that class's `alloc_small` does: only when none of
-//!   its slabs has a free slot and the source refused one request in this call (`slab_refused`).
-//!   Otherwise the slot is aligned to `align` and joins the live slots (`slot_alloc`). For a layout
+//!   its slabs has a free slot and the source refused one request in this call, when it gives back
+//!   what the call took, so the store's records and pages and the page buddy's runs are as they
+//!   were and the source's spans are those giving back leaves (`slab_refused`). Otherwise the slot is aligned to `align` and joins the live slots (`slot_alloc`). For a layout
 //!   of more than one block whose alignment divides the page, it takes a large object of
 //!   `pages_for(size)` pages, a span of its own, and refuses exactly as `alloc_large` does: only
 //!   when the source refused the span's reserve or the back of its pages in this call
@@ -119,7 +120,8 @@ pub open spec fn run_order(n: nat) -> nat {
 
 /// `after` is `before` with one refusal recorded, of a request `alloc` makes for a buddy-run object
 /// of `n` pages in a run of order `k` from the page buddy `pb`: the reserve of a run span or the
-/// back of its metadata page, only when `pb` had no free block of order `k` (`span_refused`); or
+/// back of its metadata page, only when `pb` had no free block of order `k`, the page buddy left as
+/// it was (`run_span_refused`); or
 /// the back of the object's `n` pages from the run `pb` cut at `q`, while the source held the spans
 /// it held once the run was cut, after which the run is freed again, leaving the page buddy `fin`
 /// and the source's spans as `freed` says: as they were once the run was cut, or without the run's
@@ -129,7 +131,7 @@ pub open spec fn part_refused(pb: PageBuddy, fin: PageBuddy, before: SourceView,
     &&& after.provenance == before.provenance
     &&& after.refusals == before.refusals.push(r)
     &&& {
-        ||| !pb.fits(k) && span_refused(before, after)
+        ||| run_span_refused(pb, fin, before, after, k)
         ||| exists|mid: PageBuddy, s: SourceView, q: int| #[trigger]
             cut_run(pb, mid, before, s, q, k) && r == (Refusal {
                 request: Request::Back { span: mid.span_base(span_of(q)), start: q, pages: n },
@@ -152,7 +154,8 @@ pub open spec fn records_grew(o: SizeClass, n: SizeClass, store: RecordStore) ->
 /// `alloc` of a small layout went from `h0` to `h1`, and the source's view from `s0` to `s1`,
 /// returning `r`: a slot of `class_for(size, align)`, or a refusal only when none of that class's
 /// slabs had a free slot and the source refused one request in the call (`slab_refused`), which
-/// leaves every class as it was. Every other class and the large objects are as they were either
+/// leaves every class, the store's records and pages and the page buddy's runs as they were, and
+/// the source's spans those giving back what the call took leaves. Every other class and the large objects are as they were either
 /// way. The slot is aligned to `align` and apart from every slot, buddy-run object and large object
 /// live before, and the class, the store, the page buddy and the source changed as `alloc_small`
 /// says (`slot_taken`).
@@ -178,7 +181,10 @@ pub open spec fn slot_alloc(
                 h0.classes()[c].slabs().contains_key(a) ==> h0.classes()[c].slabs()[a].free_slots() == Set::<int>::empty()
             &&& h1.classes() == h0.classes()
             &&& h1.live() == h0.live()
-            &&& slab_refused(h0.store(), h0.pb(), s0, s1, slab_order(c as nat))
+            &&& h1.store().pages() == h0.store().pages()
+            &&& h1.store().taken() == h0.store().taken()
+            &&& runs(h1.pb().used()) == runs(h0.pb().used())
+            &&& slab_refused(h0.store(), h0.pb(), h1.pb(), s0, s1, slab_order(c as nat))
         },
         Some((p, perm)) => {
             &&& perm@.is_range(p@.addr as int, n as int)
