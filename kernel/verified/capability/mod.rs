@@ -44,6 +44,8 @@ pub mod steps;
 pub mod switch;
 pub mod table;
 pub mod thread;
+#[cfg(throwaway)]
+pub mod throwaway;
 pub mod unmap;
 pub mod view;
 #[cfg(verus_keep_ghost)]

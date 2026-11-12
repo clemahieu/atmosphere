@@ -35,5 +35,7 @@ pub mod record;
 pub mod slab;
 pub mod small;
 pub mod source;
+#[cfg(throwaway)]
+mod throwaway;
 #[cfg(verus_keep_ghost)]
 mod witness;

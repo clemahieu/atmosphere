@@ -48,6 +48,7 @@ LICENSE_CHECK = "tools/check-licenses.py"
 SOURCE_LICENSE_CHECK = "tools/check-spdx.py"
 HOOK_TESTS = (".claude/hooks/license-guard-test.sh", ".claude/hooks/beads-actor-test.sh")
 EXTERNAL_BODY_CHECK = "tools/check-external-body.py"
+THROWAWAY_CHECK = "tools/check-throwaways.py"
 PAGE_LITERALS_CHECK = "tools/check-page-literals.py"
 ARCH_SOURCES_CHECK = "tools/check-arch-sources.py"
 UPSTREAM_COPIES_CHECK = "tools/check-upstream-copies.py"
@@ -425,6 +426,8 @@ STEPS = (
     Step("source licenses", X86_64, self_tested(SOURCE_LICENSE_CHECK)),
     Step("hooks", X86_64, hooks),
     Step("verify", X86_64, verify),
+    # After verify, whose exported crates a throwaway run of a crate that depends on one reads.
+    Step("throwaways", X86_64, self_tested(THROWAWAY_CHECK)),
     Step("verify aarch64", AARCH64, verify_for("--target", AARCH64)),
     Step("external body", X86_64, self_tested(EXTERNAL_BODY_CHECK)),
     Step("page literals", X86_64, self_tested(PAGE_LITERALS_CHECK)),
