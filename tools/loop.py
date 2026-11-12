@@ -11,11 +11,14 @@ report's lines say what comes next, as the round skill reads them (.claude/skill
 - `Notify: <text>` (or bullets under a bare `Notify:`), each sent with notify-send and printed;
 - `Prover: <id>` runs `claude -p --agent prover`, then appends its report to the issue as
   `Prover report:` and sets the issue open; `Skeptic: <review>` does the same with the skeptic;
+- `Retry: <id>`, from a round whose attempt on a leaf ended at its bound, makes the next session a
+  retry: a round whose prompt names that issue, which the loop's actor still holds, so it takes that
+  issue and no other, with the flags of the retry table below;
 - `Loop: continue` starts the next round, `Loop: wait` waits (another loop holds the issues in
   progress), `Loop: stop` prints the questions waiting on the human and ends the loop.
 
 The loop is one Beads actor, loop-<pid>, for every session it runs (.claude/hooks/beads-actor.sh),
-so an issue a round hands to the prover stays held between the two sessions.
+so an issue a round hands to the prover, or leaves for a retry, stays held between the two sessions.
 
 Each session's temporary directory is <project root>/scratch, on disk: the loop sets TMPDIR, which the
 session's commands read, and CLAUDE_CODE_TMPDIR, under which Claude Code keeps the session's scratchpad
@@ -30,15 +33,20 @@ issue is released with a note so the next round picks it up. A second signal, or
 <project root>/logs/loop/<pid> while it runs; `--stop` signals each such pid that is still a loop.
 
 Tuning. Before each session the loop reads <project root>/loop.toml: a table per kind (round, prover,
-skeptic) whose keys model, autocompact, effort and fallback-model become that flag of claude -p; a key
-left out passes no flag, so the agent file's model and effort hold. An edit takes effect at the next
-session. A file that does not parse or names what claude does not take is reported, and the loop
+skeptic, and retry for a round that is a retry) whose keys model, autocompact, effort and
+fallback-model become that flag of claude -p; a key left out passes no flag, so the agent file's
+model and effort hold. The retry table is where the human sets the stronger setting an unfinished
+issue is run again at. An edit takes effect at the next session. A file that does not parse or names what claude does not take is reported, and the loop
 keeps the last values it read. SIGHUP, or `tools/loop.py --reload`, re-executes the loop after the
 run in flight and its hand-off, with the same pid and so the same actor, to take up a change to this
 script.
 
-A usage limit waits until the limit's reset and goes on. A run that fails otherwise (no report, or
-an error result) is retried after 1, 2 and 4 minutes; the fourth failure in a row ends the loop.
+A usage limit waits until the limit's reset and goes on. A round that fails otherwise (no report, or
+an error result) is followed after 1, 2 and 4 minutes by another; the fourth failure in a row ends
+the loop. When the failed round left exactly one issue in progress under the loop's actor, the round
+that follows is a retry on that issue; with none or several it is a plain round, whose orient
+recovers them. A retry is a round in every other way: its report is read the same, and its failure
+counts the same.
 
 usage: tools/loop.py [--once] [--wait SECONDS]   run rounds until the loop stops
        tools/loop.py --stop [--now] [PID...]     stop running loops, after their run in flight
@@ -67,9 +75,11 @@ PIDS = ROOT / "logs" / "loop"
 CONFIG = ROOT / "loop.toml"
 SCRATCH = ROOT / "scratch"
 KINDS = ("round", "prover", "skeptic")
+RETRY = "retry"
+TABLES = (*KINDS, RETRY)
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 ISSUE = r"[a-z][a-z0-9]*-[a-z0-9]+(?:\.[0-9]+)*"
-KEY = re.compile(rf"^(Loop|Prover|Skeptic|Notify):\s*(.*)$")
+KEY = re.compile(rf"^(Loop|Prover|Skeptic|Retry|Notify):\s*(.*)$")
 DECORATION = "-*`> \t"
 WAIT = 900
 FAILURES = 4
@@ -83,6 +93,7 @@ class Report:
     loop: str = None
     prover: str = None
     skeptic: str = None
+    retry: str = None
     notify: list = field(default_factory=list)
 
 
@@ -104,7 +115,7 @@ def parse(text):
             if key == "Loop":
                 word = re.match(r"(continue|wait|stop)\b", value)
                 report.loop = word.group(1) if word else report.loop
-            elif key in ("Prover", "Skeptic"):
+            elif key in ("Prover", "Skeptic", "Retry"):
                 issue = re.match(ISSUE, value)
                 if issue:
                     setattr(report, key.lower(), issue.group(0))
@@ -182,15 +193,15 @@ def follow(lines, show):
 
 
 def options(text):
-    """The claude -p flags loop.toml gives each kind. The file is the human's, so a ValueError says what is wrong."""
+    """The claude -p flags loop.toml gives each table. The file is the human's, so a ValueError says what is wrong."""
     try:
         tables = tomllib.loads(text)
     except tomllib.TOMLDecodeError as error:
         raise ValueError(f"not TOML: {error}")
     flags = {}
     for kind, table in tables.items():
-        if kind not in KINDS or not isinstance(table, dict):
-            raise ValueError(f"{kind}: not a table of {', '.join(KINDS)}")
+        if kind not in TABLES or not isinstance(table, dict):
+            raise ValueError(f"{kind}: not a table of {', '.join(TABLES)}")
         flags[kind] = []
         for key, value in table.items():
             if not isinstance(value, str) or not value or value.startswith("-"):
@@ -235,6 +246,7 @@ class Loop:
         self.halting = False
         self.reloading = False
         self.child = None
+        self.retry = None
 
     def say(self, who, text):
         print(f"{time.strftime('%H:%M:%S')} {who:<8} {text}", file=self.out, flush=True)
@@ -282,11 +294,11 @@ class Loop:
         shown = "; ".join(f"{kind} {' '.join(flags)}" for kind, flags in self.flags.items() if flags)
         self.say("loop", f"{self.config.name}: {shown or 'no flags'}")
 
-    def agent(self, kind, prompt):
-        """Run one agent session in the main worktree; its stream is shown as it comes."""
+    def agent(self, kind, prompt, table=None):
+        """Run one agent session in the main worktree, with the flags of its kind's table or of the one named; its stream is shown as it comes."""
         self.tune()
         command = [self.claude, "-p", "--agent", kind, "--permission-mode", "auto",
-                   "--output-format", "stream-json", "--verbose", *self.flags.get(kind, []), prompt]
+                   "--output-format", "stream-json", "--verbose", *self.flags.get(table or kind, []), prompt]
         started = self.now()
         self.say(kind, f"start: {prompt}")
         self.scratch.mkdir(exist_ok=True)
@@ -339,7 +351,11 @@ class Loop:
 
     def round(self):
         """One round and its hand-off. The report's Loop word, or None when the round failed."""
-        run = self.agent("round", "Run one round.")
+        issue, self.retry = self.retry, None
+        if issue:
+            run = self.agent("round", f"Run one round. Issue {issue} is yours: a round of this loop left it unfinished.", RETRY)
+        else:
+            run = self.agent("round", "Run one round.")
         if run.report.strip():
             print(textwrap.indent(run.report.strip(), "    "), file=self.out, flush=True)
         report = parse(run.report) if not run.error else Report()
@@ -352,7 +368,13 @@ class Loop:
         if report.skeptic:
             self.hand_off("skeptic", report.skeptic,
                           f"Review {report.skeptic}. Your input is the review's last Skeptic input note.")
+        self.retry = report.retry
         return report.loop, run
+
+    def held(self):
+        """The one issue in progress under the loop's actor, or None when there is none or more than one."""
+        issues = json.loads(self.beads("list", "-s", "in_progress", "--assignee", self.actor, "--json") or "[]")
+        return issues[0]["id"] if len(issues) == 1 else None
 
     def drive(self, once=False):
         """Rounds until the loop stops. The exit status: 0 for a stop, 1 for repeated failures."""
@@ -379,6 +401,7 @@ class Loop:
                 if failures >= FAILURES:
                     self.notify(f"round loop stopped: {failures} failed rounds in a row")
                     return 1
+                self.retry = self.held()
                 self.pause(60 * 2 ** (failures - 1), f"the round ended without a report (failure {failures})")
         self.say("loop", "reloading" if self.reloading and not self.stopping else "stopped")
         return 0
@@ -447,6 +470,11 @@ class Tests(unittest.TestCase):
         report = parse("Notify:\n- atmo-1.9 needs a decision: a?\n- atmo-1.8 needs a decision: b?\nLoop: wait\n")
         self.assertEqual((report.loop, report.notify), ("wait", ["atmo-1.9 needs a decision: a?", "atmo-1.8 needs a decision: b?"]))
 
+    def test_a_retry_line_names_the_issue_the_next_round_is_pinned_to(self):
+        report = parse("- atmo-1.2 Attempt 1 ended at its bound.\nNotify: none\n**Retry:** `atmo-1.2`\nLoop: continue\n")
+        self.assertEqual((report.loop, report.retry, report.prover), ("continue", "atmo-1.2", None))
+        self.assertIsNone(parse(self.REPORT).retry)
+
     def test_a_report_without_a_loop_line_has_no_loop_word(self):
         self.assertIsNone(parse("The round ran out of turns.\nLoop: maybe\n").loop)
 
@@ -509,11 +537,14 @@ class Tests(unittest.TestCase):
                                          "prover": ["--effort", "xhigh", "--fallback-model", "opus"],
                                          "skeptic": ["--autocompact", "1M"]})
         self.assertEqual(options(""), {})
+        self.assertEqual(options('[retry]\nmodel = "fable"\neffort = "high"\nautocompact = "200k"\nfallback-model = "opus"\n'),
+                         {"retry": ["--model", "fable", "--effort", "high", "--autocompact", "200k", "--fallback-model", "opus"]})
 
     def test_loop_toml_refuses_what_claude_does_not_take(self):
         for text in ("[round\n", "[driver]\nmodel = \"opus\"\n", "model = \"opus\"\n", "[round]\nturns = \"9\"\n",
                      "[round]\neffort = \"huge\"\n", "[round]\nautocompact = \"50k\"\n", "[round]\nautocompact = \"2m\"\n",
-                     "[round]\nautocompact = 200000\n", "[round]\nmodel = \"--dangerously\"\n"):
+                     "[round]\nautocompact = 200000\n", "[round]\nmodel = \"--dangerously\"\n", "[retry]\nturns = \"9\"\n",
+                     "[retry]\neffort = \"huge\"\n"):
             with self.assertRaises(ValueError, msg=text):
                 options(text)
 
@@ -536,8 +567,11 @@ class Tests(unittest.TestCase):
     FAKE_BD = textwrap.dedent("""\
         import json, os, sys
         open(os.path.join(os.environ["FAKE"], "bd.log"), "a").write(json.dumps(sys.argv[1:]) + "\\n")
-        if sys.argv[1:3] == ["list", "-s"]:
+        if sys.argv[1:4] == ["list", "-s", "blocked"]:
             print("● atmo-1.9 ● P2 Should the loop ask?")
+        if sys.argv[1:4] == ["list", "-s", "in_progress"]:
+            held = os.path.join(os.environ["FAKE"], "held")
+            print(open(held).read() if os.path.exists(held) else "[]")
         """)
 
     def driver(self, folder, *replies, **given):
@@ -647,7 +681,61 @@ class Tests(unittest.TestCase):
             loop, clock = self.driver(folder, "Loop: wait\n", "ERROR", "no loop line", "ERROR", "ERROR", wait=900)
             self.assertEqual(loop.drive(), 1)
             self.assertEqual(clock[0], 900 + 60 + 120 + 240)
-            self.assertEqual(self.log(folder, "bd"), [])
+            self.assertEqual(self.log(folder, "bd"), [["list", "-s", "in_progress", "--assignee", loop.actor, "--json"]] * 3)
+            self.assertEqual([call[-2] for call in self.log(folder, "claude")], ["Run one round."] * 5)
+
+    RETRY = "Run one round. Issue {} is yours: a round of this loop left it unfinished."
+    TABLES = '[round]\nmodel = "fable"\neffort = "medium"\n[retry]\nmodel = "fable"\neffort = "high"\nautocompact = "200k"\n'
+
+    def sessions(self, folder):
+        return [(call[2], call[8:-2], call[-2]) for call in self.log(folder, "claude")]
+
+    def test_a_retry_line_pins_the_next_round_to_the_issue_at_the_retry_tables_flags_and_its_hand_off_runs(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            loop, _ = self.driver(folder, "Notify: none\nRetry: atmo-1.2\nLoop: continue\n", "Prover: atmo-1.2\nLoop: continue\n",
+                                  "proved", "Loop: stop\n")
+            (folder / "loop.toml").write_text(self.TABLES)
+            self.assertEqual(loop.drive(), 0)
+            plain, strong = ["--model", "fable", "--effort", "medium"], ["--model", "fable", "--effort", "high", "--autocompact", "200k"]
+            self.assertEqual(self.sessions(folder), [
+                ("round", plain, "Run one round."),
+                ("round", strong, self.RETRY.format("atmo-1.2")),
+                ("prover", [], f"Issue atmo-1.2, worktree {folder.parent / 'atmo-1.2'}. Your input is the issue's last Prover input note."),
+                ("round", plain, "Run one round.")])
+            self.assertEqual(self.log(folder, "bd"), [
+                ["update", "atmo-1.2", "--append-notes", "Prover report: proved"],
+                ["update", "atmo-1.2", "-s", "open", "--assignee", ""],
+                ["list", "-s", "blocked"]])
+
+    def test_a_round_without_a_report_that_left_one_issue_held_is_followed_by_a_retry_on_it(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            loop, clock = self.driver(folder, "ERROR", "Loop: stop\n")
+            (folder / "loop.toml").write_text(self.TABLES)
+            (folder / "held").write_text('[{"id": "atmo-1.3", "status": "in_progress"}]')
+            self.assertEqual(loop.drive(), 0)
+            self.assertEqual([(flags[3], prompt) for _, flags, prompt in self.sessions(folder)],
+                             [("medium", "Run one round."), ("high", self.RETRY.format("atmo-1.3"))])
+            self.assertEqual(clock[0], 60)
+            self.assertEqual(self.log(folder, "bd")[0], ["list", "-s", "in_progress", "--assignee", loop.actor, "--json"])
+
+    def test_a_round_without_a_report_that_left_two_issues_held_is_followed_by_a_plain_round(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            loop, _ = self.driver(folder, "no loop line", "Loop: stop\n")
+            (folder / "held").write_text('[{"id": "atmo-1.3"}, {"id": "atmo-1.4"}]')
+            self.assertEqual(loop.drive(), 0)
+            self.assertEqual([call[-2] for call in self.log(folder, "claude")], ["Run one round."] * 2)
+
+    def test_a_failed_retry_counts_as_a_failed_round_and_the_fourth_failure_ends_the_loop(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            loop, clock = self.driver(folder, "ERROR", "ERROR", "no loop line", "ERROR")
+            (folder / "held").write_text('[{"id": "atmo-1.3"}]')
+            self.assertEqual(loop.drive(), 1)
+            self.assertEqual([call[-2] for call in self.log(folder, "claude")], ["Run one round."] + [self.RETRY.format("atmo-1.3")] * 3)
+            self.assertEqual(clock[0], 60 + 120 + 240)
 
     def test_a_second_signal_ends_the_session_in_flight(self):
         with tempfile.TemporaryDirectory() as folder:

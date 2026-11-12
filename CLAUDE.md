@@ -100,7 +100,7 @@ tools/board.py          # boot dom0 on the Orange Pi under KVM and hold the run 
 Not part of the gate:
 
 ```
-tools/loop.py           # run rounds until the loop stops; loop.toml at the project root gives each session's model
+tools/loop.py           # run rounds until the loop stops; loop.toml at the project root gives each session's model, and a retry's
 tools/reviews.py        # the finished epics, in the order an epic round takes them, each with what it needs
 tools/bead-status.py    # serve the state of the Beads tree as a page at http://127.0.0.1:8377/
 tools/token-ledger.py   # harvest the transcripts' token counts into logs/token-ledger.sqlite at the project root
