@@ -93,6 +93,7 @@ tools/land.py           # from a task worktree: rebase onto main, gate, land by 
 tools/gdb.py            # attach gdb to a tools/run.py --gdb run
 tools/check-upstream-copies.py --update   # rewrite the recorded delta of a copied upstream file
 tools/check-boot-log.py --arch ARCH LOG   # hold a dom0 boot's serial log to the gate's boot checks
+tools/check-throwaways.py --write   # after adding a root witness or changing one's parameters or requires: rewrite the throwaways the gate runs; --list says which witnesses are roots
 tools/aarch64-esp.py    # build the aarch64 images and lay out the ESP the board boots
 tools/board.py          # boot dom0 on the Orange Pi under KVM and hold the run to the gate's boot checks; fails when the board is unreachable
 ```
