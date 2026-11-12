@@ -160,14 +160,24 @@ pub open spec fn runs(cores: Seq<CoreState>, c: int, t: usize) -> bool {
     cores[c].current_thread == Some(t)
 }
 
+/// Thread t is bound to a process, and core c has that process's space loaded.
+pub open spec fn runs_in_space(cores: Seq<CoreState>, records: Map<usize, PointsTo<ThreadRecord>>, c: int, t: usize) -> bool {
+    &&& records[t].value().process is Some
+    &&& cores[c].space == records[t].value().process
+}
+
 /// Core c's current thread is t exactly when t is Running on c, so no thread is current on two cores
-/// and no core's current thread is anything but a thread. A pending stop is on a Running thread, so
-/// one its core has acted on cannot stop the thread again once it is started.
+/// and no core's current thread is anything but a thread. A current thread with no stop pending is
+/// bound to a process and its core has that process's space loaded, so what it does to its space acts
+/// on the space its core translates through; one whose binding went has a stop pending. A pending stop
+/// is on a Running thread, so one its core has acted on cannot stop the thread again once it is
+/// started.
 #[verifier::opaque]
 pub open spec fn current_wf(cores: Seq<CoreState>, records: Map<usize, PointsTo<ThreadRecord>>) -> bool {
     &&& forall|c: int, t: usize| 0 <= c < NUM_CPUS && #[trigger] runs(cores, c, t) ==> {
         &&& records.contains_key(t)
         &&& records[t].value().state == (ThreadState::Running { core: c as usize })
+        &&& !records[t].value().pending_stop ==> runs_in_space(cores, records, c, t)
     }
     &&& forall|t: usize| #[trigger] records.contains_key(t) && records[t].value().state is Running ==> {
         let c = records[t].value().state->Running_core;
@@ -182,10 +192,12 @@ pub proof fn lemma_current_same(pre: Seq<CoreState>, post: Seq<CoreState>, a: Ma
     requires
         current_wf(pre, a),
         forall|c: int| 0 <= c < NUM_CPUS ==> #[trigger] post[c].current_thread == pre[c].current_thread,
+        forall|c: int| 0 <= c < NUM_CPUS ==> #[trigger] post[c].space == pre[c].space,
         b.dom() == a.dom(),
         forall|t: usize| #[trigger] b.contains_key(t) ==> {
             &&& b[t].value().state == a[t].value().state
             &&& b[t].value().pending_stop == a[t].value().pending_stop
+            &&& b[t].value().process == a[t].value().process
         },
     ensures
         current_wf(post, b),
@@ -194,8 +206,10 @@ pub proof fn lemma_current_same(pre: Seq<CoreState>, post: Seq<CoreState>, a: Ma
     assert forall|c: int, t: usize| 0 <= c < NUM_CPUS && #[trigger] runs(post, c, t) implies {
         &&& b.contains_key(t)
         &&& b[t].value().state == (ThreadState::Running { core: c as usize })
+        &&& !b[t].value().pending_stop ==> runs_in_space(post, b, c, t)
     } by {
         assert(runs(pre, c, t));
+        assert(post[c].space == pre[c].space);
     }
     assert forall|t: usize| #[trigger] b.contains_key(t) && b[t].value().state is Running implies {
         let c = b[t].value().state->Running_core;
@@ -209,6 +223,83 @@ pub proof fn lemma_current_same(pre: Seq<CoreState>, post: Seq<CoreState>, a: Ma
     }
     assert forall|t: usize| #[trigger] b.contains_key(t) && b[t].value().pending_stop implies b[t].value().state is Running by {
         assert(a.contains_key(t));
+    }
+}
+
+/// Each core runs what it ran and each thread is in the state it was in, with the stop it had
+/// pending, and any thread whose process changed was bound to none, so if it runs it has a stop
+/// pending.
+pub proof fn lemma_current_bound(pre: Seq<CoreState>, post: Seq<CoreState>, a: Map<usize, PointsTo<ThreadRecord>>, b: Map<usize, PointsTo<ThreadRecord>>)
+    requires
+        current_wf(pre, a),
+        forall|c: int| 0 <= c < NUM_CPUS ==> #[trigger] post[c].current_thread == pre[c].current_thread,
+        forall|c: int| 0 <= c < NUM_CPUS ==> #[trigger] post[c].space == pre[c].space,
+        b.dom() == a.dom(),
+        forall|t: usize| #[trigger] b.contains_key(t) ==> {
+            &&& b[t].value().state == a[t].value().state
+            &&& b[t].value().pending_stop == a[t].value().pending_stop
+            &&& (b[t].value().process == a[t].value().process || a[t].value().process is None)
+        },
+    ensures
+        current_wf(post, b),
+{
+    reveal(current_wf);
+    assert forall|c: int, t: usize| 0 <= c < NUM_CPUS && #[trigger] runs(post, c, t) implies {
+        &&& b.contains_key(t)
+        &&& b[t].value().state == (ThreadState::Running { core: c as usize })
+        &&& !b[t].value().pending_stop ==> runs_in_space(post, b, c, t)
+    } by {
+        assert(runs(pre, c, t));
+        assert(post[c].space == pre[c].space);
+    }
+    assert forall|t: usize| #[trigger] b.contains_key(t) && b[t].value().state is Running implies {
+        let c = b[t].value().state->Running_core;
+        &&& c < NUM_CPUS
+        &&& post[c as int].current_thread == Some(t)
+    } by {
+        let c = a[t].value().state->Running_core;
+        assert(a.contains_key(t));
+        assert(post[c as int].current_thread == pre[c as int].current_thread);
+    }
+    assert forall|t: usize| #[trigger] b.contains_key(t) && b[t].value().pending_stop implies b[t].value().state is Running by {
+        assert(a.contains_key(t));
+    }
+}
+
+/// Each core runs what it ran and each thread is as it was, and core c, the one core whose space
+/// changed, runs nothing, or a thread with a stop pending, or one whose process's space it now has.
+pub proof fn lemma_current_space_set(pre: Seq<CoreState>, post: Seq<CoreState>, a: Map<usize, PointsTo<ThreadRecord>>, c: int)
+    requires
+        current_wf(pre, a),
+        0 <= c < NUM_CPUS,
+        forall|d: int| 0 <= d < NUM_CPUS ==> #[trigger] post[d].current_thread == pre[d].current_thread,
+        forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] post[d].space == pre[d].space,
+        match post[c].current_thread {
+            Some(t) => a[t].value().pending_stop || runs_in_space(post, a, c, t),
+            None => true,
+        },
+    ensures
+        current_wf(post, a),
+{
+    reveal(current_wf);
+    assert forall|d: int, t: usize| 0 <= d < NUM_CPUS && #[trigger] runs(post, d, t) implies {
+        &&& a.contains_key(t)
+        &&& a[t].value().state == (ThreadState::Running { core: d as usize })
+        &&& !a[t].value().pending_stop ==> runs_in_space(post, a, d, t)
+    } by {
+        assert(runs(pre, d, t));
+        if d != c {
+            assert(post[d].space == pre[d].space);
+        }
+    }
+    assert forall|t: usize| #[trigger] a.contains_key(t) && a[t].value().state is Running implies {
+        let d = a[t].value().state->Running_core;
+        &&& d < NUM_CPUS
+        &&& post[d as int].current_thread == Some(t)
+    } by {
+        let d = a[t].value().state->Running_core;
+        assert(d < NUM_CPUS);
+        assert(post[d as int].current_thread == pre[d as int].current_thread);
     }
 }
 
@@ -2319,7 +2410,9 @@ impl CapKernel {
     }
 
     /// Core c, running nothing, makes thread t, Runnable on c, its current thread. Which thread is the
-    /// scheduler's choice; loading its frame and its space is the caller's.
+    /// scheduler's choice, and loading its frame is the caller's. The caller loads t's process's space
+    /// first, so a core runs a thread only in the space of the process it is bound to: current_wf,
+    /// design/teardown-driven-by-retype/.
     pub fn switch_in(&mut self, c: usize, t: usize)
         requires
             old(self).wf(),
@@ -2327,6 +2420,7 @@ impl CapKernel {
             old(self).cores@[c as int].current_thread is None,
             old(self).threads.records@.contains_key(t),
             old(self).threads.records@[t].value().state == (ThreadState::Runnable { core: c }),
+            runs_in_space(old(self).cores@, old(self).threads.records@, c as int, t),
         ensures
             Self::step_ok(*old(self), *final(self), c as int),
             Self::switch_frame(*old(self), *final(self), c as int, t),
@@ -2370,6 +2464,7 @@ impl CapKernel {
             assert forall|d: int, x: usize| 0 <= d < NUM_CPUS && #[trigger] runs(post.cores@, d, x) implies {
                 &&& post.threads.records@.contains_key(x)
                 &&& post.threads.records@[x].value().state == (ThreadState::Running { core: d as usize })
+                &&& !post.threads.records@[x].value().pending_stop ==> runs_in_space(post.cores@, post.threads.records@, d, x)
             } by {
                 if d != c {
                     assert(post.cores@[d] == pre.cores@[d]);
@@ -2403,7 +2498,8 @@ impl CapKernel {
 
     /// Core c, running nothing, makes thread t, Inactive, its current thread: boot's entry into the
     /// root's thread, which no capability has started. Boot made the thread, so it runs on c without
-    /// a placement, design/root-process-at-boot/. Loading its frame and its space is the caller's.
+    /// a placement, design/root-process-at-boot/. Loading its frame is the caller's, and core c has t's
+    /// process's space loaded already, as for switch_in.
     pub fn enter_boot_thread(&mut self, c: usize, t: usize)
         requires
             old(self).wf(),
@@ -2411,6 +2507,7 @@ impl CapKernel {
             old(self).cores@[c as int].current_thread is None,
             old(self).threads.records@.contains_key(t),
             old(self).threads.records@[t].value().state is Inactive,
+            runs_in_space(old(self).cores@, old(self).threads.records@, c as int, t),
         ensures
             final(self).wf(),
             Self::switch_frame(*old(self), *final(self), c as int, t),
@@ -2529,6 +2626,7 @@ impl CapKernel {
             assert forall|d: int, x: usize| 0 <= d < NUM_CPUS && #[trigger] runs(post.cores@, d, x) implies {
                 &&& post.threads.records@.contains_key(x)
                 &&& post.threads.records@[x].value().state == (ThreadState::Running { core: d as usize })
+                &&& !post.threads.records@[x].value().pending_stop ==> runs_in_space(post.cores@, post.threads.records@, d, x)
             } by {
                 assert(d != c);
                 assert(post.cores@[d] == pre.cores@[d]);
@@ -3030,6 +3128,7 @@ impl CapKernel {
             assert forall|d: int, x: usize| 0 <= d < NUM_CPUS && #[trigger] runs(post.cores@, d, x) implies {
                 &&& post.threads.records@.contains_key(x)
                 &&& post.threads.records@[x].value().state == (ThreadState::Running { core: d as usize })
+                &&& !post.threads.records@[x].value().pending_stop ==> runs_in_space(post.cores@, post.threads.records@, d, x)
             } by {
                 assert(post.cores@[d] == pre.cores@[d]);
                 assert(runs(pre.cores@, d, x));
@@ -3361,6 +3460,7 @@ impl CapKernel {
             assert forall|d: int, x: usize| 0 <= d < NUM_CPUS && #[trigger] runs(post.cores@, d, x) implies {
                 &&& post.threads.records@.contains_key(x)
                 &&& post.threads.records@[x].value().state == (ThreadState::Running { core: d as usize })
+                &&& !post.threads.records@[x].value().pending_stop ==> runs_in_space(post.cores@, post.threads.records@, d, x)
             } by {
                 assert(d != c);
                 assert(post.cores@[d] == pre.cores@[d]);
@@ -3698,7 +3798,7 @@ impl CapKernel {
         }
         Self::lemma_mappings_same_tree(pre, post);
         lemma_bindings_bound(&pre.list, &post.list, &pre.threads, &post.threads, &pre.processes, &post.processes, t, p);
-        lemma_current_same(pre.cores@, post.cores@, pre.threads.records@, post.threads.records@);
+        lemma_current_bound(pre.cores@, post.cores@, pre.threads.records@, post.threads.records@);
     }
 
     /// The binding parents after a bind: the new binding's parent is the process capability n, whose

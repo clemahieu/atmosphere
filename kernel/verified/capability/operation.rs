@@ -715,6 +715,8 @@ impl CapKernel {
                 let t = old(self).cores@[c as int].current_thread->Some_0;
                 let root = old(self).threads.records@[t].value().process->Some_0;
                 &&& old(self).root_live(root)
+                &&& old(self).cores@[c as int].space == Some(root)
+                &&& final(self).cores@[c as int].space == Some(root)
                 &&& Self::invoked(*old(self), *final(self), root, frame, ret->0)
             },
     {
@@ -738,6 +740,13 @@ impl CapKernel {
             Some(root) => root,
             None => { proof { assert(false); } return None; },
         };
+        proof {
+            // The caller has no stop pending, so its core has its process's space loaded.
+            reveal(current_wf);
+            assert(runs(self.cores@, c as int, t));
+            assert(!self.threads.records@[t].value().pending_stop);
+            assert(self.cores@[c as int].space == Some(root));
+        }
         match operation(frame.operation_number()) {
             Some(Operation::Retype) => Some(self.invoke_retype(root, frame, Tracked(&mut steps))),
             Some(Operation::Derive) => Some(self.invoke_derive(root, frame, Tracked(&mut steps))),

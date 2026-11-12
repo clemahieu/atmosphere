@@ -393,6 +393,12 @@ impl CapKernel {
                     &&& tag == KERNEL_TAG
                 },
             },
+            // A core leaves the space of the thread it runs only for that thread to leave it.
+            match old(self).cores@[c as int].current_thread {
+                Some(t) => old(self).threads.records@[t].value().pending_stop
+                    || (space is Some && old(self).threads.records@[t].value().process == space),
+                None => true,
+            },
         ensures
             Self::step_ok(*old(self), *final(self), c as int),
             final(self).cores@[c as int].space == space,
@@ -490,7 +496,10 @@ impl CapKernel {
                     assert(post.cores@[d] == pre.cores@[d]);
                 }
             }
-            lemma_current_same(pre.cores@, post.cores@, pre.threads.records@, post.threads.records@);
+            assert forall|d: int| 0 <= d < NUM_CPUS && d != c implies #[trigger] post.cores@[d].space == pre.cores@[d].space by {
+                assert(post.cores@[d] == pre.cores@[d]);
+            }
+            lemma_current_space_set(pre.cores@, post.cores@, post.threads.records@, c as int);
             assert forall|d: int| 0 <= d < NUM_CPUS implies #[trigger] post.acked(d) <= post.flush_epoch by {
                 assert(pre.acked(d) <= pre.flush_epoch);
                 assert(post.acked(d) == pre.acked(d));
