@@ -304,28 +304,9 @@ impl CapKernel {
         pcid
     }
 
-    /// A root at any offset of a table block but a space's root page is no space's root, since every
-    /// space starts a block of TABLE_PAGE_BYTES: the root switch_space takes for None.
-    pub proof fn lemma_no_space_root(&self, root: usize)
-        requires
-            self.wf(),
-            root % TABLE_PAGE_BYTES != SPACE_ROOT_PAGE * PAGE_SZ,
-        ensures
-            forall|s: usize| #[trigger] self.spaces.roots@.contains_key(s) ==> root != s + SPACE_ROOT_PAGE * PAGE_SZ,
-    {
-        assert forall|s: usize| #[trigger] self.spaces.roots@.contains_key(s) implies root != s + SPACE_ROOT_PAGE * PAGE_SZ by {
-            assert(space_wf(&self.list, &self.spaces, &self.blocks, s));
-            let q = s as int / TABLE_PAGE_BYTES as int;
-            lemma_fundamental_div_mod(s as int, TABLE_PAGE_BYTES as int);
-            lemma_mod_multiples_vanish(q, (SPACE_ROOT_PAGE * PAGE_SZ) as int, TABLE_PAGE_BYTES as int);
-            lemma_small_mod((SPACE_ROOT_PAGE * PAGE_SZ) as nat, TABLE_PAGE_BYTES as nat);
-        }
-    }
-
-    /// A core that names no space holds no space's root in its base register: a root at another
-    /// offset of a table block is none (lemma_no_space_root), and the root the core booted on is in a
-    /// page the blocks never type (kernel_root_reserved), while every space's root page is a member of
-    /// the space's block.
+    /// A core that names no space holds no space's root in its base register: its register holds the
+    /// kernel's root, a page the blocks never type (kernel_root_reserved), while every space's root page
+    /// is a member of the space's block.
     pub proof fn lemma_none_names_no_root(&self, c: int)
         requires
             self.wf(),
@@ -339,17 +320,13 @@ impl CapKernel {
         assert(self.spaces.registers@.contains_key(c));
         assert(register_names(self.spaces.registers@[c], self.cores@[c].space, self.spaces.loaded@, c, self.spaces.kernel_root@));
         let root = self.spaces.registers@[c].root();
-        if root % TABLE_PAGE_BYTES != SPACE_ROOT_PAGE * PAGE_SZ {
-            self.lemma_no_space_root(root);
-        } else {
-            assert(root == self.spaces.kernel_root@);
-            assert forall|s: usize| #[trigger] self.spaces.roots@.contains_key(s) implies root != s + SPACE_ROOT_PAGE * PAGE_SZ by {
-                assert(space_wf(&self.list, &self.spaces, &self.blocks, s));
-                let b = (s / PAGE_SZ) as int;
-                self.blocks.lemma_base(b);
-                self.blocks.lemma_member_of(b, b + SPACE_ROOT_PAGE as int);
-                assert((s + SPACE_ROOT_PAGE * PAGE_SZ) as int / PAGE_SZ as int == b + SPACE_ROOT_PAGE as int);
-            }
+        assert(root == self.spaces.kernel_root@);
+        assert forall|s: usize| #[trigger] self.spaces.roots@.contains_key(s) implies root != s + SPACE_ROOT_PAGE * PAGE_SZ by {
+            assert(space_wf(&self.list, &self.spaces, &self.blocks, s));
+            let b = (s / PAGE_SZ) as int;
+            self.blocks.lemma_base(b);
+            self.blocks.lemma_member_of(b, b + SPACE_ROOT_PAGE as int);
+            assert((s + SPACE_ROOT_PAGE * PAGE_SZ) as int / PAGE_SZ as int == b + SPACE_ROOT_PAGE as int);
         }
     }
 
@@ -369,13 +346,12 @@ impl CapKernel {
 
     /// Points core c's base register at `root` under `tag`, through the register the kernel holds for c,
     /// and records the space it names in the same step, so the record is the register's latest write
-    /// (registers_wf). `root` is the root of `space`, or for None a root that is no space's under
-    /// KERNEL_TAG, which no space holds (lemma_kernel_tag): the root c booted on, or one at no space's
-    /// root offset. Every space's root is at SPACE_ROOT_PAGE of a block of TABLE_PAGE_BYTES, so a root at
-    /// another offset of such a block is none, now or after any retype (lemma_no_space_root), and the
-    /// record never says no space while the register names one. That the boot root is the kernel's own,
-    /// a page outside every untyped that maps no page a space maps, is the glue's to keep, not this
-    /// model's. A space's root goes in under the PCID or ASID the space holds on c, so what the core then
+    /// (registers_wf). `root` is the root of `space`, or for None the kernel's own root under KERNEL_TAG,
+    /// which no space holds (lemma_kernel_tag). The model keeps that root (Spaces::kernel_root), a page
+    /// boot hands to no block and no retype ever types (kernel_root_reserved), so the record never says
+    /// no space while the register names one, now or after any retype. What the glue still owes is the
+    /// boot write that puts the root in every core's register and what that root maps, no page a space
+    /// maps. A space's root goes in under the PCID or ASID the space holds on c, so what the core then
     /// caches is under that space's tag. A register names only a loaded space that is not retired, and a
     /// retire refuses while one names it, so a core that has acknowledged a retire never walks the space
     /// again. See design/teardown-driven-by-retype/.
@@ -394,7 +370,7 @@ impl CapKernel {
                     &&& tag == id_pcid(old(self).spaces.loaded@[s].value().ids@[c as int])
                 },
                 None => {
-                    &&& root == old(self).spaces.kernel_root@ || root % TABLE_PAGE_BYTES != SPACE_ROOT_PAGE * PAGE_SZ
+                    &&& root == old(self).spaces.kernel_root@
                     &&& tag == KERNEL_TAG
                 },
             },

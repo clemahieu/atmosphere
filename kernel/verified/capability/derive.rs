@@ -258,6 +258,7 @@ impl CapKernel {
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).iommus == old(self).iommus,
             final(self).spaces.loaded == old(self).spaces.loaded,
+            final(self).spaces.kernel_root == old(self).spaces.kernel_root,
             final(self).tables.roots == old(self).tables.roots,
             ret ==> Self::derive_step(*old(self), *final(self), old(self).tables.node_of(old(self).table_at(root, to.through)->0, to.index)),
             ret && !tracked_kind(old(self).payload_of(old(self).tables.node_of(root, from)).kind) ==> {
@@ -323,6 +324,7 @@ impl CapKernel {
             final(self).flush_epoch == old(self).flush_epoch,
             final(self).iommus == old(self).iommus,
             final(self).spaces.loaded == old(self).spaces.loaded,
+            final(self).spaces.kernel_root == old(self).spaces.kernel_root,
             final(self).tables.roots == old(self).tables.roots,
             final(self).devices == old(self).devices,
             ret && !tracked_kind(old(self).payload_of(old(self).tables.node_of(src, from)).kind) ==> {

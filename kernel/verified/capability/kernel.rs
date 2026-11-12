@@ -42,8 +42,8 @@ pub struct CoreState {
     /// The next PCID to hand out at this generation. The PCIDs the core may hold entries under are
     /// below it: tags_wf.
     pub next_pcid: usize,
-    /// The space whose root this core's page-table base register names, or None for a root that is no
-    /// space's, such as the kernel's own. Only switch_space writes it, in the step that writes the
+    /// The space whose root this core's page-table base register names, or None for the kernel's own
+    /// root. Only switch_space writes it, in the step that writes the
     /// register through the core's BaseRegister: registers_wf. See design/teardown-driven-by-retype/.
     pub space: Option<usize>,
 }
@@ -110,7 +110,7 @@ pub open spec fn ids_wf(cores: Seq<CoreState>, lists: Map<usize, PointsTo<SpaceC
 
 /// Core c's base register names `space`: for Some(s), s's root under the tag the core writes for the id
 /// s holds on c (tag_written: that id where the core tags its TLB, KERNEL_TAG where it does not); for
-/// None, under KERNEL_TAG, the root the core booted on or a root at no space's root offset.
+/// None, under KERNEL_TAG, the kernel's own root, the one every core boots on.
 pub open spec fn register_names(r: BaseRegister, space: Option<usize>, lists: Map<usize, PointsTo<SpaceCores>>, c: int, kernel_root: usize) -> bool {
     &&& r.core() == c
     &&& match space {
@@ -121,7 +121,7 @@ pub open spec fn register_names(r: BaseRegister, space: Option<usize>, lists: Ma
         },
         None => {
             &&& r.tag() == KERNEL_TAG
-            &&& (r.root() == kernel_root || r.root() % TABLE_PAGE_BYTES != SPACE_ROOT_PAGE * PAGE_SZ)
+            &&& r.root() == kernel_root
         },
     }
 }

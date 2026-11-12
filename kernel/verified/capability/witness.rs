@@ -920,6 +920,7 @@ impl CapKernel {
                 &&& block_refs(&final(self).blocks, BlockRef::Small(base / PAGE_SZ)) == 2
                 &&& final(self).process_unloaded(base)
                 &&& final(self).cores == old(self).cores
+                &&& final(self).spaces.kernel_root == old(self).spaces.kernel_root
                 &&& final(self).tables.leaf(base, 0) == (base + 12 * PAGE_SZ) as usize
                 &&& forall|r: int| 1 <= r < ROOT_ENTRIES ==> #[trigger] final(self).tables.leaf(base, r) == NO_LEAF
                 &&& final(self).slot_holds(process, WITNESS_PROCESS_SLOT, (base + 8 * PAGE_SZ + 1) as usize, process_of(base))
@@ -1447,9 +1448,9 @@ impl CapKernel {
     /// leaves the retire in place, have core 0 acknowledge the retire's flush, retype the block a third
     /// time, which frees it, and retype a process at the same block into slot 257 again.
     /// Each step returns what a teardown driven by retype says, in this order, and at the end the root
-    /// holds a capability to a live process at the same block. `kernel_root` is a page at no space's
-    /// root offset, all the model asks of a root naming no space; that it is the kernel's own, outside
-    /// every untyped, is the glue's to keep. See design/teardown-driven-by-retype/.
+    /// holds a capability to a live process at the same block. `kernel_root` is the kernel's own root,
+    /// the one the model keeps and boot hands to no block, the only root a register naming no space
+    /// holds. See design/teardown-driven-by-retype/.
     #[verifier::spinoff_prover]
     pub fn witness_process_block_retyped(
         &mut self,
@@ -1468,8 +1469,7 @@ impl CapKernel {
     ) -> (ret: (bool, bool, ReclaimStep, bool, ReclaimStep, ReclaimStep, ReclaimStep, ReclaimStep, ReclaimStep, ReclaimStep, bool))
         requires
             old(self).booted(root@, process, leaf@, frames@, t@, free@, image@, untyped@, frame@, present@),
-            kernel_root % PAGE_SZ == 0,
-            kernel_root % TABLE_PAGE_BYTES != SPACE_ROOT_PAGE * PAGE_SZ,
+            old(self).spaces.kernel_root@ == kernel_root,
             mem_valid(kernel_root),
             image_tables_bound(image@) + 2 <= untyped_tables(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0])),
             base == cursor_block(page_block_payload(runs_blocks(free@, MAX_ORDER as nat)[0]).base, image_tables_bound(image@)),
@@ -1884,9 +1884,6 @@ impl CapKernel {
 
         // Core 0 leaves the dead process's space for a root naming no space, under KERNEL_TAG, which no
         // space holds, so no base register names the space a retire would end.
-        proof {
-            n7.lemma_no_space_root(kernel_root);
-        }
         self.switch_space(0, None, kernel_root, KERNEL_TAG);
         let ghost l7 = *self;
         proof {
