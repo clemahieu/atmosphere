@@ -22,6 +22,7 @@
 //! process's table into its own. And it can set and read the registers of a thread it has not started,
 //! through the thread's control capability.
 //! Beside those, boot can start the root: core 0 loads the root's space and enters its thread.
+//! And an IOMMU's flush leaves the frames, the threads and the view as they were.
 //! Every step is proven to succeed. Only Verus compiles this module, so no image contains it.
 //! See design/process-holds-capabilities/.
 use vstd::arithmetic::div_mod::*;
@@ -8054,6 +8055,26 @@ impl CapKernel {
         let (r1, r2, r3, r4, r5, ok5, states) = self.witness_dead_table_page_teardown(process, c1, Ghost(u), Ghost(first), Ghost(big));
         let ghost (su, sc, sp, sa, s5) = states@;
         (r1, r2, r3, r4, r5, ok && ok5, Ghost((s4, su, sc, sp, sa, s5)))
+    }
+
+    /// An IOMMU's flush changes nothing a process can see: its frames' bytes, the threads and the
+    /// whole view are as they were.
+    pub fn witness_flush_iommu_keeps_view(&mut self, i: usize)
+        requires
+            old(self).wf(),
+            i < NUM_IOMMUS,
+            old(self).iommu_present(i as int),
+        ensures
+            final(self).wf(),
+            final(self).frames == old(self).frames,
+            final(self).threads == old(self).threads,
+            final(self).zeroing == old(self).zeroing,
+            final(self).holders == old(self).holders,
+            final(self).view() == old(self).view(),
+    {
+        // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        self.flush_iommu(i, Tracked(&mut steps));
     }
 }
 

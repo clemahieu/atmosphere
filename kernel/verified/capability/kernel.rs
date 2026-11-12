@@ -1826,6 +1826,32 @@ impl CapKernel {
         &&& forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] post.tlb@[d] == pre.tlb@[d]
     }
 
+    /// Only IOMMU i's acknowledgement, its model of the IOTLB and the IOMMUs' command buffers changed.
+    pub open spec fn only_iommu_changed(pre: Self, post: Self, i: int) -> bool {
+        &&& post.list == pre.list
+        &&& post.cores == pre.cores
+        &&& post.flush_epoch == pre.flush_epoch
+        &&& post.tlb == pre.tlb
+        &&& post.mapped == pre.mapped
+        &&& post.blocks == pre.blocks
+        &&& post.tables == pre.tables
+        &&& post.stale_epoch == pre.stale_epoch
+        &&& post.frames == pre.frames
+        &&& post.table_pages == pre.table_pages
+        &&& post.spaces == pre.spaces
+        &&& post.mappings == pre.mappings
+        &&& post.zeroing == pre.zeroing
+        &&& post.holders == pre.holders
+        &&& post.devices == pre.devices
+        &&& post.threads == pre.threads
+        &&& post.processes == pre.processes
+        &&& post.stop_ipis == pre.stop_ipis
+        &&& post.flush_ipis == pre.flush_ipis
+        &&& post.iommus.present == pre.iommus.present
+        &&& forall|j: int| 0 <= j < NUM_IOMMUS && j != i ==> #[trigger] post.iommu_acked(j) == pre.iommu_acked(j)
+        &&& forall|j: int| 0 <= j < NUM_IOMMUS && j != i ==> #[trigger] post.iommus.tlb@[j] == pre.iommus.tlb@[j]
+    }
+
     /// A step that changed only core c, and not the space its register names, keeps the registers.
     pub proof fn lemma_registers_core(pre: Self, post: Self, c: int)
         requires
@@ -2769,21 +2795,7 @@ impl CapKernel {
             final(self).iommu_acked(i as int) == old(self).flush_epoch,
             forall|j: int| 0 <= j < NUM_IOMMUS && j != i ==> #[trigger] final(self).iommu_acked(j) == old(self).iommu_acked(j),
             final(self).iommus.tlb@[i as int] == Set::<TlbEntry>::empty(),
-            forall|j: int| 0 <= j < NUM_IOMMUS && j != i ==> #[trigger] final(self).iommus.tlb@[j] == old(self).iommus.tlb@[j],
-            final(self).iommus.present == old(self).iommus.present,
-            final(self).tlb == old(self).tlb,
-            final(self).cores == old(self).cores,
-            final(self).mapped == old(self).mapped,
-            final(self).stale_epoch == old(self).stale_epoch,
-            final(self).flush_epoch == old(self).flush_epoch,
-            final(self).list == old(self).list,
-            final(self).tables == old(self).tables,
-            final(self).blocks == old(self).blocks,
-            final(self).spaces == old(self).spaces,
-            final(self).devices == old(self).devices,
-            final(self).processes == old(self).processes,
-            final(self).table_pages == old(self).table_pages,
-            final(self).mappings == old(self).mappings,
+            Self::only_iommu_changed(*old(self), *final(self), i as int),
     {
         let ghost pre = *old(self);
         let epoch = self.flush_epoch;
