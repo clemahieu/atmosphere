@@ -4,14 +4,17 @@
 //! so what a process holds, what each capability names and which rights it carries are read from the
 //! tables here and nowhere else, beside what each device space maps, read from the walks of its tables,
 //! and which space each device is bound to, read from the device records, and what a process sees of
-//! a frame, read from its page's permission. The fields for process mappings and threads, and the
-//! contents of objects other than frames, stay empty until the objects behind them exist. See design/theorem-over-reach/ and design/device-binding-under-the-space-capability/.
+//! a frame, read from its page's permission, and of a thread, read from the registers its record saves.
+//! The fields for process mappings and threads, and the contents of objects other than frames and
+//! threads, stay empty until the objects behind them exist. See design/theorem-over-reach/ and design/device-binding-under-the-space-capability/.
 #[cfg(verus_keep_ghost)]
 use vstd::arithmetic::power2::*;
 use vstd::prelude::*;
 
 verus! {
 
+#[cfg(verus_keep_ghost)]
+use crate::arch::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::device::*;
 use crate::capability::kernel::*;
@@ -33,6 +36,8 @@ use crate::capability::thread::*;
 use crate::define::*;
 #[cfg(verus_keep_ghost)]
 use crate::pagetable::entry::PageEntry;
+#[cfg(verus_keep_ghost)]
+use crate::pptr::*;
 
 /// The bit of a capability's rights word that grants this right.
 pub open spec fn right_bit(right: Right) -> u32 {
@@ -409,6 +414,25 @@ pub open spec fn frame_contents(frames: Map<usize, PagePerm4k>, o: ObjectId) -> 
     }
 }
 
+/// Words as bytes, each word's least significant byte first.
+pub open spec fn words_bytes(words: Seq<u64>) -> Seq<u8> {
+    Seq::new(words.len() * 8, |i: int| ((words[i / 8] >> ((8 * (i % 8)) as u64)) & 0xff) as u8)
+}
+
+/// The registers each thread's record saves, keyed by the thread.
+pub open spec fn saved_registers(threads: &Threads) -> Map<ObjectId, Registers> {
+    threads.records@.map_values(|r: PointsTo<ThreadRecord>| r.value().frame)
+}
+
+/// What a process sees of object o: a thread's saved registers, as bytes, and a frame's page otherwise.
+pub open spec fn contents_of(registers: Map<ObjectId, Registers>, frames: Map<usize, PagePerm4k>, o: ObjectId) -> Seq<u8> {
+    if registers.contains_key(o) {
+        words_bytes(register_words(registers[o]))
+    } else {
+        frame_contents(frames, o)
+    }
+}
+
 /// Two frame maps that agree on every page outside the `pages` pages from first differ in contents
 /// only on those pages.
 pub proof fn lemma_contents_in_pages(a: Map<usize, PagePerm4k>, b: Map<usize, PagePerm4k>, first: usize, pages: nat, o: ObjectId)
@@ -431,9 +455,16 @@ pub proof fn lemma_contents_in_pages(a: Map<usize, PagePerm4k>, b: Map<usize, Pa
 }
 
 /// What the view reads: the list and the tables, what the device spaces map through the table tree,
-/// which space each device is bound to and the frames' pages, so a step that leaves those alone
-/// leaves the view alone.
-pub open spec fn view_of(list: &Tree, tables: &Tables, tree: TableTree, devices: &Devices, frames: Map<usize, PagePerm4k>) -> State {
+/// which space each device is bound to, the threads' saved registers and the frames' pages, so a step
+/// that leaves those alone leaves the view alone.
+pub open spec fn view_of(
+    list: &Tree,
+    tables: &Tables,
+    tree: TableTree,
+    devices: &Devices,
+    registers: Map<ObjectId, Registers>,
+    frames: Map<usize, PagePerm4k>,
+) -> State {
     State {
         held: ISet::new(|h: (ObjectId, NodeId)|
             tables.is_cap(list, h.1) && tables.owner@[page_of(h.1)].0 == h.0),
@@ -448,7 +479,7 @@ pub open spec fn view_of(list: &Tree, tables: &Tables, tree: TableTree, devices:
         bound: Map::empty(),
         shares: shares_of(tree),
         binds: binds_of(devices),
-        contents: |o: ObjectId| frame_contents(frames, o),
+        contents: |o: ObjectId| contents_of(registers, frames, o),
     }
 }
 
@@ -505,7 +536,7 @@ impl CapKernel {
     }
 
     pub open spec fn view(&self) -> State {
-        view_of(&self.list, &self.tables, tree_of(&self.table_pages, &self.spaces), &self.devices, self.frames@)
+        view_of(&self.list, &self.tables, tree_of(&self.table_pages, &self.spaces), &self.devices, saved_registers(&self.threads), self.frames@)
     }
 
     /// Without a device space nothing is shared through one.

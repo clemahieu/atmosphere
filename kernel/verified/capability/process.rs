@@ -1133,6 +1133,7 @@ impl CapKernel {
     /// root was no root before and holds no leaf, so it holds nothing.
     proof fn lemma_process_view(pre: Self, post: Self, root: usize, from: usize, to: usize, base: usize)
         requires
+            saved_registers(&post.threads) == saved_registers(&pre.threads),
             post.frames@ == pre.frames@,
             Self::adds_cap(pre, post, pre.tables.node_of(root, to)),
             pre.tables.has_slot(&pre.list, root, from),
@@ -1478,6 +1479,7 @@ impl CapKernel {
             assert(right_bit(Right::Retype) == 8);
             assert(post.list.parent@ == pre.list.parent@.insert(child, parent));
             Self::lemma_space_shares(pre, post, base, page);
+            assert(saved_registers(&post.threads) =~= saved_registers(&pre.threads));
             Self::lemma_process_view(pre, post, root, from, to, base);
             let live = |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live;
             assert(pre.view().holds_right(root, parent, Right::Retype));

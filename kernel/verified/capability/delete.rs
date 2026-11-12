@@ -532,6 +532,7 @@ impl CapKernel {
     pub proof fn lemma_delete_removes(pre: Self, post: Self, n: usize)
         requires
             post.frames@ == pre.frames@,
+            saved_registers(&post.threads) == saved_registers(&pre.threads),
             Self::caps_frame(pre, post, n, n),
             pre.is_cap(n),
             !post.list.nodes@[n as int].live,

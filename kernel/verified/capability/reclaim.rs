@@ -2111,6 +2111,7 @@ impl CapKernel {
     proof fn lemma_leaf_freed_caps(pre: Self, post: Self, base: usize)
         requires
             post.frames@ == pre.frames@,
+            saved_registers(&post.threads) == saved_registers(&pre.threads),
             pre.wf(),
             pre.leaf_is_empty(base),
             post.tables.wf(&pre.list),
@@ -3385,6 +3386,7 @@ impl CapKernel {
     proof fn lemma_unlink_discharges(pre: Self, post: Self, root: usize, untyped: usize, base: usize)
         requires
             post.frames@ == pre.frames@,
+            saved_registers(&post.threads) == saved_registers(&pre.threads),
             Self::caps_frame(pre, post, base, base),
             base % PAGE_SZ == 0,
             post.list.parent == pre.list.parent,
@@ -4437,6 +4439,7 @@ impl CapKernel {
     pub proof fn lemma_mapping_view_same(pre: Self, post: Self, n: usize)
         requires
             post.frames@ == pre.frames@,
+            saved_registers(&post.threads) == saved_registers(&pre.threads),
             Self::caps_frame(pre, post, n, n),
             pre.list.nodes@[n as int].kind is Mapping,
             !post.list.nodes@[n as int].live,
@@ -5048,6 +5051,7 @@ impl CapKernel {
             final(self).tables == old(self).tables,
             final(self).devices == old(self).devices,
             final(self).processes == old(self).processes,
+            final(self).threads == old(self).threads,
             final(self).spaces == old(self).spaces,
             final(self).zeroing == old(self).zeroing,
             final(self).stale_epoch == old(self).stale_epoch,
@@ -5128,6 +5132,7 @@ impl CapKernel {
             final(self).list == old(self).list,
             final(self).tables == old(self).tables,
             final(self).devices == old(self).devices,
+            final(self).threads == old(self).threads,
             final(self).blocks.pages@[page as int].kind is Free,
             final(self).frames@ == old(self).frames@.remove(page),
     {

@@ -1212,6 +1212,12 @@ impl Registers {
     }
 }
 
+/// The saved registers as words, in the order the frame lays them out: what a process with control of
+/// the thread sees of it. See design/theorem-over-reach/.
+pub open spec fn register_words(r: Registers) -> Seq<u64> {
+    seq![r.r15, r.r14, r.r13, r.r12, r.rbp, r.rbx, r.r11, r.r10, r.r9, r.r8, r.rcx, r.rdx, r.rsi, r.rdi, r.rax, r.error_code, r.rip, r.cs, r.flags, r.rsp, r.ss]
+}
+
 /// Registers that are all zero.
 pub open spec fn zero_registers() -> Registers {
     Registers {

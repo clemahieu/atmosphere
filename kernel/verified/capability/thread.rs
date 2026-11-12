@@ -1640,6 +1640,7 @@ impl CapKernel {
     /// table root is, so it holds nothing.
     proof fn lemma_thread_view(pre: Self, post: Self, root: usize, from: usize, to: usize, base: usize)
         requires
+            saved_registers(&post.threads) == saved_registers(&pre.threads),
             post.frames@ == pre.frames@,
             Self::adds_cap(pre, post, pre.tables.node_of(root, to)),
             pre.tables.has_slot(&pre.list, root, from),
@@ -1950,15 +1951,44 @@ impl CapKernel {
             assert(right_bit(Right::Control) == 128);
             assert(right_bit(Right::Retype) == 8);
             assert(post.list.parent@ == pre.list.parent@.insert(child, parent));
-            Self::lemma_thread_view(pre, post, root, from, to, base);
+            // The capability first, then the record's registers, as a write of contents alone.
+            let typed = CapKernel { threads: pre.threads, ..post };
+            Self::lemma_thread_view(pre, typed, root, from, to, base);
             let live = |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live;
             assert(pre.view().holds_right(root, parent, Right::Retype));
             pre.lemma_retype_covers(root, from, base, THREAD_ORDER);
-            lemma_adds_object_discharges_retype(pre.view(), post.view(), root, parent, child, live, base, pow2(1));
+            lemma_adds_object_discharges_retype(pre.view(), typed.view(), root, parent, child, live, base, pow2(1));
+            Self::lemma_record_then(pre, post, root, parent, base);
             Self::lemma_type_thread_keeps(pre, post, mid, root, to, page as int);
             Self::lemma_typed_nodes(pre.list, mid, post.list, child, base);
         }
         true
+    }
+
+    /// A thread's retype, as the capability it adds and then the registers of the record it makes:
+    /// the record is the only one new, and its registers are the object's contents, which the retype
+    /// may write.
+    proof fn lemma_record_then(pre: Self, post: Self, root: usize, parent: NodeId, base: usize)
+        requires
+            discharges(pre.view(), (CapKernel { threads: pre.threads, ..post }).view(), root,
+                Effect::Retype { untyped: parent, object: base, pages: pow2(1), into: None }),
+            post.threads.records@ == pre.threads.records@.insert(base, post.threads.records@[base]),
+        ensures
+            discharges(pre.view(), post.view(), root, Effect::Retype { untyped: parent, object: base, pages: pow2(1), into: None }),
+    {
+        let typed = CapKernel { threads: pre.threads, ..post };
+        let e = Effect::Retype { untyped: parent, object: base, pages: pow2(1), into: None };
+        lemma2_to64();
+        assert(same_but_contents(typed.view(), post.view()));
+        assert forall|o: ObjectId| #[trigger] State::changed(typed.view(), post.view(), o) implies may_change(pre.view(), e, o) by {
+            if o != base {
+                assert(saved_registers(&post.threads).contains_key(o) == saved_registers(&pre.threads).contains_key(o));
+                if saved_registers(&pre.threads).contains_key(o) {
+                    assert(saved_registers(&post.threads)[o] == saved_registers(&pre.threads)[o]);
+                }
+            }
+        }
+        lemma_then_contents(pre.view(), typed.view(), post.view(), root, e);
     }
 
     /// What a thread's retype does to the list's nodes between pre and post, making the capability
@@ -2215,6 +2245,7 @@ impl CapKernel {
             lemma_has(post.list.seq@, child);
             assert(post.list.is_child(parent, child));
             assert(post.view().holds(root, child));
+            assert(saved_registers(&post.threads) =~= saved_registers(&mid.threads));
             Self::lemma_leaf_added_discharges(mid, post, root, n, base);
             assert forall|x: NodeId| #[trigger] mid.view().names.contains_key(x) implies post.view().names.contains_key(x) by {
                 assert(post.is_cap(x) == mid.is_cap(x));
@@ -2842,7 +2873,17 @@ impl CapKernel {
             assert(Self::frame_written(pre, post, t, user_frame(frame)));
             lemma_current_same(pre.cores@, post.cores@, pre.threads.records@, post.threads.records@);
             Self::lemma_switch_wf(pre, post, 0, t);
-            assert(post.view() == pre.view());
+            let (a, b) = (pre.view(), post.view());
+            let e = Effect::Control { cap: pre.tables.node_of(root, i), thread: t };
+            assert(saved_registers(&post.threads) =~= saved_registers(&pre.threads).insert(t, user_frame(frame)));
+            assert(same_but_contents(a, b));
+            assert forall|o: ObjectId| #[trigger] State::changed(a, b, o) implies may_change(a, e, o) by {
+                if o != t {
+                    assert(saved_registers(&post.threads).contains_key(o) == saved_registers(&pre.threads).contains_key(o));
+                }
+            }
+            assert(authorized(a, root, e));
+            lemma_contents_only(a, b, root, e);
         }
         true
     }
@@ -2964,6 +3005,7 @@ impl CapKernel {
                 assert(pre.threads.records@.contains_key(x));
             }
             Self::lemma_switch_wf(pre, post, 0, t);
+            assert(saved_registers(&post.threads) =~= saved_registers(&pre.threads));
             assert(post.view() == pre.view());
         }
         true
@@ -3067,6 +3109,7 @@ impl CapKernel {
                 if core != c {
                     self.stop_elsewhere(t, core);
                     proof {
+                        assert(saved_registers(&self.threads) =~= saved_registers(&pre.threads));
                         assert(self.view() == pre.view());
                     }
                     return SuspendStep::Again;
@@ -3138,6 +3181,7 @@ impl CapKernel {
                 assert(pre.threads.records@.contains_key(x));
             }
             Self::lemma_switch_wf(pre, post, c as int, t);
+            assert(saved_registers(&post.threads) =~= saved_registers(&pre.threads));
             assert(post.view() == pre.view());
         }
         SuspendStep::Suspended
@@ -3343,7 +3387,8 @@ impl CapKernel {
     /// From pre to post, core c moved its current thread off with frame saved, as check_current does
     /// for a thread that must leave: the thread's record is written Inactive, or Dead when it was marked
     /// to die, with no stop pending and the frame it entered with; core c runs nothing; every other
-    /// object, core and record is as it was, and so is the view.
+    /// object, core and record is as it was, and the view changed only in what the thread's frame
+    /// shows.
     pub open spec fn moved_off(pre: Self, post: Self, c: int, frame: Registers) -> bool {
         let t = pre.cores@[c].current_thread->Some_0;
         let r = pre.threads.records@[t].value();
@@ -3362,7 +3407,7 @@ impl CapKernel {
         &&& post.cores@.len() == pre.cores@.len()
         &&& forall|d: int| 0 <= d < NUM_CPUS && d != c ==> #[trigger] post.cores@[d] == pre.cores@[d]
         &&& post.cores@[c] == CoreState { current_thread: None, ..pre.cores@[c] }
-        &&& post.view() == pre.view()
+        &&& saves_own_frame(pre.view(), post.view(), t)
     }
 
     /// Core c's check of its current thread on kernel entry and before returning to user mode: one load
@@ -3381,7 +3426,7 @@ impl CapKernel {
             ret == old(self).must_leave(c as int),
             !ret ==> *final(self) == *old(self),
             final(self).current_live(c as int),
-            final(self).view() == old(self).view(),
+            !ret ==> final(self).view() == old(self).view(),
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
             ret ==> Self::moved_off(*old(self), *final(self), c as int, frame),
     {
@@ -3471,7 +3516,11 @@ impl CapKernel {
                 assert(pre.threads.records@.contains_key(x));
             }
             Self::lemma_switch_wf(pre, post, c as int, t);
-            assert(post.view() == pre.view());
+            assert(saved_registers(&post.threads) =~= saved_registers(&pre.threads).insert(t, frame));
+            assert(same_but_contents(pre.view(), post.view()));
+            assert forall|o: ObjectId| #[trigger] State::changed(pre.view(), post.view(), o) implies o == t by {
+                assert(saved_registers(&post.threads).contains_key(o) == saved_registers(&pre.threads).contains_key(o));
+            }
         }
         true
     }

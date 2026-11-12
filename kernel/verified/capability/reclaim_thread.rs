@@ -163,9 +163,9 @@ impl CapKernel {
         &&& !post.list.pages@.dom().contains(base)
         &&& post.thread_work(base) < self.thread_work(base)
         &&& Self::step_ok(*self, post, c as int)
-        &&& post.view() == self.view()
+        &&& same_but_contents(self.view(), post.view())
         &&& bound_threads(&post.list, &post.tables) == bound_threads(&self.list, &self.tables)
-        &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base, pages: 0 })
+        &&& discharges(self.view(), post.view(), root, Effect::Teardown { untyped, object: base, pages: pow2(THREAD_ORDER as nat) })
     }
 
     /// The block test reclaim_thread makes reads as the records do: the block at a thread-aligned base
@@ -254,6 +254,7 @@ impl CapKernel {
     proof fn lemma_binding_view_same(pre: Self, post: Self, n: usize)
         requires
             post.frames@ == pre.frames@,
+            saved_registers(&post.threads) == saved_registers(&pre.threads),
             Self::caps_frame(pre, post, n, n),
             pre.list.nodes@[n as int].kind is Binding,
             !post.list.nodes@[n as int].live,
@@ -334,6 +335,7 @@ impl CapKernel {
             Self::lemma_tlb_same(mid, post);
             assert forall|x: usize| x != t implies #[trigger] thread_process(&post.threads, x) == thread_process(&pre.threads, x) by {}
             Self::lemma_bound_threads_remove(pre, post, t);
+            assert(saved_registers(&post.threads) =~= saved_registers(&pre.threads));
             Self::lemma_binding_view_same(pre, post, t);
             assert(!pre.is_cap(t));
             lemma_only_child_gone(pre.list, post.list, t, p);
@@ -696,7 +698,8 @@ impl CapKernel {
     }
 
     /// The kernel after the spent thread at `base` frees: nothing but its block, its record and its list
-    /// page changed, and the view and the bound threads are as they were.
+    /// page changed, the bound threads are as they were, and the view changed only in what the thread's
+    /// saved registers showed.
     proof fn lemma_thread_freed(pre: Self, post: Self, base: usize)
         requires
             pre.wf(),
@@ -731,7 +734,8 @@ impl CapKernel {
             post.stop_ipis == pre.stop_ipis,
         ensures
             post.wf(),
-            post.view() == pre.view(),
+            same_but_contents(pre.view(), post.view()),
+            forall|o: ObjectId| #[trigger] State::changed(pre.view(), post.view(), o) ==> o == base,
             bound_threads(&post.list, &post.tables) == bound_threads(&pre.list, &pre.tables),
     {
         pre.lemma_spent_thread(base);
@@ -748,7 +752,13 @@ impl CapKernel {
         assert(b.names =~= a.names);
         assert(b.pages =~= a.pages);
         assert(b.rights =~= a.rights);
-        assert(b == a);
+        assert(saved_registers(&post.threads) =~= saved_registers(&pre.threads).remove(base));
+        assert(same_but_contents(a, b));
+        assert forall|o: ObjectId| #[trigger] State::changed(a, b, o) implies o == base by {
+            if o != base {
+                assert(saved_registers(&post.threads).contains_key(o) == saved_registers(&pre.threads).contains_key(o));
+            }
+        }
         Self::lemma_devices_same_caps(pre, post);
         Self::lemma_device_bindings_space_caps(pre, post);
         assert forall|t: usize| #[trigger] pre.threads.records@.contains_key(t) && t != base implies {
@@ -805,7 +815,8 @@ impl CapKernel {
             !final(self).threads.records@.contains_key(base),
             !final(self).list.pages@.dom().contains(base),
             final(self).cores == old(self).cores,
-            final(self).view() == old(self).view(),
+            same_but_contents(old(self).view(), final(self).view()),
+            forall|o: ObjectId| #[trigger] State::changed(old(self).view(), final(self).view(), o) ==> o == base,
             bound_threads(&final(self).list, &final(self).tables) == bound_threads(&old(self).list, &old(self).tables),
     {
         let ghost pre = *old(self);
@@ -980,7 +991,14 @@ impl CapKernel {
         self.free_spent_thread(base, Tracked(steps));
         proof {
             let post = *self;
-            lemma_no_change_discharges_teardown(pre.view(), root, untyped, base, 0);
+            let e = Effect::Teardown { untyped, object: base, pages: pow2(THREAD_ORDER as nat) };
+            pre.lemma_retype_covers(root, from, base, THREAD_ORDER);
+            lemma2_to64();
+            assert(authorized(pre.view(), root, e));
+            assert forall|o: ObjectId| #[trigger] State::changed(pre.view(), post.view(), o) implies may_change(pre.view(), e, o) by {
+                assert(o == base);
+            }
+            lemma_contents_only(pre.view(), post.view(), root, e);
             assert(pre.thread_freed(post, c, root, from, base));
         }
         ReclaimStep::Freed

@@ -670,6 +670,7 @@ impl CapKernel {
             }
             assert(mid.flush_epoch <= pre.flush_epoch + 1);
             assert(Self::records_shrunk(pre, mid));
+            assert(saved_registers(&mid.threads) =~= saved_registers(&cut.threads));
             Self::lemma_revoke_step_wf(cut, mid, *self, root, c, r);
             if pre.hidden_table(r) {
                 assert(cut.blocks == pre.blocks && cut.holders == pre.holders);
@@ -737,6 +738,7 @@ impl CapKernel {
     /// with r's capability and its mapping gone and every other capability as it was.
     pub proof fn lemma_revoke_step_wf(pre: Self, mid: Self, post: Self, root: usize, c: usize, r: usize)
         requires
+            saved_registers(&mid.threads) == saved_registers(&pre.threads),
             pre.wf(),
             mid.tables.roots@.dom() == pre.tables.roots@.dom(),
             c < NODE_SPACE,
@@ -926,6 +928,7 @@ impl CapKernel {
                 }
             }
         }
+        assert(saved_registers(&post.threads) =~= saved_registers(&pre.threads));
         Self::lemma_revoke_step(pre, post, root, c, r);
         Self::lemma_delete_caps_wf(pre, post, r);
         assert(revoked_one(pre.list, post.list, c, r));
@@ -1732,6 +1735,7 @@ impl CapKernel {
     proof fn lemma_revoke_step(pre: Self, post: Self, root: usize, c: usize, r: usize)
         requires
             post.frames@ == pre.frames@,
+            saved_registers(&post.threads) == saved_registers(&pre.threads),
             pre.wf(),
             post.list.wf(),
             pre.is_cap(c),

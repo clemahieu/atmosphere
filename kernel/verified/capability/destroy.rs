@@ -339,6 +339,7 @@ impl CapKernel {
                 }
                 self.destroy_thread(c, payload.base);
                 proof {
+                    assert(saved_registers(&self.threads) =~= saved_registers(&pre.threads));
                     assert(self.view() == pre.view());
                     if pre.destroys_own(c as int, root, i) {
                         reveal(current_wf);

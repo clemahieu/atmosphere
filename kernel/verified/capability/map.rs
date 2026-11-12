@@ -2710,6 +2710,7 @@ impl CapKernel {
     pub proof fn lemma_leaf_added_discharges(pre: Self, post: Self, root: usize, f: usize, node: usize)
         requires
             post.frames@ == pre.frames@,
+            saved_registers(&post.threads) == saved_registers(&pre.threads),
             pre.wf(),
             post.tables == pre.tables,
             node < NODE_SPACE,
@@ -2741,6 +2742,7 @@ impl CapKernel {
     pub proof fn lemma_binding_added_discharges(pre: Self, post: Self, root: usize, f: usize, node: usize, d: ObjectId, s: ObjectId)
         requires
             post.frames@ == pre.frames@,
+            saved_registers(&post.threads) == saved_registers(&pre.threads),
             pre.wf(),
             post.tables == pre.tables,
             node < NODE_SPACE,
@@ -2769,6 +2771,7 @@ impl CapKernel {
     pub proof fn lemma_leaf_added_discharges_share(pre: Self, post: Self, root: usize, space: usize, from: usize, f: usize, node: usize)
         requires
             post.frames@ == pre.frames@,
+            saved_registers(&post.threads) == saved_registers(&pre.threads),
             pre.wf(),
             post.tables == pre.tables,
             node < NODE_SPACE,

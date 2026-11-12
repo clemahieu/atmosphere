@@ -3899,12 +3899,20 @@ pub open spec fn same_but_contents(a: State, b: State) -> bool {
     b == (State { contents: b.contents, ..a })
 }
 
-/// A write of contents alone, where a retype or a teardown e may write, followed by a step that
-/// discharges e, discharges e: the write moves no authority. A retype zeroes its block's pages before
-/// it makes the capability, and that is how its two halves are one step.
+/// a and b differ only in what a process sees of thread t: the step saved the frame t entered the
+/// kernel with, which t's own user-mode execution wrote, as an access writes a frame. It moves no
+/// authority, and no capability names it. See design/theorem-over-reach/.
+pub open spec fn saves_own_frame(a: State, b: State, t: ObjectId) -> bool {
+    &&& same_but_contents(a, b)
+    &&& forall|o: ObjectId| #[trigger] State::changed(a, b, o) ==> o == t
+}
+
+/// A write of contents alone, where a retype, a teardown or a control e may write, followed by a step
+/// that discharges e, discharges e: the write moves no authority. A retype zeroes its block's pages
+/// before it makes the capability, and that is how its two halves are one step.
 pub proof fn lemma_contents_then(a: State, b: State, c: State, p: ObjectId, e: Effect)
     requires
-        e is Retype || e is Teardown,
+        e is Retype || e is Teardown || e is Control,
         same_but_contents(a, b),
         forall|o: ObjectId| #[trigger] State::changed(a, b, o) ==> may_change(a, e, o),
         discharges(b, c, p, e),
@@ -3956,10 +3964,54 @@ pub proof fn lemma_contents_then(a: State, b: State, c: State, p: ObjectId, e: E
     }
 }
 
+/// So is a step that discharges e followed by a write of contents alone where e may write: a thread's
+/// retype makes the capability and then writes the record's registers.
+pub proof fn lemma_then_contents(a: State, b: State, c: State, p: ObjectId, e: Effect)
+    requires
+        e is Retype || e is Teardown || e is Control,
+        discharges(a, b, p, e),
+        same_but_contents(b, c),
+        forall|o: ObjectId| #[trigger] State::changed(b, c, o) ==> may_change(a, e, o),
+    ensures
+        discharges(a, c, p, e),
+{
+    assert(c.held == b.held && c.names == b.names && c.pages == b.pages && c.rights == b.rights);
+    assert(c.parent == b.parent && c.maps == b.maps && c.process_of == b.process_of && c.waiting == b.waiting);
+    assert(c.bound == b.bound && c.shares == b.shares && c.binds == b.binds);
+    lemma_contents_same_reach(b, c);
+    assert forall|o: ObjectId| #[trigger] State::changed(a, c, o) implies may_change(a, e, o) by {
+        if !State::changed(b, c, o) {
+            assert(State::changed(a, b, o));
+        }
+    }
+    assert forall|n: NodeId| #[trigger] State::removed(a, c, n) implies may_remove(a, p, e, n) by {
+        assert(State::removed(a, b, n));
+    }
+    assert forall|r: ObjectId, o: ObjectId| #[trigger] c.reach(r, o) && !a.reach(r, o) implies may_grow(a, p, e, r, o) by {
+        assert(b.reach(r, o));
+    }
+    assert forall|w: (ObjectId, ObjectId)| #[trigger] c.waiting.contains(w) && !a.waiting.contains(w)
+        implies may_wait(a, p, w) by {
+        assert(b.waiting.contains(w));
+    }
+    assert forall|w: (ObjectId, ObjectId)| #[trigger] c.waiting.contains(w)
+        implies c.process_behind(w.1) == a.process_behind(w.1) by {
+        assert(b.waiting.contains(w));
+        assert(c.process_behind(w.1) == b.process_behind(w.1));
+    }
+    assert forall|x: NodeId, r: Right| #[trigger] c.rights.contains((x, r)) && c.names.contains_key(x)
+        implies (a.rights.contains((x, r)) && a.names.contains_key(x)) || may_hold(a, c, e, x, r) by {
+        assert(b.rights.contains((x, r)) && b.names.contains_key(x));
+        if !(a.rights.contains((x, r)) && a.names.contains_key(x)) {
+            assert(may_hold(a, b, e, x, r));
+        }
+    }
+}
+
 /// So is a write of contents alone, where e may write, by a process e authorizes.
 pub proof fn lemma_contents_only(a: State, c: State, p: ObjectId, e: Effect)
     requires
-        e is Retype || e is Teardown,
+        e is Retype || e is Teardown || e is Control,
         authorized(a, p, e),
         same_but_contents(a, c),
         forall|o: ObjectId| #[trigger] State::changed(a, c, o) ==> may_change(a, e, o),

@@ -1871,6 +1871,7 @@ impl CapKernel {
     /// query.
     pub proof fn lemma_hidden_retyped_discharges(pre: Self, post: Self, root: usize, from: usize, parent: usize, n: usize, order: u8)
         requires
+            saved_registers(&post.threads) == saved_registers(&pre.threads),
             pre.wf(),
             n < NODE_SPACE,
             !pre.list.nodes@[n as int].live,
@@ -1899,6 +1900,7 @@ impl CapKernel {
         requires
             n + pages * PAGE_SZ <= pre.view().names[parent] + pre.view().pages[parent] * PAGE_SZ,
             post.frames@ == pre.frames@,
+            saved_registers(&post.threads) == saved_registers(&pre.threads),
             pre.wf(),
             n < NODE_SPACE,
             !pre.list.nodes@[n as int].live,
@@ -2265,6 +2267,7 @@ impl CapKernel {
         level: usize,
     )
         requires
+            saved_registers(&post.threads) == saved_registers(&pre.threads),
             pre.wf(),
             pre.tables.roots@.contains_key(root),
             1 <= level <= 3,
@@ -3663,6 +3666,7 @@ impl CapKernel {
             assert(right_bit(Right::Control) == 128);
             assert(right_bit(Right::Retype) == 8);
             Self::lemma_space_shares(pre, post, base, page);
+            assert(saved_registers(&post.threads) =~= saved_registers(&pre.threads));
             Self::lemma_places_child_view(pre, post, root, from, root, to);
             let live = |x: NodeId| x < NODE_SPACE && pre.list.nodes@[x as int].live;
             assert(pre.view().holds_right(root, parent, Right::Retype));

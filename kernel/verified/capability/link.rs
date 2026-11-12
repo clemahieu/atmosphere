@@ -1705,6 +1705,7 @@ impl CapKernel {
     proof fn lemma_link_mappings(pre: Self, post: Self, root: usize, slot: usize, parent: usize, entry: usize, from: usize, child: usize, s: usize)
         requires
             post.frames@ == pre.frames@,
+            saved_registers(&post.threads) == saved_registers(&pre.threads),
             pre.wf(),
             pre.can_link(root, slot, parent, entry, from, child),
             Self::link_done(pre, post, parent, entry, child, s),
@@ -2381,6 +2382,7 @@ impl CapKernel {
     pub proof fn lemma_cut_sheds(pre: Self, post: Self, t: usize)
         requires
             post.frames@ == pre.frames@,
+            saved_registers(&post.threads) == saved_registers(&pre.threads),
             Self::tree_cut(pre, post, t),
             post.list == pre.list,
             post.tables == pre.tables,

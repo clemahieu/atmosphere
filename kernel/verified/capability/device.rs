@@ -19,6 +19,8 @@ use crate::capability::list::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::mapping::*;
 use crate::capability::reach::*;
+#[cfg(verus_keep_ghost)]
+use crate::capability::view::*;
 use crate::capability::refs::*;
 #[cfg(verus_keep_ghost)]
 use crate::capability::revoke::UNLINK_ARM_STEPS;
@@ -2055,6 +2057,7 @@ impl CapKernel {
         proof {
             let post = *self;
             let owner = pre.tables.owner@[page_of(m)].0;
+            assert(saved_registers(&mid.threads) =~= saved_registers(&pre.threads));
             Self::lemma_revoke_step_wf(pre, mid, post, owner, m, x);
             assert(Self::device_unbound(pre, post, x));
             // Every capability is as it was: the binding node was none.
