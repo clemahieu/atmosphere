@@ -5170,6 +5170,25 @@ impl CapKernel {
         (r1, r2, r3, ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8.is_some() && ok9)
     }
 
+    /// Retypes the free order-3 block at `base` as a table page of `level`, under the untyped at index
+    /// `from` of the table at `root`, where the retype is allowed: it succeeds and the page is a table's.
+    /// A witness that ends on this retype keeps nothing else of the state it leaves.
+    fn witness_table_page(&mut self, root: usize, from: usize, base: usize, level: usize) -> (ret: bool)
+        requires
+            old(self).wf(),
+            old(self).tables.roots@.contains_key(root),
+            old(self).root_live(root),
+            old(self).can_retype_table_page(root, from, base, level),
+        ensures
+            ret,
+            final(self).wf(),
+            final(self).table_pages.maps@.contains_key(base),
+    {
+        // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
+        let tracked mut steps = Steps::fresh();
+        self.retype_table_page(root, from, base, level, Tracked(&mut steps))
+    }
+
     /// From the state boot leaves, as the root at `process`, with the 68 order-3 blocks from the jb-th
     /// past those boot's tables took from the first untyped free, the first 64 a 2M region at `big`, and
     /// entry l4 of the root's level 4 table past the kernel's and under no page of the image: retype a
@@ -5750,12 +5769,7 @@ impl CapKernel {
         }
 
         // A table page at the same block.
-        // A witness holds no lock, so nothing bounds its count: design/one-lock-bounded-steps/.
-        let tracked mut steps = Steps::fresh();
-        let ok5 = self.retype_table_page(process, ROOT_UNTYPED_SLOT, c1, 2, Tracked(&mut steps));
-        proof {
-            assert(ok5);
-        }
+        let ok5 = self.witness_table_page(process, ROOT_UNTYPED_SLOT, c1, 2);
         (r1, r2, r3, r4, r5, ok1 && ok2 && ok4 && ok5, Ghost((s4, su, sc, sp, sa, s5)))
     }
 }
