@@ -681,6 +681,111 @@ impl CapKernel {
         }
     }
 
+    /// Whether the entry the address va names can be unmapped in the space whose root is s, as the
+    /// kernel reads it beyond any table's view: the walk reaches a level 1 table whose entry maps a
+    /// frame, and the flush epoch can still rise.
+    pub open spec fn unmap_fits(&self, s: usize, va: u64) -> bool {
+        let tree = tree_of(&self.table_pages, &self.spaces);
+        let p = address_path(va);
+        &&& walk_table(tree, s, p) is Some
+        &&& p.l1 < ENTRIES
+        &&& tree.entry(walk_table(tree, s, p)->0, p.l1).perm.present
+        &&& self.flush_epoch < usize::MAX
+    }
+
+    /// Unmap's condition over the caller's view, for the space capability at index slot of the caller's
+    /// table at root: the address names a level 1 entry; the slot holds a capability that may change its
+    /// space, naming no dead process and a process's space; and unmap_fits holds in that space. The
+    /// process's liveness, the space's kind and unmap_fits read the kernel outside the view.
+    pub open spec fn unmap_allowed(&self, root: usize, slot: usize, va: u64, level: u64) -> bool {
+        let v = self.table_view(root);
+        &&& level == 1
+        &&& names_entry(va, level)
+        &&& v.contains_key(slot)
+        &&& view_writes_space(v[slot])
+        &&& !self.cap_dead(self.tables.node_of(root, slot))
+        &&& self.spaces.records@[v[slot].base].value().kind == SpaceKind::Process
+        &&& self.unmap_fits(v[slot].base, va)
+    }
+
+    /// Unmap's contract over the caller's view: no slot of any table changes, whatever the status.
+    /// Refused, with every space's tables and every block's count as they were, exactly when
+    /// unmap_allowed fails; otherwise ok, with each result 0 or 1, the space the slot names losing the
+    /// entry at the path the address names and every other space's mappings as they were, the count of
+    /// the block holding the frame that entry mapped one lower, that block dead once its count reaches
+    /// zero, and every other block's count and every page's block as they were.
+    pub open spec fn unmap_contract(pre: Self, post: Self, root: usize, slot: usize, va: u64, level: u64, out: Outcome) -> bool {
+        &&& forall|t: usize| #[trigger] post.table_view(t) == pre.table_view(t)
+        &&& {
+            ||| {
+                &&& !pre.unmap_allowed(root, slot, va, level)
+                &&& out == status_only(STATUS_REFUSED)
+                &&& tree_of(&post.table_pages, &post.spaces) == tree_of(&pre.table_pages, &pre.spaces)
+                &&& post.blocks == pre.blocks
+            }
+            ||| {
+                let s = pre.table_view(root)[slot].base;
+                let a = tree_of(&pre.table_pages, &pre.spaces);
+                let b = tree_of(&post.table_pages, &post.spaces);
+                let p = address_path(va);
+                let br = block_ref(&pre.blocks, space_mapping(a, s)[p].addr / PAGE_SZ);
+                &&& pre.unmap_allowed(root, slot, va, level)
+                &&& out.status == STATUS_OK
+                &&& out.result_1 <= 1
+                &&& out.result_2 <= 1
+                &&& out.result_3 <= 1
+                &&& out.result_4 <= 1
+                &&& space_mapping(a, s).contains_key(p)
+                &&& space_mapping(b, s) == space_mapping(a, s).remove(p)
+                &&& forall|r: usize| r != s ==> #[trigger] space_mapping(b, r) == space_mapping(a, r)
+                &&& blocks_refs_changed(&pre.blocks, &post.blocks, br, (block_refs(&pre.blocks, br) - 1) as usize, block_dead(&pre.blocks, br) || block_refs(&pre.blocks, br) == 1)
+            }
+        }
+    }
+
+    /// Unmap's specification implies its contract.
+    pub proof fn lemma_unmap_contract(pre: Self, post: Self, root: usize, frame: Registers, out: Outcome)
+        requires
+            pre.wf(),
+            Self::spec_unmapped(pre, post, root, frame, out),
+        ensures
+            Self::unmap_contract(pre, post, root, frame.slot() as usize, frame.argument(1), frame.argument(2), out),
+    {
+        let slot = frame.slot() as usize;
+        let va = frame.argument(1);
+        let level = frame.argument(2);
+        pre.lemma_table_view(root, slot);
+        assert(pre.unmap_allowed(root, slot, va, level) == pre.allows_unmap(root, frame));
+        if out.status == STATUS_OK {
+            let read = choose|read: usize| Self::page_unmapped(pre, post, root, slot, va, level, #[trigger] unmapped_of(out, read));
+            let a = tree_of(&pre.table_pages, &pre.spaces);
+            let b = tree_of(&post.table_pages, &post.spaces);
+            let s = pre.payload_of(pre.tables.node_of(root, slot)).base;
+            let p = address_path(va);
+            pre.lemma_walk_table_facts(s, p);
+            let t = walk_table(a, s, p)->0;
+            let node = mapping_node(t, p.l1);
+            assert(Self::entry_unmapped(pre, post, root, slot, p));
+            assert(Self::mapping_unlinked(pre, post, node));
+            pre.lemma_map_node_place(t, p.l1);
+            assert(mapping_wf(&pre.list, &pre.tables, a, &pre.blocks, pre.holders@, pre.mappings@, node));
+            assert(post.list.parent@ =~= pre.list.parent@.insert(node, pre.list.parent@[node]));
+            Self::lemma_map_slots(pre, post, node, pre.list.parent@[node]);
+            let m = pre.mappings@[node];
+            assert(walk(a, s, p) == Some(a.entry(t, p.l1)));
+            reveal(walks_cut);
+            assert forall|r: usize, q: SpacePath| #[trigger] walk(b, r, q) == (if r == s && q == p { None } else { walk(a, r, q) }) by {
+                lemma_ends_at_unique(a, s, p, t, r, q);
+            }
+            assert(space_mapping(b, s) =~= space_mapping(a, s).remove(p));
+            assert forall|r: usize| r != s implies #[trigger] space_mapping(b, r) == space_mapping(a, r) by {
+                assert(space_mapping(b, r) =~= space_mapping(a, r));
+            }
+            assert(space_mapping(a, s)[p].addr == m.frame * PAGE_SZ);
+            vstd::arithmetic::div_mod::lemma_div_by_multiple(m.frame as int, PAGE_SZ as int);
+        }
+    }
+
     /// Inspect's condition over the caller's view: the position word names a position, the position is
     /// in a table, and the slot there holds a capability. Nothing outside the view decides it.
     pub open spec fn inspect_allowed(&self, root: usize, at: Option<Position>) -> bool {

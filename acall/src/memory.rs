@@ -133,6 +133,29 @@ pub fn map(caller: &mut Tracked<Caller>, slot: u64, va: u64, level: u64, from: u
     out
 }
 
+/// Unmaps the level 1 entry at `level` that the address `va` names in the space of the capability at
+/// index `slot`.
+pub fn unmap(caller: &mut Tracked<Caller>, slot: u64, va: u64, level: u64) -> (out: Outcome)
+    requires
+        old(caller)@.wf(),
+    ensures
+        final(caller)@.wf(),
+        final(caller)@.root() == old(caller)@.root(),
+        CapKernel::unmap_contract(old(caller)@.kernel(), final(caller)@.kernel(), final(caller)@.root(), slot as usize, va, level, out),
+    no_unwind
+{
+    let ghost pre = caller@;
+    let out = step(caller, OPERATION_UNMAP, slot, va, level, 0, 0, 0);
+    proof {
+        let frame = choose|frame: Registers|
+            carries(frame, OPERATION_UNMAP, slot, va, level, 0, 0, 0)
+                && #[trigger] CapKernel::invoked(pre.kernel(), caller@.kernel(), pre.root(), frame, out);
+        lemma_number_names_one_operation(Operation::Unmap);
+        CapKernel::lemma_unmap_contract(pre.kernel(), caller@.kernel(), pre.root(), frame, out);
+    }
+    out
+}
+
 /// A word no wider than an index names the slot at that index of the caller's own table.
 pub proof fn lemma_own_position(word: u64)
     requires
